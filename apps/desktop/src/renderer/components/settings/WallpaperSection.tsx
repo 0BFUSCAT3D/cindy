@@ -1,33 +1,27 @@
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
-import { useEffect, useCallback, useId, useState } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { extractIpcError } from '@/utils/ipcError';
+import { DownloadMeter } from './DownloadMeter';
 
 import { Button } from '@/components/ui/button';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Slider } from '@/components/ui/slider';
+import { Tip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useWallpaperSettings } from '@/hooks/useWallpaperSettings';
-import { getBuiltinWallpaperBackground, isSceneWallpaper } from '@/lib/wallpaper';
+import { getBuiltinWallpaperPreview, isSceneWallpaper } from '@/lib/wallpaper';
 import {
   APPEARANCE_LIMITS,
   DEFAULT_APPEARANCE_SETTINGS,
   isCustomWallpaperVideo,
-  type WallpaperId,
+  SELECTABLE_WALLPAPER_IDS,
 } from '@/../shared/appearanceSettings';
-
-const WALLPAPER_OPTIONS: Array<{ id: WallpaperId }> = [
-  { id: 'none' },
-  { id: 'cindy-window' },
-  { id: 'cindy-studio' },
-  { id: 'cindy-dream' },
-];
 
 export function WallpaperSection() {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const downloadStatusId = useId();
   const {
     wallpaperId,
     wallpaperOverlay,
@@ -61,6 +55,8 @@ export function WallpaperSection() {
     };
   }, [cancelBlurPreview, previewBlur]);
   const customVideo = isCustomWallpaperVideo(customWallpaperUrl);
+  const downloading = isSceneWallpaper(wallpaperId) && downloadPending;
+  const retryable = isSceneWallpaper(wallpaperId) && downloadFailed && !downloadPending;
   const chooseWallpaper = async () => {
     setBusy(true);
     setError('');
@@ -130,114 +126,99 @@ export function WallpaperSection() {
       </div>
 
       <div
-        className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4"
+        className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] gap-2"
         role="radiogroup"
         aria-label={t('settings.appearance.wallpaper.aria')}
       >
-        {[...WALLPAPER_OPTIONS, { id: 'custom' as const }].map((option) => {
-          const selected = wallpaperId === option.id;
-          const downloading = selected && isSceneWallpaper(option.id) && downloadPending;
-          const retryable =
-            selected && isSceneWallpaper(option.id) && downloadFailed && !downloadPending;
+        {SELECTABLE_WALLPAPER_IDS.map((id) => {
+          const selected = wallpaperId === id;
+          const label = t('settings.appearance.wallpaper.options.' + id);
           const background =
-            option.id === 'custom' && customWallpaperUrl && !customVideo
+            id === 'custom' && customWallpaperUrl && !customVideo
               ? `url("${customWallpaperUrl}")`
-              : getBuiltinWallpaperBackground(option.id);
+              : getBuiltinWallpaperPreview(id);
           return (
-            <button
-              key={option.id}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              aria-label={t('settings.appearance.wallpaper.options.' + option.id)}
-              aria-busy={downloading || undefined}
-              aria-describedby={downloading || retryable ? downloadStatusId : undefined}
-              title={retryable ? t('settings.appearance.wallpaper.retryDownload') : undefined}
-              disabled={busy}
-              onClick={() => {
-                if (retryable) retryDownload();
-                else if (option.id === 'custom' && !customWallpaperUrl) void chooseWallpaper();
-                else setWallpaper(option.id);
-              }}
-              className={cn(
-                'flex min-w-0 flex-col gap-2 rounded-xl text-left transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--settings-theme-icon-active)]',
-              )}
-            >
-              <span
+            <Tip key={id} text={label}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                aria-label={label}
+                disabled={busy}
+                onClick={() =>
+                  id === 'custom' && !customWallpaperUrl ? void chooseWallpaper() : setWallpaper(id)
+                }
                 className={cn(
-                  'relative h-16 overflow-hidden rounded-xl border bg-[var(--settings-input-bg)]',
-                  selected
-                    ? 'border-2 border-[var(--settings-theme-preview-border-active)]'
-                    : 'border-[var(--settings-theme-preview-border)]',
-                )}
-                style={{
-                  backgroundImage: background,
-                  backgroundPosition: 'center',
-                  backgroundRepeat: 'no-repeat',
-                  backgroundSize: 'cover',
-                }}
-              >
-                {option.id === 'custom' && customVideo ? (
-                  <span className="absolute inset-0 flex items-center justify-center text-[var(--settings-section-sublabel)]">
-                    <Film size={22} aria-hidden="true" />
-                  </span>
-                ) : null}
-                {option.id === 'custom' && !customWallpaperUrl ? (
-                  <span className="absolute inset-0 flex items-center justify-center text-[var(--settings-section-sublabel)]">
-                    <ImagePlus size={22} aria-hidden="true" />
-                  </span>
-                ) : null}
-                {option.id === 'none' ? (
-                  <span className="absolute inset-0 flex items-center justify-center text-12 text-[var(--settings-section-sublabel)]">
-                    {t('settings.appearance.wallpaper.nonePreview')}
-                  </span>
-                ) : null}
-                {downloading && (
-                  <span
-                    role="progressbar"
-                    aria-label={t('settings.appearance.wallpaper.downloading')}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(downloadProgress * 100)}
-                    className="absolute inset-0"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="absolute inset-0 origin-bottom bg-[color-mix(in_srgb,var(--settings-input-bg)_75%,transparent)] transition-transform duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] motion-reduce:transition-none"
-                      style={{ transform: `scaleY(${downloadProgress})` }}
-                    />
-                    <span id={downloadStatusId} className="sr-only">
-                      {t('settings.appearance.wallpaper.downloading')}
-                    </span>
-                  </span>
-                )}
-                {retryable && (
-                  <span
-                    role="status"
-                    className="absolute inset-0 flex items-center justify-center bg-[color-mix(in_srgb,var(--settings-input-bg)_75%,transparent)] text-[var(--text-primary)]"
-                  >
-                    <RotateCcw size={24} aria-hidden="true" />
-                    <span id={downloadStatusId} className="sr-only">
-                      {`${t('settings.appearance.wallpaper.downloadFailed')} ${t('settings.appearance.wallpaper.retryDownload')}`}
-                    </span>
-                  </span>
-                )}
-              </span>
-              <span
-                className={cn(
-                  'truncate text-12 font-medium',
-                  selected
-                    ? 'text-[var(--settings-theme-label-active)]'
-                    : 'text-[var(--settings-theme-label)]',
+                  'flex min-w-0 flex-col gap-1 rounded-xl text-left transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--settings-theme-icon-active)]',
                 )}
               >
-                {t('settings.appearance.wallpaper.options.' + option.id)}
-              </span>
-            </button>
+                <span
+                  className={cn(
+                    'relative aspect-video w-full overflow-hidden rounded-xl border bg-[var(--settings-input-bg)]',
+                    selected
+                      ? 'border-2 border-[var(--settings-theme-preview-border-active)]'
+                      : 'border-[var(--settings-theme-preview-border)]',
+                  )}
+                  style={{
+                    backgroundImage: background,
+                    backgroundPosition: 'center',
+                    backgroundRepeat: 'no-repeat',
+                    backgroundSize: 'cover',
+                  }}
+                >
+                  {id === 'custom' && customVideo ? (
+                    <span className="absolute inset-0 flex items-center justify-center text-[var(--settings-section-sublabel)]">
+                      <Film size={22} aria-hidden="true" />
+                    </span>
+                  ) : null}
+                  {id === 'custom' && !customWallpaperUrl ? (
+                    <span className="absolute inset-0 flex items-center justify-center text-[var(--settings-section-sublabel)]">
+                      <ImagePlus size={22} aria-hidden="true" />
+                    </span>
+                  ) : null}
+                  {id === 'none' ? (
+                    <span className="absolute inset-0 flex items-center justify-center text-12 text-[var(--settings-section-sublabel)]">
+                      {t('settings.appearance.wallpaper.nonePreview')}
+                    </span>
+                  ) : null}
+                </span>
+                <span
+                  className={cn(
+                    'truncate text-12 font-medium',
+                    selected
+                      ? 'text-[var(--settings-theme-label-active)]'
+                      : 'text-[var(--settings-theme-label)]',
+                  )}
+                >
+                  {label}
+                </span>
+              </button>
+            </Tip>
           );
         })}
       </div>
+
+      {/* Only the selected CDN scene downloads; the grid stays available while it loads. */}
+      {downloading && (
+        <DownloadMeter
+          progress={{
+            label: t('settings.appearance.wallpaper.downloading'),
+            percent: downloadProgress * 100,
+          }}
+        />
+      )}
+      {retryable && (
+        <div role="status" className="flex items-center justify-between gap-3">
+          <p className="text-12 text-[var(--settings-section-sublabel)]">
+            {t('settings.appearance.wallpaper.downloadFailed')}
+          </p>
+          <Button variant="secondary" type="button" disabled={busy} onClick={retryDownload}>
+            <RotateCcw size={14} aria-hidden="true" />
+            {t('settings.appearance.wallpaper.retryDownload')}
+          </Button>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button
