@@ -769,8 +769,9 @@
     "clipboardSync": "剪貼簿同步",
     "clipboardSyncConflict": "兩端剪貼簿都發生了變更，已分別保留。請在任一裝置上重新複製以同步。",
     "clipboardSyncFailed": "同步暫時失敗，正在自動重試。開關保持開啟。",
-    "clipboardSyncSkipped": "目前內容無法同步，已略過。請檢查貼上權限，或複製文字、圖片後重試。",
-    "clipboardSyncPermission": "同步已暫停，請允許貼上權限後重試。開關保持開啟。",
+    "clipboardSyncSkipped": "此格式暫不支援剪貼簿同步，已略過",
+    "clipboardSyncTooLarge": "內容超出剪貼簿同步大小限制，已略過",
+    "clipboardSyncPermission": "剪貼簿同步需要貼上權限，授權後回到視窗即可恢復",
     "clipboardSyncWaiting": "遠端電腦的剪貼簿暫時無法存取（可能已鎖定螢幕），解鎖後會自動繼續同步。",
     "lockingOnExit": "正在鎖定電腦…",
     "lockOnExit": "退出後鎖定電腦",
@@ -2531,7 +2532,7 @@
         },
         "profile": {
           "missing": "尚未錄製聲紋",
-          "missingHint": "錄製聲紋後才會生效，大約需要 20 秒。",
+          "missingHint": "錄入聲紋後才會生效。",
           "enrolled": "已錄製聲紋",
           "enrolledAt": "{{date}} 錄製",
           "enroll": "錄製聲紋",
@@ -2556,10 +2557,11 @@
         },
         "enroll": {
           "title": "錄製聲紋",
-          "description": "請在平常使用語音輸入的地方，用平常的語氣朗讀下面 {{clips}} 段文字，每段錄音 {{seconds}} 秒。錄音時請不要讓別人說話。",
+          "description": "請用平常的語氣朗讀下面 {{clips}} 段文字。每段最多錄音 {{seconds}} 秒，讀完點選結束錄音。請在平時使用語音輸入的地方錄製，避免其他人同時說話。",
           "stepsAriaLabel": "朗讀段落",
           "step": "第 {{current}} / {{total}} 段",
           "record": "開始朗讀",
+          "stop": "結束錄音",
           "rerecord": "重錄這段",
           "recording": "正在錄音，還剩 {{seconds}} 秒",
           "recorded": "這段已錄好",
@@ -2572,7 +2574,7 @@
             "p3": "請幫我把這段內容改得更簡潔一些，保留關鍵數字和結論，然後用三到五句話總結重點。"
           },
           "errors": {
-            "too_short": "第 {{index}} 段裡說話的時間太短，請重錄這段，朗讀時不要停頓太久。",
+            "too_short": "第 {{index}} 段偵測到的語音不足，請重新錄製。",
             "no_embedding": "第 {{index}} 段沒能辨識出聲紋，請重錄這段。",
             "inconsistent": "第 {{index}} 段和其他幾段不像同一個人，可能混入了別人的聲音或噪音，請重錄這段。",
             "models_missing": "辨識模型尚未下載完成，請稍後再試。",
@@ -5292,6 +5294,7 @@
         "online": "已連線"
       },
       "connectionIssue": {
+        "device-removed": "裝置已從帳號中移除，請在本裝置登出後重新登入。",
         "auth-failed": "登入已失效，請重新登入",
         "replaced": "連線被另一處相同裝置頂替",
         "too-many-connections": "同帳號連線數已達上限",
@@ -5314,7 +5317,9 @@
       "renameConfirm": "確認",
       "renameCancel": "取消",
       "delete": "刪除",
-      "deleteOnlineHint": "線上裝置無法刪除",
+      "deleteTitle": "刪除「{{name}}」？",
+      "deleteMessage": "將此裝置從帳號中移除並中斷遠端連線。裝置上的任務和檔案會保留，重新登入後可再次加入。",
+      "deleteOnlineHint": "目前伺服器尚不支援移除線上裝置，請待服務升級後重試。",
       "error": {
         "unavailable": "裝置互聯服務暫不可用(服務端未啟用或網路異常)",
         "listFailed": "裝置列表獲取失敗"
@@ -5331,7 +5336,7 @@
         "keepAwakeToggleFailed": "切換保持喚醒失敗",
         "renameFailed": "重新命名失敗",
         "deleted": "裝置已刪除",
-        "deleteOnline": "裝置線上，無法刪除",
+        "deleteOnline": "目前伺服器尚不支援移除線上裝置，請待服務升級後重試。",
         "deleteFailed": "刪除失敗",
         "disconnected": "已斷開所有遠端連線",
         "disconnectFailed": "斷開遠端連線失敗",
@@ -10321,6 +10326,8 @@
       "browseProjectFolder": "選擇其他專案資料夾",
       "dialogue": "對話",
       "dialogueOrSelectProject": "對話或選擇專案",
+      "searchProjects": "搜尋專案",
+      "noMatchingProjects": "沒有符合的專案",
       "remoteProjectsLoadFailed": "無法讀取 {{device}} 上的專案。請檢查連線後重試。",
       "retryRemoteProjects": "重新讀取專案",
       "removeFromList": "從列表中移除",

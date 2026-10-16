@@ -12539,6 +12539,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     pluginTaskEpoch = snapshot;
     pluginTasks = createPluginTaskService({
       store: createPluginTaskStore(snapshot.client), assertCurrent, assertAuthorized: assertPlugin, resolveRoute,
+      readModelPreference: pluginId => {
+        const config = readPluginTaskConfig(pluginId);
+        // Match the shared resolver: a complete explicit identity does not
+        // inherit the new-task selection; partial/reset settings can do so.
+        const fallback = config.agentKind && config.model && config.providerId
+          ? undefined : getSelectedNewMakerRoute(activeOwnerScopeKey());
+        return { ...config, inheritedDefault: fallback ? JSON.stringify([
+          fallback.harness, fallback.model, fallback.providerId, fallback.effort, fallback.fastMode,
+        ]) : undefined };
+      },
       readPermissionMode: pluginId => clampPluginTaskPermissionMode(readPluginTaskConfig(pluginId).permissionMode),
       readLiveSession: taskId => maker.getSession(taskId),
       setModel: async (taskId, route, assertUnchanged) => {
@@ -12551,6 +12561,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           || (pendingAgent !== undefined && pendingAgent !== targetAgent);
         const result = await sessionControlService.setSessionRuntime({ targetSessionId: taskId,
           expectedGeneration: current.runtime.runtimeGeneration,
+          beforeMutation: assertUnchanged,
           patch: { ...(selectHarness ? { harness: targetAgent } : {}),
             model: route.model, providerId: route.providerId, effort: (route.effort || null) as Effort | null,
             fastMode: route.fastMode } });

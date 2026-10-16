@@ -779,8 +779,9 @@
     "clipboardSync": "Clipboard sync",
     "clipboardSyncConflict": "Both clipboards changed. Both copies were kept. Copy again on either device to sync.",
     "clipboardSyncFailed": "Sync temporarily failed. Retrying automatically; your setting stays on.",
-    "clipboardSyncSkipped": "This content could not be synced and was skipped. Check paste access, or copy text or an image to try again.",
-    "clipboardSyncPermission": "Sync is paused. Allow paste access, then retry. Your setting stays on.",
+    "clipboardSyncSkipped": "This format is not supported for clipboard sync and was skipped.",
+    "clipboardSyncTooLarge": "Content exceeds the clipboard sync size limit and was skipped.",
+    "clipboardSyncPermission": "Clipboard sync needs paste access. Allow it, then return to this window to resume.",
     "clipboardSyncWaiting": "The remote computer’s clipboard is not available right now (it may be locked). Sync resumes automatically.",
     "lockingOnExit": "Locking computer…",
     "lockOnExit": "Lock Computer on Exit",
@@ -2558,7 +2559,7 @@
         },
         "profile": {
           "missing": "No voiceprint yet",
-          "missingHint": "Record your voiceprint to enable filtering. It takes about 20 seconds.",
+          "missingHint": "Record your voiceprint to enable filtering.",
           "enrolled": "Voiceprint recorded",
           "enrolledAt": "Recorded {{date}}",
           "enroll": "Record voiceprint",
@@ -2583,10 +2584,11 @@
         },
         "enroll": {
           "title": "Record voiceprint",
-          "description": "Where you usually use voice input, read the {{clips}} passages below in your normal voice. Each recording lasts {{seconds}} seconds. Make sure no one else is talking.",
+          "description": "Read the {{clips}} passages below in your normal voice. Each recording lasts up to {{seconds}} seconds; stop recording when you finish reading. Record where you usually use voice input, with no one else talking.",
           "stepsAriaLabel": "Passages to read",
           "step": "{{current}} of {{total}}",
           "record": "Start reading",
+          "stop": "Stop Recording",
           "rerecord": "Record this one again",
           "recording": "Recording, {{seconds}} s left",
           "recorded": "Recorded",
@@ -2599,7 +2601,7 @@
             "p3": "Please make this text more concise, keep the key numbers and conclusions, and then sum up the main points in three to five sentences."
           },
           "errors": {
-            "too_short": "Passage {{index}} has too little speech. Record it again without long pauses.",
+            "too_short": "Too little speech was detected in passage {{index}}. Record it again.",
             "no_embedding": "No voiceprint could be read from passage {{index}}. Record it again.",
             "inconsistent": "Passage {{index}} does not sound like the same person as the others; another voice or noise may have been picked up. Record it again.",
             "models_missing": "The recognition model has not finished downloading. Try again shortly.",
@@ -5321,6 +5323,7 @@
         "online": "Connected"
       },
       "connectionIssue": {
+        "device-removed": "This device was removed from your account. Sign out and sign in again on this device.",
         "auth-failed": "Sign-in expired — please sign in again",
         "replaced": "Connection replaced by another instance of this device",
         "too-many-connections": "Connection limit reached for this account",
@@ -5343,7 +5346,9 @@
       "renameConfirm": "Confirm",
       "renameCancel": "Cancel",
       "delete": "Delete",
-      "deleteOnlineHint": "Online devices cannot be deleted",
+      "deleteTitle": "Delete “{{name}}”?",
+      "deleteMessage": "Remove this device from your account and disconnect remote access. Its sessions and files are kept. Sign in again on that device to rejoin.",
+      "deleteOnlineHint": "This server does not yet support removing online devices. Retry after the service is upgraded.",
       "error": {
         "unavailable": "Device Link service is unavailable (not enabled on server or network error)",
         "listFailed": "Failed to load device list"
@@ -5360,7 +5365,7 @@
         "keepAwakeToggleFailed": "Failed to toggle keep awake",
         "renameFailed": "Rename failed",
         "deleted": "Device deleted",
-        "deleteOnline": "Device is online and cannot be deleted",
+        "deleteOnline": "This server does not yet support removing online devices. Retry after the service is upgraded.",
         "deleteFailed": "Delete failed",
         "disconnected": "Disconnected all remote connections",
         "disconnectFailed": "Failed to disconnect remote connection",
@@ -10365,6 +10370,8 @@
       "browseProjectFolder": "Choose another project folder",
       "dialogue": "Chat",
       "dialogueOrSelectProject": "Chat or select project",
+      "searchProjects": "Search projects",
+      "noMatchingProjects": "No matching projects",
       "remoteProjectsLoadFailed": "Couldn't load projects from {{device}}. Check the connection and try again.",
       "retryRemoteProjects": "Reload projects",
       "removeFromList": "Remove from list",

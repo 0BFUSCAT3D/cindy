@@ -769,8 +769,9 @@
     "clipboardSync": "클립보드 동기화",
     "clipboardSyncConflict": "양쪽 클립보드가 변경되어 각각의 내용을 유지했습니다. 어느 기기에서든 다시 복사하면 동기화됩니다.",
     "clipboardSyncFailed": "동기화가 일시적으로 실패했습니다. 자동으로 재시도하며 설정은 켜진 상태로 유지됩니다.",
-    "clipboardSyncSkipped": "현재 콘텐츠를 동기화할 수 없어 건너뛰었습니다. 붙여넣기 권한을 확인하거나 텍스트 또는 이미지를 복사한 후 다시 시도해 주세요.",
-    "clipboardSyncPermission": "동기화가 일시 중지되었습니다. 붙여넣기를 허용한 후 다시 시도해 주세요. 설정은 켜진 상태로 유지됩니다.",
+    "clipboardSyncSkipped": "클립보드 동기화에서 지원하지 않는 형식이라 건너뛰었습니다.",
+    "clipboardSyncTooLarge": "클립보드 동기화 크기 제한을 초과하여 건너뛰었습니다.",
+    "clipboardSyncPermission": "클립보드 동기화에는 붙여넣기 권한이 필요합니다. 허용한 후 이 창으로 돌아오면 재개됩니다.",
     "clipboardSyncWaiting": "원격 컴퓨터의 클립보드에 지금은 접근할 수 없습니다(잠겨 있을 수 있음). 자동으로 동기화를 재개합니다.",
     "lockingOnExit": "컴퓨터를 잠그는 중…",
     "lockOnExit": "종료 시 컴퓨터 잠금",
@@ -2531,7 +2532,7 @@
         },
         "profile": {
           "missing": "등록된 성문이 없습니다",
-          "missingHint": "성문을 등록하면 적용됩니다. 약 20초 걸립니다.",
+          "missingHint": "성문을 등록하면 적용됩니다.",
           "enrolled": "성문 등록됨",
           "enrolledAt": "{{date}} 등록",
           "enroll": "성문 등록",
@@ -2556,10 +2557,11 @@
         },
         "enroll": {
           "title": "성문 등록",
-          "description": "평소 음성 입력을 사용하는 곳에서 아래 문장 {{clips}}개를 평소 말투로 읽어 주세요. 문장마다 {{seconds}}초씩 녹음합니다. 녹음하는 동안 다른 사람이 말하지 않도록 해 주세요.",
+          "description": "아래 {{clips}}개 문장을 평소 목소리로 읽어 주세요. 각 녹음은 최대 {{seconds}}초이며, 다 읽으면 녹음을 종료하세요. 평소 음성 입력을 사용하는 장소에서 다른 사람이 동시에 말하지 않도록 녹음하세요.",
           "stepsAriaLabel": "읽을 문장",
           "step": "{{current}} / {{total}}",
           "record": "읽기 시작",
+          "stop": "녹음 종료",
           "rerecord": "이 문장 다시 녹음",
           "recording": "녹음 중, {{seconds}}초 남음",
           "recorded": "녹음 완료",
@@ -2572,7 +2574,7 @@
             "p3": "이 내용을 좀 더 간결하게 다듬고, 중요한 숫자와 결론은 남긴 다음 핵심을 세 문장에서 다섯 문장으로 요약해 주세요."
           },
           "errors": {
-            "too_short": "{{index}}번째 녹음은 말한 시간이 너무 짧습니다. 오래 멈추지 말고 다시 녹음하세요.",
+            "too_short": "{{index}}번째 녹음에서 감지된 음성이 너무 짧습니다. 다시 녹음하세요.",
             "no_embedding": "{{index}}번째 녹음에서 성문을 읽지 못했습니다. 다시 녹음하세요.",
             "inconsistent": "{{index}}번째 녹음이 다른 녹음과 같은 사람의 목소리로 들리지 않습니다. 다른 사람의 목소리나 소음이 섞였을 수 있으니 다시 녹음하세요.",
             "models_missing": "인식 모델 다운로드가 아직 끝나지 않았습니다. 잠시 후 다시 시도하세요.",
@@ -5292,6 +5294,7 @@
         "online": "연결됨"
       },
       "connectionIssue": {
+        "device-removed": "계정에서 이 기기가 제거되었습니다. 이 기기에서 로그아웃한 후 다시 로그인하세요.",
         "auth-failed": "로그인이 만료되었습니다. 다시 로그인해 주세요",
         "replaced": "동일한 기기의 다른 연결로 대체되었습니다",
         "too-many-connections": "이 계정의 동시 연결 수가 상한에 도달했습니다",
@@ -5314,7 +5317,9 @@
       "renameConfirm": "확인",
       "renameCancel": "취소",
       "delete": "삭제",
-      "deleteOnlineHint": "온라인 기기는 삭제할 수 없습니다",
+      "deleteTitle": "“{{name}}” 기기를 삭제할까요?",
+      "deleteMessage": "계정에서 이 기기를 제거하고 원격 연결을 끊습니다. 기기의 세션과 파일은 유지됩니다. 해당 기기에서 다시 로그인하면 추가할 수 있습니다.",
+      "deleteOnlineHint": "현재 서버는 온라인 기기 제거를 지원하지 않습니다. 서비스 업데이트 후 다시 시도하세요.",
       "error": {
         "unavailable": "기기 연동 서비스를 사용할 수 없습니다(서버 미지원 또는 네트워크 오류)",
         "listFailed": "기기 목록을 불러오지 못했습니다"
@@ -5331,7 +5336,7 @@
         "keepAwakeToggleFailed": "절전 방지 전환에 실패했습니다",
         "renameFailed": "이름 변경에 실패했습니다",
         "deleted": "기기를 삭제했습니다",
-        "deleteOnline": "기기가 온라인 상태라 삭제할 수 없습니다",
+        "deleteOnline": "현재 서버는 온라인 기기 제거를 지원하지 않습니다. 서비스 업데이트 후 다시 시도하세요.",
         "deleteFailed": "삭제에 실패했습니다",
         "disconnected": "모든 원격 연결를 끊었습니다",
         "disconnectFailed": "원격 연결 끊기에 실패했습니다",
@@ -10321,6 +10326,8 @@
       "browseProjectFolder": "다른 프로젝트 폴더 선택",
       "dialogue": "대화",
       "dialogueOrSelectProject": "대화 또는 프로젝트 선택",
+      "searchProjects": "프로젝트 검색",
+      "noMatchingProjects": "일치하는 프로젝트가 없습니다",
       "remoteProjectsLoadFailed": "{{device}}의 프로젝트를 불러오지 못했습니다. 연결을 확인한 후 다시 시도하세요.",
       "retryRemoteProjects": "프로젝트 다시 불러오기",
       "removeFromList": "목록에서 제거",

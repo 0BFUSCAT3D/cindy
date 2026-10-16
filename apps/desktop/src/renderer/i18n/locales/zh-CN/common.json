@@ -769,8 +769,9 @@
     "clipboardSync": "剪贴板同步",
     "clipboardSyncConflict": "两端剪贴板都发生了变化，已分别保留。请在任一设备上重新复制以同步。",
     "clipboardSyncFailed": "同步暂时失败，正在自动重试。开关保持开启。",
-    "clipboardSyncSkipped": "当前内容无法同步，已跳过。请检查粘贴权限，或复制文字、图片后重试。",
-    "clipboardSyncPermission": "同步已暂停，请允许粘贴权限后重试。开关保持开启。",
+    "clipboardSyncSkipped": "此格式暂不支持剪贴板同步，已跳过",
+    "clipboardSyncTooLarge": "内容超出剪贴板同步大小限制，已跳过",
+    "clipboardSyncPermission": "剪贴板同步需要粘贴权限，授权后回到窗口即可恢复",
     "clipboardSyncWaiting": "远程电脑的剪贴板暂时无法访问（可能已锁屏），解锁后会自动继续同步。",
     "lockingOnExit": "正在锁定电脑…",
     "lockOnExit": "退出后锁定电脑",
@@ -2531,7 +2532,7 @@
         },
         "profile": {
           "missing": "还没有录入声纹",
-          "missingHint": "录入声纹后才会生效，大约需要 20 秒。",
+          "missingHint": "录入声纹后才会生效。",
           "enrolled": "已录入声纹",
           "enrolledAt": "{{date}} 录入",
           "enroll": "录入声纹",
@@ -2556,10 +2557,11 @@
         },
         "enroll": {
           "title": "录入声纹",
-          "description": "请在平时使用语音输入的地方，用平常的语气朗读下面 {{clips}} 段文字，每段录音 {{seconds}} 秒。录音时请不要让别人说话。",
+          "description": "请用平常的语气朗读下面 {{clips}} 段文字。每段最多录音 {{seconds}} 秒，读完点击结束录音。请在平时使用语音输入的地方录制，避免其他人同时说话。",
           "stepsAriaLabel": "朗读段落",
           "step": "第 {{current}} / {{total}} 段",
           "record": "开始朗读",
+          "stop": "结束录音",
           "rerecord": "重录这段",
           "recording": "正在录音，还剩 {{seconds}} 秒",
           "recorded": "这段已录好",
@@ -2572,7 +2574,7 @@
             "p3": "请帮我把这段内容改得更简洁一些，保留关键数字和结论，然后用三到五句话总结一下重点。"
           },
           "errors": {
-            "too_short": "第 {{index}} 段里说话的时间太短，请重录这段，朗读时不要停顿太久。",
+            "too_short": "第 {{index}} 段检测到的语音不足，请重新录制。",
             "no_embedding": "第 {{index}} 段没能识别出声纹，请重录这段。",
             "inconsistent": "第 {{index}} 段和其他几段不像同一个人，可能混进了别人的声音或噪音，请重录这段。",
             "models_missing": "识别模型还没有下载完成，请稍后再试。",
@@ -5292,6 +5294,7 @@
         "online": "已连接"
       },
       "connectionIssue": {
+        "device-removed": "设备已从账号中移除，请在本设备退出后重新登录。",
         "auth-failed": "登录已失效，请重新登录",
         "replaced": "连接被另一处相同设备顶替",
         "too-many-connections": "同账号连接数已达上限",
@@ -5314,7 +5317,9 @@
       "renameConfirm": "确认",
       "renameCancel": "取消",
       "delete": "删除",
-      "deleteOnlineHint": "在线设备无法删除",
+      "deleteTitle": "删除“{{name}}”？",
+      "deleteMessage": "将此设备从账号中移除并断开远程连接。设备上的任务和文件会保留，重新登录后可再次加入。",
+      "deleteOnlineHint": "当前服务端尚不支持移除在线设备，请待服务升级后重试。",
       "error": {
         "unavailable": "设备互联服务暂不可用(服务端未启用或网络异常)",
         "listFailed": "设备列表获取失败"
@@ -5331,7 +5336,7 @@
         "keepAwakeToggleFailed": "切换保持唤醒失败",
         "renameFailed": "重命名失败",
         "deleted": "设备已删除",
-        "deleteOnline": "设备在线，无法删除",
+        "deleteOnline": "当前服务端尚不支持移除在线设备，请待服务升级后重试。",
         "deleteFailed": "删除失败",
         "disconnected": "已断开所有远程连接",
         "disconnectFailed": "断开远程连接失败",
@@ -10321,6 +10326,8 @@
       "browseProjectFolder": "选择其他项目文件夹",
       "dialogue": "对话",
       "dialogueOrSelectProject": "对话或选择项目",
+      "searchProjects": "搜索项目",
+      "noMatchingProjects": "没有匹配的项目",
       "remoteProjectsLoadFailed": "无法读取 {{device}} 上的项目。请检查连接后重试。",
       "retryRemoteProjects": "重新读取项目",
       "removeFromList": "从列表中移除",

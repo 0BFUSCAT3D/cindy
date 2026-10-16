@@ -26,6 +26,8 @@
   "sectionAccessRevoked": "需要重新允许",
   "retryAccess": "重试访问",
   "recheck": "重新检查",
+  "deviceRemovedTitle": "设备已移除",
+  "deviceRemovedHint": "请退出后重新登录，以重新加入设备列表。",
   "authFailedTitle": "登录已失效",
   "authFailedHint": "登录状态已过期，请退出后重新登录。",
   "replacedTitle": "连接被顶替",

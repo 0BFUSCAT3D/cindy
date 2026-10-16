@@ -1997,6 +1997,7 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 旧 Host 缺字段时新手机仅显示原有 Version 与资源 Identifier，说明其余数据未提供；旧控制端忽略新增字段。
 服务端、relay、协议版本及原生 fingerprint 均不变。
 
+
 ### Cindy AI 企业周期配额
 
 云端组织账号优先通过 Model Access `GET /api/model-access/quota` 查询本人周期配额，
@@ -2019,3 +2020,19 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 
 额度身份隔离使用主进程 `ownerGeneration` 与 `dataOwnerId`，覆盖同 membership 跨认证 realm 切换及同账号修复；凭据状态与额度快照使用同一身份键。
 远程 transport-timeout 出站退避重连成功、或普通同账号 peer 入站 link-accept 成功后，Main 通过本地 `device-link:peer-link-reopened` 推送 `{ deviceId }`，preload 暴露可选 `onPeerLinkReopened`，仅目标设备触发排队补读。被取消的重连代次不发通知。该事件不进入 relay wire、不增加远端 IPC allowlist，也不改变 Mobile/旧消费者的请求协议。
+
+## 同账号设备版本与移除
+
+设备列表展示现有 `appVersion` 和完整 `deviceId`；版本沿用现有 hello 字段，不改协议版本。
+服务端在 hello 时保存版本，离线目录也可返回；历史设备首次重新上报后补齐。未知值不伪造。
+
+在线与离线设备均可确认移除。服务端保留移除标记、清理路由与推送 token，关闭连接时使用
+4410。新客户端将其投影为 `device-removed`，停止自动重连并显示重新登录提示；显式登录
+可再次登记。本地任务与文件不删除。旧客户端可继续重试，但服务端标记阻止重新登记。
+
+部署先迁移数据库并升级全部 device-link 服务实例，再开放新版客户端的在线删除入口；
+新版客户端遇到旧服务在线删除冲突时保留设备并提示服务尚未升级。服务端迁移、回退边界
+见 `cindy-server/docs/device-link-server.md`。删除失败不清理本地远程任务分片，重复点击在
+请求期间被挡住；取消确认不发起删除。UI 继续复用语义颜色与标准确认弹窗。
+确认删除同时阻止在途冷缓存回填、清理该设备磁盘缓存并作废删除前的目录读取；
+目录暂时不可用时，其他离线设备继续保留缓存。
