@@ -517,9 +517,6 @@
     "apps/desktop/src/main/provider-group/__tests__/failoverSessionClose.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/main/provider-group/__tests__/stores.test.ts": {
-      "resetModules": 1
-    },
     "apps/desktop/src/main/remote-agent/executor/__tests__/executor.test.ts": {
       "realWaits": 5
     },
@@ -906,9 +903,6 @@
     "apps/desktop/src/renderer/__tests__/newMakerWorktreeSend.test.ts": {
       "sourceReads": 2
     },
-    "apps/desktop/src/renderer/__tests__/orcaModelWindowSelection.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/renderer/__tests__/pendingHandoffRecovery.test.ts": {
       "resetModules": 2
     },
@@ -1026,9 +1020,6 @@
     "apps/desktop/src/renderer/__tests__/voiceInputEnterToSend.test.ts": {
       "sourceReads": 2
     },
-    "apps/desktop/src/renderer/__tests__/workdirBrowseRemoteSafety.test.ts": {
-      "sourceReads": 4
-    },
     "apps/desktop/src/renderer/__tests__/worktreeRemovalWarning.test.ts": {
       "sourceReads": 2
     },
@@ -1079,9 +1070,6 @@
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {
       "sourceReads": 6
-    },
-    "apps/desktop/src/renderer/features/bots/__tests__/botPermissionSwitch.test.ts": {
-      "sourceReads": 1
     },
     "apps/desktop/src/renderer/features/bots/__tests__/botStore.lifecycle.test.ts": {
       "resetModules": 2

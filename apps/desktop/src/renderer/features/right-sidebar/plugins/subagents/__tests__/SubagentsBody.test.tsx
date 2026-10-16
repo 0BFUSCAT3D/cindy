@@ -472,6 +472,7 @@ describe('SubagentsBody', () => {
 
     await waitFor(() => expect(listCalls).toBe(1));
     // Several poll periods elapse while the first read is still outstanding.
+    // real-wait: exercise the production polling interval while the request remains pending.
     await new Promise((resolve) => setTimeout(resolve, 3_500));
     expect(listCalls).toBe(1);
 
@@ -506,6 +507,7 @@ describe('SubagentsBody', () => {
 
     view.unmount();
     const afterUnmount = listCalls;
+    // real-wait: prove no scheduled production poll fires after unmount.
     await new Promise((resolve) => setTimeout(resolve, 2_500));
     expect(listCalls).toBe(afterUnmount);
   }, 15_000);

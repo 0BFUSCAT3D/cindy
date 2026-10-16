@@ -34,6 +34,11 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ realWaits: 0 },
 		],
 		[
+			"real wait after fake timers are restored",
+			"vi.useFakeTimers();\nvi.useRealTimers();\nsetTimeout(tick, 5_000);",
+			{ realWaits: 1 },
+		],
+		[
 			"source text read",
 			"const src = readFileSync(resolve(__dirname, '..', 'Sidebar.tsx'), 'utf8');",
 			{ sourceReads: 1 },

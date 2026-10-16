@@ -114,6 +114,7 @@ const desktopGuardInclude = [
   'src/renderer/features/cc-agent/sidebar/__tests__/sessionCardReviewRegressions.test.ts',
   'src/renderer/__tests__/orcaModelWindowSelection.test.ts',
   'src/renderer/__tests__/workdirBrowseRemoteSafety.test.ts',
+  'src/renderer/__tests__/remoteAgentRelocationWiring.test.ts',
   'src/renderer/features/bots/__tests__/botPermissionSwitch.test.ts',
   'src/main/cindy-brain/__tests__/forgeOidcInstallEntry.test.ts',
   'src/main/cindy-brain/__tests__/ghostDevRuntimeContract.test.ts',

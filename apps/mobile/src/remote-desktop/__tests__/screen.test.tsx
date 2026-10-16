@@ -4087,6 +4087,7 @@ describe("remote desktop controls", () => {
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "frame"
         ? new Promise((resolve) =>
+            // real-wait: preserve the remote-frame timeout boundary used by the transport.
             setTimeout(() => resolve({ jpeg: "a".repeat(4000) }), 100),
           )
         : original(...args),

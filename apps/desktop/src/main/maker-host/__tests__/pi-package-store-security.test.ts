@@ -457,6 +457,7 @@ describe('Pi package executable-code boundary', () => {
           expect(processRuntime.killTree).toHaveBeenCalledOnce();
         }, { timeout: 1_000 });
         processRuntime.pendingTreeSettled?.();
+        // real-wait: allow the real package-runtime watcher deadline to elapse.
         await new Promise((resolve) => setTimeout(resolve, 900));
         expect(failure).toBeUndefined();
         expect(runtime.pendingClose).not.toBeNull();

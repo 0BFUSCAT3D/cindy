@@ -271,6 +271,7 @@ describe('ImageLightbox annotate mode', () => {
 
     // 等确认框退场后再次放弃并确认:恢复到基线(空)并退出标注模式。
     await act(async () => {
+      // real-wait: verify the production confirmation-exit animation has completed.
       await new Promise((resolve) => setTimeout(resolve, 250));
     });
     await act(async () => {

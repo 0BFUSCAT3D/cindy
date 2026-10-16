@@ -31,6 +31,7 @@ export const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|mts|mjs)$/;
 const NON_UNIT_TEST = /\.(?:integration|e2e|git-integration)\.(?:test|spec)\.|\.bench\./;
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
+const REAL_WAIT_PATTERN = /\bsetTimeout\s*\([^;\n]*?,\s*(\d[\d_]*)\s*\)|\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g;
 
 /** Replace comments with spaces (keeping newlines) so matches ignore commented-out code. */
 export function stripComments(source) {
@@ -88,6 +89,24 @@ function countMatches(code, lines, pattern, marker, accept = () => true) {
   for (const match of code.matchAll(pattern)) {
     if (!accept(match)) continue;
     if (!hasJustification(lines, lineOf(code, match.index), marker)) count += 1;
+  }
+  return count;
+}
+
+function countRealWaits(code, lines) {
+  const timerEvents = [...code.matchAll(/\bvi\.(useFakeTimers|useRealTimers)\s*\(/g)];
+  let timerIndex = 0;
+  let fakeTimers = false;
+  let count = 0;
+  for (const match of code.matchAll(REAL_WAIT_PATTERN)) {
+    while (timerIndex < timerEvents.length && timerEvents[timerIndex].index < match.index) {
+      fakeTimers = timerEvents[timerIndex][1] === 'useFakeTimers';
+      timerIndex += 1;
+    }
+    if (fakeTimers) continue;
+    if (Number((match[1] ?? match[2]).replaceAll('_', '')) < REAL_WAIT_MIN_MS) continue;
+    const line = lineOf(code, match.index);
+    if (!hasJustification(lines, line, 'real-wait')) count += 1;
   }
   return count;
 }
@@ -158,16 +177,7 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   const code = stripComments(source);
   const lines = source.split(/\r?\n/);
   const resetModules = countMatches(code, lines, /\bvi\.resetModules\s*\(/g, 'reset-modules');
-  const usesFakeTimers = /\bvi\.useFakeTimers\s*\(/.test(code);
-  const realWaits = usesFakeTimers
-    ? 0
-    : countMatches(
-      code,
-      lines,
-      /\bsetTimeout\s*\([^;\n]*?,\s*(\d[\d_]*)\s*\)|\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g,
-      'real-wait',
-      (match) => Number((match[1] ?? match[2]).replaceAll('_', '')) >= REAL_WAIT_MIN_MS,
-    );
+  const realWaits = countRealWaits(code, lines);
   let sourceReads = 0;
   if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw['"`]/.test(code)) {
     for (const match of code.matchAll(/(['"`])([^'"`\n$]+)\1/g)) {
