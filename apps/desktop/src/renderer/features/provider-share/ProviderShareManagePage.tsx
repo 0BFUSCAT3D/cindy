@@ -40,7 +40,7 @@ import type {
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
 import { pendingResharesFromOwned, sharesClaudeLoginEmail, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
 import { ProviderUsageSection } from './ProviderUsageSection';
-import { publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
+import { presentProviderShareApproval, publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
 import { useShareTimeFormat } from './useShareTimeFormat';
 
@@ -83,6 +83,7 @@ export function ProviderShareManagePage({
   const [own, setOwn] = useState<ProviderOwnUsageView | null>(null);
   const [ownFailed, setOwnFailed] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
+  const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const loadSeq = useRef(0);
   const remoteLoadRange = useRef<ProviderShareUsageRange | null>(null);
@@ -147,6 +148,7 @@ export function ProviderShareManagePage({
         pending.push({
           request,
           share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
+          ...(deviceId ? { hostDeviceId: deviceId } : {}),
         });
       }
     }
@@ -157,7 +159,20 @@ export function ProviderShareManagePage({
       // 转分享请求(provider-sharing.md §4.3)：成员想经自己的供应商组把这里分享的供应商转给别人用。
       reshares: pendingResharesFromOwned(shares),
     };
-  }, [providerId, state]);
+  }, [providerId, deviceId, state]);
+
+  const approvalItem = requests.find((item) => item.request.requestId === approvalRequestId);
+  const closeApproval = useCallback(() => {
+    setApprovalRequestId(null);
+    void load();
+  }, [load]);
+  useEffect(() => {
+    if (!approvalItem) {
+      setApprovalRequestId(null);
+      return;
+    }
+    return presentProviderShareApproval(approvalItem, closeApproval);
+  }, [approvalItem, closeApproval]);
 
   const withBusy = useCallback(async (key: string, run: () => Promise<void>) => {
     setBusy((current) => new Set(current).add(key));
@@ -172,24 +187,20 @@ export function ProviderShareManagePage({
     }
   }, []);
 
-  const decide = useCallback(
-    (item: ProviderSharePendingRequest, action: 'approve' | 'reject') =>
+  const reject = useCallback(
+    (item: ProviderSharePendingRequest) =>
       withBusy(item.request.requestId, async () => {
         try {
-          await providerShareManagementCommand({ action, requestId: item.request.requestId }, deviceId);
+          await providerShareManagementCommand({ action: 'reject', requestId: item.request.requestId }, deviceId);
           // 远程管理时，本机生成链接带来的申请也在待审批里(由本机弹窗)，一并移除。
           removeProviderSharePendingRequest(item.request.requestId);
-          toast.success(
-            action === 'approve'
-              ? t('providerShare.toast.approved', { name: item.request.displayName, provider: providerName })
-              : t('providerShare.toast.rejected', { name: item.request.displayName }),
-          );
+          toast.success(t('providerShare.toast.rejected', { name: item.request.displayName }));
         } catch (error) {
           toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         }
         void load();
       }),
-    [load, providerName, deviceId, t, withBusy],
+    [load, deviceId, t, withBusy],
   );
 
   const setMember = useCallback(
@@ -359,7 +370,7 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || busy.has(item.request.requestId)}
-                    onClick={() => void decide(item, 'reject')}
+                    onClick={() => void reject(item)}
                   >
                     {t('providerShare.approve.reject')}
                   </Button>
@@ -368,7 +379,7 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || !providerClassificationReady || busy.has(item.request.requestId)}
-                    onClick={() => void decide(item, 'approve')}
+                    onClick={() => setApprovalRequestId(item.request.requestId)}
                   >
                     {t('providerShare.approve.approve')}
                   </Button>

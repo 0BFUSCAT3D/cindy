@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderView } from '@cindy/model-providers';
 
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
-import type { ProviderOwnUsageView, ProviderShareOwnerState } from '../../../../shared/providerShare';
+import type { ProviderOwnUsageView, ProviderShareOwnerState, ProviderShareRequestedEvent } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
+import { ProviderShareGlobalHost } from '../ProviderShareGlobalHost';
 import {
   getProviderSharePendingRequests,
   getProviderSharePendingReshares,
@@ -32,7 +34,7 @@ const localCatalog = vi.hoisted(() => ({
   providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
 }));
 const remoteCatalog = vi.hoisted(() => ({
-  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string }; group?: unknown }>,
   loading: false,
   error: null as string | null,
 }));
@@ -40,6 +42,7 @@ vi.mock('@/hooks/useProviders', () => ({ useProviders: () => localCatalog }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => remoteCatalog }));
 vi.mock('@/contexts/AuthContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/contexts/AuthContext')>()),
+  useAuth: () => ({ dataOwnerId: null, dataOwnerGeneration: 0 }),
   useOptionalAuthUser: () => ({ name: 'Magi', avatar: null }),
 }));
 const confirmSpy = vi.hoisted(() => vi.fn(async () => true));
@@ -136,11 +139,17 @@ const xdGroup: ProviderGroupConfig = {
 let localGroups: Record<string, ProviderGroupConfig> = {};
 
 const command = vi.fn();
+let currentOwned: ProviderShareOwnerState;
+const ownedListeners = new Set<() => void>();
+const requestedListeners = new Set<(event: ProviderShareRequestedEvent) => void>();
 
 beforeEach(() => {
   resetProviderShareStoreForTests();
   localGroupsTesting.reset();
   localGroups = {};
+  currentOwned = owned();
+  ownedListeners.clear();
+  requestedListeners.clear();
   localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
   remoteCatalog.providers = [];
   remoteCatalog.loading = false;
@@ -148,15 +157,30 @@ beforeEach(() => {
   confirmSpy.mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
-    if (cmd.action === 'owned') return owned();
+    if (cmd.action === 'owned') return currentOwned;
     if (cmd.action === 'own-usage') return ownUsage();
     if (cmd.action === 'received') return [];
-    if (cmd.action === 'set-member' || cmd.action === 'approve' || cmd.action === 'reject') return { ok: true };
+    if (cmd.action === 'received-snapshot') return { ownerStamp: { dataOwnerId: null, ownerGeneration: 0 }, received: [], confirmedRegions: [] };
+    if (cmd.action === 'set-member') return { ok: true };
+    if (cmd.action === 'approve' || cmd.action === 'reject') {
+      currentOwned = { ...currentOwned, shares: currentOwned.shares.map((share) => ({ ...share, requests: [] })) };
+      return { ok: true };
+    }
     throw new Error(`unexpected ${cmd.action}`);
   });
   Object.assign(window, {
     electronAPI: {
-      providerShare: { command, onOwnedChanged: () => () => undefined, onReceivedChanged: () => () => undefined },
+      providerShare: {
+        command,
+        onOwnedChanged: (listener: () => void) => { ownedListeners.add(listener); return () => ownedListeners.delete(listener); },
+        onRequested: (listener: (event: ProviderShareRequestedEvent) => void) => {
+          requestedListeners.add(listener); return () => requestedListeners.delete(listener);
+        },
+        onReceivedChanged: () => () => undefined,
+        onSettled: () => () => undefined,
+        onOpenJoin: () => () => undefined,
+        onOpenManage: () => () => undefined,
+      },
       // 页面上方的供应商组一块(由 ProviderGroupSection 自己的测试覆盖)：这里只给一个空组。
       providerGroup: {
         command: async (cmd: {
@@ -167,9 +191,12 @@ beforeEach(() => {
           if (cmd.action === 'list') return localGroups;
           if (cmd.action === 'remote-manage') {
             const action = cmd.request?.command?.action;
-            if (action === 'owned') return owned();
+            if (action === 'owned') return currentOwned;
             if (action === 'own-usage') return ownUsage();
-            if (action === 'approve' || action === 'reject') return { ok: true };
+            if (action === 'approve' || action === 'reject') {
+              currentOwned = { ...currentOwned, shares: currentOwned.shares.map((share) => ({ ...share, requests: [] })) };
+              return { ok: true };
+            }
           }
           return { providerId: cmd.providerId, config: null, members: [] };
         },
@@ -183,24 +210,133 @@ afterEach(() => cleanup());
 
 function renderPage(
   gate: 'on' | 'remote-off' | 'invocation-off' = 'on',
-  options: { deviceId?: string; remoteProvider?: ProviderView } = {},
+  options: { deviceId?: string; remoteProvider?: ProviderView; globalHost?: boolean; manualOnly?: boolean } = {},
 ) {
   const onBack = vi.fn();
   const view = render(
-    <ProviderShareManagePage
-      providerId="xd"
-      providerName="Cindy AI"
-      providerIcon={null}
-      gate={gate}
-      deviceId={options.deviceId}
-      remoteProvider={options.remoteProvider}
-      onBack={onBack}
-    />,
+    <MemoryRouter>
+      {options.globalHost && <ProviderShareGlobalHost manualOnly={options.manualOnly} />}
+      <ProviderShareManagePage
+        providerId="xd"
+        providerName="Cindy AI"
+        providerIcon={null}
+        gate={gate}
+        deviceId={options.deviceId}
+        remoteProvider={options.remoteProvider}
+        onBack={onBack}
+      />
+    </MemoryRouter>,
   );
   return { onBack, ...view };
 }
 
 describe('ProviderShareManagePage', () => {
+  it('supports manual approval in secondary windows without automatic share subscriptions', async () => {
+    renderPage('on', { globalHost: true, manualOnly: true });
+    const row = await screen.findByTestId('provider-share-pending-row');
+    expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull();
+    expect(requestedListeners.size).toBe(0);
+    // The management page reads owned once; a secondary host must not seed its own automatic queue.
+    expect(command.mock.calls.filter(([cmd]) => cmd.action === 'owned')).toHaveLength(1);
+    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
+    const dialog = await screen.findByTestId('provider-share-approve-dialog');
+    expect(dialog.textContent).toContain('providerShare.approve.callout');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'providerShare.approve.approve' }));
+    await waitFor(() => expect(screen.queryByTestId('provider-share-pending-row')).toBeNull());
+    expect(command).toHaveBeenCalledWith({ action: 'approve', requestId: 'req-1' });
+  });
+
+  // §4.1/§7.2: management approval must show the same disclosure and route as automatic approval.
+  // Existing host tests do not click this entry; keep the host real to catch duplicate modal ownership.
+  it.each([undefined, 'studio'])('shows approval disclosure before submitting on the provider’s computer (%s)', async (deviceId) => {
+    currentOwned.quietRequestIds = ['req-1'];
+    localGroups = deviceId ? {} : { xd: xdGroup };
+    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' }, group: xdGroup }];
+    const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
+    renderPage('on', { deviceId, globalHost: true });
+    const row = await screen.findByTestId('provider-share-pending-row');
+    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
+    const dialog = await screen.findByTestId('provider-share-approve-dialog');
+    expect(dialog.textContent).toContain('providerShare.approve.calloutGroup');
+    const approval = { action: 'approve', requestId: 'req-1' };
+    expect(command).not.toHaveBeenCalledWith(approval);
+    expect(remoteCommand).not.toHaveBeenCalledWith(expect.objectContaining({
+      request: { action: 'manage-share', command: approval },
+    }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'providerShare.approve.approve' }));
+    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('provider-share-pending-row')).toBeNull());
+    if (deviceId) {
+      expect(remoteCommand).toHaveBeenCalledWith({
+        action: 'remote-manage', deviceId, request: { action: 'manage-share', command: approval },
+      });
+      expect(command).not.toHaveBeenCalledWith(approval);
+    } else expect(command).toHaveBeenCalledWith(approval);
+  });
+
+  it('keeps a postponed request pending and closes a selected request removed by a fresh list', async () => {
+    currentOwned.quietRequestIds = ['req-1'];
+    renderPage('on', { globalHost: true });
+    const row = await screen.findByTestId('provider-share-pending-row');
+    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
+    await screen.findByTestId('provider-share-approve-dialog');
+    fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.later' }));
+    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+    expect(getProviderSharePendingRequests().map((item) => item.request.requestId)).toEqual(['req-1']);
+    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
+    await screen.findByTestId('provider-share-approve-dialog');
+    currentOwned = owned();
+    currentOwned.shares[0]!.requests = [];
+    act(() => { for (const listener of ownedListeners) listener(); });
+    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+    expect(screen.queryByTestId('provider-share-pending-row')).toBeNull();
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'reject' }));
+  });
+
+  it('holds management approval while the local group list is pending', async () => {
+    currentOwned.quietRequestIds = ['req-1'];
+    let finish!: (groups: Record<string, ProviderGroupConfig>) => void;
+    const original = window.electronAPI.providerGroup.command;
+    vi.spyOn(window.electronAPI.providerGroup, 'command').mockImplementation((cmd) =>
+      cmd.action === 'list' ? new Promise((resolve) => { finish = resolve; }) : original(cmd));
+    renderPage('on', { globalHost: true });
+    const row = await screen.findByTestId('provider-share-pending-row');
+    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
+    const dialog = await screen.findByTestId('provider-share-approve-dialog');
+    expect((within(dialog).getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
+    await act(async () => { finish({ xd: xdGroup }); });
+    expect(dialog.textContent).toContain('providerShare.approve.calloutGroup');
+    expect((within(dialog).getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('uses one approval dialog for a management selection, a late startup list and repeated requests', async () => {
+    let finishStartup!: (state: ProviderShareOwnerState) => void;
+    const original = command.getMockImplementation()!;
+    let first = true;
+    command.mockImplementation((cmd: { action: string }) => {
+      if (cmd.action === 'owned' && first) {
+        first = false;
+        return new Promise((resolve) => { finishStartup = resolve; });
+      }
+      return original(cmd);
+    });
+    renderPage('on', { globalHost: true });
+    const row = await screen.findByTestId('provider-share-pending-row');
+    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
+    await screen.findByTestId('provider-share-approve-dialog');
+    await act(async () => { finishStartup(currentOwned); });
+    const event = { request: currentOwned.shares[0]!.requests[0]!, share: { shareId: 'share-1', providerId: 'xd', providerLabel: 'Cindy AI' } };
+    act(() => { for (const listener of requestedListeners) { listener(event); listener(event); } });
+    expect(screen.getAllByTestId('provider-share-approve-dialog')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.later' }));
+    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+    act(() => { for (const listener of requestedListeners) listener(event); });
+    expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull();
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
+  });
+
   it('places link creation in the title row and pending requests before group and usage', async () => {
     renderPage();
     await screen.findAllByTestId('provider-share-member-row');
