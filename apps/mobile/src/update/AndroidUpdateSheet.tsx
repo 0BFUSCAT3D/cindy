@@ -148,16 +148,20 @@ function AndroidUpdateCard({ state }: { state: AndroidInstallState }) {
       <View style={styles.actions}>
         <MainWindowActionButton
           grow
+          numberOfLines={0}
           action={{
             label: view.dismiss === 'cancel' ? t('update.android.cancel') : t('update.later'),
             onPress: androidInstaller.close,
             testID: 'update.android.cancel',
           }}
-          style={styles.secondaryButton}
+          style={[styles.actionButton, styles.secondaryButton]}
+          textStyle={styles.actionLabel}
         />
         {view.primary ? (
           <MainWindowActionButton
             grow
+            // Large system fonts and narrow panes wrap the label instead of truncating the main action.
+            numberOfLines={0}
             action={{
               busy: view.primary.busy,
               label: t(PRIMARY_COPY[view.primary.label]),
@@ -165,6 +169,8 @@ function AndroidUpdateCard({ state }: { state: AndroidInstallState }) {
               tone: 'primary',
               testID: 'update.android.retry',
             }}
+            style={styles.actionButton}
+            textStyle={styles.actionLabel}
           />
         ) : null}
       </View>
@@ -292,6 +298,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   readyText: { color: colors.textSecondary, flex: 1, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xl },
   // Secondary actions in a paired row are filled chips without a stroke (same as CompanionCardButton).
+  // Wrapped labels keep breathing room inside the pill and stay centered.
+  actionButton: { paddingVertical: spacing.sm },
+  actionLabel: { textAlign: 'center' },
   secondaryButton: { backgroundColor: colors.surfaceChip, borderColor: colors.surfaceChip },
   browser: { alignItems: 'center', justifyContent: 'center', marginTop: spacing.xs, minHeight: 44 },
   browserText: { color: colors.textSecondary, fontSize: typeScale.footnote, fontWeight: fontWeight.medium, lineHeight: lineHeight.caption },
