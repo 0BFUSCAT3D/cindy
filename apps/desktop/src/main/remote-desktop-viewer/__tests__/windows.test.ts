@@ -124,7 +124,12 @@ afterEach(() => {
 const event = (win: any) => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
 const call = (channel: string, win: any, ...args: unknown[]) =>
   fixture.handlers.get(channel)!(event(win), ...args);
-it('records signaling and peer state on a failed request without leaking its payload', async () => {
+it.each([
+  ['DESKTOP_LEASE_EXPIRED', 'DESKTOP_LEASE_EXPIRED', 'DESKTOP_LEASE_EXPIRED'],
+  ['DESKTOP_VIDEO_TIMEOUT', 'DESKTOP_VIDEO_TIMEOUT', 'DESKTOP_VIDEO_TIMEOUT'],
+  ['DESKTOP_DISPLAY_MISSING', 'DESKTOP_DISPLAY_MISSING', 'DESKTOP_DISPLAY_MISSING'],
+  ['DESKTOP_VIDEO_TIMEOUT private-text', 'UNKNOWN_ERROR', 'DESKTOP_UNAVAILABLE'],
+])('records failed request %s without leaking its payload', async (error, code, exposedError) => {
   const sender: any = { id: 100 };
   manager = new RemoteDesktopViewerWindows((value) => value === sender);
   manager.register();
@@ -134,21 +139,22 @@ it('records signaling and peer state on a failed request without leaking its pay
   call(REMOTE_VIEWER.PRESENTED, win);
   const { generation } = call(REMOTE_VIEWER.STATE, win);
   await call(REMOTE_VIEWER.REQUEST, win, generation, { op: 'start', displayId: 'screen' });
-  vi.mocked(remoteInvoke).mockRejectedValueOnce(new Error('DESKTOP_LEASE_EXPIRED'));
+  vi.mocked(remoteInvoke).mockRejectedValueOnce(new Error(error));
   await expect(
     call(REMOTE_VIEWER.REQUEST, win, generation, { op: 'heartbeat', lease: 'lease-a' }),
-  ).rejects.toThrow('DESKTOP_LEASE_EXPIRED');
+  ).rejects.toThrow(exposedError);
   expect(fixture.debug).toHaveBeenCalledWith(
     'desktop request failed',
     expect.objectContaining({
       operation: 'heartbeat',
-      code: 'DESKTOP_LEASE_EXPIRED',
+      code,
       signaling: 'online',
       peerUnresponsive: true,
     }),
   );
   expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('lease-a');
   expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('private computer');
+  expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('private-text');
 });
 
 it.each(['resolve', 'reject'])(
