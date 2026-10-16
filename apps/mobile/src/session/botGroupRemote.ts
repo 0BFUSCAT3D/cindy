@@ -14,6 +14,7 @@ import {
   BOT_GROUP_REMOTE_RESOURCE_KIND,
   isBotGroupRuntimeFailureCode,
   parseBotGroupQuoteView,
+  parseBotGroupTaskCardView,
   type BotGroupAttachment,
   type BotGroupAttachmentCategory,
   type BotGroupErrorCode,
@@ -157,6 +158,8 @@ function parseMember(value: unknown): BotGroupMemberView | null {
     ...(id(record.actorId) ? { actorId: id(record.actorId)! } : {}),
     ...(record.actorKind === 'human' || record.actorKind === 'bot' || record.actorKind === 'integration' ? { actorKind: record.actorKind } : {}),
     ...(typeof record.isOwned === 'boolean' ? { isOwned: record.isOwned } : {}),
+    // The computer running my companion: its group tasks are read there, not on the route's computer.
+    ...(id(record.homeDeviceId) ? { homeDeviceId: id(record.homeDeviceId)! } : {}),
     ...(typeof record.isSelf === 'boolean' ? { isSelf: record.isSelf } : {}),
     ...(record.role === 'owner' || record.role === 'admin' || record.role === 'member' || record.role === 'guest' ? { role: record.role } : {}),
     avatar: text(record.avatar, 4_096) ?? '',
@@ -210,6 +213,8 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
     ? record.noticeCode as BotGroupMessageView['noticeCode']
     : null;
   const quote = parseBotGroupQuoteView(record.quote);
+  // A task this teammate started from the group (bot-group-chat.md §10); older computers send none.
+  const task = authorKind === 'bot' ? parseBotGroupTaskCardView(record.task) : null;
   return {
     id: messageId,
     sequence,
@@ -227,6 +232,7 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
     // 引用回复 and the tombstone it degrades to; older computers send neither.
     ...(record.deleted === true ? { deleted: true } : {}),
     ...(quote ? { quote } : {}),
+    ...(task ? { task } : {}),
     attachments: Array.isArray(record.attachments)
       ? record.attachments.slice(0, BOT_GROUP_ATTACHMENTS_MAX).flatMap((raw) => {
         const attachment = parseAttachment(raw);

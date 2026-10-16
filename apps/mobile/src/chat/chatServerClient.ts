@@ -1,6 +1,6 @@
 import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** The existing Chat Server HTTP contract; no device-link or executor registration. */
-import { readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
+import { botGroupMessageSummaryText, readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readBotGroupTaskCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
 import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 // The app's `@/i18n` sets up this default instance; importing it here would pull React bindings into a plain client.
@@ -63,8 +63,10 @@ export function chatRejection(error: unknown, status: number, code: string): Rec
 const memberName = (member: ChatMember) => member.kind === 'bot' && member.ownerName?.trim()
   ? `${member.name} (${member.ownerName.trim()})` : member.name;
 // A recognized 引用回复 card renders as the quote; an unknown revision keeps its readable fallback.
+// A task card is the message's task only on a teammate's own message (bot-group-chat.md §10).
+const taskCardOf = (message: ChatMessage) => message.author.kind === 'bot' ? message.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
 const bodyBlocks = (message: ChatMessage) => message.deleted || readImportedBotGroupRuntimeFailureCode(message) ? []
-  : message.content.filter(block => !readBotGroupQuoteCard(block));
+  : message.content.filter(block => !readBotGroupQuoteCard(block) && !(message.author.kind === 'bot' && readBotGroupTaskCard(block)));
 // Media blocks are the message's attachments; only the list preview falls back to their names.
 const contentText = (message: ChatMessage) => bodyBlocks(message)
   .flatMap(block => block.type === 'media' ? [] : [block.text ?? block.fallback ?? '']).join('\n');
@@ -88,7 +90,7 @@ export function chatRoomRow(room: ChatRoom, snapshot?: ChatSnapshot, selfId?: st
     ref: { collectionId: 'bot-groups', kind: 'bot-group', id: room.id },
     revision: String(room.head ?? room.revision), display: { title: room.name,
       subtitle: members.map(memberName).join(' · '),
-      ...(snapshot ? { preview: last ? (contentText(last).trim() || mediaNames(last)).slice(0, 160) || members.map(memberName).join(' · ') : '' } : {}),
+      ...(snapshot ? { preview: last ? (botGroupMessageSummaryText({ content: contentText(last), task: taskCardOf(last) ?? undefined, deleted: last.deleted }) || mediaNames(last)).slice(0, 160) || members.map(memberName).join(' · ') : '' } : {}),
       timestamp: Date.parse(last?.createdAt ?? room.updated_at),
       lastReplyAt: snapshot && selfId ? chatLastReplyAt(snapshot.messages, selfId) : undefined },
     links: members.map(member => ({ rel: 'member', label: memberName(member),
@@ -134,13 +136,18 @@ function chatMemberIdentity(member: ChatMember) {
   return { botId: member.id, name: memberName(member), ...chatMemberAvatar(member.avatar), avatarColor: '' };
 }
 
-/** Sequence strings stay on the wire; numeric positions below are presentation order only. */
-export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteChatData {
+/**
+ * Sequence strings stay on the wire; numeric positions below are presentation order only.
+ * `actors` (the account's own, from `/actors`) tell which computer runs each owned companion.
+ */
+export function chatGroupView(page: ChatPage, selfId: string, actors: readonly ChatActor[] = []): BotGroupRemoteChatData {
   const { room, members } = page.snapshot;
   const active = members.filter(member => member.state === 'joined');
   const memberViews: BotGroupMemberView[] = active.map(member => ({
     ...chatMemberIdentity(member), actorId: member.id, actorKind: member.kind, isSelf: member.id === selfId,
     isOwned: member.ownerActorId === selfId, role: member.role,
+    ...(member.ownerActorId === selfId && member.kind === 'bot'
+      ? { homeDeviceId: actors.find(actor => actor.id === member.id)?.homeDeviceId ?? null } : {}),
     status: 'active',
   }));
   const deletedIds = new Set(page.messages.filter(message => message.deleted).map(message => message.id));
@@ -157,7 +164,9 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     const joined = message.origin === 'system' && !message.deleted && message.content.find(block =>
       block.type === 'card' && block.namespace === 'cindy.membership' && block.schemaRevision === 1 && block.data?.type === 'member.joined');
     const quote = message.origin === 'system' ? null : readBotGroupQuote(message.content);
+    const task = message.origin === 'system' ? null : taskCardOf(message);
     return { id: message.id, sequence: index + 1, kind: message.origin === 'system' ? 'notice' : 'message',
+      ...(task ? { task } : {}),
       authorKind: message.origin === 'system' ? 'system' : message.author.kind === 'human' ? 'user' : 'bot',
       authorBotId: message.authorId, authorName: joined && typeof joined.data?.displayName === 'string' ? joined.data.displayName
         : member ? memberName(member) : message.author.name,
@@ -181,7 +190,7 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     revision: room.revision, members: memberViews, replyMode: room.response_mode, speakingMode: room.speaking_mode,
     organizerBotId: room.organizer_id ?? null, projectDir: null, projectDirName: null,
     createdAt: Date.parse(room.created_at), updatedAt: Date.parse(room.updated_at),
-    lastMessage: last ? { authorKind: last.authorKind, authorName: last.authorName, preview: last.content.slice(0, 80), createdAt: last.createdAt } : null,
+    lastMessage: last ? { authorKind: last.authorKind, authorName: last.authorName, preview: botGroupMessageSummaryText(last).slice(0, 80), createdAt: last.createdAt } : null,
     speakingBotIds: [], planningBotId: null, openPlan: null, plans: [], messages: projectBotGroupExecutionFailures(messages, failures),
     hasMoreBefore: page.before !== null, round: { status: 'idle', speakers: [], canContinue: false }, supportsAttachments: false };
 }

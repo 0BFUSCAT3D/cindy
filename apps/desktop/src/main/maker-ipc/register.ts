@@ -12074,6 +12074,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       return [...byPath.values()];
     },
+    // A task started from a group posts its card, confirmations and result there as its teammate.
+    postGroupTaskMessage: async (input) => botGroupChatServiceHolder
+      ? botGroupChatServiceHolder.postCompanionTaskMessage(input)
+      : { ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: true },
+    groupHasTaskChannel: async (groupId) => botGroupChatServiceHolder
+      ? botGroupChatServiceHolder.hasCompanionTaskChannel(groupId) : true,
   });
   registerBotLifecycleHandlers({
     maker,
@@ -12311,7 +12317,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       ) {
         throwIpcError('INVALID_PARAMS', 'parentSessionId + delegationId required');
       }
-      return delegationForRestore.cancelDelegation(parentSessionId, delegationId);
+      // The owner's own stop button: not a group tool call, so no live group execution is needed.
+      return delegationForRestore.cancelDelegationFromOwner(parentSessionId, delegationId);
     },
   );
   const captureSessionOwner = () => {

@@ -9,9 +9,18 @@ export function chatErrorDiagnostic(error: unknown): { code: string; status?: nu
   return { code, ...(typeof value?.status === 'number' && Number.isInteger(value.status) ? { status: value.status } : {}) };
 }
 
+/**
+ * A room reached through a bot-group entry point that is not a group (a 1:1 companion chat,
+ * a channel) answers exactly like a missing room. The internal code stays in diagnostics only.
+ */
+export function missingGroupCode(code: string): string {
+  return code === 'NOT_A_GROUP' ? 'CONVERSATION_NOT_FOUND' : code;
+}
+
 /** Stable localized categories for desktop and remote controllers; raw errors stay private. */
 export function chatGroupFailure(error: unknown): BotGroupFailure {
-  const { code, status } = chatErrorDiagnostic(error);
+  const { code: raw, status } = chatErrorDiagnostic(error);
+  const code = missingGroupCode(raw);
   let errorCode: BotGroupErrorCode;
   if (['PLAN_OPEN', 'PLAN_CLOSED', 'MENTION_UNAVAILABLE', 'MEMBER_LIMIT', 'MEMBER_UNAVAILABLE', 'HOST_NOT_READY',
     'INVALID_ATTACHMENT', 'ATTACHMENT_UNAVAILABLE', 'ATTACHMENT_TOO_LARGE', 'MEDIA_UPLOAD_FAILED',
