@@ -1,4 +1,4 @@
-import { cloudQuotaOwnerKey, quotaCredentialsReady, quotaCredentialGeneration, onQuotaCredentialSourceChanged } from '../model-access/quotaCredentialState.js';
+import { refreshQuotaCredentialOwner, cloudQuotaOwnerKey, quotaCredentialsReady, quotaCredentialGeneration, onQuotaCredentialSourceChanged } from '../model-access/quotaCredentialState.js';
 import type { ClaudeQuotaClear } from '../../shared/claudeQuotaState.js';
 import { readOrganizationAccountUsage } from './organizationAccountUsage.js';
 /**
@@ -100,6 +100,7 @@ let fetchInFlight = false;
 let fetchOwnerKey: string | null = null;
 let refreshQueued = false;
 let lastFetchAt = 0;
+let lastFetchOwnerKey: string | null = null;
 let idlePollTimer: NodeJS.Timeout | null = null;
 
 interface LiteLlmUserInfo {
@@ -273,12 +274,14 @@ export async function triggerClaudeAccountUsageRefresh(force = false): Promise<v
     if (fetchOwnerKey !== owner.key) refreshQueued = true;
     return;
   }
-  if (!force && Date.now() - lastFetchAt < THROTTLE_MS) return;
+  if (!force && lastFetchOwnerKey === owner.key && Date.now() - lastFetchAt < THROTTLE_MS) return;
 
   fetchInFlight = true;
   fetchOwnerKey = owner.key;
   lastFetchAt = Date.now();
+  lastFetchOwnerKey = owner.key;
   try {
+    if (owner.key.startsWith('cloud:')) refreshQuotaCredentialOwner(owner.key);
     const generation = quotaCredentialGeneration();
     const next = await fetchOnce(owner.authenticatedUserId);
     if (getAuthState().mode === 'cloud' && quotaCredentialGeneration() !== generation) return;

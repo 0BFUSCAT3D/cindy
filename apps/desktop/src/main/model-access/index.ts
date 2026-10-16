@@ -1,4 +1,4 @@
-import { cloudQuotaOwnerKey, noteQuotaCredentialStatus } from './quotaCredentialState.js';
+import { cloudQuotaOwnerKey, noteQuotaCredentialStatus, setQuotaCredentialStatusReader } from './quotaCredentialState.js';
 import { createByokCache } from './byokCache.js';
 import { byokSnapshotSecretIo } from '../secrets/providerSecretStore.js';
 import { registerByokIpc } from './byokIpc.js';
@@ -516,6 +516,12 @@ function mapServerError(err: unknown): never {
  */
 export function initModelAccess(): void {
   const sync = getSync();
+  setQuotaCredentialStatusReader(() => {
+    const auth = authManager.getAuthState();
+    if (auth.mode !== 'cloud' || !auth.user?.id || auth.user.id !== lastAuthUserId
+      || authManager.getActiveAuthRealm() !== lastAuthRealm) return null;
+    return sync.getStatus();
+  });
   const byok = createByokRuntime(
     broadcastReferenceModelPricing,
     createByokCache(byokSnapshotSecretIo),

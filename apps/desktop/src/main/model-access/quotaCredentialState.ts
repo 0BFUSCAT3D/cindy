@@ -43,3 +43,15 @@ export function cloudQuotaOwnerKey(auth: Pick<AuthState, 'mode' | 'dataOwnerId' 
   return auth.mode === 'cloud' && auth.dataOwnerId
     ? `cloud:${auth.dataOwnerId}:${auth.ownerGeneration}` : null;
 }
+
+// The sync owner must still match both membership and realm. The reader is wired
+// by Model Access; quota reads do not import its runtime or start credential sync.
+let readCurrentCredentialStatus: (() => ModelAccessStatus | null) | null = null;
+export function setQuotaCredentialStatusReader(reader: () => ModelAccessStatus | null): void {
+  readCurrentCredentialStatus = reader;
+}
+export function refreshQuotaCredentialOwner(ownerKey: string): void {
+  if (owner === ownerKey) return;
+  const status = readCurrentCredentialStatus?.();
+  if (status) noteQuotaCredentialStatus(ownerKey, status);
+}

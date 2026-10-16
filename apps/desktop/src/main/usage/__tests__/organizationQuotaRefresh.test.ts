@@ -187,3 +187,37 @@ it('notifies main-process consumers when finite quota recovers after a source ch
   await vi.waitFor(() => expect(snapshots).toEqual([null, quota]));
   off();
 });
+
+it('rebinds ready legacy credentials after a silent same-owner generation repair', async () => {
+  mocks.managed.mockResolvedValue(undefined);
+  const state = await import('../../model-access/quotaCredentialState');
+  state.setQuotaCredentialStatusReader(() => ({ state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null }));
+  const api = await import('../claudeAccountUsage');
+  await api.triggerClaudeAccountUsageRefresh(true);
+  expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20);
+  mocks.auth.ownerGeneration++;
+  // No auth listener / credential status event is emitted by this repair.
+  await api.triggerClaudeAccountUsageRefresh();
+  await vi.waitFor(() => expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20));
+  expect(state.quotaCredentialsReady('cloud:owner-a:2', mocks.endpoint)).toBe(true);
+});
+it('does not rebind credentials when the sync identity no longer matches the realm', async () => {
+  mocks.managed.mockResolvedValue(undefined);
+  const state = await import('../../model-access/quotaCredentialState');
+  state.setQuotaCredentialStatusReader(() => null);
+  const api = await import('../claudeAccountUsage');
+  await api.triggerClaudeAccountUsageRefresh(true);
+  mocks.auth.ownerGeneration++;
+  mocks.outbound.mockClear();
+  await api.triggerClaudeAccountUsageRefresh();
+  expect(mocks.outbound).not.toHaveBeenCalled();
+  expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+});
+
+it('still throttles unavailable reads within one owner generation', async () => {
+  mocks.managed.mockResolvedValue(null);
+  const api = await import('../claudeAccountUsage');
+  await api.triggerClaudeAccountUsageRefresh();
+  await api.triggerClaudeAccountUsageRefresh();
+  expect(mocks.managed).toHaveBeenCalledTimes(1);
+});
