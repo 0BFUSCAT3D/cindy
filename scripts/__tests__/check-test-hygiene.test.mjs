@@ -326,6 +326,26 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ sourceReads: 1 },
 		],
 		[
+			"immutable source filename aliases flow into real reads",
+			"const target = '../Component.tsx';\nconst alias = target;\nreadFileSync(resolve(__dirname, alias), 'utf8');",
+			{ sourceReads: 1 },
+		],
+		[
+			"unread names and shadowed source filename bindings are not source reads",
+			"const target = '../Component.tsx'; function check(target) { readFileSync(target, 'utf8'); }",
+			{ sourceReads: 0 },
+		],
+		[
+			"immutable fixture filename remains a fixture input",
+			"const target = '../fixture.ts'; readFileSync(resolve(__dirname, target), 'utf8');",
+			{ sourceReads: 0 },
+		],
+		[
+			"executing source read through a filename alias preserves the exemption",
+			"const target = '../Component.ts'; const source = readFileSync(resolve(__dirname, target), 'utf8'); const load = new Function(source); expect(load()).toBe(1);",
+			{ sourceReads: 0 },
+		],
+		[
 			"namespace factories do not make temporary fixture paths repository-derived",
 			"import * as path from 'node:path';\nconst fixtureRoot = path.resolve(tmpdir(), 'fixture');\nconst source = readFileSync(path.join(fixtureRoot, 'index.ts'), 'utf8');",
 			{ sourceReads: 0 },

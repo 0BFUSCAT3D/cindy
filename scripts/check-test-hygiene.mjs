@@ -945,6 +945,37 @@ function normalizeSourceReads(code) {
     return wrapperReads.get(fn);
   }
   const edits = [];
+  // Inline only immutable local string/alias bindings used as a read path.
+  // Reparse below so literal offsets and source-execution exemptions agree.
+  function pathLiteral(node, seen = new Set()) {
+    node = unwrap(node);
+    if (ts.isStringLiteralLike(node)) return node;
+    if (!ts.isIdentifier(node)) return null;
+    const bound = binding(node);
+    if (!bound || seen.has(bound) || writes.has(bound) || !ts.isVariableDeclaration(bound)
+      || !ts.isVariableDeclarationList(bound.parent) || !(bound.parent.flags & ts.NodeFlags.Const)
+      || !bound.initializer) return null;
+    return pathLiteral(bound.initializer, new Set(seen).add(bound));
+  }
+  function inlinePathLiterals(node) {
+    if (!node) return;
+    node = unwrap(node);
+    if (ts.isIdentifier(node)) {
+      // Member names are labels; only value references carry path bindings.
+      if (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
+        || ts.isPropertyAssignment(node.parent) && node.parent.name === node) return;
+      const literal = pathLiteral(node);
+      if (literal && SOURCE_EXT.test(literal.text)) edits.push({ start: node.getStart(source), end: node.end, text: literal.getText(source) });
+      return;
+    }
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const callee = node.expression;
+      const name = ts.isIdentifier(callee) ? callee.text
+        : ts.isPropertyAccessExpression(callee) ? callee.name.text
+          : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression.text : '';
+      if (/^(?:resolve|join|URL)$/.test(name)) for (const argument of node.arguments ?? []) inlinePathLiterals(argument);
+    }
+  }
   for (const call of calls) {
     const expression = call.expression;
     const name = ts.isIdentifier(expression) ? expression.text
@@ -953,6 +984,7 @@ function normalizeSourceReads(code) {
     // but a same-named passthrough or shadow must not masquerade as an fs read.
     const actualRead = matches(expression, 'read') || /^(?:readFileSync|readFile)$/.test(name)
       && ts.isIdentifier(expression) && localReadWrapper(binding(expression));
+    if (actualRead) inlinePathLiterals(call.arguments[0]);
     if (actualRead && /^(?:readFileSync|readFile)$/.test(name)) continue;
     if (actualRead || /^(?:readFileSync|readFile)$/.test(name)) {
       edits.push({ start: expression.getStart(source), end: expression.end, text: actualRead ? 'readFileSync' : '__nonFsRead' });

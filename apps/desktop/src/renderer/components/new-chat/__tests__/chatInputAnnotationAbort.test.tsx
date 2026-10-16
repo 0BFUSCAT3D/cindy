@@ -21,6 +21,8 @@ import type { PermissionSelector } from '../PermissionSelector';
 import type { ModelSelector } from '../ModelSelector';
 import type { UseVoiceInputResult } from '@/voice-input/useVoiceInput';
 import { useAttachments } from '@/hooks/useAttachments';
+import { dispatchInputDeviceAction } from '@/lib/inputDeviceActions';
+import type { InputDeviceRendererAction } from '../../../../shared/inputDevices';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as ComponentProps<typeof ModelSelector>['onModelChange'] | undefined, remoteProviders: [] as ProviderView[],
@@ -29,6 +31,9 @@ const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor:
   atPanel: null as ComponentProps<typeof AtMentionPanel> | null,
   documentChanged: vi.fn(),
   voiceState: null as UseVoiceInputResult['state'] | null,
+  draftText: '',
+  draftSource: null as UseVoiceInputResult['draftSource'],
+  draftRange: null as UseVoiceInputResult['draftRange'],
   cancel: vi.fn().mockResolvedValue(undefined),
   realModelSelector: false,
 }));
@@ -80,7 +85,7 @@ vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor |
   if (editor && editor !== h.editor) editor.on('transaction', ({ transaction }) => { if (transaction.docChanged) h.documentChanged(); });
   h.editor = editor;
   const state = h.voiceState ?? (h.listening ? 'listening' : 'idle');
-  return { state, isListening: state === 'listening', isBusy: state === 'listening' || state === 'submitting' || state === 'refining', draftText: '', start: vi.fn(), stop: h.stop, cancel: h.cancel };
+  return { state, isListening: state === 'listening', isBusy: state === 'listening' || state === 'submitting' || state === 'refining', draftText: h.draftText, draftSource: h.draftSource, draftRange: h.draftRange, start: vi.fn(), stop: h.stop, cancel: h.cancel };
 } }));
 vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], providerOrder: [], loading: false }) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }) }));
@@ -120,6 +125,9 @@ beforeEach(() => {
   h.documentChanged.mockClear();
   h.listening = false;
   h.voiceState = null;
+  h.draftText = '';
+  h.draftSource = null;
+  h.draftRange = null;
   h.stop.mockClear();
   h.realModelSelector = false;
   h.cancel.mockReset().mockResolvedValue(undefined);
@@ -144,6 +152,18 @@ function renderComposer(extra: Partial<ComponentProps<typeof ChatInput>> = {}) {
     onSend: vi.fn().mockResolvedValue(true), ...extra };
   const view = render(<ChatInput {...props} />);
   return { ...view, props };
+}
+
+function supplyRangeGeometry() {
+  // jsdom has no layout. Keep real ranges/selections while ProseMirror focuses.
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, 'createRange').mockImplementation(() => {
+    const range = createRange();
+    const rect = new DOMRect();
+    range.getClientRects = () => Object.assign([rect], { item: (index: number) => index === 0 ? rect : null });
+    range.getBoundingClientRect = () => rect;
+    return range;
+  });
 }
 
 // Replaces the source-only guards with real editor transactions at the two
@@ -294,6 +314,83 @@ it('dismisses a preview on Enter without sending or changing the hidden draft', 
   expect(screen.queryByText('preview suggestion')).toBeNull();
 });
 
+// Hardware enters through its own subscription, independently of keydown.
+// A second action proves the real subscriber is active after preview dismissal.
+it.each([
+  { type: 'command', commandId: 'composer.submit' },
+  { type: 'skill', skillId: 'example', name: 'example' },
+  { type: 'composer-text', text: 'hardware text' },
+] satisfies InputDeviceRendererAction[])('dismisses a preview before applying hardware $type actions', async action => {
+  supplyRangeGeometry();
+  h.remoteProviders = [sshNativeCodexProvider([sshModel('remote-only')])];
+  const view = renderComposer({ sessionId: 'hardware-preview', remoteHostId: 'builder',
+    runtimeAgentKind: 'codex', vendorKey: 'codex', initialModel: 'remote-only',
+    initialProviderId: 'openai', initialEffort: 'low' });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>unsent draft</p>'); });
+  expect((screen.getByRole('button', { name: 'newChat.sendButton.send' }) as HTMLButtonElement).disabled).toBe(false);
+  view.rerender(<ChatInput {...view.props} previewPrompt="preview suggestion" />);
+  expect(screen.getByText('preview suggestion')).toBeTruthy();
+  await act(async () => { dispatchInputDeviceAction(action); });
+  expect(view.props.onSend).not.toHaveBeenCalled();
+  expect(h.editor!.getText()).toBe('unsent draft');
+  expect(screen.queryByText('preview suggestion')).toBeNull();
+  await act(async () => { dispatchInputDeviceAction(action); });
+  if (action.type === 'command') {
+    await waitFor(() => expect(view.props.onSend).toHaveBeenCalledTimes(1));
+  } else {
+    expect(h.editor!.getText()).toContain(action.type === 'skill' ? '$example' : 'hardware text');
+    expect(view.props.onSend).not.toHaveBeenCalled();
+  }
+});
+
+// Observe ChatInput's real voice effect, decoration and scroller together.
+// The selection stays elsewhere; only a changed saved range must move the
+// ghost caret and scroll it into view, without scrolling to the document end.
+it('scrolls to the saved voice draft range and reacts to range-only changes', async () => {
+  supplyRangeGeometry();
+  const view = renderComposer();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  const editor = h.editor!;
+  await act(async () => {
+    editor.commands.setContent('<p>first</p><p>middle</p><p>last</p>');
+    editor.commands.setTextSelection(18);
+  });
+  await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
+  const scroller = editor.view.dom;
+  const paragraphs = scroller.querySelectorAll('p');
+  Object.defineProperties(scroller, {
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 100 },
+  });
+  scroller.scrollTop = 200;
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this === scroller) return new DOMRect(0, 0, 200, 100);
+    if (this.matches('[data-voice-caret], [data-voice-draft-inline]')) {
+      const bottom = this.closest('p') === paragraphs[1] ? 160 : 140;
+      return new DOMRect(0, bottom - 10 - (scroller.scrollTop - 200), 10, 10);
+    }
+    return originalRect.call(this);
+  });
+  h.voiceState = 'listening';
+  h.draftText = 'spoken words';
+  h.draftSource = 'partial';
+  h.draftRange = { from: 10, to: 10 };
+  view.rerender(<ChatInput {...view.props} />);
+  await waitFor(() => expect(scroller.scrollTop).toBe(264));
+  expect(scroller.querySelector('[data-voice-caret]')?.closest('p')).toBe(paragraphs[1]);
+  expect(editor.state.selection.from).toBe(18);
+
+  scroller.scrollTop = 200;
+  h.draftRange = { from: 3, to: 3 };
+  view.rerender(<ChatInput {...view.props} />);
+  await waitFor(() => expect(scroller.scrollTop).toBe(244));
+  expect(scroller.querySelector('[data-voice-caret]')?.closest('p')).toBe(paragraphs[0]);
+  await act(async () => { editor.commands.setTextSelection(18); });
+  expect(scroller.querySelector('[data-voice-caret]')?.closest('p')).toBe(paragraphs[0]);
+});
+
 // The removed source guard did not prove the editor consumed the key. Mount the
 // real composer with send enabled: an unmatched slash must close its palette
 // without submitting or changing the draft. Reuse this editor/host harness.
@@ -323,16 +420,7 @@ it.each(['Enter', 'Tab'])('consumes %s for an empty slash result without sending
 // this unit harness with the real hook; choosing another folder must append
 // once without reinserting the first. Paths are serialized mention targets.
 it('inserts queued folders into the mounted editor when the real attachment hook changes', async () => {
-  // jsdom has no layout; ProseMirror measures a Range when insertion focuses
-  // and scrolls the editor. Supply geometry without replacing its selection.
-  const createRange = document.createRange.bind(document);
-  vi.spyOn(document, 'createRange').mockImplementation(() => {
-    const range = createRange();
-    const rect = new DOMRect();
-    range.getClientRects = () => Object.assign([rect], { item: (index: number) => index === 0 ? rect : null });
-    range.getBoundingClientRect = () => rect;
-    return range;
-  });
+  supplyRangeGeometry();
   function AttachmentComposer() {
     const attachmentState = useAttachments(undefined, 'composer-regression');
     return <>
