@@ -50,11 +50,11 @@ async function openPeerFileCache(owner: string) {
       active: () => boolean,
     ) {
       if (!metadata || !validFileVersion(metadata.version)) return null;
-      const hit = await cache.lookup(
-        JSON.stringify([device, url]),
-        metadata.version,
-      );
+      const source = JSON.stringify([device, url]);
+      const hit = await cache.lookup(source, metadata.version);
       if (!active() || !hit || hit.size !== metadata.size) return null;
+      // Only the consumer copy needs new space; keep its source during eviction.
+      if (!(await cache.prune(metadata.size, source)) || !active()) return null;
       // The consumer owns a separate staging file; cache eviction never removes it.
       const directory = new Directory(
         Paths.cache,

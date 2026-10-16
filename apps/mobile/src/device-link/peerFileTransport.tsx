@@ -45,6 +45,8 @@ import {
   installPeerUploadProbe,
   installPeerReset,
   recordPeerMedia,
+  peerMediaUri,
+  releasePeerMedia,
   clearPeerMedia,
   type LocalPeerMedia as LocalMedia,
 } from "./peerFileRegistry";
@@ -576,19 +578,27 @@ export function PeerFileTransport() {
         return queueRead(
           "connection",
           async () => {
-            if (!active()) throw new Error("FILE_PEER_CANCELLED");
+            const check = (result?: LocalMedia | null) => {
+              if (active() && !signal?.aborted) return;
+              const uri = result && peerMediaUri(result);
+              if (uri) releasePeerMedia(uri);
+              throw new Error("FILE_PEER_CANCELLED");
+            };
+            check();
             const cache = await fileCache;
             if (metadata?.skipCache) await cache?.invalidate(device, url).catch(() => undefined);
-            if (metadata) await cache?.prune(metadata.size).catch(() => false);
             const cached = metadata?.skipCache ? null : await cache?.read(device, url, metadata, () => active() && !signal?.aborted).catch(() => null);
-            if (!active() || signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+            check(cached);
             if (cached) {
               mobileDebugLog('debug', 'files', 'file cache hit', { trace: readTrace, size: cached.size });
               return cached;
             }
+            if (metadata) await cache?.prune(metadata.size).catch(() => false);
+            check();
             const result = await transfer(device, url, signal, readTrace);
             if (result && active() && !signal?.aborted)
               await cache?.store(device, url, metadata, result).catch(() => undefined);
+            check(result);
             return result;
           },
           signal,

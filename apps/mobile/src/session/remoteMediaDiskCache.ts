@@ -61,8 +61,8 @@ export interface RemoteMediaDiskCacheHit {
 export interface RemoteMediaDiskCache {
   /** 命中返回本地 file:// 引用并刷新 LRU 时间;未命中 / 文件丢失返回 null。 */
   lookup(sourceUrl: string, version?: string): Promise<RemoteMediaDiskCacheHit | null>;
-  /** Frees the oldest copies only when the next operation needs disk space. */
-  prune(requiredBytes?: number): Promise<boolean>;
+  /** Frees the oldest copies under disk pressure, excluding the pending copy's source. */
+  prune(requiredBytes?: number, protectedSourceUrl?: string): Promise<boolean>;
   remove(sourceUrl: string): Promise<void>;
   /**
    * 把已取件成功的图片落盘(同 url 并发只下载一次;失败静默,缓存是纯优化)。
@@ -192,15 +192,16 @@ export function createRemoteMediaDiskCache(
     }
   }
 
-  async function prune(requiredBytes = 0): Promise<boolean> {
+  async function prune(requiredBytes = 0, protectedSourceUrl?: string): Promise<boolean> {
     await init();
+    const protectedKey = protectedSourceUrl === undefined ? undefined : cacheKeyOf(protectedSourceUrl);
     const enough = () => !options.availableBytes ||
       options.availableBytes() >= requiredBytes + (options.reserveBytes ?? 0);
     if (enough()) return true;
     const oldest = [...entries!.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
     for (const [key, entry] of oldest) {
       if (enough()) break;
-      if (downloading.has(key)) continue;
+      if (key === protectedKey || downloading.has(key)) continue;
       try {
         await io.deleteFile(entry.name);
         entries!.delete(key);

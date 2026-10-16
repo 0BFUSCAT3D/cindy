@@ -6,6 +6,7 @@ const disk = vi.hoisted(() => ({
   copying: false,
   gate: undefined as Promise<void> | undefined,
   seq: 0,
+  available: 10 * 1024 ** 3,
 }));
 vi.mock("expo-crypto", () => ({
   CryptoDigestAlgorithm: { SHA256: "sha256" },
@@ -14,7 +15,7 @@ vi.mock("expo-crypto", () => ({
   randomUUID: () => `copy-${++disk.seq}`,
 }));
 vi.mock("expo-file-system", () => ({
-  Paths: { cache: "file:///cache", availableDiskSpace: 10 * 1024 ** 3 },
+  Paths: { cache: "file:///cache", get availableDiskSpace() { return disk.available; } },
   Directory: class {
     uri: string;
     constructor(...parts: Array<string | { uri: string }>) {
@@ -90,6 +91,7 @@ afterEach(() => {
   clearPeerMedia();
   disk.gate = undefined;
   disk.copying = false;
+  disk.available = 10 * 1024 ** 3;
 });
 const metadata = { size: 5, mimeType: "text/html", version: "a".repeat(64) };
 async function seed(owner: string) {
@@ -139,4 +141,18 @@ it("invalidates a bad cache even if the forced transfer later fails, while consu
   await cache.invalidate("device", "url");
   expect(await cache.read("device", "url", metadata, () => true)).toBeNull();
   expect(disk.files.get(uri)).toEqual(Uint8Array.from([1, 2, 3, 4, 5]));
+});
+
+it("reserves only one copy on a hit and preserves its source when space cannot be reclaimed", async () => {
+  const cache = await seed("pressure-owner");
+  const before = new Set(disk.files.keys());
+  const reserve = 256 * 1024 ** 2;
+  disk.available = reserve + metadata.size - 1;
+  expect(await cache.read("device", "url", metadata, () => true)).toBeNull();
+  expect(new Set(disk.files.keys())).toEqual(before);
+  disk.available = reserve + metadata.size;
+  const result = await cache.read("device", "url", metadata, () => true);
+  expect(result).not.toBeNull();
+  releasePeerMedia(peerMediaUri(result!)!);
+  expect(new Set(disk.files.keys())).toEqual(before);
 });

@@ -12,6 +12,9 @@ const state = vi.hoisted(() => ({
   change: (_state: string) => {},
   upload: undefined as any,
   read: undefined as any,
+  download: undefined as any,
+  cache: { read: vi.fn(), store: vi.fn(), prune: vi.fn(), invalidate: vi.fn() },
+  deleted: vi.fn(),
   reset: undefined as any,
   commands: [] as any[],
   rpc: vi.fn(),
@@ -65,13 +68,20 @@ vi.mock("react-native-webview", async () => {
 vi.mock("expo-file-system", () => ({
   Directory: class {
     exists = false;
+    create() {}
   },
-  File: class {},
-  Paths: { cache: "/cache" },
+  File: class {
+    uri = "/staging";
+    exists = true;
+    create() {}
+    open() { return { close() {} }; }
+    delete() { this.exists = false; state.deleted(); }
+  },
+  Paths: { cache: "/cache", availableDiskSpace: 10 * 1024 ** 3 },
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => `id-${++state.sequence}` }));
 vi.mock("@/device-link/peerFileCache", () => ({
-  createPeerFileCache: async () => null,
+  createPeerFileCache: async () => state.cache,
 }));
 vi.mock("@/auth/AuthContext", () => ({
   useAuth: () => ({
@@ -95,8 +105,12 @@ vi.mock("@cindy/device-link", async (original) => ({
   ...(await original<typeof import("@cindy/device-link")>()),
   resolveDesktopIceServers: async () => [],
 }));
-vi.mock("@/device-link/peerFileRegistry", () => ({
-  installPeerFileDownload: () => () => {},
+vi.mock("@/device-link/peerFileRegistry", async (original) => ({
+  ...(await original<typeof import("@/device-link/peerFileRegistry")>()),
+  installPeerFileDownload: (callback: any) => {
+    state.download = callback;
+    return () => { state.download = undefined; };
+  },
   installPeerInvoke: (callback: any) => {
     state.read = callback;
     return () => {
@@ -116,9 +130,6 @@ vi.mock("@/device-link/peerFileRegistry", () => ({
       state.reset = undefined;
     };
   },
-  clearPeerMedia() {},
-  recordPeerMedia() {},
-  canStagePeerMedia: () => true,
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
@@ -139,6 +150,10 @@ beforeEach(() => {
   state.sessionBound = true;
   state.app = "active";
   state.commands = [];
+  state.deleted.mockClear();
+  state.cache.read.mockReset().mockResolvedValue(null);
+  state.cache.store.mockReset().mockResolvedValue(undefined);
+  state.cache.prune.mockReset().mockResolvedValue(true);
   state.open.mockReset().mockResolvedValue(undefined);
   state.rpc
     .mockReset()
@@ -150,6 +165,8 @@ beforeEach(() => {
             idleMs: 300_000,
             ...(state.sessionBound ? { sessionBound: true } : {}),
           }
+        : request.action === "open"
+          ? { ticket: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", size: 0, mimeType: "text/html", version: "a".repeat(64) }
         : { connection: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", sdp: "v=0" },
     );
   root = createRoot(document.createElement("div"));
@@ -232,4 +249,51 @@ it("rebuilds only on demand after failure and ignores delayed closure of the old
   expect(await read()).toEqual({ ok: true, result: "preview" });
   act(() => state.reset("device"));
   expect(await read()).toBeNull();
+});
+
+it.each([
+  ["background", false], ["reset", false], ["abort", false],
+  ["background", true], ["reset", true], ["abort", true],
+] as const)("rejects and releases a file cancelled during cache store: %s, store fails=%s", async (cause, fails) => {
+  let resume!: () => void;
+  state.cache.store.mockImplementation(() => new Promise<void>((resolve, reject) => {
+    resume = () => fails ? reject(new Error("cache unavailable")) : resolve();
+  }));
+  const controller = new AbortController();
+  const pending = state.download("device", "url", controller.signal, 1,
+    { size: 0, mimeType: "text/html", version: "a".repeat(64) });
+  const cancelled = expect(pending).rejects.toThrow("FILE_PEER_CANCELLED");
+  await vi.waitFor(() => expect(state.cache.store).toHaveBeenCalledTimes(1));
+  act(() => {
+    if (cause === "background") {
+      state.app = "background";
+      state.change("background");
+    } else if (cause === "reset") state.reset("device");
+    else controller.abort();
+  });
+  resume();
+  await cancelled;
+  expect(state.deleted).toHaveBeenCalledTimes(1);
+});
+
+it("returns a cache hit without reserving space for another transfer", async () => {
+  const cached = { ossKey: "", size: 5, mimeType: "text/html" };
+  state.cache.read.mockResolvedValue(cached);
+  expect(await state.download("device", "url", undefined, 1, cached)).toBe(cached);
+  expect(state.cache.prune).not.toHaveBeenCalled();
+  expect(state.open).not.toHaveBeenCalled();
+});
+
+it("releases a cache hit invalidated just before its promise resumes", async () => {
+  const { recordPeerMedia } = await import("@/device-link/peerFileRegistry");
+  const cached = { ossKey: "", size: 5, mimeType: "text/html" };
+  const dispose = vi.fn();
+  state.cache.read.mockImplementation(async () => {
+    recordPeerMedia(cached, "/cached-copy", dispose);
+    state.reset("device");
+    return cached;
+  });
+  await expect(state.download("device", "url")).rejects.toThrow("FILE_PEER_CANCELLED");
+  expect(dispose).toHaveBeenCalledOnce();
+  expect(state.open).not.toHaveBeenCalled();
 });

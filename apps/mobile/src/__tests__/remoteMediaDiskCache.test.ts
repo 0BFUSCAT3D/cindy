@@ -36,6 +36,22 @@ const URL_B = 'xdt-image://cache/b.png';
 const URL_C = 'xdt-image://cache/c.png';
 
 describe('remoteMediaDiskCache', () => {
+  it('protects the source of a pending copy while reclaiming other entries', async () => {
+    const h = memoryIO();
+    let capacity = 10_000;
+    const cache = createRemoteMediaDiskCache(h.io, {
+      now: () => 1, reserveBytes: 500,
+      availableBytes: () => capacity - [...h.files.values()].reduce((sum, n) => sum + n, 0),
+    });
+    await cache.store(URL_A, 'file:///a', 'text/html', 1000);
+    await cache.store(URL_B, 'file:///b', 'text/html', 1000);
+    capacity = 2500;
+    expect(await cache.prune(1000, URL_A)).toBe(true);
+    expect(await cache.lookup(URL_A)).not.toBeNull();
+    expect(await cache.lookup(URL_B)).toBeNull();
+    expect(await cache.prune(2000, URL_A)).toBe(false);
+    expect(await cache.lookup(URL_A)).not.toBeNull();
+  });
   it('recreates a removed cache directory on a later write and rejects invalid version paths', async () => {
     const h = memoryIO();
     let directoryExists = false;

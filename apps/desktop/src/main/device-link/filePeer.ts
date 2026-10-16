@@ -40,6 +40,7 @@ import { captureFilePeerScope, invalidateFilePeerScopes } from './filePeerScope'
 import { createLogger } from '../logger.js';
 import { handlePeerAttachment } from './peerAttachmentStore';
 import { fileVersion } from './fileVersion';
+import { remoteFileVersionCache, type FileVersionMetadata } from './remoteFileVersionCache';
 
 // Local-only diagnostics (scope is not upload-allowlisted): stages, sizes and timings, never paths.
 const log = createLogger('device-link:filePeer');
@@ -699,7 +700,7 @@ export function tryPeerFile(
   invoke: Invoke,
   signal?: AbortSignal,
   onProgress?: (received: number, total: number) => void,
-  metadata?: import('./remoteFileVersionCache').FileVersionMetadata,
+  metadata?: FileVersionMetadata,
 ) {
   const isCurrent = captureFilePeerScope(peer);
   refreshCooldownOwner();
@@ -707,9 +708,11 @@ export function tryPeerFile(
     peer,
     async () => {
       if (!isCurrent()) throw new Error('FILE_PEER_CANCELLED');
-      const cache = metadata && validFileVersion(metadata.version)
-        ? await import('./remoteFileVersionCache').then((module) => module.remoteFileVersionCache(peer, url, metadata)).catch(() => null)
-        : null;
+      let cache = null;
+      try {
+        cache = metadata && validFileVersion(metadata.version)
+          ? remoteFileVersionCache(peer, url, metadata) : null;
+      } catch { /* Cache availability must not prevent a fresh transfer. */ }
       if (metadata?.skipCache) await cache?.invalidate().catch(() => undefined);
       const cached = metadata?.skipCache ? null : await cache?.get().catch(() => null);
       if (cached && metadata) {
