@@ -16574,11 +16574,12 @@ async function sendProtectedQuestionSupplement(sessionId: string, requestId: str
   questionDecisionsInFlight.add(key);
   const owner = getDataOwnerGeneration();
   const epoch = _messagesEpoch.get(sessionId) ?? 0;
-  const authority = _inputProjectionAuthorityEpoch.get(sessionId) ?? 0;
   const origin = getStickySessionDeviceId(sessionId);
+  // A protected reply outlives the original turn. Terminal events invalidate
+  // queue snapshots, not this draft; operation responses keep their own guard.
   const current = () => isDataOwnerGenerationCurrent(owner) &&
     (_messagesEpoch.get(sessionId) ?? 0) === epoch &&
-    (_inputProjectionAuthorityEpoch.get(sessionId) ?? 0) === authority && getStickySessionDeviceId(sessionId) === origin &&
+    getStickySessionDeviceId(sessionId) === origin &&
     sessions.get(sessionId)?.protectedAskUser?.pending.requestId === requestId;
   try {
     const needsSupplement = await asyncQuestionNeedsSupplement(

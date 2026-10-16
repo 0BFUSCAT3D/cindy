@@ -53,6 +53,34 @@ async function fillBothQuestions(view: ReturnType<typeof render>) {
 }
 
 describe('AskUserQuestionPrompt identity', () => {
+  it.each([
+    { label: 'single-select custom answer', options: [{ label: 'A' }], multiSelect: false },
+    { label: 'multi-select custom answer', options: [{ label: 'A' }], multiSelect: true },
+    { label: 'direct answer', options: [], multiSelect: false },
+    { label: 'direct multi-select answer', options: [], multiSelect: true },
+  ])('retains the final $label until acknowledged, including across remounts', ({ options, multiSelect }) => {
+    const props = {
+      ...makeProps(),
+      pending: { requestId: 'request-1', questions: [{ question: 'Final?', options, multiSelect }] },
+      draft: { requestId: 'request-1', currentIndex: 0, answers: {}, started: true,
+        customInput: 'Keep this answer', showCustomInput: true, selectedLabels: [] },
+    };
+    const view = render(createElement(AskUserQuestionPrompt, props));
+    fireEvent.click(view.getAllByRole('button', { name: 'Submit' })[0]);
+    // A failed/unconfirmed submission keeps the card mounted. No acknowledgement
+    // means the visible field and the persisted draft must both remain retryable.
+    expect((view.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement).value).toBe('Keep this answer');
+    const draft = props.onDraftChange.mock.lastCall?.[0];
+    expect(draft).toMatchObject({ customInput: 'Keep this answer', showCustomInput: true });
+    view.unmount();
+    const restored = render(createElement(AskUserQuestionPrompt, { ...props, draft }));
+    fireEvent.click(restored.getAllByRole('button', { name: 'Submit' })[0]);
+    expect(props.onAnswer).toHaveBeenCalledTimes(2);
+    expect(props.onAnswer).toHaveBeenLastCalledWith('request-1', {
+      'Final?': multiSelect ? JSON.stringify(['Keep this answer']) : 'Keep this answer',
+    });
+  });
+
   it('starts protection on IME composition, but not focus or opening the text field', () => {
     const props = makeProps();
     const view = render(createElement(AskUserQuestionPrompt, props));

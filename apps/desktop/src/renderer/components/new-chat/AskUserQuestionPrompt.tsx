@@ -396,8 +396,8 @@ function AskUserQuestionForm({
       return;
     }
     advance(trimmed);
-    setCustomInput('');
-    setShowCustomInput(false);
+    // advance restores the next page when navigating. On the final page keep
+    // this field retryable until the host confirms and removes the card.
   }, [customInput, isMultiSelect, advance]);
 
   // ── Direct free-text answer when no option rows render ──

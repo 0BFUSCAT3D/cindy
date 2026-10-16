@@ -209,6 +209,59 @@ describe('ask_user 与 done 的时序', () => {
     expect(makerChatStore.getLightSnapshot(SESSION_ID).pendingAskUser?.requestId).toBe('async-2');
   });
 
+  it.each(['resolve', 'lookup', 'enqueue'] as const)(
+    'finishes a protected submission when the turn ends during %s',
+    async (stage) => {
+      emitAskUserRequest('async-1', [{ question: 'Original?' }], 'async');
+      makerChatStore.setAskUserDraft(SESSION_ID, {
+        requestId: 'async-1', currentIndex: 0, answers: {}, started: true, customInput: 'Finished',
+      });
+      const endTurn = () => {
+        onInteractionDismissed?.({ sessionId: SESSION_ID, requestId: 'async-1', reason: 'turn_completed' });
+        onEvent?.({ sessionId: SESSION_ID, event: {
+          type: 'status', source: 'codex', data: { isRunning: false, status: 'Done' },
+        } });
+        emitDone('codex');
+      };
+      vi.mocked(window.electronAPI.maker.resolveInteraction).mockImplementationOnce(async () => {
+        if (stage === 'resolve') endTurn();
+        return { accepted: false };
+      });
+      vi.mocked(aroundClientId).mockImplementationOnce(async () => {
+        if (stage === 'lookup') endTurn();
+        return [{ clientId: 'persist-async-1', role: 'ask_user',
+          content: { requestId: 'async-1', status: 'cancelled' } }] as never;
+      });
+      vi.mocked(window.electronAPI.maker.input.enqueue).mockImplementationOnce(async () => {
+        if (stage === 'enqueue') endTurn();
+        // A pre-terminal queue snapshot must not overwrite the newer state.
+        return { ...emptyProjection(SESSION_ID), queuePaused: stage === 'enqueue' } as never;
+      });
+      makerChatStore.answerUserQuestion(SESSION_ID, 'async-1', { 'Original?': 'Finished' });
+      await vi.waitFor(() => expect(makerChatStore.getLightSnapshot(SESSION_ID).pendingAskUser).toBeNull());
+      expect(window.electronAPI.maker.input.enqueue).toHaveBeenCalledOnce();
+      expect(makerChatStore.getSnapshot(SESSION_ID).queuePaused).toBe(false);
+    },
+  );
+
+  it('does not send a protected supplement after its task is purged', async () => {
+    emitAskUserRequest('async-1', [{ question: 'Original?' }], 'async');
+    makerChatStore.setAskUserDraft(SESSION_ID, {
+      requestId: 'async-1', currentIndex: 0, answers: {}, started: true,
+    });
+    let resolve!: (receipt: { accepted: boolean }) => void;
+    vi.mocked(window.electronAPI.maker.resolveInteraction).mockImplementationOnce(
+      () => new Promise((done) => { resolve = done; }),
+    );
+    makerChatStore.answerUserQuestion(SESSION_ID, 'async-1', { 'Original?': 'Finished' });
+    makerChatStore.purgeSession(SESSION_ID);
+    emitAskUserRequest('new');
+    resolve({ accepted: false });
+    await new Promise((done) => setTimeout(done, 0));
+    expect(window.electronAPI.maker.input.enqueue).not.toHaveBeenCalled();
+    expect(makerChatStore.getLightSnapshot(SESSION_ID).pendingAskUser?.requestId).toBe('new');
+  });
+
   it('does not protect untouched cards or synchronous drafts', () => {
     emitAskUserRequest('untouched', [{ question: 'Q?' }], 'async');
     makerChatStore.setAskUserDraft(SESSION_ID, { requestId: 'untouched', currentIndex: 0, answers: {} });
