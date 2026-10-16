@@ -246,6 +246,7 @@ import {
   createNewSessionId,
   completeNewSessionDurableEdit,
   drainStashedNewSessionDraft,
+  findNewSessionEditDraft,
   hasLiveNewSessionCreation,
   holdNewSessionCreationDraft,
   startNewSessionCreation,
@@ -507,6 +508,7 @@ export default function NewRemoteSessionScreen() {
     draft?: string;
     recoverySessionId?: string;
     editSessionId?: string;
+    creationError?: string;
   }>();
   const routeDeviceId = String(params.deviceId ?? '');
   const routeDeviceName = String(params.deviceName ?? routeDeviceId);
@@ -611,7 +613,10 @@ export default function NewRemoteSessionScreen() {
   const [creating, setCreating] = useState(false);
   const [createStartedAt, setCreateStartedAt] = useState<number | null>(null);
   const [createPhase, setCreatePhase] = useState<SlowSendPhase>('preparing');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    const creationError = readRouteString(params.creationError);
+    return creationError ? t('session.screen.createFailedNotice', { message: creationError }) : null;
+  });
   const [capabilities, setCapabilities] = useState<MobileAgentCapabilities | null>(null);
   const [capabilitiesLoading, setCapabilitiesLoading] = useState(false);
   const [, setCapabilitiesError] = useState<string | null>(null);
@@ -811,7 +816,7 @@ export default function NewRemoteSessionScreen() {
   // composer 托盘里正被全屏查看的图片附件 id(null = 关闭)。
   const [composerPreviewAttachmentId, setComposerPreviewAttachmentId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  // 创建失败后返回编辑：只领取路由指定任务与设备的草稿，普通新建页不领取。
+  // 创建失败后返回编辑；再次打开空白新建页时，继续同设备/项目的草稿。
   // 附件是已上传完成的引用,原样回列即可继续使用;notice 是「有内容没能带回」的告知
   // (创建期间发出的消息可能超出单条上限,装不下的只能丢,但不能静默丢,review P1)。
   // 声明在 attachmentError 之后:notice 就落在附件错误行上。
@@ -851,6 +856,25 @@ export default function NewRemoteSessionScreen() {
     router.replace('/devices');
     return true;
   }, [router]);
+  useEffect(() => {
+    if (params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
+      || visualInitialDraft || !newSessionPreferencesLoaded || !selectedDeviceId) return;
+    const owner = outboxOwner;
+    let active = true;
+    const resume = () => {
+      if (!active || !isMobileAuthOwnerCurrent(owner) || outboxRecoveryRef.current
+        || firstMessageRef.current || attachmentsRef.current.length
+        || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current) return;
+      const saved = findNewSessionEditDraft(selectedDeviceId, initialWorkingDir);
+      if (!saved) return;
+      active = false;
+      router.setParams({ recoverySessionId: saved.item.sessionId, deviceId: saved.deviceId });
+    };
+    const unsubscribe = mobileDurableOutbox.subscribe(resume);
+    void mobileDurableOutbox.ready().then(resume);
+    return () => { active = false; unsubscribe(); };
+  }, [params.recoverySessionId, params.editSessionId, params.draft, params.suggestion, visualInitialDraft,
+    newSessionPreferencesLoaded, selectedDeviceId, initialWorkingDir, outboxOwner, router]);
   useEffect(() => {
     const owner = outboxOwner;
     if (leaveForeignOutboxRecovery()) return;

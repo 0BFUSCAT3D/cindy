@@ -26,6 +26,7 @@ import { completeNewSessionDurableEdit, getNewSessionCreationTask, hasLiveNewSes
 import { remoteSessionStore } from '../session/remoteSessionStore';
 import { listPendingPrecreatedWorktrees, recoverPendingPrecreatedWorktrees, registerPendingPrecreatedWorktree } from '../session/precreatedWorktreeRecovery';
 import { completePrecreatedWorktreeRecovery } from '../session/completePrecreatedWorktreeRecovery';
+import { findNewSessionEditDraft, withNewSessionCreationRemoval } from '../session/newSessionCreation';
 
 // Run the page's actual recovery -> durable save -> worktree creation statements.
 // Extract AST nodes, as in newSessionWorktreeSync, so ordering is tested without
@@ -137,7 +138,7 @@ it.each(['reservation-fails', 'create-rejected', 'reply-lost', 'leaves-during-cr
     expect(getNewSessionCreationTask(previous.item.sessionId)).toBeNull();
     expect(getNewSessionCreationTask('replacement-session')).toMatchObject({ readyForEdit: 'durable',
       draft: { firstMessage: 'updated input before retry' }, attachments: [{ id: 'photo' }] });
-    expect(remoteSessionStore.getSessions().map(row => row.id)).toEqual(['replacement-session']);
+    expect(remoteSessionStore.getSessions()).toEqual([]);
     expect(hasLiveNewSessionCreation('replacement-session')).toBe(false);
 
     if (scenario === 'reply-lost') {
@@ -378,3 +379,59 @@ it('preserves a directory explicitly selected by the user while cancellation com
   }));
   expect(getCurrentMobileOutboxRecords()[0].creation?.originalWorkingDir).toBe('/other-repo');
 });
+
+// Regression: deleting only the mirror let the durable bridge recreate an
+// undeletable task. Exercise the production removal with real persisted bytes.
+it.each(['deleted', 'archived'])('retires saved recovery on %s, including editor release and cold reload', async status => {
+  await harness().run();
+  const original = getCurrentMobileOutboxRecords()[0];
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  expect(findNewSessionEditDraft('pc', '/repo')).toEqual(saved);
+  expect(findNewSessionEditDraft('other-pc')).toBeUndefined();
+  expect(findNewSessionEditDraft('pc', '/other-repo')).toBeUndefined();
+  const leave = completeNewSessionDurableEdit(saved.item.sessionId, 'pc')!;
+  expect(findNewSessionEditDraft('pc')).toBeUndefined();
+  const remote = vi.fn();
+  await withNewSessionCreationRemoval(saved.item.sessionId, 'pc', status, remote);
+  leave();
+  expect(remote).not.toHaveBeenCalled();
+  expect(getCurrentMobileOutboxRecords()).toEqual([]);
+  expect(mobileDurableOutbox.getSnapshot()[0].cleanupOutcome).toBe('cancelled');
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  expect(restoreNewSessionDurableEdit(mobileDurableOutbox.getSnapshot()[0])).toBe(false);
+  expect(findNewSessionEditDraft('pc')).toBeUndefined();
+  expect(remoteSessionStore.getSessions()).toEqual([]);
+});
+
+it('keeps a saved draft if durable deletion fails', async () => {
+  await harness().run();
+  const original = getCurrentMobileOutboxRecords()[0];
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  disk.fail = true;
+  await expect(withNewSessionCreationRemoval(saved.item.sessionId, 'pc', 'deleted', vi.fn())).rejects.toThrow('disk unavailable');
+  disk.fail = false;
+  expect(findNewSessionEditDraft('pc')).toEqual(saved);
+});
+
+it.each(['success', 'not-found', 'network-error', 'superseded', 'account-change'] as const)(
+  'retires outbox recovery only after authoritative removal: %s', async outcome => {
+    await harness().run();
+    const saved = await mobileDurableOutbox.update(getCurrentMobileOutboxRecords()[0], { state: 'failed' });
+    let current = true;
+    const remove = vi.fn(async () => {
+      if (outcome === 'superseded') current = false;
+      if (outcome === 'account-change') setMobileAuthOwner('bob', 'global');
+      if (outcome === 'not-found') throw new Error('[NOT_FOUND] missing');
+      if (outcome === 'network-error') throw new Error('offline');
+      return { id: saved.item.sessionId };
+    });
+    const result = withNewSessionCreationRemoval(saved.item.sessionId, 'pc', 'deleted', remove, () => current);
+    if (outcome === 'not-found') await expect(result).rejects.toThrow('NOT_FOUND');
+    else if (outcome === 'network-error') await expect(result).rejects.toThrow('offline');
+    else if (outcome === 'account-change') await expect(result).rejects.toThrow('STALE_AUTH_OWNER');
+    else await result;
+    expect(remove).toHaveBeenCalledOnce();
+    expect(mobileDurableOutbox.getSnapshot()[0].cleanupOutcome).toBe(
+      outcome === 'success' || outcome === 'not-found' ? 'cancelled' : undefined);
+  });

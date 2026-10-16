@@ -77,7 +77,7 @@ import {
   addScreenshotListener,
   renderConversationShareHtmlToPng,
 } from 'xdt-screenshot-monitor';
-import { Stack, useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useIsFocused, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject, type SetStateAction } from 'react';
 import {
   ActivityIndicator,
@@ -290,10 +290,10 @@ import { pickWriteFields, retryPatchWhileLatest, writeGuardFields } from '@/sess
 import {
   dismissNewSessionCreation,
   getNewSessionCreationTask,
-  retryNewSessionCreation,
   shouldBlockSessionSync,
   stashNewSessionDraftForEdit,
   useNewSessionCreationTask,
+  withNewSessionCreationRemoval,
 } from '@/session/newSessionCreation';
 import {
   useComposerImageAnnotations,
@@ -649,7 +649,7 @@ import {
   useSessionTaskUpdates,
 } from '@/session/remoteSessionStore';
 import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
-import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
+import { useFailedCreationReturnToEdit } from '@/session/useFailedCreationReturnToEdit';
 import type {
   MobileGoalLimitsInput,
   MobileGoalStatusPayload,
@@ -4093,11 +4093,54 @@ function SessionScreenContent() {
 
   // 新建会话乐观管线的收口响应:
   //  - running → task 移除(成功):守卫解除,补一轮完整同步(权威 meta / 交互 / projection);
-  //  - create-failed:Alert 重试面(重试 = 同 id 重跑管线,幂等安全;返回编辑 = 草稿
-  //    stash 回新建页并移除合成行)+ 常驻错误条兜底(Alert 被系统关掉时仍有指引);
+  //  - create-failed:带回草稿与附件并自动返回编辑，不要求用户选择恢复方式;
   //  - enqueue-failed:会话已建成,首条消息文本 / 附件回填 composer,用户走正常发送
   //    (新桌面有 clientId 幂等去重,重复风险已兜)。
   const creationTask = useNewSessionCreationTask(sessionId);
+  const creationScreenFocused = useIsFocused();
+  useFailedCreationReturnToEdit({
+    task: creationTask?.deviceId === deviceId ? creationTask : null,
+    focused: creationScreenFocused,
+    connectionEpoch,
+    onReady: params => router.replace({ pathname: '/sessions/new', params: {
+      ...params,
+      creationError: creationTask?.error ?? t('session.screen.createFailedDefault'),
+    } }),
+    onError: err => setError(t('session.screen.createFailedNotice', { message: formatRemoteError(err) })),
+    stashDraft: prepared => {
+      // 创建期间发出的后续消息必须一起带回新建页(review P1):它们此刻在 outbox 里,
+      // 而下一行 dismiss 会连同合成会话行一起删掉——会话页 unmount 时 cleanup 会把它们
+      // 写进那个已经不存在的会话的草稿,用户在新建页看不到、也再也找不回来。
+      // 新建页只有一个首条消息输入框,所以按序拼成文本、附件按 id 去重合并后一起 stash。
+      // 上传任务保不住:本页(连同 upload controller)马上要销毁,只能取消
+      // 并回收,再把「没能带回多少」告知用户(review P1:静默丢等于偷走内容)。
+      const { items: followUps, cancelledUploadCount } = takeOutboxForSession(sessionId, 'cancel');
+      if (followUps.length > 0) {
+        const { merged, dropped } = mergeAttachmentsWithinLimit(
+          prepared.attachments,
+          followUps.flatMap(outboxItemAttachments),
+        );
+        // 装不下的中转对象在这里回收:草稿带不走它们,留着就是没人认领的垃圾。
+        discardRecoveredAttachments(dropped);
+        const unrecoveredCount = dropped.length + cancelledUploadCount;
+        stashNewSessionDraftForEdit(prepared, {
+          draft: {
+            ...prepared.draft,
+            firstMessage: [
+              prepared.draft.firstMessage,
+              ...followUps.map(outboxItemDraftText),
+            ].filter(Boolean).join('\n\n'),
+          },
+          attachments: merged,
+          notice: unrecoveredCount > 0
+            ? t('session.screen.attachmentsNotCarriedBack', { count: unrecoveredCount })
+            : null,
+        });
+      } else {
+        stashNewSessionDraftForEdit(prepared);
+      }
+    },
+  });
   const prevCreationStatusRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevCreationStatusRef.current;
@@ -4109,90 +4152,6 @@ function SessionScreenContent() {
         setError(null);
         void load();
       }
-      return;
-    }
-    if (status === 'create-failed') {
-      const message = creationTask?.error ?? t('session.screen.createFailedDefault');
-      setError(t('session.screen.createFailedNotice', { message }));
-      Alert.alert(t('session.screen.createFailedTitle'), message, [
-        {
-          text: t('session.screen.backToEdit'),
-          style: 'cancel',
-          onPress: () => {
-            if (!creationTask) return;
-            const owner = getMobileAuthOwner();
-            const isCurrent = () => isMobileAuthOwnerCurrent(owner)
-              && outboxSessionAliveRef.current === sessionId && navigation.isFocused();
-            void returnNewSessionToEdit({
-              sessionId, deviceId,
-              isCurrent,
-              onReady: params => router.replace({ pathname: '/sessions/new', params }),
-              stashDraft: prepared => {
-                // 创建期间发出的后续消息必须一起带回新建页(review P1):它们此刻在 outbox 里,
-                // 而下一行 dismiss 会连同合成会话行一起删掉——会话页 unmount 时 cleanup 会把它们
-                // 写进那个已经不存在的会话的草稿,用户在新建页看不到、也再也找不回来。
-                // 新建页只有一个首条消息输入框,所以按序拼成文本、附件按 id 去重合并后一起 stash。
-                // 上传任务保不住:本页(连同 upload controller)马上要销毁,只能取消
-                // 并回收,再把「没能带回多少」告知用户(review P1:静默丢等于偷走内容)。
-                const { items: followUps, cancelledUploadCount } = takeOutboxForSession(sessionId, 'cancel');
-                if (followUps.length > 0) {
-                  const { merged, dropped } = mergeAttachmentsWithinLimit(
-                    prepared.attachments,
-                    followUps.flatMap(outboxItemAttachments),
-                  );
-                  // 装不下的中转对象在这里回收:草稿带不走它们,留着就是没人认领的垃圾。
-                  discardRecoveredAttachments(dropped);
-                  const unrecoveredCount = dropped.length + cancelledUploadCount;
-                  stashNewSessionDraftForEdit(prepared, {
-                    draft: {
-                      ...prepared.draft,
-                      firstMessage: [
-                        prepared.draft.firstMessage,
-                        ...followUps.map(outboxItemDraftText),
-                      ].filter(Boolean).join('\n\n'),
-                    },
-                    attachments: merged,
-                    notice: unrecoveredCount > 0
-                      ? t('session.screen.attachmentsNotCarriedBack', { count: unrecoveredCount })
-                      : null,
-                  });
-                } else {
-                  stashNewSessionDraftForEdit(prepared);
-                }
-              },
-            })
-              .catch((err: unknown) => {
-                // Recovery continues after leaving, but its error UI belongs to this page.
-                if (!isCurrent()) return;
-                // 补偿回收失败时保留 task + 合成行，绝不先跳回表单再创建第二个孤儿
-                // worktree。用户可取消等待连接恢复，或直接复用同 sessionId 重试创建。
-                const cleanupError = formatRemoteError(err);
-                setError(t('session.screen.createFailedNotice', { message: cleanupError }));
-                Alert.alert(t('session.screen.createFailedTitle'), cleanupError, [
-                  {
-                    text: t('session.common.cancel'),
-                    style: 'cancel',
-                  },
-                  {
-                    text: t('session.screen.retry'),
-                    onPress: () => {
-                      if (!isCurrent()) return;
-                      setError(null);
-                      retryNewSessionCreation(sessionId);
-                    },
-                  },
-                ]);
-              });
-          },
-        },
-        {
-          text: t('session.screen.retry'),
-          onPress: () => {
-            setError(null);
-            retryNewSessionCreation(sessionId);
-          },
-        },
-      ]);
       return;
     }
     if (status === 'enqueue-failed') {
@@ -9158,7 +9117,8 @@ function SessionScreenContent() {
     const releasePending = sessionPendingWrites.track(sessionId, fields);
     void (async () => {
       try {
-        const updated = await sessionMetaWriteQueue.enqueue(sessionId, fields, () => retryPatchWhileLatest(
+        const updated = await withNewSessionCreationRemoval(sessionId, rpcDeviceId, patch.status,
+          () => sessionMetaWriteQueue.enqueue(sessionId, fields, () => retryPatchWhileLatest(
           write.isLatest,
           // preSend:重连等待(最长 1.5s)之后、真正出网之前再查一次让位——本页同
           // 字段连续两次操作时,前笔在等待中被取代不得再发出(review P2)。
@@ -9168,7 +9128,7 @@ function SessionScreenContent() {
             [sessionId, patch],
             { preSend: assertStillLatest },
           ),
-        ));
+        )), write.isLatest);
         if (updated && write.isLatest()) {
           // 字段级对账 + updatedAt 单调下限(同首页):整对象覆盖会冲掉其它字段
           // 上并发写的乐观值。

@@ -1,4 +1,5 @@
 import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
+import { withNewSessionCreationRemoval } from '@/session/newSessionCreation';
 import { useHeaderHeight } from 'expo-router/react-navigation';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useSharedValue } from 'react-native-reanimated';
@@ -597,7 +598,8 @@ function DeviceDetailScreenContent() {
       const failed: typeof rows = [];
       await Promise.all(rows.map(async (row) => {
         try {
-          const updated = await maker.patchSessionMeta(row.session.id, patch);
+          const updated = await withNewSessionCreationRemoval(row.session.id, deviceId, patch.status,
+            () => maker.patchSessionMeta(row.session.id, patch));
           if (updated) remoteSessionStore.applySessionPatch(row.rowDeviceId, row.session.id, updated);
         } catch (err) {
           if (isExplicitRemoteNotFoundError(err) && patch.status !== undefined) {

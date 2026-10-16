@@ -312,12 +312,14 @@ describe('mobile optimistic composer while session is not ready', () => {
     // create-failed 的「返回编辑」会连合成会话行一起删掉:不把 outbox 一并 stash,
     // unmount cleanup 会把那些消息写进一个即将消失的会话草稿,用户再也找不回(review P1)。
     const source = readSource(SCREEN);
-    const backToEditStart = source.indexOf("text: t('session.screen.backToEdit')");
-    const backToEditEnd = source.indexOf("text: t('session.screen.retry')", backToEditStart);
+    const backToEditStart = source.indexOf("useFailedCreationReturnToEdit({");
+    const backToEditEnd = source.indexOf("const prevCreationStatusRef", backToEditStart);
     const branch = source.slice(backToEditStart, backToEditEnd);
     // 跨页导航:upload controller 随会话页销毁,在途上传保不住,只能取消 + 告知。
     expect(branch).toContain("takeOutboxForSession(sessionId, 'cancel')");
-    expect(branch).toContain('returnNewSessionToEdit({');
+    expect(branch).toContain('useFailedCreationReturnToEdit({');
+    expect(branch).not.toContain('Alert.alert');
+    expect(source).not.toContain('retryNewSessionCreation');
     expect(branch).toContain('stashDraft: prepared => {');
     const recovery = readSource('src/session/returnNewSessionToEdit.ts');
     const stash = recovery.indexOf('stashDraft(prepared);');

@@ -8,7 +8,7 @@
  * openLink / createSession / 首条消息 enqueue 全部在本模块后台串行完成。
  *
  * 状态机:running → done(task 移除)
- *              → create-failed(会话页横幅:重试[同 id 幂等安全] / 返回编辑[草稿回填])
+ *              → create-failed(保留草稿与附件，自动返回编辑)
  *              → enqueue-failed(会话已建成:乐观气泡摘除、草稿+附件回填 composer,
  *                                用户走正常 handleSend 重发)
  *
@@ -52,6 +52,7 @@ import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache'
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import { getCurrentMobileOutboxRecords, holdDurableOutboxCreation, isDurableOutboxCreationHeld, mobileDurableOutbox, persistCancelledCreationDraft, suspendCreationDraftForCleanup } from './mobileDurableOutbox';
 import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
+import { isExplicitRemoteNotFoundError } from './newSessionWorktree';
 import {
   forgetPendingPrecreatedWorktree,
   parseDiscardPrecreatedAck,
@@ -599,19 +600,86 @@ function getDurableEditTask(sessionId: string): NewSessionCreationTask | null {
   return task;
 }
 
-/** Rebuild only the local recovery entry, never restart a cancelled pipeline. */
+/** Saved editor drafts are not tasks. Keep them out of the task list. */
 export function restoreNewSessionDurableEdit(record: DurableOutboxRecord): boolean {
   if (!isDurableEditRecord(record) || !record.creation) return false;
   // Claiming already removes the synthetic row. Do not repeatedly delete a
   // later authoritative mirror row while the editor still holds this record.
   if (hasLiveNewSessionCreation(record.item.sessionId) || claimedDurableEdits.has(durableEditKey(record))) return true;
-  if (!remoteSessionStore.getSessions().some(session => session.id === record.item.sessionId)) {
-    remoteSessionStore.upsertDeviceSession(record.deviceId, record.creation.deviceName, {
-      ...sessionFromCreateResult({ sessionId: record.item.sessionId }, record.creation.draft),
-      pendingLocalCreation: true,
-    });
+  const row = remoteSessionStore.getSessions().find(session => session.id === record.item.sessionId);
+  if (row?.pendingLocalCreation && row.deviceLinkDeviceId === record.deviceId) {
+    dismissRecoveredPrecreatedSession({ sessionId: record.item.sessionId, deviceId: record.deviceId });
   }
   return true;
+}
+
+/** A blank new-task form resumes the latest saved draft for its own device/project. */
+export function findNewSessionEditDraft(deviceId: string, workingDir?: string | null): DurableOutboxRecord | undefined {
+  return getCurrentMobileOutboxRecords().filter(record => record.deviceId === deviceId
+    && isDurableEditRecord(record) && !hasLiveNewSessionCreation(record.item.sessionId)
+    && !claimedDurableEdits.has(durableEditKey(record))
+    && (!workingDir || record.creation?.draft.workingDir === workingDir))
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+/** All removal entry points retire recovery data as well as the visible row. */
+export async function withNewSessionCreationRemoval<T>(
+  sessionId: string,
+  deviceId: string,
+  status: string | undefined,
+  remove: () => Promise<T>,
+  isCurrent: () => boolean = () => true,
+): Promise<T | undefined> {
+  if ((status !== 'deleted' && status !== 'archived') || !isCurrent()) return remove();
+  const owner = getMobileAuthOwner();
+  const task = tasks.get(sessionId);
+  const localFailure = task?.deviceId === deviceId && task.status === 'create-failed' && isTaskOwnerCurrent(task);
+  const savedDraft = getCurrentMobileOutboxRecords().some(record => record.deviceId === deviceId
+    && record.item.sessionId === sessionId && isDurableEditRecord(record));
+  const failedDraft = getCurrentMobileOutboxRecords().some(record => record.deviceId === deviceId
+    && record.item.sessionId === sessionId && record.creation && record.state === 'failed');
+  if (!localFailure && !savedDraft && !failedDraft) return remove();
+  const release = localFailure ? beginNewSessionReturnToEdit(sessionId) : null;
+  if (localFailure && !release) throw new Error(i18n.t('session.new.worktreeCleanupPending'));
+  const retire = async () => {
+    if (!isCurrent()) return;
+    let hasRecovery = localFailure || savedDraft;
+    for (const record of getCurrentMobileOutboxRecords()) {
+      if (!isMobileAuthOwnerCurrent(owner)) throw new Error('STALE_AUTH_OWNER');
+      if (!isCurrent()) return;
+      if (record.deviceId !== deviceId || record.item.sessionId !== sessionId) continue;
+      hasRecovery = true;
+      await mobileDurableOutbox.update(record, {
+        suspended: true, state: 'host-owned', cleanupOutcome: 'cancelled', cancelRequested: true, error: undefined,
+      });
+    }
+    if (!isMobileAuthOwnerCurrent(owner)) throw new Error('STALE_AUTH_OWNER');
+    if (!hasRecovery || !isCurrent()) return;
+    dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
+    dismissRecoveredPrecreatedSession({ sessionId, deviceId });
+  };
+  try {
+    const prepared = localFailure ? await prepareNewSessionCreationForEdit(sessionId) : null;
+    if (!isMobileAuthOwnerCurrent(owner)) throw new Error('STALE_AUTH_OWNER');
+    if (!isCurrent()) return;
+    if (prepared || (!task && savedDraft)) {
+      await retire();
+      return;
+    }
+    let result: T;
+    try {
+      result = await remove();
+    } catch (error) {
+      // An exact host NOT_FOUND is also an authoritative removal. Preserve the
+      // existing callers' mirror reconciliation, but end outbox resurrection.
+      if (isExplicitRemoteNotFoundError(error)) await retire();
+      throw error;
+    }
+    await retire();
+    return result;
+  } finally {
+    release?.();
+  }
 }
 
 /** Host cancellation ACK is authoritative; keep the durable outbox draft for editing. */
@@ -767,7 +835,7 @@ export function completeNewSessionDurableEdit(sessionId: string, deviceId: strin
     claims.delete(key);
     if (!isMobileAuthOwnerCurrent(owner)) return;
     // Follow the stable durable identity through draft updates and cancelled-ID
-    // rotation. Only its latest, still-paused edit record may regain an entry.
+    // rotation. The draft remains available to the new-task form, never a row.
     const latest = getCurrentMobileOutboxRecords().find(record => durableEditKey(record) === key);
     if (latest && restoreNewSessionDurableEdit(latest)) emit();
   };
