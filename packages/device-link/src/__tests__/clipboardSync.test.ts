@@ -1,0 +1,124 @@
+import { expect, it, vi } from "vitest";
+import { ClipboardSync, type ClipboardSyncDeps } from "../clipboardSync";
+
+function fixture() {
+  const local = { version: 1, json: '{"text":"local"}', error: "" };
+  const remote = { version: 1, json: '{"text":"remote"}', error: "" };
+  const trace = vi.fn();
+  const write = vi.fn(async (json: string, version: string) => {
+    expect(version).toBe(String(local.version));
+    Object.assign(local, { json, error: "" });
+    return String(++local.version);
+  });
+  const request = vi.fn(
+    async (message: Parameters<ClipboardSyncDeps["request"]>[0]) => {
+      if (message.op === "clipboardVersion")
+        return { version: String(remote.version) };
+      if (message.op !== "clipboardContent")
+        throw new Error("UNEXPECTED_REQUEST");
+      if (message.action === "copy") {
+        if (remote.error) throw new Error(remote.error);
+        return { data: remote.json, length: remote.json.length };
+      }
+      if (message.action === "paste") {
+        expect(message.version).toBe(String(remote.version));
+        Object.assign(remote, { json: message.data, error: "" });
+        return { version: String(++remote.version) };
+      }
+      throw new Error("UNEXPECTED_REQUEST");
+    },
+  );
+  const read = vi.fn(async () => {
+    if (local.error) throw new Error(local.error);
+    return local.json;
+  });
+  const engine = new ClipboardSync({
+    lease: "lease",
+    inline: true,
+    current: () => true,
+    digest: (json) => json,
+    trace,
+    localVersion: async () => String(local.version),
+    readLocal: read,
+    writeLocal: write,
+    request: request as ClipboardSyncDeps["request"],
+  });
+  return { engine, local, remote, trace, write, read, request };
+}
+
+it.each(["CLIPBOARD_EMPTY", "CLIPBOARD_UNSUPPORTED", "CLIPBOARD_TOO_LONG"])(
+  "silently establishes both initial %s baselines, then syncs a new copy",
+  async (code) => {
+    const h = fixture();
+    h.local.error = h.remote.error = code;
+    await h.engine.tick();
+    await h.engine.tick();
+    expect(
+      h.trace.mock.calls.some(([stage]) => stage === "content-skipped"),
+    ).toBe(false);
+    expect(h.read).toHaveBeenCalledTimes(1);
+    expect(h.write).not.toHaveBeenCalled();
+    h.local.version++;
+    h.local.error = "";
+    await h.engine.tick();
+    expect(h.remote.json).toBe(h.local.json);
+    expect(h.trace).toHaveBeenLastCalledWith("phone-to-computer-complete");
+  },
+);
+
+it.each(["local", "remote"] as const)(
+  "an empty %s snapshot neither clears the other clipboard nor blocks its next copy",
+  async (side) => {
+    const h = fixture();
+    await h.engine.tick();
+    h[side].version++;
+    h[side].error = "CLIPBOARD_EMPTY";
+    await h.engine.tick();
+    expect(h.trace).toHaveBeenLastCalledWith("unchanged-content");
+    expect(h.write).not.toHaveBeenCalled();
+    expect(
+      h.request.mock.calls.some(
+        ([m]) => m.op === "clipboardContent" && m.action === "paste",
+      ),
+    ).toBe(false);
+    // Another empty version alongside a real copy is still not a conflict.
+    h[side].version++;
+    const other = side === "local" ? "remote" : "local";
+    h[other].version++;
+    h[other].json = '{"text":"new copy"}';
+    await h.engine.tick();
+    expect(h.local.json).toBe(h.remote.json);
+    expect(h[side].error).toBe("");
+  },
+);
+
+it.each(["CLIPBOARD_UNSUPPORTED", "CLIPBOARD_TOO_LONG"])(
+  "reports the specific %s code once per changed snapshot",
+  async (code) => {
+    const h = fixture();
+    await h.engine.tick();
+    h.local.version++;
+    h.local.error = code;
+    await h.engine.tick();
+    expect(h.trace).toHaveBeenLastCalledWith("content-skipped", code);
+    h.trace.mockClear();
+    await h.engine.tick();
+    expect(h.trace).not.toHaveBeenCalled();
+  },
+);
+
+it("does not accept an empty remote read whose version changed during the read", async () => {
+  const h = fixture();
+  await h.engine.tick();
+  h.remote.version++;
+  const request = h.request.getMockImplementation()!;
+  h.request.mockImplementation(async (message) => {
+    if (message.op === "clipboardContent" && message.action === "copy") {
+      h.remote.version++;
+      throw new Error("CLIPBOARD_EMPTY");
+    }
+    return request(message);
+  });
+  await expect(h.engine.tick()).rejects.toThrow("CLIPBOARD_CHANGED");
+  expect(h.write).not.toHaveBeenCalled();
+});

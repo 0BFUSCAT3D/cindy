@@ -113,7 +113,9 @@ describe("automatic clipboard synchronization", () => {
       await engine.tick();
       await engine.tick();
       expect(h.deps.readLocal).toHaveBeenCalledTimes(1);
-      expect(trace).toHaveBeenCalledWith("content-skipped");
+      expect(
+        trace.mock.calls.some(([stage]) => stage === "content-skipped"),
+      ).toBe(false);
       h.local("2");
       await engine.tick();
       expect(
@@ -445,7 +447,10 @@ it("an unreadable local item next to a new computer copy is a conflict; the next
   );
   h.local("2");
   await expect(engine.tick()).resolves.toBeUndefined();
-  expect(trace).toHaveBeenLastCalledWith("content-skipped");
+  expect(trace).toHaveBeenLastCalledWith(
+    "content-skipped",
+    "CLIPBOARD_UNSUPPORTED",
+  );
   // Unreadable local item and a new computer copy in the same interval.
   vi.mocked(h.deps.readLocal).mockRejectedValueOnce(
     new Error("CLIPBOARD_UNSUPPORTED"),

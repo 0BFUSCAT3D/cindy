@@ -7,6 +7,41 @@ import {
 import { DEFAULT_VIEWER_PREFERENCES } from '../../../shared/remoteDesktopViewer';
 import { ViewerSafety } from '../safety';
 
+it.each([
+  ['CLIPBOARD_UNSUPPORTED', 'clipboardSyncSkipped'],
+  ['CLIPBOARD_TOO_LONG', 'clipboardSyncTooLarge'],
+] as const)(
+  'distinguishes %s and clears its notice after a new empty snapshot',
+  async (code, notice) => {
+    const { safety, sync } = syncFixture();
+    let version = '1';
+    let error = code as string;
+    const json = '{"text":"remote"}';
+    const options: Parameters<ViewerSafety['tick']>[0] = {
+      ...sync,
+      caps: { ...sync.caps, clipboardInline: true },
+      clipboard: {
+        version: async () => version,
+        read: async () => {
+          throw new Error(error);
+        },
+        write: vi.fn(),
+      },
+      request: (async (message: RemoteDesktopRequest) => {
+        if (message.op === 'clipboardVersion') return { version: '1' };
+        if (message.op === 'clipboardContent') return { data: json, length: json.length };
+        return { enabled: true };
+      }) as Parameters<ViewerSafety['tick']>[0]['request'],
+    };
+    expect((await safety.tick(options)).notice).toBeNull();
+    version = '2';
+    expect((await safety.tick(options)).notice).toBe(notice);
+    version = '3';
+    error = 'CLIPBOARD_EMPTY';
+    expect((await safety.tick(options)).notice).toBeNull();
+  },
+);
+
 function fixture() {
   const safety = new ViewerSafety();
   const request = vi.fn(async () => ({ enabled: true })) as any;
@@ -218,7 +253,7 @@ it('a copy mid-read keeps the status; other failures back off to 5s at most and 
   }
 });
 
-it('a permission failure still waits for an explicit retry', async () => {
+it('waits after permission denial, then checks again when the user returns or copies', async () => {
   const { safety, sync } = syncFixture();
   const tick = vi
     .spyOn(ClipboardSync.prototype, 'tick')
@@ -226,9 +261,11 @@ it('a permission failure still waits for an explicit retry', async () => {
     .mockResolvedValue(undefined);
   try {
     expect((await safety.tick(sync)).notice).toBe('clipboardSyncPermission');
-    safety.wake();
     expect((await safety.tick(sync)).notice).toBe('clipboardSyncPermission');
     expect(tick).toHaveBeenCalledOnce();
+    safety.wake();
+    expect((await safety.tick(sync)).notice).toBeNull();
+    expect(tick).toHaveBeenCalledTimes(2);
   } finally {
     tick.mockRestore();
   }

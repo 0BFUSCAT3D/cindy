@@ -84,6 +84,14 @@ preserve both clipboards, and the next copy chooses the source. A successful
 transfer restores ordinary content deduplication. Contents stay in Main/native code and do not cross the viewer
 Renderer bridge.
 
+Connecting establishes both clipboard baselines silently, including empty,
+unsupported or oversized existing items. Empty later snapshots do not erase
+the other clipboard or compete with a real copy. Desktop clipboard sync notices
+use the shared transient toast (4 seconds, no retry action); unchanged status
+polls do not reopen it. Unsupported formats and size limits have distinct copy.
+Permission denials pause background attempts, but focus and copy/paste wakeups
+check again so returning after granting access resumes without a retry button.
+
 The settings panel also supports host privacy screen, host mute, lock-on-exit and
 macOS-to-macOS automatic unlock. Non-secret preferences are scoped to the local
 account and target computer; only explicit overrides are stored. Host effects
@@ -1121,11 +1129,14 @@ processes once they are over one hour old. Filenames include the process ID and
 start time, so current-process preparation survives long suspensions and module
 recreation without an active-file registry.
 
-Desktop manual copy, automatic reads and write verification share a 4 million
-pixel check before native PNG encoding. PNG buffers over 8 MiB are rejected before
+Desktop manual copy, automatic reads and write verification share a 24 million
+pixel check before native PNG encoding, covering common 4K/5K/6K screenshots.
+PNG buffers over 16 MiB are rejected before
 Base64/hash copies. Incoming PNGs have encoded-length, byte and dimension checks
 before native decoding. The pixel limit bounds encoding work; Electron still
 allocates the PNG buffer before its byte length can be checked.
+Linux uses the same Desktop limits. Transport framing remains unchanged; older
+Desktop and Mobile peers keep their own smaller limits and may decline an image.
 
 ### Opt-in Mobile clipboard synchronization
 

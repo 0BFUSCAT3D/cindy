@@ -27,7 +27,7 @@ export interface ViewerClipboardFailure {
   code: string;
   /** Status key for the viewer window; null keeps whatever is shown. */
   notice: string | null;
-  /** Milliseconds until the next attempt; null waits for an explicit retry. */
+  /** Milliseconds until the next attempt; null waits for focus or a copy/paste wakeup. */
   delay: number | null;
   /** Settles by itself (locked computer, a copy mid-read); never grows the backoff. */
   transient: boolean;
@@ -70,9 +70,8 @@ export class ViewerSafety {
   idle(): Promise<void> {
     return this.settled;
   }
-  /** Regained focus or a copy/paste: retry now, unless sync waits for a permission. */
+  /** User returned or copied/pasted: permissions may have changed in Settings. */
   wake(): void {
-    if (this.retryAt === Infinity) return;
     this.retryAt = 0;
     this.failures = 0;
   }
@@ -218,11 +217,21 @@ export class ViewerSafety {
         readLocal: () => local(options.clipboard!.read(current)),
         writeLocal: (json, version) => local(options.clipboard!.write(json, version, current)),
         localReadCache: this.localReadCache,
-        trace: (stage) => {
+        trace: (stage, code) => {
           if (!valid()) return;
           if (stage === 'content-skipped')
-            this.notices.set('clipboardSync', 'clipboardSyncSkipped');
-          else if (['phone-to-computer-complete', 'computer-to-phone-complete'].includes(stage))
+            this.notices.set(
+              'clipboardSync',
+              code === 'CLIPBOARD_TOO_LONG' ? 'clipboardSyncTooLarge' : 'clipboardSyncSkipped',
+            );
+          else if (
+            [
+              'phone-to-computer-complete',
+              'computer-to-phone-complete',
+              'unchanged-content',
+              'content-empty',
+            ].includes(stage)
+          )
             this.notices.delete('clipboardSync');
         },
         digest: (json) => {

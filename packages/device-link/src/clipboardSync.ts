@@ -28,7 +28,8 @@ export interface ClipboardSyncDeps {
   current(): boolean;
   inline?: boolean;
   localReadCache?: LocalClipboardReadCache;
-  trace?(stage: string): void;
+  /** Diagnostic codes only, never clipboard contents. */
+  trace?(stage: string, code?: string): void;
 }
 export interface ClipboardSyncBaseline {
   local: string;
@@ -242,7 +243,7 @@ export class ClipboardSync {
             digest = (await this.readLocal(local)).digest;
           } catch (error) {
             if (!skippableContent(error)) throw error;
-            this.deps.trace?.("content-skipped");
+            // Connecting only establishes a baseline; no transfer was skipped.
             if ((await this.deps.localVersion()) !== local)
               throw new Error("CLIPBOARD_CHANGED");
           }
@@ -254,7 +255,7 @@ export class ClipboardSync {
           remoteDigest = (await this.readRemote(remote)).digest;
         } catch (error) {
           if (!skippableContent(error)) throw error;
-          this.deps.trace?.("content-skipped");
+          // Existing unsupported/empty content is normal when connecting.
           if ((await this.remoteVersion()) !== remote)
             throw new Error("CLIPBOARD_CHANGED");
         }
@@ -273,28 +274,52 @@ export class ClipboardSync {
       let localChanged = local !== this.baseline.local;
       let remoteChanged = remote !== this.baseline.remote;
       if (!localChanged && !remoteChanged) return;
+      const empty = (error: unknown): undefined => {
+        if (clipboardSyncErrorCode(error) !== "CLIPBOARD_EMPTY") throw error;
+        return undefined;
+      };
       const localContent = localChanged
-        ? await this.readLocal(local).then((content) => {
-            readLocalDigest = content.digest;
-            return content;
-          })
+        ? await this.readLocal(local)
+            .catch(empty)
+            .then((content) => {
+              if (!content) return undefined;
+              readLocalDigest = content.digest;
+              return content;
+            })
         : undefined;
       const remoteContent = remoteChanged
-        ? await this.readRemote(remote).then((content) => {
-            readRemoteDigest = content.digest;
-            return content;
-          })
+        ? await this.readRemote(remote)
+            .catch(empty)
+            .then((content) => {
+              if (!content) return undefined;
+              readRemoteDigest = content.digest;
+              return content;
+            })
         : undefined;
       this.check();
       if ((await this.deps.localVersion()) !== local)
         throw new Error("CLIPBOARD_CHANGED");
+      if (
+        remoteChanged &&
+        !remoteContent &&
+        (await this.remoteVersion()) !== remote
+      )
+        throw new Error("CLIPBOARD_CHANGED");
       this.check();
+      // Empty is not a copy to propagate or a competing edit. A real copy on
+      // the other side may still sync; never erase it with an empty clipboard.
+      const localDigest = localChanged
+        ? localContent?.digest
+        : this.baseline.localDigest;
+      const remoteDigest = remoteChanged
+        ? remoteContent?.digest
+        : this.baseline.remoteDigest;
+      if (localChanged && !localContent) localChanged = false;
+      if (remoteChanged && !remoteContent) remoteChanged = false;
       if (localContent && localContent.digest === this.baseline.localDigest)
         localChanged = false;
       if (remoteContent && remoteContent.digest === this.baseline.remoteDigest)
         remoteChanged = false;
-      const localDigest = localContent?.digest ?? this.baseline.localDigest;
-      const remoteDigest = remoteContent?.digest ?? this.baseline.remoteDigest;
       if (localDigest && localDigest === remoteDigest) {
         localChanged = false;
         remoteChanged = false;
@@ -369,11 +394,16 @@ export class ClipboardSync {
               ? this.baseline.remoteDigest
               : readRemoteDigest,
         });
-        this.deps.trace?.("content-skipped");
+        const code = clipboardSyncErrorCode(error);
+        this.deps.trace?.(
+          code === "CLIPBOARD_EMPTY" ? "content-empty" : "content-skipped",
+          code,
+        );
         // Both peers changed and one of them is unreadable: as with any
         // simultaneous change, both copies are kept, but the user is told so
         // instead of the readable copy silently never arriving.
-        if (bothChanged) throw new Error("CLIPBOARD_CONFLICT");
+        if (bothChanged && code !== "CLIPBOARD_EMPTY")
+          throw new Error("CLIPBOARD_CONFLICT");
         return;
       }
       throw error;
