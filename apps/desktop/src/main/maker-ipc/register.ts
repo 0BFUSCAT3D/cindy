@@ -11460,11 +11460,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           resumeSessionId: meta.sdkSessionId,
           // 插件任务的档位由用户在任务设置里给定(errand 还会再收窄),不能借 lazy-resume
           // 的缺省 bypass 提权;档位不一致还会让 errand 复用判定每轮都失败、另开新会话
-          // (#5788)。由宿主的插件派发入口显式要求,其它 main 侧通路(Orca 派活、伙伴
-          // 委派等)保持既有缺省。
+          // (#5788)。由宿主的插件派发、伙伴后台任务派发等入口显式要求,未要求的 main 侧
+          // 通路(Orca 派活等)保持既有缺省。
           permissionMode: params.resumeWithStoredPermissionMode
             ? permissionModeOrAsk(dbRow.permissionMode)
             : 'bypassPermissions',
+          // 计划模式同理按落库状态起档,运行态才与库内一致(心跳等权限边界读取方要求两者
+          // 相同)。下方 send 带 planMode:false,本轮仍是普通执行、不消耗武装态。
+          ...(params.resumeWithStoredPermissionMode
+            ? { planMode: dbRow.planModeEnabled === true }
+            : {}),
           // 发起方回合结束后进程常被释放。漏掉 providerId = 回落到隐式默认路由,
           // 订阅 / 自定义来源的伙伴会以 AGENT_NOT_READY 起不来,委派结果停在外发
           // 队列里,表现就是「对方做完了,发起方没被叫醒」。
@@ -11593,7 +11598,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     files?: AgentInputQueuedMessage['files'];
     onAccepted?: (replayed?: boolean) => void | Promise<void>;
     onAcceptedRollback?: () => void | Promise<void>;
-    /** Remote-origin input: a cold session resumes with its stored permission mode, never bypass. */
+    /**
+     * Remote-origin input and Bot Session tasks: a cold session resumes with its stored
+     * permission mode (and Plan), never bypass.
+     */
     resumeWithStoredPermissionMode?: boolean;
   }) => {
     if (params.clientId && params.authorizationGuard) {
@@ -12123,6 +12131,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
         } : undefined,
         dispatcherSessionId,
+        // 后台任务按发起时落库的权限档运行；冷启动不能退回 bypass。否则任务实际以
+        // Full access 运行，库里却是 Auto / Ask，绑定它的心跳每轮都因档位不一致被顺延。
+        resumeWithStoredPermissionMode: true,
       }),
     discardDelegationQueuedInputs: (sessionId, delegationId) =>
       discardDelegationQueuedInputs(inputCoordinator, sessionId, delegationId, awaitAgentInputQueueSnapshotPersistence),
