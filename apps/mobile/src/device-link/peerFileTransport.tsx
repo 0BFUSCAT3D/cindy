@@ -53,10 +53,10 @@ import {
 
 let swept = false;
 const origin = "https://cindy-file-peer.invalid";
-/** Transfers slower than one sample interval record runtime stats once per interval. */
+/** Active transfers refresh route information once per interval. */
 const PROGRESS_SAMPLE_MS = FILE_PEER_PROGRESS_SAMPLE_MS;
 /**
- * Diagnostics probe budget, independent of the generic 15s command timeout: a stalled
+ * Route/diagnostics probe budget, independent of the generic 15s command timeout: a stalled
  * runtime.stats() voids one sample only and never blocks later sampling ticks.
  */
 const PROBE_BUDGET_MS = 5000;
@@ -436,8 +436,8 @@ export function PeerFileTransport() {
         target.create();
         const handle = target.open();
         sinks.current.set(id, { handle, size: file.size, offset: 0 });
-        // Network arrival (runtime/WebRTC counters) vs. disk writes, once per interval.
-        // Only while Debug recording is on: otherwise nothing would consume the sample.
+        // The watchdog needs current route information even with Debug recording off.
+        // Detailed network/disk progress is recorded only when diagnostics are enabled.
         let sampling = false;
         // Set when the receive settles: an already-issued stats reply must not append
         // a progress line behind the outcome log with a dropped sink offset.
@@ -454,7 +454,7 @@ export function PeerFileTransport() {
             rejectReceive(id, 'FILE_PEER_SLOW');
             void command('close', [id]).catch(() => {});
           }
-          if (slow || sampling || !mobileDebugEnabled()) return;
+          if (slow || sampling) return;
           sampling = true;
           // 诊断探针独立短预算：runtime.stats() 卡死只作废本样本（迟到回包同样丢弃），
           // 不让 15s 通用超时占住采样节拍，否则恰好在异常链路上拿不到任何样本。
@@ -468,6 +468,7 @@ export function PeerFileTransport() {
             .then((raw) => {
               if (settled || ended) return;
               if (connection?.id === id) connection.path = fileTransferPath(raw);
+              if (!mobileDebugEnabled()) return;
               lastProgress = {
                 elapsedMs: Date.now() - transferStartedAt,
                 written: sinks.current.get(id)?.offset ?? null,

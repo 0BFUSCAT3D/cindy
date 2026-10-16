@@ -19,6 +19,14 @@ const state = vi.hoisted(() => ({
   commands: [] as any[],
   rpc: vi.fn(),
   open: vi.fn(),
+  stats: vi.fn(),
+  holdReceive: false,
+  debug: false,
+  log: vi.fn(),
+}));
+vi.mock("@/debug/mobileDebugLog", () => ({
+  mobileDebugEnabled: () => state.debug,
+  mobileDebugLog: state.log,
 }));
 vi.mock("react-native", () => ({
   View: ({ children }: any) => children,
@@ -43,12 +51,14 @@ vi.mock("react-native-webview", async () => {
           if (!match) return;
           const message = JSON.parse(match[1]);
           state.commands.push(message);
+          if (message.action === "receive" && state.holdReceive) return;
           const result =
             message.action === "invoke"
               ? JSON.stringify({ ok: true, result: "preview" })
               : message.action === "stats"
-                ? JSON.stringify({ path: "relay" })
+                ? state.stats()
                 : "v=0";
+          if (result === undefined) return;
           props.onMessage({
             nativeEvent: {
               data: JSON.stringify({
@@ -74,7 +84,7 @@ vi.mock("expo-file-system", () => ({
     uri = "/staging";
     exists = true;
     create() {}
-    open() { return { close() {} }; }
+    open() { return { close() {}, writeBytes() {} }; }
     delete() { this.exists = false; state.deleted(); }
   },
   Paths: { cache: "/cache", availableDiskSpace: 10 * 1024 ** 3 },
@@ -150,6 +160,10 @@ beforeEach(() => {
   state.sessionBound = true;
   state.app = "active";
   state.commands = [];
+  state.holdReceive = false;
+  state.debug = false;
+  state.log.mockClear();
+  state.stats.mockReset().mockReturnValue(JSON.stringify({ path: "relay" }));
   state.deleted.mockClear();
   state.cache.read.mockReset().mockResolvedValue(null);
   state.cache.store.mockReset().mockResolvedValue(undefined);
@@ -296,4 +310,52 @@ it("releases a cache hit invalidated just before its promise resumes", async () 
   await expect(state.download("device", "url")).rejects.toThrow("FILE_PEER_CANCELLED");
   expect(dispose).toHaveBeenCalledOnce();
   expect(state.open).not.toHaveBeenCalled();
+});
+
+it.each(["unknown", "timeout", "route-change", "debug-enabled"])("samples paths after %s and falls back despite steady progress", async (initial) => {
+  state.holdReceive = true;
+  state.debug = initial === "debug-enabled";
+  const started = Date.now();
+  if (initial === "route-change") {
+    state.stats.mockImplementation(() => JSON.stringify({
+      path: Date.now() - started < 8000 ? "direct" : "relay",
+    }));
+  } else {
+    state.stats.mockReturnValueOnce(initial === "timeout" ? undefined : JSON.stringify({ path: "unknown" }));
+  }
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((...args) => args[2][0].action === "open"
+    ? Promise.resolve({ ticket: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", size: 100_000, mimeType: "text/html" })
+    : normal(...args));
+  const controller = new AbortController();
+  let settled = false;
+  const transfer = state.download("device", "url", controller.signal).then((result: unknown) => {
+    settled = true;
+    return result;
+  });
+  // Cleanup can reject the intentionally unfinished old implementation.
+  void transfer.catch(() => {});
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    const receive = state.commands.find((c) => c.action === "receive");
+    expect(receive).toBeDefined();
+    for (let offset = 0; offset < 26 && !settled; offset++) {
+      act(() => message({ type: "write", id: `write-${offset}`, args: [receive.args[0], offset, "YQ=="] }));
+      await vi.advanceTimersByTimeAsync(1000);
+      // A route change must restart the rate sample instead of using old-path throughput.
+      if (initial === "route-change" && offset === 15) expect(settled).toBe(false);
+    }
+    expect(settled).toBe(true);
+    expect(await transfer).toBeNull();
+    expect(state.stats.mock.calls.length).toBeGreaterThan(1);
+    expect(state.log).toHaveBeenCalledWith("debug", "files", "slow transfer fallback", expect.objectContaining({ reason: "slow-relay", path: "relay" }));
+    expect(state.log.mock.calls.some((c) => c[2] === "direct transfer progress")).toBe(state.debug);
+    expect(state.deleted).toHaveBeenCalledOnce();
+    const samples = state.stats.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(state.stats).toHaveBeenCalledTimes(samples);
+  } finally {
+    controller.abort();
+    await transfer.catch(() => {});
+  }
 });
