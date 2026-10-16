@@ -32,6 +32,30 @@ const TURN_REVIEW_ROWS = 80;
 /** 单条正文每块多少字;用户 / 伙伴的长消息按块分多次复盘,整条补完才算覆盖。 */
 const MESSAGE_CHUNK_CHARS = 6000;
 const TEXT_ROLES = new Set(['user', 'assistant']);
+/** 交互答复行(AskUserQuestion 的答案、计划审阅的批准 / 反馈):正文是用户的决定,按用户消息复盘。 */
+const INTERACTION_ROLES = new Set(['ask_user', 'plan_review']);
+
+/**
+ * 把交互答复行归一成用户文本(与 messagePersistBroadcaster 落库时的文本投影同口径):
+ * 已回答的问题 → "问题 → 答案" 逐行;批准的计划 → 计划正文;打回的计划 → 用户反馈;
+ * 取消 / 未回答 → 空串(无内容,不进取材)。
+ */
+function interactionText(content: unknown): string {
+  if (!content || typeof content !== 'object') return '';
+  const c = content as Record<string, unknown>;
+  if (c.answers && typeof c.answers === 'object') {
+    if (c.status === 'cancelled') return '';
+    const lines = Object.entries(c.answers as Record<string, unknown>)
+      .filter(([, answer]) => typeof answer === 'string' && answer.trim())
+      .map(([question, answer]) => (question.trim() ? `- ${question.trim()} → ${String(answer).trim()}` : `- ${String(answer).trim()}`));
+    return lines.length ? `Clarifications:\n${lines.join('\n')}` : '';
+  }
+  if (typeof c.status === 'string' && ('plan' in c || 'feedback' in c)) {
+    if (c.status === 'approved') return typeof c.plan === 'string' && c.plan.trim() ? `Approved plan:\n${c.plan.trim()}` : '';
+    if (c.status === 'revised') return typeof c.feedback === 'string' ? c.feedback.trim() : '';
+  }
+  return '';
+}
 /** 模型省略 working(本轮没改动)时用的空提案:不加不删,只让水位跟上。 */
 const EMPTY_WORKING_PROPOSAL: WorkingMemoryProposal = {
   threads: [],
@@ -44,7 +68,7 @@ const EMPTY_WORKING_PROPOSAL: WorkingMemoryProposal = {
 /** 缺口回补每批最多取多少条消息 / 多少字符;单条正文已截到 6000 字,所以每批至少前进一条。 */
 const GAP_BACKFILL_ROWS = 40;
 const GAP_BACKFILL_CHARS = 16000;
-const REVIEW_ROLES = `role IN ('user','assistant','tool_use','tool_result')`;
+const REVIEW_ROLES = `role IN ('user','assistant','tool_use','tool_result','ask_user','plan_review')`;
 /** Once per durable successful reply; serial per teammate, outside the chat/agent loop. */
 export async function reviewTeammateLearning(sessionId: string, replyId: string): Promise<void> {
   const owner = activeOwnerScopeKey();
@@ -101,16 +125,22 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 的证据来源,纠正 / 承诺可能就在长消息的尾部,没看完不能算覆盖;工具结果不是新条目的来源,
       // 截尾只影响 resolved 证据(条目多留一阵),按已覆盖处理,不为它逐块回补。
       const toSnapshot = (m: Record_, offset = 0) => {
-        const full: string = typeof JSON.parse(m.content) === 'string' ? JSON.parse(m.content) : m.content;
+        const parsed: unknown = JSON.parse(m.content);
+        // 交互答复行的正文是用户的决定,归一成文本后按用户消息对待(证据规则同用户消息)。
+        const interaction = INTERACTION_ROLES.has(m.role);
+        const full: string = interaction ? interactionText(parsed) : typeof parsed === 'string' ? parsed : m.content;
+        const role = interaction ? 'user' : m.role;
         return {
           id: m.id,
-          role: m.role,
+          role,
           order: m.order,
           text: full.slice(offset, offset + MESSAGE_CHUNK_CHARS),
           offset,
-          partial: TEXT_ROLES.has(m.role) && full.length > offset + MESSAGE_CHUNK_CHARS,
+          partial: TEXT_ROLES.has(role) && full.length > offset + MESSAGE_CHUNK_CHARS,
         };
       };
+      // 没有内容的交互行(取消 / 未回答)不进取材,也不算截断。
+      const hasText = (m: ReturnType<typeof toSnapshot>) => m.text.length > 0;
       // /clear 之前的消息始终不取。
       const clearedAtFilter = `AND created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=?), 0)`;
       const prev = await db.queryOne<{ id: string; rowid: number }>(
@@ -129,13 +159,14 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
     `,
         [sessionId, row.rowid, prevCompleted, sessionId],
       );
-      const turnMessages = learningSnapshotBudget(records.map((m) => toSnapshot(m)), 40000);
+      const turnCandidates = records.map((m) => toSnapshot(m)).filter(hasText);
+      const turnMessages = learningSnapshotBudget(turnCandidates, 40000);
       // 本轮本身被 LIMIT / 预算截断(工具密集的大轮次)、或某条用户 / 伙伴消息被截尾时,漏掉的
       // 中间承诺 / 工具结果 / 长消息尾部同样不能算"已覆盖":水位停在上一条完成回复,下一次复盘
       // 由缺口回补路径按序(含分块)补齐。
       const turnTruncated =
         records.length >= TURN_REVIEW_ROWS ||
-        turnMessages.length < records.length ||
+        turnMessages.length < turnCandidates.length ||
         turnMessages.some((m) => m.partial);
       // 缺口回补:账本上次覆盖到的行落后于上一条完成回复(某轮复盘 claim 后失败、CAS 冲突、
       // 模型漏回 working),那段内容不会再被单独复盘;按 rowid 升序分批补进本次取材,覆盖水位
@@ -162,7 +193,9 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
           : { rowid: 0, id: undefined };
       let covered: Watermark = turnTruncated ? { rowid: prevCompleted, id: prev?.id } : { rowid: row.rowid, id: replyId };
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
-      if (floor.rowid < prevCompleted) {
+      // 水位停在半条消息里时,哪怕那条消息就是上一条完成回复(后面的轮次被 rewind 掉了),
+      // 剩下的部分也得接着补,所以带偏移时取等号。
+      if (floor.rowid < prevCompleted || (floor.offset !== undefined && floor.rowid === prevCompleted)) {
         // 水位停在半条消息里时把那条消息本身也取回来(rowid > x-1 即 rowid >= x)。
         const gapAfter = floor.offset !== undefined ? floor.rowid - 1 : floor.rowid;
         const gapRows = await db.query<Record_>(
@@ -173,19 +206,18 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
     `,
           [sessionId, gapAfter, prevCompleted, sessionId, GAP_BACKFILL_ROWS + 1],
         );
-        gapMessages = learningSnapshotPrefix(
-          gapRows
-            .slice(0, GAP_BACKFILL_ROWS)
-            .map((m) => toSnapshot(m, floor.offset !== undefined && m.order === floor.rowid ? floor.offset : 0)),
-          GAP_BACKFILL_CHARS,
-        );
+        const gapCandidates = gapRows
+          .slice(0, GAP_BACKFILL_ROWS)
+          .map((m) => toSnapshot(m, floor.offset !== undefined && m.order === floor.rowid ? floor.offset : 0))
+          .filter(hasText);
+        gapMessages = learningSnapshotPrefix(gapCandidates, GAP_BACKFILL_CHARS);
         const partialAt = gapMessages.findIndex((m) => m.partial);
         if (partialAt >= 0) {
           // 连续前缀停在这条长消息的当前块:水位记到块尾,后面的消息留给下一次。
           gapMessages = gapMessages.slice(0, partialAt + 1);
           const cut = gapMessages[partialAt]!;
           covered = { rowid: cut.order, id: cut.id, offset: cut.offset + MESSAGE_CHUNK_CHARS };
-        } else if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapRows.length) {
+        } else if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapCandidates.length) {
           const last = gapMessages[gapMessages.length - 1];
           covered = last ? { rowid: last.order, id: last.id } : floor;
         }

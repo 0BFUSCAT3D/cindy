@@ -327,6 +327,18 @@ it('walks an over-long user message in chunks and only counts it covered once th
   const written = h.writeWorking.mock.calls.at(-1)![2] as { coveredThroughRowid: number; coveredThroughMessageId?: string; coveredThroughOffset?: number };
   expect(written).toMatchObject({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply2' });
   expect(written.coveredThroughOffset).toBeUndefined();
+  // 分块水位恰好停在上一条完成回复上(后面的轮次被 rewind 掉了):带偏移时取等号,仍把那条回复取回来补完剩余部分。
+  h.meta = { turnCompleted: true };
+  h.working = { ...ledger, coveredThroughRowid: 3, coveredThroughMessageId: 'prev', coveredThroughOffset: 6000 };
+  h.floorRowid = 3;
+  h.gapRows = [{ id: 'prev', role: 'assistant', content: JSON.stringify('z'.repeat(9000)), order: 3 }];
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply-after-rewind');
+  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 2, 3, 'session', 41]);
+  input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
+  expect(input.messages.find((m: { id: string }) => m.id === 'prev').text).toHaveLength(3000);
+  expect(h.writeWorking.mock.calls.at(-1)![2]).toMatchObject({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply-after-rewind' });
+  expect((h.writeWorking.mock.calls.at(-1)![2] as { coveredThroughOffset?: number }).coveredThroughOffset).toBeUndefined();
   // 本轮取材里的长用户消息同样算截断:水位停在上一条完成回复,交给下一次分块回补。
   h.meta = { turnCompleted: true };
   h.working = { ...ledger, coveredThroughRowid: 3, coveredThroughMessageId: 'prev' };
@@ -362,6 +374,49 @@ it('resolves the ledger floor by client_id so a VACUUM-renumbered rowid cannot f
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
   await reviewTeammateLearning('session', 'reply2');
   expect(query.mock.calls.at(-1)![1]).toEqual(['session', 0, 3, 'session', 41]);
+});
+
+it('feeds interaction answers (AskUserQuestion / plan review) to the review as user text and skips empty ones without counting truncation', async () => {
+  const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
+  h.working = { version: 1, revision: 4, coveredThroughRowid: 3, coveredThroughMessageId: 'prev', updatedAt: 0, threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] };
+  h.floorRowid = 3;
+  h.turnRows = [
+    { id: 'user', role: 'user', content: JSON.stringify('Which format?'), order: 4 },
+    { id: 'ask', role: 'ask_user', content: JSON.stringify({ requestId: 'r', questions: [], status: 'answered', answers: { '用哪种格式?': '先结论后细节' } }), order: 5 },
+    { id: 'plan-ok', role: 'plan_review', content: JSON.stringify({ requestId: 'p', plan: '1. 改模板', planFilePath: '', status: 'approved', feedback: null }), order: 6 },
+    { id: 'plan-no', role: 'plan_review', content: JSON.stringify({ requestId: 'q', plan: 'x', planFilePath: '', status: 'revised', feedback: '先别动样式' }), order: 7 },
+    { id: 'ask-cancel', role: 'ask_user', content: JSON.stringify({ requestId: 's', questions: [], status: 'cancelled', answers: {} }), order: 8 },
+  ];
+  h.model.mockResolvedValueOnce({
+    ok: true,
+    text: JSON.stringify({
+      memories: [],
+      skills: [],
+      // 用户在 AskUserQuestion 里的选择可以作为账本证据(按用户消息对待)。
+      working: { corrections: [{ text: '周报先结论后细节', evidence: { messageId: 'ask', quote: '用哪种格式? → 先结论后细节' } }] },
+    }),
+  });
+  await reviewTeammateLearning('session', 'reply');
+  expect(String(query.mock.calls.at(-1)![0])).toContain("'ask_user'");
+  const input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
+  const byId = Object.fromEntries(input.messages.map((m: { id: string; role: string; text: string }) => [m.id, m]));
+  expect(byId.ask).toMatchObject({ role: 'user', text: 'Clarifications:\n- 用哪种格式? → 先结论后细节' });
+  expect(byId['plan-ok']).toMatchObject({ role: 'user', text: 'Approved plan:\n1. 改模板' });
+  expect(byId['plan-no']).toMatchObject({ role: 'user', text: '先别动样式' });
+  expect(byId['ask-cancel']).toBeUndefined();
+  // 空的取消行被丢掉不算截断:水位照常推进到当前回复;纠正条目带上 ask 行作为来源。
+  expect(h.writeWorking).toHaveBeenLastCalledWith(
+    '/test-owner',
+    'bot',
+    expect.objectContaining({
+      coveredThroughRowid: 5,
+      coveredThroughMessageId: 'reply',
+      corrections: [expect.objectContaining({ text: '周报先结论后细节', messageId: 'ask' })],
+    }),
+    4,
+  );
+  h.turnRows = null;
+  h.floorRowid = null;
 });
 
 it('does not advance the watermark past the previous completed reply when the current turn itself was truncated', async () => {
