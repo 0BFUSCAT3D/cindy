@@ -893,7 +893,7 @@ describe('authorized file peer source', () => {
     await expect(read(connection, ticket, 0)).rejects.toThrow();
   });
   it.each([false, true])('handles LRU touches only for versioned cache sources (%s)', async (versionedCache) => {
-    mock.resolve.mockResolvedValue({ absPath: file, maxBytes: 100, versionedCache });
+    mock.resolve.mockResolvedValue({ absPath: file, maxBytes: 100, sourceVersion: versionedCache ? 'remote-version-a' : undefined });
     const { connection } = await connect();
     const first = await open(connection);
     await fsPromises.utimes(file, new Date(1_000), new Date(1_000));
@@ -906,9 +906,21 @@ describe('authorized file peer source', () => {
     expect(await read(connection, first.ticket, 5)).toBe('');
     const second = await open(connection);
     expect(second.version).toBe(first.version);
+    await read(connection, second.ticket, 0);
+    await read(connection, second.ticket, 5);
+    const relocated = `${file}-new-generation`;
+    await fsPromises.copyFile(file, relocated);
+    mock.resolve.mockResolvedValue({ absPath: relocated, maxBytes: 100, sourceVersion: 'remote-version-a' });
+    const third = await open(connection);
+    expect(third.version).toBe(first.version);
+    await read(connection, third.ticket, 0);
+    await read(connection, third.ticket, 5);
+    mock.resolve.mockResolvedValue({ absPath: relocated, maxBytes: 100, sourceVersion: 'remote-version-b' });
+    const changed = await open(connection);
+    expect(changed.version).not.toBe(first.version);
     // Ignoring LRU timestamps must not hide truncated or corrupt cache copies.
-    await truncate(file, 4);
-    await expect(read(connection, second.ticket, 0)).rejects.toThrow('CHANGED');
+    await truncate(relocated, 4);
+    await expect(read(connection, changed.ticket, 0)).rejects.toThrow('CHANGED');
   });
   it('rejects revoked or old-owner chunks without affecting a second peer', async () => {
     const a = await connect(),

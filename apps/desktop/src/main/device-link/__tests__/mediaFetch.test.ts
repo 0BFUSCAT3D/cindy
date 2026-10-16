@@ -66,6 +66,7 @@ beforeEach(() => {
   materializeSshRemoteMedia.mockResolvedValue({
     ok: true,
     cachePath: '/cache/ssh/plot.png',
+    sourceVersion: 'ssh-source-a',
     size: 42,
     mime: 'image/png',
     relPath: 'artifacts/plot.png',
@@ -182,14 +183,15 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
     expect(r).toEqual({ ossKey: 'cindy/device-link/u/uuid.ext', mimeType: 'image/png', size: 42 });
   });
 
-  it.each([5, 100_000])('keeps SSH version stable across LRU touches (%s bytes)', async (size) => {
+  it.each([5, 100_000])('keeps SSH version stable across LRU touches and cache relocation (%s bytes)', async (size) => {
     let clock = 1;
+    let sourceVersion = 'remote-version-a';
     let cachePath = path.join(os.tmpdir(), 'ssh-version-a.png');
     materializeSshRemoteMedia.mockImplementation(async () => ({
-      ok: true, cachePath, size, mime: 'image/png', relPath: 'artifacts/plot.png',
+      ok: true, cachePath, sourceVersion, size, mime: 'image/png', relPath: 'artifacts/plot.png',
     }));
     openMock.mockResolvedValue({
-      stat: async () => ({ isFile: () => true, size, mtimeMs: clock++, ctimeMs: clock++, ino: 1, dev: 1 }),
+      stat: async () => ({ isFile: () => true, size, mtimeMs: clock++, ctimeMs: clock++, ino: clock++, dev: 1 }),
       read: async (bytes: Buffer) => { bytes.fill(7); return { bytesRead: bytes.length }; },
       close: vi.fn(),
     });
@@ -198,6 +200,8 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
     expect(first.version).toMatch(/^[a-f0-9]{64}$/);
     expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
     cachePath = path.join(os.tmpdir(), 'ssh-version-b.png');
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    sourceVersion = 'remote-version-b';
     expect((await fetchLocalMediaToOss(args)).version).not.toBe(first.version);
   });
 

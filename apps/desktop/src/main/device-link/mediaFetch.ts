@@ -332,6 +332,7 @@ export async function resolveAuthorizedMedia(arg: unknown, maximumBytes?: number
   if (maximumBytes !== undefined)
     constraints.maxBytes = Math.min(constraints.maxBytes ?? maximumBytes, maximumBytes);
   let absPath: string;
+  let sourceVersion: string | undefined;
   let mimeType: string | undefined;
   if (sshOrigin) {
     // SSH 分支的两道约束必须在 materialize **内部**生效:它 stat 完就会把整份文件分片拉进
@@ -348,6 +349,7 @@ export async function resolveAuthorizedMedia(arg: unknown, maximumBytes?: number
       throw new Error(`SSH 媒体取回失败（${materialized.status}）：${materialized.message}`);
     }
     absPath = materialized.cachePath;
+    sourceVersion = materialized.sourceVersion;
     mimeType = materialized.mime;
   } else {
     ({ absPath, mimeType } = resolveLocalMedia(url));
@@ -431,7 +433,7 @@ export async function resolveAuthorizedMedia(arg: unknown, maximumBytes?: number
   return {
     absPath, mimeType, uploadExtHint, maxBytes: constraints.maxBytes,
     // Only the authorized SSH materializer supplies immutable versioned copies.
-    versionedCache: sshOrigin !== null,
+    sourceVersion,
   };
 }
 
@@ -440,7 +442,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
     arg && typeof arg === 'object'
       ? (arg as { url?: unknown; skipCache?: unknown; thumbnail?: unknown; prepareOnly?: unknown })
       : {};
-  const { absPath, mimeType, uploadExtHint, maxBytes, versionedCache } = await resolveAuthorizedMedia(arg);
+  const { absPath, mimeType, uploadExtHint, maxBytes, sourceVersion } = await resolveAuthorizedMedia(arg);
   const url = record.url as string;
   const sharedTask = getDeviceLinkInvokeContext()?.sharedTask;
   const mediaScope = sharedTask?.author.sharedTaskId ?? sharedTaskMediaId();
@@ -455,7 +457,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
       const result = {
         ossKey: '',
         size: before.size,
-        version: fileVersion(absPath, before, versionedCache),
+        version: fileVersion(absPath, before, sourceVersion),
         mimeType:
           mimeType ??
           mimeOf((uploadExtHint ?? path.extname(absPath)).replace(/^\./, '').toLowerCase()),
@@ -473,7 +475,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
         offset += read.bytesRead;
       }
       const after = await file.stat();
-      if (fileVersion(absPath, after, versionedCache) !== result.version)
+      if (fileVersion(absPath, after, sourceVersion) !== result.version)
         throw new Error('REMOTE_FILE_CHANGED');
       log.debug(`media:fetch prepare → inline size=${before.size} mime=${result.mimeType}`);
       return { ...result, inlineBase64: bytes.toString('base64') };

@@ -517,7 +517,7 @@ async function handleFilePeerRequest(
         size: stat.size,
         mtime: stat.mtimeMs,
         ctime: stat.ctimeMs,
-        versionedCache: authorized.versionedCache,
+        versionedCache: authorized.sourceVersion !== undefined,
         offset: 0,
         busy: false,
         openedAt: Date.now(),
@@ -527,7 +527,7 @@ async function handleFilePeerRequest(
       monitorSend(ticket, source);
       return {
         ticket, size: stat.size, mimeType,
-        version: fileVersion(authorized.absPath, stat, authorized.versionedCache),
+        version: fileVersion(authorized.absPath, stat, authorized.sourceVersion),
       };
     } catch (error) {
       await file.close();
