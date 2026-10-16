@@ -171,8 +171,9 @@ Agent 在提交新增测试前必须在 PR 描述或测试文件邻近注释中�
 三类问题：没有写理由的 `vi.resetModules()`、没有写理由的 ≥100ms 真实等待、普通单测读取生产源码
 文本（这类静态契约只能进 guard tier，不接受理由豁免）。存量计数记在
 `scripts/test-hygiene-baseline.json`，只允许减少；修掉存量后运行
-`node scripts/check-test-hygiene.mjs --update` 收紧基线。不得手改基线放宽计数让门禁变绿；确有
-必要时在 PR「风险」中说明，由评审确认。
+`node scripts/check-test-hygiene.mjs --update` 收紧基线。门禁从 GitHub PR／合并队列／push 事件
+取得基准提交，本地使用 `origin/main`；逐文件、逐规则拒绝基线上调，手改 JSON 也不能放行。
+只有确认基准提交确实没有基线文件时才允许首次登记；基准缺失、读取失败或基线格式错误均失败。
 
 ### 3.3 路径断言的跨平台宪法
 

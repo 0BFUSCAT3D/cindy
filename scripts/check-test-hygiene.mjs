@@ -16,17 +16,19 @@
 //                  guard tier（scripts/test-workspaces.config.mjs），不接受理由豁免。
 //
 // 存量计数记在 scripts/test-hygiene-baseline.json，只允许减少：某文件的计数超过基线、
-// 或基线外的文件出现未豁免的命中，都会失败。`--update` 只会把基线往下收紧；确需放宽
-// 只能手改 JSON，让评审在 diff 里看见。
+// 或基线外的文件出现未豁免的命中，都会失败。门禁对照可信 Git 基准拒绝基线上调，
+// 手改 JSON 与 `--update` 均不能绕过；只有确认基准提交还没有基线文件时才首次登记。
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BASELINE_PATH = path.join(ROOT, 'scripts', 'test-hygiene-baseline.json');
+const BASELINE_REL = 'scripts/test-hygiene-baseline.json';
+const BASELINE_PATH = path.join(ROOT, BASELINE_REL);
 const SCAN_ROOTS = ['apps', 'packages', 'scripts'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'out', 'build', 'coverage', '.vite', '.expo', '.turbo']);
 export const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
@@ -194,12 +196,19 @@ function maskStrings(source) {
 }
 
 function staticWaitCalls(code) {
-  if (!/\b(?:setTimeout|sleep|delay|wait|waitMs|pause)\s*\(/.test(code)) return [];
+  if (!/\b(?:setTimeout|sleep|delay|wait|waitMs|pause)\s*\(|(?:node:)?timers\/promises/.test(code)) return [];
   const ts = typescript ??= requireDesktop('typescript');
   const source = parseTestSource(ts, code);
   const nodeScopes = new WeakMap();
   const calls = [];
+  const promiseTimerNames = new Set();
   const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+  function isPromiseTimerImport(bound) {
+    let declaration = bound;
+    while (declaration && !ts.isImportDeclaration(declaration)) declaration = declaration.parent;
+    return declaration && ts.isStringLiteral(declaration.moduleSpecifier)
+      && /^(?:node:)?timers\/promises$/.test(declaration.moduleSpecifier.text);
+  }
   function collect(node, scope) {
     if (ts.isFunctionDeclaration(node) && node.name) scope.bindings.set(node.name.text, node);
     if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node)) scope = { parent: scope, bindings: new Map() };
@@ -210,6 +219,11 @@ function staticWaitCalls(code) {
       }
     }
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) scope.bindings.set(node.name.text, node);
+    if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportClause(node) && node.name) {
+      scope.bindings.set(node.name.text, node);
+      if (ts.isImportSpecifier(node) && (node.propertyName?.text ?? node.name.text) === 'setTimeout'
+        && isPromiseTimerImport(node)) promiseTimerNames.add(node.name.text);
+    }
     if (ts.isCallExpression(node)) calls.push(node);
     ts.forEachChild(node, child => collect(child, scope));
   }
@@ -219,6 +233,23 @@ function staticWaitCalls(code) {
       if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
     }
     return null;
+  }
+  function promiseTimerNamespace(node, seen = new Set()) {
+    if (!ts.isIdentifier(node) || seen.has(node)) return false;
+    seen.add(node);
+    const bound = binding(node);
+    if (bound && ts.isVariableDeclaration(bound) && bound.initializer) return promiseTimerNamespace(bound.initializer, seen);
+    return bound && (ts.isNamespaceImport(bound) || ts.isImportClause(bound)) && isPromiseTimerImport(bound);
+  }
+  function isPromiseTimer(node, seen = new Set()) {
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (ts.isPropertyAccessExpression(node)) return node.name.text === 'setTimeout' && promiseTimerNamespace(node.expression);
+    if (!ts.isIdentifier(node)) return false;
+    const bound = binding(node);
+    if (bound && ts.isVariableDeclaration(bound) && bound.initializer) return isPromiseTimer(bound.initializer, seen);
+    return bound && ts.isImportSpecifier(bound) && (bound.propertyName?.text ?? bound.name.text) === 'setTimeout'
+      && isPromiseTimerImport(bound);
   }
   function number(node, parameters = new Map(), seen = new Set()) {
     if (!node || seen.has(node)) return undefined;
@@ -269,8 +300,11 @@ function staticWaitCalls(code) {
     const name = ts.isIdentifier(call.expression) ? call.expression.text
       : ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : '';
     let duration;
-    if (name === 'setTimeout') duration = number(call.arguments[1]);
-    else if (REAL_WAIT_NAMES.has(name)) duration = number(call.arguments[0]);
+    const promiseTimer = isPromiseTimer(call.expression);
+    const shadowedPromiseTimer = ts.isIdentifier(call.expression) && promiseTimerNames.has(name) && !promiseTimer;
+    if (promiseTimer) duration = number(call.arguments[0]);
+    else if (name === 'setTimeout' && !shadowedPromiseTimer) duration = number(call.arguments[1]);
+    else if (REAL_WAIT_NAMES.has(name) && !shadowedPromiseTimer) duration = number(call.arguments[0]);
     else {
       if (!ts.isIdentifier(call.expression)) continue;
       const bound = binding(call.expression);
@@ -417,11 +451,11 @@ function timerStateAt(index, timerEvents, scopes) {
   return fake;
 }
 
-function countRealWaits(code, lines) {
+function countRealWaits(code, lines, sourceCode = code) {
   const timerEvents = [...code.matchAll(/\bvi\.(useFakeTimers|useRealTimers)\s*\(/g)];
   const scopes = timerEvents.length > 0 ? timerScopes(code, timerEvents) : [];
   let count = 0;
-  const waits = staticWaitCalls(code).sort((a, b) => a.index - b.index);
+  const waits = staticWaitCalls(sourceCode).sort((a, b) => a.index - b.index);
   for (const wait of waits) {
     if (timerStateAt(wait.index, timerEvents, scopes)) continue;
     if (wait.duration < REAL_WAIT_MIN_MS) continue;
@@ -704,7 +738,7 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   const lines = source.split(/\r?\n/);
   const executableCode = maskStrings(code);
   const resetModules = countModuleResets(executableCode, lines);
-  const realWaits = countRealWaits(executableCode, lines);
+  const realWaits = countRealWaits(executableCode, lines, code);
   let sourceReads = 0;
   if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw/.test(code)) {
     const sourceReadHelpers = findSourceReadHelpers(code);
@@ -784,9 +818,50 @@ const HINTS = {
   sourceReads: '普通单测不得读取源码文本做字面量断言；改为经生产入口验证行为，纯跨文件契约移入对应包的 guard tier',
 };
 
+function parseBaseline(text, label) {
+  let body;
+  try { body = JSON.parse(text); } catch { throw new Error('invalid baseline JSON: ' + label); }
+  const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!record(body) || !record(body.files)) throw new Error('invalid baseline files: ' + label);
+  for (const [file, rules] of Object.entries(body.files)) {
+    if (!record(rules) || Object.entries(rules).some(([rule, count]) => !RULES.includes(rule) || !Number.isSafeInteger(count) || count < 0)) {
+      throw new Error('invalid baseline limits: ' + label + ' (' + file + ')');
+    }
+  }
+  return body.files;
+}
+
 function readBaseline() {
   if (!existsSync(BASELINE_PATH)) return {};
-  return JSON.parse(readFileSync(BASELINE_PATH, 'utf8')).files ?? {};
+  return parseBaseline(readFileSync(BASELINE_PATH, 'utf8'), BASELINE_REL);
+}
+
+function readTrustedBaseline() {
+  const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
+  const remoteBase = process.env.GITHUB_BASE_REF ? 'refs/remotes/origin/' + process.env.GITHUB_BASE_REF : null;
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  let ref;
+  if (eventName === 'pull_request') ref = event.pull_request?.base?.sha ?? remoteBase;
+  else if (eventName === 'merge_group') ref = event.merge_group?.base_sha;
+  else if (eventName === 'push') ref = event.before;
+  else ref = remoteBase ?? 'refs/remotes/origin/main';
+  if (!ref || /^0+$/.test(ref)) throw new Error('trusted Git base is unavailable for ' + (eventName || 'local check'));
+  const git = args => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  let commit;
+  let entry;
+  try {
+    commit = git(['rev-parse', '--verify', '--end-of-options', ref + '^{commit}']);
+    entry = git(['ls-tree', '--name-only', commit, '--', BASELINE_REL]);
+  } catch {
+    throw new Error('trusted Git base cannot be read: ' + ref);
+  }
+  // Only a successfully read commit with no baseline path is first adoption.
+  // Missing refs/history and Git failures must never silently bootstrap.
+  if (!entry) return { files: null, commit };
+  let text;
+  try { text = git(['show', commit + ':' + BASELINE_REL]); }
+  catch { throw new Error('trusted Git baseline cannot be read: ' + commit); }
+  return { files: parseBaseline(text, 'trusted ' + commit), commit };
 }
 
 function writeBaseline(files) {
@@ -799,8 +874,19 @@ function writeBaseline(files) {
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const counts = await scanRepository();
+  const trusted = readTrustedBaseline();
+  const hasBaseline = existsSync(BASELINE_PATH);
   const baseline = readBaseline();
+  if (!hasBaseline && (trusted.files !== null || !args.includes('--update'))) throw new Error('baseline is missing: ' + BASELINE_REL);
+  if (trusted.files === null) console.log('[test-hygiene] bootstrap: trusted base ' + trusted.commit + ' has no baseline yet');
+  else {
+    const raised = compareWithBaseline(baseline, trusted.files).violations;
+    if (raised.length > 0) {
+      for (const item of raised) console.error('[test-hygiene] baseline cannot increase ' + item.file + ' ' + item.rule + ': ' + item.limit + ' -> ' + item.current);
+      return 1;
+    }
+  }
+  const counts = await scanRepository();
   const { violations, tightenable } = compareWithBaseline(counts, baseline);
   if (args.includes('--update')) {
     // The very first run records the existing debt; afterwards --update only tightens.

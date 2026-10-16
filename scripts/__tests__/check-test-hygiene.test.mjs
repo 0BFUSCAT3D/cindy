@@ -2,10 +2,12 @@
 // that flips one rule decision, so a detector regression cannot silently let
 // slow or source-literal unit tests back into CI.
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
 	compareWithBaseline,
@@ -63,6 +65,14 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 		["constant timeout duration", "const SECOND = 1000; const timeout = 2 * SECOND; setTimeout(done, timeout);", { realWaits: 1 }],
 		["generic arrow in a ts file does not hide later waits", "const identity = <T>(value: T) => value; setTimeout(done, 200);", { realWaits: 1 }],
 		["property timeout keeps existing detection", "globalThis.setTimeout(done, 200);", { realWaits: 1 }],
+		["promise timer uses its first argument", "import { setTimeout } from 'node:timers/promises'; await setTimeout(1_000);", { realWaits: 1 }],
+		["promise timer import alias keeps the duration", "import { setTimeout as nap } from 'node:timers/promises'; await nap(1_000);", { realWaits: 1 }],
+		["promise timer namespace keeps the duration", "import * as timers from 'node:timers/promises'; await timers.setTimeout(1_000);", { realWaits: 1 }],
+		["promise timer namespace alias keeps the duration", "import timers from 'timers/promises'; const promises = timers; await promises.setTimeout(1_000);", { realWaits: 1 }],
+		["short promise timer ignores its numeric return value", "import { setTimeout } from 'node:timers/promises'; await setTimeout(20, 1_000);", { realWaits: 0 }],
+		["a parameter can shadow the promise timer", "import { setTimeout as delay } from 'node:timers/promises'; function example(delay) { delay(1_000); }", { realWaits: 0 }],
+		["a local function can shadow the promise timer", "import { setTimeout as delay } from 'node:timers/promises'; function example() { const delay = value => value; delay(1_000); }", { realWaits: 0 }],
+		["a parameter can shadow the timer namespace", "import * as timers from 'node:timers/promises'; function example(timers) { timers.setTimeout(1_000); }", { realWaits: 0 }],
 		["short wrapper and fixture shadow", "const tick = ms => new Promise(resolve => setTimeout(resolve, ms)); tick(20); function other(tick) { tick(500); }", { realWaits: 0 }],
 		["fake wrapper call", "const tick = ms => new Promise(resolve => setTimeout(resolve, ms)); it('fake', () => { vi.useFakeTimers(); tick(500); });", { realWaits: 0 }],
 		["an uncalled fake-timer helper does not hide real waits", "function enableFake() { vi.useFakeTimers(); } it('real', () => setTimeout(done, 200));", { realWaits: 1 }],
@@ -257,4 +267,83 @@ test("compareWithBaseline only lets counts stay or shrink", () => {
 		fail.violations.map((v) => `${v.file}:${v.rule}:${v.limit}`),
 		["a.test.ts:resetModules:2", "new.test.ts:realWaits:0"],
 	);
+
+	// Exercise the real CLI in its own Git repository. A same-PR JSON edit must
+	// not become trusted merely because it was committed or --update was used.
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-hygiene-ratchet-"));
+	const baselinePath = path.join(root, "scripts", "test-hygiene-baseline.json");
+	const testPath = path.join(root, "apps", "sample", "sample.test.ts");
+	const relativeTestPath = "apps/sample/sample.test.ts";
+	const scriptPath = path.join(root, "scripts", "check-test-hygiene.mjs");
+	const environment = { ...process.env, CI: "", GITHUB_EVENT_PATH: "", GITHUB_EVENT_NAME: "", GITHUB_BASE_REF: "", GITHUB_SHA: "", NODE_PATH: "" };
+	for (const key of Object.keys(environment)) if (key.startsWith("GIT_")) delete environment[key];
+	const git = (...args) => execFileSync("git", args, { cwd: root, env: environment, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+	const commit = () => { git("add", "."); git("-c", "user.name=Hygiene Test", "-c", "user.email=hygiene@example.invalid", "commit", "-s", "-qm", "fixture"); return git("rev-parse", "HEAD"); };
+	const writeBaseline = files => fs.writeFileSync(baselinePath, JSON.stringify({ files }));
+	const writeReads = count => fs.writeFileSync(testPath, Array.from({ length: count }, (_, index) => "readFileSync(resolve(process.cwd(), 'src/input-" + index + ".ts'), 'utf8');").join("\n"));
+	const cli = (args = [], extraEnv = {}) => spawnSync(process.execPath, [scriptPath, ...args], { cwd: root, env: { ...environment, ...extraEnv }, encoding: "utf8" });
+	const output = result => (result.stdout ?? "") + (result.stderr ?? "");
+	try {
+		fs.mkdirSync(path.dirname(testPath), { recursive: true });
+		fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+		fs.copyFileSync(fileURLToPath(new URL("../check-test-hygiene.mjs", import.meta.url)), scriptPath);
+		fs.writeFileSync(path.join(root, "scripts", "test-workspaces.config.mjs"), "export default { workspaces: [] };");
+		writeReads(1);
+		git("init", "-q", "-b", "main");
+		const firstIntroduction = commit();
+		git("update-ref", "refs/remotes/origin/main", firstIntroduction);
+		const bootstrap = cli(["--update"]);
+		assert.equal(bootstrap.status, 0, output(bootstrap));
+		assert.equal(cli().status, 0);
+		const trusted = commit();
+		git("update-ref", "refs/remotes/origin/main", trusted);
+		writeReads(2);
+		writeBaseline({ [relativeTestPath]: { sourceReads: 2 } });
+		commit();
+		const raised = fs.readFileSync(baselinePath, "utf8");
+		for (const args of [[], ["--update"]]) {
+			const result = cli(args);
+			assert.notEqual(result.status, 0, "committed hand-raised baseline must fail");
+			assert.match(output(result), /baseline.*(?:increase|raise)/i);
+			assert.equal(fs.readFileSync(baselinePath, "utf8"), raised);
+		}
+		const eventPath = path.join(root, "github-event.json");
+		for (const [eventName, event] of [["pull_request", { pull_request: { base: { sha: trusted } } }], ["merge_group", { merge_group: { base_sha: trusted } }], ["push", { before: trusted }]]) {
+			fs.writeFileSync(eventPath, JSON.stringify(event));
+			const result = cli([], { GITHUB_EVENT_NAME: eventName, GITHUB_EVENT_PATH: eventPath, GITHUB_BASE_REF: eventName === "pull_request" ? "main" : "" });
+			assert.notEqual(result.status, 0, eventName);
+			assert.match(output(result), /baseline.*(?:increase|raise)/i);
+		}
+		fs.writeFileSync(eventPath, JSON.stringify({ pull_request: { base: { sha: "1".repeat(40) } } }));
+		const unavailableCommit = cli([], { GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventPath, GITHUB_BASE_REF: "main" });
+		assert.notEqual(unavailableCommit.status, 0);
+		assert.match(output(unavailableCommit), /trusted.*base/i);
+		for (const invalidBaseline of [{ files: { [relativeTestPath]: { sourceReads: "unlimited" } } }, { files: [] }, null]) {
+			fs.writeFileSync(baselinePath, JSON.stringify(invalidBaseline));
+			const invalid = cli();
+			assert.notEqual(invalid.status, 0);
+			assert.match(output(invalid), /invalid baseline/i);
+		}
+		fs.unlinkSync(baselinePath);
+		for (const args of [[], ["--update"]]) {
+			const removed = cli(args);
+			assert.notEqual(removed.status, 0);
+			assert.match(output(removed), /baseline.*missing|baseline.*removed/i);
+			assert.equal(fs.existsSync(baselinePath), false);
+		}
+		writeBaseline({ [relativeTestPath]: { sourceReads: 1 } });
+		writeReads(0);
+		const tightened = cli(["--update"]);
+		assert.equal(tightened.status, 0, output(tightened));
+		assert.deepEqual(JSON.parse(fs.readFileSync(baselinePath, "utf8")).files, {});
+		assert.equal(cli().status, 0);
+		git("update-ref", "-d", "refs/remotes/origin/main");
+		for (const args of [[], ["--update"]]) {
+			const missing = cli(args);
+			assert.notEqual(missing.status, 0);
+			assert.match(output(missing), /trusted.*base/i);
+		}
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 });
