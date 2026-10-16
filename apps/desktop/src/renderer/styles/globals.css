@@ -1620,15 +1620,16 @@ body.resizing-pane [data-ghost-webview] {
   background-color: var(--msg-scrollbar-hover);
 }
 
-/* 项目选择菜单的列表:还能继续滚动的一侧 24px 渐隐,提示列表未完(只改透明度,双模式通用)。 */
+/* 项目选择菜单的列表:还能继续滚动的一侧 24px 渐隐,提示列表未完(只改透明度,双模式通用)。
+   遮罩只取不透明度:currentColor 继承菜单的不透明正文色,不引入字面颜色。 */
 .folder-picker-fade-top {
-  mask-image: linear-gradient(to bottom, transparent, #000 24px);
+  mask-image: linear-gradient(to bottom, transparent, currentColor 24px);
 }
 .folder-picker-fade-bottom {
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, currentColor calc(100% - 24px), transparent);
 }
 .folder-picker-fade-top.folder-picker-fade-bottom {
-  mask-image: linear-gradient(to bottom, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, transparent, currentColor 24px, currentColor calc(100% - 24px), transparent);
 }
 
 /* Composer 形变面板(MorphPopover)内的下拉列表 — 8px 细滚动条。
