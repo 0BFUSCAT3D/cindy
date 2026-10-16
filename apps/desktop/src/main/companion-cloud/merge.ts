@@ -179,7 +179,7 @@ async function mergeConversation(input: {
   log?: CompanionLog;
 }): Promise<number> {
   const sourceRoom = await input.roomOf(input.source);
-  const messages = await readAllRoomMessages(input.api, sourceRoom, input.source.id);
+  const messages = await readAllRoomMessages(input.api, sourceRoom, input.source.id, { complete: true });
   const prepared: Array<{ sourceId: string; authorId: string; createdAt: string; content: Array<Record<string, unknown>> }> = [];
   for (const message of messages) {
     const authorId = message.role === 'assistant' ? input.keep.id : input.humanActorId;

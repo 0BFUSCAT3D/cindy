@@ -59,13 +59,21 @@ export function byMessageTime(a: CompanionTranscriptMessage, b: CompanionTranscr
 }
 
 /** Every visible message of the room (bounded by `maxPages`), in message-time order. */
-export async function readAllRoomMessages(api: CompanionApi, roomId: string, botActorId: string, maxPages = ROOM_HISTORY_MAX_PAGES) {
+/**
+ * The room's messages in message-time order. A view reads at most `ROOM_HISTORY_MAX_PAGES`
+ * pages; `complete` (a take-over or a merge, which treat the result as the whole history) reads
+ * to the very first page and fails rather than return part of it.
+ */
+export async function readAllRoomMessages(api: CompanionApi, roomId: string, botActorId: string,
+  options: { complete?: boolean } = {}) {
   const collected: CompanionTranscriptMessage[] = [];
   let before: string | undefined;
-  for (let page = 0; page < maxPages; page += 1) {
+  for (let page = 0; options.complete || page < ROOM_HISTORY_MAX_PAGES; page += 1) {
     const result = await readTranscriptPage(api, roomId, botActorId, before);
     collected.push(...result.messages);
     if (!result.nextBefore) break;
+    // Paging must move to older messages; a cursor that does not would read forever.
+    if (before !== undefined && BigInt(result.nextBefore) >= BigInt(before)) throw new Error('ROOM_HISTORY_STALLED');
     before = result.nextBefore;
   }
   return collected.sort(byMessageTime);

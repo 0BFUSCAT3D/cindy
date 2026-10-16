@@ -34,9 +34,9 @@ export function isUnreachable(error: unknown): boolean {
 
 const TRANSIENT_ATTACHMENT = /^(MEDIA_DOWNLOAD_FAILED|OWNER_CHANGED|fetch failed|net::ERR_\w+)$/;
 /**
- * A file that may still come on a later try (network, a failing server, an expired signed address,
- * the account changing): the step fails and is retried. Anything else (too large, gone, refused)
- * never will, and only then does the file stay a name in the text.
+ * A file that may still come on a later try (network, a failing server or 5xx/408/429, a download
+ * that ended without a status, the account changing): the step fails and is retried. Anything
+ * else (too large, gone or refused with a 4xx) never will, and only then does the file stay a name.
  */
 export function isTransientAttachmentFailure(error: unknown): boolean {
   if (isUnreachable(error)) return true;

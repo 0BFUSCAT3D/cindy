@@ -283,7 +283,7 @@ export async function importCloudHistory(input: {
   log?: CompanionLog;
 }): Promise<number> {
   const fence = input.fence ?? noFence;
-  const messages = await readAllRoomMessages(input.api, input.roomId, input.botActorId);
+  const messages = await readAllRoomMessages(input.api, input.roomId, input.botActorId, { complete: true });
   if (!messages.length) return 0;
   // Rows already imported, and delivered direct-room messages, name their room message in the
   // client id: exact. Rows mirrored from this Session keep their local timestamp; the server

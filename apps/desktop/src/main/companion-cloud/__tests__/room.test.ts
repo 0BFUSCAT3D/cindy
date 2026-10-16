@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readAllRoomMessages, transcriptPageOf } from '../room.js';
+import { ROOM_HISTORY_MAX_PAGES, readAllRoomMessages, transcriptPageOf } from '../room.js';
 import type { CompanionTranscriptMessage } from '../../../shared/companionCloud.js';
 import { fakeApi } from './fakes.js';
 
@@ -22,6 +22,28 @@ describe('reading the whole room', () => {
     expect(all[0]!.text).toBe('t101');
     expect(all.at(-1)!.text).toBe('t100');
     expect(all[0]!.role).toBe('assistant');
+  });
+});
+
+describe('reading the whole room for a take-over or a merge', () => {
+  const pages = (count: number) => fakeApi((route) => {
+    // `count` full pages, newest first; seq counts down from count * 100.
+    const before = Number(/before=(\d+)/.exec(route)?.[1] ?? count * 100 + 1);
+    const top = before - 1;
+    if (top < 1) return [];
+    return Array.from({ length: Math.min(100, top) }, (_, i) => message(top - i, top - i));
+  });
+
+  it('reads past the view limit to the first message instead of stopping part way', async () => {
+    const { api } = pages(ROOM_HISTORY_MAX_PAGES + 2);
+    expect(await readAllRoomMessages(api, 'room', 'bot')).toHaveLength(ROOM_HISTORY_MAX_PAGES * 100);
+    expect(await readAllRoomMessages(api, 'room', 'bot', { complete: true })).toHaveLength((ROOM_HISTORY_MAX_PAGES + 2) * 100);
+  });
+
+  it('fails instead of reading forever when the cursor does not move', async () => {
+    const stuck = Array.from({ length: 100 }, (_, i) => message(500 - i, 500 - i));
+    const { api } = fakeApi(() => stuck);
+    await expect(readAllRoomMessages(api, 'room', 'bot', { complete: true })).rejects.toThrow('ROOM_HISTORY_STALLED');
   });
 });
 
