@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ipcMain } from 'electron';
 
 import type { ProviderShareManagementCommand } from '../../../shared/providerManagement';
+import type { ProviderUsageHistoryView } from '../../../shared/providerShare';
 
 const state = vi.hoisted(() => ({ owner: 'owner-a', boundaryPending: false }));
 const api = vi.hoisted(() => ({ createLink: vi.fn(), approve: vi.fn(), reject: vi.fn(), setMember: vi.fn() }));
@@ -53,7 +54,13 @@ vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), s
 vi.mock('../providerShareGuestPrefs.js', () => ({ configureProviderShareGuestPrefs: vi.fn(), invalidateProviderShareGuestPrefsCache: vi.fn() }));
 vi.mock('../providerShareGuestPrefsIpc.js', () => ({ setProviderShareCredentialConsentFromIpc: vi.fn() }));
 
-import { executeProviderShareManagementCommand, registerProviderShareIpc, startProviderShareRuntime, stopProviderShareRuntime } from '../providerShareRuntime';
+import {
+  executeProviderShareManagementCommand,
+  registerProviderShareIpc,
+  startProviderShareRuntime,
+  stopProviderShareRuntime,
+  trimProviderUsageHistory,
+} from '../providerShareRuntime';
 
 const createLink: ProviderShareManagementCommand = { action: 'create-link', providerId: 'anthropic' };
 const LINK_ID = 'a'.repeat(64);
@@ -80,11 +87,52 @@ beforeEach(() => {
 
 afterEach(() => stopProviderShareRuntime());
 
+const historyRow = (index: number, model = 'model-' + index): ProviderUsageHistoryView['self']['days'][number] => ({
+  day: '2026-10-17',
+  kind: 'claude-code',
+  providerId: 'anthropic',
+  memberKey: 'local',
+  model,
+  turns: 1,
+  inputTokens: 1,
+  outputTokens: 1,
+  cacheReadTokens: 0,
+  cacheCreateTokens: 0,
+  amount: null,
+});
+
+const historyWithRows = (rows: ProviderUsageHistoryView['self']['days']): ProviderUsageHistoryView => ({
+  providerId: 'anthropic',
+  todayKey: '2026-10-17',
+  coverageStart: null,
+  self: { lastUsedAt: null, days: rows },
+  relays: [],
+  members: [],
+});
+
+describe('provider share usage history wire budget', () => {
+  it('caps the global row count even when the newest day alone has more rows', () => {
+    const trimmed = trimProviderUsageHistory(historyWithRows(Array.from({ length: 5_001 }, (_, index) => historyRow(index))));
+    expect(trimmed.self.days).toHaveLength(5_000);
+    expect(trimmed.coverageStart).toBe('2026-10-17');
+  });
+
+  it('also trims by UTF-8 JSON bytes and reports the retained date', () => {
+    const rows = Array.from({ length: 4_000 }, (_, index) => '模型-' + index + '-' + '很'.repeat(600))
+      .map((model, index) => historyRow(index, model));
+    const trimmed = trimProviderUsageHistory(historyWithRows(rows));
+    expect(trimmed.self.days.length).toBeLessThan(rows.length);
+    expect(Buffer.byteLength(JSON.stringify(trimmed), 'utf8')).toBeLessThanOrEqual(2 * 1024 * 1024 - 1_024);
+    expect(trimmed.coverageStart).toBe('2026-10-17');
+  });
+});
+
 describe('same-account share management during account transitions', () => {
   it.each([
     createLink, ...mutations,
     { action: 'owned', range: '7d' },
     { action: 'own-usage', providerId: 'anthropic', range: '7d' },
+    { action: 'usage-history', providerId: 'anthropic' },
   ] satisfies ProviderShareManagementCommand[])('refuses $action at entry while teardown is pending', async (command) => {
     state.boundaryPending = true;
     await expect(executeProviderShareManagementCommand(command)).rejects.toThrow(/PRECONDITION_FAILED/);

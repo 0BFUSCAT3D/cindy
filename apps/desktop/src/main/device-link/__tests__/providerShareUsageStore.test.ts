@@ -75,6 +75,36 @@ describe('provider share usage store', () => {
     expect(after.find((model) => model.memberKey === null)).toMatchObject({ turns: 5, inputTokens: 50 });
   });
 
+  // 「用量」块按天筛选(provider-groups.md §7)：每天按组内电脑拆开，拆法与 query 相同。
+  it('lists daily usage per member split by computer, newest day first and only for requested shares', () => {
+    let now = new Date(2026, 9, 10, 12).getTime();
+    const file = path.join(dir, 'usage.json');
+    fs.writeFileSync(file, JSON.stringify({
+      version: 1,
+      rows: [{
+        day: '2026-10-09', shareId: 's', memberId: 'm', kind: 'claude-code', providerId: 'anthropic', model: 'opus',
+        turns: 3, inputTokens: 30, outputTokens: 3, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 1,
+      }],
+    }));
+    const store = createProviderShareUsageStore(file, { now: () => now });
+    store.record('s', 'm', { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 10, 1)] });
+    store.record('s', 'm', { kind: 'claude-code', providerId: 'anthropic', memberKey: 'device:studio:a2', samples: [sample('opus', 20, 2)] });
+    now = new Date(2026, 9, 11, 12).getTime();
+    store.record('s', 'm', { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 5, 5)] });
+    store.record('other', 'x', { kind: 'codex', providerId: 'openai', memberKey: 'local', samples: [sample('gpt', 1, 1)] });
+
+    const history = store.history(new Set(['s']));
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ shareId: 's', memberId: 'm', lastUsedAt: now });
+    expect(history[0]!.days.map((row) => [row.day, row.memberKey, row.inputTokens])).toEqual([
+      ['2026-10-11', 'local', 5],
+      ['2026-10-10', 'local', 10],
+      ['2026-10-10', 'device:studio:a2', 20],
+      // 加组内电脑之前记的：没有区分电脑。
+      ['2026-10-09', null, 30],
+    ]);
+  });
+
   it('keeps existing computer distributions and all counters after exceeding the per-row capacity and restarting', async () => {
     const now = new Date(2026, 9, 11, 12).getTime();
     const file = path.join(dir, 'usage.json');
