@@ -287,7 +287,7 @@
     },
     "link": {
       "title": "{{provider}} Share Link Created",
-      "description": "Send the link to the person you want to share with. They’ll see what sharing means first, then send you a request; sharing starts once you approve it on this computer.",
+      "description": "Send the link. Sharing starts after you receive and approve their request.",
       "fieldLabel": "Share link",
       "copy": "Copy Link",
       "copied": "Copied",
@@ -1502,7 +1502,7 @@
         "noCompatibleModel": "No model is available for SSH. Connect a compatible provider in model settings first.",
         "errorWorkdirIsFile": "{{path}} exists but is not a directory; pick another path",
         "confirmCreateTitle": "Directory does not exist — create it?",
-        "confirmCreateDescription": "{{path}} does not exist on {{hostId}}. Click confirm to run mkdir -p on the remote and then enter the session.",
+        "confirmCreateDescription": "{{path}} does not exist on {{hostId}}. Confirm to create it there and enter the session.",
         "confirmCreateOk": "Create and continue"
       },
       "codexSync": {
@@ -2880,7 +2880,7 @@
         },
         "useLocalAccount": "Use local Codex account",
         "addIndependentAccount": "Sign in to a separate account",
-        "accountSourcesDescription": "Use your existing local Codex connection or sign in to a separately saved account. Both support the same features.",
+        "accountSourcesDescription": "Use your local Codex connection or sign in to a separately saved account.",
         "independentAccountDescription": "Sign in to a separately saved ChatGPT account, or connect with an API key.",
         "localUnavailable": "No local connection is available to reuse. Existing provider accounts will not be replaced."
       },
@@ -3474,7 +3474,7 @@
         "manualModelPlaceholder": "e.g. local-model",
         "addManualModel": "Add model",
         "recommended": "Recommended",
-        "modelsHint": "Checked models appear in the chat model picker and apply to every CLI where they're available; adjust anytime in provider details.",
+        "modelsHint": "Selected models appear in the chat model picker and apply to supported CLIs.",
         "noModelSelected": "Select at least one model",
         "createdToast": "Added {{name}}",
         "createFailed": "Failed to add. Please try again",
@@ -3936,7 +3936,7 @@
         },
         "step4": {
           "title": "Copy your user ID",
-          "body": "Enable Developer Mode in Discord user settings, right-click your own avatar, then choose Copy User ID."
+          "body": "Enable Developer Mode, right-click your avatar, and choose Copy User ID."
         }
       }
     },
@@ -3958,7 +3958,7 @@
       "secretPlaceholder": "Bot Secret from WeCom administration",
       "showSecret": "Show Secret",
       "hideSecret": "Hide Secret",
-      "setupHint": "Create an intelligent bot in WeCom administration, enable long connection, then enter its Bot ID and Secret.",
+      "setupHint": "Create an intelligent bot, enable long connection, and enter its Bot ID and Secret.",
       "ownerHint": "After connecting, the first member to DM the bot becomes this computer's owner. Only that member can trigger the Agent.",
       "connect": "Save and connect",
       "reconnect": "Reconnect",
@@ -4529,10 +4529,10 @@
       "backToGeneral": "Back to General",
       "description": "Extensions stay in Cindy on this device. Any ordinary Pi task executed here can use them, even when started from a phone or another connected client. Review does not load them.",
       "installSectionTitle": "Install an extension",
-      "installSectionDescription": "Paste the install source from a pi.dev page, or enter an npm package name, Git URL, or absolute local path.",
+      "installSectionDescription": "Paste an install source, npm package name, Git URL, or absolute local path.",
       "installedSectionTitle": "Installed",
       "sourcePlaceholder": "npm package, Git URL, or absolute local path",
-      "inspectionHint": "Packages are installed and loaded by Pi’s native package system. Cindy only displays advisory compatibility details; unknown, unsupported, or failed analysis never blocks installation or enablement.",
+      "inspectionHint": "Compatibility details are advisory and do not block installation or enablement.",
       "install": "Install",
       "update": "Update",
       "remove": "Uninstall",
@@ -4649,7 +4649,7 @@
         "title": "Browser automation",
         "description": "A dedicated browser for agents — separate from your everyday Chrome",
         "toggleAria": "Toggle browser automation",
-        "toggleHint": "This toggle only applies to agent sessions started afterward; it does not affect a session that is already running.",
+        "toggleHint": "Applies only to new Agent sessions.",
         "noProjectHint": "Open Settings from a project session to toggle browser automation for that project.",
         "detected": "Detected {{browser}}",
         "notDetected": "No local browser detected. Install Chrome to use browser automation.",
@@ -4727,7 +4727,7 @@
         "description": "Let agents inspect and operate a connected Android device over ADB",
         "toggleAria": "Toggle Android automation",
         "refresh": "Recheck",
-        "toggleHint": "This machine-wide toggle only applies to agent sessions started afterward; it does not affect a session that is already running.",
+        "toggleHint": "Applies only to new Agent sessions.",
         "status": {
           "checking": "Checking ADB status…",
           "disabled": "Android automation is off. Turn it on to detect ADB and devices.",
@@ -5242,7 +5242,7 @@
             "usageLabel": "How to Use It",
             "usageBody": "Post on X mentioning @askmycindy and the task is dispatched to this device to run here; the result comes back as a reply.",
             "riskLabel": "Replies Are Public",
-            "riskPublicBody": "Our reply is a public post that anyone can read. This suits questions and problems you are happy to work through in the open — not private matters, where it risks exposing them.",
+            "riskPublicBody": "Replies are public and visible to anyone. Use this for public questions and problems, not private matters that could expose your privacy.",
             "riskWorkdirBody": "Every X task runs in the default working directory set in X connection settings. The Agent can read and write files there, and its conclusion is posted publicly — if that directory points at a private repository, file contents may become public with it.",
             "withdrawLabel": "To Withdraw a Reply",
             "withdrawBody": "The person who asked can delete the answer by replying “@askmycindy /delete” to it. Include @askmycindy in the reply text. Only the public reply is deleted; the local task record is kept.",
@@ -5396,8 +5396,8 @@
           "wecom": "New WeCom conversations use this Agent, model, and permission mode. Existing sessions switch to this Agent and model on their next message unless their model was changed manually; send /new in an existing chat to apply the permission mode."
         },
         "agentLabel": "Agent",
-        "agentUnsupportedOnChannelHint": "{{agent}} Agent does not support per-message permission confirmations on this channel; messages cannot be processed. Switch to Claude Code or Codex.",
-        "agentUnsupportedOnChannelModeHint": "After switching the Agent and sending /new, if the new Agent still reports a permission-mode issue, send /permission to adjust the permission mode.",
+        "agentUnsupportedOnChannelHint": "{{agent}} cannot handle per-message approvals here. Use Claude Code or Codex to process messages.",
+        "agentUnsupportedOnChannelModeHint": "After switching Agent, send /new; if permission issues persist, send /permission.",
         "permissionModeUnsupportedOnChannelHint": "The current Agent cannot run on this channel in this permission mode, so messages cannot be processed. Send /permission to choose a supported mode.",
         "modelLabel": "Model Configuration",
         "loading": "Loading new conversation configuration…",
@@ -6324,7 +6324,7 @@
             "title": "Custom Plugin Marketplace Guide",
             "intro": "A plugin marketplace is a Git repository or local folder with a manifest file, used to distribute a set of Cindy plugins.",
             "structureTitle": "Directory Structure",
-            "structureBody": "A marketplace needs one manifest file plus one directory per plugin. Every plugin directory must contain a valid ghost.json (the plugin identity card).",
+            "structureBody": "Provide a manifest and plugin directories, each with a valid ghost.json.",
             "structureLabelManifest": "manifest",
             "structureLabelGhostCard": "Plugin card",
             "structureLabelEntry": "Plugin entry",
@@ -7146,7 +7146,7 @@
       "create": {
         "title": "Create a Personal Build",
         "cancel": "Cancel",
-        "description": "Describe what you want to change in Cindy. A task will open with the same workflow to check your environment, prepare the source, and continue making your build.",
+        "description": "Describe what you want to change in Cindy.",
         "requestLabel": "What would you like to change?",
         "requestHint": "Up to {{max}} characters. Follow progress in the task after submitting. Leaving Settings will not stop preparation.",
         "placeholder": "For example: add a filter button to show only unfinished tasks in the task list.",
@@ -8031,7 +8031,7 @@
       "screenshotFailed": "Screenshot failed",
       "comment": "Comment on the page",
       "exitCommentMode": "Exit comment mode",
-      "commentModeHint": "Click an element or Shift-drag an area · Cmd/Ctrl-click to add instantly · Esc to exit",
+      "commentModeHint": "Click element · Shift-drag to select · Cmd/Ctrl-click to add instantly · Esc to exit",
       "commentPlaceholder": "Describe the change you want here…",
       "commentSubmit": "Add comment",
       "commentCancel": "Cancel",
@@ -9341,7 +9341,7 @@
         "speakingMode": "Speaking order",
         "speakingModeAuto": "Automatic",
         "speakingModeSequential": "One at a time",
-        "speakingModeAutoNote": "Without @mentions or with @Everyone, teammates think at the same time in the first pass, then reply one after another. Mentioned teammates answer in the order you mentioned them.",
+        "speakingModeAutoNote": "No mentions or @Everyone: think simultaneously on the first pass, then take turns. Mentioned teammates reply in mention order.",
         "speakingModeSequentialNote": "One teammate speaks at a time, and each one sees the replies before it.",
         "speakingModeSaveFailed": "Couldn't save the speaking order. Try again.",
         "setOrganizer": "Make Organizer",
@@ -10481,7 +10481,7 @@
         "refining": "Refining",
         "permissionDialog": {
           "title": "Microphone permission required",
-          "description": "The app needs microphone permission to use voice input in this text box. After granting permission, click voice input again.",
+          "description": "Allow microphone access, then click voice input again.",
           "confirm": "Grant permission",
           "cancel": "Cancel"
         }
@@ -13310,7 +13310,7 @@
       "fetchFailedHint": "Couldn't load the latest status. Showing only submissions recorded on this device, so this list may be incomplete.",
       "fetchFailedPartialHint": "Couldn't load the latest status, so some issues may show incomplete status.",
       "enhancementFailedHint": "Couldn't read the issues filed from your GitHub account. The Cindy GitHub plugin's access token may not have enough permissions — check it on the plugin page.",
-      "enhancementFailedGenericHint": "Couldn't read the issues filed from your GitHub account — likely a network hiccup or GitHub rate limit. Try refreshing in a moment.",
+      "enhancementFailedGenericHint": "Could not load your GitHub issues. Retry from the top right.",
       "truncatedHint": "There are more issues than shown here — open GitHub for the full list."
     },
     "redirect": {
@@ -14359,7 +14359,7 @@
     "workingDirRequired": "Working directory is required",
     "dialogUnavailable": "window.electronAPI.dialog not available",
     "notReadyHeading": "Maker Experimental",
-    "notReadyBody": "window.electronAPI.maker is not available. Restart the app and check console for IPC registration errors.",
+    "notReadyBody": "This feature is unavailable. Restart the app.",
     "title": "Maker Experimental — Stage 1 refactor pipeline",
     "description": "New pipeline validation page. The legacy pipeline (cc-agent / codex) is unaffected.",
     "agentLabel": "Agent:",
@@ -14812,7 +14812,7 @@
   "sessionShare": {
     "export": {
       "title": "Export session",
-      "sensitiveWarning": "The exported file contains this session's full chat history and tool outputs (may include file contents and command results). Make sure you trust the recipient.",
+      "sensitiveWarning": "The export includes full chat history and tool outputs, possibly with sensitive information. Only share with trusted recipients.",
       "encryptLabel": "Encrypt the exported file with a password",
       "passwordPlaceholder": "Password (at least 4 characters)",
       "passwordConfirmPlaceholder": "Confirm password",

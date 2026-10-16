@@ -285,7 +285,7 @@
     },
     "link": {
       "title": "分享 {{provider}} 的链接已生成",
-      "description": "把链接发给你想分享的人。对方打开后会先看到说明，确认后向你发送申请，你在这台电脑上同意后分享才会生效。",
+      "description": "将链接发给对方，收到申请并同意后分享生效",
       "fieldLabel": "分享链接",
       "copy": "复制链接",
       "copied": "已复制",
@@ -1475,7 +1475,7 @@
         "noCompatibleModel": "没有可用于 SSH 远端的模型，请先在模型设置中连接兼容的供应商",
         "errorWorkdirIsFile": "{{path}} 已存在但不是目录，换一个路径",
         "confirmCreateTitle": "目录不存在，创建吗？",
-        "confirmCreateDescription": "{{path}} 在 {{hostId}} 上不存在。点确认会在远端跑 mkdir -p 创建它，然后进入任务。",
+        "confirmCreateDescription": "{{path}} 在 {{hostId}} 上不存在；确认后远端创建并进入任务。",
         "confirmCreateOk": "创建并继续"
       },
       "codexSync": {
@@ -2853,7 +2853,7 @@
         },
         "useLocalAccount": "使用本机 Codex 账号",
         "addIndependentAccount": "登录独立账号",
-        "accountSourcesDescription": "使用已有的本机 Codex 连接，或登录一个独立保存的账号。两种方式支持相同功能。",
+        "accountSourcesDescription": "使用本机 Codex 连接，或登录单独保存的账号",
         "independentAccountDescription": "登录一个独立保存的 ChatGPT 账号，或使用 API key 接入。",
         "localUnavailable": "当前没有可直接复用的本机连接。已有供应商绑定的账号不会被替换。"
       },
@@ -3445,7 +3445,7 @@
         "manualModelPlaceholder": "例如 local-model",
         "addManualModel": "添加模型",
         "recommended": "推荐",
-        "modelsHint": "勾选的模型将出现在对话的模型选择器中，对可用的 CLI 同时生效；之后可在供应商详情里随时调整。",
+        "modelsHint": "勾选模型会加入对话模型列表，也适用于可用的 CLI",
         "noModelSelected": "请至少勾选一个模型",
         "createdToast": "已添加「{{name}}」",
         "createFailed": "添加失败，请重试",
@@ -3907,7 +3907,7 @@
         },
         "step4": {
           "title": "复制用户 ID",
-          "body": "在 Discord 用户设置开启 Developer Mode，右键自己的头像，选择 Copy User ID。"
+          "body": "开启 Developer Mode，右键自己的头像并选择 Copy User ID"
         }
       }
     },
@@ -3929,7 +3929,7 @@
       "secretPlaceholder": "企业微信后台中的机器人 Secret",
       "showSecret": "显示 Secret",
       "hideSecret": "隐藏 Secret",
-      "setupHint": "在企业微信管理后台创建智能机器人并启用长连接，然后填入 Bot ID 和 Secret。",
+      "setupHint": "创建智能机器人并启用长连接，填写 Bot ID 和 Secret",
       "ownerHint": "连接后，首个向机器人发送单聊消息的成员会绑定为本机 owner；仅该成员可触发 Agent。",
       "connect": "保存并连接",
       "reconnect": "重新连接",
@@ -4500,10 +4500,10 @@
       "backToGeneral": "返回通用",
       "description": "扩展只安装并运行在这台设备的 Cindy 中，不会传到手机或其他设备。无论任务从哪里发起，只要由这台设备的普通 Pi 执行都会生效；Review 不加载。",
       "installSectionTitle": "安装扩展",
-      "installSectionDescription": "粘贴 pi.dev 页面上的安装来源，或输入 npm 包名、Git 地址、本地绝对路径。",
+      "installSectionDescription": "粘贴安装来源、npm 包名、Git 地址或本地绝对路径",
       "installedSectionTitle": "已安装",
       "sourcePlaceholder": "npm 包名、Git 地址或本地绝对路径",
-      "inspectionHint": "Pi 包由 Pi 原生包系统安装和加载。Cindy 只展示建议性兼容详情；未知、不支持或分析失败都不会阻止安装和启用。",
+      "inspectionHint": "兼容详情仅供参考，不影响安装和启用",
       "install": "安装",
       "update": "更新",
       "remove": "卸载",
@@ -4620,7 +4620,7 @@
         "title": "自动操作浏览器",
         "description": "一个 Agent 专用的独立浏览器，与你日常的 Chrome 互不影响",
         "toggleAria": "切换浏览器自动化",
-        "toggleHint": "这个开关只对之后新建的 Agent 会话生效；已在运行的 Agent 会话不受影响。",
+        "toggleHint": "仅对新建的 Agent 会话生效",
         "noProjectHint": "从项目任务中打开「设置」可针对该项目开关浏览器自动化。",
         "detected": "已检测到 {{browser}}",
         "notDetected": "未检测到本机浏览器。安装 Chrome 后即可使用浏览器自动化。",
@@ -4698,7 +4698,7 @@
         "description": "让 Agent 通过 ADB 检查并操作已连接的 Android 设备",
         "toggleAria": "切换 Android 自动化",
         "refresh": "重新检查",
-        "toggleHint": "这个全局开关只对之后新建的 Agent 会话生效；已在运行的 Agent 会话不受影响。",
+        "toggleHint": "仅对新建的 Agent 会话生效",
         "status": {
           "checking": "正在检查 ADB 状态…",
           "disabled": "Android 自动化未启用。启用后将检测 ADB 与设备。",
@@ -5213,7 +5213,7 @@
             "usageLabel": "怎么用",
             "usageBody": "在 X 上发一条推文 @askmycindy，任务就会派到这台设备上执行，结论以回帖发回给你。",
             "riskLabel": "回帖是公开的",
-            "riskPublicBody": "我们的回复是一条公开推文，任何人都能看到。这个功能适合公开地找答案、解决问题，不适合处理私事 —— 那会有隐私暴露的风险。",
+            "riskPublicBody": "回复是公开推文，任何人都能看到。适合公开提问、解决问题；不适合处理私事，以免暴露隐私。",
             "riskWorkdirBody": "X 任务都落在 X 连接设置里的默认工作目录，Agent 能读写其中文件，而结论会公开回帖 —— 默认目录指到私密仓库时，文件内容可能随之公开。",
             "withdrawLabel": "想撤回",
             "withdrawBody": "提问者在要删除的回答下回复「@askmycindy /delete」（或「@askmycindy /删除」），正文中必须手动带上 @askmycindy。只删公开回帖，本地任务记录保留。",
@@ -5367,8 +5367,8 @@
           "wecom": "企业微信新对话会使用这组 Agent、模型和权限模式；已有任务若没单独改过模型，会在收到下一条消息时换用这组 Agent 和模型，权限模式仍在已有对话发送 /new 后应用。"
         },
         "agentLabel": "Agent",
-        "agentUnsupportedOnChannelHint": "{{agent}} Agent 不支持此渠道的逐条权限确认，消息将无法处理。请改用 Claude Code 或 Codex。",
-        "agentUnsupportedOnChannelModeHint": "切换 Agent 后发送 /new，若新的 Agent 仍提示权限模式问题，请再发送 /permission 调整权限模式。",
+        "agentUnsupportedOnChannelHint": "此渠道用 {{agent}} 无法逐条授权及处理消息；请改用 Claude Code 或 Codex。",
+        "agentUnsupportedOnChannelModeHint": "切换 Agent 后发送 /new；仍有权限问题则发送 /permission",
         "permissionModeUnsupportedOnChannelHint": "当前 Agent 不支持以此权限模式在该渠道运行，消息将无法处理。请发送 /permission 调整权限模式。",
         "modelLabel": "模型配置",
         "loading": "正在读取新对话配置…",
@@ -6295,7 +6295,7 @@
             "title": "自定义插件市场指南",
             "intro": "插件市场是一个带有清单文件的 Git 仓库或本地文件夹，用来分发一组 Cindy 插件。",
             "structureTitle": "目录结构",
-            "structureBody": "市场仓库需要一份清单文件，以及若干插件目录。每个插件目录必须包含合法的 ghost.json（插件身份卡）。",
+            "structureBody": "需提供清单及含有效 ghost.json 的插件目录",
             "structureLabelManifest": "清单",
             "structureLabelGhostCard": "插件身份卡",
             "structureLabelEntry": "插件入口",
@@ -7116,7 +7116,7 @@
       "create": {
         "title": "创建个人版本",
         "cancel": "取消",
-        "description": "说说你想让 Cindy 做哪些改变。接下来会打开制作任务，使用统一流程检查环境、准备源码，再继续制作。",
+        "description": "说说你想让 Cindy 做哪些改变",
         "requestLabel": "你想做哪些改变？",
         "requestHint": "最多 {{max}} 字。提交后可在任务中继续查看进度，离开设置页不会停止准备。",
         "placeholder": "例如：在任务列表增加一个只看未完成任务的筛选按钮。",
@@ -8001,7 +8001,7 @@
       "screenshotFailed": "截图失败",
       "comment": "页面评论",
       "exitCommentMode": "退出评论模式",
-      "commentModeHint": "点击元素或 Shift 拖拽框选区域 · Cmd/Ctrl+点击直接添加 · Esc 退出",
+      "commentModeHint": "点击元素 · Shift 拖拽框选 · Cmd/Ctrl+点击直接添加 · Esc 退出",
       "commentPlaceholder": "描述这里需要怎么改…",
       "commentSubmit": "添加评论",
       "commentCancel": "取消",
@@ -9297,7 +9297,7 @@
         "speakingMode": "发言方式",
         "speakingModeAuto": "自动",
         "speakingModeSequential": "始终轮流",
-        "speakingModeAutoNote": "没有 @ 人或 @所有人时，第一圈大家同时想，之后轮流接话；@ 了伙伴就按 @ 的先后轮流。",
+        "speakingModeAutoNote": "未 @ 人或 @所有人时，首轮同时思考，之后轮流；@ 伙伴按提及顺序轮流。",
         "speakingModeSequentialNote": "每次只有一位伙伴发言，后说的能看到前面的回答。",
         "speakingModeSaveFailed": "发言方式没能保存，请再试一次",
         "setOrganizer": "设为负责人",
@@ -10437,7 +10437,7 @@
         "refining": "正在润色",
         "permissionDialog": {
           "title": "需要麦克风权限",
-          "description": "App 需要麦克风权限才能在输入框里使用语音输入。授权后，请再次点击语音输入按钮。",
+          "description": "请开启麦克风权限，再点击语音输入",
           "confirm": "去授权",
           "cancel": "取消"
         }
@@ -13252,7 +13252,7 @@
       "fetchFailedHint": "暂时取不到最新状态，当前只显示本机记录的提交，列表可能不完整。",
       "fetchFailedPartialHint": "暂时取不到最新状态，部分 Issue 的状态可能显示不全。",
       "enhancementFailedHint": "暂时没能读取你 GitHub 账号名下的 Issue。可能是 Cindy GitHub 插件的访问令牌权限不足，可到插件页检查。",
-      "enhancementFailedGenericHint": "暂时没能读取你 GitHub 账号名下的 Issue，可能是网络问题或 GitHub 接口限流，稍后可以点右上角重试。",
+      "enhancementFailedGenericHint": "无法读取 GitHub Issue，请点右上角重试",
       "truncatedHint": "Issue 较多，这里只列出了一部分，完整列表请在 GitHub 上查看。"
     },
     "redirect": {
@@ -14301,7 +14301,7 @@
     "workingDirRequired": "需要工作目录",
     "dialogUnavailable": "window.electronAPI.dialog 不可用",
     "notReadyHeading": "Maker Experimental",
-    "notReadyBody": "window.electronAPI.maker 不可用。请重启应用并检查控制台中的 IPC 注册错误。",
+    "notReadyBody": "该功能暂不可用，请重启应用",
     "title": "Maker Experimental — 一阶段重构新链路",
     "description": "新链路验证页面。老链路（cc-agent / codex）不受影响。",
     "agentLabel": "Agent：",
@@ -14753,7 +14753,7 @@
   "sessionShare": {
     "export": {
       "title": "导出任务",
-      "sensitiveWarning": "导出文件包含此任务的完整对话记录与工具输出（可能含文件内容、命令结果等敏感信息），请确认接收方可信。",
+      "sensitiveWarning": "导出包含完整对话和工具输出，可能有敏感信息，请确认接收方可信。",
       "encryptLabel": "使用密码加密导出文件",
       "passwordPlaceholder": "密码（至少 4 位）",
       "passwordConfirmPlaceholder": "再次输入密码",

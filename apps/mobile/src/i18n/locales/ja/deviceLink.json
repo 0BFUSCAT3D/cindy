@@ -37,7 +37,7 @@
   "versionMismatchTitle": "バージョンが一致しません",
   "versionMismatchHint": "このアプリのバージョンはサービスと互換性がありません。最新版に更新して再試行してください。",
   "unstableTitle": "接続が繰り返し切断されています",
-  "unstableHint": "接続が切断と再接続を繰り返しています。ネットワークを確認し、続く場合はアプリを再起動してください。",
+  "unstableHint": "接続が不安定です。ネットワークを確認して再試行してください。",
   "relay": {
     "label": {
       "online": "Relay 接続済み",
