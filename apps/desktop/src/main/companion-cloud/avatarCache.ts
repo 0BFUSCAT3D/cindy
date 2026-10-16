@@ -13,11 +13,21 @@ import { BOT_AVATAR_MAX_BYTES, isManagedBotAvatarUrl } from '../../shared/botAva
 
 export const COMPANION_AVATAR_CACHE = 'companion-avatar';
 
+/**
+ * The account's media store, captured when a lookup starts: a download that finishes after the
+ * account changed is never written into the next one (`put` throws instead).
+ */
+export interface CompanionAvatarScope {
+  /** Identifies the account; in-flight downloads and retry pauses are kept per account. */
+  key: string;
+  get: (cacheKey: string) => Promise<string | null>;
+  put: (cacheKey: string, bytes: Uint8Array, mimeType: string) => Promise<string>;
+}
+
 export interface CompanionAvatarCacheDeps {
   /** Local blob address when this store already holds that content (any source). */
   localBlob: (url: string) => Promise<string | null>;
-  get: (cacheKey: string) => Promise<string | null>;
-  put: (cacheKey: string, bytes: Uint8Array, mimeType: string) => Promise<string>;
+  scope: () => CompanionAvatarScope;
   /** Image bytes of another computer's media (device-link), bounded. */
   fetchFromDevice: (deviceId: string, url: string) => Promise<{ buffer: Uint8Array; mimeType?: string }>;
   /** Public image bytes through the guarded download (no private networks), bounded. */
@@ -50,16 +60,16 @@ export function createCompanionAvatarCache(deps: CompanionAvatarCacheDeps) {
   const inflight = new Map<string, Promise<string | null>>();
   const failedUntil = new Map<string, number>();
 
-  async function lookup(request: CompanionAvatarRequest, key: string): Promise<string | null> {
+  async function lookup(scope: CompanionAvatarScope, request: CompanionAvatarRequest, key: string): Promise<string | null> {
     // Same content already here (e.g. it was handed to this computer once): no copy needed.
     if (!request.avatar.startsWith('https://')) {
       const local = await deps.localBlob(request.avatar).catch(() => null);
       if (local) return local;
     }
-    return deps.get(key).catch(() => null);
+    return scope.get(key).catch(() => null);
   }
 
-  async function download(request: CompanionAvatarRequest, key: string): Promise<string | null> {
+  async function download(scope: CompanionAvatarScope, request: CompanionAvatarRequest, key: string): Promise<string | null> {
     const fetched = request.avatar.startsWith('https://')
       ? await deps.fetchPublic(request.avatar)
       : await deps.fetchFromDevice(request.deviceId!, request.avatar);
@@ -67,7 +77,7 @@ export function createCompanionAvatarCache(deps: CompanionAvatarCacheDeps) {
     // The sender's MIME is not trusted: only bytes that are an image are kept.
     const mimeType = deps.sniff(fetched.buffer);
     if (!mimeType?.startsWith('image/')) return null;
-    return deps.put(key, fetched.buffer, mimeType);
+    return scope.put(key, fetched.buffer, mimeType);
   }
 
   return {
@@ -75,19 +85,21 @@ export function createCompanionAvatarCache(deps: CompanionAvatarCacheDeps) {
     async resolve(request: CompanionAvatarRequest): Promise<string | null> {
       const key = companionAvatarKey(request.avatar, request.deviceId);
       if (!key) return null;
-      const hit = await lookup(request, key);
+      const scope = deps.scope();
+      const hit = await lookup(scope, request, key);
       if (hit || !request.fetch) return hit;
-      if ((failedUntil.get(key) ?? 0) > now()) return null;
-      const pending = inflight.get(key);
+      const slot = `${scope.key}\n${key}`;
+      if ((failedUntil.get(slot) ?? 0) > now()) return null;
+      const pending = inflight.get(slot);
       if (pending) return pending;
-      const run = download(request, key)
+      const run = download(scope, request, key)
         .catch(() => null)
         .then((url) => {
-          if (url) failedUntil.delete(key); else failedUntil.set(key, now() + FAILURE_BACKOFF_MS);
+          if (url) failedUntil.delete(slot); else failedUntil.set(slot, now() + FAILURE_BACKOFF_MS);
           return url;
         })
-        .finally(() => { inflight.delete(key); });
-      inflight.set(key, run);
+        .finally(() => { inflight.delete(slot); });
+      inflight.set(slot, run);
       return run;
     },
   };

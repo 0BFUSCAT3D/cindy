@@ -20,7 +20,8 @@ afterEach(() => { runtime?.dispose(); runtime = undefined; });
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
   installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
   readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: (botId: string) => Promise<void>;
-  turnActive?: () => boolean; homeLink?: CompanionCloudHost['homeLink']; stopBotTurns?: CompanionCloudHost['stopBotTurns'] }) {
+  turnActive?: () => boolean; homeLink?: CompanionCloudHost['homeLink']; stopBotTurns?: CompanionCloudHost['stopBotTurns'];
+  canonicalSession?: CompanionCloudHost['canonicalSession'] }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
@@ -38,7 +39,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   const host: CompanionCloudHost = {
     homes: createCompanionHomeRegistry(), openState: () => state,
     readValues: options.readValues ?? (async () => options.values ?? [{ key: 'companion.profile.v1', value: { name: 'Mia' } }]),
-    canonicalSession: async () => 'session-1', rowsAfter: async () => [], latestRows: async () => [],
+    canonicalSession: options.canonicalSession ?? (async () => 'session-1'), rowsAfter: async () => [], latestRows: async () => [],
     deliverToCanonical: async () => ({ ok: true }),
     materializer: local.host, listDevices: async () => options.devices ?? [],
     ...(options.installationId ? { installationId: () => options.installationId! } : {}),
@@ -650,11 +651,13 @@ describe('installation guard', () => {
 });
 
 describe('merging copies of Cindy', () => {
-  function mergeSetup(options: { sourceHome: string; flush?: ReturnType<typeof vi.fn>; turnActive?: () => boolean }) {
+  function mergeSetup(options: { sourceHome: string; flush?: ReturnType<typeof vi.fn>; turnActive?: () => boolean;
+    canonicalSession?: CompanionCloudHost['canonicalSession'] }) {
     const order: string[] = [];
     const flush = options.flush ?? vi.fn(async () => { order.push('flush'); return { ok: true as const }; });
     const homeLink = { version: vi.fn(async () => 2), targets: vi.fn(async () => []), handOver: vi.fn(async () => ({ ok: true as const })), flush };
-    const t = setup({ home: 'desk', homeLink, ...(options.turnActive ? { turnActive: options.turnActive } : {}), handler: (route, method) => {
+    const t = setup({ home: 'desk', homeLink, ...(options.turnActive ? { turnActive: options.turnActive } : {}),
+      ...(options.canonicalSession ? { canonicalSession: options.canonicalSession } : {}), handler: (route, method) => {
       if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: { ...MIA, templateId: 'cindy' }, revision: 1 }] : { revision: 1 };
       if (route === '/conversations') return { id: ROOM };
       if (route.includes('/messages?')) return [];
@@ -689,6 +692,12 @@ describe('merging copies of Cindy', () => {
     busy = false;
     expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: true, merged: 1 });
     expect(t.flush).not.toHaveBeenCalled();
+  });
+
+  it('leaves the copies active when the kept Cindy has no task here to take the conversation', async () => {
+    const t = mergeSetup({ sourceHome: 'laptop', canonicalSession: async () => null });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: false });
+    expect(t.order).toEqual(['flush']);
   });
 
   it('answers a flush request only as the copy\'s home', async () => {

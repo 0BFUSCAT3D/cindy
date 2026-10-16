@@ -317,8 +317,10 @@ export function startCompanionCloud(input: {
       const summary = await mergeCompanionsInto({ api: input.api, host: materializer, keep: keepActor, from: labelled, humanActorId: input.humanActorId,
         roomOf, fence, ...(input.media ? { media: input.media } : {}), ...(input.log ? { log: input.log } : {}),
         importHistory: async () => {
+          // Without its task here the merged conversation would never reach the kept Cindy: fail,
+          // so the copies stay active and the merge can run again.
           const sessionId = await input.host.canonicalSession(keepBotId);
-          if (!sessionId) return;
+          if (!sessionId) throw new Error('COMPANION_TASK_UNAVAILABLE');
           const inserted = await importCloudHistory({ api: input.api, host: materializer, sessionId, botActorId: keepActor.id,
             roomId: await roomOf(keepActor), fence, ...(input.media ? { download: input.media.download } : {}), ...(input.log ? { log: input.log } : {}) });
           // The merged conversation becomes the companion's context at its next idle point.
