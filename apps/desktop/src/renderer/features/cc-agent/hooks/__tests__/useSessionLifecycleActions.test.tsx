@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => ({
   beginPendingStatus: vi.fn(),
   completePendingStatus: vi.fn(),
   rollbackPendingStatus: vi.fn(),
-  isPendingStatusCurrent: vi.fn(),
   clearComposerDraft: vi.fn(),
   cleanupSessionLayoutPrefs: vi.fn(),
   cleanupSessionImages: vi.fn(),
@@ -60,7 +59,6 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
     beginPendingStatus: mocks.beginPendingStatus,
     completePendingStatus: mocks.completePendingStatus,
     rollbackPendingStatus: mocks.rollbackPendingStatus,
-    isPendingStatusCurrent: mocks.isPendingStatusCurrent,
   },
 }));
 
@@ -127,7 +125,6 @@ beforeEach(() => {
   );
   mocks.completePendingStatus.mockReturnValue(true);
   mocks.rollbackPendingStatus.mockReturnValue(true);
-  mocks.isPendingStatusCurrent.mockReturnValue(true);
   mocks.rollbackStatusTransition.mockReturnValue(true);
   mocks.refreshSessions.mockResolvedValue([]);
   mocks.cleanupSessionImages.mockResolvedValue(undefined);
@@ -355,27 +352,6 @@ describe('useSessionLifecycleActions archive optimistic ordering', () => {
     );
   });
 
-  it('drops a pre-begun remote archive that a later restore superseded during the preflight', async () => {
-    mocks.resolveStatusWriteTarget.mockResolvedValue({ kind: 'device-link', deviceId: 'device-1' });
-    // 「全部」筛选里预检期间用户已点了恢复:预先隐藏的归档凭据已被取代。
-    mocks.isPendingStatusCurrent.mockReturnValue(false);
-    const token = { deviceId: 'device-1', sessionId: 'remote-session', status: 'archived' as const };
-    const { result } = renderHook(() => useSessionLifecycleActions({ includeArchived: 'all' }));
-
-    await act(async () => {
-      await result.current.runSessionAction('remote-session', 'archive', {
-        activeSessionId: null,
-        remoteArchiveToken: token,
-      });
-    });
-
-    expect(mocks.isPendingStatusCurrent).toHaveBeenCalledWith(token);
-    expect(mocks.setStatus).not.toHaveBeenCalled();
-    expect(mocks.completePendingStatus).not.toHaveBeenCalled();
-    expect(mocks.rollbackPendingStatus).not.toHaveBeenCalled();
-    expect(mocks.toastError).not.toHaveBeenCalled();
-  });
-
   it('sends an unarchive only after the in-flight remote archive of the same task settles', async () => {
     const target = { kind: 'device-link', deviceId: 'device-1' };
     mocks.resolveStatusWriteTarget.mockResolvedValue(target);
@@ -444,93 +420,34 @@ describe('useSessionLifecycleActions archive optimistic ordering', () => {
     );
   });
 
-  it('reuses a pre-begun remote archive without hiding or navigating twice', async () => {
-    mocks.resolveStatusWriteTarget.mockResolvedValue({
-      kind: 'device-link',
-      deviceId: 'device-1',
-    });
-    const { result } = renderHook(() =>
-      useSessionLifecycleActions({ includeArchived: 'active' }),
-    );
-
-    let token: unknown;
-    act(() => {
-      token = result.current.beginRemoteArchive('remote-session', 'device-1', 'remote-session');
-    });
-    // 预检之前:行已消失、视图已跳离。
-    expect(mocks.beginPendingStatus).toHaveBeenCalledTimes(1);
-    expect(mocks.beginPendingStatus.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.navigate.mock.invocationCallOrder[0],
-    );
-    expect(mocks.navigate).toHaveBeenCalledTimes(1);
-
+  it('navigates before moving an archived remote row in the all bucket', async () => {
+    mocks.resolveStatusWriteTarget.mockResolvedValue({ kind: 'device-link', deviceId: 'device-1' });
+    const { result } = renderHook(() => useSessionLifecycleActions({ includeArchived: 'all' }));
     await act(async () => {
       await result.current.runSessionAction('remote-session', 'archive', {
         activeSessionId: 'remote-session',
-        remoteArchiveToken: token as never,
       });
     });
-
-    expect(mocks.beginPendingStatus).toHaveBeenCalledTimes(1);
     expect(mocks.navigate).toHaveBeenCalledTimes(1);
-    expect(mocks.completePendingStatus).toHaveBeenCalledWith(
-      token,
-      expect.objectContaining({ status: 'archived' }),
-    );
-  });
-
-  it('navigates before hiding a pre-begun remote row that stays in the all bucket', () => {
-    const { result } = renderHook(() => useSessionLifecycleActions({ includeArchived: 'all' }));
-
-    act(() => {
-      result.current.beginRemoteArchive('remote-session', 'device-1', 'remote-session');
-    });
-
+    expect(mocks.beginPendingStatus).toHaveBeenCalledTimes(1);
     expect(mocks.navigate.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.beginPendingStatus.mock.invocationCallOrder[0],
     );
   });
 
-  it('restores a pre-begun remote row when the caller cancels', () => {
-    const { result } = renderHook(() =>
-      useSessionLifecycleActions({ includeArchived: 'active' }),
-    );
-
-    act(() => {
-      const token = result.current.beginRemoteArchive('remote-session', 'device-1', null);
-      result.current.cancelRemoteArchive(token);
-    });
-
-    expect(mocks.rollbackPendingStatus).toHaveBeenCalledWith({
-      deviceId: 'device-1',
-      sessionId: 'remote-session',
-      status: 'archived',
-    });
-    expect(mocks.navigate).not.toHaveBeenCalled();
-    expect(mocks.setStatus).not.toHaveBeenCalled();
-  });
-
-  it('drops a pre-begun remote overlay when the write resolves to a local row', async () => {
+  it('uses the local status bucket when a copied remote task resolves to a local row', async () => {
     mocks.resolveStatusWriteTarget.mockResolvedValueOnce({ kind: 'local' });
-    const { result } = renderHook(() =>
-      useSessionLifecycleActions({ includeArchived: 'active' }),
-    );
-    const token = { deviceId: 'device-1', sessionId: 'copied', status: 'archived' as const };
-
+    const { result } = renderHook(() => useSessionLifecycleActions({ includeArchived: 'active' }));
     await act(async () => {
-      await result.current.runSessionAction('copied', 'archive', {
-        activeSessionId: null,
-        remoteArchiveToken: token,
-      });
+      await result.current.runSessionAction('copied', 'archive', { activeSessionId: null });
     });
-
-    expect(mocks.rollbackPendingStatus).toHaveBeenCalledWith(token);
     expect(mocks.beginStatusTransition).toHaveBeenCalledWith('copied', {
-      status: 'archived',
-      pinnedAt: null,
+      status: 'archived', pinnedAt: null,
     });
+    expect(mocks.beginPendingStatus).not.toHaveBeenCalled();
     expect(mocks.completePendingStatus).not.toHaveBeenCalled();
   });
+
 });
 
 describe('useSessionLifecycleActions delete cache invalidation', () => {
