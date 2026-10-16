@@ -4231,6 +4231,27 @@ describe('utility one-shot candidates', () => {
         expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
       });
 
+      it('does not reuse a remembered step after the provider route revision changes', async () => {
+        await rememberLow('https://custom.example/v1', ['low', 'medium']);
+        // Same address and tiers; only headers / key changed, which bumps the revision.
+        providerRouteCredentialRevision.mockReturnValue(1);
+        fetchMock.mockResolvedValueOnce(chatOk('fresh') as never);
+
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'fresh' });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+      });
+
+      it('keeps a remembered step while the provider route revision is unchanged', async () => {
+        await rememberLow('https://custom.example/v1', ['low', 'medium']);
+        fetchMock.mockResolvedValueOnce(chatOk('reused') as never);
+
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'reused' });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
+        expect(bodyOf(0)).not.toHaveProperty('thinking');
+      });
+
       it('does not reuse a remembered step after only the query string changes', async () => {
         await rememberLow('https://custom.example/v1?tenant=a', ['low', 'medium']);
         activeCatalog.mockReturnValue(customChatCatalog({

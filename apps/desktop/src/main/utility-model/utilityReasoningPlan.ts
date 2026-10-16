@@ -228,9 +228,14 @@ export function utilityReasoningMemoryKey(parts: {
   model: string;
   wire: UtilityProviderWire;
   mode: UtilityReasoningMode;
+  /**
+   * 供应商路由代次(provider-route 的非敏感整数),覆盖请求头、凭证、能力的修改与
+   * 同 id 删除重建:这些变化不体现在地址和档位上,但旧路由记住的写法不该沿用。
+   */
+  routeRevision: number;
 }): string {
   const mode = parts.mode.kind === 'ladder' ? 'ladder' : `fixed:${utilityReasoningRungKey(parts.mode.rung)}`;
-  return JSON.stringify([parts.providerId, parts.agentKind, parts.model, parts.wire, mode]);
+  return JSON.stringify([parts.providerId, parts.agentKind, parts.model, parts.wire, mode, parts.routeRevision]);
 }
 
 /**

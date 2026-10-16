@@ -2115,6 +2115,7 @@ function utilityRequestPlan(input: {
         model: input.model,
         wire: input.wire,
         mode,
+        routeRevision: getProviderRouteCredentialRevision(input.providerId),
       })
       : undefined,
     compat: {
