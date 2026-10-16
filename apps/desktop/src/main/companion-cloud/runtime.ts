@@ -479,14 +479,16 @@ export function startCompanionCloud(input: {
     // The whole conversation backlog first: the old copy stops mirroring once demoted, and a long
     // drain must not leave edits made meanwhile behind.
     await mirror.syncBot(bot.botId, bot.actorId, bot.name, { drain: true });
+    // The actor's name and avatar too (once demoted, this copy may no longer publish them). Before
+    // the values: an avatar upload takes a while, and an edit made meanwhile must still go up.
+    await input.syncProfile?.(bot.botId);
     // Every portable value must reach the server: a skipped one would be lost by the move. Repeat
-    // until a pass writes nothing, so the move starts from what is on disk right now.
+    // until a pass writes nothing, so the move starts from what is on disk right now; that last pass
+    // is the last await before the busy check and the move.
     for (let pass = 0; ; pass += 1) {
       if (await uploader.syncBot(bot.botId, bot.actorId, Number.POSITIVE_INFINITY, { requireAll: true }) === 0) break;
       if (pass >= 2) throw new Error('COMPANION_STILL_CHANGING');
     }
-    // The actor's name and avatar too: once demoted, this copy may no longer publish them.
-    await input.syncProfile?.(bot.botId);
   }
 
   /** A sync that must be complete (a hand-over, a merge) did not finish: why, as an action result. */

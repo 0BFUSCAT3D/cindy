@@ -232,6 +232,18 @@ describe('transfer', () => {
     expect(failing.state.isDemoted('bot_mia')).toBe(false);
   });
 
+  it('uploads an edit made while the name and avatar were being published, before moving the home', async () => {
+    let values: Array<{ key: string; value: unknown }> = [{ key: 'companion.profile.v1', value: { name: 'Mia' } }];
+    const t = setup({ home: 'desk', devices: [device('laptop')], readValues: async () => values,
+      syncProfile: async () => { values = [...values, { key: 'companion.memory.v1:late.md', value: { content: 'saved meanwhile' } }]; } });
+    expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: true });
+    const late = t.calls.findIndex(call => call.method === 'PUT' && String(call.route).includes('late.md')
+      || (call.data as { key?: string } | undefined)?.key === 'companion.memory.v1:late.md');
+    const patch = t.calls.findIndex(call => call.method === 'PATCH');
+    expect(late).toBeGreaterThanOrEqual(0);
+    expect(late).toBeLessThan(patch);
+  });
+
   it('does not move the home while a turn is still running, checked before and after the flush', async () => {
     const busy = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => true });
     expect(await busy.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'BUSY' });
