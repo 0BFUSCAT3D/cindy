@@ -38,6 +38,7 @@ vi.mock('../../appSessionState', () => ({
   getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: 'cache-owner' }),
   activeOwnerScopeKey: () => 'cache-owner:0',
 }));
+vi.mock('../mediaTransfer', () => ({ removeRemote: vi.fn() }));
 vi.mock('../mediaFetch', () => ({ resolveAuthorizedMedia: mock.resolve }));
 vi.mock('../settings-store', () => ({ readDeviceLinkSettings: () => mock.settings }));
 vi.mock('../broadcast-tap', () => ({
@@ -83,6 +84,7 @@ import {
   tryPeerFile,
   tryUploadPeerAttachment,
 } from '../filePeer';
+import { readRemoteDeviceFile } from '../fileAccess';
 import { DesktopCaptureWindow } from '../../remote-desktop/captureWindow';
 import { createHash } from 'node:crypto';
 
@@ -395,6 +397,56 @@ describe('authorized file peer source', () => {
     expect(result?.size).toBe(5);
     await result?.dispose();
   });
+  it.each(
+    (['offer', 'receive', 'idle'] as const).flatMap(stage =>
+      (['abort', 'stop', 'owner'] as const).map(reason => ({ stage, reason }))),
+  )('closes only the original owner connection after $reason during $stage', async ({ stage, reason }) => {
+    const peer = `adapter-close-${stage}-${reason}`;
+    const remote = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    let answer!: (value: { ok: boolean; result: unknown }) => void;
+    const invoke = vi.fn(async (_peer: string, channel: string, [request]: any[]) => {
+      if (channel === 'device-link:media:fetch')
+        return { ok: true, result: { ossKey: '', size: 5, mimeType: 'text/plain', transferRequired: true } };
+      if (request.action === 'caps') return { ok: true, result: { version: 1, sessionBound: true } };
+      if (request.action === 'offer' && stage === 'offer')
+        return new Promise<{ ok: boolean; result: unknown }>(resolve => { answer = resolve; });
+      if (request.action === 'open')
+        return { ok: true, result: { ticket: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', size: 5, mimeType: 'text/plain' } };
+      return { ok: true, result: { connection: remote, sdp: 'v=0' } };
+    });
+    const abort = new AbortController();
+    const fallback = vi.fn();
+    const pending = readRemoteDeviceFile(peer, 'xdt-file://test', invoke, { signal: abort.signal, fallback });
+    const rejected = stage === 'idle' ? undefined : expect(pending).rejects.toThrow('FILE_PEER_CANCELLED');
+    if (stage === 'offer') await vi.waitFor(() => expect(answer).toBeDefined());
+    else {
+      await vi.waitFor(() => expect(mock.receiving).toBeDefined());
+      if (stage === 'idle') {
+        await mock.handlers.get('file-peer:host:write')!({}, mock.receiving!.sink, 0, 'aGVsbG8=');
+        mock.receiving!.reply();
+        const result = await pending;
+        if ('dispose' in result) await result.dispose();
+      }
+    }
+    if (reason === 'owner') mock.current = false;
+    if (reason === 'abort') abort.abort();
+    // Idle connections outlive a completed read; its old signal must not block later teardown.
+    if (reason !== 'abort' || stage === 'idle') stopFilePeers(peer);
+    if (stage === 'offer') answer({ ok: true, result: { connection: remote, sdp: 'v=0' } });
+    await rejected;
+    const closes = invoke.mock.calls.filter(([, channel, [request]]) =>
+      channel === 'device-link:file-peer' && request.action === 'close');
+    if (reason === 'owner') expect(closes).toHaveLength(0);
+    else expect(closes.length).toBeGreaterThan(0);
+    for (const [target, , requests] of closes)
+      expect([target, requests]).toEqual([peer, [{ action: 'close', connection: remote }]]);
+    if (stage === 'offer') {
+      expect(mock.sent).not.toContain('answer');
+      expect(invoke.mock.calls.some(([, , [request]]) => request.action === 'open')).toBe(false);
+    }
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
   it('falls back a stalled file while another peer keeps writing and completes', async () => {
     vi.useFakeTimers();
     try {

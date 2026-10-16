@@ -1,6 +1,7 @@
 import {
   readDeviceFile,
   DL_MEDIA_FETCH_CHANNEL,
+  FILE_PEER_CHANNEL,
   FILE_PEER_MAX_BYTES,
   type DeviceFileResult,
 } from '@cindy/device-link';
@@ -31,10 +32,16 @@ export function readRemoteDeviceFile(
 ) {
   const owner = captureDataOwnerBroadcastScope();
   const isCurrent = captureFilePeerScope(device);
-  const invoke: Invoke = async (...args) => {
-    if (options.signal?.aborted || !isCurrent())
+  const invoke: Invoke = async (target, channel, args) => {
+    // A connection can outlive this read, including an offer answered after cancellation.
+    // Teardown may cross the read's cancellation boundary, never the account boundary.
+    const closing = channel === FILE_PEER_CHANNEL &&
+      (args[0] as { action?: unknown } | undefined)?.action === 'close';
+    if (closing
+      ? !isDataOwnerBroadcastScopeCurrent(owner)
+      : options.signal?.aborted || !isCurrent())
       throw new Error('FILE_PEER_CANCELLED');
-    return rawInvoke(...args);
+    return rawInvoke(target, channel, args);
   };
   const fetch = async (prepareOnly: boolean): Promise<DeviceFileResult> => {
     const response = await invoke(device, DL_MEDIA_FETCH_CHANNEL, [
