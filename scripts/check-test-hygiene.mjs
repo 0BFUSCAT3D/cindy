@@ -306,13 +306,19 @@ function maskStrings(source) {
 }
 
 function staticWaitCalls(code) {
-  if (!/\b(?:setTimeout|sleep|delay|wait|waitMs|pause)\s*\(|(?:node:)?timers\/promises/.test(code)) return [];
+  if (!/\bsetTimeout\b|\b(?:sleep|delay|wait|waitMs|pause)\s*\(|(?:node:)?timers\/promises/.test(code)) return [];
   const ts = typescript ??= requireDesktop('typescript');
   const source = parseTestSource(ts, code);
   const nodeScopes = new WeakMap();
   const calls = [];
   const promiseTimerNames = new Set();
-  const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+  const isFunction = node => ts.isFunctionLike(node) && Boolean(node.body);
+  function declare(name, declaration, scope) {
+    if (ts.isIdentifier(name)) scope.bindings.set(name.text, declaration);
+    else for (const element of name.elements) {
+      if (ts.isBindingElement(element)) declare(element.name, element, scope);
+    }
+  }
   function isPromiseTimerImport(bound) {
     let declaration = bound;
     while (declaration && !ts.isImportDeclaration(declaration)) declaration = declaration.parent;
@@ -325,10 +331,10 @@ function staticWaitCalls(code) {
     nodeScopes.set(node, scope);
     if (isFunction(node)) {
       for (const parameter of node.parameters) {
-        if (ts.isIdentifier(parameter.name)) scope.bindings.set(parameter.name.text, parameter);
+        declare(parameter.name, parameter, scope);
       }
     }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) scope.bindings.set(node.name.text, node);
+    if (ts.isVariableDeclaration(node)) declare(node.name, node, scope);
     if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportClause(node) && node.name) {
       scope.bindings.set(node.name.text, node);
       if (ts.isImportSpecifier(node) && (node.propertyName?.text ?? node.name.text) === 'setTimeout'
@@ -342,6 +348,58 @@ function staticWaitCalls(code) {
     for (let scope = nodeScopes.get(identifier); scope; scope = scope.parent) {
       if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
     }
+    return null;
+  }
+  function unwrap(node) {
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+    return node;
+  }
+  const isConst = node => ts.isVariableDeclaration(node) && (node.parent.flags & ts.NodeFlags.Const);
+  function callbackTimerImport(bound) {
+    let declaration = bound;
+    while (declaration && !ts.isImportDeclaration(declaration)) declaration = declaration.parent;
+    return declaration && !declaration.importClause?.isTypeOnly && !bound.isTypeOnly
+      && ts.isStringLiteral(declaration.moduleSpecifier) && /^(?:node:)?timers$/.test(declaration.moduleSpecifier.text);
+  }
+  function timerObject(node, seen = new Set()) {
+    node = unwrap(node);
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'default'
+      && timerObject(node.expression, seen) === 'native') return 'native';
+    if (!ts.isIdentifier(node)) return null;
+    const bound = binding(node);
+    if (!bound) return /^(?:globalThis|global|window|self)$/.test(node.text) ? 'global' : null;
+    if ((ts.isNamespaceImport(bound) || ts.isImportClause(bound)) && callbackTimerImport(bound)) return 'native';
+    if (seen.has(bound) || !isConst(bound) || !bound.initializer) return null;
+    return timerObject(bound.initializer, new Set(seen).add(bound));
+  }
+  // Immutable local aliases capture the timer function, not the later global
+  // clock state. Follow that capture through aliases, while respecting shadows.
+  function callbackTimer(node, clockIndex, seen = new Set()) {
+    node = unwrap(node);
+    const property = ts.isPropertyAccessExpression(node) ? node.name.text
+      : ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression) ? node.argumentExpression.text : null;
+    if (property === 'setTimeout') {
+      const owner = timerObject(node.expression);
+      if (owner) return { clockIndex: owner === 'native' ? 0 : clockIndex };
+    }
+    if (!ts.isIdentifier(node)) return null;
+    const bound = binding(node);
+    if (!bound) return node.text === 'setTimeout' ? { clockIndex } : null;
+    if (seen.has(bound)) return null;
+    seen = new Set(seen).add(bound);
+    if (isConst(bound) && bound.initializer) return callbackTimer(bound.initializer, bound.initializer.getStart(source), seen);
+    if (ts.isBindingElement(bound) && ts.isObjectBindingPattern(bound.parent) && !bound.dotDotDotToken) {
+      const name = bound.propertyName ?? bound.name;
+      const owner = bound.parent.parent;
+      if ((ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === 'setTimeout'
+        && isConst(owner) && owner.initializer) {
+        const object = timerObject(owner.initializer);
+        if (object) return { clockIndex: object === 'native' ? 0 : owner.initializer.getStart(source) };
+      }
+    }
+    // Builtin callback timers retain native bindings under Vitest's global fake clock.
+    if (ts.isImportSpecifier(bound) && (bound.propertyName?.text ?? bound.name.text) === 'setTimeout'
+      && callbackTimerImport(bound)) return { clockIndex: 0 };
     return null;
   }
   function promiseTimerNamespace(node, seen = new Set()) {
@@ -398,22 +456,27 @@ function staticWaitCalls(code) {
     const body = ts.isBlock(fn.body)
       ? fn.body.statements.find(ts.isReturnStatement)?.expression : fn.body;
     if (!body) return null;
-    if (ts.isCallExpression(body) && body.expression.getText(source) === 'setTimeout') return body;
+    if (ts.isCallExpression(body) && callbackTimer(body.expression)) return body;
     if (!ts.isNewExpression(body) || body.expression.getText(source) !== 'Promise') return null;
     const executor = body.arguments?.[0];
     if (!executor || !isFunction(executor)) return null;
     const candidates = ts.isBlock(executor.body) ? executor.body.statements.map(statement => statement.expression) : [executor.body];
-    return candidates.find(node => node && ts.isCallExpression(node) && node.expression.getText(source) === 'setTimeout') ?? null;
+    return candidates.find(node => node && ts.isCallExpression(node) && callbackTimer(node.expression)) ?? null;
   }
   const waits = [];
   for (const call of calls) {
     const name = ts.isIdentifier(call.expression) ? call.expression.text
       : ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : '';
     let duration;
+    let clockIndex;
+    const callback = callbackTimer(call.expression);
     const promiseTimer = isPromiseTimer(call.expression);
     const shadowedPromiseTimer = ts.isIdentifier(call.expression) && promiseTimerNames.has(name) && !promiseTimer;
     if (promiseTimer) duration = number(call.arguments[0]);
-    else if (name === 'setTimeout' && !shadowedPromiseTimer) duration = number(call.arguments[1]);
+    else if (callback) {
+      duration = number(call.arguments[1]);
+      clockIndex = callback.clockIndex;
+    }
     else if (REAL_WAIT_NAMES.has(name) && !shadowedPromiseTimer) duration = number(call.arguments[0]);
     else {
       if (!ts.isIdentifier(call.expression)) continue;
@@ -426,8 +489,11 @@ function staticWaitCalls(code) {
       // Constant waits inside a helper are already counted at their own site.
       if (number(timer.arguments[1]) !== undefined) continue;
       duration = number(timer.arguments[1], parameters);
+      clockIndex = callbackTimer(timer.expression).clockIndex;
+      // A wrapper-local capture executes when the wrapper is called.
+      if (clockIndex >= fn.getStart(source) && clockIndex < fn.end) clockIndex = undefined;
     }
-    if (Number.isFinite(duration)) waits.push({ index: call.getStart(source), duration });
+    if (Number.isFinite(duration)) waits.push({ index: call.getStart(source), duration, clockIndex });
   }
   return waits;
 }
@@ -650,7 +716,7 @@ function countRealWaits(code, lines, sourceCode = code) {
   let count = 0;
   const waits = staticWaitCalls(sourceCode).sort((a, b) => a.index - b.index);
   for (const wait of waits) {
-    if (timerStateAt(wait.index, timerEvents, scopes)) continue;
+    if (timerStateAt(wait.clockIndex ?? wait.index, timerEvents, scopes)) continue;
     if (wait.duration < REAL_WAIT_MIN_MS) continue;
     const line = lineOf(code, wait.index);
     if (!hasJustification(lines, line, 'real-wait')) count += 1;
