@@ -124,6 +124,7 @@ import {
   ghostNodeSecretAuthorizationWithinCap,
   ghostSetupAuthorizationWithinCap,
   ghostSettingsUiWithinCap,
+  ghostTaskPreferencesWithinCap,
   ghostSubscribeAuthorizationWithinCap,
   ghostToolParametersWithinCap,
   ghostUnknownV3FieldsWithinCap,
@@ -7354,6 +7355,7 @@ async function installOrUpdateMarketGhostPackageLocked(
         !ghostNodeSecretAuthorizationWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostSetupAuthorizationWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostSettingsUiWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
+        !ghostTaskPreferencesWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostSubscribeAuthorizationWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostToolParametersWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostUnknownV3FieldsWithinCap(expected.manifestCap, inspected.canonicalManifest)

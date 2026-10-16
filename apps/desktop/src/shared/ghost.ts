@@ -2690,6 +2690,14 @@ export function ghostSettingsUiWithinCap(
   return actual.settingsHeight <= reviewed.settingsHeight;
 }
 
+/** 真实包不能未经市场声明就退出宿主任务配置管理。缺省与 true 等价。 */
+export function ghostTaskPreferencesWithinCap(
+  reviewed: GhostManifest,
+  actual: GhostManifest,
+): boolean {
+  return actual.taskPreferences !== false || reviewed.taskPreferences === false;
+}
+
 /**
  * 市场清单对真实包的 network 授权语义上限。
  *

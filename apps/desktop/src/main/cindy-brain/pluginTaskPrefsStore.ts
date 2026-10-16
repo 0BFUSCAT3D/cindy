@@ -196,7 +196,8 @@ const legacyPinMigrationDone = new Set<string>();
  *   fastMode 留空,由现有解析按模型默认补;权限、目录等其它字段原样保留;
  * - 已有 model(用户已显式选过)、轻量档位键(非 cat:)、解码失败的值,以及图像/
  *   视频/向量覆盖一律丢弃(它们从此跟随系统默认);
- * - 先写新配置、再删旧文件的 `overrides` 键:中途失败下一次读取重跑,已写入的
+ * - 退出宿主管理的插件保留旧记录，恢复后再迁移；
+ * - 先写新配置、再删已处理的旧记录:中途失败下一次读取重跑,已写入的
  *   插件因已有 model 被跳过,不会重复或覆盖。
  */
 function migrateLegacyOneshotPins(): void {
@@ -210,13 +211,15 @@ function migrateLegacyOneshotPins(): void {
   try {
     const legacy = readLegacyOneshotPins();
     if (legacy) {
+      const eligible = Object.entries(legacy).filter(([ghostId]) => isPluginTaskPreferencesEnabled(ghostId));
+      if (eligible.length === 0) return;
       assertGhostPrefsWritable('ghost-errand-prefs.json');
       store.invalidateIfChanged();
       const errand = { ...store.read().errand };
       const migrated: string[] = [];
       const kept: string[] = [];
       const dropped: string[] = [];
-      for (const [ghostId, pin] of Object.entries(legacy)) {
+      for (const [ghostId, pin] of eligible) {
         if (pin === null) continue;
         const route = decodeCatalogModelPin(pin);
         if (!route) {
@@ -245,13 +248,15 @@ function migrateLegacyOneshotPins(): void {
         migrated.push(ghostId);
       }
       if (migrated.length > 0) store.writePatch({ errand });
-      clearLegacyOverrides();
+      clearLegacyOverrides(eligible.map(([ghostId]) => ghostId));
       log.info('legacy plugin oneshot pins migrated to plugin model preference', {
         source: GHOST_CINDY_PREFS_FILE,
         migrated,
         keptExistingModel: kept,
         droppedUnsupportedPins: dropped,
       });
+      // 未迁移的插件可能在当前进程中恢复宿主管理，不能把整个 owner 标成完成。
+      if (eligible.length < Object.keys(legacy).length) return;
     }
     legacyPinMigrationDone.add(scope);
   } catch (error) {

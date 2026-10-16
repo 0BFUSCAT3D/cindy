@@ -298,6 +298,7 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   自定义市场以发现并规范化的 manifest 为能力上限。超出能力上限按包内容不一致拒绝并留待
   来源修复，不转成用户审批流程；上限内的新版声明仍按上一条判断是否需要用户确认。能力上限按 Host 实际消费语义
   比较：真实包不得从无到有增加 `settingsHtml` 设置 WebView 或扩大固定 `settingsHeight`；
+  `taskPreferences` 缺省或为 `true` 时，真实包不能改为 `false` 退出宿主配置管理；
   OAuth `scopes` 换序或取子集属于收权，其它 OAuth、凭证标签与注入字段仍须保持在清单上限内；
   `setup.requires` 只能保留或删除市场已有的完整需求组，不能增加组、收紧 `anyOf` 或更换引用；
   真实包同名工具的 `parameters` JSON Schema 必须与市场规范值一致（仅对象键顺序可不同）。

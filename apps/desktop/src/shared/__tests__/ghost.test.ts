@@ -17,6 +17,7 @@ import {
   ghostNodeSecretAuthorizationWithinCap,
   ghostSetupAuthorizationWithinCap,
   ghostSettingsUiWithinCap,
+  ghostTaskPreferencesWithinCap,
   ghostSubscribeAuthorizationWithinCap,
   ghostToolParametersWithinCap,
   ghostUnknownV3FieldsWithinCap,
@@ -4596,6 +4597,29 @@ describe('ghostPermissionProjectionFingerprint', () => {
     expect(
       unreviewedGhostPermissionItems(reviewed.manifest, undefined, changedLabel.manifest),
     ).toEqual([expect.objectContaining({ key: 'network:secret:oauth_token' })]);
+  });
+
+  it.each([2, 3])('v%s market cap rejects an undisclosed task-preferences opt-out', schemaVersion => {
+    const manifest = (taskPreferences: boolean | undefined) => validateGhostManifest({
+      schemaVersion,
+      id: 'task-prefs-helper',
+      name: 'Task preferences helper',
+      version: '1.0.0',
+      entry: 'main.js',
+      ...(schemaVersion === 2 ? { slots: ['agent'] } : {}),
+      ...(schemaVersion === 3 ? { minCindyVersion: '0.1.0' } : {}),
+      ...(taskPreferences === undefined ? {} : { taskPreferences }),
+    });
+    for (const reviewed of [undefined, true, false]) {
+      for (const actual of [undefined, true, false]) {
+        const cap = manifest(reviewed);
+        const downloaded = manifest(actual);
+        expect(cap.ok && downloaded.ok).toBe(true);
+        if (!cap.ok || !downloaded.ok) continue;
+        expect(ghostTaskPreferencesWithinCap(cap.manifest, downloaded.manifest))
+          .toBe(actual !== false || reviewed === false);
+      }
+    }
   });
 
   it('market cap requires settings UI presence and only allows its height to stay or shrink', () => {

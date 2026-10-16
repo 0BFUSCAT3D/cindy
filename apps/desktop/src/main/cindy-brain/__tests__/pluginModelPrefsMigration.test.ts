@@ -77,6 +77,36 @@ describe('per-plugin Host configuration opt-out', () => {
     expect(readJson(TASK_FILE)).toBeUndefined();
     expect(readJson(CINDY_FILE)).toEqual(legacy);
   });
+
+  it('migrates another instance without rewriting dormant legacy records, then resumes after opt-in', () => {
+    const dormant = {
+      'text.oneshot': 'cat:xd:codex:old',
+      'image.generate': 'saved-image-model',
+      future: { keep: true },
+    };
+    const saved = { permissionMode: 'auto', workingDir: path.join(owner.root, 'project') };
+    writeJson(CINDY_FILE, { overrides: {
+      '_root__ping': dormant,
+      '_ns__acme__ping': { 'text.oneshot': 'cat:other:codex:active' },
+    } });
+    writeJson(TASK_FILE, { errand: { '_root__ping': saved }, sessions: {} });
+    task.setPluginTaskPreferencesResolver(id => id !== '_root__ping');
+
+    expect(task.readPluginTaskConfig('_ns__acme__ping')).toMatchObject({ model: 'active' });
+    expect(readJson(CINDY_FILE)).toEqual({ overrides: { '_root__ping': dormant } });
+    expect(readJson(TASK_FILE)).toMatchObject({ errand: { '_root__ping': saved } });
+    expect(task.readPluginTaskConfig('_root__ping')).toEqual({});
+    expect(task.readPluginTaskConfig('_ns__acme__ping')).toMatchObject({ model: 'active' });
+    expect(readJson(CINDY_FILE)).toEqual({ overrides: { '_root__ping': dormant } });
+
+    task.setPluginTaskPreferencesResolver(() => true);
+    expect(task.readPluginTaskConfig('_root__ping')).toEqual({
+      ...saved, agentKind: 'codex', providerId: 'xd', model: 'old',
+    });
+    expect(readJson(CINDY_FILE)).toBeUndefined();
+    task.writePluginTaskConfig('_root__ping', null);
+    expect(task.readPluginTaskConfig('_root__ping')).toEqual({});
+  });
 });
 
 describe('legacy per-ability pins → plugin model preference', () => {

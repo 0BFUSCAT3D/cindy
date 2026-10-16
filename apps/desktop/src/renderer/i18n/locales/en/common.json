@@ -16165,6 +16165,8 @@
     "title": "Allow this plugin’s AI to edit files?",
     "message": "Allow the AI in “{{name}}” to edit files and continue?",
     "detail": "This sets the plugin’s AI permission to Allow edits for future tasks too. A separate working directory is not a system sandbox; commands still follow Cindy permission checks. You can switch back to read-only in the plugin’s AI settings.",
+    "taskOnlyDetail": "Allow edits only for this task, without saving a default permission for future plugin tasks. A working directory is not a system sandbox; commands still follow Cindy permission checks.",
+    "autoTaskOnlyDetail": "Cindy will review actions automatically only for this task and its Workers. Actions requiring confirmation or denied actions still pause. This is not Full access. The choice is not saved as the default permission for future plugin tasks.",
     "allow": "Allow and continue",
     "cancel": "Not now"
   },

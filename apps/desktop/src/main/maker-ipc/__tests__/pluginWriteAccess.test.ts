@@ -37,9 +37,10 @@ function fixture(preferencesEnabled = true) {
  const queue = { ensureQueueRestored: vi.fn(async (_id: string) => {}), isQueueRestored: vi.fn((_id: string) => true), getQueueControlSnapshot: vi.fn((_id: string) => ({ pendingQueue: [] as string[] })) };
  const slots = new Set<string>();
  const dialog = { showMessageBox: vi.fn(async () => ({ response: 0 })) };
+ const mobilePrompt = vi.fn(async () => true);
  const write = vi.fn((_id: string, value: Record<string, unknown>) => { cfg = value; });
  const deps = { isPluginTaskPermissionAllowed, withSessionPermissionChange, withSessionRestartLock, drainPersistQueue:drain,messages,sessions,eq:()=>true,and:()=>true,service, getCurrentDbClientSnapshot: () => ownership.current, readPluginTaskConfig: () => cfg, pluginPermissionRequests: slots, PluginTaskError, maker: { getSession: () => cold ? null : live }, inputCoordinator: queue, dialog, t: (x: string) => x, getInstalledGhostName: () => 'fixture', clampPluginTaskPermissionMode: (x: string) => x, writePluginTaskConfig: write, broadcastSessionPatched: vi.fn() };
- const allDeps = {...deps, readPluginTaskConfig: () => preferencesEnabled ? cfg : {},
+ const allDeps = {...deps, showMobilePluginTaskPermission:mobilePrompt, readPluginTaskConfig: () => preferencesEnabled ? cfg : {},
   readPluginTaskPermissionMode: () => preferencesEnabled ? cfg.permissionMode : null,
   isPluginTaskPreferencesEnabled: () => preferencesEnabled,
   pluginWriteAccessGate:gate, pluginWriteAccessIdentity:()=>identity};
@@ -62,9 +63,22 @@ function fixture(preferencesEnabled = true) {
   getLiveSession:()=>cold?null:live,
   persist:async next=>{await epoch.client.tx('bots.persistSessionPermission',{mode:next});},
  });
- return {setPlan:(enabled:boolean)=>setPlan({},'task',enabled),planPersist,forgetGrants,runtimePlan:()=>runtimePlan,nativePlan:(enabled:boolean|null)=>{runtimePlan=enabled;},setImMode, setMode:(mode:string)=>setMode({},'task',mode), persistedResults, remote:()=>{remote=true;}, cold:()=>{cold=true;}, runtimeMode:()=>runtimeMode, changeOwner:()=>{ownership.current={};}, run: (mode = 'acceptEdits', explicit = false) => run('plugin', { kind: 'requestWriteAccess', taskId: 'task', mode }, explicit), queue, gate, identity: (next: string) => {identity=next;}, service, live, epoch, dialog, slots, write, history, drain, config: () => cfg, change: (next: Record<string, unknown>) => { cfg = next; } };
+ return {setPlan:(enabled:boolean)=>setPlan({},'task',enabled),planPersist,forgetGrants,runtimePlan:()=>runtimePlan,nativePlan:(enabled:boolean|null)=>{runtimePlan=enabled;},setImMode, setMode:(mode:string)=>setMode({},'task',mode), persistedResults, remote:()=>{remote=true;}, cold:()=>{cold=true;}, runtimeMode:()=>runtimeMode, changeOwner:()=>{ownership.current={};}, run: (mode = 'acceptEdits', explicit = false) => run('plugin', { kind: 'requestWriteAccess', taskId: 'task', mode }, explicit), runMobile:(mode:string)=>run('plugin',{kind:'requestWriteAccess',taskId:'task',mode,mobilePageId:'page'}), mobilePrompt, queue, gate, identity: (next: string) => {identity=next;}, service, live, epoch, dialog, slots, write, history, drain, config: () => cfg, change: (next: Record<string, unknown>) => { cfg = next; } };
 }
 describe('plugin-managed task configuration', () => {
+ it.each([
+  {mode:'acceptEdits',enabled:false,key:'taskOnlyDetail'},
+  {mode:'auto',enabled:false,key:'autoTaskOnlyDetail'},
+  {mode:'acceptEdits',enabled:true,key:'detail'},
+  {mode:'auto',enabled:true,key:'autoDetail'},
+ ])('explains the actual permission scope for $mode with Host preferences $enabled on both clients',async ({mode,enabled,key})=>{
+  const desktop=fixture(enabled);
+  await desktop.run(mode);
+  expect(desktop.dialog.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({detail:`pluginTaskWriteAccess.${key}`}));
+  const mobile=fixture(enabled);
+  await mobile.runMobile(mode);
+  expect(mobile.mobilePrompt).toHaveBeenCalledWith('plugin','page',expect.objectContaining({detail:expect.stringContaining(`pluginTaskWriteAccess.${key}`)}));
+ });
  it.each(['acceptEdits', 'auto'])('confirms %s for this task without writing Host defaults', async mode => {
   const f = fixture(false);
   await expect(f.run(mode)).resolves.toMatchObject({granted:true});
