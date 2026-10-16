@@ -9,7 +9,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string, options?: { value?: string }) => options?.value !== undefined ? `${options.value} ${key}` : key, i18n: { language: 'en' } }),
 }));
 
 import { MarketPluginDetailView } from '../MarketPluginDetailView';
@@ -58,6 +58,18 @@ const renderDetail = (overrides: Partial<PluginMarketDetail> = {}) =>
   );
 
 describe('MarketPluginDetailView', () => {
+  it('shows real download and use counts in the gray header of an uninstalled plugin', () => {
+    const { container } = renderDetail({
+      downloadStatistics: { requestCount: '0' },
+      usageStatistics: { usageCount: '8932', usageCountLast7Days: '12', asOf: '2026-10-13T00:00:00Z' },
+    });
+    const header = container.querySelector('header');
+    expect(header?.textContent).toContain('v1.3.11');
+    expect(header?.textContent).toContain('0 settings.ghosts.usage.downloadsValue');
+    expect(header?.textContent).toContain('8,932 settings.ghosts.usage.usesValue');
+    expect(container.textContent).not.toContain('settings.ghosts.usage.title');
+  });
+
   it('shows the marketing description outside the conflict state', () => {
     renderDetail();
     const description = screen.getByText('Connect Google Calendar');
@@ -122,6 +134,10 @@ describe('MarketPluginDetailView', () => {
     });
     expect(action.getAttribute('aria-busy')).toBe('true');
     expect(action.querySelector('.animate-spinner')).toBeTruthy();
-    expect(action.textContent).toBe('');
+    // Preserve the label width and accessible name while only the spinner is visible.
+    expect(action.firstElementChild?.classList.contains('opacity-0')).toBe(true);
+    expect(action.firstElementChild?.textContent).toBe('settings.ghosts.market.install');
+    expect(action.lastElementChild?.getAttribute('aria-hidden')).toBe('true');
+    expect(action.hasAttribute('disabled')).toBe(true);
   });
 });

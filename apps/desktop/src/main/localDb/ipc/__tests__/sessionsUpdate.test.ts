@@ -1,3 +1,4 @@
+import { setSessionOpeningModelAdmission, type SessionOpenBody } from '../../sessionOpening';
 /**
  * sessionsUpdate.test.ts — `local-db:sessions:update` handler 集成接线。
  * -------------------------------------------------------------------
@@ -16,6 +17,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import type { InvokeResultPayload } from '@cindy/device-link';
 
 import { messages, recentWorkdirs, sessions } from '../../schema';
 import type { SessionRouteLock } from '../../sessionRouteLock';
@@ -33,6 +35,11 @@ const h = vi.hoisted(() => ({
     persistedSdkSessionId: null,
   })),
   closeSession: vi.fn(async (_sessionId: string) => undefined),
+  closeSharedTask: vi.fn(async (_sessionId: string, _database: unknown): Promise<void> => undefined),
+  prepareSharedTaskClosure: vi.fn(async (_sessionId: string, _database: unknown): Promise<{ sessionId: string; marker: number; rowIds: number[] } | null> => null),
+  rollbackSharedTaskClosure: vi.fn(async (_database: unknown, _prepared: unknown) => undefined),
+  finalizeSharedTaskClosure: vi.fn(async (_database: unknown, _prepared: unknown) => undefined),
+  commitBotProfileDeletion: vi.fn(async (): Promise<{ status: 'archived' | 'deleted'; sessionIds: string[] }> => ({ status: 'archived', sessionIds: [] })),
   tapWindowBroadcast: vi.fn(),
   windows: [] as Array<{
     trusted?: boolean;
@@ -101,14 +108,24 @@ vi.mock('../../../logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../client/current', () => ({
+  getCurrentDbClientSnapshot: () => h,
   getDbClient: () => h.client,
   getCurrentDbClientUserId: () => 'test-user',
+}));
+vi.mock('../../botProfileDeletionStore.js', () => ({
+  commitBotProfileDeletion: h.commitBotProfileDeletion,
 }));
 vi.mock('../../dialogueWorkspace', () => ({ ensureDialogueWorkspaceDir: vi.fn() }));
 vi.mock('../../../git-context/prRefsStore', () => ({
   recomputePrRefsForSession: vi.fn(async () => undefined),
 }));
 vi.mock('../../../imageCacheStore', () => ({ removeSession: vi.fn(async () => undefined) }));
+vi.mock('../../../device-link/sharedTaskRuntime.js', () => ({
+  closeSharedTaskForTask: h.closeSharedTask,
+  prepareSharedTaskClosureForTask: h.prepareSharedTaskClosure,
+  rollbackPreparedSharedTaskClosure: h.rollbackSharedTaskClosure,
+  finalizePreparedSharedTaskClosure: h.finalizeSharedTaskClosure,
+}));
 vi.mock('../recentWorkdirs', () => ({ upsertRecentWorkdir: h.upsertRecentWorkdir }));
 vi.mock('../../../device-link/broadcast-tap.js', () => ({
   captureDataOwnerBroadcastScope: vi.fn(() =>
@@ -153,6 +170,7 @@ vi.mock('../../../cindy-brain/index.js', () => ({
 
 import {
   broadcastSessionPatched,
+  deleteBotProfileAndDetachSessionsInDb,
   patchSessionMetaInDb,
   persistSessionFields,
   registerSessionIpc,
@@ -165,6 +183,8 @@ import {
 import { retireDeletedPiSubagentState } from '../piSubagentDeletion';
 import { setSessionRouteLockImplementation } from '../../sessionRouteLock';
 import { assertTrustedAppRendererEvent } from '../../../security/trustedAppRenderer.js';
+import { createRemoteSessionsStatusSetter } from '../../../mcp-integrations/sessionStatusRemote.js';
+import * as sessionQueries from '../../sessionQueries';
 
 function createDb(): void {
   const sqlite = new Database(':memory:');
@@ -204,6 +224,7 @@ function createDb(): void {
       fast_mode INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,
       pinned_at INTEGER,
+      hidden_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       agent_kind TEXT NOT NULL DEFAULT 'cc',
@@ -221,10 +242,13 @@ function createDb(): void {
       workspace_kind TEXT NOT NULL DEFAULT 'project',
       orca_role TEXT,
       remote_host_id TEXT,
+      agent_device_id TEXT,
+      orca_remote_lead TEXT,
       codex_history_has_product_prompt INTEGER,
       codex_plan_json TEXT,
       im_bot_context_id TEXT,
       im_user_id TEXT,
+      im_default_route TEXT,
       summary TEXT,
       provider_id TEXT,
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
@@ -301,8 +325,10 @@ async function invokeCreate(body: Record<string, unknown>): Promise<unknown> {
 }
 
 beforeEach(() => {
+  setSessionOpeningModelAdmission(async body => body);
   vi.clearAllMocks();
   h.relocate.mockImplementation(async () => ({ persistedSdkSessionId: null }));
+  h.commitBotProfileDeletion.mockResolvedValue({ status: 'archived', sessionIds: [] });
   h.closeSession.mockClear();
   h.routeLock.mockImplementation(async (_sessionId, task) => task());
   h.upsertRecentWorkdir.mockImplementation(async () => true);
@@ -859,7 +885,12 @@ describe('local-db:sessions:update handler wiring', () => {
 
   it('cleans runtime state before releasing the local terminal status lock', async () => {
     const order: string[] = [];
+    h.prepareSharedTaskClosure.mockImplementationOnce(async () => {
+      order.push('sharing-prepared');
+      return { sessionId: 'codex-local', marker: 1, rowIds: [7] };
+    });
     h.runtimeCleanup.mockImplementationOnce(() => order.push('runtime-cleanup'));
+    h.closeSharedTask.mockImplementationOnce(async () => { order.push('sharing-closed'); });
     h.routeLock.mockImplementationOnce(async (_sessionId, task) => {
       const result = await task();
       order.push('lock-released');
@@ -869,13 +900,73 @@ describe('local-db:sessions:update handler wiring', () => {
 
     await invokeUpdate('codex-local', { status: 'archived' });
 
-    expect(order).toEqual(['runtime-cleanup', 'lock-released']);
+    expect(order).toEqual(['sharing-prepared', 'runtime-cleanup', 'sharing-closed', 'lock-released']);
     expect(h.runtimeCleanup).toHaveBeenCalledOnce();
+    expect(h.closeSharedTask).toHaveBeenCalledWith('codex-local', h.client);
+  });
+
+  it('restores an archived task through the remote adapter and existing patch-meta handler', async () => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    const invoke = vi.fn(async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:sessions:patch-meta');
+      return { ok: true as const, result: await invokePatchMeta(args[0] as string, args[1] as Record<string, unknown>) };
+    });
+    const restore = createRemoteSessionsStatusSetter({ captureAccess: () => () => {}, invoke });
+    expect(await restore({ deviceId: 'studio', sessionIds: ['codex-local'], status: 'active' })).toMatchObject({
+      ok: true, changed: [{ sessionId: 'codex-local', status: 'active' }],
+    });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(h.closeSharedTask).not.toHaveBeenCalled();
+  });
+
+  it('reports an unknown remote result when the receipt query overloads after the status write', async () => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    const receiptQuery = vi.spyOn(sessionQueries, 'selectSessionWithCount')
+      .mockRejectedValueOnce(new Error('db worker RPC queue overloaded'));
+    try {
+      let handlerError: unknown;
+      const invoke = vi.fn(async (_device: string, _channel: string, args: unknown[]): Promise<InvokeResultPayload> => {
+        try {
+          return { ok: true as const, result: await invokePatchMeta(args[0] as string, args[1] as Record<string, unknown>) };
+        } catch (error) {
+          handlerError = error;
+          // Preserve the handler error as dispatch does: newer hosts may wrap it first.
+          const message = error instanceof Error ? error.message : String(error);
+          const code = message.includes('db worker RPC queue overloaded') ? 'BACKPRESSURE' : 'IPC_ERROR';
+          return { ok: false as const, error: { code, message } };
+        }
+      });
+      const restore = createRemoteSessionsStatusSetter({ captureAccess: () => () => {}, invoke });
+      expect(await restore({ deviceId: 'studio', sessionIds: ['codex-local', 'unattempted'], status: 'active' })).toMatchObject({
+        ok: false, errorCode: 'REMOTE_RESULT_UNKNOWN', changed: [],
+        message: expect.stringContaining('请先查询目标任务状态'),
+        failedSessionId: 'codex-local', remainingSessionIds: ['unattempted'],
+      });
+      expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+      expect(handlerError).toBeInstanceOf(Error);
+      expect((handlerError as Error).message).toBe('[PRECONDITION_FAILED] Worktree is busy or its recovery record could not be saved');
+      expect(receiptQuery).toHaveBeenCalledOnce();
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      receiptQuery.mockRestore();
+    }
+  });
+
+  it.each(['active', 'archived'] as const)('remote patch-meta cannot change a deleted task to %s', async (status) => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'deleted' WHERE id = ?").run('codex-local');
+    await expect(invokePatchMeta('codex-local', { status })).rejects.toThrow('已删除的任务不能恢复或归档');
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'deleted' });
   });
 
   it('cleans runtime state before releasing the remote terminal status lock', async () => {
     const order: string[] = [];
+    h.prepareSharedTaskClosure.mockImplementationOnce(async () => {
+      order.push('sharing-prepared');
+      return { sessionId: 'codex-local', marker: 1, rowIds: [7] };
+    });
     h.runtimeCleanup.mockImplementationOnce(() => order.push('runtime-cleanup'));
+    h.closeSharedTask.mockImplementationOnce(async () => { order.push('sharing-closed'); });
     h.routeLock.mockImplementationOnce(async (_sessionId, task) => {
       const result = await task();
       order.push('lock-released');
@@ -885,8 +976,45 @@ describe('local-db:sessions:update handler wiring', () => {
 
     await patchSessionMetaInDb('codex-local', { status: 'archived' });
 
-    expect(order).toEqual(['runtime-cleanup', 'lock-released']);
+    expect(order).toEqual(['sharing-prepared', 'runtime-cleanup', 'sharing-closed', 'lock-released']);
     expect(h.runtimeCleanup).toHaveBeenCalledOnce();
+    expect(h.closeSharedTask).toHaveBeenCalledWith('codex-local', h.client);
+  });
+
+  it('does not commit a terminal status when the shared-task journal cannot be prepared', async () => {
+    h.prepareSharedTaskClosure.mockRejectedValueOnce(new Error('disk failed'));
+
+    await expect(invokeUpdate('codex-local', { status: 'archived' })).rejects.toThrow(
+      'Worktree is busy or its recovery record could not be saved',
+    );
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+    expect(h.closeSharedTask).not.toHaveBeenCalled();
+    expect(h.rollbackSharedTaskClosure).not.toHaveBeenCalled();
+  });
+
+  it('rolls back a prepared shared-task journal when the terminal status write fails', async () => {
+    h.prepareSharedTaskClosure.mockImplementationOnce(async () => {
+      h.sqlite!.prepare("UPDATE sessions SET status = 'deleted' WHERE id = ?").run('codex-local');
+      return { sessionId: 'codex-local', marker: 1, rowIds: [7] };
+    });
+
+    await expect(invokeUpdate('codex-local', { status: 'archived' })).rejects.toThrow('已删除的任务不能恢复或归档');
+    expect(h.rollbackSharedTaskClosure).toHaveBeenCalledWith(h.client, {
+      sessionId: 'codex-local', marker: 1, rowIds: [7],
+    });
+    expect(h.closeSharedTask).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('closes shared tasks when Bot deletion transitions sessions to terminal status (keep=%s)', async (keepTaskHistory) => {
+    h.commitBotProfileDeletion.mockResolvedValue({
+      status: keepTaskHistory ? 'archived' : 'deleted',
+      sessionIds: ['bot-local', 'bot-local'],
+    });
+
+    await deleteBotProfileAndDetachSessionsInDb('bot-1', ['bot-local'], keepTaskHistory);
+    await vi.dynamicImportSettled();
+
+    expect(h.closeSharedTask).toHaveBeenCalledExactlyOnceWith('bot-local', h.client);
   });
 
   // 竞态收敛(review on #3225):写入与查询不在同一串行区间,归档写入后、查询前
@@ -1307,4 +1435,19 @@ describe('local-db:sessions:set-pinned-card-summaries', () => {
     await expect(invokeSetPinnedCardSummaries({}, true)).rejects.toThrow('UNTRUSTED_RENDERER');
     expect(h.setPinnedSectionCardMode).not.toHaveBeenCalled();
   });
+});
+
+it('opens a normal renderer task through shared model admission', async () => {
+  const admission = vi.fn(async (body: SessionOpenBody) => ({ ...body, agentKind: 'codex' as const,
+    model: 'selected-model', providerId: 'selected-provider', effort: '', fastMode: false }));
+  setSessionOpeningModelAdmission(admission);
+  await invokeCreate({ id: 'normal-open', title: 'Normal task', workspaceKind: 'project', permissionMode: 'auto' });
+  expect(admission).toHaveBeenCalledOnce();
+  expect(h.sqlite!.prepare('SELECT model, provider_id, effort, permission_mode FROM sessions WHERE id = ?').get('normal-open'))
+    .toEqual({ model: 'selected-model', provider_id: 'selected-provider', effort: '', permission_mode: 'auto' });
+});
+it('does not create a renderer task when common model admission fails', async () => {
+  setSessionOpeningModelAdmission(async () => { throw new Error('model unavailable'); });
+  await expect(invokeCreate({ id: 'rejected-open', title: 'Rejected task' })).rejects.toThrow('model unavailable');
+  expect(h.sqlite!.prepare('SELECT id FROM sessions WHERE id = ?').get('rejected-open')).toBeUndefined();
 });

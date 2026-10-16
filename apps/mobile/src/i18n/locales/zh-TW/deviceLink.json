@@ -26,6 +26,8 @@
   "sectionAccessRevoked": "需要重新允許",
   "retryAccess": "重試訪問",
   "recheck": "重新檢查",
+  "deviceRemovedTitle": "裝置已移除",
+  "deviceRemovedHint": "請登出後重新登入，以重新加入裝置清單。",
   "authFailedTitle": "登入已失效",
   "authFailedHint": "登入狀態已過期，請退出後重新登入。",
   "replacedTitle": "連線被頂替",
@@ -71,6 +73,8 @@
     "offerExpired": "Codex 重設憑證已失效，請重新整理配額後再次確認。",
     "preconditionFailed": "操作條件已變更，請重新整理後再次確認。",
     "transient": "網路或遠端電腦暫時不可用，可以稍後重新同步。",
-    "callFailed": "遠端呼叫失敗，可以稍後重試。（{{error}}）"
+    "callFailed": "遠端呼叫沒有完成。請稍後重試。",
+    "unclassified": "這個操作沒有完成。請稍後重試。",
+    "notFound": "要操作的內容已經不存在。請回到列表重新整理後再試。"
   }
 }

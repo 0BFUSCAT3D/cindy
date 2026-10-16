@@ -120,7 +120,8 @@ describe('auth login-flow reset', () => {
     const discoveryBody = source.slice(discoveryStart, source.indexOf('\n}', discoveryStart));
     expect(discoveryBody).toContain('pendingAuthRealm = null;');
 
-    const actionStart = source.indexOf('async function runLoginAction(action: DesktopLoginAction)');
+    const actionStart = source.indexOf('async function runLoginAction(');
+    expect(actionStart).toBeGreaterThan(-1);
     const actionPreamble = source.slice(
       actionStart,
       source.indexOf('const stateBeforeAction', actionStart),
@@ -162,7 +163,8 @@ describe('auth login-flow reset', () => {
     expect(source).toContain("'INVALID_LOGIN_TICKET',");
     expect(source).toContain("'INVALID_BIND_TICKET',");
     expect(source).toContain("'INVALID_SSO_VERIFICATION_TICKET',");
-    expect(source).toContain("? { step: 'error', code, recoverTo: 'identifier' }");
+    expect(source).toContain('const errorState = loginPreparingErrorState(');
+    expect(source).toContain('? errorState');
   });
 
   it('keeps account access tokens in memory while persisting only encrypted refresh sessions', () => {
@@ -448,7 +450,8 @@ describe('auth login-flow reset', () => {
   });
 
   it('invalidates pending add-account actions without cancelling an accepted login commit', () => {
-    const runStart = source.indexOf('async function runLoginAction(action: DesktopLoginAction)');
+    const runStart = source.indexOf('async function runLoginAction(');
+    expect(runStart).toBeGreaterThan(-1);
     const runEnd = source.indexOf('\n}\n\nexport async function dispatchLoginAction', runStart);
     const runBody = source.slice(runStart, runEnd);
     expect(runBody).toContain('const actionLoginFlowEpoch = loginFlowEpoch;');

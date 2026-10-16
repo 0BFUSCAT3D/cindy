@@ -1,8 +1,11 @@
-import { providerEndpointBindings, canonicalProviderEndpoint, BUNDLED_CATALOG, classifyModel, isChatEligible, isAgentSelectableModel, mergeModelMetadata } from '@cindy/model-providers';
+import { useDialogExit } from '@/hooks/useDialogExit';
+import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { providerEndpointBindings, canonicalProviderEndpoint, BUNDLED_CATALOG, mergeModelMetadata } from '@cindy/model-providers';
 /**
  * Connection credentials and advanced routing only. Model capabilities are imported into the
  * shared catalog and edited through standard model settings. Stored per-runtime credentials,
- * OAuth definitions, explicit routes and user overrides remain unchanged when saving.
+ * OAuth definitions and user overrides are preserved. Model routes follow endpoint
+ * edits while retaining their independent protocol and path overrides.
  */
 
 import * as Dialog from '@radix-ui/react-dialog';
@@ -31,8 +34,8 @@ import {
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
-import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
+import { Select } from '@/components/ui/select';
 import { FormField } from '@/components/ui/form-field';
 import { Tip } from '@/components/ui/tooltip';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -55,6 +58,7 @@ import {
 } from '@/lib/customProviders';
 import type { CodexImageGenerationRestartPolicy } from '@/../shared/customProviderUpdate';
 import { uniqueCustomProviderId } from '@/lib/customProviderId';
+import { modelsAfterProviderEndpointEdit } from '@/lib/customProviderEndpointEdit';
 import {
   areProviderRequestUrlsAllowed,
   canSendHydratedApiKey,
@@ -67,6 +71,7 @@ import {
   restoreHydratedApiKey,
   stripCredentialHeaders,
   type CustomProviderAuthMode,
+  type ProviderConnectionTestSignatureFields,
   type SavedProviderProbeBaseline,
 } from '@/lib/providerModelFetch';
 import {
@@ -98,6 +103,7 @@ import type {
   CustomProviderConfig,
   ProviderPreset,
   ProviderRuntimeModelConfig,
+  ProviderView,
   ProviderWireProtocol,
 } from '@cindy/model-providers';
 import { SettingsTextInput } from './SettingsTextInput';
@@ -116,15 +122,6 @@ type DialogAgentKind = Extract<AgentKind, 'claude-code' | 'codex' | 'pi'>;
 const AGENTS: DialogAgentKind[] = ['claude-code', 'codex', 'pi'];
 
 const VISIBLE_AGENTS: DialogAgentKind[] = AGENTS;
-
-const DIALOG_FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[href]',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 const TAB_META: Record<
   DialogAgentKind,
@@ -159,6 +156,8 @@ function defaultWireFor(agent: DialogAgentKind): ProviderWireProtocol {
 
 interface ProviderConnectionDialogProps {
   initial?: CustomProviderConfig;
+  /** Effective modes from the same connection's active catalog, separate from editable overrides. */
+  catalogModels?: ProviderView['models'];
   /** 已占用的全部 provider id（内置 anthropic/openai/xd + 全部自定义）；新建时自动生成 id 时避让，防撞内置保留 id。 */
   existingIds?: string[];
   /** Stable fallback for transitions whose immediate opener unmounts before this dialog mounts. */
@@ -191,6 +190,8 @@ interface HeaderRow {
 }
 interface RuntimeFields extends RuntimeFillDraft {
   models: ModelRow[];
+  /** Draft-only provenance: model routes may come from a preset or another runtime. */
+  modelRouteBaseUrl?: string;
   headers: HeaderRow[];
   /** 隐藏字段：列模型端点（预设 / 已存配置快照进来），「获取模型列表」用；不在表单展示。 */
   modelsUrl: string;
@@ -199,6 +200,22 @@ interface RuntimeFields extends RuntimeFillDraft {
   catalogPresetId?: string;
   /** Codex Responses runtime 级原生图片生成能力。 */
   supportsImageGeneration: boolean;
+  /** Standalone Images API, independent of the Codex Responses hosted tool. */
+  imageApi?: 'openai-images';
+  videoApi?: 'xai-videos';
+}
+
+function runtimeProbeFields(
+  agent: DialogAgentKind,
+  runtime: RuntimeFields,
+  catalogModels?: ProviderConnectionTestSignatureFields['catalogModels'],
+): RuntimeFields & Pick<ProviderConnectionTestSignatureFields, 'catalogModels'> {
+  return {
+    ...runtime,
+    catalogModels,
+    requestPath: agent === 'pi' ? '' : runtime.requestPath,
+    models: modelsAfterProviderEndpointEdit(runtime.models, runtime.modelRouteBaseUrl, runtime.baseUrl),
+  };
 }
 
 function canRuntimeUseNativeImageGeneration(runtime: RuntimeFields): boolean {
@@ -261,6 +278,7 @@ function initRuntimes(initial?: CustomProviderConfig): Record<DialogAgentKind, R
       if (!rc) continue;
       out[a] = normalizeRuntimeImageGenerationCapability(a, {
         baseUrl: rc.baseUrl,
+        modelRouteBaseUrl: rc.baseUrl,
         requestPath: a === 'pi' ? '' : (rc.requestPath ?? ''),
         apiKey: '',
         wireProtocol: rc.wireProtocol ?? defaultWireFor(a),
@@ -273,6 +291,8 @@ function initRuntimes(initial?: CustomProviderConfig): Record<DialogAgentKind, R
         piCatalogProviderId: rc.piCatalogProviderId,
         catalogPresetId: rc.catalogPresetId,
         supportsImageGeneration: a === 'codex' && rc.supportsImageGeneration === true,
+        imageApi: rc.imageApi,
+        videoApi: rc.videoApi,
         headersState: rc.headersState,
       });
     }
@@ -392,14 +412,19 @@ function PresetDropdown({
 
 export function ProviderConnectionDialog({
   initial,
+  catalogModels,
   existingIds,
   returnFocusRef,
   focusAgent,
-  onSaved,
-  onClose,
+  onSaved: notifySaved,
+  onClose: notifyClosed,
 }: ProviderConnectionDialogProps) {
   const { t, i18n } = useTranslation();
+  const dialog = useDialogExit(returnFocusRef);
+  const onClose = useCallback(() => dialog.close(notifyClosed), [dialog.close, notifyClosed]);
+  const onSaved = useCallback(() => dialog.close(notifySaved), [dialog.close, notifySaved]);
   const editing = !!initial;
+  const catalogModelsRef = useRef(catalogModels);
   const initialOAuth = initial?.auth?.method === 'oauth' ? initial.auth.oauth : undefined;
 
   const formId = useId();
@@ -432,6 +457,7 @@ export function ProviderConnectionDialog({
   }, [fieldError]);
   const [name, setName] = useState(initial?.name ?? '');
   const [manualModel, setManualModel] = useState('');
+  const [manualModelMode, setManualModelMode] = useState('inherit');
   const [rt, setRt] = useState<Record<DialogAgentKind, RuntimeFields>>(() => initRuntimes(initial));
   const [activeTab, setActiveTab] = useState<DialogAgentKind>(
     () =>
@@ -515,7 +541,6 @@ export function ProviderConnectionDialog({
   const imageGenerationHelpPointerSuppressionFrameRef = useRef<number | null>(null);
   const imageGenerationHelpPointerSuppressionGenerationRef = useRef(0);
   const modelFetchInFlightRef = useRef(false);
-  const scrimRef = useRef<HTMLDivElement>(null);
   const dialogPanelRef = useRef<HTMLDivElement>(null);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   // 原生 window listener 的生命周期不跟着每次 render 重绑；layout effect 只把
@@ -657,47 +682,23 @@ export function ProviderConnectionDialog({
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [dismissImageGenerationHelp, dismissTopmostLayer, showImageGenerationHelp]);
 
-  useEffect(() => {
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      if (event.target !== scrimRef.current) return;
-      if (!childLayerRef.current && !runtimeFillRef.current) return;
-
-      // This must run before Radix's document-capture outside-dismiss. The
-      // scrim gesture belongs to the dialog's current child layer; consuming
-      // it here prevents Radix from committing a closed popover before the
-      // form can settle that layer exactly once.
-      event.preventDefault();
-      event.stopPropagation();
-      dismissTopmostLayer();
-    };
-    window.addEventListener('pointerdown', onPointerDown, { capture: true });
-    return () => window.removeEventListener('pointerdown', onPointerDown, true);
-  }, [dismissTopmostLayer]);
-
-  useEffect(() => {
-    const returnFocusElement =
-      document.activeElement instanceof HTMLElement && document.activeElement !== document.body
-        ? document.activeElement
-        : null;
-    const frame = requestAnimationFrame(() => {
-      (
-        dialogPanelRef.current?.querySelector<HTMLInputElement>('input')
-      )?.focus();
-    });
-    return () => {
-      cancelAnimationFrame(frame);
-      const focusTarget = returnFocusElement?.isConnected
-        ? returnFocusElement
-        : returnFocusRef?.current;
-      if (focusTarget?.isConnected) focusTarget.focus();
-    };
-  }, [returnFocusRef]);
   // 最新 runtime 表单状态镜像：拉取响应到达时据此构建弹层行/预勾选，而不是用请求发出时的
   // 闭包快照——在途期间被用户删除的行不得复活。镜像在每个 setRt updater 内**同步**更新
   // （见 setRtSynced），不用被动 useEffect——effect 在 commit 后才跑，IPC 响应若落在
   // 状态更新与 effect 之间会读到旧值。
   const rtRef = useRef(rt);
+  useLayoutEffect(() => {
+    const previousCatalogModels = catalogModelsRef.current;
+    catalogModelsRef.current = catalogModels;
+    const changedAgents = AGENTS.filter(agent =>
+      firstProviderChatModel(rtRef.current[agent].models, previousCatalogModels?.[agent])?.id !==
+      firstProviderChatModel(rtRef.current[agent].models, catalogModels?.[agent])?.id);
+    if (changedAgents.length) setTest(previous => {
+      const next = { ...previous };
+      for (const agent of changedAgents) next[agent] = IDLE_TEST;
+      return next;
+    });
+  }, [catalogModels]);
   /** 唯一的 rt 写入口：状态更新的同时同步镜像进 rtRef（updater 幂等，StrictMode 双调无害）。 */
   const setRtSynced = useCallback(
     (
@@ -769,10 +770,10 @@ export function ProviderConnectionDialog({
         authMode: savedAuthMode,
         apiKey: loadedKeyRef.current[agent] ?? '',
         ...(agent === 'pi'
-          ? { modelPiApi: firstProviderChatModel(rc.models)?.piApi }
+          ? { modelPiApi: firstProviderChatModel(rc.models, catalogModels?.[agent])?.piApi }
           : {}),
-        modelRoute: firstProviderChatModel(rc.models)?.route,
-        modelApi: firstProviderChatModel(rc.models)?.api,
+        modelRoute: firstProviderChatModel(rc.models, catalogModels?.[agent])?.route,
+        modelApi: firstProviderChatModel(rc.models, catalogModels?.[agent])?.api,
         catalogPresetId: rc.catalogPresetId,
         headers:
           rc.headers && Object.keys(rc.headers).length > 0
@@ -780,7 +781,7 @@ export function ProviderConnectionDialog({
             : [],
       };
     },
-    [editing, initial],
+    [editing, initial, catalogModels],
   );
 
   // URL edits temporarily clear an untouched hydrated key so it cannot be
@@ -848,6 +849,7 @@ export function ProviderConnectionDialog({
           }
           next[a] = {
             baseUrl: rc.baseUrl,
+            modelRouteBaseUrl: rc.baseUrl,
             requestPath: a === 'pi' ? '' : (rc.requestPath ?? ''),
             apiKey: prev[a].apiKey, // 已填的 key 保留
             wireProtocol: rc.wireProtocol ?? defaultWireFor(a),
@@ -998,7 +1000,13 @@ export function ProviderConnectionDialog({
     const includeApiKey = usesApiKey;
 
     const oauthPiUnavailable = authModeRef.current === 'oauth' && source !== 'pi';
-    const sourceDraft = cloneRuntimeFillDraft(rtRef.current[source]);
+    const sourceFields = rtRef.current[source];
+    const sourceDraft = cloneRuntimeFillDraft({
+      ...sourceFields,
+      models: modelsAfterProviderEndpointEdit(
+        sourceFields.models, sourceFields.modelRouteBaseUrl, sourceFields.baseUrl,
+      ),
+    });
     const allTargets = runtimeFillTargetAgents(source, {
       includePi: authModeRef.current !== 'oauth',
     }).map((agent) => ({
@@ -1121,6 +1129,9 @@ export function ProviderConnectionDialog({
         const restored = restoreHydratedKey(target.agent, {
           ...prev[target.agent],
           ...endpointSafeFilled,
+          ...(selectedFields.includes('models')
+            ? { modelRouteBaseUrl: runtimeFill.sourceDraft.baseUrl }
+            : {}),
         });
         next[target.agent] = restored;
       }
@@ -1187,6 +1198,7 @@ export function ProviderConnectionDialog({
   );
 
   const f = rt[activeTab];
+  const mediaOnly = f.models.some(model => model.id.trim()) && !firstProviderChatModel(f.models, catalogModels?.[activeTab]);
   const boundPreset = presets.find(preset => preset.id === f.catalogPresetId);
   const templateBound = Boolean(f.catalogPresetId);
   const endpointTemplate = boundPreset?.runtimes[activeTab]?.baseUrl;
@@ -1211,9 +1223,9 @@ export function ProviderConnectionDialog({
   const handleTest = useCallback(async () => {
     const agent = activeTab;
     const rf = rt[agent];
-    const probeFields = agent === 'pi' ? { ...rf, requestPath: '' } : rf;
+    const probeFields = runtimeProbeFields(agent, rf, catalogModels?.[agent]);
     const defaultBaseUrl = rf.baseUrl.trim();
-    const firstModelConfig = firstProviderChatModel(rf.models);
+    const firstModelConfig = firstProviderChatModel(rf.models, catalogModels?.[agent]);
     const firstModel = firstModelConfig?.id.trim();
     if (!matchesEndpointTemplate(agent, rf)) {
       toast.error(t('settings.providers.custom.errors.baseUrlInvalid'));
@@ -1281,7 +1293,7 @@ export function ProviderConnectionDialog({
       );
       if (
         providerConnectionTestRequestSignature(
-          agent === 'pi' ? { ...rtRef.current[agent], requestPath: '' } : rtRef.current[agent],
+          runtimeProbeFields(agent, rtRef.current[agent], catalogModelsRef.current?.[agent]),
           authModeRef.current,
         ) !== requestSig
       )
@@ -1295,7 +1307,7 @@ export function ProviderConnectionDialog({
     } catch (e) {
       if (
         providerConnectionTestRequestSignature(
-          agent === 'pi' ? { ...rtRef.current[agent], requestPath: '' } : rtRef.current[agent],
+          runtimeProbeFields(agent, rtRef.current[agent], catalogModelsRef.current?.[agent]),
           authModeRef.current,
         ) !== requestSig
       )
@@ -1304,7 +1316,7 @@ export function ProviderConnectionDialog({
       setTest((prev) => ({ ...prev, [agent]: { status: 'fail', code: 'UNKNOWN' } }));
       if (ipc?.message) toast.error(ipc.message);
     }
-  }, [activeTab, authMode, rt, t, savedBaselineFor, initial, presets, matchesEndpointTemplate]);
+  }, [activeTab, authMode, rt, t, savedBaselineFor, initial, presets, matchesEndpointTemplate, catalogModels]);
 
   // 拉取单飞：任一 runtime（含 Pi）在途时所有 Tab 的拉取按钮都禁用——两个并发请求会竞争
   // 同一个勾选弹层（后到的覆盖先开的、确认还会写进另一个 runtime），单飞直接消掉这类竞态。
@@ -1378,6 +1390,7 @@ export function ProviderConnectionDialog({
             id: m.id.trim(),
             name: m.name.trim(),
             mode: m.mode,
+            nativeApi: m.nativeApi,
             modalities: m.modalities,
             officialDocs: m.officialDocs,
             discoveredMetadata: m.discoveredMetadata,
@@ -1422,6 +1435,7 @@ export function ProviderConnectionDialog({
                 m.discoveredMetadata ?? { contextWindow: m.contextWindow }),
               discoveredCost: m.discoveredCost,
               mode: cur?.mode,
+              nativeApi: cur?.nativeApi,
               modalities: cur?.modalities,
               officialDocs: cur?.officialDocs,
               nameExplicit: cur ? (cur.nameExplicit ?? !cur.discoveredMetadata) : undefined,
@@ -1509,6 +1523,7 @@ export function ProviderConnectionDialog({
         id: m.id,
         name: latest?.name.trim() ? latest.name.trim() : m.name,
         mode: latest ? latest.mode : m.mode,
+        nativeApi: latest ? latest.nativeApi : m.nativeApi,
         modalities: latest?.modalities ?? m.modalities,
         officialDocs: latest?.officialDocs ?? m.officialDocs,
         discoveredMetadata: m.discoveredMetadata ?? latest?.discoveredMetadata,
@@ -1536,6 +1551,7 @@ export function ProviderConnectionDialog({
           id,
           name: m.name.trim() || id,
           mode: m.mode,
+          nativeApi: m.nativeApi,
           modalities: m.modalities,
           officialDocs: m.officialDocs,
           discoveredMetadata: m.discoveredMetadata,
@@ -1632,11 +1648,12 @@ export function ProviderConnectionDialog({
         reportFieldError(`${a}:baseUrl`, t('settings.providers.custom.errors.baseUrlInvalid'));
         return;
       }
-      const models = rf.models
+      const models = modelsAfterProviderEndpointEdit(rf.models, rf.modelRouteBaseUrl, rf.baseUrl)
         .map((m) => ({
           id: m.id.trim(),
           name: m.name.trim(),
           mode: m.mode,
+          nativeApi: m.nativeApi,
           modalities: m.modalities,
           officialDocs: m.officialDocs,
           discoveredMetadata: m.discoveredMetadata,
@@ -1704,6 +1721,8 @@ export function ProviderConnectionDialog({
         ...(a === 'codex' && rf.supportsImageGeneration && canRuntimeUseNativeImageGeneration(rf)
           ? { supportsImageGeneration: true }
           : {}),
+        ...(rf.imageApi ? { imageApi: rf.imageApi } : {}),
+        ...(rf.videoApi ? { videoApi: rf.videoApi } : {}),
         models,
         ...(Object.keys(savedHeaders).length > 0 ? { headers: savedHeaders } : {}),
         ...(rf.modelsUrl.trim() ? { modelsUrl: rf.modelsUrl.trim() } : {}),
@@ -1988,47 +2007,29 @@ export function ProviderConnectionDialog({
   };
 
   return (
-    <div
-      ref={scrimRef}
-      data-custom-provider-dialog-scrim="true"
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-[var(--overlay-modal)]"
-      onPointerDown={(event) => {
-        // pointerdown 时先按当前层级结算，避免 Popover 的 outside-dismiss 在随后
-        // click 前把状态改成 closed，令同一次手势继续误关底层表单。
-        if (event.button === 0 && event.target === event.currentTarget && !saving && !runtimeFill) {
-          event.preventDefault();
-          event.stopPropagation();
-          dismissTopmostLayer();
-        }
-      }}
-      onKeyDown={(event) => {
-        if (childLayer || runtimeFill || imageGenerationReloadConfirmation) return;
-        if (event.key !== 'Tab') return;
-        const focusable = Array.from(
-          dialogPanelRef.current?.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR) ?? [],
-        );
-        if (focusable.length === 0) {
-          event.preventDefault();
-          dialogPanelRef.current?.focus();
-          return;
-        }
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }}
-    >
-      <div
+    <Dialog.Root open={dialog.open} onOpenChange={(open) => { if (!open) dismissTopmostLayer(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          data-custom-provider-dialog-scrim="true"
+          className="modal-scrim fixed inset-0 z-[10000]"
+          style={WINDOW_DRAG_STYLE}
+        />
+      <Dialog.Content
         ref={dialogPanelRef}
-        role="dialog"
-        aria-modal="true"
+        aria-describedby={undefined}
         aria-labelledby="custom-provider-dialog-title"
-        tabIndex={-1}
+        onPointerDownOutside={(event) => event.preventDefault()}
+        onOpenAutoFocus={(event) => {
+          dialog.onOpenAutoFocus();
+          event.preventDefault();
+          dialogPanelRef.current?.querySelector<HTMLInputElement>('input')?.focus();
+        }}
+        onCloseAutoFocus={dialog.onCloseAutoFocus}
+        onEscapeKeyDown={(event) => {
+          // The existing window-capture owner handles child layers and IME first.
+          event.preventDefault();
+        }}
+        style={WINDOW_NO_DRAG_STYLE}
         onChangeCapture={(event) => {
           // 错误清除粒度(review P2/P1 双向约束):
           // - 报错字段自身被编辑时清除——改其它字段(名称/密钥/别的 runtime 行)
@@ -2053,9 +2054,7 @@ export function ProviderConnectionDialog({
           }
         }}
         className={cn(
-          'flex max-h-[88vh] w-[min(600px,calc(100vw-32px))] flex-col rounded-xl outline-none',
-          'border border-[var(--border-default)] bg-[var(--surface-elevated)]',
-          'shadow-[var(--shadow-menu)]',
+          'modal-panel fixed inset-0 z-[10000] m-auto flex h-fit max-h-[88vh] w-[min(600px,calc(100vw-32px))] flex-col outline-none',
           '[&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-[var(--focus-ring)]',
         )}
       >
@@ -2063,14 +2062,14 @@ export function ProviderConnectionDialog({
         <div className="flex items-center px-3 py-3">
           <div className="flex items-center gap-2.5 pl-2">
             <Sparkles size={20} className="text-[var(--settings-section-title)]" />
-            <h2
+            <Dialog.Title asChild><h2
               id="custom-provider-dialog-title"
               className="text-18 font-semibold text-[var(--settings-section-title)]"
             >
               {editing
                 ? t('settings.providers.custom.dialog.editTitle')
                 : t('settings.providers.custom.dialog.createTitle')}
-            </h2>
+            </h2></Dialog.Title>
           </div>
         </div>
 
@@ -2435,16 +2434,38 @@ export function ProviderConnectionDialog({
                   <span>{t('settings.providers.connection.modelCount', { count: f.models.filter((model) => model.id.trim()).length })}</span>
                   <span className="text-12">{t('settings.providers.connection.modelsAutomatic')}</span>
                   <FormField id={fieldId(`${activeTab}:manualModel`)} label={t('settings.providers.connection.manualModel')} error={errorFor(`${activeTab}:manualModel`)}>
-                    {(control) => <SettingsTextInput {...control} surface="ivory" value={manualModel}
-                      onChange={setManualModel} />}
+                        {(control) => (
+                          <SettingsTextInput {...control} surface="ivory" value={manualModel}
+                      onChange={setManualModel} />
+                        )}
+                  </FormField>
+                  <FormField id={fieldId(`${activeTab}:manualModelMode`)}
+                    label={t('settings.providers.custom.fields.modelType')}
+                    hint={t('settings.providers.connection.manualModelTypeHint')}>
+                    {(control) => (
+                      <Select {...control} label={t('settings.providers.custom.fields.modelType')}
+                        value={manualModelMode} onValueChange={setManualModelMode}
+                        options={[
+                          { value: 'inherit', label: t('settings.providers.connection.modelTypeAutomatic') },
+                          { value: 'chat', label: t('settings.providers.models.kindFilter.chat') },
+                          ...([
+                            ['image_generation', 'image'], ['video_generation', 'video'],
+                            ['audio_speech', 'tts'], ['audio_transcription', 'stt'],
+                            ['audio_generation', 'audio'], ['realtime', 'realtime'], ['embedding', 'embedding'],
+                          ] as const).map(([value, category]) => ({ value, label: t(`newChat.modelSelector.category.${category}`) })),
+                        ]} />
+                    )}
                   </FormField>
                   <Button variant="secondary" disabled={!manualModel.trim()} onClick={() => {
                     const ids = [...new Set(manualModel.split(/[,\n]/).map((id) => id.trim()).filter(Boolean))];
                     patch(activeTab, (runtime) => ({ ...runtime, models: [
-                      ...runtime.models.filter((model) => model.id.trim()),
-                      ...ids.filter((id) => !runtime.models.some((model) => model.id === id)).map((id) => ({ id, name: id })),
+                      ...runtime.models.filter((model) => model.id.trim()).map(model =>
+                        ids.includes(model.id) ? { ...model, mode: manualModelMode === 'inherit' ? undefined : manualModelMode } : model),
+                      ...ids.filter((id) => !runtime.models.some((model) => model.id === id))
+                        .map((id) => ({ id, name: id, ...(manualModelMode === 'inherit' ? {} : { mode: manualModelMode }) })),
                     ] }));
                     setManualModel('');
+                    setManualModelMode('inherit');
                     setFieldError(null);
                   }}>{t('settings.providers.custom.fields.addModel')}</Button>
                 </div>
@@ -2569,10 +2590,76 @@ export function ProviderConnectionDialog({
                   </button>
                 </div>
 
+                {authMode !== 'oauth' && (
+                  <div className="flex flex-col gap-1.5 border-t border-[var(--border-default)] pt-3">
+                    <label className="flex cursor-pointer items-center gap-2 text-13 text-[var(--settings-section-title)]">
+                      <input
+                        type="checkbox"
+                        id={fieldId(`${activeTab}:image-api`)}
+                        aria-describedby={fieldId(`${activeTab}:image-api-hint`)}
+                        checked={f.imageApi === 'openai-images'}
+                        onChange={(event) => {
+                          const enabled = event.currentTarget.checked;
+                          // One explicit media owner per provider; other chat routes and keys stay intact.
+                          setRtSynced((prev) => Object.fromEntries(
+                            Object.entries(prev).map(([agent, runtime]) => [agent, {
+                              ...runtime,
+                              imageApi: agent === activeTab && enabled
+                                ? 'openai-images'
+                                : enabled || agent === activeTab ? undefined : runtime.imageApi,
+                            }]),
+                          ) as Record<DialogAgentKind, RuntimeFields>);
+                        }}
+                        className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--settings-menu-text-selected)]"
+                      />
+                      {t('settings.providers.custom.fields.openaiImages')}
+                    </label>
+                    <p
+                      id={fieldId(`${activeTab}:image-api-hint`)}
+                      className="text-12 leading-5 text-[var(--settings-section-desc)]"
+                    >
+                      {t('settings.providers.custom.fields.openaiImagesHint')}
+                    </p>
+                  </div>
+                )}
+
+                {authMode !== 'oauth' && (
+                  <div className="flex flex-col gap-1.5 border-t border-[var(--border-default)] pt-3">
+                    <label className="flex cursor-pointer items-center gap-2 text-13 text-[var(--settings-section-title)]">
+                      <input
+                        type="checkbox"
+                        id={fieldId(`${activeTab}:video-api`)}
+                        aria-describedby={fieldId(`${activeTab}:video-api-hint`)}
+                        checked={f.videoApi === 'xai-videos'}
+                        onChange={(event) => {
+                          const enabled = event.currentTarget.checked;
+                          // One explicit media owner per provider; other chat routes and keys stay intact.
+                          setRtSynced((prev) => Object.fromEntries(
+                            Object.entries(prev).map(([agent, runtime]) => [agent, {
+                              ...runtime,
+                              videoApi: agent === activeTab && enabled
+                                ? 'xai-videos'
+                                : enabled || agent === activeTab ? undefined : runtime.videoApi,
+                            }]),
+                          ) as Record<DialogAgentKind, RuntimeFields>);
+                        }}
+                        className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--settings-menu-text-selected)]"
+                      />
+                      {t('settings.providers.custom.fields.xaiVideos')}
+                    </label>
+                    <p
+                      id={fieldId(`${activeTab}:video-api-hint`)}
+                      className="text-12 leading-5 text-[var(--settings-section-desc)]"
+                    >
+                      {t('settings.providers.custom.fields.xaiVideosHint')}
+                    </p>
+                  </div>
+                )}
+
                 {/* Codex Responses Provider 级能力。放在自定义请求头之后，默认收起；
                     同一张说明卡片支持 hover/focus 临时预览和 click/tap 固定。 */}
                 {canShowImageGenerationAdvanced && (
-                  <div className="flex flex-col gap-2 border-t border-[var(--border-subtle)] pt-3">
+                  <div className="flex flex-col gap-2 border-t border-[var(--border-default)] pt-3">
                     <button
                       type="button"
                       onClick={() => {
@@ -2709,48 +2796,38 @@ export function ProviderConnectionDialog({
               </>
             )}
 
-            {/* 测试连接：用当前 Tab 表单值发最小探测请求（与真实会话同路由口径，未保存也能测）。
-                OAuth 形态隐藏——登录前无凭证可测，保存并授权后可在供应商行验证。 */}
+                {/* 预设模板（仅新建态、有预设时显示）：下拉选择，选中即预填 baseUrl / 模型清单，
+                    用户只补 key。列表已按厂商首字母分组排序（同厂商国内/海外相邻，按构建区域排序）。 */}
             {authMode !== 'oauth' && (
               <div className="flex min-h-[32px] flex-wrap items-center gap-2.5">
-                <button
+                    {!mediaOnly && <Button
+                      variant="secondary"
+                      size="sm"
+                      compact
+                      loading={test[activeTab].status === 'testing'}
                   type="button"
                   onClick={() => void handleTest()}
                   disabled={test[activeTab].status === 'testing'}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-12 font-medium transition-colors active:scale-[0.98]',
-                    'border-[var(--settings-input-border)] text-[var(--settings-section-title)] hover:bg-[var(--surface-hover)]',
-                    test[activeTab].status === 'testing' && 'cursor-not-allowed opacity-60',
-                  )}
-                >
-                  {test[activeTab].status === 'testing' ? (
-                    <Spinner size={13} />
-                  ) : (
-                    <Plug size={13} />
-                  )}
-                  {test[activeTab].status === 'testing'
-                    ? t('settings.providers.custom.test.testing')
-                    : t('settings.providers.custom.test.button')}
-                </button>
-                {/* 获取模型列表：GET 该供应商的列模型端点，成功后开勾选弹层填进上方模型行。
-                  disabled 用 anyFetching（单飞）：另一 Tab 在途时本 Tab 也不许发起。 */}
-                <button
+                    >
+                      <Plug size={13} />
+                      {t('settings.providers.custom.test.button')}
+                    </Button>}
+                    {/* 预设模板（仅新建态、有预设时显示）：下拉选择，选中即预填 baseUrl / 模型清单，
+                        用户只补 key。列表已按厂商首字母分组排序（同厂商国内/海外相邻，按构建区域排序）。 */}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      compact
+                      loading={fetchingModels[activeTab]}
                   ref={modelPickerTriggerRef}
                   type="button"
                   onClick={() => void handleFetchModels()}
                   disabled={anyFetching}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-12 font-medium transition-colors active:scale-[0.98]',
-                    'border-[var(--settings-input-border)] text-[var(--settings-section-title)] hover:bg-[var(--surface-hover)]',
-                    anyFetching && 'cursor-not-allowed opacity-60',
-                  )}
-                >
-                  {fetchingModels[activeTab] ? <Spinner size={13} /> : <RefreshCw size={13} />}
-                  {fetchingModels[activeTab]
-                    ? t('settings.providers.custom.fetch.fetching')
-                    : t('settings.providers.custom.fetch.button')}
-                </button>
-                {test[activeTab].status === 'ok' && (
+                    >
+                      <RefreshCw size={13} />
+                      {t('settings.providers.custom.fetch.button')}
+                    </Button>
+                {!mediaOnly && test[activeTab].status === 'ok' && (
                   <span
                     className="flex items-center gap-1 text-12"
                     style={{ color: 'var(--remote-status-ready)' }}
@@ -2759,9 +2836,14 @@ export function ProviderConnectionDialog({
                     {t('settings.providers.custom.test.ok', { ms: test[activeTab].latencyMs ?? 0 })}
                   </span>
                 )}
-                {test[activeTab].status === 'fail' && (
+                {!mediaOnly && test[activeTab].status === 'fail' && (
                   <span className="text-12 text-[var(--error-fg)]">
                     {t(`providerError.${test[activeTab].code ?? 'UNKNOWN'}`)}
+                  </span>
+                )}
+                {mediaOnly && (
+                  <span className="w-full text-12 text-[var(--text-secondary)]">
+                    {t('settings.providers.connection.mediaOnlyTestHint')}
                   </span>
                 )}
               </div>
@@ -2779,7 +2861,7 @@ export function ProviderConnectionDialog({
             onClick={() => {
               if (!savingRef.current) onClose();
             }}
-            className="bg-transparent border-[var(--confirm-btn-secondary-border)] text-[var(--confirm-btn-secondary-text)] enabled:hover:bg-[var(--confirm-btn-secondary-hover)] enabled:active:bg-[var(--confirm-btn-secondary-hover)]"
+            palette="confirmation"
           >
             {t('settings.providers.custom.cancel')}
           </Button>
@@ -2789,12 +2871,14 @@ export function ProviderConnectionDialog({
             size="lg"
             loading={saving}
             onClick={() => void handleSave()}
-            className="min-w-[96px] border-transparent bg-[var(--confirm-btn-primary-bg)] text-[var(--confirm-btn-primary-text)] enabled:hover:border-transparent enabled:active:border-transparent enabled:hover:bg-[var(--confirm-btn-primary-hover)] enabled:active:bg-[var(--confirm-btn-primary-hover)]"
+            palette="confirmation"
+            className="min-w-[96px]"
           >
             {t('settings.providers.custom.save')}
           </Button>
         </div>
-      </div>
+      </Dialog.Content>
+      </Dialog.Portal>
 
       {/* 「获取模型列表」勾选弹层：可搜索多选，确认后替换该 runtime 的模型行。 */}
       {picker && (
@@ -2837,9 +2921,10 @@ export function ProviderConnectionDialog({
           }}
         >
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-[10002] bg-[var(--overlay-modal)] data-[state=open]:animate-confirm-overlay-in data-[state=closed]:animate-confirm-overlay-out" />
+            <Dialog.Overlay className="modal-scrim fixed inset-0 z-[10002]" />
             <Dialog.Content
               aria-describedby="custom-provider-image-generation-reload-description"
+              onPointerDownOutside={(event) => event.preventDefault()}
               onOpenAutoFocus={(event) => {
                 event.preventDefault();
                 document.getElementById('custom-provider-image-generation-reload-primary')?.focus();
@@ -2852,9 +2937,7 @@ export function ProviderConnectionDialog({
                 if (saving) event.preventDefault();
               }}
               className={cn(
-                'fixed inset-0 z-[10002] m-auto flex h-fit max-h-[85vh] w-[520px] max-w-[calc(100vw-2rem)] flex-col rounded-xl p-4 outline-none',
-                'bg-[var(--confirm-bg)] shadow-[var(--confirm-shadow)]',
-                'data-[state=open]:animate-confirm-content-layout-in data-[state=closed]:animate-confirm-content-layout-out',
+                'modal-panel fixed inset-0 z-[10002] m-auto flex h-fit max-h-[85vh] w-[520px] max-w-[calc(100vw-2rem)] flex-col p-4 outline-none',
               )}
             >
               <button
@@ -2879,36 +2962,38 @@ export function ProviderConnectionDialog({
                 {t('settings.providers.custom.imageGenerationReload.description')}
               </Dialog.Description>
               <div className="mt-6 flex flex-wrap justify-end gap-2.5">
-                <button
+                <Button
+                  variant="secondary"
+                  size="lg"
                   type="button"
                   disabled={saving}
                   onClick={() => {
                     imageGenerationReloadConfirmationRef.current = null;
                     setImageGenerationReloadConfirmation(null);
                   }}
-                  className="inline-flex min-w-[96px] items-center justify-center rounded-full border border-[var(--confirm-btn-secondary-border)] bg-transparent px-6 py-2.5 text-13 font-medium text-[var(--confirm-btn-secondary-text)] transition-colors hover:bg-[var(--confirm-btn-secondary-hover)] focus-visible:ring-2 focus-visible:ring-[var(--confirm-btn-secondary-border)] disabled:opacity-50"
+                  className="min-w-[96px]"
                 >
                   {t('settings.providers.custom.imageGenerationReload.cancel')}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  tone="danger-solid"
+                  loading={saving}
                   id="custom-provider-image-generation-reload-primary"
                   type="button"
                   disabled={saving}
                   onClick={() => void saveWithImageGenerationRestartPolicy('interrupt')}
-                  className="inline-flex min-w-[96px] items-center justify-center rounded-full bg-[hsl(var(--destructive))] px-6 py-2.5 text-13 font-medium text-[var(--accent-pure-cta-fg)] transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
+                  className="min-w-[96px]"
                 >
-                  {saving ? (
-                    <Spinner size={14} />
-                  ) : (
-                    t('settings.providers.custom.imageGenerationReload.interrupt')
-                  )}
-                </button>
+                  {t('settings.providers.custom.imageGenerationReload.interrupt')}
+                </Button>
               </div>
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root>
       )}
-    </div>
+    </Dialog.Root>
   );
 }
 
@@ -2936,19 +3021,6 @@ export function ModelPickerOverlay({
         (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
       )
     : picker.models;
-  useEffect(() => {
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      const target = event.target;
-      if (target instanceof Node && contentRef.current?.contains(target)) return;
-      // Close only the picker and consume the gesture before it can reach the form beneath it.
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    window.addEventListener('pointerdown', onPointerDown, { capture: true });
-    return () => window.removeEventListener('pointerdown', onPointerDown, true);
-  }, [onClose]);
   const toggle = (id: string) => {
     const next = new Set(picker.selected);
     if (next.has(id)) next.delete(id);
@@ -2968,14 +3040,14 @@ export function ModelPickerOverlay({
       <Dialog.Portal>
         <Dialog.Overlay
           className={cn(
-            'fixed inset-0 z-[10001] bg-[var(--overlay-modal)]',
-            'data-[state=open]:animate-confirm-overlay-in data-[state=closed]:animate-confirm-overlay-out',
+            'modal-scrim fixed inset-0 z-[10001]',
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         />
         <Dialog.Content
           ref={contentRef}
           aria-describedby="custom-provider-model-picker-description"
+          onPointerDownOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => {
             if (event.isComposing || event.keyCode === 229) event.preventDefault();
           }}
@@ -2992,11 +3064,8 @@ export function ModelPickerOverlay({
             returnFocusRef.current?.focus();
           }}
           className={cn(
-            'fixed left-1/2 top-1/2 z-[10001] -translate-x-1/2 -translate-y-1/2',
-            'flex max-h-[72vh] w-[460px] max-w-[calc(100vw-2rem)] flex-col rounded-xl outline-none',
-            'border border-[var(--border-default)] bg-[var(--confirm-bg)]',
-            'shadow-[var(--confirm-shadow)]',
-            'data-[state=open]:animate-confirm-content-in data-[state=closed]:animate-confirm-content-out',
+            'modal-panel fixed left-1/2 top-1/2 z-[10001] -translate-x-1/2 -translate-y-1/2',
+            'flex max-h-[72vh] w-[460px] max-w-[calc(100vw-2rem)] flex-col outline-none',
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
@@ -3096,31 +3165,20 @@ export function ModelPickerOverlay({
           </div>
           {/* Footer */}
           <div className="flex justify-end gap-2.5 px-5 py-3.5">
-            <button
-              type="button"
-              onClick={onClose}
-              className={cn(
-                'inline-flex items-center justify-center rounded-full border bg-transparent px-5 py-2 text-13 font-medium transition-colors active:scale-[0.98]',
-                'border-[var(--confirm-btn-secondary-border)] text-[var(--confirm-btn-secondary-text)] hover:bg-[var(--confirm-btn-secondary-hover)]',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-              )}
-            >
+            <Button variant="secondary" size="md" compact type="button" onClick={onClose}>
               {t('settings.providers.custom.cancel')}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="cta"
+              size="md"
+              compact
               ref={primaryButtonRef}
               type="button"
               onClick={onConfirm}
               disabled={picker.selected.size === 0}
-              className={cn(
-                'inline-flex items-center justify-center rounded-full px-5 py-2 text-13 font-medium transition-colors active:scale-[0.98]',
-                'bg-[var(--confirm-btn-primary-bg)] text-[var(--confirm-btn-primary-text)] hover:bg-[var(--confirm-btn-primary-hover)]',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                picker.selected.size === 0 && 'cursor-not-allowed opacity-50',
-              )}
             >
               {t('settings.providers.custom.fetch.confirm', { count: picker.selected.size })}
-            </button>
+            </Button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

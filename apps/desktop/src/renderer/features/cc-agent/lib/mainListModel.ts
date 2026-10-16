@@ -24,6 +24,7 @@
  */
 
 import type { Session } from '@/lib/ccAgent.types';
+import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
 import { isCindyMakeFamilySource } from '../../../../shared/cindyMakeMerge';
 import {
   MACHINE_ALL,
@@ -248,7 +249,9 @@ export function sortSessionsForMainList(
       .map((session, index) => ({ session, index, createdAt: sessionCreatedMs(session) }))
       .sort(
         (a, b) =>
-          b.createdAt - a.createdAt || a.session.id.localeCompare(b.session.id) || a.index - b.index,
+          b.createdAt - a.createdAt ||
+          a.session.id.localeCompare(b.session.id) ||
+          a.index - b.index,
       )
       .map(({ session }) => session);
   }
@@ -347,6 +350,21 @@ export function buildMainListEntries({
   scheduleSessionIndex,
 }: BuildMainListEntriesInput): MainListEntry[] {
   const ctx = priorityContext;
+  if (!CINDY_MAKE_ENABLED) {
+    const keep = (session: Session) => !isCindyMakeFamilySource(session.source);
+    projects = projects.flatMap((project) => {
+      const sessions = project.sessions.filter(keep);
+      if (sessions.length === project.sessions.length) return [project];
+      return sessions.length ? [{ ...project, sessions }] : [];
+    });
+    dialogues = dialogues.filter(keep);
+    unclassified = unclassified.filter(keep);
+    bots = bots.flatMap((bot) => {
+      const sessions = bot.sessions.filter(keep);
+      if (sessions.length === bot.sessions.length) return [bot];
+      return sessions.length ? [{ ...bot, sessions }] : [];
+    });
+  }
   const entries: MainListEntry[] = [];
   const partitioned = partitionCindyMakeSessions({ projects, dialogues, unclassified });
   projects = partitioned.projects;
@@ -455,6 +473,9 @@ function sortMainListEntries(
   manualProjectOrder: readonly string[],
   ctx: MainListPriorityContext,
 ): MainListEntry[] {
+  // Cindy Make stays above ordinary entries in every sort mode and device section.
+  const makeGroups = entries.filter((entry) => entry.kind === 'cindy-make-group');
+  entries = entries.filter((entry) => entry.kind !== 'cindy-make-group');
   if (projectOrder === 'custom') {
     // 自定义项目序:项目行按 manualProjectOrder;不在序的新项目由 normalize
     // 追加到已排序列之后。非项目条目排在项目之后,仍按当前任务排序。
@@ -465,7 +486,7 @@ function sortMainListEntries(
       .map((entry) => entry.project.projectKey);
     const normalized = normalizeManualProjectOrder(manualProjectOrder, projectKeys);
     const rank = new Map(normalized.map((key, index) => [key, index]));
-    return entries.slice().sort((a, b) => {
+    const sorted = entries.slice().sort((a, b) => {
       const aProject = a.kind === 'project';
       const bProject = b.kind === 'project';
       if (aProject !== bProject) return aProject ? -1 : 1;
@@ -479,9 +500,13 @@ function sortMainListEntries(
       }
       return compareEntriesBySortBy(a, b, sortBy, ctx);
     });
+    return [...makeGroups, ...sorted];
   }
 
-  return entries.slice().sort((a, b) => compareEntriesBySortBy(a, b, sortBy, ctx));
+  return [
+    ...makeGroups,
+    ...entries.slice().sort((a, b) => compareEntriesBySortBy(a, b, sortBy, ctx)),
+  ];
 }
 
 /* ============================== 设备分组(E 期) ============================== */
@@ -504,6 +529,21 @@ export function onlineDeviceSectionIds(
     if (device.online && (selection === MACHINE_ALL || selection.includes(id))) ids.push(id);
   }
   return ids;
+}
+
+/**
+ * 在线设备空段能否算作「侧栏已有内容」:本机段恒算;远程段只在其任务快照已就绪时算。
+ * 首次读取中 / 失败的远程设备只有一个空段头,不能遮掉整屏的加载或失败提示
+ * (单机范围选中一台正在加载的远程设备时尤其如此)。
+ */
+export function hasSettledOnlineDeviceSection(
+  devices: ReadonlyMap<string, { online: boolean }> | null | undefined,
+  selection: MachineSelection,
+  unsettledDeviceIds: ReadonlySet<string>,
+): boolean {
+  return onlineDeviceSectionIds(devices, selection).some(
+    (id) => id === null || !unsettledDeviceIds.has(id),
+  );
 }
 
 function entryDeviceId(entry: MainListEntry): string | null {

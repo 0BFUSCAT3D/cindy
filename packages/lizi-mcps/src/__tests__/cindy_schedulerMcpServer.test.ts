@@ -226,10 +226,13 @@ describe('cindy_scheduler MCP server (in-process smoke)', () => {
     const first = (result.content as Array<{ type: string; text: string }>)[0];
     const payload = JSON.parse(first.text) as {
       ok: boolean;
-      categories: { name: string; tool_count: number }[];
+      categories: { name: string; tool_count: number; description: string }[];
     };
     expect(payload.ok).toBe(true);
-    expect(payload.categories).toEqual([{ name: 'scheduler', tool_count: 11 }]);
+    // 类目概览要在第一步就写明用途与作用范围(本机 / 可跨电脑)。
+    expect(payload.categories).toEqual([
+      { name: 'scheduler', tool_count: 11, description: expect.stringMatching(/各自的电脑.*device.*只在本机/) },
+    ]);
     await h.cleanup();
   });
 
@@ -279,6 +282,37 @@ describe('cindy_scheduler MCP server (in-process smoke)', () => {
       expect(result.isError).toBe(true);
     }
     await h.cleanup();
+  });
+
+  it('asks the host before each call and does not run a denied one', async () => {
+    await h.cleanup();
+    const storage = new InMemoryStorage();
+    const scheduler = new Scheduler({
+      storage, runner: noopRunner, clock: new FakeClock(), generateId: makeIdGen(), tickIntervalMs: 60_000_000,
+    });
+    const authorizeCall = vi.fn(async ({ tool }: { tool: string }) => (tool === 'schedule_create'
+      ? { ok: false as const, errorCode: 'OWNER_TURN_REQUIRED', message: 'owner only' }
+      : { ok: true as const }));
+    const server = createSchedulerMcpServer({ getScheduler: () => scheduler, authorizeCall });
+    const [clientTx, serverTx] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'scheduler-gate', version: '0.0.0' });
+    await Promise.all([server.connect(serverTx), client.connect(clientTx)]);
+    try {
+      const denied = await client.callTool({
+        name: 'call_tool',
+        arguments: { name: 'schedule_create', args: baseCreate as unknown as Record<string, unknown> },
+      });
+      const deniedPayload = JSON.parse((denied.content as Array<{ text: string }>)[0]!.text) as Record<string, unknown>;
+      expect(deniedPayload).toMatchObject({ ok: false, errorCode: 'OWNER_TURN_REQUIRED' });
+      expect(await scheduler.list()).toHaveLength(0);
+      expect(authorizeCall).toHaveBeenCalledWith(expect.objectContaining({ server: 'cindy_scheduler', tool: 'schedule_create' }));
+
+      const listed = await client.callTool({ name: 'call_tool', arguments: { name: 'schedule_list', args: {} } });
+      expect(parseToolResult(listed as { content: unknown[]; isError?: boolean }).envelope).toMatchObject({ ok: true });
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 
   it('call_tool(schedule_create) creates a schedule and call_tool(schedule_list) returns it (same payload as scheduler.list)', async () => {
@@ -566,7 +600,8 @@ describe('cindy_scheduler MCP server (in-process smoke)', () => {
       arguments: { name: 'schedule_get', args: { id: 'does-not-exist' } },
     });
     const env = parseToolResult(result as { content: unknown[]; isError?: boolean }).envelope;
-    expect(env).toEqual({ ok: true, data: null });
+    // 本机读取自带范围：data:null 只说明本机没有。
+    expect(env).toEqual({ ok: true, data: null, scope: 'local' });
     await h.cleanup();
   });
 

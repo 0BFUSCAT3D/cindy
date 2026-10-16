@@ -438,6 +438,8 @@ vi.mock('@/state/deviceLinkModelMirror', () => ({
 import {
   ModelSelector as SharedModelSelector,
   ModelSelectorContent as SharedModelSelectorContent,
+  UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX,
+  UNIFIED_COMPACT_PANEL_WIDTH_CLASS,
   modelCompactEffortLabel,
   modelEffortLabel,
   modelListMaxHeightForRows,
@@ -560,8 +562,8 @@ describe('ModelSelector trigger variants', () => {
     // 会把模型名压成 GPT-...，所以此时只保留当前模型的已隐藏标识。
     expect(modelTagDensityForWidth(320)).toBe('hidden');
     expect(modelTagDensityForWidth(370)).toBe('subscription');
-    expect(modelTagDensityForWidth(449)).toBe('subscription');
-    expect(modelTagDensityForWidth(450)).toBe('full');
+    expect(modelTagDensityForWidth(UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX)).toBe('subscription');
+    expect(modelTagDensityForWidth(UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX + 1)).toBe('full');
   });
 
   // 打开选择器既发起刷新、又把「发现在途」状态推给内容区(见 useModelDiscoveryPending),
@@ -614,6 +616,45 @@ describe('ModelSelector trigger variants', () => {
     visibleModelsRef.models = [];
     const view = render(
       React.createElement(ModelSelector, {
+        modelId: 'remote-model',
+        effort: 'medium',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        vendorKey: 'cc',
+        deviceId: 'dev-a',
+      }),
+    );
+    try {
+      const trigger = screen.getByRole('button', { name: /模型读取失败/ });
+      expect(trigger.textContent).toContain('模型读取失败');
+      await act(async () => {
+        fireEvent.click(trigger);
+      });
+      expect(screen.getByText('无法读取远程设备上的模型。请检查连接后重试。')).toBeTruthy();
+      expect(screen.getByRole('button', { name: '重新读取模型' })).toBeTruthy();
+      expect(screen.queryByText('没有匹配的模型')).toBeNull();
+      deviceProvidersRef.prefetch.mockRejectedValueOnce(new Error('offline'));
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '重新读取模型' }));
+        await Promise.resolve();
+      });
+      expect(deviceProvidersRef.prefetch).toHaveBeenCalledWith('dev-a');
+    } finally {
+      view.unmount();
+      agentCapabilitiesRef.capabilities = originalCapabilities;
+      agentCapabilitiesRef.error = null;
+      visibleModelsRef.models = originalModels;
+    }
+  });
+
+  it('unified panel remote failures show retry instead of no matching models', async () => {
+    const originalCapabilities = agentCapabilitiesRef.capabilities;
+    const originalModels = visibleModelsRef.models;
+    agentCapabilitiesRef.capabilities = null;
+    agentCapabilitiesRef.error = 'offline';
+    visibleModelsRef.models = [];
+    const view = render(
+      React.createElement(SharedModelSelector, {
         modelId: 'remote-model',
         effort: 'medium',
         onModelChange: vi.fn(),
@@ -915,12 +956,16 @@ describe('ModelSelector trigger variants', () => {
     };
     const view = render(React.createElement(ModelSelectorContent, props));
     let pane = view.container.querySelector('[data-unified-model-panel]') as HTMLElement;
-    expect(pane.className).toContain('max-w-[min(420px,calc(100vw-48px))]');
+    expect(UNIFIED_COMPACT_PANEL_WIDTH_CLASS).toContain(
+      `max-w-[min(${UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX}px,calc(100vw-48px))]`,
+    );
+    expect(pane.className).toContain(UNIFIED_COMPACT_PANEL_WIDTH_CLASS);
 
     view.rerender(React.createElement(ModelSelectorContent, { ...props, fluidWidth: true }));
     pane = view.container.querySelector('[data-unified-model-panel]') as HTMLElement;
     expect(pane.className).toContain('w-full min-w-0');
-    expect(pane.className).not.toContain('420px');
+    expect(pane.className).not.toContain(UNIFIED_COMPACT_PANEL_WIDTH_CLASS);
+    expect(pane.className).not.toContain(`${UNIFIED_COMPACT_PANEL_MAX_WIDTH_PX}px`);
   });
 
   it('keeps the session Agent explicit when Claude Code uses an OpenAI-branded model', () => {

@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/lib/ccAgent.types';
@@ -116,6 +117,37 @@ describe('makerChatStore.mirrorAgentSwitchIntent', () => {
       providerId: 'openai',
     });
     expect(makerChatStore.getSnapshot(s)).toBe(snap); // 引用不变 = 未触发更新
+  });
+
+  it('远程 Agent 换电脑:位置随意图镜像(null = 任务所在电脑),脏值按位置不变处理', async () => {
+    const { makerChatStore } = await import('@/lib/makerChatStore');
+    const s = sid();
+    makerChatStore.mirrorAgentSwitchIntent(s, {
+      targetAgentKind: 'claude-code',
+      model: 'anthropic/claude-opus-5-5[1m]',
+      providerId: 'xd',
+      agentDeviceId: null,
+    });
+    expect(makerChatStore.getSnapshot(s).agentSwitchIntent).toMatchObject({ agentDeviceId: null });
+
+    // 位置不同 = 不同的意图,不能当成同一份回声吞掉。
+    makerChatStore.mirrorAgentSwitchIntent(s, {
+      targetAgentKind: 'claude-code',
+      model: 'anthropic/claude-opus-5-5[1m]',
+      providerId: 'xd',
+      agentDeviceId: 'studio-mac',
+    });
+    expect(makerChatStore.getSnapshot(s).agentSwitchIntent?.agentDeviceId).toBe('studio-mac');
+
+    makerChatStore.mirrorAgentSwitchIntent(s, {
+      targetAgentKind: 'claude-code',
+      model: 'm',
+      providerId: 'xd',
+      agentDeviceId: 42,
+    });
+    const intent = makerChatStore.getSnapshot(s).agentSwitchIntent;
+    expect(intent?.model).toBe('m');
+    expect(intent && 'agentDeviceId' in intent).toBe(false);
   });
 
   it('null / 非法值 = 无意图 → 清除', async () => {
@@ -839,10 +871,21 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(source).toMatch(
       /!unifiedPanelActive &&\s*\n\s*sessionId &&\s*\n\s*vendorKey &&\s*\n\s*!remoteHostId &&\s*\n\s*sessionAgentSwitchSupported/,
     );
-    expect(source).toContain('ccCaps.capabilities?.supportsSessionAgentSwitch === true');
-    expect(source).toContain('ccCaps.capabilities.supportsSessionAgentSwitchCas === true');
-    expect(source).toContain('codexCaps.capabilities?.supportsSessionAgentSwitch === true');
-    expect(source).toContain('codexCaps.capabilities.supportsSessionAgentSwitchCas === true');
+    expect(source).toContain('hostCcCaps.capabilities?.supportsSessionAgentSwitch === true');
+    expect(source).toContain('hostCcCaps.capabilities.supportsSessionAgentSwitchCas === true');
+    expect(source).toContain('hostCodexCaps.capabilities?.supportsSessionAgentSwitch === true');
+    expect(source).toContain('hostCodexCaps.capabilities.supportsSessionAgentSwitchCas === true');
+    // 能力位读**任务所在的被控电脑**,不跟模型目录走(2026-10-09 review P1):Agent 在离线的
+    // 第三台电脑时目录读不到,入口不能因此消失,否则改不回被控电脑。
+    expect(source).toMatch(
+      /const hostCcCaps = useAgentCapabilities\(\s*deviceLinkDeviceId \? 'claude-code' : null,\s*deviceLinkDeviceId \?\? undefined,\s*\);/,
+    );
+    expect(source).toMatch(
+      /const hostCodexCaps = useAgentCapabilities\(\s*deviceLinkDeviceId \? 'codex' : null,\s*deviceLinkDeviceId \?\? undefined,\s*\);/,
+    );
+    expect(source).toContain(
+      "hostCcCaps.capabilities?.supportsSessionAgentSwitchCas === true ||\n    hostCodexCaps.capabilities?.supportsSessionAgentSwitchCas === true;",
+    );
     const hostSource = readFileSync(
       resolve(process.cwd(), 'src/main/maker-ipc/register.ts'),
       'utf8',
@@ -862,13 +905,47 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const body = hostSource.slice(start, end);
     expect(body).toContain('effort: sessions.effort,');
     expect(body).toContain('fastMode: sessions.fastMode,');
+    expect(body).toContain('permissionMode: sessions.permissionMode,');
     expect(body).toContain("co.effort = (row.effort ?? undefined) as CreateOpts['effort'];");
     expect(body).toContain('co.fastMode = !!row.fastMode;');
+    expect(body).toContain('co.permissionMode = permissionModeOrAsk(row.permissionMode);');
   });
 
-  it('Orca 与角色未加载会话都 fail-closed:只有完整元数据确认非协同后开放入口', () => {
-    expect(source).toContain('sessionOrcaRole === null &&');
-    // 会话视图必须保留 undefined 未知态,不能在完整 session 回流前冒充「非协同」。
+  it('Orca 会话复用切换入口，角色未加载仍保留未知态', () => {
+    expect(source).not.toContain('sessionOrcaRole === null &&');
+    const expression = source.match(/const sessionAgentSwitchSupported =\s*([\s\S]*?);/)?.[1];
+    expect(expression).toBeDefined();
+    const supported = new Function('sessionOrcaRole', 'runtimeAgentKind', 'deviceLinkDeviceId',
+      'ccSupportsSessionAgentSwitch', 'codexSupportsSessionAgentSwitch', `return ${expression};`);
+    for (const role of [null, 'lead', 'worker']) {
+      expect(supported(role, 'codex', null, false, false)).toBe(true);
+      expect(supported(role, undefined, null, true, true)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, false)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, true)).toBe(true);
+    }
+    expect(supported(undefined, 'codex', null, true, true)).toBe(false);
+    const remoteOptions = source.slice(source.indexOf('const sessionRemoteAgentOptions ='),
+      source.indexOf('// composer pill 尾部引擎小标'));
+    expect(remoteOptions).toContain('    sessionOrcaRole,');
+    expect(remoteOptions).toContain('    sessionOrcaRemoteWorker,');
+    const relocationGuard = remoteOptions.match(/if \(([\s\S]*?)\) return undefined;/)?.[1];
+    expect(relocationGuard).toBeDefined();
+    const hidden = new Function('sessionOrcaRole', 'sessionOrcaRemoteWorker', 'deviceLinkDeviceId',
+      `const sessionId = 's1', agentLocationAware = true, remoteHostId = null, sessionEngineFilter = {};
+       return !!(${relocationGuard});`);
+    // 本机的 Lead / Worker 与普通任务一样可换 Agent 所在电脑。
+    for (const role of [null, 'lead', 'worker']) {
+      expect(hidden(role, false, null)).toBe(false);
+    }
+    // 被控电脑上的协同任务先不开放(旧版被控端会拒绝);普通被控任务不受影响。
+    expect(hidden('lead', false, 'host')).toBe(true);
+    expect(hidden('worker', false, 'host')).toBe(true);
+    expect(hidden(null, false, 'host')).toBe(false);
+    for (const role of [null, 'lead', 'worker', undefined]) {
+      expect(hidden(role, true, null)).toBe(true);
+    }
+    expect(hidden(undefined, false, null)).toBe(true);
+    // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),
       'utf8',
@@ -876,6 +953,7 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(viewSource).toContain(
       'sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}',
     );
+    expect(viewSource).toContain('sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}');
   });
 
   it('本地与远程会话打开时都读回 main 权威意图,并经新鲜度守卫过滤过期响应', () => {
@@ -937,9 +1015,11 @@ describe('ChatInput 的入口门控与调用路由', () => {
       'const exclusiveTurn = reserveAgentSwitchExclusive(sourceSessionId);',
     );
     const invoke = source.indexOf(
-      'const result = await switchApi.switchSessionAgent(',
+      // 带可选参数与不带参数的调用都必须在同一串行位置内完成。
+      'await switchApi.switchSessionAgent(',
       reservation,
     );
+    const invokeWithoutOptions = source.indexOf('await switchApi.switchSessionAgent(', invoke + 1);
     const scopeGuard = source.indexOf(
       'if (!isSessionScopeCurrent(sourceSessionId, currentSessionIdRef.current)) return false;',
       invoke,
@@ -949,7 +1029,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const release = source.indexOf('exclusiveTurn.release();', reselect);
     expect(reservation).toBeGreaterThanOrEqual(0);
     expect(invoke).toBeGreaterThan(reservation);
-    expect(scopeGuard).toBeGreaterThan(invoke);
+    expect(invokeWithoutOptions).toBeGreaterThan(invoke);
+    expect(scopeGuard).toBeGreaterThan(invokeWithoutOptions);
     expect(reselect).toBeGreaterThan(scopeGuard);
     expect(staleGuard).toBeGreaterThan(reselect);
     expect(release).toBeGreaterThan(reselect);
@@ -1073,6 +1154,36 @@ describe('ChatInput 的入口门控与调用路由', () => {
     );
   });
 
+  it.each(['lead', 'worker'])('Desktop Orca %s routes same-Agent model and provider picks through the switch intent', async sessionOrcaRole => {
+    const parsed = ts.createSourceFile('ChatInput.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const callbacks = new Map<string, string>();
+    function visit(node: ts.Node) {
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)
+        && ['performModelChange', 'performProviderChange'].includes(node.name.getText(parsed))) {
+        callbacks.set(node.name.getText(parsed), node.initializer.arguments[0].getText(parsed));
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(parsed);
+    const switchAgent = vi.fn(async () => true);
+    const bindings = { sessionOrcaRole, settingsLocked: false, sessionId: 's1',
+      sessionAgentSwitchSupported: true, remoteHostId: null, runtimeAgentKind: 'codex',
+      makerChatStore: { getAgentSwitchIntent: () => null }, performAgentSwitch: switchAgent,
+      effectiveSourceId: 'provider-old', activeModel: 'model-old' };
+    function callback(name: string) {
+      expect(callbacks.has(name)).toBe(true);
+      const compiled = ts.transpileModule(`return ${callbacks.get(name)};`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      return new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
+    }
+    expect(await callback('performModelChange')('model-new')).toBe(true);
+    expect(switchAgent).toHaveBeenLastCalledWith('codex', 'model-new', 'provider-old');
+    expect(await callback('performProviderChange')('provider-new', 'model-new', 'high', undefined, true)).toBe(true);
+    expect(switchAgent).toHaveBeenLastCalledWith('codex', 'model-new', 'provider-new', { effort: 'high', fastMode: true });
+    switchAgent.mockResolvedValue(false);
+    expect(await callback('performModelChange')('rejected-model')).toBe(false);
+  });
+
   it('await 返回后做会话作用域校验:旧会话响应不得借最新 ref 写进当前会话', () => {
     // `return false` 而不是裸 return:见下一条 —— 这是「没把选择落到会话上」的出口之一。
     expect(source).toContain(
@@ -1105,8 +1216,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
     );
     // 签名显式声明 Promise<boolean> —— 返回值是契约的一部分,不靠推断。
     expect(body).toContain('): Promise<boolean> => {');
-    // 「没落地」的四个出口:无会话 / pending send 拒绝 / 会话已切走 / ack 被超车。
-    expect(body).toContain('if (!sessionId) return false;');
+    // 「没落地」的出口:无会话或设置只读 / pending send 拒绝 / 会话已切走 / ack 被超车。
+    expect(body).toContain('if (!sessionId || settingsLocked) return false;');
     expect(body).toContain('if (hasPendingAgentSendDispatch(sessionId)) return false;');
     expect(body).toContain("if (ackAction === 'discard') return false;");
     // 同引擎重选被修订号守卫拒下 = 没落地。
@@ -1204,8 +1315,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(matches).toHaveLength(2);
     expect(selectorSource).not.toContain('(open || keepOpenForAgentConfirmation) && !disabled');
     expect(selectorSource).not.toContain('(open && !disabled) || keepOpenForAgentConfirmation');
-    // 切引擎成功后收选单;取消才 setOpen(true) 留在原地。disabled 仍不得参与开关。
-    expect(selectorSource).toContain('setOpenWithoutAutoRefresh(applied === false)');
+    // 配置切引擎保持展开；选中模型行成功后收起。disabled 仍不得参与开关。
+    expect(selectorSource).toContain('setOpenWithoutAutoRefresh(configuring || applied === false)');
     expect(selectorSource).toContain(
       "onProviderChange(args.providerId, args.wireModelId, args.effort ?? '', args.config.fast)",
     );

@@ -4,20 +4,20 @@ import { cn } from '@/lib/utils';
 export function BotConnectionStatus({
   online = true,
   deviceName,
-  activityLabel,
   inline = false,
+  homeOffline = false,
   className,
 }: {
-  online?: boolean;
+  online?: boolean | null;
+  /** The device is this companion's main computer (cloud companions): say so when offline. */
+  homeOffline?: boolean;
   deviceName?: string;
-  activityLabel?: string;
   inline?: boolean;
   className?: string;
 }) {
   const { t } = useTranslation();
-  const status = online && activityLabel?.trim()
-    ? activityLabel.trim()
-    : t(online ? 'bots.remote.online' : 'bots.remote.offline');
+  const status = t(homeOffline && !online ? 'bots.cloud.homeOfflineShort'
+    : online === null ? 'bots.remote.unknown' : online ? 'bots.remote.online' : 'bots.remote.offline');
   const name = deviceName?.trim();
   const label = name ? `${status} · ${name}` : status;
   if (inline) {
@@ -33,9 +33,7 @@ export function BotConnectionStatus({
       title={label}
       className={cn(
         'absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-sidebar',
-        !online ? 'bg-[var(--text-tertiary)]'
-          : activityLabel ? 'bg-[var(--warning-accent)]'
-            : 'bg-[var(--remote-status-ready)]',
+        online === null ? 'bg-[var(--text-tertiary)]' : online ? 'bg-[var(--remote-status-ready)]' : 'bg-[var(--remote-status-failed)]',
       )}
     />
   );

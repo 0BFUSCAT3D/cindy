@@ -74,6 +74,7 @@ export function useSessionHardwareTaskActions({
       toast.warning(t('ccAgent.sidebar.archiveBlocked.attached'));
       return;
     }
+    // 预检与确认期间保留当前任务，确定归档后再隐藏并跳离。
     const preflight = await resolveWorktreeRemovalPreflight(sessionId, deviceLinkDeviceId);
     if (preflight !== 'clean') {
       const ok = await confirmDialog({
@@ -86,7 +87,9 @@ export function useSessionHardwareTaskActions({
         confirmText: t('ccAgent.sidebar.confirmArchive.confirm'),
         cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
       });
-      if (!ok) return;
+      if (!ok) {
+        return;
+      }
     }
     await runSessionAction(sessionId, 'archive', { activeSessionId: sessionId });
   }, [

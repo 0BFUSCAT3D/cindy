@@ -45,8 +45,14 @@ import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionR
 import { withWorktreeRestoreMutation } from './restoreLock';
 import { recycleManagedWorktree } from './managedRecycle';
 import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
-import { acquireWorktreeRuntimeLease, releaseWorktreeRuntimeLease } from './runtimeLeases';
+import {
+  acquireWorktreeRuntimeLease,
+  recordWorktreeRuntimeLeaseChild,
+  reclaimOrphanedWorktreeRuntimeLeases,
+  releaseWorktreeRuntimeLease,
+} from './runtimeLeases';
 import * as store from './worktreeStore';
+import { assertPrecreatedSessionNotCancelled, sealPrecreatedSessionCancellation, withPrecreatedSessionOperationLock } from './precreatedCancellation';
 import { createLogger } from '../logger';
 import { getDbClient } from '../localDb/client/current';
 import {
@@ -385,7 +391,7 @@ async function withPrecreatedWorktreeOperationQueue<T>(
 
   await previous.catch(() => {});
   try {
-    return await fn();
+    return await withPrecreatedSessionOperationLock(sessionId, fn);
   } finally {
     releaseCurrent();
     if (precreatedWorktreeOperationQueues.get(sessionId) === queued) {
@@ -618,7 +624,7 @@ export function getForSession(sessionId: string): WorktreeMeta | null {
 }
 
 /** Caller holds the session/resource locks. Unknown DB outcomes retain the intent. */
-async function reconcileSessionTransferLocked(meta: WorktreeMeta): Promise<void> {
+async function reconcileSessionTransferLocked(meta: WorktreeMeta, beforeMutation?: () => Promise<void>): Promise<void> {
   const transfer = meta.pendingSessionTransfer;
   if (!transfer) return;
   if (!transfer.sessionId || transfer.sessionId === meta.sessionId
@@ -650,11 +656,11 @@ async function reconcileSessionTransferLocked(meta: WorktreeMeta): Promise<void>
   }
   const next = { ...meta, sessionId: row.childSessionId };
   delete next.pendingSessionTransfer;
-  await store.replace(meta.sessionId, next.sessionId, next, meta);
+  await store.replace(meta.sessionId, next.sessionId, next, meta, beforeMutation);
 }
 
 /** Startup/dispatch/retry reconciliation, scoped to the affected execution only. */
-export async function reconcileSessionTransfer(sessionId: string): Promise<void> {
+export async function reconcileSessionTransfer(sessionId: string, beforeMutation?: () => Promise<void>): Promise<void> {
   const pending = store.getAll().find(meta => meta.pendingSessionTransfer
     && (meta.sessionId === sessionId || meta.pendingSessionTransfer.sessionId === sessionId));
   if (!pending?.pendingSessionTransfer) return;
@@ -663,7 +669,7 @@ export async function reconcileSessionTransfer(sessionId: string): Promise<void>
     withWorktreeRestoreMutation(pending.pendingSessionTransfer!.sessionId, () =>
       withWorktreeResourceLock(pending.path, async () => {
         const current = store.get(pending.sessionId);
-        if (current?.pendingSessionTransfer) await reconcileSessionTransferLocked(current);
+        if (current?.pendingSessionTransfer) await reconcileSessionTransferLocked(current, beforeMutation);
       })));
 }
 
@@ -749,6 +755,7 @@ const STAGE_CHECKOUT_PATHS = [
  */
 async function stageCheckout(
   worktreePath: string,
+  onCheckoutChildSpawn?: (pid: number) => void,
 ): Promise<{ fullCheckoutPromise: Promise<void> }> {
   const t0 = Date.now();
 
@@ -762,6 +769,7 @@ async function stageCheckout(
     const { stdout } = await gitExec(
       ['ls-tree', '--name-only', 'HEAD', '--', ...STAGE_CHECKOUT_PATHS],
       worktreePath,
+      { onSpawn: onCheckoutChildSpawn },
     );
     existingPaths = stdout
       .split(/\r?\n/)
@@ -778,7 +786,9 @@ async function stageCheckout(
   // 2. 选择性 checkout 白名单文件(同步, 用户可见)
   if (existingPaths.length > 0) {
     try {
-      await gitExec(['checkout', 'HEAD', '--', ...existingPaths], worktreePath);
+      await gitExec(['checkout', 'HEAD', '--', ...existingPaths], worktreePath, {
+        onSpawn: onCheckoutChildSpawn,
+      });
       log.info(
         `[stageCheckout] selective checkout done in ${Date.now() - t0}ms (${existingPaths.length} paths)`,
       );
@@ -797,7 +807,7 @@ async function stageCheckout(
   const fullCheckoutPromise = gitExec(
     ['checkout', 'HEAD', '--', '.', ':(exclude).claude', ':(exclude).sivi'],
     worktreePath,
-    { extraEnv: { LC_ALL: 'C' } },
+    { extraEnv: { LC_ALL: 'C' }, onSpawn: onCheckoutChildSpawn },
   )
     .then(() => {
       log.info(
@@ -1016,10 +1026,11 @@ export async function copyClaudeSiviDirs(
  *    删除/归档时由 removeWorktreeForSession 清理该 path 的条目, 见 #2627)
  */
 export async function createWorktree(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
-  const create = () => withCreateWorktreeQueue(req.baseRepo, () => createWorktreeInner(req));
-  return req.recoveryKey === undefined
-    ? create()
-    : withPrecreatedWorktreeOperationQueue(req.sessionId, create);
+  const create = () => withCreateWorktreeQueue(req.baseRepo, () => {
+    assertPrecreatedSessionNotCancelled(req.sessionId);
+    return createWorktreeInner(req);
+  });
+  return withPrecreatedWorktreeOperationQueue(req.sessionId, create);
 }
 
 async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
@@ -1162,7 +1173,10 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
       const checkoutLease = await acquireWorktreeRuntimeLease(`checkout:${req.sessionId}`, worktreePath);
       if (!checkoutLease) throw new Error('managed checkout runtime lease is missing');
       try {
-        const stageRes = await timed('stage checkout', () => stageCheckout(worktreePath));
+        const stageRes = await timed('stage checkout', () => stageCheckout(
+          worktreePath,
+          (pid) => recordWorktreeRuntimeLeaseChild(checkoutLease, pid),
+        ));
         bgPromise = stageRes.fullCheckoutPromise.finally(() => releaseWorktreeRuntimeLease(checkoutLease));
       } catch (err) {
         await releaseWorktreeRuntimeLease(checkoutLease);
@@ -1213,7 +1227,16 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
         );
       }
 
-      // 9. store + DB
+      // 9. Recheck after asynchronous Git/setup work before publishing metadata.
+      // The profile/session lock also closes the check -> store.set window.
+      try {
+        assertPrecreatedSessionNotCancelled(req.sessionId);
+      } catch (error) {
+        // Rollback must not race our own background checkout writer.
+        await bgPromise?.catch(() => undefined);
+        throw error;
+      }
+      // store + DB
       const meta: WorktreeMeta = {
         sessionId: req.sessionId,
         name,
@@ -1275,6 +1298,12 @@ export interface RemoveWorktreeOptions {
    * 命中 dirty 时保留整个 worktree。
    */
   preserveDirty?: boolean;
+  /**
+   * Explicit cancellation of an unclaimed pre-created worktree may reclaim
+   * dead-owner runtime leases for its exact path. Ordinary task removal keeps
+   * those leases protective because they may belong to detached children.
+   */
+  reclaimOrphanedRuntimeLeases?: boolean;
 }
 
 /**
@@ -1373,7 +1402,23 @@ async function removeWorktreeForSessionInner(
     excludeSessionId: sessionId,
     isSessionRuntimeAlive: options.isSessionRuntimeAlive,
   });
-  if (hasLiveSessionReference(meta, liveKeys)) {
+  if (options.reclaimOrphanedRuntimeLeases) {
+    const reclaimed = await reclaimOrphanedWorktreeRuntimeLeases(worktreePath);
+    if (reclaimed > 0) {
+      log.info(
+        '[worktree] reclaimed ' + reclaimed
+          + ' dead-owner runtime lease(s) for cancelled pre-created worktree at ' + worktreePath,
+      );
+    }
+  }
+  const refreshedLiveKeys = options.reclaimOrphanedRuntimeLeases
+    ? await loadLiveSessionPathKeys({
+      contextPath: worktreePath,
+      excludeSessionId: sessionId,
+      isSessionRuntimeAlive: options.isSessionRuntimeAlive,
+    })
+    : liveKeys;
+  if (hasLiveSessionReference(meta, refreshedLiveKeys)) {
     log.info(
       `[worktree] preserved worktree at ${worktreePath}: still referenced by another live session`,
     );
@@ -1597,6 +1642,35 @@ export type DiscardPrecreatedWorktreeResult =
   | { status: 'preserved' }
   | { status: 'discarded'; branchDeleted: boolean };
 
+/** Caller holds the session-create lock. Seal before deleting so a late create
+ * cannot resurrect the cancelled id. Keep the seal even if dirty files prevent
+ * removal; the same explicit cancellation can safely be retried later. */
+export async function cancelPrecreatedWorktree(
+  sessionId: string,
+  locator: { path?: string; recoveryKey?: string },
+  options: Pick<RemoveWorktreeOptions, 'canRemove'>,
+): Promise<DiscardPrecreatedWorktreeResult> {
+  return withPrecreatedWorktreeOperationQueue(sessionId, async () => {
+    const meta = store.get(sessionId);
+    if (meta && (locator.recoveryKey !== undefined
+      ? meta.recoveryKey !== locator.recoveryKey
+      : !locator.path || (path.resolve(meta.path) !== path.resolve(locator.path)
+        && (!meta.quarantinePath || path.resolve(meta.quarantinePath) !== path.resolve(locator.path))))) {
+      return { status: 'path-mismatch' };
+    }
+    if (meta?.ephemeral) return { status: 'preserved' };
+    if (!options.canRemove || !(await options.canRemove())) return { status: 'preserved' };
+    sealPrecreatedSessionCancellation(sessionId);
+    return meta
+      ? discardPrecreatedWorktree(sessionId, meta.path, {
+        ...options,
+        reclaimOrphanedRuntimeLeases: true,
+      })
+      : { status: 'absent' };
+  });
+}
+export { assertPrecreatedSessionNotCancelled } from './precreatedCancellation';
+
 /**
  * 手机在 worktree:create 之前先持久化 sessionId + recoveryKey；若进程在 create
  * 回包前退出，恢复端拿不到 path。这里仅在随机关联键与被控端持久元数据精确匹配时
@@ -1605,7 +1679,7 @@ export type DiscardPrecreatedWorktreeResult =
 export async function discardPrecreatedWorktreeByRecoveryKey(
   sessionId: string,
   recoveryKey: string,
-  options: Pick<RemoveWorktreeOptions, 'canRemove'> = {},
+  options: Pick<RemoveWorktreeOptions, 'canRemove' | 'reclaimOrphanedRuntimeLeases'> = {},
 ): Promise<DiscardPrecreatedWorktreeResult> {
   return withPrecreatedWorktreeOperationQueue(sessionId, async () => {
     const meta = store.get(sessionId);
@@ -1630,7 +1704,7 @@ export async function discardPrecreatedWorktreeByRecoveryKey(
 export async function discardPrecreatedWorktree(
   sessionId: string,
   expectedPath: string,
-  options: Pick<RemoveWorktreeOptions, 'canRemove'> = {},
+  options: Pick<RemoveWorktreeOptions, 'canRemove' | 'reclaimOrphanedRuntimeLeases'> = {},
 ): Promise<DiscardPrecreatedWorktreeResult> {
   const meta = store.get(sessionId);
   if (!meta) return { status: 'absent' };

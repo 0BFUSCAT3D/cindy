@@ -7,6 +7,7 @@ import type {
 
 import type { BotRemoteResourceSource } from './bots.js';
 import { isBotVisibleRemotely } from './botRemoteVisibility.js';
+import { isCompanionShadowed } from '../../companion-cloud/homes.js';
 import { isManagedBotAvatarUrl } from '../../../shared/botAvatarValue.js';
 
 export const TEAMMATES_REMOTE_COLLECTION_ID = 'teammates';
@@ -81,6 +82,7 @@ function resourceRef(id: string) {
 function sourceRevision(source: BotRemoteResourceSource): string {
   return [
     source.currentVersion,
+    source.invitation?.stage ?? '',
     source.updatedAt,
     source.lastMessageAt ?? 0,
     source.lastReplyAt ?? 0,
@@ -139,7 +141,8 @@ export function visibleBotRemoteResourceSources(
   sources: readonly BotRemoteResourceSource[],
 ): BotRemoteResourceSource[] {
   return sources
-    .filter(isBotVisibleRemotely)
+    // A demoted copy runs on its home computer; listing it here would duplicate it on other devices.
+    .filter(source => isBotVisibleRemotely(source) && !isCompanionShadowed(source.id))
     .sort((left, right) => {
       const pinned = Number(Boolean(right.pinnedAt)) - Number(Boolean(left.pinnedAt));
       return pinned || right.activityAt - left.activityAt || left.id.localeCompare(right.id);
@@ -147,17 +150,8 @@ export function visibleBotRemoteResourceSources(
 }
 
 export function botRemoteResourceFromSource(source: BotRemoteResourceSource): RemoteResource {
-  const item = botRemoteCollectionItemFromSource(source);
-  return {
-    ...item,
-    ...(source.description
-      ? {
-          blocks: [{
-            id: 'about',
-            primitive: 'markdown',
-            fallbackMarkdown: source.description,
-          }],
-        }
-      : {}),
-  };
+  const blocks: NonNullable<RemoteResource['blocks']> = [];
+  if (source.description) blocks.push({ id: 'about', primitive: 'markdown', fallbackMarkdown: source.description });
+  if (source.invitation) blocks.push({ id: 'invitation', primitive: 'status', fallbackMarkdown: '', data: { stage: source.invitation.stage } });
+  return { ...botRemoteCollectionItemFromSource(source), ...(blocks.length ? { blocks } : {}) };
 }

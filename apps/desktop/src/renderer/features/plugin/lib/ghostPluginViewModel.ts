@@ -15,21 +15,15 @@ import {
   type GhostToolDecl,
   type InstalledGhost,
 } from '../../../../shared/ghost';
+import { installedGhostStoragePart } from '../../../../shared/pluginIdentity';
 import type { PluginMarketItem } from '../../../../shared/pluginMarket';
-
-/**
- * cindy 详单里**可钉后端**的类目 —— 详情页给每个申请到的动作渲染一行模型选择。
- *
- * 新增 cindy 能力类目时必须回到这里登记,否则那个类目在详情页**完全没有选型
- * 入口**(不是少个下拉:`cindyCapabilities` 为空时整张卡片都不渲染),插件只能
- * 吃全局默认档。2026-08-04 加 `embed` 时就漏过一次。
- *
- * `media` 有意不在其中:寄存(deposit)不经模型,没有"用哪个型号"可选。
- */
-const PINNABLE_CINDY_CATEGORIES = ['image', 'video', 'text', 'embed'] as const;
+import { marketItemMatchesInstalledGhost } from './pluginMarketPresentation';
 
 export interface GhostPluginListItem {
+  /** Instance key (storage part). Use this for enable/uninstall/panel IPC. */
   id: string;
+  /** Logical plugin id from the manifest. */
+  ghostId: string;
   name: string;
   description: string;
   version: string;
@@ -49,7 +43,7 @@ export interface GhostPluginListItem {
   /** 本地化后的主视图标题；未声明时为 null。 */
   mainViewTitle: string | null;
   /** 声明了由 Host 承载、但可从插件 UI 主动进入的能力。 */
-  hostCapability: 'ios-simulator' | null;
+  retirement?: InstalledGhost['retirement'];
   oauthAuthorizationExpired?: boolean;
   trust?: GhostTrustInfo;
   iconDataUrl?: string;
@@ -63,14 +57,13 @@ export interface GhostPluginListItem {
  * - `manage`:纯工具型(Agent 对话中自动调用)→ 无主按钮。
  * 停靠形态(left/right)的面板由布局树承载,不算 panel 主动作。
  */
-export type GhostPrimaryAction = 'panel' | 'command' | 'capability' | 'manage';
+export type GhostPrimaryAction = 'panel' | 'command' | 'manage';
 
 export function ghostPrimaryAction(
-  item: Pick<GhostPluginListItem, 'tabPanel' | 'canUse' | 'hostCapability'>,
+  item: Pick<GhostPluginListItem, 'tabPanel' | 'canUse'>,
 ): GhostPrimaryAction {
   if (item.tabPanel) return 'panel';
   if (item.canUse) return 'command';
-  if (item.hostCapability) return 'capability';
   return 'manage';
 }
 export interface GhostPluginDetail extends GhostPluginListItem {
@@ -80,9 +73,14 @@ export interface GhostPluginDetail extends GhostPluginListItem {
   permissions: GhostPermissionItem[];
   tools: readonly GhostToolDecl[];
   hasSettingsUi: boolean;
-  cindyCapabilities: readonly string[];
-  /** 申请了派活取件(agent.errand)——详情页据此渲染宿主统一的「AI 代办」配置卡。 */
-  hasErrand: boolean;
+  /**
+   * 宿主「模型与任务」卡:插件的唯一模型字段(快问快答与新建任务共用)。声明了
+   * 快问快答(cindy.text 含 oneshot)或任何新建任务能力即展示;图像/视频/向量
+   * 没有逐插件选模,始终跟随系统默认。
+   */
+  hasTaskPreferences: boolean;
+  /** 能新建任务(agent.tasks / 旧 agent.errand / workspace):卡片额外展示权限与工作目录。 */
+  hasPluginTasks: boolean;
   panelMinWidth: number | null;
   installDir: string | null;
 }
@@ -108,7 +106,7 @@ export interface GhostPluginMarketPresentation {
 export function marketPresentationForInstalledGhost(
   ghost: Pick<InstalledGhost, 'manifest' | 'iconDataUrl'>,
   marketItem:
-    | Pick<
+    | (Pick<
         PluginMarketItem,
         | 'ghostId'
         | 'installState'
@@ -118,13 +116,14 @@ export function marketPresentationForInstalledGhost(
         | 'author'
         | 'icon'
         | 'sourceType'
-      >
+      > &
+        Pick<PluginMarketItem, 'namespace'>)
     | null
     | undefined,
 ): GhostPluginMarketPresentation | null {
   if (
     !marketItem ||
-    marketItem.ghostId !== ghost.manifest.id ||
+    !marketItemMatchesInstalledGhost(marketItem, ghost) ||
     marketItem.installState !== 'installed' ||
     marketItem.version !== ghost.manifest.version
   ) {
@@ -169,7 +168,7 @@ export function filterGhostPluginItems<T extends GhostPluginListItem>(
 ): T[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return items.filter((item) =>
-    `${item.name} ${item.description} ${item.id}`.toLocaleLowerCase().includes(normalizedQuery),
+    `${item.name} ${item.description} ${item.ghostId} ${item.id}`.toLocaleLowerCase().includes(normalizedQuery),
   );
 }
 
@@ -177,7 +176,7 @@ export function filterGhostPluginItems<T extends GhostPluginListItem>(
  * Orders installed shortcuts by host-recorded recency while keeping never-used items stable.
  * Unknown/stale ids are ignored, so uninstall or migration residue cannot hide an item.
  */
-export function sortGhostPluginItemsByRecentUse<T extends Pick<GhostPluginListItem, 'id'>>(
+export function sortGhostPluginItemsByRecentUse<T extends Pick<GhostPluginListItem, 'id' | 'retirement'>>(
   items: readonly T[],
   recentIds: readonly string[],
 ): T[] {
@@ -207,7 +206,7 @@ export function sortGhostPluginItemsByRecentUse<T extends Pick<GhostPluginListIt
  * so letting them jump the row would only bury the unread signal.
  * Pure and reactive — recompute freely from current signals; there is no frozen snapshot to go stale.
  */
-export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id'>>(
+export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id' | 'retirement'>>(
   items: readonly T[],
   {
     recentIds,
@@ -219,8 +218,8 @@ export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id'
     .map((item, stableIndex) => ({ item, stableIndex }))
     .sort((a, b) => {
       // Tier 1 — unread notifications, newest badge first.
-      const aAt = unreadAtById.get(a.item.id);
-      const bAt = unreadAtById.get(b.item.id);
+      const aAt = a.item.retirement?.unread ? Number.MAX_SAFE_INTEGER : unreadAtById.get(a.item.id);
+      const bAt = b.item.retirement?.unread ? Number.MAX_SAFE_INTEGER : unreadAtById.get(b.item.id);
       if ((aAt !== undefined) !== (bAt !== undefined)) return aAt !== undefined ? -1 : 1;
       if (aAt !== undefined && bAt !== undefined && aAt !== bAt) return bAt - aAt;
       // Tier 2 — recently used, newest first.
@@ -244,12 +243,12 @@ export function sortInstalledForDisplay<T extends Pick<GhostPluginListItem, 'id'
  * when the user has many plugins. Updatable-but-read plugins can still fold (the banner surfaces
  * updates).
  */
-export function installedVisibleCount<T extends Pick<GhostPluginListItem, 'id'>>(
+export function installedVisibleCount<T extends Pick<GhostPluginListItem, 'id' | 'retirement'>>(
   items: readonly T[],
   unreadAtById: ReadonlyMap<string, number>,
   cap: number,
 ): number {
-  const unreadCount = items.reduce((count, item) => count + (unreadAtById.has(item.id) ? 1 : 0), 0);
+  const unreadCount = items.reduce((count, item) => count + ((item.retirement?.unread || unreadAtById.has(item.id)) ? 1 : 0), 0);
   return Math.max(cap, unreadCount);
 }
 
@@ -270,7 +269,8 @@ export function toGhostPluginListItem(
     iconDataUrl: ghost.iconDataUrl,
   };
   return {
-    id: manifest.id,
+    id: installedGhostStoragePart(ghost),
+    ghostId: manifest.id,
     name: display.name,
     description: display.description,
     version: manifest.version,
@@ -281,7 +281,7 @@ export function toGhostPluginListItem(
     tabPanel: manifest.panel?.position === 'tab',
     hasMainView: manifest.mainView !== undefined,
     mainViewTitle: manifest.mainView ? (manifest.mainView.title ?? manifest.name) : null,
-    hostCapability: manifest.iosSimulator === true ? 'ios-simulator' : null,
+    retirement: ghost.retirement,
     oauthAuthorizationExpired: ghost.oauthAuthorizationExpired !== undefined,
     trust: ghost.trust ?? {
       level: 'unverified',
@@ -303,6 +303,8 @@ export function toGhostPluginDetail(
 ): GhostPluginDetail {
   const listItem = toGhostPluginListItem(ghost, presentation);
   const { manifest } = ghost;
+  const hasPluginTasks =
+    !!manifest.workspace || manifest.agent?.errand === true || manifest.agent?.tasks === true;
   return {
     ...listItem,
     trust: listItem.trust!,
@@ -311,10 +313,8 @@ export function toGhostPluginDetail(
     permissions: ghostPermissionItems(manifest),
     tools: manifest.tools ?? [],
     hasSettingsUi: Boolean(manifest.settingsHtml),
-    cindyCapabilities: PINNABLE_CINDY_CATEGORIES.flatMap((category) =>
-      (manifest.cindy?.[category] ?? []).map((action) => `${category}.${action}`),
-    ),
-    hasErrand: manifest.agent?.errand === true,
+    hasTaskPreferences: hasPluginTasks || (manifest.cindy?.text ?? []).includes('oneshot'),
+    hasPluginTasks,
     panelMinWidth: manifest.panel ? (manifest.panel.minWidth ?? 280) : null,
     installDir: ghost.dir,
   };

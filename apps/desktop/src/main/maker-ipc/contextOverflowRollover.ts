@@ -8,7 +8,9 @@
 import {
   CODEX_HISTORY_OVERSIZED_REASON,
   CONTEXT_OVERFLOW_REASON,
+  PI_REQUEST_BODY_RECOVERY_EXHAUSTED,
   isContextOverflowErrorMessage,
+  isDeterministicHostCompactFailure,
   isRemoteCompactEncryptedContentError,
 } from '@cindy/maker-core';
 import {
@@ -22,9 +24,26 @@ import {
   shouldHandoffAfterContextAssessment,
 } from '../../shared/modelSwitchAssessment.js';
 import { decideCindyCompression } from './cindyContextCompression.js';
-import { buildHandoffText, extractPlainText, type HandoffSourceMessage } from './agentHandoff.js';
+import {
+  buildHandoffText,
+  extractPlainText,
+  prependNoteToWireUserMessage,
+  type HandoffSourceMessage,
+  type HandoffWireMessage,
+} from './agentHandoff.js';
+import { readMessageSourceDevice } from '@cindy/maker-shared/message-source';
+import { buildClientEnvironmentNote } from './mobileClientPromptNote.js';
+import { buildWireMessageSourceNote } from './messageSourceNote.js';
+import { isPiPromptRpcTimeoutError } from '../../shared/inputError.js';
+export { isPiPromptRpcTimeoutError } from '../../shared/inputError.js';
 
 const SYNTHETIC_TRIGGER_PREFIX = '[UI_ACTION_TRIGGER]';
+const BOT_CONTEXT_CHECKPOINT_RATIO = 0.9;
+/**
+ * 伙伴工作记忆账本已覆盖最近完成轮时的换窗线。宿主换窗不调用模型,交接基线远小于原生压缩
+ * 后的残留;账本新鲜时提前换窗能替掉一次把整窗送去总结的原生压缩。不新鲜则维持 90%。
+ */
+const BOT_CONTEXT_CHECKPOINT_RATIO_FRESH = 0.7;
 
 export const CODEX_HISTORY_CONTINUE_MESSAGE =
   'Continue the unfinished task from the retained history. Do not repeat completed actions. ' +
@@ -46,6 +65,8 @@ export type OverflowRolloverPlan =
       sourceUserClientId: string;
       sourceUserContent: unknown;
       sourceUserAgentFacingWireContent?: unknown;
+      /** 被重放消息的来源元数据：重放时重新生成 `[消息来源]` / `[客户端说明]`。 */
+      sourceUserAgentMeta?: Record<string, unknown> | null;
       skipGenericReplay: boolean;
       handoffMessages: OverflowSourceMessage[];
     }
@@ -67,6 +88,19 @@ export function isOversizedHistoryErrorData(data: unknown): boolean {
   return (data as { reason?: unknown }).reason === CODEX_HISTORY_OVERSIZED_REASON;
 }
 
+/** A new companion input may retire an explicitly rejected compact operation.
+ * Bare empty responses, transport failures and ordinary generation errors are
+ * not proof of a broken compact context. Reuse the native failure classifier.
+ */
+function isCompanionCompactFailure(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const record = data as { message?: unknown; sdkError?: unknown };
+  return [record.message, record.sdkError].some(value =>
+    typeof value === 'string'
+    && /error during compaction|pi compact failed|error running remote compact task/i.test(value)
+    && isDeterministicHostCompactFailure(value.replace(/error running remote compact task/ig, 'Error during compaction')));
+}
+
 export interface NativeSessionRecoveryTarget {
   model: string;
   providerId: string | null;
@@ -74,19 +108,16 @@ export interface NativeSessionRecoveryTarget {
   fastMode: boolean;
 }
 
-const PI_PROMPT_RPC_TIMEOUT_RE = /pi rpc timeout after \d+ms: prompt\b/i;
-
-export function isPiPromptRpcTimeoutError(data: unknown): boolean {
+function isPiRequestBodyRecoveryExhausted(data: unknown): boolean {
   if (!data || typeof data !== 'object') return false;
   const rec = data as { message?: unknown; sdkError?: unknown };
-  return [rec.message, rec.sdkError].some(
-    (value) => typeof value === 'string' && PI_PROMPT_RPC_TIMEOUT_RE.test(value),
-  );
+  return [rec.message, rec.sdkError].some(value =>
+    typeof value === 'string' && value.includes(PI_REQUEST_BODY_RECOVERY_EXHAUSTED));
 }
 
 /** PI 原生会话已经无法继续：超限，或 prompt RPC 超时（巨大 jsonl resume 卡死）。 */
 export function shouldRebuildPiNativeSession(data: unknown): boolean {
-  return isContextOverflowErrorData(data) || isPiPromptRpcTimeoutError(data);
+  return isContextOverflowErrorData(data) || isPiPromptRpcTimeoutError(data) || isPiRequestBodyRecoveryExhausted(data);
 }
 
 const GROK_4_CONTEXT_CAP = 500_000;
@@ -246,11 +277,48 @@ export function planContextOverflowRollover(
     ...(sourceUser.agentMeta?.agentFacingWireContent !== undefined
       ? { sourceUserAgentFacingWireContent: sourceUser.agentMeta.agentFacingWireContent }
       : {}),
+    ...(sourceUser.agentMeta ? { sourceUserAgentMeta: sourceUser.agentMeta } : {}),
     skipGenericReplay: isExternalDispatchOwner(sourceUser.agentMeta),
     handoffMessages: continueFromHistory
       ? messages.filter((message) => message.role !== 'error')
       : messages.slice(0, lastUserIndex),
   };
+}
+
+/**
+ * 重放的是落库前的 Agent 原文（不含派发时追加的说明）：按同一份来源元数据重新生成
+ * `[消息来源]`（插件 / 共享任务成员）与 `[客户端说明]`（远程设备），重建后的模型才不会把
+ * 插件或共享成员的话当成任务所有者本人输入。没有来源时原样返回。
+ */
+export function withReplaySourceNotes(
+  wire: OverflowReplayWireMessage,
+  agentMeta: Record<string, unknown> | null | undefined,
+): OverflowReplayWireMessage {
+  if (!agentMeta) return wire;
+  const sourceNote = buildWireMessageSourceNote(
+    { origin: agentMeta.origin, sourcePlugin: agentMeta.sourcePlugin, sharedTaskAuthor: agentMeta.sharedTaskAuthor },
+    {
+      visibleText: typeof wire === 'string' ? wire : extractPlainText(wire.content),
+      autoResume: agentMeta.autoResume === true,
+    },
+  );
+  const device = readMessageSourceDevice(agentMeta);
+  const clientNote = device ? buildClientEnvironmentNote({ device }) : null;
+  if (!sourceNote && !clientNote) return wire;
+  let next = wire as HandoffWireMessage;
+  if (sourceNote) next = prependNoteToWireUserMessage(next, sourceNote);
+  if (clientNote) next = prependNoteToWireUserMessage(next, clientNote);
+  // 以结构化 wire 交给重放：纯字符串会被当作落库内容再解析一次（`{` 开头的正文会被误读）。
+  return typeof next === 'string' ? { type: 'user', content: next } : (next as OverflowReplayWireMessage);
+}
+
+/** 没有来源说明时沿用原有的 agentFacingWireContent（行为不变），有则交带说明的 wire。 */
+function replayWireWithSourceNotes(
+  sourceWire: OverflowReplayWireMessage,
+  plan: Extract<OverflowRolloverPlan, { action: 'rebuild' }>,
+): unknown {
+  const withNotes = withReplaySourceNotes(sourceWire, plan.sourceUserAgentMeta);
+  return withNotes === sourceWire ? plan.sourceUserAgentFacingWireContent : withNotes;
 }
 
 function isExternalDispatchOwner(agentMeta: Record<string, unknown> | null | undefined): boolean {
@@ -294,6 +362,7 @@ export function errorContentToData(content: unknown): unknown {
 export function findLatestRebuildableError(
   messages: OverflowSourceMessage[],
   allowPiPromptTimeout = true,
+  allowCompanionCompactFailure = false,
 ): unknown | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -302,7 +371,9 @@ export function findLatestRebuildableError(
       const data = errorContentToData(message.content);
       if (isContextOverflowErrorData(data)) return data;
       if (allowPiPromptTimeout && isPiPromptRpcTimeoutError(data)) return data;
+      if (allowPiPromptTimeout && isPiRequestBodyRecoveryExhausted(data)) return data;
       if (isOversizedHistoryErrorData(data)) return data;
+      if (allowCompanionCompactFailure && isCompanionCompactFailure(data)) return data;
       return null;
     }
     if (message.role === 'assistant' && extractPlainText(message.content).trim().length > 0) {
@@ -316,6 +387,8 @@ export interface ContextOverflowRolloverDeps {
   getSessionRow(sessionId: string): Promise<{
     status: string;
     source?: string | null;
+    /** Resolved from the active, unarchived Bot link and Profile, never from UI hints. */
+    botRole?: string | null;
     agentKind: string;
     remoteHostId: string | null;
     clearedAt: number | null;
@@ -335,6 +408,22 @@ export interface ContextOverflowRolloverDeps {
   ): number | null;
   getAutoCompactThresholdPct?(): number | undefined;
   listMessages(sessionId: string): Promise<OverflowSourceMessage[]>;
+  /**
+   * 伙伴工作记忆账本的渲染段(botWorkingMemory):换窗交接里带上承诺 / 纠正 / 等待。
+   * 非伙伴主对话或无账本返回 null;读取失败也按 null,账本不能挡住换窗。
+   */
+  readWorkingMemoryNote?(sessionId: string): Promise<string | null>;
+  /**
+   * 账本是否已覆盖最近一条完成回复(botWorkingMemory.isWorkingMemoryFreshForSession)。
+   * true 时伙伴换窗线提前到 70%;缺省 / false / 抛错都按不新鲜,维持 90%。
+   */
+  isWorkingMemoryFresh?(sessionId: string): Promise<boolean>;
+  /**
+   * 伙伴自己的会话清单(botHistoryScope.listBotRecallSessionIds:私聊优先、后台任务补足,
+   * 并告知私聊是否没放全),写进回忆指引让 history 工具按 session_ids 限定到自己的历史。
+   * 非伙伴返回空清单;失败也按空清单,不挡换窗。
+   */
+  listCompanionSessionIds?(sessionId: string): Promise<{ sessionIds: string[]; chatsTruncated: boolean }>;
   /** 不受 handoff 窗口限制的最近 user，避免工具密集 turn 把身份扫丢。 */
   findLatestUser?(sessionId: string): Promise<OverflowSourceMessage | null>;
   findLatestRebuildMeta(
@@ -342,6 +431,7 @@ export interface ContextOverflowRolloverDeps {
   ): Promise<{ reason?: string; sourceUserClientId?: string | null } | null>;
   getLiveSession(sessionId: string): {
     isTurnRunning(): boolean;
+    listBackgroundTasks?(): ReadonlyArray<unknown>;
     getUsageSnapshot?(): { contextTokens: number; contextWindow: number; needsRollover?: boolean };
   } | null | undefined;
   rehydrateColdPiRuntimeForWindowVerification?(sessionId: string): Promise<void>;
@@ -385,6 +475,15 @@ export interface ContextOverflowRolloverDeps {
     info(message: string, fields?: Record<string, unknown>): void;
     warn(message: string, fields?: Record<string, unknown>): void;
   };
+}
+
+/** Only the companion's direct chat shares Desktop's automatic continuation owner. */
+export function isCanonicalBotContext(row: { source?: string | null; botRole?: string | null }): boolean {
+  return row.source === 'bot' && row.botRole === 'canonical';
+}
+
+export function canContinueContextRecovery(row: { source?: string | null; botRole?: string | null }): boolean {
+  return row.source === 'desktop' || isCanonicalBotContext(row);
 }
 
 export type OverflowClaimResult = 'claimed' | 'in-flight' | 'idle';
@@ -456,6 +555,35 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
   // One automatic continuation per source input, not one per replacement thread.
   const continuedInputs = new Map<string, string>();
 
+  // 账本是增强:读不到、抛错都按没有,绝不挡住换窗。
+  const readWorkingMemoryNote = async (sessionId: string): Promise<string | null> => {
+    try {
+      return (await deps.readWorkingMemoryNote?.(sessionId)) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const isWorkingMemoryFresh = async (sessionId: string): Promise<boolean> => {
+    try {
+      return (await deps.isWorkingMemoryFresh?.(sessionId)) === true;
+    } catch {
+      return false;
+    }
+  };
+  // 伙伴自有会话清单同样是增强:非伙伴不查,读不到按只认当前对话。
+  const companionRecall = async (
+    sessionId: string,
+    companion: boolean,
+  ): Promise<{ companionSessionIds: string[]; companionSessionIdsTruncated: boolean }> => {
+    const none = { companionSessionIds: [], companionSessionIdsTruncated: false };
+    if (!companion) return none;
+    try {
+      const own = await deps.listCompanionSessionIds?.(sessionId);
+      return own ? { companionSessionIds: own.sessionIds, companionSessionIdsTruncated: own.chatsTruncated } : none;
+    } catch {
+      return none;
+    }
+  };
   const runRecover = async (
     sessionId: string,
     errorData: unknown,
@@ -470,11 +598,11 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     if (!sessionRow || sessionRow.status === 'deleted') return false;
     // SSH only. device-link 会话落在被控桌面本地库,没有 remoteHostId,必须继续换窗。
     if (sessionRow.remoteHostId) return false;
-    if (oversized && (sessionRow.source !== 'desktop' || sessionRow.agentKind !== 'codex')) return false;
+    if (oversized && (!canContinueContextRecovery(sessionRow) || sessionRow.agentKind !== 'codex')) return false;
 
     return deps.withCloseSuppressed(sessionId, async () => {
       const live = deps.getLiveSession(sessionId);
-      if (live?.isTurnRunning()) {
+      if (live?.isTurnRunning() || (live?.listBackgroundTasks?.().length ?? 0) > 0) {
         deps.log.warn('context overflow rollover skipped: turn still running', { sessionId });
         return false;
       }
@@ -528,7 +656,10 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         toLabel: label,
         sessionId,
         reason: oversized ? 'native-session-recovery' : 'context-overflow',
-        includeToolResults: oversized,
+        includeToolResults: oversized || isCanonicalBotContext(sessionRow),
+        companion: isCanonicalBotContext(sessionRow),
+        ...(await companionRecall(sessionId, isCanonicalBotContext(sessionRow))),
+        workingMemory: await readWorkingMemoryNote(sessionId),
       });
       await deps.commitRebuild(sessionId, handoff, {
         reason: 'context-overflow',
@@ -555,7 +686,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       const replay = await deps.replayUserMessage(
         sessionId,
         oversized ? CODEX_HISTORY_CONTINUE_MESSAGE : plan.sourceUserContent,
-        oversized ? undefined : plan.sourceUserAgentFacingWireContent,
+        oversized ? undefined : replayWireWithSourceNotes(sourceWire, plan),
         oversized ? {
           signal,
           continueFromHistory: true,
@@ -620,6 +751,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         return requiresRemoteRebuild ? 'remote-unsupported' : 'not-needed';
       }
       if (!deps.rehydrateColdPiRuntimeForWindowVerification) return 'unknown-context';
+      target.assertCanCommit?.();
       try {
         await deps.rehydrateColdPiRuntimeForWindowVerification(sessionId);
       } catch (error) {
@@ -718,6 +850,9 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       toLabel: label,
       sessionId,
       reason: 'model-window-switch',
+      companion: isCanonicalBotContext(sessionRow),
+      ...(await companionRecall(sessionId, isCanonicalBotContext(sessionRow))),
+      workingMemory: await readWorkingMemoryNote(sessionId),
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: 'model-window-switch',
@@ -739,7 +874,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     return 'rebuilt';
   };
 
-  const runPrepare = async (sessionId: string): Promise<boolean> => {
+  const runPrepare = async (sessionId: string, signal: AbortSignal): Promise<boolean> => {
     await deps.drainPersistQueue();
     const sessionRow = await deps.getSessionRow(sessionId);
     if (!sessionRow || sessionRow.status === 'deleted') return false;
@@ -747,9 +882,10 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     if (sessionRow.remoteHostId) return false;
     if (!sessionRow.sdkSessionId) return false;
     const live = deps.getLiveSession(sessionId);
-    if (live?.isTurnRunning()) return false;
+    if (live?.isTurnRunning() || (live?.listBackgroundTasks?.().length ?? 0) > 0) return false;
+    const companion = isCanonicalBotContext(sessionRow);
     const source = await deps.listMessages(sessionId);
-    const lastError = findLatestRebuildableError(source, sessionRow.agentKind === 'pi');
+    const lastError = findLatestRebuildableError(source, sessionRow.agentKind === 'pi', companion);
     const liveUsage = live?.getUsageSnapshot?.();
     const hasLiveTokens =
       liveUsage !== undefined &&
@@ -773,20 +909,33 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sessionRow.agentKind,
     );
     const window = effectiveContextWindow(sessionRow.model, reportedWindow, verified);
-    const pressure = shouldRebuildForContextPressure(usedTokens, window);
+    // At a send boundary, checkpoint a pressured companion before the next turn
+    // enters native compaction. Native compaction remains enabled within a turn.
+    // 账本新鲜(复盘已覆盖最近完成轮)时线提前到 70%;不新鲜维持 90%,免得换窗丢掉还没进
+    // 账本的内容。只有落在 70%–90% 之间才去读账本;提前换窗必须拿到渲染好的账本段并原样
+    // 带进交接——同一个快照只读一次,免得判新鲜之后第二次读取失败,交接反而没带账本。
+    let earlyWorkingMemory: string | undefined;
+    const pressure = companion
+      ? shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO) ||
+        (shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO_FRESH) &&
+          (await isWorkingMemoryFresh(sessionId)) &&
+          (earlyWorkingMemory = (await readWorkingMemoryNote(sessionId)) ?? undefined) !== undefined)
+      : shouldRebuildForContextPressure(usedTokens, window);
     const compactFailed = liveUsage?.needsRollover === true;
+    const piByteRecoveryFailed = sessionRow.agentKind === 'pi' && isPiRequestBodyRecoveryExhausted(lastError);
     const tokenViolated =
       isContextOverflowErrorData(lastError) ||
       isPiPromptRpcTimeoutError(lastError) ||
       pressure ||
-      compactFailed;
+      compactFailed ||
+      (companion && isCompanionCompactFailure(lastError));
     const oversized = isOversizedHistoryErrorData(lastError);
-    const historyHealth = oversized && sessionRow.agentKind === 'codex'
+    const historyHealth = (oversized || companion) && sessionRow.agentKind === 'codex'
       ? await deps.classifyCodexHistory?.(sessionRow.sdkSessionId)
       : undefined;
     const action = decideCindyCompression({
       local: true,
-      bytes: oversized && historyHealth !== 'healthy' ? 'violated' : 'unknown',
+      bytes: piByteRecoveryFailed || historyHealth === 'oversized' || (oversized && historyHealth !== 'healthy') ? 'violated' : 'unknown',
       tokens: tokenViolated ? 'violated' : 'unknown',
     });
     if (action !== 'rebuild') return false;
@@ -820,14 +969,19 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     const handoffGeneration = deps.readPendingHandoffGeneration?.(sessionId);
     // 关掉当前 live handle。调用方必须在解析发送目标之前调用 prepare,
     // 再 getSession / createSession;peek 之后对旧对象 send 会打到已关闭实例。
+    signal.throwIfAborted();
     if (live) await deps.closeSession(sessionId);
+    signal.throwIfAborted();
     const label = engineLabelForOverflow(sessionRow.agentKind);
     const handoff = buildHandoffText(handoffMessages, {
       fromLabel: label,
       toLabel: label,
       sessionId,
-      reason: isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
-      includeToolResults: isOversizedHistoryErrorData(lastError),
+      reason: companion || isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
+      includeToolResults: companion || isOversizedHistoryErrorData(lastError),
+      companion,
+      ...(await companionRecall(sessionId, companion)),
+      workingMemory: earlyWorkingMemory ?? (await readWorkingMemoryNote(sessionId)),
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: rebuildReason,
@@ -836,7 +990,8 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sourceModel: sessionRow.model ?? null,
       sourceProviderId: sessionRow.providerId ?? null,
       expectedClearedAt: sessionRow.clearedAt,
-    });
+    }, signal);
+    signal.throwIfAborted();
     deps.setPendingHandoff(sessionId, handoff, handoffGeneration);
     deps.onRebuilt?.(sessionId);
     deps.log.info('unhealthy native session rebuilt before send; skip compact/resume', {
@@ -883,6 +1038,10 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
             toLabel: engineLabelForOverflow(row.agentKind),
             sessionId,
             reason: 'native-session-recovery',
+            includeToolResults: !target || isCanonicalBotContext(row),
+            companion: isCanonicalBotContext(row),
+            ...(await companionRecall(sessionId, isCanonicalBotContext(row))),
+            workingMemory: await readWorkingMemoryNote(sessionId),
           });
           // Durable handoff, SDK reset and complete target route succeed or fail together.
           // No user turn or tool call is replayed by this control-plane operation.
@@ -945,9 +1104,10 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
 
     async prepareUnhealthySession(sessionId: string): Promise<boolean> {
       if (inFlight.has(sessionId)) return false;
-      inFlight.set(sessionId, undefined);
+      const controller = new AbortController();
+      inFlight.set(sessionId, controller);
       try {
-        return await deps.withCloseSuppressed(sessionId, () => runPrepare(sessionId));
+        return await deps.withCloseSuppressed(sessionId, () => runPrepare(sessionId, controller.signal));
       } catch (error) {
         deps.log.warn('unhealthy native session prepare failed', {
           sessionId,

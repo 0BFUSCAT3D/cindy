@@ -9,6 +9,7 @@ import {
   filterResultsByRequestFilters,
   mergeConversationSearchFanout,
   remoteIndexedSearchIgnoredWorkingDirs,
+  remoteConversationSearchRequest,
   stampRemoteSearchResponse,
   type ConversationSearchAgentFilter,
   type ConversationSearchLastActivityFilter,
@@ -27,6 +28,7 @@ import {
 } from '@cindy/maker-shared/session-list';
 import type { DeviceAccessState } from '@cindy/maker-shared/device-list';
 import { collapseWorktreeDirForGrouping } from '@cindy/maker-shared/worktree-paths';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { deviceMirrorCleanupDisposition } from '@/device-link/presenceDevices';
@@ -147,7 +149,7 @@ async function searchOneDevice(
       invoke: deps.invoke,
     });
     const deviceRequest = requestForOrigin(origin, request);
-    const raw = await maker.searchConversations(deviceRequest);
+    const raw = await maker.searchConversations(remoteConversationSearchRequest(deviceRequest));
     if (remoteIndexedSearchIgnoredWorkingDirs(raw, deviceRequest.filters?.workingDirs)) {
       return searchCachedDeviceSessions(origin, deviceRequest, deps.getCachedSessions());
     }
@@ -181,7 +183,7 @@ export function searchCachedDeviceSessions(
 
   const hits: ConversationSearchResultItem[] = [];
   sessions.forEach((session, index) => {
-    if (session.orcaRole === 'worker') return;
+    if ((!CINDY_MAKE_ENABLED && isCindyMakeSource(session.source)) || session.orcaRole === 'worker') return;
     if (!sessionBelongsToDevice(session, origin.deviceId)) return;
     const match = cachedConversationSearchMatch(session, query, request.unnamedLabel);
     if (!match) return;
@@ -399,6 +401,8 @@ export function reconcileConversationSearchProjectSelection(
   if (selection === 'all') return 'all';
   const visible = new Set(visibleKeys);
   const next = selection.filter((key) => visible.has(key));
+  // Preserve identity when hydration or a host change leaves the selection intact.
+  if (next.length === selection.length && next.length > 0) return selection;
   return next.length > 0 ? next : 'all';
 }
 

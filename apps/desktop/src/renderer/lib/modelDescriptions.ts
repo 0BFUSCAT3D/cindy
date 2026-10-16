@@ -30,7 +30,10 @@ const families: ReadonlyArray<readonly [RegExp, string]> = [
   [/^(?:doubao-)?seed-\d/, 'everydayWork'],
   [/^(?:hy\d|hunyuan(?:-|\d))/, 'readingAndWriting'],
   [/^minimax-/, 'coding'],
+  [/^mimo-.*-flash(?:-|$)/, 'everydayWork'],
+  [/^mimo-/, 'reasoning'],
   [/^muse-spark-/, 'everydayWork'],
+  [/^muse-wonder-/, 'complexWork'],
   [/^grok-(?:build|code)-/, 'coding'],
   [/^grok-/, 'reasoning'],
 ];
@@ -51,7 +54,7 @@ export function modelDescriptionKey(model: { id: string; group?: string; mode?: 
   let id = model.id.toLowerCase().split('/').at(-1) ?? '';
   // Registry internal XD IDs have flattened route prefixes. Wire IDs usually don't.
   if (model.id.startsWith('xd/')) {
-    id = id.replace(/^(?:codex|z-ai|moonshotai|deepseek|tencent)-(?=gpt-|glm-|kimi-|deepseek-|hy\d)/, '');
+    id = id.replace(/^(?:codex|z-ai|moonshotai|deepseek|tencent|meta)-(?=gpt-|glm-|kimi-|deepseek-|hy\d|muse-)/, '');
   }
   return families.find(([pattern]) => pattern.test(id))?.[1];
 }

@@ -1,13 +1,44 @@
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('../cardStoreDb.js', () => ({ getGhostCard: vi.fn(), upsertGhostCard: vi.fn() }));
 vi.mock('../../device-link/broadcast-tap.js', () => ({ captureDataOwnerBroadcastScope: vi.fn(), isDataOwnerBroadcastScopeCurrent: vi.fn(), tapWindowBroadcast: vi.fn(), getSafeDataOwnerPushStamp: vi.fn() }));
-import { createPluginIdentityRemoteProvider, createGhostCardRemoteProvider, projectGhostCardBlocks, persistGhostCardWithRemoteChange } from '../cardRemoteResource.js';
+import { createPluginIdentityRemoteProvider, createGhostCardRemoteProvider, projectGhostCardBlocks, projectGhostCardActions, persistGhostCardWithRemoteChange, findGhostForRemotePluginIdentity } from '../cardRemoteResource.js';
 import { upsertGhostCard } from '../cardStoreDb.js';
 import { isDataOwnerBroadcastScopeCurrent, tapWindowBroadcast } from '../../device-link/broadcast-tap.js';
 const image = `cindy-media://blobs/${'b'.repeat(64)}.png`;
 const audio = `cindy-media://blobs/${'c'.repeat(64)}.mp3`;
 const request = { ref: { collectionId: 'plugin-results', kind: 'card', id: JSON.stringify(['s', 'c']) }, client: { protocolVersion: 1, primitives: [] } };
 const context = { controllerDeviceId: 'phone' };
+
+describe('native mobile card actions', () => {
+  it('projects declared buttons and approved links, preserving required text input and disabled state', () => {
+    const html = '<button data-ghost-action="edit" data-ghost-prompt="Describe &amp; edit">Edit <b>image</b></button><button data-ghost-action="delete" disabled>Delete</button><a data-ghost-link="https://example.com/?a=1&amp;b=2">Visit</a>';
+    expect(projectGhostCardActions(html, false)).toEqual([
+      { id: 'edit', label: 'Edit image', prompt: 'Describe & edit', disabled: false },
+      { id: 'delete', label: 'Delete', disabled: true },
+    ]);
+    expect(projectGhostCardActions(html, true)[2]).toEqual({ id: 'link:2', label: 'Visit', url: 'https://example.com/?a=1&b=2', disabled: false });
+  });
+  it('checks the actual persisted card revision and declaration before dispatch, and keeps legacy clients inert', async () => {
+    let html = '<button data-ghost-action="edit" data-ghost-prompt="Describe">Edit</button>';
+    const dispatch = vi.fn(async () => true);
+    const provider = createGhostCardRemoteProvider({
+      readCard: async () => ({ sessionId: 's', callId: 'c', ghostId: 'art', html, v: 1, height: 100 }),
+      authorize: async () => {}, captureScope: () => () => true,
+      interactions: { externalLinks: () => true, dispatch },
+    });
+    const old = await provider.get!(context, request);
+    expect(old.blocks?.some(b => b.primitive === 'plugin-card-actions')).toBe(false);
+    const resource = await provider.get!(context, { ...request, client: { protocolVersion: 1, primitives: ['plugin-card-actions'] } });
+    const base = { client: request.client, collectionId: 'plugin-results', resourceRef: request.ref, actionId: 'edit', input: { revision: resource.revision, pageId: 'page', prompt: 'Change it' } };
+    await expect(provider.invoke!(context, { ...base, actionId: 'forged' })).rejects.toThrow();
+    await expect(provider.invoke!(context, { ...base, input: { ...base.input, prompt: '' } })).rejects.toThrow();
+    await provider.invoke!(context, base);
+    expect(dispatch).toHaveBeenCalledWith('c', 'edit', 'Change it', 'page', 'art', 'phone');
+    html = '<p>Changed</p>';
+    await expect(provider.invoke!(context, base)).rejects.toThrow();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('read-only plugin card projection', () => {
   it('preserves readable text and managed assets, never HTML, styles or executable actions', () => {
@@ -63,6 +94,38 @@ describe('read-only plugin card projection', () => {
 
 
 describe('plugin identity for mobile annotations', () => {
+  it('resolves explicit root and organization identities, but never guesses an ambiguous legacy id', () => {
+    const root = { manifest: { id: 'helper' }, namespace: null, name: 'Root' };
+    const org = { manifest: { id: 'helper' }, namespace: 'acme', name: 'Organization' };
+    expect(findGhostForRemotePluginIdentity([root, org], JSON.stringify([null, 'helper']))).toBe(root);
+    expect(findGhostForRemotePluginIdentity([root, org], JSON.stringify(['acme', 'helper']))).toBe(org);
+    expect(findGhostForRemotePluginIdentity([root, org], '_ns__acme__helper')).toBe(org);
+    expect(findGhostForRemotePluginIdentity([root, org], '_ns/acme/helper')).toBe(org);
+    expect(findGhostForRemotePluginIdentity([root, org], 'helper')).toBeUndefined();
+    expect(findGhostForRemotePluginIdentity([org], 'helper')).toBe(org);
+    expect(findGhostForRemotePluginIdentity([root, org], JSON.stringify(['other', 'helper']))).toBeUndefined();
+    expect(findGhostForRemotePluginIdentity([root, org], '["acme","../helper"]')).toBeUndefined();
+  });
+  it('projects the requested organization identity through the task-scoped resource', async () => {
+    const ghosts = [
+      { manifest: { id: 'helper' }, namespace: null, name: 'Root' },
+      { manifest: { id: 'helper' }, namespace: 'acme', name: 'Organization' },
+    ];
+    const provider = createPluginIdentityRemoteProvider({
+      readIdentity: (id) => {
+        const ghost = findGhostForRemotePluginIdentity(ghosts, id);
+        return ghost ? { name: ghost.name } : undefined;
+      },
+      authorize: async () => {}, captureScope: () => () => true,
+    });
+    const ref = { ...request.ref, id: JSON.stringify(['s', JSON.stringify(['acme', 'helper'])]) };
+    expect((await provider.get!(context, { ...request, ref })).display.title).toBe('Organization');
+    await expect(provider.get!(context, { ...request, ref: { ...ref, id: JSON.stringify(['s', 'helper']) } })).rejects.toThrow('Plugin not found');
+    const longNamespace = 'a'.repeat(126);
+    ghosts.push({ manifest: { id: 'helper' }, namespace: longNamespace, name: 'Long Namespace' });
+    const longRef = { ...ref, id: JSON.stringify(['s', JSON.stringify([longNamespace, 'helper'])]) };
+    expect((await provider.get!(context, { ...request, ref: longRef })).display.title).toBe('Long Namespace');
+  });
   const request = { ref: { collectionId: 'plugin-identities', kind: 'plugin', id: '["s","art"]' }, client: { protocolVersion: 1, primitives: [] } };
   it('projects only public name and bounded raster data, never credentials or local URLs', async () => {
     const readIdentity = vi.fn(() => ({ name: 'Art', iconDataUrl: 'data:image/png;base64,YQ==', secret: 'private' }));

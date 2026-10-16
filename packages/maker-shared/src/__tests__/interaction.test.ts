@@ -21,6 +21,7 @@ import {
   extractPlanOutline,
   formatPermissionInput,
   interactionBlocksRemoteComposer,
+  isFreeTextAskOptionLabel,
   normalizeAskQuestions,
   normalizeIssueConfirm,
   pendingInteractionsBlockRemoteComposer,
@@ -31,6 +32,7 @@ import {
   selectionFromAnswer,
   sessionScopedPermissionSuggestions,
   sortPendingInteractions,
+  visibleAskOptions,
   type PendingInteractionLike,
 } from '../interaction.js';
 
@@ -189,11 +191,12 @@ describe('interaction shared model', () => {
       requestId: 'p-unavailable',
       toolName: 'Bash',
       description: 'Automatic review could not finish, so this action needs your confirmation.',
-      metadata: { autoReviewUnavailable: true },
+      metadata: { autoReviewUnavailable: true, imSourceDescription: '来源：Telegram · 开发群' },
       input: { command: 'npx tsc --noEmit' },
     });
 
     expect(presentation.autoReviewUnavailable).toBe(true);
+    expect(presentation.sourceDescription).toBe('来源：Telegram · 开发群');
     expect(presentation.description).toBe(
       'Automatic review could not finish, so this action needs your confirmation.',
     );
@@ -349,6 +352,56 @@ describe('interaction shared model', () => {
       kind: 'ask_user_question',
       answers: { '用哪个库?': answer },
     });
+  });
+
+  it('flags model-authored free-text answer options but keeps ordinary labels', () => {
+    // 模型自己写的「其他」逃生选项是自由输入入口。
+    expect(isFreeTextAskOptionLabel('其他（回复说明）')).toBe(true);
+    expect(isFreeTextAskOptionLabel('其它（请补充说明）')).toBe(true);
+    expect(isFreeTextAskOptionLabel('其他')).toBe(true);
+    expect(isFreeTextAskOptionLabel('其他答案')).toBe(true);
+    expect(isFreeTextAskOptionLabel('其他选项（请说明）')).toBe(true);
+    expect(isFreeTextAskOptionLabel('其他: 请填写')).toBe(true);
+    expect(isFreeTextAskOptionLabel('Other')).toBe(true);
+    expect(isFreeTextAskOptionLabel('Others')).toBe(true);
+    expect(isFreeTextAskOptionLabel('Other (please specify)')).toBe(true);
+    expect(isFreeTextAskOptionLabel('Other: please specify')).toBe(true);
+    expect(isFreeTextAskOptionLabel('Something else…')).toBe(true);
+    expect(isFreeTextAskOptionLabel('その他')).toBe(true);
+    expect(isFreeTextAskOptionLabel('기타')).toBe(true);
+    // 普通选项不能被误判。
+    expect(isFreeTextAskOptionLabel('其他任务')).toBe(false);
+    expect(isFreeTextAskOptionLabel('其他供应商')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Other tasks')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Other providers')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Otherwise')).toBe(false);
+    expect(isFreeTextAskOptionLabel('その他の質問')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Rearrange layout')).toBe(false);
+    expect(isFreeTextAskOptionLabel('')).toBe(false);
+    expect(isFreeTextAskOptionLabel('   ')).toBe(false);
+    // 只是提到「说明/填写」的实质选项不是逃生入口（真实卡片里的反例）。
+    expect(isFreeTextAskOptionLabel('sensor_height 要改（回复说明数值）')).toBe(false);
+    expect(isFreeTextAskOptionLabel('以上都不是（请说明）')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Specify another provider')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Enter your own path')).toBe(false);
+    expect(isFreeTextAskOptionLabel('Specify later')).toBe(false);
+  });
+
+  it('drops model-authored free-text options while keeping ordinary and described options', () => {
+    const options = [
+      { label: 'React Native', description: '原生端' },
+      { label: '其他（回复说明）' },
+      { label: 'Expo' },
+      { label: 'Other (please specify)' },
+    ];
+
+    expect(visibleAskOptions(options)).toEqual([
+      { label: 'React Native', description: '原生端' },
+      { label: 'Expo' },
+    ]);
+    // 全是被替换的入口时返回空列表,由调用方退回自由输入。
+    expect(visibleAskOptions([{ label: '其他' }])).toEqual([]);
+    expect(visibleAskOptions(undefined)).toEqual([]);
   });
 
   it('serializes plan review approve and feedback decisions', () => {
@@ -583,6 +636,21 @@ describe('interaction shared model', () => {
     expect(interactionBlocksRemoteComposer({ request: { kind: 'plugin_setup', requestId: 's1', revision: 1 } })).toBe(false);
     expect(interactionBlocksRemoteComposer({ request: { kind: 'future_kind', requestId: 'f1' } })).toBe(false);
     expect(interactionBlocksRemoteComposer(null)).toBe(false);
+  });
+
+  it('lets the controller answer 代输入 without taking over its composer', () => {
+    const live = { request: { kind: 'input_handoff', requestId: 'h1', revision: 3 } };
+    const ended = { request: { kind: 'input_handoff', requestId: 'h1', revision: 4, terminal: true } };
+    expect(remoteInteractionHandling(live)).toBe('resolvable');
+    expect(remoteInteractionHandling(ended)).toBe('desktop-only');
+    // A Host-owned wait outlives the turn; the owner must still be able to chat.
+    expect(interactionBlocksRemoteComposer(live)).toBe(false);
+    expect(pendingInteractionsBlockRemoteComposer([live])).toBe(false);
+    // A question the turn is blocked on still comes first.
+    expect(sortPendingInteractions([
+      live,
+      { request: { kind: 'permission', requestId: 'p1' } },
+    ]).map((item) => item.request.requestId)).toEqual(['p1', 'h1']);
   });
 
   it('keys composer blocking off the whole pending set, not the card being viewed', () => {

@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Linking, Platform } from 'react-native';
+import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { i18n } from '@/i18n';
 import {
@@ -17,6 +18,7 @@ import {
 } from '@/config/env';
 import { fetchLatestRelease } from './fetchLatestRelease';
 import { androidInstaller } from './androidInstaller';
+import { isGooglePlayInstallation } from './androidInstallSource';
 import {
   evaluateBundleUpdate,
   preferredInstallUrl,
@@ -56,10 +58,37 @@ async function openInstall(url: string): Promise<void> {
   }
 }
 
+async function openGooglePlay(packageName: string): Promise<void> {
+  const id = encodeURIComponent(packageName);
+  try {
+    await Linking.openURL(`market://details?id=${id}`);
+  } catch {
+    await openInstall(`https://play.google.com/store/apps/details?id=${id}`);
+  }
+}
+
+type BundleInstallTarget = { version?: string; itmsUrl?: string; installUrl?: string; releaseNotes?: string };
+
+/** Android 应用内安装:旧原生包、网页地址或 Play 安装返回 false,由调用方走原有出口。 */
+function startAndroidInstall(target: BundleInstallTarget, confirm: boolean): boolean {
+  if (Platform.OS !== 'android' || isGooglePlayInstallation() || !target.version || !target.installUrl) return false;
+  const releaseNotes = target.releaseNotes?.trim();
+  return androidInstaller.start({
+    version: target.version,
+    installUrl: target.installUrl,
+    ...(releaseNotes ? { releaseNotes } : {}),
+  }, { confirm });
+}
+
 /** 普通更新与强更共用的安装出口；旧 Android 包及网页地址保留浏览器回退。 */
-export function openBundleInstall(target: { version?: string; itmsUrl?: string; installUrl?: string }): void {
-  if (Platform.OS === 'android' && target.version && target.installUrl
-    && androidInstaller.start({ version: target.version, installUrl: target.installUrl })) return;
+export function openBundleInstall(target: BundleInstallTarget): void {
+  if (Platform.OS === 'android' && isGooglePlayInstallation()) {
+    // A stale forced-update target must never hand a Play install to the APK installer.
+    const packageName = Application.applicationId;
+    if (packageName) void openGooglePlay(packageName);
+    return;
+  }
+  if (startAndroidInstall(target, false)) return;
   const url = preferredInstallUrl(target);
   if (url) void openInstall(url);
 }
@@ -82,6 +111,9 @@ export function promptBundleUpdate(evaluation: ReturnType<typeof evaluateBundleU
     enterForcedUpdate(evaluation.target);
     return;
   }
+  // Android 应用内安装:发现即呈现更新卡(版本、更新内容、授权与下载同卡完成),
+  // 不再先弹系统对话框;卡内主按钮才是用户的确认。
+  if (startAndroidInstall(evaluation.target, true)) return;
 
   const notes = evaluation.target.releaseNotes?.trim();
   const message = [
@@ -104,6 +136,7 @@ export function useBundleUpdatePrompt({
     isSelfHosted: IS_OTA_SELFHOST,
     isReviewMode: REVIEW_MODE,
     isTestFlightBuild: IS_TESTFLIGHT_BUILD,
+    isGooglePlayInstallation: isGooglePlayInstallation(),
   });
   const inFlightChannels = useRef(new Set<UpdateChannel>());
   const channelEpochRef = useRef(0);

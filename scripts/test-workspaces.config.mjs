@@ -129,6 +129,7 @@ const requiredUnitWorkspace = (name, cwd, { workers = 1, execution, pool, exclud
 
 export default {
   workspaces: [
+    requiredUnitWorkspace('cindy-headless', 'apps/cindy-headless'),
     {
       name: 'desktop',
       cwd: 'apps/desktop',
@@ -250,7 +251,6 @@ export default {
     noCollectableWorkspace('@cindy/heartbeat-client', 'packages/heartbeat-client'),
     requiredUnitWorkspace('@cindy/im', 'packages/lizi-im'),
     requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
-    requiredUnitWorkspace('@cindy/ios-simulator-runtime', 'packages/ios-simulator-runtime'),
     requiredUnitWorkspace('@cindy/maker-cc-manager', 'packages/maker-cc-manager'),
     // Stays on forks: palette-scanner's tests stub HOME and the scanner resolves
     // it through os.homedir(), which a worker thread cannot see (see

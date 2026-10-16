@@ -83,8 +83,8 @@ describe('UserInfoSection — version label', () => {
       /const appVersionLabel = appRegionLabel\s*\n\s*\? `\$\{appRegionLabel\} · \$\{appDisplayVersion\}`\s*\n\s*: appDisplayVersion;/,
     );
     expect(source).not.toContain('XD.Inc');
-    expect(source).toContain('{appVersionLabel}');
-    expect(source).toContain('title={appVersionLabelDetail}');
+    expect(source).toContain('{visibleVersionLabel}');
+    expect(source).toContain('title={visibleVersionLabelDetail}');
   });
 
   it('shows the Beta label only after the persisted channel state has loaded', () => {

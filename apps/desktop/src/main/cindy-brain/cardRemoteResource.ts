@@ -1,3 +1,4 @@
+import { GHOST_CARD_ACTION_ID_RE, isGhostCardLinkAllowed } from '../../shared/ghost.js';
 import type { GhostCardRow } from './cardService.js';
 import { createHash } from 'node:crypto';
 import { REMOTE_RESOURCE_CHANGED_CHANNEL, type RemoteResourceBlock } from '@cindy/device-link';
@@ -6,9 +7,31 @@ import { getGhostCard, upsertGhostCard, type GhostCardRecord } from './cardStore
 import { assertRemoteBotInvocationAllowed } from '../device-link/remoteBotSessionBoundary.js';
 import { remoteResourceRegistry, RemoteResourceRegistryError, type RemoteResourceProvider } from '../device-link/remoteResourceRegistry.js';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent, tapWindowBroadcast, getSafeDataOwnerPushStamp } from '../device-link/broadcast-tap.js';
+import { isValidGhostId } from '../../shared/ghost.js';
+import { createPluginLogicalIdentity, findInstalledGhostByIdentity, findInstalledGhostByInstanceId, isGhostInstanceId } from '../../shared/pluginIdentity.js';
 
 const COLLECTION = 'plugin-results';
 const KIND = 'card';
+
+export function findGhostForRemotePluginIdentity<T extends { manifest: { id: string }; namespace?: string | null }>(
+  ghosts: readonly T[], id: string,
+): T | undefined {
+  if (isGhostInstanceId(id) && !isValidGhostId(id)) {
+    return findInstalledGhostByInstanceId(ghosts, id);
+  }
+  if (!id.startsWith('[')) {
+    const matches = ghosts.filter((ghost) => ghost.manifest.id === id);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(id);
+    if (!Array.isArray(parsed) || parsed.length !== 2 ||
+        (parsed[0] !== null && typeof parsed[0] !== 'string') || !isValidGhostId(parsed[1])) return undefined;
+    return findInstalledGhostByIdentity(ghosts, createPluginLogicalIdentity(parsed[0], parsed[1]));
+  } catch {
+    return undefined;
+  }
+}
 
 function decodeText(value: string): string {
   return value.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (full, entity: string) => {
@@ -45,44 +68,86 @@ export function projectGhostCardBlocks(html: string): RemoteResourceBlock[] {
   return blocks;
 }
 
-/** Read only, task-scoped resource; no list of cards or desktop interaction surface. */
+export interface RemotePluginCardAction {
+  id: string; label: string; prompt?: string; url?: string; disabled: boolean;
+}
+/** Input is already sanitizer-owned HTML. Only declared inert controls are projected. */
+export function projectGhostCardActions(html: string, externalLinks: boolean): RemotePluginCardAction[] {
+  const source = html.replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+  const items: RemotePluginCardAction[] = [];
+  for (const match of source.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/gi)) {
+    const attrs = match[2];
+    const read = (name: string) => { const value = new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs)?.[1]; return value === undefined ? undefined : decodeText(value); };
+    const action = read('data-ghost-action'), url = read('data-ghost-link');
+    if (!(action && GHOST_CARD_ACTION_ID_RE.test(action)) && !(externalLinks && url && isGhostCardLinkAllowed(url))) continue;
+    const after = source.slice(match.index! + match[0].length);
+    const label = read('aria-label') ?? decodeText(after.slice(0, after.indexOf(`</${match[1]}>`) < 0 ? 256 : after.indexOf(`</${match[1]}>`)).replace(/<[^>]+>/g, '')).trim().slice(0, 512);
+    items.push({ id: action ?? `link:${items.length}`, label: label || action || url!,
+      ...(action && read('data-ghost-prompt') !== undefined ? { prompt: read('data-ghost-prompt') } : {}),
+      ...(!action && url ? { url } : {}), disabled: /(?:^|\s)disabled(?:\s|$|=)/.test(attrs) });
+    if (items.length >= 64) break;
+  }
+  return items;
+}
+interface CardInteractions {
+  externalLinks(ghostId: string): boolean;
+  dispatch(callId: string, actionId: string, prompt: string | undefined, pageId: string, ghostId: string, controllerId: string): Promise<boolean>;
+}
+/** Task-scoped native controls. No plugin scripts or arbitrary host bridge. */
 export function createGhostCardRemoteProvider(deps: {
   readCard: (callId: string) => Promise<GhostCardRecord | null>;
   authorize: (sessionId: string) => Promise<void>;
   captureScope: () => () => boolean;
+  interactions?: CardInteractions;
 }): RemoteResourceProvider {
+  const read = async (id: string) => {
+    const valid = deps.captureScope();
+    let ids: unknown;
+    try { ids = JSON.parse(id); } catch { /* rejected below */ }
+    if (!Array.isArray(ids) || ids.length !== 2 || !ids.every(value => typeof value === 'string' && value.length > 0 && value.length <= 128))
+      throw new RemoteResourceRegistryError('NOT_FOUND', 'Card does not exist');
+    const [sessionId, callId] = ids as [string, string];
+    await deps.authorize(sessionId);
+    const card = await deps.readCard(callId);
+    if (!card || card.sessionId !== sessionId || !valid()) throw new RemoteResourceRegistryError('NOT_FOUND', 'Card does not exist');
+    await deps.authorize(sessionId);
+    if (!valid()) throw new RemoteResourceRegistryError('NOT_FOUND', 'Card does not exist');
+    return { card, callId, valid, revision: createHash('sha256').update(card.html).digest('hex') };
+  };
   return {
     collection: { id: COLLECTION, resourceKind: KIND, title: 'Plugin results' },
     async list() { return { collectionId: COLLECTION, revision: '1', items: [] }; },
     async get(_context, request) {
-      const validScope = deps.captureScope();
-      let ids: unknown;
-      try { ids = JSON.parse(request.ref.id); } catch { /* rejected below */ }
-      if (!Array.isArray(ids) || ids.length !== 2 || !ids.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 128)) {
-        throw new RemoteResourceRegistryError('NOT_FOUND', 'Card does not exist');
-      }
-      const [sessionId, callId] = ids as [string, string];
-      await deps.authorize(sessionId);
-      const card = await deps.readCard(callId);
-      if (!card || card.sessionId !== sessionId || !validScope()) throw new RemoteResourceRegistryError('NOT_FOUND', 'Card does not exist');
-      await deps.authorize(sessionId);
-      if (!validScope()) throw new RemoteResourceRegistryError('NOT_FOUND', 'Card does not exist');
-      return {
-        ref: request.ref,
-        display: { title: card.ghostId },
-        links: [],
-        revision: createHash('sha256').update(card.html).digest('hex'),
-        blocks: projectGhostCardBlocks(card.html),
-      };
+      const { card, revision } = await read(request.ref.id);
+      const blocks = projectGhostCardBlocks(card.html);
+      if (deps.interactions && request.client.primitives.includes('plugin-card-actions')) blocks.push({
+        id: 'actions', primitive: 'plugin-card-actions', fallbackMarkdown: '',
+        data: { pluginId: card.ghostId, revision, items: projectGhostCardActions(card.html, deps.interactions.externalLinks(card.ghostId)) },
+      });
+      return { ref: request.ref, display: { title: card.ghostId }, links: [], revision, blocks };
+    },
+    async invoke(context, request) {
+      if (!deps.interactions || !request.resourceRef) throw new RemoteResourceRegistryError('UNSUPPORTED_CAPABILITY', 'Card actions unavailable');
+      const { card, callId, valid, revision } = await read(request.resourceRef.id);
+      const action = projectGhostCardActions(card.html, false).find(item => item.id === request.actionId && !item.url);
+      const input = request.input ?? {};
+      if (!action || action.disabled || input.revision !== revision || typeof input.pageId !== 'string'
+        || (action.prompt !== undefined && (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 2000))
+        || (action.prompt === undefined && input.prompt !== undefined) || !valid())
+        throw new RemoteResourceRegistryError('INVALID_PARAMS', 'Card action is no longer available');
+      const delivered = await deps.interactions.dispatch(callId, action.id, input.prompt as string | undefined, input.pageId, card.ghostId, context.controllerDeviceId);
+      if (!valid() || !delivered) throw new RemoteResourceRegistryError('INTERNAL', 'Card action could not be delivered');
+      return { effects: [] };
     },
   };
 }
 
 let registered = false;
-export function registerGhostCardRemoteProvider(readIdentity: (id: string) => { name: string; iconDataUrl?: string } | undefined): void {
+export function registerGhostCardRemoteProvider(readIdentity: (id: string) => { name: string; iconDataUrl?: string } | undefined, interactions?: CardInteractions): void {
   if (registered) return;
   remoteResourceRegistry.register(createGhostCardRemoteProvider({
     readCard: getGhostCard,
+    interactions,
     authorize: (sessionId) => assertRemoteBotInvocationAllowed([sessionId]),
     captureScope: () => { const scope = captureDataOwnerBroadcastScope(); return () => isDataOwnerBroadcastScopeCurrent(scope); },
   }));
@@ -125,7 +190,9 @@ export function createPluginIdentityRemoteProvider(deps: {
       const valid = deps.captureScope();
       let ids: unknown;
       try { ids = JSON.parse(request.ref.id); } catch { /* validated below */ }
-      if (!Array.isArray(ids) || ids.length !== 2 || !ids.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 128)) {
+      if (!Array.isArray(ids) || ids.length !== 2 ||
+          typeof ids[0] !== 'string' || ids[0].length === 0 || ids[0].length > 128 ||
+          typeof ids[1] !== 'string' || ids[1].length === 0 || ids[1].length > 320) {
         throw new RemoteResourceRegistryError('NOT_FOUND', 'Plugin not found');
       }
       await deps.authorize(ids[0]);

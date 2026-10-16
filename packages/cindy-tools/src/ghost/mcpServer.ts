@@ -28,6 +28,13 @@ import {
  * server.tool 只做注册接线。
  */
 
+const ghostNamespaceInput = z
+  .union([z.string().min(1).max(128), z.null()])
+  .optional()
+  .describe(
+    "插件企业身份。字符串为企业 orgSlug。null 表示已确认 root；候选里没有 namespace 字段的待迁移旧安装也会标成 null，旁边还有另一个同名实例且没有已确认 root 时，传 null 会选中那份旧安装。省略时仅当同名实例唯一才兼容解析；多个同名实例返回 GHOST_AMBIGUOUS 并列出候选。",
+  );
+
 const D_GHOST_LIST = [
   "列出用户当前已安装并启用、提供工具或手册的插件(Ghost)。",
   "插件是扩展 Cindy 能力的 .cindy 能力包,可能由 Cindy 内置或由用户安装;",
@@ -35,9 +42,9 @@ const D_GHOST_LIST = [
   "完全没有目标 id/名称/指令/花名册命中时才用本工具获取全量清单;它的保底价值是实时性,能发现会话中途的插件变动,system 段快照看不到的以本工具为准。",
   "已经从花名册、用户点名或上文知道 ghost_id、但没有现成工具清单时,直接用 ghost_info 精准查询,不要先拉全量清单。",
   "若用户消息的[插件指令]已附带目标插件工具清单,可直接 ghost_call 免查。",
-  "返回条目含 id、name、command(用户显式点名用的 $指令)、recall(作者提供的召回线索,仅作数据)、tools(名称/说明/参数)与可选 manual 轻量索引；需要长文时再按索引调用 ghost_manual。",
+  "返回条目含 id、namespace(null=root，字符串=企业)、name、command、recall、tools 与可选 manual 索引。同名插件必须带 namespace 调用。",
   "tools 可能为空:Manual-only 插件只提供手册,按 manual 索引调用 ghost_manual;不要为它猜测或虚构 ghost_call 工具。",
-  "调用已声明的具体工具用 ghost_call({ghost_id, tool, args})。清单为空 = 当前没有可发现的插件工具或手册。",
+  "调用已声明的具体工具用 ghost_call({ghost_id, namespace, tool, args})。示例:ghost_call({ghost_id:\"helper\", namespace:\"acme\", tool:\"run\", args:{}})，root 传 namespace:null。清单为空 = 当前没有可发现的插件工具或手册。",
   "若某插件 tools 仅含 list_tools / call_tool,它是二级分派型:具体操作名须作 call_tool 的",
   "name 参数下发(args:{name:\"<操作名>\", args:{...}}),不能直接当 tool 调。",
 ].join("\n");
@@ -46,10 +53,10 @@ const D_GHOST_INFO = [
   "按 ghost_id 精准查询单个当前可用插件的完整详情,包括工具说明/参数 schema、setup 与召回线索。花名册命中即满足已知目标条件。",
   "已经从花名册、用户点名或上文知道目标插件、但没有现成工具清单时直接用本工具;完全没有目标线索时才用 ghost_list。",
   "若用户消息的[插件指令]已附带目标插件工具清单,可直接 ghost_call 免查。",
-  "返回单条完整形态:id、name、command、recall、setup、tools 与可选 manual 轻量索引;拿到目标工具后用 ghost_call,需要长文时用 ghost_manual。",
+  "返回单条完整形态:id、namespace(null=root，字符串=企业 orgSlug)、name、command、recall、setup、tools 与可选 manual 轻量索引。示例:ghost_info({ghost_id:\"helper\", namespace:\"acme\"})；省略 namespace 仅当同名实例唯一。拿到目标工具后用 ghost_call,需要长文时用 ghost_manual。",
   "tools 可能为空:Manual-only 插件仍返回完整详情与 manual 索引,通过 ghost_manual 读取;这不授予任何 ghost_call 工具能力。",
   "查询实时反映安装、启用、账号与当前工作目录状态,不要缓存或依赖会话早前的结果。",
-  "结构化错误:GHOST_NOT_FOUND(不存在、已卸载、当前账号不可用或未提供工具和手册)/ GHOST_ASLEEP(未启用)/ GHOST_DISABLED_IN_WORKDIR(当前工作目录停用)/ INTERNAL(内部查询失败)。按 message 停手改道;需要查看全量时用 ghost_list。",
+  "结构化错误:GHOST_NOT_FOUND / GHOST_AMBIGUOUS(同名多实例,candidates 为 {ghostId, namespace}。已确认 root 的 namespace 是 null；没有 namespace 字段的待迁移旧安装在候选里也会标成 null。旁边还有另一个同名实例、且没有已确认 root 时，传 namespace:null 会选中那份旧安装。按候选补 namespace 后重试，不要改选公开版) / GHOST_ASLEEP / GHOST_DISABLED_IN_WORKDIR / INTERNAL。升级普查中的旧插件没有 namespace 字段，省略 namespace 且同名唯一时才能解析。",
 ].join("\n");
 
 const D_GHOST_MANUAL = [
@@ -98,8 +105,10 @@ const D_GHOST_CALL = [
 ].join("\n");
 
 const D_MEDIA = [
-  "Cindy Core 的低级媒体接口，供当前 Agent 执行插件提供的上层能力；插件负责场景语义和可选 UI，Core 负责模型调用与媒体交付。",
-  "常规链路是 Agent 先调用插件工具，读取插件返回的普通 JSON，再自行调用本工具；不存在 mediaIntent 等保留结果格式，Host 也不会自动把插件结果转成本工具调用。",
+  "交付已有图片与生成新媒体的 Core 接口。用户只需说「把截图发给我」「让我在手机上看这张图」等自然语言；由 Agent 根据已有文件和上下文完成交付，不要求用户提供工具名、action、协议或 hash。",
+  "发送已有截图或本地图片：直接调用本工具的 import_image，path 使用实际文件路径。此动作无需生成模型或插件，不要走生成新图片流程。Host 按当前任务文件权限读取、统一入库并登记引用，成功后才返回 xdt_image_urls。",
+  "查看图片供自己分析不等于把图片发给用户；用户要求查看成果时，应在回复中展示可交付图片，不能仅说「已发送」或只给本机路径。用户反馈打不开时，根据工具结果检查或重新导入已知原文件，不要反复发送同一失效地址；原文件不在上下文中时才询问文件来源。不得自行拼接 hash、冒用其它沙盒地址或把导入成功说成手机已经下载。",
+  "生成新图片或视频时，插件负责场景语义和可选 UI，Core 负责模型调用与媒体交付。Agent 先调用插件工具，读取插件返回的普通 JSON，再自行调用本工具；不存在 mediaIntent 等保留结果格式，Host 也不会自动把插件结果转成本工具调用。",
   "如果插件需要消费最终结果，Agent 可在本工具成功后再调用插件声明的普通工具，并通过 ghost_call.attachments 显式交接；这不是生成请求的必经步骤。",
   "模型存在性来自当前账号的 Model Access model group；list_models 只投影同时满足 Gateway modalities、Guide operation 与当前客户端协议支持度的可执行模型。",
   "媒体生成必须由当前 Agent 通过本工具发起；插件面板和插件沙箱代码不得直接提交生成请求。",
@@ -265,7 +274,7 @@ function toHostSetupPlan(input: GhostSetupPlanInput): CindyGhostSetupPlan {
  * 作者字段只进入 JSONL 数据块；固定前导/尾注不混入作者内容。
  */
 export function formatGhostRoster(
-  items: Array<Pick<CindyGhostInfo, "id" | "name" | "command" | "recall">>,
+  items: Array<Pick<CindyGhostInfo, "id" | "name" | "command" | "recall" | "namespace">>,
 ): string {
   if (items.length === 0) return "";
   const lines = [...items]
@@ -276,6 +285,7 @@ export function formatGhostRoster(
         value.replace(/\s+/g, " ").trim();
       return JSON.stringify({
         id: normalize(g.id),
+        ...(g.namespace !== undefined ? { namespace: g.namespace } : {}),
         name: normalize(g.name).slice(0, 64),
         command: g.command ? normalize(g.command).slice(0, 32) : "",
         recall: g.recall
@@ -299,7 +309,7 @@ export function formatGhostRoster(
 
 /** 构造宿主注入 system/developer 段；行格式与 ghost_list 花名册共用。 */
 export function buildGhostRosterPrompt(
-  items: Array<Pick<CindyGhostInfo, "id" | "name" | "command" | "recall">>,
+  items: Array<Pick<CindyGhostInfo, "id" | "name" | "command" | "recall" | "namespace">>,
 ): string {
   return formatGhostRoster(items);
 }
@@ -556,7 +566,8 @@ const MEDIA_CAPABILITIES = new Set<CindyMediaCapability>([
 export async function handleMedia(
   deps: CindyGhostsMcpDeps,
   input: {
-    action: "list_models" | "resolve_local_path" | "prepare" | "request" | "poll";
+    action: "list_models" | "resolve_local_path" | "import_image" | "prepare" | "request" | "poll";
+    path?: string;
     capability?: CindyMediaCapability;
     url?: string;
     provider_id?: string;
@@ -588,6 +599,9 @@ export async function handleMedia(
         action: "list_models",
         ...(input.capability ? { capability: input.capability } : {}),
       });
+    } else if (input.action === "import_image") {
+      if (!input.path?.trim()) return textResult({ ok: false, errorCode: "INVALID_INPUT", message: "import_image 必须提供 path。" }, true);
+      result = await deps.callMedia({ action: "import_image", path: input.path });
     } else if (input.action === "resolve_local_path") {
       if (!input.url) {
         return textResult(
@@ -676,7 +690,7 @@ export async function handleGhostList(
       ghosts,
       hint:
         ghosts.length > 0
-          ? "按 manual 索引用 ghost_manual 读取手册;有工具时用 ghost_call({ghost_id, tool, args}) 调用已声明工具;清单实时,勿缓存。"
+          ? "按 manual 索引用 ghost_manual 读取手册;有工具时用 ghost_call({ghost_id, namespace, tool, args}) 调用已声明工具。同名插件必须带 namespace（null=root）。清单实时,勿缓存。"
           : "当前没有已启用的插件。用户可在主界面侧边栏「插件」中安装或启用插件。",
     });
   } catch (err) {
@@ -694,10 +708,10 @@ export async function handleGhostList(
 /** ghost_info 的 handler 主体(导出供单测)。 */
 export async function handleGhostInfo(
   deps: CindyGhostsMcpDeps,
-  input: { ghost_id: string },
+  input: { ghost_id: string; namespace?: string | null },
 ): Promise<McpTextResult> {
   try {
-    const result = await deps.getAwakeGhost(input.ghost_id);
+    const result = await deps.getAwakeGhost(input.ghost_id, input.namespace);
     if (!result.ok) {
       deps.logger?.warn("ghost_info rejected", {
         ghostId: input.ghost_id.slice(0, 64),
@@ -711,6 +725,7 @@ export async function handleGhostInfo(
             result.errorCode === "GHOST_NOT_FOUND"
               ? `${result.message}；不要重复重试同一目标；可调用 ghost_list 回查当前可用插件，或改用其它可用方式完成。`
               : result.message,
+          ...("candidates" in result && result.candidates ? { candidates: result.candidates } : {}),
         },
         true,
       );
@@ -741,11 +756,12 @@ export async function handleGhostInfo(
 /** ghost_manual 的 handler 主体(导出供单测)。 */
 export async function handleGhostManual(
   deps: CindyGhostsMcpDeps,
-  input: { ghost_id: string; path?: string },
+  input: { ghost_id: string; namespace?: string | null; path?: string },
 ): Promise<McpTextResult> {
   try {
     const result = await deps.readGhostManual({
       ghostId: input.ghost_id,
+      ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
       ...(input.path !== undefined ? { path: input.path } : {}),
     });
     return textResult(result, !result.ok);
@@ -890,6 +906,7 @@ export async function handleGhostCall(
   deps: CindyGhostsMcpDeps,
   input: {
     ghost_id: string;
+    namespace?: string | null;
     tool: string;
     args?: Record<string, unknown>;
     attachments?: string[];
@@ -899,12 +916,15 @@ export async function handleGhostCall(
     setup_plan?: GhostSetupPlanInput;
   },
   agentToolUseId?: string,
+  signal?: AbortSignal,
 ): Promise<McpTextResult> {
   try {
     const result = await deps.callGhostTool({
       ghostId: input.ghost_id,
+      ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
       tool: input.tool,
       args: input.args ?? {},
+      ...(signal ? { signal } : {}),
       ...(input.grant_only === true ? { grantOnly: true } : {}),
       ...(input.attachments && input.attachments.length > 0
         ? { attachments: input.attachments }
@@ -1243,12 +1263,12 @@ export function createCindyGhostsMcpServer(
 
   if (deps.connectAccount) server.tool(
     "connect_account",
-    "Request an account connection card in a teammate conversation. For a built-in Grok account use kind=host, id=grok; for an installed plugin use kind=plugin and its real ghost_id. Do not invent connectors, URLs or credentials. The card returns immediately; finish unrelated work and end the turn. The Host resumes you after authorization succeeds. Grok login does not authorize X or change your model.",
-    { kind: z.enum(["host", "plugin"]), id: z.string().min(1).max(256), reauthorize: z.boolean().optional().describe("Only for an explicit reconnect request or a known authorization/scope failure") },
-    async ({ kind, id, reauthorize }) => {
-      if (kind === "host" && id !== "grok") return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, errorCode: "UNSUPPORTED_CONNECTION" }) }], isError: true };
+    "Request an account connection for an installed plugin in the current conversation: kind=plugin and its real ghost_id. The Host presents its supported setup card, including protected manual connection forms, without calling a plugin business tool. Use reauthorize=true when the user asks to reconnect, replace a token, update authorization, or reconfigure an existing connection; saved configuration must not skip that request. Ordinary tasks wait until setup completes or is cancelled; teammate tasks may return a pending card immediately, then the Host resumes them after authorization. Follow the returned status and do not infer provider access from setup readiness. Only if the Host reports no supported setup action, follow the installed plugin's documented login method on the machine running the task. Never request credentials in chat or tool arguments. Built-in Grok login (kind=host, id=grok) remains available only in teammate conversations and does not authorize X or change your model. Do not invent connectors, URLs or credentials.",
+    { kind: z.enum(["host", "plugin"]), id: z.string().min(1).max(256), namespace: ghostNamespaceInput, reauthorize: z.boolean().optional().describe("Reopen supported setup for an explicit reconnect, token replacement, authorization update or reconfiguration request, or a known authorization/scope failure") },
+    async ({ kind, id, namespace, reauthorize }, extra) => {
+      if (kind === "host" && (id !== "grok" || namespace !== undefined)) return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, errorCode: "UNSUPPORTED_CONNECTION" }) }], isError: true };
       try {
-        const result = await deps.connectAccount!(kind === "host" ? { kind, id: "grok", reauthorize } : { kind, id, reauthorize });
+        const result = await deps.connectAccount!(kind === "host" ? { kind, id: "grok", reauthorize } : { kind, id, ...(namespace !== undefined ? { namespace } : {}), reauthorize }, extra.signal);
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       } catch {
         return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, errorCode: "CONNECTION_UNAVAILABLE" }) }], isError: true };
@@ -1263,6 +1283,7 @@ export function createCindyGhostsMcpServer(
     D_GHOST_INFO,
     {
       ghost_id: z.string().describe("目标插件 id(来自花名册、用户点名、上文或 ghost_list)"),
+      namespace: ghostNamespaceInput,
     },
     async (input) => handleGhostInfo(deps, input),
   );
@@ -1274,6 +1295,7 @@ export function createCindyGhostsMcpServer(
       ghost_id: z
         .string()
         .describe("目标插件 id(来自花名册、ghost_info 或 ghost_list)"),
+      namespace: ghostNamespaceInput,
       path: z
         .string()
         .max(1024)
@@ -1290,6 +1312,7 @@ export function createCindyGhostsMcpServer(
     D_GHOST_CALL,
     {
       ghost_id: z.string().describe("目标插件 id(来自 ghost_info / ghost_list 或用户消息附带的工具清单)"),
+      namespace: ghostNamespaceInput,
       tool: z.string().describe("工具名(来自 ghost_info / ghost_list 该插件的 tools)"),
       args: z
         .record(z.string(), z.unknown())
@@ -1327,7 +1350,7 @@ export function createCindyGhostsMcpServer(
         ),
     },
     async (input, extra) =>
-      handleGhostCall(deps, input, extractAgentToolUseId(extra)),
+      handleGhostCall(deps, input, extractAgentToolUseId(extra), extra.signal),
   );
 
   server.tool(
@@ -1335,8 +1358,9 @@ export function createCindyGhostsMcpServer(
     D_MEDIA,
     {
       action: z
-        .enum(["list_models", "resolve_local_path", "prepare", "request", "poll"])
+        .enum(["list_models", "resolve_local_path", "import_image", "prepare", "request", "poll"])
         .describe("要执行的媒体调用阶段"),
+      path: z.string().max(32768).optional().describe("import_image 时必填；实际存在的图片路径，相对路径按当前任务工作目录解析"),
       capability: z
         .enum([
           "image.generate",

@@ -12,12 +12,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, options?: { name?: string }) =>
+    t: (key: string, options?: { name?: string; value?: string }) =>
       (key === 'settings.ghosts.market.detailsAria' ||
         key === 'settings.ghosts.market.replaceAria') &&
       options?.name
         ? `${key}:${options.name}`
-        : key,
+        : options?.value !== undefined ? `${options.value} ${key}` : key,
+    i18n: { language: 'en' },
   }),
   // 页面经批量更新控制器引 @/i18n,其 init 链路需要这些导出。
   initReactI18next: { type: '3rdParty', init: vi.fn() },
@@ -163,6 +164,7 @@ describe('shouldOpenInstalledDetailAfterMarketSuccess', () => {
 
 const commandPlugin: GhostPluginListItem = {
   id: 'filo-google',
+  ghostId: 'filo-google',
   name: 'Filo Google',
   description: 'Google services',
   version: '1.0.0',
@@ -173,7 +175,6 @@ const commandPlugin: GhostPluginListItem = {
   tabPanel: false,
   hasMainView: false,
   mainViewTitle: null,
-  hostCapability: null,
   oauthAuthorizationExpired: false,
 };
 
@@ -191,12 +192,6 @@ const toolPlugin: GhostPluginListItem = {
   canUse: false,
 };
 
-const simulatorPlugin: GhostPluginListItem = {
-  ...toolPlugin,
-  id: 'ios-simulator',
-  name: 'iOS Simulator',
-  hostCapability: 'ios-simulator',
-};
 
 const mainViewPlugin: GhostPluginListItem = {
   ...panelPlugin,
@@ -298,17 +293,6 @@ describe('GhostPluginCard', () => {
     expect(onPrimary).not.toHaveBeenCalled();
   });
 
-  it('offers a conversation entry for a Host capability plugin', () => {
-    const onPrimary = vi.fn();
-    const onManage = vi.fn();
-    render(<GhostPluginCard item={simulatorPlugin} onPrimary={onPrimary} onManage={onManage} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.page.chatAria' }));
-    expect(onPrimary).toHaveBeenCalledTimes(1);
-    expect(onManage).not.toHaveBeenCalled();
-    expect(screen.queryByText('settings.ghosts.page.agentInvoked')).toBeNull();
-  });
-
   it('keeps the tab-panel action when the plugin also declares main-view', () => {
     const onPrimary = vi.fn();
     render(<GhostPluginCard item={mainViewPlugin} onPrimary={onPrimary} onManage={vi.fn()} />);
@@ -401,7 +385,7 @@ describe('GhostPluginCard', () => {
     ).toBe(true);
   });
 
-  it('replaces the update pill with a spinner while this card is pending', () => {
+  it('keeps the update label accessible while the shared button shows loading feedback', () => {
     render(
       <GhostPluginCard
         item={commandPlugin}
@@ -419,7 +403,8 @@ describe('GhostPluginCard', () => {
     });
     expect(update.getAttribute('aria-busy')).toBe('true');
     expect(update.querySelector('.animate-spinner')).toBeTruthy();
-    expect(update.textContent).toBe('');
+    expect(update.querySelector('.opacity-0')?.textContent).toContain('settings.ghosts.page.updateTo');
+    expect((update as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('sends a tool-only plugin to manage and renders no primary button', () => {
@@ -654,25 +639,33 @@ describe('MarketPluginCard', () => {
     ).toBeTruthy();
   });
 
-  it('keeps fixed market metadata on one line while truncating long identities', () => {
-    render(
+  it('shows scope, author and downloads without crowding the list with version or machine id', () => {
+    const { container } = render(
       <MarketPluginCard
-        item={marketPlugin}
+        item={{ ...marketPlugin, downloadStatistics: { requestCount: '12480' } }}
         busy={false}
         onSelect={vi.fn()}
         onIconLoadError={vi.fn()}
       />,
     );
+    const metadata = screen.getByText('settings.ghosts.page.origin.public').parentElement;
+    expect(metadata?.textContent).toBe('settings.ghosts.page.origin.public·Cindy·12,480 settings.ghosts.usage.downloadsValue');
+    expect(screen.queryByText('v1.3.11')).toBeNull();
+    expect(screen.queryByText('google-calendar')).toBeNull();
+    expect(container.querySelector('button button')).toBeNull();
+  });
 
-    const origin = screen.getByText('settings.ghosts.page.origin.public');
-    const metadata = origin.parentElement;
-    expect(metadata?.className).toContain('whitespace-nowrap');
-    expect(metadata?.className).toContain('overflow-hidden');
-    expect(origin.className).toContain('shrink-0');
-    expect(screen.getByText('v1.3.11').className).toContain('shrink-0');
-    expect(screen.getByText('google-calendar').className).toContain('truncate');
-    expect(screen.getByText('google-calendar').className).toContain('min-w-0');
-    expect(screen.getByText('Cindy').className).toContain('truncate');
+  it('keeps shared downloads in installed cards alongside exceptional authorization status', () => {
+    render(<GhostPluginCard
+      item={{ ...commandPlugin, oauthAuthorizationExpired: true }}
+      author="Cindy"
+      sourceLabel="Public"
+      marketItem={{ ...marketPlugin, downloadStatistics: { requestCount: '0' } }}
+      onPrimary={vi.fn()} onManage={vi.fn()}
+    />);
+    expect(screen.getByText('0 settings.ghosts.usage.downloadsValue')).toBeTruthy();
+    expect(screen.getByText('settings.ghosts.page.oauthAuthorizationExpired')).toBeTruthy();
+    expect(screen.queryByText('v1.0.0')).toBeNull();
   });
 
   it('offers explicit replacement while still blocking actions during busy operations', () => {
@@ -693,7 +686,7 @@ describe('MarketPluginCard', () => {
     expect(cardBody.className).not.toContain('cursor-wait');
     const replacementDescription = screen.getByText('settings.ghosts.market.replaceDescription');
     expect(replacementDescription.id).toBeTruthy();
-    expect(cardBody.getAttribute('aria-describedby')).toBe(replacementDescription.id);
+    expect(cardBody.getAttribute('aria-describedby')?.split(' ')).toContain(replacementDescription.id);
     const replaceAction = screen.getByRole('button', {
       name: 'settings.ghosts.market.replaceAria:Google Calendar',
     });
@@ -738,7 +731,8 @@ describe('MarketPluginCard', () => {
     });
     expect(install.getAttribute('aria-busy')).toBe('true');
     expect(install.querySelector('.animate-spinner')).toBeTruthy();
-    expect(install.textContent).toBe('');
+    expect(install.querySelector('.opacity-0')?.textContent).toBe('settings.ghosts.market.install');
+    expect((install as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
