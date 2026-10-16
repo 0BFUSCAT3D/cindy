@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BotGroupAttachment } from '@cindy/maker-shared/botGroupChat';
 import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
 
+// This suite exercises attachments; MCP App's native WebView is covered by mcpAppCard.test.tsx.
+vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
+
 // Group attachments open the real shared ImageLightbox here (#5875): the timeline strip, the payload
 // conversion and the viewer are production code; only native surfaces and unrelated views are replaced.
 const runtime = vi.hoisted(() => ({

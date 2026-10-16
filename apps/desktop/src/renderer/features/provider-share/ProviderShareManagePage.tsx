@@ -1,6 +1,6 @@
 /**
  * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
- * 「远程与分享」入口进入，可返回。只列**这台电脑**上的设置：供应商组、按使用方的用量、待审批申请与已分享的人。
+ * 「远程与分享」入口进入，可返回。本机或同账号组所在电脑共用这一页，设置、分享与用量始终读取管理对象所在电脑。
  *
  * 打开期间每次 OWNED_CHANGED 都按当前时间段重读(main 因此保持快速拉取，申请能尽快出现)；
  * 关闭、恢复、删除、同意、拒绝都立即生效，结果以 toast 说明。
@@ -8,14 +8,19 @@
 import { ArrowLeft } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { ProviderView } from '@cindy/model-providers';
 
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
+import { useDeviceProviders } from '@/hooks/useDeviceProviders';
+import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
 import { ProviderGroupSection } from '@/features/provider-group/ProviderGroupSection';
+import { providerManagementErrorKey, providerShareManagementCommand } from '@/features/provider-group/providerManagement';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import type { ProviderGroupConfig } from '../../../shared/providerGroup';
 
 import type {
   ProviderOwnUsageView,
@@ -25,7 +30,7 @@ import type {
   ProviderShareUsageRange,
 } from '../../../shared/providerShare';
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
-import { pendingResharesFromOwned, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
+import { pendingResharesFromOwned, sharesClaudeLoginEmail, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
 import { ProviderUsageSection } from './ProviderUsageSection';
 import { publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
@@ -38,44 +43,66 @@ export function ProviderShareManagePage({
   providerName,
   providerIcon,
   gate,
+  deviceId,
+  deviceName,
+  initialGroup,
+  remoteProvider,
   onBack,
 }: {
   providerId: string;
   providerName: string;
   providerIcon: ReactNode;
   gate: ProviderShareGate;
+  deviceId?: string;
+  deviceName?: string;
+  initialGroup?: ProviderGroupConfig;
+  remoteProvider?: ProviderView;
   onBack: () => void;
 }) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
   const time = useShareTimeFormat();
-  const selfDeviceName = useDeviceLinkDeviceList()?.find((device) => device.isSelf)?.name ?? null;
+  const devices = useDeviceLinkDeviceList();
+  const { providers } = useProviders();
+  const remoteCatalog = useDeviceProviders(deviceId);
+  const selfDeviceName = deviceId ? deviceName ?? devices?.find((device) => device.deviceId === deviceId)?.name ?? null
+    : devices?.find((device) => device.isSelf)?.name ?? null;
+  const [remoteGroup, setRemoteGroup] = useState<ProviderGroupConfig | null>(initialGroup ?? null);
   const [range, setRange] = useState<ProviderShareUsageRange>('month');
   const [state, setState] = useState<ProviderShareOwnerState | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loadErrorKey, setLoadErrorKey] = useState<string | null>(null);
   const [own, setOwn] = useState<ProviderOwnUsageView | null>(null);
   const [ownFailed, setOwnFailed] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const loadSeq = useRef(0);
+  const remoteLoadRange = useRef<ProviderShareUsageRange | null>(null);
   const rangeRef = useRef(range);
   rangeRef.current = range;
 
   const load = useCallback(async () => {
-    const seq = ++loadSeq.current;
     const range = rangeRef.current;
+    if (deviceId && remoteLoadRange.current === range) return;
+    remoteLoadRange.current = range;
+    const seq = ++loadSeq.current;
+    const owner = getDataOwnerGeneration();
     // 本机与我的其他电脑的用量读这台电脑自己的账本，不依赖分享服务，与分享的成员一起按同一个时间段读。
     const [owned, ownUsage] = await Promise.allSettled([
-      window.electronAPI.providerShare.command({ action: 'owned', range }),
-      window.electronAPI.providerShare.command({ action: 'own-usage', providerId, range }),
+      providerShareManagementCommand({ action: 'owned', range }, deviceId),
+      providerShareManagementCommand({ action: 'own-usage', providerId, range }, deviceId),
     ]);
     if (seq !== loadSeq.current) return;
+    remoteLoadRange.current = null;
+    if (!isDataOwnerGenerationCurrent(owner)) return;
     if (owned.status === 'fulfilled') {
       setState(owned.value);
       setLoadFailed(false);
-      publishProviderShareOwnerState(owned.value);
+      setLoadErrorKey(null);
+      if (!deviceId) publishProviderShareOwnerState(owned.value);
     } else {
       setLoadFailed(true);
+      setLoadErrorKey(providerManagementErrorKey(owned.reason, Boolean(deviceId)));
     }
     if (ownUsage.status === 'fulfilled') {
       setOwn(ownUsage.value);
@@ -83,7 +110,7 @@ export function ProviderShareManagePage({
     } else {
       setOwnFailed(true);
     }
-  }, [providerId]);
+  }, [providerId, deviceId]);
 
   useEffect(() => {
     void load();
@@ -96,6 +123,12 @@ export function ProviderShareManagePage({
       loadSeq.current += 1;
     };
   }, [load]);
+
+  useEffect(() => {
+    if (!deviceId) return;
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void load(); }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [deviceId, load]);
 
   // 同一个供应商在这台电脑上只应有一条分享；稳妥起见合并同供应商的全部记录。
   const { members, requests, reshares } = useMemo(() => {
@@ -135,7 +168,8 @@ export function ProviderShareManagePage({
     (item: ProviderSharePendingRequest, action: 'approve' | 'reject') =>
       withBusy(item.request.requestId, async () => {
         try {
-          await window.electronAPI.providerShare.command({ action, requestId: item.request.requestId });
+          await providerShareManagementCommand({ action, requestId: item.request.requestId }, deviceId);
+          // 远程管理时，本机生成链接带来的申请也在待审批里(由本机弹窗)，一并移除。
           removeProviderSharePendingRequest(item.request.requestId);
           toast.success(
             action === 'approve'
@@ -143,18 +177,18 @@ export function ProviderShareManagePage({
               : t('providerShare.toast.rejected', { name: item.request.displayName }),
           );
         } catch (error) {
-          toast.error(t(mapIpcErrorToI18nKey(error)));
+          toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         }
         void load();
       }),
-    [load, providerName, t, withBusy],
+    [load, providerName, deviceId, t, withBusy],
   );
 
   const setMember = useCallback(
     (member: ProviderShareMemberView, status: 'pause' | 'resume' | 'remove') =>
       withBusy(member.memberId, async () => {
         try {
-          await window.electronAPI.providerShare.command({ action: 'set-member', memberId: member.memberId, status });
+          await providerShareManagementCommand({ action: 'set-member', memberId: member.memberId, status }, deviceId);
           toast.success(
             t(
               status === 'pause'
@@ -166,19 +200,19 @@ export function ProviderShareManagePage({
             ),
           );
         } catch (error) {
-          toast.error(t(mapIpcErrorToI18nKey(error)));
+          toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         }
         void load();
       }),
-    [load, t, withBusy],
+    [load, deviceId, t, withBusy],
   );
 
-  /** 转分享：同意、拒绝，或撤回已同意的(撤回立即停止这个人经组转来的任务)。只改本机记录。 */
+  /** 转分享：同意、拒绝，或撤回已同意的；记录与运行中的任务都由供应商所在电脑处理。 */
   const decideReshare = useCallback(
     (reshare: ProviderShareReshareView, owner: string, decision: 'approve' | 'reject') =>
       withBusy(reshare.id, async () => {
         try {
-          await window.electronAPI.providerShare.command({ action: 'reshare-decide', id: reshare.id, decision });
+          await providerShareManagementCommand({ action: 'reshare-decide', id: reshare.id, decision }, deviceId);
           toast.success(
             decision === 'approve'
               ? t('providerShare.manage.reshare.toastApproved', { name: reshare.name, owner, provider: providerName })
@@ -187,11 +221,11 @@ export function ProviderShareManagePage({
                 : t('providerShare.manage.reshare.toastRejected', { name: reshare.name }),
           );
         } catch (error) {
-          toast.error(t(mapIpcErrorToI18nKey(error)));
+          toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         }
         void load();
       }),
-    [load, providerName, t, withBusy],
+    [load, providerName, deviceId, t, withBusy],
   );
 
   const removeMember = useCallback(
@@ -212,7 +246,12 @@ export function ProviderShareManagePage({
   );
 
   const ready = state?.ready === true;
-  const canCreateLink = gate === 'on' && ready;
+  const canCreateLink = gate === 'on' && ready && !loadFailed;
+  const providerForApproval = (deviceId ? remoteCatalog.providers : providers).find((provider) => provider.id === providerId);
+  const sharesClaudeEmail = sharesClaudeLoginEmail(providerForApproval);
+  // 审批只用当前目录中的目标供应商分类；进入管理页时的旧投影不能证明它仍然存在。
+  const providerClassificationReady = providerForApproval !== undefined
+    && (!deviceId || (!remoteCatalog.loading && remoteCatalog.error === null));
 
   return (
     // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、
@@ -244,7 +283,15 @@ export function ProviderShareManagePage({
         </h2>
       </div>
 
-      <ProviderGroupSection providerId={providerId} providerName={providerName} />
+      {deviceId && (
+        <p className="mt-2 text-12 leading-[1.5] text-[var(--settings-section-desc)]">
+          {t('providerGroup.management.note', { device: selfDeviceName ?? deviceId })}
+        </p>
+      )}
+      <ProviderGroupSection
+        providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
+        initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
+      />
 
       <ProviderUsageSection
         providerId={providerId}
@@ -254,6 +301,8 @@ export function ProviderShareManagePage({
         members={members}
         membersLoading={!state && !loadFailed}
         selfDeviceName={selfDeviceName}
+        ownerDeviceId={deviceId}
+        groupConfig={deviceId ? remoteGroup : undefined}
         range={range}
         onRangeChange={setRange}
         time={time}
@@ -285,7 +334,7 @@ export function ProviderShareManagePage({
             : gate === 'invocation-off'
               ? t('providerShare.manage.gateInvocation')
               : loadFailed
-                ? t('providerShare.manage.loadFailed')
+                ? t(deviceId && loadErrorKey ? loadErrorKey : 'providerShare.manage.loadFailed')
                 : t('providerShare.manage.notReady')}
         </p>
       )}
@@ -323,13 +372,18 @@ export function ProviderShareManagePage({
                     <span aria-hidden="true">·</span>
                     <span>{t('providerShare.manage.pending.expiresHint')}</span>
                   </div>
+                  {sharesClaudeEmail && (
+                    <p data-testid="provider-share-claude-email-callout" className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+                      {t('providerShare.approve.calloutClaudeEmail', { name: item.request.displayName })}
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Button
                     variant="secondary"
                     size="sm"
                     compact
-                    disabled={busy.has(item.request.requestId)}
+                    disabled={loadFailed || busy.has(item.request.requestId)}
                     onClick={() => void decide(item, 'reject')}
                   >
                     {t('providerShare.approve.reject')}
@@ -338,7 +392,7 @@ export function ProviderShareManagePage({
                     variant="primary"
                     size="sm"
                     compact
-                    disabled={busy.has(item.request.requestId)}
+                    disabled={loadFailed || !providerClassificationReady || busy.has(item.request.requestId)}
                     onClick={() => void decide(item, 'approve')}
                   >
                     {t('providerShare.approve.approve')}
@@ -374,7 +428,7 @@ export function ProviderShareManagePage({
                     variant="secondary"
                     size="sm"
                     compact
-                    disabled={busy.has(item.reshare.id)}
+                    disabled={loadFailed || busy.has(item.reshare.id)}
                     onClick={() => void decideReshare(item.reshare, item.owner.displayName, 'reject')}
                   >
                     {t('providerShare.manage.reshare.reject')}
@@ -383,7 +437,7 @@ export function ProviderShareManagePage({
                     variant="primary"
                     size="sm"
                     compact
-                    disabled={busy.has(item.reshare.id)}
+                    disabled={loadFailed || !providerClassificationReady || busy.has(item.reshare.id)}
                     onClick={() => void decideReshare(item.reshare, item.owner.displayName, 'approve')}
                   >
                     {t('providerShare.manage.reshare.approve')}
@@ -418,11 +472,12 @@ export function ProviderShareManagePage({
                 key={member.memberId}
                 member={member}
                 first={index === 0}
-                busy={busy.has(member.memberId)}
+                busy={loadFailed || busy.has(member.memberId)}
                 time={time}
                 onPause={() => void setMember(member, member.status === 'paused' ? 'resume' : 'pause')}
                 onRemove={() => void removeMember(member)}
-                reshareBusy={(id) => busy.has(id)}
+                reshareBusy={(id) => loadFailed || busy.has(id)}
+                canApproveReshare={providerClassificationReady}
                 onReshare={(reshare, decision) => void decideReshare(reshare, member.displayName, decision)}
               />
             ))
@@ -432,6 +487,7 @@ export function ProviderShareManagePage({
 
       {linkOpen && (
         <ProviderShareLinkDialog
+          deviceId={deviceId}
           providerId={providerId}
           providerLabel={providerName}
           onClose={() => setLinkOpen(false)}
@@ -449,6 +505,7 @@ function MemberRow({
   onPause,
   onRemove,
   reshareBusy,
+  canApproveReshare,
   onReshare,
 }: {
   member: ProviderShareMemberView;
@@ -458,6 +515,7 @@ function MemberRow({
   onPause: () => void;
   onRemove: () => void;
   reshareBusy: (id: string) => boolean;
+  canApproveReshare: boolean;
   onReshare: (reshare: ProviderShareReshareView, decision: 'approve' | 'reject') => void;
 }) {
   const { t } = useTranslation();
@@ -550,7 +608,7 @@ function MemberRow({
                   size="sm"
                   compact
                   tone={approved ? 'danger' : undefined}
-                  disabled={reshareBusy(reshare.id)}
+                  disabled={reshareBusy(reshare.id) || (!approved && !canApproveReshare)}
                   aria-label={t(
                     approved ? 'providerShare.manage.reshare.revokeAria' : 'providerShare.manage.reshare.approveAria',
                     { name: reshare.name },

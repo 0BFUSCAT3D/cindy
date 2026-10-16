@@ -522,7 +522,7 @@ describe('完整用量报告分批传输', () => {
 });
 
 describe('decorateProviderListWithGroups', () => {
-  it('adds the group summary only to providers that have a group and stay open for remote use', () => {
+  it('adds group summaries even when remote use is closed, while keeping running counts restricted', () => {
     const result = decorateProviderListWithGroups({
       providers: [
         { id: 'anthropic', remoteInvocationEnabled: true },
@@ -540,9 +540,9 @@ describe('decorateProviderListWithGroups', () => {
         { key: MINI.key, kind: 'device', agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mini', paused: false },
       ],
     });
-    // 只有本机设置能产生组摘要；没开放的不带。
+    // 只有本机设置能产生组摘要；关闭远程调用的组仍需保留管理入口。
     expect(result.providers[1]).not.toHaveProperty('group');
-    expect(result.providers[2]).not.toHaveProperty('group');
+    expect(result.providers[2].group).toEqual(result.providers[0].group);
   });
 
   it('leaves the sharer’s computer name out of shared members', () => {

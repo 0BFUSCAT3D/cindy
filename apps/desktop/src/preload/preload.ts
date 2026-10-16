@@ -6334,6 +6334,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onLocalModelPullProgress: fanOutMakerLocalModelPullProgress,
     onLocalModelInstallProgress: fanOutMakerLocalModelInstallProgress,
 
+    mcpApps: (sessionId: string, input: unknown): Promise<unknown> => ipcRenderer.invoke('maker:mcp-apps:v1', sessionId, input),
     // 自定义 MCP 服务器配置 CRUD（可选 bearer token 另走通用 safeStorage IPC，不经这里）。
     listCustomMcpServers: (
       context?: import('../shared/customMcp').CustomMcpListContext,

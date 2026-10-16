@@ -1669,7 +1669,7 @@ describe('Cindy durable PI Subagent runner', () => {
    * exercises it in full.
    */
   it.skipIf(process.platform === 'win32')('bounds control dedupe and abandoned receipts without replaying the legacy mailbox', async () => {
-    const fixture = await makeFixture({ hang: true });
+    const fixture = await makeFixture({ hang: true, timeoutMs: CONTROL_BACKLOG_TEST_TIMEOUT_MS });
     const running = await waitFor(async () => {
       const [run] = await listPiSubagentRuns(fixture.root);
       return run?.state === 'running' ? run : null;

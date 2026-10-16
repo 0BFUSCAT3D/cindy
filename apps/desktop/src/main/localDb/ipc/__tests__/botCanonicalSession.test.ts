@@ -2515,8 +2515,14 @@ describe('Bot canonical Session lifecycle', () => {
   });
 
   it('validates a settings grant against the model chain saved in the same update', async () => {
-    h.customMcpConfigs.push({ id: 'events', name: 'Events', transport: 'sse', url: 'https://example.invalid/sse', headers: {} });
+    const eventsConfig = { id: 'events', name: 'Events', transport: 'sse' as const, url: 'https://example.invalid/sse', headers: {} };
+    h.customMcpConfigs.push(eventsConfig);
     await refreshCustomMcpProviders();
+    // Keep this test on the legacy direct provider path so the model-route
+    // admission guard still covers a transport unavailable to Codex.
+    const eventsProviderIndex = h.mcpProviders.findIndex((provider) => provider.name === eventsConfig.id);
+    expect(eventsProviderIndex).toBeGreaterThanOrEqual(0);
+    h.mcpProviders[eventsProviderIndex] = new CustomMcpProvider(eventsConfig, () => null);
     const chain: BotModelRoute[] = [{ harness: 'claude', model: 'claude-x', providerId: null, effort: '', fastMode: false }];
     await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { modelChain: chain } });
     const created = await invoke('local-db:bots:create-canonical-session', {
@@ -2554,8 +2560,14 @@ describe('Bot canonical Session lifecycle', () => {
 
   it('validates model-side grants against the next configured route while the old turn is running', async () => {
     let chain: BotModelRoute[] = [{ harness: 'claude', model: 'claude-x', providerId: null, effort: '', fastMode: false }];
-    h.customMcpConfigs.push({ id: 'events', name: 'Events', transport: 'sse', url: 'https://example.invalid/sse', headers: {} });
+    const eventsConfig = { id: 'events', name: 'Events', transport: 'sse' as const, url: 'https://example.invalid/sse', headers: {} };
+    h.customMcpConfigs.push(eventsConfig);
     await refreshCustomMcpProviders();
+    // The production registry mounts the Apps facade for every harness. Use a
+    // direct provider here to exercise the route-change rejection itself.
+    const eventsProviderIndex = h.mcpProviders.findIndex((provider) => provider.name === eventsConfig.id);
+    expect(eventsProviderIndex).toBeGreaterThanOrEqual(0);
+    h.mcpProviders[eventsProviderIndex] = new CustomMcpProvider(eventsConfig, () => null);
     await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { modelChain: chain } });
     const created = await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 2,
@@ -2653,7 +2665,7 @@ describe('Bot canonical Session lifecycle', () => {
   it.each([
     { id: 'pi-sse', transport: 'sse' as const, url: 'https://example.invalid/mcp' },
     { id: 'pi-public-http', transport: 'http' as const, url: 'http://example.invalid/mcp' },
-  ])('keeps Pi-incompatible $id discoverable but unjoinable and removable', async (config) => {
+  ])('exposes $id through the MCP Apps facade on Pi', async (config) => {
     h.customMcpConfigs.push({ ...config, name: config.id, headers: {} });
     await refreshCustomMcpProviders();
     await invoke('local-db:bots:update', {
@@ -2666,9 +2678,9 @@ describe('Bot canonical Session lifecycle', () => {
     const input = { callerSessionId: created.session.id, kind: 'mcp' as const, id: config.id };
     await expect(findBotCapabilities(input)).resolves.toMatchObject({
       capabilities: expect.arrayContaining([{ id: config.id, name: config.id,
-        description: config.transport, available: false, joined: true }]),
+        description: config.transport, available: true, joined: true }]),
     });
-    await expect(selectBotCapability({ ...input, joined: true })).resolves.toMatchObject({ ok: false, errorCode: 'CAPABILITY_UNAVAILABLE' });
+    await expect(selectBotCapability({ ...input, joined: true })).resolves.toMatchObject({ ok: true, joined: true });
     await expect(selectBotCapability({ ...input, joined: false })).resolves.toMatchObject({ ok: true, joined: false });
   });
 

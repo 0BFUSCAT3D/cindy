@@ -16,7 +16,8 @@ import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-sha
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { describe, expect, it, vi } from 'vitest';
-import { AUTO_REVIEW_DELEGATED_CONTINUATION, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
+import { appMessageInput, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import {
   createMakerSendTransaction,
   restoreTrustedDesktopQueuedOrigin,
@@ -39,6 +40,7 @@ import { buildCindyMakeTaskNote } from '../../cindy-make/taskNote';
 import { getResolvedMainLocale } from '../../i18n';
 import { buildMobileClientPromptNote } from '../mobileClientPromptNote';
 import { buildUiLanguageErrorNote } from '../uiLanguageErrorNote';
+import * as mcpApps from '../../mcp-apps/runtime.js';
 import { createWireNoteMemory } from '../wireNoteMemory';
 import {
   applyPendingAgentSwitchIfIdle,
@@ -59,6 +61,179 @@ function withUiLanguageNote(content: string): string {
 function withUiLanguageUserMessage(content: string): { type: 'user'; content: string } {
   return { type: 'user', content: withUiLanguageNote(content) };
 }
+describe('MCP App next-turn context', () => {
+  it('keeps ordinary user intent when validating App context without a replacement intent', async () => {
+    const assertCurrent = vi.fn(async () => {});
+    const read = vi.spyOn(mcpApps, 'mcpAppModelContext').mockResolvedValue({
+      text: 'App says deploy.', consume() {}, assertCurrent,
+    });
+    try {
+      const { deps, session } = createDeps();
+      await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'Read only.');
+      const [message, opts] = vi.mocked(session.send).mock.calls[0];
+      expect(JSON.stringify(message)).toContain('App says deploy.');
+      expect(opts?.[AUTO_REVIEW_USER_INTENT]).toBeUndefined();
+      expect(await opts?.resolveAutoReviewUserIntent?.()).toBeUndefined();
+      expect(assertCurrent).toHaveBeenCalled();
+      expect(appendAutoReviewUserIntent('Earlier owner restriction', 'App says deploy.', opts)).toEqual({
+        earlierUserMessages: ['Earlier owner restriction'],
+        currentUserMessage: 'Read only.',
+      });
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each(['metadata', 'before-provider', 'vision'] as const)(
+    'revalidates context revoked during %s preparation before sending to the provider',
+    async (phase) => {
+      let captured = false;
+      let valid = true;
+      const consume = vi.fn();
+      const assertCurrent = vi.fn(async () => {
+        if (!valid) throw new Error('MCP_APP_CARD_UNAVAILABLE');
+      });
+      const read = vi.spyOn(mcpApps, 'mcpAppModelContext').mockImplementation(async () => {
+        captured = true;
+        return { text: 'PRIVATE_APP_DRAFT', consume, assertCurrent };
+      });
+      const provider = vi.fn();
+      const { deps, session } = createDeps({
+        getSessionMeta: vi.fn(async () => {
+          if (captured && phase === 'metadata') valid = false;
+          return { title: 'Test' };
+        }),
+      });
+      vi.mocked(session.send).mockImplementation(async (_message, opts) => {
+        if (phase === 'before-provider') valid = false;
+        await opts?.beforeProviderStart?.();
+        await opts?.onAccepted?.();
+        if (phase === 'vision') valid = false;
+        await opts?.resolveAutoReviewUserIntent?.();
+        provider();
+        return { accepted: true };
+      });
+      try {
+        await expect(
+          createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'Continue'),
+        ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+        expect(provider).not.toHaveBeenCalled();
+        expect(consume).not.toHaveBeenCalled();
+        expect(assertCurrent).toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  it('adds the latest App context to the agent wire while keeping the persisted user message intact', async () => {
+    const context =
+      '\n[MCP App context: external application data]\n{"draft":"updated"}\n[/MCP App context]';
+    const consume = vi.fn();
+    const read = vi
+      .spyOn(mcpApps, 'mcpAppModelContext')
+      .mockResolvedValueOnce({ text: context, consume, assertCurrent: async () => {} });
+    try {
+      const { deps, session } = createDeps();
+      await createMakerSendTransaction(deps).sendToAgentAccepted(
+        'session-1',
+        'Continue',
+        undefined,
+        {
+          persistUserMessage: { clientId: 'input', content: 'Continue' },
+        },
+      );
+      expect(read).toHaveBeenCalledWith('session-1');
+      const call = vi.mocked(session.send).mock.calls[0][0];
+      const wire = typeof call === 'string' ? call : call.content;
+      expect(JSON.stringify(wire)).toContain('updated');
+      expect(JSON.stringify(wire)).toContain('Continue');
+      expect(deps.createDbMessage).toHaveBeenCalledWith(
+        'session-1',
+        expect.objectContaining({ content: 'Continue' }),
+        undefined,
+      );
+      expect(consume).toHaveBeenCalledOnce();
+    } finally {
+      read.mockRestore();
+    }
+  });
+  it.each(['rejected', 'throws'] as const)(
+    'keeps context when dispatch %s, consumes it on accepted retry and omits it afterwards',
+    async (failure) => {
+      let pending = true;
+      const consume = vi.fn(() => {
+        pending = false;
+      });
+      const read = vi
+        .spyOn(mcpApps, 'mcpAppModelContext')
+        .mockImplementation(async () =>
+          pending
+            ? { text: 'APP_DRAFT', consume, assertCurrent: async () => {} }
+            : { text: '', consume() {}, assertCurrent: async () => {} },
+        );
+      let first = true;
+      const session = createSession({
+        send: vi.fn(async (
+          _message: UserMessage | string,
+          options?: SessionSendOptions,
+        ): Promise<SessionSendResult> => {
+          await options?.onAccepted?.();
+          if (first) {
+            first = false;
+            if (failure === 'throws') throw new Error('Dispatch failed');
+            return { accepted: false, reason: 'cancelled-before-dispatch' };
+          }
+          return { accepted: true };
+        }),
+      });
+      const memory = createWireNoteMemory();
+      const { deps } = createDeps({
+        getSession: () => session,
+        planRepeatableWireNotes: (sessionId, notes, opts) => memory.plan(sessionId, notes, opts),
+      });
+      const transaction = createMakerSendTransaction(deps);
+      try {
+        const attempt = transaction.sendToAgentAccepted('session-1', 'Continue', undefined, {
+          persistUserMessage: { clientId: 'input', content: 'Continue' },
+        });
+        if (failure === 'throws') await expect(attempt).rejects.toThrow('Dispatch failed');
+        else await expect(attempt).resolves.toMatchObject({ accepted: false });
+        expect(consume).not.toHaveBeenCalled();
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[0][0])).toContain(uiLanguageNote());
+        await expect(transaction.sendToAgentAccepted('session-1', 'Retry')).resolves.toMatchObject({
+          accepted: true,
+        });
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[1][0])).toContain('APP_DRAFT');
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[1][0])).toContain(uiLanguageNote());
+        expect(consume).toHaveBeenCalledOnce();
+        await transaction.sendToAgentAccepted('session-1', 'Next');
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[2][0])).not.toContain('APP_DRAFT');
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[2][0])).not.toContain(uiLanguageNote());
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+  it.each([
+    ['claude-code', '/compact'],
+    ['pi', '/skill:git'],
+  ] as const)('leaves context pending for the %s native command %s', async (agentKind, command) => {
+    const consume = vi.fn();
+    const read = vi
+      .spyOn(mcpApps, 'mcpAppModelContext')
+      .mockResolvedValue({ text: 'APP_DRAFT', consume, assertCurrent: async () => {} });
+    try {
+      const session = createSession({ agentKind });
+      const { deps } = createDeps({ getSession: () => session });
+      await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', command);
+      expect(read).not.toHaveBeenCalled();
+      expect(consume).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+  });
+});
 
 function createSession(overrides: Partial<MakerSendTransactionSession> = {}): MakerSendTransactionSession {
   return {
@@ -74,6 +249,7 @@ function createSession(overrides: Partial<MakerSendTransactionSession> = {}): Ma
       _message: UserMessage | string,
       opts?: SessionSendOptions,
     ) => {
+      await opts?.beforeProviderStart?.();
       await opts?.onAccepted?.();
       await opts?.onTranscriptUserEntry?.('pi-user-entry');
       await opts?.resolveAutoReviewUserIntent?.();
@@ -131,6 +307,99 @@ function createDeps(overrides: Partial<MakerSendTransactionDeps> = {}) {
   };
   return { deps, session };
 }
+
+describe('MCP App message authorization', () => {
+  it.each(['claude-code', 'pi', 'codex'] as const)(
+    'keeps App slash text literal and includes its source note for %s',
+    async (agentKind) => {
+      const { deps, session } = createDeps();
+      session.agentKind = agentKind;
+      const { blocks, persistedContent } = appMessageInput([{ type: 'text', text: '/compact' }]);
+      const sourcePlugin = { pluginId: 'mcp-app:example', name: 'example' };
+      await createMakerSendTransaction(deps).sendToAgentAccepted(
+        'session-1', { type: 'user', content: blocks }, undefined, {
+          [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+          persistUserMessage: { clientId: 'app-input', content: persistedContent, sourcePlugin },
+        },
+      );
+      const sent = vi.mocked(session.send).mock.calls[0][0];
+      const wire = JSON.stringify(typeof sent === 'string' ? sent : sent.content);
+      expect(wire).toContain('[消息来源]');
+      expect(wire).toContain('mcp_server_id: example');
+      expect(wire).toContain('\\\\/compact');
+      expect(deps.createDbMessage).toHaveBeenCalledWith(
+        'session-1', expect.objectContaining({ content: '/compact', agentMeta: expect.objectContaining({ sourcePlugin }) }),
+        undefined,
+      );
+    },
+  );
+
+  it('rejects revocation during metadata loading before persisting an App turn', async () => {
+    let visible = true;
+    const dispatch = vi.fn();
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const { deps } = createDeps({
+      prepareProductTurn: () => dispatch,
+      getSessionMeta: async () => { visible = false; return { title: 'Task' }; },
+    });
+    await expect(createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'App text', undefined, {
+      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+      [MCP_APP_MESSAGE_GUARD]: guard,
+      persistUserMessage: { clientId: 'app-input', content: 'App text' },
+    })).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    expect(deps.createDbMessage).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rechecks card authorization after accepted persistence and blocks vendor dispatch', async () => {
+    let visible = true;
+    const dispatch = vi.fn();
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const { deps, session } = createDeps({
+      prepareProductTurn: () => dispatch,
+      createDbMessage: vi.fn(async () => { visible = false; }),
+    });
+    await expect(createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'App text', undefined, {
+      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+      [MCP_APP_MESSAGE_GUARD]: guard,
+      persistUserMessage: { clientId: 'app-input', content: 'App text' },
+    })).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(session.send).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('awaits the final card guard and preserves the owner intent without leaking the callback', async () => {
+    const dispatch = vi.fn();
+    let finish!: () => void;
+    const guard = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    let intent: unknown;
+    const session = createSession({ send: vi.fn(async (_message, opts) => {
+      await opts?.beforeProviderStart?.();
+      await opts?.onAccepted?.();
+      intent = await opts?.resolveAutoReviewUserIntent?.();
+      opts?.onDispatching?.();
+      return { accepted: true } satisfies SessionSendResult;
+    }) });
+    const { deps } = createDeps({ getSession: () => session, prepareProductTurn: () => dispatch });
+    const pending = createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'App text', undefined, {
+      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+      [MCP_APP_MESSAGE_GUARD]: guard,
+      persistUserMessage: { clientId: 'app-input', content: 'App text' },
+    });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(dispatch).not.toHaveBeenCalled();
+    finish();
+    await expect(pending).resolves.toMatchObject({ accepted: true });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(intent).toEqual(restoreAutoReviewUserIntent([]));
+    expect(Object.getOwnPropertySymbols(vi.mocked(session.send).mock.calls[0][1]!))
+      .not.toContain(MCP_APP_MESSAGE_GUARD);
+    expect(JSON.stringify(vi.mocked(session.send).mock.calls[0][0])).not.toContain('MCP_APP_MESSAGE_GUARD');
+  });
+});
 
 describe('maker SEND transaction', () => {
   it.each([false, true])(
