@@ -20,6 +20,7 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -32,6 +33,10 @@ const NON_UNIT_TEST = /(?:^|[-.])(?:integration|e2e|git-integration)\.(?:test|sp
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
 const REAL_WAIT_PATTERN = /\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g;
+// Reuse Desktop's declared parser only for files that mix fake and real timers.
+// No type checking or module loading is needed to locate test/hook callbacks.
+const requireDesktop = createRequire(new URL('../apps/desktop/package.json', import.meta.url));
+let typescript;
 
 /** Replace comments with spaces (keeping newlines) so matches ignore commented-out code. */
 export function stripComments(source) {
@@ -160,10 +165,67 @@ function setTimeoutCalls(code) {
   return calls;
 }
 
+function timerScopes(code) {
+  const ts = typescript ??= requireDesktop('typescript');
+  const source = ts.createSourceFile('test.tsx', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const scopes = [];
+  function rootName(expression) {
+    if (ts.isIdentifier(expression)) return expression.text;
+    if (ts.isPropertyAccessExpression(expression) || ts.isCallExpression(expression)) return rootName(expression.expression);
+    if (ts.isTaggedTemplateExpression(expression)) return rootName(expression.tag);
+    return '';
+  }
+  function visit(node) {
+    if (ts.isCallExpression(node)) {
+      const kind = rootName(node.expression);
+      if (/^(?:describe|it|test|beforeEach|beforeAll|afterEach|afterAll)$/.test(kind)) {
+        for (const argument of node.arguments) {
+          if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) {
+            scopes.push({ kind, start: argument.getStart(source), end: argument.end });
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return scopes.sort((a, b) => (a.end - a.start) - (b.end - b.start));
+}
+
+function timerStateAt(index, timerEvents, scopes) {
+  const scopeAt = (position) => scopes.find(s => s.start <= position && position < s.end);
+  const waitScope = scopeAt(index);
+  const describeAt = (scope) => scopes.find(s => s.kind === 'describe' && s.start < scope.start && scope.end < s.end);
+  const belongsToWait = (scope) => !scope || scope.kind === 'describe' && scope.start < index && index < scope.end;
+  const events = timerEvents.map(event => ({ event, scope: scopeAt(event.index) }));
+  let fake = false;
+  // Registration-time calls and before hooks are distinct from calls in a
+  // sibling test or an after hook. Inherit hooks from outer describes first.
+  const inherited = events.filter(({ event, scope }) => event.index < index && belongsToWait(scope));
+  for (const { event } of inherited) fake = event[1] === 'useFakeTimers';
+  if (waitScope && /^(?:it|test)$/.test(waitScope.kind)) {
+    const hooks = events.filter(({ scope }) => scope && /^(?:beforeAll|beforeEach)$/.test(scope.kind) && belongsToWait(describeAt(scope)))
+      .sort((a, b) => {
+        const depthA = scopes.filter(s => s.kind === 'describe' && s.start < a.scope.start && a.scope.end < s.end).length;
+        const depthB = scopes.filter(s => s.kind === 'describe' && s.start < b.scope.start && b.scope.end < s.end).length;
+        return depthA - depthB || (a.scope.kind === b.scope.kind ? a.event.index - b.event.index : a.scope.kind === 'beforeAll' ? -1 : 1);
+      });
+    for (const { event, scope } of hooks) {
+      // An afterEach restoring real timers invalidates beforeAll-only setup
+      // for subsequent tests. Be conservative rather than exempt a real wait.
+      if (scope.kind === 'beforeAll' && events.some(entry => entry.scope?.kind === 'afterEach' && entry.event[1] === 'useRealTimers' && belongsToWait(describeAt(entry.scope)))) continue;
+      fake = event[1] === 'useFakeTimers';
+    }
+  }
+  for (const { event, scope } of events) {
+    if (scope === waitScope && event.index < index) fake = event[1] === 'useFakeTimers';
+  }
+  return fake;
+}
+
 function countRealWaits(code, lines) {
   const timerEvents = [...code.matchAll(/\bvi\.(useFakeTimers|useRealTimers)\s*\(/g)];
-  let timerIndex = 0;
-  let fakeTimers = false;
+  const scopes = timerEvents.length > 0 ? timerScopes(code) : [];
   let count = 0;
   const waits = [
     ...setTimeoutCalls(code).map(({ index, duration }) => ({ index, duration })),
@@ -173,11 +235,7 @@ function countRealWaits(code, lines) {
     })),
   ].sort((a, b) => a.index - b.index);
   for (const wait of waits) {
-    while (timerIndex < timerEvents.length && timerEvents[timerIndex].index < wait.index) {
-      fakeTimers = timerEvents[timerIndex][1] === 'useFakeTimers';
-      timerIndex += 1;
-    }
-    if (fakeTimers) continue;
+    if (timerStateAt(wait.index, timerEvents, scopes)) continue;
     if (Number(wait.duration.replaceAll('_', '')) < REAL_WAIT_MIN_MS) continue;
     const line = lineOf(code, wait.index);
     if (!hasJustification(lines, line, 'real-wait')) count += 1;

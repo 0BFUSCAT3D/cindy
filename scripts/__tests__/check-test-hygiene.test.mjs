@@ -41,6 +41,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ realWaits: 1 },
 		],
 		[
+			"fake timers in a sibling test do not hide a real wait after cleanup",
+			"afterEach(() => vi.useRealTimers());\nit('fake', () => { vi.useFakeTimers(); setTimeout(done, 100); });\nit('real', () => { setTimeout(done, 100); });",
+			{ realWaits: 1 },
+		],
+		[
+			"beforeEach fake timers apply to their own describe, not a sibling suite",
+			"describe('fake', () => { beforeEach(() => vi.useFakeTimers()); afterEach(() => vi.useRealTimers()); it('one', () => setTimeout(done, 100)); });\ndescribe('real', () => { it('two', () => setTimeout(done, 100)); });",
+			{ realWaits: 1 },
+		],
+		[
 			"multi-line real wait",
 			"await new Promise((resolve) => setTimeout(\n  resolve,\n  250,\n));",
 			{ realWaits: 1 },
