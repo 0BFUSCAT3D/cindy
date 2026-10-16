@@ -285,6 +285,7 @@ function harness(
     getLayoutStore: () => ({ getLayout: () => ({}), setLayout: vi.fn() }),
     layoutWithGhostPanel: () => null,
     spawnIfResident: vi.fn(),
+    bindPluginUsage: vi.fn(async () => {}),
     exportGhostPackage: exportPackage,
     BrowserWindow: { fromWebContents: () => null },
     dialog: { showSaveDialog: vi.fn() },

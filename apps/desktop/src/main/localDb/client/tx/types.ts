@@ -1,7 +1,9 @@
+import type { PluginUsageTransaction, PluginUsageHandle } from '../../../../shared/pluginUsage.js';
 import type { TaskTagRequest, TaskTagResult } from '@cindy/maker-shared';
 
 export type DbTxName =
   | 'authorization.readProjection'
+  | 'pluginUsage.execute'
   | 'taskTags.execute'
   | 'codex.importMessages'
   | 'claude.importMessages'
@@ -1346,6 +1348,7 @@ export type DbTxArgsByName = {
   'sessions.setTerminalStatus': SessionsSetTerminalStatusArgs;
   'recentWorkdirs.mergeWindowsIdentity': RecentWorkdirsMergeWindowsIdentityArgs;
   'recentWorkdirs.removeWindowsIdentity': RecentWorkdirsRemoveWindowsIdentityArgs;
+  'pluginUsage.execute': PluginUsageTransaction;
   'taskTags.execute': TaskTagRequest & { newId?: string; callerSessionId?: string };
   'projectAliases.replaceIdentity': ProjectAliasesReplaceIdentityArgs;
   'toolResults.compactSession': CompactSessionToolResultsArgs;
@@ -1431,6 +1434,7 @@ export type DbTxResultByName = {
   'sessions.setTerminalStatus': SessionsSetStatusResultItem;
   'recentWorkdirs.mergeWindowsIdentity': undefined;
   'recentWorkdirs.removeWindowsIdentity': { changes: number };
+  'pluginUsage.execute': PluginUsageHandle | null;
   'taskTags.execute': TaskTagResult;
   'projectAliases.replaceIdentity': {
     projectKey: string;
