@@ -78,6 +78,8 @@ it.each([true, false])(
       selected ? 'bg-sidebar-item-active' : 'text-[var(--sidebar-nav-text)]',
     );
     const trigger = screen.getByRole('combobox');
+    // The compact row must retain the picker's 24px click/focus target.
+    expect(trigger.className.split(/\s+/)).toContain('h-6');
     expect(trigger.className).toContain('text-inherit');
     expect(trigger.className).toContain('[--button-face-bg:transparent]');
     expect(trigger.className).toContain('[--button-face-border:transparent]');

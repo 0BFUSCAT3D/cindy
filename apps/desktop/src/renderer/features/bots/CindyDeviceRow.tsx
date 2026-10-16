@@ -81,7 +81,7 @@ export function CindyDeviceRow({
             current={current}
             onSelect={onSelect}
             className={cn(
-              'pointer-events-auto h-5 min-w-0 shrink px-1 text-11 text-inherit focus-visible:ring-inset',
+              'pointer-events-auto min-w-0 shrink px-1 text-11 text-inherit focus-visible:ring-inset',
               '[--button-face-bg:transparent] [--button-face-border:transparent] [--button-face-outset:0px]',
               'enabled:[&:not([aria-disabled=true])]:hover:[--button-face-bg:var(--sidebar-item-hover)] enabled:[&:not([aria-disabled=true])]:active:[--button-face-bg:var(--sidebar-item-hover)]',
               selected &&
