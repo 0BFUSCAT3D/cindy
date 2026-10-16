@@ -483,7 +483,7 @@ export function TeammatesSection() {
             type="button"
             onClick={toggleCollapsed}
             aria-expanded={!collapsed}
-            className="text-sm font-medium text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]"
+            className="text-sm leading-5 font-medium text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]"
           >
             {t('bots.title')}
           </button>

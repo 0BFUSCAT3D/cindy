@@ -1160,7 +1160,7 @@ export function ProjectsSection({
                 // 仅收起时显示运行态与未读点,展开后由下层内容提示。
                 const sectionLamp = lampAgg(section.entries.flatMap(entrySessions));
                 return (
-                  <div key={key} className="flex flex-col gap-1">
+                  <div key={key} className="flex flex-col">
                     {/* 设备分组头:可折叠。在线设备不画状态点;离线设备保留灰点与文字提示。 */}
                     <DeviceSectionHeader deviceId={section.deviceId} name={name}>
                       <button
@@ -1173,15 +1173,10 @@ export function ProjectsSection({
                             : t('ccAgent.sidebar.deviceGroup.collapse')
                         }
                         className={cn(
-                          'flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-full px-1.5',
+                          'flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-full px-2',
                           'text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]',
                         )}
                       >
-                        {sectionCollapsed ? (
-                          <ChevronRight size={12} strokeWidth={2} className="shrink-0" />
-                        ) : (
-                          <ChevronDown size={12} strokeWidth={2} className="shrink-0" />
-                        )}
                         {/* 设备段收起时才用图标呼吸提示内部运行态,展开后由下层内容提示。 */}
                         <span
                           className={cn(
@@ -1194,6 +1189,16 @@ export function ProjectsSection({
                           <MonitorSmartphone size={13} strokeWidth={2} aria-hidden />
                         </span>
                         <span className="min-w-0 truncate text-xs font-medium">{name}</span>
+                        {sectionCollapsed ? (
+                          <ChevronRight
+                            size={12}
+                            strokeWidth={2}
+                            className="shrink-0"
+                            aria-hidden
+                          />
+                        ) : (
+                          <ChevronDown size={12} strokeWidth={2} className="shrink-0" aria-hidden />
+                        )}
                         {!online && (
                           <span
                             aria-hidden
@@ -1217,7 +1222,12 @@ export function ProjectsSection({
                       </button>
                     </DeviceSectionHeader>
                     <SectionCollapse collapsed={sectionCollapsed}>
-                      <div className="flex flex-col gap-1 pl-2">
+                      <div
+                        className={cn(
+                          'flex flex-col gap-1 pl-2',
+                          section.entries.length > 0 && 'pt-1',
+                        )}
+                      >
                         {/* 折叠上限每段独立应用(切段在前,见 deviceSections 注释);
                             「显示全部」的作用域同样是段内(expandedDeviceSections)。 */}
                         {(() => {
@@ -1494,13 +1504,13 @@ export function SessionGroupNode({
           </div>
         )}
       </div>
-      {/* 组内会话:与 ProjectNode 的会话区同款容器(gap / pt / pb 呼吸、list 缩进)
+      {/* 组内会话:与 ProjectNode 的会话区同款容器(gap / pt、list 缩进)
           与同一份折叠上限(getProjectSessionCollapseLimit)。 */}
       <SectionCollapse collapsed={collapsed} data-no-drag>
         <div
           className={cn(
-            'flex flex-col gap-0.5 pt-0.5 pb-1.5 pr-0',
-            sessionVariant === 'list' ? 'pl-3' : 'pl-0',
+            'flex flex-col gap-0.5 pt-0.5 pr-0',
+            sessionVariant === 'list' ? 'pl-2' : 'pl-0',
           )}
         >
           <SessionEntryList

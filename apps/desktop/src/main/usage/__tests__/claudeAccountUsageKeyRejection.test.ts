@@ -2,7 +2,7 @@
  * 额度查询遇到 Cindy 网关 401 时上报 Cindy AI Key 失效(其余状态不上报)。
  * 只断言上报行为;配额解析契约见 claudeAccountUsageSource.test.ts。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   outboundFetch: vi.fn(),
@@ -17,6 +17,7 @@ vi.mock('../../authManager', () => ({
     mode: 'cloud',
     user: { id: 'user-1', membershipKind: 'org' },
     dataOwnerId: 'user-1',
+    ownerGeneration: 1,
   }),
 }));
 vi.mock('../../device-link/broadcast-tap.js', () => ({ tapWindowBroadcast: vi.fn() }));
@@ -36,17 +37,27 @@ vi.mock('../../model-access/gatewayKeyRejection', () => ({
   reportCindyGatewayKeyRejected: mocks.report,
 }));
 
-import { triggerClaudeAccountUsageRefresh } from '../claudeAccountUsage';
+// This suite exercises the explicit old-server / Nova compatibility path.
+vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage: async () => undefined }));
+let triggerClaudeAccountUsageRefresh: typeof import('../claudeAccountUsage')['triggerClaudeAccountUsageRefresh'];
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
 describe('claudeAccountUsage Cindy AI key rejection', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
     mocks.outboundFetch.mockReset();
     mocks.report.mockReset();
+    const credentials = await import('../../model-access/quotaCredentialState');
+    credentials.noteQuotaCredentialStatus('cloud:user-1:1', {
+      state: 'ok', source: 'server', endpoint: 'https://gateway.test.invalid', accountTier: null,
+    });
+    ({ triggerClaudeAccountUsageRefresh } = await import('../claudeAccountUsage'));
   });
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
   it('reports the sent key when user/info and daily/activity are rejected with 401', async () => {
     mocks.outboundFetch.mockImplementation(async () => jsonResponse({ error: 'invalid key' }, 401));

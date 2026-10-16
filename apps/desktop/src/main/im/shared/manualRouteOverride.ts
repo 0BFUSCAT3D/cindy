@@ -20,7 +20,7 @@ import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessi
 import { getDbClient } from '../../localDb/client/current';
 import { sessions } from '../../localDb/schema';
 import { createLogger } from '../../logger';
-import { buildImManualRouteOverrideRecord, type ImDefaultRoute } from './channelDefaultRoute';
+import { buildImManualRouteOverrideRecord, parseImDefaultRouteRecord, type ImDefaultRoute } from './channelDefaultRoute';
 
 const log = createLogger('im:default-route');
 
@@ -45,6 +45,7 @@ export async function markImSessionManualRouteOverride(sessionId: string): Promi
       effort: sessions.effort,
       feishuBotAppId: sessions.feishuBotAppId,
       imBotContextId: sessions.imBotContextId,
+      imDefaultRoute: sessions.imDefaultRoute,
     })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
@@ -52,8 +53,9 @@ export async function markImSessionManualRouteOverride(sessionId: string): Promi
   if (!row) return;
   if (row.status !== 'active' || row.remoteHostId || row.orcaRole || !row.model) return;
   const source = row.source;
-  if (!source || !IM_DEFAULT_SETTINGS_CHANNELS.includes(source as ImDefaultSettingsChannel)) return;
-  if (source === 'feishu' ? !row.feishuBotAppId : !row.imBotContextId) return;
+  const personal = source && IM_DEFAULT_SETTINGS_CHANNELS.includes(source as ImDefaultSettingsChannel)
+    && (source === 'feishu' ? !!row.feishuBotAppId : !!row.imBotContextId);
+  if (!personal && !parseImDefaultRouteRecord(row.imDefaultRoute)) return;
   const route: ImDefaultRoute = {
     agentKind: dbToMakerAgentKind(row.agentKind),
     model: row.model,

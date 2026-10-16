@@ -3571,6 +3571,7 @@ function ModelSelectorContentView({
                   remoteSources: {
                     localRailItems: remoteAgentLocalRailItems,
                     localProviders: homeProviders,
+                    localUsageDeviceId: homeDeviceId ?? null,
                     localProviderLabel: remoteAgentLocalLabel,
                     groups: remoteAgentGroups,
                     labelOf: remoteAgentLabelOf,

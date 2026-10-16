@@ -14,6 +14,7 @@ const m = vi.hoisted(() => ({
   attached: new Set<string>(),
   changed: vi.fn(),
   warning: vi.fn(),
+  archiveBlockedByRunning: vi.fn(),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (s: string) => s }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
@@ -27,7 +28,10 @@ vi.mock('@/features/cc-agent/sidebar/SessionCard', () => ({
   ),
 }));
 vi.mock('@/features/cc-agent/hooks/useSessionLifecycleActions', () => ({
-  useSessionLifecycleActions: () => ({ runSessionAction: m.run, unarchiveSession: m.unarchive }),
+  useSessionLifecycleActions: () => ({
+    runSessionAction: m.run, unarchiveSession: m.unarchive,
+    archiveBlockedByRunning: m.archiveBlockedByRunning,
+  }),
 }));
 vi.mock('@/features/cc-agent/hooks/useSessionDisplayRunningState', () => ({
   useSessionDisplayRunningState: () => ({ displayRunningSessionIds: m.running }),
@@ -63,6 +67,11 @@ const row = {
 beforeEach(() => {
   vi.clearAllMocks();
   m.running = new Set();
+  m.archiveBlockedByRunning.mockImplementation((id: string) => {
+    if (!m.running.has(id)) return false;
+    m.warning('ccAgent.sidebar.archiveBlocked.running');
+    return true;
+  });
   m.attached = new Set();
   m.confirm.mockResolvedValue(true);
   m.preflight.mockResolvedValue('clean');
@@ -74,6 +83,20 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+it.each(['clean', 'dirty', 'unknown'])('keeps sharing when a task starts during %s preflight or confirmation', async (preflight) => {
+  let finish!: (value: any) => void;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  m.preflight.mockReturnValue(preflight === 'clean' ? pending : Promise.resolve(preflight));
+  m.confirm.mockReturnValue(pending);
+  render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
+  fireEvent.click(screen.getByText('archive'));
+  await waitFor(() => expect(preflight === 'clean' ? m.preflight : m.confirm).toHaveBeenCalled());
+  m.running.add('original');
+  finish(preflight === 'clean' ? 'clean' : true);
+  await waitFor(() => expect(m.warning).toHaveBeenCalledWith('ccAgent.sidebar.archiveBlocked.running'));
+  expect(m.close).not.toHaveBeenCalled();
+  expect(m.run).not.toHaveBeenCalled();
+});
 it('opens the original archived session through the native row without restoring it', async () => {
   render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
   expect(screen.getByTestId('native-row').getAttribute('data-variant')).toBe('list');

@@ -1,3 +1,4 @@
+import { cloudQuotaOwnerKey, noteQuotaCredentialStatus, setQuotaCredentialStatusReader } from './quotaCredentialState.js';
 import { createByokCache } from './byokCache.js';
 import { byokSnapshotSecretIo } from '../secrets/providerSecretStore.js';
 import { registerByokIpc } from './byokIpc.js';
@@ -394,6 +395,11 @@ function getSync(): CredentialsSync {
       writeXdKey: writeXdKeyWithCodexSideEffect,
       store: getModelAccessCredentialsStore(),
       onStatusChange: (status) => {
+        const auth = authManager.getAuthState();
+        noteQuotaCredentialStatus(
+          cloudQuotaOwnerKey(auth),
+          status,
+        );
         if (['failed', 'disabled', 'unsupported', 'idle'].includes(status.state)) {
           accountTier = null;
         }
@@ -499,6 +505,12 @@ function mapServerError(err: unknown): never {
  */
 export function initModelAccess(): void {
   const sync = getSync();
+  setQuotaCredentialStatusReader(() => {
+    const auth = authManager.getAuthState();
+    if (auth.mode !== 'cloud' || !auth.user?.id || auth.user.id !== lastAuthUserId
+      || authManager.getActiveAuthRealm() !== lastAuthRealm) return null;
+    return sync.getStatus();
+  });
   // 主进程各调用方遇到 Cindy 网关 401 时经此重新拉取凭据(服务端会探测并换发失效 Key)。
   // 用静默同步:失败不降级状态、不清空模型列表(见 credentialsSync.resyncAfterKeyRejection)。
   installCindyGatewayKeyRejectionReporter(() => getSync().resyncAfterKeyRejection());
