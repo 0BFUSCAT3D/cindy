@@ -11,7 +11,7 @@
  */
 
 import os from 'node:os';
-import { tryPeerInvoke } from './filePeer';
+import { tryPeerInvoke, stopFilePeers } from './filePeer';
 import { assertBackgroundLinkAccepted, linkOpenCapabilities } from './backgroundLink';
 import { deviceName, initializeDeviceName } from './deviceName';
 import { desktopTransferCodec } from './transferCodec';
@@ -21,6 +21,7 @@ import { app, BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import {
   DeviceLinkClient,
+  FILE_PEER_CHANNEL,
   isScopedPeer,
   parseSharedTaskPeer,
   probeSharedTaskHost,
@@ -810,6 +811,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
 
   client.onStatusChange((status) => {
     if (status !== 'online') {
+      stopFilePeers();
       invalidatePluginOauth();
       // The shared relay connection is a larger fault domain than one peer:
       // release every active controller projection, but keep remembered topics
@@ -1736,6 +1738,7 @@ export async function openRemoteLink(
 
 /** 控制端:解除控制链路 */
 export function closeRemoteLink(deviceId: string): void {
+  stopFilePeers(deviceId);
   invalidatePluginOauth(deviceId);
   // 取消义务清单(不变量 6):用户显式断开必须终止该设备**全部** per-device
   // 恢复机制,漏一个就是「刚关又被自动建回」。当前全量:
@@ -1745,7 +1748,8 @@ export function closeRemoteLink(deviceId: string): void {
   //   4. 在途建链(登记删除 + closeEpochs 翻代拦 park 中的等待);
   //   5. remoteInvoke / remoteSubscribe 在途调用(经 4 的代次在发送/重开前自败);
   //   6. OAuth 授权事务与本机回调监听(翻代后在后续操作前自败);
-  //   7. MCP App View 的跨调用轮询与清理(绑定打开时的代次，翻代后自败)。
+  //   7. MCP App View 的跨调用轮询与清理(绑定打开时的代次，翻代后自败);
+  //   8. 独立文件连接及其排队/协商请求(stopFilePeers 翻代，迟到结果只清理)。
   // 新增任何 per-device 重试/恢复机制时必须同步登记到本清单。
   transportTimeoutReopen.cancel(deviceId);
   cancelSubscriptionReplay(deviceId);
@@ -1827,6 +1831,14 @@ export async function remoteInvoke(
     assertLinkNotClosedSinceStart();
     options?.preSend?.();
   };
+  // Cleanup is best effort over the existing link. A late file answer must never
+  // reopen the remote session just to dispose its now-unwanted allocation.
+  if (channel === FILE_PEER_CHANNEL && (args[0] as { action?: unknown } | null)?.action === 'close') {
+    preSend();
+    if (!client?.isLinkReady(deviceId))
+      throw new DeviceLinkError('LINK_NOT_OPEN', 'file cleanup requires an existing link');
+    return client.invoke(deviceId, { channel, args }, resolveRemoteInvokeTimeoutMs(channel, args, 'desktop'), { preSend });
+  }
   const invoke = async (): Promise<InvokeResultPayload> => {
     // 熔断门禁(外层 guardInvoke)在连接等待之前:open 态快速失败,不消耗 1.5s 等待。
     await ensureOnlineForRequest();
