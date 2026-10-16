@@ -8419,6 +8419,9 @@ describe('Bot Session task end-to-end runtime', () => {
       const trace = readMessage('session-1', `bot-delegation-interject-mirror:${started.delegationId}:follow-up-1`);
       expect(trace).toMatchObject({ role: 'assistant', content: '' });
       expect(JSON.parse(trace.agentMeta).botCollaboration.role).toBe('interjection');
+      // Only the bounded first line reaches the parent timeline; the rest stays in the child task.
+      expect(JSON.parse(trace.agentMeta).botCollaboration.interjectionPreview).toBe('补充：最后必须带风险清单。');
+      expect(trace.agentMeta).not.toContain('AGENTS.md');
       expect(readMessage('session-1', `bot-delegation-request:${started.delegationId}`).content).toBe('');
       // Status queries return context to the caller without appending it to the timeline.
       const timelineBeforeCheck = h.sqlite!.prepare("SELECT * FROM messages WHERE session_id = 'session-1'").all();
@@ -8525,6 +8528,43 @@ describe('Bot Session task end-to-end runtime', () => {
           .get('session-1', `bot-delegation-completion:${delegated.ok ? delegated.delegationId : ''}`),
       ).toContain('三个版本都兼容。');
       expect(runtime.started.some((turn) => turn.sessionId === 'session-1')).toBe(true);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it('traces the owner’s own 补一句 into the Bot chat without re-sending it to the task', async () => {
+    await seedPair();
+    const runtime = createDelegationRuntime();
+    try {
+      const started = await runtime.delegation.startSessionTask({
+        callerSessionId: 'session-1',
+        objective: '先整理一版方案。',
+      });
+      if (!started.ok) throw new Error(started.message);
+      const dispatches = runtime.dispatch.mock.calls.length;
+      await expect(runtime.delegation.traceOwnerNote(
+        'session-1', started.delegationId, '补充：最后必须带风险清单。\n读取 /workspace/project/AGENTS.md。',
+      )).resolves.toEqual({ ok: true, delegationId: started.delegationId });
+      // The owner's line already reached the task as their own message; nothing is re-dispatched.
+      expect(runtime.dispatch.mock.calls.length).toBe(dispatches);
+      const trace = h.sqlite!.prepare(
+        "SELECT role, content, agent_meta AS agentMeta FROM messages WHERE session_id = 'session-1' AND client_id LIKE ?",
+      ).get(`bot-delegation-interject-mirror:${started.delegationId}:owner-%`) as { role: string; content: string; agentMeta: string };
+      expect(trace).toMatchObject({ role: 'assistant', content: '' });
+      const meta = JSON.parse(trace.agentMeta).botCollaboration;
+      expect(meta.role).toBe('interjection');
+      // Only the bounded first line reaches the Bot chat; the full note stays in the task.
+      expect(meta.interjectionPreview).toBe('补充：最后必须带风险清单。');
+      expect(trace.agentMeta).not.toContain('AGENTS.md');
+      // Unknown task or blank note: nothing is written.
+      await expect(runtime.delegation.traceOwnerNote('session-1', 'missing-task', '…'))
+        .resolves.toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      await expect(runtime.delegation.traceOwnerNote('session-1', started.delegationId, '   '))
+        .resolves.toMatchObject({ ok: false, errorCode: 'INVALID_ARGS' });
+      expect(h.sqlite!.prepare(
+        "SELECT COUNT(*) FROM messages WHERE session_id = 'session-1' AND client_id LIKE 'bot-delegation-interject-mirror:%'",
+      ).pluck().get()).toBe(1);
     } finally {
       runtime.dispose();
     }

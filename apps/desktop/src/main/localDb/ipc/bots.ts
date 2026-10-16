@@ -75,6 +75,7 @@ import {
 import {
   listBotWorkbenchCandidatesForOwner,
   readBotWorkbenchTaskForOwner,
+  readBotResponsibilityScope,
   readBotResponsibleSessionIds,
 } from '../../maker-ipc/botWorkbenchTools.js';
 import {
@@ -2183,7 +2184,7 @@ export function registerBotIpc(): void {
     // Older renderers receive empty directories rather than claiming projects.
     const scopes = await collectTaskResponsibilityScopes(
       bots.map((bot) => bot.id),
-      (botId) => readBotResponsibleSessionIds(owner.userDataDir, botId),
+      (botId) => readBotResponsibilityScope(owner.userDataDir, botId),
     );
     owner.assertCurrent();
     return scopes;

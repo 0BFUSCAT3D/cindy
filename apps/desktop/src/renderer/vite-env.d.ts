@@ -4880,8 +4880,8 @@ interface ElectronAPI {
             }
           | { ok: false; errorCode: string; message: string }
         >;
-        /** 每个在用本机伙伴的逐任务责任 ID；旧宿主缺字段时不推断。 */
-        followScopes: () => Promise<Array<{ botId: string; sessionIds?: string[] }>>;
+        /** 每个在用本机伙伴的逐任务责任 ID；旧宿主缺字段时不推断。`delegatedSessionIds` 只含伙伴自己开的后台任务。 */
+        followScopes: () => Promise<Array<{ botId: string; sessionIds?: string[]; delegatedSessionIds?: string[] }>>;
       };
       listSkills: (botId: string) => Promise<import('../shared/botSkill').BotSkillSummary[]>;
       memory: {
@@ -5366,6 +5366,12 @@ interface ElectronAPI {
       parentSessionId: string,
       delegationId: string,
     ) => Promise<import('../shared/botDelegation').BotDelegationCancelResult>;
+    /** The owner's 补一句 from a task card leaves its trace in the Bot's chat (local tasks only). */
+    traceBotDelegationNote: (
+      parentSessionId: string,
+      delegationId: string,
+      text: string,
+    ) => Promise<import('../shared/botDelegation').BotDelegationNoteTraceResult>;
     onBotDelegationChanged: (
       cb: (
         payload: import('../shared/botDelegation').BotDelegationChangedPayload,

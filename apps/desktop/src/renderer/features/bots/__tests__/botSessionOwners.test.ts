@@ -79,6 +79,27 @@ describe('伙伴归属表', () => {
     expect(findBotProfileForSession([bot], 'stale-mirror')).toBeUndefined();
   });
 
+  it('同一个任务只有一个地址：主任务回伙伴页，历史走历史页，后台任务走普通任务页', () => {
+    const bot = profile({
+      id: 'bot/a',
+      sessions: [
+        { id: 's-main', role: 'canonical', kind: 'chat' },
+        { id: 's-telegram', role: 'route' },
+        { id: 's-old', role: 'history', kind: 'history' },
+        { id: 's-task', role: 'delegation', kind: 'worker' },
+        { id: 's-worker', kind: 'worker' },
+        { id: 's-lane', role: 'group', kind: 'group' },
+      ] as unknown as BotProfile['sessions'],
+    });
+    expect(botRouteForOwnedSession([bot], 's-main')).toEqual({ route: '/bots/bot%2Fa', consumesAlert: false });
+    expect(botRouteForOwnedSession([bot], 's-telegram')).toEqual({ route: '/bots/bot%2Fa/session/s-telegram', consumesAlert: false });
+    expect(botRouteForOwnedSession([bot], 's-old')).toEqual({ route: '/bots/bot%2Fa/history/s-old', consumesAlert: false, gateConsumesAlert: true });
+    expect(botRouteForOwnedSession([bot], 's-task')).toEqual({ route: '/cc-agent/s-task', consumesAlert: false });
+    expect(botRouteForOwnedSession([bot], 's-worker')).toEqual({ route: '/cc-agent/s-worker', consumesAlert: false });
+    expect(botRouteForOwnedSession([bot], 's-lane')).toEqual({ route: '/bots/bot%2Fa', consumesAlert: true });
+    expect(botRouteForOwnedSession([bot], 'not-owned')).toBeNull();
+  });
+
   it('通知点击把主任务送回伙伴页，子任务保留自己的任务地址', () => {
     const bot = profile({ id: 'bot/a' });
     expect(botRouteForOwnedSession([bot], 's-main')).toEqual({ route: '/bots/bot%2Fa', consumesAlert: false });
@@ -99,9 +120,8 @@ describe('伙伴归属表', () => {
     });
   });
 
-  // 委派执行等非对话角色仍走原伙伴任务地址(路由不在本次改动范围),那里只会是
-  // 「这个伙伴任务已不可用」;该页已打开时再点卡片不会重挂页面,所以入口自己就要处置。
-  it('委派执行任务保留原地址，入口按不可用目标处置被点的卡', () => {
+  // 普通任务页有自己的报错控件，入口不代为消除。
+  it('委派执行任务进入普通任务页，保留页面自己的报错处理', () => {
     const bot = profile({
       sessions: [
         { id: 's-main', role: 'canonical', kind: 'chat' },
@@ -109,8 +129,8 @@ describe('伙伴归属表', () => {
       ] as unknown as BotProfile['sessions'],
     });
     expect(botRouteForOwnedSession([bot], 's-delegated')).toEqual({
-      route: '/bots/bot-a/session/s-delegated',
-      consumesAlert: true,
+      route: '/cc-agent/s-delegated',
+      consumesAlert: false,
     });
   });
 
@@ -176,8 +196,8 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     });
     const { deps: d, loadProfiles } = deps({ current: [stale], loaded: [stale, delegated] });
     await expect(resolveBotRouteForSessionEntry('s-delegated', d)).resolves.toEqual({
-      route: '/bots/bot-b/session/s-delegated',
-      consumesAlert: true,
+      route: '/cc-agent/s-delegated',
+      consumesAlert: false,
     });
     expect(loadProfiles).toHaveBeenCalledWith(true);
   });
@@ -216,10 +236,28 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     expect(isLatest()).toBe(false);
   });
 
+  it('后台任务走普通任务入口，保留消息锚点与灵动岛上报', async () => {
+    const openBotRoute = vi.fn();
+    const openOrdinary = vi.fn();
+    const consumeAlert = vi.fn();
+    const open = createSessionEntryNavigator({
+      resolveBotRoute: async () => ({ route: '/cc-agent/s-task', consumesAlert: false }),
+      consumeAlert,
+      openBotRoute,
+      openOrdinary,
+    });
+    open('s-task', 'message-9', 'entry-task');
+    await Promise.resolve();
+    await Promise.resolve();
+    open.locationCommitted('/cc-agent/s-task');
+    expect(consumeAlert).not.toHaveBeenCalled();
+    expect(openBotRoute).not.toHaveBeenCalled();
+    expect(openOrdinary).toHaveBeenCalledWith('s-task', 'message-9', expect.any(Function));
+  });
+
   describe('灵动岛点击的处置等目标地址提交后才发', () => {
     const targets: Record<string, BotSessionEntryTarget> = {
       's-lane': { route: '/bots/groups/g-1', consumesAlert: true },
-      's-delegated': { route: '/bots/bot-a/session/s-delegated', consumesAlert: true },
       's-main': { route: '/bots/bot-a', consumesAlert: false },
       's-old': { route: '/bots/bot-a/history/s-old', consumesAlert: false, gateConsumesAlert: true },
     };
@@ -303,10 +341,10 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
 
     it('目标本已打开时 navigate 不会再提交，直接处置这次点击', async () => {
       const { open, consumeAlert } = setup();
-      open.locationCommitted('/bots/bot-a/session/s-delegated');
-      open('s-delegated', undefined, 'entry-2');
+      open.locationCommitted('/bots/groups/g-1');
+      open('s-lane', undefined, 'entry-2');
       await settle();
-      expect(consumeAlert).toHaveBeenCalledWith('s-delegated', 'entry-2');
+      expect(consumeAlert).toHaveBeenCalledWith('s-lane', 'entry-2');
     });
 
     it('没有灵动岛点击编号的入口(系统通知、深链)和活的主对话都不处置', async () => {

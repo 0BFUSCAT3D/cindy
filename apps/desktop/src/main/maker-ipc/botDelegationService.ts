@@ -47,7 +47,7 @@ import type {
   BotCollaborationRole,
   BotDelegationInterjectResult,
 } from '../../shared/botCollaboration.js';
-import { BOT_DELEGATION_CLIENT_ID } from '../../shared/botCollaboration.js';
+import { BOT_DELEGATION_CLIENT_ID, BOT_INTERJECTION_MAX_CHARS as MAX_INTERJECTION_CHARS, botInterjectionPreview } from '../../shared/botCollaboration.js';
 import { buildBotGroupTaskCard, type BotGroupTaskCardLabels, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
 import { t } from '../i18n.js';
 import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
@@ -59,8 +59,6 @@ import { readBotTaskModelOverride, type BotModelRoute } from '../../shared/botMo
 import { validateTaskModel, resolveTaskModelSelection, type TaskModelSelection } from './appDefaultModelControl.js';
 
 const ACTIVE_DELEGATION_STATUSES = ['queued', 'running', 'waiting'] as const;
-/** 一条补充消息的正文上限：够写清「先别做 X，改做 Y」，又不至于变成另一项任务。 */
-const MAX_INTERJECTION_CHARS = 4_000;
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_ACTIVE_CHILDREN = 10;
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
@@ -3094,7 +3092,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         message: dispatched?.message ?? '消息未能送达后台任务',
       };
     }
-    // 父任务只留发送状态；完整指令已经投递并保存在子任务，不再复制到主聊天。
+    // 父任务只留发送状态与首行摘要；完整指令已经投递并保存在子任务，不再复制到主聊天。
     // 写不进去不回滚投递——话已经送到了，回滚只会让两边记账不一致。
     await persistTimelineMessage({
       sessionId: callerSessionId,
@@ -3103,7 +3101,11 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       content: '',
       createdAt: now(),
       agentMeta: {
-        botCollaboration: await collaborationMeta(row, 'interjection'),
+        botCollaboration: {
+          ...await collaborationMeta(row, 'interjection'),
+          // 只留首行摘要，让主聊天看得出补充了什么；完整指令仍只在子任务里。
+          ...(botInterjectionPreview(trimmed) ? { interjectionPreview: botInterjectionPreview(trimmed) } : {}),
+        },
       },
     }).catch((error) => {
       log.warn('failed to mirror a Session task message into the requesting task', {
@@ -3124,6 +3126,58 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       queued: dispatched.wakeKind === 'queued',
       queuedMessageId: recovered.clientId,
     };
+  };
+
+  /**
+   * The owner typed a line into a running background task from its card in the Bot's
+   * chat. The line itself already went to the child as the owner's own message (the
+   * card sends it like typing in that task); this only leaves the same quiet trace a
+   * Bot's `message_session_task` leaves, so the Bot's chat shows what the task was told.
+   * Scoped like cancel: the task must belong to the Bot whose chat holds the card.
+   */
+  const traceOwnerNote = async (
+    callerSessionId: string,
+    delegationId: string,
+    text: string,
+  ): Promise<BotDelegationResult<{ delegationId: string }>> => {
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > MAX_INTERJECTION_CHARS) {
+      return { ok: false, errorCode: 'INVALID_ARGS', message: '消息内容为空或超长' };
+    }
+    const caller = await resolveCaller(callerSessionId);
+    if (!caller) {
+      return { ok: false, errorCode: 'NOT_A_BOT_SESSION', message: '当前任务不属于任何伙伴' };
+    }
+    const db = getDbClient().drizzle;
+    const [row] = await db
+      .select()
+      .from(botDelegations)
+      .where(and(eq(botDelegations.id, delegationId), callerTaskScope(caller)))
+      .limit(1);
+    if (!row) return { ok: false, errorCode: 'NOT_FOUND', message: '后台任务不存在' };
+    const preview = botInterjectionPreview(trimmed);
+    await persistTimelineMessage({
+      sessionId: callerSessionId,
+      // Not idempotent across calls on purpose: each 补一句 is its own line in the chat.
+      clientId: BOT_DELEGATION_CLIENT_ID.interjectionMirror(delegationId, `owner-${createId()}`),
+      role: 'assistant',
+      content: '',
+      createdAt: now(),
+      agentMeta: {
+        botCollaboration: {
+          ...await collaborationMeta(row, 'interjection'),
+          // Only the bounded first line; the full note lives in the child task.
+          ...(preview ? { interjectionPreview: preview } : {}),
+        },
+      },
+    });
+    emitChanged({
+      delegationId: row.id,
+      parentSessionId: row.parentSessionId,
+      childSessionId: row.childSessionId,
+      status: row.status as DelegationStatus,
+    });
+    return { ok: true, delegationId };
   };
 
   /**
@@ -4490,6 +4544,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     messageSessionTask: expose(messageSessionTask),
     stopSessionTask: expose(stopSessionTask),
     cancelDelegation: expose((callerSessionId: string, delegationId: string) => withTaskOperation(delegationId, () => cancelDelegation(callerSessionId, delegationId))),
+    traceOwnerNote: expose(traceOwnerNote),
     /** The owner stopping a task from its card (IPC / device-link), from any lane that shows the card. */
     cancelDelegationFromOwner: expose((callerSessionId: string, delegationId: string) => withTaskOperation(delegationId,
       () => cancelDelegation(callerSessionId, delegationId, undefined, { ownerUi: true }))),

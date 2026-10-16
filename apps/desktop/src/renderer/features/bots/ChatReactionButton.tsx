@@ -36,7 +36,7 @@ function reactorNames(reactors: ChatReactor[], t: TFunction, language: string) {
  * and actors without one fall back to an initial, never an invented identity.
  */
 export function ChatReactionButton({ groupId, messageId, reaction, revision = 0, members, disabled, onToggle }: {
-  groupId?: string; messageId: string; reaction: Reaction; revision?: string | number; members?: BotGroupMemberView[]; disabled: boolean; onToggle: () => void;
+  groupId?: string; messageId: string; reaction: Reaction; revision?: string | number; members?: readonly BotGroupMemberView[]; disabled: boolean; onToggle: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const [loaded, setLoaded] = useState<Loaded | null>(null);

@@ -6041,6 +6041,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       delegationId: string,
     ): Promise<import('../shared/botDelegation').BotDelegationCancelResult> =>
       ipcRenderer.invoke('maker:bot-delegation:cancel', parentSessionId, delegationId),
+    traceBotDelegationNote: (
+      parentSessionId: string,
+      delegationId: string,
+      text: string,
+    ): Promise<import('../shared/botDelegation').BotDelegationNoteTraceResult> =>
+      ipcRenderer.invoke('maker:bot-delegation:note-trace', parentSessionId, delegationId, text),
     onBotDelegationChanged: fanOutBotDelegationChanged,
     getBotDirectMessageThread: (
       threadId: string,

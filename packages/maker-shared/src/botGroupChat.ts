@@ -330,6 +330,8 @@ export interface BotGroupPlanStepView {
   botName: string;
   task: string;
   status: BotGroupPlanStepStatus;
+  /** The step's latest hand-off message (a redo replaces it); absent where the host does not report it. */
+  resultMessageId?: string | null;
 }
 
 export interface BotGroupPlanView {
@@ -418,6 +420,12 @@ export interface BotGroupSummary {
   lastMessage: BotGroupLastMessage | null;
   /** Latest visible incoming message (Bot or another human), excluding self and runtime activity. Older hosts omit it. */
   lastReplyAt?: number;
+  /**
+   * ISO `createdAt` of the newest (up to 99) messages from someone else — Bots and other people,
+   * not this account, notices, round/plan endings or system events — oldest first. Derived from
+   * the messages the host already read. Older hosts omit it.
+   */
+  incomingMessageTimes?: string[];
   speakingBotIds: string[];
   /** The organizer while it works out a plan (sidebar 「正在安排」). */
   planningBotId: string | null;

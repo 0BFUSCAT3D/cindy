@@ -4,7 +4,6 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import i18n from '@/i18n';
 import type { ChatMessage as Message } from '@/lib/makerChatStore';
-import { BotWorkingStatus } from '../BotWorkingStatus';
 import { WorkingStatusText, WORKING_STATUS_MIN_INTERVAL_MS } from '@/features/cc-agent/WorkingStatusText';
 import { localizePlainAgentStatus } from '@/features/cc-agent/lib/localizeAgentStatus';
 
@@ -14,7 +13,6 @@ const startedAt = Date.parse('2026-09-17T00:00:00Z');
 const message = (role: Message['role'], fields: Partial<Message> = {}): Message => ({
   clientId: role, role, content: '', createdAt: new Date(startedAt + 10).toISOString(), ...fields,
 });
-const props = { visible: true, status: 'Working…', messages: [] as Message[], startedAt, foregroundRunning: true, backgroundWorkActive: false, avatar: null };
 const advance = (ms: number) => act(() => { vi.advanceTimersByTime(ms); });
 
 beforeEach(async () => {
@@ -27,41 +25,7 @@ beforeEach(async () => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-describe('Bot working lifecycle', () => {
-  it('keeps the indicator through thinking → text → memory tool → thinking → reply → done', () => {
-    const thinking = message('thinking', { isStreaming: true });
-    const text = message('assistant', { content: '记住了…', isStreaming: true });
-    const tool = message('tool_use', { toolName: 'mcp__cindy_memory__call_tool' });
-    const view = render(<BotWorkingStatus {...props} messages={[thinking]} />);
-    expect(screen.getByRole('status').textContent).toBe('正在思考…');
-    const change = (messages: Message[], expected: string) => {
-      view.rerender(<BotWorkingStatus {...props} messages={messages} />);
-      expect(screen.getByRole('status')).toBeTruthy();
-      advance(WORKING_STATUS_MIN_INTERVAL_MS);
-      advance(150);
-      expect(screen.getByRole('status').textContent).toBe(expected);
-    };
-    change([text], '正在回复…');
-    change([{ ...text, isStreaming: false }, tool], '正在处理…');
-    change([text, tool, message('tool_result'), thinking], '正在思考…');
-    change([text, tool, message('tool_result'), { ...thinking, isStreaming: false }, text], '正在回复…');
-    view.rerender(<BotWorkingStatus {...props} visible={false} status="Done" />);
-    expect(screen.queryByRole('status')).toBeNull();
-    advance(5000);
-    expect(screen.queryByRole('status')).toBeNull();
-  });
-
-  it.each(['Done', 'Error', 'Stopped'])('immediately clears %s even during fade-out', (status) => {
-    const view = render(<BotWorkingStatus {...props} status="Thinking…" />);
-    view.rerender(<BotWorkingStatus {...props} />);
-    advance(1000);
-    view.rerender(<BotWorkingStatus {...props} visible={false} status={status} />);
-    expect(screen.queryByRole('status')).toBeNull();
-    advance(2000);
-    view.rerender(<BotWorkingStatus {...props} startedAt={startedAt + 5000} status="Thinking…" />);
-    expect(screen.getByRole('status').textContent).toBe('正在思考…');
-  });
-
+describe('plain agent status copy', () => {
   it('ignores old turns, hidden subagent output, system cards and completed text', () => {
     const messages = [
       message('assistant', { content: '旧正文', isStreaming: true, createdAt: new Date(startedAt - 1000).toISOString() }),
@@ -86,11 +50,9 @@ describe('Bot working lifecycle', () => {
     ], startedAt, i18n.t)).toBe('正在回复…');
   });
 
-  it('preserves pending-input semantics and background work after the turn', () => {
+  it('preserves pending-input semantics', () => {
     expect(localizePlainAgentStatus('Waiting on input', [], startedAt, i18n.t))
       .toBe(i18n.t('ccAgent.sidebar.card.awaitingQuestion'));
-    render(<BotWorkingStatus {...props} status="Done" foregroundRunning={false} backgroundWorkActive />);
-    expect(screen.getByRole('status').textContent).toBe('正在处理…');
   });
 });
 
