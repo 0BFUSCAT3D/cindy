@@ -67,16 +67,6 @@ const PROJECT_SEARCH_MIN_COUNT = 5;
  */
 const PROJECT_LIST_MAX_HEIGHT_CLASS = 'max-h-[252px]';
 
-/** 还能继续滚动的一侧渐隐,配合半行露出提示列表未完。 */
-const SCROLL_FADE_PX = 24;
-
-function scrollFadeMask(fadeTop: boolean, fadeBottom: boolean): string | undefined {
-  if (!fadeTop && !fadeBottom) return undefined;
-  const top = fadeTop ? `transparent, #000 ${SCROLL_FADE_PX}px` : '#000, #000';
-  const bottom = fadeBottom ? `#000 calc(100% - ${SCROLL_FADE_PX}px), transparent` : '#000, #000';
-  return `linear-gradient(to bottom, ${top}, ${bottom})`;
-}
-
 export function filterFolderPickerOptions(
   options: readonly FolderPickerOption[],
   query: string,
@@ -190,7 +180,9 @@ export function FolderPickerPopover({
   const [selectionPending, setSelectionPending] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
   const projectSearchRef = useRef<HTMLInputElement>(null);
-  const projectScrollRef = useRef<HTMLDivElement>(null);
+  // 用 state 持有列表元素:内容经 Radix Portal 渲染,首个 commit 时还没挂进 DOM,
+  // 普通 ref 配依赖数组的 effect 会在元素出现前测量一次,之后列表不变就再也不测。
+  const [projectScrollEl, setProjectScrollEl] = useState<HTMLDivElement | null>(null);
   const [scrollFade, setScrollFade] = useState({ top: false, bottom: false });
   const showProjectSearch =
     isProjectPicker && effectiveProjectOptions.length >= PROJECT_SEARCH_MIN_COUNT;
@@ -206,7 +198,7 @@ export function FolderPickerPopover({
   }, [open]);
 
   const updateScrollFade = useCallback(() => {
-    const el = projectScrollRef.current;
+    const el = projectScrollEl;
     const next = el
       ? {
           top: el.scrollTop > 1,
@@ -214,12 +206,11 @@ export function FolderPickerPopover({
         }
       : { top: false, bottom: false };
     setScrollFade((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
-  }, []);
+  }, [projectScrollEl]);
 
   useLayoutEffect(() => {
-    if (!open) return;
     updateScrollFade();
-  }, [open, visibleProjectOptions, deviceScope?.status, updateScrollFade]);
+  }, [visibleProjectOptions, deviceScope?.status, updateScrollFade]);
 
   const handleSelectPath = async (
     folderPath: string,
@@ -435,7 +426,7 @@ export function FolderPickerPopover({
                     value={projectQuery}
                     onChange={(e) => {
                       setProjectQuery(e.target.value);
-                      if (projectScrollRef.current) projectScrollRef.current.scrollTop = 0;
+                      if (projectScrollEl) projectScrollEl.scrollTop = 0;
                     }}
                     onKeyDown={(e) => {
                       // 弹层经 portal 渲染,React 事件仍会冒泡到所在的输入区;搜索框的按键只归它自己。
@@ -461,15 +452,13 @@ export function FolderPickerPopover({
               </div>
             )}
             <div
-              ref={projectScrollRef}
+              ref={setProjectScrollEl}
               data-folder-picker-scroll="true"
               onScroll={updateScrollFade}
-              style={{
-                maskImage: scrollFadeMask(scrollFade.top, scrollFade.bottom),
-                WebkitMaskImage: scrollFadeMask(scrollFade.top, scrollFade.bottom),
-              }}
               className={cn(
                 'pending-queue-scroll -mr-2 overflow-x-hidden overflow-y-auto overscroll-contain pr-2',
+                scrollFade.top && 'folder-picker-fade-top',
+                scrollFade.bottom && 'folder-picker-fade-bottom',
                 PROJECT_LIST_MAX_HEIGHT_CLASS,
               )}
             >
