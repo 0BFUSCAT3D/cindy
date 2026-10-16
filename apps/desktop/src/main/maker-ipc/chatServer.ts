@@ -421,6 +421,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
    */
   const generations = new Map<string, number>();
   const generation = (roomId: string) => generations.get(roomId) ?? 0;
+  let snapshotConnection = 0;
   const snapshots = new Map<string, { value: Snapshot; generation: number; at: number }>();
   const summaries = new Map<string, { key: string; value: BotGroupDetail; at: number }>();
   const invalidate = (roomId: string) => {
@@ -812,8 +813,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           memberJoinedClaims = true;
           reconnectDelay = 500; connected = true;
           threads.reset();
-          // Subscription replay and list sync may lag behind ready. Retire cached state
-          // now; advancing the generation also fences reads started before this connection.
+          // Replay and list sync may lag behind ready. Fence all snapshot reads,
+          // including rooms whose first read has not reached subscribe yet.
+          snapshotConnection += 1;
+          snapshots.clear();
           for (const roomId of rooms.keys()) invalidate(roomId);
           ws.send(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '0' }));
           for (const [roomId, cursor] of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
@@ -890,10 +893,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   async function readSnapshot(roomId: string) {
     id.parse(roomId); await ensureRegistered();
     const read = generation(roomId);
+    const connection = snapshotConnection;
     const value = await api<Snapshot>(`/conversations/${roomId}/snapshot`);
     if (value.room.dissolved_at) retirePlanning(roomId);
-    // Only an answer no change notice has overtaken may be reused.
-    if (current() && generation(roomId) === read) snapshots.set(roomId, { value, generation: read, at: Date.now() });
+    // A prior connection or room change makes this answer ineligible for reuse.
+    if (current() && snapshotConnection === connection && generation(roomId) === read)
+      snapshots.set(roomId, { value, generation: read, at: Date.now() });
     return value;
   }
   async function snapshot(roomId: string) {

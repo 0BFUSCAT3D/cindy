@@ -2071,7 +2071,13 @@ describe('Chat Server result delivery and refresh', () => {
       expect(pushes()).toBe(1);
     });
 
-    it.each([false, true])('uses current members after reconnect before list sync or replay finishes (late snapshot: %s)', async (lateSnapshot) => {
+    it.each([
+      ['cached room', false, false],
+      ['late read of subscribed room', true, false],
+      ['late read of unsubscribed room', true, true],
+    ] as const)('uses current members after reconnect before list sync or replay finishes (%s)', async (_label, lateSnapshot, untracked) => {
+      const targetRoom = untracked ? '10000000-0000-4000-8000-000000000002' : roomId;
+      const targetSnapshot = () => ({ body: { ...snapshotOf().body, room: room(targetRoom) } });
       const base = fixture.handle.getMockImplementation()!;
       let holdList = false;
       let finishList!: () => void;
@@ -2082,20 +2088,21 @@ describe('Chat Server result delivery and refresh', () => {
         if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { conversationListStateVersion: 1 } } };
         if (route.startsWith('/conversation-list-state?')) return holdList
           ? new Promise(resolve => { finishList = () => resolve({ body: [] }); }) : { body: [] };
-        if (route.endsWith('/snapshot')) {
+        if (route === `/conversations/${targetRoom}/snapshot`) {
           if (holdSnapshot) {
             holdSnapshot = false;
-            return new Promise(resolve => { finishSnapshot = () => resolve(snapshotOf()); });
+            return new Promise(resolve => { finishSnapshot = () => resolve(targetSnapshot()); });
           }
-          if (newMembers) return { body: { ...snapshotOf().body,
+          if (newMembers) return { body: { ...targetSnapshot().body,
             members: [selfMember, { ...botMember, id: peerId, name: 'New teammate' }] } };
         }
         return base(route, method, data);
       });
       const previous = await live();
+      if (untracked) expect(vi.mocked(previous.send).mock.calls.some(([raw]) => String(raw).includes(targetRoom))).toBe(false);
       previous.emit('close');
       holdSnapshot = lateSnapshot;
-      const oldRead = lateSnapshot ? service.getGroup(roomId) : undefined;
+      const oldRead = lateSnapshot ? service.getGroup(targetRoom) : undefined;
       await vi.advanceTimersByTimeAsync(500);
       holdList = true;
       newMembers = true;
@@ -2105,9 +2112,10 @@ describe('Chat Server result delivery and refresh', () => {
       if (lateSnapshot) { finishSnapshot(); await oldRead; }
       deps.decidePlan = vi.fn(() => new Promise(() => {})) as typeof deps.decidePlan;
       const from = fixture.handle.mock.calls.length;
-      expect(await send('reconnect-members')).toMatchObject({ ok: true });
+      expect(await service.sendMessage({ groupId: targetRoom, text: 'Make a draft', clientId: 'reconnect-members',
+        mentions: { all: false, botIds: [] } })).toMatchObject({ ok: true });
       await vi.advanceTimersByTimeAsync(0);
-      expect(routesSince(from)).toContain(`GET /conversations/${roomId}/snapshot`);
+      expect(routesSince(from)).toContain(`GET /conversations/${targetRoom}/snapshot`);
       expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({
         organizerName: 'New teammate', members: [{ botId: peerId, name: 'New teammate', description: '' }],
       }), expect.any(AbortSignal));
