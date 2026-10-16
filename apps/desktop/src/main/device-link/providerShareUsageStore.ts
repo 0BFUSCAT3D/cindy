@@ -63,6 +63,16 @@ export interface ProviderShareMemberDailyUsage {
   days: Array<ProviderShareModelUsage & { day: string }>;
 }
 
+export interface ProviderShareUsageHistoryOptions {
+  /**
+   * 最多展开多少条按电脑拆分后的明细。按日期从新到旧遍历原始行，
+   * 防止一个长期账本在生成回包前膨胀成数百万条中间对象。
+   */
+  maxRows?: number;
+  /** 仅展开仍在当前分享里的成员；JSON 编码的 [shareId, memberId]。 */
+  memberKeys?: ReadonlySet<string>;
+}
+
 /** 账本用的本地日期(YYYY-MM-DD)。 */
 export function providerUsageLocalDay(at: number): string {
   const date = new Date(at);
@@ -267,17 +277,43 @@ export function createProviderShareUsageStore(filePath: string, options: { now?:
      * 按受邀者、按天的明细(只含 shareIds 里的分享)：「用量」块在界面上按时间段、组内电脑筛选。
      * 每天按(Agent、供应商、模型、组内电脑)分行，组内电脑的拆法与 query 相同；新的日子在前。
      */
-    history(shareIds: ReadonlySet<string>): ProviderShareMemberDailyUsage[] {
+    history(shareIds: ReadonlySet<string>, options: ProviderShareUsageHistoryOptions = {}): ProviderShareMemberDailyUsage[] {
       const members = new Map<string, ProviderShareMemberDailyUsage>();
-      for (const row of load().values()) {
-        if (!shareIds.has(row.shareId)) continue;
+      const maxRows = options.maxRows === undefined
+        ? Number.POSITIVE_INFINITY
+        : Number.isFinite(options.maxRows) ? Math.max(0, Math.floor(options.maxRows)) : 0;
+      let expandedRows = 0;
+      const sourceRows = [...load().values()]
+        .filter((row) => shareIds.has(row.shareId)
+          && (!options.memberKeys || options.memberKeys.has(JSON.stringify([row.shareId, row.memberId]))))
+        .sort((a, b) => b.day.localeCompare(a.day) || b.lastAt - a.lastAt);
+      const lastUsedAt = new Map<string, number>();
+      for (const row of sourceRows) {
+        const key = JSON.stringify([row.shareId, row.memberId]);
+        lastUsedAt.set(key, Math.max(lastUsedAt.get(key) ?? 0, row.lastAt));
+      }
+      for (const row of sourceRows) {
+        if (expandedRows >= maxRows) break;
         const memberKey = JSON.stringify([row.shareId, row.memberId]);
-        const member = members.get(memberKey) ?? { shareId: row.shareId, memberId: row.memberId, lastUsedAt: null, days: [] };
+        const member = members.get(memberKey) ?? {
+          shareId: row.shareId,
+          memberId: row.memberId,
+          lastUsedAt: lastUsedAt.get(memberKey) ?? null,
+          days: [],
+        };
         members.set(memberKey, member);
-        member.lastUsedAt = Math.max(member.lastUsedAt ?? 0, row.lastAt);
-        for (const [key, counters] of splitByMember(row)) {
+        const parts = splitByMember(row);
+        for (const [key, counters] of parts) {
+          if (expandedRows >= maxRows) break;
           member.days.push({ day: row.day, kind: row.kind, providerId: row.providerId, memberKey: key, model: row.model, ...counters });
+          expandedRows++;
         }
+      }
+      // 保留只有较早记录、因预算未展开到的成员，供管理页显示其最近使用时间。
+      for (const [memberKey, latest] of lastUsedAt) {
+        if (members.has(memberKey)) continue;
+        const [shareId, memberId] = JSON.parse(memberKey) as [string, string];
+        members.set(memberKey, { shareId, memberId, lastUsedAt: latest, days: [] });
       }
       for (const member of members.values()) {
         member.days.sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : b.turns - a.turns));

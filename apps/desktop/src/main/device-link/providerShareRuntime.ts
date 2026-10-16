@@ -526,9 +526,10 @@ export function trimProviderUsageHistory(history: ProviderUsageHistoryView): Pro
       }
     }
     const truncated = count < refs.length;
+    // 二次裁剪(估价后)若没有再删行，保留第一次裁剪已经记录的覆盖起点。
     const coverageStart = truncated && kept.length > 0
       ? kept.reduce((day, ref) => day < ref.day ? day : ref.day, kept[0]!.day)
-      : null;
+      : history.coverageStart;
     return {
       ...history,
       coverageStart,
@@ -566,15 +567,37 @@ export function trimProviderUsageHistory(history: ProviderUsageHistoryView): Pro
 async function usageHistory(providerId: string): Promise<ProviderUsageHistoryView> {
   const own = currentProviderPartyUsageStore().history(providerId);
   const shares = running ? getProviderShareHostSnapshot().filter((share) => share.providerId === providerId) : [];
-  const memberIds = new Set(shares.flatMap((share) => share.members.map((member) => `${share.shareId}\u0000${member.memberId}`)));
-  const members = (getProviderShareUsageStore()?.history(new Set(shares.map((share) => share.shareId))) ?? [])
-    .filter((member) => memberIds.has(`${member.shareId}\u0000${member.memberId}`));
+  const memberKeys = new Set(shares.flatMap((share) => share.members.map((member) => JSON.stringify([share.shareId, member.memberId]))));
+  // 多取一行作为裁剪哨兵，使上层知道历史未完整展开；删除的成员在展开前就排除。
+  const members = getProviderShareUsageStore()?.history(new Set(shares.map((share) => share.shareId)), {
+    maxRows: USAGE_HISTORY_MAX_ROWS + 1,
+    memberKeys,
+  }) ?? [];
+  const lastKnownNames = readLastKnownDeviceNames();
+  const history = trimProviderUsageHistory({
+    providerId,
+    todayKey: providerUsageLocalDay(Date.now()),
+    coverageStart: null,
+    self: {
+      ...own.self,
+      days: own.self.days.map((row) => ({ ...row, providerId, amount: null })),
+    },
+    relays: own.relays.map((relay) => ({
+      ...relay,
+      deviceName: getControllerDisplayName(relay.deviceId) ?? lastKnownNames[relay.deviceId] ?? null,
+      days: relay.days.map((row) => ({ ...row, providerId, amount: null })),
+    })),
+    members: members.map((member) => ({
+      ...member,
+      days: member.days.map((row) => ({ ...row, amount: null })),
+    })),
+  });
 
   const days = async (
-    rows: ReadonlyArray<Omit<ProviderUsageDayView, 'amount' | 'providerId'> & { providerId?: string | null; sdkCostUsd: number }>,
+    rows: ReadonlyArray<ProviderUsageDayView & { sdkCostUsd?: number }>,
   ): Promise<ProviderUsageDayView[]> =>
     Promise.all(rows.map(async (row) => {
-      const usage = { ...row, providerId: row.providerId === undefined ? providerId : row.providerId };
+      const usage = { ...row, sdkCostUsd: row.sdkCostUsd ?? 0 };
       return {
         day: usage.day,
         kind: usage.kind,
@@ -589,22 +612,15 @@ async function usageHistory(providerId: string): Promise<ProviderUsageHistoryVie
         amount: await estimate(usage),
       };
     }));
-  const lastKnownNames = readLastKnownDeviceNames();
   return trimProviderUsageHistory({
-    providerId,
-    todayKey: providerUsageLocalDay(Date.now()),
-    coverageStart: null,
-    self: { lastUsedAt: own.self.lastUsedAt, days: await days(own.self.days) },
-    relays: await Promise.all(own.relays.map(async (relay) => ({
-      deviceId: relay.deviceId,
-      deviceName: getControllerDisplayName(relay.deviceId) ?? lastKnownNames[relay.deviceId] ?? null,
-      lastUsedAt: relay.lastUsedAt,
+    ...history,
+    self: { ...history.self, days: await days(history.self.days) },
+    relays: await Promise.all(history.relays.map(async (relay) => ({
+      ...relay,
       days: await days(relay.days),
     }))),
-    members: await Promise.all(members.map(async (member) => ({
-      shareId: member.shareId,
-      memberId: member.memberId,
-      lastUsedAt: member.lastUsedAt,
+    members: await Promise.all(history.members.map(async (member) => ({
+      ...member,
       days: await days(member.days),
     }))),
   });

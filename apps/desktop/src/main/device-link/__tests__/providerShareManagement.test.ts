@@ -12,6 +12,7 @@ const host = vi.hoisted(() => ({
 const listProviders = vi.hoisted(() => vi.fn());
 const identityCard = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
+const usageStores = vi.hoisted(() => ({ ownHistory: vi.fn(), memberHistory: vi.fn(), pricing: vi.fn() }));
 
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.owner,
@@ -27,10 +28,15 @@ vi.mock('../../maker-host/remote-provider-access-store.js', () => ({ isRemotePro
 vi.mock('../../textClipboard.js', () => ({ rememberIssuedClipboardText: remember }));
 vi.mock('../../security/trustedAppRenderer.js', () => ({ assertTrustedAppRendererEvent: vi.fn() }));
 vi.mock('../../usage/ledgerCurrency.js', () => ({ currentLedgerCurrency: vi.fn() }));
-vi.mock('../../usage/modelPricing.js', () => ({ getGatewayModelPricing: vi.fn(), getModelPriceQuote: vi.fn() }));
+vi.mock('../../usage/modelPricing.js', () => ({ getGatewayModelPricing: usageStores.pricing, getModelPriceQuote: vi.fn() }));
 vi.mock('../../usage/turnCostCalculator.js', () => ({ computePriceQuoteTurnMoney: vi.fn(), normalizeModelIdForPricing: vi.fn() }));
-vi.mock('../../usage/providerPartyUsageStore.js', () => ({ currentProviderPartyUsageStore: vi.fn() }));
-vi.mock('../providerShareUsageStore.js', () => ({ getProviderShareUsageStore: vi.fn() }));
+vi.mock('../../usage/providerPartyUsageStore.js', () => ({
+  currentProviderPartyUsageStore: () => ({ history: usageStores.ownHistory }),
+}));
+vi.mock('../providerShareUsageStore.js', () => ({
+  getProviderShareUsageStore: () => ({ history: usageStores.memberHistory }),
+  providerUsageLocalDay: () => '2026-10-17',
+}));
 vi.mock('../settings-store.js', () => ({ readDeviceLinkSettings: () => ({ remoteControlEnabled: true }), readLastKnownDeviceNames: vi.fn() }));
 vi.mock('../providerShareApi.js', () => ({
   providerShareApi: api,
@@ -82,6 +88,8 @@ beforeEach(() => {
   api.setMember.mockResolvedValue({ status: 'removed' });
   host.refresh.mockResolvedValue(undefined);
   host.snapshot.mockReturnValue([{ requests: [{ requestId: 'r1' }], members: [{ memberId: 'm1' }] }]);
+  usageStores.ownHistory.mockReturnValue({ self: { lastUsedAt: null, days: [] }, relays: [] });
+  usageStores.memberHistory.mockReturnValue([]);
   startProviderShareRuntime(vi.fn());
 });
 
@@ -124,6 +132,23 @@ describe('provider share usage history wire budget', () => {
     expect(trimmed.self.days.length).toBeLessThan(rows.length);
     expect(Buffer.byteLength(JSON.stringify(trimmed), 'utf8')).toBeLessThanOrEqual(2 * 1024 * 1024 - 1_024);
     expect(trimmed.coverageStart).toBe('2026-10-17');
+  });
+
+  it('bounds ledger expansion and prices only the globally retained rows, preserving SDK costs and truncation', async () => {
+    const rawRows = Array.from({ length: 5_001 }, (_, index) => {
+      return { ...historyRow(index), sdkCostUsd: 0.25 };
+    });
+    usageStores.ownHistory.mockReturnValue({ self: { lastUsedAt: null, days: rawRows }, relays: [] });
+    host.snapshot.mockReturnValue([{ providerId: 'anthropic', shareId: 's', members: [{ memberId: 'm1' }] }]);
+    const result = await executeProviderShareManagementCommand({ action: 'usage-history', providerId: 'anthropic' }) as ProviderUsageHistoryView;
+    expect(usageStores.memberHistory).toHaveBeenCalledWith(new Set(['s']), {
+      maxRows: 5_001, memberKeys: new Set([JSON.stringify(['s', 'm1'])]),
+    });
+    expect(usageStores.pricing).toHaveBeenCalledTimes(5_000);
+    expect(result.self.days).toHaveLength(5_000);
+    expect(result.self.days[0]?.amount).toEqual({ amount: 0.25, currency: 'USD' });
+    expect(result.self.days[0]).not.toHaveProperty('sdkCostUsd');
+    expect(result.coverageStart).toBe('2026-10-17');
   });
 });
 

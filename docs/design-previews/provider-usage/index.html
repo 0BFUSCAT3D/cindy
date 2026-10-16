@@ -722,7 +722,7 @@
           ${selectHtml('party', '筛选使用方', state.party, partyOptions())}
           ${grouped() ? selectHtml('computer', '筛选组内电脑', state.computer, computerOptions()) : ''}
           ${selectHtml('range', '筛选用量时间范围', state.range, rangeOptions())}
-          <label class="datefield">日期<input type="date" id="date-input" max="${TODAY_KEY}" value="${selectedDay() ?? ''}" /></label>
+          <label class="datefield">日期<input type="date" id="date-input" max="${TODAY_KEY}" /></label>
         </div>
       </div>
       ${focus.length ? `<div class="focusline">正在看<span class="pill">${focus.map(esc).join(' · ')}</span>的用量<button type="button" class="btn link" data-action="clear">看全部</button></div>` : ''}
@@ -733,6 +733,8 @@
       ${grouped() ? renderComputers() : ''}
       ${renderModels()}
     `;
+    const dateInput = document.getElementById('date-input');
+    if (dateInput) dateInput.value = selectedDay() ?? '';
     document.getElementById('group-stub').hidden = !grouped();
   }
 
