@@ -768,21 +768,29 @@ const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s
  * arbitrary expressions or cross module boundaries.
  */
 function findRepoAnchorNames(code) {
+  const ts = typescript ??= requireDesktop('typescript');
+  const source = parseTestSource(ts, code);
+  const declarations = [];
+  const collect = node => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      declarations.push({ name: node.name.text, rhs: node.initializer.getText(source) });
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
   const names = new Set();
   let changed = true;
   while (changed) {
     changed = false;
-    const declarations = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/g;
-    for (const match of code.matchAll(declarations)) {
-      const rhs = match[2];
+    for (const { name, rhs } of declarations) {
       const identifiers = rhs.match(/\b[A-Za-z_$][\w$]*\b/g) ?? [];
       const pathFactory = /^\s*(?:new\s+)?(?:resolve|join|URL)\s*\(/.test(rhs);
       const directAnchor = /^\s*(?:__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s*\)|REPO_ROOT|repoRoot|desktopRoot)\b/.test(rhs);
       const alias = /^\s*[A-Za-z_$][\w$]*\s*$/.test(rhs);
       if ((directAnchor || pathFactory && (REPO_ANCHOR.test(rhs) || identifiers.some(identifier => names.has(identifier)))
         || alias && identifiers.some(identifier => names.has(identifier)))
-        && !names.has(match[1])) {
-        names.add(match[1]);
+        && !names.has(name)) {
+        names.add(name);
         changed = true;
       }
     }

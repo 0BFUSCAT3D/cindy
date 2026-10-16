@@ -315,6 +315,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			"const agentsRoot = resolve(__dirname, '..'); const source = readFileSync(resolve(agentsRoot, 'agents', 'index.ts'), 'utf8');",
 			{ sourceReads: 1 },
 		],
+		[
+			"multiline anchor bindings retain their complete initializer",
+			"const agentsRoot = resolve(\n __dirname, '..',\n); const mainRoot = join(\n agentsRoot, 'main',\n); const source = readFileSync(resolve(mainRoot, 'index.ts'), 'utf8');",
+			{ sourceReads: 1 },
+		],
+		[
+			"semicolon-free fixture declarations do not absorb a later repository anchor",
+			"const fixtureRoot = mkdtempSync(join(tmpdir(), 'fixture-'))\nconst agentsRoot = resolve(\n __dirname, '..',\n)\nconst source = readFileSync(resolve(fixtureRoot, 'index.ts'), 'utf8');",
+			{ sourceReads: 0 },
+		],
 		["domain object pause is not a real wait", "const meter = { pause(ms) {} }; meter.pause(1_000);", { realWaits: 0 }],
 		["domain object sleep is not a real wait", "const sleeper = { sleep(ms) {} }; sleeper.sleep(1_000);", { realWaits: 0 }],
 	];
