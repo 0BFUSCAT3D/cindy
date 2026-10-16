@@ -1647,6 +1647,11 @@ async function ensureOnlineForRequest(): Promise<void> {
 /** closeRemoteLink 的取消代次(per-device):翻代使在途建链等待在发送前失效。 */
 const openLinkCloseEpochs = new Map<string, number>();
 
+/** Long-lived consumers bind to this generation so later reads cannot undo an explicit close. */
+export function getRemoteLinkCloseEpoch(deviceId: string): number {
+  return openLinkCloseEpochs.get(deviceId) ?? 0;
+}
+
 /**
  * 控制端:向目标设备发起控制链路(link-open → link-accept)。
  *
@@ -1733,7 +1738,8 @@ export function closeRemoteLink(deviceId: string): void {
   //   3. 订阅重放收敛循环(翻代 + 清定时器);
   //   4. 在途建链(登记删除 + closeEpochs 翻代拦 park 中的等待);
   //   5. remoteInvoke / remoteSubscribe 在途调用(经 4 的代次在发送/重开前自败);
-  //   6. OAuth 授权事务与本机回调监听(翻代后在后续操作前自败)。
+  //   6. OAuth 授权事务与本机回调监听(翻代后在后续操作前自败);
+  //   7. MCP App View 的跨调用轮询与清理(绑定打开时的代次，翻代后自败)。
   // 新增任何 per-device 重试/恢复机制时必须同步登记到本清单。
   transportTimeoutReopen.cancel(deviceId);
   cancelSubscriptionReplay(deviceId);

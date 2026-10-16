@@ -1,5 +1,48 @@
 # 跨端协议兼容
 
+## MCP Apps
+
+标准 MCP Apps 使用 `io.modelcontextprotocol/ui` 扩展及官方 `2026-01-26` 协议。
+客户端新增独立 `maker:mcp-apps:v1` channel，复用 device-link 的同账号调用与错误协议，
+不改变已有 channel、relay 帧或服务端 schema；Mobile 原生承载与指纹影响见本节末尾。
+App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必须有 Main 写入的
+`agentMeta.mcpApp` 标记；旧客户端不解析该字段，仍可阅读原工具返回的文本。
+新控制端连接旧 Host 时拒绝该 channel 并提示更新执行电脑，不回退到执行任意 HTML。
+完整交互需要执行电脑和查看端都支持 MCP Apps；共享任务访客不开放该入口。
+共享访客的消息历史与推送只携带 `content.mcpAppHistory: { version: 1, title, text }`，
+不发送完整 `mcpApp`、调用参数、服务器身份、schema、structuredContent 或 View-only `_meta`；
+`text` 仅来自结果的 text 块。同账号与本机继续读取完整记录，持久化数据不变。
+新查看端将摘要呈现为原有只读卡片；旧查看端不支持该摘要时不提供交互，完整只读显示需更新查看端。
+
+查看端只传标准 JSON-RPC 和界面环境；执行 Host 持有 MCP 连接、账号归属、工具可见性与
+审批决定。View 绑定 owner、task、card、caller 与配置版本，清空、回退、账号切换或配置
+撤销后旧操作失效。轮询可有界重试，工具调用、消息发送与创建申请不自动重放。
+远程外链动作单独传给控制端，在当前查看设备打开，不在执行电脑打开。
+新远程查看端打开前通过同一 channel 的一次性 `authorize-link`（`viewId` / `linkId`）
+向执行 Host 复核当前卡片、账号、配置与未结束的外链请求，且只接受显式
+`{ authorized: true, validForMs: 30000 }` 回执。Host 原子认领请求并把原 10 秒待授权
+计时替换为 30 秒结果等待，拒绝重复认领；控制端用单调时钟把整个授权往返计入
+有效期，在打开浏览器前拒绝过期回包。期限内仍由 `link-result` 返回实际打开结果，
+结果丢失或 View 销毁会失败收尾。旧 Host 拒绝该增量操作、回执缺失或没有有效期时不打开外链，
+该次请求按失败收尾，完整外链交互需更新执行电脑；不降级为跳过授权，也不自动重放。
+旧查看端可继续连接新 Host 并忽略新增回执字段，完整打开前复核需查看端更新；
+没有修改既有请求字段、channel、权限范围或原生指纹。
+兼容矩阵、可选能力声明与验证入口见 [MCP Apps 接入](../mcp-apps.md)。
+Desktop 远程卡片复用查看端 Main 验证真实 frame 的通道；本机 IPC 的 `deviceId` 只选择
+目标，不跨 device-link 传递。Main 保存远端 View 绑定，顶层 Renderer 只提交界面控制，
+不能通过通用 `deviceLink.invoke` 发送 MCP Apps RPC，也不能提供 HTML 或指定 frame 的
+目标 View。新查看端 Main 可连接既有 v1 Host，外链仍要求 `authorize-link` 明确回执；
+Mobile 和旧查看端的 wire 保持原样，完整 frame 边界需更新 Desktop 查看端。
+没有新增 channel、allowlist、relay 或原生配置。回归见 `remoteViews.test.ts`。
+本机与远控 Desktop 的 open IPC 只返回 `viewId`、`transport: "sandbox"` 与 `prefersBorder`，
+用于同版本 Main/Renderer 切换到 Main 验证真实 frame 的直连通道。凭证读取的 HTML、CSP 与
+资源策略只由 Main 供给隔离 frame，不进入顶层 Renderer。该描述符不向远程设备返回；
+Mobile 和 Desktop Main 之间的远程 v1 仍传完整文档，原有 channel 不变。Mobile 在原生
+HTML 资源模块增加独立 App 资源额度和内联承载视图，
+以不同来源隔离 proxy/App，并保留卸载后的有界 teardown；这改变 iOS/Android runtime
+fingerprint，须遵守 [冷更边界](mobile-development.md#原生配置与-runtime-fingerprint冷更边界)。
+旧 Mobile binary 保留卡片文本并提示更新手机，不回退到同源或 opaque-origin srcdoc。
+
 > **状态**：权威开发规则（authoritative）
 > **读取时机**：修改插件分发来源边界、device-link 协议／relay／隧道 payload／IPC
 > allowlist，或任何改动客户端与服务端之间 wire protocol 的地方之前

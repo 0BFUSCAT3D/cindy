@@ -1,4 +1,5 @@
 import { PluginCardActions } from '@/plugins/PluginCardActions';
+import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
 import { RichContentRuntime } from './richContentRuntime';
 import { MessageListVisibility, MessageListVisibilityContext, useMessageListItemVisible } from './messageListVisibility';
@@ -3272,13 +3273,13 @@ function SourceDeviceLabel({
 /** 插件任务派发的消息:气泡外的来源标签;与气泡内的本轮插件调用头(PluginInvocationHeader)是两回事。 */
 function SourcePluginLabel({ align, plugin }: { align: 'user' | 'agent'; plugin: MessageSourcePlugin }) {
   const { colors } = useTheme();
-  const { t, i18n: i18nInstance } = useTranslation();
+  const { i18n: i18nInstance } = useTranslation();
   const label = useMemo(() => sourcePluginLabel(plugin), [plugin, i18nInstance.language]);
   return (
     <SourceLabelWithId
       align={align}
       icon={<Ghost color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
-      idText={t('message.renderer.sourcePluginId', { id: plugin.pluginId })}
+      idText={sourceIdText({ sourcePlugin: plugin })}
       label={label}
       testID="message.sourcePlugin"
     />
@@ -3817,7 +3818,11 @@ function MessageBubble({
           ) : null}
         </View>
       ) : null}
-      {item.message.systemCardType ? (
+      {item.message.systemCardType === 'mcp-app' ? (
+        <ViewabilityGatedMcpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
+          clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? '')}
+          fallbackText={String(item.message.systemCardData?.fallbackText ?? '')} />
+      ) : item.message.systemCardType ? (
         <MobileSystemCard
           autoResumeInFlight={isMobileAutoResumeRowInFlight({
             isContinuationTurnOwner: clientId === actions.continuationTurnClientId,
@@ -5613,6 +5618,13 @@ function OrcaCollabCard({ card, screenWidth, blockKey }: {
     </CollabCardShell>
   );
 }
+
+const ViewabilityGatedMcpAppCard = memo(function ViewabilityGatedMcpAppCard(
+  props: Omit<ComponentProps<typeof McpAppCard>, 'active'>,
+) {
+  const heavyContentVisible = useContext(MessageHeavyContentVisibilityContext);
+  return <McpAppCard {...props} active={heavyContentVisible} />;
+});
 
 const ViewabilityGatedMermaidDiagram = memo(function ViewabilityGatedMermaidDiagram({
   source,

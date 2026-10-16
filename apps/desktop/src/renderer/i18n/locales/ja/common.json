@@ -11400,6 +11400,7 @@
       "pluginSent": "プラグインから送信",
       "pluginViewDetail": "プラグインを表示",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "セッション ID：{{id}}",
         "teammate": "仲間 ID：{{id}}",
         "automation": "自動化 ID：{{id}}",
@@ -16211,5 +16212,16 @@
     "offerExpired": "アカウントまたはリセットの状態が変わりました。使用量を更新してからリセットを使用してください。",
     "resetFailed": "リセットの結果を確認できませんでした。使用量を更新して、利用枠が回復したか確認してください。",
     "limitAction": "リセットを使用 · 残り {{count}} 回"
+  },
+  "mcpApps": {
+    "sharedTaskReadOnly": "このカードを操作できるのはセッションのオーナーだけです。",
+    "retry": "再読み込み",
+    "loadFailed": "アプリを読み込めませんでした。接続を確認して再読み込みしてください。",
+    "updateRequired": "このコンピューターはまだ MCP Apps に対応していません。このコンピューターの Cindy を更新してから、もう一度お試しください。",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "$t(mcpApps.appName)「{{name}}」から送信",
+    "serverId": "MCP サーバー ID：{{id}}",
+    "exitFullscreen": "全画面表示を終了"
   }
 }

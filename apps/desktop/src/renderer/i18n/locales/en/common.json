@@ -11445,6 +11445,7 @@
       "pluginSent": "Sent by plugin",
       "pluginViewDetail": "View plugin",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "Session ID: {{id}}",
         "teammate": "Teammate ID: {{id}}",
         "automation": "Automation ID: {{id}}",
@@ -16271,5 +16272,16 @@
     "offerExpired": "The account or reset offer changed. Refresh usage before resetting.",
     "resetFailed": "Could not confirm the reset result. Refresh usage to check whether limits were restored.",
     "limitAction": "Use Reset · {{count}} Available"
+  },
+  "mcpApps": {
+    "sharedTaskReadOnly": "Only the session owner can interact with this card.",
+    "retry": "Reload",
+    "loadFailed": "The app could not load. Check the connection and reload.",
+    "updateRequired": "This computer does not support MCP Apps yet. Update Cindy on that computer and try again.",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
+    "serverId": "MCP Server ID: {{id}}",
+    "exitFullscreen": "Exit Fullscreen"
   }
 }

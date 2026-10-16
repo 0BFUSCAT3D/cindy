@@ -11400,6 +11400,7 @@
       "pluginSent": "플러그인에서 보냄",
       "pluginViewDetail": "플러그인 보기",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "세션 ID: {{id}}",
         "teammate": "동료 ID: {{id}}",
         "automation": "자동화 ID: {{id}}",
@@ -16211,5 +16212,16 @@
     "offerExpired": "계정 또는 초기화 상태가 변경되었습니다. 사용량을 새로고침한 후 초기화를 사용하세요.",
     "resetFailed": "초기화 결과를 확인할 수 없습니다. 사용량을 새로고침하여 한도가 복구되었는지 확인하세요.",
     "limitAction": "초기화 사용 · {{count}}회 남음"
+  },
+  "mcpApps": {
+    "sharedTaskReadOnly": "이 카드는 세션 소유자만 조작할 수 있습니다.",
+    "retry": "다시 불러오기",
+    "loadFailed": "앱을 불러오지 못했습니다. 연결을 확인한 후 다시 불러오세요.",
+    "updateRequired": "이 컴퓨터는 아직 MCP Apps를 지원하지 않습니다. 해당 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요.",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "$t(mcpApps.appName) “{{name}}”에서 전송",
+    "serverId": "MCP 서버 ID: {{id}}",
+    "exitFullscreen": "전체 화면 종료"
   }
 }
