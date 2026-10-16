@@ -119,6 +119,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			"import { x } from '../x.ts';\nvi.mock('../y.ts');\nreadFileSync(join(__dirname, 'fixtures', 'a.ts'));",
 			{ sourceReads: 0 },
 		],
+		...['swift', 'm', 'mm', 'h', 'cpp', 'rs', 'go', 'kt', 'java', 'cs', 'py'].map(extension => [
+			`native and other production source: ${extension}`,
+			`const source = readFileSync(new URL('../helper.${extension}', import.meta.url), 'utf8');`,
+			{ sourceReads: 1 },
+		]),
+		[
+			"data and binary resources are not production source",
+			"readFileSync(new URL('../data.json', import.meta.url)); readFileSync(new URL('../helper.bin', import.meta.url));",
+			{ sourceReads: 0 },
+		],
 		[
 			"multi-line source path declared before the read",
 			"const sourcePath = resolve(\n  __dirname,\n  '..',\n  'Image.tsx',\n);\nconst source = readFileSync(sourcePath, 'utf8');",
@@ -128,6 +138,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			"a separately executed test script is not a source read",
 			"const script = join(\n dirname(fileURLToPath(import.meta.url)),\n '../scripts/test-share.mjs',\n);\nspawnSync(process.execPath, [script]);\nreadFileSync(template, 'utf8');",
 			{ sourceReads: 0 },
+		],
+		[
+			"inline executable paths are not source reads",
+			"const installer = resolve(__dirname, '../install.sh'); spawnSync('bash', [resolve(__dirname, '../register.sh')]); readFileSync(logPath, 'utf8');",
+			{ sourceReads: 0 },
+		],
+		[
+			"a multi-line native source URL is read through its binding",
+			"const sourceUrl = new URL(\n '../helper.swift',\n import.meta.url,\n); const source = readFileSync(sourceUrl, 'utf8');",
+			{ sourceReads: 1 },
 		],
 		[
 			"source read through a typed helper",

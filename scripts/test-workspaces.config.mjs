@@ -96,6 +96,8 @@ const desktopE2eInclude = [
   'src/main/maker-host/__tests__/*.e2e.test.ts',
 ];
 const mobileGuardInclude = [
+  // CSP must be applied at the WebView and download call sites, not only in its helper.
+  'src/__tests__/htmlPreviewCsp.test.ts',
   'src/auth/__tests__/loginHandoffState.test.ts',
   'src/__tests__/accountDeletion.test.ts',
   'src/__tests__/androidSessionInteractionParity.test.tsx',
@@ -129,6 +131,18 @@ const mobileGuardInclude = [
 // in the explicit guard tier. Keeping an exact allowlist makes it impossible
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
+  'src/renderer/__tests__/orcaWorkerAttentionWatcherMount.test.ts',
+  'src/renderer/__tests__/userMessageSourceLabels.test.ts',
+  // These native host suites also protect cross-runtime privacy/permission
+  // and packaging contracts unavailable through a JS-only helper fake.
+  'src/main/__tests__/sessionDragReleaseNativeHost.test.ts',
+  'src/main/computer-permission-guide/__tests__/MacComputerPermissionGuideNativeHost.test.ts',
+  'src/main/cindy-brain/__tests__/libraryExtraDirGrantContract.test.ts',
+  'src/main/agent-island/__tests__/nativeContracts.test.ts',
+  'src/main/xbox-gamepad/__tests__/nativeContracts.test.ts',
+  // Native input caller authentication plus its production Forge/fuse boundary.
+  // macOS executes the native probe; other platforms enforce the packaging contract.
+  'src/main/remote-desktop/__tests__/macosInput.test.ts',
   'src/main/__tests__/authCaptchaIpcSecurity.test.ts',
   'src/main/__tests__/appearanceUtilityWindowRegistration.test.ts',
   'src/main/__tests__/authSameOwnerRefreshUi.test.ts',

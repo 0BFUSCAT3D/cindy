@@ -63,7 +63,7 @@ Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时
 
 每片的 worker 时间里，收集（导入模块）约 325–350 秒，执行测试 250–480 秒，环境初始化 105–127 秒，
 准备约 46 秒；后三项主要来自逐文件隔离。整体切换隔离方式会破坏正确性，所以改为逐个修掉开销最大的
-文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 449 个
+文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 438 个
 文件，只减不增，见 engineering-conventions.md §3.2「性能预算」）。修完 `codexProxyHost` 后，最慢的
 单个文件从 138 秒降到约 32 秒，不再由一个文件决定分片下限。
 
@@ -88,15 +88,20 @@ CI 时长仍要用首次 4 分片 CI 实测确认。
 
 - 初始删除 81 个文件（488 条用例）；独立审查发现其中包含缺少等价覆盖的权限、竞态、远程路由
   和设计契约，已恢复 30 个完整文件，并从 `homeUsageDashboardSource.test.ts` 保留账号隔离的 3 条
-  契约（含同步主干时保留的 `botChatSurface.test.ts`）。最终相对原始基线删除 49 个文件，
+  契约（含同步主干时保留的 `botChatSurface.test.ts`）。后续逐文件复核另保留分享脱敏的两条契约、
+  侧栏折叠时通知订阅归属的一条契约。最终相对原始基线删除 47 个文件，
   不能沿用最初的「488 条无效用例」结论。
   `FileTreeView.horizontalScroll.test.tsx` 真实挂载组件并断言可见宽度，已恢复。
+  IM 启动补全、空草稿水合与语音切换、预览误发送、远程扫描旧回包、图片标注误关闭、
+  Orca 隐藏／可见时的通知生命周期，改由真实生产入口或组件行为回归覆盖。
+  原生源码检测包含 Swift、C/C++、Rust 等；必要的跨原生协议、权限与生命周期契约进入
+  required guard，执行脚本和 JSON／二进制资源不作为源码字面量断言。
 - 207 个 PARTIAL 文件（2,874 条用例，其中约 991 条是静态或重复接线候选）保留：它们与续跑、设备链、
   账户切换、Pi、权限和竞速回归混在一起，只能在补上等价的生产入口测试后逐项替换，不能按字符串模式
   批量删除。
 - 最初迁移 27 个静态契约文件；审查恢复与扫描器补漏后，Desktop 和 Mobile 的跨文件安全、权限、
   主题或文案契约统一迁到各自 `guard` allowlist，由 CI 的 `pnpm test:guard` 执行。最终名单只在
-  `scripts/test-workspaces.config.mjs` 维护（Desktop 84、Mobile 28），由 runner 从 unit 排除；
+  `scripts/test-workspaces.config.mjs` 维护（Desktop 92、Mobile 29），由 runner 从 unit 排除；
   不要在 `apps/desktop/vitest.config.ts` 的项目 exclude 里重复排除，否则 guard 层自己也收集不到这些
   文件（2026-10-16 发现 29 个 allowlist 文件实际只跑了 2 个，已修复）。
 - 缺少 timing 的文件是 `src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts`。

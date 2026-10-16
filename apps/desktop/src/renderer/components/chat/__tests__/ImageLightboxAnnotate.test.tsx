@@ -95,6 +95,24 @@ afterEach(() => {
 });
 
 describe('ImageLightbox annotate mode', () => {
+  // Replaces the deleted source scan: a background misclick during annotation
+  // must preserve unsaved strokes (engineering-conventions §3.2, user data).
+  it('keeps unsaved strokes and the lightbox open after a background click', () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    render(<ImageLightbox src={SRC} onClose={onClose} annotationEdit={{ onSave: vi.fn() }} />);
+    loadImage(lightboxImage());
+    openAnnotate();
+    drawStroke({ x: 10, y: 10 }, { x: 90, y: 50 });
+    act(() => vi.advanceTimersByTime(200));
+    // FocusScope focuses the real overlay. Target that background itself so
+    // the test cannot pass merely because an image child swallowed the click.
+    fireEvent.click(document.activeElement!);
+    act(() => vi.advanceTimersByTime(250));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(committedPaths('stroke')).toHaveLength(1);
+  });
+
   it('draws with pointer events and saves normalized strokes', async () => {
     const onSave = vi.fn();
     render(

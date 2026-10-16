@@ -96,7 +96,7 @@
     },
     "apps/desktop/src/main/__tests__/lifecycle.test.ts": {
       "resetModules": 2,
-      "sourceReads": 3
+      "sourceReads": 2
     },
     "apps/desktop/src/main/__tests__/mainWindowBackgroundThrottling.test.ts": {
       "sourceReads": 3
@@ -106,9 +106,6 @@
     },
     "apps/desktop/src/main/__tests__/makerOrcaRoleMarking.test.ts": {
       "sourceReads": 2
-    },
-    "apps/desktop/src/main/__tests__/messagesAroundClientIdIpc.test.ts": {
-      "sourceReads": 3
     },
     "apps/desktop/src/main/__tests__/modelPricingPrewarmOrdering.test.ts": {
       "sourceReads": 1
@@ -141,8 +138,7 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/__tests__/sessionDragReleaseNativeHost.test.ts": {
-      "resetModules": 1,
-      "sourceReads": 2
+      "resetModules": 1
     },
     "apps/desktop/src/main/__tests__/sessionRuntimeFallbackIntent.test.ts": {
       "sourceReads": 1
@@ -183,9 +179,6 @@
     "apps/desktop/src/main/__tests__/windowsDiagnosticsTrayWiring.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/main/__tests__/windowsIconAssets.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/main/__tests__/windowsTaskbarNative.test.ts": {
       "resetModules": 2
     },
@@ -207,9 +200,6 @@
     },
     "apps/desktop/src/main/agent-island/__tests__/layoutPreferenceStore.test.ts": {
       "resetModules": 2
-    },
-    "apps/desktop/src/main/agent-island/__tests__/MacAgentIslandNativeHost.test.ts": {
-      "sourceReads": 2
     },
     "apps/desktop/src/main/agent-island/__tests__/service.test.ts": {
       "sourceReads": 1
@@ -255,8 +245,7 @@
       "resetModules": 1
     },
     "apps/desktop/src/main/computer-permission-guide/__tests__/MacComputerPermissionGuideNativeHost.test.ts": {
-      "resetModules": 1,
-      "sourceReads": 1
+      "resetModules": 1
     },
     "apps/desktop/src/main/computer-permission-guide/__tests__/switch-target.test.ts": {
       "resetModules": 1
@@ -274,13 +263,13 @@
       "resetModules": 1
     },
     "apps/desktop/src/main/device-link/__tests__/remoteInvokeSendGuard.test.ts": {
-      "sourceReads": 2
+      "sourceReads": 1
     },
     "apps/desktop/src/main/device-link/__tests__/sharedTaskAccountBoundary.test.ts": {
       "sourceReads": 1
     },
     "apps/desktop/src/main/doc-tools/__tests__/docsOutputWriterPackaging.test.ts": {
-      "sourceReads": 3
+      "sourceReads": 2
     },
     "apps/desktop/src/main/doc-tools/__tests__/readSheetProcessPackaging.test.ts": {
       "sourceReads": 1
@@ -394,7 +383,7 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/maker-ipc/__tests__/cindyMakeFeatureGate.test.ts": {
-      "sourceReads": 2
+      "sourceReads": 1
     },
     "apps/desktop/src/main/maker-ipc/__tests__/deferredRestartQueueDrain.test.ts": {
       "sourceReads": 1
@@ -415,13 +404,13 @@
       "sourceReads": 2
     },
     "apps/desktop/src/main/maker-ipc/__tests__/orcaModelSelectionIntent.test.ts": {
-      "sourceReads": 2
+      "sourceReads": 1
     },
     "apps/desktop/src/main/maker-ipc/__tests__/orcaProviderRoutingSnapshotWiring.test.ts": {
       "sourceReads": 2
     },
     "apps/desktop/src/main/maker-ipc/__tests__/orcaRemoteModelWindowSelection.test.ts": {
-      "sourceReads": 2
+      "sourceReads": 1
     },
     "apps/desktop/src/main/maker-ipc/__tests__/orcaTeamService.test.ts": {
       "sourceReads": 2
@@ -478,7 +467,7 @@
       "sourceReads": 2
     },
     "apps/desktop/src/main/mcp-integrations/__tests__/forgeIconConversionPackaging.test.ts": {
-      "sourceReads": 4
+      "sourceReads": 3
     },
     "apps/desktop/src/main/mcp-integrations/__tests__/pluginTaskHelperScope.test.ts": {
       "sourceReads": 1
@@ -490,7 +479,7 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/model-access/__tests__/gatewayKeyRotation.test.ts": {
-      "sourceReads": 2
+      "sourceReads": 1
     },
     "apps/desktop/src/main/plugin-market/__tests__/install-manifest-read.test.ts": {
       "sourceReads": 1
@@ -528,9 +517,6 @@
     "apps/desktop/src/main/remote-desktop/__tests__/linuxPackaging.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/main/remote-desktop/__tests__/macosInput.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/main/remote-desktop/__tests__/viewerDisplaySupport.test.ts": {
       "resetModules": 1
     },
@@ -553,13 +539,13 @@
       "sourceReads": 1
     },
     "apps/desktop/src/main/resource-usage-window/__tests__/windowSecurity.test.ts": {
-      "sourceReads": 5
+      "sourceReads": 4
     },
     "apps/desktop/src/main/reviewer/__tests__/reviewExternalInputWiring.test.ts": {
       "sourceReads": 2
     },
     "apps/desktop/src/main/reviewer/__tests__/reviewPdfProcessPackaging.test.ts": {
-      "sourceReads": 7
+      "sourceReads": 6
     },
     "apps/desktop/src/main/scheduler-host/__tests__/preRunHook.test.ts": {
       "realWaits": 1
@@ -630,9 +616,6 @@
     "apps/desktop/src/main/worktree/__tests__/precreatedCancellation.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/main/xbox-gamepad/__tests__/host.test.ts": {
-      "sourceReads": 5
-    },
     "apps/desktop/src/main/xbox-gamepad/__tests__/index.test.ts": {
       "resetModules": 1
     },
@@ -663,9 +646,6 @@
     "apps/desktop/src/renderer/__tests__/agentDeviceModelMemory.test.ts": {
       "resetModules": 2
     },
-    "apps/desktop/src/renderer/__tests__/agentIslandVisibleSessionRoute.test.ts": {
-      "sourceReads": 5
-    },
     "apps/desktop/src/renderer/__tests__/attachmentFileCard.test.ts": {
       "sourceReads": 1
     },
@@ -676,7 +656,7 @@
       "sourceReads": 4
     },
     "apps/desktop/src/renderer/__tests__/automationGeneratedSessions.test.ts": {
-      "sourceReads": 25
+      "sourceReads": 1
     },
     "apps/desktop/src/renderer/__tests__/automationGroupCollapse.test.ts": {
       "resetModules": 2
@@ -781,7 +761,7 @@
       "resetModules": 1
     },
     "apps/desktop/src/renderer/__tests__/hiddenAnimationGate.test.ts": {
-      "sourceReads": 2
+      "sourceReads": 1
     },
     "apps/desktop/src/renderer/__tests__/historyPrefetch.test.ts": {
       "sourceReads": 1
@@ -964,9 +944,6 @@
     },
     "apps/desktop/src/renderer/__tests__/selectedMachineOwnerState.test.ts": {
       "resetModules": 1
-    },
-    "apps/desktop/src/renderer/__tests__/selectionQuoteUserMessage.test.ts": {
-      "sourceReads": 3
     },
     "apps/desktop/src/renderer/__tests__/sentInlineAtomBody.test.tsx": {
       "sourceReads": 1
@@ -1181,9 +1158,6 @@
     "apps/mobile/src/__tests__/clientEndpointStartup.test.ts": {
       "resetModules": 12
     },
-    "apps/mobile/src/__tests__/codeHighlight.test.ts": {
-      "sourceReads": 1
-    },
     "apps/mobile/src/__tests__/CompanionMemoryPage.test.tsx": {
       "realWaits": 2
     },
@@ -1204,9 +1178,6 @@
     },
     "apps/mobile/src/__tests__/endpointManifestLoader.test.ts": {
       "resetModules": 2
-    },
-    "apps/mobile/src/__tests__/fingerprintConfig.test.ts": {
-      "sourceReads": 1
     },
     "apps/mobile/src/__tests__/incomingShareFeedbackScript.test.ts": {
       "resetModules": 1
@@ -1235,9 +1206,6 @@
     "apps/mobile/src/__tests__/mobileVoiceHistoryStore.test.ts": {
       "resetModules": 1
     },
-    "apps/mobile/src/__tests__/newSession.test.ts": {
-      "sourceReads": 1
-    },
     "apps/mobile/src/__tests__/outboxHistoryCache.test.ts": {
       "realWaits": 1,
       "sourceReads": 1
@@ -1265,9 +1233,6 @@
     },
     "apps/mobile/src/debug/localDiagnostics.test.ts": {
       "resetModules": 1
-    },
-    "packages/design-tokens/src/__tests__/classification.test.ts": {
-      "sourceReads": 1
     },
     "packages/design-tokens/src/__tests__/zero-wiring.test.ts": {
       "sourceReads": 8

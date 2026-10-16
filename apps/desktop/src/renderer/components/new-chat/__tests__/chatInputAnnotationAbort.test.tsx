@@ -13,10 +13,17 @@ import type { ProviderView } from '@cindy/model-providers';
 import { sshNativeCodexProvider, sshModel } from '@/features/cc-agent/__tests__/sshModelFixtures';
 import type { AttachedFile } from '@/lib/fileTypes';
 import { ChatInput } from '../ChatInput';
+import { clearDraft, saveDraft } from '@/lib/composerDraftStore';
+import type { AtMentionPanel } from '../AtMentionPanel';
+import type { scanAtResources } from '@/lib/atResourceService';
+import type { ExtraDirsButton } from '../ExtraDirsButton';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), remoteProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
+  scan: vi.fn<typeof scanAtResources>(),
+  atPanel: null as ComponentProps<typeof AtMentionPanel> | null,
+  documentChanged: vi.fn(),
 }));
 
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -48,15 +55,19 @@ vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof impo
   return <span data-testid="model-selector">{modelId}</span>;
 } }));
 vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: () => ({ providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} }) }));
-vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: () => null }));
+vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: ({ open, onOpenChange, panel }: ComponentProps<typeof ExtraDirsButton>) => <><button aria-label="test-suggestions" onClick={() => onOpenChange?.(!open)} />{open && panel}</> }));
 vi.mock('../PermissionSelector', () => ({ PermissionSelector: () => <span data-testid="permission-selector" /> }));
 vi.mock('../NewGoalDialog', () => ({ NewGoalDialog: () => null }));
 vi.mock('../FolderPickerPopover', () => ({ FolderPickerPopover: () => null, addRecentFolder: vi.fn() }));
-vi.mock('../AtMentionPanel', () => ({ AtMentionPanel: () => null }));
+vi.mock('../AtMentionPanel', () => ({ AtMentionPanel: (props: ComponentProps<typeof AtMentionPanel>) => { h.atPanel = props; return null; } }));
+vi.mock('@/lib/atResourceService', async (original) => ({ ...await original<typeof import('@/lib/atResourceService')>(), scanAtResources: h.scan }));
 vi.mock('../SlashCommandPalette', () => ({ SlashCommandPalette: () => null }));
 vi.mock('@/voice-input/VoiceInputPointerHintLayer', () => ({ VoiceInputPointerHintLayer: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/voice-input/VoiceInputStatusNotice', () => ({ VoiceInputStatusNotice: () => null }));
 vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor | null) => {
+  // Attach before ChatInput's first hydration effect so an empty-document
+  // replacement on initial mount cannot hide from the regression assertion.
+  if (editor && editor !== h.editor) editor.on('transaction', ({ transaction }) => { if (transaction.docChanged) h.documentChanged(); });
   h.editor = editor;
   return { state: h.listening ? 'listening' : 'idle', isListening: h.listening, isBusy: h.listening, draftText: '', start: vi.fn(), stop: h.stop, cancel: vi.fn() };
 } }));
@@ -93,10 +104,103 @@ const annotatedImage: AttachedFile = {
 };
 
 beforeEach(() => {
+  h.editor = null;
+  h.documentChanged.mockClear();
+  h.listening = false;
+  h.atPanel = null;
+  h.scan.mockReset().mockResolvedValue({ success: true, items: [], truncated: false });
   window.electronAPI = api;
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
 });
-afterEach(() => { cleanup(); h.remoteProviders = []; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); clearDraft('composer-regression'); h.remoteProviders = []; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+function renderComposer(extra: Partial<ComponentProps<typeof ChatInput>> = {}) {
+  const attachmentState: ComponentProps<typeof ChatInput>['attachmentState'] = {
+    attachments: [], hasAttachments: false, addFiles: vi.fn(), addClipboardImage: vi.fn(),
+    rejections: [], dismissRejection: noOp, clearRejections: noOp, addFolderPath: noOp,
+    pendingFoldersVersion: 0, consumePendingFolders: () => [], addFileMention: noOp,
+    pendingFileMentionsVersion: 0, consumePendingFileMentions: () => [],
+    removeFile: noOp, updateFile: noOp, discardFiles: noOp, clearFiles: noOp, restoreFiles: files => [...files],
+  };
+  const props = { draftKey: 'composer-regression', deviceLinkDeviceId: null,
+    attachmentState,
+    hideRuntimeControls: true, showFolderPicker: false, disableAutofocus: true,
+    onSend: vi.fn().mockResolvedValue(true), ...extra };
+  const view = render(<ChatInput {...props} />);
+  return { ...view, props };
+}
+
+// Replaces the source-only guards with real editor transactions at the two
+// external-draft boundaries. Empty paragraph JSON is the minimal #720 input;
+// a document replacement would remap the live voice insertion anchor.
+it('does not replace the empty editor after an external empty-draft notification', async () => {
+  renderComposer();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  const changed = vi.fn();
+  h.editor!.on('transaction', ({ transaction }) => { if (transaction.docChanged) changed(); });
+  await act(async () => saveDraft('composer-regression', {
+    text: { type: 'doc', content: [{ type: 'paragraph' }] }, attachments: [],
+  }));
+  expect(changed).not.toHaveBeenCalled();
+  expect(h.editor!.state.selection.from).toBe(1);
+});
+
+it('does not rehydrate an empty stored document when voice busy state changes', async () => {
+  saveDraft('composer-regression', { text: { type: 'doc', content: [{ type: 'paragraph' }] }, attachments: [] });
+  const view = renderComposer();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  expect(h.documentChanged).not.toHaveBeenCalled();
+  const changed = vi.fn();
+  h.editor!.on('transaction', ({ transaction }) => { if (transaction.docChanged) changed(); });
+  h.listening = true;
+  view.rerender(<ChatInput {...view.props} />);
+  h.listening = false;
+  view.rerender(<ChatInput {...view.props} />);
+  expect(changed).not.toHaveBeenCalled();
+  expect(h.editor!.state.selection.from).toBe(1);
+});
+
+// A prompt preview hides the old draft. Its first key must only dismiss the
+// preview; dispatch tests without a preview cannot catch this accidental send.
+it('dismisses a preview on Enter without sending or changing the hidden draft', async () => {
+  const view = renderComposer();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>unsent draft</p>'); });
+  view.rerender(<ChatInput {...view.props} previewPrompt="preview suggestion" />);
+  expect(screen.getByText('preview suggestion')).toBeTruthy();
+  fireEvent.keyDown(h.editor!.view.dom, { key: 'Enter', code: 'Enter' });
+  expect(view.props.onSend).not.toHaveBeenCalled();
+  expect(h.editor!.getText()).toBe('unsent draft');
+  expect(screen.queryByText('preview suggestion')).toBeNull();
+});
+
+it('does not let a pending local resource scan repopulate an SSH composer', async () => {
+  let finish!: (value: Awaited<ReturnType<typeof scanAtResources>>) => void;
+  h.scan.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  const view = renderComposer({ initialWorkingDir: '/workspace' });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'test-suggestions' }));
+  await waitFor(() => expect(h.scan).toHaveBeenCalled());
+  h.atPanel = null;
+  view.rerender(<ChatInput {...view.props} remoteHostId="ssh-host" />);
+  // Synthetic + remains mounted for SSH, unlike the typed-@ panel. Require
+  // fresh ready props so a stale captured value cannot make this test pass.
+  const currentPanelState = () => h.atPanel?.state;
+  await waitFor(() => expect(currentPanelState()).toEqual({ kind: 'ready', items: [], truncated: false }));
+  await act(async () => finish({ success: true, items: [{ type: 'file', relPath: 'stale.txt', name: 'stale.txt' }], truncated: false }));
+  expect(currentPanelState()).toEqual({ kind: 'ready', items: [], truncated: false });
+});
+
+it('keeps a remote draft with no directory local-scan-free, but searches nonempty queries remotely', async () => {
+  renderComposer({ deviceLinkDeviceId: 'remote-device' });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  await act(async () => { h.editor!.commands.setContent('<p>@</p>'); h.editor!.commands.setTextSelection(2); });
+  await waitFor(() => expect(h.atPanel).not.toBeNull());
+  expect(h.scan).not.toHaveBeenCalled();
+  await act(async () => { h.editor!.commands.insertContent('needle'); });
+  await waitFor(() => expect(h.scan).toHaveBeenCalled());
+  expect(h.scan).toHaveBeenLastCalledWith('', expect.any(String), 2000, 'needle', 'remote-device', expect.objectContaining({ includeLocalContext: false, includeTaskHistory: true }));
+});
 
 it('restores text, attachments and strokes after an aborted annotated send', async () => {
   h.remoteProviders = [sshNativeCodexProvider([sshModel('remote-only')])];

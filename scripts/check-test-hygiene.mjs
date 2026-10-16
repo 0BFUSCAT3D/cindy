@@ -306,7 +306,9 @@ function countRealWaits(code, lines) {
 }
 
 const IMPORT_CONTEXT = /(?:\bfrom|\bimport|\brequire|\.mock|\.doMock|\.unmock|\.importActual|\.importMock|\.glob)\s*\(?\s*$/;
-const SOURCE_EXT = /\.(?:tsx?|mts|cts|css|mjs|cjs|jsx?)$/;
+const SOURCE_EXTENSION = '(?:tsx?|mts|cts|css|mjs|cjs|jsx?|swift|[cmh]|mm|cc|cpp|cxx|hh|hpp|hxx|rs|go|kts?|java|cs|py|rb|sh|bash|zsh|html|vue|svelte|scss|sass|less)';
+const SOURCE_EXT = new RegExp('\\.' + SOURCE_EXTENSION + '$', 'i');
+const SOURCE_LITERAL = new RegExp('\\.' + SOURCE_EXTENSION + '[\'"]', 'i');
 // Only anchors that point into the checkout count; generic names such as `root`
 // usually hold an mkdtemp() directory whose fake source files are test input.
 const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
@@ -363,14 +365,15 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
   const helperCall = prefix.match(/\b([A-Za-z_$][\w$]*)\s*\(\s*$/)?.[1];
   if (helperCall && sourceReadHelpers.has(helperCall)) return true;
   // resolve(__dirname, '..', 'Sidebar.tsx') or new URL('../x.ts', import.meta.url).
-  if (REPO_ANCHOR.test(line)) return true;
+  if (REPO_ANCHOR.test(line) && findEnclosingReadCall(code, match.index) >= 0) return true;
   // A separately declared sourcePath may be formatted over several lines before
   // it is passed to readFileSync. Keep that equivalent to the inline path form.
-  const pathStart = findEnclosingReadCall(code, match.index, /\b(?:resolve|join)\s*\(/g);
+  const pathStart = findEnclosingReadCall(code, match.index, /\b(?:resolve|join|URL)\s*\(/g);
   if (pathStart >= 0) {
-    const pathContext = code.slice(pathStart, match.index + match[0].length);
+    const pathEnd = code.indexOf(')', match.index + match[0].length);
+    const pathContext = code.slice(pathStart, pathEnd < 0 ? match.index + match[0].length : pathEnd + 1);
     const binding = code.slice(Math.max(0, pathStart - 150), pathStart)
-      .match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[A-Za-z_$][\w$]*\.)?$/)?.[1];
+      .match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:new\s+)?(?:[A-Za-z_$][\w$]*\.)?$/)?.[1];
     const readBinding = binding && new RegExp('\\breadFile(?:Sync)?\\s*\\(\\s*' + binding + '\\b').test(code);
     if (readBinding && REPO_ANCHOR.test(pathContext) && !/fixture/i.test(pathContext)) return true;
   }
@@ -381,11 +384,11 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
   if (callStart >= 0) {
     const callContext = code.slice(callStart, match.index + match[0].length);
     const previousContext = callContext.slice(0, -match[0].length);
-    const hasPriorSourceLiteral = /\.(?:tsx?|mts|cts|css|mjs|cjs|jsx?)['"]/.test(previousContext);
+    const hasPriorSourceLiteral = SOURCE_LITERAL.test(previousContext);
     if (/\n/.test(callContext) && !hasPriorSourceLiteral && !/[;{}]/.test(callContext) && REPO_ANCHOR.test(callContext) && !/fixture/i.test(callContext)) return true;
   }
   // readFileSync('../x.ts') reads relative to the test process, i.e. the checkout.
-  return /\breadFile(?:Sync)?\s*\(/.test(line) && (value.startsWith('./') || value.startsWith('../'));
+  return callStart >= 0 && (value.startsWith('./') || value.startsWith('../'));
 }
 
 /** Count unjustified rule hits in one unit test file. */
