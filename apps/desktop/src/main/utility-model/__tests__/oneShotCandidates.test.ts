@@ -316,6 +316,47 @@ describe('utility one-shot candidates', () => {
       expect(body).not.toHaveProperty('tools');
     });
 
+    it('turns Chat thinking off on the first fallback request', async () => {
+      fetchMock.mockResolvedValueOnce(response('{"verdict":"allow"}'));
+
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: true });
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+        model: 'small',
+        max_tokens: 384,
+        thinking: { type: 'disabled' },
+        reasoning_effort: 'minimal',
+        messages: [
+          { role: 'system', content: 'Review policy' },
+          { role: 'user', content: '<review_input>\nuser request and action\n</review_input>' },
+        ],
+      });
+    });
+
+    it('starts a Responses fallback at the lowest catalog effort, not a fixed low', async () => {
+      chainState.refs = ['cat:review-r:codex:graded'];
+      activeCatalog.mockReturnValue({ providers: [{
+        id: 'review-r', name: 'review-r', source: 'user', agents: ['codex'],
+        auth: { method: 'apiKey' },
+        routing: { codex: {
+          upstream: 'https://review-r.example/v1',
+          wireProtocol: 'openai-responses',
+          authStrategy: 'api-key-header',
+        } },
+        models: { codex: [{ id: 'graded', name: 'Graded', contextWindow: 100_000, efforts: ['high', 'medium'] }] },
+      }] } as never);
+      fetchMock.mockResolvedValueOnce({
+        ok: true, text: async () => JSON.stringify({ output_text: '{"verdict":"ask"}' }),
+      } as never);
+
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, providerId: 'review-r',
+      });
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('https://review-r.example/v1/responses');
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({ reasoning: { effort: 'medium' }, max_output_tokens: 384 });
+      expect(body).not.toHaveProperty('thinking');
+    });
+
     it('does not expand an exhausted custom chain into defaults or the gateway', async () => {
       readKey.mockReturnValue('gateway-key');
       readCustomKey.mockReturnValue(null);
