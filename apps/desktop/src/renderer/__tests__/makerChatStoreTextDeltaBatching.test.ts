@@ -2902,7 +2902,8 @@ describe('makerChatStore text delta batching', () => {
 
     onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-deferred' });
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+    // 横幅交给历史错误卡，但绑定留着：main 投影仍带着这次错误，重新点亮时要能关掉同一行。
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-deferred');
   });
 
   it('迟到的 deferred persist IPC 不得把 A 的 persistId 绑到下一轮 live error B', async () => {
@@ -3043,6 +3044,103 @@ describe('makerChatStore text delta batching', () => {
 
     onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-bg' });
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-bg');
+  });
+
+  // Orca Worker 的错误多在用户看着 Lead 时落库：横幅先交给历史错误卡，打开 Worker 时 main 投影
+  // 又把同一条错误点亮。点关闭必须标记那一行，切回或重载后尾部错误卡不能再出现。
+  it.each([
+    ['main 落库的普通错误', 'main'],
+    ['界面补写的 Key 失效错误', 'deferred'],
+  ] as const)('后台落库后被投影重新点亮的%s，点关闭仍标记同一行', async (_label, writer) => {
+    const message = LITELLM_INVALID_PROXY_TOKEN;
+    if (writer === 'main') {
+      onInputProjection?.(projection(SESSION_ID, { error: message }));
+      onEvent?.({
+        sessionId: SESSION_ID,
+        persistId: 'err-persist-worker',
+        event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
+      });
+    } else {
+      vi.mocked(window.electronAPI.modelAccess.retry).mockResolvedValueOnce({
+        state: 'failed',
+        source: null,
+        endpoint: null,
+        errorCode: 'NETWORK_ERROR',
+        accountTier: null,
+      });
+      input.persistTurnErrorDeferred.mockResolvedValueOnce('err-persist-worker');
+      onInputProjection?.(
+        projection(SESSION_ID, {
+          error: message,
+          recovery: { kind: 'active-turn', item: activeTurnRecoveryItem() },
+          errorRetryText: 'retry:user-client',
+        }),
+      );
+      emitGatewayProxyTokenFailure({
+        isTerminal: true,
+        reason: 'gateway-proxy-token-invalid',
+        message,
+      });
+    }
+    await flushPromises();
+    await flushPromises();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-worker');
+
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-worker' });
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+
+    // 打开 Worker / 任何一次投影推送：main 仍未处置这次错误。
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    makerChatStore.enterView(SESSION_ID);
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe(message);
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-worker');
+
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-worker');
+    expect(makerChatStore.getSnapshot(SESSION_ID).disposedErrorPersistId).toBe('err-persist-worker');
+    makerChatStore.leaveView(SESSION_ID);
+  });
+
+  it('看过后离开视图、再被投影点亮的错误，点关闭仍标记同一行', async () => {
+    const message = 'worker turn failed';
+    makerChatStore.enterView(SESSION_ID);
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    onEvent?.({
+      sessionId: SESSION_ID,
+      persistId: 'err-persist-viewed',
+      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
+    });
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-viewed' });
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe(message);
+
+    makerChatStore.leaveView(SESSION_ID);
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    makerChatStore.enterView(SESSION_ID);
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-viewed');
+    makerChatStore.leaveView(SESSION_ID);
+  });
+
+  it('投影清掉错误或新一轮启动后不再沿用旧绑定', () => {
+    const message = 'worker turn failed';
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    onEvent?.({
+      sessionId: SESSION_ID,
+      persistId: 'err-persist-old',
+      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
+    });
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-old' });
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-old');
+
+    onInputProjection?.(projection(SESSION_ID, { error: null }));
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
     expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
   });
 

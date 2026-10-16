@@ -4227,13 +4227,23 @@ function applyErrorPersistedDirtySignal(sessionId: string, persistId?: string): 
     _pendingErrorClearOnLeave.add(sessionId);
     return;
   }
-  setState(sessionId, (s) => ({
+  setState(sessionId, handOffPersistedLiveErrorToHistory);
+}
+
+/**
+ * 已落库的终态错误改由历史里的错误卡呈现：清掉 live 横幅并让历史重载，但保留
+ * errorPersistId。main 的输入投影仍带着这次错误(还没有人处置)，之后任何一次投影
+ * (打开任务、队列变化、协同派活等)都会把 live 横幅重新点亮；applyInputProjection
+ * 只在 error 仍在时沿用已有绑定。绑定若随横幅一起清掉，重新点亮的横幅点关闭就标不了
+ * dismissed，重载后尾部错误卡又出现(Orca Worker 的错误多在 Lead 视图里发生，最常见)。
+ * 绑定照旧由新一轮启动、投影 error 清空或新的 persistId 收掉。
+ */
+function handOffPersistedLiveErrorToHistory(s: SessionChatState): SessionChatState {
+  return {
     ...s,
     ...(s.historyLoaded ? { historyLoaded: false } : {}),
-    ...(s.error
-      ? { error: null, usageLimitRecovery: null, errorRetryText: null, errorPersistId: null }
-      : {}),
-  }));
+    ...(s.error ? { error: null, usageLimitRecovery: null, errorRetryText: null } : {}),
+  };
 }
 
 function leaveView(sessionId: string): void {
@@ -4250,13 +4260,7 @@ function leaveView(sessionId: string): void {
   _lastViewedAt.set(sessionId, Date.now());
   if (_pendingErrorClearOnLeave.has(sessionId)) {
     _pendingErrorClearOnLeave.delete(sessionId);
-    setState(sessionId, (s) => ({
-      ...s,
-      ...(s.historyLoaded ? { historyLoaded: false } : {}),
-      ...(s.error
-        ? { error: null, usageLimitRecovery: null, errorRetryText: null, errorPersistId: null }
-        : {}),
-    }));
+    setState(sessionId, handOffPersistedLiveErrorToHistory);
   }
   _trimMessagesIfNeeded();
   _softEvictIdleSessions();
