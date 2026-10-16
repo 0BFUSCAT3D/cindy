@@ -43,12 +43,23 @@ const ROOT_SOURCE_CONTRACTS = new Map([
   ['scripts/__tests__/brand-identity-sync.test.mjs', 'cross-runtime brand identity'],
   // Documented commands, required CI gates and locale-aware QA artifact wiring.
   ['scripts/__tests__/dev-docs-contract.test.mjs', 'developer/CI and QA artifact contracts'],
+  // Design inventory must agree with production entry points and shared matchers.
+  ['scripts/__tests__/design-inventory.test.mjs', 'design inventory cross-file contracts'],
+  // Locale declarations and diagnostic prose implement the terminology policy.
+  ['scripts/__tests__/glossary-rules.test.mjs', 'locale and terminology policy contracts'],
+  // Approved design exceptions are bound to exact production declarations.
+  ['scripts/__tests__/hardcoded-color-audit.test.mjs', 'design exemption and CI contracts'],
   // Dev startup must prepare every supported Agent runtime before it can launch.
   ['scripts/__tests__/ensure-agent-binaries.test.mjs', 'runtime preparation startup wiring'],
   // Restart scripts and app bootstrap must agree on isolation/process boundaries.
   ['scripts/__tests__/restart-desktop-remote.test.mjs', 'restart and bootstrap isolation contracts'],
   // Packaged notice generation and both application entry points must stay wired.
   ['scripts/__tests__/third-party-notices.test.mjs', 'cross-platform bundled license contracts'],
+]);
+// This explicit DB-tier suite uses frozen companion bytes as input to real
+// hash/manifest repair, not source-spelling assertions. Keep reload/wait checks.
+const DB_SOURCE_INPUTS = new Set([
+  'apps/desktop/src/main/localDb/__tests__/migrationCompatibility.test.ts',
 ]);
 // Reuse Desktop's declared parser to locate test/hook callbacks and local helpers.
 // No type checking or module loading is needed.
@@ -773,7 +784,7 @@ function findRepoAnchorNames(code) {
   const declarations = [];
   const collect = node => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      declarations.push({ name: node.name.text, rhs: node.initializer.getText(source) });
+      declarations.push({ name: node.name.text, initializer: node.initializer });
     }
     ts.forEachChild(node, collect);
   };
@@ -782,9 +793,16 @@ function findRepoAnchorNames(code) {
   let changed = true;
   while (changed) {
     changed = false;
-    for (const { name, rhs } of declarations) {
+    for (const { name, initializer } of declarations) {
+      const rhs = initializer.getText(source);
       const identifiers = rhs.match(/\b[A-Za-z_$][\w$]*\b/g) ?? [];
-      const pathFactory = /^\s*(?:new\s+)?(?:resolve|join|URL)\s*\(/.test(rhs);
+      let call = initializer;
+      while (ts.isParenthesizedExpression(call) || ts.isAsExpression(call) || ts.isNonNullExpression(call)) call = call.expression;
+      const callee = ts.isCallExpression(call) || ts.isNewExpression(call) ? call.expression : null;
+      const factoryName = callee && (ts.isIdentifier(callee) ? callee.text
+        : ts.isPropertyAccessExpression(callee) ? callee.name.text
+          : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : null);
+      const pathFactory = /^(?:resolve|join|URL)$/.test(factoryName ?? '');
       const directAnchor = /^\s*(?:__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s*\)|REPO_ROOT|repoRoot|desktopRoot)\b/.test(rhs);
       const alias = /^\s*[A-Za-z_$][\w$]*\s*$/.test(rhs);
       if ((directAnchor || pathFactory && (REPO_ANCHOR.test(rhs) || identifiers.some(identifier => names.has(identifier)))
@@ -1270,9 +1288,9 @@ export async function scanRepository(root = ROOT) {
   const counts = {};
   for (const file of files.sort()) {
     const rel = path.relative(root, file).split(path.sep).join('/');
-    // Only explicitly registered contracts may inspect application source;
-    // their reload/wait rules still run, just like workspace guard suites.
-    const result = scanTestSource(readFileSync(file, 'utf8'), { isGuard: guard.has(rel) || ROOT_SOURCE_CONTRACTS.has(rel) });
+    // Only explicitly registered contracts or frozen DB inputs may inspect
+    // application source; their reload/wait rules still run, like guard suites.
+    const result = scanTestSource(readFileSync(file, 'utf8'), { isGuard: guard.has(rel) || ROOT_SOURCE_CONTRACTS.has(rel) || DB_SOURCE_INPUTS.has(rel) });
     if (RULES.some((rule) => result[rule] > 0)) counts[rel] = result;
   }
   return counts;

@@ -321,6 +321,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ sourceReads: 1 },
 		],
 		[
+			"namespace path factories retain derived repository anchors",
+			"import path from 'node:path';\nconst agentsRoot = path.resolve(__dirname, '..');\nconst mainRoot = path['join'](agentsRoot, 'main');\nconst source = readFileSync(path.resolve(mainRoot, 'index.ts'), 'utf8');",
+			{ sourceReads: 1 },
+		],
+		[
+			"namespace factories do not make temporary fixture paths repository-derived",
+			"import * as path from 'node:path';\nconst fixtureRoot = path.resolve(tmpdir(), 'fixture');\nconst source = readFileSync(path.join(fixtureRoot, 'index.ts'), 'utf8');",
+			{ sourceReads: 0 },
+		],
+		[
 			"semicolon-free fixture declarations do not absorb a later repository anchor",
 			"const fixtureRoot = mkdtempSync(join(tmpdir(), 'fixture-'))\nconst agentsRoot = resolve(\n __dirname, '..',\n)\nconst source = readFileSync(resolve(fixtureRoot, 'index.ts'), 'utf8');",
 			{ sourceReads: 0 },
@@ -355,8 +365,19 @@ test("repository scan grants source exemptions only to explicit script contracts
 		fs.writeFileSync(path.join(root, "scripts", "__tests__", "ordinary.test.mjs"), appRead);
 		fs.writeFileSync(path.join(root, "scripts", "__tests__", "dev-docs-contract.test.mjs"),
 			appRead + "vi.resetModules(); setTimeout(done, 100);");
+		const designContracts = ["design-inventory.test.mjs", "glossary-rules.test.mjs", "hardcoded-color-audit.test.mjs"];
+		for (const file of designContracts) fs.writeFileSync(path.join(root, "scripts", "__tests__", file),
+			appRead + "vi.resetModules(); setTimeout(done, 100);");
+		const dbDir = path.join(root, "apps", "desktop", "src", "main", "localDb", "__tests__");
+		fs.mkdirSync(dbDir, { recursive: true });
+		fs.writeFileSync(path.join(dbDir, "migrationCompatibility.test.ts"),
+			appRead + "vi.resetModules(); setTimeout(done, 100);");
+		fs.writeFileSync(path.join(dbDir, "ordinary.test.ts"), appRead);
 		assert.deepEqual(await scanRepository(root), {
+			"apps/desktop/src/main/localDb/__tests__/migrationCompatibility.test.ts": { resetModules: 1, realWaits: 1, sourceReads: 0 },
+			"apps/desktop/src/main/localDb/__tests__/ordinary.test.ts": { resetModules: 0, realWaits: 0, sourceReads: 1 },
 			"scripts/__tests__/dev-docs-contract.test.mjs": { resetModules: 1, realWaits: 1, sourceReads: 0 },
+			...Object.fromEntries(designContracts.map(file => ["scripts/__tests__/" + file, { resetModules: 1, realWaits: 1, sourceReads: 0 }])),
 			"scripts/__tests__/ordinary.test.mjs": { resetModules: 0, realWaits: 0, sourceReads: 1 },
 			"scripts/__tests__/runner.test.mjs": { resetModules: 1, realWaits: 1, sourceReads: 1 },
 		});

@@ -662,9 +662,6 @@
     "apps/desktop/src/renderer/__tests__/markdownStrikethrough.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/renderer/__tests__/markdownTargetRendererContract.test.ts": {
-      "sourceReads": 3
-    },
     "apps/desktop/src/renderer/__tests__/memorySettingsStore.test.ts": {
       "resetModules": 1
     },

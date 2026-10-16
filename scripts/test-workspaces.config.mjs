@@ -217,6 +217,10 @@ const desktopGuardInclude = [
   'src/renderer/__tests__/orcaModelWindowSelection.test.ts',
   'src/renderer/__tests__/markdownRendererXdtAudio.test.ts',
   'src/renderer/__tests__/markdownDiffBlock.test.ts',
+  // Cross-file entry isolation and privileged-link propagation contracts;
+  // component rendering and cache-lease behavior remain in the unit tier.
+  'src/renderer/__tests__/resourceUsageEntryIsolation.test.ts',
+  'src/renderer/__tests__/markdownTargetRendererContract.test.ts',
   'src/renderer/__tests__/bulkSessionStatusRouting.test.ts',
   'src/renderer/__tests__/homeUsageDashboardSource.test.ts',
   'src/renderer/features/plugin/__tests__/unreadDotMotion.test.ts',
