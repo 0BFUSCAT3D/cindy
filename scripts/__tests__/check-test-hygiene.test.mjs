@@ -51,6 +51,11 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ realWaits: 1 },
 		],
 		[
+			"parent beforeEach runs after nested beforeAll",
+			"beforeEach(() => vi.useRealTimers()); describe('child', () => { beforeAll(() => vi.useFakeTimers()); it('real', () => setTimeout(done, 100)); });",
+			{ realWaits: 1 },
+		],
+		[
 			"multi-line real wait",
 			"await new Promise((resolve) => setTimeout(\n  resolve,\n  250,\n));",
 			{ realWaits: 1 },

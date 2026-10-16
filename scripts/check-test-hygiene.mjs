@@ -208,7 +208,8 @@ function timerStateAt(index, timerEvents, scopes) {
       .sort((a, b) => {
         const depthA = scopes.filter(s => s.kind === 'describe' && s.start < a.scope.start && a.scope.end < s.end).length;
         const depthB = scopes.filter(s => s.kind === 'describe' && s.start < b.scope.start && b.scope.end < s.end).length;
-        return depthA - depthB || (a.scope.kind === b.scope.kind ? a.event.index - b.event.index : a.scope.kind === 'beforeAll' ? -1 : 1);
+        if (a.scope.kind !== b.scope.kind) return a.scope.kind === 'beforeAll' ? -1 : 1;
+        return depthA - depthB || a.event.index - b.event.index;
       });
     for (const { event, scope } of hooks) {
       // An afterEach restoring real timers invalidates beforeAll-only setup
