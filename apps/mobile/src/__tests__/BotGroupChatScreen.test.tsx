@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
   alert: vi.fn(),
   confirm: vi.fn(),
   leave: vi.fn(),
+  focused: true,
+  closeSettings: null as null | (() => void),
   row: null as any,
   inputs: {} as Record<string, any>,
   teammates: { rows: [] as any[], loading: false, failed: false },
@@ -56,7 +58,7 @@ vi.mock('react-native', () => {
   };
 });
 vi.mock('expo-router', () => ({
-  useIsFocused: () => true,
+  useIsFocused: () => h.focused,
   Stack: { Screen: () => null },
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
@@ -117,7 +119,8 @@ vi.mock('@/session/HomeHeaderGlassButton', () => ({
   HomeHeaderGlassButton: ({ onPress, testID, disabled, children }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress }, children),
 }));
 vi.mock('@/session/CompanionSheet', () => ({
-  CompanionSheet: ({ visible, children, onClosed, testID }: any) => {
+  CompanionSheet: ({ visible, children, onClose, onClosed, testID }: any) => {
+    if (testID === 'botGroup.settings') h.closeSettings = onClose;
     const was = useRef(visible);
     useEffect(() => { if (was.current && !visible) onClosed?.(); was.current = visible; }, [visible]);
     return visible ? el('div', { 'data-testid': testID }, children) : null;
@@ -270,7 +273,7 @@ beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
-  h.platform.OS = 'ios'; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
+  h.platform.OS = 'ios'; h.focused = true; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = [];
   h.local = {
@@ -538,6 +541,21 @@ describe('group composer', () => {
       h.row.onSelectionChange({ nativeEvent: { selection: { start: text.length, end: text.length } } });
     });
   }
+
+  it.each([true, false])('locks an existing draft when dissolved without being archived (direct server %s)', async server => {
+    h.chat.server = server;
+    const live = group({ openPlan: null, archived: false });
+    await render(live);
+    await type('Unsent draft');
+    expect(h.row.editable).toBe(true);
+    expect(byId('botGroup.composer.send')?.disabled).toBe(false);
+    await render({ ...live, dissolvedAt: '2026-10-15T00:00:00.000Z' });
+    expect(h.row.editable).toBe(false);
+    expect(byId('botGroup.composer.send')?.disabled).toBe(true);
+    await click('botGroup.composer.send');
+    expect(h.chat.act).not.toHaveBeenCalled();
+    expect(node.textContent).toContain('好的，我看看');
+  });
 
   it('offers 所有人 first, inserts a picked teammate and sends the resolved mentions', async () => {
     await render(group({ openPlan: null }));
@@ -838,6 +856,89 @@ describe('group settings', () => {
     expect(byId('botGroup.settings')).not.toBeNull();
   }
 
+  it.each([true, false])('leaves after confirmed personal hide even when settings unmounts before the reply (direct=%s)', async direct => {
+    h.chat.server = direct;
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    expect(h.chat.act).toHaveBeenLastCalledWith('hide', undefined);
+    await render(null, 'missing');
+    expect(byId('botGroup.settings')).toBeNull();
+    expect(h.leave).not.toHaveBeenCalled();
+    await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('navigates only once when a personal hide completes before the list rerenders', async () => {
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])('leaves once for authoritative hide without a local action (direct=%s)', async direct => {
+    h.chat.server = direct;
+    await render(group({ serverBacked: true }));
+    h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+    expect(h.chat.act).not.toHaveBeenCalled();
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('does not navigate twice when the authoritative event precedes the local hide receipt', async () => {
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+    await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a hidden background page from navigating another route and leaves when focused again', async () => {
+    await render(group({ serverBacked: true }));
+    h.focused = false; h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).not.toHaveBeenCalled();
+    h.focused = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('resets lifecycle busy on reopen and keeps an old reply out of a new request', async () => {
+    const data = group({ serverBacked: true, supportsDissolve: true, revision: 1,
+      members: [{ botId: 'mimi', actorId: 'mimi', name: 'Mimi', avatar: '', avatarColor: '', status: 'active', isOwned: true, role: 'owner' }] });
+    let finishOld!: () => void, finishNew!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finishOld = () => resolve({ effects: [] }); }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishNew = () => resolve({ effects: [] }); }));
+    await openSettings(data);
+    await click('botGroup.settings.dissolve');
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(true);
+    await act(async () => h.closeSettings!());
+    await click('botGroup.settingsButton');
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(false);
+    await click('botGroup.settings.dissolve');
+    expect(h.chat.act).toHaveBeenCalledTimes(2);
+    await act(async () => { finishOld(); });
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(true);
+    await act(async () => { finishNew(); });
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(false);
+  });
+
+  it('does not navigate from an old hide acknowledgement after leaving the screen', async () => {
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    await act(async () => root.render(el('div')));
+    await act(async () => { finish(); });
+    expect(h.leave).not.toHaveBeenCalled();
+  });
+
   it('follows a remote rename on blur without saving an untouched name', async () => {
     await openSettings();
     await act(async () => { h.inputs['botGroup.settings.name'].onFocus(); });
@@ -896,8 +997,9 @@ describe('group settings', () => {
     expect(byId('botGroup.settings.addable')).toBeNull();
     await click('botGroup.settings.retry'); expect(refresh).toHaveBeenCalledOnce();
     expect(h.chat.act).not.toHaveBeenCalled();
-    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.archive');
-    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.archiveNote');
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.hide')?.disabled).toBe(true);
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.lifecycle.unavailable');
     expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
   });
 
@@ -962,26 +1064,27 @@ describe('group settings', () => {
     expect(byId('botGroup.settings.memberMenu.abu.action.remove:abu')?.disabled).toBe(true);
   });
 
-  it.each(['member', 'admin'] as const)('retains compatibility-entry leave for a server %s without granting archive', async (role) => {
-    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
-    data.members[0] = { ...data.members[0], isOwned: true, role };
+  it.each(['member', 'admin'] as const)('uses explicit leave for a server %s without granting archive or compatibility delete', async (role) => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsGroupLeave: true, revision: 5 });
+    data.members[0] = { ...data.members[0], actorId: 'human', isSelf: true, isOwned: true, role };
     await openSettings(data);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(role === 'admin');
     expect(byId('botGroup.settings.add')?.disabled).toBe(role !== 'admin');
-    expect(byId('botGroup.settings.delete')?.disabled).toBe(false);
-    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.delete');
-    await click('botGroup.settings.delete');
-    expect(h.chat.act).toHaveBeenCalledWith('delete', {});
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.leave')?.disabled).toBe(false);
+    await click('botGroup.settings.leave');
+    expect(h.chat.act).toHaveBeenCalledWith('leave', undefined);
     expect(h.leave).toHaveBeenCalledOnce();
   });
 
-  it('keeps compatibility leave disabled when the computer is offline', async () => {
-    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
-    data.members[0] = { ...data.members[0], isOwned: true, role: 'member' };
+  it('keeps explicit leave disabled when the computer is offline', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsGroupLeave: true, revision: 5 });
+    data.members[0] = { ...data.members[0], actorId: 'human', isSelf: true, isOwned: true, role: 'member' };
     h.chat.online = false;
     await openSettings(data);
-    expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
-    await click('botGroup.settings.delete');
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.leave')?.disabled).toBe(true);
+    await click('botGroup.settings.leave');
     expect(h.chat.act).not.toHaveBeenCalled();
   });
 

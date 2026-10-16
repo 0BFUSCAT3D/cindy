@@ -97,9 +97,12 @@ export function botGroupQuoteFromMessage(message: Pick<BotGroupMessageView,
   };
 }
 
-/** A main-timeline message that can be quoted: a real chat message that still exists. */
-export function isBotGroupMessageQuotable(message: Pick<BotGroupMessageView, 'kind' | 'deleted' | 'threadRootId' | 'authorKind'>): boolean {
-  return message.kind === 'message' && message.deleted !== true && !message.threadRootId && message.authorKind !== 'system';
+/**
+ * A main-timeline message that can be quoted: a real chat message that still exists. A thread
+ * share is not: its own text is only the card's fallback, never the reply it points at.
+ */
+export function isBotGroupMessageQuotable(message: Pick<BotGroupMessageView, 'kind' | 'deleted' | 'threadRootId' | 'authorKind' | 'threadShare'>): boolean {
+  return message.kind === 'message' && message.deleted !== true && !message.threadRootId && message.authorKind !== 'system' && !message.threadShare;
 }
 
 /** Language-neutral Markdown for clients that do not know the card. */

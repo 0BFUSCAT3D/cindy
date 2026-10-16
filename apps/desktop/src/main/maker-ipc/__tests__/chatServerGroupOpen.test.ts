@@ -66,7 +66,7 @@ import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupCh
 
 const selfId = '30000000-0000-4000-8000-000000000001';
 const rooms = Array.from({ length: 8 }, (_, index) => `10000000-0000-4000-8000-00000000000${index + 1}`);
-const room = (id: string) => ({ id, name: `Room ${id.slice(-1)}`, state: 'joined', response_mode: 'all', speaking_mode: 'auto',
+const room = (id: string) => ({ id, kind: 'group', name: `Room ${id.slice(-1)}`, state: 'joined', response_mode: 'all', speaking_mode: 'auto',
   created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z', revision: 1, archived: false });
 const message = { id: '50000000-0000-4000-8000-000000000001', seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
   content: [{ type: 'text', text: 'hello' }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null };
@@ -165,6 +165,7 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
     fixture.sockets[0].emit('message', JSON.stringify({ type: 'ready' }));
     expect(sent()).toContainEqual({ type: 'subscribe', scope: `conversation:${rooms[0]}`, after: '58' });
     // A reconnect still re-reads every followed room once.
+    await vi.advanceTimersByTimeAsync(0);
     expect(onChanged).toHaveBeenCalledWith({ groupId: rooms[0], change: 'messages' }, undefined);
   });
 

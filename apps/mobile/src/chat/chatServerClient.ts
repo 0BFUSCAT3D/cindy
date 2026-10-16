@@ -1,3 +1,4 @@
+import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** The existing Chat Server HTTP contract; no device-link or executor registration. */
 import { readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
 import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
@@ -6,7 +7,7 @@ import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 import i18next from 'i18next';
 
 export interface ChatRoom {
-  id: string; name: string; state?: string; kind: string; archived: boolean;
+  id: string; name: string; state?: string; kind: string; archived: boolean; dissolved_at?: string | null;
   created_at: string; updated_at: string; revision: number; head?: string;
   response_mode: 'all' | 'mentioned'; speaking_mode: 'auto' | 'sequential'; organizer_id?: string | null;
 }
@@ -176,7 +177,7 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     const member = members.find(candidate => candidate.id === failure.botId);
     return [{ ...failure, botName: member ? memberName(member) : '' }];
   });
-  return { id: room.id, name: room.name, serverBacked: true, archived: room.archived, selfActorId: selfId,
+  return { id: room.id, name: room.name, serverBacked: true, supportsGroupLeave: true, dissolvedAt: room.dissolved_at ?? null, archived: room.archived, selfActorId: selfId,
     revision: room.revision, members: memberViews, replyMode: room.response_mode, speakingMode: room.speaking_mode,
     organizerBotId: room.organizer_id ?? null, projectDir: null, projectDirName: null,
     createdAt: Date.parse(room.created_at), updatedAt: Date.parse(room.updated_at),
@@ -185,7 +186,7 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     hasMoreBefore: page.before !== null, round: { status: 'idle', speakers: [], canContinue: false }, supportsAttachments: false };
 }
 
-export function createChatServerClient(request: ChatRequest) {
+export function createChatServerClient(request: ChatRequest, personalList = createConversationListState()) {
   async function failures(roomId: string, messages: ChatMessage[]): Promise<ChatExecutionFailure[]> {
     const sources = new Set(messages.map(message => chatId(message.id)));
     let value: ChatExecutionFailure[] = [];
@@ -210,7 +211,46 @@ export function createChatServerClient(request: ChatRequest) {
     if (before && next && BigInt(next) >= BigInt(before)) throw new Error('INVALID_CHAT_PAGE');
     return { messages, before: next };
   }
+  let supportsDissolve = false;
+  let supportsListRemoval = false;
+  async function identity() {
+    const me = await request<{ actor: { id: string; kind: string }; capabilities?: { groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me');
+    if (me.actor.kind !== 'human') throw new Error('INVALID_CHAT_IDENTITY');
+    supportsDissolve = me.capabilities?.groupLifecycleVersion === 1;
+    supportsListRemoval = me.capabilities?.conversationListStateVersion === 1;
+    return chatId(me.actor.id);
+  }
   return {
+    personalList,
+    lifecycleCapabilities: () => ({ supportsDissolve, supportsListRemoval }),
+    async syncListState(force = false) {
+      await identity();
+      if (supportsListRemoval) await (force ? personalList.sync(request) : personalList.ensureSynced(request));
+    },
+    async resyncListState() { await identity(); if (supportsListRemoval) await personalList.resync(request); },
+    async hide(roomId: string, operationId: string) {
+      await identity();
+      if (!supportsListRemoval) throw new Error('LIFECYCLE_UNAVAILABLE');
+      await personalList.setHidden(request, chatId(roomId), true, operationId);
+    },
+    async dissolve(roomId: string, expectedRevision: unknown, operationId: string) {
+      const self = await identity();
+      if (!supportsDissolve) throw new Error('LIFECYCLE_UNAVAILABLE');
+      if (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 1) throw new Error('REVISION_CONFLICT');
+      const snapshot = await request<ChatSnapshot>(`/conversations/${chatId(roomId)}/snapshot`);
+      if (snapshot.room.kind !== 'group') throw new Error('GROUP_REQUIRED');
+      const owner = snapshot.members.find(m => m.state === 'joined' && m.role === 'owner' && (m.id === self || m.ownerActorId === self));
+      if (!owner) throw new Error('OWNER_REQUIRED');
+      const result = await request<{ revision: number; dissolvedAt: string; dissolvedBy: string }>(`/conversations/${roomId}/dissolve`, 'POST', { operationId, expectedRevision }, owner.id);
+      if (!Number.isSafeInteger(result?.revision) || result.revision < 1 || !Number.isFinite(Date.parse(result.dissolvedAt))) throw new Error('INVALID_CHAT_RESPONSE');
+      chatId(result.dissolvedBy);
+    },
+    async leave(roomId: string, operationId: string) {
+      const self = await identity();
+      const snapshot = await request<ChatSnapshot>(`/conversations/${chatId(roomId)}/snapshot`);
+      if (snapshot.room.kind !== 'group') throw new Error('GROUP_REQUIRED');
+      await request(`/conversations/${roomId}/members`, 'POST', { operationId, actorId: self, action: 'leave' });
+    },
     async list(): Promise<ChatRoom[]> {
       const rooms = new Map<string, ChatRoom>();
       let after: string | undefined;
@@ -220,18 +260,16 @@ export function createChatServerClient(request: ChatRequest) {
         for (const room of page) {
           chatId(room.id);
           if (!['direct', 'group', 'channel'].includes(room.kind)) throw new Error('INVALID_CHAT_LIST');
-          if (room.state === 'joined' && room.kind === 'group') rooms.set(room.id, room);
+          if (room.state === 'joined' && room.kind === 'group' && !personalList.hidden(room.id)) rooms.set(room.id, room);
         }
         const next = page.length === 100 ? chatId(page.at(-1)!.id) : undefined;
         if (next && next === after) throw new Error('INVALID_CHAT_PAGE');
         after = next;
       } while (after);
-      return [...rooms.values()];
+      return [...rooms.values()].filter(room => !personalList.hidden(room.id));
     },
     async me(): Promise<string> {
-      const { actor } = await request<{ actor: { id: string; kind: string } }>('/me');
-      if (actor.kind !== 'human') throw new Error('INVALID_CHAT_IDENTITY');
-      return chatId(actor.id);
+      return identity();
     },
     /** Server feature switches; an older server without them keeps per-computer companions. */
     async capabilities(): Promise<ChatCapabilities> {
