@@ -158,7 +158,7 @@ function readsCatalog(
 }
 
 /**
- * 另一台电脑上的组：状态是组所在电脑看到的。组里的「我的其他电脑」由这台电脑直接连过去(§4 同账号直连)，
+ * 另一台电脑上的组：状态是组所在电脑看到的。组里的同账号电脑与分享来的电脑都由这台电脑直连(§4)，
  * 组所在电脑那边看它能用、这台却读不到它的目录时标出来(`unreachableHere`)：否则这里显示能用，换电脑时却总换不过去。
  * 目录有短时缓存；每台最多等 3 秒，到点还没结果的不标，照组所在电脑的状态显示。
  */
@@ -170,7 +170,7 @@ export async function markMembersUnreachableHere(
   if (!view.config || !selfDeviceId) return view;
   const usable = new Set(view.members.filter((m) => m.state === 'available' || m.state === 'full').map((m) => m.key));
   const direct = view.config.members.filter((m) =>
-    m.kind === 'device' && usable.has(m.key) && m.agentDeviceId !== null && m.agentDeviceId !== selfDeviceId);
+    (m.kind === 'device' || m.kind === 'share') && usable.has(m.key) && m.agentDeviceId !== null && m.agentDeviceId !== selfDeviceId);
   if (direct.length === 0) return view;
   const reads = await Promise.all(direct.map(async (m) => ({ key: m.key, ok: await readsCatalog(directory, m.agentDeviceId!) })));
   const unreachable = new Set(reads.filter((r) => r.ok === false).map((r) => r.key));

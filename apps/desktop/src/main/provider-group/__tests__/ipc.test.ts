@@ -55,6 +55,9 @@ const MINI = {
   weight: 1,
   paused: false,
 };
+const SHARED = {
+  ...MINI, key: 'share:s1:anthropic', kind: 'share' as const, agentDeviceId: 'share:s1', providerId: 'anthropic',
+};
 
 afterEach(() => vi.mocked(isAppSessionBoundaryPending).mockReturnValue(false));
 
@@ -181,12 +184,12 @@ describe('executeProviderGroupCommand reads', () => {
     expect(marked.members[1]).toMatchObject({ state: 'available', running: 2 });
   });
 
-  it('leaves another computer’s group as it is when this computer can reach it or cannot tell', async () => {
-    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+  it.each([MINI, SHARED])('leaves a reachable $kind member unchanged, and skips probing before login', async (member) => {
+    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, member] };
     const view = {
       providerId: 'anthropic',
       config,
-      members: [{ key: MINI.key, kind: 'device' as const, label: 'mini', state: 'available' as const, running: 0, limit: 4, weight: 1, paused: false }],
+      members: [{ key: member.key, kind: member.kind, label: 'member', state: 'available' as const, running: 0, limit: 4, weight: 1, paused: false }],
     };
     const reachable = vi.fn(async () => []);
     expect(await markMembersUnreachableHere(view, { readDeviceCatalog: reachable }, 'self')).toBe(view);
@@ -196,14 +199,28 @@ describe('executeProviderGroupCommand reads', () => {
     expect(unused).not.toHaveBeenCalled();
   });
 
-  it('does not hold the group view on a slow computer, and does not mark it', async () => {
+  it.each(['available', 'full'] as const)('marks a shared member reported as %s when it is unavailable on this computer', async (state) => {
+    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, SHARED] };
+    const view = {
+      providerId: 'anthropic', config,
+      members: [{ key: SHARED.key, kind: SHARED.kind, label: 'Kai', state, running: 4, limit: 4, weight: 1, paused: false }],
+    };
+    // 分享按账号收到，跨区连接却按电脑启用：组所在电脑能用，不代表查看电脑也能直连。
+    const readDeviceCatalog = vi.fn(async () => { throw new Error('[REMOTE_AGENT_SHARE_REMOVED] share not found'); });
+    const result = await markMembersUnreachableHere(view, { readDeviceCatalog }, 'self');
+    expect(readDeviceCatalog).toHaveBeenCalledExactlyOnceWith('share:s1');
+    expect(result.members[0]).toEqual({ ...view.members[0], unreachableHere: true });
+    expect(view.members[0]).not.toHaveProperty('unreachableHere');
+  });
+
+  it.each([MINI, SHARED])('does not hold the group view on a slow $kind member, and does not mark it', async (member) => {
     vi.useFakeTimers();
     try {
-      const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+      const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, member] };
       const view = {
         providerId: 'anthropic',
         config,
-        members: [{ key: MINI.key, kind: 'device' as const, label: 'mini', state: 'available' as const, running: 0, limit: 4, weight: 1, paused: false }],
+        members: [{ key: member.key, kind: member.kind, label: 'member', state: 'available' as const, running: 0, limit: 4, weight: 1, paused: false }],
       };
       // 读目录一直没有结果(还没超时、熔断也还没打开)。
       const slow = vi.fn(() => new Promise<never[]>(() => undefined));
@@ -279,6 +296,21 @@ describe('provider group IPC remote management', () => {
     expect(readDeviceCatalog).toHaveBeenCalledExactlyOnceWith('mini');
     expect(result).toMatchObject({ members: [{ key: MINI.key, state: 'available', running: 2, unreachableHere: true }] });
     expect(view.members[0]).not.toHaveProperty('unreachableHere');
+  });
+
+  it.each(groupRequests)('probes shared members from this computer after remote $command.action', async (request) => {
+    const d = deps([]);
+    const sharedView = {
+      ...view, config: { ...config, members: [LOCAL, SHARED] },
+      members: [{ ...view.members[0], key: SHARED.key, kind: SHARED.kind, state: 'full' as const }],
+    };
+    const remoteManage = vi.fn(async () => sharedView);
+    const readDeviceCatalog = vi.fn(async () => { throw new Error('share is unavailable from this computer'); });
+    Object.assign(d, { directory: { ...d.directory, readDeviceCatalog } });
+    const result = await invokeRemoteCommand(d, remoteManage, request);
+    expect(readDeviceCatalog).toHaveBeenCalledExactlyOnceWith('share:s1');
+    expect(result).toMatchObject({ members: [{ key: SHARED.key, state: 'full', running: 2, unreachableHere: true }] });
+    expect(sharedView.members[0]).not.toHaveProperty('unreachableHere');
   });
 
   it('keeps candidates and share management results unchanged, and accepts a deleted group without probing members', async () => {
