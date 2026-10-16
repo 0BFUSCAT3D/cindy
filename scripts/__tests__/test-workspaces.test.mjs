@@ -2303,6 +2303,7 @@ export const acquireTestGateLock = (options) => acquire({ ...options, ...${JSON.
 			});
 			let output = "";
 			let failure;
+			// real-wait: watchdog for a real CLI child; the close event clears it without waiting.
 			const timer = setTimeout(() => {
 				failure = new Error(`CLI did not finish: ${output}`);
 				child.kill();

@@ -2,10 +2,14 @@
 // that flips one rule decision, so a detector regression cannot silently let
 // slow or source-literal unit tests back into CI.
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
 	compareWithBaseline,
+	scanRepository,
 	scanTestSource,
 	TEST_FILE,
 } from "../check-test-hygiene.mjs";
@@ -22,6 +26,31 @@ test("hygiene scans both test and spec files", () => {
 test("scanTestSource counts only unjustified hits for each rule", () => {
 	const cases = [
 		["per-test module reset", "beforeEach(() => { vi.resetModules(); });", { resetModules: 1 }],
+		[
+			"a reason cannot exempt a per-test hook",
+			"beforeEach(() => {\n// reset-modules: cached state\nvi.resetModules();\n});",
+			{ resetModules: 1 },
+		],
+		[
+			"a reason cannot exempt a transitive per-test helper",
+			"function reload() {\n// reset-modules: cached state\nvi.resetModules();\n}\nconst prepare = () => reload(); beforeEach(prepare);",
+			{ resetModules: 1 },
+		],
+		[
+			"same-named helpers in sibling suites keep their own lexical binding",
+			"describe('reload', () => { function setup() {\n// reset-modules: cached state\nvi.resetModules();\n} beforeEach(setup); }); describe('other', () => { function setup() {} beforeEach(setup); });",
+			{ resetModules: 1 },
+		],
+		[
+			"registering a restart callback does not execute it in the hook",
+			"let restart; beforeEach(() => { restart = () => {\n// reset-modules: persisted state after restart\nvi.resetModules();\n}; }); it('restart', () => restart());",
+			{ resetModules: 0 },
+		],
+		[
+			"explicit restart boundaries remain exempt",
+			"function restart() {\n// reset-modules: verify persisted state after restart\nvi.resetModules();\n}\nit('restart', () => restart());",
+			{ resetModules: 0 },
+		],
 		[
 			"justified module reset",
 			"// reset-modules: auto-sync prefs are module-scoped\nvi.resetModules();",
@@ -122,6 +151,21 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 		0,
 		"guard-tier files may read source",
 	);
+});
+
+test("repository scan covers runner performance without rejecting its source contracts", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-hygiene-scan-"));
+	try {
+		fs.mkdirSync(path.join(root, "scripts", "__tests__"), { recursive: true });
+		fs.writeFileSync(path.join(root, "scripts", "test-workspaces.config.mjs"), "export default { workspaces: [] };");
+		fs.writeFileSync(path.join(root, "scripts", "__tests__", "runner.test.mjs"),
+			"vi.resetModules(); setTimeout(done, 100); readFileSync(resolve(__dirname, '../runner.mjs'));");
+		assert.deepEqual(await scanRepository(root), {
+			"scripts/__tests__/runner.test.mjs": { resetModules: 1, realWaits: 1, sourceReads: 0 },
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("compareWithBaseline only lets counts stay or shrink", () => {

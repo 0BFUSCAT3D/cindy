@@ -8,6 +8,7 @@
 //   reset-modules  每次 vi.resetModules() 都会让后续 import 重新求值整条模块链。
 //                  codexProxyHost.test.ts 逐用例重置时 285 条用例耗时 105s，不重置只要 7s。
 //                  新增调用必须在上一行写 `// reset-modules: <被隔离的模块状态>`。
+//                  beforeEach/afterEach 及其准备、清理 helper 不接受理由豁免。
 //   real-wait      单测里 ≥100ms 的真实 setTimeout / sleep 既拖慢 CI 又制造时序抖动；
 //                  改用 vi.useFakeTimers() 或等待真实事件。确需真实等待时上一行写
 //                  `// real-wait: <原因>`。已切换为 fake timers 的区间不计。
@@ -26,15 +27,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(ROOT, 'scripts', 'test-hygiene-baseline.json');
-const SCAN_ROOTS = ['apps', 'packages'];
+const SCAN_ROOTS = ['apps', 'packages', 'scripts'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'out', 'build', 'coverage', '.vite', '.expo', '.turbo']);
 export const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const NON_UNIT_TEST = /(?:^|[-.])(?:integration|e2e|git-integration)\.(?:test|spec)\.|\.bench\./;
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
 const REAL_WAIT_PATTERN = /\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g;
-// Reuse Desktop's declared parser only for files that mix fake and real timers.
-// No type checking or module loading is needed to locate test/hook callbacks.
+// Reuse Desktop's declared parser to locate test/hook callbacks and local helpers.
+// No type checking or module loading is needed.
 const requireDesktop = createRequire(new URL('../apps/desktop/package.json', import.meta.url));
 let typescript;
 
@@ -89,13 +90,69 @@ function hasJustification(lines, line, marker) {
   return false;
 }
 
-function countMatches(code, lines, pattern, marker, accept = () => true) {
-  let count = 0;
-  for (const match of code.matchAll(pattern)) {
-    if (!accept(match)) continue;
-    if (!hasJustification(lines, lineOf(code, match.index), marker)) count += 1;
+/** A per-test hook cannot turn repeated module loading into an exemption. */
+function countModuleResets(code, lines) {
+  const resets = [...code.matchAll(/\bvi\.resetModules\s*\(/g)];
+  if (resets.length === 0) return 0;
+  const ts = typescript ??= requireDesktop('typescript');
+  const source = ts.createSourceFile('test.tsx', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const nodeScopes = new WeakMap();
+  const hooks = [];
+  const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+  function collect(node, scope) {
+    if (ts.isFunctionDeclaration(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node)) {
+      scope = { parent: scope, bindings: new Map() };
+    }
+    nodeScopes.set(node, scope);
+    if (isFunction(node)) {
+      if (node.name) scope.bindings.set(node.name.text, node);
+      for (const parameter of node.parameters) {
+        if (ts.isIdentifier(parameter.name)) scope.bindings.set(parameter.name.text, null);
+      }
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      scope.bindings.set(node.name.text, node.initializer && isFunction(node.initializer) ? node.initializer : null);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && /^(?:beforeEach|afterEach)$/.test(node.expression.text)) hooks.push(...node.arguments);
+    ts.forEachChild(node, child => collect(child, scope));
   }
-  return count;
+  collect(source, null);
+  function resolveHelper(identifier) {
+    for (let scope = nodeScopes.get(identifier); scope; scope = scope.parent) {
+      if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
+    }
+    return null;
+  }
+  const perTest = new Set();
+  const visitedFunctions = new Set();
+  function visitFunction(node) {
+    if (!node || visitedFunctions.has(node)) return;
+    visitedFunctions.add(node);
+    if (node.body) visit(node.body);
+  }
+  function visit(node) {
+    // Defining or storing a restart callback is not a per-test reload. Only
+    // follow an actual local call, or the callback registered with a hook.
+    if (isFunction(node)) return;
+    if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)
+        && expression.expression.text === 'vi' && expression.name.text === 'resetModules') {
+        perTest.add(expression.getStart(source));
+      }
+      if (ts.isIdentifier(expression)) visitFunction(resolveHelper(expression));
+      else if (isFunction(expression)) visitFunction(expression);
+    }
+    ts.forEachChild(node, visit);
+  }
+  for (const hook of hooks) {
+    if (isFunction(hook)) visitFunction(hook);
+    else if (ts.isIdentifier(hook)) visitFunction(resolveHelper(hook));
+  }
+  return resets.filter(match => perTest.has(match.index)
+    || !hasJustification(lines, lineOf(code, match.index), 'reset-modules')).length;
 }
 
 /** Mask string contents while preserving line numbers and call-site punctuation. */
@@ -336,7 +393,7 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   const code = stripComments(source);
   const lines = source.split(/\r?\n/);
   const executableCode = maskStrings(code);
-  const resetModules = countMatches(executableCode, lines, /\bvi\.resetModules\s*\(/g, 'reset-modules');
+  const resetModules = countModuleResets(executableCode, lines);
   const realWaits = countRealWaits(executableCode, lines);
   let sourceReads = 0;
   if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw/.test(code)) {
@@ -383,7 +440,9 @@ export async function scanRepository(root = ROOT) {
   const counts = {};
   for (const file of files.sort()) {
     const rel = path.relative(root, file).split(path.sep).join('/');
-    const result = scanTestSource(readFileSync(file, 'utf8'), { isGuard: guard.has(rel) });
+    // Root runner tests are a dedicated infrastructure/contract tier. Their
+    // source contracts remain valid; the performance rules still apply.
+    const result = scanTestSource(readFileSync(file, 'utf8'), { isGuard: guard.has(rel) || rel.startsWith('scripts/') });
     if (RULES.some((rule) => result[rule] > 0)) counts[rel] = result;
   }
   return counts;
@@ -408,7 +467,7 @@ export function compareWithBaseline(counts, baseline) {
 }
 
 const HINTS = {
-  resetModules: '只在被测的模块级状态确实需要重建的边界调用，上一行写 `// reset-modules: <原因>`；优先用生产代码的 dispose/reset 或依赖注入',
+  resetModules: 'beforeEach/afterEach 及其准备、清理 helper 禁止重载模块，写理由也不豁免；显式重启边界上一行写 `// reset-modules: <原因>`；优先用生产代码的 dispose/reset 或依赖注入',
   realWaits: '改用 vi.useFakeTimers() 或等待真实事件；确需真实等待时上一行写 `// real-wait: <原因>`',
   sourceReads: '普通单测不得读取源码文本做字面量断言；改为经生产入口验证行为，纯跨文件契约移入对应包的 guard tier',
 };
