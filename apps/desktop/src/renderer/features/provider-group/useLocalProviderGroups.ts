@@ -85,6 +85,8 @@ function reload(owner: DataOwnerGeneration): Promise<void> {
     if (groups) state.snapshot = groups;
     state.ready = true;
     state.failed = groups === null;
+    // 失败不缓存为已读取：关掉后重新打开会重读；重读期间 failed 保持为 true，审批仍不能同意。
+    if (groups === null) state.loaded = null;
     notify();
   };
   state.loaded = Promise.resolve()

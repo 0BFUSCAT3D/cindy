@@ -111,10 +111,23 @@ describe('useLocalProviderGroups', () => {
     expect(command).toHaveBeenCalledTimes(1);
   });
 
-  it('becomes ready without groups when the read fails', async () => {
+  it('reports a failed read and retries when reopened without a group change event', async () => {
     command.mockRejectedValueOnce(new Error('boom'));
     const view = renderHook(() => useLocalProviderGroupsState());
     await waitFor(() => expect(view.result.current).toEqual({ groups: {}, ready: true, failed: true }));
+    view.unmount();
+
+    const retry = deferred<Record<string, ProviderGroupConfig>>();
+    command.mockReturnValueOnce(retry.promise);
+    const reopened = renderHook(() => useLocalProviderGroupsState());
+    expect(reopened.result.current.failed).toBe(true);
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      retry.resolve(group('A'));
+      await retry.promise;
+    });
+    await waitFor(() => expect(reopened.result.current.failed).toBe(false));
+    expect(reopened.result.current.groups.anthropic?.members[0].label).toBe('A');
   });
 
   it('forgets readiness after switching accounts', async () => {
