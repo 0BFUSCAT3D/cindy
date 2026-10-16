@@ -4315,7 +4315,7 @@
         "ariaLabel": "Choose the second fallback auxiliary model"
       },
       "emptySlot": "Not selected",
-      "customHint": "A custom chain is tried in this order only. If none of them work, Cindy will not switch to another model.",
+      "customHint": "Lightweight text features try only these models, in order. When Auto-review’s built-in models are unavailable, it also tries this chain and sends your original messages and the action arguments to the selected providers.",
       "signInHint": "Sign in to Cindy to use the automatic recommendations. While signed out, choose a configured model from another provider under Custom.",
       "chooseAgent": "Choose an Agent",
       "backToAgents": "Back to Agent selection",
