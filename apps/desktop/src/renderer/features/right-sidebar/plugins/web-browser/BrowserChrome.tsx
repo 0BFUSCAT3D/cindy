@@ -124,15 +124,20 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
   ) {
     const { t } = useTranslation();
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+    const moreMenuHiddenCloseRef = useRef(false);
     const handleMoreMenuOpenChange = useCallback(
       (open: boolean) => {
+        if (open) moreMenuHiddenCloseRef.current = false;
         setMoreMenuOpen(open);
         onOverlayOpenChange?.(open);
       },
       [onOverlayOpenChange],
     );
     useLayoutEffect(() => {
-      if (!visible) handleMoreMenuOpenChange(false);
+      if (!visible) {
+        moreMenuHiddenCloseRef.current = true;
+        handleMoreMenuOpenChange(false);
+      }
     }, [visible, handleMoreMenuOpenChange]);
 
     // URL pill 编辑态 —— 点 / focus 进入,Enter / Esc / blur 退出。
@@ -338,9 +343,10 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
             align="end"
             className="min-w-[9rem]"
             onCloseAutoFocus={(event) => {
-              // A task switch must not pull focus back to its hidden trigger.
-              // Ordinary dismissal keeps Radix's default focus restoration.
-              if (!visible) event.preventDefault();
+              // Presence can finish closing after a rapid return to this task.
+              // Remember the hidden close until the next intentional opening;
+              // ordinary dismissal still restores the visible trigger focus.
+              if (!visible || moreMenuHiddenCloseRef.current) event.preventDefault();
             }}
           >
             <DropdownMenuItem
