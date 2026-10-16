@@ -16,6 +16,7 @@ vi.mock('../ledgerCurrency', () => ({ currentLedgerCurrency: () => 'CNY' }));
 vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage: mocks.managed }));
 const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
 beforeEach(async () => {
+  // reset-modules: each refresh scenario starts with a new quota credential singleton.
   vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
   mocks.auth = { mode: 'cloud', ownerGeneration: 1, dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } };
   mocks.endpoint = 'https://gateway.example.test';

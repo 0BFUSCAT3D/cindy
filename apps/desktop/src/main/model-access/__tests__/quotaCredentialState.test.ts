@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest';
+// reset-modules: each case must observe a fresh in-process credential status store.
 beforeEach(() => vi.resetModules());
 const status = { state: 'ok', source: 'server', endpoint: 'https://gateway.example.test', accountTier: null } as const;
 it('requires a successful current-process sync and matches both owner and endpoint', async () => {

@@ -47,6 +47,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe('claudeAccountUsage Cindy AI key rejection', () => {
   beforeEach(async () => {
+    // reset-modules: reset the quota credential singleton before rebuilding the mocked account state.
     vi.resetModules();
     vi.useFakeTimers();
     mocks.outboundFetch.mockReset();
