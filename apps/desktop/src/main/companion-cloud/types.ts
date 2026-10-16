@@ -33,14 +33,20 @@ export function isUnreachable(error: unknown): boolean {
 }
 
 const TRANSIENT_ATTACHMENT = /^(MEDIA_DOWNLOAD_FAILED|OWNER_CHANGED|fetch failed|net::ERR_\w+)$/;
+/** The object store's own answer to a signed address (every try signs a fresh one). */
+const SIGNED_URL_FAILURE = /^MEDIA_(UPLOAD|DOWNLOAD)_FAILED$/;
 /**
- * A file that may still come on a later try (network, a failing server or 5xx/408/429, a download
- * that ended without a status, the account changing): the step fails and is retried. Anything
- * else (too large, gone or refused with a 4xx) never will, and only then does the file stay a name.
+ * A file that may still come on a later try (network, a failing server or 5xx/408/429, an expired
+ * signed address, a download that ended without a status, the account changing): the step fails
+ * and is retried. Anything else (too large, gone, refused by the chat server) never will, and only
+ * then does the file stay a name.
  */
 export function isTransientAttachmentFailure(error: unknown): boolean {
   if (isUnreachable(error)) return true;
   if (!(error instanceof Error)) return false;
-  if (typeof (error as { status?: unknown }).status === 'number') return false;
+  const status = (error as { status?: unknown }).status;
+  // An expired signature (401/403 from the object store) is signed again on the retry; the chat
+  // server refusing the file, or the object being gone (404), never changes.
+  if (typeof status === 'number') return SIGNED_URL_FAILURE.test(error.message) && (status === 401 || status === 403);
   return TRANSIENT_ATTACHMENT.test(error.message) || error.name === 'TimeoutError' || error.name === 'AbortError';
 }
