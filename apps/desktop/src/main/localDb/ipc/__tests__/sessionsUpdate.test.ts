@@ -182,6 +182,7 @@ import {
 import { retireDeletedPiSubagentState } from '../piSubagentDeletion';
 import { setSessionRouteLockImplementation } from '../../sessionRouteLock';
 import { assertTrustedAppRendererEvent } from '../../../security/trustedAppRenderer.js';
+import { createRemoteSessionsStatusSetter } from '../../../mcp-integrations/sessionStatusRemote.js';
 
 function createDb(): void {
   const sqlite = new Database(':memory:');
@@ -900,6 +901,27 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(order).toEqual(['sharing-prepared', 'runtime-cleanup', 'sharing-closed', 'lock-released']);
     expect(h.runtimeCleanup).toHaveBeenCalledOnce();
     expect(h.closeSharedTask).toHaveBeenCalledWith('codex-local', h.client);
+  });
+
+  it('restores an archived task through the remote adapter and existing patch-meta handler', async () => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    const invoke = vi.fn(async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:sessions:patch-meta');
+      return { ok: true as const, result: await invokePatchMeta(args[0] as string, args[1] as Record<string, unknown>) };
+    });
+    const restore = createRemoteSessionsStatusSetter({ captureAccess: () => () => {}, invoke });
+    expect(await restore({ deviceId: 'studio', sessionIds: ['codex-local'], status: 'active' })).toMatchObject({
+      ok: true, changed: [{ sessionId: 'codex-local', status: 'active' }],
+    });
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(h.closeSharedTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['active', 'archived'] as const)('remote patch-meta cannot change a deleted task to %s', async (status) => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'deleted' WHERE id = ?").run('codex-local');
+    await expect(invokePatchMeta('codex-local', { status })).rejects.toThrow('已删除的任务不能恢复或归档');
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'deleted' });
   });
 
   it('cleans runtime state before releasing the remote terminal status lock', async () => {
