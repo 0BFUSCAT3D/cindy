@@ -1,3 +1,5 @@
+import { quotaCredentialsReady, quotaCredentialGeneration, onQuotaCredentialSourceChanged } from '../model-access/quotaCredentialState.js';
+import type { ClaudeQuotaClear } from '../../shared/claudeQuotaState.js';
 import { readOrganizationAccountUsage } from './organizationAccountUsage.js';
 /**
  * claudeAccountUsage — Claude 账号配额 (LiteLLM spend / max_budget) 拉取与广播。
@@ -93,6 +95,7 @@ const IDLE_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 let snapshot: ClaudeAccountUsageSnapshot | null = null;
 let snapshotOwnerKey: string | null = null;
+let clearReason: ClaudeQuotaClear['quotaState'] = 'unlimited';
 let fetchInFlight = false;
 let fetchOwnerKey: string | null = null;
 let refreshQueued = false;
@@ -222,6 +225,8 @@ async function fetchOnce(authenticatedUserId?: string): Promise<ClaudeAccountUsa
   // 无关,proxy 只服务于子进程的 chat completion 请求。
   const baseUrl = claudeUpstreamEndpoint().trim();
   if (!apiKey || !baseUrl) return null;
+  const legacyOwner = currentQuotaOwner();
+  if (getAuthState().mode === 'cloud' && (!legacyOwner || !quotaCredentialsReady(legacyOwner.key, baseUrl))) return null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -236,6 +241,7 @@ async function fetchOnce(authenticatedUserId?: string): Promise<ClaudeAccountUsa
       fetchTodayActivity(baseUrl, apiKey, controller.signal),
     ]);
     if (!cycle) return null;
+    if (getAuthState().mode === 'cloud' && (!legacyOwner || !quotaCredentialsReady(legacyOwner.key, baseUrl))) return null;
     const todaySpend = dailyActivity ? resolveDailyActivitySpend(dailyActivity).todaySpend : null;
     log.info(
       `refreshed cycle=${cycle.spend.toFixed(2)}/${cycle.maxBudget.toFixed(2)} today=${todaySpend == null ? 'n/a' : todaySpend.toFixed(2)} resetAt=${cycle.budgetResetAt ?? 'n/a'}`,
@@ -273,9 +279,12 @@ export async function triggerClaudeAccountUsageRefresh(force = false): Promise<v
   fetchOwnerKey = owner.key;
   lastFetchAt = Date.now();
   try {
+    const generation = quotaCredentialGeneration();
     const next = await fetchOnce(owner.authenticatedUserId);
+    if (getAuthState().mode === 'cloud' && quotaCredentialGeneration() !== generation) return;
     if (currentQuotaOwner()?.key !== owner.key) return;
     if (next === 'unlimited') {
+      clearReason = 'unlimited';
       snapshot = null;
       snapshotOwnerKey = owner.key;
       broadcast(null);
@@ -318,10 +327,10 @@ export function readClaudeAccountUsageSnapshot(): ClaudeAccountUsageSnapshot | n
 }
 
 /** Authoritative no-limit state is replayable even if no renderer heard its push. */
-export function readClaudeAccountQuotaClear(): { quotaState: 'unlimited' } | null {
+export function readClaudeAccountQuotaClear(): ClaudeQuotaClear | null {
   const owner = currentQuotaOwner();
   return owner && snapshotOwnerKey === owner.key && snapshot === null
-    ? { quotaState: 'unlimited' } : null;
+    ? { quotaState: clearReason } : null;
 }
 
 function broadcast(payload: ClaudeAccountUsageSnapshot | null): void {
@@ -334,3 +343,17 @@ function broadcast(payload: ClaudeAccountUsageSnapshot | null): void {
   // (刷新自带 10s 节流 + turn-done 触发,低频;无 active 链路时 O(1) no-op)。
   tapWindowBroadcast(USAGE_CLAUDE_ACCOUNT_CHANGED, payload);
 }
+
+// A new gateway invalidates both finite and unlimited results from the previous
+// source. Replayable invalidation also covers renderers that missed the push.
+onQuotaCredentialSourceChanged((ownerKey) => {
+  const owner = currentQuotaOwner();
+  if (!owner || !owner.key.startsWith('cloud:') || owner.key !== ownerKey) return;
+  snapshot = null;
+  snapshotOwnerKey = owner.key;
+  clearReason = 'invalidated';
+  lastFetchAt = 0;
+  broadcast(null);
+  if (fetchInFlight) refreshQueued = true;
+  else void triggerClaudeAccountUsageRefresh(true).catch(() => undefined);
+});

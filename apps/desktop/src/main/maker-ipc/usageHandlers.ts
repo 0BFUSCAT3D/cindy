@@ -72,7 +72,7 @@ export function toLegacyUsdModelPricing(
 
 /** usage handler 需要的 host-level 查询与刷新能力。 */
 export interface MakerUsageHandlerDeps {
-  readClaudeAccountQuotaClear?(): { quotaState: 'unlimited' } | null;
+  readClaudeAccountQuotaClear?(): { quotaState: 'unlimited' | 'invalidated' } | null;
   readAgentTodayUsage(agentKind: AgentKind): Promise<AgentTodayUsage>;
   readCodexAccountUsageSnapshot(providerId?: string): Promise<RateLimitSnapshot | null>;
   readCodexRateLimits(providerId?: string): Promise<MobileCodexRateLimitsResult>;

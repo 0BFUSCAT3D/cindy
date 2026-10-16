@@ -1767,3 +1767,5 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 配额读取 IPC 返回 null 仅表示当前无可用快照，不清除 renderer 已缓存的同账号额度；只有权威 clear 读取结果或显式 clear push 才清除缓存。
 
 `maker:usage:account('claude-code', 'cindy-quota-state-v1')` 为可选读取能力：有限额度保持原快照，权威不限额返回 `{ quotaState: 'unlimited' }`，暂无当前账号快照返回 null。无该能力参数的旧消费者仍只收到快照/null；旧主机忽略该参数，新消费者对其 null 保留旧缓存。本地重新挂载和远程读取均查询该状态，避免错过 clear 推送；仅权威 clear 可淘汰同账号缓存。
+
+企业凭据迁移：`/quota` 查询不依赖本地推理凭据；仅在当前进程、当前账号已成功同步服务端凭据，且实际 endpoint 与本次同步一致时，允许 404/明确 501 后的旧直连回退。持久化凭据不能作为本轮同步成功的证明。网关 endpoint 或身份代次变化时，失效当前账号额度并丢弃旧代次在途结果；失效结果通过既有 null push 通知，可选状态读取返回 `{ quotaState: 'invalidated' }`，与 unavailable null 区分。新本地/远程消费者将 invalidated 和 unlimited 都作为权威清缓存；未携带能力参数的旧消费者保持 snapshot/null 返回。此处不变更凭据存储、推理回退或额度计算口径。

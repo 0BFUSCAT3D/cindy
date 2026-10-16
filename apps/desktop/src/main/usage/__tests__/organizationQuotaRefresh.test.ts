@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   auth: { mode: 'cloud', dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } },
+  endpoint: 'https://gateway.example.test',
   managed: vi.fn(), outbound: vi.fn(), broadcast: vi.fn(),
 }));
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
@@ -9,14 +10,17 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({ tapWindowBroadcast: mocks
 vi.mock('../../logger', () => ({ createLogger: () => ({ info: vi.fn(), debug: vi.fn() }) }));
 vi.mock('../../maker-host/auth-adapters', () => ({ readClaudeApiKey: () => 'fixture-key' }));
 vi.mock('../../maker-host/outbound-fetch', () => ({ outboundFetch: mocks.outbound }));
-vi.mock('../../maker-host/runtime-configs', () => ({ claudeUpstreamEndpoint: () => 'https://gateway.example.test' }));
+vi.mock('../../maker-host/runtime-configs', () => ({ claudeUpstreamEndpoint: () => mocks.endpoint }));
 vi.mock('../modelPricing', () => ({ getGatewayAccountCurrency: async () => 'CNY' }));
 vi.mock('../ledgerCurrency', () => ({ currentLedgerCurrency: () => 'CNY' }));
 vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage: mocks.managed }));
 const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
   mocks.auth = { mode: 'cloud', dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } };
+  mocks.endpoint = 'https://gateway.example.test';
+  const state = await import('../../model-access/quotaCredentialState');
+  state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
   mocks.managed.mockResolvedValue(quota);
   mocks.outbound.mockResolvedValue({ ok: true, json: async () => ({ spend: 2, max_budget: 20, results: [] }) });
 });
@@ -73,5 +77,62 @@ describe('Cindy AI enterprise quota refresh', () => {
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(mocks.managed).not.toHaveBeenCalled();
     expect(mocks.outbound).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('quota gateway migration boundary', () => {
+  it('blocks persisted legacy credentials before this process completes credential sync', async () => {
+    const state = await import('../../model-access/quotaCredentialState');
+    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    mocks.managed.mockResolvedValue(undefined);
+    const api = await import('../claudeAccountUsage');
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(mocks.outbound).not.toHaveBeenCalled();
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    await vi.waitFor(() => expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20));
+  });
+
+  it('reads managed quota before credential sync without contacting the persisted gateway', async () => {
+    const state = await import('../../model-access/quotaCredentialState');
+    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    const api = await import('../claudeAccountUsage');
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(api.readClaudeAccountUsageSnapshot()).toEqual(quota);
+    expect(mocks.outbound).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the old gateway quota even if the first new gateway query fails', async () => {
+    mocks.managed.mockResolvedValue(undefined);
+    const api = await import('../claudeAccountUsage');
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20);
+    mocks.managed.mockResolvedValue(null);
+    mocks.endpoint = 'https://new-gateway.example.test';
+    const state = await import('../../model-access/quotaCredentialState');
+    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'invalidated' });
+    expect(mocks.broadcast).toHaveBeenLastCalledWith('usage:claude-account-changed', null);
+    await vi.waitFor(() => expect(mocks.managed).toHaveBeenCalledTimes(2));
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+  });
+
+  it('drops a late response from the previous gateway after credentials change', async () => {
+    mocks.managed.mockResolvedValue(undefined);
+    let complete!: (value: unknown) => void;
+    mocks.outbound.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const api = await import('../claudeAccountUsage');
+    const pending = api.triggerClaudeAccountUsageRefresh(true);
+    await vi.waitFor(() => expect(mocks.outbound).toHaveBeenCalledTimes(2));
+    mocks.managed.mockResolvedValue(null);
+    mocks.endpoint = 'https://new-gateway.example.test';
+    const state = await import('../../model-access/quotaCredentialState');
+    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    complete({ ok: true, json: async () => ({ spend: 99, max_budget: 100 }) });
+    await pending;
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'invalidated' });
+    expect(mocks.broadcast.mock.calls.some(([, value]) => value?.spend === 99)).toBe(false);
   });
 });

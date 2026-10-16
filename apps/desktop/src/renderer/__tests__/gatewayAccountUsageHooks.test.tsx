@@ -156,14 +156,14 @@ it('preserves owner-bound warm quota when a refresh has no main snapshot', async
   expect(finalView.result.current.usage?.spend).toBe(12);
 });
 
-it('replays an authoritative unlimited read after the clear push was missed while unmounted', async () => {
-  state.owner = 'quota-missed-clear';
+it.each(['unlimited', 'invalidated'])('replays an authoritative %s read after the clear push was missed while unmounted', async (quotaState) => {
+  state.owner = `quota-missed-clear-${quotaState}`;
   state.membership = 'org';
   state.quota.mockResolvedValue({ spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 });
   const first = renderHook(() => useClaudeAccountUsageResult(true));
   await waitFor(() => expect(first.result.current.usage?.spend).toBe(12));
   first.unmount();
-  state.quota.mockResolvedValue({ quotaState: 'unlimited' });
+  state.quota.mockResolvedValue({ quotaState });
   const reopened = renderHook(() => useClaudeAccountUsageResult(true));
   await waitFor(() => expect(reopened.result.current.loading).toBe(false));
   expect(reopened.result.current.usage).toBeNull();

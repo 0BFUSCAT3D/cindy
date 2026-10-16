@@ -377,7 +377,7 @@ describe('remote account parity', () => {
   });
 });
 
-it('retains remote quota on unavailable reads but replays a missed unlimited clear', async () => {
+it.each(['unlimited', 'invalidated'])('retains remote quota on unavailable reads but replays a missed %s clear', async (quotaState) => {
   const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
   mocks.invoke.mockResolvedValue(quota);
   const first = renderHook(() => useRemoteClaudeAccountUsage('device-quota'));
@@ -389,7 +389,7 @@ it('retains remote quota on unavailable reads but replays a missed unlimited cle
   await flushMicrotasks();
   expect(unavailable.result.current).toEqual(quota);
   unavailable.unmount();
-  mocks.invoke.mockResolvedValue({ quotaState: 'unlimited' });
+  mocks.invoke.mockResolvedValue({ quotaState });
   const cleared = renderHook(() => useRemoteClaudeAccountUsage('device-quota'));
   await flushMicrotasks();
   expect(cleared.result.current).toBeNull();
