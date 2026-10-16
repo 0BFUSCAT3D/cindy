@@ -435,7 +435,10 @@ describe('OrcaWorkflowRoute source invariants', () => {
     expect(workerPanelSource).toContain("navigate('/settings?section=collaboration')");
     expect(workerPanelSource).not.toContain('settingsEnabled');
     expect(workersTabBodySource).toContain("import { isSidebarWindow } from '@/lib/sidebarWindow';");
-    expect(workersTabBodySource).toContain('<OrcaWorkerPanel {...workerPanelProps} />');
+    // 分离窗额外接「在主窗口查看」，仍复用同一份 workerPanelProps。
+    expect(workersTabBodySource).toMatch(
+      /<OrcaWorkerPanel\s+\{\.\.\.workerPanelProps\}\s+onViewWorkerInMainWindow=\{handleViewWorkerInMainWindow\}\s*\/>/,
+    );
     expect(workersTabBodySource).toContain('<RoutedOrcaWorkerPanel {...workerPanelProps} />');
   });
 

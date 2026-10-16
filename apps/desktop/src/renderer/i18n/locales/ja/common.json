@@ -14585,6 +14585,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session が見つかりません",
       "waitingForWorker": "Worker を待機中",
+      "workerHiddenInSeparateWindow": "別ウィンドウでは Worker の会話を表示しません",
+      "viewWorkerInMainWindow": "メインウィンドウで表示",
       "remoteWorkerLoading": "{{device}} 上のタスクを読み込み中…",
       "remoteWorkerUnreachable": "{{device}} に現在接続できません。再接続すると、この Worker のタスクが再び表示されます。",
       "closeAria": "閉じる"

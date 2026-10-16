@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
+import { Button } from '@/components/ui/button';
 import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';
 import { toast } from '@/lib/toast';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
@@ -45,6 +46,11 @@ export interface OrcaWorkerPanelProps {
   onFocusWorkerSessionIdConsumed?: (revision: number) => void;
   onSelectionIntentCleared?: (revision: number) => void;
   onSearchJumpConsumed?: () => void;
+  /**
+   * 分离侧栏窗口专用：合并回主窗口并在主窗协同 tab 选中该 Worker。分离窗只有收窄的
+   * preload 和轻量入口，撑不起完整聊天视图，所以这里不嵌入 Worker 对话。
+   */
+  onViewWorkerInMainWindow?: (workerSessionId: string) => void;
 }
 
 function sameVisibleSessionPayload(
@@ -69,9 +75,13 @@ export function OrcaWorkerPanel({
   onFocusWorkerSessionIdConsumed,
   onSelectionIntentCleared,
   onSearchJumpConsumed,
+  onViewWorkerInMainWindow,
 }: OrcaWorkerPanelProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // 分离窗只显示占位、不显示 Worker 对话：不能当作用户在看这个 Worker，
+  // 否则「已完成」会被自动确认、提醒也会被清掉。
+  const workerConversationVisible = viewVisible && !isSidebarWindow();
   // Worker 可以放 Agent 的其他电脑与分享；Lead 的 Agent 位置未解析时不提供，Worker 跟 Lead。
   const workerAgentDevices = useWorkerAgentDevices({
     controlledDeviceId: agentDeviceId === undefined ? undefined : deviceId,
@@ -96,7 +106,7 @@ export function OrcaWorkerPanel({
   } = useOrcaWorkerSelection({
     leadSessionId,
     deviceId: deviceId ?? undefined,
-    viewVisible,
+    viewVisible: workerConversationVisible,
     focusWorkerSessionId,
     focusWorkerHintRevision,
     searchJump,
@@ -198,11 +208,26 @@ export function OrcaWorkerPanel({
           onOpenCreate={() => void handleOpenCreate()}
           onOpenSettings={isSidebarWindow() || deviceId !== null ? undefined : handleOpenSettings}
           onArchiveWorker={handleArchiveWorker}
-          clearAttentionWhenVisible={viewVisible}
+          clearAttentionWhenVisible={workerConversationVisible}
         />
       </div>
       <div className="chat-rail-compact min-h-0 flex-1">
-        {workerSessionId && remoteDevice ? (
+        {workerSessionId && isSidebarWindow() ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              {t('orca.split.workerHiddenInSeparateWindow')}
+            </p>
+            {onViewWorkerInMainWindow && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onViewWorkerInMainWindow(workerSessionId)}
+              >
+                {t('orca.split.viewWorkerInMainWindow')}
+              </Button>
+            )}
+          </div>
+        ) : workerSessionId && remoteDevice ? (
           <RemoteWorkerSessionPane
             key={workerSessionId}
             leadSessionId={leadSessionId}
