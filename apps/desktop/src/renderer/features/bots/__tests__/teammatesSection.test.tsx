@@ -189,7 +189,7 @@ describe('one Cindy entry across devices', () => {
     expect(screen.queryByRole('combobox', { name: /bots.devicePicker.switchDevice/ })).toBeNull();
     expect(screen.queryByTestId('cindy-device-row')).toBeNull();
     expect(screen.queryByText('bots.devicePicker.local')).toBeNull();
-    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
     fireEvent.click(screen.getByText('Local preview').closest('button')!);
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/cindy-default');
 
@@ -204,7 +204,7 @@ describe('one Cindy entry across devices', () => {
     expect(screen.queryByRole('combobox', { name: /bots.devicePicker.switchDevice/ })).toBeNull();
     expect(screen.queryByTestId('cindy-device-row')).toBeNull();
     expect(screen.queryByText('bots.devicePicker.local')).toBeNull();
-    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
     expect(screen.getByText('Local preview')).toBeTruthy();
   });
 
@@ -310,10 +310,10 @@ describe('teammate host labels', () => {
       name: 'Cindy', avatar: '🤖', avatarColor: 'violet', description: '', preview: 'Remote preview',
       activityAt: 1, sessionId: 'remote-session', online: true }];
     const view = await renderSidebar();
-    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
     expect(view.container.innerHTML).not.toContain('MBP-M5');
     expect(screen.queryByRole('img', { name: /bots.remote.online/ })).toBeNull();
-    expect(screen.getByText('bots.remote.online · Mac-Studio')).toBeTruthy();
+    expect(screen.getByText('Mac-Studio')).toBeTruthy();
     expect(screen.getByText('Local preview')).toBeTruthy();
     const remoteRow = screen.getByText('Remote preview').closest('button')!;
     fireEvent.click(remoteRow);
@@ -328,12 +328,12 @@ describe('teammate host labels', () => {
   it('keeps local status free of device labels before and after directory updates', async () => {
     mocks.profiles = [bot({ id: 'local-bot', name: 'Cindy' })];
     const view = await renderSidebar();
-    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
     expect(view.container.innerHTML).not.toContain('bots.remote.thisDevice');
     expect(view.container.textContent).not.toContain(' · ');
     mocks.devices = [{ deviceId: 'local-device', name: 'Renamed Mac', isSelf: true }];
     view.rerender(<TeammatesSection />);
-    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
     expect(view.container.innerHTML).not.toContain('Renamed Mac');
     expect(view.container.textContent).not.toContain(' · ');
   });
@@ -347,13 +347,13 @@ describe('teammate host labels', () => {
       activityAt: 1, sessionId: 'remote-session', online: true,
     }));
     const view = await renderSidebar();
-    expect(screen.getByText('bots.remote.online · Shared Mac (host-a)')).toBeTruthy();
-    expect(screen.getByText('bots.remote.online · Shared Mac (host-b)')).toBeTruthy();
+    expect(screen.getByText('Shared Mac (host-a)')).toBeTruthy();
+    expect(screen.getByText('Shared Mac (host-b)')).toBeTruthy();
     expect(view.container.innerHTML).not.toContain('local-device');
     mocks.remoteBots = mocks.remoteBots.map((entry) => ({ ...entry, deviceName: entry.deviceId === 'host-a' ? 'Studio' : 'Mini' }));
     view.rerender(<TeammatesSection />);
-    expect(screen.getByText('bots.remote.online · Studio')).toBeTruthy();
-    expect(screen.getByText('bots.remote.online · Mini')).toBeTruthy();
+    expect(screen.getByText('Studio')).toBeTruthy();
+    expect(screen.getByText('Mini')).toBeTruthy();
   });
 
   it.each(['Thinking', 'Generating'])('preserves %s while hiding the local host and idle status', async (compactDetail) => {
@@ -371,7 +371,7 @@ describe('teammate host labels', () => {
     mocks.islandActivity.clear();
     view.rerender(<TeammatesSection />);
     expect(screen.queryByText(compactDetail)).toBeNull();
-    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
     expect(screen.getByText('Previous reply')).toBeTruthy();
   });
 
@@ -579,8 +579,7 @@ describe('TeammatesSection rows', () => {
   });
 
   it('shows the latest message and its time instead of a channel label', async () => {
-    const at = new Date();
-    at.setHours(9, 7, 0, 0);
+    const at = new Date(Date.now() - 5 * 60_000);
     mocks.profiles = [
       bot({
         id: 'bot-1',
@@ -594,7 +593,7 @@ describe('TeammatesSection rows', () => {
     const view = await renderSidebar();
 
     expect(screen.getByText('Two checks are still red on #2829')).toBeTruthy();
-    expect(screen.getByText('09:07')).toBeTruthy();
+    expect(screen.getByText(translate('ccAgent.time.relative.minute', { count: 5 }))).toBeTruthy();
     expect(view.container.textContent).not.toContain('Local');
     expect(screen.queryByText('Delivery steward')).toBeNull();
   });
