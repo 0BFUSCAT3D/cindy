@@ -39,6 +39,7 @@ vi.mock('../components/chat/useOpenWithMenu', () => ({
 vi.mock('../components/chat/useFileChipContextMenu', () => ({
   useFileChipContextMenu: () => ({
     onContextMenu: vi.fn(),
+    onActivate: (_event: unknown, openDefault: () => void) => openDefault(),
     openAt: vi.fn(),
     menu: null,
   }),

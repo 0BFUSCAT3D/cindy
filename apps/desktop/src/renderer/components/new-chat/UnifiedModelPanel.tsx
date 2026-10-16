@@ -282,17 +282,19 @@ export interface UnifiedModelPanelProps {
   panelElement: HTMLElement | null;
   overlayClassName?: string;
   /**
-   * 远程 Agent(仅新任务草稿):左侧栏在本机供应商之后列出其他电脑上的供应商。选中那台
-   * 电脑上的模型 = Agent 在那台电脑运行,任务和文件仍在本机。
+   * 远程 Agent：左侧栏在任务所在电脑的供应商之后列出其他电脑上的供应商。选中那台
+   * 电脑上的模型 = Agent 在那台电脑运行，任务和文件仍在原电脑。
    *
    * 面板只管栏位与选中态;列表数据(`providers` / `deviceId` 及各谓词)由调用方随
    * `active` 切到那台电脑的目录 —— 所以 `ready` 为 false 的那几帧列表显示加载态,
    * 绝不拿上一份目录按同名供应商筛出一份「看起来像远程」的列表。
    */
   remoteSources?: {
-    /** 本机格(★ / 全部 / 本机供应商)的栏位,按**本机**目录派生。 */
+    /** 普通格(★ / 全部 / 任务所在电脑的供应商)，按任务所在电脑的目录派生。 */
     localRailItems: readonly UnifiedRailItem[];
     localProviders: readonly ProviderView[];
+    /** 任务所在电脑的用量归属；null / 缺省 = 控制端本机。与正在浏览的目录无关。 */
+    localUsageDeviceId?: string | null;
     localProviderLabel: (providerId: string) => string;
     /** 每台电脑一段:有可用模型的供应商(按那台的目录顺序)。 */
     groups: readonly {
@@ -1146,6 +1148,16 @@ export function UnifiedModelPanel({
   );
 
   /**
+   * 「全部 / 收藏」聚合行第二行的来源名。只有任务所在电脑自己目录里的 Cindy AI(xd)不带来源、
+   * 保留单行简介(model-catalog-runtime.md);分享来的目录、正在浏览的其他电脑目录里的 xd 与其他
+   * 供应商一样写来源,否则同名模型分不清来自哪里(#6110)。可见行与定宽 sizer 共用这一个判断。
+   * 外来收藏(renderDeviceFavoriteRow)始终带来源,不经这里。
+   */
+  const ownCatalog = !isSharedProvider && !remoteSources?.active;
+  const aggregateSourceLabel = (providerId: string): string | undefined =>
+    ownCatalog && providerId === 'xd' ? undefined : providerLabel(providerId);
+
+  /**
    * 收藏区里另一台电脑上的收藏(见 resolveDeviceFavorite)。与本目录的行刻意分开画:
    *   - 来源名带那台电脑(同浏览那台时的「供应商 · 电脑」),图标 / 账号 / 用量都按那台的目录读,
    *     不拿本目录同 id 的供应商顶替;
@@ -1284,6 +1296,7 @@ export function UnifiedModelPanel({
           ? {
               remoteSources: {
                 localProviders: remoteSources.localProviders,
+                localUsageDeviceId: remoteSources.localUsageDeviceId,
                 localProviderLabel: remoteSources.localProviderLabel,
                 providersOf: (deviceId: string) =>
                   remoteSources.groups.find((group) => group.deviceId === deviceId)?.providers ?? [],
@@ -1424,7 +1437,7 @@ export function UnifiedModelPanel({
                       anchor={row.anchor}
                       config={config}
                       {...(effectiveRail.kind === 'all' || effectiveRail.kind === 'favorites'
-                        ? { sourceLabel: providerLabel(row.entry.providerId) }
+                        ? { sourceLabel: aggregateSourceLabel(row.entry.providerId) }
                         : {})}
                       selected={isSelectedRow(row.anchor, row.entry)}
                       active={sameAnchor(flyAnchor, row.anchor)}
@@ -1497,7 +1510,7 @@ export function UnifiedModelPanel({
                       entry={row.entry}
                       anchor={row.anchor}
                       config={config}
-                      sourceLabel={providerLabel(row.entry.providerId)}
+                      sourceLabel={aggregateSourceLabel(row.entry.providerId)}
                       selected={false}
                       active={false}
                       isFavoriteRow={!!row.favorite}

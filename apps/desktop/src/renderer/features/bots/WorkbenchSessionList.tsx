@@ -34,7 +34,7 @@ export function WorkbenchSessionList({
     useSessionRunningStatus(undefined);
   const attached = useAttachedSessionIds();
   const { displayRunningSessionIds } = useSessionDisplayRunningState(sessions, runningSessionIds);
-  const { runSessionAction, unarchiveSession } = useSessionLifecycleActions({
+  const { runSessionAction, unarchiveSession, archiveBlockedByRunning } = useSessionLifecycleActions({
     includeArchived: 'all',
   });
   const byId = useMemo(() => new Map(sessions.map((row) => [row.id, row])), [sessions]);
@@ -62,10 +62,7 @@ export function WorkbenchSessionList({
           return;
         }
         const archive = kind !== 'delete';
-        if (archive && runningSessionIds.has(id)) {
-          toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
-          return;
-        }
+        if (archive && archiveBlockedByRunning(id, byId.get(id)?.deviceLinkDeviceId)) return;
         if (
           archive &&
           (attached.has(id) ||
@@ -92,6 +89,7 @@ export function WorkbenchSessionList({
           }))
         )
           return;
+        if (archive && archiveBlockedByRunning(id, byId.get(id)?.deviceLinkDeviceId)) return;
         if (sharedTaskId) {
           const result = (await window.electronAPI.sharedTask.account({
             action: 'close',
@@ -110,7 +108,7 @@ export function WorkbenchSessionList({
         );
       }
     },
-    [byId, attached, confirm, onChanged, runSessionAction, runningSessionIds, t, unarchiveSession],
+    [byId, attached, confirm, onChanged, runSessionAction, archiveBlockedByRunning, t, unarchiveSession],
   );
   const rename = useCallback(
     async (id: string, title: string) => {
