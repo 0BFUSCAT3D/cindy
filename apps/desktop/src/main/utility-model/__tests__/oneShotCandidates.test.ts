@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const localReady = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../local-model-runtime/preflight.js', () => ({ ensureManagedOllamaReadyForSession: localReady }));
 
@@ -49,10 +49,12 @@ vi.mock('../../maker-host/auth-adapters.js', () => ({
 
 vi.mock('../../maker-host/anthropic-responses-bridge-host.js', () => ({
   getChatgptBridgeAuth: vi.fn(),
+  getChatgptBridgeAuthForDispatch: vi.fn(),
 }));
 
 vi.mock('../../maker-host/grok-oauth-login.js', () => ({
   getGrokAccessToken: vi.fn(),
+  getGrokOAuthCredentialGeneration: vi.fn(() => 0),
 }));
 
 vi.mock('../../maker-host/generic-oauth.js', () => ({
@@ -66,6 +68,7 @@ vi.mock('../../maker-host/active-catalog.js', () => ({
 
 vi.mock('../../maker-host/provider-route.js', () => ({
   isProviderRouteMutationInProgress: vi.fn(() => false),
+  getProviderRouteCredentialRevision: vi.fn(() => 0),
 }));
 
 vi.mock('../../maker-host/model-disable-store.js', () => ({
@@ -103,20 +106,22 @@ import { fetch as undiciFetch } from 'undici';
 
 import { getAppCapabilities } from '../../appCapabilities.js';
 import { readClaudeApiKey } from '../../maker-host/auth-adapters.js';
-import { getChatgptBridgeAuth } from '../../maker-host/anthropic-responses-bridge-host.js';
-import { getGrokAccessToken } from '../../maker-host/grok-oauth-login.js';
+import { getChatgptBridgeAuth, getChatgptBridgeAuthForDispatch } from '../../maker-host/anthropic-responses-bridge-host.js';
+import { getGrokAccessToken, getGrokOAuthCredentialGeneration } from '../../maker-host/grok-oauth-login.js';
 import { readCachedGenericOAuthAccessToken } from '../../maker-host/generic-oauth.js';
 import {
   getActiveCatalog,
   isXdGatewayPaymentRequiredRoute,
 } from '../../maker-host/active-catalog.js';
 import { readModelDisableOverrides } from '../../maker-host/model-disable-store.js';
-import { isProviderRouteMutationInProgress } from '../../maker-host/provider-route.js';
+import { getProviderRouteCredentialRevision, isProviderRouteMutationInProgress } from '../../maker-host/provider-route.js';
 import { readCustomProviderKey } from '../../secrets/providerSecretStore.js';
 import { reportCindyGatewayKeyRejected } from '../../model-access/gatewayKeyRejection.js';
 import { getUtilityModelChainProfiles } from '../UtilityModelSelection.js';
+import { parseAutoPermissionReviewDecision } from '../../maker-host/auto-permission-reviewer.js';
 import {
   DEDICATED_AUTO_REVIEW_CANDIDATES,
+  createCustomAutoReviewFallback,
   getUtilityTextCandidates,
   isUtilityRoutePaymentRequired,
   requestDedicatedAutoReviewCandidateText,
@@ -129,13 +134,17 @@ const getProfiles = vi.mocked(getUtilityModelChainProfiles);
 const appCapabilities = vi.mocked(getAppCapabilities);
 const readKey = vi.mocked(readClaudeApiKey);
 const readCodexCreds = vi.mocked(getChatgptBridgeAuth);
+const readCodexDispatchAuth = vi.mocked(getChatgptBridgeAuthForDispatch);
+const codexAuthorizationCurrent = vi.fn((_providerId: string) => true);
 const readGrokToken = vi.mocked(getGrokAccessToken);
+const grokCredentialGeneration = vi.mocked(getGrokOAuthCredentialGeneration);
 const readGenericOAuthToken = vi.mocked(readCachedGenericOAuthAccessToken);
 const fetchMock = vi.mocked(undiciFetch);
 const activeCatalog = vi.mocked(getActiveCatalog);
 const xdPaymentRequiredRoute = vi.mocked(isXdGatewayPaymentRequiredRoute);
 const readDisableOverrides = vi.mocked(readModelDisableOverrides);
 const providerRouteMutationInProgress = vi.mocked(isProviderRouteMutationInProgress);
+const providerRouteCredentialRevision = vi.mocked(getProviderRouteCredentialRevision);
 const readCustomKey = vi.mocked(readCustomProviderKey);
 const reportKeyRejected = vi.mocked(reportCindyGatewayKeyRejected);
 
@@ -158,9 +167,16 @@ describe('utility one-shot candidates', () => {
     appCapabilities.mockReturnValue({ canUseCindyGateway: true } as never);
     readKey.mockReturnValue(null);
     readCodexCreds.mockRejectedValue(new Error('not authenticated'));
+    codexAuthorizationCurrent.mockReturnValue(true);
+    readCodexDispatchAuth.mockImplementation(async (providerId = 'openai') => ({
+      ...await (providerId === 'openai' ? readCodexCreds() : readCodexCreds(providerId)),
+      canDispatch: () => codexAuthorizationCurrent(providerId),
+    }));
     readGrokToken.mockRejectedValue(new Error('not authenticated'));
+    grokCredentialGeneration.mockReturnValue(0);
     readGenericOAuthToken.mockReturnValue(null);
     providerRouteMutationInProgress.mockReturnValue(false);
+    providerRouteCredentialRevision.mockReturnValue(0);
     readCustomKey.mockReturnValue(null);
     readDisableOverrides.mockReturnValue({ disabledModels: {}, disabledProviders: {} });
     activeCatalog.mockReturnValue({ providers: [] } as never);
@@ -183,6 +199,306 @@ describe('utility one-shot candidates', () => {
         missingCredentialMessage: 'api key missing',
       },
     ]);
+  });
+
+  describe('custom Auto-review fallback', () => {
+    const prompt = 'Review policy\n<review_input>\nuser request and action\n</review_input>';
+    const options = {
+      timeoutMs: 12_000,
+      validateResponse: (text: string) => parseAutoPermissionReviewDecision(text) !== null,
+    };
+    const response = (text: string) => ({
+      ok: true,
+      text: async () => JSON.stringify({ choices: [{ message: { content: text } }] }),
+    }) as never;
+
+    beforeEach(() => {
+      chainState.source = 'custom';
+      chainState.refs = ['cat:review-a:codex:small', 'cat:review-b:codex:small'];
+      activeCatalog.mockReturnValue({
+        providers: ['review-a', 'review-b'].map((id) => ({
+          id,
+          name: id,
+          source: 'user',
+          agents: ['codex'],
+          auth: { method: 'apiKey' },
+          routing: { codex: {
+            upstream: `https://${id}.example/v1`,
+            wireProtocol: 'openai-chat',
+            authStrategy: 'api-key-header',
+          } },
+          models: { codex: [{ id: 'small', name: 'Small', contextWindow: 100_000 }] },
+        })),
+      } as never);
+      readCustomKey.mockImplementation((id) => `${id}-secret`);
+    });
+
+    afterEach(() => { vi.useRealTimers(); });
+
+    it.each(['auto', 'env'] as const)('does not use a %s auxiliary chain', (source) => {
+      chainState.source = source;
+      expect(createCustomAutoReviewFallback()).toBeUndefined();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(readCustomKey).not.toHaveBeenCalled();
+    });
+
+    it('validates each response and preserves exact route credentials and native system separation', async () => {
+      fetchMock.mockResolvedValueOnce(response('not JSON'));
+      fetchMock.mockResolvedValueOnce(response('{"verdict":"allow"}'));
+      const result = await createCustomAutoReviewFallback()!(prompt, options);
+
+      expect(result).toMatchObject({ ok: true, providerId: 'review-b', text: '{"verdict":"allow"}' });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        'https://review-a.example/v1/chat/completions',
+        'https://review-b.example/v1/chat/completions',
+      ]);
+      for (const [index, [, init]] of fetchMock.mock.calls.entries()) {
+        expect(init?.headers).toMatchObject({ Authorization: `Bearer review-${index === 0 ? 'a' : 'b'}-secret` });
+        const body = JSON.parse(String(init?.body));
+        expect(body).toMatchObject({
+          model: 'small', max_tokens: 384,
+          messages: [
+            { role: 'system', content: 'Review policy' },
+            { role: 'user', content: '<review_input>\nuser request and action\n</review_input>' },
+          ],
+        });
+        expect(body).not.toHaveProperty('tools');
+        expect(body).not.toHaveProperty('tool_choice');
+      }
+    });
+
+    it.each(['allow', 'block', 'ask'])('does not try another model after a valid %s', async (verdict) => {
+      fetchMock.mockResolvedValueOnce(response(JSON.stringify({ verdict })));
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, text: JSON.stringify({ verdict }), providerId: 'review-a',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves the decision budget instead of consuming it on optional chat thinking', async () => {
+      fetchMock.mockImplementation(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        // A thinking-enabled upstream consumes the short output cap on reasoning,
+        // then returns no final answer. Disabling thinking leaves room for JSON.
+        return response(body.thinking?.type === 'disabled' ? '{"verdict":"block"}' : '');
+      });
+
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, providerId: 'review-a', text: '{"verdict":"block"}',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ max_tokens: 384 });
+    });
+
+    it('uses the supported low effort for a subscription Responses fallback', async () => {
+      chainState.refs = ['codex-gpt-5.4-nano'];
+      activeCatalog.mockReturnValue({ providers: [{
+        id: 'openai', name: 'OpenAI', source: 'builtin', agents: ['codex'],
+        auth: { method: 'oauth' },
+        routing: { codex: { upstream: 'https://chatgpt.example/backend-api/codex', authStrategy: 'oauth-passthrough' } },
+        models: { codex: [{ id: 'gpt-5.4-nano', name: 'Nano', contextWindow: 272_000 }] },
+      }] } as never);
+      readCodexCreds.mockResolvedValue({ accessToken: 'codex-token', accountId: 'account-1' });
+      fetchMock.mockResolvedValueOnce({
+        ok: true, text: async () => JSON.stringify({ output_text: '{"verdict":"ask"}' }),
+      } as never);
+
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, providerId: 'openai', text: '{"verdict":"ask"}',
+      });
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({ reasoning: { effort: 'low' } });
+      expect(body).not.toHaveProperty('thinking');
+      expect(body).not.toHaveProperty('tools');
+    });
+
+    it('does not expand an exhausted custom chain into defaults or the gateway', async () => {
+      readKey.mockReturnValue('gateway-key');
+      readCustomKey.mockReturnValue(null);
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    describe('subscription authorization', () => {
+      const providers = ['openai', 'openai-work', 'xai', 'xai-work'];
+      const configureSubscription = (providerId: string) => {
+        const openai = providerId.startsWith('openai');
+        const model = openai ? 'gpt-5.4-nano' : 'xai/grok-4.3';
+        chainState.refs = [`cat:${providerId}:codex:${model}`];
+        activeCatalog.mockReturnValue({ providers: [{
+          id: providerId, name: providerId, source: providerId.endsWith('-work') ? 'user' : 'builtin',
+          agents: ['codex'], auth: { method: 'oauth', native: openai ? 'codex' : 'xai' },
+          routing: { codex: { upstream: 'https://subscription.example/v1', authStrategy: 'provider-oauth-header' } },
+          models: { codex: [{ id: model, name: model, contextWindow: 272_000 }] },
+        }] } as never);
+        readCodexCreds.mockResolvedValue({ accessToken: 'selected-token', accountId: 'selected-account' });
+        readGrokToken.mockResolvedValue('selected-token');
+      };
+
+      it.each(providers)('discards a late allow after %s authorization changes, even with the same cached credentials', async (providerId) => {
+        configureSubscription(providerId);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          text: async () => {
+            // Logout/reconnect may leave the same token in a reader cache. The
+            // native authorization proof/generation must still invalidate it.
+            codexAuthorizationCurrent.mockImplementation((id) => id !== providerId);
+            grokCredentialGeneration.mockImplementation((id) => id === providerId ? 1 : 0);
+            return JSON.stringify({ output_text: '{"verdict":"allow"}' });
+          },
+        } as never);
+        await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(providers)('accepts %s decisions when only another subscription changes', async (providerId) => {
+        configureSubscription(providerId);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          text: async () => {
+            codexAuthorizationCurrent.mockImplementation((id) => id !== 'unrelated');
+            grokCredentialGeneration.mockImplementation((id) => id === 'unrelated' ? 1 : 0);
+            return JSON.stringify({ output_text: '{"verdict":"allow"}' });
+          },
+        } as never);
+        await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: true, providerId });
+      });
+
+      it.each(['xai', 'xai-work'])('preserves an in-flight %s decision across ordinary access-token refresh', async (providerId) => {
+        configureSubscription(providerId);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          text: async () => {
+            readGrokToken.mockResolvedValue('refreshed-token');
+            return JSON.stringify({ output_text: '{"verdict":"ask"}' });
+          },
+        } as never);
+        await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: true, providerId });
+      });
+    });
+
+    it('skips a disabled route and uses only the next selected route', async () => {
+      readDisableOverrides.mockReturnValue({ disabledModels: {}, disabledProviders: { 'review-a': true } });
+      fetchMock.mockResolvedValueOnce(response('{"verdict":"ask"}'));
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, providerId: 'review-b',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['provider', 'before dispatch'], ['model', 'before dispatch'],
+      ['provider', 'after dispatch'], ['model', 'after dispatch'],
+    ])('rejects a %s disabled %s instead of accepting its decision', async (kind, phase) => {
+      const disable = () => readDisableOverrides.mockReturnValue(kind === 'provider'
+        ? { disabledModels: {}, disabledProviders: { 'review-a': true } }
+        : { disabledModels: { 'review-a:small': true }, disabledProviders: {} });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        text: async () => {
+          if (phase === 'after dispatch') disable();
+          return JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}' } }] });
+        },
+      } as never);
+      const fallback = createCustomAutoReviewFallback()!;
+      if (phase === 'before dispatch') disable();
+      await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(phase === 'after dispatch' ? 1 : 0);
+    });
+
+    it.each(['owner', 'chain', 'boundary'])('rejects a stale %s captured before the dedicated phase', async (change) => {
+      const fallback = createCustomAutoReviewFallback()!;
+      if (change === 'owner') ownerState.key = 'owner-b';
+      if (change === 'chain') chainState.refs.reverse();
+      if (change === 'boundary') ownerState.pending = true;
+      await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['endpoint', 'headers', 'credential', 'recreated', 'mutation'])
+      ('rejects a provider %s change while dedicated candidates run', async (change) => {
+        const fallback = createCustomAutoReviewFallback()!;
+        const provider = getActiveCatalog().providers[0]!;
+        if (change === 'endpoint') provider.routing.codex!.upstream = 'https://replacement.example/v1';
+        if (change === 'headers') provider.routing.codex!.headerOverride = { 'X-Tenant': 'other-tenant' };
+        // Credential edits and delete/recreate commit monotonic revisions even
+        // when the provider id, endpoint and visible descriptors stay identical.
+        if (change === 'credential') providerRouteCredentialRevision.mockReturnValue(1);
+        if (change === 'recreated') providerRouteCredentialRevision.mockReturnValue(2);
+        if (change === 'mutation') providerRouteMutationInProgress.mockReturnValue(true);
+        await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: false });
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+    it.each(['endpoint', 'credential'])('discards a valid late result after a provider %s change', async (change) => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        text: async () => {
+          if (change === 'endpoint') getActiveCatalog().providers[0]!.routing.codex!.upstream = 'https://replacement.example/v1';
+          else providerRouteCredentialRevision.mockReturnValue(1);
+          return JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}' } }] });
+        },
+      } as never);
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps unrelated provider changes and display metadata out of the routing identity', async () => {
+      const fallback = createCustomAutoReviewFallback()!;
+      getActiveCatalog().providers[0]!.name = 'Updated label';
+      providerRouteCredentialRevision.mockImplementation((id) => id === 'unrelated' ? 1 : 0);
+      readDisableOverrides.mockReturnValue({ disabledModels: { 'unrelated:small': true }, disabledProviders: { unrelated: true } });
+      fetchMock.mockResolvedValueOnce(response('{"verdict":"allow"}'));
+      await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: true, providerId: 'review-a' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['owner', 'chain'])('discards a response and stops the chain if the %s changes in flight', async (change) => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        text: async () => {
+          if (change === 'owner') ownerState.key = 'owner-b';
+          else chainState.refs.reverse();
+          return JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}' } }] });
+        },
+      } as never);
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds credential discovery per legacy profile and never dispatches the late request', async () => {
+      vi.useFakeTimers();
+      const customProviders = getActiveCatalog().providers;
+      activeCatalog.mockReturnValue({ providers: [
+        ...customProviders,
+        {
+          id: 'openai', name: 'OpenAI', source: 'builtin', agents: ['codex'],
+          auth: { method: 'oauth' },
+          routing: { codex: { upstream: 'https://chatgpt.example/backend-api/codex', authStrategy: 'oauth-passthrough' } },
+          models: { codex: [{ id: 'gpt-5.4-nano', name: 'Nano', contextWindow: 272_000 }] },
+        },
+      ] } as never);
+      chainState.refs = ['codex-gpt-5.4-nano', 'cat:review-b:codex:small'];
+      let finishAuth!: (value: { accessToken: string; accountId: string }) => void;
+      readCodexCreds.mockImplementationOnce(() => new Promise((resolve) => { finishAuth = resolve; }));
+      fetchMock.mockResolvedValueOnce(response('{"verdict":"allow"}'));
+
+      const pending = createCustomAutoReviewFallback()!(prompt, options);
+      await vi.advanceTimersByTimeAsync(options.timeoutMs);
+      await expect(pending).resolves.toMatchObject({ ok: true, providerId: 'review-b' });
+      finishAuth({ accessToken: 'late-token', accountId: 'account-1' });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('https://review-b.example/v1/chat/completions');
+    });
+
+    it('does not dispatch any auxiliary route after cancellation', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(createCustomAutoReviewFallback()!(prompt, { ...options, signal: controller.signal }))
+        .resolves.toMatchObject({ ok: false });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it('skips unauthenticated codex and keeps configured LiteLLM when API key exists', async () => {
@@ -2480,7 +2796,10 @@ describe('utility one-shot candidates', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('uses a supported ChatGPT subscription model with a tool-free Responses body', async () => {
+  it.each([
+    { candidateIndex: 1, model: 'gpt-5.4-nano' },
+    { candidateIndex: 2, model: 'gpt-6-luna' },
+  ])('uses $model with a tool-free subscription Responses body', async ({ candidateIndex, model }) => {
     activeCatalog.mockReturnValue({
       providers: [{
         id: 'openai',
@@ -2495,7 +2814,7 @@ describe('utility one-shot candidates', () => {
           },
         },
         models: {
-          codex: [{ id: 'gpt-5.4-nano', name: 'Nano', contextWindow: 272_000 }],
+          codex: [{ id: model, name: model, contextWindow: 272_000 }],
         },
       }],
     } as never);
@@ -2508,18 +2827,18 @@ describe('utility one-shot candidates', () => {
 
     const result = await requestDedicatedAutoReviewCandidateText(
       'Review policy\n<review_input>\nclassify\n</review_input>',
-      DEDICATED_AUTO_REVIEW_CANDIDATES[1],
+      DEDICATED_AUTO_REVIEW_CANDIDATES[candidateIndex],
       { timeoutMs: 8_000 },
     );
 
     expect(result).toMatchObject({
       ok: true,
       providerId: 'openai',
-      model: 'gpt-5.4-nano',
+      model,
     });
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
     expect(body).toMatchObject({
-      model: 'gpt-5.4-nano',
+      model,
       reasoning: { effort: 'low' },
       instructions: 'Review policy',
       input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '<review_input>\nclassify\n</review_input>' }] }],
@@ -2527,6 +2846,31 @@ describe('utility one-shot candidates', () => {
     expect(body).not.toHaveProperty('tools');
     expect(body).not.toHaveProperty('tool_choice');
     expect(body).not.toHaveProperty('parallel_tool_calls');
+  });
+
+  it('skips GPT-6 Luna when the subscription catalog only offers the previous Luna model', async () => {
+    activeCatalog.mockReturnValue({
+      providers: [{
+        id: 'openai',
+        agents: ['codex'],
+        routing: { codex: { upstream: 'https://chatgpt.example/backend-api/codex' } },
+        models: { codex: [{ id: 'gpt-5.6-luna' }] },
+      }],
+    } as never);
+
+    const result = await requestDedicatedAutoReviewCandidateText(
+      'classify',
+      DEDICATED_AUTO_REVIEW_CANDIDATES[2],
+      { timeoutMs: 8_000 },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'no_candidate',
+      attempts: [expect.objectContaining({ model: 'gpt-6-luna', reason: 'model_unavailable' })],
+    });
+    expect(readCodexCreds).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('does not start OpenAI HTTP after credential refresh outlives the candidate', async () => {

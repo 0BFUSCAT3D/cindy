@@ -236,7 +236,7 @@ import { resolveDesktopClaudeSubagentModelAccess } from './subagent-model-access
 import { claudeSubagentUsageBridge } from './claude-subagent-usage-bridge.js';
 import { createAutoPermissionReviewer } from './auto-permission-reviewer.js';
 import { createToolLoopReviewer } from './tool-loop-reviewer.js';
-import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
+import { createCustomAutoReviewFallback, requestUtilityText } from '../utility-model/oneShotCandidates.js';
 import {
   AUTO_REVIEW_ROUTER_GUARD_TIMEOUT_MS,
   createAutoReviewModelRouter,
@@ -428,6 +428,7 @@ export function setProviderAccessRuntimeRefreshListener(listener: (() => void) |
 
 const requestAutoReviewText = createAutoReviewModelRouter({
   logger: desktopMakerLogger,
+  createAuxiliaryFallback: createCustomAutoReviewFallback,
 });
 
 let autoReviewContextResolver: AutoReviewDelegate['prepareRequest'];

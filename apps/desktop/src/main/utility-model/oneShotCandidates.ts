@@ -12,8 +12,8 @@ import { createLogger } from '../logger.js';
 import { getAppCapabilities } from '../appCapabilities.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { readClaudeApiKey } from '../maker-host/auth-adapters.js';
-import { getChatgptBridgeAuth } from '../maker-host/anthropic-responses-bridge-host.js';
-import { getGrokAccessToken } from '../maker-host/grok-oauth-login.js';
+import { getChatgptBridgeAuth, getChatgptBridgeAuthForDispatch } from '../maker-host/anthropic-responses-bridge-host.js';
+import { getGrokAccessToken, getGrokOAuthCredentialGeneration } from '../maker-host/grok-oauth-login.js';
 import { readCachedGenericOAuthAccessToken } from '../maker-host/generic-oauth.js';
 // undici 的 fetch,但 per-request 现取系统代理(裸 undici 不吃代理设置)。
 import { outboundUndiciFetch as undiciFetch } from '../maker-host/outbound-fetch.js';
@@ -24,7 +24,7 @@ import {
 } from '../maker-host/active-catalog.js';
 import { readModelDisableOverrides } from '../maker-host/model-disable-store.js';
 import { isModelDisabled, isProviderDisabled } from '@cindy/model-providers';
-import { isProviderRouteMutationInProgress } from '../maker-host/provider-route.js';
+import { getProviderRouteCredentialRevision, isProviderRouteMutationInProgress } from '../maker-host/provider-route.js';
 import { withOpenCodeGoSessionHeader } from '../maker-host/opencode-go-session.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { reportCindyGatewayKeyRejected } from '../model-access/gatewayKeyRejection.js';
@@ -34,6 +34,7 @@ import { ensureManagedOllamaReadyForSession } from '../local-model-runtime/prefl
 import { parseAuxiliaryModelRef, type ParsedAuxiliaryModelRef } from '../../shared/auxiliaryModelChain.js';
 import { getUtilityModelChainProfiles } from './UtilityModelSelection.js';
 import { getEffectiveAuxiliaryModelChain } from './resolveAuxiliaryModelChain.js';
+import { requestUtilityTextWithinTimeout } from './utilityTextTimeout.js';
 import { getUtilityModelProfile, isUtilityModelProviderKind } from '../../shared/utilityModelProfiles.js';
 import type { UtilityModelProfile, UtilityModelTransport } from '../../shared/utilityModelProfiles.js';
 import type {
@@ -374,10 +375,9 @@ export async function requestExplicitUtilityText(
 const DEDICATED_AUTO_REVIEW_MAX_TOKENS = 384;
 
 /**
- * Auto-review 的封闭候选表。它刻意不接受调用方传 provider/model：待审内容只能
- * 发往 Cindy 托管网关或用户已连接的 OpenAI 订阅，不能跟随主会话落到 xAI、DeepSeek、
- * Kimi 或自定义 BYOM。Claude 订阅不在表内:它只供内置 Claude Code CLI 自己使用,
- * Cindy 的直连请求不得借用。
+ * Auto-review 第一阶段的封闭候选表，不跟随主会话的 provider/model。
+ * 全部不可用后，路由器才尝试用户明确自定义的辅助模型链；自动／环境变量辅助链不参与。
+ * Claude 订阅只供内置 Claude Code CLI 自己使用，Cindy 的直连请求不得借用。
  */
 export const DEDICATED_AUTO_REVIEW_CANDIDATES = Object.freeze([
   {
@@ -400,7 +400,7 @@ export const DEDICATED_AUTO_REVIEW_CANDIDATES = Object.freeze([
     id: 'chatgpt-luna',
     providerId: 'openai',
     agentKind: 'codex',
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     transport: 'codex-responses',
     reasoningEffort: 'low',
   },
@@ -415,6 +415,107 @@ export const DEDICATED_AUTO_REVIEW_CANDIDATES = Object.freeze([
 
 export type DedicatedAutoReviewCandidate = (typeof DEDICATED_AUTO_REVIEW_CANDIDATES)[number];
 
+function splitAutoReviewPrompt(prompt: string): { systemPrompt?: string; evidence: string } {
+  // The reviewer escapes delimiters inside evidence. Keep Host rules on the native
+  // system channel, and action/user strings on the user channel for every candidate.
+  const boundary = prompt.indexOf('\n<review_input>\n');
+  return {
+    systemPrompt: boundary >= 0 ? prompt.slice(0, boundary) : undefined,
+    evidence: boundary >= 0 ? prompt.slice(boundary + 1) : prompt,
+  };
+}
+
+export type AutoReviewAuxiliaryFallback = (
+  prompt: string,
+  opts: { timeoutMs: number; signal?: AbortSignal; validateResponse: (text: string) => boolean },
+) => Promise<UtilityTextResult>;
+
+/** Capture explicit routing consent before the dedicated chain starts awaiting. */
+export function createCustomAutoReviewFallback(): AutoReviewAuxiliaryFallback | undefined {
+  const chain = getEffectiveAuxiliaryModelChain();
+  if (chain.source !== 'custom' || chain.refs.length === 0) return undefined;
+  const ownerScopeKey = activeOwnerScopeKey();
+  const chainSnapshot = stableSnapshot(chain);
+  const snapshotRoute = (route: UtilityTextDispatchRoute): string => {
+    const provider = getActiveCatalog().providers.find((item) => item.id === route.providerId);
+    return stableSnapshot({
+      source: provider?.source,
+      auth: provider?.auth,
+      routing: provider?.routing[route.agentKind],
+      disabled: isProviderModelRouteDisabled(route.providerId, route.model),
+      // The existing revision survives delete/recreate and covers secret-only edits.
+      credentialRevision: getProviderRouteCredentialRevision(route.providerId),
+    });
+  };
+  const routes = chain.refs.flatMap((ref) => {
+    const parsed = parseAuxiliaryModelRef(ref);
+    if (!parsed) return [];
+    const route = auxiliaryRefDispatchRoute(parsed);
+    return [{ route, snapshot: snapshotRoute(route) }];
+  });
+  const stillCurrent = (): boolean => !isAppSessionBoundaryPending()
+    && activeOwnerScopeKey() === ownerScopeKey
+    && stableSnapshot(getEffectiveAuxiliaryModelChain()) === chainSnapshot
+    && routes.every(({ route, snapshot }) =>
+      !isProviderRouteMutationInProgress(route.providerId) && snapshotRoute(route) === snapshot,
+    );
+
+  return async (prompt, opts) => {
+    const { systemPrompt, evidence } = splitAutoReviewPrompt(prompt);
+    const attempts: UtilityTextAttempt[] = [];
+    for (const ref of chain.refs) {
+      if (opts.signal?.aborted || !stillCurrent()) break;
+      const parsed = parseAuxiliaryModelRef(ref);
+      if (!parsed) continue;
+      const route = auxiliaryRefDispatchRoute(parsed);
+      const routing = getActiveCatalog().providers.find((provider) => provider.id === route.providerId)
+        ?.routing[route.agentKind];
+      const failure = (reason: 'timeout' | 'request_failed'): UtilityTextResult => ({
+        ok: false,
+        reason: reason === 'timeout' ? 'timeout' : 'all_candidates_failed',
+        attempts: [{
+          providerId: route.providerId,
+          model: route.model,
+          transport: route.agentKind === 'codex' && routing?.wireProtocol !== 'openai-chat'
+            ? 'codex-responses' : 'litellm-chat-completions',
+          status: 'failed',
+          reason,
+        }],
+      });
+      let result: UtilityTextResult;
+      try {
+        // Normalize legacy profiles into exact catalog HTTP routes too. Never call
+        // Agent.oneShot: approval must not start a development Agent or tool loop.
+        result = await requestUtilityTextWithinTimeout(
+          (signal) => requestExplicitUtilityText(evidence, {
+            ...route,
+            systemPrompt,
+            maxTokens: DEDICATED_AUTO_REVIEW_MAX_TOKENS,
+            timeoutMs: opts.timeoutMs,
+            signal,
+            reasoningEffort: 'low',
+            // Use the auxiliary transport's short-output policy: switch off optional
+            // thinking; Responses maps this to its supported low effort instead.
+            disableReasoning: true,
+            validateResponse: opts.validateResponse,
+            beforeDispatch: async () => !signal.aborted && stillCurrent(),
+          }),
+          opts.timeoutMs,
+          opts.signal,
+          () => failure('timeout'),
+        );
+      } catch {
+        // A credential/catalog failure must not bypass the next selected model.
+        result = failure('request_failed');
+      }
+      if (opts.signal?.aborted || !stillCurrent()) break;
+      if (result.ok) return result;
+      attempts.push(...result.attempts);
+    }
+    return failedChainResult(attempts);
+  };
+}
+
 /**
  * 执行一个专用 Auto-review 候选。
  *
@@ -426,11 +527,7 @@ export async function requestDedicatedAutoReviewCandidateText(
   candidate: DedicatedAutoReviewCandidate,
   opts: { timeoutMs: number; signal?: AbortSignal },
 ): Promise<UtilityTextResult> {
-  // The reviewer escapes delimiters inside evidence. Keep Host rules on the native
-  // system channel, and action/user strings on the user channel for every candidate.
-  const evidenceBoundary = prompt.indexOf('\n<review_input>\n');
-  const systemPrompt = evidenceBoundary >= 0 ? prompt.slice(0, evidenceBoundary) : undefined;
-  const evidence = evidenceBoundary >= 0 ? prompt.slice(evidenceBoundary + 1) : prompt;
+  const { systemPrompt, evidence } = splitAutoReviewPrompt(prompt);
   const profile: UtilityModelProfile = {
     id: candidate.providerId,
     model: candidate.model,
@@ -1143,8 +1240,15 @@ async function requestBuiltinProviderText(
 
   if (isOpenAiSubscriptionProvider(input.provider)) {
     let creds: Awaited<ReturnType<typeof getChatgptBridgeAuth>>;
+    let credentialStillCurrent: (() => boolean) | undefined;
     try {
-      creds = await (input.provider.id === 'openai' ? getChatgptBridgeAuth() : getChatgptBridgeAuth(input.provider.id));
+      if (input.beforeDispatch) {
+        const auth = await getChatgptBridgeAuthForDispatch(input.provider.id);
+        creds = auth;
+        credentialStillCurrent = auth.canDispatch;
+      } else {
+        creds = await (input.provider.id === 'openai' ? getChatgptBridgeAuth() : getChatgptBridgeAuth(input.provider.id));
+      }
     } catch {
       return { ok: false, reason: 'no_candidate', attempts: [skippedAttempt(profile, 'not_authenticated')] };
     }
@@ -1189,22 +1293,15 @@ async function requestBuiltinProviderText(
               model: input.model,
             })
           : undefined,
-        credentialStillCurrent: requestOpts?.beforeDispatch
-          ? async () => {
-              try {
-                const current = await (input.provider.id === 'openai' ? getChatgptBridgeAuth() : getChatgptBridgeAuth(input.provider.id));
-                return current.accountId === accountId && current.accessToken === creds.accessToken;
-              } catch {
-                return false;
-              }
-            }
-          : undefined,
+        credentialStillCurrent: requestOpts?.beforeDispatch ? credentialStillCurrent : undefined,
         routeStillCurrent: requestOpts?.beforeDispatch ? input.routeStillCurrent : undefined,
       }),
     }], prompt, [], input);
   }
 
   if (providerCatalogId(input.provider) === 'xai') {
+    const credentialGeneration = input.beforeDispatch
+      ? getGrokOAuthCredentialGeneration(input.provider.id) : undefined;
     let accessToken: string;
     try {
       accessToken = await (input.provider.id === 'xai' ? getGrokAccessToken() : getGrokAccessToken(input.provider.id));
@@ -1240,8 +1337,12 @@ async function requestBuiltinProviderText(
           : undefined,
         credentialStillCurrent: requestOpts?.beforeDispatch
           ? async () => {
+              if (getGrokOAuthCredentialGeneration(input.provider.id) !== credentialGeneration) return false;
               try {
-                return (await (input.provider.id === 'xai' ? getGrokAccessToken() : getGrokAccessToken(input.provider.id))) === accessToken;
+                await (input.provider.id === 'xai' ? getGrokAccessToken() : getGrokAccessToken(input.provider.id));
+                // Token refresh stays within the same login. Logout/reconnect must
+                // invalidate the request even when a cached token is unchanged.
+                return getGrokOAuthCredentialGeneration(input.provider.id) === credentialGeneration;
               } catch {
                 return false;
               }
@@ -1757,6 +1858,12 @@ async function requestProviderHttpText(input: {
       }
       throw new UtilityTextExecutionError({ reason: 'empty_response' });
     }
+    // A valid response cannot outlive the route or authorization that sent it.
+    // Recheck credentials and routing after the complete response, including retries.
+    if (
+      (input.credentialStillCurrent && !(await input.credentialStillCurrent()))
+      || (input.routeStillCurrent && !input.routeStillCurrent())
+    ) throw new UtilityTextExecutionError({ reason: 'request_failed' });
     return text;
   } catch (error) {
     if (error instanceof UtilityTextExecutionError) throw error;
