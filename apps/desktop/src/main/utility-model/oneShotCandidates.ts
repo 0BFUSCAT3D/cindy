@@ -474,7 +474,9 @@ export function createCustomAutoReviewFallback(): AutoReviewAuxiliaryFallback | 
             timeoutMs: opts.timeoutMs,
             signal,
             reasoningEffort: 'low',
-            disableReasoning: false,
+            // Use the auxiliary transport's short-output policy: switch off optional
+            // thinking; Responses maps this to its supported low effort instead.
+            disableReasoning: true,
             validateResponse: opts.validateResponse,
             beforeDispatch: async () => !signal.aborted && stillCurrent(),
           }),

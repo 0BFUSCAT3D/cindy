@@ -261,6 +261,43 @@ describe('utility one-shot candidates', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it('preserves the decision budget instead of consuming it on optional chat thinking', async () => {
+      fetchMock.mockImplementation(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        // A thinking-enabled upstream consumes the short output cap on reasoning,
+        // then returns no final answer. Disabling thinking leaves room for JSON.
+        return response(body.thinking?.type === 'disabled' ? '{"verdict":"block"}' : '');
+      });
+
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, providerId: 'review-a', text: '{"verdict":"block"}',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ max_tokens: 384 });
+    });
+
+    it('uses the supported low effort for a subscription Responses fallback', async () => {
+      chainState.refs = ['codex-gpt-5.4-nano'];
+      activeCatalog.mockReturnValue({ providers: [{
+        id: 'openai', name: 'OpenAI', source: 'builtin', agents: ['codex'],
+        auth: { method: 'oauth' },
+        routing: { codex: { upstream: 'https://chatgpt.example/backend-api/codex', authStrategy: 'oauth-passthrough' } },
+        models: { codex: [{ id: 'gpt-5.4-nano', name: 'Nano', contextWindow: 272_000 }] },
+      }] } as never);
+      readCodexCreds.mockResolvedValue({ accessToken: 'codex-token', accountId: 'account-1' });
+      fetchMock.mockResolvedValueOnce({
+        ok: true, text: async () => JSON.stringify({ output_text: '{"verdict":"ask"}' }),
+      } as never);
+
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({
+        ok: true, providerId: 'openai', text: '{"verdict":"ask"}',
+      });
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({ reasoning: { effort: 'low' } });
+      expect(body).not.toHaveProperty('thinking');
+      expect(body).not.toHaveProperty('tools');
+    });
+
     it('does not expand an exhausted custom chain into defaults or the gateway', async () => {
       readKey.mockReturnValue('gateway-key');
       readCustomKey.mockReturnValue(null);
