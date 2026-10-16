@@ -69,6 +69,7 @@ import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
 import { CompanionEntering } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
+import { BotGroupTaskCard } from './BotGroupTaskCard';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
 import { BotGroupQuote } from './BotGroupQuote';
 import {
@@ -576,6 +577,14 @@ function BotGroupTimelineItem({
           onStart={() => onPlanAction('start')} onDismiss={() => onPlanAction('dismiss')} onEditStep={onEditStep} />
         : <>
           {quoteDisplay ? <BotGroupQuote display={quoteDisplay} /> : null}
+          {/* A task this teammate started from the group; mine is live, another owner's is a snapshot.
+              An author no longer in the group is unknown: its task may run on another computer, so it
+              stays a snapshot rather than a lookup on this one (same rule as the desktop timeline).
+              The live card reads the owned companion's home computer when it is known (the group may
+              be opened through another computer, or straight from the Chat Server with none); else
+              the computer the group was opened through. */}
+          {message.task ? <BotGroupTaskCard task={message.task} owned={member !== undefined && member.isOwned !== false}
+            deviceId={member?.homeDeviceId || deviceId || ''} /> : null}
           {message.attachments?.length ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align="left" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} /> : null}
           {message.content.trim() ? <BotGroupMarkdownText content={message.content} /> : null}
           <BotGroupHandoffFiles files={message.files} />

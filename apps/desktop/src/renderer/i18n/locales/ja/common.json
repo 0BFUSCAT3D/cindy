@@ -9268,6 +9268,17 @@
       "speaking": {
         "planning": "役割分担を考えています…"
       },
+      "task": {
+        "label": "タスク",
+        "state": {
+          "started": "進行中",
+          "waiting": "確認待ち",
+          "completed": "完了",
+          "failed": "失敗",
+          "cancelled": "キャンセル済み",
+          "timed-out": "タイムアウト"
+        }
+      },
       "files": {
         "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります",
         "untitled": "添付ファイル",
