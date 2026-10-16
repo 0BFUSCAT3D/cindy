@@ -36,6 +36,7 @@ const filePath = () => path.join(dir, state.scope, 'provider-share-approval-wind
 const assertCurrent = () => { if (state.boundaryPending) throw new Error('account boundary'); };
 
 async function loadProcess() {
+  // reset-modules: each case starts a fresh Electron main-process runtime so retained ownership cannot leak between accounts.
   vi.resetModules();
   windows = await import('../providerShareApprovalWindows');
   windows.configureProviderShareApprovalWindows({ filePath, scopeKey: () => state.scope });

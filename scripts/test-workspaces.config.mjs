@@ -107,6 +107,10 @@ const desktopGuardInclude = [
   'src/main/__tests__/gitContextIpcSecurity.test.ts',
   'src/main/__tests__/isolatedOnProductionProfileStartup.test.ts',
   'src/main/__tests__/windowThemeVibrancyIpcSecurity.test.ts',
+  // This contract executes the exported close-generation functions in isolation because importing
+  // the full device-link singleton would start Electron runtime wiring. Keep it in the explicit
+  // guard tier rather than letting its source extraction enter ordinary unit tests.
+  'src/main/mcp-apps/__tests__/remoteViews.test.ts',
   'src/main/cindy-brain/__tests__/forgeOidcInstallEntry.test.ts',
   'src/main/cindy-brain/__tests__/ghostDevRuntimeContract.test.ts',
   'src/main/cindy-brain/__tests__/ghostIpcMutationLease.test.ts',
