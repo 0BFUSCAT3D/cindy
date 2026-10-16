@@ -97,7 +97,7 @@ export function remoteFileVersionCache(
       }
       assertCurrent();
       if (!verified || !supportedMime(verified)) return;
-      const written = await integrationCachePut(
+      await integrationCachePut(
         {
           cacheKey: key,
           integration: INTEGRATION,
@@ -110,7 +110,9 @@ export function remoteFileVersionCache(
       assertCurrent();
       // Use the warehouse's existing byte budget. Only this integration's cache
       // is eligible: attachments, pinned media and other integrations stay protected.
-      const live = new Set([written.hash]);
+      // The consumer owns the input file, not this warehouse copy. Even the
+      // newest copy must be evictable when other integrations fill the budget.
+      const live = new Set<string>();
       const scan = await scanCache({ live, integration: INTEGRATION }, db);
       assertCurrent();
       await evictCacheBlobs(
