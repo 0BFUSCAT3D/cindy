@@ -171,7 +171,7 @@ describe('sessionMenu navigation', () => {
     expect(sessionMenuCopyLink(session({
       id: 'abc',
       deviceLinkDeviceId: sharedTaskHostPeer('shared-task', 'host-device'),
-    }))).toBe('cindy://session/abc?device=host-device');
+    }))).toBe('cindy://session/abc');
   });
 
   it('settles back navigation in two stages', () => {

@@ -1,4 +1,4 @@
-import { parseSharedTaskPeer } from '@cindy/device-link';
+import { isSharedTaskPeer } from '@cindy/device-link';
 import { BRAND_IDENTITY, allDeepLinkSchemes } from '@cindy/maker-shared/brand-identity';
 import type { RemoteSession } from '@/session/types';
 
@@ -24,8 +24,8 @@ export function isCindyDeepLinkUrl(url: string): boolean {
 }
 
 /**
- * deviceId = 会话归属的 device-link 设备,冻进 `?device=`(与桌面端 builder 同形):
- * 目标任务归档 / 未同步后,点开与引用仍能按它找到那台电脑,不必猜当前设备。
+ * 同账号任务的 device-link 设备冻进 `?device=`(与桌面端 builder 同形):
+ * 目标任务归档 / 未同步后仍能找到所属电脑。共享访客链接保留原有无设备格式。
  */
 export interface MobileSessionDeepLinkOptions {
   /** 当前同步的任务信息优先于页面保留的设备路由。 */
@@ -39,12 +39,14 @@ function sessionDeepLinkQuery(
 ): string {
   const pairs: string[] = [];
   if (messageClientId) pairs.push(`message=${encodeURIComponent(messageClientId)}`);
-  // 共享任务句柄只在当前客户端有效;跨端链接携带房主的真实电脑 ID。
   const sourceDeviceId = opts?.session?.canonicalDeviceId
     ?? opts?.session?.deviceLinkDeviceId
     ?? opts?.deviceId;
-  const deviceId = parseSharedTaskPeer(sourceDeviceId)?.deviceId ?? sourceDeviceId;
-  if (deviceId) pairs.push(`device=${encodeURIComponent(deviceId)}`);
+  // 共享句柄只在当前客户端有效,其物理设备也不代表访客的授权路由。
+  // 保留共享链接原有格式,由已同步的共享任务目录提供路由。
+  if (sourceDeviceId && !isSharedTaskPeer(sourceDeviceId)) {
+    pairs.push(`device=${encodeURIComponent(sourceDeviceId)}`);
+  }
   return pairs.length > 0 ? `?${pairs.join('&')}` : '';
 }
 
@@ -123,9 +125,9 @@ export function parseSessionDeepLinkUrl(url: string): SessionDeepLinkTarget | nu
 /**
  * 点开 / 解析会话深链时目标任务所在的设备。已同步列表反查到的可达设备优先
  * (re-link 后深链冻结的 `?device=` 可能已过期);列表里没有(已归档 / 尚未同步)
- * 时用冻结值,再退回当前任务所在设备。手机与桌面端生成远程会话深链时都会冻结
- * `?device=`;不带它的只剩电脑本机生成的深链(Agent 回复正文、桌面端本机会话),
- * 多在同一台电脑的任务里出现,归档任务不在列表里,但仍在那台电脑上。
+ * 时用冻结值,再退回当前任务所在设备。同账号远程任务链接会冻结 `?device=`;
+ * 电脑本机生成的深链和共享访客链接可以不带它。共享访问仍依赖既有授权目录,
+ * 这里不负责冷启动恢复共享身份。
  */
 export function resolveSessionLinkDeviceId({
   listedDeviceId,

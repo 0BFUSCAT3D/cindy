@@ -103,21 +103,32 @@ describe('session links', () => {
     [{ canonicalDeviceId: 'canonical', deviceLinkDeviceId: 'physical' }, 'canonical'],
     [{ deviceLinkDeviceId: 'physical' }, 'physical'],
     [null, 'route'],
-    [{ canonicalDeviceId: sharedTaskHostPeer('shared', 'host'), deviceLinkDeviceId: 'old' }, 'host'],
+    [{ canonicalDeviceId: sharedTaskHostPeer('shared', 'host'), deviceLinkDeviceId: 'old' }, null],
   ] as const)('uses current session ownership before the retained route: %j', (session, expected) => {
     const options = { session, deviceId: 'route' };
     expect(parseSessionDeepLinkUrl(buildMobileSessionDeepLink('abc', options))?.deviceId).toBe(expected);
     expect(parseSessionDeepLinkUrl(buildMobileSessionMessageDeepLink('abc', 'm1', options))?.deviceId).toBe(expected);
   });
 
-  it('exports shared-task links with the physical host device instead of a local peer handle', () => {
+  it('keeps shared-task links device-less instead of exporting an unscoped physical route', () => {
     const deviceId = sharedTaskHostPeer('shared-task', 'host-device');
     expect(buildMobileSessionDeepLink('abc', { deviceId })).toBe(
-      'cindy://session/abc?device=host-device',
+      'cindy://session/abc',
     );
     expect(buildMobileSessionMessageDeepLink('abc', 'm1', { deviceId })).toBe(
-      'cindy://session/abc?message=m1&device=host-device',
+      'cindy://session/abc?message=m1',
     );
+    const target = parseSessionDeepLinkUrl(buildMobileSessionDeepLink('abc', { deviceId }))!;
+    expect(resolveSessionLinkDeviceId({
+      listedDeviceId: deviceId,
+      linkedDeviceId: target.deviceId,
+      currentDeviceId: 'other-device',
+    })).toBe(deviceId);
+    // 同一共享任务中的旧格式链接可沿用当前已授权句柄,不转向房主的物理设备。
+    expect(resolveSessionLinkDeviceId({
+      linkedDeviceId: target.deviceId,
+      currentDeviceId: deviceId,
+    })).toBe(deviceId);
   });
 
   it('resolves the device for a session link, falling back when the target is not listed', () => {
