@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ipcMain } from 'electron';
 
 import type { ProviderShareManagementCommand } from '../../../shared/providerManagement';
 
@@ -43,16 +44,19 @@ vi.mock('../dispatch.js', () => ({
 vi.mock('../providerShareHost.js', () => ({
   startProviderShareHost: vi.fn(), stopProviderShareHost: vi.fn(),
   refreshProviderShareHost: host.refresh, getProviderShareHostSnapshot: host.snapshot,
+  clearProviderShareRequestQuiet: vi.fn(),
+  providerShareGuestAccess: vi.fn(), providerShareGuestDenial: vi.fn(), ensureProviderSharePeerKnown: vi.fn(),
   quietProviderShareRequests: host.quiet, markProviderShareHostActive: host.active,
   applyLocalRequestDecision: host.decision, applyLocalMemberChange: host.member,
 }));
 vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), stopProviderShareGuest: vi.fn() }));
-vi.mock('../providerShareGuestPrefs.js', () => ({ invalidateProviderShareGuestPrefsCache: vi.fn() }));
+vi.mock('../providerShareGuestPrefs.js', () => ({ configureProviderShareGuestPrefs: vi.fn(), invalidateProviderShareGuestPrefsCache: vi.fn() }));
 vi.mock('../providerShareGuestPrefsIpc.js', () => ({ setProviderShareCredentialConsentFromIpc: vi.fn() }));
 
-import { executeProviderShareManagementCommand, startProviderShareRuntime, stopProviderShareRuntime } from '../providerShareRuntime';
+import { executeProviderShareManagementCommand, registerProviderShareIpc, startProviderShareRuntime, stopProviderShareRuntime } from '../providerShareRuntime';
 
 const createLink: ProviderShareManagementCommand = { action: 'create-link', providerId: 'anthropic' };
+const LINK_ID = 'a'.repeat(64);
 const mutations: ProviderShareManagementCommand[] = [
   { action: 'approve', requestId: 'r1' },
   { action: 'reject', requestId: 'r1' },
@@ -65,7 +69,7 @@ beforeEach(() => {
   state.boundaryPending = false;
   listProviders.mockResolvedValue([{ id: 'anthropic', name: 'Anthropic', connected: true, agents: ['claude-code'] }]);
   identityCard.mockResolvedValue({ card: 'test-identity-card' });
-  api.createLink.mockResolvedValue({ invitation: 'test-invitation' });
+  api.createLink.mockResolvedValue({ invitation: 'test-invitation', linkId: LINK_ID });
   api.approve.mockResolvedValue({ ok: true });
   api.reject.mockResolvedValue({ ok: true });
   api.setMember.mockResolvedValue({ status: 'removed' });
@@ -143,9 +147,37 @@ describe('same-account share management during account transitions', () => {
   });
 
   it('creates and registers a link when the account is stable', async () => {
-    await expect(executeProviderShareManagementCommand(createLink)).resolves.toMatchObject({ link: 'https://cindy.app/s#test-link' });
+    await expect(executeProviderShareManagementCommand(createLink)).resolves.toMatchObject({ link: 'https://cindy.app/s#test-link', linkId: LINK_ID });
     expect(api.createLink).toHaveBeenCalledTimes(1);
-    expect(host.quiet).toHaveBeenCalledExactlyOnceWith('anthropic');
+    expect(host.quiet).toHaveBeenCalledExactlyOnceWith('anthropic', LINK_ID);
     expect(remember).toHaveBeenCalledExactlyOnceWith('https://cindy.app/s#test-link', expect.any(String));
+  });
+
+  it('rejects an old server before exposing or registering a remote link', async () => {
+    api.createLink.mockResolvedValueOnce({ invitation: 'test-invitation' });
+    await expect(executeProviderShareManagementCommand(createLink)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    expect(host.quiet).not.toHaveBeenCalled();
+    expect(host.active).not.toHaveBeenCalled();
+    expect(remember).not.toHaveBeenCalled();
+  });
+
+  it('still creates local share links with an old server', async () => {
+    api.createLink.mockResolvedValueOnce({ invitation: 'test-invitation' });
+    const handle = vi.spyOn(ipcMain, 'handle');
+    try {
+      registerProviderShareIpc();
+      const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
+      await expect(handler({} as Electron.IpcMainInvokeEvent, createLink)).resolves.toMatchObject({ link: 'https://cindy.app/s#test-link' });
+      expect(host.quiet).not.toHaveBeenCalled();
+      expect(remember).toHaveBeenCalledTimes(1);
+    } finally {
+      handle.mockRestore();
+    }
+  });
+
+  it('does not register a link when saving its host ownership fails', async () => {
+    host.quiet.mockRejectedValueOnce(new Error('ownership save failed'));
+    await expect(executeProviderShareManagementCommand(createLink)).rejects.toThrow('ownership save failed');
+    expect(remember).not.toHaveBeenCalled();
   });
 });

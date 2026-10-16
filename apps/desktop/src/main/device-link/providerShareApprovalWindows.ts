@@ -1,4 +1,4 @@
-/** 七分钟内的审批弹窗归属；只存电脑、供应商与截止时刻，不存链接口令、申请或身份。 */
+/** 七分钟内的审批弹窗归属；只存电脑、供应商、非秘密链接标识与截止时刻，不存口令、申请或身份。 */
 import { PROVIDER_SHARE_LINK_TTL_MS } from '@cindy/device-link';
 
 import { createLogger } from '../logger.js';
@@ -10,13 +10,29 @@ const log = createLogger('provider-share:approval-windows');
 /** 两侧共用：链接五分钟有效，再给申请拉取留两分钟；过期不重建、不延长。 */
 export const PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS = PROVIDER_SHARE_LINK_TTL_MS + 2 * 60_000;
 
+export interface ProviderShareApprovalQuietLink {
+  providerId: string;
+  linkId: string;
+  until: number;
+}
+
+export interface ProviderShareApprovalWatch {
+  hostDeviceId: string;
+  providerId: string;
+  linkId?: string;
+  until: number;
+}
+
 export interface ProviderShareApprovalWindows {
   quietUntil: Record<string, number>;
-  watches: Array<{ hostDeviceId: string; providerId: string; until: number }>;
+  /** Exact-link ownership for servers that return linkId; legacy watches omit it. */
+  quietLinks?: ProviderShareApprovalQuietLink[];
+  watches: ProviderShareApprovalWatch[];
 }
 
 const empty = (): ProviderShareApprovalWindows => ({ quietUntil: {}, watches: [] });
 const validId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
+const validLinkId = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
 function normalize(raw: unknown): ProviderShareApprovalWindows {
   const input = raw as Partial<ProviderShareApprovalWindows> | null;
@@ -29,12 +45,21 @@ function normalize(raw: unknown): ProviderShareApprovalWindows {
   const watches = new Map<string, ProviderShareApprovalWindows['watches'][number]>();
   for (const item of Array.isArray(input?.watches) ? input.watches : []) {
     if (!item || !validId(item.hostDeviceId) || !validId(item.providerId) || !validUntil(item.until)) continue;
-    const key = JSON.stringify([item.hostDeviceId, item.providerId]);
+    if (item.linkId !== undefined && !validLinkId(item.linkId)) continue;
+    const linkId = item.linkId;
+    const key = JSON.stringify([item.hostDeviceId, item.providerId, linkId ?? null]);
     const previous = watches.get(key);
-    const watch = { hostDeviceId: item.hostDeviceId, providerId: item.providerId, until: item.until };
+    const watch = { hostDeviceId: item.hostDeviceId, providerId: item.providerId, ...(linkId ? { linkId } : {}), until: item.until };
     if (!previous || previous.until < watch.until) watches.set(key, watch);
   }
-  return { quietUntil, watches: [...watches.values()] };
+  const quietLinks = new Map<string, ProviderShareApprovalQuietLink>();
+  for (const item of Array.isArray(input?.quietLinks) ? input.quietLinks : []) {
+    if (!item || !validId(item.providerId) || !validLinkId(item.linkId) || !validUntil(item.until)) continue;
+    const key = JSON.stringify([item.providerId, item.linkId]);
+    const previous = quietLinks.get(key);
+    if (!previous || previous.until < item.until) quietLinks.set(key, { providerId: item.providerId, linkId: item.linkId, until: item.until });
+  }
+  return { quietUntil, ...(quietLinks.size > 0 ? { quietLinks: [...quietLinks.values()] } : {}), watches: [...watches.values()] };
 }
 
 function createStore(options: { filePath: () => string; scopeKey: () => string }) {

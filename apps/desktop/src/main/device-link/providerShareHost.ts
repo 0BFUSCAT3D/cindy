@@ -81,6 +81,7 @@ export type ProviderShareWatchedSnapshot = Pick<ProviderShareOwned, 'shareId' | 
 interface RemoteLinkWatch {
   hostDeviceId: string;
   providerId: string;
+  linkId?: string;
   until: number;
   readShares(): Promise<readonly ProviderShareWatchedSnapshot[]>;
 }
@@ -100,6 +101,8 @@ interface Runtime {
   stopped: boolean;
   /** 本机分享：供应商 → 另一台电脑生成的链接的窗口期截止时刻。 */
   quietUntil: Map<string, number>;
+  /** 本机分享：服务端返回 linkId 时，按具体链接归属的窗口期截止时刻。 */
+  quietLinks: Map<string, number>;
   /** 本机分享里由另一台电脑弹窗的申请。 */
   quietRequests: Set<string>;
   /** 本机为另一台电脑上的分享生成了链接，窗口期内关注那条分享。 */
@@ -124,6 +127,7 @@ const snapshotListeners = new Set<() => void>();
  * 同进程重建时保留回调与去重；完整进程重启则从按账号保存的七分钟窗口恢复，不存申请或链接口令。
  */
 const retainedQuietUntilByScope = new Map<string, Map<string, number>>();
+const retainedQuietLinksByScope = new Map<string, Map<string, number>>();
 const retainedRemoteLinkStateByScope = new Map<string, RetainedRemoteLinkState>();
 
 function activeQuietUntil(source: ReadonlyMap<string, number>): Map<string, number> {
@@ -136,12 +140,22 @@ function retainQuietUntil(rt: Runtime): void {
   const active = activeQuietUntil(rt.quietUntil);
   if (active.size > 0) retainedQuietUntilByScope.set(rt.scope, active);
   else retainedQuietUntilByScope.delete(rt.scope);
+  const activeLinks = activeQuietUntil(rt.quietLinks);
+  if (activeLinks.size > 0) retainedQuietLinksByScope.set(rt.scope, activeLinks);
+  else retainedQuietLinksByScope.delete(rt.scope);
 }
 
 function restoreQuietUntil(scope: string | null): Map<string, number> {
   if (scope === null) return new Map();
   const retained = retainedQuietUntilByScope.get(scope);
   retainedQuietUntilByScope.delete(scope);
+  return retained ? activeQuietUntil(retained) : new Map();
+}
+
+function restoreQuietLinks(scope: string | null): Map<string, number> {
+  if (scope === null) return new Map();
+  const retained = retainedQuietLinksByScope.get(scope);
+  retainedQuietLinksByScope.delete(scope);
   return retained ? activeQuietUntil(retained) : new Map();
 }
 
@@ -219,7 +233,9 @@ function applySnapshot(rt: Runtime, next: ProviderShareOwned[]): void {
       pendingIds.add(request.requestId);
       if (rt.knownRequests.has(request.requestId)) continue;
       rt.knownRequests.add(request.requestId);
-      const quiet = (rt.quietUntil.get(share.providerId) ?? 0) > now;
+      const quiet = request.linkId
+        ? (rt.quietLinks.get(`${share.providerId}:${request.linkId}`) ?? 0) > now
+        : (rt.quietUntil.get(share.providerId) ?? 0) > now;
       if (quiet) rt.quietRequests.add(request.requestId);
       rt.events.requested(request, share, quiet);
     }
@@ -229,6 +245,9 @@ function applySnapshot(rt: Runtime, next: ProviderShareOwned[]): void {
   }
   for (const [providerId, until] of rt.quietUntil) {
     if (until <= now) rt.quietUntil.delete(providerId);
+  }
+  for (const [key, until] of rt.quietLinks) {
+    if (until <= now) rt.quietLinks.delete(key);
   }
   rt.events.changed(next);
   for (const listener of snapshotListeners) {
@@ -272,8 +291,11 @@ function applyWatched(rt: Runtime, hostDeviceId: string, shares: readonly Provid
     if (item.hostDeviceId === hostDeviceId && !present.has(requestId)) rt.watched.delete(requestId);
   }
   for (const share of shares) {
-    if (!rt.watches.some((watch) => watch.hostDeviceId === hostDeviceId && watch.providerId === share.providerId && watch.until > now)) continue;
+    const watches = rt.watches.filter((watch) => watch.hostDeviceId === hostDeviceId && watch.providerId === share.providerId && watch.until > now);
+    if (watches.length === 0) continue;
     for (const request of share.requests) {
+      // 旧窗口只接无标识的旧回包，不能接管升级后其它电脑生成的链接。
+      if (!watches.some((watch) => watch.linkId === request.linkId)) continue;
       // 弹过一次的不再弹(本机处理后，处理前发出的那次拉取可能还带着它)。
       if (rt.watchedSeen.has(request.requestId)) continue;
       rt.watchedSeen.add(request.requestId);
@@ -296,10 +318,12 @@ export function startProviderShareHost(events: ProviderShareHostEvents, options:
   const remoteLinkState = restoreRemoteLinkState(scope);
   const saved = scope === null ? null : readProviderShareApprovalWindows();
   const retainedQuiet = restoreQuietUntil(scope);
+  const retainedQuietLinks = restoreQuietLinks(scope);
   // 启动的第一轮快照之前恢复两侧归属。读远端的函数由新运行时接线提供，不能从磁盘恢复旧账号闭包。
   if (saved) {
     remoteLinkState.watches = saved.watches.flatMap((watch) => {
-      const retained = remoteLinkState.watches.find((item) => item.hostDeviceId === watch.hostDeviceId && item.providerId === watch.providerId);
+      const retained = remoteLinkState.watches.find((item) => item.hostDeviceId === watch.hostDeviceId
+        && item.providerId === watch.providerId && item.linkId === watch.linkId);
       const readShares = options.readWatchedShares
         ? () => options.readWatchedShares!(watch.hostDeviceId)
         : retained?.readShares;
@@ -320,6 +344,9 @@ export function startProviderShareHost(events: ProviderShareHostEvents, options:
     reconciled: false,
     stopped: false,
     quietUntil: saved ? new Map(Object.entries(saved.quietUntil)) : retainedQuiet,
+    quietLinks: saved
+      ? new Map((saved.quietLinks ?? []).map((item) => [`${item.providerId}:${item.linkId}`, item.until]))
+      : retainedQuietLinks,
     quietRequests: new Set(),
     watches: remoteLinkState.watches,
     watched: remoteLinkState.watched,
@@ -397,19 +424,24 @@ export function getProviderShareHostSnapshot(): readonly ProviderShareOwned[] {
   return runtime?.shares ?? [];
 }
 
-/** 同账号另一台电脑经管理为本机的这个供应商生成了链接：窗口期内的新申请由那台弹窗。 */
-export async function quietProviderShareRequests(providerId: string): Promise<void> {
+/** 同账号另一台电脑经管理生成的链接：只将这条链接的申请交给那台弹窗。 */
+export async function quietProviderShareRequests(providerId: string, linkId?: string): Promise<void> {
   const rt = runtime;
   assertApprovalWindowCurrent(rt);
   const assertCurrent = () => assertApprovalWindowCurrent(rt);
   const until = Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
-  await updateProviderShareApprovalWindows((value) => ({
-    ...value, quietUntil: { ...value.quietUntil, [providerId]: until },
-  }), assertCurrent);
-  rt.quietUntil.set(providerId, until);
+  await updateProviderShareApprovalWindows((value) => linkId
+    ? {
+      ...value,
+      quietLinks: [...(value.quietLinks ?? []).filter((item) => item.providerId !== providerId || item.linkId !== linkId),
+        { providerId, linkId, until }],
+    }
+    : { ...value, quietUntil: { ...value.quietUntil, [providerId]: until } }, assertCurrent);
+  if (linkId) rt.quietLinks.set(`${providerId}:${linkId}`, until);
+  else rt.quietUntil.set(providerId, until);
 }
 
-/** 本机自己生成了链接：本机的人在场，新申请恢复由本机弹窗。 */
+/** 本机新链接清除旧版按供应商静默的窗口；其它链接的精确归属保持不变。 */
 export async function clearProviderShareRequestQuiet(providerId: string): Promise<void> {
   const rt = runtime;
   assertApprovalWindowCurrent(rt);
@@ -426,20 +458,24 @@ export async function clearProviderShareRequestQuiet(providerId: string): Promis
 export async function watchProviderShareRequests(
   hostDeviceId: string,
   providerId: string,
-  readShares: RemoteLinkWatch['readShares'],
+  linkIdOrReadShares: string | RemoteLinkWatch['readShares'],
+  maybeReadShares?: RemoteLinkWatch['readShares'],
 ): Promise<void> {
   const rt = runtime;
   assertApprovalWindowCurrent(rt);
   const assertCurrent = () => assertApprovalWindowCurrent(rt);
   const until = Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
+  const linkId = typeof linkIdOrReadShares === 'string' ? linkIdOrReadShares : undefined;
+  const readShares = typeof linkIdOrReadShares === 'function' ? linkIdOrReadShares : maybeReadShares;
+  if (!readShares) throwIpcError('PRECONDITION_FAILED', 'Provider share approval reader is unavailable');
   await updateProviderShareApprovalWindows((value) => ({
     ...value,
-    watches: [...value.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId),
-      { hostDeviceId, providerId, until }],
+    watches: [...value.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId || watch.linkId !== linkId),
+      { hostDeviceId, providerId, ...(linkId ? { linkId } : {}), until }],
   }), assertCurrent);
   rt.watches = [
-    ...rt.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId),
-    { hostDeviceId, providerId, until, readShares },
+    ...rt.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId || watch.linkId !== linkId),
+    { hostDeviceId, providerId, ...(linkId ? { linkId } : {}), until, readShares },
   ];
   markProviderShareHostActive(PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
 }

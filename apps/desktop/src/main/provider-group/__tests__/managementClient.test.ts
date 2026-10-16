@@ -28,6 +28,7 @@ function replying(result: unknown): ProviderGroupRemoteInvoke {
 }
 
 const createLink: ProviderManagementRequest = { action: 'manage-share', command: { action: 'create-link', providerId: 'anthropic' } };
+const LINK_ID = 'a'.repeat(64);
 
 beforeEach(() => {
   state.owner = 'owner-a';
@@ -63,7 +64,7 @@ describe('provider management client', () => {
   ] satisfies ProviderManagementRequest[])('drops a $command.action reply during teardown before changing local state', async (request) => {
     const invoke: ProviderGroupRemoteInvoke = async () => {
       state.boundaryPending = true;
-      return { ok: true, result: { result: { link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() }, respondedAt: Date.now() } };
+      return { ok: true, result: { result: { link: 'https://cindy.app/s#test', linkId: LINK_ID, expiresAt: new Date(Date.now() + 60_000).toISOString() }, respondedAt: Date.now() } };
     };
     await expect(invokeProviderManagement(invoke, 'group-host', request)).rejects.toThrow(/PRECONDITION_FAILED/);
     expect(host.watch).not.toHaveBeenCalled();
@@ -73,15 +74,15 @@ describe('provider management client', () => {
 
   it('watches the group computer\'s share after generating a link there, so the request prompts here', async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
-    const invoke = replying({ link: 'https://cindy.app/s#token', expiresAt });
+    const invoke = replying({ link: 'https://cindy.app/s#token', linkId: LINK_ID, expiresAt });
     const snapshot = { ready: true, shares: [{ shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic', requests: [] }] };
     const readInvoke = replying(snapshot);
     const created = await invokeProviderManagement(invoke, 'group-host', createLink, readInvoke) as { link: string };
     expect(invoke).toHaveBeenCalledWith('group-host', PROVIDER_GROUP_REMOTE_CHANNEL, [createLink], expect.anything());
     expect(created.link).toBe('https://cindy.app/s#token');
     expect(clipboard.remember).toHaveBeenCalledWith('https://cindy.app/s#token', expect.any(String));
-    expect(host.watch).toHaveBeenCalledWith('group-host', 'anthropic', expect.any(Function));
-    const readShares = host.watch.mock.calls[0][2];
+    expect(host.watch).toHaveBeenCalledWith('group-host', 'anthropic', LINK_ID, expect.any(Function));
+    const readShares = host.watch.mock.calls[0][3];
     await expect(readShares()).resolves.toEqual(snapshot.shares);
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(readInvoke).toHaveBeenCalledWith('group-host', PROVIDER_GROUP_REMOTE_CHANNEL, [
@@ -92,20 +93,29 @@ describe('provider management client', () => {
   });
 
   it('does not watch when the link response is invalid or the account changed on the way', async () => {
-    await expect(invokeProviderManagement(replying({ link: '' }), 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
+    await expect(invokeProviderManagement(replying({ link: '', linkId: LINK_ID }), 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
     const switching = vi.fn(async () => {
       state.owner = 'owner-b';
-      return { ok: true, result: { result: { link: 'x', expiresAt: new Date().toISOString() }, respondedAt: Date.now() } };
+      return { ok: true, result: { result: { link: 'x', linkId: LINK_ID, expiresAt: new Date().toISOString() }, respondedAt: Date.now() } };
     }) as unknown as ProviderGroupRemoteInvoke;
     await expect(invokeProviderManagement(switching, 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
     expect(host.watch).not.toHaveBeenCalled();
     expect(clipboard.remember).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, 'not-a-digest', 'A'.repeat(64), null])('does not copy or watch a remote link with invalid linkId %s', async (linkId) => {
+    const invoke = replying({ link: 'https://cindy.app/s#test', linkId, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    await expect(invokeProviderManagement(invoke, 'group-host', createLink))
+      .rejects.toThrow(linkId === undefined ? /UNSUPPORTED_CAPABILITY/ : /PRECONDITION_FAILED/);
+    expect(host.watch).not.toHaveBeenCalled();
+    expect(clipboard.remember).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('does not register a link for copying until its approval watch has been saved', async () => {
     let finishSave!: () => void;
     host.watch.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
-    const invoke = replying({ link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const invoke = replying({ link: 'https://cindy.app/s#test', linkId: LINK_ID, expiresAt: new Date(Date.now() + 60_000).toISOString() });
     const creating = invokeProviderManagement(invoke, 'group-host', createLink);
     await vi.waitFor(() => expect(host.watch).toHaveBeenCalledTimes(1));
     expect(clipboard.remember).not.toHaveBeenCalled();
@@ -124,7 +134,7 @@ describe('provider management client', () => {
         return {
           ok: true,
           result: {
-            result: { link: 'https://cindy.app/s#slow', expiresAt: new Date(1_300_000).toISOString() },
+            result: { link: 'https://cindy.app/s#slow', linkId: LINK_ID, expiresAt: new Date(1_300_000).toISOString() },
             respondedAt: 1_000_000,
           },
         };
@@ -147,7 +157,7 @@ describe('provider management client', () => {
 
   it('does not register or return a link when saving its approval watch fails', async () => {
     host.watch.mockRejectedValueOnce(new Error('[PRECONDITION_FAILED] approval setup failed'));
-    const invoke = replying({ link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const invoke = replying({ link: 'https://cindy.app/s#test', linkId: LINK_ID, expiresAt: new Date(Date.now() + 60_000).toISOString() });
     await expect(invokeProviderManagement(invoke, 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
     expect(clipboard.remember).not.toHaveBeenCalled();
     expect(invoke).toHaveBeenCalledTimes(1);

@@ -27,6 +27,9 @@ let windows: typeof import('../providerShareApprovalWindows');
 const events = () => ({ changed: vi.fn(), requested: vi.fn(), watchedRequested: vi.fn(), revoked: vi.fn(), reconcile: vi.fn() });
 const request = { requestId: 'request-1', displayName: 'Guest', avatarUrl: null, region: 'global' as const,
   pairingCode: '0123', createdAt: '2026-10-15T08:00:00Z', expiresAt: '2026-10-16T08:00:00Z' };
+const LINK_A = 'a'.repeat(64);
+const LINK_B = 'b'.repeat(64);
+const LINK_C = 'c'.repeat(64);
 const ownedShare = { shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic', hostDeviceId: 'host-device',
   createdAt: '2026-10-15T08:00:00Z', members: [], requests: [request] };
 const filePath = () => path.join(dir, state.scope, 'provider-share-approval-windows.json');
@@ -59,6 +62,89 @@ afterEach(() => {
 });
 
 describe('approval ownership across a complete application restart', () => {
+  it('retains separate remote-link quiet windows when a local link is created, including after restart', async () => {
+    host.startProviderShareHost(events());
+    await host.quietProviderShareRequests('anthropic', LINK_A);
+    await host.quietProviderShareRequests('anthropic', LINK_C);
+    await host.clearProviderShareRequestQuiet('anthropic');
+    host.stopProviderShareHost();
+    await loadProcess();
+    const requests = [LINK_A, LINK_B, LINK_C].map((linkId, i) => ({ ...request, requestId: `request-${i}`, linkId }));
+    state.owned = [{ ...ownedShare, requests }];
+    const ev = events();
+    host.startProviderShareHost(ev);
+    await host.refreshProviderShareHost('local-link-after-restart');
+    expect(ev.requested.mock.calls.map(([item, , quiet]) => [item.linkId, quiet])).toEqual([
+      [LINK_A, true], [LINK_B, false], [LINK_C, true],
+    ]);
+  });
+
+  it('restores multiple watches for one supplier without claiming a third computer link', async () => {
+    host.startProviderShareHost(events());
+    await host.watchProviderShareRequests('group-host', 'anthropic', LINK_A, async () => []);
+    await host.watchProviderShareRequests('group-host', 'anthropic', LINK_B, async () => []);
+    host.stopProviderShareHost();
+    await loadProcess();
+    const requests = [LINK_A, LINK_B, LINK_C].map((linkId, i) => ({ ...request, requestId: `request-${i}`, linkId }));
+    const ev = events();
+    host.startProviderShareHost(ev, { readWatchedShares: async () => [{ ...ownedShare, hostDeviceId: 'group-host', requests }] });
+    await host.refreshProviderShareHost('multiple-link-restart');
+    expect(ev.watchedRequested.mock.calls.map(([item]) => item.request.linkId)).toEqual([LINK_A, LINK_B]);
+    await host.refreshProviderShareHost('same-snapshot');
+    expect(ev.watchedRequested).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a restored legacy watch claim an identified request', async () => {
+    host.startProviderShareHost(events());
+    await host.watchProviderShareRequests('group-host', 'anthropic', async () => []);
+    host.stopProviderShareHost();
+    await loadProcess();
+    const ev = events();
+    host.startProviderShareHost(ev, { readWatchedShares: async () => [{ ...ownedShare, requests: [{ ...request, linkId: LINK_B }] }] });
+    await host.refreshProviderShareHost('legacy-watch-new-link');
+    expect(ev.watchedRequested).not.toHaveBeenCalled();
+  });
+
+  it('expires exact ownership and isolates it from another account', async () => {
+    host.startProviderShareHost(events());
+    await host.quietProviderShareRequests('anthropic', LINK_A);
+    await host.watchProviderShareRequests('group-host', 'anthropic', LINK_A, async () => []);
+    host.stopProviderShareHost();
+    await loadProcess();
+    const identified = { ...request, linkId: LINK_A };
+    state.owned = [{ ...ownedShare, requests: [identified] }];
+    state.scope = 'owner-b';
+    const other = events();
+    const readWatchedShares = vi.fn(async () => [{ ...ownedShare, requests: [identified] }]);
+    host.startProviderShareHost(other, { readWatchedShares });
+    await host.refreshProviderShareHost('other-account-exact');
+    expect(other.requested).toHaveBeenCalledWith(identified, expect.anything(), false);
+    expect(readWatchedShares).not.toHaveBeenCalled();
+    host.stopProviderShareHost();
+    state.scope = 'owner-a';
+    vi.setSystemTime(Date.now() + windows.PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1);
+    const expired = events();
+    host.startProviderShareHost(expired, { readWatchedShares });
+    await host.refreshProviderShareHost('expired-exact');
+    expect(expired.requested).toHaveBeenCalledWith(identified, expect.anything(), false);
+    expect(readWatchedShares).not.toHaveBeenCalled();
+    expect(windows.readProviderShareApprovalWindows()).toEqual({ quietUntil: {}, watches: [] });
+  });
+
+  it('routes watched requests only to the exact link that was generated here', async () => {
+    const watched = events();
+    const remote = { ...ownedShare, hostDeviceId: 'group-host', requests: [{ ...request, requestId: 'request-b', linkId: LINK_B }] };
+    host.startProviderShareHost(watched);
+    await host.watchProviderShareRequests('group-host', 'anthropic', LINK_A, async () => [remote]);
+    await host.refreshProviderShareHost('exact-link');
+    expect(watched.watchedRequested).not.toHaveBeenCalled();
+
+    const matching = { ...remote, requests: [{ ...request, requestId: 'request-a', linkId: LINK_A }] };
+    await host.watchProviderShareRequests('group-host', 'anthropic', LINK_A, async () => [matching]);
+    await host.refreshProviderShareHost('exact-link-match');
+    expect(watched.watchedRequested).toHaveBeenCalledWith(expect.objectContaining({ request: expect.objectContaining({ linkId: LINK_A }) }));
+  });
+
   it('keeps the supplier computer quiet before its first snapshot after restart', async () => {
     host.startProviderShareHost(events());
     await host.quietProviderShareRequests('anthropic');
@@ -150,7 +236,7 @@ describe('approval ownership storage', () => {
     const invoke = vi.fn(async () => {
       host.stopProviderShareHost(); // 回包已到，账号没变，但设备互联的 runtime 已被停止。
       return { ok: true as const, result: {
-        result: { link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        result: { link: 'https://cindy.app/s#test', linkId: LINK_A, expiresAt: new Date(Date.now() + 60_000).toISOString() },
         respondedAt: Date.now(),
       } };
     });

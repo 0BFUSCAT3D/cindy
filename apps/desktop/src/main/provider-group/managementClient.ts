@@ -33,20 +33,25 @@ export async function invokeProviderManagement(
     throwIpcError('PRECONDITION_FAILED', 'Invalid provider management response');
   }
   if (request.action === 'manage-share' && request.command.action === 'create-link') {
-    const created = reply.result as { link?: unknown; expiresAt?: unknown } | null;
+    const created = reply.result as { link?: unknown; linkId?: unknown; expiresAt?: unknown } | null;
+    if (created && created.linkId === undefined) {
+      throwIpcError('UNSUPPORTED_CAPABILITY', 'Remote share links require an update on the provider computer and provider share server');
+    }
     if (!created || typeof created.link !== 'string' || !created.link || created.link.length > 4096
+      || typeof created.linkId !== 'string' || !/^[a-f0-9]{64}$/.test(created.linkId)
       || typeof created.expiresAt !== 'string' || !Number.isFinite(Date.parse(created.expiresAt))) {
       throwIpcError('PRECONDITION_FAILED', 'Invalid provider share link');
     }
     const responseReceivedAt = Date.now();
     const remoteRemaining = Math.max(0, Math.min(PROVIDER_SHARE_LINK_TTL_MS, Date.parse(created.expiresAt) - reply.respondedAt));
-    await watchProviderShareRequests(deviceId, request.command.providerId, () => readProviderManagementShares(readInvoke, deviceId));
+    await watchProviderShareRequests(deviceId, request.command.providerId, created.linkId,
+      () => readProviderManagementShares(readInvoke, deviceId));
     assertOwner();
     const postResponseElapsed = Math.max(0, Date.now() - responseReceivedAt);
     const remaining = Math.max(0, remoteRemaining - postResponseElapsed);
     const expiresAt = new Date(Date.now() + remaining).toISOString();
     rememberIssuedClipboardText(created.link, expiresAt);
-    return { link: created.link, expiresAt };
+    return { link: created.link, linkId: created.linkId, expiresAt };
   }
   if (request.action === 'manage-share' && (request.command.action === 'approve' || request.command.action === 'reject')) {
     forgetWatchedProviderShareRequest(request.command.requestId);

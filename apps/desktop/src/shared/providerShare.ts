@@ -137,6 +137,8 @@ export interface ProviderShareOwnerState {
 export interface ProviderShareLinkCreated {
   link: string;
   expiresAt: string;
+  /** Non-secret per-link identifier; absent when the host or server predates exact approval routing. */
+  linkId?: string;
 }
 
 export interface ProviderShareRequestedEvent {

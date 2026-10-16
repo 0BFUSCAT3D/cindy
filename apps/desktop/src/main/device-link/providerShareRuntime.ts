@@ -475,7 +475,11 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
   };
 }
 
-async function createLink(providerId: string, assertCurrent: () => void = () => undefined): Promise<ProviderShareLinkCreated> {
+async function createLink(
+  providerId: string,
+  assertCurrent: () => void = () => undefined,
+  requireLinkId = false,
+): Promise<ProviderShareLinkCreated> {
   assertCurrent();
   requireRunning();
   // 逐级开启：允许远程控制 → 允许被远程调用 → 分享。
@@ -498,14 +502,16 @@ async function createLink(providerId: string, assertCurrent: () => void = () => 
     identityCard,
   });
   assertCurrent();
+  if (requireLinkId && !created.linkId) {
+    throwIpcError('UNSUPPORTED_CAPABILITY', 'Remote share links require an update to the provider share server');
+  }
   markProviderShareHostActive();
   void refreshProviderShareHost('link');
   // 倒计时按本机收到响应的时刻计算：链接刚签发，服务端从签发起算 5 分钟。不拿服务端的绝对时间
   // 和本机时钟相减(两边时钟可能有偏差，偏快会一生成就显示已过期)，并留出请求往返的余量。
   const expiresAt = new Date(Date.now() + PROVIDER_SHARE_LINK_TTL_MS - LINK_TTL_SAFETY_MS).toISOString();
   const link = providerShareLinkFor(created.invitation);
-  rememberIssuedClipboardText(link, expiresAt);
-  return { link, expiresAt };
+  return { link, expiresAt, ...(created.linkId ? { linkId: created.linkId } : {}) };
 }
 
 async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
@@ -520,6 +526,7 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       const created = await createLink(command.providerId, assertCurrent);
       await clearProviderShareRequestQuiet(command.providerId);
       assertCurrent();
+      rememberIssuedClipboardText(created.link, created.expiresAt);
       return created;
     }
     case 'approve':
@@ -594,10 +601,11 @@ export async function executeProviderShareManagementCommand(command: ProviderSha
     if (!found) throwIpcError('NOT_FOUND', 'The share request or member is no longer on this computer');
   }
   if (command.action === 'create-link') {
-    const created = await createLink(command.providerId, assertCurrent);
+    const created = await createLink(command.providerId, assertCurrent, true);
     assertCurrent();
-    await quietProviderShareRequests(command.providerId);
+    await quietProviderShareRequests(command.providerId, created.linkId);
     assertCurrent();
+    rememberIssuedClipboardText(created.link, created.expiresAt);
     return created;
   }
   const result = await execute(command, assertCurrent);
