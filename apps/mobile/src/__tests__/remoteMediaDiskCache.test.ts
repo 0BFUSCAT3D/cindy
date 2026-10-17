@@ -36,6 +36,17 @@ const URL_B = 'xdt-image://cache/b.png';
 const URL_C = 'xdt-image://cache/c.png';
 
 describe('remoteMediaDiskCache', () => {
+  it('preserves the previous version when replacement storage is unavailable', async () => {
+    const h = memoryIO();
+    let available = 10_000;
+    const cache = createRemoteMediaDiskCache(h.io, { availableBytes: () => available, reserveBytes: 500 });
+    await cache.store(URL_A, 'https://old', 'text/html', 1000, 'a'.repeat(64));
+    available = 1499;
+    expect(await cache.store(URL_A, 'https://new', 'text/html', 1000, 'b'.repeat(64))).toBe(false);
+    expect(h.io.download).toHaveBeenCalledTimes(1);
+    expect(h.io.deleteFile).not.toHaveBeenCalled();
+    expect(await cache.lookup(URL_A)).toMatchObject({ version: 'a'.repeat(64), size: 1000 });
+  });
   it('keeps the previous version available until a changed download successfully commits', async () => {
     const { io } = memoryIO();
     const cache = createRemoteMediaDiskCache(io);

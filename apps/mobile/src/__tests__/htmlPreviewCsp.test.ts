@@ -295,7 +295,10 @@ describe('资源取件的安全接线(源码级守卫)', () => {
     expect(snapshotSource).toContain('finally { for (const key of uploaded) deps.deleteOssObject(key); }');
     expect(pageSource).toContain("method: 'DELETE'");
     const media = readFileSync(resolve(process.cwd(), 'src/session/remoteMedia.ts'), 'utf8');
-    expect(media.indexOf('opts?.onOssKey?.(fetched.ossKey);')).toBeLessThan(media.indexOf('const signed = await deps.presignGet('));
+    const collected = media.indexOf('opts?.onOssKey?.(fetched.ossKey);');
+    const presigned = media.indexOf('deps.presignGet(fetched.ossKey)');
+    expect(collected).toBeGreaterThanOrEqual(0);
+    expect(presigned).toBeGreaterThan(collected);
   });
 
   it('SSH 会话的资源取件必须带会话上下文', () => {

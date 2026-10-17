@@ -4,7 +4,9 @@ import {
   downloadRemoteMediaShareTemp,
   withDownloadedRemoteMediaFile,
   retainRemoteFilePreview,
+  createExpoRemoteMediaDiskCacheIO,
 } from '@/session/remoteMediaDiskCacheExpo';
+import { createRemoteMediaDiskCache } from '@/session/remoteMediaDiskCache';
 
 const io = vi.hoisted(() => ({
   size: 5,
@@ -12,6 +14,7 @@ const io = vi.hoisted(() => ({
   copied: new Set<string>(),
   download: vi.fn(),
   remove: vi.fn(),
+  move: vi.fn(),
   resumable: vi.fn(),
   cancel: vi.fn(async () => undefined),
   deleteAsync: vi.fn(async () => undefined),
@@ -31,6 +34,7 @@ vi.mock('expo-file-system', () => ({
     uri: string;
     constructor(parent: string, name: string) { this.uri = `${parent}/${name}`; }
     create() {}
+    list() { return []; }
   },
   File: class {
     uri: string;
@@ -47,6 +51,9 @@ vi.mock('expo-file-system', () => ({
     get size() { return io.copying.has(this.uri) ? 0 : io.size; }
     get exists() { return true; }
     async base64() { return 'aGVsbG8='; }
+    async text() { return ''; }
+    write() {}
+    moveSync(target: { uri: string }) { io.move(this.uri, target.uri); }
     delete() { io.remove(this.uri); }
     static downloadFileAsync = io.download;
   },
@@ -57,10 +64,27 @@ beforeEach(() => {
   io.copying.clear();
   io.copied.clear();
   io.remove.mockClear();
+  io.move.mockClear();
   io.download.mockReset().mockImplementation(async (_url, target) => target);
   io.resumable.mockReset().mockResolvedValue({ status: 200 });
   io.cancel.mockClear();
   io.deleteAsync.mockClear();
+});
+
+describe('versioned cache with the Expo adapter', () => {
+  it.each(['data:text/css;base64,', 'file:///empty.css', 'https://example.com/empty.css'])(
+    'retains a confirmed empty file from %s without accepting empty unversioned images', async source => {
+      io.size = 0;
+      const cache = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO());
+      const version = 'a'.repeat(64);
+      expect(await cache.store('resource', source, 'text/css', 0, version)).toBe(true);
+      expect(await cache.lookup('resource', version)).toMatchObject({ size: 0, version, mimeType: 'text/css' });
+      expect(io.remove).not.toHaveBeenCalled();
+      expect(io.move).toHaveBeenCalled();
+      expect(await cache.store('image', 'https://example.com/empty.png', 'image/png', 0)).toBe(false);
+      expect(await cache.lookup('image')).toBeNull();
+    },
+  );
 });
 
 describe('bounded temporary media downloads', () => {

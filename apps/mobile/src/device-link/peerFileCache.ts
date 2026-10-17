@@ -52,7 +52,7 @@ async function openPeerFileCache(owner: string) {
     /** A completed OSS fallback joins the same version cache as direct downloads. */
     async download(device: string, url: string, metadata: Metadata, downloadUrl: string,
       active: () => boolean, signal?: AbortSignal): Promise<LocalPeerMedia | null> {
-      if (!active() || !validFileVersion(metadata.version) || !(await cache.prune(2 * metadata.size))) return null;
+      if (!active() || !validFileVersion(metadata.version) || !(await api.prune(device, url, metadata.size))) return null;
       const uri = await downloadRemoteMediaShareTemp(downloadUrl, metadata.mimeType, undefined, signal);
       if (!uri) return null;
       const file = new File(uri);
@@ -78,7 +78,7 @@ async function openPeerFileCache(owner: string) {
       await cache.store(JSON.stringify([device, url]),
         `data:${result.mimeType};base64,${result.inlineBase64}`, result.mimeType, result.size, result.version);
     },
-    prune: (size: number) => cache.prune(2 * size),
+    prune: (device: string, url: string, size: number) => cache.prune(2 * size, JSON.stringify([device, url])),
     invalidate: (device: string, url: string) =>
       cache.remove(JSON.stringify([device, url])),
     async read(
@@ -133,7 +133,7 @@ async function openPeerFileCache(owner: string) {
         return;
       const uri = peerMediaUri(result);
       // Account for both the durable copy and the consumer's upcoming copy.
-      if (!uri || !(await cache.prune(2 * result.size))) return;
+      if (!uri || !(await api.prune(device, url, result.size))) return;
       await cache.store(
         JSON.stringify([device, url]),
         uri,

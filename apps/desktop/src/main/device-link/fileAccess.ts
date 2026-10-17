@@ -33,6 +33,8 @@ export function readRemoteDeviceFile(
     /** Bytes actually written by the direct receiver, shared by every file entry point. */
     onProgress?: (received: number, total: number) => void;
     skipCache?: boolean;
+    /** Version-keyed outer caches must wait for host validation before filling. */
+    cacheFirst?: boolean;
     maxPeerBytes?: number;
     maxBytes?: number;
     stream?: boolean;
@@ -76,7 +78,7 @@ export function readRemoteDeviceFile(
     return response.result as DeviceFileResult;
   };
   return readDeviceFile<LocalFileResult>({
-    cacheFirst: options.skipCache || isSharedTaskPeer(device) ? undefined : {
+    cacheFirst: options.skipCache || options.cacheFirst === false || isSharedTaskPeer(device) ? undefined : {
       key: cacheKey,
       read: async () => {
         const previous = latestFiles.get(cacheKey);

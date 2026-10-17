@@ -251,16 +251,17 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
         return null; // 缓存是纯优化,写入失败静默(渲染回退 data URI)
       }
     },
-    async download(url, name) {
+    async download(url, name, options) {
       // 契约(RemoteMediaDiskCacheIO.download):失败不得破坏既有同名好文件。
       // downloadFileAsync 直接写目标(Android 失败可留半成品),所以先下到临时名,
-      // 正尺寸成功后原子顶替;失败 / 空文件清临时、不动现有文件(返回 null,上层
+      // 确认尺寸后原子顶替;仅已确认版本与零尺寸的文件允许为空，普通图片仍拒绝空内容。
+      // 失败清临时、不动现有文件(返回 null,上层
       // 保留旧条目继续离线可看)。残留的 .dl.tmp 由 init 对账当孤儿清掉。
       const tmp = new File(dir, `${name}.dl.tmp`);
       try {
         const downloaded = await copyRemoteFile(url, tmp);
-        const size = downloaded.size ?? 0;
-        if (size <= 0) {
+        const size = downloaded.size ?? -1;
+        if (size < 0 || (size === 0 && !options?.allowEmpty)) {
           if (tmp.exists) tmp.delete();
           return null;
         }

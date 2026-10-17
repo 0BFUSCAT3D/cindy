@@ -19,6 +19,28 @@ beforeEach(() => {
   peer.mockResolvedValue(null);
 });
 describe('desktop shared file access', () => {
+  it('waits for the current same-size version when filling an outer version cache', async () => {
+    const old = { ossKey: '', size: 3, mimeType: 'text/html', version: '1'.repeat(64), inlineBase64: 'b2xk' };
+    const fresh = { ...old, version: '2'.repeat(64), inlineBase64: 'bmV3' };
+    const invoke = vi.fn().mockResolvedValue({ ok: true, result: old });
+    const url = 'xdt-file://open?path=/versioned.html';
+    await readRemoteDeviceFile('versioned', url, invoke);
+    cache.get.mockResolvedValue('/cache/old');
+    const read = vi.spyOn(fs, 'readFile').mockResolvedValue(Buffer.from('old'));
+    let reply!: (value: unknown) => void;
+    invoke.mockImplementationOnce(() => new Promise(resolve => { reply = resolve; }));
+    let settled = false;
+    const pending = readRemoteDeviceFile('versioned', url, invoke, { cacheFirst: false })
+      .then(result => { settled = true; return result; });
+    try {
+      await vi.waitFor(() => expect(reply).toBeTypeOf('function'));
+      expect(settled).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+      reply({ ok: true, result: fresh });
+      expect(await pending).toEqual(fresh);
+      expect(cache.invalidate).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
   it('returns cached HTML before a blocked host version check completes', async () => {
     const result = { ossKey: '', size: 3, mimeType: 'text/html', version: 'c'.repeat(64), inlineBase64: 'YWJj' };
     cache.get.mockResolvedValueOnce(null).mockResolvedValueOnce('/cache/instant');

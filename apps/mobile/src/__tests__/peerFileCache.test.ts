@@ -184,3 +184,24 @@ it("reserves only one copy on a hit and preserves its source when space cannot b
   releasePeerMedia(peerMediaUri(result!)!);
   expect(new Set(disk.files.keys())).toEqual(before);
 });
+
+it.each(['download', 'store', 'direct'] as const)('keeps the old version when %s cannot reserve replacement space', async mode => {
+  const cache = await seed(`replace-pressure-${mode}`);
+  const before = new Set(disk.files.keys());
+  const newer = { ...metadata, version: 'b'.repeat(64) };
+  disk.available = 256 * 1024 ** 2 + metadata.size - 1;
+  if (mode === 'download') {
+    expect(await cache.download('device', 'url', newer, 'https://unavailable', () => true)).toBeNull();
+  } else if (mode === 'direct') {
+    expect(await cache.prune('device', 'url', newer.size)).toBe(false);
+  } else {
+    const uri = 'file:///replacement';
+    disk.files.set(uri, new Uint8Array(newer.size));
+    const result = { ossKey: '', ...newer };
+    recordPeerMedia(result, uri, () => disk.files.delete(uri));
+    await cache.store('device', 'url', newer, result);
+    releasePeerMedia(uri);
+  }
+  expect(new Set(disk.files.keys())).toEqual(before);
+  expect(await cache.readLatest('device', 'url', () => true)).toMatchObject(metadata);
+});

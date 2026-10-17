@@ -19,6 +19,7 @@ vi.mock('../mediaTransfer', () => ({ removeRemote: vi.fn() }));
 vi.mock('electron', () => ({ app: { getPath: () => state.root } }));
 vi.mock('../../appSessionState', () => ({
   getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: state.owner }),
+  activeOwnerScopeKey: () => `${state.owner}:${state.generation}`,
 }));
 vi.mock('../../localDb/client/current', () => ({ getDbClient: () => ({ drizzle: state.db }) }));
 vi.mock('../broadcast-tap', () => ({

@@ -596,7 +596,7 @@ export function PeerFileTransport() {
               mobileDebugLog('debug', 'files', 'file cache hit', { trace: readTrace, size: cached.size });
               return cached;
             }
-            if (metadata) await cache?.prune(metadata.size).catch(() => false);
+            if (metadata) await cache?.prune(device, url, metadata.size).catch(() => false);
             check();
             const result = await transfer(device, url, signal, readTrace);
             if (result && active() && !signal?.aborted)

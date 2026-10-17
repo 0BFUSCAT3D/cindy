@@ -31,7 +31,7 @@ export interface RemoteMediaDiskCacheIO {
    * 契约:落位必须原子(临时位置下载、成功后移入)——失败时不得破坏已存在的
    * 同名文件,store 的失败清理依赖这一点区分「半成品」与「现存好文件」。
    */
-  download(url: string, name: string): Promise<number | null>;
+  download(url: string, name: string, options?: { allowEmpty: boolean }): Promise<number | null>;
   /**
    * 把 base64 字节写入缓存文件(inline 缩略图落盘用);成功返回字节数,失败返回
    * null(不抛)。契约与 download 相同:落位必须原子,失败不得破坏既有同名文件。
@@ -252,7 +252,7 @@ export function createRemoteMediaDiskCache(
       await init();
       // 单对象就超预算:落盘立刻会被 LRU 逐出,整个下载都是白费,直接跳过。
       if (expectedSize !== undefined && expectedSize > maxBytes) return false;
-      if (options.availableBytes && !(await prune(expectedSize ?? 0))) return false;
+      if (options.availableBytes && !(await prune(expectedSize ?? 0, sourceUrl))) return false;
       const key = cacheKeyOf(sourceUrl);
       const run = async (): Promise<boolean> => {
         // The OS or manual cache cleanup may remove the directory after init.
@@ -261,7 +261,7 @@ export function createRemoteMediaDiskCache(
         // version must never race an overwrite of the same physical file.
         const name = `${key}${version ? `-${version}` : ''}.${extOfMime(mimeType)}`;
         const prev = entries?.get(key);
-        const size = await io.download(downloadUrl, name);
+        const size = await io.download(downloadUrl, name, { allowEmpty: !!version && expectedSize === 0 });
         if (size !== null && expectedSize !== undefined && size !== expectedSize) {
           await Promise.resolve(io.deleteFile(name)).catch(() => undefined);
           return false;
