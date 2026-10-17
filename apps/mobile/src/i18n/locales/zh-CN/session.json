@@ -211,6 +211,7 @@
     "retry": "重试",
     "firstMessageNotSent": "首条消息没有发出，内容已还原到输入框。",
     "attachmentsNotCarriedBack": "有 {{count}} 个附件没能一起带回，需要重新添加。",
+    "pendingAttachmentsNotCarriedBack": "尚未完成选择或上传的附件没能一起带回，请重新添加。",
     "localStorageFull": "Cindy 在手机上的本地存储已满，消息没能保存，请稍后重试。",
     "commandWaitsForSession": "任务还在创建中，这个命令要等任务就绪后才能用，请稍后再发。",
     "locateMessageNotFound": "未找到要定位的消息。",

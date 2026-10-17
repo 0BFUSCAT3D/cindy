@@ -1419,6 +1419,7 @@ function SessionScreenContent() {
     waitForPastePlaceholdersSettled,
     hasPastePlaceholders,
     getPendingUploadCount,
+    hasAttachmentInput,
   } = useMobileLocalAttachments({
     attachmentScopeKey: sessionId,
     deviceId,
@@ -4114,9 +4115,8 @@ function SessionScreenContent() {
     beforeNavigate: async () => {
       const owner = getMobileAuthOwner();
       if (outboxSessionAliveRef.current !== sessionId) return;
-      const pendingCount = getPendingUploadCount();
-      const notice = pendingCount > 0
-        ? t('session.screen.attachmentsNotCarriedBack', { count: pendingCount })
+      const notice = hasAttachmentInput()
+        ? t('session.screen.pendingAttachmentsNotCarriedBack')
         : attachmentError;
       // Seal native picker/paste callbacks as well as queued uploads. Keep the
       // warning in the existing error state if durable saving needs another try.
