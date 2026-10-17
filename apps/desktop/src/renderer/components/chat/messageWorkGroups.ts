@@ -159,6 +159,7 @@ export type RenderItem =
   | WorkGroupRenderItem;
 
 export function isCompletedAssistantMessage(message: ChatMessage): boolean {
+  if (message.failedSamplingAttempt) return false;
   return (
     message.turnCompleted === true ||
     (message.turnMoney?.amount ?? 0) > 0 ||
@@ -240,6 +241,7 @@ function isDeliveryProseItem(it: RenderItem): boolean {
   return (
     it.type === 'message' &&
     it.message.role === 'assistant' &&
+    !it.message.failedSamplingAttempt &&
     !it.message.systemCardType &&
     (Boolean(it.message.images?.length || it.message.files?.length) ||
       isDeliveryProseText(it.message.content))
@@ -251,6 +253,7 @@ function isAssistantAnswerCandidate(it: RenderItem): it is MessageRenderItem {
   return (
     it.type === 'message' &&
     it.message.role === 'assistant' &&
+    !it.message.failedSamplingAttempt &&
     !it.message.systemCardType &&
     it.message.content.trim().length > 0
   );
