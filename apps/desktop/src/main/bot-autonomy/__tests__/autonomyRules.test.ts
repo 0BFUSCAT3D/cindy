@@ -1,0 +1,153 @@
+/*
+ * 测试价值
+ * - 生产入口与可观察结果：bot-autonomy 的判定入口 deriveFollowerBotId / resolveSchedulerBotId（谁被叫醒）、
+ *   AutonomyEventLedger.evaluate + settle（何时、发几次事件）、projectBotGlance（工作台一眼看到哪些任务）。
+ *   结果直接决定哪个伙伴被叫醒、主人是否被打扰、工作台显示范围。
+ * - Bug／规则依据：docs/product-rules/cindy-bots-runtime.md §6.3「谁来跟」「阈值」「防打转」与 §7 红线
+ *   （总调度唯一；伙伴之间不能无限互相触发）。
+ * - 现有覆盖缺口：新模块，无既有覆盖；taskWatch / runtime 测试只走代表路径，不穷举跟进者矩阵与阈值边界。
+ * - 最小失败输入：creator 暂停且未允许代跟 → 必须 null（不是总调度）；同一 (类型, phaseSince) 第二次判定
+ *   不再出现；第 7 次同类事件被截停；另一台电脑上的任务在这台电脑发了事件（两台电脑的同名伙伴各跟一遍）；
+ *   非总调度伙伴看不到别人开的任务。
+ * - tier：unit（纯函数，无 IO、无计时器）。
+ */
+import { describe, expect, it } from 'vitest';
+
+import {
+  AUTONOMY_THRESHOLDS,
+  DEFAULT_SCHEDULER_BOT_ID,
+  type WatchedSession,
+} from '../../../shared/botAutonomy.js';
+import { AutonomyEventLedger } from '../events.js';
+import { deriveFollowerBotId, resolveSchedulerBotId, type FollowerBotState } from '../follower.js';
+import { projectBotGlance } from '../glance.js';
+
+const bot = (status: string, allowSchedulerFollow = false, shadowed = false): FollowerBotState => ({
+  status, allowSchedulerFollow, shadowed,
+});
+
+function row(patch: Partial<WatchedSession>): WatchedSession {
+  return {
+    sessionId: 's1',
+    deviceId: null,
+    deviceName: null,
+    online: true,
+    title: 'Task',
+    workingDir: null,
+    phase: 'running',
+    phaseSince: 0,
+    lastActivityAt: 0,
+    startedAt: 0,
+    pendingQuestion: null,
+    error: null,
+    creatorBotId: null,
+    followerBotId: 'sched',
+    source: 'user',
+    ...patch,
+  };
+}
+
+describe('who follows a task', () => {
+  it.each([
+    ['owner task → scheduler', null, 'sched', { sched: bot('active') }, 'sched'],
+    ['owner task, scheduler paused → nobody', null, 'sched', { sched: bot('paused') }, null],
+    ['owner task, no scheduler → nobody', null, null, {}, null],
+    ['teammate task → its creator', 'a', 'sched', { a: bot('active'), sched: bot('active') }, 'a'],
+    ['creator paused, not shared → nobody', 'a', 'sched', { a: bot('paused'), sched: bot('active') }, null],
+    ['creator paused, shared → scheduler', 'a', 'sched', { a: bot('paused', true), sched: bot('active') }, 'sched'],
+    ['creator runs on another computer, shared → scheduler', 'a', 'sched', { a: bot('active', true, true), sched: bot('active') }, 'sched'],
+    ['creator gone → nobody', 'gone', 'sched', { sched: bot('active') }, null],
+  ] as const)('%s', (_name, creatorBotId, schedulerBotId, bots, expected) => {
+    expect(deriveFollowerBotId({
+      creatorBotId,
+      schedulerBotId,
+      bots: new Map(Object.entries(bots)),
+    })).toBe(expected);
+  });
+
+  it.each([
+    ['not customized → active Cindy assistant', { customized: false, schedulerBotId: null }, { [DEFAULT_SCHEDULER_BOT_ID]: bot('active') }, DEFAULT_SCHEDULER_BOT_ID],
+    ['not customized, assistant paused → none', { customized: false, schedulerBotId: null }, { [DEFAULT_SCHEDULER_BOT_ID]: bot('paused') }, null],
+    ['customized off stays off', { customized: true, schedulerBotId: null }, { [DEFAULT_SCHEDULER_BOT_ID]: bot('active') }, null],
+    ['customized teammate', { customized: true, schedulerBotId: 'a' }, { a: bot('paused'), [DEFAULT_SCHEDULER_BOT_ID]: bot('active') }, 'a'],
+    ['customized teammate archived → default', { customized: true, schedulerBotId: 'a' }, { a: bot('archived'), [DEFAULT_SCHEDULER_BOT_ID]: bot('active') }, DEFAULT_SCHEDULER_BOT_ID],
+  ] as const)('scheduler: %s', (_name, override, bots, expected) => {
+    expect(resolveSchedulerBotId(override, new Map(Object.entries(bots)))).toBe(expected);
+  });
+});
+
+describe('autonomy event thresholds and loop guard', () => {
+  it('fires each (type, phaseSince) once, waits for thresholds, and caps repeats per 24h', () => {
+    const ledger = new AutonomyEventLedger();
+    const t0 = 1_000_000;
+    const rows = [
+      row({ sessionId: 'run', phase: 'running', phaseSince: t0, lastActivityAt: t0 }),
+      row({ sessionId: 'wait', phase: 'waiting-answer', phaseSince: t0 }),
+      row({ sessionId: 'err', phase: 'errored', phaseSince: t0 }),
+      row({ sessionId: 'auto', phase: 'finished', phaseSince: t0, source: 'routine' }),
+      row({ sessionId: 'off', phase: 'errored', phaseSince: t0, online: false }),
+      // 另一台电脑上的任务由那台电脑上的伙伴跟：即使误带了跟进者，这台电脑也不发事件。
+      row({ sessionId: 'remote', deviceId: 'd1', phase: 'errored', phaseSince: t0 }),
+    ];
+    // 出错立即发；卡住 / 等你未到阈值；自动化任务做完、离线电脑与另一台电脑的任务不发。
+    expect(ledger.evaluate(rows, t0 + 1).due.map((c) => c.id)).toEqual([`errored:err:${t0}`]);
+    const later = t0 + AUTONOMY_THRESHOLDS.stuckAfterMs;
+    const first = ledger.evaluate(rows, later).due;
+    expect(first.map((c) => c.type).sort()).toEqual(['errored', 'stuck', 'waiting']);
+    for (const candidate of first) ledger.settle(candidate, later);
+    expect(ledger.evaluate(rows, later + 1).due).toEqual([]);
+
+    // 同一任务反复进出同一状态：第 maxEventsPerSessionPerDay + 1 次被截停，只进 capped。
+    const max = AUTONOMY_THRESHOLDS.maxEventsPerSessionPerDay;
+    let capped = 0;
+    for (let i = 1; i <= max; i += 1) {
+      const result = ledger.evaluate([row({ sessionId: 'err', phase: 'errored', phaseSince: t0 + i })], later + i);
+      capped += result.capped.length;
+      for (const candidate of result.due) ledger.settle(candidate, later + i);
+    }
+    expect(capped).toBe(1);
+    // 24h 后计数清零，又可以发。
+    const nextDay = later + max + 24 * 60 * 60_000;
+    expect(ledger.evaluate([row({ sessionId: 'err', phase: 'errored', phaseSince: nextDay })], nextDay).due).toHaveLength(1);
+  });
+});
+
+describe('workbench glance scope', () => {
+  it('shows every task to the scheduler but only own or taken-over tasks to other teammates', () => {
+    const now = 10 * 60_000;
+    const rows = [
+      row({ sessionId: 'mine', creatorBotId: 'a', phase: 'waiting-permission', phaseSince: 0, pendingRequestId: 'req-1' }),
+      row({ sessionId: 'taken', phase: 'running', startedAt: 60_000 }),
+      row({ sessionId: 'owner', phase: 'errored', error: 'boom', phaseSince: 120_000 }),
+      // 另一台电脑上的任务没有跟进者，但总调度的工作台照样看得到、可以允许。
+      row({ sessionId: 'remote', deviceId: 'd1', deviceName: 'Mac mini', phase: 'usage-limit', phaseSince: 0, followerBotId: null }),
+    ];
+    const base = {
+      rows,
+      responsibleSessionIds: new Set(['taken']),
+      finished: [
+        { sessionId: 'mine', creatorBotId: 'a', at: now - 1 },
+        { sessionId: 'owner', creatorBotId: null, at: now - 1 },
+      ],
+      offlineDevices: ['Old PC'],
+      lastSweepAt: now,
+      now,
+    };
+    const own = projectBotGlance({ ...base, botId: 'a', schedulerBotId: 'sched' });
+    expect(own.scope).toBe('own');
+    expect(own.waiting.map((r) => [r.sessionId, r.waitingFor, r.requestId])).toEqual([['mine', 'permission', 'req-1']]);
+    expect(own.working.map((r) => [r.sessionId, r.minutes])).toEqual([['taken', 9]]);
+    expect(own.doneToday).toBe(1);
+    expect(own.offlineDevices).toEqual([]);
+
+    const all = projectBotGlance({ ...base, botId: 'sched', schedulerBotId: 'sched', responsibleSessionIds: new Set() });
+    expect(all.scope).toBe('all');
+    expect(all.waiting.map((r) => [r.sessionId, r.waitingFor, r.question])).toEqual([
+      ['mine', 'permission', null],
+      ['owner', 'error', 'boom'],
+    ]);
+    expect(all.working.map((r) => r.sessionId)).toEqual(['taken', 'remote']);
+    expect(all.doneToday).toBe(2);
+    expect(all.offlineDevices).toEqual(['Old PC']);
+  });
+});

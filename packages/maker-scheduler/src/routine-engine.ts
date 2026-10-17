@@ -1,5 +1,6 @@
 import { RoutineEventAdmission, addRoutineReceipt, compactRoutineReceipts, receiptIsLive } from './routine-event-admission.js';
 import {
+  BUILTIN_ROUTINE_ERROR,
   matchesRoutineEvent,
   nextRoutineTriggerAt,
   parseRoutineEvent,
@@ -7,6 +8,7 @@ import {
 } from "./routines.js";
 import type {
   Routine,
+  RoutineBuiltin,
   RoutineEvent,
   RoutineInput,
   RoutineSource,
@@ -262,7 +264,23 @@ export class RoutineEngine {
     return this.writeRoutine(botId, raw, { creationId });
   }
 
-  private async writeRoutine(botId: string, raw: RoutineInput, options: { id?: string; expectedRevision?: number; creationId?: string }): Promise<Routine> {
+  /**
+   * 宿主内置规则的幂等落地：不存在就建；指令/触发条件与宿主模板不同就改成模板；
+   * 保留用户的暂停选择（enabled）。暂停中的伙伴不建，恢复后由宿主再调一次。
+   * 这是唯一能写内置规则内容的入口；普通 put 只能切换 enabled，remove 一律拒绝。
+   */
+  async ensureBuiltin(botId: string, builtin: RoutineBuiltin, raw: RoutineInput, id: string): Promise<Routine | null> {
+    if (!/^[a-zA-Z0-9_-]{16,128}$/.test(id)) throw new Error("Invalid routine creation ID");
+    if (this.blockedBots.has(botId)) return null;
+    const existing = this.state.routines.find((routine) => routine.id === id && routine.botId === botId);
+    return this.writeRoutine(
+      botId,
+      existing ? { ...raw, enabled: existing.enabled } : raw,
+      { id, builtin },
+    );
+  }
+
+  private async writeRoutine(botId: string, raw: RoutineInput, options: { id?: string; expectedRevision?: number; creationId?: string; builtin?: RoutineBuiltin }): Promise<Routine> {
     const { expectedRevision, creationId } = options;
     const id = options.id ?? creationId;
     const parsed = parseRoutineInput(raw);
@@ -282,12 +300,17 @@ export class RoutineEngine {
         // A newly created, unclassified reminder must retain delivery.
         ...(!existing && parsed.silentWhenIdle === undefined ? { silentWhenIdle: false } : {}),
       });
-      if (id && !existing && !creationId) throw new Error("Routine not found");
-      if (creationId && state.routines.some(row => row.id === creationId && row.botId !== botId)) throw new Error("Routine creation ID already used");
+      if (id && !existing && !creationId && !options.builtin) throw new Error("Routine not found");
+      if ((creationId || options.builtin) && state.routines.some(row => row.id === id && row.botId !== botId)) throw new Error("Routine creation ID already used");
+      // Host-owned rules: callers other than ensureBuiltin may only pause/resume them.
+      if (existing?.builtin && !options.builtin &&
+        JSON.stringify(parseRoutineInput({ ...existing, enabled: input.enabled })) !== JSON.stringify(input))
+        throw new Error(`${BUILTIN_ROUTINE_ERROR}: built-in routines can only be paused or resumed`);
+      const builtin = options.builtin ?? existing?.builtin;
       if (creationId && existing && JSON.stringify(parseRoutineInput(existing)) !== JSON.stringify(input)) throw new Error("Routine already created; refresh before editing");
       if (expectedRevision !== undefined && existing?.revision !== expectedRevision) throw new Error("Routine changed; refresh before saving");
       if (
-        existing &&
+        existing && existing.builtin === builtin &&
         JSON.stringify(parseRoutineInput(existing)) === JSON.stringify(input)
       )
         return structuredClone(existing);
@@ -295,7 +318,8 @@ export class RoutineEngine {
       const now = this.deps.now();
       const routine: Routine = {
         ...input,
-        id: existing?.id ?? creationId ?? this.deps.id(),
+        ...(builtin ? { builtin } : {}),
+        id: existing?.id ?? creationId ?? id ?? this.deps.id(),
         botId,
         revision: (existing?.revision ?? 0) + 1,
         createdAt: existing?.createdAt ?? now,
@@ -333,8 +357,10 @@ export class RoutineEngine {
 
   /** Quiesce execution before host cleanup; failed cleanup leaves a disabled, retryable rule. */
   async remove(botId: string, id: string, cleanup?: () => Promise<void>, expectedRevision?: number): Promise<void> {
-    if (!this.state.routines.some((routine) => routine.id === id && routine.botId === botId))
-      throw new Error("Routine not found");
+    const target = this.state.routines.find((routine) => routine.id === id && routine.botId === botId);
+    if (!target) throw new Error("Routine not found");
+    // Deleting the teammate (removeBot) still clears it; a single built-in rule can only be paused.
+    if (target.builtin) throw new Error(`${BUILTIN_ROUTINE_ERROR}: built-in routines cannot be deleted; pause it instead`);
     if (this.removing.has(id)) throw new Error("Routine is being removed");
     if (expectedRevision !== undefined && this.state.routines.find(row => row.id === id && row.botId === botId)?.revision !== expectedRevision) throw new Error("Routine changed; refresh before deleting");
     this.removing.add(id);

@@ -1,0 +1,743 @@
+/**
+ * 伙伴自主跟进 · 层 0 状态表（程序级，不经模型）。
+ *
+ * 一张表装下本机与已授权在线电脑上的全部任务：
+ * - 本机：灵动岛活动订阅（运行 / 等交互 / 完成 / 出错）+ 输入协调器投影（出错 / 用量上限等待）
+ *   + 挂起交互（等你的那句话）+ 数据库兜底（标题、隐藏 / 归档、伙伴专线排除、启动时被打断的任务）。
+ * - 远程：仅当存在在线、已开启远程控制且本机允许控制的同账号电脑时，按
+ *   `AUTONOMY_THRESHOLDS.remotePollMs` 轮询 `maker:list-active` v2，再按需读标题与挂起交互。
+ *   失败按设备指数退避（上限 15 分钟），离线电脑的行保留最后状态并标 online=false。
+ *   远程行只进工作台（给主人看与允许）：followerBotId 恒为 null，不发事件、不发系统提醒——
+ *   那台电脑上的任务由那台电脑上的伙伴跟，避免两台电脑的同名伙伴各跟一遍。
+ *
+ * 所有 IO 经注入的 deps，便于单测；账号边界由 service 在 deps 里校验。
+ */
+import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
+import {
+  AUTONOMY_THRESHOLDS,
+  type WatchedPhase,
+  type WatchedSession,
+  type WatchedSource,
+} from '../../shared/botAutonomy.js';
+import {
+  deriveFollowerBotId,
+  resolveSchedulerBotId,
+  type FollowerBotDirectory,
+  type FollowerBotState,
+} from './follower.js';
+import type { FinishedRecord } from './glance.js';
+import {
+  deriveLocalPhase,
+  deriveRemotePhase,
+  isFinishTransition,
+  nextPhaseSince,
+  summarizeInteraction,
+  truncateSummary,
+} from './phase.js';
+
+/** 做完的行在表里停留多久（之后只留在「今天做完」计数里）。 */
+export const FINISHED_ROW_RETENTION_MS = 15 * 60_000;
+/** 伙伴、委派与接手关系的重读间隔。 */
+export const OWNERSHIP_REFRESH_MS = 60_000;
+/** 设备目录（服务端 HTTP）重读间隔；轮询本身按 remotePollMs。 */
+export const DEVICE_DIRECTORY_REFRESH_MS = 5 * 60_000;
+/** 远程轮询失败的退避上限。 */
+export const REMOTE_BACKOFF_MAX_MS = 15 * 60_000;
+/** 离线电脑的行最多保留多久。 */
+export const OFFLINE_ROW_RETENTION_MS = 24 * 60 * 60_000;
+/** 启动兜底：只看最近这么久内被打断的任务，最多这么多条。 */
+export const INTERRUPTED_LOOKBACK_MS = 24 * 60 * 60_000;
+export const INTERRUPTED_LIMIT = 50;
+/** 本机库里查不到的任务（例如别的电脑经渲染层镜像进灵动岛的）隔多久再查一次。 */
+const MISSING_META_RETRY_MS = 60_000;
+/** 远程一次读标题的批量。 */
+const REMOTE_READ_BATCH = 50;
+
+const USER_SOURCES = new Set(['desktop', 'feishu', 'slack', 'telegram', 'x', 'discord', 'wechat', 'dingtalk', 'wecom', 'shared']);
+/** 伙伴自己的专线（主任务 / 历史 / 群 / IM 渠道）不是「任务」，不进表。 */
+const BOT_LANE_ROLES = new Set(['canonical', 'history', 'group', 'channel']);
+
+export interface LocalSessionMeta {
+  id: string;
+  title: string;
+  workingDir: string | null;
+  status: string;
+  hiddenAt: number | null;
+  source: string;
+  orcaRole: string | null;
+  /** bot_session_links.role（无链接为 null）。 */
+  laneRole: string | null;
+  /** 上一轮没有正常收尾（startedAt > endedAt）。只在新鲜读库时有意义。 */
+  interrupted: boolean;
+  activeTurnStartedAt: number | null;
+}
+
+export interface OwnershipSnapshot {
+  bots: Map<string, FollowerBotState>;
+  /** 任务 → 开它（或明确接手它）的伙伴。委派来源优先。 */
+  creatorBySession: Map<string, string>;
+  /** 伙伴 → 它负责的任务（委派 + 明确接手 - 解除）。 */
+  responsibleByBot: Map<string, Set<string>>;
+}
+
+export interface RemoteDeviceTarget {
+  deviceId: string;
+  name: string;
+  online: boolean;
+  /** 已开启远程控制、本机允许控制、版本支持后台只读请求。 */
+  eligible: boolean;
+}
+
+export interface TaskWatchLogger {
+  info(message: string, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+  debug(message: string, meta?: Record<string, unknown>): void;
+}
+
+export interface TaskWatchDeps {
+  now(): number;
+  log: TaskWatchLogger;
+  getActivitySnapshots(): readonly SessionActivitySnapshot[];
+  getPendingInteractions(sessionId: string): readonly unknown[];
+  readLocalSessions(ids: readonly string[]): Promise<LocalSessionMeta[]>;
+  readInterruptedSessions(sinceMs: number, limit: number): Promise<LocalSessionMeta[]>;
+  readOwnership(): Promise<OwnershipSnapshot>;
+  readSchedulerOverride(): { customized: boolean; schedulerBotId: string | null };
+  /** null = 当前不能用设备互联（未登录 / 换号中 / 无 device-link）。 */
+  listRemoteDevices(): Promise<RemoteDeviceTarget[] | null>;
+  invokeRemote(deviceId: string, channel: string, args: unknown[]): Promise<unknown>;
+  /** 表有变化（行、相位、标题、跟进者、在线状态）。 */
+  onChange(): void;
+}
+
+interface LocalFacts {
+  activity: SessionActivitySnapshot | null;
+  inputError: string | null;
+  usageLimitWait: boolean;
+}
+
+interface RemoteDeviceState {
+  name: string;
+  online: boolean;
+  failures: number;
+  nextPollAt: number;
+  offlineSince: number | null;
+  /** 远程任务上次观察到的活动迹象：消息数或更新时间变化即算有活动。 */
+  signals: Map<string, { signature: string; observedAt: number }>;
+}
+
+const EMPTY_OWNERSHIP: OwnershipSnapshot = {
+  bots: new Map(),
+  creatorBySession: new Map(),
+  responsibleByBot: new Map(),
+};
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+export function remoteWatchedSessionId(deviceId: string, sessionId: string): string {
+  return `${deviceId}::${sessionId}`;
+}
+
+export class TaskWatch {
+  private readonly rows = new Map<string, WatchedSession>();
+  private readonly local = new Map<string, LocalFacts>();
+  private readonly meta = new Map<string, LocalSessionMeta>();
+  private readonly missingMeta = new Map<string, number>();
+  /** 启动兜底读到的「上次被打断」行：没有新的活动之前保留，复查库里已收尾就移除。 */
+  private readonly interrupted = new Set<string>();
+  private readonly pending = new Set<string>();
+  private flushing: Promise<void> | null = null;
+  private ownership: OwnershipSnapshot = EMPTY_OWNERSHIP;
+  private ownershipAt = 0;
+  private ownershipRefresh: Promise<void> | null = null;
+  private schedulerBotId: string | null = null;
+  private readonly finishedLog: FinishedRecord[] = [];
+  private readonly remote = new Map<string, RemoteDeviceState>();
+  private directory: { at: number; devices: RemoteDeviceTarget[] } | null = null;
+  private remotePolling = false;
+  private lastSweepAt = 0;
+  private stopped = false;
+
+  constructor(private readonly deps: TaskWatchDeps) {}
+
+  // ─── 读 ────────────────────────────────────────────────────────────────
+
+  list(): WatchedSession[] {
+    return [...this.rows.values()].map((row) => ({ ...row }));
+  }
+
+  get(sessionId: string): WatchedSession | undefined {
+    const row = this.rows.get(sessionId);
+    return row ? { ...row } : undefined;
+  }
+
+  getSchedulerBotId(): string | null {
+    return this.schedulerBotId;
+  }
+
+  getBots(): FollowerBotDirectory {
+    return this.ownership.bots;
+  }
+
+  responsibleFor(botId: string): ReadonlySet<string> {
+    return this.ownership.responsibleByBot.get(botId) ?? new Set();
+  }
+
+  finished(): readonly FinishedRecord[] {
+    return this.finishedLog;
+  }
+
+  offlineDevices(): string[] {
+    return [...this.remote.values()].filter((device) => !device.online).map((device) => device.name);
+  }
+
+  getLastSweepAt(): number {
+    return this.lastSweepAt;
+  }
+
+  // ─── 生命周期 ──────────────────────────────────────────────────────────
+
+  async start(): Promise<void> {
+    await this.refreshOwnership();
+    for (const snapshot of this.deps.getActivitySnapshots()) {
+      this.local.set(snapshot.sessionId, { ...this.factsFor(snapshot.sessionId), activity: snapshot });
+      this.pending.add(snapshot.sessionId);
+    }
+    await this.seedInterrupted();
+    await this.flush();
+  }
+
+  stop(): void {
+    this.stopped = true;
+  }
+
+  // ─── 本机输入 ──────────────────────────────────────────────────────────
+
+  applyActivity(sessionId: string, current: SessionActivitySnapshot | null): void {
+    if (this.stopped) return;
+    this.local.set(sessionId, { ...this.factsFor(sessionId), activity: current });
+    this.queue(sessionId);
+  }
+
+  applyInputProjection(projection: { sessionId: string; error?: string | null; usageLimitWait?: unknown }): void {
+    if (this.stopped || typeof projection?.sessionId !== 'string') return;
+    const facts = this.factsFor(projection.sessionId);
+    const inputError = typeof projection.error === 'string' && projection.error ? projection.error : null;
+    const usageLimitWait = !!projection.usageLimitWait;
+    if (facts.inputError === inputError && facts.usageLimitWait === usageLimitWait) return;
+    // 没有任何活动、也没有出错 / 等待的会话不进表（投影会为每个会话广播）。
+    if (!this.local.has(projection.sessionId) && !inputError && !usageLimitWait) return;
+    this.local.set(projection.sessionId, { ...facts, inputError, usageLimitWait });
+    this.queue(projection.sessionId);
+  }
+
+  /** 设置变化（总调度换人）或资料变化后：重读归属并重算全部跟进者。 */
+  async refreshFollowers(): Promise<void> {
+    await this.refreshOwnership(true);
+    this.deps.onChange();
+  }
+
+  private factsFor(sessionId: string): LocalFacts {
+    return this.local.get(sessionId) ?? { activity: null, inputError: null, usageLimitWait: false };
+  }
+
+  private queue(sessionId: string): void {
+    this.pending.add(sessionId);
+    if (this.flushing) return;
+    // 同一 tick 的多条变化合成一次读库。
+    this.flushing = Promise.resolve().then(() => this.flush()).finally(() => { this.flushing = null; });
+  }
+
+  /** 测试与 service 用：等当前排队的重算落定。 */
+  async settled(): Promise<void> {
+    while (this.flushing) await this.flushing;
+  }
+
+  private async flush(): Promise<void> {
+    while (this.pending.size && !this.stopped) {
+      const ids = [...this.pending];
+      this.pending.clear();
+      const now = this.deps.now();
+      const unknown = ids.filter((id) => !this.meta.has(id)
+        && (this.missingMeta.get(id) === undefined || now - (this.missingMeta.get(id) ?? 0) >= MISSING_META_RETRY_MS));
+      if (unknown.length) {
+        try {
+          const rows = await this.deps.readLocalSessions(unknown);
+          if (this.stopped) return;
+          const found = new Set<string>();
+          for (const row of rows) {
+            found.add(row.id);
+            this.meta.set(row.id, row);
+            this.missingMeta.delete(row.id);
+          }
+          for (const id of unknown) if (!found.has(id)) this.missingMeta.set(id, now);
+        } catch (error) {
+          this.deps.log.warn('session meta read failed', { error: errorCode(error) });
+          continue;
+        }
+      }
+      let unowned = false;
+      let changed = false;
+      for (const id of ids) {
+        const result = this.recomputeLocal(id, now);
+        changed ||= result.changed;
+        unowned ||= result.unowned;
+      }
+      // 新出现的任务可能刚由伙伴委派开出来：归属有点旧就提前重读一次。
+      if (unowned && now - this.ownershipAt >= 5_000) await this.refreshOwnership();
+      if (changed || unowned) this.deps.onChange();
+    }
+  }
+
+  private isWatchable(meta: LocalSessionMeta | undefined): meta is LocalSessionMeta {
+    return !!meta
+      && meta.status === 'active'
+      && meta.hiddenAt === null
+      && meta.orcaRole !== 'worker'
+      && meta.source !== 'review'
+      && !(meta.laneRole !== null && BOT_LANE_ROLES.has(meta.laneRole));
+  }
+
+  private recomputeLocal(sessionId: string, now: number): { changed: boolean; unowned: boolean } {
+    const meta = this.meta.get(sessionId);
+    const previous = this.rows.get(sessionId) ?? null;
+    if (!this.isWatchable(meta)) {
+      this.interrupted.delete(sessionId);
+      return { changed: this.rows.delete(sessionId), unowned: false };
+    }
+    const facts = this.factsFor(sessionId);
+    const activity = facts.activity;
+    let phase: WatchedPhase = deriveLocalPhase({
+      activityPhase: activity?.phase ?? null,
+      interactionKind: activity?.interactionKind ?? null,
+      inputError: !!facts.inputError,
+      usageLimitWait: facts.usageLimitWait,
+    });
+    if (activity) this.interrupted.delete(sessionId);
+    // 第一次看到就已经做完（例如启动时灵动岛里还挂着的未读完成）：没有可观察的跃迁，不发「做完」。
+    if (phase === 'finished' && !previous) return { changed: false, unowned: false };
+    if (phase === 'idle') {
+      if (previous && this.interrupted.has(sessionId)) return { changed: false, unowned: false };
+      if (previous?.phase === 'finished') return { changed: false, unowned: false };
+      if (!previous || !isFinishTransition(previous.phase, 'idle')) {
+        return { changed: this.rows.delete(sessionId), unowned: false };
+      }
+      phase = 'finished';
+    }
+    let phaseSince: number;
+    if (phase === 'running') {
+      phaseSince = activity?.startedAtMs ?? (previous?.phase === 'running' ? previous.phaseSince : now);
+    } else if (phase === 'finished') {
+      phaseSince = nextPhaseSince(previous, phase, activity?.phase === 'completed' ? activity.lastActivityAtMs ?? now : now);
+    } else if (phase === 'errored') {
+      phaseSince = nextPhaseSince(previous, phase, activity?.phase === 'error' ? activity.lastActivityAtMs ?? now : now);
+    } else {
+      phaseSince = nextPhaseSince(previous, phase, now);
+    }
+    let pendingQuestion: string | null = null;
+    let pendingRequestId: string | null = null;
+    if (phase === 'waiting-answer' || phase === 'waiting-permission') {
+      const summary = summarizeInteraction(this.deps.getPendingInteractions(sessionId)[0]);
+      const keep = previous?.phase === phase;
+      pendingQuestion = summary?.summary ?? (keep ? previous.pendingQuestion : null);
+      pendingRequestId = summary?.requestId ?? (keep ? previous.pendingRequestId ?? null : null);
+    }
+    const creatorBotId = this.ownership.creatorBySession.get(sessionId) ?? null;
+    const row: WatchedSession = {
+      sessionId,
+      deviceId: null,
+      deviceName: null,
+      online: true,
+      title: meta.title,
+      workingDir: meta.workingDir,
+      phase,
+      phaseSince,
+      lastActivityAt: activity?.lastActivityAtMs ?? previous?.lastActivityAt ?? phaseSince,
+      startedAt: activity?.startedAtMs ?? previous?.startedAt ?? null,
+      pendingQuestion,
+      pendingRequestId,
+      error: phase === 'errored' && facts.inputError ? truncateSummary(facts.inputError) : null,
+      creatorBotId,
+      followerBotId: null,
+      source: localSource(meta, creatorBotId),
+    };
+    row.followerBotId = this.followerFor(row);
+    if (phase === 'finished' && previous?.phase !== 'finished') this.recordFinished(row, now);
+    this.rows.set(sessionId, row);
+    return { changed: !sameRow(previous, row), unowned: !previous && creatorBotId === null };
+  }
+
+  private recordFinished(row: WatchedSession, now: number): void {
+    this.finishedLog.push({ sessionId: row.sessionId, creatorBotId: row.creatorBotId, at: now });
+    // 只为「今天做完 N 件」留两天的记录。
+    const cutoff = now - 2 * 24 * 60 * 60_000;
+    while (this.finishedLog.length && this.finishedLog[0]!.at < cutoff) this.finishedLog.shift();
+  }
+
+  private async seedInterrupted(): Promise<void> {
+    const now = this.deps.now();
+    let rows: LocalSessionMeta[];
+    try {
+      rows = await this.deps.readInterruptedSessions(now - INTERRUPTED_LOOKBACK_MS, INTERRUPTED_LIMIT);
+    } catch (error) {
+      this.deps.log.warn('interrupted session seed failed', { error: errorCode(error) });
+      return;
+    }
+    for (const meta of rows) {
+      this.meta.set(meta.id, meta);
+      if (!this.isWatchable(meta) || !meta.interrupted || this.rows.has(meta.id) || this.local.get(meta.id)?.activity) continue;
+      const since = meta.activeTurnStartedAt ?? now;
+      const creatorBotId = this.ownership.creatorBySession.get(meta.id) ?? null;
+      const row: WatchedSession = {
+        sessionId: meta.id,
+        deviceId: null,
+        deviceName: null,
+        online: true,
+        title: meta.title,
+        workingDir: meta.workingDir,
+        phase: 'errored',
+        phaseSince: since,
+        lastActivityAt: since,
+        startedAt: since,
+        pendingQuestion: null,
+        error: null,
+        creatorBotId,
+        followerBotId: null,
+        source: localSource(meta, creatorBotId),
+      };
+      row.followerBotId = this.followerFor(row);
+      this.rows.set(meta.id, row);
+      this.interrupted.add(meta.id);
+    }
+  }
+
+  private followerFor(row: Pick<WatchedSession, 'creatorBotId' | 'deviceId'>): string | null {
+    // 每台电脑上的任务由那台电脑上的伙伴跟：两台电脑上的同名伙伴（如各自的 Cindy 助理）不会各跟一遍。
+    // 另一台电脑的行只进工作台给主人看与允许；总调度仍可经工具显式继续它。
+    if (row.deviceId !== null) return null;
+    return deriveFollowerBotId({
+      creatorBotId: row.creatorBotId,
+      schedulerBotId: this.schedulerBotId,
+      bots: this.ownership.bots,
+    });
+  }
+
+  private async refreshOwnership(force = false): Promise<void> {
+    if (this.ownershipRefresh) {
+      await this.ownershipRefresh;
+      if (!force) return;
+    }
+    const run = (async () => {
+      try {
+        const next = await this.deps.readOwnership();
+        if (this.stopped) return;
+        this.ownership = next;
+        this.ownershipAt = this.deps.now();
+      } catch (error) {
+        this.deps.log.warn('ownership read failed', { error: errorCode(error) });
+      }
+      this.schedulerBotId = resolveSchedulerBotId(this.readOverride(), this.ownership.bots);
+      for (const row of this.rows.values()) {
+        if (row.deviceId === null) {
+          row.creatorBotId = this.ownership.creatorBySession.get(row.sessionId) ?? null;
+          const meta = this.meta.get(row.sessionId);
+          if (meta) row.source = localSource(meta, row.creatorBotId);
+        }
+        row.followerBotId = this.followerFor(row);
+      }
+    })();
+    this.ownershipRefresh = run;
+    try {
+      await run;
+    } finally {
+      if (this.ownershipRefresh === run) this.ownershipRefresh = null;
+    }
+  }
+
+  private readOverride(): { customized: boolean; schedulerBotId: string | null } {
+    try {
+      return this.deps.readSchedulerOverride();
+    } catch (error) {
+      this.deps.log.warn('scheduler setting read failed', { error: errorCode(error) });
+      return { customized: false, schedulerBotId: null };
+    }
+  }
+
+  // ─── 周期扫描 ──────────────────────────────────────────────────────────
+
+  /** 程序级心跳：刷新归属与标题、清理做完的行、按需轮询远程电脑。阈值事件由 service 随后判定。 */
+  async sweep(): Promise<void> {
+    if (this.stopped) return;
+    const now = this.deps.now();
+    if (now - this.ownershipAt >= OWNERSHIP_REFRESH_MS) await this.refreshOwnership();
+    await this.refreshLocalMeta();
+    for (const [id, row] of this.rows) {
+      if (row.phase === 'finished' && now - row.phaseSince >= FINISHED_ROW_RETENTION_MS
+        && !(row.deviceId === null && this.local.get(id)?.activity)) this.rows.delete(id);
+    }
+    for (const [id, facts] of this.local) {
+      if (!facts.activity && !facts.inputError && !facts.usageLimitWait && !this.rows.has(id)) this.local.delete(id);
+    }
+    if (this.meta.size > 2_000) {
+      for (const id of this.meta.keys()) if (!this.rows.has(id) && !this.local.has(id)) this.meta.delete(id);
+    }
+    await this.pollRemote(now);
+    if (this.stopped) return;
+    this.lastSweepAt = now;
+    this.deps.onChange();
+  }
+
+  private async refreshLocalMeta(): Promise<void> {
+    const ids = [...this.rows.values()].filter((row) => row.deviceId === null).map((row) => row.sessionId);
+    if (!ids.length) return;
+    let fresh: LocalSessionMeta[];
+    try {
+      fresh = await this.deps.readLocalSessions(ids);
+    } catch (error) {
+      this.deps.log.warn('session meta refresh failed', { error: errorCode(error) });
+      return;
+    }
+    if (this.stopped) return;
+    const found = new Map(fresh.map((meta) => [meta.id, meta]));
+    for (const id of ids) {
+      const meta = found.get(id);
+      const row = this.rows.get(id);
+      if (!row) continue;
+      if (!meta || !this.isWatchable(meta)) {
+        if (meta) this.meta.set(id, meta);
+        else this.meta.delete(id);
+        this.rows.delete(id);
+        this.interrupted.delete(id);
+        continue;
+      }
+      this.meta.set(id, meta);
+      if (this.interrupted.has(id) && !meta.interrupted) {
+        this.rows.delete(id);
+        this.interrupted.delete(id);
+        continue;
+      }
+      row.title = meta.title;
+      row.workingDir = meta.workingDir;
+    }
+  }
+
+  // ─── 远程电脑 ──────────────────────────────────────────────────────────
+
+  private async pollRemote(now: number): Promise<void> {
+    if (this.remotePolling) return;
+    this.remotePolling = true;
+    try {
+      if (!this.directory || now - this.directory.at >= DEVICE_DIRECTORY_REFRESH_MS) {
+        let devices: RemoteDeviceTarget[] | null = null;
+        try {
+          devices = await this.deps.listRemoteDevices();
+        } catch (error) {
+          this.deps.log.debug('device directory read failed', { error: errorCode(error) });
+        }
+        if (this.stopped) return;
+        if (devices === null && !this.directory) return;
+        this.directory = { at: now, devices: devices ?? this.directory?.devices ?? [] };
+        const known = new Set(this.directory.devices.map((device) => device.deviceId));
+        for (const deviceId of this.remote.keys()) if (!known.has(deviceId)) this.forgetDevice(deviceId);
+      }
+      const targets = this.directory.devices.filter((device) => device.eligible);
+      for (const device of this.directory.devices) {
+        if (!device.eligible && this.remote.has(device.deviceId)) this.forgetDevice(device.deviceId);
+      }
+      for (const device of targets) {
+        if (this.stopped) return;
+        const state = this.remote.get(device.deviceId) ?? {
+          name: device.name,
+          online: device.online,
+          failures: 0,
+          nextPollAt: 0,
+          offlineSince: null,
+          signals: new Map(),
+        };
+        state.name = device.name;
+        this.remote.set(device.deviceId, state);
+        if (!device.online) {
+          this.markDeviceOffline(device.deviceId, state, now);
+          continue;
+        }
+        if (state.nextPollAt > now) continue;
+        try {
+          await this.pollDevice(device.deviceId, state, now);
+          state.failures = 0;
+          state.online = true;
+          state.offlineSince = null;
+          state.nextPollAt = now + AUTONOMY_THRESHOLDS.remotePollMs;
+        } catch (error) {
+          state.failures += 1;
+          state.nextPollAt = now + Math.min(
+            AUTONOMY_THRESHOLDS.remotePollMs * 2 ** state.failures,
+            REMOTE_BACKOFF_MAX_MS,
+          );
+          this.markDeviceOffline(device.deviceId, state, now);
+          this.deps.log.debug('remote task poll failed', {
+            deviceId: device.deviceId.slice(0, 8),
+            failures: state.failures,
+            error: errorCode(error),
+          });
+        }
+      }
+    } finally {
+      this.remotePolling = false;
+    }
+  }
+
+  private markDeviceOffline(deviceId: string, state: RemoteDeviceState, now: number): void {
+    if (state.online || state.offlineSince === null) state.offlineSince = state.offlineSince ?? now;
+    state.online = false;
+    for (const [id, row] of this.rows) {
+      if (row.deviceId !== deviceId) continue;
+      if (now - (state.offlineSince ?? now) >= OFFLINE_ROW_RETENTION_MS) this.rows.delete(id);
+      else row.online = false;
+    }
+  }
+
+  private forgetDevice(deviceId: string): void {
+    this.remote.delete(deviceId);
+    for (const [id, row] of this.rows) if (row.deviceId === deviceId) this.rows.delete(id);
+  }
+
+  private async pollDevice(deviceId: string, state: RemoteDeviceState, now: number): Promise<void> {
+    const result = record(await this.deps.invokeRemote(deviceId, 'maker:list-active', [
+      { summary: true, snapshotVersion: 2 },
+    ]));
+    const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+    const active = new Map<string, { isTurnRunning?: unknown; activityPhase?: unknown }>();
+    for (const raw of sessions) {
+      const row = record(raw);
+      if (!row || typeof row.sessionId !== 'string' || !row.sessionId || row.sessionId.length > 256) continue;
+      const phase = deriveRemotePhase(row);
+      if (phase === 'idle') continue;
+      active.set(row.sessionId, row);
+    }
+    // 标题、更新时间与消息数：只为非空闲的任务读，按批。
+    const metas = new Map<string, Record<string, unknown>>();
+    const ids = [...active.keys()];
+    for (let offset = 0; offset < ids.length; offset += REMOTE_READ_BATCH) {
+      const batch = await this.deps.invokeRemote(deviceId, 'local-db:sessions:get-many', [ids.slice(offset, offset + REMOTE_READ_BATCH)]);
+      for (const raw of Array.isArray(batch) ? batch : []) {
+        const meta = record(raw);
+        if (meta && typeof meta.id === 'string') metas.set(meta.id, meta);
+      }
+    }
+    if (this.stopped) return;
+    const seen = new Set<string>();
+    for (const [remoteId, activity] of active) {
+      const meta = metas.get(remoteId);
+      // 被控端隐藏的任务读不到；伙伴的专线与后台任务由那台电脑自己的伙伴跟，不跨电脑重复跟。
+      if (!meta || meta.source === 'bot' || meta.orcaRole === 'worker' || meta.source === 'review'
+        || (meta.status !== undefined && meta.status !== 'active') || (meta.hiddenAt !== undefined && meta.hiddenAt !== null)) continue;
+      const id = remoteWatchedSessionId(deviceId, remoteId);
+      seen.add(id);
+      const previous = this.rows.get(id) ?? null;
+      let interactionKind: string | null = null;
+      let pendingQuestion: string | null = null;
+      let pendingRequestId: string | null = null;
+      if (activity.activityPhase === 'needs-interaction') {
+        if (previous && (previous.phase === 'waiting-answer' || previous.phase === 'waiting-permission')) {
+          interactionKind = previous.phase === 'waiting-permission' ? 'permission' : 'ask_user_question';
+          pendingQuestion = previous.pendingQuestion;
+          pendingRequestId = previous.pendingRequestId ?? null;
+        } else {
+          try {
+            const pending = await this.deps.invokeRemote(deviceId, 'maker:get-pending-interactions', [remoteId]);
+            const first = Array.isArray(pending) ? record(pending[0])?.request ?? pending[0] : undefined;
+            const summary = summarizeInteraction(first);
+            interactionKind = summary?.waitingFor === 'permission' ? 'permission' : 'ask_user_question';
+            pendingQuestion = summary?.summary ?? null;
+            pendingRequestId = summary?.requestId ?? null;
+          } catch {
+            // 读不到具体问题：仍按「等回答」显示。
+          }
+        }
+      }
+      const phase = deriveRemotePhase({ ...activity, interactionKind });
+      // 第一次看到就已经做完的任务没有可观察的「做完」跃迁：不进表、不发事件、不计数。
+      if (phase === 'finished' && !previous) continue;
+      const signature = `${String(meta.messageCount ?? '')}|${String(meta.updatedAt ?? '')}`;
+      const signal = state.signals.get(remoteId);
+      const activityAt = !signal || signal.signature !== signature ? now : signal.observedAt;
+      state.signals.set(remoteId, { signature, observedAt: activityAt });
+      const updatedAt = finiteNumber(meta.updatedAt);
+      // 出错的时刻尽量用被控端的更新时间，重启后同一次出错仍是同一个事件 id。
+      const candidateSince = phase === 'errored' && updatedAt !== null && updatedAt <= now ? updatedAt : now;
+      const phaseSince = phase === 'running' && previous?.phase === 'running'
+        ? previous.phaseSince
+        : nextPhaseSince(previous, phase, candidateSince);
+      const row: WatchedSession = {
+        sessionId: id,
+        deviceId,
+        deviceName: state.name,
+        online: true,
+        title: typeof meta.title === 'string' && meta.title ? meta.title : (previous?.title ?? ''),
+        workingDir: typeof meta.workingDir === 'string' ? meta.workingDir : null,
+        phase,
+        phaseSince,
+        lastActivityAt: Math.max(activityAt, updatedAt !== null && updatedAt <= now ? updatedAt : 0),
+        startedAt: previous?.startedAt ?? (phase === 'running' ? now : null),
+        pendingQuestion,
+        pendingRequestId,
+        error: null,
+        creatorBotId: null,
+        followerBotId: null,
+        source: meta.source === 'scheduler' ? 'routine' : USER_SOURCES.has(String(meta.source ?? 'desktop')) ? 'user' : 'other',
+      };
+      row.followerBotId = this.followerFor(row);
+      if (phase === 'finished' && previous?.phase !== 'finished') this.recordFinished(row, now);
+      this.rows.set(id, row);
+    }
+    // 离开活动列表：之前在跑 / 等交互的算做完；做完的行留到保留期满。
+    for (const [id, row] of this.rows) {
+      if (row.deviceId !== deviceId || seen.has(id)) continue;
+      row.online = true;
+      if (isFinishTransition(row.phase, 'idle')) {
+        row.phase = 'finished';
+        row.phaseSince = now;
+        row.pendingQuestion = null;
+        row.pendingRequestId = null;
+        this.recordFinished(row, now);
+      } else if (row.phase !== 'finished') {
+        this.rows.delete(id);
+      }
+    }
+    for (const remoteId of state.signals.keys()) {
+      if (!active.has(remoteId)) state.signals.delete(remoteId);
+    }
+  }
+}
+
+function localSource(meta: LocalSessionMeta, creatorBotId: string | null): WatchedSource {
+  if (creatorBotId) return 'bot-task';
+  if (meta.source === 'scheduler') return 'routine';
+  return USER_SOURCES.has(meta.source) ? 'user' : 'other';
+}
+
+function sameRow(a: WatchedSession | null, b: WatchedSession): boolean {
+  return !!a
+    && a.phase === b.phase
+    && a.phaseSince === b.phaseSince
+    && a.title === b.title
+    && a.pendingQuestion === b.pendingQuestion
+    && (a.pendingRequestId ?? null) === (b.pendingRequestId ?? null)
+    && a.error === b.error
+    && a.followerBotId === b.followerBotId
+    && a.online === b.online;
+}
+
+/** 日志只记错误类别，不带可能含任务内容的原文。 */
+export function errorCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error && typeof (error as { code: unknown }).code === 'string') {
+    return (error as { code: string }).code;
+  }
+  return error instanceof Error ? error.name : typeof error;
+}

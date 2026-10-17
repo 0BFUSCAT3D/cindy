@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import { botProfileDir } from './botProfileFolder.js';
 
-/** Per-task responsibility, independent of project discovery, judgments and Todo.
+/** Per-task responsibility, independent of directories and Todo.
  * Releases override creation evidence; nothing is inferred from conversation text.
  */
 export type TaskResponsibilities = Record<string, { responsible: boolean; updatedAt: string }>;

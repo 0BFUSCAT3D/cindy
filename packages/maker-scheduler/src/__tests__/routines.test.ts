@@ -792,4 +792,33 @@ describe('routine check configuration', () => {
     ]);
     await f.engine.stop();
   });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果：RoutineEngine.ensureBuiltin / put / remove / publish；主人能暂停但删不掉、
+   *   改不了宿主内置的「跟进」规则，宿主改模板后已有规则被对齐且保留暂停选择。
+   * - Bug／规则依据：docs/product-rules/bot-routines.md「内置跟进例行任务」（只能暂停 / 恢复）。
+   * - 现有覆盖缺口：既有用例只覆盖普通规则；builtin 分支（拒删、拒改、对齐模板、保留 enabled）无覆盖。
+   * - 最小失败输入：对 builtin 规则 remove，或 put 一份改了 prompt 的定义；宿主再次 ensure 新 prompt。
+   * - tier：unit（内存 load/save fake，无真实等待）。
+   */
+  it('keeps a host built-in rule pausable but not deletable or editable, and realigns it on ensure', async () => {
+    const f = await fixture();
+    const id = 'builtin-follow-up-bot';
+    try {
+      const created = await f.engine.ensureBuiltin('bot', 'follow-up', input, id);
+      expect(created).toMatchObject({ id, builtin: 'follow-up', enabled: true });
+      // 幂等：同一模板不产生新 revision。
+      expect((await f.engine.ensureBuiltin('bot', 'follow-up', input, id))?.revision).toBe(created?.revision);
+      await expect(f.engine.remove('bot', id)).rejects.toThrow('BUILTIN_ROUTINE');
+      await expect(f.engine.put('bot', { ...input, prompt: 'edited' }, id)).rejects.toThrow('BUILTIN_ROUTINE');
+      const paused = await f.engine.put('bot', { ...input, enabled: false }, id);
+      expect(paused).toMatchObject({ builtin: 'follow-up', enabled: false });
+      expect(await f.engine.publish('github', event('while-paused'))).toEqual({ accepted: 0, duplicate: false });
+      const realigned = await f.engine.ensureBuiltin('bot', 'follow-up', { ...input, prompt: 'v2' }, id);
+      expect(realigned).toMatchObject({ prompt: 'v2', enabled: false, builtin: 'follow-up' });
+      await f.engine.setBotPaused('bot', true);
+      expect(await f.engine.ensureBuiltin('bot', 'follow-up', input, id)).toBeNull();
+    } finally { await f.engine.stop(); }
+  });
 });
