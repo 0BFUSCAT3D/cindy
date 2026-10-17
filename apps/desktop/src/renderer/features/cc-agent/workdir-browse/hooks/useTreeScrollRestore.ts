@@ -36,6 +36,7 @@ const RESTORE_EPSILON_PX = 1;
 
 export function useTreeScrollRestore(
   scope: string,
+  treeKey: string,
   rows: readonly TreeRow[],
   containerRef: RefObject<HTMLElement | null>,
   active = true,
@@ -43,10 +44,16 @@ export function useTreeScrollRestore(
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const scopeRef = useRef(scope);
+  /** 树身份（storeKey = 工作目录 + 远端）。与 scope 分开传：scope 同时含视口身份，
+   *  而视口与树可能独立变化 —— 只有「同树换视口」才允许继承位置（评审 P2）。 */
+  const treeKeyRef = useRef(treeKey);
   /** 最近一次观察到的视口顶部行（onScroll 更新）。换到没有历史锚点的 scope 时
    *  继承它 —— 否则新树的 DOM 保留旧像素 scrollTop，而被忽略目录 / 分批数据在
    *  上方插入行后，视口会落到另一批条目上（评审 P2）。 */
   const lastAnchorRef = useRef<TreeScrollAnchor | null>(null);
+  /** 换树后的一次性「回到顶部」：新树若无自己的记录，应从顶部开始，而不是停在
+   *  旧树残留的 DOM scrollTop 上。 */
+  const awaitTopRestoreRef = useRef(false);
   /** 还有一次「待完成」的恢复：scope 变化 / 重新激活时置位。
    *  注意：找到锚点行后**不**立即清除 —— 换 store 时新树是分批长出来的，锚点行
    *  的 index 会随后续数据到达而位移，要跟到树稳定为止。清除只发生在用户自己
@@ -58,11 +65,21 @@ export function useTreeScrollRestore(
   if (scopeRef.current !== scope) {
     const previousScope = scopeRef.current;
     scopeRef.current = scope;
-    // 首次进入的 scope（例如第一次打开「显示被忽略的目录」）没有历史锚点：继承
-    // 切换前视口顶部的行，保持「看同一批条目」。只继承一次，之后由滚动 / 接管更新。
-    if (!loadTreeScrollAnchor(scope)) {
-      const inherited = lastAnchorRef.current ?? loadTreeScrollAnchor(previousScope);
-      if (inherited) saveTreeScrollAnchor(scope, inherited);
+    const sameTree = treeKeyRef.current === treeKey;
+    treeKeyRef.current = treeKey;
+    if (sameTree) {
+      // 同一棵树的视口切换（例如第一次打开「显示被忽略的目录」）没有历史锚点：
+      // 继承切换前视口顶部的行，保持「看同一批条目」。只继承一次，之后由滚动 /
+      // 接管更新。
+      if (!loadTreeScrollAnchor(scope)) {
+        const inherited = lastAnchorRef.current ?? loadTreeScrollAnchor(previousScope);
+        if (inherited) saveTreeScrollAnchor(scope, inherited);
+      }
+    } else {
+      // 换了树（切项目 / 换远端，storeKey 变化）：旧树的位置不许泄漏 —— 丢弃
+      // 最后视口锚点，新 scope 用它自己的记录，没有记录就由 tryRestore 回到顶部。
+      lastAnchorRef.current = null;
+      awaitTopRestoreRef.current = true;
     }
     pendingRestoreRef.current = true;
   }
@@ -81,6 +98,14 @@ export function useTreeScrollRestore(
     if (!el || el.clientHeight === 0) return false;
     const anchor = loadTreeScrollAnchor(scopeRef.current);
     if (!anchor) {
+      if (awaitTopRestoreRef.current) {
+        // 换树且新树没有记录：把旧树残留的 DOM scrollTop 清回顶部（评审 P2）。
+        awaitTopRestoreRef.current = false;
+        if (el.scrollTop !== 0) {
+          programmaticScrollRef.current = 0;
+          el.scrollTop = 0;
+        }
+      }
       pendingRestoreRef.current = false;
       return true;
     }

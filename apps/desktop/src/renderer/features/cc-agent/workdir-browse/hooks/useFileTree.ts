@@ -130,6 +130,10 @@ export interface UseFileTreeReturn {
    *  锚点、DOM 复用判定）用它，而不是靠对象引用。 */
   storeKey: string;
 
+  /** 树身份（workdir + 远端/设备，不含显示模式段）。开关「显示被忽略的目录」不变；
+   *  切项目 / 换远端才变 —— 滚动锚点继承靠它区分「同树换视口」与「换树」。 */
+  treeIdentityKey: string;
+
   toggleFolder: (relPath: string) => void;
   /** Collapse every folder back to root. Also clears persisted state. */
   collapseAll: () => void;
@@ -241,6 +245,19 @@ function storeKey(opts: Required<UseFileTreeOptions>): string {
   const device = opts.deviceId ? `::device=${opts.deviceId}` : '';
   const reveal = opts.showIgnoredDirs ? '::reveal' : '';
   return `${opts.workdir}::doc=${opts.docMode}::hideMeta=${opts.hideMetaFiles}${reveal}${remote}${device}`;
+}
+
+/** 树身份：工作目录 + 远端/设备，不含显示模式段（reveal / doc / hideMeta）。
+ *  开关「显示被忽略的目录」不变；切项目 / 换远端才变。滚动锚点继承用它区分
+ *  「同树换视口」（可继承位置）与「换树」（位置不得跨树泄漏，评审 P2）。 */
+function treeIdentityKey(
+  workdir: string,
+  remoteHostId: string | null,
+  deviceId: string | null,
+): string {
+  const remote = remoteHostId ? `::remote=${remoteHostId}` : '';
+  const device = deviceId ? `::device=${deviceId}` : '';
+  return `${workdir}${remote}${device}`;
 }
 
 function emit(store: FileTreeStore): void {
@@ -859,6 +876,7 @@ export function useFileTree({
       // 非 device 会话恒 true;device 会话见上面探测注释。
       showIgnoredDirsSupported: deviceId ? deviceRevealSupported : true,
       storeKey: store.key,
+      treeIdentityKey: treeIdentityKey(store.workdir, store.remoteHostId, store.deviceId),
       toggleFolder: toggleFolderCb,
       collapseAll: collapseAllCb,
       refresh: refreshCb,

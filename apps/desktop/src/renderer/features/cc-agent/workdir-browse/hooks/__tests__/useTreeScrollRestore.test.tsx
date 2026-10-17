@@ -75,15 +75,17 @@ afterEach(() => {
 
 function Harness({
   scope,
+  treeKey,
   rows,
   active = true,
 }: {
   scope: string;
+  treeKey: string;
   rows: TreeRow[];
   active?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const onScroll = useTreeScrollRestore(scope, rows, ref, active);
+  const onScroll = useTreeScrollRestore(scope, treeKey, rows, ref, active);
   return <div ref={ref} onScroll={onScroll} data-testid="viewport" />;
 }
 
@@ -94,7 +96,7 @@ function viewportOf(container: HTMLElement): HTMLDivElement {
 describe('useTreeScrollRestore', () => {
   it('滚动时把「顶部行 + 行内偏移」写进锚点', () => {
     const scope = makeTreeScrollScope('tab-1', '/repo');
-    const { container } = render(<Harness scope={scope} rows={rows5} />);
+    const { container } = render(<Harness scope={scope} treeKey="/repo" rows={rows5} />);
     const el = viewportOf(container);
 
     // 顶部留白 8 + 2 行 + 行内 4px。
@@ -108,7 +110,7 @@ describe('useTreeScrollRestore', () => {
     const scope = makeTreeScrollScope('tab-1', '/repo');
     saveTreeScrollAnchor(scope, { rowKey: 'd.ts', offset: 3 });
 
-    const { container } = render(<Harness scope={scope} rows={rows5} />);
+    const { container } = render(<Harness scope={scope} treeKey="/repo" rows={rows5} />);
 
     expect(viewportOf(container).scrollTop).toBe(8 + 3 * 29 + 3);
   });
@@ -118,11 +120,11 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'e.ts', offset: 0 });
 
     const { container, rerender } = render(
-      <Harness scope={scope} rows={rows5.slice(0, 3)} />,
+      <Harness scope={scope} treeKey="/repo" rows={rows5.slice(0, 3)} />,
     );
     expect(viewportOf(container).scrollTop).toBe(0);
 
-    rerender(<Harness scope={scope} rows={rows5} />);
+    rerender(<Harness scope={scope} treeKey="/repo" rows={rows5} />);
     expect(viewportOf(container).scrollTop).toBe(8 + 4 * 29);
   });
 
@@ -133,11 +135,11 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scopeB, { rowKey: 'e.ts', offset: 0 });
 
     const { container, rerender } = render(
-      <Harness scope={scopeA} rows={rows5} />,
+      <Harness scope={scopeA} treeKey="/repo" rows={rows5} />,
     );
     expect(viewportOf(container).scrollTop).toBe(8);
 
-    rerender(<Harness scope={scopeB} rows={rows5} />);
+    rerender(<Harness scope={scopeB} treeKey="/repo" rows={rows5} />);
     expect(viewportOf(container).scrollTop).toBe(8 + 4 * 29);
   });
 
@@ -146,7 +148,7 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'c.ts', offset: 2 });
     setTestViewportSize(0);
 
-    const { container } = render(<Harness scope={scope} rows={rows5} />);
+    const { container } = render(<Harness scope={scope} treeKey="/repo" rows={rows5} />);
     const el = viewportOf(container);
     el.scrollTop = 0;
     fireEvent.scroll(el);
@@ -159,12 +161,12 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'd.ts', offset: 2 });
 
     const { container, rerender } = render(
-      <Harness scope={scope} rows={rows5} active={false} />,
+      <Harness scope={scope} treeKey="/repo" rows={rows5} active={false} />,
     );
     const el = viewportOf(container);
     expect(el.scrollTop).toBe(0);
 
-    rerender(<Harness scope={scope} rows={rows5} active />);
+    rerender(<Harness scope={scope} treeKey="/repo" rows={rows5} active />);
     expect(el.scrollTop).toBe(8 + 3 * 29 + 2);
   });
 
@@ -173,7 +175,7 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'd.ts', offset: 1 });
     setTestViewportSize(0);
 
-    const { container } = render(<Harness scope={scope} rows={rows5} />);
+    const { container } = render(<Harness scope={scope} treeKey="/repo" rows={rows5} />);
     expect(viewportOf(container).scrollTop).toBe(0);
 
     setTestViewportSize(600);
@@ -186,7 +188,7 @@ describe('useTreeScrollRestore', () => {
     const scopeA = makeTreeScrollScope('tab-1', '/repo');
     const scopeB = makeTreeScrollScope('tab-1', '/repo::reveal');
     const { container, rerender } = render(
-      <Harness scope={scopeA} rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
+      <Harness scope={scopeA} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
     );
     const el = viewportOf(container);
 
@@ -196,7 +198,7 @@ describe('useTreeScrollRestore', () => {
 
     // 切到还没有锚点的放行态 store，且新树在 c.ts 上方插入两行（被忽略的目录）。
     rerender(
-      <Harness scope={scopeB} rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
+      <Harness scope={scopeB} treeKey="/repo" rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
     );
 
     // 继承锚点：c.ts 仍对齐视口顶部，而不是保留旧像素落到 x.ts / y.ts 那一批。
@@ -204,11 +206,48 @@ describe('useTreeScrollRestore', () => {
     expect(el.scrollTop).toBe(8 + 4 * 29);
   });
 
+  it('换树（切项目 / 换远端）不继承旧树位置；新树无记录时回到顶部（评审 P2）', () => {
+    const scopeA = makeTreeScrollScope('tab-1', '/repo-a');
+    const scopeB = makeTreeScrollScope('tab-1', '/repo-b');
+    const { container, rerender } = render(
+      <Harness scope={scopeA} treeKey="/repo-a" rows={rows5} />,
+    );
+    const el = viewportOf(container);
+
+    // 用户在项目 A 滚到 e.ts 顶部。
+    el.scrollTop = 8 + 4 * 29;
+    fireEvent.scroll(el);
+    expect(loadTreeScrollAnchor(scopeA)).toEqual({ rowKey: 'e.ts', offset: 0 });
+
+    // 切到项目 B（treeKey 变化）：B 没有历史记录 —— 不得继承 A 的位置，
+    // 也不能停在 A 残留的 DOM scrollTop 上，应回到顶部。
+    rerender(<Harness scope={scopeB} treeKey="/repo-b" rows={rows5} />);
+    expect(loadTreeScrollAnchor(scopeB)).toBeNull();
+    expect(el.scrollTop).toBe(0);
+  });
+
+  it('换树后新树有自己的记录：恢复它自己的记录，而不是顶部或旧树位置（评审 P2）', () => {
+    const scopeA = makeTreeScrollScope('tab-1', '/repo-a');
+    const scopeB = makeTreeScrollScope('tab-1', '/repo-b');
+    saveTreeScrollAnchor(scopeB, { rowKey: 'c.ts', offset: 2 });
+
+    const { container, rerender } = render(
+      <Harness scope={scopeA} treeKey="/repo-a" rows={rows5} />,
+    );
+    const el = viewportOf(container);
+    el.scrollTop = 8 + 4 * 29;
+    fireEvent.scroll(el);
+
+    rerender(<Harness scope={scopeB} treeKey="/repo-b" rows={rows5} />);
+    expect(el.scrollTop).toBe(8 + 2 * 29 + 2);
+    expect(loadTreeScrollAnchor(scopeA)).toEqual({ rowKey: 'e.ts', offset: 0 });
+  });
+
   it('用户接管后的普通 resize 不回拉过期锚点；重新可见时仍恢复（评审 P2）', () => {
     const scope = makeTreeScrollScope('tab-1', '/repo');
     saveTreeScrollAnchor(scope, { rowKey: 'c.ts', offset: 0 });
     const { container, rerender } = render(
-      <Harness scope={scope} rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
     );
     const el = viewportOf(container);
     expect(el.scrollTop).toBe(8 + 2 * 29);
@@ -216,7 +255,7 @@ describe('useTreeScrollRestore', () => {
     // 用户接管（点击行），随后上方行增删但滚动位置没变、锚点没更新。
     fireEvent.pointerDown(el);
     rerender(
-      <Harness scope={scope} rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
     );
     expect(el.scrollTop).toBe(8 + 2 * 29);
 
@@ -237,13 +276,13 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'c.ts', offset: 0 });
 
     const { container, rerender } = render(
-      <Harness scope={scope} rows={makeRows(['a.ts', 'b.ts', 'c.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts'])} />,
     );
     const el = viewportOf(container);
     expect(el.scrollTop).toBe(8 + 2 * 29);
 
     // 上方插入两行：锚点行仍在顶部（换 store 后数据分批到达的缩影）。
-    rerender(<Harness scope={scope} rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts'])} />);
+    rerender(<Harness scope={scope} treeKey="/repo" rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts'])} />);
     expect(el.scrollTop).toBe(8 + 4 * 29);
   });
 
@@ -256,13 +295,13 @@ describe('useTreeScrollRestore', () => {
     setTestViewportSize(100);
 
     const { container, rerender } = render(
-      <Harness scope={scope} rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'])} />,
     );
     const el = viewportOf(container);
     Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 190 });
     // 重新触发一次恢复：目标 8+5*29=153 > maxScroll(90) → 写入 90。
     rerender(
-      <Harness scope={scope} rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'])} />,
     );
     expect(el.scrollTop).toBe(90);
 
@@ -274,6 +313,7 @@ describe('useTreeScrollRestore', () => {
     rerender(
       <Harness
         scope={scope}
+        treeKey="/repo"
         rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts', 'g.ts', 'h.ts', 'i.ts', 'j.ts'])}
       />,
     );
@@ -285,7 +325,7 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'c.ts', offset: 10 });
 
     const { container, rerender } = render(
-      <Harness scope={scope} rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts', 'd.ts'])} />,
     );
     const el = viewportOf(container);
     expect(el.scrollTop).toBe(8 + 2 * 29 + 10);
@@ -295,7 +335,7 @@ describe('useTreeScrollRestore', () => {
     el.scrollTop = 8 + 2 * 29 + 2;
     fireEvent.scroll(el);
 
-    rerender(<Harness scope={scope} rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts', 'd.ts'])} />);
+    rerender(<Harness scope={scope} treeKey="/repo" rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts', 'd.ts'])} />);
     expect(el.scrollTop).toBe(8 + 4 * 29 + 10);
   });
 
@@ -304,7 +344,7 @@ describe('useTreeScrollRestore', () => {
     saveTreeScrollAnchor(scope, { rowKey: 'c.ts', offset: 0 });
 
     const { container, rerender } = render(
-      <Harness scope={scope} rows={makeRows(['a.ts', 'b.ts', 'c.ts'])} />,
+      <Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts', 'c.ts'])} />,
     );
     const el = viewportOf(container);
     expect(el.scrollTop).toBe(8 + 2 * 29);
@@ -312,7 +352,7 @@ describe('useTreeScrollRestore', () => {
     // 用户点了一下行（展开 / 选中都是 pointerdown）：即使还没滚动，也交还控制权。
     fireEvent.pointerDown(el);
 
-    rerender(<Harness scope={scope} rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts'])} />);
+    rerender(<Harness scope={scope} treeKey="/repo" rows={makeRows(['x.ts', 'y.ts', 'a.ts', 'b.ts', 'c.ts'])} />);
     // 保持用户当前的像素位置，不被拉回锚点行（c.ts 已位移到 index 4）。
     expect(el.scrollTop).toBe(8 + 2 * 29);
   });
@@ -321,14 +361,14 @@ describe('useTreeScrollRestore', () => {
     const scope = makeTreeScrollScope('tab-1', '/repo');
     saveTreeScrollAnchor(scope, { rowKey: 'e.ts', offset: 0 });
 
-    const { container, rerender } = render(<Harness scope={scope} rows={rows5} />);
+    const { container, rerender } = render(<Harness scope={scope} treeKey="/repo" rows={rows5} />);
     const el = viewportOf(container);
     expect(el.scrollTop).toBe(8 + 4 * 29);
 
     // 用户滚回顶部：锚点被覆盖，之后的 rows 更新不应把视图拉回旧位置。
     el.scrollTop = 0;
     fireEvent.scroll(el);
-    rerender(<Harness scope={scope} rows={makeRows(['a.ts', 'b.ts'])} />);
+    rerender(<Harness scope={scope} treeKey="/repo" rows={makeRows(['a.ts', 'b.ts'])} />);
 
     expect(el.scrollTop).toBe(0);
     expect(loadTreeScrollAnchor(scope)).toEqual({ rowKey: 'a.ts', offset: 0 });

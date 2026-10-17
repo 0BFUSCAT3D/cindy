@@ -394,8 +394,12 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
   virtualizerRef.current = virtualizer;
 
   // 滚动位置：onScroll 持续记录锚点；挂载 / 换 store / 重新激活时自动恢复。
+  // treeIdentityKey 单独传入：hook 用它区分「同树换视口」（可继承位置）与
+  // 「换树」（切项目 / 换远端，位置不得跨树泄漏，评审 P2）。storeKey 含显示
+  // 模式段，开关切换也会变，不能当树身份用。
   const handleScroll = useTreeScrollRestore(
     makeTreeScrollScope(scrollScope, tree.storeKey),
+    tree.treeIdentityKey,
     rows,
     containerRef,
     active,

@@ -29,6 +29,7 @@ function makeTree(): UseFileTreeReturn {
     loadError: null,
     showIgnoredDirsSupported: true,
     storeKey: 'test-store',
+    treeIdentityKey: 'test-store',
     toggleFolder: vi.fn(),
     collapseAll: vi.fn(),
     refresh: vi.fn(async () => undefined),

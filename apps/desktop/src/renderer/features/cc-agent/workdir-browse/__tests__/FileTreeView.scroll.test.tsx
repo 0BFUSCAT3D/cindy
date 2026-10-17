@@ -64,6 +64,7 @@ function makeTree(opts: {
   expanded?: string[];
   storeKey?: string;
 }): UseFileTreeReturn {
+  const storeKey = opts.storeKey ?? 'workdir::hidden';
   return {
     entries: new Map(opts.entries),
     expanded: new Set(opts.expanded ?? ['']),
@@ -71,7 +72,8 @@ function makeTree(opts: {
     initialLoading: false,
     loadError: null,
     showIgnoredDirsSupported: true,
-    storeKey: opts.storeKey ?? 'workdir::hidden',
+    storeKey,
+    treeIdentityKey: storeKey.split('::')[0],
     toggleFolder: vi.fn(),
     collapseAll: vi.fn(),
     refresh: vi.fn(async () => undefined),
