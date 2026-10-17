@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     reactToMessage: vi.fn(),
     removeMessageReaction: vi.fn(),
     sendText: vi.fn(),
+    sendFile: vi.fn(),
     sendMarkdownText: vi.fn(),
     startStreamingText: vi.fn(),
     patchMarkdownCard: vi.fn(),
@@ -4338,6 +4339,24 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
   });
 
 describe('初始流式输出面创建失败的收口降级(#2164)', () => {
+  // Unit: real turn events; missing stream must not drop generated media.
+  it.each(['', 'image ready'])('keeps generated media when stream creation fails (body=%s)', async (body) => {
+    mocks.feishuIm.startStreamingText.mockRejectedValue(new Error('card create denied'));
+    mocks.resolveXdtImageUrl.mockReturnValue({ absPath: '/media/generated.png' });
+    const h = setupSession(async () => ({ accepted: true }));
+    await runDefaultTurn();
+    mocks.feishuIm.sendText.mockClear();
+    h.emit({ type: 'tool_result_full', data: { fullText: '{"xdt_image_url":"xdt-image://generated.png"}' } });
+    if (body) h.emit({ type: 'text', data: { text: body, isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await flushMicrotasks();
+    await waitForAssertion(() => expect(mocks.feishuIm.sendFile).toHaveBeenCalledExactlyOnceWith(
+      'ou_user', '/media/generated.png', undefined, { threadTs: undefined },
+    ));
+    if (body) expect(mocks.feishuIm.sendText).toHaveBeenCalledWith('ou_user', body, { threadTs: undefined });
+    else expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
+  });
+
   it('startStreamingText 拒绝 + 短文本:正文经 sendText 一次性送达,turn 正常完成', async () => {
     mocks.feishuIm.startStreamingText.mockRejectedValue(new Error('card create denied'));
     const h = setupSession(async () => ({ accepted: true }));

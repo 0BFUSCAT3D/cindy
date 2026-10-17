@@ -3762,7 +3762,7 @@ export function createTurnRunner(
       }
     } else {
       // 初始流式输出面创建失败但正文已生成(#2164):此前两条分支都不命中,
-      // 已持久化的助手回复在渠道侧静默消失。收口时一次性降级为普通文本发送
+      // 已持久化的助手回复在渠道侧静默消失。收口时一次性降级发送正文和附件
       // (turn.done 已置,composeStreamingView 只含干净正文;长度限制由渠道发送
       // 实现兑现)。发送失败只记脱敏日志,不阻塞 settle / 队列放行。
       try {
@@ -3776,12 +3776,17 @@ export function createTurnRunner(
             ...(turn.mediaAbsPaths.length > 0 ? { mediaAbsPaths: turn.mediaAbsPaths } : {}),
           });
         } else {
-          await output.im.sendText(userId, fallbackText, { threadTs: turn.scopeKey });
+          if (fallbackText.trim()) {
+            await output.im.sendText(userId, fallbackText, { threadTs: turn.scopeKey });
+          }
+          for (const absPath of turn.mediaAbsPaths) {
+            await output.im.sendFile(userId, absPath, undefined, { threadTs: turn.scopeKey });
+          }
         }
-        log.info(`[${channel}/turn] streaming surface unavailable — final text delivered via plain send`);
+        log.info(`[${channel}/turn] streaming surface unavailable — final output delivered via fallback`);
       } catch (err) {
         log.warn(
-          `[${channel}/turn] plain-text fallback send failed (non-fatal): ${
+          `[${channel}/turn] fallback send failed (non-fatal): ${
             err instanceof Error ? err.message : String(err)
           }`,
         );

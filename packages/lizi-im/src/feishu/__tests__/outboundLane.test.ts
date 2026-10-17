@@ -209,6 +209,34 @@ describe('feishu outbound lane routing', () => {
     },
   );
 
+  // Real transport state: a later registered opener must retain its own trigger.
+  it.each(['streaming', 'consume'])('empty %s final does not consume a newer pending trigger', async (mode) => {
+    const lane = 'g/oc_group1/omt_t1';
+    outbound.pushReplyAnchor(lane, 'om_old');
+    outbound.pushPatchableOpener(lane, 'om_old', 'om_old_trigger');
+    const handle = await start(lane);
+    const registerNext = () => {
+      outbound.pushReplyAnchor(lane, 'om_next');
+      outbound.pushPatchableOpener(lane, 'om_next', 'om_next_trigger');
+    };
+    if (mode === 'streaming') {
+      larkMocks.request.mockImplementationOnce(async () => { registerNext(); return { code: 0 }; });
+      await handle.finalize('');
+    } else {
+      registerNext();
+      outbound.rearmAnchorToTrigger(lane, 'om_old');
+    }
+    await outbound.sendText(lane, 'old background result');
+    expect(larkMocks.reply).toHaveBeenLastCalledWith(expect.objectContaining({ path: { message_id: 'om_old_trigger' } }));
+    expect(outbound.getOpenerTrigger(lane)).toBe('om_next_trigger');
+    const next = await start(lane);
+    await next.finalize('');
+    await outbound.sendText(lane, 'next background result');
+    expect(larkMocks.reply).toHaveBeenLastCalledWith(expect.objectContaining({
+      path: { message_id: 'om_next_trigger' }, data: expect.objectContaining({ reply_in_thread: true }),
+    }));
+  });
+
   it('restores a cold topic anchor before streaming a background result', async () => {
     larkMocks.list.mockResolvedValueOnce({ code: 0, data: { items: [
       { message_id: 'om_deleted', thread_id: 'omt_t1', chat_id: 'oc_group1', deleted: true },
@@ -650,7 +678,7 @@ describe('feishu outbound lane routing', () => {
     expect(outbound.claimPatchableOpener('g/oc_g/omt_p9')).toBe('om_opener');
 
     // patch 失败撤回开场白卡后: 回拨锚点到触发消息。
-    expect(outbound.rearmAnchorToTrigger('g/oc_g/omt_p9')).toBe(true);
+    expect(outbound.rearmAnchorToTrigger('g/oc_g/omt_p9', 'om_opener')).toBe(true);
     await outbound.sendText('g/oc_g/omt_p9', '兜底回复');
     expect(larkMocks.reply).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -659,7 +687,7 @@ describe('feishu outbound lane routing', () => {
       }),
     );
     // 触发记录一次性消费 — 再次回拨返回 false。
-    expect(outbound.rearmAnchorToTrigger('g/oc_g/omt_p9')).toBe(false);
+    expect(outbound.rearmAnchorToTrigger('g/oc_g/omt_p9', 'om_opener')).toBe(false);
   });
 
   it('暂存队列容量淘汰记录 opener id, 连接恢复时撤回(不留思考卡)', async () => {
