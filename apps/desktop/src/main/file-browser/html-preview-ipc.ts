@@ -25,6 +25,7 @@ import { previewTransportErrorCode, readPreviewMetadata } from './html-preview-r
 const log = createLogger('html-preview');
 export const HTML_PREVIEW_CHANNEL = 'maker:html-preview:open';
 interface RemoteSource {
+  cached?(args: HtmlPreviewArgs, root: string, rel: string): Promise<string | null>;
   stat(
     args: HtmlPreviewArgs,
     root: string,
@@ -89,6 +90,11 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
         isCurrent,
         // Log status only: paths, signed URLs and page contents are not diagnostics.
         onResourceError: (status) => log.warn('Preview resource request failed', { status }),
+        cached: args.origin.kind === 'local' ? undefined : async (root, rel) => {
+          if (!isCurrent()) return null;
+          const cached = await remote.cached?.(args, root, rel);
+          return isCurrent() ? cached ?? null : null;
+        },
         stat: async (root, rel, signal) => {
           if (args.origin.kind !== 'local')
             return readPreviewMetadata(

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+vi.mock("@/config/env", () => ({ getActiveMobileSessionRealm: () => 'global' }));
 const disk = vi.hoisted(() => ({
   files: new Map<string, Uint8Array>(),
   indexes: new Map<string, string>(),
@@ -41,6 +42,8 @@ vi.mock("expo-file-system", () => ({
     delete() {
       disk.files.delete(this.uri);
     }
+    async text() { return new TextDecoder().decode(disk.files.get(this.uri)); }
+    write(text: string) { disk.files.set(this.uri, new TextEncoder().encode(text)); }
     async copy(target: { uri: string }) {
       disk.copying = true;
       if (disk.gate) await disk.gate;
@@ -81,6 +84,11 @@ vi.mock("@/session/remoteMediaDiskCacheExpo", () => ({
   },
 }));
 import { createPeerFileCache } from "@/device-link/peerFileCache";
+import { createMobileHtmlPreviewCache } from '@/session/mobileHtmlPreviewCache';
+import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { File } from 'expo-file-system';
+import { FILE_PEER_MAX_BYTES } from '@cindy/device-link';
+import { remoteFileMediaUrl } from '@/session/fileBrowserGallery';
 import {
   clearPeerMedia,
   peerMediaUri,
@@ -88,10 +96,59 @@ import {
   releasePeerMedia,
 } from "@/device-link/peerFileRegistry";
 afterEach(() => {
+  setMobileAuthOwner(null);
   clearPeerMedia();
   disk.gate = undefined;
   disk.copying = false;
   disk.available = 10 * 1024 ** 3;
+});
+
+// Cached previews have no fresh metadata: identity and owner fencing must hold locally.
+it('restores preview bytes offline, isolates account/device/SSH, and rejects a copy crossing an account switch', async () => {
+  setMobileAuthOwner('html-owner');
+  const cache = createMobileHtmlPreviewCache('desktop-a', '/site')!;
+  const input = new File('file:///input.html');
+  input.write('<p>Cached</p>');
+  // A transfer saved before cache-first previews existed must also open offline.
+  const transfer = await createPeerFileCache(JSON.stringify(['global', 'html-owner']));
+  const meta = { ...metadata, size: input.size };
+  const media = { ossKey: '', ...meta };
+  recordPeerMedia(media, input.uri, () => {});
+  await transfer.store('desktop-a', remoteFileMediaUrl('/site/index.html', undefined, undefined,
+    { baseDir: '/site', maxBytes: FILE_PEER_MAX_BYTES }), meta, media);
+  const copy = new File('file:///restored.html');
+  expect(await cache.copy('index.html', copy)).toBe(input.size);
+  expect(await copy.text()).toBe('<p>Cached</p>');
+  expect(await cache.copy('index.html', new File('file:///too-large.html'), 1)).toBeNull();
+  expect(disk.files.has('file:///too-large.html')).toBe(false);
+  await cache.store('index.html', input, 'text/html');
+  expect(await createMobileHtmlPreviewCache('desktop-b', '/site')!.copy('index.html', copy)).toBeNull();
+  const ssh = { sessionId: 's', remoteHostId: 'ssh', workdir: '/site' };
+  expect(await createMobileHtmlPreviewCache('desktop-a', '/site', ssh)!.copy('index.html', copy)).toBeNull();
+  setMobileAuthOwner('other-html-owner');
+  expect(await createMobileHtmlPreviewCache('desktop-a', '/site')!.copy('index.html', copy)).toBeNull();
+  setMobileAuthOwner('html-owner');
+  const restored = createMobileHtmlPreviewCache('desktop-a', '/site')!;
+  let release!: () => void;
+  disk.gate = new Promise<void>((resolve) => { release = resolve; });
+  const pending = restored.copy('index.html', copy);
+  await vi.waitFor(() => expect(disk.copying).toBe(true));
+  setMobileAuthOwner('other-html-owner');
+  release();
+  expect(await pending).toBeNull();
+  expect(copy.exists).toBe(false);
+});
+
+it('restores complete legacy manifests and rejects paths that the preview cannot publish', async () => {
+  setMobileAuthOwner('manifest-owner');
+  const cache = createMobileHtmlPreviewCache('desktop', '/site')!;
+  const temporary = new File('file:///manifest.json');
+  const file = { name: 'index.html', relPath: 'index.html', type: 'file' as const, size: 20 };
+  await cache.storeManifest('index.html', [file], temporary);
+  expect(await cache.manifest('index.html')).toEqual([file]);
+  expect(temporary.exists).toBe(false);
+  await cache.storeManifest('index.html', [file, { ...file, relPath: '../secret.html' }], temporary);
+  expect(await cache.manifest('index.html')).toBeNull();
 });
 const metadata = { size: 5, mimeType: "text/html", version: "a".repeat(64) };
 async function seed(owner: string) {

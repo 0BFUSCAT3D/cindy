@@ -167,14 +167,18 @@ export async function fetchRemoteAbsFileOnce(
    */
   constraints?: RemoteMediaFetchConstraints | null,
   signal?: AbortSignal,
+  onProgress?: (loaded: number, total: number) => void,
 ): Promise<MobileResolvedRemoteMedia> {
   return withTransientRemoteRetry(async () => {
+    const assertActive = () => { if (signal?.aborted) throw new Error('PREVIEW_CANCELLED'); };
+    assertActive();
     await deps.openLink(deps.deviceId);
+    assertActive();
     // kind 只影响结果的 previewable 标志(此处不消费),按 image 占位。
     return resolveMobileRemoteMedia(
       { kind: 'image', url: remoteFileMediaUrl(absPath, undefined, ssh, constraints) },
       { fetchRemoteMedia: deps.maker.fetchRemoteMedia, presignGet: deps.presignGet },
-      { onOssKey, signal, stream: false },
+      { onOssKey, signal, stream: false, ...(onProgress ? { onProgress } : {}) },
     );
   });
 }

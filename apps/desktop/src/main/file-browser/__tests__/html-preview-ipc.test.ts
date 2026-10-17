@@ -315,3 +315,50 @@ async function readResource(url: string, pathname: string) {
   await bootstrap.body?.cancel();
   return fetch(new URL(pathname, url), { headers: { cookie } });
 }
+
+// Regression: weak-network stat used to block even a complete, readable cache.
+it('serves cached HTML and assets while stat is pending, retains them on failure, and fences account changes', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-offline-test-'));
+  let fail!: () => void;
+  const waiting = new Promise<never>((_resolve, reject) => { fail = () => reject(new Error('offline')); });
+  try {
+    await fs.writeFile(path.join(dir, 'index.html'), '<h1>Saved page</h1>');
+    await fs.writeFile(path.join(dir, 'style.css'), 'body { color: blue; }');
+    const stat = vi.fn(() => waiting);
+    const read = vi.fn();
+    registerHtmlPreviewIpc({ cached: async (_args, _root, rel) => path.join(dir, rel), stat, read });
+    const { url } = await mocks.handle.mock.calls[0][1]({}, args);
+    expect(stat).not.toHaveBeenCalled();
+    expect(await (await readResource(url, '/index.html')).text()).toContain('Saved page');
+    expect(await (await readResource(url, '/style.css')).text()).toBe('body { color: blue; }');
+    expect(stat).toHaveBeenCalledTimes(2);
+    expect(read).not.toHaveBeenCalled();
+    fail();
+    expect(await (await readResource(url, '/index.html')).text()).toContain('Saved page');
+    mocks.current = false;
+    expect((await fetch(url, { redirect: 'manual' })).status).toBe(410);
+  } finally { fail(); await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+it('refreshes the durable copy for the next open without replacing the visible snapshot', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-refresh-test-'));
+  try {
+    const cached = path.join(dir, 'index.html');
+    await fs.writeFile(cached, '<p>previous</p>');
+    const next = '<p>updated</p>';
+    let refreshed!: () => void;
+    const update = new Promise<void>((resolve) => { refreshed = resolve; });
+    registerHtmlPreviewIpc({
+      cached: async () => cached,
+      stat: async () => ({ relPath: 'index.html', type: 'file', size: Buffer.byteLength(next), mtimeMs: 1 }),
+      read: async () => { await fs.writeFile(cached, next); refreshed(); return cached; },
+    });
+    const open = mocks.handle.mock.calls[0][1];
+    const first = await open({}, args);
+    expect(await (await readResource(first.url, '/index.html')).text()).toContain('previous');
+    await update;
+    expect(await (await readResource(first.url, '/index.html')).text()).toContain('previous');
+    const second = await open({}, args);
+    expect(await (await readResource(second.url, '/index.html')).text()).toContain('updated');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
