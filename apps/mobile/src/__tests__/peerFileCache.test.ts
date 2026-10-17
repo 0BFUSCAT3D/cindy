@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+vi.mock("@/config/env", () => ({ getActiveMobileSessionRealm: () => 'global' }));
 const disk = vi.hoisted(() => ({
   files: new Map<string, Uint8Array>(),
-  indexes: new Map<string, string>(),
   copying: false,
   gate: undefined as Promise<void> | undefined,
   seq: 0,
@@ -24,6 +24,11 @@ vi.mock("expo-file-system", () => ({
         .join("/");
     }
     create() {}
+    list() {
+      return [...disk.files.keys()]
+        .filter((uri) => uri.startsWith(`${this.uri}/`))
+        .map((uri) => new File(uri));
+    }
   },
   File: class {
     uri: string;
@@ -32,8 +37,22 @@ vi.mock("expo-file-system", () => ({
         .map((p) => (typeof p === "string" ? p : p.uri))
         .join("/");
     }
+    static async downloadFileAsync(url: string, target: { uri: string }) {
+      const bytes = disk.files.get(url);
+      if (!bytes) throw new Error("missing");
+      disk.files.set(target.uri, bytes.slice());
+      return new File(target.uri);
+    }
     get exists() {
       return disk.files.has(this.uri);
+    }
+    get name() { return this.uri.split('/').at(-1)!; }
+    moveSync(target: { uri: string }) {
+      const bytes = disk.files.get(this.uri);
+      if (!bytes) throw new Error('missing');
+      disk.files.set(target.uri, bytes);
+      disk.files.delete(this.uri);
+      this.uri = target.uri;
     }
     get size() {
       return disk.files.get(this.uri)?.length ?? 0;
@@ -42,6 +61,8 @@ vi.mock("expo-file-system", () => ({
       disk.files.delete(this.uri);
     }
     async base64() { return Buffer.from(disk.files.get(this.uri)!).toString('base64'); }
+    async text() { return new TextDecoder().decode(disk.files.get(this.uri)); }
+    write(value: string | Uint8Array) { disk.files.set(this.uri, typeof value === "string" ? new TextEncoder().encode(value) : value); }
     async copy(target: { uri: string }) {
       disk.copying = true;
       if (disk.gate) await disk.gate;
@@ -53,42 +74,14 @@ vi.mock("expo-file-system", () => ({
     }
   },
 }));
-vi.mock("@/session/remoteMediaDiskCacheExpo", () => ({
-  downloadRemoteMediaShareTemp: async (url: string) => {
-    const uri = `file:///download-${++disk.seq}`;
-    const bytes = disk.files.get(url);
-    if (!bytes) return null;
-    disk.files.set(uri, bytes.slice());
-    return uri;
-  },
-  createExpoRemoteMediaDiskCacheIO: (namespace: string) => {
-    const uri = (name: string) => `file:///cache/${namespace}/${name}`;
-    return {
-      ensureDir() {},
-      readIndexText: async () => disk.indexes.get(namespace) ?? null,
-      writeIndexText: (text: string) => {
-        disk.indexes.set(namespace, text);
-      },
-      fileExists: (name: string) => disk.files.has(uri(name)),
-      fileSize: (name: string) => disk.files.get(uri(name))?.length ?? -1,
-      fileUri: uri,
-      deleteFile: (name: string) => {
-        disk.files.delete(uri(name));
-      },
-      listFiles: () =>
-        [...disk.files.keys()]
-          .filter((p) => p.startsWith(`file:///cache/${namespace}/`))
-          .map((p) => p.split("/").at(-1)!),
-      download: async (source: string, name: string) => {
-        const bytes = source.startsWith('data:') ? Buffer.from(source.split(',')[1], 'base64') : disk.files.get(source);
-        if (!bytes) return null;
-        disk.files.set(uri(name), bytes.slice());
-        return bytes.length;
-      },
-    };
-  },
-}));
+import { createRemoteMediaDiskCache } from '@/session/remoteMediaDiskCache';
+import { createExpoRemoteMediaDiskCacheIO } from '@/session/remoteMediaDiskCacheExpo';
 import { createPeerFileCache } from "@/device-link/peerFileCache";
+import { createMobileHtmlPreviewCache } from '@/session/mobileHtmlPreviewCache';
+import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { File } from 'expo-file-system';
+import { FILE_PEER_MAX_BYTES, sharedTaskHostPeer } from '@cindy/device-link';
+import { remoteFileMediaUrl } from '@/session/fileBrowserGallery';
 import {
   clearPeerMedia,
   peerMediaUri,
@@ -96,10 +89,61 @@ import {
   releasePeerMedia,
 } from "@/device-link/peerFileRegistry";
 afterEach(() => {
+  setMobileAuthOwner(null);
   clearPeerMedia();
   disk.gate = undefined;
   disk.copying = false;
   disk.available = 10 * 1024 ** 3;
+});
+
+// Cached previews have no fresh metadata: identity and owner fencing must hold locally.
+it('restores preview bytes offline, isolates account/device/SSH, and rejects a copy crossing an account switch', async () => {
+  setMobileAuthOwner('html-owner');
+  // Shared guests must revalidate membership before reading, including HTML.
+  expect(createMobileHtmlPreviewCache(sharedTaskHostPeer('shared', 'host'), '/site')).toBeUndefined();
+  const cache = createMobileHtmlPreviewCache('desktop-a', '/site')!;
+  const input = new File('file:///input.html');
+  input.write('<p>Cached</p>');
+  // A transfer saved before cache-first previews existed must also open offline.
+  const transfer = await createPeerFileCache(JSON.stringify(['global', 'html-owner']));
+  const meta = { ...metadata, size: input.size };
+  const media = { ossKey: '', ...meta };
+  recordPeerMedia(media, input.uri, () => {});
+  await transfer.store('desktop-a', remoteFileMediaUrl('/site/index.html', undefined, undefined,
+    { baseDir: '/site', maxBytes: FILE_PEER_MAX_BYTES }), meta, media);
+  const copy = new File('file:///restored.html');
+  expect(await cache.copy('index.html', copy)).toBe(input.size);
+  expect(await copy.text()).toBe('<p>Cached</p>');
+  expect(await cache.copy('index.html', new File('file:///too-large.html'), 1)).toBeNull();
+  expect(disk.files.has('file:///too-large.html')).toBe(false);
+  await cache.store('index.html', input, 'text/html');
+  expect(await createMobileHtmlPreviewCache('desktop-b', '/site')!.copy('index.html', copy)).toBeNull();
+  const ssh = { sessionId: 's', remoteHostId: 'ssh', workdir: '/site' };
+  expect(await createMobileHtmlPreviewCache('desktop-a', '/site', ssh)!.copy('index.html', copy)).toBeNull();
+  setMobileAuthOwner('other-html-owner');
+  expect(await createMobileHtmlPreviewCache('desktop-a', '/site')!.copy('index.html', copy)).toBeNull();
+  setMobileAuthOwner('html-owner');
+  const restored = createMobileHtmlPreviewCache('desktop-a', '/site')!;
+  let release!: () => void;
+  disk.gate = new Promise<void>((resolve) => { release = resolve; });
+  const pending = restored.copy('index.html', copy);
+  await vi.waitFor(() => expect(disk.copying).toBe(true));
+  setMobileAuthOwner('other-html-owner');
+  release();
+  expect(await pending).toBeNull();
+  expect(copy.exists).toBe(false);
+});
+
+it('restores complete legacy manifests and rejects paths that the preview cannot publish', async () => {
+  setMobileAuthOwner('manifest-owner');
+  const cache = createMobileHtmlPreviewCache('desktop', '/site')!;
+  const temporary = new File('file:///manifest.json');
+  const file = { name: 'index.html', relPath: 'index.html', type: 'file' as const, size: 20 };
+  await cache.storeManifest('index.html', [file], temporary);
+  expect(await cache.manifest('index.html')).toEqual([file]);
+  expect(temporary.exists).toBe(false);
+  await cache.storeManifest('index.html', [file, { ...file, relPath: '../secret.html' }], temporary);
+  expect(await cache.manifest('index.html')).toBeNull();
 });
 const metadata = { size: 5, mimeType: "text/html", version: "a".repeat(64) };
 it('reuses completed OSS downloads through the same cache and does not retain changed-sized bytes', async () => {
@@ -121,6 +165,36 @@ it.each([0, 5])('shares %s-byte inline files with the durable version cache', as
   expect(await cache.readInline('other-device', 'url', result, () => true)).toBeNull();
   expect(await cache.readInline('device', 'url', { ...result, version: 'b'.repeat(64) }, () => true)).toBeNull();
   expect(await cache.readLatest('device', 'url', () => true)).toEqual(result);
+});
+// PR #6299: the mocked cache IO hid empty-file rejection. Exercise the real cache
+// and Expo adapter with an in-memory filesystem (unit): empty first writes and
+// nonempty -> empty refresh must survive an index reload and shadow old transfers.
+it.each(['', '<p>Old</p>'])('persists empty preview files after initial content %j', async (initial) => {
+  const account = `empty-preview-${initial.length}`;
+  const owner = JSON.stringify(['global', account]);
+  setMobileAuthOwner(account);
+  const cache = createMobileHtmlPreviewCache('desktop', '/site')!;
+  const source = new File(`file:///input-${account}.html`);
+  const destination = new File(`file:///output-${account}.html`);
+  source.write('<p>Old transfer</p>');
+  const transfer = await createPeerFileCache(owner);
+  const meta = { ...metadata, size: source.size };
+  const media = { ossKey: '', ...meta };
+  recordPeerMedia(media, source.uri, () => {});
+  await transfer.store('desktop', remoteFileMediaUrl('/site/index.html', undefined, undefined,
+    { baseDir: '/site', maxBytes: FILE_PEER_MAX_BYTES }), meta, media);
+  source.write(initial);
+  await cache.store('index.html', source, 'text/html');
+  source.write('');
+  await cache.store('index.html', source, 'text/html');
+  expect(await cache.copy('index.html', destination)).toBe(0);
+  expect(await destination.text()).toBe('');
+  const namespace = `files-${createHash('sha256').update(owner).digest('hex')}`;
+  const reopened = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO(namespace));
+  const identity = JSON.stringify(['desktop', null, '/site', 'resource', 'index.html']);
+  const hit = await reopened.lookup(`html-preview:${identity}`);
+  expect(hit?.size).toBe(0);
+  expect(await new File(hit!.uri).text()).toBe('');
 });
 async function seed(owner: string) {
   const cache = await createPeerFileCache(owner);

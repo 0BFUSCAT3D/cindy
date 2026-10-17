@@ -407,6 +407,15 @@ export function registerFileBrowserIpc(): void {
   // 日志设施由宿主注入——desktop 侧接统一 logger(规则 12),scope 与抽包前一致。
   setFileBrowserCoreLoggerFactory(createLogger);
   registerHtmlPreviewIpc({
+    cached: (args, root, relPath) => {
+      if (args.origin.kind === 'local') return Promise.resolve(null);
+      return findStaleCached({
+        transport: args.origin.kind,
+        endpointId: args.origin.kind === 'device' ? args.origin.deviceId : args.origin.remoteHostId,
+        workdir: root,
+        relPath,
+      });
+    },
     stat: async (args, root, relPath, signal) => {
       signal?.throwIfAborted();
       if (args.origin.kind === 'device') {

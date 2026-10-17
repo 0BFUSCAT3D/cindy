@@ -4,6 +4,7 @@ import { i18n } from '@/i18n';
 import {
   adaptTextFilePreviewResult,
   fetchRemoteAbsFileToUrl,
+  fetchRemoteAbsFileOnce,
   type RemoteAbsFileFetchDeps,
 } from '@/session/remoteAbsFileFetch';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
@@ -62,6 +63,17 @@ describe('fetchRemoteAbsFileToUrl', () => {
     } finally { clearPeerMedia(); }
   });
 
+  // Unit regression: cancelling HTML preparation while opening a link must not
+  // enqueue the file read once that link eventually opens.
+  it('does not start a preview file read after cancellation during link setup', async () => {
+    const { deps, openLink, fetchRemoteMedia } = makeDeps();
+    const controller = new AbortController();
+    openLink.mockImplementation(async () => { controller.abort(); });
+    await expect(fetchRemoteAbsFileOnce(deps, '/page.html', undefined, undefined, undefined, controller.signal))
+      .rejects.toThrow('PREVIEW_CANCELLED');
+    expect(fetchRemoteMedia).not.toHaveBeenCalled();
+    expect(openLink).toHaveBeenCalledOnce();
+  });
   it('revalidates complete files while retaining streaming URLs', async () => {
     for (const first of [true, false]) {
       const { deps, fetchRemoteMedia } = makeDeps();

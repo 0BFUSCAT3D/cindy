@@ -79,6 +79,13 @@ async function openPeerFileCache(owner: string) {
         `data:${result.mimeType};base64,${result.inlineBase64}`, result.mimeType, result.size, result.version);
     },
     prune: (device: string, url: string, size: number) => cache.prune(2 * size, JSON.stringify([device, url])),
+    // HTML previews deliberately allow a last-known copy before remote stat.
+    // Keep these keys separate from the strictly versioned transfer cache.
+    lookupPreview: async (identity: string, previousTransfer?: { device: string; url: string }) =>
+      await cache.lookup(`html-preview:${identity}`) ?? (previousTransfer
+        ? cache.lookup(JSON.stringify([previousTransfer.device, previousTransfer.url])) : null),
+    storePreview: (identity: string, uri: string, mime: string, size: number) =>
+      cache.store(`html-preview:${identity}`, uri, mime, size),
     invalidate: (device: string, url: string) =>
       cache.remove(JSON.stringify([device, url])),
     async read(

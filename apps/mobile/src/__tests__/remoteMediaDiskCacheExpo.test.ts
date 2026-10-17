@@ -104,7 +104,7 @@ describe('versioned cache with the Expo adapter', () => {
     expect(await cache.lookup('resource')).toMatchObject({ size: 7 });
   });
   it.each(['data:text/css;base64,', 'file:///empty.css', 'https://example.com/empty.css'])(
-    'retains a confirmed empty file from %s without accepting empty unversioned images', async source => {
+    'retains a declared empty file from %s but rejects undeclared empty downloads', async source => {
       io.size = 0;
       const cache = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO());
       const version = 'a'.repeat(64);
@@ -112,7 +112,7 @@ describe('versioned cache with the Expo adapter', () => {
       expect(await cache.lookup('resource', version)).toMatchObject({ size: 0, version, mimeType: 'text/css' });
       expect(io.remove).not.toHaveBeenCalled();
       expect(io.move).toHaveBeenCalled();
-      expect(await cache.store('image', 'https://example.com/empty.png', 'image/png', 0)).toBe(false);
+      expect(await cache.store('image', 'https://example.com/empty.png', 'image/png')).toBe(false);
       expect(await cache.lookup('image')).toBeNull();
     },
   );

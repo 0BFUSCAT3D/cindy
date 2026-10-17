@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AppState } from 'react-native';
-import type { MobileHtmlPreview, PrepareMobileHtmlPreview } from './mobileHtmlPreview';
+import type { HtmlPreviewProgress, MobileHtmlPreview, PrepareMobileHtmlPreview } from './mobileHtmlPreview';
 import { errorText } from '@/debug/fileDiagnostics';
 import { mobileDebugLog } from '@/debug/mobileDebugLog';
 
@@ -10,6 +10,7 @@ export function useHtmlSnapshot(absPath: string, enabled: boolean, prepare: Prep
   const [epoch, setEpoch] = useState(0);
   const [result, setResult] = useState<{
     preview?: MobileHtmlPreview; error?: unknown; path?: string; prepare?: PrepareMobileHtmlPreview; epoch?: number;
+    progress?: HtmlPreviewProgress;
   }>({});
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -24,13 +25,15 @@ export function useHtmlSnapshot(absPath: string, enabled: boolean, prepare: Prep
     const controller = new AbortController();
     const startedAt = Date.now();
     let preview: MobileHtmlPreview | undefined;
-    void prepare(absPath, controller.signal).then((value) => {
+    void prepare(absPath, controller.signal, (progress) => {
+      if (!controller.signal.aborted) setResult((previous) => ({ ...previous, progress, path: absPath, prepare, epoch }));
+    }).then((value) => {
       preview = value;
       mobileDebugLog('debug', 'files', 'html preview prepared', {
         ms: Date.now() - startedAt, onDemand: value.onDemand === true, aborted: controller.signal.aborted,
       });
       if (controller.signal.aborted) void value.close().catch(() => {});
-      else setResult({ preview: value, path: absPath, prepare, epoch });
+      else setResult((previous) => ({ ...previous, preview: value, path: absPath, prepare, epoch }));
     }).catch((error: unknown) => {
       mobileDebugLog(controller.signal.aborted ? 'debug' : 'warn', 'files', 'html preview prepare failed', {
         ms: Date.now() - startedAt, aborted: controller.signal.aborted, error: errorText(error),
@@ -46,6 +49,7 @@ export function useHtmlSnapshot(absPath: string, enabled: boolean, prepare: Prep
   return {
     preview: current ? result.preview : undefined,
     error: current ? result.error : undefined,
+    progress: current ? result.progress : undefined,
     foreground, retry: () => setEpoch((value) => value + 1),
   };
 }

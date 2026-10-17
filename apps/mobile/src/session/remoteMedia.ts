@@ -54,6 +54,8 @@ export interface MobileRemoteMediaFetchOptions {
   /** Local callbacks: only connect on a cache miss or during background revalidation. */
   beforeFetch?: () => Promise<unknown>;
   retainBackground?: (result: MobileRemoteMediaFetchResult, isCurrent?: () => boolean) => Promise<void>;
+  /** Local receiver bytes; never sent to the remote computer. */
+  onProgress?: (loaded: number, total: number) => void;
   /** Local read intent only; false for consumers that copy complete bytes. */
   stream?: boolean;
   skipCache?: boolean;
@@ -75,6 +77,7 @@ export interface MobileRemoteMediaResolverDeps {
 export interface MobileRemoteMediaResolveOptions {
   beforeFetch?: () => Promise<unknown>;
   discardBackgroundOssKey?: (key: string) => void;
+  onProgress?: (loaded: number, total: number) => void;
   stream?: boolean;
   signal?: AbortSignal;
   /** 强制被控端绕过上传去重缓存(上次的 ossKey 已悬空时的自愈路径)。 */
@@ -211,6 +214,7 @@ export async function resolveMobileRemoteMedia(
         if (uri) releasePeerMedia(uri);
       } finally { if (isCurrent?.() !== false) opts.discardBackgroundOssKey?.(result.ossKey); }
     } } : {}),
+    ...(opts?.onProgress ? { onProgress: opts.onProgress } : {}),
     ...(opts?.stream !== undefined ? { stream: opts.stream } : {}),
     ...(opts?.onOssKey ? { onDiscardOssKey: opts.onOssKey } : {}),
     ...(opts?.signal ? { signal: opts.signal } : {}),

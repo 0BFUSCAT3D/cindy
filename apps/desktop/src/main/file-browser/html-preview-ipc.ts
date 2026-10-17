@@ -26,6 +26,7 @@ import { previewTransportErrorCode, readPreviewMetadata } from './html-preview-r
 const log = createLogger('html-preview');
 export const HTML_PREVIEW_CHANNEL = 'maker:html-preview:open';
 interface RemoteSource {
+  cached?(args: HtmlPreviewArgs, root: string, rel: string): Promise<string | null>;
   stat(
     args: HtmlPreviewArgs,
     root: string,
@@ -46,11 +47,6 @@ export async function disposeHtmlPreviews(): Promise<void> {
   await Promise.allSettled([...active].map((close) => close()));
 }
 export function registerHtmlPreviewIpc(remote: RemoteSource): void {
-  // Keep only references to managed cache files, never another copy of their bytes.
-  type CachedFile = { metadata: DirEntry; path: string };
-  const files = new Map<string, CachedFile>();
-  const refreshing = new Set<string>();
-  let cacheOwner: string | undefined;
   ipcMain.handle(HTML_PREVIEW_CHANNEL, async (event, args: HtmlPreviewArgs) => {
     assertTrustedAppRendererEvent(event);
     if (shuttingDown || preparing >= 8)
@@ -77,11 +73,7 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
     try {
       previewLocation(args);
       const scope = captureDataOwnerBroadcastScope();
-      const ownerKey = scope.ownerScopeKey;
-      const cacheable = !!ownerKey && !(args.origin.kind === 'device' && isSharedTaskPeer(args.origin.deviceId));
-      if (cacheOwner !== ownerKey) { files.clear(); cacheOwner = ownerKey; }
-      const keyOf = (root: string, rel: string) => JSON.stringify([ownerKey, args.origin, args.workdir, root, rel]);
-      const selected = new Map<string, CachedFile>();
+      const cacheable = !!scope.ownerScopeKey && !(args.origin.kind === 'device' && isSharedTaskPeer(args.origin.deviceId));
       const isCurrent = () =>
         !shuttingDown &&
         !request.controller.signal.aborted &&
@@ -101,17 +93,13 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
         isCurrent,
         // Log status only: paths, signed URLs and page contents are not diagnostics.
         onResourceError: (status) => log.warn('Preview resource request failed', { status }),
+        cached: args.origin.kind === 'local' || !cacheable ? undefined : async (root, rel) => {
+          if (!isCurrent()) return null;
+          const cached = await remote.cached?.(args, root, rel);
+          return isCurrent() ? cached ?? null : null;
+        },
         stat: async (root, rel, signal) => {
           if (args.origin.kind !== 'local') {
-            const key = keyOf(root, rel);
-            const cached = cacheable ? files.get(key) : undefined;
-            const stat = cached && await fs.stat(cached.path).catch(() => null);
-            if (cached && stat?.isFile() && stat.size === cached.metadata.size) {
-              selected.set(key, cached);
-              return cached.metadata;
-            }
-            selected.delete(key);
-            files.delete(key);
             return readPreviewMetadata(
               (attemptSignal) => remote.stat(args, root, rel, attemptSignal),
               signal ?? request.controller.signal,
@@ -125,12 +113,7 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
         },
         read: async (root, entry, signal) => {
           if (args.origin.kind !== 'local') {
-            const key = keyOf(root, entry.relPath);
-            const cached = selected.get(key);
-            if (cached) return cached.path;
-            const file = await remote.read(args, root, entry, signal);
-            if (cacheable && isCurrent() && !signal?.aborted) files.set(key, { metadata: entry, path: file });
-            return file;
+            return remote.read(args, root, entry, signal);
           }
           const source = path.join(root, entry.relPath);
           const [rootReal, real] = await Promise.all([fs.realpath(root), fs.realpath(source)]);
@@ -144,25 +127,6 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
         materialize: async (source, dest, expectedSize) => {
           // The temporary tree is a view of managed media, not another persistent media store.
           await copyPreviewFile(source, dest, expectedSize);
-          // Start after copying: replacing the shared cache cannot invalidate this view.
-          for (const [key, cached] of selected) {
-            if (cached.path !== source || refreshing.has(key)) continue;
-            refreshing.add(key);
-            const [, , , root, rel] = JSON.parse(key) as string[];
-            void (async () => {
-              if (!isCurrent()) return;
-              const metadata = await readPreviewMetadata(
-                (signal) => remote.stat(args, root, rel, signal),
-                request.controller.signal,
-                isCurrent,
-              );
-              if (!isCurrent() || metadata.type !== 'file') return;
-              const entry = { ...metadata, name: cached.metadata.name };
-              const file = await remote.read(args, root, entry, request.controller.signal);
-              if (isCurrent()) files.set(key, { metadata: entry, path: file });
-            })().catch(() => { /* Preserve the usable snapshot while offline. */ })
-              .finally(() => refreshing.delete(key));
-          }
           const file = await fs.open(dest, 'r');
           const probe = Buffer.alloc(8192);
           let mime: string | null;

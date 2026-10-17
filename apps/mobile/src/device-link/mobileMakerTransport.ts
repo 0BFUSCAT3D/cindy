@@ -1184,12 +1184,14 @@ export function createMobileMakerTransport({
               ? stage(
                   "direct",
                   () => tryMobilePeerFile(deviceId, url, opts?.signal, trace || undefined,
-                    opts?.skipCache ? { ...metadata, skipCache: true } : metadata),
+                    opts?.skipCache ? { ...metadata, skipCache: true } : metadata, opts?.onProgress),
                   (result) => ({ hit: result !== null }),
                 )
               : Promise.resolve(null),
-          fallback: () =>
-            stage("upload", fallback ?? (() => fetch(false)), describeResult),
+          fallback: () => {
+            try { opts?.onProgress?.(0, 0); } catch { /* Observer only; upload bytes are unavailable. */ }
+            return stage("upload", fallback ?? (() => fetch(false)), describeResult);
+          },
         }),
       (result) => ({
         route: peerMediaUri(result)

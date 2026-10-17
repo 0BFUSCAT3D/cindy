@@ -33,7 +33,7 @@
  * 会被 RNW 交给 RN `Linking` 试着让系统处理 —— 于是 `tel:` / `mailto:` / 自定义 scheme
  * 会拉起外部应用,把下面这段策略整个绕过去。放到 `['*']` 之后,回调是唯一决策点。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { WebView, type WebViewProps } from 'react-native-webview';
 import type { ShouldStartLoadRequest, WebViewNavigation } from 'react-native-webview/lib/WebViewTypes';
@@ -48,9 +48,10 @@ import { browserViewportScrollScript } from '@/session/htmlBrowserViewport';
 import { useTheme } from '@/theme';
 
 /** The server serves only the downloaded manifest; every HTML has the same CSP and device guard. */
-export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInsets, onNavigationStateChange }: {
+export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInsets, onNavigationStateChange, loading }: {
   preview: MobileHtmlPreview;
   onError(): void;
+  loading?: ReactNode;
   webViewRef?: RefObject<WebView | null>;
   viewportInsets?: WebViewProps['contentInset'];
   onNavigationStateChange?(preview: MobileHtmlPreview, state: WebViewNavigation): void;
@@ -74,6 +75,7 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
   // Diagnostics only: load outcome and timing per mounted snapshot; the URL carries the snapshot token.
   const mountedAt = useMemo(() => Date.now(), [preview]);
   const failed = (event: string, detail: Record<string, unknown>) => {
+    if (currentPreview.current !== preview) return;
     mobileDebugLog('warn', 'files', event, { ms: Date.now() - mountedAt, ...detail });
     onError();
   };
@@ -122,7 +124,7 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
     // Themed backing for the strips under the floating controls; the viewport script paints
     // the page canvas itself, so this never becomes the background of an unstyled page.
     style={[styles.fill, { backgroundColor: colors.surfaceElevated }, paintedPreview !== preview && styles.unpainted]}
-  /></View></View>;
+  />{paintedPreview !== preview && loading ? <View style={StyleSheet.absoluteFill} pointerEvents="none">{loading}</View> : null}</View></View>;
 }
 
 export function HtmlFileReader({ html, testID }: { html: string; testID?: string }) {

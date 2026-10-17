@@ -32,7 +32,7 @@ export interface RemoteMediaDiskCacheIO {
    * 同名文件,store 的失败清理依赖这一点区分「半成品」与「现存好文件」。
    * 提供 expectedSize 时必须在移入前校验，尺寸不符返回 null 并保留旧文件。
    */
-  download(url: string, name: string, options?: { allowEmpty: boolean; expectedSize?: number }): Promise<number | null>;
+  download(url: string, name: string, expectedSize?: number): Promise<number | null>;
   /**
    * 把 base64 字节写入缓存文件(inline 缩略图落盘用);成功返回字节数,失败返回
    * null(不抛)。契约与 download 相同:落位必须原子,失败不得破坏既有同名文件。
@@ -73,7 +73,8 @@ export interface RemoteMediaDiskCache {
    *
    * 返回值 = **本次是否真的写入了新字节**。false 覆盖三种"promise 正常完成但盘上
    * 不是本次对象"的情形:超预算跳过、下载失败(按 IO 契约原子落位失败,现存同名
-   * 好文件被刻意保留)、落成 0 字节被作废。调用方据此决定能否改用本地文件——
+   * 好文件被刻意保留)、未声明为空的对象落成 0 字节被作废。expectedSize === 0
+   * 时允许保存有效空文件。调用方据此决定能否改用本地文件——
    * 只看 promise resolve 会把**已被证伪的旧文件**当成本次结果(PR #1125 review)。
    */
   store(sourceUrl: string, downloadUrl: string, mimeType: string, expectedSize?: number, version?: string): Promise<boolean>;
@@ -142,7 +143,7 @@ export function createRemoteMediaDiskCache(
    * download / writeFileBase64 落位之后的共同收尾(两条写入路径同一套失败语义):
    *   - size === null:写入失败(IO 契约保证原子落位、失败不动现有文件)——同名
    *     刷新场景下 name 就是现存条目的好文件,不能误删;只清理并非现存条目的半成品;
-   *   - size === 0:普通图片缓存视为失败；版本已确认的空文件（例如 CSS）正常保留;
+   *   - size === 0:仅 expectedSize === 0 时有效,否则作废并在下次 lookup 重取;
    *   - 成功:mime 变化换扩展名时删除不再被引用的旧文件,登记条目并做配额回收。
    * 返回 true 仅当本次确实登记了新写入的字节(见 store 返回值契约)。
    */
@@ -153,6 +154,7 @@ export function createRemoteMediaDiskCache(
     size: number | null,
     mimeType: string,
     version?: string,
+    expectedSize?: number,
   ): Promise<boolean> {
     if (size === null) {
       if (!prev || prev.name !== name) {
@@ -160,7 +162,7 @@ export function createRemoteMediaDiskCache(
       }
       return false;
     }
-    if (size < 0 || (size === 0 && !version) || !entries) {
+    if (size < 0 || (size === 0 && expectedSize !== 0) || !entries) {
       await Promise.resolve(io.deleteFile(name)).catch(() => undefined);
       if (prev && prev.name === name && entries) {
         entries.delete(key);
@@ -262,13 +264,8 @@ export function createRemoteMediaDiskCache(
         // version must never race an overwrite of the same physical file.
         const name = `${key}${version ? `-${version}` : ''}.${extOfMime(mimeType)}`;
         const prev = entries?.get(key);
-        // Validate before the IO publishes bytes: checking afterwards could
-        // delete a same-version file that already replaced the good copy.
-        const size = await io.download(downloadUrl, name, {
-          allowEmpty: !!version && expectedSize === 0,
-          expectedSize,
-        });
-        return commitWrittenFile(key, name, prev, size, mimeType, version);
+        const size = await io.download(downloadUrl, name, expectedSize);
+        return commitWrittenFile(key, name, prev, size, mimeType, version, expectedSize);
       };
       const pending = downloading.get(key);
       // 只合并**同一下载地址**的并发 store。forceRefresh 自愈会带全新 presign 地址,
