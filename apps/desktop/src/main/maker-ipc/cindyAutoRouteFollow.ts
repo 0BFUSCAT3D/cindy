@@ -4,6 +4,8 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 
+import { isSupportedRuntimeEffort } from './runtimeSelectionAxes.js';
+
 /**
  * 进行中任务跟随服务端挪动的 Auto。
  *
@@ -61,7 +63,9 @@ export async function followMovedCindyAutoRoutes(deps: CindyAutoRouteFollowDeps)
         const route = await deps.readRoute(candidate.sessionId);
         const providerId = route ? movedCindyAutoProviderId(providers, route) : null;
         if (!route || !providerId) return;
-        await deps.stage(candidate.sessionId, { ...route, providerId });
+        // Auto 没有推理档位，任务里存的是空串；登记切换只接受合法档位或 null。
+        const effort = isSupportedRuntimeEffort(route.effort) ? route.effort : null;
+        await deps.stage(candidate.sessionId, { ...route, providerId, effort });
         staged += 1;
         deps.logger?.info('Cindy Auto moved provider; staged switch for next message', {
           sessionId: candidate.sessionId,

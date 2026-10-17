@@ -164,3 +164,46 @@ describe('followMovedCindyAutoRoutes', () => {
     expect(stage).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Auto 没有推理档位时的跨来源跟随', () => {
+  // Auto 不带档位，任务库里 effort 存的是空串；登记切换只接受合法档位或 null。
+  const movedToPool = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', [AUTO])];
+
+  function follow(providers: ProviderView[], current: CindyAutoRoute) {
+    const stage = vi.fn(async () => {});
+    return {
+      stage,
+      run: () => followMovedCindyAutoRoutes({
+        listCandidates: async () => [{ sessionId: 'task', ...current }],
+        listProviders: async () => providers,
+        withSessionLock: async (_sessionId, run) => run(),
+        readRoute: async () => current,
+        stage,
+        assertCurrent: () => {},
+      }),
+    };
+  }
+
+  it('号池 → 平台：按无档位（null）登记，不把空串交给登记切换', async () => {
+    const { stage, run } = follow(movedToPlatform, route({ providerId: 'org-pool', effort: '' }));
+    await expect(run()).resolves.toBe(1);
+    expect(stage).toHaveBeenCalledWith('task', {
+      agentKind: 'pi', model: AUTO, providerId: 'xd', effort: null, fastMode: false,
+    });
+  });
+
+  it('平台 → 号池：同样按无档位（null）登记', async () => {
+    const { stage, run } = follow(movedToPool, route({ providerId: 'xd', effort: '' }));
+    await expect(run()).resolves.toBe(1);
+    expect(stage).toHaveBeenCalledWith('task', {
+      agentKind: 'pi', model: AUTO, providerId: 'org-pool', effort: null, fastMode: false,
+    });
+  });
+
+  it('负向：用户自己接的供应商上的 auto/... 不跟随，即使 Cindy 来源也有同名 Auto', async () => {
+    const providers = [provider('custom', 'user', ['other']), provider('xd', 'builtin', [AUTO])];
+    const { stage, run } = follow(providers, route({ providerId: 'custom', effort: '' }));
+    await expect(run()).resolves.toBe(0);
+    expect(stage).not.toHaveBeenCalled();
+  });
+});
