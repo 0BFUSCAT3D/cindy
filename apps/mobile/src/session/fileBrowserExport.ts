@@ -81,7 +81,10 @@ export async function exportRemoteFileToUrl(
     });
     const downloaded = await result.cacheDownload?.(signed.getUrl);
     const downloadedUri = downloaded && peerMediaUri(downloaded);
-    if (downloadedUri) return downloadedUri;
+    if (downloadedUri) {
+      deps.deleteOssObject?.(result.ossKey);
+      return downloadedUri;
+    }
     mobileDebugLog("debug", "files", "file export presigned", {
       ms: Date.now() - presignStartedAt,
       size: result.size,

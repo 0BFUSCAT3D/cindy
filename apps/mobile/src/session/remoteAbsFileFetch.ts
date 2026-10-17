@@ -131,6 +131,10 @@ export async function fetchRemoteAbsFileToUrl(
         Object.keys(fetchOpts).length ? fetchOpts : undefined,
       );
     });
+    // Only the local copy can outlive its temporary cloud object.
+    if (resolved.ossKey && resolved.url.startsWith('file://')) {
+      deps.deleteOssObject?.(resolved.ossKey);
+    }
     if (deps.stream !== false) rememberFetch(key, resolved, Date.now());
     assertActive();
     return resolved.url;
