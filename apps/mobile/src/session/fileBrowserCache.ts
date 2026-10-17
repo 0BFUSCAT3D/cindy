@@ -5,7 +5,7 @@
  *    规则 7),后台静默刷新后原位更新;跨启动仍有上次快照可秒开。
  * 2. 文本迷你缩略图片段:小文件(≤96KB)拉一次首块,渲染真实内容迷你页;
  *    片段(≤2KB)内存 + AsyncStorage 双层缓存,key 含 mtime 天然失效。
- * 3. 预览正文:内存 LRU(mtime keyed),翻页/重进不再重复拉取。
+ * 3. 预览正文:内存 LRU(账号/设备/路径),翻页/重进先展示旧内容再后台更新。
  *
  * AsyncStorage 侧统一带索引数组做 LRU 剪枝,防无限膨胀。
  */
@@ -277,11 +277,12 @@ export function storeCachedPreviewText(
   workdir: string,
   relPath: string,
   _mtimeMs: number,
-  value: CachedPreviewText,
+  value: CachedPreviewText | null,
 ): void {
   workdir = JSON.stringify([scope, workdir]);
   const key = snippetKey(workdir, relPath, 0);
   previewTextMemory.delete(key);
+  if (value === null) return;
   previewTextMemory.set(key, value);
   while (previewTextMemory.size > PREVIEW_TEXT_MAX_ENTRIES) {
     const oldest = previewTextMemory.keys().next().value;

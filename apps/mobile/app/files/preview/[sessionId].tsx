@@ -565,7 +565,7 @@ function RemoteFilePreviewContent() {
         stream: false,
         isCancelled: () => run.cancelled,
       });
-      if (run.cancelled) return;
+      // The copy helper also releases a late staging result after cancellation.
       // 传原始文件名:分享单按真实扩展名识别类型(PDF/视频等非图片 mime 不在
       // extOfMime 映射里,不带名字会落成 .img 让接收方无法预览)。
       const mime = shareMimeForFileName(item.name);
@@ -1242,6 +1242,11 @@ function TextPreviewPage({
       .then((res: FileBrowserReadFileResult) => {
         if (cancelled) return;
         if (!res.ok) {
+          // Keep the visible snapshot, but don't seed future opens from text
+          // the host has confirmed is no longer previewable.
+          if (cacheable && (res.code === 'OVERSIZE' || res.code === 'BINARY_FILE')) {
+            storeCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs, null);
+          }
           // A failed refresh must not hide the text the user is already reading.
           if (res.code === 'OVERSIZE') {
             unavailable({

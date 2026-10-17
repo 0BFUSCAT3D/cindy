@@ -83,9 +83,7 @@ async function copyRemoteFile(
 /** A visible preview owns its copy; transport staging and cache eviction cannot expire it. */
 export async function retainRemoteFilePreview(url: string, mimeType: string, fileName: string) {
   if (!url.startsWith('file://') && !url.startsWith('data:')) return { uri: url, release() {} };
-  let uri: string | null;
-  try { uri = await downloadRemoteMediaShareTemp(url, mimeType, fileName); }
-  finally { if (url.startsWith('file://')) releasePeerMedia(url); }
+  const uri = await downloadRemoteMediaShareTemp(url, mimeType, fileName);
   if (!uri) throw new Error('PREVIEW_CACHE_FAILED');
   return {
     uri,
@@ -109,6 +107,7 @@ export async function downloadRemoteMediaShareTemp(
   signal?: AbortSignal,
 ): Promise<string | null> {
   try {
+    if (signal?.aborted) return null;
     const dir = new Directory(Paths.cache, SHARE_TMP_DIR_NAME);
     dir.create({ intermediates: true, idempotent: true });
     const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -133,6 +132,10 @@ export async function downloadRemoteMediaShareTemp(
     return file.exists ? file.uri : null;
   } catch {
     return null; // 分享失败由调用方兜底提示
+  } finally {
+    // Sharing and visible previews both own their new copy after this handoff.
+    // Only registered transport staging is released; ordinary local files stay.
+    if (url.startsWith('file://')) releasePeerMedia(url);
   }
 }
 
@@ -182,6 +185,7 @@ export async function withDownloadedRemoteMediaFile<T>(
   } catch {
     return null;
   } finally {
+    if (url.startsWith('file://')) releasePeerMedia(url);
     // 临时文件用完即删:资源可能几十个,留着会把 cache 目录堆满。
     try {
       target?.delete();
@@ -261,7 +265,8 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
       try {
         const downloaded = await copyRemoteFile(url, tmp);
         const size = downloaded.size ?? -1;
-        if (size < 0 || (size === 0 && !options?.allowEmpty)) {
+        if (size < 0 || (size === 0 && !options?.allowEmpty) ||
+            (options?.expectedSize !== undefined && size !== options.expectedSize)) {
           if (tmp.exists) tmp.delete();
           return null;
         }

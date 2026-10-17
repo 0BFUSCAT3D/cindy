@@ -30,8 +30,9 @@ export interface RemoteMediaDiskCacheIO {
    * 下载 url 到缓存文件;成功返回字节数,失败返回 null(不抛)。
    * 契约:落位必须原子(临时位置下载、成功后移入)——失败时不得破坏已存在的
    * 同名文件,store 的失败清理依赖这一点区分「半成品」与「现存好文件」。
+   * 提供 expectedSize 时必须在移入前校验，尺寸不符返回 null 并保留旧文件。
    */
-  download(url: string, name: string, options?: { allowEmpty: boolean }): Promise<number | null>;
+  download(url: string, name: string, options?: { allowEmpty: boolean; expectedSize?: number }): Promise<number | null>;
   /**
    * 把 base64 字节写入缓存文件(inline 缩略图落盘用);成功返回字节数,失败返回
    * null(不抛)。契约与 download 相同:落位必须原子,失败不得破坏既有同名文件。
@@ -261,11 +262,12 @@ export function createRemoteMediaDiskCache(
         // version must never race an overwrite of the same physical file.
         const name = `${key}${version ? `-${version}` : ''}.${extOfMime(mimeType)}`;
         const prev = entries?.get(key);
-        const size = await io.download(downloadUrl, name, { allowEmpty: !!version && expectedSize === 0 });
-        if (size !== null && expectedSize !== undefined && size !== expectedSize) {
-          await Promise.resolve(io.deleteFile(name)).catch(() => undefined);
-          return false;
-        }
+        // Validate before the IO publishes bytes: checking afterwards could
+        // delete a same-version file that already replaced the good copy.
+        const size = await io.download(downloadUrl, name, {
+          allowEmpty: !!version && expectedSize === 0,
+          expectedSize,
+        });
         return commitWrittenFile(key, name, prev, size, mimeType, version);
       };
       const pending = downloading.get(key);
