@@ -2,7 +2,7 @@ import { stripChatQuoteMarkerLines } from '@cindy/maker-shared/chat-quotes';
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { i18n } from '@/i18n';
 import { categorizeMobileAttachment, extractRemoteFileExt, mergeAttachmentsWithinLimit, mimeTypeForMobileAttachment } from './attachments';
-import { isDurableOutboxUnsent, type DurableOutboxRecord } from './durableOutbox';
+import { isDurableCreationDraft, isDurableOutboxUnsent, type DurableOutboxRecord } from './durableOutbox';
 import { discardOutboxUploads, getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
 import type { RemoteSerializedAttachment } from './types';
 
@@ -18,11 +18,21 @@ export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: 
   guard();
   const group = getCurrentMobileOutboxRecords().filter(r => r.deviceId === deviceId && r.item.sessionId === sessionId);
   let first = group.find(r => r.creation);
-  if (!first?.creation || first.prepared || !first.suspended) return first;
+  if (!first?.creation) return;
+  let creation = first.creation;
+  // Every editor entry, including retry after background recovery, must own a
+  // writable draft before exposing content. Normalize the existing marker here;
+  // presentation, claims and subsequent edits use the same store predicate.
+  if (!isDurableCreationDraft(first)) {
+    creation = { ...creation, editReady: true };
+    if (!isDurableCreationDraft({ ...first, creation })) return;
+    first = await mobileDurableOutbox.update(first, { creation });
+    guard();
+  }
   const followUps = group.filter(r => r !== first && !r.creation);
   if (!followUps.length) return first;
   if (followUps.some(r => !isDurableOutboxUnsent(r))) throw new Error('OUTBOX_CREATION_OWNERSHIP_UNRESOLVED');
-  const copied = new Set(first.creation.mergedFollowUpClientIds ?? []);
+  const copied = new Set(creation.mergedFollowUpClientIds ?? []);
   const pending = followUps.filter(r => !copied.has(r.item.clientId));
   const { durableOutboxUploadUri, outboxAttachmentNeedsLocalBytes, removeOutboxFiles, removeRetainedOutboxFiles, retainOutboxFile } = await import('./durableOutboxFiles');
   const copies: DurableOutboxRecord = { ...first, uploads: [] };
@@ -30,7 +40,7 @@ export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: 
   try {
     const attachments = [...first.item.attachmentSlots];
     const slotMeta = [...first.item.slotMeta];
-    const text = [first.creation.draft.firstMessage];
+    const text = [creation.draft.firstMessage];
     let omitted = 0;
     for (const record of pending) {
       text.push(record.item.quotesEncoded ? stripChatQuoteMarkerLines(record.item.text) : record.item.text);
@@ -68,9 +78,9 @@ export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: 
       guard();
       const firstMessage = text.filter(Boolean).join('\n\n');
       first = await mobileDurableOutbox.update(first, {
-        creation: { ...first.creation, draft: { ...first.creation.draft, firstMessage },
+        creation: { ...creation, draft: { ...creation.draft, firstMessage },
           mergedFollowUpClientIds: [...copied, ...pending.map(r => r.item.clientId)],
-          notice: [first.creation.notice, omitted ? i18n.t('session.screen.attachmentsNotCarriedBack', { count: omitted }) : null]
+          notice: [creation.notice, omitted ? i18n.t('session.screen.attachmentsNotCarriedBack', { count: omitted }) : null]
             .filter(Boolean).join('\n') || undefined,
         },
         uploads: [...first.uploads, ...copies.uploads],

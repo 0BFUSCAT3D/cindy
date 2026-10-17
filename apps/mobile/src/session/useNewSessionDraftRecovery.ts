@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
-import type { DurableOutboxRecord } from './durableOutbox';
+import { isDurableCreationDraft, type DurableOutboxRecord } from './durableOutbox';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
 import { completeNewSessionDurableEdit, findNewSessionEditDraft, subscribeNewSessionCreationTasks } from './newSessionCreation';
 import { mergeNewSessionEditFollowUps } from './mergeNewSessionEditFollowUps';
@@ -50,7 +50,7 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, getToken,
       if (!record?.creation || record.prepared) return;
       merging = true;
       void mergeNewSessionEditFollowUps(sessionId, deviceId, callbacks.current.getToken).then(saved => {
-        if (!active || !isMobileAuthOwnerCurrent(owner) || !saved?.creation || saved.prepared
+        if (!active || !isMobileAuthOwnerCurrent(owner) || !saved?.creation || !isDurableCreationDraft(saved)
           || !getCurrentMobileOutboxRecords().includes(saved)) return;
         restored = true;
         editingRecord.current = saved;

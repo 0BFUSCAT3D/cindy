@@ -77,7 +77,7 @@ export function isDurableOutboxSettled(record: DurableOutboxRecord): boolean {
 export function isDurableCreationDraft(record: DurableOutboxRecord): boolean {
   return record.suspended === true && record.state === 'failed'
     && !!(record.creation?.editReady || record.creation?.cancelled)
-    && !record.prepared && !record.enqueueStarted && record.sendAtMs === undefined
+    && !record.prepared && !record.template && !record.enqueueStarted && record.sendAtMs === undefined
     && !record.cancelRequested && !isDurableOutboxSettled(record);
 }
 

@@ -701,6 +701,45 @@ async function saveFollowUpFixture(first: DurableOutboxRecord, pendingUpload = f
   return record;
 }
 
+// #6281 unit: retry-opened background failures lack editReady/cancelled.
+// Existing recovery cases start with cancelledCreationDraft and miss this input.
+// Exercise the shared production recovery + editing + cold reload, not a route copy.
+it.each([false, true])('persists edits to a retry-opened creation (follow-up: %s)', async followUp => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, { state: 'failed', suspended: true });
+  if (followUp) await saveFollowUpFixture(first);
+  const recovered = (await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc'))!;
+  expect(recovered.creation?.draft.firstMessage).toBe(followUp ? 'keep my input\n\nsecond message' : 'keep my input');
+  const leave = completeNewSessionDurableEdit(first.item.sessionId, 'pc');
+  expect(leave).toBeTypeOf('function');
+  const edited = (await persistNewSessionDraftEdit(recovered, { firstMessage: 'remaining' }))!;
+  await persistNewSessionDraftEdit(edited, { removeAttachmentId: 'photo' });
+  leave!();
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  const restored = findNewSessionEditDraft('pc')!;
+  expect(restored.creation?.draft.firstMessage).toBe('remaining');
+  expect(restored.item.attachmentSlots.map(a => a?.id)).toEqual(followUp ? ['second-photo'] : []);
+  if (followUp) await persistNewSessionDraftEdit(restored, { removeAttachmentId: 'second-photo' });
+  await persistNewSessionDraftEdit(restored, { firstMessage: '' });
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  expect(findNewSessionEditDraft('pc')).toBeUndefined();
+  expect(getCurrentMobileOutboxRecords()).toEqual([]);
+});
+
+it.each([
+  { suspended: false }, { state: 'queued' as const }, { enqueueStarted: true },
+  { prepared: {} as QueuedRemoteMessage }, { template: {} as QueuedRemoteMessage },
+  { cancelRequested: true }, { cleanupOutcome: 'cancelled' as const }, { sendAtMs: 1 },
+])('does not turn a non-editable creation into a recovery draft: %j', async patch => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, { state: 'failed', suspended: true, ...patch });
+  await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc')).resolves.toBeUndefined();
+  expect(mobileDurableOutbox.getSnapshot()).toEqual([first]);
+  expect(first.creation?.editReady).toBeUndefined();
+});
+
 it.each([false, true])('recovers sent follow-ups before composer input, retaining upload bytes (pending: %s)', async pendingUpload => {
   const original = await saveDraftFixture();
   const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));

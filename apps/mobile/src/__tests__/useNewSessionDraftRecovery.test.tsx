@@ -71,12 +71,12 @@ beforeEach(() => {
   outbox.ready.mockReset().mockReturnValue(new Promise<void>(resolve => { ready = resolve; }));
   outbox.records = [{
     version: 1, accountId: owner.accountKey, deviceId: 'device', state: 'failed', createdAt: 1,
-    uploads: [], error: 'Model unavailable',
+    uploads: [], error: 'Model unavailable', suspended: true,
     item: { sessionId: 'task', clientId: 'first', text: 'Saved draft', attachmentSlots: [],
       quotesEncoded: false, agentReferences: [], pastedTextRanges: [], slashCommandRanges: [],
       permissionModeAtSend: 'auto', slotMeta: [], slotByLocalId: {}, waitingIds: [],
       failedIds: [], enqueueError: null, phase: 'failed' },
-    creation: { deviceName: 'PC', planModeArm: false, restorePermissionMode: null,
+    creation: { deviceName: 'PC', planModeArm: false, restorePermissionMode: null, editReady: true,
       draft: { agentKind: 'codex', workspaceKind: 'dialogue', model: 'model', effort: 'medium',
         permissionMode: 'auto', workingDir: '', providerId: 'openai', fastMode: false, firstMessage: 'Saved draft' } },
   }];
@@ -224,7 +224,7 @@ it('uses the latest device after a route change while storage is pending', async
 
 // Cold recovery now waits for queued messages to join the draft. That await
 // must not restore stale content, swallow a write failure, or claim twice.
-it.each(['complete', 'unmount', 'owner-switch', 'save-fails', 'prepared'] as const)(
+it.each(['complete', 'unmount', 'owner-switch', 'save-fails', 'prepared', 'resumed', 'cancel-requested', 'unmarked'] as const)(
   'settles follow-up consolidation before restoring the editor: %s', async outcome => {
     let resolve!: (record: DurableOutboxRecord) => void;
     let reject!: (error: Error) => void;
@@ -238,6 +238,9 @@ it.each(['complete', 'unmount', 'owner-switch', 'save-fails', 'prepared'] as con
     if (outcome === 'unmount') await act(async () => root.render(null));
     if (outcome === 'owner-switch') setMobileAuthOwner('other');
     if (outcome === 'prepared') outbox.records[0].prepared = {} as NonNullable<DurableOutboxRecord['prepared']>;
+    if (outcome === 'resumed') outbox.records[0].suspended = false;
+    if (outcome === 'cancel-requested') outbox.records[0].cancelRequested = true;
+    if (outcome === 'unmarked') outbox.records[0].creation!.editReady = undefined;
     await act(async () => {
       if (outcome === 'save-fails') reject(new Error('save failed'));
       else resolve(outbox.records[0]);
