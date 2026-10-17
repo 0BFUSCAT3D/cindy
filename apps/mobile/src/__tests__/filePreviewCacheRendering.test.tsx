@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react';
+import { act, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Screen from '../../app/files/preview/[sessionId]';
@@ -102,15 +102,35 @@ async function open(cached = true) {
   if (cached) storeCachedListing(state.scope, '/repo', '', entries);
   await act(async () => { root.render(<Screen />); });
 }
+
+function expectVisiblePage(relPath: string, meta: string) {
+  // Metadata now belongs to each page's floating chrome. Exercise the real
+  // renderItem boundary without mounting the native readers in jsdom.
+  type PageProps = {
+    visible: boolean;
+    active: boolean;
+    item: { relPath: string };
+    htmlBrowserActions: { meta: string };
+  };
+  const pages = state.pager.data.map((item: unknown, index: number) => {
+    const row = state.pager.renderItem({ item, index }) as ReactElement<{ children: ReactElement<PageProps> }>;
+    return row.props.children.props;
+  }) as PageProps[];
+  const visiblePages = pages.filter(page => page.visible);
+  expect(visiblePages).toHaveLength(1);
+  expect(visiblePages[0]).toMatchObject({
+    active: true, item: { relPath }, htmlBrowserActions: { meta },
+  });
+}
 describe('cached file preview presentation', () => {
   it('shows the cached index, count and size on the first render and does not reposition on unchanged refresh', async () => {
     await open();
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
     expect(state.pager.initialScrollIndex).toBe(2);
     const selectedKey = state.pager.keyExtractor(state.pager.data[2]);
     state.scroll.mockClear();
     await act(async () => { resolveListing({ entries }); });
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
     expect(state.pager.keyExtractor(state.pager.data[2])).toBe(selectedKey);
     expect(state.scroll).not.toHaveBeenCalled();
   });
@@ -119,29 +139,29 @@ describe('cached file preview presentation', () => {
     act(() => state.pager.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 390 * 3 } } }));
     state.scroll.mockClear();
     await act(async () => { rejectListing(new Error('offline')); });
-    expect(host.textContent).toContain('s.txt4 / 6 · 11.9 KB');
+    expectVisiblePage('s.txt', '4 / 6 · 11.9 KB');
     expect(state.scroll).not.toHaveBeenCalled();
   });
   it('still opens without a listing and seeds subsequent opens from the successful background read', async () => {
     await open(false);
-    expect(host.textContent).toContain('1 / 1');
+    expectVisiblePage('README.md', '1 / 1');
     state.scroll.mockClear();
     await act(async () => { resolveListing({ entries }); });
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
     expect(state.scroll).toHaveBeenCalledExactlyOnceWith({ animated: false, offset: 2 * 390 });
     act(() => root.unmount());
     root = createRoot(host);
     await open(false);
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
   });
   it('keeps the file selected after a swipe when a directory refresh moves it to another index', async () => {
     await open();
     act(() => state.pager.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 390 * 3 } } }));
-    expect(host.textContent).toContain('s.txt4 / 6 · 11.9 KB');
+    expectVisiblePage('s.txt', '4 / 6 · 11.9 KB');
     const selectedKey = state.pager.keyExtractor(state.pager.data[3]);
     state.scroll.mockClear();
     await act(async () => { resolveListing({ entries: entries.slice(1) }); });
-    expect(host.textContent).toContain('s.txt3 / 5 · 11.9 KB');
+    expectVisiblePage('s.txt', '3 / 5 · 11.9 KB');
     expect(state.pager.data[state.pager.initialScrollIndex].relPath).toBe('s.txt');
     expect(state.pager.keyExtractor(state.pager.data[2])).toBe(selectedKey);
     expect(state.scroll).toHaveBeenCalledExactlyOnceWith({ animated: false, offset: 2 * 390 });
