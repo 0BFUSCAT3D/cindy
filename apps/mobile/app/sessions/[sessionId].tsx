@@ -98,6 +98,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { Text, TextInput } from '@/components/AppText';
+import { usePendingQuestionScroll } from '@/session/usePendingQuestionScroll';
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated';
 import { MobileAgentMark } from '@/components/MobileAgentMark';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
@@ -2398,14 +2399,9 @@ function SessionScreenContent() {
   const activePendingKind = activePendingInteraction
     ? interactionKind(activePendingInteraction)
     : null;
-  const pendingInteractionScrollRef = useRef<ScrollView>(null);
-  const pendingQuestionInputFocusedRef = useRef(false);
-  const revealPendingQuestionInput = useCallback(() => {
-    if (activePendingKind !== 'ask_user_question' || !pendingQuestionInputFocusedRef.current) return;
-    // 问答输入与提交操作都在卡片末尾。聚焦、键盘缩高或切换问题后，
-    // 让它们一起进入可见区域；用户仍可向上滚动查看选项。
-    pendingInteractionScrollRef.current?.scrollToEnd({ animated: false });
-  }, [activePendingKind]);
+  const pendingQuestionScroll = usePendingQuestionScroll(
+    activePendingKind === 'ask_user_question' ? activePendingRequestId : null,
+  );
   const activePendingCollapsed = isPendingInteractionCollapsed(
     collapsedPendingRequestIds,
     activePendingRequestId,
@@ -10446,22 +10442,19 @@ function SessionScreenContent() {
                 </View>
               ) : (
                 <ScrollView
-                  ref={pendingInteractionScrollRef}
+                  ref={pendingQuestionScroll.scrollRef}
                   keyboardShouldPersistTaps="handled"
                   nestedScrollEnabled
-                  onFocus={() => {
-                    pendingQuestionInputFocusedRef.current = true;
-                    revealPendingQuestionInput();
-                  }}
-                  onBlur={() => { pendingQuestionInputFocusedRef.current = false; }}
-                  onLayout={revealPendingQuestionInput}
-                  onContentSizeChange={revealPendingQuestionInput}
+                  onFocus={pendingQuestionScroll.onFocus}
+                  onBlur={pendingQuestionScroll.onBlur}
+                  onLayout={pendingQuestionScroll.reveal}
+                  onContentSizeChange={pendingQuestionScroll.reveal}
                   testID="interaction.bottomScroll"
                 >
                 <InteractionPanel
                   companion={companionChat}
                   companionIdentity={companionInteractionIdentity}
-                  safeAreaBottomInset={keyboardState.visible ? 0 : insets.bottom}
+                  safeAreaBottomInset={insets.bottom}
                   collapse={pendingInteractionCollapse}
                   deviceId={deviceId}
                   sessionId={sessionId}
