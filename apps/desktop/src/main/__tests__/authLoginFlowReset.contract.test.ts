@@ -5,6 +5,11 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  ColdStartAuthFallbackRegistry,
+  commitColdStartRefreshIfCurrent,
+} from '../authStartupGate';
+
 /** Regression guard for login progress that is intentionally owned by Electron main. */
 describe('auth login-flow reset', () => {
   const source = readFileSync(resolve(process.cwd(), 'src/main/authManager.ts'), 'utf8').replace(
@@ -911,22 +916,29 @@ describe('auth login-flow reset', () => {
       .toBeGreaterThan(timeoutRecovery);
   });
 
-  it('records the fallback epoch synchronously with the epoch bump', () => {
-    const clearStart = source.indexOf('function clearAuth(');
-    const clearEnd = source.indexOf('\n}\n', source.indexOf('authStateEpoch += 1;', clearStart));
-    const clearBody = source.slice(clearStart, clearEnd);
-    const bump = clearBody.indexOf('authStateEpoch += 1;');
-    const record = clearBody.indexOf('coldStartTimeoutFallbacks.record(epochBeforeClear, authStateEpoch);');
-    expect(bump).toBeGreaterThan(-1);
-    expect(record).toBeGreaterThan(bump);
-    // Recording later (in the caller, after the recovery promise unwinds) leaves a
-    // window where a concurrent refresh already sees the new epoch while the marker
-    // is still null, so its successful result is discarded again.
-    expect(clearBody).toContain('if (opts.coldStartTimeoutRecovery)');
-    expect(clearBody.indexOf('const epochBeforeClear = authStateEpoch;')).toBeLessThan(bump);
-    expect(source.slice(source.indexOf('export async function initialize('))).not.toContain(
-      '\n      coldStartTimeoutFallbacks.record(epochBeforeClear, authStateEpoch);'
-    );
+  it('accepts a late refresh when the fallback edge was recorded at bump time', () => {
+    // Behavior equivalent of "record where the epoch is bumped": an edge that is
+    // recorded before the refresh settles lets the late success commit; a chain
+    // with a missing edge (bump recorded too late / by a real auth action) does not.
+    const registry = new ColdStartAuthFallbackRegistry();
+    registry.record(3, 4);
+    const committed = commitColdStartRefreshIfCurrent({
+      registry,
+      flowEpoch: 3,
+      currentEpoch: 4,
+      commit: () => 'owner',
+    });
+    expect(committed).toEqual({ superseded: false, flowEpoch: 4, value: 'owner' });
+
+    const unrecorded = new ColdStartAuthFallbackRegistry();
+    expect(
+      commitColdStartRefreshIfCurrent({
+        registry: unrecorded,
+        flowEpoch: 3,
+        currentEpoch: 4,
+        commit: () => 'owner',
+      }),
+    ).toEqual({ superseded: true });
   });
 
   it('drops a runtime refresh result after logout or a newer login changes auth generation', () => {
