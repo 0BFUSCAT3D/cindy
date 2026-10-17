@@ -265,10 +265,14 @@ export function ContextSheetNote({ text, tone = 'secondary', testID }: {
   testID?: string;
 }) {
   const styles = useThemedStyles(makeContextSheetStyles);
-  if (tone === 'error') return <ErrorNotice message={text} messageTestID={testID} />;
   return (
-    <Text style={styles.note} testID={testID}>{text}</Text>
+    <Text style={[styles.note, tone === 'error' && styles.noteError]} testID={testID}>{text}</Text>
   );
+}
+
+/** 独立操作失败；字段校验继续使用 ContextSheetNote。 */
+export function ContextSheetError({ text, testID }: { text: string; testID?: string }) {
+  return <ErrorNotice message={text} messageTestID={testID} />;
 }
 
 export interface ContextSheetChoiceRowProps<T extends string> {

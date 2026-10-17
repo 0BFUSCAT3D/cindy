@@ -49,6 +49,7 @@ export function SessionTailBanner({
         <ErrorNoticeAction
           primary
           disabled={busy}
+          busy={busy}
           label={
             isInterrupted
               ? t('session.tail.continueTask')
@@ -78,6 +79,7 @@ export function SessionTailBanner({
       dismissLabel={t('session.tail.dismissNotice')}
       dismissTestID="session.tailBanner.dismiss"
       dismissDisabled={busy}
+      dismissBusy={busy}
     >
       {state.kind === 'error-tail' && state.rawError && !isInterrupted ? (
         <AgentErrorDetails message={state.rawError} actions={actions} />

@@ -25,6 +25,7 @@ export function ErrorNotice({
   dismissLabel,
   dismissTestID,
   dismissDisabled,
+  dismissBusy,
   dismissHint,
   children,
   style,
@@ -39,6 +40,7 @@ export function ErrorNotice({
   dismissLabel?: string;
   dismissTestID?: string;
   dismissDisabled?: boolean;
+  dismissBusy?: boolean;
   dismissHint?: string;
   children?: ReactNode;
 }) {
@@ -73,7 +75,7 @@ export function ErrorNotice({
             accessibilityRole="button"
             accessibilityLabel={dismissLabel}
             accessibilityHint={dismissHint}
-            accessibilityState={{ disabled: !!dismissDisabled }}
+            accessibilityState={{ disabled: !!dismissDisabled, busy: !!dismissBusy }}
             disabled={dismissDisabled}
             testID={dismissTestID}
             onPress={onDismiss}
@@ -104,6 +106,7 @@ export function ErrorNoticeAction({
   icon,
   onPress,
   disabled,
+  busy,
   hint,
   testID,
   primary,
@@ -112,6 +115,7 @@ export function ErrorNoticeAction({
   icon?: ReactNode;
   onPress(): void;
   disabled?: boolean;
+  busy?: boolean;
   hint?: string;
   testID?: string;
   primary?: boolean;
@@ -122,7 +126,7 @@ export function ErrorNoticeAction({
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityHint={hint}
-      accessibilityState={{ disabled: !!disabled }}
+      accessibilityState={{ disabled: !!disabled, busy: !!busy }}
       disabled={disabled}
       onPress={onPress}
       testID={testID}

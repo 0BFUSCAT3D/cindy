@@ -7,9 +7,11 @@ import { iconSize, iconStroke, useTheme } from '@/theme';
 export function ReadableHistoryRecovery({
   onRecover,
   busy,
+  disabled,
 }: {
   onRecover(): void;
   busy?: boolean;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -24,7 +26,8 @@ export function ReadableHistoryRecovery({
         />
       }
       onPress={onRecover}
-      disabled={busy}
+      disabled={busy || disabled}
+      busy={busy}
       testID="session.readableHistoryRecovery"
     />
   );

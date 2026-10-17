@@ -109,18 +109,20 @@ export function InlineQueueSection({
           dismissLabel={t('session.tail.dismissNotice')}
           dismissTestID="queue.inline.clearErrorButton"
           dismissDisabled={!!errorDisabledReason}
+          dismissBusy={busy}
           dismissHint={errorDisabledReason ?? undefined}
         >
           <AgentErrorDetails message={projection.error} actions={<>
             {retryable ? <ErrorNoticeAction
               primary
               disabled={!!retryDisabledReason}
+              busy={busy}
               hint={retryDisabledReason ?? undefined}
               label={t('message.queue.retrySend')}
               onPress={onRetryError}
               testID="queue.inline.retryButton"
             /> : null}
-            {onRecoverHistory ? <ReadableHistoryRecovery onRecover={onRecoverHistory} busy={controlsDisabled} /> : null}
+            {onRecoverHistory ? <ReadableHistoryRecovery onRecover={onRecoverHistory} busy={busy} disabled={controlsDisabled} /> : null}
           </>} />
           {retryable && retryDisabledReason ? (
             <Text style={styles.disabledHint} testID="queue.inline.errorDisabledReason">

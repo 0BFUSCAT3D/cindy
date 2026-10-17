@@ -189,12 +189,16 @@ export function ContextSheetNote({ text, tone = 'secondary', testID }: {
   testID?: string;
 }) {
   const { colors } = useTheme();
-  if (tone === 'error') return <NativeErrorNotice message={text} testID={testID} />;
   return (
-    <Text testID={testID} modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(colors.textSecondary)]}>
+    <Text testID={testID} modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(tone === 'error' ? colors.errorText : colors.textSecondary)]}>
       {text}
     </Text>
   );
+}
+
+/** 由现有 Section 提供独立操作失败的卡片容器。 */
+export function ContextSheetError({ text, testID }: { text: string; testID?: string }) {
+  return <NativeErrorNotice message={text} testID={testID} />;
 }
 
 export function ContextSheetChoiceRow<T extends string>(props: ContextSheetChoiceRowProps<T>) {
