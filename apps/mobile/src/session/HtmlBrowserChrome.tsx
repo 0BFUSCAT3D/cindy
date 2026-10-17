@@ -91,7 +91,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps | DocumentPreviewChr
         {button(X, t("files.preview.done"), p.onClose, "filePreview.done")}
         <View style={[styles.address, p.document && styles.documentTitle]}>
           {p.document ? <View style={styles.addressTitle}>
-            <Text numberOfLines={1} style={[styles.title, styles.centeredTitle]} testID="filePreview.title">{p.title}</Text>
+            <Text numberOfLines={1} style={styles.documentTitleText} testID="filePreview.title">{p.title}</Text>
           </View> : editing ? <TextInput
             value={address}
             onChangeText={setAddress}
@@ -328,7 +328,14 @@ const makeStyles = (c: ThemeColors) =>
       paddingLeft: spacing.lg,
     },
     documentTitle: { paddingHorizontal: spacing.lg },
-    centeredTitle: { textAlign: "center" },
+    documentTitleText: {
+      flex: 1,
+      textAlign: "center",
+      color: c.textPrimary,
+      fontSize: typeScale.body,
+      lineHeight: lineHeight.body,
+      fontWeight: fontWeight.semibold,
+    },
     title: { flex: 1, color: c.textPrimary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
     addressTitle: {
       flex: 1,

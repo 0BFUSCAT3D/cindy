@@ -191,7 +191,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps | DocumentPreviewChr
             {p.document ? <NativeText
               testID="filePreview.title"
               modifiers={[
-                font({ size: typeScale.footnote }),
+                font({ size: typeScale.body, weight: "semibold" }),
                 lineLimit(1),
                 padding({ horizontal: spacing.lg }),
                 frame({ maxWidth: Infinity, height: size, alignment: "center" }),
