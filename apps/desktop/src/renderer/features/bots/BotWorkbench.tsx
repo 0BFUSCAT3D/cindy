@@ -94,8 +94,11 @@ export function BotWorkbench({
     [hostDeviceId, hostName, self?.deviceId],
   );
   const { glance: raw, failed, fetchedAt } = useBotGlance(botId, host);
-  // 设备清单说它离线，或最近一次读取失败：保留上一份内容，但经那台转来的行按离线显示。
-  const hostOnline = !hostDeviceId || (hostDevice?.online !== false && !failed);
+  // 那台电脑不在设备清单里、离线、任一端关了远程控制，或最近一次读取失败：保留上一份内容，
+  // 但经那台转来的行按离线显示（不能「允许」）。清单还没加载时只看读取结果。
+  const hostControllable = devices === null
+    || Boolean(hostDevice && hostDevice.online && hostDevice.remoteControlEnabled && hostDevice.controlEnabled);
+  const hostOnline = !hostDeviceId || (hostControllable && !failed);
   const glance = useMemo<BotGlance | null>(
     () => (raw ? rebaseGlance(raw, { ...host, online: hostOnline }) : null),
     [raw, host, hostOnline],

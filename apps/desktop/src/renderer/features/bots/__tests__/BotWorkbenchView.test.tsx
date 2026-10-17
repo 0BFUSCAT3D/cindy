@@ -19,7 +19,16 @@ const m = vi.hoisted(() => ({
   resolveRoute: vi.fn(async (id: string) => `/cc-agent/${id}`),
   pinSessionOrigin: vi.fn(),
   mirrored: [] as Array<{ id: string }>,
+  devices: [] as Array<Record<string, unknown>>,
 }));
+
+function deviceList(studio: Record<string, unknown> = {}) {
+  const controllable = { online: true, remoteControlEnabled: true, controlEnabled: true };
+  return [
+    { deviceId: 'dev-self', name: 'MacBook', isSelf: true, ...controllable },
+    { deviceId: 'dev-2', name: 'Studio', isSelf: false, ...controllable, ...studio },
+  ];
+}
 vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -29,10 +38,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
-  useDeviceLinkDeviceList: () => [
-    { deviceId: 'dev-self', name: 'MacBook', isSelf: true },
-    { deviceId: 'dev-2', name: 'Studio', isSelf: false },
-  ],
+  useDeviceLinkDeviceList: () => m.devices,
 }));
 vi.mock('@/lib/remoteDataOwnerPushFence', () => ({ isDeviceLinkRemotePushCurrent: () => true }));
 vi.mock('@/lib/sidebarWindow', () => ({ isSidebarWindow: () => false }));
@@ -81,6 +87,7 @@ beforeEach(() => {
   listeners = [];
   m.makerApiForDevice.mockReturnValue(m.remoteApi);
   m.mirrored = [];
+  m.devices = deviceList();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     localDb: { bots: { autonomy: { glance: glanceApi } } },
     maker: {
@@ -216,6 +223,21 @@ it('greys out a remote teammate\'s rows once that computer stops answering, keep
   act(() => push?.({ deviceId: 'dev-2', channel: 'maker:bot-autonomy:changed', payload: { botIds: ['bot-1'] } }, {}));
   await waitFor(() => expect(allow().disabled).toBe(true));
   expect(screen.getByText('删掉旧分支吗？')).toBeTruthy();
+});
+
+it('greys out a remote teammate\'s rows when remote control to that computer is turned off', async () => {
+  remoteInvoke.mockResolvedValue(glance({
+    waiting: [row({ sessionId: 's8', question: '合并到主干吗？', waitingFor: 'permission', requestId: 'r-8' })],
+  }));
+  const view = render(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
+  const allow = () => within(screen.getByText('合并到主干吗？').closest('li')!)
+    .getByRole('button', { name: 'bots.workbench.glance.allow' }) as HTMLButtonElement;
+  await screen.findByText('合并到主干吗？');
+  expect(allow().disabled).toBe(false);
+
+  m.devices = deviceList({ controlEnabled: false });
+  view.rerender(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
+  expect(allow().disabled).toBe(true);
 });
 
 it('never approves a confirmation that carries no request id; it opens the task instead', async () => {
