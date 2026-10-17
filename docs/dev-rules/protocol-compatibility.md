@@ -1350,11 +1350,16 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
     Claude Code 后台子代理与后台任务、Pi 子代理)与待唤醒续跑(`pendingWake`)；Codex 中继里没有仍在运行的 `process/start` 进程
     (后台终端；按 exec-server 的 `process/closed` / `process/exited` 与启动失败判断，固定 Codex 0.159.2 实测)，也没有在等本机确认的消息；
     回到某条消息后、下一轮跑完前也算忙(Claude Code 要到下一次发送才在 B 上截断)。A 本机执行器里的后台命令不算忙。
+    会话 id 会被 B 改写的也不让：B 打开时把启动选项里的字符串按 A 的工作目录及各级上级目录、用户目录与附加目录投影到虚拟
+    工作区，`resumeSessionId` 也不例外；Pi 的会话 id 是 B 上的会话文件路径，两台同为 Mac(`/Users`)或同为 Windows 时
+    常落在这些前缀下，带过去会变成不存在的文件。A 按同一规则预判(`hostRewritesResumeId`)，这样的 Pi 任务不让出。
+    (App 重启后接回 Pi 走的也是这条投影，是此前就有的问题，本期未改 B。)
   - **连回**：只有要 B 上的 Agent 干活的调用触发(`send` / `steer` / `resumeBackgroundTask` / `compactSession` / 回退，以及要 B 回答的
     `previewModelSwitch` / `getContextUsage` / `getCodexContextWindowInfo`)；`requiresModelSwitchRebuild` 已让出时回 false(下一次连回
     本来就是带新模型的冷启动接回)；只改设置的
     (`setModel` / `setEffort` / `setFastMode` / `setPlanMode` / `setThinkingEnabled` / `setPermissionMode` / 目录 / `setVendorOptions`)
-    已让出时只记在 A，`abort` / `requestGracefulStop` / `stopBackgroundTask` 已让出时什么也不做。连回带当前原生会话 id 与最新的
+    已让出时只记在 A，`abort` / `requestGracefulStop` / `stopBackgroundTask` 已让出时什么也不做。会话里还没有对话(不是接回的旧会话、
+    也没跑完过一轮)时连回直接开新会话，不带 id。连回带当前原生会话 id 与最新的
     模型、来源、推理强度、快速模式、思考开关、权限档、计划模式、附加 / 可写目录；回退 / 分叉用的一次性 `resumeSessionAt` /
     `forkSession` 只在第一轮跑完前带(之后再带会再截断一次)；`setVendorOptions` 改过的内容、`libraryRoot`、`useCindyAutoReviewFallback` 连回后再告诉 B 一次。受邀者归属校验、
     供应商组 `relayMemberOf` 回到原组内电脑与 App 重启后接回同一条路径。B 接不回原会话时(会话失效回调里正是这次带的 id，或 B
@@ -1365,7 +1370,8 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   - **已知限制**：B 的整机合计上限(`TOTAL_LIMIT`)A 看不到别的设备的占用，只能靠被拒后处理；A 在自己额度内不让出，可能挡住别的
     设备，第一期接受。A 作为供应商组所在电脑替受邀者中转的 run 不进连接池(由发起方决定让出，发起方让出后按原有逻辑关掉中转)；
     同一台 B 的多个分享入口(`share:<id>`)各算一个池，计数可能偏低，靠被拒后处理兜住。
-    回归见 `remote-agent/__tests__/connectionPool.test.ts` 与 `execServerRelayBusy.e2e.test.ts`。
+    回归见 `remote-agent/__tests__/connectionPool.test.ts`、`execServerRelayBusy.e2e.test.ts`，以及真实 Claude Code / Codex / Pi 的
+    `claudeHosted` / `codexHosted` / `piHosted.e2e.test.ts`(共用 `poolHarness.ts`)。
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 

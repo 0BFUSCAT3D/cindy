@@ -18,7 +18,7 @@ import {
   RemoteConnectionPool,
   type PooledRemoteConnection,
 } from '../controller/connectionPool';
-import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
+import { hostRewritesResumeId, startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
 import type { RemoteAgentLimits } from '../../../shared/remoteAgentLimits';
 
@@ -215,6 +215,23 @@ describe('remote connection pool', () => {
   });
 });
 
+describe('resume ids the provider would rewrite', () => {
+  const mac = { workingDir: '/Users/alice/work/app', homeDir: '/Users/alice', extraDirs: ['/Volumes/data/ref'], writableDirs: [] };
+  const win = { workingDir: 'C:\\Users\\alice\\work\\app', homeDir: 'C:\\Users\\alice', extraDirs: [], writableDirs: [] };
+  it.each([
+    ['session uuid', 'f3b1c7de-0c2a-4c5e-9e7a-1a2b3c4d5e6f', mac, false],
+    ['Pi file under another Mac user', '/Users/bob/Library/Application Support/Cindy/pi/sessions/s.jsonl', mac, true],
+    ['Pi file under this home', '/Users/alice/Library/pi/s.jsonl', mac, true],
+    ['Pi file under an extra folder', '/Volumes/data/ref/s.jsonl', mac, true],
+    ['Pi file on a Linux provider', '/home/bob/.local/share/cindy/pi/s.jsonl', mac, false],
+    ['Pi file on a Windows provider', 'C:\\Users\\bob\\AppData\\Roaming\\Cindy\\pi\\s.jsonl', mac, false],
+    ['Pi file under another Windows user', 'C:\\Users\\bob\\AppData\\Roaming\\Cindy\\pi\\s.jsonl', win, true],
+    ['Pi file on a Mac provider for a Windows task', '/Users/bob/Library/pi/s.jsonl', win, false],
+  ] as const)('%s', (_label, id, workspace, rewritten) => {
+    expect(hostRewritesResumeId(id, workspace)).toBe(rewritten);
+  });
+});
+
 // ─── 两端接线 ────────────────────────────────────────────────────
 
 const RG = path.resolve(__dirname, '../../../../../ripgrep-bin', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'rg.exe' : 'rg');
@@ -272,6 +289,8 @@ interface Scenario {
 
 let scenario: Scenario;
 let nextNative = 0;
+/** 下一个 Agent 的会话 id(模拟 Pi 的会话文件路径)。 */
+let nextNativeId: string | null = null;
 
 /** 假 Agent：会话 id 接回 resumeSessionId；按消息内容干活。 */
 function fakeAgent(input: HostedStartInput): AgentSessionHandle {
@@ -280,6 +299,10 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
   let running = false;
   const resume = input.options.resumeSessionId;
   let id = resume ?? `native-${(nextNative += 1)}`;
+  if (nextNativeId) {
+    id = nextNativeId;
+    nextNativeId = null;
+  }
   let model = input.options.model;
   let planMode = input.options.planMode === true;
   let effort = input.options.effort;
@@ -817,6 +840,18 @@ describe('remote connection pool with a real host', () => {
     await expect(closing).resolves.toBeUndefined();
     await opening;
     expect(scenario.closes).toBe(1);
+  });
+
+  it('keeps a task whose session id the provider would rewrite, so its conversation is not lost', async () => {
+    const pool = newPool();
+    // 像 Pi 那样，会话 id 是对方电脑上的文件路径，且落在这台电脑工作目录的上级目录下。
+    nextNativeId = path.join(project, '..', 'pi-sessions', 'a.jsonl');
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
+    expect(scenario.closes).toBe(0);
   });
 
   it('keeps a task with a pending rewind until its next turn finishes', async () => {

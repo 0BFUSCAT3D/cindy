@@ -30,7 +30,7 @@ import type { PdfTextExtractor } from '../executor/files';
 import { ExecutorGate, executorGateModeFor, type ExecutorAction } from '../executor/gate';
 import { GitCredentialHistory } from '../executor/gitCredentials';
 import type { GuardedFetch } from '../executor/webFetch';
-import { ExecutorWorkspace } from '../executor/workspace';
+import { ExecutorWorkspace, projectPathText } from '../executor/workspace';
 import type {
   RemoteAgentOpenPayload,
   RemoteAgentWireAncestorFile,
@@ -38,7 +38,7 @@ import type {
   RemoteAgentWireImportFile,
   RemoteAgentWirePersonal,
 } from '../wire';
-import { encodeStartOptions } from '../wire';
+import { encodeStartOptions, MAX_ANCESTOR_LEVELS } from '../wire';
 import { isRemoteRunLimitError, type PooledRemoteConnection, type RemoteConnectionPool } from './connectionPool';
 import {
   createRemoteAgentHandle,
@@ -229,6 +229,32 @@ function shellName(): string {
   return (process.env.SHELL ?? '/bin/bash').split('/').pop() || 'bash';
 }
 
+/**
+ * 对方打开任务时会把启动选项里的路径按这台电脑的工作目录(及各级上级目录)、用户目录与附加目录投影到
+ * 虚拟工作区(host/runHost.ts prepareShadow)，接回用的会话 id 也不例外。Pi 的会话 id 是对方电脑上的会话文件
+ * 路径，两台同为 Mac 或同为 Windows 时常落在这些前缀下(如 /Users)，带过去会被改写成不存在的文件、只能开新会话。
+ * 返回 true 表示这个 id 带给对方会被改写。
+ */
+export function hostRewritesResumeId(
+  id: string,
+  workspace: { workingDir: string; homeDir?: string; extraDirs: readonly string[]; writableDirs: readonly string[] },
+): boolean {
+  if (!path.posix.isAbsolute(id) && !path.win32.isAbsolute(id)) return false;
+  const local = /^[A-Za-z]:|^\\\\/.test(workspace.workingDir) ? path.win32 : path.posix;
+  const marker = '\u0000';
+  const aliases: Array<{ from: string; to: string }> = [{ from: workspace.workingDir, to: marker }];
+  if (workspace.homeDir) aliases.push({ from: workspace.homeDir, to: marker });
+  let parent = workspace.workingDir;
+  for (let up = 1; up <= MAX_ANCESTOR_LEVELS; up += 1) {
+    const next = local.dirname(parent);
+    if (next === parent) break;
+    parent = next;
+    aliases.push({ from: parent, to: marker });
+  }
+  for (const dir of [...workspace.extraDirs, ...workspace.writableDirs]) aliases.push({ from: dir, to: marker });
+  return projectPathText(id, aliases) !== id;
+}
+
 /** 真正的原生会话 id(Claude Code 首轮完成前是占位)。 */
 function isNativeSessionId(id: unknown): id is string {
   return typeof id === 'string' && id.length > 0 && id !== '<pending>' && id !== '<failed>';
@@ -311,6 +337,11 @@ export async function startRemoteAgentSession(
    * 连回时还要带上，否则回退悄悄失效。跑完一轮后再带会再截断一次，就不带了。
    */
   let oneShotPending = opts.vendorOptions?.resumeSessionAt !== undefined || opts.vendorOptions?.forkSession !== undefined;
+  /**
+   * 会话里有没有对话(接回的旧会话，或跑完过一轮)。没有时连回就开新会话：Codex 的线程、Pi 的会话文件在
+   * 第一轮之前可能还没落盘，带 id 接回反而会被当成接不回。
+   */
+  let hasHistory = isNativeSessionId(opts.resumeSessionId);
   let lastStarted: RemoteStartedInfo | null = null;
 
   let personalRoots: Array<{ relative: string; local: string }> = [];
@@ -344,12 +375,19 @@ export async function startRemoteAgentSession(
       })
     : null;
 
+  /** 让出后能不能接回原来的会话：没有对话就不用接；会话 id 会被对方改写的(见 hostRewritesResumeId)不让出。 */
+  const resumableAfterRelease = () => {
+    if (!hasHistory || !controller || !isNativeSessionId(controller.handle.id)) return true;
+    return !hostRewritesResumeId(controller.handle.id, { workingDir: opts.workingDir, homeDir: os.homedir(), extraDirs, writableDirs });
+  };
+
   const isIdle = () => linkState === 'connected'
     && !!active
     && inflight === 0
     && !active.hasPendingWork
     && !relay?.busy()
-    && controller?.isQuiet() === true;
+    && controller?.isQuiet() === true
+    && resumableAfterRelease();
 
   /** 连接池让出名额：只结束对方的 Agent 进程，本机部分与对话记录都留着。 */
   async function release(): Promise<boolean> {
@@ -425,7 +463,10 @@ export async function startRemoteAgentSession(
       onEvent: (event) => {
         if (!isCurrent()) return;
         touch();
-        if ((event as { type?: unknown } | null)?.type === 'done') oneShotPending = false;
+        if ((event as { type?: unknown } | null)?.type === 'done') {
+          oneShotPending = false;
+          hasHistory = true;
+        }
         // 打开完成前到的先攒着：连回时要先合入对方启动时的状态，再按顺序交给任务。
         if (controller && opened) controller.onEvent(event);
         else early.push({ type: 'event', value: event });
@@ -528,7 +569,7 @@ export async function startRemoteAgentSession(
   function openOptions(reconnect: boolean): StartSessionOptions {
     if (!reconnect || !controller) return opts;
     const state = controller.readState();
-    const resumeId = isNativeSessionId(controller.handle.id) ? controller.handle.id : undefined;
+    const resumeId = hasHistory && isNativeSessionId(controller.handle.id) ? controller.handle.id : undefined;
     const vendor = { ...vendorOptions };
     if (!oneShotPending) {
       delete vendor.resumeSessionAt;

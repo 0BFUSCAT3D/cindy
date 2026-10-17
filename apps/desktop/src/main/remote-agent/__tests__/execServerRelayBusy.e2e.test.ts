@@ -53,7 +53,7 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
 
       // 短命令跑完就不忙。
       start(3, 'short', 'exit 0');
-      await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params.processId === 'short'), { timeout: 5000 }).toBe(true);
+      await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params?.processId === 'short'), { timeout: 5000 }).toBe(true);
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
 
       // 还在跑的(如 Codex 的后台终端)算忙。
@@ -61,7 +61,7 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
       await expect.poll(() => messages.some((item) => item.id === 4), { timeout: 5000 }).toBe(true);
       expect(relay.busy()).toBe(true);
       send({ id: 5, method: 'process/terminate', params: { processId: 'long' } });
-      await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params.processId === 'long'), { timeout: 5000 }).toBe(true);
+      await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params?.processId === 'long'), { timeout: 5000 }).toBe(true);
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
 
       // 让出名额后关掉 exec-server，中继本身还能接新的连接。
