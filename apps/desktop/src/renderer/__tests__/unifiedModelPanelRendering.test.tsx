@@ -4429,8 +4429,9 @@ describe('统一面板 · 最近使用记录与陈列', () => {
   it('远程目录(device-link / 浏览另一台)不展示本机「最近」(2026-10-17 review P1)', async () => {
     // 远程目录与本地同源(同 provider+modelId):不设门时本机历史会解析成远端快捷方式
     // (点去另一台跑、点星改远端收藏)。记录没有设备字段,读侧与写侧同一道 deviceId 门。
+    // providersRef 的元素类型是 unknown(与本文件 295 行既有写法同构,需 as object)。
     remoteProvidersRef.providers = providersRef.providers.map((provider) => ({
-      ...provider,
+      ...(provider as object),
       remoteInvocationEnabled: true,
     }));
     try {
