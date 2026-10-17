@@ -210,7 +210,7 @@ export interface DeviceLinkContextValue {
     deviceId: string,
     channel: string,
     args?: unknown[],
-    opts?: { preSend?: () => void },
+    opts?: { preSend?: () => void; background?: boolean },
   ): Promise<T>;
   // `owner` is a stable id for the mounted consumer (e.g. `session:<id>`, `device:<id>`),
   // so repeated subscribes from resync/retry are idempotent and a topic is only released
@@ -1534,7 +1534,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     deviceId: string,
     channel: string,
     args: unknown[] = [],
-    opts?: { preSend?: () => void },
+    opts?: { preSend?: () => void; background?: boolean },
   ) => {
     const preSend = () => {
       if (presenceAvailableByDeviceRef.current.get(deviceId) === false) {
@@ -1567,7 +1567,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
             return withAccessRevokedHandling(deviceId, async () => unwrapInvoke<T>(result));
           }
         }
-        return sendInvokeWithAccessHandling<T>(client, deviceId, channel, args, { preSend });
+        return sendInvokeWithAccessHandling<T>(client, deviceId, channel, args, { preSend, background: opts?.background });
       },
     );
   }, [sendOpenLinkOnce]);
@@ -2054,6 +2054,7 @@ async function sendOpenLink(
 
 interface SendInvokeOptions {
   preSend?: () => void;
+  background?: boolean;
   /** 同一轮明确 fan-out 共享;普通独立请求省略。 */
   responsivenessCohort?: number;
   /** 仅主动的代表性 half-open 探测允许领取 probe 席位。 */
@@ -2104,7 +2105,7 @@ async function sendInvoke<T>(
       // 长通道(media / 文件搜索 / schedule 就绪窗口等)按 invokeTimeouts 解析
       // 规则保留更长窗口,避免 mobile 收紧的默认 15s 误伤合法慢操作。
       resolveMobileInvokeTimeoutMs(channel, args),
-      { preSend: () => {
+      { background: opts?.background, preSend: () => {
         try {
           opts?.preSend?.();
         } catch (err) {

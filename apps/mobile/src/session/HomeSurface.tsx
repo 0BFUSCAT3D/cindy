@@ -1778,7 +1778,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       return () => { cancelled = true; };
     }
     void discoverRemoteHomeCollections(
-      invoke,
+      (deviceId, channel, args) => invoke(deviceId, channel, args, {
+        background: true,
+        preSend: () => {
+          if (cancelled || homeAccountGenerationRef.current !== accountGeneration)
+            throw new Error('Remote discovery superseded');
+        },
+      }),
       targets,
       i18nInstance.language,
       remoteHomeCollectionsRef.current,

@@ -28,12 +28,18 @@ async function downloadCancellable(
   url: string,
   target: File,
   signal: AbortSignal,
+  maxBytes?: number,
 ): Promise<File> {
   const FileSystem = await import("expo-file-system/legacy");
-  const task = FileSystem.createDownloadResumable(url, target.uri);
   let rejectStopped: (reason: Error) => void = () => undefined;
   const stopped = new Promise<never>((_, reject) => {
     rejectStopped = reject;
+  });
+  const task = FileSystem.createDownloadResumable(url, target.uri, {}, (progress) => {
+    if (maxBytes !== undefined && progress.totalBytesWritten > maxBytes) {
+      rejectStopped(new Error('PREVIEW_TOO_LARGE'));
+      void task.cancelAsync().catch(() => undefined);
+    }
   });
   const stop = () => {
     rejectStopped(new Error("DOWNLOAD_CANCELLED"));
@@ -62,9 +68,12 @@ async function copyRemoteFile(
   url: string,
   target: File,
   signal?: AbortSignal,
+  maxBytes?: number,
 ): Promise<File> {
   if (url.startsWith("file://")) {
-    await new File(url).copy(target);
+    const source = new File(url);
+    if (maxBytes !== undefined && source.size > maxBytes) throw new Error('PREVIEW_TOO_LARGE');
+    await source.copy(target);
     return target;
   }
   if (url.startsWith("data:")) {
@@ -76,7 +85,7 @@ async function copyRemoteFile(
     target.write(Uint8Array.from(atob(match[1]), (char) => char.charCodeAt(0)));
     return target;
   }
-  if (signal) return downloadCancellable(url, target, signal);
+  if (signal || maxBytes !== undefined) return downloadCancellable(url, target, signal ?? new AbortController().signal, maxBytes);
   return File.downloadFileAsync(url, target, { idempotent: true });
 }
 
@@ -171,17 +180,20 @@ export async function withDownloadedRemoteMediaFile<T>(
   mimeType: string,
   maxBytes: number,
   read: (file: File) => Promise<T | null>,
+  signal?: AbortSignal,
 ): Promise<T | null> {
   const dir = new Directory(Paths.cache, SHARE_TMP_DIR_NAME);
   let target: File | null = null;
   try {
+    if (signal?.aborted) return null;
     dir.create({ intermediates: true, idempotent: true });
     const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     target = new File(dir, `res-${unique}.${extOfMime(mimeType)}`);
-    const file = await copyRemoteFile(url, target);
+    const file = await copyRemoteFile(url, target, signal, signal ? maxBytes : undefined);
     const size = file.size ?? 0;
-    if (size <= 0 || size > maxBytes) return null;
-    return await read(file);
+    if (signal?.aborted || size <= 0 || size > maxBytes) return null;
+    const result = await read(file);
+    return signal?.aborted ? null : result;
   } catch {
     return null;
   } finally {
