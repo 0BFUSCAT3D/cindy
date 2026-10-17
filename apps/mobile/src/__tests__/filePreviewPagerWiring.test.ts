@@ -237,12 +237,15 @@ describe('HTML 生成物的渲染态接线', () => {
     expect(source).toContain('testID="filePreview.htmlError"');
     expect(source).toContain("t('files.preview.htmlSnapshotTooLarge')");
     expect(source).toContain('onPress: htmlSnapshot.retry');
-    expect(source).toContain('!htmlSnapshot.preview || !htmlSnapshot.foreground');
+    // The viewport now mounts during preparation; executable content remains gated
+    // inside the reader until a current, guarded snapshot exists.
+    expect(readSource('src/session/HtmlFileReader.tsx')).toContain('{preview ? <WebView');
+    expect(readSource('src/session/useHtmlSnapshot.ts')).toContain('const current = enabled && foreground');
   });
 
   it('downloads stop on source mode, invisibility, background, and source identity changes', () => {
     const hook = readSource('src/session/useHtmlSnapshot.ts');
-    expect(hook).toContain('if (!enabled || !foreground) return');
+    expect(hook).toContain('if (!enabled || !foreground) {');
     expect(hook).toContain('controller.abort()');
     expect(hook).toContain('preview?.close()');
     expect(hook).toContain('[absPath, enabled, foreground, prepare, epoch]');

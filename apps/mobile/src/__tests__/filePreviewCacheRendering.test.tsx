@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react';
+import { act, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Screen from '../../app/files/preview/[sessionId]';
@@ -102,18 +102,25 @@ async function open(cached = true) {
   if (cached) storeCachedListing(state.scope, '/repo', '', entries);
   await act(async () => { root.render(<Screen />); });
 }
-// The native pager is not mounted in jsdom. Read the real screen's renderItem
-// output at the reader boundary: #6318 moved the title/metadata into each page.
-// Keep checking the selected file and metadata after refresh/swipe, rather than
-// looking for the removed screen-level header or reimplementing its formatting.
-function expectVisiblePage(name: string, meta: string) {
-  const pages = state.pager.data.map((item: unknown, index: number) =>
-    state.pager.renderItem({ item, index }).props.children.props,
-  );
-  const visiblePages = pages.filter((page: { visible: boolean }) => page.visible);
+
+function expectVisiblePage(relPath: string, meta: string) {
+  // Metadata now belongs to each page's floating chrome. Exercise the real
+  // renderItem boundary without mounting the native readers in jsdom.
+  type PageProps = {
+    visible: boolean;
+    active: boolean;
+    item: { name: string; relPath: string };
+    htmlBrowserActions: { meta: string };
+  };
+  const pages = state.pager.data.map((item: unknown, index: number) => {
+    const row = state.pager.renderItem({ item, index }) as ReactElement<{ children: ReactElement<PageProps> }>;
+    return row.props.children.props;
+  }) as PageProps[];
+  const visiblePages = pages.filter(page => page.visible);
   expect(visiblePages).toHaveLength(1);
-  expect(visiblePages[0].item.name).toBe(name);
-  expect(visiblePages[0].htmlBrowserActions.meta).toBe(meta);
+  expect(visiblePages[0]).toMatchObject({
+    active: true, item: { name: relPath, relPath }, htmlBrowserActions: { meta },
+  });
 }
 describe('cached file preview presentation', () => {
   it('shows the cached index, count and size on the first render and does not reposition on unchanged refresh', async () => {
