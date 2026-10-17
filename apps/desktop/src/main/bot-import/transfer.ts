@@ -72,6 +72,7 @@ export const IMPORT_IM_BOT_ISSUES: ReadonlySet<string> = new Set([
   'IMPORT_IM_BOT_IN_USE',
   'IMPORT_IM_BOT_CONNECT_FAILED',
   'IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED',
+  'IMPORT_IM_BOT_SOURCE_CHANGED',
 ]);
 const IM_BOT_FORMATS = new Set(['telegram', 'discord']);
 

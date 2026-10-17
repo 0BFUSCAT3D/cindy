@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { readImportSourceBot, type SourceReaderDeps } from './sources.js';
+import { importBotIdentity, readImportSourceBot, readImportSourceBotIdentity, type SourceReaderDeps } from './sources.js';
 import { resolveSourceCli } from './takeover.js';
 import { importedProcessEnvironment, runImportedProcess } from './process.js';
 import { CompanionImportError, object, string, type ImportItem, type ImportSource } from './types.js';
@@ -8,13 +8,17 @@ import type { ImportedImBotTarget } from './imBotConnections.js';
 
 /** Durable per-bot progress in the import receipt; a retry resumes from it instead of stopping twice. */
 export interface ImportBotRecord {
-  phase: 'stopping' | 'stopped' | 'connected';
+  /** `restoring`: the companion could not connect and the source switch is being put back. */
+  phase: 'stopping' | 'stopped' | 'restoring' | 'connected';
   /** The source switch before this import, restored when the companion cannot connect. */
   original?: { present: boolean; value?: unknown };
   /** This import turned the source switch off. */
   changed?: boolean;
   /** The source gateway was serving the bot when the import began. */
   wasLive?: boolean;
+  /** A gateway restart was issued (it may have run even when unconfirmed), so a restore restarts again. */
+  restartRequested?: boolean;
+  /** The restart command succeeded; an unconfirmed restart is retried on the next attempt. */
   restarted?: boolean;
 }
 
@@ -110,16 +114,18 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
     : run(['config', 'patch', '--stdin'], JSON.stringify(nested(bot.enabledPath, present ? value : null)));
   const liveness = () => source.kind === 'hermes' ? hermesLiveness(source, bot.platform, alive) : Promise.resolve({ live: false, parked: false });
   const restartGateway = () => run(['gateway', 'restart'], undefined, 120_000);
-  /** Only undo what this import did; a still-unknown restore keeps the record for the next retry. */
+  /** Only undo what this import did; a still-unknown restore keeps the `restoring` record for the next retry. */
   const restore = async () => {
     if (!record) return;
     if (record.changed && record.original) {
+      // Durable before the switch flips back: a resumed import finishes the restore instead of connecting.
+      if (record.phase !== 'restoring') await save({ ...record, phase: 'restoring' });
       try {
         await setSwitch(record.original.value, record.original.present);
         // The switch was on when this import turned it off.
         if (!(await readImportSourceBot(source, bot)).enabled) return;
         const { parked } = await liveness();
-        if (record.restarted && !parked) await restartGateway();
+        if ((record.restartRequested || record.restarted) && !parked) await restartGateway();
       } catch (error) {
         if (error instanceof CompanionImportError && error.code === 'OWNER_CHANGED') throw error;
         return;
@@ -129,21 +135,33 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
   };
 
   try {
+    if (record?.phase === 'restoring') { await restore(); return 'IMPORT_IM_BOT_CONNECT_FAILED'; }
     const existing = target.existing();
     if (existing === 'self') { await save({ ...(record ?? {}), phase: 'connected' }); return undefined; }
     if (existing === 'other') { await restore(); return 'IMPORT_IM_BOT_IN_USE'; }
+    /** The switch at this path must still belong to the previewed bot before this import touches it. */
+    const sameBot = async () => {
+      const current = await readImportSourceBotIdentity(source, bot, readers); assertOwner();
+      return !!current && current === importBotIdentity(item.credential?.value);
+    };
     if (!record) {
       // Nothing changes in the source before the companion side is known to be addable.
       const blocked = await target.preflight(); assertOwner();
       if (blocked) return blocked;
+      if (!(await sameBot())) return 'IMPORT_IM_BOT_SOURCE_CHANGED';
       const before = await readImportSourceBot(source, bot); assertOwner();
       const { live } = await liveness();
       await save({ phase: 'stopping', original: { present: before.present, ...(before.present ? { value: before.value } : {}) },
         wasLive: source.kind === 'hermes' ? live : before.enabled });
+    } else if (record.phase === 'stopped' && (await readImportSourceBot(source, bot)).enabled) {
+      // The source came back on after an earlier stop: stop it again before connecting.
+      await save({ ...record, phase: 'stopping' });
     }
     if (record!.phase === 'stopping') {
       if ((await readImportSourceBot(source, bot)).enabled) {
         cli ??= await resolveSourceCli(source, readers.home, readers.env); assertOwner();
+        // Only an unchanged bot is ever switched off by this import.
+        if (!record!.changed && !(await sameBot())) { await save(undefined); return 'IMPORT_IM_BOT_SOURCE_CHANGED'; }
         await save({ ...record!, changed: true });
         await setSwitch(false);
         if ((await readImportSourceBot(source, bot)).enabled) {
@@ -158,8 +176,8 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
       let state = await liveness();
       // A restart would unpark a parked profile, so a parked bot is never restarted.
       if (state.live && !state.parked && !record!.restarted) {
-        await save({ ...record!, restarted: true });
-        await restartGateway();
+        await save({ ...record!, restartRequested: true });
+        if (await restartGateway()) await save({ ...record!, restarted: true });
         state = await liveness();
       }
       const deadline = timing.now() + timing.timeoutMs;
@@ -173,6 +191,8 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
       // OpenClaw hot-reloads channel config; Telegram's conflict window still catches a slow stop.
       await timing.sleep(timing.settleMs); assertOwner();
     }
+    // Confirm once more right before connecting: both sides must never serve the bot together.
+    if ((await readImportSourceBot(source, bot)).enabled) return 'IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED';
     const issue = await target.connect(); assertOwner();
     if (!issue) { await save({ ...record!, phase: 'connected' }); return undefined; }
     await restore();

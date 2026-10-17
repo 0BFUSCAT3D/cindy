@@ -825,6 +825,7 @@
     "imBotInUse": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
     "imBotConnectFailed": "沒能連上這個機器人，請到夥伴的「訊息平台」頁重試。",
     "imBotSourceStopUnconfirmed": "原本的機器人還沒停下，暫時沒有接給夥伴。可以稍後在夥伴的「訊息平台」頁連線。",
+    "imBotSourceChanged": "原本的機器人在預覽後換過了，沒有停用它。請重新讀取後再匯入。",
     "bots": "訊息機器人",
     "botsNote": "匯入後，{{source}} 裡的這些機器人會停用，由夥伴接管。",
     "sourceDisabled": "原本已停用",

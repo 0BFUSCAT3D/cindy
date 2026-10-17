@@ -22,6 +22,7 @@ else if (args[0] === 'config' && args[1] === 'patch') {
   const merge = (node, patch) => { for (const [key, value] of Object.entries(patch)) { if (value === null) delete node[key]; else if (typeof value === 'object') merge(node[key] ??= {}, value); else node[key] = value; } };
   merge(config, JSON.parse(fs.readFileSync(0, 'utf8')));
 } else if (args[0] === 'gateway' && args[1] === 'restart') {
+  if (fs.existsSync(path.join(home, 'fail-restart'))) process.exit(1);
   const stateFile = path.join(home, 'gateway_state.json');
   if (!fs.existsSync(path.join(home, 'restart-keeps-live'))) {
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -73,8 +74,8 @@ it('stops a live Hermes bot, restarts the gateway, waits for it to let go, then 
   expect(await t.calls()).toEqual(['config set platforms.telegram.enabled false', 'gateway restart']);
   expect((await t.readConfig()).platforms.telegram.enabled).toBe(false);
   expect(t.target.connect).toHaveBeenCalledTimes(1);
-  expect(t.saves.map(record => record?.phase)).toEqual(['stopping', 'stopping', 'stopped', 'stopped', 'connected']);
-  expect(t.saves.at(-1)).toEqual({ phase: 'connected', original: { present: false }, wasLive: true, changed: true, restarted: true });
+  expect(t.saves.map(record => record?.phase)).toEqual(['stopping', 'stopping', 'stopped', 'stopped', 'stopped', 'connected']);
+  expect(t.saves.at(-1)).toEqual({ phase: 'connected', original: { present: false }, wasLive: true, changed: true, restartRequested: true, restarted: true });
   for (const call of await t.calls()) expect(call).not.toContain('fake-telegram-token');
 });
 
@@ -116,6 +117,42 @@ it('does not connect when the source switch or the live bot does not stop', asyn
   // The switch stays off: the user moved the bot, the gateway has just not let go yet.
   expect(t.saves.at(-1)).toMatchObject({ phase: 'stopped', changed: true, restarted: true });
   expect((await t.readConfig()).platforms.telegram.enabled).toBe(false);
+});
+
+it('retries a gateway restart that did not succeed instead of waiting on it forever', async () => {
+  const t = await setup('hermes', { name: 'Ada' }, { live: true, env: telegramEnv });
+  await fs.writeFile(path.join(t.state, 'fail-restart'), '');
+  expect(await t.run()).toBe('IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED');
+  const record = t.saves.at(-1)!;
+  expect(record).toMatchObject({ phase: 'stopped', restartRequested: true });
+  expect(record.restarted).toBeUndefined();
+  await fs.rm(path.join(t.state, 'fail-restart'));
+  expect(await t.run(record)).toBeUndefined();
+  expect((await t.calls()).filter(call => call === 'gateway restart')).toHaveLength(2);
+  expect(t.target.connect).toHaveBeenCalledTimes(1);
+});
+
+it('finishes an interrupted rollback and re-stops a source that came back on, never serving both sides', async () => {
+  const t = await setup('hermes', { name: 'Ada' }, { env: telegramEnv });
+  // Crash after the switch was restored but before the record was cleared.
+  const restoring: ImportBotRecord = { phase: 'restoring', original: { present: false }, wasLive: false, changed: true };
+  expect(await t.run(restoring)).toBe('IMPORT_IM_BOT_CONNECT_FAILED');
+  expect(t.target.connect).not.toHaveBeenCalled();
+  expect(t.saves.at(-1)).toBeUndefined();
+  // A "stopped" record whose source is enabled again is stopped once more before connecting.
+  expect(await t.run({ ...restoring, phase: 'stopped' })).toBeUndefined();
+  expect(await t.calls()).toEqual(['config unset platforms.telegram.enabled', 'config set platforms.telegram.enabled false']);
+  expect((await t.readConfig()).platforms.telegram.enabled).toBe(false);
+  expect(t.target.connect).toHaveBeenCalledTimes(1);
+});
+
+it('leaves a bot swapped in after the preview running and does not connect the old one', async () => {
+  const t = await setup('hermes', { name: 'Ada' }, { live: true, env: telegramEnv });
+  await fs.writeFile(path.join(t.state, '.env'), 'TELEGRAM_BOT_TOKEN=67890:fake-new-token\nTELEGRAM_ALLOWED_USERS=424242');
+  expect(await t.run()).toBe('IMPORT_IM_BOT_SOURCE_CHANGED');
+  expect(await t.calls()).toEqual([]);
+  expect(t.target.connect).not.toHaveBeenCalled();
+  expect(t.saves).toEqual([]);
 });
 
 it('resumes an interrupted takeover without stopping or restarting twice', async () => {

@@ -303,7 +303,7 @@ interface SourceBot {
   enabled: boolean;
   enabledPath: string[];
   owner?: string;
-  /** Telegram / Discord allowed users when no single owner is evident. */
+  /** Allowed users when no single owner is evident. */
   ownerCandidates?: string[];
   /** Other agents also route through this bot: stopping it affects them, so it is not preselected. */
   shared?: boolean;
@@ -368,11 +368,11 @@ function hermesBots(source: ImportSource, values: Record<string, unknown>, env: 
         : { appKey: value('DINGTALK_CLIENT_ID', extra.client_id), appSecret: value('DINGTALK_CLIENT_SECRET', extra.client_secret) };
     if (Object.values(fields).some(field => !field)) continue;
     const domain = string(env.FEISHU_DOMAIN) || string(extra.domain);
-    // Feishu: only a single open_id admin; WeCom / DingTalk: only a single explicit allowed user.
+    // Feishu: open_id admins; WeCom / DingTalk: explicit allowed users.
     const owners = platform === 'feishu' ? userIds(listOf(extra.admins), [], /^ou_[A-Za-z0-9_-]{1,128}$/) : allowed(PLAIN_USER_ID);
     bots.push({ platform, account: 'default', name: sourceBotName(source, 'default', platform === 'feishu' ? env.FEISHU_BOT_NAME : '', extra.bot_name, block.name),
       credential: fields, ...(platform === 'feishu' ? { service: /lark/i.test(domain) ? 'lark' as const : 'feishu' as const } : {}),
-      enabled, enabledPath, ...(owners.length === 1 ? { owner: owners[0] } : {}) });
+      enabled, enabledPath, ...inferOwner(owners) });
   }
   return bots;
 }
@@ -423,9 +423,8 @@ async function openclawBots(source: ImportSource, values: Record<string, unknown
         const pattern = /^ou_[A-Za-z0-9_-]{1,128}$/;
         const owners = prefixed('feishu', pattern);
         const allowed = owners.length ? owners : userIds(listOf(merged.allowFrom), ['feishu:', 'lark:'], pattern);
-        const owner = allowed.length === 1 ? allowed[0] : undefined;
         bots.push({ platform, account, name, credential: { appId, appSecret }, service: domain === 'lark' || /larksuite/i.test(domain) ? 'lark' : 'feishu',
-          enabled, enabledPath, shared: route.shared, ...(owner ? { owner } : {}) });
+          enabled, enabledPath, shared: route.shared, ...inferOwner(allowed) });
         continue;
       }
       let token = platform === 'telegram' ? '' : secretReference(merged.token);
@@ -459,6 +458,7 @@ async function sourceBots(source: ImportSource, values: Record<string, unknown>,
 
 /**
  * One entry per bot; an ambiguous owner offers up to five exclusive alternatives, none preselected.
+ * Every platform needs a known owner: the companion would otherwise adopt whoever messages it first.
  * A bot carries its own credential: references the source environment defines are resolved here,
  * so importing the bot never also requires selecting its token under connections.
  */
@@ -478,12 +478,32 @@ function pushBotItems(items: ImportItem[], bots: SourceBot[], env: Record<string
     });
     const id = entryId(bot.platform, bot.account);
     const candidates = bot.owner ? [] : bot.ownerCandidates ?? [];
-    if (bot.owner || (bot.platform !== 'telegram' && bot.platform !== 'discord')) items.push(item(id, bot.owner));
+    if (bot.owner) items.push(item(id, bot.owner));
     else if (candidates.length > 1 && candidates.length <= BOT_OWNER_ALTERNATIVES) {
       const ids = candidates.map(owner => entryId(bot.platform, `${bot.account}\0owner:${owner}`));
       candidates.forEach((owner, index) => items.push(item(ids[index]!, owner, { selected: false, exclusiveWith: ids.filter((_id, other) => other !== index) })));
     } else items.push(item(id, undefined, { issues: ['IMPORT_IM_BOT_OWNER_MISSING'] }));
   }
+}
+
+const BOT_IDENTITY_FIELDS = ['token', 'appId', 'wecomBotId', 'appKey'] as const;
+
+/** The platform identity (token / app ID / bot ID) of one bot credential. */
+export function importBotIdentity(credential: unknown): string {
+  const value = object(credential);
+  return BOT_IDENTITY_FIELDS.map(field => string(value[field])).find(Boolean) ?? '';
+}
+
+/** The bot's current identity in its source, re-read with the source's own environment; '' when it is gone. */
+export async function readImportSourceBotIdentity(source: ImportSource, bot: NonNullable<ImportItem['bot']>, deps: SourceReaderDeps): Promise<string> {
+  const budget = createImportBudget();
+  const values = await config(path.dirname(source.configFile), source.configFile, budget);
+  const env = await sourceEnvironment(source, values, budget);
+  const found = (await sourceBots(source, values, env, deps, budget, optionalText, true))
+    .find(candidate => candidate.platform === bot.platform && candidate.account === bot.account);
+  if (!found) return '';
+  return importBotIdentity(Object.fromEntries(Object.entries(found.credential).map(([field, value]) =>
+    [field, value.replace(REFERENCE, (match, name: string) => Object.hasOwn(env, name) ? env[name]! : match)])));
 }
 
 /** Current source switch for one imported bot, re-read from its native config. */

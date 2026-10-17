@@ -248,6 +248,17 @@ describe('installed agent imports', () => {
     const legacy = await inspectImportSource(source!, reader);
     expect(legacy.items.some(item => item.view.category === 'bots' || ['feishu', 'wecom'].includes(item.credential?.format ?? ''))).toBe(false);
     expect(legacy.items.find(item => item.credential?.format === 'telegram')?.view).toMatchObject({ category: 'connections', name: 'Telegram · default' });
+    // Every platform needs a known owner before its source bot can be stopped.
+    await write('.hermes/.env', ['FEISHU_APP_ID=cli_fixture', 'FEISHU_APP_SECRET=fake-feishu-secret',
+      'WECOM_BOT_ID=fixture-wecom', 'WECOM_SECRET=fake-wecom-secret', 'WECOM_ALLOWED_USERS=alice,bob'].join('\n'));
+    await write('.hermes/config.yaml', 'name: Ada\n');
+    const unowned = (await inspectImportSource(source!, reader, undefined, { bots: true })).items.filter(item => item.view.category === 'bots');
+    expect(unowned.map(({ view }) => [view.platform, view.owner, view.selected, view.issues])).toEqual([
+      ['feishu', undefined, true, ['IMPORT_IM_BOT_OWNER_MISSING']],
+      ['wecom', 'alice', false, undefined],
+      ['wecom', 'bob', false, undefined],
+    ]);
+    expect(unowned[1]!.view.exclusiveWith).toEqual([unowned[2]!.view.id]);
   });
 
   it('offers exclusive owner alternatives for a few allowed users and asks for an owner beyond five', async () => {

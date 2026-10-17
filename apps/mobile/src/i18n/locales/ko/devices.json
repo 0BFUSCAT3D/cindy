@@ -825,6 +825,7 @@
     "imBotInUse": "이 봇은 이미 이 컴퓨터에서 사용 중입니다 (설정 → IM 봇, 또는 다른 동료).",
     "imBotConnectFailed": "이 봇에 연결하지 못했습니다. 동료의 메시지 플랫폼 페이지에서 다시 시도하세요.",
     "imBotSourceStopUnconfirmed": "기존 봇이 아직 멈추지 않아 동료에게 넘기지 않았습니다. 나중에 동료의 메시지 플랫폼 페이지에서 연결할 수 있습니다.",
+    "imBotSourceChanged": "미리보기 후 기존 봇이 바뀌어 중지하지 않았습니다. 다시 읽은 뒤 가져오세요.",
     "bots": "메시지 봇",
     "botsNote": "가져온 후 {{source}}의 이 봇들은 중지되고 동료가 이어받습니다.",
     "sourceDisabled": "원래 사용 중지됨",

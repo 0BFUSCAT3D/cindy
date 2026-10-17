@@ -256,6 +256,8 @@ export function companionImportReasonKey(code?: string): string {
     IMPORT_IM_BOT_IN_USE: 'imBotInUse', IMPORT_IM_BOT_CONNECT_FAILED: 'imBotConnectFailed',
     // 原 Agent 里的机器人没能确认停下,没有接给伙伴。
     IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED: 'imBotSourceStopUnconfirmed',
+    // 预览后原来位置上的机器人换了，没有停用它。
+    IMPORT_IM_BOT_SOURCE_CHANGED: 'imBotSourceChanged',
   };
   return code && keys[code] || 'itemFailed';
 }

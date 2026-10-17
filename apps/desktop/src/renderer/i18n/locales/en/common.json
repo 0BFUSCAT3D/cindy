@@ -9825,6 +9825,7 @@
       "imBotInUse": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
       "imBotConnectFailed": "Couldn’t connect this bot. Try again on the teammate’s Messaging platforms page.",
       "imBotSourceStopUnconfirmed": "The original bot hasn’t stopped yet, so it wasn’t handed to the teammate. You can connect it later on the teammate’s Messaging platforms page.",
+      "imBotSourceChanged": "The original bot changed after the preview, so it wasn’t stopped. Reload the preview and import again.",
       "bots": "Messaging bots",
       "botsNote": "After import, these bots stop in {{source}} and the teammate takes them over.",
       "sourceDisabled": "Already off",

@@ -45,7 +45,8 @@ export function importedImBotTarget(botId: string, credential: { format: string;
   const channel = credential.format;
   if (!['telegram', 'discord', 'feishu', 'wecom', 'dingtalk'].includes(channel)) return 'IMPORT_IM_BOT_CONNECT_FAILED';
   const owner = string(value.ownerUserId);
-  if ((channel === 'telegram' || channel === 'discord') && !owner) return 'IMPORT_IM_BOT_OWNER_MISSING';
+  // Without a known owner the companion would adopt whoever messages the bot first.
+  if (!owner) return 'IMPORT_IM_BOT_OWNER_MISSING';
   let input: BotImConnectionAddInput;
   try {
     input = parseBotImConnectionAddInput({ botId, channel, token: value.token, ownerUserId: owner, appId: value.appId, appSecret: value.appSecret,
