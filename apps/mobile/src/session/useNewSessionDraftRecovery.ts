@@ -9,18 +9,19 @@ import { persistNewSessionDraftEdit, type NewSessionDraftEdit } from './persistN
 type CreationRecord = DurableOutboxRecord & { creation: NonNullable<DurableOutboxRecord['creation']> };
 
 /** The form owns one edit claim until its recovery route changes or unmounts. */
-export function useNewSessionDurableEdit({ sessionId, deviceId, owner, getToken, leaveForeignRecovery, onRestore, onEdited, onError }: {
+export function useNewSessionDurableEdit({ sessionId, deviceId, owner, getToken, hasInput, leaveForeignRecovery, onRestore, onEdited, onError }: {
   sessionId: string;
   deviceId: string;
   owner: MobileAuthOwnerGeneration;
   getToken?: () => Promise<string | null>;
+  hasInput: () => boolean;
   leaveForeignRecovery: () => boolean;
   onRestore: (record: CreationRecord) => void;
   onEdited?: (record: DurableOutboxRecord | null) => void;
   onError?: (error: unknown) => void;
 }) {
-  const callbacks = useRef({ getToken, leaveForeignRecovery, onRestore, onEdited, onError });
-  callbacks.current = { getToken, leaveForeignRecovery, onRestore, onEdited, onError };
+  const callbacks = useRef({ getToken, hasInput, leaveForeignRecovery, onRestore, onEdited, onError });
+  callbacks.current = { getToken, hasInput, leaveForeignRecovery, onRestore, onEdited, onError };
   const editingRecord = useRef<DurableOutboxRecord | null>(null);
   const pendingEdit = useRef<Promise<unknown>>(Promise.resolve());
   const edit = useCallback((change: NewSessionDraftEdit) => {
@@ -40,11 +41,12 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, getToken,
   useEffect(() => {
     if (callbacks.current.leaveForeignRecovery() || !sessionId) return;
     let active = true;
-    let restored = false;
+    let restorationHandled = false;
     let merging = false;
     let releaseEditClaim: (() => void) | undefined;
     const restore = () => {
-      if (!active || restored || merging || !isMobileAuthOwnerCurrent(owner)) return;
+      if (!active || restorationHandled || merging || !isMobileAuthOwnerCurrent(owner)) return;
+      if (callbacks.current.hasInput()) { restorationHandled = true; return; }
       const record = getCurrentMobileOutboxRecords().find(r => r.item.sessionId === sessionId && r.creation
         && r.accountId === owner.accountKey && r.deviceId === deviceId);
       if (!record?.creation || record.prepared) return;
@@ -52,7 +54,10 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, getToken,
       void mergeNewSessionEditFollowUps(sessionId, deviceId, callbacks.current.getToken).then(saved => {
         if (!active || !isMobileAuthOwnerCurrent(owner) || !saved?.creation || !isDurableCreationDraft(saved)
           || !getCurrentMobileOutboxRecords().includes(saved)) return;
-        restored = true;
+        // Storage/attachment consolidation may outlive a user edit. Abandon
+        // this attempt without claiming the saved draft or replacing the form.
+        restorationHandled = true;
+        if (callbacks.current.hasInput()) return;
         editingRecord.current = saved;
         callbacks.current.onRestore(saved as CreationRecord);
         releaseEditClaim = completeNewSessionDurableEdit(sessionId, deviceId);

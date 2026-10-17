@@ -42,7 +42,7 @@ function Editor(props: EditProps) {
   } });
   editorActions = recovery;
   return <><span>{text}</span><span>{record?.error}</span>
-    <button onClick={() => { setText('New input'); recovery.edit({ firstMessage: 'New input' }); }}>Edit</button></>;
+    <button onClick={() => { hasInput = true; setText('New input'); recovery.edit({ firstMessage: 'New input' }); }}>Edit</button></>;
 }
 function BlankForm(props: ResumeProps) {
   const [route, setRoute] = useState('');
@@ -85,7 +85,7 @@ beforeEach(() => {
   outbox.saveEdit.mockReset().mockImplementation(async (record, change) => ({
     ...record, creation: { ...record.creation, draft: { ...record.creation.draft, firstMessage: change.firstMessage } },
   }));
-  edit = { sessionId: 'task', deviceId: 'device', owner, leaveForeignRecovery: () => false, onEdited: vi.fn() };
+  edit = { sessionId: 'task', deviceId: 'device', owner, hasInput: () => hasInput, leaveForeignRecovery: () => false, onEdited: vi.fn() };
   hasInput = false;
   resume = { enabled: true, deviceId: 'device', workingDir: '/repo', owner, hasInput: () => hasInput };
   container = document.createElement('div');
@@ -224,6 +224,30 @@ it('uses the latest device after a route change while storage is pending', async
 
 // Cold recovery now waits for queued messages to join the draft. That await
 // must not restore stale content, swallow a write failure, or claim twice.
+it.each(['storage', 'merge'] as const)('preserves input entered while waiting for %s and leaves the saved draft unclaimed', async waitingFor => {
+  const saved = outbox.records[0];
+  let finish!: (record: DurableOutboxRecord) => void;
+  outbox.merge.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await renderEdit();
+  if (waitingFor === 'merge') await act(async () => ready());
+  act(() => container.querySelector('button')!.click());
+  await act(async () => { ready(); finish(saved); });
+  expect(container.textContent).toBe('New inputEdit');
+  expect(outbox.claim).not.toHaveBeenCalled();
+  expect(outbox.saveEdit).not.toHaveBeenCalled();
+  expect(outbox.records).toEqual([saved]);
+  // Clearing the protection later cannot restart this abandoned restoration.
+  hasInput = false;
+  await notify();
+  expect(container.textContent).toBe('New inputEdit');
+  expect(outbox.claim).not.toHaveBeenCalled();
+  // A separate blank form can still recover the saved record.
+  await act(async () => root.render(null));
+  await renderEdit();
+  expect(container.textContent).toBe('Saved draftModel unavailableEdit');
+  expect(outbox.claim).toHaveBeenCalledOnce();
+});
+
 it.each(['complete', 'unmount', 'owner-switch', 'save-fails', 'prepared', 'resumed', 'cancel-requested', 'unmarked'] as const)(
   'settles follow-up consolidation before restoring the editor: %s', async outcome => {
     let resolve!: (record: DurableOutboxRecord) => void;

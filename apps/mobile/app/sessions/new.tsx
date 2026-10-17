@@ -857,9 +857,14 @@ export default function NewRemoteSessionScreen() {
     router.replace('/devices');
     return true;
   }, [router]);
+  const hasRecoveryInput = () => !!(outboxRecoveryRef.current
+    || firstMessageRef.current || attachmentsRef.current.length || hasAttachmentInput()
+    || incomingShareReceivedRef.current || userTouchedDeviceRef.current
+    || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current);
   const { edit: editRecoveredDraft, flush: flushRecoveredDraft } = useNewSessionDurableEdit({
     sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
     getToken: auth.getAccessToken,
+    hasInput: hasRecoveryInput,
     leaveForeignRecovery: leaveForeignOutboxRecovery,
     onError: error => setError(formatRemoteError(error)),
     onEdited: record => { outboxRecoveryRef.current = record; },
@@ -960,10 +965,7 @@ export default function NewRemoteSessionScreen() {
     enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
       || visualInitialDraft || !newSessionPreferencesLoaded),
     deviceId: selectedDeviceId, workingDir: initialWorkingDir, owner: outboxOwner,
-    hasInput: () => !!(outboxRecoveryRef.current
-        || firstMessageRef.current || attachmentsRef.current.length || hasAttachmentInput()
-        || incomingShareReceivedRef.current
-        || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current),
+    hasInput: hasRecoveryInput,
     onResume: next => router.setParams(next),
   });
   useEffect(() => {
