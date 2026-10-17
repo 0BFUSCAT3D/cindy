@@ -85,19 +85,32 @@ export async function awaitWithStartupTimeout<T>(
  * authStateEpoch,于是流程稍后**成功**(token 已轮换并落盘)时,`epochChanged`
  * 把它误判为「用户改过登录态」而整体丢弃:进程停在未登录,每次启动都重现。
  *
- * 只有「当前代际恰好等于兜底记下的那一代」才豁免;之后任何用户登录/登出都会再
- * 推进一次代际,流程重新被正常作废(旧 token family 已被新登录取代)。
+ * 豁免必须绑定到「这次兜底造成的那一次代际推进」,因此比对的是
+ * `startupFallback` 的 from/to 转换,而不是「当前代际恰好等于某个记录值」:
+ *
+ * - 流程当前代际 == from 且现值 == to → 只可能是这次兜底,豁免;
+ * - 用户在兜底之前已显式登录过 → 兜底的 from 不等于流程起始代际,照常作废,
+ *   旧流程不会反过来覆盖新登录;
+ * - 连续两次兜底 → 流程接受第一次后代际前移到 to,第二次的 from 正好等于它,
+ *   仍然豁免,不会因为多推进一次就误伤。
+ *
+ * 之后任何用户登录/登出都会再推进一次代际,流程重新被正常作废(旧 token family
+ * 已被新登录取代)。
  */
 export function supersededOnlyByOwnStartupFallback(input: {
-  /** 流程开跑时快照的代际。 */
-  epochAtStart: number;
+  /** 流程当前认可的代际(接受过自己的兜底后会前移)。 */
+  flowEpoch: number;
   /** 当前的 authStateEpoch。 */
   currentEpoch: number;
-  /** 启动闸超时兜底自己推进到的代际;未发生兜底时为 null。 */
-  startupFallbackEpoch: number | null;
+  /** 兜底自己造成的那次代际推进;未发生兜底时为 null。 */
+  startupFallback: { from: number; to: number } | null;
 }): boolean {
-  if (input.currentEpoch === input.epochAtStart) return false;
-  return input.startupFallbackEpoch === null || input.currentEpoch !== input.startupFallbackEpoch;
+  if (input.currentEpoch === input.flowEpoch) return false;
+  const fallback = input.startupFallback;
+  if (fallback && input.flowEpoch === fallback.from && input.currentEpoch === fallback.to) {
+    return false;
+  }
+  return true;
 }
 
 /**

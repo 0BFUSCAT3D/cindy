@@ -893,18 +893,51 @@ describe('auth login-flow reset', () => {
     const initializeStart = source.indexOf('export async function initialize(');
     const initializeEnd = source.indexOf('\n}\n\n/**\n * 冷启动 refresh 流程本体', initializeStart);
     const initializeBody = source.slice(initializeStart, initializeEnd);
-    const timeoutRecovery = initializeBody.indexOf("recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery')");
+    const timeoutRecovery = initializeBody.indexOf(
+      "recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery'",
+    );
     expect(timeoutRecovery).toBeGreaterThan(-1);
     const recoveryGuard = initializeBody.lastIndexOf('ownerChangeShellGate.isPending()', timeoutRecovery);
     expect(recoveryGuard).toBeGreaterThan(-1);
     const recoveryWait = initializeBody.indexOf('await ownerChangeShellGate.waitForSettled();', recoveryGuard);
     expect(recoveryWait).toBeGreaterThan(recoveryGuard);
     expect(recoveryWait).toBeLessThan(timeoutRecovery);
-    // The fallback must mark the epoch it raised; otherwise the in-flight refresh
-    // that already rotated a valid token is discarded as a user auth change and
-    // every launch falls back to the login page.
-    expect(initializeBody.indexOf('coldStartTimeoutFallbackEpoch = authStateEpoch;', timeoutRecovery))
+    // The fallback must tell the recovery it is the startup-gate fallback, so the
+    // epoch it raises is recorded at the moment it is raised (see below).
+    expect(initializeBody.indexOf('coldStartTimeoutRecovery: true', timeoutRecovery))
       .toBeGreaterThan(timeoutRecovery);
+  });
+
+  it('records the fallback epoch synchronously with the epoch bump', () => {
+    const clearStart = source.indexOf('function clearAuth(');
+    const clearEnd = source.indexOf('\n}\n', source.indexOf('authStateEpoch += 1;', clearStart));
+    const clearBody = source.slice(clearStart, clearEnd);
+    const bump = clearBody.indexOf('authStateEpoch += 1;');
+    const record = clearBody.indexOf('coldStartTimeoutFallback = { from: epochBeforeClear, to: authStateEpoch };');
+    expect(bump).toBeGreaterThan(-1);
+    expect(record).toBeGreaterThan(bump);
+    // Recording later (in the caller, after the recovery promise unwinds) leaves a
+    // window where a concurrent refresh already sees the new epoch while the marker
+    // is still null, so its successful result is discarded again.
+    expect(clearBody).toContain('if (opts.coldStartTimeoutRecovery)');
+    expect(clearBody.indexOf('const epochBeforeClear = authStateEpoch;')).toBeLessThan(bump);
+    expect(source.slice(source.indexOf('export async function initialize('))).not.toContain(
+      '\n      coldStartTimeoutFallback = { from:',
+    );
+  });
+
+  it('schedules post-login syncs with the epoch the flow commits under', () => {
+    const coldStart = source.indexOf('async function runColdStartRefreshFlow(');
+    const coldStartEnd = source.indexOf('\n}\n\n/**\n * Called on system resume', coldStart);
+    const body = source.slice(coldStart, coldStartEnd);
+    expect(body).toContain('let flowAuthEpoch = epochAtStart;');
+    expect(body).toContain('flowEpoch: flowAuthEpoch,');
+    expect(body).toContain('startupFallback: coldStartTimeoutFallback,');
+    expect(body).toContain('flowAuthEpoch = authStateEpoch;');
+    // Both post-commit schedulers must use the adopted epoch; passing epochAtStart
+    // made them treat a recovery login as stale-auth and skip canary/beta sync.
+    expect(body).not.toContain('expectedAuthEpoch: epochAtStart,');
+    expect(body.match(/expectedAuthEpoch: flowAuthEpoch,/g)?.length).toBe(2);
   });
 
   it('lets a cold-start refresh outlive its own startup-gate timeout fallback', () => {
@@ -912,7 +945,7 @@ describe('auth login-flow reset', () => {
     const coldStartEnd = source.indexOf('\n}\n\n/**\n * Called on system resume', coldStart);
     const body = source.slice(coldStart, coldStartEnd);
     expect(body).toContain('supersededOnlyByOwnStartupFallback({');
-    expect(body).toContain('startupFallbackEpoch: coldStartTimeoutFallbackEpoch,');
+    expect(body).toContain('startupFallback: coldStartTimeoutFallback,');
     // The real-supersession log stays exactly where it was, after the exemption.
     const exemption = body.indexOf('supersededOnlyByOwnStartupFallback({');
     const warn = body.indexOf('cold-start refresh flow superseded by manual auth change');

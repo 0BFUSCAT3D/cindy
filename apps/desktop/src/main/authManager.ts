@@ -2491,6 +2491,8 @@ async function withAccountFreeOwnerCommit(opts: {
   authAlreadyCleared?: boolean;
   validateBeforeCommit?: () => boolean;
   shouldClearOnFailure?: () => boolean;
+  /** 本次收敛是冷启动启动闸超时兜底;转发给 clearAuth 以便同步登记兜底代际。 */
+  coldStartTimeoutRecovery?: boolean;
 }): Promise<void> {
   let authCleared = opts.authAlreadyCleared ?? false;
   let releaseBoundary: (() => void) | null = null;
@@ -2517,6 +2519,7 @@ async function withAccountFreeOwnerCommit(opts: {
         preservePersistedRefreshToken: true,
         credentialStoreUnavailable: opts.credentialStoreUnavailable,
         deferSessionCommit: true,
+        coldStartTimeoutRecovery: opts.coldStartTimeoutRecovery,
       });
       authCleared = true;
     }
@@ -2566,6 +2569,7 @@ async function withAccountFreeOwnerCommit(opts: {
             preservePersistedRefreshToken: opts.preservePersistedRefreshToken,
             credentialStoreUnavailable: opts.credentialStoreUnavailable,
             deferSessionCommit: true,
+            coldStartTimeoutRecovery: opts.coldStartTimeoutRecovery,
           });
           authCleared = true;
         }
@@ -2590,6 +2594,7 @@ async function withAccountFreeOwnerCommit(opts: {
           preservePersistedRefreshToken: opts.preservePersistedRefreshToken,
           credentialStoreUnavailable: opts.credentialStoreUnavailable,
           deferSessionCommit: true,
+          coldStartTimeoutRecovery: opts.coldStartTimeoutRecovery,
         });
         authCleared = true;
       }
@@ -2620,6 +2625,11 @@ async function recoverAccountFreeOwnerAtStartup(
   mode: Extract<AppSessionMode, 'signed-out' | 'local'>,
   reason: string,
   credentialStoreUnavailable = false,
+  /**
+   * 本次收敛是冷启动启动闸超时兜底。必须由调用方显式声明并透传到 clearAuth:
+   * 兜底代际要在推进代际的同一同步时刻登记,不能等本函数返回(PR #6273 review P1)。
+   */
+  opts: { coldStartTimeoutRecovery?: boolean } = {},
 ): Promise<void> {
   const ownerId = mode === 'local' ? LOCAL_DATA_OWNER_ID : null;
   if (isGhostSkillProjectionBoundaryStableForOwner(ownerId)) {
@@ -2641,6 +2651,7 @@ async function recoverAccountFreeOwnerAtStartup(
     notify: false,
     clearOnFailure: mode === 'signed-out',
     preservePersistedRefreshToken: true,
+    coldStartTimeoutRecovery: opts.coldStartTimeoutRecovery,
   });
 }
 
@@ -3165,14 +3176,15 @@ const COLD_START_AUTH_GATE_TIMEOUT_MS = 20_000;
 let authStateEpoch = 0;
 
 /**
- * 启动闸超时兜底(`cold-start-timeout-recovery`)自己推进到的 authStateEpoch。
+ * 启动闸超时兜底(`cold-start-timeout-recovery`)自己造成的代际推进:从 `from`
+ * 推到 `to`,在 clearAuth 推进代际的**同一同步时刻**记录。
  *
- * 该兜底是冷启动流程自己的安全网,不是用户动作,但它同样会推进 authStateEpoch。
- * 把这个代际记下来,让同一轮冷启动的 refresh 迟到成功时不被误判成「用户改过登录态」
- * 而丢弃(token 已轮换,丢弃就等于每次启动都回落登录页)。
+ * 记成一对(而不是只记新代际)才能把豁免绑定到「这次兜底」:冷启动流程只在自己
+ * 当前代际等于 `from` 且现值为 `to` 时被豁免。若用户在该兜底之前已经显式登录过,
+ * 兜底的 `from` 就不等于流程起始代际,旧流程仍被正常作废(不会反过来覆盖新登录)。
  * 见 authStartupGate 的 supersededOnlyByOwnStartupFallback。
  */
-let coldStartTimeoutFallbackEpoch: number | null = null;
+let coldStartTimeoutFallback: { from: number; to: number } | null = null;
 
 /**
  * 登录态落地后异步同步灰度标记，不阻塞 renderer 进入主界面。
@@ -3679,10 +3691,24 @@ function clearAuth(
      * namespace during teardown.
      */
     deferSessionCommit?: boolean;
+    /**
+     * 本次清理是冷启动启动闸超时的兜底(不是用户动作)。为 true 时在**推进代际的
+     * 同一同步时刻**记下该代际,让触发兜底的冷启动流程即使在本函数外层还没返回、
+     * 锁还没释放时也能认出「这一代是我自己的兜底」而不是用户改过登录态。
+     * 见 authStartupGate 的 supersededOnlyByOwnStartupFallback。
+     */
+    coldStartTimeoutRecovery?: boolean;
   } = {},
 ): void {
   const notify = opts.notify ?? true;
+  const epochBeforeClear = authStateEpoch;
   authStateEpoch += 1; // 迟到的冷启动流程从此作废(见 authStateEpoch 注释)
+  // 必须与上一行同步记录:兜底流程外层还有 await commit / 释放锁 / 多层异步返回,
+  // 期间并发的刷新已经能看到新代际;若等到外层返回才登记,它仍会被误判为
+  // 「用户改过登录态」而丢弃(PR #6273 review P1)。
+  if (opts.coldStartTimeoutRecovery) {
+    coldStartTimeoutFallback = { from: epochBeforeClear, to: authStateEpoch };
+  }
   refreshBackoff.clear();
   loginFlowEpoch += 1;
   // Explicit logout clears health. Failed startup keeps its recovery reason
@@ -4697,12 +4723,9 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
         await ownerChangeShellGate.waitForSettled();
         return snapshotAuthState();
       }
-      await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery');
-      // This fallback is the cold-start flow's own safety net, not a user auth
-      // action. Record the epoch it raised so the still-running refresh — which
-      // already rotated a valid token — can still publish its result instead of
-      // being discarded as "superseded by manual auth change".
-      coldStartTimeoutFallbackEpoch = authStateEpoch;
+      await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery', false, {
+        coldStartTimeoutRecovery: true,
+      });
       return snapshotLoggedOutAuthState();
     },
     onLateResult: (state) =>
@@ -4731,14 +4754,24 @@ async function runColdStartRefreshFlow(
   const attemptedOwnershipTokens = new Set(ownershipRecovery.attemptedTokens);
   attemptedOwnershipTokens.add(storedToken);
   const epochAtStart = authStateEpoch;
+  /**
+   * 本流程当前认可的代际。接受「自己的启动闸超时兜底」后前移到兜底那一代:
+   * 提交后的灰度/组织默认同步必须用这个代际,否则本次恢复登录会被自己的兜底
+   * 判成 stale-auth 而跳过同步(PR #6273 review P2);之后任何真实用户动作仍会
+   * 再次推进代际,继续正确作废这些任务。
+   */
+  let flowAuthEpoch = epochAtStart;
   const epochChanged = (point: string): boolean => {
     if (
       !supersededOnlyByOwnStartupFallback({
-        epochAtStart,
+        flowEpoch: flowAuthEpoch,
         currentEpoch: authStateEpoch,
-        startupFallbackEpoch: coldStartTimeoutFallbackEpoch,
+        startupFallback: coldStartTimeoutFallback,
       })
     ) {
+      // Either nothing moved, or the only move was our own fallback — adopt the
+      // current epoch as this flow's own. Assigning is a no-op in the former case.
+      flowAuthEpoch = authStateEpoch;
       return false;
     }
     log.warn(
@@ -4746,7 +4779,7 @@ async function runColdStartRefreshFlow(
     );
     // A real user auth change landed on top of the fallback: this flow's epoch is
     // now stale for good, so stop exempting it.
-    coldStartTimeoutFallbackEpoch = null;
+    coldStartTimeoutFallback = null;
     return true;
   };
 
@@ -4959,13 +4992,17 @@ async function runColdStartRefreshFlow(
       },
     });
     await migrateLocalProviderBindingsAfterCloudCommit(refreshData.membership.id);
+    // Schedule with the epoch this flow actually commits under (flowAuthEpoch, which
+    // moves forward when the flow accepts its own startup-gate fallback) — passing the
+    // original epochAtStart would make these tasks treat a recovery login as stale-auth
+    // and skip the canary flag / org beta sync (PR #6273 review P2).
     scheduleCanaryFlagSync({
       token: refreshData.accessToken,
-      expectedAuthEpoch: epochAtStart,
+      expectedAuthEpoch: flowAuthEpoch,
       expectedUserId: refreshData.membership.id,
     });
     scheduleXdOrgBetaDefault({
-      expectedAuthEpoch: epochAtStart,
+      expectedAuthEpoch: flowAuthEpoch,
       expectedUserId: refreshData.membership.id,
     });
     scheduleRefresh(refreshData.accessToken);

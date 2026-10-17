@@ -188,9 +188,9 @@ describe('supersededOnlyByOwnStartupFallback', () => {
   it('keeps a cold-start flow alive when only its own timeout fallback advanced the epoch', () => {
     expect(
       supersededOnlyByOwnStartupFallback({
-        epochAtStart: 7,
+        flowEpoch: 7,
         currentEpoch: 8,
-        startupFallbackEpoch: 8,
+        startupFallback: { from: 7, to: 8 },
       }),
     ).toBe(false);
   });
@@ -198,19 +198,44 @@ describe('supersededOnlyByOwnStartupFallback', () => {
   it('still supersedes the flow after a later user auth change', () => {
     expect(
       supersededOnlyByOwnStartupFallback({
-        epochAtStart: 7,
+        flowEpoch: 8,
         currentEpoch: 9,
-        startupFallbackEpoch: 8,
+        startupFallback: { from: 7, to: 8 },
       }),
     ).toBe(true);
+  });
+
+  it('does not exempt a flow when a user signed in before the fallback ran', () => {
+    // User login moved 7 -> 8, then the fallback moved 8 -> 9. The flow started at 7,
+    // so this transition is not its own: the stale refresh must stay discarded
+    // instead of overwriting the fresh login.
+    expect(
+      supersededOnlyByOwnStartupFallback({
+        flowEpoch: 7,
+        currentEpoch: 9,
+        startupFallback: { from: 8, to: 9 },
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps exempting a flow that hit the fallback twice', () => {
+    // First fallback 7 -> 8 (adopted), second 8 -> 9: the second transition starts
+    // exactly where the flow now stands, so a repeated fallback must not discard it.
+    expect(
+      supersededOnlyByOwnStartupFallback({
+        flowEpoch: 8,
+        currentEpoch: 9,
+        startupFallback: { from: 8, to: 9 },
+      }),
+    ).toBe(false);
   });
 
   it('does not treat an unrelated change as the flow\'s own fallback', () => {
     expect(
       supersededOnlyByOwnStartupFallback({
-        epochAtStart: 7,
+        flowEpoch: 7,
         currentEpoch: 8,
-        startupFallbackEpoch: null,
+        startupFallback: null,
       }),
     ).toBe(true);
   });
@@ -218,9 +243,9 @@ describe('supersededOnlyByOwnStartupFallback', () => {
   it('reports no supersession while the epoch is unchanged', () => {
     expect(
       supersededOnlyByOwnStartupFallback({
-        epochAtStart: 7,
+        flowEpoch: 7,
         currentEpoch: 7,
-        startupFallbackEpoch: null,
+        startupFallback: null,
       }),
     ).toBe(false);
   });
