@@ -521,8 +521,8 @@ export interface AgentSwitchContent {
 }
 
 export interface Message {
-  /** Local durable-push receipt time, retained by the display cache. */
-  cacheReceivedAt?: number;
+  /** Local durable-push order, retained by the display cache. */
+  cacheReceipt?: import('@cindy/maker-shared/message-window').HistoryCacheReceipt;
   id: string;
   /**
    * SQLite insertion order for DB-backed history rows. Remote controllers use it

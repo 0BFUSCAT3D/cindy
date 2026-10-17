@@ -132,8 +132,8 @@ export interface RemoteSessionRuntimePending {
 }
 
 export interface RemoteMessage {
-  /** Local durable-push receipt time, retained by the display cache. */
-  cacheReceivedAt?: number;
+  /** Local durable-push order, retained by the display cache. */
+  cacheReceipt?: import('@cindy/maker-shared/message-window').HistoryCacheReceipt;
   id: string;
   clientId: string;
   sessionId: string;

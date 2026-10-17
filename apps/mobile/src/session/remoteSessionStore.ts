@@ -1,5 +1,5 @@
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
-import { historyTurnEnded } from '@cindy/maker-shared/message-window';
+import { historyTurnEnded, nextHistoryCacheReceipt } from '@cindy/maker-shared/message-window';
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
 import {
   createContext,
@@ -4609,7 +4609,7 @@ export const remoteSessionStore = {
       const fromList = payload.listMessage === true;
       if (fromList && (!sessionId || !listMessageWriteAllowed(sessionId, deviceId))) return;
       if (sessionId && message) {
-        const received = fromList ? { ...message, cacheReceivedAt: Date.now() } : message;
+        const received = fromList ? { ...message, cacheReceipt: nextHistoryCacheReceipt() } : message;
         this.appendMessage(sessionId, received, { listMessage: fromList });
         if (fromList) void cacheSessionListMessage(deviceId, sessionId, received);
       }

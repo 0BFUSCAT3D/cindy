@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  HistoryViewController, HistoryViewHandoff, projectHistoryView, renderHistoryView, historyViewLeaves,
+  HistoryViewController, HistoryViewHandoff, projectHistoryView, renderHistoryView, historyViewLeaves, nextHistoryCacheReceipt,
 } from '@cindy/maker-shared/message-window';
 import { buildRenderItems, groupWorkRuns, selectVisibleMessages, collectTurnFinalAssistantClientIds,
   findLastUserMessageClientId, planSessionBelongsToLatestUserTurn } from '../components/chat/MessageStream';
@@ -57,11 +57,12 @@ describe('desktop remote history uses the shared live-to-history handoff', () =>
   it('renders a later list receipt instead of the old cached body', async () => {
     const { view, render, setSource } = fixture();
     const old = { ...row('reply'), content: 'old cached body' };
-    const received = { ...old, content: 'updated received body', cacheReceivedAt: Date.now() - 100 };
+    const readReceipt = nextHistoryCacheReceipt();
+    const received = { ...old, content: 'updated received body', cacheReceipt: nextHistoryCacheReceipt() };
     view.setActive(false);
     await view.restoreCachedView(async () => ({ items: projectHistoryView([old], false), details: new Map(),
       expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null,
-      readAt: received.cacheReceivedAt - 100 }));
+      readReceipt }));
     expect(render([received]).text).toContain('updated received body');
     expect(render([received]).text).not.toContain('old cached body');
     setSource([{ ...old, content: 'authoritative body' }]);

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { mergeHistoryPrefetchRequest, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
 import { useAuth } from '@/auth/AuthContext';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
@@ -18,22 +19,17 @@ export function RemoteHistoryPrefetchBridge() {
     const generation = accountGeneration;
     const isCurrent = () => latest.current.accountGeneration === generation;
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
-    const pending = new Map<string, Set<string> | null>();
+    const pending = new Map<string, HistoryPrefetchRequest>();
     const unsubscribe = remoteSessionStore.onSessionHistoryPrefetchRequested((deviceId, sessionId) => {
-      if (!sessionId) pending.set(deviceId, null);
-      else if (pending.get(deviceId) !== null) {
-        const ids = pending.get(deviceId) ?? new Set<string>();
-        ids.add(sessionId);
-        pending.set(deviceId, ids);
-      }
+      pending.set(deviceId, mergeHistoryPrefetchRequest(pending.get(deviceId), sessionId ? new Set([sessionId]) : undefined));
       if (timers.has(deviceId)) return;
       timers.set(deviceId, setTimeout(() => {
         timers.delete(deviceId);
-        const ids = pending.get(deviceId);
+        const request = pending.get(deviceId)!;
         pending.delete(deviceId);
         if (!isCurrent()) return;
         const reader = createMobileMakerTransport({ deviceId, invoke: latest.current.invoke, isCurrent });
-        void prefetchRemoteHistories(deviceId, reader, isCurrent, ids ?? undefined);
+        void prefetchRemoteHistories(deviceId, reader, isCurrent, request.targets, request.recent);
       }, PREFETCH_DELAY_MS));
     });
     return () => {

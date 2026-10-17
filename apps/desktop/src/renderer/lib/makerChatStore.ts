@@ -40,6 +40,7 @@ import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/de
 
 import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
+import { nextHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
@@ -409,8 +410,8 @@ export interface AskUserQuestionItem {
 }
 
 export interface ChatMessage {
-  /** Local durable-push receipt time, retained by the display cache. */
-  cacheReceivedAt?: number;
+  /** Local durable-push order, retained by the display cache. */
+  cacheReceipt?: HistoryCacheReceipt;
   /** Private Bot reply provenance, projected from persisted/live agent metadata. */
   botPrivateReply?: boolean;
   botLearning?: import('@cindy/maker-shared/bot-learning').BotLearningReceipt[];
@@ -7936,6 +7937,8 @@ interface GlobalListenerOptions {
    * messages, or persist a retry failure independently.
    */
   ownsRemoteAuthRetry?: boolean;
+  /** The primary renderer owns list-cache receipts; auxiliary windows only display pushes. */
+  ownsRemoteListCache?: boolean;
 }
 
 function initGlobalListeners(options: GlobalListenerOptions = {}): void {
@@ -9112,9 +9115,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
           // 远程会话的持久化消息(接管路径)→ 注入 in-memory state(同本机)。
           const payload = push.payload as { sessionId?: string; message?: Message };
           const row = payload?.message && listMessage
-            ? { ...payload.message, cacheReceivedAt: Date.now() } : payload?.message;
+            ? { ...payload.message, cacheReceipt: nextHistoryCacheReceipt() } : payload?.message;
           handleMessageCreatedRaw({ ...payload, message: row }, remoteIngress);
-          if (listMessage && push.deviceId && inboundSid) {
+          if (listMessage && options.ownsRemoteListCache !== false && push.deviceId && inboundSid) {
             if (row && !isBeforeOrAtRendererClearBoundary(inboundSid, row.createdAt)) persistListMessage(push.deviceId, inboundSid, row);
           }
           break;
@@ -11488,9 +11491,9 @@ function hydrateRemoteMessagesFromCache(sessionId: string): void {
       const current = new Map(s.messages.map(message => [message.clientId, message]));
       const newerReceipts = new Set(mapped.filter(message => {
         const existing = current.get(message.clientId);
-        return !existing?.isStreaming && message.cacheReceivedAt !== undefined
-          && message.cacheReceivedAt >= (history?.readAt ?? 0)
-          && message.cacheReceivedAt > (existing?.cacheReceivedAt ?? 0);
+        return !existing?.isStreaming
+          && historyCacheReceiptFollows(message.cacheReceipt, history?.readReceipt, history?.stale)
+          && historyCacheReceiptFollows(message.cacheReceipt, existing?.cacheReceipt);
       }).map(message => message.clientId));
       // hasMoreMessages 显式压成 false:缓存窗口期间不许向上翻页。翻回来的权威老行
       // 不带 cacheHydrated,首拉落地剔除缓存行后会在窗口中间留出一段洞,得靠后续翻页
@@ -11701,7 +11704,7 @@ function createRemoteHistoryView(sessionId: string) {
     setState(sessionId, (state) => ({ ...state, historyLoaded: true,
       messages: confirmRemoteUsers(
         mergeMessages(available, state.messages.filter((message) => !message.cacheHydrated
-          || (message.cacheReceivedAt !== undefined && message.cacheReceivedAt >= (snapshot.readAt ?? 0))), { addOnly: true }),
+          || historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale)), { addOnly: true }),
         new Set(available.filter((message) => message.role === 'user').map((message) => message.clientId)),
       ),
       hasMoreMessages: snapshot.hasMore, isLoadingMore: view.isLoadingOlder(),
@@ -11719,7 +11722,7 @@ function createRemoteHistoryView(sessionId: string) {
 // Activity version already read ahead, per device and task, valid only while that mirror entry
 // is current (account switch or cache invalidation resets it). Memory only.
 const remoteHistoryPrefetchedAt = new Map<string, { version: string; owner: ReturnType<typeof getDataOwnerGeneration>; token: number }>();
-const remoteHistoryPrefetchRuns = new Map<string, { again: boolean; targets: Set<string> | null }>();
+const remoteHistoryPrefetchRuns = new Map<string, { again: boolean; request: HistoryPrefetchRequest }>();
 
 /**
  * After a list read that may follow missed pushes (bootstrap/reconnect), read the latest
@@ -11730,11 +11733,10 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
   const run = remoteHistoryPrefetchRuns.get(deviceId);
   if (run) {
     run.again = true;
-    if (!sessionIds) run.targets = null;
-    else if (run.targets) for (const id of sessionIds) run.targets.add(id);
+    run.request = mergeHistoryPrefetchRequest(run.request, sessionIds);
     return;
   }
-  const state = { again: true, targets: sessionIds ? new Set(sessionIds) : null };
+  const state = { again: true, request: mergeHistoryPrefetchRequest(undefined, sessionIds) };
   remoteHistoryPrefetchRuns.set(deviceId, state);
   const owner = getDataOwnerGeneration();
   const key = (sessionId: string) => JSON.stringify([deviceId, sessionId]);
@@ -11744,12 +11746,11 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
   try {
     while (state.again) {
       state.again = false;
-      const targets = state.targets;
-      state.targets = new Set<string>();
+      const request = state.request;
+      state.request = mergeHistoryPrefetchRequest(undefined, new Set());
       const candidates = selectHistoryPrefetchSessions(remoteProjectsStore.getDeviceSessions(deviceId, 'active'), {
-        limit: targets?.size,
-        eligible: (session) => session.status === 'active' && session.source !== 'scheduler' && !getRemoteHistoryView(session.id)
-          && (!targets || (targets.has(session.id) && historyPrefetchVersion(session) !== undefined)),
+        limit: request.recent ? undefined : 0, targets: request.targets,
+        eligible: (session) => session.status === 'active' && session.source !== 'scheduler' && !getRemoteHistoryView(session.id),
         prefetchedAt: (sessionId) => {
           const entry = remoteHistoryPrefetchedAt.get(key(sessionId));
           return entry && isDataOwnerGenerationCurrent(entry.owner)
@@ -11763,7 +11764,7 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
         if (!historySnapshotCovers(previous, session)) {
           // Capture write authority before the read, like an open view does.
           const write = remoteHistoryCacheWriter(deviceId, session.id);
-          const readAt = Date.now();
+          const readReceipt = nextHistoryCacheReceipt();
           let page: HistoryViewPage<Message>;
           try {
             page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
@@ -11780,7 +11781,7 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
           const snapshot = historySnapshotForCache({ ...page, items }, previous,
             (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
           if (!snapshot) continue;
-          write({ ...snapshot, readAt });
+          write({ ...snapshot, readReceipt });
         }
         const version = historyPrefetchVersion(session);
         if (version !== undefined) {
@@ -18691,7 +18692,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
   const createdAtById = new Map(serverMsgs.map((m) => [m.clientId, m.createdAt]));
   const serverIdByClientId = new Map(serverMsgs.map((m) => [m.clientId, m.id]));
   const rowidById = new Map(serverMsgs.map((m) => [m.clientId, m.rowid]));
-  const receivedAtById = new Map(serverMsgs.map((m) => [m.clientId, m.cacheReceivedAt]));
+  const receiptById = new Map(serverMsgs.map((m) => [m.clientId, m.cacheReceipt]));
   const remoteContentTruncatedById = new Map(
     serverMsgs.map((m) => [m.clientId, m.agentMeta?.remoteContentTruncated === true]),
   );
@@ -19284,7 +19285,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
     const iso = mapServerCreatedAt(cm, ts);
     const serverId = serverIdByClientId.get(cm.clientId);
     const rowid = rowidById.get(cm.clientId);
-    const cacheReceivedAt = receivedAtById.get(cm.clientId);
+    const cacheReceipt = receiptById.get(cm.clientId);
     const remoteContentTruncated = remoteContentTruncatedById.get(cm.clientId) === true;
     const remoteRowsTrimmed = remoteRowsTrimmedById.get(cm.clientId) === true;
     const legacyUserTurnCost = legacyUserTurnCosts.get(cm.clientId);
@@ -19304,7 +19305,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
       ...(iso ? { createdAt: iso } : {}),
       ...(typeof serverId === 'string' && serverId.length > 0 ? { id: serverId } : {}),
       ...(rowid !== undefined ? { rowid } : {}),
-      ...(cacheReceivedAt !== undefined ? { cacheReceivedAt } : {}),
+      ...(cacheReceipt !== undefined ? { cacheReceipt } : {}),
       ...(remoteContentTruncated ? { remoteContentTruncated: true } : {}),
       ...(remoteRowsTrimmed ? { remoteRowsTrimmed: true } : {}),
     };

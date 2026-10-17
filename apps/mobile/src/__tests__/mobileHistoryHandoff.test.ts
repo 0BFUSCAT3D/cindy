@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { HistoryViewController, HistoryViewHandoff, projectHistoryView } from '@cindy/maker-shared/message-window';
+import { describe, expect, it, vi } from 'vitest';
+import { HistoryViewController, HistoryViewHandoff, projectHistoryView, nextHistoryCacheReceipt } from '@cindy/maker-shared/message-window';
 import { buildMobileHistoryRenderItems } from '../session/mobileHistoryRender';
 import type { RemoteMessage } from '../session/types';
 
@@ -17,7 +17,7 @@ describe('mobile history handoff', () => {
   // old tail-only rule hid it. Unit: real handoff + renderer, no network or timers.
   it('shows a newer received body in place until a page read after that push takes over', async () => {
     const old = { ...row('answer'), content: 'old answer' };
-    const received = { ...old, content: 'updated answer', cacheReceivedAt: 200 };
+    const received = { ...old, content: 'updated answer', cacheReceipt: { run: 'cached', order: 2 } };
     const view = new HistoryViewController<RemoteMessage>({
       page: async () => ({ version: 1, items: projectHistoryView([old], false), hasMore: false, nextCursor: null }),
       details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }),
@@ -26,7 +26,7 @@ describe('mobile history handoff', () => {
     view.setActive(false);
     await view.restoreCachedView(async () => ({ items: projectHistoryView([old], false),
       details: new Map(), expanded: new Set(), nextCursor: null, hasMore: false,
-      loading: false, ready: true, error: null, readAt: 100 }));
+      loading: false, ready: true, error: null, readReceipt: { run: 'cached', order: 1 } }));
     const handoff = createHandoff();
     const render = (snapshot = view.getSnapshot(), currentHandoff = handoff) => {
       const state = currentHandoff.reconcile(snapshot, [received]);
@@ -40,8 +40,40 @@ describe('mobile history handoff', () => {
     // A new receipt can also arrive while the very first page is in flight.
     expect(render({ ...view.getSnapshot(), items: [], stale: false }, createHandoff())).toEqual(['updated answer']);
     // A newer authoritative read is allowed to replace it, even with shorter text.
-    expect(render({ ...view.getSnapshot(), stale: false, readAt: 300 })).toEqual(['old answer']);
+    expect(render({ ...view.getSnapshot(), stale: false, readReceipt: { run: 'cached', order: 3 } })).toEqual(['old answer']);
     expect(handoff.reconcile(view.getSnapshot(), []).tail.size).toBe(0);
+  });
+
+  // A clock correction must not make an old receipt beat every future Host read,
+  // including receipts restored from a previous app run.
+  it.each([false, true])('retires old receipts after a clock rollback (previous run=%s)', async (previousRun) => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(50_000);
+    const cachedRead = previousRun ? { run: 'previous-snapshot', order: 1 } : nextHistoryCacheReceipt();
+    const receipt = previousRun ? { run: 'previous-run', order: 999_999 } : nextHistoryCacheReceipt();
+    const old = { ...row('answer'), content: 'cached body', cacheReceipt: receipt };
+    const view = new HistoryViewController<RemoteMessage>({
+      page: async () => ({ version: 1, items: projectHistoryView([{ ...row('answer'), content: 'host body' }], false), hasMore: false, nextCursor: null }),
+      details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }), expanded: async () => undefined,
+    });
+    const handoff = createHandoff();
+    const render = () => {
+      const snapshot = view.getSnapshot();
+      const state = handoff.reconcile(snapshot, [old]);
+      return buildMobileHistoryRenderItems({ view, snapshot, messages: state.messages, staleTail: state.tail,
+        pendingHandoff: state.pending, streaming: false, sessionId: 's' }).filter(item => item.type === 'message').map(item => item.message.body);
+    };
+    try {
+      view.setActive(false);
+      await view.restoreCachedView(async () => ({ items: projectHistoryView([{ ...row('answer'), content: 'older body' }], false),
+        details: new Map(), expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null, readReceipt: cachedRead }));
+      expect(render()).toEqual(['cached body']);
+      clock.mockReturnValue(100);
+      view.setActive(true);
+      await view.refresh();
+      expect(render()).toEqual(['host body']);
+      view.setActive(false);
+      expect(render()).toEqual(['host body']); // Leaving the page must not revive the retired receipt.
+    } finally { view.setActive(false); clock.mockRestore(); }
   });
 
   it('keeps the live tail below completed text when recovery history has not caught up to that tail', async () => {

@@ -291,20 +291,22 @@ describe('冷缓存 hydrate', () => {
     expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['earlier history', 'latest reply']);
   });
 
-  it('shows a list-pushed reply immediately when opening a task while its history request is still pending', async () => {
+  it.each([true, false])('shows list text while pending and only its owner persists receipts (owner=%s)', async (ownsRemoteListCache) => {
     const s = sid();
     setDataOwnerGeneration('owner-a', 1);
     registerRemote(s);
     let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
     window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
-    makerChatStore.initGlobalListeners();
+    makerChatStore.initGlobalListeners({ ownsRemoteListCache });
     const row = dbMessage(s, 'prefetched', '完整长正文'.repeat(2000), '2026-10-10T00:00:00.000Z');
     push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: row } });
     await flush(30);
     expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual([row.content]);
     expect(invoke.mock.calls.filter(([, channel]) => channel.startsWith('local-db:messages:'))).toEqual([]);
-    expect(putMessages.mock.calls.find(([device, session]) => device === DEVICE_ID && session === s)?.[2])
-      .toEqual([{ ...row, cacheReceivedAt: expect.any(Number) }]);
+    if (ownsRemoteListCache) {
+      expect(putMessages.mock.calls.find(([device, session]) => device === DEVICE_ID && session === s)?.[2])
+        .toEqual([{ ...row, cacheReceipt: { run: expect.any(String), order: expect.any(Number) } }]);
+    } else expect(putMessages).not.toHaveBeenCalled();
     remoteListPromise = new Promise<Message[]>(() => {});
     makerChatStore.ensureInitialMessages(s);
     await flush(30);
@@ -464,6 +466,39 @@ describe('冷缓存 hydrate', () => {
     expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
   });
 
+  // Mirror the mobile queue regression through Desktop's real store and disk writer.
+  it.each([false, true])('keeps a completion outside the queued reconnect budget (recent first=%s)', async (recentFirst) => {
+    const held = sid();
+    const done = sid();
+    const running = Array.from({ length: 5 }, () => sid());
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: held, status: 'active', updatedAt: '2026-10-11T00:00:00Z' },
+      { id: done, status: 'active', updatedAt: '2026-10-11T00:00:01Z', lastTurnEndedAt: 100 },
+      ...running.map(id => ({ id, status: 'active', updatedAt: '2026-10-11T00:00:09Z', activeTurnStartedAt: 100 })),
+    ] as never);
+    let release!: () => void;
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation((async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:messages:view');
+      const id = String(args[0]);
+      if (id === held) await new Promise<void>(resolve => { release = resolve; });
+      return { version: 1, items: projectHistoryView([dbMessage(id, 'reply', id, '2026-10-11T00:00:10Z')], false), hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementation>[0]);
+    try {
+      const first = makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([held]));
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      const reconnect = () => makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      const completion = () => makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([done]));
+      if (recentFirst) { await reconnect(); await completion(); }
+      else { await completion(); await reconnect(); }
+      release();
+      await first;
+      await flush(30);
+      expect(invoke.mock.calls.map(([, , args]) => args[0])).toEqual(expect.arrayContaining([done, ...running]));
+      expect(putMessages.mock.calls.find(([, id]) => id === done)?.[6]).toContain(done);
+    } finally { invoke.mockImplementation(original); }
+  });
+
   it('restores the structured view through the actual offline session entry', async () => {
     const s = sid();
     const rows = [{ id: 'cached', clientId: 'cached', role: 'user', content: 'offline history', createdAt: '2026-09-17T00:00:00Z' }];
@@ -485,9 +520,9 @@ describe('冷缓存 hydrate', () => {
   it.each([false, true])('restores a later disk receipt over the same row in old history (raw delayed=%s)', async (delayed) => {
     const s = sid();
     const old = dbMessage(s, 'reply', 'old body', '2026-10-11T00:00:01.000Z');
-    const latest = { ...old, content: 'latest body', cacheReceivedAt: 200 };
+    const latest = { ...old, content: 'latest body', cacheReceipt: { run: 'cached', order: 2 } };
     const historyView = encodeRemoteHistory({ items: projectHistoryView([old], false), details: new Map(), expanded: new Set(),
-      readAt: 100, ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+      readReceipt: { run: 'cached', order: 1 }, ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
     let reads = 0;
     getMessages.mockImplementation(async () => {
       if (++reads === 2 && delayed) await flush(30);

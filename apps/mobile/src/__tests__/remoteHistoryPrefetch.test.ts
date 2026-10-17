@@ -43,6 +43,31 @@ afterEach(async () => {
 });
 
 describe('history read ahead after a list refresh', () => {
+  // A bounded reconnect read is not a superset of completion targets. Hold one
+  // real read pending, then enqueue both request kinds in either order.
+  it.each([false, true])('retains completion targets alongside a queued reconnect (recent first=%s)', async (recentFirst) => {
+    setMobileAuthOwner('user-1');
+    const running = Array.from({ length: 5 }, (_, i) => session(`running-${i}`, '2026-10-11T00:00:09Z', { activeTurnStartedAt: 100 }));
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [
+      session('held', '2026-10-11T00:00:01Z'), session('done', '2026-10-11T00:00:02Z', { lastTurnEndedAt: 100 }), ...running,
+    ]);
+    let release!: () => void;
+    const reader = { readHistoryView: vi.fn(async (id: string) => {
+      if (id === 'held') await new Promise<void>(resolve => { release = resolve; });
+      return page([row(id, 9)]);
+    }) };
+    const first = prefetchRemoteHistories(DEVICE, reader, () => true, new Set(['held']));
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const reconnect = () => prefetchRemoteHistories(DEVICE, reader, () => true);
+    const completion = () => prefetchRemoteHistories(DEVICE, reader, () => true, new Set(['done']));
+    if (recentFirst) { await reconnect(); await completion(); }
+    else { await completion(); await reconnect(); }
+    release();
+    await first;
+    expect(reader.readHistoryView.mock.calls.map(([id]) => id)).toEqual(expect.arrayContaining(['done', ...running.map(s => s.id)]));
+    expect((await readHistoryDisk(historyDiskAuthority(DEVICE, 'done')))?.items).toEqual(page([row('done', 9)]).items);
+  });
+
   // Unit regression: completion must warm its own disk page without reading
   // unrelated running tasks; ordinary preview/ack patches must not cause traffic.
   it('reads only the completed task and ignores repeated completion and preview patches', async () => {

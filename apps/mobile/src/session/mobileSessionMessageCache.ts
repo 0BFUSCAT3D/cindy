@@ -1,4 +1,5 @@
 import { messageCacheStorage } from './messageCacheStorage';
+import { nextHistoryCacheReceipt, historyCacheReceiptFollows, type HistoryCacheReceipt } from '@cindy/maker-shared/message-window';
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
 import { MESSAGE_PAGE_SIZE } from '@/session/messagePaging';
 import type { RemoteMessage } from '@/session/types';
@@ -37,7 +38,7 @@ let globalClearInProgress = false;
 let activeGlobalClear: Promise<void> | null = null;
 
 export interface SessionMessageCacheWriteAuthority {
-  readonly capturedAt: number;
+  readonly capturedReceipt: HistoryCacheReceipt;
   readonly key: string;
   readonly owner: MobileAuthOwnerGeneration;
   readonly globalEpoch: number;
@@ -75,7 +76,7 @@ export function captureSessionMessageCacheWriteAuthority(
   const key = safeStorageKey(deviceId, sessionId);
   if (!key) return null;
   return {
-    capturedAt: Date.now(),
+    capturedReceipt: nextHistoryCacheReceipt(),
     key,
     owner,
     globalEpoch: globalWriteEpoch,
@@ -110,7 +111,7 @@ export async function cacheSessionMessagesIfCurrent(
     }
     const arrivals = isRecord(previous) && Array.isArray(previous.messages)
       ? normalizeCachedMessages(previous.messages).filter(row =>
-        typeof row.cacheReceivedAt === 'number' && row.cacheReceivedAt >= authority.capturedAt) : [];
+        historyCacheReceiptFollows(row.cacheReceipt, authority.capturedReceipt)) : [];
     if (!isSessionMessageCacheWriteAuthorityCurrent(authority)) return;
     normalized = normalizeCachedMessages([...normalized, ...arrivals]);
     const payload: StoredSessionMessageCache = {

@@ -340,18 +340,18 @@ describe('readMessages / writeMessages', () => {
     const c = rawCache();
     const token = await c.readMessagesWithInvalidation('dev', 'session');
     const old = row('same', '2026-01-01T00:00:00Z', { content: 'old' });
-    const updated = { ...old, content: 'updated', cacheReceivedAt: 200 };
+    const updated = { ...old, content: 'updated', cacheReceipt: { run: 'renderer', order: 2 } };
     const snapshot: HistoryViewSnapshot<typeof old> = {
       items: projectHistoryView([old], false), details: new Map(), expanded: new Set(),
-      nextCursor: null, hasMore: false, ready: true, loading: false, error: null, readAt: 100,
+      nextCursor: null, hasMore: false, ready: true, loading: false, error: null, readReceipt: { run: 'renderer', order: 1 },
     };
     await c.writeMessages('dev', 'session', [updated], token.invalidation, token.ownerRoot, token.accountCounter, undefined, true);
     await c.writeMessages('dev', 'session', [], token.invalidation, token.ownerRoot, token.accountCounter, encodeRemoteHistory(snapshot));
     const cached = await c.readMessagesWithInvalidation('dev', 'session');
     expect(cached.messages).toEqual([updated]);
-    expect(decodeRemoteHistory(cached.historyView)?.readAt).toBe(100);
+    expect(decodeRemoteHistory(cached.historyView)?.readReceipt).toEqual({ run: 'renderer', order: 1 });
     await c.writeMessages('dev', 'session', [], token.invalidation, token.ownerRoot, token.accountCounter,
-      encodeRemoteHistory({ ...snapshot, readAt: 300 }));
+      encodeRemoteHistory({ ...snapshot, readReceipt: { run: 'restarted-renderer', order: 1 } }));
     expect((await c.readMessagesWithInvalidation('dev', 'session')).messages).toEqual([]);
   });
 

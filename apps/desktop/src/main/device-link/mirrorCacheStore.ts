@@ -31,6 +31,7 @@
  */
 
 import path from 'node:path';
+import { historyCacheReceiptFollows } from '@cindy/maker-shared/message-window';
 import fsp from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -1166,8 +1167,7 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
             if (!(await canCommitNonEmpty())) return { invalidation: -1 };
             const previous = await readJson(file);
             const rows = isRecord(previous) && Array.isArray(previous.messages) ? normalizeMessages(previous.messages) : [];
-            const arrivals = rows.filter(row => typeof row.cacheReceivedAt === 'number'
-              && row.cacheReceivedAt >= (history.readAt ?? 0));
+            const arrivals = rows.filter(row => historyCacheReceiptFollows(row.cacheReceipt, history.readReceipt));
             retainedListReceipts = arrivals.length > 0;
             normalized = normalizeMessages([...normalized, ...arrivals]);
           }

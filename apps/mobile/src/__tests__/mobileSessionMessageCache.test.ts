@@ -199,7 +199,7 @@ describe('mobileSessionMessageCache', () => {
     const old = makeMessage({ id: 'same', clientId: 'same', createdAt: isoAt(1), content: 'old' });
     await cacheSessionMessages('host-a', 'session-1', [old]);
     const authority = captureSessionMessageCacheWriteAuthority('host-a', 'session-1')!;
-    const newer = { ...old, content: 'updated', cacheReceivedAt: authority.capturedAt };
+    const newer = { ...old, content: 'updated', cacheReceipt: { ...authority.capturedReceipt, order: authority.capturedReceipt.order + 1 } };
     await cacheSessionListMessage('host-a', 'session-1', newer);
     await cacheSessionMessagesIfCurrent(authority, [old]);
     expect(await getCachedSessionMessages('host-a', 'session-1')).toEqual([newer]);

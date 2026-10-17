@@ -4,6 +4,8 @@ import {
   historySnapshotForCache,
   isHistoryViewUnavailable,
   selectHistoryPrefetchSessions,
+  mergeHistoryPrefetchRequest, type HistoryPrefetchRequest,
+  nextHistoryCacheReceipt,
 } from '@cindy/maker-shared/message-window';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
@@ -21,7 +23,7 @@ type Reader = Pick<MobileMakerTransport, 'readHistoryView'>;
 // was written to is current (sign-out, account switch and cache clears invalidate it). Memory only.
 const prefetchedAt = new Map<string, { version: string; current(): boolean }>();
 const keyFor = (deviceId: string, sessionId: string) => JSON.stringify([deviceId, sessionId]);
-const running = new Map<string, { again: boolean; targets: Set<string> | null }>();
+const running = new Map<string, { again: boolean; request: HistoryPrefetchRequest }>();
 
 /**
  * After a list read that may follow missed pushes, read the latest history page of recently
@@ -33,28 +35,27 @@ export async function prefetchRemoteHistories(
   reader: Reader,
   isCurrent: () => boolean,
   sessionIds?: ReadonlySet<string>,
+  recent = sessionIds === undefined,
 ): Promise<void> {
   if (!deviceId || isSharedTaskPeer(deviceId)) return;
   const run = running.get(deviceId);
   if (run) {
     run.again = true;
-    if (!sessionIds) run.targets = null;
-    else if (run.targets) for (const id of sessionIds) run.targets.add(id);
+    run.request = mergeHistoryPrefetchRequest(run.request, sessionIds, recent);
     return;
   }
-  const state = { again: true, targets: sessionIds ? new Set(sessionIds) : null };
+  const state = { again: true, request: mergeHistoryPrefetchRequest(undefined, sessionIds, recent) };
   running.set(deviceId, state);
   try {
     while (state.again && isCurrent()) {
       state.again = false;
-      const targets = state.targets;
-      state.targets = new Set<string>();
+      const request = state.request;
+      state.request = mergeHistoryPrefetchRequest(undefined, new Set());
       const candidates = selectHistoryPrefetchSessions(
         remoteSessionStore.getSessions().filter((session) => session.deviceLinkDeviceId === deviceId),
         {
-          limit: targets?.size,
+          limit: request.recent ? undefined : 0, targets: request.targets,
           eligible: (session) => session.status === 'active' && session.pendingLocalCreation !== true
-            && (!targets || (targets.has(session.id) && historyPrefetchVersion(session) !== undefined))
             && remoteSessionStore.getSessionRetention(session.id) === 'regular'
             && !isRemoteHistoryViewMounted(deviceId, session.id),
           prefetchedAt: (sessionId) => {
@@ -68,7 +69,7 @@ export async function prefetchRemoteHistories(
         const authority = historyDiskAuthority(deviceId, session.id);
         const previous = detachedRemoteHistorySnapshot(deviceId, session.id) ?? await readHistoryDisk(authority);
         if (!historySnapshotCovers(previous, session)) {
-          const readAt = Date.now();
+          const readReceipt = nextHistoryCacheReceipt();
           let page;
           try {
             page = await reader.readHistoryView(session.id);
@@ -79,7 +80,7 @@ export async function prefetchRemoteHistories(
           }
           if (!isCurrent() || isRemoteHistoryViewMounted(deviceId, session.id)) continue;
           const snapshot = historySnapshotForCache(page, previous, fitsHistoryDisk);
-          if (!snapshot || !await writeHistoryDisk(authority, { ...snapshot, readAt })) continue;
+          if (!snapshot || !await writeHistoryDisk(authority, { ...snapshot, readReceipt })) continue;
           dropDetachedRemoteHistoryView(deviceId, session.id);
         }
         const version = historyPrefetchVersion(session);

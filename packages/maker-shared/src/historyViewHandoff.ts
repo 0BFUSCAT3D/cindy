@@ -1,4 +1,4 @@
-import { historyViewLeaves, historyWorkSummaries, type HistoryMessageSource } from './historyView.js';
+import { historyViewLeaves, historyWorkSummaries, historyCacheReceiptFollows, type HistoryMessageSource } from './historyView.js';
 import type { HistoryViewSnapshot } from './historyViewController.js';
 
 /** Live content may be newer, but its provisional timestamp must not replace known history order. */
@@ -47,9 +47,8 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
     const history = new Map(available.map(row => [row.clientId, row]));
     // IDs and createdAt do not change when a saved body is updated. A push
     // received after this page's read began must remain visible even if that
-    // older page arrives later. Only local receipt/read times are compared.
-    const receivedAfterRead = (row: T) => typeof row.cacheReceivedAt === 'number'
-      && row.cacheReceivedAt >= (snapshot.readAt ?? 0);
+    // older page arrives later. Fresh reads also retire receipts from an earlier run.
+    const receivedAfterRead = (row: T) => historyCacheReceiptFollows(row.cacheReceipt, snapshot.readReceipt, snapshot.stale);
     const current = new Set(raw.map(row => row.clientId));
     for (const id of this.pending) if (!current.has(id)) this.pending.delete(id);
     for (const row of raw) {
