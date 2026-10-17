@@ -6,6 +6,7 @@ import {
   cindyAutoRouteToFollow,
   followMovedCindyAutoRoutes,
   movedCindyAutoProviderId,
+  stagedCindyAutoSwitch,
   type CindyAutoRoute,
   type CindyAutoRouteFollowDeps,
 } from '../cindyAutoRouteFollow.js';
@@ -341,5 +342,124 @@ describe('号池 → 平台：目录刷新按旧路由重新加载过的进行�
   it('负向：已有登记的切换不覆盖', () => {
     reloadWithStalePool();
     expect(cindyAutoRouteToFollow(runtimeState(true))).toBeNull();
+  });
+});
+
+describe('已登记的 Auto 换来源，在 Auto 又挪动后撤销或改写', () => {
+  // 9333 上 a91bc630 的真实形态：任务库仍是号池（effort 空串），跟随登记过「下一条切到 Cindy AI」，
+  // 之后管理员又把 Auto 挪回号池。
+  const TASK = 'a91bc630-93d5-4685-9bef-7f3980b9e49e';
+  const REAL_AUTO = 'auto/d00e8b7f-fb6f-4045-922f-310da7b839fc';
+  const POOL = 'byok-f83a176f-8e24-494c-8e88-290584b05a76';
+  const OTHER_POOL = 'byok-0b4c9d2e-1f3a-4c5b-8d6e-7f8091a2b3c4';
+  const current: CindyAutoRoute = {
+    agentKind: 'pi',
+    model: REAL_AUTO,
+    providerId: POOL,
+    effort: '',
+    fastMode: false,
+  };
+  const stagedToPlatform = {
+    configStaged: true,
+    sameAgentSelection: true,
+    targetAgentKind: 'pi' as const,
+    model: REAL_AUTO,
+    providerId: 'xd',
+    fastMode: false,
+  };
+
+  function follow(providers: ProviderView[], intent: typeof stagedToPlatform | undefined) {
+    const stage = vi.fn(async () => {});
+    const cancelStagedSwitch = vi.fn(async () => {});
+    const readStagedSwitch = async () => stagedCindyAutoSwitch(intent, current);
+    return {
+      stage,
+      cancelStagedSwitch,
+      run: () =>
+        followMovedCindyAutoRoutes({
+          listCandidates: async () => [{ sessionId: TASK, ...current }],
+          listProviders: async () => providers,
+          withSessionLock: async (_sessionId, run) => run(),
+          // 已有登记时加锁重读一律不给路由（与真实 readRoute 一致）。
+          readRoute: async () => (intent ? null : current),
+          readStagedSwitch,
+          cancelStagedSwitch,
+          stage,
+          assertCurrent: () => {},
+        }),
+    };
+  }
+
+  it('Auto 挪回当前所在的号池：撤销「切到 Cindy AI」的登记，不再登记新切换', async () => {
+    const backInPool = [
+      provider('xd', 'builtin', ['auto', 'z-ai/glm-5.3-flash']),
+      provider(POOL, 'organization', [REAL_AUTO, `${POOL}/e2e-model`]),
+    ];
+    const { stage, cancelStagedSwitch, run } = follow(backInPool, stagedToPlatform);
+    await run();
+    expect(cancelStagedSwitch).toHaveBeenCalledWith(TASK);
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it('登记的目标已没有这个 Auto、它去了另一个号池：改登记到那里', async () => {
+    const movedToOtherPool = [
+      provider('xd', 'builtin', ['auto']),
+      provider(POOL, 'organization', [`${POOL}/e2e-model`]),
+      provider(OTHER_POOL, 'organization', [REAL_AUTO]),
+    ];
+    const { stage, cancelStagedSwitch, run } = follow(movedToOtherPool, stagedToPlatform);
+    await run();
+    expect(stage).toHaveBeenCalledWith(TASK, { ...current, providerId: OTHER_POOL, effort: null });
+    expect(cancelStagedSwitch).not.toHaveBeenCalled();
+  });
+
+  it('哪里都没有这个 Auto 了：撤销登记，交给既有的来源失效处理', async () => {
+    const gone = [
+      provider('xd', 'builtin', ['auto']),
+      provider(POOL, 'organization', [`${POOL}/e2e-model`]),
+    ];
+    const { stage, cancelStagedSwitch, run } = follow(gone, stagedToPlatform);
+    await run();
+    expect(cancelStagedSwitch).toHaveBeenCalledWith(TASK);
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it('登记的目标仍有这个 Auto：保持不动', async () => {
+    const stillOnPlatform = [
+      provider('xd', 'builtin', ['auto', REAL_AUTO]),
+      provider(POOL, 'organization', [`${POOL}/e2e-model`]),
+    ];
+    const { stage, cancelStagedSwitch, run } = follow(stillOnPlatform, stagedToPlatform);
+    await run();
+    expect(cancelStagedSwitch).not.toHaveBeenCalled();
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it('负向：只认系统登记、同引擎、同一个 Auto、只换来源的登记', () => {
+    expect(stagedCindyAutoSwitch(stagedToPlatform, current)).toEqual({
+      current,
+      targetProviderId: 'xd',
+    });
+    // 用户自己点选的不动。
+    expect(
+      stagedCindyAutoSwitch({ ...stagedToPlatform, configStaged: undefined }, current),
+    ).toBeNull();
+    expect(
+      stagedCindyAutoSwitch({ ...stagedToPlatform, sameAgentSelection: undefined }, current),
+    ).toBeNull();
+    expect(
+      stagedCindyAutoSwitch({ ...stagedToPlatform, targetAgentKind: 'claude-code' }, current),
+    ).toBeNull();
+    expect(
+      stagedCindyAutoSwitch({ ...stagedToPlatform, model: 'auto/other-group' }, current),
+    ).toBeNull();
+    expect(
+      stagedCindyAutoSwitch({ ...stagedToPlatform, targetAgentDeviceId: 'device-2' }, current),
+    ).toBeNull();
+    const plain = { ...current, model: 'z-ai/glm-5.3-flash' };
+    expect(
+      stagedCindyAutoSwitch({ ...stagedToPlatform, model: 'z-ai/glm-5.3-flash' }, plain),
+    ).toBeNull();
+    expect(stagedCindyAutoSwitch(undefined, current)).toBeNull();
   });
 });

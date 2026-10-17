@@ -512,7 +512,11 @@ import {
 } from '../localDb/schema.js';
 import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
-import { cindyAutoRouteToFollow, followMovedCindyAutoRoutes } from './cindyAutoRouteFollow.js';
+import {
+  cindyAutoRouteToFollow,
+  followMovedCindyAutoRoutes,
+  stagedCindyAutoSwitch,
+} from './cindyAutoRouteFollow.js';
 import { readEffectiveBotModelChain, readEffectiveBotModelSelection } from '../maker-host/bot-model-chain-settings-store.js';
 import {
   isOrcaWorkerPermissionMode,
@@ -15073,6 +15077,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             !!profiles.pendingMutation,
         });
       },
+      readStagedSwitch: async (sessionId) => {
+        const intent = agentSwitchPending.get(sessionId);
+        if (!intent?.configStaged) return null;
+        const profiles = await readSessionRuntimeProfiles(sessionId);
+        return profiles ? stagedCindyAutoSwitch(intent, profiles.effective) : null;
+      },
+      cancelStagedSwitch: async (sessionId) => cancelPendingAgentSwitchHolder?.(sessionId),
       stage: (sessionId, route) => stageSessionRouteSelection(sessionId, route, route.agentKind),
       assertCurrent: () => {
         if (getActiveAppSession().generation !== owner.generation) {

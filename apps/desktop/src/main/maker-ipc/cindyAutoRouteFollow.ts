@@ -1,6 +1,13 @@
-import { movedCindyAutoSourceId, type AgentKind, type ProviderView } from '@cindy/model-providers';
+import {
+  effectiveSourceIdForModel,
+  isCindyAutoModelId,
+  movedCindyAutoSourceId,
+  type AgentKind,
+  type ProviderView,
+} from '@cindy/model-providers';
 
 import { isSupportedRuntimeEffort } from './runtimeSelectionAxes.js';
+import type { PendingAgentSwitchIntent } from './sessionAgentSwitchHandler.js';
 import type { SessionRuntimeControlSnapshot } from './sessionRuntimeControl.js';
 
 /**
@@ -50,6 +57,30 @@ export function cindyAutoRouteToFollow(state: CindyAutoRuntimeState): CindyAutoR
   return state.effective;
 }
 
+/** 系统按配置登记、下一条消息生效的 Auto 换来源（同引擎、同一个 Auto，只换来源）。 */
+export interface StagedCindyAutoSwitch {
+  /** 任务当前实际路由（登记还没生效）。 */
+  current: CindyAutoRoute;
+  targetProviderId: string | null;
+}
+
+/** 从切换意图里认出系统登记的 Auto 换来源；用户自己点选、换引擎、换模型或换电脑的都不算。 */
+export function stagedCindyAutoSwitch(
+  intent: PendingAgentSwitchIntent | undefined,
+  current: CindyAutoRoute,
+): StagedCindyAutoSwitch | null {
+  if (!intent?.configStaged || !intent.sameAgentSelection) return null;
+  if (intent.targetAgentDeviceId !== undefined) return null;
+  if (intent.targetAgentKind !== current.agentKind || intent.model !== current.model) return null;
+  if (!isCindyAutoModelId(intent.model)) return null;
+  return { current, targetProviderId: intent.providerId ?? null };
+}
+
+/** Pi 的 providerId=null 就是 Cindy AI；其它引擎的 null 不推断。 */
+function cindySourceId(agentKind: AgentKind, providerId: string | null): string | null {
+  return providerId ?? (agentKind === 'pi' ? 'xd' : null);
+}
+
 export interface CindyAutoRouteFollowDeps {
   /**
    * 本地数据库是否已就绪。启动早期目录先到、数据库还没接管时直接跳过（不算失败）；
@@ -62,6 +93,10 @@ export interface CindyAutoRouteFollowDeps {
   withSessionLock(sessionId: string, run: () => Promise<void>): Promise<void>;
   /** 加锁后重读任务当前实际路由；已有登记的切换或运行时改道时返回 null，不覆盖。 */
   readRoute(sessionId: string): Promise<CindyAutoRoute | null>;
+  /** 系统已登记的 Auto 换来源；没有时返回 null。加锁后会重读。 */
+  readStagedSwitch?(sessionId: string): Promise<StagedCindyAutoSwitch | null>;
+  /** 撤销上面那条登记（调用方已持有该任务的 send 锁）。 */
+  cancelStagedSwitch?(sessionId: string): Promise<void>;
   /** 登记下一条消息前的切换（调用方已持有该任务的 send 锁）。 */
   stage(sessionId: string, route: CindyAutoRoute): Promise<void>;
   assertCurrent(): void;
@@ -77,8 +112,22 @@ export async function followMovedCindyAutoRoutes(deps: CindyAutoRouteFollowDeps)
   deps.assertCurrent();
   let staged = 0;
   for (const candidate of candidates) {
-    if (!movedCindyAutoProviderId(providers, candidate)) continue;
     try {
+      // 已登记过换来源的任务，按 Auto 现在的位置重新核对那条登记（任务库里的路由还是旧的）。
+      if (deps.readStagedSwitch && (await deps.readStagedSwitch(candidate.sessionId))) {
+        await deps.withSessionLock(candidate.sessionId, async () => {
+          deps.assertCurrent();
+          const switchToCheck = await deps.readStagedSwitch?.(candidate.sessionId);
+          if (
+            switchToCheck &&
+            (await recheckStagedSwitch(deps, providers, candidate.sessionId, switchToCheck))
+          ) {
+            staged += 1;
+          }
+        });
+        continue;
+      }
+      if (!movedCindyAutoProviderId(providers, candidate)) continue;
       await deps.withSessionLock(candidate.sessionId, async () => {
         deps.assertCurrent();
         const route = await deps.readRoute(candidate.sessionId);
@@ -104,4 +153,42 @@ export async function followMovedCindyAutoRoutes(deps: CindyAutoRouteFollowDeps)
     }
   }
   return staged;
+}
+
+/**
+ * 以任务当前路由为准，看 Auto 现在该在哪：目标仍对就不动；当前位置又能用、或哪里都没有了就撤销；
+ * 去了别处就改登记到那里。返回是否改登记。调用方已持有该任务的 send 锁。
+ */
+async function recheckStagedSwitch(
+  deps: CindyAutoRouteFollowDeps,
+  providers: readonly ProviderView[],
+  sessionId: string,
+  { current, targetProviderId }: StagedCindyAutoSwitch,
+): Promise<boolean> {
+  const from = cindySourceId(current.agentKind, current.providerId);
+  // 其它引擎的默认来源不一定是 Cindy AI，判断不了就不动。
+  if (!from) return false;
+  const target = cindySourceId(current.agentKind, targetProviderId);
+  const now = effectiveSourceIdForModel([...providers], from, current.model, current.agentKind);
+  if (now === target) return false;
+  if (!now || now === from) {
+    await deps.cancelStagedSwitch?.(sessionId);
+    deps.logger?.info('Cindy Auto staged switch withdrawn', {
+      sessionId,
+      model: current.model,
+      from,
+      to: target,
+    });
+    return false;
+  }
+  const effort = isSupportedRuntimeEffort(current.effort) ? current.effort : null;
+  await deps.stage(sessionId, { ...current, providerId: now, effort });
+  deps.logger?.info('Cindy Auto staged switch retargeted', {
+    sessionId,
+    model: current.model,
+    from,
+    to: now,
+    previousTarget: target,
+  });
+  return true;
 }
