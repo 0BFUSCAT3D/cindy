@@ -76,7 +76,10 @@ function mergeCooling(
     const b = next[providerId] ?? {};
     const entries: Record<string, ProviderGroupCooling> = {};
     for (const memberKey of new Set([...Object.keys(a), ...Object.keys(b)])) {
-      const scopes = currentCooling(a[memberKey], now);
+      const incoming = b[memberKey];
+      // 加载时已截短的旧记录优先，不能因排队拿锁而用 now 再截短一次并延长。
+      const migrated = typeof a[memberKey] === 'number' && typeof incoming === 'object' && incoming[''] !== undefined;
+      const scopes = migrated ? {} : currentCooling(a[memberKey], now);
       for (const [scope, until] of Object.entries(currentCooling(b[memberKey], now))) {
         scopes[scope] = Math.max(scopes[scope] ?? 0, until);
       }

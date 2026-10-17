@@ -47,6 +47,11 @@ describe('mergeCooling', () => {
     )).toEqual({ anthropic: { local: { 'claude:fable': 500_000, 'claude:sonnet': 400_000 } } });
     expect(mergeCooling({ anthropic: { local: 86_400_000 } }, {}, 1_000))
       .toEqual({ anthropic: { local: { '': 121_000 } } });
+    // 旧数字已在加载时截短；排队写入不能按拿锁时间重新延长，过期后也不能复活。
+    const legacy = { anthropic: { local: 86_400_000 } };
+    const migrated = { anthropic: { local: { '': 121_000 } } };
+    expect(mergeCooling(legacy, migrated, 60_000)).toEqual(migrated);
+    expect(mergeCooling(legacy, migrated, 180_000)).toEqual({});
   });
 
   it('keeps both members when they are in different snapshots', () => {

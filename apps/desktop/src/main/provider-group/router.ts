@@ -112,9 +112,11 @@ function coolKey(providerId: string, memberKey: string): string {
 export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): ProviderGroupRouter {
   const guestSupportReader = deps.readCaps ? createGuestSupportReader(deps.readCaps) : null;
   const cooling = new Map<string, Record<string, number>>();
+  let hasLegacyCooling = false;
   try {
     for (const [providerId, members] of Object.entries(deps.coolingStore?.read() ?? {})) {
       for (const [memberKey, value] of Object.entries(members)) {
+        if (typeof value === 'number') hasLegacyCooling = true;
         cooling.set(coolKey(providerId, memberKey), currentCooling(value, deps.now()));
       }
     }
@@ -138,6 +140,9 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       // 落盘失败只影响重启后的记忆，本次运行照常避开。
     }
   }
+
+  // 固定首次加载时截短的截止时间，重启或切回账号不能重新起算两分钟。
+  if (hasLegacyCooling) persistCooling();
 
   const lastPicked = new Map<string, string>();
   const tried = new Map<string, { at: number; keys: Set<string> }>();
