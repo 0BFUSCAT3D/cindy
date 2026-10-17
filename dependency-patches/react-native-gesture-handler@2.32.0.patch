@@ -1,26 +1,46 @@
 diff --git a/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt b/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt
-index 83292244551410154a4efa0e243cc906dd13a30f..8159793328699b58a3100758f992fcd0305e56b2 100644
 --- a/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt
 +++ b/android/src/main/java/com/swmansion/gesturehandler/core/NativeViewGestureHandler.kt
-@@ -335,7 +335,23 @@ class NativeViewGestureHandler : GestureHandler() {
+@@ -125,12 +125,15 @@
+     } else if (state == STATE_UNDETERMINED || state == STATE_BEGAN) {
+       when {
+         shouldActivateOnStart -> {
+-          tryIntercept(view, event)
++          if (tryIntercept(view, event)) {
++            (hook as? ScrollViewHook)?.onIntercept()
++          }
+           hook.sendTouchEvent(view, event)
+           activate()
+         }
+ 
+         tryIntercept(view, event) -> {
++          (hook as? ScrollViewHook)?.onIntercept()
+           hook.sendTouchEvent(view, event)
+           activate()
+         }
+@@ -335,7 +338,27 @@
    }
  
    private class ScrollViewHook : NativeViewGestureHandlerHook {
-+    private var dispatchingInterceptedStream = false
++    private var hasInterceptedTouchStream = false
 +
      override fun shouldCancelRootViewGestureHandlerIfNecessary() = true
 +
++    fun onIntercept() {
++      hasInterceptedTouchStream = true
++    }
++
 +    override fun sendTouchEvent(view: View?, event: MotionEvent): Boolean? {
-+      val terminal = event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL
-+      // Before activation, UP/CANCEL still belong to the normal root dispatch.
-+      // Redispatching them here interrupts selectable text's native action mode.
-+      if (!dispatchingInterceptedStream && terminal) return view?.onTouchEvent(event)
++      // Early/forced activation does not imply that the ScrollView intercepted.
++      // Keep its original delivery path until onInterceptTouchEvent returns true.
++      if (!hasInterceptedTouchStream) return view?.onTouchEvent(event)
 +
 +      // Interception bypasses root dispatch. Let the ScrollView cancel its child
 +      // touch target, or text can run a pending long-press after UP (Cindy #6219).
-+      dispatchingInterceptedStream = true
 +      val handled = view?.dispatchTouchEvent(event)
-+      if (terminal) dispatchingInterceptedStream = false
++      if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
++        hasInterceptedTouchStream = false
++      }
 +      return handled
 +    }
    }
