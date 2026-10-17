@@ -21,6 +21,7 @@ import {
   type RemoteAgentStreamItem,
 } from '@cindy/device-link';
 
+import { readExistingTextSync } from '../executor/files';
 import type { ExecutorAction, ExecutorGateDecision } from '../executor/gate';
 import { resolveExecutorShell } from '../executor/shell';
 import type { ExecutorWorkspace } from '../executor/workspace';
@@ -30,6 +31,8 @@ export const EXEC_SERVER_WS_PATH = '/ws/exec-server';
 const MAX_LINE_CHARS = 48 * 1024 * 1024;
 /** 单帧数据上限，留出 JSON 包装余量。 */
 const FRAME_CHARS = REMOTE_AGENT_MAX_INLINE_PAYLOAD_CHARS - 1024;
+/** 一次回推超过这么久算慢链路(每个 Codex 文件请求都要等一次回推)。 */
+const SLOW_PUSH_MS = 2_000;
 
 export interface ExecServerRelayDeps {
   codexPath: string;
@@ -41,6 +44,21 @@ export interface ExecServerRelayDeps {
   push(frames: RemoteAgentPushFrame[]): Promise<void>;
   env?: NodeJS.ProcessEnv;
   log?: { warn(message: string, meta?: Record<string, unknown>): void };
+  now?: () => number;
+}
+
+/**
+ * 中继的往来统计(只含计数与耗时)。任务结束时有慢回推或闸门拒绝就记一条日志：前者说明链路慢
+ * (托管 Codex 启动要等几十次回推，#5764)，后者说明 Agent 有文件或命令没拿到(如任务在子目录时
+ * 上级目录的 Skill 遍历)。
+ */
+export interface ExecServerRelayStats {
+  requests: number;
+  rejected: number;
+  pushes: number;
+  pushMaxMs: number;
+  pushAvgMs: number;
+  slowPushes: number;
 }
 
 interface Connection {
@@ -73,9 +91,16 @@ function fromFileUrl(value: unknown, base: string): string | null {
   return path.isAbsolute(value) ? value : path.resolve(base, value);
 }
 
-const READ_METHODS = new Set(['fs/readFile', 'fs/readDirectory', 'fs/readDir', 'fs/listDirectory']);
-/** 只看元数据、不读内容的操作不过闸门。 */
-const METADATA_METHODS = new Set(['fs/getMetadata', 'fs/exists', 'fs/stat']);
+// exec-server 的只读操作按读取过闸门；不在下面几组里的 `fs/` 方法一律按写入处理(新版 Codex 新增的
+// 方法先从严)。`fs/walk`、`fs/canonicalize`、`fs/open` 曾落进写入：计划模式下工作区里的项目 Skill
+// 加载被拒，工作区外的单文件读取也被当成区外写入拒掉(#5764)。
+
+/** 读单个文件或单层目录；fs/open 的显式写入模式在下方按写入处理。 */
+const READ_METHODS = new Set(['fs/readFile', 'fs/open', 'fs/readDirectory', 'fs/readDir', 'fs/listDirectory']);
+/** 递归遍历：按目录级读取过闸门，根在工作区外与本机任务的搜索一样要本机确认。 */
+const TREE_READ_METHODS = new Set(['fs/walk']);
+/** 只看元数据、不读内容的操作不过闸门(`fs/canonicalize` 只解析真实路径)。 */
+const METADATA_METHODS = new Set(['fs/getMetadata', 'fs/exists', 'fs/stat', 'fs/canonicalize']);
 
 /** 把一个 exec-server 请求换成要过闸门的操作。 */
 export function execServerActions(method: string, params: unknown, cwd: string): ExecutorAction[] {
@@ -89,12 +114,17 @@ export function execServerActions(method: string, params: unknown, cwd: string):
   const paths = ['path', 'sourcePath', 'destinationPath', 'source', 'destination', 'from', 'to', 'target']
     .map((key) => fromFileUrl(record[key], cwd))
     .filter((value): value is string => !!value);
-  const kind = READ_METHODS.has(method) ? 'read' : 'write';
+  if (TREE_READ_METHODS.has(method)) return paths.map((target) => ({ kind: 'read', path: target, scope: 'tree' }));
+  // Pinned Codex 0.159.2 uses a read-only fs/open and writes through fs/writeFile.
+  // Keep explicit non-read modes fail-closed for newer protocols; they are not evidence that
+  // their later handle-based write methods are supported by this relay.
+  const readOnlyOpen = method !== 'fs/open' || record.mode === undefined || record.mode === 'read';
+  const kind = READ_METHODS.has(method) && readOnlyOpen ? 'read' : 'write';
   return paths.map((target) => ({ kind, path: target }) as ExecutorAction);
 }
 
 /** 映射协议路径、命令和可逆的 UTF-8 文件数据；二进制内容保持原样。 */
-export function mapExecServerParams(value: unknown, workspace: ExecutorWorkspace, method?: string): unknown {
+export function mapExecServerParams(value: unknown, workspace: ExecutorWorkspace, method?: string, mapFileData = true): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const result = { ...value as Record<string, unknown> };
   for (const key of ['cwd', 'path', 'sourcePath', 'destinationPath', 'source', 'destination', 'from', 'to', 'target']) {
@@ -108,10 +138,31 @@ export function mapExecServerParams(value: unknown, workspace: ExecutorWorkspace
   }
   if (Array.isArray(result.argv)) result.argv = result.argv.map((part) => typeof part === 'string' ? workspace.mapCommand(part, resolveExecutorShell().dialect) : part);
   if (typeof result.command === 'string') result.command = workspace.mapCommand(result.command, resolveExecutorShell().dialect);
-  if (method?.startsWith('fs/write') && typeof result.dataBase64 === 'string') {
-    result.dataBase64 = workspace.mapInputFromAgent(Buffer.from(result.dataBase64, 'base64')).toString('base64');
+  return mapFileData ? mapExecServerFileData(result, workspace, method) : result;
+}
+
+/**
+ * 授权通过后、实际转发前才读写入目标的原内容，排队中的请求也在出队后读取最新内容。
+ * 路径与命令的映射仍在权限检查前完成，确保 gate 检查的是实际执行的操作。
+ */
+function mapExecServerFileData(value: unknown, workspace: ExecutorWorkspace, method?: string): unknown {
+  if (!method?.startsWith('fs/write') || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+  if (typeof result.dataBase64 !== 'string') return value;
+  return { ...result, dataBase64: workspace.mapInputFromAgent(Buffer.from(result.dataBase64, 'base64'),
+    existingTextFor(result.path, workspace)).toString('base64') };
+}
+
+/** 旧内容仅用于还原写入路径的原写法，不回给 Agent；凭证类文件不预读。 */
+function existingTextFor(target: unknown, workspace: ExecutorWorkspace): string | null {
+  if (typeof target !== 'string') return null;
+  let local: string;
+  try {
+    local = target.startsWith('file://') ? fileURLToPath(target) : target;
+  } catch {
+    return null;
   }
-  return result;
+  return workspace.isSensitive(local) ? null : readExistingTextSync(local);
 }
 
 /** JSON 层逐字符串投影；文件 base64 数据保持原始字节，进程输出单独解码。 */
@@ -156,8 +207,14 @@ export class ExecServerRelay {
   private outbox: RemoteAgentPushFrame[] = [];
   private flushing: Promise<void> | null = null;
   private closed = false;
+  private readonly counts = { requests: 0, rejected: 0, pushes: 0, pushTotalMs: 0, pushMaxMs: 0, slowPushes: 0 };
 
   constructor(private readonly deps: ExecServerRelayDeps) {}
+
+  stats(): ExecServerRelayStats {
+    const { requests, rejected, pushes, pushTotalMs, pushMaxMs, slowPushes } = this.counts;
+    return { requests, rejected, pushes, pushMaxMs, pushAvgMs: pushes ? Math.round(pushTotalMs / pushes) : 0, slowPushes };
+  }
 
   handle(item: Extract<RemoteAgentStreamItem, { t: 'ws' }>): void {
     if (this.closed) return;
@@ -178,6 +235,8 @@ export class ExecServerRelay {
     if (this.closed) return;
     this.closed = true;
     for (const connId of [...this.connections.keys()]) this.dropConnection(connId, false);
+    const stats = this.stats();
+    if (stats.slowPushes > 0 || stats.rejected > 0) this.deps.log?.warn('remote agent: exec-server relay summary', { ...stats });
   }
 
   private open(connId: string, wsPath: string): void {
@@ -233,12 +292,19 @@ export class ExecServerRelay {
     }
     let actions: ExecutorAction[] = [];
     if (message && typeof message.method === 'string' && message.id !== undefined) {
-      message.params = mapExecServerParams(message.params, this.deps.workspace, message.method);
+      this.counts.requests += 1;
+      message.params = mapExecServerParams(message.params, this.deps.workspace, message.method, false);
       data = JSON.stringify(message);
       actions = execServerActions(message.method, message.params, this.deps.cwd);
     }
     const id = message?.id;
-    const line = `${data}\n`;
+    // 延迟到所有 action 获准之后，不能为了内容保真提前读取被拒绝的目标。
+    const line = () => {
+      if (message && typeof message.method === 'string' && message.id !== undefined) {
+        return JSON.stringify({ ...message, params: mapExecServerFileData(message.params, this.deps.workspace, message.method) }) + '\n';
+      }
+      return data + '\n';
+    };
     if (connection.queue) {
       this.enqueue(connection, () => this.deliver(connId, connection, id, line, actions));
       return;
@@ -255,7 +321,7 @@ export class ExecServerRelay {
       this.enqueue(connection, () => this.deliver(connId, connection, id, line, rest));
       return;
     }
-    connection.child.stdin.write(line);
+    connection.child.stdin.write(line());
   }
 
   private enqueue(connection: Connection, task: () => Promise<void>): void {
@@ -268,7 +334,7 @@ export class ExecServerRelay {
     });
   }
 
-  private async deliver(connId: string, connection: Connection, id: unknown, line: string, actions: ExecutorAction[]): Promise<void> {
+  private async deliver(connId: string, connection: Connection, id: unknown, line: () => string, actions: ExecutorAction[]): Promise<void> {
     for (const action of actions) {
       let decision = this.deps.authorize(action);
       if (!decision.ok && this.deps.confirm && await this.deps.confirm(action)) decision = this.deps.authorize(action);
@@ -278,10 +344,11 @@ export class ExecServerRelay {
         return;
       }
     }
-    if (!connection.closed) connection.child.stdin.write(line);
+    if (!connection.closed) connection.child.stdin.write(line());
   }
 
   private reject(connId: string, id: unknown, decision: ExecutorGateDecision): void {
+    this.counts.rejected += 1;
     this.sendMessage(connId, JSON.stringify({
       id,
       error: { code: -32001, message: this.deps.workspace.mapTextForAgent(decision.reason ?? 'Not allowed in this workspace.') },
@@ -346,8 +413,19 @@ export class ExecServerRelay {
         batch.push(this.outbox.shift()!);
         size += length;
       }
+      const now = this.deps.now ?? Date.now;
+      const startedAt = now();
       try {
         await this.deps.push(batch);
+        const elapsed = now() - startedAt;
+        this.counts.pushes += 1;
+        this.counts.pushTotalMs += elapsed;
+        this.counts.pushMaxMs = Math.max(this.counts.pushMaxMs, elapsed);
+        if (elapsed >= SLOW_PUSH_MS) {
+          this.counts.slowPushes += 1;
+          // 第一次慢就记一条(任务可能要很久才结束，汇总那条来得晚)。
+          if (this.counts.slowPushes === 1) this.deps.log?.warn('remote agent: exec-server push slow', { pushMs: elapsed, frames: batch.length });
+        }
       } catch (error) {
         // 批次已从 outbox 取出但交付失败(push 同序号重试耗尽)：不能只记日志就继续发后续帧
         // ——远端 Codex 会永久缺这条 JSON-RPC 回复卡住，丢失的中间分片还会把后续分片拼成

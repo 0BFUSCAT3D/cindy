@@ -50,9 +50,14 @@ function makeHost(
     purge?: (ids: readonly string[], nativeIds: readonly string[]) => Promise<void>;
     events?: AgentEvent[];
     recordGuestUsage?: Parameters<typeof createRemoteAgentHost>[0]['recordGuestUsage'];
+    recordOwnerUsage?: Parameters<typeof createRemoteAgentHost>[0]['recordOwnerUsage'];
+    /** 任务开始时的账号是否仍是当前账号(缺省一直是)。 */
+    ownerCurrent?: () => boolean;
     providerAccess?: boolean;
     /** false = 不接受受邀者出站登记(旧接线)；缺省给一个记录调用的实现。 */
     bindGuestProviderRoute?: false | Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
+    /** 会话是否正在运行一轮(缺省不提供，同旧 Agent)。 */
+    isTurnRunning?: (input: HostedStartInput) => boolean;
   } = {},
 ) {
   const bindGuestProviderRoute = options.bindGuestProviderRoute === false
@@ -95,6 +100,7 @@ function makeHost(
         },
         getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: 0, costUsd: 0 }),
         setInteractionResolver() {},
+        ...(options.isTurnRunning ? { isTurnRunning: () => options.isTurnRunning!(input) } : {}),
       };
       return handle;
     },
@@ -108,9 +114,10 @@ function makeHost(
     }),
     ...(options.purge ? { purgeHostedTranscripts: options.purge } : {}),
     ...(options.recordGuestUsage ? { recordGuestUsage: options.recordGuestUsage } : {}),
+    ...(options.recordOwnerUsage ? { recordOwnerUsage: options.recordOwnerUsage } : {}),
     ...(bindGuestProviderRoute ? { bindGuestProviderRoute } : {}),
     captureOwner: () => 'owner',
-    isOwnerCurrent: () => true,
+    isOwnerCurrent: () => options.ownerCurrent?.() ?? true,
     runsRoot,
   });
 }
@@ -462,7 +469,11 @@ describe('guest provider access and usage', () => {
     const host = makeHost(started, { bindGuestProviderRoute: bind });
     await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: kind, payload: { json: openPayload('task-1') } });
     await host.handle(OWNER, { op: 'open', runId: RUN_2, agentKind: kind, payload: { json: openPayload('task-2') } });
-    await vi.waitFor(() => expect(started).toHaveLength(2));
+    // Open acknowledges before filesystem preparation/startHosted finishes.
+    // Keep Linux's default; Windows already allows this suite 60s for async disk I/O.
+    await vi.waitFor(() => expect(started).toHaveLength(2), {
+      timeout: process.platform === 'win32' ? 10_000 : 1_000,
+    });
     const guestRun = started.find((entry) => entry.input.guest)!;
     const ownerRun = started.find((entry) => !entry.input.guest)!;
     expect(bind).toHaveBeenCalledTimes(1);
@@ -503,14 +514,15 @@ describe('guest provider access and usage', () => {
     host.dispose();
   });
 
-  it('meters guest turns with the resolved provider and leaves same-account runs unmetered', async () => {
+  it('meters guest turns into the guest ledger and same-account turns into the owner ledger', async () => {
     const done = {
       type: 'done',
       data: { modelUsageCumulativeStartsAtZero: true, modelUsage: { 'claude-opus': { inputTokens: 12, outputTokens: 3, costUSD: 0.02 } } },
     } as unknown as AgentEvent;
     const recordGuestUsage = vi.fn();
+    const recordOwnerUsage = vi.fn();
     const started: Started[] = [];
-    const host = makeHost(started, { events: [done], recordGuestUsage });
+    const host = makeHost(started, { events: [done], recordGuestUsage, recordOwnerUsage });
     await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
     await host.handle(OWNER, { op: 'open', runId: RUN_2, agentKind: 'claude-code', payload: { json: openPayload('task-2') } });
     // open 只登记任务，启动与事件泵在后台继续；Windows 全量分片繁忙时不能用 waitFor 的
@@ -525,13 +537,69 @@ describe('guest provider access and usage', () => {
         expect(events).toContain('"t":"event","event":{"type":"done"');
       }
     }, { timeout: 10_000 });
-    expect(recordGuestUsage).toHaveBeenCalledTimes(1);
-    expect(recordGuestUsage).toHaveBeenCalledWith(GUEST, {
+    const usage = {
       kind: 'claude-code',
       providerId: 'shared-provider',
+      // 没有经组转给别的电脑：在本机运行。
+      memberKey: 'local',
       samples: [{ model: 'claude-opus', turns: 1, inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0.02 }],
-    });
+    };
+    expect(recordGuestUsage).toHaveBeenCalledTimes(1);
+    expect(recordGuestUsage).toHaveBeenCalledWith(GUEST, usage);
+    expect(recordOwnerUsage).toHaveBeenCalledTimes(1);
+    expect(recordOwnerUsage).toHaveBeenCalledWith(OWNER, usage);
     expect(host.activeControllers().sort()).toEqual([GUEST, OWNER].sort());
+    host.dispose();
+  });
+
+  it('does not record a late turn after the account changed', async () => {
+    const done = {
+      type: 'done',
+      data: { modelUsageCumulativeStartsAtZero: true, modelUsage: { 'claude-opus': { inputTokens: 12, outputTokens: 3, costUSD: 0.02 } } },
+    } as unknown as AgentEvent;
+    const recordOwnerUsage = vi.fn();
+    const started: Started[] = [];
+    const host = makeHost(started, { events: [done], recordOwnerUsage, ownerCurrent: () => false });
+    await host.handle(OWNER, { op: 'open', runId: RUN_2, agentKind: 'claude-code', payload: { json: openPayload('task-2') } });
+    await vi.waitFor(async () => {
+      const poll = await host.handle(OWNER, { op: 'poll', runs: [{ runId: RUN_2, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
+      expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"t":"event","event":{"type":"done"');
+    }, { timeout: 10_000 });
+    expect(recordOwnerUsage).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
+  it('lists only the runs that are in a turn right now', async () => {
+    const busy = new Set<string>([hostSessionIdFor(GUEST, 'task-1')]);
+    const started: Started[] = [];
+    const host = makeHost(started, { isTurnRunning: (input) => busy.has(input.hostSessionId) });
+    await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
+    await host.handle(OWNER, { op: 'open', runId: RUN_2, agentKind: 'claude-code', payload: { json: openPayload('task-2') } });
+    await vi.waitFor(() => expect(started).toHaveLength(2), { timeout: 10_000 });
+    // 两个任务都开着，只有正在运行一轮的那个算；这一轮结束后马上不算。
+    await vi.waitFor(() => expect(host.turnRunningControllers()).toEqual([GUEST]), { timeout: 10_000 });
+    expect(host.activeControllers().sort()).toEqual([GUEST, OWNER].sort());
+    busy.clear();
+    expect(host.turnRunningControllers()).toEqual([]);
+    host.dispose();
+  });
+
+  it('lists the local provider of each run in a turn, whoever started it', async () => {
+    const busy = new Set<string>([hostSessionIdFor(GUEST, 'task-1'), hostSessionIdFor(OWNER, 'task-2')]);
+    const started: Started[] = [];
+    const host = makeHost(started, { isTurnRunning: (input) => busy.has(input.hostSessionId) });
+    await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
+    await host.handle(OWNER, {
+      op: 'open',
+      runId: RUN_2,
+      agentKind: 'claude-code',
+      payload: { json: openPayload('task-2', { options: { model: 'claude-opus', providerId: 'anthropic' } }) },
+    });
+    await vi.waitFor(() => expect(started).toHaveLength(2), { timeout: 10_000 });
+    // 组所在电脑据此显示这台在跑几个：受邀者与本账号其他电脑的任务都算，按本机实际用的供应商。
+    await vi.waitFor(() => expect(host.turnRunningProviders().sort()).toEqual(['anthropic', 'shared-provider']), { timeout: 10_000 });
+    busy.delete(hostSessionIdFor(GUEST, 'task-1'));
+    expect(host.turnRunningProviders()).toEqual(['anthropic']);
     host.dispose();
   });
 });

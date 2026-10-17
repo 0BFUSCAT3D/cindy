@@ -35,7 +35,11 @@ vi.mock('@/components/settings/useProviderSubscriptionCard', () => ({
   },
 }));
 vi.mock('@/components/status/QuotaHoverCard', () => ({
-  QuotaHoverCard: ({ account }: { account: { title: string } }) => <div data-testid="quota-card">{account.title}</div>,
+  QuotaHoverCard: ({ account, hideIdentity }: { account: { title: string }; hideIdentity?: boolean }) => (
+    <div data-testid="quota-card" data-hide-identity={String(Boolean(hideIdentity))}>
+      {account.title}
+    </div>
+  ),
 }));
 
 import { GroupMemberQuota, groupMemberQuotaTarget, type GroupMemberQuotaTarget } from '../GroupMemberQuota';
@@ -63,6 +67,8 @@ describe('GroupMemberQuota', () => {
   it('reads this computer’s account for this computer', () => {
     show({ kind: 'local', providerId: 'anthropic' });
     expect(screen.getByTestId('quota-card').textContent).toBe('This computer’s Claude');
+    // 行本身已说明是哪台电脑：卡片不再出标题行。
+    expect(screen.getByTestId('quota-card').getAttribute('data-hide-identity')).toBe('true');
     expect(mocks.deviceReads.every((deviceId) => deviceId === undefined)).toBe(true);
   });
 

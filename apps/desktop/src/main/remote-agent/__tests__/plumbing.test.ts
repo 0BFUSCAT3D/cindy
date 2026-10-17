@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
+import { MAIN_OWNED_SEND_CONTEXT, type InteractionDecision } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -13,8 +14,10 @@ import { approvalActionsFor, createRemoteAgentHandle, innerShellScript } from '.
 import type { RemoteAgentRunClient } from '../controller/runClient';
 import { credentialConfirmation, takeGroupSwitchState } from '../controller/startRemote';
 import { EventLog, LineSplitter } from '../eventLog';
+import { ExecutorGate } from '../executor/gate';
 import { ExecutorWorkspace } from '../executor/workspace';
 import { createRunTunnel } from '../host/tunnel';
+import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
 import { decodeOpenPayload, decodeSendOptions, encodeSendOptions, isSafeProjectFilePath } from '../wire';
 
 let root: string;
@@ -78,6 +81,8 @@ describe('tunnel', () => {
       expect((await fetch(`${tunnel.url}/mcp/a?q=1`, { headers: { authorization: `Bearer ${tunnel.token}` } })).status).toBe(200);
       expect((await fetch(`${tunnel.url}/t/${tunnel.token}/mcp/b`)).status).toBe(200);
       expect(seen).toEqual(['/mcp/a?q=1', '/mcp/b']);
+      // Cindy 工具请求也算链路往来，结束后不再计入在途。
+      expect(tunnel.linkActivity()).toMatchObject({ httpInFlight: 0, lastActivityAt: expect.any(Number) });
     } finally {
       await tunnel.close();
     }
@@ -102,12 +107,17 @@ describe('tunnel', () => {
       const good = new WebSocket(`${wsUrl}/ws/exec-server`, { headers: { authorization: `Bearer ${tunnel.token}` } });
       const echoed = new Promise<string>((resolve) => good.on('message', (data) => resolve(String(data))));
       await new Promise<void>((resolve) => good.on('open', () => resolve()));
-      good.send('{"id":1}');
+      good.send('{"id":1,"method":"fs/readFile","params":{}}');
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(opened).toEqual(['c1:/ws/exec-server']);
-      expect(messages).toEqual(['{"id":1}']);
-      tunnel.sendWs('c1', '{"result":true}');
-      expect(await echoed).toBe('{"result":true}');
+      expect(messages).toEqual(['{"id":1,"method":"fs/readFile","params":{}}']);
+      expect(tunnel.linkActivity()).toMatchObject({ execRequests: 1, execResponses: 0, execOldestPending: { method: 'fs/readFile' } });
+      tunnel.sendWs('c1', '{"id":1,"result":true}');
+      expect(await echoed).toBe('{"id":1,"result":true}');
+      // 隧道两个方向的帧都记进往来(托管 Codex 据此判断慢启动仍在推进)。
+      expect(tunnel.linkActivity()).toMatchObject({ execRequests: 1, execResponses: 1 });
+      expect(tunnel.linkActivity().execOldestPending).toBeUndefined();
+      expect(tunnel.linkActivity().lastActivityAt).toEqual(expect.any(Number));
       good.close();
     } finally {
       await tunnel.close();
@@ -115,8 +125,31 @@ describe('tunnel', () => {
   });
 });
 
+describe('remote AgentSessionHandle close', () => {
+  it('propagates a DEVICE_LINK close failure after disposing local resources', async () => {
+    let disposed = 0;
+    const client = {
+      async close() {
+        throw Object.assign(new Error('[REMOTE_AGENT_UNAVAILABLE] [DEVICE_LINK_DEVICE_OFFLINE] target offline'), {
+          code: 'DEVICE_OFFLINE',
+        });
+      },
+    } as unknown as RemoteAgentRunClient;
+    const controller = createRemoteAgentHandle({
+      client,
+      started: { id: 'sdk-1', agentKind: 'claude-code', model: 'm', shadowDir: '', methods: [], state: {} },
+      workspace: new ExecutorWorkspace({ workingDir: root }),
+      recordApproval: () => undefined,
+      newId: () => 'req',
+      dispose: async () => { disposed += 1; },
+    });
+    await expect(controller.handle.close({ reason: 'navigation' })).rejects.toThrow(/DEVICE_LINK_DEVICE_OFFLINE/);
+    expect(disposed).toBe(1);
+  });
+});
+
 describe('confirmations raised on this computer', () => {
-  it('use the Agent confirmation channel and accept only a one-time allow', async () => {
+  it('uses the Agent confirmation channel and offers an explicit credential grant for this task', async () => {
     let next = 0;
     const controller = createRemoteAgentHandle({
       client: {} as RemoteAgentRunClient,
@@ -144,6 +177,7 @@ describe('confirmations raised on this computer', () => {
       input: { file_path: env },
       description: 'goes through the sharer',
       metadata: { hostOwnedConfirmation: 'shared_provider_credential' },
+      suggestions: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
     }]);
     behavior = 'deny';
     expect(await controller.confirm(request)).toBe(false);
@@ -151,6 +185,42 @@ describe('confirmations raised on this computer', () => {
       toolName: 'Bash',
       input: { command: 'cat .env' },
     });
+  });
+
+  it('accepts a session grant only when offered by this computer, and ignores late answers', async () => {
+    const controller = createRemoteAgentHandle({
+      client: {} as RemoteAgentRunClient,
+      started: { id: 'sdk-1', agentKind: 'claude-code', model: 'm', shadowDir: '', methods: [], state: {} },
+      workspace: new ExecutorWorkspace({ workingDir: root }),
+      recordApproval: () => undefined,
+      newId: () => 'req',
+      dispose: async () => undefined,
+    });
+    const request = credentialConfirmation({ kind: 'read', path: path.join(root, '.env') }, 'shared credentials');
+    controller.handle.setInteractionResolver(async () => ({
+      kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
+    }));
+    expect(await controller.confirm(request)).toBe('session');
+    expect(await controller.confirm({ ...request, suggestions: [] })).toBe(true);
+    expect(await controller.confirm({ ...request, metadata: {} })).toBe(true);
+    for (const permissionUpdates of [
+      [{ ...PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL, destination: 'userSettings' }],
+      [{ ...PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL, mode: 'bypassPermissions' }],
+      [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL, { type: 'setMode', destination: 'session' }],
+    ]) {
+      controller.handle.setInteractionResolver(async () => ({ kind: 'permission', behavior: 'allow', permissionUpdates }));
+      expect(await controller.confirm(request)).toBe(true);
+    }
+    // 远端的普通交互仍只登记同一操作，不建立本机的凭证授权。
+    const remote = await controller.onRequest({ type: 'interaction', request: { ...request, kind: 'permission', requestId: 'remote' } });
+    expect(remote?.type).toBe('interaction');
+
+    let answer!: (decision: InteractionDecision) => void;
+    controller.handle.setInteractionResolver(() => new Promise((resolve) => { answer = resolve; }));
+    const pending = controller.confirm(request);
+    controller.onClosed('closed');
+    answer({ kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL] });
+    expect(await pending).toBe(false);
   });
 });
 
@@ -166,6 +236,40 @@ describe('exec-server relay gate', () => {
       .toEqual([{ kind: 'read', path: path.join(root, '.env') }]);
     expect(execServerActions('fs/getMetadata', { path: `file://${root}/.git` }, '/w')).toEqual([]);
     expect(execServerActions('initialize', {}, '/w')).toEqual([]);
+    // 只读操作按读取：walk 是目录级读取，open 只开只读句柄，canonicalize 只解析路径。
+    const skills = path.join(root, '.agents', 'skills');
+    expect(execServerActions('fs/walk', { path: pathToFileURL(skills).href, options: { maxDepth: 6 } }, '/w'))
+      .toEqual([{ kind: 'read', path: skills, scope: 'tree' }]);
+    expect(execServerActions('fs/open', { handleId: 'h1', path: pathToFileURL(path.join(root, 'a.png')).href }, '/w'))
+      .toEqual([{ kind: 'read', path: path.join(root, 'a.png') }]);
+    expect(execServerActions('fs/open', { handleId: 'h2', mode: 'replace', path: pathToFileURL(path.join(root, 'a.png')).href }, '/w'))
+      .toEqual([{ kind: 'write', path: path.join(root, 'a.png') }]);
+    expect(execServerActions('fs/canonicalize', { path: pathToFileURL(skills).href }, '/w')).toEqual([]);
+    // 不认识的 fs 方法仍从严按写入。
+    expect(execServerActions('fs/futureMethod', { path: pathToFileURL(skills).href }, '/w'))
+      .toEqual([{ kind: 'write', path: skills }]);
+  });
+
+  it('lets read-only exec-server operations follow the read rules (#5764)', () => {
+    const project = path.join(root, 'game');
+    const client = path.join(project, 'client');
+    fs.mkdirSync(client, { recursive: true });
+    const skills = pathToFileURL(path.join(project, '.agents', 'skills')).href;
+    const agentsMd = pathToFileURL(path.join(project, 'AGENTS.md')).href;
+    const decide = (gate: ExecutorGate, method: string, params: Record<string, unknown>) =>
+      execServerActions(method, params, '/w').map((action) => gate.authorize(action).ok);
+
+    // 计划模式：工作区里的 Skill 遍历与只读打开不再算写入。
+    const plan = new ExecutorGate(new ExecutorWorkspace({ workingDir: project }), 'plan');
+    expect(decide(plan, 'fs/walk', { path: skills })).toEqual([true]);
+    expect(decide(plan, 'fs/open', { handleId: 'h1', path: agentsMd })).toEqual([true]);
+    expect(decide(plan, 'fs/open', { handleId: 'h2', mode: 'replace', path: agentsMd })).toEqual([false]);
+
+    // 任务在子目录：上级目录的单文件读取照读取规则放行，递归遍历仍要本机确认。
+    const sub = new ExecutorGate(new ExecutorWorkspace({ workingDir: client }), 'normal');
+    expect(decide(sub, 'fs/open', { handleId: 'h1', path: agentsMd })).toEqual([true]);
+    expect(decide(sub, 'fs/walk', { path: skills })).toEqual([false]);
+    expect(decide(sub, 'fs/canonicalize', { path: skills })).toEqual([]);
   });
 
   it('matches Codex and Claude Code confirmations to the commands and files that later run', () => {

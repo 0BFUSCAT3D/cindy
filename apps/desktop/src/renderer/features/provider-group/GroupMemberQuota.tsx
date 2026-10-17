@@ -71,11 +71,12 @@ export function GroupMemberQuota({
   }
 
   return (
-    <div id={id} data-testid="provider-group-member-quota" className={cn('pb-1', inset)}>
+    // 紧贴在电脑这一行下面：行本身已说明是哪台电脑，卡片不再出「Claude · 套餐」标题行。
+    <div id={id} data-testid="provider-group-member-quota" className={cn('-mt-1', inset)}>
       {card ? (
-        <QuotaHoverCard variant="embedded" account={card} />
+        <QuotaHoverCard variant="embedded" hideIdentity account={card} />
       ) : (
-        <p className="px-4 pb-2 text-12 leading-[1.5] text-[var(--text-tertiary)]">{note}</p>
+        <p className="px-4 pb-3 text-12 leading-[1.5] text-[var(--text-tertiary)]">{note}</p>
       )}
     </div>
   );

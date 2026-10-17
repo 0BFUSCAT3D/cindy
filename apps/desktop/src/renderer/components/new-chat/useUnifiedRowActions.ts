@@ -53,6 +53,7 @@ type ActionResult = void | boolean | Promise<void | boolean>;
 
 export interface UnifiedRowActionsOptions {
   favoriteStore?: FavoriteStore;
+  onFavoriteError?: () => void;
   interactionDisabled: boolean;
   /** 这一行是不是当前会话 / 草稿正在用的那一行(来源 + 模型 + 引擎都对上)。 */
   isLiveRow: (entry: UnifiedModelEntry, config: UnifiedRowConfig) => boolean;
@@ -395,11 +396,29 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
     onBeforeRemoveFavorite,
   } = options;
 
-  const favorites: FavoriteStore = options.favoriteStore ?? {
+  const favoriteStore: FavoriteStore = options.favoriteStore ?? {
     get: getModelFavorite,
     add: config => { addModelFavorite(config); },
     update: updateModelFavorite,
     remove: removeModelFavorite,
+  };
+  const favoriteWrite = (write: () => void | Promise<void>): void | Promise<void> => {
+    try {
+      const result = write();
+      if (result) return result.catch((error: unknown) => {
+        options.onFavoriteError?.();
+        throw error;
+      });
+    } catch (error) {
+      options.onFavoriteError?.();
+      throw error;
+    }
+  };
+  const favorites: FavoriteStore = {
+    get: favoriteStore.get,
+    add: (config) => favoriteWrite(() => favoriteStore.add(config)),
+    update: (uid, patch) => favoriteWrite(() => favoriteStore.update(uid, patch)),
+    remove: (uid) => favoriteWrite(() => favoriteStore.remove(uid)),
   };
 
   /**

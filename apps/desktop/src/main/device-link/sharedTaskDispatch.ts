@@ -2,6 +2,7 @@ import { FILE_BROWSER_EVENT_CHANNEL, FILE_BROWSER_REMOTE_OP_CHANNEL, fsWatchTopi
 import type { SharedTaskHost } from './sharedTaskHost.js';
 import * as subscriptions from './subscriptions.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
+import { OWNER_ONLY_HOST_CONFIRMATION_TOOL_NAMES } from '../agent-app-update/constants.js';
 
 export type SharedTaskPeerCapture = NonNullable<ReturnType<SharedTaskHost['capturePeer']>>;
 export interface SharedTaskInteractionCapture {
@@ -160,7 +161,8 @@ function assertSharedTaskPermissionUpdates(
 
 /** Shared-task guests may answer the generic Agent interaction cards. Host-only
  * confirmations (plugin setup, issue review, grants, and rename prompts) never
- * enter this branch and remain protected by the normal origin gate. */
+ * enter this branch and remain protected by the normal origin gate. Owner-only
+ * Host cards that do use the generic channel (app update) are refused by name. */
 function assertSharedTaskInteractionResolve(
   capture: SharedTaskPeerCapture, args: unknown[], sessionId: string,
   phase: 'invoke' | 'result',
@@ -168,6 +170,7 @@ function assertSharedTaskInteractionResolve(
   if (args.length !== 2 || typeof args[0] !== 'string' || !args[0]) deny();
   const interaction = phase === 'invoke' ? readInteractionSession?.(args[0]) : undefined;
   if (phase === 'invoke' && (!interaction || interaction.sessionId !== sessionId)) deny();
+  if (interaction?.toolName && OWNER_ONLY_HOST_CONFIRMATION_TOOL_NAMES.has(interaction.toolName)) deny();
   const decision = record(args[1]);
   if (!decision || typeof decision.kind !== 'string' || !interactionDecisionKinds.has(decision.kind)) deny();
   // Guests approve the host-displayed input, never substitute executable input.
@@ -252,7 +255,8 @@ export function assertSharedTaskInvoke(
   if (channel === 'device-link:media:fetch') {
     const request = record(args[0]);
     if (args.length !== 1 || !request || typeof request.url !== 'string' ||
-          Object.keys(request).some((key) => !['url', 'skipCache', 'thumbnail', 'prepareOnly'].includes(key)) ||
+          Object.keys(request).some((key) => !['url', 'skipCache', 'thumbnail', 'prepareOnly', 'metadataOnly'].includes(key)) ||
+        (request.metadataOnly !== undefined && typeof request.metadataOnly !== 'boolean') ||
         !capture.authorize('attachment.read')) deny();
     // The media handler validates ledger/workdir ownership before reading bytes.
     return;
@@ -336,5 +340,7 @@ export function captureSharedTaskPush(source: string, channel: string, payload: 
       sharedTaskMetadataTopic(channel, payload) !== null ||
       channel.startsWith('usage:message-') || channel === 'usage:session-spend-changed' || channel === 'usage:session-tokens-changed')) return null;
   if (channel === 'maker:event:batch' && (!Array.isArray(row.events) || row.events.some((event) => record(event)?.sessionId !== sessionId))) return null;
+  // 代输入 is the owner's own sign-in step; guests never see or answer it.
+  if (channel === 'maker:interaction-request' && record(row.request)?.kind === 'input_handoff') return null;
   return () => capture.isCurrent();
 }
