@@ -3680,6 +3680,7 @@ function ProjectDragOverlay({
 
 function HomeProjectWindowAnchorTracker({
   childOffsets,
+  deferOffscreen = false,
   onAnchorChange,
   projectHeaderHeight,
   projectLayoutRevision,
@@ -3688,6 +3689,7 @@ function HomeProjectWindowAnchorTracker({
   viewportHeight,
 }: {
   childOffsets: readonly number[];
+  deferOffscreen?: boolean;
   onAnchorChange(anchor: number): void;
   projectHeaderHeight: SharedValue<number>;
   projectLayoutRevision: SharedValue<number>;
@@ -3707,6 +3709,7 @@ function HomeProjectWindowAnchorTracker({
       if (!layout || !Number.isFinite(layout.pageY)) return null;
       return resolveHomeProjectChildAnchor({
         childOffsets,
+        preloadDistance: deferOffscreen ? viewportHeight : 0,
         projectHeaderHeight: projectHeaderHeight.value,
         projectTop: layout.pageY,
         shift: PROJECT_CHILD_WINDOW_SHIFT,
@@ -3715,13 +3718,14 @@ function HomeProjectWindowAnchorTracker({
       });
     },
     (next, previous) => {
-      // Keep the last bounded window when offscreen or unmeasurable. Clearing
-      // it leaves a blank until a later UI -> JS round trip on reverse scroll.
-      // The outer SectionList owns recycling of offscreen project blocks.
-      if (next === null || next < 0 || next === previous) return;
+      // Project blocks retain their window until the outer list recycles them.
+      // Nested groups instead release rows beyond the preload band, avoiding
+      // one full native window per expanded group. Failed measurement retains
+      // either window; it is not proof that the group has left the screen.
+      if (next === null || (next < 0 && !deferOffscreen) || next === previous) return;
       runOnJS(onAnchorChange)(next);
     },
-    [childOffsets, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
+    [childOffsets, deferOffscreen, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
   );
   return null;
 }
@@ -4647,7 +4651,9 @@ function AutomationGroupChildren({
   const childrenRef = useAnimatedRef<View>();
   const layoutRevision = useSharedValue(0);
   const headerHeight = useSharedValue(0);
-  const [windowAnchor, setWindowAnchor] = useState(0);
+  // A project can retain many expanded automation groups. Preload nearby runs
+  // after layout instead of multiplying every project slot by a child window.
+  const [windowAnchor, setWindowAnchor] = useState(-1);
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const childOffsets = buildHomeProjectChildOffsets(visibleItems.map((child) => estimateHomeSessionRowHeight(child, textMode)));
   const windowingEnabled = shouldWindowHomeProjectChildren({
@@ -4655,14 +4661,17 @@ function AutomationGroupChildren({
     scrollTrackingAvailable: viewport !== null, threshold: PROJECT_CHILD_WINDOW_THRESHOLD,
   });
   const range = windowingEnabled
-    ? resolveHomeProjectChildWindow({ anchor: windowAnchor, childOffsets,
+    ? windowAnchor >= 0
+      ? resolveHomeProjectChildWindow({ anchor: windowAnchor, childOffsets,
         overscan: PROJECT_CHILD_WINDOW_OVERSCAN, windowSize: PROJECT_CHILD_WINDOW_SIZE })
+      : { start: 0, end: 0, leadingSpacerHeight: 0, trailingSpacerHeight: childOffsets.at(-1) ?? 0 }
     : { start: 0, end: visibleItems.length, leadingSpacerHeight: 0, trailingSpacerHeight: 0 };
   return (
     <Reanimated.View ref={childrenRef} collapsable={false}
       onLayout={() => { if (windowingEnabled) layoutRevision.value += 1; }}
       style={styles.automationGroupChildren} testID={childrenTestID ?? `${testID}.automationGroupChildren`}>
       {windowingEnabled && viewport ? <HomeProjectWindowAnchorTracker
+        deferOffscreen
         childOffsets={childOffsets} onAnchorChange={setWindowAnchor}
         projectHeaderHeight={headerHeight} projectLayoutRevision={layoutRevision}
         projectRef={childrenRef} scrollY={viewport.scrollY} viewportHeight={viewport.viewportHeight}
