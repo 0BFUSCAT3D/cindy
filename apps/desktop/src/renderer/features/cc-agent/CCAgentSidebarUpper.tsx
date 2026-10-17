@@ -1,4 +1,5 @@
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * CCAgentFeature 的 Sidebar 上半内容。
  * ---------------------------------------------------------------------------
@@ -374,17 +375,16 @@ function RemoteSidebarLoadNotice({
           ? 'ccAgent.sidebar.machineSwitcher.tasksPartiallyFailed'
           : 'ccAgent.sidebar.machineSwitcher.tasksLoadFailed'
       : 'ccAgent.sidebar.machineSwitcher.devicesLoading';
+  if (alarming) return <ErrorNotice role="alert" className="mx-3" message={t(messageKey, { device: deviceLabel })} />;
   return (
     <div
-      role={alarming ? 'alert' : 'status'}
+      role="status"
       className={cn(
         quietDeviceLoading
           ? 'mx-3 flex flex-col items-center gap-3 px-4 py-8 text-center text-[var(--text-secondary)]'
           : 'border',
         !quietDeviceLoading &&
-          (alarming
-            ? 'border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-fg)]'
-            : 'border-[var(--border-default)] bg-[var(--surface-chip)] text-[var(--text-secondary)]'),
+          'border-[var(--border-default)] bg-[var(--surface-chip)] text-[var(--text-secondary)]',
         !quietDeviceLoading &&
           (partial
             ? 'mx-3 flex items-start gap-2 rounded-[8px] px-3 py-2'

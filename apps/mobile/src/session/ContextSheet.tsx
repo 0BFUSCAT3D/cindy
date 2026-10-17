@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ErrorNotice';
 /**
  * ContextSheet —— + 号弹出的可拖动「上下文」面板。
  *
@@ -117,7 +118,7 @@ export function ContextSheet({
         >
           {media}
           {children}
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {error ? <ErrorNotice message={error} /> : null}
         </SheetSurface>
       </SheetModal>
     </DismissAction.Provider>
@@ -264,8 +265,9 @@ export function ContextSheetNote({ text, tone = 'secondary', testID }: {
   testID?: string;
 }) {
   const styles = useThemedStyles(makeContextSheetStyles);
+  if (tone === 'error') return <ErrorNotice message={text} messageTestID={testID} />;
   return (
-    <Text style={[styles.note, tone === 'error' && styles.noteError]} testID={testID}>{text}</Text>
+    <Text style={styles.note} testID={testID}>{text}</Text>
   );
 }
 

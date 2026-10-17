@@ -1,5 +1,6 @@
 import { useNativeGlassButtonStyle } from "@/platform/chrome/nativeGlassButtonStyle.ios";
 import { iconSize, useTheme } from '@/theme';
+import { NativeErrorNotice } from '@/components/NativeErrorNotice.ios';
 import { ComposerNativeSection as Section } from './ComposerNativeSection';
 import {
   createContext,
@@ -75,7 +76,7 @@ export function ContextSheet(props: ContextSheetProps) {
         {props.children}
         {props.error ? (
           <Section>
-            <Text modifiers={[foregroundStyle(colors.errorText)]}>{props.error}</Text>
+            <NativeErrorNotice message={props.error} />
           </Section>
         ) : null}
       </ComposerSheet>
@@ -188,8 +189,9 @@ export function ContextSheetNote({ text, tone = 'secondary', testID }: {
   testID?: string;
 }) {
   const { colors } = useTheme();
+  if (tone === 'error') return <NativeErrorNotice message={text} testID={testID} />;
   return (
-    <Text testID={testID} modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(tone === 'error' ? colors.errorText : colors.textSecondary)]}>
+    <Text testID={testID} modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(colors.textSecondary)]}>
       {text}
     </Text>
   );

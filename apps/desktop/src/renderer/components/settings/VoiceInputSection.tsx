@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Button } from '@/components/ui/button';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSettingsSearchNavigation } from './SettingsSearchNavigation';
@@ -640,15 +641,19 @@ function VoiceInputServiceSourceCard() {
             />
           </VoiceInputInlineSettingRow>
 
-          {connectionTest.status !== 'idle' ? (
+          {connectionTest.status === 'error' ? (
+            <ErrorNotice
+              role="alert"
+              aria-live="polite"
+              message={t(VOICE_INPUT_CONNECTION_TEST_FAILURE_KEYS[connectionTest.reason])}
+            />
+          ) : connectionTest.status !== 'idle' ? (
             <div
-              role={connectionTest.status === 'error' ? 'alert' : 'status'}
+              role="status"
               aria-live="polite"
               className={cn(
                 'flex items-center gap-2 rounded-[10px] border px-3 py-2 text-12 leading-[1.4]',
-                connectionTest.status === 'error'
-                  ? 'border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-fg)]'
-                  : 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-section-sublabel)]',
+                'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-section-sublabel)]',
               )}
             >
               {connectionTest.status === 'success' ? <Check size={13} aria-hidden /> : null}
@@ -660,9 +665,7 @@ function VoiceInputServiceSourceCard() {
               <span>
                 {connectionTest.status === 'testing'
                   ? t('settings.voiceInput.serviceSource.connectionTest.testingStatus')
-                  : connectionTest.status === 'success'
-                    ? t('settings.voiceInput.serviceSource.connectionTest.success')
-                    : t(VOICE_INPUT_CONNECTION_TEST_FAILURE_KEYS[connectionTest.reason])}
+                  : t('settings.voiceInput.serviceSource.connectionTest.success')}
               </span>
             </div>
           ) : null}
@@ -721,12 +724,10 @@ function VoiceInputServiceSourceCard() {
                 />
               </VoiceInputInlineSettingRow>
               {customAsrUrlInvalid ? (
-                <p
+                <ErrorNotice
                   role="alert"
-                  className="rounded-[10px] border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2 text-12 leading-[1.4] text-[var(--error-fg)]"
-                >
-                  {t('settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid')}
-                </p>
+                  message={t('settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid')}
+                />
               ) : null}
 
               <VoiceInputInlineSettingRow
@@ -839,28 +840,16 @@ function VoiceInputServiceSourceCard() {
           </VoiceInputInlineSettingRow>
 
           {byokCredentialErrorText ? (
-            <div
-              className={cn(
-                'flex flex-wrap items-center justify-between gap-2 rounded-[12px] px-3.5 py-2.5',
-                'border border-[var(--error-border)] bg-[var(--error-bg)]',
-              )}
-            >
-              <p className="min-w-0 text-12 leading-[1.4] text-[var(--error-fg)]">
-                {byokCredentialErrorText}
-              </p>
-              {!credentialRecoveryInVoiceSettings ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  compact
-                  type="button"
-                  onClick={openProvidersTab}
-                  className="shrink-0"
-                >
-                  {t('settings.voiceInput.serviceSource.manageProviders')}
-                </Button>
-              ) : null}
-            </div>
+            <ErrorNotice
+              message={byokCredentialErrorText}
+              actions={
+                !credentialRecoveryInVoiceSettings && (
+                  <Button size="sm" compact onClick={openProvidersTab}>
+                    {t('settings.voiceInput.serviceSource.manageProviders')}
+                  </Button>
+                )
+              }
+            />
           ) : null}
         </>
       ) : null}
