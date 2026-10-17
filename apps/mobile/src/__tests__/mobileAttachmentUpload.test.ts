@@ -24,6 +24,28 @@ const readFileChunk = vi.fn(async (_uri: string, _position: number, length: numb
 );
 
 describe('mobileAttachmentUpload', () => {
+  // Unit regression: background outbox calls this entry without the composer's onUploaded.
+  // The immutable snapshot must be retained before it is removed on either transport.
+  it.each(['oss', 'peer'] as const)('retains the sent %s image snapshot before cleanup', async (transport) => {
+    const order: string[] = [];
+    let retained: { ref: string; uri: string } | undefined;
+    const apiFetch = vi.fn(async () => ({ putUrl: 'https://oss.example/upload', key: 'uploads/photo.png' }));
+    const off = installPeerUpload(async (_device, _uri, metadata) => transport === 'peer'
+      ? buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }) : null);
+    try {
+      const attachment = await uploadMobileAttachmentFromFile({ name: 'photo.png', size: 4, mimeType: 'image/png' }, 'file:///draft', {
+        deviceId: 'computer', token: 'token', deps: {
+          apiFetch: apiFetch as unknown as typeof apiFetchRaw,
+          readFileChunk, uploadFile: async () => ({ status: 200 }),
+          snapshotFile: async () => ({ uri: 'file:///snapshot', size: 4, cleanup: async () => { order.push('cleanup'); } }),
+          retainImage: async (ref, uri) => { retained = { ref, uri }; order.push('retain'); },
+        },
+      });
+      expect(retained).toEqual({ ref: attachment.url ?? attachment.path, uri: 'file:///snapshot' });
+      expect(order).toEqual(['retain', 'cleanup']);
+    } finally { off(); }
+  });
+
   it('uploads prepared bytes to the captured peer without presigning OSS', async () => {
     const apiFetch = vi.fn();
     const peer = vi.fn(async (_device, _uri, metadata) => buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }));

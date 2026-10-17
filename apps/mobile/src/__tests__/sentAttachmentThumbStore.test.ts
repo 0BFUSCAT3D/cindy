@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
+import { buildAttachmentOssRef, buildPeerAttachmentRef } from '@cindy/device-link';
+import { resolveMobileRemoteMedia } from '@/session/remoteMedia';
 
 const storage = vi.hoisted(() => new Map<string, string>());
+vi.mock('expo-file-system/legacy', () => ({
+  getInfoAsync: async () => ({ exists: true, size: 1000 }),
+}));
 
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
@@ -22,6 +27,7 @@ import {
   getSentAttachmentThumbUri,
   getSentAttachmentThumbsVersion,
   registerSentAttachmentThumb,
+  resolveSentAttachmentThumb,
   subscribeSentAttachmentThumbs,
   type SentAttachmentThumbFsDeps,
 } from '@/session/sentAttachmentThumbStore';
@@ -65,6 +71,34 @@ beforeEach(async () => {
 });
 
 describe('sentAttachmentThumbStore', () => {
+  // Regression: sent photos became unavailable offline after history replaced the upload URL.
+  // Existing tests only queried the original ref. Unit tier exercises persistence + real lookup.
+  it.each(['oss', 'peer'] as const)('keeps a %s upload readable by its final content address after restart', async (transport) => {
+    const sha256 = 'a'.repeat(64);
+    const metadata = { sha256, size: 1000, mimeType: 'image/png', originalName: 'photo.png' };
+    const ref = transport === 'oss'
+      ? buildAttachmentOssRef({ ...metadata, ossKey: 'uploads/photo' })
+      : buildPeerAttachmentRef({ ...metadata, ticket: '11111111-1111-1111-1111-111111111111' });
+    const { deps, copies } = makeFsDeps();
+    await registerSentAttachmentThumb(ref, 'file:///cache/upload-snapshot', deps);
+    await __testing.flushPersist();
+    expect(copies).toHaveLength(1);
+    expect(copies[0].to.endsWith('.png')).toBe(true);
+    __testing.reset();
+    await expect(resolveSentAttachmentThumb(`cindy-media://blobs/${sha256}.png`, deps)).resolves.toEqual({
+      uri: copies[0].to, size: 1000, mimeType: 'image/png',
+    });
+    expect(getSentAttachmentThumbUri(`cindy-media://blobs/${sha256}.png`)).toBe(copies[0].to);
+    expect(getSentAttachmentThumbUri(`cindy-media://blobs/${'b'.repeat(64)}.png`)).toBeNull();
+    expect(applySentAttachmentThumbOverlay({ kind: 'image', uri: ref, previewable: false }).uri).toBe(copies[0].to);
+    const fetchRemoteMedia = vi.fn(async () => { throw new Error('NOT_CONNECTED'); });
+    await expect(resolveMobileRemoteMedia({ kind: 'image', url: `cindy-media://blobs/${sha256}.png` }, {
+      fetchRemoteMedia, presignGet: vi.fn(),
+    })).resolves.toMatchObject({ url: copies[0].to, mimeType: 'image/png', ossKey: '' });
+    expect(fetchRemoteMedia).not.toHaveBeenCalled();
+    await expect(resolveSentAttachmentThumb(ref, { ...deps, statSize: async () => 0 })).resolves.toBeNull();
+  });
+
   it('register 拷贝文件进自有目录并可同步查询;版本号通知订阅者', async () => {
     const { deps, copies } = makeFsDeps();
     const versions: number[] = [];

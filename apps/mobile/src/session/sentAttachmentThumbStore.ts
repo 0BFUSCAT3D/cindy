@@ -1,15 +1,9 @@
 /**
  * sentAttachmentThumbStore — 已发送本机图片附件的本地缩略图兜底映射。
  * ---------------------------------------------------------------------------
- * 手机端上传的图片在消息里持久化为 `cindy-oss-attach://` 中转引用;该引用要等被控端
- * (桌面)取走消息、物化进 image cache 后才被改写成可远程取件的 `xdt-image://`。
- * 改写结果不会回推,所以「发出后停留在当前界面」期间(以及桌面端离线、消息压在
- * 队列里的整个窗口)气泡只能显示「暂不能直接预览」占位卡——图明明就在手机本地。
- *
- * 本 store 补上这个空档:上传成功时把实际 PUT 的文件(降采样产物,通常几百 KB)
- * 拷贝进 app 自有目录,记录「ossRef → 本地相对文件名」映射并持久化;渲染用户消息
- * 图片时 url 仍是 `cindy-oss-attach://` 且映射命中 → 用本地图当缩略图。桌面端物化后
- * url 变成 `xdt-image://`,兜底自然退场,本地副本保留供再次查看。
+ * 上传成功后保留实际发送的图片字节，同时接受 OSS 与直传引用。
+ * 原引用继续持久化；从其中的完整性指纹重建查询索引，让消息换成 cindy-media
+ * 内容地址后仍能使用同一副本。缩略图与原图查看共用这份已上传的完整图片。
  *
  * 设计要点:
  *   - 映射存**相对文件名**:iOS app 容器绝对路径会随更新变化,不能持久化绝对路径;
@@ -21,8 +15,9 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
-import { isAttachmentOssRef } from '@/session/attachmentOssRef';
+import { isAttachmentOssRef, parseAttachmentOssRef, isPeerAttachmentRef, parsePeerAttachmentRef } from '@cindy/device-link';
 import { isPayloadDesktopLocalMediaUrl } from '@cindy/maker-shared/payload-summary';
+import { extOfMime, imageMimeFromUrl, type RemoteMediaDiskCacheHit } from '@/session/remoteMediaDiskCache';
 
 const STORAGE_KEY = 'xdt.sentAttachmentThumbs.v1';
 /** documentDirectory 下的自有子目录(不放 cache:系统清缓存会把兜底图清裂)。 */
@@ -76,6 +71,8 @@ const defaultFsDeps: SentAttachmentThumbFsDeps = {
 };
 
 const entries = new Map<string, ThumbEntry>();
+/** Derived from the existing persisted refs; no second copy or persistence format. */
+const entriesByHash = new Map<string, ThumbEntry>();
 const listeners = new Set<() => void>();
 let version = 0;
 /** hydrate 后缓存的 documentDirectory(以 / 结尾),同步查询拼路径用。 */
@@ -91,6 +88,22 @@ function bump(): void {
 
 function thumbDir(): string | null {
   return cachedDocDir ? `${cachedDocDir}${THUMB_DIR_NAME}` : null;
+}
+
+function contentHash(ref: string): string | undefined {
+  return /^cindy-media:\/\/blobs\/([a-f0-9]{64})\.[a-z0-9]+$/.exec(ref)?.[1]
+    ?? parseAttachmentOssRef(ref)?.sha256 ?? parsePeerAttachmentRef(ref)?.sha256;
+}
+
+function imageMimeForRef(ref: string): string | undefined {
+  return parseAttachmentOssRef(ref)?.mimeType ?? parsePeerAttachmentRef(ref)?.mimeType
+    ?? imageMimeFromUrl(ref) ?? undefined;
+}
+
+function rememberEntry(ref: string, entry: ThumbEntry): void {
+  entries.set(ref, entry);
+  const hash = contentHash(ref);
+  if (hash) entriesByHash.set(hash, entry);
 }
 
 /**
@@ -113,7 +126,7 @@ async function hydrateInternal(deps: SentAttachmentThumbFsDeps): Promise<void> {
   // 内存以磁盘为底、保留 hydrate 期间已注册的新条目(register 先 await hydrate,
   // 实际不会先写;防御性合并保证后写胜)。
   for (const [ossRef, entry] of keep) {
-    if (!entries.has(ossRef)) entries.set(ossRef, entry);
+    if (!entries.has(ossRef)) rememberEntry(ossRef, entry);
   }
   // 目录孤儿清理:磁盘上存在但映射不再引用的文件。
   const dir = thumbDir();
@@ -137,7 +150,7 @@ async function hydrateInternal(deps: SentAttachmentThumbFsDeps): Promise<void> {
  * 引用,应当当场记下对应关系 —— 留底之后气泡第一帧就有图,远端取件退化为后备。
  */
 function isThumbBackedRef(value: unknown): value is string {
-  return isAttachmentOssRef(value) || isPayloadDesktopLocalMediaUrl(value);
+  return isAttachmentOssRef(value) || isPeerAttachmentRef(value) || isPayloadDesktopLocalMediaUrl(value);
 }
 
 /**
@@ -157,10 +170,13 @@ export async function registerSentAttachmentThumb(
     if (!dir) return;
     const at = Date.now();
     fileSeq += 1;
-    const file = `thumb-${at}-${fileSeq}.${extForUri(sourceUri)}`;
+    // Upload snapshots intentionally have no extension. Keep the image's actual
+    // format so sharing a retained PNG/GIF does not label its bytes as JPEG.
+    const mime = imageMimeForRef(ossRef);
+    const file = `thumb-${at}-${fileSeq}.${mime?.startsWith('image/') ? extOfMime(mime) : extForUri(sourceUri)}`;
     await deps.makeDirectory(dir);
     await deps.copy(sourceUri, `${dir}/${file}`);
-    entries.set(ossRef, { file, at });
+    rememberEntry(ossRef, { file, at });
     schedulePersist();
     bump();
   } catch {
@@ -176,8 +192,23 @@ export function getSentAttachmentThumbUri(ossRef: string): string | null {
   if (!hydratePromise) void ensureSentAttachmentThumbsHydrated();
   const dir = thumbDir();
   if (!dir) return null;
-  const entry = entries.get(ossRef);
+  const hash = contentHash(ossRef);
+  const entry = entries.get(ossRef) ?? (hash ? entriesByHash.get(hash) : undefined);
   return entry ? `${dir}/${entry.file}` : null;
+}
+
+/** Original-image reads must wait for hydration and verify the retained file still exists. */
+export async function resolveSentAttachmentThumb(
+  ref: string,
+  deps: SentAttachmentThumbFsDeps = defaultFsDeps,
+): Promise<RemoteMediaDiskCacheHit | null> {
+  await ensureSentAttachmentThumbsHydrated(deps);
+  const uri = getSentAttachmentThumbUri(ref);
+  if (!uri) return null;
+  const size = await deps.statSize(uri).catch(() => 0);
+  if (size <= 0) return null;
+  const mimeType = imageMimeForRef(ref) ?? imageMimeFromUrl(uri);
+  return mimeType?.startsWith('image/') ? { uri, size, mimeType } : null;
 }
 
 /**
@@ -188,7 +219,8 @@ export function getSentAttachmentThumbUri(ossRef: string): string | null {
 export function applySentAttachmentThumbOverlay<
   T extends { kind: string; uri?: string; previewable: boolean },
 >(item: T): T {
-  if (item.kind !== 'image' || item.previewable || !item.uri || !isAttachmentOssRef(item.uri)) {
+  if (item.kind !== 'image' || item.previewable || !item.uri
+    || !(isAttachmentOssRef(item.uri) || isPeerAttachmentRef(item.uri))) {
     return item;
   }
   const local = getSentAttachmentThumbUri(item.uri);
@@ -272,6 +304,7 @@ export const __testing = {
   },
   reset(): void {
     entries.clear();
+    entriesByHash.clear();
     listeners.clear();
     version = 0;
     cachedDocDir = null;
