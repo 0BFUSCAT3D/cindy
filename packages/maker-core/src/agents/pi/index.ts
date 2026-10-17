@@ -7137,6 +7137,11 @@ export class PiAgent extends BaseAgent {
       // 正是 "keeps thinking off after a carrier-less switch" 系列用例守的回归。
       const keepThinkingOff = explicitThinking === false
         || (explicitThinking === undefined && thinkingExplicitlyOff);
+      // 思考被关（本次载体或既有标记）时档位不下发——发了会把思考重新打开——但用户
+      // 本次 selection 里显式选的档位是独立决定，仍要记入期望档位：之后再打开思考时
+      // setThinkingEnabled(true) 应回到用户选的档位，而不是更早的旧值
+      // （2026-10-18 Greptile P1：high + 载体 low/off → 重开后应发 low 而非 high）。
+      if (setOpts?.effort && keepThinkingOff) mutableEffort = setOpts.effort;
       // pi CLI 在 set_model 后会把思考档位重置成新模型自己的默认（转录实证：声明了档位的
       // 模型落到 defaultEffort 如 high，未声明的落到 low/medium），而本函数原本只在
       // setOpts.effort 上做校验、从不下发。不在这里把目标档位重新下发的话，每次切模型

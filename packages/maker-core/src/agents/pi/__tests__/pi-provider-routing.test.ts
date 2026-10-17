@@ -4689,6 +4689,77 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("remembers an explicitly chosen effort when a switch keeps thinking off", async () => {
+    // 2026-10-18 Greptile P1：思考关着时档位不下发（下发会重开思考），但用户本次
+    // selection 里显式选的档位是独立决定，必须记入期望档位——否则重开思考时回到
+    // 更早的旧值（high），与界面选中的档位不一致。
+    const denseMap = {
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    } as const;
+    captured.requestHandler = async (command) => {
+      if (command.type === "get_state") {
+        return {
+          success: true,
+          data: { sessionFile: "/mock/s.jsonl", model: { contextWindow: 200_000 } },
+        };
+      }
+      return { success: true, data: {} };
+    };
+    const agent = new PiAgent(
+      byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-a",
+              name: "Native A",
+              baseUrl: "http://a.test",
+              api: "openai-responses" as const,
+              models: [
+                { id: "model-a", reasoning: true, thinkingLevelMap: { ...denseMap } },
+                { id: "model-b", reasoning: true, thinkingLevelMap: { ...denseMap } },
+              ],
+            },
+          ],
+          env: {},
+        }),
+        [
+          { id: "model-a", displayName: "A", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+          { id: "model-b", displayName: "B", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+        ],
+      ),
+    );
+    const handle = await agent.startSession({
+      sessionId: "thinking-off-remembers-chosen-effort",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "native-a",
+      effort: "high",
+    });
+    const levels = () =>
+      captured.requests.filter((r) => r.type === "set_thinking_level").map((r) => String(r.level));
+
+    // 载体 low + thinkingEnabled:false：off 下发，但 low 要被记住。
+    await handle.setModel!("model-b", { providerId: "native-a", effort: "low", thinkingEnabled: false });
+    await handle.setThinkingEnabled!(true);
+    expect(levels()[levels().length - 1]).toBe("low");
+
+    // 既有标记关闭 + 仅带 effort 的载体：不下发档位（标记仍关），但 high 同样要被记住。
+    await handle.setThinkingEnabled!(false);
+    const before = captured.requests.length;
+    await handle.setModel!("model-a", { providerId: "native-a", effort: "high" });
+    expect(
+      captured.requests.slice(before).some((r) => r.type === "set_thinking_level"),
+    ).toBe(false);
+    await handle.setThinkingEnabled!(true);
+    expect(levels()[levels().length - 1]).toBe("high");
+    await handle.close();
+  });
+
   it("keeps the explicit-off marker when re-enabling thinking is rejected", async () => {
     const denseMap = {
       minimal: "minimal",
