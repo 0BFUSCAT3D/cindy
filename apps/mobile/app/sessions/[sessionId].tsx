@@ -282,6 +282,7 @@ import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalView, goalStatusLabel } from '@/session/ContextSheetGoalView';
 import { parseGoalLimitsRouteParam } from '@/session/goalLimitsRouteParam';
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from '@/session/ComposerAttachmentTray';
+import { useComposerPendingImagePreview } from '@/session/useComposerPendingImagePreview';
 import { useSlowSendVisible, type SlowSendPhase } from '@/session/SlowSendNotice';
 import { ComposerActivityPill, composerActivityPillOverlayColor, makeComposerActivityPillStyles } from '@/session/ComposerActivityPill';
 import { PlanModeChip } from '@/session/PlanModeChip';
@@ -7209,6 +7210,7 @@ function SessionScreenContent() {
       .finally(() => setStopPending(false));
   };
 
+  const pendingImagePreview = useComposerPendingImagePreview({ attachments, previews: attachmentPreviews, pendingUploads, getUploadedAttachmentId });
   const renderComposerControls = ({ composerLayout, composerSendUnavailableReason, composerStopDisabledReason, composerStopDisabled, composerShowInlineStop, composerSendSlotIsStop, composerShowSendButton, composerSendDisabled, voiceIsListening, voiceIsProcessing, voiceProcessingIndicator, voiceIsBusy, voiceRecordingTimer, composerVoicePlacement }: SessionComposerControlState): SessionComposerControls => {
     composerSendTargetEnabledRef.current = composerShowSendButton && !composerLayout.send.disabled;
     if (!composerShowSendButton) sendButtonFrameRef.current = null;
@@ -7419,7 +7421,7 @@ function SessionScreenContent() {
   const renderComposerAttachmentTray = () => (
     <ComposerAttachmentTray
       attachments={attachments}
-      getUploadedAttachmentId={getUploadedAttachmentId}
+      onPreviewPending={pendingImagePreview.open}
       onPreview={setComposerPreviewAttachmentId}
       onRemove={removeRemoteFileAttachment}
       onRemovePending={removePendingUpload}
@@ -8945,6 +8947,7 @@ function SessionScreenContent() {
     || (modelSheetOpen && canUseComposer)
     || (permissionSheetOpen && canUseComposer)
     || composerPreviewAttachmentId !== null
+    || pendingImagePreview.active
     || sessionListDrawerOverlayMounted
     || messageBlockingOverlay
   );
@@ -10154,6 +10157,7 @@ function SessionScreenContent() {
             testID="session.permissionSheet"
           />
         ) : null}
+        {pendingImagePreview.host}
         {composerPreviewUrl && composerGalleryImages.length > 0 ? (
           // composer 托盘图片的全屏查看(沿用聊天消息同款 ImageLightbox;本地图无需远端取件)。
           // annotation:托盘图可圈点标注 / 再编辑,保存后烧录替换附件重新上传。

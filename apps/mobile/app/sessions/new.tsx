@@ -170,6 +170,7 @@ import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalCreateForm } from '@/session/ContextSheetGoalView';
 import type { MobileGoalLimitsInput } from '@cindy/maker-shared/device-link-contract';
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from '@/session/ComposerAttachmentTray';
+import { useComposerPendingImagePreview } from '@/session/useComposerPendingImagePreview';
 import { SlowSendNotice, type SlowSendPhase } from '@/session/SlowSendNotice';
 import { ImageLightbox } from '@/session/ImageLightbox';
 import {
@@ -2101,6 +2102,7 @@ export default function NewRemoteSessionScreen() {
     draftText: draft.firstMessage,
   });
   const composerIncomingImageCount = pendingUploads.filter((item) => item.kind === 'image').length + pastePlaceholderCount;
+  const pendingImagePreview = useComposerPendingImagePreview({ attachments, previews: attachmentPreviews, pendingUploads, getUploadedAttachmentId });
   const composerImageCount = attachments.filter((item) => item.category === 'image').length + composerIncomingImageCount;
   const { active: composerImageHoldActive, collapse: collapseComposerImages } = useComposerImageExpansion(composerImageCount, imageSelectionRevision);
   const composerCardActive = firstMessageInputFocused || composerPillOpen.opening
@@ -4623,7 +4625,7 @@ export default function NewRemoteSessionScreen() {
   const renderComposerAttachmentTray = () => (
     <ComposerAttachmentTray
       attachments={attachments}
-      getUploadedAttachmentId={getUploadedAttachmentId}
+      onPreviewPending={pendingImagePreview.open}
       onPreview={setComposerPreviewAttachmentId}
       onRemove={removeAttachment}
       onRemovePending={removePendingUpload}
@@ -7274,6 +7276,7 @@ export default function NewRemoteSessionScreen() {
         options={runtimeOptions.permissionOptions}
         testID="newSession.permissionSheet"
       />
+      {pendingImagePreview.host}
       {composerPreviewUrl && composerGalleryImages.length > 0 ? (
         // composer 托盘图片的全屏查看(沿用聊天消息同款 ImageLightbox;本地图无需远端取件)。
         // annotation:托盘图可圈点标注 / 再编辑,保存后烧录替换附件重新上传。

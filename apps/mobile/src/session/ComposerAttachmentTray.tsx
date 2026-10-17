@@ -12,16 +12,12 @@ import { FileTypeIcon } from '@/components/FileTypeIcon';
  */
 import { Pen, RefreshCw, X } from 'lucide-react-native';
 import { Image } from 'expo-image';
-import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { Text } from '@/components/AppText';
 import type { RemoteSerializedAttachment } from '@/session/types';
 import type { PendingLocalAttachmentUpload } from '@/session/mobileLocalAttachmentUpload';
 import { attachmentDisplayLabel, pendingUploadDisplayLabel } from '@/session/attachments';
-import { ImageLightbox } from '@/session/ImageLightbox';
-import { buildMediaPayload } from '@/session/messagePayload';
-import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import { fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 
 /** 输入卡内的缩略图为正方形(产品决策,不用横长方)。 */
@@ -36,7 +32,8 @@ export interface ComposerAttachmentTrayProps {
   onPreview: (attachmentId: string) => void;
   /** 乐观上传中的本机附件(图片=缩略卡,文件=chip,均带转圈;失败态带重试)。 */
   pendingUploads?: readonly PendingLocalAttachmentUpload[];
-  getUploadedAttachmentId?: (localId: string) => string | undefined;
+  /** Screen owns the viewer so keyboard blur cannot unmount it with this tray. */
+  onPreviewPending: (localId: string) => void;
   /** X 一个上传中的附件(取消上传)。 */
   onRemovePending?: (localId: string) => void;
   /** 重试一个失败态的上传卡。 */
@@ -58,7 +55,7 @@ export function ComposerAttachmentTray({
   onRemove,
   onPreview,
   pendingUploads = [],
-  getUploadedAttachmentId,
+  onPreviewPending,
   onRemovePending,
   onRetryPending,
   pastePlaceholderCount = 0,
@@ -69,19 +66,6 @@ export function ComposerAttachmentTray({
   const { t } = useTranslation();
   const styles = useThemedStyles(makeTrayStyles);
   const { colors } = useTheme();
-  const [pendingPreviewId, setPendingPreviewId] = useState<string | null>(null);
-  const deliveredId = pendingPreviewId ? getUploadedAttachmentId?.(pendingPreviewId) : undefined;
-  const delivered = attachments.find((item) => item.id === deliveredId);
-  const pending = pendingUploads.find((item) => item.localId === pendingPreviewId);
-  // Prefer the delivered URI even during the brief overlap of both lists: the
-  // uploader may already have deleted the temporary source at this point.
-  const previewUri = delivered ? previews[delivered.id] : pending?.previewUri;
-  const previewName = delivered?.name ?? pending?.name;
-  const pendingPreview = useMemo<MobileMessageGalleryImage[]>(() => {
-    if (!previewUri || !previewName || !pendingPreviewId) return [];
-    const payload = buildMediaPayload({ kind: 'image', previewable: true, title: previewName, url: previewUri }, previewName);
-    return payload.kind === 'media' ? [{ key: pendingPreviewId, payload, title: previewName, url: previewUri }] : [];
-  }, [previewUri, previewName, pendingPreviewId]);
   if (attachments.length === 0 && pendingUploads.length === 0 && pastePlaceholderCount === 0) return null;
   return (
     <View style={styles.tray} testID={`${testIDPrefix}.attachmentTray`}>
@@ -167,7 +151,7 @@ export function ComposerAttachmentTray({
                 accessibilityLabel={t('composer.attachments.viewImage', { name: pending.name })}
                 accessibilityRole="button"
                 disabled={!pending.previewUri}
-                onPress={() => setPendingPreviewId(pending.localId)}
+                onPress={() => onPreviewPending(pending.localId)}
                 style={({ pressed }) => [styles.thumbBusyOverlay, pressed && styles.pressed]}
                 testID={`${testIDPrefix}.attachmentPendingPreviewButton`}
               >
@@ -236,9 +220,6 @@ export function ComposerAttachmentTray({
           </View>
         </View>
       ))}
-      {pendingPreview.length > 0 ? (
-        <ImageLightbox key={previewUri} images={pendingPreview} initialUrl={pendingPreview[0].url} onClose={() => setPendingPreviewId(null)} />
-      ) : null}
     </View>
   );
 }

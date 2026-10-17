@@ -8,12 +8,14 @@ import {
 } from "@/session/ComposerAttachmentTray";
 import { i18n } from "@/i18n";
 import { useComposerImageExpansion } from "@/session/useComposerImageExpansion";
+import { useComposerPendingImagePreview } from "@/session/useComposerPendingImagePreview";
 import type { RemoteSerializedAttachment } from "@/session/types";
 import type { PendingLocalAttachmentUpload } from "@/session/mobileLocalAttachmentUpload";
 
 const theme = vi.hoisted(() => ({
   mode: "light",
   files: null as Set<string> | null,
+  mounts: 0,
 }));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
@@ -64,21 +66,29 @@ vi.mock("@/components/AppText", async () => ({
 }));
 vi.mock("@/components/FileTypeIcon", () => ({ FileTypeIcon: () => null }));
 vi.mock("expo-image", () => ({ Image: () => null }));
-vi.mock("@/session/ImageLightbox", () => ({
-  ImageLightbox: ({
-    images,
-    onClose,
-  }: {
-    images: { url: string }[];
-    onClose(): void;
-  }) => (
-    <button data-testid="lightbox" onClick={onClose}>
-      {theme.files && !theme.files.has(images[0].url)
-        ? "missing"
-        : images[0].url}
-    </button>
-  ),
-}));
+vi.mock("@/session/ImageLightbox", async () => {
+  const { useEffect } = await import("react");
+  return {
+    ImageLightbox: ({
+      images,
+      onClose,
+    }: {
+      images: { url: string }[];
+      onClose(): void;
+    }) => {
+      useEffect(() => {
+        theme.mounts += 1;
+      }, []);
+      return (
+        <button data-testid="lightbox" onClick={onClose}>
+          {theme.files && !theme.files.has(images[0].url)
+            ? "missing"
+            : images[0].url}
+        </button>
+      );
+    },
+  };
+});
 vi.mock("lucide-react-native", async () => {
   const { createElement } = await import("react");
   const icon =
@@ -103,6 +113,7 @@ let root: Root;
 let host: HTMLDivElement;
 beforeEach(async () => {
   theme.files = null;
+  theme.mounts = 0;
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   await i18n.changeLanguage("zh-CN");
   host = document.createElement("div");
@@ -199,19 +210,45 @@ describe("composer attachment tray overlay foreground", () => {
   // 上传中图片验证真实托盘打开本地预览，并在上传完成后仍保持查看器。
   it("switches an open preview to the durable URI when the temporary file is deleted", () => {
     theme.files = new Set(["file:///uploading.jpg"]);
-    const render = (uploading: boolean, delivered = false) =>
+    function Composer({
+      uploading,
+      delivered,
+      showTray,
+    }: {
+      uploading: boolean;
+      delivered: boolean;
+      showTray: boolean;
+    }) {
+      const props = {
+        attachments: delivered ? [attachment("done")] : [],
+        previews: { done: "file:///durable.jpg" },
+        pendingUploads: uploading ? [pending("uploading")] : [],
+        getUploadedAttachmentId: (id: string) =>
+          delivered && id === "uploading" ? "done" : undefined,
+      };
+      const preview = useComposerPendingImagePreview(props);
+      return (
+        <>
+          {showTray && (
+            <ComposerAttachmentTray
+              {...props}
+              onPreviewPending={preview.open}
+              onRemove={() => {}}
+              onPreview={() => {}}
+              testIDPrefix="t"
+            />
+          )}
+          {preview.host}
+        </>
+      );
+    }
+    const render = (uploading: boolean, delivered = false, showTray = true) =>
       act(() =>
         root.render(
-          <ComposerAttachmentTray
-            attachments={delivered ? [attachment("done")] : []}
-            previews={{ done: "file:///durable.jpg" }}
-            getUploadedAttachmentId={(id) =>
-              delivered && id === "uploading" ? "done" : undefined
-            }
-            onRemove={() => {}}
-            onPreview={() => {}}
-            pendingUploads={uploading ? [pending("uploading")] : []}
-            testIDPrefix="t"
+          <Composer
+            uploading={uploading}
+            delivered={delivered}
+            showTray={showTray}
           />,
         ),
       );
@@ -224,17 +261,22 @@ describe("composer attachment tray overlay foreground", () => {
     expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
       "file:///uploading.jpg",
     );
+    render(true, false, false); // Keyboard blur unmounts the attachment tray.
+    expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
+      "file:///uploading.jpg",
+    );
     theme.files.delete("file:///uploading.jpg");
     theme.files.add("file:///durable.jpg");
     // onUploaded publishes the delivered attachment before the controller removes pending.
-    render(true, true);
+    render(true, true, false);
     expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
       "file:///durable.jpg",
     );
-    render(false, true);
+    render(false, true, false);
     expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
       "file:///durable.jpg",
     );
+    expect(theme.mounts).toBe(1); // No native modal dismissal/presentation race.
     act(() =>
       host
         .querySelector<HTMLButtonElement>('[data-testid="lightbox"]')!
@@ -253,6 +295,7 @@ describe("composer attachment tray overlay foreground", () => {
           previews={{}}
           onRemove={() => {}}
           onPreview={() => {}}
+          onPreviewPending={() => {}}
           pendingUploads={[
             { ...pending("unresolved"), previewUri: "" },
             pending("failed", true),
@@ -302,6 +345,7 @@ describe("composer attachment tray overlay foreground", () => {
               previews={{}}
               onRemove={() => {}}
               onPreview={() => {}}
+              onPreviewPending={() => {}}
               pendingUploads={[pending("uploading"), pending("failed", true)]}
               testIDPrefix="t"
             />
