@@ -98,6 +98,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { Text, TextInput } from '@/components/AppText';
+import { usePendingQuestionScroll } from '@/session/usePendingQuestionScroll';
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated';
 import { MobileAgentMark } from '@/components/MobileAgentMark';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
@@ -2398,6 +2399,9 @@ function SessionScreenContent() {
   const activePendingKind = activePendingInteraction
     ? interactionKind(activePendingInteraction)
     : null;
+  const pendingQuestionScroll = usePendingQuestionScroll(
+    activePendingKind === 'ask_user_question' ? activePendingRequestId : null,
+  );
   const activePendingCollapsed = isPendingInteractionCollapsed(
     collapsedPendingRequestIds,
     activePendingRequestId,
@@ -9486,8 +9490,10 @@ function SessionScreenContent() {
     }
   }, [applyComposerDocument, deviceId, maker, messageActionBusy, requestSync, rewindState, sessionId]);
 
+  const pendingInteractionDock = sessionOperationLayout.composerSlot === 'pending-interaction';
   const dockKeyboardFollow = Platform.OS === 'ios' && composerDock.enabled && nativeComposerFrameAvailable
-    && adaptiveWindow.regions.length === 0 && sessionOperationLayout.composerSlot === 'editable'
+    && adaptiveWindow.regions.length === 0
+    && (sessionOperationLayout.composerSlot === 'editable' || pendingInteractionDock)
     && !shareSelectionActive && !isSharedTaskAccessRevoked;
   const companionHeaderShown = companionChat && !!companionResource && !shareSelectionActive;
   const headerNode = (
@@ -10239,7 +10245,9 @@ function SessionScreenContent() {
           width={paneLayout.detail.width}
         >
         {!isSharedTaskAccessRevoked && <DockKeyboardLift
-          active={dockKeyboardFollow} restingBottom={composerDock.restingBottom} keyboardGap={composerDock.keyboardGap}
+          active={dockKeyboardFollow}
+          restingBottom={pendingInteractionDock ? 0 : composerDock.restingBottom}
+          keyboardGap={pendingInteractionDock ? 0 : composerDock.keyboardGap}
           pointerEvents="box-none"
           testID="session.bottomViewport"
           style={[
@@ -10434,8 +10442,13 @@ function SessionScreenContent() {
                 </View>
               ) : (
                 <ScrollView
+                  ref={pendingQuestionScroll.scrollRef}
                   keyboardShouldPersistTaps="handled"
                   nestedScrollEnabled
+                  onFocus={pendingQuestionScroll.onFocus}
+                  onBlur={pendingQuestionScroll.onBlur}
+                  onLayout={pendingQuestionScroll.reveal}
+                  onContentSizeChange={pendingQuestionScroll.reveal}
                   testID="interaction.bottomScroll"
                 >
                 <InteractionPanel
