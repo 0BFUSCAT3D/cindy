@@ -148,6 +148,7 @@ export {
   connectedProvidersForAgent,
   nativeDefaultSourceId,
   effectiveSourceIdForModel,
+  movedCindyAutoSourceId,
   actualSourceIdForModel,
   providerOffersModel,
   getModel,

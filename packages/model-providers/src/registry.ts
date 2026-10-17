@@ -365,6 +365,22 @@ function relocatedAutoSourceId(
 }
 
 /**
+ * 已保存或运行中的路由（任务、伙伴模型链、IM 默认）：服务端把其中的 Auto 挪到另一家
+ * Cindy 来源后，现在该走的来源；没挪动或不适用时返回 null。只在使用时解析，不改写保存的值。
+ * Pi 的 providerId=null 就是 Cindy AI 网关；其它引擎的 null 不一定落在 Cindy AI，不推断。
+ */
+export function movedCindyAutoSourceId(
+  views: readonly ProviderView[],
+  route: { agent: AgentKind; model: string; providerId: string | null },
+): string | null {
+  if (!isCindyAutoModelId(route.model)) return null;
+  const remembered = route.providerId ?? (route.agent === 'pi' ? 'xd' : null);
+  if (!remembered) return null;
+  const effective = effectiveSourceIdForModel([...views], remembered, route.model, route.agent);
+  return effective && effective !== remembered ? effective : null;
+}
+
+/**
  * 「实际路由口径」的来源解析:选择规则与 effectiveSourceIdForModel 相同,但**不**
  * 剔除停用拷贝(includeDisabled rail)。给「展示一个已在运行的会话」用:运行中的
  * 会话不因停用打断,实际路由层对隐式来源仍落原生默认、对显式来源仍用会话存的值 ——

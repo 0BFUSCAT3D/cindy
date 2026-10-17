@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { isCindyAutoModelId, isCindyDistributedProvider } from '../provider-identity.js';
-import { effectiveSourceIdForModel, type ProviderView } from '../registry.js';
+import { effectiveSourceIdForModel, movedCindyAutoSourceId, type ProviderView } from '../registry.js';
 import type { CatalogModel, ProviderSource } from '../types.js';
 
 function model(id: string): CatalogModel {
@@ -86,5 +86,20 @@ describe('effectiveSourceIdForModel：Auto 跨 Cindy 来源改道', () => {
     const views = [provider('xd', 'builtin', ['glm']), provider('org-pool', 'organization', ['pool-model'])];
     expect(effectiveSourceIdForModel(views, 'org-pool', 'glm', 'pi')).toBeNull();
     expect(effectiveSourceIdForModel([provider('xd', 'builtin', [AUTO])], 'gone-pool', AUTO, 'pi')).toBeNull();
+  });
+});
+
+describe('movedCindyAutoSourceId：已保存 / 运行中的路由', () => {
+  const toPool = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', [AUTO])];
+
+  it('挪动后给出新来源，没挪动给 null', () => {
+    expect(movedCindyAutoSourceId(toPool, { agent: 'pi', model: AUTO, providerId: 'xd' })).toBe('org-pool');
+    expect(movedCindyAutoSourceId(toPool, { agent: 'pi', model: AUTO, providerId: 'org-pool' })).toBeNull();
+    expect(movedCindyAutoSourceId(toPool, { agent: 'pi', model: 'auto', providerId: 'xd' })).toBeNull();
+  });
+
+  it('Pi 的 null 就是 Cindy AI；其它引擎的 null 不推断', () => {
+    expect(movedCindyAutoSourceId(toPool, { agent: 'pi', model: AUTO, providerId: null })).toBe('org-pool');
+    expect(movedCindyAutoSourceId(toPool, { agent: 'codex', model: AUTO, providerId: null })).toBeNull();
   });
 });

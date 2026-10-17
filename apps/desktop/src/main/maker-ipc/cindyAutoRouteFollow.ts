@@ -1,6 +1,5 @@
 import {
-  effectiveSourceIdForModel,
-  isCindyAutoModelId,
+  movedCindyAutoSourceId,
   type AgentKind,
   type ProviderView,
 } from '@cindy/model-providers';
@@ -22,21 +21,16 @@ export interface CindyAutoRoute {
   fastMode: boolean;
 }
 
-/** Pi 的 providerId=null 就是 Cindy AI 网关；其它引擎的 null 不一定落在 Cindy AI，不推断。 */
-function rememberedProviderId(route: CindyAutoRoute): string | null {
-  return route.providerId ?? (route.agentKind === 'pi' ? 'xd' : null);
-}
-
 /** 该路由的 Auto 已被服务端挪到另一家 Cindy 来源时返回新来源，否则 null。 */
 export function movedCindyAutoProviderId(
   providers: readonly ProviderView[],
   route: CindyAutoRoute,
 ): string | null {
-  if (!isCindyAutoModelId(route.model)) return null;
-  const remembered = rememberedProviderId(route);
-  if (!remembered) return null;
-  const effective = effectiveSourceIdForModel([...providers], remembered, route.model, route.agentKind);
-  return effective && effective !== remembered ? effective : null;
+  return movedCindyAutoSourceId(providers, {
+    agent: route.agentKind,
+    model: route.model,
+    providerId: route.providerId,
+  });
 }
 
 export interface CindyAutoRouteFollowDeps {
