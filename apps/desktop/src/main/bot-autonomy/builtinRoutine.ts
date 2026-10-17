@@ -8,9 +8,28 @@
  * - silentWhenIdle：没事可报时不打扰主人。
  * - 用户只能暂停 / 恢复，不能删除或改内容；宿主每次 ensure 时把指令与触发条件对齐到模板。
  */
+import { createHash } from 'node:crypto';
 import type { RoutineInput, RoutineTrigger } from '@cindy/maker-scheduler';
-import { AUTONOMY_EVENT_TYPES, HOST_SESSIONS_SOURCE_ID } from '../../shared/botAutonomy.js';
+import {
+  AUTONOMY_EVENT_TYPES,
+  BUILTIN_FOLLOW_UP_ROUTINE_PREFIX,
+  HOST_SESSIONS_SOURCE_ID,
+} from '../../shared/botAutonomy.js';
 import { FOLLOW_UP_PROMPT_VERSION, buildFollowUpRoutinePrompt } from './followUpPrompt.js';
+
+/** 与例行任务引擎的 creationId 校验一致。 */
+const ROUTINE_ID_PATTERN = /^[a-zA-Z0-9_-]{16,128}$/;
+
+/**
+ * 内置跟进规则的 id：前缀 + 伙伴 id 合法时原样拼接（已落盘的 id 不变）；伙伴 id 过长（合法伙伴 id 可到
+ * 128 字符）或含引擎不接受的字符时，改用前缀 + 伙伴 id 的 sha256 前 40 位，长度与字符集都稳定合法。
+ * 不要从 id 反推伙伴 id。
+ */
+export function builtinFollowUpRoutineId(botId: string): string {
+  const plain = `${BUILTIN_FOLLOW_UP_ROUTINE_PREFIX}${botId}`;
+  if (ROUTINE_ID_PATTERN.test(plain)) return plain;
+  return `${BUILTIN_FOLLOW_UP_ROUTINE_PREFIX}${createHash('sha256').update(botId).digest('hex').slice(0, 40)}`;
+}
 
 /** 内置规则的保存名；渲染层按 builtin 字段本地化显示，这里只是落盘值。 */
 export const FOLLOW_UP_ROUTINE_NAME = '跟进任务';

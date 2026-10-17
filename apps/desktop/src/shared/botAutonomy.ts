@@ -15,12 +15,8 @@
 /** 事件源 id；在引擎每次创建后由宿主重新登记。 */
 export const HOST_SESSIONS_SOURCE_ID = 'host:sessions';
 
-/** 内置跟进例行任务的 id 前缀；`creationId = BUILTIN_FOLLOW_UP_ROUTINE_PREFIX + botId`，幂等。 */
+/** 内置跟进例行任务的 id 前缀；完整 id 由主进程 builtinRoutine.ts 的 builtinFollowUpRoutineId 生成，幂等。 */
 export const BUILTIN_FOLLOW_UP_ROUTINE_PREFIX = 'builtin-follow-up-';
-
-export function builtinFollowUpRoutineId(botId: string): string {
-  return `${BUILTIN_FOLLOW_UP_ROUTINE_PREFIX}${botId}`;
-}
 
 /** 默认总调度伙伴：出厂 Cindy 助理。未自定义时派生，不写 override。 */
 export const DEFAULT_SCHEDULER_BOT_ID = 'cindy-default';

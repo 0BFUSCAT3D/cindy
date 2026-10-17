@@ -165,6 +165,8 @@ export class TaskWatch {
   /** 主任务 id → 所属伙伴（来自伙伴资料 canonical_session_id）。 */
   private canonicalOwners = new Map<string, string>();
   private ownershipAt = 0;
+  /** 归属至少成功读到过一次：之前不重算、不通知，免得把启动时已有的事件按「没人跟」结清。 */
+  private ownershipLoaded = false;
   private ownershipRefresh: Promise<void> | null = null;
   private schedulerBotId: string | null = null;
   private readonly finishedLog: FinishedRecord[] = [];
@@ -259,6 +261,10 @@ export class TaskWatch {
 
   private queue(sessionId: string): void {
     this.pending.add(sessionId);
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
     if (this.flushing) return;
     // 同一 tick 的多条变化合成一次读库。
     this.flushing = Promise.resolve().then(() => this.flush()).finally(() => { this.flushing = null; });
@@ -270,7 +276,8 @@ export class TaskWatch {
   }
 
   private async flush(): Promise<void> {
-    while (this.pending.size && !this.stopped) {
+    // 归属还没读到：只累积 pending，首次读到后再一起重算。
+    while (this.ownershipLoaded && this.pending.size && !this.stopped) {
       const ids = [...this.pending];
       this.pending.clear();
       const now = this.deps.now();
@@ -468,6 +475,7 @@ export class TaskWatch {
   }
 
   private async refreshOwnership(force = false): Promise<void> {
+    const wasLoaded = this.ownershipLoaded;
     if (this.ownershipRefresh) {
       await this.ownershipRefresh;
       if (!force) return;
@@ -478,6 +486,7 @@ export class TaskWatch {
         if (this.stopped) return;
         this.ownership = next;
         this.ownershipAt = this.deps.now();
+        this.ownershipLoaded = true;
         this.canonicalOwners = new Map();
         for (const [botId, bot] of next.bots) {
           if (bot.canonicalSessionId) this.canonicalOwners.set(bot.canonicalSessionId, botId);
@@ -502,6 +511,8 @@ export class TaskWatch {
     } finally {
       if (this.ownershipRefresh === run) this.ownershipRefresh = null;
     }
+    // 首次读到归属（含启动时读失败、之后扫描才读到）：把期间累积的变化补算一次。
+    if (!wasLoaded && this.ownershipLoaded && this.pending.size && !this.stopped) this.scheduleFlush();
   }
 
   private readOverride(): { customized: boolean; schedulerBotId: string | null } {
@@ -696,21 +707,23 @@ export class TaskWatch {
       let pendingQuestion: string | null = null;
       let pendingRequestId: string | null = null;
       if (activity.activityPhase === 'needs-interaction') {
-        if (previous && (previous.phase === 'waiting-answer' || previous.phase === 'waiting-permission')) {
+        // 每次轮询都重读挂起交互（每个等待中的远程任务每分钟一次）：两次轮询之间可能从请求 A 直接换到 B。
+        let summary: ReturnType<typeof summarizeInteraction> = null;
+        try {
+          const pending = await this.deps.invokeRemote(deviceId, 'maker:get-pending-interactions', [remoteId]);
+          const first = Array.isArray(pending) ? record(pending[0])?.request ?? pending[0] : undefined;
+          summary = summarizeInteraction(first);
+        } catch {
+          // 读不到：沿用上次读到的；从没读到过时仍按「等回答」显示。
+        }
+        if (summary) {
+          interactionKind = summary.waitingFor === 'permission' ? 'permission' : 'ask_user_question';
+          pendingQuestion = summary.summary;
+          pendingRequestId = summary.requestId;
+        } else if (previous && (previous.phase === 'waiting-answer' || previous.phase === 'waiting-permission')) {
           interactionKind = previous.phase === 'waiting-permission' ? 'permission' : 'ask_user_question';
           pendingQuestion = previous.pendingQuestion;
           pendingRequestId = previous.pendingRequestId ?? null;
-        } else {
-          try {
-            const pending = await this.deps.invokeRemote(deviceId, 'maker:get-pending-interactions', [remoteId]);
-            const first = Array.isArray(pending) ? record(pending[0])?.request ?? pending[0] : undefined;
-            const summary = summarizeInteraction(first);
-            interactionKind = summary?.waitingFor === 'permission' ? 'permission' : 'ask_user_question';
-            pendingQuestion = summary?.summary ?? null;
-            pendingRequestId = summary?.requestId ?? null;
-          } catch {
-            // 读不到具体问题：仍按「等回答」显示。
-          }
         }
       }
       const phase = deriveRemotePhase({ ...activity, interactionKind });
@@ -723,9 +736,13 @@ export class TaskWatch {
       const updatedAt = finiteNumber(meta.updatedAt);
       // 出错的时刻尽量用被控端的更新时间，重启后同一次出错仍是同一个事件 id。
       const candidateSince = phase === 'errored' && updatedAt !== null && updatedAt <= now ? updatedAt : now;
-      const phaseSince = phase === 'running' && previous?.phase === 'running'
+      let phaseSince = phase === 'running' && previous?.phase === 'running'
         ? previous.phaseSince
         : nextPhaseSince(previous, phase, candidateSince);
+      // 同一任务从请求 A 换到请求 B 是新的等待：重新计时（也就是新的事件 id）。
+      if (previous?.phase === phase && previous.pendingRequestId && pendingRequestId && previous.pendingRequestId !== pendingRequestId) {
+        phaseSince = now;
+      }
       const row: WatchedSession = {
         sessionId: id,
         deviceId,

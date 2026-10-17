@@ -122,7 +122,7 @@ const receipt = await cindy.routines.request({
 
 ## 内置跟进例行任务
 
-每个在用、且本机是主力电脑的伙伴有一条宿主内置规则（`builtin: 'follow-up'`，id 固定为 `builtin-follow-up-<伙伴 id>`）：
+每个在用、且本机是主力电脑的伙伴有一条宿主内置规则（`builtin: 'follow-up'`，id 固定为 `builtin-follow-up-<伙伴 id>`；伙伴 id 过长或含引擎不接受的字符时改为前缀 + 伙伴 id 的 sha256 前 40 位，同样幂等，不要从 id 反推伙伴 id）：
 
 - 触发条件：6 个事件条件（含条件兜底 `sweep`）订阅 `host:sessions`，筛选 `followerBotId` 等于自己；没有时间或间隔条件，
   旧版带的 2 小时间隔条件在下一次 ensure 时被对齐掉。`silentWhenIdle` 开启，

@@ -16,11 +16,10 @@ import type { RoutineEngine } from '@cindy/maker-scheduler';
 import {
   AUTONOMY_THRESHOLDS,
   HOST_SESSIONS_SOURCE_ID,
-  builtinFollowUpRoutineId,
   type BotGlance,
   type WatchedSession,
 } from '../../shared/botAutonomy.js';
-import { FOLLOW_UP_BUILTIN_VERSION, buildFollowUpRoutineInput } from './builtinRoutine.js';
+import { FOLLOW_UP_BUILTIN_VERSION, buildFollowUpRoutineInput, builtinFollowUpRoutineId } from './builtinRoutine.js';
 import {
   AutonomyEventLedger,
   hostSessionsSource,
@@ -66,7 +65,7 @@ export class BotAutonomyRuntime {
   private readonly reminded = new Map<string, number>();
   private readonly ensured = new Set<string>();
   /** 正在对齐的内置规则：并发的 ensure 与发布共用同一次写入。 */
-  private readonly ensuring = new Map<string, Promise<void>>();
+  private readonly ensuring = new Map<string, Promise<boolean>>();
   /** 伙伴上次被叫醒（任一事件被它的规则接收）的时刻；启动时视为刚叫醒过，避免重启后一起白跑。 */
   private readonly lastWokenAt = new Map<string, number>();
   private readonly sweptIds = new Set<string>();
@@ -78,6 +77,8 @@ export class BotAutonomyRuntime {
   private lastPushAt = 0;
   private lastSignature = '';
   private sweeping = false;
+  /** 状态表首次观察完成（归属已读）之前不判定事件。 */
+  private started = false;
   private stopped = false;
 
   constructor(private readonly deps: AutonomyRuntimeDeps) {
@@ -91,6 +92,7 @@ export class BotAutonomyRuntime {
     this.unsubscribe = this.deps.subscribeActivity(this.watch);
     await this.watch.start();
     if (this.stopped) return;
+    this.started = true;
     await this.ensureBuiltins();
     await this.evaluate();
     this.schedulePush();
@@ -195,17 +197,19 @@ export class BotAutonomyRuntime {
     }
   }
 
-  private ensureOne(botId: string): Promise<void> {
-    if (this.stopped || !this.deps.isCurrent()) return Promise.resolve();
+  /** 返回内置规则是否已落地；失败时不记为已对齐，下次扫描或发布前重试。 */
+  private ensureOne(botId: string): Promise<boolean> {
+    if (this.stopped || !this.deps.isCurrent()) return Promise.resolve(false);
     const inflight = this.ensuring.get(botId);
     if (inflight) return inflight;
     const id = builtinFollowUpRoutineId(botId);
     if (!ROUTINE_ID_PATTERN.test(id)) {
+      // 兜底：builtinFollowUpRoutineId 对任何伙伴 id 都给出合法 id，正常不会走到这里。
       this.ensured.add(botId);
       this.deps.log.warn('builtin routine skipped: unsupported teammate id');
-      return Promise.resolve();
+      return Promise.resolve(false);
     }
-    const run = (async () => {
+    const run = (async (): Promise<boolean> => {
       try {
         await this.deps.engine.ensureBuiltin(
           botId,
@@ -214,9 +218,12 @@ export class BotAutonomyRuntime {
           id,
           FOLLOW_UP_BUILTIN_VERSION,
         );
-        if (!this.stopped) this.ensured.add(botId);
+        if (this.stopped) return false;
+        this.ensured.add(botId);
+        return true;
       } catch (error) {
         this.deps.log.warn('builtin routine ensure failed', { error: errorCode(error) });
+        return false;
       } finally {
         this.ensuring.delete(botId);
       }
@@ -229,13 +236,13 @@ export class BotAutonomyRuntime {
    * 发布前先确保跟进者的内置规则已落地：首次安装或新伙伴时，事件若赶在 ensure 之前发布，
    * 引擎会记下回执却没有规则接收（accepted=0），这次事件就永久丢了。
    */
-  private async ensureFollower(botId: string): Promise<void> {
-    if (!this.ensured.has(botId)) await this.ensureOne(botId);
+  private async ensureFollower(botId: string): Promise<boolean> {
+    return this.ensured.has(botId) || await this.ensureOne(botId);
   }
 
   /** 判定并发布阈值事件。可重入：同一事件 id 在途时不重复处理。 */
   async evaluate(): Promise<void> {
-    if (this.stopped || !this.deps.isCurrent()) return;
+    if (!this.started || this.stopped || !this.deps.isCurrent()) return;
     const now = this.deps.now();
     const { due, capped } = this.ledger.evaluate(this.watch.list(), now);
     for (const candidate of capped) {
@@ -260,8 +267,13 @@ export class BotAutonomyRuntime {
       this.remindOwner(candidate, now);
       return;
     }
-    await this.ensureFollower(candidate.row.followerBotId);
+    const ready = await this.ensureFollower(candidate.row.followerBotId);
     if (this.stopped) return;
+    if (!ready) {
+      // 规则没落地就发布会 accepted=0 并留下回执，之后同一事件再也发不出去：不发、不结清，下次扫描重试。
+      this.deps.log.warn('autonomy event deferred: builtin routine not ready', { type: candidate.type });
+      return;
+    }
     let accepted: number;
     try {
       const result = await this.deps.engine.publish(
@@ -307,8 +319,12 @@ export class BotAutonomyRuntime {
       if (now - last < AUTONOMY_THRESHOLDS.fallbackIntervalMs) continue;
       const id = sweepEventId(botId, now);
       if (this.sweptIds.has(id)) continue;
-      await this.ensureFollower(botId);
+      const ready = await this.ensureFollower(botId);
       if (this.stopped) return;
+      if (!ready) {
+        this.deps.log.warn('autonomy sweep deferred: builtin routine not ready');
+        continue;
+      }
       try {
         const result = await this.deps.engine.publish(
           HOST_SESSIONS_SOURCE_ID,

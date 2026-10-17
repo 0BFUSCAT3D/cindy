@@ -7,7 +7,8 @@
  *   等你状态的时刻跨重启稳定；远程电脑离线保留最后状态；轮询失败退避，不形成重试风暴）。
  * - 现有覆盖缺口：新模块；autonomyRules 只测纯判定，不经过活动订阅、读库与远程轮询的组合时序。
  * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；主人点停止后灵动岛条目消失
- *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败。
+ *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败；远程任务两次轮询之间从权限请求
+ *   A 换到 B，仍显示 A。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
@@ -200,4 +201,39 @@ describe('TaskWatch remote polling', () => {
     await h.watch.sweep();
     expect(h.invokeRemote.mock.calls.length).toBe(calls + 1);
   });
+
+  it('re-reads the pending request on every poll while a remote task keeps waiting', async () => {
+    const requests = [
+      { kind: 'permission', requestId: 'req-A', toolName: 'Bash' },
+      { kind: 'permission', requestId: 'req-B', toolName: 'Write' },
+    ];
+    let poll = 0;
+    const h = harness({
+      devices: [{ deviceId: 'dev-1', name: 'Studio', online: true, eligible: true }],
+      invokeRemote: async (_deviceId, channel) => {
+        if (channel === 'maker:list-active') {
+          poll += 1;
+          return { format: 'active-sessions-v2', sessions: [{ sessionId: 'r1', isTurnRunning: true, activityPhase: 'needs-interaction' }] };
+        }
+        if (channel === 'local-db:sessions:get-many') {
+          return [{ id: 'r1', title: 'Remote deploy', source: 'desktop', status: 'active', hiddenAt: null, updatedAt: 9_000, messageCount: 3 }];
+        }
+        // 两次轮询之间远程任务从权限请求 A 直接换到 B，中间的「在跑」没被观察到。
+        return [{ request: requests[poll - 1] }];
+      },
+    });
+    await h.watch.start();
+    await h.watch.sweep();
+    const first = h.watch.get('dev-1::r1');
+    expect(first).toMatchObject({ phase: 'waiting-permission', pendingRequestId: 'req-A', pendingQuestion: 'Bash' });
+
+    h.advance(AUTONOMY_THRESHOLDS.remotePollMs);
+    await h.watch.sweep();
+    // 新请求是新的等待：「允许」对准 B，等待时刻从这次观察算起。
+    expect(h.watch.get('dev-1::r1')).toMatchObject({
+      phase: 'waiting-permission', pendingRequestId: 'req-B', pendingQuestion: 'Write', phaseSince: h.now(),
+    });
+    expect(h.invokeRemote.mock.calls.filter(([, channel]) => channel === 'maker:get-pending-interactions')).toHaveLength(2);
+  });
 });
+

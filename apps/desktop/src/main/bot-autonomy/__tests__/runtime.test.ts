@@ -12,7 +12,9 @@
  * - 最小失败输入：引擎重建后不重登记 → publish 抛 "not listening"；waiting 事件叫醒了非跟进者；
  *   跟进规则暂停后主人收不到提醒或被重复提醒；没有待处理任务也被兜底叫醒，或每 30 秒扫描重复叫醒；
  *   停止被当成做完叫醒伙伴；首次安装时事件赶在 ensure 之前发布、accepted=0 后永久丢失；伙伴主任务的欢迎轮出错
- *   后宿主把 errored 发给它自己，排在正在失败的主任务后面打转。
+ *   后宿主把 errored 发给它自己，排在正在失败的主任务后面打转；启动时第一次读归属失败，补快照里已出错的任务被按
+ *   「没人跟」结清、之后归属读到也不再发；内置规则落地失败仍发布（accepted=0 + 回执）后永久丢失；
+ *   120 字符的合法伙伴 id 拼出超过 128 字符的规则 id、永远没有内置规则。
  * - tier：unit（真实引擎 + 内存 load/save；状态表 IO 为内存 fake；时间由 now() 推进）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
@@ -20,11 +22,8 @@ import { RoutineEngine, type RoutineEngineDeps, type RoutineState } from '@cindy
 import type { AutonomyEngine } from '../runtime.js';
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  AUTONOMY_THRESHOLDS,
-  HOST_SESSIONS_SOURCE_ID,
-  builtinFollowUpRoutineId,
-} from '../../../shared/botAutonomy.js';
+import { AUTONOMY_THRESHOLDS, HOST_SESSIONS_SOURCE_ID } from '../../../shared/botAutonomy.js';
+import { builtinFollowUpRoutineId } from '../builtinRoutine.js';
 import { BotAutonomyRuntime } from '../runtime.js';
 import { TaskWatch, type LocalSessionMeta } from '../taskWatch.js';
 
@@ -53,7 +52,13 @@ function errored(sessionId: string): SessionActivitySnapshot {
   return { ...waiting(sessionId), phase: 'error', interactionKind: undefined, lastActivityAtMs: 5 } as SessionActivitySnapshot;
 }
 
-async function setup() {
+async function setup(options: {
+  /** 每次读归属前调用；抛错即这次读失败（模拟启动时读库 / 读文件出错）。 */
+  beforeOwnershipRead?: () => void;
+  creators?: Record<string, string>;
+  extraBots?: string[];
+  subscribeActivity?: (watch: TaskWatch) => (() => void) | null;
+} = {}) {
   let now = 1_000_000;
   let saved: RoutineState | null = null;
   const execute = vi.fn<RoutineEngineDeps['execute']>(async () => ({}));
@@ -71,6 +76,7 @@ async function setup() {
     ['sched', { status: 'active', allowSchedulerFollow: false, canonicalSessionId: 'sched-main' }],
     ['a', { status: 'active', allowSchedulerFollow: false, canonicalSessionId: 'a-main' }],
     ['paused-bot', { status: 'paused', allowSchedulerFollow: false }],
+    ...(options.extraBots ?? []).map((id) => [id, { status: 'active', allowSchedulerFollow: false }] as const),
   ]);
   const create = (engine: AutonomyEngine) => new BotAutonomyRuntime({
       engine,
@@ -79,7 +85,7 @@ async function setup() {
       isCurrent: () => true,
       remind,
       push: () => {},
-      subscribeActivity: () => () => {},
+      subscribeActivity: options.subscribeActivity ?? (() => () => {}),
       createWatch: (onChange) => new TaskWatch({
         now: () => now,
         log,
@@ -89,7 +95,10 @@ async function setup() {
         getPendingInteractions: () => [],
         readLocalSessions: async (ids) => ids.map(meta),
         readInterruptedSessions: async () => [],
-        readOwnership: async () => ({ bots, creatorBySession: new Map(), responsibleByBot: new Map() }),
+        readOwnership: async () => {
+          options.beforeOwnershipRead?.();
+          return { bots, creatorBySession: new Map(Object.entries(options.creators ?? {})), responsibleByBot: new Map() };
+        },
         readSchedulerOverride: () => ({ customized: true, schedulerBotId: 'sched' }),
         listRemoteDevices: async () => null,
         invokeRemote: async () => { throw new Error('unused'); },
@@ -281,6 +290,92 @@ describe('BotAutonomyRuntime with the routine engine', () => {
       // 工作台：自己的主任务不进自己的「等你 / 在做」；总调度仍能看到伙伴 a 的主任务。
       expect(runtime.glance('sched').waiting.map((r) => r.sessionId)).toEqual(['a-main']);
       expect(runtime.glance('a').waiting).toEqual([]);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  it('does not judge startup tasks before ownership has loaded once, even if the first read fails', async () => {
+    let ownershipReads = 0;
+    // 与 service 一致：订阅时把灵动岛当前快照同步补进状态表；启动时第一次读归属失败，下一次扫描才读到。
+    const t = await setup({
+      creators: { t1: 'a' },
+      beforeOwnershipRead: () => {
+        ownershipReads += 1;
+        if (ownershipReads === 1) throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' });
+      },
+      subscribeActivity: (watch) => {
+        watch.applyActivity('t1', errored('t1'));
+        return () => {};
+      },
+    });
+    const engine = await t.engine();
+    const runtime = await t.runtime(engine);
+    try {
+      // 让补快照的重算与它触发的判定都有机会先跑（setTimeout 0，不是真实等待）。
+      for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(t.execute).not.toHaveBeenCalled();
+      await runtime.sweep();
+      await vi.waitFor(() => expect(t.execute).toHaveBeenCalledTimes(1));
+      const [routine, run] = t.execute.mock.calls[0]!;
+      expect(routine.id).toBe(builtinFollowUpRoutineId('a'));
+      expect(run.events.map((e) => [e.event.type, e.event.subject, e.event.data.followerBotId])).toEqual([
+        ['errored', 't1', 'a'],
+      ]);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  it('keeps an event for the next scan when the built-in rule cannot be written yet', async () => {
+    const t = await setup();
+    const engine = await t.engine();
+    let failing = true;
+    const publish = vi.fn<AutonomyEngine['publish']>((...args) => engine.publish(...args));
+    const flaky: AutonomyEngine = {
+      registerSource: (source) => engine.registerSource(source),
+      publish,
+      ensureBuiltin: async (...args) => {
+        if (failing) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        return engine.ensureBuiltin(...args);
+      },
+    };
+    const runtime = t.create(flaky);
+    try {
+      await runtime.start({ timers: false });
+      runtime.watch.applyActivity('t1', errored('t1'));
+      await runtime.watch.settled();
+      // 规则落地失败：不发布、不结清，留到下一次扫描。
+      await runtime.evaluate();
+      expect(publish).not.toHaveBeenCalled();
+
+      failing = false;
+      await runtime.evaluate();
+      await vi.waitFor(() => expect(t.execute).toHaveBeenCalledTimes(1));
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(t.execute.mock.calls[0]![1].events.map((e) => [e.event.type, e.event.subject])).toEqual([['errored', 't1']]);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  it('gives a teammate with a long id a valid built-in rule id, and keeps short ids unchanged', async () => {
+    const longId = `b${'x'.repeat(119)}`;
+    const shortId = 'teammate-0123456789abc';
+    const t = await setup({ extraBots: [longId, shortId] });
+    const engine = await t.engine();
+    const runtime = await t.runtime(engine);
+    try {
+      // 已落盘的普通伙伴规则 id 不变：仍是前缀 + 伙伴 id。
+      expect(engine.list(shortId).map((r) => r.id)).toEqual([`builtin-follow-up-${shortId}`]);
+      // 120 字符的合法伙伴 id：拼接超过 128 字符，改用稳定的摘要 id，规则照样落地。
+      const id = builtinFollowUpRoutineId(longId);
+      expect(id).toMatch(/^[a-zA-Z0-9_-]{16,128}$/);
+      expect(builtinFollowUpRoutineId(longId)).toBe(id);
+      expect(engine.list(longId).map((r) => r.id)).toEqual([id]);
     } finally {
       runtime.stop();
       await engine.stop();
