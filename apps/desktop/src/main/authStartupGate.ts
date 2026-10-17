@@ -129,6 +129,23 @@ export class ColdStartAuthFallbackRegistry {
   }
 }
 
+export function commitColdStartRefreshIfCurrent<T>(input: {
+  registry: ColdStartAuthFallbackRegistry;
+  flowEpoch: number;
+  currentEpoch: number;
+  commit: () => T;
+}):
+  | { superseded: true }
+  | { superseded: false; flowEpoch: number; value: T } {
+  const result = input.registry.commitIfCurrent({
+    flowEpoch: input.flowEpoch,
+    currentEpoch: input.currentEpoch,
+    commit: input.commit,
+  });
+  if (!result.committed) return { superseded: true };
+  return { superseded: false, flowEpoch: input.currentEpoch, value: result.value };
+}
+
 /**
  * 登录准备态(「正在连接登录服务」)最多阻塞 UI 的时长。getProviders 走
  * CindyAuthClient 默认 15s AbortController,但黑洞 / captive-portal 下 Electron

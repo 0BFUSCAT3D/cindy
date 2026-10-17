@@ -66,6 +66,7 @@ import {
   awaitWithStartupTimeout,
   mapLoginProvidersLoadFailure,
   ColdStartAuthFallbackRegistry,
+  commitColdStartRefreshIfCurrent,
 } from './authStartupGate';
 import { syncCanaryFlagAfterAuth } from './canaryFlagSync';
 import {
@@ -4769,22 +4770,21 @@ async function runColdStartRefreshFlow(
    */
   let flowAuthEpoch = epochAtStart;
   const epochChanged = (point: string): boolean => {
-    const fallbackCommit = coldStartTimeoutFallbacks.commitIfCurrent({
+    const resolution = commitColdStartRefreshIfCurrent({
+      registry: coldStartTimeoutFallbacks,
       flowEpoch: flowAuthEpoch,
       currentEpoch: authStateEpoch,
       commit: () => undefined,
     });
-    if (!fallbackCommit.committed) {
-      // Either nothing moved, or the only move was our own fallback — adopt the
-      // current epoch as this flow's own. Assigning is a no-op in the former case.
-      flowAuthEpoch = authStateEpoch;
+    if (!resolution.superseded) {
+      // A committed result means the epoch is unchanged or every transition is
+      // this flow's startup fallback. Adopt the committed epoch before post-login sync.
+      flowAuthEpoch = resolution.flowEpoch;
       return false;
     }
     log.warn(
       `cold-start refresh flow superseded by manual auth change (${point}) — discarding late result`,
     );
-    // A real user auth change landed on top of the fallback: this flow's epoch is
-    // now stale for good, so stop exempting it.
     coldStartTimeoutFallbacks.clear();
     return true;
   };

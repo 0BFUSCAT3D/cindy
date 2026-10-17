@@ -16,6 +16,7 @@ import {
   awaitLoginProvidersWithPreparingGate,
   awaitWithStartupTimeout,
   ColdStartAuthFallbackRegistry,
+  commitColdStartRefreshIfCurrent,
   mapLoginProvidersLoadFailure,
 } from '../authStartupGate';
 
@@ -212,7 +213,8 @@ describe('ColdStartAuthFallbackRegistry', () => {
 
     resolveRefresh('owner');
     const refreshedUser = await refresh;
-    const commit = registry.commitIfCurrent({
+    const commit = commitColdStartRefreshIfCurrent({
+      registry,
       flowEpoch,
       currentEpoch,
       commit: () => {
@@ -221,7 +223,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
       },
     });
 
-    expect(commit).toEqual({ committed: true, value: 'owner' });
+    expect(commit).toEqual({ superseded: false, flowEpoch: 9, value: 'owner' });
     expect(committedUser).toBe('owner');
   });
 
@@ -230,9 +232,13 @@ describe('ColdStartAuthFallbackRegistry', () => {
     registry.record(8, 9);
     const commit = vi.fn(() => 'stale-owner');
 
-    expect(registry.commitIfCurrent({ flowEpoch: 7, currentEpoch: 9, commit })).toEqual({
-      committed: false,
+    const rejected = commitColdStartRefreshIfCurrent({
+      registry,
+      flowEpoch: 7,
+      currentEpoch: 9,
+      commit,
     });
+    expect(rejected).toEqual({ superseded: true });
     expect(commit).not.toHaveBeenCalled();
   });
 
