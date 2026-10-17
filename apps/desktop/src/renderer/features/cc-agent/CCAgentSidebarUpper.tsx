@@ -197,8 +197,9 @@ import {
   holdSidebarViewedPriority,
   ProjectsSection,
   SessionGroupNode,
+  viewedPriorityHold,
 } from './sidebar/sections/ProjectsSection';
-import { partitionCindyMakeSessions, sortSessionsForMainList } from './lib/mainListModel';
+import { advanceViewedPriorityHold, partitionCindyMakeSessions, sortSessionsForMainList } from './lib/mainListModel';
 import { toStoredSessionTitle } from './lib/sessionDisplayTitle';
 import {
   getVisibleSidebarSessionIds,
@@ -1947,6 +1948,58 @@ function ExpandedView({
     selectedMachineId,
   ]);
 
+  const projectPriorityProjection = useMemo(() => {
+    const waiting = new Set<string>(urgentSet);
+    for (const [sessionId, kind] of attentionKinds) {
+      if (kind === 'awaiting' || kind === 'error') waiting.add(sessionId);
+    }
+    const natural = sidebarPriorityContext(
+      {
+        runningSessionIds: displayRunningSessionIds,
+        attentionSessionIds: sidebarNotifications,
+        waitingSessionIds: waiting,
+      },
+      [
+        ...visibleProjects.flatMap((project) => project.sessions),
+        ...groups.bots.flatMap((bot) => bot.sessions),
+        ...visibleDialogues,
+        ...visibleUnclassified,
+      ],
+      (session) => getRemoteSessionActivity(session.id, session.deviceLinkDeviceId)?.phase,
+    );
+    const hold = advanceViewedPriorityHold(
+      {
+        prevViewedId: viewedPriorityHold.prevViewedId,
+        heldPriorityRanks: new Map(viewedPriorityHold.heldPriorityRanks),
+        recentlyViewedAtMs: new Map(viewedPriorityHold.recentlyViewedAtMs),
+      },
+      viewedSessionId ?? activeSessionId,
+      natural,
+      Date.now(),
+    );
+    return {
+      context: {
+        ...natural,
+        heldPriorityRanks: hold.heldPriorityRanks,
+        recentlyViewedAtMs: hold.recentlyViewedAtMs,
+      },
+      hold,
+    };
+  }, [
+    activeSessionId,
+    attentionKinds,
+    displayRunningSessionIds,
+    groups.bots,
+    remoteActivityRevision,
+    sidebarNotifications,
+    urgentSet,
+    viewedSessionId,
+    visibleDialogues,
+    visibleProjects,
+    visibleUnclassified,
+  ]);
+  const projectPriorityContext = projectPriorityProjection.context;
+
   const visibleProjectsWithVendor = useMemo(() => {
     const unpinnedProjects = visibleProjects.filter(
       (project) =>
@@ -1975,6 +2028,7 @@ function ExpandedView({
       hostProjectSort.order,
       hostProjectSort.projectOrder,
       localPlatform,
+      projectPriorityContext,
     );
   }, [
     visibleProjects,
@@ -1983,6 +2037,7 @@ function ExpandedView({
     vendorPredicate,
     filter.vendor,
     hostProjectSort,
+    projectPriorityContext,
   ]);
 
   // 折叠 rail 没有独立的 Pinned 项目瓷砖，因此项目面板必须保留置顶项目，
@@ -2011,8 +2066,9 @@ function ExpandedView({
       hostProjectSort.order,
       hostProjectSort.projectOrder,
       localPlatform,
+      projectPriorityContext,
     );
-  }, [visibleProjects, vendorPredicate, filter.vendor, hostProjectSort, localPlatform]);
+  }, [visibleProjects, vendorPredicate, filter.vendor, hostProjectSort, localPlatform, projectPriorityContext]);
 
   /**
    * Pinned 拖拽落定回调。SortableList 给的是当前 visible（含 vendor / projectsFilter
@@ -3952,6 +4008,8 @@ function ExpandedView({
                   isAllCollapsed={collapse.isAllCollapsed}
                   activeSessionId={activeSessionId}
                   viewedSessionId={viewedSessionId}
+                  priorityContext={projectPriorityContext}
+                  priorityHold={projectPriorityProjection.hold}
                   runningSessionIds={displayRunningSessionIds}
                   attachedSessionIds={attachedSessionIds}
                   notifications={sidebarNotifications}
