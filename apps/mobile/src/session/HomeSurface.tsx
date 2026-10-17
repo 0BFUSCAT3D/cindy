@@ -3680,6 +3680,7 @@ function ProjectDragOverlay({
 
 function HomeProjectWindowAnchorTracker({
   childOffsets,
+  deferOffscreen = false,
   onAnchorChange,
   projectHeaderHeight,
   projectLayoutRevision,
@@ -3688,6 +3689,7 @@ function HomeProjectWindowAnchorTracker({
   viewportHeight,
 }: {
   childOffsets: readonly number[];
+  deferOffscreen?: boolean;
   onAnchorChange(anchor: number): void;
   projectHeaderHeight: SharedValue<number>;
   projectLayoutRevision: SharedValue<number>;
@@ -3707,6 +3709,7 @@ function HomeProjectWindowAnchorTracker({
       if (!layout || !Number.isFinite(layout.pageY)) return null;
       return resolveHomeProjectChildAnchor({
         childOffsets,
+        preloadDistance: deferOffscreen ? viewportHeight : 0,
         projectHeaderHeight: projectHeaderHeight.value,
         projectTop: layout.pageY,
         shift: PROJECT_CHILD_WINDOW_SHIFT,
@@ -3715,12 +3718,14 @@ function HomeProjectWindowAnchorTracker({
       });
     },
     (next, previous) => {
-      // A temporarily unavailable native view is not evidence that its rows
-      // left the viewport. Keep the last bounded window until measured again.
-      if (next === null || next === previous) return;
+      // Project blocks retain their window until the outer list recycles them.
+      // Nested groups instead release rows beyond the preload band, avoiding
+      // one full native window per expanded group. Failed measurement retains
+      // either window; it is not proof that the group has left the screen.
+      if (next === null || (next < 0 && !deferOffscreen) || next === previous) return;
       runOnJS(onAnchorChange)(next);
     },
-    [childOffsets, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
+    [childOffsets, deferOffscreen, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
   );
   return null;
 }
@@ -3818,7 +3823,7 @@ function ProjectRow({
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const projectRef = useAnimatedRef<View>();
   const prepareDisclosure = useDisclosurePrepare();
-  const [windowAnchor, setWindowAnchor] = useState(-1);
+  const [windowAnchor, setWindowAnchor] = useState(0);
   const projectLayoutRevision = useSharedValue(0);
   const estimatedChildHeights = useMemo(() => {
     const expandedKeys = new Set(expandedAutomationGroups);
@@ -3828,11 +3833,10 @@ function ProjectRow({
     () => buildHomeProjectChildOffsets(estimatedChildHeights),
     [estimatedChildHeights],
   );
-  // Keep the common five-row preview unchanged. A large expanded group keeps
-  // its complete estimated height as a spacer until native layout establishes
-  // that its child area intersects the viewport. This avoids mounting an
-  // off-screen child window just because the folder header entered the outer
-  // SectionList render window.
+  // Render a bounded child window immediately, including before native layout
+  // is ready. A full-height placeholder here becomes visible when scrolling
+  // into a project before its measurement reaches JS. The outer SectionList
+  // still bounds mounted groups, and ordinary five-row previews are unchanged.
   const windowingEnabled = shouldWindowHomeProjectChildren({
     collapsed,
     itemCount: visibleSessions.length,
@@ -3840,21 +3844,13 @@ function ProjectRow({
     threshold: PROJECT_CHILD_WINDOW_THRESHOLD,
   });
   const scrollY = homeScrollY;
-  const childContentHeight = estimatedChildOffsets[estimatedChildOffsets.length - 1] ?? 0;
   const childWindow = windowingEnabled
-    ? windowAnchor >= 0
-      ? resolveHomeProjectChildWindow({
+    ? resolveHomeProjectChildWindow({
         anchor: windowAnchor,
         childOffsets: estimatedChildOffsets,
         overscan: PROJECT_CHILD_WINDOW_OVERSCAN,
         windowSize: PROJECT_CHILD_WINDOW_SIZE,
       })
-      : {
-          end: 0,
-          leadingSpacerHeight: 0,
-          start: 0,
-          trailingSpacerHeight: childContentHeight,
-        }
     : {
         end: visibleSessions.length,
         leadingSpacerHeight: 0,
@@ -4655,6 +4651,8 @@ function AutomationGroupChildren({
   const childrenRef = useAnimatedRef<View>();
   const layoutRevision = useSharedValue(0);
   const headerHeight = useSharedValue(0);
+  // A project can retain many expanded automation groups. Preload nearby runs
+  // after layout instead of multiplying every project slot by a child window.
   const [windowAnchor, setWindowAnchor] = useState(-1);
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const childOffsets = buildHomeProjectChildOffsets(visibleItems.map((child) => estimateHomeSessionRowHeight(child, textMode)));
@@ -4673,6 +4671,7 @@ function AutomationGroupChildren({
       onLayout={() => { if (windowingEnabled) layoutRevision.value += 1; }}
       style={styles.automationGroupChildren} testID={childrenTestID ?? `${testID}.automationGroupChildren`}>
       {windowingEnabled && viewport ? <HomeProjectWindowAnchorTracker
+        deferOffscreen
         childOffsets={childOffsets} onAnchorChange={setWindowAnchor}
         projectHeaderHeight={headerHeight} projectLayoutRevision={layoutRevision}
         projectRef={childrenRef} scrollY={viewport.scrollY} viewportHeight={viewport.viewportHeight}
