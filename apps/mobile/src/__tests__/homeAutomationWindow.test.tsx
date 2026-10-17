@@ -65,10 +65,9 @@ it('bounds 200 recent runs before layout, while scrolling, and when reversing to
     const { elements, onOpenSession } = renderChildren(200, anchor);
     const rows = elements.filter(node => node.type === 'row');
     expect(rows.length).toBeLessThanOrEqual(23);
-    expect(rows.length).toBe(anchor < 0 ? 0 : anchor === 196 ? 15 : 23);
+    expect(rows.length).toBe(anchor === 196 ? 15 : 23);
     const spacerHeight = elements.filter(node => node.type === 'view').reduce((sum, node) => sum + (node.props.style?.height ?? 0), 0);
     expect(spacerHeight + rows.length * 60).toBe(200 * 60);
-    if (anchor < 0) continue;
     const first = rows[0];
     first.props.onOpenSession(first.props.item);
     expect(onOpenSession).toHaveBeenCalledWith(first.props.item);
@@ -78,6 +77,16 @@ it('bounds 200 recent runs before layout, while scrolling, and when reversing to
       expect(rows.at(-1)!.props.hideDivider).toBe(true);
     }
   }
+});
+
+// Regression: a 23-task folder entered the viewport as a full-height blank.
+// Existing cases only checked bounded mounting after measurement. Unit tier:
+// exercise the production renderer before any native layout/scroll callback.
+it('renders a 23-row group immediately instead of waiting for native measurement', () => {
+  const rows = renderChildren(23, -1).elements.filter(node => node.type === 'row');
+  expect(rows).toHaveLength(23);
+  expect(rows[0].props.item.session.id).toBe('s0');
+  expect(rows.at(-1)!.props.item.session.id).toBe('s22');
 });
 
 it('preserves small previews and the view-all action for old runs', () => {
@@ -156,7 +165,7 @@ it('connects native layout and scroll measurements through the real tracker to r
     </Viewport.Provider>));
     frame(200, 0);
     expect(measure).not.toHaveBeenCalled();
-    expect(rows()).toHaveLength(0);
+    expect(rows()).toHaveLength(23);
     act(() => onLayout());
     frame(200, 0);
     expect(rows()).toHaveLength(23);
@@ -170,7 +179,9 @@ it('connects native layout and scroll measurements through the real tracker to r
     frame(-11800, 12000);
     expect(rows().at(-1)?.dataset.row).toBe('s199');
     frame(-12000, 12200);
-    expect(rows()).toHaveLength(0); // Fully outside the viewport.
+    // Leaving the viewport must not discard the last bounded window: a
+    // reverse scroll can reveal it before the JS update is delivered.
+    expect(rows().at(-1)?.dataset.row).toBe('s199');
     frame(-11800, 12000);
     expect(rows().at(-1)?.dataset.row).toBe('s199');
     frame(200, 0);

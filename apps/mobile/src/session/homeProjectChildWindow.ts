@@ -50,9 +50,9 @@ export function findHomeProjectChildIndex(
 }
 
 /**
- * Keeps a large nested group as a spacer until its child area intersects the
- * viewport. This prevents an off-screen folder header from eagerly mounting a
- * complete child window during a grouping-mode switch.
+ * Finds the visible child anchor. A negative result means the group is outside
+ * the viewport; callers retain their bounded window until the outer list
+ * recycles the group so reverse scrolling never starts with an empty block.
  */
 export function resolveHomeProjectChildAnchor(input: {
   childOffsets: readonly number[];
