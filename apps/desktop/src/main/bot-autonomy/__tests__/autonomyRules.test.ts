@@ -8,6 +8,7 @@
  * - 现有覆盖缺口：新模块，无既有覆盖；taskWatch / runtime 测试只走代表路径，不穷举跟进者矩阵与阈值边界。
  * - 最小失败输入：creator 暂停且未允许代跟 → 必须 null（不是总调度）；同一 (类型, phaseSince) 第二次判定
  *   不再出现；第 7 次同类事件被截停；另一台电脑上的任务在这台电脑发了事件（两台电脑的同名伙伴各跟一遍）；
+ *   一次 10 分钟以上的长构建（工具在途、没有活动事件）被判卡住；
  *   非总调度伙伴看不到别人开的任务。
  * - tier：unit（纯函数，无 IO、无计时器）。
  */
@@ -18,9 +19,10 @@ import {
   DEFAULT_SCHEDULER_BOT_ID,
   type WatchedSession,
 } from '../../../shared/botAutonomy.js';
-import { AutonomyEventLedger } from '../events.js';
+import { AutonomyEventLedger, dueEventType } from '../events.js';
 import { deriveFollowerBotId, resolveSchedulerBotId, type FollowerBotState } from '../follower.js';
 import { projectBotGlance } from '../glance.js';
+import { summarizeInteraction } from '../phase.js';
 
 const bot = (status: string, allowSchedulerFollow = false, shadowed = false): FollowerBotState => ({
   status, allowSchedulerFollow, shadowed,
@@ -112,6 +114,16 @@ describe('autonomy event thresholds and loop guard', () => {
   });
 });
 
+describe('stuck while a tool call is in flight', () => {
+  it('waits for the longer in-tool threshold before calling a running task stuck', () => {
+    const t0 = 0;
+    const longBuild = row({ phase: 'running', phaseSince: t0, lastActivityAt: t0, toolInFlight: true });
+    expect(dueEventType(longBuild, t0 + AUTONOMY_THRESHOLDS.stuckAfterMs)).toBeNull();
+    expect(dueEventType(longBuild, t0 + AUTONOMY_THRESHOLDS.stuckInToolAfterMs)).toBe('stuck');
+    expect(dueEventType({ ...longBuild, toolInFlight: false }, t0 + AUTONOMY_THRESHOLDS.stuckAfterMs)).toBe('stuck');
+  });
+});
+
 describe('workbench glance scope', () => {
   it('shows every task to the scheduler but only own or taken-over tasks to other teammates', () => {
     const now = 10 * 60_000;
@@ -149,5 +161,15 @@ describe('workbench glance scope', () => {
     expect(all.working.map((r) => r.sessionId)).toEqual(['taken', 'remote']);
     expect(all.doneToday).toBe(2);
     expect(all.offlineDevices).toEqual(['Old PC']);
+  });
+});
+
+describe('waiting-row summary for a permission request', () => {
+  it('shows an MCP tool as "server · tool" instead of the raw mcp__ identifier, and keeps other names', () => {
+    // Seen in the dev build: the glance row title was `mcp__cindy_helper__call_tool` (programmer-speak on a user-facing row).
+    const mcp = summarizeInteraction({ kind: 'permission', requestId: 'r1', toolName: 'mcp__cindy_helper__call_tool' });
+    expect(mcp).toEqual({ summary: 'cindy_helper · call_tool', waitingFor: 'permission', requestId: 'r1' });
+    const bash = summarizeInteraction({ kind: 'permission', requestId: 'r2', title: 'bash' });
+    expect(bash?.summary).toBe('bash');
   });
 });

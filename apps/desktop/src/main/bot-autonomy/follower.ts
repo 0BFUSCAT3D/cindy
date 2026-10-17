@@ -15,6 +15,8 @@ export interface FollowerBotState {
   allowSchedulerFollow: boolean;
   /** 云端伙伴的主力电脑在别处：本机不运行它的例行任务，视为本机不可用。 */
   shadowed?: boolean;
+  /** 资料上登记的主任务 id（bot_profiles.canonical_session_id）。 */
+  canonicalSessionId?: string | null;
 }
 
 export type FollowerBotDirectory = ReadonlyMap<string, FollowerBotState>;

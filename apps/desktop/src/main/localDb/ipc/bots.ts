@@ -48,6 +48,7 @@ import {
 } from '../../maker-host/bot-model-chain-settings-store.js';
 import { extractMessagePreview, sessionCreateToRow, sessionToCamel } from '../mapper.js';
 import { normalizeBotToolCapabilities } from '../../../shared/botCapabilitySelection.js';
+import type { BotWorkbench } from '../../../shared/botWorkbench.js';
 import {
   botProfileContentChanged,
   botProfileModelSelectionChanged,
@@ -219,6 +220,7 @@ import { buildDefaultBotIdentity } from '../../../shared/botProfileDefaults.js';
 import { coordinateBotCanonicalReplacement } from '../../maker-ipc/botCanonicalReplacementCoordinator.js';
 import { searchConversations } from '../conversationSearch.js';
 import { registerBotAutonomyIpc } from '../../bot-autonomy/ipc.js';
+import { signalBotAutonomyBotsChanged } from '../../bot-autonomy/botsChangedSignal.js';
 import {
   BOT_FAILURE_REASONS,
   isBotFailureAttentionWorthy,
@@ -1351,6 +1353,8 @@ export function broadcastBotProfileChanged(payload: {
   change: 'created' | 'updated';
 }): void {
   broadcastBotRemoteResourceChanged(payload.botId);
+  // 伙伴自主跟进：新建伙伴、改「它开的任务也交给总调度跟」立即生效。
+  signalBotAutonomyBotsChanged();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {

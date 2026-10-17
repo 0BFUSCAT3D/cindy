@@ -7,7 +7,8 @@
  *   cindy-bots-runtime.md §6.3「总调度唯一，默认 Cindy 助理」。
  * - 现有覆盖缺口：overrideSettingsFile.test 只测通用文件层，不测 null 作为有意义的 override（关掉总调度）
  *   与「未自定义」的区分。
- * - 最小失败输入：写 null 后若不落盘（preserveDefaults 缺失），重新读会回到默认 Cindy 助理。
+ * - 最小失败输入：写 null 后若不落盘（preserveDefaults 缺失），重新读会回到默认 Cindy 助理；override 文件损坏时
+ *   回落默认，把主人关掉的总调度悄悄打开（必须失败关闭）。
  * - tier：unit（临时目录真实文件，无计时器）。
  */
 import fs from 'node:fs';
@@ -62,6 +63,18 @@ describe('bot autonomy scheduler setting', () => {
 
     await resetBotAutonomySettings({ rootPath });
     expect(readBotAutonomySettingsOverride({ rootPath }).customized).toBe(false);
+    expect(effective()).toBe(DEFAULT_SCHEDULER_BOT_ID);
+  });
+
+  it('fails closed when the override file exists but cannot be read, and reset recovers the default', async () => {
+    const file = path.join(rootPath, 'bot-autonomy-settings.json');
+    fs.writeFileSync(file, '{"schedulerBotId": nul');
+    expect(readBotAutonomySettingsOverride({ rootPath })).toEqual({ customized: true, schedulerBotId: null });
+    expect(effective()).toBeNull();
+    // 坏文件保留给主人检查；恢复默认删掉它，重新跟随默认。
+    expect(fs.readFileSync(file, 'utf8')).toBe('{"schedulerBotId": nul');
+    await resetBotAutonomySettings({ rootPath });
+    expect(fs.existsSync(file)).toBe(false);
     expect(effective()).toBe(DEFAULT_SCHEDULER_BOT_ID);
   });
 });

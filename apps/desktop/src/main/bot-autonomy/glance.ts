@@ -47,6 +47,8 @@ export function projectBotGlance(input: GlanceInput): BotGlance {
   const minutes = (since: number) => Math.max(0, Math.floor((input.now - since) / 60_000));
   for (const row of input.rows) {
     if (!inScope(row.sessionId, row.creatorBotId)) continue;
+    // 自己的主任务不进自己的工作台：看到自己在做事只是噪音。
+    if ((row.canonicalOfBotId ?? null) === input.botId) continue;
     const base = {
       sessionId: row.sessionId,
       deviceId: row.deviceId,

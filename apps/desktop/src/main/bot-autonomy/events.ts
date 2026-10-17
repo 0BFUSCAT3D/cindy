@@ -62,8 +62,11 @@ export function dueEventType(row: WatchedSession, now: number): AutonomyEventTyp
   // 另一台电脑上的任务由那台电脑上的伙伴跟：这里只进工作台，不发事件。
   if (!row.online || row.deviceId !== null) return null;
   switch (row.phase) {
-    case 'running':
-      return now - Math.max(row.lastActivityAt, row.phaseSince) >= AUTONOMY_THRESHOLDS.stuckAfterMs ? 'stuck' : null;
+    case 'running': {
+      // 前台工具调用在途（例如一次长构建）期间没有活动事件：用更长的阈值，不把健康的长调用当卡住。
+      const threshold = row.toolInFlight ? AUTONOMY_THRESHOLDS.stuckInToolAfterMs : AUTONOMY_THRESHOLDS.stuckAfterMs;
+      return now - Math.max(row.lastActivityAt, row.phaseSince) >= threshold ? 'stuck' : null;
+    }
     case 'waiting-answer':
     case 'waiting-permission':
       return now - row.phaseSince >= AUTONOMY_THRESHOLDS.waitingAfterMs ? 'waiting' : null;
@@ -73,7 +76,8 @@ export function dueEventType(row: WatchedSession, now: number): AutonomyEventTyp
       return 'usage-limit';
     case 'finished':
       // 自动化运行的任务有自己的结果通知，「做完」不再叫醒伙伴；卡住 / 等你 / 出错照常。
-      return row.source === 'routine' ? null : 'finished';
+      // 伙伴主任务的一轮回复做完不是「任务做完」：否则别的伙伴每回一句话都会叫醒总调度。
+      return row.source === 'routine' || row.canonicalOfBotId ? null : 'finished';
     default:
       return null;
   }

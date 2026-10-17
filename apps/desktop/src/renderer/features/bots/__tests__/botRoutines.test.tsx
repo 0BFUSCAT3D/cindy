@@ -263,6 +263,10 @@ it('shows the host-owned follow-up as a pause-only built-in row that never opens
 
   const toggle = await screen.findByRole('switch', { name: 'routines.builtinFollowUp.name' });
   expect(screen.queryByText('follow-up')).toBeNull();
+  // 内置规则的触发条件很多且来源重复，只写一句固定白话，不逐条列出。
+  const row = toggle.parentElement!;
+  expect(row.textContent).toContain('routines.builtinFollowUp.hint');
+  expect(row.textContent).not.toContain('routines.everyMinutes');
   fireEvent.click(screen.getByText('routines.builtinFollowUp.name'));
   expect(screen.queryByLabelText('routines.instructions')).toBeNull();
 

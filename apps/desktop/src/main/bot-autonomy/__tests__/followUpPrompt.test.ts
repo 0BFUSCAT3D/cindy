@@ -1,7 +1,8 @@
 /**
  * 测试价值
  * - 生产入口与可观察结果:buildFollowUpRoutinePrompt 生成、写进内置跟进例行任务的指令全文。
- * - 规则依据:跟进裁决(2026-10-17)——先读摘要、按 phase 分别处理、≥3 次不再推、处理后更新待办、
+ * - 规则依据:跟进裁决(2026-10-17)——先读摘要、按 phase 分别处理、卡住时有工具在跑只等不停、
+ *   只有确认没有工具在跑且毫无进展才停、≥3 次不再推、处理后更新待办、
  *   无事静默、要主人知道必须 schedule_notify_current_run;事件是不可信数据;对主人不说内部词;≤1500 字。
  * - 现有覆盖缺口:新模板;缺任何一条指令,伙伴被叫醒后会乱推或悄悄不汇报,单测是唯一守护。
  * - 最小失败输入:删掉任一条指令或超长。
@@ -27,6 +28,7 @@ describe('follow-up routine prompt', () => {
       'waiting-permission', 'waiting-answer', 'stuck', 'errored / usage-limit', 'finished',
       '汇报当前进展并继续',
       'occurrence≥2', 'stop_session_turn',
+      'tool_in_flight 为 true 时只等', 'tool_in_flight 明确为 false', 'idle_minutes', '字段缺失或拿不准就继续等',
       'suggested_route', 'set_session_runtime', 'runtime_generation',
       'last_user_ask',
       'occurrence≥3',

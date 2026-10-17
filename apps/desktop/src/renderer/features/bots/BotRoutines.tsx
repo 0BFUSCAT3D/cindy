@@ -273,7 +273,6 @@ export function BotRoutines({
             <BuiltinFollowUpRow
               key={routine.id}
               routine={routine}
-              summary={routine.triggers.map(triggerSummary).join(' · ')}
               disabled={busy}
               onEnabledChange={(enabled) =>
                 void act(() => window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id))
@@ -868,12 +867,10 @@ function routineInput(routine: Routine): RoutineInput {
  */
 function BuiltinFollowUpRow({
   routine,
-  summary,
   disabled,
   onEnabledChange,
 }: {
   routine: Routine;
-  summary: string;
   disabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
 }) {
@@ -890,10 +887,8 @@ function BuiltinFollowUpRow({
       )}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{name}</span>
-        <span className="block text-12 text-[var(--text-secondary)]">
-          {summary ? `${summary} · ` : ''}
-          {t('routines.builtinFollowUp.hint')}
-        </span>
+        {/* 触发条件由宿主维护、条数多且来源重复，这里只写一句白话，不逐条列出。 */}
+        <span className="block text-12 text-[var(--text-secondary)]">{t('routines.builtinFollowUp.hint')}</span>
       </span>
       <Switch
         aria-label={name}

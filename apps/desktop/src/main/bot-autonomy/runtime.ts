@@ -20,7 +20,7 @@ import {
   type BotGlance,
   type WatchedSession,
 } from '../../shared/botAutonomy.js';
-import { buildFollowUpRoutineInput } from './builtinRoutine.js';
+import { FOLLOW_UP_BUILTIN_VERSION, buildFollowUpRoutineInput } from './builtinRoutine.js';
 import {
   AutonomyEventLedger,
   hostSessionsSource,
@@ -65,7 +65,8 @@ export class BotAutonomyRuntime {
   private readonly inflight = new Set<string>();
   private readonly reminded = new Map<string, number>();
   private readonly ensured = new Set<string>();
-  private readonly ensuring = new Set<string>();
+  /** 正在对齐的内置规则：并发的 ensure 与发布共用同一次写入。 */
+  private readonly ensuring = new Map<string, Promise<void>>();
   /** 伙伴上次被叫醒（任一事件被它的规则接收）的时刻；启动时视为刚叫醒过，避免重启后一起白跑。 */
   private readonly lastWokenAt = new Map<string, number>();
   private readonly sweptIds = new Set<string>();
@@ -93,6 +94,8 @@ export class BotAutonomyRuntime {
     await this.ensureBuiltins();
     await this.evaluate();
     this.schedulePush();
+    // start 期间可能已被停止（换账号 / 引擎重建）：不再起定时器，免得泄漏。
+    if (this.stopped) return;
     if (options.timers !== false) {
       this.sweepTimer = setInterval(() => { void this.sweep(); }, SWEEP_INTERVAL_MS);
       this.sweepTimer.unref?.();
@@ -192,23 +195,42 @@ export class BotAutonomyRuntime {
     }
   }
 
-  private async ensureOne(botId: string): Promise<void> {
-    if (this.stopped || this.ensuring.has(botId) || !this.deps.isCurrent()) return;
+  private ensureOne(botId: string): Promise<void> {
+    if (this.stopped || !this.deps.isCurrent()) return Promise.resolve();
+    const inflight = this.ensuring.get(botId);
+    if (inflight) return inflight;
     const id = builtinFollowUpRoutineId(botId);
     if (!ROUTINE_ID_PATTERN.test(id)) {
       this.ensured.add(botId);
       this.deps.log.warn('builtin routine skipped: unsupported teammate id');
-      return;
+      return Promise.resolve();
     }
-    this.ensuring.add(botId);
-    try {
-      await this.deps.engine.ensureBuiltin(botId, 'follow-up', buildFollowUpRoutineInput(botId), id);
-      if (!this.stopped) this.ensured.add(botId);
-    } catch (error) {
-      this.deps.log.warn('builtin routine ensure failed', { error: errorCode(error) });
-    } finally {
-      this.ensuring.delete(botId);
-    }
+    const run = (async () => {
+      try {
+        await this.deps.engine.ensureBuiltin(
+          botId,
+          'follow-up',
+          buildFollowUpRoutineInput(botId),
+          id,
+          FOLLOW_UP_BUILTIN_VERSION,
+        );
+        if (!this.stopped) this.ensured.add(botId);
+      } catch (error) {
+        this.deps.log.warn('builtin routine ensure failed', { error: errorCode(error) });
+      } finally {
+        this.ensuring.delete(botId);
+      }
+    })();
+    this.ensuring.set(botId, run);
+    return run;
+  }
+
+  /**
+   * 发布前先确保跟进者的内置规则已落地：首次安装或新伙伴时，事件若赶在 ensure 之前发布，
+   * 引擎会记下回执却没有规则接收（accepted=0），这次事件就永久丢了。
+   */
+  private async ensureFollower(botId: string): Promise<void> {
+    if (!this.ensured.has(botId)) await this.ensureOne(botId);
   }
 
   /** 判定并发布阈值事件。可重入：同一事件 id 在途时不重复处理。 */
@@ -238,6 +260,8 @@ export class BotAutonomyRuntime {
       this.remindOwner(candidate, now);
       return;
     }
+    await this.ensureFollower(candidate.row.followerBotId);
+    if (this.stopped) return;
     let accepted: number;
     try {
       const result = await this.deps.engine.publish(
@@ -283,6 +307,8 @@ export class BotAutonomyRuntime {
       if (now - last < AUTONOMY_THRESHOLDS.fallbackIntervalMs) continue;
       const id = sweepEventId(botId, now);
       if (this.sweptIds.has(id)) continue;
+      await this.ensureFollower(botId);
+      if (this.stopped) return;
       try {
         const result = await this.deps.engine.publish(
           HOST_SESSIONS_SOURCE_ID,

@@ -70,6 +70,15 @@ export function fallbackDigestPhase(activity: TaskDigestActivity | null): TaskDi
   }
 }
 
+/**
+ * 观察层是否看到有前台工具调用在途(长时间构建 / 测试时任务看起来像卡住)。观察层只对本机任务
+ * 掌握这个事实(另一台电脑的行缺省为 false,并不代表没有),所以只有本机且字段存在时才给出;
+ * 否则返回 undefined,摘要里不出现 tool_in_flight,伙伴按「不确定」处理。
+ */
+export function watchedToolInFlight(watched: WatchedSession | null, local: boolean): boolean | undefined {
+  return local && typeof watched?.toolInFlight === 'boolean' ? watched.toolInFlight : undefined;
+}
+
 function minutesSince(now: number, since: number | null | undefined): number | null {
   if (typeof since !== 'number' || !Number.isFinite(since) || since <= 0) return null;
   return Math.max(0, Math.floor((now - since) / 60_000));
@@ -135,6 +144,7 @@ export function createTaskDigestReader(deps: TaskDigestDeps) {
         ok: true,
         digest: assemble({
           key, now, watched, facts, activity, exchange, prStatus,
+          local: false,
           device: watched?.deviceName ?? deviceName ?? deviceId,
           queuedCount: null,
           // 跨电脑换模型没有 expected_generation,set_session_runtime 只支持本机:不给建议。
@@ -160,6 +170,7 @@ export function createTaskDigestReader(deps: TaskDigestDeps) {
       ok: true,
       digest: assemble({
         key, now, watched, facts, activity, exchange, prStatus, queuedCount, suggestedRoute,
+        local: true,
         device: null,
         runtimeGeneration: activity?.runtimeGeneration ?? null,
       }),
@@ -178,10 +189,13 @@ function assemble(input: {
   queuedCount: number | null;
   suggestedRoute: TaskDigestRoute | null;
   runtimeGeneration: number | null;
+  /** 本机任务;另一台电脑上的任务为 false。 */
+  local: boolean;
   device: string | null;
 }): TaskDigestWire {
   const { watched, activity } = input;
   const phase: TaskDigestPhase = watched?.phase ?? fallbackDigestPhase(activity);
+  const toolInFlight = watchedToolInFlight(watched, input.local);
   const since = watched
     ? watched.phaseSince
     : phase === 'running'
@@ -193,6 +207,7 @@ function assemble(input: {
     title: watched?.title || input.facts.title,
     phase,
     elapsed_minutes: minutesSince(input.now, since),
+    idle_minutes: minutesSince(input.now, watched?.lastActivityAt ?? activity?.lastActivityAtMs),
     last_user_ask: input.exchange.lastUserAsk,
     last_assistant_line: input.exchange.lastAssistantLine,
     pending_question: watched?.pendingQuestion ?? null,
@@ -204,6 +219,7 @@ function assemble(input: {
     queued_count: input.queuedCount,
     follower_bot_id: watched?.followerBotId ?? null,
     creator_bot_id: watched?.creatorBotId ?? null,
+    ...(toolInFlight === undefined ? {} : { tool_in_flight: toolInFlight }),
   };
 }
 

@@ -16,6 +16,9 @@ const m = vi.hoisted(() => ({
   toastError: vi.fn(),
   remoteApi: { getPendingInteractions: vi.fn(), resolveInteraction: vi.fn() },
   makerApiForDevice: vi.fn(),
+  resolveRoute: vi.fn(async (id: string) => `/cc-agent/${id}`),
+  pinSessionOrigin: vi.fn(),
+  mirrored: [] as Array<{ id: string }>,
 }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
 vi.mock('react-i18next', () => ({
@@ -33,11 +36,15 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
 }));
 vi.mock('@/lib/remoteDataOwnerPushFence', () => ({ isDeviceLinkRemotePushCurrent: () => true }));
 vi.mock('@/lib/sidebarWindow', () => ({ isSidebarWindow: () => false }));
-vi.mock('@/lib/orcaSessionIdentity', () => ({ resolveSessionRoute: async (id: string) => `/cc-agent/${id}` }));
+vi.mock('@/lib/orcaSessionIdentity', () => ({ resolveSessionRoute: m.resolveRoute }));
+vi.mock('@/features/device-link/remoteProjectsStore', () => ({
+  remoteProjectsStore: { pinSessionOrigin: m.pinSessionOrigin, getMergedRemoteSessions: () => m.mirrored },
+}));
 vi.mock('@/lib/toast', () => ({ toast: { warning: m.toastWarning, error: m.toastError } }));
 vi.mock('@/lib/makerTransport', () => ({ makerApiForDevice: m.makerApiForDevice }));
 
 import { BotWorkbench } from '../BotWorkbench';
+import { allowGlanceRow } from '../botGlance';
 
 type Listener = (payload: { botIds?: string[] }) => void;
 let listeners: Listener[] = [];
@@ -73,6 +80,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   listeners = [];
   m.makerApiForDevice.mockReturnValue(m.remoteApi);
+  m.mirrored = [];
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     localDb: { bots: { autonomy: { glance: glanceApi } } },
     maker: {
@@ -98,9 +106,14 @@ it('shows one quiet sentence when nothing waits or runs, and the follow-everythi
   expect(await screen.findByText('bots.workbench.glance.quiet')).toBeTruthy();
   expect(screen.getByText('bots.autonomy.title')).toBeTruthy();
   expect(screen.queryByRole('heading')).toBeNull();
-  expect(
-    screen.getByText('bots.workbench.glance.seenJust · bots.workbench.glance.doneToday:3 · bots.workbench.glance.devicesOffline:Studio'),
-  ).toBeTruthy();
+  const footerText = screen.getByText(
+    'bots.workbench.glance.seenJust · bots.workbench.glance.doneToday:3 · bots.workbench.glance.devicesOffline:Studio',
+  );
+  // 页脚不跟两块一起滚：它是面板的直接子节点，与滚动的内容区并列（实测 800 高窗口里页脚曾被挤到折叠线下）。
+  const panel = screen.getByRole('region', { name: 'bots.workbench.title' });
+  const footer = footerText.closest('footer')!;
+  expect(footer.parentElement).toBe(panel);
+  expect(footer.previousElementSibling?.contains(screen.getByText('bots.workbench.glance.quiet'))).toBe(true);
 });
 
 it('allows only the permission request the row points at, and opens the task when that request is gone', async () => {
@@ -128,7 +141,7 @@ it('allows only the permission request the row points at, and opens the task whe
   expect(localMaker.resolveInteraction).toHaveBeenCalledTimes(1);
 });
 
-it('opens answer rows by their bare session id and cannot allow on an offline computer', async () => {
+it('opens a task on another computer through the device-aware route, not a same-id local lookup', async () => {
   glanceApi.mockResolvedValue(glance({
     waiting: [
       row({ sessionId: 'dev-2::s7', deviceId: 'dev-2', deviceName: 'Studio', question: '用哪个分支？', waitingFor: 'answer' }),
@@ -140,8 +153,13 @@ it('opens answer rows by their bare session id and cannot allow on an offline co
 
   const answer = (await screen.findByText('用哪个分支？')).closest('li')!;
   expect(within(answer).queryByRole('button', { name: 'bots.workbench.glance.allow' })).toBeNull();
+  m.mirrored = [{ id: 's7' }];
   fireEvent.click(within(answer).getByRole('button', { name: 'bots.workbench.glance.answer' }));
   await waitFor(() => expect(m.navigate).toHaveBeenCalledWith('/cc-agent/s7'));
+  // 先登记这件任务属于 Studio，再按远程镜像里的那一行解析——与会话链接打开远程任务同一路径。
+  expect(m.pinSessionOrigin).toHaveBeenCalledWith('dev-2', 's7');
+  expect(m.resolveRoute).toHaveBeenCalledWith('s7', { id: 's7' });
+  expect(m.pinSessionOrigin.mock.invocationCallOrder[0]).toBeLessThan(m.resolveRoute.mock.invocationCallOrder[0]!);
 
   const offline = screen.getByText('可以推送吗？').closest('li')!;
   expect((within(offline).getByRole('button', { name: 'bots.workbench.glance.allow' }) as HTMLButtonElement).disabled).toBe(true);
@@ -177,4 +195,21 @@ it('reads a teammate on another computer from that computer and answers its own 
   await waitFor(() => expect(m.remoteApi.resolveInteraction).toHaveBeenCalledWith('r-5', { kind: 'permission', behavior: 'allow' }));
   expect(m.makerApiForDevice).toHaveBeenCalledWith('dev-2');
   expect(m.remoteApi.getPendingInteractions).toHaveBeenCalledWith('s5');
+});
+
+it('never approves a confirmation that carries no request id; it opens the task instead', async () => {
+  // 宿主把 kind 含 confirm 的交互归成权限类但没有 requestId：那件任务里唯一的权限请求不一定是这一行。
+  const confirmRow = row({ sessionId: 's3', question: '确认要发布吗？', waitingFor: 'permission', requestId: null });
+  glanceApi.mockResolvedValue(glance({ waiting: [confirmRow] }));
+  localMaker.getPendingInteractions.mockResolvedValue([permission('r-other')]);
+  render(<BotWorkbench botId="bot-1" />);
+
+  const waiting = (await screen.findByText('确认要发布吗？')).closest('li')!;
+  expect(within(waiting).queryByRole('button', { name: 'bots.workbench.glance.allow' })).toBeNull();
+  fireEvent.click(within(waiting).getByRole('button', { name: 'bots.workbench.glance.look' }));
+  await waitFor(() => expect(m.navigate).toHaveBeenCalledWith('/cc-agent/s3'));
+  expect(m.pinSessionOrigin).not.toHaveBeenCalled();
+  await expect(allowGlanceRow(confirmRow)).resolves.toBe('gone');
+  expect(localMaker.getPendingInteractions).not.toHaveBeenCalled();
+  expect(localMaker.resolveInteraction).not.toHaveBeenCalled();
 });

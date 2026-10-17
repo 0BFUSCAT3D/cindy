@@ -2,18 +2,22 @@
  * 测试价值
  * - 生产入口与可观察结果：BotAutonomyRuntime（start / evaluate / stop）接真实 RoutineEngine：事件源登记、
  *   内置「跟进」规则落地、阈值事件只叫醒跟进者自己的规则、跟进规则被暂停时改为系统提醒主人、
- *   条件兜底 sweep 只叫醒还有待处理任务且久未被叫醒的伙伴。
+ *   条件兜底 sweep 只叫醒还有待处理任务且久未被叫醒的伙伴；主人停止的任务不发任何事件；内置规则还没落地时
+ *   出现的事件不丢；启动中途被停止不留定时器；伙伴自己的主任务出错不叫醒它自己，总调度（另一个伙伴）照常收到。
  * - Bug／规则依据：docs/product-rules/bot-routines.md「宿主内置事件源 host:sessions」（引擎每次创建后都要
  *   重新登记，事件源表只在内存）与「内置跟进例行任务」；cindy-bots-runtime.md §6.3「没人跟 → 系统提醒」
  *   与「条件兜底」（没有待处理任务的伙伴不被白叫醒）。
  * - 现有覆盖缺口：maker-scheduler 测试只覆盖引擎自身；autonomyRules / taskWatch 不经过引擎，测不到重建后
  *   事件源丢失、followerBotId 过滤与 accepted=0 的提醒分支。
  * - 最小失败输入：引擎重建后不重登记 → publish 抛 "not listening"；waiting 事件叫醒了非跟进者；
- *   跟进规则暂停后主人收不到提醒或被重复提醒；没有待处理任务也被兜底叫醒，或每 30 秒扫描重复叫醒。
+ *   跟进规则暂停后主人收不到提醒或被重复提醒；没有待处理任务也被兜底叫醒，或每 30 秒扫描重复叫醒；
+ *   停止被当成做完叫醒伙伴；首次安装时事件赶在 ensure 之前发布、accepted=0 后永久丢失；伙伴主任务的欢迎轮出错
+ *   后宿主把 errored 发给它自己，排在正在失败的主任务后面打转。
  * - tier：unit（真实引擎 + 内存 load/save；状态表 IO 为内存 fake；时间由 now() 推进）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 import { RoutineEngine, type RoutineEngineDeps, type RoutineState } from '@cindy/maker-scheduler';
+import type { AutonomyEngine } from '../runtime.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -29,15 +33,24 @@ const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
 function meta(id: string): LocalSessionMeta {
   return {
     id, title: `title ${id}`, workingDir: null, status: 'active', hiddenAt: null, source: 'desktop',
-    orcaRole: null, laneRole: null, interrupted: false, activeTurnStartedAt: null,
+    orcaRole: null, laneRole: null, laneBotId: null, interrupted: false, activeTurnStartedAt: null, lastTurnEndedAt: null,
   };
 }
 
-function waiting(sessionId: string): SessionActivitySnapshot {
+/** 灵动岛在交互到来时记下活动时刻 `at`。 */
+function waiting(sessionId: string, at = 1): SessionActivitySnapshot {
   return {
-    sessionId, phase: 'needs-interaction', interactionKind: 'ask_user_question', startedAtMs: 1, lastActivityAtMs: 1,
+    sessionId, phase: 'needs-interaction', interactionKind: 'ask_user_question', startedAtMs: 1, lastActivityAtMs: at,
     currentActionSummary: null, attention: true, workflow: null, turnGeneration: 1, gracefulStopState: 'none', source: 'local',
   } as unknown as SessionActivitySnapshot;
+}
+
+function running(sessionId: string): SessionActivitySnapshot {
+  return { ...waiting(sessionId), phase: 'running', interactionKind: undefined, attention: false } as SessionActivitySnapshot;
+}
+
+function errored(sessionId: string): SessionActivitySnapshot {
+  return { ...waiting(sessionId), phase: 'error', interactionKind: undefined, lastActivityAtMs: 5 } as SessionActivitySnapshot;
 }
 
 async function setup() {
@@ -55,12 +68,11 @@ async function setup() {
     onError: () => {},
   };
   const bots = new Map([
-    ['sched', { status: 'active', allowSchedulerFollow: false }],
-    ['a', { status: 'active', allowSchedulerFollow: false }],
+    ['sched', { status: 'active', allowSchedulerFollow: false, canonicalSessionId: 'sched-main' }],
+    ['a', { status: 'active', allowSchedulerFollow: false, canonicalSessionId: 'a-main' }],
     ['paused-bot', { status: 'paused', allowSchedulerFollow: false }],
   ]);
-  const runtime = async (engine: RoutineEngine) => {
-    const instance = new BotAutonomyRuntime({
+  const create = (engine: AutonomyEngine) => new BotAutonomyRuntime({
       engine,
       now: () => now,
       log,
@@ -73,6 +85,7 @@ async function setup() {
         log,
         onChange,
         getActivitySnapshots: () => [],
+        isToolCallInFlight: () => false,
         getPendingInteractions: () => [],
         readLocalSessions: async (ids) => ids.map(meta),
         readInterruptedSessions: async () => [],
@@ -82,6 +95,8 @@ async function setup() {
         invokeRemote: async () => { throw new Error('unused'); },
       }),
     });
+  const runtime = async (engine: RoutineEngine) => {
+    const instance = create(engine);
     await instance.start({ timers: false });
     return instance;
   };
@@ -90,7 +105,7 @@ async function setup() {
     await created.start();
     return created;
   };
-  return { runtime, engine, execute, remind, advance: (ms: number) => { now += ms; } };
+  return { runtime, create, engine, execute, remind, now: () => now, advance: (ms: number) => { now += ms; } };
 }
 
 describe('BotAutonomyRuntime with the routine engine', () => {
@@ -121,7 +136,7 @@ describe('BotAutonomyRuntime with the routine engine', () => {
     const engine = await t.engine();
     const runtime = await t.runtime(engine);
     try {
-      runtime.watch.applyActivity('t1', waiting('t1'));
+      runtime.watch.applyActivity('t1', waiting('t1', t.now()));
       await runtime.watch.settled();
       await runtime.evaluate();
       expect(t.execute).not.toHaveBeenCalled();
@@ -138,7 +153,7 @@ describe('BotAutonomyRuntime with the routine engine', () => {
 
       // 主人暂停了总调度的跟进规则：事件没人接 → 本机任务改为系统提醒，同一事件只提醒一次。
       await engine.put('sched', { ...engine.list('sched')[0]!, enabled: false }, builtinFollowUpRoutineId('sched'));
-      runtime.watch.applyActivity('t2', waiting('t2'));
+      runtime.watch.applyActivity('t2', waiting('t2', t.now()));
       await runtime.watch.settled();
       t.advance(AUTONOMY_THRESHOLDS.waitingAfterMs);
       await runtime.evaluate();
@@ -164,7 +179,7 @@ describe('BotAutonomyRuntime with the routine engine', () => {
       expect(t.execute).not.toHaveBeenCalled();
 
       // 有一条等你的任务、且距启动（视为上次叫醒）已满间隔 → 发一条 sweep；30 秒扫描再来也不重复。
-      runtime.watch.applyActivity('t1', waiting('t1'));
+      runtime.watch.applyActivity('t1', waiting('t1', t.now()));
       await runtime.watch.settled();
       await runtime.evaluateFallback();
       await runtime.evaluateFallback();
@@ -187,6 +202,85 @@ describe('BotAutonomyRuntime with the routine engine', () => {
       await vi.waitFor(() => expect(t.execute).toHaveBeenCalledTimes(3));
       expect(t.execute.mock.calls[2]![1].events.map((e) => e.event.type)).toEqual(['sweep']);
       expect(engine.list('a')[0]!.triggers.some((trigger) => trigger.kind === 'interval')).toBe(false);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  it('publishes nothing when the owner stops a running task', async () => {
+    const t = await setup();
+    const engine = await t.engine();
+    const runtime = await t.runtime(engine);
+    try {
+      runtime.watch.applyActivity('t1', running('t1'));
+      await runtime.watch.settled();
+      // 停止：灵动岛直接撤掉条目，没有完成态。
+      runtime.watch.applyActivity('t1', null);
+      await runtime.watch.settled();
+      await runtime.evaluate();
+      t.advance(AUTONOMY_THRESHOLDS.fallbackIntervalMs);
+      await runtime.sweep();
+      expect(t.execute).not.toHaveBeenCalled();
+      expect(t.remind).not.toHaveBeenCalled();
+      expect(runtime.glance('sched').doneToday).toBe(0);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  it('does not lose an event that arrives before the built-in rule is in place on first install', async () => {
+    const t = await setup();
+    const engine = await t.engine();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // 首次安装：内置规则写盘慢于第一条事件。
+    const slow: AutonomyEngine = {
+      registerSource: (source) => engine.registerSource(source),
+      publish: (...args) => engine.publish(...args),
+      ensureBuiltin: async (...args) => { await gate; return engine.ensureBuiltin(...args); },
+    };
+    const runtime = t.create(slow);
+    try {
+      const started = runtime.start({ timers: false });
+      runtime.watch.applyActivity('t1', errored('t1'));
+      await runtime.watch.settled();
+      const early = runtime.evaluate();
+      release();
+      await Promise.all([started, early]);
+      await vi.waitFor(() => expect(t.execute).toHaveBeenCalledTimes(1));
+      expect(t.execute.mock.calls[0]![1].events.map((e) => [e.event.type, e.event.subject])).toEqual([['errored', 't1']]);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  it("never wakes a teammate for its own main task, while the scheduler still follows another teammate's main task", async () => {
+    const t = await setup();
+    const engine = await t.engine();
+    const runtime = await t.runtime(engine);
+    try {
+      // 两件主任务的欢迎轮都出错：总调度自己的 sched-main，与伙伴 a 的 a-main。
+      runtime.watch.applyActivity('sched-main', errored('sched-main'));
+      runtime.watch.applyActivity('a-main', errored('a-main'));
+      await runtime.watch.settled();
+      await runtime.evaluate();
+      await vi.waitFor(() => expect(t.execute).toHaveBeenCalledTimes(1));
+      const [routine, run] = t.execute.mock.calls[0]!;
+      expect(routine.id).toBe(builtinFollowUpRoutineId('sched'));
+      expect(run.events.map((e) => [e.event.type, e.event.subject, e.event.data.followerBotId])).toEqual([
+        ['errored', 'a-main', 'sched'],
+      ]);
+      expect(runtime.watch.get('sched-main')).toMatchObject({ canonicalOfBotId: 'sched', followerBotId: null });
+      // 满兜底间隔：自己的主任务也不触发对自己的 sweep。
+      t.advance(AUTONOMY_THRESHOLDS.fallbackIntervalMs);
+      await runtime.evaluateFallback();
+      expect(t.execute.mock.calls.every(([, r]) => r.events.every((e) => e.event.subject !== 'sched-main'))).toBe(true);
+      // 工作台：自己的主任务不进自己的「等你 / 在做」；总调度仍能看到伙伴 a 的主任务。
+      expect(runtime.glance('sched').waiting.map((r) => r.sessionId)).toEqual(['a-main']);
+      expect(runtime.glance('a').waiting).toEqual([]);
     } finally {
       runtime.stop();
       await engine.stop();

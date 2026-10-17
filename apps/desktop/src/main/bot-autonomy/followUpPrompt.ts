@@ -6,7 +6,7 @@
  * FOLLOW_UP_PROMPT_VERSION,宿主据此把已有伙伴的内置规则对齐到新模板。
  * 长度上限 1500 字:每次叫醒都会带上,控制成本。
  */
-export const FOLLOW_UP_PROMPT_VERSION = 1;
+export const FOLLOW_UP_PROMPT_VERSION = 2;
 
 export const FOLLOW_UP_PROMPT_MAX_CHARS = 1500;
 
@@ -17,7 +17,8 @@ export function buildFollowUpRoutinePrompt(botId: string): string {
     '2. 按 phase 处理:',
     '- waiting-permission:权限只能主人批(工作台上有「允许」),你不能代批;用 schedule_notify_current_run 提醒主人等批什么,并用 update_teammate_todo 记一条待办。',
     '- waiting-answer:答案能从任务上下文确定就代答;不能确定就提醒主人。',
-    '- stuck:用 continue_workbench_task 发「汇报当前进展并继续」;同一任务再次卡住(occurrence≥2)就用 stop_session_turn 停下(仅本机任务)并提醒主人。',
+    '- stuck:长时间构建、测试也会像卡住。tool_in_flight 为 true 时只等,不推也不停。否则用 continue_workbench_task 发一次「汇报当前进展并继续」,只推这一次。',
+    '  再次卡住(occurrence≥2)时,只有 tool_in_flight 明确为 false、且摘要显示上次提醒后毫无进展(idle_minutes 一直在涨、last_assistant_line 还是上次那句),才用 stop_session_turn 停下(仅本机任务)并提醒主人;字段缺失或拿不准就继续等,不要停。',
     '- errored / usage-limit:摘要里有 suggested_route 就用 set_session_runtime 换过去(expected_generation 填 runtime_generation),再 continue_workbench_task 让它继续;没有就提醒主人。',
     '- finished:对照 last_user_ask 核对结果,有问题就继续跟进;只有主人会关心的结果才汇报。',
     '- 别的伙伴开的任务默认由它自己跟进:continue_workbench_task 返回 TASK_FOLLOWED_BY_OTHER_BOT 时只读不推;确需你接手才告诉主人,可在那位伙伴的设置里打开「它开的任务也交给你跟进」。',

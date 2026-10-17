@@ -796,10 +796,11 @@ describe('routine check configuration', () => {
   /*
    * 测试价值
    * - 生产入口与可观察结果：RoutineEngine.ensureBuiltin / put / remove / publish；主人能暂停但删不掉、
-   *   改不了宿主内置的「跟进」规则，宿主改模板后已有规则被对齐且保留暂停选择。
+   *   改不了宿主内置的「跟进」规则，宿主改模板（正文或模板版本）后已有规则被对齐且保留暂停选择。
    * - Bug／规则依据：docs/product-rules/bot-routines.md「内置跟进例行任务」（只能暂停 / 恢复）。
    * - 现有覆盖缺口：既有用例只覆盖普通规则；builtin 分支（拒删、拒改、对齐模板、保留 enabled）无覆盖。
-   * - 最小失败输入：对 builtin 规则 remove，或 put 一份改了 prompt 的定义；宿主再次 ensure 新 prompt。
+   * - 最小失败输入：对 builtin 规则 remove，或 put 一份改了 prompt 的定义；宿主再次 ensure 新 prompt；
+   *   正文相同但模板版本递增时不重写（版本形同虚设）。
    * - tier：unit（内存 load/save fake，无真实等待）。
    */
   it('keeps a host built-in rule pausable but not deletable or editable, and realigns it on ensure', async () => {
@@ -815,8 +816,12 @@ describe('routine check configuration', () => {
       const paused = await f.engine.put('bot', { ...input, enabled: false }, id);
       expect(paused).toMatchObject({ builtin: 'follow-up', enabled: false });
       expect(await f.engine.publish('github', event('while-paused'))).toEqual({ accepted: 0, duplicate: false });
-      const realigned = await f.engine.ensureBuiltin('bot', 'follow-up', { ...input, prompt: 'v2' }, id);
-      expect(realigned).toMatchObject({ prompt: 'v2', enabled: false, builtin: 'follow-up' });
+      const realigned = await f.engine.ensureBuiltin('bot', 'follow-up', { ...input, prompt: 'v2' }, id, 1);
+      expect(realigned).toMatchObject({ prompt: 'v2', enabled: false, builtin: 'follow-up', builtinVersion: 1 });
+      // 模板版本递增：正文相同也重写并记下新版本；同版本再 ensure 不产生新 revision。主人暂停后的选择保留。
+      const bumped = await f.engine.ensureBuiltin('bot', 'follow-up', { ...input, prompt: 'v2' }, id, 2);
+      expect(bumped).toMatchObject({ builtinVersion: 2, enabled: false, revision: realigned!.revision + 1 });
+      expect((await f.engine.ensureBuiltin('bot', 'follow-up', { ...input, prompt: 'v2' }, id, 2))?.revision).toBe(bumped?.revision);
       await f.engine.setBotPaused('bot', true);
       expect(await f.engine.ensureBuiltin('bot', 'follow-up', input, id)).toBeNull();
     } finally { await f.engine.stop(); }

@@ -15442,7 +15442,7 @@
     "advancedSettings": "高级设置",
     "builtinFollowUp": {
       "name": "跟进（内置）",
-      "hint": "内置，只能暂停或恢复"
+      "hint": "任务卡住、等你、出错、撞上用量上限或做完时叫醒它；内置，只能暂停或恢复。"
     }
   },
   "cindyMakeDoctor": {

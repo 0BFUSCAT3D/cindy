@@ -15497,7 +15497,7 @@
     "advancedSettings": "Advanced settings",
     "builtinFollowUp": {
       "name": "Follow-up (built-in)",
-      "hint": "Built in, so it can only be paused or resumed"
+      "hint": "Wakes it when a session is stuck, waiting for you, errors out, hits the usage limit, or finishes. Built in, so it can only be paused or resumed."
     }
   },
   "cindyMakeDoctor": {

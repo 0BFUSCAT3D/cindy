@@ -29,6 +29,11 @@ export const DEFAULT_SCHEDULER_BOT_ID = 'cindy-default';
 export const AUTONOMY_THRESHOLDS = {
   /** 运行中但无任何活动达到这么久 → stuck。 */
   stuckAfterMs: 10 * 60_000,
+  /**
+   * 前台工具调用在途（tool_use 已发、tool_result 未回，例如一次长构建）时没有任何活动事件，
+   * 用更长的阈值判 stuck，避免把健康的长工具调用当成卡住。
+   */
+  stuckInToolAfterMs: 45 * 60_000,
   /** 等权限 / 等回答达到这么久 → waiting（主人不在时伙伴代答或提醒）。 */
   waitingAfterMs: 5 * 60_000,
   /** 同一任务同一类事件 24h 内最多发布次数，防止伙伴与任务互相推着打转。 */
@@ -74,6 +79,16 @@ export interface WatchedSession {
    * （实现者 A 新增，可选字段。）
    */
   pendingRequestId?: string | null;
+  /**
+   * 本机任务当前有前台工具调用在途（只是布尔事实，不含工具名与入参）；远程与缺省为 false。
+   * stuck 判定据此改用 `stuckInToolAfterMs`。（实现者 A 新增，可选字段。）
+   */
+  toolInFlight?: boolean;
+  /**
+   * 这件任务是哪个伙伴自己的主任务（canonical）；不是则 null / 缺省。伙伴自己的主任务永远不是它自己的
+   * 事件对象，也不出现在它自己的工作台；总调度是另一个伙伴时照常看到、照常跟。（实现者 A 新增，可选字段。）
+   */
+  canonicalOfBotId?: string | null;
   error: string | null;
   /** 哪个伙伴开的这件任务（bot_delegations / task-responsibility），没有就是 null。 */
   creatorBotId: string | null;

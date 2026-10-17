@@ -4,7 +4,8 @@
  * - 规则依据:摘要优先用观察层状态行(与工作台、事件同一口径),缺行时保守推断;子项失败不拖垮整份;
  *   跨电脑不给换模型建议(set_session_runtime 只支持本机);离线电脑明确报 REMOTE_UNAVAILABLE。
  * - 现有覆盖缺口:新模块。
- * - 最小失败输入:有 / 无观察层状态行的本机任务;PR 读取抛错;离线电脑;已删除任务。
+ * - 最小失败输入:有 / 无观察层状态行的本机任务;PR 读取抛错;离线电脑;已删除任务;状态行带 / 不带
+ *   toolInFlight(不知道时摘要里不出现 tool_in_flight,伙伴不能把「没有字段」当成「没有工具在跑」)。
  * - tier:unit(依赖全部注入,无数据库、Electron 与网络)。
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -48,7 +49,7 @@ describe('task digest assembly', () => {
     expect(result).toEqual({
       ok: true,
       digest: {
-        session_id: 'local-1', device: null, title: '修登录', phase: 'waiting-permission', elapsed_minutes: 9,
+        session_id: 'local-1', device: null, title: '修登录', phase: 'waiting-permission', elapsed_minutes: 9, idle_minutes: 9,
         last_user_ask: '修登录', last_assistant_line: '要删旧表吗?', pending_question: null, error: null,
         current_route: route, runtime_generation: 4,
         suggested_route: { ...route, harness: 'claude-code', model: 'claude-opus-5-5' },
@@ -61,21 +62,29 @@ describe('task digest assembly', () => {
   it('prefers the watcher row for phase, question, error and who follows', async () => {
     const row = {
       sessionId: 'local-1', deviceId: null, deviceName: null, online: true, title: '修登录(状态表)', workingDir: null,
-      phase: 'usage-limit', phaseSince: NOW - 30 * 60_000, lastActivityAt: NOW, startedAt: null,
+      phase: 'usage-limit', phaseSince: NOW - 30 * 60_000, lastActivityAt: NOW - 25 * 60_000, startedAt: null,
       pendingQuestion: null, error: '已达用量上限', creatorBotId: 'writer', followerBotId: 'writer', source: 'user',
     } satisfies WatchedSession;
     const result = await setup({ 'local-1': row }).read({ sessionId: 'local-1' });
     expect(result).toMatchObject({
       ok: true,
-      digest: { title: '修登录(状态表)', phase: 'usage-limit', elapsed_minutes: 30, error: '已达用量上限', creator_bot_id: 'writer', follower_bot_id: 'writer' },
+      digest: { title: '修登录(状态表)', phase: 'usage-limit', elapsed_minutes: 30, idle_minutes: 25, error: '已达用量上限', creator_bot_id: 'writer', follower_bot_id: 'writer' },
     });
+    // 只有本机且观察层给了这个事实才出现 tool_in_flight;另一台电脑的行缺省为 false 但并不可信,不给。
+    const busy = { ...row, phase: 'running' as const, toolInFlight: true };
+    const remoteIdle = { ...row, sessionId: 'laptop::s-1', phase: 'running' as const, toolInFlight: false };
+    const withFlag = setup({ 'local-1': busy, 'laptop::s-1': remoteIdle });
+    expect(await withFlag.read({ sessionId: 'local-1' })).toMatchObject({ ok: true, digest: { phase: 'running', tool_in_flight: true } });
+    expect(await withFlag.read({ sessionId: 'laptop::s-1' })).not.toHaveProperty('digest.tool_in_flight');
+    const { toolInFlight: _omitted, ...noFact } = busy;
+    expect(await setup({ 'local-1': noFact }).read({ sessionId: 'local-1' })).not.toHaveProperty('digest.tool_in_flight');
   });
 
   it('reads another computer without a route suggestion, and reports offline or missing tasks explicitly', async () => {
     const { read } = setup();
     expect(await read({ sessionId: 'laptop::s-1', callerSessionId: 'bot-main' })).toMatchObject({
       ok: true,
-      digest: { session_id: 'laptop::s-1', device: 'MacBook', phase: 'running', pr_status: 'PR o/r#3 open', suggested_route: null, runtime_generation: null, queued_count: null },
+      digest: { session_id: 'laptop::s-1', device: 'MacBook', phase: 'running', pr_status: 'PR o/r#3 open', suggested_route: null, runtime_generation: null, queued_count: null, idle_minutes: null },
     });
     expect(await read({ sessionId: 'offline::s-1' })).toMatchObject({ ok: false, errorCode: 'REMOTE_UNAVAILABLE' });
     expect(await read({ sessionId: 'gone' })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });

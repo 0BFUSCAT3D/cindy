@@ -9,6 +9,8 @@
 import { useEffect, useState } from 'react';
 
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
+import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { BOT_AUTONOMY_IPC, type BotGlance, type GlanceRow } from '../../../shared/botAutonomy';
 
@@ -116,13 +118,32 @@ export function useBotGlance(botId: string, host: GlanceHost, enabled = true): G
   return state;
 }
 
+/** 这一行能不能直接「允许」：只有带着具体权限请求 id 的行才行。 */
+export function canAllowGlanceRow(row: GlanceRow): boolean {
+  return row.waitingFor === 'permission' && Boolean(row.requestId);
+}
+
+/**
+ * 打开这一行的任务。别的电脑上的任务走与会话链接相同的按设备路径：先登记它属于哪台电脑，
+ * 再按远程镜像里的那一行解析路由；不能只拿裸 id 去查本机库（会落到本机同 id 任务或找不到）。
+ */
+export async function glanceSessionRoute(row: GlanceRow): Promise<string> {
+  const sessionId = bareGlanceSessionId(row);
+  if (!row.deviceId) return resolveSessionRoute(sessionId);
+  remoteProjectsStore.pinSessionOrigin(row.deviceId, sessionId);
+  const mirrored = remoteProjectsStore.getMergedRemoteSessions().find((session) => session.id === sessionId) ?? null;
+  return resolveSessionRoute(sessionId, mirrored);
+}
+
 export type AllowOutcome = 'allowed' | 'gone' | 'blocked' | 'failed';
 
 /**
  * 「允许」：只回应这一行对应的那条权限请求，本机走本机宿主，别的电脑走 device-link 隧道到那台。
- * 请求已经不在（被处理、被换掉）时不替主人批准别的请求，交给调用方改为「去任务里看」。
+ * 请求已经不在（被处理、被换掉）或行上没有请求 id 时不替主人批准别的请求，交给调用方改为「去任务里看」。
  */
 export async function allowGlanceRow(row: GlanceRow): Promise<AllowOutcome> {
+  // 没有具体请求 id（例如按「需要确认」归成权限类的交互）时不替主人批准任何一条，交给调用方打开任务。
+  if (!row.requestId) return 'gone';
   if (row.deviceId && !row.online) return 'blocked';
   const sessionId = bareGlanceSessionId(row);
   const api = row.deviceId
@@ -130,9 +151,7 @@ export async function allowGlanceRow(row: GlanceRow): Promise<AllowOutcome> {
     : window.electronAPI.maker;
   const pending = await api.getPendingInteractions(sessionId);
   const permissions = (Array.isArray(pending) ? pending : []).filter((item) => item?.request?.kind === 'permission');
-  const target = row.requestId
-    ? permissions.find((item) => item.request.requestId === row.requestId)
-    : permissions.length === 1 ? permissions[0] : undefined;
+  const target = permissions.find((item) => item.request.requestId === row.requestId);
   if (!target) return 'gone';
   const receipt = await api.resolveInteraction(target.request.requestId, { kind: 'permission', behavior: 'allow' });
   return receipt?.accepted === true ? 'allowed' : 'failed';

@@ -6,20 +6,19 @@ import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
-import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { BotGlance, GlanceRow } from '../../../shared/botAutonomy';
-import { allowGlanceRow, bareGlanceSessionId, rebaseGlance, useBotGlance } from './botGlance';
+import { allowGlanceRow, canAllowGlanceRow, glanceSessionRoute, rebaseGlance, useBotGlance } from './botGlance';
 
 /**
  * 伙伴工作台「一眼」（右侧栏的一个标签）。
  *
  * 只有两块 + 一行页脚，数据全部来自宿主的 glance 投影：
  * - 等你：一句问题（没有就用任务标题），一行「来源任务 · 电脑 · 等了多久」，下面是动作——
- *   权限类「允许」直接回应那一条请求（别的电脑经 device-link 到那台），回答类「回答」与出错类
- *   「看看」打开那件任务。
+ *   带具体请求 id 的权限类「允许」直接回应那一条请求（别的电脑经 device-link 到那台）；回答类
+ *   「回答」、出错类与没有请求 id 的确认类「看看」打开那件任务（别的电脑上的按设备打开）。
  * - 在做：标题 + 「电脑 · 做了多久」，最多先列 3 件；离线电脑上的变灰并写「离线」。
  * - 页脚：「刚看过一遍 · 今天做完 N 件 · X 离线」。两块都空时只说一句安静的话。
  * 负责所有任务的伙伴（scope = all）在顶部带「自动跟进所有任务」小标。
@@ -102,7 +101,7 @@ export function BotWorkbench({
     (row: GlanceRow) => {
       if (!canNavigate) return;
       const owner = getDataOwnerGeneration();
-      void resolveSessionRoute(bareGlanceSessionId(row))
+      void glanceSessionRoute(row)
         .then((route) => {
           if (isDataOwnerGenerationCurrent(owner)) navigate(route);
         })
@@ -145,8 +144,9 @@ export function BotWorkbench({
   ];
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-[var(--surface)]">
-      <section className="flex flex-col gap-7 px-5 pb-6 pt-4" aria-label={t('bots.workbench.title')}>
+    // 两块在中间滚动，页脚钉在面板底部：行再多也一直看得见「刚看过一遍 · 今天做完 N 件」。
+    <section className="flex h-full min-h-0 flex-col bg-[var(--surface)]" aria-label={t('bots.workbench.title')}>
+      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto overflow-x-hidden px-5 pb-6 pt-4">
         {glance.scope === 'all' ? (
           <p className="inline-flex h-6 items-center self-start rounded-full border border-[var(--border-default)] px-2.5 text-12 leading-4 text-[var(--text-secondary)]">
             {t('bots.autonomy.title')}
@@ -159,17 +159,17 @@ export function BotWorkbench({
         ) : null}
         {glance.waiting.length > 0 ? <WaitingBlock rows={glance.waiting} ctx={ctx} /> : null}
         {glance.working.length > 0 ? <WorkingBlock rows={glance.working} ctx={ctx} /> : null}
-        <p
-          className={cn(
-            'flex items-center gap-2 text-12 leading-[1.5] text-[var(--text-tertiary)]',
-            quiet ? 'justify-center' : 'pl-5',
-          )}
-        >
-          <span aria-hidden className="size-1 shrink-0 rounded-full bg-[var(--text-tertiary)]" />
-          <span className="min-w-0 tabular-nums">{join(...footer)}</span>
-        </p>
-      </section>
-    </div>
+      </div>
+      <footer
+        className={cn(
+          'flex shrink-0 items-center gap-2 border-t border-[var(--border-default)] py-2.5 text-12 leading-[1.5] text-[var(--text-tertiary)]',
+          quiet ? 'justify-center px-5' : 'pl-10 pr-5',
+        )}
+      >
+        <span aria-hidden className="size-1 shrink-0 rounded-full bg-[var(--text-tertiary)]" />
+        <span className="min-w-0 truncate tabular-nums">{join(...footer)}</span>
+      </footer>
+    </section>
   );
 }
 
@@ -262,7 +262,7 @@ function WaitingRow({ row, ctx }: { row: GlanceRow; ctx: RowContext }) {
     <li className="-ml-2 flex flex-col">
       <RowText row={row} title={question} meta={meta} ctx={ctx} titleId={titleId} />
       <div className="mt-1 flex gap-2 pl-2">
-        {row.waitingFor === 'permission' ? (
+        {canAllowGlanceRow(row) ? (
           <Button
             variant="secondary"
             size="xs"

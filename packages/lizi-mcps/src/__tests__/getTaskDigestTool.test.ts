@@ -30,6 +30,8 @@ const digest: TaskDigestWire = {
   title: '修登录'.repeat(80),
   phase: 'waiting-answer',
   elapsed_minutes: 12,
+  idle_minutes: 12,
+  tool_in_flight: true,
   last_user_ask: longText,
   last_assistant_line: longText,
   pending_question: longText,
@@ -58,7 +60,7 @@ describe('get_task_digest', () => {
     const reg = setup({ taskDigest });
     const { text, json } = parse(await reg.call('get_task_digest', { session_id: 'laptop::s-9' }));
     expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(TASK_DIGEST_MAX_BYTES);
-    expect(json).toMatchObject({ ok: true, session_id: 'laptop::s-9', phase: 'waiting-answer', queued_count: 1 });
+    expect(json).toMatchObject({ ok: true, session_id: 'laptop::s-9', phase: 'waiting-answer', queued_count: 1, tool_in_flight: true });
     for (const key of ['last_user_ask', 'last_assistant_line', 'pending_question', 'error', 'pr_status'] as const) {
       const value = json[key];
       if (value !== null) expect(Array.from(String(value)).length).toBeLessThanOrEqual(300);

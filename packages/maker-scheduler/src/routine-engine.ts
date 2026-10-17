@@ -269,18 +269,24 @@ export class RoutineEngine {
    * 保留用户的暂停选择（enabled）。暂停中的伙伴不建，恢复后由宿主再调一次。
    * 这是唯一能写内置规则内容的入口；普通 put 只能切换 enabled，remove 一律拒绝。
    */
-  async ensureBuiltin(botId: string, builtin: RoutineBuiltin, raw: RoutineInput, id: string): Promise<Routine | null> {
+  async ensureBuiltin(
+    botId: string,
+    builtin: RoutineBuiltin,
+    raw: RoutineInput,
+    id: string,
+    builtinVersion?: number,
+  ): Promise<Routine | null> {
     if (!/^[a-zA-Z0-9_-]{16,128}$/.test(id)) throw new Error("Invalid routine creation ID");
     if (this.blockedBots.has(botId)) return null;
     const existing = this.state.routines.find((routine) => routine.id === id && routine.botId === botId);
     return this.writeRoutine(
       botId,
       existing ? { ...raw, enabled: existing.enabled } : raw,
-      { id, builtin },
+      { id, builtin, ...(builtinVersion !== undefined ? { builtinVersion } : {}) },
     );
   }
 
-  private async writeRoutine(botId: string, raw: RoutineInput, options: { id?: string; expectedRevision?: number; creationId?: string; builtin?: RoutineBuiltin }): Promise<Routine> {
+  private async writeRoutine(botId: string, raw: RoutineInput, options: { id?: string; expectedRevision?: number; creationId?: string; builtin?: RoutineBuiltin; builtinVersion?: number }): Promise<Routine> {
     const { expectedRevision, creationId } = options;
     const id = options.id ?? creationId;
     const parsed = parseRoutineInput(raw);
@@ -307,10 +313,11 @@ export class RoutineEngine {
         JSON.stringify(parseRoutineInput({ ...existing, enabled: input.enabled })) !== JSON.stringify(input))
         throw new Error(`${BUILTIN_ROUTINE_ERROR}: built-in routines can only be paused or resumed`);
       const builtin = options.builtin ?? existing?.builtin;
+      const builtinVersion = options.builtinVersion ?? existing?.builtinVersion;
       if (creationId && existing && JSON.stringify(parseRoutineInput(existing)) !== JSON.stringify(input)) throw new Error("Routine already created; refresh before editing");
       if (expectedRevision !== undefined && existing?.revision !== expectedRevision) throw new Error("Routine changed; refresh before saving");
       if (
-        existing && existing.builtin === builtin &&
+        existing && existing.builtin === builtin && existing.builtinVersion === builtinVersion &&
         JSON.stringify(parseRoutineInput(existing)) === JSON.stringify(input)
       )
         return structuredClone(existing);
@@ -319,6 +326,7 @@ export class RoutineEngine {
       const routine: Routine = {
         ...input,
         ...(builtin ? { builtin } : {}),
+        ...(builtin && builtinVersion !== undefined ? { builtinVersion } : {}),
         id: existing?.id ?? creationId ?? id ?? this.deps.id(),
         botId,
         revision: (existing?.revision ?? 0) + 1,

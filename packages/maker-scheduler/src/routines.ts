@@ -61,6 +61,11 @@ export interface Routine {
    * state 版本不变。
    */
   builtin?: RoutineBuiltin;
+  /**
+   * 内置规则的宿主模板版本（可选，只由 ensureBuiltin 写）。版本变化时 ensure 一定重写规则；
+   * 旧数据缺省视为与任何显式版本不同，下次 ensure 补写。
+   */
+  builtinVersion?: number;
   revision: number;
   createdAt: number;
   updatedAt: number;

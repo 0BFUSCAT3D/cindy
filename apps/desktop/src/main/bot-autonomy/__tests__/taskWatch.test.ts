@@ -3,15 +3,18 @@
  * - 生产入口与可观察结果：TaskWatch（start / applyActivity / applyInputProjection / sweep）产出的状态表行：
  *   哪些任务进表、处于什么状态、等你的那句话、谁在跟；远程电脑失败时的退避与离线标记。
  * - Bug／规则依据：docs/product-rules/cindy-bots-runtime.md §6.3（观察范围：排除伙伴专线 / 隐藏 / Orca
- *   worker；启动时已做完的任务不补发；远程电脑离线保留最后状态；轮询失败退避，不形成重试风暴）。
+ *   worker；启动时已做完的任务不补发；只有观察到完成才算做完，主人停止的任务静默离表；长工具调用在途；
+ *   等你状态的时刻跨重启稳定；远程电脑离线保留最后状态；轮询失败退避，不形成重试风暴）。
  * - 现有覆盖缺口：新模块；autonomyRules 只测纯判定，不经过活动订阅、读库与远程轮询的组合时序。
- * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；远程 list-active 连续失败。
+ * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；主人点停止后灵动岛条目消失
+ *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AUTONOMY_THRESHOLDS } from '../../../shared/botAutonomy.js';
+import { AutonomyEventLedger } from '../events.js';
 import {
   REMOTE_BACKOFF_MAX_MS,
   TaskWatch,
@@ -23,7 +26,7 @@ import {
 function meta(id: string, patch: Partial<LocalSessionMeta> = {}): LocalSessionMeta {
   return {
     id, title: `title ${id}`, workingDir: '/w', status: 'active', hiddenAt: null, source: 'desktop',
-    orcaRole: null, laneRole: null, interrupted: false, activeTurnStartedAt: null, ...patch,
+    orcaRole: null, laneRole: null, laneBotId: null, interrupted: false, activeTurnStartedAt: null, lastTurnEndedAt: null, ...patch,
   };
 }
 
@@ -40,8 +43,10 @@ function harness(options: {
   devices?: RemoteDeviceTarget[] | null;
   invokeRemote?: TaskWatchDeps['invokeRemote'];
   creators?: Record<string, string>;
+  now?: number;
 } = {}) {
-  let now = 10_000;
+  let now = options.now ?? 10_000;
+  const toolsInFlight = new Set<string>();
   const metas = new Map((options.metas ?? []).map((m) => [m.id, m]));
   const pending = new Map<string, unknown[]>();
   const onChange = vi.fn();
@@ -50,6 +55,7 @@ function harness(options: {
     now: () => now,
     log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
     getActivitySnapshots: () => options.snapshots ?? [],
+    isToolCallInFlight: (id) => toolsInFlight.has(id),
     getPendingInteractions: (id) => pending.get(id) ?? [],
     readLocalSessions: async (ids) => ids.flatMap((id) => (metas.has(id) ? [metas.get(id)!] : [])),
     readInterruptedSessions: async () => [...metas.values()].filter((m) => m.interrupted),
@@ -64,7 +70,7 @@ function harness(options: {
     onChange,
   });
   return {
-    watch, metas, pending, onChange, invokeRemote,
+    watch, metas, pending, onChange, invokeRemote, toolsInFlight,
     advance: (ms: number) => { now += ms; },
     now: () => now,
   };
@@ -74,9 +80,10 @@ describe('TaskWatch local observation', () => {
   it('tracks user and teammate tasks, skips teammate lanes, and ignores a completion seen only at startup', async () => {
     const h = harness({
       metas: [
-        meta('user'), meta('delegated'), meta('lane', { laneRole: 'canonical', source: 'bot' }),
+        meta('user'), meta('delegated'), meta('lane', { laneRole: 'history', laneBotId: 'a', source: 'bot' }),
+        meta('sched-main', { laneRole: 'canonical', laneBotId: 'sched', source: 'bot' }),
         meta('hidden', { hiddenAt: 1 }), meta('worker', { orcaRole: 'worker' }), meta('stale-done'),
-        meta('crashed', { interrupted: true, activeTurnStartedAt: 5_000 }),
+        meta('crashed', { interrupted: true, activeTurnStartedAt: 5_000 }), meta('stopped'),
       ],
       snapshots: [activity('stale-done', 'completed')],
       creators: { delegated: 'a' },
@@ -87,13 +94,29 @@ describe('TaskWatch local observation', () => {
       ['crashed', 'errored', 5_000, 'sched'],
     ]);
 
-    for (const id of ['user', 'delegated', 'lane', 'hidden', 'worker']) h.watch.applyActivity(id, activity(id, 'running'));
+    for (const id of ['user', 'delegated', 'lane', 'hidden', 'worker', 'stopped', 'sched-main']) h.watch.applyActivity(id, activity(id, 'running'));
     await h.watch.settled();
+    // 历史专线不进表；总调度自己的主任务（按 canonical 链接认出）进表但没有跟进者——不叫醒它自己。
     expect(h.watch.list().map((r) => [r.sessionId, r.source, r.followerBotId]).sort()).toEqual([
       ['crashed', 'user', 'sched'],
       ['delegated', 'bot-task', 'a'],
+      ['sched-main', 'other', null],
+      ['stopped', 'user', 'sched'],
       ['user', 'user', 'sched'],
     ]);
+    expect(h.watch.get('sched-main')?.canonicalOfBotId).toBe('sched');
+
+    // 长工具调用在途：灵动岛知道 tool_use 还没回；每次扫描刷新这个布尔事实。
+    h.toolsInFlight.add('stopped');
+    await h.watch.sweep();
+    expect(h.watch.get('stopped')?.toolInFlight).toBe(true);
+    expect(h.watch.get('user')?.toolInFlight).toBe(false);
+
+    // 主人点了停止：灵动岛直接撤掉条目、没有完成态 → 静默离表，不算做完。
+    h.watch.applyActivity('stopped', null);
+    await h.watch.settled();
+    expect(h.watch.get('stopped')).toBeUndefined();
+    expect(h.watch.finished()).toEqual([]);
 
     // 等权限：带一句话摘要与请求 id，不带工具入参。
     h.pending.set('user', [{ kind: 'permission', requestId: 'req-9', toolName: 'Bash', input: { command: 'secret' } }]);
@@ -105,11 +128,26 @@ describe('TaskWatch local observation', () => {
     expect(JSON.stringify(h.watch.get('user'))).not.toContain('secret');
     expect(h.watch.get('delegated')?.phase).toBe('usage-limit');
 
-    // 跑完后活动条目消失：算一次「做完」，计入今天做完。
+    // 观察到完成才算做完：完成态之后条目被已读清掉，行仍留到保留期满，只计一次。
+    h.watch.applyActivity('user', activity('user', 'completed', { lastActivityAtMs: 9_000 }));
+    await h.watch.settled();
     h.watch.applyActivity('user', null);
     await h.watch.settled();
-    expect(h.watch.get('user')?.phase).toBe('finished');
+    expect(h.watch.get('user')).toMatchObject({ phase: 'finished', phaseSince: 9_000 });
     expect(h.watch.finished().map((f) => f.sessionId)).toEqual(['user']);
+  });
+
+  it('gives the same pending interaction the same event id after a restart', async () => {
+    const waitingSnapshot = activity('t', 'needs-interaction', { interactionKind: 'ask_user_question', lastActivityAtMs: 7_000 });
+    const ids: string[] = [];
+    // 第二个实例模拟重启后：时间已过去很久，灵动岛里还是同一条挂起交互。
+    for (const now of [10_000, 10_000 + 3 * AUTONOMY_THRESHOLDS.waitingAfterMs]) {
+      const h = harness({ metas: [meta('t')], snapshots: [waitingSnapshot], now });
+      await h.watch.start();
+      h.advance(AUTONOMY_THRESHOLDS.waitingAfterMs);
+      ids.push(...new AutonomyEventLedger().evaluate(h.watch.list(), h.now()).due.map((c) => c.id));
+    }
+    expect(ids).toEqual(['waiting:t:7000', 'waiting:t:7000']);
   });
 });
 

@@ -10,10 +10,16 @@
  */
 import type { RoutineInput, RoutineTrigger } from '@cindy/maker-scheduler';
 import { AUTONOMY_EVENT_TYPES, HOST_SESSIONS_SOURCE_ID } from '../../shared/botAutonomy.js';
-import { buildFollowUpRoutinePrompt } from './followUpPrompt.js';
+import { FOLLOW_UP_PROMPT_VERSION, buildFollowUpRoutinePrompt } from './followUpPrompt.js';
 
 /** 内置规则的保存名；渲染层按 builtin 字段本地化显示，这里只是落盘值。 */
 export const FOLLOW_UP_ROUTINE_NAME = '跟进任务';
+
+/**
+ * 模板版本：随规则落盘（`builtinVersion`）。ensure 时版本不同就重写这条内置规则（即使正文恰好相同），
+ * 指令措辞改动由 followUpPrompt.ts 的 FOLLOW_UP_PROMPT_VERSION 递增驱动。
+ */
+export const FOLLOW_UP_BUILTIN_VERSION = FOLLOW_UP_PROMPT_VERSION;
 
 export function buildFollowUpRoutineInput(botId: string): RoutineInput {
   const triggers: RoutineTrigger[] = AUTONOMY_EVENT_TYPES.map((type): RoutineTrigger => ({

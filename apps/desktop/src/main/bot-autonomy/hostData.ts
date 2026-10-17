@@ -32,7 +32,7 @@ function toMeta(row: {
   activeTurnStartedAt: number | null;
   lastTurnEndedAt: number | null;
   clearedAt: number | null;
-}, laneRole: string | null): LocalSessionMeta {
+}, lane: { role: string; botId: string } | null): LocalSessionMeta {
   const started = row.activeTurnStartedAt;
   return {
     id: row.id,
@@ -42,9 +42,11 @@ function toMeta(row: {
     hiddenAt: row.hiddenAt,
     source: row.source,
     orcaRole: row.orcaRole,
-    laneRole,
+    laneRole: lane?.role ?? null,
+    laneBotId: lane?.botId ?? null,
     interrupted: started !== null && started > (row.lastTurnEndedAt ?? 0) && started > (row.clearedAt ?? 0),
     activeTurnStartedAt: started,
+    lastTurnEndedAt: row.lastTurnEndedAt,
   };
 }
 
@@ -61,15 +63,15 @@ const metaSelection = {
   clearedAt: sessions.clearedAt,
 };
 
-async function laneRoles(ids: readonly string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+async function laneRoles(ids: readonly string[]): Promise<Map<string, { role: string; botId: string }>> {
+  const out = new Map<string, { role: string; botId: string }>();
   const db = getDbClient().drizzle;
   for (let offset = 0; offset < ids.length; offset += SESSION_BATCH) {
     const rows = await db
-      .select({ sessionId: botSessionLinks.sessionId, role: botSessionLinks.role })
+      .select({ sessionId: botSessionLinks.sessionId, role: botSessionLinks.role, botId: botSessionLinks.botId })
       .from(botSessionLinks)
       .where(inArray(botSessionLinks.sessionId, ids.slice(offset, offset + SESSION_BATCH)));
-    for (const row of rows) out.set(row.sessionId, row.role);
+    for (const row of rows) out.set(row.sessionId, { role: row.role, botId: row.botId });
   }
   return out;
 }
@@ -109,7 +111,12 @@ export async function readInterruptedSessionMetas(sinceMs: number, limit: number
 export async function readBotDirectory(): Promise<Map<string, FollowerBotState>> {
   const db = getDbClient().drizzle;
   const rows = await db
-    .select({ id: botProfiles.id, status: botProfiles.status, capabilities: botProfileVersions.capabilitiesJson })
+    .select({
+      id: botProfiles.id,
+      status: botProfiles.status,
+      canonicalSessionId: botProfiles.canonicalSessionId,
+      capabilities: botProfileVersions.capabilitiesJson,
+    })
     .from(botProfiles)
     .leftJoin(
       botProfileVersions,
@@ -121,6 +128,7 @@ export async function readBotDirectory(): Promise<Map<string, FollowerBotState>>
       status: row.status,
       allowSchedulerFollow: readAllowSchedulerFollow(row.capabilities),
       shadowed: isCompanionShadowed(row.id),
+      canonicalSessionId: row.canonicalSessionId ?? null,
     });
   }
   return out;

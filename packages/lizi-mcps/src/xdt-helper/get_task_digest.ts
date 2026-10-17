@@ -39,6 +39,10 @@ export interface TaskDigestWire {
   phase: TaskDigestPhase;
   /** 处于当前状态(或本轮运行)多少分钟;未知为 null。 */
   elapsed_minutes: number | null;
+  /** 距离任务最后一次有动静(输出、工具结果)多少分钟;未知为 null。 */
+  idle_minutes: number | null;
+  /** 当前有工具调用正在执行(长时间构建 / 测试);宿主不知道时不出现这个字段。 */
+  tool_in_flight?: boolean;
   last_user_ask: string | null;
   last_assistant_line: string | null;
   pending_question: string | null;
@@ -101,6 +105,7 @@ export function boundTaskDigest(raw: TaskDigestWire): TaskDigestWire {
 const DESCRIPTION = [
   '读一件任务的短摘要(≤2KB):状态 phase、已持续分钟数、主人最后的要求、助手最后一句、待回答的问题、错误、当前模型路线、',
   '建议换到的下一条路线(你的候选链里还没试过的那条,没有则 null)、PR 状态、排队消息数、谁开的 / 谁在跟。',
+  'idle_minutes 距最后一次动静的分钟数;tool_in_flight 为 true 表示有工具调用(如长时间构建、测试)正在执行,宿主不知道时不出现。',
   '被程序叫醒跟进任务时先读这一份再决定;要看原文再用 get_chat_history。',
   '作用范围:本机任务直接传 id;另一台电脑上的任务传 deviceId::sessionId(只读,对方须在线)。',
   'phase:running 运行中 / waiting-permission 等权限 / waiting-answer 等回答 / errored 出错 / usage-limit 撞用量上限 / finished 刚做完 / idle 空闲。',

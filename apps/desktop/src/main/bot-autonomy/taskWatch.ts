@@ -29,7 +29,6 @@ import type { FinishedRecord } from './glance.js';
 import {
   deriveLocalPhase,
   deriveRemotePhase,
-  isFinishTransition,
   nextPhaseSince,
   summarizeInteraction,
   truncateSummary,
@@ -54,8 +53,11 @@ const MISSING_META_RETRY_MS = 60_000;
 const REMOTE_READ_BATCH = 50;
 
 const USER_SOURCES = new Set(['desktop', 'feishu', 'slack', 'telegram', 'x', 'discord', 'wechat', 'dingtalk', 'wecom', 'shared']);
-/** 伙伴自己的专线（主任务 / 历史 / 群 / IM 渠道）不是「任务」，不进表。 */
-const BOT_LANE_ROLES = new Set(['canonical', 'history', 'group', 'channel']);
+/**
+ * 伙伴的历史 / 群 / IM 渠道专线不是「任务」，不进表。主任务（canonical）进表：总调度是另一个伙伴时要能
+ * 发现它坏了；但它永远不是主任务所属伙伴自己的事件对象（见 followerFor），也不进它自己的工作台。
+ */
+const BOT_LANE_ROLES = new Set(['history', 'group', 'channel']);
 
 export interface LocalSessionMeta {
   id: string;
@@ -67,9 +69,13 @@ export interface LocalSessionMeta {
   orcaRole: string | null;
   /** bot_session_links.role（无链接为 null）。 */
   laneRole: string | null;
+  /** bot_session_links.bot_id（无链接为 null）。 */
+  laneBotId: string | null;
   /** 上一轮没有正常收尾（startedAt > endedAt）。只在新鲜读库时有意义。 */
   interrupted: boolean;
   activeTurnStartedAt: number | null;
+  /** 上一轮收尾时刻（库里的 last_turn_ended_at）；跨重启稳定，用作出错状态的时刻。 */
+  lastTurnEndedAt: number | null;
 }
 
 export interface OwnershipSnapshot {
@@ -98,6 +104,8 @@ export interface TaskWatchDeps {
   now(): number;
   log: TaskWatchLogger;
   getActivitySnapshots(): readonly SessionActivitySnapshot[];
+  /** 本机任务是否有前台工具调用在途（tool_use 已发、tool_result 未回）；只是布尔事实。 */
+  isToolCallInFlight(sessionId: string): boolean;
   getPendingInteractions(sessionId: string): readonly unknown[];
   readLocalSessions(ids: readonly string[]): Promise<LocalSessionMeta[]>;
   readInterruptedSessions(sinceMs: number, limit: number): Promise<LocalSessionMeta[]>;
@@ -154,6 +162,8 @@ export class TaskWatch {
   private readonly pending = new Set<string>();
   private flushing: Promise<void> | null = null;
   private ownership: OwnershipSnapshot = EMPTY_OWNERSHIP;
+  /** 主任务 id → 所属伙伴（来自伙伴资料 canonical_session_id）。 */
+  private canonicalOwners = new Map<string, string>();
   private ownershipAt = 0;
   private ownershipRefresh: Promise<void> | null = null;
   private schedulerBotId: string | null = null;
@@ -313,7 +323,7 @@ export class TaskWatch {
     }
     const facts = this.factsFor(sessionId);
     const activity = facts.activity;
-    let phase: WatchedPhase = deriveLocalPhase({
+    const phase: WatchedPhase = deriveLocalPhase({
       activityPhase: activity?.phase ?? null,
       interactionKind: activity?.interactionKind ?? null,
       inputError: !!facts.inputError,
@@ -325,10 +335,9 @@ export class TaskWatch {
     if (phase === 'idle') {
       if (previous && this.interrupted.has(sessionId)) return { changed: false, unowned: false };
       if (previous?.phase === 'finished') return { changed: false, unowned: false };
-      if (!previous || !isFinishTransition(previous.phase, 'idle')) {
-        return { changed: this.rows.delete(sessionId), unowned: false };
-      }
-      phase = 'finished';
+      // 回到空闲但没观察到完成（主人点了停止 / 中止：灵动岛直接撤掉条目，不留完成卡）：
+      // 不是「做完」，静默离表——不发事件、不计入今天做完，免得伙伴把主人刚停下的事又推起来。
+      return { changed: this.rows.delete(sessionId), unowned: false };
     }
     let phaseSince: number;
     if (phase === 'running') {
@@ -336,7 +345,14 @@ export class TaskWatch {
     } else if (phase === 'finished') {
       phaseSince = nextPhaseSince(previous, phase, activity?.phase === 'completed' ? activity.lastActivityAtMs ?? now : now);
     } else if (phase === 'errored') {
-      phaseSince = nextPhaseSince(previous, phase, activity?.phase === 'error' ? activity.lastActivityAtMs ?? now : now);
+      // 时刻尽量取跨重启稳定的来源（灵动岛终态时刻，否则库里的上一轮收尾时刻），重启后同一次出错是同一个事件 id。
+      const terminal = activity?.phase === 'error' || activity?.phase === 'completed';
+      const ended = meta.lastTurnEndedAt;
+      const endedFresh = ended !== null && ended <= now && (previous?.startedAt == null || ended >= previous.startedAt);
+      phaseSince = nextPhaseSince(previous, phase, terminal ? activity?.lastActivityAtMs ?? now : endedFresh ? ended : now);
+    } else if (phase === 'waiting-answer' || phase === 'waiting-permission') {
+      // 进入等交互时灵动岛会记下活动时刻；等待期间没有新活动，重启后同一条挂起交互仍是同一个时刻。
+      phaseSince = nextPhaseSince(previous, phase, activity?.phase === 'needs-interaction' ? activity.lastActivityAtMs ?? now : now);
     } else {
       phaseSince = nextPhaseSince(previous, phase, now);
     }
@@ -348,7 +364,8 @@ export class TaskWatch {
       pendingQuestion = summary?.summary ?? (keep ? previous.pendingQuestion : null);
       pendingRequestId = summary?.requestId ?? (keep ? previous.pendingRequestId ?? null : null);
     }
-    const creatorBotId = this.ownership.creatorBySession.get(sessionId) ?? null;
+    const canonicalOfBotId = this.canonicalOwner(sessionId, meta);
+    const creatorBotId = this.creatorOf(sessionId, canonicalOfBotId);
     const row: WatchedSession = {
       sessionId,
       deviceId: null,
@@ -362,8 +379,10 @@ export class TaskWatch {
       startedAt: activity?.startedAtMs ?? previous?.startedAt ?? null,
       pendingQuestion,
       pendingRequestId,
+      toolInFlight: phase === 'running' && this.deps.isToolCallInFlight(sessionId),
       error: phase === 'errored' && facts.inputError ? truncateSummary(facts.inputError) : null,
       creatorBotId,
+      canonicalOfBotId,
       followerBotId: null,
       source: localSource(meta, creatorBotId),
     };
@@ -374,6 +393,8 @@ export class TaskWatch {
   }
 
   private recordFinished(row: WatchedSession, now: number): void {
+    // 伙伴主任务的一轮回复不计入「今天做完」。
+    if (row.canonicalOfBotId) return;
     this.finishedLog.push({ sessionId: row.sessionId, creatorBotId: row.creatorBotId, at: now });
     // 只为「今天做完 N 件」留两天的记录。
     const cutoff = now - 2 * 24 * 60 * 60_000;
@@ -393,7 +414,8 @@ export class TaskWatch {
       this.meta.set(meta.id, meta);
       if (!this.isWatchable(meta) || !meta.interrupted || this.rows.has(meta.id) || this.local.get(meta.id)?.activity) continue;
       const since = meta.activeTurnStartedAt ?? now;
-      const creatorBotId = this.ownership.creatorBySession.get(meta.id) ?? null;
+      const canonicalOfBotId = this.canonicalOwner(meta.id, meta);
+      const creatorBotId = this.creatorOf(meta.id, canonicalOfBotId);
       const row: WatchedSession = {
         sessionId: meta.id,
         deviceId: null,
@@ -408,6 +430,7 @@ export class TaskWatch {
         pendingQuestion: null,
         error: null,
         creatorBotId,
+        canonicalOfBotId,
         followerBotId: null,
         source: localSource(meta, creatorBotId),
       };
@@ -417,15 +440,31 @@ export class TaskWatch {
     }
   }
 
-  private followerFor(row: Pick<WatchedSession, 'creatorBotId' | 'deviceId'>): string | null {
+  private followerFor(row: Pick<WatchedSession, 'creatorBotId' | 'deviceId' | 'canonicalOfBotId'>): string | null {
     // 每台电脑上的任务由那台电脑上的伙伴跟：两台电脑上的同名伙伴（如各自的 Cindy 助理）不会各跟一遍。
     // 另一台电脑的行只进工作台给主人看与允许；总调度仍可经工具显式继续它。
     if (row.deviceId !== null) return null;
-    return deriveFollowerBotId({
+    const follower = deriveFollowerBotId({
       creatorBotId: row.creatorBotId,
       schedulerBotId: this.schedulerBotId,
       bots: this.ownership.bots,
     });
+    // 伙伴自己的主任务永远不是它自己的事件对象：自己叫醒自己只会排在正在失败的主任务后面打转。
+    // 总调度是另一个伙伴时照常跟（它能发现别的伙伴的主任务坏了）。
+    return follower !== null && follower === (row.canonicalOfBotId ?? null) ? null : follower;
+  }
+
+  /** 这件任务是哪个伙伴的主任务：资料登记的 canonical_session_id 优先，其次 bot_session_links 的 canonical 链接。 */
+  private canonicalOwner(sessionId: string, meta: LocalSessionMeta | undefined): string | null {
+    const registered = this.canonicalOwners.get(sessionId);
+    if (registered) return registered;
+    return meta?.laneRole === 'canonical' ? meta.laneBotId : null;
+  }
+
+  /** 主任务所属伙伴不算它的「开的任务」：不让它经 creator 路径跟自己，也不进它自己的工作台。 */
+  private creatorOf(sessionId: string, canonicalOfBotId: string | null): string | null {
+    const creator = this.ownership.creatorBySession.get(sessionId) ?? null;
+    return creator !== null && creator === canonicalOfBotId ? null : creator;
   }
 
   private async refreshOwnership(force = false): Promise<void> {
@@ -439,14 +478,19 @@ export class TaskWatch {
         if (this.stopped) return;
         this.ownership = next;
         this.ownershipAt = this.deps.now();
+        this.canonicalOwners = new Map();
+        for (const [botId, bot] of next.bots) {
+          if (bot.canonicalSessionId) this.canonicalOwners.set(bot.canonicalSessionId, botId);
+        }
       } catch (error) {
         this.deps.log.warn('ownership read failed', { error: errorCode(error) });
       }
       this.schedulerBotId = resolveSchedulerBotId(this.readOverride(), this.ownership.bots);
       for (const row of this.rows.values()) {
         if (row.deviceId === null) {
-          row.creatorBotId = this.ownership.creatorBySession.get(row.sessionId) ?? null;
           const meta = this.meta.get(row.sessionId);
+          row.canonicalOfBotId = this.canonicalOwner(row.sessionId, meta);
+          row.creatorBotId = this.creatorOf(row.sessionId, row.canonicalOfBotId);
           if (meta) row.source = localSource(meta, row.creatorBotId);
         }
         row.followerBotId = this.followerFor(row);
@@ -483,6 +527,14 @@ export class TaskWatch {
     }
     for (const [id, facts] of this.local) {
       if (!facts.activity && !facts.inputError && !facts.usageLimitWait && !this.rows.has(id)) this.local.delete(id);
+    }
+    // 查不到元数据的记录：过了重试间隔或已不在活动里就丢掉，避免无界增长（下次出现会重新查）。
+    for (const [id, at] of this.missingMeta) {
+      if (!this.local.has(id) || now - at >= MISSING_META_RETRY_MS) this.missingMeta.delete(id);
+    }
+    // 长工具调用期间没有活动事件：每次扫描刷新一次「工具在途」，stuck 判定据此放宽。
+    for (const row of this.rows.values()) {
+      if (row.deviceId === null) row.toolInFlight = row.phase === 'running' && this.deps.isToolCallInFlight(row.sessionId);
     }
     if (this.meta.size > 2_000) {
       for (const id of this.meta.keys()) if (!this.rows.has(id) && !this.local.has(id)) this.meta.delete(id);
@@ -696,19 +748,12 @@ export class TaskWatch {
       if (phase === 'finished' && previous?.phase !== 'finished') this.recordFinished(row, now);
       this.rows.set(id, row);
     }
-    // 离开活动列表：之前在跑 / 等交互的算做完；做完的行留到保留期满。
+    // 离开活动列表：只有观察到完成（列表里出现过 completed）的行留到保留期满；其它（含被停止）静默离表，
+    // 不算「做完」。
     for (const [id, row] of this.rows) {
       if (row.deviceId !== deviceId || seen.has(id)) continue;
       row.online = true;
-      if (isFinishTransition(row.phase, 'idle')) {
-        row.phase = 'finished';
-        row.phaseSince = now;
-        row.pendingQuestion = null;
-        row.pendingRequestId = null;
-        this.recordFinished(row, now);
-      } else if (row.phase !== 'finished') {
-        this.rows.delete(id);
-      }
+      if (row.phase !== 'finished') this.rows.delete(id);
     }
     for (const remoteId of state.signals.keys()) {
       if (!active.has(remoteId)) state.signals.delete(remoteId);

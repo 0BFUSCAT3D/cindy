@@ -34,14 +34,29 @@ import {
   scopeIsCurrent,
   setActiveBotAutonomy,
 } from './hub.js';
+import { setBotAutonomyBotsChangedListener } from './botsChangedSignal.js';
 import { BotAutonomyRuntime } from './runtime.js';
 import { TaskWatch, errorCode } from './taskWatch.js';
 
 export { configureBotAutonomyHost } from './hub.js';
 
 const log = createLogger('bot-autonomy');
+/** 伙伴资料 / 生命周期变化合并后再重读归属（同一次保存常连发几条广播）。 */
+const BOTS_CHANGED_DEBOUNCE_MS = 300;
 
 let initialized = false;
+let botsChangedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onBotsChanged(): void {
+  if (botsChangedTimer) return;
+  botsChangedTimer = setTimeout(() => {
+    botsChangedTimer = null;
+    const active = getActiveBotAutonomy();
+    if (!active || !scopeIsCurrent(active.scope)) return;
+    active.runtime.refreshFollowers().catch((error) => log.warn('autonomy follower refresh failed', { error: errorCode(error) }));
+  }, BOTS_CHANGED_DEBOUNCE_MS);
+  botsChangedTimer.unref?.();
+}
 
 function assertScope(scope: string): void {
   if (!scopeIsCurrent(scope)) throw Object.assign(new Error('owner changed'), { code: 'OWNER_CHANGED' });
@@ -51,6 +66,7 @@ function assertScope(scope: string): void {
 export function initBotAutonomy(): void {
   if (initialized) return;
   initialized = true;
+  setBotAutonomyBotsChangedListener(onBotsChanged);
   onRoutineEngineLifecycle({
     started: (engine, scope) => startRuntime(engine, scope),
     stopped: (engine) => {
@@ -86,6 +102,7 @@ function startRuntime(engine: RoutineEngine, scope: string): void {
       log,
       onChange,
       getActivitySnapshots: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
+      isToolCallInFlight: (sessionId) => getAgentIslandService()?.isToolCallInFlight(sessionId) ?? false,
       getPendingInteractions: (sessionId) => {
         try {
           return getBotAutonomyHostDeps().getPendingInteractions?.(sessionId) ?? [];

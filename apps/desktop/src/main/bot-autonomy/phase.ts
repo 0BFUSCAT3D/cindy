@@ -66,15 +66,6 @@ export function nextPhaseSince(
   return candidate;
 }
 
-/**
- * 「做完」：曾在跑（或等交互）的任务进入 finished，或直接回到空闲（例如主人正看着任务，
- * 完成态没有停留就被已读清掉）。
- */
-export function isFinishTransition(previous: WatchedPhase | null, next: WatchedPhase): boolean {
-  if (next === 'finished') return previous !== 'finished';
-  return next === 'idle' && (previous === 'running' || previous === 'waiting-answer' || previous === 'waiting-permission');
-}
-
 export function truncateSummary(text: string, max = SUMMARY_MAX_CHARS): string {
   const compact = text.replace(/\s+/gu, ' ').trim();
   const chars = Array.from(compact);
@@ -87,6 +78,12 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/** `mcp__<server>__<tool>` 这种原始工具名在「等你」里太像代码，改成「server · tool」；其它名字原样。 */
+function readableToolName(name: string): string {
+  const match = /^mcp__(.+?)__(.+)$/u.exec(name.trim());
+  return match ? `${match[1]} · ${match[2]}` : name;
 }
 
 /**
@@ -107,7 +104,7 @@ export function summarizeInteraction(raw: unknown): InteractionSummary | null {
   const kind = text(request.kind);
   if (kind === 'permission') {
     const name = text(request.title) ?? text(request.displayName) ?? text(request.toolName);
-    return { summary: name ? truncateSummary(name) : null, waitingFor: 'permission', requestId: text(request.requestId) };
+    return { summary: name ? truncateSummary(readableToolName(name)) : null, waitingFor: 'permission', requestId: text(request.requestId) };
   }
   if (kind === 'ask_user_question') {
     const questions = Array.isArray(request.questions) ? request.questions : [];
