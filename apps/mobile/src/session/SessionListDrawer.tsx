@@ -140,6 +140,13 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
         .activeOffsetX(-16)
         .failOffsetX(16)
         .failOffsetY([-16, 16])
+        .onStart(() => {
+          'worklet';
+          // A new horizontal drag takes over from the current rebound position.
+          // Do not stop it on touch-down: vertical scrolling must leave it running.
+          cancelAnimation(progress);
+          cancelAnimation(dragX);
+        })
         .onUpdate((event) => {
           'worklet';
           dragX.value = Math.min(0, event.translationX);
@@ -164,7 +171,7 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
             });
           }
         }),
-    [closeFromGesture, dragX, panelWidth, persistent],
+    [closeFromGesture, dragX, panelWidth, persistent, progress],
   );
 
   const scrimStyle = useAnimatedStyle(() => ({

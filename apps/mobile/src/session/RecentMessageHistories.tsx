@@ -174,7 +174,7 @@ const styles = StyleSheet.create({
 });
 
 /** Route-owned drawers must be above the root-owned histories, not beneath them. */
-export function MessageHistoryOverlay({ children }: { children: ReactNode }) {
+export function MessageHistoryOverlay({ children, enabled = true }: { children: ReactNode; enabled?: boolean }) {
   const context = useContext(Context);
   const residentChildren = useResidentHomeListContextBridge(children);
   if (!context) throw new Error('RecentMessageHistoriesProvider is missing');
@@ -185,10 +185,10 @@ export function MessageHistoryOverlay({ children }: { children: ReactNode }) {
   const route = useContext(NavigationRouteContext);
   useLayoutEffect(() => {
     if (NativeHistorySlot || needsResidentHistoryUpgrade) return;
-    setOverlay(owner, focused ? <NavigationContext.Provider value={navigation}>
+    setOverlay(owner, enabled && focused ? <NavigationContext.Provider value={navigation}>
       <NavigationRouteContext.Provider value={route}>{residentChildren}</NavigationRouteContext.Provider>
     </NavigationContext.Provider> : null);
-  }, [setOverlay, owner, focused, navigation, route, residentChildren]);
+  }, [setOverlay, owner, enabled, focused, navigation, route, residentChildren]);
   useLayoutEffect(() => () => setOverlay(owner, null), [setOverlay, owner]);
-  return NativeHistorySlot || needsResidentHistoryUpgrade ? children : null;
+  return !enabled || NativeHistorySlot || needsResidentHistoryUpgrade ? children : null;
 }
