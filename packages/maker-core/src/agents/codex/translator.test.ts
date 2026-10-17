@@ -122,9 +122,16 @@ describe('Codex assistant text streaming contract', () => {
     translateErrorNotification(makeParams({ willRetry: true,
       message: 'stream disconnected - retrying sampling request (1/5 in 212ms)...',
       codexErrorInfo: { responseStreamDisconnected: {} } }), q, ctx);
-    complete('successful-answer', 'Hello from attempt two', 'final_answer');
+    complete('successful-commentary', 'Preparing the accepted answer', 'commentary');
+    complete('successful-intro', 'Hello from attempt two', 'final_answer');
+    complete('successful-answer', 'The accepted answer continues', 'final_answer');
+    expect(finishCodexSamplingTurn(rt, 't1', 'turn-a', 'completed')).toBeUndefined();
     const events = await collect(q);
-    expect(events.filter(event => event.type === 'text')).toHaveLength(4);
+    expect(events.filter(event => event.type === 'text').map(event =>
+      (event.data as { agentMessageId?: string }).agentMessageId)).toEqual([
+      'progress', 'failed-commentary', 'failed-answer',
+      'successful-commentary', 'successful-intro', 'successful-answer',
+    ]);
     expect(events.find(event => event.type === 'error')).toMatchObject({
       data: { isTerminal: false, willRetry: true, assistantAttemptFailure: {
         threadId: 't1', turnId: 'turn-a', attempt: 1,

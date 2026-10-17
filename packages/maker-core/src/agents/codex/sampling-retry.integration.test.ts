@@ -44,12 +44,19 @@ it.skipIf(!binaryPath).each(['success', 'exhausted', 'stop', 'steer'] as const)(
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       const request = requests.length;
+      const willComplete = recover || request > 2 || (request === 2 && ending === 'success');
       res.writeHead(200, { 'content-type': 'text/event-stream', connection: 'close' });
       sendEvent(res, { type: 'response.created', response: { id: 'response-' + request } });
+      if (willComplete) {
+        for (const [id, phase] of [['accepted-commentary-', 'commentary'], ['accepted-intro-', 'final_answer']] as const) {
+          sendEvent(res, { type: 'response.output_item.done', item: { type: 'message', role: 'assistant',
+            id: id + request, phase, content: [{ type: 'output_text', text: id + request }] } });
+        }
+      }
       sendEvent(res, { type: 'response.output_item.done', item: { type: 'message', role: 'assistant',
         id: 'answer-' + request, phase: 'final_answer',
         content: [{ type: 'output_text', text: 'Opening from request ' + request }] } });
-      if (recover || request > 2 || (request === 2 && ending === 'success')) {
+      if (willComplete) {
         complete(res, request);
       } else if (request === 2 && (ending === 'stop' || ending === 'steer')) {
         heldResponse = res;
@@ -138,6 +145,14 @@ it.skipIf(!binaryPath).each(['success', 'exhausted', 'stop', 'steer'] as const)(
         (event.data as { text?: string }).text)).toContain('Opening from request 1');
       expect(events.some(event => event.type === 'error' &&
         (event.data as { willRetry?: boolean }).willRetry === true)).toBe(true);
+      if (ending === 'success' || ending === 'steer') {
+        const acceptedRequest = ending === 'success' ? 2 : 3;
+        const acceptedIds = ['accepted-commentary-' + acceptedRequest, 'accepted-intro-' + acceptedRequest];
+        const textIds = events.filter(event => event.type === 'text').map(event =>
+          (event.data as { agentMessageId?: string }).agentMessageId);
+        expect(textIds).toEqual(expect.arrayContaining(acceptedIds));
+        expect(failures.flatMap(failure => failure.agentMessageIds).some(id => acceptedIds.includes(id))).toBe(false);
+      }
       const failureCount = failures.length;
       recover = true;
       const boundary = events.length;
