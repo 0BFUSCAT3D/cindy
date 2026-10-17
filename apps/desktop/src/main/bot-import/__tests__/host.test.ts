@@ -670,7 +670,10 @@ it('does not reintroduce a credential-bearing skill slug in the generated resour
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const requestId = 'fixture-slug-12345';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['skill', 'env'], takeover: false }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  // Acceptance may precede filesystem writes; join the import transaction before
+  // checking published content or letting teardown remove its directory.
+  const completed = await withBotProfileLocks([result.botId], () => getCompanionImportResult(requestId));
+  expect(completed?.status).toBe('complete');
   const directory = path.join(h.root, 'bots', result.botId, 'skills');
   const [slug] = await fs.readdir(directory);
   expect(slug).toMatch(/^import-[a-f0-9]+$/);
