@@ -51,6 +51,8 @@ export interface MobileResolvedRemoteMedia {
 }
 
 export interface MobileRemoteMediaFetchOptions {
+  /** Await Host version validation; still reuse bytes for that confirmed version. */
+  revalidate?: boolean;
   /** Local callbacks: only connect on a cache miss or during background revalidation. */
   beforeFetch?: () => Promise<unknown>;
   retainBackground?: (result: MobileRemoteMediaFetchResult, isCurrent?: () => boolean) => Promise<void>;
@@ -75,6 +77,7 @@ export interface MobileRemoteMediaResolverDeps {
 }
 
 export interface MobileRemoteMediaResolveOptions {
+  revalidate?: boolean;
   beforeFetch?: () => Promise<unknown>;
   discardBackgroundOssKey?: (key: string) => void;
   onProgress?: (loaded: number, total: number) => void;
@@ -204,6 +207,7 @@ export async function resolveMobileRemoteMedia(
     throw new Error(i18n.t("composer.attachments.notFetchableMedia"));
   }
   const fetchOpts = {
+    ...(opts?.revalidate ? { revalidate: true } : {}),
     ...(opts?.beforeFetch ? { beforeFetch: opts.beforeFetch } : {}),
     ...(opts?.stream === false ? { retainBackground: async (result: MobileRemoteMediaFetchResult, isCurrent?: () => boolean) => {
       if (!result.ossKey || isCurrent?.() === false) return;

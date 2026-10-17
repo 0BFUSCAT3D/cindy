@@ -20,13 +20,14 @@ const io = vi.hoisted(() => ({
   resumable: vi.fn(),
   cancel: vi.fn(async () => undefined),
   deleteAsync: vi.fn(async () => undefined),
+  progress: (_value: { totalBytesWritten: number }) => {},
 }));
 
 vi.mock('expo-file-system/legacy', () => ({
-  createDownloadResumable: (url: string, uri: string) => ({
-    downloadAsync: () => io.resumable(url, uri),
-    cancelAsync: io.cancel,
-  }),
+  createDownloadResumable: (url: string, uri: string, _options?: unknown, progress?: typeof io.progress) => {
+    io.progress = progress ?? (() => {});
+    return { downloadAsync: () => io.resumable(url, uri), cancelAsync: io.cancel };
+  },
   deleteAsync: io.deleteAsync,
 }));
 
@@ -140,6 +141,30 @@ describe('bounded temporary media downloads', () => {
     finish('dimensions and embedded bytes');
     expect(await result).toBe('dimensions and embedded bytes');
     expect(io.remove).toHaveBeenCalledExactlyOnceWith(io.download.mock.calls[0]![1].uri);
+  });
+
+  // Unit: large text fallback must stop a slow/oversized OSS download and clean
+  // its partial file. Existing cases covered cancellation only for sharing.
+  it.each(['cancel', 'oversize'] as const)('does not deliver preview bytes after %s', async reason => {
+    const abort = new AbortController();
+    io.resumable.mockReturnValue(new Promise(() => {}));
+    const read = vi.fn();
+    const result = withDownloadedRemoteMediaFile('https://example.com/text', 'text/plain', 8, read, abort.signal);
+    await vi.waitFor(() => expect(io.resumable).toHaveBeenCalledOnce());
+    if (reason === 'cancel') abort.abort();
+    else io.progress({ totalBytesWritten: 9 });
+    expect(await result).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    expect(io.cancel).toHaveBeenCalled();
+    expect(io.deleteAsync).toHaveBeenCalledOnce();
+  });
+
+  it('discards a text result cancelled while the file was being read', async () => {
+    const abort = new AbortController();
+    const result = await withDownloadedRemoteMediaFile('file:///peer/staged', 'text/plain', 8,
+      async () => { abort.abort(); return 'late text'; }, abort.signal);
+    expect(result).toBeNull();
+    expect(io.remove).toHaveBeenCalledOnce();
   });
 
   it.each([0, 9])('removes a %s-byte download without exposing it to the consumer', async (size) => {

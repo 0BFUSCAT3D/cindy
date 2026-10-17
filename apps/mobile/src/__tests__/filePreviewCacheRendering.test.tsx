@@ -102,15 +102,28 @@ async function open(cached = true) {
   if (cached) storeCachedListing(state.scope, '/repo', '', entries);
   await act(async () => { root.render(<Screen />); });
 }
+// The native pager is not mounted in jsdom. Read the real screen's renderItem
+// output at the reader boundary: #6318 moved the title/metadata into each page.
+// Keep checking the selected file and metadata after refresh/swipe, rather than
+// looking for the removed screen-level header or reimplementing its formatting.
+function expectVisiblePage(name: string, meta: string) {
+  const pages = state.pager.data.map((item: unknown, index: number) =>
+    state.pager.renderItem({ item, index }).props.children.props,
+  );
+  const visiblePages = pages.filter((page: { visible: boolean }) => page.visible);
+  expect(visiblePages).toHaveLength(1);
+  expect(visiblePages[0].item.name).toBe(name);
+  expect(visiblePages[0].htmlBrowserActions.meta).toBe(meta);
+}
 describe('cached file preview presentation', () => {
   it('shows the cached index, count and size on the first render and does not reposition on unchanged refresh', async () => {
     await open();
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
     expect(state.pager.initialScrollIndex).toBe(2);
     const selectedKey = state.pager.keyExtractor(state.pager.data[2]);
     state.scroll.mockClear();
     await act(async () => { resolveListing({ entries }); });
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
     expect(state.pager.keyExtractor(state.pager.data[2])).toBe(selectedKey);
     expect(state.scroll).not.toHaveBeenCalled();
   });
@@ -119,29 +132,29 @@ describe('cached file preview presentation', () => {
     act(() => state.pager.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 390 * 3 } } }));
     state.scroll.mockClear();
     await act(async () => { rejectListing(new Error('offline')); });
-    expect(host.textContent).toContain('s.txt4 / 6 · 11.9 KB');
+    expectVisiblePage('s.txt', '4 / 6 · 11.9 KB');
     expect(state.scroll).not.toHaveBeenCalled();
   });
   it('still opens without a listing and seeds subsequent opens from the successful background read', async () => {
     await open(false);
-    expect(host.textContent).toContain('1 / 1');
+    expectVisiblePage('README.md', '1 / 1');
     state.scroll.mockClear();
     await act(async () => { resolveListing({ entries }); });
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
     expect(state.scroll).toHaveBeenCalledExactlyOnceWith({ animated: false, offset: 2 * 390 });
     act(() => root.unmount());
     root = createRoot(host);
     await open(false);
-    expect(host.textContent).toContain('3 / 6 · 11.9 KB');
+    expectVisiblePage('README.md', '3 / 6 · 11.9 KB');
   });
   it('keeps the file selected after a swipe when a directory refresh moves it to another index', async () => {
     await open();
     act(() => state.pager.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 390 * 3 } } }));
-    expect(host.textContent).toContain('s.txt4 / 6 · 11.9 KB');
+    expectVisiblePage('s.txt', '4 / 6 · 11.9 KB');
     const selectedKey = state.pager.keyExtractor(state.pager.data[3]);
     state.scroll.mockClear();
     await act(async () => { resolveListing({ entries: entries.slice(1) }); });
-    expect(host.textContent).toContain('s.txt3 / 5 · 11.9 KB');
+    expectVisiblePage('s.txt', '3 / 5 · 11.9 KB');
     expect(state.pager.data[state.pager.initialScrollIndex].relPath).toBe('s.txt');
     expect(state.pager.keyExtractor(state.pager.data[2])).toBe(selectedKey);
     expect(state.scroll).toHaveBeenCalledExactlyOnceWith({ animated: false, offset: 2 * 390 });

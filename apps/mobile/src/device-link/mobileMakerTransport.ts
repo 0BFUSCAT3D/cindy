@@ -249,6 +249,8 @@ export interface RemoteTextFilePreviewResult {
   error?: string;
   reason?: "oversize" | "not_found" | "forbidden" | "read_failed";
   data?: string;
+  /** Only returned when the caller opts into the existing file transfer path. */
+  transferRequired?: boolean;
   size: number;
   limitMb?: number;
 }
@@ -901,7 +903,7 @@ export interface MobileMakerTransport {
     listDir(path: string): Promise<RemoteDirectoryListResult>;
     statPath(path: string): Promise<RemotePathStatResult>;
     mkdirP(path: string): Promise<{ resolvedPath: string }>;
-    readTextFilePreview(path: string): Promise<RemoteTextFilePreviewResult>;
+    readTextFilePreview(path: string, options?: { allowFileTransfer?: boolean; signal?: AbortSignal }): Promise<RemoteTextFilePreviewResult>;
   };
   /** 完整文件浏览(workdir 相对路径语义,被控端 file-browser:remote-op 聚合通道)。 */
   fileBrowser: {
@@ -1142,7 +1144,7 @@ export function createMobileMakerTransport({
       "result",
       () =>
         readDeviceFile({
-          cacheFirst: stream || opts?.skipCache || opts?.thumbnail || isSharedTaskPeer(deviceId) ? undefined : {
+          cacheFirst: stream || opts?.revalidate || opts?.skipCache || opts?.thumbnail || isSharedTaskPeer(deviceId) ? undefined : {
             read: async () => (await getFileCache())?.readLatest(deviceId, url, () => fileIsCurrent() && !opts?.signal?.aborted) ?? null,
             retain: async (result) => { await opts?.retainBackground?.(withDownload(result), fileIsCurrent); },
           },
@@ -1572,8 +1574,8 @@ export function createMobileMakerTransport({
       listDir: (path) => call("fs:list-dir", [{ path }]),
       statPath: (path) => call("fs:stat-path", [{ path }]),
       mkdirP: (path) => call("fs:mkdir-p", [{ path }]),
-      readTextFilePreview: (filePath) =>
-        call("text-file:read-preview", [{ filePath }]),
+      readTextFilePreview: (filePath, options) =>
+        call("text-file:read-preview", [{ filePath, ...(options?.allowFileTransfer ? { allowFileTransfer: true } : {}) }]),
     },
     fileBrowser: {
       cacheScope: JSON.stringify([fileOwner.accountKey, deviceId]),

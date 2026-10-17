@@ -188,6 +188,21 @@ known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机�
 传输去重仅保留有界内存，两端持久展示缓存继续使用原有账号隔离与删除屏障。
 不修改 relay、不新增权限、数据库 migration 或 Mobile 原生指纹。
 
+## 大文本预览的文件传输回退
+
+`text-file:read-preview` 接受可选 `allowFileTransfer: true`。仍先执行原绝对路径、
+访问策略和 10 MiB 大小校验；成功结果的 UTF-8 JSON 大于设备消息预算（4 MiB 留出
+64 KiB 封装余量）时，仅向显式支持的调用方返回 `{ success: true, transferRequired: true,
+size, limitMb }`，不把正文塞入消息。未声明支持的本地／旧控制端仍收到原有结果。
+新手机收到标记后，使用既有 `xdt-file` 文件通道及版本缓存取件，并携带 `maxBytes=10485760`；
+读取前后校验取消、账号和实际大小，结束时释放取件暂存及 OSS 对象。文本已有独立展示缓存，
+其更新等待主机版本复验后再复用对应字节，避免把旧快照反复写回。无新增存储目录或通道。
+
+旧 Host 忽略新增请求字段，新手机继续接收原正文／错误；收到明确的 `PAYLOAD_TOO_LARGE`
+时可走同一文件回退，权限、缺失和连接错误不触发回退。旧 Host 若不能返回明确超限错误，
+仍需更新 Host 才能消除此失败；不以超时为由重发或绕过文本授权。完整修复需要两端更新，
+不需要服务端或 Mobile 原生构建变化。
+
 ## invoke 结果传输编码（弱网减流量）
 
 控制端 `invoke` payload 可选携带 `transfer: { gzip?: 1, ifNoneMatch?: string }`：注入了解压
@@ -217,6 +232,15 @@ Desktop 的压缩保持 gzip level 4 与同步发送／错误处理契约，手�
 `@cindy/device-link/node-compression` 独立入口，跨平台主入口与 Mobile 不加载 Node 模块。
 DEBUG 统计只记原始／gzip／wire 字节与压缩耗时，不记录正文或凭证。
 回归见 Desktop `device-link/__tests__/transferCodec.test.ts`（实际 zlib／pako 解码）。
+
+Mobile 开启本地诊断时，在原有 30 秒／卡顿区间统计内汇总 `relayTransfers`：每个 channel
+首次写入 socket 的请求数、收到的响应数、还原正文前的响应 payload UTF-8 字节数、
+`notModified` 与 gzip 命中数。前者不把准入等待或取消算作已发送，也不重复计重传；
+后者不包含 envelope、分片头、ACK 与重传字节，不是总线上流量。peer 直连不经过此计数。
+传输行按响应 payload 字节数降序只保留前六个通道，`relayTransfersOmitted` 标明省略的
+通道数；与 push／invoke 列表一起保持在单条日志的 120 值预算内，不能当作全部通道总量。
+旧 `invokeCount` 仍是业务调用次数，不能与已发请求数混用。不开诊断时不序列化计量，
+不记录请求参数、正文、设备／任务 ID，不改变传输协议或恢复策略。
 
 ## 群执行终态与错误展示
 

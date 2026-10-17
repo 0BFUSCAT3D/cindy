@@ -702,7 +702,7 @@ interface MessageActions {
   /** 待发送气泡(pending_send 项)的展开态与队列操作回调。 */
   pendingSend?: PendingSendBubbleActions;
   getSentImagePreview?: GetSentMessageImagePreview;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
   onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   busyClientId?: string | null;
@@ -7189,7 +7189,7 @@ function MessagePayloadModal({
   /** 图表导出图的标注配置(来自聊天 lightbox 的同一份 chatAnnotation)。 */
   imageAnnotation?: ImageLightboxAnnotationConfig;
   onClose(): void;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
   onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   onShareImage?: ComponentProps<typeof ImageLightbox>['onShareImage'];
@@ -7574,7 +7574,7 @@ function MessagePayloadBody({
   onResolveRemoteMedia,
 }: {
   payload: MessagePayload;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
   onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
 }) {
@@ -7768,7 +7768,7 @@ function DiffPayloadBody({
 }: {
   diff: NormalizedToolDiff;
   layout: PayloadBodyLayout;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
 }) {
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -7956,7 +7956,7 @@ function FilePayloadBody({
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   layout: PayloadBodyLayout;
   payload: Extract<MessagePayload, { kind: 'file' }>;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
 }) {
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -8055,26 +8055,34 @@ type RemoteTextFilePreviewLoadState =
 
 function useRemoteTextFilePreview(
   sourcePath: string,
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>,
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>,
 ) {
   const { i18n: i18nInstance } = useTranslation();
   const [previewLoadState, setPreviewLoadState] = useState<RemoteTextFilePreviewLoadState>(
     { status: 'idle' },
   );
   const previewSeqRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
   const previewKind = useMemo(() => remoteFilePreviewKind(sourcePath), [sourcePath]);
   const canPreview = previewKind === 'text' && !!sourcePath && !!onReadTextFilePreview;
 
   useEffect(() => {
     previewSeqRef.current += 1;
     setPreviewLoadState({ status: 'idle' });
-  }, [sourcePath]);
+    return () => {
+      previewSeqRef.current += 1;
+      previewAbortRef.current?.abort();
+    };
+  }, [sourcePath, onReadTextFilePreview]);
 
   const loadPreview = useCallback(() => {
     if (!canPreview || previewLoadState.status === 'loading') return;
     const seq = ++previewSeqRef.current;
+    previewAbortRef.current?.abort();
+    const abort = new AbortController();
+    previewAbortRef.current = abort;
     setPreviewLoadState({ status: 'loading' });
-    void onReadTextFilePreview(sourcePath)
+    void onReadTextFilePreview(sourcePath, { signal: abort.signal })
       .then((result) => {
         if (previewSeqRef.current !== seq) return;
         if (result.success && typeof result.data === 'string') {
