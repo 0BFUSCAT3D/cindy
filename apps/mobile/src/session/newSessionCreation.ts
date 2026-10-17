@@ -54,6 +54,7 @@ import { getCurrentMobileOutboxRecords, holdDurableOutboxCreation, isDurableOutb
 import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
 import { isExplicitRemoteNotFoundError } from './newSessionWorktree';
 import { mergeAttachmentsWithinLimit } from './attachments';
+import type { MobileLocalAttachmentUploadCandidate } from './mobileLocalAttachmentUpload';
 import {
   forgetPendingPrecreatedWorktree,
   parseDiscardPrecreatedAck,
@@ -805,7 +806,9 @@ export async function appendNewSessionEditComposer(sessionId: string, deviceId: 
   text: string;
   attachments: readonly RemoteSerializedAttachment[];
   notice?: string | null;
+  getUploadedSource?: (id: string) => MobileLocalAttachmentUploadCandidate | undefined;
 }): Promise<RemoteSerializedAttachment[]> {
+  const owner = getMobileAuthOwner();
   const task = tasks.get(sessionId);
   const memory = task?.deviceId === deviceId && isTaskOwnerCurrent(task) ? task.editDraft?.value : undefined;
   const record = getCurrentMobileOutboxRecords().find(record => record.deviceId === deviceId
@@ -820,19 +823,40 @@ export async function appendNewSessionEditComposer(sessionId: string, deviceId: 
     dropped.length ? i18n.t('session.screen.attachmentsNotCarriedBack', { count: dropped.length }) : null,
   ].filter(Boolean).join('\n') || undefined;
   if (record?.creation) {
-    // Keep existing upload slot numbers and retained bytes intact. New files
-    // already have uploaded references; only their ownership moves here.
+    // A serialized OSS/peer reference is not enough to resubmit the recovered
+    // draft. Keep its bytes through the same retention path as initial creation.
     const added = merged.filter(file => !original.some(existing => existing.id === file.id));
-    await mobileDurableOutbox.update(record, {
-      creation: { ...record.creation, draft: nextDraft, notice },
-      item: { ...record.item,
-        text: [record.item.text, input.text].filter(Boolean).join('\n\n'),
-        attachmentSlots: [...record.item.attachmentSlots, ...added],
-        slotMeta: [...record.item.slotMeta, ...added.map(file => ({
-          kind: file.category === 'image' ? 'image' as const : 'file' as const, previewUri: null,
-        }))],
-      },
-    });
+    const sources = added.map(file => input.getUploadedSource?.(file.id));
+    const copies: DurableOutboxRecord = { ...record, uploads: [] };
+    const { retainOutboxFile, removeRetainedOutboxFiles, outboxAttachmentNeedsLocalBytes } = await import('./durableOutboxFiles');
+    try {
+      for (let index = 0; index < added.length; index++) {
+        if (!isMobileAuthOwnerCurrent(owner)) throw new Error('OUTBOX_STALE_WRITE');
+        const source = sources[index];
+        if (source) copies.uploads.push(await retainOutboxFile(record, record.item.attachmentSlots.length + index, source));
+        else if (outboxAttachmentNeedsLocalBytes(added[index])) {
+          throw new Error(i18n.t('session.screen.attachmentsNotCarriedBack', { count: 1 }));
+        }
+      }
+      if (!isMobileAuthOwnerCurrent(owner) || !getCurrentMobileOutboxRecords().includes(record)) {
+        throw new Error('OUTBOX_STALE_WRITE');
+      }
+      await mobileDurableOutbox.update(record, {
+        creation: { ...record.creation, draft: nextDraft, notice },
+        uploads: [...record.uploads, ...copies.uploads],
+        item: { ...record.item,
+          text: [record.item.text, input.text].filter(Boolean).join('\n\n'),
+          attachmentSlots: [...record.item.attachmentSlots, ...added],
+          slotMeta: [...record.item.slotMeta, ...added.map(file => ({
+            kind: file.category === 'image' ? 'image' as const : 'file' as const, previewUri: null,
+          }))],
+        },
+      });
+    } catch (error) {
+      // Never remove old recovery bytes or composer sources on a failed save.
+      await removeRetainedOutboxFiles(copies).catch(() => undefined);
+      throw error;
+    }
   } else {
     stashNewSessionDraftForEdit(task!, { draft: nextDraft, attachments: merged, notice });
   }

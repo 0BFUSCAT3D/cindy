@@ -358,6 +358,7 @@ describe('mobile optimistic composer while session is not ready', () => {
       t: (key: string) => key, attachmentError: null, setAttachmentError: warning,
       discardAllPendingUploadsForScopeChange: vi.fn(), draftRef: { current: '' },
       attachmentsRef: { current: [] }, appendNewSessionEditComposer: save,
+      getUploadedSource: vi.fn(),
       releaseUploadedSources: vi.fn(), setAttachments: vi.fn(), replaceComposerDraft: vi.fn(),
       discardRecoveredAttachments: vi.fn(),
     };
@@ -367,6 +368,7 @@ describe('mobile optimistic composer while session is not ready', () => {
     await new Function(...Object.keys(context), `${code}; return callback();`)(...Object.values(context));
     expect(save).toHaveBeenCalledWith('task', 'mac', {
       text: '', attachments: [], notice: 'session.screen.pendingAttachmentsNotCarriedBack',
+      getUploadedSource: context.getUploadedSource,
     });
     expect(warning).toHaveBeenCalledWith('session.screen.pendingAttachmentsNotCarriedBack');
   });

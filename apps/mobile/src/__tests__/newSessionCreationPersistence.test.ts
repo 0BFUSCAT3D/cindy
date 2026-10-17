@@ -5,6 +5,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { getMobileAuthOwner, setMobileAuthOwner } from '../auth/authOwnerGeneration';
 import type { MobileMakerTransport } from '../device-link/mobileMakerTransport';
 import type { DurableOutboxRecord } from '../session/durableOutbox';
+import type { MobileLocalAttachmentUploadCandidate } from '../session/mobileLocalAttachmentUpload';
+import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles } from '../session/durableOutboxFiles';
 import { cancelledCreationDraft, outboxCreationRetryIdentity } from '../session/cancelledCreationDraft';
 import { buildOutboxItem } from '../session/sessionOutbox';
 
@@ -18,7 +20,23 @@ vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
   },
   removeItem: async (key: string) => { disk.data.delete(key); },
 } }));
-vi.mock('../session/durableOutboxFiles', () => ({ durableOutboxUploadUri: vi.fn(), removeOutboxFiles: vi.fn() }));
+const files = vi.hoisted(() => ({ retained: new Map<string, string>(), sequence: 0, beforeCopy: async () => {} }));
+vi.mock('../session/durableOutboxFiles', () => {
+  const uri = (record: DurableOutboxRecord, upload: { fileName: string }) => `file:///outbox/${record.item.clientId}/${upload.fileName}`;
+  return {
+    durableOutboxUploadUri: uri, removeOutboxFiles: vi.fn(),
+    outboxAttachmentNeedsLocalBytes: (file: { path: string }) => file.path.startsWith('cindy-oss-attach://') || file.path.startsWith('cindy-peer-attach://'),
+    retainOutboxFile: vi.fn(async (record: DurableOutboxRecord, slot: number, source: MobileLocalAttachmentUploadCandidate) => {
+      await files.beforeCopy();
+      const upload = { slot, fileName: `slot-${slot}-${++files.sequence}.png`, name: source.name, size: source.size, kind: source.kind };
+      files.retained.set(uri(record, upload), source.uri);
+      return upload;
+    }),
+    removeRetainedOutboxFiles: vi.fn(async (record: DurableOutboxRecord) => {
+      for (const upload of record.uploads) files.retained.delete(uri(record, upload));
+    }),
+  };
+});
 vi.mock('../session/mobileAttachmentUpload', () => ({ discardMobileUploadedAttachment: vi.fn() }));
 vi.mock('expo-crypto', () => ({ getRandomBytes: (n: number) => new Uint8Array(n).fill(7) }));
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox, persistCancelledCreationDraft } from '../session/mobileDurableOutbox';
@@ -55,6 +73,9 @@ beforeEach(async () => {
   await mobileDurableOutbox.activate('');
   disk.data.clear();
   disk.fail = false;
+  files.retained.clear();
+  files.sequence = 0;
+  files.beforeCopy = async () => {};
   setMobileAuthOwner('alice', 'global');
   await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
 });
@@ -76,9 +97,9 @@ function harness(previous: DurableOutboxRecord | null = null) {
     planModeCapability: false, planModeDraftOn: false,
     holdNewSessionCreationDraft, holdPrecreatedWorktreeRegistration: () => () => {},
     sendAttachments: [{ id: 'photo', path: 'oss://photo', name: 'photo.png', ext: 'png', size: 3, category: 'image', mimeType: 'image/png' }],
-    attachmentPreviews: {}, getUploadedSource: () => ({ uri: 'file:///photo.png' }),
-    retainOutboxFile: vi.fn(async () => ({ slot: 0, fileName: 'slot-0.png', name: 'photo.png', size: 3, kind: 'image' })),
-    removeRetainedOutboxFiles: vi.fn(async () => {}), releaseUploadedSources: vi.fn(),
+    attachmentPreviews: {}, getUploadedSource: (_id: string): MobileLocalAttachmentUploadCandidate | undefined => ({ uri: 'file:///photo.png', name: 'photo.png', size: 3, kind: 'image' }),
+    retainOutboxFile, durableOutboxUploadUri,
+    removeRetainedOutboxFiles, releaseUploadedSources: vi.fn(),
     outboxAttachmentNeedsLocalBytes: () => true,
     registerPendingPrecreatedWorktree: vi.fn(async (..._args: Parameters<typeof registerPendingPrecreatedWorktree>) => true), forgetPendingPrecreatedWorktree: vi.fn(),
     buildWorktreeCreateRequest: (input: unknown) => input,
@@ -160,7 +181,7 @@ it.each(['reservation-fails', 'create-rejected', 'reply-lost', 'leaves-during-cr
     expect(saved).toMatchObject({ storageSessionId: original.item.sessionId, suspended: true, state: 'failed',
       creation: { editReady: true, draft: { firstMessage: 'updated input before retry', workingDir: '/repo' } },
       item: { sessionId: 'replacement-session', clientId: original.item.clientId, attachmentSlots: [{ id: 'photo' }] },
-      uploads: [{ fileName: 'slot-0.png' }] });
+      uploads: [{ slot: 0, name: 'photo.png', fileName: expect.stringMatching(/^slot-0-\d+\.png$/) }] });
     expect(getNewSessionCreationTask('replacement-session')?.readyForEdit).toBe('durable');
     const leaveReopenedForm = completeNewSessionDurableEdit('replacement-session', 'pc');
     expect(getNewSessionCreationTask('replacement-session')).toBeNull();
@@ -243,7 +264,7 @@ it('persists the draft and attachments before reserving and dispatching worktree
     const saved = [...disk.data.values()].map((value) => JSON.parse(value) as DurableOutboxRecord)[0];
     expect(saved).toMatchObject({ suspended: true, item: { text: 'keep my input' },
       creation: { originalWorkingDir: '/repo', draft: { workingDir: '/repo' } },
-      uploads: [{ fileName: 'slot-0.png' }] });
+      uploads: [{ slot: 0, name: 'photo.png', fileName: expect.stringMatching(/^slot-0-\d+\.png$/) }] });
     return true;
   });
   await h.run();
@@ -263,7 +284,8 @@ it('recovers the input after a lost create reply and cold outbox activation', as
   await mobileDurableOutbox.activate('');
   await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
   expect(getCurrentMobileOutboxRecords()[0]).toMatchObject({ suspended: true, state: 'failed',
-    item: { text: 'keep my input', attachmentSlots: [{ id: 'photo' }] }, uploads: [{ fileName: 'slot-0.png' }],
+    item: { text: 'keep my input', attachmentSlots: [{ id: 'photo' }] },
+    uploads: [{ slot: 0, name: 'photo.png', fileName: expect.stringMatching(/^slot-0-\d+\.png$/) }],
     creation: { cancelled: true, draft: { workingDir: '/repo', firstMessage: 'keep my input' } } });
 });
 
@@ -418,14 +440,16 @@ it.each([false, true])('preserves the current composer in the durable recovery b
   await harness().run();
   const original = getCurrentMobileOutboxRecords()[0];
   const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
-  const file = { ...saved.item.attachmentSlots[0]!, id: 'new-file', name: 'new.png' };
+  const file = { ...saved.item.attachmentSlots[0]!, id: 'new-file', name: 'new.png', path: 'cindy-oss-attach://new' };
   disk.fail = fails;
   const transfer = appendNewSessionEditComposer(saved.item.sessionId, 'pc', {
     text: 'also keep my unsent input', attachments: [file], notice: 'one upload needs to be selected again',
+    getUploadedSource: () => ({ uri: 'file:///composer/new.png', name: 'new.png', size: 3, kind: 'image' }),
   });
   if (fails) {
     await expect(transfer).rejects.toThrow('disk unavailable');
     expect(getCurrentMobileOutboxRecords()[0]).toEqual(saved);
+    expect(files.retained.size).toBe(1); // Only the pre-existing first attachment survives rollback.
     disk.fail = false;
     return;
   }
@@ -436,9 +460,59 @@ it.each([false, true])('preserves the current composer in the durable recovery b
   expect(restored.creation?.draft.firstMessage).toBe('keep my input\n\nalso keep my unsent input');
   expect(restored.creation?.notice).toBe('one upload needs to be selected again');
   expect(restored.item.attachmentSlots.map(file => file?.id)).toEqual(['photo', 'new-file']);
-  expect(restored.uploads).toEqual(saved.uploads);
+  expect(restored.uploads[0]).toEqual(saved.uploads[0]);
+  expect(restored.uploads[1]).toMatchObject({ slot: 1, name: 'new.png', size: 3, kind: 'image' });
   expect(restored.item.slotMeta).toHaveLength(2);
+  const resubmit = harness(restored);
+  resubmit.bindings.sendAttachments = [...restored.item.attachmentSlots.filter(file => file !== null)];
+  resubmit.bindings.getUploadedSource = () => undefined; // Old chat has unmounted.
+  await expect(resubmit.run()).resolves.toBeDefined();
+  expect(retainOutboxFile).toHaveBeenCalledWith(expect.anything(), 1, expect.objectContaining({
+    uri: durableOutboxUploadUri(restored, restored.uploads[1]), name: 'new.png',
+  }));
 });
+
+// Regression: incomplete/late attachment transfers must not replace recovery or
+// leak newly retained copies. The original draft and its bytes stay intact.
+it.each(['copy-fails', 'missing-source', 'deleted', 'account-change'] as const)(
+  'rolls back only new attachment copies when composer transfer cannot finish: %s', async outcome => {
+    await harness().run();
+    const original = getCurrentMobileOutboxRecords()[0];
+    const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+    const retainedBefore = new Map(files.retained);
+    const attachments = ['one', 'two'].map(id => ({ ...saved.item.attachmentSlots[0]!, id,
+      path: `cindy-peer-attach://${id}` }));
+    let copies = 0;
+    files.beforeCopy = async () => {
+      if (++copies !== 2) return;
+      if (outcome === 'copy-fails') throw new Error('copy unavailable');
+      if (outcome === 'deleted') {
+        await withNewSessionCreationRemoval(saved.item.sessionId, 'pc', 'deleted', vi.fn());
+      }
+      if (outcome === 'account-change') {
+        setMobileAuthOwner('bob', 'global');
+        await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+      }
+    };
+    const transfer = appendNewSessionEditComposer(saved.item.sessionId, 'pc', {
+      text: 'unsent', attachments,
+      getUploadedSource: id => outcome === 'missing-source' && id === 'two' ? undefined
+        : { uri: `file:///composer/${id}.png`, name: `${id}.png`, size: 3, kind: 'image' },
+    });
+    await expect(transfer).rejects.toThrow();
+    expect(files.retained).toEqual(retainedBefore);
+    if (outcome === 'account-change') {
+      expect(getCurrentMobileOutboxRecords()).toEqual([]);
+      setMobileAuthOwner('alice', 'global');
+      await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+    }
+    if (outcome === 'deleted') {
+      expect(findNewSessionEditDraft('pc')).toBeUndefined();
+      expect(mobileDurableOutbox.getSnapshot()[0].cleanupOutcome).toBe('cancelled');
+    } else {
+      expect(getCurrentMobileOutboxRecords()).toEqual([saved]);
+    }
+  });
 
 it.each(['success', 'not-found', 'network-error', 'superseded', 'account-change'] as const)(
   'retires outbox recovery only after authoritative removal: %s', async outcome => {

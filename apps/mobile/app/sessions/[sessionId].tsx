@@ -4125,7 +4125,7 @@ function SessionScreenContent() {
       const text = draftRef.current;
       const files = [...attachmentsRef.current];
       if (!text && files.length === 0 && !notice) return;
-      const dropped = await appendNewSessionEditComposer(sessionId, deviceId, { text, attachments: files, notice });
+      const dropped = await appendNewSessionEditComposer(sessionId, deviceId, { text, attachments: files, notice, getUploadedSource });
       if (!isMobileAuthOwnerCurrent(owner) || outboxSessionAliveRef.current !== sessionId) return;
       // Ownership changed only after the save succeeded. Unmount cleanup must
       // not delete attachments now owned by the recovered new-task draft.
