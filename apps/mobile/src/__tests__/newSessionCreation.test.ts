@@ -323,7 +323,9 @@ describe('newSessionCreation pipeline', () => {
       completeNewSessionDurableEdit('s1', 'dev-1');
       expect(getNewSessionCreationTask('s1')).toBeNull();
     }
-    expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({ suspended: true, state: 'failed' }));
+    expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({
+      suspended: true, state: 'failed', error: '[MODEL_UNAVAILABLE] unavailable',
+    }));
     expect(record.item.text).toBe(DRAFT.firstMessage);
     expect(record.creation?.draft).toEqual(DRAFT);
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();

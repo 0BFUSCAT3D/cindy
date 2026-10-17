@@ -36,7 +36,8 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
         && record.item.sessionId === sessionId && record.creation);
     if (durableFirst) {
       await mobileDurableOutbox.update(durableFirst, {
-        suspended: true, state: 'failed', error: i18n.t('session.screen.firstMessageNotSent'),
+        suspended: true, state: 'failed',
+        error: prepared.error || durableFirst.error || i18n.t('session.screen.firstMessageNotSent'),
         creation: { ...durableFirst.creation!, editReady: true },
       });
       if (!taskCurrent()) return;

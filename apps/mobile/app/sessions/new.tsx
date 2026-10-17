@@ -5,7 +5,7 @@ import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreated
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
 import { isRemoteTaskSuggestionId } from '@/session/remoteTaskSuggestionsModel';
 import { mobileDurableOutbox, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
-import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
+import { persistNewSessionCreationDraft } from '@/session/persistNewSessionCreationDraft';
 import { buildOutboxItem, createOutboxClientId } from '@/session/sessionOutbox';
 import type { DurableOutboxRecord } from '@/session/durableOutbox';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
@@ -4936,7 +4936,7 @@ export default function NewRemoteSessionScreen() {
       const useDurableCreation = legacyPlanRestore === null;
       if (recovering && !useDurableCreation) throw new Error(t('session.outbox.legacyPlanRecovery'));
       if (useDurableCreation) {
-        let firstRecord: DurableOutboxRecord = {
+        const firstRecord: DurableOutboxRecord = {
           version: 1, accountId: authOwnerAtCreate.accountKey, deviceId: deviceIdSnapshot,
           ...(recoveryIdentity ? { storageSessionId: recoveryIdentity.storageSessionId } : {}),
           createdAt: recovering?.createdAt ?? Date.now(), state: recovering ? 'failed' : 'queued',
@@ -4954,30 +4954,12 @@ export default function NewRemoteSessionScreen() {
             readyPreviews: sendAttachments.map((a) => attachmentPreviews[a.id] ?? null), claimedUploads: [],
           }),
         };
-        let filesCommitted = false;
-        try {
-          for (let slot = 0; slot < sendAttachments.length; slot++) {
-            const attachment = sendAttachments[slot];
-            const source = getUploadedSource(attachment.id);
-            const oldSlot = recovering?.item.attachmentSlots.findIndex((a) => a?.id === attachment.id);
-            const oldUpload = recovering?.uploads.find((u) => u.slot === oldSlot);
-            if (source) firstRecord.uploads.push(await retainOutboxFile(firstRecord, slot, source));
-            else if (recovering && oldUpload) firstRecord.uploads.push(await retainOutboxFile(firstRecord, slot, {
-              ...oldUpload, uri: durableOutboxUploadUri(recovering, oldUpload),
-            }));
-            else if (outboxAttachmentNeedsLocalBytes(attachment)) throw new Error(t('session.screen.attachmentsNotCarriedBack', { count: 1 }));
-          }
-          if (!isCurrentOwner() || !ensureDeviceAlive()) return;
-          if (recovering) {
-            const latest = getCurrentMobileOutboxRecords().find((r) => r.item.clientId === firstMessageClientId && r.item.sessionId === recovering.item.sessionId);
-            if (latest !== recovering || latest.prepared) throw new Error('OUTBOX_STALE_WRITE');
-            firstRecord = await mobileDurableOutbox.update(latest, firstRecord);
-          } else await mobileDurableOutbox.add(firstRecord);
-          filesCommitted = true;
-        } finally {
-          if (!filesCommitted) await removeRetainedOutboxFiles(firstRecord).catch(() => undefined);
-        }
-        outboxRecoveryRef.current = firstRecord;
+        const saved = await persistNewSessionCreationDraft({
+          record: firstRecord, recovering, getUploadedSource,
+          isCurrent: () => isCurrentOwner() && ensureDeviceAlive(),
+        });
+        if (!saved) return;
+        outboxRecoveryRef.current = saved;
         if (!isCurrentOwner() || !ensureDeviceAlive()) return;
         releaseUploadedSources(sendAttachments.map((a) => a.id));
       }

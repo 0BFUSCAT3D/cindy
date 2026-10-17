@@ -9,6 +9,8 @@ import type { MobileLocalAttachmentUploadCandidate } from '../session/mobileLoca
 import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles } from '../session/durableOutboxFiles';
 import { cancelledCreationDraft, outboxCreationRetryIdentity } from '../session/cancelledCreationDraft';
 import { buildOutboxItem } from '../session/sessionOutbox';
+import { persistNewSessionCreationDraft } from '../session/persistNewSessionCreationDraft';
+import { returnNewSessionToEdit } from '../session/returnNewSessionToEdit';
 
 const disk = vi.hoisted(() => ({ data: new Map<string, string>(), fail: false }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
@@ -98,7 +100,7 @@ function harness(previous: DurableOutboxRecord | null = null) {
     holdNewSessionCreationDraft, holdPrecreatedWorktreeRegistration: () => () => {},
     sendAttachments: [{ id: 'photo', path: 'oss://photo', name: 'photo.png', ext: 'png', size: 3, category: 'image', mimeType: 'image/png' }],
     attachmentPreviews: {}, getUploadedSource: (_id: string): MobileLocalAttachmentUploadCandidate | undefined => ({ uri: 'file:///photo.png', name: 'photo.png', size: 3, kind: 'image' }),
-    retainOutboxFile, durableOutboxUploadUri,
+    persistNewSessionCreationDraft,
     removeRetainedOutboxFiles, releaseUploadedSources: vi.fn(),
     outboxAttachmentNeedsLocalBytes: () => true,
     registerPendingPrecreatedWorktree: vi.fn(async (..._args: Parameters<typeof registerPendingPrecreatedWorktree>) => true), forgetPendingPrecreatedWorktree: vi.fn(),
@@ -404,9 +406,25 @@ it('preserves a directory explicitly selected by the user while cancellation com
 
 // Regression: deleting only the mirror let the durable bridge recreate an
 // undeletable task. Exercise the production removal with real persisted bytes.
+async function saveDraftFixture() {
+  const draft = { agentKind: 'codex' as const, workspaceKind: 'project' as const,
+    workingDir: '/repo', model: 'model', providerId: null, effort: 'high',
+    permissionMode: 'ask', fastMode: false, firstMessage: 'keep my input' };
+  return (await persistNewSessionCreationDraft({
+    record: { version: 1, accountId: getMobileAuthOwner().accountKey, deviceId: 'pc', createdAt: 1,
+      state: 'queued', uploads: [], creation: { draft, originalWorkingDir: '/repo', deviceName: 'PC', planModeArm: false, restorePermissionMode: null },
+      item: buildOutboxItem({ clientId: 'message', sessionId: 'session-1', text: draft.firstMessage,
+        permissionModeAtSend: 'ask', quotesEncoded: false, agentReferences: [], pastedTextRanges: [], slashCommandRanges: [],
+        readyAttachments: [{ id: 'photo', path: 'cindy-oss-attach://photo', name: 'photo.png', ext: 'png', size: 3, category: 'image', mimeType: 'image/png' }],
+        readyPreviews: [], claimedUploads: [] }),
+    },
+    recovering: null, isCurrent: () => true,
+    getUploadedSource: () => ({ uri: 'file:///photo.png', name: 'photo.png', size: 3, kind: 'image' }),
+  }))!;
+}
+
 it.each(['deleted', 'archived'])('retires saved recovery on %s, including editor release and cold reload', async status => {
-  await harness().run();
-  const original = getCurrentMobileOutboxRecords()[0];
+  const original = await saveDraftFixture();
   const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
   expect(findNewSessionEditDraft('pc', '/repo')).toEqual(saved);
   expect(findNewSessionEditDraft('other-pc')).toBeUndefined();
@@ -427,8 +445,7 @@ it.each(['deleted', 'archived'])('retires saved recovery on %s, including editor
 });
 
 it('keeps a saved draft if durable deletion fails', async () => {
-  await harness().run();
-  const original = getCurrentMobileOutboxRecords()[0];
+  const original = await saveDraftFixture();
   const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
   disk.fail = true;
   await expect(withNewSessionCreationRemoval(saved.item.sessionId, 'pc', 'deleted', vi.fn())).rejects.toThrow('disk unavailable');
@@ -437,8 +454,7 @@ it('keeps a saved draft if durable deletion fails', async () => {
 });
 
 it.each([false, true])('preserves the current composer in the durable recovery before handoff (save fails: %s)', async fails => {
-  await harness().run();
-  const original = getCurrentMobileOutboxRecords()[0];
+  const original = await saveDraftFixture();
   const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
   const file = { ...saved.item.attachmentSlots[0]!, id: 'new-file', name: 'new.png', path: 'cindy-oss-attach://new' };
   disk.fail = fails;
@@ -463,10 +479,14 @@ it.each([false, true])('preserves the current composer in the durable recovery b
   expect(restored.uploads[0]).toEqual(saved.uploads[0]);
   expect(restored.uploads[1]).toMatchObject({ slot: 1, name: 'new.png', size: 3, kind: 'image' });
   expect(restored.item.slotMeta).toHaveLength(2);
-  const resubmit = harness(restored);
-  resubmit.bindings.sendAttachments = [...restored.item.attachmentSlots.filter(file => file !== null)];
-  resubmit.bindings.getUploadedSource = () => undefined; // Old chat has unmounted.
-  await expect(resubmit.run()).resolves.toBeDefined();
+  const resubmitted = await persistNewSessionCreationDraft({
+    record: { ...restored, item: { ...restored.item, sessionId: 'resubmitted' }, storageSessionId: restored.item.sessionId },
+    recovering: restored, isCurrent: () => true,
+    getUploadedSource: () => undefined, // Old chat has unmounted; only durable bytes remain.
+  });
+  expect(getCurrentMobileOutboxRecords()).toEqual([resubmitted]);
+  expect(resubmitted?.uploads).toHaveLength(2);
+  expect(resubmitted?.item.text).toBe(restored.item.text);
   expect(retainOutboxFile).toHaveBeenCalledWith(expect.anything(), 1, expect.objectContaining({
     uri: durableOutboxUploadUri(restored, restored.uploads[1]), name: 'new.png',
   }));
@@ -476,8 +496,7 @@ it.each([false, true])('preserves the current composer in the durable recovery b
 // leak newly retained copies. The original draft and its bytes stay intact.
 it.each(['copy-fails', 'missing-source', 'deleted', 'account-change'] as const)(
   'rolls back only new attachment copies when composer transfer cannot finish: %s', async outcome => {
-    await harness().run();
-    const original = getCurrentMobileOutboxRecords()[0];
+    const original = await saveDraftFixture();
     const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
     const retainedBefore = new Map(files.retained);
     const attachments = ['one', 'two'].map(id => ({ ...saved.item.attachmentSlots[0]!, id,
@@ -516,7 +535,7 @@ it.each(['copy-fails', 'missing-source', 'deleted', 'account-change'] as const)(
 
 it.each(['success', 'not-found', 'network-error', 'superseded', 'account-change'] as const)(
   'retires outbox recovery only after authoritative removal: %s', async outcome => {
-    await harness().run();
+    await saveDraftFixture();
     const saved = await mobileDurableOutbox.update(getCurrentMobileOutboxRecords()[0], { state: 'failed' });
     let current = true;
     const remove = vi.fn(async () => {
@@ -535,3 +554,25 @@ it.each(['success', 'not-found', 'network-error', 'superseded', 'account-change'
     expect(mobileDurableOutbox.getSnapshot()[0].cleanupOutcome).toBe(
       outcome === 'success' || outcome === 'not-found' ? 'cancelled' : undefined);
   });
+
+it('persists the real creation error through return to edit and cold recovery', async () => {
+  const record = await saveDraftFixture();
+  startNewSessionCreation({
+    sessionId: record.item.sessionId, firstMessageClientId: record.item.clientId,
+    deviceId: record.deviceId, deviceName: 'PC', draft: record.creation!.draft,
+    attachments: [], planModeArm: false, legacyPlanRestore: null,
+    confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }),
+    authGateHint: 'Provider setup required', onUnauthenticated: () => {},
+    transport: { openLink: async () => {}, subscribe: async () => {}, handoffFirstMessage: async () => {},
+      maker: {} as MobileMakerTransport },
+  });
+  await vi.waitFor(() => expect(getNewSessionCreationTask(record.item.sessionId)?.status).toBe('create-failed'));
+  await returnNewSessionToEdit({ sessionId: record.item.sessionId, deviceId: record.deviceId,
+    isCurrent: () => true, onReady: () => {} });
+  expect(getCurrentMobileOutboxRecords()[0].error).toBe('Provider setup required');
+  setMobileAuthOwner(null);
+  await mobileDurableOutbox.activate('');
+  setMobileAuthOwner('alice', 'global');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  expect(findNewSessionEditDraft('pc')?.error).toBe('Provider setup required');
+});
