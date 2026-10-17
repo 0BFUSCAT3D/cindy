@@ -25,15 +25,21 @@ vi.mock("react-native", async () => {
       children,
       style,
       testID,
+      onPress,
+      disabled,
     }: {
       children?: ReactNode;
       style?: unknown;
       testID?: string;
+      onPress?: () => void;
+      disabled?: boolean;
     }) =>
       createElement(
         tag,
         {
           "data-testid": testID,
+          onClick: onPress,
+          disabled,
           "data-color": flatten(
             typeof style === "function" ? style({ pressed: false }) : style,
           ).color,
@@ -54,6 +60,19 @@ vi.mock("@/components/AppText", async () => ({
 }));
 vi.mock("@/components/FileTypeIcon", () => ({ FileTypeIcon: () => null }));
 vi.mock("expo-image", () => ({ Image: () => null }));
+vi.mock("@/session/ImageLightbox", () => ({
+  ImageLightbox: ({
+    images,
+    onClose,
+  }: {
+    images: { url: string }[];
+    onClose(): void;
+  }) => (
+    <button data-testid="lightbox" onClick={onClose}>
+      {images[0].url}
+    </button>
+  ),
+}));
 vi.mock("lucide-react-native", async () => {
   const { createElement } = await import("react");
   const icon =
@@ -110,6 +129,87 @@ const colorOf = (selector: string) =>
   host.querySelector(selector)?.getAttribute("data-color");
 
 describe("composer attachment tray overlay foreground", () => {
+  // 用户反馈：在途图片只能看缩略图。既有颜色测试不覆盖点击；unit 层用一张
+  // 上传中图片验证真实托盘打开本地预览，并在上传完成后仍保持查看器。
+  it("previews an uploading image and keeps it open after upload completes", () => {
+    const render = (uploading: boolean) =>
+      act(() =>
+        root.render(
+          <ComposerAttachmentTray
+            attachments={uploading ? [] : [attachment("done")]}
+            previews={{ done: "file:///uploading.jpg" }}
+            onRemove={() => {}}
+            onPreview={() => {}}
+            pendingUploads={uploading ? [pending("uploading")] : []}
+            testIDPrefix="t"
+          />,
+        ),
+      );
+    render(true);
+    const preview = host.querySelector<HTMLButtonElement>(
+      '[data-testid="t.attachmentPendingPreviewButton"]',
+    );
+    expect(preview).not.toBeNull();
+    act(() => preview!.click());
+    expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
+      "file:///uploading.jpg",
+    );
+    render(false);
+    expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
+      "file:///uploading.jpg",
+    );
+    act(() =>
+      host
+        .querySelector<HTMLButtonElement>('[data-testid="lightbox"]')!
+        .click(),
+    );
+    expect(host.querySelector('[data-testid="lightbox"]')).toBeNull();
+  });
+
+  it("keeps unresolved images disabled and retry/cancel separate from preview", () => {
+    const retry = vi.fn();
+    const cancel = vi.fn();
+    act(() =>
+      root.render(
+        <ComposerAttachmentTray
+          attachments={[]}
+          previews={{}}
+          onRemove={() => {}}
+          onPreview={() => {}}
+          pendingUploads={[
+            { ...pending("unresolved"), previewUri: "" },
+            pending("failed", true),
+          ]}
+          onRetryPending={retry}
+          onRemovePending={cancel}
+          testIDPrefix="t"
+        />,
+      ),
+    );
+    const preview = host.querySelector<HTMLButtonElement>(
+      '[data-testid="t.attachmentPendingPreviewButton"]',
+    )!;
+    expect(preview.disabled).toBe(true);
+    act(() => preview.click());
+    act(() =>
+      host
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="t.attachmentPendingRetryButton"]',
+        )!
+        .click(),
+    );
+    act(() =>
+      host
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="t.attachmentPendingRemoveButton"]',
+        )!
+        .click(),
+    );
+    expect(retry).toHaveBeenCalledWith("failed");
+    expect(cancel).toHaveBeenCalledWith("unresolved");
+    expect(host.querySelector('[data-testid="lightbox"]')).toBeNull();
+  });
+
   // 遮罩 scrim 两种模式都是深色:前景必须恒白,不能跟着主题反相成近黑。
   it.each(["light", "dark"])(
     "keeps spinner, retry and +N readable on the dark scrim in %s mode",

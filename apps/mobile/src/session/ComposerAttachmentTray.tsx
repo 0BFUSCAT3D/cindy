@@ -12,12 +12,16 @@ import { FileTypeIcon } from '@/components/FileTypeIcon';
  */
 import { Pen, RefreshCw, X } from 'lucide-react-native';
 import { Image } from 'expo-image';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { Text } from '@/components/AppText';
 import type { RemoteSerializedAttachment } from '@/session/types';
 import type { PendingLocalAttachmentUpload } from '@/session/mobileLocalAttachmentUpload';
 import { attachmentDisplayLabel, pendingUploadDisplayLabel } from '@/session/attachments';
+import { ImageLightbox } from '@/session/ImageLightbox';
+import { buildMediaPayload } from '@/session/messagePayload';
+import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import { fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 
 /** 输入卡内的缩略图为正方形(产品决策,不用横长方)。 */
@@ -63,6 +67,15 @@ export function ComposerAttachmentTray({
   const { t } = useTranslation();
   const styles = useThemedStyles(makeTrayStyles);
   const { colors } = useTheme();
+  // Keep the opened local image stable when the upload becomes a formal attachment.
+  const [pendingPreview, setPendingPreview] = useState<MobileMessageGalleryImage[] | null>(null);
+  const previewPending = (pending: PendingLocalAttachmentUpload) => {
+    if (!pending.previewUri) return;
+    const payload = buildMediaPayload({ kind: 'image', previewable: true, title: pending.name, url: pending.previewUri }, pending.name);
+    if (payload.kind === 'media') {
+      setPendingPreview([{ key: pending.localId, payload, title: pending.name, url: pending.previewUri }]);
+    }
+  };
   if (attachments.length === 0 && pendingUploads.length === 0 && pastePlaceholderCount === 0) return null;
   return (
     <View style={styles.tray} testID={`${testIDPrefix}.attachmentTray`}>
@@ -144,9 +157,16 @@ export function ComposerAttachmentTray({
                 <Text style={styles.thumbFailedText}>{t('composer.attachments.retry')}</Text>
               </Pressable>
             ) : (
-              <View style={styles.thumbBusyOverlay}>
+              <Pressable
+                accessibilityLabel={t('composer.attachments.viewImage', { name: pending.name })}
+                accessibilityRole="button"
+                disabled={!pending.previewUri}
+                onPress={() => previewPending(pending)}
+                style={({ pressed }) => [styles.thumbBusyOverlay, pressed && styles.pressed]}
+                testID={`${testIDPrefix}.attachmentPendingPreviewButton`}
+              >
                 <ActivityIndicator color={colors.swipeActionText} size="small" />
-              </View>
+              </Pressable>
             )}
           </View>
           <Pressable
@@ -210,6 +230,9 @@ export function ComposerAttachmentTray({
           </View>
         </View>
       ))}
+      {pendingPreview ? (
+        <ImageLightbox images={pendingPreview} initialUrl={pendingPreview[0].url} onClose={() => setPendingPreview(null)} />
+      ) : null}
     </View>
   );
 }

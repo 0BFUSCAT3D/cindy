@@ -2097,7 +2097,20 @@ export default function NewRemoteSessionScreen() {
     armed: composerVoiceHoldArmed,
     draftText: draft.firstMessage,
   });
+  const composerIncomingImageCount = pendingUploads.filter((item) => item.kind === 'image').length + pastePlaceholderCount;
+  const composerImageCount = attachments.filter((item) => item.category === 'image').length + composerIncomingImageCount;
+  const previousComposerIncomingImageCount = useRef(0);
+  const [composerImagesCollapsed, setComposerImagesCollapsed] = useState(false);
+  useEffect(() => {
+    // Only incoming images reopen a manually collapsed tray. Completed uploads
+    // can briefly appear in both lists and must not count as another addition.
+    if (composerIncomingImageCount > previousComposerIncomingImageCount.current || composerImageCount === 0) {
+      setComposerImagesCollapsed(false);
+    }
+    previousComposerIncomingImageCount.current = composerIncomingImageCount;
+  }, [composerImageCount, composerIncomingImageCount]);
   const composerCardActive = firstMessageInputFocused || composerPillOpen.opening
+    || (composerImageCount > 0 && !composerImagesCollapsed)
     || modelSheetOpen
     || permissionSheetOpen
     || voiceStartPending
@@ -2107,6 +2120,7 @@ export default function NewRemoteSessionScreen() {
   // 下拉收起 = 退出聚焦激活态(模型浮窗已是独立 Modal,拖拽手势够不到它,无需在此关闭)。
   // 语音结束 hold 态未聚焦,blur 是 no-op,需显式解除 hold 才能收回简洁态。
   const handleComposerSnapToAuto = useCallback(() => {
+    setComposerImagesCollapsed(true);
     setComposerVoiceHoldArmed(false);
     firstMessageInputRef.current?.blur();
   }, []);
