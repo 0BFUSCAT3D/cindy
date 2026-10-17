@@ -444,7 +444,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
    * scheduleId → 当前这一个稳定失配（见 RoutinePermissionMismatchError.signature）连续出现的次数。
    * 受理时的核验只要给出别的结论（通过、切换在途、实例更换、排队后被改、revision 变化）
    * 或换成另一个失配，就从头计数；没走到受理核验的触发不改变计数。只在内存：重启后
-   * 运行实例本就重建，旧计数没有意义。
+   * 运行实例本就重建，旧计数没有意义。调度在失配期间被删除时条目会留到进程结束；
+   * 每条只有签名与计数，数量上限是本进程内出现过稳定失配的调度数，不另接删除通知。
    */
   private readonly permissionMismatchStreaks = new Map<
     string,

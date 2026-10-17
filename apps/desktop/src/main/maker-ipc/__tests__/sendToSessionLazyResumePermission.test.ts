@@ -297,3 +297,68 @@ describe('Bot Session task cold start keeps the persisted permission and Plan', 
     expect(setPlanMode).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 排队项的冷启动(发送事务 lazy-create 前的 reconcileCreateOptsAgainstDb):伙伴委派等 Host
+ * 输入入队时 createOpts.planMode 恒为 false(那一条消息按普通执行)。排队期间运行实例关闭后,
+ * drain 冷启动若照搬它,会话的计划模式就与库内不一致,绑定的心跳又会被判失配。会话起档必须
+ * 取库内值;本轮意图由发送事务另按原快照传给 send,不经这里。
+ */
+describe('queued cold start keeps the persisted Plan', () => {
+  const reconcileSource = (() => {
+    const start = registerSource.indexOf('async function reconcileCreateOptsAgainstDb(');
+    const end = registerSource.indexOf('\n  // 冷 Pi 切模核实前', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    return ts.transpileModule(`${registerSource.slice(start, end)}\nreturn reconcileCreateOptsAgainstDb;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+    }).outputText;
+  })();
+
+  function reconcileWithRow(row: Record<string, unknown>) {
+    const chain = { from: () => chain, where: () => chain, limit: async () => [row] };
+    const stubs: Record<string, unknown> = {
+      getDbClient: () => ({ drizzle: { select: () => chain } }),
+      sessions: {},
+      eq: () => undefined,
+      log: { warn: () => undefined, info: () => undefined, debug: () => undefined },
+      dbToMakerAgentKind: (kind: string) => (kind === 'cc' ? 'claude-code' : kind),
+      permissionModeOrAsk,
+    };
+    const scope = new Proxy(stubs, {
+      has: (target, key) => key in target || !(key in globalThis),
+      get: (target, key) => {
+        if (key === Symbol.unscopables) return undefined;
+        if (key in target) return target[key as string];
+        throw new ReferenceError(`unstubbed dependency of the production slice: ${String(key)}`);
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    return new Function('scope', `with (scope) { return (function () { ${reconcileSource} })(); }`)(
+      scope,
+    ) as (sessionId: string, co: Record<string, unknown>) => Promise<void>;
+  }
+
+  it.each([true, false])('starts a queued Host input with the stored Plan %s', async (planModeEnabled) => {
+    const reconcile = reconcileWithRow({
+      agentKind: 'cc',
+      model: 'claude-opus-fixture',
+      sdkSessionId: 'sdk-child',
+      providerId: 'fixture-provider',
+      effort: 'high',
+      fastMode: false,
+      permissionMode: 'auto',
+      planModeEnabled,
+      agentDeviceId: null,
+      remoteHostId: null,
+    });
+    // 入队时的快照:伙伴委派排队项 planMode=false,权限是旧值。
+    const co: Record<string, unknown> = {
+      agentKind: 'claude-code',
+      permissionMode: 'bypassPermissions',
+      planMode: false,
+    };
+    await reconcile('child', co);
+    expect(co).toMatchObject({ permissionMode: 'auto', planMode: planModeEnabled });
+  });
+});
