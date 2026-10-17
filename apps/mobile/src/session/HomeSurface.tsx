@@ -153,11 +153,11 @@ import {
   patchDeviceViewsWithPresence,
 } from '@/device-link/presenceDevices';
 import {
-  connectionIssueHint,
-  connectionIssueTitle,
+  connectionHealthCopy,
   describeRemoteError,
   formatRemoteError,
 } from '@/device-link/remoteStatus';
+import { useLocalNetworkStatus } from '@/device-link/localNetworkStatus';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { ConnectionRecoveryProgress } from '@/components/ConnectionBanner';
 import { ConnectionNoticeOverlay, useDelayedConnectionNotice } from '@/components/ConnectionNoticeOverlay';
@@ -525,6 +525,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const {
     connectionEpoch,
     connectionIssue,
+    getPresenceAvailability,
     invoke,
     lastPresenceSnapshot,
     recoveringDeviceIds,
@@ -2179,8 +2180,22 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [home.deviceFilters, home.selectedDeviceId, initialHomeSettled, selectedDeviceId]);
   // 连接层失败原因比请求级 error 更根因:unstable 在 online 时也需保持可见。
   const activeConnectionIssue = status !== 'online' || connectionIssue?.kind === 'unstable' ? connectionIssue : null;
-  const selectedDeviceDisconnected = resolveHomeDeviceDisconnected(home.deviceFilters, selectedDeviceId, status === 'connecting');
-  const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility({
+  const network = useLocalNetworkStatus();
+  const networkUnavailable = network === 'unavailable';
+  // Cached rows and failed hydration are not proof that a computer is offline.
+  // Use this relay generation's authoritative presence; unknown stays neutral.
+  const selectedDeviceDisconnected = status === 'online'
+    && resolveHomeDeviceDisconnected(home.deviceFilters.map((device) => ({
+      deviceId: device.deviceId,
+      sessionCount: device.sessionCount,
+      available: device.deviceId === null || getPresenceAvailability(device.deviceId) !== false,
+    })), selectedDeviceId, false);
+  const healthCopy = connectionHealthCopy({
+    network, status, issue: activeConnectionIssue,
+    deviceDisconnected: selectedDeviceDisconnected,
+    deviceUnresponsive: homeDeviceRecovery && homeDeviceUnresponsive,
+  });
+  const showConnectionRow = networkUnavailable || selectedDeviceDisconnected || resolveConnectionBannerVisibility({
     offline: status !== 'online',
     connecting: status === 'connecting',
     offlineLongEnough: true,
@@ -2191,7 +2206,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   });
   const showConnectionNotice = useDelayedConnectionNotice(showConnectionRow);
   const quietSyncing = !showConnectionRow && (refreshing || homeRecoveringDeviceIds.size > 0 || status === 'connecting');
-  const showHomeSyncAction = resolveConnectionBannerSyncActionVisibility({
+  const showHomeSyncAction = !networkUnavailable && resolveConnectionBannerSyncActionVisibility({
     online: status === 'online',
     hasActiveIssue: activeConnectionIssue !== null,
     deviceUnresponsive: homeDeviceRecovery,
@@ -2199,19 +2214,15 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     // loadHome has no outer retry after its bounded REST retries are exhausted.
     requestErrorAutoRecovering: false,
   });
-  const showHomeRecoveryProgress = (!activeConnectionIssue
+  const showHomeRecoveryProgress = !networkUnavailable && (!activeConnectionIssue
     || activeConnectionIssue.kind === 'unstable' || activeConnectionIssue.kind === 'replaced')
     && (status === 'connecting' || homeDeviceRecovery);
-  const connectionTone = activeConnectionIssue
+  const connectionTone = networkUnavailable || activeConnectionIssue
     ? 'off'
     : homeDeviceRecovery ? 'busy' : selectedDeviceDisconnected ? 'off' : connectionError ? 'muted' : status === 'online' ? 'ready' : status === 'connecting' ? 'busy' : 'off';
-  const connectionTitle = activeConnectionIssue
-    ? connectionIssueTitle(activeConnectionIssue.kind)
-    : homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveTitle' : 'deviceLink.recovery.syncing')
-      : selectedDeviceDisconnected ? t('deviceLink.cachedHistory.title') : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t);
-  const connectionCopy = activeConnectionIssue
-    ? connectionIssueHint(activeConnectionIssue.kind)
-    : homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveHint' : 'deviceLink.recovery.syncingHint') : selectedDeviceDisconnected ? t('deviceLink.cachedHistory.hint') : connectionError;
+  const connectionTitle = healthCopy?.title ?? (homeDeviceRecovery ? t('deviceLink.recovery.syncing')
+    : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t));
+  const connectionCopy = healthCopy?.hint ?? (homeDeviceRecovery ? t('deviceLink.recovery.syncingHint') : connectionError);
   const emptyStateTitle = initialHomeError ? t('devices.list.syncFailed') : home.emptyTitle;
   const emptyStateCopy = initialHomeError ? (connectionError ?? t('devices.list.requestFailed')) : home.emptyCopy;
   // 无可控制电脑的引导态(landing)可见性,与 ListEmptyComponent 的分支同口径。
@@ -3244,7 +3255,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
           style={[styles.connectionRow, (connectionError || activeConnectionIssue) && styles.connectionRowError]}
           testID="connection.banner"
         >
-          <StatusDot tone={connectionTone} pulsing={!activeConnectionIssue && status === 'connecting'} />
+          <StatusDot tone={connectionTone} pulsing={!networkUnavailable && !activeConnectionIssue && status === 'connecting'} />
           <Text ellipsizeMode="tail" numberOfLines={1} style={styles.connectionText} testID="connection.title">
             {connectionCopy ? `${connectionTitle} · ${connectionCopy}` : connectionTitle}
           </Text>
