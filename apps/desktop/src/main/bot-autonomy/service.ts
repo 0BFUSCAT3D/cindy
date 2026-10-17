@@ -165,7 +165,8 @@ function startRuntime(engine: RoutineEngine, scope: string): void {
   setActiveBotAutonomy({ scope, engine, runtime });
   const live = () => getActiveBotAutonomy()?.runtime === runtime && scopeIsCurrent(scope);
   registerBotAutonomyReader({
-    glance: (botId) => (live() ? runtime.glance(botId) : null),
+    // 归属还没读到时返回 null（工具报 HOST_NOT_READY），不把空表当成「什么都不用管」交给伙伴。
+    glance: (botId) => (live() && runtime.watch.isReady() ? runtime.glance(botId) : null),
     schedulerBotId: () => (live() ? runtime.watch.getSchedulerBotId() : null),
     watched: (sessionId) => (live() ? runtime.watch.get(sessionId) ?? null : null),
   });

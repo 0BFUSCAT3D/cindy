@@ -9,7 +9,7 @@
  * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；主人点停止后灵动岛条目消失
  *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败；远程任务两次轮询之间从权限请求
  *   A 换到 B，仍显示 A；本机任务在同一相位里从请求 A 换到 B（权限或回答），沿用 A 的等待时刻；读任务元数据失败一次后，
- *   这批任务被丢掉，之后再无活动就永远不进表；启动兜底读失败一次后再不重试；启动时归属读失败，上一轮被打断的任务按空归属判给总调度；伙伴刚开的任务在上次归属读取
+ *   这批任务被丢掉，之后再无活动就永远不进表；启动兜底读失败一次后再不重试；启动时归属读失败，上一轮被打断的任务按空归属判给总调度、工作台把空表当成「没事」；伙伴刚开的任务在上次归属读取
  *   几秒内出现，被当成「没人开」落到总调度。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
  */
@@ -253,8 +253,11 @@ describe('TaskWatch ownership and startup retries', () => {
     h.failOwnershipReads(1);
     await h.watch.start();
     expect(h.watch.get('crashed')).toBeUndefined();
+    // 工作台在这之前报「还没就绪」，不能把空表当成「没事要管」交给伙伴。
+    expect(h.watch.isReady()).toBe(false);
     h.advance(10 * 60_000);
     await h.watch.sweep();
+    expect(h.watch.isReady()).toBe(true);
     expect(h.watch.get('crashed')).toMatchObject({ phase: 'errored', creatorBotId: 'a', followerBotId: 'a' });
   });
 

@@ -254,6 +254,11 @@ export class TaskWatch {
   }
 
   /** 设置变化（总调度换人）或资料变化后：重读归属并重算全部跟进者。 */
+  /** 归属至少成功读到过一次：在这之前状态表与跟进者都不可信，工作台按「还没就绪」处理。 */
+  isReady(): boolean {
+    return this.ownershipLoaded && !this.stopped;
+  }
+
   async refreshFollowers(): Promise<void> {
     await this.refreshOwnership(true);
     this.deps.onChange();
