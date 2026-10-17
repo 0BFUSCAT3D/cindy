@@ -235,6 +235,12 @@ import {
 } from '@/session/newSession';
 import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { newSessionText } from '@/session/newSessionMessages';
+import {
+  cacheNewSessionHostDefaults,
+  getNewSessionHostDefaults,
+  rememberNewSessionHostRuntime,
+  type NewSessionHostDefaults,
+} from '@/session/newSessionHostDefaultsCache';
 import { i18n } from '@/i18n';
 import {
   getMobileAuthOwner,
@@ -1086,42 +1092,54 @@ export default function NewRemoteSessionScreen() {
   const autoDefaultDeviceRef = useRef<string | null>(null);
   // 被控电脑的「新建任务默认」(与桌面远程新建同一读源 maker:get-new-maker-defaults):
   // 默认模型 = 那台电脑上新建任务时用户上次选的模型,不再从任务列表推断「最近使用」。
-  // 选中设备后一次读齐三个 agent,供自动默认 / 恢复上次 agent / 切 agent 同步取用。
-  // 旧被控端(CHANNEL_NOT_ALLOWED)或重试后仍失败都算读完,回落目录区域默认,不无限等待。
-  const [hostDraftDefaults, setHostDraftDefaults] = useState<{
-    deviceId: string;
-    byAgent: Partial<Record<NewSessionAgentKind, NewSessionRuntime | null>>;
-  } | null>(null);
+  // 同账号同设备先用跨页缓存,再后台读齐三个 agent;刷新不阻塞新建或覆盖手动选择。
+  // 无缓存时才等待首读;旧被控端或重试后仍失败也算读完,回落目录默认,不无限等待。
+  const [hostDraftDefaults, setHostDraftDefaults] = useState<NewSessionHostDefaults | null>(
+    () => getNewSessionHostDefaults(selectedDeviceId),
+  );
   const hostDraftDefaultsRef = useRef(hostDraftDefaults);
   hostDraftDefaultsRef.current = hostDraftDefaults;
   // 在途读取:切 agent 时等它读完再选模型,避免先落目录默认、又因已手动切换而再也补不回来。
   const hostDraftDefaultsLoadRef = useRef<{ deviceId: string; promise: Promise<void> } | null>(null);
   useEffect(() => {
-    if (!selectedDeviceId || deviceLinkStatus !== 'online') return undefined;
-    if (hostDraftDefaultsRef.current?.deviceId === selectedDeviceId) return undefined;
     const deviceId = selectedDeviceId;
+    const owner = getMobileAuthOwner();
+    const cached = getNewSessionHostDefaults(deviceId);
+    hostDraftDefaultsRef.current = cached;
+    setHostDraftDefaults(cached);
+    if (!deviceId || deviceLinkStatus !== 'online' || !owner.accountKey) return undefined;
     let cancelled = false;
+    let cacheable = true;
+    const isCurrent = () => !cancelled && isMobileAuthOwnerCurrent(owner);
     const readAgent = async (agentKind: NewSessionAgentKind) => {
       for (let attempt = 0; ; attempt += 1) {
         const defaults = await withTransientRemoteRetry(async () => {
           await openLink(deviceId);
           return maker.getNewMakerDefaults(agentKind);
         }, { maxAttempts: 2 }).catch(() => undefined);
-        if (cancelled) return null;
+        if (!isCurrent()) return null;
         // 被控端刚启动、渲染进程还没推来草稿时回 {}:稍后重读,不把它当成「从未选过模型」;
         // 有限次后(含不带该字段的旧被控端)按无默认处理。读取失败不重读。
         if (defaults === undefined || isHostDraftDefaultsReady(defaults) || attempt >= 2) {
+          if (!isHostDraftDefaultsReady(defaults)) {
+            cacheable = false;
+            if (cached) return cached.byAgent[agentKind] ?? null;
+          }
           return hostDraftRuntimeFromDefaults(defaults, agentKind);
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
-        if (cancelled) return null;
+        if (!isCurrent()) return null;
       }
     };
     const promise = Promise.all(
       NEW_SESSION_AGENT_OPTIONS.map(async ({ kind }) => [kind, await readAgent(kind)] as const),
     ).then((entries) => {
-      if (cancelled) return;
-      const next = { deviceId, byAgent: Object.fromEntries(entries) };
+      if (!isCurrent()) return;
+      const snapshot = {
+        deviceId,
+        byAgent: { ...Object.fromEntries(entries), ...hostChoiceOverridesRef.current.get(deviceId) },
+      };
+      const next = cacheable ? cacheNewSessionHostDefaults(snapshot, cached) : snapshot;
       // 同步更新镜像:等待中的切 agent 回调在下一次渲染前就要读到结果。
       hostDraftDefaultsRef.current = next;
       setHostDraftDefaults(next);
@@ -1130,7 +1148,7 @@ export default function NewRemoteSessionScreen() {
     return () => {
       cancelled = true;
     };
-  }, [deviceLinkStatus, maker, openLink, selectedDeviceId]);
+  }, [deviceLinkStatus, maker, openLink, selectedDeviceId, outboxOwner]);
   // 等该设备的被控电脑默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
   // 按目录默认继续。effect 重跑会换一份新的在途读取,跟着等新的那份(有限次)。
   const waitHostDraftDefaults = useCallback(async (deviceId: string) => {
@@ -1145,6 +1163,11 @@ export default function NewRemoteSessionScreen() {
   // 本页已写回被控电脑的选择(按设备、agent):优先于读取结果,避免选择前发出的读取
   // 晚到后把旧模型带回来(切到别的 agent 再切回时)。
   const hostChoiceOverridesRef = useRef(new Map<string, Partial<Record<NewSessionAgentKind, NewSessionRuntime>>>());
+  const hostChoiceOwnerRef = useRef(outboxOwner);
+  if (hostChoiceOwnerRef.current !== outboxOwner) {
+    hostChoiceOwnerRef.current = outboxOwner;
+    hostChoiceOverridesRef.current.clear();
+  }
   const hostRuntimeFor = useCallback(
     (agentKind: NewSessionAgentKind): NewSessionRuntime | null => {
       const deviceId = selectedDeviceRef.current;
@@ -1186,6 +1209,7 @@ export default function NewRemoteSessionScreen() {
       ...overrides.get(selectedDeviceId),
       [agentKind]: { agentKind, model, effort, providerId },
     });
+    rememberNewSessionHostRuntime(selectedDeviceId, { agentKind, model, effort, providerId });
   }, [draft, hostChoiceRequest, maker, remoteAgentChoice, selectedDeviceId]);
   // selectedDeviceId 的渲染期镜像:异步回调(权限确认 .then)提交前比对触发时捕获的设备,
   // 不一致即放弃写入 —— 防止确认弹窗期间用户切了设备,回调把旧设备的来源/配置写进草稿

@@ -246,6 +246,7 @@ import {
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { useDeviceLinkReconnectEpoch } from '@/features/device-link/useDeviceLinkReconnectEpoch';
 import { extractIpcError } from '@/utils/ipcError';
+import { getRemoteDraftDefaults, rememberRemoteDraftDefaults, forgetRemoteDraftDefaults } from './remoteDraftDefaultsCache';
 import { matchNavigationCommandName, tryHandleNavigationCommand } from '@/lib/navigationCommands';
 import {
   useAgentCapabilities,
@@ -1492,13 +1493,19 @@ export function NewMakerDraftRoute() {
   // 选中模型的 model/effort/fast/permission/source 不取控制端本地(chatPrefs),改经隧道拉被控端
   // 当前草稿值(maker:get-new-maker-defaults),按被控端 capabilities 校准后 seed 进一个**临时
   // holder(dlSel)**;用户在远程草稿里的修改只写 dlSel,既不污染本地 newMakerDraft、也不回写被控端。
-  // 只有旧版被控端明确不支持此 channel 时才回落 capabilities 默认；超时 / 断链必须保留为
-  // error，不能伪装成「已读取但没有远程偏好」后放行发送。
+  // 已读过的同账号 / 设备 / 引擎默认立即复用，后台刷新；首次读取失败仍阻止创建。
   // 本地草稿(无 deviceId)整段跳过,走下方 chatPrefs 路径(逐字节不变)。
   const [remoteDraftState, setRemoteDraftState] = useState<{
     status: 'idle' | 'loading' | 'ready' | 'error';
     value: RemoteDraftDefaults | null;
-  }>({ status: 'idle', value: null });
+  }>(() => {
+    const cached = isDeviceLinkDraft && effectiveDeviceLinkDeviceId
+      ? getRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind)
+      : undefined;
+    return cached !== undefined
+      ? { status: 'ready', value: cached }
+      : { status: 'idle', value: null };
+  });
   const [remoteDraftRetryEpoch, setRemoteDraftRetryEpoch] = useState(0);
   const [dlSel, setDlSel] = useState<DeviceLinkDraftSelection | null>(null);
   const dlSeedKeyRef = useRef<string | null>(null);
@@ -1529,28 +1536,41 @@ export function NewMakerDraftRoute() {
       return;
     }
     let cancelled = false;
+    const owner = getDataOwnerGeneration();
     const requestRevision = remoteDraftRevisionRef.current;
+    // A worktree write requires fresh host confirmation, never a cached acknowledgement.
+    const transaction = wtPreferenceTransactionRef.current;
+    const confirmingWrite = transaction?.deviceId === effectiveDeviceLinkDeviceId
+      && transaction.status !== 'committed';
+    const cached = confirmingWrite ? undefined
+      : getRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind);
     setRemoteDraftState((previous) => ({
-      status: 'loading',
-      value: sameIdentity ? previous.value : null,
+      status: cached !== undefined ? 'ready' : 'loading',
+      value: cached !== undefined ? cached : sameIdentity ? previous.value : null,
     }));
     window.electronAPI.deviceLink
       .invoke(effectiveDeviceLinkDeviceId, 'maker:get-new-maker-defaults', [capabilityAgentKind])
       .then((v) => {
-        if (!cancelled && remoteDraftRevisionRef.current === requestRevision) {
+        if (!cancelled && isDataOwnerGenerationCurrent(owner) && remoteDraftRevisionRef.current === requestRevision) {
+          const received = (v as RemoteDraftDefaults | null) ?? null;
+          const value = received && Object.keys(received).length === 0 && cached !== undefined
+            ? cached : received;
+          if (!confirmingWrite || value?.worktreeEnabled === transaction?.enabled) {
+            rememberRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind, value);
+          }
           setRemoteDraftState({
             status: 'ready',
-            value: (v as RemoteDraftDefaults | null) ?? null,
+            value,
           });
         }
       })
       .catch((error) => {
-        if (cancelled || remoteDraftRevisionRef.current !== requestRevision) return;
+        if (cancelled || !isDataOwnerGenerationCurrent(owner) || remoteDraftRevisionRef.current !== requestRevision) return;
         const unsupported = extractIpcError(error)?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED';
-        // 只有确认旧端不支持时回落 capabilities 默认。超时/断链保留同目标旧镜像供展示，
-        // 但状态必须是 error，发送 / 新建目标会阻止提交并触发一次显式重试。
+        // A failed background refresh must not discard a previously usable default.
+        // Without one (or while confirming a write), keep the original error gate.
         setRemoteDraftState((previous) => ({
-          status: unsupported ? 'ready' : 'error',
+          status: unsupported || cached !== undefined ? 'ready' : 'error',
           value: unsupported ? null : previous.value,
         }));
       });
@@ -1563,6 +1583,7 @@ export function NewMakerDraftRoute() {
     capabilityAgentKind,
     remoteDraftRefreshEpoch,
     remoteDraftRetryEpoch,
+    dataOwnerId,
   ]);
 
   // 运行 Agent 的电脑只提供模型目录：没有它的草稿默认值，改用本次运行内对这台电脑的上一次
@@ -1738,6 +1759,7 @@ export function NewMakerDraftRoute() {
       const payload = push.payload as Record<string, RemoteDraftDefaults | undefined> | null;
       const next = payload?.[vendorSlot] ?? null;
       remoteDraftRevisionRef.current += 1;
+      rememberRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind, next);
       setRemoteDraftState({ status: 'ready', value: next });
       // 选中行(dlSel)的 effort/fast 也跟被控端走:按当前 dlSel.model 重解析,但保留控制端的
       // permission/source/model 选择(非按模型记 / 控制端 launch 意图)。被控端改选中模型 effort 即时反映。
@@ -2045,6 +2067,9 @@ export function NewMakerDraftRoute() {
       if (effectiveAgentDeviceId && !options?.taskComputerSelection) return;
       const model = target?.modelId ?? dlSel?.model ?? deviceLinkInitial?.model;
       if (!model) return;
+      // Until the host pushes the saved preference, do not reuse the old model on reopen.
+      remoteDraftRevisionRef.current += 1;
+      forgetRemoteDraftDefaults(effectiveDeviceLinkDeviceId);
       // 只改 Fast 时也要带上激活档(被控端 trigger 要更新激活 effort)。给了显式目标就**只**
       // 认目标自己的档:此刻 dlSel 里还是上一个模型的档,拿它顶上等于把 A 的档写到 B 头上;
       // 目标没档就整个不下发 effort,让被控端保留它为该模型记的那份。
@@ -2309,6 +2334,7 @@ export function NewMakerDraftRoute() {
       if (req.remoteSnapshot && !deviceChanged && effectiveAgentDeviceId) {
         // 同一台被控电脑重新验证,但 Agent 在另一台电脑运行:草稿的模型属于那台的目录,被控电脑
         // 的能力快照校准不了它(store 也不会清掉那台的选择)。只刷新被控电脑的草稿值。
+        if (req.deviceId) rememberRemoteDraftDefaults(req.deviceId, capabilityAgentKind, req.remoteSnapshot.defaults);
         setRemoteDraftState({ status: 'ready', value: req.remoteSnapshot.defaults });
       } else if (req.remoteSnapshot) {
         const {
@@ -2364,6 +2390,7 @@ export function NewMakerDraftRoute() {
                 ),
           );
         }
+        if (req.deviceId) rememberRemoteDraftDefaults(req.deviceId, capabilityAgentKind, freshDefaults);
         setRemoteDraftState({ status: 'ready', value: freshDefaults });
       } else if (deviceChanged) {
         setDlSel(null);
@@ -3286,6 +3313,7 @@ export function NewMakerDraftRoute() {
       setWtPreferenceSaving(true);
       if (isDeviceLinkDraft && effectiveDeviceLinkDeviceId) {
         remoteDraftRevisionRef.current += 1;
+        forgetRemoteDraftDefaults(effectiveDeviceLinkDeviceId);
         wtPreferenceTransactionRef.current = {
           seq: writeSeq,
           deviceId: effectiveDeviceLinkDeviceId,
