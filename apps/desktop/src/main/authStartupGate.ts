@@ -77,6 +77,19 @@ export async function awaitWithStartupTimeout<T>(
   }
 }
 
+export async function resolveColdStartTimeoutRecovery<T>(input: {
+  ownerTransitionPending: boolean;
+  pendingState: T;
+  recover: () => Promise<T>;
+}): Promise<T> {
+  // A pending owner transition owns the user-data boundary. Do not wait on its
+  // teardown from the startup timeout callback and do not start a competing
+  // account-free cleanup; return a fail-closed projection while the transition's
+  // own commit/rollback broadcast will publish the settled state.
+  if (input.ownerTransitionPending) return input.pendingState;
+  return input.recover();
+}
+
 /**
  * 判断冷启动 refresh 流程的迟到结果是否「只被它自己的启动闸超时兜底」超越。
  *

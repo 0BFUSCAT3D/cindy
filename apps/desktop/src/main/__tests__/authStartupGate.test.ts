@@ -17,6 +17,7 @@ import {
   awaitWithStartupTimeout,
   ColdStartAuthFallbackRegistry,
   commitColdStartRefreshIfCurrent,
+  resolveColdStartTimeoutRecovery,
   mapLoginProvidersLoadFailure,
 } from '../authStartupGate';
 
@@ -186,6 +187,30 @@ describe('awaitWithStartupTimeout', () => {
 });
 
 describe('ColdStartAuthFallbackRegistry', () => {
+  it('returns a pending boundary when the owner transition exceeds the startup deadline', async () => {
+    const pendingState = { mode: 'signed-out', ownerBoundaryPending: true } as const;
+    const recover = vi.fn(async () => ({ mode: 'signed-out', ownerBoundaryPending: false }));
+    const result = await resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: true,
+      pendingState,
+      recover,
+    });
+    expect(result).toEqual(pendingState);
+    expect(recover).not.toHaveBeenCalled();
+  });
+
+  it('recovers a signed-out owner when no owner transition is pending', async () => {
+    const pendingState = { mode: 'signed-out', ownerBoundaryPending: true } as const;
+    const recoveredState = { mode: 'signed-out', ownerBoundaryPending: false } as const;
+    const recover = vi.fn(async () => recoveredState);
+    await expect(resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: false,
+      pendingState,
+      recover,
+    })).resolves.toBe(recoveredState);
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
   it('preserves a late successful refresh across consecutive renderer startup timeouts', async () => {
     vi.useFakeTimers();
     const registry = new ColdStartAuthFallbackRegistry();

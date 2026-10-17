@@ -67,6 +67,7 @@ import {
   mapLoginProvidersLoadFailure,
   ColdStartAuthFallbackRegistry,
   commitColdStartRefreshIfCurrent,
+  resolveColdStartTimeoutRecovery,
 } from './authStartupGate';
 import { syncCanaryFlagAfterAuth } from './canaryFlagSync';
 import {
@@ -4724,17 +4725,24 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       // has been swept. Otherwise the previous cloud owner's links remain
       // available to local/anonymous Agent processes during a slow refresh.
       // The refresh may already have crossed into its owner teardown while the
-      // startup deadline fires. Wait for that boundary to settle first: starting
-      // signed-out recovery concurrently would invalidate the successful refresh
-      // and make every subsequent launch appear logged out.
-      if (ownerChangeShellGate.isPending()) {
-        await ownerChangeShellGate.waitForSettled();
-        return snapshotAuthState();
-      }
-      await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery', false, {
-        coldStartTimeoutRecovery: true,
+      // startup deadline fires. That teardown owns the user-data boundary, so
+      // never wait on it here (its awaits are unbounded) and never start a
+      // competing account-free cleanup: return a fail-closed projection and let
+      // the transition's own commit/rollback broadcast publish the settled state.
+      const recovery = await resolveColdStartTimeoutRecovery({
+        ownerTransitionPending: ownerChangeShellGate.isPending(),
+        pendingState: snapshotLoggedOutAuthState(true),
+        recover: () =>
+          recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery', false, {
+            coldStartTimeoutRecovery: true,
+          }).then(() => snapshotLoggedOutAuthState()),
       });
-      return snapshotLoggedOutAuthState();
+      if (recovery.ownerBoundaryPending) {
+        log.warn(
+          'cold-start startup deadline reached during owner transition; keeping the shell fail-closed',
+        );
+      }
+      return recovery;
     },
     onLateResult: (state) =>
       log.info(

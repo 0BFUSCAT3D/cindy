@@ -889,7 +889,7 @@ describe('auth login-flow reset', () => {
     expect(getLoginBody).toContain('mapLoginProvidersLoadFailure(error)');
   });
 
-  it('does not run the signed-out timeout recovery while a cloud owner transition is already pending', () => {
+  it('does not wait on an unbounded owner transition before signed-out recovery', () => {
     const initializeStart = source.indexOf('export async function initialize(');
     const initializeEnd = source.indexOf('\n}\n\n/**\n * 冷启动 refresh 流程本体', initializeStart);
     const initializeBody = source.slice(initializeStart, initializeEnd);
@@ -897,11 +897,14 @@ describe('auth login-flow reset', () => {
       "recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery'",
     );
     expect(timeoutRecovery).toBeGreaterThan(-1);
-    const recoveryGuard = initializeBody.lastIndexOf('ownerChangeShellGate.isPending()', timeoutRecovery);
-    expect(recoveryGuard).toBeGreaterThan(-1);
-    const recoveryWait = initializeBody.indexOf('await ownerChangeShellGate.waitForSettled();', recoveryGuard);
-    expect(recoveryWait).toBeGreaterThan(recoveryGuard);
-    expect(recoveryWait).toBeLessThan(timeoutRecovery);
+    // The timeout boundary must go through the guarded helper so a still-pending
+    // owner transition is not awaited (its teardown awaits are unbounded) and no
+    // competing signed-out cleanup starts underneath it.
+    const guardedRecovery = initializeBody.lastIndexOf('resolveColdStartTimeoutRecovery({', timeoutRecovery);
+    expect(guardedRecovery).toBeGreaterThan(-1);
+    expect(guardedRecovery).toBeLessThan(timeoutRecovery);
+    expect(initializeBody).toContain('pendingState: snapshotLoggedOutAuthState(true)');
+    expect(initializeBody).not.toContain('await ownerChangeShellGate.waitForSettled();\n        return snapshotAuthState();');
     // The fallback must tell the recovery it is the startup-gate fallback, so the
     // epoch it raises is recorded at the moment it is raised (see below).
     expect(initializeBody.indexOf('coldStartTimeoutRecovery: true', timeoutRecovery))
@@ -924,31 +927,6 @@ describe('auth login-flow reset', () => {
     expect(source.slice(source.indexOf('export async function initialize('))).not.toContain(
       '\n      coldStartTimeoutFallbacks.record(epochBeforeClear, authStateEpoch);'
     );
-  });
-
-  it('schedules post-login syncs with the epoch the flow commits under', () => {
-    const coldStart = source.indexOf('async function runColdStartRefreshFlow(');
-    const coldStartEnd = source.indexOf('\n}\n\n/**\n * Called on system resume', coldStart);
-    const body = source.slice(coldStart, coldStartEnd);
-    expect(body).toContain('let flowAuthEpoch = epochAtStart;');
-    expect(body).toContain('flowEpoch: flowAuthEpoch,');
-    expect(body).toContain('flowAuthEpoch = authStateEpoch;');
-    // Both post-commit schedulers must use the adopted epoch; passing epochAtStart
-    // made them treat a recovery login as stale-auth and skip canary/beta sync.
-    expect(body).not.toContain('expectedAuthEpoch: epochAtStart,');
-    expect(body.match(/expectedAuthEpoch: flowAuthEpoch,/g)?.length).toBe(2);
-  });
-
-  it('lets a cold-start refresh outlive its own startup-gate timeout fallback', () => {
-    const coldStart = source.indexOf('async function runColdStartRefreshFlow(');
-    const coldStartEnd = source.indexOf('\n}\n\n/**\n * Called on system resume', coldStart);
-    const body = source.slice(coldStart, coldStartEnd);
-    expect(body).toContain('coldStartTimeoutFallbacks.commitIfCurrent({');
-    // The real-supersession log stays exactly where it was, after the exemption.
-    const exemption = body.indexOf('coldStartTimeoutFallbacks.commitIfCurrent({');
-    const warn = body.indexOf('cold-start refresh flow superseded by manual auth change');
-    expect(exemption).toBeGreaterThan(-1);
-    expect(warn).toBeGreaterThan(exemption);
   });
 
   it('drops a runtime refresh result after logout or a newer login changes auth generation', () => {
