@@ -422,8 +422,10 @@ describe('wrapTeamDeps', () => {
         dispatchMeta: { source: 'mcp', context: 'send_to_worker' },
       } as never);
       expect(result.ok).toBe(false);
-      expect(result.dispatchOutcome).toMatchObject({ code: 'SEND_FAILED', accepted: false });
-      expect(String(result.dispatchOutcome?.message)).toContain('image attachments');
+      expect(result.dispatchOutcome).toMatchObject({
+        code: 'SEND_FAILED', accepted: false,
+        message: expect.stringContaining('image attachments'),
+      });
       expect(remoteInvoke.mock.calls.some(([, channel]) => channel === 'maker:input:enqueue')).toBe(false);
     } finally { workers.stop(); }
   });
