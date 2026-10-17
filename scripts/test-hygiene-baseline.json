@@ -1017,9 +1017,6 @@
     "apps/mobile/src/__tests__/mobileVoiceHistoryStore.test.ts": {
       "resetModules": 1
     },
-    "apps/mobile/src/__tests__/outboxHistoryCache.test.ts": {
-      "realWaits": 1
-    },
     "apps/mobile/src/__tests__/remoteHistoryReentry.test.ts": {
       "sourceReads": 1
     },
