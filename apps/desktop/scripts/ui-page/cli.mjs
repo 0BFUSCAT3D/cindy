@@ -17,7 +17,7 @@ matrix (comma lists; every combination runs in one browser):
   --theme light,dark|all   default: light
   --locale <list>|all      ${LOCALES.join(', ')} (default: zh-CN)
   --viewport 1280x800,…    default: the page/case viewport
-  --platform darwin|win32|linux   value of electronAPI.platform (default: darwin)
+  --platform darwin|win32|linux   value of electronAPI.platform (default: this machine)
 runtime:
   --compare [<ref>]        also render the source at <ref> (default: upstream merge-base); overview pairs before/after
   --focus <css selector>   2x crop + measured box/padding/font of one element at every capture
@@ -66,6 +66,9 @@ function report(summary) {
             : 'no loaded product file differs from ref; before = now, not rendered') +
           (page.compare.newSinceRef.length
             ? `; new since ref (used as-is): ${page.compare.newSinceRef.join(', ')}`
+            : '') +
+          (page.compare.currentOnBothSides?.length
+            ? `; current on both sides: ${page.compare.currentOnBothSides.join(', ')}`
             : ''),
       );
   }
@@ -193,6 +196,8 @@ async function main() {
     }
     console.log(options.json ? JSON.stringify(summary, null, 2) : report(summary));
     if (!['passed', 'preview-closed'].includes(summary.status)) process.exitCode = 1;
+    // A scenario still running after its timeout keeps this process alive; end once output is out.
+    if (summary.strandedScenarios?.length) process.stdout.write('', () => process.exit());
   } finally {
     process.removeListener('SIGINT', interrupt);
     process.removeListener('SIGTERM', interrupt);

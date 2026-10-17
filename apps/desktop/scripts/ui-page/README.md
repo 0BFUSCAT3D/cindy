@@ -185,6 +185,7 @@ mountPage({ cases: ['off', 'on'], render: (ctx) => <Switch checked={ctx.case ===
 补回；不写 `<ref>` 时用本分支与上游主干的分叉点，也就是“本分支改动之前”。场景与
 harness 始终用当前版本，所以两边执行同样的步骤、截同样的图。没有文件不同时不重复渲染。
 改前一侧的断言失败不影响结果，在报告里以 `before <ref>:` 开头逐条列出；`<ref>` 之后才新增的文件按当前版本使用并列出。
+Tailwind 配置由 Tailwind 直接从磁盘加载，两侧都用当前版本；它在 `<ref>` 之后有改动时报告会写明。
 
 ## 运行方式
 
@@ -192,7 +193,11 @@ harness 始终用当前版本，所以两边执行同样的步骤、截同样的
   临时 profile、拒绝权限与下载、只允许访问测试源，运行完删除临时数据；后台检查不显示窗口、
   不占 Dock。
 - `--engine chromium`：Playwright Chromium 或本机 Chrome（`--browser <路径>` 指定）。
-- `--timeout` 是每个变体的超时（默认 20 秒）；Ctrl+C 会写完 `summary.json` 并关闭窗口。
+- `--timeout` 是每个变体的超时（默认 20 秒）；超时后场景不能再截图。Electron 各变体共用一个
+  窗口，超时的场景仍在运行时本次检查直接停止，避免它操作后面的变体。Ctrl+C 会写完
+  `summary.json` 并关闭窗口。
+- `--platform` 默认是当前电脑的平台；指定其它平台只改变页面读到的 `electronAPI.platform`，
+  报告会写明模拟的平台。
 - `ui:preview` 只用于人工验收：显示一个窗口，依赖的源码、样式、翻译或场景变化后自动重载，
   关窗或 Ctrl+C 结束。自动检查不要用它保持窗口。修改运行器、依赖或 Tailwind 配置后重启命令。
 

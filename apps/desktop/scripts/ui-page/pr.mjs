@@ -29,6 +29,13 @@ export function prSnippet(summary, argv) {
     `- 版本：\`${summary.commit?.slice(0, 12) ?? '未知'}\`${summary.worktreeDirty ? '（含未提交改动）' : ''}`,
     `- 结果：${passed}/${variants.length} 个场景通过${warnings ? `，${warnings} 条警告` : ''}`,
   ];
+  const simulated = [...new Set(variants.map((variant) => variant.platform))].filter(
+    (platform) => platform !== process.platform,
+  );
+  if (simulated.length)
+    lines.push(
+      `- 模拟平台：页面按 ${simulated.map((platform) => PLATFORM[platform] ?? platform).join(' / ')} 渲染`,
+    );
   for (const page of summary.pages) {
     const own = variants.filter((variant) => variant.page === page.name);
     const cases = [...new Map(own.map((variant) => [variant.case, variant.about])).entries()];
@@ -45,6 +52,10 @@ export function prSnippet(summary, argv) {
         page.compare.replacedFromRef.length
           ? `  - 改前／改后对照：\`${page.compare.ref}\`，同一步骤左右并排`
           : `  - 改前／改后对照：\`${page.compare.ref}\` 之后没有改动本页面加载的产品文件`,
+      );
+    if (page.compare?.currentOnBothSides?.length)
+      lines.push(
+        `  - 对照两侧都用当前版本：${page.compare.currentOnBothSides.map((file) => `\`${file}\``).join('、')}`,
       );
   }
   // `--focus` measurements: the last capture where the element was visible, before → now.

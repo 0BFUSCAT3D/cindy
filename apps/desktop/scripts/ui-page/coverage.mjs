@@ -7,7 +7,7 @@ const git = (args) =>
   execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const renderer = path.join(desktop, 'src/renderer');
 // Files whose change is visible in the UI; anything else is ignored for coverage.
-const UI_FILE = /\.(?:tsx|ts|css|json)$/;
+const UI_FILE = /\.(?:tsx|ts|css|json|png|jpe?g|gif|webp|avif|svg|woff2?|ttf|otf)$/;
 
 /** Merge-base with `requested`, or with the conventional upstream branch. */
 export function baseRef(requested) {

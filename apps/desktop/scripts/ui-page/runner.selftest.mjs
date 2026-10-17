@@ -130,16 +130,24 @@ test('a page that never mounts fails at the timeout and leaves no runtime behind
   assert.equal(leftoverRunners(), '');
 });
 
-test('an interrupt still writes the summary and stops the runtime', async () => {
-  // Never mounts, so the run is still waiting when the interrupt arrives.
-  const file = await entry('waiting', `export {};\n`);
-  const { code, stdout } = await run(['--entry', file, '--timeout', '60000'], {
-    interruptWhenRunning: true,
-  });
-  assert.equal(code, 1);
-  const summaryFile = /summary:\s+(\S+)/.exec(stdout)?.[1];
-  assert.ok(summaryFile, stdout);
-  const summary = JSON.parse(await readFile(summaryFile, 'utf8'));
-  assert.match(summary.errors.join('\n'), /用户中断/);
-  assert.equal(leftoverRunners(), '');
-});
+// Windows has no POSIX signals: a child killed with 'SIGINT' is terminated outright, so the
+// CLI's own interrupt handling cannot be observed from here.
+test(
+  'an interrupt still writes the summary and stops the runtime',
+  {
+    skip: process.platform === 'win32' && 'Windows cannot deliver SIGINT to the child',
+  },
+  async () => {
+    // Never mounts, so the run is still waiting when the interrupt arrives.
+    const file = await entry('waiting', `export {};\n`);
+    const { code, stdout } = await run(['--entry', file, '--timeout', '60000'], {
+      interruptWhenRunning: true,
+    });
+    assert.equal(code, 1);
+    const summaryFile = /summary:\s+(\S+)/.exec(stdout)?.[1];
+    assert.ok(summaryFile, stdout);
+    const summary = JSON.parse(await readFile(summaryFile, 'utf8'));
+    assert.match(summary.errors.join('\n'), /用户中断/);
+    assert.equal(leftoverRunners(), '');
+  },
+);

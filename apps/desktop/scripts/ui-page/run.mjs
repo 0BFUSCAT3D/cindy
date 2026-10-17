@@ -87,6 +87,7 @@ function browserPath(explicit) {
 }
 
 const COMPARE_SCOPE = ['apps/desktop/src', 'apps/desktop/resources', 'packages'];
+const TAILWIND_CONFIG = 'apps/desktop/tailwind.config.ts';
 const BINARY = /\.(?:png|jpe?g|gif|webp|avif|woff2?|ttf|otf)$/;
 const MODULE_SUFFIXES = [
   '',
@@ -315,6 +316,10 @@ export async function runPlan(plan, options, externalSignal) {
           newSinceRef: loaded
             .filter((file) => overlay.changed.has(file) && !overlay.atRef.has(file))
             .map(relative),
+          // Loaded as a module by Tailwind from disk, so both sides use the current version.
+          currentOnBothSides: git(['diff', '--name-only', options.compare, '--', TAILWIND_CONFIG])
+            .split('\n')
+            .filter(Boolean),
         };
       }
       summary.pages.push(page);
@@ -485,6 +490,9 @@ export async function runPlan(plan, options, externalSignal) {
       };
       let opened;
       let timer;
+      let work;
+      // After a timeout the scenario may still be running; it must not capture or act anymore.
+      let timedOut = false;
       const started = performance.now();
       // Generic checks run at every capture, so states reached in check() (open menus, new
       // messages) are checked too. Host mutations are checked once after check().
@@ -501,7 +509,8 @@ export async function runPlan(plan, options, externalSignal) {
         result.hostMissing = [...audited.hostMissing];
         if (role === 'after' && options.mode === 'check') result.errors.push(...audited.errors);
       };
-      const capture = async (name, captureOptions = {}, { audit = true } = {}) => {
+      const capture = async (name, captureOptions = {}, { audit = true, failure = false } = {}) => {
+        if (timedOut && !failure) throw new Error(`variant timed out before capture ${name}`);
         const file = path.join(dir, `${name}.png`);
         const target = captureOptions.locator ?? opened.page;
         await target.screenshot({ path: path.join(evidence, file), timeout: 5000, scale: 'css' });
@@ -558,7 +567,7 @@ export async function runPlan(plan, options, externalSignal) {
         });
       };
       try {
-        const work = (async () => {
+        work = (async () => {
           opened = {};
           await openVariant(variant, item.bundles[role], definition, opened);
           result.timings.readyMs = Math.round(performance.now() - started);
@@ -613,6 +622,7 @@ export async function runPlan(plan, options, externalSignal) {
           work,
           new Promise((_, reject) => {
             timer = setTimeout(() => {
+              timedOut = true;
               reject(new Error(`variant timed out after ${options.timeout}ms`));
               // Unblock pending Playwright calls. Chromium: close this variant's context.
               // Electron: leave the page; only a hung renderer costs the shared window.
@@ -648,10 +658,31 @@ export async function runPlan(plan, options, externalSignal) {
             .evaluate(() => window.__uiPage?.hostMissing ?? [])
             .catch(() => []);
         if (opened?.page && !opened.page.isClosed())
-          await capture('failure', {}, { audit: false }).catch(() => {});
+          await capture('failure', {}, { audit: false, failure: true }).catch(() => {});
         result.status = role === 'before' ? 'before-failed' : 'failed';
       } finally {
         clearTimeout(timer);
+        if (timedOut) {
+          // Pending Playwright calls fail within the page default timeout once the page is gone.
+          const settled = await Promise.race([
+            work.then(
+              () => true,
+              () => true,
+            ),
+            delay(Math.min(options.timeout, 10000) + 2000).then(() => false),
+          ]);
+          if (!settled)
+            summary.strandedScenarios = [...(summary.strandedScenarios ?? []), variant.id];
+          // Electron shares one window between variants: a scenario that keeps running would act
+          // on the next variant's page, so stop the run instead of recording polluted results.
+          if (!settled && app) {
+            const error = new Error(
+              `${variant.id} was still running after its timeout; stopped the run so it cannot affect later variants`,
+            );
+            result.errors.push(error.message);
+            controller.abort(error);
+          }
+        }
         opened?.detach?.();
         if (opened?.context) await opened.context.close().catch(() => {});
         result.timings.totalMs = Math.round(performance.now() - started);

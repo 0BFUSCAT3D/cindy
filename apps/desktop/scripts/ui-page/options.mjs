@@ -87,7 +87,9 @@ export function parseOptions(argv) {
   options.cases = raw.case ?? 'default';
   options.themes = list(raw.theme ?? 'light', THEMES, 'theme');
   options.locales = list(raw.locale ?? 'zh-CN', LOCALES, 'locale');
-  options.platform = list(raw.platform ?? 'darwin', PLATFORMS, 'platform')[0];
+  // Same platform as the machine taking the screenshots unless one is simulated explicitly.
+  const host = PLATFORMS.includes(process.platform) ? process.platform : 'linux';
+  options.platform = list(raw.platform ?? host, PLATFORMS, 'platform')[0];
   if (raw.viewport && (raw.width || raw.height))
     throw new Error('Use either --viewport or --width/--height');
   options.viewports = raw.viewport

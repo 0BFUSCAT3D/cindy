@@ -65,22 +65,26 @@ async function main() {
   const remotes = git(['remote']).split('\n').filter(Boolean);
   const pushRepo = (name) => githubRepo(git(['remote', 'get-url', '--push', name]));
   const project = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+  // GitHub owner and repository names are case-insensitive.
   const targets = new Set(
     [
       githubRepo(project.repository?.url ?? ''),
       remotes.includes('upstream') && githubRepo(git(['remote', 'get-url', 'upstream'])),
-    ].filter(Boolean),
+    ]
+      .filter(Boolean)
+      .map((name) => name.toLowerCase()),
   );
+  const isTarget = (name) => targets.has(name.toLowerCase());
   const remote =
     options.remote ??
     remotes.find((name) => {
       const repo = pushRepo(name);
-      return repo && !targets.has(repo);
+      return repo && !isTarget(repo);
     });
   const repo = remote && pushRepo(remote);
   if (!repo)
     throw new Error('Need a GitHub fork remote for screenshots (e.g. origin = <you>/cindy)');
-  if (targets.has(repo))
+  if (isTarget(repo))
     throw new Error(`${remote} pushes to ${repo}, the PR's target; publish to your fork instead`);
 
   const current = git(['rev-parse', '--abbrev-ref', 'HEAD']);
