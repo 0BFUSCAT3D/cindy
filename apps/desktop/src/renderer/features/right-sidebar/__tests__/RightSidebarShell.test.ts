@@ -4,6 +4,10 @@ import { createElement, useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AppShortcutOverrides } from '../../../../shared/appShortcuts';
+import {
+  BROWSER_COMMENT_ELEMENT_SELECTED_CHANNEL,
+  BROWSER_COMMENT_EXIT_MODE_CHANNEL,
+} from '../../../../shared/browserComment';
 import { Globe, type LucideIcon } from 'lucide-react';
 
 vi.mock('react-i18next', () => ({
@@ -27,6 +31,19 @@ vi.mock('@/lib/toast', () => ({
 }));
 
 vi.mock('../plugins', () => ({}));
+
+// Real guest preload and host, joined only at the Electron IPC boundary.
+const commentIpc = vi.hoisted(() => ({
+  listeners: new Map<string, (event: unknown, payload: unknown) => void>(),
+  sendToHost: vi.fn(),
+}));
+vi.mock('electron', () => ({
+  ipcRenderer: {
+    on: (channel: string, listener: (event: unknown, payload: unknown) => void) =>
+      commentIpc.listeners.set(channel, listener),
+    sendToHost: (channel: string, payload: unknown) => commentIpc.sendToHost(channel, payload),
+  },
+}));
 
 // eagerSpawnAndReport 会真的 acquire 一个 <webview> 并等 dom-ready(jsdom 里永远
 // 不来 → 8s 兜底),跨 session popup 用例只关心它前后的编排,所以桩掉这一个导出。
@@ -469,6 +486,157 @@ describe('RightSidebarShell empty state', () => {
         nextTaskInput.remove();
         browserWebviewPool.releaseAll();
         unregisterTabKind('web-browser');
+      }
+    },
+  );
+
+  function renderInteractionBrowser() {
+    Object.assign(window.electronAPI, { onRsbBrowserFocusUrlBar: () => () => undefined });
+    registerTabKind({
+      kind: 'web-browser',
+      menu: { kind: 'web-browser', labelKey: 'browser', icon: Globe, order: 1, enabled: true },
+      TabPillTitle: () => createElement('span', null, 'browser'),
+      TabBody: (props: TabKindBodyProps) =>
+        createElement(BrowserTabBody, { ...props, state: props.state as WebBrowserState }),
+      defaultState: () => ({ url: 'https://example.test/', title: '', favicon: null, isAudible: false }),
+    });
+    const entry = browserWebviewPool.acquire('browser-a');
+    Object.assign(entry.webview, {
+      getURL: () => 'https://example.test/', getTitle: () => '',
+      canGoBack: () => false, canGoForward: () => false,
+      getWebContentsId: () => 101, setAudioMuted: () => undefined,
+      executeJavaScript: async () => undefined,
+    });
+    tabsIpc.list.mockImplementation(async ({ sessionId }: { sessionId: string }) =>
+      sessionId === 'task-a'
+        ? { tabs: [{ id: 'browser-a', kind: 'web-browser', state: { url: 'https://example.test/' } }], activeTabId: 'browser-a' }
+        : { tabs: [], activeTabId: null },
+    );
+    const props = { sessionId: 'task-a', workdir: '/tmp/task-a', remoteHostId: null, isMac: true, shellVisible: true };
+    const view = render(createElement(RightSidebarShell, props));
+    const hide = (transition: 'task switch' | 'sidebar hide') => view.rerender(createElement(
+      RightSidebarShell, transition === 'task switch'
+        ? { ...props, sessionId: 'task-b', workdir: '/tmp/task-b' }
+        : { ...props, shellVisible: false },
+    ));
+    const show = () => view.rerender(createElement(RightSidebarShell, props));
+    return { entry, view, hide, show };
+  }
+
+  it.each(['task switch', 'sidebar hide'] as const)(
+    'cancels retained address editing on %s without background navigation', async (transition) => {
+      const { entry, view, hide, show } = renderInteractionBrowser();
+      const external = document.createElement('input');
+      document.body.append(external);
+      try {
+        await screen.findByRole('button', { name: 'https://example.test/' });
+        const slot = entry.wrapper.parentElement;
+        const originalSrc = entry.webview.getAttribute('src');
+        fireEvent.click(screen.getByRole('button', { name: 'https://example.test/' }));
+        const address = view.container.querySelector('input')!;
+        await waitFor(() => expect(document.activeElement).toBe(address));
+        fireEvent.change(address, { target: { value: 'https://unfinished.test/' } });
+        hide(transition);
+        // The real Shell transition must cancel editing by itself. jsdom does
+        // not implement CSS-induced blur; native blur timing needs Chromium.
+        expect(view.container.querySelector('input')).toBeNull();
+        expect(getBucket('task-a').tabs[0].state).toMatchObject({ url: 'https://example.test/' });
+        expect(entry.webview.getAttribute('src')).toBe(originalSrc);
+        show();
+        expect(view.container.querySelector('input')).toBeNull();
+        expect(entry.wrapper.parentElement).toBe(slot);
+        expect(entry.wrapper.isConnected).toBe(true);
+
+        // Ordinary visible blur and explicit Enter/Ctrl+Enter remain commits.
+        for (const [value, key, want] of [
+          ['https://clicked.test/', 'blur', 'https://clicked.test/'],
+          ['https://entered.test/', 'Enter', 'https://entered.test/'],
+          ['google', 'Ctrl+Enter', 'https://www.google.com'],
+        ]) {
+          fireEvent.click(screen.getByRole('button', { name: (getBucket('task-a').tabs[0].state as WebBrowserState).url }));
+          const input = view.container.querySelector('input')!;
+          await waitFor(() => expect(document.activeElement).toBe(input));
+          fireEvent.change(input, { target: { value } });
+          if (key === 'blur') act(() => external.focus());
+          else fireEvent.keyDown(input, { key: 'Enter', ctrlKey: key === 'Ctrl+Enter' });
+          expect(getBucket('task-a').tabs[0].state).toMatchObject({ url: want });
+          expect(entry.webview.getAttribute('src')).toBe(want);
+        }
+      } finally {
+        view.unmount(); external.remove();
+        browserWebviewPool.releaseAll(); unregisterTabKind('web-browser');
+      }
+    },
+  );
+
+  it.each(['task switch', 'sidebar hide'] as const)(
+    'removes the real guest comment blocker on %s while retaining its host', async (transition) => {
+      await import('../../../../preload/browserCommentPreload');
+      let overlay: ShadowRoot | undefined;
+      const attachShadow = Element.prototype.attachShadow;
+      const shadowSpy = vi.spyOn(Element.prototype, 'attachShadow').mockImplementation(function (this: Element, init) {
+        const shadow = attachShadow.call(this, init);
+        if (init.mode === 'closed') overlay = shadow;
+        return shadow;
+      });
+      const target = document.createElement('button');
+      target.textContent = 'Guest target';
+      document.body.append(target);
+      const oldHitTest = Object.getOwnPropertyDescriptor(document, 'elementsFromPoint');
+      Object.defineProperty(document, 'elementsFromPoint', { configurable: true, value: () => [target] });
+      const { entry, view, hide, show } = renderInteractionBrowser();
+      Object.assign(entry.webview, { send: (channel: string, envelope: unknown) => {
+        const handler = commentIpc.listeners.get(channel);
+        if (!handler) throw new Error('Missing guest command: ' + channel);
+        handler({}, envelope);
+      } });
+      commentIpc.sendToHost.mockImplementation((channel: string, payload: unknown) => {
+        entry.webview.dispatchEvent(Object.assign(new Event('ipc-message'), { channel, args: [payload] }));
+      });
+      try {
+        await screen.findByRole('button', { name: 'https://example.test/' });
+        const slot = entry.wrapper.parentElement;
+        const src = entry.webview.getAttribute('src');
+        fireEvent.click(screen.getByRole('button', { name: 'rightSidebar.browser.comment' }));
+        await screen.findByText('rightSidebar.browser.commentModeHint');
+        const blocker = overlay!.querySelector<HTMLElement>('.blocker')!;
+        const click = new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 20, clientY: 30 });
+        fireEvent(blocker, click);
+        expect(click.defaultPrevented).toBe(true);
+        const editor = await screen.findByPlaceholderText('rightSidebar.browser.commentPlaceholder');
+        fireEvent.change(editor, { target: { value: 'Keep my unfinished comment' } });
+        const selectionMessage = commentIpc.sendToHost.mock.calls.find(
+          ([channel]) => channel === BROWSER_COMMENT_ELEMENT_SELECTED_CHANNEL,
+        )!;
+        hide(transition);
+        await waitFor(() => expect(blocker.isConnected).toBe(false));
+        // A queued selection from the old interaction must not reopen an
+        // editor in the retained background host.
+        act(() => commentIpc.sendToHost(...selectionMessage));
+        expect(screen.queryByPlaceholderText('rightSidebar.browser.commentPlaceholder')).toBeNull();
+        // Detached old blocker must have lost its capture handler as well.
+        const staleClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+        fireEvent(blocker, staleClick);
+        expect(staleClick.defaultPrevented).toBe(false);
+        expect(entry.wrapper.parentElement).toBe(slot);
+        expect(entry.wrapper.isConnected).toBe(true);
+        expect(entry.webview.getAttribute('src')).toBe(src);
+        show();
+        expect(screen.queryByRole('button', { name: 'rightSidebar.browser.exitCommentMode' })).toBeNull();
+        expect(screen.queryByPlaceholderText('rightSidebar.browser.commentPlaceholder')).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'rightSidebar.browser.comment' }));
+        await screen.findByText('rightSidebar.browser.commentModeHint');
+        fireEvent.click(overlay!.querySelector('.blocker')!, { clientX: 20, clientY: 30 });
+        expect((await screen.findByPlaceholderText('rightSidebar.browser.commentPlaceholder') as HTMLTextAreaElement).value).toBe('Keep my unfinished comment');
+      } finally {
+        view.unmount();
+        // Real preload teardown also runs after a failed red assertion.
+        commentIpc.listeners.get(BROWSER_COMMENT_EXIT_MODE_CHANNEL)?.({}, { requestId: 'test-cleanup' });
+        commentIpc.sendToHost.mockReset();
+        shadowSpy.mockRestore(); target.remove();
+        if (oldHitTest) Object.defineProperty(document, 'elementsFromPoint', oldHitTest);
+        else Reflect.deleteProperty(document, 'elementsFromPoint');
+        browserWebviewPool.releaseAll(); unregisterTabKind('web-browser');
       }
     },
   );

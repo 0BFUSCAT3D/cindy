@@ -399,7 +399,7 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
   const pageUrlRef = useRef(browser.url || state.url || 'about:blank');
   pageUrlRef.current = browser.url || state.url || 'about:blank';
   const getPageUrl = useCallback(() => pageUrlRef.current, []);
-  const comment = useBrowserComment(tabId, sessionId, browser.webview, getPageUrl);
+  const comment = useBrowserComment(tabId, sessionId, browser.webview, getPageUrl, tabVisible);
   // 页面评论的落点是主窗 composer 的「N 条注释」胶囊。detached 独立子窗口
   // (SidebarWindowLayout)只挂 RightSidebarShell、不挂 ChatInput,评论写进
   // 子窗口自己的 composerDraftStore 无处可发(还会误报成功 toast),故子窗口里

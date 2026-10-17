@@ -59,7 +59,7 @@ import { cn } from '@/lib/utils';
 import { parseOmnibox } from './lib/parseOmnibox';
 
 export interface BrowserChromeProps {
-  /** 保活宿主失活/隐藏时，关闭挂在 body 上的菜单。 */
+  /** 保活宿主失活/隐藏时，取消地址编辑并关闭挂在 body 上的菜单。 */
   visible?: boolean;
   url: string;
   isLoading: boolean;
@@ -147,16 +147,26 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
     const inputRef = useRef<HTMLInputElement | null>(null);
     const suppressNextBlurSubmitRef = useRef(false);
 
+    useLayoutEffect(() => {
+      if (!visible) {
+        // Set the latch before removing the focused input: hiding a retained
+        // host must never commit an unfinished address through blur.
+        suppressNextBlurSubmitRef.current = true;
+        setEditing(false);
+      }
+    }, [visible]);
+
     // 进入编辑态时只负责 focus/select。editingValue 在 beginEdit 同步写入,避免
     // input 首帧先显示空值 / 旧值、下一帧再跳成 URL 的视觉闪动。
     useLayoutEffect(() => {
-      if (editing) {
-        requestAnimationFrame(() => {
+      if (editing && visible) {
+        const frame = requestAnimationFrame(() => {
           inputRef.current?.focus();
           inputRef.current?.select();
         });
+        return () => cancelAnimationFrame(frame);
       }
-    }, [editing]);
+    }, [editing, visible]);
 
     const beginEdit = useCallback(() => {
       suppressNextBlurSubmitRef.current = false;
@@ -190,13 +200,13 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
 
     const handleBlur = useCallback(
       (e: React.FocusEvent<HTMLInputElement>) => {
-        if (suppressNextBlurSubmitRef.current) {
+        if (!visible || suppressNextBlurSubmitRef.current) {
           suppressNextBlurSubmitRef.current = false;
           return;
         }
         submitValue(e.currentTarget.value);
       },
-      [submitValue],
+      [submitValue, visible],
     );
 
     const handleKey = useCallback(
