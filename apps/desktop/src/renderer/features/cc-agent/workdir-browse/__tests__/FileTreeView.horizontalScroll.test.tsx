@@ -324,4 +324,39 @@ describe('globals.css 里的 .tree-hscroll 规则', () => {
     );
     expect(globalsSrc).toMatch(/::-webkit-scrollbar\s*\{\s*width:\s*12px;\s*\}/);
   });
+
+  /**
+   * 评审（纵向滚动拉回横向位置）：虚拟化只挂视口内的行，横向范围完全由当前
+   * 挂载行撑出 —— 宽行被回收时范围缩小，浏览器会把 scrollLeft 拉回。内容层
+   * 要保留本树已测得的最大宽（单调不减 minWidth），换树时才重置。
+   */
+  it('回收宽行不缩小横向范围：内容层保留已测得的最大宽，换树才重置', () => {
+    const { container, rerender } = render(
+      <FileTreeView tree={makeTree()} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    const inner = container.querySelector<HTMLElement>('div.relative.w-full')!;
+    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 500 });
+
+    // 宽行挂载时测得 500：写入粘性 minWidth。
+    rerender(
+      <FileTreeView tree={makeTree()} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(inner.style.minWidth).toBe('500px');
+
+    // 宽行被回收（后续测得更窄）：粘性 minWidth 不缩，横向滚动范围不变小。
+    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 200 });
+    rerender(
+      <FileTreeView tree={makeTree()} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(inner.style.minWidth).toBe('500px');
+
+    // 换树（storeKey 变）：粘性宽重置，等新树自己重新测量（先撤掉 stub，让
+    // jsdom 回到真实 scrollWidth=0，验证重置本身）。
+    Reflect.deleteProperty(inner, 'scrollWidth');
+    const switchedTree = { ...makeFarTargetsTree(), storeKey: 'test-store-2', treeIdentityKey: 'test-store-2' };
+    rerender(
+      <FileTreeView tree={switchedTree} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(inner.style.minWidth).toBe('');
+  });
 });

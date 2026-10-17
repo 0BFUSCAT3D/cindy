@@ -50,6 +50,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -393,6 +394,30 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
   const virtualizerRef = useRef(virtualizer);
   virtualizerRef.current = virtualizer;
 
+  // 横向范围的粘性下限：虚拟化只挂视口内的行，横向范围完全由当前挂载行撑出 ——
+  // 用户向右滚到深层长名后再纵向滚开，宽行被回收、横向范围缩小，浏览器会把
+  // scrollLeft 拉回（评审：纵向滚动拉回横向位置）。记录本树已测得的最大内容宽，
+  // 作为内容层的单调不减 minWidth；换树（storeKey 变）时重置。jsdom 无布局
+  // （scrollWidth 恒 0），直接操作 DOM 不额外渲染。#4436 的行宽契约不变：
+  // 行仍 min-w-max，这里只是不让「测得过的最大宽」随回收缩水。
+  const contentLayerRef = useRef<HTMLDivElement | null>(null);
+  const stickyMinWidthRef = useRef(0);
+  const stickyStoreKeyRef = useRef(tree.storeKey);
+  useLayoutEffect(() => {
+    const inner = contentLayerRef.current;
+    if (!inner) return;
+    if (stickyStoreKeyRef.current !== tree.storeKey) {
+      stickyStoreKeyRef.current = tree.storeKey;
+      stickyMinWidthRef.current = 0;
+      inner.style.minWidth = '';
+    }
+    const measured = inner.scrollWidth;
+    if (measured > stickyMinWidthRef.current) {
+      stickyMinWidthRef.current = measured;
+      inner.style.minWidth = `${measured}px`;
+    }
+  }, [rows, tree.storeKey]);
+
   // 滚动位置：onScroll 持续记录锚点；挂载 / 换 store / 重新激活时自动恢复。
   // treeIdentityKey 单独传入：hook 用它区分「同树换视口」（可继承位置）与
   // 「换树」（切项目 / 换远端，位置不得跨树泄漏，评审 P2）。storeKey 含显示
@@ -605,7 +630,7 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
       {rows.length === 0 ? (
         emptyState
       ) : (
-        <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+        <div ref={contentLayerRef} className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((vi) => {
             const row = rows[vi.index];
             if (!row) return null;
