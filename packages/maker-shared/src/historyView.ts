@@ -28,6 +28,8 @@ export interface HistoryMessageSource {
   content: unknown;
   createdAt: string;
   rowid?: number;
+  /** Controller-local receipt time of a durable push; never a Host revision. */
+  cacheReceivedAt?: number;
   toolUseId?: string | null;
   agentMeta?: object | null;
   /** Host outline only; transferred in work summaries, never as a replacement body. */

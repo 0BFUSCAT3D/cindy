@@ -409,6 +409,8 @@ export interface AskUserQuestionItem {
 }
 
 export interface ChatMessage {
+  /** Local durable-push receipt time, retained by the display cache. */
+  cacheReceivedAt?: number;
   /** Private Bot reply provenance, projected from persisted/live agent metadata. */
   botPrivateReply?: boolean;
   botLearning?: import('@cindy/maker-shared/bot-learning').BotLearningReceipt[];
@@ -9106,14 +9108,17 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
         case 'maker:interaction-dismissed':
           handleLiveInteractionDismissedRaw(push.payload, remoteIngress);
           break;
-        case 'local-db:messages:created':
+        case 'local-db:messages:created': {
           // 远程会话的持久化消息(接管路径)→ 注入 in-memory state(同本机)。
-          handleMessageCreatedRaw(push.payload, remoteIngress);
+          const payload = push.payload as { sessionId?: string; message?: Message };
+          const row = payload?.message && listMessage
+            ? { ...payload.message, cacheReceivedAt: Date.now() } : payload?.message;
+          handleMessageCreatedRaw({ ...payload, message: row }, remoteIngress);
           if (listMessage && push.deviceId && inboundSid) {
-            const row = (push.payload as { message?: Message }).message;
             if (row && !isBeforeOrAtRendererClearBoundary(inboundSid, row.createdAt)) persistListMessage(push.deviceId, inboundSid, row);
           }
           break;
+        }
         case 'local-db:messages:deleted':
           handleMessageDeletedRaw(push.payload, remoteIngress);
           break;
@@ -11431,7 +11436,7 @@ const _cacheHydrateSuppressed = new Set<string>();
 /**
  * 远程会话:从本地冷缓存乐观 hydrate 最近一页(并行于 fresh 首拉)。
  *
- * 只在**切片仍为空且 fresh 还没落地**时种入,种入的行打 `cacheHydrated` 标记,
+ * 只在 fresh 还没落地时补入,种入的行打 `cacheHydrated` 标记,
  * 由首拉落地时整批换掉。刻意不动 `historyLoaded` / `oldestMessageId`,并把
  * `hasMoreMessages` 留在 false:缓存窗口通常只活几百毫秒(fresh 到达前),
  * 拿缓存的游标去翻页会和随后落地的权威窗口打架(见首拉里孤岛游标那段);
@@ -11476,12 +11481,21 @@ function hydrateRemoteMessagesFromCache(sessionId: string): void {
     if (_cacheHydrateSuppressed.has(sessionId)) return;
     if (!isCurrentHydration()) return;
     setState(sessionId, (s) => {
-      // fresh 已经落地 / 期间已有实时消息进来 → 缓存没有价值了,原样返回不动切片。
-      if (s.historyLoaded || s.messages.length > 0) return s;
+      // A pre-received reply does not contain the earlier disk history. Fill
+      // missing rows while keeping every newer in-memory body and its identity.
+      const history = getRemoteHistoryView(sessionId)?.getSnapshot();
+      if (s.historyLoaded && !history?.stale) return s;
+      const current = new Map(s.messages.map(message => [message.clientId, message]));
+      const newerReceipts = new Set(mapped.filter(message => {
+        const existing = current.get(message.clientId);
+        return !existing?.isStreaming && message.cacheReceivedAt !== undefined
+          && message.cacheReceivedAt >= (history?.readAt ?? 0)
+          && message.cacheReceivedAt > (existing?.cacheReceivedAt ?? 0);
+      }).map(message => message.clientId));
       // hasMoreMessages 显式压成 false:缓存窗口期间不许向上翻页。翻回来的权威老行
       // 不带 cacheHydrated,首拉落地剔除缓存行后会在窗口中间留出一段洞,得靠后续翻页
       // 才收敛。首拉通常几百毫秒就到并写回真实的 hasMore,压掉这段的代价近乎为零。
-      return { ...s, messages: mapped, hasMoreMessages: false };
+      return { ...s, messages: mergeMessages(mapped, s.messages, { addOnly: true, addOnlyExcept: newerReceipts }), hasMoreMessages: false };
     });
   });
 }
@@ -11686,7 +11700,8 @@ function createRemoteHistoryView(sessionId: string) {
     for (const detail of snapshot.details.values()) available.push(...detail.messages);
     setState(sessionId, (state) => ({ ...state, historyLoaded: true,
       messages: confirmRemoteUsers(
-        mergeMessages(available, state.messages.filter((message) => !message.cacheHydrated), { addOnly: true }),
+        mergeMessages(available, state.messages.filter((message) => !message.cacheHydrated
+          || (message.cacheReceivedAt !== undefined && message.cacheReceivedAt >= (snapshot.readAt ?? 0))), { addOnly: true }),
         new Set(available.filter((message) => message.role === 'user').map((message) => message.clientId)),
       ),
       hasMoreMessages: snapshot.hasMore, isLoadingMore: view.isLoadingOlder(),
@@ -11704,17 +11719,22 @@ function createRemoteHistoryView(sessionId: string) {
 // Activity version already read ahead, per device and task, valid only while that mirror entry
 // is current (account switch or cache invalidation resets it). Memory only.
 const remoteHistoryPrefetchedAt = new Map<string, { version: string; owner: ReturnType<typeof getDataOwnerGeneration>; token: number }>();
-const remoteHistoryPrefetchRuns = new Map<string, { again: boolean }>();
+const remoteHistoryPrefetchRuns = new Map<string, { again: boolean; targets: Set<string> | null }>();
 
 /**
  * After a list read that may follow missed pushes (bootstrap/reconnect), read the latest
  * history page of recently changed tasks into the mirror a task restores on open. Open tasks
  * read their own view. Sequential and best effort: a failed read waits for the next refresh.
  */
-async function prefetchRemoteHistories(deviceId: string): Promise<void> {
+async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySet<string>): Promise<void> {
   const run = remoteHistoryPrefetchRuns.get(deviceId);
-  if (run) { run.again = true; return; }
-  const state = { again: true };
+  if (run) {
+    run.again = true;
+    if (!sessionIds) run.targets = null;
+    else if (run.targets) for (const id of sessionIds) run.targets.add(id);
+    return;
+  }
+  const state = { again: true, targets: sessionIds ? new Set(sessionIds) : null };
   remoteHistoryPrefetchRuns.set(deviceId, state);
   const owner = getDataOwnerGeneration();
   const key = (sessionId: string) => JSON.stringify([deviceId, sessionId]);
@@ -11724,8 +11744,12 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
   try {
     while (state.again) {
       state.again = false;
+      const targets = state.targets;
+      state.targets = new Set<string>();
       const candidates = selectHistoryPrefetchSessions(remoteProjectsStore.getDeviceSessions(deviceId, 'active'), {
-        eligible: (session) => session.status === 'active' && session.source !== 'scheduler' && !getRemoteHistoryView(session.id),
+        limit: targets?.size,
+        eligible: (session) => session.status === 'active' && session.source !== 'scheduler' && !getRemoteHistoryView(session.id)
+          && (!targets || (targets.has(session.id) && historyPrefetchVersion(session) !== undefined)),
         prefetchedAt: (sessionId) => {
           const entry = remoteHistoryPrefetchedAt.get(key(sessionId));
           return entry && isDataOwnerGenerationCurrent(entry.owner)
@@ -11739,6 +11763,7 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
         if (!historySnapshotCovers(previous, session)) {
           // Capture write authority before the read, like an open view does.
           const write = remoteHistoryCacheWriter(deviceId, session.id);
+          const readAt = Date.now();
           let page: HistoryViewPage<Message>;
           try {
             page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
@@ -11755,7 +11780,7 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
           const snapshot = historySnapshotForCache({ ...page, items }, previous,
             (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
           if (!snapshot) continue;
-          write(snapshot);
+          write({ ...snapshot, readAt });
         }
         const version = historyPrefetchVersion(session);
         if (version !== undefined) {
@@ -18666,6 +18691,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
   const createdAtById = new Map(serverMsgs.map((m) => [m.clientId, m.createdAt]));
   const serverIdByClientId = new Map(serverMsgs.map((m) => [m.clientId, m.id]));
   const rowidById = new Map(serverMsgs.map((m) => [m.clientId, m.rowid]));
+  const receivedAtById = new Map(serverMsgs.map((m) => [m.clientId, m.cacheReceivedAt]));
   const remoteContentTruncatedById = new Map(
     serverMsgs.map((m) => [m.clientId, m.agentMeta?.remoteContentTruncated === true]),
   );
@@ -19258,6 +19284,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
     const iso = mapServerCreatedAt(cm, ts);
     const serverId = serverIdByClientId.get(cm.clientId);
     const rowid = rowidById.get(cm.clientId);
+    const cacheReceivedAt = receivedAtById.get(cm.clientId);
     const remoteContentTruncated = remoteContentTruncatedById.get(cm.clientId) === true;
     const remoteRowsTrimmed = remoteRowsTrimmedById.get(cm.clientId) === true;
     const legacyUserTurnCost = legacyUserTurnCosts.get(cm.clientId);
@@ -19277,6 +19304,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
       ...(iso ? { createdAt: iso } : {}),
       ...(typeof serverId === 'string' && serverId.length > 0 ? { id: serverId } : {}),
       ...(rowid !== undefined ? { rowid } : {}),
+      ...(cacheReceivedAt !== undefined ? { cacheReceivedAt } : {}),
       ...(remoteContentTruncated ? { remoteContentTruncated: true } : {}),
       ...(remoteRowsTrimmed ? { remoteRowsTrimmed: true } : {}),
     };

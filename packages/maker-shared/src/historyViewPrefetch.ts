@@ -12,6 +12,12 @@ export interface HistoryPrefetchSession {
   lastTurnEndedAt?: number | null;
 }
 
+/** Durable turn-end patches, rather than activity text, trigger read ahead. */
+export function historyTurnEnded(previous: { lastTurnEndedAt?: number | null }, patch: { lastTurnEndedAt?: unknown }): boolean {
+  return typeof patch.lastTurnEndedAt === 'number' && Number.isFinite(patch.lastTurnEndedAt)
+    && patch.lastTurnEndedAt > (previous.lastTurnEndedAt ?? 0);
+}
+
 /** A turn that started after the last one ended keeps writing rows without touching `updatedAt`. */
 function isTurnRunning(session: HistoryPrefetchSession): boolean {
   return typeof session.activeTurnStartedAt === 'number'

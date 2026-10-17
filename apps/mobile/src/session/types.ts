@@ -132,6 +132,8 @@ export interface RemoteSessionRuntimePending {
 }
 
 export interface RemoteMessage {
+  /** Local durable-push receipt time, retained by the display cache. */
+  cacheReceivedAt?: number;
   id: string;
   clientId: string;
   sessionId: string;

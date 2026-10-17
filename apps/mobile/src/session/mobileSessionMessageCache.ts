@@ -37,6 +37,7 @@ let globalClearInProgress = false;
 let activeGlobalClear: Promise<void> | null = null;
 
 export interface SessionMessageCacheWriteAuthority {
+  readonly capturedAt: number;
   readonly key: string;
   readonly owner: MobileAuthOwnerGeneration;
   readonly globalEpoch: number;
@@ -74,6 +75,7 @@ export function captureSessionMessageCacheWriteAuthority(
   const key = safeStorageKey(deviceId, sessionId);
   if (!key) return null;
   return {
+    capturedAt: Date.now(),
     key,
     owner,
     globalEpoch: globalWriteEpoch,
@@ -88,9 +90,10 @@ export function captureSessionMessageCacheWriteAuthority(
 export async function cacheSessionMessagesIfCurrent(
   authority: SessionMessageCacheWriteAuthority | null,
   messages: readonly RemoteMessage[],
+  preserveLaterReceipts = true,
 ): Promise<boolean> {
   if (!isSessionMessageCacheWriteAuthorityCurrent(authority)) return false;
-  const normalized = normalizeCachedMessages(messages);
+  let normalized = normalizeCachedMessages(messages);
   let written = false;
   await enqueueCacheOperation(authority.key, async () => {
     if (!isSessionMessageCacheWriteAuthorityCurrent(authority)) return;
@@ -98,6 +101,18 @@ export async function cacheSessionMessagesIfCurrent(
       await messageCacheStorage.removeItem(authority.key);
       return;
     }
+    // A blurred page's pending flush may run after a list push. Preserve only
+    // receipts newer than the captured write, not arbitrary old cached history.
+    let previous: unknown = null;
+    if (preserveLaterReceipts) {
+      const raw = await messageCacheStorage.getItem(authority.key);
+      try { previous = raw ? JSON.parse(raw) : null; } catch { /* Replace an unreadable cache. */ }
+    }
+    const arrivals = isRecord(previous) && Array.isArray(previous.messages)
+      ? normalizeCachedMessages(previous.messages).filter(row =>
+        typeof row.cacheReceivedAt === 'number' && row.cacheReceivedAt >= authority.capturedAt) : [];
+    if (!isSessionMessageCacheWriteAuthorityCurrent(authority)) return;
+    normalized = normalizeCachedMessages([...normalized, ...arrivals]);
     const payload: StoredSessionMessageCache = {
       version: 1,
       updatedAt: Date.now(),
@@ -119,7 +134,7 @@ export async function replaceCachedSessionMessages(
   if (!key) return false;
   keyWriteEpochs.set(key, (keyWriteEpochs.get(key) ?? 0) + 1);
   const authority = captureSessionMessageCacheWriteAuthority(deviceId, sessionId);
-  return cacheSessionMessagesIfCurrent(authority, messages);
+  return cacheSessionMessagesIfCurrent(authority, messages, false);
 }
 
 // 读取某 (host, session) 的缓存消息;无缓存 / 解析失败一律返回空数组(乐观 hydrate 不应抛错)。
@@ -162,7 +177,8 @@ export async function cacheSessionListMessage(deviceId: string, sessionId: strin
     if (!isSessionMessageCacheWriteAuthorityCurrent(authority)) return;
     const raw = await messageCacheStorage.getItem(authority.key);
     const parsed: unknown = raw ? JSON.parse(raw) : null;
-    const previous = normalizeCachedMessages(isRecord(parsed) && Array.isArray(parsed.messages) ? parsed.messages : []);
+    const previous = normalizeCachedMessages(isRecord(parsed) && Array.isArray(parsed.messages)
+      ? parsed.messages : Array.isArray(parsed) ? parsed : []);
     const messages = normalizeCachedMessages([...previous.filter(row =>
       row.id !== message.id && (!message.clientId || row.clientId !== message.clientId)), message]);
     if (!isSessionMessageCacheWriteAuthorityCurrent(authority)) return;

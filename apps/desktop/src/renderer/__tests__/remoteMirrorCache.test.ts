@@ -272,6 +272,25 @@ afterEach(() => {
 });
 
 describe('冷缓存 hydrate', () => {
+  // Regression: one pre-received row prevented the disk history from hydrating.
+  // Unit: open through the real store with its network request held pending.
+  it('merges older disk history under a list-pushed reply before the network returns', async () => {
+    const s = sid();
+    setDataOwnerGeneration('owner-a', 1);
+    registerRemote(s);
+    const old = dbMessage(s, 'old', 'earlier history', '2026-10-10T00:00:00.000Z');
+    const latest = dbMessage(s, 'new', 'latest reply', '2026-10-10T00:01:00.000Z');
+    cachedMessages.set(`${DEVICE_ID}::${s}`, [old as unknown as Record<string, unknown>]);
+    let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+    window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+    makerChatStore.initGlobalListeners();
+    push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: latest } });
+    remoteListPromise = new Promise<Message[]>(() => {});
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['earlier history', 'latest reply']);
+  });
+
   it('shows a list-pushed reply immediately when opening a task while its history request is still pending', async () => {
     const s = sid();
     setDataOwnerGeneration('owner-a', 1);
@@ -284,7 +303,8 @@ describe('冷缓存 hydrate', () => {
     await flush(30);
     expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual([row.content]);
     expect(invoke.mock.calls.filter(([, channel]) => channel.startsWith('local-db:messages:'))).toEqual([]);
-    expectPut(DEVICE_ID, s, [row]);
+    expect(putMessages.mock.calls.find(([device, session]) => device === DEVICE_ID && session === s)?.[2])
+      .toEqual([{ ...row, cacheReceivedAt: expect.any(Number) }]);
     remoteListPromise = new Promise<Message[]>(() => {});
     makerChatStore.ensureInitialMessages(s);
     await flush(30);
@@ -421,6 +441,29 @@ describe('冷缓存 hydrate', () => {
     }
   });
 
+  // Turn-end read ahead is targeted; duplicate end events must not refetch.
+  it('reads only the completed task and coalesces its duplicate completion', async () => {
+    const completed = sid();
+    const other = sid();
+    const running = sid();
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: completed, status: 'active', updatedAt: '2026-10-11T00:00:00Z', lastTurnEndedAt: 100 },
+      { id: other, status: 'active', updatedAt: '2026-10-11T00:00:00Z', lastTurnEndedAt: 100 },
+      { id: running, status: 'active', updatedAt: '2026-10-11T00:00:00Z', lastTurnEndedAt: 100, activeTurnStartedAt: 200 },
+    ] as never);
+    invoke.mockImplementationOnce((async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:messages:view');
+      expect(args[0]).toBe(completed);
+      return { version: 1, items: projectHistoryView([dbMessage(completed, 'reply', 'finished body', '2026-10-11T00:00:01Z')], false),
+        hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    await makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([completed, running]));
+    await flush(30);
+    expect(putMessages.mock.calls.at(-1)?.[6]).toContain('finished body');
+    await makerChatStore.prefetchRemoteHistories(DEVICE_ID, new Set([completed]));
+    expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
+  });
+
   it('restores the structured view through the actual offline session entry', async () => {
     const s = sid();
     const rows = [{ id: 'cached', clientId: 'cached', role: 'user', content: 'offline history', createdAt: '2026-09-17T00:00:00Z' }];
@@ -435,6 +478,35 @@ describe('冷缓存 hydrate', () => {
     expect(makerChatStore.getSnapshot(s).messages.map((row) => row.content)).toEqual(['offline history']);
     expect(invoke).not.toHaveBeenCalled();
     makerChatStore.purgeSession(s);
+  });
+
+  // A restart restores two caches: the structured page and a later durable list receipt.
+  // Neither resolution order may hide the newer body while the Host is offline.
+  it.each([false, true])('restores a later disk receipt over the same row in old history (raw delayed=%s)', async (delayed) => {
+    const s = sid();
+    const old = dbMessage(s, 'reply', 'old body', '2026-10-11T00:00:01.000Z');
+    const latest = { ...old, content: 'latest body', cacheReceivedAt: 200 };
+    const historyView = encodeRemoteHistory({ items: projectHistoryView([old], false), details: new Map(), expanded: new Set(),
+      readAt: 100, ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+    let reads = 0;
+    getMessages.mockImplementation(async () => {
+      if (++reads === 2 && delayed) await flush(30);
+      return { messages: [latest], historyView, invalidation: cachedInvalidation,
+        ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter };
+    });
+    registerRemote(s);
+    remoteProjectsStore.markDeviceDisconnected(DEVICE_ID);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(60);
+    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual(['latest body']);
+    getRemoteHistoryView(s)?.setActive(true);
+    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual(['latest body']);
+    expect(invoke).not.toHaveBeenCalled();
+    makerChatStore.purgeSession(s);
+    getMessages.mockImplementation(async (deviceId, sessionId) => ({
+      messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [], invalidation: cachedInvalidation,
+      ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+    }));
   });
 
   it('首拉未回来时用缓存种入,行带 cacheHydrated 且不置 historyLoaded', async () => {

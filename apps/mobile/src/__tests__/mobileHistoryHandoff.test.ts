@@ -13,6 +13,37 @@ const row = (id: string, streaming = false): RemoteMessage => ({
 const createHandoff = () => new HistoryViewHandoff<RemoteMessage>((row) => row.agentMeta?.isStreaming === true);
 
 describe('mobile history handoff', () => {
+  // Regression: an updated list body has the same ID/time as the cached page. The
+  // old tail-only rule hid it. Unit: real handoff + renderer, no network or timers.
+  it('shows a newer received body in place until a page read after that push takes over', async () => {
+    const old = { ...row('answer'), content: 'old answer' };
+    const received = { ...old, content: 'updated answer', cacheReceivedAt: 200 };
+    const view = new HistoryViewController<RemoteMessage>({
+      page: async () => ({ version: 1, items: projectHistoryView([old], false), hasMore: false, nextCursor: null }),
+      details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }),
+      expanded: async () => undefined,
+    });
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({ items: projectHistoryView([old], false),
+      details: new Map(), expanded: new Set(), nextCursor: null, hasMore: false,
+      loading: false, ready: true, error: null, readAt: 100 }));
+    const handoff = createHandoff();
+    const render = (snapshot = view.getSnapshot(), currentHandoff = handoff) => {
+      const state = currentHandoff.reconcile(snapshot, [received]);
+      return buildMobileHistoryRenderItems({ view, snapshot, messages: state.messages,
+        pendingHandoff: state.pending, staleTail: state.tail, streaming: false, sessionId: 's',
+      }).filter(item => item.type === 'message').map(item => item.message.body);
+    };
+    expect(render()).toEqual(['updated answer']);
+    // An in-flight page captured before the push must not roll it back either.
+    expect(render({ ...view.getSnapshot(), stale: false })).toEqual(['updated answer']);
+    // A new receipt can also arrive while the very first page is in flight.
+    expect(render({ ...view.getSnapshot(), items: [], stale: false }, createHandoff())).toEqual(['updated answer']);
+    // A newer authoritative read is allowed to replace it, even with shorter text.
+    expect(render({ ...view.getSnapshot(), stale: false, readAt: 300 })).toEqual(['old answer']);
+    expect(handoff.reconcile(view.getSnapshot(), []).tail.size).toBe(0);
+  });
+
   it('keeps the live tail below completed text when recovery history has not caught up to that tail', async () => {
     const first = { ...row('A'), content: 'first paragraph' };
     let live = { ...row('B', true), content: 'second paragraph', createdAt: first.createdAt };

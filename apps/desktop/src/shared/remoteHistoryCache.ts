@@ -111,6 +111,7 @@ export function decodeRemoteHistory<T extends HistoryMessageSource>(
       expanded: new Set(value.expanded),
       hasMore: value.hasMore,
       nextCursor: value.nextCursor,
+      ...(typeof value.readAt === 'number' && Number.isFinite(value.readAt) ? { readAt: value.readAt } : {}),
       ready: true,
       loading: false,
       error: null,
@@ -132,6 +133,7 @@ export function encodeRemoteHistory<T extends HistoryMessageSource>(
       expanded: [...snapshot.expanded],
       hasMore: snapshot.hasMore,
       nextCursor: snapshot.nextCursor,
+      readAt: snapshot.readAt,
     },
     (key, value) => {
       // A cached transcript may be read offline. Never revive a live indicator or send payload.

@@ -521,6 +521,8 @@ export interface AgentSwitchContent {
 }
 
 export interface Message {
+  /** Local durable-push receipt time, retained by the display cache. */
+  cacheReceivedAt?: number;
   id: string;
   /**
    * SQLite insertion order for DB-backed history rows. Remote controllers use it
