@@ -73,6 +73,14 @@ export function isDurableOutboxSettled(record: DurableOutboxRecord): boolean {
   return record.cleanupOutcome !== undefined;
 }
 
+/** A failed creation belongs to its editor until a new creation takes it over. */
+export function isDurableCreationDraft(record: DurableOutboxRecord): boolean {
+  return record.suspended === true && record.state === 'failed'
+    && !!(record.creation?.editReady || record.creation?.cancelled)
+    && !record.prepared && !record.enqueueStarted && record.sendAtMs === undefined
+    && !record.cancelRequested && !isDurableOutboxSettled(record);
+}
+
 /**
  * 已移交被控端的记录:持久投递已收下(或已落定)。会话 FIFO 只派发第一条未移交的记录,
  * 移交后的记录只做对账,不再挡后面的消息。
@@ -126,7 +134,7 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
   };
   const mutate = async (
     record: DurableOutboxRecord,
-    next: DurableOutboxRecord | null,
+    change: DurableOutboxRecord | null | ((current: DurableOutboxRecord) => DurableOutboxRecord | null),
     adding = false,
     expectedRecords: readonly DurableOutboxRecord[] = [],
   ): Promise<DurableOutboxRecord | null> => {
@@ -135,8 +143,14 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
     return serialize(async () => {
       assertOwner(record.accountId, epoch);
       const current = records.find((r) => keyFor(r) === keyFor(record));
-      if (adding ? current !== undefined : current !== record)
+      const editing = typeof change === 'function';
+      // Keystrokes share this store's write queue; each edits the preceding saved
+      // revision, never an old render snapshot. Clearing does not permit re-add.
+      if (editing && !current) return null;
+      if (editing ? (!current || current.item.sessionId !== record.item.sessionId || !isDurableCreationDraft(current))
+        : adding ? current !== undefined : current !== record)
         throw new Error("OUTBOX_STALE_WRITE");
+      const next = editing ? change(current!) : change;
       if (expectedRecords.some((expected) => !records.includes(expected)))
         throw new Error("OUTBOX_STALE_WRITE");
       if (next && keyFor(next) !== keyFor(record)) throw new Error("OUTBOX_IDENTITY_CHANGED");
@@ -247,6 +261,8 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
         deviceId: record.deviceId,
       }, false, expectedRecords) as Promise<DurableOutboxRecord>,
     remove: (record: DurableOutboxRecord) => mutate(record, null),
+    editCreationDraft: (record: DurableOutboxRecord, edit: (current: DurableOutboxRecord) => DurableOutboxRecord | null) =>
+      mutate(record, edit),
     ready: (): Promise<void> => store.activate(accountId),
   };
   return store;

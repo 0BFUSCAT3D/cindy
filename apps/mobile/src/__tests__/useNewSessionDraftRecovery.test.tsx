@@ -9,6 +9,7 @@ import { useAutoResumeNewSessionDraft, useNewSessionDurableEdit } from '@/sessio
 const outbox = vi.hoisted(() => ({
   records: [] as DurableOutboxRecord[], listeners: new Set<() => void>(),
   ready: vi.fn(), claim: vi.fn(), release: vi.fn(), find: vi.fn(), merge: vi.fn(),
+  saveEdit: vi.fn(),
 }));
 vi.mock('@/session/mobileDurableOutbox', () => ({
   getCurrentMobileOutboxRecords: () => outbox.records,
@@ -25,16 +26,19 @@ vi.mock('@/session/newSessionCreation', () => ({
   findNewSessionEditDraft: outbox.find,
 }));
 vi.mock('@/session/mergeNewSessionEditFollowUps', () => ({ mergeNewSessionEditFollowUps: outbox.merge }));
+vi.mock('@/session/persistNewSessionCreationDraft', () => ({ persistNewSessionDraftEdit: outbox.saveEdit }));
 type EditProps = Omit<Parameters<typeof useNewSessionDurableEdit>[0], 'onRestore'>;
 type ResumeProps = Omit<Parameters<typeof useAutoResumeNewSessionDraft>[0], 'onResume'>;
+let editorActions: ReturnType<typeof useNewSessionDurableEdit>;
 function Editor(props: EditProps) {
   const [record, setRecord] = useState<DurableOutboxRecord>();
   const [text, setText] = useState('');
-  useNewSessionDurableEdit({ ...props, onRestore: saved => {
+  const recovery = useNewSessionDurableEdit({ ...props, onRestore: saved => {
     setRecord(saved); setText(saved.creation.draft.firstMessage);
   } });
+  editorActions = recovery;
   return <><span>{text}</span><span>{record?.error}</span>
-    <button onClick={() => setText('New input')}>Edit</button></>;
+    <button onClick={() => { setText('New input'); recovery.edit({ firstMessage: 'New input' }); }}>Edit</button></>;
 }
 function BlankForm(props: ResumeProps) {
   const [route, setRoute] = useState('');
@@ -74,7 +78,10 @@ beforeEach(() => {
   }];
   outbox.find.mockReset().mockImplementation(() => outbox.records[0]);
   outbox.merge.mockReset().mockImplementation(async () => outbox.records[0]);
-  edit = { sessionId: 'task', deviceId: 'device', owner, leaveForeignRecovery: () => false };
+  outbox.saveEdit.mockReset().mockImplementation(async (record, change) => ({
+    ...record, creation: { ...record.creation, draft: { ...record.creation.draft, firstMessage: change.firstMessage } },
+  }));
+  edit = { sessionId: 'task', deviceId: 'device', owner, leaveForeignRecovery: () => false, onEdited: vi.fn() };
   hasInput = false;
   resume = { enabled: true, deviceId: 'device', workingDir: '/repo', owner, hasInput: () => hasInput };
   container = document.createElement('div');
@@ -98,11 +105,52 @@ it('restores text and the saved failure once, preserving edits across renders an
   await renderEdit();
   await notify();
   expect(container.textContent).toBe('New inputModel unavailableEdit');
+  expect(edit.onEdited).toHaveBeenCalledWith(expect.objectContaining({
+    creation: expect.objectContaining({ draft: expect.objectContaining({ firstMessage: 'New input' }) }),
+  }));
   expect(outbox.claim).toHaveBeenCalledOnce();
   expect(outbox.release).not.toHaveBeenCalled();
   await act(async () => root.render(null));
   expect(outbox.release).toHaveBeenCalledOnce();
   expect(outbox.listeners.size).toBe(0);
+});
+
+it('waits for deletion to be saved, then releases the recovery record without resaving later input', async () => {
+  await renderEdit();
+  await act(async () => ready());
+  let finish!: (value: null) => void;
+  outbox.saveEdit.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  editorActions.edit({ firstMessage: '' });
+  let flushed = false;
+  const flush = editorActions.flush().then(() => { flushed = true; });
+  expect(flushed).toBe(false);
+  await act(async () => { finish(null); await flush; });
+  expect(edit.onEdited).toHaveBeenLastCalledWith(null);
+  act(() => container.querySelector('button')!.click());
+  expect(outbox.saveEdit).toHaveBeenCalledOnce();
+});
+
+it.each(['newer-edit', 'unmount', 'owner-switch', 'failure'] as const)('settles a pending edit without restoring stale form ownership: %s', async event => {
+  edit.onError = vi.fn();
+  await renderEdit();
+  await act(async () => ready());
+  let finish!: (value: DurableOutboxRecord) => void;
+  let fail!: (error: Error) => void;
+  outbox.saveEdit.mockReturnValueOnce(new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+  editorActions.edit({ firstMessage: 'older' });
+  const pending = editorActions.flush();
+  if (event === 'newer-edit') await act(async () => { editorActions.edit({ firstMessage: 'newer' }); await editorActions.flush(); });
+  if (event === 'unmount') await act(async () => root.render(null));
+  if (event === 'owner-switch') setMobileAuthOwner('bob');
+  if (event === 'failure') {
+    const error = new Error('disk unavailable');
+    await act(async () => { fail(error); await expect(pending).rejects.toThrow('disk unavailable'); });
+    expect(edit.onError).toHaveBeenCalledWith(error);
+  } else await act(async () => { finish(outbox.records[0]); await pending; });
+  expect(edit.onEdited).toHaveBeenCalledTimes(event === 'newer-edit' ? 1 : 0);
+  if (event === 'newer-edit') expect(edit.onEdited).toHaveBeenCalledWith(expect.objectContaining({
+    creation: expect.objectContaining({ draft: expect.objectContaining({ firstMessage: 'newer' }) }),
+  }));
 });
 
 it.each(['account', 'device', 'prepared', 'foreign-route', 'unmount', 'owner-switch'] as const)(

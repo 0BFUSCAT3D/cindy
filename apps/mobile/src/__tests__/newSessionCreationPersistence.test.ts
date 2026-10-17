@@ -9,7 +9,7 @@ import type { MobileLocalAttachmentUploadCandidate } from '../session/mobileLoca
 import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles } from '../session/durableOutboxFiles';
 import { cancelledCreationDraft, outboxCreationRetryIdentity } from '../session/cancelledCreationDraft';
 import { buildOutboxItem } from '../session/sessionOutbox';
-import { persistNewSessionCreationDraft } from '../session/persistNewSessionCreationDraft';
+import { persistNewSessionCreationDraft, persistNewSessionDraftEdit } from '../session/persistNewSessionCreationDraft';
 import { returnNewSessionToEdit } from '../session/returnNewSessionToEdit';
 import { mergeNewSessionEditFollowUps } from '../session/mergeNewSessionEditFollowUps';
 import { createDurableOutboxDelivery } from '../session/durableOutboxDelivery';
@@ -430,6 +430,103 @@ async function saveDraftFixture() {
   }))!;
 }
 
+// Unit regression for manual edits after recovery (2026-10-17): the old form
+// changed only React state, so reopening restored deleted text and attachments.
+// Real store + production edit entry cover persistence and ordered writes here;
+// the React hook suite covers the form handoff, which prior removal tests miss.
+it('persists rapid partial deletion and attachment removal before resubmit and cold recovery', async () => {
+  const original = await saveDraftFixture();
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const leave = completeNewSessionDurableEdit(saved.item.sessionId, 'pc')!;
+  await Promise.all([
+    persistNewSessionDraftEdit(saved, { firstMessage: 'keep my' }),
+    persistNewSessionDraftEdit(saved, { removeAttachmentId: 'photo' }),
+    persistNewSessionDraftEdit(saved, { firstMessage: 'keep' }),
+  ]);
+  leave();
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  const recovered = findNewSessionEditDraft('pc')!;
+  expect(recovered.creation?.draft.firstMessage).toBe('keep');
+  expect(recovered.item.text).toBe('keep');
+  expect(recovered.item.attachmentSlots).toEqual([]);
+  expect(recovered.item.slotMeta).toEqual([]);
+  expect(recovered.uploads).toEqual([]);
+  expect(files.retained.size).toBe(0);
+  const submitted = await persistNewSessionCreationDraft({ record: recovered, recovering: recovered,
+    getUploadedSource: () => undefined, isCurrent: () => true });
+  expect(submitted?.item.text).toBe('keep');
+  expect(submitted?.uploads).toEqual([]);
+});
+
+it('removes one recovered attachment while preserving the remaining bytes and upload slot on resubmit', async () => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  await saveFollowUpFixture(first);
+  const merged = (await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc'))!;
+  const deletedUri = durableOutboxUploadUri(merged, merged.uploads[0]);
+  const keptUri = durableOutboxUploadUri(merged, merged.uploads[1]);
+  const edited = (await persistNewSessionDraftEdit(merged, { removeAttachmentId: 'photo' }))!;
+  expect(edited.item.attachmentSlots.map(a => a?.id)).toEqual(['second-photo']);
+  expect(edited.uploads[0].slot).toBe(0);
+  expect(files.retained.has(deletedUri)).toBe(false);
+  expect(files.retained.has(keptUri)).toBe(true);
+  const resent = (await persistNewSessionCreationDraft({ record: edited, recovering: edited,
+    getUploadedSource: () => undefined, isCurrent: () => true }))!;
+  expect(resent.uploads).toHaveLength(1);
+  expect(files.retained.get(durableOutboxUploadUri(resent, resent.uploads[0]))).toBe(keptUri);
+});
+
+it.each(['text-first', 'attachment-first'] as const)('clearing recovered input deletes the record, including late edits and cold reload: %s', async order => {
+  const original = await saveDraftFixture();
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const leave = completeNewSessionDurableEdit(saved.item.sessionId, 'pc')!;
+  const changes = [{ firstMessage: '' }, { removeAttachmentId: 'photo' }];
+  if (order === 'attachment-first') changes.reverse();
+  await Promise.all(changes.map(change => persistNewSessionDraftEdit(saved, change)));
+  expect(await persistNewSessionDraftEdit(saved, { firstMessage: 'late edit' })).toBeNull();
+  leave();
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  expect(mobileDurableOutbox.getSnapshot()).toEqual([]);
+  expect(disk.data.size).toBe(0);
+  expect(files.retained.size).toBe(0);
+  expect(findNewSessionEditDraft('pc')).toBeUndefined();
+  expect(getNewSessionCreationTask(saved.item.sessionId)).toBeNull();
+});
+
+it.each(['save', 'remove'] as const)('reports failed draft %s without deleting still-owned bytes', async failure => {
+  const original = await saveDraftFixture();
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const empty = await persistNewSessionDraftEdit(saved, { firstMessage: '' });
+  disk.fail = failure === 'save';
+  disk.failRemove = failure === 'remove';
+  await expect(persistNewSessionDraftEdit(empty!, failure === 'save'
+    ? { firstMessage: 'changed' } : { removeAttachmentId: 'photo' })).rejects.toThrow('unavailable');
+  expect(mobileDurableOutbox.getSnapshot()[0]).toBe(empty);
+  expect(files.retained.size).toBe(1);
+  disk.fail = false;
+  disk.failRemove = false;
+  const submitted = await persistNewSessionCreationDraft({ recovering: empty,
+    record: { ...empty!, creation: { ...empty!.creation!, draft: { ...empty!.creation!.draft, firstMessage: 'current form' } },
+      item: { ...empty!.item, text: 'current form', attachmentSlots: [], slotMeta: [] } },
+    getUploadedSource: () => undefined, isCurrent: () => true });
+  expect(submitted?.item.text).toBe('current form');
+  expect(submitted?.uploads).toEqual([]);
+});
+
+it.each(['account', 'deleted', 'handed-off'] as const)('does not edit or recreate records after %s', async change => {
+  const original = await saveDraftFixture();
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  if (change === 'deleted') await mobileDurableOutbox.remove(saved);
+  if (change === 'handed-off') await mobileDurableOutbox.update(saved, { suspended: false, state: 'queued' });
+  const pending = persistNewSessionDraftEdit(saved, { firstMessage: '' });
+  if (change === 'account') setMobileAuthOwner('bob');
+  if (change === 'deleted') await expect(pending).resolves.toBeNull();
+  else await expect(pending).rejects.toThrow(change === 'account' ? 'OUTBOX_OWNER_CHANGED' : 'OUTBOX_STALE_WRITE');
+  expect(mobileDurableOutbox.getSnapshot()[0]?.item.text).toBe(change === 'deleted' ? undefined : saved.item.text);
+});
+
 it.each(['deleted', 'archived'])('retires saved recovery on %s, including editor release and cold reload', async status => {
   const original = await saveDraftFixture();
   const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
@@ -647,6 +744,17 @@ it.each([false, true])('recovers sent follow-ups before composer input, retainin
   expect(enqueue.mock.calls[0][0].item.attachmentSlots.map(a => a?.path)).toEqual([
     'cindy-oss-attach://fresh-0', 'cindy-oss-attach://fresh-1',
   ]);
+});
+
+it.each([false, true])('preserves literal quote markers unless the follow-up encodes product quotes: %s', async quotesEncoded => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const followUp = await saveFollowUpFixture(first);
+  const text = '> <!-- cindy-composer-quote -->\n> quoted text\n\nreply';
+  await mobileDurableOutbox.update(followUp, { item: { ...followUp.item, text, quotesEncoded } });
+  const restored = await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc');
+  expect(restored?.creation?.draft.firstMessage).toBe(first.creation!.draft.firstMessage + '\n\n'
+    + (quotesEncoded ? '> quoted text\n\nreply' : text));
 });
 
 it('finishes interrupted source removal after reload without duplicating merged content', async () => {

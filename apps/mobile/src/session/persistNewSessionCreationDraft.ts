@@ -1,8 +1,45 @@
 import { i18n } from '@/i18n';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import type { DurableOutboxRecord } from './durableOutbox';
 import type { MobileLocalAttachmentUploadCandidate } from './mobileLocalAttachmentUpload';
 import { durableOutboxUploadUri, outboxAttachmentNeedsLocalBytes, removeRetainedOutboxFiles, retainOutboxFile } from './durableOutboxFiles';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
+
+export type NewSessionDraftEdit = { firstMessage?: string; removeAttachmentId?: string };
+
+/** User edits replace recovered content; an empty recovery is discarded permanently. */
+export async function persistNewSessionDraftEdit(record: DurableOutboxRecord, edit: NewSessionDraftEdit): Promise<DurableOutboxRecord | null> {
+  const owner = getMobileAuthOwner();
+  const guard = () => {
+    if (owner.accountKey !== record.accountId || !isMobileAuthOwnerCurrent(owner)) throw new Error('OUTBOX_OWNER_CHANGED');
+  };
+  guard();
+  let removed: DurableOutboxRecord | undefined;
+  const saved = await mobileDurableOutbox.editCreationDraft(record, current => {
+    guard();
+    const slots = current.item.attachmentSlots.map((attachment, slot) => ({ attachment, slot }))
+      .filter(({ attachment }) => attachment && attachment.id !== edit.removeAttachmentId);
+    const firstMessage = edit.firstMessage ?? current.creation!.draft.firstMessage;
+    const uploads = current.uploads.filter(upload => slots.some(({ slot }) => slot === upload.slot));
+    removed = { ...current, uploads: current.uploads.filter(upload => !uploads.includes(upload)) };
+    if (!firstMessage.trim() && !slots.length) return null;
+    return {
+      ...current,
+      creation: { ...current.creation!, draft: { ...current.creation!.draft, firstMessage } },
+      uploads: uploads.map(upload => ({ ...upload, slot: slots.findIndex(({ slot }) => slot === upload.slot) })),
+      item: { ...current.item, text: firstMessage,
+        attachmentSlots: slots.map(({ attachment }) => attachment),
+        slotMeta: slots.map(({ slot }) => current.item.slotMeta[slot]),
+        slotByLocalId: {}, waitingIds: [], failedIds: [],
+        agentReferences: [], pastedTextRanges: [], slashCommandRanges: [], quotesEncoded: false,
+      },
+    };
+  });
+  // Delete only bytes no longer referenced by the committed revision. Startup
+  // reconciliation already handles a failed local cleanup; do not undo the edit.
+  if (removed?.uploads.length) await removeRetainedOutboxFiles(removed).catch(() => undefined);
+  return saved;
+}
 
 /** Save attachment bytes before the form reserves a worktree or hands off creation. */
 export async function persistNewSessionCreationDraft({ record, recovering, getUploadedSource, isCurrent }: {

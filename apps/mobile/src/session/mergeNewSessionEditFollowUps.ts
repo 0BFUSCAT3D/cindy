@@ -33,7 +33,7 @@ export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: 
     const text = [first.creation.draft.firstMessage];
     let omitted = 0;
     for (const record of pending) {
-      text.push(stripChatQuoteMarkerLines(record.item.text));
+      text.push(record.item.quotesEncoded ? stripChatQuoteMarkerLines(record.item.text) : record.item.text);
       for (let slot = 0; slot < record.item.attachmentSlots.length; slot++) {
         const upload = record.uploads.find(u => u.slot === slot);
         // Queued uploads already own durable bytes even before receiving a remote reference.

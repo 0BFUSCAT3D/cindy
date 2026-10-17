@@ -855,10 +855,11 @@ export default function NewRemoteSessionScreen() {
     router.replace('/devices');
     return true;
   }, [router]);
-  useNewSessionDurableEdit({
+  const { edit: editRecoveredDraft, flush: flushRecoveredDraft } = useNewSessionDurableEdit({
     sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
     leaveForeignRecovery: leaveForeignOutboxRecovery,
     onError: error => setError(formatRemoteError(error)),
+    onEdited: record => { outboxRecoveryRef.current = record; },
     onRestore: record => {
       outboxRecoveryRef.current = record;
       userTouchedDeviceRef.current = true;
@@ -2179,10 +2180,11 @@ export default function NewRemoteSessionScreen() {
   const patchDraft = useCallback((patch: Partial<NewSessionDraft>) => {
     if (patch.firstMessage !== undefined) {
       firstMessageRef.current = patch.firstMessage;
+      if (!creatingRef.current) editRecoveredDraft({ firstMessage: patch.firstMessage });
       voiceDictionaryLearningTrackerRef.current?.inspectDraft(patch.firstMessage);
     }
     setDraft((current) => ({ ...current, ...patch }));
-  }, []);
+  }, [editRecoveredDraft]);
 
   const openPluginPalette = useCallback(() => {
     const next = composerDocumentProjectedText(appendComposerPluginTrigger(textComposerDocument(firstMessageRef.current)));
@@ -2210,9 +2212,10 @@ export default function NewRemoteSessionScreen() {
   const setFirstMessageDraft = useCallback((next: SetStateAction<string>) => {
     const value = typeof next === 'function' ? next(firstMessageRef.current) : next;
     firstMessageRef.current = value;
+    if (!creatingRef.current) editRecoveredDraft({ firstMessage: value });
     setDraft((current) => ({ ...current, firstMessage: value }));
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(value);
-  }, []);
+  }, [editRecoveredDraft]);
 
   const handleFirstMessageInputContentSizeChange = useCallback((event: TextInputContentSizeChangeEvent) => {
     const nextHeight = Math.max(
@@ -4502,6 +4505,7 @@ export default function NewRemoteSessionScreen() {
   }, [setFirstMessageDraft]);
 
   const removeAttachment = useCallback((id: string) => {
+    if (!creatingRef.current) editRecoveredDraft({ removeAttachmentId: id });
     // 已上传中转区的对象移除时 best-effort 回收,避免未发送附件在 OSS 留孤儿(同会话页)。
     const removed = attachments.find((item) => item.id === id);
     if (removed) discardMobileUploadedAttachment(removed, { getToken: () => auth.getAccessToken() });
@@ -4524,7 +4528,7 @@ export default function NewRemoteSessionScreen() {
     // 标注附件退场时同步清「矢量笔迹 + 原图副本」的再编辑真相。
     composerAnnotationsRef.current?.forgetAttachment(id);
     releaseUploadedSources([id]);
-  }, [attachments, auth]);
+  }, [attachments, auth, editRecoveredDraft]);
 
   // 圈点标注(托盘再编辑)与附件管线的接线(新建会话页无聊天场景,chat 配置不用)。
   const composerAnnotations = useComposerImageAnnotations({
@@ -4789,6 +4793,10 @@ export default function NewRemoteSessionScreen() {
       const deviceAtCreate = selectedDeviceId;
       if (selectedDeviceRef.current !== deviceAtCreate) return;
       const ensureDeviceAlive = (): boolean => selectedDeviceRef.current === deviceAtCreate;
+      // A full submission below saves the current form again, so an earlier
+      // incremental write failure must not permanently block another attempt.
+      await flushRecoveredDraft().catch(() => undefined);
+      if (!isCurrentOwner() || !ensureDeviceAlive()) return;
       if (voiceRecordingActiveRef.current || voiceState === 'listening') {
         const latestDraftText = await finishVoiceRecording();
         if (!isCurrentOwner()) return;
@@ -5369,6 +5377,7 @@ export default function NewRemoteSessionScreen() {
     draft,
     remoteAgentPick,
     finishVoiceRecording,
+    flushRecoveredDraft,
     leaveForeignOutboxRecovery,
     getPresenceAvailability,
     maker,

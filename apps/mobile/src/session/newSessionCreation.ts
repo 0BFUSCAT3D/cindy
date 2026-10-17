@@ -51,7 +51,7 @@ import {
 import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import { getCurrentMobileOutboxRecords, holdDurableOutboxCreation, isDurableOutboxCreationHeld, mobileDurableOutbox, persistCancelledCreationDraft, suspendCreationDraftForCleanup } from './mobileDurableOutbox';
-import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
+import { isDurableCreationDraft, type DurableOutboxRecord } from './durableOutbox';
 import { isExplicitRemoteNotFoundError } from './newSessionWorktree';
 import { mergeAttachmentsWithinLimit } from './attachments';
 import type { MobileLocalAttachmentUploadCandidate } from './mobileLocalAttachmentUpload';
@@ -576,10 +576,7 @@ export function holdNewSessionCreationDraft(sessionId: string): () => void {
 
 function isDurableEditRecord(record: DurableOutboxRecord): boolean {
   return record.accountId === getMobileAuthOwner().accountKey
-    && record.suspended === true && record.state === 'failed'
-    && !!(record.creation?.editReady || record.creation?.cancelled)
-    && !record.prepared && !record.enqueueStarted && record.sendAtMs === undefined
-    && !record.cancelRequested && !isDurableOutboxSettled(record);
+    && isDurableCreationDraft(record);
 }
 
 function getDurableEditTask(sessionId: string): NewSessionCreationTask | null {

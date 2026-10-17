@@ -1,23 +1,41 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
 import type { DurableOutboxRecord } from './durableOutbox';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
 import { completeNewSessionDurableEdit, findNewSessionEditDraft } from './newSessionCreation';
 import { mergeNewSessionEditFollowUps } from './mergeNewSessionEditFollowUps';
+import { persistNewSessionDraftEdit, type NewSessionDraftEdit } from './persistNewSessionCreationDraft';
 
 type CreationRecord = DurableOutboxRecord & { creation: NonNullable<DurableOutboxRecord['creation']> };
 
 /** The form owns one edit claim until its recovery route changes or unmounts. */
-export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveForeignRecovery, onRestore, onError }: {
+export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveForeignRecovery, onRestore, onEdited, onError }: {
   sessionId: string;
   deviceId: string;
   owner: MobileAuthOwnerGeneration;
   leaveForeignRecovery: () => boolean;
   onRestore: (record: CreationRecord) => void;
+  onEdited?: (record: DurableOutboxRecord | null) => void;
   onError?: (error: unknown) => void;
 }) {
-  const callbacks = useRef({ leaveForeignRecovery, onRestore, onError });
-  callbacks.current = { leaveForeignRecovery, onRestore, onError };
+  const callbacks = useRef({ leaveForeignRecovery, onRestore, onEdited, onError });
+  callbacks.current = { leaveForeignRecovery, onRestore, onEdited, onError };
+  const editingRecord = useRef<DurableOutboxRecord | null>(null);
+  const pendingEdit = useRef<Promise<unknown>>(Promise.resolve());
+  const edit = useCallback((change: NewSessionDraftEdit) => {
+    const record = editingRecord.current;
+    if (!record || record.item.sessionId !== sessionId || record.deviceId !== deviceId || !isMobileAuthOwnerCurrent(owner)) return;
+    const pending: Promise<void> = persistNewSessionDraftEdit(record, change).then(saved => {
+      if (pendingEdit.current !== pending || !isMobileAuthOwnerCurrent(owner) || editingRecord.current?.item.sessionId !== sessionId) return;
+      editingRecord.current = saved;
+      callbacks.current.onEdited?.(saved);
+    });
+    pendingEdit.current = pending;
+    void pending.catch(error => {
+      if (pendingEdit.current === pending && isMobileAuthOwnerCurrent(owner) && editingRecord.current?.item.sessionId === sessionId) callbacks.current.onError?.(error);
+    });
+  }, [sessionId, deviceId, owner]);
+  const flush = useCallback(() => pendingEdit.current, []);
   useEffect(() => {
     if (callbacks.current.leaveForeignRecovery() || !sessionId) return;
     let active = true;
@@ -34,6 +52,7 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveFore
         if (!active || !isMobileAuthOwnerCurrent(owner) || !saved?.creation || saved.prepared
           || !getCurrentMobileOutboxRecords().includes(saved)) return;
         restored = true;
+        editingRecord.current = saved;
         callbacks.current.onRestore(saved as CreationRecord);
         releaseEditClaim = completeNewSessionDurableEdit(sessionId, deviceId);
       }).catch(error => {
@@ -42,8 +61,9 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveFore
     };
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; unsubscribe(); releaseEditClaim?.(); };
+    return () => { active = false; editingRecord.current = null; pendingEdit.current = Promise.resolve(); unsubscribe(); releaseEditClaim?.(); };
   }, [sessionId, deviceId, owner]);
+  return { edit, flush };
 }
 
 /** Resume only while this form is still blank when asynchronous storage becomes ready. */
