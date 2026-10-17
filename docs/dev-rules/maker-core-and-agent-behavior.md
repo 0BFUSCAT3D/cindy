@@ -173,6 +173,10 @@ SSH 或暂时失败留待重试；共享原生 ID 的活动任务优先，不关
 配置；每次重连重新认证，刷新必须匹配冻结的 owner、host 代次及账号，且不能复用刚被
 拒绝的 token。owner 切换 pending 期间，即使 owner key 尚未提交变化，也必须在异步认证
 读取前后拒绝提供 token。刷新有超时，失败走正常错误路径，不切回历史所属账号。
+Codex 用量读取若收到原生 `account/rateLimits/read` 的明确 `401 token_expired`，
+在同一个账号控制 host 上调用一次 `account/read { refreshToken: true }`，成功后仅重试
+该只读 RPC 一次。其它错误、明确撤销与刷新失败直接返回；不清凭证、不重发模型 turn。
+
 同 owner 的 Ghost 投影修复会更新账号代次但保留 Maker 与活跃任务；凭证 reader 固定
 owner 身份、认证 realm 和 CodexAgent 实例，每次读取单独捕获代次，不能将创建时的代次永久锁在
 reader 上。跨修复的在途读取仍拒绝，修复完成后的新读取可正常刷新；真正切账号或

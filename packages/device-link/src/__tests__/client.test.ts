@@ -130,6 +130,36 @@ function makeHarness(opts?: {
 const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('outbound invoke admission', () => {
+  it('distinguishes a suspended reliable peer from legacy reads and another healthy controller', async () => {
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000 } });
+    try {
+      h.client.start(); await tick(); h.current().ack();
+      expect(h.client.needsLinkRecovery('legacy')).toBe(false);
+      await establishInboundReliableLink(h, 'stream-a', 1, 'peer-a');
+      await establishInboundReliableLink(h, 'stream-b', 1, 'peer-b');
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(false);
+      h.client.restartConnection('system-resume');
+      await tick(); h.current().ack();
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(true);
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(true);
+      expect(h.client.needsLinkRecovery('legacy')).toBe(false);
+      await establishInboundReliableLink(h, 'stream-b', 1, 'peer-b');
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(false);
+      const socket = h.current();
+      const response = h.client.invoke('legacy', { channel: 'local-db:sessions:list', args: [] });
+      const frame = socket.sent.find(env => env.kind === 'invoke' && env.dst === 'legacy')!;
+      socket.push({ v: 1, kind: 'invoke-result', src: 'legacy', id: frame.id, payload: { ok: true, result: [] } });
+      await expect(response).resolves.toEqual({ ok: true, result: [] });
+      await establishInboundReliableLink(h, 'stream-a', 1, 'peer-a');
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(false);
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(false);
+      expect(h.current()).toBe(socket);
+      h.client.closeLink('peer-a', 'user');
+      expect(h.client.needsLinkRecovery('peer-a')).toBe(false);
+      expect(h.client.needsLinkRecovery('peer-b')).toBe(false);
+    } finally { h.client.stop(); }
+  });
+
   it('waits for a 20-second mobile history recovery without widening other requests or replaying it', async () => {
     vi.useFakeTimers();
     const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 15_000 } });

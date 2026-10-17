@@ -1091,6 +1091,12 @@ export class DeviceLinkClient {
     return !!peer && this.isPeerSendReady(peer) && peer.receiveReady;
   }
 
+  /** Even unlinked reads queue behind a previously negotiated reliable link. */
+  needsLinkRecovery(dst: string): boolean {
+    const peer = this.peerTransport.get(dst);
+    return !!peer?.reliable && !this.isPeerSendReady(peer);
+  }
+
   /** Mirror admission only: listing-only/legacy peers need no bidirectional link. */
   canSendPush(dst: string): boolean {
     if (this.status !== 'online') return false;
