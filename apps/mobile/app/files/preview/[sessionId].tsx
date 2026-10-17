@@ -718,6 +718,7 @@ function RemoteFilePreviewContent() {
         renderItem={({ item, index }) => (
           <View style={{ width: pageWidth }}>
             <FilePreviewPage
+              deviceId={deviceId}
               absolutePathOf={absolutePathOf}
               active={Math.abs(index - pageIndex) <= 1}
               // HTML 渲染态只在真正可见的当前页挂载可执行 WebView(review P1):
@@ -858,6 +859,7 @@ function PreviewNav({
 }
 
 function FilePreviewPage({
+  deviceId,
   absolutePathOf,
   active,
   exportToUrl,
@@ -877,6 +879,7 @@ function FilePreviewPage({
   visible,
   workdir,
 }: {
+  deviceId: string;
   absolutePathOf(relPath: string): string;
   active: boolean;
   exportToUrl: ExportToUrl;
@@ -924,6 +927,7 @@ function FilePreviewPage({
       <TextPreviewPage
         key={maker.fileBrowser.cacheScope}
         cacheScope={maker.fileBrowser.cacheScope}
+        deviceId={deviceId}
         absolutePathOf={absolutePathOf}
         active={active}
         prepareHtmlPreview={prepareHtmlPreview}
@@ -1157,6 +1161,7 @@ function PdfPreviewPage({
  */
 function TextPreviewPage({
   cacheScope,
+  deviceId,
   absolutePathOf,
   active,
   prepareHtmlPreview,
@@ -1173,6 +1178,7 @@ function TextPreviewPage({
   workdir,
 }: {
   cacheScope: string;
+  deviceId: string;
   /** item.relPath → 被控端绝对路径(HTML 资源透传要据此定位同目录)。 */
   absolutePathOf(relPath: string): string;
   active: boolean;
@@ -1213,7 +1219,7 @@ function TextPreviewPage({
   const cacheable = !!workdir;
   const [state, setState] = useState<TextPreviewState>(() => {
     // Cache identity includes the account, device, workdir and path.
-    const cached = cacheable ? getCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs) : null;
+    const cached = cacheable ? getCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs, deviceId) : null;
     return cached
       ? {
           status: 'ready',
@@ -1247,7 +1253,7 @@ function TextPreviewPage({
           // Keep the visible snapshot, but don't seed future opens from text
           // the host has confirmed is no longer previewable.
           if (cacheable && (res.code === 'OVERSIZE' || res.code === 'BINARY_FILE')) {
-            storeCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs, null);
+            storeCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs, null, deviceId);
           }
           // A failed refresh must not hide the text the user is already reading.
           if (res.code === 'OVERSIZE') {
@@ -1276,7 +1282,7 @@ function TextPreviewPage({
           // 原文只为渲染态(markdown / HTML)保留,普通代码文件不留大字符串。
           content: richKind ? content : undefined,
         };
-        if (cacheable) storeCachedPreviewText(cacheScope, workdir, item.relPath, res.data.mtimeMs, ready);
+        if (cacheable) storeCachedPreviewText(cacheScope, workdir, item.relPath, res.data.mtimeMs, ready, deviceId);
         setState({ status: 'ready', ...ready });
       })
       .catch((err) => {
@@ -1289,7 +1295,7 @@ function TextPreviewPage({
       cancelled = true;
       loadedRef.current = false;
     };
-  }, [active, wantsText, cacheable, cacheScope, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
+  }, [active, wantsText, cacheable, cacheScope, deviceId, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
 
   const htmlSnapshot = useHtmlSnapshot(
     absolutePathOf(item.relPath),

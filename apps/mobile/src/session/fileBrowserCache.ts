@@ -5,11 +5,13 @@
  *    规则 7),后台静默刷新后原位更新;跨启动仍有上次快照可秒开。
  * 2. 文本迷你缩略图片段:小文件(≤96KB)拉一次首块,渲染真实内容迷你页;
  *    片段(≤2KB)内存 + AsyncStorage 双层缓存,key 含 mtime 天然失效。
- * 3. 预览正文:内存 LRU(账号/设备/路径),翻页/重进先展示旧内容再后台更新。
+ * 3. 同账号预览正文:内存 LRU(账号/设备/路径),翻页/重进先展示旧内容再后台更新。
+ *    共享访客不复用正文缓存,每次打开先由主机校验权限。
  *
  * AsyncStorage 侧统一带索引数组做 LRU 剪枝,防无限膨胀。
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { isSharedTaskPeer } from "@cindy/device-link";
 import { useEffect, useState } from "react";
 
 import type { MobileMakerTransport } from "@/device-link/mobileMakerTransport";
@@ -262,7 +264,10 @@ export function getCachedPreviewText(
   workdir: string,
   relPath: string,
   _mtimeMs: number,
+  deviceId: string,
 ): CachedPreviewText | null {
+  // Shared guests must pass a fresh host authorization check before showing text.
+  if (isSharedTaskPeer(deviceId)) return null;
   workdir = JSON.stringify([scope, workdir]);
   const key = snippetKey(workdir, relPath, 0);
   const value = previewTextMemory.get(key);
@@ -278,7 +283,9 @@ export function storeCachedPreviewText(
   relPath: string,
   _mtimeMs: number,
   value: CachedPreviewText | null,
+  deviceId: string,
 ): void {
+  if (isSharedTaskPeer(deviceId)) return;
   workdir = JSON.stringify([scope, workdir]);
   const key = snippetKey(workdir, relPath, 0);
   previewTextMemory.delete(key);
