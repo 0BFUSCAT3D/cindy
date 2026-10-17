@@ -745,7 +745,20 @@
     if (!t) return;
     const { action, id, value } = t.dataset;
     if (action === 'open') { state.open = state.open === id ? null : id; render(); return; }
-    if (action === 'pick') { state[id] = value; state.open = null; render(); return; }
+    if (action === 'pick') {
+      // 只接受各筛选器已有的选项，不让 DOM 的 data-id 写入任意状态(如 statuses)。
+      if (id === 'party') {
+        const option = partyOptions().find((o) => o !== 'sep' && o.value === value);
+        if (option) state.party = option.value;
+      } else if (id === 'computer') {
+        const option = computerOptions().find((o) => o !== 'sep' && o.value === value);
+        if (option) state.computer = option.value;
+      } else if (id === 'range') {
+        const option = rangeOptions().find((o) => o.value === value);
+        if (option) state.range = option.value;
+      }
+      state.open = null; render(); return;
+    }
     if (action === 'stack') { state.stack = value; render(); return; }
     if (action === 'day') { state.range = `day:${value}`; hideTip(); render(); return; }
     if (action === 'focus-party') { state.party = state.party === value ? 'all' : value; render(); return; }
