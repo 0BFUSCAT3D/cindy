@@ -7130,6 +7130,13 @@ export class PiAgent extends BaseAgent {
       mutablePiProviderId = provider;
       activeEffortSnapshot = nextEffortSnapshot;
       mutableProviderId = effectiveProviderId;
+      const explicitThinking =
+        setOpts && typeof setOpts.thinkingEnabled === 'boolean' ? setOpts.thinkingEnabled : undefined;
+      // 用户最新显式意图是「关」（本次载体，或此前成功关掉的标记/启动声明）：
+      // 下面 #5733 的档位恢复不得运行——它会把用户已关掉的思考复活，
+      // 正是 "keeps thinking off after a carrier-less switch" 系列用例守的回归。
+      const keepThinkingOff = explicitThinking === false
+        || (explicitThinking === undefined && thinkingExplicitlyOff);
       // pi CLI 在 set_model 后会把思考档位重置成新模型自己的默认（转录实证：声明了档位的
       // 模型落到 defaultEffort 如 high，未声明的落到 low/medium），而本函数原本只在
       // setOpts.effort 上做校验、从不下发。不在这里把目标档位重新下发的话，每次切模型
@@ -7137,6 +7144,7 @@ export class PiAgent extends BaseAgent {
       // （mutableEffort）；新模型不支持（含未声明档位）时保持 pi 默认，与能力收敛一致。
       const restoredEffort = setOpts?.effort ?? mutableEffort;
       if (
+        !keepThinkingOff &&
         restoredEffort &&
         nextEffortSnapshot && nextEffortSnapshot.length > 0 &&
         nextEffortSnapshot.includes(restoredEffort)
@@ -7199,8 +7207,6 @@ export class PiAgent extends BaseAgent {
       //
       // 失败只告警、不抛：模型切换已经成功，抛出会让上层回滚 route / 终止会话，反而
       // 制造「Pi 已切模、宿主认为没切」的分裂。用户可在 UI 上重新选择。
-      const explicitThinking =
-        setOpts && typeof setOpts.thinkingEnabled === 'boolean' ? setOpts.thinkingEnabled : undefined;
       {
         const requestedEffort = setOpts?.effort ?? mutableEffort ?? startupEffort ?? null;
         const nativeTarget = provider !== PI_PROVIDER_ID
