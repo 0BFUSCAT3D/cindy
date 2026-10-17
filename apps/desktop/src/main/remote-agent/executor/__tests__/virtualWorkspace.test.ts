@@ -481,6 +481,8 @@ describe('virtual workspace', () => {
         { path: { type: 'path', path: 'file:///home/agent/workspace' }, access: 'write' },
         { path: { type: 'path', path: 'file:///home/agent/.codex/memories' }, access: 'write' },
         { path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' },
+        // 以转义开头的相对 glob(名字就叫 `*.pem` 的文件)，不是以反斜杠开头的绝对路径。
+        { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
       ] } },
       cwd: 'file:///home/agent/workspace',
     };
@@ -489,6 +491,7 @@ describe('virtual workspace', () => {
       { path: { type: 'path', path: pathToFileURL(project).href }, access: 'write' },
       // 任务电脑是 Windows 时 POSIX 路径不是本机路径，禁止条目也无从对应。
       ...(process.platform === 'win32' ? [] : [{ path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' }]),
+      { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
     ]);
     expect(params.sandbox.cwd).toBe(pathToFileURL(project).href);
     // 没有虚拟工作区(旧版对端)时沙箱原样转发，与之前一致。

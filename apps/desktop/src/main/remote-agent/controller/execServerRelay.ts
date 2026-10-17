@@ -209,7 +209,8 @@ function mapSandboxEntry(entry: unknown, workspace: ExecutorWorkspace): unknown[
     const agentPath = agentPathFromUri(target.path);
     return deny && agentPath !== null && isLocalAbsolutePath(agentPath) ? [entry] : [];
   }
-  if (target.type === 'glob_pattern' && typeof target.pattern === 'string' && /^(?:[A-Za-z]:|[\\/])/.test(target.pattern)) {
+  // 绝对 glob 只认盘符、`/` 开头与 UNC(`\\server`)；单个 `\` 开头是 POSIX 的转义(`\*.pem`)，按相对 glob 保留。
+  if (target.type === 'glob_pattern' && typeof target.pattern === 'string' && /^(?:[A-Za-z]:|\/|\\\\)/.test(target.pattern)) {
     const local = workspace.localGlobFromAgent(target.pattern);
     if (local !== null) return [{ ...record, path: { ...target, pattern: local } }];
     return deny && isLocalAbsolutePath(target.pattern) ? [entry] : [];
