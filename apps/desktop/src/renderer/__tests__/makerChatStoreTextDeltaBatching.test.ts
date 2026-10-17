@@ -3209,7 +3209,7 @@ describe('makerChatStore text delta batching', () => {
 
   // Codex review：本机错误 A 交给历史后，scheduler 发送前失败可直接把错误换成 B，中间没有
   // 新一轮启动，也没有 error:null 投影。关闭 B 只能标 B 的行，不能标 A。
-  it('发送前失败直接换成新错误 B：B 已落库则标 B，未落库则不标 A', async () => {
+  it('发送前失败直接换成新错误 B：关闭时 B 未落库则不标 A，B 落库后只补标 B', async () => {
     onInputProjection?.(projection(SESSION_ID, { error: 'error A' }));
     onEvent?.({
       sessionId: SESSION_ID,
@@ -3226,20 +3226,28 @@ describe('makerChatStore text delta batching', () => {
     await flushPromises();
     expect(messageService.dismissError).not.toHaveBeenCalled();
 
-    // B 落库后：投影再点亮 B，尾部是 B 的行。
-    onInputProjection?.(projection(SESSION_ID, { error: 'error B' }));
-    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
-    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
-    await reloadHistory([
+    // B 随后落库：在途投影再点亮 B(用户已关过它)，落库信号不绑这个重亮的横幅，补标 B 的行。
+    const rowsWithB = [
       errorTailUserRow,
       persistedErrorRow('err-persist-A', 'error A'),
       persistedErrorRow('err-persist-B', 'error B', {}, '2026-10-16T00:00:03.000Z'),
-    ]);
+    ];
+    onInputProjection?.(projection(SESSION_ID, { error: 'error B' }));
+    vi.mocked(messageService.list).mockResolvedValueOnce(rowsWithB);
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    await flushPromises();
+    await flushPromises();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+    expect(messageService.dismissError).toHaveBeenCalledTimes(1);
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-B');
+
+    // 重载后尾部是已被跳过的 B；再关一次重亮的横幅也不会去标 A。
+    onInputProjection?.(projection(SESSION_ID));
+    await reloadHistory(rowsWithB);
     onInputProjection?.(projection(SESSION_ID, { error: 'error B' }));
     makerChatStore.clearError(SESSION_ID);
     await flushPromises();
     expect(messageService.dismissError).toHaveBeenCalledTimes(1);
-    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-B');
   });
 
   it('历史未加载或尾部不是未处置的 error 行时不标记任何行', async () => {
@@ -3326,6 +3334,31 @@ describe('makerChatStore text delta batching', () => {
     await flushPromises();
     expect(vi.mocked(messageService.list).mock.calls.length).toBe(listCalls);
     expect(messageService.dismissError).toHaveBeenCalledTimes(2);
+  });
+
+  // Greptile review：关闭请求返回前，在途的同文案投影又把横幅点亮；落库信号此时不能绑到这个
+  // 重亮的横幅，否则走不到补标，横幅随后被清掉，这一行仍未处置。
+  it('关闭后同文案横幅被在途投影重新点亮：落库信号不绑定横幅，仍补标那一行', async () => {
+    const message = 'worker turn failed';
+    await closeSameTextErrorBeforeItPersists(message);
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe(message);
+
+    vi.mocked(messageService.list).mockResolvedValueOnce(persistedRowsWithB(message));
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    await flushPromises();
+    await flushPromises();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+    expect(messageService.dismissError).toHaveBeenCalledTimes(2);
+    expect(messageService.dismissError).toHaveBeenLastCalledWith(SESSION_ID, 'err-persist-B');
+
+    // 关闭请求生效后的投影清掉横幅；重载历史后尾部是 B，但已被跳过，不再出提示。
+    onInputProjection?.(projection(SESSION_ID));
+    await reloadHistory(persistedRowsWithB(message));
+    const snapshot = makerChatStore.getSnapshot(SESSION_ID);
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.messages.at(-1)?.clientId).toBe('err-persist-B');
+    expect(snapshot.disposedErrorPersistId).toBe('err-persist-B');
   });
 
   it.each([

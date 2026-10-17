@@ -4234,10 +4234,12 @@ function applyErrorPersistedDirtySignal(sessionId: string, persistId?: string): 
     !state.errorPersistId &&
     state.error &&
     !_deferredTurnErrorPersist.has(sessionId) &&
-    !_staleDeferredErrorPersistIds.get(sessionId)?.has(persistId)
+    !_staleDeferredErrorPersistIds.get(sessionId)?.has(persistId) &&
+    !disposedIntentCoversLiveError(sessionId, state)
   ) {
     // 本窗口没有 in-flight deferred(设备互联控制端只收到脏信号):绑到当前未绑定横幅。
     // 本窗口刚拒绝过的迟到 persistId 不算控制端信号,不能绑到下一轮错误。
+    // 横幅是刚被关掉那次错误的重亮时不绑,交给下面的补标(见 disposedIntentCoversLiveError)。
     bindLiveErrorPersistId(sessionId, persistId);
   }
   const latest = sessions.get(sessionId) ?? state;
@@ -15928,6 +15930,24 @@ function liveErrorTextMatchesRow(
   if (liveText === message) return true;
   const bannerText = liveErrorBannerText(message, reason);
   return liveText === bannerText || liveText.replace(/ \(HTTP \d{3}\)$/, '') === bannerText;
+}
+
+/**
+ * 当前未绑定的 live 横幅是不是刚被关掉的那次错误重新亮起来(例如关闭请求返回前，已在途的
+ * 同文案投影又把它点亮)。是的话落库信号不能绑到它：绑上后这一行就算「属于当前横幅」，走不到
+ * 补标，关闭请求随后清掉横幅，这一行仍未处置，刷新后又出现。
+ * 意图有效期内同文案的横幅只可能是这种重亮：新错误要经过新一轮启动、新队列项或文案不同的
+ * 投影，这些都会先作废意图(见 claimDisposedLiveErrorRow)。
+ * 两边都是横幅文案，可能分别来自 error 事件和投影，所以两个方向各按行口径比一次。
+ */
+function disposedIntentCoversLiveError(sessionId: string, state: SessionChatState): boolean {
+  const intent = _disposedLiveErrorIntents.get(sessionId);
+  if (!intent || !state.error) return false;
+  const reason = state.errorReason ?? undefined;
+  return (
+    liveErrorTextMatchesRow(intent.text, state.error, reason) ||
+    liveErrorTextMatchesRow(state.error, intent.text, reason)
+  );
 }
 
 /**
