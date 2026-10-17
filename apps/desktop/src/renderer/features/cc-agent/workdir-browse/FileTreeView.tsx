@@ -399,26 +399,26 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
   // scrollLeft 拉回（评审：纵向滚动拉回横向位置）。记录本树已测得的最大内容宽，
   // 用一个绝对定位的扩展占位元素撑住滚动范围 —— 占位不参与行布局，行宽
   // （width:100%）不会被撑宽，alignRowHorizontally 的行右缘对齐保持原语义
-  // （评审：粘性 minWidth 会把短名滚出视口）。换树（storeKey 变）时重置。
+  // （评审：粘性 minWidth 会把短名滚出视口）。
+  // extent 绑定 storeKey：换树 / 切开关（storeKey 变）时先把占位卸载（条目换
+  // key 不渲染旧占位），并**当轮跳过测量** —— 否则旧占位还挂在 DOM 里，测出的
+  // scrollWidth 仍含旧宽，会把旧值写回、横条过长（评审：隐藏目录后横条仍过长）。
   // jsdom 无布局（scrollWidth 恒 0）时测得 0，不渲染占位。
-  const [stickyExtentWidth, setStickyExtentWidth] = useState(0);
-  const stickyExtentRef = useRef(0);
-  const stickyStoreKeyRef = useRef(tree.storeKey);
+  const [extent, setExtent] = useState<{ storeKey: string; width: number }>({
+    storeKey: tree.storeKey,
+    width: 0,
+  });
   const contentLayerRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
-    if (stickyStoreKeyRef.current !== tree.storeKey) {
-      stickyStoreKeyRef.current = tree.storeKey;
-      stickyExtentRef.current = 0;
-      setStickyExtentWidth(0);
+    if (extent.storeKey !== tree.storeKey) {
+      setExtent({ storeKey: tree.storeKey, width: 0 });
+      return; // 本轮 DOM 里还有旧占位，测了会把旧宽写回；等占位卸载后的下一轮。
     }
     const inner = contentLayerRef.current;
     if (!inner) return;
     const measured = inner.scrollWidth;
-    if (measured > stickyExtentRef.current) {
-      stickyExtentRef.current = measured;
-      setStickyExtentWidth(measured);
-    }
-  }, [rows, tree.storeKey]);
+    if (measured > extent.width) setExtent({ storeKey: tree.storeKey, width: measured });
+  }, [rows, tree.storeKey, extent]);
 
   // 滚动位置：onScroll 持续记录锚点；挂载 / 换 store / 重新激活时自动恢复。
   // treeIdentityKey 单独传入：hook 用它区分「同树换视口」（可继承位置）与
@@ -633,12 +633,12 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
         emptyState
       ) : (
         <div ref={contentLayerRef} className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-          {stickyExtentWidth > 0 && (
+          {extent.storeKey === tree.storeKey && extent.width > 0 && (
             <div
               aria-hidden
               data-testid="tree-horizontal-extent"
               className="pointer-events-none absolute left-0 top-0 h-px"
-              style={{ width: stickyExtentWidth }}
+              style={{ width: extent.width }}
             />
           )}
           {virtualizer.getVirtualItems().map((vi) => {

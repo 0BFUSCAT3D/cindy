@@ -328,36 +328,65 @@ describe('globals.css 里的 .tree-hscroll 规则', () => {
   /**
    * 评审（纵向滚动拉回横向位置）：虚拟化只挂视口内的行，横向范围完全由当前
    * 挂载行撑出 —— 宽行被回收时范围缩小，浏览器会把 scrollLeft 拉回。用绝对定位
-   * 的扩展占位保留本树已测得的最大宽（不参与行布局，行宽不被撑宽），换树重置。
+   * 的扩展占位保留本树已测得的最大宽（不参与行布局，行宽不被撑宽）。
+   *
+   * 评审追加（隐藏目录后横条仍过长）：换 storeKey 的那一轮 effect 里旧占位还挂
+   * 在 DOM 上，此时测量必须跳过 —— 否则旧占位贡献的 500 被写回、横条仍过长。
+   * getter 模拟真实 scrollWidth = max(当前挂载内容宽, 占位宽)。
    */
-  it('回收宽行不缩小横向范围：扩展占位保留已测得的最大宽，换树才重置', () => {
+  it('回收宽行不缩小横向范围；换 storeKey 当轮不测量，旧占位宽不写回', () => {
+    let contentWidth = 200;
     const { container, rerender } = render(
       <FileTreeView tree={makeTree()} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
     );
     const inner = container.querySelector<HTMLElement>('div.relative.w-full')!;
-    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 500 });
+    Object.defineProperty(inner, 'scrollWidth', {
+      configurable: true,
+      get() {
+        const spacer = inner.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]');
+        const spacerWidth = spacer ? parseInt(spacer.style.width, 10) || 0 : 0;
+        return Math.max(contentWidth, spacerWidth);
+      },
+    });
 
-    // 宽行挂载时测得 500：占位把横向范围撑到 500。
+    // 宽行挂载（内容 500）：占位把横向范围撑到 500。
+    contentWidth = 500;
     rerender(
       <FileTreeView tree={makeTree()} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
     );
-    const spacer = container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')!;
-    expect(spacer).not.toBeNull();
-    expect(spacer.style.width).toBe('500px');
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')?.style.width,
+    ).toBe('500px');
 
-    // 宽行被回收（后续测得更窄）：占位不缩，横向滚动范围不变小。
-    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 200 });
+    // 宽行被回收（内容回落到 200）：占位 500 继续撑住，横向范围不变小。
+    contentWidth = 200;
     rerender(
       <FileTreeView tree={makeTree()} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
     );
-    expect(spacer.style.width).toBe('500px');
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')?.style.width,
+    ).toBe('500px');
 
-    // 换树（storeKey 变）：占位移除，等新树自己重新测量（先撤 stub 验证重置本身）。
-    Reflect.deleteProperty(inner, 'scrollWidth');
+    // 切开关（storeKey 变、同一棵树）：当轮跳过测量（旧占位还挂载、会贡献 500）
+    // → 占位卸载 → 下一轮按真实内容测得 200。旧占位的 500 不得写回。
+    contentWidth = 200;
+    const toggledTree = { ...makeTree(), storeKey: 'test-store::reveal', treeIdentityKey: 'test-store' };
+    rerender(
+      <FileTreeView tree={toggledTree} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')?.style.width,
+    ).toBe('200px');
+
+    // 换树（treeIdentityKey 也变）：旧占位先卸载，新树按自己的内容重新测量
+    // （内容 800 → 占位 800px，而不是沿用旧树的 500/200）。
+    contentWidth = 800;
     const switchedTree = { ...makeFarTargetsTree(), storeKey: 'test-store-2', treeIdentityKey: 'test-store-2' };
     rerender(
       <FileTreeView tree={switchedTree} scrollScope="tab-1" selectedPath={null} onSelectFile={vi.fn()} />,
     );
-    expect(container.querySelector('[data-testid="tree-horizontal-extent"]')).toBeNull();
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')?.style.width,
+    ).toBe('800px');
   });
 });
