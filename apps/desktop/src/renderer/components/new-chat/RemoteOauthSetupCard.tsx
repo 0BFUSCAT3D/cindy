@@ -1,4 +1,3 @@
-import { ErrorNotice } from '@/components/ui/error-notice';
 import { AlertCircle, Check, Copy, ExternalLink, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -209,7 +208,7 @@ function AccountCard({
         </div>
       ) : null}
       {!terminal && errorMessage ? (
-        <ErrorNotice role="alert" className="mt-3" message={errorMessage} />
+        <p role="alert" className="mt-3 text-13 text-[var(--error-fg)]">{errorMessage}</p>
       ) : null}
       {!terminal ? (
         <div className={`${compact ? 'mt-4' : 'mt-5'} flex flex-wrap items-center gap-2`}>
@@ -249,7 +248,9 @@ function AccountCard({
         </div>
       ) : null}
       {presentation?.failed ? (
-        <ErrorNotice role="alert" className="mt-2" message={t('newChat.pluginSetup.deviceCode.actionFailed')} />
+        <p role="alert" className="mt-2 text-13 text-[var(--error-fg)]">
+          {t('newChat.pluginSetup.deviceCode.actionFailed')}
+        </p>
       ) : null}
     </section>
   );

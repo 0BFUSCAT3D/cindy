@@ -1,4 +1,3 @@
-import { ErrorNotice } from '@/components/ui/error-notice';
 import { Copy, ExternalLink } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -201,7 +200,9 @@ function DeviceCodeView({
             {t('newChat.pluginSetup.deviceCode.remaining', { time })}
           </p>
           {failed ? (
-            <ErrorNotice role="alert" message={t('newChat.pluginSetup.deviceCode.actionFailed')} />
+            <p role="alert" className="text-13 text-[var(--error-fg)]">
+              {t('newChat.pluginSetup.deviceCode.actionFailed')}
+            </p>
           ) : null}
         </>
       ) : (
