@@ -86,7 +86,8 @@ function browserPath(explicit) {
   return found;
 }
 
-const COMPARE_SCOPE = ['apps/desktop/src', 'packages'];
+const COMPARE_SCOPE = ['apps/desktop/src', 'apps/desktop/resources', 'packages'];
+const BINARY = /\.(?:png|jpe?g|gif|webp|avif|woff2?|ttf|otf)$/;
 const MODULE_SUFFIXES = [
   '',
   '.ts',
@@ -126,11 +127,16 @@ function compareOverlay(ref) {
     get(file) {
       if (!this.has(file)) return undefined;
       this.used.add(file);
-      if (!contents.has(file))
+      if (!contents.has(file)) {
+        const spec = `${ref}:${path.relative(root, file).split(path.sep).join('/')}`;
+        // Images and fonts stay bytes; source, styles and translations are text.
         contents.set(
           file,
-          git(['show', `${ref}:${path.relative(root, file).split(path.sep).join('/')}`]),
+          BINARY.test(file)
+            ? execFileSync('git', ['show', spec], { cwd: root, maxBuffer: 64 * 1024 * 1024 })
+            : git(['show', spec]),
         );
+      }
       return contents.get(file);
     },
     resolve(candidate) {
@@ -455,6 +461,8 @@ export async function runPlan(plan, options, externalSignal) {
 
     const runVariant = async (item, variant, role) => {
       const definition = item.definition;
+      // Lets an observer (the runner self-test) act once a variant is in progress.
+      if (process.env.CINDY_UI_PROGRESS) process.stderr.write(`UI_VARIANT ${variant.id} ${role}\n`);
       const dir = path.join(variant.id, role === 'before' ? 'before' : '');
       await mkdir(path.join(evidence, dir), { recursive: true });
       const result = {

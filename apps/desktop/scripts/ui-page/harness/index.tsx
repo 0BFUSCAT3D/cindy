@@ -41,6 +41,8 @@ export interface PageDefinition {
   render: (ctx: UiPageContext) => ReactNode;
 }
 
+const requestedKeys = new Set<string>();
+
 /** Report keys that only resolve through the fallback language for the active locale. */
 function trackMissingTranslations(): void {
   const translator = (i18n as unknown as { translator?: { translate: Function } }).translator;
@@ -52,6 +54,7 @@ function trackMissingTranslations(): void {
     ...rest: unknown[]
   ) => {
     const list = (Array.isArray(keys) ? keys : [keys]).filter((key) => typeof key === 'string');
+    for (const key of list) requestedKeys.add(key);
     const lng = (options?.lng as string | undefined) ?? i18n.language;
     if (
       list.length &&
@@ -80,6 +83,8 @@ export async function mountPage(definition: PageDefinition): Promise<void> {
   await i18n.changeLanguage(ctx.locale);
   trackMissingTranslations();
   runtime.t = (key, options) => i18n.t(key, options) as string;
+  // Lets the audit tell a rendered translation key from ordinary dotted text.
+  runtime.isTranslationKey = (text) => requestedKeys.has(text) || i18n.exists(text);
   const content = definition.render(ctx);
   createRoot(document.getElementById('root')!).render(
     <ThemeProvider syncWindowVibrancy={false}>

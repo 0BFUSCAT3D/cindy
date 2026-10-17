@@ -31,13 +31,16 @@ export function pageAudit() {
       if (!el.closest('[title]')) truncatedWithoutTitle.push(item);
     } else if (overflowX || overflowY) clipped.push({ ...item, axis: overflowX ? 'x' : 'y' });
   }
+  const runtime = window.__uiPage;
+  // Three or more segments read as a key on their own; two-segment text (`bots.send`, but also
+  // `example.com`) counts only when it is an actual translation key.
   const rawKeys = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   while (walker.nextNode() && rawKeys.length < 20) {
     const value = walker.currentNode.textContent.trim();
-    if (/^[a-z][a-zA-Z0-9_-]*(\.[a-zA-Z0-9_-]+){2,}$/.test(value)) rawKeys.push(value);
+    if (!/^[a-z][a-zA-Z0-9_-]*(\.[a-zA-Z0-9_-]+)+$/.test(value)) continue;
+    if (/(\.[^.]+){2,}/.test(value) || runtime.isTranslationKey?.(value)) rawKeys.push(value);
   }
-  const runtime = window.__uiPage;
   return {
     horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
     rawKeys,

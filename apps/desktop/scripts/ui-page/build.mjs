@@ -22,10 +22,19 @@ const assetLoaders = Object.fromEntries(
   ]),
 );
 const SOURCE = /\.[cm]?[jt]sx?$/;
-// Inputs `--compare` can take from another revision: source, styles and translations.
-const OVERLAY = /\.(?:[cm]?[jt]sx?|css|json)$/;
+// Inputs `--compare` can take from another revision: source, styles, translations and assets.
+const ASSET = new RegExp(`(?:${Object.keys(assetLoaders).join('|').replaceAll('.', '\\.')})$`);
+const OVERLAY = /\.(?:[cm]?[jt]sx?|css|json|png|jpe?g|gif|webp|avif|svg|woff2?|ttf|otf)$/;
 const loaderFor = (file) =>
-  file.endsWith('.css') ? 'css' : file.endsWith('.json') ? 'json' : /x$/.test(file) ? 'tsx' : 'ts';
+  ASSET.test(file)
+    ? 'file'
+    : file.endsWith('.css')
+      ? 'css'
+      : file.endsWith('.json')
+        ? 'json'
+        : /x$/.test(file)
+          ? 'tsx'
+          : 'ts';
 const CONTENT_TYPES = {
   '.js': 'text/javascript',
   '.css': 'text/css',

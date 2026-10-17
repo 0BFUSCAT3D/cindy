@@ -13,18 +13,25 @@ const cli = fileURLToPath(new URL('./cli.mjs', import.meta.url));
 const harness = fileURLToPath(new URL('./harness/index.tsx', import.meta.url));
 let dir;
 
-function run(args, { interruptAfterMs } = {}) {
+function run(args, { interruptWhenRunning } = {}) {
   return new Promise((resolve) => {
-    const env = { ...process.env, NODE_DEBUG: '' };
+    const env = { ...process.env, NODE_DEBUG: '', CINDY_UI_PROGRESS: '1' };
     const child = spawn(process.execPath, [cli, ...args], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
+    let interrupted = false;
     child.stdout.on('data', (chunk) => (stdout += chunk));
-    child.stderr.on('data', (chunk) => (stderr += chunk));
-    if (interruptAfterMs) setTimeout(() => child.kill('SIGINT'), interruptAfterMs);
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      // Interrupt as soon as the runtime is up and a variant is waiting on the page.
+      if (interruptWhenRunning && !interrupted && /^UI_VARIANT /m.test(stderr)) {
+        interrupted = true;
+        child.kill('SIGINT');
+      }
+    });
     child.on('exit', (code) => resolve({ code, stdout, stderr }));
   });
 }
@@ -59,7 +66,15 @@ function Page({ kind }: { kind: string }) {
   if (kind === 'network') void fetch('https://example.com/selftest').catch(() => {});
   if (kind === 'mutation') try { (window as any).electronAPI.maker.send({}); } catch {}
   if (kind === 'missing') void (window as any).electronAPI.selftest?.unknownCall;
-  return <div>{kind === 'raw-key' ? 'bots.list.startChat' : 'Ready'}</div>;
+  return kind === 'raw-key' ? (
+    <div>
+      <p>bots.list.startChat</p>
+      <p>bots.send</p>
+      <p>cindy.app</p>
+    </div>
+  ) : (
+    <div>Ready</div>
+  );
 }
 mountPage({
   cases: ['ok', 'throws', 'network', 'mutation', 'missing', 'raw-key'],
@@ -95,7 +110,8 @@ mountPage({
   assert.match(byCase.mutation.errors.join('\n'), /maker\.send/);
   assert.equal(byCase.missing.status, 'passed');
   assert.ok(byCase.missing.hostMissing.some((key) => key.startsWith('selftest')));
-  assert.match(byCase['raw-key'].errors.join('\n'), /bots\.list\.startChat/);
+  // Two-segment keys count when they are real keys; ordinary dotted text does not.
+  assert.match(byCase['raw-key'].errors.join('\n'), /bots\.list\.startChat, bots\.send$/m);
   assert.ok(existsSync(path.join(summary.evidence, 'summary.json')));
   // The PR description lists the failing variants it came from.
   assert.match(await readFile(summary.pr, 'utf8'), /未通过：`entry\.throws\./);
@@ -104,7 +120,7 @@ mountPage({
 test('a page that never mounts fails at the timeout and leaves no runtime behind', async () => {
   const file = await entry('stuck', `export {};\n`);
   const started = Date.now();
-  const { code, stdout } = await run(['--entry', file, '--json', '--timeout', '1500']);
+  const { code, stdout } = await run(['--entry', file, '--json', '--timeout', '1000']);
   assert.equal(code, 1);
   assert.match(
     JSON.parse(stdout).variants[0].errors.join('\n'),
@@ -118,7 +134,7 @@ test('an interrupt still writes the summary and stops the runtime', async () => 
   // Never mounts, so the run is still waiting when the interrupt arrives.
   const file = await entry('waiting', `export {};\n`);
   const { code, stdout } = await run(['--entry', file, '--timeout', '60000'], {
-    interruptAfterMs: 3000,
+    interruptWhenRunning: true,
   });
   assert.equal(code, 1);
   const summaryFile = /summary:\s+(\S+)/.exec(stdout)?.[1];

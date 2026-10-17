@@ -25,5 +25,7 @@ export interface UiPageRuntime {
   /** Deliver a host event to listeners registered through `subscription(name)`; returns listener count. */
   emit?: (name: string, payload: unknown) => number;
   t?: (key: string, options?: Record<string, unknown>) => string;
+  /** True when `text` is a key the page requested through t() or one the resources define. */
+  isTranslationKey?: (text: string) => boolean;
   cases?: string[];
 }
