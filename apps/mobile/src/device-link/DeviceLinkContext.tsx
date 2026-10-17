@@ -172,6 +172,7 @@ import { prepareVisualMockDeviceLinkContext } from '@/debug/visualMock';
 import { meterDeviceLinkInvokes, recordDeviceLinkPush } from '@/debug/deviceLinkTraffic';
 import { decodeGzipBase64TextBounded } from '@/utils/gzipBase64';
 import { jankMetricsEnabled, recordInvokeSent, recordPushHandled } from '@/debug/jankMetrics';
+import { localNetworkStore, type NetworkState } from '@/device-link/localNetworkStatus';
 
 export interface DeviceLinkContextValue {
   status: DeviceLinkStatus;
@@ -1357,10 +1358,12 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       report: (event) => mobileDebugLog('debug', 'device-link', 'background lifecycle', event),
     });
     noteAppLifecycleState(AppState.currentState);
+    let refreshNetworkState = () => {};
     const sub = AppState.addEventListener('change', (next) => {
       // 先于下面的恢复动作记账:回前台后 rehydrate 新发的请求属于新生命周期。
       noteAppLifecycleState(next);
       if (next === 'active') {
+        refreshNetworkState();
         diagnostics.foreground();
         const resumingFromBackground = backgroundReleaseInFlightRef.current;
         backgroundReleaseInFlightRef.current = false;
@@ -1399,10 +1402,18 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     // existing heartbeat fallback if the optional runtime module is unavailable.
     let disposed = false;
     let networkSubscription: { remove(): void } | undefined;
-    let previousNetwork: { type?: string; isConnected?: boolean; isInternetReachable?: boolean } | undefined;
-    void import('expo-network').then(({ addNetworkStateListener }) => {
+    let previousNetwork: NetworkState | undefined;
+    void import('expo-network').then(({ addNetworkStateListener, getNetworkStateAsync }) => {
       if (disposed) return;
-      networkSubscription = addNetworkStateListener((network) => {
+      let networkRevision = 0;
+      const onNetworkState = (network: NetworkState) => {
+        if (disposed) return;
+        networkRevision += 1;
+        localNetworkStore.update(network);
+        if (localNetworkStore.getSnapshot().status === 'unavailable') {
+          // A phone-wide outage is not evidence against any individual computer.
+          resetDeviceResponsivenessTracking();
+        }
         const urgent = previousNetwork !== undefined && (
           previousNetwork.type !== network.type
           || previousNetwork.isConnected !== network.isConnected
@@ -1427,7 +1438,16 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
         }
         if (AppState.currentState !== 'active' || network.isConnected === false) return;
         recoverNetwork(urgent);
-      });
+      };
+      networkSubscription = addNetworkStateListener(onNetworkState);
+      refreshNetworkState = () => {
+        if (typeof getNetworkStateAsync !== 'function') return;
+        const revision = ++networkRevision;
+        void getNetworkStateAsync().then((network) => {
+          if (!disposed && revision === networkRevision) onNetworkState(network);
+        }).catch(() => { /* Keep listener evidence when the native lookup fails. */ });
+      };
+      refreshNetworkState();
     }).catch(() => {
       console.warn('[device-link] network listener unavailable; using heartbeat recovery');
     });
@@ -1437,6 +1457,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       diagnostics.background();
       recoveryDiagnostics.delete(client);
       networkSubscription?.remove();
+      localNetworkStore.update();
       sub.remove();
       backgroundConnection.dispose();
       backgroundTransitions.current.clear();

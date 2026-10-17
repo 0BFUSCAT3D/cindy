@@ -1,8 +1,8 @@
 /**
  * 统一伙伴列表里的群聊行，和伙伴私聊共同按最新消息排序。
  *
- * 群行与伙伴行同一套 IM 行几何（见 __tests__/botsSidebarSpacing.test.ts）：左侧两位
- * 成员的叠放头像，第一行群名，第二行最近一条消息「作者：内容」。有伙伴正在发言时，
+ * 群行与伙伴行同一套 IM 行几何（见 __tests__/teammatesSectionSpacing.test.ts）：左侧按人数
+ * 显示组合头像，第一行群名，第二行最近一条消息「作者：内容」。有伙伴正在发言时，
  * 第二行临时让位给运行中标记（橙色 sparkles + 发言伙伴的工作状态，DESIGN.md §2
  * Thinking Orange 的侧栏运行态），一轮结束就落回最近消息。
  *
@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import type { AgentIslandSessionActivity } from '../../../shared/agentIsland';
 import type { BotGroupSummary } from '../../../shared/botGroupChat';
 import { BotGenerationLabel } from './BotGenerationLabel';
-import { BotGroupDuoAvatar } from './BotGroupAvatars';
+import { BotGroupSidebarAvatar } from './BotGroupAvatars';
 import { isBotGroupLaneSession } from './botGroupLane';
 import {
   botGroupNoticeKey,
@@ -178,6 +178,7 @@ export function BotGroupSidebarRow({
   const timestamp = formatBotListTimestamp(
     !group.archived && group.speakingBotIds.length > 0 ? now : group.lastMessage?.createdAt ?? group.updatedAt,
     now,
+    t,
   );
   return (
     <div className="relative">
@@ -197,7 +198,7 @@ export function BotGroupSidebarRow({
           : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover',
       )}
     >
-      <BotGroupDuoAvatar members={group.members} selected={selected} />
+      <BotGroupSidebarAvatar members={group.members} selected={selected} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 truncate text-14 leading-5" title={group.name}>{group.name}</span>
@@ -207,7 +208,7 @@ export function BotGroupSidebarRow({
       </span>
       <span
         className={cn(
-          'w-10 shrink-0 self-start pt-0.5 text-right text-11 tabular-nums',
+          'min-w-10 shrink-0 self-start whitespace-nowrap pt-0.5 text-right text-11 tabular-nums',
           mutedClass,
         )}
       >

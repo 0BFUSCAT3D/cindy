@@ -33,6 +33,7 @@ export * from "./peerTransferCooldown.js";
 export * from "./peerInvoke.js";
 export * from "./peerAttachment.js";
 export * from "./fileAccess.js";
+export * from "./fileTransferPolicy.js";
 export * from "./filePeerRuntime.js";
 
 export { FILE_PEER_RUNTIME_SOURCE } from "./filePeerRuntimeSource.js";

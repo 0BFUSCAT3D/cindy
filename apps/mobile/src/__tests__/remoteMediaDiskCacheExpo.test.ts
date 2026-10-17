@@ -3,14 +3,20 @@ import {
   downloadRemoteMediaAsDataUri,
   downloadRemoteMediaShareTemp,
   withDownloadedRemoteMediaFile,
+  retainRemoteFilePreview,
+  createExpoRemoteMediaDiskCacheIO,
 } from '@/session/remoteMediaDiskCacheExpo';
+import { createRemoteMediaDiskCache } from '@/session/remoteMediaDiskCache';
+import { clearPeerMedia, recordPeerMedia, canStagePeerMedia } from '@/device-link/peerFileRegistry';
 
 const io = vi.hoisted(() => ({
   size: 5,
+  sizes: new Map<string, number>(),
   copying: new Set<string>(),
   copied: new Set<string>(),
   download: vi.fn(),
   remove: vi.fn(),
+  move: vi.fn(),
   resumable: vi.fn(),
   cancel: vi.fn(async () => undefined),
   deleteAsync: vi.fn(async () => undefined),
@@ -30,6 +36,7 @@ vi.mock('expo-file-system', () => ({
     uri: string;
     constructor(parent: string, name: string) { this.uri = `${parent}/${name}`; }
     create() {}
+    list() { return []; }
   },
   File: class {
     uri: string;
@@ -42,27 +49,88 @@ vi.mock('expo-file-system', () => ({
       await new Promise((done) => setTimeout(done, 0));
       io.copying.delete(target.uri);
       io.copied.add(target.uri);
+      io.sizes.set(target.uri, this.size);
     }
-    get size() { return io.copying.has(this.uri) ? 0 : io.size; }
+    get size() { return io.copying.has(this.uri) ? 0 : (io.sizes.get(this.uri) ?? io.size); }
     get exists() { return true; }
     async base64() { return 'aGVsbG8='; }
-    delete() { io.remove(this.uri); }
+    async text() { return ''; }
+    write(value: string | Uint8Array) { io.sizes.set(this.uri, value.length); }
+    moveSync(target: { uri: string }) {
+      io.sizes.set(target.uri, this.size);
+      io.sizes.delete(this.uri);
+      io.move(this.uri, target.uri);
+    }
+    delete() { io.sizes.delete(this.uri); io.remove(this.uri); }
     static downloadFileAsync = io.download;
   },
 }));
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   io.size = 5;
+  io.sizes.clear();
+  clearPeerMedia();
   io.copying.clear();
   io.copied.clear();
   io.remove.mockClear();
-  io.download.mockReset().mockImplementation(async (_url, target) => target);
+  io.move.mockClear();
+  io.download.mockReset().mockImplementation(async (_url, target) => {
+    io.sizes.set(target.uri, io.size);
+    return target;
+  });
   io.resumable.mockReset().mockResolvedValue({ status: 200 });
   io.cancel.mockClear();
   io.deleteAsync.mockClear();
 });
 
+describe('versioned cache with the Expo adapter', () => {
+  // #6292: IO used to overwrite good bytes before store checked the length.
+  // Existing tests only covered a new version/name. Unit: same-name refresh
+  // through the real cache and Expo adapter must preserve old bytes and index.
+  it.each([undefined, 'a'.repeat(64)])('preserves a good copy on truncated refresh (version %s)', async version => {
+    const cache = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO());
+    expect(await cache.store('resource', 'https://example.com/good', 'application/pdf', 5, version)).toBe(true);
+    const old = await cache.lookup('resource');
+    io.move.mockClear();
+    io.remove.mockClear();
+    io.size = 3;
+    expect(await cache.store('resource', 'https://example.com/truncated', 'application/pdf', 5, version)).toBe(false);
+    expect(io.move).not.toHaveBeenCalled();
+    expect(io.remove.mock.calls.every(([uri]) => uri.endsWith('.dl.tmp'))).toBe(true);
+    expect(await cache.lookup('resource')).toEqual(old);
+    io.size = 7;
+    expect(await cache.store('resource', 'https://example.com/complete', 'application/pdf', 7, version)).toBe(true);
+    expect(await cache.lookup('resource')).toMatchObject({ size: 7 });
+  });
+  it.each(['data:text/css;base64,', 'file:///empty.css', 'https://example.com/empty.css'])(
+    'retains a declared empty file from %s but rejects undeclared empty downloads', async source => {
+      io.size = 0;
+      const cache = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO());
+      const version = 'a'.repeat(64);
+      expect(await cache.store('resource', source, 'text/css', 0, version)).toBe(true);
+      expect(await cache.lookup('resource', version)).toMatchObject({ size: 0, version, mimeType: 'text/css' });
+      expect(io.remove).not.toHaveBeenCalled();
+      expect(io.move).toHaveBeenCalled();
+      expect(await cache.store('image', 'https://example.com/empty.png', 'image/png')).toBe(false);
+      expect(await cache.lookup('image')).toBeNull();
+    },
+  );
+});
+
 describe('bounded temporary media downloads', () => {
+  it('keeps a preview copy alive after transport staging expires, until its owner releases it', async () => {
+    const { recordPeerMedia, releasePeerMedia } = await import('@/device-link/peerFileRegistry');
+    const dispose = vi.fn();
+    recordPeerMedia({ ossKey: '', size: 5, mimeType: 'application/pdf' }, 'file:///peer/source', dispose);
+    const retained = await retainRemoteFilePreview('file:///peer/source', 'application/pdf', 'preview.pdf');
+    expect(io.copied.has(retained.uri)).toBe(true);
+    expect(dispose).toHaveBeenCalledOnce();
+    releasePeerMedia('file:///peer/source');
+    expect(io.remove).not.toHaveBeenCalled();
+    retained.release();
+    expect(io.remove).toHaveBeenCalledExactlyOnceWith(retained.uri);
+  });
   it('keeps the file until the asynchronous consumer finishes, then removes it', async () => {
     let finish!: (value: string) => void;
     const read = vi.fn(() => new Promise<string>((done) => { finish = done; }));
@@ -104,6 +172,38 @@ describe('bounded temporary media downloads', () => {
 });
 
 describe('share temp downloads', () => {
+  // #6292: file/browser/preview/chat exports copy a staged URI but previously
+  // left the source and its budget alive for five minutes. Exercise the shared
+  // production copy entry for success/failure/cancel; existing preview-only
+  // ownership coverage missed the download/share path. Unit, no real files.
+  it.each(['success', 'failure', 'cancel', 'cancel-before'] as const)('releases staging after a %s share copy', async outcome => {
+    const source = 'file:///peer/share-source';
+    const dispose = vi.fn();
+    const size = 2 * 1024 * 1024 * 1024;
+    recordPeerMedia({ ossKey: '', size: 1, mimeType: 'application/pdf' }, 'file:///peer/other', () => {});
+    expect(recordPeerMedia({ ossKey: '', size, mimeType: 'application/pdf' }, source, dispose)).toBe(true);
+    expect(canStagePeerMedia(size)).toBe(false);
+    if (outcome === 'failure') {
+      const { File } = await import('expo-file-system');
+      vi.spyOn(File.prototype, 'copy').mockRejectedValueOnce(new Error('disk full'));
+    }
+    const abort = new AbortController();
+    if (outcome === 'cancel-before') abort.abort();
+    const copy = downloadRemoteMediaShareTemp(source, 'application/pdf', 'share.pdf', abort.signal);
+    if (outcome !== 'cancel-before') expect(dispose).not.toHaveBeenCalled();
+    if (outcome === 'cancel') abort.abort();
+    const uri = await copy;
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(canStagePeerMedia(size)).toBe(true);
+    if (outcome === 'success') {
+      expect(uri).toMatch(/\/share.pdf$/);
+      expect(io.remove).not.toHaveBeenCalled();
+    } else {
+      expect(uri).toBeNull();
+      if (outcome === 'cancel-before') expect(io.copied.size).toBe(0);
+    }
+    vi.restoreAllMocks();
+  });
   it('keeps the existing download path when no cancellation signal is given', async () => {
     expect(await downloadRemoteMediaShareTemp('https://example.com/a.pdf', 'application/pdf', 'a.pdf'))
       .toMatch(/\/a\.pdf$/);

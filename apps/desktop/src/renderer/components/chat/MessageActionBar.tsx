@@ -34,7 +34,6 @@ import {
   Ellipsis,
   Link2,
   MessageSquarePlus,
-  MessageSquareReply,
   MessagesSquare,
   SmilePlus,
   Pencil,
@@ -47,6 +46,7 @@ import { useStableTranslation as useTranslation } from '@/hooks/useStableTransla
 import { cn } from '@/lib/utils';
 import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import { CHAT_COLOR_TRANSITION_CLASS, CHAT_ICON_BUTTON_CLASS } from './chatChrome';
+import { ChatReplyIcon } from './ChatReplyIcon';
 import { Spinner } from '@/components/ui/spinner';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip, Tooltip } from '@/components/ui/tooltip';
@@ -384,7 +384,7 @@ export function MessageActionBar({
           aria-label={replyAction?.label ?? t('chat.messageActionBar.reply')}
         >
           {replyAction ? <MessagesSquare size={14} strokeWidth={2} className={actionIconClass} />
-            : <MessageSquareReply size={14} strokeWidth={2} className={actionIconClass} />}
+            : <ChatReplyIcon size={14} strokeWidth={2} className={actionIconClass} />}
           {!!replyAction?.count && <span className={cn('text-12 tabular-nums', actionIconClass)}>{replyAction.count}</span>}
         </button>
       </Tooltip.Trigger>
@@ -404,7 +404,7 @@ export function MessageActionBar({
         className={actionButtonClass}
         aria-label={quoteAction.label}
       >
-        <MessageSquareReply size={14} strokeWidth={2} className={actionIconClass} />
+        <ChatReplyIcon size={14} strokeWidth={2} className={actionIconClass} />
       </button>
     </Tip>
   );

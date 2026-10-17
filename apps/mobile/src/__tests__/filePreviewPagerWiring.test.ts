@@ -44,9 +44,14 @@ describe('remote file preview pager wiring', () => {
     const textPage = source.slice(source.indexOf('function TextPreviewPage('), source.indexOf('function ImagePreviewPage('));
     const sourceList = textPage.match(/<FlatList\s[\s\S]*?data=\{state.lines\}[\s\S]*?testID=\{visible \? 'filePreview.sourceReady' : undefined\}/);
     expect(sourceList).not.toBeNull();
-    // Loading/error pages and prefetched neighbours must not satisfy the wait.
-    expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(textPage.indexOf("if (state.status === 'loading')"));
-    expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(textPage.indexOf("if (state.status === 'unavailable')"));
+    // Guard protocol: Maestro file_browser.yaml / visual_files.yaml wait for sourceReady.
+    // Loading/error pages and prefetched neighbours must not satisfy that wait.
+    // Require both branches to exist: comparing a list offset with -1 silently passed.
+    const loadingBranch = textPage.indexOf("state.status === 'loading' ? (");
+    const unavailableBranch = textPage.indexOf("state.status === 'unavailable' ? (");
+    expect(loadingBranch).toBeGreaterThanOrEqual(0);
+    expect(unavailableBranch).toBeGreaterThan(loadingBranch);
+    expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(unavailableBranch);
   });
 
   it('reserves horizontal gestures for the PDF WebView', () => {

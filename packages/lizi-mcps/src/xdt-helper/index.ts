@@ -41,6 +41,7 @@ export {
   type SessionStatus,
   type SessionStatusChangeItem,
   type SetSessionsStatusResult,
+  type RemoteSessionsStatusResult,
 } from './archive_sessions.js';
 // multi-worker Phase 1 control tools
 export {
@@ -181,6 +182,11 @@ export {
   registerCreateTeammateTool,
   type CreateTeammateCallbacks,
 } from './create_teammate.js';
+export {
+  registerTeammateHomeTools,
+  type TeammateHomeCallbacks,
+  type TeammateHomeComputerWire,
+} from './teammate_home.js';
 export {
   registerBotCapabilityTools,
   buildFindBotCapabilitiesDescription,

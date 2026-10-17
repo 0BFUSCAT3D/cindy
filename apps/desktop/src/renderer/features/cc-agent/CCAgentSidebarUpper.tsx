@@ -115,9 +115,16 @@ import type { Session } from '@/lib/ccAgent.types';
 import {
   clearSessionAttentionMany,
   clearSystemSessionAttention,
-  useSessionAttentionKinds,
   useSessionAttentionSnapshot,
 } from '@/lib/sessionAttentionStore';
+import {
+  findOrcaLeadSessionIdForWorker,
+  formatOrcaWorkerNotificationTitle,
+  mergeOrcaLeadNotifications,
+  shouldNotifyOrcaWorkerEvent,
+  useOrcaLeadWorkerAttention,
+  useSessionAttentionKindsWithOrcaLeads,
+} from './lib/orcaLeadWorkerAttention';
 import { patchDraft as patchNewMakerDraft } from '@/state/newMakerDraft';
 import { consumePendingProjectFocus, usePendingProjectFocus } from '@/state/pendingProjectFocus';
 import {
@@ -518,7 +525,13 @@ export function CCAgentSidebarUpper() {
       ).map((session) => session.id),
     [searchProjectSessions, hiddenProjectKeys, localPlatform],
   );
-  const attentionNotifications = useSessionAttentionSnapshot();
+  const rawAttentionNotifications = useSessionAttentionSnapshot();
+  // Orca Lead 汇总其 Worker 的出错 / 等待确认(只读派生,不写回 attention store)。
+  const orcaLeadWorkerAttention = useOrcaLeadWorkerAttention();
+  const attentionNotifications = useMemo(
+    () => mergeOrcaLeadNotifications(rawAttentionNotifications, orcaLeadWorkerAttention),
+    [rawAttentionNotifications, orcaLeadWorkerAttention],
+  );
   // Sidebar is rendered outside the :sessionId route, so useParams won't work.
   // Use useMatch to extract the active session id from the URL.
   const match = useMatch('/cc-agent/:sessionId');
@@ -1180,10 +1193,25 @@ function ExpandedView({
         remoteSessionsForNotificationRef.current,
       ]);
       if (!CINDY_MAKE_ENABLED && session && isCindyMakeSource(session.source)) return;
-      // Orca worker 自身状态翻转不发独立通知 —— 等 lead 接到 worker_report 处理完
-      // 再以 lead 名义统一推一条，避免同一事件双重打扰。语义上用户应回到 lead 主对话
-      // 查看，而非跳到 worker 实现细节；与 effectiveRunningSessionIds 的角色聚合口径一致。
-      if (session && isOrcaWorkerSession(session)) return;
+      // Orca Worker 的完成不发独立通知 —— 等 Lead 接到 worker_report 处理完再以 Lead
+      // 名义统一推一条。出错与需要确认要用户本人处理,单独通知,标题带上所属 Lead;
+      // 点击按 Worker id 走 resolveSessionRoute,落到 Lead 并打开该 Worker。
+      if (session && isOrcaWorkerSession(session)) {
+        if (!shouldNotifyOrcaWorkerEvent(kind, session)) return;
+        const leadSessionId = findOrcaLeadSessionIdForWorker(sessionId);
+        const leadSession = leadSessionId
+          ? findSessionNotificationSession(leadSessionId, [
+              sessionsRef.current,
+              allSessionsForNotificationRef.current,
+            ])
+          : null;
+        const title = formatOrcaWorkerNotificationTitle(
+          projectDraftSessionTitle(session.title, unnamedLabelRef.current),
+          leadSession ? projectDraftSessionTitle(leadSession.title, unnamedLabelRef.current) : null,
+        );
+        sendSessionEventNotification(sessionId, title, kind);
+        return;
+      }
       // /review 审查任务不单独通知:结果回到来源任务,由来源任务的轮次收尾通知。
       if (session && isReviewSessionSource(session.source)) return;
       // 插件后台隐藏任务不单独通知;显示到任务列表后恢复。
@@ -1236,7 +1264,9 @@ function ExpandedView({
     },
   );
   const remoteScheduleIndex = useRemoteScheduleIndex();
-  const attentionKinds = useSessionAttentionKinds();
+  // Lead 的 kind / 未读已并入其 Worker 的出错 / 等待确认(lib/orcaLeadWorkerAttention.ts)。
+  const attentionKinds = useSessionAttentionKindsWithOrcaLeads();
+  const orcaLeadWorkerAttention = useOrcaLeadWorkerAttention();
   const urgentSet = useSessionAttentionUrgencySet();
   const unreadScheduleSessionIds = useMemo(() => {
     const next = new Set<string>();
@@ -1255,9 +1285,10 @@ function ExpandedView({
     [scheduleSessionIndex, remoteScheduleIndex],
   );
   const sidebarNotifications = useMemo(() => {
-    if (unreadScheduleSessionIds.size === 0) return notifications;
-    return new Set([...notifications, ...unreadScheduleSessionIds]);
-  }, [notifications, unreadScheduleSessionIds]);
+    const withOrcaLeads = mergeOrcaLeadNotifications(notifications, orcaLeadWorkerAttention);
+    if (unreadScheduleSessionIds.size === 0) return withOrcaLeads;
+    return new Set([...withOrcaLeads, ...unreadScheduleSessionIds]);
+  }, [notifications, orcaLeadWorkerAttention, unreadScheduleSessionIds]);
   const remoteActivityRevision = useRemoteSessionActivityRevision();
 
   const markAutomationSessionRunsRead = useCallback(
@@ -4103,8 +4134,8 @@ function CollapsedView({
   const { runningSessionIds } = useSessionRunningStatus(attentionSessionId);
   // 瓷砖未读点颜色按 attention kind(done 绿 / awaiting TapTap 蓝 / error 红);组件层
   // 取一次,renderItem 里查表(renderItem 非组件,不能 per-item 用 hook)。
-
-  const attentionKinds = useSessionAttentionKinds();
+  // Lead 的 kind 已并入其 Worker 的出错 / 等待确认(notifications 由上层同口径合并)。
+  const attentionKinds = useSessionAttentionKindsWithOrcaLeads();
   // 失败 automation urgency 集合 —— rail 瓷砖也要按此把 failed schedule 涂红,不能
   // 让"失败的定时任务"落到默认绿色 done tone(否则和 SessionItem 不一致,
   // 折叠视图会把失败误传成"完成了")。
@@ -4369,7 +4400,8 @@ function RailPanels({
   // (只是 return null),下次打开面板旧菜单会按旧坐标复现并引用旧项目(review)。
   // 与下方 showAllProjects 的复位同构。
 
-  const attentionKinds = useSessionAttentionKinds();
+  // Lead 的 kind 已并入其 Worker 的出错 / 等待确认(notifications 由 ExpandedView 同口径合并)。
+  const attentionKinds = useSessionAttentionKindsWithOrcaLeads();
   const urgentSet = useSessionAttentionUrgencySet();
   // 项目列表「显示全部」:面板关闭后复位(与 ProjectsSection 的段收起复位同语义)。
   const [showAllProjects, setShowAllProjects] = useState(false);
