@@ -3265,7 +3265,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         ) : null}
       </View>
 
-      {residentList.enabled ? (
+      {residentList.enabled && !embedded ? (
         <ResidentHomeList focused={screenFocused && active} top={chromeHeight}
           left={embedded ? 0 : edgePadding.paddingLeft} right={embedded ? 0 : edgePadding.paddingRight}>
           <ActiveHomeSession.Provider value={activeHomeSession}>

@@ -153,7 +153,12 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
             runOnJS(closeFromGesture)();
           } else {
             // 未过阈回弹:位置插值档(fast + move 曲线)。
-            dragX.value = withTiming(0, {
+            const effective = Math.max(0, Math.min(1, progress.value + dragX.value / panelWidth));
+            cancelAnimation(progress);
+            cancelAnimation(dragX);
+            progress.value = effective;
+            dragX.value = 0;
+            progress.value = withTiming(1, {
               duration: motionDuration.fast,
               easing: Easing.bezier(...motionEasing.move),
             });

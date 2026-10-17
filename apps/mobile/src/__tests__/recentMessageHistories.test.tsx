@@ -38,6 +38,7 @@ vi.mock('react-native-reanimated', () => ({
   },
 }));
 vi.mock('react-native', () => ({
+  Platform: { OS: 'android', select: (values: Record<string, unknown>) => values.android ?? values.default },
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children, pointerEvents, accessibilityElementsHidden, ref, style, onLayout }: {
     children: ReactNode; pointerEvents?: string; accessibilityElementsHidden?: boolean; ref: Ref<unknown>; style?: unknown; onLayout?: () => void;
@@ -208,6 +209,12 @@ describe('resident five-task message lists outside route lifetimes', () => {
     await show(null);
     expect(container.querySelector('[data-drawer]')).toBeNull();
     expect(container.querySelector('[data-task="a"]')).not.toBeNull();
+  });
+  it('keeps the detail history above a resident list while the list is dragged', async () => {
+    await show('a');
+    const history = container.querySelector('[data-task="a"]')!;
+    const clip = history.closest<HTMLElement>('[data-layout*="zIndex"]');
+    expect(clip?.dataset.layout).toContain('"zIndex":1');
   });
   it('hosts route drawers after the outer resident task list on persistent layouts', async () => {
     remember('a');
