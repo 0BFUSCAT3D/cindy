@@ -83,6 +83,9 @@ afterEach(() => stopProviderShareRuntime());
 describe('same-account share management during account transitions', () => {
   it.each([
     createLink, ...mutations,
+    { action: 'get-run-limits' },
+    { action: 'set-run-limits', limits: { perDevice: 16, total: 64 } },
+    { action: 'reset-run-limits' },
     { action: 'owned', range: '7d' },
     { action: 'own-usage', providerId: 'anthropic', range: '7d' },
   ] satisfies ProviderShareManagementCommand[])('refuses $action at entry while teardown is pending', async (command) => {

@@ -136,7 +136,7 @@ describe('multiplexed poll', () => {
     await until(() => firstSink.done && secondSink.done);
   });
 
-  it('delivers every run exactly once with at most two polls in flight', async () => {
+  it.each([12, 130])('delivers %i runs exactly once with at most two polls in flight', async count => {
     const host = fakeHost();
     let inflight = 0;
     let peak = 0;
@@ -149,7 +149,7 @@ describe('multiplexed poll', () => {
         inflight -= 1;
       }
     });
-    const ids = Array.from({ length: 12 }, () => randomUUID());
+    const ids = Array.from({ length: count }, () => randomUUID());
     const logs = ids.map((runId) => host.add(runId));
     const sinks = ids.map((runId) => collector(runId));
     for (const sink of sinks) poller.register(sink.run);

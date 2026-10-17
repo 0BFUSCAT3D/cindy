@@ -160,6 +160,10 @@ beforeEach(() => {
     if (cmd.action === 'owned') return currentOwned;
     if (cmd.action === 'own-usage') return ownUsage();
     if (cmd.action === 'received') return [];
+    if (cmd.action === 'get-run-limits') return {
+      value: { perDevice: 16, total: 64 }, defaults: { perDevice: 16, total: 64 },
+      isCustomized: false, customizedKeys: [], usage: { total: 0, devices: 0, largestDevice: 0 },
+    };
     if (cmd.action === 'received-snapshot') return { ownerStamp: { dataOwnerId: null, ownerGeneration: 0 }, received: [], confirmedRegions: [] };
     if (cmd.action === 'set-member') return { ok: true };
     if (cmd.action === 'approve' || cmd.action === 'reject') {
@@ -193,6 +197,7 @@ beforeEach(() => {
             const action = cmd.request?.command?.action;
             if (action === 'owned') return currentOwned;
             if (action === 'own-usage') return ownUsage();
+            if (action === 'get-run-limits') return command(cmd.request?.command);
             if (action === 'approve' || action === 'reject') {
               currentOwned = { ...currentOwned, shares: currentOwned.shares.map((share) => ({ ...share, requests: [] })) };
               return { ok: true };

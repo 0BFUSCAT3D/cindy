@@ -451,6 +451,20 @@
       "rejectedBody": "{{name}} declined to share {{provider}}",
       "reshareTitle": "New Usage Request",
       "reshareBody": "{{name}} wants to use your shared {{provider}} through {{owner}}’s provider group"
+    },
+    "runLimits": {
+      "title": "Remote session limits",
+      "description": "Applies to all providers on this computer, including your other computers and devices using shared providers. Idle sessions count until released. Sessions run directly on this computer do not count.",
+      "perDevice": "Maximum sessions per connected device",
+      "total": "Maximum sessions across all connected devices",
+      "invalid": "Enter whole numbers from 1 to {{max}}. The per-device limit cannot exceed the total limit.",
+      "usage": "{{used}} / {{total}} sessions held by {{devices}} devices; the busiest device holds {{largest}}.",
+      "applyHint": "Changes apply immediately. Lowering a limit only blocks new sessions; existing sessions continue. Group relays count toward the directly connected device.",
+      "save": "Save",
+      "reset": "Restore defaults",
+      "saved": "Remote session limits saved",
+      "retry": "Reload",
+      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -11723,7 +11737,9 @@
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
-      "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page."
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
+      "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
+      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing."
     },
     "generatedFiles": {
       "title": "Files created this message",

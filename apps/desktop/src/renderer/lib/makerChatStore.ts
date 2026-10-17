@@ -1,3 +1,4 @@
+import { remoteAgentLimitErrorKey } from '../../shared/remoteAgentLimits';
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
 import { isComposerTypingRecently } from './composerTypingActivity';
@@ -350,11 +351,15 @@ function resolveEstimatedTurnCostUsd(
 /** Translation candidate only; callers must check their active i18n resources.
  * Unknown-code fallback text is diagnostic content, not curated guidance. */
 export function remoteErrorI18nKey(msg: string): string | undefined {
+  const limitKey = remoteAgentLimitErrorKey(msg);
+  if (limitKey) return limitKey;
   const parsed = parseAgentErrorCode(msg);
   return parsed ? `chat.remoteError.${parsed.code}` : undefined;
 }
 
 export function decodeRemoteErrorMessage(msg: string): string {
+  const limitKey = remoteAgentLimitErrorKey(msg);
+  if (limitKey) return i18n.t(limitKey);
   const parsed = parseAgentErrorCode(msg);
   return parsed
     ? i18n.t(`chat.remoteError.${parsed.code}`, { defaultValue: parsed.fallback })

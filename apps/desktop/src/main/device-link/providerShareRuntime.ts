@@ -1,3 +1,6 @@
+import { isRemoteAgentLimits } from '../../shared/remoteAgentLimits.js';
+import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
+import { remoteAgentLimitUsage } from './dispatch.js';
 /**
  * 供应商分享的本机接线：分享者与受邀者两侧运行时的起停、推送给 Renderer、系统通知，以及
  * Renderer 的命令通道。账号操作只接受本机应用窗口，不能经设备互联从别的电脑调用。
@@ -328,6 +331,12 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'Invalid command');
   const value = raw as Record<string, unknown>;
   switch (value.action) {
+    case 'get-run-limits':
+    case 'reset-run-limits':
+      return { action: value.action };
+    case 'set-run-limits':
+      if (!isRemoteAgentLimits(value.limits)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
+      return { action: value.action, limits: { perDevice: value.limits.perDevice, total: value.limits.total } };
     case 'owned':
       return { action: 'owned', range: usageRange(value.range) };
     case 'own-usage':
@@ -517,6 +526,15 @@ async function createLink(
 async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
   assertCurrent();
   switch (command.action) {
+    case 'get-run-limits':
+    case 'set-run-limits':
+    case 'reset-run-limits': {
+      if (command.action !== 'get-run-limits') {
+        await saveRemoteAgentLimits(command.action === 'reset-run-limits' ? null : command.limits);
+        assertCurrent();
+      }
+      return { ...readRemoteAgentLimitsState(), usage: remoteAgentLimitUsage() };
+    }
     case 'owned':
       if (running) markProviderShareHostActive(60_000);
       return ownerState(command.range);
