@@ -18933,6 +18933,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       const expectSample = (outputTokens: number, generationDurationMs: number) =>
         expect(handle.getUsageSnapshot()).toMatchObject({
           outputTokens, generationDurationMs, generationReliable: true,
+          tokenSpeed: { tokens: outputTokens, elapsedMs: generationDurationMs, rate: 100, streaming: true },
         });
       expectSample(100, 1_000);
       const tool = { id: 'tool-1', type: 'mcpToolCall', server: 'test', tool: 'read', arguments: {} };
@@ -18973,6 +18974,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       expect(events.find((event) => event.type === 'done')?.data.usage.durationMs).toBe(5_000);
       expect(events.filter((event) => event.type === 'status').at(-1)?.data).toMatchObject({
         status: 'Done', outputTokens: 500, generationDurationMs: 5_000,
+        tokenSpeed: { tokens: 500, elapsedMs: 5_000, average: 100, streaming: false },
       });
       await handle.send({ type: 'user', content: 'next turn' });
       expect(handle.getUsageSnapshot().outputTokens).toBe(0);
