@@ -466,6 +466,14 @@ describe('virtual workspace', () => {
     expect(posix.localGlobFromAgent('/home/agent/workspace/\\*.lock')).toBe(literal + '/\\*.lock');
   });
 
+  it.skipIf(process.platform === 'win32')('escapes a backslash in a POSIX local directory name when mapping absolute sandbox globs', () => {
+    // POSIX 目录名可以含反斜杠；Codex 的 POSIX glob 把它当转义符，不转义的话禁止规则会对不上真实目录。
+    const project = path.join(root, 'project\\name');
+    fs.mkdirSync(project);
+    const workspace = new ExecutorWorkspace({ workingDir: project, aliases: [{ from: 'C:\\Agent\\mirror\\workspace', to: project }] });
+    expect(workspace.localGlobFromAgent('C:\\Agent\\mirror\\workspace\\**\\*.env')).toBe(root + '/project\\\\name/**/*.env');
+  });
+
   it('maps Codex sandbox permissions from a POSIX agent and keeps deny rules that are valid on this computer', async () => {
     const { workspace, project, executor } = setup('/home/agent/workspace');
     const sandbox = {
