@@ -35,7 +35,7 @@ import {
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
 import { useRemoteBots } from './useRemoteBots';
 import { useCompanionCloud } from './companionCloudStore';
-import { cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from './companionCloudPresentation';
+import { cloudRemoteBots, isCloudCompanionRemote, withoutCloudCompanions, withoutShadowedBots } from './companionCloudPresentation';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
 import { BotConnectionStatus } from './BotConnectionStatus';
@@ -45,11 +45,12 @@ import { BotAvatar } from './BotAvatar';
 import { BotCreateMenu } from './BotCreateMenu';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
+import { BotGroupSidebarAvatar } from './BotGroupAvatars';
 import { refreshBotGroups, useBotGroupList } from './botGroupStore';
 import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 import { chatErrorKey } from './chatError';
 import { subscribeBotReadState, getBotLastReadAtMap, isBotGroupUnread } from './botReadState';
-import { withoutBotGroupLanes } from './botGroupLane';
+import { withoutBotHiddenLanes } from './botGroupLane';
 import {
   botListSubtitle,
   botListTimestampAt,
@@ -109,26 +110,6 @@ function useAvatarRowCapacity(ref: RefObject<HTMLDivElement | null>, active: boo
     return () => observer.disconnect();
   }, [ref, active]);
   return width > 0 ? Math.max(1, Math.floor((width + 8) / AVATAR_SLOT_PX)) : Number.POSITIVE_INFINITY;
-}
-
-/** 群聊在头像行里用两位成员叠放,和单聊头像一眼可分。 */
-function GroupMiniAvatar({ members }: { members: readonly Parameters<typeof BotAvatar>[0]['bot'][] }) {
-  const [first, second] = members;
-  if (!first || !second) {
-    return (
-      <span aria-hidden className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--surface-chip)] text-[var(--sidebar-list-muted)]">
-        <Users size={14} strokeWidth={2} />
-      </span>
-    );
-  }
-  return (
-    <span aria-hidden className="relative block h-7 w-7">
-      <BotAvatar bot={first} size="xs" className="absolute left-0 top-0 h-[18px] w-[18px] text-10" />
-      <span className="absolute bottom-0 right-0 flex rounded-full border-[1.5px] border-sidebar">
-        <BotAvatar bot={second} size="xs" className="h-[18px] w-[18px] text-10" />
-      </span>
-    </span>
-  );
 }
 
 /**
@@ -243,13 +224,16 @@ export function TeammatesSection() {
     const canonicalSessionId = canonicalBotSessionId(bot);
     const canonicalActivity = canonicalSessionId ? islandActivity.get(canonicalSessionId) : undefined;
     if (canonicalActivity?.phase === 'running') return canonicalActivity;
-    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」。
-    return withoutBotGroupLanes(bot.sessions).map((session) => islandActivity.get(session.id))
+    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」;
+    // IM 专线在 IM 里回复,同样不点亮这一行。
+    return withoutBotHiddenLanes(bot.sessions).map((session) => islandActivity.get(session.id))
       .find((activity) => activity?.phase === 'running');
   };
   // 伙伴搜索并入侧栏总搜索(TeammateSearchResults),段内不再单独筛选。
   const roster = partitionBotRoster(rosterBots, { query: '', showHidden });
-  const cindyOptions = cindyDeviceOptions(bots, remoteBots, devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
+  // A cloud companion is one row wherever it runs; only per-computer Cindys still merge into one entry.
+  const cindyOptions = cindyDeviceOptions(withoutCloudCompanions(bots, cloud), withoutCloudCompanions(remoteBots, cloud),
+    devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
   const hasMultipleCindys = cindyOptions.length > 1;
   const routeCindy = cindyOptions.find(option => option.key === cindyDeviceKey({ id: botId ?? '', deviceId }));
   // Follow the open Cindy chat; otherwise the local-first roster is the default.
@@ -552,7 +536,7 @@ export function TeammatesSection() {
                       )}
                     >
                       {entry.kind === 'group' ? (
-                        <GroupMiniAvatar members={entry.group.members} />
+                        <BotGroupSidebarAvatar members={entry.group.members} compact />
                       ) : (entry.kind === 'cindy' ? currentCindy?.bot : entry.bot) ? (
                         <BotAvatar bot={(entry.kind === 'cindy' ? currentCindy?.bot : entry.bot)!} size="sm" />
                       ) : null}
@@ -612,7 +596,7 @@ export function TeammatesSection() {
                   selected={selected} typing={Boolean(activity || ('deviceId' in bot && bot.online && bot.generation))} subtitle={subtitleText}
                   timestamp={formatBotListTimestamp(local
                     ? botListTimestampAt({ lastMessageAt: local.lastMessageAt, working: Boolean(activity) }, now)
-                    : 'activityAt' in bot ? bot.activityAt : 0, now)}
+                    : 'activityAt' in bot ? bot.activityAt : 0, now, t)}
                   onOpen={() => navigate(currentCindy.route)}
                   onSelect={option => navigate(option.route)}
                   onContextMenu={local ? event => {
@@ -636,14 +620,16 @@ export function TeammatesSection() {
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
                     onClick={() => navigate(`/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`)}
                     className={cn('flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-sidebar-item-active text-sidebar-item-active-foreground' : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover')}>
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} quiet={isCloudCompanionRemote(cloud, bot)} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate text-14 leading-5">{bot.name}</span>
-                      <BotConnectionStatus inline online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />
-                      <span className="truncate text-12 leading-4 text-[var(--sidebar-list-muted)]">{bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} /> : bot.preview || bot.description || t('bots.list.startChat')}</span>
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <span className="min-w-0 truncate text-14 leading-5">{bot.name}</span>
+                        <BotConnectionStatus inline online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} quiet={isCloudCompanionRemote(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]'} />
+                      </span>
+                      <span className={cn('truncate text-12 leading-4', selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]')}>{bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} /> : bot.preview || bot.description || t('bots.list.startChat')}</span>
                     </span>
                     {!selected && isRemoteBotUnread(bot) ? <span aria-label={t('bots.list.unread', { count: 1 })} className="size-[7px] shrink-0 rounded-full bg-[var(--bot-unread-bg)]" /> : null}
-                    <span className="w-10 shrink-0 self-start pt-0.5 text-right text-11 tabular-nums text-[var(--sidebar-list-muted)]">{formatBotListTimestamp(bot.activityAt, now)}</span>
+                    <span className={cn('min-w-10 shrink-0 self-start whitespace-nowrap pt-0.5 text-right text-11 tabular-nums', selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]')}>{formatBotListTimestamp(bot.activityAt, now, t)}</span>
                   </button>
                 );
               }
@@ -666,6 +652,7 @@ export function TeammatesSection() {
               const timestamp = formatBotListTimestamp(
                 botListTimestampAt({ lastMessageAt: bot.lastMessageAt, working: typing }, now),
                 now,
+                t,
               );
               // The selected pill is a light/dark gray fill, not an inverse one,
               // so muted text on it would sit at a far lower contrast than on
@@ -685,8 +672,8 @@ export function TeammatesSection() {
                   {/* 定稿原型 `.row-open{padding:8px 10px;gap:10px}`:整行只有这一个
                       可点区域,左右内边距对称。行尾曾经还挂过一列齿轮/状态图标,
                       它下线后 `pr-2` 的占位残留了下来 —— 右边比左边窄一截,
-                      单看不出问题,和左侧头像一比就是歪的。数值基线见
-                      __tests__/botsSidebarSpacing.test.ts。 */}
+                      单看不出问题,和左侧头像一比就是歪的。这里的行内边距与下方按钮样式
+                      保持同一套几何基线。 */}
                   <button
                     type="button"
                     onClick={() => navigate(`/bots/${bot.id}`)}
@@ -726,6 +713,7 @@ export function TeammatesSection() {
                         >
                           {botRosterLabel(bot, bots)}
                         </span>
+                        {!typing && <BotConnectionStatus inline className={selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]'} />}
                         {/* 权限模式仍不在聊天列表挂警告；这里仅显示 Hermes 风格、
                             已持久化且需要用户处理的运行失败。 */}
                         {bot.needsAttention ? (
@@ -736,7 +724,6 @@ export function TeammatesSection() {
                           />
                         ) : null}
                       </span>
-                      {!typing && <BotConnectionStatus inline className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />}
                       <span className="flex min-w-0 items-center gap-2">
                         {/* 未读只强调名字与数字，预览保持次级，避免整行同时争抢注意力。 */}
                         <span
@@ -755,11 +742,9 @@ export function TeammatesSection() {
                       </span>
                     </span>
                     {/*
-                      Grok / Hermes 都把消息行当成完整的联系人入口。时间与未读因此
-                      有自己的固定右列，不再跟名字和预览抢剩余宽度；无论名字多长、
-                      有没有未读，所有数字都落在同一条垂直线上。
+                      时间与未读共用右对齐列；相对时间按文字宽度撑开，避免折行。
                     */}
-                    <span className="flex w-10 shrink-0 self-stretch flex-col items-end justify-between py-0.5">
+                    <span className="flex min-w-10 shrink-0 self-stretch flex-col items-end justify-between whitespace-nowrap py-0.5">
                       <span className={cn('min-h-4 text-11 tabular-nums', mutedClass)}>{timestamp}</span>
                       <span className="flex min-h-4 items-center justify-end">
                         {unread > 0 ? (

@@ -236,13 +236,14 @@ import { resolveDesktopClaudeSubagentModelAccess } from './subagent-model-access
 import { claudeSubagentUsageBridge } from './claude-subagent-usage-bridge.js';
 import { createAutoPermissionReviewer } from './auto-permission-reviewer.js';
 import { createToolLoopReviewer } from './tool-loop-reviewer.js';
-import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
+import { createCustomAutoReviewFallback, requestUtilityText } from '../utility-model/oneShotCandidates.js';
 import {
   AUTO_REVIEW_ROUTER_GUARD_TIMEOUT_MS,
   createAutoReviewModelRouter,
 } from './auto-review-model-router.js';
 import { ensureCurrentAccountProviderReadiness } from './account-provider-readiness-ensure.js';
 import { ACCOUNT_PROVIDER_NOT_READY_CODE } from '../../shared/accountProviderReadiness.js';
+import { listBotImConnectionsForBot } from '../im/shared/botImConnectionStore.js';
 import {
   armCodexHttpRecovery,
   clearCodexProxyAuthInjection,
@@ -428,6 +429,7 @@ export function setProviderAccessRuntimeRefreshListener(listener: (() => void) |
 
 const requestAutoReviewText = createAutoReviewModelRouter({
   logger: desktopMakerLogger,
+  createAuxiliaryFallback: createCustomAutoReviewFallback,
 });
 
 let autoReviewContextResolver: AutoReviewDelegate['prepareRequest'];
@@ -2728,6 +2730,9 @@ export function getMaker(): Maker {
         return result.skills;
       },
       listMcpServers: listBotRuntimeMcpServers,
+      // 伙伴绑了哪些平台的机器人(不含凭证): 主任务据此挂渠道原生 API 工具(见 hydrate 内注释)。
+      listBotImChannels: ({ botId }) =>
+        [...new Set(listBotImConnectionsForBot(botId).map((connection) => connection.channel))],
       listToolsets: async ({ botId, agentKind, workingDir, remoteHostId }) => {
         const registry = getPluginRegistry();
         return Promise.all(
