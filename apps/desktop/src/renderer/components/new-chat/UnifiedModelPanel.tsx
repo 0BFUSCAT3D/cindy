@@ -456,7 +456,11 @@ export function UnifiedModelPanel({
   const storedRecentModels = useRecentModels();
   // official 入口(设置页 / create-agent)刻意不展示「最近」:那里的选择动作不记录(见
   // `recordRecentUsage`)也不该被个人流水影响 —— 与收藏区同一条策略门。
-  const recentModels = selectionPolicy === 'official' ? NO_RECENT : storedRecentModels;
+  // 远程目录(device-link 任务 / 远程 Agent 浏览另一台 / 分享供应商)同样不展示:
+  // 记录没有设备字段,本机流水拿到被控端目录会把同 provider+modelId 的条目解析成
+  // 远端快捷方式(点去另一台跑、点星改远端收藏)。收藏有远端仹本可同步,最近没有,
+  // 所以直接隐藏而非换数据源(2026-10-17 review P1)。
+  const recentModels = selectionPolicy === 'official' || deviceId ? NO_RECENT : storedRecentModels;
   // 引擎 override / 深度 / Fast 三份 store 的版本号:任一变化都要重算行三元组与浮层
   // (其它窗口的 storage 事件、device-link 推送同样经这两个版本号进来)。远程 Agent 的档位记忆
   // 是另一份 store,版本号并进 memoryVersion。

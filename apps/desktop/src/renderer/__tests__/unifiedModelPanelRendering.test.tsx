@@ -4426,6 +4426,33 @@ describe('统一面板 · 最近使用记录与陈列', () => {
     expect(screen.getByText('还没有最近使用的模型')).toBeTruthy();
   });
 
+  it('远程目录(device-link / 浏览另一台)不展示本机「最近」(2026-10-17 review P1)', async () => {
+    // 远程目录与本地同源(同 provider+modelId):不设门时本机历史会解析成远端快捷方式
+    // (点去另一台跑、点星改远端收藏)。记录没有设备字段,读侧与写侧同一道 deviceId 门。
+    remoteProvidersRef.providers = providersRef.providers.map((provider) => ({
+      ...provider,
+      remoteInvocationEnabled: true,
+    }));
+    try {
+      recordRecentModel(
+        { providerId: 'openai', modelId: 'gpt-5.6', agent: 'cc', effort: 'high' },
+        1000,
+      );
+      renderPanel({ deviceId: 'device-b' });
+      await act(async () => {
+        fireEvent.click(document.querySelector('[data-rail-item="recent"]') as HTMLElement);
+      });
+      expect(screen.getByText('还没有最近使用的模型')).toBeTruthy();
+      const list = screen.getByRole('listbox');
+      expect(within(list).queryByText('GPT-5.6')).toBeNull();
+      expect(list.querySelector('[data-unified-anchor^="recent::"]')).toBeNull();
+    } finally {
+      remoteProvidersRef.providers = [];
+    }
+    // 本机历史不丢:回到本机目录仍在。
+    expect(listRecentModels()).toHaveLength(1);
+  });
+
   it('点最近行按该副本的完整配置回调(引擎 / 深度一并带出)', async () => {
     recordRecentModel(
       { providerId: 'openai', modelId: 'gpt-5.6', agent: 'cc', effort: 'high' },
