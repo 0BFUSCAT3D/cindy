@@ -13,7 +13,7 @@
  * window.electronAPI 用 vi.stubGlobal 注入（node 环境，无 jsdom）。
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type InvokeMock = ReturnType<typeof vi.fn>;
 
@@ -23,8 +23,15 @@ let transport: typeof import('../lib/fileBrowserTransport');
 let presenceCallbacks: Array<(snapshot: { deviceId: string; online: boolean }) => void>;
 let statusCallbacks: Array<(payload: { status: string }) => void>;
 
-beforeEach(async () => {
-  // 模块级重连代次与订阅标志要按测试隔离(否则第一个测试的订阅会跨用例残留)。
+/**
+ * 显式重启边界（非 hook）：每个用例开头调用，拿到一份全新的 transport 模块。
+ * fileBrowserTransport 的模块级重连代次、订阅标志与 per-deviceId 探测缓存均无
+ * prod 重置入口，只能靠重启模块隔离跨用例残留；放在 beforeEach 里属于「hook
+ * 重载模块」（无论写什么理由都被 test-hygiene 禁止），所以收拢到这里由用例
+ * 显式调用。
+ */
+async function freshTransport(): Promise<void> {
+  // reset-modules: 按用例隔离模块级重连代次、订阅标志与探测缓存
   vi.resetModules();
   invokeMock = vi.fn();
   presenceCallbacks = [];
@@ -51,7 +58,7 @@ beforeEach(async () => {
     },
   });
   transport = await import('../lib/fileBrowserTransport');
-});
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -63,6 +70,7 @@ const freshDevice = () => `reveal-${Date.now().toString(36)}-${seq++}`;
 
 describe('deviceSupportsRevealIgnoredDirs', () => {
   it('新被控端:true,并缓存(不重复探测)', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockResolvedValue({ ok: true, gzip: true, showIgnoredDirs: true });
 
@@ -74,6 +82,7 @@ describe('deviceSupportsRevealIgnoredDirs', () => {
   });
 
   it('老被控端(caps 返回 unknown op):false,且不缓存(升级后重连能自愈)', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockResolvedValue({ ok: false, message: 'unknown op: caps' });
 
@@ -88,6 +97,7 @@ describe('deviceSupportsRevealIgnoredDirs', () => {
   });
 
   it('caps 有响应但没带能力位(中间版本):false', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockResolvedValue({ ok: true, gzip: true });
 
@@ -95,6 +105,7 @@ describe('deviceSupportsRevealIgnoredDirs', () => {
   });
 
   it('老端无 remote-op channel(CHANNEL_NOT_ALLOWED):确定性 false', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockRejectedValue(new Error('DEVICE_LINK_CHANNEL_NOT_ALLOWED'));
 
@@ -102,6 +113,7 @@ describe('deviceSupportsRevealIgnoredDirs', () => {
   });
 
   it('瞬态失败:返回 null(不是 false),不缓存,恢复后重探拿到真结论', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockRejectedValueOnce(new Error('device link tunnel is not connected'));
 
@@ -119,6 +131,7 @@ describe('deviceSupportsRevealIgnoredDirs', () => {
    * reconnect 流拿代次。
    */
   it('重连(即使没有任何 hook 观察)作废肯定结论缓存', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockResolvedValue({ ok: true, showIgnoredDirs: true });
 
@@ -143,6 +156,7 @@ describe('deviceSupportsRevealIgnoredDirs', () => {
   });
 
   it('relay 恢复 online 同样作废缓存', async () => {
+    await freshTransport();
     const deviceId = freshDevice();
     invokeMock.mockResolvedValue({ ok: true, showIgnoredDirs: true });
     await expect(transport.deviceSupportsRevealIgnoredDirs(deviceId, '/repo')).resolves.toBe(true);

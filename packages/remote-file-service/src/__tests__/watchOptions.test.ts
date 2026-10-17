@@ -93,6 +93,9 @@ async function fireEvent(
   filename: string,
 ): Promise<RemoteFileTreeEvent[]> {
   record.cb?.(eventType, filename);
+  // 等生产代码真实的 coalesce 窗口（50ms）吐批次 —— 这是被测行为本身，
+  // 换 fake timers 会改掉 coalescing 的真实计时语义。
+  // real-wait: 等 coalesce 窗口真实计时器把批次吐出
   await new Promise((resolve) => setTimeout(resolve, 120));
   return emitted;
 }
