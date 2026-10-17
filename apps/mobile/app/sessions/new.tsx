@@ -7,7 +7,7 @@ import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreated
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
 import { isRemoteTaskSuggestionId } from '@/session/remoteTaskSuggestionsModel';
 import { mobileDurableOutbox, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
-import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
+import { persistNewSessionCreationDraft } from '@/session/persistNewSessionCreationDraft';
 import { buildOutboxItem, createOutboxClientId } from '@/session/sessionOutbox';
 import type { DurableOutboxRecord } from '@/session/durableOutbox';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
@@ -114,6 +114,7 @@ import {
 import { useAuth } from '@/auth/AuthContext';
 import { discardMobileUploadedAttachment } from '@/session/mobileAttachmentUpload';
 import { discardNewSessionUploadedAttachments } from '@/session/newSessionAttachmentCleanup';
+import { useAutoResumeNewSessionDraft, useNewSessionDurableEdit } from '@/session/useNewSessionDraftRecovery';
 import { goBackGuarded } from '@/utils/backGuard';
 import { buildMobileImageAttachmentCandidate } from '@/session/mobileImageAttachment';
 import { useMobileLocalAttachments } from '@/session/useMobileLocalAttachments';
@@ -242,7 +243,6 @@ import {
 import { useTranslation } from 'react-i18next';
 import {
   createNewSessionId,
-  completeNewSessionDurableEdit,
   drainStashedNewSessionDraft,
   hasLiveNewSessionCreation,
   holdNewSessionCreationDraft,
@@ -505,6 +505,7 @@ export default function NewRemoteSessionScreen() {
     draft?: string;
     recoverySessionId?: string;
     editSessionId?: string;
+    creationError?: string;
   }>();
   const routeDeviceId = String(params.deviceId ?? '');
   const routeDeviceName = String(params.deviceName ?? routeDeviceId);
@@ -609,7 +610,10 @@ export default function NewRemoteSessionScreen() {
   const [creating, setCreating] = useState(false);
   const [createStartedAt, setCreateStartedAt] = useState<number | null>(null);
   const [createPhase, setCreatePhase] = useState<SlowSendPhase>('preparing');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    const creationError = readRouteString(params.creationError);
+    return creationError ? t('session.screen.createFailedNotice', { message: creationError }) : null;
+  });
   const [capabilities, setCapabilities] = useState<MobileAgentCapabilities | null>(null);
   const [capabilitiesLoading, setCapabilitiesLoading] = useState(false);
   const [, setCapabilitiesError] = useState<string | null>(null);
@@ -809,7 +813,7 @@ export default function NewRemoteSessionScreen() {
   // composer 托盘里正被全屏查看的图片附件 id(null = 关闭)。
   const [composerPreviewAttachmentId, setComposerPreviewAttachmentId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  // 创建失败后返回编辑：只领取路由指定任务与设备的草稿，普通新建页不领取。
+  // 创建失败后返回编辑；再次打开空白新建页时，继续同设备/项目的草稿。
   // 附件是已上传完成的引用,原样回列即可继续使用;notice 是「有内容没能带回」的告知
   // (创建期间发出的消息可能超出单条上限,装不下的只能丢,但不能静默丢,review P1)。
   // 声明在 attachmentError 之后:notice 就落在附件错误行上。
@@ -849,34 +853,30 @@ export default function NewRemoteSessionScreen() {
     router.replace('/devices');
     return true;
   }, [router]);
-  useEffect(() => {
-    const owner = outboxOwner;
-    if (leaveForeignOutboxRecovery()) return;
-    const sid = String(params.recoverySessionId ?? '');
-    if (!sid) return;
-    let active = true;
-    let restored = false;
-    let releaseEditClaim: (() => void) | undefined;
-    const restore = () => {
-      if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
-      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation
-        && r.accountId === owner.accountKey && r.deviceId === routeDeviceId);
-      if (!record?.creation || record.prepared) return;
-      restored = true;
+  const hasRecoveryInput = () => !!(outboxRecoveryRef.current
+    || firstMessageRef.current || attachmentsRef.current.length || hasAttachmentInput()
+    || incomingShareReceivedRef.current || userTouchedDeviceRef.current
+    || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current);
+  const { edit: editRecoveredDraft, flush: flushRecoveredDraft } = useNewSessionDurableEdit({
+    sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
+    getToken: auth.getAccessToken,
+    hasInput: hasRecoveryInput,
+    leaveForeignRecovery: leaveForeignOutboxRecovery,
+    onError: error => setError(formatRemoteError(error)),
+    onEdited: record => { outboxRecoveryRef.current = record; },
+    onRestore: record => {
       outboxRecoveryRef.current = record;
       userTouchedDeviceRef.current = true;
       restoreCreationDraft(record.creation.draft,
         record.item.attachmentSlots.filter((a): a is RemoteSerializedAttachment => a !== null),
         { enabled: record.creation.planModeArm, restorePermissionMode: record.creation.restorePermissionMode },
         record.deviceId);
+      if (record.creation.notice) setAttachmentError(record.creation.notice);
+      if (record.error) setError(t('session.screen.createFailedNotice', { message: record.error }));
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
-      releaseEditClaim = completeNewSessionDurableEdit(sid, record.deviceId);
-    };
-    const unsubscribe = mobileDurableOutbox.subscribe(restore);
-    void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; unsubscribe(); releaseEditClaim?.(); };
-  }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
+    },
+  });
   useEffect(() => {
     const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
     if (!stashed) return;
@@ -915,6 +915,7 @@ export default function NewRemoteSessionScreen() {
     discardAllPendingUploads,
     waitForPendingUploads,
     getPendingUploadCount,
+    hasAttachmentInput,
     getUploadedSource,
     getUploadedAttachmentId,
     releaseUploadedSources,
@@ -953,7 +954,16 @@ export default function NewRemoteSessionScreen() {
     setAttachmentError(null);
   }), [auth.getAccessToken, discardAllPendingUploads]);
   const incomingShareBatch = useIncomingShareBatch();
+  const incomingShareReceivedRef = useRef(false);
+  if (incomingShareBatch) incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
+  useAutoResumeNewSessionDraft({
+    enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
+      || visualInitialDraft || !newSessionPreferencesLoaded),
+    deviceId: selectedDeviceId, workingDir: initialWorkingDir, owner: outboxOwner,
+    hasInput: hasRecoveryInput,
+    onResume: next => router.setParams(next),
+  });
   useEffect(() => {
     if (!isShareTargetFocused || !auth.isAuthenticated || !incomingShareBatch
       || getMobileAuthOwner().accountId !== auth.user?.id) return;
@@ -1885,10 +1895,11 @@ export default function NewRemoteSessionScreen() {
   const patchDraft = useCallback((patch: Partial<NewSessionDraft>) => {
     if (patch.firstMessage !== undefined) {
       firstMessageRef.current = patch.firstMessage;
+      if (!creatingRef.current) editRecoveredDraft({ firstMessage: patch.firstMessage });
       voiceDictionaryLearningTrackerRef.current?.inspectDraft(patch.firstMessage);
     }
     setDraft((current) => ({ ...current, ...patch }));
-  }, []);
+  }, [editRecoveredDraft]);
 
   const openPluginPalette = useCallback(() => {
     const next = composerDocumentProjectedText(appendComposerPluginTrigger(textComposerDocument(firstMessageRef.current)));
@@ -1916,9 +1927,10 @@ export default function NewRemoteSessionScreen() {
   const setFirstMessageDraft = useCallback((next: SetStateAction<string>) => {
     const value = typeof next === 'function' ? next(firstMessageRef.current) : next;
     firstMessageRef.current = value;
+    if (!creatingRef.current) editRecoveredDraft({ firstMessage: value });
     setDraft((current) => ({ ...current, firstMessage: value }));
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(value);
-  }, []);
+  }, [editRecoveredDraft]);
 
   const handleFirstMessageInputContentSizeChange = useCallback((event: TextInputContentSizeChangeEvent) => {
     const nextHeight = Math.max(
@@ -4208,6 +4220,7 @@ export default function NewRemoteSessionScreen() {
   }, [setFirstMessageDraft]);
 
   const removeAttachment = useCallback((id: string) => {
+    if (!creatingRef.current) editRecoveredDraft({ removeAttachmentId: id });
     // 已上传中转区的对象移除时 best-effort 回收,避免未发送附件在 OSS 留孤儿(同会话页)。
     const removed = attachments.find((item) => item.id === id);
     if (removed) discardMobileUploadedAttachment(removed, { getToken: () => auth.getAccessToken() });
@@ -4230,7 +4243,7 @@ export default function NewRemoteSessionScreen() {
     // 标注附件退场时同步清「矢量笔迹 + 原图副本」的再编辑真相。
     composerAnnotationsRef.current?.forgetAttachment(id);
     releaseUploadedSources([id]);
-  }, [attachments, auth]);
+  }, [attachments, auth, editRecoveredDraft]);
 
   // 圈点标注(托盘再编辑)与附件管线的接线(新建会话页无聊天场景,chat 配置不用)。
   const composerAnnotations = useComposerImageAnnotations({
@@ -4496,6 +4509,10 @@ export default function NewRemoteSessionScreen() {
       const deviceAtCreate = selectedDeviceId;
       if (selectedDeviceRef.current !== deviceAtCreate) return;
       const ensureDeviceAlive = (): boolean => selectedDeviceRef.current === deviceAtCreate;
+      // A full submission below saves the current form again, so an earlier
+      // incremental write failure must not permanently block another attempt.
+      await flushRecoveredDraft().catch(() => undefined);
+      if (!isCurrentOwner() || !ensureDeviceAlive()) return;
       if (voiceRecordingActiveRef.current || voiceState === 'listening') {
         const latestDraftText = await finishVoiceRecording();
         if (!isCurrentOwner()) return;
@@ -4644,7 +4661,7 @@ export default function NewRemoteSessionScreen() {
       const useDurableCreation = legacyPlanRestore === null;
       if (recovering && !useDurableCreation) throw new Error(t('session.outbox.legacyPlanRecovery'));
       if (useDurableCreation) {
-        let firstRecord: DurableOutboxRecord = {
+        const firstRecord: DurableOutboxRecord = {
           version: 1, accountId: authOwnerAtCreate.accountKey, deviceId: deviceIdSnapshot,
           ...(recoveryIdentity ? { storageSessionId: recoveryIdentity.storageSessionId } : {}),
           createdAt: recovering?.createdAt ?? Date.now(), state: recovering ? 'failed' : 'queued',
@@ -4662,30 +4679,12 @@ export default function NewRemoteSessionScreen() {
             readyPreviews: sendAttachments.map((a) => attachmentPreviews[a.id] ?? null), claimedUploads: [],
           }),
         };
-        let filesCommitted = false;
-        try {
-          for (let slot = 0; slot < sendAttachments.length; slot++) {
-            const attachment = sendAttachments[slot];
-            const source = getUploadedSource(attachment.id);
-            const oldSlot = recovering?.item.attachmentSlots.findIndex((a) => a?.id === attachment.id);
-            const oldUpload = recovering?.uploads.find((u) => u.slot === oldSlot);
-            if (source) firstRecord.uploads.push(await retainOutboxFile(firstRecord, slot, source));
-            else if (recovering && oldUpload) firstRecord.uploads.push(await retainOutboxFile(firstRecord, slot, {
-              ...oldUpload, uri: durableOutboxUploadUri(recovering, oldUpload),
-            }));
-            else if (outboxAttachmentNeedsLocalBytes(attachment)) throw new Error(t('session.screen.attachmentsNotCarriedBack', { count: 1 }));
-          }
-          if (!isCurrentOwner() || !ensureDeviceAlive()) return;
-          if (recovering) {
-            const latest = getCurrentMobileOutboxRecords().find((r) => r.item.clientId === firstMessageClientId && r.item.sessionId === recovering.item.sessionId);
-            if (latest !== recovering || latest.prepared) throw new Error('OUTBOX_STALE_WRITE');
-            firstRecord = await mobileDurableOutbox.update(latest, firstRecord);
-          } else await mobileDurableOutbox.add(firstRecord);
-          filesCommitted = true;
-        } finally {
-          if (!filesCommitted) await removeRetainedOutboxFiles(firstRecord).catch(() => undefined);
-        }
-        outboxRecoveryRef.current = firstRecord;
+        const saved = await persistNewSessionCreationDraft({
+          record: firstRecord, recovering, getUploadedSource,
+          isCurrent: () => isCurrentOwner() && ensureDeviceAlive(),
+        });
+        if (!saved) return;
+        outboxRecoveryRef.current = saved;
         if (!isCurrentOwner() || !ensureDeviceAlive()) return;
         releaseUploadedSources(sendAttachments.map((a) => a.id));
       }
@@ -5094,6 +5093,7 @@ export default function NewRemoteSessionScreen() {
     draft,
     remoteAgentPick,
     finishVoiceRecording,
+    flushRecoveredDraft,
     leaveForeignOutboxRecovery,
     getPresenceAvailability,
     maker,

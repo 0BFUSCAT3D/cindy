@@ -20,11 +20,13 @@ export interface MobileHtmlPreview {
   url: string;
   documents: string[];
   onDemand?: boolean;
+  /** One background check of the entry HTML; failures leave the current page intact. */
+  updated?: Promise<MobileHtmlPreview | null>;
   close(): Promise<void>;
 }
 export interface HtmlPreviewProgress extends TransferProgress { name: string }
 type ProgressListener = (progress: HtmlPreviewProgress) => void;
-export type PrepareMobileHtmlPreview = (absPath: string, signal: AbortSignal, onProgress?: ProgressListener) => Promise<MobileHtmlPreview>;
+export type PrepareMobileHtmlPreview = (absPath: string, signal: AbortSignal, onProgress?: ProgressListener, preferCache?: boolean) => Promise<MobileHtmlPreview>;
 
 type HtmlPreviewDeps = RemoteAbsFileFetchDeps & {
   maker: MobileMakerTransport;
@@ -95,7 +97,7 @@ async function materializeResource(deps: HtmlPreviewDeps, root: string, relative
       if (html !== undefined) {
         destination.write(withSnapshotHtmlCsp(html));
       }
-      return { filename, mime, bytes: media.size,
+      return { filename, mime, bytes: media.size, html,
         route: media.inlineBase64 !== undefined ? 'inline' : media.url.startsWith('file://') ? 'direct' : 'upload' };
     } finally { if (media.url.startsWith('file://')) releasePeerMedia(media.url); }
   } catch (error) {
@@ -128,16 +130,18 @@ function sweepInterruptedSnapshots() {
 
 /** Source identity stays in the transport; no device credentials enter the snapshot. */
 export async function prepareMobileHtmlPreview(absPath: string, deps: HtmlPreviewDeps,
-  signal: AbortSignal, onProgress?: ProgressListener): Promise<MobileHtmlPreview> {
+  signal: AbortSignal, onProgress?: ProgressListener, preferCache = true): Promise<MobileHtmlPreview> {
   if (!native) throw new Error('HTML_PREVIEW_NATIVE_UNAVAILABLE');
   const { root, entry } = htmlSnapshotLocation(absPath);
   if (/[\\:\0\r\n]/.test(entry) || entry.startsWith('.')) throw new Error('NOT_FOUND');
   const cache = createMobileHtmlPreviewCache(deps.deviceId, root, deps.ssh);
   const lifetime = new AbortController();
   let active: MobileHtmlPreview | undefined;
+  let refreshed: MobileHtmlPreview | null | undefined;
   const abort = () => {
     lifetime.abort();
     void active?.close().catch(() => {});
+    void refreshed?.close().catch(() => {});
   };
   signal.addEventListener('abort', abort, { once: true });
   const unsubscribe = subscribeMobileAuthOwner(() => { if (cache && !cache.current()) abort(); });
@@ -153,16 +157,25 @@ export async function prepareMobileHtmlPreview(absPath: string, deps: HtmlPrevie
   });
   try {
     const preview = native.startOnDemand && native.resolveRequest
-      ? await prepareOnDemand(absPath, deps, lifetime.signal, onProgress, cache)
-      : await prepareLegacy(absPath, deps, lifetime.signal, onProgress, cache);
+      ? await prepareOnDemand(absPath, deps, lifetime.signal, onProgress, cache, preferCache)
+      : await prepareLegacy(absPath, deps, lifetime.signal, onProgress, cache, preferCache);
     active = preview;
     if (lifetime.signal.aborted) { await preview.close(); throw new Error('PREVIEW_CANCELLED'); }
-    return { ...preview, close: async () => { dispose(); await preview.close(); } };
+    const close = async () => { dispose(); await preview.close(); await refreshed?.close(); };
+    const updated = preview.updated?.then(async (next) => {
+      refreshed = next;
+      if (lifetime.signal.aborted) { await next?.close(); return null; }
+      return next ? { ...next, close } : null;
+    });
+    // The original visit owns both immutable copies. Keeping the old server until
+    // exit avoids killing in-flight WebKit reads while React commits its replacement.
+    return { ...preview, updated, close };
   } catch (error) { dispose(); throw error; }
 }
 
 async function prepareLegacy(absPath: string, deps: HtmlPreviewDeps, signal: AbortSignal,
-  onProgress?: ProgressListener, cache?: MobileHtmlPreviewCache, preferCache = true): Promise<MobileHtmlPreview> {
+  onProgress?: ProgressListener, cache?: MobileHtmlPreviewCache, preferCache = true,
+  onEntryHtml?: (html: string) => void): Promise<MobileHtmlPreview> {
   const server = native!;
   assertHtmlSnapshotActive(signal);
   const { root, entry } = htmlSnapshotLocation(absPath);
@@ -255,6 +268,7 @@ async function prepareLegacy(absPath: string, deps: HtmlPreviewDeps, signal: Abo
         if (text !== undefined) {
           // Reject invalid UTF-8 instead of publishing a corrupted page. No source text is truncated.
           destination.write(withSnapshotHtmlCsp(text));
+          if (file.relPath === entry) onEntryHtml?.(text);
         }
         manifest.push([file.relPath, String(index), mime]);
       } finally { for (const key of uploaded) deps.deleteOssObject(key); }
@@ -275,11 +289,11 @@ async function restoreCachedResource(cache: MobileHtmlPreviewCache, relative: st
     const size = await cache?.copy(relative, destination, maxBytes);
     if (size != null) {
       const mime = MIME[relative.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
-      if (mime === 'text/html') {
-        const html = new TextDecoder('utf-8', { fatal: true }).decode(await destination.bytes());
+      const html = mime === 'text/html' ? new TextDecoder('utf-8', { fatal: true }).decode(await destination.bytes()) : undefined;
+      if (html !== undefined) {
         destination.write(withSnapshotHtmlCsp(html));
       }
-      return { size, mime };
+      return { size, mime, html };
     }
     return null;
   } catch { /* Old transfer copies may predate HTML validation. Fetch a fresh copy. */ }
@@ -310,6 +324,7 @@ async function restoreLegacy(absPath: string, deps: HtmlPreviewDeps, signal: Abo
   try {
     const manifest: string[][] = [];
     const restored = [];
+    let entryHtml: string | undefined;
     let remaining = HTML_SNAPSHOT_MAX_BYTES;
     for (const [index, file] of files.entries()) {
       const destination = new File(dir, String(index));
@@ -320,6 +335,7 @@ async function restoreLegacy(absPath: string, deps: HtmlPreviewDeps, signal: Abo
         continue;
       }
       const { size, mime } = cached;
+      if (file.relPath === entry) entryHtml = cached.html;
       manifest.push([file.relPath, String(index), mime]);
       restored.push({ ...file, size });
       remaining -= size;
@@ -327,16 +343,21 @@ async function restoreLegacy(absPath: string, deps: HtmlPreviewDeps, signal: Abo
     assertHtmlSnapshotActive(signal);
     const url = await native!.start(decodeURIComponent(dir.uri.replace(/^file:\/\//, '')), entry, token, HTML_SNAPSHOT_CSP, manifest);
     assertHtmlSnapshotActive(signal);
-    // Refresh a separate snapshot, leaving the visible copy and its scroll position intact.
-    void prepareLegacy(absPath, deps, refresh.signal, undefined, cache, false)
-      .then((updated) => updated.close()).catch(() => {});
-    return { url, documents: snapshotDocumentPaths(restored), close };
+    let freshHtml: string | undefined;
+    const updated = prepareLegacy(absPath, deps, refresh.signal, undefined, cache, false, (html) => { freshHtml = html; })
+      .then(async (fresh) => {
+        if (!refresh.signal.aborted && freshHtml !== undefined && freshHtml !== entryHtml) return fresh;
+        await fresh.close();
+        return null;
+      }).catch(() => null);
+    return { url, documents: snapshotDocumentPaths(restored), updated, close };
   } catch (error) { await close(); throw error; }
 }
 
 /** New native binaries fetch each requested resource; older binaries retain their existing snapshot API. */
 async function prepareOnDemand(absPath: string, deps: HtmlPreviewDeps,
-  signal: AbortSignal, onProgress?: ProgressListener, cache?: MobileHtmlPreviewCache): Promise<MobileHtmlPreview> {
+  signal: AbortSignal, onProgress?: ProgressListener, cache?: MobileHtmlPreviewCache, preferCache = true,
+  preparedEntry?: { file: File; mime: string }): Promise<MobileHtmlPreview> {
   const server = native!;
   assertHtmlSnapshotActive(signal);
   const { root, entry } = htmlSnapshotLocation(absPath);
@@ -352,20 +373,28 @@ async function prepareOnDemand(absPath: string, deps: HtmlPreviewDeps,
   const requests = new Map<string, AbortController>();
   const pending = new Set<Promise<unknown>>();
   const materialized = new Map<string, { filename: string; mime: string }>();
+  let entryUpdated: Promise<MobileHtmlPreview | null> | undefined;
   const queue = createFileReadQueue();
   const loadResource = async (relative: string, filename: string, requestSignal: AbortSignal) => {
     const destination = new File(dir, filename);
-    const cached = await restoreCachedResource(cache, relative, destination);
+    const cached = preferCache ? await restoreCachedResource(cache, relative, destination) : null;
     assertHtmlSnapshotActive(requestSignal);
     if (cached) {
       const { size, mime } = cached;
       const updatedName = `${filename}-refresh`;
       const update = materializeResource(deps, root, relative, dir, updatedName, signal, undefined, cache)
-        .then(() => {}, () => {}).finally(() => {
+        .then((fresh) => {
+          if (relative !== entry || signal.aborted || fresh.html === undefined || fresh.html === cached.html) return null;
+          // Reuse the bytes just downloaded; companion resources in the replacement
+          // use fresh reads instead of inheriting stale CSS/JS from the old document.
+          return prepareOnDemand(absPath, deps, signal, undefined, cache, false,
+            { file: new File(dir, updatedName), mime: fresh.mime });
+        }).catch(() => null).finally(() => {
           try { new File(dir, updatedName).delete(); } catch {}
           pending.delete(update);
         });
       pending.add(update);
+      if (relative === entry) entryUpdated = update;
       return { filename, mime, bytes: size, route: 'cache' };
     }
     return materializeResource(deps, root, relative, dir, filename, requestSignal, onProgress, cache);
@@ -454,7 +483,12 @@ async function prepareOnDemand(absPath: string, deps: HtmlPreviewDeps,
     assertHtmlSnapshotActive(signal);
     // Keep weak-network waiting outside WebKit's document-request timeout. Only the
     // entry is fetched eagerly; sibling resources retain the existing on-demand queue.
-    const preparation = loadResource(entry, String(sequence++), signal);
+    const filename = String(sequence++);
+    const preparation = preparedEntry ? (async () => {
+      await preparedEntry.file.copy(new File(dir, filename));
+      assertHtmlSnapshotActive(signal);
+      return { filename, mime: preparedEntry.mime };
+    })() : loadResource(entry, filename, signal);
     pending.add(preparation);
     try { materialized.set(entry, await preparation); } finally { pending.delete(preparation); }
     assertHtmlSnapshotActive(signal);
@@ -463,6 +497,6 @@ async function prepareOnDemand(absPath: string, deps: HtmlPreviewDeps,
       await server.stop(token);
       throw new Error('PREVIEW_CANCELLED');
     }
-    return { url, documents: ['/' + entry.split('/').map(encodeURIComponent).join('/')], onDemand: true, close };
+    return { url, documents: ['/' + entry.split('/').map(encodeURIComponent).join('/')], onDemand: true, updated: entryUpdated, close };
   } catch (error) { await close(); throw error; }
 }

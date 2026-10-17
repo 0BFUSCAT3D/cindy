@@ -43,8 +43,8 @@ export interface MobileLocalAttachmentUploadCandidate {
   height?: number | null;
   /**
    * 任务真正开跑时的异步就位钩子(相册 ph:// → file:// 换址、HEIC 转码缩边等重活)。
-   * 返回的字段覆盖到 candidate 上再进后续管线;托盘预览始终用原始 uri,所以入队
-   * 当帧就有缩略图,重活全在后台。
+   * 返回的字段覆盖到 candidate 上再进后续管线;入队时先显示缩略图,就位后
+   * 立即切换预览地址,无需等待压缩和上传结束。重活全在后台。
    */
   resolve?: (signal?: AbortSignal) => Promise<Partial<Pick<
     MobileLocalAttachmentUploadCandidate,
@@ -282,7 +282,7 @@ export function createMobileLocalAttachmentUploadController(
       pending.push({
         localId: task.localId,
         kind: task.candidate.kind,
-        previewUri: task.candidate.uri,
+        previewUri: task.resolvedSource?.uri || task.candidate.uri,
         name: task.candidate.name,
         size: task.candidate.size,
         sourceId: task.candidate.sourceId,
@@ -324,6 +324,8 @@ export function createMobileLocalAttachmentUploadController(
     if (keepOriginal) task.prepared = undefined;
     const cleanup = task.candidate.cleanupLocalUris;
     if (!cleanup) return;
+    // Failed uploads retain the picker thumbnail, but recycle resolved originals.
+    task.resolvedSource = undefined;
     const originalUri = task.candidate.uri;
     const uris = [...task.localUris].filter((uri) => !keepOriginal || uri !== originalUri);
     task.localUris = keepOriginal ? new Set([originalUri]) : new Set();
@@ -361,6 +363,7 @@ export function createMobileLocalAttachmentUploadController(
     }
     task.resolvedSource = source;
     task.localUris.add(source.uri);
+    if (!disposed && !task.discarded && source.uri !== task.candidate.uri) notifyPending();
     // 只有图片需要降采样;文件(pdf / office / 文本)与已优化产物原样直传。
     const prepared = source.kind === 'image' && !source.skipPreprocess
       ? await step(deps.preprocess({

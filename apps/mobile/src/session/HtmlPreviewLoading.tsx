@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { Text } from '@/components/AppText';
@@ -11,6 +12,13 @@ import { formatTransferProgress } from './transferProgress';
 export function HtmlPreviewLoading({ progress }: { progress?: HtmlPreviewProgress }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const [waiting, setWaiting] = useState(false);
+  useEffect(() => {
+    // Cached files normally finish before this; real transfers show their progress immediately.
+    const timer = setTimeout(() => setWaiting(true), 200);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!waiting && !progress) return null;
   return <View style={styles.container} testID="filePreview.htmlResourceLoading">
     <ActivityIndicator color={colors.textTertiary} />
     <Text style={[styles.hint, { color: colors.textSecondary }]}>{t('files.preview.fetchingHtmlResources')}</Text>

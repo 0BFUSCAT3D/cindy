@@ -19,6 +19,7 @@ import {
 } from '../device-link/broadcast-tap.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+import { isSharedTaskPeer } from '@cindy/device-link';
 import { isIpcError } from '../../shared/ipc-errors.js';
 import { previewTransportErrorCode, readPreviewMetadata } from './html-preview-read.js';
 
@@ -32,6 +33,7 @@ interface RemoteSource {
     rel: string,
     signal?: AbortSignal,
   ): Promise<Omit<DirEntry, 'name'>>;
+  /** Validate the source even when size/mtime match; they are not a complete version. */
   read(args: HtmlPreviewArgs, root: string, entry: DirEntry, signal?: AbortSignal): Promise<string>;
 }
 
@@ -71,6 +73,7 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
     try {
       previewLocation(args);
       const scope = captureDataOwnerBroadcastScope();
+      const cacheable = !!scope.ownerScopeKey && !(args.origin.kind === 'device' && isSharedTaskPeer(args.origin.deviceId));
       const isCurrent = () =>
         !shuttingDown &&
         !request.controller.signal.aborted &&
@@ -90,25 +93,28 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
         isCurrent,
         // Log status only: paths, signed URLs and page contents are not diagnostics.
         onResourceError: (status) => log.warn('Preview resource request failed', { status }),
-        cached: args.origin.kind === 'local' ? undefined : async (root, rel) => {
+        cached: args.origin.kind === 'local' || !cacheable ? undefined : async (root, rel) => {
           if (!isCurrent()) return null;
           const cached = await remote.cached?.(args, root, rel);
           return isCurrent() ? cached ?? null : null;
         },
         stat: async (root, rel, signal) => {
-          if (args.origin.kind !== 'local')
+          if (args.origin.kind !== 'local') {
             return readPreviewMetadata(
               (attemptSignal) => remote.stat(args, root, rel, attemptSignal),
               signal ?? request.controller.signal,
               isCurrent,
             );
+          }
           const real = await fs.realpath(path.join(root, rel));
           if (!isPathAllowedAgainst(real, getSensitiveMediaBlocklist()))
             throw new Error('BAD_ARGS');
           return statEntry(root, rel);
         },
         read: async (root, entry, signal) => {
-          if (args.origin.kind !== 'local') return remote.read(args, root, entry, signal);
+          if (args.origin.kind !== 'local') {
+            return remote.read(args, root, entry, signal);
+          }
           const source = path.join(root, entry.relPath);
           const [rootReal, real] = await Promise.all([fs.realpath(root), fs.realpath(source)]);
           if (

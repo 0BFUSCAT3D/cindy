@@ -37,6 +37,12 @@ vi.mock("expo-file-system", () => ({
         .map((p) => (typeof p === "string" ? p : p.uri))
         .join("/");
     }
+    static async downloadFileAsync(url: string, target: { uri: string }) {
+      const bytes = disk.files.get(url);
+      if (!bytes) throw new Error("missing");
+      disk.files.set(target.uri, bytes.slice());
+      return new File(target.uri);
+    }
     get exists() {
       return disk.files.has(this.uri);
     }
@@ -54,8 +60,9 @@ vi.mock("expo-file-system", () => ({
     delete() {
       disk.files.delete(this.uri);
     }
+    async base64() { return Buffer.from(disk.files.get(this.uri)!).toString('base64'); }
     async text() { return new TextDecoder().decode(disk.files.get(this.uri)); }
-    write(text: string) { disk.files.set(this.uri, new TextEncoder().encode(text)); }
+    write(value: string | Uint8Array) { disk.files.set(this.uri, typeof value === "string" ? new TextEncoder().encode(value) : value); }
     async copy(target: { uri: string }) {
       disk.copying = true;
       if (disk.gate) await disk.gate;
@@ -73,7 +80,7 @@ import { createPeerFileCache } from "@/device-link/peerFileCache";
 import { createMobileHtmlPreviewCache } from '@/session/mobileHtmlPreviewCache';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { File } from 'expo-file-system';
-import { FILE_PEER_MAX_BYTES } from '@cindy/device-link';
+import { FILE_PEER_MAX_BYTES, sharedTaskHostPeer } from '@cindy/device-link';
 import { remoteFileMediaUrl } from '@/session/fileBrowserGallery';
 import {
   clearPeerMedia,
@@ -92,6 +99,8 @@ afterEach(() => {
 // Cached previews have no fresh metadata: identity and owner fencing must hold locally.
 it('restores preview bytes offline, isolates account/device/SSH, and rejects a copy crossing an account switch', async () => {
   setMobileAuthOwner('html-owner');
+  // Shared guests must revalidate membership before reading, including HTML.
+  expect(createMobileHtmlPreviewCache(sharedTaskHostPeer('shared', 'host'), '/site')).toBeUndefined();
   const cache = createMobileHtmlPreviewCache('desktop-a', '/site')!;
   const input = new File('file:///input.html');
   input.write('<p>Cached</p>');
@@ -137,6 +146,26 @@ it('restores complete legacy manifests and rejects paths that the preview cannot
   expect(await cache.manifest('index.html')).toBeNull();
 });
 const metadata = { size: 5, mimeType: "text/html", version: "a".repeat(64) };
+it('reuses completed OSS downloads through the same cache and does not retain changed-sized bytes', async () => {
+  const cache = await createPeerFileCache('oss-owner');
+  disk.files.set('https://oss/file', new Uint8Array(5));
+  const result = await cache.download('device', 'url', metadata, 'https://oss/file', () => true);
+  expect(result).not.toBeNull();
+  releasePeerMedia(peerMediaUri(result!)!);
+  expect(await cache.read('device', 'url', metadata, () => true)).not.toBeNull();
+  expect(await cache.download('device', 'changed', { ...metadata, size: 6 }, 'https://oss/file', () => true)).toBeNull();
+  expect(await cache.read('device', 'changed', metadata, () => true)).toBeNull();
+});
+it.each([0, 5])('shares %s-byte inline files with the durable version cache', async size => {
+  const cache = await createPeerFileCache(`inline-${size}`);
+  const result = { ossKey: '', ...metadata, size, inlineBase64: Buffer.alloc(size, 7).toString('base64') };
+  await cache.storeInline('device', 'url', result);
+  expect(await cache.readLatest('device', 'url', () => true)).toEqual(result);
+  expect(await cache.readInline('device', 'url', result, () => true)).toEqual(result);
+  expect(await cache.readInline('other-device', 'url', result, () => true)).toBeNull();
+  expect(await cache.readInline('device', 'url', { ...result, version: 'b'.repeat(64) }, () => true)).toBeNull();
+  expect(await cache.readLatest('device', 'url', () => true)).toEqual(result);
+});
 // PR #6299: the mocked cache IO hid empty-file rejection. Exercise the real cache
 // and Expo adapter with an in-memory filesystem (unit): empty first writes and
 // nonempty -> empty refresh must survive an index reload and shadow old transfers.
@@ -228,4 +257,25 @@ it("reserves only one copy on a hit and preserves its source when space cannot b
   expect(result).not.toBeNull();
   releasePeerMedia(peerMediaUri(result!)!);
   expect(new Set(disk.files.keys())).toEqual(before);
+});
+
+it.each(['download', 'store', 'direct'] as const)('keeps the old version when %s cannot reserve replacement space', async mode => {
+  const cache = await seed(`replace-pressure-${mode}`);
+  const before = new Set(disk.files.keys());
+  const newer = { ...metadata, version: 'b'.repeat(64) };
+  disk.available = 256 * 1024 ** 2 + metadata.size - 1;
+  if (mode === 'download') {
+    expect(await cache.download('device', 'url', newer, 'https://unavailable', () => true)).toBeNull();
+  } else if (mode === 'direct') {
+    expect(await cache.prune('device', 'url', newer.size)).toBe(false);
+  } else {
+    const uri = 'file:///replacement';
+    disk.files.set(uri, new Uint8Array(newer.size));
+    const result = { ossKey: '', ...newer };
+    recordPeerMedia(result, uri, () => disk.files.delete(uri));
+    await cache.store('device', 'url', newer, result);
+    releasePeerMedia(uri);
+  }
+  expect(new Set(disk.files.keys())).toEqual(before);
+  expect(await cache.readLatest('device', 'url', () => true)).toMatchObject(metadata);
 });

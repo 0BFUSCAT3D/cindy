@@ -62,6 +62,7 @@ vi.mock('../providerShareGuestPrefsIpc.js', () => ({ setProviderShareCredentialC
 
 import {
   executeProviderShareManagementCommand,
+  parseProviderShareCommand,
   registerProviderShareIpc,
   startProviderShareRuntime,
   stopProviderShareRuntime,
@@ -152,9 +153,21 @@ describe('provider share usage history wire budget', () => {
   });
 });
 
+describe('remote task limit management payloads', () => {
+  it.each([{ perDevice: 24 }, { total: 80 }, { perDevice: 16, total: 64 }])('preserves only supplied fields in %j', limits => {
+    expect(parseProviderShareCommand({ action: 'set-run-limits', limits })).toEqual({ action: 'set-run-limits', limits });
+  });
+  it.each([{}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 }])('rejects malformed patches %j', limits => {
+    expect(() => parseProviderShareCommand({ action: 'set-run-limits', limits })).toThrow('INVALID_PARAMS');
+  });
+});
+
 describe('same-account share management during account transitions', () => {
   it.each([
     createLink, ...mutations,
+    { action: 'get-run-limits' },
+    { action: 'set-run-limits', limits: { perDevice: 16, total: 64 } },
+    { action: 'reset-run-limits' },
     { action: 'owned', range: '7d' },
     { action: 'own-usage', providerId: 'anthropic', range: '7d' },
     { action: 'usage-history', providerId: 'anthropic' },
