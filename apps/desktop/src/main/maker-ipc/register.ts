@@ -512,7 +512,7 @@ import {
 } from '../localDb/schema.js';
 import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
-import { followMovedCindyAutoRoutes } from './cindyAutoRouteFollow.js';
+import { cindyAutoRouteToFollow, followMovedCindyAutoRoutes } from './cindyAutoRouteFollow.js';
 import { readEffectiveBotModelChain, readEffectiveBotModelSelection } from '../maker-host/bot-model-chain-settings-store.js';
 import {
   isOrcaWorkerPermissionMode,
@@ -15061,14 +15061,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }),
       withSessionLock: withSendToSessionLock,
       readRoute: async (sessionId) => {
-        // 用户或系统已登记的切换、运行时改道都是更晚的决定，不覆盖。
-        if (agentSwitchPending.get(sessionId)) return null;
-        const credentialSwitch = getPendingCredentialSwitchTarget(sessionId);
-        if (credentialSwitch && credentialSwitch.selectionSource !== 'agent') return null;
         const profiles = await readSessionRuntimeProfiles(sessionId);
-        if (!profiles || profiles.pendingMutation || profiles.control.effectiveOverride)
-          return null;
-        return profiles.effective;
+        if (!profiles) return null;
+        const credentialSwitch = getPendingCredentialSwitchTarget(sessionId);
+        return cindyAutoRouteToFollow({
+          effective: profiles.effective,
+          control: profiles.control,
+          hasPendingSelection:
+            !!agentSwitchPending.get(sessionId) ||
+            (!!credentialSwitch && credentialSwitch.selectionSource !== 'agent') ||
+            !!profiles.pendingMutation,
+        });
       },
       stage: (sessionId, route) => stageSessionRouteSelection(sessionId, route, route.agentKind),
       assertCurrent: () => {

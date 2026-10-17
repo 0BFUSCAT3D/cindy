@@ -1,13 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CatalogModel, ProviderSource, ProviderView } from '@cindy/model-providers';
 
 import {
+  cindyAutoRouteToFollow,
   followMovedCindyAutoRoutes,
   movedCindyAutoProviderId,
   type CindyAutoRoute,
   type CindyAutoRouteFollowDeps,
 } from '../cindyAutoRouteFollow.js';
+import {
+  acceptSessionRuntimeMutation,
+  clearSessionRuntimeControlState,
+  getSessionRuntimeControlSnapshot,
+} from '../sessionRuntimeControl.js';
 
 const AUTO = 'auto/group-1';
 
@@ -261,5 +267,79 @@ describe('Auto 没有推理档位时的跨来源跟随', () => {
     const { stage, run } = follow(providers, route({ providerId: 'custom', effort: '' }));
     await expect(run()).resolves.toBe(0);
     expect(stage).not.toHaveBeenCalled();
+  });
+});
+
+describe('号池 → 平台：目录刷新按旧路由重新加载过的进行中任务', () => {
+  // 9333 上 706b7b9b 等任务的真实形态：任务库 effort 为空串；号池来源是 byok-<UUID>。
+  const TASK = '706b7b9b-ded3-4326-8c81-9bbf5a45857a';
+  const REAL_AUTO = 'auto/d00e8b7f-fb6f-4045-922f-310da7b839fc';
+  const POOL = 'byok-f83a176f-8e24-494c-8e88-290584b05a76';
+  const dbRow = {
+    agentKind: 'pi',
+    model: REAL_AUTO,
+    providerId: POOL,
+    effort: '',
+    fastMode: false,
+  } as const;
+  const poolRoute = { ...dbRow, effort: null };
+  /** Cindy AI 已列出 Auto，号池目录也已刷新、不再列它。 */
+  const afterBothRefreshed = [
+    provider('xd', 'builtin', ['auto', REAL_AUTO, 'z-ai/glm-5.3-flash']),
+    provider(POOL, 'organization', [`${POOL}/e2e-model`]),
+  ];
+
+  afterEach(() => clearSessionRuntimeControlState(TASK));
+
+  function runtimeState(hasPendingSelection = false) {
+    const control = getSessionRuntimeControlSnapshot(TASK);
+    return { effective: control.effectiveOverride ?? dbRow, control, hasPendingSelection };
+  }
+
+  /** 先刷新的 Cindy AI 触发上下文刷新：号池目录还是旧的，按号池路由重新加载（立即生效）。 */
+  function reloadWithStalePool() {
+    acceptSessionRuntimeMutation({
+      sessionId: TASK,
+      source: 'agent',
+      deferred: false,
+      profile: poolRoute,
+    });
+  }
+
+  it('重新加载写上的运行时覆盖就是当前路由，照常拿来跟随', () => {
+    reloadWithStalePool();
+    expect(cindyAutoRouteToFollow(runtimeState())).toEqual(poolRoute);
+  });
+
+  it('号池刷新后再跑跟随：登记下一条消息切到 Cindy AI', async () => {
+    reloadWithStalePool();
+    const stage = vi.fn(async () => {});
+    await expect(
+      followMovedCindyAutoRoutes({
+        listCandidates: async () => [{ sessionId: TASK, ...dbRow }],
+        listProviders: async () => afterBothRefreshed,
+        withSessionLock: async (_sessionId, run) => run(),
+        readRoute: async () => cindyAutoRouteToFollow(runtimeState()),
+        stage,
+        assertCurrent: () => {},
+      }),
+    ).resolves.toBe(1);
+    expect(stage).toHaveBeenCalledWith(TASK, { ...poolRoute, providerId: 'xd' });
+  });
+
+  it('负向：故障切换中的任务不跟随', () => {
+    acceptSessionRuntimeMutation({
+      sessionId: TASK,
+      source: 'fallback',
+      deferred: false,
+      previousProfile: poolRoute,
+      profile: { ...poolRoute, model: 'z-ai/glm-5.3-flash', providerId: 'xd' },
+    });
+    expect(cindyAutoRouteToFollow(runtimeState())).toBeNull();
+  });
+
+  it('负向：已有登记的切换不覆盖', () => {
+    reloadWithStalePool();
+    expect(cindyAutoRouteToFollow(runtimeState(true))).toBeNull();
   });
 });

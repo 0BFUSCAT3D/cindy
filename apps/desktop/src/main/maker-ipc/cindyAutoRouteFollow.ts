@@ -1,6 +1,7 @@
 import { movedCindyAutoSourceId, type AgentKind, type ProviderView } from '@cindy/model-providers';
 
 import { isSupportedRuntimeEffort } from './runtimeSelectionAxes.js';
+import type { SessionRuntimeControlSnapshot } from './sessionRuntimeControl.js';
 
 /**
  * 进行中任务跟随服务端挪动的 Auto。
@@ -29,6 +30,24 @@ export function movedCindyAutoProviderId(
     model: route.model,
     providerId: route.providerId,
   });
+}
+
+/** 加锁后重读到的任务运行时状态。 */
+export interface CindyAutoRuntimeState {
+  /** 任务当前实际路由（有运行时覆盖时就是覆盖的那条）。 */
+  effective: CindyAutoRoute;
+  control: Pick<SessionRuntimeControlSnapshot, 'fallbackHop'>;
+  /** 用户或系统已登记、下一条消息生效的切换（含延后的运行时选择）。 */
+  hasPendingSelection: boolean;
+}
+
+/**
+ * 要跟随的当前路由；已有登记的切换或正在故障切换时返回 null，不覆盖。
+ * 运行时覆盖本身不算改道：目录刷新按原路由重新加载进行中任务时也会写上它，这时它就是当前路由。
+ */
+export function cindyAutoRouteToFollow(state: CindyAutoRuntimeState): CindyAutoRoute | null {
+  if (state.hasPendingSelection || state.control.fallbackHop > 0) return null;
+  return state.effective;
 }
 
 export interface CindyAutoRouteFollowDeps {
