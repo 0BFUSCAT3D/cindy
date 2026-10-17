@@ -394,6 +394,22 @@ describe('resolveNewMakerDefaultTuple', () => {
       }
     });
 
+    it('订阅等内置非 Cindy AI 来源里被标记的 auto/... 不当组 Auto', () => {
+      const gateway = provider({ id: 'xd', access: 'managed', models: { pi: [model('auto')] } });
+      // 订阅来源（内置、非 Cindy AI）里恰好有个被标记的 auto/...：不参与 Auto 规则。
+      const openai = provider({ id: 'openai', access: 'subscription', models: { pi: [groupAuto(['pi'])] } });
+      expect(resolve([openai, gateway], new Set(['pi']))).toMatchObject({ providerId: 'xd', model: 'auto' });
+      expect(resolve([openai], new Set(['pi']))).toBeNull();
+    });
+
+    it('Auto 从两份目录都消失：不编造默认，交给后续规则或既有空态', () => {
+      const gateway = provider({ id: 'xd', access: 'managed', models: { pi: [model('z-ai/glm-5.3-flash', 'high', ['pi'])] } });
+      const byok = pool('org-pool', [model('pool-model')]);
+      expect(resolve([gateway, byok])).toBeNull();
+      const xai = provider({ id: 'xai', access: 'subscription', models: { pi: [model('grok-4.6')] } });
+      expect(resolve([gateway, byok, xai])).toMatchObject({ providerId: 'xai', model: 'grok-4.6' });
+    });
+
     it('个人订阅仍然优先', () => {
       const openai = provider({ id: 'openai', access: 'subscription', models: { codex: [model('gpt-6.1-sol')] } });
       const byok = pool('org-pool', [groupAuto(['pi'])]);

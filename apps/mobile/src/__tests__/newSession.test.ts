@@ -939,6 +939,18 @@ describe('pickAgentDefaultRuntime', () => {
     expect(
       resolveRecentModelAndProvider(toPool, { model: auto, providerId: 'xd' }, 'pi', true),
     ).toEqual({ model: auto, providerId: 'org-pool' });
+    // 负向:用户自己接的供应商仍提供同名 auto/... 时原样保留,不被拉去 Cindy 来源。
+    expect(
+      resolveRecentModelAndProvider(toPlatform, { model: auto, providerId: 'custom' }, 'pi', true),
+    ).toEqual({ model: auto, providerId: 'custom' });
+    // 负向:Auto 从两份目录都消失时不崩,按既有规则落到目录首项。
+    const gone = [
+      autoRow('xd', 'builtin', ['auto'], 'auto'),
+      autoRow('org-pool', 'organization', ['pool-model'], 'pool-model'),
+    ];
+    expect(
+      resolveRecentModelAndProvider(gone, { model: auto, providerId: 'org-pool' }, 'pi', true),
+    ).toEqual({ model: 'auto', providerId: 'xd' });
   });
 });
 

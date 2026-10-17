@@ -58,6 +58,22 @@ describe('movedCindyAutoProviderId', () => {
     expect(movedCindyAutoProviderId(movedToPool, route({ providerId: null, agentKind: 'codex' }))).toBeNull();
   });
 
+  it('订阅等内置非 Cindy AI 来源上的 auto/... 不跟随', () => {
+    const subscription = [provider('openai', 'builtin', ['other']), provider('xd', 'builtin', [AUTO])];
+    expect(movedCindyAutoProviderId(subscription, route({ providerId: 'openai' }))).toBeNull();
+  });
+
+  it('Auto 从两份目录都消失时不登记切换，保留原路由交给既有的来源失效提示', () => {
+    const gone = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', ['pool-model'])];
+    expect(movedCindyAutoProviderId(gone, route())).toBeNull();
+    expect(movedCindyAutoProviderId(gone, route({ providerId: null }))).toBeNull();
+  });
+
+  it('回归：预设 auto 的任务不动', () => {
+    expect(movedCindyAutoProviderId(movedToPlatform, route({ model: 'auto', providerId: null }))).toBeNull();
+    expect(movedCindyAutoProviderId(movedToPlatform, route({ model: 'auto', providerId: 'xd' }))).toBeNull();
+  });
+
   it('来源没变、普通模型、用户自己接的供应商都不动', () => {
     expect(movedCindyAutoProviderId(movedToPlatform, route({ providerId: 'xd' }))).toBeNull();
     expect(movedCindyAutoProviderId(movedToPlatform, route({ model: 'pool-model' }))).toBeNull();

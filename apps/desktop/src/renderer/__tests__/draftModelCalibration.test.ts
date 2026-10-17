@@ -986,6 +986,48 @@ describe('模型组 Auto：服务端决定默认与来源', () => {
       .toEqual({ model: 'custom-model', providerId: 'custom-litellm' });
   });
 
+  it('用户手动选过的模型不被服务端默认覆盖', () => {
+    const gateway = provider('xd', true, { pi: [model('auto'), groupAuto(true)] });
+    const byok = pool('org-pool', [model('pool-model')]);
+    const providers = [gateway, byok];
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'pool-model', chosenByUser: true,
+      preferredProviderId: 'org-pool', providersLoading: false }))
+      .toEqual({ model: 'pool-model', providerId: null });
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi',
+      draft: { model: 'pool-model', providerId: 'org-pool', chosenByUser: true } }))
+      .toEqual({ model: 'pool-model', providerId: 'org-pool' });
+  });
+
+  it('Auto 从两份目录都消失：不崩，落到记着的来源里仍可用的模型', () => {
+    const gateway = provider('xd', true, { pi: [model('z-ai/glm-5.3-flash')] });
+    const byok = pool('org-pool', [model('pool-model')]);
+    const providers = [gateway, byok];
+    for (const chosenByUser of [false, true]) {
+      expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi',
+        draft: { model: 'auto/group-1', providerId: 'org-pool', chosenByUser } }))
+        .toEqual({ model: 'pool-model', providerId: 'org-pool' });
+    }
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'auto/group-1', chosenByUser: false,
+      preferredProviderId: 'org-pool', providersLoading: false }))
+      .toEqual({ model: 'pool-model', providerId: 'org-pool' });
+  });
+
+  it('回归：订阅、自定义供应商、个人用户与预设 auto 的默认不变', () => {
+    // 个人用户：目录标的是 GLM，默认仍是预设 auto，来源 Cindy AI。
+    const personal = provider('xd', true, { pi: [model('z-ai/glm-5.3-flash', { newSessionDefault: ['pi'] }), model('auto')] });
+    expect(resolveNewTaskDefaultRoute({ providers: [personal], agent: 'pi' }))
+      .toEqual({ model: 'auto', providerId: 'xd' });
+    // 订阅：Codex 订阅在场时 Codex 默认仍是订阅里的 Sol，不受 Pi 侧 Auto 规则影响。
+    const openai = provider('openai', true, { codex: [model('gpt-6.1-sol')] }, 'subscription');
+    expect(resolveNewTaskDefaultRoute({ providers: [openai, personal], agent: 'codex' }))
+      .toEqual({ model: 'gpt-6.1-sol', providerId: 'openai' });
+    // 自定义供应商：记着的自定义来源与模型原样保留。
+    const custom = pool('custom-litellm', [model('custom-model')], 'user');
+    expect(resolveNewTaskDefaultRoute({ providers: [personal, custom], agent: 'pi',
+      draft: { model: 'custom-model', providerId: 'custom-litellm', chosenByUser: true } }))
+      .toEqual({ model: 'custom-model', providerId: 'custom-litellm' });
+  });
+
   it('新建任务提交时，Auto 已挪走的旧来源换成解析出的新来源；其它显式来源原样提交', () => {
     const gateway = provider('xd', true, { pi: [model('auto'), groupAuto(true)] });
     const byok = pool('org-pool', [model('pool-model')]);

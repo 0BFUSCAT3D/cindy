@@ -103,3 +103,30 @@ describe('movedCindyAutoSourceId：已保存 / 运行中的路由', () => {
     expect(movedCindyAutoSourceId(toPool, { agent: 'codex', model: AUTO, providerId: null })).toBeNull();
   });
 });
+
+describe('负向与回归', () => {
+  it('订阅等内置非 Cindy AI 来源里的 auto/... 不当组 Auto：不从它挪走，也不挪到它', () => {
+    const fromSubscription = [provider('openai', 'builtin', ['other']), provider('xd', 'builtin', [AUTO])];
+    expect(effectiveSourceIdForModel(fromSubscription, 'openai', AUTO, 'pi')).toBeNull();
+    expect(movedCindyAutoSourceId(fromSubscription, { agent: 'pi', model: AUTO, providerId: 'openai' })).toBeNull();
+    const toSubscription = [provider('xd', 'builtin', ['auto']), provider('openai', 'builtin', [AUTO])];
+    expect(effectiveSourceIdForModel(toSubscription, 'xd', AUTO, 'pi')).toBeNull();
+    expect(movedCindyAutoSourceId(toSubscription, { agent: 'pi', model: AUTO, providerId: 'xd' })).toBeNull();
+  });
+
+  it('Auto 从两份目录都消失：不改道，按显式来源失效返回 null（由既有的来源失效提示接手）', () => {
+    const gone = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', ['pool-model'])];
+    expect(effectiveSourceIdForModel(gone, 'org-pool', AUTO, 'pi')).toBeNull();
+    expect(movedCindyAutoSourceId(gone, { agent: 'pi', model: AUTO, providerId: 'org-pool' })).toBeNull();
+    expect(movedCindyAutoSourceId(gone, { agent: 'pi', model: AUTO, providerId: null })).toBeNull();
+  });
+
+  it('回归：预设 auto 与普通模型的来源解析不变', () => {
+    const views = [provider('xd', 'builtin', ['auto', 'glm']), provider('custom', 'user', ['custom-model'])];
+    expect(effectiveSourceIdForModel(views, 'xd', 'auto', 'pi')).toBe('xd');
+    expect(effectiveSourceIdForModel(views, null, 'auto', 'pi')).toBe('xd');
+    expect(movedCindyAutoSourceId(views, { agent: 'pi', model: 'auto', providerId: null })).toBeNull();
+    expect(effectiveSourceIdForModel(views, 'custom', 'custom-model', 'pi')).toBe('custom');
+    expect(effectiveSourceIdForModel(views, 'custom', 'glm', 'pi')).toBeNull();
+  });
+});
