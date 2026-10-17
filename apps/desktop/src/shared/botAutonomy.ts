@@ -97,6 +97,10 @@ export interface WatchedSession {
    */
   followerBotId: string | null;
   source: WatchedSource;
+  /**
+   * 共享给访客的任务（来源 shared）：里面有账号外的人发的话。不叫醒任何伙伴、不让伙伴自动继续，只进工作台给主人看。
+   */
+  shared?: boolean;
 }
 
 /** `sweep`：条件兜底（按伙伴、不针对单个任务；subject 为伙伴 id，任务字段为空串）。 */

@@ -145,6 +145,7 @@ export function createDesktopTaskDigestDeps(host: DesktopTaskDigestHost): TaskDi
           .drizzle.select({
             title: sessions.title,
             status: sessions.status,
+            source: sessions.source,
             agentKind: sessions.agentKind,
             model: sessions.model,
             providerId: sessions.providerId,

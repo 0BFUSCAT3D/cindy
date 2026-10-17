@@ -8,7 +8,8 @@
  *   自己开的或明确接手的任务;目录不授予任何权限;总调度身份查不到时 fail closed。
  * - 现有覆盖缺口:旧用例按项目目录授权,规则已整体替换;新授权矩阵此前没有任何覆盖。
  * - 最小失败输入:总调度 / 开任务的伙伴 / 无关伙伴 × 普通任务、伙伴专线、后台任务、归档任务、
- *   另一台电脑上的任务;别的伙伴开的任务(跟进人是它 / 已交给总调度);观察层没有这一行。
+ *   另一台电脑上的任务;别的伙伴开的任务(跟进人是它 / 已交给总调度);观察层没有这一行;
+ *   共享给访客的任务(访客的话不能借伙伴之手推动主人账号里的事)。
  * - tier:unit(依赖全部注入,无数据库与 Electron)。
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -36,9 +37,10 @@ const TARGETS: Record<string, WorkbenchTargetFacts> = {
   'writer-created': ordinary('writer-created'),
   'writer-handed': ordinary('writer-handed'),
   'scheduler-created': ordinary('scheduler-created'),
+  'shared-task': ordinary('shared-task', { source: 'shared' }),
 };
 /** 观察层状态行:creator / follower 由宿主按伙伴设置推导。im-task 与 laptop::s-3 故意没有行。 */
-const WATCHED: Record<string, { creatorBotId: string | null; followerBotId: string | null }> = {
+const WATCHED: Record<string, { creatorBotId: string | null; followerBotId: string | null; shared?: boolean }> = {
   'owner-task': { creatorBotId: null, followerBotId: 'cindy-default' },
   'writer-child': { creatorBotId: 'writer', followerBotId: 'writer' },
   'writer-created': { creatorBotId: 'writer', followerBotId: 'writer' },
@@ -46,6 +48,7 @@ const WATCHED: Record<string, { creatorBotId: string | null; followerBotId: stri
   'scheduler-created': { creatorBotId: 'cindy-default', followerBotId: 'cindy-default' },
   'laptop::s-1': { creatorBotId: null, followerBotId: 'cindy-default' },
   'laptop::s-2': { creatorBotId: 'writer', followerBotId: 'writer' },
+  'laptop::s-4': { creatorBotId: null, followerBotId: null, shared: true },
 };
 
 function setup(options: { scheduler?: string | null; watched?: boolean } = {}) {
@@ -85,6 +88,9 @@ describe('workbench authorization matrix', () => {
     ['main-scheduler', 'scheduler-created', 'ok', 'ok'],
     ['main-scheduler', 'laptop::s-2', 'ok', 'TASK_FOLLOWED_BY_OTHER_BOT'],
     ['main-scheduler', 'laptop::s-3', 'ok', 'TASK_FOLLOWED_BY_OTHER_BOT'],
+    // 共享给访客的任务里有账号外的人发的话:可以看,不能经工作台推动(本机与另一台电脑)。
+    ['main-scheduler', 'shared-task', 'ok', 'TASK_SHARED_WITH_GUESTS'],
+    ['main-scheduler', 'laptop::s-4', 'ok', 'TASK_SHARED_WITH_GUESTS'],
     ['main-scheduler', 'bot-lane', 'TASK_NOT_ACCESSIBLE', 'TASK_NOT_ACCESSIBLE'],
     ['main-scheduler', 'archived-task', 'ok', 'TASK_ARCHIVED'],
     ['main-scheduler', 'review-task', 'TASK_NOT_SUPPORTED', 'TASK_NOT_SUPPORTED'],

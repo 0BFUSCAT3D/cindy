@@ -83,6 +83,13 @@ export interface WorkbenchGrant {
   followedByOtherBot?: string | null;
 }
 
+/** 共享给访客的任务里有账号外的人发的话:伙伴不能经工作台推动它,只能告诉主人。 */
+const sharedTaskNotContinuable: Failure = {
+  ok: false,
+  errorCode: 'TASK_SHARED_WITH_GUESTS',
+  message: '这件任务共享给了访客,里面有账号外的人发的话;伙伴不能替主人继续它,请告诉主人由他自己处理。',
+};
+
 /** 总调度对别的伙伴开的任务默认只看不跟。 */
 export function followedByOtherBotFailure(creatorBotId: string): Failure {
   const who = creatorBotId === 'unknown' ? '另一位伙伴' : `伙伴 ${creatorBotId}`;
@@ -152,7 +159,7 @@ export interface BotWorkbenchAccessDeps {
   /** 当前总调度伙伴 id;观察层未就绪时返回 null(按不是总调度处理)。 */
   schedulerBotId(): Promise<string | null>;
   /** 观察层状态表的一行(本机裸 id / 远程 deviceId::sessionId);读不到返回 null。 */
-  readWatched(taskKey: string): Pick<WatchedSession, 'creatorBotId' | 'followerBotId'> | null;
+  readWatched(taskKey: string): Pick<WatchedSession, 'creatorBotId' | 'followerBotId' | 'shared'> | null;
   readResponsibleSessionIds(botId: string): Promise<string[]>;
   saveResponsibility(botId: string, sessionId: string, responsible: boolean): Promise<void>;
   /** 该伙伴自己的后台任务:执行任务 id → 状态。 */
@@ -218,6 +225,7 @@ export function createBotWorkbenchAccess(deps: BotWorkbenchAccessDeps) {
     };
     if (ref.kind === 'remote') {
       if (!scheduler) return remoteNotAllowed;
+      if (mode === 'continue' && watched()?.shared) return sharedTaskNotContinuable;
       if (mode === 'continue') {
         const other = followedByOtherBot(botId, watched(), { remote: true, delegationChild: false });
         if (other) return followedByOtherBotFailure(other);
@@ -225,6 +233,7 @@ export function createBotWorkbenchAccess(deps: BotWorkbenchAccessDeps) {
       return { ok: true, ref, taskId: `${ref.deviceId}::${ref.sessionId}` };
     }
     const target = await deps.readTarget(ref.sessionId);
+    if (mode === 'continue' && target?.source === 'shared') return sharedTaskNotContinuable;
     const grant = await grantFor(botId, ref.sessionId, scheduler);
     if (scheduler && mode === 'continue' && target) {
       grant.followedByOtherBot = followedByOtherBot(botId, watched(), {

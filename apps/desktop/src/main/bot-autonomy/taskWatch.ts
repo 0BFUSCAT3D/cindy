@@ -407,6 +407,7 @@ export class TaskWatch {
       canonicalOfBotId,
       followerBotId: null,
       source: localSource(meta, creatorBotId),
+      ...(meta.source === 'shared' ? { shared: true } : {}),
     };
     row.followerBotId = this.followerFor(row);
     if (phase === 'finished' && previous?.phase !== 'finished') this.recordFinished(row, now);
@@ -456,6 +457,7 @@ export class TaskWatch {
         canonicalOfBotId,
         followerBotId: null,
         source: localSource(meta, creatorBotId),
+        ...(meta.source === 'shared' ? { shared: true } : {}),
       };
       row.followerBotId = this.followerFor(row);
       this.rows.set(meta.id, row);
@@ -463,10 +465,12 @@ export class TaskWatch {
     }
   }
 
-  private followerFor(row: Pick<WatchedSession, 'creatorBotId' | 'deviceId' | 'canonicalOfBotId'>): string | null {
+  private followerFor(row: Pick<WatchedSession, 'creatorBotId' | 'deviceId' | 'canonicalOfBotId' | 'shared'>): string | null {
     // 每台电脑上的任务由那台电脑上的伙伴跟：两台电脑上的同名伙伴（如各自的 Cindy 助理）不会各跟一遍。
     // 另一台电脑的行只进工作台给主人看与允许；总调度仍可经工具显式继续它。
     if (row.deviceId !== null) return null;
+    // 共享任务里有访客发的话：不能让账号外的内容叫醒以主人权限运行的伙伴，等你时直接提醒主人。
+    if (row.shared) return null;
     const follower = deriveFollowerBotId({
       creatorBotId: row.creatorBotId,
       schedulerBotId: this.schedulerBotId,
@@ -787,6 +791,7 @@ export class TaskWatch {
         creatorBotId: null,
         followerBotId: null,
         source: meta.source === 'scheduler' ? 'routine' : USER_SOURCES.has(String(meta.source ?? 'desktop')) ? 'user' : 'other',
+        ...(meta.source === 'shared' ? { shared: true } : {}),
       };
       row.followerBotId = this.followerFor(row);
       if (phase === 'finished' && previous?.phase !== 'finished') this.recordFinished(row, now);

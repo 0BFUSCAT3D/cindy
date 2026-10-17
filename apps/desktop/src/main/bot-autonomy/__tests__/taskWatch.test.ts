@@ -198,6 +198,15 @@ describe('TaskWatch local observation', () => {
     });
   });
 
+  // 依据:共享给访客的任务里有账号外的人发的话,不能借事件叫醒以主人权限运行的伙伴。最小失败输入:来源 shared。
+  it('shows a task shared with guests but gives it no follower', async () => {
+    const h = harness({ metas: [meta('guest', { source: 'shared' })] });
+    await h.watch.start();
+    h.watch.applyActivity('guest', activity('guest', 'running'));
+    await h.watch.settled();
+    expect(h.watch.get('guest')).toMatchObject({ phase: 'running', shared: true, followerBotId: null });
+  });
+
   it('restarts the wait clock when a local task moves from one question to another', async () => {
     const h = harness({ metas: [meta('q')] });
     await h.watch.start();

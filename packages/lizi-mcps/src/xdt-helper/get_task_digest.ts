@@ -56,6 +56,11 @@ export interface TaskDigestWire {
   queued_count: number | null;
   follower_bot_id: string | null;
   creator_bot_id: string | null;
+  /**
+   * 共享给访客的任务:里面有账号外的人发的话。为 true 时不给 last_user_ask / last_assistant_line,
+   * 伙伴不得据它自主行动,只告诉主人。
+   */
+  shared_task?: boolean;
 }
 
 export const TASK_DIGEST_MAX_BYTES = 2048;

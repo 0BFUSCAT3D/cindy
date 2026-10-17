@@ -21,7 +21,9 @@ function setup(watched: Record<string, WatchedSession> = {}) {
     now: () => NOW,
     watched: (key) => watched[key] ?? null,
     local: {
-      readSession: async (id) => (id === 'gone' ? { title: 'x', status: 'deleted', route: null } : id === 'local-1' ? { title: '修登录', status: 'active', route } : null),
+      readSession: async (id) => (id === 'gone' ? { title: 'x', status: 'deleted', route: null }
+        : id === 'local-1' ? { title: '修登录', status: 'active', route }
+          : id === 'shared-1' ? { title: '和访客一起改文案', status: 'active', route, shared: true } : null),
       readActivity: async () => ({ phase: 'needs-interaction', interactionKind: 'permission', lastActivityAtMs: NOW - 9 * 60_000, runtimeGeneration: 4, route }),
       readLastExchange: async () => ({ lastUserAsk: '修登录', lastAssistantLine: '要删旧表吗?' }),
       queuedCount: async () => 2,
@@ -43,6 +45,16 @@ function setup(watched: Record<string, WatchedSession> = {}) {
 }
 
 describe('task digest assembly', () => {
+  // 依据:共享任务里最近一句「用户」可能是访客写的;摘要原样交给伙伴就成了账号外的人借伙伴下指令。
+  // 最小失败输入:来源 shared 的本机任务。
+  it('leaves out the conversation text of a task shared with guests and flags it', async () => {
+    const { read } = setup();
+    const result = await read({ sessionId: 'shared-1', callerSessionId: 'bot-main' });
+    expect(result).toMatchObject({ ok: true, digest: { last_user_ask: null, last_assistant_line: null, shared_task: true } });
+    expect(sessionFactsFromRow({ title: 't', status: 'active', source: 'shared' })).toMatchObject({ shared: true });
+    expect(sessionFactsFromRow({ title: 't', status: 'active', source: 'desktop' })?.shared).toBeUndefined();
+  });
+
   it('builds a local digest, inferring the phase when the watcher has no row and surviving a failed PR read', async () => {
     const { read, deps } = setup();
     const result = await read({ sessionId: 'local-1', callerSessionId: 'bot-main' });
@@ -76,8 +88,9 @@ describe('task digest assembly', () => {
     const withFlag = setup({ 'local-1': busy, 'laptop::s-1': remoteIdle });
     expect(await withFlag.read({ sessionId: 'local-1' })).toMatchObject({ ok: true, digest: { phase: 'running', tool_in_flight: true } });
     expect(await withFlag.read({ sessionId: 'laptop::s-1' })).not.toHaveProperty('digest.tool_in_flight');
-    const { toolInFlight: _omitted, ...noFact } = busy;
-    expect(await setup({ 'local-1': noFact }).read({ sessionId: 'local-1' })).not.toHaveProperty('digest.tool_in_flight');
+    const noFact: Partial<typeof busy> = { ...busy };
+    delete noFact.toolInFlight;
+    expect(await setup({ 'local-1': noFact as WatchedSession }).read({ sessionId: 'local-1' })).not.toHaveProperty('digest.tool_in_flight');
   });
 
   it('reads another computer without a route suggestion, and reports offline or missing tasks explicitly', async () => {

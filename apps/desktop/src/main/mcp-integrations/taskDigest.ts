@@ -15,6 +15,8 @@ export interface TaskDigestSessionFacts {
   title: string;
   status: string;
   route: TaskDigestRoute | null;
+  /** 共享给访客的任务(来源 shared):摘要不带对话原文。 */
+  shared?: boolean;
 }
 
 export interface TaskDigestActivity {
@@ -208,8 +210,9 @@ function assemble(input: {
     phase,
     elapsed_minutes: minutesSince(input.now, since),
     idle_minutes: minutesSince(input.now, watched?.lastActivityAt ?? activity?.lastActivityAtMs),
-    last_user_ask: input.exchange.lastUserAsk,
-    last_assistant_line: input.exchange.lastAssistantLine,
+    // 共享任务里最近一句「用户」可能是访客写的:不交给伙伴当指令看。
+    last_user_ask: input.facts.shared ? null : input.exchange.lastUserAsk,
+    last_assistant_line: input.facts.shared ? null : input.exchange.lastAssistantLine,
     pending_question: watched?.pendingQuestion ?? null,
     error: watched?.error ?? null,
     current_route: activity?.route ?? input.facts.route,
@@ -220,6 +223,7 @@ function assemble(input: {
     follower_bot_id: watched?.followerBotId ?? null,
     creator_bot_id: watched?.creatorBotId ?? null,
     ...(toolInFlight === undefined ? {} : { tool_in_flight: toolInFlight }),
+    ...(input.facts.shared ? { shared_task: true } : {}),
   };
 }
 
@@ -252,6 +256,7 @@ export function sessionFactsFromRow(row: unknown): TaskDigestSessionFacts | null
   return {
     title: text(record.title) ?? '',
     status: text(record.status) ?? 'active',
+    ...(text(record.source) === 'shared' ? { shared: true } : {}),
     route: harness && model
       ? {
           harness,
