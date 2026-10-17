@@ -158,15 +158,19 @@ export function resolveNewMakerDefaultTuples(args: {
   const tuples: NewMakerDefaultTuple[] = [];
 
   for (const policy of DEFAULT_POLICIES) {
-    const matchingProviders = providers.filter(
-      (candidate) =>
-        ((providerCatalogId(candidate) === policy.providerId &&
-          candidate.access?.kind === policy.accessKind) ||
-          (policy.serverMarkedAuto === true && isCindyDistributedProvider(candidate))) &&
-        candidate.connected &&
-        !candidate.suspended &&
-        !candidate.modelDiscoveryFailure,
-    );
+    const isPolicyProvider = (candidate: ProviderView) => providerCatalogId(candidate) === policy.providerId;
+    const matchingProviders = providers
+      .filter(
+        (candidate) =>
+          ((isPolicyProvider(candidate) && candidate.access?.kind === policy.accessKind) ||
+            (policy.serverMarkedAuto === true && isCindyDistributedProvider(candidate))) &&
+          candidate.connected &&
+          !candidate.suspended &&
+          !candidate.modelDiscoveryFailure,
+      )
+      // 服务端每个引擎只标一个默认；管理员恰在两次拉取之间改配置时，Cindy AI 与号池可能
+      // 短暂各标一个，此时以 Cindy AI 为准，不取决于来源列表的顺序。
+      .sort((a, b) => Number(isPolicyProvider(b)) - Number(isPolicyProvider(a)));
     const passes: ModelSearchPass[] = [
       ...(policy.serverMarkedAuto ? ['serverMarkedAuto' as const] : []),
       'preferred',

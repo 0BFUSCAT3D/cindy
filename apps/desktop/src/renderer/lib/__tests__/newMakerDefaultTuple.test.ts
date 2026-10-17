@@ -360,6 +360,14 @@ describe('resolveNewMakerDefaultTuple', () => {
       expect(resolve([byok])).toMatchObject({ vendor: 'pi', providerId: 'org-pool' });
     });
 
+    it('Cindy AI 与号池短暂各标一个默认时以 Cindy AI 为准，与来源列表顺序无关', () => {
+      const gateway = provider({ id: 'xd', access: 'managed', models: { pi: [model('auto', 'high', ['pi'])] } });
+      const byok = pool('org-pool', [groupAuto(['pi'])]);
+      for (const sources of [[gateway, byok], [byok, gateway]]) {
+        expect(resolve(sources)).toMatchObject({ providerId: 'xd', model: 'auto' });
+      }
+    });
+
     it('旧服务端没有标记时回退预设 auto；号池里没被标记的模型不当默认', () => {
       const gateway = provider({ id: 'xd', access: 'managed', models: { pi: [model('auto')] } });
       const byok = pool('org-pool', [model('pool-model'), groupAuto()]);
