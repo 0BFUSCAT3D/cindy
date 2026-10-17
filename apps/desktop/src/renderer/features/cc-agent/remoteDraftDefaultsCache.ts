@@ -18,7 +18,15 @@ export function getRemoteDraftDefaults(deviceId: string, agent: string): RemoteD
   return currentCache().get(`${deviceId}:${agent}`);
 }
 
-export function rememberRemoteDraftDefaults(deviceId: string, agent: string, value: RemoteDraftDefaults | null): void {
+export function rememberRemoteDraftDefaults(
+  deviceId: string,
+  agent: string,
+  value: RemoteDraftDefaults | null,
+  transaction?: { deviceId: string; status: string; enabled?: boolean } | null,
+): void {
+  // Pull, push and inline handoff must obey the same pending-write boundary.
+  if (transaction?.deviceId === deviceId && transaction.status !== 'committed'
+    && value?.worktreeEnabled !== transaction.enabled) return;
   // {} means the host renderer has not published its preferences yet.
   if (value && Object.keys(value).length === 0) return;
   currentCache().set(`${deviceId}:${agent}`, value);

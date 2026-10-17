@@ -693,7 +693,7 @@ interface DraftTargetRequest {
 
 export function NewMakerDraftRoute() {
   const { t, i18n } = useTranslation();
-  const { dataOwnerId } = useAuth();
+  const { dataOwnerId, dataOwnerGeneration } = useAuth();
   const draft = useNewMakerDraft();
   const location = useLocation();
   const navigate = useNavigate();
@@ -1510,6 +1510,7 @@ export function NewMakerDraftRoute() {
   const [dlSel, setDlSel] = useState<DeviceLinkDraftSelection | null>(null);
   const dlSeedKeyRef = useRef<string | null>(null);
   const dlSeedCapabilitiesRef = useRef<AgentCapabilities | null>(null);
+  const dlSeedDefaultsRef = useRef<RemoteDraftDefaults | null>(null);
   /** 控制端是否编辑过当前设备 / Agent 的远程运行配置；能力刷新不得覆盖这类显式意图。 */
   const dlRuntimeTouchedRef = useRef(false);
   const skipDefaultsRefetchRef = useRef(false);
@@ -1555,9 +1556,7 @@ export function NewMakerDraftRoute() {
           const received = (v as RemoteDraftDefaults | null) ?? null;
           const value = received && Object.keys(received).length === 0 && cached !== undefined
             ? cached : received;
-          if (!confirmingWrite || value?.worktreeEnabled === transaction?.enabled) {
-            rememberRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind, value);
-          }
+          rememberRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind, value, wtPreferenceTransactionRef.current);
           setRemoteDraftState({
             status: 'ready',
             value,
@@ -1584,6 +1583,7 @@ export function NewMakerDraftRoute() {
     remoteDraftRefreshEpoch,
     remoteDraftRetryEpoch,
     dataOwnerId,
+    dataOwnerGeneration,
   ]);
 
   // 运行 Agent 的电脑只提供模型目录：没有它的草稿默认值，改用本次运行内对这台电脑的上一次
@@ -1617,6 +1617,7 @@ export function NewMakerDraftRoute() {
     if (!usesDeviceCatalog || !catalogDeviceId) {
       dlSeedKeyRef.current = null;
       dlSeedCapabilitiesRef.current = null;
+      dlSeedDefaultsRef.current = null;
       dlRuntimeTouchedRef.current = false;
       setDlSel(null);
       return;
@@ -1640,6 +1641,7 @@ export function NewMakerDraftRoute() {
         currentSeedKey: dlSeedKeyRef.current,
         nextSeedKey: key,
         capabilitiesChanged,
+        defaultsChanged: !isAgentDeviceDraft && dlSeedDefaultsRef.current !== deviceDraftDefaults,
         controllerTouched: dlRuntimeTouchedRef.current,
         remoteModelChosenByUser: deviceDraftDefaults?.modelChosenByUser,
       })
@@ -1671,6 +1673,7 @@ export function NewMakerDraftRoute() {
     }
     dlSeedKeyRef.current = key;
     dlSeedCapabilitiesRef.current = capabilities;
+    dlSeedDefaultsRef.current = deviceDraftDefaults;
     if (newTarget) dlRuntimeTouchedRef.current = false;
     setDlSel(
       resolveDeviceLinkDraftDefaults(
@@ -1692,6 +1695,7 @@ export function NewMakerDraftRoute() {
     deviceProvidersUnsupported,
     deviceDraftDefaultsReady,
     deviceDraftDefaults,
+    isAgentDeviceDraft,
   ]);
 
   // 记住这次对运行 Agent 的电脑的选择(仅本次运行)，切走再切回时恢复。
@@ -1759,7 +1763,7 @@ export function NewMakerDraftRoute() {
       const payload = push.payload as Record<string, RemoteDraftDefaults | undefined> | null;
       const next = payload?.[vendorSlot] ?? null;
       remoteDraftRevisionRef.current += 1;
-      rememberRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind, next);
+      rememberRemoteDraftDefaults(effectiveDeviceLinkDeviceId, capabilityAgentKind, next, wtPreferenceTransactionRef.current);
       setRemoteDraftState({ status: 'ready', value: next });
       // 选中行(dlSel)的 effort/fast 也跟被控端走:按当前 dlSel.model 重解析,但保留控制端的
       // permission/source/model 选择(非按模型记 / 控制端 launch 意图)。被控端改选中模型 effort 即时反映。
@@ -2334,7 +2338,7 @@ export function NewMakerDraftRoute() {
       if (req.remoteSnapshot && !deviceChanged && effectiveAgentDeviceId) {
         // 同一台被控电脑重新验证,但 Agent 在另一台电脑运行:草稿的模型属于那台的目录,被控电脑
         // 的能力快照校准不了它(store 也不会清掉那台的选择)。只刷新被控电脑的草稿值。
-        if (req.deviceId) rememberRemoteDraftDefaults(req.deviceId, capabilityAgentKind, req.remoteSnapshot.defaults);
+        if (req.deviceId) rememberRemoteDraftDefaults(req.deviceId, capabilityAgentKind, req.remoteSnapshot.defaults, wtPreferenceTransactionRef.current);
         setRemoteDraftState({ status: 'ready', value: req.remoteSnapshot.defaults });
       } else if (req.remoteSnapshot) {
         const {
@@ -2347,6 +2351,7 @@ export function NewMakerDraftRoute() {
         // same-device refreshes that retain a separate Agent are handled above.
         dlSeedKeyRef.current = req.deviceId ? `${req.deviceId}:${capabilityAgentKind}` : null;
         dlSeedCapabilitiesRef.current = freshCaps;
+        dlSeedDefaultsRef.current = freshDefaults;
         if (deviceChanged) {
           setDlSel(
             resolveDeviceLinkDraftDefaults(
@@ -2390,7 +2395,7 @@ export function NewMakerDraftRoute() {
                 ),
           );
         }
-        if (req.deviceId) rememberRemoteDraftDefaults(req.deviceId, capabilityAgentKind, freshDefaults);
+        if (req.deviceId) rememberRemoteDraftDefaults(req.deviceId, capabilityAgentKind, freshDefaults, wtPreferenceTransactionRef.current);
         setRemoteDraftState({ status: 'ready', value: freshDefaults });
       } else if (deviceChanged) {
         setDlSel(null);

@@ -1090,6 +1090,7 @@ export default function NewRemoteSessionScreen() {
   // 持久草稿不会写入该 ref，因此已下架模型仍走 mobile 的首项降级。
   const explicitProviderModelSelectionRef = useRef<string | null>(null);
   const autoDefaultDeviceRef = useRef<string | null>(null);
+  const autoDefaultSnapshotRef = useRef<NewSessionHostDefaults | null | undefined>(undefined);
   // 被控电脑的「新建任务默认」(与桌面远程新建同一读源 maker:get-new-maker-defaults):
   // 默认模型 = 那台电脑上新建任务时用户上次选的模型,不再从任务列表推断「最近使用」。
   // 同账号同设备先用跨页缓存,再后台读齐三个 agent;刷新不阻塞新建或覆盖手动选择。
@@ -1109,7 +1110,7 @@ export default function NewRemoteSessionScreen() {
     setHostDraftDefaults(cached);
     if (!deviceId || deviceLinkStatus !== 'online' || !owner.accountKey) return undefined;
     let cancelled = false;
-    let cacheable = true;
+    const successfulAgents = new Set<NewSessionAgentKind>();
     const isCurrent = () => !cancelled && isMobileAuthOwnerCurrent(owner);
     const readAgent = async (agentKind: NewSessionAgentKind) => {
       for (let attempt = 0; ; attempt += 1) {
@@ -1122,8 +1123,9 @@ export default function NewRemoteSessionScreen() {
         // 有限次后(含不带该字段的旧被控端)按无默认处理。读取失败不重读。
         if (defaults === undefined || isHostDraftDefaultsReady(defaults) || attempt >= 2) {
           if (!isHostDraftDefaultsReady(defaults)) {
-            cacheable = false;
             if (cached) return cached.byAgent[agentKind] ?? null;
+          } else {
+            successfulAgents.add(agentKind);
           }
           return hostDraftRuntimeFromDefaults(defaults, agentKind);
         }
@@ -1139,7 +1141,19 @@ export default function NewRemoteSessionScreen() {
         deviceId,
         byAgent: { ...Object.fromEntries(entries), ...hostChoiceOverridesRef.current.get(deviceId) },
       };
-      const next = cacheable ? cacheNewSessionHostDefaults(snapshot, cached) : snapshot;
+      // A failed optional engine must not discard another engine's successful read.
+      // Unknown engines stay absent from the cross-page cache; this visit may still
+      // fall back after the read has failed, as before.
+      const cacheable = {
+        deviceId,
+        byAgent: {
+          ...cached?.byAgent,
+          ...Object.fromEntries(entries.filter(([kind]) => successfulAgents.has(kind))),
+          ...hostChoiceOverridesRef.current.get(deviceId),
+        },
+      };
+      const remembered = successfulAgents.size ? cacheNewSessionHostDefaults(cacheable, cached) : getNewSessionHostDefaults(deviceId);
+      const next = { ...snapshot, byAgent: { ...snapshot.byAgent, ...remembered?.byAgent, ...hostChoiceOverridesRef.current.get(deviceId) } };
       // 同步更新镜像:等待中的切 agent 回调在下一次渲染前就要读到结果。
       hostDraftDefaultsRef.current = next;
       setHostDraftDefaults(next);
@@ -1151,15 +1165,17 @@ export default function NewRemoteSessionScreen() {
   }, [deviceLinkStatus, maker, openLink, selectedDeviceId, outboxOwner]);
   // 等该设备的被控电脑默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
   // 按目录默认继续。effect 重跑会换一份新的在途读取,跟着等新的那份(有限次)。
-  const waitHostDraftDefaults = useCallback(async (deviceId: string) => {
+  const waitHostDraftDefaults = useCallback(async (deviceId: string, agentKind: NewSessionAgentKind) => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (hostDraftDefaultsRef.current?.deviceId === deviceId) return;
+      if (hostDraftDefaultsRef.current?.deviceId === deviceId
+        && agentKind in hostDraftDefaultsRef.current.byAgent) return;
       const load = hostDraftDefaultsLoadRef.current;
       if (!load || load.deviceId !== deviceId) return;
       await load.promise;
     }
   }, []);
-  const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId;
+  const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId
+    && draft.agentKind in hostDraftDefaults.byAgent;
   // 本页已写回被控电脑的选择(按设备、agent):优先于读取结果,避免选择前发出的读取
   // 晚到后把旧模型带回来(切到别的 agent 再切回时)。
   const hostChoiceOverridesRef = useRef(new Map<string, Partial<Record<NewSessionAgentKind, NewSessionRuntime>>>());
@@ -1445,7 +1461,8 @@ export default function NewRemoteSessionScreen() {
       restored,
       modelReady: canResolveStoredAgentRuntime({
         deviceId: selectedDeviceId,
-        hostDefaultsSettled,
+        hostDefaultsSettled: hostDraftDefaults?.deviceId === selectedDeviceId
+          && storedAgentKind in hostDraftDefaults.byAgent,
         hostRuntime: hostRuntimeFor(storedAgentKind),
         catalogReady: deviceProviders.ready,
         providersUnsupported: deviceProviders.unsupported,
@@ -1489,6 +1506,10 @@ export default function NewRemoteSessionScreen() {
           : false,
       };
     };
+    // Stored-engine restoration and the generic default effect consume the same
+    // snapshot; only a later host refresh may seed the untouched draft again.
+    const previousAutoDefaultSnapshot = autoDefaultSnapshotRef.current;
+    autoDefaultSnapshotRef.current = hostDraftDefaults;
     if (step === 'model') {
       // agent 与权限已在第一步恢复;只补模型,不动 agent 与权限(期间用户改过权限/计划模式不被覆盖)。
       setDraft((current) => (current.agentKind === storedAgentKind
@@ -1535,7 +1556,10 @@ export default function NewRemoteSessionScreen() {
       // 否则标记已落、草稿却没写,两条默认路径都不再处理,页面停在占位模型。
       if (applied) return;
       if (storedAgentRestoreRef.current === restoreState) storedAgentRestoreRef.current = previousRestore;
-      if (autoDefaultDeviceRef.current === selectedDeviceId) autoDefaultDeviceRef.current = previousAutoDefaultDevice;
+      if (autoDefaultDeviceRef.current === selectedDeviceId) {
+        autoDefaultDeviceRef.current = previousAutoDefaultDevice;
+        autoDefaultSnapshotRef.current = previousAutoDefaultSnapshot;
+      }
     };
   }, [
     draft.permissionMode,
@@ -1583,7 +1607,7 @@ export default function NewRemoteSessionScreen() {
     if (!newSessionPreferencesLoaded) return;
     const result = resolveNewSessionAutoDefault({
       userTouched: userTouchedRuntimeRef.current,
-      appliedDeviceId: autoDefaultDeviceRef.current,
+      appliedDeviceId: autoDefaultSnapshotRef.current === hostDraftDefaults ? autoDefaultDeviceRef.current : null,
       selectedDeviceId,
       hostDefaultsSettled,
       hostRuntime: hostRuntimeFor(draft.agentKind),
@@ -1601,7 +1625,9 @@ export default function NewRemoteSessionScreen() {
     });
     if (!result) return;
     const previousAutoDefaultDevice = autoDefaultDeviceRef.current;
+    const previousAutoDefaultSnapshot = autoDefaultSnapshotRef.current;
     autoDefaultDeviceRef.current = result.appliedDeviceId;
+    autoDefaultSnapshotRef.current = hostDraftDefaults;
     let applied = false;
     const nextAgentKind = result.patch.agentKind ?? draft.agentKind;
     const storedPermissionMode = appliedPermissionMemoryRef.current
@@ -1647,6 +1673,7 @@ export default function NewRemoteSessionScreen() {
       // 写入前 effect 重跑:撤回设备锁,重跑时按最新数据重新应用,不把这台设备误记为已应用。
       if (!applied && autoDefaultDeviceRef.current === result.appliedDeviceId) {
         autoDefaultDeviceRef.current = previousAutoDefaultDevice;
+        autoDefaultSnapshotRef.current = previousAutoDefaultSnapshot;
       }
     };
   }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
@@ -4407,7 +4434,7 @@ export default function NewRemoteSessionScreen() {
       restoringRememberedChoice: storedPermissionMode !== undefined,
     }).then(async (confirmed) => {
       // 被控电脑默认还在读:等读完再选模型(切换已标记手动,之后自动默认不会再补)。
-      await waitHostDraftDefaults(selectedDeviceId);
+      await waitHostDraftDefaults(selectedDeviceId, nextKind);
       // 确认期间设备已切换 → 放弃本次写入,新设备自己的 effect 会接管(Greptile P1)。
       if (selectedDeviceId !== selectedDeviceRef.current) return;
       // 确认期间用户又切了 agent / 手动选了模型 → 旧回调不得覆盖新选择(Greptile P1)。

@@ -449,7 +449,7 @@ describe('stored agent restore gating', () => {
     // 切 agent 先等被控电脑默认读完再选模型,不把目录默认当成最终选择(Greptile P1)。
     const switchStart = source.indexOf('const switchAgent = useCallback(');
     const switchBody = source.slice(switchStart, source.indexOf('\n  }, [', switchStart));
-    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId);');
+    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId, nextKind);');
     expect(waitAt).toBeGreaterThan(-1);
     expect(waitAt).toBeLessThan(switchBody.indexOf('pickAgentDefaultRuntime({'));
   });
