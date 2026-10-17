@@ -5728,7 +5728,18 @@ export async function refresh(options?: { networkRecovered?: boolean }): Promise
     log.debug('runtime refresh skipped in local mode');
     return false;
   }
-  if (refreshPromise !== null) return refreshPromise;
+  if (refreshPromise !== null) {
+    if (!options?.networkRecovered) return refreshPromise;
+    const recoveryEpoch = authStateEpoch;
+    const refreshed = await refreshPromise;
+    if (refreshed || authStateEpoch !== recoveryEpoch) return refreshed;
+    // Another recovery caller may already have started the next single flight.
+    if (refreshPromise !== null) return refreshPromise;
+    if (!refreshBackoff.networkRecovered(recoveryEpoch)) return false;
+    // Consume this hint once, including when the old network failure arrived
+    // after it. A failure of the new attempt must retain its own cooldown.
+    return refresh();
+  }
   if (options?.networkRecovered) refreshBackoff.networkRecovered(authStateEpoch);
   // Explicit callers (including chat polling and resume) share the same wait
   // as the retry timer; skipped calls must not move the deadline forward.

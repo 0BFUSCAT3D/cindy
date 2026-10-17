@@ -18,8 +18,10 @@ export class AuthRefreshBackoff {
   }
 
   /** A real server response proves reachability; interface hints do not. */
-  networkRecovered(epoch: number): void {
-    if (this.epoch === epoch && this.networkFailure) this.clear();
+  networkRecovered(epoch: number): boolean {
+    if (this.epoch !== epoch || !this.networkFailure) return false;
+    this.clear();
+    return true;
   }
 
   clear(): void {
