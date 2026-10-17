@@ -11,6 +11,7 @@ import {
 import type { RemoteInvoke } from "@/device-link/mobileMakerTransport";
 import { installPeerFileDownload } from "@/device-link/peerFileRegistry";
 import { isDirectPreviewableMediaUrl, resolveMobileRemoteMedia } from "@/session/remoteMedia";
+import { fetchRemoteAbsFileOnce } from '@/session/remoteAbsFileFetch';
 import {
   setMobileAuthOwner,
   __testing as authOwnerTesting,
@@ -212,14 +213,35 @@ describe("mobile maker transport", () => {
         direct,
       );
       expect(peer).toHaveBeenCalledOnce();
-      expect(peer.mock.calls[0]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number), { ...direct, transferRequired: true, version: 'a'.repeat(64) }]);
+      expect(peer.mock.calls[0]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number), { ...direct, transferRequired: true, version: 'a'.repeat(64) }, undefined]);
       invoke.mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
       await maker.fetchRemoteMedia('xdt-file://open?path=/b', { stream: false, skipCache: true });
       expect(peer.mock.calls[1]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number),
-        { ...direct, transferRequired: true, version: 'a'.repeat(64), skipCache: true }]);
+        { ...direct, transferRequired: true, version: 'a'.repeat(64), skipCache: true }, undefined]);
     } finally {
       uninstall();
     }
+  });
+  // Unit: exercise the complete HTML fetch adapter chain. A failed partial direct
+  // download must clear its percentage while the existing OSS fallback prepares.
+  it('forwards receiver progress through HTML fetching and resets it on upload fallback', async () => {
+    const progress = vi.fn();
+    const metadata = { ossKey: '', size: 100, mimeType: 'text/html' };
+    const uninstall = installPeerFileDownload(async (_device, _url, _signal, _trace, _metadata, onProgress) => {
+      onProgress?.(42, 100);
+      return null;
+    });
+    const invoke = vi.fn().mockResolvedValueOnce({ ...metadata, transferRequired: true })
+      .mockResolvedValueOnce({ ...metadata, ossKey: 'owned/page' });
+    try {
+      const maker = createMobileMakerTransport({ deviceId: 'd', invoke });
+      const result = await fetchRemoteAbsFileOnce({ maker, deviceId: 'd', openLink: async () => {},
+        presignGet: async () => ({ getUrl: 'https://example.test/page', expiresAt: '2099-01-01T00:00:00Z' }) },
+      '/page.html', undefined, undefined, undefined, new AbortController().signal, progress);
+      expect(result.url).toBe('https://example.test/page');
+      expect(progress.mock.calls).toEqual([[42, 100], [0, 0]]);
+      expect(invoke).toHaveBeenCalledTimes(2);
+    } finally { uninstall(); }
   });
   it("cancels before caps and keeps old-host export on the existing job protocol", async () => {
     const invoke = vi

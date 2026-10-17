@@ -24,6 +24,8 @@ export interface PreviewSource {
   signal?: AbortSignal;
   isCurrent?(): boolean;
   onResourceError?(status: number): void;
+  /** Local, account-scoped lookup; must never wait for remote metadata. */
+  cached?(root: string, rel: string): Promise<string | null>;
   stat(root: string, rel: string, signal?: AbortSignal): Promise<Omit<DirEntry, 'name'>>;
   read(root: string, entry: DirEntry, signal?: AbortSignal): Promise<string>;
   /** Media goes through the existing managed store; other files are copied into staging. */
@@ -152,28 +154,40 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
   };
   try {
     if (!current()) throw new Error('PREVIEW_CANCELLED');
-    const initial = await source.stat(root, entry, source.signal ?? controller.signal);
+    const cachedEntry = await source.cached?.(root, entry).catch(() => null);
     if (!current()) throw new Error('PREVIEW_CANCELLED');
-    if (initial.type !== 'file') throw new Error('NOT_FOUND');
-    const materialize = async (relPath: string, directory: string, signal: AbortSignal) => {
+    if (!cachedEntry) {
+      const initial = await source.stat(root, entry, source.signal ?? controller.signal);
+      if (!current()) throw new Error('PREVIEW_CANCELLED');
+      if (initial.type !== 'file') throw new Error('NOT_FOUND');
+    }
+    const refresh = async (relPath: string, signal: AbortSignal) => {
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
       const metadata = await source.stat(root, relPath, signal);
+      if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
       if (metadata.type !== 'file' || metadata.relPath !== relPath || !Number.isSafeInteger(metadata.size) || metadata.size < 0)
         throw new Error('NOT_FOUND');
-      const file = { ...metadata, name: relPath.split('/').pop()! };
-      const sourcePath = await source.read(root, file, signal);
+      const sourcePath = await source.read(root, { ...metadata, name: relPath.split('/').pop()! }, signal);
+      return { path: sourcePath, size: metadata.size };
+    };
+    const materialize = async (relPath: string, directory: string, signal: AbortSignal) => {
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
-      const stat = await fs.stat(sourcePath);
+      const cached = await source.cached?.(root, relPath).catch(() => null);
+      const cachedStat = cached ? await fs.stat(cached).catch(() => null) : null;
+      const hit = cached && cachedStat?.isFile() ? { path: cached, size: cachedStat.size } : null;
+      const file = hit ?? await refresh(relPath, signal);
+      if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
+      const stat = await fs.stat(file.path);
       if (!stat.isFile() || stat.size !== file.size) throw new Error('PREVIEW_CHANGED');
       const dest = path.join(directory, 'asset');
-      const materialized = await source.materialize(sourcePath, dest, file.size);
+      const materialized = await source.materialize(file.path, dest, file.size);
       if ((await fs.stat(materialized)).size !== file.size) throw new Error('PREVIEW_CHANGED');
       // Guard HTML documents, including secondary pages, before publishing the snapshot.
       // Copy guarded HTML into this snapshot even if materialize returned a shared cache path.
       // XML documents retain their parser/MIME and use the response CSP, not an HTML prolog.
       let assetPath = materialized;
       let assetSize = stat.size;
-      if (/\.html?$/i.test(file.relPath)) {
+      if (/\.html?$/i.test(relPath)) {
         const original = await fs.readFile(materialized);
         let html: string | undefined;
         try {
@@ -195,6 +209,13 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
         }
       }
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
+      if (hit) {
+        // Refresh the durable cache after owning a copy. Never replace the open page
+        // or make a disconnected host invalidate an otherwise readable snapshot.
+        const update = refresh(relPath, controller.signal).then(() => {}, () => {});
+        pending.add(update);
+        void update.finally(() => pending.delete(update));
+      }
       return { path: assetPath, size: assetSize };
     };
     const token = randomBytes(24).toString('hex');
@@ -290,7 +311,7 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
     });
     server.unref();
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    if (source.isCurrent && !source.isCurrent()) throw new Error('PREVIEW_CANCELLED');
+    if (!current()) throw new Error('PREVIEW_CANCELLED');
     return { url: `${origin}/${token}/`, close };
   } catch (error) {
     await close();

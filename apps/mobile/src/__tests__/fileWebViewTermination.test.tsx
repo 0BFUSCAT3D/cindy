@@ -6,6 +6,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { PeerFileTransport } from '@/device-link/peerFileTransport';
 import { HtmlSnapshotReader } from '@/session/HtmlFileReader';
 import type { MobileHtmlPreview } from '@/session/mobileHtmlPreview';
+import type { HtmlPreviewProgress, PrepareMobileHtmlPreview } from '@/session/mobileHtmlPreview';
+import { useHtmlSnapshot } from '@/session/useHtmlSnapshot';
+import { HtmlPreviewLoading } from '@/session/HtmlPreviewLoading';
 
 const state = vi.hoisted(() => ({
   props: {} as Record<string, (...args: any[]) => void>,
@@ -22,10 +25,16 @@ const state = vi.hoisted(() => ({
 vi.mock('react-native', () => ({
   Platform: { OS: 'ios' },
   View: ({ children }: { children: unknown }) => children,
+  ActivityIndicator: () => null,
   StyleSheet: { create: (value: unknown) => value },
   AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
 }));
 vi.mock('@/theme', () => ({ useTheme: () => ({ colors: { surfaceElevated: '#FFFFFC' } }) }));
+vi.mock('@/components/AppText', () => ({ Text: ({ children }: { children: unknown }) => children }));
+vi.mock('react-i18next', async (original) => ({
+  ...await original<typeof import('react-i18next')>(),
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 vi.mock('@/session/useHtmlBrowserViewport', () => ({ useHtmlBrowserViewport: (insets: unknown) => ({ viewRef: { current: null }, measure() {}, script: '/* geometry only */ true;', obscuredContentInsets: insets }) }));
 vi.mock('react-native-webview', async () => {
   const { forwardRef, useEffect, useImperativeHandle } = await import('react');
@@ -169,15 +178,60 @@ it('starts a new native history for a refreshed snapshot and ignores navigation 
 
 const hidden = () => [(state.props as Record<string, unknown>).style].flat(Infinity).some((style: any) => style?.opacity === 0);
 it('hides each snapshot until its first document loads, then reveals it', () => {
-  root = createRoot(document.createElement('div'));
+  const container = document.createElement('div');
+  root = createRoot(container);
   const first: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/a/', documents: ['/index.html'], close: async () => {} };
-  act(() => root!.render(createElement(HtmlSnapshotReader, { preview: first, onError() {} })));
+  act(() => root!.render(createElement(HtmlSnapshotReader, { preview: first, onError() {}, loading: 'loading-page' })));
   expect(hidden()).toBe(true);
+  expect(container.textContent).toBe('loading-page');
   act(() => state.props.onLoadEnd());
   expect(hidden()).toBe(false);
+  expect(container.textContent).toBe('');
   const next: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/b/', documents: ['/index.html'], close: async () => {} };
   act(() => root!.render(createElement(HtmlSnapshotReader, { preview: next, onError() {} })));
   expect(hidden()).toBe(true);
   act(() => state.props.onLoadEnd());
   expect(hidden()).toBe(false);
+});
+
+// Unit: real hook + loading component, covering the formerly invisible transfer
+// and late progress/error callbacks after switching files. No native network needed.
+it('shows known bytes and speed, hides unknown percentages, and ignores retired progress', async () => {
+  const container = document.createElement('div');
+  root = createRoot(container);
+  const observers: Array<(progress: HtmlPreviewProgress) => void> = [];
+  const prepare: PrepareMobileHtmlPreview = async (_path, _signal, onProgress) => {
+    observers.push(onProgress!);
+    return { url: 'http://127.0.0.1:1234/preview', documents: [], close: async () => {} };
+  };
+  function Harness({ path, enabled = true }: { path: string; enabled?: boolean }) {
+    const snapshot = useHtmlSnapshot(path, enabled, prepare);
+    return createElement(HtmlPreviewLoading, { progress: snapshot.progress });
+  }
+  await act(async () => root!.render(createElement(Harness, { path: '/a.html' })));
+  act(() => observers[0]({ name: 'a.html', loaded: 512, total: 1024, bytesPerSecond: 1024 }));
+  expect(container.textContent).toContain('a.html50% · 1.0 KB/s');
+  act(() => observers[0]({ name: 'a.html', loaded: 0, total: 0, bytesPerSecond: null }));
+  expect(container.textContent).not.toMatch(/%|\/s/);
+  await act(async () => root!.render(createElement(Harness, { path: '/b.html' })));
+  act(() => observers[0]({ name: 'a.html', loaded: 1024, total: 1024, bytesPerSecond: 1024 }));
+  expect(container.textContent).not.toContain('a.html');
+  act(() => observers[1]({ name: 'b.html', loaded: 1, total: 4, bytesPerSecond: null }));
+  expect(container.textContent).toContain('b.html25%');
+  await act(async () => root!.render(createElement(Harness, { path: '/b.html', enabled: false })));
+  act(() => observers[1]({ name: 'b.html', loaded: 4, total: 4, bytesPerSecond: 1 }));
+  expect(container.textContent).not.toContain('b.html');
+});
+
+it('ignores late failure events from a replaced preview', () => {
+  root = createRoot(document.createElement('div'));
+  const onError = vi.fn();
+  const preview: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/first', documents: [], close: async () => {} };
+  act(() => root!.render(createElement(HtmlSnapshotReader, { preview, onError })));
+  const old = state.props;
+  act(() => root!.render(createElement(HtmlSnapshotReader, { preview: { ...preview, url: 'http://127.0.0.1:4321/next' }, onError })));
+  act(() => old.onError({ nativeEvent: { code: -1001 } }));
+  expect(onError).not.toHaveBeenCalled();
+  act(() => state.props.onError({ nativeEvent: { code: -1001 } }));
+  expect(onError).toHaveBeenCalledOnce();
 });

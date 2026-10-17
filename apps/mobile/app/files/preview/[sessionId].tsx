@@ -63,6 +63,7 @@ import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
 import { FileTransferBusyNotice } from '@/session/FileTransferBusyNotice';
 import type { RemoteMediaSshContext } from '@/session/fileBrowserGallery';
 import { HtmlSnapshotReader } from '@/session/HtmlFileReader';
+import { HtmlPreviewLoading } from '@/session/HtmlPreviewLoading';
 import { HtmlBrowserChrome } from '@/session/HtmlBrowserChrome';
 import { HtmlWebsiteBrowser, type WebsiteVisit } from '@/session/HtmlWebsiteBrowser';
 import { normalizeBrowserAddress } from '@/session/browserAddress';
@@ -314,6 +315,14 @@ function RemoteFilePreviewContent() {
     setPageIndex(0);
   }, [singleAbsPath]);
 
+  // A known HTML path can read its cached entry immediately; sibling enumeration
+  // only enriches the pager and must not gate opening the document.
+  useEffect(() => {
+    if (!deviceId || !workdir || richTextKindOf(initialRelPath) !== 'html') return;
+    setSiblings([fallbackItem(initialRelPath)]);
+    setPageIndex(0);
+  }, [deviceId, initialRelPath, workdir]);
+
   // 同目录 pager 远端数据:只在目录来源或恢复代数变化时重列。语言 / 排序变化
   // 只消费下面缓存的原始目录项重建展示模型,不能为翻译重新请求设备。
   useEffect(() => {
@@ -487,10 +496,10 @@ function RemoteFilePreviewContent() {
   }, [session?.remoteHostId, sessionId, workdir]);
 
   const prepareHtmlPreview = useCallback<PrepareMobileHtmlPreview>(
-    (absPath, signal) => prepareMobileHtmlPreview(absPath, {
+    (absPath, signal, onProgress) => prepareMobileHtmlPreview(absPath, {
       maker, deviceId, openLink, presignGet, ssh: sshMediaContext,
       deleteOssObject: deleteResourceOssObject,
-    }, signal),
+    }, signal, onProgress),
     [deleteResourceOssObject, deviceId, maker, openLink, presignGet, sshMediaContext],
   );
 
@@ -1224,14 +1233,17 @@ function TextPreviewPage({
   const [textReloadEpoch, setTextReloadEpoch] = useState(0);
   const codeListRef = useRef<FlatList<string>>(null);
   const scrolledToTargetRef = useRef(false);
+  const wantsText = richKind !== 'html' || richView === 'source';
 
   useEffect(() => {
-    if (!active || loadedRef.current || !workdir) return;
+    if (!active || !wantsText || loadedRef.current || !workdir) return;
     loadedRef.current = true;
     let cancelled = false;
+    let settled = false;
     void readTextFile(item.relPath)
       .then((res: FileBrowserReadFileResult) => {
         if (cancelled) return;
+        settled = true;
         if (!res.ok) {
           if (res.code === 'OVERSIZE') {
             setState({
@@ -1269,8 +1281,9 @@ function TextPreviewPage({
       });
     return () => {
       cancelled = true;
+      if (!settled) loadedRef.current = false;
     };
-  }, [active, cacheable, cacheScope, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
+  }, [active, wantsText, cacheable, cacheScope, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
 
   const htmlSnapshot = useHtmlSnapshot(
     absolutePathOf(item.relPath),
@@ -1381,13 +1394,11 @@ function TextPreviewPage({
             </View>
           ) : !htmlSnapshot.preview || !htmlSnapshot.foreground ? (
             // 取件期间不先渲染破图再热替换 —— 那会让 WebView 重载、页面闪一下。
-            <View style={styles.centerFill} testID="filePreview.htmlResourceLoading">
-              <ActivityIndicator color={colors.textTertiary} />
-              <Text style={styles.hintText}>{t('files.preview.fetchingHtmlResources')}</Text>
-            </View>
+            <HtmlPreviewLoading progress={htmlSnapshot.progress} />
           ) : (
             // 只有完整下载并加固过的目录快照才能进入 WebView。
             <HtmlSnapshotReader preview={htmlSnapshot.preview} onError={() => setHtmlLoadError(true)}
+              loading={<HtmlPreviewLoading progress={htmlSnapshot.progress} />}
               webViewRef={browserRef}
               viewportInsets={{ ...browserContentInset, left: insets.left, right: insets.right }}
               onNavigationStateChange={(preview, state) => setBrowserNavigation({ preview, state })}
