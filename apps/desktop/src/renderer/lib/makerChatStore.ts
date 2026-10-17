@@ -40,7 +40,7 @@ import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/de
 
 import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
-import { nextHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
+import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
@@ -8753,6 +8753,11 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     clearRemoteOptimisticSend(sessionId, mapped.clientId);
     const current = getOrCreateState(sessionId);
     const existing = current.messages.find((candidate) => candidate.clientId === mapped.clientId);
+    if (existing?.cacheHydrated || existing?.cacheReceipt) {
+      // This is a live body now; it must not inherit the replaced cache's order or provenance.
+      mapped.cacheHydrated = false;
+      mapped.cacheReceipt = message.cacheReceipt;
+    }
     if (mapped.systemCardType?.startsWith('cindy-make')) {
       // A late update to an older preparation card must not replace the current result.
       const existingIndex = existing ? current.messages.indexOf(existing) : -1;
@@ -11491,7 +11496,7 @@ function hydrateRemoteMessagesFromCache(sessionId: string): void {
       const current = new Map(s.messages.map(message => [message.clientId, message]));
       const newerReceipts = new Set(mapped.filter(message => {
         const existing = current.get(message.clientId);
-        return !existing?.isStreaming
+        return !existing?.isStreaming && isHistoryCacheReceipt(existing?.cacheReceipt)
           && historyCacheReceiptFollows(message.cacheReceipt, history?.readReceipt, history?.stale)
           && historyCacheReceiptFollows(message.cacheReceipt, existing?.cacheReceipt);
       }).map(message => message.clientId));
@@ -11701,9 +11706,13 @@ function createRemoteHistoryView(sessionId: string) {
     }
     const available = historyViewLeaves(snapshot.items).flatMap((item) => item.type === 'messages' ? item.messages : []);
     for (const detail of snapshot.details.values()) available.push(...detail.messages);
+    // Restored page rows are cached too. Keep their read order when borrowing them
+    // into the raw store, so a delayed disk receipt is comparable without treating live rows as old.
+    const borrowed = deviceId && snapshot.stale ? available.map(message => ({ ...message,
+      cacheHydrated: true as const, cacheReceipt: snapshot.readReceipt })) : available;
     setState(sessionId, (state) => ({ ...state, historyLoaded: true,
       messages: confirmRemoteUsers(
-        mergeMessages(available, state.messages.filter((message) => !message.cacheHydrated
+        mergeMessages(borrowed, state.messages.filter((message) => !message.cacheHydrated
           || historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale)), { addOnly: true }),
         new Set(available.filter((message) => message.role === 'user').map((message) => message.clientId)),
       ),

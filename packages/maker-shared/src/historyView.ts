@@ -17,11 +17,11 @@ export function isHistoryCacheReceipt(value: unknown): value is HistoryCacheRece
   const receipt = value as HistoryCacheReceipt | null;
   return !!receipt && typeof receipt.run === 'string' && Number.isSafeInteger(receipt.order) && receipt.order > 0;
 }
-/** Restored snapshots may borrow other-run receipts; a successful fresh read retires them. */
+/** Only a current-run push can supersede a restored page from another run. */
 export function historyCacheReceiptFollows(receipt: unknown, read: unknown, restored = false): boolean {
   if (!isHistoryCacheReceipt(receipt)) return false;
   if (!isHistoryCacheReceipt(read)) return true;
-  return receipt.run === read.run ? receipt.order > read.order : restored && read.run !== cacheReceiptRun;
+  return receipt.run === read.run ? receipt.order > read.order : restored && receipt.run === cacheReceiptRun;
 }
 
 export function isHistoryViewUnavailable(error: unknown): boolean {

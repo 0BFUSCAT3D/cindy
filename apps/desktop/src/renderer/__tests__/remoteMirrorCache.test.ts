@@ -291,6 +291,39 @@ describe('冷缓存 hydrate', () => {
     expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['earlier history', 'latest reply']);
   });
 
+  // Unit: a live detail push wins even when an older disk receipt arrives later.
+  // The prior tests only mixed distinct IDs or two comparable cached receipts.
+  it.each([false, true])('keeps an unmarked live body when disk hydration is delayed (cached page=%s)', async (cachedPage) => {
+    const s = sid();
+    setDataOwnerGeneration('owner-a', 1);
+    registerRemote(s);
+    const live = dbMessage(s, 'reply', 'live body', '2026-10-11T00:00:01.000Z');
+    let release!: () => void;
+    if (cachedPage) getMessages.mockResolvedValueOnce({ messages: [], invalidation: cachedInvalidation,
+      ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      historyView: encodeRemoteHistory({ items: projectHistoryView([{ ...live, content: 'old page' }], false),
+        details: new Map(), expanded: new Set(), readReceipt: { run: 'old-run', order: 1 },
+        ready: true, loading: false, error: null, nextCursor: null, hasMore: false }) } as CachedRead);
+    getMessages.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { messages: [{ ...live, content: 'old disk body', cacheReceipt: { run: 'old-run', order: 99 } }],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter };
+    });
+    let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+    window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+    makerChatStore.initGlobalListeners();
+    remoteListPromise = new Promise<Message[]>(() => {});
+    if (cachedPage) remoteProjectsStore.markDeviceDisconnected(DEVICE_ID);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    if (cachedPage) expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['old page']);
+    push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, message: live } });
+    expect(makerChatStore.getSnapshot(s).messages[0].cacheReceipt).toBeUndefined();
+    release();
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual(['live body']);
+  });
+
   it.each([true, false])('shows list text while pending and only its owner persists receipts (owner=%s)', async (ownsRemoteListCache) => {
     const s = sid();
     setDataOwnerGeneration('owner-a', 1);
@@ -517,10 +550,10 @@ describe('冷缓存 hydrate', () => {
 
   // A restart restores two caches: the structured page and a later durable list receipt.
   // Neither resolution order may hide the newer body while the Host is offline.
-  it.each([false, true])('restores a later disk receipt over the same row in old history (raw delayed=%s)', async (delayed) => {
+  it.each([[false, true], [true, true], [false, false], [true, false]])('restores disk receipts only in a comparable run (raw delayed=%s, same run=%s)', async (delayed, sameRun) => {
     const s = sid();
     const old = dbMessage(s, 'reply', 'old body', '2026-10-11T00:00:01.000Z');
-    const latest = { ...old, content: 'latest body', cacheReceipt: { run: 'cached', order: 2 } };
+    const latest = { ...old, content: 'latest body', cacheReceipt: { run: sameRun ? 'cached' : 'other-old-run', order: 2 } };
     const historyView = encodeRemoteHistory({ items: projectHistoryView([old], false), details: new Map(), expanded: new Set(),
       readReceipt: { run: 'cached', order: 1 }, ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
     let reads = 0;
@@ -533,9 +566,9 @@ describe('冷缓存 hydrate', () => {
     remoteProjectsStore.markDeviceDisconnected(DEVICE_ID);
     makerChatStore.ensureInitialMessages(s);
     await flush(60);
-    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual(['latest body']);
+    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual([sameRun ? 'latest body' : 'old body']);
     getRemoteHistoryView(s)?.setActive(true);
-    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual(['latest body']);
+    expect(makerChatStore.getSnapshot(s).messages.map(row => row.content)).toEqual([sameRun ? 'latest body' : 'old body']);
     expect(invoke).not.toHaveBeenCalled();
     makerChatStore.purgeSession(s);
     getMessages.mockImplementation(async (deviceId, sessionId) => ({

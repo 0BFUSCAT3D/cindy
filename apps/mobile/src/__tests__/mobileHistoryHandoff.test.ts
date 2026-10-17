@@ -48,7 +48,7 @@ describe('mobile history handoff', () => {
   // including receipts restored from a previous app run.
   it.each([false, true])('retires old receipts after a clock rollback (previous run=%s)', async (previousRun) => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(50_000);
-    const cachedRead = previousRun ? { run: 'previous-snapshot', order: 1 } : nextHistoryCacheReceipt();
+    const cachedRead = previousRun ? { run: 'previous-run', order: 1 } : nextHistoryCacheReceipt();
     const receipt = previousRun ? { run: 'previous-run', order: 999_999 } : nextHistoryCacheReceipt();
     const old = { ...row('answer'), content: 'cached body', cacheReceipt: receipt };
     const view = new HistoryViewController<RemoteMessage>({
@@ -74,6 +74,28 @@ describe('mobile history handoff', () => {
       view.setActive(false);
       expect(render()).toEqual(['host body']); // Leaving the page must not revive the retired receipt.
     } finally { view.setActive(false); clock.mockRestore(); }
+  });
+
+  // Unit: separately saved raw (run A) and authoritative page (run B), restored
+  // offline in run C. Only an actual C push may supersede B; A cannot be ordered after B.
+  it.each([false, true])('does not guess the order of two old runs (current push=%s)', async (currentPush) => {
+    const raw = { ...row('answer'), content: 'raw body',
+      cacheReceipt: currentPush ? nextHistoryCacheReceipt() : { run: 'run-A', order: 999_999 } };
+    const view = new HistoryViewController<RemoteMessage>({
+      page: async () => { throw new Error('offline'); },
+      details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }), expanded: async () => undefined,
+    });
+    view.setNetworkAvailable(false);
+    await view.restoreCachedView(async () => ({ items: projectHistoryView([{ ...row('answer'), content: 'authoritative B' }], false),
+      details: new Map(), expanded: new Set(), nextCursor: null, hasMore: false,
+      loading: false, ready: true, error: null, readReceipt: { run: 'run-B', order: 1 } }));
+    const snapshot = view.getSnapshot();
+    const state = createHandoff().reconcile(snapshot, [raw]);
+    expect(buildMobileHistoryRenderItems({ view, snapshot, messages: state.messages, staleTail: state.tail,
+      pendingHandoff: state.pending, streaming: false, sessionId: 's' })
+      .filter(item => item.type === 'message').map(item => item.message.body))
+      .toEqual([currentPush ? 'raw body' : 'authoritative B']);
+    view.setActive(false);
   });
 
   it('keeps the live tail below completed text when recovery history has not caught up to that tail', async () => {
