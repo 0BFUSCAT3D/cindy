@@ -48,17 +48,47 @@ describe("shared file read policy", () => {
     expect(discard).toHaveBeenCalledWith(cached);
     expect(prepare).not.toHaveBeenCalled();
   });
-  it.each([true, false])('only versions a completed fallback when its source is unchanged (%s)', async unchanged => {
+  it.each(['unchanged', 'version', 'source-size', 'export-size', 'denied', 'cancelled'] as const)(
+    'only delivers a revalidated export to its consumer: %s', async mode => {
     const version = 'a'.repeat(64);
     const prepared = { ...metadata, version };
-    const result = await readDeviceFile({
+    const exported = { ossKey: 'export/key', size: prepared.size + (mode === 'export-size' ? 1 : 0), mimeType: 'application/octet-stream' };
+    const discard = vi.fn(), publish = vi.fn();
+    const abort = new AbortController();
+    const pending = readDeviceFile({
       prepare: async () => prepared,
       peer: async () => null,
-      fallback: async () => ({ ossKey: 'export/key', size: prepared.size, mimeType: 'application/octet-stream' }),
-      revalidate: async () => ({ ...prepared, version: unchanged ? version : 'b'.repeat(64) }),
-    });
-    expect(result.version).toBe(unchanged ? version : undefined);
-    expect(result.mimeType).toBe(unchanged ? metadata.mimeType : 'application/octet-stream');
+      fallback: async () => exported,
+      revalidate: async () => {
+        if (mode === 'denied') throw new Error('DENIED');
+        if (mode === 'cancelled') abort.abort();
+        return { ...prepared, version: mode === 'version' ? 'b'.repeat(64) : version,
+          size: prepared.size + (mode === 'source-size' ? 1 : 0) };
+      },
+      signal: abort.signal, discard,
+    }).then(publish);
+    if (mode === 'unchanged') {
+      await pending;
+      expect(publish).toHaveBeenCalledExactlyOnceWith({ ...exported, version, mimeType: metadata.mimeType });
+      expect(discard).not.toHaveBeenCalled();
+    } else {
+      await expect(pending).rejects.toThrow(mode === 'denied' ? 'DENIED' : mode === 'cancelled' ? 'FILE_PEER_CANCELLED' : 'FILE_PEER_CHANGED');
+      expect(publish).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledExactlyOnceWith(exported);
+    }
+  });
+  it('keeps the last good cache when a background export changes during revalidation', async () => {
+    const cached = { ...metadata, version: 'a'.repeat(64), inlineBase64: 'b2xk' };
+    const exported = { ossKey: 'export/changed', size: metadata.size, mimeType: metadata.mimeType };
+    const discard = vi.fn(), retain = vi.fn();
+    expect(await readDeviceFile({
+      cacheFirst: { key: 'changed-export', read: async () => cached, retain },
+      prepare: async () => ({ ...metadata, version: 'b'.repeat(64) }),
+      peer: async () => null, fallback: async () => exported,
+      revalidate: async () => ({ ...metadata, version: 'c'.repeat(64) }), discard,
+    })).toBe(cached);
+    await vi.waitFor(() => expect(discard).toHaveBeenCalledExactlyOnceWith(exported));
+    expect(retain).not.toHaveBeenCalled();
   });
   it.each(['text/html', 'text/css', 'application/javascript', 'text/plain', 'application/pdf', 'image/png', 'application/zip'])(
     'revalidates %s before reusing bytes and replaces changed versions', async (mimeType) => {

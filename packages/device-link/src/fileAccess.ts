@@ -115,12 +115,15 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
   const result = await options.fallback();
   if (!active()) return discardCancelled(result);
   if (!mediaStream && !result.version && validFileVersion(prepared.version) && options.revalidate) {
-    let after: DeviceFileResult;
-    try { after = await options.revalidate(); }
-    catch (error) { await options.discard?.(result); throw error; }
-    if (!active()) return discardCancelled(result);
-    if (after.version === prepared.version && after.size === prepared.size && result.size === prepared.size)
+    try {
+      const after = await options.revalidate();
+      assertActive();
+      // A result without a version can still be persisted by an outer cache.
+      // Reject inconsistent exports here, before any consumer can publish them.
+      if (after.version !== prepared.version || after.size !== prepared.size || result.size !== prepared.size)
+        throw new Error('FILE_PEER_CHANGED');
       return { ...result, version: prepared.version, mimeType: prepared.mimeType };
+    } catch (error) { await options.discard?.(result); throw error; }
   }
   return result;
 }
