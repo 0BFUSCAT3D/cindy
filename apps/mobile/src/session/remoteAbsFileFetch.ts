@@ -25,6 +25,7 @@ import type {
   MobileMakerTransport,
   RemoteTextFilePreviewResult,
 } from '@/device-link/mobileMakerTransport';
+import { releasePeerMedia } from '@/device-link/peerFileRegistry';
 import {
   effectiveRemoteMediaSshContext,
   remoteFileMediaUrl,
@@ -220,4 +221,63 @@ export function adaptTextFilePreviewResult(
       ? i18n.t('composer.attachments.pathNotReadable')
       : res.error ?? i18n.t('composer.attachments.readFailed');
   return { ok: false, code: 'READ_FAILED', message };
+}
+
+/** Size-limited text fallback; uses existing transfer/cache and temporary-file cleanup. */
+export async function readRemoteTextFilePreview(
+  deps: RemoteAbsFileFetchDeps & {
+    readPreview: (path: string) => Promise<RemoteTextFilePreviewResult>;
+    isCurrent: () => boolean;
+  },
+  path: string,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<RemoteTextFilePreviewResult> {
+  const assertActive = () => {
+    if (signal?.aborted || !deps.isCurrent()) throw new Error('PREVIEW_CANCELLED');
+  };
+  assertActive();
+  let preview: RemoteTextFilePreviewResult | undefined;
+  try {
+    preview = await deps.readPreview(path);
+  } catch (error) {
+    // Older Hosts ignore the opt-in and return their existing compact error.
+    // Permission, missing-file and connection failures must never bypass the text reader.
+    if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'PAYLOAD_TOO_LARGE') throw error;
+  }
+  assertActive();
+  if (preview && (!preview.success || !preview.transferRequired)) return preview;
+  const maxBytes = 10 * 1024 * 1024;
+  const uploaded = new Set<string>();
+  let localUri: string | undefined;
+  try {
+    const media = await resolveMobileRemoteMedia(
+      { kind: 'image', url: remoteFileMediaUrl(path, undefined, undefined, { maxBytes }) },
+      { fetchRemoteMedia: deps.maker.fetchRemoteMedia, presignGet: deps.presignGet },
+      // The visible text cache already provides the stale snapshot. This read
+      // must validate the Host version before updating that snapshot again.
+      { signal, stream: false, revalidate: true, beforeFetch: async () => {
+        assertActive();
+        await deps.openLink(deps.deviceId);
+        assertActive();
+      }, onOssKey: (key) => uploaded.add(key) },
+    );
+    if (media.url.startsWith('file://')) localUri = media.url;
+    assertActive();
+    if (!Number.isSafeInteger(media.size) || media.size < 0) throw new Error('PREVIEW_CHANGED');
+    if (media.size > maxBytes) return { success: false, reason: 'oversize', size: media.size, limitMb: 10 };
+    const { withDownloadedRemoteMediaFile } = await import('./remoteMediaDiskCacheExpo');
+    const result = await withDownloadedRemoteMediaFile(media.url, media.mimeType, maxBytes, async (file) => {
+      assertActive();
+      if (file.size !== media.size) throw new Error('PREVIEW_CHANGED');
+      const data = await file.text();
+      assertActive();
+      return { success: true, data, size: media.size, limitMb: 10 };
+    }, signal);
+    assertActive();
+    if (!result) throw new Error('PREVIEW_READ_FAILED');
+    return result;
+  } finally {
+    if (localUri) releasePeerMedia(localUri);
+    for (const key of uploaded) deps.deleteOssObject?.(key);
+  }
 }

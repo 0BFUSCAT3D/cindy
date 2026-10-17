@@ -39,6 +39,26 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  // Unit: a visible text snapshot is already cached by the reader. Its refresh
+  // must await the Host, while retaining the existing confirmed-version cache.
+  it('revalidates text without returning stale bytes or invalidating a confirmed version', async () => {
+    setMobileAuthOwner('text-revalidation');
+    const stale = { ossKey: '', size: 3, mimeType: 'text/plain', version: 'a'.repeat(64), inlineBase64: 'b2xk' };
+    const current = { ...stale, version: 'b'.repeat(64), inlineBase64: 'bmV3' };
+    fileCache.readLatest.mockResolvedValue(stale);
+    fileCache.readInline.mockResolvedValue(current);
+    const invoke = vi.fn(async () => ({ ...current, inlineBase64: undefined, transferRequired: true }));
+    const maker = createMobileMakerTransport({ deviceId: 'text-host', invoke: invoke as RemoteInvoke });
+    try {
+      expect(await maker.fetchRemoteMedia('xdt-file://open?path=/text.txt', { stream: false, revalidate: true })).toEqual(current);
+      expect(fileCache.readLatest).not.toHaveBeenCalled();
+      expect(fileCache.invalidate).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      fileCache.readLatest.mockReset(); fileCache.readInline.mockReset();
+      authOwnerTesting.reset(); vi.clearAllMocks();
+    }
+  });
   it('reads through an older shared host without sending unknown metadata-only fields', async () => {
     const result = { ossKey: '', size: 3, mimeType: 'text/plain', inlineBase64: 'YWJj' };
     const invoke = vi.fn(async (_device, _channel, [request]) => {

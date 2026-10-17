@@ -14,6 +14,8 @@ import {
 } from '@cindy/device-link';
 import { isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 import { DeviceLinkProvider, useDeviceLink, type DeviceLinkContextValue } from '../device-link/DeviceLinkContext';
+import { useMobileMakerTransport } from '../device-link/useMobileMakerTransport';
+import type { MobileMakerTransport } from '../device-link/mobileMakerTransport';
 import { acquireDeviceSendSlot, resetDeviceResponsivenessTracking, settleDeviceSend, unresponsiveDevicesStore } from '../device-link/unresponsiveDevicesStore';
 import { revokedDevicesStore } from '../device-link/revokedDevicesStore';
 import { localNetworkStore, type NetworkState } from '../device-link/localNetworkStatus';
@@ -108,7 +110,8 @@ const accepted = (capabilities?: string[]): LinkAcceptPayload => ({ appVersion: 
 const historyChannel = 'local-db:messages:view';
 let root: Root;
 let context: DeviceLinkContextValue;
-function Probe() { context = useDeviceLink(); return null; }
+let maker: MobileMakerTransport;
+function Probe() { context = useDeviceLink(); maker = useMobileMakerTransport('host'); return null; }
 function render() { root.render(createElement(DeviceLinkProvider, null, createElement(Probe))); }
 function deferredAccept() {
   let resolve!: (value: LinkAcceptPayload) => void;
@@ -284,6 +287,35 @@ describe('Provider device roster reads', () => {
 });
 
 describe('Provider queued send guards', () => {
+  it('opts the production text reader into file transfer and honors pre-cancelled reads', async () => {
+    const client = transport.clients[0];
+    client.invoke.mockResolvedValue({ ok: true, result: { success: true, data: 'text', size: 4 } });
+    await act(async () => {
+      expect(await maker.fs.readTextFilePreview('/text.txt')).toMatchObject({ data: 'text' });
+    });
+    expect(client.invoke).toHaveBeenCalledWith('host', {
+      channel: 'text-file:read-preview', args: [{ filePath: '/text.txt', allowFileTransfer: true }],
+    }, undefined, expect.any(Object));
+    client.invoke.mockClear();
+    const abort = new AbortController(); abort.abort();
+    await expect(maker.fs.readTextFilePreview('/text.txt', { signal: abort.signal })).rejects.toThrow('PREVIEW_CANCELLED');
+    expect(client.invoke).not.toHaveBeenCalled();
+  });
+  // Unit: resource auto-refresh must reach the shared scheduler as background;
+  // the previous adapter dropped that local hint and consumed foreground slots.
+  it('preserves background intent without changing ordinary resource reads', async () => {
+    const client = transport.clients[0];
+    await act(async () => {
+      await context.invoke('host', 'maker:remote-resources:manifest', [], { background: true });
+      await context.invoke('host', 'maker:remote-resources:manifest', []);
+    });
+    const calls = client.invoke.mock.calls.filter(([, payload]) => payload.channel === 'maker:remote-resources:manifest');
+    expect(calls.map(call => call[3]?.background)).toEqual([true, undefined]);
+    expect(calls.map(call => call[1])).toEqual([
+      { channel: 'maker:remote-resources:manifest', args: [] },
+      { channel: 'maker:remote-resources:manifest', args: [] },
+    ]);
+  });
   it('rejects a write cancelled after admission without sending or counting a remote timeout', async () => {
     resetDeviceResponsivenessTracking();
     const client = transport.clients[0];

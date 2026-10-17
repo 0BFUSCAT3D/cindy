@@ -109,7 +109,7 @@ function expectVisiblePage(relPath: string, meta: string) {
   type PageProps = {
     visible: boolean;
     active: boolean;
-    item: { relPath: string };
+    item: { name: string; relPath: string };
     htmlBrowserActions: { meta: string };
   };
   const pages = state.pager.data.map((item: unknown, index: number) => {
@@ -119,7 +119,7 @@ function expectVisiblePage(relPath: string, meta: string) {
   const visiblePages = pages.filter(page => page.visible);
   expect(visiblePages).toHaveLength(1);
   expect(visiblePages[0]).toMatchObject({
-    active: true, item: { relPath }, htmlBrowserActions: { meta },
+    active: true, item: { name: relPath, relPath }, htmlBrowserActions: { meta },
   });
 }
 describe('cached file preview presentation', () => {

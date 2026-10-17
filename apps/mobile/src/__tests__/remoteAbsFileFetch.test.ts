@@ -5,10 +5,75 @@ import {
   adaptTextFilePreviewResult,
   fetchRemoteAbsFileToUrl,
   fetchRemoteAbsFileOnce,
+  readRemoteTextFilePreview,
   type RemoteAbsFileFetchDeps,
 } from '@/session/remoteAbsFileFetch';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
 import { clearPeerMedia, recordPeerMedia } from '@/device-link/peerFileRegistry';
+const textIO = vi.hoisted(() => ({ size: 5, text: 'hello', read: vi.fn() }));
+vi.mock('@/session/remoteMediaDiskCacheExpo', () => ({
+  withDownloadedRemoteMediaFile: async (_url: string, _mime: string, _max: number, read: (file: unknown) => unknown) => {
+    textIO.read();
+    return read({ size: textIO.size, text: async () => textIO.text });
+  },
+}));
+
+// Unit: exercise the actual RPC → file fallback, rather than only adapting the
+// RPC shape. A legal large reply used to fail before reaching the text reader.
+describe('large text preview', () => {
+  const setup = () => {
+    const { deps, fetchRemoteMedia, presignGet } = makeDeps();
+    const readPreview = vi.fn<() => Promise<RemoteTextFilePreviewResult>>(async () => ({ success: true, transferRequired: true, size: 5 }));
+    const deleteOssObject = vi.fn();
+    textIO.size = 5; textIO.text = 'hello'; textIO.read.mockClear();
+    fetchRemoteMedia.mockResolvedValue({ ossKey: 'oss/text', size: 5, mimeType: 'text/plain' });
+    return { deps: { ...deps, readPreview, deleteOssObject, isCurrent: () => true }, fetchRemoteMedia, presignGet, readPreview, deleteOssObject };
+  };
+  it.each([false, true])('reads and cleans transferred text, legacy error=%s', async legacy => {
+    const h = setup();
+    if (legacy) h.readPreview.mockRejectedValue(Object.assign(new Error('too large'), { code: 'PAYLOAD_TOO_LARGE' }));
+    expect(await readRemoteTextFilePreview(h.deps, '/tmp/text.txt')).toEqual({ success: true, data: 'hello', size: 5, limitMb: 10 });
+    expect(h.fetchRemoteMedia.mock.calls[0][0]).toContain('maxBytes=10485760');
+    expect(h.deleteOssObject).toHaveBeenCalledExactlyOnceWith('oss/text');
+  });
+  it.each(['forbidden', 'not_found', 'oversize'] as const)('does not transfer after host returns %s', async reason => {
+    const h = setup();
+    const result = { success: false, reason, size: 12 };
+    h.readPreview.mockResolvedValue(result);
+    expect(await readRemoteTextFilePreview(h.deps, '/tmp/text.txt')).toBe(result);
+    expect(h.fetchRemoteMedia).not.toHaveBeenCalled();
+  });
+  it('keeps small text inline and does not retry connection failures as file reads', async () => {
+    const h = setup();
+    h.readPreview.mockResolvedValue({ success: true, data: '', size: 0 });
+    expect(await readRemoteTextFilePreview(h.deps, '/tmp/text.txt')).toMatchObject({ data: '' });
+    h.readPreview.mockRejectedValue(new Error('offline'));
+    await expect(readRemoteTextFilePreview(h.deps, '/tmp/text.txt')).rejects.toThrow('offline');
+    expect(h.fetchRemoteMedia).not.toHaveBeenCalled();
+  });
+  it('stops before transferring when cancelled during the RPC', async () => {
+    const h = setup();
+    const abort = new AbortController();
+    h.readPreview.mockImplementation(async () => { abort.abort(); return { success: true, transferRequired: true, size: 5 }; });
+    await expect(readRemoteTextFilePreview(h.deps, '/tmp/text.txt', abort.signal)).rejects.toThrow('PREVIEW_CANCELLED');
+    expect(h.fetchRemoteMedia).not.toHaveBeenCalled();
+  });
+  it('cleans an uploaded object even when presigning fails', async () => {
+    const h = setup();
+    h.presignGet.mockRejectedValue(new Error('offline'));
+    await expect(readRemoteTextFilePreview(h.deps, '/tmp/text.txt')).rejects.toThrow('offline');
+    expect(h.deleteOssObject).toHaveBeenCalledExactlyOnceWith('oss/text');
+  });
+  it('rejects truncated data and releases the direct transfer staging file', async () => {
+    const h = setup();
+    const media = { ossKey: '', size: 6, mimeType: 'text/plain' };
+    const dispose = vi.fn();
+    recordPeerMedia(media, 'file:///text-staged', dispose);
+    h.fetchRemoteMedia.mockResolvedValue(media);
+    await expect(readRemoteTextFilePreview(h.deps, '/tmp/text.txt')).rejects.toThrow('PREVIEW_CHANGED');
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+});
 
 // 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
 beforeAll(async () => {
@@ -20,7 +85,7 @@ function makeDeps(overrides: Partial<{
   getUrl: string;
   expiresAt: string;
 }> = {}) {
-  const fetchRemoteMedia = vi.fn(async () => ({
+  const fetchRemoteMedia = vi.fn<RemoteAbsFileFetchDeps['maker']['fetchRemoteMedia']>(async () => ({
     ossKey: overrides.ossKey ?? 'oss/abc',
     mimeType: 'image/png',
     size: 1234,

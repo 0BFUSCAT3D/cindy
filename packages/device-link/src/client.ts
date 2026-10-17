@@ -272,6 +272,12 @@ export interface DeviceLinkClientOptions {
    * 不传时 wire 行为与旧版完全相同。
    */
   transferCodec?: DeviceLinkTransferCodec;
+  /** Optional local counters; no content/identities, never part of delivery decisions. */
+  invokeMetrics?: {
+    enabled(): boolean;
+    record(event: { channel: string; phase: 'sent' | 'result'; payloadBytes?: number;
+      notModified?: boolean; gzip?: boolean }): void;
+  };
   /** 测试注入:覆盖重连/心跳的时间参数 */
   timing?: Partial<DeviceLinkTiming>;
 }
@@ -1456,6 +1462,7 @@ export class DeviceLinkClient {
         'invoke-result',
         timeoutMs,
       );
+      this.reportInvokeMetric(payload.channel, env.payload as InvokeResultPayload);
       const result = transfer
         ? transfer.decode(env.payload as InvokeResultPayload)
         : env.payload as InvokeResultPayload;
@@ -1630,6 +1637,17 @@ export class DeviceLinkClient {
 
   // ─── 内部:请求配对 ─────────────────────────────────────────────────────────
 
+  private reportInvokeMetric(channel: string, result?: InvokeResultPayload): void {
+    try {
+      if (!this.opts.invokeMetrics?.enabled()) return;
+      this.opts.invokeMetrics.record(result === undefined ? { channel, phase: 'sent' } : {
+        channel, phase: 'result', payloadBytes: byteLength(JSON.stringify(result)),
+        notModified: result.ok && result.transfer?.notModified === true,
+        gzip: result.ok && typeof result.transfer?.gzipBase64 === 'string',
+      });
+    } catch { /* Diagnostics must never affect delivery or response decoding. */ }
+  }
+
   /** 发送请求帧并等待同 id 响应;同 id relay-error 转成 DeviceLinkError reject */
   private request(
     env: Omit<Envelope, 'id'>,
@@ -1703,6 +1721,7 @@ export class DeviceLinkClient {
         noteFirstWrite: () => {
           if (firstWriteAt !== undefined) return;
           firstWriteAt = this.monotonicNow();
+          if (env.kind === 'invoke') this.reportInvokeMetric((env.payload as InvokePayload).channel);
           // Only the first write can move the deadline. Replays and partial writes
           // cannot extend it; total transport lifetime is at most sendWaitMs + timeout.
           deadlineMonotonicAt = Math.min(firstWriteAt + timeout, startedMonotonicAt + sendWaitMs + timeout);

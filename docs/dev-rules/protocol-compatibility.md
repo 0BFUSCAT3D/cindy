@@ -188,6 +188,21 @@ known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机�
 传输去重仅保留有界内存，两端持久展示缓存继续使用原有账号隔离与删除屏障。
 不修改 relay、不新增权限、数据库 migration 或 Mobile 原生指纹。
 
+## 大文本预览的文件传输回退
+
+`text-file:read-preview` 接受可选 `allowFileTransfer: true`。仍先执行原绝对路径、
+访问策略和 10 MiB 大小校验；成功结果的 UTF-8 JSON 大于设备消息预算（4 MiB 留出
+64 KiB 封装余量）时，仅向显式支持的调用方返回 `{ success: true, transferRequired: true,
+size, limitMb }`，不把正文塞入消息。未声明支持的本地／旧控制端仍收到原有结果。
+新手机收到标记后，使用既有 `xdt-file` 文件通道及版本缓存取件，并携带 `maxBytes=10485760`；
+读取前后校验取消、账号和实际大小，结束时释放取件暂存及 OSS 对象。文本已有独立展示缓存，
+其更新等待主机版本复验后再复用对应字节，避免把旧快照反复写回。无新增存储目录或通道。
+
+旧 Host 忽略新增请求字段，新手机继续接收原正文／错误；收到明确的 `PAYLOAD_TOO_LARGE`
+时可走同一文件回退，权限、缺失和连接错误不触发回退。旧 Host 若不能返回明确超限错误，
+仍需更新 Host 才能消除此失败；不以超时为由重发或绕过文本授权。完整修复需要两端更新，
+不需要服务端或 Mobile 原生构建变化。
+
 ## invoke 结果传输编码（弱网减流量）
 
 控制端 `invoke` payload 可选携带 `transfer: { gzip?: 1, ifNoneMatch?: string }`：注入了解压
@@ -217,6 +232,15 @@ Desktop 的压缩保持 gzip level 4 与同步发送／错误处理契约，手�
 `@cindy/device-link/node-compression` 独立入口，跨平台主入口与 Mobile 不加载 Node 模块。
 DEBUG 统计只记原始／gzip／wire 字节与压缩耗时，不记录正文或凭证。
 回归见 Desktop `device-link/__tests__/transferCodec.test.ts`（实际 zlib／pako 解码）。
+
+Mobile 开启本地诊断时，在原有 30 秒／卡顿区间统计内汇总 `relayTransfers`：每个 channel
+首次写入 socket 的请求数、收到的响应数、还原正文前的响应 payload UTF-8 字节数、
+`notModified` 与 gzip 命中数。前者不把准入等待或取消算作已发送，也不重复计重传；
+后者不包含 envelope、分片头、ACK 与重传字节，不是总线上流量。peer 直连不经过此计数。
+传输行按响应 payload 字节数降序只保留前六个通道，`relayTransfersOmitted` 标明省略的
+通道数；与 push／invoke 列表一起保持在单条日志的 120 值预算内，不能当作全部通道总量。
+旧 `invokeCount` 仍是业务调用次数，不能与已发请求数混用。不开诊断时不序列化计量，
+不记录请求参数、正文、设备／任务 ID，不改变传输协议或恢复策略。
 
 ## 群执行终态与错误展示
 
@@ -1345,11 +1369,17 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 
 - **open 载荷新增可选 `relay`**(`remote-agent/wire.ts`，`REMOTE_AGENT_RELAY_KEY_PATTERN`，16–64 位 `[A-Za-z0-9_-]`)：O 为受邀者取的
   不透明键(按受邀者派生，不含分享与成员信息)。M 收到带 `relay` 的 open 一律按受邀者隔离运行(即使控制端是同账号的 O)：
-  受邀者目录、会话索引、续接校验与运行数按(控制端, relay)分开；同一控制端按受邀者各 16 个、合计 64 个任务。只有同账号
-  控制端的 `relay` 才各算一份运行数：受邀者控制端自己填的 `relay` 只把它的数据分开存放，运行数仍按这个受邀者合计 16 个，
-  不能借此放宽额度(分享来的 M 上 O 本身就是受邀者，O 替各受邀者中转的任务在那台合计 16 个)。O 同时带
+  受邀者目录、会话索引、续接校验按(控制端, relay)分开。数量上限按认证的直接连接设备合计，分享 peer 取其 deviceId，
+  同一设备跨供应商、分享入口及 relay 共用额度；默认单设备 16、提供方整机 64（可配置），不会因 relay 获得额外额度。O 同时带
   `groupAssigned`，并把 `sessionId` 换成按(受邀者, 任务 id)派生的 id、`providerId` 换成 M 上的供应商。旧 M 丢弃这个字段，
   所以 O 只把受邀者任务交给 caps 声明了 `guestRelay` 的同账号 M；分享来的 M 本来就把 O 当受邀者隔离，不要求这个能力。
+- **提供方远程任务数量设置**：沿用 `maker:remote-agent:v1`，不加必填字段；`caps.maxRuns` 返回当前单设备上限（1～1000，旧解析器可读）。
+  超限仍回 `REMOTE_AGENT_BUSY`，message 用 `[DEVICE_LIMIT]` / `[TOTAL_LIMIT]` 区分原因，旧端继续按忙碌处理。
+  本机 `provider-share:command` 与同账号管理通道增加 `get-run-limits` / `set-run-limits` / `reset-run-limits`；
+  `set-run-limits.limits` 只包含用户编辑过的 `perDevice` / `total`，写入端在锁内合并当前值并验证大小关系；
+  未编辑字段不落盘，继续跟随默认值或此前显式设置。两个字段同时提供仍兼容。
+  不向受邀者开放。旧端不认识这些管理命令时显示需要更新，不回退伪造成功。设置只影响新增实例，不中断存量。
+  大额度下控制端仍按每批最多 64 个任务轮转 poll，不提高 wire 上限。
 - **caps 新增可选 `guestRelay: true`**(`RemoteAgentCaps`)：被控端能按受邀者隔离运行(供应商级授权与受邀者出站边界都已接上)。
 - **新 op `forget { relay }`**(`parseRemoteAgentRequest`)：O 删除受邀者后请 M 清掉替它运行过的任务、受邀者目录与会话记录；
   只作用于调用方自己的 relay。旧 M 回 `REMOTE_AGENT_INVALID`(它从没接过被中转的任务)。

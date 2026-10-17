@@ -502,14 +502,16 @@ function RemoteFilePreviewContent() {
   // absPath 单文件模式走 text-file:read-preview(被控端绝对路径文本通道),
   // 回包适配成 readFile 同构结果,文本页零分支。
   const readTextFile = useCallback(
-    (relPath: string): Promise<FileBrowserReadFileResult> =>
+    (relPath: string, signal?: AbortSignal): Promise<FileBrowserReadFileResult> =>
       withTransientRemoteRetry(async () => {
+        if (signal?.aborted) throw new Error('PREVIEW_CANCELLED');
         await openLink(deviceId);
+        if (signal?.aborted) throw new Error('PREVIEW_CANCELLED');
         const startedAt = Date.now();
         const channel = singleAbsPath ? 'text-preview' : 'read-file';
         try {
           const res = singleAbsPath
-            ? adaptTextFilePreviewResult(singleAbsPath, await maker.fs.readTextFilePreview(singleAbsPath))
+            ? adaptTextFilePreviewResult(singleAbsPath, await maker.fs.readTextFilePreview(singleAbsPath, { signal }))
             : await maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
           // Whole-text reads share the relay with rendered-HTML resource requests; size only.
           // gzip 回包是压缩数据的 base64,与纯文本字符数分字段记录,避免两种口径混用。
@@ -823,7 +825,7 @@ function FilePreviewPage({
   onOpenLightbox(url: string): void;
   /** chat-text-quote:markdown 渲染态的选中引用回调(仅文本页消费)。 */
   onQuoteSelection?: (text: string) => void;
-  readTextFile(relPath: string): Promise<FileBrowserReadFileResult>;
+  readTextFile(relPath: string, signal?: AbortSignal): Promise<FileBrowserReadFileResult>;
   recoveryEpoch: number;
   targetLine: number | null;
   /** 是否真正可见的当前页(可执行渲染态的挂载门,见调用处说明)。 */
@@ -1158,7 +1160,7 @@ function TextPreviewPage({
   /** chat-text-quote:markdown 渲染态的选中引用回调(源码态暂不支持,见 PR 说明)。 */
   onQuoteSelection?: (text: string) => void;
   /** 屏级注入:readFile 带瞬断重试 + openLink(与列表/搜索/导出同路径)。 */
-  readTextFile(relPath: string): Promise<FileBrowserReadFileResult>;
+  readTextFile(relPath: string, signal?: AbortSignal): Promise<FileBrowserReadFileResult>;
   targetLine: number | null;
   /** 是否真正可见的当前页:HTML 渲染态只在可见时挂 WebView(文本预取不受限)。 */
   visible: boolean;
@@ -1208,9 +1210,10 @@ function TextPreviewPage({
     if (!active || !wantsText || loadedRef.current || !workdir) return;
     loadedRef.current = true;
     let cancelled = false;
+    const abort = new AbortController();
     const unavailable = (value: TextPreviewState) => setState((previous) =>
       previous.status === 'ready' ? previous : value);
-    void readTextFile(item.relPath)
+    void readTextFile(item.relPath, abort.signal)
       .then((res: FileBrowserReadFileResult) => {
         if (cancelled) return;
         if (!res.ok) {
@@ -1257,6 +1260,7 @@ function TextPreviewPage({
       });
     return () => {
       cancelled = true;
+      abort.abort();
       loadedRef.current = false;
     };
   }, [active, wantsText, cacheable, cacheScope, deviceId, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
