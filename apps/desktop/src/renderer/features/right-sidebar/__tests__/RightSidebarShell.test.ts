@@ -445,7 +445,7 @@ describe('RightSidebarShell empty state', () => {
       try {
         await waitFor(() => expect(entry.wrapper.parentElement?.id).not.toBe('browser-webview-pool'));
         const slot = entry.wrapper.parentElement;
-        const trigger = screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' });
+        let trigger = screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' });
         act(() => trigger.focus());
         fireEvent.keyDown(trigger, { key: 'Enter' });
         const firstMenu = await screen.findByRole('menu');
@@ -476,6 +476,7 @@ describe('RightSidebarShell empty state', () => {
         expect(entry.wrapper.isConnected).toBe(true);
 
         view.rerender(createElement(RightSidebarShell, props));
+        trigger = screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' });
         expect(screen.queryByRole('menu')).toBeNull();
         expect(trigger.getAttribute('data-state')).toBe('closed');
         expect(entry.wrapper.parentElement).toBe(slot);

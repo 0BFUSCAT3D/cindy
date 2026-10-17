@@ -245,6 +245,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--border-default)] bg-content-area px-2">
         {/* 左:导航按钮 */}
         <ChromeIconButton
+          visible={visible}
           icon={ArrowLeft}
           disabled={!canGoBack}
           onClick={onGoBack}
@@ -252,6 +253,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
           disabledTooltip={t('rightSidebar.browser.goBackUnavailable')}
         />
         <ChromeIconButton
+          visible={visible}
           icon={ArrowRight}
           disabled={!canGoForward}
           onClick={onGoForward}
@@ -259,6 +261,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
           disabledTooltip={t('rightSidebar.browser.goForwardUnavailable')}
         />
         <ChromeIconButton
+          visible={visible}
           icon={RotateCw}
           reducedMotionIcon={isLoading ? XIcon : undefined}
           spinning={isLoading}
@@ -313,6 +316,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
           message-square-plus = 页面评论(评论模式点选元素 → 评论进 composer,
           已实现,active 态高亮);ellipsis = 更多菜单(系统浏览器打开 / 复制链接)。 */}
         <ChromeIconButton
+          visible={visible}
           icon={Camera}
           onClick={onCaptureScreenshot}
           tooltip={t('rightSidebar.browser.screenshot')}
@@ -320,6 +324,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
         {/* detached 子窗口无 composer,评论无处落点 —— 直接不渲染该按钮。 */}
         {commentSupported && (
           <ChromeIconButton
+            visible={visible}
             icon={MessageSquarePlus}
             active={commentActive}
             onClick={onToggleComment}
@@ -334,7 +339,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
           走 data-[state=open])。菜单项在无有效链接(新标签空白态)时置灰。 */}
         <DropdownMenu open={visible && moreMenuOpen} onOpenChange={handleMoreMenuOpenChange}>
           <DropdownMenuTrigger asChild>
-            <Tip text={t('rightSidebar.browser.moreTools')} side="bottom">
+            <Tip text={t('rightSidebar.browser.moreTools')} side="bottom" disabled={!visible}>
               <button
                 type="button"
                 aria-label={t('rightSidebar.browser.moreTools')}
@@ -382,6 +387,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
  * star 用)。disabled 时半透明 + 不可点。
  */
 function ChromeIconButton({
+  visible,
   icon: Icon,
   reducedMotionIcon: ReducedMotionIcon,
   size = 14,
@@ -393,6 +399,7 @@ function ChromeIconButton({
   tooltip,
   disabledTooltip,
 }: {
+  visible: boolean;
   icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
   /** reduced-motion 下用静态动作图标表达 loading 状态，避免刷新/空闲态无法区分。 */
   reducedMotionIcon?: React.ComponentType<{
@@ -451,8 +458,10 @@ function ChromeIconButton({
     </button>
   );
 
+  // Disabling Tip unmounts its Radix root, clearing open portals and pending
+  // hover timers even if this host returns before the delay expires.
   return (
-    <Tip text={accessibleLabel} side="bottom">
+    <Tip text={accessibleLabel} side="bottom" disabled={!visible}>
       {disabled ? (
         <span
           role="button"

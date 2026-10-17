@@ -46,7 +46,7 @@ it('keeps external focus when the browser returns before its More exit animation
   const input = document.createElement('input');
   document.body.append(input);
   try {
-    const trigger = screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' });
+    let trigger = screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' });
     act(() => trigger.focus());
     fireEvent.keyDown(trigger, { key: 'Enter' });
     const menu = await screen.findByRole('menu');
@@ -57,6 +57,10 @@ it('keeps external focus when the browser returns before its More exit animation
     expect(menu.getAttribute('data-state')).toBe('closed');
     expect(menu.isConnected).toBe(true); // Presence is waiting for float-out.
     view.rerender(createElement(BrowserChrome, props));
+    // The closing modal still aria-hides new triggers until Presence exits.
+    trigger = view.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="rightSidebar.browser.moreTools"]',
+    )!;
     expect(menu.isConnected).toBe(true);
     expect(trigger.getAttribute('data-state')).toBe('closed');
     act(() => input.focus());
@@ -67,6 +71,7 @@ it('keeps external focus when the browser returns before its More exit animation
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(document.activeElement).toBe(input);
     expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' })).toBe(trigger);
 
     // A later ordinary dismissal must not inherit the earlier hidden close.
     act(() => trigger.focus());
