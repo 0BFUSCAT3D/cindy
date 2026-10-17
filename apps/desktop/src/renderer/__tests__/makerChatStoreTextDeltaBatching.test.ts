@@ -3392,6 +3392,83 @@ describe('makerChatStore text delta batching', () => {
     expect(messageService.dismissError).toHaveBeenCalledTimes(1);
   });
 
+  // Codex review：本端拒绝的发送没有产生新一轮，不能提前作废补标意图。
+  it.each([
+    [
+      'sendMessage 被 beforeEnqueue 拒绝',
+      () =>
+        makerChatStore.sendMessage(
+          SESSION_ID,
+          'next',
+          MODEL,
+          EFFORT,
+          PERMISSION_MODE,
+          WORKING_DIR,
+          undefined,
+          undefined,
+          { beforeEnqueue: async () => false },
+        ),
+    ],
+    [
+      'steerMessage 被在飞插话拒绝',
+      () => {
+        onInputProjection?.(projection(SESSION_ID, { steeringQueueClientIds: ['steer-in-flight'] }));
+        return makerChatStore.steerMessage(
+          SESSION_ID,
+          'next',
+          MODEL,
+          EFFORT,
+          PERMISSION_MODE,
+          WORKING_DIR,
+        );
+      },
+    ],
+    [
+      'steerMessage 被 beforeEnqueue 拒绝',
+      () =>
+        makerChatStore.steerMessage(
+          SESSION_ID,
+          'next',
+          MODEL,
+          EFFORT,
+          PERMISSION_MODE,
+          WORKING_DIR,
+          undefined,
+          undefined,
+          { beforeEnqueue: async () => false },
+        ),
+    ],
+  ] as const)('关闭后%s：意图保留，同文案的行落库后仍补标', async (_label, send) => {
+    const message = 'worker turn failed';
+    await closeSameTextErrorBeforeItPersists(message);
+
+    await expect(send()).resolves.toBe(false);
+    vi.mocked(messageService.list).mockResolvedValueOnce(persistedRowsWithB(message));
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    await flushPromises();
+    await flushPromises();
+    expect(messageService.dismissError).toHaveBeenCalledTimes(2);
+    expect(messageService.dismissError).toHaveBeenLastCalledWith(SESSION_ID, 'err-persist-B');
+  });
+
+  it('关闭后发送被接受(直接派发、队列不增长)：意图作废，同文案的行落库不再补标', async () => {
+    const message = 'worker turn failed';
+    await closeSameTextErrorBeforeItPersists(message);
+
+    input.enqueue.mockResolvedValueOnce(projection(SESSION_ID));
+    await expect(
+      makerChatStore.sendMessage(SESSION_ID, 'next', MODEL, EFFORT, PERMISSION_MODE, WORKING_DIR),
+    ).resolves.toBe(true);
+    expect(makerChatStore.getSnapshot(SESSION_ID).pendingQueue).toHaveLength(0);
+
+    const listCalls = vi.mocked(messageService.list).mock.calls.length;
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    await flushPromises();
+    await flushPromises();
+    expect(vi.mocked(messageService.list).mock.calls.length).toBe(listCalls);
+    expect(messageService.dismissError).toHaveBeenCalledTimes(1);
+  });
+
   it('does not treat a custom LiteLLM provider token error as Cindy credentials', async () => {
     onInputProjection?.(
       projection(SESSION_ID, {

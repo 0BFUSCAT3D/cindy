@@ -14808,8 +14808,6 @@ function sendMessage(
   if ((!text.trim() && (!files || files.length === 0)) || !workingDir)
     return Promise.resolve(false);
   if (isRemoteDeletedSessionSendBlocked(sessionId)) return Promise.resolve(false);
-  // 发了新消息,之后落库的错误属于新一次发送,不再代关掉的那次错误补标。
-  _disposedLiveErrorIntents.delete(sessionId);
   const remoteScopeAtStart = captureRemoteOptimisticSendScope(
     sessionId,
     opts?.onRemoteOptimisticFailure,
@@ -15061,6 +15059,11 @@ async function sendMessageCore(
     }
   }
 
+  // 消息已过完所有本端拒绝点(clear/scope/beforeEnqueue),之后一定交给 coordinator 或
+  // 远程 outbox:之后落库的错误属于这次发送,不再代关掉的那次错误补标。被拒的发送不作废,
+  // 否则关掉的错误随后落库时补标不了。
+  _disposedLiveErrorIntents.delete(sessionId);
+
   // 一次性契约收口(bot review P2):计划勾选在**点击发送**时消耗——本条消息的计划
   // 意图已定格在行内快照(createOpts.planMode,派发时经 SendOptions.planMode 权威
   // 生效),这里立即熄灭 store/DB/runtime 的勾选,会话忙时连续排队的后续消息不再
@@ -15237,8 +15240,6 @@ function steerMessage(
     return Promise.resolve(false);
   }
   if (isRemoteDeletedSessionSendBlocked(sessionId)) return Promise.resolve(false);
-  // 发了新消息,之后落库的错误属于新一次发送,不再代关掉的那次错误补标。
-  _disposedLiveErrorIntents.delete(sessionId);
   const remoteScopeAtStart = captureRemoteOptimisticSendScope(
     sessionId,
     opts?.onRemoteOptimisticFailure,
@@ -15462,6 +15463,10 @@ async function steerMessageCore(
       throw err;
     }
   }
+  // 消息已过完所有本端拒绝点(clear/scope/canStartComposerSteer/beforeEnqueue),之后一定交给 coordinator 或
+  // 远程 outbox:之后落库的错误属于这次发送,不再代关掉的那次错误补标。被拒的发送不作废,
+  // 否则关掉的错误随后落库时补标不了。
+  _disposedLiveErrorIntents.delete(sessionId);
   touchSessionUserSend(sessionId, workingDir, false);
   // 补起名同样要覆盖 steer:首条是纯附件的会话标题此时是合成占位,而用户完全
   // 可能趁这一轮还在跑就用「插话」写下第一句话。只走普通发送的话,这句话不会
@@ -17435,6 +17440,9 @@ export { UI_ACTION_TRIGGER_PREFIX };
  */
 
 function sendUiTriggerCore(sessionId: string, prompt: string): Promise<void> {
+  // 已拿到发送 token(Agent 切换在途时 sendUiTrigger 直接拒绝、走不到这里),之后一定发出:
+  // 同 sendMessageCore,只在这里作废关闭错误的待补标意图。
+  _disposedLiveErrorIntents.delete(sessionId);
   const state = getOrCreateState(sessionId);
   // UI triggers can be invoked from an error card while the mirror is being
   // reseeded. Pin every mutation in this attempt to the device that owned the
@@ -17528,7 +17536,6 @@ function sendUiTriggerCore(sessionId: string, prompt: string): Promise<void> {
 
 function sendUiTrigger(sessionId: string, prompt: string): Promise<void> {
   if (!sessionId) return Promise.reject(new Error('sendUiTrigger: empty sessionId'));
-  _disposedLiveErrorIntents.delete(sessionId);
   return withAgentSendDispatch(
     sessionId,
     () => Promise.reject(new Error('Agent switch is still in progress')),
