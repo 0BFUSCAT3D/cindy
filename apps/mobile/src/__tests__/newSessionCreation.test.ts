@@ -648,7 +648,7 @@ describe('newSessionCreation pipeline', () => {
     expect(record.item.text).toBe(DRAFT.firstMessage);
   });
 
-  it.each(['matching', 'device', 'account', 'not-ready', 'switched-owner'])('only acknowledges durable edit recovery after the matching form restores it: %s', async scope => {
+  it.each(['matching', 'matching-no-error', 'device', 'account', 'not-ready', 'switched-owner'])('only acknowledges durable edit recovery after the matching form restores it: %s', async scope => {
     const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
     startNewSessionCreation(makeParams('s1', maker));
     await flushPipeline();
@@ -656,6 +656,8 @@ describe('newSessionCreation pipeline', () => {
     editOutbox.records.mockReturnValue([record]);
     await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: vi.fn() });
     const owner = getMobileAuthOwner();
+    record.error = scope === 'matching-no-error' ? undefined : 'saved creation failure';
+    const matching = scope === 'matching' || scope === 'matching-no-error';
     // Model the persisted edit-ready patch so the real form acquires a releaseable claim.
     record.suspended = true;
     record.creation!.editReady = true;
@@ -670,11 +672,12 @@ describe('newSessionCreation pipeline', () => {
       getCurrentMobileOutboxRecords: editOutbox.records, outboxRecoveryRef: { current: null },
       userTouchedDeviceRef: { current: false }, restoreCreationDraft: restore,
       setSelectedDeviceId: vi.fn(), setSelectedDeviceName: vi.fn(), completeNewSessionDurableEdit,
+      setError: vi.fn(), t: (_key: string, values: { message: string }) => `创建失败：${values.message}`,
       mobileDurableOutbox: { subscribe: () => () => {}, ready: async () => {} },
     };
     const cleanup = runRecoveryEffect('completeNewSessionDurableEdit(', bindings)!;
     await flushPipeline();
-    if (scope === 'matching') {
+    if (matching) {
       expect(restore).toHaveBeenCalledWith(DRAFT, [], { enabled: false, restorePermissionMode: null }, 'dev-1');
       expect(getNewSessionCreationTask('s1')).toBeNull();
     } else {
@@ -682,8 +685,12 @@ describe('newSessionCreation pipeline', () => {
       if (scope === 'switched-owner') expect(getNewSessionCreationTask('s1')).toBeNull();
       else expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
     }
+    // Cold/blank-form recovery has no creationError route parameter. Restore
+    // the saved reason only with its matching draft; old records keep any live error.
+    if (scope === 'matching') expect(bindings.setError).toHaveBeenCalledWith('创建失败：saved creation failure');
+    else expect(bindings.setError).not.toHaveBeenCalled();
     cleanup();
-    if (scope === 'matching') {
+    if (matching) {
       expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
       expect(remoteSessionStore.getSessions()).toEqual([]);
     }

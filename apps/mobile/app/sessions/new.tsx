@@ -877,6 +877,7 @@ export default function NewRemoteSessionScreen() {
         { enabled: record.creation.planModeArm, restorePermissionMode: record.creation.restorePermissionMode },
         record.deviceId);
       if (record.creation.notice) setAttachmentError(record.creation.notice);
+      if (record.error) setError(t('session.screen.createFailedNotice', { message: record.error }));
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
       releaseEditClaim = completeNewSessionDurableEdit(sid, record.deviceId);
@@ -884,7 +885,7 @@ export default function NewRemoteSessionScreen() {
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);
     return () => { active = false; unsubscribe(); releaseEditClaim?.(); };
-  }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
+  }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft, t]);
   useEffect(() => {
     const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
     if (!stashed) return;

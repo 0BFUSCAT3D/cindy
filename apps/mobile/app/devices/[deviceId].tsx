@@ -162,6 +162,7 @@ function DeviceDetailScreenContent() {
     automationWorkingDir?: string;
     automationSessionIds?: string;
     statusFilter?: string;
+    search?: string;
   }>();
   const deviceId = readRouteString(params.deviceId) ?? '';
   const deviceName = readRouteString(params.name) ?? readRouteString(params.deviceName) ?? deviceId;
@@ -204,7 +205,7 @@ function DeviceDetailScreenContent() {
     () => parseRouteStatusFilter(readRouteString(params.statusFilter)),
   );
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(() => readRouteString(params.search) === '1');
   const [searchFilterOpen, setSearchFilterOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
