@@ -944,7 +944,7 @@ describe('Shared create project picker', () => {
   });
 
   // 远程模型目录的 loading / error 与草稿默认值都是创建前置条件：任一路径没就绪
-  // 都不能把兜底值提交给对端；真实读取失败还必须告知用户，不能在 loading=false 后放行。
+  // 都不能把兜底值提交给对端；无缓存首读失败必须告知用户，不能在 loading=false 后放行。
   it('blocks send and goal creation until remote models/defaults are ready, including terminal errors', () => {
     expect(newMakerDraftRouteSource).toContain(
       'capabilitiesError || (deviceProvidersError && !deviceProvidersUnsupported)',
@@ -966,7 +966,8 @@ describe('Shared create project picker', () => {
       "throw new Error(t('ccAgent.draft.remoteDefaultsLoadFailed'))",
     );
     expect(newMakerDraftRouteSource).toContain('setRemoteDraftRetryEpoch((value) => value + 1)');
-    expect(newMakerDraftRouteSource).toContain("status: unsupported ? 'ready' : 'error'");
+    // 首读失败阻止创建、有缓存时刷新失败保留可用状态：由 remoteDraftDefaultsCache.test.tsx
+    // 执行真实页面 hooks 验证，不再将所有读取失败都静态锁定为 error。
     expect(newMakerDraftRouteSource).toContain(
       "if (extractIpcError(error)?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED') return null;",
     );

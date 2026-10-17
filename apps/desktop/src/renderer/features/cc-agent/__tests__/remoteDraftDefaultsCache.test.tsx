@@ -12,14 +12,15 @@ import { resolveDeviceLinkDraftDefaults, shouldReseedDeviceLinkDraftDefaults, ty
 // Unit regression: existing pure default resolvers cannot detect a page remount
 // blocking on RPC, or a cache bypassing the worktree write confirmation. Execute
 // the production page's hooks without mounting unrelated composer/IPC features.
-const source = readFileSync(resolve(process.cwd(), 'src/renderer/features/cc-agent/NewMakerDraftRoute.tsx'), 'utf8');
+const source = readFileSync(resolve(process.cwd(), 'src/renderer/features/cc-agent/NewMakerDraftRoute.tsx'), 'utf8').replace(/\r\n?/g, '\n');
 const start = source.indexOf('  const [remoteDraftState, setRemoteDraftState]');
 const end = source.indexOf('  // 运行 Agent 的电脑只提供模型目录', start);
 const seedStart = source.indexOf('  useEffect(() => {', source.indexOf('  // seed dlSel:'));
 const seedEnd = source.indexOf('\n  ]);', seedStart) + '\n  ]);'.length;
 const pushStart = source.indexOf('  useEffect(() => {', source.indexOf('  // 订阅被控端草稿全量变更 push:'));
 const pushEnd = source.indexOf('\n  ]);', pushStart) + '\n  ]);'.length;
-if (start < 0 || end < 0) throw new Error('Remote defaults hooks not found');
+if (start < 0 || end <= start || seedStart < 0 || seedEnd <= seedStart
+  || pushStart < 0 || pushEnd <= pushStart) throw new Error('Remote defaults hooks not found');
 const compiled = ts.transpileModule(`function usePageDefaults(bindings) {
   const { useState, useRef, useEffect, isDeviceLinkDraft, effectiveDeviceLinkDeviceId,
     capabilityAgentKind, useDeviceLinkReconnectEpoch, extractIpcError,

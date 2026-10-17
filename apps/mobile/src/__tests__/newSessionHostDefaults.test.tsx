@@ -19,14 +19,15 @@ import {
 // Unit regression for #5816: run the page's real defaults hooks, without its
 // unrelated native UI. Existing newSession tests cover selection policy but not
 // remount/remote-read timing. Minimum failure: reopen while the next RPC is pending.
-const source = readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+const source = readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8').replace(/\r\n?/g, '\n');
 const start = source.indexOf('  const [hostDraftDefaults, setHostDraftDefaults]');
 const end = source.indexOf('  // selectedDeviceId 的渲染期镜像', start);
 const autoStart = source.indexOf('  useEffect(() => {', source.indexOf('  // 决策逻辑全在纯函数 resolveNewSessionAutoDefault'));
 const autoEnd = source.indexOf('\n\n  // 目录就绪后的来源终检', autoStart);
 const storedStart = source.lastIndexOf('  useEffect(() => {', source.indexOf('    const storedAgentKind = newSessionPreferences?.agentKind;'));
 const storedEnd = source.indexOf('\n\n  // 权限记忆恢复:', storedStart);
-if (start < 0 || end < 0) throw new Error('New-session host defaults hooks not found');
+if (start < 0 || end <= start || autoStart < 0 || autoEnd <= autoStart
+  || storedStart < 0 || storedEnd <= storedStart) throw new Error('New-session host defaults hooks not found');
 const compiled = ts.transpileModule(`function usePageDefaults(bindings) {
   const { useState, useRef, useEffect, useCallback, selectedDeviceId, deviceLinkStatus,
     maker, openLink, outboxOwner, selectedDeviceRef, remoteAgentChoice,
