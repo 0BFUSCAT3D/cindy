@@ -9,7 +9,8 @@
  * ——media:fetch 故意不限 workdir,靠 device-link 的三道 gate(被控开关 /
  * 撤销黑名单 / channel 白名单)保证「等同本地访问」的信任级。
  *
- * 缓存策略(bot review 实捉后收紧):`xdt-file://` 不进被控端 mtime/size 感知
+ * 完整文件进入共用读取层，优先使用持久字节缓存、后台复验，不复用下述临时 URL。
+ * 流式地址缓存策略:`xdt-file://` 不进被控端 mtime/size 感知
  * 的上传去重缓存(那只对 `xdt-image://` 生效,见 desktop mediaFetch.ts),手机侧
  * 又没有 mtime 来源可验证文件是否被覆写——若按 presign 全期(约 1 小时)缓存,
  * 同路径文件被 agent 覆写后会一直吃到旧字节。因此这里只做**短 TTL** 缓存:
@@ -43,6 +44,7 @@ export interface RemoteAbsFileFetchDeps {
   deviceId: string;
   openLink: (deviceId: string) => Promise<unknown>;
   presignGet: (ossKey: string) => Promise<MobileRemoteMediaPresignResult>;
+  deleteOssObject?: (key: string) => void;
   /** 取消信号(如页面卸载、导出提示上的「取消」):中止取件,不再重试。 */
   isCancelled?: () => boolean;
 }
@@ -101,7 +103,7 @@ export async function fetchRemoteAbsFileToUrl(
     ? `${eff.sessionId}\u0000${eff.remoteHostId}\u0000${eff.workdir}`
     : '';
   const key = `${deps.deviceId}\u0000${absPath}\u0000${sshKey}\u0000${deps.stream === false ? 'file' : 'stream'}`;
-  const cached = lookupCache(key, Date.now());
+  const cached = deps.stream === false ? null : lookupCache(key, Date.now());
   if (cached) return cached.url;
   // 与 exportRemoteFileToUrl 同一写法:轮询 isCancelled 转成取件的 AbortSignal。
   const abort = deps.isCancelled ? new AbortController() : null;
@@ -115,12 +117,13 @@ export async function fetchRemoteAbsFileToUrl(
   const timer = abort ? setInterval(check, 100) : null;
   try {
     const fetchOpts = {
+      beforeFetch: () => deps.openLink(deps.deviceId),
+      ...(deps.deleteOssObject ? { discardBackgroundOssKey: deps.deleteOssObject } : {}),
       ...(deps.stream === false ? { stream: false } : {}),
       ...(abort ? { signal: abort.signal } : {}),
     };
     const resolved = await withTransientRemoteRetry(async () => {
       assertActive();
-      await deps.openLink(deps.deviceId);
       // kind 只影响结果的 previewable 标志(此处不消费),按 image 占位。
       return resolveMobileRemoteMedia(
         { kind: 'image', url: remoteFileMediaUrl(absPath, undefined, ssh) },
@@ -128,7 +131,11 @@ export async function fetchRemoteAbsFileToUrl(
         Object.keys(fetchOpts).length ? fetchOpts : undefined,
       );
     });
-    rememberFetch(key, resolved, Date.now());
+    // Only the local copy can outlive its temporary cloud object.
+    if (resolved.ossKey && resolved.url.startsWith('file://')) {
+      deps.deleteOssObject?.(resolved.ossKey);
+    }
+    if (deps.stream !== false) rememberFetch(key, resolved, Date.now());
     assertActive();
     return resolved.url;
   } finally {
@@ -167,14 +174,20 @@ export async function fetchRemoteAbsFileOnce(
    */
   constraints?: RemoteMediaFetchConstraints | null,
   signal?: AbortSignal,
+  onProgress?: (loaded: number, total: number) => void,
 ): Promise<MobileResolvedRemoteMedia> {
   return withTransientRemoteRetry(async () => {
+    const assertActive = () => { if (signal?.aborted) throw new Error('PREVIEW_CANCELLED'); };
+    assertActive();
     await deps.openLink(deps.deviceId);
+    assertActive();
     // kind 只影响结果的 previewable 标志(此处不消费),按 image 占位。
     return resolveMobileRemoteMedia(
       { kind: 'image', url: remoteFileMediaUrl(absPath, undefined, ssh, constraints) },
       { fetchRemoteMedia: deps.maker.fetchRemoteMedia, presignGet: deps.presignGet },
-      { onOssKey, signal, stream: false },
+      // HTML already restores its visible snapshot before calling here. Returning
+      // another stale snapshot would write old bytes back into that preview cache.
+      { onOssKey, signal, stream: false, skipCache: true, ...(onProgress ? { onProgress } : {}) },
     );
   });
 }

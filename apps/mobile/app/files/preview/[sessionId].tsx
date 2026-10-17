@@ -63,6 +63,7 @@ import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
 import { FileTransferBusyNotice } from '@/session/FileTransferBusyNotice';
 import type { RemoteMediaSshContext } from '@/session/fileBrowserGallery';
 import { HtmlSnapshotReader } from '@/session/HtmlFileReader';
+import { HtmlPreviewLoading } from '@/session/HtmlPreviewLoading';
 import { HtmlBrowserChrome } from '@/session/HtmlBrowserChrome';
 import { HtmlWebsiteBrowser, type WebsiteVisit } from '@/session/HtmlWebsiteBrowser';
 import { normalizeBrowserAddress } from '@/session/browserAddress';
@@ -94,7 +95,7 @@ import { ImageLightbox } from '@/session/ImageLightbox';
 import { buildMediaPayload } from '@/session/messagePayload';
 import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import type { MobileRemoteMediaPresignResult } from '@/session/remoteMedia';
-import { downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo';
+import { downloadRemoteMediaShareTemp, retainRemoteFilePreview } from '@/session/remoteMediaDiskCacheExpo';
 import { remoteSessionStore, useRemoteSessions } from '@/session/remoteSessionStore';
 import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
@@ -213,7 +214,12 @@ function RemoteFilePreviewContent() {
   const [session, setSession] = useState<RemoteSession | null>(knownSession);
   const workdir = session?.workingDir ?? '';
 
-  const [siblings, setSiblings] = useState<FileBrowserGridItem[] | null>(null);
+  // The requested file is already known. Mount it (and its cached body) before
+  // listing neighbours; a slow directory read must not hold every reopen blank.
+  const [siblings, setSiblings] = useState<FileBrowserGridItem[] | null>(() => (
+    initialRelPath && workdir ? [fallbackItem(initialRelPath)]
+      : singleAbsPath ? [absPathItem(singleAbsPath)] : null
+  ));
   const [siblingListing, setSiblingListing] = useState<SiblingListing | null>(null);
   const [pageIndex, setPageIndex] = useState(0);
   // 屏级焦点(HTML 可执行 WebView 的挂载门之一,见 renderItem 的 visible)。
@@ -318,6 +324,7 @@ function RemoteFilePreviewContent() {
   // 只消费下面缓存的原始目录项重建展示模型,不能为翻译重新请求设备。
   useEffect(() => {
     if (!deviceId || !workdir || !initialRelPath) return undefined;
+    setSiblings((previous) => previous ?? [fallbackItem(initialRelPath)]);
     let cancelled = false;
     const dirRel = parentRelPath(initialRelPath) ?? '';
     const listingKey = `${deviceId}\u0000${workdir}\u0000${dirRel}`;
@@ -431,41 +438,6 @@ function RemoteFilePreviewContent() {
   }, [auth]);
 
   /**
-   * 两段式导出 → presign 下载地址(图片/PDF/音视频原件与「下载原文件」共用)。
-   * 实现在 fileBrowserExport(与浏览页长按分享共用):path+mtime 缓存、
-   * 轮询瞬断重试、卸载中止。
-   * absPath 单文件模式改走 media:fetch 绝对路径取件(exportFile* 对 workdir
-   * 外路径一律拒绝),relPath/mtime 参数此时被忽略。
-   */
-  const exportToUrl = useCallback(
-    (relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string> => {
-      const stream = options?.stream ?? true;
-      const isCancelled = () => unmountedRef.current || options?.isCancelled?.() === true;
-      if (singleAbsPath) {
-        return fetchRemoteAbsFileToUrl(
-          { maker, deviceId, openLink, presignGet, stream, isCancelled },
-          singleAbsPath,
-        );
-      }
-      return exportRemoteFileToUrl(
-        {
-          maker,
-          deviceId,
-          openLink,
-          presignGet,
-          stream,
-          isCancelled,
-          onProgress: options?.onProgress,
-        },
-        workdir,
-        relPath,
-        mtimeMs,
-      );
-    },
-    [deviceId, maker, openLink, presignGet, singleAbsPath, workdir],
-  );
-
-  /**
    * 回收资源取件产生的 OSS 对象(与会话页 deleteRemoteMediaObject 同一端点与语义)。
    * 空 ossKey(inline 缩略图 / 缓存命中)没有在世对象,跳过。
    */
@@ -478,6 +450,42 @@ function RemoteFilePreviewContent() {
     }).catch(() => undefined);
   }, [auth]);
 
+  /**
+   * 两段式导出 → presign 下载地址(图片/PDF/音视频原件与「下载原文件」共用)。
+   * 实现在 fileBrowserExport(与浏览页长按分享共用):path+mtime 缓存、
+   * 轮询瞬断重试、卸载中止。
+   * absPath 单文件模式改走 media:fetch 绝对路径取件(exportFile* 对 workdir
+   * 外路径一律拒绝),relPath/mtime 参数此时被忽略。
+   */
+  const exportToUrl = useCallback(
+    (relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string> => {
+      const stream = options?.stream ?? true;
+      const isCancelled = () => unmountedRef.current || options?.isCancelled?.() === true;
+      if (singleAbsPath) {
+        return fetchRemoteAbsFileToUrl(
+          { maker, deviceId, openLink, presignGet, stream, isCancelled, deleteOssObject: deleteResourceOssObject },
+          singleAbsPath,
+        );
+      }
+      return exportRemoteFileToUrl(
+        {
+          maker,
+          deviceId,
+          openLink,
+          presignGet,
+          stream,
+          isCancelled,
+          onProgress: options?.onProgress,
+          deleteOssObject: deleteResourceOssObject,
+        },
+        workdir,
+        relPath,
+        mtimeMs,
+      );
+    },
+    [deleteResourceOssObject, deviceId, maker, openLink, presignGet, singleAbsPath, workdir],
+  );
+
   // SSH 远程工作区的取件上下文:三项必须同时给(被控端 parseSshMediaOrigin 会按
   // sessionId 反查会话库逐项比对);本机会话为 null,取件走被控桌面本机路径。
   const sshMediaContext = useMemo((): RemoteMediaSshContext | null => {
@@ -487,10 +495,10 @@ function RemoteFilePreviewContent() {
   }, [session?.remoteHostId, sessionId, workdir]);
 
   const prepareHtmlPreview = useCallback<PrepareMobileHtmlPreview>(
-    (absPath, signal) => prepareMobileHtmlPreview(absPath, {
+    (absPath, signal, onProgress) => prepareMobileHtmlPreview(absPath, {
       maker, deviceId, openLink, presignGet, ssh: sshMediaContext,
       deleteOssObject: deleteResourceOssObject,
-    }, signal),
+    }, signal, onProgress),
     [deleteResourceOssObject, deviceId, maker, openLink, presignGet, sshMediaContext],
   );
 
@@ -558,7 +566,7 @@ function RemoteFilePreviewContent() {
         stream: false,
         isCancelled: () => run.cancelled,
       });
-      if (run.cancelled) return;
+      // The copy helper also releases a late staging result after cancellation.
       // 传原始文件名:分享单按真实扩展名识别类型(PDF/视频等非图片 mime 不在
       // extOfMime 映射里,不带名字会落成 .img 让接收方无法预览)。
       const mime = shareMimeForFileName(item.name);
@@ -710,6 +718,7 @@ function RemoteFilePreviewContent() {
         renderItem={({ item, index }) => (
           <View style={{ width: pageWidth }}>
             <FilePreviewPage
+              deviceId={deviceId}
               absolutePathOf={absolutePathOf}
               active={Math.abs(index - pageIndex) <= 1}
               // HTML 渲染态只在真正可见的当前页挂载可执行 WebView(review P1):
@@ -850,6 +859,7 @@ function PreviewNav({
 }
 
 function FilePreviewPage({
+  deviceId,
   absolutePathOf,
   active,
   exportToUrl,
@@ -869,6 +879,7 @@ function FilePreviewPage({
   visible,
   workdir,
 }: {
+  deviceId: string;
   absolutePathOf(relPath: string): string;
   active: boolean;
   exportToUrl: ExportToUrl;
@@ -916,6 +927,7 @@ function FilePreviewPage({
       <TextPreviewPage
         key={maker.fileBrowser.cacheScope}
         cacheScope={maker.fileBrowser.cacheScope}
+        deviceId={deviceId}
         absolutePathOf={absolutePathOf}
         active={active}
         prepareHtmlPreview={prepareHtmlPreview}
@@ -1071,7 +1083,7 @@ function PdfPreviewPage({
   workdir,
 }: {
   active: boolean;
-  exportToUrl(relPath: string, mtimeMs: number): Promise<string>;
+  exportToUrl(relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string>;
   item: FileBrowserGridItem;
   onDownload(): void;
   recoveryEpoch: number;
@@ -1108,7 +1120,7 @@ function PdfPreviewPage({
     requestedAtRecoveryEpochRef.current = latestRecoveryEpochRef.current;
     let cancelled = false;
     setFailure(null);
-    void exportToUrl(item.relPath, item.mtimeMs)
+    void exportToUrl(item.relPath, item.mtimeMs, { stream: false })
       .then(preparePdfPreviewSource)
       .then((source) => {
         if (cancelled) { source.release(); return; }
@@ -1149,6 +1161,7 @@ function PdfPreviewPage({
  */
 function TextPreviewPage({
   cacheScope,
+  deviceId,
   absolutePathOf,
   active,
   prepareHtmlPreview,
@@ -1165,6 +1178,7 @@ function TextPreviewPage({
   workdir,
 }: {
   cacheScope: string;
+  deviceId: string;
   /** item.relPath → 被控端绝对路径(HTML 资源透传要据此定位同目录)。 */
   absolutePathOf(relPath: string): string;
   active: boolean;
@@ -1200,12 +1214,12 @@ function TextPreviewPage({
   const [browserNavigation, setBrowserNavigation] = useState<{
     preview: MobileHtmlPreview; state: WebViewNavigation;
   } | null>(null);
-  // absPath 单文件模式(item.relPath 为绝对路径)没有可靠 mtime(恒 0),
-  // 缓存键无法随文件覆写失效,读写一律跳过缓存。
-  const cacheable = !!workdir && !isAbsolutePathShape(item.relPath);
+  // A cached preview renders immediately, including absolute paths without mtime.
+  // The bounded text request below refreshes it in the background.
+  const cacheable = !!workdir;
   const [state, setState] = useState<TextPreviewState>(() => {
-    // 内存缓存命中(mtime keyed)直接就绪:翻页/重进零等待、零重复拉取。
-    const cached = cacheable ? getCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs) : null;
+    // Cache identity includes the account, device, workdir and path.
+    const cached = cacheable ? getCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs, deviceId) : null;
     return cached
       ? {
           status: 'ready',
@@ -1220,21 +1234,30 @@ function TextPreviewPage({
   // data-src-line 定位到覆盖目标行的块并闪高亮;切到源码态仍走精确行号跳转),
   // 可切源码;其余文本恒为源码态。
   const [richView, setRichView] = useState<'rendered' | 'source'>(richKind ? 'rendered' : 'source');
-  const loadedRef = useRef(state.status === 'ready');
+  const loadedRef = useRef(false);
   const [textReloadEpoch, setTextReloadEpoch] = useState(0);
   const codeListRef = useRef<FlatList<string>>(null);
   const scrolledToTargetRef = useRef(false);
+  const wantsText = richKind !== 'html' || richView === 'source';
 
   useEffect(() => {
-    if (!active || loadedRef.current || !workdir) return;
+    if (!active || !wantsText || loadedRef.current || !workdir) return;
     loadedRef.current = true;
     let cancelled = false;
+    const unavailable = (value: TextPreviewState) => setState((previous) =>
+      previous.status === 'ready' ? previous : value);
     void readTextFile(item.relPath)
       .then((res: FileBrowserReadFileResult) => {
         if (cancelled) return;
         if (!res.ok) {
+          // Keep the visible snapshot, but don't seed future opens from text
+          // the host has confirmed is no longer previewable.
+          if (cacheable && (res.code === 'OVERSIZE' || res.code === 'BINARY_FILE')) {
+            storeCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs, null, deviceId);
+          }
+          // A failed refresh must not hide the text the user is already reading.
           if (res.code === 'OVERSIZE') {
-            setState({
+            unavailable({
               status: 'unavailable',
               oversize: true,
               reason: t('files.preview.oversize', {
@@ -1242,9 +1265,9 @@ function TextPreviewPage({
               }),
             });
           } else if (res.code === 'BINARY_FILE') {
-            setState({ status: 'unavailable', reason: t('files.preview.binaryFile') });
+            unavailable({ status: 'unavailable', reason: t('files.preview.binaryFile') });
           } else {
-            setState({ status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
+            unavailable({ status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
           }
           return;
         }
@@ -1259,18 +1282,20 @@ function TextPreviewPage({
           // 原文只为渲染态(markdown / HTML)保留,普通代码文件不留大字符串。
           content: richKind ? content : undefined,
         };
-        if (cacheable) storeCachedPreviewText(cacheScope, workdir, item.relPath, res.data.mtimeMs, ready);
+        if (cacheable) storeCachedPreviewText(cacheScope, workdir, item.relPath, res.data.mtimeMs, ready, deviceId);
         setState({ status: 'ready', ...ready });
       })
       .catch((err) => {
         if (cancelled) return;
         loadedRef.current = false; // 传输层瞬断允许重进重试
-        setState({ status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
+        setState((previous) => previous.status === 'ready' ? previous
+          : { status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
       });
     return () => {
       cancelled = true;
+      loadedRef.current = false;
     };
-  }, [active, cacheable, cacheScope, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
+  }, [active, wantsText, cacheable, cacheScope, deviceId, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
 
   const htmlSnapshot = useHtmlSnapshot(
     absolutePathOf(item.relPath),
@@ -1381,13 +1406,11 @@ function TextPreviewPage({
             </View>
           ) : !htmlSnapshot.preview || !htmlSnapshot.foreground ? (
             // 取件期间不先渲染破图再热替换 —— 那会让 WebView 重载、页面闪一下。
-            <View style={styles.centerFill} testID="filePreview.htmlResourceLoading">
-              <ActivityIndicator color={colors.textTertiary} />
-              <Text style={styles.hintText}>{t('files.preview.fetchingHtmlResources')}</Text>
-            </View>
+            <HtmlPreviewLoading progress={htmlSnapshot.progress} />
           ) : (
             // 只有完整下载并加固过的目录快照才能进入 WebView。
             <HtmlSnapshotReader preview={htmlSnapshot.preview} onError={() => setHtmlLoadError(true)}
+              loading={<HtmlPreviewLoading progress={htmlSnapshot.progress} />}
               webViewRef={browserRef}
               viewportInsets={{ ...browserContentInset, left: insets.left, right: insets.right }}
               onNavigationStateChange={(preview, state) => setBrowserNavigation({ preview, state })}
@@ -1490,7 +1513,7 @@ function ImagePreviewPage({
   workdir,
 }: {
   active: boolean;
-  exportToUrl(relPath: string, mtimeMs: number): Promise<string>;
+  exportToUrl(relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string>;
   item: FileBrowserGridItem;
   maker: Pick<MobileMakerTransport, 'fileBrowser'>;
   onOpenLightbox(url: string): void;
@@ -1512,15 +1535,21 @@ function ImagePreviewPage({
   const [failure, setFailure] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const requestedRef = useRef(false);
+  const releaseSourceRef = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => releaseSourceRef.current?.(), []);
 
   useEffect(() => {
     if (!active || requestedRef.current || !workdir) return undefined;
     requestedRef.current = true;
     let cancelled = false;
     setFailure(null);
-    void exportToUrl(item.relPath, item.mtimeMs)
-      .then((url) => {
-        if (!cancelled) setFullUrl(url);
+    void exportToUrl(item.relPath, item.mtimeMs, { stream: false })
+      .then((url) => retainRemoteFilePreview(url, shareMimeForFileName(item.name), item.name))
+      .then((source) => {
+        if (cancelled) { source.release(); return; }
+        releaseSourceRef.current?.();
+        releaseSourceRef.current = source.release;
+        setFullUrl(source.uri);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1530,7 +1559,7 @@ function ImagePreviewPage({
     return () => {
       cancelled = true;
     };
-  }, [active, attempt, exportToUrl, item.mtimeMs, item.relPath, workdir]);
+  }, [active, attempt, exportToUrl, item.mtimeMs, item.name, item.relPath, workdir]);
 
   const displayUri = fullUrl ?? thumbUri;
   return (

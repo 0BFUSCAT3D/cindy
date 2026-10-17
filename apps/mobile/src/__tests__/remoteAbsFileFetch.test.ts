@@ -4,9 +4,11 @@ import { i18n } from '@/i18n';
 import {
   adaptTextFilePreviewResult,
   fetchRemoteAbsFileToUrl,
+  fetchRemoteAbsFileOnce,
   type RemoteAbsFileFetchDeps,
 } from '@/session/remoteAbsFileFetch';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
+import { clearPeerMedia, recordPeerMedia } from '@/device-link/peerFileRegistry';
 
 // 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
 beforeAll(async () => {
@@ -38,15 +40,49 @@ function makeDeps(overrides: Partial<{
 }
 
 describe('fetchRemoteAbsFileToUrl', () => {
-  it('separates streaming and complete-file cache entries in either order', async () => {
+  it.each([true, false])('reclaims the cloud object only after a local copy is available: %s', async (downloaded) => {
+    const { deps } = makeDeps();
+    const local = { ossKey: '', size: 3, mimeType: 'image/png' };
+    const uri = 'file:///cached-absolute.png';
+    const dispose = vi.fn();
+    recordPeerMedia(local, uri, dispose);
+    const deleteOssObject = vi.fn();
+    const cacheDownload = vi.fn(async () => {
+      expect(deleteOssObject).not.toHaveBeenCalled();
+      return downloaded ? local : null;
+    });
+    deps.maker.fetchRemoteMedia = vi.fn(async () => ({
+      ...local, ossKey: 'absolute/cloud-key', cacheDownload,
+    }));
+    try {
+      const url = await fetchRemoteAbsFileToUrl({ ...deps, stream: false, deleteOssObject }, '/tmp/shot.png');
+      expect(url).toBe(downloaded ? uri : 'https://oss.example/get/abc');
+      expect(cacheDownload).toHaveBeenCalledWith('https://oss.example/get/abc');
+      expect(deleteOssObject.mock.calls).toEqual(downloaded ? [['absolute/cloud-key']] : []);
+      expect(dispose).not.toHaveBeenCalled();
+    } finally { clearPeerMedia(); }
+  });
+
+  // Unit regression: cancelling HTML preparation while opening a link must not
+  // enqueue the file read once that link eventually opens.
+  it('does not start a preview file read after cancellation during link setup', async () => {
+    const { deps, openLink, fetchRemoteMedia } = makeDeps();
+    const controller = new AbortController();
+    openLink.mockImplementation(async () => { controller.abort(); });
+    await expect(fetchRemoteAbsFileOnce(deps, '/page.html', undefined, undefined, undefined, controller.signal))
+      .rejects.toThrow('PREVIEW_CANCELLED');
+    expect(fetchRemoteMedia).not.toHaveBeenCalled();
+    expect(openLink).toHaveBeenCalledOnce();
+  });
+  it('revalidates complete files while retaining streaming URLs', async () => {
     for (const first of [true, false]) {
       const { deps, fetchRemoteMedia } = makeDeps();
       await fetchRemoteAbsFileToUrl({ ...deps, stream: first }, '/media.mp4');
       await fetchRemoteAbsFileToUrl({ ...deps, stream: !first }, '/media.mp4');
       await fetchRemoteAbsFileToUrl({ ...deps, stream: first }, '/media.mp4');
-      expect(fetchRemoteMedia).toHaveBeenCalledTimes(2);
-      expect(fetchRemoteMedia.mock.calls.map((call) => (call as unknown[])[1])).toEqual(
-        first ? [undefined, { stream: false }] : [{ stream: false }, undefined],
+      expect(fetchRemoteMedia).toHaveBeenCalledTimes(first ? 2 : 3);
+      expect(fetchRemoteMedia.mock.calls.map((call) => ((call as unknown[])[1] as { stream?: boolean }).stream)).toEqual(
+        first ? [undefined, false] : [false, undefined, false],
       );
     }
   });
@@ -78,7 +114,7 @@ describe('fetchRemoteAbsFileToUrl', () => {
     expect(url).toBe('https://oss.example/get/abc');
     expect(fetchRemoteMedia).toHaveBeenCalledWith(
       `xdt-file://open?path=${encodeURIComponent('/tmp/shot.png')}`,
-      undefined,
+      expect.objectContaining({ beforeFetch: expect.any(Function) }),
     );
     expect(presignGet).toHaveBeenCalledWith('oss/abc');
   });
@@ -134,7 +170,7 @@ describe('fetchRemoteAbsFileToUrl', () => {
     await fetchRemoteAbsFileToUrl(deps, 'C:\\tmp\\shot.png');
     expect(fetchRemoteMedia).toHaveBeenCalledWith(
       `xdt-file://open?path=${encodeURIComponent('C:\\tmp\\shot.png')}`,
-      undefined,
+      expect.objectContaining({ beforeFetch: expect.any(Function) }),
     );
   });
 });

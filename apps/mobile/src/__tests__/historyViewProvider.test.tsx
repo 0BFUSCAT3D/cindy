@@ -16,6 +16,7 @@ import { isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 import { DeviceLinkProvider, useDeviceLink, type DeviceLinkContextValue } from '../device-link/DeviceLinkContext';
 import { acquireDeviceSendSlot, resetDeviceResponsivenessTracking, settleDeviceSend, unresponsiveDevicesStore } from '../device-link/unresponsiveDevicesStore';
 import { revokedDevicesStore } from '../device-link/revokedDevicesStore';
+import { localNetworkStore, type NetworkState } from '../device-link/localNetworkStatus';
 
 const auth = vi.hoisted(() => ({
   isAuthenticated: true,
@@ -29,6 +30,7 @@ const networkEvents = vi.hoisted(() => ({
   state: 'active',
   app: (_next: string) => {},
   network: (_next: { type?: string; isConnected?: boolean; isInternetReachable?: boolean }) => {},
+  read: vi.fn<() => Promise<{ type?: string; isConnected?: boolean; isInternetReachable?: boolean }>>(),
 }));
 vi.mock('react-native', () => ({
   Platform: { OS: 'android' },
@@ -39,7 +41,7 @@ vi.mock('react-native', () => ({
     },
   },
 }));
-vi.mock('expo-network', () => ({ addNetworkStateListener: (listener: typeof networkEvents.network) => {
+vi.mock('expo-network', () => ({ getNetworkStateAsync: networkEvents.read, addNetworkStateListener: (listener: typeof networkEvents.network) => {
   networkEvents.network = listener; return { remove() {} };
 } }));
 vi.mock('expo-secure-store', () => ({
@@ -126,6 +128,7 @@ async function readHistory() {
 }
 
 beforeEach(async () => {
+  networkEvents.read.mockReset().mockRejectedValue(new Error('native lookup unavailable'));
   networkEvents.state = 'active';
   auth.accountGeneration = 1;
   auth.apiFetch.mockReset();
@@ -455,6 +458,68 @@ describe('Provider shared-task relay compatibility', () => {
 
 describe('Provider network recovery priority', () => {
   const wifi = { type: 'WIFI', isConnected: true, isInternetReachable: true };
+  it('refreshes native state on foreground and ignores snapshots older than a network event', async () => {
+    networkEvents.read.mockResolvedValueOnce({ type: 'NONE', isConnected: false });
+    await act(async () => networkEvents.app('active'));
+    expect(localNetworkStore.getSnapshot().status).toBe('unavailable');
+    let complete!: (network: NetworkState) => void;
+    networkEvents.read.mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
+    await act(async () => networkEvents.app('active'));
+    await act(async () => {
+      networkEvents.network(wifi);
+      complete({ type: 'NONE', isConnected: false });
+    });
+    expect(localNetworkStore.getSnapshot().status).toBe('available');
+  });
+
+  it.each([
+    [{ type: 'WIFI', isConnected: true, isInternetReachable: false }, 'unavailable'],
+    [{ type: 'UNKNOWN', isConnected: false, isInternetReachable: false }, 'unknown'],
+  ] as const)('uses native evidence without turning lookup failures into phone outages (%j)', async (network, expected) => {
+    await act(async () => networkEvents.network(network));
+    expect(localNetworkStore.getSnapshot().status).toBe(expected);
+  });
+
+  // Regression: phone route loss used to count as three host failures. Existing
+  // recovery tests only checked reconnect calls, not the visible host verdict.
+  // Unit tier: real provider/native event boundary, no network or real timers.
+  it.each(['outage', 'route switch'] as const)('does not blame either computer for timeouts spanning a phone %s', async (change) => {
+    resetDeviceResponsivenessTracking();
+    await act(async () => networkEvents.network(wifi));
+    const devices = ['host-a', 'host-b'];
+    const pending = devices.map(device => Array.from({ length: 3 }, () => acquireDeviceSendSlot(device)));
+    await act(async () => {
+      networkEvents.network(change === 'outage'
+        ? { type: 'NONE', isConnected: false, isInternetReachable: false }
+        : { ...wifi, type: 'CELLULAR' });
+      networkEvents.network(wifi);
+      devices.forEach((device, index) => {
+        pending[index].forEach(slot => settleDeviceSend(device, slot, 'timeout'));
+      });
+    });
+    expect([...unresponsiveDevicesStore.getSnapshot()]).toEqual([]);
+    const fresh = Array.from({ length: 3 }, () => acquireDeviceSendSlot('host-a'));
+    await act(async () => {
+      networkEvents.network(wifi);
+      fresh.forEach(slot => settleDeviceSend('host-a', slot, 'timeout'));
+    });
+    expect(unresponsiveDevicesStore.has('host-a')).toBe(true);
+  });
+
+  it('ignores requests issued offline, then counts new failures after recovery', async () => {
+    resetDeviceResponsivenessTracking();
+    await act(async () => networkEvents.network({ type: 'NONE', isConnected: false }));
+    const pending = Array.from({ length: 3 }, () => acquireDeviceSendSlot('host'));
+    await act(async () => networkEvents.network(wifi));
+    pending.forEach(slot => settleDeviceSend('host', slot, 'timeout'));
+    expect(unresponsiveDevicesStore.has('host')).toBe(false);
+    const fresh = Array.from({ length: 3 }, () => acquireDeviceSendSlot('host'));
+    await act(async () => fresh.forEach(slot => settleDeviceSend('host', slot, 'timeout')));
+    expect(unresponsiveDevicesStore.has('host')).toBe(true);
+    await act(async () => networkEvents.network({ type: 'NONE', isConnected: false }));
+    expect(unresponsiveDevicesStore.has('host')).toBe(false);
+  });
+
   it('replaces an online socket on physical route changes and retains probes for equal hints', async () => {
     const client = transport.clients[0];
     await act(async () => {

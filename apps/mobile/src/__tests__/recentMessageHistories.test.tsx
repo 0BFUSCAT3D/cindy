@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { act, createContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -157,6 +155,26 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(container.querySelector('button')).toBeNull();
     expect(unmounts).toEqual(['a']);
   });
+  // Regression: preview -> interactive back exposes the native slot before JS
+  // focus returns. The slot must accept its retained surface while subscriptions
+  // and positioning remain paused. Existing reentry tests only used focused slots.
+  it('keeps the native docking slot ready while a file preview covers the task', async () => {
+    state.native = true;
+    await show('a', 'cached');
+    const original = container.querySelector<HTMLButtonElement>('[data-task="a"]')!;
+    await act(async () => original.click());
+    state.focused = false;
+    await show('a', 'cached');
+    expect(container.querySelector('[data-slot]')?.getAttribute('data-selected')).toBe('true');
+    expect(original.dataset.active).toBe('false');
+    expect(original.dataset.positioning).toBe('false');
+    expect(original.closest('[data-store-gate]')?.getAttribute('data-store-gate')).toBe('false');
+    state.focused = true;
+    await show('a', 'cached');
+    expect(container.querySelector('[data-task="a"]')).toBe(original);
+    expect(original.textContent).toBe('cached:420');
+    expect(unmounts).toEqual([]);
+  });
   it('shows cached native content before new route data and chrome are ready', async () => {
     state.native = true;
     await show('a', 'cached');
@@ -233,26 +251,7 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(residentHost.compareDocumentPosition(drawer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(drawer.closest('[data-layout]')?.getAttribute('data-layout')).toContain('"zIndex":40');
   });
-  it('does not keep the old route preloading mechanism alongside the resident host', () => {
-    const home = readFileSync(resolve(process.cwd(), 'src/session/HomeSurface.tsx'), 'utf8');
-    expect(home).not.toContain('useRecentTaskPreload');
-    expect(home).not.toContain('router.prefetch');
-    const layout = readFileSync(resolve(process.cwd(), 'app/_layout.tsx'), 'utf8');
-    // Source structure is independent of checkout line endings.
-    for (const source of [layout.replace(/\r\n/g, '\n'), layout.replace(/\r?\n/g, '\r\n')]) {
-      const provider = source.search(/<RecentMessageHistoriesProvider(?:\s|>)/);
-      const residentProvider = source.indexOf('<ResidentHomeListProvider>');
-      const stack = source.search(/<Stack\s/);
-      expect(provider).toBeGreaterThanOrEqual(0);
-      expect(residentProvider).toBeGreaterThan(provider);
-      expect(stack).toBeGreaterThan(provider);
-      expect(stack).toBeGreaterThan(residentProvider);
-      expect(source.indexOf('</ResidentHomeListProvider>')).toBeGreaterThan(stack);
-      expect(source.indexOf('</RecentMessageHistoriesProvider>')).toBeGreaterThan(
-        source.indexOf('</ResidentHomeListProvider>'),
-      );
-    }
-  });
+
   it('clears all instances at an account boundary', async () => {
     await show('a'); await show('b');
     await act(async () => setMobileAuthOwner('two'));

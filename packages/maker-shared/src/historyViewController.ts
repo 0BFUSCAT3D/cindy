@@ -1,4 +1,5 @@
 import {
+  nextHistoryCacheReceipt, type HistoryCacheReceipt,
   readHistoryWorkDetails, retainHistoryViewPrefix, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
   type HistoryViewItem, type HistoryViewPage, type HistoryWorkPatch, type HistoryWorkSummary,
 } from './historyView.js';
@@ -26,6 +27,8 @@ export interface HistoryViewSnapshot<T extends HistoryMessageSource> {
    * disk, or was read before the view went inactive/offline. Cleared by a latest-page read.
    */
   stale?: boolean;
+  /** Controller-local start of the latest page read, also retained in its disk cache. */
+  readReceipt?: HistoryCacheReceipt;
 }
 
 export interface HistoryViewTransport<T extends HistoryMessageSource> {
@@ -158,6 +161,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     if (!this.isActive() || this.state.loading || (older && !this.state.hasMore)) return;
     const generation = this.generation;
     const before = older ? this.state.nextCursor ?? undefined : undefined;
+    const readReceipt = nextHistoryCacheReceipt();
     this.publish({ loading: true, error: null });
     try {
       const page = await this.transport.page(before);
@@ -179,7 +183,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const stableItems = items.length === this.state.items.length
         && items.every((item, index) => item === this.state.items[index]) ? this.state.items : items;
       this.publish({ items: stableItems, ready: true, loading: false,
-        ...(older ? {} : { stale: false }),
+        ...(older ? {} : { stale: false, readReceipt }),
         hasMore: retained.hasMore, nextCursor: retained.nextCursor });
       for (const summary of historyWorkSummaries(items)) {
         if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
@@ -355,7 +359,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.cacheGeneration++;
     this.detailRuns.clear();
     this.publish({ items: [], details: new Map(), expanded: new Set(), ready: false,
-      nextCursor: null, hasMore: false, loading: false, error: null, stale: false });
+      nextCursor: null, hasMore: false, loading: false, error: null, stale: false, readReceipt: undefined });
     this.sendIntent();
     if (this.active) void this.refresh();
   }
