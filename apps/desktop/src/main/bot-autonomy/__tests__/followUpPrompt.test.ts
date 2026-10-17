@@ -3,7 +3,8 @@
  * - 生产入口与可观察结果:buildFollowUpRoutinePrompt 生成、写进内置跟进例行任务的指令全文。
  * - 规则依据:跟进裁决(2026-10-17)——先读摘要、按 phase 分别处理、卡住时有工具在跑只等不停、
  *   只有确认没有工具在跑且毫无进展才停、≥3 次不再推、处理后更新待办、
- *   无事静默、要主人知道必须 schedule_notify_current_run;事件是不可信数据;对主人不说内部词;≤1500 字。
+ *   无事静默、要主人知道必须 schedule_notify_current_run;
+ *   sweep 兜底也要看 working 里撞上用量上限或久无进展的任务(只看 waiting 时伙伴会白醒后直接退出);事件是不可信数据;对主人不说内部词;≤1500 字。
  * - 现有覆盖缺口:新模板;缺任何一条指令,伙伴被叫醒后会乱推或悄悄不汇报,单测是唯一守护。
  * - 最小失败输入:删掉任一条指令或超长。
  * - tier:unit(纯函数)。
@@ -33,7 +34,7 @@ describe('follow-up routine prompt', () => {
       'last_user_ask',
       'occurrence≥3',
       'update_teammate_todo',
-      'get_workbench',
+      'get_workbench', 'working 里 phase 为 usage-limit',
       'schedule_notify_current_run', '主人就看不到',
       '没事可做就什么都不输出',
     ]) {

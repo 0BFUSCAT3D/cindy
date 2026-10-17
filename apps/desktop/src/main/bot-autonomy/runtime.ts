@@ -58,6 +58,11 @@ export interface AutonomyRuntimeDeps {
   subscribeActivity(watch: TaskWatch): (() => void) | null;
 }
 
+/** 「一眼」的调用方附加限制（远程端排除不可见伙伴）。 */
+export interface GlanceOptions {
+  excludeBotIds?: ReadonlySet<string>;
+}
+
 export class BotAutonomyRuntime {
   readonly watch: TaskWatch;
   private readonly ledger = new AutonomyEventLedger();
@@ -137,7 +142,7 @@ export class BotAutonomyRuntime {
     }
   }
 
-  glance(botId: string): BotGlance {
+  glance(botId: string, options?: GlanceOptions): BotGlance {
     return projectBotGlance({
       botId,
       schedulerBotId: this.watch.getSchedulerBotId(),
@@ -147,6 +152,7 @@ export class BotAutonomyRuntime {
       offlineDevices: this.watch.offlineDevices(),
       lastSweepAt: this.watch.getLastSweepAt(),
       now: this.deps.now(),
+      ...(options?.excludeBotIds ? { excludeBotIds: options.excludeBotIds } : {}),
     });
   }
 
@@ -372,11 +378,15 @@ export class BotAutonomyRuntime {
     this.pushTimer.unref?.();
   }
 
-  /** 只在「一眼」可见的内容变了时推送；分钟数由界面自己按时间刷新。 */
+  /**
+   * 只在「一眼」可见的内容变了时推送；分钟数由界面自己按时间刷新。
+   * 页脚「上次看过 N 分钟前」读 lastSweepAt：按分钟粒度计入签名，扫描后没别的变化也会刷新。
+   */
   flushPush(): void {
     if (this.stopped || !this.deps.isCurrent()) return;
     const signature = JSON.stringify([
       this.watch.getSchedulerBotId(),
+      Math.floor(this.watch.getLastSweepAt() / 60_000),
       this.watch.offlineDevices(),
       this.watch.finished().length,
       this.watch.list().map((row) => [

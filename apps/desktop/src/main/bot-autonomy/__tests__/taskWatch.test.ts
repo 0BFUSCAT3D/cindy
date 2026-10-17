@@ -8,7 +8,8 @@
  * - 现有覆盖缺口：新模块；autonomyRules 只测纯判定，不经过活动订阅、读库与远程轮询的组合时序。
  * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；主人点停止后灵动岛条目消失
  *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败；远程任务两次轮询之间从权限请求
- *   A 换到 B，仍显示 A。
+ *   A 换到 B，仍显示 A；本机任务在同一相位里从请求 A 换到 B，沿用 A 的等待时刻；读任务元数据失败一次后，
+ *   这批任务被丢掉，之后再无活动就永远不进表。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
@@ -51,6 +52,7 @@ function harness(options: {
   const metas = new Map((options.metas ?? []).map((m) => [m.id, m]));
   const pending = new Map<string, unknown[]>();
   const onChange = vi.fn();
+  let metaReadFailures = 0;
   const invokeRemote = vi.fn(options.invokeRemote ?? (async () => { throw new Error('offline'); }));
   const watch = new TaskWatch({
     now: () => now,
@@ -58,7 +60,13 @@ function harness(options: {
     getActivitySnapshots: () => options.snapshots ?? [],
     isToolCallInFlight: (id) => toolsInFlight.has(id),
     getPendingInteractions: (id) => pending.get(id) ?? [],
-    readLocalSessions: async (ids) => ids.flatMap((id) => (metas.has(id) ? [metas.get(id)!] : [])),
+    readLocalSessions: async (ids) => {
+      if (metaReadFailures > 0) {
+        metaReadFailures -= 1;
+        throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' });
+      }
+      return ids.flatMap((id) => (metas.has(id) ? [metas.get(id)!] : []));
+    },
     readInterruptedSessions: async () => [...metas.values()].filter((m) => m.interrupted),
     readOwnership: async () => ({
       bots: new Map([['sched', { status: 'active', allowSchedulerFollow: false }], ['a', { status: 'active', allowSchedulerFollow: false }]]),
@@ -73,6 +81,7 @@ function harness(options: {
   return {
     watch, metas, pending, onChange, invokeRemote, toolsInFlight,
     advance: (ms: number) => { now += ms; },
+    failMetaReads: (count: number) => { metaReadFailures = count; },
     now: () => now,
   };
 }
@@ -149,6 +158,39 @@ describe('TaskWatch local observation', () => {
       ids.push(...new AutonomyEventLedger().evaluate(h.watch.list(), h.now()).due.map((c) => c.id));
     }
     expect(ids).toEqual(['waiting:t:7000', 'waiting:t:7000']);
+  });
+
+  it('restarts the wait clock when a local task moves from one permission request to another', async () => {
+    const h = harness({ metas: [meta('t')] });
+    await h.watch.start();
+    const waiting = activity('t', 'needs-interaction', { interactionKind: 'permission', lastActivityAtMs: 7_000 });
+    h.pending.set('t', [{ kind: 'permission', requestId: 'req-A', toolName: 'Bash' }]);
+    h.watch.applyActivity('t', waiting);
+    await h.watch.settled();
+    expect(h.watch.get('t')).toMatchObject({ phase: 'waiting-permission', pendingRequestId: 'req-A', phaseSince: 7_000 });
+
+    // A 被处理后紧接着出现 B，中间的「在跑」没有被单独观察到：相位不变，请求换了。
+    h.advance(AUTONOMY_THRESHOLDS.waitingAfterMs);
+    h.pending.set('t', [{ kind: 'permission', requestId: 'req-B', toolName: 'Write' }]);
+    h.watch.applyActivity('t', waiting);
+    await h.watch.settled();
+    expect(h.watch.get('t')).toMatchObject({
+      phase: 'waiting-permission', pendingRequestId: 'req-B', pendingQuestion: 'Write', phaseSince: h.now(),
+    });
+  });
+
+  it('keeps tasks whose metadata read failed and retries them on the next sweep', async () => {
+    const h = harness({ metas: [meta('quiet')] });
+    await h.watch.start();
+    h.failMetaReads(1);
+    // 这是这件任务最后一条活动：之后一直安静（卡住），不会再有活动把它带回来。
+    h.watch.applyActivity('quiet', activity('quiet', 'running'));
+    await h.watch.settled();
+    expect(h.watch.get('quiet')).toBeUndefined();
+
+    await h.watch.sweep();
+    await h.watch.settled();
+    expect(h.watch.get('quiet')).toMatchObject({ phase: 'running', followerBotId: 'sched' });
   });
 });
 

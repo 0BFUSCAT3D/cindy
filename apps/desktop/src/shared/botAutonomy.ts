@@ -164,6 +164,11 @@ export interface GlanceRow {
   online: boolean;
   title: string;
   kind: GlanceKind;
+  /**
+   * 状态表里的当前 phase（在做里区分运行中与撞上用量上限）。本版宿主总会填；远程较旧版本的宿主
+   * 经设备互联返回的行没有它，所以是可选字段。
+   */
+  phase?: WatchedPhase;
   /** 等了 / 做了多少分钟。 */
   minutes: number;
   /** waiting 行：等什么（问题或权限一句话）。 */

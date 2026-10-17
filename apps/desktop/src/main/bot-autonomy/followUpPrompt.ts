@@ -6,7 +6,7 @@
  * FOLLOW_UP_PROMPT_VERSION,宿主据此把已有伙伴的内置规则对齐到新模板。
  * 长度上限 1500 字:每次叫醒都会带上,控制成本。
  */
-export const FOLLOW_UP_PROMPT_VERSION = 2;
+export const FOLLOW_UP_PROMPT_VERSION = 3;
 
 export const FOLLOW_UP_PROMPT_MAX_CHARS = 1500;
 
@@ -25,7 +25,7 @@ export function buildFollowUpRoutinePrompt(botId: string): string {
     '3. 同一任务同类事件 occurrence≥3:不要再推,直接告诉主人卡在哪、需要他做什么。',
     '- 别的电脑上的任务由那台电脑上的伙伴跟进,你只在工作台里看;主人明确要你去继续时才动它。',
     '4. 每处理完一件,用 update_teammate_todo 更新或完成对应待办。',
-    '5. sweep 事件(兜底):说明有事等了很久没人处理,用 get_workbench 逐件看 waiting 里的本机任务,同样先读摘要。',
+    '5. sweep 事件(兜底):说明有事等了很久没人处理。用 get_workbench 看本机任务:waiting 里的每一件,以及 working 里 phase 为 usage-limit、或做了很久没有进展的(读摘要确认真卡住再动);逐件按第 2 条处理,同样先读摘要。',
     '6. 这一轮的回复不会自动发给主人。要主人知道的事,先调用 schedule_notify_current_run 再写;不调用,主人就看不到。没事可做就什么都不输出。',
     '对主人说平常话:说「任务」,不说 session、phase、事件、例行任务这类内部词。',
   ].join('\n');

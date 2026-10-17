@@ -278,10 +278,10 @@ export class RoutineEngine {
   ): Promise<Routine | null> {
     if (!/^[a-zA-Z0-9_-]{16,128}$/.test(id)) throw new Error("Invalid routine creation ID");
     if (this.blockedBots.has(botId)) return null;
-    const existing = this.state.routines.find((routine) => routine.id === id && routine.botId === botId);
+    // enabled 在写队列里按最新记录保留（见 writeRoutine），排在前面的暂停不会被旧值覆盖。
     return this.writeRoutine(
       botId,
-      existing ? { ...raw, enabled: existing.enabled } : raw,
+      raw,
       { id, builtin, ...(builtinVersion !== undefined ? { builtinVersion } : {}) },
     );
   }
@@ -305,6 +305,8 @@ export class RoutineEngine {
         // Legacy saved definitions may omit this field and must stay quiet.
         // A newly created, unclassified reminder must retain delivery.
         ...(!existing && parsed.silentWhenIdle === undefined ? { silentWhenIdle: false } : {}),
+        // Host realign of a built-in rule keeps the owner's latest pause choice.
+        ...(options.builtin && existing ? { enabled: existing.enabled } : {}),
       });
       if (id && !existing && !creationId && !options.builtin) throw new Error("Routine not found");
       if ((creationId || options.builtin) && state.routines.some(row => row.id === id && row.botId !== botId)) throw new Error("Routine creation ID already used");

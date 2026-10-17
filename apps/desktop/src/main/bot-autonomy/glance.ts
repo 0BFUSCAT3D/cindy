@@ -30,6 +30,11 @@ export interface GlanceInput {
   offlineDevices: readonly string[];
   lastSweepAt: number;
   now: number;
+  /**
+   * 不可见的伙伴（远程端：隐藏 / 归档的伙伴只在本机恢复）：它开的、它的主任务、它在跟的任务都不投影，
+   * 也不计入「今天做完」。本机渲染层不传。
+   */
+  excludeBotIds?: ReadonlySet<string>;
 }
 
 export function isSameLocalDay(a: number, b: number): boolean {
@@ -42,6 +47,8 @@ export function projectBotGlance(input: GlanceInput): BotGlance {
   const scope: BotGlance['scope'] = input.schedulerBotId === input.botId ? 'all' : 'own';
   const inScope = (sessionId: string, creatorBotId: string | null) =>
     scope === 'all' || creatorBotId === input.botId || input.responsibleSessionIds.has(sessionId);
+  const exclude = input.excludeBotIds;
+  const hidden = (botId: string | null | undefined) => !!botId && !!exclude?.has(botId);
   const waiting: Array<GlanceRow & { sort: number }> = [];
   const working: Array<GlanceRow & { sort: number }> = [];
   const minutes = (since: number) => Math.max(0, Math.floor((input.now - since) / 60_000));
@@ -49,12 +56,14 @@ export function projectBotGlance(input: GlanceInput): BotGlance {
     if (!inScope(row.sessionId, row.creatorBotId)) continue;
     // 自己的主任务不进自己的工作台：看到自己在做事只是噪音。
     if ((row.canonicalOfBotId ?? null) === input.botId) continue;
+    if (hidden(row.creatorBotId) || hidden(row.canonicalOfBotId) || hidden(row.followerBotId)) continue;
     const base = {
       sessionId: row.sessionId,
       deviceId: row.deviceId,
       deviceName: row.deviceName,
       online: row.online,
       title: row.title,
+      phase: row.phase,
       followerBotId: row.followerBotId,
     };
     if (row.phase === 'waiting-answer' || row.phase === 'waiting-permission' || row.phase === 'errored') {
@@ -90,7 +99,8 @@ export function projectBotGlance(input: GlanceInput): BotGlance {
       });
   const doneToday = new Set(
     input.finished
-      .filter((item) => isSameLocalDay(item.at, input.now) && inScope(item.sessionId, item.creatorBotId))
+      .filter((item) => isSameLocalDay(item.at, input.now) && inScope(item.sessionId, item.creatorBotId)
+        && !hidden(item.creatorBotId))
       .map((item) => item.sessionId),
   ).size;
   return {

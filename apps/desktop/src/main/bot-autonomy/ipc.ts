@@ -32,6 +32,12 @@ export function registerBotAutonomyIpc(): void {
         .where(eq(botProfiles.id, botId))
         .limit(1);
       if (!profile || !isBotVisibleRemotely(profile)) throwIpcError('NOT_FOUND', 'Bot 不存在');
+      // 总调度看全部任务：隐藏 / 归档伙伴开的、它的主任务与它在跟的任务也不能经远程露出。
+      const profiles = await getDbClient().drizzle
+        .select({ id: botProfiles.id, hiddenAt: botProfiles.hiddenAt, status: botProfiles.status })
+        .from(botProfiles);
+      const excludeBotIds = new Set(profiles.filter((item) => !isBotVisibleRemotely(item)).map((item) => item.id));
+      return getBotAutonomyGlance(botId, { excludeBotIds });
     }
     return getBotAutonomyGlance(botId);
   });

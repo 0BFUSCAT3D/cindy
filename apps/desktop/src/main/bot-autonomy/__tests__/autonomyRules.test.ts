@@ -162,6 +162,42 @@ describe('workbench glance scope', () => {
     expect(all.doneToday).toBe(2);
     expect(all.offlineDevices).toEqual(['Old PC']);
   });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果：projectBotGlance 带 excludeBotIds（远程端 glance IPC 传入隐藏 / 归档伙伴）时的等你 / 在做 / 今天做完。
+   * - Bug／规则依据：隐藏伙伴只在本机恢复（botRemoteVisibility.ts）；隐藏只写 botProfiles.hiddenAt、不写 sessions.hiddenAt，
+   *   总调度（scope all）的远程工作台曾照样列出隐藏伙伴开的、它的主任务与它在跟的任务。
+   * - 现有覆盖缺口：上一用例不传排除集；本机渲染层不排除，远程排除只有这里守护。
+   * - 最小失败输入：隐藏伙伴开的等你 / 在做任务、它的主任务、它今天做完的任务。
+   * - tier：unit（纯函数）。
+   */
+  it('hides tasks of companions excluded for a remote controller, keeping owner and visible teammates tasks', () => {
+    const now = 10 * 60_000;
+    const glance = projectBotGlance({
+      botId: 'sched',
+      schedulerBotId: 'sched',
+      rows: [
+        row({ sessionId: 'h-wait', creatorBotId: 'hidden', followerBotId: 'hidden', phase: 'waiting-answer', pendingQuestion: 'q' }),
+        row({ sessionId: 'h-work', creatorBotId: 'hidden', followerBotId: 'hidden', phase: 'running' }),
+        row({ sessionId: 'h-main', canonicalOfBotId: 'hidden', phase: 'errored', error: 'boom' }),
+        row({ sessionId: 'owner', phase: 'usage-limit', startedAt: 60_000 }),
+        row({ sessionId: 'b-task', creatorBotId: 'b', followerBotId: 'b', phase: 'waiting-permission' }),
+      ],
+      responsibleSessionIds: new Set(),
+      finished: [
+        { sessionId: 'h-done', creatorBotId: 'hidden', at: now - 1 },
+        { sessionId: 'owner-done', creatorBotId: null, at: now - 1 },
+      ],
+      offlineDevices: [],
+      lastSweepAt: now,
+      now,
+      excludeBotIds: new Set(['hidden']),
+    });
+    expect(glance.waiting.map((r) => [r.sessionId, r.phase])).toEqual([['b-task', 'waiting-permission']]);
+    expect(glance.working.map((r) => [r.sessionId, r.phase])).toEqual([['owner', 'usage-limit']]);
+    expect(glance.doneToday).toBe(1);
+  });
 });
 
 describe('waiting-row summary for a permission request', () => {

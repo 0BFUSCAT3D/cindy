@@ -63,6 +63,7 @@ async function setup(options: {
   let saved: RoutineState | null = null;
   const execute = vi.fn<RoutineEngineDeps['execute']>(async () => ({}));
   const remind = vi.fn();
+  const push = vi.fn();
   const engineDeps: RoutineEngineDeps = {
     load: async () => structuredClone(saved),
     save: async (state) => { saved = structuredClone(state); },
@@ -84,7 +85,7 @@ async function setup(options: {
       log,
       isCurrent: () => true,
       remind,
-      push: () => {},
+      push,
       subscribeActivity: options.subscribeActivity ?? (() => () => {}),
       createWatch: (onChange) => new TaskWatch({
         now: () => now,
@@ -114,7 +115,7 @@ async function setup(options: {
     await created.start();
     return created;
   };
-  return { runtime, create, engine, execute, remind, now: () => now, advance: (ms: number) => { now += ms; } };
+  return { runtime, create, engine, execute, remind, push, now: () => now, advance: (ms: number) => { now += ms; } };
 }
 
 describe('BotAutonomyRuntime with the routine engine', () => {
@@ -376,6 +377,41 @@ describe('BotAutonomyRuntime with the routine engine', () => {
       expect(id).toMatch(/^[a-zA-Z0-9_-]{16,128}$/);
       expect(builtinFollowUpRoutineId(longId)).toBe(id);
       expect(engine.list(longId).map((r) => r.id)).toEqual([id]);
+    } finally {
+      runtime.stop();
+      await engine.stop();
+    }
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果：BotAutonomyRuntime.sweep → 状态表 onChange → 节流推送，界面收到 push 的次数。
+   * - Bug／规则依据：页脚「上次看过 N 分钟前」读 lastSweepAt；推送签名曾不含它，没有别的变化时界面一直停在旧时间。
+   * - 现有覆盖缺口：其它用例不观察 push。
+   * - 最小失败输入：两次扫描之间状态表不变、时间跨过一分钟（应推）与只过 10 秒（不推）。
+   * - tier：unit（时间由 now() 推进；节流定时器为 setTimeout 0，不是真实等待）。
+   */
+  it('refreshes the workbench footer when a sweep crosses a minute, even if no task changed', async () => {
+    const t = await setup();
+    const engine = await t.engine();
+    const runtime = await t.runtime(engine);
+    const flush = async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); };
+    try {
+      await flush();
+      t.push.mockClear();
+      t.advance(60_000);
+      await runtime.sweep();
+      await flush();
+      expect(t.push).toHaveBeenCalledTimes(1);
+      // 同一分钟内再扫一次：页脚不变，不推。
+      t.advance(10_000);
+      await runtime.sweep();
+      await flush();
+      expect(t.push).toHaveBeenCalledTimes(1);
+      t.advance(60_000);
+      await runtime.sweep();
+      await flush();
+      expect(t.push).toHaveBeenCalledTimes(2);
     } finally {
       runtime.stop();
       await engine.stop();

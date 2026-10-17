@@ -826,4 +826,25 @@ describe('routine check configuration', () => {
       expect(await f.engine.ensureBuiltin('bot', 'follow-up', input, id)).toBeNull();
     } finally { await f.engine.stop(); }
   });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果：RoutineEngine.put / ensureBuiltin 经同一串行写队列后落地的内置规则（enabled、prompt）。
+   * - Bug／规则依据：docs/product-rules/bot-routines.md「内置跟进例行任务」保留主人的暂停选择；ensureBuiltin 曾在
+   *   写队列外读 enabled，排在它前面的暂停写入落地后又被旧值 true 覆盖，规则被悄悄恢复。
+   * - 现有覆盖缺口：上一用例的暂停与对齐都逐个 await，测不到两次写入在队列里重叠的时序。
+   * - 最小失败输入：暂停（不 await）紧接着宿主对齐新模板。
+   * - tier：unit（内存 load/save fake，无真实等待）。
+   */
+  it('keeps an owner pause that is queued ahead of a host realign of the built-in rule', async () => {
+    const f = await fixture();
+    const id = 'builtin-follow-up-bot';
+    try {
+      await f.engine.ensureBuiltin('bot', 'follow-up', input, id);
+      const pausing = f.engine.put('bot', { ...input, enabled: false }, id);
+      await f.engine.ensureBuiltin('bot', 'follow-up', { ...input, prompt: 'v2' }, id, 1);
+      await pausing;
+      expect(f.engine.list('bot').find((routine) => routine.id === id)).toMatchObject({ enabled: false, prompt: 'v2' });
+    } finally { await f.engine.stop(); }
+  });
 });

@@ -22,7 +22,7 @@ import {
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { resolveSchedulerBotId } from './follower.js';
 import { readBotDirectory } from './hostData.js';
-import type { BotAutonomyRuntime } from './runtime.js';
+import type { BotAutonomyRuntime, GlanceOptions } from './runtime.js';
 import { errorCode } from './taskWatch.js';
 
 const log = createLogger('bot-autonomy');
@@ -68,10 +68,10 @@ function emptyGlance(botId: string): BotGlance {
   return { botId, scope: 'own', waiting: [], working: [], lastSweepAt: 0, doneToday: 0, offlineDevices: [] };
 }
 
-export function getBotAutonomyGlance(botId: string): BotGlance {
+export function getBotAutonomyGlance(botId: string, options?: GlanceOptions): BotGlance {
   if (isAppSessionBoundaryPending()) throwIpcError('PRECONDITION_FAILED', 'App session is switching; retry later.');
   const active = current && scopeIsCurrent(current.scope) ? current.runtime : null;
-  return active ? active.glance(botId) : emptyGlance(botId);
+  return active ? active.glance(botId, options) : emptyGlance(botId);
 }
 
 /** 默认总调度：在用的 Cindy 助理，否则没有。 */

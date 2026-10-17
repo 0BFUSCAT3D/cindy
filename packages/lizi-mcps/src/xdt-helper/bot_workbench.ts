@@ -25,6 +25,8 @@ export interface GlanceRowWire {
   online: boolean;
   title: string;
   kind: GlanceKindWire;
+  /** 状态表 phase(running / usage-limit / waiting-* / errored);旧宿主可能缺省。 */
+  phase?: string;
   minutes: number;
   question: string | null;
   waitingFor: 'permission' | 'answer' | 'error' | null;
@@ -100,6 +102,7 @@ export function glanceForModel(glance: BotGlanceWire): Record<string, unknown> {
   const row = (item: GlanceRowWire) => ({
     task_id: item.sessionId,
     title: item.title,
+    ...(item.phase ? { phase: item.phase } : {}),
     minutes: item.minutes,
     ...(item.deviceName ? { device: item.deviceName } : {}),
     ...(item.online ? {} : { online: false }),
@@ -146,7 +149,8 @@ export function registerBotWorkbenchTools(
     description:
       '读取你的工作台「一眼」:waiting 是在等主人的任务(等权限 / 等回答 / 出错),working 是正在做的任务,'
       + '另有今天做完几件与上次扫描时间。总调度伙伴(scope=all)看到本机与在线电脑上的全部任务;其它伙伴(scope=own)只看自己开的或明确接手的任务。'
-      + '定时兜底叫醒时逐件看 waiting:先 get_task_digest 读摘要再决定。只读,不改任何任务。',
+      + '每行带 phase(working 里 usage-limit 表示撞上用量上限)。定时兜底叫醒时逐件看 waiting,以及 working 里 usage-limit 或久无进展的任务:'
+      + '先 get_task_digest 读摘要再决定。只读,不改任何任务。',
     inputShape: {},
     handler: async () => {
       const sessionId = callerSessionId();

@@ -296,7 +296,10 @@ export class TaskWatch {
           for (const id of unknown) if (!found.has(id)) this.missingMeta.set(id, now);
         } catch (error) {
           this.deps.log.warn('session meta read failed', { error: errorCode(error) });
-          continue;
+          // 读库失败不能丢掉这批 id：否则之后一直安静的任务（正是卡住的那种）再也进不了表。
+          // 放回 pending 并停下，不原地空转；下一条活动或下一次扫描再重试。
+          for (const id of ids) this.pending.add(id);
+          break;
         }
       }
       let unowned = false;
@@ -371,6 +374,9 @@ export class TaskWatch {
       pendingQuestion = summary?.summary ?? (keep ? previous.pendingQuestion : null);
       pendingRequestId = summary?.requestId ?? (keep ? previous.pendingRequestId ?? null : null);
     }
+    // 同一相位里从请求 A 换到 B：新请求是新的等待，等待时刻从这次观察算起（与远程一致）。
+    if (previous?.phase === phase && previous.pendingRequestId && pendingRequestId
+      && previous.pendingRequestId !== pendingRequestId) phaseSince = now;
     const canonicalOfBotId = this.canonicalOwner(sessionId, meta);
     const creatorBotId = this.creatorOf(sessionId, canonicalOfBotId);
     const row: WatchedSession = {
@@ -532,6 +538,8 @@ export class TaskWatch {
     const now = this.deps.now();
     if (now - this.ownershipAt >= OWNERSHIP_REFRESH_MS) await this.refreshOwnership();
     await this.refreshLocalMeta();
+    // 上次读元数据失败留下的 pending：按扫描节奏重试一次，不形成重试风暴。
+    if (this.pending.size && this.ownershipLoaded && !this.stopped) this.scheduleFlush();
     for (const [id, row] of this.rows) {
       if (row.phase === 'finished' && now - row.phaseSince >= FINISHED_ROW_RETENTION_MS
         && !(row.deviceId === null && this.local.get(id)?.activity)) this.rows.delete(id);

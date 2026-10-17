@@ -16,7 +16,8 @@ function parse(result: { content: Array<{ type: string; text?: string }> }) {
  *   伙伴身份只从调用方 Session 派生,工具不收 botId / 目录。
  * - 现有覆盖缺口:旧用例覆盖的是项目增删、判断写入与候选快照,随功能删除;「一眼」投影给模型的
  *   形状(task_id 可直接交给 get_task_digest、只在需要时出现的字段)此前没有覆盖。
- * - 最小失败输入:离线电脑上的等待行、由别的伙伴在跟的行、空白消息、未绑定 Session。
+ * - 最小失败输入:离线电脑上的等待行、由别的伙伴在跟的行、撞上用量上限的在做行(phase 不能丢,兜底叫醒靠它找)、
+ *   空白消息、未绑定 Session。
  * - tier:unit(纯工具层,宿主回调全部 mock)。
  */
 const glance = {
@@ -30,6 +31,7 @@ const glance = {
       online: false,
       title: '修登录',
       kind: 'waiting' as const,
+      phase: 'waiting-answer',
       minutes: 7,
       question: '要不要删旧表?',
       waitingFor: 'answer' as const,
@@ -44,6 +46,7 @@ const glance = {
       online: true,
       title: '跑测试',
       kind: 'working' as const,
+      phase: 'usage-limit',
       minutes: 3,
       question: null,
       waitingFor: null,
@@ -88,10 +91,10 @@ describe('bot workbench tools', () => {
       workbench: {
         scope: 'all',
         waiting: [{
-          task_id: 'laptop::s-9', title: '修登录', minutes: 7, device: 'MacBook', online: false,
+          task_id: 'laptop::s-9', title: '修登录', phase: 'waiting-answer', minutes: 7, device: 'MacBook', online: false,
           waiting_for: 'answer', question: '要不要删旧表?', followed_by: 'writer',
         }],
-        working: [{ task_id: 's-1', title: '跑测试', minutes: 3 }],
+        working: [{ task_id: 's-1', title: '跑测试', phase: 'usage-limit', minutes: 3 }],
         done_today: 2,
         last_sweep_at: '2026-10-17T05:00:00.000Z',
         offline_devices: ['MacBook'],
