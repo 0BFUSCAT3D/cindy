@@ -36,6 +36,11 @@ export function movedCindyAutoProviderId(
 }
 
 export interface CindyAutoRouteFollowDeps {
+  /**
+   * 本地数据库是否已就绪。启动早期目录先到、数据库还没接管时直接跳过（不算失败）；
+   * 数据库就绪后的那次 Cindy AI 刷新会再跑一次跟随。
+   */
+  isReady?(): boolean;
   /** 本机进行中、正在用 Auto 的任务（目录刷新时的粗筛，加锁后会重读）。 */
   listCandidates(): Promise<readonly ({ sessionId: string } & CindyAutoRoute)[]>;
   listProviders(): Promise<readonly ProviderView[]>;
@@ -50,6 +55,7 @@ export interface CindyAutoRouteFollowDeps {
 
 /** 返回本次登记了切换的任务数；单个任务失败只记日志，不影响其余任务。 */
 export async function followMovedCindyAutoRoutes(deps: CindyAutoRouteFollowDeps): Promise<number> {
+  if (deps.isReady && !deps.isReady()) return 0;
   const candidates = await deps.listCandidates();
   if (candidates.length === 0) return 0;
   const providers = await deps.listProviders();

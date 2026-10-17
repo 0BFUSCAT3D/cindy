@@ -15022,6 +15022,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   followMovedCindyAutoRoutesNow = async () => {
     const owner = getActiveAppSession();
     await followMovedCindyAutoRoutes({
+      isReady: () => tryGetDbClient() !== null,
       // 远程主机 / 另一台电脑上运行的任务，路由由那一端的目录决定，不在本机改道。
       listCandidates: async () => (await getDbClient().drizzle.select({
         sessionId: sessions.id,

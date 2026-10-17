@@ -117,6 +117,24 @@ describe('followMovedCindyAutoRoutes', () => {
     expect(stage).not.toHaveBeenCalled();
   });
 
+  it('本地数据库还没就绪（启动早期）时直接跳过：不读任务、不报错、不记日志', async () => {
+    const listCandidates = vi.fn(async () => {
+      throw new Error('DbClient not ready');
+    });
+    const logger = { info: vi.fn() };
+    const { stage, deps: input } = deps({ isReady: () => false, listCandidates, logger });
+    await expect(followMovedCindyAutoRoutes(input)).resolves.toBe(0);
+    expect(listCandidates).not.toHaveBeenCalled();
+    expect(stage).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it('数据库就绪后照常跟随', async () => {
+    const { stage, deps: input } = deps({ isReady: () => true });
+    await expect(followMovedCindyAutoRoutes(input)).resolves.toBe(1);
+    expect(stage).toHaveBeenCalledTimes(1);
+  });
+
   it('没有候选任务时不读供应商目录', async () => {
     const listProviders = vi.fn(async () => movedToPlatform);
     const { deps: input } = deps({ listCandidates: async () => [], listProviders });
