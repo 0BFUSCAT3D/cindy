@@ -213,7 +213,12 @@ function RemoteFilePreviewContent() {
   const [session, setSession] = useState<RemoteSession | null>(knownSession);
   const workdir = session?.workingDir ?? '';
 
-  const [siblings, setSiblings] = useState<FileBrowserGridItem[] | null>(null);
+  // The requested file is already known. Mount it (and its cached body) before
+  // listing neighbours; a slow directory read must not hold every reopen blank.
+  const [siblings, setSiblings] = useState<FileBrowserGridItem[] | null>(() => (
+    initialRelPath && workdir ? [fallbackItem(initialRelPath)]
+      : singleAbsPath ? [absPathItem(singleAbsPath)] : null
+  ));
   const [siblingListing, setSiblingListing] = useState<SiblingListing | null>(null);
   const [pageIndex, setPageIndex] = useState(0);
   // 屏级焦点(HTML 可执行 WebView 的挂载门之一,见 renderItem 的 visible)。
@@ -318,6 +323,7 @@ function RemoteFilePreviewContent() {
   // 只消费下面缓存的原始目录项重建展示模型,不能为翻译重新请求设备。
   useEffect(() => {
     if (!deviceId || !workdir || !initialRelPath) return undefined;
+    setSiblings((previous) => previous ?? [fallbackItem(initialRelPath)]);
     let cancelled = false;
     const dirRel = parentRelPath(initialRelPath) ?? '';
     const listingKey = `${deviceId}\u0000${workdir}\u0000${dirRel}`;
