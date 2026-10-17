@@ -1345,7 +1345,10 @@ async function requestBuiltinProviderText(
               session_id: randomUUID(),
               accept: 'text/event-stream',
             },
-            model: input.model.replace(/^chatgpt\//, ''),
+            // ChatGPT only accepts the bare official model id: drop the bridge prefix
+            // and the `[1m]` context-profile suffix, matching the conversation path
+            // (maker-host/anthropic-responses-bridge-host.ts withOpenaiContextProfileModel).
+            model: input.model.replace(/^chatgpt\//, '').replace(/\[1m\]$/, ''),
           },
         },
         ...utilityRequestPlan({

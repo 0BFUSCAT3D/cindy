@@ -2727,6 +2727,39 @@ describe('utility one-shot candidates', () => {
     expect(body).not.toHaveProperty('max_output_tokens');
   });
 
+  it.each([
+    { selected: 'chatgpt/gpt-5.6-sol[1m]', sent: 'gpt-5.6-sol' },
+    { selected: 'chatgpt/gpt-5.6-sol', sent: 'gpt-5.6-sol' },
+  ])('sends the bare ChatGPT model id for $selected', async ({ selected, sent }) => {
+    activeCatalog.mockReturnValue({
+      providers: [{
+        id: 'openai',
+        name: 'OpenAI',
+        source: 'builtin',
+        agents: ['codex'],
+        auth: { method: 'oauth' },
+        routing: { codex: { upstream: 'https://chatgpt.example/api/v1', authStrategy: 'oauth-passthrough' } },
+        models: { codex: [{ id: selected, name: 'GPT-5.6 Sol', contextWindow: 1_000_000 }] },
+      }],
+    } as never);
+    readCodexCreds.mockResolvedValue({ accessToken: 'codex-token', accountId: 'account-1' });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      text: async () => 'data: {"type":"response.output_text.delta","delta":"done"}\ndata: [DONE]\n',
+    } as never);
+
+    const result = await requestUtilityText(makerMock(false), 'generate', {
+      providerId: 'openai',
+      agentKind: 'codex',
+      model: selected,
+      disableReasoning: true,
+    });
+
+    // The user's selection is still reported as chosen; only the wire id is bare.
+    expect(result).toMatchObject({ ok: true, providerId: 'openai', model: selected });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ model: sent });
+  });
+
   it('maps disabled reasoning to low for OpenAI Responses instead of unsupported minimal', async () => {
     activeCatalog.mockReturnValue({
       providers: [{
