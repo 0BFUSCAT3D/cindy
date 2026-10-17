@@ -25,7 +25,7 @@ function written(local: string, virtual: string): string { return virtual.starts
 /** 转发给 exec-server 的 Codex 请求里与沙箱有关的字段。 */
 interface MappedSandboxRequest {
   cwd?: string;
-  sandbox: { cwd?: string; permissions: { file_system: { entries: unknown[] } } };
+  sandbox: { cwd?: string; userHomeDir?: string; permissions: { file_system: { entries: unknown[] } } };
 }
 
 function setup(virtual: string) {
@@ -446,6 +446,8 @@ describe('virtual workspace', () => {
       ] } },
       cwd: local(project),
       policyContext: { cwd: local(project), workspaceRoots: [local(project)] },
+      // 对不上的用户目录换成本机的：Codex 缺了它会把 `~/…` 规则当解析失败、一律拒绝读取。
+      userHomeDir: local(os.homedir()),
       temporaryDirectories: [local(temp)],
       windowsSandboxLevel: 'disabled',
     });
@@ -483,6 +485,8 @@ describe('virtual workspace', () => {
         { path: { type: 'path', path: 'file:///home/agent/workspace' }, access: 'write' },
         { path: { type: 'path', path: 'file:///home/agent/.codex/memories' }, access: 'write' },
         { path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' },
+        // POSIX Agent 的 `/C:/secret` 是根目录下的普通路径，不是 Windows 盘符。
+        { path: { type: 'path', path: 'file:///C:/secret' }, access: 'deny' },
         // 相对 glob 不能被误认成绝对路径丢掉：以转义开头(名字就叫 `*.pem` 的文件)、文件名里带冒号。
         { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
         { path: { type: 'glob_pattern', pattern: 'a:*.pem' }, access: 'deny' },
@@ -492,18 +496,23 @@ describe('virtual workspace', () => {
         { path: { type: 'glob_pattern', pattern: '/home/agent/.aws/**' }, access: 'deny' },
       ] } },
       cwd: 'file:///home/agent/workspace',
+      userHomeDir: 'file:///home/agent',
     };
     const params = mapExecServerParams({ path: 'file:///home/agent/workspace/a.txt', sandbox }, workspace, 'fs/readFile') as MappedSandboxRequest;
     expect(params.sandbox.permissions.file_system.entries).toEqual([
       { path: { type: 'path', path: pathToFileURL(project).href }, access: 'write' },
       // 任务电脑是 Windows 时 POSIX 路径不是本机路径，禁止条目也无从对应。
-      ...(process.platform === 'win32' ? [] : [{ path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' }]),
+      ...(process.platform === 'win32' ? [] : [
+        { path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' },
+        { path: { type: 'path', path: 'file:///C:/secret' }, access: 'deny' },
+      ]),
       { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
       { path: { type: 'glob_pattern', pattern: 'a:*.pem' }, access: 'deny' },
       { path: { type: 'glob_pattern', pattern: 'a:*.cache' }, access: 'write' },
       { path: { type: 'glob_pattern', pattern: '/home/agent/.aws/**' }, access: 'deny' },
     ]);
     expect(params.sandbox.cwd).toBe(pathToFileURL(project).href);
+    expect(params.sandbox.userHomeDir).toBe(pathToFileURL(os.homedir()).href);
     // 没有虚拟工作区(旧版对端)时沙箱原样转发，与之前一致。
     const plain = new ExecutorWorkspace({ workingDir: project });
     expect((mapExecServerParams({ sandbox }, plain) as MappedSandboxRequest).sandbox).toBe(sandbox);
