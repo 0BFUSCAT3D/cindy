@@ -3,6 +3,7 @@ import {
   downloadRemoteMediaAsDataUri,
   downloadRemoteMediaShareTemp,
   withDownloadedRemoteMediaFile,
+  retainRemoteFilePreview,
 } from '@/session/remoteMediaDiskCacheExpo';
 
 const io = vi.hoisted(() => ({
@@ -63,6 +64,18 @@ beforeEach(() => {
 });
 
 describe('bounded temporary media downloads', () => {
+  it('keeps a preview copy alive after transport staging expires, until its owner releases it', async () => {
+    const { recordPeerMedia, releasePeerMedia } = await import('@/device-link/peerFileRegistry');
+    const dispose = vi.fn();
+    recordPeerMedia({ ossKey: '', size: 5, mimeType: 'application/pdf' }, 'file:///peer/source', dispose);
+    const retained = await retainRemoteFilePreview('file:///peer/source', 'application/pdf', 'preview.pdf');
+    expect(io.copied.has(retained.uri)).toBe(true);
+    expect(dispose).toHaveBeenCalledOnce();
+    releasePeerMedia('file:///peer/source');
+    expect(io.remove).not.toHaveBeenCalled();
+    retained.release();
+    expect(io.remove).toHaveBeenCalledExactlyOnceWith(retained.uri);
+  });
   it('keeps the file until the asynchronous consumer finishes, then removes it', async () => {
     let finish!: (value: string) => void;
     const read = vi.fn(() => new Promise<string>((done) => { finish = done; }));

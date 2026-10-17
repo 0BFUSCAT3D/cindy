@@ -56,6 +56,7 @@ export interface RemoteMediaDiskCacheHit {
   uri: string;
   mimeType: string;
   size: number;
+  version?: string;
 }
 
 export interface RemoteMediaDiskCache {
@@ -140,7 +141,7 @@ export function createRemoteMediaDiskCache(
    * download / writeFileBase64 落位之后的共同收尾(两条写入路径同一套失败语义):
    *   - size === null:写入失败(IO 契约保证原子落位、失败不动现有文件)——同名
    *     刷新场景下 name 就是现存条目的好文件,不能误删;只清理并非现存条目的半成品;
-   *   - size <= 0:0 字节文件已落位顶替,文件与同名旧条目一并作废,下次 lookup 重取;
+   *   - size === 0:普通图片缓存视为失败；版本已确认的空文件（例如 CSS）正常保留;
    *   - 成功:mime 变化换扩展名时删除不再被引用的旧文件,登记条目并做配额回收。
    * 返回 true 仅当本次确实登记了新写入的字节(见 store 返回值契约)。
    */
@@ -158,7 +159,7 @@ export function createRemoteMediaDiskCache(
       }
       return false;
     }
-    if (size <= 0 || !entries) {
+    if (size < 0 || (size === 0 && !version) || !entries) {
       await Promise.resolve(io.deleteFile(name)).catch(() => undefined);
       if (prev && prev.name === name && entries) {
         entries.delete(key);
@@ -230,9 +231,7 @@ export function createRemoteMediaDiskCache(
       const entry = entries?.get(key);
       if (!entry) return null;
       if (version !== undefined && entry.version !== version) {
-        await Promise.resolve(io.deleteFile(entry.name)).catch(() => undefined);
-        entries?.delete(key);
-        await persistIndex().catch(() => undefined);
+        // Keep the last usable copy until its replacement commits successfully.
         return null;
       }
       const exists = await Promise.resolve(io.fileExists(entry.name)).catch(() => false);
@@ -244,7 +243,8 @@ export function createRemoteMediaDiskCache(
       }
       entry.lastUsedAt = now();
       if (options.persistAccess) await persistIndex().catch(() => undefined);
-      return { uri: io.fileUri(entry.name), mimeType: entry.mimeType, size: entry.size };
+      return { uri: io.fileUri(entry.name), mimeType: entry.mimeType, size: entry.size,
+        ...(entry.version ? { version: entry.version } : {}) };
     },
 
     async store(sourceUrl, downloadUrl, mimeType, expectedSize, version) {
@@ -262,6 +262,10 @@ export function createRemoteMediaDiskCache(
         const name = `${key}${version ? `-${version}` : ''}.${extOfMime(mimeType)}`;
         const prev = entries?.get(key);
         const size = await io.download(downloadUrl, name);
+        if (size !== null && expectedSize !== undefined && size !== expectedSize) {
+          await Promise.resolve(io.deleteFile(name)).catch(() => undefined);
+          return false;
+        }
         return commitWrittenFile(key, name, prev, size, mimeType, version);
       };
       const pending = downloading.get(key);

@@ -36,6 +36,17 @@ const URL_B = 'xdt-image://cache/b.png';
 const URL_C = 'xdt-image://cache/c.png';
 
 describe('remoteMediaDiskCache', () => {
+  it('keeps the previous version available until a changed download successfully commits', async () => {
+    const { io } = memoryIO();
+    const cache = createRemoteMediaDiskCache(io);
+    await cache.store(URL_A, 'https://old', 'application/pdf', 1000, 'a'.repeat(64));
+    expect(await cache.lookup(URL_A, 'b'.repeat(64))).toBeNull();
+    vi.mocked(io.download).mockResolvedValueOnce(null);
+    expect(await cache.store(URL_A, 'https://new', 'application/pdf', 1000, 'b'.repeat(64))).toBe(false);
+    expect(await cache.lookup(URL_A)).toMatchObject({ version: 'a'.repeat(64), size: 1000 });
+    await cache.store(URL_A, 'https://new', 'application/pdf', 1000, 'b'.repeat(64));
+    expect(await cache.lookup(URL_A)).toMatchObject({ version: 'b'.repeat(64), size: 1000 });
+  });
   it('protects the source of a pending copy while reclaiming other entries', async () => {
     const h = memoryIO();
     let capacity = 10_000;

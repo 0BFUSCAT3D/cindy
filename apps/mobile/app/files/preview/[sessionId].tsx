@@ -94,7 +94,7 @@ import { ImageLightbox } from '@/session/ImageLightbox';
 import { buildMediaPayload } from '@/session/messagePayload';
 import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import type { MobileRemoteMediaPresignResult } from '@/session/remoteMedia';
-import { downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo';
+import { downloadRemoteMediaShareTemp, retainRemoteFilePreview } from '@/session/remoteMediaDiskCacheExpo';
 import { remoteSessionStore, useRemoteSessions } from '@/session/remoteSessionStore';
 import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
@@ -431,6 +431,19 @@ function RemoteFilePreviewContent() {
   }, [auth]);
 
   /**
+   * 回收资源取件产生的 OSS 对象(与会话页 deleteRemoteMediaObject 同一端点与语义)。
+   * 空 ossKey(inline 缩略图 / 缓存命中)没有在世对象,跳过。
+   */
+  const deleteResourceOssObject = useCallback((ossKey: string) => {
+    if (!ossKey) return;
+    void auth.apiFetch('/api/device-link/media', {
+      baseUrl: DEVICE_LINK_API_BASE_URL,
+      method: 'DELETE',
+      body: { key: ossKey },
+    }).catch(() => undefined);
+  }, [auth]);
+
+  /**
    * 两段式导出 → presign 下载地址(图片/PDF/音视频原件与「下载原文件」共用)。
    * 实现在 fileBrowserExport(与浏览页长按分享共用):path+mtime 缓存、
    * 轮询瞬断重试、卸载中止。
@@ -443,7 +456,7 @@ function RemoteFilePreviewContent() {
       const isCancelled = () => unmountedRef.current || options?.isCancelled?.() === true;
       if (singleAbsPath) {
         return fetchRemoteAbsFileToUrl(
-          { maker, deviceId, openLink, presignGet, stream, isCancelled },
+          { maker, deviceId, openLink, presignGet, stream, isCancelled, deleteOssObject: deleteResourceOssObject },
           singleAbsPath,
         );
       }
@@ -456,27 +469,15 @@ function RemoteFilePreviewContent() {
           stream,
           isCancelled,
           onProgress: options?.onProgress,
+          deleteOssObject: deleteResourceOssObject,
         },
         workdir,
         relPath,
         mtimeMs,
       );
     },
-    [deviceId, maker, openLink, presignGet, singleAbsPath, workdir],
+    [deleteResourceOssObject, deviceId, maker, openLink, presignGet, singleAbsPath, workdir],
   );
-
-  /**
-   * 回收资源取件产生的 OSS 对象(与会话页 deleteRemoteMediaObject 同一端点与语义)。
-   * 空 ossKey(inline 缩略图 / 缓存命中)没有在世对象,跳过。
-   */
-  const deleteResourceOssObject = useCallback((ossKey: string) => {
-    if (!ossKey) return;
-    void auth.apiFetch('/api/device-link/media', {
-      baseUrl: DEVICE_LINK_API_BASE_URL,
-      method: 'DELETE',
-      body: { key: ossKey },
-    }).catch(() => undefined);
-  }, [auth]);
 
   // SSH 远程工作区的取件上下文:三项必须同时给(被控端 parseSshMediaOrigin 会按
   // sessionId 反查会话库逐项比对);本机会话为 null,取件走被控桌面本机路径。
@@ -1071,7 +1072,7 @@ function PdfPreviewPage({
   workdir,
 }: {
   active: boolean;
-  exportToUrl(relPath: string, mtimeMs: number): Promise<string>;
+  exportToUrl(relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string>;
   item: FileBrowserGridItem;
   onDownload(): void;
   recoveryEpoch: number;
@@ -1108,7 +1109,7 @@ function PdfPreviewPage({
     requestedAtRecoveryEpochRef.current = latestRecoveryEpochRef.current;
     let cancelled = false;
     setFailure(null);
-    void exportToUrl(item.relPath, item.mtimeMs)
+    void exportToUrl(item.relPath, item.mtimeMs, { stream: false })
       .then(preparePdfPreviewSource)
       .then((source) => {
         if (cancelled) { source.release(); return; }
@@ -1200,11 +1201,11 @@ function TextPreviewPage({
   const [browserNavigation, setBrowserNavigation] = useState<{
     preview: MobileHtmlPreview; state: WebViewNavigation;
   } | null>(null);
-  // absPath 单文件模式(item.relPath 为绝对路径)没有可靠 mtime(恒 0),
-  // 缓存键无法随文件覆写失效,读写一律跳过缓存。
-  const cacheable = !!workdir && !isAbsolutePathShape(item.relPath);
+  // A cached preview renders immediately, including absolute paths without mtime.
+  // The bounded text request below refreshes it in the background.
+  const cacheable = !!workdir;
   const [state, setState] = useState<TextPreviewState>(() => {
-    // 内存缓存命中(mtime keyed)直接就绪:翻页/重进零等待、零重复拉取。
+    // Cache identity includes the account, device, workdir and path.
     const cached = cacheable ? getCachedPreviewText(cacheScope, workdir, item.relPath, item.mtimeMs) : null;
     return cached
       ? {
@@ -1220,7 +1221,7 @@ function TextPreviewPage({
   // data-src-line 定位到覆盖目标行的块并闪高亮;切到源码态仍走精确行号跳转),
   // 可切源码;其余文本恒为源码态。
   const [richView, setRichView] = useState<'rendered' | 'source'>(richKind ? 'rendered' : 'source');
-  const loadedRef = useRef(state.status === 'ready');
+  const loadedRef = useRef(false);
   const [textReloadEpoch, setTextReloadEpoch] = useState(0);
   const codeListRef = useRef<FlatList<string>>(null);
   const scrolledToTargetRef = useRef(false);
@@ -1229,12 +1230,15 @@ function TextPreviewPage({
     if (!active || loadedRef.current || !workdir) return;
     loadedRef.current = true;
     let cancelled = false;
+    const unavailable = (value: TextPreviewState) => setState((previous) =>
+      previous.status === 'ready' ? previous : value);
     void readTextFile(item.relPath)
       .then((res: FileBrowserReadFileResult) => {
         if (cancelled) return;
         if (!res.ok) {
+          // A failed refresh must not hide the text the user is already reading.
           if (res.code === 'OVERSIZE') {
-            setState({
+            unavailable({
               status: 'unavailable',
               oversize: true,
               reason: t('files.preview.oversize', {
@@ -1242,9 +1246,9 @@ function TextPreviewPage({
               }),
             });
           } else if (res.code === 'BINARY_FILE') {
-            setState({ status: 'unavailable', reason: t('files.preview.binaryFile') });
+            unavailable({ status: 'unavailable', reason: t('files.preview.binaryFile') });
           } else {
-            setState({ status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
+            unavailable({ status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
           }
           return;
         }
@@ -1265,10 +1269,12 @@ function TextPreviewPage({
       .catch((err) => {
         if (cancelled) return;
         loadedRef.current = false; // 传输层瞬断允许重进重试
-        setState({ status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
+        setState((previous) => previous.status === 'ready' ? previous
+          : { status: 'unavailable', reason: t('files.preview.readFailed'), retryable: true });
       });
     return () => {
       cancelled = true;
+      loadedRef.current = false;
     };
   }, [active, cacheable, cacheScope, item.relPath, richKind, readTextFile, t, workdir, textReloadEpoch]);
 
@@ -1490,7 +1496,7 @@ function ImagePreviewPage({
   workdir,
 }: {
   active: boolean;
-  exportToUrl(relPath: string, mtimeMs: number): Promise<string>;
+  exportToUrl(relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string>;
   item: FileBrowserGridItem;
   maker: Pick<MobileMakerTransport, 'fileBrowser'>;
   onOpenLightbox(url: string): void;
@@ -1512,15 +1518,21 @@ function ImagePreviewPage({
   const [failure, setFailure] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const requestedRef = useRef(false);
+  const releaseSourceRef = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => releaseSourceRef.current?.(), []);
 
   useEffect(() => {
     if (!active || requestedRef.current || !workdir) return undefined;
     requestedRef.current = true;
     let cancelled = false;
     setFailure(null);
-    void exportToUrl(item.relPath, item.mtimeMs)
-      .then((url) => {
-        if (!cancelled) setFullUrl(url);
+    void exportToUrl(item.relPath, item.mtimeMs, { stream: false })
+      .then((url) => retainRemoteFilePreview(url, shareMimeForFileName(item.name), item.name))
+      .then((source) => {
+        if (cancelled) { source.release(); return; }
+        releaseSourceRef.current?.();
+        releaseSourceRef.current = source.release;
+        setFullUrl(source.uri);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1530,7 +1542,7 @@ function ImagePreviewPage({
     return () => {
       cancelled = true;
     };
-  }, [active, attempt, exportToUrl, item.mtimeMs, item.relPath, workdir]);
+  }, [active, attempt, exportToUrl, item.mtimeMs, item.name, item.relPath, workdir]);
 
   const displayUri = fullUrl ?? thumbUri;
   return (

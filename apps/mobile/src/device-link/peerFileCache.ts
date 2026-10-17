@@ -4,13 +4,14 @@ import {
   digestStringAsync,
   randomUUID,
 } from "expo-crypto";
-import { validFileVersion, type DeviceFileResult } from "@cindy/device-link";
+import { FILE_INLINE_MAX_BYTES, validFileVersion, type DeviceFileResult } from "@cindy/device-link";
 import { createRemoteMediaDiskCache } from "@/session/remoteMediaDiskCache";
-import { createExpoRemoteMediaDiskCacheIO } from "@/session/remoteMediaDiskCacheExpo";
+import { createExpoRemoteMediaDiskCacheIO, downloadRemoteMediaShareTemp } from "@/session/remoteMediaDiskCacheExpo";
 import {
   PEER_FILE_DISK_RESERVE_BYTES,
   recordPeerMedia,
   peerMediaUri,
+  releasePeerMedia,
   type LocalPeerMedia,
 } from "./peerFileRegistry";
 
@@ -39,7 +40,44 @@ async function openPeerFileCache(owner: string) {
       persistAccess: true,
     },
   );
-  return {
+  const api = {
+    async readLatest(device: string, url: string, active: () => boolean): Promise<DeviceFileResult | null> {
+      const hit = await cache.lookup(JSON.stringify([device, url]));
+      if (!active() || !hit || !validFileVersion(hit.version)) return null;
+      const metadata = { size: hit.size, mimeType: hit.mimeType, version: hit.version };
+      return hit.size <= FILE_INLINE_MAX_BYTES
+        ? api.readInline(device, url, metadata, active)
+        : api.read(device, url, metadata, active);
+    },
+    /** A completed OSS fallback joins the same version cache as direct downloads. */
+    async download(device: string, url: string, metadata: Metadata, downloadUrl: string,
+      active: () => boolean, signal?: AbortSignal): Promise<LocalPeerMedia | null> {
+      if (!active() || !validFileVersion(metadata.version) || !(await cache.prune(2 * metadata.size))) return null;
+      const uri = await downloadRemoteMediaShareTemp(downloadUrl, metadata.mimeType, undefined, signal);
+      if (!uri) return null;
+      const file = new File(uri);
+      const dispose = () => { if (file.exists) file.delete(); };
+      if (!active() || signal?.aborted || file.size !== metadata.size) { dispose(); return null; }
+      const result = { ossKey: '', ...metadata };
+      if (!recordPeerMedia(result, uri, dispose)) { dispose(); return null; }
+      await api.store(device, url, metadata, result).catch(() => undefined);
+      if (!active() || signal?.aborted) { releasePeerMedia(uri); return null; }
+      return result;
+    },
+    async readInline(device: string, url: string, metadata: Metadata, active: () => boolean) {
+      if (!validFileVersion(metadata.version) || metadata.size > FILE_INLINE_MAX_BYTES) return null;
+      const hit = await cache.lookup(JSON.stringify([device, url]), metadata.version);
+      if (!active() || !hit || hit.size !== metadata.size) return null;
+      const inlineBase64 = await new File(hit.uri).base64();
+      if (!active()) return null;
+      return { ossKey: '', ...metadata, inlineBase64 };
+    },
+    async storeInline(device: string, url: string, result: DeviceFileResult) {
+      if (!validFileVersion(result.version) || typeof result.inlineBase64 !== 'string'
+        || result.size > FILE_INLINE_MAX_BYTES) return;
+      await cache.store(JSON.stringify([device, url]),
+        `data:${result.mimeType};base64,${result.inlineBase64}`, result.mimeType, result.size, result.version);
+    },
     prune: (size: number) => cache.prune(2 * size),
     invalidate: (device: string, url: string) =>
       cache.remove(JSON.stringify([device, url])),
@@ -105,4 +143,5 @@ async function openPeerFileCache(owner: string) {
       );
     },
   };
+  return api;
 }

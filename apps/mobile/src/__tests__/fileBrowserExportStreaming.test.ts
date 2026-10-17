@@ -31,7 +31,7 @@ describe('file browser playback and download', () => {
           expect(await exportRemoteFileToUrl({ ...deps, stream }, '/p', 'media', 1))
             .toBe(stream ? 'https://example.test/stream' : local);
         }
-        expect(peer).toHaveBeenCalledOnce();
+        expect(peer).toHaveBeenCalledTimes(2);
         expect(deps.presignGet).toHaveBeenCalledOnce();
       } finally { uninstall(); clearPeerMedia(); }
     }

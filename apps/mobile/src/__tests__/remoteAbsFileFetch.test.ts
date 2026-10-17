@@ -38,15 +38,15 @@ function makeDeps(overrides: Partial<{
 }
 
 describe('fetchRemoteAbsFileToUrl', () => {
-  it('separates streaming and complete-file cache entries in either order', async () => {
+  it('revalidates complete files while retaining streaming URLs', async () => {
     for (const first of [true, false]) {
       const { deps, fetchRemoteMedia } = makeDeps();
       await fetchRemoteAbsFileToUrl({ ...deps, stream: first }, '/media.mp4');
       await fetchRemoteAbsFileToUrl({ ...deps, stream: !first }, '/media.mp4');
       await fetchRemoteAbsFileToUrl({ ...deps, stream: first }, '/media.mp4');
-      expect(fetchRemoteMedia).toHaveBeenCalledTimes(2);
-      expect(fetchRemoteMedia.mock.calls.map((call) => (call as unknown[])[1])).toEqual(
-        first ? [undefined, { stream: false }] : [{ stream: false }, undefined],
+      expect(fetchRemoteMedia).toHaveBeenCalledTimes(first ? 2 : 3);
+      expect(fetchRemoteMedia.mock.calls.map((call) => ((call as unknown[])[1] as { stream?: boolean }).stream)).toEqual(
+        first ? [undefined, false] : [false, undefined, false],
       );
     }
   });
@@ -78,7 +78,7 @@ describe('fetchRemoteAbsFileToUrl', () => {
     expect(url).toBe('https://oss.example/get/abc');
     expect(fetchRemoteMedia).toHaveBeenCalledWith(
       `xdt-file://open?path=${encodeURIComponent('/tmp/shot.png')}`,
-      undefined,
+      expect.objectContaining({ beforeFetch: expect.any(Function) }),
     );
     expect(presignGet).toHaveBeenCalledWith('oss/abc');
   });
@@ -134,7 +134,7 @@ describe('fetchRemoteAbsFileToUrl', () => {
     await fetchRemoteAbsFileToUrl(deps, 'C:\\tmp\\shot.png');
     expect(fetchRemoteMedia).toHaveBeenCalledWith(
       `xdt-file://open?path=${encodeURIComponent('C:\\tmp\\shot.png')}`,
-      undefined,
+      expect.objectContaining({ beforeFetch: expect.any(Function) }),
     );
   });
 });

@@ -1,5 +1,8 @@
+import { validFileVersion } from './fileTransferPolicy';
+
 /** Shared file read policy. UI entry points never choose a transport. */
 export const FILE_INLINE_MAX_BYTES = 64 * 1024;
+const revalidatingFiles = new Map<string, Promise<void>>();
 
 export interface DeviceFileResult {
   ossKey: string;
@@ -21,6 +24,22 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
   prepare(): Promise<DeviceFileResult>;
   peer(metadata: DeviceFileResult): Promise<T | null>;
   fallback(): Promise<DeviceFileResult>;
+  /** Metadata-only preparation is opt-in; old hosts may still return bytes. */
+  inline?(): Promise<DeviceFileResult>;
+  /** Recheck the source after two-stage export before retaining a reusable copy. */
+  revalidate?(): Promise<DeviceFileResult>;
+  /** Small files share the platform's versioned disk store with peer downloads. */
+  inlineCache?: {
+    read(metadata: DeviceFileResult): Promise<DeviceFileResult | null>;
+    store(result: DeviceFileResult): Promise<void>;
+  };
+  /** Same-owner local bytes may render before the host responds. Explicit refresh omits this. */
+  cacheFirst?: {
+    key: string;
+    read(): Promise<DeviceFileResult | T | null>;
+    /** Finish retaining a changed fallback before disposing its temporary result. */
+    retain?(result: DeviceFileResult | T): Promise<void>;
+  };
   /** Retained preview/playback URL, rather than an immediate complete-file copy. */
   stream?: boolean;
   /** Adapter returns expiring staging URLs without copying them into consumer-owned storage. */
@@ -42,9 +61,47 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
     }
   };
   assertActive();
-  const prepared = await options.prepare();
+  if (options.cacheFirst) {
+    const cached = await options.cacheFirst.read().catch(() => null);
+    if (!active()) return discardCancelled(cached ?? { ossKey: '', size: 0, mimeType: '' });
+    if (cached) {
+      const { key, retain } = options.cacheFirst;
+      if (!revalidatingFiles.has(key)) {
+        const refresh = Promise.resolve().then(async () => {
+          assertActive();
+          const metadata = await options.prepare();
+          if (!active()) return discardCancelled(metadata);
+          if (validFileVersion(cached.version) && metadata.version === cached.version && metadata.size === cached.size) {
+            if (metadata.ossKey) await options.discard?.(metadata);
+            return;
+          }
+          const fresh = await readDeviceFile({ ...options, cacheFirst: undefined, prepare: async () => metadata });
+          try { await retain?.(fresh); }
+          finally { await options.discard?.(fresh); }
+        }).catch(() => { /* Background failure must not replace an already usable preview. */ })
+          .finally(() => { if (revalidatingFiles.get(key) === refresh) revalidatingFiles.delete(key); });
+        revalidatingFiles.set(key, refresh);
+      }
+      return cached;
+    }
+  }
+  let prepared = await options.prepare();
   if (!active()) return discardCancelled(prepared);
-  const mediaStream = options.stream && /^(audio|video)\//i.test(prepared.mimeType);
+  const isMediaStream = (file: DeviceFileResult) => options.stream && /^(audio|video)\//i.test(file.mimeType);
+  if (!isMediaStream(prepared) && validFileVersion(prepared.version) && prepared.size <= FILE_INLINE_MAX_BYTES) {
+    if (prepared.transferRequired === true && options.inline) {
+      const cached = await options.inlineCache?.read(prepared).catch(() => null);
+      if (!active()) return discardCancelled(cached ?? prepared);
+      if (cached) return cached;
+      prepared = await options.inline();
+      if (!active()) return discardCancelled(prepared);
+    }
+    if (typeof prepared.inlineBase64 === 'string') {
+      await options.inlineCache?.store(prepared).catch(() => undefined);
+      if (!active()) return discardCancelled(prepared);
+    }
+  }
+  const mediaStream = isMediaStream(prepared);
   // Small audio/video files arrive inline too, but playback still needs a retained
   // URL. Reuse the streaming path without re-uploading an old host's OSS result.
   const inlineMediaStream = mediaStream && !prepared.ossKey &&
@@ -57,6 +114,14 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
   if (direct) return direct;
   const result = await options.fallback();
   if (!active()) return discardCancelled(result);
+  if (!mediaStream && !result.version && validFileVersion(prepared.version) && options.revalidate) {
+    let after: DeviceFileResult;
+    try { after = await options.revalidate(); }
+    catch (error) { await options.discard?.(result); throw error; }
+    if (!active()) return discardCancelled(result);
+    if (after.version === prepared.version && after.size === prepared.size && result.size === prepared.size)
+      return { ...result, version: prepared.version, mimeType: prepared.mimeType };
+  }
   return result;
 }
 

@@ -36,6 +36,8 @@ describe("file cache identity", () => {
     expect(
       getCachedPreviewText("account-b/device-a", "/same", "a", 1),
     ).toBeNull();
+    // A changed listing mtime doesn't block rendering the previous bounded text.
+    expect(getCachedPreviewText("account-a/device-a", "/same", "a", 2)?.lines).toEqual(['private']);
   });
   it("does not coalesce indexes on different devices and preserves the real RPC path", async () => {
     const make = (scope: string) => ({

@@ -7,6 +7,7 @@
  * JS 层引用,不影响 fingerprint(以 mobile:release:check 实测为准)。
  */
 import { Directory, File, Paths } from "expo-file-system";
+import { releasePeerMedia } from '@/device-link/peerFileRegistry';
 
 import {
   extOfMime,
@@ -77,6 +78,21 @@ async function copyRemoteFile(
   }
   if (signal) return downloadCancellable(url, target, signal);
   return File.downloadFileAsync(url, target, { idempotent: true });
+}
+
+/** A visible preview owns its copy; transport staging and cache eviction cannot expire it. */
+export async function retainRemoteFilePreview(url: string, mimeType: string, fileName: string) {
+  if (!url.startsWith('file://') && !url.startsWith('data:')) return { uri: url, release() {} };
+  let uri: string | null;
+  try { uri = await downloadRemoteMediaShareTemp(url, mimeType, fileName); }
+  finally { if (url.startsWith('file://')) releasePeerMedia(url); }
+  if (!uri) throw new Error('PREVIEW_CACHE_FAILED');
+  return {
+    uri,
+    release() {
+      try { const file = new File(uri); if (file.exists) file.delete(); } catch { /* OS reclaims cache files. */ }
+    },
+  };
 }
 
 /**
@@ -220,7 +236,7 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
           encoding: FileSystem.EncodingType.Base64,
         });
         const size = tmp.size ?? 0;
-        if (size <= 0) {
+        if (size < 0) {
           if (tmp.exists) tmp.delete();
           return null;
         }

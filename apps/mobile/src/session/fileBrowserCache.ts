@@ -261,10 +261,10 @@ export function getCachedPreviewText(
   scope: string,
   workdir: string,
   relPath: string,
-  mtimeMs: number,
+  _mtimeMs: number,
 ): CachedPreviewText | null {
   workdir = JSON.stringify([scope, workdir]);
-  const key = snippetKey(workdir, relPath, mtimeMs);
+  const key = snippetKey(workdir, relPath, 0);
   const value = previewTextMemory.get(key);
   if (!value) return null;
   previewTextMemory.delete(key);
@@ -276,11 +276,11 @@ export function storeCachedPreviewText(
   scope: string,
   workdir: string,
   relPath: string,
-  mtimeMs: number,
+  _mtimeMs: number,
   value: CachedPreviewText,
 ): void {
   workdir = JSON.stringify([scope, workdir]);
-  const key = snippetKey(workdir, relPath, mtimeMs);
+  const key = snippetKey(workdir, relPath, 0);
   previewTextMemory.delete(key);
   previewTextMemory.set(key, value);
   while (previewTextMemory.size > PREVIEW_TEXT_MAX_ENTRIES) {

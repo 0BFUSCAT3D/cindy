@@ -41,6 +41,7 @@ vi.mock("expo-file-system", () => ({
     delete() {
       disk.files.delete(this.uri);
     }
+    async base64() { return Buffer.from(disk.files.get(this.uri)!).toString('base64'); }
     async copy(target: { uri: string }) {
       disk.copying = true;
       if (disk.gate) await disk.gate;
@@ -53,6 +54,13 @@ vi.mock("expo-file-system", () => ({
   },
 }));
 vi.mock("@/session/remoteMediaDiskCacheExpo", () => ({
+  downloadRemoteMediaShareTemp: async (url: string) => {
+    const uri = `file:///download-${++disk.seq}`;
+    const bytes = disk.files.get(url);
+    if (!bytes) return null;
+    disk.files.set(uri, bytes.slice());
+    return uri;
+  },
   createExpoRemoteMediaDiskCacheIO: (namespace: string) => {
     const uri = (name: string) => `file:///cache/${namespace}/${name}`;
     return {
@@ -72,7 +80,7 @@ vi.mock("@/session/remoteMediaDiskCacheExpo", () => ({
           .filter((p) => p.startsWith(`file:///cache/${namespace}/`))
           .map((p) => p.split("/").at(-1)!),
       download: async (source: string, name: string) => {
-        const bytes = disk.files.get(source);
+        const bytes = source.startsWith('data:') ? Buffer.from(source.split(',')[1], 'base64') : disk.files.get(source);
         if (!bytes) return null;
         disk.files.set(uri(name), bytes.slice());
         return bytes.length;
@@ -94,6 +102,26 @@ afterEach(() => {
   disk.available = 10 * 1024 ** 3;
 });
 const metadata = { size: 5, mimeType: "text/html", version: "a".repeat(64) };
+it('reuses completed OSS downloads through the same cache and does not retain changed-sized bytes', async () => {
+  const cache = await createPeerFileCache('oss-owner');
+  disk.files.set('https://oss/file', new Uint8Array(5));
+  const result = await cache.download('device', 'url', metadata, 'https://oss/file', () => true);
+  expect(result).not.toBeNull();
+  releasePeerMedia(peerMediaUri(result!)!);
+  expect(await cache.read('device', 'url', metadata, () => true)).not.toBeNull();
+  expect(await cache.download('device', 'changed', { ...metadata, size: 6 }, 'https://oss/file', () => true)).toBeNull();
+  expect(await cache.read('device', 'changed', metadata, () => true)).toBeNull();
+});
+it.each([0, 5])('shares %s-byte inline files with the durable version cache', async size => {
+  const cache = await createPeerFileCache(`inline-${size}`);
+  const result = { ossKey: '', ...metadata, size, inlineBase64: Buffer.alloc(size, 7).toString('base64') };
+  await cache.storeInline('device', 'url', result);
+  expect(await cache.readLatest('device', 'url', () => true)).toEqual(result);
+  expect(await cache.readInline('device', 'url', result, () => true)).toEqual(result);
+  expect(await cache.readInline('other-device', 'url', result, () => true)).toBeNull();
+  expect(await cache.readInline('device', 'url', { ...result, version: 'b'.repeat(64) }, () => true)).toBeNull();
+  expect(await cache.readLatest('device', 'url', () => true)).toEqual(result);
+});
 async function seed(owner: string) {
   const cache = await createPeerFileCache(owner);
   const uri = `file:///received/${owner}`;
