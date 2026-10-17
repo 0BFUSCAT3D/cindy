@@ -125,7 +125,8 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
         // The switch was on when this import turned it off.
         if (!(await readImportSourceBot(source, bot)).enabled) return;
         const { parked } = await liveness();
-        if ((record.restartRequested || record.restarted) && !parked) await restartGateway();
+        // A failed restart keeps the `restoring` record, so the original bot is not left stopped.
+        if ((record.restartRequested || record.restarted) && !parked && !(await restartGateway())) return;
       } catch (error) {
         if (error instanceof CompanionImportError && error.code === 'OWNER_CHANGED') throw error;
         return;
@@ -138,7 +139,8 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
     if (record?.phase === 'restoring') { await restore(); return 'IMPORT_IM_BOT_CONNECT_FAILED'; }
     const existing = target.existing();
     if (existing === 'self') { await save({ ...(record ?? {}), phase: 'connected' }); return undefined; }
-    if (existing === 'other') { await restore(); return 'IMPORT_IM_BOT_IN_USE'; }
+    // Another companion took the bot meanwhile: it serves it now, so the source stays off.
+    if (existing === 'other') { await save(undefined); return 'IMPORT_IM_BOT_IN_USE'; }
     /** The switch at this path must still belong to the previewed bot before this import touches it. */
     const sameBot = async () => {
       const current = await readImportSourceBotIdentity(source, bot, readers); assertOwner();
@@ -195,7 +197,8 @@ export async function takeOverImportedBot(input: BotTakeoverInput): Promise<stri
     if ((await readImportSourceBot(source, bot)).enabled) return 'IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED';
     const issue = await target.connect(); assertOwner();
     if (!issue) { await save({ ...record!, phase: 'connected' }); return undefined; }
-    await restore();
+    // A concurrent import connected it to another companion; re-enabling the source would make both serve it.
+    if (issue === 'IMPORT_IM_BOT_IN_USE') await save(undefined); else await restore();
     return issue;
   } catch (error) {
     if (error instanceof CompanionImportError && error.code === 'SOURCE_COMMAND_UNAVAILABLE') {

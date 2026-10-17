@@ -146,6 +146,25 @@ it('finishes an interrupted rollback and re-stops a source that came back on, ne
   expect(t.target.connect).toHaveBeenCalledTimes(1);
 });
 
+it('keeps the source off when another companion claimed the bot, and retries a rollback whose restart failed', async () => {
+  const t = await setup('hermes', { name: 'Ada' }, { live: true, env: telegramEnv });
+  // A concurrent import connected the bot to another companion first.
+  t.target.connect.mockResolvedValueOnce('IMPORT_IM_BOT_IN_USE');
+  expect(await t.run()).toBe('IMPORT_IM_BOT_IN_USE');
+  expect((await t.readConfig()).platforms.telegram.enabled).toBe(false);
+  expect(t.saves.at(-1)).toBeUndefined();
+  // An ordinary connect failure rolls back; a failed restart keeps the rollback pending.
+  const stopped = { phase: 'stopped' as const, original: { present: false }, wasLive: true, changed: true, restartRequested: true, restarted: true };
+  t.target.connect.mockResolvedValueOnce('IMPORT_IM_BOT_CONNECT_FAILED');
+  await fs.writeFile(path.join(t.state, 'fail-restart'), '');
+  expect(await t.run(stopped)).toBe('IMPORT_IM_BOT_CONNECT_FAILED');
+  expect(t.saves.at(-1)).toMatchObject({ phase: 'restoring' });
+  await fs.rm(path.join(t.state, 'fail-restart'));
+  expect(await t.run(t.saves.at(-1))).toBe('IMPORT_IM_BOT_CONNECT_FAILED');
+  expect(t.saves.at(-1)).toBeUndefined();
+  expect(t.target.connect).toHaveBeenCalledTimes(2);
+});
+
 it('leaves a bot swapped in after the preview running and does not connect the old one', async () => {
   const t = await setup('hermes', { name: 'Ada' }, { live: true, env: telegramEnv });
   await fs.writeFile(path.join(t.state, '.env'), 'TELEGRAM_BOT_TOKEN=67890:fake-new-token\nTELEGRAM_ALLOWED_USERS=424242');

@@ -494,12 +494,12 @@ export function importBotIdentity(credential: unknown): string {
   return BOT_IDENTITY_FIELDS.map(field => string(value[field])).find(Boolean) ?? '';
 }
 
-/** The bot's current identity in its source, re-read with the source's own environment; '' when it is gone. */
+/** The bot's current identity in its source, re-read with the source's own environment; '' when it is gone or routed elsewhere. */
 export async function readImportSourceBotIdentity(source: ImportSource, bot: NonNullable<ImportItem['bot']>, deps: SourceReaderDeps): Promise<string> {
   const budget = createImportBudget();
   const values = await config(path.dirname(source.configFile), source.configFile, budget);
   const env = await sourceEnvironment(source, values, budget);
-  const found = (await sourceBots(source, values, env, deps, budget, optionalText, true))
+  const found = (await sourceBots(source, values, env, deps, budget))
     .find(candidate => candidate.platform === bot.platform && candidate.account === bot.account);
   if (!found) return '';
   return importBotIdentity(Object.fromEntries(Object.entries(found.credential).map(([field, value]) =>

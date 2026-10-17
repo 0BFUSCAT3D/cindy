@@ -73,6 +73,8 @@ export const IMPORT_IM_BOT_ISSUES: ReadonlySet<string> = new Set([
   'IMPORT_IM_BOT_CONNECT_FAILED',
   'IMPORT_IM_BOT_SOURCE_STOP_UNCONFIRMED',
   'IMPORT_IM_BOT_SOURCE_CHANGED',
+  // The source CLI is missing: the bot credential is saved, only its source stop did not run.
+  'SOURCE_COMMAND_UNAVAILABLE',
 ]);
 const IM_BOT_FORMATS = new Set(['telegram', 'discord']);
 
