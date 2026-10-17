@@ -12,6 +12,7 @@ import { parseRoutineInput, type RoutineInput } from '@cindy/maker-scheduler';
 import { normalizeBotName } from '../../shared/botCreation.js';
 import { listBotRemoteResourceSources } from '../localDb/ipc/bots.js';
 import { validateBotAvatarBuffer, decodeBotAvatarImage } from '../localDb/ipc/botAvatarSelection.js';
+import { toSdrAvatarImage } from '../hdrAvatarToSdr.js';
 import { COMPANION_IMPORT_CHUNK_LENGTH, COMPANION_IMPORT_READ_MAX_LENGTH, COMPANION_IMPORT_SELECTION_CHUNK_LENGTH } from '@cindy/maker-shared/companion-import';
 import type { CompanionImportPreview, CompanionImportResult, CompanionImportSelection, CompanionImportSubmission, CompanionImportSource } from '@cindy/maker-shared/companion-import';
 import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
@@ -36,6 +37,9 @@ import { verifyImportedAutomation } from './verification.js';
 import { importMemoryMedia } from './memoryMedia.js';
 import { projectImportedSkill } from './skillResources.js';
 import { assertImportedAutomationReady } from './automationRuntime.js';
+
+/** Bot tokens saved resolved, so delivery and the companion's own connection read the real value. */
+const IM_BOT_CREDENTIAL_FORMATS = new Set(['telegram', 'discord']);
 
 interface Owned<T> { owner: string; controller: string; value: T; createdAt: number }
 const sources = new Map<string, Owned<ImportSource>>();
@@ -117,8 +121,10 @@ export async function previewCompanionImport(sourceId: string, controller: strin
   const inspected = await inspectImportSource(source, readers()); scope.assert();
   const snapshot = { ...inspected, items: inspected.items.map((item, index) => ({ ...item, sourceIndex: index })) };
   if (snapshot.avatarImageBase64) {
-    const buffer = Buffer.from(snapshot.avatarImageBase64, 'base64');
-    validateBotAvatarBuffer(buffer);
+    const original = Buffer.from(snapshot.avatarImageBase64, 'base64');
+    // Tone map before resizing: the thumbnail below would otherwise misread PQ / HLG pixels as sRGB.
+    const { buffer } = await toSdrAvatarImage({ buffer: original, mimeType: validateBotAvatarBuffer(original) });
+    scope.assert();
     snapshot.avatarImageBase64 = (await sharp(buffer, { limitInputPixels: 40_000_000 }).resize(256, 256, { fit: 'cover' }).jpeg({ quality: 65 }).toBuffer()).toString('base64');
     scope.assert();
   }
@@ -766,7 +772,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
           }
           return [server];
         }),
-        credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || item.credential.format !== 'telegram') ? [{ id: item.view.id, ...item.credential, ...(item.credential.format === 'telegram' ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
+        credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || !IM_BOT_CREDENTIAL_FORMATS.has(item.credential.format)) ? [{ id: item.view.id, ...item.credential, ...(IM_BOT_CREDENTIAL_FORMATS.has(item.credential.format) ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
         files: Object.fromEntries(items.flatMap(item => item.asset && !isMemoryItem(item) ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
         fileExecutables: Object.fromEntries(items.flatMap(item => item.asset && !isMemoryItem(item) ? [[item.asset.name, item.asset.executable === true]] : [])),
         memoryFiles: Object.fromEntries(items.flatMap(memoryFileEntries)),
@@ -800,6 +806,14 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       return routine.id;
     },
     verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected, snapshot.source.root),
+    async connectImBot(botId, item) {
+      if (!item.credential) return undefined;
+      // Loaded lazily so the import pipeline does not pull the IM runtime into its own module graph.
+      const { connectImportedImBot } = await import('./imBotConnections.js'); scope.assert();
+      const value = resolveImportReferences(item.credential.value, selectedImportEnvironment(selected));
+      const issue = await connectImportedImBot(botId, { format: item.credential.format, value }); scope.assert();
+      return issue;
+    },
     pauseSource: (item, source, resumeInterruptedPause) => changeSourceAutomationState(source.source, item, false, readers(), scope.assert, resumeInterruptedPause, selectedImportEnvironment(selected)),
     resumeSource: (item, source) => changeSourceAutomationState(source.source, item, true, readers(), scope.assert, false, selectedImportEnvironment(selected)),
     async enableRoutine(botId, routineId, item) {
