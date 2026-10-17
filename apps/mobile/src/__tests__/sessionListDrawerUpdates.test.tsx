@@ -165,6 +165,29 @@ describe('shared Home drawer host', () => {
     native.gesture.end!({ translationX: -160, velocityX: 0 });
     expect(props.onClose).toHaveBeenCalledOnce();
   });
+  it.each([
+    { translationX: -40, velocityX: 0, closes: true },
+    { translationX: -20, velocityX: 0, closes: false },
+    { translationX: -20, velocityX: -900, closes: true },
+  ])('uses the inherited rebound position when releasing a second swipe ($translationX, $velocityX)', async ({ translationX, velocityX, closes }) => {
+    native.reduceMotion = false;
+    await act(async () => root.render(<SessionListDrawer {...props} />));
+    const [progress, dragX] = native.values;
+    native.gesture.start!();
+    native.gesture.update!({ translationX: -100 });
+    native.gesture.end!({ translationX: -100, velocityX: 0 });
+    expect(props.onClose).not.toHaveBeenCalled();
+    // The first 100-point swipe is rebounding and still leaves 80 points hidden.
+    progress!.value = 0.75;
+    native.gesture.start!();
+    native.gesture.update!({ translationX });
+    native.gesture.end!({ translationX, velocityX });
+    expect(props.onClose).toHaveBeenCalledTimes(closes ? 1 : 0);
+    if (!closes) {
+      expect(progress!.value).toBe(1);
+      expect(dragX!.value).toBe(0);
+    }
+  });
   it('unmounts the invisible blocker even when the animation never calls completion', async () => {
     native.reduceMotion = false;
     await act(async () => root.render(<SessionListDrawer {...props} />));

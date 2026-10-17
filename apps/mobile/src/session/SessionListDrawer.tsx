@@ -153,8 +153,10 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
         })
         .onEnd((event) => {
           'worklet';
+          // Include the position inherited when a previous rebound was interrupted.
+          const offsetX = (progress.value - 1) * panelWidth + Math.min(0, event.translationX);
           const shouldClose =
-            event.translationX < -panelWidth * DRAWER_CLOSE_DISTANCE_RATIO ||
+            offsetX < -panelWidth * DRAWER_CLOSE_DISTANCE_RATIO ||
             event.velocityX < DRAWER_CLOSE_VELOCITY;
           if (shouldClose) {
             runOnJS(closeFromGesture)();
