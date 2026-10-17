@@ -223,7 +223,8 @@ export class TaskWatch {
       this.local.set(snapshot.sessionId, { ...this.factsFor(snapshot.sessionId), activity: snapshot });
       this.pending.add(snapshot.sessionId);
     }
-    await this.seedInterrupted();
+    // 归属没读到时不补「上一轮被打断」的任务：空归属会把它判成没人开、先落到总调度；留给读到归属后的扫描。
+    if (this.ownershipLoaded) await this.seedInterrupted();
     await this.flush();
   }
 
@@ -543,8 +544,8 @@ export class TaskWatch {
     const now = this.deps.now();
     if (now - this.ownershipAt >= OWNERSHIP_REFRESH_MS) await this.refreshOwnership();
     await this.refreshLocalMeta();
-    // 启动兜底读失败（如数据库一时忙）：按扫描节奏重试，读成功一次后不再读。
-    if (!this.interruptedSeeded && !this.stopped) await this.seedInterrupted();
+    // 启动兜底读失败（如数据库一时忙）或启动时归属还没读到：按扫描节奏重试，读成功一次后不再读。
+    if (!this.interruptedSeeded && this.ownershipLoaded && !this.stopped) await this.seedInterrupted();
     // 上次读元数据失败留下的 pending：按扫描节奏重试一次，不形成重试风暴。
     if (this.pending.size && this.ownershipLoaded && !this.stopped) this.scheduleFlush();
     for (const [id, row] of this.rows) {
