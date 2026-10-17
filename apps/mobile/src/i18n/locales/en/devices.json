@@ -823,7 +823,12 @@
     "imBotOwnerMissing": "No owner user ID was found. Finish connecting this bot on the teammate’s Messaging platforms page.",
     "imBotGatewayRunning": "The original gateway is still using this bot. Stop it, then connect the bot on Messaging platforms.",
     "imBotInUse": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
-    "imBotConnectFailed": "Couldn’t connect this bot. Try again on the teammate’s Messaging platforms page."
+    "imBotConnectFailed": "Couldn’t connect this bot. Try again on the teammate’s Messaging platforms page.",
+    "imBotSourceStopUnconfirmed": "The original bot hasn’t stopped yet, so it wasn’t handed to the teammate. You can connect it later on the teammate’s Messaging platforms page.",
+    "bots": "Messaging bots",
+    "botsNote": "After import, these bots stop in {{source}} and the teammate takes them over.",
+    "sourceDisabled": "Already off",
+    "botOwner": "Owner ID {{id}}"
   },
   "teammateTodo": {
     "title": "Todos",
