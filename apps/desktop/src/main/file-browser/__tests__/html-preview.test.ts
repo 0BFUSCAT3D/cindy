@@ -155,7 +155,7 @@ describe('directory HTML preview', () => {
     cleanups.push(preview.close);
     expect(read).not.toHaveBeenCalled();
     expect(stat).toHaveBeenCalledTimes(1);
-    expect(stat).toHaveBeenCalledWith(args.workdir, 'index.html');
+    expect(stat).toHaveBeenCalledWith(args.workdir, 'index.html', expect.any(AbortSignal));
     const initial = await fetch(preview.url, { redirect: 'manual' });
     const cookie = initial.headers.get('set-cookie')!.split(';')[0];
     const load = (p: string) => fetch(new URL(p, preview.url), { headers: { cookie } });

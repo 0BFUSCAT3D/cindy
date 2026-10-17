@@ -2988,7 +2988,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
       absPath: string;
+      requestId?: string;
     }): Promise<{ ok: true; url: string }> => ipcRenderer.invoke('maker:html-preview:open', params),
+    cancelHtmlPreview: (requestId: string): Promise<{ ok: true }> => ipcRenderer.invoke('maker:html-preview:cancel', requestId),
     chatFetch: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
@@ -4719,8 +4721,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     closeLink: (deviceId: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('device-link:close-link', { deviceId }),
     /** 远程调用被控端的 allowlist 内 channel;成功直接拿返回值,失败 reject 带 code 的 Error */
-    invoke: (deviceId: string, channel: string, args: unknown[]): Promise<unknown> =>
-      ipcRenderer.invoke('device-link:invoke', { deviceId, channel, args }),
+    invoke: (deviceId: string, channel: string, args: unknown[], scheduling?: { background?: boolean }): Promise<unknown> =>
+      ipcRenderer.invoke('device-link:invoke', { deviceId, channel, args, ...(scheduling ? { scheduling } : {}) }),
     /** 控制端:订阅被控端某 topic 的变更推送(push 驱动侧边栏 / 会话视图) */
     subscribe: (deviceId: string, topics: string[]): Promise<{ ok: true }> =>
       ipcRenderer.invoke('device-link:topic-subscribe', { deviceId, topics }),
