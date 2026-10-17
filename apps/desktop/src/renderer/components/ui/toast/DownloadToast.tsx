@@ -57,7 +57,7 @@ export function DownloadToast({ items }: { items: readonly FileTransferToast[] }
                     <div className="break-words text-13 font-medium leading-5 text-[var(--text-primary)] [overflow-wrap:anywhere]">
                       {item.name}
                     </div>
-                    <div className="mt-1 text-12 leading-[18px] tabular-nums text-[var(--text-secondary)] [overflow-wrap:anywhere]">
+                    <div className="mt-1 text-12 leading-normal tabular-nums text-[var(--text-secondary)] [overflow-wrap:anywhere]">
                       {item.message}
                     </div>
                   </div>
