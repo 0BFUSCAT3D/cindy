@@ -148,8 +148,12 @@ Auto 只按模型 ID 认（`isCindyAutoModelId`）：服务端可以把同一个
 的那一家（同样限于这两类），新建任务提交与手机端 `resolveRecentModelAndProvider` 复用同一规则；
 记住的来源仍列着它（只是断连或停用）、或是用户自己接的供应商时不改道。
 目录刷新后，仍记着旧来源的进行中任务登记一次「下一条消息前切换」：引擎与模型 ID 不变，只换
-供应商与 Key（`apps/desktop/src/main/maker-ipc/cindyAutoRouteFollow.ts`）；已有登记的切换或
-运行时改道不覆盖，远程主机与另一台电脑上运行的任务不在本机改道。Auto 没有推理档位（任务里 effort
+供应商与 Key（`apps/desktop/src/main/maker-ipc/cindyAutoRouteFollow.ts`）。用户点选、跨引擎或跨电脑
+的切换，以及等待生效的换凭证、运行时选择都不覆盖；运行时覆盖本身不算改道——目录刷新按原路由重新加载
+进行中任务时也会写上它，这时它就是当前路由，照常跟随——只有故障切换中（`fallbackHop > 0`）的任务
+不跟随。系统登记的 Auto 换来源（configStaged、同引擎、同一个 Auto、只换来源）在 Auto 再次挪动时按
+当前位置重新核对：目标仍提供就不动；当前位置又能用、或哪里都没有了就撤销登记；去了别的来源就改登记
+到那里。远程主机与另一台电脑上运行的任务不在本机改道。Auto 没有推理档位（任务里 effort
 为空串）时按 null 登记。Cindy AI 列表或企业号池目录任一边刷新后 Auto ID 有增减，会顺带刷新另一边
 （`cindyAutoModelIdsChanged`），跟随在两边都更新后才看到一致的位置；只刷新一边会把旧位置当成仍有效。
 请求被拒后刷新目录重试不在客户端处理。
