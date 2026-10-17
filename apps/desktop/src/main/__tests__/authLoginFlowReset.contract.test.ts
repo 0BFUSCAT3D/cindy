@@ -913,7 +913,7 @@ describe('auth login-flow reset', () => {
     const clearEnd = source.indexOf('\n}\n', source.indexOf('authStateEpoch += 1;', clearStart));
     const clearBody = source.slice(clearStart, clearEnd);
     const bump = clearBody.indexOf('authStateEpoch += 1;');
-    const record = clearBody.indexOf('coldStartTimeoutFallback = { from: epochBeforeClear, to: authStateEpoch };');
+    const record = clearBody.indexOf('coldStartTimeoutFallbacks.record(epochBeforeClear, authStateEpoch);');
     expect(bump).toBeGreaterThan(-1);
     expect(record).toBeGreaterThan(bump);
     // Recording later (in the caller, after the recovery promise unwinds) leaves a
@@ -922,7 +922,7 @@ describe('auth login-flow reset', () => {
     expect(clearBody).toContain('if (opts.coldStartTimeoutRecovery)');
     expect(clearBody.indexOf('const epochBeforeClear = authStateEpoch;')).toBeLessThan(bump);
     expect(source.slice(source.indexOf('export async function initialize('))).not.toContain(
-      '\n      coldStartTimeoutFallback = { from:',
+      '\n      coldStartTimeoutFallbacks.record(epochBeforeClear, authStateEpoch);'
     );
   });
 
@@ -932,7 +932,6 @@ describe('auth login-flow reset', () => {
     const body = source.slice(coldStart, coldStartEnd);
     expect(body).toContain('let flowAuthEpoch = epochAtStart;');
     expect(body).toContain('flowEpoch: flowAuthEpoch,');
-    expect(body).toContain('startupFallback: coldStartTimeoutFallback,');
     expect(body).toContain('flowAuthEpoch = authStateEpoch;');
     // Both post-commit schedulers must use the adopted epoch; passing epochAtStart
     // made them treat a recovery login as stale-auth and skip canary/beta sync.
@@ -944,10 +943,9 @@ describe('auth login-flow reset', () => {
     const coldStart = source.indexOf('async function runColdStartRefreshFlow(');
     const coldStartEnd = source.indexOf('\n}\n\n/**\n * Called on system resume', coldStart);
     const body = source.slice(coldStart, coldStartEnd);
-    expect(body).toContain('supersededOnlyByOwnStartupFallback({');
-    expect(body).toContain('startupFallback: coldStartTimeoutFallback,');
+    expect(body).toContain('coldStartTimeoutFallbacks.commitIfCurrent({');
     // The real-supersession log stays exactly where it was, after the exemption.
-    const exemption = body.indexOf('supersededOnlyByOwnStartupFallback({');
+    const exemption = body.indexOf('coldStartTimeoutFallbacks.commitIfCurrent({');
     const warn = body.indexOf('cold-start refresh flow superseded by manual auth change');
     expect(exemption).toBeGreaterThan(-1);
     expect(warn).toBeGreaterThan(exemption);

@@ -88,29 +88,45 @@ export async function awaitWithStartupTimeout<T>(
  * 豁免必须绑定到「这次兜底造成的那一次代际推进」,因此比对的是
  * `startupFallback` 的 from/to 转换,而不是「当前代际恰好等于某个记录值」:
  *
- * - 流程当前代际 == from 且现值 == to → 只可能是这次兜底,豁免;
- * - 用户在兜底之前已显式登录过 → 兜底的 from 不等于流程起始代际,照常作废,
- *   旧流程不会反过来覆盖新登录;
- * - 连续两次兜底 → 流程接受第一次后代际前移到 to,第二次的 from 正好等于它,
- *   仍然豁免,不会因为多推进一次就误伤。
+ * - 多窗口连续兜底 → 每次同步记录一条代际转换。即使 refresh 尚未观察第一条转换,
+ *   也能沿连续的兜底链识别到当前代际。
  *
- * 之后任何用户登录/登出都会再推进一次代际,流程重新被正常作废(旧 token family
- * 已被新登录取代)。
+ * 任何用户登录/登出造成的转换没有兜底记录,会截断这条链,流程仍被正常作废。
  */
-export function supersededOnlyByOwnStartupFallback(input: {
-  /** 流程当前认可的代际(接受过自己的兜底后会前移)。 */
-  flowEpoch: number;
-  /** 当前的 authStateEpoch。 */
-  currentEpoch: number;
-  /** 兜底自己造成的那次代际推进;未发生兜底时为 null。 */
-  startupFallback: { from: number; to: number } | null;
-}): boolean {
-  if (input.currentEpoch === input.flowEpoch) return false;
-  const fallback = input.startupFallback;
-  if (fallback && input.flowEpoch === fallback.from && input.currentEpoch === fallback.to) {
-    return false;
+export class ColdStartAuthFallbackRegistry {
+  private readonly fallbacks = new Map<number, number>();
+
+  /** Called synchronously with the auth epoch increment in clearAuth. */
+  record(fromEpoch: number, toEpoch: number): void {
+    if (toEpoch > fromEpoch) this.fallbacks.set(fromEpoch, toEpoch);
   }
-  return true;
+
+  /** A late refresh is valid only if every intervening epoch came from startup fallback. */
+  containsOnlyFallbacks(fromEpoch: number, toEpoch: number): boolean {
+    let epoch = fromEpoch;
+    while (epoch < toEpoch) {
+      const nextEpoch = this.fallbacks.get(epoch);
+      if (nextEpoch === undefined || nextEpoch <= epoch || nextEpoch > toEpoch) return false;
+      epoch = nextEpoch;
+    }
+    return epoch === toEpoch;
+  }
+
+  /** Apply a refresh commit only while no explicit auth change interrupted its flow. */
+  commitIfCurrent<T>(input: {
+    flowEpoch: number;
+    currentEpoch: number;
+    commit: () => T;
+  }): { committed: true; value: T } | { committed: false } {
+    if (!this.containsOnlyFallbacks(input.flowEpoch, input.currentEpoch)) {
+      return { committed: false };
+    }
+    return { committed: true, value: input.commit() };
+  }
+
+  clear(): void {
+    this.fallbacks.clear();
+  }
 }
 
 /**

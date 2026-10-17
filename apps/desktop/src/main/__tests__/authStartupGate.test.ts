@@ -15,8 +15,8 @@ import {
   LOGIN_PREPARING_GATE_TIMEOUT_MS,
   awaitLoginProvidersWithPreparingGate,
   awaitWithStartupTimeout,
+  ColdStartAuthFallbackRegistry,
   mapLoginProvidersLoadFailure,
-  supersededOnlyByOwnStartupFallback,
 } from '../authStartupGate';
 
 describe('awaitWithStartupTimeout', () => {
@@ -184,70 +184,68 @@ describe('awaitWithStartupTimeout', () => {
   });
 });
 
-describe('supersededOnlyByOwnStartupFallback', () => {
-  it('keeps a cold-start flow alive when only its own timeout fallback advanced the epoch', () => {
-    expect(
-      supersededOnlyByOwnStartupFallback({
-        flowEpoch: 7,
-        currentEpoch: 8,
-        startupFallback: { from: 7, to: 8 },
-      }),
-    ).toBe(false);
+describe('ColdStartAuthFallbackRegistry', () => {
+  it('preserves a late successful refresh across consecutive renderer startup timeouts', async () => {
+    vi.useFakeTimers();
+    const registry = new ColdStartAuthFallbackRegistry();
+    const flowEpoch = 7;
+    let currentEpoch = flowEpoch;
+    let committedUser: string | null = null;
+    let resolveRefresh!: (user: unknown) => void;
+    const refresh = new Promise<unknown>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const recover = () => {
+      const previousEpoch = currentEpoch;
+      currentEpoch += 1;
+      registry.record(previousEpoch, currentEpoch);
+      return { isAuthenticated: false };
+    };
+
+    // Two renderer windows share the same refresh, but each owns a startup timer.
+    const primary = awaitWithStartupTimeout(refresh, { timeoutMs: 1000, onTimeout: recover });
+    const secondary = awaitWithStartupTimeout(refresh, { timeoutMs: 1500, onTimeout: recover });
+    await vi.advanceTimersByTimeAsync(1500);
+    await expect(primary).resolves.toEqual({ isAuthenticated: false });
+    await expect(secondary).resolves.toEqual({ isAuthenticated: false });
+    expect(currentEpoch).toBe(9);
+
+    resolveRefresh('owner');
+    const refreshedUser = await refresh;
+    const commit = registry.commitIfCurrent({
+      flowEpoch,
+      currentEpoch,
+      commit: () => {
+        committedUser = refreshedUser;
+        return committedUser;
+      },
+    });
+
+    expect(commit).toEqual({ committed: true, value: 'owner' });
+    expect(committedUser).toBe('owner');
   });
 
-  it('still supersedes the flow after a later user auth change', () => {
-    expect(
-      supersededOnlyByOwnStartupFallback({
-        flowEpoch: 8,
-        currentEpoch: 9,
-        startupFallback: { from: 7, to: 8 },
-      }),
-    ).toBe(true);
+  it('does not commit a refresh after an explicit login interrupts the fallback chain', () => {
+    const registry = new ColdStartAuthFallbackRegistry();
+    registry.record(8, 9);
+    const commit = vi.fn(() => 'stale-owner');
+
+    expect(registry.commitIfCurrent({ flowEpoch: 7, currentEpoch: 9, commit })).toEqual({
+      committed: false,
+    });
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('does not exempt a flow when a user signed in before the fallback ran', () => {
-    // User login moved 7 -> 8, then the fallback moved 8 -> 9. The flow started at 7,
-    // so this transition is not its own: the stale refresh must stay discarded
-    // instead of overwriting the fresh login.
-    expect(
-      supersededOnlyByOwnStartupFallback({
-        flowEpoch: 7,
-        currentEpoch: 9,
-        startupFallback: { from: 8, to: 9 },
-      }),
-    ).toBe(true);
+  it('rejects a later user auth change after consecutive startup fallbacks', () => {
+    const registry = new ColdStartAuthFallbackRegistry();
+    registry.record(7, 8);
+    registry.record(8, 9);
+    expect(registry.containsOnlyFallbacks(7, 10)).toBe(false);
   });
 
-  it('keeps exempting a flow that hit the fallback twice', () => {
-    // First fallback 7 -> 8 (adopted), second 8 -> 9: the second transition starts
-    // exactly where the flow now stands, so a repeated fallback must not discard it.
-    expect(
-      supersededOnlyByOwnStartupFallback({
-        flowEpoch: 8,
-        currentEpoch: 9,
-        startupFallback: { from: 8, to: 9 },
-      }),
-    ).toBe(false);
-  });
-
-  it('does not treat an unrelated change as the flow\'s own fallback', () => {
-    expect(
-      supersededOnlyByOwnStartupFallback({
-        flowEpoch: 7,
-        currentEpoch: 8,
-        startupFallback: null,
-      }),
-    ).toBe(true);
-  });
-
-  it('reports no supersession while the epoch is unchanged', () => {
-    expect(
-      supersededOnlyByOwnStartupFallback({
-        flowEpoch: 7,
-        currentEpoch: 7,
-        startupFallback: null,
-      }),
-    ).toBe(false);
+  it('accepts the unchanged generation without fallback records', () => {
+    const registry = new ColdStartAuthFallbackRegistry();
+    expect(registry.containsOnlyFallbacks(7, 7)).toBe(true);
   });
 });
 

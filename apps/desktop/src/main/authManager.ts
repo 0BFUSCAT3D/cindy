@@ -65,7 +65,7 @@ import {
   awaitLoginProvidersWithPreparingGate,
   awaitWithStartupTimeout,
   mapLoginProvidersLoadFailure,
-  supersededOnlyByOwnStartupFallback,
+  ColdStartAuthFallbackRegistry,
 } from './authStartupGate';
 import { syncCanaryFlagAfterAuth } from './canaryFlagSync';
 import {
@@ -3184,7 +3184,7 @@ let authStateEpoch = 0;
  * 兜底的 `from` 就不等于流程起始代际,旧流程仍被正常作废(不会反过来覆盖新登录)。
  * 见 authStartupGate 的 supersededOnlyByOwnStartupFallback。
  */
-let coldStartTimeoutFallback: { from: number; to: number } | null = null;
+const coldStartTimeoutFallbacks = new ColdStartAuthFallbackRegistry();
 
 /**
  * 登录态落地后异步同步灰度标记，不阻塞 renderer 进入主界面。
@@ -3707,7 +3707,11 @@ function clearAuth(
   // 期间并发的刷新已经能看到新代际;若等到外层返回才登记,它仍会被误判为
   // 「用户改过登录态」而丢弃(PR #6273 review P1)。
   if (opts.coldStartTimeoutRecovery) {
-    coldStartTimeoutFallback = { from: epochBeforeClear, to: authStateEpoch };
+    coldStartTimeoutFallbacks.record(epochBeforeClear, authStateEpoch);
+  } else {
+    // A user logout/login or any non-timeout clear breaks the fallback chain even
+    // when no refresh guard ran between that action and a sibling window timeout.
+    coldStartTimeoutFallbacks.clear();
   }
   refreshBackoff.clear();
   loginFlowEpoch += 1;
@@ -4698,6 +4702,9 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
   if (coldStartAuthInFlight === null) {
     coldStartAuthInFlight = runColdStartRefreshFlow(storedToken, persistedSession.realm).finally(
       () => {
+        // Keep every fallback edge until the shared refresh settles: sibling renderer
+        // timeouts may append another edge while the network flow is still pending.
+        coldStartTimeoutFallbacks.clear();
         coldStartAuthInFlight = null;
       },
     );
@@ -4762,13 +4769,12 @@ async function runColdStartRefreshFlow(
    */
   let flowAuthEpoch = epochAtStart;
   const epochChanged = (point: string): boolean => {
-    if (
-      !supersededOnlyByOwnStartupFallback({
-        flowEpoch: flowAuthEpoch,
-        currentEpoch: authStateEpoch,
-        startupFallback: coldStartTimeoutFallback,
-      })
-    ) {
+    const fallbackCommit = coldStartTimeoutFallbacks.commitIfCurrent({
+      flowEpoch: flowAuthEpoch,
+      currentEpoch: authStateEpoch,
+      commit: () => undefined,
+    });
+    if (!fallbackCommit.committed) {
       // Either nothing moved, or the only move was our own fallback — adopt the
       // current epoch as this flow's own. Assigning is a no-op in the former case.
       flowAuthEpoch = authStateEpoch;
@@ -4779,7 +4785,7 @@ async function runColdStartRefreshFlow(
     );
     // A real user auth change landed on top of the fallback: this flow's epoch is
     // now stale for good, so stop exempting it.
-    coldStartTimeoutFallback = null;
+    coldStartTimeoutFallbacks.clear();
     return true;
   };
 
