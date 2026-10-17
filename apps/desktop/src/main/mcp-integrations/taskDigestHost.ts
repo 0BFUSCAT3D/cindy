@@ -7,6 +7,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { InvokeResultPayload } from '@cindy/device-link';
 import type { HistoryDevice, TaskDigestRoute } from '@cindy/mcps';
 
+import { parseActiveSessionList } from '../bot-autonomy/phase.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { botProfileVersions, botSessionLinks, sessions } from '../localDb/schema.js';
 import { readEffectiveBotModelChain } from '../maker-host/bot-model-chain-settings-store.js';
@@ -214,10 +215,13 @@ export function createDesktopTaskDigestDeps(host: DesktopTaskDigestHost): TaskDi
         }
       },
       readActivity: async (deviceId, sessionId) => {
-        const result = (await unwrap(host.invokeRemote, deviceId, 'maker:list-active', [
+        const list = parseActiveSessionList(await unwrap(host.invokeRemote, deviceId, 'maker:list-active', [
           { summary: true, snapshotVersion: 2 },
-        ])) as { sessions?: Array<{ sessionId?: unknown; isTurnRunning?: unknown; activityPhase?: unknown }> } | null;
-        const row = (Array.isArray(result?.sessions) ? result.sessions : []).find((item) => item.sessionId === sessionId);
+        ]));
+        // 认不出的格式按读取失败：摘要退回保守推断，不报成「空闲」。
+        if (!list) throw Object.assign(new Error('Unexpected active session list'), { code: 'REMOTE_SHAPE' });
+        const row = (list as Array<{ sessionId?: unknown; isTurnRunning?: unknown; activityPhase?: unknown } | null>)
+          .find((item) => item?.sessionId === sessionId);
         if (!row) return { phase: 'idle' };
         return { phase: typeof row.activityPhase === 'string' ? row.activityPhase : row.isTurnRunning === true ? 'running' : 'idle' };
       },

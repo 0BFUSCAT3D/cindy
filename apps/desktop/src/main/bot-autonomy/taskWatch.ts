@@ -30,6 +30,7 @@ import {
   deriveLocalPhase,
   deriveRemotePhase,
   nextPhaseSince,
+  parseActiveSessionList,
   summarizeInteraction,
   truncateSummary,
 } from './phase.js';
@@ -373,15 +374,17 @@ export class TaskWatch {
     }
     let pendingQuestion: string | null = null;
     let pendingRequestId: string | null = null;
+    let pendingInteractionId: string | null = null;
     if (phase === 'waiting-answer' || phase === 'waiting-permission') {
       const summary = summarizeInteraction(this.deps.getPendingInteractions(sessionId)[0]);
       const keep = previous?.phase === phase;
       pendingQuestion = summary?.summary ?? (keep ? previous.pendingQuestion : null);
       pendingRequestId = summary?.requestId ?? (keep ? previous.pendingRequestId ?? null : null);
+      pendingInteractionId = summary?.interactionId ?? (keep ? previous.pendingInteractionId ?? null : null);
     }
     // 同一相位里从请求 A 换到 B：新请求是新的等待，等待时刻从这次观察算起（与远程一致）。
-    if (previous?.phase === phase && previous.pendingRequestId && pendingRequestId
-      && previous.pendingRequestId !== pendingRequestId) phaseSince = now;
+    if (previous?.phase === phase && previous.pendingInteractionId && pendingInteractionId
+      && previous.pendingInteractionId !== pendingInteractionId) phaseSince = now;
     const canonicalOfBotId = this.canonicalOwner(sessionId, meta);
     const creatorBotId = this.creatorOf(sessionId, canonicalOfBotId);
     const row: WatchedSession = {
@@ -397,6 +400,7 @@ export class TaskWatch {
       startedAt: activity?.startedAtMs ?? previous?.startedAt ?? null,
       pendingQuestion,
       pendingRequestId,
+      pendingInteractionId,
       toolInFlight: phase === 'running' && this.deps.isToolCallInFlight(sessionId),
       error: phase === 'errored' && facts.inputError ? truncateSummary(facts.inputError) : null,
       creatorBotId,
@@ -690,10 +694,8 @@ export class TaskWatch {
     const response = await this.deps.invokeRemote(deviceId, 'maker:list-active', [
       { summary: true, snapshotVersion: 2 },
     ]);
-    // 新版被控端返回 active-sessions-v2 包装；不认识 snapshotVersion 的旧版仍返回原来的数组，两种都收。
-    // 都不是就按读取失败处理（退避、标离线），不能当成「没有任务」把那台电脑的行全清掉。
-    const result = record(response);
-    const sessions = Array.isArray(response) ? response : Array.isArray(result?.sessions) ? result.sessions : null;
+    // 两种返回都收；都不是就按读取失败处理（退避、标离线），不能当成「没有任务」把那台电脑的行全清掉。
+    const sessions = parseActiveSessionList(response);
     if (!sessions) throw Object.assign(new Error('Unexpected active session list'), { code: 'REMOTE_SHAPE' });
     const active = new Map<string, { isTurnRunning?: unknown; activityPhase?: unknown }>();
     for (const raw of sessions) {
@@ -726,6 +728,7 @@ export class TaskWatch {
       let interactionKind: string | null = null;
       let pendingQuestion: string | null = null;
       let pendingRequestId: string | null = null;
+      let pendingInteractionId: string | null = null;
       if (activity.activityPhase === 'needs-interaction') {
         // 每次轮询都重读挂起交互（每个等待中的远程任务每分钟一次）：两次轮询之间可能从请求 A 直接换到 B。
         let summary: ReturnType<typeof summarizeInteraction> = null;
@@ -740,10 +743,12 @@ export class TaskWatch {
           interactionKind = summary.waitingFor === 'permission' ? 'permission' : 'ask_user_question';
           pendingQuestion = summary.summary;
           pendingRequestId = summary.requestId;
+          pendingInteractionId = summary.interactionId;
         } else if (previous && (previous.phase === 'waiting-answer' || previous.phase === 'waiting-permission')) {
           interactionKind = previous.phase === 'waiting-permission' ? 'permission' : 'ask_user_question';
           pendingQuestion = previous.pendingQuestion;
           pendingRequestId = previous.pendingRequestId ?? null;
+          pendingInteractionId = previous.pendingInteractionId ?? null;
         }
       }
       const phase = deriveRemotePhase({ ...activity, interactionKind });
@@ -760,7 +765,8 @@ export class TaskWatch {
         ? previous.phaseSince
         : nextPhaseSince(previous, phase, candidateSince);
       // 同一任务从请求 A 换到请求 B 是新的等待：重新计时（也就是新的事件 id）。
-      if (previous?.phase === phase && previous.pendingRequestId && pendingRequestId && previous.pendingRequestId !== pendingRequestId) {
+      if (previous?.phase === phase && previous.pendingInteractionId && pendingInteractionId
+        && previous.pendingInteractionId !== pendingInteractionId) {
         phaseSince = now;
       }
       const row: WatchedSession = {
@@ -776,6 +782,7 @@ export class TaskWatch {
         startedAt: previous?.startedAt ?? (phase === 'running' ? now : null),
         pendingQuestion,
         pendingRequestId,
+        pendingInteractionId,
         error: null,
         creatorBotId: null,
         followerBotId: null,
@@ -811,6 +818,7 @@ function sameRow(a: WatchedSession | null, b: WatchedSession): boolean {
     && a.title === b.title
     && a.pendingQuestion === b.pendingQuestion
     && (a.pendingRequestId ?? null) === (b.pendingRequestId ?? null)
+    && (a.pendingInteractionId ?? null) === (b.pendingInteractionId ?? null)
     && a.error === b.error
     && a.followerBotId === b.followerBotId
     && a.online === b.online;

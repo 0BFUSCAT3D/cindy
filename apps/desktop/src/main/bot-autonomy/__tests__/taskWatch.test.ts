@@ -8,7 +8,7 @@
  * - 现有覆盖缺口：新模块；autonomyRules 只测纯判定，不经过活动订阅、读库与远程轮询的组合时序。
  * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；主人点停止后灵动岛条目消失
  *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败；远程任务两次轮询之间从权限请求
- *   A 换到 B，仍显示 A；本机任务在同一相位里从请求 A 换到 B，沿用 A 的等待时刻；读任务元数据失败一次后，
+ *   A 换到 B，仍显示 A；本机任务在同一相位里从请求 A 换到 B（权限或回答），沿用 A 的等待时刻；读任务元数据失败一次后，
  *   这批任务被丢掉，之后再无活动就永远不进表；启动兜底读失败一次后再不重试；启动时归属读失败，上一轮被打断的任务按空归属判给总调度；伙伴刚开的任务在上次归属读取
  *   几秒内出现，被当成「没人开」落到总调度。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
@@ -196,6 +196,22 @@ describe('TaskWatch local observation', () => {
     expect(h.watch.get('t')).toMatchObject({
       phase: 'waiting-permission', pendingRequestId: 'req-B', pendingQuestion: 'Write', phaseSince: h.now(),
     });
+  });
+
+  it('restarts the wait clock when a local task moves from one question to another', async () => {
+    const h = harness({ metas: [meta('q')] });
+    await h.watch.start();
+    const waiting = activity('q', 'needs-interaction', { interactionKind: 'ask_user_question', lastActivityAtMs: 7_000 });
+    h.pending.set('q', [{ kind: 'ask_user_question', requestId: 'ask-A', questions: [{ question: '用哪个分支？' }] }]);
+    h.watch.applyActivity('q', waiting);
+    await h.watch.settled();
+    expect(h.watch.get('q')).toMatchObject({ phase: 'waiting-answer', phaseSince: 7_000, pendingRequestId: null });
+
+    h.advance(AUTONOMY_THRESHOLDS.waitingAfterMs);
+    h.pending.set('q', [{ kind: 'ask_user_question', requestId: 'ask-B', questions: [{ question: '要不要推送？' }] }]);
+    h.watch.applyActivity('q', waiting);
+    await h.watch.settled();
+    expect(h.watch.get('q')).toMatchObject({ phase: 'waiting-answer', pendingQuestion: '要不要推送？', phaseSince: h.now() });
   });
 
   it('keeps tasks whose metadata read failed and retries them on the next sweep', async () => {

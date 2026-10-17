@@ -75,6 +75,8 @@ export interface WatchedSession {
    * （实现者 A 新增，可选字段。）
    */
   pendingRequestId?: string | null;
+  /** 挂起交互自身的 id（任何种类）：只用来认出同一相位里换成了另一条请求，不用于批准。 */
+  pendingInteractionId?: string | null;
   /**
    * 本机任务当前有前台工具调用在途（只是布尔事实，不含工具名与入参）；远程与缺省为 false。
    * stuck 判定据此改用 `stuckInToolAfterMs`。（实现者 A 新增，可选字段。）

@@ -22,7 +22,7 @@ import {
 import { AutonomyEventLedger, dueEventType } from '../events.js';
 import { deriveFollowerBotId, resolveSchedulerBotId, type FollowerBotState } from '../follower.js';
 import { projectBotGlance } from '../glance.js';
-import { summarizeInteraction } from '../phase.js';
+import { parseActiveSessionList, summarizeInteraction } from '../phase.js';
 
 const bot = (status: string, allowSchedulerFollow = false, shadowed = false): FollowerBotState => ({
   status, allowSchedulerFollow, shadowed,
@@ -200,11 +200,30 @@ describe('workbench glance scope', () => {
   });
 });
 
+describe('pending interaction identity and active-session responses', () => {
+  // 依据：同一相位里换了一条请求要重新计时；缺口：回答 / 确认卡的 id 被归成 null，换了也认不出。
+  // 「允许」只对真正的权限请求：确认卡有 id 也不能成为可批准的 requestId。tier：unit。
+  it('keeps every interaction id for change detection but only exposes permission ids for approval', () => {
+    expect(summarizeInteraction({ kind: 'ask_user_question', requestId: 'q1', questions: [{ question: '用哪个分支？' }] }))
+      .toEqual({ summary: '用哪个分支？', waitingFor: 'answer', requestId: null, interactionId: 'q1' });
+    expect(summarizeInteraction({ kind: 'host_confirm', requestId: 'c1' }))
+      .toEqual({ summary: null, waitingFor: 'permission', requestId: null, interactionId: 'c1' });
+  });
+
+  it('reads both the v2 wrapper and the legacy array from list-active, and rejects anything else', () => {
+    const rows = [{ sessionId: 's1' }];
+    expect(parseActiveSessionList({ format: 'active-sessions-v2', sessions: rows })).toBe(rows);
+    expect(parseActiveSessionList(rows)).toBe(rows);
+    expect(parseActiveSessionList({ format: 'unknown' })).toBeNull();
+    expect(parseActiveSessionList(null)).toBeNull();
+  });
+});
+
 describe('waiting-row summary for a permission request', () => {
   it('shows an MCP tool as "server · tool" instead of the raw mcp__ identifier, and keeps other names', () => {
     // Seen in the dev build: the glance row title was `mcp__cindy_helper__call_tool` (programmer-speak on a user-facing row).
     const mcp = summarizeInteraction({ kind: 'permission', requestId: 'r1', toolName: 'mcp__cindy_helper__call_tool' });
-    expect(mcp).toEqual({ summary: 'cindy_helper · call_tool', waitingFor: 'permission', requestId: 'r1' });
+    expect(mcp).toEqual({ summary: 'cindy_helper · call_tool', waitingFor: 'permission', requestId: 'r1', interactionId: 'r1' });
     const bash = summarizeInteraction({ kind: 'permission', requestId: 'r2', title: 'bash' });
     expect(bash?.summary).toBe('bash');
   });

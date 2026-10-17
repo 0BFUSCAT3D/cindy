@@ -94,8 +94,10 @@ function readableToolName(name: string): string {
 export interface InteractionSummary {
   summary: string | null;
   waitingFor: 'permission' | 'answer';
-  /** 权限请求的 id（只对 kind=permission 给出）。 */
+  /** 权限请求的 id（只对 kind=permission 给出）：工作台「允许」只回应这一条。 */
   requestId: string | null;
+  /** 任何挂起交互的 id（回答、确认卡也有）：只用来认出「换成了另一条请求」，不用于批准。 */
+  interactionId: string | null;
 }
 
 export function summarizeInteraction(raw: unknown): InteractionSummary | null {
@@ -104,14 +106,24 @@ export function summarizeInteraction(raw: unknown): InteractionSummary | null {
   const kind = text(request.kind);
   if (kind === 'permission') {
     const name = text(request.title) ?? text(request.displayName) ?? text(request.toolName);
-    return { summary: name ? truncateSummary(readableToolName(name)) : null, waitingFor: 'permission', requestId: text(request.requestId) };
+    return { summary: name ? truncateSummary(readableToolName(name)) : null, waitingFor: 'permission', requestId: text(request.requestId), interactionId: text(request.requestId) };
   }
   if (kind === 'ask_user_question') {
     const questions = Array.isArray(request.questions) ? request.questions : [];
     const first = record(questions[0]);
     const question = text(first?.question) ?? text(first?.header);
-    return { summary: question ? truncateSummary(question) : null, waitingFor: 'answer', requestId: null };
+    return { summary: question ? truncateSummary(question) : null, waitingFor: 'answer', requestId: null, interactionId: text(request.requestId) };
   }
   // plan_review / input_handoff / plugin_setup / 宿主确认卡：只报种类，不带正文。
-  return { summary: null, waitingFor: kind?.includes('confirm') ? 'permission' : 'answer', requestId: null };
+  return { summary: null, waitingFor: kind?.includes('confirm') ? 'permission' : 'answer', requestId: null, interactionId: text(request.requestId) };
+}
+
+/**
+ * `maker:list-active` 的返回：新版被控端认 `snapshotVersion: 2`，回 `active-sessions-v2` 包装；更旧的版本
+ * 忽略这个参数，仍回原来的数组。两种都收；都不是返回 null，由调用方按读取失败处理（不能当成「没有任务」）。
+ */
+export function parseActiveSessionList(response: unknown): unknown[] | null {
+  if (Array.isArray(response)) return response;
+  const wrapped = record(response);
+  return wrapped && Array.isArray(wrapped.sessions) ? wrapped.sessions : null;
 }
