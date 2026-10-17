@@ -1334,7 +1334,7 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 - **控制端连接池：名额紧张时让出闲置任务的 Agent 进程**(2026-10-17)：B 按发起设备限制同时开着的 run(`caps.maxRuns`)，
   A 上开着的任务即使闲着也占名额。A 对每台 B 一个连接池(`controller/connectionPool.ts`，计数口径与 B 的 `limitDeviceOf`
   一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 A 本机设置(「远程与分享」页「这台电脑使用
-  其他电脑的模型」，默认 10，0～120，**0 = 从不让出**，与没有连接池时一样满了直接报错)。三条路径都只让有资格的：
+  其他电脑的模型」，只在管理本机时显示，默认 10，0～120，**0 = 从不让出**，与没有连接池时一样满了直接报错)。三条路径都只让有资格的：
   A 在这台 B 上开着的连接数到了水位线 `ceil(maxRuns×80%)`(只在水位线低于上限、即 maxRuns ≥ 5 时；每次 open 前与每分钟查一次)
   按最久没活动的顺序让，直到降到水位线以下；open 前已满先同步让一个；open 被拒且是名额类 `REMOTE_AGENT_BUSY`
   (`[DEVICE_LIMIT]` / `[TOTAL_LIMIT]`，旧 B 是 `too many tasks are running from this computer`；`too much staged data` 不算)
@@ -1364,7 +1364,7 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
     `forkSession` 只在第一轮跑完前带(之后再带会再截断一次)；`setVendorOptions` 改过的内容、`libraryRoot`、`useCindyAutoReviewFallback` 连回后再告诉 B 一次。受邀者归属校验、
     供应商组 `relayMemberOf` 回到原组内电脑与 App 重启后接回同一条路径。B 接不回原会话时(会话失效回调里正是这次带的 id，或 B
     返回了别的会话 id)沿用 `onInvalidResumeSession` 语义，同时在任务里插一条非终止的 `[REMOTE_AGENT_RESUME_LOST]` 提示，
-    不悄悄丢上下文；旧手机没有这条文案，显示 message 的英文兜底。
+    不悄悄丢上下文；手机端同步补了 `session.remoteError.REMOTE_AGENT_RESUME_LOST`，旧手机没有这条文案，显示通用的「回复失败」。
   - **并发**：让出进行中来的调用等它让完再连回；同时几个调用只连一次；调用开始后让出放弃；已让出时的关闭、归档、删除、换账号、
     退出 App(`detach`)只收本机部分，不再联系 B。
   - **已知限制**：B 的整机合计上限(`TOTAL_LIMIT`)A 看不到别的设备的占用，只能靠被拒后处理；A 在自己额度内不让出，可能挡住别的

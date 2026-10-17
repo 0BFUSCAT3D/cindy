@@ -373,6 +373,19 @@ describe('ProviderShareManagePage', () => {
    * - tier：unit；验证本地页面状态与跨电脑路由字段。
    * - 实测耗时：本文件单独运行约 3 秒。
    */
+  // 闲置释放只对这台电脑生效：管理另一台电脑时不显示，免得以为改的是那台。
+  it('shows the idle release setting only when managing this computer', async () => {
+    renderPage();
+    expect(await screen.findByTestId('remote-agent-idle-release')).toBeTruthy();
+    expect(command).toHaveBeenCalledWith({ action: 'get-idle-release' });
+    cleanup();
+    command.mockClear();
+    renderPage('on', { deviceId: 'studio' });
+    await screen.findByTestId('remote-agent-limits');
+    expect(screen.queryByTestId('remote-agent-idle-release')).toBeNull();
+    expect(command).not.toHaveBeenCalledWith({ action: 'get-idle-release' });
+  });
+
   it('keeps the managed computer on pending approvals', async () => {
     renderPage('on', { deviceId: 'studio' });
     await screen.findByTestId('provider-share-pending-row');

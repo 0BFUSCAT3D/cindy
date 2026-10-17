@@ -521,8 +521,8 @@ export function ProviderShareManagePage({
         time={time}
       />
 
-      {/* 这台电脑作为使用方的设置(与上面提供方的额度分开)：不管管理的是哪台电脑，改的都是这台。 */}
-      <RemoteAgentIdleReleaseSection />
+      {/* 这台电脑作为使用方的设置(与上面提供方的额度分开)：只对这台生效，管理另一台电脑时不显示，免得以为改的是那台。 */}
+      {!deviceId && <RemoteAgentIdleReleaseSection />}
 
       {linkOpen && (
         <ProviderShareLinkDialog
