@@ -244,7 +244,12 @@ export class RemoteDesktopController {
     this.deps.stopInput();
     // Repairing just the input helper must not expose a privacy-masked desktop
     // or unmute the host without the viewer seeing a settings change.
-    const restoring = preserveSafety ? Promise.resolve() : this.clearSafety();
+    const restoring = preserveSafety
+      ? Promise.resolve()
+      : this.clearSafety().catch((error) => {
+          log.warn('Safety restoration failed after control loss', error);
+          throw error;
+        });
     this.deps.changed();
     return restoring;
   }
@@ -623,10 +628,10 @@ export class RemoteDesktopController {
           await this.revokeControl();
         throw error;
       }
-    } catch {
+    } catch (error) {
       // The viewer retains its picture and can retry via the normal permission
       // path. No recursive restart if the replacement helper also fails.
-      log.debug('Input recovery or safety restoration deferred');
+      if (recover) log.debug('Input recovery deferred', error);
     }
   }
   /** Starts input for the lease's current display; shared by `control` and `autoControl`. */
