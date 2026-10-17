@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 vi.mock("@/config/env", () => ({ getActiveMobileSessionRealm: () => 'global' }));
 const disk = vi.hoisted(() => ({
   files: new Map<string, Uint8Array>(),
-  indexes: new Map<string, string>(),
   copying: false,
   gate: undefined as Promise<void> | undefined,
   seq: 0,
@@ -25,6 +24,11 @@ vi.mock("expo-file-system", () => ({
         .join("/");
     }
     create() {}
+    list() {
+      return [...disk.files.keys()]
+        .filter((uri) => uri.startsWith(`${this.uri}/`))
+        .map((uri) => new File(uri));
+    }
   },
   File: class {
     uri: string;
@@ -35,6 +39,14 @@ vi.mock("expo-file-system", () => ({
     }
     get exists() {
       return disk.files.has(this.uri);
+    }
+    get name() { return this.uri.split('/').at(-1)!; }
+    moveSync(target: { uri: string }) {
+      const bytes = disk.files.get(this.uri);
+      if (!bytes) throw new Error('missing');
+      disk.files.set(target.uri, bytes);
+      disk.files.delete(this.uri);
+      this.uri = target.uri;
     }
     get size() {
       return disk.files.get(this.uri)?.length ?? 0;
@@ -55,34 +67,8 @@ vi.mock("expo-file-system", () => ({
     }
   },
 }));
-vi.mock("@/session/remoteMediaDiskCacheExpo", () => ({
-  createExpoRemoteMediaDiskCacheIO: (namespace: string) => {
-    const uri = (name: string) => `file:///cache/${namespace}/${name}`;
-    return {
-      ensureDir() {},
-      readIndexText: async () => disk.indexes.get(namespace) ?? null,
-      writeIndexText: (text: string) => {
-        disk.indexes.set(namespace, text);
-      },
-      fileExists: (name: string) => disk.files.has(uri(name)),
-      fileSize: (name: string) => disk.files.get(uri(name))?.length ?? -1,
-      fileUri: uri,
-      deleteFile: (name: string) => {
-        disk.files.delete(uri(name));
-      },
-      listFiles: () =>
-        [...disk.files.keys()]
-          .filter((p) => p.startsWith(`file:///cache/${namespace}/`))
-          .map((p) => p.split("/").at(-1)!),
-      download: async (source: string, name: string) => {
-        const bytes = disk.files.get(source);
-        if (!bytes) return null;
-        disk.files.set(uri(name), bytes.slice());
-        return bytes.length;
-      },
-    };
-  },
-}));
+import { createRemoteMediaDiskCache } from '@/session/remoteMediaDiskCache';
+import { createExpoRemoteMediaDiskCacheIO } from '@/session/remoteMediaDiskCacheExpo';
 import { createPeerFileCache } from "@/device-link/peerFileCache";
 import { createMobileHtmlPreviewCache } from '@/session/mobileHtmlPreviewCache';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
@@ -151,6 +137,36 @@ it('restores complete legacy manifests and rejects paths that the preview cannot
   expect(await cache.manifest('index.html')).toBeNull();
 });
 const metadata = { size: 5, mimeType: "text/html", version: "a".repeat(64) };
+// PR #6299: the mocked cache IO hid empty-file rejection. Exercise the real cache
+// and Expo adapter with an in-memory filesystem (unit): empty first writes and
+// nonempty -> empty refresh must survive an index reload and shadow old transfers.
+it.each(['', '<p>Old</p>'])('persists empty preview files after initial content %j', async (initial) => {
+  const account = `empty-preview-${initial.length}`;
+  const owner = JSON.stringify(['global', account]);
+  setMobileAuthOwner(account);
+  const cache = createMobileHtmlPreviewCache('desktop', '/site')!;
+  const source = new File(`file:///input-${account}.html`);
+  const destination = new File(`file:///output-${account}.html`);
+  source.write('<p>Old transfer</p>');
+  const transfer = await createPeerFileCache(owner);
+  const meta = { ...metadata, size: source.size };
+  const media = { ossKey: '', ...meta };
+  recordPeerMedia(media, source.uri, () => {});
+  await transfer.store('desktop', remoteFileMediaUrl('/site/index.html', undefined, undefined,
+    { baseDir: '/site', maxBytes: FILE_PEER_MAX_BYTES }), meta, media);
+  source.write(initial);
+  await cache.store('index.html', source, 'text/html');
+  source.write('');
+  await cache.store('index.html', source, 'text/html');
+  expect(await cache.copy('index.html', destination)).toBe(0);
+  expect(await destination.text()).toBe('');
+  const namespace = `files-${createHash('sha256').update(owner).digest('hex')}`;
+  const reopened = createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO(namespace));
+  const identity = JSON.stringify(['desktop', null, '/site', 'resource', 'index.html']);
+  const hit = await reopened.lookup(`html-preview:${identity}`);
+  expect(hit?.size).toBe(0);
+  expect(await new File(hit!.uri).text()).toBe('');
+});
 async function seed(owner: string) {
   const cache = await createPeerFileCache(owner);
   const uri = `file:///received/${owner}`;
