@@ -1,4 +1,3 @@
-import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome/SystemNavigationBack';
 /**
  * 远程文件 Quick Look 预览。
  *
@@ -11,7 +10,7 @@ import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome
  * 文本 = readFile(acceptGzip,pako 解码)+ 行号列表;图片 = 缩略图立即显示,
  * OSS 导出原图就绪后无缝换源(不出 loading 态,规则 7);其它 = 占位 + 下载。
  * markdown 与 HTML 额外有「渲染 / 源码」双态,默认渲染。HTML 使用浮动浏览器控件,
- * 源码和文件操作收进更多菜单;markdown 保留原来的切换栏并复用已读文本。
+ * 所有文件共用悬浮控件,源码切换、文件信息与路径操作收进更多菜单。
  * HTML 渲染完整目录快照,源码仍走文本通道与原有大小限制。
  *
  * absPath 单文件模式(route 参 absPath,与 relPath 互斥):聊天 chip 指向
@@ -26,7 +25,7 @@ import { Image } from 'expo-image';
 import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownToLine, Copy, Database, File as FileIcon, Info, MessageSquarePlus, Share as ShareIcon } from 'lucide-react-native';
+import { ArrowDownToLine, Database, File as FileIcon, Info } from 'lucide-react-native';
 import {
   ActivityIndicator,
   Alert,
@@ -60,7 +59,6 @@ import { decodeGzipBase64Text, mergePathIntoComposerDraft, shareMimeForFileName 
 import { appendQuote, truncateQuoteText } from '@/session/chatQuoteStore';
 import { getCachedPreviewText, storeCachedPreviewText } from '@/session/fileBrowserCache';
 import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
-import { FileTransferBusyNotice } from '@/session/FileTransferBusyNotice';
 import type { RemoteMediaSshContext } from '@/session/fileBrowserGallery';
 import { HtmlSnapshotReader } from '@/session/HtmlFileReader';
 import { HtmlPreviewLoading } from '@/session/HtmlPreviewLoading';
@@ -72,7 +70,7 @@ import type { MobileHtmlPreview } from '@/session/mobileHtmlPreview';
 import { prepareMobileHtmlPreview, type PrepareMobileHtmlPreview } from '@/session/mobileHtmlPreview';
 import { useHtmlSnapshot } from '@/session/useHtmlSnapshot';
 import { MainWindowActionButton } from '@/components/MobilePrimitives';
-import { FileBrowserSegmentedControl } from '@/session/FileBrowserSegmentedControl';
+import { useHtmlBrowserViewport } from '@/session/useHtmlBrowserViewport';
 import { MarkdownFileReader } from '@/session/MarkdownFileReader';
 import { RemoteMediaPlayerWebView } from '@/session/mediaPlayerWebView';
 import { NativeVideoPlayer } from '@/session/NativeVideoPlayer';
@@ -119,7 +117,7 @@ type TextPreviewState =
 type RichTextKind = 'markdown' | 'html';
 
 type HtmlBrowserActions = Pick<HtmlBrowserChromeProps,
-  'busy' | 'notice' | 'onCancelNotice' | 'onClose' | 'onShare' | 'onCopyPath' | 'onAddToTask'>;
+  'meta' | 'busy' | 'notice' | 'onCancelNotice' | 'onClose' | 'onShare' | 'onCopyPath' | 'onAddToTask'>;
 
 interface SiblingListing {
   key: string;
@@ -198,7 +196,6 @@ function RemoteFilePreviewContent() {
   const targetLineRaw = Number(readRouteString(params.line) ?? '');
   const targetLine = Number.isInteger(targetLineRaw) && targetLineRaw > 0 ? targetLineRaw : null;
   const router = useRouter();
-  const systemBack = useSystemNavigationBack();
   const previewWindow = useAdaptiveWindow();
   const pageInsets = useSafeAreaInsets();
   const [measuredPageWidth, setMeasuredPageWidth] = useState<number | null>(null);
@@ -659,15 +656,7 @@ function RemoteFilePreviewContent() {
       );
     }
     return (
-      <SafeAreaView style={styles.safeArea} testID="filePreview.screen">
-        <SystemNavigationBack close label={t('files.preview.done')} onPress={() => goBackGuarded(router)} />
-        <PreviewNav
-          hideDone={systemBack}
-          meta=""
-          onDone={() => goBackGuarded(router)}
-          onShare={null}
-          title={pathDisplayName(singleAbsPath ?? initialRelPath)}
-        />
+      <SafeAreaView edges={[]} style={styles.safeArea} testID="filePreview.screen">
         <View style={styles.centerFill}>
           {error ? <>
             <Text style={styles.hintText}>{t('files.preview.readFailed')}</Text>
@@ -677,29 +666,27 @@ function RemoteFilePreviewContent() {
             } }} />
           </> : <ActivityIndicator color={colors.textTertiary} />}
         </View>
+        <HtmlBrowserChrome
+          document
+          title={pathDisplayName(pendingPath)}
+          path={absolutePathOf(pendingPath)}
+          top={pageInsets.top}
+          bottom={pageInsets.bottom}
+          left={pageInsets.left + spacing.md}
+          right={pageInsets.right + spacing.md}
+          busy
+          pending
+          onClose={() => goBackGuarded(router)}
+          onShare={() => {}}
+          onCopyPath={() => {}}
+          onAddToTask={() => {}}
+        />
       </SafeAreaView>
     );
   }
 
-  const htmlBrowser = richTextKindOf(current.relPath) === 'html';
   return (
-    <SafeAreaView edges={htmlBrowser ? [] : undefined} style={styles.safeArea} testID="filePreview.screen">
-      {!htmlBrowser ? <>
-        <SystemNavigationBack close label={t('files.preview.done')} onPress={() => goBackGuarded(router)} />
-      <PreviewNav
-        hideDone={systemBack}
-        meta={[
-          `${pageIndex + 1} / ${siblings.length}`,
-          // absPath 单文件模式没有目录列举,size 未知(0)不显示,避免「0 B」。
-          ...(current.sizeBytes > 0 ? [formatByteSize(current.sizeBytes)] : []),
-        ].join(' · ')}
-        onDone={() => goBackGuarded(router)}
-        onShare={() => void downloadAndShare(current)}
-        title={current.name}
-      />
-      <View style={styles.navHairline} />
-      </> : null}
-
+    <SafeAreaView edges={[]} style={styles.safeArea} testID="filePreview.screen">
       <FlatList
         onLayout={event => setMeasuredPageWidth(Math.max(1, event.nativeEvent.layout.width))}
         data={siblings}
@@ -739,6 +726,10 @@ function RemoteFilePreviewContent() {
               maker={maker}
               onDownload={() => void downloadAndShare(item)}
               htmlBrowserActions={{
+                meta: [
+                  `${index + 1} / ${siblings.length}`,
+                  ...(item.sizeBytes > 0 ? [formatByteSize(item.sizeBytes)] : []),
+                ].join(' · '),
                 busy: !!busyLabel,
                 notice: busyLabel ?? notice,
                 // busyLabel 只由导出 / 分享设置,进行中的提示带「取消」。
@@ -784,31 +775,6 @@ function RemoteFilePreviewContent() {
         windowSize={3}
       />
 
-      {!htmlBrowser ? <>
-      <View style={styles.toolbarHairline} />
-      <View style={styles.toolbar}>
-        <ToolbarButton
-          disabled={!!busyLabel}
-          Icon={Copy}
-          label={t('files.preview.copyPath')}
-          onPress={() => void copyPath(current)}
-          testID="filePreview.copyPath"
-        />
-        <ToolbarButton
-          disabled={!!busyLabel}
-          Icon={MessageSquarePlus}
-          label={t('files.preview.sendToSession')}
-          onPress={() => sendToSession(current)}
-          testID="filePreview.sendToSession"
-        />
-      </View>
-      {busyLabel ? (
-        <FileTransferBusyNotice label={busyLabel} onCancel={cancelExport} testID="filePreview.busy" />
-      ) : notice ? (
-        <Text style={styles.noticeText} testID="filePreview.notice">{notice}</Text>
-      ) : null}
-      </> : null}
-
       {lightboxImages.length > 0 ? (
         <ImageLightbox
           images={lightboxImages}
@@ -821,42 +787,6 @@ function RemoteFilePreviewContent() {
 }
 
 /* ------------------------------ 页面组件 ------------------------------ */
-
-function PreviewNav({
-  hideDone = false,
-  meta,
-  onDone,
-  onShare,
-  title,
-}: {
-  hideDone?: boolean;
-  meta: string;
-  onDone(): void;
-  onShare: (() => void) | null;
-  title: string;
-}) {
-  const styles = useThemedStyles(makeStyles);
-  const { colors } = useTheme();
-  const { t } = useTranslation();
-  return (
-    <View style={styles.navRow}>
-      {!hideDone ? <Pressable accessibilityLabel={t('files.preview.done')} hitSlop={10} onPress={onDone} testID="filePreview.done">
-        <Text style={styles.doneText}>{t('files.preview.done')}</Text>
-      </Pressable> : null}
-      <View style={styles.navTitleCol}>
-        <Text numberOfLines={1} style={styles.navTitle} testID="filePreview.title">{title}</Text>
-        {meta ? <Text numberOfLines={1} style={styles.navMeta}>{meta}</Text> : null}
-      </View>
-      {onShare ? (
-        <Pressable accessibilityLabel={t('files.preview.a11yShare')} hitSlop={10} onPress={onShare} testID="filePreview.share">
-          <ShareIcon color={colors.textPrimary} size={iconSize.xl} strokeWidth={iconStroke.regular} />
-        </Pressable>
-      ) : (
-        <View style={{ width: iconSize.xl }} />
-      )}
-    </View>
-  );
-}
 
 function FilePreviewPage({
   deviceId,
@@ -903,8 +833,18 @@ function FilePreviewPage({
   workdir: string;
 }) {
   const { t } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const insets = useSafeAreaInsets();
+  const contentPadding = {
+    paddingTop: insets.top + HTML_BROWSER_CONTROL_SIZE + spacing.xs,
+    paddingBottom: insets.bottom + spacing.xs,
+    paddingLeft: insets.left,
+    paddingRight: insets.right,
+  };
+  const avKind = avKindFor(item.relPath);
+  let content;
   if (item.thumb === 'image') {
-    return (
+    content = (
       <ImagePreviewPage
         active={active}
         exportToUrl={exportToUrl}
@@ -914,15 +854,11 @@ function FilePreviewPage({
         workdir={workdir}
       />
     );
-  }
-  if (item.previewKind === 'pdf') {
-    return <PdfPreviewPage active={active} exportToUrl={exportToUrl} item={item} onDownload={onDownload} recoveryEpoch={recoveryEpoch} workdir={workdir} />;
-  }
-  const avKind = avKindFor(item.relPath);
-  if (avKind) {
-    return <AvPreviewPage active={active} exportToUrl={exportToUrl} item={item} kind={avKind} onDownload={onDownload} visible={visible} workdir={workdir} />;
-  }
-  if (item.thumb === 'doc') {
+  } else if (item.previewKind === 'pdf') {
+    content = <PdfPreviewPage active={active} exportToUrl={exportToUrl} item={item} onDownload={onDownload} recoveryEpoch={recoveryEpoch} workdir={workdir} />;
+  } else if (avKind) {
+    content = <AvPreviewPage active={active} exportToUrl={exportToUrl} item={item} kind={avKind} onDownload={onDownload} visible={visible} workdir={workdir} />;
+  } else if (item.thumb === 'doc') {
     return (
       <TextPreviewPage
         key={maker.fileBrowser.cacheScope}
@@ -944,8 +880,24 @@ function FilePreviewPage({
         workdir={workdir}
       />
     );
+  } else {
+    content = <UnsupportedPage item={item} onDownload={onDownload} reason={t('files.preview.unsupportedType')} />;
   }
-  return <UnsupportedPage item={item} onDownload={onDownload} reason={t('files.preview.unsupportedType')} />;
+  return (
+    <View style={styles.textPage}>
+      <View style={[styles.textPage, item.previewKind !== 'pdf' && contentPadding]}>{content}</View>
+      {visible ? <HtmlBrowserChrome
+        document
+        {...htmlBrowserActions}
+        title={item.name}
+        path={absolutePathOf(item.relPath)}
+        top={insets.top}
+        bottom={insets.bottom}
+        left={insets.left + spacing.md}
+        right={insets.right + spacing.md}
+      /> : null}
+    </View>
+  );
 }
 
 /**
@@ -1089,6 +1041,13 @@ function PdfPreviewPage({
   recoveryEpoch: number;
   workdir: string;
 }) {
+  const insets = useSafeAreaInsets();
+  const { viewRef, measure, viewportStyle, obscuredContentInsets } = useHtmlBrowserViewport({
+    top: insets.top + HTML_BROWSER_CONTROL_SIZE + spacing.xs,
+    bottom: insets.bottom + spacing.xs,
+    left: insets.left,
+    right: insets.right,
+  });
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -1152,7 +1111,14 @@ function PdfPreviewPage({
       </View>
     );
   }
-  return <WebView source={pdfSource} originWhitelist={['https://*', 'http://*', 'file://*']} style={styles.pdfView} testID="filePreview.pdfView" />;
+  return <View ref={viewRef} onLayout={measure} collapsable={false} style={[styles.pdfView, viewportStyle]}>
+    <WebView source={pdfSource} originWhitelist={['https://*', 'http://*', 'file://*']}
+      automaticallyAdjustContentInsets={false}
+      contentInsetAdjustmentBehavior="never"
+      obscuredContentInsets={obscuredContentInsets}
+      contentInset={obscuredContentInsets}
+      style={styles.pdfView} testID="filePreview.pdfView" />
+  </View>;
 }
 
 /**
@@ -1208,7 +1174,7 @@ function TextPreviewPage({
   // Sit directly against the safe-area edges; only a small gap separates page content.
   const browserTop = insets.top;
   const browserBottom = insets.bottom;
-  const browserContentInset = { top: browserTop + HTML_BROWSER_CONTROL_SIZE + spacing.xs, bottom: browserBottom + HTML_BROWSER_CONTROL_SIZE + spacing.xs };
+  const browserContentInset = { top: browserTop + HTML_BROWSER_CONTROL_SIZE + spacing.xs, bottom: browserBottom + (richKind === 'html' ? HTML_BROWSER_CONTROL_SIZE : 0) + spacing.xs };
   const browserRef = useRef<WebView>(null);
   const [website, setWebsite] = useState<WebsiteVisit | null>(null);
   const [browserNavigation, setBrowserNavigation] = useState<{
@@ -1338,17 +1304,6 @@ function TextPreviewPage({
     setState({ status: 'loading' });
     setTextReloadEpoch((epoch) => epoch + 1);
   };
-  if (state.status === 'loading' && richKind !== 'html') {
-    return (
-      <View style={styles.centerFill}>
-        <ActivityIndicator color={colors.textTertiary} />
-      </View>
-    );
-  }
-  if (state.status === 'unavailable' && richKind !== 'html') {
-    return <UnsupportedPage item={item} onDownload={onDownload} reason={state.reason} onRetry={state.retryable ? retryText : undefined} />;
-  }
-
   const ready = state.status === 'ready' ? state : null;
   const targetIndex = targetLine !== null && targetLine <= (ready?.lines.length ?? 0) ? targetLine - 1 : null;
   const lineNumWidth = String(ready?.lines.length ?? 0).length;
@@ -1359,36 +1314,13 @@ function TextPreviewPage({
   const navigation = htmlPanWanted && browserNavigation && browserNavigation.preview === htmlSnapshot.preview ? browserNavigation.state : null;
   return (
     <View style={styles.textPage}>
-      <View style={[styles.textPage, richKind === 'html' && richView === 'source' && {
-        paddingTop: browserContentInset.top, paddingBottom: browserContentInset.bottom,
-        paddingLeft: insets.left, paddingRight: insets.right,
-      }]}>
+      <View style={styles.textPage}>
       {clipped ? (
-        <View style={styles.truncBar} testID="filePreview.truncBanner">
+        <View style={[styles.truncBar, { marginTop: browserContentInset.top }]} testID="filePreview.truncBanner">
           <Info color={colors.textSecondary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
           <Text style={styles.truncText}>
             {ready?.truncated ? t('files.preview.truncated2mb') : t('files.preview.truncatedLines', { lines: MAX_RENDERED_LINES })}
           </Text>
-        </View>
-      ) : null}
-      {/* HTML 的模式切换在浮动浏览器菜单中;Markdown 保留原有胶囊。 */}
-      {canRenderRich && richKind !== 'html' ? (
-        <View style={styles.mdToggleRow}>
-          <FileBrowserSegmentedControl<'rendered' | 'source'>
-            accessibilityLabel={t('files.preview.mdViewA11y', { view: richView === 'rendered' ? t('files.preview.mdRendered') : t('files.preview.mdSource') })}
-            onChange={setRichView}
-            options={(['rendered', 'source'] as const).map((value) => {
-              const label = t(value === 'rendered' ? 'files.preview.mdRendered' : 'files.preview.mdSource');
-              return {
-                value,
-                label,
-                accessibilityLabel: t('files.preview.mdViewA11y', { view: label }),
-                testID: `filePreview.richView.${value}`,
-              };
-            })}
-            testID="filePreview.richView"
-            value={richView}
-          />
         </View>
       ) : null}
       {showRendered ? (
@@ -1419,6 +1351,7 @@ function TextPreviewPage({
         ) : (
           <MarkdownFileReader
             markdown={ready?.content ?? ''}
+            viewportInsets={{ ...browserContentInset, top: clipped ? 0 : browserContentInset.top, left: insets.left, right: insets.right }}
             onPageSwipe={onMarkdownPageSwipe ? (direction) => onMarkdownPageSwipe(item.key, direction) : undefined}
             onQuoteSelection={onQuoteSelection}
             targetLine={targetLine}
@@ -1432,7 +1365,13 @@ function TextPreviewPage({
           onRetry={state.retryable ? retryText : undefined} />
       ) : (
       <FlatList
-        contentContainerStyle={styles.codeContent}
+        contentContainerStyle={[styles.codeContent, {
+          paddingTop: clipped ? spacing.md : browserContentInset.top + spacing.md,
+          paddingBottom: browserContentInset.bottom + spacing.md,
+          paddingLeft: insets.left + spacing.lg,
+          paddingRight: insets.right + spacing.lg,
+        }]}
+        scrollIndicatorInsets={browserContentInset}
         data={state.lines}
         initialNumToRender={40}
         keyExtractor={(_, index) => String(index)}
@@ -1463,6 +1402,18 @@ function TextPreviewPage({
       />
       )}
       </View>
+      {richKind !== 'html' && visible ? <HtmlBrowserChrome
+        document
+        {...htmlBrowserActions}
+        title={item.name}
+        path={absolutePathOf(item.relPath)}
+        top={browserTop}
+        bottom={browserBottom}
+        left={insets.left + spacing.md}
+        right={insets.right + spacing.md}
+        source={richView === 'source'}
+        onToggleSource={canRenderRich ? () => setRichView(value => value === 'rendered' ? 'source' : 'rendered') : undefined}
+      /> : null}
       {richKind === 'html' && visible ? (
         <HtmlBrowserChrome
           {...htmlBrowserActions}
@@ -1646,36 +1597,6 @@ function GenericGlyph({ name }: { name: string }) {
   );
 }
 
-function ToolbarButton({
-  disabled,
-  Icon,
-  label,
-  onPress,
-  testID,
-}: {
-  disabled?: boolean;
-  Icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number }>;
-  label: string;
-  onPress(): void;
-  testID: string;
-}) {
-  const styles = useThemedStyles(makeStyles);
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [styles.toolItem, (pressed || disabled) && styles.pressed]}
-      testID={testID}
-    >
-      <Icon color={colors.textPrimary} size={iconSize.xl} strokeWidth={iconStroke.regular} />
-      <Text style={styles.toolLabel}>{label}</Text>
-    </Pressable>
-  );
-}
-
 /* ------------------------------ 工具 ------------------------------ */
 
 function fallbackItem(relPath: string): FileBrowserGridItem {
@@ -1721,18 +1642,6 @@ const makeStyles = (colors: ThemeColors) => {
       justifyContent: 'center',
       paddingHorizontal: spacing.xl,
     },
-    navRow: {
-      alignItems: 'center',
-      flexDirection: 'row',
-      gap: spacing.md,
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.md,
-    },
-    doneText: { color: colors.textPrimary, fontSize: typeScale.bodyLarge, lineHeight: lineHeight.bodyLarge, fontWeight: fontWeight.medium },
-    navTitleCol: { alignItems: 'center', flex: 1, gap: 2, minWidth: 0 },
-    navTitle: { color: colors.textPrimary, fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.semibold },
-    navMeta: { color: colors.textTertiary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
-    navHairline: { backgroundColor: colors.border, height: StyleSheet.hairlineWidth },
     truncBar: {
       alignItems: 'center',
       backgroundColor: colors.surfaceChip,
@@ -1744,10 +1653,6 @@ const makeStyles = (colors: ThemeColors) => {
     },
     truncText: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
     textPage: { flex: 1 },
-    mdToggleRow: {
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.sm,
-    },
     codeList: { flex: 1 },
     codeContent: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
     codeLine: { flexDirection: 'row', gap: spacing.sm + 2 },
@@ -1836,22 +1741,5 @@ const makeStyles = (colors: ThemeColors) => {
       paddingHorizontal: spacing.xl,
     },
     ctaLabel: { color: colors.ctaText, fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall, fontWeight: fontWeight.medium },
-    toolbarHairline: { backgroundColor: colors.border, height: StyleSheet.hairlineWidth },
-    toolbar: {
-      backgroundColor: colors.surface,
-      flexDirection: 'row',
-      justifyContent: 'space-around',
-      paddingBottom: spacing.sm,
-      paddingTop: spacing.md,
-    },
-    toolItem: { alignItems: 'center', gap: spacing.xs, minWidth: 64 },
-    toolLabel: { color: colors.textSecondary, fontSize: typeScale.micro, lineHeight: lineHeight.micro },
-    noticeText: {
-      color: colors.textSecondary,
-      fontSize: typeScale.footnote,
-      lineHeight: lineHeight.caption,
-      paddingBottom: spacing.sm,
-      textAlign: 'center',
-    },
   });
 };
