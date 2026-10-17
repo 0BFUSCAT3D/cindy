@@ -59,19 +59,29 @@ async function main() {
   const images = summary.overviews ?? (summary.overview ? [summary.overview] : []);
   if (!images.length) throw new Error(`${run} has no overview images`);
 
-  // Images go to the author's fork, never to the repository the PR targets.
+  // Images go to the author's fork, never to the repository PRs target: the project's own
+  // repository (package.json) and an `upstream` remote, if any. Checked against the URL git
+  // actually pushes to, which is also where the links point.
   const remotes = git(['remote']).split('\n').filter(Boolean);
-  const canonical = githubRepo(
-    git(['remote', 'get-url', remotes.includes('upstream') ? 'upstream' : 'origin']),
+  const pushRepo = (name) => githubRepo(git(['remote', 'get-url', '--push', name]));
+  const project = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+  const targets = new Set(
+    [
+      githubRepo(project.repository?.url ?? ''),
+      remotes.includes('upstream') && githubRepo(git(['remote', 'get-url', 'upstream'])),
+    ].filter(Boolean),
   );
   const remote =
     options.remote ??
-    remotes.find((name) => githubRepo(git(['remote', 'get-url', name])) !== canonical);
-  const repo = remote && githubRepo(git(['remote', 'get-url', remote]));
+    remotes.find((name) => {
+      const repo = pushRepo(name);
+      return repo && !targets.has(repo);
+    });
+  const repo = remote && pushRepo(remote);
   if (!repo)
     throw new Error('Need a GitHub fork remote for screenshots (e.g. origin = <you>/cindy)');
-  if (repo === canonical)
-    throw new Error(`${remote} is ${canonical}, the PR's target; publish to your fork instead`);
+  if (targets.has(repo))
+    throw new Error(`${remote} pushes to ${repo}, the PR's target; publish to your fork instead`);
 
   const current = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = options.branch ?? `pr-assets/${current === 'HEAD' ? 'detached' : current}`;

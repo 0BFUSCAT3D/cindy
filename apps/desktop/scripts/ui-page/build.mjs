@@ -22,6 +22,10 @@ const assetLoaders = Object.fromEntries(
   ]),
 );
 const SOURCE = /\.[cm]?[jt]sx?$/;
+// Inputs `--compare` can take from another revision: source, styles and translations.
+const OVERLAY = /\.(?:[cm]?[jt]sx?|css|json)$/;
+const loaderFor = (file) =>
+  file.endsWith('.css') ? 'css' : file.endsWith('.json') ? 'json' : /x$/.test(file) ? 'tsx' : 'ts';
 const CONTENT_TYPES = {
   '.js': 'text/javascript',
   '.css': 'text/css',
@@ -92,7 +96,11 @@ function boundaries(stubs, replaced, overlay) {
           candidate = path.resolve(args.resolveDir, args.path);
         if (!candidate) return undefined;
         const stub = stubs.get(withoutExtension(candidate));
-        if (!stub) return undefined;
+        if (!stub) {
+          // --compare: a file the old revision imports but the worktree no longer has.
+          const old = overlay?.resolve(candidate);
+          return old ? { path: old } : undefined;
+        }
         const importers = (replaced[stub.key] ??= { kind: stub.kind, importers: [] }).importers;
         const importer = path.relative(desktop, args.importer);
         if (!importers.includes(importer)) importers.push(importer);
@@ -109,15 +117,13 @@ function boundaries(stubs, replaced, overlay) {
             }
           : { contents: stub.code, loader: 'tsx', resolveDir: desktop };
       });
-      if (overlay?.size)
-        build.onLoad({ filter: SOURCE }, (args) =>
-          overlay.has(args.path)
-            ? {
-                contents: overlay.get(args.path),
-                loader: /x$/.test(args.path) ? 'tsx' : 'ts',
-              }
-            : undefined,
-        );
+      if (overlay)
+        build.onLoad({ filter: OVERLAY }, (args) => {
+          const contents = overlay.get(args.path);
+          return contents === undefined
+            ? undefined
+            : { contents, loader: loaderFor(args.path), resolveDir: path.dirname(args.path) };
+        });
     },
   };
 }
@@ -157,7 +163,38 @@ const common = (definition, plugins) => ({
   plugins,
 });
 
-/** Source inputs only (no CSS); used to decide which pages load a changed file. */
+const globalsPath = path.join(renderer, 'styles/globals.css');
+const configPath = path.join(desktop, 'tailwind.config.ts');
+
+/** Stylesheets every page is built with (globals.css and its imports) and the Tailwind config. */
+let sharedStyles;
+async function sharedStyleInputs() {
+  sharedStyles ??= esbuild
+    .build({
+      absWorkingDir: root,
+      bundle: true,
+      write: false,
+      metafile: true,
+      outdir,
+      loader: assetLoaders,
+      logLevel: 'silent',
+      stdin: {
+        contents: await readFile(globalsPath, 'utf8'),
+        loader: 'css',
+        resolveDir: path.dirname(globalsPath),
+      },
+    })
+    .then((result) => [
+      globalsPath,
+      configPath,
+      ...Object.keys(result.metafile.inputs)
+        .filter((file) => file !== '<stdin>')
+        .map(sourcePath),
+    ]);
+  return sharedStyles;
+}
+
+/** Everything a page is built from; used to decide which pages a changed file affects. */
 export async function scanPage(definition) {
   const replaced = {};
   const { contents } = entryContents(definition);
@@ -167,16 +204,20 @@ export async function scanPage(definition) {
     entryNames: 'page',
   });
   return {
-    inputs: Object.keys(result.metafile.inputs)
-      .filter((file) => !file.startsWith('ui-stub:') && file !== 'ui-page-entry.ts')
-      .map(sourcePath),
+    inputs: [
+      ...Object.keys(result.metafile.inputs)
+        .filter((file) => !file.startsWith('ui-stub:') && file !== 'ui-page-entry.ts')
+        .map(sourcePath),
+      ...(await sharedStyleInputs()),
+    ],
     replaced,
   };
 }
 
 /**
  * Builds the selected page from current source every time (no cached bundle).
- * `overlay` maps absolute source paths to replacement contents (used by --compare).
+ * `overlay` (--compare) supplies another revision's contents: `has(file)`, `get(file)` and
+ * `resolve(path)` for files that revision imports but the worktree no longer has.
  */
 export async function buildPage(definition, overlay) {
   const replaced = {};
@@ -190,7 +231,6 @@ export async function buildPage(definition, overlay) {
     .filter((file) => !file.startsWith('ui-stub:') && file !== 'ui-page-entry.ts')
     .map(sourcePath);
   // Tailwind scans exactly the imported source (and overlay text in compare mode).
-  const configPath = path.join(desktop, 'tailwind.config.ts');
   const config = loadConfig(configPath);
   const scanned = inputs.filter(
     (file) => !file.includes(`${path.sep}node_modules${path.sep}`) && SOURCE.test(file),
@@ -201,12 +241,12 @@ export async function buildPage(definition, overlay) {
       .filter((file) => overlay?.has(file))
       .map((file) => ({ raw: overlay.get(file), extension: path.extname(file).slice(1) })),
   ];
-  const globalsPath = path.join(renderer, 'styles/globals.css');
-  const globals = await postcss([tailwind(config)]).process(await readFile(globalsPath, 'utf8'), {
-    from: globalsPath,
-  });
+  const globals = await postcss([tailwind(config)]).process(
+    overlay?.get(globalsPath) ?? (await readFile(globalsPath, 'utf8')),
+    { from: globalsPath },
+  );
   const styles = await esbuild.build({
-    ...common(definition, []),
+    ...common(definition, overlay ? [boundaries(new Map(), {}, overlay)] : []),
     stdin: { contents: globals.css, loader: 'css', resolveDir: path.dirname(globalsPath) },
     entryNames: 'styles',
   });
@@ -218,13 +258,14 @@ export async function buildPage(definition, overlay) {
       body: Buffer.from(output.contents),
     });
   }
+  const styleInputs = Object.keys(styles.metafile.inputs)
+    .filter((file) => file !== '<stdin>')
+    .map(sourcePath);
   const watched = [
     ...new Set(
       [
         ...inputs,
-        ...Object.keys(styles.metafile.inputs)
-          .filter((file) => file !== '<stdin>')
-          .map(sourcePath),
+        ...styleInputs,
         ...Object.values(definition.stubs ?? {})
           .filter((value) => typeof value === 'string' && /^\.\.?\//.test(value))
           .map((value) => path.resolve(definition.dir, value)),
@@ -250,6 +291,7 @@ export async function buildPage(definition, overlay) {
     files,
     styles: ['/styles.css', ...(files.has('/page.css') ? ['/page.css'] : [])],
     inputs,
+    styleInputs: [globalsPath, ...styleInputs],
     replaced,
     fingerprints,
     sourceDigest: digest.digest('hex'),

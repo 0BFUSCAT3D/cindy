@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import { chromium, _electron } from 'playwright-core';
 import { buildPage, inputsChanged, root } from './build.mjs';
 import { auditOutcome, pageAudit } from './audit.mjs';
 import { variantsFor } from './options.mjs';
+import { reloadPage } from './registry.mjs';
 
 const require = createRequire(import.meta.url);
 export const origin = 'http://cindy-ui.test';
@@ -18,7 +19,12 @@ const csp =
   "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
 const git = (args) =>
-  execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 64 * 1024 * 1024,
+  });
 
 const bundlePrefix = (bundle) => `/b/${bundle.bundleDigest.slice(0, 16)}`;
 
@@ -80,32 +86,57 @@ function browserPath(explicit) {
   return found;
 }
 
-/** Contents of each bundle input as of `ref`, for files that differ from the worktree. */
-function compareOverlay(ref, inputs) {
-  const changed = new Set(
-    git(['diff', '--name-only', ref, '--', 'apps', 'packages'])
-      .split('\n')
-      .filter(Boolean)
-      .map((file) => path.join(root, file)),
+const COMPARE_SCOPE = ['apps/desktop/src', 'packages'];
+const MODULE_SUFFIXES = [
+  '',
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '/index.ts',
+  '/index.tsx',
+  '/index.js',
+];
+
+/**
+ * Product source (apps/desktop/src, packages) as of `ref`, read lazily from git: files that
+ * differ from the worktree, including ones the worktree has since moved or deleted. The
+ * scenario (fixtures, harness) stays current so before/after render the same data.
+ */
+function compareOverlay(ref) {
+  const absolute = (list) =>
+    new Set(
+      list
+        .split('\n')
+        .filter(Boolean)
+        .map((file) => path.join(root, file)),
+    );
+  const atRef = absolute(git(['ls-tree', '-r', '--name-only', ref, '--', ...COMPARE_SCOPE]));
+  const changed = absolute(
+    git(['diff', '--no-renames', '--name-only', ref, '--', ...COMPARE_SCOPE]),
   );
-  const overlay = new Map();
-  const newSinceRef = [];
-  // Only product source goes back to `ref`; the scenario (fixtures, harness) stays current so
-  // before/after render the same data.
-  const scenario = path.join(root, 'apps/desktop/scripts') + path.sep;
-  for (const file of inputs) {
-    if (!changed.has(file) || file.startsWith(scenario)) continue;
-    const relative = path.relative(root, file).split(path.sep).join('/');
-    try {
-      overlay.set(file, git(['show', `${ref}:${relative}`]));
-    } catch {
-      newSinceRef.push(relative);
-    }
-  }
+  const contents = new Map();
+  const isFile = (file) => existsSync(file) && statSync(file).isFile();
   return {
-    overlay,
-    newSinceRef,
-    files: [...overlay.keys()].map((file) => path.relative(root, file)),
+    changed,
+    atRef,
+    used: new Set(),
+    has: (file) => changed.has(file) && atRef.has(file),
+    get(file) {
+      if (!this.has(file)) return undefined;
+      this.used.add(file);
+      if (!contents.has(file))
+        contents.set(
+          file,
+          git(['show', `${ref}:${path.relative(root, file).split(path.sep).join('/')}`]),
+        );
+      return contents.get(file);
+    },
+    resolve(candidate) {
+      if (MODULE_SUFFIXES.some((suffix) => isFile(candidate + suffix))) return null;
+      return MODULE_SUFFIXES.map((suffix) => candidate + suffix).find((file) => atRef.has(file));
+    },
   };
 }
 
@@ -187,22 +218,25 @@ export async function runPlan(plan, options, externalSignal) {
   }
   const controller = new AbortController();
   let browser, app, electronPage, stopping;
+  // Nothing to close yet (still launching): the finally block stops whatever launch returns.
   const stopRuntime = () =>
-    (stopping ??= (async () => {
-      if (app) {
-        const child = app.process();
-        const force = setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        }, 4000);
-        try {
-          await app.close();
-        } finally {
-          clearTimeout(force);
-        }
-        assert(child.exitCode !== null || child.signalCode !== null, 'Electron still running');
-      } else if (browser) await browser.close();
-      summary.cleanup.runtimeClosed = true;
-    })());
+    !app && !browser
+      ? Promise.resolve()
+      : (stopping ??= (async () => {
+          if (app) {
+            const child = app.process();
+            const force = setTimeout(() => {
+              if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+            }, 4000);
+            try {
+              await app.close();
+            } finally {
+              clearTimeout(force);
+            }
+            assert(child.exitCode !== null || child.signalCode !== null, 'Electron still running');
+          } else if (browser) await browser.close();
+          summary.cleanup.runtimeClosed = true;
+        })());
   const abort = () => controller.abort(externalSignal?.reason ?? new Error('Interrupted'));
   externalSignal?.addEventListener('abort', abort, { once: true });
   if (externalSignal?.aborted) abort();
@@ -263,11 +297,19 @@ export async function runPlan(plan, options, externalSignal) {
         bundleDigest: after.bundleDigest,
       };
       if (options.compare) {
-        const { overlay, newSinceRef, files } = compareOverlay(options.compare, after.inputs);
+        const overlay = compareOverlay(options.compare);
+        const loaded = [...after.inputs, ...after.styleInputs];
         // Nothing this page loads differs from the ref: a second render would be identical.
-        if (overlay.size)
+        if (loaded.some((file) => overlay.has(file)))
           item.bundles.before = await measure('buildMs', () => buildPage(item.definition, overlay));
-        page.compare = { ref: options.compare, replacedFromRef: files, newSinceRef };
+        const relative = (file) => path.relative(root, file);
+        page.compare = {
+          ref: options.compare,
+          replacedFromRef: [...overlay.used].map(relative).sort(),
+          newSinceRef: loaded
+            .filter((file) => overlay.changed.has(file) && !overlay.atRef.has(file))
+            .map(relative),
+        };
       }
       summary.pages.push(page);
     }
@@ -327,7 +369,9 @@ export async function runPlan(plan, options, externalSignal) {
       }
     });
 
-    const openVariant = async (variant, bundle, definition) => {
+    // Resources go into `opened` as soon as they exist, so a variant that fails to start is
+    // still screenshotted, its listeners removed and its context closed by the caller.
+    const openVariant = async (variant, bundle, definition, opened = {}) => {
       let page, context;
       if (app) {
         page = electronPage;
@@ -355,6 +399,15 @@ export async function runPlan(plan, options, externalSignal) {
       };
       page.on('pageerror', onError);
       page.on('console', onConsole);
+      Object.assign(opened, {
+        page,
+        context,
+        errors,
+        detach: () => {
+          page.off('pageerror', onError);
+          page.off('console', onConsole);
+        },
+      });
       if (app) await writeBundle(path.join(scratch, 'bundle'), bundle);
       current.bundle = bundle;
       current.blocked = [];
@@ -397,11 +450,7 @@ export async function runPlan(plan, options, externalSignal) {
         const actual = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
         assert.deepEqual(actual, variant.viewport, 'Electron window matches the variant viewport');
       }
-      const detach = () => {
-        page.off('pageerror', onError);
-        page.off('console', onConsole);
-      };
-      return { page, context, errors, detach };
+      return opened;
     };
 
     const runVariant = async (item, variant, role) => {
@@ -429,12 +478,28 @@ export async function runPlan(plan, options, externalSignal) {
       let opened;
       let timer;
       const started = performance.now();
-      const capture = async (name, captureOptions = {}) => {
+      // Generic checks run at every capture, so states reached in check() (open menus, new
+      // messages) are checked too. Host mutations are checked once after check().
+      const audited = { errors: new Set(), warnings: new Set(), hostMissing: new Set() };
+      const auditPage = async () => {
+        const audit = await opened.page.evaluate(pageAudit);
+        const outcome = auditOutcome({ ...audit, mutations: [] });
+        for (const error of outcome.errors) audited.errors.add(error);
+        for (const warning of outcome.warnings) audited.warnings.add(warning);
+        for (const name of audit.hostMissing) audited.hostMissing.add(name);
+      };
+      const mergeAudits = () => {
+        result.warnings.push(...audited.warnings);
+        result.hostMissing = [...audited.hostMissing];
+        if (role === 'after' && options.mode === 'check') result.errors.push(...audited.errors);
+      };
+      const capture = async (name, captureOptions = {}, { audit = true } = {}) => {
         const file = path.join(dir, `${name}.png`);
         const target = captureOptions.locator ?? opened.page;
         await target.screenshot({ path: path.join(evidence, file), timeout: 5000, scale: 'css' });
         result.screenshots.push(file.split(path.sep).join('/'));
         if (options.focus && !captureOptions.locator) await captureFocus(name);
+        if (audit) await auditPage();
       };
       // `--focus`: a 2x crop around one element plus its measured box, so small spacing and
       // truncation changes are readable without opening the full screenshot.
@@ -486,7 +551,8 @@ export async function runPlan(plan, options, externalSignal) {
       };
       try {
         const work = (async () => {
-          opened = await openVariant(variant, item.bundles[role], definition);
+          opened = {};
+          await openVariant(variant, item.bundles[role], definition, opened);
           result.timings.readyMs = Math.round(performance.now() - started);
           const { page } = opened;
           if (definition.adhoc && options.cases === 'all' && !item.expanded) {
@@ -502,14 +568,9 @@ export async function runPlan(plan, options, externalSignal) {
             }
           }
           await capture('initial');
-          const audit = await page.evaluate(pageAudit);
-          const outcome = auditOutcome(audit);
-          result.warnings.push(...outcome.warnings);
-          result.hostMissing = audit.hostMissing;
           // The pre-change side replays the same steps so every capture has a counterpart;
           // its assertions only describe the old code and never fail the run.
           if (options.mode === 'check') {
-            if (role === 'after') result.errors.push(...outcome.errors);
             const checkStarted = performance.now();
             const ui = {
               ...variant,
@@ -562,7 +623,8 @@ export async function runPlan(plan, options, externalSignal) {
             });
           }),
         ]);
-        if (opened) result.errors.push(...opened.errors);
+        mergeAudits();
+        if (opened?.errors) result.errors.push(...opened.errors);
         if (options.focus && !result.focus.length)
           result.warnings.push(`focus ${options.focus} was not visible at any capture`);
         if (current.blocked.length)
@@ -571,16 +633,18 @@ export async function runPlan(plan, options, externalSignal) {
         else result.status = result.errors.length ? 'failed' : 'passed';
       } catch (error) {
         result.errors.unshift(String(error?.stack ?? error));
-        if (opened) result.errors.push(...opened.errors);
+        mergeAudits();
+        if (opened?.errors) result.errors.push(...opened.errors);
         if (result.hostMissing.length === 0 && opened?.page && !opened.page.isClosed())
           result.hostMissing = await opened.page
             .evaluate(() => window.__uiPage?.hostMissing ?? [])
             .catch(() => []);
-        if (opened?.page && !opened.page.isClosed()) await capture('failure').catch(() => {});
+        if (opened?.page && !opened.page.isClosed())
+          await capture('failure', {}, { audit: false }).catch(() => {});
         result.status = role === 'before' ? 'before-failed' : 'failed';
       } finally {
         clearTimeout(timer);
-        opened?.detach();
+        opened?.detach?.();
         if (opened?.context) await opened.context.close().catch(() => {});
         result.timings.totalMs = Math.round(performance.now() - started);
       }
@@ -591,7 +655,7 @@ export async function runPlan(plan, options, externalSignal) {
     if (options.mode === 'preview') {
       const item = plan.pages[0];
       const variant = item.variants[0];
-      const definition = item.definition;
+      let definition = item.definition;
       const opened = await openVariant(variant, item.bundles.after, definition);
       summary.status = 'preview-open';
       console.log(
@@ -603,8 +667,24 @@ export async function runPlan(plan, options, externalSignal) {
         if (controller.signal.aborted || opened.page.isClosed()) break;
         if (!(await inputsChanged(item.bundles.after.fingerprints))) continue;
         try {
+          // The scenario file may have changed too: reload its data, stubs and viewport.
+          definition = item.definition = await reloadPage(definition);
+          const scenario = definition.cases[variant.case];
+          if (!scenario) throw new Error(`case ${variant.case} no longer exists`);
           item.bundles.after = await buildPage(definition);
           current.bundle = item.bundles.after;
+          const viewport = options.viewports?.[0] ?? scenario.viewport ?? definition.viewport;
+          current.context = {
+            ...current.context,
+            data: scenario.data ?? {},
+            storage: scenario.storage,
+            viewport,
+          };
+          if (app)
+            await app.evaluate(({ BrowserWindow }, size) => {
+              BrowserWindow.getAllWindows()[0].setContentSize(size.width, size.height);
+            }, viewport);
+          else await opened.page.setViewportSize(viewport);
           if (app) {
             await writeBundle(path.join(scratch, 'bundle'), current.bundle);
             await writeFile(

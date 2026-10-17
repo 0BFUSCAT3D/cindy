@@ -46,7 +46,7 @@ FAIL group-chat.no-sidebar.dark.zh-CN.1280x800
 - 证据目录只保留最近 20 次运行；`summary.json` 有每个变体的截图、错误、警告、耗时、宿主缺失
   接口和 Electron／Chromium 版本，`--json` 直接输出它。
 
-每个变体都会自动检查，出现以下情况判为失败：
+每次截图（`initial`、`check` 里的 `ui.capture`、`final`）时都会自动检查，出现以下情况判为失败：
 
 - 页面报错、控制台 error、尝试访问测试源以外的网络；
 - 横向溢出；
@@ -60,7 +60,7 @@ FAIL group-chat.no-sidebar.dark.zh-CN.1280x800
 `--changed` 读取相对上游主干的改动（含未提交和未跟踪文件），选出真实加载了这些文件的页面，
 默认跑全部场景：
 
-- `loaded` 文件被某页面加载。加载不等于被渲染到，具体分支是否出现取决于场景。
+- `loaded` 文件被某页面加载；全局样式及其引入的样式文件、Tailwind 配置算作每个页面都加载。加载不等于被渲染到，具体分支是否出现取决于场景。
 - `STUBBED` 文件在该页面里被替换，等于没验证。
 - `UNCOVERED` 是 renderer 里没有任何页面加载的界面文件，**未被验证**：补一个场景、用
   `--entry` 临时挂载，或在完整 Desktop 里验收。
@@ -120,15 +120,20 @@ export default {
 import { AppFrame, ctx, forbid, mountPage, subscription } from '../../ui-page/harness';
 
 mountPage({
-  route: '/bots/group/fixture-group',           // 可选：MemoryRouter 初始地址
-  host: (ctx) => ({                             // window.electronAPI 的场景数据
+  route: '/bots/group/fixture-group', // 可选：MemoryRouter 初始地址
+  host: (ctx) => ({
+    // window.electronAPI 的场景数据
     maker: {
       getBotGroup: async () => groupFrom(ctx.data),
       onBotGroupChanged: subscription('botGroupChanged'),
       sendBotGroupMessage: forbid('maker.sendBotGroupMessage'),
     },
   }),
-  render: (ctx) => <AppFrame><BotGroupChatView /></AppFrame>,
+  render: (ctx) => (
+    <AppFrame>
+      <BotGroupChatView />
+    </AppFrame>
+  ),
 });
 ```
 
@@ -142,7 +147,7 @@ mountPage({
 3. **模块替换（`stubs`）**，只在 store 或 hook 无法经宿主接口喂数据时使用。键是相对
    `apps/desktop` 的模块路径（不带扩展名）：
    - 字符串：整个模块换成这段代码；
-   - `{ file: './x.ts' }`：换成场景目录下的文件；
+   - 以 `./` 或 `../` 开头的字符串（如 `'./x.ts'`）：换成场景目录下的这个文件；
    - `{ partial: '…' }`：保留真实模块，只覆盖其中几个导出。
 
    被替换的模块会列在报告的 `replaced` 里，不算被验证。
@@ -175,8 +180,9 @@ mountPage({ cases: ['off', 'on'], render: (ctx) => <Switch checked={ctx.case ===
 
 ## 改前／改后对照
 
-`--compare [<ref>]` 把本页面加载的产品源码（`apps/desktop/src`、`packages`）换回 `<ref>` 的
-版本再渲染一次；不写 `<ref>` 时用本分支与上游主干的分叉点，也就是“本分支改动之前”。场景与
+`--compare [<ref>]` 把本页面加载的产品源码、样式与翻译（`apps/desktop/src`、`packages` 下的
+脚本、CSS、JSON，含全局样式）换回 `<ref>` 的版本再渲染一次，此后移动或删除的文件也按 `<ref>`
+补回；不写 `<ref>` 时用本分支与上游主干的分叉点，也就是“本分支改动之前”。场景与
 harness 始终用当前版本，所以两边执行同样的步骤、截同样的图。没有文件不同时不重复渲染。
 改前一侧的断言失败不影响结果，在报告里以 `before <ref>:` 开头逐条列出；`<ref>` 之后才新增的文件按当前版本使用并列出。
 

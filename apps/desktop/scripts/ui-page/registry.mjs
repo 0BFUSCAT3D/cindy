@@ -34,6 +34,14 @@ export async function loadPages() {
   return pages;
 }
 
+/** Re-imports a page definition after its file changed (preview). */
+export async function reloadPage(definition) {
+  if (definition.adhoc) return definition;
+  const fresh = (await import(`${pathToFileURL(definition.file).href}?v=${Date.now()}`)).default;
+  validate(fresh, definition.file);
+  return { ...fresh, dir: definition.dir, file: definition.file };
+}
+
 /** Throwaway entry written by an agent: generic checks only, cases come from mountPage(). */
 export function adhocPage(entry) {
   if (!existsSync(entry)) throw new Error(`--entry not found: ${entry}`);
