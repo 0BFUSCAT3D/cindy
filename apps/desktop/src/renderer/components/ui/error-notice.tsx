@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { cn } from '@/lib/utils';
 import { Button } from './button';
+import { Tip } from './tooltip';
 
 interface ErrorNoticeProps extends Omit<ComponentPropsWithoutRef<'div'>, 'children'> {
   message: ReactNode;
@@ -84,15 +85,16 @@ export const ErrorNotice = forwardRef<HTMLDivElement, ErrorNoticeProps>(function
         )}
       </div>
       {onDismiss && (
-        <button
-          type="button"
-          onClick={onDismiss}
-          aria-label={closeLabel}
-          title={closeLabel}
-          className="-mt-1 -mr-1 flex size-7 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] transition-colors"
-        >
-          <X size={14} />
-        </button>
+        <Tip text={closeLabel}>
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label={closeLabel}
+            className="-mt-1 -mr-1 flex size-7 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </Tip>
       )}
     </div>
   );
