@@ -31,6 +31,11 @@ export interface MobileAgentCapabilities {
   supportsOrcaWorkerPermissionMode?: boolean;
   /** host 是否支持创建后修改 Orca Worker 的角色名/标识(update_worker)；旧 host 缺省 false。 */
   supportsOrcaWorkerUpdate?: boolean;
+  /**
+   * host 是否支持给 Orca Worker 单独指定 Agent 所在电脑(远程供应商，`agentDeviceId`)；旧 host 缺省
+   * false：Worker 表单不列远程供应商、不发这个字段(旧 host 会静默丢掉)。
+   */
+  supportsOrcaWorkerAgentDevice?: boolean;
   /** host 是否在 set-model 内执行强制模型窗口保护；旧 host 缺省 false。 */
   supportsModelWindowSwitchGuard?: boolean;
 }
@@ -165,6 +170,7 @@ export function normalizeMobileAgentCapabilities(value: unknown): MobileAgentCap
     supportsModelWindowSwitchGuard: value.supportsModelWindowSwitchGuard === true,
     supportsOrcaWorkerPermissionMode: value.supportsOrcaWorkerPermissionMode === true,
     supportsOrcaWorkerUpdate: value.supportsOrcaWorkerUpdate === true,
+    supportsOrcaWorkerAgentDevice: value.supportsOrcaWorkerAgentDevice === true,
   };
 }
 
