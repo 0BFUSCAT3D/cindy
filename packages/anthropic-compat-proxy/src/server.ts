@@ -14,8 +14,6 @@
  */
 
 import { installResponseGuard } from './response-guard.js';
-import { compressGzip } from './compression.js';
-import { shouldCompressRequest } from './request-compression.js';
 import { collectRecoverableBody } from './oversized-attachments.js';
 import { createHash } from 'node:crypto';
 import { createServer, request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions, type Server, type ServerResponse } from 'node:http';
@@ -907,19 +905,7 @@ function decodeBodyForLog(buf: Buffer, contentEncoding: string | undefined): Buf
  *
  * 请求 body 在调用 forward 前已被上层在 debug 级别下 dump 过,这里不重复。
  */
-function forward(...args: Parameters<typeof forwardRequest>): void {
-  void forwardRequest(...args).catch(() => {
-    const res = args[5];
-    // Preparation/dispatch failure must settle the request, never leave an
-    // unhandled rejection or replay inference to discover compression support.
-    if (res.destroyed || res.writableEnded) return;
-    if (res.headersSent) { res.destroy(); return; }
-    res.writeHead(502, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: { type: 'proxy_error', message: 'upstream request preparation failed' } }));
-  });
-}
-
-async function forwardRequest(
+function forward(
   target: UpstreamTarget,
   method: string,
   path: string,
@@ -959,13 +945,13 @@ async function forwardRequest(
   // 为 true 时启用 2xx 成功响应的流式有效性门(#2242):空 2xx / 非 SSE 2xx /
   // 零事件 SSE 不再原样透传给客户端,转成结构化 502。false 保持字节级透传。
   requestDeclaredStream = false,
-  // 异步压缩完成后、透明重试前再跑同一条 dispatch gate。返回 false = 已改道(典型 503),
+  // 透明重试前再跑同一条 dispatch gate。返回 false = 已改道(典型 503),
   // 不得带着旧 headerOverride 再发一次。省略 = 与扩展前一样直接重发。
   beforeRetry?: () => Promise<boolean>,
   // Optional request-local operational observer. It never receives raw request/response data.
   forwardLifecycle?: ForwardLifecycleObserver | null,
   recoverUpstreamOversized?: (body: Buffer, signal: AbortSignal) => Promise<Buffer>,
-): Promise<void> {
+): void {
   // Diagnostics are a strict side channel: callback failures must never change forwarding.
   const notifyForwardLifecycle = (notify: () => void): void => {
     try {
@@ -1003,49 +989,6 @@ async function forwardRequest(
   const upstreamQuery = [actualTarget.baseQuery, routedQuery].filter(Boolean).join('&');
   const upstreamPath = upstreamQuery ? `${upstreamPathname}?${upstreamQuery}` : upstreamPathname;
 
-  // Keep the logical body for observers and existing semantic recovery rules.
-  // Compress only the final wire copy, after routing, transforms and headers.
-  let wireBody = body;
-  if (shouldCompressRequest(actualTarget, method, upstreamPathname, actualHeaders, body.length)) {
-    try {
-      const { compressed, stats } = await compressGzip(body, 1);
-      const used = stats.wireBytes < stats.originalBytes * 0.9;
-      if (used) {
-        wireBody = compressed;
-        actualHeaders = { ...actualHeaders, 'content-encoding': 'gzip' };
-      }
-      logger.debug?.('request gzip', { reqId, ...stats, used });
-    } catch {
-      // Nothing has been sent yet. Local compression failure can safely retain
-      // the original body; an upstream error must never trigger a gzip retry.
-      logger.debug?.('request gzip unavailable; sending identity', { reqId });
-    }
-    // A transparent retry has already started the shared lifecycle, but its
-    // previous upstream ended and the new request has no close listener yet.
-    const notifyPreparationFailure = (fallback: 'retry-rejected' | 'retry-error'): void => {
-      notifyForwardLifecycle(() => forwardLifecycle?.onFailure?.(
-        clientRes.destroyed && !clientRes.writableEnded ? 'client-aborted' : fallback,
-      ));
-    };
-    const stopIfClientClosed = (): boolean => {
-      if (!clientRes.destroyed && !clientRes.writableEnded) return false;
-      notifyPreparationFailure('retry-rejected');
-      return true;
-    };
-    if (stopIfClientClosed()) return;
-    // Compression yields to the event loop: credentials/owner may have changed.
-    try {
-      if (beforeRetry && !(await beforeRetry())) {
-        notifyPreparationFailure('retry-rejected');
-        return;
-      }
-    } catch (err) {
-      notifyPreparationFailure('retry-error');
-      throw err;
-    }
-    if (stopIfClientClosed()) return;
-  }
-
   // http.request 会把 options 原样透传给 agent.createConnection → net.connect,
   // 所以 socket 级 connect 选项运行时有效;但 @types/node 的 RequestOptions 没收录
   // autoSelectFamilyAttemptTimeout,用交叉类型显式补上。
@@ -1057,7 +1000,7 @@ async function forwardRequest(
     headers: {
       ...actualHeaders,
       host: actualTarget.hostname,
-      'content-length': String(wireBody.length),
+      'content-length': String(body.length),
     },
     timeout: UPSTREAM_SOCKET_TIMEOUT_MS,
     autoSelectFamilyAttemptTimeout: UPSTREAM_CONNECT_ATTEMPT_TIMEOUT_MS,
@@ -1946,7 +1889,7 @@ async function forwardRequest(
     upstreamReq.destroy(new Error('upstream socket timeout'));
   });
 
-  upstreamReq.end(wireBody);
+  upstreamReq.end(body);
 }
 
 /**

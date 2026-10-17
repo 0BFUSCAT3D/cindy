@@ -1,9 +1,6 @@
-/** Node-only transport primitives. Policies and wire envelopes belong to callers. */
+/** Node-only device transport primitives; not exported from the cross-platform entry. */
 import { performance } from 'node:perf_hooks';
-import { promisify } from 'node:util';
-import { gzip, gzipSync, gunzipSync } from 'node:zlib';
-
-const gzipAsync = promisify(gzip);
+import { gzipSync, gunzipSync } from 'node:zlib';
 
 export interface CompressionStats {
   originalBytes: number;
@@ -20,12 +17,6 @@ function result(input: Buffer, compressed: Buffer, started: number, base64: bool
     compressionMs: performance.now() - started,
   };
   return { compressed, stats };
-}
-
-/** Large HTTP uploads use libuv rather than blocking the main event loop. */
-export async function compressGzip(input: Buffer, level: number, base64 = false) {
-  const started = performance.now();
-  return result(input, await gzipAsync(input, { level }), started, base64);
 }
 
 /** Retains synchronous send/error contracts in existing device-link transports. */
