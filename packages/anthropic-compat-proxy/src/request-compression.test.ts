@@ -143,19 +143,49 @@ describe('final model request compression', () => {
     }
   });
 
-  it.each(['owner-changed', 'client-disconnected'] as const)('does not dispatch after %s during compression', async (reason) => {
+  // PR #6284: after a 400 recovery, the previous response has ended but no new
+  // upstream listener exists during gzip. Its lifecycle must still settle once.
+  it.each([
+    ['initial', 'owner-changed'], ['initial', 'client-disconnected'], ['initial', 'gate-error'],
+    ['retry', 'owner-changed'], ['retry', 'client-disconnected'], ['retry', 'gate-error'],
+  ] as const)('settles %s forwarding after %s during compression', async (phase, reason) => {
     let release!: () => void;
     let started!: () => void;
     const entered = new Promise<void>((resolve) => { started = resolve; });
     const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let markSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { markSettled = resolve; });
     let valid = true;
+    let gateError = false;
+    const lifecycle = { onStart: vi.fn(), onComplete: vi.fn(), onFailure: vi.fn() };
+    if (phase === 'retry') {
+      responses = [400];
+      vi.mocked(compressGzip).mockImplementationOnce(async (body) => {
+        const compressed = gzipSync(body);
+        return { compressed, stats: { originalBytes: body.length, gzipBytes: compressed.length,
+          wireBytes: compressed.length, compressionMs: 0 } };
+      });
+    }
     vi.mocked(compressGzip).mockImplementationOnce(async (body) => {
       started(); await blocked;
       const compressed = gzipSync(body);
       return { compressed, stats: { originalBytes: body.length, gzipBytes: compressed.length,
         wireBytes: compressed.length, compressionMs: 0 } };
     });
-    await start({ routingTransform: () => ({ dispatchGenerationValid: () => valid }) });
+    await start({
+      transformRequest: [Object.assign((body: unknown) => body, { onRequestSettled: markSettled })],
+      routingTransform: () => ({
+        dispatchGenerationValid: () => {
+          if (gateError) throw new Error('private gate failure');
+          return valid;
+        },
+        forwardLifecycle: lifecycle,
+      }),
+      recoveryRules: [{
+        id: 'test-retry', enabled: () => true, matches: () => true,
+        strip: (body) => body,
+      }],
+    });
     const abort = new AbortController();
     const pending = fetch(`${proxy!.url}/v1/messages`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -163,18 +193,32 @@ describe('final model request compression', () => {
     });
     await entered;
     if (reason === 'owner-changed') valid = false;
+    else if (reason === 'gate-error') gateError = true;
     else {
       abort.abort();
       await expect(pending).rejects.toThrow();
-      // dispose closes the server-side response before the queued gzip finishes.
+      // Wait for the production settlement hook, not only server.close(): the
+      // response close event may arrive after dispose's listening socket closes.
       await proxy!.dispose(); proxy = undefined;
+      await settled;
     }
     release();
     if (reason === 'owner-changed') expect((await pending).status).toBe(503);
+    if (reason === 'gate-error') expect((await pending).status).toBe(502);
     // Drain the deferred continuation, without a timing-based sleep.
     await blocked;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(records).toHaveLength(0);
+    expect(records).toHaveLength(phase === 'retry' ? 1 : 0);
+    expect(lifecycle.onStart).toHaveBeenCalledTimes(phase === 'retry' ? 1 : 0);
+    expect(lifecycle.onComplete).not.toHaveBeenCalled();
+    if (phase === 'retry') {
+      expect(lifecycle.onFailure.mock.calls).toEqual([[
+        reason === 'owner-changed' ? 'retry-rejected' : reason === 'gate-error' ? 'retry-error' : 'client-aborted',
+        undefined,
+      ]]);
+    } else {
+      expect(lifecycle.onFailure).not.toHaveBeenCalled();
+    }
   });
 
   it('requires an exact supported destination, JSON and a 64 KiB byte threshold', () => {

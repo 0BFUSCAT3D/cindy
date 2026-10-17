@@ -1020,10 +1020,30 @@ async function forwardRequest(
       // the original body; an upstream error must never trigger a gzip retry.
       logger.debug?.('request gzip unavailable; sending identity', { reqId });
     }
-    if (clientRes.destroyed || clientRes.writableEnded) return;
+    // A transparent retry has already started the shared lifecycle, but its
+    // previous upstream ended and the new request has no close listener yet.
+    const notifyPreparationFailure = (fallback: 'retry-rejected' | 'retry-error'): void => {
+      notifyForwardLifecycle(() => forwardLifecycle?.onFailure?.(
+        clientRes.destroyed && !clientRes.writableEnded ? 'client-aborted' : fallback,
+      ));
+    };
+    const stopIfClientClosed = (): boolean => {
+      if (!clientRes.destroyed && !clientRes.writableEnded) return false;
+      notifyPreparationFailure('retry-rejected');
+      return true;
+    };
+    if (stopIfClientClosed()) return;
     // Compression yields to the event loop: credentials/owner may have changed.
-    if (beforeRetry && !(await beforeRetry())) return;
-    if (clientRes.destroyed || clientRes.writableEnded) return;
+    try {
+      if (beforeRetry && !(await beforeRetry())) {
+        notifyPreparationFailure('retry-rejected');
+        return;
+      }
+    } catch (err) {
+      notifyPreparationFailure('retry-error');
+      throw err;
+    }
+    if (stopIfClientClosed()) return;
   }
 
   // http.request 会把 options 原样透传给 agent.createConnection → net.connect,
