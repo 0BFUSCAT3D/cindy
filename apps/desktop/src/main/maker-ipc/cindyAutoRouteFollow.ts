@@ -1,8 +1,4 @@
-import {
-  movedCindyAutoSourceId,
-  type AgentKind,
-  type ProviderView,
-} from '@cindy/model-providers';
+import { movedCindyAutoSourceId, type AgentKind, type ProviderView } from '@cindy/model-providers';
 
 import { isSupportedRuntimeEffort } from './runtimeSelectionAxes.js';
 

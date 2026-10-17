@@ -162,7 +162,8 @@ async function followMovedCindyAuto(
   providers: readonly ProviderView[] | undefined,
 ): Promise<BotModelRoute[]> {
   // 预设 auto 只在 Cindy AI 上、不会被挪动；只有模型组 Auto 才值得为此读一次目录。
-  if (!chain.some((route) => route.model !== 'auto' && isCindyAutoModelId(route.model))) return chain;
+  if (!chain.some((route) => route.model !== 'auto' && isCindyAutoModelId(route.model)))
+    return chain;
   let views = providers;
   if (!views) {
     try {
@@ -192,7 +193,10 @@ export async function readEffectiveBotModelSelection(
 ): Promise<{ chain: BotModelRoute[]; followsCindyDefault: boolean }> {
   const explicit = readExplicitBotModelChain(config);
   if (explicit !== null) {
-    return { chain: await followMovedCindyAuto(explicit, options?.providers), followsCindyDefault: false };
+    return {
+      chain: await followMovedCindyAuto(explicit, options?.providers),
+      followsCindyDefault: false,
+    };
   }
   const state = await readBotModelChainSettingsState(options);
   // 跟随 Cindy 默认时链路由实时目录推导，已经是当前位置；只有用户自定义的设置是存下来的。

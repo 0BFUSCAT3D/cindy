@@ -8,7 +8,11 @@
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { AgentKind } from '@cindy/maker-core';
-import { effectiveSourceIdForModel, movedCindyAutoSourceId, type ProviderView } from '@cindy/model-providers';
+import {
+  effectiveSourceIdForModel,
+  movedCindyAutoSourceId,
+  type ProviderView,
+} from '@cindy/model-providers';
 
 import type { ImDefaultSettingsChannel } from '../../../shared/imDefaultSettings.js';
 import { getDbClient } from '../../localDb/client/current';
@@ -141,9 +145,15 @@ function providerNormalizer(providers: ProviderView[]) {
   return (route: ImDefaultRoute): string | null => {
     if (route.agentDeviceId) return route.providerId;
     const agent = route.agentKind as AgentKind;
-    return movedCindyAutoSourceId(providers, { agent, model: route.model, providerId: route.providerId })
-      ?? route.providerId
-      ?? effectiveSourceIdForModel(providers, null, route.model, agent);
+    return (
+      movedCindyAutoSourceId(providers, {
+        agent,
+        model: route.model,
+        providerId: route.providerId,
+      }) ??
+      route.providerId ??
+      effectiveSourceIdForModel(providers, null, route.model, agent)
+    );
   };
 }
 

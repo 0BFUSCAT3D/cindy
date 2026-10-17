@@ -476,7 +476,11 @@ describe('Cindy Auto moving between Cindy AI and the enterprise pool', () => {
   function withModels(revision: string, ...ids: string[]) {
     const next = structuredClone(directory);
     next.revision = revision;
-    next.providers[0].models = ids.map((id) => ({ ...structuredClone(provider.models[0]), id, name: id }));
+    next.providers[0].models = ids.map((id) => ({
+      ...structuredClone(provider.models[0]),
+      id,
+      name: id,
+    }));
     return next;
   }
   async function syncTwice(first: typeof directory, second: typeof directory) {
@@ -492,18 +496,30 @@ describe('Cindy Auto moving between Cindy AI and the enterprise pool', () => {
   }
 
   it('platform → pool: a newly listed pool Auto asks Cindy AI to refresh too', async () => {
-    const notify = await syncTwice(withModels('1', 'byok/a/chat'), withModels('2', 'byok/a/chat', 'auto/group-a'));
+    const notify = await syncTwice(
+      withModels('1', 'byok/a/chat'),
+      withModels('2', 'byok/a/chat', 'auto/group-a'),
+    );
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('pool → platform: a pool Auto that disappeared asks Cindy AI to refresh too', async () => {
-    const notify = await syncTwice(withModels('1', 'byok/a/chat', 'auto/group-a'), withModels('2', 'byok/a/chat'));
+    const notify = await syncTwice(
+      withModels('1', 'byok/a/chat', 'auto/group-a'),
+      withModels('2', 'byok/a/chat'),
+    );
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('does not ask when only ordinary pool models change or nothing changes', async () => {
-    expect(await syncTwice(withModels('1', 'byok/a/chat', 'auto/group-a'), withModels('2', 'byok/a/other', 'auto/group-a')))
-      .not.toHaveBeenCalled();
-    expect(await syncTwice(withModels('1', 'auto/group-a'), withModels('1', 'auto/group-a'))).not.toHaveBeenCalled();
+    expect(
+      await syncTwice(
+        withModels('1', 'byok/a/chat', 'auto/group-a'),
+        withModels('2', 'byok/a/other', 'auto/group-a'),
+      ),
+    ).not.toHaveBeenCalled();
+    expect(
+      await syncTwice(withModels('1', 'auto/group-a'), withModels('1', 'auto/group-a')),
+    ).not.toHaveBeenCalled();
   });
 });

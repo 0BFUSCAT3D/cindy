@@ -47,31 +47,49 @@ const movedToPlatform = [
 describe('movedCindyAutoProviderId', () => {
   it('Auto 换了 Cindy 来源时给出新来源，引擎与模型不在这里改', () => {
     expect(movedCindyAutoProviderId(movedToPlatform, route())).toBe('xd');
-    const movedToPool = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', [AUTO])];
+    const movedToPool = [
+      provider('xd', 'builtin', ['auto']),
+      provider('org-pool', 'organization', [AUTO]),
+    ];
     expect(movedCindyAutoProviderId(movedToPool, route({ providerId: 'xd' }))).toBe('org-pool');
   });
 
   it('Pi 的默认来源（providerId=null）就是 Cindy AI，Auto 挪到号池同样跟随', () => {
-    const movedToPool = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', [AUTO])];
+    const movedToPool = [
+      provider('xd', 'builtin', ['auto']),
+      provider('org-pool', 'organization', [AUTO]),
+    ];
     expect(movedCindyAutoProviderId(movedToPool, route({ providerId: null }))).toBe('org-pool');
     // 其它引擎的默认来源不一定是 Cindy AI，不推断。
-    expect(movedCindyAutoProviderId(movedToPool, route({ providerId: null, agentKind: 'codex' }))).toBeNull();
+    expect(
+      movedCindyAutoProviderId(movedToPool, route({ providerId: null, agentKind: 'codex' })),
+    ).toBeNull();
   });
 
   it('订阅等内置非 Cindy AI 来源上的 auto/... 不跟随', () => {
-    const subscription = [provider('openai', 'builtin', ['other']), provider('xd', 'builtin', [AUTO])];
+    const subscription = [
+      provider('openai', 'builtin', ['other']),
+      provider('xd', 'builtin', [AUTO]),
+    ];
     expect(movedCindyAutoProviderId(subscription, route({ providerId: 'openai' }))).toBeNull();
   });
 
   it('Auto 从两份目录都消失时不登记切换，保留原路由交给既有的来源失效提示', () => {
-    const gone = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', ['pool-model'])];
+    const gone = [
+      provider('xd', 'builtin', ['auto']),
+      provider('org-pool', 'organization', ['pool-model']),
+    ];
     expect(movedCindyAutoProviderId(gone, route())).toBeNull();
     expect(movedCindyAutoProviderId(gone, route({ providerId: null }))).toBeNull();
   });
 
   it('回归：预设 auto 的任务不动', () => {
-    expect(movedCindyAutoProviderId(movedToPlatform, route({ model: 'auto', providerId: null }))).toBeNull();
-    expect(movedCindyAutoProviderId(movedToPlatform, route({ model: 'auto', providerId: 'xd' }))).toBeNull();
+    expect(
+      movedCindyAutoProviderId(movedToPlatform, route({ model: 'auto', providerId: null })),
+    ).toBeNull();
+    expect(
+      movedCindyAutoProviderId(movedToPlatform, route({ model: 'auto', providerId: 'xd' })),
+    ).toBeNull();
   });
 
   it('来源没变、普通模型、用户自己接的供应商都不动', () => {
@@ -95,7 +113,9 @@ describe('followMovedCindyAutoRoutes', () => {
       listProviders: async () => movedToPlatform,
       withSessionLock,
       readRoute: async (sessionId) =>
-        sessionId === 'moved' ? route({ effort: 'medium', fastMode: true }) : route({ providerId: 'xd' }),
+        sessionId === 'moved'
+          ? route({ effort: 'medium', fastMode: true })
+          : route({ providerId: 'xd' }),
       stage,
       assertCurrent: () => {},
     };
@@ -107,7 +127,11 @@ describe('followMovedCindyAutoRoutes', () => {
     await expect(followMovedCindyAutoRoutes(input)).resolves.toBe(1);
     expect(withSessionLock).toHaveBeenCalledTimes(1);
     expect(stage).toHaveBeenCalledWith('moved', {
-      agentKind: 'pi', model: AUTO, providerId: 'xd', effort: 'medium', fastMode: true,
+      agentKind: 'pi',
+      model: AUTO,
+      providerId: 'xd',
+      effort: 'medium',
+      fastMode: true,
     });
   });
 
@@ -166,7 +190,9 @@ describe('followMovedCindyAutoRoutes', () => {
 
   it('账号切换后整批停止，不再改动下一个账号的任务', async () => {
     let current = true;
-    const stage = vi.fn(async () => { current = false; });
+    const stage = vi.fn(async () => {
+      current = false;
+    });
     const { deps: input } = deps({
       listCandidates: async () => [
         { sessionId: 'first', ...route() },
@@ -185,20 +211,24 @@ describe('followMovedCindyAutoRoutes', () => {
 
 describe('Auto 没有推理档位时的跨来源跟随', () => {
   // Auto 不带档位，任务库里 effort 存的是空串；登记切换只接受合法档位或 null。
-  const movedToPool = [provider('xd', 'builtin', ['auto']), provider('org-pool', 'organization', [AUTO])];
+  const movedToPool = [
+    provider('xd', 'builtin', ['auto']),
+    provider('org-pool', 'organization', [AUTO]),
+  ];
 
   function follow(providers: ProviderView[], current: CindyAutoRoute) {
     const stage = vi.fn(async () => {});
     return {
       stage,
-      run: () => followMovedCindyAutoRoutes({
-        listCandidates: async () => [{ sessionId: 'task', ...current }],
-        listProviders: async () => providers,
-        withSessionLock: async (_sessionId, run) => run(),
-        readRoute: async () => current,
-        stage,
-        assertCurrent: () => {},
-      }),
+      run: () =>
+        followMovedCindyAutoRoutes({
+          listCandidates: async () => [{ sessionId: 'task', ...current }],
+          listProviders: async () => providers,
+          withSessionLock: async (_sessionId, run) => run(),
+          readRoute: async () => current,
+          stage,
+          assertCurrent: () => {},
+        }),
     };
   }
 
@@ -206,7 +236,11 @@ describe('Auto 没有推理档位时的跨来源跟随', () => {
     const { stage, run } = follow(movedToPlatform, route({ providerId: 'org-pool', effort: '' }));
     await expect(run()).resolves.toBe(1);
     expect(stage).toHaveBeenCalledWith('task', {
-      agentKind: 'pi', model: AUTO, providerId: 'xd', effort: null, fastMode: false,
+      agentKind: 'pi',
+      model: AUTO,
+      providerId: 'xd',
+      effort: null,
+      fastMode: false,
     });
   });
 
@@ -214,7 +248,11 @@ describe('Auto 没有推理档位时的跨来源跟随', () => {
     const { stage, run } = follow(movedToPool, route({ providerId: 'xd', effort: '' }));
     await expect(run()).resolves.toBe(1);
     expect(stage).toHaveBeenCalledWith('task', {
-      agentKind: 'pi', model: AUTO, providerId: 'org-pool', effort: null, fastMode: false,
+      agentKind: 'pi',
+      model: AUTO,
+      providerId: 'org-pool',
+      effort: null,
+      fastMode: false,
     });
   });
 

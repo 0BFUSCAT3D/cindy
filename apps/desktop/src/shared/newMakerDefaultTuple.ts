@@ -126,11 +126,12 @@ function matchingModel(
   // Both renderer and unattended callers keep the same-provider fallback.
   // Without local visibility overrides, use the catalog's default visibility.
   // Cindy Auto is an upstream route identity; do not substitute a fixed model.
-  const candidates = pass === 'serverMarkedAuto'
-    ? models.filter((model) => isServerMarkedAuto(model, agent)).sort(bySortOrder)
-    : pass === 'preferred'
-      ? modelIds.map((id) => models.find((model) => model.id === id))
-      : models.slice().sort(bySortOrder);
+  const candidates =
+    pass === 'serverMarkedAuto'
+      ? models.filter((model) => isServerMarkedAuto(model, agent)).sort(bySortOrder)
+      : pass === 'preferred'
+        ? modelIds.map((id) => models.find((model) => model.id === id))
+        : models.slice().sort(bySortOrder);
   return candidates
     .find(
       (model) =>
@@ -158,7 +159,8 @@ export function resolveNewMakerDefaultTuples(args: {
   const tuples: NewMakerDefaultTuple[] = [];
 
   for (const policy of DEFAULT_POLICIES) {
-    const isPolicyProvider = (candidate: ProviderView) => providerCatalogId(candidate) === policy.providerId;
+    const isPolicyProvider = (candidate: ProviderView) =>
+      providerCatalogId(candidate) === policy.providerId;
     const matchingProviders = providers
       .filter(
         (candidate) =>
@@ -183,13 +185,7 @@ export function resolveNewMakerDefaultTuples(args: {
         for (const agent of policy.agents) {
           const vendor = vendorForAgent(agent);
           if (!availableAgents.has(vendor)) continue;
-          const model = matchingModel(
-            provider,
-            agent,
-            policy.modelIds,
-            pass,
-            args.isModelEnabled,
-          );
+          const model = matchingModel(provider, agent, policy.modelIds, pass, args.isModelEnabled);
           if (!model) continue;
           tuples.push({
             vendor,

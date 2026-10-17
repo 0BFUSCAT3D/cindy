@@ -454,8 +454,12 @@ describe('cindyAutoModelIdsChanged', () => {
   });
 
   it('负向：只有普通模型变化、顺序变化或形似 auto 的 ID 不算', () => {
-    expect(cindyAutoModelIdsChanged(ids('auto/group-a', 'p1'), ids('p2', 'auto/group-a'))).toBe(false);
-    expect(cindyAutoModelIdsChanged(ids('autopilot', 'vendor/auto'), ids('automation'))).toBe(false);
+    expect(cindyAutoModelIdsChanged(ids('auto/group-a', 'p1'), ids('p2', 'auto/group-a'))).toBe(
+      false,
+    );
+    expect(cindyAutoModelIdsChanged(ids('autopilot', 'vendor/auto'), ids('automation'))).toBe(
+      false,
+    );
     expect(cindyAutoModelIdsChanged([], [])).toBe(false);
   });
 });

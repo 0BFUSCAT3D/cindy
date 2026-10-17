@@ -5979,9 +5979,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 目录刷新先登记被服务端挪走的 Auto：之后的上下文刷新会跳过已登记切换的任务，
       // 不再按旧来源重载一个已不提供该模型的连接。
       if (!targets) {
-        await followMovedCindyAutoRoutesNow().catch((error) => log.warn('Cindy Auto provider follow failed', {
-          error: error instanceof Error ? error.message : String(error),
-        }));
+        await followMovedCindyAutoRoutesNow().catch((error) =>
+          log.warn('Cindy Auto provider follow failed', {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
       }
     }).then(() => refreshActiveModelContextSettings({
       targets, inferProviderId: (model, agent) => resolveDesktopModelContextProviderId(getActiveCatalog(), agent, null, model),
@@ -15024,30 +15026,39 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     await followMovedCindyAutoRoutes({
       isReady: () => tryGetDbClient() !== null,
       // 远程主机 / 另一台电脑上运行的任务，路由由那一端的目录决定，不在本机改道。
-      listCandidates: async () => (await getDbClient().drizzle.select({
-        sessionId: sessions.id,
-        agentKind: sessions.agentKind,
-        model: sessions.model,
-        providerId: sessions.providerId,
-        effort: sessions.effort,
-        fastMode: sessions.fastMode,
-      }).from(sessions).where(and(
-        eq(sessions.status, 'active'),
-        or(eq(sessions.model, 'auto'), like(sessions.model, 'auto/%')),
-        isNull(sessions.remoteHostId),
-        isNull(sessions.agentDeviceId),
-      ))).map((row) => ({
-        sessionId: row.sessionId,
-        agentKind: dbToMakerAgentKind(row.agentKind),
-        model: row.model,
-        providerId: row.providerId?.trim() || null,
-        effort: row.effort ?? null,
-        fastMode: row.fastMode === true,
-      })),
-      listProviders: () => getDesktopProviderService().listProviders({
-        allowSideEffects: false,
-        catalog: getActiveCatalog(),
-      }),
+      listCandidates: async () =>
+        (
+          await getDbClient()
+            .drizzle.select({
+              sessionId: sessions.id,
+              agentKind: sessions.agentKind,
+              model: sessions.model,
+              providerId: sessions.providerId,
+              effort: sessions.effort,
+              fastMode: sessions.fastMode,
+            })
+            .from(sessions)
+            .where(
+              and(
+                eq(sessions.status, 'active'),
+                or(eq(sessions.model, 'auto'), like(sessions.model, 'auto/%')),
+                isNull(sessions.remoteHostId),
+                isNull(sessions.agentDeviceId),
+              ),
+            )
+        ).map((row) => ({
+          sessionId: row.sessionId,
+          agentKind: dbToMakerAgentKind(row.agentKind),
+          model: row.model,
+          providerId: row.providerId?.trim() || null,
+          effort: row.effort ?? null,
+          fastMode: row.fastMode === true,
+        })),
+      listProviders: () =>
+        getDesktopProviderService().listProviders({
+          allowSideEffects: false,
+          catalog: getActiveCatalog(),
+        }),
       withSessionLock: withSendToSessionLock,
       readRoute: async (sessionId) => {
         // 用户或系统已登记的切换、运行时改道都是更晚的决定，不覆盖。
@@ -15055,7 +15066,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const credentialSwitch = getPendingCredentialSwitchTarget(sessionId);
         if (credentialSwitch && credentialSwitch.selectionSource !== 'agent') return null;
         const profiles = await readSessionRuntimeProfiles(sessionId);
-        if (!profiles || profiles.pendingMutation || profiles.control.effectiveOverride) return null;
+        if (!profiles || profiles.pendingMutation || profiles.control.effectiveOverride)
+          return null;
         return profiles.effective;
       },
       stage: (sessionId, route) => stageSessionRouteSelection(sessionId, route, route.agentKind),
