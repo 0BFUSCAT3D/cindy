@@ -167,6 +167,8 @@ export class TaskWatch {
   private ownershipAt = 0;
   /** 归属至少成功读到过一次：之前不重算、不通知，免得把启动时已有的事件按「没人跟」结清。 */
   private ownershipLoaded = false;
+  /** 启动兜底（上一轮被打断的任务）是否已读成功；读失败时在之后的扫描里重试。 */
+  private interruptedSeeded = false;
   private ownershipRefresh: Promise<void> | null = null;
   private schedulerBotId: string | null = null;
   private readonly finishedLog: FinishedRecord[] = [];
@@ -310,7 +312,9 @@ export class TaskWatch {
         unowned ||= result.unowned;
       }
       // 新出现的任务可能刚由伙伴委派开出来：归属有点旧就提前重读一次。
-      if (unowned && now - this.ownershipAt >= 5_000) await this.refreshOwnership();
+      // 新出现、又查不到创建者的任务：发布任何事件前先确认一次最新归属（委派任务与它的委派记录在同一事务里写入，
+      // 新读一次一定能认出来）；不拿几秒前的缓存判它「没人开」，否则事件会先落到总调度并被结清。
+      if (unowned) await this.refreshOwnership(true);
       if (changed || unowned) this.deps.onChange();
     }
   }
@@ -423,6 +427,7 @@ export class TaskWatch {
       this.deps.log.warn('interrupted session seed failed', { error: errorCode(error) });
       return;
     }
+    this.interruptedSeeded = true;
     for (const meta of rows) {
       this.meta.set(meta.id, meta);
       if (!this.isWatchable(meta) || !meta.interrupted || this.rows.has(meta.id) || this.local.get(meta.id)?.activity) continue;
@@ -538,6 +543,8 @@ export class TaskWatch {
     const now = this.deps.now();
     if (now - this.ownershipAt >= OWNERSHIP_REFRESH_MS) await this.refreshOwnership();
     await this.refreshLocalMeta();
+    // 启动兜底读失败（如数据库一时忙）：按扫描节奏重试，读成功一次后不再读。
+    if (!this.interruptedSeeded && !this.stopped) await this.seedInterrupted();
     // 上次读元数据失败留下的 pending：按扫描节奏重试一次，不形成重试风暴。
     if (this.pending.size && this.ownershipLoaded && !this.stopped) this.scheduleFlush();
     for (const [id, row] of this.rows) {

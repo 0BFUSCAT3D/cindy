@@ -9,7 +9,8 @@
  * - 最小失败输入：伙伴主任务（canonical）出现在活动里；启动时灵动岛残留「完成」；主人点停止后灵动岛条目消失
  *   被当成做完；同一条挂起交互在重启后得到新的事件 id；远程 list-active 连续失败；远程任务两次轮询之间从权限请求
  *   A 换到 B，仍显示 A；本机任务在同一相位里从请求 A 换到 B，沿用 A 的等待时刻；读任务元数据失败一次后，
- *   这批任务被丢掉，之后再无活动就永远不进表。
+ *   这批任务被丢掉，之后再无活动就永远不进表；启动兜底读失败一次后再不重试；伙伴刚开的任务在上次归属读取
+ *   几秒内出现，被当成「没人开」落到总调度。
  * - tier：unit（全部 IO 经注入的内存 fake，时间由 now() 推进，无真实等待）。
  */
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
@@ -53,6 +54,8 @@ function harness(options: {
   const pending = new Map<string, unknown[]>();
   const onChange = vi.fn();
   let metaReadFailures = 0;
+  let interruptedReadFailures = 0;
+  const creators = new Map(Object.entries(options.creators ?? {}));
   const invokeRemote = vi.fn(options.invokeRemote ?? (async () => { throw new Error('offline'); }));
   const watch = new TaskWatch({
     now: () => now,
@@ -67,10 +70,16 @@ function harness(options: {
       }
       return ids.flatMap((id) => (metas.has(id) ? [metas.get(id)!] : []));
     },
-    readInterruptedSessions: async () => [...metas.values()].filter((m) => m.interrupted),
+    readInterruptedSessions: async () => {
+      if (interruptedReadFailures > 0) {
+        interruptedReadFailures -= 1;
+        throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' });
+      }
+      return [...metas.values()].filter((m) => m.interrupted);
+    },
     readOwnership: async () => ({
       bots: new Map([['sched', { status: 'active', allowSchedulerFollow: false }], ['a', { status: 'active', allowSchedulerFollow: false }]]),
-      creatorBySession: new Map(Object.entries(options.creators ?? {})),
+      creatorBySession: new Map(creators),
       responsibleByBot: new Map(),
     }),
     readSchedulerOverride: () => ({ customized: true, schedulerBotId: 'sched' }),
@@ -82,6 +91,8 @@ function harness(options: {
     watch, metas, pending, onChange, invokeRemote, toolsInFlight,
     advance: (ms: number) => { now += ms; },
     failMetaReads: (count: number) => { metaReadFailures = count; },
+    failInterruptedReads: (count: number) => { interruptedReadFailures = count; },
+    creators,
     now: () => now,
   };
 }
@@ -191,6 +202,28 @@ describe('TaskWatch local observation', () => {
     await h.watch.sweep();
     await h.watch.settled();
     expect(h.watch.get('quiet')).toMatchObject({ phase: 'running', followerBotId: 'sched' });
+  });
+});
+
+describe('TaskWatch ownership and startup retries', () => {
+  it('retries the startup read of interrupted tasks on a later sweep', async () => {
+    const h = harness({ metas: [meta('crashed', { interrupted: true, activeTurnStartedAt: 5_000 })] });
+    h.failInterruptedReads(1);
+    await h.watch.start();
+    expect(h.watch.get('crashed')).toBeUndefined();
+    await h.watch.sweep();
+    expect(h.watch.get('crashed')).toMatchObject({ phase: 'errored', phaseSince: 5_000, followerBotId: 'sched' });
+  });
+
+  it('re-reads ownership before judging a newly seen task unowned, even right after the last read', async () => {
+    const h = harness({ metas: [meta('fresh')] });
+    await h.watch.start();
+    // 伙伴 a 刚开出这件任务：委派记录在上次归属读取之后一秒才写入。
+    h.advance(1_000);
+    h.creators.set('fresh', 'a');
+    h.watch.applyActivity('fresh', activity('fresh', 'running'));
+    await h.watch.settled();
+    expect(h.watch.get('fresh')).toMatchObject({ creatorBotId: 'a', followerBotId: 'a', source: 'bot-task' });
   });
 });
 
