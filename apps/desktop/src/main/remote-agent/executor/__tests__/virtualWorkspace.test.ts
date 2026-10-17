@@ -755,7 +755,7 @@ describe('virtual workspace', () => {
     }
   });
 
-  it('maps workbench project paths in direct and stringified generic-tool arguments', async () => {
+  it('maps path fields in direct and stringified generic-tool arguments, leaving opaque todo labels alone', async () => {
     const virtual = '/Users/agent/workspace';
     const { project, executor } = setup(virtual);
     const forwarded: Array<Record<string, unknown>> = [];
@@ -771,21 +771,21 @@ describe('virtual workspace', () => {
       },
     });
     try {
-      for (const args of [
-        { project: virtual },
-        JSON.stringify({ project: virtual }),
-        { items: [{ project: virtual }] },
-      ]) {
+      // 伙伴待办里的 project 只是原样回传的标签(2026-10-17 放弃「项目」后不再授权),不做路径还原。
+      const calls: Array<[string, unknown]> = [
+        ['list_dir', { path: virtual }],
+        ['list_dir', JSON.stringify({ path: virtual })],
+        ['preflight_teammate_todo_events', { events: [{ source: 's', sequence: 1, key: 'k', project: virtual }] }],
+      ];
+      for (const [name, args] of calls) {
         await router({ method: 'POST', path: '/mcp/cindy_helper', headers: [], body: Buffer.from(JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: {
-            name: args && typeof args === 'object' && !Array.isArray(args) && 'items' in args ? 'set_workbench_tasks' : 'set_workbench_task', args,
-          } },
+          jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: { name, args } },
         })).toString('base64') });
       }
       expect(forwarded).toEqual([
-        { name: 'set_workbench_task', args: { project } },
-        { name: 'set_workbench_task', args: JSON.stringify({ project }) },
-        { name: 'set_workbench_tasks', args: { items: [{ project }] } },
+        { name: 'list_dir', args: { path: project } },
+        { name: 'list_dir', args: JSON.stringify({ path: project }) },
+        { name: 'preflight_teammate_todo_events', args: { events: [{ source: 's', sequence: 1, key: 'k', project: virtual }] } },
       ]);
     } finally {
       await executor.close();
