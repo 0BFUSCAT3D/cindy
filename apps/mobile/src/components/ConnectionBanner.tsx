@@ -90,7 +90,9 @@ export function ConnectionBanner({
   // 熔断已关后残留的 DEVICE_UNRESPONSIVE 错误是陈旧快照,按 null 处理(与
   // useShowConnectionBanner 同一判定,否则会出现可见但无内容的空壳 banner)。
   const effectiveError = resolveEffectiveConnectionError(error, deviceUnresponsive);
-  const deviceDisconnected = cachedOnly || Boolean(effectiveError?.includes('DEVICE_OFFLINE'));
+  // Request errors can outlive reconnection (e.g. history pagination). Only the
+  // current presence verdict can replace that request's error and retry action.
+  const deviceDisconnected = cachedOnly;
   const healthCopy = connectionHealthCopy({
     network, status, issue: activeIssue,
     deviceDisconnected,

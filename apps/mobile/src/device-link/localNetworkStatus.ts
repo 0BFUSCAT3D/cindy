@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 export type LocalNetworkStatus = 'unknown' | 'available' | 'unavailable';
 export type NetworkState = { type?: string; isConnected?: boolean; isInternetReachable?: boolean };
 
-let snapshot: { status: LocalNetworkStatus } = { status: 'unknown' };
+let snapshot: { status: LocalNetworkStatus; connectedType?: string } = { status: 'unknown' };
 const listeners = new Set<() => void>();
 
 /** Native network evidence only; a failed computer request cannot change this. */
@@ -20,8 +20,12 @@ export const localNetworkStore = {
       : network.type === 'NONE' || network.isConnected === false || network.isInternetReachable === false
         ? 'unavailable'
         : network.isConnected === true ? 'available' : 'unknown';
-    if (status === snapshot.status) return;
-    snapshot = { status };
+    // A connected WIFI → CELLULAR transition interrupts old requests even when
+    // both paths are available. Repeated capability hints keep the same snapshot.
+    const connectedType = network?.isConnected === true && network.type !== 'UNKNOWN' && network.type !== 'NONE'
+      ? network.type : undefined;
+    if (status === snapshot.status && connectedType === snapshot.connectedType) return;
+    snapshot = { status, connectedType };
     for (const listener of listeners) listener();
   },
 };

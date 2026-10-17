@@ -483,19 +483,27 @@ describe('Provider network recovery priority', () => {
   // Regression: phone route loss used to count as three host failures. Existing
   // recovery tests only checked reconnect calls, not the visible host verdict.
   // Unit tier: real provider/native event boundary, no network or real timers.
-  it('does not blame either computer for timeouts spanning a phone outage', async () => {
+  it.each(['outage', 'route switch'] as const)('does not blame either computer for timeouts spanning a phone %s', async (change) => {
     resetDeviceResponsivenessTracking();
     await act(async () => networkEvents.network(wifi));
     const devices = ['host-a', 'host-b'];
     const pending = devices.map(device => Array.from({ length: 3 }, () => acquireDeviceSendSlot(device)));
     await act(async () => {
-      networkEvents.network({ type: 'NONE', isConnected: false, isInternetReachable: false });
+      networkEvents.network(change === 'outage'
+        ? { type: 'NONE', isConnected: false, isInternetReachable: false }
+        : { ...wifi, type: 'CELLULAR' });
       networkEvents.network(wifi);
       devices.forEach((device, index) => {
         pending[index].forEach(slot => settleDeviceSend(device, slot, 'timeout'));
       });
     });
     expect([...unresponsiveDevicesStore.getSnapshot()]).toEqual([]);
+    const fresh = Array.from({ length: 3 }, () => acquireDeviceSendSlot('host-a'));
+    await act(async () => {
+      networkEvents.network(wifi);
+      fresh.forEach(slot => settleDeviceSend('host-a', slot, 'timeout'));
+    });
+    expect(unresponsiveDevicesStore.has('host-a')).toBe(true);
   });
 
   it('ignores requests issued offline, then counts new failures after recovery', async () => {
