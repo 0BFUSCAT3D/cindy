@@ -4601,6 +4601,94 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("serializes setThinkingEnabled behind an in-flight model switch", async () => {
+    // 2026-10-17 Greptile P1：setModel 走 runExclusivePiRpc 而 setThinkingEnabled 直发。
+    // 切模进行中用户关闭思考：不排队的话，切模收尾仍按更早的 thinkingEnabled:true
+    // 载体重新下发开启并清掉关闭标记——用户看到关闭成功、实际被覆盖。修复后整个
+    // setThinkingEnabled 同队列串行，意图按时间序线性化，后发者胜。
+    const denseMap = {
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    } as const;
+    let releaseSwitch!: () => void;
+    const switchGate = new Promise<void>((resolve) => { releaseSwitch = resolve; });
+    const thinkingOrder: string[] = [];
+    captured.requestHandler = async (command) => {
+      if (command.type === "get_state") {
+        return {
+          success: true,
+          data: { sessionFile: "/mock/s.jsonl", model: { contextWindow: 200_000 } },
+        };
+      }
+      if (command.type === "set_model") {
+        await switchGate;
+        return { success: true, data: { contextWindow: 200_000 } };
+      }
+      if (command.type === "set_thinking_level") {
+        thinkingOrder.push(String(command.level));
+        return { success: true, data: {} };
+      }
+      return { success: true, data: {} };
+    };
+    const agent = new PiAgent(
+      byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-a",
+              name: "Native A",
+              baseUrl: "http://a.test",
+              api: "openai-responses" as const,
+              models: [
+                { id: "model-a", reasoning: true, thinkingLevelMap: { ...denseMap } },
+                { id: "model-b", reasoning: true, thinkingLevelMap: { ...denseMap } },
+              ],
+            },
+          ],
+          env: {},
+        }),
+        [
+          { id: "model-a", displayName: "A", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+          { id: "model-b", displayName: "B", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+        ],
+      ),
+    );
+    const handle = await agent.startSession({
+      sessionId: "thinking-toggle-serializes-with-switch",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "native-a",
+      effort: "high",
+    });
+    const beforeSwitch = captured.requests.length;
+    const switchPromise = handle.setModel!("model-b", { providerId: "native-a", thinkingEnabled: true });
+    // 等切模真正进入临界区、卡在门控的 set_model 上（对齐真实竞态：切模已持锁进行中）。
+    await vi.waitFor(() => {
+      if (!captured.requests.slice(beforeSwitch).some((r) => r.type === "set_model")) {
+        throw new Error("switch has not reached set_model yet");
+      }
+    });
+
+    // 切模进行中发起关闭：修复后它必须排队等切模收尾完成，最后落地。
+    const togglePromise = handle.setThinkingEnabled!(false);
+    releaseSwitch();
+    await Promise.all([switchPromise, togglePromise]);
+
+    // 用户的关闭是更新的意图，必须最后生效；收尾按旧载体下发的开启在其之前。
+    expect(thinkingOrder[thinkingOrder.length - 1]).toBe("off");
+    // 终态标记保持「用户已关」：随后的无载体切模不得再发任何档位。
+    const beforeFinal = captured.requests.length;
+    await handle.setModel!("model-a", { providerId: "native-a" });
+    expect(
+      captured.requests.slice(beforeFinal).some((r) => r.type === "set_thinking_level"),
+    ).toBe(false);
+    await handle.close();
+  });
+
   it("keeps the explicit-off marker when re-enabling thinking is rejected", async () => {
     const denseMap = {
       minimal: "minimal",

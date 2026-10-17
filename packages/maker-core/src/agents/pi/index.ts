@@ -8050,26 +8050,32 @@ export class PiAgent extends BaseAgent {
 
       async setThinkingEnabled(enabled: boolean): Promise<void> {
         if (reviewMode) return;
-        // 打开时回到会话当前的期望档位，而不是固定 xhigh：显式开关不该把用户选好的
-        // max/medium 抹平——否则紧随其后的切模按 mutableEffort 归一化时又会把它降档。
-        // 没有期望档位时才回到历史默认 xhigh。
-        const targetEffort = enabled ? mutableEffort ?? startupEffort ?? null : null;
-        const level = targetEffort
-          ? effortToPiThinkingLevel(targetEffort)
-          : enabled
-            ? 'xhigh'
-            : 'off';
-        const resp = await proc.request({
-          type: 'set_thinking_level',
-          level,
+        // 整个操作（读档位、RPC、标记与档位记忆更新）必须与 setModel 同队列串行：
+        // 切模进行中用户关闭思考时，若这里不排队直接发，切模收尾仍会按更早的
+        // thinkingEnabled:true 载体重新下发开启并清掉关闭标记——用户看到关闭成功、
+        // 实际被覆盖（2026-10-17 Greptile P1）。串行后意图按时间序线性化，后发者胜。
+        await runExclusivePiRpc(async () => {
+          // 打开时回到会话当前的期望档位，而不是固定 xhigh：显式开关不该把用户选好的
+          // max/medium 抹平——否则紧随其后的切模按 mutableEffort 归一化时又会把它降档。
+          // 没有期望档位时才回到历史默认 xhigh。
+          const targetEffort = enabled ? mutableEffort ?? startupEffort ?? null : null;
+          const level = targetEffort
+            ? effortToPiThinkingLevel(targetEffort)
+            : enabled
+              ? 'xhigh'
+              : 'off';
+          const resp = await proc.request({
+            type: 'set_thinking_level',
+            level,
+          });
+          if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
+          // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
+          // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
+          thinkingExplicitlyOff = !enabled;
+          // 只在打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
+          // 再打开应回到原档位，而不是回落到启动时的档位。
+          if (enabled) mutableEffort = targetEffort ?? 'xhigh';
         });
-        if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
-        // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
-        // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
-        thinkingExplicitlyOff = !enabled;
-        // 只在打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
-        // 再打开应回到原档位，而不是回落到启动时的档位。
-        if (enabled) mutableEffort = targetEffort ?? 'xhigh';
       },
 
       async setPermissionMode(mode): Promise<void> {
