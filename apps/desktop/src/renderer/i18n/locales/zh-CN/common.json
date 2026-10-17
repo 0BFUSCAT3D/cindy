@@ -9777,7 +9777,13 @@
       "imBotOwnerMissing": "没找到主人的用户 ID，请到伙伴的「消息平台」页把这个机器人连上。",
       "imBotGatewayRunning": "原来的网关还在用这个机器人。先停掉它，再到「消息平台」页连接。",
       "imBotInUse": "这个机器人已经在这台电脑上用了：在 设置 → IM 机器人 里，或者在另一位伙伴那里。",
-      "imBotConnectFailed": "没能连上这个机器人，请到伙伴的「消息平台」页重试。"
+      "imBotConnectFailed": "没能连上这个机器人，请到伙伴的「消息平台」页重试。",
+      "imBotSourceStopUnconfirmed": "原来的机器人还没停下，暂时没有接给伙伴。可以稍后在伙伴的「消息平台」页连接。",
+      "imBotSourceChanged": "原来的机器人在预览后换过了，没有停用它。请重新读取后再导入。",
+      "bots": "消息机器人",
+      "botsNote": "导入后，{{source}} 里的这些机器人会停用，由伙伴接管。",
+      "sourceDisabled": "原来已停用",
+      "botOwner": "主人 ID {{id}}"
     },
     "learning": {
       "memory": "已记住：{{title}}",
