@@ -58,6 +58,7 @@ export interface MobileRemoteMediaFetchOptions {
 }
 
 export interface MobileRemoteMediaResolverDeps {
+  findLocalImage?(url: string): Promise<{ uri: string; mimeType: string; size: number } | null>;
   fetchRemoteMedia(
     url: string,
     opts?: MobileRemoteMediaFetchOptions,
@@ -176,6 +177,18 @@ export async function resolveMobileRemoteMedia(
   deps: MobileRemoteMediaResolverDeps,
   opts?: MobileRemoteMediaResolveOptions,
 ): Promise<MobileResolvedRemoteMedia> {
+  if (media.kind === 'image' && !opts?.skipCache) {
+    // Shared by task history, group chat and file viewers. Keeping this here
+    // avoids fixing thumbnails in one screen while original-image reads still go online.
+    const local = await (deps.findLocalImage
+      ? deps.findLocalImage(media.url)
+      : import('./sentAttachmentThumbStore').then((store) => store.resolveSentAttachmentThumb(media.url)))
+      .catch(() => null);
+    if (local) return {
+      url: local.uri, mimeType: local.mimeType, size: local.size,
+      ossKey: '', expiresAt: REMOTE_MEDIA_NEVER_EXPIRES, previewable: true,
+    };
+  }
   if (!isDesktopLocalMediaUrl(media.url)) {
     throw new Error(i18n.t("composer.attachments.notFetchableMedia"));
   }

@@ -153,11 +153,11 @@ import {
   patchDeviceViewsWithPresence,
 } from '@/device-link/presenceDevices';
 import {
-  connectionIssueHint,
-  connectionIssueTitle,
+  connectionHealthCopy,
   describeRemoteError,
   formatRemoteError,
 } from '@/device-link/remoteStatus';
+import { useLocalNetworkStatus } from '@/device-link/localNetworkStatus';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { ConnectionRecoveryProgress } from '@/components/ConnectionBanner';
 import { ConnectionNoticeOverlay, useDelayedConnectionNotice } from '@/components/ConnectionNoticeOverlay';
@@ -525,6 +525,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const {
     connectionEpoch,
     connectionIssue,
+    getPresenceAvailability,
     invoke,
     lastPresenceSnapshot,
     recoveringDeviceIds,
@@ -2179,8 +2180,22 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [home.deviceFilters, home.selectedDeviceId, initialHomeSettled, selectedDeviceId]);
   // 连接层失败原因比请求级 error 更根因:unstable 在 online 时也需保持可见。
   const activeConnectionIssue = status !== 'online' || connectionIssue?.kind === 'unstable' ? connectionIssue : null;
-  const selectedDeviceDisconnected = resolveHomeDeviceDisconnected(home.deviceFilters, selectedDeviceId, status === 'connecting');
-  const showConnectionRow = selectedDeviceDisconnected || resolveConnectionBannerVisibility({
+  const network = useLocalNetworkStatus();
+  const networkUnavailable = network === 'unavailable';
+  // Cached rows and failed hydration are not proof that a computer is offline.
+  // Use this relay generation's authoritative presence; unknown stays neutral.
+  const selectedDeviceDisconnected = status === 'online'
+    && resolveHomeDeviceDisconnected(home.deviceFilters.map((device) => ({
+      deviceId: device.deviceId,
+      sessionCount: device.sessionCount,
+      available: device.deviceId === null || getPresenceAvailability(device.deviceId) !== false,
+    })), selectedDeviceId, false);
+  const healthCopy = connectionHealthCopy({
+    network, status, issue: activeConnectionIssue,
+    deviceDisconnected: selectedDeviceDisconnected,
+    deviceUnresponsive: homeDeviceRecovery && homeDeviceUnresponsive,
+  });
+  const showConnectionRow = networkUnavailable || selectedDeviceDisconnected || resolveConnectionBannerVisibility({
     offline: status !== 'online',
     connecting: status === 'connecting',
     offlineLongEnough: true,
@@ -2191,7 +2206,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   });
   const showConnectionNotice = useDelayedConnectionNotice(showConnectionRow);
   const quietSyncing = !showConnectionRow && (refreshing || homeRecoveringDeviceIds.size > 0 || status === 'connecting');
-  const showHomeSyncAction = resolveConnectionBannerSyncActionVisibility({
+  const showHomeSyncAction = !networkUnavailable && resolveConnectionBannerSyncActionVisibility({
     online: status === 'online',
     hasActiveIssue: activeConnectionIssue !== null,
     deviceUnresponsive: homeDeviceRecovery,
@@ -2199,19 +2214,15 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     // loadHome has no outer retry after its bounded REST retries are exhausted.
     requestErrorAutoRecovering: false,
   });
-  const showHomeRecoveryProgress = (!activeConnectionIssue
+  const showHomeRecoveryProgress = !networkUnavailable && (!activeConnectionIssue
     || activeConnectionIssue.kind === 'unstable' || activeConnectionIssue.kind === 'replaced')
     && (status === 'connecting' || homeDeviceRecovery);
-  const connectionTone = activeConnectionIssue
+  const connectionTone = networkUnavailable || activeConnectionIssue
     ? 'off'
     : homeDeviceRecovery ? 'busy' : selectedDeviceDisconnected ? 'off' : connectionError ? 'muted' : status === 'online' ? 'ready' : status === 'connecting' ? 'busy' : 'off';
-  const connectionTitle = activeConnectionIssue
-    ? connectionIssueTitle(activeConnectionIssue.kind)
-    : homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveTitle' : 'deviceLink.recovery.syncing')
-      : selectedDeviceDisconnected ? t('deviceLink.cachedHistory.title') : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t);
-  const connectionCopy = activeConnectionIssue
-    ? connectionIssueHint(activeConnectionIssue.kind)
-    : homeDeviceRecovery ? t(homeDeviceUnresponsive ? 'deviceLink.deviceUnresponsiveHint' : 'deviceLink.recovery.syncingHint') : selectedDeviceDisconnected ? t('deviceLink.cachedHistory.hint') : connectionError;
+  const connectionTitle = healthCopy?.title ?? (homeDeviceRecovery ? t('deviceLink.recovery.syncing')
+    : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t));
+  const connectionCopy = healthCopy?.hint ?? (homeDeviceRecovery ? t('deviceLink.recovery.syncingHint') : connectionError);
   const emptyStateTitle = initialHomeError ? t('devices.list.syncFailed') : home.emptyTitle;
   const emptyStateCopy = initialHomeError ? (connectionError ?? t('devices.list.requestFailed')) : home.emptyCopy;
   // 无可控制电脑的引导态(landing)可见性,与 ListEmptyComponent 的分支同口径。
@@ -3244,7 +3255,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
           style={[styles.connectionRow, (connectionError || activeConnectionIssue) && styles.connectionRowError]}
           testID="connection.banner"
         >
-          <StatusDot tone={connectionTone} pulsing={!activeConnectionIssue && status === 'connecting'} />
+          <StatusDot tone={connectionTone} pulsing={!networkUnavailable && !activeConnectionIssue && status === 'connecting'} />
           <Text ellipsizeMode="tail" numberOfLines={1} style={styles.connectionText} testID="connection.title">
             {connectionCopy ? `${connectionTitle} · ${connectionCopy}` : connectionTitle}
           </Text>
@@ -3680,6 +3691,7 @@ function ProjectDragOverlay({
 
 function HomeProjectWindowAnchorTracker({
   childOffsets,
+  deferOffscreen = false,
   onAnchorChange,
   projectHeaderHeight,
   projectLayoutRevision,
@@ -3688,6 +3700,7 @@ function HomeProjectWindowAnchorTracker({
   viewportHeight,
 }: {
   childOffsets: readonly number[];
+  deferOffscreen?: boolean;
   onAnchorChange(anchor: number): void;
   projectHeaderHeight: SharedValue<number>;
   projectLayoutRevision: SharedValue<number>;
@@ -3707,6 +3720,7 @@ function HomeProjectWindowAnchorTracker({
       if (!layout || !Number.isFinite(layout.pageY)) return null;
       return resolveHomeProjectChildAnchor({
         childOffsets,
+        preloadDistance: deferOffscreen ? viewportHeight : 0,
         projectHeaderHeight: projectHeaderHeight.value,
         projectTop: layout.pageY,
         shift: PROJECT_CHILD_WINDOW_SHIFT,
@@ -3715,12 +3729,14 @@ function HomeProjectWindowAnchorTracker({
       });
     },
     (next, previous) => {
-      // A temporarily unavailable native view is not evidence that its rows
-      // left the viewport. Keep the last bounded window until measured again.
-      if (next === null || next === previous) return;
+      // Project blocks retain their window until the outer list recycles them.
+      // Nested groups instead release rows beyond the preload band, avoiding
+      // one full native window per expanded group. Failed measurement retains
+      // either window; it is not proof that the group has left the screen.
+      if (next === null || (next < 0 && !deferOffscreen) || next === previous) return;
       runOnJS(onAnchorChange)(next);
     },
-    [childOffsets, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
+    [childOffsets, deferOffscreen, onAnchorChange, projectHeaderHeight, projectLayoutRevision, projectRef, scrollY, viewportHeight],
   );
   return null;
 }
@@ -3818,7 +3834,7 @@ function ProjectRow({
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const projectRef = useAnimatedRef<View>();
   const prepareDisclosure = useDisclosurePrepare();
-  const [windowAnchor, setWindowAnchor] = useState(-1);
+  const [windowAnchor, setWindowAnchor] = useState(0);
   const projectLayoutRevision = useSharedValue(0);
   const estimatedChildHeights = useMemo(() => {
     const expandedKeys = new Set(expandedAutomationGroups);
@@ -3828,11 +3844,10 @@ function ProjectRow({
     () => buildHomeProjectChildOffsets(estimatedChildHeights),
     [estimatedChildHeights],
   );
-  // Keep the common five-row preview unchanged. A large expanded group keeps
-  // its complete estimated height as a spacer until native layout establishes
-  // that its child area intersects the viewport. This avoids mounting an
-  // off-screen child window just because the folder header entered the outer
-  // SectionList render window.
+  // Render a bounded child window immediately, including before native layout
+  // is ready. A full-height placeholder here becomes visible when scrolling
+  // into a project before its measurement reaches JS. The outer SectionList
+  // still bounds mounted groups, and ordinary five-row previews are unchanged.
   const windowingEnabled = shouldWindowHomeProjectChildren({
     collapsed,
     itemCount: visibleSessions.length,
@@ -3840,21 +3855,13 @@ function ProjectRow({
     threshold: PROJECT_CHILD_WINDOW_THRESHOLD,
   });
   const scrollY = homeScrollY;
-  const childContentHeight = estimatedChildOffsets[estimatedChildOffsets.length - 1] ?? 0;
   const childWindow = windowingEnabled
-    ? windowAnchor >= 0
-      ? resolveHomeProjectChildWindow({
+    ? resolveHomeProjectChildWindow({
         anchor: windowAnchor,
         childOffsets: estimatedChildOffsets,
         overscan: PROJECT_CHILD_WINDOW_OVERSCAN,
         windowSize: PROJECT_CHILD_WINDOW_SIZE,
       })
-      : {
-          end: 0,
-          leadingSpacerHeight: 0,
-          start: 0,
-          trailingSpacerHeight: childContentHeight,
-        }
     : {
         end: visibleSessions.length,
         leadingSpacerHeight: 0,
@@ -4655,6 +4662,8 @@ function AutomationGroupChildren({
   const childrenRef = useAnimatedRef<View>();
   const layoutRevision = useSharedValue(0);
   const headerHeight = useSharedValue(0);
+  // A project can retain many expanded automation groups. Preload nearby runs
+  // after layout instead of multiplying every project slot by a child window.
   const [windowAnchor, setWindowAnchor] = useState(-1);
   const textMode = useHomeRowDisplay().viewMode === 'text';
   const childOffsets = buildHomeProjectChildOffsets(visibleItems.map((child) => estimateHomeSessionRowHeight(child, textMode)));
@@ -4673,6 +4682,7 @@ function AutomationGroupChildren({
       onLayout={() => { if (windowingEnabled) layoutRevision.value += 1; }}
       style={styles.automationGroupChildren} testID={childrenTestID ?? `${testID}.automationGroupChildren`}>
       {windowingEnabled && viewport ? <HomeProjectWindowAnchorTracker
+        deferOffscreen
         childOffsets={childOffsets} onAnchorChange={setWindowAnchor}
         projectHeaderHeight={headerHeight} projectLayoutRevision={layoutRevision}
         projectRef={childrenRef} scrollY={viewport.scrollY} viewportHeight={viewport.viewportHeight}

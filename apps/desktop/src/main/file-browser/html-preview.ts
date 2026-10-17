@@ -17,11 +17,14 @@ export interface HtmlPreviewArgs {
     | { kind: 'ssh'; remoteHostId: string };
   workdir: string;
   absPath: string;
+  /** Viewer-local cancellation identity; never sent to the remote computer. */
+  requestId?: string;
 }
 export interface PreviewSource {
+  signal?: AbortSignal;
   isCurrent?(): boolean;
   onResourceError?(status: number): void;
-  stat(root: string, rel: string): Promise<Omit<DirEntry, 'name'>>;
+  stat(root: string, rel: string, signal?: AbortSignal): Promise<Omit<DirEntry, 'name'>>;
   read(root: string, entry: DirEntry, signal?: AbortSignal): Promise<string>;
   /** Media goes through the existing managed store; other files are copied into staging. */
   materialize(source: string, destination: string, expectedSize: number): Promise<string>;
@@ -134,7 +137,7 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
   const pending = new Set<Promise<void>>();
   const queue = createFileReadQueue();
   const materialized = new Map<string, { path: string; size: number }>();
-  const current = () => !closed && source.isCurrent?.() !== false;
+  const current = () => !closed && !source.signal?.aborted && source.isCurrent?.() !== false;
   const close = async () => {
     closed = true;
     controller.abort();
@@ -148,11 +151,13 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
       .catch(() => { /* Temporary storage can be reclaimed by the OS if cleanup fails. */ });
   };
   try {
-    const initial = await source.stat(root, entry);
+    if (!current()) throw new Error('PREVIEW_CANCELLED');
+    const initial = await source.stat(root, entry, source.signal ?? controller.signal);
+    if (!current()) throw new Error('PREVIEW_CANCELLED');
     if (initial.type !== 'file') throw new Error('NOT_FOUND');
     const materialize = async (relPath: string, directory: string, signal: AbortSignal) => {
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
-      const metadata = await source.stat(root, relPath);
+      const metadata = await source.stat(root, relPath, signal);
       if (metadata.type !== 'file' || metadata.relPath !== relPath || !Number.isSafeInteger(metadata.size) || metadata.size < 0)
         throw new Error('NOT_FOUND');
       const file = { ...metadata, name: relPath.split('/').pop()! };

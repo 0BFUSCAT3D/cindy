@@ -71,6 +71,7 @@ import { getRemoteWatchRegistry } from './remote-watch.js';
 import { throwRemoteFsIpcError } from './remote.js';
 import { watcherManager, type FileTreeEvent } from './watcher.js';
 import { registerHtmlPreviewIpc } from './html-preview-ipc.js';
+import { statSshPreviewMetadata } from './html-preview-read.js';
 import { toWorkdirRel } from '../../shared/workdirPath.js';
 
 const log = createLogger('file-browser/ipc');
@@ -176,8 +177,11 @@ interface WatchArgs extends RemoteRoutedArgs {
  * ({ok,result}|{ok:false,error}),handler 的真实返回值在 result 里——renderer
  * 通路由 ipc.ts 解包,main 直调必须自己解,否则读信封字段恒错(真机实踩)。
  */
-async function deviceOpInvoke<T>(deviceId: string, opArgs: Record<string, unknown>): Promise<T> {
-  const payload = await remoteInvoke(deviceId, FILE_BROWSER_REMOTE_OP_CHANNEL, [opArgs]);
+async function deviceOpInvoke<T>(deviceId: string, opArgs: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  const options = signal ? { preSend: () => signal.throwIfAborted() } : undefined;
+  const payload = options
+    ? await remoteInvoke(deviceId, FILE_BROWSER_REMOTE_OP_CHANNEL, [opArgs], options)
+    : await remoteInvoke(deviceId, FILE_BROWSER_REMOTE_OP_CHANNEL, [opArgs]);
   if (!payload.ok) {
     throw new Error(`[${payload.error.code}] ${payload.error.message}`);
   }
@@ -397,18 +401,14 @@ export function registerFileBrowserIpc(): void {
   // 日志设施由宿主注入——desktop 侧接统一 logger(规则 12),scope 与抽包前一致。
   setFileBrowserCoreLoggerFactory(createLogger);
   registerHtmlPreviewIpc({
-    stat: async (args, root, relPath) => {
+    stat: async (args, root, relPath, signal) => {
+      signal?.throwIfAborted();
       if (args.origin.kind === 'device') {
         return deviceOpInvoke<import('@cindy/file-browser-core').FileStat>(args.origin.deviceId, {
           op: 'stat', workdir: root, relPath,
-        });
+        }, signal);
       }
-      if (args.origin.kind !== 'ssh') throw new Error('BAD_ARGS');
-      await getRemoteFileBrowser().request(args.origin.remoteHostId, 'stat', {
-        workdir: args.workdir,
-        relPath: toWorkdirRel(args.workdir, args.absPath)!,
-      });
-      return getRemoteFileBrowser().request(args.origin.remoteHostId, 'stat', { workdir: root, relPath });
+      return statSshPreviewMetadata(getRemoteFileBrowser(), args, root, relPath, signal);
     },
     read: async (args, root, entry, signal) => {
       if (signal?.aborted) throw new Error('PREVIEW_CANCELLED');
