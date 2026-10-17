@@ -215,6 +215,10 @@ interface FileTreeStore {
    *  过渡窗口）。借来的树一旦根请求失败就不代表当前视图，留着会让失败看起来像
    *  加载成功（评审 P2）。 */
   seeded: boolean;
+  /** 本 scope **自己持久化过**的展开位（创建时从 localStorage 读出的那份）。
+   *  seed 窗口收尾的 root 剪枝要继续豁免它们：那时子目录列表可能还是兄弟 scope
+   *  借来的，列表缺路径 ≠ 本 scope 的展开位过期（评审：切开关丢失展开记录）。 */
+  readonly persistedExpanded: ReadonlySet<string>;
   /** 同一 relPath 的并发 listDir,latest 赢:每次开 listDir 前 bump,resolve
    *  时比对 —— 不一致就丢结果。 */
   tokens: Map<string, number>;
@@ -457,6 +461,7 @@ function getOrCreateStore(opts: Required<UseFileTreeOptions>): FileTreeStore {
             loadError: null,
           },
     seeded: seedDisplayable && !!seed,
+    persistedExpanded,
     tokens: new Map(),
     inFlight: new Map(),
     pendingEventParents: new Set(),
@@ -499,12 +504,19 @@ async function fetchDirOnce(store: FileTreeStore, relPath: string): Promise<void
     // 根请求**成功**（无论后面是否结构等价而跳过替换）都代表「借来的树」窗口
     // 结束：之后任何一次根刷新失败都不能再把已属于本 scope 的树当成借来的清掉
     // （评审 P1；结构等价的路径同样要落定，否则会长久停在"借来"态）。
+    // wasSeeded 必须在清标志前捕获：seed 窗口收尾的这次 root 剪枝，子目录列表
+    // 可能还是兄弟 scope 借来的（root 先回、子目录后回）—— 借来的列表缺路径 ≠
+    // 本 scope 的展开位过期，要继续豁免本 scope 自己的持久记录；等后续 root
+    // 刷新（entries 已全属本 scope）再做精确剪枝（评审：切开关丢失展开记录）。
+    const wasSeeded = store.seeded;
     if (relPath === ROOT_KEY) store.seeded = false;
     // 结构等价 → 跳过 setEntries，避免子组件无意义重渲（参见函数顶部注释）。
     // root 仍要 prune 一次：seed 的 root 可能与新 root 结构一致而展开态还是借的。
     const prevList = store.snapshot.entries.get(relPath);
     if (prevList && entriesStructurallyEqual(prevList, list)) {
-      if (relPath === ROOT_KEY) pruneExpandedForCurrentTree(store);
+      if (relPath === ROOT_KEY) {
+        pruneExpandedForCurrentTree(store, wasSeeded ? { keep: store.persistedExpanded } : undefined);
+      }
       return;
     }
     const nextEntries = new Map(store.snapshot.entries);
@@ -512,7 +524,9 @@ async function fetchDirOnce(store: FileTreeStore, relPath: string): Promise<void
     store.snapshot = { ...store.snapshot, entries: nextEntries };
     emit(store);
     // 过渡期(seed)借来的展开态在新树里可能已不可达,root 数据落地即剪。
-    if (relPath === ROOT_KEY) pruneExpandedForCurrentTree(store);
+    if (relPath === ROOT_KEY) {
+      pruneExpandedForCurrentTree(store, wasSeeded ? { keep: store.persistedExpanded } : undefined);
+    }
   } catch (err) {
     log.warn(`listDir failed for ${relPath}`, err);
     // root 失败要可见:空树 + 无提示会被读成"项目是空的"。device-link 的

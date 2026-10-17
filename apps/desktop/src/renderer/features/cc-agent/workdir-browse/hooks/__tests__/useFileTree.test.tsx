@@ -447,6 +447,84 @@ describe('useFileTree showIgnoredDirs option', () => {
   });
 
   /**
+   * 评审（切开关丢失展开记录）：seed 窗口内 root 先回、子目录列表还是兄弟 scope
+   * 借来的（借来的 `packages` 列表没有 node_modules）。此时收尾剪枝不得用借来的
+   * 列表否定本 scope 自己持久化的 `packages/node_modules` 展开位 —— 否则它被剪掉
+   * 并覆盖 localStorage，之后子目录响应只更新列表、不会恢复展开位。
+   */
+  it('seed 窗口 root 先回、子目录还是借来的列表时，保留本 scope 自己的展开位', async () => {
+    const hiddenRoot: readonly DirEntry[] = [
+      { name: 'packages', relPath: 'packages', type: 'directory', size: 0, mtimeMs: 1 },
+    ];
+    const hiddenPackages: readonly DirEntry[] = [];
+    const revealedRoot = hiddenRoot;
+    const revealedPackages: readonly DirEntry[] = [
+      {
+        name: 'node_modules',
+        relPath: 'packages/node_modules',
+        type: 'directory',
+        size: 0,
+        mtimeMs: 2,
+      },
+    ];
+    // 放行态 scope 上次会话存过 packages/node_modules 展开位。
+    mocks.loadExpandedSet.mockImplementation(
+      (_workdir: string, opts?: { showIgnoredDirs?: boolean }) =>
+        opts?.showIgnoredDirs ? new Set(['packages/node_modules']) : new Set<string>(),
+    );
+    // 挂住放行态的首次 root listDir（模拟 root 先于子目录数据就绪的窗口）。
+    const pendingRevealRoot = deferred<readonly DirEntry[]>();
+    let revealRootCalls = 0;
+    mocks.listDir.mockImplementation((args: { relPath?: string; showIgnoredDirs?: boolean }) => {
+      if (!args.showIgnoredDirs) {
+        return Promise.resolve((args.relPath ?? '') === '' ? hiddenRoot : hiddenPackages);
+      }
+      if ((args.relPath ?? '') === '') {
+        revealRootCalls += 1;
+        return revealRootCalls === 1
+          ? pendingRevealRoot.promise
+          : Promise.resolve(revealedRoot);
+      }
+      return Promise.resolve(revealedPackages);
+    });
+
+    const view = renderHook(
+      ({ reveal }: { reveal: boolean }) =>
+        useFileTree({ workdir: '/workdir-seed-root-first', showIgnoredDirs: reveal }),
+      { initialProps: { reveal: false } },
+    );
+    await waitFor(() => expect(view.result.current.initialLoading).toBe(false));
+
+    await act(async () => {
+      view.rerender({ reveal: true });
+    });
+    // seed 窗口内：创建时 creation prune 已用 keep 保住本 scope 的展开位。
+    expect(view.result.current.expanded.has('packages/node_modules')).toBe(true);
+
+    // root 这才返回（此时 entries 里的 packages 列表仍是借来的空列表）。
+    await act(async () => {
+      pendingRevealRoot.resolve(revealedRoot);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.entries.get('')).toEqual(revealedRoot));
+
+    // 借来的 packages 列表缺 node_modules ≠ 本 scope 的展开位过期：不得剪掉、
+    // 不得覆盖持久记录。
+    expect(view.result.current.expanded.has('packages/node_modules')).toBe(true);
+    const revealWrites = mocks.saveExpandedSet.mock.calls
+      .filter(
+        (call) =>
+          (call[2] as { showIgnoredDirs?: boolean } | undefined)?.showIgnoredDirs === true,
+      )
+      .map((call) => call[1] as Set<string>);
+    // 修好后的行为：借来的列表没有可剪的东西 → prune 早退、可能零回写；
+    // 旧代码会剪掉并回写一份不含它的记录 —— 两种情况下这条都必须成立。
+    expect(revealWrites.every((set) => set.has('packages/node_modules'))).toBe(true);
+
+    view.unmount();
+  });
+
+  /**
    * 评审 P1：被忽略目录嵌在已展开的普通目录下时（`packages/foo/node_modules`），
    * 只滤根列表的实现会把它一直留在展开的父目录下 —— 而且 prune 拿过期的 reveal
    * 子列表判可达性，会把它保留到手动刷新。逐列表过滤后：首帧就不渲染它，prune 也
