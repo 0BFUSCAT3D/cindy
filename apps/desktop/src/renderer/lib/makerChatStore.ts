@@ -15866,7 +15866,14 @@ function markLiveErrorRowDisposed(sessionId: string, clientId: string): void {
   setState(sessionId, (s) =>
     s.disposedErrorPersistId === clientId ? s : { ...s, disposedErrorPersistId: clientId },
   );
-  void dismissErrorTailMessage(sessionId, clientId);
+  void dismissErrorTailMessage(sessionId, clientId).then((persisted) => {
+    // 落库失败时 errorDismissed 已回滚;这里一并撤掉跳过标记,让尾部错误提示重新出现、
+    // 用户可以再关一次。否则提示被藏着,重启后这一行又冒出来。
+    if (persisted || sessions.get(sessionId)?.disposedErrorPersistId !== clientId) return;
+    setState(sessionId, (s) =>
+      s.disposedErrorPersistId === clientId ? { ...s, disposedErrorPersistId: null } : s,
+    );
+  });
 }
 
 /**

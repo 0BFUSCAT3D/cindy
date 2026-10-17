@@ -3187,6 +3187,26 @@ describe('makerChatStore text delta batching', () => {
     expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-status');
   });
 
+  it('认领到的行落库标记失败时撤掉跳过标记，尾部错误提示重新出现', async () => {
+    await reloadHistory([errorTailUserRow, persistedErrorRow('err-persist-fail', 'worker turn failed')]);
+    onInputProjection?.(projection(SESSION_ID, { error: 'worker turn failed' }));
+    vi.mocked(messageService.dismissError).mockRejectedValueOnce(new Error('db busy'));
+
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    await flushPromises();
+
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-fail');
+    const snapshot = makerChatStore.getSnapshot(SESSION_ID);
+    // 与 CCAgentSessionView 尾部错误提示同一判定：最后一条未处置、也不是被跳过的那一行。
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.messages.at(-1)).toEqual(
+      expect.objectContaining({ clientId: 'err-persist-fail', role: 'error' }),
+    );
+    expect(snapshot.messages.at(-1)?.errorDismissed).toBeFalsy();
+    expect(snapshot.disposedErrorPersistId).toBeNull();
+  });
+
   // Codex review：本机错误 A 交给历史后，scheduler 发送前失败可直接把错误换成 B，中间没有
   // 新一轮启动，也没有 error:null 投影。关闭 B 只能标 B 的行，不能标 A。
   it('发送前失败直接换成新错误 B：B 已落库则标 B，未落库则不标 A', async () => {
