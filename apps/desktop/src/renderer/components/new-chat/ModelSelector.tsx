@@ -3525,6 +3525,17 @@ function ModelSelectorContentView({
           </div>
           {localCatalogNotice && <div className="shrink-0 p-2">{localCatalogNotice}</div>}
           <UnifiedModelPanel
+            {...(!remoteAgent && deviceId && (remoteModelListStatus === 'loading' || remoteModelListStatus === 'error')
+              ? {
+                  catalogNotice: (
+                    <RemoteModelLoadNotice
+                      status={remoteModelListStatus}
+                      onRetry={retryRemoteModels}
+                      message={remoteFailureMessage}
+                    />
+                  ),
+                }
+              : {})}
             deviceId={deviceId}
             providerUsage={providerUsageScope}
             providerGroupUsage={providerGroupUsage}
@@ -4255,12 +4266,8 @@ export function ModelSelector({
           ? t('newChat.modelSelector.trigger.agent.pi')
           : t('newChat.modelSelector.trigger.agent.codex')
       : null;
-  const agentIdentityLabel =
-    agentName && agentIdentity?.state === 'pending'
-      ? t('newChat.modelSelector.trigger.agent.pending', { agent: agentName })
-      : agentName;
-  const baseDisplayIdentityLabel = agentIdentityLabel
-    ? `${agentIdentityLabel} · ${displayLabel}`
+  const baseDisplayIdentityLabel = agentName
+    ? `${agentName} · ${displayLabel}`
     : displayLabel;
   const remoteStatusLabel = currentModel
     ? remoteModelLoading
@@ -4472,7 +4479,7 @@ export function ModelSelector({
     </span>
   ) : null;
   const agentIdentityPrefix =
-    agentIdentityLabel &&
+    agentName &&
     !isCompactToolbar &&
     (!engineMarkOption || agentIdentity?.state === 'pending') ? (
       <>
@@ -4482,7 +4489,7 @@ export function ModelSelector({
             isCreateAgentVariant ? 'text-12' : dense ? 'text-12' : 'text-13',
           )}
         >
-          {agentIdentityLabel}
+          {agentName}
         </span>
         <span
           className={cn(

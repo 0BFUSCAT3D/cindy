@@ -17,6 +17,7 @@ import {
 import { toast } from '@/lib/toast';
 import { matchesModelName } from '@/lib/modelDisplayNames';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { favoritesSyncFailureI18nKey } from './favoritesSyncFailure';
 import { Check, Loader2, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -281,6 +282,8 @@ export interface UnifiedModelPanelProps {
   /** 面板容器元素(浮层按它的左 / 右外侧定位)。 */
   panelElement: HTMLElement | null;
   overlayClassName?: string;
+  /** deviceId 目录读取中/失败时取代「没有匹配的模型」。 */
+  catalogNotice?: ReactNode;
   /**
    * 远程 Agent：左侧栏在任务所在电脑的供应商之后列出其他电脑上的供应商。选中那台
    * 电脑上的模型 = Agent 在那台电脑运行，任务和文件仍在原电脑。
@@ -399,6 +402,7 @@ export function UnifiedModelPanel({
   panelElement,
   overlayClassName,
   panelWidthFluid = false,
+  catalogNotice,
   remoteSources,
 }: UnifiedModelPanelProps) {
   const { t } = useTranslation();
@@ -1387,7 +1391,7 @@ export function UnifiedModelPanel({
               </span>
             </div>
           )}
-          {favoritesListDeviceId && remoteFavorites.error ? <div role="status" className="px-3 py-2 text-13 text-[var(--text-secondary)]">{t('newChat.modelSelector.unified.favoritesSyncFailed')}</div> : null}
+          {favoritesListDeviceId && remoteFavorites.error ? <div role="status" className="px-3 py-2 text-13 text-[var(--text-secondary)]">{t(favoritesSyncFailureI18nKey(remoteFavorites.errorCode))}</div> : null}
           {remoteListPending ? (
             remoteSources?.failure ?? (
               <div
@@ -1398,6 +1402,8 @@ export function UnifiedModelPanel({
                 {t('newChat.modelSelector.unified.remoteLoading')}
               </div>
             )
+          ) : catalogNotice ? (
+            catalogNotice
           ) : !hasRows ? (
             <div className="px-3 py-6 text-center text-13 text-[var(--text-tertiary)]">
               {/* ★ 视图的空态是引导语,不是「没有匹配」(设计稿 favEmpty;★ 常驻后必经)。 */}

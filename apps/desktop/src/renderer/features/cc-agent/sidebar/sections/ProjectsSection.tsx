@@ -96,7 +96,7 @@ import { buildSessionSourceLabelMap } from '../../lib/sessionSourceLabel';
 import { aggregateSessionLamps, type SessionLampAggregate } from '../../lib/sessionLampAggregation';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { SidebarRightStatusIndicator } from '../SidebarRightStatusIndicator';
-import { useSessionAttentionKinds } from '@/lib/sessionAttentionStore';
+import { useSessionAttentionKindsWithOrcaLeads } from '../../lib/orcaLeadWorkerAttention';
 import { useSessionAttentionUrgencySet } from '../../contexts/SessionAttentionUrgencyContext';
 import {
   getRemoteSessionActivity,
@@ -470,7 +470,8 @@ export function ProjectsSection({
   // 整表订阅仅限本聚合组件(两个 store 头注的性能边界):本组件本就随
   // notifications 整集变化重渲染,不额外放大;远程镜像走整表版本号 + 逐 id 读,
   // 与 CCAgentSidebarUpper.projectAgg 同款先例。
-  const attentionKinds = useSessionAttentionKinds();
+  // Lead 的 kind 已并入其 Worker 的出错 / 等待确认(notifications 由上层同口径合并)。
+  const attentionKinds = useSessionAttentionKindsWithOrcaLeads();
   const urgentSet = useSessionAttentionUrgencySet();
   const remoteActivityRevision = useRemoteSessionActivityRevision();
   const collapsedAttentionToneFor = useCallback(
