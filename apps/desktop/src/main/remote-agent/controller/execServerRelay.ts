@@ -148,9 +148,14 @@ function asJsonRecord(value: unknown): JsonRecord | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : null;
 }
 
-/** 本机能用的绝对路径：任务电脑是 Windows 时必须带盘符或是 UNC，`/Users/…` 这类 POSIX 路径不算。 */
+/**
+ * 本机能用的绝对路径：任务电脑是 Windows 时必须带盘符或是 UNC，以 `/` 开头的 POSIX 路径不算；
+ * 是 POSIX 时 `//server/share` 是 Windows 网络路径(本机 exec-server 不认带主机名的 file URI)，也不算。
+ */
 function isLocalAbsolutePath(value: string): boolean {
-  return process.platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(value) : path.posix.isAbsolute(value);
+  return process.platform === 'win32'
+    ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(value)
+    : path.posix.isAbsolute(value) && !/^[\\/]{2}/.test(value);
 }
 
 /** Agent 发来的 file URI 还原成它那边的路径写法(`file:///C:/x` → `C:/x`，UNC 带回主机名)。 */
@@ -205,7 +210,7 @@ function mapSandboxEntry(entry: unknown, workspace: ExecutorWorkspace): unknown[
     return deny && agentPath !== null && isLocalAbsolutePath(agentPath) ? [entry] : [];
   }
   if (target.type === 'glob_pattern' && typeof target.pattern === 'string' && /^(?:[A-Za-z]:|[\\/])/.test(target.pattern)) {
-    const local = workspace.localPathFromAgent(target.pattern);
+    const local = workspace.localGlobFromAgent(target.pattern);
     if (local !== null) return [{ ...record, path: { ...target, pattern: local } }];
     return deny && isLocalAbsolutePath(target.pattern) ? [entry] : [];
   }

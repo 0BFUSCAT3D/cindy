@@ -422,6 +422,9 @@ describe('virtual workspace', () => {
         { path: { type: 'path', path: 'file:///C:/Agent/codex-home/memories' }, access: 'write' },
         { path: { type: 'glob_pattern', pattern: 'C:\\Agent\\codex-home\\**' }, access: 'write' },
         { path: { type: 'path', path: 'file:///C:/Agent/secrets' }, access: 'deny' },
+        // Windows 网络路径：POSIX 本机的 exec-server 不认带主机名的 file URI，留下会让每条命令都被拒。
+        { path: { type: 'path', path: 'file://server/share/secret' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: '\\\\server\\share\\**' }, access: 'deny' },
       ] } },
       cwd: 'file:///C:/Agent/mirror/workspace',
       policyContext: { cwd: 'file:///C:/Agent/mirror/workspace', workspaceRoots: ['file:///C:/Agent/mirror/workspace', 'file:///C:/Agent/other'] },
@@ -436,7 +439,7 @@ describe('virtual workspace', () => {
         { path: { type: 'special', value: { kind: 'root' } }, access: 'read' },
         { path: { type: 'path', path: local(project) }, access: 'write' },
         { path: { type: 'path', path: local(path.join(project, '.git')) }, access: 'read' },
-        { path: { type: 'glob_pattern', pattern: path.join(project, '**', '*.env') }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: project + '/**/*.env' }, access: 'deny' },
         { path: { type: 'glob_pattern', pattern: '**/*.pem' }, access: 'deny' },
       ] } },
       cwd: local(project),
@@ -447,6 +450,20 @@ describe('virtual workspace', () => {
     // fs/* 请求带同一个沙箱上下文。
     const read = mapExecServerParams({ path: 'file:///C:/Agent/mirror/workspace/a.txt', sandbox }, workspace, 'fs/readFile') as MappedSandboxRequest;
     expect(read.sandbox).toEqual(params.sandbox);
+  });
+
+  it('keeps glob characters in the local directory name literal when mapping absolute sandbox globs', () => {
+    const project = path.join(root, 'project[1]{a}');
+    fs.mkdirSync(project);
+    const workspace = new ExecutorWorkspace({ workingDir: project, aliases: [{ from: 'C:\\Agent\\mirror\\workspace', to: project }] });
+    workspace.setVirtualRoot('C:\\Agent\\mirror');
+    const literal = path.join(root, 'project[[]1[]][{]a[}]');
+    expect(workspace.localGlobFromAgent('C:\\Agent\\mirror\\workspace\\**\\*.env')).toBe(literal + '/**/*.env');
+    expect(workspace.localGlobFromAgent('C:\\Agent\\mirror\\workspace')).toBe(literal);
+    expect(workspace.localGlobFromAgent('C:\\Agent\\other\\**')).toBeNull();
+    // POSIX Agent 的模式里反斜杠是转义，不能当成分隔符。
+    const posix = new ExecutorWorkspace({ workingDir: project, aliases: [{ from: '/home/agent/workspace', to: project }] });
+    expect(posix.localGlobFromAgent('/home/agent/workspace/\\*.lock')).toBe(literal + '/\\*.lock');
   });
 
   it('maps Codex sandbox permissions from a POSIX agent and keeps deny rules that are valid on this computer', async () => {

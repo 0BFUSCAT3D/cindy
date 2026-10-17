@@ -605,6 +605,22 @@ export class ExecutorWorkspace {
     return null;
   }
 
+  /**
+   * Agent 给的绝对 glob：影子前缀换成本机目录，目录名里的通配字符写成字符类按字面匹配(`[` → `[[]`，
+   * 两种路径约定都认)；前缀后面的模式保持 Agent 的写法，POSIX 模式里的反斜杠转义不当成分隔符。
+   */
+  localGlobFromAgent(pattern: string): string | null {
+    for (const alias of this.aliases) {
+      if (stripAliasPrefix(pattern, alias.from) === null) continue;
+      const from = alias.from.replace(/[\\/]+$/, '');
+      const rest = pattern.slice(from.length).replace(/^[\\/]/, '');
+      const base = alias.to.replace(/[\\/]+$/, '').replace(/[*?[\]{}]/g, (char) => `[${char}]`);
+      if (!rest) return base;
+      return `${base}/${WINDOWS_PATH.test(from) ? rest.replace(/\\/g, '/') : rest}`;
+    }
+    return null;
+  }
+
   /** 本机真实路径投影到 Agent 主机上的路径；仅匹配完整路径段。 */
   toAgentPath(input: string): string {
     if (!this.virtualRoot) return input;
