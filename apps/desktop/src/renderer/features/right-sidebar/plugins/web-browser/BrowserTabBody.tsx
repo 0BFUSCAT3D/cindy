@@ -544,7 +544,7 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
             >
               {t('rightSidebar.browser.resourceAlert.terminate')}
             </Button>
-            <Tip text={t('rightSidebar.browser.resourceAlert.dismiss')} side="bottom">
+            <Tip text={t('rightSidebar.browser.resourceAlert.dismiss')} side="bottom" disabled={!tabVisible}>
               <button
                 type="button"
                 aria-label={t('rightSidebar.browser.resourceAlert.dismiss')}
