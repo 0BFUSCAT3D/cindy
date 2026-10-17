@@ -863,12 +863,16 @@ Mobile 复用 `remote-media` 磁盘缓存，放入 realm/账号 SHA-256 命名�
 `device-link:media:fetch` 在 `prepareOnly: true` 时接受可选 `metadataOnly: true`：
 仍先授权并从打开的文件句柄取版本，但小文件也只返回 `transferRequired: true` 与元数据。
 两端共用读取策略：小文件先查同一版本缓存，未命中再以原 `prepareOnly` 请求取 inline 字节；
-大文件沿用 peer／OSS 读取。旧 Host 忽略 `metadataOnly`，新控制端接收原 inline／OSS 结果；
+大文件沿用 peer／OSS 读取。同账号旧 Host 忽略 `metadataOnly`，新控制端接收原 inline／OSS 结果；
+共享任务的旧 Host 使用闭集参数白名单，两端访客不发送 `metadataOnly`，沿用先授权的 inline／OSS
+读取。新 Host 同时接受布尔型 `metadataOnly`，不改变成员、附件归属及工作目录校验。
 旧控制端不传此字段，新 Host 保持原行为。两段式导出缺版本时，以导出前后主机版本和大小一致
 作为登记条件，变化或无版本的结果不登记为长期有效。缓存失败不阻断正常读取。
 Mobile 的 HTML 资源、文件浏览器原图、PDF、下载／分享使用完整文件路径，先取当前账号、设备、
 完整 URL 对应的本地缓存，再后台检查版本；同源在途后台检查合并。连接恢复也放到缓存读取之后。
-Desktop 完整文件与远程 HTML 预览复用已知元数据和现有磁盘副本，后台检查变化；进程重启后
+Desktop 完整文件与远程 HTML 预览复用已知元数据和现有磁盘副本，后台检查变化；HTML 的大小／mtime
+仅用于快照展示和传输上限，不作为后台跳过读取的版本判据。复验绕过外层 size／mtime 命中，
+device 仍可复用主机确认版本的字节，SSH 重新读取；新版原子保存前保留旧副本。进程重启后
 尚无元数据索引时先查询版本，字节仍可从已有磁盘缓存复用。后台失败保留旧副本，更新完成后
 后续打开使用新版；不强制重载正在操作的 HTML、图片或 PDF。预览持有自己的副本，关闭时仅释放这份副本，
 不会删除可复用的源缓存。零字节 HTML 配套资源也可按版本缓存。

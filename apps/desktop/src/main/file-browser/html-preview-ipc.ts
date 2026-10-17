@@ -25,6 +25,7 @@ const log = createLogger('html-preview');
 export const HTML_PREVIEW_CHANNEL = 'maker:html-preview:open';
 interface RemoteSource {
   stat(args: HtmlPreviewArgs, root: string, rel: string): Promise<Omit<DirEntry, 'name'>>;
+  /** Validate the source even when size/mtime match; they are not a complete version. */
   read(args: HtmlPreviewArgs, root: string, entry: DirEntry, signal?: AbortSignal): Promise<string>;
 }
 
@@ -118,7 +119,6 @@ export function registerHtmlPreviewIpc(remote: RemoteSource): void {
               const metadata = await remote.stat(args, root, rel);
               if (!isCurrent() || metadata.type !== 'file') return;
               const entry = { ...metadata, name: cached.metadata.name };
-              if (entry.size === cached.metadata.size && entry.mtimeMs === cached.metadata.mtimeMs) return;
               const file = await remote.read(args, root, entry);
               if (isCurrent()) files.set(key, { metadata: entry, path: file });
             })().catch(() => { /* Preserve the usable snapshot while offline. */ })

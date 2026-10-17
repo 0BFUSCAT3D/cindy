@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 const peer = vi.hoisted(() => vi.fn());
 const remove = vi.hoisted(() => vi.fn());
 const owner = vi.hoisted(() => ({ current: true }));
@@ -19,6 +20,17 @@ beforeEach(() => {
   peer.mockResolvedValue(null);
 });
 describe('desktop shared file access', () => {
+  it('reads through an older shared host without sending unknown metadata-only fields', async () => {
+    const result = { ossKey: '', size: 3, mimeType: 'text/plain', inlineBase64: 'YWJj' };
+    const invoke = vi.fn(async (_device, _channel, [request]) => {
+      if ('metadataOnly' in request) throw new Error('PERMISSION_DENIED');
+      return { ok: true, result };
+    });
+    const device = sharedTaskHostPeer('shared', 'host');
+    expect(await readRemoteDeviceFile(device, 'xdt-file://open?path=/a.txt', invoke)).toEqual(result);
+    expect(await readRemoteDeviceFile(device, 'xdt-file://open?path=/a.txt', invoke)).toEqual(result);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
   it('waits for the current same-size version when filling an outer version cache', async () => {
     const old = { ossKey: '', size: 3, mimeType: 'text/html', version: '1'.repeat(64), inlineBase64: 'b2xk' };
     const fresh = { ...old, version: '2'.repeat(64), inlineBase64: 'bmV3' };

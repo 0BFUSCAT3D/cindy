@@ -69,7 +69,8 @@ export function readRemoteDeviceFile(
   };
   const fetch = async (prepareOnly: boolean, metadataOnly = false): Promise<DeviceFileResult> => {
     const response = await invoke(device, DL_MEDIA_FETCH_CHANNEL, [
-      { url, prepareOnly, ...(metadataOnly ? { metadataOnly: true } : {}), ...(options.skipCache ? { skipCache: true } : {}) },
+      // Older shared hosts reject unknown fields; retain their authorized inline/OSS path.
+      { url, prepareOnly, ...(metadataOnly && !isSharedTaskPeer(device) ? { metadataOnly: true } : {}), ...(options.skipCache ? { skipCache: true } : {}) },
     ]);
     if (!response.ok) {
       const error = (response as { error?: { code?: string; message?: string } }).error;

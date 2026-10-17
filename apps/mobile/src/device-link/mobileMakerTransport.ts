@@ -1076,7 +1076,8 @@ export function createMobileMakerTransport({
         {
           url,
           prepareOnly,
-          ...(metadataOnly ? { metadataOnly: true } : {}),
+          // Older shared hosts use a closed request-field allowlist.
+          ...(metadataOnly && !isSharedTaskPeer(deviceId) ? { metadataOnly: true } : {}),
           ...(opts?.skipCache ? { skipCache: true } : {}),
           ...(opts?.thumbnail ? { thumbnail: true } : {}),
         },

@@ -81,7 +81,7 @@ it('opens a preview before downloading even a large entry file', async () => {
   await expect(mocks.handle.mock.calls[0][1]({}, args)).resolves.toMatchObject({ ok: true });
   expect(read).not.toHaveBeenCalled();
 });
-it('serves cached HTML while remote stat is blocked, then uses the changed file on the next open', async () => {
+it.each([1, 2])('serves cached HTML while stat is blocked, then refreshes with mtime %s', async (mtimeMs) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-swr-test-'));
   let reply!: (value: any) => void;
   const metadata = { relPath: 'index.html', type: 'file' as const, size: 3, mtimeMs: 1 };
@@ -99,10 +99,11 @@ it('serves cached HTML while remote stat is blocked, then uses the changed file 
     expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
     expect(read).toHaveBeenCalledOnce();
     read.mockResolvedValueOnce(path.join(dir, 'new.html'));
-    reply({ ...metadata, mtimeMs: 2 });
+    reply({ ...metadata, mtimeMs });
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     const third = await open({}, args);
     expect(await (await readResource(third.url, '/index.html')).text()).toContain('new');
+    expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 it('passes the captured owner guard through reference-free cache ingestion', async () => {

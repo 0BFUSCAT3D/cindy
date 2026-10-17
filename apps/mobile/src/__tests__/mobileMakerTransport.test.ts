@@ -3,6 +3,7 @@ import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
   FILE_INLINE_MAX_BYTES,
   REMOTE_INVOKE_ALLOWLIST,
+  sharedTaskHostPeer,
 } from "@cindy/device-link";
 import {
   createMobileMakerTransport,
@@ -37,6 +38,17 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  it('reads through an older shared host without sending unknown metadata-only fields', async () => {
+    const result = { ossKey: '', size: 3, mimeType: 'text/plain', inlineBase64: 'YWJj' };
+    const invoke = vi.fn(async (_device, _channel, [request]) => {
+      if ('metadataOnly' in request) throw new Error('PERMISSION_DENIED');
+      return result;
+    });
+    const maker = createMobileMakerTransport({ deviceId: sharedTaskHostPeer('shared', 'host'), invoke: invoke as RemoteInvoke });
+    expect(await maker.fetchRemoteMedia('xdt-file://open?path=/a.txt', { stream: false })).toEqual(result);
+    expect(await maker.fetchRemoteMedia('xdt-file://open?path=/a.txt', { stream: false })).toEqual(result);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
   it('opens a cached file without waiting for connection or host metadata, then refreshes in background', async () => {
     setMobileAuthOwner('cache-first-owner');
     const cached = { ossKey: '', size: 3, mimeType: 'application/pdf', version: 'a'.repeat(64), inlineBase64: 'YWJj' };
