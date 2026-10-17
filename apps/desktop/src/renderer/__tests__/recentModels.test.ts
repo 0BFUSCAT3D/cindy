@@ -17,6 +17,8 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
+import * as recentModels from '@/state/recentModels';
+
 class MemLocalStorage {
   private store = new Map<string, string>();
   onWrite: ((key: string) => void) | null = null;
@@ -41,7 +43,8 @@ beforeEach(() => {
   memStorage = new MemLocalStorage();
   vi.stubGlobal('window', { localStorage: memStorage });
   vi.stubGlobal('localStorage', memStorage);
-  vi.resetModules();
+  // 生产模块自带的 reset(check:test-hygiene 禁止 beforeEach 里 vi.resetModules)。
+  recentModels.__resetForTest();
 });
 
 afterEach(() => {
@@ -91,8 +94,13 @@ async function flushAsync(): Promise<void> {
   for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * 返回静态导入的模块。reset 顺带把 storage 订阅重绑到**当前** window stub ——
+ * installStorageBus / installLocks 在用例内换掉 window,不重绑跨窗口用例收不到事件。
+ */
 async function loadModule() {
-  return await import('@/state/recentModels');
+  recentModels.__resetForTest();
+  return recentModels;
 }
 
 const OPUS = { providerId: 'anthropic', modelId: 'claude-opus-5', agent: 'cc' } as const;

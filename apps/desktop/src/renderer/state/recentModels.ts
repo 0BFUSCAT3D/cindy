@@ -318,8 +318,18 @@ function getItemsSnapshot(): readonly RecentModelItem[] {
   return load().items;
 }
 
-const removeStorageListener = (() => {
-  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return null;
+let removeStorageListener: (() => void) | null = null;
+
+/**
+ * 把 storage 事件订阅绑到**当前** window 上。模块导入时绑一次；
+ * `__resetForTest` 里解绑后重绑 —— 测试会在模块导入后才替换 window stub,
+ * 不重绑的话监听器永远挂在旧 stub 上,跨窗口用例收不到事件。
+ */
+function bindStorageListener(): void {
+  if (removeStorageListener) return;
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+  // 绑定时捕获 window:解绑必须对**同一对象**;测试的 stub window 不一定有 removeEventListener。
+  const boundWindow: Window = window;
   /** 本 owner 分区的内存态跟外来写入对齐(重读真相,不采信 event.newValue)。 */
   const refreshActive = (): void => {
     const next = loadFromStorage();
@@ -345,13 +355,20 @@ const removeStorageListener = (() => {
     // 非 active 分区:只要 op-log 里还有它的记录就照样调和。
     if (reconciler.hasOps(event.key)) reconciler.schedule(event.key);
   };
-  window.addEventListener('storage', onStorage);
-  return () => window.removeEventListener('storage', onStorage);
-})();
+  boundWindow.addEventListener('storage', onStorage);
+  removeStorageListener = () => {
+    if (typeof boundWindow.removeEventListener === 'function') {
+      boundWindow.removeEventListener('storage', onStorage);
+    }
+  };
+}
+
+bindStorageListener();
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     removeStorageListener?.();
+    removeStorageListener = null;
   });
 }
 
@@ -415,6 +432,10 @@ export function __resetForTest(): void {
     }
   }
   activeDataOwnerId = null;
+  // 解绑后重绑到当前 window:测试在导入后才换 window stub,不重绑跨窗口用例收不到事件。
+  removeStorageListener?.();
+  removeStorageListener = null;
+  bindStorageListener();
 }
 
 export const __STORAGE_KEY = STORAGE_KEY;
