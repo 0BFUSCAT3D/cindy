@@ -18,6 +18,7 @@ import {
   FolderOpen,
   History,
   Info,
+  MessageCircle,
   Settings2,
   Sparkles,
   UserRound,
@@ -66,6 +67,7 @@ import { BotTaskModelEditor } from './BotTaskModelEditor';
 import { BotCapabilitySettings } from './BotCapabilitySettings';
 import { BotRoutines } from './BotRoutines';
 import { BotMemorySettings } from './BotMemorySettings';
+import { BotChannelsPage } from './BotChannelsPage';
 import {
   botSettingsChanges,
   normalizeBotSettingsPayload,
@@ -105,7 +107,7 @@ export function BotSettings({
   beforeCloseRef,
   initialPage = 'home',
 }: {
-  initialPage?: 'home' | 'memory' | 'capabilities' | 'model';
+  initialPage?: 'home' | 'memory' | 'capabilities' | 'model' | 'channels';
   bot: BotProfile;
   beforeCloseRef?: { current: (() => Promise<boolean>) | null };
   onBack: () => void;
@@ -145,6 +147,7 @@ export function BotSettings({
     | 'personality'
     | 'model'
     | 'capabilities'
+    | 'channels'
     | 'history'
     | 'advanced'
     | 'routines'
@@ -155,7 +158,9 @@ export function BotSettings({
   const memoryLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const memoryBackRef = useRef<(() => Promise<boolean>) | null>(null);
   const pageTitle =
-    page === 'memory'
+    page === 'channels'
+      ? t('bots.channels.title')
+      : page === 'memory'
       ? t('bots.memory.title')
       : page === 'model'
         ? t('bots.settingsTabs.model')
@@ -414,6 +419,7 @@ export function BotSettings({
     ['memory', Brain, t('bots.memory.title')],
     ['model', Sparkles, t('bots.settingsTabs.model')],
     ['capabilities', Settings2, t('bots.capabilities.title')],
+    ['channels', MessageCircle, t('bots.channels.title')],
     ['routines', Clock3, t('routines.title')],
     ['history', History, t('bots.historySearch.title')],
     ['advanced', FolderOpen, t('bots.homeFolder.title')],
@@ -683,6 +689,7 @@ export function BotSettings({
             </div>
           </div>
         )}
+        {page === 'channels' ? <BotChannelsPage bot={bot} /> : null}
         {page === 'history' ? (
           <BotLifecycleSettings
             bot={bot}
