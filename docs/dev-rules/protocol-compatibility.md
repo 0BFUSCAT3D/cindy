@@ -1053,6 +1053,13 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `fs/readFile`、`fs/open` 的缺省/read 模式与目录读取按读取，显式非 read 的 open 模式仍从严按写入；`fs/walk` 按
   目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
+  非完全访问档下 `process/start` 与 `fs/*` 带 `sandbox`(固定版本 `codex-rs/file-system/src/lib.rs` 的
+  `WireFileSystemSandboxContext`)，其中目录与权限条目都是 B 上看到的 file URI，中继换成 A 的路径：虚拟工作区内的
+  映射为本机路径(绝对 glob 里本机目录名按字面转义)；不在其中的是 B 自己的目录(如它的 Codex 记忆目录)，读写
+  授权丢弃，只收不放；禁止规则不因转换失效：路径条目在 A 上也是合法绝对路径时原样保留，没映射上的禁止 glob
+  一律原样保留；用户目录对不上时换成 A 本机的(Codex 缺了它会把 `~/…` 规则当解析失败、一律拒绝读取)；
+  `file:///C:/…` 是否为盘符按 B 的路径约定(虚拟工作区路径)判断；网络与 Windows 沙箱档位不动。原样转发时
+  两端系统不同会被 A 的 exec-server 拒绝(`invalid sandbox permission path URI`)。
 - **影子目录与配置同步**：`open` 载荷除项目说明文件(含 `.claude/CLAUDE.md`、`.claude/rules`、
   `.codex/skills`)外还带 `ancestorFiles`(项目上级目录里的
   `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `AGENTS.override.md`，按层级 `up`，最多 24 级)与
@@ -2239,3 +2246,11 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 `:switch-home` / `:home-choices`，并新增 `:attachment`、`:cindy-copies`、`:merge-cindy` 与 `maker:companion-avatar:resolve`，只在同一个 Desktop 内的 preload 与 Main 之间使用。
 伙伴资料快照 `companion.profile.v1` 新增可选的 `templateId`；新增偏好键 `companion.todo.v1:<id>`、`companion.routine.v1:<id>`、`companion.workbench.v1`，
 旧客户端不认识这些键，接管时忽略。镜像上传的房间消息可带 `media` 块；旧客户端按文件名显示。手机端同样不改原生指纹。
+
+## 伙伴导入的消息机器人分类
+
+`companion-import` Remote Resource 的 client primitives 可追加 `companion-import-bots-v1`。只有声明它的控制端
+（以及本机界面与 `import_agent`）的预览才会收到 `category: 'bots'` 条目及其可选 `platform` / `owner` 字段，导入时
+会先在来源 Agent 里停用这些机器人再由伙伴连接；旧控制端的预览校验不认识新分类，所以照旧把 Telegram / Discord
+放在 `connections`、不停来源，也不出现飞书 / 企业微信 / 钉钉条目。分类随预览快照与加密检查点保存，开始导入和恢复
+都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
