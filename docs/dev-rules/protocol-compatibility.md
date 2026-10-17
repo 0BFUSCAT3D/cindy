@@ -1055,9 +1055,10 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
   非完全访问档下 `process/start` 与 `fs/*` 带 `sandbox`(固定版本 `codex-rs/file-system/src/lib.rs` 的
   `WireFileSystemSandboxContext`)，其中目录与权限条目都是 B 上看到的 file URI，中继换成 A 的路径：虚拟工作区内的
-  映射为本机路径；不在其中的是 B 自己的目录(如它的 Codex 记忆目录)，读写授权丢弃，禁止条目在 A 上也是合法
-  绝对路径时原样保留，只收不放；网络与 Windows 沙箱档位不动。原样转发时两端系统不同会被 A 的 exec-server
-  拒绝(`invalid sandbox permission path URI`)。
+  映射为本机路径(绝对 glob 里本机目录名按字面转义)；不在其中的是 B 自己的目录(如它的 Codex 记忆目录)，读写
+  授权丢弃，只收不放；禁止规则不因转换失效：路径条目在 A 上也是合法绝对路径时原样保留，没映射上的禁止 glob
+  一律原样保留；网络与 Windows 沙箱档位不动。原样转发时两端系统不同会被 A 的 exec-server 拒绝
+  (`invalid sandbox permission path URI`)。
 - **影子目录与配置同步**：`open` 载荷除项目说明文件(含 `.claude/CLAUDE.md`、`.claude/rules`、
   `.codex/skills`)外还带 `ancestorFiles`(项目上级目录里的
   `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `AGENTS.override.md`，按层级 `up`，最多 24 级)与

@@ -195,8 +195,10 @@ function mapSandboxDirs(record: JsonRecord, workspace: ExecutorWorkspace): JsonR
 
 /**
  * 一条文件权限：虚拟工作区内的路径换成本机路径。Agent 主机自己的路径(如它的 Codex 记忆目录)在本机
- * 没有对应位置，读写授权直接丢掉，只收不放；禁止条目在本机也是合法绝对路径时原样保留，不删本机
- * 有意义的禁止规则。相对 glob 与特殊路径(`:tmpdir`、项目根等)由本机 exec-server 按映射后的目录解释。
+ * 没有对应位置，读写授权直接丢掉，只收不放。禁止规则不因转换失效：路径条目在本机也是合法绝对路径时
+ * 原样保留(不合法的会让本机 exec-server 拒绝整个请求)；没映射上的禁止 glob 一律原样保留——相对的由本机
+ * 按工作目录解释，Agent 主机的绝对路径在本机匹配不到东西，无需判断它是不是绝对路径。特殊路径(`:tmpdir`、
+ * 项目根等)由本机 exec-server 按映射后的目录解释。
  */
 function mapSandboxEntry(entry: unknown, workspace: ExecutorWorkspace): unknown[] {
   const record = asJsonRecord(entry);
@@ -209,11 +211,11 @@ function mapSandboxEntry(entry: unknown, workspace: ExecutorWorkspace): unknown[
     const agentPath = agentPathFromUri(target.path);
     return deny && agentPath !== null && isLocalAbsolutePath(agentPath) ? [entry] : [];
   }
-  // 绝对 glob 只认盘符、`/` 开头与 UNC(`\\server`)；单个 `\` 开头是 POSIX 的转义(`\*.pem`)，按相对 glob 保留。
-  if (target.type === 'glob_pattern' && typeof target.pattern === 'string' && /^(?:[A-Za-z]:|\/|\\\\)/.test(target.pattern)) {
+  if (target.type === 'glob_pattern' && typeof target.pattern === 'string') {
     const local = workspace.localGlobFromAgent(target.pattern);
     if (local !== null) return [{ ...record, path: { ...target, pattern: local } }];
-    return deny && isLocalAbsolutePath(target.pattern) ? [entry] : [];
+    // 读写 glob 只有明确是绝对路径(盘符加分隔符、`/` 开头、`\\server`)才是 Agent 主机的路径，丢掉；判断不准只会少放。
+    return deny || !/^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(target.pattern) ? [entry] : [];
   }
   return [entry];
 }

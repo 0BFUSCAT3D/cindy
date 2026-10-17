@@ -424,6 +424,7 @@ describe('virtual workspace', () => {
         { path: { type: 'path', path: 'file:///C:/Agent/secrets' }, access: 'deny' },
         // Windows 网络路径：POSIX 本机的 exec-server 不认带主机名的 file URI，留下会让每条命令都被拒。
         { path: { type: 'path', path: 'file://server/share/secret' }, access: 'deny' },
+        // 没映射上的禁止 glob 原样保留：在本机匹配不到东西，也不会让请求被拒。
         { path: { type: 'glob_pattern', pattern: '\\\\server\\share\\**' }, access: 'deny' },
       ] } },
       cwd: 'file:///C:/Agent/mirror/workspace',
@@ -441,6 +442,7 @@ describe('virtual workspace', () => {
         { path: { type: 'path', path: local(path.join(project, '.git')) }, access: 'read' },
         { path: { type: 'glob_pattern', pattern: project + '/**/*.env' }, access: 'deny' },
         { path: { type: 'glob_pattern', pattern: '**/*.pem' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: '\\\\server\\share\\**' }, access: 'deny' },
       ] } },
       cwd: local(project),
       policyContext: { cwd: local(project), workspaceRoots: [local(project)] },
@@ -481,8 +483,13 @@ describe('virtual workspace', () => {
         { path: { type: 'path', path: 'file:///home/agent/workspace' }, access: 'write' },
         { path: { type: 'path', path: 'file:///home/agent/.codex/memories' }, access: 'write' },
         { path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' },
-        // 以转义开头的相对 glob(名字就叫 `*.pem` 的文件)，不是以反斜杠开头的绝对路径。
+        // 相对 glob 不能被误认成绝对路径丢掉：以转义开头(名字就叫 `*.pem` 的文件)、文件名里带冒号。
         { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: 'a:*.pem' }, access: 'deny' },
+        { path: { type: 'glob_pattern', pattern: 'a:*.cache' }, access: 'write' },
+        // Agent 主机自己的绝对路径：写入授权丢掉，禁止规则保留。
+        { path: { type: 'glob_pattern', pattern: '/home/agent/.codex/**' }, access: 'write' },
+        { path: { type: 'glob_pattern', pattern: '/home/agent/.aws/**' }, access: 'deny' },
       ] } },
       cwd: 'file:///home/agent/workspace',
     };
@@ -492,6 +499,9 @@ describe('virtual workspace', () => {
       // 任务电脑是 Windows 时 POSIX 路径不是本机路径，禁止条目也无从对应。
       ...(process.platform === 'win32' ? [] : [{ path: { type: 'path', path: 'file:///home/agent/.ssh' }, access: 'deny' }]),
       { path: { type: 'glob_pattern', pattern: '\\*.pem' }, access: 'deny' },
+      { path: { type: 'glob_pattern', pattern: 'a:*.pem' }, access: 'deny' },
+      { path: { type: 'glob_pattern', pattern: 'a:*.cache' }, access: 'write' },
+      { path: { type: 'glob_pattern', pattern: '/home/agent/.aws/**' }, access: 'deny' },
     ]);
     expect(params.sandbox.cwd).toBe(pathToFileURL(project).href);
     // 没有虚拟工作区(旧版对端)时沙箱原样转发，与之前一致。
