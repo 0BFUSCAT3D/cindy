@@ -3744,7 +3744,7 @@ assertRouteCurrent();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
-      tokenSpeed: translatorRt.tokenSpeed.snapshot(),
+      tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
       outputTokens: usageTracker.getTurnUsage().output,
       durationMs: translatorRt.generationOutputDurationMs,
       openStartedAt: translatorRt.generationStartedAt,
@@ -11058,7 +11058,7 @@ assertRouteCurrent();
       const realTurnUsage = usageTracker.getTurnUsage();
       const realTurnUsageSegments = usageTracker.getTurnUsageSegments();
       finalizeCodexGenerationTurn(translatorRt, turn.id);
-      translatorRt.tokenSpeed.stop(realTurnUsage.output);
+      translatorRt.tokenSpeed.stop();
       const generationDurationMs = codexGenerationDurationMs(translatorRt);
       const codexDoneUsage = {
         promptTokens: realTurnUsage.input,
@@ -11279,7 +11279,7 @@ assertRouteCurrent();
           data: {
             status: 'Done',
             ...attachLiveGeneration(endSnap, {
-              tokenSpeed: translatorRt.tokenSpeed.snapshot(),
+              tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
               outputTokens: realTurnUsage.output,
               durationMs: translatorRt.generationOutputDurationMs,
               openStartedAt: null,
@@ -12345,6 +12345,14 @@ assertRouteCurrent();
               translatorRt.generationDurationMs,
               translatorRt.generationStartedAt,
             );
+            if (translatorRt.generationTimingReliable) {
+              translatorRt.tokenSpeed.recordUsage(
+                usageTracker.getTurnUsage().output,
+                translatorRt.generationOutputDurationMs,
+              );
+            } else {
+              translatorRt.tokenSpeed.invalidate();
+            }
           }
           maybePushUsageRefresh();
           // Maker Memory flush 观察 (A 轻版: 只打日志). makerMemoryEnabled 关时 controller 为 null。

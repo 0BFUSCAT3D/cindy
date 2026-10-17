@@ -1,3 +1,4 @@
+import type { RemoteAgentLimitUsage } from '../../shared/remoteAgentLimits.js';
 import { executeTaskTags, TASK_TAG_CHANNEL } from '../localDb/ipc/taskTags.js';
 import { encodeMessageBodies, versionMessageBody } from './sessionMessageReuse.js';
 import type { TaskTagRequest } from '@cindy/maker-shared';
@@ -398,6 +399,7 @@ export interface RemoteAgentHandler {
   purgeControllers?(match: (controller: string) => boolean): Promise<void>;
   /** 有进行中任务的控制端。 */
   activeControllers?(): string[];
+  limitUsage?(): RemoteAgentLimitUsage;
   /** 正在运行一轮的任务的控制端(每个任务一项)。 */
   turnRunningControllers?(): string[];
   /**
@@ -4865,3 +4867,8 @@ export const __testing = {
     activeClient = c;
   },
 };
+
+/** 提供方管理用的本机占用，不暴露给分享受邀者。 */
+export function remoteAgentLimitUsage(): RemoteAgentLimitUsage {
+  return remoteAgentHandler?.limitUsage?.() ?? { total: 0, devices: 0, largestDevice: 0 };
+}

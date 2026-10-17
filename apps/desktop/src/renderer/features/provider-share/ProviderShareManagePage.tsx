@@ -1,3 +1,4 @@
+import { RemoteAgentLimitsSection } from './RemoteAgentLimitsSection';
 /**
  * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
  * 「远程与分享」入口进入，可返回。本机或同账号组所在电脑共用这一页，设置、分享与用量始终读取管理对象所在电脑。
@@ -497,6 +498,8 @@ export function ProviderShareManagePage({
         providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
         initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
       />
+
+      <RemoteAgentLimitsSection key={deviceId ?? 'local'} deviceId={deviceId} />
 
       <ProviderUsageSection
         providerId={providerId}

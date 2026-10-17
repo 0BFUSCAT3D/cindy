@@ -388,9 +388,6 @@
     "apps/desktop/src/main/plugin-publisher/__tests__/host.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/main/provider-group/__tests__/coolingStore.test.ts": {
-      "resetModules": 2
-    },
     "apps/desktop/src/main/provider-group/__tests__/failoverSessionClose.test.ts": {
       "sourceReads": 1
     },
@@ -1016,9 +1013,6 @@
     },
     "apps/mobile/src/__tests__/mobileVoiceHistoryStore.test.ts": {
       "resetModules": 1
-    },
-    "apps/mobile/src/__tests__/outboxHistoryCache.test.ts": {
-      "realWaits": 1
     },
     "apps/mobile/src/__tests__/remoteHistoryReentry.test.ts": {
       "sourceReads": 1
