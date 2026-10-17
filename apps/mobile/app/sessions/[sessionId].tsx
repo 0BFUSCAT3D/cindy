@@ -10571,32 +10571,39 @@ function SessionScreenContent() {
                   例外:新建任务慢发送时这一行要说明卡在哪一步,不能被同步占位藏掉。
                   判据必须带 messageCount:syncingWhileEmpty 只要 loading 就为真,而收口后
                   还会再来几轮 load(实测日志),只看它会让已有消息的会话反复熄灭活动条。 */}
-              {!companionChat && (showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
+              {/* 保留活动行的位置：提示出现、切换与结束不改变消息列表底部留白。 */}
+              {!companionChat ? (
                 <View
+                  pointerEvents="box-none"
                   style={[
                     styles.composerActivityFrame,
-                    { paddingHorizontal: composerTouchLayout.composerPaddingHorizontal },
+                    {
+                      paddingHorizontal: composerTouchLayout.composerPaddingHorizontal,
+                      minHeight: 44,
+                    },
                   ]}
                 >
-                  <ComposerActivityStatus
-                    availableRegion={composerRegion}
-                    key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
-                    sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
-                    reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
-                    pendingRecovery={pendingRecoveryStatus}
-                    sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
-                    startedAt={composerActivityStartedAtMs}
-                    rateStartedAt={remoteSessionRunStatus.startedAt}
-                    streaming={isSessionStreaming}
-                    tokenUsage={composerActivityTokenUsage}
-                    outputTokens={remoteSessionRunStatus.outputTokens}
-                    generationDurationMs={remoteSessionRunStatus.generationDurationMs}
-                    generationReliable={remoteSessionRunStatus.generationReliable}
-                    tokenSpeed={remoteSessionRunStatus.tokenSpeed}
-                    generationActive={remoteSessionRunStatus.generationActive}
-                    visible={showComposerActivity}
-                    slowSendPhase={creationSlowPhase}
-                  />
+                  {(showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
+                    <ComposerActivityStatus
+                      availableRegion={composerRegion}
+                      key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
+                      sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
+                      reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
+                      pendingRecovery={pendingRecoveryStatus}
+                      sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
+                      startedAt={composerActivityStartedAtMs}
+                      rateStartedAt={remoteSessionRunStatus.startedAt}
+                      streaming={isSessionStreaming}
+                      tokenUsage={composerActivityTokenUsage}
+                      outputTokens={remoteSessionRunStatus.outputTokens}
+                      generationDurationMs={remoteSessionRunStatus.generationDurationMs}
+                      generationReliable={remoteSessionRunStatus.generationReliable}
+                      tokenSpeed={remoteSessionRunStatus.tokenSpeed}
+                      generationActive={remoteSessionRunStatus.generationActive}
+                      visible={showComposerActivity}
+                      slowSendPhase={creationSlowPhase}
+                    />
+                  ) : null}
                 </View>
               ) : null}
               {/* Desktop BotWorkingStatus: a teammate's paced public status stays above the composer,
