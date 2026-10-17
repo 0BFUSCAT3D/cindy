@@ -37,6 +37,7 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Text } from "@/components/AppText";
 import { MainWindowActionButton } from "@/components/MobilePrimitives";
+import { SystemNavigationBack, useSystemNavigationBack } from "@/platform/chrome/SystemNavigationBack";
 import { iconSize, lineHeight, navigationChrome, radius, spacing, typeScale, useTheme } from "@/theme";
 import { useLiquidGlassAvailable } from "./useLiquidGlassAvailable";
 import {
@@ -50,6 +51,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps | DocumentPreviewChr
   const { colors, mode } = useTheme();
   const { t } = useTranslation();
   const glass = useLiquidGlassAvailable();
+  const systemBack = useSystemNavigationBack();
   const [editing, setEditing] = useState(false);
   const addressText = useNativeState(p.document ? '' : p.address);
   const addressRef = useRef<TextFieldRef>(null);
@@ -148,6 +150,12 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps | DocumentPreviewChr
   );
   return (
     <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+      <SystemNavigationBack
+        close
+        available={p.document === true}
+        label={t("files.preview.done")}
+        onPress={p.onClose}
+      />
       <View
         pointerEvents="box-none"
         style={{
@@ -159,7 +167,10 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps | DocumentPreviewChr
           gap: spacing.sm,
         }}
       >
-        <Host {...host} style={{ width: size, height: size }}>
+        {p.document && systemBack ? (
+          // Duo owns close in its native toolbar; keep equal side widths for the title.
+          <View pointerEvents="none" style={{ width: size, height: size }} />
+        ) : <Host {...host} style={{ width: size, height: size }}>
           <Button
             onPress={p.onClose}
             testID="filePreview.done"
@@ -171,7 +182,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps | DocumentPreviewChr
               modifiers={[frame({ width: size, height: size })]}
             />
           </Button>
-        </Host>
+        </Host>}
         <Host {...host} style={{ flex: 1, minWidth: 0, height: size }}>
           <HStack
             spacing={0}
