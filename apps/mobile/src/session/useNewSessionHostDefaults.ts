@@ -24,7 +24,10 @@ export function useNewSessionHostDefaults({
   const hostDraftDefaultsRef = useRef(hostDraftDefaults);
   hostDraftDefaultsRef.current = hostDraftDefaults;
   // 在途读取:切 agent 时等它读完再选模型,避免先落目录默认、又因已手动切换而再也补不回来。
-  const hostDraftDefaultsLoadRef = useRef<{ deviceId: string; promise: Promise<void> } | null>(null);
+  const hostDraftDefaultsLoadRef = useRef<{
+    deviceId: string;
+    byAgent: Partial<Record<NewSessionAgentKind, Promise<void>>>;
+  } | null>(null);
   useEffect(() => {
     const deviceId = selectedDeviceId;
     const owner = getMobileAuthOwner();
@@ -56,13 +59,13 @@ export function useNewSessionHostDefaults({
         if (!isCurrent()) return null;
       }
     };
-    const promise = Promise.all(
-      NEW_SESSION_AGENT_OPTIONS.map(async ({ kind }) => [kind, await readAgent(kind)] as const),
-    ).then((entries) => {
+    const byAgent = Object.fromEntries(NEW_SESSION_AGENT_OPTIONS.map(({ kind }) => [kind, readAgent(kind).then((runtime) => {
       if (!isCurrent()) return;
+      // Publish each engine as soon as it settles. Leaving this page while an
+      // unrelated engine is slow must not discard a successful default.
       const snapshot = {
         deviceId,
-        byAgent: { ...Object.fromEntries(entries), ...hostChoiceOverridesRef.current.get(deviceId) },
+        byAgent: { ...hostDraftDefaultsRef.current?.byAgent, [kind]: runtime, ...hostChoiceOverridesRef.current.get(deviceId) },
       };
       // A failed optional engine must not discard another engine's successful read.
       // Unknown engines stay absent from the cross-page cache; this visit may still
@@ -71,22 +74,22 @@ export function useNewSessionHostDefaults({
         deviceId,
         byAgent: {
           ...cached?.byAgent,
-          ...Object.fromEntries(entries.filter(([kind]) => successfulAgents.has(kind))),
+          [kind]: runtime,
           ...hostChoiceOverridesRef.current.get(deviceId),
         },
       };
-      const remembered = successfulAgents.size ? cacheNewSessionHostDefaults(cacheable, cached) : getNewSessionHostDefaults(deviceId);
+      const remembered = successfulAgents.has(kind) ? cacheNewSessionHostDefaults(cacheable, cached) : getNewSessionHostDefaults(deviceId);
       const next = { ...snapshot, byAgent: { ...snapshot.byAgent, ...remembered?.byAgent, ...hostChoiceOverridesRef.current.get(deviceId) } };
       // 同步更新镜像:等待中的切 agent 回调在下一次渲染前就要读到结果。
       hostDraftDefaultsRef.current = next;
       setHostDraftDefaults(next);
-    });
-    hostDraftDefaultsLoadRef.current = { deviceId, promise };
+    })]));
+    hostDraftDefaultsLoadRef.current = { deviceId, byAgent };
     return () => {
       cancelled = true;
     };
   }, [deviceLinkStatus, maker, openLink, selectedDeviceId, outboxOwner]);
-  // 等该设备的被控电脑默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
+  // 只等目标 agent 的默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
   // 按目录默认继续。effect 重跑会换一份新的在途读取,跟着等新的那份(有限次)。
   const waitHostDraftDefaults = useCallback(async (deviceId: string, agentKind: NewSessionAgentKind) => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -94,7 +97,7 @@ export function useNewSessionHostDefaults({
         && agentKind in hostDraftDefaultsRef.current.byAgent) return;
       const load = hostDraftDefaultsLoadRef.current;
       if (!load || load.deviceId !== deviceId) return;
-      await load.promise;
+      await load.byAgent[agentKind];
     }
   }, []);
   const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId

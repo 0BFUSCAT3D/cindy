@@ -37,9 +37,8 @@ export function cacheNewSessionHostDefaults(
 
 export function rememberNewSessionHostRuntime(deviceId: string, runtime: NewSessionRuntime): void {
   const current = cache.get(deviceId);
-  if (!current) return;
   cache.set(deviceId, {
-    ...current,
-    byAgent: { ...current.byAgent, [runtime.agentKind]: runtime },
+    deviceId,
+    byAgent: { ...current?.byAgent, [runtime.agentKind]: runtime },
   });
 }

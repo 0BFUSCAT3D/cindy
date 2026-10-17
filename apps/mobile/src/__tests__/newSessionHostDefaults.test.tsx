@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
 import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
-import { DEFAULT_NEW_SESSION_DRAFT, type NewSessionAgentKind, type NewSessionStoredPreferences } from '@/session/newSession';
+import { DEFAULT_NEW_SESSION_DRAFT, isNewSessionRuntimePending, type NewSessionAgentKind, type NewSessionStoredPreferences } from '@/session/newSession';
 import type { MobileNewMakerDefaults } from '@/device-link/mobileMakerTransport';
 import { buildMobileModelSections } from '@/session/providerModelSections';
 import { act, createElement, useRef, useState } from 'react';
@@ -18,6 +18,7 @@ function usePageDefaults(bindings: Parameters<typeof useNewSessionHostDefaults>[
   preferences: NewSessionStoredPreferences | null;
 }) {
   const [draft, setDraft] = useState(bindings.draft);
+  const [settledDeviceId, setSettledDeviceId] = useState<string | null>(null);
   const userTouchedRuntimeRef = useRef(false);
   const defaults = useNewSessionHostDefaults({ ...bindings, draft });
   const selectedDeviceRef = useRef(bindings.selectedDeviceId);
@@ -35,11 +36,16 @@ function usePageDefaults(bindings: Parameters<typeof useNewSessionHostDefaults>[
     modelSections: buildMobileModelSections({ providers: [], agentKind: draft.agentKind }),
     flatModelsForUnsupportedHost: () => undefined, targetAgentHasFast: () => false,
     draftMemory: { getFast: () => false, getEffort: () => undefined, setFast: () => {}, setEffort: () => {} },
-    settleRuntime: () => {},
+    settleRuntime: (_source, deviceId) => setSettledDeviceId(deviceId),
   });
   return {
     settled: defaults.hostDefaultsSettled, runtime: defaults.hostRuntimeFor('codex'),
     runtimeFor: defaults.hostRuntimeFor, draft, wait: defaults.waitHostDraftDefaults,
+    pending: isNewSessionRuntimePending({
+      settled: settledDeviceId === bindings.selectedDeviceId,
+      selectedDeviceId: bindings.selectedDeviceId, userTouched: userTouchedRuntimeRef.current,
+      remoteAgentPicked: false, catalogReady: deviceProviders.ready, catalogFailed: false, modelRowCount: 0,
+    }),
     choose: (mark: boolean) => {
       userTouchedRuntimeRef.current = true;
       setDraft(bindings.draft);
@@ -63,14 +69,15 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function mount(deviceId = 'desktop', agentKind: NewSessionAgentKind = 'codex', failedAgent?: string, storedAgent: NewSessionAgentKind | null = null) {
+function mount(deviceId = 'desktop', agentKind: NewSessionAgentKind = 'codex', failedAgent?: string, storedAgent: NewSessionAgentKind | null = null, pendingAgents: NewSessionAgentKind[] = []) {
   if (root) act(() => root!.unmount());
   const read = deferred<MobileNewMakerDefaults>();
+  const pendingReads = new Map(pendingAgents.map((agent) => [agent, deferred<MobileNewMakerDefaults>()]));
   const bindings = {
     selectedDeviceId: deviceId, deviceLinkStatus: 'online', selectedDeviceRef: { current: deviceId },
     outboxOwner: getMobileAuthOwner(), remoteAgentChoice: null,
     draft: { ...DEFAULT_NEW_SESSION_DRAFT, agentKind, model: 'chosen', providerId: 'provider', effort: 'high', fastMode: false },
-    maker: { getNewMakerDefaults: vi.fn((agent?: string) => agent === failedAgent ? Promise.reject(new Error('read failed')) : read.promise), applyNewMakerDraftPref: vi.fn(async () => {}) },
+    maker: { getNewMakerDefaults: vi.fn((agent?: string) => agent === failedAgent ? Promise.reject(new Error('read failed')) : pendingReads.get(agent as NewSessionAgentKind)?.promise ?? read.promise), applyNewMakerDraftPref: vi.fn(async () => {}) },
     openLink: vi.fn(async () => {}),
     preferences: storedAgent ? { agentKind: storedAgent, permissionModeByAgent: {}, device: null, workspaceKind: null, workingDirByDevice: {} } : null,
   };
@@ -79,9 +86,44 @@ function mount(deviceId = 'desktop', agentKind: NewSessionAgentKind = 'codex', f
   root = createRoot(document.createElement('div'));
   const render = () => act(() => root!.render(createElement(Harness)));
   render();
-  return { read, bindings, render, get state() { return state; } };
+  return { read, pendingReads, bindings, render, get state() { return state; } };
 }
 const defaults = (model: string) => ({ worktreeEnabled: false, model, providerId: 'provider', effort: 'high' });
+
+// A new-task page can be left before optional engines finish. Its successful
+// engine and explicit model choice must already be available on the next visit.
+it.each(['codex', 'pi', 'claude-code'] as const)('settles and caches %s without waiting for unrelated engines', async (agent) => {
+  const others = (['codex', 'pi', 'claude-code'] as const).filter((kind) => kind !== agent);
+  const first = mount('desktop', agent, undefined, agent, others);
+  let waited = false;
+  await act(async () => { void first.state.wait('desktop', agent).then(() => { waited = true; }); });
+  expect(first.state.pending).toBe(true);
+  await act(async () => first.read.resolve(defaults('ready')));
+  expect(first.state.pending).toBe(false);
+  expect(first.state.draft.model).toBe('ready');
+  expect(waited).toBe(true);
+  expect(getNewSessionHostDefaults('desktop')?.byAgent[agent]?.model).toBe('ready');
+  const reopened = mount('desktop', agent, undefined, agent);
+  await act(async () => {});
+  expect(reopened.state.pending).toBe(false);
+  expect(reopened.state.draft.model).toBe('ready');
+  await act(async () => {
+    for (const pending of first.pendingReads.values()) pending.resolve(defaults('late'));
+  });
+  for (const other of others) expect(getNewSessionHostDefaults('desktop')?.byAgent[other]).toBeUndefined();
+});
+
+it.each(['codex', 'pi', 'claude-code'] as const)('keeps a first-visit manual %s choice even when all reads are pending', async (agent) => {
+  const first = mount('desktop', agent);
+  act(() => first.state.choose(true));
+  expect(getNewSessionHostDefaults('desktop')?.byAgent[agent]?.model).toBe('chosen');
+  const reopened = mount('desktop', agent, undefined, agent);
+  await act(async () => {});
+  expect(reopened.state.pending).toBe(false);
+  expect(reopened.state.draft.model).toBe('chosen');
+  await act(async () => first.read.resolve(defaults('late')));
+  expect(getNewSessionHostDefaults('desktop')?.byAgent[agent]?.model).toBe('chosen');
+});
 
 it('restores the remembered engine before applying fresh background defaults', async () => {
   const first = mount();
