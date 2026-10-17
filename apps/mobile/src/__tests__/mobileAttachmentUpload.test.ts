@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { apiFetchRaw } from '@/api/client';
 import { installPeerUpload } from '@/device-link/peerFileRegistry';
 import { buildPeerAttachmentRef, parsePeerAttachmentRef } from '@cindy/device-link';
@@ -22,8 +23,28 @@ beforeAll(async () => {
 const readFileChunk = vi.fn(async (_uri: string, _position: number, length: number) =>
   Buffer.alloc(length, 0x78).toString('base64'),
 );
+beforeEach(() => setMobileAuthOwner('alice'));
 
 describe('mobileAttachmentUpload', () => {
+  // Unit: late peer completion must not retain removed uploads or an invalidated owner's pixels.
+  it.each(['cancelled', 'outbox-removed', 'account-switched'] as const)('does not retain a late upload after %s', async (reason) => {
+    const abort = new AbortController();
+    let active = true;
+    const retainImage = vi.fn();
+    const off = installPeerUpload(async (_device, _uri, metadata) => {
+      if (reason === 'cancelled') abort.abort();
+      if (reason === 'outbox-removed') active = false;
+      if (reason === 'account-switched') { setMobileAuthOwner('bob'); setMobileAuthOwner('alice'); }
+      return buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' });
+    });
+    try {
+      await uploadMobileAttachmentFromFile({ name: 'photo.png', size: 4, mimeType: 'image/png' }, 'file:///source', {
+        token: 'token', deviceId: 'computer', signal: abort.signal, isActive: () => active,
+        deps: { readFileChunk, retainImage },
+      });
+      expect(retainImage).not.toHaveBeenCalled();
+    } finally { off(); }
+  });
   // Unit regression: background outbox calls this entry without the composer's onUploaded.
   // The immutable snapshot must be retained before it is removed on either transport.
   it.each(['oss', 'peer'] as const)('retains the sent %s image snapshot before cleanup', async (transport) => {

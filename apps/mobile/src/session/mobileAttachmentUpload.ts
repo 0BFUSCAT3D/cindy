@@ -1,4 +1,5 @@
 import { apiFetchRaw } from '@/api/client';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { canMobilePeerUpload, tryMobilePeerUpload } from '@/device-link/peerFileRegistry';
 import { DEVICE_LINK_API_BASE_URL } from '@/config/env';
 import { i18n } from '@/i18n';
@@ -333,8 +334,13 @@ export async function uploadMobileAttachmentFromFile(
     id?: string;
     deps?: UploadDeps;
     signal?: AbortSignal;
+    /** The outbox can remove a record without aborting its already-running upload. */
+    isActive?: () => boolean;
   },
 ): Promise<RemoteSerializedAttachment> {
+  const owner = getMobileAuthOwner();
+  const isActive = () => !!owner.accountKey && isMobileAuthOwnerCurrent(owner)
+    && !options.signal?.aborted && (options.isActive?.() ?? true);
   assertMobileDocumentSize(candidate.size);
   // 直连不设体积上限;超过 OSS 上限的附件只能直连——先确认直连可用(只查对端能力),
   // 不可用就在快照和摘要之前失败,不白复制、白读一遍数 GB 的文件。
@@ -353,11 +359,14 @@ export async function uploadMobileAttachmentFromFile(
   // Both the composer and the background outbox upload here. Keep the exact hashed
   // snapshot before cleanup; retaining only in the composer loses background sends.
   const retain = async (attachment: RemoteSerializedAttachment) => {
-    if (attachment.category === 'image') {
+    if (attachment.category === 'image' && isActive()) {
       try {
-        const save = options.deps?.retainImage
-          ?? (await import('@/session/sentAttachmentThumbStore')).registerSentAttachmentThumb;
-        await save(attachment.url ?? attachment.path, snapshot.uri);
+        if (options.deps?.retainImage) {
+          await options.deps.retainImage(attachment.url ?? attachment.path, snapshot.uri);
+        } else {
+          const { registerSentAttachmentThumb } = await import('@/session/sentAttachmentThumbStore');
+          await registerSentAttachmentThumb(attachment.url ?? attachment.path, snapshot.uri, undefined, isActive);
+        }
       } catch { /* Optional local copy must not turn a completed upload into a failed send. */ }
     }
     return attachment;

@@ -15,6 +15,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { isAttachmentOssRef, parseAttachmentOssRef, isPeerAttachmentRef, parsePeerAttachmentRef } from '@cindy/device-link';
 import { isPayloadDesktopLocalMediaUrl } from '@cindy/maker-shared/payload-summary';
 import { extOfMime, imageMimeFromUrl, type RemoteMediaDiskCacheHit } from '@/session/remoteMediaDiskCache';
@@ -26,6 +27,7 @@ const THUMB_DIR_NAME = 'sent-attachment-thumbs';
 const KNOWN_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp']);
 
 interface ThumbEntry {
+  accountKey: string;
   /** THUMB_DIR_NAME 下的相对文件名。 */
   file: string;
   /** 注册时间戳。 */
@@ -85,6 +87,11 @@ function bump(): void {
   version += 1;
   for (const listener of [...listeners]) listener();
 }
+subscribeMobileAuthOwner(bump);
+
+function scopedKey(accountKey: string, ref: string): string {
+  return JSON.stringify([accountKey, ref]);
+}
 
 function thumbDir(): string | null {
   return cachedDocDir ? `${cachedDocDir}${THUMB_DIR_NAME}` : null;
@@ -101,9 +108,9 @@ function imageMimeForRef(ref: string): string | undefined {
 }
 
 function rememberEntry(ref: string, entry: ThumbEntry): void {
-  entries.set(ref, entry);
+  entries.set(scopedKey(entry.accountKey, ref), entry);
   const hash = contentHash(ref);
-  if (hash) entriesByHash.set(hash, entry);
+  if (hash) entriesByHash.set(scopedKey(entry.accountKey, hash), entry);
 }
 
 /**
@@ -126,7 +133,7 @@ async function hydrateInternal(deps: SentAttachmentThumbFsDeps): Promise<void> {
   // 内存以磁盘为底、保留 hydrate 期间已注册的新条目(register 先 await hydrate,
   // 实际不会先写;防御性合并保证后写胜)。
   for (const [ossRef, entry] of keep) {
-    if (!entries.has(ossRef)) rememberEntry(ossRef, entry);
+    if (!entries.has(scopedKey(entry.accountKey, ossRef))) rememberEntry(ossRef, entry);
   }
   // 目录孤儿清理:磁盘上存在但映射不再引用的文件。
   const dir = thumbDir();
@@ -161,11 +168,15 @@ export async function registerSentAttachmentThumb(
   ossRef: string | undefined,
   sourceUri: string,
   deps: SentAttachmentThumbFsDeps = defaultFsDeps,
+  isActive: () => boolean = () => true,
 ): Promise<void> {
   if (!isThumbBackedRef(ossRef) || !sourceUri) return;
+  const owner = getMobileAuthOwner();
+  const current = () => !!owner.accountKey && isMobileAuthOwnerCurrent(owner) && isActive();
+  if (!current()) return;
   try {
     await ensureSentAttachmentThumbsHydrated(deps);
-    if (entries.has(ossRef)) return;
+    if (!current() || entries.has(scopedKey(owner.accountKey, ossRef))) return;
     const dir = thumbDir();
     if (!dir) return;
     const at = Date.now();
@@ -175,8 +186,13 @@ export async function registerSentAttachmentThumb(
     const mime = imageMimeForRef(ossRef);
     const file = `thumb-${at}-${fileSeq}.${mime?.startsWith('image/') ? extOfMime(mime) : extForUri(sourceUri)}`;
     await deps.makeDirectory(dir);
+    if (!current()) return;
     await deps.copy(sourceUri, `${dir}/${file}`);
-    rememberEntry(ossRef, { file, at });
+    if (!current()) {
+      await deps.remove(`${dir}/${file}`);
+      return;
+    }
+    rememberEntry(ossRef, { file, at, accountKey: owner.accountKey });
     schedulePersist();
     bump();
   } catch {
@@ -189,11 +205,14 @@ export async function registerSentAttachmentThumb(
  * 未 hydrate 时顺带惰性触发,完成后经版本订阅驱动重渲染。
  */
 export function getSentAttachmentThumbUri(ossRef: string): string | null {
+  const { accountKey } = getMobileAuthOwner();
+  if (!accountKey) return null;
   if (!hydratePromise) void ensureSentAttachmentThumbsHydrated();
   const dir = thumbDir();
   if (!dir) return null;
   const hash = contentHash(ossRef);
-  const entry = entries.get(ossRef) ?? (hash ? entriesByHash.get(hash) : undefined);
+  const entry = entries.get(scopedKey(accountKey, ossRef))
+    ?? (hash ? entriesByHash.get(scopedKey(accountKey, hash)) : undefined);
   return entry ? `${dir}/${entry.file}` : null;
 }
 
@@ -202,11 +221,14 @@ export async function resolveSentAttachmentThumb(
   ref: string,
   deps: SentAttachmentThumbFsDeps = defaultFsDeps,
 ): Promise<RemoteMediaDiskCacheHit | null> {
+  const owner = getMobileAuthOwner();
+  if (!owner.accountKey) return null;
   await ensureSentAttachmentThumbsHydrated(deps);
+  if (!isMobileAuthOwnerCurrent(owner)) return null;
   const uri = getSentAttachmentThumbUri(ref);
   if (!uri) return null;
   const size = await deps.statSize(uri).catch(() => 0);
-  if (size <= 0) return null;
+  if (size <= 0 || !isMobileAuthOwnerCurrent(owner)) return null;
   const mimeType = imageMimeForRef(ref) ?? imageMimeFromUrl(uri);
   return mimeType?.startsWith('image/') ? { uri, size, mimeType } : null;
 }
@@ -273,8 +295,10 @@ function parseStoredEntries(raw: string | null): Array<[string, ThumbEntry]> {
         && record.file.length > 0
         && typeof record.at === 'number'
         && Number.isFinite(record.at)
+        && typeof record.accountKey === 'string'
+        && record.accountKey.length > 0
       ) {
-        out.push([record.ossRef, { file: record.file, at: record.at }]);
+        out.push([record.ossRef, { file: record.file, at: record.at, accountKey: record.accountKey }]);
       }
     }
     return out;
@@ -284,8 +308,9 @@ function parseStoredEntries(raw: string | null): Array<[string, ThumbEntry]> {
 }
 
 function schedulePersist(): void {
-  const snapshot = [...entries.entries()].map(([ossRef, entry]) => ({
-    ossRef,
+  const snapshot = [...entries.entries()].map(([key, entry]) => ({
+    ossRef: (JSON.parse(key) as [string, string])[1],
+    accountKey: entry.accountKey,
     file: entry.file,
     at: entry.at,
   }));

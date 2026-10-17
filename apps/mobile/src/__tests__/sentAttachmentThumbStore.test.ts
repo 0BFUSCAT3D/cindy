@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
 import { buildAttachmentOssRef, buildPeerAttachmentRef } from '@cindy/device-link';
 import { resolveMobileRemoteMedia } from '@/session/remoteMedia';
+import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 
 const storage = vi.hoisted(() => new Map<string, string>());
 vi.mock('expo-file-system/legacy', () => ({
@@ -68,9 +69,55 @@ beforeEach(async () => {
   await __testing.flushPersist();
   __testing.reset();
   storage.clear();
+  setMobileAuthOwner('alice');
 });
 
 describe('sentAttachmentThumbStore', () => {
+  // Unit: cache ownership must survive restart without exposing another account's pixels.
+  // Previously the global exact-ref and content-hash indices both ignored the owner.
+  it('isolates exact and content-address reads by account, realm and logout', async () => {
+    const finalRef = `cindy-media://blobs/${'a'.repeat(64)}.png`;
+    const ref = buildAttachmentOssRef({ ossKey: 'uploads/alice', sha256: 'a'.repeat(64), size: 1000, mimeType: 'image/png' });
+    const { deps } = makeFsDeps();
+    await registerSentAttachmentThumb(ref, 'file:///alice.png', deps);
+    await __testing.flushPersist();
+    __testing.reset();
+    for (const [id, realm] of [['bob', 'global'], ['alice', 'cn'], ['', 'global']] as const) {
+      setMobileAuthOwner(id, realm);
+      expect(await resolveSentAttachmentThumb(ref, deps)).toBeNull();
+      expect(getSentAttachmentThumbUri(ref)).toBeNull();
+      expect(await resolveSentAttachmentThumb(finalRef, deps)).toBeNull();
+    }
+    setMobileAuthOwner('alice');
+    expect(await resolveSentAttachmentThumb(ref, deps)).not.toBeNull();
+    expect(await resolveSentAttachmentThumb(finalRef, deps)).not.toBeNull();
+    expect(await resolveSentAttachmentThumb(finalRef, { ...deps, statSize: async () => {
+      setMobileAuthOwner('bob');
+      return 1000;
+    } })).toBeNull();
+  });
+
+  it.each(['owner', 'cancelled'] as const)('removes a copy invalidated during file IO (%s)', async (reason) => {
+    let active = true;
+    const { deps, removed, copies } = makeFsDeps();
+    const copy = deps.copy;
+    deps.copy = async (from, to) => {
+      await copy(from, to);
+      if (reason === 'owner') { setMobileAuthOwner('bob'); setMobileAuthOwner('alice'); }
+      else active = false;
+    };
+    await registerSentAttachmentThumb(OSS_REF, 'file:///alice.png', deps, () => active);
+    await __testing.flushPersist();
+    expect(getSentAttachmentThumbUri(OSS_REF)).toBeNull();
+    expect(removed).toContain(copies[0].to);
+    expect(storage.has(__testing.storageKey)).toBe(false);
+  });
+
+  it('does not assign unowned legacy records to the next logged-in account', async () => {
+    storage.set(__testing.storageKey, JSON.stringify([{ ossRef: OSS_REF, file: 'old.png', at: 1 }]));
+    await ensureSentAttachmentThumbsHydrated(makeFsDeps().deps);
+    expect(getSentAttachmentThumbUri(OSS_REF)).toBeNull();
+  });
   // Regression: sent photos became unavailable offline after history replaced the upload URL.
   // Existing tests only queried the original ref. Unit tier exercises persistence + real lookup.
   it.each(['oss', 'peer'] as const)('keeps a %s upload readable by its final content address after restart', async (transport) => {
@@ -188,8 +235,8 @@ describe('sentAttachmentThumbStore', () => {
   it('hydrate 保留旧映射,只清目录孤儿文件', async () => {
     const now = Date.now();
     storage.set(__testing.storageKey, JSON.stringify([
-      { ossRef: OSS_REF, file: 'thumb-fresh.jpg', at: now - 1000 },
-      { ossRef: OSS_REF_2, file: 'thumb-stale.jpg', at: now - 30 * 24 * 60 * 60 * 1000 },
+      { ossRef: OSS_REF, file: 'thumb-fresh.jpg', at: now - 1000, accountKey: getMobileAuthOwner().accountKey },
+      { ossRef: OSS_REF_2, file: 'thumb-stale.jpg', at: now - 30 * 24 * 60 * 60 * 1000, accountKey: getMobileAuthOwner().accountKey },
     ]));
     const { deps, removed, setDirFiles } = makeFsDeps();
     setDirFiles(['thumb-fresh.jpg', 'thumb-stale.jpg', 'thumb-orphan.jpg']);
