@@ -2398,6 +2398,14 @@ function SessionScreenContent() {
   const activePendingKind = activePendingInteraction
     ? interactionKind(activePendingInteraction)
     : null;
+  const pendingInteractionScrollRef = useRef<ScrollView>(null);
+  const pendingQuestionInputFocusedRef = useRef(false);
+  const revealPendingQuestionInput = useCallback(() => {
+    if (activePendingKind !== 'ask_user_question' || !pendingQuestionInputFocusedRef.current) return;
+    // 问答输入与提交操作都在卡片末尾。聚焦、键盘缩高或切换问题后，
+    // 让它们一起进入可见区域；用户仍可向上滚动查看选项。
+    pendingInteractionScrollRef.current?.scrollToEnd({ animated: false });
+  }, [activePendingKind]);
   const activePendingCollapsed = isPendingInteractionCollapsed(
     collapsedPendingRequestIds,
     activePendingRequestId,
@@ -9486,8 +9494,10 @@ function SessionScreenContent() {
     }
   }, [applyComposerDocument, deviceId, maker, messageActionBusy, requestSync, rewindState, sessionId]);
 
+  const pendingInteractionDock = sessionOperationLayout.composerSlot === 'pending-interaction';
   const dockKeyboardFollow = Platform.OS === 'ios' && composerDock.enabled && nativeComposerFrameAvailable
-    && adaptiveWindow.regions.length === 0 && sessionOperationLayout.composerSlot === 'editable'
+    && adaptiveWindow.regions.length === 0
+    && (sessionOperationLayout.composerSlot === 'editable' || pendingInteractionDock)
     && !shareSelectionActive && !isSharedTaskAccessRevoked;
   const companionHeaderShown = companionChat && !!companionResource && !shareSelectionActive;
   const headerNode = (
@@ -10239,7 +10249,9 @@ function SessionScreenContent() {
           width={paneLayout.detail.width}
         >
         {!isSharedTaskAccessRevoked && <DockKeyboardLift
-          active={dockKeyboardFollow} restingBottom={composerDock.restingBottom} keyboardGap={composerDock.keyboardGap}
+          active={dockKeyboardFollow}
+          restingBottom={pendingInteractionDock ? 0 : composerDock.restingBottom}
+          keyboardGap={pendingInteractionDock ? 0 : composerDock.keyboardGap}
           pointerEvents="box-none"
           testID="session.bottomViewport"
           style={[
@@ -10434,14 +10446,22 @@ function SessionScreenContent() {
                 </View>
               ) : (
                 <ScrollView
+                  ref={pendingInteractionScrollRef}
                   keyboardShouldPersistTaps="handled"
                   nestedScrollEnabled
+                  onFocus={() => {
+                    pendingQuestionInputFocusedRef.current = true;
+                    revealPendingQuestionInput();
+                  }}
+                  onBlur={() => { pendingQuestionInputFocusedRef.current = false; }}
+                  onLayout={revealPendingQuestionInput}
+                  onContentSizeChange={revealPendingQuestionInput}
                   testID="interaction.bottomScroll"
                 >
                 <InteractionPanel
                   companion={companionChat}
                   companionIdentity={companionInteractionIdentity}
-                  safeAreaBottomInset={insets.bottom}
+                  safeAreaBottomInset={keyboardState.visible ? 0 : insets.bottom}
                   collapse={pendingInteractionCollapse}
                   deviceId={deviceId}
                   sessionId={sessionId}
