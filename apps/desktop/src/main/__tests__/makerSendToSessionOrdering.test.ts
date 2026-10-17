@@ -99,8 +99,8 @@ describe('sendToSession ordering', () => {
     const serviceDispatchBlock = extractOrcaTeamServiceDispatchResolvedWorkerSource();
     const serviceDepsBlock = extractBetween(
       source,
-      'const orcaTeamService = createOrcaTeamService({',
-      '  });\n  orcaTeamServiceForEvents = orcaTeamService;',
+      'const orcaTeamService = createOrcaTeamService(orcaRemoteWorkers.wrapTeamDeps({',
+      '  }));\n  orcaTeamServiceForEvents = orcaTeamService;',
     );
     const lifecycleDispatchBlock = extractBetween(
       orcaLifecycleServiceSource,
@@ -109,7 +109,9 @@ describe('sendToSession ordering', () => {
     );
 
     expect(helperBlock).toContain('const result = await resolveCollabDispatchResult(');
-    expect(helperBlock).toMatch(/\(\) =>\s+session\.send\(agentMessage, \{/);
+    expect(helperBlock).toMatch(
+      /async \(\) => \{\s+const sendResult = await session\.send\((?:agentMessage|outgoingMessage), \{/,
+    );
     expect(helperBlock).toContain('planMode: false,');
     expect(helperBlock).toContain('throwOnStartFailure: true,');
     expect(helperBlock).toContain('onAccepted: async () => {');
@@ -375,7 +377,9 @@ describe('sendToSession ordering', () => {
     expect(orcaInterAgentDispatcherSource).toContain('resolveCollabDispatchResult');
     expect(helperBlock).toContain('Promise<CollabDirectDispatchResult>');
     expect(helperBlock).toContain('const result = await resolveCollabDispatchResult(');
-    expect(helperBlock).toMatch(/\(\) =>\s+session\.send\(agentMessage, \{/);
+    expect(helperBlock).toMatch(
+      /async \(\) => \{\s+const sendResult = await session\.send\((?:agentMessage|outgoingMessage), \{/,
+    );
     expect(helperBlock).toContain('planMode: false,');
     expect(helperBlock).toContain('throwOnStartFailure: true,');
     expect(helperBlock).not.toContain('await session.send(agentMessage, {');
@@ -755,8 +759,8 @@ describe('sendToSession ordering', () => {
     );
     const serviceDepsBlock = extractBetween(
       source,
-      'const orcaTeamService = createOrcaTeamService({',
-      '  });\n  orcaTeamServiceForEvents = orcaTeamService;',
+      'const orcaTeamService = createOrcaTeamService(orcaRemoteWorkers.wrapTeamDeps({',
+      '  }));\n  orcaTeamServiceForEvents = orcaTeamService;',
     );
     const switchFocusIpcBlock = extractBetween(
       source,
@@ -947,8 +951,8 @@ expect(serviceDepsBlock).toContain('await orcaWorkerResumeScheduler.request(targ
     );
     const serviceDepsBlock = extractBetween(
       source,
-      'const orcaTeamService = createOrcaTeamService({',
-      '  });\n  orcaTeamServiceForEvents = orcaTeamService;',
+      'const orcaTeamService = createOrcaTeamService(orcaRemoteWorkers.wrapTeamDeps({',
+      '  }));\n  orcaTeamServiceForEvents = orcaTeamService;',
     );
 
     expect(source).toContain('registerOrcaWorkerControlHandlers(createElectronIpcHandlerRegistry(), {');
@@ -1015,8 +1019,8 @@ expect(serviceDepsBlock).toContain('await orcaWorkerResumeScheduler.request(targ
     const serviceDispatchBlock = extractOrcaTeamServiceDispatchResolvedWorkerSource();
     const depsBlock = extractBetween(
       source,
-      'const orcaTeamService = createOrcaTeamService({',
-      '  });\n  orcaTeamServiceForEvents = orcaTeamService;',
+      'const orcaTeamService = createOrcaTeamService(orcaRemoteWorkers.wrapTeamDeps({',
+      '  }));\n  orcaTeamServiceForEvents = orcaTeamService;',
     );
 
     expect(serviceSendBlock).toContain("return dispatchToWorker({ ...params, mode: 'normal' }, assertCurrent)");
