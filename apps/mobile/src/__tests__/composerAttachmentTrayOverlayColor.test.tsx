@@ -143,14 +143,16 @@ describe("composer attachment tray overlay foreground", () => {
       uploaded,
       uploading,
       placeholders,
+      revision,
     }: {
       uploaded: number;
       uploading: number;
       placeholders: number;
+      revision: number;
     }) {
       const expansion = useComposerImageExpansion(
         uploaded + uploading + placeholders,
-        uploading + placeholders,
+        revision,
       );
       return (
         <button onClick={expansion.collapse}>
@@ -158,13 +160,19 @@ describe("composer attachment tray overlay foreground", () => {
         </button>
       );
     }
-    const render = (uploaded: number, uploading: number, placeholders = 0) =>
+    const render = (
+      uploaded: number,
+      uploading: number,
+      placeholders = 0,
+      revision = 1,
+    ) =>
       act(() =>
         root.render(
           <Composer
             uploaded={uploaded}
             uploading={uploading}
             placeholders={placeholders}
+            revision={revision}
           />,
         ),
       );
@@ -177,10 +185,10 @@ describe("composer attachment tray overlay foreground", () => {
     expect(host.textContent).toBe("collapsed");
     render(1, 0);
     expect(host.textContent).toBe("collapsed");
-    render(1, 0, 1); // paste another image
+    render(1, 0, 1, 2); // paste another image
     expect(host.textContent).toBe("expanded");
     act(() => host.querySelector("button")!.click());
-    render(1, 1); // placeholder becomes a pending upload, no new slot
+    render(1, 1, 0, 2); // placeholder becomes a pending upload, no new selection
     expect(host.textContent).toBe("collapsed");
     render(0, 0);
     render(1, 0); // restored image draft

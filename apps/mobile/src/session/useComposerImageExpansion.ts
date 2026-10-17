@@ -3,21 +3,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** Newly added images open the card; completing uploads respect an explicit collapse. */
 export function useComposerImageExpansion(
   imageCount: number,
-  incomingImageCount: number,
+  imageSelectionRevision: number,
 ) {
-  const previousIncomingCount = useRef(0);
+  const previousSelectionRevision = useRef(imageSelectionRevision);
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => {
-    // Uploaded and pending lists can briefly overlap; only new incoming slots
-    // count as an addition. A paste placeholder becoming an upload keeps its slot.
+    // Selection and completion can cancel each other out in the pending count.
+    // The upload hook reports actual additions, including native paste starts.
     if (
-      incomingImageCount > previousIncomingCount.current ||
+      imageSelectionRevision !== previousSelectionRevision.current ||
       imageCount === 0
     ) {
       setCollapsed(false);
     }
-    previousIncomingCount.current = incomingImageCount;
-  }, [imageCount, incomingImageCount]);
+    previousSelectionRevision.current = imageSelectionRevision;
+  }, [imageCount, imageSelectionRevision]);
   const collapse = useCallback(() => setCollapsed(true), []);
   return { active: imageCount > 0 && !collapsed, collapse };
 }

@@ -906,6 +906,7 @@ export default function NewRemoteSessionScreen() {
   const {
     pendingUploads,
     pastePlaceholderCount,
+    imageSelectionRevision,
     beginPastePlaceholders,
     failPastePlaceholders,
     addImages: addLocalImageAttachments,
@@ -2101,7 +2102,7 @@ export default function NewRemoteSessionScreen() {
   });
   const composerIncomingImageCount = pendingUploads.filter((item) => item.kind === 'image').length + pastePlaceholderCount;
   const composerImageCount = attachments.filter((item) => item.category === 'image').length + composerIncomingImageCount;
-  const { active: composerImageHoldActive, collapse: collapseComposerImages } = useComposerImageExpansion(composerImageCount, composerIncomingImageCount);
+  const { active: composerImageHoldActive, collapse: collapseComposerImages } = useComposerImageExpansion(composerImageCount, imageSelectionRevision);
   const composerCardActive = firstMessageInputFocused || composerPillOpen.opening
     || composerImageHoldActive
     || modelSheetOpen

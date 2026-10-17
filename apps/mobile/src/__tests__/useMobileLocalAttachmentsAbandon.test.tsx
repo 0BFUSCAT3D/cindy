@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MobileLocalAttachmentUploadCandidate } from '@/session/mobileLocalAttachmentUpload';
+import { useComposerImageExpansion } from '@/session/useComposerImageExpansion';
 import {
   useMobileLocalAttachments,
   type UseMobileLocalAttachmentsOptions,
@@ -75,8 +76,14 @@ function mount(scopeKey: string) {
     onPicked: vi.fn(),
   };
   const results: UseMobileLocalAttachmentsResult[] = [];
+  let expansion!: ReturnType<typeof useComposerImageExpansion>;
   function Harness({ scope }: { scope: string }) {
-    results.push(useMobileLocalAttachments({ ...options, attachmentScopeKey: scope }));
+    const local = useMobileLocalAttachments({ ...options, attachmentScopeKey: scope });
+    results.push(local);
+    expansion = useComposerImageExpansion(
+      local.pendingUploads.filter((item) => item.kind === 'image').length + local.pastePlaceholderCount,
+      local.imageSelectionRevision,
+    );
     return null;
   }
   act(() => root.render(<Harness scope={scopeKey} />));
@@ -84,6 +91,7 @@ function mount(scopeKey: string) {
     options,
     first: results[0],
     latest: () => results.at(-1)!,
+    expansion: () => expansion,
     rerender: (scope: string) => act(() => root.render(<Harness scope={scope} />)),
   };
 }
@@ -99,6 +107,57 @@ const imageCandidate = (name: string, onAbandoned: () => void): MobileLocalAttac
 const flush = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
 describe('useMobileLocalAttachments abandonment on scope change', () => {
+  // PR #6291: unit integration through the real selection/upload and expansion
+  // hooks. Count-only tests miss a completion and addition in the same render.
+  it('reopens for a new selection during completion but not for paste materialization or retry', async () => {
+    const harness = mount('session-a');
+    act(() => harness.latest().enqueueUploads([imageCandidate('first.png', vi.fn())], { token: 'token' }));
+    await act(async () => { await flush(); });
+    expect(harness.expansion().active).toBe(true);
+    act(() => harness.expansion().collapse());
+    await act(async () => {
+      runtime.uploads[0].resolve();
+      await harness.latest().waitForPendingUploads();
+      harness.latest().enqueueUploads([imageCandidate('next.png', vi.fn())], { token: 'token' });
+      await flush();
+    });
+    expect(harness.latest().pendingUploads).toHaveLength(1);
+    expect(harness.expansion().active).toBe(true);
+    act(() => harness.expansion().collapse());
+    act(() => harness.latest().beginPastePlaceholders(1));
+    expect(harness.expansion().active).toBe(true);
+    act(() => harness.expansion().collapse());
+    // Keep this upload at the token boundary, without native file conversion.
+    harness.options.getAccessToken = () => new Promise(() => {});
+    harness.rerender('session-a');
+    await act(async () => { await harness.latest().addPastedImages(['file:///cache/paste.png']); });
+    expect(harness.latest().pastePlaceholderCount).toBe(0);
+    expect(harness.expansion().active).toBe(false);
+    act(() => harness.latest().beginPastePlaceholders(1));
+    expect(harness.expansion().active).toBe(true);
+    act(() => harness.expansion().collapse());
+    act(() => {
+      harness.latest().failPastePlaceholders();
+      harness.latest().beginPastePlaceholders(1);
+    });
+    expect(harness.expansion().active).toBe(true);
+    act(() => harness.latest().failPastePlaceholders());
+    act(() => harness.expansion().collapse());
+    // Direct paste (without a loading event) is a new selection as well.
+    await act(async () => { await harness.latest().addPastedImages(['file:///cache/direct.png']); });
+    expect(harness.expansion().active).toBe(true);
+    act(() => harness.latest().discardAllPendingUploads());
+    await act(async () => {
+      harness.latest().enqueueUploads([imageCandidate('failed.png', vi.fn())], { token: Promise.resolve(null) });
+      await harness.latest().waitForPendingUploads();
+    });
+    expect(harness.latest().pendingUploads[0].failed).toBe(true);
+    act(() => harness.expansion().collapse());
+    act(() => harness.latest().retryPendingUpload(harness.latest().pendingUploads[0].localId));
+    expect(harness.latest().pendingUploads[0].failed).toBeFalsy();
+    expect(harness.expansion().active).toBe(false);
+  });
+
   // PR #6291: the real upload hook must publish the local-id handoff before
   // reclaiming a pasted source. Tray-only tests cannot prove this ordering.
   it('keeps upload identity resolvable after source cleanup and releases it with the attachment', async () => {
