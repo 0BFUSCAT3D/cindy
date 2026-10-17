@@ -58,7 +58,7 @@ import { formatByteSize, isHtmlFilePreviewCandidate } from '@/session/filePrevie
 import { joinRemotePath } from '@/session/htmlLocalResources';
 import { decodeGzipBase64Text, mergePathIntoComposerDraft, shareMimeForFileName } from '@/session/fileBrowserActions';
 import { appendQuote, truncateQuoteText } from '@/session/chatQuoteStore';
-import { getCachedPreviewText, storeCachedPreviewText } from '@/session/fileBrowserCache';
+import { getCachedListingSync, storeCachedListing, getCachedPreviewText, storeCachedPreviewText } from '@/session/fileBrowserCache';
 import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
 import { FileTransferBusyNotice } from '@/session/FileTransferBusyNotice';
 import type { RemoteMediaSshContext } from '@/session/fileBrowserGallery';
@@ -214,14 +214,16 @@ function RemoteFilePreviewContent() {
   const [session, setSession] = useState<RemoteSession | null>(knownSession);
   const workdir = session?.workingDir ?? '';
 
-  // The requested file is already known. Mount it (and its cached body) before
-  // listing neighbours; a slow directory read must not hold every reopen blank.
+  // Reuse the browser's listing as well as the body: a synthetic single page
+  // would move the already visible file when the directory request completes.
+  const [initialSiblings] = useState(() => initialRelPath && workdir
+    ? previewSiblings(getCachedListingSync(maker.fileBrowser.cacheScope, workdir, parentRelPath(initialRelPath) ?? '') ?? [], sortMode, initialRelPath)
+    : null);
   const [siblings, setSiblings] = useState<FileBrowserGridItem[] | null>(() => (
-    initialRelPath && workdir ? [fallbackItem(initialRelPath)]
-      : singleAbsPath ? [absPathItem(singleAbsPath)] : null
+    initialSiblings ?? (singleAbsPath ? [absPathItem(singleAbsPath)] : null)
   ));
   const [siblingListing, setSiblingListing] = useState<SiblingListing | null>(null);
-  const [pageIndex, setPageIndex] = useState(0);
+  const [pageIndex, setPageIndex] = useState(() => Math.max(0, initialSiblings?.findIndex(item => item.relPath === initialRelPath) ?? 0));
   // 屏级焦点(HTML 可执行 WebView 的挂载门之一,见 renderItem 的 visible)。
   // 本屏被压栈(点「发送到会话」→ router.navigate 把会话页推到根 Stack 上)时
   // 路由仍挂载、pageIndex 也不变,只有 focus 会翻。
@@ -334,17 +336,12 @@ function RemoteFilePreviewContent() {
     })
       .then((raw) => {
         if (cancelled) return;
-        setSiblingListing({ key: listingKey, entries: normalizeRemoteOpDirEntries(raw) });
+        const entries = normalizeRemoteOpDirEntries(raw);
+        storeCachedListing(maker.fileBrowser.cacheScope, workdir, dirRel, entries);
+        setSiblingListing({ key: listingKey, entries });
       })
-      .catch(() => {
-        if (cancelled) return;
-        setSiblingListing(null);
-        setSiblings([fallbackItem(initialRelPath)]);
-        setPageIndex(0);
-        requestAnimationFrame(() => {
-          if (!cancelled) pagerRef.current?.scrollToOffset({ animated: false, offset: 0 });
-        });
-      });
+      // A failed background refresh must keep the visible file and neighbours.
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -363,6 +360,7 @@ function RemoteFilePreviewContent() {
     let cancelled = false;
     const anchorRelPath = currentRelPathRef.current ?? initialRelPath;
     const anchorTo = (index: number): void => {
+      if (index === pageIndexRef.current) return;
       setPageIndex(index);
       requestAnimationFrame(() => {
         if (!cancelled) {
@@ -372,9 +370,7 @@ function RemoteFilePreviewContent() {
     };
     // 图片已统一走浏览页的 ImageLightbox,翻页器只装非图片文件;
     // 仅当直接以图片路径进入(旧链路兜底)时保留该图片单页。
-    const files = buildFileBrowserGridItems(siblingListing.entries, sortMode, Date.now())
-      .filter((item) => item.kind === 'file')
-      .filter((item) => item.thumb !== 'image' || item.relPath === initialRelPath);
+    const files = previewSiblings(siblingListing.entries, sortMode, initialRelPath, anchorRelPath);
     let index = files.findIndex((item) => item.relPath === anchorRelPath);
     if (index < 0) index = files.findIndex((item) => item.relPath === initialRelPath);
     if (files.length === 0 || index < 0) {
@@ -390,6 +386,8 @@ function RemoteFilePreviewContent() {
   }, [deviceId, i18nInstance.language, initialRelPath, siblingListing, sortMode, workdir]);
 
   const current = siblings?.[pageIndex] ?? null;
+  const pageIndexRef = useRef(pageIndex);
+  pageIndexRef.current = pageIndex;
   const pagerRef = useRef<FlatList<FileBrowserGridItem>>(null);
   const moveMarkdownPager = useCallback((key: string, direction: 'previous' | 'next') => {
     if (key !== current?.key || !siblings) return;
@@ -1677,6 +1675,13 @@ function ToolbarButton({
 }
 
 /* ------------------------------ 工具 ------------------------------ */
+
+function previewSiblings(entries: FileBrowserRemoteOpEntry[], sort: FileBrowserSortMode, initialRelPath: string, anchorRelPath = initialRelPath): FileBrowserGridItem[] {
+  const files = buildFileBrowserGridItems(entries, sort, Date.now())
+    .filter(item => item.kind === 'file')
+    .filter(item => item.thumb !== 'image' || item.relPath === initialRelPath);
+  return files.some(item => item.relPath === anchorRelPath || item.relPath === initialRelPath) ? files : [fallbackItem(initialRelPath)];
+}
 
 function fallbackItem(relPath: string): FileBrowserGridItem {
   const name = basename(relPath);
