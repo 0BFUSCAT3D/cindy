@@ -54,6 +54,8 @@ export interface DurableOutboxRecord {
     editReady?: true;
     /** Content that could not be carried back, shown beside the restored attachments. */
     notice?: string;
+    /** Messages already copied into this draft; makes interrupted consolidation idempotent. */
+    mergedFollowUpClientIds?: string[];
     deviceName: string;
     planModeArm: boolean;
     restorePermissionMode: string | null;
@@ -126,6 +128,7 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
     record: DurableOutboxRecord,
     next: DurableOutboxRecord | null,
     adding = false,
+    expectedRecords: readonly DurableOutboxRecord[] = [],
   ): Promise<DurableOutboxRecord | null> => {
     const epoch = generation;
     await store.ready();
@@ -133,6 +136,8 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
       assertOwner(record.accountId, epoch);
       const current = records.find((r) => keyFor(r) === keyFor(record));
       if (adding ? current !== undefined : current !== record)
+        throw new Error("OUTBOX_STALE_WRITE");
+      if (expectedRecords.some((expected) => !records.includes(expected)))
         throw new Error("OUTBOX_STALE_WRITE");
       if (next && keyFor(next) !== keyFor(record)) throw new Error("OUTBOX_IDENTITY_CHANGED");
       if (next && next.item.sessionId !== record.item.sessionId
@@ -233,13 +238,14 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
     update: (
       record: DurableOutboxRecord,
       patch: Partial<DurableOutboxRecord>,
+      expectedRecords: readonly DurableOutboxRecord[] = [],
     ) =>
       mutate(record, {
         ...record,
         ...patch,
         accountId: record.accountId,
         deviceId: record.deviceId,
-      }) as Promise<DurableOutboxRecord>,
+      }, false, expectedRecords) as Promise<DurableOutboxRecord>,
     remove: (record: DurableOutboxRecord) => mutate(record, null),
     ready: (): Promise<void> => store.activate(accountId),
   };

@@ -6,9 +6,11 @@ import { returnNewSessionToEdit } from './returnNewSessionToEdit';
 type RecoveryOptions = Parameters<typeof returnNewSessionToEdit>[0];
 
 /** A failed creation has one next step: restore its draft in the new-task form. */
-export function useFailedCreationReturnToEdit({ task, focused, connectionEpoch, stashDraft, beforeNavigate, onReady, onError }: {
+export function useFailedCreationReturnToEdit({ task, focused, sending = false, connectionEpoch, stashDraft, beforeNavigate, onReady, onError }: {
   task: NewSessionCreationTask | null;
   focused: boolean;
+  /** A send already retaining/writing its bytes must settle before recovery reads the outbox. */
+  sending?: boolean;
   connectionEpoch: number;
   stashDraft: RecoveryOptions['stashDraft'];
   beforeNavigate?: () => Promise<void>;
@@ -31,7 +33,7 @@ export function useFailedCreationReturnToEdit({ task, focused, connectionEpoch, 
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => {
-    if (!failed || !focused || !sessionId || !deviceId) return;
+    if (!failed || !focused || sending || !sessionId || !deviceId) return;
     const identity = JSON.stringify([deviceId, sessionId, startedAt]);
     if (navigated.current === identity) return;
     const owner = getMobileAuthOwner();
@@ -58,5 +60,5 @@ export function useFailedCreationReturnToEdit({ task, focused, connectionEpoch, 
     });
     // Recovery itself continues after leaving. Re-entry (or restored connection)
     // can resume the existing recovery; ordinary store updates never retry it.
-  }, [sessionId, deviceId, failed, startedAt, focused, connectionEpoch, readyForEdit]);
+  }, [sessionId, deviceId, failed, startedAt, focused, sending, connectionEpoch, readyForEdit]);
 }

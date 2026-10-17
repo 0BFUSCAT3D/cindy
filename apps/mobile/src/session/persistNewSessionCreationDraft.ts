@@ -11,7 +11,9 @@ export async function persistNewSessionCreationDraft({ record, recovering, getUp
   getUploadedSource: (id: string) => MobileLocalAttachmentUploadCandidate | undefined;
   isCurrent: () => boolean;
 }): Promise<DurableOutboxRecord | null> {
-  let saved = { ...record, uploads: [] as DurableOutboxRecord['uploads'] };
+  // Recovery may carry local-only slots or expired remote references. Delivery
+  // must materialize the retained bytes again after the new task is created.
+  let saved: DurableOutboxRecord = { ...record, refreshUploads: !!recovering, uploads: [] };
   let committed = false;
   try {
     for (let slot = 0; slot < saved.item.attachmentSlots.length; slot++) {

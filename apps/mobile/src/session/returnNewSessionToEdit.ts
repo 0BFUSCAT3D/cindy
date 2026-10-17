@@ -1,6 +1,7 @@
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { i18n } from '@/i18n';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
+import { mergeNewSessionEditFollowUps } from './mergeNewSessionEditFollowUps';
 import {
   beginNewSessionReturnToEdit, markNewSessionDurableEditReady, getNewSessionCreationTask, prepareNewSessionCreationForEdit,
   stashNewSessionDraftForEdit, type NewSessionCreationTask,
@@ -19,6 +20,8 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   const task = getNewSessionCreationTask(sessionId);
   if (!ownerCurrent() || !isCurrent() || task?.deviceId !== deviceId) return;
   if (task.readyForEdit && !task.returningToEdit) {
+    if (task.readyForEdit === 'durable') await mergeNewSessionEditFollowUps(sessionId, deviceId);
+    if (!ownerCurrent() || !isCurrent() || getNewSessionCreationTask(sessionId)?.deviceId !== deviceId) return;
     await onReady({ deviceId, deviceName: task.deviceName,
       ...(task.readyForEdit === 'durable' ? { recoverySessionId: sessionId } : { editSessionId: sessionId }) });
     return;
@@ -40,6 +43,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
         error: prepared.error || durableFirst.error || i18n.t('session.screen.firstMessageNotSent'),
         creation: { ...durableFirst.creation!, editReady: true },
       });
+      await mergeNewSessionEditFollowUps(sessionId, deviceId);
       if (!taskCurrent()) return;
       markNewSessionDurableEditReady(sessionId, deviceId);
       if (isCurrent()) await onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });

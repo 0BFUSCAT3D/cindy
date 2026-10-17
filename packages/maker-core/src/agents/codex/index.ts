@@ -42,6 +42,7 @@ import { promises as fs } from 'node:fs';
 import { structuredPatch } from 'diff';
 import { syncCodexArchiveState } from './archive-state.js';
 import { readCodexThreadMcpServerTools } from './mcp-server-tools.js';
+import { readAccountRateLimitsWithRefresh } from './app-server/account-rate-limits.js';
 
 import {
   BaseAgent,
@@ -3000,7 +3001,7 @@ assertRouteCurrent();
     // oauth-bearer prevents a gateway/provider host from reading or mutating the wrong
     // account context; getHost refuses to replace a differently-authenticated active host.
     return this.withStartedAccountHost(providerId,
-      host => host.request<AccountRateLimitsResponse>(Method.AccountRateLimitsRead, undefined));
+      host => readAccountRateLimitsWithRefresh((method, params, options) => host.request(method, params, options)));
   }
 
   /** Consume one reset credit on the non-model app-server control plane. */

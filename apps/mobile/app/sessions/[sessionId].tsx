@@ -4106,6 +4106,7 @@ function SessionScreenContent() {
   useFailedCreationReturnToEdit({
     task: creationTask?.deviceId === deviceId ? creationTask : null,
     focused: creationScreenFocused,
+    sending,
     connectionEpoch,
     onReady: params => router.replace({ pathname: '/sessions/new', params: {
       ...params,

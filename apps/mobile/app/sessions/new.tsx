@@ -858,6 +858,7 @@ export default function NewRemoteSessionScreen() {
   useNewSessionDurableEdit({
     sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
     leaveForeignRecovery: leaveForeignOutboxRecovery,
+    onError: error => setError(formatRemoteError(error)),
     onRestore: record => {
       outboxRecoveryRef.current = record;
       userTouchedDeviceRef.current = true;

@@ -3,32 +3,42 @@ import { isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth
 import type { DurableOutboxRecord } from './durableOutbox';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
 import { completeNewSessionDurableEdit, findNewSessionEditDraft } from './newSessionCreation';
+import { mergeNewSessionEditFollowUps } from './mergeNewSessionEditFollowUps';
 
 type CreationRecord = DurableOutboxRecord & { creation: NonNullable<DurableOutboxRecord['creation']> };
 
 /** The form owns one edit claim until its recovery route changes or unmounts. */
-export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveForeignRecovery, onRestore }: {
+export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveForeignRecovery, onRestore, onError }: {
   sessionId: string;
   deviceId: string;
   owner: MobileAuthOwnerGeneration;
   leaveForeignRecovery: () => boolean;
   onRestore: (record: CreationRecord) => void;
+  onError?: (error: unknown) => void;
 }) {
-  const callbacks = useRef({ leaveForeignRecovery, onRestore });
-  callbacks.current = { leaveForeignRecovery, onRestore };
+  const callbacks = useRef({ leaveForeignRecovery, onRestore, onError });
+  callbacks.current = { leaveForeignRecovery, onRestore, onError };
   useEffect(() => {
     if (callbacks.current.leaveForeignRecovery() || !sessionId) return;
     let active = true;
     let restored = false;
+    let merging = false;
     let releaseEditClaim: (() => void) | undefined;
     const restore = () => {
-      if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
+      if (!active || restored || merging || !isMobileAuthOwnerCurrent(owner)) return;
       const record = getCurrentMobileOutboxRecords().find(r => r.item.sessionId === sessionId && r.creation
         && r.accountId === owner.accountKey && r.deviceId === deviceId);
       if (!record?.creation || record.prepared) return;
-      restored = true;
-      callbacks.current.onRestore(record as CreationRecord);
-      releaseEditClaim = completeNewSessionDurableEdit(sessionId, record.deviceId);
+      merging = true;
+      void mergeNewSessionEditFollowUps(sessionId, deviceId).then(saved => {
+        if (!active || !isMobileAuthOwnerCurrent(owner) || !saved?.creation || saved.prepared
+          || !getCurrentMobileOutboxRecords().includes(saved)) return;
+        restored = true;
+        callbacks.current.onRestore(saved as CreationRecord);
+        releaseEditClaim = completeNewSessionDurableEdit(sessionId, deviceId);
+      }).catch(error => {
+        if (active && isMobileAuthOwnerCurrent(owner)) callbacks.current.onError?.(error);
+      }).finally(() => { merging = false; });
     };
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);

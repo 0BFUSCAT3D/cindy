@@ -11,8 +11,11 @@ import { cancelledCreationDraft, outboxCreationRetryIdentity } from '../session/
 import { buildOutboxItem } from '../session/sessionOutbox';
 import { persistNewSessionCreationDraft } from '../session/persistNewSessionCreationDraft';
 import { returnNewSessionToEdit } from '../session/returnNewSessionToEdit';
+import { mergeNewSessionEditFollowUps } from '../session/mergeNewSessionEditFollowUps';
+import { createDurableOutboxDelivery } from '../session/durableOutboxDelivery';
+import type { InputProjection, QueuedRemoteMessage } from '../session/types';
 
-const disk = vi.hoisted(() => ({ data: new Map<string, string>(), fail: false }));
+const disk = vi.hoisted(() => ({ data: new Map<string, string>(), fail: false, failRemove: false }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
   getAllKeys: async () => [...disk.data.keys()],
   getItem: async (key: string) => disk.data.get(key) ?? null,
@@ -20,13 +23,16 @@ vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
     if (disk.fail) throw new Error('disk unavailable');
     disk.data.set(key, value);
   },
-  removeItem: async (key: string) => { disk.data.delete(key); },
+  removeItem: async (key: string) => {
+    if (disk.failRemove) throw new Error('remove unavailable');
+    disk.data.delete(key);
+  },
 } }));
 const files = vi.hoisted(() => ({ retained: new Map<string, string>(), sequence: 0, beforeCopy: async () => {} }));
 vi.mock('../session/durableOutboxFiles', () => {
   const uri = (record: DurableOutboxRecord, upload: { fileName: string }) => `file:///outbox/${record.item.clientId}/${upload.fileName}`;
   return {
-    durableOutboxUploadUri: uri, removeOutboxFiles: vi.fn(),
+    durableOutboxUploadUri: uri, removeOutboxFiles: vi.fn(async () => {}),
     outboxAttachmentNeedsLocalBytes: (file: { path: string }) => file.path.startsWith('cindy-oss-attach://') || file.path.startsWith('cindy-peer-attach://'),
     retainOutboxFile: vi.fn(async (record: DurableOutboxRecord, slot: number, source: MobileLocalAttachmentUploadCandidate) => {
       await files.beforeCopy();
@@ -75,6 +81,7 @@ beforeEach(async () => {
   await mobileDurableOutbox.activate('');
   disk.data.clear();
   disk.fail = false;
+  disk.failRemove = false;
   files.retained.clear();
   files.sequence = 0;
   files.beforeCopy = async () => {};
@@ -557,6 +564,10 @@ it.each(['success', 'not-found', 'network-error', 'superseded', 'account-change'
 
 it('persists the real creation error through return to edit and cold recovery', async () => {
   const record = await saveDraftFixture();
+  // P1 #6281: a second send used a separate ledger row which recovery ignored.
+  // Unit: actual return-to-edit must preserve that message before navigation.
+  await mobileDurableOutbox.add({ ...record, creation: undefined, uploads: [], createdAt: 2,
+    item: { ...record.item, clientId: 'follow-up', text: 'second message', attachmentSlots: [], slotMeta: [] } });
   startNewSessionCreation({
     sessionId: record.item.sessionId, firstMessageClientId: record.item.clientId,
     deviceId: record.deviceId, deviceName: 'PC', draft: record.creation!.draft,
@@ -570,9 +581,132 @@ it('persists the real creation error through return to edit and cold recovery', 
   await returnNewSessionToEdit({ sessionId: record.item.sessionId, deviceId: record.deviceId,
     isCurrent: () => true, onReady: () => {} });
   expect(getCurrentMobileOutboxRecords()[0].error).toBe('Provider setup required');
+  expect(getCurrentMobileOutboxRecords()[0].creation?.draft.firstMessage).toBe('keep my input\n\nsecond message');
+  expect(getCurrentMobileOutboxRecords()).toHaveLength(1);
   setMobileAuthOwner(null);
   await mobileDurableOutbox.activate('');
   setMobileAuthOwner('alice', 'global');
   await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
   expect(findNewSessionEditDraft('pc')?.error).toBe('Provider setup required');
 });
+
+// P1 #6281: previous tests covered only unsent composer input, not independently
+// queued messages. Unit production consolidation checks order, byte ownership,
+// interrupted writes and deletion/account races with the real durable store.
+async function saveFollowUpFixture(first: DurableOutboxRecord, pendingUpload = false) {
+  const record: DurableOutboxRecord = { ...first, createdAt: 2, creation: undefined,
+    item: { ...first.item, clientId: 'follow-up', text: 'second message',
+      attachmentSlots: [pendingUpload ? null : { ...first.item.attachmentSlots[0]!, id: 'second-photo' }] }, uploads: [] };
+  record.uploads.push(await retainOutboxFile(record, 0, { uri: 'file:///second.png', name: 'second.png', kind: 'image', size: 3 }));
+  await mobileDurableOutbox.add(record);
+  return record;
+}
+
+it.each([false, true])('recovers sent follow-ups before composer input, retaining upload bytes (pending: %s)', async pendingUpload => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const second = await saveFollowUpFixture(first, pendingUpload);
+  const other = { ...second, deviceId: 'other-pc', item: { ...second.item, clientId: 'other-device' } };
+  await mobileDurableOutbox.add(other);
+  await mobileDurableOutbox.add({ ...second, createdAt: 3, uploads: [], item: { ...second.item,
+    clientId: 'third', text: 'third message', attachmentSlots: [], slotMeta: [] } });
+  const saved = (await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc'))!;
+  expect(saved.creation?.draft.firstMessage).toBe('keep my input\n\nsecond message\n\nthird message');
+  expect(saved.uploads).toHaveLength(2);
+  expect(files.retained.get(durableOutboxUploadUri(saved, saved.uploads[1]))).toBe(durableOutboxUploadUri(second, second.uploads[0]));
+  if (pendingUpload) expect(saved.item.attachmentSlots[1]?.path).toBe(durableOutboxUploadUri(saved, saved.uploads[1]));
+  await appendNewSessionEditComposer(first.item.sessionId, 'pc', { text: 'still typing', attachments: [] });
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  const restored = (await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc'))!;
+  expect(restored.creation?.draft.firstMessage).toBe('keep my input\n\nsecond message\n\nthird message\n\nstill typing');
+  expect(getCurrentMobileOutboxRecords().filter(r => r.deviceId === 'pc')).toEqual([restored]);
+  expect(getCurrentMobileOutboxRecords().find(r => r.deviceId === 'other-pc')).toEqual(other);
+  const resent = await persistNewSessionCreationDraft({ record: { ...restored, storageSessionId: first.item.sessionId,
+    item: { ...restored.item, sessionId: 'replacement' } }, recovering: restored, isCurrent: () => true,
+    getUploadedSource: () => undefined });
+  expect(resent?.uploads).toHaveLength(2);
+  // Exercise delivery, not just the copied files: local-only recovered slots
+  // must be uploaded before the new task receives its message.
+  await mobileDurableOutbox.update(resent!, { state: 'queued', suspended: false, error: undefined,
+    creation: { ...resent!.creation!, cancelled: undefined, editReady: undefined } });
+  const projection = { sessionId: 'replacement', pendingQueue: [] } as unknown as InputProjection;
+  const enqueue = vi.fn(async (_record: DurableOutboxRecord) => projection);
+  const upload = vi.fn(async (_record: DurableOutboxRecord, retained: { slot: number }) => ({
+    ...first.item.attachmentSlots[0]!, id: `fresh-${retained.slot}`, path: `cindy-oss-attach://fresh-${retained.slot}`,
+  }));
+  await createDurableOutboxDelivery({ store: mobileDurableOutbox, isCurrent: () => true,
+    canRun: r => r.deviceId === 'pc', projection: async () => projection,
+    session: async () => ({ id: 'replacement', status: 'active' }),
+    prepare: async r => ({ clientId: r.item.clientId } as QueuedRemoteMessage), upload, enqueue,
+    cancel: async () => true, history: async () => false, applyProjection: () => {}, cleanup: async () => {},
+    discardUploads: () => {}, retryable: () => false, describe: String, confirmationMessage: 'confirm', clearedMessage: 'cleared',
+  }).run();
+  expect(upload).toHaveBeenCalledTimes(2);
+  expect(enqueue).toHaveBeenCalledOnce();
+  expect(enqueue.mock.calls[0][0].item.attachmentSlots.map(a => a?.path)).toEqual([
+    'cindy-oss-attach://fresh-0', 'cindy-oss-attach://fresh-1',
+  ]);
+});
+
+it('finishes interrupted source removal after reload without duplicating merged content', async () => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  await saveFollowUpFixture(first);
+  disk.failRemove = true;
+  await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc')).rejects.toThrow('remove unavailable');
+  expect(getCurrentMobileOutboxRecords()).toHaveLength(2);
+  disk.failRemove = false;
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  const saved = await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc');
+  expect(saved?.creation?.draft.firstMessage).toBe('keep my input\n\nsecond message');
+  expect(saved?.uploads).toHaveLength(2);
+  expect(getCurrentMobileOutboxRecords()).toEqual([saved]);
+});
+
+it('reports overflow from multiple messages and refuses records with delivery evidence', async () => {
+  const original = await saveDraftFixture();
+  const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const followUp: DurableOutboxRecord = { ...first, creation: undefined, uploads: [], createdAt: 2,
+    enqueueStarted: true, item: { ...first.item, clientId: 'many-files', text: 'keep all text',
+      attachmentSlots: Array.from({ length: 21 }, (_, i) => ({ ...first.item.attachmentSlots[0]!,
+        id: `file-${i}`, path: `/repo/file-${i}.png` })) } };
+  await mobileDurableOutbox.add(followUp);
+  await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc')).rejects.toThrow('OUTBOX_CREATION_OWNERSHIP_UNRESOLVED');
+  expect(getCurrentMobileOutboxRecords()).toHaveLength(2);
+  await mobileDurableOutbox.update(followUp, { enqueueStarted: false });
+  const saved = await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc');
+  expect(saved?.item.attachmentSlots).toHaveLength(20);
+  expect(saved?.creation?.notice).toBeTruthy();
+  expect(saved?.creation?.draft.firstMessage).toBe('keep my input\n\nkeep all text');
+});
+
+it.each(['copy-fails', 'save-fails', 'source-edited', 'deleted', 'account-change'] as const)(
+  'keeps source messages and rejects stale consolidation: %s', async outcome => {
+    const original = await saveDraftFixture();
+    const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+    const second = await saveFollowUpFixture(first);
+    const before = new Map(files.retained);
+    files.beforeCopy = async () => {
+      if (outcome === 'copy-fails') throw new Error('copy unavailable');
+      if (outcome === 'save-fails') disk.fail = true;
+      if (outcome === 'source-edited') await mobileDurableOutbox.update(second, { item: { ...second.item, text: 'edited' } });
+      if (outcome === 'deleted') await withNewSessionCreationRemoval(first.item.sessionId, 'pc', 'deleted', vi.fn());
+      if (outcome === 'account-change') { setMobileAuthOwner('bob', 'global'); await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey); }
+    };
+    await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc')).rejects.toThrow();
+    expect(files.retained).toEqual(before);
+    disk.fail = false;
+    setMobileAuthOwner('alice', 'global');
+    await mobileDurableOutbox.activate('');
+    await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+    if (outcome === 'deleted') {
+      expect(getCurrentMobileOutboxRecords()).toEqual([]);
+      expect(findNewSessionEditDraft('pc')).toBeUndefined();
+    } else {
+      expect(getCurrentMobileOutboxRecords()).toHaveLength(2);
+      expect(findNewSessionEditDraft('pc')?.creation?.draft.firstMessage).toBe('keep my input');
+    }
+  },
+);

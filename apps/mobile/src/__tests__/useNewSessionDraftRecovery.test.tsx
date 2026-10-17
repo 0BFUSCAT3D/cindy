@@ -8,7 +8,7 @@ import { useAutoResumeNewSessionDraft, useNewSessionDurableEdit } from '@/sessio
 
 const outbox = vi.hoisted(() => ({
   records: [] as DurableOutboxRecord[], listeners: new Set<() => void>(),
-  ready: vi.fn(), claim: vi.fn(), release: vi.fn(), find: vi.fn(),
+  ready: vi.fn(), claim: vi.fn(), release: vi.fn(), find: vi.fn(), merge: vi.fn(),
 }));
 vi.mock('@/session/mobileDurableOutbox', () => ({
   getCurrentMobileOutboxRecords: () => outbox.records,
@@ -24,6 +24,7 @@ vi.mock('@/session/newSessionCreation', () => ({
   completeNewSessionDurableEdit: outbox.claim,
   findNewSessionEditDraft: outbox.find,
 }));
+vi.mock('@/session/mergeNewSessionEditFollowUps', () => ({ mergeNewSessionEditFollowUps: outbox.merge }));
 type EditProps = Omit<Parameters<typeof useNewSessionDurableEdit>[0], 'onRestore'>;
 type ResumeProps = Omit<Parameters<typeof useAutoResumeNewSessionDraft>[0], 'onResume'>;
 function Editor(props: EditProps) {
@@ -72,6 +73,7 @@ beforeEach(() => {
         permissionMode: 'auto', workingDir: '', providerId: 'openai', fastMode: false, firstMessage: 'Saved draft' } },
   }];
   outbox.find.mockReset().mockImplementation(() => outbox.records[0]);
+  outbox.merge.mockReset().mockImplementation(async () => outbox.records[0]);
   edit = { sessionId: 'task', deviceId: 'device', owner, leaveForeignRecovery: () => false };
   hasInput = false;
   resume = { enabled: true, deviceId: 'device', workingDir: '/repo', owner, hasInput: () => hasInput };
@@ -167,3 +169,30 @@ it('uses the latest device after a route change while storage is pending', async
   await act(async () => root.render(null));
   expect(outbox.listeners.size).toBe(0);
 });
+
+// Cold recovery now waits for queued messages to join the draft. That await
+// must not restore stale content, swallow a write failure, or claim twice.
+it.each(['complete', 'unmount', 'owner-switch', 'save-fails', 'prepared'] as const)(
+  'settles follow-up consolidation before restoring the editor: %s', async outcome => {
+    let resolve!: (record: DurableOutboxRecord) => void;
+    let reject!: (error: Error) => void;
+    outbox.merge.mockReturnValue(new Promise((yes, no) => { resolve = yes; reject = no; }));
+    edit.onError = vi.fn();
+    await renderEdit();
+    await act(async () => ready());
+    await notify();
+    expect(outbox.merge).toHaveBeenCalledOnce();
+    expect(outbox.claim).not.toHaveBeenCalled();
+    if (outcome === 'unmount') await act(async () => root.render(null));
+    if (outcome === 'owner-switch') setMobileAuthOwner('other');
+    if (outcome === 'prepared') outbox.records[0].prepared = {} as NonNullable<DurableOutboxRecord['prepared']>;
+    await act(async () => {
+      if (outcome === 'save-fails') reject(new Error('save failed'));
+      else resolve(outbox.records[0]);
+    });
+    expect(outbox.claim).toHaveBeenCalledTimes(outcome === 'complete' ? 1 : 0);
+    expect(edit.onError).toHaveBeenCalledTimes(outcome === 'save-fails' ? 1 : 0);
+    if (outcome === 'complete') expect(container.textContent).toContain('Saved draft');
+    else expect(container.textContent).not.toContain('Saved draft');
+  },
+);

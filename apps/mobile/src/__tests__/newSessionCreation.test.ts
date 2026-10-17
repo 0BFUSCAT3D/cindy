@@ -25,7 +25,7 @@ vi.mock('@/session/mobileDurableOutbox', () => ({
   suspendCreationDraftForCleanup: vi.fn(async () => {}),
   getCurrentMobileOutboxRecords: editOutbox.records,
   isDurableOutboxCreationHeld: () => false,
-  mobileDurableOutbox: { update: editOutbox.update, subscribe: () => () => {} },
+  mobileDurableOutbox: { update: editOutbox.update, subscribe: () => () => {}, reconcileDrafts: async () => {} },
 }));
 import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';

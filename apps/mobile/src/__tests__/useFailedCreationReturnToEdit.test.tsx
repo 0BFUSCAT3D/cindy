@@ -95,6 +95,19 @@ it('starts recovery only when the failed task is focused', async () => {
   expect(state.recover).toHaveBeenCalledTimes(1);
 });
 
+// A failure can arrive while the second send is retaining bytes. Navigation
+// must wait for that send's durable handoff, not strand it under the old task.
+it('waits for an in-progress send before recovering the failed creation', async () => {
+  props.sending = true;
+  await render();
+  expect(state.recover).not.toHaveBeenCalled();
+  props.sending = false;
+  await render();
+  expect(state.recover).toHaveBeenCalledOnce();
+  await act(async () => { await pending.onReady({ deviceId: 'device', deviceName: 'PC', recoverySessionId: 'task' }); finish(); });
+  expect(props.onReady).toHaveBeenCalledOnce();
+});
+
 it('resumes a prepared draft after recovery started on an earlier mount', async () => {
   props.task = { ...failedTask(), returningToEdit: true };
   state.recover.mockResolvedValue(undefined);
