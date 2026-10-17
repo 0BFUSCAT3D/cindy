@@ -2,6 +2,8 @@ import { afterAll, beforeEach, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { FileServiceRpcError } from '@cindy/remote-file-service/client';
 const mocks = vi.hoisted(() => ({
   handle: vi.fn(),
   trusted: vi.fn(),
@@ -21,6 +23,7 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 }));
 vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ drizzle: mocks.db }) }));
 import { disposeHtmlPreviews, registerHtmlPreviewIpc } from '../html-preview-ipc';
+import { readPreviewMetadata, statSshPreviewMetadata } from '../html-preview-read';
 const args = {
   origin: { kind: 'device', deviceId: 'remote' },
   workdir: '/remote',
@@ -64,7 +67,138 @@ it('returns an actionable typed error when the remote cannot read files', async 
   await expect(mocks.handle.mock.calls[0][1]({}, args)).rejects.toMatchObject({
     code: 'HTML_PREVIEW_UNSUPPORTED',
   });
-  expect(stat).toHaveBeenCalledWith(args, '/remote/preview', 'index.html');
+  expect(stat).toHaveBeenCalledExactlyOnceWith(args, '/remote/preview', 'index.html', expect.any(AbortSignal));
+});
+
+// Unit tier, fake clock: the real metadata reader must survive transient
+// congestion without retrying permanent errors or allowing unbounded waiting.
+it('backs off read-only metadata across congestion and a short disconnect', async () => {
+  vi.useFakeTimers();
+  try {
+    const stat = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'BACKPRESSURE' }))
+      .mockRejectedValueOnce(new Error('[NOT_CONNECTED] reconnecting'))
+      .mockResolvedValue({ type: 'file' });
+    const result = readPreviewMetadata(stat, new AbortController().signal, () => true);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(stat).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(stat).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(result).resolves.toEqual({ type: 'file' });
+    expect(stat).toHaveBeenCalledTimes(3);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each([
+  ['BACKPRESSURE', 'DEVICE_LINK_BUSY'],
+  ['INVOKE_TIMEOUT', 'DEVICE_LINK_TIMEOUT'],
+  ['NOT_CONNECTED', 'DEVICE_LINK_NOT_CONNECTED'],
+  ['TIMEOUT', 'DEVICE_LINK_TIMEOUT'],
+  ['CHANNEL_CLOSED', 'DEVICE_LINK_NOT_CONNECTED'],
+  ['CHANNEL_ERROR', 'DEVICE_LINK_NOT_CONNECTED'],
+])('bounds repeated %s failures and preserves the connection error', async (code, expected) => {
+  vi.useFakeTimers();
+  try {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const stat = vi.fn().mockImplementation(async () => {
+      started();
+      throw new FileServiceRpcError(code, 'transient');
+    });
+    registerHtmlPreviewIpc({ stat, read: vi.fn() });
+    const result = mocks.handle.mock.calls[0][1]({}, args).catch((e: unknown) => e);
+    await ready;
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(await result).toMatchObject({ code: expected });
+    expect(stat).toHaveBeenCalledTimes(4);
+  } finally { vi.useRealTimers(); }
+});
+
+// PR #6288: cancellation must reach both SSH stat sends, including the manager's
+// internal rebuild. Existing IPC tests inject stat and cannot observe this adapter.
+// Unit tier: a paused request gate models connection setup, with no real network.
+it.each([[1, false], [2, false], [2, true]] as const)('blocks SSH preview send %s after cancellation (rebuild=%s)', async (cancelAt, rebuild) => {
+  const controller = new AbortController();
+  const sent: string[] = [];
+  let gates = 0;
+  const request = vi.fn().mockImplementation(async (_host, _method, params, options) => {
+    const send = async () => {
+      await Promise.resolve();
+      if (++gates === cancelAt) controller.abort();
+      await options?.beforeSend?.();
+      sent.push(params.relPath);
+    };
+    await send();
+    // The manager repeats its gate after a channel loss and rebuild.
+    if (rebuild && params.relPath === 'preview/index.html') await send();
+    return { type: 'file' };
+  });
+  const result = statSshPreviewMetadata({ request }, {
+    ...args, origin: { kind: 'ssh', remoteHostId: 'ssh-1' },
+  }, '/remote/preview', 'style.css', controller.signal);
+  await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+  expect(sent).toHaveLength(cancelAt - 1);
+});
+
+it('ends a stalled stat at the total deadline and aborts its downstream signal', async () => {
+  vi.useFakeTimers();
+  try {
+    const stat = vi.fn(() => new Promise(() => {}));
+    const result = readPreviewMetadata(stat, new AbortController().signal, () => true).catch(e => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await result).toMatchObject({ code: 'DEVICE_LINK_TIMEOUT' });
+    expect(stat).toHaveBeenCalledOnce();
+    expect((stat.mock.calls[0] as unknown as [AbortSignal])[0].aborted).toBe(true);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each(['cancel', 'owner-change'] as const)('does not start another read after %s during backoff', async (cause) => {
+  vi.useFakeTimers();
+  try {
+    const controller = new AbortController();
+    let current = true;
+    const stat = vi.fn().mockRejectedValue(new Error('[BACKPRESSURE] busy'));
+    const result = readPreviewMetadata(stat, controller.signal, () => current).catch(e => e);
+    await vi.advanceTimersByTimeAsync(100);
+    if (cause === 'cancel') controller.abort();
+    else current = false;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await result).toMatchObject({ code: 'HTML_PREVIEW_CANCELLED' });
+    expect(stat).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each(['cancel', 'destroyed', 'navigation'] as const)('cancels pending metadata on %s and discards its late success', async (trigger) => {
+  let resolve!: (value: { relPath: string; type: 'file'; size: number; mtimeMs: number }) => void;
+  let started!: () => void;
+  const ready = new Promise<void>(done => { started = done; });
+  let signal!: AbortSignal;
+  const stat = vi.fn((_args, _root, _rel, attemptSignal) => {
+    signal = attemptSignal;
+    started();
+    return new Promise<{ relPath: string; type: 'file'; size: number; mtimeMs: number }>(done => { resolve = done; });
+  });
+  registerHtmlPreviewIpc({ stat, read: vi.fn() });
+  const open = mocks.handle.mock.calls[0][1];
+  const cancel = mocks.handle.mock.calls[1][1];
+  const sender = Object.assign(new EventEmitter(), { id: 10 });
+  const result = open({ sender }, { ...args, requestId: 'preview-1' }).catch((e: unknown) => e);
+  await ready;
+  // A trusted but different window cannot cancel this sender's allocation.
+  await cancel({ sender: { id: 11 } }, 'preview-1');
+  expect(signal.aborted).toBe(false);
+  if (trigger === 'cancel') await cancel({ sender }, 'preview-1');
+  else if (trigger === 'destroyed') sender.emit('destroyed');
+  else sender.emit('did-start-navigation', {}, 'https://example.test', false, true);
+  expect(await result).toMatchObject({ code: 'HTML_PREVIEW_CANCELLED' });
+  expect(signal.aborted).toBe(true);
+  resolve({ relPath: 'index.html', type: 'file', size: 0, mtimeMs: 0 });
+  await Promise.resolve();
+  expect(stat).toHaveBeenCalledOnce();
+  expect(sender.listenerCount('destroyed')).toBe(0);
+  expect(sender.listenerCount('did-start-navigation')).toBe(0);
 });
 it('opens a preview before downloading even a large entry file', async () => {
   const read = vi.fn();
@@ -104,6 +238,38 @@ it.each([1, 2])('serves cached HTML while stat is blocked, then refreshes with m
     const third = await open({}, args);
     expect(await (await readResource(third.url, '/index.html')).text()).toContain('new');
     expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+// #6292 + #6288 integration, unit tier: previous cancellation cases only cover
+// uncached preparation. Cancel a cached preview during a stalled background stat;
+// its transport must abort and a later open must be able to revalidate again.
+it('releases a cancelled cached refresh so the next preview can revalidate', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-refresh-cancel-'));
+  const metadata = { relPath: 'index.html', type: 'file' as const, size: 3, mtimeMs: 1 };
+  const stat = vi.fn(async (_args, _root, _rel, _signal: AbortSignal) => metadata);
+  const read = vi.fn(async () => path.join(dir, 'old.html'));
+  try {
+    await fs.writeFile(path.join(dir, 'old.html'), 'old');
+    registerHtmlPreviewIpc({ stat, read });
+    const open = mocks.handle.mock.calls[0][1];
+    const cancel = mocks.handle.mock.calls[1][1];
+    const first = await open({}, args);
+    expect(await (await readResource(first.url, '/index.html')).text()).toContain('old');
+    let refreshSignal!: AbortSignal;
+    stat.mockImplementationOnce((_args, _root, _rel, signal) => {
+      refreshSignal = signal;
+      return new Promise(() => {});
+    });
+    const sender = Object.assign(new EventEmitter(), { id: 20 });
+    const second = await open({ sender }, { ...args, requestId: 'cached-preview' });
+    expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
+    await cancel({ sender }, 'cached-preview');
+    expect(refreshSignal.aborted).toBe(true);
+    const callsBeforeReopen = stat.mock.calls.length;
+    const third = await open({}, args);
+    expect(await (await readResource(third.url, '/index.html')).text()).toContain('old');
+    expect(stat.mock.calls.length).toBeGreaterThan(callsBeforeReopen);
+    expect(read).toHaveBeenCalledTimes(2);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 it('passes the captured owner guard through reference-free cache ingestion', async () => {

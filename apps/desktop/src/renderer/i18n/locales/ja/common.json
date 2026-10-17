@@ -9759,7 +9759,11 @@
       "setupDeferred": "パートナーとのチャットでログインと確認を続けられます。",
       "automationInvalid": "自動化の定義を変換できず、作成されていません。",
       "itemFailed": "この項目は未完了です。再試行するか詳細を確認してください。",
-      "chatPartial": "パートナーは作成されましたが、一部の情報は完全に保存されていません。以下の項目は対応が必要です。他の情報とチャットは利用できます。"
+      "chatPartial": "パートナーは作成されましたが、一部の情報は完全に保存されていません。以下の項目は対応が必要です。他の情報とチャットは利用できます。",
+      "imBotOwnerMissing": "オーナーのユーザー ID が見つかりませんでした。仲間の「メッセージプラットフォーム」ページでこのボットを接続してください。",
+      "imBotGatewayRunning": "元のゲートウェイがまだこのボットを使っています。停止してから「メッセージプラットフォーム」で接続してください。",
+      "imBotInUse": "このボットはすでにこのコンピューターで使われています（設定 → IM ボット、または別の仲間）。",
+      "imBotConnectFailed": "このボットに接続できませんでした。仲間の「メッセージプラットフォーム」ページでやり直してください。"
     },
     "learning": {
       "memory": "記憶しました：{{title}}",
@@ -9835,6 +9839,143 @@
       "transferConflict": "{{name}} のメインのパソコンはすでに変わっているため、移しませんでした",
       "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
       "transferFailed": "{{name}} を「{{device}}」に移せませんでした"
+    },
+    "channels": {
+      "title": "メッセージプラットフォーム",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飛書",
+        "lark": "Lark",
+        "wecom": "WeCom",
+        "dingtalk": "DingTalk",
+        "discord": "Discord"
+      },
+      "status": {
+        "connected": "接続済み",
+        "connecting": "接続中…",
+        "offline": "オフライン",
+        "conflict": "別のデバイスがこのボットを使用中",
+        "error": "エラー",
+        "idle": "未接続"
+      },
+      "remove": "削除",
+      "removeAria": "{{platform}} を削除",
+      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram、飛書、WeCom、DingTalk、Discord で作成したボットを追加すると、{{name}} がそこで返信します。",
+      "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
+      "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
+      "groups": {
+        "title": "グループ",
+        "hint": "{{name}} が参加したグループがここに表示されます。「常時」= すべてのメッセージを読み、{{name}} が発言するかを自分で判断します（毎回トークンを消費）。",
+        "empty": "まだグループがありません。ボットをグループに追加し、誰かが発言すると表示されます。",
+        "loadFailed": "グループ一覧を読み込めませんでした",
+        "saveFailed": "保存できず、以前のモードに戻しました",
+        "retry": "再読み込み",
+        "mode": {
+          "mention": "@ のみ",
+          "always": "常時"
+        }
+      },
+      "lanes": {
+        "title": "非表示のタスク",
+        "hint": "グループ、トピック、ほかの人からの DM ごとに非表示のタスクがあります。止まったり話がかみ合わなくなったりしたら、やり直せます。履歴は残ります。",
+        "ownerName": "あなたとの DM",
+        "kind": {
+          "ownerDm": "メインタスク",
+          "group": "グループ",
+          "topic": "トピック",
+          "guestDm": "DM"
+        },
+        "state": {
+          "running": "返信中",
+          "failed": "前回の返信でエラー"
+        },
+        "noActivity": "まだメッセージがありません",
+        "messageCount_other": "現在のコンテキストに {{count}} 件のメッセージ",
+        "reset": "やり直す",
+        "resetAria": "「{{lane}}」をやり直す",
+        "resetConfirm": {
+          "title": "「{{lane}}」をやり直しますか？",
+          "description": "次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴はこの非表示のタスクにすべて残り、{{name}} の記憶は変わりません。",
+          "ownerDescription": "これは {{name}} のメインタスクで、デスクトップでの会話とこの DM で共有しています。次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴、記憶、ファイルはすべて残ります。",
+          "confirm": "やり直す",
+          "cancel": "キャンセル"
+        },
+        "resetDone": "「{{lane}}」をやり直しました。次のメッセージはまっさらなコンテキストから始まります。",
+        "resetFailed": "やり直せませんでした。しばらくしてからもう一度お試しください",
+        "loadFailed": "非表示のタスクを読み込めませんでした",
+        "empty": "グループやほかの人からの DM はまだありません。グループや DM で誰かが {{name}} に話しかけると、ここに表示されます。"
+      },
+      "add": {
+        "button": "プラットフォームを追加",
+        "title": "{{name}} にプラットフォームを追加",
+        "description": "プラットフォームで作成したボットの認証情報を貼り付けてください。このコンピューターにのみ保存されます。",
+        "platformLabel": "プラットフォーム",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "@BotFather が発行した Token を貼り付け",
+          "ownerLabel": "あなたの Telegram ユーザー ID",
+          "ownerPlaceholder": "数字のみの ID（@userinfobot で確認）",
+          "ownerHint": "この ID からのメッセージは {{name}} 自身の権限で実行されます。それ以外の人はゲストとして扱われます。"
+        },
+        "feishu": {
+          "serviceLabel": "サービス",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "App Secret を貼り付け"
+        },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "WeCom 管理画面の Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "WeCom 管理画面の Bot Secret",
+          "ownerHint": "最初にこのボットへ DM を送った人がオーナーになり、{{name}} 自身の権限で実行されます。先にインテリジェントボットを作成し、長時間接続を有効にしてください。"
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "ボットアプリの Client ID を貼り付け",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "ボットアプリの Client Secret を貼り付け",
+          "ownerHint": "最初にこのボットへ DM を送った人がオーナーになり、{{name}} 自身の権限で実行されます。グループでは @ されたときだけ返信します。"
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "Discord Bot Token を貼り付け",
+          "ownerLabel": "あなたの Discord ユーザー ID",
+          "ownerPlaceholder": "17〜20 桁の数字 ID",
+          "ownerHint": "この ID からの DM だけが {{name}} に届き、{{name}} 自身の権限で実行されます。"
+        },
+        "confirm": "接続",
+        "connecting": "接続中…",
+        "errors": {
+          "invalidToken": "Bot Token の形式ではないようです。123456:ABC… の形式です。",
+          "invalidOwner": "ユーザー ID は数字で入力してください。",
+          "invalidFeishu": "App ID と App Secret の両方を入力してください。",
+          "invalidWecom": "Bot ID と Secret の両方を入力してください。",
+          "invalidDingtalk": "Client ID と Client Secret の両方を入力してください。",
+          "invalidDiscordToken": "Bot Token の形式ではないようです。",
+          "invalidDiscordOwner": "ユーザー ID は 17〜20 桁の数字です。",
+          "conflict": "このボットはすでにこのコンピューターで使われています（設定 → IM ボット、または別の仲間）。",
+          "botUnavailable": "{{name}} は現在利用できません。復帰後にもう一度お試しください。",
+          "connectFailed": "接続できませんでした：{{reason}}",
+          "failed": "完了できませんでした。しばらくしてからもう一度お試しください。",
+          "personalBotGone": "設定 → IM ボット にこのボットはもうありません。認証情報を入力してください。"
+        },
+        "source": {
+          "label": "接続方法",
+          "existing": "Cindy で設定済みのボットを使う",
+          "manual": "新しい認証情報を入力",
+          "moveNote": "このボットは 設定 → IM ボット から移され、そちらは空になります。これまでの個人チャットとグループチャットは {{name}} が引き継いで返信します。"
+        }
+      },
+      "removeConfirm": {
+        "title": "{{platform}} を削除しますか？",
+        "description": "このボットは返信を停止し、認証情報はこのコンピューターから削除され、非表示のタスクはアーカイブされます。{{name}} の記憶と性格は変わりません。",
+        "confirm": "削除",
+        "cancel": "キャンセル",
+        "failed": "削除できませんでした。しばらくしてからもう一度お試しください",
+        "ok": "OK"
+      }
     }
   },
   "common": {
@@ -11222,6 +11363,9 @@
       "previewFailed": "Web プレビューを準備できませんでした。ディレクトリと接続を確認して再試行してください。",
       "previewNotFound": "HTML ファイルが見つかりません。ファイルが存在するか確認してください。",
       "previewFetching": "Web プレビューを準備しています…",
+      "previewConnectionBusy": "接続が混雑しているため、Web プレビューの準備が完了していません。しばらくしてから再試行してください。",
+      "previewTimeout": "リモート Web プレビューがタイムアウトしました。しばらくしてから再試行してください。",
+      "previewDisconnected": "リモートデバイスに接続できていません。接続が回復したら再試行してください。",
       "previewTooLarge": "準備中のプレビューが多すぎます。しばらくしてから再試行してください。",
       "previewUnsupported": "ディレクトリをプレビューするには、リモート端末の Cindy を更新してください。",
       "fetching": "リモートからファイルを取得しています…",
@@ -11484,7 +11628,8 @@
         "labelStrip": "履歴の画像を整理しました",
         "toggleHint": "引き継ぎ内容を表示",
         "handoffTitle": "引き継ぎ内容——整理後にこの会話の続きへ渡したコンテキスト要約(チャット履歴には含まれず、ここでのみ表示)",
-        "handoffTitleEnglishSource": "引き継ぎ内容——整理後にこの会話の続きへ渡したコンテキスト要約。原文は英語(チャット履歴には含まれず、ここでのみ表示)"
+        "handoffTitleEnglishSource": "引き継ぎ内容——整理後にこの会話の続きへ渡したコンテキスト要約。原文は英語(チャット履歴には含まれず、ここでのみ表示)",
+        "labelIdleGap": "しばらく間が空いたため、整理して続行しました"
       },
       "review": {
         "running": "現在の成果をレビュー中",
@@ -11640,7 +11785,11 @@
       "referencedMessages": "参照メッセージ（{{count}}）",
       "referencedContext": "参照メッセージ",
       "groupBackground": "グループチャットの背景",
-      "viewThread": "スレッドの文脈を見る ({{count}})"
+      "viewThread": "スレッドの文脈を見る ({{count}})",
+      "memberFromGroup": "{{name}} · {{platform}} グループ「{{group}}」から",
+      "memberFromPlatform": "{{name}} · {{platform}} グループから",
+      "guestFromDm": "{{name}} · {{platform}} の DM から（オーナー以外）",
+      "unknownSender": "グループメンバー"
     },
     "rewind": {
       "noFilesToRollback": "復元できるプロジェクトファイルの変更は検出されませんでした",

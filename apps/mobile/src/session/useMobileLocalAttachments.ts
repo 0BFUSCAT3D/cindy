@@ -96,6 +96,8 @@ async function deleteLocalUris(uris: readonly string[]): Promise<void> {
 export interface UseMobileLocalAttachmentsResult {
   beginOutboxAttachmentHandoff: () => Promise<ReturnType<MobileLocalAttachmentUploadController['beginHandoff']>>;
   getUploadedSource: (id: string) => MobileLocalAttachmentUploadCandidate | undefined;
+  /** Resolve a tray upload to its delivered attachment without retaining temporary URIs. */
+  getUploadedAttachmentId: (localId: string) => string | undefined;
   releaseUploadedSources: (ids: readonly string[]) => void;
   /** 上传中的附件(托盘渲染 pending 卡)。 */
   pendingUploads: readonly PendingLocalAttachmentUpload[];
@@ -104,6 +106,8 @@ export interface UseMobileLocalAttachmentsResult {
    * 托盘先画 N 张无图转圈占位卡;onPasteImages 兑现或失败 / 超时后归零。
    */
   pastePlaceholderCount: number;
+  /** Changes only for newly selected image batches, not upload progress or paste materialization. */
+  imageSelectionRevision: number;
   /** 原生 images-loading 事件:立刻竖起 count 张粘贴占位卡。 */
   beginPastePlaceholders: (count: number) => void;
   /** 原生 images-load-failed 事件:撤掉占位卡并提示。 */
@@ -182,6 +186,7 @@ export function useMobileLocalAttachments(
   // 仍在原生处理中的占位继续转圈(review P2)。超时定时器兜底事件丢失,超时属
   // 异常兜底,一次清全部不做批次精度。
   const [pastePlaceholderCount, setPastePlaceholderCount] = useState(0);
+  const [imageSelectionRevision, setImageSelectionRevision] = useState(0);
   const pastePlaceholderBatchesRef = useRef<number[]>([]);
   const pastePlaceholderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 占位窗口的发送等待者:waitForPendingUploads 必须把占位当在途工作等待——
@@ -249,6 +254,7 @@ export function useMobileLocalAttachments(
   const beginPastePlaceholders = (count: number) => {
     if (count <= 0 || !isAttachmentScopeActive()) return;
     pastePlaceholderBatchesRef.current.push(count);
+    setImageSelectionRevision((revision) => revision + 1);
     syncPastePlaceholders();
   };
 
@@ -266,7 +272,7 @@ export function useMobileLocalAttachments(
     optionsRef.current.onError(t('composer.upload.clipboardReadFailed'));
   };
 
-  const uploadedSourcesRef = useRef(new Map<string, MobileLocalAttachmentUploadCandidate>());
+  const uploadedSourcesRef = useRef(new Map<string, MobileLocalAttachmentUploadCandidate & { localId: string }>());
   const stagingUrisRef = useRef(new Set<string>());
   const stagingOwnerRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const controller = useMemo(() => createMobileLocalAttachmentUploadController({
@@ -331,7 +337,7 @@ export function useMobileLocalAttachments(
         return;
       }
       uploadedSourcesRef.current.set(attachment.id, {
-        ...candidate, uri: stageUri, name: attachment.name, mimeType: attachment.mimeType,
+        ...candidate, localId, uri: stageUri, name: attachment.name, mimeType: attachment.mimeType,
         size: attachment.size, resolve: undefined, skipPreprocess: true, cleanupLocalUris: undefined,
         onAbandoned: undefined, onConsumed: undefined,
       });
@@ -384,6 +390,7 @@ export function useMobileLocalAttachments(
   const enqueueUploads = (
     candidates: readonly MobileLocalAttachmentUploadCandidate[],
     opts: { token: string | Promise<string | null> },
+    replacesPastePlaceholder = false,
   ) => {
     if (!isAttachmentScopeActive()) {
       // 作用域已失效,任务不会入队:视同放弃,让自行生成输入文件的调用方回收。
@@ -401,6 +408,9 @@ export function useMobileLocalAttachments(
           })),
       opts,
     );
+    if (!replacesPastePlaceholder && candidates.some((candidate) => candidate.kind === 'image')) {
+      setImageSelectionRevision((revision) => revision + 1);
+    }
   };
 
   useEffect(() => () => {
@@ -566,6 +576,7 @@ export function useMobileLocalAttachments(
     // 本批 uris 就是最早一批占位卡的兑现:先按 FIFO 出列本批再做限额检查
     //(否则这批会被自己的占位双扣槽位)。出列与下方 enqueue 的 pending 上屏在
     // 同一同步段,React 批处理保证占位卡 → pending 卡之间没有空帧。
+    const replacesPastePlaceholder = getPastePlaceholderTotal() > 0;
     shiftPastePlaceholderBatch();
     const begun = beginPick();
     if (!begun) {
@@ -596,7 +607,7 @@ export function useMobileLocalAttachments(
           },
           cleanupLocalUris: ownsLocalFile ? cleanupPastedImageLocalUris : undefined,
         };
-      }), { token: optionsRef.current.getAccessToken() });
+      }), { token: optionsRef.current.getAccessToken() }, replacesPastePlaceholder);
     } catch (err) {
       if (isAttachmentScopeActive()) optionsRef.current.onError(formatRemoteError(err));
     } finally {
@@ -615,6 +626,7 @@ export function useMobileLocalAttachments(
       }
     },
     getUploadedSource: (id) => uploadedSourcesRef.current.get(id),
+    getUploadedAttachmentId: (localId) => [...uploadedSourcesRef.current].find(([, source]) => source.localId === localId)?.[0],
     releaseUploadedSources: (ids) => {
       for (const id of ids) {
         const source = uploadedSourcesRef.current.get(id);
@@ -626,6 +638,7 @@ export function useMobileLocalAttachments(
     },
     pendingUploads,
     pastePlaceholderCount,
+    imageSelectionRevision,
     beginPastePlaceholders,
     failPastePlaceholders,
     addImages,

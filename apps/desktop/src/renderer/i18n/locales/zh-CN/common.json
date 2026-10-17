@@ -9759,7 +9759,11 @@
       "setupDeferred": "可在伙伴对话中继续登录与验证。",
       "automationInvalid": "自动化定义无法转换，尚未创建。",
       "itemFailed": "此项未完成，可重试并查看导入详情。",
-      "chatPartial": "伙伴已创建，但部分资料未完整保存。以下项目仍需处理；其他内容和对话可以正常使用。"
+      "chatPartial": "伙伴已创建，但部分资料未完整保存。以下项目仍需处理；其他内容和对话可以正常使用。",
+      "imBotOwnerMissing": "没找到主人的用户 ID，请到伙伴的「消息平台」页把这个机器人连上。",
+      "imBotGatewayRunning": "原来的网关还在用这个机器人。先停掉它，再到「消息平台」页连接。",
+      "imBotInUse": "这个机器人已经在这台电脑上用了：在 设置 → IM 机器人 里，或者在另一位伙伴那里。",
+      "imBotConnectFailed": "没能连上这个机器人，请到伙伴的「消息平台」页重试。"
     },
     "learning": {
       "memory": "已记住：{{title}}",
@@ -9835,6 +9839,143 @@
       "transferConflict": "{{name}} 的主力电脑已经变了，这次没有交出",
       "transferOffline": "连不上服务器，{{name}} 仍在这台电脑运行",
       "transferFailed": "未能把 {{name}} 交给「{{device}}」"
+    },
+    "channels": {
+      "title": "消息平台",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飞书",
+        "lark": "Lark",
+        "wecom": "企业微信",
+        "dingtalk": "钉钉",
+        "discord": "Discord"
+      },
+      "status": {
+        "connected": "已连接",
+        "connecting": "连接中…",
+        "offline": "已下线",
+        "conflict": "另一台设备正在用这个机器人",
+        "error": "出错",
+        "idle": "未连接"
+      },
+      "remove": "移除",
+      "removeAria": "移除 {{platform}}",
+      "empty": "{{name}} 还没有消息平台。把你在 Telegram、飞书、企业微信、钉钉或 Discord 申请的机器人加进来，{{name}} 就会在那里回复。",
+      "externalNote": "给这个机器人发消息的人都是在和 {{name}} 对话。你自己的消息按 {{name}} 的权限执行；其他人各有一条隐藏任务，权限受限。",
+      "sharedMemoryNote": "{{name}} 会把这里和其它对话里的信息放在一起用。想隔开记忆，请换一位伙伴。",
+      "groups": {
+        "title": "群聊",
+        "hint": "{{name}} 进过的群会出现在这里。「全响应」= 每条消息都看，{{name}} 自己判断要不要插话（每条都会消耗 token）。",
+        "empty": "还没有群。把机器人拉进群、有人说话后就会出现在这里。",
+        "loadFailed": "未能读取群列表",
+        "saveFailed": "没保存上，已恢复原来的模式",
+        "retry": "重新读取",
+        "mode": {
+          "mention": "仅 @",
+          "always": "全响应"
+        }
+      },
+      "lanes": {
+        "title": "隐藏任务",
+        "hint": "每个群、话题和其他人的私聊各有一条隐藏任务。哪条卡住或答非所问，可以让它重新开始，记录会保留。",
+        "ownerName": "你的私聊",
+        "kind": {
+          "ownerDm": "主任务",
+          "group": "群聊",
+          "topic": "话题",
+          "guestDm": "私聊"
+        },
+        "state": {
+          "running": "正在回复",
+          "failed": "上次回复出错"
+        },
+        "noActivity": "还没有消息",
+        "messageCount_other": "当前上下文 {{count}} 条消息",
+        "reset": "重新开始",
+        "resetAria": "让「{{lane}}」重新开始",
+        "resetConfirm": {
+          "title": "让「{{lane}}」重新开始？",
+          "description": "下一条消息会从干净的上下文开始，正在进行的回复会停下。完整记录仍留在这条隐藏任务里，{{name}} 的记忆不变。",
+          "ownerDescription": "这是 {{name}} 的主任务，桌面上的对话和这里的私聊共用它。下一条消息会从干净的上下文开始，正在进行的回复会停下；记录、记忆和文件都保留。",
+          "confirm": "重新开始",
+          "cancel": "取消"
+        },
+        "resetDone": "「{{lane}}」已重新开始，下一条消息从干净的上下文开始。",
+        "resetFailed": "没能重新开始，请稍后再试",
+        "loadFailed": "未能读取隐藏任务",
+        "empty": "还没有群或其他人的私聊。有人在群里或私聊里和 {{name}} 说话后，会出现在这里。"
+      },
+      "add": {
+        "button": "添加平台",
+        "title": "给 {{name}} 添加平台",
+        "description": "粘贴你在平台上申请的机器人凭证，只存在这台电脑上。",
+        "platformLabel": "平台",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "粘贴 @BotFather 生成的 Token",
+          "ownerLabel": "你的 Telegram 用户 ID",
+          "ownerPlaceholder": "纯数字 ID（向 @userinfobot 查询）",
+          "ownerHint": "来自这个 ID 的消息按 {{name}} 自己的权限执行，其他人都按访客处理。"
+        },
+        "feishu": {
+          "serviceLabel": "服务",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "粘贴 App Secret"
+        },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "企业微信管理后台里的 Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "企业微信管理后台里的 Bot Secret",
+          "ownerHint": "首个私聊这个机器人的人会成为它的主人，按 {{name}} 自己的权限执行。先创建智能机器人并开启长连接。"
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "粘贴机器人应用的 Client ID",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "粘贴机器人应用的 Client Secret",
+          "ownerHint": "首个私聊这个机器人的人会成为它的主人，按 {{name}} 自己的权限执行。群里被 @ 时才回复。"
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "粘贴 Discord Bot Token",
+          "ownerLabel": "你的 Discord 用户 ID",
+          "ownerPlaceholder": "17–20 位数字 ID",
+          "ownerHint": "只有来自这个 ID 的私聊会交给 {{name}}，按 {{name}} 自己的权限执行。"
+        },
+        "confirm": "连接",
+        "connecting": "连接中…",
+        "errors": {
+          "invalidToken": "这不像 Bot Token，格式应为 123456:ABC…",
+          "invalidOwner": "用户 ID 应该是一串数字。",
+          "invalidFeishu": "App ID 和 App Secret 都要填。",
+          "invalidWecom": "Bot ID 和 Secret 都要填。",
+          "invalidDingtalk": "Client ID 和 Client Secret 都要填。",
+          "invalidDiscordToken": "这不像 Bot Token。",
+          "invalidDiscordOwner": "用户 ID 应该是 17–20 位数字。",
+          "conflict": "这个机器人已经在这台电脑上用了：在 设置 → IM 机器人 里，或者在另一位伙伴那里。",
+          "botUnavailable": "{{name}} 现在不可用，等 TA 恢复后再试。",
+          "connectFailed": "没连上：{{reason}}",
+          "failed": "没能完成，请稍后再试。",
+          "personalBotGone": "设置 → IM 机器人 里已经没有这个机器人了，请改为填写凭证。"
+        },
+        "source": {
+          "label": "连接方式",
+          "existing": "使用已在 Cindy 设置的机器人",
+          "manual": "填写新的凭证",
+          "moveNote": "这个机器人会从 设置 → IM 机器人 移过来，那里将变为空；原来的私聊和群聊改由 {{name}} 接着回复。"
+        }
+      },
+      "removeConfirm": {
+        "title": "移除 {{platform}}？",
+        "description": "这个机器人不再回复，凭证从这台电脑删除，它的隐藏任务会归档。{{name}} 的记忆和性格不变。",
+        "confirm": "移除",
+        "cancel": "取消",
+        "failed": "没能移除，请稍后再试",
+        "ok": "知道了"
+      }
     }
   },
   "common": {
@@ -11222,6 +11363,9 @@
       "previewFailed": "无法准备网页预览，请检查目录和连接后重试",
       "previewNotFound": "找不到 HTML 文件，请确认文件仍然存在",
       "previewFetching": "正在准备网页预览…",
+      "previewConnectionBusy": "连接拥堵，网页预览暂未完成，请稍后重试",
+      "previewTimeout": "等待远程网页超时，请稍后重试",
+      "previewDisconnected": "尚未连通远程设备，连接恢复后可重试",
       "previewTooLarge": "正在准备的预览过多，请稍后重试",
       "previewUnsupported": "远程设备暂不支持目录预览，请更新该设备上的 Cindy 后重试",
       "fetching": "正在从远端获取文件…",
@@ -11484,7 +11628,8 @@
         "labelStrip": "已整理历史图片",
         "toggleHint": "查看交接内容",
         "handoffTitle": "交接内容——整理后发送给后续对话的上下文摘要(不计入对话记录，仅在此展示)",
-        "handoffTitleEnglishSource": "交接内容——整理后发送给后续对话的上下文摘要，原文为英文(不计入对话记录，仅在此展示)"
+        "handoffTitleEnglishSource": "交接内容——整理后发送给后续对话的上下文摘要，原文为英文(不计入对话记录，仅在此展示)",
+        "labelIdleGap": "隔了一段时间再聊，已整理上下文后继续"
       },
       "review": {
         "running": "正在审查当前成果",
@@ -11640,7 +11785,11 @@
       "referencedMessages": "引用消息（{{count}}）",
       "referencedContext": "引用消息",
       "groupBackground": "群聊背景",
-      "viewThread": "查看 thread 上下文 ({{count}})"
+      "viewThread": "查看 thread 上下文 ({{count}})",
+      "memberFromGroup": "{{name}} · 来自 {{platform}} 群「{{group}}」",
+      "memberFromPlatform": "{{name}} · 来自 {{platform}} 群聊",
+      "guestFromDm": "{{name}} · 来自 {{platform}} 私聊（非主人）",
+      "unknownSender": "群成员"
     },
     "rewind": {
       "noFilesToRollback": "没有检测到可恢复的项目文件改动",
