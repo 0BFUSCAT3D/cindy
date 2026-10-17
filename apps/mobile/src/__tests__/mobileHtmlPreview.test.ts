@@ -171,6 +171,60 @@ function previewCache() {
 }
 
 describe('persistent HTML preview cache', () => {
+  // Unit regression: old transfer-cache HTML can be invalid UTF-8 even after the
+  // remote document is repaired. Exercise both native preparation entry points.
+  it.each([false, true])('replaces undecodable cached entries and reopens offline (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps, caps, listDir } = setup();
+    listDir.mockResolvedValue([entry('index.html')]);
+    const { saved } = previewCache();
+    saved.set('index.html', new Uint8Array([0xff]));
+    const preview = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
+    expect(saved.get('index.html')).toEqual(bytes);
+    expect([...mocks.contents.values()].some((value) => new TextDecoder().decode(value).endsWith(html))).toBe(true);
+    await preview.close();
+    mocks.remote.mockRejectedValue(new Error('offline'));
+    caps.mockRejectedValue(new Error('offline'));
+    const reopened = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
+    expect([...mocks.contents.values()].some((value) => new TextDecoder().decode(value).endsWith(html))).toBe(true);
+    await reopened.close();
+  });
+
+  it.each([false, true])('recovers an undecodable cached subpage without blocking the valid entry (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps } = setup();
+    const { cache, saved } = previewCache();
+    saved.set('index.html', bytes);
+    saved.set('second.html', new Uint8Array([0xff]));
+    cache.manifest.mockResolvedValue([entry('index.html'), entry('second.html')]);
+    const preview = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
+    if (demand) {
+      mocks.listeners.get('resourceRequest')!({ token: '01'.repeat(24), id: 'second', path: 'second.html' });
+      await vi.waitFor(() => expect(mocks.resolveRequest).toHaveBeenCalledWith('01'.repeat(24), 'second', expect.any(String), 'text/html', 200));
+    } else {
+      // Legacy servers publish only valid restored files; refresh repairs the next open.
+      expect(mocks.start.mock.calls[0][4].map((item: string[]) => item[0])).toEqual(['index.html']);
+    }
+    await vi.waitFor(() => expect(saved.get('second.html')).toEqual(bytes));
+    await preview.close();
+  });
+
+  it.each([false, true])('does not fetch after cancellation during an invalid cache copy (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps, caps } = setup();
+    const { cache } = previewCache();
+    const controller = new AbortController();
+    cache.copy.mockImplementation(async (_relative, destination) => {
+      mocks.contents.set(destination.uri, new Uint8Array([0xff]));
+      controller.abort();
+      return 1;
+    });
+    await expect(prepareMobileHtmlPreview('/site/index.html', deps, controller.signal)).rejects.toThrow('PREVIEW_CANCELLED');
+    expect(mocks.remote).not.toHaveBeenCalled();
+    expect(caps).not.toHaveBeenCalled();
+    expect(mocks.contents.size).toBe(0);
+  });
+
   // Behavioral timing contract: a cache hit must resolve before an unresolved remote operation.
   it.each([false, true])('opens cached content before network checks, including old native mode (onDemand=%s)', async (demand) => {
     mocks.demand = demand;
@@ -414,8 +468,7 @@ describe("on-demand mobile HTML previews", () => {
       return { url: "data:text/html;base64,", size: bytes.length, inlineBase64: Buffer.from(bytes).toString("base64") };
     });
     const preparing = prepareMobileHtmlPreview("/site/index.html", deps, new AbortController().signal, progress);
-    await Promise.resolve();
-    expect(mocks.remote).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mocks.remote).toHaveBeenCalledOnce());
     expect(mocks.startOnDemand).not.toHaveBeenCalled();
     expect(progress).toHaveBeenLastCalledWith(expect.objectContaining({ name: "index.html", loaded: 4, total: bytes.length }));
     await vi.advanceTimersByTimeAsync(90_000);

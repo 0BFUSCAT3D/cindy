@@ -268,6 +268,25 @@ async function prepareLegacy(absPath: string, deps: HtmlPreviewDeps, signal: Abo
   } catch (error) { await close(); throw error; }
 }
 
+/** Unreadable or undecodable cache copies are misses in both native modes. */
+async function restoreCachedResource(cache: MobileHtmlPreviewCache, relative: string,
+  destination: File, maxBytes?: number) {
+  try {
+    const size = await cache?.copy(relative, destination, maxBytes);
+    if (size != null) {
+      const mime = MIME[relative.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
+      if (mime === 'text/html') {
+        const html = new TextDecoder('utf-8', { fatal: true }).decode(await destination.bytes());
+        destination.write(withSnapshotHtmlCsp(html));
+      }
+      return { size, mime };
+    }
+    return null;
+  } catch { /* Old transfer copies may predate HTML validation. Fetch a fresh copy. */ }
+  try { destination.delete(); } catch {}
+  return null;
+}
+
 /** Old native binaries can publish only the files restored before starting their server. */
 async function restoreLegacy(absPath: string, deps: HtmlPreviewDeps, signal: AbortSignal,
   cache: NonNullable<MobileHtmlPreviewCache>): Promise<MobileHtmlPreview | null> {
@@ -294,14 +313,13 @@ async function restoreLegacy(absPath: string, deps: HtmlPreviewDeps, signal: Abo
     let remaining = HTML_SNAPSHOT_MAX_BYTES;
     for (const [index, file] of files.entries()) {
       const destination = new File(dir, String(index));
-      const size = await cache.copy(file.relPath, destination, remaining);
+      const cached = await restoreCachedResource(cache, file.relPath, destination, remaining);
       assertHtmlSnapshotActive(signal);
-      if (size === null) {
+      if (!cached) {
         if (file.relPath === entry) { await close(); return null; }
         continue;
       }
-      const mime = MIME[file.relPath.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
-      if (mime === 'text/html') destination.write(withSnapshotHtmlCsp(new TextDecoder('utf-8', { fatal: true }).decode(await destination.bytes())));
+      const { size, mime } = cached;
       manifest.push([file.relPath, String(index), mime]);
       restored.push({ ...file, size });
       remaining -= size;
@@ -337,12 +355,10 @@ async function prepareOnDemand(absPath: string, deps: HtmlPreviewDeps,
   const queue = createFileReadQueue();
   const loadResource = async (relative: string, filename: string, requestSignal: AbortSignal) => {
     const destination = new File(dir, filename);
-    const size = await cache?.copy(relative, destination);
+    const cached = await restoreCachedResource(cache, relative, destination);
     assertHtmlSnapshotActive(requestSignal);
-    if (size != null) {
-      const mime = MIME[relative.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
-      if (mime === 'text/html') destination.write(withSnapshotHtmlCsp(new TextDecoder('utf-8', { fatal: true }).decode(await destination.bytes())));
-      assertHtmlSnapshotActive(requestSignal);
+    if (cached) {
+      const { size, mime } = cached;
       const updatedName = `${filename}-refresh`;
       const update = materializeResource(deps, root, relative, dir, updatedName, signal, undefined, cache)
         .then(() => {}, () => {}).finally(() => {
