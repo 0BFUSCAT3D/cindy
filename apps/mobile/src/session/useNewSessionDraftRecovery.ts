@@ -2,24 +2,25 @@ import { useCallback, useEffect, useRef } from 'react';
 import { isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
 import type { DurableOutboxRecord } from './durableOutbox';
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
-import { completeNewSessionDurableEdit, findNewSessionEditDraft } from './newSessionCreation';
+import { completeNewSessionDurableEdit, findNewSessionEditDraft, subscribeNewSessionCreationTasks } from './newSessionCreation';
 import { mergeNewSessionEditFollowUps } from './mergeNewSessionEditFollowUps';
 import { persistNewSessionDraftEdit, type NewSessionDraftEdit } from './persistNewSessionCreationDraft';
 
 type CreationRecord = DurableOutboxRecord & { creation: NonNullable<DurableOutboxRecord['creation']> };
 
 /** The form owns one edit claim until its recovery route changes or unmounts. */
-export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveForeignRecovery, onRestore, onEdited, onError }: {
+export function useNewSessionDurableEdit({ sessionId, deviceId, owner, getToken, leaveForeignRecovery, onRestore, onEdited, onError }: {
   sessionId: string;
   deviceId: string;
   owner: MobileAuthOwnerGeneration;
+  getToken?: () => Promise<string | null>;
   leaveForeignRecovery: () => boolean;
   onRestore: (record: CreationRecord) => void;
   onEdited?: (record: DurableOutboxRecord | null) => void;
   onError?: (error: unknown) => void;
 }) {
-  const callbacks = useRef({ leaveForeignRecovery, onRestore, onEdited, onError });
-  callbacks.current = { leaveForeignRecovery, onRestore, onEdited, onError };
+  const callbacks = useRef({ getToken, leaveForeignRecovery, onRestore, onEdited, onError });
+  callbacks.current = { getToken, leaveForeignRecovery, onRestore, onEdited, onError };
   const editingRecord = useRef<DurableOutboxRecord | null>(null);
   const pendingEdit = useRef<Promise<unknown>>(Promise.resolve());
   const edit = useCallback((change: NewSessionDraftEdit) => {
@@ -48,7 +49,7 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveFore
         && r.accountId === owner.accountKey && r.deviceId === deviceId);
       if (!record?.creation || record.prepared) return;
       merging = true;
-      void mergeNewSessionEditFollowUps(sessionId, deviceId).then(saved => {
+      void mergeNewSessionEditFollowUps(sessionId, deviceId, callbacks.current.getToken).then(saved => {
         if (!active || !isMobileAuthOwnerCurrent(owner) || !saved?.creation || saved.prepared
           || !getCurrentMobileOutboxRecords().includes(saved)) return;
         restored = true;
@@ -61,7 +62,16 @@ export function useNewSessionDurableEdit({ sessionId, deviceId, owner, leaveFore
     };
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; editingRecord.current = null; pendingEdit.current = Promise.resolve(); unsubscribe(); releaseEditClaim?.(); };
+    return () => {
+      active = false;
+      editingRecord.current = null;
+      const pending = pendingEdit.current;
+      pendingEdit.current = Promise.resolve();
+      unsubscribe();
+      // Keep the existing claim until the last serialized edit settles. A new
+      // blank form must not restore a revision the user has just deleted.
+      void pending.then(() => releaseEditClaim?.(), () => releaseEditClaim?.());
+    };
   }, [sessionId, deviceId, owner]);
   return { edit, flush };
 }
@@ -87,7 +97,7 @@ export function useAutoResumeNewSessionDraft({ enabled, deviceId, workingDir, ow
       active = false;
       callbacks.current.onResume({ recoverySessionId: saved.item.sessionId, deviceId: saved.deviceId });
     };
-    const unsubscribe = mobileDurableOutbox.subscribe(resume);
+    const unsubscribe = subscribeNewSessionCreationTasks(resume);
     void mobileDurableOutbox.ready().then(resume);
     return () => { active = false; unsubscribe(); };
   }, [enabled, deviceId, workingDir, owner]);

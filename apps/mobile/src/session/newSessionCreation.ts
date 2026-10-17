@@ -704,7 +704,7 @@ export function shouldBlockSessionSync(sessionId: string): boolean {
   return status === 'running' || status === 'create-failed';
 }
 
-function subscribeTasks(callback: () => void): () => void {
+export function subscribeNewSessionCreationTasks(callback: () => void): () => void {
   subs.add(callback);
   const offOutbox = mobileDurableOutbox.subscribe(callback);
   return () => {
@@ -726,7 +726,7 @@ function getTaskSnapshot(sessionId: string): NewSessionCreationTask | null {
 
 /** 会话页订阅本会话的创建 task(null = 无 task / 已完成)。 */
 export function useNewSessionCreationTask(sessionId: string): NewSessionCreationTask | null {
-  return useSyncExternalStore(subscribeTasks, () => getTaskSnapshot(sessionId));
+  return useSyncExternalStore(subscribeNewSessionCreationTasks, () => getTaskSnapshot(sessionId));
 }
 
 // ---------------------------------------------------------------------------

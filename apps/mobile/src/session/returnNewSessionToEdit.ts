@@ -8,9 +8,10 @@ import {
 } from './newSessionCreation';
 
 /** Shared by both entry screens; finish recovery even if the initiating screen leaves. */
-export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, onReady, stashDraft = stashNewSessionDraftForEdit }: {
+export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, onReady, getToken, stashDraft = stashNewSessionDraftForEdit }: {
   sessionId: string;
   deviceId: string;
+  getToken?: () => Promise<string | null>;
   isCurrent: () => boolean;
   onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string; editSessionId?: string }) => void | Promise<void>;
   stashDraft?: (task: NewSessionCreationTask) => void;
@@ -20,7 +21,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   const task = getNewSessionCreationTask(sessionId);
   if (!ownerCurrent() || !isCurrent() || task?.deviceId !== deviceId) return;
   if (task.readyForEdit && !task.returningToEdit) {
-    if (task.readyForEdit === 'durable') await mergeNewSessionEditFollowUps(sessionId, deviceId);
+    if (task.readyForEdit === 'durable') await mergeNewSessionEditFollowUps(sessionId, deviceId, getToken);
     if (!ownerCurrent() || !isCurrent() || getNewSessionCreationTask(sessionId)?.deviceId !== deviceId) return;
     await onReady({ deviceId, deviceName: task.deviceName,
       ...(task.readyForEdit === 'durable' ? { recoverySessionId: sessionId } : { editSessionId: sessionId }) });
@@ -43,7 +44,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
         error: prepared.error || durableFirst.error || i18n.t('session.screen.firstMessageNotSent'),
         creation: { ...durableFirst.creation!, editReady: true },
       });
-      await mergeNewSessionEditFollowUps(sessionId, deviceId);
+      await mergeNewSessionEditFollowUps(sessionId, deviceId, getToken);
       if (!taskCurrent()) return;
       markNewSessionDurableEditReady(sessionId, deviceId);
       if (isCurrent()) await onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });

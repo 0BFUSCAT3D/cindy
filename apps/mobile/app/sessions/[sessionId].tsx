@@ -4104,6 +4104,7 @@ function SessionScreenContent() {
   //    (新桌面有 clientId 幂等去重,重复风险已兜)。
   const creationScreenFocused = useIsFocused();
   useFailedCreationReturnToEdit({
+    getToken: auth.getAccessToken,
     task: creationTask?.deviceId === deviceId ? creationTask : null,
     focused: creationScreenFocused,
     sending,

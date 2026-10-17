@@ -24,6 +24,10 @@ vi.mock('@/session/mobileDurableOutbox', () => ({
 vi.mock('@/session/newSessionCreation', () => ({
   completeNewSessionDurableEdit: outbox.claim,
   findNewSessionEditDraft: outbox.find,
+  subscribeNewSessionCreationTasks: (listener: () => void) => {
+    outbox.listeners.add(listener);
+    return () => outbox.listeners.delete(listener);
+  },
 }));
 vi.mock('@/session/mergeNewSessionEditFollowUps', () => ({ mergeNewSessionEditFollowUps: outbox.merge }));
 vi.mock('@/session/persistNewSessionCreationDraft', () => ({ persistNewSessionDraftEdit: outbox.saveEdit }));
@@ -244,3 +248,37 @@ it.each(['complete', 'unmount', 'owner-switch', 'save-fails', 'prepared'] as con
     else expect(container.textContent).not.toContain('Saved draft');
   },
 );
+
+// #6281: leaving during a delete must not let a blank form claim the old revision.
+it.each(['edited', 'cleared', 'failed'] as const)('keeps the edit claim through pending persistence: %s', async outcome => {
+  let claimed = false;
+  outbox.claim.mockImplementation(() => {
+    claimed = true;
+    return () => { claimed = false; outbox.release(); for (const listener of outbox.listeners) listener(); };
+  });
+  outbox.find.mockImplementation(() => claimed ? undefined : outbox.records[0]);
+  await renderEdit();
+  await act(async () => ready());
+  let finish!: (record: DurableOutboxRecord | null) => void;
+  let fail!: (error: Error) => void;
+  outbox.saveEdit.mockReturnValueOnce(new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+  editorActions.edit({ firstMessage: 'remaining text' });
+  await renderBlank();
+  expect(outbox.release).not.toHaveBeenCalled();
+  expect(container.textContent).toBe('');
+  await act(async () => {
+    if (outcome === 'failed') { fail(new Error('disk unavailable')); return; }
+    const record = outbox.records[0];
+    outbox.records = outcome === 'cleared' ? [] : [{ ...record, creation: { ...record.creation!,
+      draft: { ...record.creation!.draft, firstMessage: 'remaining text' } } }];
+    for (const listener of outbox.listeners) listener();
+    expect(container.textContent).toBe('');
+    finish(outbox.records[0] ?? null);
+  });
+  expect(outbox.release).toHaveBeenCalledOnce();
+  expect(container.textContent).toBe(outcome === 'cleared' ? '' : 'device/task');
+  if (outcome === 'edited') {
+    await renderEdit();
+    expect(container.textContent).toBe('remaining textModel unavailableEdit');
+  }
+});

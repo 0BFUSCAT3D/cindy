@@ -12,6 +12,7 @@ import { buildOutboxItem } from '../session/sessionOutbox';
 import { persistNewSessionCreationDraft, persistNewSessionDraftEdit } from '../session/persistNewSessionCreationDraft';
 import { returnNewSessionToEdit } from '../session/returnNewSessionToEdit';
 import { mergeNewSessionEditFollowUps } from '../session/mergeNewSessionEditFollowUps';
+import { discardMobileUploadedAttachment } from '../session/mobileAttachmentUpload';
 import { createDurableOutboxDelivery } from '../session/durableOutboxDelivery';
 import type { InputProjection, QueuedRemoteMessage } from '../session/types';
 
@@ -81,6 +82,7 @@ beforeEach(async () => {
   await mobileDurableOutbox.activate('');
   disk.data.clear();
   disk.fail = false;
+  vi.mocked(discardMobileUploadedAttachment).mockClear();
   disk.failRemove = false;
   files.retained.clear();
   files.sequence = 0;
@@ -773,19 +775,33 @@ it('finishes interrupted source removal after reload without duplicating merged 
   expect(getCurrentMobileOutboxRecords()).toEqual([saved]);
 });
 
-it('reports overflow from multiple messages and refuses records with delivery evidence', async () => {
+it.each([false, true])('reclaims only unretained overflow uploads after commit (interrupted: %s)', async interrupted => {
   const original = await saveDraftFixture();
   const first = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
   const followUp: DurableOutboxRecord = { ...first, creation: undefined, uploads: [], createdAt: 2,
     enqueueStarted: true, item: { ...first.item, clientId: 'many-files', text: 'keep all text',
       attachmentSlots: Array.from({ length: 21 }, (_, i) => ({ ...first.item.attachmentSlots[0]!,
-        id: `file-${i}`, path: `/repo/file-${i}.png` })) } };
+        id: `file-${i}`, path: i === 20 ? first.item.attachmentSlots[0]!.path
+          : i === 19 ? 'cindy-oss-attach://unused-overflow' : `/repo/file-${i}.png` })) } };
   await mobileDurableOutbox.add(followUp);
   await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc')).rejects.toThrow('OUTBOX_CREATION_OWNERSHIP_UNRESOLVED');
   expect(getCurrentMobileOutboxRecords()).toHaveLength(2);
   await mobileDurableOutbox.update(followUp, { enqueueStarted: false });
-  const saved = await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc');
+  disk.fail = true;
+  await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc', async () => 'test-token')).rejects.toThrow('disk unavailable');
+  expect(discardMobileUploadedAttachment).not.toHaveBeenCalled();
+  disk.fail = false;
+  if (interrupted) {
+    disk.failRemove = true;
+    await expect(mergeNewSessionEditFollowUps(first.item.sessionId, 'pc', async () => 'test-token')).rejects.toThrow('remove unavailable');
+    expect(discardMobileUploadedAttachment).not.toHaveBeenCalled();
+    disk.failRemove = false;
+    await mobileDurableOutbox.activate('');
+    await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  }
+  const saved = await mergeNewSessionEditFollowUps(first.item.sessionId, 'pc', async () => 'test-token');
   expect(saved?.item.attachmentSlots).toHaveLength(20);
+  expect(vi.mocked(discardMobileUploadedAttachment).mock.calls.map(([a]) => a.path)).toEqual(['cindy-oss-attach://unused-overflow']);
   expect(saved?.creation?.notice).toBeTruthy();
   expect(saved?.creation?.draft.firstMessage).toBe('keep my input\n\nkeep all text');
 });

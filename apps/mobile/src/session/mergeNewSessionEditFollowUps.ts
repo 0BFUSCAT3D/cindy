@@ -3,11 +3,11 @@ import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGe
 import { i18n } from '@/i18n';
 import { categorizeMobileAttachment, extractRemoteFileExt, mergeAttachmentsWithinLimit, mimeTypeForMobileAttachment } from './attachments';
 import { isDurableOutboxUnsent, type DurableOutboxRecord } from './durableOutbox';
-import { getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
+import { discardOutboxUploads, getCurrentMobileOutboxRecords, mobileDurableOutbox } from './mobileDurableOutbox';
 import type { RemoteSerializedAttachment } from './types';
 
 /** Consolidate unsent messages before either warm navigation or cold editor recovery. */
-export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: string): Promise<DurableOutboxRecord | undefined> {
+export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: string, getToken: () => Promise<string | null> = async () => null): Promise<DurableOutboxRecord | undefined> {
   const owner = getMobileAuthOwner();
   // Drain committed send handoffs before reading the group, including a send
   // whose disk write was still queued when its chat unmounted.
@@ -84,7 +84,13 @@ export async function mergeNewSessionEditFollowUps(sessionId: string, deviceId: 
       guard();
       if (!getCurrentMobileOutboxRecords().includes(first)) throw new Error('OUTBOX_STALE_WRITE');
       await mobileDurableOutbox.remove(record);
-      // Remote references now belong to the parent; only remove local copies.
+      // Only references retained by the committed parent changed ownership.
+      // Derive unused references from both records so interrupted cleanup can
+      // finish on cold recovery without another ledger or a dropped-ID list.
+      discardOutboxUploads(record, owner, getToken, record.item.attachmentSlots.filter(
+        (attachment): attachment is RemoteSerializedAttachment => attachment !== null
+          && !first!.item.attachmentSlots.some(kept => kept?.path === attachment.path),
+      ));
       await removeOutboxFiles(record).catch(() => undefined);
     }
     return first;

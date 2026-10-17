@@ -6,19 +6,20 @@ import { returnNewSessionToEdit } from './returnNewSessionToEdit';
 type RecoveryOptions = Parameters<typeof returnNewSessionToEdit>[0];
 
 /** A failed creation has one next step: restore its draft in the new-task form. */
-export function useFailedCreationReturnToEdit({ task, focused, sending = false, connectionEpoch, stashDraft, beforeNavigate, onReady, onError }: {
+export function useFailedCreationReturnToEdit({ task, focused, sending = false, connectionEpoch, getToken, stashDraft, beforeNavigate, onReady, onError }: {
   task: NewSessionCreationTask | null;
   focused: boolean;
   /** A send already retaining/writing its bytes must settle before recovery reads the outbox. */
   sending?: boolean;
   connectionEpoch: number;
+  getToken?: RecoveryOptions['getToken'];
   stashDraft: RecoveryOptions['stashDraft'];
   beforeNavigate?: () => Promise<void>;
   onReady: RecoveryOptions['onReady'];
   onError: (error: unknown) => void;
 }) {
-  const callbacks = useRef({ stashDraft, beforeNavigate, onReady, onError });
-  callbacks.current = { stashDraft, beforeNavigate, onReady, onError };
+  const callbacks = useRef({ getToken, stashDraft, beforeNavigate, onReady, onError });
+  callbacks.current = { getToken, stashDraft, beforeNavigate, onReady, onError };
   const navigated = useRef<string | null>(null);
   const sessionId = task?.sessionId;
   const deviceId = task?.deviceId;
@@ -41,7 +42,7 @@ export function useFailedCreationReturnToEdit({ task, focused, sending = false, 
       && current.current.sessionId === sessionId && current.current.deviceId === deviceId
       && current.current.startedAt === startedAt && isMobileAuthOwnerCurrent(owner);
     void returnNewSessionToEdit({
-      sessionId, deviceId, isCurrent,
+      sessionId, deviceId, isCurrent, getToken: callbacks.current.getToken,
       stashDraft: callbacks.current.stashDraft,
       onReady: async params => {
         if (!isCurrent() || navigated.current === identity) return;

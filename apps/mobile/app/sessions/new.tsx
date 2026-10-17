@@ -857,6 +857,7 @@ export default function NewRemoteSessionScreen() {
   }, [router]);
   const { edit: editRecoveredDraft, flush: flushRecoveredDraft } = useNewSessionDurableEdit({
     sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
+    getToken: auth.getAccessToken,
     leaveForeignRecovery: leaveForeignOutboxRecovery,
     onError: error => setError(formatRemoteError(error)),
     onEdited: record => { outboxRecoveryRef.current = record; },
