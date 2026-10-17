@@ -163,6 +163,8 @@ export interface UseMobileLocalAttachmentsResult {
    * 计数会放行超额选图 / 标注,占位兑现时轮到粘贴图自己撞上限被丢(review P2)。
    */
   getPendingUploadCount: () => number;
+  /** Synchronous picker, upload and paste activity, including before the first slot exists. */
+  hasAttachmentInput: () => boolean;
 }
 
 export function useMobileLocalAttachments(
@@ -672,5 +674,6 @@ export function useMobileLocalAttachments(
     ),
     hasPastePlaceholders: () => isAttachmentScopeActive() && getPastePlaceholderTotal() > 0,
     getPendingUploadCount: () => (isAttachmentScopeActive() ? getPendingSlotCount() : 0),
+    hasAttachmentInput: () => isAttachmentScopeActive() && (pickerBusyRef.current || getPendingSlotCount() > 0),
   };
 }
