@@ -38,13 +38,23 @@ describe('冷却记录的成员边界', () => {
 describe('mergeCooling', () => {
   const { mergeCooling } = coolingStore.__testing;
 
+  it('merges independent model limits without widening them, and bounds legacy records during migration', () => {
+    expect(mergeCooling(
+      { anthropic: { local: { 'claude:fable': 500_000, 'claude:opus': 500 } } },
+      { anthropic: { local: { 'claude:sonnet': 400_000, 'claude:fable': 300_000 } } },
+      1_000,
+    )).toEqual({ anthropic: { local: { 'claude:fable': 500_000, 'claude:sonnet': 400_000 } } });
+    expect(mergeCooling({ anthropic: { local: 86_400_000 } }, {}, 1_000))
+      .toEqual({ anthropic: { local: { '': 121_000 } } });
+  });
+
   it('keeps both members when they are in different snapshots', () => {
     expect(mergeCooling(
-      { anthropic: { 'device:mini:a': 1_000 } },
-      { anthropic: { 'device:studio:a': 2_000 } },
+      { anthropic: { 'device:mini:a': { '': 1_000 } } },
+      { anthropic: { 'device:studio:a': { '': 2_000 } } },
       0,
     )).toEqual({
-      anthropic: { 'device:mini:a': 1_000, 'device:studio:a': 2_000 },
+      anthropic: { 'device:mini:a': { '': 1_000 }, 'device:studio:a': { '': 2_000 } },
     });
   });
 
@@ -52,35 +62,35 @@ describe('mergeCooling', () => {
     // 旧快照里这一台冷却到 5000，调用方这次只带着更早算出的 3000(比如基于稍旧的内存状态)：
     // 不应该把已经落地的更晚结束时间往回改。
     expect(mergeCooling(
-      { anthropic: { 'device:mini:a': 5_000 } },
-      { anthropic: { 'device:mini:a': 3_000 } },
+      { anthropic: { 'device:mini:a': { '': 5_000 } } },
+      { anthropic: { 'device:mini:a': { '': 3_000 } } },
       0,
     )).toEqual({
-      anthropic: { 'device:mini:a': 5_000 },
+      anthropic: { 'device:mini:a': { '': 5_000 } },
     });
     expect(mergeCooling(
-      { anthropic: { 'device:mini:a': 3_000 } },
-      { anthropic: { 'device:mini:a': 5_000 } },
+      { anthropic: { 'device:mini:a': { '': 3_000 } } },
+      { anthropic: { 'device:mini:a': { '': 5_000 } } },
       0,
     )).toEqual({
-      anthropic: { 'device:mini:a': 5_000 },
+      anthropic: { 'device:mini:a': { '': 5_000 } },
     });
   });
 
   it('merges across providers too', () => {
     expect(mergeCooling(
-      { anthropic: { a: 1 } },
-      { openai: { b: 2 } },
+      { anthropic: { a: { '': 1 } } },
+      { openai: { b: { '': 2 } } },
       0,
-    )).toEqual({ anthropic: { a: 1 }, openai: { b: 2 } });
+    )).toEqual({ anthropic: { a: { '': 1 } }, openai: { b: { '': 2 } } });
   });
 
   it('到期条目从两份快照移除，未到期的并发冷却保留较晚结束时间', () => {
     expect(mergeCooling(
-      { anthropic: { old: 99, boundary: 100, active: 200 }, openai: { old: 1 } },
-      { anthropic: { stale: 50, active: 150, fresh: 300 } },
+      { anthropic: { old: 99, boundary: 100, active: { '': 200 } }, openai: { old: 1 } },
+      { anthropic: { stale: 50, active: 150, fresh: { '': 300 } } },
       100,
-    )).toEqual({ anthropic: { active: 200, fresh: 300 } });
+    )).toEqual({ anthropic: { active: { '': 200 }, fresh: { '': 300 } } });
   });
 });
 
@@ -88,7 +98,7 @@ describe('writeProviderGroupCooling (real file)', () => {
   it('512 个最长合法键的冷却全部写入并在重启读取后保留，文件大小预算也足够', async () => {
     const providerId = 'p'.repeat(128);
     const members = Object.fromEntries(Array.from({ length: PROVIDER_GROUP_STORAGE_MEMBER_CAP }, (_, i) => [
-      `device:${String(i).padStart(164, 'd')}:${providerId}`, Number.MAX_VALUE,
+      `device:${String(i).padStart(164, 'd')}:${providerId}`, { 'claude:fable': Number.MAX_VALUE },
     ]));
     coolingStore.writeProviderGroupCooling({ [providerId]: members });
     const file = path.join(tmpDir, 'provider-group-cooling.json');
@@ -97,6 +107,7 @@ describe('writeProviderGroupCooling (real file)', () => {
     });
     expect(fs.statSync(file).size).toBeLessThan(1024 * 1024);
     // 新实例没有旧 store 的缓存，直接从实际文件恢复。
+    // reset-modules: verify persisted cooldowns survive a fresh store instance.
     vi.resetModules();
     const restarted = await import('../coolingStore.js');
     expect(restarted.readProviderGroupCooling()[providerId]).toEqual(members);
@@ -108,10 +119,10 @@ describe('writeProviderGroupCooling (real file)', () => {
     const now = Date.now();
     const studioUntil = now + 120_000;
     const miniUntil = now + 60_000;
-    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:studio:a': studioUntil } });
-    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:mini:a': miniUntil } });
+    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:studio:a': { '': studioUntil } } });
+    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:mini:a': { '': miniUntil } } });
     await vi.waitFor(() => {
-      expect(coolingStore.readProviderGroupCooling().anthropic).toEqual({ 'device:studio:a': studioUntil, 'device:mini:a': miniUntil });
+      expect(coolingStore.readProviderGroupCooling().anthropic).toEqual({ 'device:studio:a': { '': studioUntil }, 'device:mini:a': { '': miniUntil } });
     });
   });
 
@@ -122,11 +133,12 @@ describe('writeProviderGroupCooling (real file)', () => {
     // 模拟旧版已经写满的文件；当前新版写入不能再把过期条目并回来。
     const current = coolingStore.readProviderGroupCooling();
     fs.writeFileSync(file, JSON.stringify({ cooling: { ...current, openai: expired } }));
-    const next = { 'device:new:openai': now + 60_000 };
+    const next = { 'device:new:openai': { '': now + 60_000 } };
     coolingStore.writeProviderGroupCooling({ openai: next });
     await vi.waitFor(() => {
       expect(JSON.parse(fs.readFileSync(file, 'utf8')).cooling.openai).toEqual(next);
     });
+    // reset-modules: verify persisted cooldowns survive a fresh store instance.
     vi.resetModules();
     const restarted = await import('../coolingStore.js');
     expect(restarted.readProviderGroupCooling().openai).toEqual(next);

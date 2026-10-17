@@ -7,7 +7,7 @@ import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 import { isProviderGroupProviderId, PROVIDER_GROUP_STORAGE_MEMBER_CAP } from '../../shared/providerGroup.js';
-import type { ProviderGroupPersistedCooling } from './router.js';
+import { currentCooling, PROVIDER_GROUP_COOLING_SCOPE_CAP, type ProviderGroupCooling, type ProviderGroupPersistedCooling } from './cooling.js';
 
 interface CoolingFile {
   cooling: ProviderGroupPersistedCooling;
@@ -24,11 +24,19 @@ function normalize(raw: unknown): CoolingFile {
   for (const [providerId, members] of Object.entries(source)) {
     if (Object.keys(cooling).length >= MAX_PROVIDERS) break;
     if (!isProviderGroupProviderId(providerId) || !members || typeof members !== 'object' || Array.isArray(members)) continue;
-    const entries: Record<string, number> = {};
+    const entries: Record<string, ProviderGroupCooling> = {};
     for (const [memberKey, until] of Object.entries(members as Record<string, unknown>)) {
       if (Object.keys(entries).length >= PROVIDER_GROUP_STORAGE_MEMBER_CAP) break;
-      if (!MEMBER_KEY_PATTERN.test(memberKey) || typeof until !== 'number' || !Number.isFinite(until) || until <= 0) continue;
-      entries[memberKey] = until;
+      if (!MEMBER_KEY_PATTERN.test(memberKey)) continue;
+      if (typeof until === 'number' && Number.isFinite(until) && until > 0) {
+        entries[memberKey] = until;
+      } else if (until && typeof until === 'object' && !Array.isArray(until)) {
+        const scopes = Object.fromEntries(Object.entries(until).filter(([scope, end]) =>
+          (scope === '' || /^(claude|model):.{1,512}$/.test(scope))
+          && typeof end === 'number' && Number.isFinite(end) && end > 0,
+        ).sort(([a], [b]) => Number(b === '') - Number(a === '')).slice(0, PROVIDER_GROUP_COOLING_SCOPE_CAP));
+        if (Object.keys(scopes).length) entries[memberKey] = scopes;
+      }
     }
     if (Object.keys(entries).length > 0) cooling[providerId] = entries;
   }
@@ -65,10 +73,13 @@ function mergeCooling(
   for (const providerId of new Set([...Object.keys(current), ...Object.keys(next)])) {
     const a = current[providerId] ?? {};
     const b = next[providerId] ?? {};
-    const entries: Record<string, number> = {};
+    const entries: Record<string, ProviderGroupCooling> = {};
     for (const memberKey of new Set([...Object.keys(a), ...Object.keys(b)])) {
-      const until = Math.max(a[memberKey] ?? 0, b[memberKey] ?? 0);
-      if (until > now) entries[memberKey] = until;
+      const scopes = currentCooling(a[memberKey], now);
+      for (const [scope, until] of Object.entries(currentCooling(b[memberKey], now))) {
+        scopes[scope] = Math.max(scopes[scope] ?? 0, until);
+      }
+      if (Object.keys(scopes).length) entries[memberKey] = scopes;
     }
     if (Object.keys(entries).length > 0) merged[providerId] = entries;
   }

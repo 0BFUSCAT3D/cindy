@@ -65,11 +65,25 @@ const bothOk = async (): Promise<ResolvedProviderGroupMember[]> => [
 ];
 
 describe('provider group state kept by the group computer', () => {
+  it('restores model scopes without blocking other models, and bounds legacy unscoped records', async () => {
+    const persisted = { value: {} as ProviderGroupPersistedCooling };
+    const router = harness(bothOk, persisted);
+    router.markCooling('anthropic', A.key, START + 86_400_000, 'claude-fable-5[1m]');
+    const restarted = harness(bothOk, persisted);
+    expect(restarted.coolingUntil('anthropic', A.key, 'fable')).toBe(START + 86_400_000);
+    expect(restarted.coolingUntil('anthropic', A.key, MODEL)).toBeNull();
+    expect((await restarted.view('anthropic')).members[0].state).toBe('available');
+    expect(await restarted.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL }))
+      .toMatchObject({ kind: 'member', member: { key: A.key } });
+    const legacy = harness(bothOk, { value: { anthropic: { [A.key]: START + 86_400_000 } } });
+    expect(legacy.coolingUntil('anthropic', A.key)).toBe(START + 120_000);
+  });
+
   it('remembers cooldowns across restarts and drops the ones that have ended', async () => {
     const persisted = { value: {} as ProviderGroupPersistedCooling };
     const router = harness(bothOk, persisted);
     router.markCooling('anthropic', A.key, START + 3 * 60 * 60_000);
-    expect(persisted.value).toEqual({ anthropic: { [A.key]: START + 3 * 60 * 60_000 } });
+    expect(persisted.value).toEqual({ anthropic: { [A.key]: { '': START + 3 * 60 * 60_000 } } });
     const restarted = harness(bothOk, { value: { anthropic: { [A.key]: START + 60_000, [B.key]: START - 1 } } });
     expect(restarted.coolingUntil('anthropic', A.key)).toBe(START + 60_000);
     expect(restarted.coolingUntil('anthropic', B.key)).toBeNull();
