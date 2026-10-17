@@ -82,13 +82,24 @@ export interface CreateWorkerDeps {
 
 /**
  * 图片地址列表的共享形状（send_to_worker / create_worker / create_workers 共用）。
- * 要求扁平字符串数组；模型常见误传是多套一层（[[a],[b]]），直接拍平自愈而不是报参数错。
+ * 要求扁平字符串数组；实测两类误传形态自愈而不是报参数错：
+ * 1. 多套一层：[[a],[b]] → 拍平；
+ * 2. XML 风格包装：{item:[a,b]}（模型/兼容层把数组参数输出成 <item> 重复标签）→ 取 item。
  */
 export const imagesListSchema = z.preprocess(
-  (value) =>
-    Array.isArray(value) && value.some((item) => Array.isArray(item))
-      ? (value as unknown[]).flat(1)
-      : value,
+  (value) => {
+    if (Array.isArray(value)) {
+      return value.some((item) => Array.isArray(item)) ? (value as unknown[]).flat(1) : value;
+    }
+    if (
+      value
+      && typeof value === 'object'
+      && Array.isArray((value as { item?: unknown }).item)
+    ) {
+      return (value as { item: unknown[] }).item;
+    }
+    return value;
+  },
   z.array(z.string().min(1)).max(8),
 );
 

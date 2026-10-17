@@ -108,6 +108,20 @@ describe('create_worker tool', () => {
     }));
   });
 
+  it('unwraps the XML-style {item:[...]} wrapper instead of failing schema validation', async () => {
+    // 实测形态: 模型/兼容层把数组参数输出成 {item:[...]}(TapTap 会话 5 连败的元凶)。
+    const { registry, createWorker } = setup();
+    const result = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'worker',
+      initial_task: 'review',
+      images: { item: ['cindy-media://blobs/a.png', 'cindy-media://blobs/b.png'] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({
+      initialTaskImages: ['cindy-media://blobs/a.png', 'cindy-media://blobs/b.png'],
+    }));
+  });
+
   it('still rejects non-string image entries after flattening', async () => {
     const { registry, createWorker } = setup();
     const result = await registry.call('create_worker', {
