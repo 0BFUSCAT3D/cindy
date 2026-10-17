@@ -290,6 +290,39 @@ it('ignores late failure events from a replaced preview', () => {
   expect(onError).toHaveBeenCalledOnce();
 });
 
+// Unit regression for PR #6323: real hook + reader navigation followed by a delayed
+// update must preserve the current inner page. Existing update cases had no navigation.
+// Minimal input: cached entry -> sibling document -> background update resolves.
+it.each(['sibling', 'entry', 'returned'] as const)('applies background updates only at the entry document (%s)', async (destination) => {
+  root = createRoot(document.createElement('div'));
+  let finishCheck!: (preview: MobileHtmlPreview) => void;
+  const initial: MobileHtmlPreview = {
+    url: 'http://127.0.0.1:1234/__cindy/token', documents: ['/report%20one.html', '/detail.html'],
+    close: vi.fn().mockResolvedValue(undefined),
+    updated: new Promise(resolve => { finishCheck = resolve; }),
+  };
+  const next = { ...initial, url: 'http://127.0.0.1:4321/__cindy/fresh', updated: undefined };
+  const prepare = vi.fn().mockResolvedValue(initial);
+  let snapshot!: ReturnType<typeof useHtmlSnapshot>;
+  function Harness() {
+    snapshot = useHtmlSnapshot('/report one.html', true, prepare);
+    return createElement(HtmlSnapshotReader, {
+      preview: snapshot.preview, onError() {}, onNavigationStateChange: snapshot.onNavigationStateChange,
+    });
+  }
+  await act(async () => root!.render(createElement(Harness)));
+  const navigate = (path: string) => act(() => state.props.onNavigationStateChange({ url: `http://127.0.0.1:1234/${path}` }));
+  navigate(destination === 'entry' ? 'report%20one.html#details' : 'detail.html');
+  if (destination === 'returned') navigate('report%20one.html');
+  await act(async () => finishCheck(next));
+  expect(snapshot.preview).toBe(destination === 'sibling' ? initial : next);
+  expect(state.mounts).toBe(destination === 'sibling' ? 1 : 2);
+  expect(initial.close).not.toHaveBeenCalled();
+  expect(prepare).toHaveBeenCalledOnce();
+  await act(async () => root!.unmount()); root = undefined;
+  expect(initial.close).toHaveBeenCalledOnce();
+});
+
 // Unit: the real hook must retain usable content during automatic replacement and
 // ignore late work after leaving. These timings were absent from manual-retry coverage.
 it.each(['changed', 'same', 'failed', 'left'] as const)('replaces a stale snapshot at most once and preserves its owner (%s)', async (outcome) => {
