@@ -3179,8 +3179,12 @@ export function createTurnRunner(
     // 它不置 turn.done, composeStreamingView 会把 activity 一起写进正文。
     clearRunningIndicators(t.activity);
     try {
-      // 没产出任何内容(无文本无步骤)且无错 → 不留空卡。
-      if (!t.streamingHandle && t.buffer.length === 0 && t.mediaAbsPaths.length === 0 && t.activity.totalSteps === 0 && !errMsg) {
+      // 成功但没有正文或附件：标题、步骤不算回复，也不新建空卡。
+      if (!t.buffer.trim() && t.mediaAbsPaths.length === 0 && !errMsg) {
+        if (t.streamingHandlePromise) await t.streamingHandlePromise;
+        if (sessionStates.get(state.makerSession.id) === state) {
+          await t.streamingHandle?.finalize('');
+        }
         return;
       }
       if (silenced && !t.streamingHandlePromise) return;
@@ -3730,34 +3734,27 @@ export function createTurnRunner(
         // The terminal branch below handles the missing output surface.
       }
     }
+    // 所有渠道共用空成功结果语义；文本渠道仍须提交终态（微信持久任务依赖它）。
+    if (!turn.streamingHandle && turn.mediaAbsPaths.length > 0) {
+      await ensureStreamingHandle(turn);
+    }
+    const finalView = composeStreamingView(turn);
     if (turn.streamingHandle) {
-      const finalView = composeStreamingView(turn) || '_(空回复)_';
-      await finalizeTurnStream(turn, finalView);
-    } else if (turn.presenter.wholeText().length === 0) {
-      // No streamed text at all — send a one-shot text so the user knows the
-      // turn ended. (Rare; normally agents emit at least one text block.)
+      await finalizeTurnStream(turn, finalView.trim() ? finalView : '');
+    } else if (!finalView.trim() && turn.mediaAbsPaths.length === 0) {
       try {
         if (output.kind === 'chunked-text') {
           await output.commitFinal({
             userId,
-            text: '✅ (本轮无文本输出)',
+            text: '',
             terminal: turn.terminalKind,
             threadTs: turn.scopeKey,
-            ...(turn.mediaAbsPaths.length > 0 ? { mediaAbsPaths: turn.mediaAbsPaths } : {}),
           });
         } else {
-          // 群主流 @ 开话题但本轮无流式输出: pending opener 尚未被认领 —
-          // 仅当 opener 是本轮消息创建的(trigger 匹配)才消费, 否则另发
-          // (避免消费上一轮遗留的 opener 造成归属错乱)。
+          // 只清除本轮自己的待认领开场白，不能消费别的轮次。
           const triggerId = output.im.getPendingOpenerTrigger?.(userId);
-          const isMyOpener = triggerId === turn.userMessageId;
-          const consumed =
-            isMyOpener
-              ? ((await output.im.consumePendingOpenerCard?.(userId, '✅ (本轮无文本输出)')) ??
-                false)
-              : false;
-          if (!consumed) {
-            await sendTextClaimingOpener(userId, '✅ (本轮无文本输出)', turn.scopeKey);
+          if (triggerId && triggerId === turn.userMessageId) {
+            await output.im.consumePendingOpenerCard?.(userId, '');
           }
         }
       } catch {

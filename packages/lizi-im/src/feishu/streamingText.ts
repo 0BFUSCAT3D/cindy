@@ -31,6 +31,7 @@ import {
   sendFile,
   sendText,
   claimPatchableOpener,
+  recallMessage,
 } from './outbound.js';
 import { buildMarkdownCardV2, buildMixedMarkdownCardV2 } from './cards.js';
 import { resolveFeishuMediaUrl } from './mediaCache.js';
@@ -223,6 +224,10 @@ class FeishuStreamingTextHandle implements StreamingTextHandle {
   private async doFinalize(): Promise<void> {
     const log = getLog();
     const text = this.buffer;
+    if (!text.trim() && this.extraImageAbsPaths.length === 0) {
+      await recallMessage(this.messageId);
+      return;
+    }
 
     // 1. Upload all xdt-image URLs in parallel; missing entries get a "图片
     //    加载失败" placeholder in the final card.
@@ -307,7 +312,7 @@ class FeishuStreamingTextHandle implements StreamingTextHandle {
     //    a) text only → plain markdown card v2
     //    b) text + images (markdown 内联 OR tool_result 追加) → mixed elements card
     //    c) empty text + only files → "🎉 N 个文件已送达" placeholder
-    //    d) totally empty → fallback "(空回复)"
+    //    d) extra images all failed → delivery failure (truly empty finals returned above)
     const hasAnyImage = imageUrls.length > 0 || extraImageKeys.length > 0;
     const fileOnly = cardTextTrimmed.length === 0 && !hasAnyImage && fileLinks.length > 0;
     try {
@@ -320,7 +325,7 @@ class FeishuStreamingTextHandle implements StreamingTextHandle {
         // 兜底分支会塞 "(空回复)" — 但 hasAnyImage 时一定不为空, 所以不会触发。
         card = buildMixedMarkdownCardV2(cardText, imageMap, extraImageKeys);
       } else {
-        card = buildMarkdownCardV2(cardTextTrimmed.length > 0 ? cardText : transportMessages.streaming.emptyReply);
+        card = buildMarkdownCardV2(cardTextTrimmed.length > 0 ? cardText : transportMessages.streaming.deliveryFailed);
       }
       card = fitCardToLimit(cardText, card, (visibleText) =>
         hasAnyImage
@@ -370,5 +375,9 @@ export async function start(
  * 把 picker card 直接转成"已接管 + 总结"视图, 替代发两张独立消息。
  */
 export async function patchMarkdown(messageId: string, markdown: string): Promise<void> {
+  if (!markdown.trim()) {
+    await recallMessage(messageId);
+    return;
+  }
   await patchCardRaw(messageId, buildMarkdownCardV2(markdown));
 }

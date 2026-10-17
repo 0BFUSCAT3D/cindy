@@ -531,6 +531,25 @@ describe('FeishuIM opener consumption failure semantics', () => {
     expect(outboundMocks.rearmAnchorToTrigger).toHaveBeenCalledWith('g/oc_c/omt_t');
   });
 
+  it('empty opener final is recalled and subsequent replies use the trigger anchor', async () => {
+    outboundMocks.claimPatchableOpener.mockReturnValue('om_opener');
+    await expect(im.consumePendingOpenerCard('g/oc_c/omt_t', '')).resolves.toBe(true);
+    expect(streamingText.patchMarkdown).toHaveBeenCalledWith('om_opener', '');
+    expect(outboundMocks.rearmAnchorToTrigger).toHaveBeenCalledWith('g/oc_c/omt_t');
+    expect(outboundMocks.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('deferred empty opener never falls back to a blank card (initial recall fails=%s)', async (fails) => {
+    outboundMocks.drainDeferredOpenerConsumes.mockReturnValueOnce([
+      { userId: 'g/oc_c/omt_t', openerId: 'om_empty', markdown: '' },
+    ]);
+    if (fails) vi.mocked(streamingText.patchMarkdown).mockRejectedValueOnce(new Error('recall failed'));
+    feishuEvents.emit('imStatus', { kind: 'connected', appId: 'cli' });
+    await vi.waitFor(() => expect(outboundMocks.rearmAnchorToTrigger).toHaveBeenCalledWith('g/oc_c/omt_t'));
+    expect(outboundMocks.sendInteractive).not.toHaveBeenCalled();
+    expect(outboundMocks.sendText).not.toHaveBeenCalled();
+  });
+
   it('consumePendingOpenerCard: 撤回失败不回拨不另发, 重新暂存等重试', async () => {
     outboundMocks.claimPatchableOpener.mockReturnValue('om_opener');
     (streamingText.patchMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
