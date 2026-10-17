@@ -240,7 +240,10 @@ export function publishProviderShareOwnerState(state: ProviderShareOwnerState, o
     return;
   }
   // 远程快照只覆盖这台被管理电脑，不能抹掉本机或其他被管理电脑的待审批申请。
-  const remotePending = pending.map((item) => item.hostDeviceId ? item : { ...item, hostDeviceId: options.hostDeviceId });
+  // watchedRequests 属于另一台电脑的审批宿主；远程快照只发布当前被管理电脑自己的申请。
+  const remotePending = pending
+    .filter((item) => !item.hostDeviceId || item.hostDeviceId === options.hostDeviceId)
+    .map((item) => item.hostDeviceId ? item : { ...item, hostDeviceId: options.hostDeviceId });
   setPending([
     ...pendingRequests.filter((item) => item.hostDeviceId !== options.hostDeviceId),
     ...remotePending,

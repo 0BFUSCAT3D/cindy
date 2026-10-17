@@ -11,6 +11,7 @@ import { ProviderShareManagePage } from '../ProviderShareManagePage';
 import {
   getProviderSharePendingRequests,
   getProviderSharePendingReshares,
+  publishProviderShareOwnerState,
   resetProviderShareStoreForTests,
 } from '../providerShareStore';
 
@@ -279,6 +280,28 @@ describe('ProviderShareManagePage', () => {
     renderPage('on', { deviceId: 'studio' });
     await screen.findByTestId('provider-share-pending-row');
     expect(getProviderSharePendingRequests()[0]?.hostDeviceId).toBe('studio');
+  });
+
+  it("does not import another computer's watched approval into the managed computer snapshot", () => {
+    const snapshot = {
+      ...owned(),
+      watchedRequests: [{
+        request: {
+          requestId: 'watched-on-other-host',
+          displayName: 'Other',
+          avatarUrl: null,
+          region: 'global' as const,
+          pairingCode: '1234',
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+        share: { shareId: 'other-share', providerId: 'xd', providerLabel: 'Cindy AI' },
+        hostDeviceId: 'other-host',
+      }],
+    };
+    publishProviderShareOwnerState(snapshot, { hostDeviceId: 'studio' });
+    publishProviderShareOwnerState(snapshot, { hostDeviceId: 'studio' });
+    expect(getProviderSharePendingRequests().map((item) => [item.request.requestId, item.hostDeviceId])).toEqual([['req-1', 'studio']]);
   });
 
   // 2026-10-16 用户反馈页面底部的「生成分享链接」太难找：它在标题一行，待处理紧跟标题，不再有底部的「分享」块。
