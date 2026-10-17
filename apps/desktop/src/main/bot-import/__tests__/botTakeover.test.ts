@@ -50,8 +50,14 @@ async function setup(kind: 'hermes' | 'openclaw', config: Record<string, unknown
   // A named profile is served by the host gateway under "<profile>:<platform>".
   const key = options.profile ? `${options.profile}:telegram` : 'telegram';
   await fs.writeFile(path.join(host, 'gateway_state.json'), JSON.stringify({ pid: process.pid, platforms: { [key]: { state: options.live ? 'connected' : 'disconnected', writer_pid: process.pid } } }));
-  await fs.writeFile(path.join(bin, kind), `#!${process.execPath}\n${FAKE}`, { mode: 0o700 });
-  const readers = { home: root, env: { PATH: path.join(root, 'empty-path') }, readCronDatabase: async () => [] };
+  if (process.platform === 'win32') {
+    // Windows finds the .cmd wrapper and runs it through the system shell, which needs the host environment.
+    await fs.writeFile(path.join(bin, `${kind}.cjs`), FAKE);
+    await fs.writeFile(path.join(bin, `${kind}.cmd`), `@echo off\r\n"${process.execPath}" "%~dp0${kind}.cjs" %*\r\n`);
+  } else {
+    await fs.writeFile(path.join(bin, kind), `#!${process.execPath}\n${FAKE}`, { mode: 0o700 });
+  }
+  const readers = { home: root, env: { ...(process.platform === 'win32' ? process.env : {}), PATH: path.join(root, 'empty-path') }, readCronDatabase: async () => [] };
   const source = (await discoverImportSources(readers)).find(item => item.agentId === (options.profile ?? (kind === 'hermes' ? 'default' : 'main')))!;
   const item = (await inspectImportSource(source, readers, undefined, { bots: true })).items.find(entry => entry.view.category === 'bots')!;
   const saves: Array<ImportBotRecord | undefined> = [];
