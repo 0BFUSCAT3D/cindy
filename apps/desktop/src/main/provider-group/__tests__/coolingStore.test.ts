@@ -10,6 +10,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { PROVIDER_GROUP_STORAGE_MEMBER_CAP } from '../../../shared/providerGroup.js';
+import { PROVIDER_GROUP_COOLING_SCOPE_CAP } from '../cooling.js';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-group-cooling-store-test-'));
 
@@ -95,17 +96,22 @@ describe('mergeCooling', () => {
 });
 
 describe('writeProviderGroupCooling (real file)', () => {
-  it('512 个最长合法键的冷却全部写入并在重启读取后保留，文件大小预算也足够', async () => {
+  it('512 个成员各有 64 个模型范围时全部写入并在重启读取后保留', async () => {
+    // PR #6322 review: 单范围用例低于旧 1 MiB 上限，无法发现多模型冷却整次写入失败。
+    // unit: 经真实写入/重启读取入口覆盖超过旧预算的合法多范围记录。
     const providerId = 'p'.repeat(128);
+    const scopes = Object.fromEntries(Array.from({ length: PROVIDER_GROUP_COOLING_SCOPE_CAP }, (_, i) => [
+      `model:${String(i).padStart(40, 'm')}`, Number.MAX_VALUE,
+    ]));
     const members = Object.fromEntries(Array.from({ length: PROVIDER_GROUP_STORAGE_MEMBER_CAP }, (_, i) => [
-      `device:${String(i).padStart(164, 'd')}:${providerId}`, { 'claude:fable': Number.MAX_VALUE },
+      `device:${String(i).padStart(164, 'd')}:${providerId}`, scopes,
     ]));
     coolingStore.writeProviderGroupCooling({ [providerId]: members });
     const file = path.join(tmpDir, 'provider-group-cooling.json');
     await vi.waitFor(() => {
       expect(JSON.parse(fs.readFileSync(file, 'utf8')).cooling[providerId]).toEqual(members);
     });
-    expect(fs.statSync(file).size).toBeLessThan(1024 * 1024);
+    expect(fs.statSync(file).size).toBeGreaterThan(1024 * 1024);
     // 新实例没有旧 store 的缓存，直接从实际文件恢复。
     // reset-modules: verify persisted cooldowns survive a fresh store instance.
     vi.resetModules();

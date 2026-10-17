@@ -51,7 +51,8 @@ const store = createOverrideSettingsFile<CoolingFile>({
   normalize,
   log,
   label: 'provider-group-cooling',
-  maxBytes: 1024 * 1024,
+  // 每个成员由单条冷却扩展到多个模型范围，读写预算同比扩展；仍保留整文件上限。
+  maxBytes: 1024 * 1024 * PROVIDER_GROUP_COOLING_SCOPE_CAP,
 });
 
 export function readProviderGroupCooling(): ProviderGroupPersistedCooling {
