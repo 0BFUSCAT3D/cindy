@@ -87,13 +87,19 @@ export function BotWorkbench({
   const navigate = useNavigate();
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf) ?? null;
-  const hostName = hostDeviceId ? (devices?.find((device) => device.deviceId === hostDeviceId)?.name ?? null) : null;
+  const hostDevice = hostDeviceId ? (devices?.find((device) => device.deviceId === hostDeviceId) ?? null) : null;
+  const hostName = hostDevice?.name ?? null;
   const host = useMemo(
     () => ({ deviceId: hostDeviceId, deviceName: hostName, selfDeviceId: self?.deviceId ?? null }),
     [hostDeviceId, hostName, self?.deviceId],
   );
   const { glance: raw, failed, fetchedAt } = useBotGlance(botId, host);
-  const glance = useMemo<BotGlance | null>(() => (raw ? rebaseGlance(raw, host) : null), [raw, host]);
+  // 设备清单说它离线，或最近一次读取失败：保留上一份内容，但经那台转来的行按离线显示。
+  const hostOnline = !hostDeviceId || (hostDevice?.online !== false && !failed);
+  const glance = useMemo<BotGlance | null>(
+    () => (raw ? rebaseGlance(raw, { ...host, online: hostOnline }) : null),
+    [raw, host, hostOnline],
+  );
   const now = useNow(30_000);
   const canNavigate = !isSidebarWindow();
 

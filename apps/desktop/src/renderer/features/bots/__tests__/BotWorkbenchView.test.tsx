@@ -197,6 +197,27 @@ it('reads a teammate on another computer from that computer and answers its own 
   expect(m.remoteApi.getPendingInteractions).toHaveBeenCalledWith('s5');
 });
 
+// 依据：工作台合同「别的电脑离线时不能替主人操作」；缺口：读过一次后那台断开，保留的旧内容仍显示在线、
+// 「允许」可点。最小失败输入：首读成功、变化推送后的重读失败。tier：renderer unit。
+it('greys out a remote teammate\'s rows once that computer stops answering, keeping the last content', async () => {
+  let push: ((event: unknown, stamp: unknown) => void) | undefined;
+  (window as unknown as { electronAPI: { deviceLink: { onRemotePush: unknown } } }).electronAPI.deviceLink.onRemotePush =
+    (cb: (event: unknown, stamp: unknown) => void) => { push = cb; return () => undefined; };
+  remoteInvoke.mockResolvedValueOnce(glance({
+    waiting: [row({ sessionId: 's7', question: '删掉旧分支吗？', waitingFor: 'permission', requestId: 'r-7' })],
+  }));
+  render(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
+  const allow = () => within(screen.getByText('删掉旧分支吗？').closest('li')!)
+    .getByRole('button', { name: 'bots.workbench.glance.allow' }) as HTMLButtonElement;
+  await screen.findByText('删掉旧分支吗？');
+  expect(allow().disabled).toBe(false);
+
+  remoteInvoke.mockRejectedValueOnce(new Error('offline'));
+  act(() => push?.({ deviceId: 'dev-2', channel: 'maker:bot-autonomy:changed', payload: { botIds: ['bot-1'] } }, {}));
+  await waitFor(() => expect(allow().disabled).toBe(true));
+  expect(screen.getByText('删掉旧分支吗？')).toBeTruthy();
+});
+
 it('never approves a confirmation that carries no request id; it opens the task instead', async () => {
   // 宿主把 kind 含 confirm 的交互归成权限类但没有 requestId：那件任务里唯一的权限请求不一定是这一行。
   const confirmRow = row({ sessionId: 's3', question: '确认要发布吗？', waitingFor: 'permission', requestId: null });

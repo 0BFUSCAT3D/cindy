@@ -28,6 +28,11 @@ export interface GlanceHost {
   deviceName?: string | null;
   /** 这台电脑在 device-link 里的 id，用来把远端记成「别的电脑」的行认回本机。 */
   selfDeviceId?: string | null;
+  /**
+   * 伙伴所在电脑当前能不能连上（设备在线且最近一次读取成功）。读不到时界面保留上一份内容，
+   * 但经那台转来的行一律按离线显示（变灰、不能「允许」），不能继续显示成在线。
+   */
+  online?: boolean;
 }
 
 /** 远程任务的 sessionId 带 `deviceId::` 前缀；导航与交互要用那台电脑上的裸 id。 */
@@ -41,14 +46,22 @@ export function bareGlanceSessionId(row: Pick<GlanceRow, 'sessionId' | 'deviceId
 function rebaseRow(row: GlanceRow, host: GlanceHost): GlanceRow {
   if (!host.deviceId) return row;
   const bare = bareGlanceSessionId(row);
+  const reachable = host.online !== false;
   if (!row.deviceId) {
     // 那台的本机任务：从这台看就是那台电脑上的任务。
-    return { ...row, deviceId: host.deviceId, deviceName: host.deviceName ?? row.deviceName, sessionId: `${host.deviceId}::${bare}` };
+    return {
+      ...row,
+      deviceId: host.deviceId,
+      deviceName: host.deviceName ?? row.deviceName,
+      online: row.online && reachable,
+      sessionId: `${host.deviceId}::${bare}`,
+    };
   }
   if (host.selfDeviceId && row.deviceId === host.selfDeviceId) {
     return { ...row, deviceId: null, deviceName: null, online: true, sessionId: bare };
   }
-  return row;
+  // 第三台电脑的行是经那台转来的：那台连不上时状态无从确认，同样按离线显示。
+  return reachable ? row : { ...row, online: false };
 }
 
 export function rebaseGlance(glance: BotGlance, host: GlanceHost): BotGlance {
