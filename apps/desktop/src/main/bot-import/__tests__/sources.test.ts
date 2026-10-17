@@ -239,9 +239,10 @@ describe('installed agent imports', () => {
       { platform: 'feishu', name: 'Ada Lark', selected: false, enabled: false, owner: 'ou_fixtureowner' },
       { platform: 'wecom', name: 'Ada', selected: true, enabled: undefined, owner: 'alice' },
     ]);
-    expect(bots[1]!.credential?.value).toEqual({ appId: '${FEISHU_APP_ID}', appSecret: '${FEISHU_APP_SECRET}', account: 'default', service: 'lark', ownerUserId: 'ou_fixtureowner' });
+    // A bot carries its own credential, so it never also requires selecting its token under connections.
+    expect(bots[1]!.credential?.value).toEqual({ appId: 'cli_fixture', appSecret: 'fake-feishu-secret', account: 'default', service: 'lark', ownerUserId: 'ou_fixtureowner' });
     expect(bots[1]!.bot).toEqual({ platform: 'feishu', account: 'default', enabledPath: ['platforms', 'feishu', 'enabled'] });
-    for (const bot of bots) expect(bot.view.dependsOn!.every(id => snapshot.items.some(item => item.view.id === id && item.view.selected))).toBe(true);
+    for (const bot of bots) expect(bot.view.dependsOn).toEqual([]);
     expect(JSON.stringify(bots.map(item => item.view))).not.toMatch(/fake-|cli_fixture|fixture-wecom/);
     // Controllers without the bots category keep today's Telegram / Discord connections and no others.
     const legacy = await inspectImportSource(source!, reader);

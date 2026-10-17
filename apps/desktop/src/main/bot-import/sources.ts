@@ -188,7 +188,7 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
       mcp: { name, enabled, ...(command ? { command, args: Array.isArray(record.args) ? record.args.map(string) : [], cwd, transport: 'stdio' as const } : { url, transport: record.transport === 'sse' ? 'sse' as const : 'http' as const }),
         env: scalarEnv(record.env), headers: scalarEnvHeaders(record.headers) } });
   }
-  if (bots) pushBotItems(items, await sourceBots(source, values, env, deps, budget, readText));
+  if (bots) pushBotItems(items, await sourceBots(source, values, env, deps, budget, readText), env);
   else await legacyImBots(items, source, values, env, deps, budget, readText);
   // Keep native auth metadata without exposing its contents or inventing a refresh protocol.
   // API keys have a direct environment equivalent; provider OAuth needs its native refresh adapter.
@@ -457,9 +457,16 @@ async function sourceBots(source: ImportSource, values: Record<string, unknown>,
   return source.kind === 'hermes' ? hermesBots(source, values, env) : openclawBots(source, values, env, deps, budget, readText, allAgents);
 }
 
-/** One entry per bot; an ambiguous owner offers up to five exclusive alternatives, none preselected. */
-function pushBotItems(items: ImportItem[], bots: SourceBot[]) {
-  for (const bot of bots) {
+/**
+ * One entry per bot; an ambiguous owner offers up to five exclusive alternatives, none preselected.
+ * A bot carries its own credential: references the source environment defines are resolved here,
+ * so importing the bot never also requires selecting its token under connections.
+ */
+function pushBotItems(items: ImportItem[], bots: SourceBot[], env: Record<string, string> = {}) {
+  for (const original of bots) {
+    const credential = Object.fromEntries(Object.entries(original.credential).map(([field, value]) =>
+      [field, value.replace(REFERENCE, (match, name: string) => Object.hasOwn(env, name) ? env[name]! : match)]));
+    const bot = { ...original, credential };
     const references = [...new Set(Object.values(bot.credential).flatMap(value => [...value.matchAll(REFERENCE)].map(match => match[1]!)))];
     const selected = bot.enabled && !bot.shared;
     const item = (id: string, owner: string | undefined, view: Partial<ImportItem['view']> = {}): ImportItem => ({
@@ -524,7 +531,8 @@ export function createImportSourceReader(deps: SourceReaderDeps, budget = create
     }
     await connections(items, source, values, deps, budget, readText);
     // Mask every bot credential, including bots routed to other agents and platforms the legacy path skips.
-    pushBotItems(items, await sourceBots(source, values, await sourceEnvironment(source, values, budget, readText), deps, budget, readText, true));
+    const env = await sourceEnvironment(source, values, budget, readText);
+    pushBotItems(items, await sourceBots(source, values, env, deps, budget, readText, true), env);
     sourceConfiguration(items, source, values);
     return previewImportRedactions(items);
   };
