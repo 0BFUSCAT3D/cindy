@@ -7,10 +7,14 @@ import {
   ComposerAttachmentTray,
 } from "@/session/ComposerAttachmentTray";
 import { i18n } from "@/i18n";
+import { useComposerImageExpansion } from "@/session/useComposerImageExpansion";
 import type { RemoteSerializedAttachment } from "@/session/types";
 import type { PendingLocalAttachmentUpload } from "@/session/mobileLocalAttachmentUpload";
 
-const theme = vi.hoisted(() => ({ mode: "light" }));
+const theme = vi.hoisted(() => ({
+  mode: "light",
+  files: null as Set<string> | null,
+}));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   const flatten = (style: unknown): Record<string, unknown> =>
@@ -69,7 +73,9 @@ vi.mock("@/session/ImageLightbox", () => ({
     onClose(): void;
   }) => (
     <button data-testid="lightbox" onClick={onClose}>
-      {images[0].url}
+      {theme.files && !theme.files.has(images[0].url)
+        ? "missing"
+        : images[0].url}
     </button>
   ),
 }));
@@ -96,6 +102,7 @@ vi.mock("@/theme", async () => {
 let root: Root;
 let host: HTMLDivElement;
 beforeEach(async () => {
+  theme.files = null;
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   await i18n.changeLanguage("zh-CN");
   host = document.createElement("div");
@@ -129,15 +136,70 @@ const colorOf = (selector: string) =>
   host.querySelector(selector)?.getAttribute("data-color");
 
 describe("composer attachment tray overlay foreground", () => {
+  // PR #6291: production expansion hook, with a button representing the card's
+  // collapse gesture. Existing tray tests do not exercise new-task expansion.
+  it("opens for new images but respects collapse through paste and upload completion", () => {
+    function Composer({
+      uploaded,
+      uploading,
+      placeholders,
+    }: {
+      uploaded: number;
+      uploading: number;
+      placeholders: number;
+    }) {
+      const expansion = useComposerImageExpansion(
+        uploaded + uploading + placeholders,
+        uploading + placeholders,
+      );
+      return (
+        <button onClick={expansion.collapse}>
+          {expansion.active ? "expanded" : "collapsed"}
+        </button>
+      );
+    }
+    const render = (uploaded: number, uploading: number, placeholders = 0) =>
+      act(() =>
+        root.render(
+          <Composer
+            uploaded={uploaded}
+            uploading={uploading}
+            placeholders={placeholders}
+          />,
+        ),
+      );
+    render(0, 0);
+    expect(host.textContent).toBe("collapsed");
+    render(0, 1);
+    expect(host.textContent).toBe("expanded");
+    act(() => host.querySelector("button")!.click());
+    render(1, 1); // delivered/pending overlap
+    expect(host.textContent).toBe("collapsed");
+    render(1, 0);
+    expect(host.textContent).toBe("collapsed");
+    render(1, 0, 1); // paste another image
+    expect(host.textContent).toBe("expanded");
+    act(() => host.querySelector("button")!.click());
+    render(1, 1); // placeholder becomes a pending upload, no new slot
+    expect(host.textContent).toBe("collapsed");
+    render(0, 0);
+    render(1, 0); // restored image draft
+    expect(host.textContent).toBe("expanded");
+  });
+
   // 用户反馈：在途图片只能看缩略图。既有颜色测试不覆盖点击；unit 层用一张
   // 上传中图片验证真实托盘打开本地预览，并在上传完成后仍保持查看器。
-  it("previews an uploading image and keeps it open after upload completes", () => {
-    const render = (uploading: boolean) =>
+  it("switches an open preview to the durable URI when the temporary file is deleted", () => {
+    theme.files = new Set(["file:///uploading.jpg"]);
+    const render = (uploading: boolean, delivered = false) =>
       act(() =>
         root.render(
           <ComposerAttachmentTray
-            attachments={uploading ? [] : [attachment("done")]}
-            previews={{ done: "file:///uploading.jpg" }}
+            attachments={delivered ? [attachment("done")] : []}
+            previews={{ done: "file:///durable.jpg" }}
+            getUploadedAttachmentId={(id) =>
+              delivered && id === "uploading" ? "done" : undefined
+            }
             onRemove={() => {}}
             onPreview={() => {}}
             pendingUploads={uploading ? [pending("uploading")] : []}
@@ -154,9 +216,16 @@ describe("composer attachment tray overlay foreground", () => {
     expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
       "file:///uploading.jpg",
     );
-    render(false);
+    theme.files.delete("file:///uploading.jpg");
+    theme.files.add("file:///durable.jpg");
+    // onUploaded publishes the delivered attachment before the controller removes pending.
+    render(true, true);
     expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
-      "file:///uploading.jpg",
+      "file:///durable.jpg",
+    );
+    render(false, true);
+    expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
+      "file:///durable.jpg",
     );
     act(() =>
       host

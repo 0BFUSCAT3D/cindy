@@ -351,6 +351,7 @@ export function BotGroupComposer({
       onPasteImagesLoadFailed={() => { if (pasteAllowedRef.current) tray.failPastePlaceholders(); }}
       cardActive={cardActive}
       accessoryAbove={hasAttachments ? <ComposerAttachmentTray attachments={tray.attachments} previews={tray.previews}
+        getUploadedAttachmentId={tray.getUploadedAttachmentId}
         pendingUploads={tray.pendingUploads} pastePlaceholderCount={tray.pastePlaceholderCount}
         onPreview={setPreviewId} onRemove={tray.removeAttachment} onRemovePending={tray.removePendingUpload}
         onRetryPending={tray.retryPendingUpload} removeDisabled={sending} testIDPrefix="botGroup" /> : null}

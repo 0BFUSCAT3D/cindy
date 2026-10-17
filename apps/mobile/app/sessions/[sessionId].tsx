@@ -1414,6 +1414,7 @@ function SessionScreenContent() {
     waitForPendingUploads,
     beginOutboxAttachmentHandoff,
     getUploadedSource,
+    getUploadedAttachmentId,
     releaseUploadedSources,
     waitForPastePlaceholdersSettled,
     hasPastePlaceholders,
@@ -7418,6 +7419,7 @@ function SessionScreenContent() {
   const renderComposerAttachmentTray = () => (
     <ComposerAttachmentTray
       attachments={attachments}
+      getUploadedAttachmentId={getUploadedAttachmentId}
       onPreview={setComposerPreviewAttachmentId}
       onRemove={removeRemoteFileAttachment}
       onRemovePending={removePendingUpload}

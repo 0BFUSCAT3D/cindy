@@ -96,6 +96,8 @@ async function deleteLocalUris(uris: readonly string[]): Promise<void> {
 export interface UseMobileLocalAttachmentsResult {
   beginOutboxAttachmentHandoff: () => Promise<ReturnType<MobileLocalAttachmentUploadController['beginHandoff']>>;
   getUploadedSource: (id: string) => MobileLocalAttachmentUploadCandidate | undefined;
+  /** Resolve a tray upload to its delivered attachment without retaining temporary URIs. */
+  getUploadedAttachmentId: (localId: string) => string | undefined;
   releaseUploadedSources: (ids: readonly string[]) => void;
   /** 上传中的附件(托盘渲染 pending 卡)。 */
   pendingUploads: readonly PendingLocalAttachmentUpload[];
@@ -266,7 +268,7 @@ export function useMobileLocalAttachments(
     optionsRef.current.onError(t('composer.upload.clipboardReadFailed'));
   };
 
-  const uploadedSourcesRef = useRef(new Map<string, MobileLocalAttachmentUploadCandidate>());
+  const uploadedSourcesRef = useRef(new Map<string, MobileLocalAttachmentUploadCandidate & { localId: string }>());
   const stagingUrisRef = useRef(new Set<string>());
   const stagingOwnerRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const controller = useMemo(() => createMobileLocalAttachmentUploadController({
@@ -331,7 +333,7 @@ export function useMobileLocalAttachments(
         return;
       }
       uploadedSourcesRef.current.set(attachment.id, {
-        ...candidate, uri: stageUri, name: attachment.name, mimeType: attachment.mimeType,
+        ...candidate, localId, uri: stageUri, name: attachment.name, mimeType: attachment.mimeType,
         size: attachment.size, resolve: undefined, skipPreprocess: true, cleanupLocalUris: undefined,
         onAbandoned: undefined, onConsumed: undefined,
       });
@@ -615,6 +617,7 @@ export function useMobileLocalAttachments(
       }
     },
     getUploadedSource: (id) => uploadedSourcesRef.current.get(id),
+    getUploadedAttachmentId: (localId) => [...uploadedSourcesRef.current].find(([, source]) => source.localId === localId)?.[0],
     releaseUploadedSources: (ids) => {
       for (const id of ids) {
         const source = uploadedSourcesRef.current.get(id);

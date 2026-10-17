@@ -18,6 +18,7 @@ import { resolveWorkspacePickerFrame, type WorkspacePickerFrame } from '@/sessio
 import { simpleScreenSafeAreaEdges } from '@/platform/chrome/SimpleStackHeader';
 import { readComposerEntry, useComposerDock } from '@/session/composerMorph';
 import { useComposerPillOpen } from '@/session/useComposerPillOpen';
+import { useComposerImageExpansion } from '@/session/useComposerImageExpansion';
 import { DockKeyboardBottomSpacer } from '@/session/ComposerDockKeyboardFollow';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
 import { composerGeometry } from '@/session/composerGeometry';
@@ -917,6 +918,7 @@ export default function NewRemoteSessionScreen() {
     waitForPendingUploads,
     getPendingUploadCount,
     getUploadedSource,
+    getUploadedAttachmentId,
     releaseUploadedSources,
   } = useMobileLocalAttachments({
     getAccessToken: () => auth.getAccessToken(),
@@ -2099,18 +2101,9 @@ export default function NewRemoteSessionScreen() {
   });
   const composerIncomingImageCount = pendingUploads.filter((item) => item.kind === 'image').length + pastePlaceholderCount;
   const composerImageCount = attachments.filter((item) => item.category === 'image').length + composerIncomingImageCount;
-  const previousComposerIncomingImageCount = useRef(0);
-  const [composerImagesCollapsed, setComposerImagesCollapsed] = useState(false);
-  useEffect(() => {
-    // Only incoming images reopen a manually collapsed tray. Completed uploads
-    // can briefly appear in both lists and must not count as another addition.
-    if (composerIncomingImageCount > previousComposerIncomingImageCount.current || composerImageCount === 0) {
-      setComposerImagesCollapsed(false);
-    }
-    previousComposerIncomingImageCount.current = composerIncomingImageCount;
-  }, [composerImageCount, composerIncomingImageCount]);
+  const { active: composerImageHoldActive, collapse: collapseComposerImages } = useComposerImageExpansion(composerImageCount, composerIncomingImageCount);
   const composerCardActive = firstMessageInputFocused || composerPillOpen.opening
-    || (composerImageCount > 0 && !composerImagesCollapsed)
+    || composerImageHoldActive
     || modelSheetOpen
     || permissionSheetOpen
     || voiceStartPending
@@ -2120,10 +2113,10 @@ export default function NewRemoteSessionScreen() {
   // 下拉收起 = 退出聚焦激活态(模型浮窗已是独立 Modal,拖拽手势够不到它,无需在此关闭)。
   // 语音结束 hold 态未聚焦,blur 是 no-op,需显式解除 hold 才能收回简洁态。
   const handleComposerSnapToAuto = useCallback(() => {
-    setComposerImagesCollapsed(true);
+    collapseComposerImages();
     setComposerVoiceHoldArmed(false);
     firstMessageInputRef.current?.blur();
-  }, []);
+  }, [collapseComposerImages]);
   const composerResize = useComposerResize({
     autoMaxContentHeight: MOBILE_COMPOSER_INPUT_MAX_HEIGHT,
     // 简洁态一律收到单行(下拉收起和点别处收键盘的结果一致);
@@ -4629,6 +4622,7 @@ export default function NewRemoteSessionScreen() {
   const renderComposerAttachmentTray = () => (
     <ComposerAttachmentTray
       attachments={attachments}
+      getUploadedAttachmentId={getUploadedAttachmentId}
       onPreview={setComposerPreviewAttachmentId}
       onRemove={removeAttachment}
       onRemovePending={removePendingUpload}

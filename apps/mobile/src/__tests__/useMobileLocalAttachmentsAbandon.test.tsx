@@ -13,6 +13,7 @@ const runtime = vi.hoisted(() => ({
   uploads: [] as Array<{ name: string; resolve: () => void }>,
   discarded: [] as unknown[],
   pickPhotos: vi.fn(),
+  durablePreviewUri: null as string | null,
 }));
 
 vi.mock('react-native', () => ({ Platform: { OS: 'ios' } }));
@@ -31,7 +32,7 @@ vi.mock('@/session/durableOutboxFiles', () => ({
   retainComposerAttachmentFile: async (_owner: string, id: string) => `file:///stage/${id}`,
 }));
 vi.mock('@/session/sentAttachmentThumbStore', () => ({
-  getSentAttachmentThumbUri: () => null,
+  getSentAttachmentThumbUri: () => runtime.durablePreviewUri,
   registerSentAttachmentThumb: async () => undefined,
 }));
 vi.mock('@/session/mobileAttachmentUpload', () => ({
@@ -59,6 +60,7 @@ beforeEach(() => {
   runtime.uploads = [];
   runtime.discarded = [];
   runtime.pickPhotos.mockReset();
+  runtime.durablePreviewUri = null;
   root = createRoot(document.createElement('div'));
 });
 afterEach(() => act(() => root.unmount()));
@@ -97,6 +99,38 @@ const imageCandidate = (name: string, onAbandoned: () => void): MobileLocalAttac
 const flush = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
 describe('useMobileLocalAttachments abandonment on scope change', () => {
+  // PR #6291: the real upload hook must publish the local-id handoff before
+  // reclaiming a pasted source. Tray-only tests cannot prove this ordering.
+  it('keeps upload identity resolvable after source cleanup and releases it with the attachment', async () => {
+    const harness = mount('session-a');
+    runtime.durablePreviewUri = 'file:///durable/pasted.png';
+    let localId = '';
+    let attachmentAtCleanup: string | undefined;
+    let deliveriesAtCleanup = 0;
+    const cleanup = vi.fn(async () => {
+      attachmentAtCleanup = harness.latest().getUploadedAttachmentId(localId);
+      deliveriesAtCleanup = vi.mocked(harness.options.onUploaded).mock.calls.length;
+    });
+    act(() => harness.first.enqueueUploads([{
+      ...imageCandidate('pasted.png', vi.fn()), cleanupLocalUris: cleanup,
+    }], { token: 'token' }));
+    await act(async () => { await flush(); });
+    localId = harness.latest().pendingUploads[0].localId;
+    expect(harness.latest().getUploadedAttachmentId(localId)).toBeUndefined();
+    await act(async () => { runtime.uploads[0].resolve(); await harness.latest().waitForPendingUploads(); });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(attachmentAtCleanup).toBe('att-pasted.png');
+    expect(deliveriesAtCleanup).toBe(1);
+    expect(harness.options.onUploaded).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'att-pasted.png' }),
+      expect.objectContaining({ uri: 'file:///durable/pasted.png' }), localId,
+    );
+    expect(harness.latest().pendingUploads).toEqual([]);
+    expect(harness.latest().getUploadedAttachmentId(localId)).toBe('att-pasted.png');
+    act(() => harness.latest().releaseUploadedSources(['att-pasted.png']));
+    expect(harness.latest().getUploadedAttachmentId(localId)).toBeUndefined();
+  });
+
   it('puts selected photos in the tray and closes the context panel before their originals load', async () => {
     const harness = mount('session-a');
     runtime.pickPhotos.mockResolvedValue([{
