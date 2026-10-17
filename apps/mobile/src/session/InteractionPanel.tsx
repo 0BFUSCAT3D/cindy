@@ -1224,7 +1224,7 @@ function AskUserQuestionForm({
               <InteractionTouchButton
                 accessibilityLabel={t('interaction.panel.selectAnswer', { label: option.label })}
                 accessibilityHint={busy ? t('interaction.panel.submittingHint') : undefined}
-                disabled={busy}
+                disabled={busy || voice.listening}
                 key={option.label}
                 onPress={() => toggleLabel(option.label)}
                 selected={selected}
@@ -1318,7 +1318,6 @@ function AskUserQuestionForm({
               <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
             </View>
           )}
-          {voice.error ? <Text testID="interaction.ask.voiceError">{voice.error}</Text> : null}
         </View>
       ) : (
         <View style={[
@@ -1347,6 +1346,9 @@ function AskUserQuestionForm({
         </View>
       )}
 
+      {/* Shown for both layouts: the option-less card has a microphone too. */}
+      {voice.error ? <Text testID="interaction.ask.voiceError">{voice.error}</Text> : null}
+
       <InteractionActions touchLayout={touchLayout}>
         {item.retainedDraft ? (
           <ResolveButton busy={busy} label={t('interaction.panel.closeAnswer')}
@@ -1358,7 +1360,7 @@ function AskUserQuestionForm({
         {currentIndex > 0 ? (
           <InteractionTouchButton
             accessibilityLabel={t('interaction.panel.previous')}
-            disabled={busy}
+            disabled={busy || voice.listening}
             onPress={() => {
               const answer = isMulti
                 ? encodeMultiSelectAnswer(options, selectedLabels, customInput)
@@ -1378,6 +1380,7 @@ function AskUserQuestionForm({
         <ResolveButton
           accessibilityLabel={t('interaction.panel.skipAccessibility')}
           busy={busy}
+          disabled={voice.listening}
           label={t('interaction.panel.skip')}
           onPress={() => advance('')}
           requestId={requestId}
@@ -1389,6 +1392,7 @@ function AskUserQuestionForm({
           <ResolveButton
             accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
+            disabled={voice.listening}
             invalidReason={!canSubmitMulti ? t('interaction.panel.answerRequired') : null}
             label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
             onPress={submitMulti}
@@ -1401,6 +1405,7 @@ function AskUserQuestionForm({
           <ResolveButton
             accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
+            disabled={voice.listening}
             invalidReason={!canSubmitSingle ? t('interaction.panel.answerRequired') : null}
             label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
             onPress={submitSingle}
@@ -1969,6 +1974,7 @@ function ResolveButton({
   armed,
   busy,
   confirmLabel,
+  disabled,
   invalidReason,
   label,
   onPress,
@@ -1981,6 +1987,8 @@ function ResolveButton({
   armed?: boolean;
   busy: boolean;
   confirmLabel?: string;
+  /** Blocks the press without pretending to submit (e.g. while dictating). */
+  disabled?: boolean;
   invalidReason?: string | null;
   label: string;
   onPress(): void;
@@ -2005,7 +2013,7 @@ function ResolveButton({
     : variant === 'secondary'
       ? styles.secondaryButton
       : styles.inlineButton;
-  const disabledButtonStyle = variant === 'primary' && presentation.disabled
+  const disabledButtonStyle = variant === 'primary' && (disabled || presentation.disabled)
     ? styles.primaryButtonDisabled
     : null;
   const textStyle = variant === 'primary'
@@ -2013,7 +2021,7 @@ function ResolveButton({
     : variant === 'secondary'
       ? styles.secondaryText
       : styles.inlineButtonText;
-  const disabledTextStyle = variant === 'primary' && presentation.disabled
+  const disabledTextStyle = variant === 'primary' && (disabled || presentation.disabled)
     ? styles.primaryTextDisabled
     : null;
 
@@ -2022,7 +2030,7 @@ function ResolveButton({
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={presentation.disabledReason ?? undefined}
       busy={busy}
-      disabled={presentation.disabled}
+      disabled={Boolean(disabled) || presentation.disabled}
       hitSlop={companion ? COMPANION_BUTTON_HIT_SLOP : undefined}
       onPress={onPress}
       style={[buttonStyle, disabledButtonStyle, touchStyle, stack?.stacked && STACKED_COMPANION_BUTTON]}
