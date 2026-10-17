@@ -170,8 +170,6 @@
   `docs/dev-rules/architecture-invariants.md`。
 - 新增或修改 Settings UI、配置文件、本地偏好、运行时 profile，或 agent／MCP／provider
   开关前，必须先读 `docs/dev-rules/configuration-and-overrides.md`。
-- 修改 Codex 上游协议在设置页的外层显示前，先读
-  `docs/dev-rules/codex-upstream-protocol-display.md`。那是 #6015 的已验证显示记录，不是协议语义规范。
 - 新增或修改涉及 workdir 文件、agent 进程、会话数据的功能，新增 IPC channel／推送事件，
   或修改 device-link 的重试／超时／断链恢复逻辑前，必须先读
   `docs/dev-rules/remote-and-mobile-adaptation.md`；其中恢复路径改动必须回答该文件的
