@@ -246,6 +246,31 @@ describe('TaskWatch ownership and startup retries', () => {
 });
 
 describe('TaskWatch remote polling', () => {
+  // 依据：协议兼容（docs/dev-rules/protocol-compatibility.md）——旧版被控端不认 snapshotVersion，仍回数组。
+  // 缺口：数组被当成「没有任务」，那台电脑的行被全部清掉还显示在线。最小失败输入：list-active 回数组。tier：unit。
+  it('reads the legacy array an older computer returns, and treats an unknown shape as a failed read', async () => {
+    let shape: 'array' | 'garbage' = 'array';
+    const h = harness({
+      devices: [{ deviceId: 'dev-1', name: 'Studio', online: true, eligible: true }],
+      invokeRemote: async (_deviceId, channel) => {
+        if (channel === 'maker:list-active') {
+          return shape === 'array' ? [{ sessionId: 'r1', isTurnRunning: true, activityPhase: 'running' }] : { format: 'unknown' };
+        }
+        if (channel === 'local-db:sessions:get-many') return [{ id: 'r1', title: 'Old host build', source: 'desktop', status: 'active', hiddenAt: null }];
+        return [];
+      },
+    });
+    await h.watch.start();
+    await h.watch.sweep();
+    expect(h.watch.get('dev-1::r1')).toMatchObject({ phase: 'running', title: 'Old host build', online: true });
+
+    shape = 'garbage';
+    h.advance(AUTONOMY_THRESHOLDS.remotePollMs);
+    await h.watch.sweep();
+    expect(h.watch.get('dev-1::r1')).toMatchObject({ online: false });
+    expect(h.watch.offlineDevices()).toEqual(['Studio']);
+  });
+
   it('reads eligible online computers, then backs off and marks rows offline when polling fails', async () => {
     let fail = false;
     const h = harness({

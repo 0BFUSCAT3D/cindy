@@ -687,10 +687,14 @@ export class TaskWatch {
   }
 
   private async pollDevice(deviceId: string, state: RemoteDeviceState, now: number): Promise<void> {
-    const result = record(await this.deps.invokeRemote(deviceId, 'maker:list-active', [
+    const response = await this.deps.invokeRemote(deviceId, 'maker:list-active', [
       { summary: true, snapshotVersion: 2 },
-    ]));
-    const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+    ]);
+    // 新版被控端返回 active-sessions-v2 包装；不认识 snapshotVersion 的旧版仍返回原来的数组，两种都收。
+    // 都不是就按读取失败处理（退避、标离线），不能当成「没有任务」把那台电脑的行全清掉。
+    const result = record(response);
+    const sessions = Array.isArray(response) ? response : Array.isArray(result?.sessions) ? result.sessions : null;
+    if (!sessions) throw Object.assign(new Error('Unexpected active session list'), { code: 'REMOTE_SHAPE' });
     const active = new Map<string, { isTurnRunning?: unknown; activityPhase?: unknown }>();
     for (const raw of sessions) {
       const row = record(raw);
