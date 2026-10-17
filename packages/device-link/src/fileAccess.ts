@@ -2,7 +2,6 @@ import { validFileVersion } from './fileTransferPolicy';
 
 /** Shared file read policy. UI entry points never choose a transport. */
 export const FILE_INLINE_MAX_BYTES = 64 * 1024;
-const revalidatingFiles = new Map<string, Promise<void>>();
 
 export interface DeviceFileResult {
   ossKey: string;
@@ -35,7 +34,6 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
   };
   /** Same-owner local bytes may render before the host responds. Explicit refresh omits this. */
   cacheFirst?: {
-    key: string;
     read(): Promise<DeviceFileResult | T | null>;
     /** Finish retaining a changed fallback before disposing its temporary result. */
     retain?(result: DeviceFileResult | T): Promise<void>;
@@ -65,23 +63,20 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
     const cached = await options.cacheFirst.read().catch(() => null);
     if (!active()) return discardCancelled(cached ?? { ossKey: '', size: 0, mimeType: '' });
     if (cached) {
-      const { key, retain } = options.cacheFirst;
-      if (!revalidatingFiles.has(key)) {
-        const refresh = Promise.resolve().then(async () => {
-          assertActive();
-          const metadata = await options.prepare();
-          if (!active()) return discardCancelled(metadata);
-          if (validFileVersion(cached.version) && metadata.version === cached.version && metadata.size === cached.size) {
-            if (metadata.ossKey) await options.discard?.(metadata);
-            return;
-          }
-          const fresh = await readDeviceFile({ ...options, cacheFirst: undefined, prepare: async () => metadata });
-          try { await retain?.(fresh); }
-          finally { await options.discard?.(fresh); }
-        }).catch(() => { /* Background failure must not replace an already usable preview. */ })
-          .finally(() => { if (revalidatingFiles.get(key) === refresh) revalidatingFiles.delete(key); });
-        revalidatingFiles.set(key, refresh);
-      }
+      const { retain } = options.cacheFirst;
+      // Revalidation belongs to this read; an obsolete caller cannot suppress a reopen.
+      void Promise.resolve().then(async () => {
+        assertActive();
+        const metadata = await options.prepare();
+        if (!active()) return discardCancelled(metadata);
+        if (validFileVersion(cached.version) && metadata.version === cached.version && metadata.size === cached.size) {
+          if (metadata.ossKey) await options.discard?.(metadata);
+          return;
+        }
+        const fresh = await readDeviceFile({ ...options, cacheFirst: undefined, prepare: async () => metadata });
+        try { await retain?.(fresh); }
+        finally { await options.discard?.(fresh); }
+      }).catch(() => { /* Background failure must not replace an already usable preview. */ });
       return cached;
     }
   }

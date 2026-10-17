@@ -1143,7 +1143,6 @@ export function createMobileMakerTransport({
       () =>
         readDeviceFile({
           cacheFirst: stream || opts?.skipCache || opts?.thumbnail || isSharedTaskPeer(deviceId) ? undefined : {
-            key: JSON.stringify([fileOwner.accountKey, fileOwner.generation, deviceId, url]),
             read: async () => (await getFileCache())?.readLatest(deviceId, url, () => fileIsCurrent() && !opts?.signal?.aborted) ?? null,
             retain: async (result) => { await opts?.retainBackground?.(withDownload(result), fileIsCurrent); },
           },

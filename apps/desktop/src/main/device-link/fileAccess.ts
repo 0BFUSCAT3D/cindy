@@ -80,7 +80,6 @@ export function readRemoteDeviceFile(
   };
   return readDeviceFile<LocalFileResult>({
     cacheFirst: options.skipCache || options.cacheFirst === false || isSharedTaskPeer(device) ? undefined : {
-      key: cacheKey,
       read: async () => {
         const previous = latestFiles.get(cacheKey);
         if (!previous || (options.stream && /^(audio|video)\//.test(previous.metadata.mimeType))) return null;

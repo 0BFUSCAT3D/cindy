@@ -8,20 +8,26 @@ const metadata = {
   transferRequired: true,
 };
 describe("shared file read policy", () => {
-  it('returns cached bytes while the host is pending, and merges background revalidation', async () => {
+  it.each(['cancelled', 'superseded'])('reopens from cache and refreshes independently of a %s read', async mode => {
     const cached = { ...metadata, version: 'a'.repeat(64), inlineBase64: 'YQ==' };
-    let reply!: (value: DeviceFileResult) => void;
-    const prepare = vi.fn(() => new Promise<DeviceFileResult>(resolve => { reply = resolve; }));
-    const retain = vi.fn(), discard = vi.fn(), peer = vi.fn();
-    const options = { prepare, peer, fallback: vi.fn(), discard,
-      cacheFirst: { key: 'cache-first-pending', read: async () => cached, retain } };
-    expect(await readDeviceFile(options)).toBe(cached);
-    expect(await readDeviceFile(options)).toBe(cached);
-    expect(prepare).toHaveBeenCalledOnce();
     const fresh = { ...cached, version: 'b'.repeat(64), transferRequired: false, inlineBase64: 'Yg==' };
-    reply(fresh);
-    await vi.waitFor(() => expect(retain).toHaveBeenCalledWith(fresh));
-    expect(discard).toHaveBeenCalledWith(fresh);
+    let reply!: (value: DeviceFileResult) => void;
+    const prepare = vi.fn().mockImplementationOnce(() => new Promise<DeviceFileResult>(resolve => { reply = resolve; }))
+      .mockResolvedValue(fresh);
+    const retain = vi.fn(), discard = vi.fn(), peer = vi.fn();
+    const abort = new AbortController();
+    let current = true;
+    const options = { prepare, peer, fallback: vi.fn(), discard,
+      cacheFirst: { read: async () => cached, retain } };
+    expect(await readDeviceFile({ ...options, signal: abort.signal, isCurrent: () => current })).toBe(cached);
+    if (mode === 'cancelled') abort.abort();
+    else current = false;
+    expect(await readDeviceFile(options)).toBe(cached);
+    // The reopened request must publish before the obsolete host read settles.
+    try { await vi.waitFor(() => expect(retain).toHaveBeenCalledExactlyOnceWith(fresh)); }
+    finally { reply(cached); }
+    await vi.waitFor(() => expect(discard).toHaveBeenCalledWith(cached));
+    expect(retain).toHaveBeenCalledExactlyOnceWith(fresh);
     expect(peer).not.toHaveBeenCalled();
   });
   it.each(['unchanged', 'offline'] as const)('keeps cached bytes on %s without transferring them again', async mode => {
@@ -32,7 +38,7 @@ describe("shared file read policy", () => {
     });
     const peer = vi.fn(), fallback = vi.fn(), retain = vi.fn();
     expect(await readDeviceFile({ prepare, peer, fallback,
-      cacheFirst: { key: mode, read: async () => cached, retain } })).toBe(cached);
+      cacheFirst: { read: async () => cached, retain } })).toBe(cached);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
     expect(peer).not.toHaveBeenCalled();
     expect(fallback).not.toHaveBeenCalled();
@@ -43,7 +49,7 @@ describe("shared file read policy", () => {
     const cached = { ...metadata, version: 'a'.repeat(64) };
     const discard = vi.fn(), prepare = vi.fn();
     await expect(readDeviceFile({ prepare, peer: vi.fn(), fallback: vi.fn(), discard,
-      isCurrent: () => current, cacheFirst: { key: 'switched', read: async () => { current = false; return cached; } },
+      isCurrent: () => current, cacheFirst: { read: async () => { current = false; return cached; } },
     })).rejects.toThrow('FILE_PEER_CANCELLED');
     expect(discard).toHaveBeenCalledWith(cached);
     expect(prepare).not.toHaveBeenCalled();
@@ -82,7 +88,7 @@ describe("shared file read policy", () => {
     const exported = { ossKey: 'export/changed', size: metadata.size, mimeType: metadata.mimeType };
     const discard = vi.fn(), retain = vi.fn();
     expect(await readDeviceFile({
-      cacheFirst: { key: 'changed-export', read: async () => cached, retain },
+      cacheFirst: { read: async () => cached, retain },
       prepare: async () => ({ ...metadata, version: 'b'.repeat(64) }),
       peer: async () => null, fallback: async () => exported,
       revalidate: async () => ({ ...metadata, version: 'c'.repeat(64) }), discard,
