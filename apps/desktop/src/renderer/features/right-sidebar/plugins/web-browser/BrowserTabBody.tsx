@@ -631,7 +631,7 @@ function BrowserCrashBanner({
           : 'rightSidebar.browser.crash.crashedDesc';
   return (
     <div className="modal-scrim absolute inset-0 flex items-center justify-center">
-      <ErrorNotice className="max-w-xs" message={t(titleKey)} description={t(descKey)} actions={<>
+      <ErrorNotice className="modal-panel max-w-xs" message={t(titleKey)} description={t(descKey)} actions={<>
           <Button size="sm" compact type="button" onClick={onRecover}>
             <RotateCw size={12} strokeWidth={2.5} />
             {t('rightSidebar.browser.crash.reload')}

@@ -1,6 +1,6 @@
 import { ErrorNotice } from '@/components/ui/error-notice';
 import { Button } from '@/components/ui/button';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSettingsSearchNavigation } from './SettingsSearchNavigation';
 import { DefaultOverrideControls } from './DefaultOverrideControls';
 import { VoiceSpeakerFilterCard } from './VoiceSpeakerFilterCard';
@@ -374,6 +374,7 @@ function VoiceInputInlineSettingRow({
  */
 function VoiceInputServiceSourceCard() {
   const { t } = useTranslation();
+  const customAsrUrlErrorId = useId();
   const { mode: appMode } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -707,6 +708,8 @@ function VoiceInputServiceSourceCard() {
                 <input
                   type="url"
                   value={customAsrWebsocketUrl}
+                  aria-invalid={customAsrUrlInvalid || undefined}
+                  aria-describedby={customAsrUrlInvalid ? customAsrUrlErrorId : undefined}
                   onChange={(event) => {
                     customAsrFormDirtyRef.current = true;
                     setCustomAsrWebsocketUrl(event.target.value);
@@ -724,10 +727,13 @@ function VoiceInputServiceSourceCard() {
                 />
               </VoiceInputInlineSettingRow>
               {customAsrUrlInvalid ? (
-                <ErrorNotice
+                <p
+                  id={customAsrUrlErrorId}
                   role="alert"
-                  message={t('settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid')}
-                />
+                  className="text-12 text-[var(--error-fg)]"
+                >
+                  {t('settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid')}
+                </p>
               ) : null}
 
               <VoiceInputInlineSettingRow
