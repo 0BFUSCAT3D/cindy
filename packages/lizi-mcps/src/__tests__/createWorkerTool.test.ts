@@ -85,6 +85,29 @@ describe('create_worker tool', () => {
     expect(vi.mocked(createWorker).mock.calls[1]?.[0]).not.toHaveProperty('initialTaskImages');
   });
 
+  it('flattens a one-level-nested images array instead of failing schema validation', async () => {
+    // 模型常见误传是多套一层([[/a.png],[/b.png]]); 接口要自愈而不是报参数错。
+    const { registry, createWorker } = setup();
+    const result = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'worker',
+      initial_task: 'review', images: [['/tmp/a.png'], ['/tmp/b.png']],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({
+      initialTaskImages: ['/tmp/a.png', '/tmp/b.png'],
+    }));
+  });
+
+  it('still rejects non-string image entries after flattening', async () => {
+    const { registry, createWorker } = setup();
+    const result = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'worker',
+      initial_task: 'review', images: [{ uri: '/tmp/a.png' }],
+    });
+    expect(result.isError).toBe(true);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
   it('describes the subagent distinction before creating a worker', () => {
     const { registry } = setup();
 

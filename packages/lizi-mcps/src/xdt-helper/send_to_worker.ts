@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
 import type { ControlResult } from '../lizi_xdtHelperMcpServer.js';
 import { errorPayload, okPayload } from './_payload.js';
+import { imagesListSchema } from './create_worker.js';
 
 /** 协同消息投递方式:queue = 普通直发/排队(缺省),steer = 尝试插进对方当前 turn。 */
 export type OrcaMessageDelivery = 'queue' | 'steer';
@@ -97,11 +98,9 @@ export function registerSendToWorkerTool(
         .enum(['queue', 'steer'])
         .optional()
         .describe('投递方式:queue(默认)= 直发或排队;steer = 尝试插进 worker 当前 turn'),
-      images: z
-        .array(z.string().min(1))
-        .max(8)
+      images: imagesListSchema
         .optional()
-        .describe('可选, 随消息发给 worker 的图片(png/jpeg/gif/webp, 最多 8 张); 仅本机 worker 支持, SSH 远端 worker 会被拒绝。地址两类: (a) 用户在对话里贴的图 — 把上下文 <cindy-host-image-references> 里的 uri 原样传入; (b) Lead 自己落盘的本机绝对路径'),
+        .describe('可选, 随消息发给 worker 的图片(png/jpeg/gif/webp, 最多 8 张); 必须是扁平字符串数组, 每张图一个字符串, 如 ["cindy-media://...png"]; 仅本机 worker 支持, SSH 远端 worker 会被拒绝。地址两类: (a) 用户在对话里贴的图 — 把上下文 <cindy-host-image-references> 里的 uri 原样传入; (b) Lead 自己落盘的本机绝对路径'),
     },
     handler: async ({ target_session_id, message, delivery, images }) => {
       const ctx = deps.getSessionContext?.();

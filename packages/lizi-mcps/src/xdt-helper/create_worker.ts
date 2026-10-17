@@ -66,6 +66,18 @@ export interface CreateWorkerDeps {
   }) => Promise<CreateWorkerControlResult>;
 }
 
+/**
+ * 图片地址列表的共享形状（send_to_worker / create_worker / create_workers 共用）。
+ * 要求扁平字符串数组；模型常见误传是多套一层（[[a],[b]]），直接拍平自愈而不是报参数错。
+ */
+export const imagesListSchema = z.preprocess(
+  (value) =>
+    Array.isArray(value) && value.some((item) => Array.isArray(item))
+      ? (value as unknown[]).flat(1)
+      : value,
+  z.array(z.string().min(1)).max(8),
+);
+
 /** 单个 worker 的稳定输入 schema；create_worker/create_workers 共用。 */
 export const createWorkerSpecSchema = z.object({
   role: z
@@ -107,11 +119,9 @@ export const createWorkerSpecSchema = z.object({
     .min(1)
     .optional()
     .describe('可选, 创建后立即派给 worker 的第一条消息'),
-  images: z
-    .array(z.string().min(1))
-    .max(8)
+  images: imagesListSchema
     .optional()
-    .describe('可选, 随 initial_task 发给 worker 的图片(png/jpeg/gif/webp, 最多 8 张); 仅本机 worker 支持, SSH 远端 worker 会拒绝; 不传 initial_task 时忽略。地址两类: (a) 用户在对话里贴的图 — 把上下文 <cindy-host-image-references> 里的 uri 原样传入; (b) Lead 自己落盘的本机绝对路径'),
+    .describe('可选, 随 initial_task 发给 worker 的图片(png/jpeg/gif/webp, 最多 8 张); 必须是扁平字符串数组, 每张图一个字符串, 如 ["cindy-media://...png"]; 仅本机 worker 支持, SSH 远端 worker 会拒绝; 不传 initial_task 时忽略。地址两类: (a) 用户在对话里贴的图 — 把上下文 <cindy-host-image-references> 里的 uri 原样传入; (b) Lead 自己落盘的本机绝对路径'),
   working_dir: z.string().min(1).max(4096).refine((value) => value.trim().length > 0).optional()
     .describe('可选，Worker 所在主机上已存在的绝对工作目录；省略则继承 Lead。创建前校验并绑定，失败不回退；不创建目录或 Git worktree。指定 execution_device_id 时是那台电脑上的目录，省略则由那台分配任务目录。'),
   execution_device_id: z.string().trim().min(1).max(128).optional()
