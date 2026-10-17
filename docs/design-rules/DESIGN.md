@@ -79,15 +79,17 @@ Verify actual Light/Dark screenshots across host pages and the expanded tool pan
 The built-in picker retains Window Companion, Future Atelier and Dream Wander,
 with their Static / Dynamic choice, alongside 26 supplied still images: character,
 cat, landscape, space and abstract artworks (user curation, 2026-10-16). The supplied
-stills ship as metadata-free WebP at their source resolution, with separate lightweight
-thumbnails. Blue Gaze and Amber Light are hidden from the picker.
+stills use metadata-free WebP at their source resolution, delivered on demand from
+the CDN (user decision, 2026-10-17). Only lightweight thumbnails and the three scene
+previews ship with the app. Blue Gaze and Amber Light are hidden from the picker.
 Previously saved selections keep their artwork and motion behavior;
 removing a catalog choice does not rewrite appearance preferences or delete source images.
-The original three scenes retain mainline on-demand image/video downloads, verified
-cache reuse, and preview fallback. Their download progress and retry action appear
+All official images share the existing on-demand downloader, verified cache reuse,
+and preview fallback; only the original three scenes offer video. Download progress and retry appear
 below the grid when needed while the thumbnails remain available for selection.
-Reuse the settings DownloadMeter; keep all new stills offline
-and do not request CDN assets for IDs absent from the download manifest.
+Reuse the settings DownloadMeter. Browsing the grid or hiding the wallpaper does not
+download originals; only a selected, visible image is requested. Reuse valid cached
+images offline and after upgrades. Do not request CDN assets for IDs absent from the manifest.
 The original three scenes lead the Cindy group, followed by Whisper, Crimson Realm, Night Glance, Scarlet Stroll,
 Neon Silhouette, Prism Shards, followed by the two cat wallpapers Wheatfield Watch
 and Teacup Cat. Other artwork follows this group; Moon Gazer (formerly Giant Moon Platform) sits

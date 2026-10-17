@@ -146,9 +146,6 @@
     "apps/desktop/src/main/__tests__/usageBroadcasterXaiSubscription.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/main/__tests__/wallpaperVideo.test.ts": {
-      "resetModules": 1
-    },
     "apps/desktop/src/main/__tests__/windowsDiagnosticsTrayWiring.test.ts": {
       "sourceReads": 1
     },
