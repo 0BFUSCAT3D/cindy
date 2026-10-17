@@ -3285,8 +3285,11 @@ describe('makerChatStore text delta batching', () => {
 
   // 人工 review：A 已交给历史，同文案的 B 被投影点亮、落库信号到达前就被关掉。兜底只看得到
   // 尾部的 A；B 落库后必须补标，否则刷新后 B 又冒出来。
-  async function closeSameTextErrorBeforeItPersists(message: string): Promise<void> {
-    onInputProjection?.(projection(SESSION_ID, { error: message }));
+  async function closeSameTextErrorBeforeItPersists(
+    message: string,
+    extra: Partial<AgentInputProjection> = {},
+  ): Promise<void> {
+    onInputProjection?.(projection(SESSION_ID, { ...extra, error: message }));
     onEvent?.({
       sessionId: SESSION_ID,
       persistId: 'err-persist-A',
@@ -3295,7 +3298,8 @@ describe('makerChatStore text delta batching', () => {
     onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-A' });
     await reloadHistory([errorTailUserRow, persistedErrorRow('err-persist-A', message)]);
 
-    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    onInputProjection?.(projection(SESSION_ID, { ...extra, error: message }));
+    input.clearError.mockResolvedValueOnce(projection(SESSION_ID, extra));
     makerChatStore.clearError(SESSION_ID);
     await flushPromises();
     expect(messageService.dismissError).toHaveBeenCalledTimes(1);
@@ -3392,10 +3396,32 @@ describe('makerChatStore text delta batching', () => {
     expect(messageService.dismissError).toHaveBeenCalledTimes(1);
   });
 
-  // Codex review：本端拒绝的发送没有产生新一轮，不能提前作废补标意图。
+  // Codex / Greptile review：没被受理的发送/插话没有产生新一轮，不能提前作废补标意图。
+  const heldQueue: Partial<AgentInputProjection> = {
+    pendingQueue: [activeTurnRecoveryItem('held', 'held-client')],
+    queuePaused: true,
+  };
   it.each([
     [
       'sendMessage 被 beforeEnqueue 拒绝',
+      {},
+      () =>
+        makerChatStore.sendMessage(
+          SESSION_ID,
+          'next',
+          MODEL,
+          EFFORT,
+          PERMISSION_MODE,
+          WORKING_DIR,
+          undefined,
+          undefined,
+          { beforeEnqueue: async () => false },
+        ),
+    ],
+    [
+      // 已有暂停队列时发送先乐观排进队列，再跑 beforeEnqueue；乐观项不算队列增长。
+      'sendMessage 在已有暂停队列时被 beforeEnqueue 拒绝',
+      heldQueue,
       () =>
         makerChatStore.sendMessage(
           SESSION_ID,
@@ -3411,6 +3437,7 @@ describe('makerChatStore text delta batching', () => {
     ],
     [
       'steerMessage 被在飞插话拒绝',
+      {},
       () => {
         onInputProjection?.(projection(SESSION_ID, { steeringQueueClientIds: ['steer-in-flight'] }));
         return makerChatStore.steerMessage(
@@ -3425,6 +3452,7 @@ describe('makerChatStore text delta batching', () => {
     ],
     [
       'steerMessage 被 beforeEnqueue 拒绝',
+      {},
       () =>
         makerChatStore.steerMessage(
           SESSION_ID,
@@ -3438,9 +3466,24 @@ describe('makerChatStore text delta batching', () => {
           { beforeEnqueue: async () => false },
         ),
     ],
-  ] as const)('关闭后%s：意图保留，同文案的行落库后仍补标', async (_label, send) => {
+    [
+      'steerMessage 被主进程拒绝且未物化进队列',
+      {},
+      () => {
+        input.steer.mockResolvedValueOnce(false);
+        return makerChatStore.steerMessage(
+          SESSION_ID,
+          'next',
+          MODEL,
+          EFFORT,
+          PERMISSION_MODE,
+          WORKING_DIR,
+        );
+      },
+    ],
+  ] as const)('关闭后%s：意图保留，同文案的行落库后仍补标', async (_label, extra, send) => {
     const message = 'worker turn failed';
-    await closeSameTextErrorBeforeItPersists(message);
+    await closeSameTextErrorBeforeItPersists(message, extra);
 
     await expect(send()).resolves.toBe(false);
     vi.mocked(messageService.list).mockResolvedValueOnce(persistedRowsWithB(message));
@@ -3451,14 +3494,31 @@ describe('makerChatStore text delta batching', () => {
     expect(messageService.dismissError).toHaveBeenLastCalledWith(SESSION_ID, 'err-persist-B');
   });
 
-  it('关闭后发送被接受(直接派发、队列不增长)：意图作废，同文案的行落库不再补标', async () => {
+  it.each([
+    [
+      '发送被接受(直接派发、队列不增长)',
+      () => {
+        input.enqueue.mockResolvedValueOnce(projection(SESSION_ID));
+        return makerChatStore.sendMessage(
+          SESSION_ID,
+          'next',
+          MODEL,
+          EFFORT,
+          PERMISSION_MODE,
+          WORKING_DIR,
+        );
+      },
+    ],
+    [
+      '插话被主进程受理',
+      () =>
+        makerChatStore.steerMessage(SESSION_ID, 'next', MODEL, EFFORT, PERMISSION_MODE, WORKING_DIR),
+    ],
+  ] as const)('关闭后%s：意图作废，同文案的行落库不再补标', async (_label, send) => {
     const message = 'worker turn failed';
     await closeSameTextErrorBeforeItPersists(message);
 
-    input.enqueue.mockResolvedValueOnce(projection(SESSION_ID));
-    await expect(
-      makerChatStore.sendMessage(SESSION_ID, 'next', MODEL, EFFORT, PERMISSION_MODE, WORKING_DIR),
-    ).resolves.toBe(true);
+    await expect(send()).resolves.toBe(true);
     expect(makerChatStore.getSnapshot(SESSION_ID).pendingQueue).toHaveLength(0);
 
     const listCalls = vi.mocked(messageService.list).mock.calls.length;

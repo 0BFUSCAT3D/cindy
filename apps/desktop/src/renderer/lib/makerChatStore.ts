@@ -15463,10 +15463,9 @@ async function steerMessageCore(
       throw err;
     }
   }
-  // 消息已过完所有本端拒绝点(clear/scope/canStartComposerSteer/beforeEnqueue),之后一定交给 coordinator 或
-  // 远程 outbox:之后落库的错误属于这次发送,不再代关掉的那次错误补标。被拒的发送不作废,
-  // 否则关掉的错误随后落库时补标不了。
-  _disposedLiveErrorIntents.delete(sessionId);
+  // 插话被受理(远程 outbox 收下 / 主进程受理或物化进队列)才作废关闭错误的待补标意图:之后
+  // 落库的错误属于这次插话,不再代关掉的那次错误补标。被拒的插话不作废,否则关掉的错误随后
+  // 落库时补标不了。
   touchSessionUserSend(sessionId, workingDir, false);
   // 补起名同样要覆盖 steer:首条是纯附件的会话标题此时是合成占位,而用户完全
   // 可能趁这一轮还在跑就用「插话」写下第一句话。只走普通发送的话,这句话不会
@@ -15487,6 +15486,7 @@ async function steerMessageCore(
     if (materializationPending) remoteRecord.onMaterializationReady = commitAutoTitle;
     else commitAutoTitle();
     remoteRecord.composerResolvedOptimistically = true;
+    _disposedLiveErrorIntents.delete(sessionId);
     void pumpRemoteOptimisticSends(sessionId);
     return true;
   }
@@ -15496,6 +15496,7 @@ async function steerMessageCore(
     .steer(sessionId, queued, { touchUserSend: true })
     .then(async (ok) => {
       if (ok) {
+        _disposedLiveErrorIntents.delete(sessionId);
         commitAutoTitle();
         requestInputProjection(sessionId);
         return true;
@@ -15516,6 +15517,7 @@ async function steerMessageCore(
           // 物化进队列 = 这条输入已被主端接管、日后会派发,与受理同等 —— 起名也要
           // 跟上,否则纯附件/fork 之后的第一句话恰好在这条不确定路径上不改名
           // (review P1)。是否真该改名仍由 main 权威判定。
+          _disposedLiveErrorIntents.delete(sessionId);
           commitAutoTitle();
           return true;
         }
@@ -15969,7 +15971,7 @@ function disposedIntentCoversLiveError(sessionId: string, state: SessionChatStat
  * disposedErrorPersistId，并发的历史重载即使先读到未处置的旧值，尾部横幅也会跳过它。
  *
  * 作废(之后同文案的行不再补标)：读到一条 error 行后(对上就标，对不上说明已是别的错误)；
- * 新一轮启动、新的队列项、本窗口发送/插话/UI 触发；投影带来文案不同的新错误；/clear、
+ * 新一轮启动、新的队列项、本窗口发送/插话被受理、UI 触发；投影带来文案不同的新错误；/clear、
  * 删除、归档、LRU 驱逐。不设时间上限：新错误都要经过上面某一条，远程落库慢时也不该丢标记。
  * 剩余边界：作废之前落库的同文案新错误也会被标掉——它正是用户刚关掉的那种错误。
  */
@@ -15997,9 +15999,12 @@ function invalidateDisposedLiveErrorIntentOnTransition(
   const intent = _disposedLiveErrorIntents.get(sessionId);
   if (!intent) return;
   const turnStarted = !prev.agentStatus.isRunning && next.agentStatus.isRunning;
+  // 本端乐观排进来、主进程还没收下的项不算：发送可能随后被拒、撤回，受理时由发送路径作废。
   const queueGrew =
     prev.pendingQueue !== next.pendingQueue &&
-    next.pendingQueue.some((item) => !intent.queueIds.has(item.clientId));
+    next.pendingQueue.some(
+      (item) => item.isPendingEnqueue !== true && !intent.queueIds.has(item.clientId),
+    );
   if (turnStarted || queueGrew) _disposedLiveErrorIntents.delete(sessionId);
 }
 
