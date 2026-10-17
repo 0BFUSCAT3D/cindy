@@ -138,6 +138,27 @@ export interface RemoteSyncCoordinator {
   isRunning(): boolean;
 }
 
+/** Cached reading can coalesce with ACK, but a broken subscription must not stall snapshots.
+ * This is only a validation grace period; cold reads and the subscription retry loop remain independent.
+ */
+export async function waitForCachedSubscription(
+  run: Pick<RemoteSyncRun, 'signal'>,
+  cached: boolean,
+  subscription: Promise<unknown>,
+): Promise<void> {
+  const settled = subscription.catch(() => undefined);
+  if (!cached) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await waitForRemoteSync(run.signal, () => Promise.race([
+      settled,
+      new Promise<void>(resolve => { timer = setTimeout(resolve, 2000); }),
+    ]));
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 interface PendingRemoteSync {
   reasons: Set<string>;
   replaceMessages: boolean;

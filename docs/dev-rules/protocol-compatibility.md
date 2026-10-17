@@ -233,6 +233,13 @@ Desktop 的压缩保持 gzip level 4 与同步发送／错误处理契约，手�
 DEBUG 统计只记原始／gzip／wire 字节与压缩耗时，不记录正文或凭证。
 回归见 Desktop `device-link/__tests__/transferCodec.test.ts`（实际 zlib／pako 解码）。
 
+Mobile 开启本地诊断时，在原有 30 秒／卡顿区间统计内汇总 `relayTransfers`：每个 channel
+首次写入 socket 的请求数、收到的响应数、还原正文前的响应 payload UTF-8 字节数、
+`notModified` 与 gzip 命中数。前者不把准入等待或取消算作已发送，也不重复计重传；
+后者不包含 envelope、分片头、ACK 与重传字节，不是总线上流量。peer 直连不经过此计数。
+旧 `invokeCount` 仍是业务调用次数，不能与已发请求数混用。不开诊断时不序列化计量，
+不记录请求参数、正文、设备／任务 ID，不改变传输协议或恢复策略。
+
 ## 群执行终态与错误展示
 
 发送前拒绝、SDK 错误、正常完成和宿主超时进入同一个执行收尾入口；首个终态及提交正文固定，

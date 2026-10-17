@@ -171,7 +171,7 @@ import type { InputProjection, PendingInteraction, RemoteMessage } from '@/sessi
 import { prepareVisualMockDeviceLinkContext } from '@/debug/visualMock';
 import { meterDeviceLinkInvokes, recordDeviceLinkPush } from '@/debug/deviceLinkTraffic';
 import { decodeGzipBase64TextBounded } from '@/utils/gzipBase64';
-import { jankMetricsEnabled, recordInvokeSent, recordPushHandled } from '@/debug/jankMetrics';
+import { jankMetricsEnabled, recordInvokeSent, recordInvokeTransfer, recordPushHandled } from '@/debug/jankMetrics';
 import { localNetworkStore, type NetworkState } from '@/device-link/localNetworkStatus';
 
 export interface DeviceLinkContextValue {
@@ -966,6 +966,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       logger: mobileDeviceLinkLogger,
       // 弱网减流量：声明可解 gzip，大结果压缩、内容未变的结果只回标记（被控端支持时）。
       transferCodec: { gunzipBase64: decodeGzipBase64TextBounded },
+      invokeMetrics: { enabled: jankMetricsEnabled, record: recordInvokeTransfer },
       // Mobile 具备按 deviceId 独立 openLink/订阅/快照恢复能力。可靠 ACK
       // 耗尽时只复位该 peer，共享 WSS 和其它远端继续工作；恢复仍只使用所有
       // Desktop 版本都支持的 link-open，不增加 wire/capability 要求。

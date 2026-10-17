@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   recordInvokeSent,
+  recordInvokeTransfer,
   recordPushHandled,
   setJankMetricsEnabled,
   setRemoteSessionStoreSizeSource,
@@ -55,6 +56,7 @@ describe("jank metrics", () => {
       ],
       invokeCount: 2,
       invokes: [{ channel: "git-context:pr-status", count: 2 }],
+      relayTransfers: [],
     });
     expect(takeJankMetrics()).toMatchObject({ pushCount: 0, invokeCount: 0 });
   });
@@ -65,6 +67,8 @@ describe("jank metrics", () => {
     // Channel names that look sensitive must not take their counts with them.
     recordPushHandled("auth:token-refreshed", 3);
     recordInvokeSent("local-db:messages:view");
+    recordInvokeTransfer({ channel: 'local-db:messages:view', phase: 'sent' });
+    recordInvokeTransfer({ channel: 'local-db:messages:view', phase: 'result', payloadBytes: 95, notModified: true });
     const line = serializeMobileDebugRecord("debug", "performance", [
       "jank metrics",
       takeJankMetrics(),
@@ -75,6 +79,8 @@ describe("jank metrics", () => {
       store,
       pushes: [{ count: 1, totalMs: 3 }],
       invokes: [{ channel: "local-db:messages:view", count: 1 }],
+      relayTransfers: [{ channel: 'local-db:messages:view', sent: 1, results: 1, payloadBytes: 95, notModified: 1, gzip: 0 }],
     });
+    expect(takeJankMetrics().relayTransfers).toEqual([]);
   });
 });
