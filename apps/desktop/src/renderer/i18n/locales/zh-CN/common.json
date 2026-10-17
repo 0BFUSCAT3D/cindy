@@ -14657,6 +14657,8 @@
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "找不到 Orca lead 任务",
       "waitingForWorker": "等待 Worker",
+      "workerHiddenInSeparateWindow": "独立窗口中不显示 Worker 对话",
+      "viewWorkerInMainWindow": "在主窗口查看",
       "remoteWorkerLoading": "正在读取 {{device}} 上的任务…",
       "remoteWorkerUnreachable": "{{device}} 当前无法连接，恢复后会自动显示这个 Worker 的任务。",
       "closeAria": "关闭"
