@@ -1735,5 +1735,41 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     const dismissed = host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:dismiss-error');
     expect(dismissed).toEqual(tailIsB ? [[DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-b']]] : []);
   });
+
+  // 人工 review(PR #6251)：同文案的 B 在被控端落库前就被关掉，兜底只能标尾部的 A；B 的落库
+  // 信号到达后经隧道读被控端历史，确认是同文案的 error 行再经隧道补标。
+  it('dismisses a same-text remote error row through the tunnel once it persists after close', async () => {
+    const s = sid();
+    const errorRow = (id: string, ts: string): Message => ({
+      ...dbMessage(s, id, '', ts, 'error'),
+      clientId: `err-${id}`,
+      content: { message: 'remote turn failed' },
+    });
+    host.seedSession(s, {}, [
+      dbMessage(s, 'question', 'question', '2026-10-16T00:00:00Z', 'user'),
+      errorRow('a', '2026-10-16T00:00:01Z'),
+    ]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    await makerChatStore.ensureInitialMessages(s);
+    await flush();
+    expect(makerChatStore.getSnapshot(s).messages.at(-1)?.clientId).toBe('err-a');
+
+    host.push('maker:input:projection', { ...emptyProjection(s), error: 'remote turn failed' });
+    makerChatStore.clearError(s);
+    await flush();
+    const dismissCalls = () =>
+      host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:dismiss-error');
+    expect(dismissCalls()).toEqual([[DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-a']]]);
+
+    host.hostMessage(s, errorRow('b', '2026-10-16T00:00:02Z'), { lossy: true });
+    host.push('local-db:session:error-persisted', { sessionId: s, persistId: 'err-b' });
+    await flush();
+    await flush();
+    expect(dismissCalls()).toEqual([
+      [DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-a']],
+      [DEVICE_ID, 'local-db:messages:dismiss-error', [s, 'err-b']],
+    ]);
+    expect(makerChatStore.getSnapshot(s).disposedErrorPersistId).toBe('err-b');
+  });
 });
 

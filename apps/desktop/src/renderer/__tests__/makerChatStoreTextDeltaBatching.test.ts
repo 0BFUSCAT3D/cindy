@@ -3255,6 +3255,90 @@ describe('makerChatStore text delta batching', () => {
     expect(messageService.dismissError).not.toHaveBeenCalled();
   });
 
+  // 人工 review：A 已交给历史，同文案的 B 被投影点亮、落库信号到达前就被关掉。兜底只看得到
+  // 尾部的 A；B 落库后必须补标，否则刷新后 B 又冒出来。
+  async function closeSameTextErrorBeforeItPersists(message: string): Promise<void> {
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    onEvent?.({
+      sessionId: SESSION_ID,
+      persistId: 'err-persist-A',
+      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
+    });
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-A' });
+    await reloadHistory([errorTailUserRow, persistedErrorRow('err-persist-A', message)]);
+
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    expect(messageService.dismissError).toHaveBeenCalledTimes(1);
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-A');
+  }
+  function persistedRowsWithB(message: string, bExtra: Record<string, unknown> = {}): Message[] {
+    return [
+      errorTailUserRow,
+      persistedErrorRow('err-persist-A', message, { dismissed: true }),
+      persistedErrorRow('err-persist-B', message, bExtra, '2026-10-16T00:00:03.000Z'),
+    ];
+  }
+
+  it('同文案的新错误落库前被关闭：落库信号到达后补标那一行，刷新后不再出现', async () => {
+    const message = 'worker turn failed';
+    await closeSameTextErrorBeforeItPersists(message);
+
+    vi.mocked(messageService.list).mockResolvedValueOnce(persistedRowsWithB(message));
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    await flushPromises();
+    await flushPromises();
+    expect(messageService.dismissError).toHaveBeenCalledTimes(2);
+    expect(messageService.dismissError).toHaveBeenLastCalledWith(SESSION_ID, 'err-persist-B');
+    expect(makerChatStore.getSnapshot(SESSION_ID).disposedErrorPersistId).toBe('err-persist-B');
+
+    // 历史重载即使先于这次写读到 B 未处置，尾部横幅也跳过 B。
+    await reloadHistory(persistedRowsWithB(message));
+    const snapshot = makerChatStore.getSnapshot(SESSION_ID);
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.messages.at(-1)?.clientId).toBe('err-persist-B');
+    expect(snapshot.disposedErrorPersistId).toBe('err-persist-B');
+
+    // 只补标一次：之后再有行落库不再去读、也不再标。
+    const listCalls = vi.mocked(messageService.list).mock.calls.length;
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-C' });
+    await flushPromises();
+    expect(vi.mocked(messageService.list).mock.calls.length).toBe(listCalls);
+    expect(messageService.dismissError).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['新一轮启动', () => emitStatus({ status: 'Running', isRunning: true })],
+    [
+      '投影带来文案不同的新错误',
+      () => {
+        onInputProjection?.(projection(SESSION_ID, { error: 'another failure' }));
+        // 新错误在别处被关掉(横幅还亮着时落库信号会直接绑到它，走不到补标)。
+        onInputProjection?.(projection(SESSION_ID));
+      },
+    ],
+    [
+      '队列出现新消息',
+      () =>
+        onInputProjection?.(
+          projection(SESSION_ID, { pendingQueue: [activeTurnRecoveryItem('next', 'next-client')] }),
+        ),
+    ],
+  ] as const)('关闭后%s，之后同文案的行落库不再补标', async (_label, invalidate) => {
+    const message = 'worker turn failed';
+    await closeSameTextErrorBeforeItPersists(message);
+
+    invalidate();
+    // 意图已作废：B 落库信号到达时不再去读，也不标。
+    const listCalls = vi.mocked(messageService.list).mock.calls.length;
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    await flushPromises();
+    await flushPromises();
+    expect(vi.mocked(messageService.list).mock.calls.length).toBe(listCalls);
+    expect(messageService.dismissError).toHaveBeenCalledTimes(1);
+  });
+
   it('does not treat a custom LiteLLM provider token error as Cindy credentials', async () => {
     onInputProjection?.(
       projection(SESSION_ID, {
