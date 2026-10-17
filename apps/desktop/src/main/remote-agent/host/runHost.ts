@@ -297,12 +297,12 @@ export interface RemoteAgentGroupRelayDeps {
    * 那台在启动阶段没能接下任务：按组的口径判定(provider-group/failurePolicy)，那台账号的问题冷却它。返回 true =
    * 可以换下一台；false = 换到哪台都一样(模型停用、请求无效等)，照原来的错误报给受邀者。
    */
-  noteStartFailure(providerId: string, member: GroupRelayMember, error: unknown): boolean;
+  noteStartFailure(providerId: string, member: GroupRelayMember, error: unknown, model?: string): boolean;
   /**
    * 那台上的任务运行中失败(终态错误，或一轮进行中任务意外结束)：问题出在那台电脑本身时按组的口径冷却它，组设置
    * 允许自动换电脑时返回 true(可以换一台)；用户停止、上下文超限等换到哪台都一样的失败返回 false。
    */
-  noteRunFailure(providerId: string, member: GroupRelayMember, failure: RelayRunFailure): boolean;
+  noteRunFailure(providerId: string, member: GroupRelayMember, failure: RelayRunFailure, model?: string): boolean;
   /** 计入那台组内电脑的负载(按它是否正在运行一轮)。 */
   trackRun(providerId: string, memberKey: string): GroupRelayLoad;
   /** 删掉受邀者后，请接过它任务的组内电脑清掉留下的会话记录与目录。 */
@@ -1122,7 +1122,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     if (!relayDeps || !start || !run.providerId || run.closing || run.handle) return false;
     run.groupFreshStart = undefined;
     const local = localGroupMember(run.providerId);
-    if (!relayDeps.noteStartFailure(run.providerId, local, error)) return false;
+    if (!relayDeps.noteStartFailure(run.providerId, local, error, payload.options.model)) return false;
     const tried = new Set<string>([...start.avoid, local.memberKey]);
     const next = await relayDeps.plan({
       kind: run.kind,
@@ -1280,8 +1280,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     const relayDeps = deps.groupRelay;
     if (!relayDeps || !run.providerId || !run.hostSessionId) return null;
     const canSwitch = phase === 'start'
-      ? relayDeps.noteStartFailure(run.providerId, member, failure.message ?? '')
-      : relayDeps.noteRunFailure(run.providerId, member, failure);
+      ? relayDeps.noteStartFailure(run.providerId, member, failure.message ?? '', model)
+      : relayDeps.noteRunFailure(run.providerId, member, failure, model);
     if (!canSwitch) return null;
     // 旧版受邀者不认识这个状态：照旧只转出原来的错误。
     if (!run.acceptsGroupSwitch) return null;
@@ -1548,7 +1548,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }
         tried.add(current.memberKey);
         // 与本机自己的任务同一个判定：换到哪台都一样的失败不再换，照原来的错误报给受邀者。
-        if (!relayDeps.noteStartFailure(groupProviderId, current, error)) break;
+        if (!relayDeps.noteStartFailure(groupProviderId, current, error, backend.model ?? payload.options.model)) break;
         deps.log?.warn('remote agent: provider group computer did not take the shared task; trying the next one', {
           runId: run.id,
           member: current.memberKey,

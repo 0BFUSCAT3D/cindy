@@ -388,9 +388,6 @@
     "apps/desktop/src/main/plugin-publisher/__tests__/host.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/main/provider-group/__tests__/coolingStore.test.ts": {
-      "resetModules": 2
-    },
     "apps/desktop/src/main/provider-group/__tests__/failoverSessionClose.test.ts": {
       "sourceReads": 1
     },
