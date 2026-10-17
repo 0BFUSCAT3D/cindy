@@ -12,6 +12,42 @@ import {
 } from "@/session/remoteMedia";
 
 describe("mobile remote media", () => {
+  it('retains a background fallback and releases its staging copy and cloud object', async () => {
+    const { recordPeerMedia } = await import('@/device-link/peerFileRegistry');
+    const local = { ossKey: '', mimeType: 'application/pdf', size: 3 };
+    const dispose = vi.fn();
+    recordPeerMedia(local, 'file:///background/pdf', dispose);
+    let retain!: NonNullable<import('@/session/remoteMedia').MobileRemoteMediaFetchOptions['retainBackground']>;
+    const discardBackgroundOssKey = vi.fn();
+    await resolveMobileRemoteMedia({ kind: 'file', url: 'xdt-file://open?path=/a.pdf' }, {
+      fetchRemoteMedia: async (_url, options) => {
+        retain = options!.retainBackground!;
+        return { ...local, inlineBase64: 'YWJj' };
+      },
+      presignGet: async () => ({ getUrl: 'https://oss/new', expiresAt: '2099-01-01T00:00:00Z' }),
+    }, { stream: false, discardBackgroundOssKey });
+    const cacheDownload = vi.fn(async () => local);
+    await retain({ ...local, ossKey: 'oss/new', cacheDownload });
+    expect(cacheDownload).toHaveBeenCalledWith('https://oss/new');
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(discardBackgroundOssKey).toHaveBeenCalledWith('oss/new');
+  });
+  it('returns a completed fallback copy while preserving ownership of the OSS object', async () => {
+    const { recordPeerMedia, releasePeerMedia } = await import('@/device-link/peerFileRegistry');
+    const local = { ossKey: '', mimeType: 'application/pdf', size: 3 };
+    recordPeerMedia(local, 'file:///cached/pdf', () => {});
+    const cacheDownload = vi.fn(async () => local);
+    const onOssKey = vi.fn();
+    try {
+      const result = await resolveMobileRemoteMedia({ kind: 'file', url: 'xdt-file://open?path=/a.pdf' }, {
+        fetchRemoteMedia: async () => ({ ossKey: 'oss/file', size: 3, mimeType: local.mimeType, cacheDownload }),
+        presignGet: async () => ({ getUrl: 'https://oss/file', expiresAt: '2099-01-01T00:00:00Z' }),
+      }, { stream: false, onOssKey });
+      expect(result).toMatchObject({ url: 'file:///cached/pdf', ossKey: 'oss/file' });
+      expect(cacheDownload).toHaveBeenCalledWith('https://oss/file');
+      expect(onOssKey).toHaveBeenCalledExactlyOnceWith('oss/file');
+    } finally { releasePeerMedia('file:///cached/pdf'); }
+  });
   // Unit regression: retained sent images must serve original and thumbnail requests
   // offline. Existing tests covered only remote downloads and already-resolved copies.
   it.each([false, true])('reads a retained sent image offline (thumbnail=%s), with forced repair bypass', async (thumbnail) => {

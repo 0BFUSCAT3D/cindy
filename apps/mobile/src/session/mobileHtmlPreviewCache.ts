@@ -1,5 +1,5 @@
 import { File } from 'expo-file-system';
-import { FILE_PEER_MAX_BYTES } from '@cindy/device-link';
+import { FILE_PEER_MAX_BYTES, isSharedTaskPeer } from '@cindy/device-link';
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { getActiveMobileSessionRealm } from '@/config/env';
 import { createPeerFileCache } from '@/device-link/peerFileCache';
@@ -9,7 +9,7 @@ import { HTML_SNAPSHOT_MAX_ENTRIES, HTML_SNAPSHOT_MAX_BYTES, type HtmlSnapshotEn
 /** Reuse the account's existing disk cache and pressure-based eviction. No network here. */
 export function createMobileHtmlPreviewCache(deviceId: string, root: string, ssh?: RemoteMediaSshContext | null) {
   const owner = getMobileAuthOwner();
-  if (!owner.accountId) return undefined;
+  if (!owner.accountId || isSharedTaskPeer(deviceId)) return undefined;
   const cache = createPeerFileCache(JSON.stringify([getActiveMobileSessionRealm(), owner.accountId]));
   const current = () => isMobileAuthOwnerCurrent(owner);
   const key = (relative: string, manifest = false) => JSON.stringify([

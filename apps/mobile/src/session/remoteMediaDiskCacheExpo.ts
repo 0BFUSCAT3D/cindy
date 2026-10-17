@@ -7,6 +7,7 @@
  * JS 层引用,不影响 fingerprint(以 mobile:release:check 实测为准)。
  */
 import { Directory, File, Paths } from "expo-file-system";
+import { releasePeerMedia } from '@/device-link/peerFileRegistry';
 
 import {
   extOfMime,
@@ -79,6 +80,19 @@ async function copyRemoteFile(
   return File.downloadFileAsync(url, target, { idempotent: true });
 }
 
+/** A visible preview owns its copy; transport staging and cache eviction cannot expire it. */
+export async function retainRemoteFilePreview(url: string, mimeType: string, fileName: string) {
+  if (!url.startsWith('file://') && !url.startsWith('data:')) return { uri: url, release() {} };
+  const uri = await downloadRemoteMediaShareTemp(url, mimeType, fileName);
+  if (!uri) throw new Error('PREVIEW_CACHE_FAILED');
+  return {
+    uri,
+    release() {
+      try { const file = new File(uri); if (file.exists) file.delete(); } catch { /* OS reclaims cache files. */ }
+    },
+  };
+}
+
 /**
  * 一次性分享临时文件:超出磁盘缓存预算的对象走 store 会被 LRU 立即逐出,
  * lookup 拿不到 → 分享失败。这里绕开 LRU 直接下到独立临时目录,只服务本次
@@ -93,6 +107,7 @@ export async function downloadRemoteMediaShareTemp(
   signal?: AbortSignal,
 ): Promise<string | null> {
   try {
+    if (signal?.aborted) return null;
     const dir = new Directory(Paths.cache, SHARE_TMP_DIR_NAME);
     dir.create({ intermediates: true, idempotent: true });
     const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -117,6 +132,10 @@ export async function downloadRemoteMediaShareTemp(
     return file.exists ? file.uri : null;
   } catch {
     return null; // 分享失败由调用方兜底提示
+  } finally {
+    // Sharing and visible previews both own their new copy after this handoff.
+    // Only registered transport staging is released; ordinary local files stay.
+    if (url.startsWith('file://')) releasePeerMedia(url);
   }
 }
 
@@ -166,6 +185,7 @@ export async function withDownloadedRemoteMediaFile<T>(
   } catch {
     return null;
   } finally {
+    if (url.startsWith('file://')) releasePeerMedia(url);
     // 临时文件用完即删:资源可能几十个,留着会把 cache 目录堆满。
     try {
       target?.delete();
@@ -220,7 +240,7 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
           encoding: FileSystem.EncodingType.Base64,
         });
         const size = tmp.size ?? 0;
-        if (size <= 0) {
+        if (size < 0) {
           if (tmp.exists) tmp.delete();
           return null;
         }
@@ -244,7 +264,8 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
       try {
         const downloaded = await copyRemoteFile(url, tmp);
         const size = downloaded.size ?? -1;
-        if (!downloaded.exists || size < 0 || (size === 0 && expectedSize !== 0)) {
+        if (!downloaded.exists || size < 0 || (size === 0 && expectedSize !== 0) ||
+            (expectedSize !== undefined && size !== expectedSize)) {
           if (tmp.exists) tmp.delete();
           return null;
         }

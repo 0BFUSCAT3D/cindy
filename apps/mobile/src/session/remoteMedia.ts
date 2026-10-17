@@ -1,4 +1,4 @@
-import { peerMediaUri, peerMediaExpiry } from "@/device-link/peerFileRegistry";
+import { peerMediaUri, peerMediaExpiry, releasePeerMedia } from "@/device-link/peerFileRegistry";
 import type { NormalizedToolMedia } from "@/session/messageNormalize";
 import {
   isPayloadDesktopLocalMediaUrl,
@@ -22,6 +22,9 @@ export function mediaLoadFailureKey(error: unknown): 'message.lightbox.sourceMis
 }
 
 export interface MobileRemoteMediaFetchResult {
+  version?: string;
+  /** Local adapter only; never sent over device-link. Copies an OSS result into the shared file cache. */
+  cacheDownload?: (downloadUrl: string) => Promise<MobileRemoteMediaFetchResult | null>;
   /** inline 缩略图回包(新被控端)时为空串。 */
   ossKey: string;
   mimeType: string;
@@ -48,6 +51,9 @@ export interface MobileResolvedRemoteMedia {
 }
 
 export interface MobileRemoteMediaFetchOptions {
+  /** Local callbacks: only connect on a cache miss or during background revalidation. */
+  beforeFetch?: () => Promise<unknown>;
+  retainBackground?: (result: MobileRemoteMediaFetchResult, isCurrent?: () => boolean) => Promise<void>;
   /** Local receiver bytes; never sent to the remote computer. */
   onProgress?: (loaded: number, total: number) => void;
   /** Local read intent only; false for consumers that copy complete bytes. */
@@ -69,6 +75,8 @@ export interface MobileRemoteMediaResolverDeps {
 }
 
 export interface MobileRemoteMediaResolveOptions {
+  beforeFetch?: () => Promise<unknown>;
+  discardBackgroundOssKey?: (key: string) => void;
   onProgress?: (loaded: number, total: number) => void;
   stream?: boolean;
   signal?: AbortSignal;
@@ -196,6 +204,16 @@ export async function resolveMobileRemoteMedia(
     throw new Error(i18n.t("composer.attachments.notFetchableMedia"));
   }
   const fetchOpts = {
+    ...(opts?.beforeFetch ? { beforeFetch: opts.beforeFetch } : {}),
+    ...(opts?.stream === false ? { retainBackground: async (result: MobileRemoteMediaFetchResult, isCurrent?: () => boolean) => {
+      if (!result.ossKey || isCurrent?.() === false) return;
+      try {
+        const signed = await deps.presignGet(result.ossKey);
+        const copy = await result.cacheDownload?.(signed.getUrl);
+        const uri = copy && peerMediaUri(copy);
+        if (uri) releasePeerMedia(uri);
+      } finally { if (isCurrent?.() !== false) opts.discardBackgroundOssKey?.(result.ossKey); }
+    } } : {}),
     ...(opts?.onProgress ? { onProgress: opts.onProgress } : {}),
     ...(opts?.stream !== undefined ? { stream: opts.stream } : {}),
     ...(opts?.onOssKey ? { onDiscardOssKey: opts.onOssKey } : {}),
@@ -255,6 +273,13 @@ export async function resolveMobileRemoteMedia(
     mobileDebugLog("warn", "files", "remote media presign invalid", { kind: media.kind });
     throw new Error(i18n.t("composer.attachments.mediaUrlInvalid"));
   }
+  const downloaded = await fetched.cacheDownload?.(signed.getUrl);
+  const downloadedUri = downloaded && peerMediaUri(downloaded);
+  if (downloadedUri) return {
+    url: downloadedUri, ossKey: fetched.ossKey, mimeType: fetched.mimeType, size: fetched.size,
+    expiresAt: peerMediaExpiry(downloaded!)!,
+    previewable: canPreviewResolvedRemoteMedia(media.kind, fetched.mimeType),
+  };
   if (media.kind !== "image")
     mobileDebugLog("debug", "files", "remote media presigned", {
       kind: media.kind,
