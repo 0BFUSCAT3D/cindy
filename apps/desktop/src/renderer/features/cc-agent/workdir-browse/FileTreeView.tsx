@@ -397,24 +397,26 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
   // 横向范围的粘性下限：虚拟化只挂视口内的行，横向范围完全由当前挂载行撑出 ——
   // 用户向右滚到深层长名后再纵向滚开，宽行被回收、横向范围缩小，浏览器会把
   // scrollLeft 拉回（评审：纵向滚动拉回横向位置）。记录本树已测得的最大内容宽，
-  // 作为内容层的单调不减 minWidth；换树（storeKey 变）时重置。jsdom 无布局
-  // （scrollWidth 恒 0），直接操作 DOM 不额外渲染。#4436 的行宽契约不变：
-  // 行仍 min-w-max，这里只是不让「测得过的最大宽」随回收缩水。
-  const contentLayerRef = useRef<HTMLDivElement | null>(null);
-  const stickyMinWidthRef = useRef(0);
+  // 用一个绝对定位的扩展占位元素撑住滚动范围 —— 占位不参与行布局，行宽
+  // （width:100%）不会被撑宽，alignRowHorizontally 的行右缘对齐保持原语义
+  // （评审：粘性 minWidth 会把短名滚出视口）。换树（storeKey 变）时重置。
+  // jsdom 无布局（scrollWidth 恒 0）时测得 0，不渲染占位。
+  const [stickyExtentWidth, setStickyExtentWidth] = useState(0);
+  const stickyExtentRef = useRef(0);
   const stickyStoreKeyRef = useRef(tree.storeKey);
+  const contentLayerRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
-    const inner = contentLayerRef.current;
-    if (!inner) return;
     if (stickyStoreKeyRef.current !== tree.storeKey) {
       stickyStoreKeyRef.current = tree.storeKey;
-      stickyMinWidthRef.current = 0;
-      inner.style.minWidth = '';
+      stickyExtentRef.current = 0;
+      setStickyExtentWidth(0);
     }
+    const inner = contentLayerRef.current;
+    if (!inner) return;
     const measured = inner.scrollWidth;
-    if (measured > stickyMinWidthRef.current) {
-      stickyMinWidthRef.current = measured;
-      inner.style.minWidth = `${measured}px`;
+    if (measured > stickyExtentRef.current) {
+      stickyExtentRef.current = measured;
+      setStickyExtentWidth(measured);
     }
   }, [rows, tree.storeKey]);
 
@@ -631,6 +633,14 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
         emptyState
       ) : (
         <div ref={contentLayerRef} className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+          {stickyExtentWidth > 0 && (
+            <div
+              aria-hidden
+              data-testid="tree-horizontal-extent"
+              className="pointer-events-none absolute left-0 top-0 h-px"
+              style={{ width: stickyExtentWidth }}
+            />
+          )}
           {virtualizer.getVirtualItems().map((vi) => {
             const row = rows[vi.index];
             if (!row) return null;
