@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const larkMocks = vi.hoisted(() => {
+  const request = vi.fn(async () => ({ code: 0 }));
   const list = vi.fn<() => Promise<{ code: number; data: { items: Array<{
     message_id: string; thread_id: string; chat_id: string; deleted?: boolean;
   }> } }>>(async () => ({ code: 0, data: { items: [] } }));
@@ -63,11 +64,12 @@ const larkMocks = vi.hoisted(() => {
       return Promise.resolve({ data: { items: [] } });
     },
   );
-  return { list, create, reply, deleteMessage, getMessage, patch, replyOwners, getOwners, deleteOwners };
+  return { request, list, create, reply, deleteMessage, getMessage, patch, replyOwners, getOwners, deleteOwners };
 });
 
 vi.mock('@larksuiteoapi/node-sdk', () => ({
   Client: class {
+    request = larkMocks.request;
     im = {
       v1: {
         message: {
@@ -103,6 +105,7 @@ vi.mock('../moduleScope.js', async (importOriginal) => ({
 }));
 
 import * as outbound from '../outbound.js';
+import { start } from '../streamingText.js';
 
 const creds = { appId: 'cli_test', appSecret: 'secret', service: 'feishu' as const };
 const otherCreds = { appId: 'cli_other_account', appSecret: 'secret', service: 'feishu' as const };
@@ -162,6 +165,49 @@ describe('feishu outbound lane routing', () => {
     await expect(outbound.sendText('g/oc_group1/omt_t1', 'x')).rejects.toThrow(/no reply anchor/);
     expect(larkMocks.create).not.toHaveBeenCalled();
   });
+
+  // PR #6330: real streaming final + outbound reply, rather than a mocked
+  // rearm call. Existing tests covered pending openers but not claimed cards.
+  // Unit tier: empty finalize followed by background text, no real I/O/waits.
+  it.each(['same', 'changed-before', 'changed-during', 'new-round', 'delete-failed'])(
+    'empty claimed opener preserves the next reply target (%s)', async (transition) => {
+      const lane = 'g/oc_group1/omt_t1';
+      outbound.pushReplyAnchor(lane, 'om_opener');
+      outbound.pushPatchableOpener(lane, 'om_opener', 'om_trigger');
+      const handle = await start(lane);
+      const replaceAccount = () => {
+        rebindFresh(otherCreds);
+        outbound.pushReplyAnchor(lane, 'om_new');
+        outbound.pushPatchableOpener(lane, 'om_new', 'om_new_trigger');
+        outbound.claimPatchableOpener(lane);
+      };
+      if (transition === 'changed-before') replaceAccount();
+      if (transition === 'changed-during') larkMocks.request.mockImplementationOnce(async () => {
+        replaceAccount();
+        return { code: 0 };
+      });
+      if (transition === 'new-round') larkMocks.request.mockImplementationOnce(async () => {
+        outbound.pushReplyAnchor(lane, 'om_new');
+        outbound.pushPatchableOpener(lane, 'om_new', 'om_new_trigger');
+        outbound.claimPatchableOpener(lane);
+        return { code: 0 };
+      });
+      if (transition === 'delete-failed') {
+        larkMocks.request.mockRejectedValueOnce(new Error('delete failed'));
+        await expect(handle.finalize('')).rejects.toThrow('delete failed');
+      } else {
+        await handle.finalize('');
+      }
+      if (transition === 'changed-before') expect(larkMocks.request).not.toHaveBeenCalled();
+      await outbound.sendText(lane, 'background result');
+      const expected = transition === 'same' ? 'om_trigger'
+        : transition === 'delete-failed' ? 'om_opener' : 'om_new';
+      expect(larkMocks.reply).toHaveBeenLastCalledWith(expect.objectContaining({
+        path: { message_id: expected },
+        data: expect.objectContaining(transition === 'same' ? { reply_in_thread: true } : {}),
+      }));
+    },
+  );
 
   it('restores a cold topic anchor before streaming a background result', async () => {
     larkMocks.list.mockResolvedValueOnce({ code: 0, data: { items: [

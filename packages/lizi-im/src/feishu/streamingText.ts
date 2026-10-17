@@ -32,6 +32,8 @@ import {
   sendText,
   claimPatchableOpener,
   recallMessage,
+  getAccountEpoch,
+  rearmAnchorToTrigger,
 } from './outbound.js';
 import { buildMarkdownCardV2, buildMixedMarkdownCardV2 } from './cards.js';
 import { resolveFeishuMediaUrl } from './mediaCache.js';
@@ -118,7 +120,7 @@ class FeishuStreamingTextHandle implements StreamingTextHandle {
    */
   private extraImageAbsPaths: string[] = [];
 
-  constructor(messageId: string, openId: string, initial: string, private readonly opts?: { threadTs?: string }) {
+  constructor(messageId: string, openId: string, initial: string, private readonly opts?: { threadTs?: string }, private readonly openerEpoch?: number) {
     this.messageId = messageId;
     this.openId = openId;
     // `initial` is what's currently DISPLAYED in feishu (e.g. "🧠 思考中...").
@@ -225,7 +227,13 @@ class FeishuStreamingTextHandle implements StreamingTextHandle {
     const log = getLog();
     const text = this.buffer;
     if (!text.trim() && this.extraImageAbsPaths.length === 0) {
+      // A claimed opener is also the topic's reply anchor. Only its owning
+      // account/round may restore that anchor after a successful recall.
+      if (this.openerEpoch !== undefined && getAccountEpoch() !== this.openerEpoch) return;
       await recallMessage(this.messageId);
+      if (this.openerEpoch !== undefined && getAccountEpoch() === this.openerEpoch) {
+        rearmAnchorToTrigger(this.openId, this.messageId);
+      }
       return;
     }
 
@@ -364,7 +372,7 @@ export async function start(
   // 认领后直接 patch, 不再新建一条「开个话题」占位回复。
   const claimed = opts?.threadTs ? null : claimPatchableOpener(openId);
   if (claimed) {
-    return new FeishuStreamingTextHandle(claimed, openId, initial, opts);
+    return new FeishuStreamingTextHandle(claimed, openId, initial, opts, getAccountEpoch());
   }
   const { messageId } = await sendCardRaw(openId, buildMarkdownCardV2(initial), opts);
   return new FeishuStreamingTextHandle(messageId, openId, initial, opts);

@@ -592,7 +592,11 @@ export function getOpenerTrigger(laneUserId: string): string | undefined {
  * reply_in_thread 标记)。兜底发送向触发消息 reply 且 reply_in_thread=true,
  * 仍落回话题 — 而不是向已删除的开场白卡 reply 失败。无触发记录返回 false。
  */
-export function rearmAnchorToTrigger(laneUserId: string): boolean {
+export function rearmAnchorToTrigger(laneUserId: string, expectedOpenerId?: string): boolean {
+  // A delayed recall must not replace the anchor claimed by a newer round.
+  if (expectedOpenerId !== undefined && S().laneAnchors.get(laneUserId)?.held !== expectedOpenerId) {
+    return false;
+  }
   const triggerId = S().openerTriggers.get(laneUserId);
   S().openerTriggers.delete(laneUserId);
   if (!triggerId) return false;
