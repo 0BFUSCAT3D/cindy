@@ -593,11 +593,16 @@ export class ExecutorWorkspace {
 
   /** 影子路径映射回本机路径；不是影子路径时原样返回。 */
   mapAlias(input: string): string {
+    return this.localPathFromAgent(input) ?? input;
+  }
+
+  /** 影子路径对应的本机路径；不是影子路径(Agent 主机自己的路径)时返回 null。 */
+  localPathFromAgent(input: string): string | null {
     for (const alias of this.aliases) {
       const rest = stripAliasPrefix(input, alias.from);
       if (rest !== null) return rest ? path.join(alias.to, ...rest.split('/')) : alias.to;
     }
-    return input;
+    return null;
   }
 
   /** 本机真实路径投影到 Agent 主机上的路径；仅匹配完整路径段。 */
