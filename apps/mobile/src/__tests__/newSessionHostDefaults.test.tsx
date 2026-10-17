@@ -1,76 +1,53 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { act, createElement, useCallback, useEffect, useRef, useState } from 'react';
+import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
+import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
+import { DEFAULT_NEW_SESSION_DRAFT, type NewSessionAgentKind, type NewSessionStoredPreferences } from '@/session/newSession';
+import type { MobileNewMakerDefaults } from '@/device-link/mobileMakerTransport';
+import { buildMobileModelSections } from '@/session/providerModelSections';
+import { act, createElement, useRef, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import ts from 'typescript';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { getMobileAuthOwner, isMobileAuthOwnerCurrent, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
-import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
-import {
-  NEW_SESSION_AGENT_OPTIONS, hostDraftRuntimeFromDefaults, isHostDraftDefaultsReady,
-  resolveNewSessionAutoDefault, type NewSessionRuntime,
-  isStoredAgentRestorePending, nextStoredAgentRestoreStep, canResolveStoredAgentRuntime, pickAgentDefaultRuntime,
-} from '@/session/newSession';
-import {
-  cacheNewSessionHostDefaults, getNewSessionHostDefaults, rememberNewSessionHostRuntime,
-} from '@/session/newSessionHostDefaultsCache';
+import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { getNewSessionHostDefaults } from '@/session/newSessionHostDefaultsCache';
 
-// Unit regression for #5816: run the page's real defaults hooks, without its
-// unrelated native UI. Existing newSession tests cover selection policy but not
-// remount/remote-read timing. Minimum failure: reopen while the next RPC is pending.
-const source = readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8').replace(/\r\n?/g, '\n');
-const start = source.indexOf('  const [hostDraftDefaults, setHostDraftDefaults]');
-const end = source.indexOf('  // selectedDeviceId 的渲染期镜像', start);
-const autoStart = source.indexOf('  useEffect(() => {', source.indexOf('  // 决策逻辑全在纯函数 resolveNewSessionAutoDefault'));
-const autoEnd = source.indexOf('\n\n  // 目录就绪后的来源终检', autoStart);
-const storedStart = source.lastIndexOf('  useEffect(() => {', source.indexOf('    const storedAgentKind = newSessionPreferences?.agentKind;'));
-const storedEnd = source.indexOf('\n\n  // 权限记忆恢复:', storedStart);
-if (start < 0 || end <= start || autoStart < 0 || autoEnd <= autoStart
-  || storedStart < 0 || storedEnd <= storedStart) throw new Error('New-session host defaults hooks not found');
-const compiled = ts.transpileModule(`function usePageDefaults(bindings) {
-  const { useState, useRef, useEffect, useCallback, selectedDeviceId, deviceLinkStatus,
-    maker, openLink, outboxOwner, selectedDeviceRef, remoteAgentChoice,
-    resolveNewSessionAutoDefault, deviceProviders, modelRows, modelSections,
-    isStoredAgentRestorePending, nextStoredAgentRestoreStep, canResolveStoredAgentRuntime, pickAgentDefaultRuntime,
-    getMobileAuthOwner, isMobileAuthOwnerCurrent, NEW_SESSION_AGENT_OPTIONS,
-    hostDraftRuntimeFromDefaults, isHostDraftDefaultsReady, withTransientRemoteRetry,
-    cacheNewSessionHostDefaults, getNewSessionHostDefaults, rememberNewSessionHostRuntime } = bindings;
+// Unit regression: import the same hooks as the page. The remote transport and
+// native permission UI are boundaries; cache/selection/lifecycle code is real.
+vi.mock('@/session/fullAccessConfirmation', () => ({ confirmFullAccessChange: vi.fn(async () => true) }));
+vi.mock('@/debug/mobileDebugLog', () => ({ mobileDebugLog: vi.fn() }));
+function usePageDefaults(bindings: Parameters<typeof useNewSessionHostDefaults>[0] & {
+  preferences: NewSessionStoredPreferences | null;
+}) {
   const [draft, setDraft] = useState(bindings.draft);
   const userTouchedRuntimeRef = useRef(false);
-  const autoDefaultDeviceRef = useRef(null);
-  const autoDefaultSnapshotRef = useRef(undefined);
-  ${source.slice(start, end)}
-  const newSessionPreferencesLoaded = true, newSessionPreferences = bindings.preferences, capabilities = undefined;
-  const appliedPermissionMemoryRef = useRef(true);
-  const defaultPermissionModeForNewSessionAgent = () => 'default';
-  const confirmFullAccessChange = async () => true;
-  const settleRuntime = () => {};
-  const storedAgentRestoreRef = useRef(null), runtimeActionSeqRef = useRef(0);
-  const deviceProvidersRef = useRef(deviceProviders), catalogReadyRef = useRef(false);
-  const preferredDefaultDevice = { deviceId: selectedDeviceId };
-  const mobileDebugLog = () => {}, flattenProviderSections = () => [];
-  const buildMobileModelSections = () => ({ sections: [] }), flatModelsForUnsupportedHost = () => [];
-  const isFastRestorable = () => false, targetAgentHasFast = () => false;
-  const draftMemory = { getFast: () => false };
-  ${source.slice(storedStart, storedEnd)}
-  ${source.slice(autoStart, autoEnd)}
-  return { settled: hostDefaultsSettled, runtime: hostRuntimeFor('codex'),
-    draft, wait: waitHostDraftDefaults, choose: (mark) => {
+  const defaults = useNewSessionHostDefaults({ ...bindings, draft });
+  const selectedDeviceRef = useRef(bindings.selectedDeviceId);
+  selectedDeviceRef.current = bindings.selectedDeviceId;
+  const deviceProviders = useRef({ providers: [], ready: false, loading: true, unsupported: false, error: null }).current;
+  useNewSessionDefaultSelection({
+    ...defaults, draft, setDraft, userTouchedRuntimeRef,
+    selectedDeviceId: bindings.selectedDeviceId, selectedDeviceRef,
+    newSessionPreferencesLoaded: true, newSessionPreferences: bindings.preferences,
+    preferredDefaultDevice: { deviceId: bindings.selectedDeviceId },
+    autoDefaultDeviceRef: useRef(null),
+    appliedPermissionMemoryRef: useRef(true),
+    runtimeActionSeqRef: useRef(0), deviceProviders, deviceProvidersRef: useRef(deviceProviders),
+    catalogReadyRef: useRef(false), capabilities: null, modelRows: [],
+    modelSections: buildMobileModelSections({ providers: [], agentKind: draft.agentKind }),
+    flatModelsForUnsupportedHost: () => undefined, targetAgentHasFast: () => false,
+    draftMemory: { getFast: () => false, getEffort: () => undefined, setFast: () => {}, setEffort: () => {} },
+    settleRuntime: () => {},
+  });
+  return {
+    settled: defaults.hostDefaultsSettled, runtime: defaults.hostRuntimeFor('codex'),
+    runtimeFor: defaults.hostRuntimeFor, draft, wait: defaults.waitHostDraftDefaults,
+    choose: (mark: boolean) => {
       userTouchedRuntimeRef.current = true;
       setDraft(bindings.draft);
-      requestHostChoiceWrite(mark);
-    } };
-}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-interface State {
-  settled: boolean;
-  runtime: NewSessionRuntime | null;
-  draft: { model: string; agentKind: string };
-  wait(deviceId: string, agent: string): Promise<void>;
-  choose(markModelChoice: boolean): void;
+      defaults.requestHostChoiceWrite(mark);
+    },
+  };
 }
-const usePageDefaults = new Function(`${compiled}; return usePageDefaults;`)() as
-  (bindings: Record<string, unknown>) => State;
+type State = ReturnType<typeof usePageDefaults>;
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 beforeEach(() => { setMobileAuthOwner('defaults-test'); });
@@ -86,23 +63,16 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function mount(deviceId = 'desktop', agentKind = 'codex', failedAgent?: string, storedAgent?: string) {
+function mount(deviceId = 'desktop', agentKind: NewSessionAgentKind = 'codex', failedAgent?: string, storedAgent: NewSessionAgentKind | null = null) {
   if (root) act(() => root!.unmount());
-  const read = deferred<unknown>();
+  const read = deferred<MobileNewMakerDefaults>();
   const bindings = {
-    useState, useRef, useEffect, useCallback,
     selectedDeviceId: deviceId, deviceLinkStatus: 'online', selectedDeviceRef: { current: deviceId },
     outboxOwner: getMobileAuthOwner(), remoteAgentChoice: null,
-    draft: { agentKind, model: 'chosen', providerId: 'provider', effort: 'high', fastMode: false },
+    draft: { ...DEFAULT_NEW_SESSION_DRAFT, agentKind, model: 'chosen', providerId: 'provider', effort: 'high', fastMode: false },
     maker: { getNewMakerDefaults: vi.fn((agent?: string) => agent === failedAgent ? Promise.reject(new Error('read failed')) : read.promise), applyNewMakerDraftPref: vi.fn(async () => {}) },
     openLink: vi.fn(async () => {}),
-    getMobileAuthOwner, isMobileAuthOwnerCurrent, NEW_SESSION_AGENT_OPTIONS,
-    hostDraftRuntimeFromDefaults, isHostDraftDefaultsReady, withTransientRemoteRetry,
-    cacheNewSessionHostDefaults, getNewSessionHostDefaults, rememberNewSessionHostRuntime,
-    resolveNewSessionAutoDefault, deviceProviders: { ready: false, unsupported: false },
-    isStoredAgentRestorePending, nextStoredAgentRestoreStep, canResolveStoredAgentRuntime, pickAgentDefaultRuntime,
-    preferences: storedAgent ? { agentKind: storedAgent, permissionModeByAgent: {} } : undefined,
-    modelRows: [], modelSections: { connected: [] },
+    preferences: storedAgent ? { agentKind: storedAgent, permissionModeByAgent: {}, device: null, workspaceKind: null, workingDirByDevice: {} } : null,
   };
   let state!: State;
   function Harness() { state = usePageDefaults(bindings); return null; }
@@ -143,15 +113,20 @@ it('reopens with cached defaults immediately and refreshes the next visit in the
   await act(async () => {});
 });
 
-it('keeps a manual model choice across a late refresh and the next new task', async () => {
+it.each(['codex', 'pi', 'claude-code'] as const)('preserves a manual %s choice while refreshing the other engines', async (agent) => {
   const first = mount();
   await act(async () => first.read.resolve(defaults('first')));
-  const second = mount();
+  const second = mount('desktop', agent);
   act(() => second.state.choose(true));
   await act(async () => second.read.resolve(defaults('old-response')));
-  expect(second.state.runtime?.model).toBe('chosen');
+  expect(second.state.runtimeFor(agent)?.model).toBe('chosen');
   expect(second.state.draft.model).toBe('chosen');
-  expect(mount().state.runtime?.model).toBe('chosen');
+  for (const other of ['codex', 'pi', 'claude-code'] as const) {
+    if (other === agent) continue;
+    expect(second.state.runtimeFor(other)?.model).toBe('old-response');
+    expect(getNewSessionHostDefaults('desktop')?.byAgent[other]?.model).toBe('old-response');
+  }
+  expect(mount('desktop', agent).state.runtimeFor(agent)?.model).toBe('chosen');
   await act(async () => {});
 });
 
@@ -189,7 +164,7 @@ it('drops cached and in-flight defaults when the account changes', async () => {
   const pending = mount();
   act(() => pending.state.choose(true));
   act(() => setMobileAuthOwner('different-account'));
-  const newAccount = deferred<unknown>();
+  const newAccount = deferred<MobileNewMakerDefaults>();
   pending.bindings.outboxOwner = getMobileAuthOwner();
   pending.bindings.maker.getNewMakerDefaults.mockImplementation(() => newAccount.promise);
   pending.render();

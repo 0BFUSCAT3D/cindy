@@ -20,10 +20,19 @@ export function cacheNewSessionHostDefaults(
   expected: NewSessionHostDefaults | null,
 ): NewSessionHostDefaults {
   const current = getNewSessionHostDefaults(next.deviceId);
-  // A choice made while the read was pending wins over its older response.
-  if (current !== expected && current) return current;
-  cache.set(next.deviceId, next);
-  return next;
+  // Only the engines changed during this read outrank its response. A manual
+  // Codex choice must not discard fresh Pi/Claude defaults from the same read.
+  const byAgent = { ...next.byAgent };
+  if (current && current !== expected) {
+    for (const agent of Object.keys(current.byAgent) as NewSessionAgentKind[]) {
+      if (current.byAgent[agent] !== expected?.byAgent[agent]) {
+        byAgent[agent] = current.byAgent[agent];
+      }
+    }
+  }
+  const merged = { ...next, byAgent };
+  cache.set(next.deviceId, merged);
+  return merged;
 }
 
 export function rememberNewSessionHostRuntime(deviceId: string, runtime: NewSessionRuntime): void {

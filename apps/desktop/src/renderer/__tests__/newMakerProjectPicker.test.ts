@@ -19,6 +19,7 @@ const readSource = (...segments: string[]): string =>
   readFileSync(resolve(__dirname, '..', ...segments), 'utf8').replace(/\r\n?/g, '\n');
 
 const newMakerDraftRouteSource = readSource('features', 'cc-agent', 'NewMakerDraftRoute.tsx');
+const remoteDefaultsSource = readSource('features', 'cc-agent', 'useRemoteDraftDefaults.ts');
 const ccAgentSessionViewSource = readSource('features', 'cc-agent', 'CCAgentSessionView.tsx');
 
 const worktreeChipsSource = readSource('components', 'new-chat', 'WorktreeChipsRow.tsx');
@@ -1637,12 +1638,12 @@ describe('Shared create project picker', () => {
   });
 
   it('uses the selected provider catalog for remote effort recalculation', () => {
-    const pushStart = newMakerDraftRouteSource.indexOf(
+    const pushStart = remoteDefaultsSource.indexOf(
       'const re = resolveDeviceLinkDraftDefaults(',
     );
-    const pushBlock = newMakerDraftRouteSource.slice(
+    const pushBlock = remoteDefaultsSource.slice(
       pushStart,
-      newMakerDraftRouteSource.indexOf('return { ...prev', pushStart),
+      remoteDefaultsSource.indexOf('return { ...prev', pushStart),
     );
     const modelSwitchStart = newMakerDraftRouteSource.indexOf(
       'const resolved = resolveDeviceLinkDraftDefaults(',
@@ -1664,9 +1665,9 @@ describe('Shared create project picker', () => {
   });
 
   it('reapplies refreshed regional defaults only while the remote runtime is untouched', () => {
-    const seed = newMakerDraftRouteSource.slice(
-      newMakerDraftRouteSource.indexOf('// seed dlSel:'),
-      newMakerDraftRouteSource.indexOf('// 远程草稿展示用:'),
+    const seed = remoteDefaultsSource.slice(
+      remoteDefaultsSource.indexOf('export function useRemoteDraftSelection('),
+      remoteDefaultsSource.indexOf('export function useRemoteDraftPush('),
     );
     expect(seed).toContain('shouldReseedDeviceLinkDraftDefaults({');
     expect(seed).toContain('capabilitiesChanged,');
@@ -1701,9 +1702,9 @@ describe('Shared create project picker', () => {
    * 或「永远判不成新目标」)。
    */
   it('advances the device-link seed key to the engine the user just picked', () => {
-    const seed = newMakerDraftRouteSource.slice(
-      newMakerDraftRouteSource.indexOf('// seed dlSel:'),
-      newMakerDraftRouteSource.indexOf('// 远程草稿展示用:'),
+    const seed = remoteDefaultsSource.slice(
+      remoteDefaultsSource.indexOf('export function useRemoteDraftSelection('),
+      remoteDefaultsSource.indexOf('export function useRemoteDraftPush('),
     );
     // 播种 effect 侧的 key 构造(正本)。
     expect(seed).toContain('const key = `${catalogDeviceId}:${capabilityAgentKind}`;');
