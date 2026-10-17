@@ -349,15 +349,19 @@ host-side behavior is covered in
 The mobile viewer follows the host's control bit instead of rebuilding the session. A
 rejected input batch, a failed control request or a heartbeat that reports
 `controlling: false` all stop local input while media and lease identity stay
-untouched. In a visible foreground viewer, input rejection and return from PiP
-immediately request control through the host's normal permission checks. If
+untouched. For control-capable hosts in a visible foreground viewer, input
+rejection and return from PiP immediately request control through the host's
+normal permission checks. If
 control or settings are still settling, their completion continues the pending
 restore without waiting for a timer. The existing 3-second heartbeat is only a
 fallback after a failed or uncertain attempt; a temporary host refusal does not
 change the intent to control. Actual PiP, pending presentation,
 background/inactive state, route blur, offline signaling and in-flight control
 or settings changes defer recovery. The local **View only** choice still blocks
-input after host control returns. A dropped
+input after host control returns. Hosts without input capability instead send
+`presentation enabled:false` on return from PiP, restoring foreground video and
+signaling policy without requesting control. A new PiP entry waits for that
+reply before authorizing background viewing again. A dropped
 stalled batch (WebView overflow) also asks the host to drop control: posting
 `control:false` to the WebView clears its queued release without flushing it, so
 only an explicit host `control enabled:false` (which stops the input helper and

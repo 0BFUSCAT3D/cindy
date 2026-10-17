@@ -1065,12 +1065,12 @@ export function RemoteDesktopSession({
   const requestHostControlRef = useRef(requestHostControl);
   const restoreInlinePresentation = () => {
     const current = active.current;
+    const canControl = capsRef.current?.value.canControl === true;
     if (
       !current ||
-      (current.controlling &&
+      ((current.controlling || !canControl) &&
         !pipPrepared.current &&
         !foregroundRestorePending.current) ||
-      !capsRef.current?.value.canControl ||
       presentation.current ||
       actualPresentation.current ||
       !focusedRef.current ||
@@ -1094,7 +1094,26 @@ export function RemoteDesktopSession({
       enabled: pipEnabledRef.current && frameReady,
       authorized: false,
     });
-    // Foreground always retains host control; view only guards input locally.
+    if (!canControl) {
+      // View-only hosts still need to leave background video/lease policy.
+      // A new PiP entry must await this reply before authorizing background again.
+      const restoration = request({
+        op: "presentation",
+        lease: current.lease,
+        enabled: false,
+      })
+        .then(() => {})
+        .catch((cause) => {
+          if (active.current === current) fail(cause);
+        });
+      controlRestoration.current = restoration;
+      void restoration.finally(() => {
+        if (controlRestoration.current === restoration)
+          controlRestoration.current = null;
+      });
+      return;
+    }
+    // Capable hosts retain foreground control; view only guards input locally.
     // A temporary release/refusal must not replace that intent. App/route/PiP
     // events restore immediately; heartbeats retry when a transition was busy
     // or its request failed, using the same lease and host permission checks.

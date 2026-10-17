@@ -1035,6 +1035,25 @@ describe("remote desktop controls", () => {
     expect(button("viewOnly").getAttribute("aria-selected")).toBe("false");
     expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
   });
+  // Unit regression: portal/view-only hosts still need to leave the host's
+  // background video mode. Existing fullscreen tests only used canControl:true.
+  it("clears host background viewing immediately on a view-only fullscreen return", async () => {
+    fixture.canControl = false;
+    fixture.hostPlatform = "linux";
+    await retainedViewer();
+    expect(
+      requests().filter((r) => r.op === "presentation" && r.enabled),
+    ).toHaveLength(1);
+    await nativePresentation("presentation", { active: false });
+    const foregroundRequests = () =>
+      requests().filter((r) => r.op === "presentation" && !r.enabled);
+    // No heartbeat advance: returning fullscreen must clear background mode.
+    expect(foregroundRequests()).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(9000));
+    expect(foregroundRequests()).toHaveLength(1);
+    expect(requests().filter((r) => r.op === "control")).toHaveLength(0);
+    expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
+  });
   it("does not select view-only or label the viewer as view-only during actual PiP", async () => {
     await retainedViewer();
     expect(host.textContent).not.toContain("remoteDesktop.viewOnly");
@@ -1368,14 +1387,22 @@ describe("remote desktop controls", () => {
       expect(button("viewOnly").getAttribute("aria-selected")).toBe("false");
     },
   );
-  it.each(["grant", "timeout"])(
-    "orders rapid Home entry after pending fullscreen restoration: %s",
-    async (outcome) => {
+  it.each([
+    { outcome: "grant", canControl: true },
+    { outcome: "timeout", canControl: true },
+    { outcome: "grant", canControl: false },
+    { outcome: "timeout", canControl: false },
+  ])(
+    "orders rapid Home entry after pending fullscreen restoration: $outcome, canControl=$canControl",
+    async ({ outcome, canControl }) => {
+      fixture.canControl = canControl;
       await retainedViewer();
       let finish!: (value: unknown) => void;
       const original = fixture.invoke.getMockImplementation()!;
       fixture.invoke.mockImplementation((...args) =>
-        args[2][0].op === "control" && args[2][0].enabled
+        (canControl
+          ? args[2][0].op === "control" && args[2][0].enabled
+          : args[2][0].op === "presentation" && !args[2][0].enabled)
           ? new Promise((resolve) => {
               finish = resolve;
             })
@@ -1404,31 +1431,43 @@ describe("remote desktop controls", () => {
       );
     },
   );
-  it("restores fullscreen input as soon as an overlapping sound change settles", async () => {
-    fixture.systemAudio = true;
-    await retainedViewer();
-    const original = fixture.invoke.getMockImplementation()!;
-    let finish!: () => void;
-    fixture.invoke.mockImplementation((...args) =>
-      args[2][0].op === "presentation" && !args[2][0].enabled
-        ? new Promise((resolve) => {
-            finish = () => resolve({});
-          })
-        : original(...args),
-    );
-    act(() => button("operations").click());
-    await act(async () => button("sound").click());
-    const controls = () =>
-      requests().filter((r) => r.op === "control" && r.enabled).length;
-    const before = controls();
-    await nativePresentation("presentation", { active: false });
-    expect(controls()).toBe(before);
-    await act(async () => finish());
-    // No timer advance: the settings completion resumes the deferred restore.
-    expect(controls()).toBe(before + 1);
-    expect(visibleInputHint()).toBe("remoteDesktop.touchHint");
-    expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
-  });
+  it.each([true, false])(
+    "restores fullscreen mode after an overlapping sound change, canControl=%s",
+    async (canControl) => {
+      fixture.canControl = canControl;
+      fixture.systemAudio = true;
+      await retainedViewer();
+      const original = fixture.invoke.getMockImplementation()!;
+      let finish!: () => void;
+      fixture.invoke.mockImplementation((...args) =>
+        args[2][0].op === "presentation" && !args[2][0].enabled
+          ? new Promise((resolve) => {
+              finish = () => resolve({});
+            })
+          : original(...args),
+      );
+      act(() => button("operations").click());
+      await act(async () => button("sound").click());
+      const restores = () =>
+        requests().filter((r) =>
+          canControl
+            ? r.op === "control" && r.enabled
+            : r.op === "presentation" && !r.enabled,
+        ).length;
+      const before = restores();
+      await nativePresentation("presentation", { active: false });
+      expect(restores()).toBe(before);
+      await act(async () => finish());
+      // No timer advance: the settings completion resumes the deferred restore.
+      expect(restores()).toBe(before + 1);
+      expect(visibleInputHint()).toBe(
+        canControl
+          ? "remoteDesktop.touchHint"
+          : "remoteDesktop.controlUnavailableHint",
+      );
+      expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
+    },
+  );
   it("preserves authorized native media while fullscreen signaling reconnects", async () => {
     const viewer = await retainedViewer();
     const controls = requests().filter((r) => r.op === "control").length;
