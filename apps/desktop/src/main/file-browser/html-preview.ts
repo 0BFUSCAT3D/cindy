@@ -212,7 +212,9 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
           if (checkEntry) cachedHtml = original;
           // One same-origin request observes this opening's existing background check.
           // Fresh pages do not carry the script, so reload never starts a polling loop.
-          const reload = checkEntry ? `<script>(()=>{const page=location.pathname;addEventListener('load',()=>{fetch(${JSON.stringify(updatePath)},{cache:'no-store'}).then(r=>r.ok?r.json():false).then(changed=>{if(changed&&location.pathname===page)location.reload();}).catch(()=>{});},{once:true});})();</script>` : '';
+          // JSON quoting alone does not escape an HTML script closing tag.
+          const updateUrl = JSON.stringify(updatePath).replace(/</g, '\\u003c');
+          const reload = checkEntry ? `<script>(()=>{const page=location.pathname;addEventListener('load',()=>{fetch(${updateUrl},{cache:'no-store'}).then(r=>r.ok?r.json():false).then(changed=>{if(changed&&location.pathname===page)location.reload();}).catch(()=>{});},{once:true});})();</script>` : '';
           const guarded = withSnapshotHtmlCsp(html.charCodeAt(0) === 0xfeff
             ? `\uFEFF${reload}${html.slice(1)}` : reload + html);
           await fs.writeFile(dest, guarded, { encoding: 'utf8', mode: 0o600 });
