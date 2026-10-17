@@ -111,6 +111,7 @@ import {
 import { useAuth } from '@/auth/AuthContext';
 import { discardMobileUploadedAttachment } from '@/session/mobileAttachmentUpload';
 import { discardNewSessionUploadedAttachments } from '@/session/newSessionAttachmentCleanup';
+import { useAutoResumeNewSessionDraft, useNewSessionDurableEdit } from '@/session/useNewSessionDraftRecovery';
 import { goBackGuarded } from '@/utils/backGuard';
 import { buildMobileImageAttachmentCandidate } from '@/session/mobileImageAttachment';
 import { useMobileLocalAttachments } from '@/session/useMobileLocalAttachments';
@@ -244,9 +245,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import {
   createNewSessionId,
-  completeNewSessionDurableEdit,
   drainStashedNewSessionDraft,
-  findNewSessionEditDraft,
   hasLiveNewSessionCreation,
   holdNewSessionCreationDraft,
   startNewSessionCreation,
@@ -856,20 +855,10 @@ export default function NewRemoteSessionScreen() {
     router.replace('/devices');
     return true;
   }, [router]);
-  useEffect(() => {
-    const owner = outboxOwner;
-    if (leaveForeignOutboxRecovery()) return;
-    const sid = String(params.recoverySessionId ?? '');
-    if (!sid) return;
-    let active = true;
-    let restored = false;
-    let releaseEditClaim: (() => void) | undefined;
-    const restore = () => {
-      if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
-      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation
-        && r.accountId === owner.accountKey && r.deviceId === routeDeviceId);
-      if (!record?.creation || record.prepared) return;
-      restored = true;
+  useNewSessionDurableEdit({
+    sessionId: String(params.recoverySessionId ?? ''), deviceId: routeDeviceId, owner: outboxOwner,
+    leaveForeignRecovery: leaveForeignOutboxRecovery,
+    onRestore: record => {
       outboxRecoveryRef.current = record;
       userTouchedDeviceRef.current = true;
       restoreCreationDraft(record.creation.draft,
@@ -880,12 +869,8 @@ export default function NewRemoteSessionScreen() {
       if (record.error) setError(t('session.screen.createFailedNotice', { message: record.error }));
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
-      releaseEditClaim = completeNewSessionDurableEdit(sid, record.deviceId);
-    };
-    const unsubscribe = mobileDurableOutbox.subscribe(restore);
-    void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; unsubscribe(); releaseEditClaim?.(); };
-  }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft, t]);
+    },
+  });
   useEffect(() => {
     const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
     if (!stashed) return;
@@ -964,26 +949,16 @@ export default function NewRemoteSessionScreen() {
   const incomingShareReceivedRef = useRef(false);
   if (incomingShareBatch) incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
-  useEffect(() => {
-    if (params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
-      || visualInitialDraft || !newSessionPreferencesLoaded || !selectedDeviceId) return;
-    const owner = outboxOwner;
-    let active = true;
-    const resume = () => {
-      if (!active || !isMobileAuthOwnerCurrent(owner) || outboxRecoveryRef.current
+  useAutoResumeNewSessionDraft({
+    enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
+      || visualInitialDraft || !newSessionPreferencesLoaded),
+    deviceId: selectedDeviceId, workingDir: initialWorkingDir, owner: outboxOwner,
+    hasInput: () => !!(outboxRecoveryRef.current
         || firstMessageRef.current || attachmentsRef.current.length || hasAttachmentInput()
         || incomingShareReceivedRef.current
-        || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current) return;
-      const saved = findNewSessionEditDraft(selectedDeviceId, initialWorkingDir);
-      if (!saved) return;
-      active = false;
-      router.setParams({ recoverySessionId: saved.item.sessionId, deviceId: saved.deviceId });
-    };
-    const unsubscribe = mobileDurableOutbox.subscribe(resume);
-    void mobileDurableOutbox.ready().then(resume);
-    return () => { active = false; unsubscribe(); };
-  }, [params.recoverySessionId, params.editSessionId, params.draft, params.suggestion, visualInitialDraft,
-    newSessionPreferencesLoaded, selectedDeviceId, initialWorkingDir, outboxOwner, router, hasAttachmentInput]);
+        || userTouchedRuntimeRef.current || userTouchedWorkspaceRef.current),
+    onResume: next => router.setParams(next),
+  });
   useEffect(() => {
     if (!isShareTargetFocused || !auth.isAuthenticated || !incomingShareBatch
       || getMobileAuthOwner().accountId !== auth.user?.id) return;

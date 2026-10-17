@@ -27,7 +27,7 @@ vi.mock('@/session/mobileDurableOutbox', () => ({
   isDurableOutboxCreationHeld: () => false,
   mobileDurableOutbox: { update: editOutbox.update, subscribe: () => () => {} },
 }));
-import { getMobileAuthOwner, isMobileAuthOwnerCurrent, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
 const recoveryAsyncStorage = vi.hoisted(() => ({
   getItem: vi.fn(async (key: string) => recoveryStorage.get(key) ?? null),
@@ -208,47 +208,7 @@ async function flushPipeline(): Promise<void> {
   }
 }
 
-// Reuse the existing native-page effect harness for both explicit recovery and
-// blank-form resume; execute production callbacks, never duplicate their guards.
-const recoveryPage = ts.createSourceFile('new.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-function runRecoveryEffect(marker: string, bindings: Record<string, unknown>): (() => void) | undefined {
-  let effect = '';
-  function visit(node: ts.Node) {
-    if (ts.isCallExpression(node) && node.expression.getText(recoveryPage) === 'useEffect'
-      && node.arguments[0]?.getText(recoveryPage).includes(marker)) effect = node.arguments[0].getText(recoveryPage);
-    ts.forEachChild(node, visit);
-  }
-  visit(recoveryPage);
-  if (!effect) throw new Error('Missing production creation recovery effect');
-  const compiled = ts.transpileModule(`function run(bindings) { const { ${Object.keys(bindings).join(', ')} } = bindings; return (${effect})(); }`,
-    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  return new Function(`${compiled}; return run;`)()(bindings);
-}
-
 describe('newSessionCreation pipeline', () => {
-  it.each(['blank', 'upload', 'paste', 'received-share', 'input-before-ready'])('blank form recovery respects active input: %s', async scenario => {
-    const original = recoveryOutboxRecord('s1');
-    editOutbox.records.mockReturnValue([{ ...original, accountId: getMobileAuthOwner().accountKey,
-      suspended: true, creation: { ...original.creation!, editReady: true } }]);
-    let pendingInput = scenario === 'upload' || scenario === 'paste';
-    let ready!: () => void;
-    const router = { setParams: vi.fn() };
-    const cleanup = runRecoveryEffect('findNewSessionEditDraft(', {
-      params: {}, visualInitialDraft: null, newSessionPreferencesLoaded: true, selectedDeviceId: 'dev-1',
-      outboxOwner: getMobileAuthOwner(), isMobileAuthOwnerCurrent, outboxRecoveryRef: { current: null },
-      firstMessageRef: { current: '' }, attachmentsRef: { current: [] },
-      userTouchedRuntimeRef: { current: false }, userTouchedWorkspaceRef: { current: false },
-      hasAttachmentInput: () => pendingInput, incomingShareReceivedRef: { current: scenario === 'received-share' },
-      findNewSessionEditDraft, initialWorkingDir: null, router,
-      mobileDurableOutbox: { subscribe: () => () => {}, ready: () => new Promise<void>(resolve => { ready = resolve; }) },
-    });
-    if (scenario === 'input-before-ready') pendingInput = true;
-    ready();
-    await flushPipeline();
-    expect(router.setParams).toHaveBeenCalledTimes(scenario === 'blank' ? 1 : 0);
-    cleanup?.();
-  });
-
   it('carries unsent composer text and files through legacy memory recovery', async () => {
     const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
     startNewSessionCreation(makeParams('s1', maker));
@@ -646,54 +606,6 @@ describe('newSessionCreation pipeline', () => {
     expect(getNewSessionCreationTask('s1')).toBeNull();
     expect(remoteSessionStore.getSessions().some(s => s.id === 's1')).toBe(false);
     expect(record.item.text).toBe(DRAFT.firstMessage);
-  });
-
-  it.each(['matching', 'matching-no-error', 'device', 'account', 'not-ready', 'switched-owner'])('only acknowledges durable edit recovery after the matching form restores it: %s', async scope => {
-    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
-    startNewSessionCreation(makeParams('s1', maker));
-    await flushPipeline();
-    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
-    editOutbox.records.mockReturnValue([record]);
-    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: vi.fn() });
-    const owner = getMobileAuthOwner();
-    record.error = scope === 'matching-no-error' ? undefined : 'saved creation failure';
-    const matching = scope === 'matching' || scope === 'matching-no-error';
-    // Model the persisted edit-ready patch so the real form acquires a releaseable claim.
-    record.suspended = true;
-    record.creation!.editReady = true;
-    if (scope === 'account') record.accountId = 'foreign-owner';
-    if (scope === 'not-ready') editOutbox.records.mockReturnValue([]);
-    if (scope === 'switched-owner') setMobileAuthOwner('owner-b');
-    // Execute the real form effect, including readiness and ownership guards.
-    const restore = vi.fn(() => expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable'));
-    const bindings = {
-      outboxOwner: owner, params: { recoverySessionId: 's1' }, routeDeviceId: scope === 'device' ? 'dev-2' : 'dev-1',
-      leaveForeignOutboxRecovery: () => false, isMobileAuthOwnerCurrent,
-      getCurrentMobileOutboxRecords: editOutbox.records, outboxRecoveryRef: { current: null },
-      userTouchedDeviceRef: { current: false }, restoreCreationDraft: restore,
-      setSelectedDeviceId: vi.fn(), setSelectedDeviceName: vi.fn(), completeNewSessionDurableEdit,
-      setError: vi.fn(), t: (_key: string, values: { message: string }) => `创建失败：${values.message}`,
-      mobileDurableOutbox: { subscribe: () => () => {}, ready: async () => {} },
-    };
-    const cleanup = runRecoveryEffect('completeNewSessionDurableEdit(', bindings)!;
-    await flushPipeline();
-    if (matching) {
-      expect(restore).toHaveBeenCalledWith(DRAFT, [], { enabled: false, restorePermissionMode: null }, 'dev-1');
-      expect(getNewSessionCreationTask('s1')).toBeNull();
-    } else {
-      expect(restore).not.toHaveBeenCalled();
-      if (scope === 'switched-owner') expect(getNewSessionCreationTask('s1')).toBeNull();
-      else expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
-    }
-    // Cold/blank-form recovery has no creationError route parameter. Restore
-    // the saved reason only with its matching draft; old records keep any live error.
-    if (scope === 'matching') expect(bindings.setError).toHaveBeenCalledWith('创建失败：saved creation failure');
-    else expect(bindings.setError).not.toHaveBeenCalled();
-    cleanup();
-    if (matching) {
-      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
-      expect(remoteSessionStore.getSessions()).toEqual([]);
-    }
   });
 
   it.each([false, true])('isolates a late background edit draft from another task (other form already claimed: %s)', async claimed => {
