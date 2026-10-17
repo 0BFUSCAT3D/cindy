@@ -15,6 +15,15 @@ export function isRemoteAgentLimits(value: unknown): value is RemoteAgentLimits 
     && v.perDevice >= 1 && v.perDevice <= v.total && v.total <= REMOTE_AGENT_LIMIT_MAX;
 }
 
+/** 仅接收用户编辑过的字段；合并后的大小关系由写入端在锁内校验。 */
+export function isRemoteAgentLimitsPatch(value: unknown): value is Partial<RemoteAgentLimits> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length > 0 && entries.every(([key, limit]) =>
+    (key === 'perDevice' || key === 'total')
+    && Number.isInteger(limit) && limit >= 1 && limit <= REMOTE_AGENT_LIMIT_MAX);
+}
+
 export interface RemoteAgentLimitUsage {
   total: number;
   devices: number;

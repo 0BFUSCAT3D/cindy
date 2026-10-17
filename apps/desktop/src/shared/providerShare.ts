@@ -160,7 +160,7 @@ export interface ProviderShareSettledEvent {
 export type ProviderShareCommand =
   | { action: 'get-run-limits' }
   | { action: 'reset-run-limits' }
-  | { action: 'set-run-limits'; limits: RemoteAgentLimits }
+  | { action: 'set-run-limits'; limits: Partial<RemoteAgentLimits> }
   | { action: 'owned'; range: ProviderShareUsageRange }
   /** 这个供应商按使用方的用量(本机与我的其他电脑)。不依赖分享服务。 */
   | { action: 'own-usage'; providerId: string; range: ProviderShareUsageRange }

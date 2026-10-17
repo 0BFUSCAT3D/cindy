@@ -20,6 +20,29 @@ beforeEach(async () => {
 afterEach(async () => { await fs.rm(state.root, { recursive: true, force: true }); });
 
 describe('remote task limit overrides', () => {
+  it('only persists supplied fields and preserves earlier explicit choices', async () => {
+    await saveRemoteAgentLimits({ perDevice: 24 });
+    expect(readRemoteAgentLimitsState()).toMatchObject({
+      value: { perDevice: 24, total: 64 }, customizedKeys: ['perDevice'],
+    });
+    expect(JSON.parse(await fs.readFile(path.join(state.root, 'a', 'remote-agent-limits.json'), 'utf8'))).toEqual({ perDevice: 24 });
+    await saveRemoteAgentLimits({ total: 80 });
+    await saveRemoteAgentLimits({ perDevice: 16 });
+    expect(readRemoteAgentLimitsState()).toMatchObject({
+      value: { perDevice: 16, total: 80 }, customizedKeys: ['perDevice', 'total'],
+    });
+    await expect(saveRemoteAgentLimits({ total: 8 })).rejects.toThrow('INVALID_PARAMS');
+    expect(readRemoteAgentLimitsState().value).toEqual({ perDevice: 16, total: 80 });
+  });
+
+  it('validates concurrent partial updates against the value inside the write lock', async () => {
+    await saveRemoteAgentLimits({ perDevice: 16, total: 64 });
+    const results = await Promise.allSettled([
+      saveRemoteAgentLimits({ perDevice: 60 }), saveRemoteAgentLimits({ total: 32 }),
+    ]);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+    expect(isRemoteAgentLimits(readRemoteAgentLimitsState().value)).toBe(true);
+  });
   it('keeps explicit defaults, isolates accounts, and resets by deleting overrides', async () => {
     expect(readRemoteAgentLimitsState().isCustomized).toBe(false);
     await saveRemoteAgentLimits({ perDevice: 16, total: 64 });

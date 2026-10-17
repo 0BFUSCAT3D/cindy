@@ -53,7 +53,7 @@ vi.mock('../providerShareGuest.js', () => ({ startProviderShareGuest: vi.fn(), s
 vi.mock('../providerShareGuestPrefs.js', () => ({ configureProviderShareGuestPrefs: vi.fn(), invalidateProviderShareGuestPrefsCache: vi.fn() }));
 vi.mock('../providerShareGuestPrefsIpc.js', () => ({ setProviderShareCredentialConsentFromIpc: vi.fn() }));
 
-import { executeProviderShareManagementCommand, registerProviderShareIpc, startProviderShareRuntime, stopProviderShareRuntime } from '../providerShareRuntime';
+import { executeProviderShareManagementCommand, parseProviderShareCommand, registerProviderShareIpc, startProviderShareRuntime, stopProviderShareRuntime } from '../providerShareRuntime';
 
 const createLink: ProviderShareManagementCommand = { action: 'create-link', providerId: 'anthropic' };
 const LINK_ID = 'a'.repeat(64);
@@ -79,6 +79,15 @@ beforeEach(() => {
 });
 
 afterEach(() => stopProviderShareRuntime());
+
+describe('remote task limit management payloads', () => {
+  it.each([{ perDevice: 24 }, { total: 80 }, { perDevice: 16, total: 64 }])('preserves only supplied fields in %j', limits => {
+    expect(parseProviderShareCommand({ action: 'set-run-limits', limits })).toEqual({ action: 'set-run-limits', limits });
+  });
+  it.each([{}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 }])('rejects malformed patches %j', limits => {
+    expect(() => parseProviderShareCommand({ action: 'set-run-limits', limits })).toThrow('INVALID_PARAMS');
+  });
+});
 
 describe('same-account share management during account transitions', () => {
   it.each([

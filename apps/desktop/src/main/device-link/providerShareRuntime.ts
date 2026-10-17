@@ -1,4 +1,4 @@
-import { isRemoteAgentLimits } from '../../shared/remoteAgentLimits.js';
+import { isRemoteAgentLimitsPatch } from '../../shared/remoteAgentLimits.js';
 import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
 import { remoteAgentLimitUsage } from './dispatch.js';
 /**
@@ -335,8 +335,8 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
     case 'reset-run-limits':
       return { action: value.action };
     case 'set-run-limits':
-      if (!isRemoteAgentLimits(value.limits)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
-      return { action: value.action, limits: { perDevice: value.limits.perDevice, total: value.limits.total } };
+      if (!isRemoteAgentLimitsPatch(value.limits)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
+      return { action: value.action, limits: { ...value.limits } };
     case 'owned':
       return { action: 'owned', range: usageRange(value.range) };
     case 'own-usage':

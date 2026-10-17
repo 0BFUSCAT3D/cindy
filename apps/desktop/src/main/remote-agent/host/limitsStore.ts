@@ -3,7 +3,7 @@ import { createLogger } from '../../logger.js';
 import { createOverrideSettingsFile } from '../../maker-host/override-settings-file.js';
 import { captureProviderManagementScope } from '../../provider-group/managementScope.js';
 import { throwIpcError } from '../../utils/ipcValidate.js';
-import { DEFAULT_REMOTE_AGENT_LIMITS, isRemoteAgentLimits, type RemoteAgentLimits } from '../../../shared/remoteAgentLimits.js';
+import { DEFAULT_REMOTE_AGENT_LIMITS, isRemoteAgentLimits, isRemoteAgentLimitsPatch, type RemoteAgentLimits } from '../../../shared/remoteAgentLimits.js';
 
 const store = createOverrideSettingsFile<RemoteAgentLimits>({
   filePath: () => ownerScopedUserDataPath('remote-agent-limits.json'),
@@ -21,13 +21,16 @@ export function readRemoteAgentLimitsState() {
   return store.readState();
 }
 
-export async function saveRemoteAgentLimits(value: RemoteAgentLimits | null): Promise<void> {
+export async function saveRemoteAgentLimits(value: Partial<RemoteAgentLimits> | null): Promise<void> {
   const assertCurrent = captureProviderManagementScope();
   if (value === null) await store.resetAtomic();
   else {
-    if (!isRemoteAgentLimits(value)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
+    if (!isRemoteAgentLimitsPatch(value)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
     // 显式保存默认值也是用户选择；恢复默认才删除 overrides。
-    await store.writePatchAtomic(value, { preserveDefaults: true });
+    await store.updateAtomic(current => {
+      if (!isRemoteAgentLimits({ ...current.value, ...value })) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
+      return value;
+    }, { preserveDefaults: true });
   }
   assertCurrent();
 }

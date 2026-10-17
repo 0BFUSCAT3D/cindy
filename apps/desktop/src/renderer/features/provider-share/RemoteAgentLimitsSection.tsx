@@ -13,15 +13,17 @@ import { providerManagementErrorKey, providerShareManagementCommand } from '../p
 export function RemoteAgentLimitsSection({ deviceId }: { deviceId?: string }) {
   const { t } = useTranslation();
   const [view, setView] = useState<RemoteAgentLimitsView | null>(null);
-  const [draft, setDraft] = useState<{ perDevice: string; total: string } | null>(null);
+  const [draft, setDraft] = useState<Partial<{ perDevice: string; total: string }> | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const saving = useRef(false);
+  const reading = useRef<number | null>(null);
   const sequence = useRef(0);
 
   const load = useCallback(async () => {
-    if (saving.current) return;
+    if (saving.current || reading.current !== null) return;
     const seq = ++sequence.current;
+    reading.current = seq;
     const owner = getDataOwnerGeneration();
     try {
       const next = await providerShareManagementCommand({ action: 'get-run-limits' }, deviceId);
@@ -31,6 +33,8 @@ export function RemoteAgentLimitsSection({ deviceId }: { deviceId?: string }) {
     } catch (error) {
       if (seq !== sequence.current || !isDataOwnerGenerationCurrent(owner)) return;
       setErrorKey(providerManagementErrorKey(error, Boolean(deviceId)));
+    } finally {
+      if (reading.current === seq) reading.current = null;
     }
   }, [deviceId]);
 
@@ -39,13 +43,14 @@ export function RemoteAgentLimitsSection({ deviceId }: { deviceId?: string }) {
     const timer = window.setInterval(() => {
       if (document.visibilityState !== 'hidden') void load();
     }, 5_000);
-    return () => { sequence.current += 1; window.clearInterval(timer); };
+    return () => { sequence.current += 1; reading.current = null; window.clearInterval(timer); };
   }, [load]);
 
-  const values = draft ?? { perDevice: String(view?.value.perDevice ?? ''), total: String(view?.value.total ?? '') };
+  const values = { perDevice: String(view?.value.perDevice ?? ''), total: String(view?.value.total ?? ''), ...draft };
   const limits = { perDevice: Number(values.perDevice), total: Number(values.total) };
   const valid = isRemoteAgentLimits(limits);
-  const changed = view && (limits.perDevice !== view.value.perDevice || limits.total !== view.value.total);
+  const changed = view && (['perDevice', 'total'] as const).some(key =>
+    draft?.[key] !== undefined && (limits[key] !== view.value[key] || !view.customizedKeys.includes(key)));
 
   const save = async (reset: boolean) => {
     if (saving.current || (!reset && !valid)) return;
@@ -55,7 +60,10 @@ export function RemoteAgentLimitsSection({ deviceId }: { deviceId?: string }) {
     const owner = getDataOwnerGeneration();
     try {
       const next = await providerShareManagementCommand(reset
-        ? { action: 'reset-run-limits' } : { action: 'set-run-limits', limits }, deviceId);
+        ? { action: 'reset-run-limits' } : { action: 'set-run-limits', limits: {
+          ...(draft?.perDevice !== undefined ? { perDevice: limits.perDevice } : {}),
+          ...(draft?.total !== undefined ? { total: limits.total } : {}),
+        } }, deviceId);
       if (seq !== sequence.current || !isDataOwnerGenerationCurrent(owner)) return;
       setView(next);
       setDraft(null);
@@ -86,7 +94,7 @@ export function RemoteAgentLimitsSection({ deviceId }: { deviceId?: string }) {
               <FormField key={key} label={t(`providerShare.runLimits.${key}`)}>
                 {control => <Input {...control} type="number" min={1} max={REMOTE_AGENT_LIMIT_MAX} step={1}
                   disabled={busy || Boolean(errorKey)} value={values[key]} data-testid={`remote-agent-limit-${key}`}
-                  onChange={value => setDraft({ ...values, [key]: value })} />}
+                  onChange={value => setDraft(previous => ({ ...previous, [key]: value }))} />}
               </FormField>
             ))}
           </div>

@@ -27,6 +27,32 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('RemoteAgentLimitsSection', () => {
+  it('saves only edited fields, including an explicitly chosen default', async () => {
+    render(<RemoteAgentLimitsSection />);
+    await waitFor(() => expect(input('perDevice').value).toBe('16'));
+    fireEvent.change(input('perDevice'), { target: { value: '32' } });
+    fireEvent.click(button('save'));
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith({ action: 'set-run-limits', limits: { perDevice: 32 } }, undefined));
+    await waitFor(() => expect(button('save').disabled).toBe(true));
+    fireEvent.change(input('perDevice'), { target: { value: '24' } });
+    fireEvent.change(input('perDevice'), { target: { value: '16' } });
+    expect(button('save').disabled).toBe(false);
+    fireEvent.click(button('save'));
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith({ action: 'set-run-limits', limits: { perDevice: 16 } }, undefined));
+  });
+
+  it('accepts slow reads instead of superseding every response with the next poll', async () => {
+    vi.useFakeTimers();
+    command.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(view()), 6_000)));
+    render(<RemoteAgentLimitsSection deviceId="slow-computer" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(command).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(input('perDevice').value).toBe('16');
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(command).toHaveBeenCalledTimes(2);
+    expect(input('total').value).toBe('64');
+  });
   it('validates both limits, saves on the selected computer and resets its overrides', async () => {
     render(<RemoteAgentLimitsSection deviceId="provider-computer" />);
     await waitFor(() => expect(input('perDevice').value).toBe('16'));
@@ -54,7 +80,7 @@ describe('RemoteAgentLimitsSection', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(command).toHaveBeenCalledTimes(2);
     expect(input('perDevice').value).toBe('32');
-    expect(input('total').value).toBe('64');
+    expect(input('total').value).toBe('80');
   });
 
   it('does not show an old account response after an account switch', async () => {
