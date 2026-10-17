@@ -1,0 +1,171 @@
+/**
+ * 远程模型连接池(控制端，这台电脑对每台运行 Agent 的电脑一个)。
+ *
+ * 对方电脑按「发起设备」限制同时开着的远程任务数(`caps.maxRuns`)，开着的 Agent 进程才占名额，
+ * 对话记录不占。本机任务闲着时 Agent 进程仍开着，名额紧张时就由这里让出：只断开那台电脑上的 Agent
+ * (`close`)，对话记录与本机部分(执行器、本机 Cindy 工具、Codex 执行环境)都留着，下次要它干活时
+ * 带原来的会话 id 连回来。
+ *
+ * 只在名额紧张时让：
+ *  - 本机在这台电脑上开着的连接数到了水位线(maxRuns 的 80%，向上取整)：按最久没活动的顺序让，直到降到
+ *    水位线以下。上限很小(1～4)时水位线就等于上限，「快满」等同「已满」，不提前让，只走下面两条按需的；
+ *  - 打开前已满：先让一个再打开；
+ *  - 对方以名额已满拒绝打开：让一个再重试一次。
+ * 只有「不忙」且闲置满设置时长的连接才有资格让；没有就不动，由对方的上限做最终裁决。设置为 0 时
+ * 一个都不让(与没有连接池时一样，满了直接报错)。
+ * 不排队等名额。对方整机合计上限(TOTAL_LIMIT)本机看不到别的设备的占用，只能靠被拒后处理。
+ */
+export const REMOTE_AGENT_POOL_WATERMARK_RATIO = 0.8;
+/** 在水位线之上的连接会随时间变得有资格，定期再看一次。 */
+export const REMOTE_AGENT_POOL_CHECK_MS = 60_000;
+
+export interface PooledRemoteConnection {
+  /** 占着对方的名额(正在连、连着或正在断开)。 */
+  occupiesSlot(): boolean;
+  /** 不忙：没有在跑的回合、没有未完成的请求，对方进程里也没有后台工作。 */
+  isIdle(): boolean;
+  /** 最后一次活动的时间(毫秒)。 */
+  lastActivityAt(): number;
+  /** 断开对方电脑上的 Agent(仍然不忙时才断)；返回是否让出了名额。 */
+  release(): Promise<boolean>;
+}
+
+/**
+ * 对方以名额已满拒绝打开(`REMOTE_AGENT_BUSY` 的单设备 / 整机上限；旧版对方只有一句
+ * `too many tasks are running from this computer`)。暂存数据过多(`too much staged data`)也是
+ * `REMOTE_AGENT_BUSY`，但与名额无关，不算。
+ */
+export function isRemoteRunLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (!message.includes('REMOTE_AGENT_BUSY')) return false;
+  return /\[(?:DEVICE|TOTAL)_LIMIT\]/.test(message) || message.includes('too many tasks are running from this computer');
+}
+
+export interface RemoteConnectionPoolOptions {
+  /** 闲置满多少分钟才有资格让出名额；0 = 不让。每次判断时读取。 */
+  idleMinutes(): number;
+  now?: () => number;
+  checkMs?: number;
+  log?: { info(message: string, meta?: Record<string, unknown>): void; warn(message: string, meta?: Record<string, unknown>): void };
+}
+
+export class RemoteConnectionPool {
+  private readonly members = new Set<PooledRemoteConnection>();
+  private maxRuns: number | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  /** 让出名额一次只做一个，避免几条路径同时挑中不同的连接、多让。 */
+  private chain: Promise<unknown> = Promise.resolve();
+  private readonly now: () => number;
+
+  constructor(private readonly options: RemoteConnectionPoolOptions) {
+    this.now = options.now ?? Date.now;
+  }
+
+  /** 登记一个连接；返回注销函数。 */
+  add(member: PooledRemoteConnection): () => void {
+    this.members.add(member);
+    if (!this.timer) {
+      this.timer = setInterval(() => void this.trim(), this.options.checkMs ?? REMOTE_AGENT_POOL_CHECK_MS);
+      (this.timer as { unref?: () => void }).unref?.();
+    }
+    return () => {
+      this.members.delete(member);
+      if (this.members.size === 0 && this.timer) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+    };
+  }
+
+  /** 对方最近一次报的单设备上限(每次打开前 caps 拿到)。 */
+  noteMaxRuns(maxRuns: number): void {
+    if (Number.isInteger(maxRuns) && maxRuns >= 1) this.maxRuns = maxRuns;
+  }
+
+  get size(): number {
+    return this.members.size;
+  }
+
+  /** 本机在这台电脑上占着的名额数。 */
+  occupied(except?: PooledRemoteConnection): number {
+    let count = 0;
+    for (const member of this.members) if (member !== except && member.occupiesSlot()) count += 1;
+    return count;
+  }
+
+  /** 提前让出名额的水位线；上限太小(水位线不低于上限)时没有。 */
+  watermark(): number | null {
+    if (this.maxRuns === null) return null;
+    const watermark = Math.ceil(this.maxRuns * REMOTE_AGENT_POOL_WATERMARK_RATIO);
+    return watermark < this.maxRuns ? watermark : null;
+  }
+
+  /** 有资格让出名额：不忙，且闲置满设置时长(0 = 都没有资格)。 */
+  private isEligible(member: PooledRemoteConnection): boolean {
+    const minutes = this.options.idleMinutes();
+    if (!Number.isFinite(minutes) || minutes <= 0) return false;
+    return member.occupiesSlot() && member.isIdle() && this.now() - member.lastActivityAt() >= minutes * 60_000;
+  }
+
+  /** 有资格让出名额的连接，最久没活动的在前。 */
+  eligible(except?: PooledRemoteConnection): PooledRemoteConnection[] {
+    return [...this.members]
+      .filter((member) => member !== except && this.isEligible(member))
+      .sort((a, b) => a.lastActivityAt() - b.lastActivityAt());
+  }
+
+  private serial<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(task, task);
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
+  /** 按顺序试着让一个(候选在等待期间可能变忙，release 会放弃)。 */
+  private async releaseNext(except?: PooledRemoteConnection): Promise<boolean> {
+    for (const member of this.eligible(except)) {
+      // 前一个候选让的时候这个可能刚有了活动。
+      if (!this.isEligible(member)) continue;
+      try {
+        if (await member.release()) return true;
+      } catch (error) {
+        this.options.log?.warn('remote agent pool: release failed', { error: String(error) });
+      }
+    }
+    return false;
+  }
+
+  /** 到水位线就按最久没活动让，直到降到水位线以下或没有有资格的。 */
+  trim(): Promise<void> {
+    return this.serial(async () => {
+      for (;;) {
+        const watermark = this.watermark();
+        if (watermark === null || this.occupied() < watermark) return;
+        if (!await this.releaseNext()) return;
+        this.options.log?.info('remote agent pool: released an idle connection', { occupied: this.occupied(), maxRuns: this.maxRuns });
+      }
+    });
+  }
+
+  /**
+   * 打开前(`self` 是正要打开的那个，已登记为占名额)：已满就先同步让一个；再在后台按水位线整理。
+   * 没有有资格的也照常打开，对方才是最终裁判(本机计数可能不准：多实例、对方刚改了上限)。
+   */
+  async beforeOpen(self: PooledRemoteConnection): Promise<void> {
+    await this.serial(async () => {
+      if (this.maxRuns === null || this.occupied(self) < this.maxRuns) return;
+      if (await this.releaseNext(self)) {
+        this.options.log?.info('remote agent pool: made room before opening', { maxRuns: this.maxRuns });
+      }
+    });
+    void this.trim();
+  }
+
+  /** 对方以名额已满拒绝了打开：让一个，让出了就由调用方重试一次。 */
+  releaseForRetry(self: PooledRemoteConnection): Promise<boolean> {
+    return this.serial(async () => {
+      const released = await this.releaseNext(self);
+      this.options.log?.info('remote agent pool: open rejected for capacity', { released, maxRuns: this.maxRuns });
+      return released;
+    });
+  }
+}

@@ -479,6 +479,18 @@
       "saved": "Remote session limits saved",
       "retry": "Reload",
       "loading": "Loading…"
+    },
+    "idleRelease": {
+      "title": "When this computer uses models on other computers",
+      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, tasks idle longer than the time below are temporarily disconnected to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running or still have background work are never disconnected.",
+      "minutes": "Idle release (minutes)",
+      "hint": "Set 0 to never disconnect; when the limit is reached you see the limit message. 1–120 disconnects a task only after it has been idle this long.",
+      "invalid": "Enter a whole number from 0 to {{max}}.",
+      "save": "Save",
+      "reset": "Restore defaults",
+      "saved": "Idle release setting saved",
+      "retry": "Reload",
+      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -11998,7 +12010,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
       "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
-      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing."
+      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
+      "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context."
     },
     "generatedFiles": {
       "title": "Files created this message",

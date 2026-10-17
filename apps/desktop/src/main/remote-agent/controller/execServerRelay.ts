@@ -68,6 +68,13 @@ interface Connection {
   closed: boolean;
   /** 有消息在等本机确认时，后面的消息按顺序排在它后面。 */
   queue?: Promise<void>;
+  /**
+   * 还在运行的进程(`process/start` 起的，收到 `process/closed` / `process/exited` 或启动失败前都算)。
+   * Codex 的后台终端就是这些：编号在对方的 Codex 里，进程在这里，连接一断就没了。
+   */
+  processes: Set<string>;
+  /** 启动请求 id → 进程编号(启动失败时据此移除)。 */
+  starting: Map<string, string>;
 }
 
 /** `["/bin/zsh","-lc","cmd"]` → `cmd`；其它形态按空格拼接。 */
@@ -346,6 +353,27 @@ export class ExecServerRelay {
     }
   }
 
+  /**
+   * 还有放不下的工作：有进程在跑(含 Codex 的后台终端)、有消息在等本机确认，或还有帧没推完。
+   * 这时断开对方的 Agent 会丢掉它们，连接池不让出名额。
+   */
+  busy(): boolean {
+    if (this.outbox.length || this.flushing) return true;
+    for (const connection of this.connections.values()) {
+      if (connection.processes.size || connection.starting.size || connection.queue) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 对方的 Agent 已断开(连接池让出名额)：关掉本机为它起的 exec-server，中继本身留给连回来的 Agent。
+   */
+  reset(): void {
+    if (this.closed) return;
+    this.outbox = [];
+    for (const connId of [...this.connections.keys()]) this.dropConnection(connId, false);
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -372,7 +400,7 @@ export class ExecServerRelay {
       this.send({ connId, kind: 'close' });
       return;
     }
-    const connection: Connection = { child, buffer: '', closed: false };
+    const connection: Connection = { child, buffer: '', closed: false, processes: new Set(), starting: new Map() };
     this.connections.set(connId, connection);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -382,7 +410,10 @@ export class ExecServerRelay {
         if (index < 0) break;
         const line = connection.buffer.slice(0, index);
         connection.buffer = connection.buffer.slice(index + 1);
-        if (line.trim()) this.sendMessage(connId, this.projectOutbound(line));
+        if (line.trim()) {
+          this.trackOutbound(connection, line);
+          this.sendMessage(connId, this.projectOutbound(line));
+        }
       }
       if (connection.buffer.length > MAX_LINE_CHARS) {
         this.deps.log?.warn('remote agent: exec-server line too long; closing', { connId });
@@ -411,6 +442,10 @@ export class ExecServerRelay {
       message.params = mapExecServerParams(message.params, this.deps.workspace, message.method, false);
       data = JSON.stringify(message);
       actions = execServerActions(message.method, message.params, this.deps.cwd);
+      if (message.method === 'process/start') {
+        const processId = (message.params as { processId?: unknown } | undefined)?.processId;
+        if (typeof processId === 'string') connection.starting.set(JSON.stringify(message.id), processId);
+      }
     }
     const id = message?.id;
     // 延迟到所有 action 获准之后，不能为了内容保真提前读取被拒绝的目标。
@@ -462,8 +497,36 @@ export class ExecServerRelay {
     if (!connection.closed) connection.child.stdin.write(line());
   }
 
+  /** 记下 exec-server 报的进程起止(只看编号，不改消息)。 */
+  private trackOutbound(connection: Connection, line: string): void {
+    // 大段文件内容不必再解析一遍：进程通知带方法名，启动回包很短。
+    if (!line.includes('"process/') && !(connection.starting.size && line.length < 64 * 1024)) return;
+    let message: { id?: unknown; method?: unknown; params?: { processId?: unknown }; result?: unknown; error?: unknown };
+    try {
+      message = JSON.parse(line) as typeof message;
+    } catch {
+      return;
+    }
+    if (!message || typeof message !== 'object') return;
+    if (message.id !== undefined && message.method === undefined) {
+      const key = JSON.stringify(message.id);
+      const processId = connection.starting.get(key);
+      if (processId === undefined) return;
+      connection.starting.delete(key);
+      if (message.error === undefined) connection.processes.add(processId);
+      return;
+    }
+    if ((message.method === 'process/closed' || message.method === 'process/exited') && typeof message.params?.processId === 'string') {
+      const processId = message.params.processId;
+      connection.processes.delete(processId);
+      for (const [key, starting] of connection.starting) if (starting === processId) connection.starting.delete(key);
+    }
+  }
+
   private reject(connId: string, id: unknown, decision: ExecutorGateDecision): void {
     this.counts.rejected += 1;
+    // 被闸门拦下的启动没有到 exec-server，不会有进程。
+    this.connections.get(connId)?.starting.delete(JSON.stringify(id));
     this.sendMessage(connId, JSON.stringify({
       id,
       error: { code: -32001, message: this.deps.workspace.mapTextForAgent(decision.reason ?? 'Not allowed in this workspace.') },

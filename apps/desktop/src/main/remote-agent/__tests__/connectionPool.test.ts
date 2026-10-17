@@ -1,0 +1,911 @@
+/**
+ * 远程模型连接池：只在名额紧张时让出「不忙且闲置满设置时长」的连接；让出只结束对方的 Agent 进程，
+ * 本机部分(执行器里的后台命令等)留着，再发消息时带原来的会话 id 连回来。
+ *
+ * 前半是连接池本身的判定；后半与 roundtrip.test.ts 同一套两端同进程的接线，被控端是真实的
+ * createRemoteAgentHost(按设备计名额)，Agent 是假的。
+ */
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import type { AgentEvent, AgentSessionHandle, BackgroundTaskSnapshot, StartSessionOptions } from '@cindy/maker-core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  isRemoteRunLimitError,
+  RemoteConnectionPool,
+  type PooledRemoteConnection,
+} from '../controller/connectionPool';
+import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
+import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
+import type { RemoteAgentLimits } from '../../../shared/remoteAgentLimits';
+
+// ─── 连接池本身 ────────────────────────────────────────────────────
+
+interface FakeMember extends PooledRemoteConnection {
+  name: string;
+  occupied: boolean;
+  idle: boolean;
+  activity: number;
+  released: number;
+}
+
+function member(name: string, activity: number, idle = true): FakeMember {
+  const item: FakeMember = {
+    name,
+    occupied: true,
+    idle,
+    activity,
+    released: 0,
+    occupiesSlot: () => item.occupied,
+    isIdle: () => item.idle,
+    lastActivityAt: () => item.activity,
+    release: async () => {
+      if (!item.occupied || !item.idle) return false;
+      item.occupied = false;
+      item.released += 1;
+      return true;
+    },
+  };
+  return item;
+}
+
+const MINUTE = 60_000;
+
+function poolWith(minutes: number, now: number) {
+  let idleMinutes = minutes;
+  const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, now: () => now, checkMs: 3_600_000 });
+  return { pool, setMinutes: (value: number) => { idleMinutes = value; } };
+}
+
+describe('remote connection pool', () => {
+  const now = 100 * MINUTE;
+
+  it('recognizes capacity rejections from new and old hosts, but not staged-data pressure', () => {
+    expect(isRemoteRunLimitError(new Error('[REMOTE_AGENT_BUSY] [DEVICE_LIMIT] remote task limit for this device reached'))).toBe(true);
+    expect(isRemoteRunLimitError(new Error('[REMOTE_AGENT_BUSY] [TOTAL_LIMIT] remote task limit for the provider computer reached'))).toBe(true);
+    expect(isRemoteRunLimitError(new Error('[REMOTE_AGENT_BUSY] too many tasks are running from this computer'))).toBe(true);
+    expect(isRemoteRunLimitError(new Error('[REMOTE_AGENT_BUSY] too much staged data'))).toBe(false);
+    expect(isRemoteRunLimitError(new Error('[REMOTE_AGENT_UNAVAILABLE] [DEVICE_LIMIT]'))).toBe(false);
+  });
+
+  it('does not release below the watermark, however long a connection has been idle', async () => {
+    const { pool } = poolWith(10, now);
+    pool.noteMaxRuns(10); // 水位线 8
+    const members = Array.from({ length: 7 }, (_, index) => member(`m${index}`, now - 1_000 * MINUTE));
+    members.forEach((item) => pool.add(item));
+    await pool.trim();
+    expect(members.map((item) => item.released)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it('at the watermark releases eligible connections oldest first until below it', async () => {
+    const { pool } = poolWith(10, now);
+    pool.noteMaxRuns(10);
+    const fresh = Array.from({ length: 6 }, (_, index) => member(`fresh${index}`, now - MINUTE));
+    const old = member('old', now - 30 * MINUTE);
+    const older = member('older', now - 60 * MINUTE);
+    const busy = member('busy', now - 90 * MINUTE, false);
+    [...fresh, old, older, busy].forEach((item) => pool.add(item));
+    expect(pool.occupied()).toBe(9);
+    await pool.trim();
+    // 9 → 7：先让最久的 older，再让 old；忙的与闲置不足 10 分钟的不动。
+    expect([older.released, old.released, busy.released]).toEqual([1, 1, 0]);
+    expect(fresh.every((item) => item.released === 0)).toBe(true);
+    expect(pool.occupied()).toBe(7);
+  });
+
+  it('at the watermark without eligible connections releases nothing', async () => {
+    const { pool } = poolWith(10, now);
+    pool.noteMaxRuns(5); // 水位线 4
+    const members = [
+      member('busy', now - 60 * MINUTE, false),
+      member('recent1', now - 9 * MINUTE),
+      member('recent2', now - MINUTE),
+      member('recent3', now),
+    ];
+    members.forEach((item) => pool.add(item));
+    await pool.trim();
+    expect(members.map((item) => item.released)).toEqual([0, 0, 0, 0]);
+  });
+
+  it.each([
+    [1, null],
+    [2, null],
+    [4, null],
+    [5, 4],
+    [16, 13],
+  ])('maxRuns %i has watermark %s; small limits never release early', async (maxRuns, watermark) => {
+    const { pool } = poolWith(10, now);
+    pool.noteMaxRuns(maxRuns);
+    expect(pool.watermark()).toBe(watermark);
+    const members = Array.from({ length: maxRuns }, (_, index) => member(`m${index}`, now - (100 + index) * MINUTE));
+    members.forEach((item) => pool.add(item));
+    await pool.trim();
+    const released = members.reduce((sum, item) => sum + item.released, 0);
+    expect(released).toBe(watermark === null ? 0 : maxRuns - watermark + 1);
+  });
+
+  it('when full makes room for exactly one before opening, and only with an eligible connection', async () => {
+    const { pool } = poolWith(10, now);
+    pool.noteMaxRuns(2);
+    const a = member('a', now - 20 * MINUTE);
+    const b = member('b', now - 30 * MINUTE);
+    const self = member('self', now, false);
+    [a, b, self].forEach((item) => pool.add(item));
+    await pool.beforeOpen(self);
+    expect([a.released, b.released, self.released]).toEqual([0, 1, 0]);
+    // 又满了，剩下的那个闲置不足：不让，照常打开(由对方裁决)。
+    a.activity = now - MINUTE;
+    const c = member('c', now - 5 * MINUTE);
+    pool.add(c);
+    await pool.beforeOpen(self);
+    expect([a.released, c.released]).toEqual([0, 0]);
+  });
+
+  it('uses the latest caps value for the per-device limit', async () => {
+    const { pool } = poolWith(10, now);
+    const a = member('a', now - 20 * MINUTE);
+    const self = member('self', now, false);
+    [a, self].forEach((item) => pool.add(item));
+    pool.noteMaxRuns(4);
+    await pool.beforeOpen(self);
+    expect(a.released).toBe(0);
+    pool.noteMaxRuns(1);
+    await pool.beforeOpen(self);
+    expect(a.released).toBe(1);
+  });
+
+  it('after a capacity rejection releases one eligible connection, none when nothing qualifies', async () => {
+    const { pool } = poolWith(10, now);
+    pool.noteMaxRuns(16);
+    const self = member('self', now, false);
+    const a = member('a', now - 20 * MINUTE);
+    const b = member('b', now - 40 * MINUTE);
+    [self, a, b].forEach((item) => pool.add(item));
+    expect(await pool.releaseForRetry(self)).toBe(true);
+    expect([a.released, b.released]).toEqual([0, 1]);
+    a.idle = false;
+    expect(await pool.releaseForRetry(self)).toBe(false);
+  });
+
+  it('with 0 minutes never releases on any path', async () => {
+    const { pool } = poolWith(0, now);
+    pool.noteMaxRuns(5);
+    const self = member('self', now, false);
+    const members = Array.from({ length: 5 }, (_, index) => member(`m${index}`, now - 1_000 * MINUTE));
+    [self, ...members].forEach((item) => pool.add(item));
+    await pool.trim();
+    await pool.beforeOpen(self);
+    expect(await pool.releaseForRetry(self)).toBe(false);
+    expect(members.every((item) => item.released === 0)).toBe(true);
+  });
+
+  it('only counts the idle threshold that is set when deciding', async () => {
+    const { pool, setMinutes } = poolWith(30, now);
+    pool.noteMaxRuns(1);
+    const self = member('self', now, false);
+    const a = member('a', now - 20 * MINUTE);
+    [self, a].forEach((item) => pool.add(item));
+    expect(await pool.releaseForRetry(self)).toBe(false);
+    setMinutes(15);
+    expect(await pool.releaseForRetry(self)).toBe(true);
+  });
+
+  it('checks the watermark periodically while connections are registered', async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = now;
+      const pool = new RemoteConnectionPool({ idleMinutes: () => 10, now: () => clock, checkMs: MINUTE });
+      pool.noteMaxRuns(5);
+      const members = Array.from({ length: 4 }, (_, index) => member(`m${index}`, now - index * MINUTE));
+      const leave = members.map((item) => pool.add(item));
+      await vi.advanceTimersByTimeAsync(MINUTE);
+      expect(members.every((item) => item.released === 0)).toBe(true);
+      clock = now + 12 * MINUTE;
+      await vi.advanceTimersByTimeAsync(MINUTE);
+      expect(members.reduce((sum, item) => sum + item.released, 0)).toBe(1);
+      expect(members[3].released).toBe(1);
+      leave.forEach((fn) => fn());
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ─── 两端接线 ────────────────────────────────────────────────────
+
+const RG = path.resolve(__dirname, '../../../../../ripgrep-bin', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'rg.exe' : 'rg');
+const CONTROLLER = 'controller-device-1';
+
+let root: string;
+let project: string;
+let hostRoot: string;
+
+function queue() {
+  const items: AgentEvent[] = [];
+  let wake: (() => void) | null = null;
+  let ended = false;
+  return {
+    push(event: AgentEvent) {
+      items.push(event);
+      wake?.();
+      wake = null;
+    },
+    end() {
+      ended = true;
+      wake?.();
+      wake = null;
+    },
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        if (items.length) {
+          yield items.shift()!;
+          continue;
+        }
+        if (ended) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+    },
+  };
+}
+
+interface Scenario {
+  /** 被控端启动过的 Agent(每次打开一个)。 */
+  started: HostedStartInput[];
+  /** 被控端 Agent 收到的方法调用。 */
+  calls: Array<{ method: string; args: unknown[] }>;
+  /** 被控端收到的 close op 次数。 */
+  closes: number;
+  /** 打开时接不回会话：先问控制端能不能清掉，再开新会话。 */
+  failResume: 'callback' | 'silent' | null;
+  /** 下一个 Agent 报告的后台任务 / 待唤醒数。 */
+  backgroundTasks: BackgroundTaskSnapshot[];
+  pendingWake: number;
+  /** send 'hold' 时卡住，直到调用它。 */
+  releaseHold: (() => void) | null;
+}
+
+let scenario: Scenario;
+let nextNative = 0;
+
+/** 假 Agent：会话 id 接回 resumeSessionId；按消息内容干活。 */
+function fakeAgent(input: HostedStartInput): AgentSessionHandle {
+  scenario.started.push(input);
+  const events = queue();
+  let running = false;
+  const resume = input.options.resumeSessionId;
+  let id = resume ?? `native-${(nextNative += 1)}`;
+  let model = input.options.model;
+  let planMode = input.options.planMode === true;
+  let effort = input.options.effort;
+  const failResume = resume ? scenario.failResume : null;
+  const backgroundTasks = scenario.backgroundTasks;
+  const pendingWake = scenario.pendingWake;
+  if (failResume) {
+    id = `native-${(nextNative += 1)}`;
+    if (failResume === 'callback') void input.onInvalidResumeSession?.(resume!);
+  }
+  const auth = { authorization: `Bearer ${input.tunnel.token}` };
+  const tool = async (name: string, args: Record<string, unknown>) => {
+    const response = await fetch(`${input.tunnel.url}/mcp/cindy_exec`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await response.json() as { result: { content: Array<{ text: string }> } };
+    return body.result.content.map((item) => item.text).join('');
+  };
+  const record = (method: string, args: unknown[]) => scenario.calls.push({ method, args });
+  const say = (text: string) => events.push({ type: 'text', data: { text, isFinal: true }, source: input.kind });
+  return {
+    get id() {
+      return id;
+    },
+    agentKind: input.kind,
+    get model() {
+      return model;
+    },
+    async send(message) {
+      record('send', [message]);
+      const text = typeof message.content === 'string' ? message.content : '';
+      running = true;
+      if (text === 'hold') {
+        await new Promise<void>((resolve) => {
+          scenario.releaseHold = resolve;
+        });
+      } else if (text === 'bg') {
+        say(await tool('Bash', { command: 'sleep 0.3; echo bg-finished', run_in_background: true }));
+      } else if (text.startsWith('read ')) {
+        say(await tool('BashOutput', { bash_id: text.slice(5) }));
+      } else if (text === 'whoami') {
+        say(`${id} ${model} ${effort ?? ''} plan:${planMode}`);
+      } else {
+        say(`ok:${text}`);
+      }
+      running = false;
+      events.push({ type: 'done', data: {}, source: input.kind });
+    },
+    async steer() {},
+    async abort() {
+      record('abort', []);
+    },
+    async close() {
+      events.end();
+    },
+    events: () => events,
+    getUsageSnapshot: () => ({ tokenUsage: scenario.calls.length ? 7 : 0, contextTokens: scenario.calls.length ? 5 : 0, contextWindow: 100, costUsd: 0 }),
+    setInteractionResolver() {},
+    isTurnRunning: () => running,
+    getPlanMode: () => planMode,
+    getEffort: () => effort ?? null,
+    listBackgroundTasks: () => backgroundTasks,
+    countPendingWakeContinuations: () => pendingWake,
+    async setPermissionMode(mode) {
+      record('setPermissionMode', [mode]);
+    },
+    async setModel(next, opts) {
+      record('setModel', [next, opts]);
+      model = next;
+      if (opts?.effort) effort = opts.effort;
+    },
+    async setEffort(next) {
+      record('setEffort', [next]);
+      effort = next;
+    },
+    async setPlanMode(enabled) {
+      record('setPlanMode', [enabled]);
+      planMode = enabled;
+    },
+    async setExtraDirs(dirs, libraryRoot) {
+      record('setExtraDirs', [dirs, libraryRoot]);
+    },
+    async requiresModelSwitchRebuild() {
+      record('requiresModelSwitchRebuild', []);
+      return true;
+    },
+    async commitRewindFiles(userUuid, priorAssistantUuid) {
+      record('commitRewindFiles', [userUuid, priorAssistantUuid]);
+      return { ok: true } as never;
+    },
+  } as AgentSessionHandle;
+}
+
+let limits: RemoteAgentLimits;
+let host: ReturnType<typeof createRemoteAgentHost>;
+/** 改写 / 拦截被控端的回复(模拟旧版文案、暂存过多等)。 */
+let intercept: ((request: Record<string, unknown>) => unknown) | null;
+let opens: number;
+
+function createHost() {
+  return createRemoteAgentHost({
+    readLimits: () => limits,
+    isAgentAvailable: () => true,
+    startHosted: async (input) => fakeAgent(input),
+    isControllerAuthorized: () => true,
+    captureOwner: () => 'owner',
+    isOwnerCurrent: () => true,
+    runsRoot: hostRoot,
+  });
+}
+
+function deps(pool?: RemoteConnectionPool): StartRemoteAgentDeps {
+  return {
+    invoke: async (args) => {
+      const request = JSON.parse(JSON.stringify(args[0])) as Record<string, unknown>;
+      if (request.op === 'open') opens += 1;
+      if (request.op === 'close') scenario.closes += 1;
+      if (intercept) {
+        const replaced = intercept(request);
+        if (replaced !== undefined) return replaced;
+      }
+      const result = await host.handle(CONTROLLER, request);
+      return JSON.parse(JSON.stringify(result ?? null));
+    },
+    rgPath: RG,
+    prepareMcp: async () => ({ servers: new Map(), dispose() {} }),
+    collectProjectFiles: async () => [],
+    isGitRepo: async () => false,
+    newId: randomUUID,
+    ...(pool ? { pool } : {}),
+  };
+}
+
+/** 极短的闲置阈值(分钟)：测试里「闲置满」只要等几毫秒。 */
+const TINY_MINUTES = 1 / 60_000;
+let idleMinutes: number;
+
+function newPool(): RemoteConnectionPool {
+  return new RemoteConnectionPool({ idleMinutes: () => idleMinutes, checkMs: 3_600_000 });
+}
+
+const opened: AgentSessionHandle[] = [];
+
+async function start(pool: RemoteConnectionPool | undefined, extra: Partial<StartSessionOptions> = {}): Promise<AgentSessionHandle> {
+  const handle = await startRemoteAgentSession('claude-code', {
+    sessionId: randomUUID(), workingDir: project, model: 'm1', ...extra,
+  } as StartSessionOptions, deps(pool));
+  opened.push(handle);
+  return handle;
+}
+
+/** 收集一个句柄的事件；`until` 等到满足条件的事件。 */
+function watch(handle: AgentSessionHandle) {
+  const seen: AgentEvent[] = [];
+  const waiters: Array<{ test: (event: AgentEvent) => boolean; resolve: (event: AgentEvent) => void }> = [];
+  void (async () => {
+    for await (const event of handle.events()) {
+      seen.push(event);
+      for (const waiter of [...waiters]) {
+        if (waiter.test(event)) {
+          waiters.splice(waiters.indexOf(waiter), 1);
+          waiter.resolve(event);
+        }
+      }
+    }
+  })();
+  return {
+    seen,
+    until: (test: (event: AgentEvent) => boolean) => new Promise<AgentEvent>((resolve) => {
+      const found = seen.find(test);
+      if (found) resolve(found);
+      else waiters.push({ test, resolve });
+    }),
+  };
+}
+
+const textOf = (event: AgentEvent) => (event.data as { text?: string }).text ?? '';
+
+/** 发一条消息，等它的回答。 */
+async function ask(handle: AgentSessionHandle, watcher: ReturnType<typeof watch>, content: string): Promise<string> {
+  const doneBefore = watcher.seen.filter((event) => event.type === 'done').length;
+  await handle.send({ type: 'user', content });
+  await watcher.until(() => watcher.seen.filter((event) => event.type === 'done').length > doneBefore);
+  const texts = watcher.seen.filter((event) => event.type === 'text');
+  return textOf(texts[texts.length - 1]);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+beforeEach(() => {
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-ra-pool-')));
+  project = path.join(root, 'project');
+  hostRoot = path.join(root, 'host');
+  fs.mkdirSync(project);
+  scenario = { started: [], calls: [], closes: 0, failResume: null, backgroundTasks: [], pendingWake: 0, releaseHold: null };
+  limits = { perDevice: 1, total: 64 };
+  intercept = null;
+  opens = 0;
+  idleMinutes = TINY_MINUTES;
+  host = createHost();
+});
+
+afterEach(async () => {
+  scenario.releaseHold?.();
+  await Promise.allSettled(opened.splice(0).map((handle) => handle.close({ reason: 'navigation' })));
+  await host.abortAll();
+  host.dispose();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('remote connection pool with a real host', () => {
+  it('makes room when full, then reconnects the released task to the same conversation', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const aEvents = watch(a);
+    expect(await ask(a, aEvents, 'hello')).toBe('ok:hello');
+    const nativeA = a.id;
+    await sleep(5);
+    const b = await start(pool);
+    // 对方只给 1 个名额：打开 b 之前先让出了 a。
+    expect(host.limitUsage().total).toBe(1);
+    expect(scenario.started).toHaveLength(2);
+    expect(scenario.started[1].options.resumeSessionId).toBeUndefined();
+    // a 的状态照常读，界面不变空。
+    expect(a.id).toBe(nativeA);
+    expect(a.getUsageSnapshot().tokenUsage).toBeGreaterThan(0);
+    await sleep(5);
+    expect(await ask(a, aEvents, 'whoami')).toBe(`${nativeA} m1  plan:false`);
+    expect(scenario.started).toHaveLength(3);
+    expect(scenario.started[2].options.resumeSessionId).toBe(nativeA);
+    expect(host.limitUsage().total).toBe(1);
+    // b 让出后照样能用。
+    const bEvents = watch(b);
+    await sleep(5);
+    expect(await ask(b, bEvents, 'again')).toBe('ok:again');
+  });
+
+  it('keeps background commands on this computer across a release and reads them by the same id', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    const started = await ask(a, events, 'bg');
+    const id = /with ID: (\S+?)\./.exec(started)?.[1];
+    expect(id).toBeTruthy();
+    // 本机执行器里的后台命令不算忙：a 照样有资格让出。
+    await sleep(5);
+    await start(pool);
+    expect(scenario.started).toHaveLength(2);
+    await sleep(400);
+    const output = await ask(a, events, `read ${id}`);
+    expect(output).toContain('bg-finished');
+    expect(scenario.started[2].options.resumeSessionId).toBe(a.id);
+  });
+
+  it('records setting changes while released and opens with them, without reconnecting just for them', async () => {
+    const pool = newPool();
+    const extra = path.join(root, 'extra');
+    fs.mkdirSync(extra);
+    const a = await start(pool, { permissionMode: 'default' } as Partial<StartSessionOptions>);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    await start(pool);
+    const before = scenario.calls.length;
+    await a.setModel!('m2', { providerId: 'p2', effort: 'high' });
+    await a.setPermissionMode!('acceptEdits');
+    await a.setPlanMode!(true);
+    await a.setExtraDirs!([extra]);
+    await a.abort();
+    expect(scenario.calls.slice(before)).toEqual([]);
+    expect(scenario.started).toHaveLength(2);
+    expect(a.model).toBe('m2');
+    expect(a.getPlanMode?.()).toBe(true);
+    expect(a.getEffort?.()).toBe('high');
+    await sleep(5);
+    expect(await ask(a, events, 'whoami')).toBe(`${a.id} m2 high plan:true`);
+    const reopened = scenario.started[2];
+    expect(reopened.options).toMatchObject({
+      model: 'm2', providerId: 'p2', effort: 'high', permissionMode: 'acceptEdits', planMode: true,
+      resumeSessionId: a.id,
+    });
+    expect(reopened.workspace.extraDirs).toEqual([extra]);
+  });
+
+  it('does not reapply one-shot rewind or fork options when reconnecting', async () => {
+    const pool = newPool();
+    const a = await start(pool, { vendorOptions: { source: 's', resumeSessionAt: 'msg-1', forkSession: true } } as Partial<StartSessionOptions>);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    expect(scenario.started[0].options.vendorOptions).toEqual({ source: 's', resumeSessionAt: 'msg-1', forkSession: true });
+    await sleep(5);
+    await start(pool);
+    await sleep(5);
+    await ask(a, events, 'again');
+    expect(scenario.started[2].options.vendorOptions).toEqual({ source: 's' });
+  });
+
+  it('tells the user when the conversation could not be resumed, via the invalid-resume callback', async () => {
+    const pool = newPool();
+    const invalidated: string[] = [];
+    const a = await start(pool, { onInvalidResumeSession: async (expected: string) => { invalidated.push(expected); return true; } } as Partial<StartSessionOptions>);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    const original = a.id;
+    await sleep(5);
+    await start(pool);
+    scenario.failResume = 'callback';
+    await sleep(5);
+    await ask(a, events, 'again');
+    expect(invalidated).toEqual([original]);
+    const lost = events.seen.filter((event) => event.type === 'error');
+    expect(lost).toHaveLength(1);
+    expect(lost[0].data).toMatchObject({ isTerminal: false });
+    expect(String((lost[0].data as { message: string }).message)).toContain('[REMOTE_AGENT_RESUME_LOST]');
+  });
+
+  it('tells the user when the other computer silently started a different conversation', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    await start(pool);
+    scenario.failResume = 'silent';
+    await sleep(5);
+    await ask(a, events, 'again');
+    const errors = events.seen.filter((event) => event.type === 'error');
+    expect(errors.map((event) => (event.data as { message: string }).message)).toEqual([
+      expect.stringContaining('[REMOTE_AGENT_RESUME_LOST]'),
+    ]);
+  });
+
+  it('does not release a task while it is busy', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    // 回合进行中。
+    const sending = a.send({ type: 'user', content: 'hold' });
+    await vi.waitFor(() => expect(scenario.releaseHold).not.toBeNull());
+    await sleep(5);
+    await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
+    scenario.releaseHold?.();
+    await sending;
+    await events.until((event) => event.type === 'done');
+    expect(scenario.started).toHaveLength(1);
+    expect(scenario.closes).toBe(0);
+  });
+
+  it.each([
+    ['background tasks', () => { scenario.backgroundTasks = [{ taskId: 't1', taskType: 'local_agent' }]; }],
+    ['pending wake continuations', () => { scenario.pendingWake = 1; }],
+  ])('treats %s on the other computer as busy', async (_label, arrange) => {
+    arrange();
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
+    expect(a.id).toBeTruthy();
+  });
+
+  it('with a single slot and nothing eligible reports the rejection without retrying', async () => {
+    idleMinutes = 30;
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    opens = 0;
+    await expect(start(pool)).rejects.toThrow('[REMOTE_AGENT_BUSY] [DEVICE_LIMIT]');
+    expect(opens).toBe(1);
+  });
+
+  it('with 0 minutes never releases and does not retry', async () => {
+    idleMinutes = 0;
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    opens = 0;
+    await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
+    expect(opens).toBe(1);
+    expect(scenario.closes).toBe(0);
+  });
+
+  it.each([
+    ['new', '[REMOTE_AGENT_BUSY] [DEVICE_LIMIT] remote task limit for this device reached'],
+    ['old', '[REMOTE_AGENT_BUSY] too many tasks are running from this computer'],
+  ])('after a capacity rejection (%s host wording) releases one and retries once', async (_label, message) => {
+    limits = { perDevice: 16, total: 64 };
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    // 本机计数没到上限(对方刚调小了上限等)：对方拒绝第一次打开。
+    let rejected = 0;
+    intercept = (request) => {
+      if (request.op === 'open' && rejected === 0) {
+        rejected += 1;
+        throw new Error(message);
+      }
+      return undefined;
+    };
+    opens = 0;
+    await start(pool);
+    expect(opens).toBe(2);
+    expect(scenario.closes).toBe(1);
+    expect(host.limitUsage().total).toBe(1);
+  });
+
+  it('retries a capacity rejection only once', async () => {
+    limits = { perDevice: 16, total: 64 };
+    const pool = newPool();
+    for (const content of ['a', 'b']) {
+      const handle = await start(pool);
+      await ask(handle, watch(handle), content);
+    }
+    await sleep(5);
+    intercept = (request) => {
+      if (request.op === 'open') throw new Error('[REMOTE_AGENT_BUSY] [TOTAL_LIMIT] remote task limit for the provider computer reached');
+      return undefined;
+    };
+    opens = 0;
+    await expect(start(pool)).rejects.toThrow('[TOTAL_LIMIT]');
+    expect(opens).toBe(2);
+    expect(scenario.closes).toBe(1);
+  });
+
+  it('does not release for staged-data pressure', async () => {
+    limits = { perDevice: 16, total: 64 };
+    const pool = newPool();
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    intercept = (request) => {
+      if (request.op === 'open') throw new Error('[REMOTE_AGENT_BUSY] too much staged data');
+      return undefined;
+    };
+    opens = 0;
+    await expect(start(pool)).rejects.toThrow('too much staged data');
+    expect(opens).toBe(1);
+    expect(scenario.closes).toBe(0);
+  });
+
+  it('a send during a release waits for it and reconnects once; two sends open one connection', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    // 让 close 慢一点，在让出进行中发消息。
+    let closeGate: (() => void) | null = null;
+    intercept = (request) => {
+      if (request.op !== 'close' || closeGate) return undefined;
+      return new Promise((resolve) => {
+        closeGate = () => resolve(host.handle(CONTROLLER, request).then((value) => value ?? null));
+      });
+    };
+    const releasing = pool.releaseForRetry(member('other', 0, false));
+    await vi.waitFor(() => expect(closeGate).not.toBeNull());
+    const first = a.send({ type: 'user', content: 'one' });
+    const second = a.send({ type: 'user', content: 'two' });
+    await sleep(5);
+    expect(scenario.started).toHaveLength(1);
+    closeGate!();
+    expect(await releasing).toBe(true);
+    await Promise.all([first, second]);
+    await events.until(() => events.seen.filter((event) => event.type === 'done').length >= 3);
+    expect(scenario.started).toHaveLength(2);
+    expect(scenario.started[1].options.resumeSessionId).toBe(a.id);
+    expect(scenario.calls.filter((call) => call.method === 'send')).toHaveLength(3);
+  });
+
+  it('gives up a release once a send has started', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    // 发送一开始(还没到对方)就不能再让。
+    const sending = a.send({ type: 'user', content: 'hold' });
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(false);
+    await vi.waitFor(() => expect(scenario.releaseHold).not.toBeNull());
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(false);
+    scenario.releaseHold?.();
+    await sending;
+    await events.until((event) => event.type === 'done' && events.seen.filter((item) => item.type === 'done').length >= 2);
+    expect(scenario.closes).toBe(0);
+  });
+
+  it.each(['navigation', 'account-boundary'] as const)('closing a released task (%s) does not contact the other computer', async (reason) => {
+    const pool = newPool();
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    await start(pool);
+    const closes = scenario.closes;
+    await expect(a.close({ reason })).resolves.toBeUndefined();
+    await expect(a.close({ reason })).resolves.toBeUndefined();
+    expect(scenario.closes).toBe(closes);
+    expect(pool.size).toBe(1);
+  });
+
+  it('detaching a released task on app quit does not contact the other computer', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    await start(pool);
+    const closes = scenario.closes;
+    await expect(a.detach!({ reason: 'app-quit' })).resolves.toBeUndefined();
+    expect(scenario.closes).toBe(closes);
+  });
+
+  it('closing during a release waits for it and stays quiet', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    let closeGate: (() => void) | null = null;
+    intercept = (request) => {
+      if (request.op !== 'close' || closeGate) return undefined;
+      return new Promise((resolve) => {
+        closeGate = () => resolve(host.handle(CONTROLLER, request).then((value) => value ?? null));
+      });
+    };
+    const opening = start(pool);
+    await vi.waitFor(() => expect(closeGate).not.toBeNull());
+    const closing = a.close({ reason: 'navigation' });
+    closeGate!();
+    await expect(closing).resolves.toBeUndefined();
+    await opening;
+    expect(scenario.closes).toBe(1);
+  });
+
+  it('keeps a task with a pending rewind until its next turn finishes', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await a.commitRewindFiles!('', 'assistant-1');
+    await sleep(5);
+    await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
+    await ask(a, events, 'after rewind');
+    await sleep(5);
+    await start(pool);
+    expect(scenario.closes).toBe(1);
+  });
+
+  it('carries rewind and fork options when released before the first turn ran', async () => {
+    const pool = newPool();
+    const vendorOptions = { resumeSessionAt: 'msg-1', forkSession: true };
+    const a = await start(pool, { resumeSessionId: 'native-old', vendorOptions } as Partial<StartSessionOptions>);
+    await sleep(5);
+    await start(pool);
+    const events = watch(a);
+    await sleep(5);
+    await ask(a, events, 'first');
+    expect(scenario.started[2].options).toMatchObject({ resumeSessionId: 'native-old', vendorOptions });
+  });
+
+  it('closes the other computer\'s process when the task is closed while reconnecting', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    await start(pool);
+    await sleep(5);
+    // 连回的 open 在路上时关掉任务。
+    let openGate: (() => void) | null = null;
+    intercept = (request) => {
+      if (request.op !== 'open' || openGate) return undefined;
+      return new Promise((resolve) => {
+        openGate = () => resolve(host.handle(CONTROLLER, request).then((value) => value ?? null));
+      });
+    };
+    const sending = a.send({ type: 'user', content: 'late' });
+    await vi.waitFor(() => expect(openGate).not.toBeNull());
+    const closing = a.close({ reason: 'navigation' });
+    openGate!();
+    await closing;
+    await expect(sending).rejects.toThrow();
+    // b 为 a 让了位；a 连回途中被关掉，对方不能留下 a 的进程。
+    await vi.waitFor(() => expect(host.limitUsage().total).toBe(0));
+    expect(pool.size).toBe(1);
+  });
+
+  it('does not grant a cleared library folder again after reconnecting', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await a.setExtraDirs!([], path.join(root, 'library'));
+    await a.setExtraDirs!([]);
+    await sleep(5);
+    await start(pool);
+    await sleep(5);
+    const before = scenario.calls.length;
+    await ask(a, events, 'again');
+    expect(scenario.calls.slice(before).map((call) => call.method)).toEqual(['send']);
+  });
+
+  it('answers that a model switch needs no extra rebuild while released, without reconnecting', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    expect(await a.requiresModelSwitchRebuild!('m2')).toBe(true);
+    await sleep(5);
+    await start(pool);
+    expect(await a.requiresModelSwitchRebuild!('m2')).toBe(false);
+    expect(scenario.started).toHaveLength(2);
+  });
+
+  it('keeps the last usage reading after reconnecting until the new process reports its own', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    const usage = a.getUsageSnapshot();
+    expect(usage.tokenUsage).toBe(7);
+    await sleep(5);
+    await start(pool);
+    expect(a.getUsageSnapshot()).toEqual(usage);
+  });
+});
