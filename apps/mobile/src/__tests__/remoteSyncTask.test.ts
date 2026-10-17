@@ -5,6 +5,7 @@ import {
   createRemoteSyncRunner,
   waitForCachedSubscription,
 } from '@/device-link/remoteSyncTask';
+import { SubscriptionAcknowledgements } from '@/device-link/subscriptionAcknowledgements';
 
 function deferred() {
   let resolve!: () => void;
@@ -30,12 +31,13 @@ describe('remote sync task runner', () => {
     const subscription = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
     const run = { signal: controller.signal, isStale: () => controller.signal.aborted };
     let settled = false;
-    const waiting = waitForCachedSubscription(run, outcome !== 'cold', subscription).then(() => { settled = true; });
+    let ack = false;
+    const waiting = waitForCachedSubscription(run, outcome !== 'cold', subscription, () => ack).then(() => { settled = true; });
     const observed = waiting.catch(() => undefined);
     try {
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(outcome === 'cold');
-      if (outcome === 'ack') resolve();
+      if (outcome === 'ack') { ack = true; resolve(); }
       if (outcome === 'failure') reject(new Error('offline'));
       if (outcome === 'cancel') controller.abort();
       if (outcome === 'timeout') await vi.advanceTimersByTimeAsync(2000);
@@ -128,6 +130,33 @@ describe('remote sync task runner', () => {
 });
 
 describe('remote sync coordinator', () => {
+  // Unit, PR #6325: previous tests had one promise for one connection. A completed
+  // old subscription (or only the new list ACK) must not start a cached read while
+  // the current detail ACK is missing. Exercise the production ACK table + waiter.
+  it('waits for current detail ACK after a focused reconnect', async () => {
+    vi.useFakeTimers();
+    const acks = new SubscriptionAcknowledgements(() => {});
+    const topics = ['sessions', 'session:s'] as const;
+    acks.set('d', new Set(topics));
+    const previousSubscription = Promise.resolve();
+    await previousSubscription;
+    acks.delete('d');
+    acks.set('d', new Set(['sessions']));
+    const controller = new AbortController();
+    let reads = 0;
+    const waiting = waitForCachedSubscription(
+      { signal: controller.signal }, true, previousSubscription,
+      () => acks.identity('d', topics) !== null,
+    ).then(() => { reads++; });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(reads).toBe(0);
+    acks.set('d', new Set(topics));
+    await vi.advanceTimersByTimeAsync(50);
+    await waiting;
+    expect(reads).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   // Unit: the ACK may land during cached-return preparation or after the first
   // snapshot starts. Only the former can safely remove the recovery batch.
   it.each([false, true])('coalesces cached return but preserves an ACK after snapshot start (%s)', async (lateAck) => {
@@ -137,7 +166,7 @@ describe('remote sync coordinator', () => {
     let ack = false;
     let reads = 0;
     const coordinator = createRemoteSyncCoordinator(async run => {
-      await waitForCachedSubscription(run, true, subscription.promise);
+      await waitForCachedSubscription(run, true, subscription.promise, () => ack);
       const covered = ack;
       reads++;
       await snapshot.promise;

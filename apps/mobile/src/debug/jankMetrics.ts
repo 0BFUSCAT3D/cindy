@@ -112,6 +112,7 @@ export function takeJankMetrics(): {
   invokeCount: number;
   invokes: ChannelCountRow[];
   relayTransfers: ({ channel: string } & TransferCounters)[];
+  relayTransfersOmitted: number;
 } {
   let pushCount = 0;
   let pushMs = 0;
@@ -139,7 +140,13 @@ export function takeJankMetrics(): {
     pushes: topChannels(pushRows, (row) => row.totalMs),
     invokeCount,
     invokes: topChannels(invokeRows, (row) => row.count),
-    relayTransfers: [...transfers].map(([channel, counts]) => ({ channel, ...counts })),
+    // Six rows per list keep the complete record below the writer's 120-value
+    // budget. Rank by bytes so a late large response cannot disappear behind noise.
+    relayTransfers: topChannels(
+      [...transfers].map(([channel, counts]) => ({ channel, ...counts })),
+      (row) => row.payloadBytes,
+    ),
+    relayTransfersOmitted: Math.max(0, transfers.size - TOP_CHANNELS),
   };
   pushes = new Map();
   invokes = new Map();

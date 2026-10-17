@@ -1808,7 +1808,6 @@ function SessionScreenContent() {
     typeof createTransientTopicSubscriptionCoordinator
   > | null>(null);
   sessionsSubscriptionCoordinatorRef.current ??= createTransientTopicSubscriptionCoordinator();
-  const focusedSubscriptionRef = useRef<Promise<void> | null>(null);
   // 门槛代号:每次「作废门槛」(原地切 session / liveAttention 上升沿)都递增。
   // sync 尾部只有代号与自己启动时一致才允许落 key——否则 A→B→A 场景下,visit-1
   // 的在途旧 load 会在重置之后用**相同的** `${sessionId}:${connectionEpoch}` 把门槛
@@ -3720,8 +3719,8 @@ function SessionScreenContent() {
       // cached content is already readable; timeout/failure still permits a snapshot.
       // An ACK after the read starts retains the existing recovery follow-up.
       const needsAck = (getSubscriptionIdentity?.(deviceId, ['sessions', `session:${sessionId}`]) ?? null) === null;
-      await waitForCachedSubscription(syncRun, isReopen && needsAck,
-        Promise.all([sessionsReady, focusedSubscriptionRef.current]));
+      await waitForCachedSubscription(syncRun, isReopen && needsAck, sessionsReady,
+        () => (getSubscriptionIdentity?.(deviceId, ['sessions', `session:${sessionId}`]) ?? null) !== null);
     };
     const retryRead = <T,>(read: () => Promise<T>): Promise<T> => {
       let failedAtVersion: number | null = null;
@@ -4271,18 +4270,13 @@ function SessionScreenContent() {
   useFocusEffect(
     useCallback(() => {
       if (!deviceId || !sessionId) return undefined;
-      const cleanup = startFocusedTopicSubscription({
+      return startFocusedTopicSubscription({
         deviceId,
         owner: `session:${sessionId}`,
-        subscribe: (owner, target, topics) => {
-          const ready = subscribe(owner, target, topics);
-          focusedSubscriptionRef.current = ready;
-          return ready;
-        },
+        subscribe,
         topic: `session:${sessionId}`,
         unsubscribe,
       });
-      return () => { focusedSubscriptionRef.current = null; cleanup(); };
     }, [deviceId, sessionId, subscribe, unsubscribe]),
   );
 
