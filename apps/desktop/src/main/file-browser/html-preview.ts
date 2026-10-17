@@ -139,6 +139,10 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
   const pending = new Set<Promise<void>>();
   const queue = createFileReadQueue();
   const materialized = new Map<string, { path: string; size: number }>();
+  const token = randomBytes(24).toString('hex');
+  const updatePath = `/${token}/updated`;
+  let entryUpdate: Promise<{ path: string; size: number } | null> | undefined;
+  let updateApplied = false;
   const current = () => !closed && !source.signal?.aborted && source.isCurrent?.() !== false;
   const close = async () => {
     closed = true;
@@ -170,25 +174,27 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
       const sourcePath = await source.read(root, { ...metadata, name: relPath.split('/').pop()! }, signal);
       return { path: sourcePath, size: metadata.size };
     };
-    const materialize = async (relPath: string, directory: string, signal: AbortSignal) => {
+    const materialize = async (relPath: string, directory: string, signal: AbortSignal,
+      fresh?: { path: string; size: number }): Promise<{ path: string; size: number }> => {
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
-      const cached = await source.cached?.(root, relPath).catch(() => null);
+      const cached = fresh || updateApplied ? null : await source.cached?.(root, relPath).catch(() => null);
       const cachedStat = cached ? await fs.stat(cached).catch(() => null) : null;
       const hit = cached && cachedStat?.isFile() ? { path: cached, size: cachedStat.size } : null;
-      const file = hit ?? await refresh(relPath, signal);
+      const file = fresh ?? hit ?? await refresh(relPath, signal);
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
       const stat = await fs.stat(file.path);
       if (!stat.isFile() || stat.size !== file.size) throw new Error('PREVIEW_CHANGED');
       const dest = path.join(directory, 'asset');
-      const materialized = await source.materialize(file.path, dest, file.size);
-      if ((await fs.stat(materialized)).size !== file.size) throw new Error('PREVIEW_CHANGED');
+      const copied = await source.materialize(file.path, dest, file.size);
+      if ((await fs.stat(copied)).size !== file.size) throw new Error('PREVIEW_CHANGED');
       // Guard HTML documents, including secondary pages, before publishing the snapshot.
       // Copy guarded HTML into this snapshot even if materialize returned a shared cache path.
       // XML documents retain their parser/MIME and use the response CSP, not an HTML prolog.
-      let assetPath = materialized;
+      let assetPath = copied;
       let assetSize = stat.size;
+      let cachedHtml: Buffer | undefined;
       if (/\.html?$/i.test(relPath)) {
-        const original = await fs.readFile(materialized);
+        const original = await fs.readFile(copied);
         let html: string | undefined;
         try {
           html = new TextDecoder('utf-8', { fatal: true }).decode(original);
@@ -202,7 +208,13 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
           !html.includes('\0') &&
           [...(charsets ?? [])].every((match) => /^utf-?8$/i.test(match[1]))
         ) {
-          const guarded = withSnapshotHtmlCsp(html);
+          const checkEntry = !!hit && relPath === entry;
+          if (checkEntry) cachedHtml = original;
+          // One same-origin request observes this opening's existing background check.
+          // Fresh pages do not carry the script, so reload never starts a polling loop.
+          const reload = checkEntry ? `<script>(()=>{const page=location.pathname;addEventListener('load',()=>{fetch(${JSON.stringify(updatePath)},{cache:'no-store'}).then(r=>r.ok?r.json():false).then(changed=>{if(changed&&location.pathname===page)location.reload();}).catch(()=>{});},{once:true});})();</script>` : '';
+          const guarded = withSnapshotHtmlCsp(html.charCodeAt(0) === 0xfeff
+            ? `\uFEFF${reload}${html.slice(1)}` : reload + html);
           await fs.writeFile(dest, guarded, { encoding: 'utf8', mode: 0o600 });
           assetPath = dest;
           assetSize = Buffer.byteLength(guarded);
@@ -210,15 +222,22 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
       }
       if (!current() || signal.aborted) throw new Error('PREVIEW_CANCELLED');
       if (hit) {
-        // Refresh the durable cache after owning a copy. Never replace the open page
-        // or make a disconnected host invalidate an otherwise readable snapshot.
-        const update = refresh(relPath, controller.signal).then(() => {}, () => {});
+        const fetched = refresh(relPath, controller.signal);
+        if (cachedHtml) {
+          const previous = cachedHtml;
+          entryUpdate = fetched.then(async (next) => {
+            if (!current() || previous.equals(await fs.readFile(next.path))) return null;
+            const directory = await fs.mkdtemp(path.join(staging, 'updated-'));
+            return materialize(relPath, directory, controller.signal, next);
+          }).catch(() => null);
+        }
+        // An offline refresh must never invalidate the readable copy.
+        const update = (entryUpdate && relPath === entry ? entryUpdate : fetched).then(() => {}, () => {});
         pending.add(update);
         void update.finally(() => pending.delete(update));
       }
       return { path: assetPath, size: assetSize };
     };
-    const token = randomBytes(24).toString('hex');
     const cookieName = `cindy_preview_${token}`;
     let origin = '';
     server = createServer((req, res) => {
@@ -261,6 +280,24 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
           return deny(403);
         }
       }
+      if (url.pathname === updatePath) {
+        if (req.method !== 'GET') return deny(405);
+        void Promise.resolve(entryUpdate).then((replacement) => {
+          if (res.destroyed) return;
+          if (!current()) return deny(410);
+          const changed = !!replacement && !updateApplied;
+          if (changed) {
+            // Already displayed resources remain usable; the reloaded document gets
+            // fresh companions instead of inheriting the previous snapshot's files.
+            updateApplied = true;
+            materialized.clear();
+            materialized.set(entry, replacement!);
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(changed));
+        });
+        return;
+      }
       let pathname: string;
       try {
         pathname = decodeURIComponent(url.pathname);
@@ -275,12 +312,13 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
       res.once('close', () => requestController.abort());
       const signal = AbortSignal.any([controller.signal, requestController.signal]);
       const work = queue('preview', async () => {
+        const startedAfterUpdate = updateApplied;
         let asset = materialized.get(relPath);
         if (!asset) {
           const directory = await fs.mkdtemp(path.join(staging, 'request-'));
           try {
             asset = await materialize(relPath, directory, signal);
-            materialized.set(relPath, asset);
+            if (startedAfterUpdate === updateApplied) materialized.set(relPath, asset);
           } catch (error) {
             await fs.rm(directory, { recursive: true, force: true });
             throw error;

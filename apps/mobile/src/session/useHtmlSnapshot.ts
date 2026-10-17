@@ -15,30 +15,41 @@ export function useHtmlSnapshot(absPath: string, enabled: boolean, prepare: Prep
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       setForeground(state === 'active');
-      if (state === 'active') setEpoch((value) => value + 1);
     });
     return () => subscription.remove();
   }, []);
   useEffect(() => {
     setResult({});
-    if (!enabled || !foreground) return;
+    if (!enabled || !foreground) {
+      // A manual reload bypasses stale bytes only for this visit. Returning later
+      // must still open the last available cache without waiting for a connection.
+      setEpoch(0);
+      return;
+    }
     const controller = new AbortController();
     const startedAt = Date.now();
     let preview: MobileHtmlPreview | undefined;
     void prepare(absPath, controller.signal, (progress) => {
       if (!controller.signal.aborted) setResult((previous) => ({ ...previous, progress, path: absPath, prepare, epoch }));
-    }).then((value) => {
+    }, epoch === 0).then(async (value) => {
       preview = value;
       mobileDebugLog('debug', 'files', 'html preview prepared', {
         ms: Date.now() - startedAt, onDemand: value.onDemand === true, aborted: controller.signal.aborted,
       });
-      if (controller.signal.aborted) void value.close().catch(() => {});
-      else setResult((previous) => ({ ...previous, preview: value, path: absPath, prepare, epoch }));
+      if (controller.signal.aborted) { void value.close().catch(() => {}); return; }
+      setResult((previous) => ({ ...previous, preview: value, path: absPath, prepare, epoch }));
+      const fresh = await value.updated;
+      if (fresh) {
+        // Reuse the completed background snapshot. No second remote download and
+        // no recursive refresh: this is one check for this opening only.
+        if (controller.signal.aborted) void fresh.close().catch(() => {});
+        else setResult({ preview: fresh, path: absPath, prepare, epoch });
+      }
     }).catch((error: unknown) => {
       mobileDebugLog(controller.signal.aborted ? 'debug' : 'warn', 'files', 'html preview prepare failed', {
         ms: Date.now() - startedAt, aborted: controller.signal.aborted, error: errorText(error),
       });
-      if (!controller.signal.aborted) setResult({ error, path: absPath, prepare, epoch });
+      if (!controller.signal.aborted) setResult((previous) => previous.preview ? previous : { error, path: absPath, prepare, epoch });
     });
     return () => {
       controller.abort();
