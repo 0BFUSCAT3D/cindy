@@ -8913,6 +8913,27 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     }, { pingIntervalMs: 600_000, transportRetryIntervalMs: 2_000 });
   });
 
+  // PR #6288: one cumulative ACK must measure the whole burst, not interpret
+  // its small tail as a slow link. Unit/fake clock; existing cases ACK one message.
+  it('samples cumulative delivery bytes together so a small tail does not delay a later lost frame', async () => {
+    await withFakeTimers(async (h, advance) => {
+      const ws = h.current();
+      h.client.sendInvokeResult('dev-b', 'burst-head', { ok: true, result: 'x'.repeat(200 * 1024) });
+      h.client.sendInvokeResult('dev-b', 'burst-tail', { ok: true, result: 'x'.repeat(64 * 1024) });
+      const tail = parseTransportPayload(ws.sent.find(e => e.id === 'burst-tail')!.payload)!.meta;
+      await advance(9_000);
+      ws.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-b', payload: {
+        channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL,
+        payload: { streamId: tail.streamId, ackSeq: tail.seq },
+      } });
+      expect(h.client.getReliableSendQueueDepth('dev-b')).toBe(0);
+      h.client.sendInvokeResult('dev-b', 'lost-next', { ok: true, result: 'x'.repeat(200 * 1024) });
+      const next = parseTransportPayload(ws.sent.find(e => e.id === 'lost-next')!.payload)!.meta;
+      await advance(26_000);
+      expect(sendsBySeq(ws).get(next.seq)).toBe(2);
+    }, { pingIntervalMs: 600_000, transportRetryIntervalMs: 2_000 });
+  });
+
   it('a large response delivered after 18s is not duplicated while waiting for its first ACK', async () => {
     await withFakeTimers(async (h, advance) => {
       h.client.sendInvokeResult('dev-b', 'slow-page', { ok: true, result: 'x'.repeat(200 * 1024) });

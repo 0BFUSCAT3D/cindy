@@ -1,4 +1,7 @@
 import { createIpcError, type IpcErrorCode } from '../../shared/ipc-errors.js';
+import { toWorkdirRel } from '../../shared/workdirPath.js';
+import type { HtmlPreviewArgs } from './html-preview.js';
+import type { RemoteFileBrowserManager } from './remote.js';
 
 const TRANSPORT_ERRORS = {
   BACKPRESSURE: 'DEVICE_LINK_BUSY',
@@ -13,7 +16,29 @@ const TRANSPORT_ERRORS = {
   DEVICE_UNRESPONSIVE: 'DEVICE_LINK_DEVICE_UNRESPONSIVE',
   DEVICE_LINK_DEVICE_UNRESPONSIVE: 'DEVICE_LINK_DEVICE_UNRESPONSIVE',
   PEER_RESET: 'DEVICE_LINK_NOT_CONNECTED',
+  TIMEOUT: 'DEVICE_LINK_TIMEOUT',
+  CHANNEL_CLOSED: 'DEVICE_LINK_NOT_CONNECTED',
+  CHANNEL_ERROR: 'DEVICE_LINK_NOT_CONNECTED',
 } satisfies Record<string, IpcErrorCode>;
+
+/** Keep both SSH reads together so cancellation also covers connection rebuilds. */
+export async function statSshPreviewMetadata(
+  browser: Pick<RemoteFileBrowserManager, 'request'>,
+  args: HtmlPreviewArgs,
+  root: string,
+  relPath: string,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  if (args.origin.kind !== 'ssh') throw new Error('BAD_ARGS');
+  const options = { beforeSend: () => signal?.throwIfAborted() };
+  await browser.request(args.origin.remoteHostId, 'stat', {
+    workdir: args.workdir,
+    relPath: toWorkdirRel(args.workdir, args.absPath)!,
+  }, options);
+  signal?.throwIfAborted();
+  return browser.request(args.origin.remoteHostId, 'stat', { workdir: root, relPath }, options);
+}
 
 /** Closed vocabulary; never expose the remote error text or path to the UI. */
 export function previewTransportErrorCode(error: unknown): IpcErrorCode | undefined {

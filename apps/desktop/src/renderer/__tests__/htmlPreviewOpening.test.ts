@@ -52,7 +52,7 @@ it.each([false, true])('dismisses neutral loading when preview settles (failure=
     }));
     const opening = openHtmlFileByPreference('session', '/remote/index.html', t, context);
     await vi.advanceTimersByTimeAsync(600);
-    expect(mocks.loading).toHaveBeenCalledWith('chat.remoteFile.previewFetching', expect.objectContaining({ action: { label: 'common.cancel', onClick: expect.any(Function) } }));
+    expect(mocks.loading).toHaveBeenCalledWith('chat.remoteFile.previewFetching', expect.objectContaining({ action: { label: 'commonUi.confirmDialog.cancel', onClick: expect.any(Function) } }));
     expect(mocks.error).not.toHaveBeenCalled();
     settle();
     await opening;

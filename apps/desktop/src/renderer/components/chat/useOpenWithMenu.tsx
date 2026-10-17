@@ -151,7 +151,7 @@ export async function openHtmlFileByPreference(
     const delayed = setTimeout(() => {
       if (cancelled) return;
       loading = toast.loading(t('chat.remoteFile.previewFetching'), {
-        action: { label: t('common.cancel'), onClick: cancel },
+        action: { label: t('commonUi.confirmDialog.cancel'), onClick: cancel },
         onClose: cancel,
       });
     }, 600);

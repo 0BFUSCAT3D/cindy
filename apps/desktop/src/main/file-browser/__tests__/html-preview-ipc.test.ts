@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { FileServiceRpcError } from '@cindy/remote-file-service/client';
 const mocks = vi.hoisted(() => ({
   handle: vi.fn(),
   trusted: vi.fn(),
@@ -22,7 +23,7 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 }));
 vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ drizzle: mocks.db }) }));
 import { disposeHtmlPreviews, registerHtmlPreviewIpc } from '../html-preview-ipc';
-import { readPreviewMetadata } from '../html-preview-read';
+import { readPreviewMetadata, statSshPreviewMetadata } from '../html-preview-read';
 const args = {
   origin: { kind: 'device', deviceId: 'remote' },
   workdir: '/remote',
@@ -89,23 +90,55 @@ it('backs off read-only metadata across congestion and a short disconnect', asyn
   } finally { vi.useRealTimers(); }
 });
 
-it.each(['BACKPRESSURE', 'INVOKE_TIMEOUT', 'NOT_CONNECTED'])('bounds repeated %s failures and preserves the connection error', async (code) => {
+it.each([
+  ['BACKPRESSURE', 'DEVICE_LINK_BUSY'],
+  ['INVOKE_TIMEOUT', 'DEVICE_LINK_TIMEOUT'],
+  ['NOT_CONNECTED', 'DEVICE_LINK_NOT_CONNECTED'],
+  ['TIMEOUT', 'DEVICE_LINK_TIMEOUT'],
+  ['CHANNEL_CLOSED', 'DEVICE_LINK_NOT_CONNECTED'],
+  ['CHANNEL_ERROR', 'DEVICE_LINK_NOT_CONNECTED'],
+])('bounds repeated %s failures and preserves the connection error', async (code, expected) => {
   vi.useFakeTimers();
   try {
     let started!: () => void;
     const ready = new Promise<void>(resolve => { started = resolve; });
     const stat = vi.fn().mockImplementation(async () => {
       started();
-      throw Object.assign(new Error('transient'), { code });
+      throw new FileServiceRpcError(code, 'transient');
     });
     registerHtmlPreviewIpc({ stat, read: vi.fn() });
     const result = mocks.handle.mock.calls[0][1]({}, args).catch((e: unknown) => e);
     await ready;
     await vi.advanceTimersByTimeAsync(7_000);
-    const expected = { BACKPRESSURE: 'DEVICE_LINK_BUSY', INVOKE_TIMEOUT: 'DEVICE_LINK_TIMEOUT', NOT_CONNECTED: 'DEVICE_LINK_NOT_CONNECTED' }[code];
     expect(await result).toMatchObject({ code: expected });
     expect(stat).toHaveBeenCalledTimes(4);
   } finally { vi.useRealTimers(); }
+});
+
+// PR #6288: cancellation must reach both SSH stat sends, including the manager's
+// internal rebuild. Existing IPC tests inject stat and cannot observe this adapter.
+// Unit tier: a paused request gate models connection setup, with no real network.
+it.each([[1, false], [2, false], [2, true]] as const)('blocks SSH preview send %s after cancellation (rebuild=%s)', async (cancelAt, rebuild) => {
+  const controller = new AbortController();
+  const sent: string[] = [];
+  let gates = 0;
+  const request = vi.fn().mockImplementation(async (_host, _method, params, options) => {
+    const send = async () => {
+      await Promise.resolve();
+      if (++gates === cancelAt) controller.abort();
+      await options?.beforeSend?.();
+      sent.push(params.relPath);
+    };
+    await send();
+    // The manager repeats its gate after a channel loss and rebuild.
+    if (rebuild && params.relPath === 'preview/index.html') await send();
+    return { type: 'file' };
+  });
+  const result = statSshPreviewMetadata({ request }, {
+    ...args, origin: { kind: 'ssh', remoteHostId: 'ssh-1' },
+  }, '/remote/preview', 'style.css', controller.signal);
+  await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+  expect(sent).toHaveLength(cancelAt - 1);
 });
 
 it('ends a stalled stat at the total deadline and aborts its downstream signal', async () => {

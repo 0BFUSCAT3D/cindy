@@ -3966,6 +3966,10 @@ export class DeviceLinkClient {
     peer.highestAckSeq = ackSeq;
     this.logRecoveryStage(src, 'ack-received', ` ack=${ackSeq}`, false);
     let rttSample: number | null = null;
+    const acknowledgedAt = this.monotonicNow();
+    let deliveryStartedAt = acknowledgedAt;
+    let deliveryBytes = 0;
+    let deliverySampleValid = true;
     for (const [seq, pending] of peer.pending) {
       if (seq > ackSeq) break;
       if (pending.envelope.id) {
@@ -3979,10 +3983,19 @@ export class DeviceLinkClient {
         rttSample = this.monotonicNow() - pending.firstSentAt;
       }
       if (pending.firstSentAt !== undefined && pending.attempts === 1) {
-        updateDeliveryEstimate(peer.rtt, pending.bytes, this.monotonicNow() - pending.firstSentAt);
+        deliveryStartedAt = Math.min(deliveryStartedAt, pending.firstSentAt);
+        deliveryBytes += pending.bytes;
+      } else {
+        deliverySampleValid = false;
       }
       peer.pending.delete(seq);
       peer.pendingBytes -= pending.bytes;
+    }
+    // A cumulative ACK measures the whole acknowledged burst. Sampling its
+    // tail separately counts time spent delivering preceding messages as slowness.
+    // Retransmitted batches have ambiguous timing and cannot teach delivery pace.
+    if (deliverySampleValid) {
+      updateDeliveryEstimate(peer.rtt, deliveryBytes, acknowledgedAt - deliveryStartedAt);
     }
     if (rttSample !== null) updateRetransmitEstimate(peer.rtt, rttSample);
     if (peer.recoveryNeedsAck) {

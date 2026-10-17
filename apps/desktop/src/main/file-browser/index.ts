@@ -71,6 +71,7 @@ import { getRemoteWatchRegistry } from './remote-watch.js';
 import { throwRemoteFsIpcError } from './remote.js';
 import { watcherManager, type FileTreeEvent } from './watcher.js';
 import { registerHtmlPreviewIpc } from './html-preview-ipc.js';
+import { statSshPreviewMetadata } from './html-preview-read.js';
 import { toWorkdirRel } from '../../shared/workdirPath.js';
 
 const log = createLogger('file-browser/ipc');
@@ -407,13 +408,7 @@ export function registerFileBrowserIpc(): void {
           op: 'stat', workdir: root, relPath,
         }, signal);
       }
-      if (args.origin.kind !== 'ssh') throw new Error('BAD_ARGS');
-      await getRemoteFileBrowser().request(args.origin.remoteHostId, 'stat', {
-        workdir: args.workdir,
-        relPath: toWorkdirRel(args.workdir, args.absPath)!,
-      });
-      signal?.throwIfAborted();
-      return getRemoteFileBrowser().request(args.origin.remoteHostId, 'stat', { workdir: root, relPath });
+      return statSshPreviewMetadata(getRemoteFileBrowser(), args, root, relPath, signal);
     },
     read: async (args, root, entry, signal) => {
       if (signal?.aborted) throw new Error('PREVIEW_CANCELLED');
