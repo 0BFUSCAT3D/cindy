@@ -1,7 +1,6 @@
 import { flushPluginUsageLifecycle } from './plugin-usage/current.js';
 import { registerAccessibilitySupportIpc } from './accessibility-support-ipc.js';
 import { mcpAppSchemePrivilege, registerMcpAppProtocol } from './mcp-apps/sandboxProtocol.js';
-import { registerHtmlAnswerPreviewIpc } from './htmlAnswerPreview.js';
 import { prepareImportedAutomation, finishImportedAutomation } from './bot-import/automationRuntime.js';
 import { ensureImportedAutomationReady, recoverCompanionImports } from './bot-import/host.js';
 import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/recycleControls';
@@ -9060,7 +9059,6 @@ app.on('ready', async () => {
   registerRemoteMediaProtocolHandler();
   registerCindyMediaProtocolHandler();
   registerMcpAppProtocol();
-  registerHtmlAnswerPreviewIpc();
 
   // Inject a Content-Security-Policy response header onto the app's own
   // top-level document (defaultSession mainFrame) before any window loads.

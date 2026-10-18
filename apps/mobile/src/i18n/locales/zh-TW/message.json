@@ -391,5 +391,9 @@
     "memory": "已記住：{{title}}",
     "skillCreated": "已建立技能：{{title}}",
     "skillUpdated": "已更新技能：{{title}}"
+  },
+  "richAnswer": {
+    "calculationUnavailable": "此項暫時無法計算。",
+    "incomplete": "部分內容未能顯示。"
   }
 }

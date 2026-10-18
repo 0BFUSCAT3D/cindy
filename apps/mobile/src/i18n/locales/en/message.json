@@ -391,5 +391,9 @@
     "memory": "Remembered: {{title}}",
     "skillCreated": "Created skill: {{title}}",
     "skillUpdated": "Updated skill: {{title}}"
+  },
+  "richAnswer": {
+    "calculationUnavailable": "Unable to calculate this value.",
+    "incomplete": "Some content could not be displayed."
   }
 }

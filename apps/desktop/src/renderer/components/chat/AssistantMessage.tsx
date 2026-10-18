@@ -1,3 +1,4 @@
+import { hasRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
 import { BotLearningFooter } from '@/features/bots/BotLearningFooter';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
 import { botTaskResultKey, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
@@ -141,7 +142,7 @@ const StreamingBody = memo(function StreamingBody({
     <>
       {committedText && (
         <MarkdownRenderer
-          renderHtmlAnswers
+            renderRichAnswers
           workingDir={workingDir}
           content={committedText}
           isStreaming
@@ -358,7 +359,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             running={false}
             sessionId={currentSessionId}
           />
-        ) : isStreaming && USE_LINE_COMMIT_STREAMING ? (
+        ) : isStreaming && USE_LINE_COMMIT_STREAMING && !hasRichAnswer(content) ? (
           <StreamingBody
             workingDir={workingDir}
             content={displayContent}
@@ -373,7 +374,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           // MarkdownRenderer。isStreaming 透传 — true 时 MarkdownRenderer 内部启用
           // 100ms throttle, false 时无节流, 行为和该文件性能优化前完全一致。
           <MarkdownRenderer
-            renderHtmlAnswers
+            renderRichAnswers
             workingDir={workingDir}
             content={displayContent}
             isStreaming={isStreaming}
@@ -431,7 +432,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {!isStreaming && showActionBar && (
         <MessageActionBar
           createdAt={createdAt}
-          copyText={content}
+          copyText={richAnswerText(content)}
           copyLinkText={messageDeepLink}
           align="left"
           hovered={hovered}

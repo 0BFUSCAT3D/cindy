@@ -1,3 +1,5 @@
+import { splitRichAnswer, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
+import { RichAnswer } from './RichAnswer';
 /**
  * MarkdownRenderer
  * ---------------------------------------------------------------------------
@@ -8,18 +10,15 @@
  * - Inline code: Stone bg + 4px padding + 6px radius
  * - GFM tables, lists, bold, italic, links
  * - HTML tags filtered (no <script>); safe single <img> tags are normalized
- *   into Markdown image nodes before HTML filtering. Complete assistant HTML answers
- *   may opt into the separate sandbox preview after streaming finishes.
+ *   into Markdown image nodes before HTML filtering.
  */
 
-import { htmlAnswerDocument } from '@cindy/maker-shared/html-answer';
-import { HtmlAnswerPreview } from './HtmlAnswerPreview';
 import { Tip } from '@/components/ui/tooltip';
 import { useImageLoadFailure } from './useImageLoadFailure';
 import { ChatLoadingImage } from './ChatLoadingImage';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 import { CHAT_CODE_CLASS, CHAT_CODE_SURFACE_CLASS, CHAT_ICON_BUTTON_CLASS } from './chatChrome';
-import { createContext, useContext, createElement, memo, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
+import { createElement, memo, useId, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
@@ -334,10 +333,8 @@ const previewSafeUrlTransform: UrlTransform = (url, key) => {
   return defaultUrlTransform(url);
 };
 
-const HtmlAnswerContext = createContext(false);
-
 interface MarkdownRendererProps {
-  renderHtmlAnswers?: boolean;
+  renderRichAnswers?: boolean;
   /** F1: session cwd used to resolve relative paths in markdown links.
    *  Stable per-session — only changes on session switch (parent remount). */
   workingDir: string;
@@ -566,7 +563,6 @@ const baseComponents: Components = {
   // simpler renderer there. See line ~310 for the implementation.
 
   pre({ children, ...props }) {
-    const htmlEnabled = useContext(HtmlAnswerContext);
     // Intercept ```diff fenced blocks before they fall through to highlight.js
     // — we render them with our own row/gutter/symbol layout (MarkdownDiffBlock)
     // so the visual matches the Edit-tool DiffView card and the GitHub red/green
@@ -574,11 +570,6 @@ const baseComponents: Components = {
     // Other languages (js/ts/python/...) still go through the default pre+code
     // path with rehype-highlight.
     const firstChild = Array.isArray(children) ? children[0] : children;
-    if (htmlEnabled && isValidElement<{ children?: ReactNode; className?: string }>(firstChild)
-      && firstChild.props.className?.includes('language-html')) {
-      const html = htmlAnswerDocument(nodeToText(firstChild.props.children));
-      if (html) return <HtmlAnswerPreview html={html} />;
-    }
     if (isDiffCodeChild(firstChild)) {
       const codeChildren = (firstChild as { props: { children?: ReactNode } })
         .props.children;
@@ -1678,7 +1669,7 @@ function InlineCodeWithTarget({
   );
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({
+const MarkdownRendererBase = memo(function MarkdownRendererBase({
   workingDir,
   content,
   isStreaming = false,
@@ -1688,7 +1679,6 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   currentSessionTitle,
   allowPrivilegedLinks = true,
   emitSourceLines = false,
-  renderHtmlAnswers = false,
 }: MarkdownRendererProps) {
   // Cap markdown re-parse + syntax highlight cost during streaming.
   // Static callers (TextLightbox) leave isStreaming undefined → false,
@@ -1936,11 +1926,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     ],
   );
 
-  const htmlAnswer = renderHtmlAnswers && !isStreaming ? htmlAnswerDocument(content) : null;
   return (
-    <HtmlAnswerContext.Provider value={renderHtmlAnswers && !isStreaming}>
     <div className="msg-markdown select-text">
-      {htmlAnswer ? <HtmlAnswerPreview html={htmlAnswer} /> : isStreaming ? (
+      {isStreaming ? (
         streamingChunks.map((chunk) => (
           <StreamingMarkdownChunk
             key={chunk.start}
@@ -1992,6 +1980,28 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         />
       )}
     </div>
-    </HtmlAnswerContext.Provider>
   );
+});
+
+/** Assistant-only envelope decoding, before Markdown chunking or repairs. */
+export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRendererProps) {
+  const instanceKey = useId();
+  const sessionFileCtx = useChatSessionFile();
+  const source = useStreamingThrottle(props.content, props.isStreaming ?? false);
+  const renderMedia = (node: RichNode) => {
+    if (node.kind === 'image') return <MarkdownRendererBase {...props} content={richMarkdown(node) ?? ''} isStreaming={false} />;
+    const raw = richMediaSource(node);
+    if (!raw) return null;
+    const normalized = raw.startsWith('xdt-audio://') && props.allowPrivilegedLinks !== false ? raw : normalizeMarkdownImageSrc(raw, props.workingDir, props.allowPrivilegedLinks !== false);
+    if (!normalized) return null;
+    const src = rewriteToRemoteMediaOrigin(normalized, props.currentSessionId ? toRemoteMediaOrigin(sessionFileCtx.origin, sessionFileCtx.workingDir) : undefined);
+    return node.kind === 'audio' ? <InlineXdtAudioPlayer src={src} /> : <ChatVideoView src={src} filename={richString(node, 'alt', 'video')} variant="tool-output" sessionId={props.currentSessionId} />;
+  };
+  const parts = useMemo(() => props.renderRichAnswers ? splitRichAnswer(source) : [], [source, props.renderRichAnswers]);
+  if (!parts.some(part => part.kind === 'rich')) return <MarkdownRendererBase {...props} />;
+  return <div className="rich-answer-body">{parts.map(part => part.kind === 'rich'
+    ? <RichAnswer renderMedia={renderMedia} key={part.key} source={part.source} complete={part.complete || !props.isStreaming}
+        stateKey={`${props.streamFadeKey ?? instanceKey}:${part.key}`}
+        renderMarkdown={(content, id) => <MarkdownRendererBase {...props} content={content} streamFadeKey={`${props.streamFadeKey}:${part.key}:${id}`} />} />
+    : <MarkdownRendererBase {...props} key={part.key} content={part.source} isStreaming={!part.complete && props.isStreaming} streamFadeKey={`${props.streamFadeKey}:${part.key}`} />)}</div>;
 });

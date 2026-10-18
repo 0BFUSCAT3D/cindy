@@ -391,5 +391,9 @@
     "memory": "記憶しました：{{title}}",
     "skillCreated": "スキルを作成：{{title}}",
     "skillUpdated": "スキルを更新：{{title}}"
+  },
+  "richAnswer": {
+    "calculationUnavailable": "この値を計算できません。",
+    "incomplete": "一部の内容を表示できませんでした。"
   }
 }

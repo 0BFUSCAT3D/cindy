@@ -22,15 +22,6 @@ const project = (items: RenderItem[], streaming: boolean) =>
   simplifyBotRenderItems(groupWorkRuns(items, streaming), streaming);
 
 describe('teammate final-result presentation', () => {
-  // Unit: a complete HTML result before a trailing tool must survive companion answer compaction.
-  it('retains a finished HTML answer before a trailing tool and closing reply', () => {
-    const html = '<html><body><button>Result</button></body></html>';
-    const rows = [message('u', 'user'), message('html', 'assistant', html), tool('notify'),
-      message('final', 'assistant', 'Done', { turnCompleted: true })];
-    expect(proseIds(project(rows, false))).toEqual(['html', 'final']);
-    expect(proseIds(project([message('u', 'user'), message('html', 'assistant', html, { isStreaming: true })], true))).toEqual([]);
-  });
-
   // #6351: provider final_answer only closes a message, not a successful sample.
   // Failed output remains in the expandable work history rather than being lifted
   // beside the real answer; normal commentary is governed by the existing rules.
@@ -367,4 +358,11 @@ it('keeps an unanswered historical receipt visible while the next user turn stre
   const next = [...history, message('next-user', 'user'),
     message('next-answer', 'assistant', 'First words', { assistantPhase: 'final_answer', isStreaming: true })];
   expect(allKeys(project(next, true))).toEqual(['msg-old-user', 'msg-receipt', 'msg-next-user', 'msg-next-answer']);
+});
+
+it('keeps streaming component answers visible through commentary and later tools', () => {
+  const body = '```cindy-ui\n' + JSON.stringify({ seq: 1, op: 'create', id: 'heading', kind: 'heading', props: { text: 'Result' } }) + '\n';
+  const rows = [message('u', 'user'), message('rich', 'assistant', body, { assistantPhase: 'commentary', isStreaming: true }), tool('later')];
+  expect(proseIds(project(rows, true))).toContain('rich');
+  expect(rows[1].type === 'message' && rows[1].message.content).toBe(body);
 });

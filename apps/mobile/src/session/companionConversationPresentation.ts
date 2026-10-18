@@ -1,9 +1,10 @@
+import { hasRichAnswer } from '@cindy/maker-shared/rich-answer';
 import { botTaskResultKey, readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { HISTORY_GAP_SPLIT_MS } from '@cindy/maker-shared/history-gap';
 import { collectMobileMarkdownImages } from './messageMarkdown';
 import type { MobileMessageRenderItem } from './messageRenderModel';
 
-const isDelivery = (item: MobileMessageRenderItem) => item.type === 'tool_media' && item.tools.some(tool => !!tool.media?.length || !!tool.files?.length)
+const isDelivery = (item: MobileMessageRenderItem) => (item.type === 'message' && !item.message.failedSamplingAttempt && item.message.kind === 'assistant' && hasRichAnswer(item.message.body)) || item.type === 'tool_media' && item.tools.some(tool => !!tool.media?.length || !!tool.files?.length)
   || item.type === 'message' && !item.message.failedSamplingAttempt && (item.message.companion?.kind === 'task' && item.message.companion.meta.role === 'delegation-result'
     || !!item.message.attachments?.length || !!item.message.media?.length
     || !!item.message.files?.length || collectMobileMarkdownImages(item.message.body).length > 0);

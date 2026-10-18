@@ -288,10 +288,9 @@ describe('message render shared model', () => {
   // 交付正文与位置无关地留在折叠组外。原始形状(2026-07-31 定时巡检):agent 先输出
   // 长篇简报,再调 notify 发通知,最后说一句「已触发通知」——SDK seal 只盖最后那句,
   // 「最终答复」回溯又遇工具即停,简报会被整段折进「工作过程」。
-  it.each([
-    `本轮 7 条有活动。${'逐条核对了改动落在哪些产品面。'.repeat(50)}`,
-    '<html><body><h1>Short HTML answer</h1></body></html>',
-  ])('keeps delivery prose outside the work fold even before a trailing side-effect tool: %s', (brief) => {
+  it('keeps delivery prose outside the work fold even before a trailing side-effect tool', () => {
+    const brief = `本轮 7 条有活动。${'逐条核对了改动落在哪些产品面。'.repeat(50)}`;
+    expect(brief.length).toBeGreaterThanOrEqual(600);
 
     const items = buildMessageRenderItems([
       message({ kind: 'user', source: source('user', 'brief me', 1), body: 'brief me', label: 'user' }),
