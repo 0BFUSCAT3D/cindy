@@ -7,6 +7,7 @@ import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
 
 // This suite exercises attachment layout; keep the unrelated native App surface out of Node.
 vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
+vi.mock('react-native-webview', () => ({ WebView: () => null }));
 
 // Keeps the rendered React Native styles of the real file chip (#5875). Node has no Yoga, so the
 // content-sized width below applies Yoga's own flex-basis rule to those styles instead of a layout pass.
