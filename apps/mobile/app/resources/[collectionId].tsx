@@ -114,7 +114,7 @@ function RemoteCollectionScreenContent() {
         title={title || t('devices.resources.titleFallback')}
         titleTestID="remoteResources.title"
       />
-      {loading ? (
+      {loading && items.length === 0 ? (
         <View style={styles.center}>
           <RemoteListSyncingPlaceholder testID="remoteResources.loading" />
         </View>

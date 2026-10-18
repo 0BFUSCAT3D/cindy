@@ -53,8 +53,10 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   // Main computers (cloud-companions.md): only with a server that declares companionHome.
   const cloud = useCloudCompanionHome(focused);
   // One row per companion, under its main computer (a row built from the cloud when none is listed).
-  const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
-    [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
+  // Unverified disk rows stay hidden on the first roster load; cloud actors remain independently usable.
+  const visibleRosterItems = roster.loading && !roster.error ? [] : roster.items;
+  const items = useMemo(() => cloud.supported ? cloudCompanionRows(visibleRosterItems, cloud.actors, cloud.deviceNames) : visibleRosterItems,
+    [cloud.actors, cloud.deviceNames, cloud.supported, visibleRosterItems]);
   // A cloud companion opens its normal chat (cached when its computer is unreachable). Only a row
   // this phone knows from the cloud alone (never listed by its computer) opens the cloud conversation.
   const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && row.item.revision === CLOUD_ROW_REVISION ? cloudActorForRow(cloud.actors, row) : null;

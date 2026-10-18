@@ -9,7 +9,7 @@ import {
   cacheRemoteResourceItems, readRemoteResourceSnapshot,
   remoteResourceCacheRevision, subscribeRemoteResourceCache,
 } from '@/device-link/remoteResourceCache';
-import { remoteResourceConnectionState, hasRemoteCollectionCache, isRemoteResourceHostOnline, readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
+import { REMOTE_RESOURCE_STARTUP_TIMEOUT_MS, remoteResourceConnectionState, hasRemoteCollectionCache, isRemoteResourceHostOnline, readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 import { listRemoteCollection, mergeRemoteCollectionHostShards, normalizeRemoteCollectionItems,
   type HostedRemoteCollectionItem, type RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { formatRemoteError, isAutoRecoveringRemoteError } from '@/device-link/remoteStatus';
@@ -55,6 +55,16 @@ export function useRemoteResourceList(collectionId: string, targets: readonly Re
     });
     return () => { cancelled = true; generation.current += 1; };
   }, [binding, collectionId, owner, user?.id]);
+
+  useEffect(() => {
+    if (!enabled || hydrated !== binding || state.settled || (status !== 'stopped' && status !== 'connecting')) return;
+    const timer = setTimeout(() => {
+      setState((old) => old.binding === binding && !old.settled ? {
+        ...old, settled: true, loading: false, refreshing: false, error: t('devices.resources.hostOffline'),
+      } : old);
+    }, REMOTE_RESOURCE_STARTUP_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [binding, enabled, hydrated, state.settled, status, t]);
 
   const read = useCallback(async (run: RemoteSyncRun) => {
     if (!enabled || !active.current || hydrated !== binding || !collectionId) return;

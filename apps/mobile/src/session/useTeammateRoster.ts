@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { REMOTE_RESOURCE_MANIFEST_CHANNEL, type RemoteResourceManifestResponse } from '@cindy/device-link';
 import { useFocusEffect } from 'expo-router';
@@ -8,7 +8,7 @@ import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { toDeviceListItems } from '@/device-link/devices';
 import { useRevokedDevices } from '@/device-link/revokedDevicesStore';
 import { cacheRemoteResourceHome, readRemoteResourceSnapshot } from '@/device-link/remoteResourceCache';
-import { readRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
+import { REMOTE_RESOURCE_STARTUP_TIMEOUT_MS, readRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 import { discoverRemoteHomeCollections, remoteResourceDiscoveryTargets,
   type RemoteHomeCollection, type RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { formatRemoteError, isAutoRecoveringRemoteError } from '@/device-link/remoteStatus';
@@ -157,6 +157,16 @@ export function useTeammateRoster(enabled = true) {
       targets: old.binding === binding && JSON.stringify(old.targets) === JSON.stringify(filtered) ? old.targets : filtered,
       groupTargets, error: error ?? (failures.length ? formatRemoteError(failures[0]) : null) }));
   }, [binding, i18n.language, invoke, openLink, readDeviceList, revoked, status, t, user?.id]);
+  useEffect(() => {
+    if (!enabled || discovery.binding !== binding || !discovery.ready || discovery.settled
+      || (status !== 'stopped' && status !== 'connecting')) return;
+    const timer = setTimeout(() => {
+      setDiscovery((old) => old.binding === binding && !old.settled ? {
+        ...old, settled: true, loading: false, error: t('devices.resources.hostOffline'),
+      } : old);
+    }, REMOTE_RESOURCE_STARTUP_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [binding, discovery.binding, discovery.ready, discovery.settled, enabled, status, t]);
   const requestDiscover = useRemoteSyncCoordinator(discover, JSON.stringify([binding, connectionEpoch, presenceVersion, status, enabled]));
   useFocusEffect(useCallback(() => {
     if (!enabled) return;

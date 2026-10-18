@@ -20,6 +20,7 @@ vi.mock('@/device-link/revokedDevicesStore', () => ({ useRevokedDevices: () => h
 vi.mock('@/device-link/remoteStatus', async () => ({ ...await vi.importActual<typeof import('@/device-link/remoteStatus')>('@/device-link/remoteStatus'), formatRemoteError: String }));
 vi.mock('@/device-link/remoteResourceCache', () => ({ cacheRemoteResourceHome: vi.fn(), readRemoteResourceSnapshot: h.snapshot }));
 vi.mock('@/session/useRemoteResourceList', () => ({ useRemoteResourceList: () => h.list }));
+import { REMOTE_RESOURCE_STARTUP_TIMEOUT_MS } from '@/device-link/remoteResourceAvailability';
 import { useTeammateRoster } from '@/session/useTeammateRoster';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
@@ -61,6 +62,24 @@ it('keeps a cold launch loading while the relay is starting, without reporting c
   expect(result.loading).toBe(true);
   expect(result.error).toBeNull();
   expect(h.link.readDeviceList).not.toHaveBeenCalled();
+});
+it('falls back to the cached roster after a stalled relay startup and recovers on reconnect', async () => {
+  vi.useFakeTimers();
+  const cached = { key: 'old:bot', host: { deviceId: 'old', deviceName: 'Old' }, item: {
+    ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', display: { title: 'Cached' }, links: [],
+  } };
+  h.link.status = 'connecting';
+  h.list.items = [cached];
+  h.snapshot.mockResolvedValue({ home: [], items: { teammates: [cached] }, read: {} });
+  await render();
+  expect(result.loading).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(REMOTE_RESOURCE_STARTUP_TIMEOUT_MS));
+  expect(result.loading).toBe(false);
+  expect(result.items).toEqual([cached]);
+  expect(result.error).toContain('devices.resources.hostOffline');
+  h.link.status = 'online'; h.link.connectionEpoch++;
+  await render();
+  expect(h.link.readDeviceList).toHaveBeenCalled();
 });
 it('drops old account discovery replies', async () => {
   let finish!: (value: unknown) => void;
