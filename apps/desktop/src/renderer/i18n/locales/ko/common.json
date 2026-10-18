@@ -14788,6 +14788,7 @@
     "addUnavailable": "현재 분할 창에서 이 세션을 열 수 없습니다. 기본 영역에서 세션을 연 후 다시 시도하세요."
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo 라이브러리(읽기 전용)",
     "retryRemotePlugins": "원격 플러그인을 불러오지 못했습니다. 다시 시도",
     "menuAria": "작업 메뉴",
     "tooltipEmpty": "더 많은 작업",
