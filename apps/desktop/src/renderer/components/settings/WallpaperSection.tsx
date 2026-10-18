@@ -16,6 +16,7 @@ import {
   APPEARANCE_LIMITS,
   DEFAULT_APPEARANCE_SETTINGS,
   isCustomWallpaperVideo,
+  RETIRED_WALLPAPER_IDS,
   SELECTABLE_WALLPAPER_IDS,
   type WallpaperId,
 } from '@/../shared/appearanceSettings';
@@ -46,10 +47,13 @@ export function WallpaperSection() {
     setMotion,
     resetWallpaper,
   } = useWallpaperSettings();
+  // A retired wallpaper stays visible (and selected) only while it is in use.
+  const retiredInUse = RETIRED_WALLPAPER_IDS.find((id) => id === wallpaperId);
+  const pickerIds: readonly WallpaperId[] = retiredInUse
+    ? [SELECTABLE_WALLPAPER_IDS[0], retiredInUse, ...SELECTABLE_WALLPAPER_IDS.slice(1)]
+    : SELECTABLE_WALLPAPER_IDS;
   const entryId =
-    focusedWallpaperId ??
-    SELECTABLE_WALLPAPER_IDS.find((id) => id === wallpaperId) ??
-    SELECTABLE_WALLPAPER_IDS[0];
+    focusedWallpaperId ?? pickerIds.find((id) => id === wallpaperId) ?? pickerIds[0];
   // The shared slider restores its starting value during cancellation. Clear
   // that temporary preview after its handler, returning to the latest saved value.
   const cancelBlurPreview = useCallback(() => {
@@ -141,7 +145,7 @@ export function WallpaperSection() {
           if (!event.currentTarget.contains(event.relatedTarget)) setFocusedWallpaperId(null);
         }}
       >
-        {SELECTABLE_WALLPAPER_IDS.map((id, index) => {
+        {pickerIds.map((id, index) => {
           const selected = wallpaperId === id;
           const label = t('settings.appearance.wallpaper.options.' + id);
           const background =
@@ -183,14 +187,14 @@ export function WallpaperSection() {
                       next = 0;
                       break;
                     case 'End':
-                      next = SELECTABLE_WALLPAPER_IDS.length - 1;
+                      next = pickerIds.length - 1;
                       break;
                     default:
                       return;
                   }
                   event.preventDefault();
-                  const count = SELECTABLE_WALLPAPER_IDS.length;
-                  const target = SELECTABLE_WALLPAPER_IDS[(next + count) % count];
+                  const count = pickerIds.length;
+                  const target = pickerIds[(next + count) % count];
                   buttons.current.get(target)?.focus();
                   // An empty custom tile needs explicit activation to open the file picker.
                   if (target !== wallpaperId && (target !== 'custom' || customWallpaperUrl)) {
