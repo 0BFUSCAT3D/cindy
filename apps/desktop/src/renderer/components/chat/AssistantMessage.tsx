@@ -141,6 +141,7 @@ const StreamingBody = memo(function StreamingBody({
     <>
       {committedText && (
         <MarkdownRenderer
+          renderHtmlAnswers
           workingDir={workingDir}
           content={committedText}
           isStreaming
@@ -365,6 +366,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           // MarkdownRenderer。isStreaming 透传 — true 时 MarkdownRenderer 内部启用
           // 100ms throttle, false 时无节流, 行为和该文件性能优化前完全一致。
           <MarkdownRenderer
+            renderHtmlAnswers
             workingDir={workingDir}
             content={displayContent}
             isStreaming={isStreaming}

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { app, protocol, session, type WebContents } from 'electron';
+import { app, ipcMain, protocol, session, type WebContents } from 'electron';
+import { registerHtmlAnswerPreviewIpc } from '../../htmlAnswerPreview.js';
+vi.mock('../../security/trustedAppRenderer.js', () => ({ assertTrustedAppRendererEvent: vi.fn() }));
 import { EventEmitter } from 'node:events';
 import type { McpAppsHost } from '../host.js';
 import { setMcpAppsHost } from '../runtime.js';
@@ -52,6 +54,25 @@ const document = {
   prefersBorder: true,
 };
 describe('MCP App local protocol isolation', () => {
+  // Unit: answer previews reuse document isolation, but must never acquire the App RPC bridge.
+  it('mounts an HTML answer with no host bridge and only lets its caller release it', async () => {
+    let serve!: (request: Request) => Promise<Response> | Response;
+    let invoke!: (...args: any[]) => any;
+    vi.spyOn(protocol, 'handle').mockImplementation((_scheme, callback) => { serve = callback; });
+    vi.spyOn(ipcMain, 'handle').mockImplementation((_channel, callback) => { invoke = callback; });
+    registerMcpAppProtocol();
+    registerHtmlAnswerPreviewIpc();
+    const event = { sender: { id: 1 } };
+    const view = invoke(event, { html: '<html><body><button>Answer</button></body></html>' });
+    const response = await serve(new Request(view.url));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Security-Policy')).toContain("connect-src 'none'");
+    expect(await response.text()).toContain('Content-Security-Policy');
+    expect((await serve(new Request(`cindy-mcp-app://${view.viewId}/bridge`, { method: 'POST', body: '{}' }))).status).toBe(403);
+    expect(() => invoke({ sender: { id: 2 } }, { viewId: view.viewId })).toThrow();
+    invoke(event, { viewId: view.viewId });
+    expect((await serve(new Request(view.url))).status).toBe(404);
+  });
   it('gives remotely mounted documents the same authenticated bridge and releases their Main binding', async () => {
     let handler!: (request: Request) => Promise<Response> | Response;
     vi.spyOn(protocol, 'handle').mockImplementation((_scheme, callback) => { handler = callback; });

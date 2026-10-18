@@ -22,6 +22,15 @@ const project = (items: RenderItem[], streaming: boolean) =>
   simplifyBotRenderItems(groupWorkRuns(items, streaming), streaming);
 
 describe('teammate final-result presentation', () => {
+  // Unit: a complete HTML result before a trailing tool must survive companion answer compaction.
+  it('retains a finished HTML answer before a trailing tool and closing reply', () => {
+    const html = '<html><body><button>Result</button></body></html>';
+    const rows = [message('u', 'user'), message('html', 'assistant', html), tool('notify'),
+      message('final', 'assistant', 'Done', { turnCompleted: true })];
+    expect(proseIds(project(rows, false))).toEqual(['html', 'final']);
+    expect(proseIds(project([message('u', 'user'), message('html', 'assistant', html, { isStreaming: true })], true))).toEqual([]);
+  });
+
   it('keeps coordination input hidden while process, explicit inputs, results and errors remain visible', () => {
     const rows = [message('coordination', 'user', '[UI_ACTION_TRIGGER]File agreement', { isSyntheticTrigger: true }),
       tool('audit'), message('visible-input', 'user', 'Requested status'),

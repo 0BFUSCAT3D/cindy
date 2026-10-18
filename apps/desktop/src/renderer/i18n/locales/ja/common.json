@@ -11268,6 +11268,10 @@
       "selectionCount_one": "{{count}} 件の引用",
       "selectionCount_other": "{{count}} 件の引用"
     },
+    "htmlAnswer": {
+      "preview": "プレビュー",
+      "source": "ソースを表示"
+    },
     "mermaid": {
       "clickToZoom": "クリックで拡大",
       "zoom": "拡大",

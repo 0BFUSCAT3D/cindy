@@ -34,6 +34,7 @@
     "./goal-command": "./src/goalCommand.ts",
     "./goal-verdict": "./src/goalVerdict.ts",
     "./history-gap": "./src/historyGap.ts",
+    "./html-answer": "./src/htmlAnswer.ts",
     "./image-annotation": "./src/imageAnnotation.ts",
     "./interaction": "./src/interaction.ts",
     "./internal-citation": "./src/internalCitation.ts",

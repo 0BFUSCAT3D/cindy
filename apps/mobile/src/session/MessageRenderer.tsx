@@ -1,3 +1,5 @@
+import { htmlAnswerDocument } from '@cindy/maker-shared/html-answer';
+import { HtmlAnswerPreview } from './HtmlAnswerPreview';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
@@ -3804,6 +3806,7 @@ function MessageBubble({
           />
         ) : (
           <MarkdownBody
+            renderHtmlAnswers={item.message.kind === 'assistant'}
             allowIosUITextView={!shouldCollapseLongMessage}
             markdownImageCacheKey={item.message.key}
             layout={contentLayout}
@@ -5591,7 +5594,7 @@ const ViewabilityGatedMathFormula = memo(function ViewabilityGatedMathFormula({
 /** A frozen task result reads like a reply: same Markdown, links and file chips (Desktop MarkdownRenderer). */
 function CompanionCardMarkdown({ text, actions }: { text: string; actions: MessageActions }) {
   const layout = useMemo(() => buildMessageContentLayout({ screenWidth: actions.screenWidth }), [actions.screenWidth]);
-  return <MarkdownBody layout={layout} text={text} selectable
+  return <MarkdownBody renderHtmlAnswers layout={layout} text={text} selectable
     onOpenPayload={actions.onOpenPayload} onOpenSessionLink={actions.onOpenSessionLink} />;
 }
 
@@ -5599,6 +5602,7 @@ function CompanionCardMarkdown({ text, actions }: { text: string; actions: Messa
 // 文本选择 = 完成态消息的各块 Text 原生 selectable:长按文字就地弹系统选择手柄/Copy 菜单,
 // 不跳转界面;整条复制走操作条按钮。选择按块进行(原生 Text 能力边界,跨段选择做不到)。
 function MarkdownBody({
+  renderHtmlAnswers = false,
   allowIosUITextView = true,
   markdownImageCacheKey,
   layout,
@@ -5627,6 +5631,7 @@ function MarkdownBody({
   /** 消息流式中:文件 chip 层跳过远端验证。 */
   streaming?: boolean;
   text: string;
+  renderHtmlAnswers?: boolean;
 }) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -5647,6 +5652,7 @@ function MarkdownBody({
   const settledTextStyle = useMemo(() => pinSettledWidth
     ? [styles.messageText, { width: contentWidth }]
     : styles.messageText, [contentWidth, pinSettledWidth, styles.messageText]);
+  const htmlVisible = useContext(MessageHeavyContentVisibilityContext);
   const markdownParseRef = useRef<MobileMarkdownParseResult | null>(null);
   const markdownParse = useMemo(() => {
     const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -5865,6 +5871,8 @@ function MarkdownBody({
       );
     }
     if (block.type === 'code') {
+      const html = renderHtmlAnswers && !streaming && block.language === 'html' ? htmlAnswerDocument(block.text) : null;
+      if (html) return <HtmlAnswerPreview key={block.key} html={html} active={htmlVisible} />;
       // 围栏代码在气泡内换行,不用横向 ScrollView:后者在展开长用户消息时
       // 会按未折行内容报出超高,气泡巨幅空白并把每行裁在右侧圆角外。
       return (
@@ -6013,7 +6021,9 @@ function MarkdownBody({
         {renderInlines(block.inlines, spanFor(inlinesSelectable(block.inlines)))}
       </MarkdownSelectableText>
     );
-  }, [allowIosUITextView, contentWidth, inlinesSelectable, layout, onOpenPayload, pinSettledWidth, renderInlines, selectable, settledTextStyle, spanFor, styles, t]);
+  }, [allowIosUITextView, contentWidth, inlinesSelectable, layout, onOpenPayload, pinSettledWidth, renderInlines, selectable, settledTextStyle, spanFor, styles, t, renderHtmlAnswers, streaming, htmlVisible]);
+  const htmlAnswer = renderHtmlAnswers && !streaming ? htmlAnswerDocument(text) : null;
+  if (htmlAnswer) return <HtmlAnswerPreview html={htmlAnswer} active={htmlVisible} />;
   return (
     <View
       collapsable={false}

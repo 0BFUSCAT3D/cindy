@@ -4442,6 +4442,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('dialogue-workspace:reset'),
   },
 
+  htmlAnswerPreview: (input: { html: string } | { viewId: string }): Promise<{ viewId: string; url: string } | null> =>
+    ipcRenderer.invoke('html-answer:preview', input),
+
   cindyMediaStorage: {
     /**
      * 本窗口草稿附件 URL 变化时上报(composerDraftStore mutator 尾部调用,

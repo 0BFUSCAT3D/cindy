@@ -1,4 +1,5 @@
 import { botTaskResultKey, readBotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
+import { htmlAnswerDocument } from '@cindy/maker-shared/html-answer';
 import { extractRenderedMarkdownImageTargets } from '@/components/chat/markdownImageTargets';
 import { HISTORY_GAP_SPLIT_MS } from '@/lib/historyGap';
 import type { ChatMessage } from '@/lib/makerChatStore';
@@ -20,6 +21,10 @@ function isProse(item: RenderItem): item is MessageRenderItem {
 
 function hasAttachments(message: ChatMessage): boolean {
   return Boolean(message.images?.length || message.files?.length);
+}
+
+function hasHtmlAnswer(message: ChatMessage): boolean {
+  return !message.isStreaming && htmlAnswerDocument(message.content) !== null;
 }
 
 function expandWorkGroups(items: readonly RenderItem[]): RenderItem[] {
@@ -171,7 +176,8 @@ function projectWindow(
   const isAddressedReply = (message: ChatMessage) => Boolean(message.content.trim())
     && !(message.assistantPhase === 'commentary' && !message.explicitDelivery)
     && (message.assistantPhase === 'final_answer' || Boolean(message.sourceGroup)
-      || Boolean(message.explicitDelivery) || isCompletedAssistantMessage(message) || sealedAnswers.has(message));
+      || Boolean(message.explicitDelivery) || hasHtmlAnswer(message)
+      || isCompletedAssistantMessage(message) || sealedAnswers.has(message));
   const result: RenderItem[] = [];
   let turn: RenderItem[] = [];
   const flushTurn = (active: boolean) => {
@@ -180,7 +186,7 @@ function projectWindow(
     for (let index = 0; index < turn.length; index += 1) {
       const item = turn[index];
       if (isProse(item) && item.message.content.trim()) lastProse = index;
-      if ((isProse(item) && (hasAttachments(item.message)
+      if ((isProse(item) && (hasAttachments(item.message) || hasHtmlAnswer(item.message)
         || extractRenderedMarkdownImageTargets(item.message.content).length > 0))
         || (item.type === 'message' && item.message.systemCardType === 'bot-session-task-result')
         || (item.type === 'generated_files' && visibleGeneratedFileKeys?.has(item.key))
@@ -203,7 +209,7 @@ function projectWindow(
         if (!item.message.content.trim() && !hasAttachments(item.message)) return;
         if (item.message.assistantPhase === 'commentary' && !item.message.explicitDelivery && !hasAttachments(item.message)) return;
         if (item.message.assistantPhase !== 'final_answer' && !item.message.sourceGroup && !item.message.explicitDelivery && !isCompletedAssistantMessage(item.message) && !sealedAnswers.has(item.message)
-          && !hasAttachments(item.message) && index !== fallbackProse
+          && !hasAttachments(item.message) && !hasHtmlAnswer(item.message) && index !== fallbackProse
           && extractRenderedMarkdownImageTargets(item.message.content).length === 0) {
           return;
         }

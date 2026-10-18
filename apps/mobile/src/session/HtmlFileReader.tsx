@@ -24,7 +24,7 @@
  * 出网由 htmlPreviewCsp 在引擎层封锁(导航回调管不到子资源请求)。
  * ⚠️ **不要把这套说成「零出网」**:WebRTC 不受 CSP 管辖,iOS 上仍是残留信道 ——
  * 准确边界与待裁决的取舍见 htmlPreviewCsp 头注的「残留信道」一节。
- * 不挂 onMessage:页面里的 postMessage 无人消费,不给任意生成物开一条通向 RN 侧的通道。
+ * 文件阅读不挂 onMessage；内联答案仅接收有界尺寸通知，不执行页面发来的任何命令。
  * Android 另关多窗口:`window.open` / `target="_blank"` 走的是 onCreateWindow,不经过下面
  * 的导航回调,不关掉等于给策略留一个后门(见 setSupportMultipleWindows 处的说明)。
  *
@@ -42,6 +42,7 @@ import { sanitizeDiagnosticText } from '@/debug/fileDiagnostics';
 import { mobileDebugLog } from '@/debug/mobileDebugLog';
 import { interceptHtmlNavigation, interceptSnapshotNavigation } from '@/session/htmlNavigationPolicy';
 import { withHtmlPreviewCsp } from '@/session/htmlPreviewCsp';
+import { htmlAnswerHeight } from '@cindy/maker-shared/html-answer';
 import type { MobileHtmlPreview } from '@/session/mobileHtmlPreview';
 import { useHtmlBrowserViewport } from '@/session/useHtmlBrowserViewport';
 import { browserViewportScrollScript } from '@/session/htmlBrowserViewport';
@@ -130,7 +131,9 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
   /> : null}{(!preview || paintedPreview !== preview) && loading ? <View key="loading" style={StyleSheet.absoluteFill} pointerEvents="none">{loading}</View> : null}</View></View>;
 }
 
-export function HtmlFileReader({ html, testID }: { html: string; testID?: string }) {
+export function HtmlFileReader({ html, testID, onContentHeight }: {
+  html: string; testID?: string; onContentHeight?: (height: number) => void;
+}) {
   // CSP 注入放在**渲染载体这一层**,而不是取件那一层:任何进到这个 WebView 的
   // HTML 都必须带策略,不管它有没有同目录资源(见 htmlPreviewCsp 的说明)。
   const guardedHtml = useMemo(() => withHtmlPreviewCsp(html), [html]);
@@ -151,7 +154,7 @@ export function HtmlFileReader({ html, testID }: { html: string; testID?: string
   );
   return (
     <View style={styles.fill} testID={testID}>
-      <WebView
+      <WebView<{}>
         onShouldStartLoadWithRequest={interceptNavigation}
         // 首份文档加载完就上闩:此后 about:blank 这类替换文档的导航不再放行。
         onLoadEnd={() => { documentSettledRef.current = true; }}
@@ -180,6 +183,14 @@ export function HtmlFileReader({ html, testID }: { html: string; testID?: string
         // 于是目录锚点在 Android 上点了没反应。显式对齐后两端都解析成
         // `about:blank#toc`,锚点放行、origin 仍是 opaque(不放宽权限面)。
         source={{ baseUrl: 'about:blank', html: guardedHtml }}
+        // Inline answers may report a bounded height; no commands or host operations.
+        onMessage={onContentHeight ? (event) => {
+          try {
+            if (event.nativeEvent.data.length > 256) return;
+            const height = htmlAnswerHeight(JSON.parse(event.nativeEvent.data));
+            if (height !== null) onContentHeight(height);
+          } catch { /* malformed size notification */ }
+        } : undefined}
         style={styles.fill}
       />
     </View>

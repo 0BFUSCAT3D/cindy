@@ -11267,6 +11267,10 @@
       "selectionCount_one": "{{count}} 處引用",
       "selectionCount_other": "{{count}} 處引用"
     },
+    "htmlAnswer": {
+      "preview": "預覽",
+      "source": "查看原始碼"
+    },
     "mermaid": {
       "clickToZoom": "點選放大",
       "zoom": "放大",

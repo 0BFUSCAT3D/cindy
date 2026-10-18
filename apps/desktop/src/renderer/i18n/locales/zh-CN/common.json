@@ -11268,6 +11268,10 @@
       "selectionCount_one": "{{count}} 处引用",
       "selectionCount_other": "{{count}} 处引用"
     },
+    "htmlAnswer": {
+      "preview": "预览",
+      "source": "查看源码"
+    },
     "mermaid": {
       "clickToZoom": "点击放大",
       "zoom": "放大",
