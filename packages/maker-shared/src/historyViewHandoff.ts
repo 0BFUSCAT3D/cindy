@@ -49,11 +49,18 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
     // received after this page's read began must remain visible even if that
     // older page arrives later. Fresh reads also retire receipts from an earlier run.
     const receivedAfterRead = (row: T) => historyCacheReceiptFollows(row.cacheReceipt, snapshot.readReceipt, snapshot.stale);
+    // Only a complete, authoritative empty read can prove an absent body was
+    // removed. Apply the same receipt evidence before either handoff is merged.
+    const cleared = snapshot.ready && !snapshot.stale && !snapshot.hasMore && snapshot.items.length === 0;
+    const supersededByEmptyRead = (row: T) => cleared
+      && isHistoryCacheReceipt(row.cacheReceipt) && isHistoryCacheReceipt(snapshot.readReceipt)
+      && !receivedAfterRead(row);
     const current = new Set(raw.map(row => row.clientId));
     for (const id of this.pending) if (!current.has(id)) this.pending.delete(id);
     for (const row of raw) {
       if (row.role !== 'assistant') continue;
-      if (this.streaming(row)) this.pending.add(row.clientId);
+      if (supersededByEmptyRead(row)) this.pending.delete(row.clientId);
+      else if (this.streaming(row)) this.pending.add(row.clientId);
       else if (history.has(row.clientId) && !this.streaming(history.get(row.clientId)!)) this.pending.delete(row.clientId);
     }
     const pending = new Set(this.pending);
@@ -62,15 +69,10 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
       const known = history.get(row.clientId);
       history.set(row.clientId, known ? liveContentWithHistoryOrder(row, known) : row);
     }
-    // An authoritative empty history retires older receipts even if the raw
-    // deletion push lags behind it. A nonempty paged window cannot prove an
-    // absent older row was deleted; keep the existing coverage/removal rule.
-    const cleared = !snapshot.stale && !snapshot.hasMore && snapshot.items.length === 0;
     const rawById = new Map(raw.map(row => [row.clientId, row]));
     for (const id of this.tail) {
       const row = rawById.get(id);
-      if (!row || (!receivedAfterRead(row) && (history.has(id)
-        || (cleared && isHistoryCacheReceipt(row.cacheReceipt) && isHistoryCacheReceipt(snapshot.readReceipt))))) {
+      if (!row || supersededByEmptyRead(row) || (history.has(id) && !receivedAfterRead(row))) {
         this.tail.delete(id);
       }
     }

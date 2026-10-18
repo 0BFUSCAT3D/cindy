@@ -53,13 +53,14 @@ function fixture() {
 }
 
 describe('desktop remote history uses the shared live-to-history handoff', () => {
-  it('lets a newer empty page retire a list receipt before the raw deletion push arrives', async () => {
+  it.each([false, true])('lets a newer empty page retire a receipt before the raw deletion push arrives (streamed=%s)', async (streamed) => {
     const { view, render, setSource } = fixture();
     const readReceipt = nextHistoryCacheReceipt();
-    const received = { ...row('reply'), cacheReceipt: nextHistoryCacheReceipt() };
+    let received = { ...row('reply', streamed), cacheReceipt: nextHistoryCacheReceipt() };
     view.setActive(false);
     await view.restoreCachedView(async () => ({ ...view.getSnapshot(), ready: true, readReceipt }));
     expect(render([received]).text).toContain('visible answer');
+    received = { ...received, isStreaming: false };
     setSource([]);
     view.setActive(true);
     await view.refresh();
@@ -67,6 +68,7 @@ describe('desktop remote history uses the shared live-to-history handoff', () =>
     view.setActive(false);
     expect(render([received]).items).toEqual([]);
     expect(render([received]).state.tail.size).toBe(0);
+    expect(render([received]).state.pending.size).toBe(0);
   });
 
   // Unit: reproduce the list-receipt/history timestamp disagreement through the
