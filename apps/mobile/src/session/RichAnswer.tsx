@@ -1,3 +1,17 @@
+import {
+  Mail,
+  CalendarDays,
+  Folder,
+  ChartColumn,
+  Check,
+  Info,
+  Clock,
+  MapPin,
+  Coffee,
+  Image,
+  Users,
+  Star,
+} from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Fragment,
@@ -18,7 +32,7 @@ import {
   StyleSheet,
   type GestureResponderEvent,
 } from "react-native";
-import Svg, { Polyline } from "react-native-svg";
+import Svg, { Polyline, Line, Circle, Text as SvgText } from "react-native-svg";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/auth/AuthContext";
 import {
@@ -35,6 +49,7 @@ import {
   RichInteractionMemory,
   richAction,
   richChart,
+  richLinePlot,
   richResolvedValues,
   richCalculationUnavailable,
   richLabel,
@@ -46,6 +61,21 @@ import {
   type RichNode,
   type RichValue,
 } from "@cindy/maker-shared/rich-answer";
+
+const answerIcons = {
+  mail: Mail,
+  calendar: CalendarDays,
+  folder: Folder,
+  chart: ChartColumn,
+  check: Check,
+  info: Info,
+  clock: Clock,
+  location: MapPin,
+  coffee: Coffee,
+  image: Image,
+  users: Users,
+  star: Star,
+};
 
 const memory = new RichInteractionMemory({
   async read() {
@@ -87,7 +117,9 @@ function RichDocumentView({
   );
   useEffect(() => {
     void memory.load();
-    const subscription = AppState.addEventListener('change', state => { if (state !== 'active') void memory.flush(); });
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") void memory.flush();
+    });
     return () => {
       subscription.remove();
       void memory.flush();
@@ -114,13 +146,18 @@ function RichDocumentView({
   const render = (id: string): ReactNode => {
     const node = doc.nodes.get(id);
     if (!node) return null;
-    if (richCalculationUnavailable(node, values)) return <Text style={styles.caption}>{complete ? t("message.richAnswer.calculationUnavailable") : '…'}</Text>;
+    if (richCalculationUnavailable(node, values))
+      return (
+        <Text style={styles.caption}>
+          {complete ? t("message.richAnswer.calculationUnavailable") : "…"}
+        </Text>
+      );
     const bind = richString(node, "bind", id),
       label = richString(node, "label");
     const children = node.children.map((child) => (
       <Fragment key={child}>{render(child)}</Fragment>
     ));
-    if ((["image", "video", "audio"].includes(node.kind)) && renderMedia)
+    if (["image", "video", "audio"].includes(node.kind) && renderMedia)
       return (
         <View style={styles.content}>
           {renderMedia(node)}
@@ -150,6 +187,28 @@ function RichDocumentView({
             {richLabel(node, values)}
           </Text>
         );
+      case "icon": {
+        const name = richString(node, "name");
+        const Icon = Object.prototype.hasOwnProperty.call(answerIcons, name)
+          ? answerIcons[name as keyof typeof answerIcons]
+          : Info;
+        return (
+          <View style={styles.iconRow}>
+            <Icon
+              size={20}
+              strokeWidth={1.75}
+              color={colors.textPrimary}
+              accessible={false}
+            />
+            <View style={styles.iconBody}>
+              <Text style={styles.iconTitle}>{label || name}</Text>
+              {richString(node, "text") ? (
+                <Text style={styles.text}>{richString(node, "text")}</Text>
+              ) : null}
+            </View>
+          </View>
+        );
+      }
       case "divider":
         return <View style={styles.divider} />;
       case "stack":
@@ -325,43 +384,30 @@ function RichDocumentView({
           <View style={styles.stack}>
             <Text style={styles.text}>{label}</Text>
             {richString(node, "variant") === "line" ? (
-              <Svg
-                accessibilityLabel={label}
-                width="100%"
-                height={160}
-                viewBox="0 0 480 180"
-              >
-                <Polyline
-                  fill="none"
-                  stroke={colors.textPrimary}
-                  strokeWidth={2}
-                  points={data
-                    .map(
-                      (item, i) =>
-                        `${10 + (i / Math.max(1, data.length - 1)) * 460},${170 - ((item.value - min) / span) * 160}`,
-                    )
-                    .join(" ")}
-                />
-              </Svg>
+              <AnswerLineChart data={data} label={label} />
             ) : null}
-            {data.map((item, index) => (
-              <View key={index}>
-                <View style={styles.labelRow}>
-                  <Text style={styles.caption}>{item.label}</Text>
-                  <Text style={styles.caption}>{item.value}</Text>
-                </View>
-                {richString(node, "variant") !== "line" ? (
-                  <View style={styles.track}>
-                    <View
-                      style={[
-                        styles.bar,
-                        { marginLeft: `${((Math.min(0, item.value) - min) / span) * 100}%`, width: `${(Math.abs(item.value) / span) * 100}%` },
-                      ]}
-                    />
+            {richString(node, "variant") !== "line" &&
+              data.map((item, index) => (
+                <View key={index}>
+                  <View style={styles.labelRow}>
+                    <Text style={styles.caption}>{item.label}</Text>
+                    <Text style={styles.caption}>{item.value}</Text>
                   </View>
-                ) : null}
-              </View>
-            ))}
+                  {richString(node, "variant") !== "line" ? (
+                    <View style={styles.track}>
+                      <View
+                        style={[
+                          styles.bar,
+                          {
+                            marginLeft: `${((Math.min(0, item.value) - min) / span) * 100}%`,
+                            width: `${(Math.abs(item.value) / span) * 100}%`,
+                          },
+                        ]}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              ))}
           </View>
         );
       }
@@ -381,6 +427,100 @@ function RichDocumentView({
       {doc.issues ? (
         <Text style={styles.caption}>{t("message.richAnswer.incomplete")}</Text>
       ) : null}
+    </View>
+  );
+}
+function AnswerLineChart({
+  data,
+  label,
+}: {
+  data: { label: string; value: number }[];
+  label: string;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [width, setWidth] = useState(320);
+  const plot = richLinePlot(data, width);
+  return (
+    <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+      <Svg
+        width="100%"
+        height={plot.height}
+        viewBox={`0 0 ${plot.width} ${plot.height}`}
+        accessible
+        accessibilityLabel={`${label}. ${data.map((item) => `${item.label}: ${item.value}`).join(", ")}`}
+      >
+        {plot.ticks.map((tick) => (
+          <Fragment key={tick.value}>
+            <Line
+              x1={plot.left}
+              x2={plot.width - plot.right}
+              y1={tick.y}
+              y2={tick.y}
+              stroke={colors.border}
+            />
+            <SvgText
+              x={plot.left - 6}
+              y={tick.y + 4}
+              textAnchor="end"
+              fontSize={textStyles.footnote.fontSize}
+              fill={colors.textSecondary}
+            >
+              {Number(tick.value.toPrecision(3))}
+            </SvgText>
+          </Fragment>
+        ))}
+        <Polyline
+          fill="none"
+          stroke={colors.textPrimary}
+          strokeWidth={2}
+          points={plot.points.map((p) => `${p.x},${p.y}`).join(" ")}
+        />
+        {plot.points.map((p, i) => (
+          <Fragment key={i}>
+            <Circle cx={p.x} cy={p.y} r={3} fill={colors.textPrimary} />
+            {plot.showValues ? (
+              <SvgText
+                x={p.x}
+                y={p.y - 10}
+                textAnchor="middle"
+                fontSize={textStyles.footnote.fontSize}
+                fill={colors.textPrimary}
+              >
+                {p.value}
+              </SvgText>
+            ) : null}
+          </Fragment>
+        ))}
+      </Svg>
+      <View
+        style={[
+          data.length <= 8 ? styles.chartLabels : styles.stack,
+          data.length <= 8 && {
+            paddingLeft: plot.left,
+            paddingRight: plot.right,
+          },
+        ]}
+      >
+        {data.map((item, i) => (
+          <View
+            key={i}
+            style={data.length <= 8 ? styles.chartLabel : styles.labelRow}
+          >
+            <Text
+              style={[
+                styles.caption,
+                data.length <= 8 && styles.chartLabelText,
+              ]}
+            >
+              {item.label}
+            </Text>
+            {!plot.showValues ? (
+              <Text style={styles.caption}>{item.value}</Text>
+            ) : null}
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -452,6 +592,20 @@ function AnswerRange({
 }
 const makeStyles = (colors: ThemeColors) =>
   StyleSheet.create({
+    iconRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: spacing.md,
+    },
+    iconBody: { flex: 1, gap: spacing.xs, minWidth: 0 },
+    iconTitle: {
+      ...textStyles.bodyLarge,
+      color: colors.textPrimary,
+      fontWeight: fontWeight.medium,
+    },
+    chartLabels: { flexDirection: "row" },
+    chartLabel: { flex: 1, minWidth: 0 },
+    chartLabelText: { textAlign: "center" },
     stack: { gap: spacing.lg, minWidth: 0 },
     content: { minWidth: 0, flexShrink: 1 },
     row: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },

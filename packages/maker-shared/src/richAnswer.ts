@@ -4,6 +4,7 @@ export const RICH_ANSWER_KINDS = [
   "text",
   "markdown",
   "heading",
+  "icon",
   "stack",
   "row",
   "grid",
@@ -388,18 +389,34 @@ export function richDefaults(
 }
 /** Resolve inputs and calculated node references from one document snapshot.
  * Forward references are supported; cycles and missing values stay unavailable. */
-export function richResolvedValues(document: RichDocument, edited: RichValues = {}): RichValues {
-  const values: Record<string, RichValue | undefined> = { ...richDefaults(document), ...edited };
+export function richResolvedValues(
+  document: RichDocument,
+  edited: RichValues = {},
+): RichValues {
+  const values: Record<string, RichValue | undefined> = {
+    ...richDefaults(document),
+    ...edited,
+  };
   const visiting = new Set<string>();
   const resolve = (id: string): RichValue | undefined => {
     if (own(values, id)) return values[id];
     if (visiting.has(id) || visiting.size >= MAX_DEPTH) return undefined;
     const node = document.nodes.get(id);
-    if (!node || !["stat", "text", "heading"].includes(node.kind)) return undefined;
+    if (!node || !["stat", "text", "heading"].includes(node.kind))
+      return undefined;
     visiting.add(id);
-    const result = richEvaluate(node.props.value ?? node.props.text, values, 0, resolve);
+    const result = richEvaluate(
+      node.props.value ?? node.props.text,
+      values,
+      0,
+      resolve,
+    );
     visiting.delete(id);
-    Object.defineProperty(values, id, { value: result, enumerable: true, configurable: true });
+    Object.defineProperty(values, id, {
+      value: result,
+      enumerable: true,
+      configurable: true,
+    });
     return result;
   };
   for (const node of document.nodes.values()) resolve(node.id);
@@ -423,59 +440,110 @@ export function richEvaluate(
   if (expr.op === "if") {
     if (expr.args.length !== 3) return undefined;
     const condition = evaluate(expr.args[0]);
-    return condition === undefined ? undefined : evaluate(expr.args[condition ? 1 : 2]);
+    return condition === undefined
+      ? undefined
+      : evaluate(expr.args[condition ? 1 : 2]);
   }
   const args = expr.args.map(evaluate);
-  if (args.some(x => x === undefined)) return undefined;
+  if (args.some((x) => x === undefined)) return undefined;
   if (expr.op === "concat") {
     // Computed references may share and repeatedly double strings. Bound the
     // result before allocating it, just like an individual node props payload.
-    if (args.reduce<number>((size, arg) => size + String(arg).length, 0) > 65_536) return undefined;
+    if (
+      args.reduce<number>((size, arg) => size + String(arg).length, 0) > 65_536
+    )
+      return undefined;
     return args.join("");
   }
-  if (["eq", "lt", "gt", "sub", "div"].includes(String(expr.op)) && args.length !== 2) return undefined;
+  if (
+    ["eq", "lt", "gt", "sub", "div"].includes(String(expr.op)) &&
+    args.length !== 2
+  )
+    return undefined;
   if (expr.op === "eq") return args[0] === args[1];
-  if (args.length === 0 || args.some(x => typeof x === "string" && !x.trim())) return undefined;
+  if (args.length === 0 || args.some((x) => typeof x === "string" && !x.trim()))
+    return undefined;
   const nums = args.map(Number);
   if (!nums.every(Number.isFinite)) return undefined;
   let result: number;
   switch (expr.op) {
-    case "add": result = nums.reduce((a, b) => a + b, 0); break;
-    case "mul": result = nums.reduce((a, b) => a * b, 1); break;
-    case "sub": result = nums[0] - nums[1]; break;
-    case "div": result = nums[0] / nums[1]; break;
-    case "min": result = Math.min(...nums); break;
-    case "max": result = Math.max(...nums); break;
-    case "lt": return nums[0] < nums[1];
-    case "gt": return nums[0] > nums[1];
-    default: return undefined;
+    case "add":
+      result = nums.reduce((a, b) => a + b, 0);
+      break;
+    case "mul":
+      result = nums.reduce((a, b) => a * b, 1);
+      break;
+    case "sub":
+      result = nums[0] - nums[1];
+      break;
+    case "div":
+      result = nums[0] / nums[1];
+      break;
+    case "min":
+      result = Math.min(...nums);
+      break;
+    case "max":
+      result = Math.max(...nums);
+      break;
+    case "lt":
+      return nums[0] < nums[1];
+    case "gt":
+      return nums[0] > nums[1];
+    default:
+      return undefined;
   }
   return Number.isFinite(result) ? result : undefined;
 }
-export function richValue(node: RichNode, values: RichValues): RichValue | undefined {
+export function richValue(
+  node: RichNode,
+  values: RichValues,
+): RichValue | undefined {
   return richEvaluate(node.props.value ?? node.props.text ?? "", values);
 }
 export function richLabel(node: RichNode, values: RichValues): string {
   const result = richValue(node, values);
-  return result === undefined ? "—" : richString(node, "prefix") + String(result) + richString(node, "suffix");
+  return result === undefined
+    ? "—"
+    : richString(node, "prefix") + String(result) + richString(node, "suffix");
 }
 /** Component-local pending/error display; unaffected prose and controls remain usable. */
-export function richCalculationUnavailable(node: RichNode, values: RichValues): boolean {
-  if (["stat", "text", "heading"].includes(node.kind)) return richValue(node, values) === undefined;
-  return node.kind === "chart" && Array.isArray(node.props.data) && node.props.data.some(item => {
-    if (!record(item)) return true;
-    const result = richEvaluate(item.value, values);
-    return result === undefined || (typeof result === "string" && !result.trim()) || !Number.isFinite(Number(result));
-  });
+export function richCalculationUnavailable(
+  node: RichNode,
+  values: RichValues,
+): boolean {
+  if (["stat", "text", "heading"].includes(node.kind))
+    return richValue(node, values) === undefined;
+  return (
+    node.kind === "chart" &&
+    Array.isArray(node.props.data) &&
+    node.props.data.some((item) => {
+      if (!record(item)) return true;
+      const result = richEvaluate(item.value, values);
+      return (
+        result === undefined ||
+        (typeof result === "string" && !result.trim()) ||
+        !Number.isFinite(Number(result))
+      );
+    })
+  );
 }
-export function richAction(node: RichNode, values: RichValues): Record<string, RichValue> {
+export function richAction(
+  node: RichNode,
+  values: RichValues,
+): Record<string, RichValue> {
   const action = node.props.set;
   if (!record(action)) return {};
   const changes: Record<string, RichValue> = {};
-  for (const [key, expr] of Object.entries(action).filter(([key]) => ID.test(key)).slice(0, 100)) {
+  for (const [key, expr] of Object.entries(action)
+    .filter(([key]) => ID.test(key))
+    .slice(0, 100)) {
     const result = richEvaluate(expr, values);
     if (result === undefined) return {}; // an invalid form cannot partially apply
-    Object.defineProperty(changes, key, { value: result, enumerable: true, configurable: true });
+    Object.defineProperty(changes, key, {
+      value: result,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return changes;
 }
@@ -593,7 +661,11 @@ export class RichInteractionMemory {
   }
   flushSync(): void {
     clearTimeout(this.timer);
-    try { this.storage?.writeSync?.(this.serialize()); } catch { /* Storage unavailable: keep in-memory values. */ }
+    try {
+      this.storage?.writeSync?.(this.serialize());
+    } catch {
+      /* Storage unavailable: keep in-memory values. */
+    }
   }
   async flush(): Promise<void> {
     clearTimeout(this.timer);
@@ -624,6 +696,39 @@ export function richChart(
         }))
         .filter((item) => Number.isFinite(item.value))
     : [];
+}
+
+/** Shared plot coordinates keep native and desktop charts aligned with the same data. */
+export function richLinePlot(
+  data: { label: string; value: number }[],
+  width: number,
+) {
+  const w = Math.max(180, width),
+    left = 36,
+    right = 12,
+    top = 26,
+    bottom = 146;
+  const min = Math.min(0, ...data.map((item) => item.value));
+  const max = Math.max(0, ...data.map((item) => item.value));
+  const scale = Math.max(Math.abs(min), Math.abs(max), 1);
+  const span = max / scale - min / scale || 1;
+  const y = (v: number) =>
+    bottom - ((v / scale - min / scale) / span) * (bottom - top);
+  return {
+    width: w,
+    height: 164,
+    left,
+    right,
+    ticks: [min, min / 2 + max / 2, max]
+      .filter((v, i, all) => all.indexOf(v) === i)
+      .map((value) => ({ value, y: y(value) })),
+    points: data.map((item, i) => ({
+      ...item,
+      x: left + ((i + 0.5) / Math.max(1, data.length)) * (w - left - right),
+      y: y(item.value),
+    })),
+    showValues: data.length <= Math.floor((w - left - right) / 35),
+  };
 }
 export function richRange(
   node: RichNode,
@@ -664,6 +769,10 @@ export function richAnswerText(source: string): string {
             .filter(Boolean)
             .join("\n\n");
         if (node.kind === "heading") return `### ${richLabel(node, values)}`;
+        if (node.kind === "icon")
+          return [richString(node, "label"), richString(node, "text")]
+            .filter(Boolean)
+            .join("\n");
         if (node.kind === "text") return richLabel(node, values);
         if (node.kind === "divider") return "---";
         if (node.kind === "stat")

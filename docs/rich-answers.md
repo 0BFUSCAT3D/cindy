@@ -38,6 +38,14 @@ iPhone 原生测试版回放真实结果，已检查任务、伙伴、流式到�
 
 旧完整 HTML 预览路径已移除，其旧验收不覆盖本实现。送审不代表跨设备补充验收已完成；合并/发布前仍须补齐上面列明的相关场景。
 
+## 日常正文补充验收（2026-10-18）
+
+按用户纠正，新增 15 次真实 maker 调用：照片图文、图标说明、数据简报各 3 种 Harness，加上原生线条图标与图表修正后的 6 次复测。请求只描述用户要看的内容，没有指定组件协议或手写模型答案。14 份组件正文解析无错误；Pi 的首次图标说明采用普通 Markdown + emoji，属于有效简洁输出。明确要求线条图标后，三种 Harness 均选中 mail/calendar/folder/chart 四个原生图标。三份图文均加载 coffee/park/art 三张真实照片；六组图表（折线 + 条形）全部 60 个数值与输入一致。
+
+实测发现并修复：折线图原先只有线，必须对照下方列表才能读数；现有共享坐标计算，桌面与手机都直接展示刻度、点值和类别。补充原生线条图标，未知名称保留文字并使用通用图标，不加载任意资源。两项生产渲染入口回归通过，包含流式数据修改后的标签和可读结果（组件 5/5，2.16s）；共享 85 项、两端类型检查、测试卫生检查通过。这里只扩展已授权公共能力说明中的图标与图表属性，没有新增模型后处理。
+
+桌面浅/深色各查看 15 份实际结果，没有解析提示或横向溢出。iPhone 浅/深色回放图文、原生图标与修正图表的三 Harness 结果。六次复测均记录到模型尚未结束时已显示的正文组件。手机照片通过本机测试 HTTP 映射读取，明确不当作跨设备媒体取件已通过。调试版沿用的导航弃用与 Reanimated 警告已留在运行记录，截图时收起调试提示，没有修改生产日志规则。
+
 ## 界面证据
 
 真实模型费用比较，12 个月并开启服务；宿主原生组件显示 300 / 240、省 60。图片只含本任务合成测试内容。
@@ -47,3 +55,13 @@ iPhone 原生测试版回放真实结果，已检查任务、伙伴、流式到�
 | iOS 浅色（原生回放） | iOS 深色（原生回放） |
 | --- | --- |
 | ![浅色](images/rich-answers/mobile-cost-light.png) | ![深色](images/rich-answers/mobile-cost-dark.png) |
+
+### 常见输出（真实模型生成）
+
+![Desktop 图文混排](images/rich-answers/desktop-illustrated.png)
+![Desktop 原生图标](images/rich-answers/desktop-icons.png)
+![Desktop 数据图](images/rich-answers/desktop-charts.png)
+
+| iOS 图文 | iOS 原生图标（深色） | iOS 数据图 |
+| --- | --- | --- |
+| ![图文](images/rich-answers/mobile-illustrated-light.png) | ![图标](images/rich-answers/mobile-icons-dark.png) | ![图表](images/rich-answers/mobile-charts-light.png) |

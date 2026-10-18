@@ -12,12 +12,13 @@ Each block starts seq=1 and increments by one. Its first operation has version:1
 
 Components and props (no arbitrary HTML, CSS, scripts or tool access):
 - text/heading: text; markdown: text supports lists/tables/links.
+- icon: name (mail, calendar, folder, chart, check, info, clock, location, coffee, image, users, star), label, text?. A small native line icon with a title and optional description. Use for icon-led explanations; no buttons or actions.
 - stack/group: vertical children. row/grid: columns 1–3; grid layout:"aside" for image + text. Containers combine freely and adapt to the available width.
 - divider.
 - image/video/audio: src (existing managed reference, URL or task file), alt, caption. Reuse actual media; never invent asset URLs or embed base64 data.
 - code: text, language. math: text (LaTeX). diagram: text (Mermaid).
 - stat: label, value, prefix?, suffix?.
-- chart: label, variant:"bar"|"line", data:[{label,value}].
+- chart: label (include unit), variant:"bar"|"line", data:[{label,value}]. Data labels are short categories/dates; values are drawn separately, so do not repeat them in labels. Line charts include axis guides and point values; bar charts label every bar.
 - range: label, bind?, min,max,step,default,suffix?. input: label,bind?,default,placeholder. check: label,bind?,default boolean. select: label,bind?,default,options:[{label,value}].
 - details: label,default boolean,children. tabs: children are containers with label; default is selected child id.
 - button/form: label,set:{stateKey:expression}. Button or form submit only changes local UI values. It does not execute tools, navigate, or send messages.
@@ -31,7 +32,6 @@ Example (each object is one line within the cindy-ui block):
 {"seq":3,"op":"patch","id":"cost","props":{"value":{"op":"mul","args":[{"ref":"months"},18]}}}
 
 Keep blocks under 128 KB, with no more than 2048 nodes and depth 32. Finish each line before starting the next. Media loads via the existing host path. Interrupted output keeps committed nodes; incomplete lines wait for completion. Unknown or malformed operations show a local readable fallback, never execute code. New Cindy clients render components; older clients may show the fenced source. Use Markdown when the receiving channel does not support components.`;
-
 
 /** Host addition only: native CLI instructions and execution remain unchanged. */
 export const ANSWER_DELIVERY_PROMPT = `## Cindy answer delivery
