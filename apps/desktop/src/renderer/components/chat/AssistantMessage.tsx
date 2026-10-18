@@ -197,6 +197,7 @@ interface AssistantMessageProps {
   showActionBar?: boolean;
   /** 伙伴对话使用常显、无费用、无 Fork 的轻量消息操作栏。 */
   simplifiedBotConversation?: boolean;
+  failedSamplingAttempt?: boolean;
   botLearning?: unknown;
   botTaskResults?: BotCollaborationMeta[];
   /** Per-turn 费用 (USD) — 仅该轮最后一条 assistant 有值, action bar 时间旁显示。 */
@@ -226,6 +227,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   currentSessionId,
   currentSessionTitle,
   content,
+  failedSamplingAttempt,
   isStreaming,
   createdAt,
   messageClientId,
@@ -336,6 +338,11 @@ export const AssistantMessage = memo(function AssistantMessage({
           'text-[var(--msg-assistant-text)]',
         )}
       >
+        {failedSamplingAttempt && (
+          <div className="mb-1 text-13 font-normal leading-[1.384615]" style={{ color: 'var(--text-secondary)' }}>
+            {t('chat.failedSamplingAttempt')}
+          </div>
+        )}
         {ghostRenderCard && messageClientId && !showOriginal ? (
           // 出口钩子自绘:意识卡片替换气泡(净化后的静态 HTML,沙箱 iframe)。
           // 复用 GhostToolCard(自带主机身份头 + 主题注入 + 沙箱),turn 级无
@@ -412,7 +419,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       </div>
       {simplifiedBotConversation && !isStreaming && content.trim() && <BotLearningFooter receipts={botLearning} />}
       {simplifiedBotConversation && !isStreaming && botTaskResults?.length ? (
-        <div className="w-full max-w-[440px] min-w-0 space-y-2" data-bot-task-results>
+        <div className="w-full max-w-[560px] min-w-0" data-bot-task-results>
           {botTaskResults.map(card => <BotSessionTaskResultCard key={botTaskResultKey(card)}
             data={{ ...card }} sessionId={currentSessionId} attached />)}
         </div>
