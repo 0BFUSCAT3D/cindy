@@ -53,6 +53,43 @@ function fixture() {
 }
 
 describe('desktop remote history uses the shared live-to-history handoff', () => {
+  it('lets a newer empty page retire a list receipt before the raw deletion push arrives', async () => {
+    const { view, render, setSource } = fixture();
+    const readReceipt = nextHistoryCacheReceipt();
+    const received = { ...row('reply'), cacheReceipt: nextHistoryCacheReceipt() };
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({ ...view.getSnapshot(), ready: true, readReceipt }));
+    expect(render([received]).text).toContain('visible answer');
+    setSource([]);
+    view.setActive(true);
+    await view.refresh();
+    expect(render([received]).items).toEqual([]);
+    view.setActive(false);
+    expect(render([received]).items).toEqual([]);
+    expect(render([received]).state.tail.size).toBe(0);
+  });
+
+  // Unit: reproduce the list-receipt/history timestamp disagreement through the
+  // Desktop renderer; the already received answer must never disappear on entry.
+  it('keeps a received answer whose timestamp is earlier than the cached page tail', async () => {
+    const { view, render, setSource } = fixture();
+    const later = row('user');
+    const readReceipt = nextHistoryCacheReceipt();
+    const received = { ...row('reply'), cacheReceipt: nextHistoryCacheReceipt() };
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({ items: projectHistoryView([later], false), details: new Map(),
+      expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null, readReceipt }));
+    expect(render([received]).text).toContain('visible answer');
+    setSource([received, later]);
+    view.setActive(true);
+    await view.refresh();
+    const result = render([received]);
+    expect(result.items.filter(item => item.type === 'message').map(item => item.message.clientId))
+      .toEqual(['reply', 'user']);
+    expect(result.state.tail.size).toBe(0);
+    view.setActive(false);
+  });
+
   // Same-ID body updates must survive cache restore and yield to a later Host read.
   it('renders a later list receipt instead of the old cached body', async () => {
     const { view, render, setSource } = fixture();

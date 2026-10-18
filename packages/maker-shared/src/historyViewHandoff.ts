@@ -1,4 +1,4 @@
-import { historyViewLeaves, historyWorkSummaries, historyCacheReceiptFollows, type HistoryMessageSource } from './historyView.js';
+import { historyViewLeaves, historyWorkSummaries, historyCacheReceiptFollows, isHistoryCacheReceipt, type HistoryMessageSource } from './historyView.js';
 import type { HistoryViewSnapshot } from './historyViewController.js';
 
 /** Live content may be newer, but its provisional timestamp must not replace known history order. */
@@ -62,11 +62,17 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
       const known = history.get(row.clientId);
       history.set(row.clientId, known ? liveContentWithHistoryOrder(row, known) : row);
     }
-    // A row leaves the tail once history covers it or the raw store drops it (delete/rewind).
+    // An authoritative empty history retires older receipts even if the raw
+    // deletion push lags behind it. A nonempty paged window cannot prove an
+    // absent older row was deleted; keep the existing coverage/removal rule.
+    const cleared = !snapshot.stale && !snapshot.hasMore && snapshot.items.length === 0;
     const rawById = new Map(raw.map(row => [row.clientId, row]));
     for (const id of this.tail) {
       const row = rawById.get(id);
-      if (!row || (history.has(id) && !receivedAfterRead(row))) this.tail.delete(id);
+      if (!row || (!receivedAfterRead(row) && (history.has(id)
+        || (cleared && isHistoryCacheReceipt(row.cacheReceipt) && isHistoryCacheReceipt(snapshot.readReceipt))))) {
+        this.tail.delete(id);
+      }
     }
     const endMs = snapshot.stale ? historyViewEndMs(snapshot) : 0;
     for (const row of raw) {
@@ -79,7 +85,10 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
         }
         continue;
       }
-      if (receivedAfterRead(row) || (snapshot.stale && Date.parse(row.createdAt) > endMs)) this.tail.add(row.clientId);
+      // Once receipt order is available, wall-clock fallback must not revive an
+      // already superseded body when this fresh view becomes stale on blur.
+      if (receivedAfterRead(row) || (!isHistoryCacheReceipt(row.cacheReceipt)
+        && snapshot.stale && Date.parse(row.createdAt) > endMs)) this.tail.add(row.clientId);
       if (this.tail.has(row.clientId)) history.set(row.clientId, row);
     }
     const tail = this.tail.size ? new Set(this.tail) : EMPTY;

@@ -3105,41 +3105,9 @@ export function MessageStream({
   // parsed image targets without retaining state beyond the session mount.
   const markdownImageTargetCacheRef = useRef<MarkdownImageTargetCache>(new Map());
   const { items: ungroupedRenderItems, singleResultMap } = useMemo(() => {
-    const built = streamProjection(
-      displayMessages,
-      [
-        getDataOwnerGeneration(),
-        taskUpdates,
-        ghostCardSnapshot,
-        ghostCardSnapshot.version,
-        historyLoaded,
-        hasMoreMessages,
-        historyWindowHasIsland,
-        turnChangeSets,
-        workingDir,
-        simplifiedBotConversation,
-        sessionId,
-        cindyMakeSessionId,
-        cindyMakeCompletionInComposer,
-        subagentRunStatuses,
-        historyView,
-      ],
-      () =>
-        buildCachedRenderItems(displayMessages, taskUpdates, ghostCardSnapshot, {
-          historyWindowIncomplete:
-            !historyLoaded || Boolean(hasMoreMessages) || historyWindowHasIsland,
-          turnChangeSets,
-          workingDir,
-          botSessionId: simplifiedBotConversation ? sessionId : undefined,
-          markdownImageTargetCache: markdownImageTargetCacheRef.current,
-          cindyMakeSessionId,
-          cindyMakeCompletionInComposer,
-          subagentRunStatuses,
-        }),
-      !simplifiedBotConversation && !historyView,
-    );
     if (historyView && historySnapshot?.ready) {
-      const results = new Map(built.singleResultMap);
+      // Build only the displayed projection; the raw fallback is lazy below.
+      const results = new Map<string, string>();
       const items = renderHistoryView<HistoryChatMessage, RenderItem>({
         view: historyView,
         snapshot: historySnapshot,
@@ -3207,6 +3175,39 @@ export function MessageStream({
         singleResultMap: results,
       };
     }
+    const built = streamProjection(
+      displayMessages,
+      [
+        getDataOwnerGeneration(),
+        taskUpdates,
+        ghostCardSnapshot,
+        ghostCardSnapshot.version,
+        historyLoaded,
+        hasMoreMessages,
+        historyWindowHasIsland,
+        turnChangeSets,
+        workingDir,
+        simplifiedBotConversation,
+        sessionId,
+        cindyMakeSessionId,
+        cindyMakeCompletionInComposer,
+        subagentRunStatuses,
+        historyView,
+      ],
+      () =>
+        buildCachedRenderItems(displayMessages, taskUpdates, ghostCardSnapshot, {
+          historyWindowIncomplete:
+            !historyLoaded || Boolean(hasMoreMessages) || historyWindowHasIsland,
+          turnChangeSets,
+          workingDir,
+          botSessionId: simplifiedBotConversation ? sessionId : undefined,
+          markdownImageTargetCache: markdownImageTargetCacheRef.current,
+          cindyMakeSessionId,
+          cindyMakeCompletionInComposer,
+          subagentRunStatuses,
+        }),
+      !simplifiedBotConversation && !historyView,
+    );
     return {
       items: reuseGeneratedFilesRenderItems(built.items, generatedFilesItemCacheRef.current),
       singleResultMap: built.singleResultMap,

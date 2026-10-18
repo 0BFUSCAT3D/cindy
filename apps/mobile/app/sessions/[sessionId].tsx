@@ -4738,7 +4738,10 @@ function SessionScreenContent() {
   const streamingRenderPrefixRef = useRef<MobileStreamingRenderPrefixCache | null>(null);
   const renderWindow = useMemo(
     () => {
-      const builtWindow = buildMobileStreamingRenderWindow({
+      // A ready history view owns the displayed sequence. Avoid normalizing the
+      // unused raw transcript first, and retire its prefix before any fallback.
+      if (historyView.snapshot.ready) streamingRenderPrefixRef.current = null;
+      const builtWindow = historyView.snapshot.ready ? null : buildMobileStreamingRenderWindow({
         cacheKey: i18nInstance.language,
         messages: projectedMessages,
         messageStructureChangedIndexes: projectedMessageStructureChangedIndexes,
@@ -4754,11 +4757,11 @@ function SessionScreenContent() {
         prefixCache: streamingRenderPrefixRef,
         taskUpdates,
       });
-      const historyItems = historyView.snapshot.ready ? buildMobileHistoryRenderItems({
+      const historyItems = builtWindow ? builtWindow.items : buildMobileHistoryRenderItems({
         view: historyView.view, snapshot: historyView.snapshot, messages: projectedMessages,
         streaming: isMessageListStreaming, sessionId, sessionSource: currentSession?.source, taskUpdates,
         pendingHandoff: handoff.pending, staleTail: handoff.tail, localUserClientIds,
-      }) : builtWindow.items;
+      });
       let items = insertMobileForkOriginItem(
         // 孤儿 agent_task 兜底用 maker status 驱动的权威 turn 边界 gate,与 store 的
         // turn-start 清理同源闭环——渲染开启时 map 必已清过 stale。不用 isSessionStreaming
@@ -4776,10 +4779,10 @@ function SessionScreenContent() {
         ? previousRenderItemsRef.current
         : null;
       const previous = previousRenderState?.items ?? [];
-      const committedPrefix = historyView.snapshot.ready || forkOrigin || errorTailClientId
+      const committedPrefix = !builtWindow || forkOrigin || errorTailClientId
         ? null
         : builtWindow.prefix;
-      const stablePrefixItemCount = historyView.snapshot.ready || forkOrigin || errorTailClientId
+      const stablePrefixItemCount = !builtWindow || forkOrigin || errorTailClientId
         ? 0
         : committedMobileStreamingPrefixItemCount(
             builtWindow,
@@ -4791,7 +4794,7 @@ function SessionScreenContent() {
         stablePrefixItemCount,
       );
       return {
-        diffCount: errorTailClientId
+        diffCount: !builtWindow || errorTailClientId
           ? countMobileRenderItemDiffs(reconciled)
           : builtWindow.diffCount,
         items: reconciled,
