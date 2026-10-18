@@ -386,10 +386,10 @@ export class AppServerHost {
    */
   private lastIdlessAccountRateLimits: AccountRateLimitsUpdatedNotification['params'] | null = null;
   /**
-   * 按 limitId 记录最近一次已 fan-out 的配额 payload (JSON)。app-server 会以秒级间隔
+   * 记录最近一次已 fan-out 的配额 payload (limitId + JSON), 仅用于丢弃连续重复。app-server 会以秒级间隔
    * 重复推送内容不变的快照 (实测 ~64% 与上一条相同), 相同内容不再重复广播与记日志。
    */
-  private readonly lastFannedOutRateLimitsJson = new Map<string, string>();
+  private lastFannedOutRateLimitsKey: string | null = null;
 
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | null = null;
@@ -1221,12 +1221,14 @@ export class AppServerHost {
         this.lastAccountRateLimits.delete(limitKey);
         this.lastAccountRateLimits.set(limitKey, p);
         this.lastIdlessAccountRateLimits = null;
-        if (this.lastFannedOutRateLimitsJson.get(limitKey) === rawJson) return;
-        this.lastFannedOutRateLimitsJson.set(limitKey, rawJson);
       } else {
-        // 无 limitId 的更新目标 bucket 取决于前一条, 不去重, 始终广播。
         this.lastIdlessAccountRateLimits = p;
       }
+      // 只丢弃与上一条已广播更新完全相同的连续重复: 它不改变「最近观察的 bucket」, 下游
+      // (usageBroadcaster) 依赖这个顺序把稀疏更新合并进正确的 bucket; A,B,A 中最后的 A 不能丢。
+      const fanOutKey = `${limitKey ?? ''}\u0000${rawJson}`;
+      if (this.lastFannedOutRateLimitsKey === fanOutKey) return;
+      this.lastFannedOutRateLimitsKey = fanOutKey;
       this.logger.debug('accountRateLimits fan-out', {
         subscribers: this.subscribers.size,
         rawJson,

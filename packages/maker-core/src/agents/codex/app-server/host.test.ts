@@ -261,7 +261,7 @@ describe('AppServerHost assistant text delta routing', () => {
 // ~3.5s 一条 account_usage), 但内容变化仍立即下发, 且晚到的 subscriber 仍能经 replay
 // 立即拿到当前配额 (Codex chip 冷启动依赖它)。
 describe('AppServerHost account rate limit fan-out', () => {
-  it('fans out only changed snapshots per limitId and still replays the latest to late subscribers', async () => {
+  it('drops only consecutive duplicate snapshots (keeping bucket order) and still replays the latest to late subscribers', async () => {
     const transport = new NotificationTransport();
     const host = new AppServerHost({
       createTransport: () => transport,
@@ -285,6 +285,7 @@ describe('AppServerHost account rate limit fan-out', () => {
     expect(early.mock.calls.map(([p]) => [p.rateLimits.limitId, p.rateLimits.primary.usedPercent])).toEqual([
       ['codex', 10],
       ['codex_spark', 10],
+      ['codex', 10],
       ['codex', 20],
     ]);
 
@@ -295,7 +296,7 @@ describe('AppServerHost account rate limit fan-out', () => {
       ['codex_spark', 10],
       ['codex', 20],
     ]);
-    expect(early).toHaveBeenCalledTimes(3);
+    expect(early).toHaveBeenCalledTimes(4);
 
     // 无 limitId 的稀疏更新不去重, 且仅在它是最新一条时才排在回放最后。
     const sparse = { method: 'account/rateLimits/updated', params: { rateLimits: { primary: { usedPercent: 30, windowDurationMins: 300, resetsAt: 1 } } } };
