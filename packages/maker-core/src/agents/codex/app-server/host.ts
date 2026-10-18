@@ -379,7 +379,7 @@ export class AppServerHost {
    * 账号配额最近一次 snapshot, 给新 subscribeThread 立即重放 — 用户打开新 codex
    * session 时不必等下次 turn 完成才看到 chip 数据。整个 host 生命周期共享一份 (账号级)。
    */
-  private lastAccountRateLimits: AccountRateLimitsUpdatedNotification['params'] | null = null;
+  private readonly lastAccountRateLimits = new Map<string, AccountRateLimitsUpdatedNotification['params']>();
   /**
    * 按 limitId 记录最近一次已 fan-out 的配额 payload (JSON)。app-server 会以秒级间隔
    * 重复推送内容不变的快照 (实测 ~64% 与上一条相同), 相同内容不再重复广播与记日志。
@@ -1152,9 +1152,12 @@ export class AppServerHost {
     this.replayBufferedDescendantThreadStarts(threadId);
 
     // 账号配额 snapshot replay — 让新 session 立即看到当前账号配额, 不必等下次 turn。
-    if (this.lastAccountRateLimits && handlers.accountRateLimitsUpdated) {
+    if (this.lastAccountRateLimits.size > 0 && handlers.accountRateLimitsUpdated) {
+      // 按 limitId 各回放最新一份: 去重后不变的快照不会再被推送, 只回放一条会让新会话缺其余 limit。
       try {
-        handlers.accountRateLimitsUpdated(this.lastAccountRateLimits);
+        for (const snapshot of this.lastAccountRateLimits.values()) {
+          handlers.accountRateLimitsUpdated(snapshot);
+        }
       } catch (e) {
         this.logger.error('accountRateLimitsUpdated replay threw', { message: (e as Error).message });
       }
@@ -1205,9 +1208,9 @@ export class AppServerHost {
     if (method === 'account/rateLimits/updated') {
       const p = params as AccountRateLimitsUpdatedNotification['params'];
       // replay 快照始终跟随最新一条 (哪怕内容未变), 新 subscriber 拿到的与旧行为一致。
-      this.lastAccountRateLimits = p;
-      const rawJson = JSON.stringify(p.rateLimits ?? null);
       const limitKey = p.rateLimits?.limitId ?? '';
+      this.lastAccountRateLimits.set(limitKey, p);
+      const rawJson = JSON.stringify(p.rateLimits ?? null);
       if (this.lastFannedOutRateLimitsJson.get(limitKey) === rawJson) return;
       this.lastFannedOutRateLimitsJson.set(limitKey, rawJson);
       this.logger.debug('accountRateLimits fan-out', {

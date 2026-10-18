@@ -3692,6 +3692,15 @@ describe('anthropic-compat-proxy 客户端中断传播', () => {
       disconnectLogs: 0,
     },
     {
+      name: 'terminal event only half sent (no blank line yet) → client-aborted',
+      events: 'event: response.created\ndata: {"type":"response.created"}\n\n'
+        + 'event: response.completed\n',
+      waitFor: 'response.completed',
+      expected: { type: 'failure', failure: 'client-aborted' },
+      observerEnds: 0,
+      disconnectLogs: 1,
+    },
+    {
       name: 'no terminal event yet → client-aborted',
       events: 'event: response.created\ndata: {"type":"response.created"}\n\n',
       waitFor: 'response.created',

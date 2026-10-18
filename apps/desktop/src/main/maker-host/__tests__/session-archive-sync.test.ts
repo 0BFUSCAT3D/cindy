@@ -131,6 +131,20 @@ describe('task archive projection', () => {
     expect(f.sync).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: 'thread', archived: true, remoteHostId: 'remote' }));
   });
 
+  it('does not let an hourly pass that skipped an offline remote hide it until the next hour', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.insert('c', 'codex', 'archived', 'thread', 'remote');
+    await f.coordinator.request();
+    expect(f.sync).toHaveBeenCalledTimes(1);
+    f.canUseRemote.mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(61 * 60_000);
+    expect(f.sync).toHaveBeenCalledTimes(1);
+    f.canUseRemote.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.sync).toHaveBeenCalledTimes(2);
+  });
+
   it('stops a backfill when the owner changes', async () => {
     const f = fixture(); f.insert('a'); f.insert('b');
     f.sync.mockImplementationOnce(async () => { f.assertCurrent.mockImplementation(() => { throw new Error('changed'); }); });

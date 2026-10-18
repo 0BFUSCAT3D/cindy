@@ -291,8 +291,10 @@ describe('AppServerHost account rate limit fan-out', () => {
     transport.emit(snapshot('codex', 20));
     const late = vi.fn();
     const lateSubscription = host.subscribeThread('thread-2', { accountRateLimitsUpdated: late });
-    expect(late).toHaveBeenCalledOnce();
-    expect(late.mock.calls[0][0].rateLimits).toMatchObject({ limitId: 'codex', primary: { usedPercent: 20 } });
+    expect(late.mock.calls.map(([p]) => [p.rateLimits.limitId, p.rateLimits.primary.usedPercent])).toEqual([
+      ['codex', 20],
+      ['codex_spark', 10],
+    ]);
     expect(early).toHaveBeenCalledTimes(3);
 
     await earlySubscription.release();

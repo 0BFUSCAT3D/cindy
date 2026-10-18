@@ -213,8 +213,8 @@ const offlinePushQueue = createOfflinePushQueue({ maxBytes: 2 * 1024 * 1024 });
 
 // Start the async DB check at the final wire boundary and deliver in per-peer
 // order even when replies arrive out of order. Checks issued in the same pass
-// (all peers of one fan-out, every item of one flush) share one batched read
-// that is issued after all of them arrived; see projectRemoteBotPush. Bounds
+// (all peers of one fan-out) share one batched read that is issued after all of
+// them arrived; see projectRemoteBotPush. Bounds
 // match best-effort push: dropped frames recover through the Session snapshot.
 const botPushChecks = new Map<string, { tail: Promise<void>; bytes: number; count: number }>();
 function sendBotCheckedPush(
@@ -236,12 +236,16 @@ function sendBotCheckedPush(
   const client = activeClient;
   const linkEpoch = remoteInvokeLinkEpoch.get(dst) ?? 0;
   const owner = broadcastTap.captureDataOwnerBroadcastScope();
+  // A push that is already at the head of an idle queue starts its read now, so all peers of
+  // one fan-out share a round. One queued behind another reads only when it reaches the head:
+  // an earlier read would be a visibility verdict taken before waiting out the slower pushes.
+  const atHead = queue.count === 0;
   queue.count += 1; queue.bytes += size;
-  const authorized = projectRemoteBotPush(payload, channel);
+  const early = atHead ? projectRemoteBotPush(payload, channel) : null;
   // Settled below in per-peer order; do not surface as unhandled meanwhile.
-  authorized.catch(() => undefined);
+  early?.catch(() => undefined);
   queue.tail = queue.tail.then(async () => {
-    const projected = await authorized;
+    const projected = await (early ?? projectRemoteBotPush(payload, channel));
     if (projected !== null && activeClient === client && (remoteInvokeLinkEpoch.get(dst) ?? 0) === linkEpoch && !isControllerRevoked(dst) && broadcastTap.isDataOwnerBroadcastScopeCurrent(owner)) send(projected);
   }).catch(failed).finally(() => {
     queue.count -= 1; queue.bytes -= size;

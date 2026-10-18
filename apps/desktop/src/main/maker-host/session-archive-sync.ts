@@ -91,7 +91,11 @@ export function createSessionArchiveSync(deps: {
         if (backoff?.signature === signature && Date.now() < backoff.retryAt) continue;
       }
       const first = group[0]!;
-      if (first.remoteHostId && !deps.canUseRemote(first.remoteHostId)) continue;
+      if (first.remoteHostId && !deps.canUseRemote(first.remoteHostId)) {
+        // 这一轮没能核验: 不让整点复核的标记掩盖它, 远端恢复后下一次 tick 就补做。
+        applied.delete(key);
+        continue;
+      }
       try {
         await withSessionRouteLocks(group.map(row => row.id), async () => {
           const current = await scope.client.query<ArchiveSessionRow>(

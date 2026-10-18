@@ -1020,9 +1020,9 @@ describe('remote companion Session visibility at the device-link boundary', () =
   });
 
   // 测试价值:forwardPush 扇出到多台控制端时,同一轮只读一次授权(实测 3 台 peer 下每条 push
-  // 每台各读一次 sessions,rawAll 堆积);同时守住「读取发出后到达的 push 必须重新读库」,
-  // 轮内合并不能变成缓存,隐藏之后的 push 不得沿用旧结论。unit,进程内 fake。
-  it('shares one authorization read per fan-out pass and never reuses it for later pushes', async () => {
+  // 每台各读一次 sessions,rawAll 堆积);同时守住「排在慢 push 后面的 push 到队头才读库」:
+  // 提前读到的 visible 结论不能越过排队等待,等待期间被隐藏的伙伴事件不得发出。unit,进程内 fake。
+  it('shares one authorization read per fan-out and reads a queued push only when it reaches the head', async () => {
     let hidden = false;
     let release!: () => void;
     let gate: Promise<void> = Promise.resolve();
@@ -1037,24 +1037,23 @@ describe('remote companion Session visibility at the device-link boundary', () =
     const peers = ['ctrl-1', 'ctrl-2', 'ctrl-3'];
     for (const peer of peers) subscriptions.subscribe(peer, ['session:s1']);
     __testing.forwardPush('maker:event', { sessionId: 's1', seq: 0 });
-    __testing.forwardPush('maker:event', { sessionId: 's1', seq: 1 });
-    await vi.waitFor(() => expect(client.sendPush).toHaveBeenCalledTimes(6));
+    await vi.waitFor(() => expect(client.sendPush).toHaveBeenCalledTimes(3));
+    // Three peers, one push: a single shared read, not one per peer.
     expect(batch).toHaveBeenCalledTimes(1);
     expect(batch).toHaveBeenCalledWith(['s1'], 'session');
-    for (const peer of peers) {
-      expect(client.sendPush.mock.calls.filter(([dst]) => dst === peer).map((call) => call[2].seq)).toEqual([0, 1]);
-    }
 
-    // A read already issued is not joined: the push after the hide reads again.
+    // The first push's read is slow; the second queues behind it and must not carry a
+    // verdict taken before the companion is hidden.
     gate = new Promise<void>((resolve) => { release = resolve; });
     __testing.forwardPush('maker:event', { sessionId: 's1', seq: 2 });
     await vi.waitFor(() => expect(batch).toHaveBeenCalledTimes(2));
-    hidden = true;
     __testing.forwardPush('maker:event', { sessionId: 's1', seq: 3 });
-    await vi.waitFor(() => expect(batch).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(batch).toHaveBeenCalledTimes(2);
+    hidden = true;
     release();
-    await vi.waitFor(() => expect(client.sendPush).toHaveBeenCalledTimes(9));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(batch.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(client.sendPush.mock.calls.map((call) => call[2].seq).filter((seq) => seq >= 2)).toEqual([2, 2, 2]);
   });
 

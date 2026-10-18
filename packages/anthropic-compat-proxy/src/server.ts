@@ -137,6 +137,8 @@ const ERROR_RESPONSE_DUMP_MAX_BYTES = 16 * 1024;
 const SSE_TERMINAL_EVENT_RE =
   /\nevent:[ \t]*(?:response\.(?:completed|failed|incomplete)|message_stop)[ \t]*(?:\r?\n|\r?$)|"type"[ \t]*:[ \t]*"(?:response\.(?:completed|failed|incomplete)|message_stop)"|\ndata:[ \t]*\[DONE\]/;
 const SSE_TERMINAL_SCAN_TAIL_CHARS = 64;
+/** SSE 事件结束符:空行。 */
+const SSE_EVENT_END_RE = /\r?\n\r?\n/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1685,18 +1687,32 @@ function forward(
     // 匹配 `event: <终态>` 行或 data JSON 的顶层 `"type":"<终态>"`(JSON 字符串内的引号
     // 必然被转义,正文内容不会误命中);保留上一 chunk 的尾巴以覆盖跨 chunk 截断。
     const scanTerminalSseEvent = (isSse || canInferSse) && !isCompressed && status >= 200 && status < 300;
+    // terminalSseEventSeen 仅在终态事件完整经过(其后出现空行结束符)后为真:
+    // 事件被拆成两段发送时,第一段命中标记不代表事件已转发完,此时取消仍按断开处理。
     let terminalSseEventSeen = false;
+    let terminalSseMarkerSeen = false;
     // 以换行起头:首个 chunk 开头即视为行首。
     let terminalSseScanTail = '\n';
     const scanChunkForTerminalSseEvent = (chunk: Buffer): void => {
       if (!scanTerminalSseEvent || terminalSseEventSeen) return;
       const text = terminalSseScanTail + chunk.toString('latin1');
-      if (SSE_TERMINAL_EVENT_RE.test(text)) {
+      let rest = text;
+      if (!terminalSseMarkerSeen) {
+        const match = SSE_TERMINAL_EVENT_RE.exec(text);
+        if (!match) {
+          terminalSseScanTail = text.slice(-SSE_TERMINAL_SCAN_TAIL_CHARS);
+          return;
+        }
+        terminalSseMarkerSeen = true;
+        rest = text.slice(match.index + match[0].length);
+      }
+      if (SSE_EVENT_END_RE.test(rest)) {
         terminalSseEventSeen = true;
         terminalSseScanTail = '';
         return;
       }
-      terminalSseScanTail = text.slice(-SSE_TERMINAL_SCAN_TAIL_CHARS);
+      // 空行结束符可能跨 chunk,保留最后 3 个字符。
+      terminalSseScanTail = rest.slice(-3);
     };
     completeAfterTerminalSseEvent = () => {
       if (!terminalSseEventSeen || !streamGateCommitted || upstreamResponseTerminal !== null) return false;
