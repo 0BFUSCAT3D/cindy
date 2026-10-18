@@ -16601,6 +16601,8 @@
     "exitFullscreen": "Exit Fullscreen"
   },
   "richAnswer": {
+    "playVideo": "Play video",
+    "openVideoSource": "Open original video",
     "calculationUnavailable": "Unable to calculate this value.",
     "incomplete": "Some content could not be displayed."
   }

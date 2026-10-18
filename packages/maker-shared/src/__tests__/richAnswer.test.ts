@@ -1,3 +1,4 @@
+import { youtubeVideo, isYoutubeEmbedUrl } from '../richAnswer';
 import { describe, expect, it } from 'vitest';
 import { RichAnswerStream, RichInteractionMemory, hasRichAnswer, splitRichAnswer, richDefaults, richEvaluate, richLabel, richResolvedValues, richChart, richCalculationUnavailable, richVisualStyle, richVector, richLinePlot } from '../richAnswer';
 // Tier 1: actual stream reducer. Regression targets are partial transport, edits,
@@ -197,4 +198,18 @@ it("keeps small-valued axes distinguishable and dense dates on the same coordina
     richLinePlot([{ label: "a", value: 24000 }], 300, { includeZero: true })
       .min,
   ).toBeLessThanOrEqual(0);
+});
+
+// Unit: the reported YouTube watch URL used to reach the file player. Existing
+// media tests cover file URLs only; verify host routing and the navigation boundary.
+it('routes YouTube pages to canonical players without turning arbitrary URLs into embeds', () => {
+  for (const src of ['https://www.youtube.com/watch?v=glW1pXWebnY', 'https://youtu.be/glW1pXWebnY', 'https://m.youtube.com/shorts/glW1pXWebnY']) {
+    const video = youtubeVideo(src)!;
+    expect(video.id).toBe('glW1pXWebnY');
+    expect(isYoutubeEmbedUrl(video.embed)).toBe(true);
+    expect(isYoutubeEmbedUrl(src)).toBe(false);
+  }
+  expect(youtubeVideo('https://youtu.be/glW1pXWebnY?t=1m2s')?.embed).toContain('start=62');
+  for (const src of ['https://youtube.com.evil.test/watch?v=glW1pXWebnY', 'https://evil@www.youtube.com/watch?v=glW1pXWebnY', 'file:///watch?v=glW1pXWebnY', 'https://example.org/movie.mp4', 'https://youtube.com/watch?v=bad']) expect(youtubeVideo(src)).toBeNull();
+  expect(isYoutubeEmbedUrl('https://www.youtube-nocookie.com/embed/glW1pXWebnY?autoplay=1')).toBe(false);
 });

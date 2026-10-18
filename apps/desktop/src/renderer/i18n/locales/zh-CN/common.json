@@ -16542,6 +16542,8 @@
     "exitFullscreen": "退出全屏"
   },
   "richAnswer": {
+    "playVideo": "播放视频",
+    "openVideoSource": "打开原视频",
     "calculationUnavailable": "此项暂时无法计算。",
     "incomplete": "部分内容未能显示。"
   }

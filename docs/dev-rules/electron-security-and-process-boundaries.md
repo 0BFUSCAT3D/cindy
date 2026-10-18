@@ -185,6 +185,16 @@ auth-server）+ origin 命中 `setLoginCaptchaOriginResolver` 注入的 auth 端
 - 新增加载远程内容的 session 时，必须同时设置 `setPermissionRequestHandler` 与
   `setPermissionCheckHandler`，按最小权限默认拒绝；需要放行时必须校验真实来源与权限类型。
 
+### 正文视频网站播放器
+
+YouTube 视频组件使用 `cindy-video-embed` 非持久独立 WebView；不共用浏览器或应用
+Cookie，不注入 preload/IPC，不放宽主窗 CSP。Main 仅接受共享解析器生成的
+`https://www.youtube-nocookie.com/embed/<video-id>` 规范地址，禁止弹窗、下载、其它
+顶层导航与重定向；设备权限默认拒绝，仅已核验播放器可请求全屏。
+专属 session 的请求钩子只向规范播放器请求提供当前安装 App ID 的 HTTPS Referer，
+遵守 YouTube 嵌入身份要求，不覆盖默认 session 的 MCP 请求钩子。点击后才装载，
+不可见／卸载时销毁 guest，原视频外链始终保留。普通视频文件继续走原媒体播放器。
+
 ## 7．CSP、协议与 Electron Fuses
 
 - 应用 CSP 由 `main/security/csp.ts` 统一注入。不得另注册会覆盖它的

@@ -1,3 +1,4 @@
+import { VideoSitePreview } from '../VideoSitePreview';
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -269,4 +270,23 @@ it('preserves line-height units and keeps dense chart dates on the plot axis', (
   expect(svg.getAttribute('aria-label')).toContain('10/12: 24300');
   const y = [...svg.querySelectorAll('circle')].map((c) => Number(c.getAttribute('cy')));
   expect(Math.max(...y) - Math.min(...y)).toBeGreaterThan(100);
+});
+
+// Unit: the user saw a failed <video> for a YouTube page. Mount the production
+// site preview; click-to-load, URL replacement and unmount must own the guest.
+it('loads a site player on demand, retains its source link and disposes it on replacement', () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const view = render(<VideoSitePreview src="https://youtube.com/watch?v=glW1pXWebnY" title="Tutorial" />);
+  expect(view.container.querySelector('webview')).toBeNull();
+  expect(screen.getByRole('link').getAttribute('href')).toBe('https://www.youtube.com/watch?v=glW1pXWebnY');
+  fireEvent.click(screen.getByRole('button'));
+  const guest = view.container.querySelector('webview')!;
+  expect(guest.getAttribute('src')).toContain('youtube-nocookie.com/embed/glW1pXWebnY');
+  expect(view.container.querySelector('video')).toBeNull();
+  view.rerender(<VideoSitePreview src="https://youtu.be/6b9FKpTeV28" title="Next" />);
+  expect(guest.isConnected).toBe(false);
+  expect(view.container.querySelector('webview')).toBeNull();
+  fireEvent.click(screen.getByRole('button'));
+  view.unmount();
+  expect(document.querySelector('webview')).toBeNull();
 });

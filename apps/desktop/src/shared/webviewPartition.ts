@@ -17,6 +17,9 @@
  */
 export const BROWSER_PARTITION = 'persist:xdmaker-browser-app';
 
+/** Video-site players have no application/browser cookies or preload bridge. */
+export const VIDEO_EMBED_PARTITION = 'cindy-video-embed';
+
 /**
  * LOGIN_CAPTCHA_PARTITION — 登录页人机验证(Turnstile 托管挑战页)webview 的专用
  * 分区。不带 `persist:` 前缀 = 纯内存 session,关闭 overlay 即弃,不与 RSB 浏览器

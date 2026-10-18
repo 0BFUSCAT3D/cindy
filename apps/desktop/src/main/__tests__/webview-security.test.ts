@@ -1,3 +1,5 @@
+import { authorizeVideoEmbed, hardenVideoEmbedSession, installVideoEmbedGuestHandlers } from '../webview-security';
+import { VIDEO_EMBED_PARTITION } from '../../shared/webviewPartition';
 /**
  * webview-security 单测 —— 模拟恶意 will-attach-webview 输入,断言 hardener 把
  * 危险开关全部锁死、partition 强制覆盖。
@@ -1318,5 +1320,44 @@ describe('resolveGuestShortcutAction', () => {
       resolveGuestShortcutAction(key('KeyW', { meta: true, shift: true }), getCombos),
     ).toBeNull();
     expect(resolveGuestShortcutAction(key('KeyT', { meta: true }), getCombos)).toBeNull();
+  });
+});
+
+// Unit: reported video-page playback needs a new guest branch; existing browser
+// tests do not cover this zero-bridge session, app identity or its navigation gate.
+describe('YouTube embedded player isolation', () => {
+  const url = 'https://www.youtube-nocookie.com/embed/glW1pXWebnY?playsinline=1&autoplay=0';
+  it('accepts canonical player URLs and removes all privileged guest settings', () => {
+    const prefs: Record<string, unknown> = { preload: '/evil', nodeIntegration: true, webSecurity: false };
+    const params = { src: url, partition: VIDEO_EMBED_PARTITION, allowpopups: 'true' };
+    expect(authorizeVideoEmbed(prefs, params)).toBe(true);
+    expect(prefs).toMatchObject({ partition: VIDEO_EMBED_PARTITION, sandbox: true, contextIsolation: true, webSecurity: true, nodeIntegration: false });
+    expect(prefs.preload).toBeUndefined();
+    expect(params).not.toHaveProperty('allowpopups');
+    expect(authorizeVideoEmbed({}, { ...params, src: 'https://example.com' })).toBe(false);
+  });
+  it('provides the app referer only for player requests and denies devices, downloads and navigation', () => {
+    const session = Object.assign(new EventEmitter(), {
+      setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn(),
+      webRequest: { onBeforeSendHeaders: vi.fn() },
+    });
+    hardenVideoEmbedSession(session as unknown as Session);
+    hardenVideoEmbedSession(session as unknown as Session);
+    expect(session.webRequest.onBeforeSendHeaders).toHaveBeenCalledTimes(1);
+    const reply = vi.fn();
+    session.webRequest.onBeforeSendHeaders.mock.calls[0][1]({ url, requestHeaders: {} }, reply);
+    expect(reply.mock.calls[0][0].requestHeaders.Referer).toMatch(/^https:\/\/[^/]+\/$/);
+    const permission = session.setPermissionRequestHandler.mock.calls[0][0];
+    permission({ getURL: () => url }, 'camera', reply);
+    expect(reply).toHaveBeenLastCalledWith(false);
+    const deny = { preventDefault: vi.fn() };
+    session.emit('will-download', deny);
+    expect(deny.preventDefault).toHaveBeenCalledTimes(1);
+    const guest = Object.assign(new EventEmitter(), { setWindowOpenHandler: vi.fn() });
+    installVideoEmbedGuestHandlers(guest as unknown as WebContents);
+    guest.emit('will-navigate', deny, 'file:///private');
+    guest.emit('will-redirect', deny, 'https://example.com');
+    expect(deny.preventDefault).toHaveBeenCalledTimes(3);
+    expect(guest.setWindowOpenHandler.mock.calls[0][0]()).toEqual({ action: 'deny' });
   });
 });

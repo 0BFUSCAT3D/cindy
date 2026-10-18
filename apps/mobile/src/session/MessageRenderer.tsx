@@ -1,3 +1,5 @@
+import { VideoSitePreview } from './VideoSitePreview';
+import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
 import { richVisualStyle, splitRichAnswer, richAnswerText, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
 import { RichAnswer } from './RichAnswer';
 import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
@@ -9868,6 +9870,7 @@ function RichAnswerMedia({ node, body }: { node: RichNode; body: Parameters<type
   const [width, setWidth] = useState(0);
   const raw = richMediaSource(node);
   if (!raw || (node.kind !== 'image' && node.kind !== 'video' && node.kind !== 'audio')) return null;
+  if (node.kind === 'video' && youtubeVideo(raw)) return <VideoSitePreview src={raw} title={richString(node, 'alt', 'YouTube')} />;
   const direct = /^(?:https?|xdt-audio|xdt-video|cindy-media):\/\//.test(raw);
   const url = direct ? raw : mobileMarkdownManagedImagePreviewUrl(raw, origin?.workdir, body.markdownImageCacheKey, origin?.remoteHostId, origin?.sessionId);
   // Outside-workdir files retain the existing explicit-open path; never fetch them automatically.

@@ -17,7 +17,7 @@ Components and props (no arbitrary HTML, CSS, scripts or tool access):
 - icon: name (mail, calendar, folder, chart, check, info, clock, location, coffee, image, users, star), label, text?. size?, strokeWidth?.
 - stack/group: vertical children. row/grid: columns?, mobileColumns?, weights? (relative column widths); layout:"aside" for side-by-side content.
 - divider.
-- image/video/audio: src (existing managed reference, URL or task file), alt, caption. Reuse actual media; never invent asset URLs or embed base64 data.
+- image/video/audio: src (existing managed reference, URL or task file), alt, caption. Reuse actual media; never invent asset URLs or embed base64 data. Video src accepts a playable media file URL or a YouTube watch/share/shorts URL (the host uses the site player). Other website pages are links, not video files; link to those pages instead of treating them as media bytes.
 - code: text, language. math: text (LaTeX). diagram: text (Mermaid).
 - stat: label, value, prefix?, suffix?.
 - chart: label, variant:"bar"|"line", data:[{label,value}], color?, colors? (bar colors), height?, yMin?, yMax?, includeZero?, ticks?, decimals?, showValues?, showLabels?, showPoints?, pointRadius?, strokeWidth?, showGrid?, left?, right?, top?, bottom?. Line domains fit the data unless specified. Chart options are optional; use svg for other chart types or custom composition.
