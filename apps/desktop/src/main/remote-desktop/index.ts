@@ -268,8 +268,10 @@ let pending: {
   timer: ReturnType<typeof setTimeout>;
 } | null = null;
 // A dead input helper or a refused injection is an input failure, not a session
-// failure: release control and keep the lease, capture and media running.
-const input = new DesktopInputHost(() => remoteDesktop.releaseControl());
+// failure: repair input once while keeping the lease, capture and media running.
+const input = new DesktopInputHost(() => {
+  void remoteDesktop.releaseControl(true);
+});
 const clipboardCounter = new ClipboardCounter(resolveDesktopInputBinary);
 // A display change holds native capture instead of stopping it: frames pause
 // until the changed display is known, then the same stream follows it. The
@@ -916,7 +918,7 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
       // lease's display is unavailable). Release control so the host and the
       // viewer agree, and so taking control again genuinely restarts the
       // helper instead of being skipped as "already controlling".
-      remoteDesktop.releaseControl();
+      void remoteDesktop.releaseControl(true);
       throw error;
     }
   },

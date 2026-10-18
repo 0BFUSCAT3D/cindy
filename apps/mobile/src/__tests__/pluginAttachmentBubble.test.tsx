@@ -106,6 +106,27 @@ describe('attachment-only user plugin bubble', () => {
 });
 
 describe('partner work feedback', () => {
+  it('retains failed reply warnings inside expanded work and the upstream error notice', () => {
+    const items = buildMobileMessageRenderItems([
+      msg('failed', 'assistant', 'Incomplete opening', { agentMeta: { failedSamplingAttempt: {
+        threadId: 'thread', turnId: 'turn', attempt: 1, itemId: 'item',
+      } } }),
+      msg('error', 'error', 'Connection interrupted'),
+      msg('answer', 'assistant', 'Accepted answer', { agentMeta: { turnCompleted: true } }),
+    ], { isSessionStreaming: false });
+    viewportHarness.expanded = true;
+    try {
+      const host = document.createElement('div');
+      host.innerHTML = renderClient(<MessageRenderer items={items} />);
+      expect(host.textContent).toContain('This reply did not complete. Its content is for reference only.');
+      expect(host.textContent).toContain('Could not complete the reply');
+      expect(host.textContent).toContain('Error Details');
+      expect(host.querySelectorAll('[data-testid="message.agentBubble"]')).toHaveLength(2);
+    } finally {
+      viewportHarness.expanded = false;
+    }
+  });
+
   it('uses the short hint in the existing live work row and preserves the completed record', () => {
     const messages = [msg('u', 'user', 'Remember this'), msg('c', 'tool_use', {
       toolName: 'bot_memory', toolUseId: 'c', input: { action: 'write' },
