@@ -134,12 +134,12 @@ describe('ToolLoopMonitor', () => {
     expect(t.stops).toEqual([]);
   });
 
-  // greptile P1(#6388):连发调用不计数,但也不能当作「模式已打破」取消进行中的复核。
-  it('keeps a pending review when a chained script call is ignored', async () => {
+  // greptile P1(#6388):突发重复不计数,但也不能当作「模式已打破」取消进行中的复核。
+  it('keeps a pending review when a burst repeat is ignored', async () => {
     vi.useFakeTimers();
     const { reviewer, pending } = deferredReviewer();
     const stops: HardToolLoopVerdict[] = [];
-    const monitor = new ToolLoopMonitor(new ToolLoopGuard({ chainedCallGapMs: 2_000 }), {
+    const monitor = new ToolLoopMonitor(new ToolLoopGuard({ burstRepeatGapMs: 2_000 }), {
       reviewer, context: () => ({ sessionId: 's1', agentKind: 'codex', model: 'm1' }),
       onReviewedStop: (verdict) => stops.push(verdict), logger,
     });
@@ -149,8 +149,8 @@ describe('ToolLoopMonitor', () => {
       expect(monitor.onToolResult(`r${i}`, `changed ${i}`).kind).toBe('ok');
     }
     expect(reviewer).toHaveBeenCalledTimes(1);
-    monitor.onToolUse('chained', 'read', { path: 'same.ts' });
-    expect(monitor.onToolResult('chained', 'changed again').kind).toBe('ok');
+    monitor.onToolUse('burst', 'read', { path: 'same.ts' });
+    expect(monitor.onToolResult('burst', 'changed again').kind).toBe('ok');
     expect(pending[0]?.signal.aborted).toBe(false);
     pending[0]?.resolve('stop');
     await vi.advanceTimersByTimeAsync(0);

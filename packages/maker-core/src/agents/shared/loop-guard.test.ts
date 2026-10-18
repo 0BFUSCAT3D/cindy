@@ -788,39 +788,39 @@ describe('ToolLoopGuard pacing and final limits', () => {
     expect(captured).not.toBe(input);
   });
 
-  // codex P1(#6388):后台脚本调用在模型调用发出之后才完成时,间隔不能按「最新结果」算(为负),
-  // 否则间隔很长的真实重复会被误判为脚本连发而永远不计数。
-  it('measures the chained gap from results that arrived before the call started', () => {
-    const { guard, advance } = clockGuard({ chainedCallGapMs: 2_000 });
+  // 2026-10-18 误报:脚本里同一调用在突发里重复(0.8s 一次)不是模型逐次重复;
+  // 隔着采样时间的重复仍须计数。
+  it('ignores a call repeated in a burst but counts it once sampling gaps separate it', () => {
+    const { guard, advance } = clockGuard({ burstRepeatGapMs: 2_000 });
+    for (let i = 0; i < 30; i++) {
+      expect(feed(guard, `burst-${i}`, 'browser', { action: 'snapshot' }, 'saving').kind).toBe('ok');
+      advance(800);
+    }
+    let last: ToolLoopGuardVerdict = { kind: 'ok' };
+    for (let i = 0; i < 4; i++) {
+      advance(3_000);
+      last = feed(guard, `model-${i}`, 'browser', { action: 'snapshot' }, 'saving');
+    }
+    expect(last).toMatchObject({ kind: 'hard', reason: 'consecutive' });
+  });
+
+  // codex P1(#6388):判据只看该调用自己的开始时间。后台脚本以其它调用持续快速返回结果,
+  // 不能让隔着采样时间的模型重复被当作突发而永远不计数;完成顺序、并发也不影响。
+  it('counts model repeats even while a script keeps returning unrelated results quickly', () => {
+    const { guard, advance } = clockGuard({ burstRepeatGapMs: 2_000 });
     let last: ToolLoopGuardVerdict = { kind: 'ok' };
     for (let round = 0; round < 6; round++) {
       guard.onToolUse(`model-${round}`, 'read', { path: 'a' });
+      guard.onToolUse(`script-a-${round}`, 'read', { path: 'b' });
       advance(500);
-      guard.onToolUse(`script-${round}`, 'read', { path: 'b' });
-      advance(500);
-      guard.onToolResult(`script-${round}`, 'same');
+      guard.onToolResult(`script-a-${round}`, 'same');
+      guard.onToolUse(`script-b-${round}`, 'read', { path: 'b' });
       advance(500);
       last = guard.onToolResult(`model-${round}`, 'same');
+      guard.onToolResult(`script-b-${round}`, 'same');
       advance(8_500);
     }
     expect(last).toMatchObject({ kind: 'hard', reason: 'pingpong', count: 12 });
-  });
-
-  // codex P1(#6388):夹在模型重复调用之间的脚本连发调用不能清零模型的连续计数。
-  it('keeps the model streak when different chained script calls run between its repeats', () => {
-    const { guard, advance } = clockGuard({ chainedCallGapMs: 2_000 });
-    let last: ToolLoopGuardVerdict = { kind: 'ok' };
-    for (let round = 0; round < 4; round++) {
-      guard.onToolUse(`model-${round}`, 'read', { path: 'a' });
-      advance(500);
-      last = guard.onToolResult(`model-${round}`, 'same');
-      advance(500);
-      guard.onToolUse(`script-${round}`, 'read', { path: `other-${round}` });
-      advance(500);
-      guard.onToolResult(`script-${round}`, `other-${round}`);
-      advance(8_500);
-    }
-    expect(last).toMatchObject({ kind: 'hard', reason: 'consecutive', count: 4 });
   });
 });
 

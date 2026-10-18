@@ -134,11 +134,10 @@ export const STALL_ABORT_RECOVERY_GRACE_MS = 10_000;
  */
 export const MANUAL_ABORT_RECOVERY_GRACE_MS = 15_000;
 /**
- * Codex tool calls arriving sooner than this after the previous result cannot have
- * had a model sampling in between (one sampling takes seconds), so they come from a
- * script issuing them in sequence rather than from the model repeating itself.
+ * The same Codex tool call starting again sooner than this cannot be a new model
+ * response (one sampling takes seconds): it is a script repeating it in a burst.
  */
-const CODEX_SCRIPT_CHAINED_CALL_GAP_MS = 2_000;
+const CODEX_BURST_REPEAT_GAP_MS = 2_000;
 
 /** Shared confirmation budget for provider interrupt ACK and send acceptance. */
 const GRACEFUL_STOP_CONFIRMATION_TIMEOUT_MS = 5_000;
@@ -2337,9 +2336,9 @@ export class Session {
         // not enable the retry-count rule without that evidence. Claude also
         // disables category-only retries; repetition rules stay active.
         contractConsecutiveLimit: Number.POSITIVE_INFINITY,
-        // Codex code mode: calls issued back-to-back by one background script
-        // carry no ownership marker; see ToolLoopGuardOptions.chainedCallGapMs.
-        ...(this.agentKind === 'codex' ? { chainedCallGapMs: CODEX_SCRIPT_CHAINED_CALL_GAP_MS } : {}),
+        // Codex code mode: a background script's calls carry no ownership marker;
+        // see ToolLoopGuardOptions.burstRepeatGapMs.
+        ...(this.agentKind === 'codex' ? { burstRepeatGapMs: CODEX_BURST_REPEAT_GAP_MS } : {}),
       }), {
         reviewer: this.toolLoopReviewer,
         context: () => ({ sessionId: this.id, agentKind: this.agentKind, model: this.handle.model }),

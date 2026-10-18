@@ -311,15 +311,15 @@ describe.each(['pi', 'codex'] as const)('%s Session tool loop coverage', (agentK
 });
 
 // 2026-10-18 误报:code mode 脚本在后台连着发起调用(点保存后反复截快照等页面更新),
-// app-server 不标注调用属于哪段脚本。连发(无模型采样间隔)不计数,模型逐次重复仍须中断。
-it('does not count Codex calls chained back to back by a script, but still stops a model repeating itself', async () => {
+// app-server 不标注调用属于哪段脚本。同一调用的突发重复(无模型采样间隔)不计数,模型逐次重复仍须中断。
+it('does not count a Codex call repeated in a script burst, but still stops a model repeating itself', async () => {
   const t = setup('codex');
   const context = { rt: newCodexRuntimeState(), log: { info() {}, warn() {}, error() {}, debug() {} } };
   let n = 0;
-  const call = async (action: string, text: string) => {
+  const call = async (action: string, text: string, ref?: string) => {
     const item = {
       type: 'mcpToolCall', id: `exec-${n++}`, server: 'cindy_browser', tool: 'call_tool',
-      arguments: { name: 'browser', args: { action } }, status: 'completed',
+      arguments: { name: 'browser', args: { action, ...(ref ? { ref } : {}) } }, status: 'completed',
       result: { content: [{ type: 'text', text }] },
     };
     translateItemNotification('started', { threadId: 'thread', turnId: 'turn', item }, t.queue, context);
@@ -329,7 +329,7 @@ it('does not count Codex calls chained back to back by a script, but still stops
   await t.session.send('upload the icons');
   await vi.advanceTimersByTimeAsync(3_000);
   for (let i = 0; i < 30; i++) {
-    await call(i % 7 === 0 ? 'click' : 'snapshot', i % 7 === 0 ? 'clicked' : 'saving');
+    await call(i % 7 === 0 ? 'click' : 'snapshot', i % 7 === 0 ? `clicked e${i}` : 'saving', i % 7 === 0 ? `e${i}` : undefined);
     await vi.advanceTimersByTimeAsync(800);
   }
   expect(t.errors()).toHaveLength(0);
