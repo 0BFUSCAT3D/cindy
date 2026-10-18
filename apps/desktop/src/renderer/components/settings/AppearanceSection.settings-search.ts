@@ -5,8 +5,8 @@ export default {
   id: 'AppearanceSection',
   order: 30,
   entries: [
-    // 'general.appearance' / 'personalization.streamFade' 是拆分前的旧 id,保留为别名供旧深链解析。
-    { id: 'appearance', tab: 'appearance', targetId: 'settings-panel-appearance', titleKey: 'settings.tabs.appearance', sectionKey: 'settings.tabs.appearance', aliases: ['general.appearance'] },
+    // 'general.appearance' / 'personalization.streamFade' 是拆分前的旧 id,保留为别名供旧深链解析(含旧具体锚点 targetId)。
+    { id: 'appearance', tab: 'appearance', targetId: 'settings-panel-appearance', titleKey: 'settings.tabs.appearance', sectionKey: 'settings.tabs.appearance', aliases: ['general.appearance', 'settings-search-target-general-appearance'] },
     { id: 'appearance.fonts', tab: 'appearance', targetId: 'settings-search-target-appearance-fonts', titleKey: 'settings.appearance.font.title', sectionKey: 'settings.appearance.font.title' },
     { id: 'appearance.sidebar', tab: 'appearance', targetId: 'settings-search-target-appearance-sidebar', titleKey: 'settings.appearance.sidebarAndPanels', sectionKey: 'settings.appearance.sidebarAndPanels' },
     { id: 'settings.appearance.wallpaper.customChoose', fallbackTargetId: 'settings-search-target-appearance-wallpaper', tab: 'appearance', targetId: 'settings-search-settings-appearance-wallpaper', titleKey: 'settings.appearance.wallpaper.options.custom', sectionKey: 'settings.appearance.wallpaper.title', descriptionKey: 'settings.appearance.wallpaper.customHint' },
@@ -21,7 +21,7 @@ export default {
     { id: 'settings.appearance.sidebarCardMode.label', fallbackTargetId: 'settings-search-target-appearance-sidebar', tab: 'appearance', targetId: 'settings-search-settings-appearance-sidebarCardMode-label', titleKey: 'settings.appearance.sidebarCardMode.label', sectionKey: 'settings.appearance.sidebarAndPanels', descriptionKey: 'settings.appearance.sidebarCardMode.hint' },
     { id: 'settings.appearance.sidebarMainListMode.label', fallbackTargetId: 'settings-search-target-appearance-sidebar', tab: 'appearance', targetId: 'settings-search-settings-appearance-sidebarMainListMode-label', titleKey: 'settings.appearance.sidebarMainListMode.label', sectionKey: 'settings.appearance.sidebarAndPanels', descriptionKey: 'settings.appearance.sidebarMainListMode.hint' },
     { id: 'settings.appearance.ghostPanelRestore.label', fallbackTargetId: 'settings-search-target-appearance-sidebar', tab: 'appearance', targetId: 'settings-search-settings-appearance-ghostPanelRestore-label', titleKey: 'settings.appearance.ghostPanelRestore.label', sectionKey: 'settings.appearance.sidebarAndPanels', descriptionKey: 'settings.appearance.ghostPanelRestore.hint' },
-    { id: 'appearance.streamFade', tab: 'appearance', targetId: 'settings-search-target-appearance-stream-fade', titleKey: 'settings.sections.streamFade', sectionKey: 'settings.sections.streamFade', aliases: ['personalization.streamFade'] },
+    { id: 'appearance.streamFade', tab: 'appearance', targetId: 'settings-search-target-appearance-stream-fade', titleKey: 'settings.sections.streamFade', sectionKey: 'settings.sections.streamFade', aliases: ['personalization.streamFade', 'settings-search-target-personalization-stream-fade'] },
     { id: 'settings.streamFade.label', fallbackTargetId: 'settings-search-target-appearance-stream-fade', tab: 'appearance', targetId: 'settings-search-target-appearance-stream-fade', titleKey: 'settings.streamFade.label', sectionKey: 'settings.sections.streamFade', aliases: ['fade in', '流式淡入'] },
   ],
 } satisfies SettingsSearchModule;

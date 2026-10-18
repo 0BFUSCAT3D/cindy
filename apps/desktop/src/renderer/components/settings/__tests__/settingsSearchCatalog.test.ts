@@ -60,6 +60,19 @@ describe('settings search catalog', () => {
     );
   });
 
+  it('resolves legacy concrete anchor ids to the Appearance tab', () => {
+    expect(isLegacyAppearanceDeepLink(null, 'settings-search-target-general-appearance')).toBe(true);
+    expect(
+      isLegacyAppearanceDeepLink('personalization', 'settings-search-target-personalization-stream-fade'),
+    ).toBe(true);
+    expect(resolveSettingsSearchTarget('appearance', 'settings-search-target-general-appearance')).toBe(
+      'settings-panel-appearance',
+    );
+    expect(
+      resolveSettingsSearchTarget('appearance', 'settings-search-target-personalization-stream-fade'),
+    ).toBe('settings-search-target-appearance-stream-fade');
+  });
+
   it('keeps sections that still live on General or Personalization in place', () => {
     expect(isLegacyAppearanceDeepLink(null, 'notifications')).toBe(false);
     expect(isLegacyAppearanceDeepLink('personalization', 'memory')).toBe(false);
