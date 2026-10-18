@@ -5099,7 +5099,7 @@ export function MessageStream({
     const currentIds = new Set<string>();
     for (const m of messages) currentIds.add(m.clientId);
 
-    const addedKeys = collectUnreadKeys({
+    const { keys: addedKeys, supersedes } = collectUnreadKeys({
       prevIds: prev,
       messages,
       nearBottom: isNearBottomRef.current,
@@ -5107,8 +5107,10 @@ export function MessageStream({
     });
     if (addedKeys.length > 0) {
       setUnreadKeys((keys) => {
-        if (addedKeys.every((key) => keys.has(key))) return keys;
-        return new Set([...keys, ...addedKeys]);
+        const next = new Set(keys);
+        for (const key of supersedes) next.delete(key);
+        for (const key of addedKeys) next.add(key);
+        return next.size === keys.size && addedKeys.every((key) => keys.has(key)) ? keys : next;
       });
     }
     prevMessageIdsRef.current = currentIds;

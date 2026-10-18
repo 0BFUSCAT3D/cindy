@@ -36,6 +36,8 @@ export interface UnreadCountMessage {
   isSyntheticTrigger?: boolean;
   /** 'steer' 的 user 消息插进当前回合，不开启新回合 */
   delivery?: string;
+  /** assistant 系统卡（Cindy Make / review 等）；与 MessageStream 同口径，开启新回合 */
+  systemCardType?: string;
 }
 
 export interface CollectUnreadKeysArgs {
@@ -50,7 +52,25 @@ export interface CollectUnreadKeysArgs {
 }
 
 function isTurnBoundary(m: UnreadCountMessage): boolean {
-  return m.role === 'user' && m.delivery !== 'steer';
+  if (m.role === 'user') return m.delivery !== 'steer';
+  return (
+    m.role === 'assistant' &&
+    (m.systemCardType === 'cindy-make' ||
+      m.systemCardType === 'cindy-make-doctor' ||
+      m.systemCardType === 'review')
+  );
+}
+
+const UNKNOWN_TURN_KEY = 'turn:';
+
+export interface UnreadKeyUpdate {
+  /** 本轮新增的未读键 */
+  keys: string[];
+  /**
+   * 本轮新增行续接的是已见的回合，且回合起点现在已可见：此前在起点未加载时记下的
+   * 「起点未知」键与它是同一次回复，调用方应移除，避免补载历史后重复计数。
+   */
+  supersedes: string[];
 }
 
 export function collectUnreadKeys({
@@ -58,8 +78,9 @@ export function collectUnreadKeys({
   messages,
   nearBottom,
   isLocalUserSend,
-}: CollectUnreadKeysArgs): string[] {
-  if (nearBottom) return [];
+}: CollectUnreadKeysArgs): UnreadKeyUpdate {
+  const none: UnreadKeyUpdate = { keys: [], supersedes: [] };
+  if (nearBottom) return none;
   let start = 0;
   if (prevIds.size > 0) {
     // 只数尾部追加：分页 prepend 的历史行不在 prevIds 里，纯差分会误计。
@@ -71,29 +92,39 @@ export function collectUnreadKeys({
       }
     }
     // 一条已见消息都找不到 = 窗口整体重置（rewind / 重载），不做未读猜测。
-    if (lastSeenIdx === -1) return [];
+    if (lastSeenIdx === -1) return none;
     start = lastSeenIdx + 1;
   }
-  let turnKey = 'turn:';
+  let turnKey = UNKNOWN_TURN_KEY;
+  // 起点在已见区域内（而非本轮新增行里）：新增行续接的是已见回合。
+  let boundaryBeforeStart = false;
   for (let i = start - 1; i >= 0; i--) {
     if (isTurnBoundary(messages[i])) {
       turnKey = `turn:${messages[i].clientId}`;
+      boundaryBeforeStart = true;
       break;
     }
   }
   const keys = new Set<string>();
+  const supersedes: string[] = [];
   for (let i = start; i < messages.length; i++) {
     const m = messages[i];
-    if (isTurnBoundary(m)) turnKey = `turn:${m.clientId}`;
+    if (isTurnBoundary(m)) {
+      turnKey = `turn:${m.clientId}`;
+      boundaryBeforeStart = false;
+    }
     if (prevIds.has(m.clientId)) continue;
     if (m.isSyntheticTrigger) continue;
     if (m.role === 'assistant') {
       keys.add(turnKey);
+      if (boundaryBeforeStart && !supersedes.includes(UNKNOWN_TURN_KEY)) {
+        supersedes.push(UNKNOWN_TURN_KEY);
+      }
     } else if (m.role === 'ask_user' || m.role === 'plan_review') {
       keys.add(m.clientId);
     } else if (m.role === 'user' && prevIds.size > 0 && isLocalUserSend?.(m.clientId) === false) {
       keys.add(m.clientId);
     }
   }
-  return [...keys];
+  return { keys: [...keys], supersedes };
 }
