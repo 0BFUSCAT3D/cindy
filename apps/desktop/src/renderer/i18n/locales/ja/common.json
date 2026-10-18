@@ -14778,6 +14778,7 @@
     "addUnavailable": "このセッションは現在の分割で開けません。メイン領域でセッションを開いてから、もう一度お試しください。"
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo ライブラリ（読み取り専用）",
     "retryRemotePlugins": "リモートプラグインを読み込めませんでした。再試行",
     "menuAria": "操作メニュー",
     "tooltipEmpty": "その他の操作",
