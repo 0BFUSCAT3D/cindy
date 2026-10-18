@@ -5419,11 +5419,14 @@ describe('CodexAgent.refreshLocalModels', () => {
     // #6396 review:本地配置变更守卫把 in-flight 创建算作 active 并提前拒绝,但远程 daemon 重启清理同样
     // failIfActive,却依赖取消由模型发现占用、尚无 Session 的创建,不能被那条规则挡住。
     const agent = new CodexAgent(createDeps());
-    const stuck = new Promise<never>(() => {});
+    const creation = deferred<void>();
     (agent as any).hostPromises.set('remote:builder', {
-      promise: stuck, credentialMode: undefined, credentialModeResolved: true, generation: 0,
+      promise: creation.promise, credentialMode: undefined, credentialModeResolved: true, generation: 0,
     });
-    await expect(agent.disposeRemoteHostAfterRestart('builder')).resolves.toBeUndefined();
+    const cleanup = agent.disposeRemoteHostAfterRestart('builder');
+    // 清理取消 in-flight 创建后会等它收尾(最多 1.5s);让创建立即结束,避免真实等待。
+    creation.resolve();
+    await expect(cleanup).resolves.toBeUndefined();
     expect((agent as any).hostPromises.has('remote:builder')).toBe(false);
   });
 
