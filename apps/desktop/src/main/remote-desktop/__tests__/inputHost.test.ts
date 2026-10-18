@@ -397,6 +397,25 @@ describe('native input lifecycle', () => {
     await flush();
     // A batch without pointer events never reports.
     expect(pointer).toHaveBeenCalledTimes(2);
+    // A wheel has no position: it reports where the pointer already is, even before a move.
+    host.input([
+      { kind: 'scroll', dx: 0, dy: 3 },
+      { kind: 'move', x: 0.9, y: 0.9 },
+    ]);
+    await flush();
+    c.child.stdout.emit('data', Buffer.from('ok\n'));
+    await flush();
+    expect(pointer.mock.calls.at(-1)![0]).toEqual([
+      { x: 10, y: 10 },
+      { x: 89, y: 89 },
+    ]);
+    host.input([{ kind: 'scroll', dx: 0, dy: -3 }]);
+    await flush();
+    c.child.stdout.emit('data', Buffer.from('ok\n'));
+    await flush();
+    expect(pointer.mock.calls.at(-1)![0]).toEqual([{ x: 89, y: 89 }]);
+    // Before any pointer position is known there is nothing to report.
+    expect(pointer).toHaveBeenCalledTimes(4);
     host.stop();
     c.exit();
   });
