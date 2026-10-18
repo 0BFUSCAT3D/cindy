@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useAuth } from '@/contexts/AuthContext';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { VendorIcon, agentKindToVendor } from '@/components/sidebar/VendorIcon';
 import type { Session } from '@/lib/ccAgent.types';
@@ -35,14 +36,22 @@ const log = createLogger('interrupted-tasks-resume');
 /** localDb 登录后才 ready,首拉沿用 usePendingAlertAttention 的线性退避。 */
 const MAX_LOAD_ATTEMPTS = 5;
 
-/** 窗口级单例:布局重挂载不重复查询;弹窗关过一次后本窗口不再弹。 */
-let _loadPromise: Promise<InterruptedTask[]> | null = null;
-let _handledThisWindow = false;
+/**
+ * 窗口级单例:布局重挂载不重复查询;弹窗关过一次后本窗口不再弹。
+ * 都按数据所有者(账号)隔离:同一窗口换账号登录时,旧账号的任务列表与「已处理」标记不得带入。
+ */
+let _load: { ownerId: string | null; promise: Promise<InterruptedTask[]> } | null = null;
+let _handledOwnerId: string | null | undefined;
 
 interface InterruptedTask {
   session: Session;
   interruptedAt: number;
   activity: string | null;
+}
+
+async function listStillInterruptedIds(): Promise<Set<string>> {
+  const candidates = await window.electronAPI.localDb.sessions.interruptedResumeCandidates();
+  return new Set(candidates.map((c) => c.sessionId));
 }
 
 async function loadInterruptedTasks(): Promise<InterruptedTask[]> {
@@ -106,15 +115,18 @@ function TaskCheckbox({
 
 export function InterruptedTasksResumeDialog({ suspended = false }: { suspended?: boolean }) {
   const { t } = useTranslation();
+  const { dataOwnerId } = useAuth();
   const [tasks, setTasks] = useState<InterruptedTask[]>([]);
   const [deselected, setDeselected] = useState<ReadonlySet<string>>(() => new Set());
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
-    _loadPromise ??= loadInterruptedTasksWithRetry();
-    void _loadPromise.then((loaded) => {
-      if (!active || _handledThisWindow || loaded.length === 0) return;
+    if (_load?.ownerId !== dataOwnerId) {
+      _load = { ownerId: dataOwnerId, promise: loadInterruptedTasksWithRetry() };
+    }
+    void _load.promise.then((loaded) => {
+      if (!active || _handledOwnerId === dataOwnerId || loaded.length === 0) return;
       log.info(`found ${loaded.length} interrupted task(s) to offer for resume`);
       setTasks(loaded);
       setOpen(true);
@@ -122,10 +134,10 @@ export function InterruptedTasksResumeDialog({ suspended = false }: { suspended?
     return () => {
       active = false;
     };
-  }, []);
+  }, [dataOwnerId]);
 
   const handleOpenChange = (next: boolean) => {
-    if (!next) _handledThisWindow = true;
+    if (!next) _handledOwnerId = dataOwnerId;
     setOpen(next);
   };
 
@@ -157,15 +169,24 @@ export function InterruptedTasksResumeDialog({ suspended = false }: { suspended?
   };
 
   const handleContinue = () => {
-    const ids = selectedIds;
-    void Promise.allSettled(
-      ids.map((id) => makerChatStore.sendUiTrigger(id, CONTINUE_AFTER_APP_EXIT_PROMPT)),
-    ).then((results) => {
+    const picked = selectedIds;
+    void (async () => {
+      // 弹窗可能在更新说明后才出现,期间任务可能已被其它窗口/横幅继续:提交前重新取
+      // 仍处于中断态的集合再取交集,避免对已恢复的任务重复续跑。
+      const stillInterrupted = await listStillInterruptedIds().catch(() => null);
+      if (!stillInterrupted) {
+        toast.error(t('chat.interruptedResumeDialog.continueFailed', { count: picked.length }));
+        return;
+      }
+      const ids = picked.filter((id) => stillInterrupted.has(id));
+      const results = await Promise.allSettled(
+        ids.map((id) => makerChatStore.sendUiTrigger(id, CONTINUE_AFTER_APP_EXIT_PROMPT)),
+      );
       const failed = results.filter((r) => r.status === 'rejected');
       if (failed.length === 0) return;
       log.warn(`failed to continue ${failed.length}/${ids.length} interrupted task(s)`);
       toast.error(t('chat.interruptedResumeDialog.continueFailed', { count: failed.length }));
-    });
+    })();
   };
 
   if (total === 0) return null;

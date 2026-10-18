@@ -11178,9 +11178,9 @@
       "dismissTitle": "この中断通知を閉じる"
     },
     "interruptedResumeDialog": {
-      "title": "中断したタスクを再開",
-      "description_one": "{{appName}} が前回予期せず終了し、{{count}} 件のタスクが完了していません。選択したタスクは会話履歴から進捗を確認し、中断したところから再開します。",
-      "description_other": "{{appName}} が前回予期せず終了し、{{count}} 件のタスクが完了していません。選択したタスクは会話履歴から進捗を確認し、中断したところから再開します。",
+      "title": "中断したセッションを再開",
+      "description_one": "{{appName}} が前回予期せず終了し、{{count}} 件のセッションが完了していません。選択したセッションは会話履歴から進捗を確認し、中断したところから再開します。",
+      "description_other": "{{appName}} が前回予期せず終了し、{{count}} 件のセッションが完了していません。選択したセッションは会話履歴から進捗を確認し、中断したところから再開します。",
       "selectAll": "すべて選択",
       "selectedCount": "{{selected}} / {{total}} 件を選択",
       "interruptedAgo": "{{time}}前に中断",
@@ -11189,8 +11189,8 @@
       "continueSelected_other": "{{count}} 件を再開",
       "continueNone": "再開",
       "later": "後で",
-      "continueFailed_one": "{{count}} 件のタスクを再開できませんでした。タスクを開いて再試行してください。",
-      "continueFailed_other": "{{count}} 件のタスクを再開できませんでした。タスクを開いて再試行してください。"
+      "continueFailed_one": "{{count}} 件のセッションを再開できませんでした。セッションを開いて再試行してください。",
+      "continueFailed_other": "{{count}} 件のセッションを再開できませんでした。セッションを開いて再試行してください。"
     },
     "unreadFailedScheduleBanner": {
       "text": "自動実行に失敗した記録があります。",

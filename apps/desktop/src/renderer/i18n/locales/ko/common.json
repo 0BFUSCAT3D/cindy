@@ -11178,19 +11178,19 @@
       "dismissTitle": "이 중단 알림 닫기"
     },
     "interruptedResumeDialog": {
-      "title": "중단된 작업 이어서 하기",
-      "description_one": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 작업 {{count}}개가 끝나지 않았습니다. 선택한 작업은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
-      "description_other": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 작업 {{count}}개가 끝나지 않았습니다. 선택한 작업은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "title": "중단된 세션 이어서 하기",
+      "description_one": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "description_other": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
       "selectAll": "모두 선택",
       "selectedCount": "{{total}}개 중 {{selected}}개 선택",
       "interruptedAgo": "{{time}} 전 중단",
       "interruptedJustNow": "방금 중단",
-      "continueSelected_one": "작업 {{count}}개 이어서 하기",
-      "continueSelected_other": "작업 {{count}}개 이어서 하기",
+      "continueSelected_one": "세션 {{count}}개 이어서 하기",
+      "continueSelected_other": "세션 {{count}}개 이어서 하기",
       "continueNone": "이어서 하기",
       "later": "나중에",
-      "continueFailed_one": "작업 {{count}}개를 이어서 진행하지 못했습니다. 작업을 열어 다시 시도하세요.",
-      "continueFailed_other": "작업 {{count}}개를 이어서 진행하지 못했습니다. 작업을 열어 다시 시도하세요."
+      "continueFailed_one": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요.",
+      "continueFailed_other": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요."
     },
     "unreadFailedScheduleBanner": {
       "text": "실패한 자동 실행이 있습니다.",
