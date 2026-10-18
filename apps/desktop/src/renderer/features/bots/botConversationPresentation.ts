@@ -166,7 +166,7 @@ function projectWindow(
   let sealedRun = false;
   for (let index = expanded.length - 1; index >= 0; index -= 1) {
     const item = expanded[index];
-    if (!isProse(item) || !item.message.content.trim()) {
+    if (!isProse(item) || !item.message.content.trim() || item.message.failedSamplingAttempt) {
       sealedRun = false;
       continue;
     }
@@ -174,6 +174,7 @@ function projectWindow(
     if (sealedRun) sealedAnswers.add(item.message);
   }
   const isAddressedReply = (message: ChatMessage) => Boolean(message.content.trim())
+    && !message.failedSamplingAttempt
     && !(message.assistantPhase === 'commentary' && !message.explicitDelivery)
     && (message.assistantPhase === 'final_answer' || Boolean(message.sourceGroup)
       || Boolean(message.explicitDelivery) || hasHtmlAnswer(message)
