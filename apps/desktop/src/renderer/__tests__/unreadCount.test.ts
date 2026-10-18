@@ -6,11 +6,38 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { countUnreadAdded } from '../components/chat/unreadCount';
+import { collectUnreadKeys } from '../components/chat/unreadCount';
 
 const msg = (clientId: string, role: string) => ({ clientId, role });
+const countUnreadAdded = (args: Parameters<typeof collectUnreadKeys>[0]) =>
+  collectUnreadKeys(args).length;
 
 describe('countUnreadAdded', () => {
+  // 一次回复执行中会写出几十段中间正文，最终折进同一段工作过程；逐条计数曾把
+  // 一次回复报成「59 条新消息」。同一回合跨多次 diff 返回同一个键，由调用方去重。
+  it('同一回合的多段 assistant 输出只算一条，steer 不开启新回合', () => {
+    const first = [msg('u1', 'user'), msg('a1', 'assistant'), msg('a2', 'assistant')];
+    expect(
+      collectUnreadKeys({ prevIds: new Set(['u1']), messages: first, nearBottom: false }),
+    ).toEqual(['turn:u1']);
+    const second = [
+      ...first,
+      { clientId: 's1', role: 'user', delivery: 'steer' },
+      msg('a3', 'assistant'),
+      msg('q1', 'ask_user'),
+      msg('u2', 'user'),
+      msg('a4', 'assistant'),
+    ];
+    expect(
+      collectUnreadKeys({
+        prevIds: new Set(first.map((m) => m.clientId)),
+        messages: second,
+        nearBottom: false,
+        isLocalUserSend: () => true,
+      }),
+    ).toEqual(['turn:u1', 'q1', 'turn:u2']);
+  });
+
   it('assistant / ask_user / plan_review 在离底时计数', () => {
     expect(
       countUnreadAdded({
@@ -146,9 +173,20 @@ describe('countUnreadAdded', () => {
 });
 
 it('counts new result receipts in history, but not replayed receipts or paginated old cards', () => {
-  const messages = [{ clientId: 'older-result', role: 'assistant' }, { clientId: 'anchor', role: 'assistant' },
-    { clientId: 'user-input', role: 'user' }, { clientId: 'result-1', role: 'assistant' },
-    { clientId: 'hidden-wake', role: 'user', isSyntheticTrigger: true }, { clientId: 'result-2', role: 'assistant' }];
+  const messages = [
+    { clientId: 'older-result', role: 'assistant' },
+    { clientId: 'anchor', role: 'assistant' },
+    { clientId: 'user-input', role: 'user' },
+    { clientId: 'result-1', role: 'assistant' },
+    { clientId: 'hidden-wake', role: 'user', isSyntheticTrigger: true },
+    { clientId: 'result-2', role: 'assistant' },
+  ];
   expect(countUnreadAdded({ prevIds: new Set(['anchor']), messages, nearBottom: false })).toBe(2);
-  expect(countUnreadAdded({ prevIds: new Set(messages.map(message => message.clientId)), messages, nearBottom: false })).toBe(0);
+  expect(
+    countUnreadAdded({
+      prevIds: new Set(messages.map((message) => message.clientId)),
+      messages,
+      nearBottom: false,
+    }),
+  ).toBe(0);
 });
