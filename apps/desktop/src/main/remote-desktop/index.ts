@@ -209,6 +209,10 @@ const controlledOverlay = new ControlledOverlay(
     if (!controllerDirectory) throw new Error('controller directory unavailable');
     await controllerDirectory.revoke(peer);
   },
+  // Same as the main window's Disconnect, for the session the overlay names only.
+  (peer) => {
+    if (remoteDesktop.state?.peer === peer) remoteDesktop.stopByUser();
+  },
 );
 /** Device-link owns names and revocation; injected at registration (no import cycle). */
 export interface RemoteDesktopControllerDirectory {
@@ -269,9 +273,13 @@ let pending: {
 } | null = null;
 // A dead input helper or a refused injection is an input failure, not a session
 // failure: repair input once while keeping the lease, capture and media running.
-const input = new DesktopInputHost(() => {
-  void remoteDesktop.releaseControl(true);
-});
+const input = new DesktopInputHost(
+  () => {
+    void remoteDesktop.releaseControl(true);
+  },
+  undefined,
+  (point) => controlledOverlay.viewerPointer(point),
+);
 const clipboardCounter = new ClipboardCounter(resolveDesktopInputBinary);
 // A display change holds native capture instead of stopping it: frames pause
 // until the changed display is known, then the same stream follows it. The
@@ -1142,6 +1150,7 @@ export function registerRemoteDesktopIpc(
     return {
       enabled: readDeviceLinkSettings().remoteDesktopEnabled,
       active: remoteDesktop.state,
+      overlay: controlledOverlay.visible,
       permissionGuide: permissions.guideOpen,
       ...(checkWindowsSupport === true
         ? { windowsSupport: await readWindowsDesktopSupport() }

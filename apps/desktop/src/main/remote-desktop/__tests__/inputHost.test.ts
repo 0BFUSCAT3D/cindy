@@ -354,6 +354,37 @@ describe('native input lifecycle', () => {
     expect(c.child.stdin.write).not.toHaveBeenCalled();
     c.exit();
   });
+  // The controlled overlay needs each viewer pointer before it lands to let it pass through.
+  it('reports each whole-display pointer position before injecting it', async () => {
+    const c = childProcess();
+    const pointer = vi.fn();
+    const host = new DesktopInputHost(
+      vi.fn(),
+      {
+        platform: 'darwin',
+        resolveBinary: async () => '/test/helper',
+        spawn: () => {
+          queueMicrotask(() => c.child.stdout.emit('data', Buffer.from('ready\n')));
+          return c.typed;
+        },
+      },
+      (point) => pointer(point, c.child.stdin.write.mock.calls.length),
+    );
+    await host.start('1');
+    host.input([
+      { kind: 'move', x: 0.25, y: 0.75 },
+      { kind: 'key', code: 'KeyA', down: true },
+      { kind: 'button', button: 0, down: true, x: 0.5, y: 0.5 },
+    ]);
+    await flush();
+    expect(pointer.mock.calls).toEqual([
+      [{ x: 25, y: 74 }, 0],
+      [{ x: 50, y: 50 }, 0],
+    ]);
+    expect(c.child.stdin.write).toHaveBeenCalledOnce();
+    host.stop();
+    c.exit();
+  });
 });
 
 it('keeps Linux whole-desktop coordinates normalized and releases input before returning ownership', async () => {
@@ -450,7 +481,11 @@ describe('代输入 window input', () => {
       ['darwin', { windowId: 0, pid: 2 }],
       ['darwin', { windowId: 1, pid: -1 }],
     ] as const) {
-      const host = new DesktopInputHost(vi.fn(), { platform, resolveBinary: async () => '/x', spawn });
+      const host = new DesktopInputHost(vi.fn(), {
+        platform,
+        resolveBinary: async () => '/x',
+        spawn,
+      });
       await expect(host.start('1', window)).rejects.toThrow('DESKTOP_INPUT_UNSUPPORTED');
     }
     expect(spawn).not.toHaveBeenCalled();

@@ -227,6 +227,8 @@ export class DesktopInputHost {
       spawn: (binary: string, args: string[] = []) =>
         spawn(binary, args, { stdio: 'pipe', windowsHide: true }),
     },
+    /** Each whole-display pointer position (global DIP), reported just before it is injected. */
+    private readonly onPointer?: (point: { x: number; y: number }) => void,
   ) {}
   async start(displayId: string, window?: { windowId: number; pid: number }): Promise<void> {
     this.stop();
@@ -386,6 +388,7 @@ export class DesktopInputHost {
           x: Math.round(display.bounds.x + event.x * (display.bounds.width - 1)),
           y: Math.round(display.bounds.y + event.y * (display.bounds.height - 1)),
         };
+        this.onPointer?.(point);
         const native = process.platform === 'win32' ? screen.dipToScreenPoint(point) : point;
         return { ...event, ...native };
       }),
