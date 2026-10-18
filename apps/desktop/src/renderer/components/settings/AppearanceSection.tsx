@@ -113,15 +113,15 @@ interface ModePalette {
 }
 
 function modePalette(theme: Theme): ModePalette {
-  const dark = theme.type === 'dark';
-  const value = (id: string, fallback: string) => resolveThemeValue(theme, id) ?? fallback;
+  // 回退用同名语义角色的 CSS 变量,不写字面色值(所选主题缺项时跟随当前全局主题)。
+  const value = (id: string) => resolveThemeValue(theme, id) ?? `var(--${id})`;
   return {
-    canvas: value('surface', dark ? '#121212' : '#F2F2ED'),
-    sidebar: value('surface-chip', dark ? '#1D1D1D' : '#EEEEE9'),
-    line: value('border-default', dark ? '#313131' : '#E4E4DF'),
-    field: value('surface-elevated', dark ? '#1F1F1F' : '#FDFDF8'),
-    send: value('text-primary', dark ? '#D4D4D4' : '#1A1A1A'),
-    ink: value('text-tertiary', dark ? '#C1C1C1' : '#6B6B67'),
+    canvas: value('surface'),
+    sidebar: value('surface-chip'),
+    line: value('border-default'),
+    field: value('surface-elevated'),
+    send: value('text-primary'),
+    ink: value('text-tertiary'),
   };
 }
 
