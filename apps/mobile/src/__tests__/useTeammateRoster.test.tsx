@@ -47,6 +47,21 @@ it('does not treat initial offline discovery as authoritative; recovers on conne
   h.link.status = 'online'; h.link.connectionEpoch++; await render();
   expect(result.authoritative).toBe(true); expect(result.createTargets[0].deviceId).toBe('new');
 });
+
+it('keeps a cold launch loading while the relay is starting, without reporting cached hosts offline', async () => {
+  const cached = { key: 'old:bot', host: { deviceId: 'old', deviceName: 'Old' }, item: {
+    ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', display: { title: 'Cached' }, links: [],
+  } };
+  h.link.status = 'stopped';
+  h.list.items = [cached];
+  h.snapshot.mockResolvedValue({ home: [], items: { teammates: [cached] }, read: {} });
+  h.link.readDeviceList.mockRejectedValue(new Error('should wait for relay'));
+  await render();
+  expect(result.items).toEqual([cached]);
+  expect(result.loading).toBe(true);
+  expect(result.error).toBeNull();
+  expect(h.link.readDeviceList).not.toHaveBeenCalled();
+});
 it('drops old account discovery replies', async () => {
   let finish!: (value: unknown) => void;
   h.link.readDeviceList.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
@@ -88,7 +103,7 @@ it('shows cached teammates while host discovery is pending, then removes revoked
   h.snapshot.mockResolvedValue({ home: [], items: { teammates: h.list.items }, read: {} });
   h.list.isOnline.mockReturnValue(false);
   await render();
-  expect(result.items).toHaveLength(1); expect(result.loading).toBe(false);
+  expect(result.items).toHaveLength(1); expect(result.loading).toBe(true);
   expect(result.authoritative).toBe(false); expect(result.isOnline(h.list.items[0].host)).toBe(false);
   h.revoked = new Set(['old']); await render();
   expect(result.items).toEqual([]);
@@ -192,7 +207,7 @@ it('retains in-memory teammates if the disk capability read stalls', async () =>
   await act(async () => vi.advanceTimersByTimeAsync(2000));
   expect(result.targets.map(host => host.deviceId)).toEqual(['old']);
   expect(result.items).toEqual([cached]);
-  expect(result.loading).toBe(false);
+  expect(result.loading).toBe(true);
 });
 
 it('keeps every cached roster host in the list targets while a partial home manifest catches up', async () => {

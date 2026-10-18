@@ -177,7 +177,7 @@ it('shows disk-cached rows during the first slow network read without claiming a
   h.list.mockReturnValue(new Promise(() => {}));
   await render();
   expect(result.items[0].item.ref.id).toBe('cached-visible');
-  expect(result.loading).toBe(false); expect(result.syncing).toBe(true);
+  expect(result.loading).toBe(true); expect(result.syncing).toBe(true);
   expect(result.isOnline(targets[0])).toBe(false);
 });
 

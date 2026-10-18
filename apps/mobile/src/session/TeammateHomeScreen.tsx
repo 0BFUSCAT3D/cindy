@@ -164,7 +164,7 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
       quietPresence={quietPresence}
       topInset={nativeHeader ? headerHeight : undefined}
       notice={navigation.saveFailed ? <Text accessibilityRole="alert" style={styles.notice}>{t('devices.companions.preferenceSaveFailed')}</Text> : null} autoFocusSearch={searchEpoch > 0}
-      loading={roster.items.length + groups.items.length === 0 && (roster.loading || groups.loading)}
+      loading={roster.loading || groups.loading}
       refreshing={roster.refreshing || groups.refreshing}
       error={groups.error ?? roster.error}
       onRefresh={() => { void roster.refresh(); void cloud.refresh(); if (groups.supported) void groups.refresh(); }}

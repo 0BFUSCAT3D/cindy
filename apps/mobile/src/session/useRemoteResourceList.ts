@@ -37,6 +37,8 @@ export function useRemoteResourceList(collectionId: string, targets: readonly Re
   const focusController = useRef(new AbortController());
   const recovery = useRef<ReturnType<typeof createRemoteReadRecovery> | null>(null);
   const failedHosts = useRef(new Set<string>());
+  const settledRef = useRef(false);
+  settledRef.current = state.binding === binding && state.settled;
   const presenceKey = targets.map((target) => `${target.deviceId}:${getPresenceAvailability(target.deviceId)}`).join('|');
   void presenceVersion;
   useEffect(() => {
@@ -56,6 +58,10 @@ export function useRemoteResourceList(collectionId: string, targets: readonly Re
 
   const read = useCallback(async (run: RemoteSyncRun) => {
     if (!enabled || !active.current || hydrated !== binding || !collectionId) return;
+    // The relay starts as stopped/connecting during a cold launch.  Do not
+    // turn that transport startup window into a resource failure; the status
+    // dependency will schedule the same read once the relay is online.
+    if ((status === 'stopped' || status === 'connecting') && !settledRef.current) return;
     const expected = ++generation.current;
     const signal = focusController.current.signal;
     const current = () => !run.isStale() && !signal.aborted && generation.current === expected
@@ -145,7 +151,10 @@ export function useRemoteResourceList(collectionId: string, targets: readonly Re
   ), [connectionEpoch, getPresenceAvailability, ownState, presenceKey, state.replies, status]);
   return {
     items: ownState ? state.items : [],
-    loading: !ownState || (!state.settled && state.items.length === 0 && (state.loading || hydrated !== binding)),
+    // A disk snapshot is still unverified on a cold mount. Keep the first
+    // screen in its loading state until a live collection read settles; after
+    // that, background refreshes continue to leave the current rows visible.
+    loading: !ownState || (!state.settled && (state.loading || hydrated !== binding)),
     syncing: !ownState || state.loading || hydrated !== binding,
     refreshing: ownState && state.refreshing,
     error: ownState ? state.error : null,
