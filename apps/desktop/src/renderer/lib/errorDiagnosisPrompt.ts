@@ -32,19 +32,26 @@ export function buildErrorDiagnosisPrompt(
 }
 
 /**
- * 新建任务页已有未发送的内容时不覆盖：诊断提示追加在原文之后，附件与浏览器评论原样保留。
- * 草稿为空时与其他预填入口一致，整体写入。
+ * 新建任务页已有未发送的内容时不覆盖：以原草稿为底整体保留（附件、浏览器评论、插件交接、
+ * 旧版引用等全部字段），只把诊断提示追加在正文之后。草稿为空时与其他预填入口一致，整体写入。
  */
 export function prefillErrorDiagnosisDraft(prompt: string): void {
   const existing = getDraft(NEW_MAKER_DRAFT_KEY);
   const added = plainTextToTiptapDoc(prompt);
   const existingContent = existing?.text?.content ?? [];
-  saveDraft(NEW_MAKER_DRAFT_KEY, {
-    ...(existing?.browserComments?.length ? { browserComments: existing.browserComments } : {}),
-    text: existingContent.length > 0
-      ? { ...added, content: [...existingContent, ...(added.content ?? [])] }
-      : added,
-    attachments: existing?.attachments ?? [],
-  });
+  const hasUnsent =
+    existingContent.length > 0 ||
+    (existing?.attachments.length ?? 0) > 0 ||
+    (existing?.browserComments?.length ?? 0) > 0 ||
+    (existing?.quotes?.length ?? 0) > 0;
+  saveDraft(
+    NEW_MAKER_DRAFT_KEY,
+    existing && hasUnsent
+      ? {
+          ...existing,
+          text: { ...added, content: [...existingContent, ...(added.content ?? [])] },
+        }
+      : { text: added, attachments: [] },
+  );
   resetDraftWorkspaceTargets();
 }

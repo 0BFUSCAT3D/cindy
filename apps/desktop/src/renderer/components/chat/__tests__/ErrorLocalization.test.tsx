@@ -50,13 +50,14 @@ it('offers diagnosis after expanding details with a redacted prompt for the fail
 // 新建任务页已有未发送内容时，诊断预填只追加，不能丢掉用户的文字与附件。
 it('appends the diagnosis prompt to an unsent new-task draft instead of replacing it', () => {
   const attachment = { id: 'a1', name: 'note.txt', path: '/tmp/note.txt' } as never;
-  saveDraft(NEW_MAKER_DRAFT_KEY, { text: plainTextToTiptapDoc('我写到一半的内容'), attachments: [attachment] });
+  saveDraft(NEW_MAKER_DRAFT_KEY, { text: plainTextToTiptapDoc('我写到一半的内容'), attachments: [attachment], pendingGhostId: 'plugin-1' });
   prefillErrorDiagnosisDraft('请帮我诊断这个错误');
   const draft = getDraft(NEW_MAKER_DRAFT_KEY)!;
   const text = JSON.stringify(draft.text);
   expect(text.indexOf('我写到一半的内容')).toBeGreaterThanOrEqual(0);
   expect(text.indexOf('请帮我诊断这个错误')).toBeGreaterThan(text.indexOf('我写到一半的内容'));
   expect(draft.attachments).toHaveLength(1);
+  expect(draft.pendingGhostId).toBe('plugin-1');
   clearDraft(NEW_MAKER_DRAFT_KEY);
 });
 
