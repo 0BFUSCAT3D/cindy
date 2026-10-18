@@ -1,8 +1,86 @@
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import ts from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
 import {
   shouldSuppressEmptyMessageState,
   shouldSuppressRemoteListEmptyState,
 } from '@/session/sessionEmptyState';
+
+// Run the real detail-page sync callback without loading native navigation.
+// Existing policy tests cannot detect an old active/archive response publishing
+// a false successful-empty result. Deferred reads cover that timing in unit tier.
+const detailSource = ts.createSourceFile('detail.tsx', readFileSync(
+  resolve(process.cwd(), 'app/devices/[deviceId].tsx'), 'utf8',
+), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let syncCode = '';
+function findSync(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(detailSource) === 'syncSessions'
+    && node.initializer && ts.isCallExpression(node.initializer)) {
+    syncCode = ts.transpileModule(`const sync = ${node.initializer.arguments[0].getText(detailSource)};`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+  }
+  ts.forEachChild(node, findSync);
+}
+findSync(detailSource);
+
+it.each(['resolve', 'reject'])('keeps a new filter pending when the old request settles with %s', async (outcome) => {
+  const firstScope = { deviceId: 'mac', filter: 'active' };
+  const listQueryScopeRef = { current: firstScope };
+  let finish!: (rows: unknown[]) => void;
+  let fail!: (error: Error) => void;
+  const invoke = vi.fn(() => new Promise<unknown[]>((yes, no) => { finish = yes; fail = no; }));
+  const published: unknown[][] = [];
+  let syncedScope: unknown = null;
+  let loading = false;
+  let error: unknown = null;
+  const compile = (listQueryScope: typeof firstScope) => {
+    const bindings = {
+      deviceId: 'mac', deviceName: 'Mac', listQueryScope, listQueryScopeRef,
+      requestedListFilter: listQueryScope.filter, automationScopeKey: null, statusFilter: listQueryScope.filter,
+      remoteListStatusFilter: (filter: string) => filter,
+      LIST_LIMIT: 200, invoke, subscribe: async () => undefined,
+      withTransientRemoteRetry: (read: () => Promise<unknown>) => read(),
+      remoteSessionStore: {
+        captureDeviceSessionListMutationEpoch: () => 0,
+        isDeviceSessionListMutationEpochCurrent: () => true,
+        setDeviceSessions: (_id: string, _name: string, rows: unknown[]) => published.push(rows),
+      },
+      remoteScheduleEventStore: { clearDeviceMirrorInvalidation: () => undefined },
+      invalidateOfflineScheduleIndexFailureFor: () => undefined,
+      getScheduleIndexInvalidationVersion: () => 0,
+      loadSharedSessionScheduleIndex: async () => new Map(), maker: {}, canLoadScheduleIndex: () => true,
+      setScheduleIndex: () => undefined, setLastSyncedAt: () => undefined,
+      setSyncedListQueryScope: (value: unknown) => { syncedScope = value; },
+      setLoading: (value: boolean) => { loading = value; },
+      setError: (value: unknown) => { error = value; }, formatRemoteError: String,
+    };
+    return new Function(...Object.keys(bindings), `${syncCode}\nreturn sync;`)(...Object.values(bindings)) as () => Promise<void>;
+  };
+  const oldRun = compile(firstScope)();
+  await Promise.resolve();
+  // A → archived → A is still a new query; equality of filter text is insufficient.
+  listQueryScopeRef.current = { deviceId: 'mac', filter: 'archived' };
+  listQueryScopeRef.current = { ...firstScope };
+  if (outcome === 'resolve') finish([]); else fail(new Error('old failure'));
+  await oldRun;
+  expect(published).toEqual([]);
+  expect(syncedScope).toBeNull();
+  expect(error).toBeNull();
+  expect(loading).toBe(true);
+
+  const currentRun = compile(listQueryScopeRef.current)();
+  await Promise.resolve();
+  finish([]);
+  await currentRun;
+  expect(published).toEqual([[]]);
+  expect(syncedScope).toBe(listQueryScopeRef.current);
+  expect(loading).toBe(false);
+  expect(shouldSuppressRemoteListEmptyState({
+    itemCount: 0, hasSyncedThisOpen: syncedScope === listQueryScopeRef.current, loading,
+  })).toBe(false);
+});
 
 const base = {
   loading: false,
@@ -41,6 +119,18 @@ describe('shouldSuppressEmptyMessageState', () => {
 });
 
 describe('shouldSuppressRemoteListEmptyState', () => {
+  // Regression: reopening an already-synced list with a new filter used to show
+  // "no tasks" while its request was pending, and again when that request failed.
+  // Unit tier: the production presentation policy had only cold-open coverage.
+  it.each([{ loading: true }, { failed: true }])('does not report an empty result during %o', (state) => {
+    expect(shouldSuppressRemoteListEmptyState({
+      itemCount: 0, hasSyncedThisOpen: true, ...state,
+    })).toBe(true);
+    expect(shouldSuppressRemoteListEmptyState({
+      itemCount: 3, hasSyncedThisOpen: true, ...state,
+    })).toBe(false);
+  });
+
   it('suppresses the empty state on cold open before the first sync completes (0 items, not synced)', () => {
     // 冷进首帧:列表初始 []、lastSyncedAt === null → 抑制,渲染干净空白而非闪"暂无自动化/还没有对话"。
     expect(shouldSuppressRemoteListEmptyState({ itemCount: 0, hasSyncedThisOpen: false })).toBe(true);

@@ -6,6 +6,7 @@ import { i18n } from '@/i18n';
 import { startBoundedStartupRead } from '@/session/mobileHomeStartup';
 import { resolveConnectionBannerSyncActionVisibility, resolveConnectionBannerVisibility, resolveHomeConnectionFeedback } from '@/components/connectionBannerVisibility';
 import { connectionHealthCopy, describeRemoteError } from '@/device-link/remoteStatus';
+import { isTaskSuggestionsSyncPending } from '@/session/useRemoteTaskSuggestionsPresentation';
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(process.cwd(), relativePath), 'utf8').replace(/\r\n/g, '\n');
@@ -15,7 +16,7 @@ function readSource(relativePath: string): string {
 // phone-wide outages and broke when the same shared policy gained that input.
 const homeSource = ts.createSourceFile('HomeSurface.tsx', readSource('src/session/HomeSurface.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const feedbackExpressions = new Map<string, string>();
-const feedbackNames = new Set(['healthCopy', 'showConnectionRow', 'showHomeSyncAction', 'showHomeRecoveryProgress', 'connectionTitle']);
+const feedbackNames = new Set(['homeListScopePending', 'initialHomeLoading', 'initialHomeError', 'healthCopy', 'showConnectionRow', 'showHomeSyncAction', 'showHomeRecoveryProgress', 'connectionTitle']);
 function collectFeedback(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && feedbackNames.has(node.name.getText(homeSource)) && node.initializer) {
     feedbackExpressions.set(node.name.getText(homeSource), ts.transpileModule(`const result = ${node.initializer.getText(homeSource)};`, {
@@ -30,6 +31,9 @@ function homeFeedback(overrides: Record<string, unknown>) {
     network: 'available', networkUnavailable: false, status: 'online',
     selectedDeviceDisconnected: false, activeConnectionIssue: null,
     homeDeviceRecovery: false, homeDeviceUnresponsive: false, connectionError: null,
+    initialHomeSettled: true, homeListFilterChanged: false, indexedSearch: { status: 'idle' },
+    homeSyncDeviceIds: ['mac'], homeListOwnedDeviceIdsRef: { current: new Set(['mac']) },
+    rawDeviceConnectionStates: { mac: 'idle' }, isTaskSuggestionsSyncPending,
     resolveConnectionBannerSyncActionVisibility, resolveConnectionBannerVisibility, connectionHealthCopy,
     t: (key: string) => i18n.t(key), homeConnectionTitle: () => 'online', ...overrides,
   };
@@ -42,6 +46,25 @@ function homeFeedback(overrides: Record<string, unknown>) {
 }
 
 describe('mobile Home connection feedback', () => {
+  // Unit regression for the reported active/archive flash: run Home's actual
+  // presentation expressions after startup has already settled. Existing tests
+  // only exercised connection banners and never a new list scope or search.
+  it.each([
+    { homeListFilterChanged: true },
+    { homeListOwnedDeviceIdsRef: { current: new Set() } },
+    { rawDeviceConnectionStates: { mac: 'syncing' } },
+    { indexedSearch: { status: 'searching' } },
+  ])('keeps an empty list loading during %o after the first sync', (state) => {
+    expect(homeFeedback(state).initialHomeLoading).toBe(true);
+  });
+
+  it('shows a failed reload as an error instead of a successful empty result', () => {
+    expect(homeFeedback({ connectionError: 'failed' })).toMatchObject({
+      initialHomeLoading: false, initialHomeError: true,
+    });
+    expect(homeFeedback({})).toMatchObject({ initialHomeLoading: false, initialHomeError: false });
+  });
+
   it('does not offer manual sync for the device-prefixed unresponsive error shown on Home', () => {
     expect(resolveConnectionBannerSyncActionVisibility({
       online: true,
@@ -791,8 +814,12 @@ describe('mobile home desktop-first surface', () => {
     const source = readSource('src/session/HomeSurface.tsx');
 
     expect(source).toContain('const initialHomeSettled = deviceIdentityCacheReady && lastSyncedAt !== null;');
-    expect(source).toContain('const initialHomeLoading = !initialHomeSettled && !connectionError;');
-    expect(source).toContain('const initialHomeError = !initialHomeSettled && !!connectionError;');
+    expect(homeFeedback({ initialHomeSettled: false })).toMatchObject({
+      initialHomeLoading: true, initialHomeError: false,
+    });
+    expect(homeFeedback({ initialHomeSettled: false, connectionError: 'failed' })).toMatchObject({
+      initialHomeLoading: false, initialHomeError: true,
+    });
     expect(source).toContain('const hasOpenableLiveDevice = deviceModels.some((item) => item.canOpen);');
     // 首次 loadHome 落地前(含失败态)FAB 只认 live 设备:首页列表缓存画出的会话会合成出
     // 「可用」的 primaryDevice,但缓存设备不能当 live 设备开新会话(settle 后回归 primaryDevice 语义)。
