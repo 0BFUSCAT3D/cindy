@@ -9874,12 +9874,16 @@ function RichAnswerMedia({ node, body }: { node: RichNode; body: Parameters<type
   if (!url) return <MarkdownBodyBase {...body} text={richMarkdown(node) ?? ''} streaming={false} />;
   const label = richString(node, 'alt', node.kind);
   const media: NormalizedToolMedia = { kind: node.kind, url, title: label, previewable: isDirectPreviewableMediaUrl(url) };
+  // Rich answers also render outside LegendList (cloud companions). Keep ordinary
+  // state there, but remount the preview when a recycled row or streamed media
+  // patch changes its identity, so resolved thumbnails/errors cannot cross images.
+  const previewKey = JSON.stringify([origin?.deviceId, origin?.sessionId, body.richStateKey ?? body.markdownImageCacheKey, node.id, url]);
   const imageWidth = Math.min(body.layout.imagePreviewWidth, width);
   const layout = { ...body.layout, imagePreviewWidth: imageWidth,
     imagePreviewHeight: imageWidth * body.layout.imagePreviewHeight / body.layout.imagePreviewWidth,
     mediaPreviewWidth: Math.min(body.layout.mediaPreviewWidth, width) };
   return <View style={{ minWidth: 0 }} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
-    {width > 0 ? <MediaPreview layout={layout} media={media} label={label} onResolveRemoteMedia={resolver}
+    {width > 0 ? <MediaPreview key={previewKey} layout={layout} media={media} label={label} onResolveRemoteMedia={resolver}
       usePreviewState={useState}
       onOpen={body.onOpenPayload ? () => body.onOpenPayload!(buildMediaPayload(media, label)) : undefined} /> : null}
   </View>;
