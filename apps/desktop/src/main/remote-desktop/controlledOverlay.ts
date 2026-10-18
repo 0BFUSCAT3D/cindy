@@ -159,6 +159,10 @@ export class ControlledOverlay {
   /** Whether the local-only windows currently let clicks through, and when they take them back. */
   private passThrough = false;
   private restTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Viewer pointer batches currently being injected. */
+  private injecting = 0;
+  /** Bumped when the overlay stops, so a late completion cannot affect the next lease. */
+  private injectEpoch = 0;
   /** Last dragged origin, kept for this app run only. */
   private position: { x: number; y: number } | null = null;
 
@@ -198,10 +202,12 @@ export class ControlledOverlay {
    * batch starts being injected (every earlier batch has finished). If any is over the
    * overlay or its confirmation, clicks pass through both for the whole batch; local
    * clicks (on the same system cursor) get them back once a batch stays clear of
-   * them or the viewer's pointer rests. */
-  viewerPointer(points: { x: number; y: number }[]): void {
+   * them, or once the pointer has rested there for a while. The returned callback
+   * marks the batch finished: the rest countdown only starts then, so a slow batch
+   * never gets its later events through to the hidden windows. */
+  viewerPointer(points: { x: number; y: number }[]): () => void {
     const windows = this.localOnlyWindows();
-    if (!windows.length) return;
+    if (!windows.length) return () => {};
     const over = points.some((point) =>
       windows.some((window) => {
         const { x, y, width, height } = window.getBounds();
@@ -209,10 +215,17 @@ export class ControlledOverlay {
       }),
     );
     if (this.restTimer) clearTimeout(this.restTimer);
-    this.restTimer = over
-      ? setTimeout(() => this.setPassThrough(false), VIEWER_POINTER_REST_MS)
-      : null;
+    this.restTimer = null;
     this.setPassThrough(over);
+    this.injecting++;
+    const epoch = this.injectEpoch;
+    let finished = false;
+    return () => {
+      if (finished || epoch !== this.injectEpoch) return;
+      finished = true;
+      if (--this.injecting > 0 || !this.passThrough) return;
+      this.restTimer = setTimeout(() => this.setPassThrough(false), VIEWER_POINTER_REST_MS);
+    };
   }
 
   /** What the viewer must never reach: the shown overlay and the shown confirmation. */
@@ -240,6 +253,8 @@ export class ControlledOverlay {
     if (this.restTimer) clearTimeout(this.restTimer);
     this.restTimer = null;
     this.passThrough = false;
+    this.injecting = 0;
+    this.injectEpoch++;
     // An unanswered confirmation never outlives its lease: closing it cancels.
     const confirmation = this.confirmWindow;
     if (confirmation && !confirmation.isDestroyed()) confirmation.destroy();

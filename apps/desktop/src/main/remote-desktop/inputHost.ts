@@ -230,8 +230,9 @@ export class DesktopInputHost {
         spawn(binary, args, { stdio: 'pipe', windowsHide: true }),
     },
     /** The whole-display pointer positions (global DIP) of one batch, reported as that
-     * batch starts its native injection, i.e. after every earlier batch has finished. */
-    private readonly onPointer?: (points: { x: number; y: number }[]) => void,
+     * batch starts its native injection, i.e. after every earlier batch has finished.
+     * The returned callback runs once the batch has finished (or failed) injecting. */
+    private readonly onPointer?: (points: { x: number; y: number }[]) => (() => void) | void,
   ) {}
   async start(displayId: string, window?: { windowId: number; pid: number }): Promise<void> {
     this.stop();
@@ -422,28 +423,32 @@ export class DesktopInputHost {
       if (generation !== this.generation) return;
       this.writing = this.writing.then(async () => {
         if (generation !== this.generation) return;
-        // Local-only windows must pass this batch's pointer through exactly while it is
-        // injected, not when it was queued behind earlier batches.
-        if (points.length) this.onPointer?.(points);
-        if (connection) {
-          if ((await connection.request(line.slice(0, -1))) !== 'ok\n')
-            throw new Error('DESKTOP_INPUT_UNAVAILABLE');
-        } else {
-          // stdin.write completion only proves bytes were queued. Hold ownership
-          // until the helper has finished posting the entire native batch.
-          await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => finish(new Error('DESKTOP_INPUT_TIMEOUT')), 10_000);
-            const finish = (error?: Error) => {
-              clearTimeout(timer);
-              if (this.acknowledge === finish) this.acknowledge = null;
-              if (error) reject(error);
-              else resolve();
-            };
-            this.acknowledge = finish;
-            child!.stdin.write(line, (error) => {
-              if (error) finish(error);
+        // Local-only windows must pass this batch's pointer through for as long as it is
+        // being injected, not from when it was queued nor after a fixed delay.
+        const settled = points.length ? this.onPointer?.(points) : undefined;
+        try {
+          if (connection) {
+            if ((await connection.request(line.slice(0, -1))) !== 'ok\n')
+              throw new Error('DESKTOP_INPUT_UNAVAILABLE');
+          } else {
+            // stdin.write completion only proves bytes were queued. Hold ownership
+            // until the helper has finished posting the entire native batch.
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(() => finish(new Error('DESKTOP_INPUT_TIMEOUT')), 10_000);
+              const finish = (error?: Error) => {
+                clearTimeout(timer);
+                if (this.acknowledge === finish) this.acknowledge = null;
+                if (error) reject(error);
+                else resolve();
+              };
+              this.acknowledge = finish;
+              child!.stdin.write(line, (error) => {
+                if (error) finish(error);
+              });
             });
-          });
+          }
+        } finally {
+          settled?.();
         }
       });
       await this.writing;

@@ -373,7 +373,8 @@ it('asks only the local user: hidden from capture, passed through, never focused
     expect(confirmation.getBounds()).toEqual({ x: 520, y: 388, width: 400, height: 150 });
 
     // The viewer's pointer passes through it as through the overlay.
-    overlay.viewerPointer([{ x: 700, y: 450 }]);
+    const done = overlay.viewerPointer([{ x: 700, y: 450 }]);
+    done();
     expect(confirmation.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
     expect(state.windows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
     vi.advanceTimersByTime(1000);
@@ -396,7 +397,7 @@ it('asks only the local user: hidden from capture, passed through, never focused
   }
 });
 
-it("lets the viewer's pointer pass through, handing it back when it leaves or rests", async () => {
+it("lets the viewer's pointer pass through for each batch's whole injection", async () => {
   vi.useFakeTimers();
   try {
     const { overlay } = fixture();
@@ -404,33 +405,46 @@ it("lets the viewer's pointer pass through, handing it back when it leaves or re
     await settle();
     // Centred pill: x 600–839, y 37–72.
     const window = state.windows[0];
-    overlay.viewerPointer([{ x: 700, y: 50 }]);
-    overlay.viewerPointer([{ x: 710, y: 50 }]);
-    expect(window.setIgnoreMouseEvents.mock.calls).toEqual([[true]]);
-    overlay.viewerPointer([{ x: 700, y: 200 }]);
-    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
-    // Resting over it returns it to local clicks; the viewer's next click re-arms it first.
-    overlay.viewerPointer([{ x: 700, y: 50 }]);
+    const ignored = () => window.setIgnoreMouseEvents.mock.lastCall?.[0];
+    const over = { x: 700, y: 50 };
+    const clear = { x: 700, y: 200 };
+
+    // A batch that takes longer than the rest delay keeps passing through until it is done.
+    const slow = overlay.viewerPointer([over]);
+    vi.advanceTimersByTime(5000);
+    expect(ignored()).toBe(true);
+    slow();
+    // Resting over it then returns it to local clicks after the delay.
     vi.advanceTimersByTime(999);
-    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
+    expect(ignored()).toBe(true);
     vi.advanceTimersByTime(1);
-    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
-    overlay.viewerPointer([{ x: 700, y: 50 }]);
-    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
-    // A click over it followed by a move away in the same batch still passes through.
-    overlay.viewerPointer([
-      { x: 700, y: 50 },
-      { x: 700, y: 200 },
-    ]);
-    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true);
-    // A later batch entirely clear of it hands it back.
-    overlay.viewerPointer([{ x: 700, y: 200 }]);
-    expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
-    overlay.viewerPointer([{ x: 700, y: 50 }]);
-    // A lease that ends mid-rest leaves nothing behind for the next overlay.
+    expect(ignored()).toBe(false);
+
+    // A click over it followed by a move away in the same batch still passes through,
+    // and a later batch entirely clear of it hands it back at once.
+    overlay.viewerPointer([over, clear])();
+    expect(ignored()).toBe(true);
+    overlay.viewerPointer([clear])();
+    expect(ignored()).toBe(false);
+
+    // Moving about over it keeps re-arming the countdown from each batch's completion.
+    overlay.viewerPointer([over])();
+    vi.advanceTimersByTime(600);
+    overlay.viewerPointer([over])();
+    vi.advanceTimersByTime(600);
+    expect(ignored()).toBe(true);
+
+    // A lease that ends mid-batch leaves nothing behind for the next overlay.
+    const late = overlay.viewerPointer([over]);
     overlay.update(null);
+    overlay.update(phone);
+    await settle();
+    const next = state.windows[1];
+    const calls = next.setIgnoreMouseEvents.mock.calls.length;
+    late();
     vi.runAllTimers();
-    expect(window.setIgnoreMouseEvents).toHaveBeenCalledTimes(7);
+    expect(next.setIgnoreMouseEvents.mock.calls.length).toBe(calls);
+    expect(window.destroyed).toBe(true);
   } finally {
     vi.useRealTimers();
   }

@@ -359,6 +359,7 @@ describe('native input lifecycle', () => {
   it('reports a batch’s pointer positions when its injection starts, not when queued', async () => {
     const c = childProcess();
     const pointer = vi.fn();
+    const settled = vi.fn();
     const host = new DesktopInputHost(
       vi.fn(),
       {
@@ -369,7 +370,10 @@ describe('native input lifecycle', () => {
           return c.typed;
         },
       },
-      (points) => pointer(points, c.child.stdin.write.mock.calls.length),
+      (points) => {
+        pointer(points, c.child.stdin.write.mock.calls.length);
+        return () => settled(points);
+      },
     );
     await host.start('1');
     host.input([
@@ -390,8 +394,11 @@ describe('native input lifecycle', () => {
         0,
       ],
     ]);
+    // The first batch is not finished until the helper acknowledges it.
+    expect(settled).not.toHaveBeenCalled();
     c.child.stdout.emit('data', Buffer.from('ok\n'));
     await flush();
+    expect(settled).toHaveBeenCalledTimes(1);
     expect(pointer.mock.calls.at(-1)).toEqual([[{ x: 10, y: 10 }], 1]);
     c.child.stdout.emit('data', Buffer.from('ok\n'));
     await flush();
