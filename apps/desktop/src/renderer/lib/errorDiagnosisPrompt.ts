@@ -7,7 +7,12 @@
 import type { TFunction } from 'i18next';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
-import { getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import {
+  draftHasContent,
+  getDraft,
+  plainTextToTiptapDoc,
+  saveDraft,
+} from '@/lib/composerDraftStore';
 import { resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 
 export interface ErrorDiagnosisSource {
@@ -40,12 +45,8 @@ export function prefillErrorDiagnosisDraft(prompt: string): void {
   const existing = getDraft(NEW_MAKER_DRAFT_KEY);
   const added = plainTextToTiptapDoc(prompt);
   const existingContent = existing?.text?.content ?? [];
-  const hasUnsent =
-    existingContent.length > 0 ||
-    (existing?.attachments.length ?? 0) > 0 ||
-    (existing?.browserComments?.length ?? 0) > 0 ||
-    (existing?.quotes?.length ?? 0) > 0;
-  if (existing && hasUnsent) {
+  // 与侧边栏「未发送」标记同一判据：清空后残留的空段落不算内容。
+  if (existing && draftHasContent(existing)) {
     // 用户自己的未发送草稿：工作区目标（项目、远程电脑、额外授权目录）也属于它，原样保留。
     saveDraft(NEW_MAKER_DRAFT_KEY, {
       ...existing,

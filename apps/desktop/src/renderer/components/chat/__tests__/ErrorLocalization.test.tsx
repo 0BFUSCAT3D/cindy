@@ -63,7 +63,9 @@ it('appends the diagnosis prompt to an unsent new-task draft instead of replacin
   expect(getNewMakerDraft().workingDir).toBe('/tmp/my-project');
   expect(getNewMakerDraft().extraDirs).toEqual(['/tmp/extra']);
   clearDraft(NEW_MAKER_DRAFT_KEY);
-  // 空草稿则复位工作区目标，残留的目录授权不带进诊断任务。
+  // 用户清空输入框后 Tiptap 仍留一个空段落：按空草稿处理，复位工作区目标，残留的目录授权不带进诊断任务。
+  patchDraft({ workingDir: '/tmp/my-project', extraDirs: ['/tmp/extra'] });
+  saveDraft(NEW_MAKER_DRAFT_KEY, { text: { type: 'doc', content: [{ type: 'paragraph' }] }, attachments: [] });
   prefillErrorDiagnosisDraft('请帮我诊断这个错误');
   expect(getNewMakerDraft().extraDirs).toEqual([]);
   expect(getNewMakerDraft().workingDir).toBeNull();
