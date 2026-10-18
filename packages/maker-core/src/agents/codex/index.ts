@@ -2420,6 +2420,7 @@ export class CodexAgent extends BaseAgent {
       for (const candidate of affectedKeys()) {
         await this.retireHostKey(candidate, reason, {
           failIfActive: options.allLocalHosts === true && options.forceRetire !== true,
+          rejectBeforeMutation: options.allLocalHosts === true && options.forceRetire !== true,
           logPrefix: 'codex local credential hard cut',
           throwOnShutdownFailure: true,
         });
@@ -15381,6 +15382,8 @@ assertRouteCurrent();
       expectedGeneration?: number;
       /** Propagate shutdown failure to callers that must not mutate persisted state afterward. */
       throwOnShutdownFailure?: boolean;
+      /** Refuse (counting an in-flight creation as active) before cancelling or mutating anything. */
+      rejectBeforeMutation?: boolean;
     },
   ): Promise<void> {
     const retiring = this.retiringHosts.get(key);
@@ -15412,11 +15415,12 @@ assertRouteCurrent();
       });
       return;
     }
-    // failIfActive 的拒绝必须发生在任何状态改动之前:下面处理 in-flight 创建时会推进 key 代次并
-    // 摘掉 hostPromises,若之后才因 active 抛错,正在创建的 host 会以「superseded」失败,等于一次
-    // 被拒绝的退役仍然打掉了正在启动的会话。in-flight 创建本身也算 active(与 MCP 刷新守卫的
-    // assertIdle 口径一致):正在启动的 host 不能被一次会被拒绝的刷新打断。
-    if (opts.failIfActive) {
+    // 本地配置变更守卫(allLocalHosts)的拒绝必须发生在任何状态改动之前:下面处理 in-flight 创建时会
+    // 推进 key 代次并摘掉 hostPromises,若之后才因 active 抛错,正在创建的 host 会以「superseded」
+    // 失败,等于一次被拒绝的退役仍然打掉了正在启动的会话。in-flight 创建本身也算 active(与守卫
+    // assertIdle 口径一致)。只对该守卫生效:远程 daemon 重启清理同样 failIfActive,却依赖取消
+    // 模型发现等占用的 in-flight 创建(review #6396)。
+    if (opts.failIfActive && opts.rejectBeforeMutation) {
       const host = this.hosts.get(key);
       const activeUseCount = (host
         ? this.hostActiveUseCount(key, host)

@@ -5415,6 +5415,18 @@ describe('CodexAgent.refreshLocalModels', () => {
     }
   });
 
+  it('remote daemon restart cleanup still cancels an in-flight host creation instead of reporting it active', async () => {
+    // #6396 review:本地配置变更守卫把 in-flight 创建算作 active 并提前拒绝,但远程 daemon 重启清理同样
+    // failIfActive,却依赖取消由模型发现占用、尚无 Session 的创建,不能被那条规则挡住。
+    const agent = new CodexAgent(createDeps());
+    const stuck = new Promise<never>(() => {});
+    (agent as any).hostPromises.set('remote:builder', {
+      promise: stuck, credentialMode: undefined, credentialModeResolved: true, generation: 0,
+    });
+    await expect(agent.disposeRemoteHostAfterRestart('builder')).resolves.toBeUndefined();
+    expect((agent as any).hostPromises.has('remote:builder')).toBe(false);
+  });
+
   it('rejects an in-flight SSH catalog on daemon closure and allows a fresh retry', async () => {
     const transports: InstanceType<typeof MockCodexTransport>[] = [];
     const agent = new CodexAgent(createDeps({}, { getRemoteCodexTransport: () => {
