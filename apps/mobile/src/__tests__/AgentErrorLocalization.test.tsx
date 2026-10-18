@@ -55,11 +55,12 @@ it('offers diagnosis after expanding details with a redacted prompt for the fail
   expect(host.querySelector('[data-testid="agentError.diagnose"]')).toBeNull();
   await act(async () => clickText(i18n.t('session.tail.showErrorDetails')));
   await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="agentError.diagnose"]')!.click());
-  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', onDiagnose.mock.calls[0][0]);
+  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', { ...onDiagnose.mock.calls[0][0], reason: 'unexpected api_key=private-reason-value' });
   expect(prompt).toContain('cindy://session/s1');
   expect(prompt).toContain('Reply failed');
-  expect(prompt).toContain('reason: tool_use_loop_detected');
+  expect(prompt).toContain('reason: unexpected');
   expect(prompt).not.toContain('private-test-value');
+  expect(prompt).not.toContain('private-reason-value');
 });
 
 describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {

@@ -41,11 +41,13 @@ it('offers diagnosis after expanding details with a redacted prompt for the fail
   expect(screen.queryByText(en.chat.errorBanner.diagnose)).toBeNull();
   fireEvent.click(screen.getByText(en.chat.errorBanner.networkShowRaw));
   fireEvent.click(screen.getByText(en.chat.errorBanner.diagnose));
-  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', onDiagnose.mock.calls[0][0]);
+  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', { ...onDiagnose.mock.calls[0][0], reason: 'unexpected api_key=private-reason-value' });
   expect(prompt).toContain('cindy://session/s1');
   expect(prompt).toContain(en.chat.errorBanner.replyFailed);
   expect(prompt).toContain('Unexpected provider failure');
   expect(prompt).not.toContain('private-test-value');
+  expect(prompt).toContain('reason: unexpected');
+  expect(prompt).not.toContain('private-reason-value');
 });
 
 // 新建任务页已有未发送内容时，诊断预填只追加，不能丢掉用户的文字与附件。

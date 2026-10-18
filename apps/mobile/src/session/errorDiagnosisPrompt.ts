@@ -22,6 +22,8 @@ export function buildErrorDiagnosisPrompt(
   return t("session.tail.diagnosePrompt", {
     sessionUrl,
     message: redactSensitiveText(source.message).trim(),
-    details: source.reason ? `${details}\nreason: ${source.reason}` : details,
+    details: source.reason
+      ? `${details}\nreason: ${redactSensitiveText(source.reason).trim()}`
+      : details,
   });
 }
