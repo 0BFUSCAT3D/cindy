@@ -1353,3 +1353,19 @@ describe('remote recorded-turn actions', () => {
     expect(write).not.toHaveBeenCalled();
   });
 });
+
+it('compacts rich answer history into a complete replayable snapshot instead of cutting its JSON', () => {
+  const sendInvokeResult = vi.fn().mockImplementationOnce(() => { throw tooLarge(); });
+  const client = mkClient({ sendInvokeResult });
+  const ops = [JSON.stringify({ seq: 1, op: 'create', id: 'text', kind: 'text', props: { text: 'Initial' } })];
+  for (let seq = 2; seq <= 80; seq++) ops.push(JSON.stringify({ seq, op: 'patch', id: 'text', props: { text: '中'.repeat(600) + seq } }));
+  const content = '```cindy-ui\n' + ops.join('\n') + '\n```';
+  __testing.sendInvokeResultSafe(client as never, 'mobile', 'rich-history', { ok: true, result: [{ id: 'rich', role: 'assistant', content }] }, 'local-db:messages:list');
+  expect(sendInvokeResult).toHaveBeenCalledTimes(2);
+  const result = sendInvokeResult.mock.calls[1][2].result[0].content;
+  expect(result).toContain('```cindy-ui\n');
+  const operation = JSON.parse(result.split('\n')[1]);
+  expect(operation).toMatchObject({ seq: 1, op: 'create', id: 'text', props: { text: '中'.repeat(600) + '80' } });
+  expect(result.endsWith('\n```\n')).toBe(true);
+  expect(encodedByteLength(result)).toBeLessThan(128 * 1024);
+});

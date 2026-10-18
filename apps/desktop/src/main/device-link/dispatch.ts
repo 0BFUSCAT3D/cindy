@@ -1,3 +1,4 @@
+import { hasRichAnswer, compactRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
 import type { RemoteAgentLimitUsage } from '../../shared/remoteAgentLimits.js';
 import { executeTaskTags, TASK_TAG_CHANNEL } from '../localDb/ipc/taskTags.js';
 import { encodeMessageBodies, versionMessageBody } from './sessionMessageReuse.js';
@@ -3903,7 +3904,15 @@ function sanitizeRemoteMessage(record: Record<string, unknown>): Record<string, 
 }
 
 function compactRemoteMessageContent(content: unknown, limit: number): unknown {
-  if (typeof content === 'string') return truncateRemoteInvokeString(content, limit);
+  if (typeof content === 'string') {
+    if (encodedByteLength(content) > limit && hasRichAnswer(content)) {
+      const snapshot = compactRichAnswer(content);
+      // Complete references and operations only; never send a cut JSON line.
+      if (encodedByteLength(snapshot) <= limit) return snapshot;
+      return truncateRemoteInvokeString(richAnswerText(content), limit);
+    }
+    return truncateRemoteInvokeString(content, limit);
+  }
   const serialized = safeJsonStringify(content);
   if (!serialized || encodedByteLength(serialized) <= limit) return content;
   return REMOTE_INVOKE_TRUNCATED_CONTENT;

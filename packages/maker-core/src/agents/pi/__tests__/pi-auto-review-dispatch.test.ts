@@ -3252,6 +3252,7 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     deps.resolvePiGlobalContextHome = vi.fn(() => { throw new Error('Bot must not read user context'); });
     deps.getGhostRosterPrompt = vi.fn(() => 'BOT ROSTER');
     deps.runtimeConfig.memoryEnabled = false;
+    deps.runtimeConfig.answerDeliveryPrompt = 'DELIVERY PROTOCOL';
     const handle = await new PiAgent(deps).startSession({
       sessionId: 'bot-read-only-session',
       workingDir: cwd,
@@ -3287,6 +3288,7 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
       expect(deps.resolvePiGlobalContextHome).not.toHaveBeenCalled();
       const promptIndex = captured.args.indexOf('--append-system-prompt');
       expect(captured.args[promptIndex + 1]).toContain('BOT SOUL');
+      expect(captured.args[promptIndex + 1]).toContain('DELIVERY PROTOCOL');
       expect(captured.args[promptIndex + 1]).not.toContain('BOT ROSTER');
       expect(captured.args[promptIndex + 1]).not.toContain('You are Cindy.');
       expect(captured.args[promptIndex + 1]).not.toContain('GLOBAL USER PROMPT');

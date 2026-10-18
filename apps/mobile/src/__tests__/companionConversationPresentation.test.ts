@@ -181,3 +181,9 @@ it.each([true, false])('keeps guest-safe explicit delivery without sealing adjac
   expect(text).not.toContain('Before');
   expect(text).not.toContain('After');
 });
+it('keeps a component progress answer visible before finalization and later tool calls', () => {
+  const content = '```cindy-ui\n' + JSON.stringify({ seq: 1, op: 'create', id: 'heading', kind: 'heading', props: { text: 'Result' } }) + '\n';
+  const source = [row('u0', 'user', 'Help'), row('a1', 'assistant', content, { assistantPhase: 'commentary' }), ...base.slice(2)];
+  const result = bodies(source, true);
+  expect(result.some(item => item.type === 'message' && item.message.body === content)).toBe(true);
+});
