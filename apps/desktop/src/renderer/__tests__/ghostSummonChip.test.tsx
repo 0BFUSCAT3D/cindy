@@ -316,6 +316,7 @@ describe('GhostSummonCard(chip 形态)', () => {
                 <MemoryRouter>
                   <Tooltip.Provider>
                     <UserMessage
+                      workingDir="/synthetic/issue-6386"
                       content={content}
                       messageClientId="m1"
                       isLastUserMessage
