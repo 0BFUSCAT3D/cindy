@@ -453,8 +453,8 @@ function AnswerLineChart({
         ))}
       </svg>
       <dl
-        className={data.length <= 8 ? 'rich-answer-chart-labels' : undefined}
-        style={data.length <= 8 ? { paddingLeft: plot.left, paddingRight: plot.right } : undefined}
+        className={plot.showValues ? 'rich-answer-chart-labels' : undefined}
+        style={plot.showValues ? { paddingLeft: plot.left, paddingRight: plot.right } : undefined}
       >
         {data.map((item, i) => (
           <div key={i}>

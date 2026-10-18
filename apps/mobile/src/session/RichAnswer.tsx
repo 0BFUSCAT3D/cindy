@@ -495,8 +495,8 @@ function AnswerLineChart({
       </Svg>
       <View
         style={[
-          data.length <= 8 ? styles.chartLabels : styles.stack,
-          data.length <= 8 && {
+          plot.showValues ? styles.chartLabels : styles.stack,
+          plot.showValues && {
             paddingLeft: plot.left,
             paddingRight: plot.right,
           },
@@ -505,12 +505,12 @@ function AnswerLineChart({
         {data.map((item, i) => (
           <View
             key={i}
-            style={data.length <= 8 ? styles.chartLabel : styles.labelRow}
+            style={plot.showValues ? styles.chartLabel : styles.labelRow}
           >
             <Text
               style={[
                 styles.caption,
-                data.length <= 8 && styles.chartLabelText,
+                plot.showValues && styles.chartLabelText,
               ]}
             >
               {item.label}
