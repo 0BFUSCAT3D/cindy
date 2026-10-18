@@ -218,7 +218,7 @@ function RichDocumentView({
       case "grid": {
         const aside = richString(node, "layout") === "aside";
         const columns =
-          width < 360 && !aside
+          width <= 600 && !aside
             ? 1
             : Math.round(
                 Math.max(1, Math.min(3, richNumber(node, "columns", 2))),

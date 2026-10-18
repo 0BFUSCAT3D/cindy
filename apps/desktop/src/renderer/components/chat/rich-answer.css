@@ -139,7 +139,11 @@
   height: 100%;
   background: var(--text-secondary);
 }
-@container (max-width:360px) {
+/* Two readable chart columns need more room than a phone-sized answer. */
+@container (max-width:600px) {
+  .rich-answer-row {
+    flex-direction: column;
+  }
   .rich-answer-grid {
     grid-template-columns: 1fr;
   }
