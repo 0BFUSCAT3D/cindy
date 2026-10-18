@@ -1019,6 +1019,45 @@ describe('remote companion Session visibility at the device-link boundary', () =
     expect(client.sendPush.mock.calls.every((call) => call[2].sessionId !== 's1')).toBe(true);
   });
 
+  // 测试价值:forwardPush 扇出到多台控制端时,同一轮只读一次授权(实测 3 台 peer 下每条 push
+  // 每台各读一次 sessions,rawAll 堆积);同时守住「读取发出后到达的 push 必须重新读库」,
+  // 轮内合并不能变成缓存,隐藏之后的 push 不得沿用旧结论。unit,进程内 fake。
+  it('shares one authorization read per fan-out pass and never reuses it for later pushes', async () => {
+    let hidden = false;
+    let release!: () => void;
+    let gate: Promise<void> = Promise.resolve();
+    const batch = vi.fn(async (ids: readonly string[]) => {
+      const snapshot = hidden;
+      await gate;
+      return new Map(ids.map((id) => [id, snapshot ? 'hidden' as const : 'visible' as const]));
+    });
+    setRemoteBotSessionLookup(async () => { throw new Error('single lookup must not run'); }, batch);
+    const client = mkClient();
+    __testing.setActiveClient(client as never);
+    const peers = ['ctrl-1', 'ctrl-2', 'ctrl-3'];
+    for (const peer of peers) subscriptions.subscribe(peer, ['session:s1']);
+    __testing.forwardPush('maker:event', { sessionId: 's1', seq: 0 });
+    __testing.forwardPush('maker:event', { sessionId: 's1', seq: 1 });
+    await vi.waitFor(() => expect(client.sendPush).toHaveBeenCalledTimes(6));
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch).toHaveBeenCalledWith(['s1'], 'session');
+    for (const peer of peers) {
+      expect(client.sendPush.mock.calls.filter(([dst]) => dst === peer).map((call) => call[2].seq)).toEqual([0, 1]);
+    }
+
+    // A read already issued is not joined: the push after the hide reads again.
+    gate = new Promise<void>((resolve) => { release = resolve; });
+    __testing.forwardPush('maker:event', { sessionId: 's1', seq: 2 });
+    await vi.waitFor(() => expect(batch).toHaveBeenCalledTimes(2));
+    hidden = true;
+    __testing.forwardPush('maker:event', { sessionId: 's1', seq: 3 });
+    await vi.waitFor(() => expect(batch).toHaveBeenCalledTimes(3));
+    release();
+    await vi.waitFor(() => expect(client.sendPush).toHaveBeenCalledTimes(9));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.sendPush.mock.calls.map((call) => call[2].seq).filter((seq) => seq >= 2)).toEqual([2, 2, 2]);
+  });
+
   it('revalidates cached replies without repeating the local handler', async () => {
     let hidden = false;
     setRemoteBotSessionLookup(async () => hidden ? 'hidden' : 'visible');

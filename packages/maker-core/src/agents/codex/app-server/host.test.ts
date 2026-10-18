@@ -257,6 +257,50 @@ describe('AppServerHost assistant text delta routing', () => {
   });
 });
 
+// 保护: account/rateLimits/updated 按 limitId 去重后, 不变的快照不再重复广播 (原先每
+// ~3.5s 一条 account_usage), 但内容变化仍立即下发, 且晚到的 subscriber 仍能经 replay
+// 立即拿到当前配额 (Codex chip 冷启动依赖它)。
+describe('AppServerHost account rate limit fan-out', () => {
+  it('fans out only changed snapshots per limitId and still replays the latest to late subscribers', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+    const early = vi.fn();
+    const earlySubscription = host.subscribeThread('thread-1', { accountRateLimitsUpdated: early });
+    const snapshot = (limitId: string, usedPercent: number) => ({
+      method: 'account/rateLimits/updated',
+      params: { rateLimits: { limitId, primary: { usedPercent, windowDurationMins: 300, resetsAt: 1 } } },
+    });
+
+    transport.emit(snapshot('codex', 10));
+    transport.emit(snapshot('codex', 10));
+    transport.emit(snapshot('codex_spark', 10));
+    transport.emit(snapshot('codex', 10));
+    transport.emit(snapshot('codex', 20));
+
+    expect(early.mock.calls.map(([p]) => [p.rateLimits.limitId, p.rateLimits.primary.usedPercent])).toEqual([
+      ['codex', 10],
+      ['codex_spark', 10],
+      ['codex', 20],
+    ]);
+
+    transport.emit(snapshot('codex', 20));
+    const late = vi.fn();
+    const lateSubscription = host.subscribeThread('thread-2', { accountRateLimitsUpdated: late });
+    expect(late).toHaveBeenCalledOnce();
+    expect(late.mock.calls[0][0].rateLimits).toMatchObject({ limitId: 'codex', primary: { usedPercent: 20 } });
+    expect(early).toHaveBeenCalledTimes(3);
+
+    await earlySubscription.release();
+    await lateSubscription.release();
+    await host.shutdown();
+  });
+});
+
 describe('AppServerHost custom Provider subagent policy', () => {
   const routes = [
     {

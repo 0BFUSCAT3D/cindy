@@ -110,6 +110,12 @@ const NOTIFICATIONS_TO_OPT_OUT = [
   'item/plan/delta',
   'item/commandExecution/outputDelta',
   'item/fileChange/outputDelta',
+  // 以下高频通知全仓无消费方 (client 只会落一条 unhandled notification 日志, 实测合计
+  // ~2万条/天)。要消费其中任一项时, 先从这里移除再加进 SUBSCRIBED_METHODS。
+  'turn/moderationMetadata',
+  'mcpServer/startupStatus/updated',
+  'remoteControl/status/changed',
+  'item/commandExecution/terminalInteraction',
 ];
 
 const DEFAULT_THREAD_UNSUBSCRIBE_TIMEOUT_MS = 5_000;
@@ -374,6 +380,11 @@ export class AppServerHost {
    * session 时不必等下次 turn 完成才看到 chip 数据。整个 host 生命周期共享一份 (账号级)。
    */
   private lastAccountRateLimits: AccountRateLimitsUpdatedNotification['params'] | null = null;
+  /**
+   * 按 limitId 记录最近一次已 fan-out 的配额 payload (JSON)。app-server 会以秒级间隔
+   * 重复推送内容不变的快照 (实测 ~64% 与上一条相同), 相同内容不再重复广播与记日志。
+   */
+  private readonly lastFannedOutRateLimitsJson = new Map<string, string>();
 
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | null = null;
@@ -1193,10 +1204,15 @@ export class AppServerHost {
     // 缓存最近 snapshot (给新 subscribe replay) + 广播给所有 active subscriber 各一份。
     if (method === 'account/rateLimits/updated') {
       const p = params as AccountRateLimitsUpdatedNotification['params'];
+      // replay 快照始终跟随最新一条 (哪怕内容未变), 新 subscriber 拿到的与旧行为一致。
       this.lastAccountRateLimits = p;
-      this.logger.info('accountRateLimits fan-out', {
+      const rawJson = JSON.stringify(p.rateLimits ?? null);
+      const limitKey = p.rateLimits?.limitId ?? '';
+      if (this.lastFannedOutRateLimitsJson.get(limitKey) === rawJson) return;
+      this.lastFannedOutRateLimitsJson.set(limitKey, rawJson);
+      this.logger.debug('accountRateLimits fan-out', {
         subscribers: this.subscribers.size,
-        rawJson: JSON.stringify(p.rateLimits ?? null),
+        rawJson,
       });
       for (const handlers of this.subscribers.values()) {
         try {

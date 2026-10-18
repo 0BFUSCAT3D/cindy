@@ -1966,6 +1966,8 @@ export class CodexAgent extends BaseAgent {
       if (!opts.remoteHostId) this.archiveHostKeys.add(key);
       const host = await this.getHost(opts.remoteHostId, undefined, {
         keyOverride: key, hostPurpose: 'control-plane',
+        // Local archive hosts never run turns; skip the MCP bridge they would never use.
+        ...(!opts.remoteHostId ? { nativeStorageOnly: true } : {}),
         ...(storage ? { historyHome: storage.historyHome, sqliteHome: storage.sqliteHome } : {}),
       });
       return { key, host };
@@ -2547,6 +2549,8 @@ export class CodexAgent extends BaseAgent {
       localAuthPolicy?: 'isolated' | 'legacy-shared';
       keyOverride?: string;
       hostPurpose?: 'control-plane' | 'review' | 'custom-context';
+      /** Archive-only control host: native storage RPCs, no turns, no MCP bridge. */
+      nativeStorageOnly?: boolean;
       customContextModel?: string;
       customContextWindow?: number;
       sqliteHome?: string;
@@ -2780,6 +2784,7 @@ assertRouteCurrent();
         opts.localAuthPolicy,
         opts.routeIsCurrent,
         opts.deviceHostedGuestProviderId,
+        opts.nativeStorageOnly,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -3028,6 +3033,7 @@ assertRouteCurrent();
     localAuthPolicy?: 'isolated' | 'legacy-shared',
     routeIsCurrent?: () => boolean,
     deviceHostedGuestProviderId?: string,
+    nativeStorageOnly?: boolean,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3164,6 +3170,7 @@ assertRouteCurrent();
                 ? { requestedCredentialMode: credentialMode }
                 : {}),
               ...(hostPurpose ? { hostPurpose } : {}),
+              ...(nativeStorageOnly ? { nativeStorageOnly } : {}),
               ...(hostPurpose === 'custom-context'
                 ? {
                     customContextModel,
