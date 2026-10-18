@@ -138,7 +138,12 @@ import {
   isShareableToolMedia,
   useShareSelectionActive,
 } from './shareSelectionStore';
-import { parsePluginInstanceId, pluginStoragePart } from '../../../shared/pluginIdentity';
+import {
+  parsePluginInstanceId,
+  pluginInstallStoragePart,
+  pluginNewInstallRelId,
+  pluginStoragePart,
+} from '../../../shared/pluginIdentity';
 import { isValidGhostId } from '../../../shared/ghost';
 import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 
@@ -801,7 +806,7 @@ export function collectGhostCallsByUserTurn(
       typeof (m.toolInput as Record<string, unknown>).ghost_id === 'string'
     ) {
       const input = m.toolInput as Record<string, unknown>;
-      const gid = ghostCardInstanceId(input.ghost_id as string, input.namespace);
+      const gid = ghostSummonInstanceId(input.ghost_id as string, input.namespace);
       if (!gid) continue;
       const set = out.get(currentUserClientId) ?? new Set<string>();
       set.add(gid);
@@ -1492,6 +1497,20 @@ function ghostCardInstanceId(ghostId: string, namespace: unknown): string | null
   return typeof namespace === 'string' && isValidPluginNamespace(namespace)
     ? pluginStoragePart({ namespace, ghostId })
     : null;
+}
+
+/** Summon labels retain explicit root identity; card/media anchoring keeps its existing keys. */
+function ghostSummonInstanceId(ghostId: string, namespace: unknown): string | null {
+  const id = ghostCardInstanceId(ghostId, namespace);
+  if (!id) return null;
+  const explicitRoot =
+    namespace === null ||
+    (namespace === undefined &&
+      !isValidGhostId(ghostId) &&
+      parsePluginInstanceId(ghostId)?.namespace === null);
+  return explicitRoot
+    ? pluginInstallStoragePart(pluginNewInstallRelId({ namespace: null, ghostId: id }))
+    : id;
 }
 
 export function buildRenderItems(
