@@ -171,7 +171,10 @@ export function createSessionEntryNavigator(
 ): SessionEntryNavigator {
   let sequence = 0;
   let committedPath: string | null = null;
-  let commitCount = 0;
+  // Every location committed since the latest entry opened; a correction is valid only while
+  // all of them are the entry's own landing (ordinary page or the Bot target), so leaving and
+  // coming back never counts as "stayed".
+  let committedSinceOpen = new Set<string>();
   let pending: { entry: number; sessionId: string; islandEntryId: string; route: string } | null = null;
   const openBotTarget = (entry: number, sessionId: string, target: BotSessionEntryTarget, disposalId: string | undefined) => {
     if (target.consumesAlert && disposalId) {
@@ -191,7 +194,7 @@ export function createSessionEntryNavigator(
   const open = (sessionId: string, messageClientId?: string, islandEntryId?: string) => {
     const entry = ++sequence;
     pending = null;
-    const commitsAtOpen = commitCount;
+    committedSinceOpen = new Set();
     const isLatest = () => sequence === entry;
     const known = deps.readKnownBotRoute(sessionId);
     // Background tasks keep their ordinary page with message anchors and visible-session reporting.
@@ -205,8 +208,11 @@ export function createSessionEntryNavigator(
     const ordinaryRoute = `/cc-agent/${encodeURIComponent(sessionId)}`;
     void deps.resolveBotRoute(sessionId).then((target) => {
       if (!isLatest() || !target || target.route.startsWith('/cc-agent/')) return;
-      // Correct only this entry's own landing; any other committed location means the user moved on.
-      if (commitCount !== commitsAtOpen && committedPath !== ordinaryRoute) return;
+      // Correct only this entry's own landing: the ordinary page, or the Bot page the ordinary
+      // path already resolved to. Any other committed location means the user moved on.
+      for (const path of committedSinceOpen) {
+        if (path !== ordinaryRoute && path !== target.route) return;
+      }
       movedToBotPage = true;
       openBotTarget(entry, sessionId, target, islandEntryId);
     });
@@ -214,7 +220,7 @@ export function createSessionEntryNavigator(
   return Object.assign(open, {
     locationCommitted: (path: string) => {
       committedPath = path;
-      commitCount += 1;
+      committedSinceOpen.add(path);
       const waiting = pending;
       if (!waiting) return;
       pending = null;

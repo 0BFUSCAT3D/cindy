@@ -312,6 +312,29 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       expect(isOrdinaryLatest()).toBe(false);
     });
 
+    it('离开后又回到普通页也算去过别处：不再拉回伙伴页，也不处置', async () => {
+      const { open, openBotRoute, consumeAlert, resolve } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane', undefined, 'entry-3');
+      open.locationCommitted('/cc-agent/s-lane');
+      open.locationCommitted('/elsewhere');
+      open.locationCommitted('/cc-agent/s-lane');
+      resolve(lane);
+      await Promise.resolve();
+      expect(openBotRoute).not.toHaveBeenCalled();
+      expect(consumeAlert).not.toHaveBeenCalled();
+    });
+
+    it('普通页导航因投影已更新直接落到伙伴页时，照常处置这次点击', async () => {
+      const { open, consumeAlert, resolve } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-lane', undefined, 'entry-4');
+      open.locationCommitted('/bots/groups/g-1');
+      resolve(lane);
+      await Promise.resolve();
+      expect(consumeAlert).toHaveBeenCalledExactlyOnceWith('s-lane', 'entry-4');
+    });
+
     it('用户已去了别处时不再拉回伙伴页，也不处置', async () => {
       const { open, openBotRoute, consumeAlert, resolve } = setup();
       open.locationCommitted('/cc-agent/new');
