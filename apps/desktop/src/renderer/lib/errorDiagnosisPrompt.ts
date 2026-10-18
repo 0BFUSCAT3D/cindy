@@ -33,7 +33,8 @@ export function buildErrorDiagnosisPrompt(
 
 /**
  * 新建任务页已有未发送的内容时不覆盖：以原草稿为底整体保留（附件、浏览器评论、插件交接、
- * 旧版引用等全部字段），只把诊断提示追加在正文之后。草稿为空时与其他预填入口一致，整体写入。
+ * 旧版引用、工作区目标等全部内容），只把诊断提示追加在正文之后。草稿为空时与其他预填入口一致，
+ * 整体写入并复位工作区目标（避免残留的远程目标或额外授权目录带进诊断任务）。
  */
 export function prefillErrorDiagnosisDraft(prompt: string): void {
   const existing = getDraft(NEW_MAKER_DRAFT_KEY);
@@ -44,14 +45,14 @@ export function prefillErrorDiagnosisDraft(prompt: string): void {
     (existing?.attachments.length ?? 0) > 0 ||
     (existing?.browserComments?.length ?? 0) > 0 ||
     (existing?.quotes?.length ?? 0) > 0;
-  saveDraft(
-    NEW_MAKER_DRAFT_KEY,
-    existing && hasUnsent
-      ? {
-          ...existing,
-          text: { ...added, content: [...existingContent, ...(added.content ?? [])] },
-        }
-      : { text: added, attachments: [] },
-  );
+  if (existing && hasUnsent) {
+    // 用户自己的未发送草稿：工作区目标（项目、远程电脑、额外授权目录）也属于它，原样保留。
+    saveDraft(NEW_MAKER_DRAFT_KEY, {
+      ...existing,
+      text: { ...added, content: [...existingContent, ...(added.content ?? [])] },
+    });
+    return;
+  }
+  saveDraft(NEW_MAKER_DRAFT_KEY, { text: added, attachments: [] });
   resetDraftWorkspaceTargets();
 }

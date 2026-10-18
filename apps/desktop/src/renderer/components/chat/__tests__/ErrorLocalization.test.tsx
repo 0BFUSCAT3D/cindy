@@ -22,6 +22,7 @@ import { remoteErrorMessageForBanner } from '@/lib/makerChatStore';
 import { buildErrorDiagnosisPrompt, prefillErrorDiagnosisDraft } from '@/lib/errorDiagnosisPrompt';
 import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { getDraft as getNewMakerDraft, patchDraft } from '@/state/newMakerDraft';
 
 const locales = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko };
 const raw = JSON.stringify({ error: {
@@ -50,6 +51,7 @@ it('offers diagnosis after expanding details with a redacted prompt for the fail
 // 新建任务页已有未发送内容时，诊断预填只追加，不能丢掉用户的文字与附件。
 it('appends the diagnosis prompt to an unsent new-task draft instead of replacing it', () => {
   const attachment = { id: 'a1', name: 'note.txt', path: '/tmp/note.txt' } as never;
+  patchDraft({ workingDir: '/tmp/my-project', extraDirs: ['/tmp/extra'] });
   saveDraft(NEW_MAKER_DRAFT_KEY, { text: plainTextToTiptapDoc('我写到一半的内容'), attachments: [attachment], pendingGhostId: 'plugin-1' });
   prefillErrorDiagnosisDraft('请帮我诊断这个错误');
   const draft = getDraft(NEW_MAKER_DRAFT_KEY)!;
@@ -58,6 +60,13 @@ it('appends the diagnosis prompt to an unsent new-task draft instead of replacin
   expect(text.indexOf('请帮我诊断这个错误')).toBeGreaterThan(text.indexOf('我写到一半的内容'));
   expect(draft.attachments).toHaveLength(1);
   expect(draft.pendingGhostId).toBe('plugin-1');
+  expect(getNewMakerDraft().workingDir).toBe('/tmp/my-project');
+  expect(getNewMakerDraft().extraDirs).toEqual(['/tmp/extra']);
+  clearDraft(NEW_MAKER_DRAFT_KEY);
+  // 空草稿则复位工作区目标，残留的目录授权不带进诊断任务。
+  prefillErrorDiagnosisDraft('请帮我诊断这个错误');
+  expect(getNewMakerDraft().extraDirs).toEqual([]);
+  expect(getNewMakerDraft().workingDir).toBeNull();
   clearDraft(NEW_MAKER_DRAFT_KEY);
 });
 
