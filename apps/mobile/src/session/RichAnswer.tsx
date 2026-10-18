@@ -25,13 +25,12 @@ import {
 import {
   View,
   AppState,
-  Text,
   Pressable,
-  TextInput,
   Switch,
   StyleSheet,
   type GestureResponderEvent,
 } from "react-native";
+import { Text, TextInput } from "@/components/AppText";
 import Svg, { Polyline, Line, Circle, Text as SvgText } from "react-native-svg";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/auth/AuthContext";
@@ -42,6 +41,8 @@ import {
   radius,
   textStyles,
   fontWeight,
+  iconSize,
+  iconStroke,
   type ThemeColors,
 } from "@/theme";
 import {
@@ -195,8 +196,8 @@ function RichDocumentView({
         return (
           <View style={styles.iconRow}>
             <Icon
-              size={20}
-              strokeWidth={1.75}
+              size={iconSize.action}
+              strokeWidth={iconStroke.thin}
               color={colors.textPrimary}
               accessible={false}
             />
@@ -473,7 +474,7 @@ function AnswerLineChart({
         <Polyline
           fill="none"
           stroke={colors.textPrimary}
-          strokeWidth={2}
+          strokeWidth={iconStroke.regular}
           points={plot.points.map((p) => `${p.x},${p.y}`).join(" ")}
         />
         {plot.points.map((p, i) => (

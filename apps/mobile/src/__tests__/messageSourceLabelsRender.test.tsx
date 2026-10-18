@@ -99,6 +99,7 @@ vi.mock("@legendapp/list/react-native", () => ({
   useViewability: () => {},
 }));
 vi.mock("lucide-react-native", () => ({
+  Mail: () => null, CalendarDays: () => null, Folder: () => null, ChartColumn: () => null, Info: () => null, Clock: () => null, MapPin: () => null, Coffee: () => null, Image: () => null, Users: () => null, Star: () => null,
   Database: () => null,
   FileArchive: () => null,
   FileAudio: () => null,
