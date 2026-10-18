@@ -41,7 +41,7 @@ const MAX_LOAD_ATTEMPTS = 5;
  * 都按数据所有者(账号)隔离:同一窗口换账号登录时,旧账号的任务列表与「已处理」标记不得带入。
  */
 let _load: { ownerId: string | null; promise: Promise<InterruptedTask[]> } | null = null;
-let _handledOwnerId: string | null | undefined;
+const _handledOwnerIds = new Set<string | null>();
 
 interface InterruptedTask {
   session: Session;
@@ -126,7 +126,7 @@ export function InterruptedTasksResumeDialog({ suspended = false }: { suspended?
       _load = { ownerId: dataOwnerId, promise: loadInterruptedTasksWithRetry() };
     }
     void _load.promise.then((loaded) => {
-      if (!active || _handledOwnerId === dataOwnerId || loaded.length === 0) return;
+      if (!active || _handledOwnerIds.has(dataOwnerId) || loaded.length === 0) return;
       log.info(`found ${loaded.length} interrupted task(s) to offer for resume`);
       setTasks(loaded);
       setOpen(true);
@@ -137,7 +137,7 @@ export function InterruptedTasksResumeDialog({ suspended = false }: { suspended?
   }, [dataOwnerId]);
 
   const handleOpenChange = (next: boolean) => {
-    if (!next) _handledOwnerId = dataOwnerId;
+    if (!next) _handledOwnerIds.add(dataOwnerId);
     setOpen(next);
   };
 
