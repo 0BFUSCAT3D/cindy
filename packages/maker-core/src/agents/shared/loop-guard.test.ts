@@ -823,21 +823,38 @@ describe('ToolLoopGuard pacing and final limits', () => {
     expect(last).toMatchObject({ kind: 'hard', reason: 'pingpong', count: 12 });
   });
 
-  // codex P1(#6388):重叠的同一调用按「新的先完成」返回,迟到的旧调用不能把最新开始时间覆盖回去。
-  it('keeps the latest start of a call when overlapping repeats complete newest-first', () => {
+  // codex P1/P2(#6388):突发关系在调用开始时确定,并发的相邻调用无论按什么顺序返回都不影响;
+  // 结果到达时才看会漏掉尚未返回的邻居,或被迟到的旧调用覆盖。
+  it('decides burst repeats at call start, whatever order overlapping calls complete in', () => {
     const { guard, advance } = clockGuard({ burstRepeatGapMs: 2_000 });
     const verdicts: ToolLoopGuardVerdict[] = [];
     for (let group = 0; group < 6; group++) {
       guard.onToolUse(`a-${group}`, 'browser', { action: 'snapshot' });
-      advance(500);
+      advance(1_500);
       guard.onToolUse(`b-${group}`, 'browser', { action: 'snapshot' });
-      advance(500);
+      advance(1_500);
       guard.onToolUse(`c-${group}`, 'browser', { action: 'snapshot' });
       advance(100);
-      for (const id of ['c', 'b', 'a']) verdicts.push(guard.onToolResult(`${id}-${group}`, 'saving'));
-      advance(400);
+      for (const id of ['a', 'c', 'b']) verdicts.push(guard.onToolResult(`${id}-${group}`, 'saving'));
+      advance(1_400);
     }
     expect(verdicts.filter((verdict) => verdict.kind === 'hard')).toEqual([]);
+  });
+
+  // codex P2(#6388):突发结果不参与判定,也不能消耗复核放行额度。
+  it('does not spend the review grace window on burst repeats', () => {
+    const { guard, advance } = clockGuard({ burstRepeatGapMs: 2_000 });
+    guard.acceptCurrentPattern(4);
+    for (let i = 0; i < 10; i++) {
+      feed(guard, `burst-${i}`, 'browser', { action: 'snapshot' }, 'same');
+      advance(500);
+    }
+    let last: ToolLoopGuardVerdict = { kind: 'ok' };
+    for (let i = 0; i < 3; i++) {
+      advance(3_000);
+      last = feed(guard, `model-${i}`, 'browser', { action: 'snapshot' }, 'same');
+    }
+    expect(last.kind).toBe('ok');
   });
 
   // codex P1(#6388):突发重复只有续接了当前连续段才评估时长上限,

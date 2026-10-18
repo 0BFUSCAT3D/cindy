@@ -181,6 +181,9 @@ interface PendingToolUse {
   name: string;
   input: unknown;
   startedAt: number;
+  /** 突发重复判据启用时,调用开始当下确定的指纹与是否突发重复;未启用时为 undefined。 */
+  callFingerprint?: string;
+  burstRepeat?: boolean;
 }
 
 /**
@@ -347,8 +350,25 @@ export class ToolLoopGuard {
   onToolUse(toolUseId: string, toolName: unknown, input: unknown): void {
     if (toolUseId.length === 0) return;
     if (typeof toolName !== 'string' || toolName.length === 0) return;
-    const startedAt = this.pendingToolUses.get(toolUseId)?.startedAt ?? this.now();
-    this.pendingToolUses.set(toolUseId, { name: toolName, input, startedAt });
+    const previous = this.pendingToolUses.get(toolUseId);
+    const startedAt = previous?.startedAt ?? this.now();
+    const pending: PendingToolUse = { name: toolName, input, startedAt };
+    if (this.burstRepeatGapMs !== undefined) {
+      // 突发关系在调用开始时就确定:并发的相邻调用可能乱序返回,结果到达时再看会漏掉尚未返回的邻居。
+      const callFingerprint = fingerprintToolCall(toolName, input, null);
+      if (previous?.callFingerprint === callFingerprint) {
+        pending.burstRepeat = previous.burstRepeat;
+      } else {
+        // 补齐后参数变了:撤销按半信息登记的开始时间,再按完整参数登记。
+        if (previous?.callFingerprint !== undefined
+          && this.lastStartByCall.get(previous.callFingerprint) === startedAt) {
+          this.lastStartByCall.delete(previous.callFingerprint);
+        }
+        pending.burstRepeat = this.noteCallStart(callFingerprint, startedAt);
+      }
+      pending.callFingerprint = callFingerprint;
+    }
+    this.pendingToolUses.set(toolUseId, pending);
   }
 
   /** 最近一次结果是否被纳入判定;为 true 且判定为 ok 说明此前的疑似模式已被打破。 */
@@ -419,12 +439,12 @@ export class ToolLoopGuard {
     this.lastOrdinaryFinishedAt = finishedAt;
     this.recordEvidence(toolUse, output, isError);
     const fullFingerprint = fingerprintToolCall(toolUse.name, toolUse.input, output);
-    const callFingerprint = fingerprintToolCall(toolUse.name, toolUse.input, null);
+    const callFingerprint = toolUse.callFingerprint ?? fingerprintToolCall(toolUse.name, toolUse.input, null);
     this.lastResultCallFingerprintValue = callFingerprint;
-    const burstRepeat = this.noteCallStart(callFingerprint, toolUse.startedAt);
-    // 复核放行额度按普通结果计,节奏轮询同样消耗。
+    const burstRepeat = toolUse.burstRepeat === true;
+    // 复核放行额度按普通结果计,节奏轮询同样消耗;突发重复不参与判定,也不消耗。
     const inGrace = this.suspicionGraceResults > 0;
-    if (inGrace) this.suspicionGraceResults -= 1;
+    if (inGrace && !burstRepeat) this.suspicionGraceResults -= 1;
     // 节奏轮询只参与完全相同 streak 的续接与最终时长上限,不计入任何疑似判据。
     if (paced) {
       // 写入或命令照常打断长只读窗口,节奏本身不改变这一点。
@@ -581,10 +601,9 @@ export class ToolLoopGuard {
     this.resetPatternState();
   }
 
-  /** 记录该调用本次开始时间,返回它是否是距上一次同一调用不足 burstRepeatGapMs 的突发重复。 */
+  /** 调用开始时登记其开始时间,返回它是否是距上一次同一调用不足 burstRepeatGapMs 的突发重复。 */
   private noteCallStart(callFingerprint: string, startedAt: number): boolean {
     const previous = this.lastStartByCall.get(callFingerprint);
-    // 重叠的同一调用可能先发后到:只记最新的开始时间,迟到的旧调用不能把它覆盖回去。
     this.lastStartByCall.delete(callFingerprint);
     this.lastStartByCall.set(callFingerprint, previous === undefined ? startedAt : Math.max(previous, startedAt));
     if (this.lastStartByCall.size > MAX_TRACKED_CALL_STARTS) {
