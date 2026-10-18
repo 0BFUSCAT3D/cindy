@@ -822,6 +822,23 @@ describe('ToolLoopGuard pacing and final limits', () => {
     }
     expect(last).toMatchObject({ kind: 'hard', reason: 'pingpong', count: 12 });
   });
+
+  // codex P1(#6388):重叠的同一调用按「新的先完成」返回,迟到的旧调用不能把最新开始时间覆盖回去。
+  it('keeps the latest start of a call when overlapping repeats complete newest-first', () => {
+    const { guard, advance } = clockGuard({ burstRepeatGapMs: 2_000 });
+    const verdicts: ToolLoopGuardVerdict[] = [];
+    for (let group = 0; group < 6; group++) {
+      guard.onToolUse(`a-${group}`, 'browser', { action: 'snapshot' });
+      advance(500);
+      guard.onToolUse(`b-${group}`, 'browser', { action: 'snapshot' });
+      advance(500);
+      guard.onToolUse(`c-${group}`, 'browser', { action: 'snapshot' });
+      advance(100);
+      for (const id of ['c', 'b', 'a']) verdicts.push(guard.onToolResult(`${id}-${group}`, 'saving'));
+      advance(400);
+    }
+    expect(verdicts.filter((verdict) => verdict.kind === 'hard')).toEqual([]);
+  });
 });
 
 describe('classifyToolContractError', () => {

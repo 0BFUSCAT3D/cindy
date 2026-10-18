@@ -583,8 +583,9 @@ export class ToolLoopGuard {
   /** 记录该调用本次开始时间,返回它是否是距上一次同一调用不足 burstRepeatGapMs 的突发重复。 */
   private noteCallStart(callFingerprint: string, startedAt: number): boolean {
     const previous = this.lastStartByCall.get(callFingerprint);
+    // 重叠的同一调用可能先发后到:只记最新的开始时间,迟到的旧调用不能把它覆盖回去。
     this.lastStartByCall.delete(callFingerprint);
-    this.lastStartByCall.set(callFingerprint, startedAt);
+    this.lastStartByCall.set(callFingerprint, previous === undefined ? startedAt : Math.max(previous, startedAt));
     if (this.lastStartByCall.size > MAX_TRACKED_CALL_STARTS) {
       const oldest = this.lastStartByCall.keys().next().value;
       if (oldest !== undefined) this.lastStartByCall.delete(oldest);
