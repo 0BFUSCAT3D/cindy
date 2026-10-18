@@ -115,9 +115,16 @@ describe('wallpaper keyboard navigation', () => {
     expect(setPatch).not.toHaveBeenCalled();
   });
 
-  it('drops the retired tile from the picker once it is not in use', async () => {
+  it('drops the retired tile once the user switches away from it', async () => {
+    const user = userEvent.setup();
+    saved.wallpaperId = 'cindy-window';
     view();
+    act(() => tile('cindy-window').focus());
+    await user.keyboard('{ArrowRight}');
+    await expectSelected('cindy-whisper');
     expect(screen.queryByRole('radio', { name: /cindy-window$/ })).toBeNull();
+    expect(document.activeElement).toBe(tile('cindy-whisper'));
+    expect(tabStops()).toEqual([tile('cindy-whisper')]);
   });
 
   it('moves focus and selection with all four arrows and Home', async () => {

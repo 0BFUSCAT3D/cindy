@@ -114,7 +114,8 @@
   回归见 `main/__tests__/wallpaperVideo.test.ts` 的升级离线复用及损坏修复测试，
   `customWallpaper.test.ts` 覆盖自定义媒体操作不误删官方图片和视频。
   发布脚本默认核验仓内原始素材，`--directory` 也接受按 hash 命名的导出目录或旧 `-hd.mp4` 输入。
-  `node scripts/publish-wallpaper-videos.mjs --verify-only` 离线核验；
+  `node scripts/publish-wallpaper-videos.mjs --verify-only --directory=<原始素材目录>` 离线核验（MP4 原片不入库，
+  需指向导出目录）；`--check-cdn` 只按清单读取线上对象，干净检出即可运行；
   `node scripts/publish-wallpaper-videos.mjs --check-cdn --region=global` 只读校验清单全部线上文件；
   实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --region=global`。
   中国大陆版显式用 `--region=cn`，内部 dev 环境显式用 `--region=dev`；三个环境分别发布并校验，

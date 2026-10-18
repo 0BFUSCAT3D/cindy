@@ -76,26 +76,27 @@ align with the same wallpaper instead of introducing an opaque footer rectangle.
 Built-in SVG wallpapers are decorative assets, not new semantic UI colors.
 Verify actual Light/Dark screenshots across host pages and the expanded tool pane.
 
-The built-in picker retains Window Companion, Future Atelier and Dream Wander,
-with their Static / Dynamic choice, alongside 26 supplied still images: character,
-cat, landscape, space and abstract artworks (user curation, 2026-10-16). The supplied
-stills use metadata-free WebP at their source resolution, delivered on demand from
-the CDN (user decision, 2026-10-17). Only lightweight thumbnails and the three scene
-previews ship with the app. Blue Gaze and Amber Light are hidden from the picker.
-Previously saved selections keep their artwork and motion behavior;
-removing a catalog choice does not rewrite appearance preferences or delete source images.
+The built-in picker lists 13 artworks (user curation, 2026-10-17): the Cindy group —
+Whisper, Night Glance, Scarlet Stroll, Neon Silhouette, Prism Shards — followed by
+Night Launch, Silent Orbits, Dune Dawn, Planet Dawn, Indigo Folds, Dune Sphere,
+Ocean Clouds and Rose Quartz. All five Cindy wallpapers offer Static / Dynamic; their
+1920×1080, 24fps, 10-second loops keep the source composition as first and last frame.
+The other eight are stills. All official originals are metadata-free WebP/MP4 delivered
+on demand from the CDN (user decision, 2026-10-17); only lightweight thumbnails and the
+three legacy scene previews ship with the app.
+Window Companion, Future Atelier and Dream Wander are retired from the picker
+(`RETIRED_WALLPAPER_IDS`, 2026-10-17). Their manifest entries and CDN objects stay, so a
+saved selection keeps its still and motion; while one is in use it appears selected right
+after None with its Static / Dynamic choice, and it disappears once the user switches away.
+Removing a catalog choice never rewrites appearance preferences or deletes CDN objects.
 All official images share the existing on-demand downloader, verified cache reuse,
-and preview fallback; only the original three scenes offer video. Download progress and retry appear
+and preview fallback; only manifest entries with video metadata offer motion. Download progress and retry appear
 below the grid when needed while the thumbnails remain available for selection.
 Reuse the settings DownloadMeter. Browsing the grid or hiding the wallpaper does not
 download originals; only a selected, visible image is requested. Reuse valid cached
 images offline and after upgrades. Do not request CDN assets for IDs absent from the manifest.
-The original three scenes lead the Cindy group, followed by Whisper, Crimson Realm, Night Glance, Scarlet Stroll,
-Neon Silhouette, Prism Shards, followed by the two cat wallpapers Wheatfield Watch
-and Teacup Cat. Other artwork follows this group; Moon Gazer (formerly Giant Moon Platform) sits
-directly after the two cat wallpapers, and Cloud Roaming follows Indigo Folds. Six
-supplied stills were dropped from the picker before release (Palm Shadows, Dusk Arrow,
-Rainy Stop, Window Rest, Golden Tides, Forest River) and are not shipped.
+Earlier unreleased artwork (including Blue Gaze, Amber Light and the 2026-10-16 batch
+trimmed on 2026-10-17) is not shipped and needs no compatibility.
 The new artwork uses the existing continuous cover fit, theme-derived visibility
 and blur controls. None remains the default and restores the theme canvas.
 The picker remains an inline compact grid (user choice, 2026-10-15): use
