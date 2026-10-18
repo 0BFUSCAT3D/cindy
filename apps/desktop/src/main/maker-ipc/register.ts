@@ -32,6 +32,7 @@ import { getManagedLlamaCppService } from '../local-model-runtime/llamaCppServic
 import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLlamaCppProvider.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
+import { configureBotAutonomyHost, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
@@ -3305,6 +3306,11 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
   );
   return out;
 }
+
+// 伙伴自主跟进：状态表读「等你的那句话」只取请求本身（不含 persistId 等宿主内部字段）。
+configureBotAutonomyHost({
+  getPendingInteractions: (sessionId) => getPendingInteractionsForSession(sessionId).map((entry) => entry.request),
+});
 
 /**
  * Agent-owned interactions are queue/zombie boundaries. Desktop-only confirms
@@ -10008,6 +10014,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           effort: sessions.effort,
           fastMode: sessions.fastMode,
           permissionMode: sessions.permissionMode,
+          planModeEnabled: sessions.planModeEnabled,
           agentDeviceId: sessions.agentDeviceId,
           remoteHostId: sessions.remoteHostId,
         })
@@ -10051,6 +10058,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       co.effort = (row.effort ?? undefined) as CreateOpts['effort'];
       co.fastMode = !!row.fastMode;
       co.permissionMode = permissionModeOrAsk(row.permissionMode);
+      // 新建会话的计划模式按落库状态起档：排队项的 createOpts.planMode 是那一条消息的
+      // 计划意图（伙伴委派等 Host 输入恒为 false），本轮意图仍由发送事务按原快照传给
+      // send，这里只校正冷启动的会话状态，不改本轮是否以计划执行。
+      co.planMode = row.planModeEnabled === true;
     } catch (error) {
       // context.rebuild clears sdk_session_id before the next bootstrap. If the
       // DB truth cannot be read, continuing with caller-supplied opts could
@@ -11476,11 +11487,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           resumeSessionId: meta.sdkSessionId,
           // 插件任务的档位由用户在任务设置里给定(errand 还会再收窄),不能借 lazy-resume
           // 的缺省 bypass 提权;档位不一致还会让 errand 复用判定每轮都失败、另开新会话
-          // (#5788)。由宿主的插件派发入口显式要求,其它 main 侧通路(Orca 派活、伙伴
-          // 委派等)保持既有缺省。
+          // (#5788)。由宿主的插件派发、伙伴后台任务派发等入口显式要求,未要求的 main 侧
+          // 通路(Orca 派活等)保持既有缺省。
           permissionMode: params.resumeWithStoredPermissionMode
             ? permissionModeOrAsk(dbRow.permissionMode)
             : 'bypassPermissions',
+          // 计划模式同理按落库状态起档,运行态才与库内一致(心跳等权限边界读取方要求两者
+          // 相同)。下方 send 带 planMode:false,本轮仍是普通执行、不消耗武装态。
+          ...(params.resumeWithStoredPermissionMode
+            ? { planMode: dbRow.planModeEnabled === true }
+            : {}),
           // 发起方回合结束后进程常被释放。漏掉 providerId = 回落到隐式默认路由,
           // 订阅 / 自定义来源的伙伴会以 AGENT_NOT_READY 起不来,委派结果停在外发
           // 队列里,表现就是「对方做完了,发起方没被叫醒」。
@@ -11609,7 +11625,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     files?: AgentInputQueuedMessage['files'];
     onAccepted?: (replayed?: boolean) => void | Promise<void>;
     onAcceptedRollback?: () => void | Promise<void>;
-    /** Remote-origin input: a cold session resumes with its stored permission mode, never bypass. */
+    /**
+     * Remote-origin input and Bot Session tasks: a cold session resumes with its stored
+     * permission mode (and Plan), never bypass.
+     */
     resumeWithStoredPermissionMode?: boolean;
   }) => {
     if (params.clientId && params.authorizationGuard) {
@@ -12149,6 +12168,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
         } : undefined,
         dispatcherSessionId,
+        // 后台任务按发起时落库的权限档运行；冷启动不能退回 bypass。否则任务实际以
+        // Full access 运行，库里却是 Auto / Ask，绑定它的心跳每轮都因档位不一致被顺延。
+        resumeWithStoredPermissionMode: true,
       }),
     discardDelegationQueuedInputs: (sessionId, delegationId) =>
       discardDelegationQueuedInputs(inputCoordinator, sessionId, delegationId, awaitAgentInputQueueSnapshotPersistence),
@@ -18343,6 +18365,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }),
     emitProjection: (projection) => {
       broadcastToAllWindows(MAKER_PUSH.INPUT_PROJECTION, projection);
+      // 伙伴自主跟进：出错 / 用量上限等待旁路进状态表（只读投影，不影响原广播）。
+      try { noteBotAutonomyInputProjection(projection); } catch { /* 观察层异常不影响输入协调 */ }
       if (!isGoalInputBlocked(projection.sessionId)) notifyGoalIdleAfterTurnSettled(projection.sessionId);
     },
     // 意识拦截钩(订阅槽①):派发/落库前问已装钩子意识;fail-open 由

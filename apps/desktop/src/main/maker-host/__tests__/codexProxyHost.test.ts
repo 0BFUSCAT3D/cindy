@@ -1618,7 +1618,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       };
       const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-      const forcedRouteTransform = transforms[3];
+      const forcedRouteTransform = transforms[4];
       if (!forcedRouteTransform) throw new Error('expected locked Subagent route transform');
       mockState.injectionTransform.mockImplementationOnce((body) => {
         // 首个 collab_spawn 请求必须先懒登记血缘，同一轮 instructions transform 才能
@@ -1708,7 +1708,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       )).toBeNull();
 
-      const execGuardTransform = transforms[5];
+      const execGuardTransform = transforms[6];
       if (!execGuardTransform) throw new Error('expected locked Subagent exec guard transform');
       const guarded = execGuardTransform({
         model: 'deepseek/deepseek-v4-flash',
@@ -1805,7 +1805,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       };
       const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-      const forcedRouteTransform = transforms[3];
+      const forcedRouteTransform = transforms[4];
       if (!forcedRouteTransform) throw new Error('expected smart Subagent route transform');
       expect(forcedRouteTransform({
         model: 'smart/model-cheap',
@@ -2729,7 +2729,7 @@ describe('codex proxy host', () => {
         // upstream 是函数形态(每请求现取,model-access 下发可运行期换 endpoint);
         // 断言其当前求值 = 网关 base + /v1
         upstream: expect.any(Function),
-        // [encrypted activeStrip, image generation activeStrip, provider-aware Guardian reviewer, locked Subagent route, instructions 注入, locked Subagent exec guard, Gateway 原生 web_search, 跨来源压缩块兼容, xAI ModelInput activeStrip, responses item id activeStrip(#4738), responses item id length activeStrip(#4227), exec function adapter, strict gateway history 兼容, xAI ModelInput sanitize, DeepSeek V4 custom tool 兼容, xAI Responses 兼容, XD Gateway Grok 兼容, ByteDance Seed tool 兼容, MiniMax effort 兼容, provider model rewrite, provider 参数归一, 视觉桥(controller 未注入 → 短路透传), 工具 ID 校正, stripNonAnthropicFields]
+        // [armed HTTP recovery strip(WS 错误后落回 HTTP 即激活对应 strip), encrypted activeStrip, image generation activeStrip, provider-aware Guardian reviewer, locked Subagent route, instructions 注入, locked Subagent exec guard, Gateway 原生 web_search, 跨来源压缩块兼容, xAI ModelInput activeStrip, responses item id activeStrip(#4738), responses item id length activeStrip(#4227), exec function adapter, strict gateway history 兼容, xAI ModelInput sanitize, DeepSeek V4 custom tool 兼容, xAI Responses 兼容, XD Gateway Grok 兼容, ByteDance Seed tool 兼容, MiniMax effort 兼容, provider model rewrite, provider 参数归一, 视觉桥(controller 未注入 → 短路透传), 工具 ID 校正, stripNonAnthropicFields]
         transformRequest: [
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
@@ -2737,6 +2737,7 @@ describe('codex proxy host', () => {
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), // frozen custom-provider effort
+          expect.any(Function),
         ],
         transformResponse: expect.any(Function),
         routingTransform: expect.any(Function),
@@ -3548,8 +3549,8 @@ describe('codex proxy host', () => {
     setSessionProvider('session-openai-review', 'openai');
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    // active strips ×2, then provider-aware Guardian rewrite。
-    const reviewerTransform = transforms[2];
+    // armed HTTP recovery strip, active strips ×2, then provider-aware Guardian rewrite。
+    const reviewerTransform = transforms[3];
     if (!reviewerTransform) throw new Error('expected Guardian reviewer transform');
     const body = { model: 'codex-auto-review', input: [{ role: 'user', content: 'review' }] };
     const guardianHeaders = (parentThreadId: string) => ({
@@ -3616,7 +3617,7 @@ describe('codex proxy host', () => {
     await host.ensureCodexControlPlaneProxyReady('oauth-bearer');
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    const reviewerTransform = transforms[2];
+    const reviewerTransform = transforms[3];
     if (!reviewerTransform) throw new Error('expected Guardian reviewer transform');
     expect(reviewerTransform(
       { model: 'codex-auto-review', input: [] },
@@ -6852,7 +6853,7 @@ describe('codex proxy host', () => {
     await host.ensureCodexProxyReady();
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    expect(transforms).toHaveLength(26); // ordinary transforms + dump + frozen custom-provider effort
+    expect(transforms).toHaveLength(27); // ordinary transforms + dump + frozen custom-provider effort
     const ctx = {
       method: 'POST',
       url: '/v1/responses',

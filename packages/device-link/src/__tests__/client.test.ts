@@ -95,6 +95,7 @@ function makeHarness(opts?: {
   logger?: ConstructorParameters<typeof DeviceLinkClient>[0]['logger'];
   peerFailurePolicy?: ConstructorParameters<typeof DeviceLinkClient>[0]['peerFailurePolicy'];
   peerResetReadRetry?: ConstructorParameters<typeof DeviceLinkClient>[0]['peerResetReadRetry'];
+  invokeMetrics?: ConstructorParameters<typeof DeviceLinkClient>[0]['invokeMetrics'];
 }): Harness {
   const sockets: FakeWs[] = [];
   const client = new DeviceLinkClient({
@@ -115,6 +116,7 @@ function makeHarness(opts?: {
     },
     peerFailurePolicy: opts?.peerFailurePolicy,
     peerResetReadRetry: opts?.peerResetReadRetry,
+    invokeMetrics: opts?.invokeMetrics,
     timing: {
       reconnectBaseMs: 5,
       reconnectMaxMs: 40,
@@ -266,7 +268,9 @@ describe('outbound invoke admission', () => {
 
   it('rechecks a queued write before dispatch and releases its slot when the caller cancels', async () => {
     vi.useFakeTimers();
-    const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 } });
+    const metrics = vi.fn();
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 },
+      invokeMetrics: { enabled: () => true, record: metrics } });
     const calls: Promise<unknown>[] = [];
     try {
       h.client.start(); await vi.advanceTimersByTimeAsync(1); h.current().ack();
@@ -291,6 +295,7 @@ describe('outbound invoke admission', () => {
       expect(sent()).toHaveLength(13);
       expect(sent().at(-1)?.payload).toMatchObject({ channel: 'maker:send', args: ['fresh'] });
       expect(sent().some(e => (e.payload as { args: unknown[] }).args[0] === 'stale')).toBe(false);
+      expect(metrics.mock.calls.filter(([event]) => event.phase === 'sent')).toHaveLength(13);
     } finally {
       h.client.stop(); await Promise.all(calls); vi.useRealTimers();
     }
@@ -787,7 +792,7 @@ function makeRelayClient(
   relay: MemoryRelay,
   deviceId: string,
   timing?: ConstructorParameters<typeof DeviceLinkClient>[0]['timing'],
-  extra?: Pick<ConstructorParameters<typeof DeviceLinkClient>[0], 'transferCodec'>,
+  extra?: Pick<ConstructorParameters<typeof DeviceLinkClient>[0], 'transferCodec' | 'invokeMetrics'>,
 ): DeviceLinkClient {
   return new DeviceLinkClient({
     ...extra,
@@ -7917,7 +7922,9 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     };
     const relay = new MemoryRelay();
     const host = makeRelayClient(relay, 'desktop', undefined, { transferCodec: codec });
-    const controller = makeRelayClient(relay, 'ios', undefined, { transferCodec: codec });
+    const metrics = vi.fn();
+    const controller = makeRelayClient(relay, 'ios', undefined, { transferCodec: codec,
+      invokeMetrics: { enabled: () => true, record: metrics } });
     let rows = Array.from({ length: 400 }, (_, i) => ({ id: `session-${i}`, title: '弱网任务', status: 'idle' }));
     const handled: Envelope[] = [];
     const offHost = host.onFrame((env) => {
@@ -7956,6 +7963,14 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     expect(second).toEqual({ ok: true, result: rows });
     expect((handled[1]!.payload as InvokePayload).transfer?.ifNoneMatch).toEqual(expect.any(String));
     expect(resultBytes() - firstBytes).toBeLessThan(1_000);
+    // Unit: measure encoded logical payloads, not the reconstructed full page.
+    expect(metrics.mock.calls.map(([event]) => event.phase)).toEqual(['sent', 'result', 'sent', 'result']);
+    const encodedResponses = (relay.deliveredTo.get('ios') ?? []).filter(env => env.kind === 'invoke-result')
+      .map(env => Buffer.byteLength(parseTransportPayload(env.payload)?.data ?? JSON.stringify(env.payload)));
+    expect(metrics.mock.calls[1][0]).toMatchObject({ gzip: true, notModified: false, payloadBytes: encodedResponses[0] });
+    expect(metrics.mock.calls[3][0]).toMatchObject({ notModified: true, payloadBytes: encodedResponses[1] });
+    // A failed diagnostics sink cannot turn a valid response into a failed read.
+    metrics.mockImplementation(() => { throw new Error('diagnostic sink failed'); });
     // Each call returns its own object: a consumer mutating one result cannot corrupt the cache.
     expect(second.ok && second.result).not.toBe(first.ok && first.result);
 

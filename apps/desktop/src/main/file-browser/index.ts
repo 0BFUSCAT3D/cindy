@@ -200,6 +200,8 @@ async function fetchRemoteBigFile(
     mtimeMs: number;
     remoteHostId?: string | null;
     deviceId?: string | null;
+    /** HTML background reads must validate beyond the outer size/mtime cache key. */
+    revalidate?: boolean;
   },
   onProgress: (received: number, total: number, phase?: 'upload' | 'download') => void,
   signal?: AbortSignal,
@@ -230,6 +232,8 @@ async function fetchRemoteBigFile(
           remoteInvoke,
           {
             // Cache fills are shared: closing one preview must not cancel another consumer.
+            // This fill is keyed by the caller's stat; never relabel stale bytes as that version.
+            cacheFirst: false,
             workdir: args.workdir,
             relPath: args.relPath,
             maxBytes: Math.max(1, args.size),
@@ -336,6 +340,7 @@ async function fetchRemoteBigFile(
       },
       onProgress,
       signal,
+      { revalidate: args.revalidate },
     );
   }
   if (args.remoteHostId) {
@@ -359,6 +364,7 @@ async function fetchRemoteBigFile(
       ),
       onProgress,
       signal,
+      { revalidate: args.revalidate },
     );
   }
   throw new Error('fetch-remote requires remoteHostId or deviceId');
@@ -401,6 +407,15 @@ export function registerFileBrowserIpc(): void {
   // 日志设施由宿主注入——desktop 侧接统一 logger(规则 12),scope 与抽包前一致。
   setFileBrowserCoreLoggerFactory(createLogger);
   registerHtmlPreviewIpc({
+    cached: (args, root, relPath) => {
+      if (args.origin.kind === 'local') return Promise.resolve(null);
+      return findStaleCached({
+        transport: args.origin.kind,
+        endpointId: args.origin.kind === 'device' ? args.origin.deviceId : args.origin.remoteHostId,
+        workdir: root,
+        relPath,
+      });
+    },
     stat: async (args, root, relPath, signal) => {
       signal?.throwIfAborted();
       if (args.origin.kind === 'device') {
@@ -418,6 +433,7 @@ export function registerFileBrowserIpc(): void {
           relPath: entry.relPath,
           size: entry.size,
           mtimeMs: entry.mtimeMs,
+          revalidate: true,
           deviceId: args.origin.kind === 'device' ? args.origin.deviceId : undefined,
           remoteHostId: args.origin.kind === 'ssh' ? args.origin.remoteHostId : undefined,
         },

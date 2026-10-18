@@ -195,6 +195,11 @@ beforeEach(() => {
     if (cmd.action === 'own-usage') return ownUsage();
     if (cmd.action === 'usage-history') return usageHistory();
     if (cmd.action === 'received') return [];
+    if (cmd.action === 'get-run-limits') return {
+      value: { perDevice: 16, total: 64 }, defaults: { perDevice: 16, total: 64 },
+      isCustomized: false, customizedKeys: [], usage: { total: 0, devices: 0, largestDevice: 0 },
+    };
+    if (cmd.action === 'received-snapshot') return { ownerStamp: { dataOwnerId: null, ownerGeneration: 0 }, received: [], confirmedRegions: [] };
     if (cmd.action === 'set-member' || cmd.action === 'approve' || cmd.action === 'reject') return { ok: true };
     throw new Error(`unexpected ${cmd.action}`);
   });
@@ -214,6 +219,7 @@ beforeEach(() => {
             if (action === 'owned') return owned();
             if (action === 'own-usage') return ownUsage();
             if (action === 'usage-history') return usageHistory();
+            if (action === 'get-run-limits') return command(cmd.request?.command);
             if (action === 'approve' || action === 'reject') return { ok: true };
           }
           return { providerId: cmd.providerId, config: null, members: [] };
@@ -488,10 +494,10 @@ describe('ProviderShareManagePage', () => {
   });
 
   it('does not show zero when usage could not be read', async () => {
+    const respond = command.getMockImplementation()!;
     command.mockImplementation(async (cmd: { action: string }) => {
-      if (cmd.action === 'owned') return owned();
-      if (cmd.action === 'received') return [];
-      throw new Error('boom');
+      if (cmd.action === 'usage-history') throw new Error('boom');
+      return respond(cmd);
     });
     renderPage();
     expect((await screen.findByRole('alert')).textContent).toBe('providerGroup.usage.loadFailed');

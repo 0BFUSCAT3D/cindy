@@ -14,6 +14,8 @@ const runtime = vi.hoisted(() => ({
   uploads: [] as Array<{ name: string; resolve: () => void }>,
   discarded: [] as unknown[],
   pickPhotos: vi.fn(),
+  pickCamera: vi.fn(),
+  pickDocument: vi.fn(),
   durablePreviewUri: null as string | null,
 }));
 
@@ -22,8 +24,12 @@ vi.mock('react-i18next', async (importOriginal) => {
   const t = (key: string) => key;
   return { ...await importOriginal<typeof import('react-i18next')>(), useTranslation: () => ({ t }) };
 });
-vi.mock('expo-document-picker', () => ({}));
-vi.mock('expo-image-picker', () => ({ requestMediaLibraryPermissionsAsync: async () => ({ granted: true }) }));
+vi.mock('expo-document-picker', () => ({ getDocumentAsync: runtime.pickDocument }));
+vi.mock('expo-image-picker', () => ({
+  requestMediaLibraryPermissionsAsync: async () => ({ granted: true }),
+  requestCameraPermissionsAsync: async () => ({ granted: true }),
+  launchCameraAsync: runtime.pickCamera,
+}));
 vi.mock('@/session/deferredPhotoLibrary', () => ({ pickDeferredLibraryPhotos: runtime.pickPhotos }));
 vi.mock('expo-file-system/legacy', () => ({
   documentDirectory: 'file:///docs/',
@@ -61,6 +67,8 @@ beforeEach(() => {
   runtime.uploads = [];
   runtime.discarded = [];
   runtime.pickPhotos.mockReset();
+  runtime.pickCamera.mockReset();
+  runtime.pickDocument.mockReset();
   runtime.durablePreviewUri = null;
   root = createRoot(document.createElement('div'));
 });
@@ -107,6 +115,18 @@ const imageCandidate = (name: string, onAbandoned: () => void): MobileLocalAttac
 const flush = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
 describe('useMobileLocalAttachments abandonment on scope change', () => {
+  it.each(['paste', 'upload'])('reports %s input synchronously before React commits the tray', async kind => {
+    const harness = mount('session-a');
+    expect(harness.first.hasAttachmentInput()).toBe(false);
+    act(() => {
+      if (kind === 'paste') harness.first.beginPastePlaceholders(1);
+      else harness.first.enqueueUploads([imageCandidate('a.png', vi.fn())], { token: 'token' });
+      expect(harness.first.hasAttachmentInput()).toBe(true);
+    });
+    act(() => harness.first.discardAllPendingUploadsForScopeChange());
+    expect(harness.first.hasAttachmentInput()).toBe(false);
+  });
+
   // PR #6291: unit integration through the real selection/upload and expansion
   // hooks. Count-only tests miss a completion and addition in the same render.
   it('reopens for a new selection during completion but not for paste materialization or retry', async () => {
@@ -204,18 +224,28 @@ describe('useMobileLocalAttachments abandonment on scope change', () => {
     expect(runtime.uploads).toHaveLength(0);
   });
 
-  it('releases native selections returned after a scope change instead of attaching them to another task', async () => {
+  it.each(['library', 'camera', 'document'] as const)('reports %s input before a slot exists and ignores late selections after scope exit', async source => {
     const harness = mount('session-a');
-    let finish!: (value: MobileLocalAttachmentUploadCandidate[]) => void;
-    runtime.pickPhotos.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    let finish!: (value: unknown) => void;
+    const picker = source === 'library' ? runtime.pickPhotos : source === 'camera' ? runtime.pickCamera : runtime.pickDocument;
+    picker.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
     let picking!: Promise<void>;
-    await act(async () => { picking = harness.first.addImages('library'); });
+    await act(async () => { picking = source === 'document' ? harness.first.addDocument() : harness.first.addImages(source); });
+    expect(harness.first.getPendingUploadCount()).toBe(0);
+    expect(harness.first.hasAttachmentInput()).toBe(true);
     act(() => harness.first.discardAllPendingUploadsForScopeChange());
+    expect(harness.first.hasAttachmentInput()).toBe(false);
     const abandoned = vi.fn();
-    await act(async () => { finish([imageCandidate('late.jpg', abandoned)]); await picking; });
-    expect(abandoned).toHaveBeenCalledOnce();
+    await act(async () => {
+      finish(source === 'library' ? [imageCandidate('late.jpg', abandoned)] : {
+        canceled: false, assets: [{ uri: 'file:///late.jpg', name: 'late.jpg', fileName: 'late.jpg' }],
+      });
+      await picking;
+    });
+    if (source === 'library') expect(abandoned).toHaveBeenCalledOnce();
     expect(harness.latest().pendingUploads).toEqual([]);
     expect(harness.options.onPicked).not.toHaveBeenCalled();
+    expect(runtime.uploads).toHaveLength(0);
   });
 
   it('abandons a candidate enqueued from a stale scope without starting an upload', async () => {

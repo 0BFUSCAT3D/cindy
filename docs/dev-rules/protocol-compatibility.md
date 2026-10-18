@@ -138,9 +138,13 @@ schema、数据库或 Mobile 原生指纹。完整管理需要两端客户端更
 ## 实时生成速度
 
 既有 maker status 可选携带 `tokenSpeed`（`rate`、`average`、`tokens`、`elapsedMs`、
-`streaming`），由主机按 Pi `pi-token-speed` 扩展算法测得；仅用于显示，不参与费用、缓存或
-上下文计数。新客户端校验数值，非法即丢弃；旧主机省略时沿用原 usage 计数路径，旧客户端忽略
-新增字段。主机检测到挂起或时钟异常时，本轮后续帧不再携带该字段并标记
+`streaming`），由主机计算；Codex 使用真实输出用量与配对生成时长，最近三个有效区间按
+时长加权（包含请求后的首响应等待，排除工具与审批等待）。Claude Code / Pi 使用基于
+`pi-token-speed` 的流式文字／思考／所有工具参数估算，从首个内容块开始，工具调用生成
+结束即暂停。两种口径不能直接作为模型性能横向排名。收尾 `rate` 仍携带平均值以兼容旧端；
+新端只更新本轮平均，保留最近速度及曲线，不把最终校准当作新的速度样本。
+仅用于显示，不参与费用、缓存或上下文计数。新客户端校验数值，非法即丢弃；旧主机省略时
+沿用原 usage 计数路径，旧客户端忽略新增字段。主机检测到挂起或时钟异常时，本轮后续帧不再携带该字段并标记
 `generationReliable: false`，客户端据此丢弃已保留的速度。无需服务端更新、新通道、权限或
 数据库 migration。
 
@@ -184,6 +188,21 @@ known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机�
 传输去重仅保留有界内存，两端持久展示缓存继续使用原有账号隔离与删除屏障。
 不修改 relay、不新增权限、数据库 migration 或 Mobile 原生指纹。
 
+## 大文本预览的文件传输回退
+
+`text-file:read-preview` 接受可选 `allowFileTransfer: true`。仍先执行原绝对路径、
+访问策略和 10 MiB 大小校验；成功结果的 UTF-8 JSON 大于设备消息预算（4 MiB 留出
+64 KiB 封装余量）时，仅向显式支持的调用方返回 `{ success: true, transferRequired: true,
+size, limitMb }`，不把正文塞入消息。未声明支持的本地／旧控制端仍收到原有结果。
+新手机收到标记后，使用既有 `xdt-file` 文件通道及版本缓存取件，并携带 `maxBytes=10485760`；
+读取前后校验取消、账号和实际大小，结束时释放取件暂存及 OSS 对象。文本已有独立展示缓存，
+其更新等待主机版本复验后再复用对应字节，避免把旧快照反复写回。无新增存储目录或通道。
+
+旧 Host 忽略新增请求字段，新手机继续接收原正文／错误；收到明确的 `PAYLOAD_TOO_LARGE`
+时可走同一文件回退，权限、缺失和连接错误不触发回退。旧 Host 若不能返回明确超限错误，
+仍需更新 Host 才能消除此失败；不以超时为由重发或绕过文本授权。完整修复需要两端更新，
+不需要服务端或 Mobile 原生构建变化。
+
 ## invoke 结果传输编码（弱网减流量）
 
 控制端 `invoke` payload 可选携带 `transfer: { gzip?: 1, ifNoneMatch?: string }`：注入了解压
@@ -213,6 +232,15 @@ Desktop 的压缩保持 gzip level 4 与同步发送／错误处理契约，手�
 `@cindy/device-link/node-compression` 独立入口，跨平台主入口与 Mobile 不加载 Node 模块。
 DEBUG 统计只记原始／gzip／wire 字节与压缩耗时，不记录正文或凭证。
 回归见 Desktop `device-link/__tests__/transferCodec.test.ts`（实际 zlib／pako 解码）。
+
+Mobile 开启本地诊断时，在原有 30 秒／卡顿区间统计内汇总 `relayTransfers`：每个 channel
+首次写入 socket 的请求数、收到的响应数、还原正文前的响应 payload UTF-8 字节数、
+`notModified` 与 gzip 命中数。前者不把准入等待或取消算作已发送，也不重复计重传；
+后者不包含 envelope、分片头、ACK 与重传字节，不是总线上流量。peer 直连不经过此计数。
+传输行按响应 payload 字节数降序只保留前六个通道，`relayTransfersOmitted` 标明省略的
+通道数；与 push／invoke 列表一起保持在单条日志的 120 值预算内，不能当作全部通道总量。
+旧 `invokeCount` 仍是业务调用次数，不能与已发请求数混用。不开诊断时不序列化计量，
+不记录请求参数、正文、设备／任务 ID，不改变传输协议或恢复策略。
 
 ## 群执行终态与错误展示
 
@@ -856,8 +884,9 @@ dev/ino/size/mtime/ctime，连同解析后的路径生成不透明版本。SSH �
 例外：由 materializer 用远端主机、工作目录、相对路径及远端 size/mtime 生成源版本，
 prepare/open 复用该源版本并校验副本大小，不使用带登录代次的本地路径或 LRU 时间。
 缓存仍按稳定账号隔离，原有代次取消校验保留；不把版本当作授权凭据。
-新版控制端只有两次版本一致且传输成功才保留私有缓存副本；读取缓存前仍执行
-prepare 授权与版本查询。缺失／非法版本的旧端不启用此缓存，旧控制端忽略新增字段。
+新版控制端只有两次版本一致且传输成功才保留私有缓存副本。同账号文件预览优先显示
+已有本地副本，prepare 授权与版本查询放到后台；共享任务仍先复验权限。
+缺失／非法版本的旧端不启用此缓存，旧控制端忽略新增字段。
 缓存按稳定账号、目标设备、完整媒体 URL 隔离（含 SSH 与目录约束），跨重启保留，
 不设时间 TTL、16 MiB 单文件门槛或条目数门槛。账号代次用于拒绝迟到结果，不能进入
 持久缓存键。Desktop 图片等媒体复用 `cindy-media` 的 `integration-cache` 索引和
@@ -869,10 +898,47 @@ HTML 等普通文件复用 `remote-file-cache` 的 4 GiB 总量上限、LRU 与�
 
 Mobile 复用 `remote-media` 磁盘缓存，放入 realm/账号 SHA-256 命名空间；无固定容量
 门槛，仅在现有传输空间预留不足时按 LRU 清理（保留 256 MiB，并考虑下载与消费者副本）。
-访问顺序落盘、版本不同删除旧条目；版本进入物理文件名，避免异步复制撞上覆盖写。
+访问顺序落盘，新版本完整保存后再替换旧条目；版本进入物理文件名，避免异步复制撞上覆盖写。
+下载尺寸在原子移入前校验，同版本或无版本刷新被截断时也不得覆盖旧文件。
 系统清掉目录后，下一次取件自动重建。两端消费者均拿独立副本，清缓存不删正在预览的副本。
 强制刷新只跳过旧副本的读取，成功后仍更新缓存，避免下次普通打开又命中损坏副本。
-已有 OSS 和流式媒体缓存维持原生命周期；此缓存只保存已完成的 peer 整文件下载。
+完整文件读取统一复用版本缓存，覆盖 inline 小文件、peer 下载及已经完成的 OSS 回退下载。
+`device-link:media:fetch` 在 `prepareOnly: true` 时接受可选 `metadataOnly: true`：
+仍先授权并从打开的文件句柄取版本，但小文件也只返回 `transferRequired: true` 与元数据。
+两端共用读取策略：小文件先查同一版本缓存，未命中再以原 `prepareOnly` 请求取 inline 字节；
+大文件沿用 peer／OSS 读取。同账号旧 Host 忽略 `metadataOnly`，新控制端接收原 inline／OSS 结果；
+共享任务的旧 Host 使用闭集参数白名单，两端访客不发送 `metadataOnly`，沿用先授权的 inline／OSS
+读取。新 Host 同时接受布尔型 `metadataOnly`，不改变成员、附件归属及工作目录校验。
+旧控制端不传此字段，新 Host 保持原行为。两段式导出缺版本而准备阶段有有效版本时，必须确认
+导出前后主机版本、大小及导出大小一致才交付；不一致报 FILE_PEER_CHANGED 并释放导出暂存，
+复验异常或取消也不交付，避免外层缓存发布未确认字节，后台沿用旧副本。无版本旧 Host 保持原读取方式，
+不将其结果登记为主机版本缓存。缓存存储失败不阻断正常读取。
+Mobile 的文件浏览器原图、PDF、下载／分享使用完整文件路径，先取当前账号、设备、
+完整 URL 对应的本地缓存，再后台检查版本；每次读取独立复验，取消或过期的旧读取不压住重开后的检查。
+不增加跨请求复验接管或自动重试。连接恢复也放到缓存读取之后。
+HTML 由预览层复用同一账号磁盘缓存并持有独立快照；后台取件跳过传输层的旧快照，
+避免将旧内容再次写回预览缓存。空文件以明确的 expectedSize === 0 为依据保存。
+相对路径到主机 URL 的映射只保留在进程内；Mobile 重启后的首次相对路径读取仍需在线查询
+URL，之后复用持久字节。本次不新增持久 URL 索引，冷启动离线相对路径预览不在覆盖范围内。
+Desktop 完整文件与远程 HTML 预览复用现有磁盘副本，后台检查变化；HTML 的大小／mtime
+仅用于快照展示和传输上限，不作为后台跳过读取的版本判据。复验绕过外层 size／mtime 命中，
+device 仍可复用主机确认版本的字节，SSH 重新读取；新版原子保存前保留旧副本。HTML 直接通过
+现有磁盘索引定位副本，不再另维护进程内元数据索引和刷新集合。两端 HTML 先显示缓存，再在
+本次打开的后台读取中比较入口 HTML 内容；不同且新版快照准备完成时自动切换，相同或失败不重载。
+更新仅在当前仍停留于入口文档时应用；已导航到内页则保留当前页面，新缓存供下次打开使用。
+Mobile 直接复用后台准备好的快照；Desktop 缓存入口通过现有鉴权的本地预览服务读取一次更新结果，
+确认变化后重载。没有持续监听或轮询，检查完成后的修改需从 Cindy 重新打开；手机也可手动刷新，
+跳过旧副本并在成功后更新缓存。只改配套资源不触发入口重载。图片、PDF 保持后台更新供后续打开使用。
+预览持有自己的副本，关闭时释放本次打开的新旧快照，不删除可复用的源缓存。
+零字节 HTML 配套资源也可按版本缓存。
+回归覆盖见 [Mobile 快照测试](../../apps/mobile/src/__tests__/mobileHtmlPreview.test.ts) 与
+[Desktop 预览测试](../../apps/desktop/src/main/file-browser/__tests__/html-preview.test.ts)。
+Mobile 分享及 HTML 资源复制在完成、失败、取消后释放传输暂存；独立消费者副本继续由原持有者管理。
+音视频播放继续用保留的流式地址，不为了缓存而预先下载整份媒体；完整下载仍按上述规则。
+不可变聊天图片与目录维持已有专用缓存；Mobile 限量文本预览先显示缓存（包括绝对路径），
+后台读取后更新当前文本，失败不遮住已有内容，文本不改为无界整文件下载。
+主机确认 BINARY_FILE／OVERSIZE 后撤销下次打开使用的文本缓存，但不清空当前显示的快照。
+不增加缓存目录、额度、通道、服务端改动或 Mobile 原生指纹；完整优化需要两端客户端更新。
 
 网络帧仍是旧版可读的 16 KiB，不增加 wire 通道。新版接收运行时仅在本地桥接声明
 批量写入时，把已到达帧合为至多 256 KiB 后串行写盘；仍按实际写入块数归还流控额度，
@@ -987,6 +1053,13 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `fs/readFile`、`fs/open` 的缺省/read 模式与目录读取按读取，显式非 read 的 open 模式仍从严按写入；`fs/walk` 按
   目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
+  非完全访问档下 `process/start` 与 `fs/*` 带 `sandbox`(固定版本 `codex-rs/file-system/src/lib.rs` 的
+  `WireFileSystemSandboxContext`)，其中目录与权限条目都是 B 上看到的 file URI，中继换成 A 的路径：虚拟工作区内的
+  映射为本机路径(绝对 glob 里本机目录名按字面转义)；不在其中的是 B 自己的目录(如它的 Codex 记忆目录)，读写
+  授权丢弃，只收不放；禁止规则不因转换失效：路径条目在 A 上也是合法绝对路径时原样保留，没映射上的禁止 glob
+  一律原样保留；用户目录对不上时换成 A 本机的(Codex 缺了它会把 `~/…` 规则当解析失败、一律拒绝读取)；
+  `file:///C:/…` 是否为盘符按 B 的路径约定(虚拟工作区路径)判断；网络与 Windows 沙箱档位不动。原样转发时
+  两端系统不同会被 A 的 exec-server 拒绝(`invalid sandbox permission path URI`)。
 - **影子目录与配置同步**：`open` 载荷除项目说明文件(含 `.claude/CLAUDE.md`、`.claude/rules`、
   `.codex/skills`)外还带 `ancestorFiles`(项目上级目录里的
   `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `AGENTS.override.md`，按层级 `up`，最多 24 级)与
@@ -1215,9 +1288,16 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   - `pick { sessionId, providerId, agentKind, model, exclude[] }` → `{ kind: 'member', member: { key, kind, agentDeviceId, providerId }, label }`
     / `{ kind: 'unavailable' }` / `{ kind: 'none' }`(没有组或供应商没开放远程调用)。组员坐标是 O 视角(`local` = O 自己)，C 换算成
     本机位置；选中即给那台记 30s 临时占用；
-  - `cool { providerId, memberKey, cause: 'usage-limit' | 'auth' | 'overload', resetAt? }` → O 冷却那台(`resetAt` 最多信 8 天)；
+  - `cool { providerId, memberKey, cause: 'usage-limit' | 'auth' | 'overload', resetAt? }` → O 短暂冷却那台，未带模型的旧报告最多信 2 分钟；
     连不上不报，只由 C 自己避开(组内状态以 O 为准，C 那边的问题不记进组里，2026-10-11)。`exclude` 非空(C 这一轮试过
     不行再来问)时 O 不用短时缓存、现读组内电脑的最新状态再选，请求格式不变；
+  - `cool-model { providerId, memberKey, cause: 'usage-limit', model, resetAt? }`（2026-10-17）→ O 只冷却对应模型，
+    `resetAt` 最多信 8 天，无时刻则 30 分钟；Claude 家族别名共用一个范围。新 C 连接旧 O 收到
+    `unknown provider group action` 时，只回退一次 `cool`，重置时刻压到未来最多 2 分钟；其他失败不回退。
+    旧 C 连接新 O 的无模型报告只保留短冷却。完整模型隔离需 C/O 更新；手机仍由被控电脑执行，无新 channel 或服务端改动。
+    本地 `provider-group-cooling.json` 的成员值从旧数字扩为范围到时刻的对象（空键是全账号）；新版加载旧数字最多保留
+    2 分钟，降级旧版忽略对象并依据配额/实际报错重新判断，不影响任务与组配置。回归见 `router.state.test.ts`、
+    `coolingStore.test.ts`、`remoteHandler.test.ts` 与 `remote-agent/__tests__/groupRelay.test.ts`。
   - `leases { seq, entries: [{ sessionId, providerId, memberKey }] }` → 整体替换 C 正在运行的经组任务，`seq` 只增(C 按时间生成，
     重启后仍增大)，乱序旧包丢弃，150s 不刷新作废；只用于分摊负载；
   - `view { providerId, model? }` → 组设置与组员状态(`ProviderGroupView`)；省略 `model` 时只按组级状态返回，
@@ -1303,11 +1383,17 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 
 - **open 载荷新增可选 `relay`**(`remote-agent/wire.ts`，`REMOTE_AGENT_RELAY_KEY_PATTERN`，16–64 位 `[A-Za-z0-9_-]`)：O 为受邀者取的
   不透明键(按受邀者派生，不含分享与成员信息)。M 收到带 `relay` 的 open 一律按受邀者隔离运行(即使控制端是同账号的 O)：
-  受邀者目录、会话索引、续接校验与运行数按(控制端, relay)分开；同一控制端按受邀者各 16 个、合计 64 个任务。只有同账号
-  控制端的 `relay` 才各算一份运行数：受邀者控制端自己填的 `relay` 只把它的数据分开存放，运行数仍按这个受邀者合计 16 个，
-  不能借此放宽额度(分享来的 M 上 O 本身就是受邀者，O 替各受邀者中转的任务在那台合计 16 个)。O 同时带
+  受邀者目录、会话索引、续接校验按(控制端, relay)分开。数量上限按认证的直接连接设备合计，分享 peer 取其 deviceId，
+  同一设备跨供应商、分享入口及 relay 共用额度；默认单设备 16、提供方整机 64（可配置），不会因 relay 获得额外额度。O 同时带
   `groupAssigned`，并把 `sessionId` 换成按(受邀者, 任务 id)派生的 id、`providerId` 换成 M 上的供应商。旧 M 丢弃这个字段，
   所以 O 只把受邀者任务交给 caps 声明了 `guestRelay` 的同账号 M；分享来的 M 本来就把 O 当受邀者隔离，不要求这个能力。
+- **提供方远程任务数量设置**：沿用 `maker:remote-agent:v1`，不加必填字段；`caps.maxRuns` 返回当前单设备上限（1～1000，旧解析器可读）。
+  超限仍回 `REMOTE_AGENT_BUSY`，message 用 `[DEVICE_LIMIT]` / `[TOTAL_LIMIT]` 区分原因，旧端继续按忙碌处理。
+  本机 `provider-share:command` 与同账号管理通道增加 `get-run-limits` / `set-run-limits` / `reset-run-limits`；
+  `set-run-limits.limits` 只包含用户编辑过的 `perDevice` / `total`，写入端在锁内合并当前值并验证大小关系；
+  未编辑字段不落盘，继续跟随默认值或此前显式设置。两个字段同时提供仍兼容。
+  不向受邀者开放。旧端不认识这些管理命令时显示需要更新，不回退伪造成功。设置只影响新增实例，不中断存量。
+  大额度下控制端仍按每批最多 64 个任务轮转 poll，不提高 wire 上限。
 - **caps 新增可选 `guestRelay: true`**(`RemoteAgentCaps`)：被控端能按受邀者隔离运行(供应商级授权与受邀者出站边界都已接上)。
 - **新 op `forget { relay }`**(`parseRemoteAgentRequest`)：O 删除受邀者后请 M 清掉替它运行过的任务、受邀者目录与会话记录；
   只作用于调用方自己的 relay。旧 M 回 `REMOTE_AGENT_INVALID`(它从没接过被中转的任务)。
@@ -2160,3 +2246,11 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 `:switch-home` / `:home-choices`，并新增 `:attachment`、`:cindy-copies`、`:merge-cindy` 与 `maker:companion-avatar:resolve`，只在同一个 Desktop 内的 preload 与 Main 之间使用。
 伙伴资料快照 `companion.profile.v1` 新增可选的 `templateId`；新增偏好键 `companion.todo.v1:<id>`、`companion.routine.v1:<id>`、`companion.workbench.v1`，
 旧客户端不认识这些键，接管时忽略。镜像上传的房间消息可带 `media` 块；旧客户端按文件名显示。手机端同样不改原生指纹。
+
+## 伙伴导入的消息机器人分类
+
+`companion-import` Remote Resource 的 client primitives 可追加 `companion-import-bots-v1`。只有声明它的控制端
+（以及本机界面与 `import_agent`）的预览才会收到 `category: 'bots'` 条目及其可选 `platform` / `owner` 字段，导入时
+会先在来源 Agent 里停用这些机器人再由伙伴连接；旧控制端的预览校验不认识新分类，所以照旧把 Telegram / Discord
+放在 `connections`、不停来源，也不出现飞书 / 企业微信 / 钉钉条目。分类随预览快照与加密检查点保存，开始导入和恢复
+都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。

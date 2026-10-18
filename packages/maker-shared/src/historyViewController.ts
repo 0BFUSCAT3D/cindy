@@ -32,6 +32,8 @@ export interface HistoryViewSnapshot<T extends HistoryMessageSource> {
 }
 
 export interface HistoryViewTransport<T extends HistoryMessageSource> {
+  /** False when the owning screen already coordinates focus/reconnect snapshots. */
+  refreshOnResume?: boolean;
   page(before?: string): Promise<HistoryViewPage<T>>;
   details(summary: HistoryWorkSummary, after?: string): Promise<HistoryDetailPage<T>>;
   /** Full replacement of this view's intent; empty releases detail streaming. */
@@ -77,7 +79,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.publish({ loading: false, ...(available ? {} : { stale: this.state.ready }),
       details: new Map([...this.state.details].map(([key, detail]) =>
         [key, detail.loading ? { ...detail, loading: false } : detail])) });
-    if (available && this.active) void this.refresh();
+    if (available && this.active && this.transport.refreshOnResume !== false) void this.refresh();
   }
   getSnapshot = (): HistoryViewSnapshot<T> => this.state;
   /** Pagination feedback only; background validation must not disturb the reading viewport. */
@@ -342,7 +344,10 @@ export class HistoryViewController<T extends HistoryMessageSource> {
 
   /** View blur/background and source resets invalidate all outstanding reads. */
   setActive(active: boolean): void {
-    if (active === this.active) { if (active && !this.state.ready) void this.refresh(); return; }
+    if (active === this.active) {
+      if (active && !this.state.ready && this.transport.refreshOnResume !== false) void this.refresh();
+      return;
+    }
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     this.active = active;
@@ -352,7 +357,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.detailRuns.clear();
     this.publish({ loading: false, ...(active ? {} : { stale: this.state.ready }) });
     this.sendIntent();
-    if (active) void this.refresh();
+    if (active && this.transport.refreshOnResume !== false) void this.refresh();
   }
   reset(): void {
     this.generation++;

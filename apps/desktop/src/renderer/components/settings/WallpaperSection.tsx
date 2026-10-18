@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
 import { useEffect, useCallback, useRef, useState } from 'react';
@@ -10,7 +11,7 @@ import { Slider } from '@/components/ui/slider';
 import { Tip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useWallpaperSettings } from '@/hooks/useWallpaperSettings';
-import { getBuiltinWallpaperPreview, isSceneWallpaper } from '@/lib/wallpaper';
+import { getBuiltinWallpaperPreview, isCdnWallpaper, isSceneWallpaper } from '@/lib/wallpaper';
 import {
   APPEARANCE_LIMITS,
   DEFAULT_APPEARANCE_SETTINGS,
@@ -62,8 +63,8 @@ export function WallpaperSection() {
     };
   }, [cancelBlurPreview, previewBlur]);
   const customVideo = isCustomWallpaperVideo(customWallpaperUrl);
-  const downloading = isSceneWallpaper(wallpaperId) && downloadPending;
-  const retryable = isSceneWallpaper(wallpaperId) && downloadFailed && !downloadPending;
+  const downloading = isCdnWallpaper(wallpaperId) && downloadPending;
+  const retryable = isCdnWallpaper(wallpaperId) && downloadFailed && !downloadPending;
   const chooseWallpaper = async () => {
     setBusy(true);
     setError('');
@@ -250,7 +251,7 @@ export function WallpaperSection() {
         })}
       </div>
 
-      {/* Only the selected CDN scene downloads; the grid stays available while it loads. */}
+      {/* Only the selected wallpaper downloads; the grid stays available while it loads. */}
       {downloading && (
         <DownloadMeter
           progress={{
@@ -298,9 +299,7 @@ export function WallpaperSection() {
         </p>
       </div>
       {(error || (wallpaperId === 'custom' && playbackFailed)) && (
-        <p role="alert" className="text-12 text-[var(--text-primary)]">
-          {error || t('settings.appearance.wallpaper.customPlaybackFailed')}
-        </p>
+        <ErrorNotice role="alert" message={error || t('settings.appearance.wallpaper.customPlaybackFailed')} />
       )}
 
       <div className="h-px bg-[var(--settings-input-border)]" />
