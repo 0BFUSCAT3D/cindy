@@ -117,7 +117,8 @@
   `node scripts/publish-wallpaper-videos.mjs --verify-only --directory=<原始素材目录>` 离线核验（MP4 原片不入库，
   需指向导出目录）；`--check-cdn` 只按清单读取线上对象，干净检出即可运行；
   `node scripts/publish-wallpaper-videos.mjs --check-cdn --region=global` 只读校验清单全部线上文件；
-  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --region=global`。
+  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --directory=<原始素材目录> --region=global`，
+  目录与离线核验为同一份受审核素材（按 `<sha256>.<ext>` 或 `<壁纸 ID>.<ext>` 命名）。
   中国大陆版显式用 `--region=cn`，内部 dev 环境显式用 `--region=dev`；三个环境分别发布并校验，
   资源先于对应客户端上线。只读校验优先读取本环境的 `XDT_GLOBAL_CDN_BASE_URL` / `XDT_CDN_BASE_URL` /
   `XDT_DEVCH_CDN_BASE_URL`，未配置时读取对应 endpoint 文件；dev 不回落到生产配置。
