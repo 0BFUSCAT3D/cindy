@@ -76,6 +76,18 @@ export function readToolProcessMedia(
   }
 }
 
+/** Strip only our presentation envelope; keep ordinary JSON tool output intact. */
+export function readToolProcessText(text: string | undefined): string | undefined {
+  if (!text?.includes("cindy_process_media")) return text;
+  try {
+    const value = record(JSON.parse(text));
+    if (!Array.isArray(value?.cindy_process_media)) return text;
+    const { cindy_process_media: _media, cindy_process_media_omitted: _omitted, ...body } = value;
+    return Object.keys(body).length === 1 && typeof body.text === "string"
+      ? body.text : JSON.stringify(body, null, 2);
+  } catch { return text; }
+}
+
 export function withToolProcessMedia(
   text: string,
   media: ProcessMediaRef[],
@@ -86,11 +98,27 @@ export function withToolProcessMedia(
   } catch {
     /* ordinary tool text */
   }
-  const encode = (value: Record<string, unknown>) =>
-    JSON.stringify({ ...value, cindy_process_media: media });
+  const bytes = new TextEncoder();
+  const kept: ProcessMediaRef[] = [];
+  // Reserve the complete envelope and an omitted-count field before adding references.
+  // A single oversized signed URL must not prevent later small references from fitting.
+  let remaining = 8192 - bytes.encode(JSON.stringify({
+    text: "", cindy_process_media: [], cindy_process_media_omitted: media.length,
+  })).length;
+  for (const item of media) {
+    const cost = bytes.encode(JSON.stringify(item)).length + (kept.length ? 1 : 0);
+    if (cost > remaining) continue;
+    kept.push(item);
+    remaining -= cost;
+  }
+  const omitted = media.length - kept.length;
+  const encode = (value: Record<string, unknown>) => {
+    const { cindy_process_media: _media, cindy_process_media_omitted: _omitted, ...body } = value;
+    return JSON.stringify({ ...body, cindy_process_media: kept,
+      ...(omitted ? { cindy_process_media_omitted: omitted } : {}) });
+  };
   const encoded = encode(payload);
   // Remote history has an 8KB byte budget. Truncate prose, never cut JSON or a URL.
-  const bytes = new TextEncoder();
   if (bytes.encode(encoded).length <= 8192) return encoded;
   let low = 0;
   let high = text.length;

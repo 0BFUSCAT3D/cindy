@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import {
   collectNativeToolMedia,
   readToolProcessMedia,
+  readToolProcessText,
   withToolProcessMedia,
 } from "../toolProcessMedia";
 describe("tool process media", () => {
@@ -60,4 +61,21 @@ describe("tool process media", () => {
     expect(readToolProcessMedia(text)).toEqual(refs);
     expect(JSON.parse(text).text).toMatch(/^截图说明😀/);
   });
+});
+
+// Unit: more references than the wire can hold must remain parseable, including
+// when one signed URL alone exceeds the budget. The count records omitted items.
+it("budgets whole references and exposes the original multiline tool text", () => {
+  const refs = Array.from({ length: 100 }, (_, i) => ({ kind: "image" as const, url: `https://example.com/${i}.png?token=${"x".repeat(150)}` }));
+  refs.unshift({ kind: "image", url: "https://example.com/oversized?" + "x".repeat(9000) });
+  const encoded = withToolProcessMedia("", refs);
+  expect(new TextEncoder().encode(encoded).length).toBeLessThanOrEqual(8192);
+  const kept = readToolProcessMedia(encoded);
+  expect(kept.length).toBeGreaterThan(0);
+  expect(kept.every(ref => refs.some(original => original.url === ref.url))).toBe(true);
+  expect(JSON.parse(encoded).cindy_process_media_omitted).toBe(refs.length - kept.length);
+  expect(readToolProcessText(withToolProcessMedia("first\nsecond", refs.slice(-1)))).toBe("first\nsecond");
+  const json = '{"ok":true,"text":"note"}';
+  expect(JSON.parse(readToolProcessText(withToolProcessMedia(json, refs.slice(-1)))!)).toEqual(JSON.parse(json));
+  expect(readToolProcessText(json)).toBe(json);
 });

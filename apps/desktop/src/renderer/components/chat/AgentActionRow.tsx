@@ -1,4 +1,4 @@
-import { readToolProcessMedia } from '@cindy/maker-shared/tool-process-media';
+import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
 import { ChatVideoView } from './ChatVideoView';
 import { ChatImageView } from './ChatImageView';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
@@ -792,12 +792,13 @@ export function AgentActionRow({
 }: AgentActionRowProps) {
   const { t } = useTranslation();
   const processMedia = useMemo(() => readToolProcessMedia(toolResult), [toolResult]);
-  const compactedToolResult = parseToolResultCompactionMarker(toolResult);
+  const resultText = readToolProcessText(toolResult);
+  const compactedToolResult = parseToolResultCompactionMarker(resultText);
   const displayedToolResult = compactedToolResult
     ? t('chat.toolResultCompacted', {
         size: formatToolResultCompactionBytes(compactedToolResult.originalBytes),
       })
-    : toolResult;
+    : resultText;
   // 会话文件来源:remote 时 Read 图片走远程媒体改写、文件打开走远程分流。
   const fileCtx = useChatSessionFile();
   const toolName = message.toolName ?? '';

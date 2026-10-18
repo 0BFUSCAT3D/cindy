@@ -1,4 +1,4 @@
-import { readToolProcessMedia } from '@cindy/maker-shared/tool-process-media';
+import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
@@ -4259,8 +4259,7 @@ function ToolActionRow({
   const { colors } = useTheme();
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
-  // 媒体不在行内渲染:tool 产出的图/视频由紧随 tool_group 的独立 ToolMediaBlock
-  // 承载(对齐桌面 AgentActionRow「媒体跳出折叠卡」的语义),行内不再重复。
+  // 明确交付媒体仍由 ToolMediaBlock 承载；原生过程媒体留在所属工具步骤内。
   const hasDetails = !!(row.detail || tool.body || tool.diff || tool.secondaryBody);
   const [expanded, toggleExpanded] = useFoldableExpandedState(`toolrow-${rowKey ?? tool.key}`, false);
   const showDetails = expanded && hasDetails;
@@ -7128,7 +7127,7 @@ function ToolResultPreview({
   onOpen?: (payload: MessagePayload) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
-  const payload = buildToolResultPayload(tool);
+  const payload = buildToolResultPayload({ ...tool, secondaryBody: readToolProcessText(tool.secondaryBody) });
   if (!payload) return null;
   const preview = summarizeMessagePayloadPreview(payload, { maxPreviewChars: TOOL_RESULT_PREVIEW_MAX_CHARS });
   // 「查看内容」hint 只在纯文本结果确实被截断(字符上限或行数上限)时显示——预览已

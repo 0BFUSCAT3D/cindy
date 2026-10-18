@@ -4096,7 +4096,7 @@ it('persists bound results with the final seal, and a failed result lookup canno
 it('persists process media on its accepted result and broadcasts the durable row', async () => {
   onToolUseEvent(SESSION, { toolUseId: 'native-image', toolName: 'Read', input: {} }, null);
   const result = onToolResultFullEvent(SESSION, { toolUseId: 'native-image', fullText: 'read' }, null)!;
-  persistToolProcessMedia(SESSION, result.persistId, result.content, [{ kind: 'image', data: 'bytes' }]);
+  await persistToolProcessMedia(SESSION, result.persistId, result.content, [{ kind: 'image', data: 'bytes' }]);
   await drainPersistQueue();
   const updated = vi.mocked(updateMessageContent).mock.calls.find(([, id]) => id === result.persistId);
   expect(JSON.parse(updated![2] as string)).toEqual({ text: 'read', cindy_process_media: [
@@ -4104,4 +4104,42 @@ it('persists process media on its accepted result and broadcasts the durable row
   ] });
   expect(broadcastMessageRow).toHaveBeenCalledWith(SESSION, expect.anything(), ownerScopeState.scope);
   expect(materializeToolProcessMedia).toHaveBeenCalled();
+});
+
+// Unit: a pending SSH import must not hold the shared persistence queue, and
+// summaries arriving before/after it completes must retain the same media row.
+it('keeps unrelated writes flowing and merges later summaries with process media', async () => {
+  const refs = [{ kind: 'image' as const, url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' }];
+  let finish!: (value: typeof refs) => void;
+  vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  onToolUseEvent(SESSION, { toolUseId: 'image-race', toolName: 'Read', input: {} }, null);
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'image-race', fullText: '' }, null)!;
+  const pending = persistToolProcessMedia(SESSION, result.persistId, '', [{ kind: 'image', path: '/remote/image.png' }]);
+  onToolResultEvent(SESSION, { toolUseIds: ['image-race'], summary: 'Image read' }, null);
+  onToolUseEvent('unrelated-session', { toolUseId: 'other', toolName: 'Read', input: {} }, null);
+  await drainPersistQueue();
+  expect(createMessage).toHaveBeenCalledWith('unrelated-session', expect.objectContaining({ role: 'tool_use' }), expect.anything());
+  finish(refs);
+  await pending;
+  await drainPersistQueue();
+  expect(JSON.parse(vi.mocked(updateMessageContent).mock.calls.at(-1)![2] as string)).toEqual({ text: 'Image read', cindy_process_media: refs });
+  const summary = onToolResultEvent(SESSION, { toolUseIds: ['image-race'], summary: 'Image read successfully' }, null)!;
+  expect(JSON.parse(summary.content).cindy_process_media).toEqual(refs);
+  onToolResultFullEvent(SESSION, { toolUseId: 'image-race', fullText: 'Final image description' }, null);
+  await drainPersistQueue();
+  expect(JSON.parse(vi.mocked(updateMessageContent).mock.calls.at(-1)![2] as string)).toEqual({ text: 'Final image description', cindy_process_media: refs });
+});
+
+it('does not publish a pending media import after its owner is superseded', async () => {
+  let finish!: (value: any[]) => void;
+  vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  onToolUseEvent(SESSION, { toolUseId: 'owner-image', toolName: 'Read', input: {} }, null);
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'owner-image', fullText: '' }, null)!;
+  const pending = persistToolProcessMedia(SESSION, result.persistId, '', [{ kind: 'image', path: '/image.png' }]);
+  await drainPersistQueue();
+  ownerScopeState.current = false;
+  finish([{ kind: 'image', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' }]);
+  await pending;
+  await drainPersistQueue();
+  expect(updateMessageContent).not.toHaveBeenCalled();
 });
