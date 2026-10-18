@@ -194,17 +194,20 @@ export class ControlledOverlay {
     }
   }
 
-  /** The viewer's pointer, in global DIP, just before it is injected. While it is
-   * over the overlay or its confirmation, clicks pass through both; local clicks (on
-   * the same system cursor) get them back once the viewer's pointer leaves or rests.
-   * Each viewer button event re-arms pass-through before it is injected. */
-  viewerPointer(point: { x: number; y: number }): void {
+  /** The viewer's pointer positions of one batch, in global DIP, reported as that
+   * batch starts being injected (every earlier batch has finished). If any is over the
+   * overlay or its confirmation, clicks pass through both for the whole batch; local
+   * clicks (on the same system cursor) get them back once a batch stays clear of
+   * them or the viewer's pointer rests. */
+  viewerPointer(points: { x: number; y: number }[]): void {
     const windows = this.localOnlyWindows();
     if (!windows.length) return;
-    const over = windows.some((window) => {
-      const { x, y, width, height } = window.getBounds();
-      return point.x >= x && point.x < x + width && point.y >= y && point.y < y + height;
-    });
+    const over = points.some((point) =>
+      windows.some((window) => {
+        const { x, y, width, height } = window.getBounds();
+        return point.x >= x && point.x < x + width && point.y >= y && point.y < y + height;
+      }),
+    );
     if (this.restTimer) clearTimeout(this.restTimer);
     this.restTimer = over
       ? setTimeout(() => this.setPassThrough(false), VIEWER_POINTER_REST_MS)

@@ -227,8 +227,9 @@ export class DesktopInputHost {
       spawn: (binary: string, args: string[] = []) =>
         spawn(binary, args, { stdio: 'pipe', windowsHide: true }),
     },
-    /** Each whole-display pointer position (global DIP), reported just before it is injected. */
-    private readonly onPointer?: (point: { x: number; y: number }) => void,
+    /** The whole-display pointer positions (global DIP) of one batch, reported as that
+     * batch starts its native injection, i.e. after every earlier batch has finished. */
+    private readonly onPointer?: (points: { x: number; y: number }[]) => void,
   ) {}
   async start(displayId: string, window?: { windowId: number; pid: number }): Promise<void> {
     this.stop();
@@ -381,6 +382,7 @@ export class DesktopInputHost {
     if (!display || (!this.child && !this.windows)) throw new Error('DESKTOP_INPUT_UNAVAILABLE');
     if (events.length === 0) return;
     const batch = this.activity!.begin(events);
+    const points: { x: number; y: number }[] = [];
     this.write(
       events.map((event) => {
         if (event.kind !== 'move' && event.kind !== 'button') return event;
@@ -388,14 +390,19 @@ export class DesktopInputHost {
           x: Math.round(display.bounds.x + event.x * (display.bounds.width - 1)),
           y: Math.round(display.bounds.y + event.y * (display.bounds.height - 1)),
         };
-        this.onPointer?.(point);
+        points.push(point);
         const native = process.platform === 'win32' ? screen.dipToScreenPoint(point) : point;
         return { ...event, ...native };
       }),
       batch,
+      points,
     );
   }
-  private write(events: unknown[], batch?: { ready: Promise<void>; complete: () => void }): void {
+  private write(
+    events: unknown[],
+    batch?: { ready: Promise<void>; complete: () => void },
+    points: { x: number; y: number }[] = [],
+  ): void {
     const child = this.child;
     const line = `${JSON.stringify(events)}\n`;
     const connection = this.windows;
@@ -410,6 +417,9 @@ export class DesktopInputHost {
       if (generation !== this.generation) return;
       this.writing = this.writing.then(async () => {
         if (generation !== this.generation) return;
+        // Local-only windows must pass this batch's pointer through exactly while it is
+        // injected, not when it was queued behind earlier batches.
+        if (points.length) this.onPointer?.(points);
         if (connection) {
           if ((await connection.request(line.slice(0, -1))) !== 'ok\n')
             throw new Error('DESKTOP_INPUT_UNAVAILABLE');

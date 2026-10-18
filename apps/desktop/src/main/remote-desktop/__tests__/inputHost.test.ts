@@ -354,8 +354,9 @@ describe('native input lifecycle', () => {
     expect(c.child.stdin.write).not.toHaveBeenCalled();
     c.exit();
   });
-  // The controlled overlay needs each viewer pointer before it lands to let it pass through.
-  it('reports each whole-display pointer position before injecting it', async () => {
+  // The controlled overlay passes the viewer's pointer through only while its batch is
+  // injected: a batch queued behind an unacknowledged one must not change it early.
+  it('reports a batch’s pointer positions when its injection starts, not when queued', async () => {
     const c = childProcess();
     const pointer = vi.fn();
     const host = new DesktopInputHost(
@@ -368,20 +369,34 @@ describe('native input lifecycle', () => {
           return c.typed;
         },
       },
-      (point) => pointer(point, c.child.stdin.write.mock.calls.length),
+      (points) => pointer(points, c.child.stdin.write.mock.calls.length),
     );
     await host.start('1');
     host.input([
-      { kind: 'move', x: 0.25, y: 0.75 },
-      { kind: 'key', code: 'KeyA', down: true },
       { kind: 'button', button: 0, down: true, x: 0.5, y: 0.5 },
+      { kind: 'key', code: 'KeyA', down: true },
+      { kind: 'move', x: 0.25, y: 0.75 },
     ]);
+    host.input([{ kind: 'move', x: 0.1, y: 0.1 }]);
+    host.input([{ kind: 'key', code: 'KeyB', down: true }]);
     await flush();
+    // Only the first batch has started; it reports every position at once, before its write.
     expect(pointer.mock.calls).toEqual([
-      [{ x: 25, y: 74 }, 0],
-      [{ x: 50, y: 50 }, 0],
+      [
+        [
+          { x: 50, y: 50 },
+          { x: 25, y: 74 },
+        ],
+        0,
+      ],
     ]);
-    expect(c.child.stdin.write).toHaveBeenCalledOnce();
+    c.child.stdout.emit('data', Buffer.from('ok\n'));
+    await flush();
+    expect(pointer.mock.calls.at(-1)).toEqual([[{ x: 10, y: 10 }], 1]);
+    c.child.stdout.emit('data', Buffer.from('ok\n'));
+    await flush();
+    // A batch without pointer events never reports.
+    expect(pointer).toHaveBeenCalledTimes(2);
     host.stop();
     c.exit();
   });

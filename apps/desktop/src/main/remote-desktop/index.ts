@@ -278,7 +278,7 @@ const input = new DesktopInputHost(
     void remoteDesktop.releaseControl(true);
   },
   undefined,
-  (point) => controlledOverlay.viewerPointer(point),
+  (points) => controlledOverlay.viewerPointer(points),
 );
 const clipboardCounter = new ClipboardCounter(resolveDesktopInputBinary);
 // A display change holds native capture instead of stopping it: frames pause
