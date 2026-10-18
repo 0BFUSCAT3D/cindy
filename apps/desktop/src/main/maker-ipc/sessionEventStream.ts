@@ -97,7 +97,7 @@ export function persistSessionStreamEvent(
     if (r && Array.isArray(processMedia) && processMedia.length) {
       persistToolProcessMedia(session.id, r.persistId, r.content, processMedia, {
         workdir: session.workDir, remoteHostId: session.remoteHostId,
-      });
+      }, event.turnScope === 'background' ? 'background' : 'turn');
     }
   } else if (event.type === 'thinking') {
     // thinking final/redacted 落库收口 main;clientId=blockId(renderer 同源),无需

@@ -1762,14 +1762,20 @@ export async function persistToolProcessMedia(
   text: string,
   items: NativeToolMedia[],
   origin?: import('./cindy-media/toolProcessMedia').ToolMediaOrigin,
+  scope: 'turn' | 'background' = 'turn',
 ): Promise<void> {
   if (!items.length) return;
   const ownerScope = captureOwnerScope();
   const assertStillValid = () => {
     if (!isOwnerScopeCurrent(ownerScope)) throw ownerScopeSupersededError();
   };
-  const contentMap = toolResultContentByClientId.get(sessionId)
-    ?? new Map([[persistId, text]]);
+  // Capture the accepted result's map before fetching: a background summary
+  // may release its state while media is still being materialized.
+  const contentMap = scope === 'background'
+    ? backgroundTurnPersistStatesBySession.get(sessionId)
+      ?.find(state => state.toolResultContentByClientId.has(persistId))?.toolResultContentByClientId
+    : toolResultContentByClientId.get(sessionId) ?? new Map([[persistId, text]]);
+  if (!contentMap) return;
   try {
     assertStillValid();
     const db = getDbClient().drizzle;

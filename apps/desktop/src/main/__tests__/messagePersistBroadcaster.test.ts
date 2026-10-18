@@ -4130,6 +4130,34 @@ it('keeps unrelated writes flowing and merges later summaries with process media
   expect(JSON.parse(vi.mocked(updateMessageContent).mock.calls.at(-1)![2] as string)).toEqual({ text: 'Final image description', cindy_process_media: refs });
 });
 
+// Unit regression for #6372: background results have a separate content map.
+// Either completion order must keep the summary and media on the original row,
+// even when the summary releases the background state while import is pending.
+it.each(['summary-first', 'media-first'] as const)('retains background process media (%s)', async (order) => {
+  const refs = [{ kind: 'image' as const, url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' }];
+  let finish!: (value: typeof refs) => void;
+  vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  onToolUseEvent(SESSION, { toolUseId: 'background-image', toolName: 'collab:spawnAgent', input: {} }, null, 'background');
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'background-image', fullText: '' }, null, 'background')!;
+  const pending = persistToolProcessMedia(SESSION, result.persistId, '', [{ kind: 'image', data: 'bytes' }], undefined, 'background');
+  if (order === 'media-first') {
+    finish(refs);
+    await pending;
+    await drainPersistQueue();
+  }
+  const summary = onToolResultEvent(SESSION, { toolUseIds: ['background-image'], summary: 'Image read' }, null, 'background')!;
+  expect(summary.persistId).toBe(result.persistId);
+  await drainPersistQueue();
+  if (order === 'summary-first') {
+    finish(refs);
+    await pending;
+    await drainPersistQueue();
+  }
+  const updates = vi.mocked(updateMessageContent).mock.calls;
+  expect(updates.at(-1)?.slice(0, 2)).toEqual([SESSION, result.persistId]);
+  expect(JSON.parse(updates.at(-1)![2] as string)).toEqual({ text: 'Image read', cindy_process_media: refs });
+});
+
 it('does not publish a pending media import after its owner is superseded', async () => {
   let finish!: (value: any[]) => void;
   vi.mocked(materializeToolProcessMedia).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
