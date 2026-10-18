@@ -55,6 +55,8 @@ import {
   findInstalledGhostByInstanceId,
   installedGhostLogicalIdentity,
   parsePluginInstanceId,
+  pluginInstallStoragePart,
+  pluginNewInstallRelId,
   pluginStoragePart,
 } from '../../../shared/pluginIdentity';
 
@@ -282,12 +284,20 @@ export function GhostSummonCard({
     const identity = parsePluginInstanceId(ghostId);
     return identity ? findInstalledGhostByIdentity(installedGhosts, identity) : undefined;
   };
-  const commandIdentity = directive.kind === 'command' &&
-    typeof commandNamespace === 'string' &&
-    (commandNamespace === '@root' || isValidPluginNamespace(commandNamespace)) &&
+  const directiveNamespace =
+    directive.kind === 'command' && directive.namespace !== undefined
+      ? directive.namespace
+      : commandNamespace === '@root'
+        ? null
+        : commandNamespace;
+  const commandIdentity =
+    directive.kind === 'command' &&
+    (directiveNamespace === null ||
+      (typeof directiveNamespace === 'string' && isValidPluginNamespace(directiveNamespace))) &&
     isValidGhostId(directive.ghostId)
-    ? { namespace: commandNamespace === '@root' ? null : commandNamespace, ghostId: directive.ghostId }
-    : null;
+      ? { namespace: directiveNamespace, ghostId: directive.ghostId }
+      : null;
+
   const commandInstanceId = commandIdentity ? pluginStoragePart(commandIdentity) : null;
   const ghostForDirective = (ghostId: string) => commandIdentity && ghostId === commandIdentity.ghostId
     ? findInstalledGhostByIdentity(installedGhosts, commandIdentity)
@@ -301,6 +311,7 @@ export function GhostSummonCard({
     if (!fulfilledIds) return false;
     if (commandIdentity && commandInstanceId) {
       if (fulfilledIds.has(commandInstanceId)) return true;
+      if (fulfilledIds.has(pluginInstallStoragePart(pluginNewInstallRelId(commandIdentity)))) return true;
       const matches = installedGhosts.filter((ghost) => ghost.manifest.id === commandIdentity.ghostId);
       const match = matches.length === 1 ? matches[0] : undefined;
       return Boolean(match && fulfilledIds.has(commandIdentity.ghostId) &&

@@ -86,7 +86,105 @@ afterEach(() => {
   delete (window as { matchMedia?: unknown }).matchMedia;
 });
 
+const ROOT_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGOwbvpGEmIY1TCqYfhqAACHB7MQtEO1oAAAAABJRU5ErkJggg==';
+const ORG_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGOYbPyKJMQwqmFUw/DVAABSy7AQ0SGg2gAAAABJRU5ErkJggg==';
+
 describe('GhostSummonCard(chip 形态)', () => {
+  // #6386: existing tests covered org calls and ambiguous bare history, but not
+  // explicit root messages through the production projection into this chip.
+  // Unit tier: only the installed-list hook is replaced; no runtime/credentials.
+  it.each([
+    {
+      label: 'explicit root',
+      input: { ghost_id: 'helper', namespace: null },
+      name: 'Root',
+      icon: ROOT_ICON,
+    },
+    { label: 'encoded root', input: { ghost_id: '_root__helper' }, name: 'Root', icon: ROOT_ICON },
+    {
+      label: 'explicit organization',
+      input: { ghost_id: 'helper', namespace: 'acme' },
+      name: 'Organization',
+      icon: ORG_ICON,
+    },
+    {
+      label: 'legacy unqualified history',
+      input: { ghost_id: 'helper' },
+      name: 'helper',
+      icon: null,
+    },
+  ])(
+    'keeps $label name and icon together while running, settled and reloaded',
+    ({ input, name, icon }) => {
+      stubMatchMedia(true);
+      installedGhostsMock.mockReturnValue([
+        {
+          manifest: { id: 'helper', name: 'Root', version: '1' },
+          dir: '/tmp/_ns/_root/helper',
+          instanceKey: '_root__helper',
+          namespace: null,
+          iconDataUrl: ROOT_ICON,
+        },
+        {
+          manifest: { id: 'helper', name: 'Organization', version: '2' },
+          dir: '/tmp/_ns/acme/helper',
+          instanceKey: '_ns__acme__helper',
+          namespace: 'acme',
+          iconDataUrl: ORG_ICON,
+        },
+      ] as InstalledGhost[]);
+      const messages = [
+        { clientId: 'm1', role: 'user', content: 'help' },
+        {
+          clientId: 'call',
+          role: 'tool_use',
+          toolUseId: 'call-1',
+          toolName: 'mcp__cindy__ghost_call',
+          toolInput: { ...input, tool: 'run' },
+        },
+      ] as ChatMessage[];
+      const chip = (history: ChatMessage[], running: boolean) => {
+        const fulfilled = collectGhostCallsByUserTurn(history);
+        return (
+          <GhostFulfillmentContext.Provider value={fulfilled}>
+            <GhostSummonCard
+              directive={{ kind: 'semantic', ghostIds: [...(fulfilled.get('m1') ?? [])] }}
+              messageClientId="m1"
+              running={running}
+            />
+          </GhostFulfillmentContext.Provider>
+        );
+      };
+      const assertIdentity = (container: HTMLElement) => {
+        expect(screen.getByText(name)).toBeTruthy();
+        const images = [...container.querySelectorAll('img')].map((img) => img.getAttribute('src'));
+        expect(images).toEqual(icon ? [icon] : []);
+        for (const other of ['Root', 'Organization'].filter((value) => value !== name)) {
+          expect(screen.queryByText(other)).toBeNull();
+        }
+      };
+      const view = render(chip(messages, true));
+      assertIdentity(view.container);
+      expect(screen.getByText('调用中…')).toBeTruthy();
+      const settled = [
+        ...messages,
+        {
+          clientId: 'result',
+          role: 'tool_result',
+          toolUseId: 'call-1',
+          content: 'ok',
+        } as ChatMessage,
+      ];
+      view.rerender(chip(settled, false));
+      assertIdentity(view.container);
+      expect(screen.getByText('已调用')).toBeTruthy();
+      view.unmount();
+      const reloaded = render(chip(JSON.parse(JSON.stringify(settled)) as ChatMessage[], false));
+      assertIdentity(reloaded.container);
+      expect(screen.getByText('已调用')).toBeTruthy();
+    },
+  );
+
   it('does not attach a newly installed root version to an ambiguous historical bare id', () => {
     installedGhostsMock.mockReturnValue([
       { manifest: { id: 'helper', name: 'New Root', version: '99' },
@@ -98,6 +196,57 @@ describe('GhostSummonCard(chip 形态)', () => {
     expect(screen.queryByText('v99')).toBeNull();
     expect(container.querySelector('img[src="data:image/png;base64,AAAA"]')).toBeNull();
   });
+
+  it.each([undefined, '@root'])(
+    'keeps an explicit root command fulfilled with namespace token %s',
+    (commandNamespace) => {
+      installedGhostsMock.mockReturnValue([
+        {
+          manifest: { id: 'helper', name: 'Root', version: '1' },
+          dir: '/tmp/_ns/_root/helper',
+          instanceKey: '_root__helper',
+          namespace: null,
+          iconDataUrl: ROOT_ICON,
+        },
+        {
+          manifest: { id: 'helper', name: 'Organization', version: '2' },
+          dir: '/tmp/_ns/acme/helper',
+          namespace: 'acme',
+          iconDataUrl: ORG_ICON,
+        },
+      ] as InstalledGhost[]);
+      const directive = {
+        kind: 'command',
+        command: 'draw',
+        name: 'Root',
+        ghostId: 'helper',
+        namespace: null,
+        raw: '',
+      } as const;
+      const messages = [
+        { clientId: 'm1', role: 'user', content: 'draw' },
+        {
+          clientId: 'call',
+          role: 'tool_use',
+          toolName: 'mcp__cindy__ghost_call',
+          toolInput: { ghost_id: 'helper', namespace: null, tool: 'run' },
+        },
+      ] as ChatMessage[];
+      const { container } = render(
+        <GhostFulfillmentContext.Provider value={collectGhostCallsByUserTurn(messages)}>
+          <GhostSummonCard
+            directive={directive}
+            commandNamespace={commandNamespace}
+            messageClientId="m1"
+          />
+        </GhostFulfillmentContext.Provider>,
+      );
+      expect(screen.getByText('已调用')).toBeTruthy();
+      expect(container.querySelector('img')?.getAttribute('src')).toBe(ROOT_ICON);
+      fireEvent.click(screen.getByRole('button', { expanded: false }));
+      expect(screen.getByText('v1')).toBeTruthy();
+    },
+  );
 
   it('renders an organization semantic call instead of its same-id root neighbor', () => {
     installedGhostsMock.mockReturnValue([
