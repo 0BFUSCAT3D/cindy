@@ -437,7 +437,8 @@ export class ToolLoopGuard {
     if (burstRepeat) {
       this.lastResultObservedValue = false;
       if (!READ_ONLY_TOOL_NAMES.has(toolUse.name)) this.stableReadWindow = [];
-      if (fullFingerprint === this.lastFullFingerprint) this.observeStreak(fullFingerprint, false);
+      if (fullFingerprint !== this.lastFullFingerprint) return { kind: 'ok' };
+      this.observeStreak(fullFingerprint, false);
       return this.finalVerdict(toolUse.name);
     }
     const suspect = (verdict: ToolLoopGuardVerdict, pattern: Iterable<string>): ToolLoopGuardVerdict => {

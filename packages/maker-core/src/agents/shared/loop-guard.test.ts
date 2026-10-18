@@ -839,6 +839,22 @@ describe('ToolLoopGuard pacing and final limits', () => {
     }
     expect(verdicts.filter((verdict) => verdict.kind === 'hard')).toEqual([]);
   });
+
+  // codex P1(#6388):突发重复只有续接了当前连续段才评估时长上限,
+  // 否则早已陈旧的连续段会被算到无关的突发调用头上。
+  it('does not apply the duration cap of a stale streak to an unrelated burst result', () => {
+    const { guard, advance } = clockGuard({ burstRepeatGapMs: 2_000, finalStreakMs: 20_000 });
+    const verdicts: ToolLoopGuardVerdict[] = [];
+    for (let tick = 0; tick < 40; tick++) {
+      advance(1_000);
+      // A script polls once a second (a burst after the first), with a different result each time.
+      guard.onToolUse(`x-${tick}`, 'browser', { action: 'poll' });
+      verdicts.push(guard.onToolResult(`x-${tick}`, `busy ${tick}`));
+      // The model repeats one call four times, three seconds apart, then stops.
+      if (tick % 3 === 0 && tick < 12) verdicts.push(feed(guard, `a-${tick}`, 'browser', { action: 'snapshot' }, 'same'));
+    }
+    expect(verdicts.filter((verdict) => verdict.kind === 'hard' && verdict.final)).toEqual([]);
+  });
 });
 
 describe('classifyToolContractError', () => {
