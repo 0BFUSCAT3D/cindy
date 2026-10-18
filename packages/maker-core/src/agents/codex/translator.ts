@@ -420,7 +420,7 @@ function failSamplingSegment(rt: CodexRuntimeState, threadId: string, turnId: st
 /** A stopped retry remains auditable; a successful turn never marks its last reply failed. */
 export function finishCodexSamplingTurn(
   rt: CodexRuntimeState, threadId: string, turnId: string, status: string,
-  error?: ErrorNotification['params']['error'] | null,
+  error?: Parameters<typeof classifyCodexError>[0],
 ) {
   const key = JSON.stringify([threadId, turnId]);
   const segment = rt.samplingSegments.get(key);
