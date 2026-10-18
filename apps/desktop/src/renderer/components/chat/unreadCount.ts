@@ -96,12 +96,13 @@ export function collectUnreadKeys({
     start = lastSeenIdx + 1;
   }
   let turnKey = UNKNOWN_TURN_KEY;
-  // 起点在已见区域内（而非本轮新增行里）：新增行续接的是已见回合。
+  // 续接已见回合，且该回合起点是这一轮才补载出来的（不在 prevIds 里）：此前给这些
+  // 行记的是「起点未知」键。起点早已见过的回合（如之后新到的 user）不属于此类。
   let boundaryBeforeStart = false;
   for (let i = start - 1; i >= 0; i--) {
     if (isTurnBoundary(messages[i])) {
       turnKey = `turn:${messages[i].clientId}`;
-      boundaryBeforeStart = true;
+      boundaryBeforeStart = !prevIds.has(messages[i].clientId);
       break;
     }
   }

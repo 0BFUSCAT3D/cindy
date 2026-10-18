@@ -45,6 +45,19 @@ describe('countUnreadAdded', () => {
     expect(
       collectUnreadKeys({ prevIds: new Set(['a1', 'a2']), messages: loaded, nearBottom: false }),
     ).toEqual({ keys: ['turn:u0'], supersedes: ['turn:'] });
+    // 起点早已见过的回合（外部 user 之后的又一批回复）续接时，不得撤销更早回复的未知键。
+    expect(
+      collectUnreadKeys({
+        prevIds: new Set(['a1', 'u9', 'a9']),
+        messages: [
+          msg('a1', 'assistant'),
+          msg('u9', 'user'),
+          msg('a9', 'assistant'),
+          msg('a10', 'assistant'),
+        ],
+        nearBottom: false,
+      }),
+    ).toEqual({ keys: ['turn:u9'], supersedes: [] });
     // 新到的外部 user 开启的新回复在本轮行内，不得撤销旧键。
     expect(
       collectUnreadKeys({
