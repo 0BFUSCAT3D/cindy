@@ -122,6 +122,28 @@ describe('create_worker tool', () => {
     }));
   });
 
+  it('wraps a single-element-collapsed {item:string} and bare string into an array', async () => {
+    // 实测形态: 单图时 <item> 单实例被兼容层折叠成标量 —— scout 单图 4 连拒的根因。
+    const { registry, createWorker } = setup();
+    const wrapped = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'w1',
+      initial_task: 'review', images: { item: 'cindy-media://blobs/a.png' },
+    });
+    expect(wrapped.isError).toBeFalsy();
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({
+      initialTaskImages: ['cindy-media://blobs/a.png'],
+    }));
+
+    const bare = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'w2',
+      initial_task: 'review', images: 'cindy-media://blobs/a.png',
+    });
+    expect(bare.isError).toBeFalsy();
+    expect(vi.mocked(createWorker).mock.calls[1]?.[0]).toMatchObject({
+      initialTaskImages: ['cindy-media://blobs/a.png'],
+    });
+  });
+
   it('still rejects non-string image entries after flattening', async () => {
     const { registry, createWorker } = setup();
     const result = await registry.call('create_worker', {

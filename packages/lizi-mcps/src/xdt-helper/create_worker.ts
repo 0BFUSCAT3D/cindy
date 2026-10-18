@@ -82,22 +82,25 @@ export interface CreateWorkerDeps {
 
 /**
  * 图片地址列表的共享形状（send_to_worker / create_worker / create_workers 共用）。
- * 要求扁平字符串数组；实测两类误传形态自愈而不是报参数错：
+ * 要求扁平字符串数组；实测两类误传形态自愈而不是报参数错（glm 等 openai-completions 兼容层
+ * 把数组参数序列化成 <item> 重复标签，单元素时会折叠成标量）：
  * 1. 多套一层：[[a],[b]] → 拍平；
- * 2. XML 风格包装：{item:[a,b]}（模型/兼容层把数组参数输出成 <item> 重复标签）→ 取 item。
+ * 2. XML 风格包装：{item:[a,b]} → 取 item；单元素折叠 {item:a} → [a]；裸标量 a → [a]。
  */
 export const imagesListSchema = z.preprocess(
   (value) => {
     if (Array.isArray(value)) {
       return value.some((item) => Array.isArray(item)) ? (value as unknown[]).flat(1) : value;
     }
-    if (
-      value
-      && typeof value === 'object'
-      && Array.isArray((value as { item?: unknown }).item)
-    ) {
-      return (value as { item: unknown[] }).item;
+    if (value && typeof value === 'object') {
+      const item = (value as { item?: unknown }).item;
+      if (item === undefined) return value;
+      value = item;
+      if (Array.isArray(value)) {
+        return value.some((x) => Array.isArray(x)) ? (value as unknown[]).flat(1) : value;
+      }
     }
+    if (typeof value === 'string' && value.trim().length > 0) return [value];
     return value;
   },
   z.array(z.string().min(1)).max(8),
