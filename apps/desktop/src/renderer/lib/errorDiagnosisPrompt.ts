@@ -7,7 +7,7 @@
 import type { TFunction } from 'i18next';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
-import { plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import { getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
 import { resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 
 export interface ErrorDiagnosisSource {
@@ -31,10 +31,20 @@ export function buildErrorDiagnosisPrompt(
   });
 }
 
+/**
+ * 新建任务页已有未发送的内容时不覆盖：诊断提示追加在原文之后，附件与浏览器评论原样保留。
+ * 草稿为空时与其他预填入口一致，整体写入。
+ */
 export function prefillErrorDiagnosisDraft(prompt: string): void {
+  const existing = getDraft(NEW_MAKER_DRAFT_KEY);
+  const added = plainTextToTiptapDoc(prompt);
+  const existingContent = existing?.text?.content ?? [];
   saveDraft(NEW_MAKER_DRAFT_KEY, {
-    text: plainTextToTiptapDoc(prompt),
-    attachments: [],
+    ...(existing?.browserComments?.length ? { browserComments: existing.browserComments } : {}),
+    text: existingContent.length > 0
+      ? { ...added, content: [...existingContent, ...(added.content ?? [])] }
+      : added,
+    attachments: existing?.attachments ?? [],
   });
   resetDraftWorkspaceTargets();
 }

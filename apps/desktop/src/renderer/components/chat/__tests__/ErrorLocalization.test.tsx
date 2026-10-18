@@ -19,7 +19,9 @@ import { ErrorBanner } from '../ErrorBanner';
 import { ErrorMessageCard } from '../ErrorMessageCard';
 import { ErrorTailErrorBanner } from '../InterruptedTurnBanner';
 import { remoteErrorMessageForBanner } from '@/lib/makerChatStore';
-import { buildErrorDiagnosisPrompt } from '@/lib/errorDiagnosisPrompt';
+import { buildErrorDiagnosisPrompt, prefillErrorDiagnosisDraft } from '@/lib/errorDiagnosisPrompt';
+import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
 
 const locales = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko };
 const raw = JSON.stringify({ error: {
@@ -43,6 +45,19 @@ it('offers diagnosis after expanding details with a redacted prompt for the fail
   expect(prompt).toContain(en.chat.errorBanner.replyFailed);
   expect(prompt).toContain('Unexpected provider failure');
   expect(prompt).not.toContain('private-test-value');
+});
+
+// 新建任务页已有未发送内容时，诊断预填只追加，不能丢掉用户的文字与附件。
+it('appends the diagnosis prompt to an unsent new-task draft instead of replacing it', () => {
+  const attachment = { id: 'a1', name: 'note.txt', path: '/tmp/note.txt' } as never;
+  saveDraft(NEW_MAKER_DRAFT_KEY, { text: plainTextToTiptapDoc('我写到一半的内容'), attachments: [attachment] });
+  prefillErrorDiagnosisDraft('请帮我诊断这个错误');
+  const draft = getDraft(NEW_MAKER_DRAFT_KEY)!;
+  const text = JSON.stringify(draft.text);
+  expect(text.indexOf('我写到一半的内容')).toBeGreaterThanOrEqual(0);
+  expect(text.indexOf('请帮我诊断这个错误')).toBeGreaterThan(text.indexOf('我写到一半的内容'));
+  expect(draft.attachments).toHaveLength(1);
+  clearDraft(NEW_MAKER_DRAFT_KEY);
 });
 
 describe.each(SUPPORTED_LOCALES)('error presentation in %s', locale => {
