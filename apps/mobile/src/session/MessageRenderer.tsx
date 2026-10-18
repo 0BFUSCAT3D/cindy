@@ -2533,11 +2533,15 @@ export function MessageRenderer({
       useNativeDriver: true,
     });
     initialRevealAnimationRef.current = revealAnimation;
-    revealAnimation.start(({ finished }) => {
+    revealAnimation.start(() => {
       if (initialRevealAnimationRef.current === revealAnimation) {
         initialRevealAnimationRef.current = null;
       }
-      if (finished) finish();
+      // Native cancellation must also release the initial visibility gate. Once
+      // this handle is cleared, positioning cannot reveal the list through it,
+      // and a retained list will not rerun initial positioning on reentry.
+      // finish() fences callbacks from a previous history or an unmounted list.
+      finish();
     });
 
     // Seek once, then reconcile the bookmark as estimated row heights become measured.
