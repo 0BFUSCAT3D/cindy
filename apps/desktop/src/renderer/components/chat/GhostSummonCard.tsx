@@ -70,6 +70,19 @@ export const GhostFulfillmentContext = createContext<ReadonlyMap<string, Readonl
   new Map(),
 );
 
+/** Match call status only; legacy bare directives must not acquire a live install's identity. */
+export function hasGhostSummonFulfillment(
+  fulfilledIds: ReadonlySet<string> | undefined,
+  ghostId: string,
+): boolean {
+  if (!fulfilledIds) return false;
+  if (fulfilledIds.has(ghostId)) return true;
+  return (
+    isValidGhostId(ghostId) &&
+    fulfilledIds.has(pluginInstallStoragePart(pluginNewInstallRelId({ namespace: null, ghostId })))
+  );
+}
+
 /**
  * 召唤标注展示数据:发送期追加段解析出的 command / mention 之外,再加一种
  * semantic——消息没有任何追加段、AI 纯靠语义自主召唤(只有 ghostId 清单,
@@ -317,14 +330,14 @@ export function GhostSummonCard({
       return Boolean(match && fulfilledIds.has(commandIdentity.ghostId) &&
         installedGhostLogicalIdentity(match).namespace === commandIdentity.namespace);
     }
-    if (fulfilledIds.has(ghostId)) return true;
+    if (hasGhostSummonFulfillment(fulfilledIds, ghostId)) return true;
     const ghost = ghostForDirective(ghostId);
     return ghost ? fulfilledIds.has(pluginStoragePart(installedGhostLogicalIdentity(ghost))) : false;
   };
   // 软提示的兑现子集(方案 2):AI 真调了才算,只提及没调的不升级(不撒谎)。
   const fulfilled =
     directive.kind === 'mention' && fulfilledIds
-      ? directive.ghosts.filter((g) => fulfilledIds.has(g.ghostId))
+      ? directive.ghosts.filter((g) => hasGhostSummonFulfillment(fulfilledIds, g.ghostId))
       : [];
 
   if (directive.kind === 'mention' && fulfilled.length === 0) {
