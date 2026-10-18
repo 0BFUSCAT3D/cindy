@@ -11312,10 +11312,6 @@
       "selectionCount_one": "{{count}} selection",
       "selectionCount_other": "{{count}} selections"
     },
-    "htmlAnswer": {
-      "preview": "Preview",
-      "source": "View source"
-    },
     "mermaid": {
       "clickToZoom": "Click to zoom",
       "zoom": "Zoom",

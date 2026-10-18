@@ -11268,10 +11268,6 @@
       "selectionCount_one": "인용 {{count}}개",
       "selectionCount_other": "인용 {{count}}개"
     },
-    "htmlAnswer": {
-      "preview": "미리 보기",
-      "source": "소스 보기"
-    },
     "mermaid": {
       "clickToZoom": "클릭하여 확대",
       "zoom": "확대",

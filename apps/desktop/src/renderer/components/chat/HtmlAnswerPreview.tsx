@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Code2, Eye } from 'lucide-react';
-import { htmlAnswerHeight, prepareHtmlAnswer } from '@cindy/maker-shared/html-answer';
+import { HTML_ANSWER_MAX_HEIGHT, htmlAnswerHeight, prepareHtmlAnswer } from '@cindy/maker-shared/html-answer';
 import { Button } from '@/components/ui/button';
 
 function hostTheme() {
@@ -18,8 +17,7 @@ export function HtmlAnswerPreview({ html }: { html: string }) {
   const { t } = useTranslation();
   const frame = useRef<HTMLIFrameElement>(null);
   const [theme, setTheme] = useState(hostTheme);
-  const [source, setSource] = useState(false);
-  const [height, setHeight] = useState(320);
+  const [height, setHeight] = useState(1);
   const [url, setUrl] = useState<string>();
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -42,7 +40,6 @@ export function HtmlAnswerPreview({ html }: { html: string }) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (source) return;
     let disposed = false;
     let viewId: string | undefined;
     const release = () => {
@@ -50,7 +47,7 @@ export function HtmlAnswerPreview({ html }: { html: string }) {
     };
     setUrl(undefined);
     setFailed(false);
-    setHeight(320);
+    setHeight(1);
     void window.electronAPI
       .htmlAnswerPreview({ html: documentHtml })
       .then((view) => {
@@ -66,7 +63,7 @@ export function HtmlAnswerPreview({ html }: { html: string }) {
       disposed = true;
       release();
     };
-  }, [documentHtml, source, attempt]);
+  }, [documentHtml, attempt]);
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (!frame.current || event.source !== frame.current.contentWindow) return;
@@ -76,36 +73,20 @@ export function HtmlAnswerPreview({ html }: { html: string }) {
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
   }, []);
-  const showSource = source || failed;
   return (
-    <div className="my-3 min-w-0" data-html-answer="true">
-      <div className="flex justify-end pb-1">
-        <Button
-          variant="secondary"
-          tone="quiet"
-          size="sm"
-          compact
-          title={t(showSource ? 'chat.htmlAnswer.preview' : 'chat.htmlAnswer.source')}
-          aria-label={t(showSource ? 'chat.htmlAnswer.preview' : 'chat.htmlAnswer.source')}
-          onClick={() => {
-            if (failed) setAttempt((value) => value + 1);
-            setFailed(false);
-            setSource(!showSource);
-          }}
-        >
-          {showSource ? <Eye size={14} /> : <Code2 size={14} />}
+    <div className="min-w-0" data-html-answer="true">
+      {failed ? (
+        <Button variant="secondary" tone="quiet" size="sm"
+          onClick={() => setAttempt(value => value + 1)}>
+          {t('commonUi.retry')}
         </Button>
-      </div>
-      {showSource ? (
-        <pre className="overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--msg-tool-card-bg)] p-3">
-          <code>{html}</code>
-        </pre>
       ) : url ? (
         <iframe
           ref={frame}
           src={url}
           title="HTML"
           sandbox="allow-scripts"
+          scrolling={height >= HTML_ANSWER_MAX_HEIGHT ? 'auto' : 'no'}
           className="block w-full border-0"
           style={{ height }}
         />

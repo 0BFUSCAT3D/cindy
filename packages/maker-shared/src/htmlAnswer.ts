@@ -10,6 +10,9 @@ export function htmlAnswerDocument(text: string): string | null {
     : null;
 }
 
+// Bound pathological documents without making ordinary long answers a nested scroller.
+export const HTML_ANSWER_MAX_HEIGHT = 100_000;
+
 export function htmlAnswerHeight(value: unknown): number | null {
   if (!value || typeof value !== "object") return null;
   const data = value as { type?: unknown; height?: unknown };
@@ -17,7 +20,7 @@ export function htmlAnswerHeight(value: unknown): number | null {
     typeof data.height === "number" &&
     Number.isFinite(data.height) &&
     data.height > 0
-    ? Math.max(160, Math.min(1200, Math.ceil(data.height)))
+    ? Math.max(1, Math.min(HTML_ANSWER_MAX_HEIGHT, Math.ceil(data.height)))
     : null;
 }
 
@@ -29,6 +32,7 @@ export function prepareHtmlAnswer(
   const encodedTheme = JSON.stringify(theme).replace(/</g, "\\u003c");
   return `<meta name="viewport" content="width=device-width, initial-scale=1"><style>
   :root { color-scheme: ${theme.dark ? "dark" : "light"}; }
+  html, body { min-height: 0 !important; }
   body { margin: 0; font: 16px/1.6 system-ui, sans-serif; background: var(--cindy-answer-bg); color: var(--cindy-answer-fg); overflow-wrap: anywhere; }
   img,video,svg,canvas { max-width: 100%; } * { box-sizing: border-box; }
   </style><script>(()=>{
@@ -38,7 +42,8 @@ export function prepareHtmlAnswer(
     addEventListener('DOMContentLoaded',()=>{
       let previous=0;
       const measure=()=>{
-        const height=Math.ceil(document.body.getBoundingClientRect().height);
+        const body=document.body,style=getComputedStyle(body);
+        const height=Math.max(1,Math.ceil(Math.max(body.scrollHeight,body.getBoundingClientRect().height)+(parseFloat(style.marginTop)||0)+(parseFloat(style.marginBottom)||0)));
         if(height===previous)return;previous=height;
         const data={type:'cindy-html-answer-size',height};
         if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(data));

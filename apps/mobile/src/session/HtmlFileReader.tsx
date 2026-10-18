@@ -131,8 +131,8 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
   /> : null}{(!preview || paintedPreview !== preview) && loading ? <View key="loading" style={StyleSheet.absoluteFill} pointerEvents="none">{loading}</View> : null}</View></View>;
 }
 
-export function HtmlFileReader({ html, testID, onContentHeight }: {
-  html: string; testID?: string; onContentHeight?: (height: number) => void;
+export function HtmlFileReader({ html, testID, onContentHeight, scrollEnabled = true }: {
+  html: string; testID?: string; onContentHeight?: (height: number) => void; scrollEnabled?: boolean;
 }) {
   // CSP 注入放在**渲染载体这一层**,而不是取件那一层:任何进到这个 WebView 的
   // HTML 都必须带策略,不管它有没有同目录资源(见 htmlPreviewCsp 的说明)。
@@ -160,7 +160,7 @@ export function HtmlFileReader({ html, testID, onContentHeight }: {
         onLoadEnd={() => { documentSettledRef.current = true; }}
         // 见头注:收窄会让 RNW 在回调前把非白名单 URL 交给 Linking,绕过下面的策略。
         originWhitelist={['*']}
-        scrollEnabled
+        scrollEnabled={scrollEnabled}
         // Android:关掉多窗口(review P1)。留着默认支持时,`window.open(...)` 与
         // `target="_blank"` 会走 onCreateWindow 而**不经过** onShouldStartLoadWithRequest,
         // 于是程序化打开 https 或自定义 scheme 能整个绕过上面的 click 门与 scheme 拒绝。

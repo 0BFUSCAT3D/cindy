@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  HTML_ANSWER_MAX_HEIGHT,
   htmlAnswerDocument,
   htmlAnswerHeight,
   prepareHtmlAnswer,
@@ -18,9 +19,10 @@ describe("HTML answer presentation", () => {
     expect(
       htmlAnswerHeight({ type: "cindy-html-answer-size", height: 500 }),
     ).toBe(500);
+    expect(htmlAnswerHeight({ type: "cindy-html-answer-size", height: 4800 })).toBe(4800);
     expect(
       htmlAnswerHeight({ type: "cindy-html-answer-size", height: 1e9 }),
-    ).toBe(1200);
+    ).toBe(HTML_ANSWER_MAX_HEIGHT);
     expect(
       htmlAnswerHeight({ type: "cindy-html-answer-size", height: NaN }),
     ).toBeNull();
