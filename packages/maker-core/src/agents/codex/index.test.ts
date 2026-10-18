@@ -592,13 +592,19 @@ describe('Codex archive synchronization', () => {
     MockCodexTransport.onCreate = transport => transport.setMockResponse('thread/read', { result: {
       thread: { id: 'archived-thread', path: '/history/archived_sessions/rollout.jsonl' },
     } });
+    const prepareCodexExtraSpawnConfig = vi.fn(async () => ({ extraArgs: [], extraEnv: {} }));
     const agent = new CodexAgent(createDeps({}, {
       resolveCodexThreadStorage: async () => ({ historyHome: '/history', sqliteHome: '/state' }),
       recordCodexThreadLocation,
+      prepareCodexExtraSpawnConfig,
     }));
     try {
       await agent.syncThreadArchiveState({ threadId: 'archived-thread', archived: true, assertCurrent: () => {} });
       expect(createdTransports).toHaveLength(1);
+      // Archive hosts never run turns; the host builds no MCP bridge for them.
+      expect(prepareCodexExtraSpawnConfig).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        hostPurpose: 'control-plane', nativeStorageOnly: true,
+      }));
       expect(createdStdioOptions[0].extraArgs).toContain('sqlite_home="/state"');
       expect(recordCodexThreadLocation).toHaveBeenCalledWith('archived-thread', '/state', '/history/archived_sessions/rollout.jsonl');
       await agent.releaseArchiveHosts();
