@@ -5023,10 +5023,6 @@
           "name": "Android 自動化",
           "description": "接続された Android デバイスを表示・操作します。"
         },
-        "ios-simulator": {
-          "name": "iOS シミュレータ",
-          "description": "iOS シミュレータでアプリをインストール、実行、検証します。"
-        },
         "browser": {
           "name": "ブラウザ",
           "description": "Web ページを閲覧、読み取り、撮影、操作します。"
@@ -6934,10 +6930,10 @@
         "embeddedSimulator": {
           "title": "旧内蔵シミュレーターは提供を終了しました",
           "description": "Cindy は旧内蔵シミュレーターを削除しました。",
-          "replacementName": "Baguette シミュレーター",
+          "replacementName": "iOS シミュレータ",
           "replacementDescription": "Cindy のサイドバーでリアルタイム画面を表示し、デバイスの操作、App の実行、スクリーンショットの撮影ができます。",
           "requirements": "Apple Silicon Mac、macOS 15 以降、フルバージョンの Xcode が必要です。",
-          "dataNotice": "元のシミュレーターのデバイスや App データは削除されません。Baguette をインストールしても、デバイス、App、ログイン状態は自動移行されません。"
+          "dataNotice": "元のシミュレーターのデバイスや App データは削除されません。新しい iOS シミュレータをインストールしても、デバイス、App、ログイン状態は自動移行されません。"
         }
       },
       "usage": {

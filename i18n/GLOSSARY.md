@@ -357,7 +357,7 @@ Agent 遇到需要主人填写的界面（选择、文本、密码、验证码�
 
 ### iOS Simulator
 
-Apple Simulator 的用户可见名称，也用于原内置模拟器的下线说明。Cindy 已移除内置查看器能力。iOS 保留官方大小写；中文使用「模拟器」，日语使用「シミュレータ」，韩语使用「시뮬레이터」。译法仍为 proposed。
+Apple Simulator 的用户可见名称，也用于原内置模拟器的下线说明及替代它的官方插件（baguette-simulator）。Cindy 已移除内置查看器能力。iOS 保留官方大小写；中文使用「模拟器」，日语使用「シミュレータ」，韩语使用「시뮬레이터」。译法仍为 proposed。
 
 ### Lark
 

@@ -5023,10 +5023,6 @@
           "name": "Android 自动化",
           "description": "查看、点击和操作连接到本机的 Android 设备。"
         },
-        "ios-simulator": {
-          "name": "iOS 模拟器",
-          "description": "在 iOS 模拟器中安装、运行和检查应用。"
-        },
         "browser": {
           "name": "浏览器",
           "description": "浏览网页、读取页面、截图和操作网页。"
@@ -6934,10 +6930,10 @@
         "embeddedSimulator": {
           "title": "原内置模拟器已下线",
           "description": "Cindy 已移除原内置模拟器。",
-          "replacementName": "Baguette 模拟器",
-          "replacementDescription": "在 Cindy 侧边栏查看实时画面，操作设备、运行 App 和截图。",
+          "replacementName": "iOS 模拟器",
+          "replacementDescription": "在 Cindy 侧边栏查看实时画面，操作设备、运行 App 和截图。基于开源项目 Baguette。",
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更高版本及完整 Xcode。",
-          "dataNotice": "原模拟器的设备和应用数据不会被删除。安装 Baguette 不会自动迁移设备、App 或登录状态。"
+          "dataNotice": "原模拟器的设备和应用数据不会被删除。安装新的 iOS 模拟器不会自动迁移设备、App 或登录状态。"
         }
       },
       "usage": {
