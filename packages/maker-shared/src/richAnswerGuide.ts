@@ -1,6 +1,8 @@
 /** Single delivery protocol used by host instructions and optional capability lookup. */
 export const RICH_ANSWER_GUIDE = `Cindy can render a streaming component document directly in an assistant progress message or final answer. You choose content and layout; ordinary Markdown remains available. No HTML file or extra model call is needed.
 
+Your canvas is an inline, progressively rendered part of the conversation, within the message width on desktop or mobile. Cindy supplies the surrounding application surface. The same answer can be viewed in light or dark mode, and the user can switch modes after generation. Unspecified colors use the host defaults. When choosing your own backgrounds, text, chart or SVG colors, consider their contrast together in both modes; use {light:"...",dark:"..."} color pairs when they need to adapt. Literal colors remain unchanged across themes. Backgrounds and other visual choices are yours; this describes the rendering environment, not a prescribed visual style.
+
 To use components, place newline-delimited JSON operations inside a cindy-ui fenced block. Each complete line is rendered immediately; do not wait for a whole document. A code example must be nested inside a longer outer Markdown fence so it stays an example.
 
 Each block starts seq=1 and increments by one. Its first operation has version:1. Node id: 1–80 letters/digits/underscore/hyphen, stable across edits. Operations:
