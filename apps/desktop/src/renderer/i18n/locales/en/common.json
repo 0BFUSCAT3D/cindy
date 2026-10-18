@@ -11221,6 +11221,21 @@
       "continueTitle": "Continue from where the task left off (completed steps will not be repeated)",
       "dismissTitle": "Dismiss this interruption notice"
     },
+    "interruptedResumeDialog": {
+      "title": "Resume interrupted sessions",
+      "description_one": "{{appName}} quit unexpectedly and {{count}} session didn't finish. Selected sessions will check the conversation and pick up where they left off.",
+      "description_other": "{{appName}} quit unexpectedly and {{count}} sessions didn't finish. Selected sessions will check the conversation and pick up where they left off.",
+      "selectAll": "Select all",
+      "selectedCount": "{{selected}} of {{total}} selected",
+      "interruptedAgo": "interrupted {{time}} ago",
+      "interruptedJustNow": "interrupted just now",
+      "continueSelected_one": "Resume {{count}} session",
+      "continueSelected_other": "Resume {{count}} sessions",
+      "continueNone": "Resume",
+      "later": "Not now",
+      "continueFailed_one": "{{count}} session couldn't resume. Open it to try again.",
+      "continueFailed_other": "{{count}} sessions couldn't resume. Open them to try again."
+    },
     "unreadFailedScheduleBanner": {
       "text": "An automatic run failed.",
       "precheck": "Automatic checks are temporarily blocked.",

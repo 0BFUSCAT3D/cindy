@@ -11176,6 +11176,21 @@
       "continueTitle": "從中斷處繼續完成任務（不會重複已完成的步驟）",
       "dismissTitle": "關閉此中斷提示"
     },
+    "interruptedResumeDialog": {
+      "title": "繼續上次中斷的任務",
+      "description_one": "{{appName}} 上次意外結束，有 {{count}} 個任務沒做完。選取的任務會根據對話紀錄判斷進度，從中斷的地方接著做。",
+      "description_other": "{{appName}} 上次意外結束，有 {{count}} 個任務沒做完。選取的任務會根據對話紀錄判斷進度，從中斷的地方接著做。",
+      "selectAll": "全選",
+      "selectedCount": "已選 {{selected}} / {{total}}",
+      "interruptedAgo": "{{time}}前中斷",
+      "interruptedJustNow": "剛剛中斷",
+      "continueSelected_one": "繼續 {{count}} 個任務",
+      "continueSelected_other": "繼續 {{count}} 個任務",
+      "continueNone": "繼續任務",
+      "later": "暫不繼續",
+      "continueFailed_one": "有 {{count}} 個任務未能繼續，可以開啟任務後重試。",
+      "continueFailed_other": "有 {{count}} 個任務未能繼續，可以開啟任務後重試。"
+    },
     "unreadFailedScheduleBanner": {
       "text": "先前有自動執行失敗。",
       "precheck": "自動檢查暫時受阻。",
