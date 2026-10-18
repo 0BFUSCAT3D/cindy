@@ -106,7 +106,7 @@ function boundaries(stubs, replaced, overlay) {
         if (!candidate) return undefined;
         const stub = stubs.get(withoutExtension(candidate));
         if (!stub) {
-          // --compare: a file the old revision imports but the worktree no longer has.
+          // --compare: resolve as the old revision would (moved, deleted or re-extensioned files).
           const old = overlay?.resolve(candidate);
           return old ? { path: old } : undefined;
         }

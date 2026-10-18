@@ -115,8 +115,10 @@ function compareOverlay(ref) {
         .map((file) => path.join(root, file)),
     );
   const atRef = absolute(git(['ls-tree', '-r', '--name-only', ref, '--', ...COMPARE_SCOPE]));
+  // Untracked files are new since the ref too.
   const changed = absolute(
-    git(['diff', '--no-renames', '--name-only', ref, '--', ...COMPARE_SCOPE]),
+    git(['diff', '--no-renames', '--name-only', ref, '--', ...COMPARE_SCOPE]) +
+      git(['ls-files', '--others', '--exclude-standard', '--', ...COMPARE_SCOPE]),
   );
   const contents = new Map();
   const isFile = (file) => existsSync(file) && statSync(file).isFile();
@@ -124,6 +126,8 @@ function compareOverlay(ref) {
     changed,
     atRef,
     used: new Set(),
+    // Worktree files the ref side resolved past (e.g. foo.tsx where the ref had foo.ts).
+    superseded: new Set(),
     has: (file) => changed.has(file) && atRef.has(file),
     get(file) {
       if (!this.has(file)) return undefined;
@@ -140,9 +144,14 @@ function compareOverlay(ref) {
       }
       return contents.get(file);
     },
+    // Resolves an import the way the ref's tree would; null when that matches the worktree.
     resolve(candidate) {
-      if (MODULE_SUFFIXES.some((suffix) => isFile(candidate + suffix))) return null;
-      return MODULE_SUFFIXES.map((suffix) => candidate + suffix).find((file) => atRef.has(file));
+      const first = (exists) => MODULE_SUFFIXES.map((suffix) => candidate + suffix).find(exists);
+      const old = first((file) => atRef.has(file));
+      const now = first(isFile);
+      if (!old || old === now) return null;
+      if (now) this.superseded.add(now);
+      return old;
     },
   };
 }
@@ -307,14 +316,20 @@ export async function runPlan(plan, options, externalSignal) {
         const overlay = compareOverlay(options.compare);
         const loaded = [...after.inputs, ...after.styleInputs];
         // Nothing this page loads differs from the ref: a second render would be identical.
-        if (loaded.some((file) => overlay.has(file)))
+        // New files count too: one may replace a ref file under another extension.
+        if (loaded.some((file) => overlay.changed.has(file)))
           item.bundles.before = await measure('buildMs', () => buildPage(item.definition, overlay));
         const relative = (file) => path.relative(root, file);
         page.compare = {
           ref: options.compare,
           replacedFromRef: [...overlay.used].map(relative).sort(),
           newSinceRef: loaded
-            .filter((file) => overlay.changed.has(file) && !overlay.atRef.has(file))
+            .filter(
+              (file) =>
+                overlay.changed.has(file) &&
+                !overlay.atRef.has(file) &&
+                !overlay.superseded.has(file),
+            )
             .map(relative),
           // Loaded as a module by Tailwind from disk, so both sides use the current version.
           currentOnBothSides: git(['diff', '--name-only', options.compare, '--', TAILWIND_CONFIG])
@@ -491,8 +506,9 @@ export async function runPlan(plan, options, externalSignal) {
       let opened;
       let timer;
       let work;
-      // After a timeout the scenario may still be running; it must not capture or act anymore.
+      // After a timeout or interrupt the scenario may still be running; it must not capture anymore.
       let timedOut = false;
+      let interrupted = false;
       const started = performance.now();
       // Generic checks run at every capture, so states reached in check() (open menus, new
       // messages) are checked too. Host mutations are checked once after check().
@@ -510,7 +526,8 @@ export async function runPlan(plan, options, externalSignal) {
         if (role === 'after' && options.mode === 'check') result.errors.push(...audited.errors);
       };
       const capture = async (name, captureOptions = {}, { audit = true, failure = false } = {}) => {
-        if (timedOut && !failure) throw new Error(`variant timed out before capture ${name}`);
+        if ((timedOut || interrupted) && !failure)
+          throw new Error(`variant stopped before capture ${name}`);
         const file = path.join(dir, `${name}.png`);
         const target = captureOptions.locator ?? opened.page;
         await target.screenshot({ path: path.join(evidence, file), timeout: 5000, scale: 'css' });
@@ -635,10 +652,12 @@ export async function runPlan(plan, options, externalSignal) {
             }, options.timeout);
           }),
           new Promise((_, reject) => {
-            if (controller.signal.aborted) reject(controller.signal.reason);
-            controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
-              once: true,
-            });
+            const stop = () => {
+              interrupted = true;
+              reject(controller.signal.reason);
+            };
+            if (controller.signal.aborted) stop();
+            controller.signal.addEventListener('abort', stop, { once: true });
           }),
         ]);
         mergeAudits();
@@ -662,20 +681,21 @@ export async function runPlan(plan, options, externalSignal) {
         result.status = role === 'before' ? 'before-failed' : 'failed';
       } finally {
         clearTimeout(timer);
-        if (timedOut) {
-          // Pending Playwright calls fail within the page default timeout once the page is gone.
+        if (timedOut || interrupted) {
+          // Pending Playwright calls fail within the page default timeout once the page is gone;
+          // an interrupt closes the runtime, so they fail at once.
           const settled = await Promise.race([
             work.then(
               () => true,
               () => true,
             ),
-            delay(Math.min(options.timeout, 10000) + 2000).then(() => false),
+            delay(timedOut ? Math.min(options.timeout, 10000) + 2000 : 2000).then(() => false),
           ]);
           if (!settled)
             summary.strandedScenarios = [...(summary.strandedScenarios ?? []), variant.id];
           // Electron shares one window between variants: a scenario that keeps running would act
           // on the next variant's page, so stop the run instead of recording polluted results.
-          if (!settled && app) {
+          if (!settled && app && !interrupted) {
             const error = new Error(
               `${variant.id} was still running after its timeout; stopped the run so it cannot affect later variants`,
             );
