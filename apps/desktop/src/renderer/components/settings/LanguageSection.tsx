@@ -31,7 +31,7 @@ export function LanguageSection() {
 
       <div
         className={cn(
-          'flex flex-row items-center justify-between gap-6 rounded-xl p-5',
+          'flex flex-row items-center justify-between gap-6 rounded-xl px-4 py-4',
           'bg-[var(--settings-theme-card-bg)]',
           'border border-[var(--settings-theme-card-border)]',
         )}
@@ -87,7 +87,7 @@ export function LanguageSection() {
                     className={cn(
                       'flex h-9 w-full cursor-pointer select-none items-center justify-between gap-3 rounded-[8px] px-3 text-left text-13 outline-none transition-colors',
                       'text-[var(--settings-input-text)]',
-                      'data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]',
+                      'data-[state=checked]:text-[var(--settings-menu-text-selected)]',
                     )}
                   >
                     <Select.ItemText className="min-w-0 truncate">
