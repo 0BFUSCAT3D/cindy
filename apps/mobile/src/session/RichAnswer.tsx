@@ -79,8 +79,20 @@ import {
   richRange,
   richString,
   type RichNode,
+  type RichPalette,
   type RichValue,
 } from "@cindy/maker-shared/rich-answer";
+
+/** Answer colors are Cindy theme colors; the model only names a role. */
+const richPalette = (colors: ThemeColors): RichPalette => ({
+  primary: colors.textPrimary,
+  secondary: colors.textSecondary,
+  tertiary: colors.textTertiary,
+  success: colors.statusDone,
+  warning: colors.warningFg,
+  danger: colors.statusError,
+  border: colors.border,
+});
 
 const answerIcons = {
   mail: Mail,
@@ -125,7 +137,9 @@ function RichDocumentView({
   renderMedia,
 }: Props) {
   const { t } = useTranslation();
-  const { colors, mode } = useTheme();
+  const { colors } = useTheme();
+  const palette = richPalette(colors);
+  const [rootWidth, setRootWidth] = useState(0);
   const baseStyles = useThemedStyles(makeStyles);
   const styles = baseStyles;
   const parser = useRef(new RichAnswerStream());
@@ -156,7 +170,7 @@ function RichDocumentView({
   const render = (id: string, inherited: TextStyle = {}): ReactNode => {
     const node = doc.nodes.get(id);
     if (!node) return null;
-    const visual = richVisualStyle(node, mode === "dark");
+    const visual = richVisualStyle(node, palette);
     const textStyle: TextStyle = { ...inherited };
     const viewStyle: ViewStyle = {};
     for (const [key, value] of Object.entries(visual)) {
@@ -181,6 +195,13 @@ function RichDocumentView({
       delete viewStyle.minHeight;
       delete viewStyle.maxHeight;
     }
+    // Answers written on a desktop are read here too: fixed widths stay within the screen.
+    if (typeof viewStyle.width === "number" && viewStyle.maxWidth === undefined)
+      viewStyle.maxWidth = "100%";
+    if (typeof viewStyle.minWidth === "number")
+      viewStyle.minWidth = rootWidth
+        ? Math.min(viewStyle.minWidth, rootWidth)
+        : undefined;
     const result = renderContent(id, textStyle);
     if (!isValidElement(result)) return result;
     const element = result as ReactElement<{
@@ -259,7 +280,7 @@ function RichDocumentView({
       );
     switch (node.kind) {
       case "svg":
-        return <AnswerVector node={node} dark={mode === "dark"} />;
+        return <AnswerVector node={node} palette={palette} />;
       case "text":
       case "heading":
         return (
@@ -302,7 +323,7 @@ function RichDocumentView({
         return (
           <AnswerLayout
             node={node}
-            dark={mode === "dark"}
+            palette={palette}
             renderChild={(child) => render(child, textStyle)}
           />
         );
@@ -461,9 +482,9 @@ function RichDocumentView({
                             backgroundColor:
                               richColor(
                                 (node.props.colors as unknown[])?.[index],
-                                mode === "dark",
+                                palette,
                               ) ??
-                              richColor(node.props.color, mode === "dark") ??
+                              richColor(node.props.color, palette) ??
                               colors.textSecondary,
                             marginLeft: `${((Math.min(0, item.value) - min) / span) * 100}%`,
                             width: `${(Math.abs(item.value) / span) * 100}%`,
@@ -482,7 +503,11 @@ function RichDocumentView({
     }
   };
   return (
-    <View testID="message.richAnswer" style={styles.stack}>
+    <View
+      testID="message.richAnswer"
+      style={styles.stack}
+      onLayout={(e) => setRootWidth(e.nativeEvent.layout.width)}
+    >
       {doc.roots.map((id) => (
         <Fragment key={id}>{render(id)}</Fragment>
       ))}
@@ -494,15 +519,15 @@ function RichDocumentView({
 }
 function AnswerVector({
   node,
-  dark,
+  palette,
   style,
 }: {
   node: RichNode;
-  dark: boolean;
+  palette: RichPalette;
   style?: StyleProp<ViewStyle>;
 }) {
   const [width, setWidth] = useState(0);
-  const vector = richVector(node, dark);
+  const vector = richVector(node, palette);
   const dims = vector.viewBox.split(" ").map(Number);
   const box = StyleSheet.flatten(style) ?? {};
   const height = Math.min(
@@ -528,6 +553,8 @@ function AnswerVector({
         width="100%"
         height={height}
         viewBox={vector.viewBox}
+        // Unpainted shapes take the host text color instead of SVG's default black.
+        fill={palette.primary}
         accessibilityLabel={richString(node, "label", richString(node, "alt"))}
       >
         {vector.shapes.map((shape, index) =>
@@ -543,17 +570,17 @@ function AnswerVector({
 }
 function AnswerLayout({
   node,
-  dark,
+  palette,
   renderChild,
   style,
 }: {
   node: RichNode;
-  dark: boolean;
+  palette: RichPalette;
   renderChild: (id: string) => ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
   const [width, setWidth] = useState(0);
-  const visual = richVisualStyle(node, dark);
+  const visual = richVisualStyle(node, palette);
   const aside = richString(node, "layout") === "aside";
   const mobile = width <= 600 && !aside;
   const weights = Array.isArray(node.props.weights)
@@ -618,7 +645,9 @@ function AnswerLineChart({
   label: string;
   node: RichNode;
 }) {
-  const { colors, mode } = useTheme();
+  const { colors } = useTheme();
+  const color =
+    richColor(node.props.color, richPalette(colors)) ?? colors.textPrimary;
   const styles = useThemedStyles(makeStyles);
   const [width, setWidth] = useState(320);
   const plot = richLinePlot(data, width, node.props);
@@ -655,9 +684,7 @@ function AnswerLineChart({
         ))}
         <Polyline
           fill="none"
-          stroke={
-            richColor(node.props.color, mode === "dark") ?? colors.textPrimary
-          }
+          stroke={color}
           strokeWidth={richNumber(node, "strokeWidth", iconStroke.regular)}
           points={plot.points.map((p) => `${p.x},${p.y}`).join(" ")}
         />
@@ -680,10 +707,7 @@ function AnswerLineChart({
                 cx={p.x}
                 cy={p.y}
                 r={richNumber(node, "pointRadius", 3)}
-                fill={
-                  richColor(node.props.color, mode === "dark") ??
-                  colors.textPrimary
-                }
+                fill={color}
               />
             )}
             {plot.showValues ? (

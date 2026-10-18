@@ -45,6 +45,7 @@ import {
   richRange,
   richString,
   type RichNode,
+  type RichPalette,
   type RichValue,
 } from '@cindy/maker-shared/rich-answer';
 import { useAuth } from '@/contexts/AuthContext';
@@ -53,10 +54,15 @@ import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import './rich-answer.css';
 
-const subscribeTheme = (listener: () => void) => {
-  const observer = new MutationObserver(listener);
-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-  return () => observer.disconnect();
+/** Answer colors are Cindy theme tokens, so they follow the mode without re-rendering. */
+const palette: RichPalette = {
+  primary: 'var(--text-primary)',
+  secondary: 'var(--text-secondary)',
+  tertiary: 'var(--text-tertiary)',
+  success: 'var(--status-success)',
+  warning: 'var(--warning-fg)',
+  danger: 'var(--error-fg)',
+  border: 'var(--border-default)',
 };
 const answerIcons = {
   mail: Mail,
@@ -124,10 +130,6 @@ function RichAnswerDocument({
   renderMarkdown: (source: string, id: string) => ReactNode;
 }) {
   const { t } = useTranslation();
-  const dark = useSyncExternalStore(subscribeTheme, () =>
-    document.documentElement.classList.contains('dark'),
-  );
-
   const parser = useRef(new RichAnswerStream());
   const doc = useMemo(() => parser.current.update(source, complete), [source, complete]);
   const edited = useSyncExternalStore(memory.subscribe, () => memory.get(stateKey));
@@ -147,12 +149,15 @@ function RichAnswerDocument({
     const node = doc.nodes.get(id);
     if (!node) return null;
     const result = renderContent(id),
-      visual = richVisualStyle(node, dark);
+      visual = richVisualStyle(node, palette);
     if (!isValidElement(result) || !Object.keys(visual).length) return result;
     const element = result as ReactElement<{ style?: CSSProperties }>;
     const media = ['image', 'video', 'audio'].includes(node.kind);
     const box = { ...visual };
     if (media) for (const key of ['height', 'minHeight', 'maxHeight']) delete box[key];
+    // The same answer is read on phones: fixed widths never exceed the available width.
+    if (typeof box.width === 'number' && box.maxWidth === undefined) box.maxWidth = '100%';
+    if (typeof box.minWidth === 'number') box.minWidth = `min(${box.minWidth}px, 100%)`;
     const variables: Record<string, string | number> = {};
     for (const [key, value] of Object.entries(visual))
       variables[`--rich-${key}`] =
@@ -206,16 +211,18 @@ function RichAnswerDocument({
       );
     switch (node.kind) {
       case 'svg': {
-        const vector = richVector(node, dark);
+        const vector = richVector(node, palette);
         return (
           <svg
             role="img"
             aria-label={label || richString(node, 'alt')}
             viewBox={vector.viewBox}
-            style={{ width: '100%', height: 'auto', display: 'block' }}
+            // Unpainted shapes take the host text color instead of SVG's default black.
+            style={{ width: '100%', height: 'auto', display: 'block', fill: 'currentColor' }}
           >
-            {vector.shapes.map((shape, index) =>
-              createElement(shape.type, { ...shape.props, key: index }, shape.text),
+            {vector.shapes.map(({ type, props: { fill, stroke, ...props }, text }, index) =>
+              // Theme tokens only resolve as CSS, not as SVG presentation attributes.
+              createElement(type, { ...props, style: { fill, stroke }, key: index }, text),
             )}
           </svg>
         );
@@ -417,7 +424,12 @@ function RichAnswerDocument({
           <figure className="rich-answer-chart">
             <figcaption>{label}</figcaption>
             {richString(node, 'variant') === 'line' ? (
-              <AnswerLineChart data={data} label={label} node={node} dark={dark} />
+              <AnswerLineChart
+                data={data}
+                label={label}
+                node={node}
+                color={richColor(node.props.color, palette)}
+              />
             ) : null}
             {richString(node, 'variant') !== 'line' && (
               <dl>
@@ -432,8 +444,8 @@ function RichAnswerDocument({
                         <div
                           style={{
                             backgroundColor:
-                              richColor((node.props.colors as unknown[])?.[i], dark) ??
-                              richColor(node.props.color, dark),
+                              richColor((node.props.colors as unknown[])?.[i], palette) ??
+                              richColor(node.props.color, palette),
                             marginLeft: `${((Math.min(0, item.value) - min) / span) * 100}%`,
                             width: `${(Math.abs(item.value) / span) * 100}%`,
                           }}
@@ -469,12 +481,12 @@ function AnswerLineChart({
   data,
   label,
   node,
-  dark,
+  color = 'currentColor',
 }: {
   data: { label: string; value: number }[];
   label: string;
   node: RichNode;
-  dark: boolean;
+  color?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(480);
@@ -515,8 +527,7 @@ function AnswerLineChart({
           </Fragment>
         ))}
         <polyline
-          fill="none"
-          stroke={richColor(node.props.color, dark) ?? 'currentColor'}
+          style={{ fill: 'none', stroke: color }}
           strokeWidth={richNumber(node, 'strokeWidth', 2)}
           points={plot.points.map((p) => `${p.x},${p.y}`).join(' ')}
         />
@@ -538,7 +549,7 @@ function AnswerLineChart({
                 cx={p.x}
                 cy={p.y}
                 r={richNumber(node, 'pointRadius', 3)}
-                fill={richColor(node.props.color, dark) ?? 'currentColor'}
+                style={{ fill: color }}
               />
             )}
             {plot.showValues && (

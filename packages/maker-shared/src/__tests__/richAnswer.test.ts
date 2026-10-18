@@ -1,6 +1,6 @@
 import { youtubeVideo } from '../richAnswer';
 import { describe, expect, it } from 'vitest';
-import { RichAnswerStream, RichInteractionMemory, hasRichAnswer, splitRichAnswer, richDefaults, richEvaluate, richLabel, richResolvedValues, richChart, richCalculationUnavailable, richVisualStyle, richVector, richLinePlot } from '../richAnswer';
+import { RichAnswerStream, RichInteractionMemory, hasRichAnswer, splitRichAnswer, richDefaults, richEvaluate, richLabel, richResolvedValues, richChart, richCalculationUnavailable, richVisualStyle, richVector, richLinePlot, type RichPalette } from '../richAnswer';
 // Tier 1: actual stream reducer. Regression targets are partial transport, edits,
 // replay and preservation of user input; no DOM/source-string contracts.
 const line = (seq: number, op: Record<string, unknown>) => JSON.stringify({ seq, ...op }) + '\n';
@@ -108,16 +108,17 @@ it('keeps missing, cyclic and invalid calculations unavailable instead of report
   expect(richEvaluate({ op: 'concat', args: Array(32).fill({ ref: 'text' }) }, { text: 'a'.repeat(4096) })).toBeUndefined();
 });
 
+const palette: RichPalette = { primary: "P", secondary: "S", tertiary: "T", success: "OK", warning: "W", danger: "D", border: "B" };
 // Tier 1: model visual attributes must reach both renderers without admitting
 // executable SVG/URL payloads; the reported stock data must not flatten at zero.
-it("preserves model colors and vector geometry, excludes executable attributes, and fits line domains", () => {
+it("maps color roles, keeps vector geometry, excludes executable attributes, and fits line domains", () => {
   const source = line(1, {
     op: "create",
     id: "visual",
     kind: "svg",
     props: {
       style: {
-        color: { light: "#1257ab", dark: "#89baff" },
+        color: "secondary",
         fontSize: 28,
         gap: 24,
         backgroundColor: "url(https://example.test/track)",
@@ -127,7 +128,8 @@ it("preserves model colors and vector geometry, excludes executable attributes, 
         {
           type: "path",
           d: "M 0 20 L 40 30",
-          stroke: { light: "#1257ab", dark: "#89baff" },
+          stroke: "success",
+          fill: "none",
           strokeWidth: 4,
           onClick: "alert(1)",
         },
@@ -140,17 +142,18 @@ it("preserves model colors and vector geometry, excludes executable attributes, 
   const doc = new RichAnswerStream().update(source, true),
     node = doc.nodes.get("visual")!;
   expect(doc.issues).toBe(0);
-  expect(richVisualStyle(node, true)).toEqual({
-    color: "#89baff",
+  expect(richVisualStyle(node, palette)).toEqual({
+    color: "S",
     fontSize: 28,
     gap: 24,
   });
-  const vector = richVector(node, true);
+  const vector = richVector(node, palette);
   expect(vector.viewBox).toBe("0 0 400 240");
   expect(vector.shapes).toHaveLength(2);
   expect(vector.shapes[0].props).toEqual({
     d: "M 0 20 L 40 30",
-    stroke: "#89baff",
+    stroke: "OK",
+    fill: "none",
     strokeWidth: 4,
   });
   const data = [
@@ -211,4 +214,14 @@ it('routes YouTube pages to canonical players without turning arbitrary URLs int
   expect(youtubeVideo('https://youtu.be/glW1pXWebnY?t=1m2s')?.embed).toContain('start=62');
   for (const src of ['https://youtube.com.evil.test/watch?v=glW1pXWebnY', 'https://evil@www.youtube.com/watch?v=glW1pXWebnY', 'file:///watch?v=glW1pXWebnY', 'https://example.org/movie.mp4', 'https://youtube.com/watch?v=bad']) expect(youtubeVideo(src)).toBeNull();
   expect(youtubeVideo('https://www.youtube-nocookie.com/embed/glW1pXWebnY?autoplay=1')?.embed).toBe('https://www.youtube.com/embed/glW1pXWebnY?playsinline=1&autoplay=0');
+});
+// 2026-10-18 owner decision: colors and backgrounds belong to Cindy. Answers written
+// before it (and literal colors from models) must not paint backgrounds or custom colors.
+it("ignores model backgrounds and color values and keeps borders on the host border", () => {
+  const card = new RichAnswerStream().update(
+    line(1, { op: "create", id: "card", kind: "stack", props: { style: { backgroundColor: { light: "#14161b", dark: "#101216" }, color: { light: "#f5f6f8", dark: "#f5f6f8" }, borderColor: "#2a2e36", borderWidth: 3, padding: 20 } } }),
+    true,
+  ).nodes.get("card")!;
+  expect(richVisualStyle(card, palette)).toEqual({ padding: 20, borderWidth: 1, borderStyle: "solid", borderColor: "B" });
+  expect(richVisualStyle(card)).toEqual({ padding: 20, borderWidth: 1 });
 });

@@ -42,28 +42,46 @@ const enums: Record<string, readonly string[]> = {
   textDecorationLine: ["none", "underline", "line-through"],
   borderStyle: ["solid", "dashed", "dotted"],
 };
-export function richColor(value: unknown, dark = false): string | undefined {
-  if (value && typeof value === "object") {
-    const pair = value as Record<string, unknown>;
-    value = dark ? (pair.dark ?? pair.light) : (pair.light ?? pair.dark);
-  }
-  if (typeof value !== "string") return undefined;
-  // Both native SVG and CSS support these literal colors. URLs/var()/expressions never cross this boundary.
-  return /^(?:#[\da-f]{3,8}|rgba?\([\d.,%\s]+\)|hsla?\([\d.,%\s]+\)|[a-z]+)$/i.test(
-    value,
-  )
-    ? value
+/**
+ * Colors are Cindy's, not the model's: answers may only name a role, and each client maps
+ * roles to its theme tokens so both modes and every device stay consistent and calm.
+ */
+export const RICH_COLOR_ROLES = [
+  "primary",
+  "secondary",
+  "tertiary",
+  "success",
+  "warning",
+  "danger",
+] as const;
+export type RichColorRole = (typeof RICH_COLOR_ROLES)[number];
+/** Host values for each role plus the host border; values are theme tokens or theme colors. */
+export type RichPalette = Record<RichColorRole | "border", string>;
+export function richColor(
+  value: unknown,
+  palette: RichPalette,
+): string | undefined {
+  return typeof value === "string" &&
+    (RICH_COLOR_ROLES as readonly string[]).includes(value)
+    ? palette[value as RichColorRole]
     : undefined;
 }
-export function richVisualStyle(node: RichNode, dark = false): RichVisualStyle {
+/** Without a palette (layout-only callers) colors and borders are omitted. */
+export function richVisualStyle(
+  node: RichNode,
+  palette?: RichPalette,
+): RichVisualStyle {
   const raw = node.props.style;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const style = raw as Record<string, unknown>;
   const out: RichVisualStyle = {};
   for (const [key, value] of Object.entries(style)) {
-    if (["color", "backgroundColor", "borderColor"].includes(key)) {
-      const color = richColor(value, dark);
+    // Backgrounds and border colors stay with the host; text uses a named role only.
+    if (key === "color") {
+      const color = palette && richColor(value, palette);
       if (color) out[key] = color;
+    } else if (key === "borderWidth" && typeof value === "number") {
+      if (value > 0) out[key] = 1;
     } else if (
       lengths.has(key) &&
       typeof value === "number" &&
@@ -101,6 +119,11 @@ export function richVisualStyle(node: RichNode, dark = false): RichVisualStyle {
     )
       out[key] = Math.max(0, Math.min(1, value));
     else if (enums[key]?.includes(String(value))) out[key] = String(value);
+  }
+  if (palette && (out.borderWidth || out.borderStyle)) {
+    out.borderWidth ??= 1;
+    out.borderStyle ??= "solid";
+    out.borderColor = palette.border;
   }
   return out;
 }
@@ -150,7 +173,7 @@ const numbers = new Set([
 ]);
 export function richVector(
   node: RichNode,
-  dark = false,
+  palette: RichPalette,
 ): { viewBox: string; shapes: RichVectorShape[] } {
   const vb = Array.isArray(node.props.viewBox)
     ? node.props.viewBox
@@ -174,7 +197,7 @@ export function richVector(
       if (numbers.has(k) && typeof v === "number" && Number.isFinite(v))
         props[k] = v;
       else if (["fill", "stroke"].includes(k)) {
-        const c = richColor(v, dark);
+        const c = v === "none" ? "none" : richColor(v, palette);
         if (c) props[k] = c;
       } else if (
         k === "d" &&

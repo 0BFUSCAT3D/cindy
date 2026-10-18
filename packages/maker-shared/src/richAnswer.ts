@@ -1,4 +1,4 @@
-export { richColor, richVisualStyle, richVector } from "./richAnswerVisual";
+export { RICH_COLOR_ROLES, richColor, richVisualStyle, richVector, type RichColorRole, type RichPalette } from "./richAnswerVisual";
 export { youtubeVideo } from "./youtubeVideo";
 /** Model-neutral, declarative answer components. No code evaluation or I/O. */
 export const RICH_ANSWER_LANGUAGE = "cindy-ui";

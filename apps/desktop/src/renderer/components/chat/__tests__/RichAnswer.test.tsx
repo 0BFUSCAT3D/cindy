@@ -188,7 +188,7 @@ it('renders model styling and vector geometry and applies a local visual patch',
       op: 'create',
       id: 'title',
       kind: 'heading',
-      props: { text: '自由排版', style: { color: '#2457a7', fontSize: 32 } },
+      props: { text: '自由排版', style: { color: 'secondary', fontSize: 32 } },
     }) +
     line(2, {
       op: 'create',
@@ -198,7 +198,7 @@ it('renders model styling and vector geometry and applies a local visual patch',
         label: '自绘图',
         viewBox: [0, 0, 400, 200],
         shapes: [
-          { type: 'path', d: 'M 0 100 L 400 20', stroke: '#2457a7', strokeWidth: 4 },
+          { type: 'path', d: 'M 0 100 L 400 20', stroke: 'success', strokeWidth: 4 },
           { type: 'text', x: 10, y: 20, text: '模型标注' },
           { type: 'script', text: 'alert(1)' },
         ],
@@ -210,16 +210,16 @@ it('renders model styling and vector geometry and applies a local visual patch',
   };
   const view = render(<RichAnswer {...props} source={source} complete={false} />);
   expect(screen.getByText('自由排版').style.fontSize).toBe('32px');
-  expect(screen.getByLabelText('自绘图').querySelector('path')?.getAttribute('stroke')).toBe(
-    '#2457a7',
+  expect(screen.getByLabelText('自绘图').querySelector('path')?.style.stroke).toBe(
+    'var(--status-success)',
   );
   expect(screen.getByLabelText('自绘图').querySelector('script')).toBeNull();
   const updated =
     source +
-    line(3, { op: 'patch', id: 'title', props: { style: { color: '#98346a', fontSize: 24 } } });
+    line(3, { op: 'patch', id: 'title', props: { style: { color: 'danger', fontSize: 24 } } });
   view.rerender(<RichAnswer {...props} source={updated} complete />);
   expect(screen.getByText('自由排版').style.fontSize).toBe('24px');
-  expect(screen.getByText('自由排版').style.color).toBe('rgb(152, 52, 106)');
+  expect(screen.getByText('自由排版').style.color).toBe('var(--error-fg)');
 });
 
 // Tier 1: real model output used a unitless line-height and stock data whose
@@ -294,3 +294,18 @@ it('loads a site player on demand, retains its source link and disposes it on re
   view.unmount();
   expect(document.querySelector('webview')).toBeNull();
 });
+
+// Unit: an answer designed on a desktop is also read on a phone, and colors belong to Cindy:
+// wide fixed boxes stay in bounds and model backgrounds or literal colors are not painted.
+it('bounds fixed widths and leaves backgrounds and literal colors to the host', () => {
+  const source =
+    line(1, { op: 'create', id: 'card', kind: 'stack', props: { style: { backgroundColor: '#14161b', width: 720, minWidth: 480 } } }) +
+    line(2, { op: 'create', id: 'faint', kind: 'text', parent: 'card', props: { text: 'Faint', style: { color: { light: '#222', dark: '#222' } } } });
+  render(<RichAnswer stateKey="bounds" source={source} complete renderMarkdown={(text) => <span>{text}</span>} />);
+  const card = screen.getByText('Faint').parentElement!;
+  expect(card.style.backgroundColor).toBe('');
+  expect(card.style.maxWidth).toBe('100%');
+  expect(card.style.minWidth).toBe('min(480px, 100%)');
+  expect(screen.getByText('Faint').style.color).toBe('');
+});
+
