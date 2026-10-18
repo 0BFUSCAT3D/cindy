@@ -292,10 +292,20 @@ describe('AppServerHost account rate limit fan-out', () => {
     const late = vi.fn();
     const lateSubscription = host.subscribeThread('thread-2', { accountRateLimitsUpdated: late });
     expect(late.mock.calls.map(([p]) => [p.rateLimits.limitId, p.rateLimits.primary.usedPercent])).toEqual([
-      ['codex', 20],
       ['codex_spark', 10],
+      ['codex', 20],
     ]);
     expect(early).toHaveBeenCalledTimes(3);
+
+    // 无 limitId 的稀疏更新不去重, 且仅在它是最新一条时才排在回放最后。
+    const sparse = { method: 'account/rateLimits/updated', params: { rateLimits: { primary: { usedPercent: 30, windowDurationMins: 300, resetsAt: 1 } } } };
+    transport.emit(sparse);
+    transport.emit(sparse);
+    expect(early).toHaveBeenCalledTimes(5);
+    const afterSparse = vi.fn();
+    const sparseSubscription = host.subscribeThread('thread-3', { accountRateLimitsUpdated: afterSparse });
+    expect(afterSparse.mock.calls.map(([p]) => p.rateLimits.limitId ?? null)).toEqual(['codex_spark', 'codex', null]);
+    await sparseSubscription.release();
 
     await earlySubscription.release();
     await lateSubscription.release();

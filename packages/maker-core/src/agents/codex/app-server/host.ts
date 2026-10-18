@@ -381,6 +381,11 @@ export class AppServerHost {
    */
   private readonly lastAccountRateLimits = new Map<string, AccountRateLimitsUpdatedNotification['params']>();
   /**
+   * 没有 limitId 的稀疏更新按「合并进最近观察到的 bucket」约定处理 (usageBroadcaster), 不能当独立
+   * bucket 去重或按插入序回放; 仅当它是最新一条时作为最后一份回放, 之后来了带 limitId 的即作废。
+   */
+  private lastIdlessAccountRateLimits: AccountRateLimitsUpdatedNotification['params'] | null = null;
+  /**
    * 按 limitId 记录最近一次已 fan-out 的配额 payload (JSON)。app-server 会以秒级间隔
    * 重复推送内容不变的快照 (实测 ~64% 与上一条相同), 相同内容不再重复广播与记日志。
    */
@@ -1152,12 +1157,13 @@ export class AppServerHost {
     this.replayBufferedDescendantThreadStarts(threadId);
 
     // 账号配额 snapshot replay — 让新 session 立即看到当前账号配额, 不必等下次 turn。
-    if (this.lastAccountRateLimits.size > 0 && handlers.accountRateLimitsUpdated) {
+    if ((this.lastAccountRateLimits.size > 0 || this.lastIdlessAccountRateLimits) && handlers.accountRateLimitsUpdated) {
       // 按 limitId 各回放最新一份: 去重后不变的快照不会再被推送, 只回放一条会让新会话缺其余 limit。
       try {
         for (const snapshot of this.lastAccountRateLimits.values()) {
           handlers.accountRateLimitsUpdated(snapshot);
         }
+        if (this.lastIdlessAccountRateLimits) handlers.accountRateLimitsUpdated(this.lastIdlessAccountRateLimits);
       } catch (e) {
         this.logger.error('accountRateLimitsUpdated replay threw', { message: (e as Error).message });
       }
@@ -1208,11 +1214,19 @@ export class AppServerHost {
     if (method === 'account/rateLimits/updated') {
       const p = params as AccountRateLimitsUpdatedNotification['params'];
       // replay 快照始终跟随最新一条 (哪怕内容未变), 新 subscriber 拿到的与旧行为一致。
-      const limitKey = p.rateLimits?.limitId ?? '';
-      this.lastAccountRateLimits.set(limitKey, p);
+      const limitKey = p.rateLimits?.limitId;
       const rawJson = JSON.stringify(p.rateLimits ?? null);
-      if (this.lastFannedOutRateLimitsJson.get(limitKey) === rawJson) return;
-      this.lastFannedOutRateLimitsJson.set(limitKey, rawJson);
+      if (limitKey) {
+        // 删后再插, 让 Map 顺序反映最近观察顺序; 带 limitId 的更新使稀疏更新的回放作废。
+        this.lastAccountRateLimits.delete(limitKey);
+        this.lastAccountRateLimits.set(limitKey, p);
+        this.lastIdlessAccountRateLimits = null;
+        if (this.lastFannedOutRateLimitsJson.get(limitKey) === rawJson) return;
+        this.lastFannedOutRateLimitsJson.set(limitKey, rawJson);
+      } else {
+        // 无 limitId 的更新目标 bucket 取决于前一条, 不去重, 始终广播。
+        this.lastIdlessAccountRateLimits = p;
+      }
       this.logger.debug('accountRateLimits fan-out', {
         subscribers: this.subscribers.size,
         rawJson,
