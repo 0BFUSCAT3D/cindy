@@ -14,11 +14,14 @@ const flush = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
+// The system cursor, which the local user can move between the viewer's batches.
+let cursor = { x: 0, y: 0 };
 vi.mock('electron', () => ({
   app: {},
   screen: {
     getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 100, height: 100 } }],
     dipToScreenPoint: (point: unknown) => point,
+    getCursorScreenPoint: () => cursor,
   },
 }));
 vi.mock('../windowsHost', () => ({
@@ -404,7 +407,9 @@ describe('native input lifecycle', () => {
     await flush();
     // A batch without pointer events never reports.
     expect(pointer).toHaveBeenCalledTimes(2);
-    // A wheel has no position: it reports where the pointer already is, even before a move.
+    // A wheel has no position: it reports the live system cursor, which the local user
+    // may have moved since the viewer's last batch, ahead of any positions in its batch.
+    cursor = { x: 7, y: 8 };
     host.input([
       { kind: 'scroll', dx: 0, dy: 3 },
       { kind: 'move', x: 0.9, y: 0.9 },
@@ -413,15 +418,15 @@ describe('native input lifecycle', () => {
     c.child.stdout.emit('data', Buffer.from('ok\n'));
     await flush();
     expect(pointer.mock.calls.at(-1)![0]).toEqual([
-      { x: 10, y: 10 },
+      { x: 7, y: 8 },
       { x: 89, y: 89 },
     ]);
+    cursor = { x: 30, y: 40 };
     host.input([{ kind: 'scroll', dx: 0, dy: -3 }]);
     await flush();
     c.child.stdout.emit('data', Buffer.from('ok\n'));
     await flush();
-    expect(pointer.mock.calls.at(-1)![0]).toEqual([{ x: 89, y: 89 }]);
-    // Before any pointer position is known there is nothing to report.
+    expect(pointer.mock.calls.at(-1)![0]).toEqual([{ x: 30, y: 40 }]);
     expect(pointer).toHaveBeenCalledTimes(4);
     host.stop();
     c.exit();

@@ -213,8 +213,6 @@ export class DesktopInputHost {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private stopping: Promise<void> = Promise.resolve();
   private privacyPaused = false;
-  /** Where the viewer's pointer is once everything queued so far has been injected. */
-  private lastPoint: { x: number; y: number } | null = null;
   private linuxPoint: ((x: number, y: number) => { x: number; y: number }) | null = null;
   /** 代输入 live view: the helper confines input to this window and maps 0–1 fractions itself. */
   private window: { windowId: number; pid: number } | null = null;
@@ -236,7 +234,6 @@ export class DesktopInputHost {
   ) {}
   async start(displayId: string, window?: { windowId: number; pid: number }): Promise<void> {
     this.stop();
-    this.lastPoint = null;
     const platform = this.runtime.platform ?? process.platform;
     if (platform !== 'darwin' && platform !== 'win32' && platform !== 'linux')
       throw new Error('DESKTOP_INPUT_UNSUPPORTED');
@@ -397,17 +394,18 @@ export class DesktopInputHost {
       const mapped = process.platform === 'win32' ? screen.dipToScreenPoint(point) : point;
       return { ...event, ...mapped };
     });
-    // A wheel carries no position: it lands where the pointer is when it is injected,
-    // which, in serialized order, is the last position queued before this batch.
-    if (this.lastPoint && events.some((event) => event.kind === 'scroll'))
-      points.unshift(this.lastPoint);
-    if (points.length) this.lastPoint = points[points.length - 1];
-    this.write(native, batch, points);
+    this.write(
+      native,
+      batch,
+      points,
+      events.some((event) => event.kind === 'scroll'),
+    );
   }
   private write(
     events: unknown[],
     batch?: { ready: Promise<void>; complete: () => void },
     points: { x: number; y: number }[] = [],
+    wheel = false,
   ): void {
     const child = this.child;
     const line = `${JSON.stringify(events)}\n`;
@@ -425,7 +423,12 @@ export class DesktopInputHost {
         if (generation !== this.generation) return;
         // Local-only windows must pass this batch's pointer through for as long as it is
         // being injected, not from when it was queued nor after a fixed delay.
-        const settled = points.length ? this.onPointer?.(points) : undefined;
+        // A wheel carries no position: it lands on the system cursor as it is when this
+        // batch starts, which the local user may have moved since the viewer last did.
+        const settled =
+          points.length || wheel
+            ? this.onPointer?.(wheel ? [screen.getCursorScreenPoint(), ...points] : points)
+            : undefined;
         try {
           if (connection) {
             if ((await connection.request(line.slice(0, -1))) !== 'ok\n')
