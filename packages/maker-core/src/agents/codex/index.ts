@@ -12294,6 +12294,8 @@ assertRouteCurrent();
       tokenUsageUpdated: (params) => {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.tokenUsageUpdated?.(params))) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
+        // 每次模型回应结束上报一次用量;多记一次边界只会让循环检测更保守。
+        translatorRt.modelResponseSeq += 1;
         const reportedWindow = params.tokenUsage?.modelContextWindow;
         if (typeof reportedWindow === 'number' && Number.isFinite(reportedWindow) && reportedWindow > 0) {
           lastNativeContextWindowTurnId = params.turnId || null;

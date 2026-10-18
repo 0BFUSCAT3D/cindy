@@ -68,8 +68,8 @@ export class ToolLoopMonitor {
     this.budget = opts.reviewBudget ?? { used: 0 };
   }
 
-  onToolUse(toolUseId: string, toolName: unknown, input: unknown): void {
-    this.guard.onToolUse(toolUseId, toolName, input);
+  onToolUse(toolUseId: string, toolName: unknown, input: unknown, modelResponseId?: string): void {
+    this.guard.onToolUse(toolUseId, toolName, input, modelResponseId);
   }
 
   onToolResult(

@@ -3006,7 +3006,12 @@ export class Session {
     }
     if (typeof data.toolUseId !== 'string' || control.pendingToolLoop) return;
     if (event.type === 'tool_use') {
-      control.toolLoopMonitor.onToolUse(data.toolUseId, data.toolName, data.input);
+      control.toolLoopMonitor.onToolUse(
+        data.toolUseId,
+        data.toolName,
+        data.input,
+        event.modelResponseId,
+      );
       return;
     }
     if (event.type !== 'tool_result_full' || typeof data.fullText !== 'string') return;

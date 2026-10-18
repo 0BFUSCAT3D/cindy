@@ -179,6 +179,8 @@ interface PendingToolUse {
   name: string;
   input: unknown;
   startedAt: number;
+  /** 发出该调用的模型回应;缺省表示每次调用各自对应一次模型回应。 */
+  modelResponseId?: string;
 }
 
 /**
@@ -261,6 +263,9 @@ export type ToolLoopGuardVerdict =
  * 连续 finalConsecutiveLimit 次、完全相同结果持续 finalStreakMs)与长只读
  * 轮转不经复核直接判定(final=true)。
  *
+ * 调用带模型回应标识时,同一回应内重复的完整结果/调用不再推进 1-3 层与快速连续上限,
+ * 只续接完全相同结果的时长上限:一段脚本内的有界轮询不是模型在打转。
+ *
  * 类本身不依赖 Electron / SDK / provider, 也不做 IO;调用方决定何时启用和如何中断。
  */
 export class ToolLoopGuard {
@@ -300,6 +305,11 @@ export class ToolLoopGuard {
   private callWindow: string[] = [];
   private stableReadWindow: string[] = [];
 
+  // 当前模型回应内已计入判据的指纹;同一回应内的重复只续接时长上限,不计入 1-3 层。
+  private activeModelResponseId: string | null = null;
+  private responseFullFingerprints = new Set<string>();
+  private responseCallFingerprints = new Set<string>();
+
   // 第 4 层无批次兼容状态: 最近一次契约错误的 name+类别键与连续计数
   private lastContractKey: string | null = null;
   private contractStreak = 0;
@@ -329,12 +339,21 @@ export class ToolLoopGuard {
    * 记录工具调用开始。stream_event 可能只有 id, 这种半信息不缓存;
    * 后续 assistant 完整 tool_use 到达时会用 name/input 补齐。补齐时保留
    * 首次开始时间,节奏判据按真实开始时刻计算。
+   *
+   * modelResponseId 标识发出该调用的模型回应。Codex code mode 下一次回应是一段脚本,
+   * 脚本内部的有界轮询会产生多次完全相同的调用;同一回应内重复的调用只计一次,
+   * 模型逐次回应重复同一调用才计入 1-3 层判据。
    */
-  onToolUse(toolUseId: string, toolName: unknown, input: unknown): void {
+  onToolUse(toolUseId: string, toolName: unknown, input: unknown, modelResponseId?: string): void {
     if (toolUseId.length === 0) return;
     if (typeof toolName !== 'string' || toolName.length === 0) return;
-    const startedAt = this.pendingToolUses.get(toolUseId)?.startedAt ?? this.now();
-    this.pendingToolUses.set(toolUseId, { name: toolName, input, startedAt });
+    const previous = this.pendingToolUses.get(toolUseId);
+    this.pendingToolUses.set(toolUseId, {
+      name: toolName,
+      input,
+      startedAt: previous?.startedAt ?? this.now(),
+      modelResponseId: previous?.modelResponseId ?? modelResponseId,
+    });
   }
 
   /** 最近一次结果是否被纳入判定;为 true 且判定为 ok 说明此前的疑似模式已被打破。 */
@@ -407,6 +426,7 @@ export class ToolLoopGuard {
     const fullFingerprint = fingerprintToolCall(toolUse.name, toolUse.input, output);
     const callFingerprint = fingerprintToolCall(toolUse.name, toolUse.input, null);
     this.lastResultCallFingerprintValue = callFingerprint;
+    const repeatedInResponse = this.noteModelResponse(toolUse.modelResponseId, fullFingerprint, callFingerprint);
     // 复核放行额度按普通结果计,节奏轮询同样消耗。
     const inGrace = this.suspicionGraceResults > 0;
     if (inGrace) this.suspicionGraceResults -= 1;
@@ -479,7 +499,7 @@ export class ToolLoopGuard {
 
     // 长只读轮转证据已足够强,不经复核
     if (READ_ONLY_TOOL_NAMES.has(toolUse.name)) {
-      this.stableReadWindow.push(fullFingerprint);
+      if (!repeatedInResponse.result) this.stableReadWindow.push(fullFingerprint);
       if (this.stableReadWindow.length > STABLE_READ_WINDOW_SIZE) this.stableReadWindow.shift();
       if (this.stableReadWindow.length === STABLE_READ_WINDOW_SIZE) {
         const counts = new Map<string, number>();
@@ -500,7 +520,7 @@ export class ToolLoopGuard {
     }
 
     // 第 1 层: 连续 name+input+output 完全相同
-    this.observeStreak(fullFingerprint, true);
+    this.observeStreak(fullFingerprint, !repeatedInResponse.result);
     const final = this.finalVerdict(toolUse.name);
     if (final.kind === 'hard') return final;
     if (this.consecutiveStreak >= this.consecutiveLimit) {
@@ -514,6 +534,7 @@ export class ToolLoopGuard {
     }
 
     // 第 2/3 层: name+input 滑动窗口多样性坍缩(指纹不含 output)
+    if (repeatedInResponse.call) return { kind: 'ok' };
     this.callWindow.push(callFingerprint);
     const bufferSize = Math.max(this.windowSize, this.rotationWindowSize);
     if (this.callWindow.length > bufferSize) this.callWindow.shift();
@@ -555,6 +576,36 @@ export class ToolLoopGuard {
   resetTurn(): void {
     this.pendingToolUses.clear();
     this.resetPatternState();
+  }
+
+  /**
+   * 记录本次结果所属的模型回应,返回该回应内是否已出现过同一完整结果/同一调用。
+   * 没有回应标识时每次调用自成一次回应,行为与旧调用方一致。
+   */
+  private noteModelResponse(
+    modelResponseId: string | undefined,
+    fullFingerprint: string,
+    callFingerprint: string,
+  ): { result: boolean; call: boolean } {
+    if (modelResponseId === undefined) {
+      this.resetModelResponseState();
+      return { result: false, call: false };
+    }
+    if (modelResponseId !== this.activeModelResponseId) {
+      this.resetModelResponseState();
+      this.activeModelResponseId = modelResponseId;
+    }
+    const result = this.responseFullFingerprints.has(fullFingerprint);
+    const call = this.responseCallFingerprints.has(callFingerprint);
+    this.responseFullFingerprints.add(fullFingerprint);
+    this.responseCallFingerprints.add(callFingerprint);
+    return { result, call };
+  }
+
+  private resetModelResponseState(): void {
+    this.activeModelResponseId = null;
+    this.responseFullFingerprints.clear();
+    this.responseCallFingerprints.clear();
   }
 
   /** 续接或重开完全相同 streak;counted=false 的节奏结果只续接不计数。 */
@@ -604,6 +655,7 @@ export class ToolLoopGuard {
     this.suspicionGraceResults = 0;
     this.callWindow = [];
     this.stableReadWindow = [];
+    this.resetModelResponseState();
     this.lastContractKey = null;
     this.contractStreak = 0;
     this.resetContractBatchState();

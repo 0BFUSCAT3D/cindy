@@ -336,6 +336,35 @@ it.each([false, true])('keeps translated Codex waits alive with agent states=%s'
   expect(t.handle.abort).not.toHaveBeenCalled();
 });
 
+// 2026-10-18 误报:code mode 下一次回应是一段脚本,脚本里点保存后反复截快照等页面更新,
+// 同一回应内的相同调用被当成模型连续四次重复而中断。模型逐次回应重复同一调用仍须中断。
+it('counts repeats per Codex model response, not per call inside one code-mode script', async () => {
+  const t = setup('codex');
+  const context = { rt: newCodexRuntimeState(), log: { info() {}, warn() {}, error() {}, debug() {} } };
+  let seq = 0;
+  const respond = (calls: Array<'snapshot' | 'click'>) => {
+    translateItemNotification('started', {
+      threadId: 'thread', turnId: 'turn', item: { type: 'reasoning', id: `reasoning-${seq}`, summary: [], content: [] },
+    }, t.queue, context);
+    for (const action of calls) {
+      const item = {
+        type: 'mcpToolCall', id: `call-${seq++}`, server: 'cindy_browser', tool: 'call_tool',
+        arguments: { name: 'browser', args: { action } }, status: 'completed',
+        result: { content: [{ type: 'text', text: `${action}: saving` }] },
+      };
+      translateItemNotification('started', { threadId: 'thread', turnId: 'turn', item }, t.queue, context);
+      translateItemNotification('completed', { threadId: 'thread', turnId: 'turn', item }, t.queue, context);
+    }
+    return vi.advanceTimersByTimeAsync(0);
+  };
+  await t.session.send('upload the icons');
+  await respond(['snapshot', 'click', ...Array.from({ length: 11 }, (_, i) => i % 2 ? 'click' as const : 'snapshot' as const)]);
+  expect(t.errors()).toHaveLength(0);
+  for (let i = 0; i < 4; i++) await respond(['snapshot']);
+  expect(t.errors()).toHaveLength(1);
+  expect(t.errors()[0]).toMatchObject({ data: { toolLoop: { kind: 'consecutive', count: 4 } } });
+});
+
 it('pairs real Pi translator tool events without changing their results', async () => {
   const t = setup('pi');
   const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return logger; } };

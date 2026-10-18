@@ -129,6 +129,12 @@ export interface CodexRuntimeState {
    * turnStarted 时与 lastAuthErrorKey 一起清。
    */
   networkRetryNotice: { key: string; count: number; emitted: boolean } | null;
+  /**
+   * 模型回应边界计数。回应结束时的 thread/tokenUsage/updated 与新回应开头的思考/文字
+   * item 都会推进它;两次推进之间的工具调用来自同一次回应(code mode 下即同一段脚本),
+   * 供工具循环检测合并脚本内的重复调用。多推进只会把回应拆细,检测退回逐次计数。
+   */
+  modelResponseSeq: number;
 }
 
 export function newCodexRuntimeState(): CodexRuntimeState {
@@ -155,6 +161,7 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     emittedWebSearchInput: new Map(),
     lastAuthErrorKey: null,
     networkRetryNotice: null,
+    modelResponseSeq: 0,
   };
 }
 
@@ -432,13 +439,24 @@ export function finishCodexSamplingTurn(
   return failure;
 }
 
+/** 给工具调用标上发出它的模型回应,供 Session 的工具循环检测合并同一段脚本内的重复调用。 */
+function withModelResponseId(queue: AsyncQueue<AgentEvent>, modelResponseId: string): AsyncQueue<AgentEvent> {
+  return {
+    push: (event) => queue.push(event.type === 'tool_use' ? { ...event, modelResponseId } : event),
+    end: () => queue.end(),
+    clear: () => queue.clear(),
+    get pending() { return queue.pending; },
+    [Symbol.asyncIterator]: () => queue[Symbol.asyncIterator](),
+  };
+}
+
 export function translateItemNotification(
   phase: ItemPhase,
   notification:
     | ItemStartedNotification['params']
     | ItemUpdatedNotification['params']
     | ItemCompletedNotification['params'],
-  queue: AsyncQueue<AgentEvent>,
+  eventQueue: AsyncQueue<AgentEvent>,
   ctx: CodexTranslateContext,
 ): void {
   const item = notification.item;
@@ -465,6 +483,12 @@ export function translateItemNotification(
     item as { id?: unknown; type?: unknown },
     notification as { turnId?: unknown },
   );
+  const modelOutput = itemType === 'agentMessage' || itemType === 'reasoning';
+  // 新的思考或文字说明一定属于一次新回应;用量通知缺失时也能分开相邻回应。
+  if (modelOutput && phase === 'started') ctx.rt.modelResponseSeq += 1;
+  const queue = modelOutput
+    ? eventQueue
+    : withModelResponseId(eventQueue, `${notification.turnId}:${ctx.rt.modelResponseSeq}`);
 
   switch (itemType) {
     case 'agentMessage':
