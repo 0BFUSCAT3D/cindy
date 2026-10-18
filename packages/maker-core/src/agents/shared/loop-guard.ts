@@ -534,7 +534,11 @@ export class ToolLoopGuard {
     }
 
     // 第 2/3 层: name+input 滑动窗口多样性坍缩(指纹不含 output)
-    if (repeatedInResponse.call) return { kind: 'ok' };
+    if (repeatedInResponse.call) {
+      // 同回应内的重复既不推进也不打破窗口模式;不算参与判定,以免取消进行中的复核。
+      this.lastResultObservedValue = false;
+      return { kind: 'ok' };
+    }
     this.callWindow.push(callFingerprint);
     const bufferSize = Math.max(this.windowSize, this.rotationWindowSize);
     if (this.callWindow.length > bufferSize) this.callWindow.shift();
