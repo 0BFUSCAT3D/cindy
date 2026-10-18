@@ -1,3 +1,4 @@
+import { readToolProcessMedia } from '@cindy/maker-shared/tool-process-media';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
@@ -4240,7 +4241,7 @@ function ToolGroupCard({
  * 媒体条 / 结果预览,再点收起。展开态走共享进程内记忆(blockId 前缀 `toolrow-`,
  * 与组级 `tools-` key 空间天然隔离)。无详情可展的行不显示 chevron、不可点击。
  */
-type ToolDetailActions = Pick<MessageActions, 'onLoadToolInput' | 'onOpenPayload'>;
+type ToolDetailActions = Pick<MessageActions, 'onLoadToolInput' | 'onOpenPayload' | 'onResolveRemoteMedia'>;
 
 function ToolActionRow({
   actions,
@@ -4287,6 +4288,15 @@ function ToolActionRow({
         <Text style={[styles.toolName, styles.toolNameFlex]} numberOfLines={1}>{row.label}</Text>
         {chevronNode}
       </Pressable>
+      {readToolProcessMedia(tool.secondaryBody).map((entry) => (
+        <MediaPreview key={entry.url} label={mediaLabel({ ...entry, previewable: false })}
+          layout={contentLayout} media={{ ...entry, previewable: false }}
+          onOpen={actions.onOpenPayload ? () => actions.onOpenPayload!(buildMediaPayload(
+            { ...entry, previewable: false }, mediaLabel({ ...entry, previewable: false }),
+          )) : undefined}
+          onResolveRemoteMedia={actions.onResolveRemoteMedia}
+          variant={entry.kind === 'image' ? 'attachment' : 'card'} />
+      ))}
       {showDetails ? (
         <View style={styles.toolRowDetails}>
           {row.detail || tool.body ? (

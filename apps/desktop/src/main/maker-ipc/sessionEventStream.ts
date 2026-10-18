@@ -1,3 +1,4 @@
+import type { NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 import type { Session } from '@cindy/maker-core';
 import { persistSubagentTaskUpdate } from '../localDb/subagentRuns.js';
 import { broadcastSubagentRunsChanged } from '../localDb/ipc/subagentRuns.js';
@@ -15,6 +16,7 @@ import {
   onThinkingEvent,
   onToolResultEvent,
   onToolResultFullEvent,
+  persistToolProcessMedia,
   onToolUseEvent,
 } from '../messagePersistBroadcaster.js';
 import { type OrcaTeamService } from './orcaTeamService.js';
@@ -91,6 +93,12 @@ export function persistSessionStreamEvent(
     );
     persistId = r?.persistId;
     resolvedContent = r?.content;
+    const processMedia = (event.data as { processMedia?: NativeToolMedia[] }).processMedia;
+    if (r && Array.isArray(processMedia) && processMedia.length) {
+      persistToolProcessMedia(session.id, r.persistId, r.content, processMedia, {
+        workdir: session.workDir, remoteHostId: session.remoteHostId,
+      });
+    }
   } else if (event.type === 'thinking') {
     // thinking final/redacted 落库收口 main;clientId=blockId(renderer 同源),无需
     // persistId 回传。start/delta 不落库。

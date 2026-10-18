@@ -1,3 +1,5 @@
+import { materializeToolProcessMedia } from './cindy-media/toolProcessMedia.js';
+import { withToolProcessMedia, type NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 import { readTaskResultsForReply } from './botTaskReplyResults.js';
 /**
  * messagePersistBroadcaster — 把 agent 消息的持久化从 renderer 收口到 main 单点。
@@ -1745,6 +1747,40 @@ export function onToolResultEvent(
   return { persistId, content };
 }
 
+/** Attach native media to the already accepted result row, never to the current turn.
+ * The existing owner-scoped FIFO prevents clear/delete or the next turn from stealing it.
+ */
+export function persistToolProcessMedia(
+  sessionId: string,
+  persistId: string,
+  text: string,
+  items: NativeToolMedia[],
+  origin?: import('./cindy-media/toolProcessMedia').ToolMediaOrigin,
+): void {
+  if (!items.length) return;
+  enqueueWrite(`tool_media:${sessionId}:${persistId}`, async (ownerScope) => {
+    const assertStillValid = () => {
+      if (!isOwnerScopeCurrent(ownerScope)) throw ownerScopeSupersededError();
+    };
+    const db = getDbClient().drizzle;
+    const media = await materializeToolProcessMedia(items, db, assertStillValid, origin);
+    assertStillValid();
+    if (!media.length) return;
+    // Keep media refs outside the text truncation budget so reopening retains images.
+    const content = withToolProcessMedia(text, media);
+    const updated = await updateDbMessageContent(sessionId, persistId, content);
+    if (updated) {
+      toolResultContentByClientId.get(sessionId)?.set(persistId, content);
+      broadcastMessageRow(sessionId, updated, ownerScope);
+    }
+  });
+}
+
+function markFailedToolResultText(text: string, isError: boolean): string {
+  if (!isError || text.includes('<tool_use_error>')) return text;
+  return `<tool_use_error>${text}</tool_use_error>`;
+}
+
 /**
  * 处理 tool_result_full 事件(toolUseId + 全文)。返回 { persistId, content } 让
  * renderer 把对应 tool_result 气泡内容更新成全文;返回 null 表示无需显示变更
@@ -1753,11 +1789,6 @@ export function onToolResultEvent(
  * 对齐老 renderer:有映射 → 覆盖更新;无映射但 tool_use 已到 → eager-create;
  * tool_use 也没到 → buffer。
  */
-function markFailedToolResultText(text: string, isError: boolean): string {
-  if (!isError || text.includes('<tool_use_error>')) return text;
-  return `<tool_use_error>${text}</tool_use_error>`;
-}
-
 export function onToolResultFullEvent(
   sessionId: string,
   data: { toolUseId?: unknown; fullText?: unknown; isError?: unknown },

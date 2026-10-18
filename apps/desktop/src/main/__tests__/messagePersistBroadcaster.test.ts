@@ -1,3 +1,8 @@
+import { materializeToolProcessMedia } from '../cindy-media/toolProcessMedia.js';
+vi.mock('../cindy-media/toolProcessMedia.js', () => ({ materializeToolProcessMedia: vi.fn(async () => [
+  { kind: 'image', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' },
+]) }));
+vi.mock('../localDb/client/current.js', () => ({ getDbClient: vi.fn(() => ({ drizzle: {} })) }));
 vi.mock('../botTaskReplyResults.js', () => ({ readTaskResultsForReply: vi.fn(async () => []) }));
 import { readTaskResultsForReply } from '../botTaskReplyResults.js';
 /**
@@ -76,6 +81,7 @@ import {
   __resetMediaToolResultPoolForTesting,
 } from '../mcp-integrations/mediaToolResultFallback.js';
 import {
+  persistToolProcessMedia,
   onToolUseEvent,
   onAgentTaskUpdateEvent,
   persistCodexPlanOnDone,
@@ -4084,4 +4090,18 @@ it('persists bound results with the final seal, and a failed result lookup canno
   vi.mocked(readTaskResultsForReply).mockRejectedValueOnce(new Error('DB unavailable'));
   await expect(markAssistantTurnCompleted(SESSION, 'other', undefined, ['bot-delegation-completion:job'])).resolves.toBe(true);
   expect(patchMessageAgentMetaWithResult).toHaveBeenCalledWith(SESSION, 'other', { turnCompleted: true });
+});
+
+// Unit regression: a late import updates the original result, never the next turn.
+it('persists process media on its accepted result and broadcasts the durable row', async () => {
+  onToolUseEvent(SESSION, { toolUseId: 'native-image', toolName: 'Read', input: {} }, null);
+  const result = onToolResultFullEvent(SESSION, { toolUseId: 'native-image', fullText: 'read' }, null)!;
+  persistToolProcessMedia(SESSION, result.persistId, result.content, [{ kind: 'image', data: 'bytes' }]);
+  await drainPersistQueue();
+  const updated = vi.mocked(updateMessageContent).mock.calls.find(([, id]) => id === result.persistId);
+  expect(JSON.parse(updated![2] as string)).toEqual({ text: 'read', cindy_process_media: [
+    { kind: 'image', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png' },
+  ] });
+  expect(broadcastMessageRow).toHaveBeenCalledWith(SESSION, expect.anything(), ownerScopeState.scope);
+  expect(materializeToolProcessMedia).toHaveBeenCalled();
 });

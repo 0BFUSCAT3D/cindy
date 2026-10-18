@@ -2505,3 +2505,23 @@ it('does not count visible summaries as output and pauses the usage clock while 
     vi.useRealTimers();
   }
 });
+
+// Regression: imageView was discarded by the host; now a paired process step. Unit.
+it('projects imageView once and retains mixed MCP media', async () => {
+  const q = createAsyncQueue<AgentEvent>();
+  const ctx = makeCtx(newCodexRuntimeState());
+  const viewed = { threadId: 't', turnId: 'turn', item: { type: 'imageView', id: 'view', path: '/tmp/preview.png' } };
+  translateItemNotification('started', viewed, q, ctx);
+  translateItemNotification('completed', viewed, q, ctx);
+  translateItemNotification('completed', { threadId: 't', turnId: 'turn', item: {
+    type: 'mcpToolCall', id: 'mcp', server: 'preview', tool: 'capture', status: 'completed',
+    result: { content: [{ type: 'text', text: 'captured' }, { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }] },
+  } }, q, ctx);
+  q.end(); const events: AgentEvent[] = []; for await (const e of q) events.push(e);
+  expect(events.filter(e => e.type === 'tool_use')).toHaveLength(1);
+  expect(events.filter(e => e.type === 'tool_result_full').map(e => e.data)).toEqual([
+    { toolUseId: 'view', fullText: '/tmp/preview.png', processMedia: [{ kind: 'image', path: '/tmp/preview.png' }] },
+    { toolUseId: 'mcp', fullText: 'captured', isError: false,
+      processMedia: [{ kind: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }] },
+  ]);
+});
