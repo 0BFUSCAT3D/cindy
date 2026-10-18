@@ -150,6 +150,9 @@ vi.mock("react-native-svg", () => ({
 }));
 vi.mock("react-native-uitextview", async () => ({ UITextView: (await import('react-native')).Text }));
 vi.mock("expo-image", () => ({ Image: () => null }));
+// The site-video preview imports this native surface; label tests keep the
+// production renderer but must not load React Native's Flow runtime in Node.
+vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("expo-router", () => ({
   useRouter: () => ({ push: vi.fn() }),
   useFocusEffect: vi.fn(),
