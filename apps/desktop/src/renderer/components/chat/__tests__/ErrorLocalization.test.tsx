@@ -19,6 +19,7 @@ import { ErrorBanner } from '../ErrorBanner';
 import { ErrorMessageCard } from '../ErrorMessageCard';
 import { ErrorTailErrorBanner } from '../InterruptedTurnBanner';
 import { remoteErrorMessageForBanner } from '@/lib/makerChatStore';
+import { buildErrorDiagnosisPrompt } from '@/lib/errorDiagnosisPrompt';
 
 const locales = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko };
 const raw = JSON.stringify({ error: {
@@ -26,6 +27,23 @@ const raw = JSON.stringify({ error: {
   type: 'invalid_request_error', code: 'unsupported_value', param: 'parallel_tool_calls',
 } });
 afterEach(cleanup);
+
+// 诊断入口只在展开详情后出现；预填给新任务的提示带出错任务链接，且与详情同样脱敏。
+it('offers diagnosis after expanding details with a redacted prompt for the failed session', async () => {
+  const i18n = createInstance();
+  await i18n.init({ lng: 'en', resources: { en: { translation: en } }, interpolation: { escapeValue: false } });
+  const onDiagnose = vi.fn();
+  const error = 'Unexpected provider failure; api_key=private-test-value';
+  render(<I18nextProvider i18n={i18n}><ErrorBanner error={error} onRetry={vi.fn()} onDiagnose={onDiagnose} /></I18nextProvider>);
+  expect(screen.queryByText(en.chat.errorBanner.diagnose)).toBeNull();
+  fireEvent.click(screen.getByText(en.chat.errorBanner.networkShowRaw));
+  fireEvent.click(screen.getByText(en.chat.errorBanner.diagnose));
+  const prompt = buildErrorDiagnosisPrompt(i18n.t, 'cindy://session/s1', onDiagnose.mock.calls[0][0]);
+  expect(prompt).toContain('cindy://session/s1');
+  expect(prompt).toContain(en.chat.errorBanner.replyFailed);
+  expect(prompt).toContain('Unexpected provider failure');
+  expect(prompt).not.toContain('private-test-value');
+});
 
 describe.each(SUPPORTED_LOCALES)('error presentation in %s', locale => {
   it('keeps the localized blocked-input fallback visible instead of a reply-failure summary', async () => {
