@@ -440,7 +440,10 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
 - **实现**：`apps/desktop/src/main/maker-ipc/piIdleReleaseWatcher.ts`（30min TTL /
   5min 扫描）。候选只取本机桌面来源、无 Orca 角色、非远程、未隐藏的 pi 会话
   （归档也纳入——归档不会关运行时）；释放前在发送锁内复查回合/后台任务/silent-stop
-  续跑/自动续跑/排队输入，最后由 `closeIfIdle()` 做同步的检查+关闭预约。
+  续跑/自动续跑/排队输入，并重读最新活动时间复核阈值；最后由
+  `Session.closeIfIdle()` 做同步的检查+关闭预约——它同时拒绝关闭宿主独占 RPC 操作
+  （手动压缩 / rewind / 切模）在途的会话（pi 侧由 `runExclusivePiRpc` 计数，
+  见 `hasPendingHostOperation`）。
 - **重建语义**：释放不影响会话数据；下一次发送走既有 lazy create-session，resume 自
   `sdk_session_id`，与冷启动一致。闲置后首次发送因此可能多等一次冷启动。
 - **回归**：`apps/desktop/src/main/maker-ipc/__tests__/piIdleReleaseWatcher.test.ts`。

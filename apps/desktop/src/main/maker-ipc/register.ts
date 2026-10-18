@@ -15881,28 +15881,38 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 来源都有各自的生命周期。归档会话也纳入(归档不关运行时)，其余安全闸门见
   // piIdleReleaseWatcher；释放后下一次发送走 lazy create-session 透明重建。
   const PI_IDLE_RELEASE_SESSION_STATUSES = ['active', 'archived'] as const;
+  const piIdleReleaseIdleSince = () =>
+    sql<number>`max(${sessions.updatedAt}, coalesce(${sessions.lastTurnEndedAt}, 0), coalesce(${sessions.userSendAt}, 0))`;
+  const piIdleReleaseCandidateWhere = () =>
+    and(
+      eq(sessions.agentKind, 'pi'),
+      inArray(sessions.status, PI_IDLE_RELEASE_SESSION_STATUSES),
+      eq(sessions.source, 'desktop'),
+      isNull(sessions.orcaRole),
+      isNull(sessions.hiddenAt),
+      isNull(sessions.remoteHostId),
+      isNull(sessions.agentDeviceId),
+    );
   piIdleReleaseWatcher?.stop();
   piIdleReleaseWatcher = createPiIdleReleaseWatcher({
     readIdleReleaseMinutes: () => DEFAULT_PI_IDLE_RELEASE_MINUTES,
     listCandidates: async (idleBeforeMs) => {
-      const idleSince = sql<number>`max(${sessions.updatedAt}, coalesce(${sessions.lastTurnEndedAt}, 0), coalesce(${sessions.userSendAt}, 0))`;
+      const idleSince = piIdleReleaseIdleSince();
       const rows = await getDbClient()
         .drizzle
         .select({ id: sessions.id, idleSinceMs: idleSince })
         .from(sessions)
-        .where(
-          and(
-            eq(sessions.agentKind, 'pi'),
-            inArray(sessions.status, PI_IDLE_RELEASE_SESSION_STATUSES),
-            eq(sessions.source, 'desktop'),
-            isNull(sessions.orcaRole),
-            isNull(sessions.hiddenAt),
-            isNull(sessions.remoteHostId),
-            isNull(sessions.agentDeviceId),
-            sql`${idleSince} < ${idleBeforeMs}`,
-          ),
-        );
+        .where(and(piIdleReleaseCandidateWhere(), sql`${idleSince} < ${idleBeforeMs}`));
       return rows.map((row) => ({ id: row.id, idleSinceMs: Number(row.idleSinceMs) }));
+    },
+    readIdleSinceMs: async (sessionId) => {
+      const [row] = await getDbClient()
+        .drizzle
+        .select({ idleSinceMs: piIdleReleaseIdleSince() })
+        .from(sessions)
+        .where(and(eq(sessions.id, sessionId), piIdleReleaseCandidateWhere()))
+        .limit(1);
+      return row ? Number(row.idleSinceMs) : null;
     },
     getSession: (sessionId) => maker.getSession(sessionId) ?? null,
     withSessionLock: withSendToSessionLock,

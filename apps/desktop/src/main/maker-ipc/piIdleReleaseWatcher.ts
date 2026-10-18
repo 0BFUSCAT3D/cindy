@@ -9,9 +9,10 @@
  *
  * 候选由 SQL 给出(闲置起点取 max(updated_at, last_turn_ended_at, user_send_at))，
  * 但真正的闸门在**拿到发送锁之后**重读活会话：回合在跑、有排队输入、有后台任务
- * (pi 子代理)、有 silent-stop 续跑认领、有已排定的自动续跑时一律跳过。
- * 最后由 `closeIfIdle()` 做一次同步的「检查 + 关闭预约」，与并发发送互斥；
- * 关闭失败或竞态只会让本轮跳过，下轮重试，不需要额外的持久标记。
+ * (pi 子代理)、有 silent-stop 续跑认领、有已排定的自动续跑时一律跳过；锁内再用
+ * 最新活动时间复核一次闲置阈值(扫描快照可能已经过期)。最后由 `closeIfIdle()`
+ * 做一次同步的「检查 + 关闭预约」——它同时覆盖宿主发起的独占 RPC 操作
+ * (手动压缩 / rewind / 切模)与并发发送；关闭失败或竞态只会让本轮跳过，下轮重试。
  *
  * 释放后下一次发送走既有 lazy create-session 透明重建(resume 自 sdk_session_id)，
  * 与冷启动语义一致，见 docs/dev-rules/pi-harness.md。
@@ -52,6 +53,8 @@ export interface PiIdleReleaseWatcherDeps {
   getSession(sessionId: string): PiIdleReleaseSession | null;
   withSessionLock<T>(sessionId: string, task: () => Promise<T>): Promise<T>;
   hasPendingInput(sessionId: string): Promise<boolean>;
+  /** 锁内复核用：重读该会话的最新活动时间；`null` = 已不再符合候选条件。 */
+  readIdleSinceMs(sessionId: string): Promise<number | null>;
   /** 已排定/在途的自动续跑(stall / idle / reconnect 等)未收口时不得释放。 */
   hasScheduledAutoResume(sessionId: string): boolean;
   now(): number;
@@ -104,13 +107,19 @@ export function createPiIdleReleaseWatcher(
             if (deps.hasScheduledAutoResume(candidate.id)) return;
             if (await deps.hasPendingInput(candidate.id)) return;
 
+            // 候选是扫描开始时的快照：等锁期间用户可能已经发过消息、跑完一轮。
+            // 用锁内的最新活动时间复核阈值，避免把刚用过的会话提前回收。
+            const idleSinceMs = await deps.readIdleSinceMs(candidate.id);
+            if (idleSinceMs === null) return;
+            if (deps.now() - idleSinceMs < idleReleaseMinutes * 60_000) return;
+
             // 同步复查 + 关闭预约：并发发送要么先赢，要么看到 closePromise 被拒。
             const released = await session.closeIfIdle();
             if (!released) return;
 
             deps.log.info('piIdleWatcher: released idle session', {
               sessionId: candidate.id,
-              idleMs: Math.max(0, deps.now() - candidate.idleSinceMs),
+              idleMs: Math.max(0, deps.now() - idleSinceMs),
               idleThresholdMin: idleReleaseMinutes,
             });
           });

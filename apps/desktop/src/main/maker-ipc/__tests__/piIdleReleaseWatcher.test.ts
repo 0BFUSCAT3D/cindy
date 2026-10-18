@@ -27,6 +27,7 @@ function createDeps(overrides: Partial<PiIdleReleaseWatcherDeps> = {}) {
     getSession: vi.fn(() => session),
     withSessionLock: vi.fn(async (_sessionId, task) => task()),
     hasPendingInput: vi.fn(async () => false),
+    readIdleSinceMs: vi.fn(async () => 0),
     hasScheduledAutoResume: vi.fn(() => false),
     now: vi.fn(() => 120_000),
     timer: { setInterval, clearInterval },
@@ -115,6 +116,28 @@ describe('createPiIdleReleaseWatcher', () => {
 
     expect(session.closeIfIdle).not.toHaveBeenCalled();
     expect(deps.log.info).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the idle clock after waiting for the session lock', async () => {
+    // now=120_000、TTL=1min：候选快照已过期，锁内复核发现 30s 前刚有活动。
+    const { deps, session, watcher } = createDeps({
+      readIdleSinceMs: vi.fn(async () => 90_000),
+    });
+
+    await watcher.scanNow();
+
+    expect(session.closeIfIdle).not.toHaveBeenCalled();
+    expect(deps.log.info).not.toHaveBeenCalled();
+  });
+
+  it('skips a session that no longer matches the candidate filter', async () => {
+    const { session, watcher } = createDeps({
+      readIdleSinceMs: vi.fn(async () => null),
+    });
+
+    await watcher.scanNow();
+
+    expect(session.closeIfIdle).not.toHaveBeenCalled();
   });
 
   it('leaves a session untouched when this process does not own its runtime', async () => {
