@@ -339,7 +339,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         )}
       >
         {failedSamplingAttempt && (
-          <div className="mb-1 text-13 font-normal leading-[18px]" style={{ color: 'var(--text-secondary)' }}>
+          <div className="mb-1 text-13 font-normal leading-[1.384615]" style={{ color: 'var(--text-secondary)' }}>
             {t('chat.failedSamplingAttempt')}
           </div>
         )}

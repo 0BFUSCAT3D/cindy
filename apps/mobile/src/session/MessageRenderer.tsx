@@ -8810,7 +8810,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textSecondary,
     fontSize: typeScale.footnote,
     lineHeight: lineHeight.caption,
-    fontWeight: '400',
+    fontWeight: fontWeight.regular,
   },
   modelMismatchText: {
     color: colors.textTertiary,
