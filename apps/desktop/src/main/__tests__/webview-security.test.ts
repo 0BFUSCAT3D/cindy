@@ -1,5 +1,3 @@
-import { authorizeVideoEmbed, hardenVideoEmbedSession, installVideoEmbedGuestHandlers } from '../webview-security';
-import { VIDEO_EMBED_PARTITION } from '../../shared/webviewPartition';
 /**
  * webview-security 单测 —— 模拟恶意 will-attach-webview 输入,断言 hardener 把
  * 危险开关全部锁死、partition 强制覆盖。
@@ -40,6 +38,7 @@ import {
   LOGIN_CAPTCHA_PARTITION,
 } from '../../shared/webviewPartition';
 import { getEffectiveAppShortcuts, type AppShortcutId } from '../../shared/appShortcuts';
+import { CURRENT_APP_ID } from '../../shared/brandRegion';
 import * as appSessionState from '../appSessionState';
 import { resolveGhostMediaHandoverTarget } from '../cindy-brain/ghostMediaHandoverTargetTracker';
 import {
@@ -58,6 +57,7 @@ import {
   installGhostGuestNavigationHandlers,
   installGhostMediaHandoverSource,
   installBrowserGuestHandlers,
+  installBrowserVideoReferrer,
   installDeferredPopupRouter,
   installLoginCaptchaGuestHandlers,
   isAllowedLoginCaptchaUrl,
@@ -66,6 +66,26 @@ import {
   setLoginCaptchaOriginResolver,
   setRsbPopupOpenerResolver,
 } from '../webview-security';
+
+// Unit: login return/reload sent YouTube's own URL as Referer and the real
+// embedded player returned 152-4. Exercise the request callback, not source text.
+it('retains app identity on player return without replacing website embed origins', () => {
+  const onBeforeSendHeaders = vi.fn();
+  const browserSession = { webRequest: { onBeforeSendHeaders } } as unknown as Session;
+  installBrowserVideoReferrer(browserSession);
+  installBrowserVideoReferrer(browserSession);
+  expect(onBeforeSendHeaders).toHaveBeenCalledTimes(1);
+  const [filter, request] = onBeforeSendHeaders.mock.calls[0];
+  expect(filter.urls).toEqual(['https://www.youtube.com/embed/*']);
+  for (const referrer of [undefined, 'https://www.youtube.com/embed/E5wWVwe7-6E', 'https://www.youtube.com/']) {
+    const callback = vi.fn();
+    request({ requestHeaders: { ...(referrer ? { referer: referrer } : {}), Accept: 'text/html' } }, callback);
+    expect(callback).toHaveBeenCalledWith({ requestHeaders: { Referer: `https://${CURRENT_APP_ID}/`, Accept: 'text/html' } });
+  }
+  const callback = vi.fn();
+  request({ requestHeaders: { Referer: 'https://example.org/article' } }, callback);
+  expect(callback).toHaveBeenCalledWith({ requestHeaders: { Referer: 'https://example.org/article' } });
+});
 
 describe('applyWebviewHardening', () => {
   it('locks down all webPreferences fields per Codex tY', () => {
@@ -128,8 +148,10 @@ describe('applyWebviewHardening', () => {
     expect(webPreferences.preload).toBe('/app/.vite/build/browserCommentPreload.js');
   });
 
-  it('forces partition to BROWSER_PARTITION (overrides any renderer-set value)', () => {
-    const webPreferences: Record<string, unknown> = {};
+  // Unit: Chromium selects the actual cookie store from WebPreferences, not
+  // only tag params. The old video partition must not survive browser routing.
+  it('forces the actual guest cookie store to the browser partition', () => {
+    const webPreferences: Record<string, unknown> = { partition: 'cindy-video-embed' };
     const params: Record<string, string> = {
       partition: 'persist:evil-other-session',
     };
@@ -137,6 +159,7 @@ describe('applyWebviewHardening', () => {
     applyWebviewHardening(webPreferences, params);
 
     expect(params.partition).toBe(BROWSER_PARTITION);
+    expect(webPreferences.partition).toBe(BROWSER_PARTITION);
   });
 
   it('fills BROWSER_PARTITION when renderer did not set partition at all', () => {
@@ -1320,64 +1343,5 @@ describe('resolveGuestShortcutAction', () => {
       resolveGuestShortcutAction(key('KeyW', { meta: true, shift: true }), getCombos),
     ).toBeNull();
     expect(resolveGuestShortcutAction(key('KeyT', { meta: true }), getCombos)).toBeNull();
-  });
-});
-
-// Unit: reported video-page playback needs a new guest branch; existing browser
-// tests do not cover this zero-bridge session, app identity or its navigation gate.
-describe('YouTube embedded player isolation', () => {
-  const url = 'https://www.youtube-nocookie.com/embed/glW1pXWebnY?playsinline=1&autoplay=0';
-  it('accepts canonical player URLs and removes all privileged guest settings', () => {
-    const prefs: Record<string, unknown> = { preload: '/evil', nodeIntegration: true, webSecurity: false };
-    const params = { src: url, partition: VIDEO_EMBED_PARTITION, allowpopups: 'true' };
-    expect(authorizeVideoEmbed(prefs, params)).toBe(true);
-    expect(prefs).toMatchObject({ partition: VIDEO_EMBED_PARTITION, sandbox: true, contextIsolation: true, webSecurity: true, nodeIntegration: false });
-    expect(prefs.preload).toBeUndefined();
-    expect(params.allowpopups).toBe('true');
-    expect(prefs.disablePopups).toBe(false);
-    expect(authorizeVideoEmbed({}, { ...params, src: 'https://example.com' })).toBe(false);
-  });
-  it('provides the app referer only for player requests and denies devices, downloads and navigation', () => {
-    const session = Object.assign(new EventEmitter(), {
-      setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn(),
-      webRequest: { onBeforeSendHeaders: vi.fn() },
-    });
-    hardenVideoEmbedSession(session as unknown as Session);
-    hardenVideoEmbedSession(session as unknown as Session);
-    expect(session.webRequest.onBeforeSendHeaders).toHaveBeenCalledTimes(1);
-    const reply = vi.fn();
-    session.webRequest.onBeforeSendHeaders.mock.calls[0][1]({ url, requestHeaders: {} }, reply);
-    expect(reply.mock.calls[0][0].requestHeaders.Referer).toMatch(/^https:\/\/[^/]+\/$/);
-    const permission = session.setPermissionRequestHandler.mock.calls[0][0];
-    permission({ getURL: () => url }, 'camera', reply);
-    expect(reply).toHaveBeenLastCalledWith(false);
-    const deny = { preventDefault: vi.fn() };
-    session.emit('will-download', deny);
-    expect(deny.preventDefault).toHaveBeenCalledTimes(1);
-    const guest = Object.assign(new EventEmitter(), { getURL: () => url, setWindowOpenHandler: vi.fn() });
-    const openExternal = vi.fn().mockResolvedValue(undefined);
-    installVideoEmbedGuestHandlers(guest as unknown as WebContents, openExternal);
-    guest.emit('will-navigate', deny, 'file:///private');
-    guest.emit('will-redirect', deny, 'https://example.com');
-    expect(deny.preventDefault).toHaveBeenCalledTimes(3);
-    expect(guest.setWindowOpenHandler.mock.calls[0][0]({ url: 'javascript:alert(1)' })).toEqual({ action: 'deny' });
-    expect(openExternal).not.toHaveBeenCalled();
-  });
-  // Unit: login/help buttons were silently swallowed. Existing isolation coverage
-  // did not exercise valid player links; no account page may enter the guest.
-  it('opens player login and help links in the browser while denying native popups and redirects', () => {
-    const guest = Object.assign(new EventEmitter(), { getURL: () => url, setWindowOpenHandler: vi.fn() });
-    const openExternal = vi.fn().mockResolvedValue(undefined);
-    installVideoEmbedGuestHandlers(guest as unknown as WebContents, openExternal);
-    const popup = guest.setWindowOpenHandler.mock.calls[0][0];
-    expect(popup({ url: 'https://accounts.google.com/ServiceLogin?continue=https://evil.test' })).toEqual({ action: 'deny' });
-    expect(openExternal).toHaveBeenLastCalledWith('https://www.youtube.com/watch?v=glW1pXWebnY');
-    const deny = { preventDefault: vi.fn() };
-    guest.emit('will-navigate', deny, 'https://support.google.com/youtube/answer/3037019');
-    expect(openExternal).toHaveBeenLastCalledWith('https://support.google.com/youtube/answer/3037019');
-    guest.emit('will-redirect', deny, 'https://accounts.google.com/ServiceLogin');
-    popup({ url: 'https://youtube.com.evil.test/watch?v=glW1pXWebnY' });
-    expect(openExternal).toHaveBeenCalledTimes(2);
-    expect(deny.preventDefault).toHaveBeenCalledTimes(2);
   });
 });

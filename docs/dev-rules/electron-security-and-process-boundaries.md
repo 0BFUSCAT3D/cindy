@@ -187,16 +187,18 @@ auth-server）+ origin 命中 `setLoginCaptchaOriginResolver` 注入的 auth 端
 
 ### 正文视频网站播放器
 
-YouTube 视频组件使用 `cindy-video-embed` 非持久独立 WebView；不共用浏览器或应用
-Cookie，不注入 preload/IPC，不放宽主窗 CSP。Main 仅接受共享解析器生成的
-`https://www.youtube-nocookie.com/embed/<video-id>` 规范地址，禁止创建原生弹窗、下载、其它
-顶层导航与重定向；设备权限默认拒绝，仅已核验播放器可请求全屏。
-播放器的弹窗请求须到达 Main handler：经过共享解析器核验的 HTTPS YouTube／Google
-登录链接转为系统浏览器打开原视频，YouTube 帮助链接打开帮助页，其余目标拒绝。
-不把登录页装进播放器、不转发登录 continuation、不复制浏览器 Cookie；重定向不触发外部打开。
-专属 session 的请求钩子只向规范播放器请求提供当前安装 App ID 的 HTTPS Referer，
-遵守 YouTube 嵌入身份要求，不覆盖默认 session 的 MCP 请求钩子。点击后才装载，
-不可见／卸载时销毁 guest，原视频外链始终保留。普通视频文件继续走原媒体播放器。
+YouTube 视频组件复用内置浏览器的 `BROWSER_PARTITION` 持久会话、标准 WebView
+加固与原生弹窗路由。用户从播放器登录时，在 Cindy 浏览器完成授权，登录状态保留在同一
+会话中；不得另造无痕视频分区、阻断登录跳转或复制外部浏览器 Cookie。
+共享解析器从核验的视频 ID 生成 `https://www.youtube.com/embed/<video-id>`，
+不执行模型提供的任意 iframe/HTML。点击封面后装载，卸载时销毁 guest；切换焦点或打开
+登录页不会销毁播放器。主窗口 CSP、沙箱、上下文隔离和无 Node 的浏览器基线保持不变。
+
+播放器首次加载通过 WebView `httpreferrer` 提供当前 App ID。浏览器会话的单一请求头
+listener 仅匹配 YouTube `/embed/*`：来源缺失或登录返回变成 YouTube 自身时补上 App ID，
+已有网站嵌入来源原样保留。不注册第二个同会话 listener，也不触及 default session 的
+MCP 请求钩子。此身份要求来自 YouTube 官方文档，不伪装成第三方网站或改写 User-Agent。
+普通视频文件继续走原媒体播放器，原视频外链始终保留。
 
 ## 7．CSP、协议与 Electron Fuses
 

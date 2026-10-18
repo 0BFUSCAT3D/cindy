@@ -79,24 +79,24 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); runtime.clear(); vi.useRealTimers(); });
 
-// Unit: the real video component used to swallow login/help taps. The diagram
-// lifecycle tests do not cover navigation; a login popup is the minimal failure.
-it('opens video login/help in the system browser without navigating its isolated WebView', () => {
+// Unit: login was blocked by the actual video component's navigation callback.
+// Existing diagram tests do not exercise site navigation or native cookie policy.
+it('keeps video login and return navigation inside the persistent native WebView', () => {
   act(() => root.render(createElement(VideoSitePreview, { src: 'https://youtu.be/E5wWVwe7-6E', title: 'Sound Burger' })));
   expect(state.live).toBe(0);
   act(() => state.play());
   expect(state.live).toBe(1);
   const player = state.props;
-  player.onOpenWindow({ nativeEvent: { targetUrl: 'https://accounts.google.com/ServiceLogin' } });
-  expect(state.openURL).toHaveBeenLastCalledWith('https://www.youtube.com/watch?v=E5wWVwe7-6E');
-  expect(player.onShouldStartLoadWithRequest({ url: 'https://support.google.com/youtube/answer/3037019', navigationType: 'click', isTopFrame: true })).toBe(false);
-  expect(state.openURL).toHaveBeenLastCalledWith('https://support.google.com/youtube/answer/3037019');
-  expect(player.onShouldStartLoadWithRequest({ url: 'https://accounts.google.com/ServiceLogin', navigationType: 'other', isTopFrame: true })).toBe(false);
-  for (const targetUrl of ['file:///private', 'javascript:alert(1)', 'https://youtube.com.evil.test/watch?v=E5wWVwe7-6E', 'https://user@www.youtube.com/watch?v=E5wWVwe7-6E']) {
-    player.onOpenWindow({ nativeEvent: { targetUrl } });
+  expect(player.incognito).not.toBe(true);
+  expect(player.thirdPartyCookiesEnabled).not.toBe(false);
+  expect(player.setSupportMultipleWindows).toBe(false);
+  for (const url of ['https://accounts.google.com/ServiceLogin', player.source.uri, 'https://www.youtube.com/watch?v=E5wWVwe7-6E']) {
+    expect(player.onShouldStartLoadWithRequest({ url, isTopFrame: true })).toBe(true);
   }
-  expect(state.openURL).toHaveBeenCalledTimes(2);
-  expect(player.onShouldStartLoadWithRequest({ url: player.source.uri, isTopFrame: true })).toBe(true);
+  for (const url of ['file:///private', 'javascript:alert(1)', 'https://user@www.youtube.com/watch?v=E5wWVwe7-6E']) {
+    expect(player.onShouldStartLoadWithRequest({ url, isTopFrame: true })).toBe(false);
+  }
+  expect(state.openURL).not.toHaveBeenCalled();
 });
 
 it('cancels unseen work, keeps visible content during a drag and reuses a snapshot on revisit', () => {

@@ -1,6 +1,3 @@
-import { isYoutubeEmbedUrl, youtubePlayerExternalUrl } from '@cindy/maker-shared/rich-answer';
-import { CURRENT_APP_ID } from '../shared/brandRegion';
-import { VIDEO_EMBED_PARTITION } from '../shared/webviewPartition';
 /**
  * webview-security — RSB 内置浏览器 (web-browser plugin) 用的 `<webview>` 加固。
  *
@@ -27,8 +24,8 @@ import { VIDEO_EMBED_PARTITION } from '../shared/webviewPartition';
 
 import path from 'node:path';
 
-import { app, session, shell, type BrowserWindow, type Session, type WebContents } from 'electron';
-import { createLogger } from './logger';
+import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron';
+import { CURRENT_APP_ID } from '../shared/brandRegion';
 
 import {
   BROWSER_PARTITION,
@@ -111,6 +108,7 @@ export function applyWebviewHardening(
   // 也跑在我们指定的隔离 session 里(cookies / IDB / cache 单一来源)。Codex
   // 用 Tb('app') 映射拿 partition 字符串,我们用单一常量,实质等价。
   params.partition = BROWSER_PARTITION;
+  webPreferences.partition = BROWSER_PARTITION;
 
   // ── webPreferences:guest 页面的渲染环境 ────────────────────────────────────
   // 全部对齐 Codex tY(line 49849-49859):
@@ -939,55 +937,24 @@ export function installGhostMediaHandoverSource(
   hostContents.once('destroyed', revoke);
 }
 
-/** Reuse the zero-bridge guest hardening; only the canonical player URL may attach. */
-export function authorizeVideoEmbed(webPreferences: Record<string, unknown>, params: Record<string, string>): boolean {
-  if (params.partition !== VIDEO_EMBED_PARTITION || !isYoutubeEmbedUrl(params.src)) return false;
-  applyLoginCaptchaWebviewHardening(webPreferences, params);
-  webPreferences.partition = VIDEO_EMBED_PARTITION;
-  // Main denies native popups and routes validated player links to the browser.
-  params.allowpopups = 'true';
-  webPreferences.disablePopups = false;
-  return true;
-}
-const hardenedVideoSessions = new WeakSet<object>();
-const videoEmbedLog = createLogger('video-embed');
-export function hardenVideoEmbedSession(videoSession: Session): void {
-  if (hardenedVideoSessions.has(videoSession)) return;
-  videoSession.setPermissionRequestHandler((contents, permission, callback) => {
-    callback(permission === 'fullscreen' && isYoutubeEmbedUrl(contents.getURL()));
-  });
-  videoSession.setPermissionCheckHandler((contents, permission) =>
-    permission === 'fullscreen' && !!contents && isYoutubeEmbedUrl(contents.getURL()));
-  videoSession.on('will-download', event => event.preventDefault());
-  // This is an isolated session, so it cannot replace the app/MCP header listener.
-  videoSession.webRequest.onBeforeSendHeaders({ urls: ['https://www.youtube-nocookie.com/embed/*'] }, (details, callback) => {
+const browserVideoReferrers = new WeakSet<Session>();
+
+/** Login redirects/reloads can replace the app Referer with the player's own URL. */
+export function installBrowserVideoReferrer(browserSession: Session): void {
+  if (browserVideoReferrers.has(browserSession)) return;
+  // Single owner for this browser session's header listener; default-session MCP
+  // hooks are separate. Preserve a website's real embedding origin when present.
+  browserSession.webRequest.onBeforeSendHeaders({ urls: ['https://www.youtube.com/embed/*'] }, (details, callback) => {
     const headers = { ...details.requestHeaders };
-    if (isYoutubeEmbedUrl(details.url)) {
-      for (const key of Object.keys(headers)) if (key.toLowerCase() === 'referer') delete headers[key];
+    const key = Object.keys(headers).find(name => name.toLowerCase() === 'referer');
+    const referrer = key ? headers[key] : undefined;
+    if (!referrer || /^https:\/\/www\.youtube\.com(?:\/|$)/i.test(referrer)) {
+      if (key) delete headers[key];
       headers.Referer = `https://${CURRENT_APP_ID}/`;
     }
     callback({ requestHeaders: headers });
   });
-  hardenedVideoSessions.add(videoSession);
-}
-export function installVideoEmbedGuestHandlers(
-  guest: WebContents,
-  openExternal: (url: string) => Promise<void> = url => shell.openExternal(url),
-): void {
-  const openPlayerLink = (url: string) => {
-    const target = youtubePlayerExternalUrl(guest.getURL(), url);
-    if (target) void openExternal(target).catch(() => videoEmbedLog.warn('Could not open source in browser'));
-  };
-  guest.setWindowOpenHandler(details => {
-    openPlayerLink(details.url);
-    return { action: 'deny' };
-  });
-  guest.on('will-navigate', (event, url) => {
-    if (isYoutubeEmbedUrl(url)) return;
-    event.preventDefault();
-    openPlayerLink(url);
-  });
-  guest.on('will-redirect', (event, url) => { if (!isYoutubeEmbedUrl(url)) event.preventDefault(); });
+  browserVideoReferrers.add(browserSession);
 }
 
 export function installWebviewHardener(): void {
@@ -997,21 +964,9 @@ export function installWebviewHardener(): void {
     // 不装浏览器的 popup 路由与快捷键转发)。
     let pendingGhostAttach: ReturnType<typeof authorizeGhostWebviewAttach> = null;
     let pendingCaptchaAttach = false;
-    let pendingVideoAttach = false;
     contents.on('will-attach-webview', (e, webPreferences, params) => {
-      pendingVideoAttach = false;
       pendingCaptchaAttach = false;
       pendingGhostAttach = null;
-      if (params.partition === VIDEO_EMBED_PARTITION) {
-        if (!authorizeVideoEmbed(webPreferences as unknown as Record<string, unknown>, params)) {
-          e.preventDefault();
-          return;
-        }
-        try { hardenVideoEmbedSession(session.fromPartition(VIDEO_EMBED_PARTITION)); }
-        catch { e.preventDefault(); return; }
-        pendingVideoAttach = true;
-        return;
-      }
       // 意识面板分支:声明了意识分区的 webview 必须验明正身——
       // 分区/地址/已装清单三对齐才放行并保留专属分区;验证失败直接拒附加
       // (绝不回落到浏览器分区,那会让 cindy-ghost:// 内容跑进错误 session)。
@@ -1052,6 +1007,7 @@ export function installWebviewHardener(): void {
         pendingCaptchaAttach = true;
         return;
       }
+      installBrowserVideoReferrer(session.fromPartition(BROWSER_PARTITION));
       applyWebviewHardening(
         webPreferences as unknown as Record<string, unknown>,
         params,
@@ -1061,11 +1017,6 @@ export function installWebviewHardener(): void {
       );
     });
     contents.on('did-attach-webview', (_e, guestContents) => {
-      if (pendingVideoAttach) {
-        pendingVideoAttach = false;
-        installVideoEmbedGuestHandlers(guestContents);
-        return;
-      }
       if (pendingCaptchaAttach) {
         pendingCaptchaAttach = false;
         // 挑战页零弹窗;顶层导航只允许停留在托管挑战页白名单内(Turnstile 的

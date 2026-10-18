@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { youtubeVideo } from '@cindy/maker-shared/rich-answer';
-import { VIDEO_EMBED_PARTITION } from '@/../shared/webviewPartition';
+import { BROWSER_PARTITION } from '@/../shared/webviewPartition';
+import { CURRENT_APP_ID } from '@/../shared/brandRegion';
 
-/** Click-to-load, isolated site player. The original link remains available on every failure. */
+/** Click-to-load site player using the built-in browser’s persistent login session. */
 export function VideoSitePreview({ src, title }: { src: string; title: string }) {
   const video = youtubeVideo(src);
   return video ? <YoutubePreview key={video.embed} video={video} title={title} /> : null;
@@ -16,10 +17,10 @@ function YoutubePreview({ video, title }: { video: NonNullable<ReturnType<typeof
     if (!active || !host.current) return;
     const target = host.current;
     const guest = document.createElement('webview');
-    guest.setAttribute('partition', VIDEO_EMBED_PARTITION);
-    // Let popup requests reach Main's handler; it denies native windows and
-    // opens only validated player links in the system browser.
+    guest.setAttribute('partition', BROWSER_PARTITION);
+    // Reuse the browser's session and popup flow so login can return to this player.
     guest.setAttribute('allowpopups', '');
+    guest.setAttribute('httpreferrer', `https://${CURRENT_APP_ID}/`);
     guest.setAttribute('src', video.embed);
     guest.setAttribute('title', title);
     guest.setAttribute('style', 'display:flex;width:100%;height:100%');
@@ -31,15 +32,7 @@ function YoutubePreview({ video, title }: { video: NonNullable<ReturnType<typeof
     };
     guest.addEventListener('did-fail-load', failed);
     guest.addEventListener('render-process-gone', stop);
-    const visibility = () => { if (document.hidden) stop(); };
-    document.addEventListener('visibilitychange', visibility);
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => !entry.isIntersecting)) stop();
-    });
-    observer.observe(target);
     return () => {
-      observer.disconnect();
-      document.removeEventListener('visibilitychange', visibility);
       guest.removeEventListener('did-fail-load', failed);
       guest.removeEventListener('render-process-gone', stop);
       guest.remove();

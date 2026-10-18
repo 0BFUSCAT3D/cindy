@@ -275,14 +275,18 @@ it('preserves line-height units and keeps dense chart dates on the plot axis', (
 // Unit: the user saw a failed <video> for a YouTube page. Mount the production
 // site preview; click-to-load, URL replacement and unmount must own the guest.
 it('loads a site player on demand, retains its source link and disposes it on replacement', () => {
-  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
   const view = render(<VideoSitePreview src="https://youtube.com/watch?v=glW1pXWebnY" title="Tutorial" />);
   expect(view.container.querySelector('webview')).toBeNull();
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://www.youtube.com/watch?v=glW1pXWebnY');
   fireEvent.click(screen.getByRole('button'));
   const guest = view.container.querySelector('webview')!;
-  expect(guest.getAttribute('src')).toContain('youtube-nocookie.com/embed/glW1pXWebnY');
+  expect(guest.getAttribute('src')).toContain('youtube.com/embed/glW1pXWebnY');
   expect(view.container.querySelector('video')).toBeNull();
+  // Opening a login page must not discard its player/opener when focus changes.
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+  fireEvent(document, new Event('visibilitychange'));
+  expect(guest.isConnected).toBe(true);
+  vi.restoreAllMocks();
   view.rerender(<VideoSitePreview src="https://youtu.be/6b9FKpTeV28" title="Next" />);
   expect(guest.isConnected).toBe(false);
   expect(view.container.querySelector('webview')).toBeNull();
