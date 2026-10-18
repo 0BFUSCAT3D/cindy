@@ -3925,6 +3925,11 @@ function MessageBubble({
         />
       ) : null}
       {attachmentStripNode}
+      {item.message.failedSamplingAttempt ? (
+        <Text style={styles.failedSamplingAttemptText}>
+          {t('message.renderer.failedSamplingAttempt')}
+        </Text>
+      ) : null}
       {item.message.role === 'error' ? (
         <ErrorNotice message={displayBubbleBody}>
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
@@ -8800,6 +8805,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flexDirection: 'row',
     gap: 4,
     maxWidth: '86%',
+  },
+  failedSamplingAttemptText: {
+    color: colors.textSecondary,
+    fontSize: typeScale.footnote,
+    lineHeight: lineHeight.caption,
+    fontWeight: fontWeight.regular,
   },
   modelMismatchText: {
     color: colors.textTertiary,
