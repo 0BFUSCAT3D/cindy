@@ -92,6 +92,7 @@ import {
   findImageTargets,
 } from './markdownImageLivePreview';
 import {
+  docSearchIndexOfLine,
   docSearchRangesField,
   filterVisibleDocSearchRanges,
   setDocSearchRangesEffect,
@@ -107,6 +108,12 @@ export interface PlaintextEditorSearchHandle {
   findAll: (query: string) => number;
   /** Focus / scroll to the nth match (0-indexed). No-op if out of range. */
   setActive: (index: number) => void;
+  /**
+   * Index of the first visible match on `line` (1-indexed) or later — the
+   * jump target for "open file at line N". Must count the *filtered* matches
+   * findAll() returned, not raw source hits.
+   */
+  indexOfLine: (line: number) => number;
   /** Drop cached matches + clear highlight. */
   clear: () => void;
 }
@@ -1207,6 +1214,15 @@ export const PlaintextEditor = forwardRef<PlaintextEditorHandle, PlaintextEditor
               ),
             ],
           });
+        },
+        indexOfLine: (line: number): number => {
+          const view = cmViewRef.current;
+          if (!view) return 0;
+          return docSearchIndexOfLine(
+            matchesRef.current,
+            (from) => view.state.doc.lineAt(from).number,
+            line,
+          );
         },
         clear: (): void => {
           matchesRef.current = [];

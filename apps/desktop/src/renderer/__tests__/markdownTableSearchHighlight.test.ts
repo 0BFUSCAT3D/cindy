@@ -23,6 +23,7 @@ import {
   searchHighlightField,
 } from '@/components/markdown/PlaintextEditor';
 import {
+  docSearchIndexOfLine,
   docSearchRangesField,
   filterVisibleDocSearchRanges,
   setDocSearchRangesEffect,
@@ -329,5 +330,53 @@ describe('markdown table widget search highlight', () => {
     expect(cell.dataset.searchHighlights).toBe('1:5');
     cell.blur();
     view.destroy();
+  });
+});
+
+describe('docSearchIndexOfLine (project-search jump target)', () => {
+  // mermaid 块整块不可见 → findAll 剔除其中的命中。目标行之前若有这类同词
+  // 命中,按源码计数会偏大:这里可见命中 4 个(源码计数给 5,越界 → setActive
+  // 直接 return,用户点了跳转却什么都没滚)。
+  const DOC_WITH_HIDDEN_HIT = [
+    '```mermaid',
+    'graph TD',
+    '  A[alpha] --> B[x]',
+    '```',
+    '',
+    'alpha one',
+    'alpha two',
+    'alpha three',
+    'alpha target',
+  ].join('\n');
+
+  it('counts only visible hits, so a hidden earlier hit does not offset the target', () => {
+    const doc = docOf(DOC_WITH_HIDDEN_HIT);
+    const visible = visibleMatches('alpha', doc);
+    const lineOf = (from: number) => doc.lineAt(from).number;
+
+    // mermaid 块里(line 3)那处命中被剔除 → 可见命中只剩 line 6/7/8/9 四处
+    expect(visible).toHaveLength(4);
+    expect(doc.lineAt(visible[0].from).number).toBe(6);
+    expect(doc.lineAt(visible[3].from).number).toBe(9);
+
+    // 跳到 line 9 → 下标 3。
+    expect(docSearchIndexOfLine(visible, lineOf, 9)).toBe(3);
+    // 对照:旧口径(数 line 9 之前的源码命中)会把隐藏那处一起算进去 → 4,
+    // 而可见命中总共只有 4 个 → setActive(4) 越界直接 return,跳转根本不发生。
+    const linesBeforeTarget = DOC_WITH_HIDDEN_HIT.split(/\r?\n/).slice(0, 8);
+    const sourceCount = linesBeforeTarget
+      .join('\n')
+      .toLowerCase()
+      .split('alpha').length - 1;
+    expect(sourceCount).toBe(4);
+    expect(sourceCount).toBeGreaterThanOrEqual(visible.length);
+  });
+
+  it('returns 0 when no visible match is on or after the line', () => {
+    const doc = docOf(DOC_WITH_MERMAID);
+    const visible = visibleMatches('alpha', doc);
+    const lineOf = (from: number) => doc.lineAt(from).number;
+    expect(docSearchIndexOfLine(visible, lineOf, 99)).toBe(0);
+    expect(docSearchIndexOfLine([], lineOf, 1)).toBe(0);
   });
 });

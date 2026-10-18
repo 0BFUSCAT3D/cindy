@@ -95,6 +95,26 @@ function mergeHiddenRanges(ranges: DocSearchHiddenRange[]): DocSearchHiddenRange
   return out;
 }
 
+/**
+ * 第一个落在 `line`(1-indexed)或之后的命中的下标 —— 即"该行第一个命中"在
+ * **可见命中列表**里的位置,没有则返回 0(调用方还会 clamp 到 total-1)。
+ *
+ * 按行号跳转必须用它,不能对源码直接计数:findAll 已把图片 alt、mermaid 块、
+ * conceal 标记等看不见的命中剔除,源码计数会把这些一起算进去,序号偏大 →
+ * 跳到后面的另一处。`lineOf` 把文档位置映射成行号(通常传
+ * `doc.lineAt(from).number`)。
+ */
+export function docSearchIndexOfLine(
+  matches: DocSearchRange[],
+  lineOf: (from: number) => number,
+  line: number,
+): number {
+  for (let i = 0; i < matches.length; i++) {
+    if (lineOf(matches[i].from) >= line) return i;
+  }
+  return 0;
+}
+
 /** 取出落在 [from, to) 内的命中(表格 widget 用它在自己 DOM 里补画高亮)。 */
 export function selectDocSearchRangesWithin(
   ranges: DocSearchRange[],
