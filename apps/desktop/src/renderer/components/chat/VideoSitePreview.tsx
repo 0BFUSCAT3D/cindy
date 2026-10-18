@@ -17,6 +17,9 @@ function YoutubePreview({ video, title }: { video: NonNullable<ReturnType<typeof
     const target = host.current;
     const guest = document.createElement('webview');
     guest.setAttribute('partition', VIDEO_EMBED_PARTITION);
+    // Let popup requests reach Main's handler; it denies native windows and
+    // opens only validated player links in the system browser.
+    guest.setAttribute('allowpopups', '');
     guest.setAttribute('src', video.embed);
     guest.setAttribute('title', title);
     guest.setAttribute('style', 'display:flex;width:100%;height:100%');

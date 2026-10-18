@@ -5,7 +5,7 @@ import { AppState, Image, Linking, Pressable, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as Application from 'expo-application';
 import { useTranslation } from 'react-i18next';
-import { youtubeVideo, isYoutubeEmbedUrl } from '@cindy/maker-shared/rich-answer';
+import { youtubeVideo, isYoutubeEmbedUrl, youtubePlayerExternalUrl } from '@cindy/maker-shared/rich-answer';
 import { Text } from '@/components/AppText';
 import { useTheme } from '@/theme';
 import { registerMobileMessageWebView } from './mobileMessageWebViewMetrics';
@@ -20,6 +20,10 @@ function YoutubePreview({ video, title }: { video: NonNullable<ReturnType<typeof
   const focused = useIsFocused();
   const [active, setActive] = useState(false);
   const [width, setWidth] = useState(0);
+  const openPlayerLink = (url: string) => {
+    const target = youtubePlayerExternalUrl(video.embed, url);
+    if (target) void Linking.openURL(target).catch(() => undefined);
+  };
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => { if (state !== 'active') setActive(false); });
     return () => subscription.remove();
@@ -48,8 +52,12 @@ function YoutubePreview({ video, title }: { video: NonNullable<ReturnType<typeof
       originWhitelist={['*']}
       scrollEnabled={false}
       setSupportMultipleWindows
-      onOpenWindow={() => undefined}
-      onShouldStartLoadWithRequest={request => request.isTopFrame === false || isYoutubeEmbedUrl(request.url)}
+      onOpenWindow={event => openPlayerLink(event.nativeEvent.targetUrl)}
+      onShouldStartLoadWithRequest={request => {
+        if (request.isTopFrame === false || isYoutubeEmbedUrl(request.url)) return true;
+        if (request.navigationType === 'click') openPlayerLink(request.url);
+        return false;
+      }}
       onError={() => setActive(false)}
       onContentProcessDidTerminate={() => setActive(false)}
     /> : <Pressable accessibilityRole="button" accessibilityLabel={t('message.richAnswer.playVideo')} onPress={() => setActive(true)}>

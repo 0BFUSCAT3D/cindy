@@ -1,5 +1,5 @@
 export { richColor, richVisualStyle, richVector } from "./richAnswerVisual";
-export { youtubeVideo, isYoutubeEmbedUrl } from "./youtubeVideo";
+export { youtubeVideo, isYoutubeEmbedUrl, youtubePlayerExternalUrl } from "./youtubeVideo";
 /** Model-neutral, declarative answer components. No code evaluation or I/O. */
 export const RICH_ANSWER_LANGUAGE = "cindy-ui";
 export const RICH_ANSWER_KINDS = [

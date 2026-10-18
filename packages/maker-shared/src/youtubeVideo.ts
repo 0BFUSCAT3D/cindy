@@ -28,3 +28,20 @@ export function youtubeVideo(source: string): { id: string; embed: string; watch
 export function isYoutubeEmbedUrl(source: string): boolean {
   return youtubeVideo(source)?.embed === source;
 }
+
+/** Player login/help links leave the sandbox; account pages never enter it. */
+export function youtubePlayerExternalUrl(source: string, target: string): string | null {
+  if (!isYoutubeEmbedUrl(source)) return null;
+  try {
+    const url = new URL(target);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
+    if (url.hostname === 'support.google.com' && url.pathname.startsWith('/youtube/')) return url.href;
+    if (url.hostname === 'accounts.google.com'
+      || ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'www.youtube-nocookie.com', 'youtu.be'].includes(url.hostname)) {
+      // Use the browser's own login context, without forwarding sandbox login
+      // continuations or copying credentials back into the embedded player.
+      return youtubeVideo(target)?.watch ?? youtubeVideo(source)!.watch;
+    }
+  } catch { /* Invalid or non-web targets remain blocked. */ }
+  return null;
+}

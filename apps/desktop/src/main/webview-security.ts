@@ -1,4 +1,4 @@
-import { isYoutubeEmbedUrl } from '@cindy/maker-shared/rich-answer';
+import { isYoutubeEmbedUrl, youtubePlayerExternalUrl } from '@cindy/maker-shared/rich-answer';
 import { CURRENT_APP_ID } from '../shared/brandRegion';
 import { VIDEO_EMBED_PARTITION } from '../shared/webviewPartition';
 /**
@@ -27,7 +27,8 @@ import { VIDEO_EMBED_PARTITION } from '../shared/webviewPartition';
 
 import path from 'node:path';
 
-import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron';
+import { app, session, shell, type BrowserWindow, type Session, type WebContents } from 'electron';
+import { createLogger } from './logger';
 
 import {
   BROWSER_PARTITION,
@@ -943,9 +944,13 @@ export function authorizeVideoEmbed(webPreferences: Record<string, unknown>, par
   if (params.partition !== VIDEO_EMBED_PARTITION || !isYoutubeEmbedUrl(params.src)) return false;
   applyLoginCaptchaWebviewHardening(webPreferences, params);
   webPreferences.partition = VIDEO_EMBED_PARTITION;
+  // Main denies native popups and routes validated player links to the browser.
+  params.allowpopups = 'true';
+  webPreferences.disablePopups = false;
   return true;
 }
 const hardenedVideoSessions = new WeakSet<object>();
+const videoEmbedLog = createLogger('video-embed');
 export function hardenVideoEmbedSession(videoSession: Session): void {
   if (hardenedVideoSessions.has(videoSession)) return;
   videoSession.setPermissionRequestHandler((contents, permission, callback) => {
@@ -965,9 +970,23 @@ export function hardenVideoEmbedSession(videoSession: Session): void {
   });
   hardenedVideoSessions.add(videoSession);
 }
-export function installVideoEmbedGuestHandlers(guest: WebContents): void {
-  guest.setWindowOpenHandler(() => ({ action: 'deny' }));
-  guest.on('will-navigate', (event, url) => { if (!isYoutubeEmbedUrl(url)) event.preventDefault(); });
+export function installVideoEmbedGuestHandlers(
+  guest: WebContents,
+  openExternal: (url: string) => Promise<void> = url => shell.openExternal(url),
+): void {
+  const openPlayerLink = (url: string) => {
+    const target = youtubePlayerExternalUrl(guest.getURL(), url);
+    if (target) void openExternal(target).catch(() => videoEmbedLog.warn('Could not open source in browser'));
+  };
+  guest.setWindowOpenHandler(details => {
+    openPlayerLink(details.url);
+    return { action: 'deny' };
+  });
+  guest.on('will-navigate', (event, url) => {
+    if (isYoutubeEmbedUrl(url)) return;
+    event.preventDefault();
+    openPlayerLink(url);
+  });
   guest.on('will-redirect', (event, url) => { if (!isYoutubeEmbedUrl(url)) event.preventDefault(); });
 }
 

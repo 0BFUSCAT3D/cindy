@@ -189,8 +189,11 @@ auth-server）+ origin 命中 `setLoginCaptchaOriginResolver` 注入的 auth 端
 
 YouTube 视频组件使用 `cindy-video-embed` 非持久独立 WebView；不共用浏览器或应用
 Cookie，不注入 preload/IPC，不放宽主窗 CSP。Main 仅接受共享解析器生成的
-`https://www.youtube-nocookie.com/embed/<video-id>` 规范地址，禁止弹窗、下载、其它
+`https://www.youtube-nocookie.com/embed/<video-id>` 规范地址，禁止创建原生弹窗、下载、其它
 顶层导航与重定向；设备权限默认拒绝，仅已核验播放器可请求全屏。
+播放器的弹窗请求须到达 Main handler：经过共享解析器核验的 HTTPS YouTube／Google
+登录链接转为系统浏览器打开原视频，YouTube 帮助链接打开帮助页，其余目标拒绝。
+不把登录页装进播放器、不转发登录 continuation、不复制浏览器 Cookie；重定向不触发外部打开。
 专属 session 的请求钩子只向规范播放器请求提供当前安装 App ID 的 HTTPS Referer，
 遵守 YouTube 嵌入身份要求，不覆盖默认 session 的 MCP 请求钩子。点击后才装载，
 不可见／卸载时销毁 guest，原视频外链始终保留。普通视频文件继续走原媒体播放器。

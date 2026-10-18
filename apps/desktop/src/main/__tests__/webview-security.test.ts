@@ -1333,7 +1333,8 @@ describe('YouTube embedded player isolation', () => {
     expect(authorizeVideoEmbed(prefs, params)).toBe(true);
     expect(prefs).toMatchObject({ partition: VIDEO_EMBED_PARTITION, sandbox: true, contextIsolation: true, webSecurity: true, nodeIntegration: false });
     expect(prefs.preload).toBeUndefined();
-    expect(params).not.toHaveProperty('allowpopups');
+    expect(params.allowpopups).toBe('true');
+    expect(prefs.disablePopups).toBe(false);
     expect(authorizeVideoEmbed({}, { ...params, src: 'https://example.com' })).toBe(false);
   });
   it('provides the app referer only for player requests and denies devices, downloads and navigation', () => {
@@ -1353,11 +1354,30 @@ describe('YouTube embedded player isolation', () => {
     const deny = { preventDefault: vi.fn() };
     session.emit('will-download', deny);
     expect(deny.preventDefault).toHaveBeenCalledTimes(1);
-    const guest = Object.assign(new EventEmitter(), { setWindowOpenHandler: vi.fn() });
-    installVideoEmbedGuestHandlers(guest as unknown as WebContents);
+    const guest = Object.assign(new EventEmitter(), { getURL: () => url, setWindowOpenHandler: vi.fn() });
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    installVideoEmbedGuestHandlers(guest as unknown as WebContents, openExternal);
     guest.emit('will-navigate', deny, 'file:///private');
     guest.emit('will-redirect', deny, 'https://example.com');
     expect(deny.preventDefault).toHaveBeenCalledTimes(3);
-    expect(guest.setWindowOpenHandler.mock.calls[0][0]()).toEqual({ action: 'deny' });
+    expect(guest.setWindowOpenHandler.mock.calls[0][0]({ url: 'javascript:alert(1)' })).toEqual({ action: 'deny' });
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+  // Unit: login/help buttons were silently swallowed. Existing isolation coverage
+  // did not exercise valid player links; no account page may enter the guest.
+  it('opens player login and help links in the browser while denying native popups and redirects', () => {
+    const guest = Object.assign(new EventEmitter(), { getURL: () => url, setWindowOpenHandler: vi.fn() });
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    installVideoEmbedGuestHandlers(guest as unknown as WebContents, openExternal);
+    const popup = guest.setWindowOpenHandler.mock.calls[0][0];
+    expect(popup({ url: 'https://accounts.google.com/ServiceLogin?continue=https://evil.test' })).toEqual({ action: 'deny' });
+    expect(openExternal).toHaveBeenLastCalledWith('https://www.youtube.com/watch?v=glW1pXWebnY');
+    const deny = { preventDefault: vi.fn() };
+    guest.emit('will-navigate', deny, 'https://support.google.com/youtube/answer/3037019');
+    expect(openExternal).toHaveBeenLastCalledWith('https://support.google.com/youtube/answer/3037019');
+    guest.emit('will-redirect', deny, 'https://accounts.google.com/ServiceLogin');
+    popup({ url: 'https://youtube.com.evil.test/watch?v=glW1pXWebnY' });
+    expect(openExternal).toHaveBeenCalledTimes(2);
+    expect(deny.preventDefault).toHaveBeenCalledTimes(2);
   });
 });
