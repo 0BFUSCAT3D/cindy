@@ -1,3 +1,5 @@
+import { materializeToolProcessMedia } from './cindy-media/toolProcessMedia.js';
+import { withToolProcessMedia, type ProcessMediaRef, type NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 import { readTaskResultsForReply } from './botTaskReplyResults.js';
 /**
  * messagePersistBroadcaster — 把 agent 消息的持久化从 renderer 收口到 main 单点。
@@ -1641,6 +1643,14 @@ export function onThinkingEvent(
 const toolResultIdByToolUseId = new Map<string, Map<string, string>>();
 const pendingFullTextByToolUseId = new Map<string, Map<string, { text: string; createdAt: number }>>();
 const toolResultContentByClientId = new Map<string, Map<string, string>>();
+// Tied to the exact turn's content map; pending imports keep their old map alive
+// without polluting the next turn or retaining completed sessions globally.
+const processMediaByContentMap = new WeakMap<Map<string, string>, Map<string, ProcessMediaRef[]>>();
+function contentWithProcessMedia(map: Map<string, string>, id: string, text: string): string {
+  const media = processMediaByContentMap.get(map)?.get(id);
+  return media?.length ? withToolProcessMedia(text, media) : text;
+}
+
 
 function getOrCreateSessionMap<V>(
   outer: Map<string, Map<string, V>>,
@@ -1753,7 +1763,7 @@ export function onToolResultEvent(
     // 内容没增长 → 不写库;renderer 已显示该条,返回现有内容即可(upsert 命中后无变化)。
     if (prev === undefined || content.length <= prev.length) {
       if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
-      return { persistId: existing, content: prev ?? content };
+      return { persistId: existing, content: contentWithProcessMedia(contentMap, existing, prev ?? content) };
     }
     // contentMap 存全文(增长比较与 renderer 显示都要它);DB 只落有界内容。
     // 截断后内容没变(全文都在 8KB 之外增长)就跳过 UPDATE——省掉重复写同一
@@ -1763,12 +1773,12 @@ export function onToolResultEvent(
     const capped = persistableToolResultContent(sessionId, content);
     if (capped !== cappedPrev) {
       enqueueWrite(`tool_result_update:${sessionId}:${existing}`, () =>
-        updateDbMessageContent(sessionId, existing!, capped),
+        updateDbMessageContent(sessionId, existing!, contentWithProcessMedia(contentMap, existing!, capped)),
       );
     }
     if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', existing);
     if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
-    return { persistId: existing, content };
+    return { persistId: existing, content: contentWithProcessMedia(contentMap, existing, content) };
   }
 
   const persistId = createId();
@@ -1787,6 +1797,53 @@ export function onToolResultEvent(
   return { persistId, content };
 }
 
+/** Fetch outside the global write queue; only the final row update is serialized. */
+export async function persistToolProcessMedia(
+  sessionId: string,
+  persistId: string,
+  text: string,
+  items: NativeToolMedia[],
+  origin?: import('./cindy-media/toolProcessMedia').ToolMediaOrigin,
+  scope: 'turn' | 'background' = 'turn',
+): Promise<void> {
+  if (!items.length) return;
+  const ownerScope = captureOwnerScope();
+  const assertStillValid = () => {
+    if (!isOwnerScopeCurrent(ownerScope)) throw ownerScopeSupersededError();
+  };
+  // Capture the accepted result's map before fetching: a background summary
+  // may release its state while media is still being materialized.
+  const contentMap = scope === 'background'
+    ? backgroundTurnPersistStatesBySession.get(sessionId)
+      ?.find(state => state.toolResultContentByClientId.has(persistId))?.toolResultContentByClientId
+    : toolResultContentByClientId.get(sessionId) ?? new Map([[persistId, text]]);
+  if (!contentMap) return;
+  try {
+    assertStillValid();
+    const db = getDbClient().drizzle;
+    const media = await materializeToolProcessMedia(items, db, assertStillValid, origin);
+    assertStillValid();
+    if (!media.length) return;
+    let mediaMap = processMediaByContentMap.get(contentMap);
+    if (!mediaMap) processMediaByContentMap.set(contentMap, mediaMap = new Map());
+    mediaMap.set(persistId, [...new Map([...(mediaMap.get(persistId) ?? []), ...media]
+      .map(item => [item.kind + ':' + item.url, item])).values()]);
+    enqueueWrite(`tool_media:${sessionId}:${persistId}`, async () => {
+      assertStillValid();
+      const content = contentWithProcessMedia(contentMap, persistId, contentMap.get(persistId) ?? text);
+      const updated = await updateDbMessageContent(sessionId, persistId, content);
+      if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
+    });
+  } catch (error) {
+    if (!isOwnerScopeSupersededError(error)) log.warn('Native tool media persistence failed', { sessionId, persistId });
+  }
+}
+
+function markFailedToolResultText(text: string, isError: boolean): string {
+  if (!isError || text.includes('<tool_use_error>')) return text;
+  return `<tool_use_error>${text}</tool_use_error>`;
+}
+
 /**
  * 处理 tool_result_full 事件(toolUseId + 全文)。返回 { persistId, content } 让
  * renderer 把对应 tool_result 气泡内容更新成全文;返回 null 表示无需显示变更
@@ -1795,11 +1852,6 @@ export function onToolResultEvent(
  * 对齐老 renderer:有映射 → 覆盖更新;无映射但 tool_use 已到 → eager-create;
  * tool_use 也没到 → buffer。
  */
-function markFailedToolResultText(text: string, isError: boolean): string {
-  if (!isError || text.includes('<tool_use_error>')) return text;
-  return `<tool_use_error>${text}</tool_use_error>`;
-}
-
 export function onToolResultFullEvent(
   sessionId: string,
   data: { toolUseId?: unknown; fullText?: unknown; isError?: unknown },
@@ -1867,11 +1919,11 @@ export function onToolResultFullEvent(
   const capped = persistableToolResultContent(sessionId, fullText);
   if (capped !== cappedPrev) {
     enqueueWrite(`tool_result_full:${sessionId}:${target}`, () =>
-      updateDbMessageContent(sessionId, target, capped),
+      updateDbMessageContent(sessionId, target, contentWithProcessMedia(contentMap, target, capped)),
     );
   }
   if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', target);
-  return { persistId: target, content: fullText };
+  return { persistId: target, content: contentWithProcessMedia(contentMap, target, fullText) };
 }
 
 /**

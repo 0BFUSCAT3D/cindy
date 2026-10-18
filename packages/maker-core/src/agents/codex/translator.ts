@@ -1,3 +1,4 @@
+import { nativeToolMediaFields, type NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 /**
  * Codex app-server v2 Notification → maker-core 语义 AgentEvent 翻译器。
  *
@@ -1568,7 +1569,7 @@ function handleMcpToolCall(
   }
   queue.push({
     type: 'tool_result_full',
-    data: { toolUseId: item.id, fullText, isError },
+    data: { toolUseId: item.id, fullText, isError, ...nativeToolMediaFields(item.result?.content) },
     source: 'codex',
   });
   queue.push({
@@ -1889,7 +1890,7 @@ function handleDynamicToolCall(
   const fullText = dynamicContentItemsToText(item.contentItems);
   queue.push({
     type: 'tool_result_full',
-    data: { toolUseId: item.id, fullText, isError },
+    data: { toolUseId: item.id, fullText, isError, ...nativeToolMediaFields(item.contentItems) },
     source: 'codex',
   });
   queue.push({
@@ -2215,21 +2216,22 @@ function toCodexTaskUpdate(
   };
 }
 
-// ── imageView → image event (kind='view') ────────────────────────────────────
-// 模型读了一张本地图。codex 一般只发 completed (path 必有), started/updated 防御性同样发 — 同一
-// blockId, renderer 自己判重。
+// Native image reads are tool steps, with their preview inside the work group.
+// Only completed items have usable media; emit the step once.
 
 function handleImageView(
   phase: ItemPhase,
   item: ImageViewItem,
   queue: AsyncQueue<AgentEvent>,
 ): void {
-  if (phase === 'updated') return;
-  queue.push({
-    type: 'image',
-    data: { kind: 'view', blockId: item.id, path: item.path },
-    source: 'codex',
-  });
+  if (phase !== 'completed') return;
+  queue.push({ type: 'tool_use', source: 'codex',
+    data: { toolUseId: item.id, toolName: 'view_image', input: { path: item.path } } });
+  queue.push({ type: 'tool_result_full', source: 'codex',
+    data: { toolUseId: item.id, fullText: item.path,
+      processMedia: [{ kind: 'image', path: item.path } satisfies NativeToolMedia] } });
+  queue.push({ type: 'tool_result', source: 'codex',
+    data: { toolUseIds: [item.id], summary: 'done' } });
 }
 
 // ── imageGeneration → image event (kind='generation') ────────────────────────
