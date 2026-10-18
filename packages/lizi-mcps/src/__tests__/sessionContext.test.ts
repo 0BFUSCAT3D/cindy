@@ -12,6 +12,8 @@ import {
 } from '../session-context.js';
 import type { OrcaMcpDeps } from '../orca/server.js';
 import type { LiziMcpSessionContext } from '../types.js';
+import { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
+import { registerMergeQueuedMessagesTool } from '../xdt-helper/merge_queued_messages.js';
 import type { RenameSessionsDeps } from '../xdt-helper/rename_sessions.js';
 import type { SetCurrentSessionTitleDeps } from '../xdt-helper/set_current_session_title.js';
 
@@ -36,6 +38,29 @@ function tools(server: unknown) {
       >;
     }
   )._registeredTools;
+}
+
+function setupMergeRegistry() {
+  const mergeWorkerQueuedMessages = vi.fn(async () => ({
+    ok: true as const,
+    workerId: 'worker-1',
+    queuedMessageId: 'merged-1',
+    messages: [
+      {
+        queuedMessageId: 'merged-1',
+        position: 0,
+        source: 'user' as const,
+        content: 'merged',
+        consuming: false,
+      },
+    ],
+  }));
+  const registry = new XdtHelperToolRegistry();
+  registerMergeQueuedMessagesTool(registry, {
+    getSessionContext: () => ({ sessionId: 'lead-1' }),
+    mergeWorkerQueuedMessages,
+  });
+  return { registry, mergeWorkerQueuedMessages };
 }
 
 function createOrcaDeps(overrides: Partial<OrcaMcpDeps> = {}): OrcaMcpDeps {
@@ -582,6 +607,49 @@ describe('dynamic lizi MCP session context', () => {
         queue: [{ queued_message_id: 'latest-1', source: 'user' }],
       },
     });
+  });
+
+  it('flattens a one-level-nested queued_message_ids array instead of failing schema validation', async () => {
+    // 模型常见误传是多套一层([['q1','q2']]);接口要自愈而不是报参数错。
+    const { registry, mergeWorkerQueuedMessages } = setupMergeRegistry();
+    const result = await registry.call('merge_queued_messages', {
+      worker_id: 'worker-1',
+      queued_message_ids: [['q1', 'q2']],
+      message: 'merged',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(mergeWorkerQueuedMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ queuedMessageIds: ['q1', 'q2'] }),
+    );
+  });
+
+  it('unwraps the XML-style {item:[...]} wrapper for queued_message_ids', async () => {
+    // 实测形态: 模型/兼容层把数组参数输出成 {item:[...]}(与 images 参数同病)。
+    const { registry, mergeWorkerQueuedMessages } = setupMergeRegistry();
+    const result = await registry.call('merge_queued_messages', {
+      worker_id: 'worker-1',
+      queued_message_ids: { item: ['q1', 'q2'] },
+      message: 'merged',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(mergeWorkerQueuedMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ queuedMessageIds: ['q1', 'q2'] }),
+    );
+  });
+
+  it('still rejects folded single-id and non-array junk forms for queued_message_ids', async () => {
+    // 单元素折叠({item:'q1'}/裸标量)只凑出 1 个 id,合并不了;无 item 键的对象不是数组。
+    // 两类都必须报参数错,不能静默放行。
+    const { registry, mergeWorkerQueuedMessages } = setupMergeRegistry();
+    for (const queued_message_ids of [{ item: 'q1' }, 'q1', { foo: ['q1', 'q2'] }]) {
+      const result = await registry.call('merge_queued_messages', {
+        worker_id: 'worker-1',
+        queued_message_ids,
+        message: 'merged',
+      });
+      expect(result.isError).toBe(true);
+    }
+    expect(mergeWorkerQueuedMessages).not.toHaveBeenCalled();
   });
 
   // github_lizi / gitlab_lizi 的同款用例已分别随 lizi_github / lizi_gitlab 退役
