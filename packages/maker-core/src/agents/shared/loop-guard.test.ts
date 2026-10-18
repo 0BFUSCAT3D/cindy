@@ -805,6 +805,23 @@ describe('ToolLoopGuard pacing and final limits', () => {
     }
     expect(last).toMatchObject({ kind: 'hard', reason: 'pingpong', count: 12 });
   });
+
+  // codex P1(#6388):夹在模型重复调用之间的脚本连发调用不能清零模型的连续计数。
+  it('keeps the model streak when different chained script calls run between its repeats', () => {
+    const { guard, advance } = clockGuard({ chainedCallGapMs: 2_000 });
+    let last: ToolLoopGuardVerdict = { kind: 'ok' };
+    for (let round = 0; round < 4; round++) {
+      guard.onToolUse(`model-${round}`, 'read', { path: 'a' });
+      advance(500);
+      last = guard.onToolResult(`model-${round}`, 'same');
+      advance(500);
+      guard.onToolUse(`script-${round}`, 'read', { path: `other-${round}` });
+      advance(500);
+      guard.onToolResult(`script-${round}`, `other-${round}`);
+      advance(8_500);
+    }
+    expect(last).toMatchObject({ kind: 'hard', reason: 'consecutive', count: 4 });
+  });
 });
 
 describe('classifyToolContractError', () => {

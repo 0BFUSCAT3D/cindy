@@ -435,6 +435,12 @@ export class ToolLoopGuard {
     if (paced) {
       // 连发不算参与判定:既不推进也不打破模式,进行中的复核因此不会被它取消。
       if (chained) this.lastResultObservedValue = false;
+      if (chained) {
+        // 连发既不推进也不打破已有计数:夹在模型重复调用之间的脚本调用不能清零连续段,
+        // 只有与当前连续段完全相同时才续接时长上限。
+        if (fullFingerprint === this.lastFullFingerprint) this.observeStreak(fullFingerprint, false);
+        return this.finalVerdict(toolUse.name);
+      }
       // 写入或命令照常打断长只读窗口,节奏本身不改变这一点。
       if (!READ_ONLY_TOOL_NAMES.has(toolUse.name)) this.stableReadWindow = [];
       this.observeStreak(fullFingerprint, false);
