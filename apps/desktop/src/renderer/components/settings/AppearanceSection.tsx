@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import * as Select from '@radix-ui/react-select';
+import { SelectParts as Select } from '@/components/ui/select';
 
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import {
@@ -336,7 +336,7 @@ function FamilyDropdown({
           className={cn(
             'flex h-9 w-[320px] max-w-full shrink-0 items-center justify-between gap-3 rounded-full border px-3.5 text-13 outline-none transition-colors',
             'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-            'hover:bg-[var(--settings-menu-bg-hover)] focus:ring-2 focus:ring-[var(--focus-ring-soft)]',
+            'hover:bg-[var(--settings-menu-bg-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
           )}
         >
           <span className="flex min-w-0 items-center gap-2 text-left">
@@ -360,9 +360,8 @@ function FamilyDropdown({
             align="start"
             sideOffset={6}
             className={cn(
-              'z-[10010] max-h-[18rem] w-[var(--radix-select-trigger-width)] min-w-[220px] overflow-y-auto rounded-xl p-2',
+              'z-[10010] max-h-[min(18rem,var(--radix-select-content-available-height))] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl p-2',
               'border border-[var(--settings-input-border)] bg-[var(--settings-theme-card-bg)]',
-              'shadow-[var(--shadow-menu)]',
             )}
           >
             <Select.Viewport className="flex flex-col gap-[2px]">
@@ -372,8 +371,8 @@ function FamilyDropdown({
                   value={family.id}
                   className={cn(
                     'flex h-9 w-full cursor-pointer select-none items-center justify-between gap-3 rounded-[8px] px-3 text-left text-13 outline-none transition-colors',
-                    'text-[var(--settings-input-text)] data-[highlighted]:bg-[var(--settings-menu-bg-hover)]',
-                    'data-[state=checked]:bg-[var(--settings-menu-bg-selected)] data-[state=checked]:text-[var(--settings-menu-text-selected)]',
+                    'text-[var(--settings-input-text)]',
+                    'data-[state=checked]:text-[var(--settings-menu-text-selected)]',
                   )}
                 >
                   <span className="flex min-w-0 items-center gap-2">
