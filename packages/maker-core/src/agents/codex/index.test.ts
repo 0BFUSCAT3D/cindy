@@ -1321,6 +1321,37 @@ describe('CodexAgent spawn configuration', () => {
     await agent.dispose();
   });
 
+  it('a refused MCP refresh does not make a starting session reselect its route or respawn', async () => {
+    // 2026-10-19:hook-control 每 2 秒重试一次因伙伴会话 busy 而被拒绝的 MCP 刷新;此前预约就推进
+    // 配置代次,正在启动的会话每次都判定「路由已变」重来,7 次后以 LAZY_CREATE_FAILED 失败。
+    // 被拒绝的变更没有改变任何 host:启动中的会话必须沿用原路由、只 spawn 一次。
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const resolvePolicy = vi.fn(async () => 'legacy-shared' as const);
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexLocalAuthPolicy: resolvePolicy,
+      prepareCodexExtraSpawnConfig: async () => {
+        started.resolve();
+        await finish.promise;
+        return { extraArgs: [], extraEnv: {} };
+      },
+    }));
+    const startup = agent.startSession({ sessionId: 'starting-during-refused-refresh', model: 'gpt-5.4', workingDir: '/repo' });
+    await started.promise;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true });
+      expect(() => guard.assertIdle()).toThrow(/active Codex session/);
+      await expect(guard.retireActiveHost()).rejects.toThrow(/active Codex session/);
+      guard.release();
+    }
+    finish.resolve();
+    const handle = await startup;
+    expect(resolvePolicy).toHaveBeenCalledTimes(1);
+    expect(createdTransports).toHaveLength(1);
+    await handle.close();
+    await agent.dispose();
+  });
+
   it('defers MCP refresh during asynchronous control-plane host preparation', async () => {
     const started = deferred<void>();
     const finish = deferred<void>();

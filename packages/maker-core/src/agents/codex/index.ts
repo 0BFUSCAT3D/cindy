@@ -2375,7 +2375,18 @@ export class CodexAgent extends BaseAgent {
       if (pending.length === 0) break;
       await Promise.allSettled(pending);
     }
-    this.bumpHostGeneration(LOCAL_CONFIGURATION_CHANGE_KEY);
+    // 配置代次只在变更真正落地(host 被退役 / finalize 通过 busy 检查)时才推进。
+    // 预约本身已经通过 hostCredentialModeSwitches 挡住新的 host 获取;若在预约时就推进代次,
+    // 一次因 busy 被拒绝、随后 release 的变更也会让所有正在准备 host 的会话判定「路由已变」而
+    // 重来——hook-control 每 2 秒重试一次被拒的 MCP 刷新时,新启动的 Codex 任务会连续撞满 7 次
+    // 重试并以 LAZY_CREATE_FAILED 收场(2026-10-19 实排:伙伴会话长时间 busy,窗口期内任何 Codex
+    // 任务都无法启动)。
+    let generationBumped = false;
+    const commitConfigurationChange = (): void => {
+      if (generationBumped) return;
+      generationBumped = true;
+      this.bumpHostGeneration(LOCAL_CONFIGURATION_CHANGE_KEY);
+    };
 
     let releaseSwitch!: () => void;
     const switchPromise = new Promise<void>((resolve) => {
@@ -2413,6 +2424,7 @@ export class CodexAgent extends BaseAgent {
           throwOnShutdownFailure: true,
         });
       }
+      commitConfigurationChange();
     };
 
     return {
@@ -2439,6 +2451,7 @@ export class CodexAgent extends BaseAgent {
               await retire();
             } else {
               await this.disposeLocalHostForCredentialChangeUnlocked(key, reason);
+              commitConfigurationChange();
             }
           }
         } finally {
@@ -15398,6 +15411,22 @@ assertRouteCurrent();
         reason,
       });
       return;
+    }
+    // failIfActive 的拒绝必须发生在任何状态改动之前:下面处理 in-flight 创建时会推进 key 代次并
+    // 摘掉 hostPromises,若之后才因 active 抛错,正在创建的 host 会以「superseded」失败,等于一次
+    // 被拒绝的退役仍然打掉了正在启动的会话。in-flight 创建本身也算 active(与 MCP 刷新守卫的
+    // assertIdle 口径一致):正在启动的 host 不能被一次会被拒绝的刷新打断。
+    if (opts.failIfActive) {
+      const host = this.hosts.get(key);
+      const activeUseCount = (host
+        ? this.hostActiveUseCount(key, host)
+        : (this.hostSessionBindingLeases.get(key) ?? 0))
+        + (this.hostPromises.has(key) ? 1 : 0);
+      if (activeUseCount > 0) {
+        throw new Error(
+          `Cannot restart local Codex host while ${activeUseCount} active Codex session(s) are attached`,
+        );
+      }
     }
     const inflight = this.hostPromises.get(key);
     if (inflight) {
