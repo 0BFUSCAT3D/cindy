@@ -178,3 +178,95 @@ it('renders native icon explanations and keeps unknown icon text readable', () =
   expect(view.container.querySelector('img, button, a')).toBeNull();
   expect(screen.queryByRole('status')).toBeNull();
 });
+
+// Tier 1: model-selected visuals must survive a streamed patch; invalid SVG
+// content must never introduce executable/remote elements into the DOM.
+it('renders model styling and vector geometry and applies a local visual patch', () => {
+  const source =
+    line(1, {
+      op: 'create',
+      id: 'title',
+      kind: 'heading',
+      props: { text: '自由排版', style: { color: '#2457a7', fontSize: 32 } },
+    }) +
+    line(2, {
+      op: 'create',
+      id: 'custom',
+      kind: 'svg',
+      props: {
+        label: '自绘图',
+        viewBox: [0, 0, 400, 200],
+        shapes: [
+          { type: 'path', d: 'M 0 100 L 400 20', stroke: '#2457a7', strokeWidth: 4 },
+          { type: 'text', x: 10, y: 20, text: '模型标注' },
+          { type: 'script', text: 'alert(1)' },
+        ],
+      },
+    });
+  const props = {
+    stateKey: 'visual-controls',
+    renderMarkdown: (text: string) => <span>{text}</span>,
+  };
+  const view = render(<RichAnswer {...props} source={source} complete={false} />);
+  expect(screen.getByText('自由排版').style.fontSize).toBe('32px');
+  expect(screen.getByLabelText('自绘图').querySelector('path')?.getAttribute('stroke')).toBe(
+    '#2457a7',
+  );
+  expect(screen.getByLabelText('自绘图').querySelector('script')).toBeNull();
+  const updated =
+    source +
+    line(3, { op: 'patch', id: 'title', props: { style: { color: '#98346a', fontSize: 24 } } });
+  view.rerender(<RichAnswer {...props} source={updated} complete />);
+  expect(screen.getByText('自由排版').style.fontSize).toBe('24px');
+  expect(screen.getByText('自由排版').style.color).toBe('rgb(152, 52, 106)');
+});
+
+// Tier 1: real model output used a unitless line-height and stock data whose
+// dates became a vertical list whenever point values did not fit. Earlier
+// renderer tests only covered two points and did not exercise either failure.
+it('preserves line-height units and keeps dense chart dates on the plot axis', () => {
+  const source =
+    line(1, {
+      op: 'create',
+      id: 'heading',
+      kind: 'heading',
+      style: { fontSize: 30, lineHeight: 1.25 },
+      props: { text: '标题换行' },
+    }) +
+    line(2, {
+      op: 'create',
+      id: 'text',
+      kind: 'text',
+      props: { text: '两行正文', style: { fontSize: 20, lineHeight: 32 } },
+    }) +
+    line(3, {
+      op: 'create',
+      id: 'chart',
+      kind: 'chart',
+      props: {
+        label: '价格',
+        variant: 'line',
+        showValues: false,
+        data: Array.from({ length: 11 }, (_, i) => ({
+          label: `10/${i + 2}`,
+          value: 24000 + i * 30,
+        })),
+      },
+    });
+  const view = render(
+    <RichAnswer
+      source={source}
+      complete
+      stateKey="regression-layout"
+      renderMarkdown={(text) => <span>{text}</span>}
+    />,
+  );
+  expect(screen.getByText('标题换行').style.lineHeight).toBe('1.25');
+  expect(screen.getByText('两行正文').style.lineHeight).toBe('32px');
+  const svg = screen.getByRole('img');
+  expect(svg.textContent).toContain('10/2');
+  expect(view.container.querySelector('dl')).toBeNull();
+  expect(svg.getAttribute('aria-label')).toContain('10/12: 24300');
+  const y = [...svg.querySelectorAll('circle')].map((c) => Number(c.getAttribute('cy')));
+  expect(Math.max(...y) - Math.min(...y)).toBeGreaterThan(100);
+});

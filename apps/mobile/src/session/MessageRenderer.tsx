@@ -1,4 +1,4 @@
-import { splitRichAnswer, richAnswerText, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
+import { richVisualStyle, splitRichAnswer, richAnswerText, richMediaSource, richMarkdown, richString, type RichNode } from '@cindy/maker-shared/rich-answer';
 import { RichAnswer } from './RichAnswer';
 import { readToolProcessMedia, readToolProcessText } from '@cindy/maker-shared/tool-process-media';
 import { PluginCardActions } from '@/plugins/PluginCardActions';
@@ -9878,9 +9878,15 @@ function RichAnswerMedia({ node, body }: { node: RichNode; body: Parameters<type
   // state there, but remount the preview when a recycled row or streamed media
   // patch changes its identity, so resolved thumbnails/errors cannot cross images.
   const previewKey = JSON.stringify([origin?.deviceId, origin?.sessionId, body.richStateKey ?? body.markdownImageCacheKey, node.id, url]);
-  const imageWidth = Math.min(body.layout.imagePreviewWidth, width);
+  const visual = richVisualStyle(node);
+  const imageWidth = typeof visual.width === 'number' || typeof visual.width === 'string'
+    ? width : Math.min(body.layout.imagePreviewWidth, width);
+  const naturalFrameHeight = imageWidth * body.layout.imagePreviewHeight / body.layout.imagePreviewWidth;
+  const imageHeight = Math.min(typeof visual.maxHeight === 'number' ? visual.maxHeight : Infinity,
+    Math.max(typeof visual.minHeight === 'number' ? visual.minHeight : 0,
+      typeof visual.height === 'number' ? visual.height : naturalFrameHeight));
   const layout = { ...body.layout, imagePreviewWidth: imageWidth,
-    imagePreviewHeight: imageWidth * body.layout.imagePreviewHeight / body.layout.imagePreviewWidth,
+    imagePreviewHeight: imageHeight,
     mediaPreviewWidth: Math.min(body.layout.mediaPreviewWidth, width) };
   return <View style={{ minWidth: 0 }} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
     {width > 0 ? <MediaPreview key={previewKey} layout={layout} media={media} label={label} onResolveRemoteMedia={resolver}

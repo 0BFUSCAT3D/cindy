@@ -1,3 +1,4 @@
+export { richColor, richVisualStyle, richVector } from "./richAnswerVisual";
 /** Model-neutral, declarative answer components. No code evaluation or I/O. */
 export const RICH_ANSWER_LANGUAGE = "cindy-ui";
 export const RICH_ANSWER_KINDS = [
@@ -18,6 +19,7 @@ export const RICH_ANSWER_KINDS = [
   "diagram",
   "stat",
   "chart",
+  "svg",
   "range",
   "input",
   "check",
@@ -184,6 +186,10 @@ export class RichAnswerStream {
       if (op.version !== undefined && op.version !== 1) throw Error("version");
       if (typeof op.id !== "string" || !ID.test(op.id)) throw Error("id");
       const current = this.nodes.get(op.id);
+      const props = this.props(op.props);
+      // Some real harness outputs place visual style beside props. Normalize once.
+      if (record(op.style) && props.style === undefined)
+        props.style = this.props(op.style);
       if (op.op === "create") {
         if (
           current ||
@@ -212,7 +218,7 @@ export class RichAnswerStream {
         const node: RichNode = {
           id: op.id,
           kind: op.kind as RichAnswerKind,
-          props: this.props(op.props),
+          props,
           children: [],
         };
         // The bounded depth also limits recursive React rendering.
@@ -249,7 +255,7 @@ export class RichAnswerStream {
         if (!current) throw Error("target");
         this.nodes.set(current.id, {
           ...current,
-          props: { ...current.props, ...this.props(op.props) },
+          props: { ...current.props, ...props },
         });
       } else if (op.op === "remove") {
         if (!current) throw Error("target");
@@ -702,32 +708,96 @@ export function richChart(
 export function richLinePlot(
   data: { label: string; value: number }[],
   width: number,
+  options: Record<string, unknown> = {},
 ) {
+  const number = (key: string, fallback: number) =>
+    typeof options[key] === "number" && Number.isFinite(options[key])
+      ? (options[key] as number)
+      : fallback;
   const w = Math.max(180, width),
-    left = 36,
-    right = 12,
-    top = 26,
-    bottom = 146;
-  const min = Math.min(0, ...data.map((item) => item.value));
-  const max = Math.max(0, ...data.map((item) => item.value));
-  const scale = Math.max(Math.abs(min), Math.abs(max), 1);
-  const span = max / scale - min / scale || 1;
+    height = Math.max(80, number("height", 220));
+  const top = Math.max(0, number("top", 28)),
+    bottom = height - Math.max(0, number("bottom", 28));
+  let min = Math.min(...data.map((item) => item.value)),
+    max = Math.max(...data.map((item) => item.value));
+  if (!data.length) {
+    min = 0;
+    max = 1;
+  }
+  if (options.includeZero === true) {
+    min = Math.min(0, min);
+    max = Math.max(0, max);
+  }
+  const pad = (max - min || Math.abs(max) * 0.05 || 1) * 0.1;
+  min = number("yMin", min - pad);
+  max = number("yMax", max + pad);
+  if (max <= min) max = min + 1;
+  const scale = Math.max(Math.abs(min), Math.abs(max), 1),
+    span = max / scale - min / scale;
   const y = (v: number) =>
     bottom - ((v / scale - min / scale) / span) * (bottom - top);
+  const tickCount = Math.max(2, Math.min(50, Math.round(number("ticks", 4))));
+  const tickStep = (max - min) / (tickCount - 1);
+  const decimals = Math.max(
+    0,
+    Math.min(12, number("decimals", Math.ceil(-Math.log10(tickStep)) + 1)),
+  );
+  const ticks = Array.from({ length: tickCount }, (_, i) => {
+    const value = min + tickStep * i;
+    return {
+      value,
+      y: y(value),
+      label: Number(value.toFixed(decimals)).toLocaleString(undefined, {
+        maximumFractionDigits: decimals,
+      }),
+    };
+  });
+  const left = Math.max(
+    0,
+    number(
+      "left",
+      Math.max(...ticks.map((tick) => tick.label.length * 7)) + 12,
+    ),
+  );
+  const right = Math.max(0, number("right", 20));
+  const pointSpace = (w - left - right) / Math.max(1, data.length);
+  const longest = Math.max(1, ...data.map((item) => String(item.value).length));
+  const labelWidth = Math.max(
+    1,
+    ...data.map((item) =>
+      Array.from(item.label).reduce(
+        (n, c) => n + (c.charCodeAt(0) > 255 ? 12 : 7),
+        0,
+      ),
+    ),
+  );
+  const labelStep = Math.max(
+    1,
+    Math.ceil((labelWidth + 12) / Math.max(1, pointSpace)),
+  );
   return {
     width: w,
-    height: 164,
+    height,
+    labelY: height - 6,
+    labels: data.flatMap((item, i) =>
+      options.showLabels === false || i % labelStep !== 0
+        ? []
+        : [{ label: item.label, x: left + (i + 0.5) * pointSpace }],
+    ),
     left,
     right,
-    ticks: [min, min / 2 + max / 2, max]
-      .filter((v, i, all) => all.indexOf(v) === i)
-      .map((value) => ({ value, y: y(value) })),
+    min,
+    max,
+    ticks,
     points: data.map((item, i) => ({
       ...item,
-      x: left + ((i + 0.5) / Math.max(1, data.length)) * (w - left - right),
+      x: left + (i + 0.5) * pointSpace,
       y: y(item.value),
     })),
-    showValues: data.length <= Math.floor((w - left - right) / 35),
+    showValues:
+      typeof options.showValues === "boolean"
+        ? options.showValues
+        : longest * 8 + 16 <= pointSpace,
   };
 }
 export function richRange(
@@ -768,6 +838,8 @@ export function richAnswerText(source: string): string {
           return [richString(node, "label"), ...node.children.map(visit)]
             .filter(Boolean)
             .join("\n\n");
+        if (node.kind === "svg")
+          return richString(node, "label", richString(node, "alt"));
         if (node.kind === "heading") return `### ${richLabel(node, values)}`;
         if (node.kind === "icon")
           return [richString(node, "label"), richString(node, "text")]

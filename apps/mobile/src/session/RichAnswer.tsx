@@ -15,6 +15,10 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Fragment,
+  cloneElement,
+  createElement,
+  isValidElement,
+  type ReactElement,
   useMemo,
   useRef,
   useState,
@@ -29,9 +33,21 @@ import {
   Switch,
   StyleSheet,
   type GestureResponderEvent,
+  type ViewStyle,
+  type TextStyle,
+  type StyleProp,
 } from "react-native";
 import { Text, TextInput } from "@/components/AppText";
-import Svg, { Polyline, Line, Circle, Text as SvgText } from "react-native-svg";
+import Svg, {
+  Path,
+  Rect,
+  Ellipse,
+  Polygon,
+  Polyline,
+  Line,
+  Circle,
+  Text as SvgText,
+} from "react-native-svg";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/auth/AuthContext";
 import {
@@ -46,6 +62,9 @@ import {
   type ThemeColors,
 } from "@/theme";
 import {
+  richVisualStyle,
+  richColor,
+  richVector,
   RichAnswerStream,
   RichInteractionMemory,
   richAction,
@@ -106,8 +125,9 @@ function RichDocumentView({
   renderMedia,
 }: Props) {
   const { t } = useTranslation();
-  const { colors } = useTheme();
-  const styles = useThemedStyles(makeStyles);
+  const { colors, mode } = useTheme();
+  const baseStyles = useThemedStyles(makeStyles);
+  const styles = baseStyles;
   const parser = useRef(new RichAnswerStream());
   const doc = useMemo(
     () => parser.current.update(source, complete),
@@ -126,7 +146,6 @@ function RichDocumentView({
       void memory.flush();
     };
   }, []);
-  const [width, setWidth] = useState(0);
   const values = richResolvedValues(doc, edited);
   const change = (key: string, value: RichValue) => {
     memory.set(stateKey, { [key]: value });
@@ -134,17 +153,78 @@ function RichDocumentView({
   const apply = (node: RichNode) => {
     memory.set(stateKey, richAction(node, values));
   };
-  const button = (label: string, action: () => void, selected?: boolean) => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      onPress={action}
-      style={[styles.button, selected && styles.selected]}
-    >
-      <Text style={styles.buttonText}>{label}</Text>
-    </Pressable>
-  );
-  const render = (id: string): ReactNode => {
+  const render = (id: string, inherited: TextStyle = {}): ReactNode => {
+    const node = doc.nodes.get(id);
+    if (!node) return null;
+    const visual = richVisualStyle(node, mode === "dark");
+    const textStyle: TextStyle = { ...inherited };
+    const viewStyle: ViewStyle = {};
+    for (const [key, value] of Object.entries(visual)) {
+      if (
+        [
+          "color",
+          "fontSize",
+          "fontWeight",
+          "fontFamily",
+          "fontStyle",
+          "lineHeight",
+          "letterSpacing",
+          "textAlign",
+          "textDecorationLine",
+        ].includes(key)
+      )
+        (textStyle as Record<string, unknown>)[key] = value;
+      else (viewStyle as Record<string, unknown>)[key] = value;
+    }
+    if (["image", "video", "audio"].includes(node.kind)) {
+      delete viewStyle.height;
+      delete viewStyle.minHeight;
+      delete viewStyle.maxHeight;
+    }
+    const result = renderContent(id, textStyle);
+    if (!isValidElement(result)) return result;
+    const element = result as ReactElement<{
+      style?: StyleProp<ViewStyle | TextStyle>;
+    }>;
+    return cloneElement(element, {
+      style: [element.props.style, viewStyle],
+    });
+  };
+  const renderContent = (id: string, textStyle: TextStyle): ReactNode => {
+    const styledText = (base: TextStyle): TextStyle => {
+      const size = Number(textStyle.fontSize ?? base.fontSize);
+      const line = textStyle.lineHeight;
+      return {
+        ...base,
+        ...textStyle,
+        lineHeight:
+          line === undefined
+            ? (size * Number(base.lineHeight)) / Number(base.fontSize)
+            : line <= 4
+              ? size * line
+              : line,
+      };
+    };
+    const styles = {
+      ...baseStyles,
+      text: styledText(baseStyles.text),
+      heading: styledText(baseStyles.heading),
+      caption: styledText(baseStyles.caption),
+      iconTitle: styledText(baseStyles.iconTitle),
+      statValue: styledText(baseStyles.statValue),
+      buttonText: styledText(baseStyles.buttonText),
+      input: styledText(baseStyles.input),
+    };
+    const button = (label: string, action: () => void, selected?: boolean) => (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ selected }}
+        onPress={action}
+        style={[styles.button, selected && styles.selected]}
+      >
+        <Text style={styles.buttonText}>{label}</Text>
+      </Pressable>
+    );
     const node = doc.nodes.get(id);
     if (!node) return null;
     if (richCalculationUnavailable(node, values))
@@ -156,7 +236,7 @@ function RichDocumentView({
     const bind = richString(node, "bind", id),
       label = richString(node, "label");
     const children = node.children.map((child) => (
-      <Fragment key={child}>{render(child)}</Fragment>
+      <Fragment key={child}>{render(child, textStyle)}</Fragment>
     ));
     if (["image", "video", "audio"].includes(node.kind) && renderMedia)
       return (
@@ -178,6 +258,8 @@ function RichDocumentView({
         </View>
       );
     switch (node.kind) {
+      case "svg":
+        return <AnswerVector node={node} dark={mode === "dark"} />;
       case "text":
       case "heading":
         return (
@@ -196,9 +278,9 @@ function RichDocumentView({
         return (
           <View style={styles.iconRow}>
             <Icon
-              size={iconSize.action}
-              strokeWidth={iconStroke.thin}
-              color={colors.textPrimary}
+              size={richNumber(node, "size", iconSize.action)}
+              strokeWidth={richNumber(node, "strokeWidth", iconStroke.thin)}
+              color={textStyle.color ?? colors.textPrimary}
               accessible={false}
             />
             <View style={styles.iconBody}>
@@ -216,38 +298,14 @@ function RichDocumentView({
       case "group":
         return <View style={styles.stack}>{children}</View>;
       case "row":
-      case "grid": {
-        const aside = richString(node, "layout") === "aside";
-        const columns =
-          width <= 600 && !aside
-            ? 1
-            : Math.round(
-                Math.max(1, Math.min(3, richNumber(node, "columns", 2))),
-              );
+      case "grid":
         return (
-          <View style={styles.row}>
-            {node.children.map((child, index) => (
-              <View
-                key={child}
-                style={
-                  aside
-                    ? {
-                        flexBasis: index === 0 ? "30%" : "60%",
-                        flexGrow: 1,
-                        minWidth: 0,
-                      }
-                    : {
-                        width: `${100 / columns - (columns > 1 ? 2 : 0)}%`,
-                        minWidth: 0,
-                      }
-                }
-              >
-                {render(child)}
-              </View>
-            ))}
-          </View>
+          <AnswerLayout
+            node={node}
+            dark={mode === "dark"}
+            renderChild={(child) => render(child, textStyle)}
+          />
         );
-      }
       case "stat":
         return (
           <View style={styles.stat}>
@@ -370,7 +428,7 @@ function RichDocumentView({
                 key={child}
                 style={selected !== child ? styles.hidden : undefined}
               >
-                {render(child)}
+                {render(child, textStyle)}
               </View>
             ))}
           </View>
@@ -385,7 +443,7 @@ function RichDocumentView({
           <View style={styles.stack}>
             <Text style={styles.text}>{label}</Text>
             {richString(node, "variant") === "line" ? (
-              <AnswerLineChart data={data} label={label} />
+              <AnswerLineChart data={data} label={label} node={node} />
             ) : null}
             {richString(node, "variant") !== "line" &&
               data.map((item, index) => (
@@ -400,6 +458,13 @@ function RichDocumentView({
                         style={[
                           styles.bar,
                           {
+                            backgroundColor:
+                              richColor(
+                                (node.props.colors as unknown[])?.[index],
+                                mode === "dark",
+                              ) ??
+                              richColor(node.props.color, mode === "dark") ??
+                              colors.textSecondary,
                             marginLeft: `${((Math.min(0, item.value) - min) / span) * 100}%`,
                             width: `${(Math.abs(item.value) / span) * 100}%`,
                           },
@@ -417,11 +482,7 @@ function RichDocumentView({
     }
   };
   return (
-    <View
-      testID="message.richAnswer"
-      style={styles.stack}
-      onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
-    >
+    <View testID="message.richAnswer" style={styles.stack}>
       {doc.roots.map((id) => (
         <Fragment key={id}>{render(id)}</Fragment>
       ))}
@@ -431,17 +492,136 @@ function RichDocumentView({
     </View>
   );
 }
+function AnswerVector({
+  node,
+  dark,
+  style,
+}: {
+  node: RichNode;
+  dark: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const [width, setWidth] = useState(0);
+  const vector = richVector(node, dark);
+  const dims = vector.viewBox.split(" ").map(Number);
+  const box = StyleSheet.flatten(style) ?? {};
+  const height = Math.min(
+    typeof box.maxHeight === "number" ? box.maxHeight : Infinity,
+    Math.max(
+      typeof box.minHeight === "number" ? box.minHeight : 0,
+      typeof box.height === "number" ? box.height : (width * dims[3]) / dims[2],
+    ),
+  );
+  const types = {
+    path: Path,
+    rect: Rect,
+    circle: Circle,
+    ellipse: Ellipse,
+    line: Line,
+    polyline: Polyline,
+    polygon: Polygon,
+    text: SvgText,
+  };
+  return (
+    <View style={style} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+      <Svg
+        width="100%"
+        height={height}
+        viewBox={vector.viewBox}
+        accessibilityLabel={richString(node, "label", richString(node, "alt"))}
+      >
+        {vector.shapes.map((shape, index) =>
+          createElement(
+            types[shape.type] as React.ComponentType<any>,
+            { ...shape.props, key: index },
+            shape.text,
+          ),
+        )}
+      </Svg>
+    </View>
+  );
+}
+function AnswerLayout({
+  node,
+  dark,
+  renderChild,
+  style,
+}: {
+  node: RichNode;
+  dark: boolean;
+  renderChild: (id: string) => ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const [width, setWidth] = useState(0);
+  const visual = richVisualStyle(node, dark);
+  const aside = richString(node, "layout") === "aside";
+  const mobile = width <= 600 && !aside;
+  const weights = Array.isArray(node.props.weights)
+    ? node.props.weights.filter(
+        (v): v is number =>
+          typeof v === "number" && Number.isFinite(v) && v > 0,
+      )
+    : aside
+      ? [0.7, 1.8]
+      : [];
+  const columns =
+    visual.flexDirection === "column"
+      ? 1
+      : Math.max(
+          1,
+          Math.round(
+            mobile
+              ? richNumber(node, "mobileColumns", 1)
+              : weights.length || richNumber(node, "columns", 2),
+          ),
+        );
+  const gap = Number(visual.gap ?? spacing.sm);
+  const horizontalPadding =
+    Number(visual.paddingLeft ?? visual.padding ?? 0) +
+    Number(visual.paddingRight ?? visual.padding ?? 0);
+  const usable = Math.max(
+    0,
+    width -
+      horizontalPadding -
+      2 * Number(visual.borderWidth ?? 0) -
+      gap * (columns - 1),
+  );
+  return (
+    <View
+      style={[{ flexDirection: "row", flexWrap: "wrap", gap }, style]}
+      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+    >
+      {node.children.map((id, i) => (
+        <View
+          key={id}
+          style={{
+            width:
+              !mobile && columns > 1 && weights.length
+                ? (usable * weights[i % columns]) /
+                  weights.reduce((a, b) => a + b, 0)
+                : usable / columns,
+            minWidth: 0,
+          }}
+        >
+          {renderChild(id)}
+        </View>
+      ))}
+    </View>
+  );
+}
 function AnswerLineChart({
   data,
   label,
+  node,
 }: {
   data: { label: string; value: number }[];
   label: string;
+  node: RichNode;
 }) {
-  const { colors } = useTheme();
+  const { colors, mode } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [width, setWidth] = useState(320);
-  const plot = richLinePlot(data, width);
+  const plot = richLinePlot(data, width, node.props);
   return (
     <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
       <Svg
@@ -453,13 +633,15 @@ function AnswerLineChart({
       >
         {plot.ticks.map((tick) => (
           <Fragment key={tick.value}>
-            <Line
-              x1={plot.left}
-              x2={plot.width - plot.right}
-              y1={tick.y}
-              y2={tick.y}
-              stroke={colors.border}
-            />
+            {node.props.showGrid !== false && (
+              <Line
+                x1={plot.left}
+                x2={plot.width - plot.right}
+                y1={tick.y}
+                y2={tick.y}
+                stroke={colors.border}
+              />
+            )}
             <SvgText
               x={plot.left - 6}
               y={tick.y + 4}
@@ -467,19 +649,43 @@ function AnswerLineChart({
               fontSize={textStyles.footnote.fontSize}
               fill={colors.textSecondary}
             >
-              {Number(tick.value.toPrecision(3))}
+              {tick.label}
             </SvgText>
           </Fragment>
         ))}
         <Polyline
           fill="none"
-          stroke={colors.textPrimary}
-          strokeWidth={iconStroke.regular}
+          stroke={
+            richColor(node.props.color, mode === "dark") ?? colors.textPrimary
+          }
+          strokeWidth={richNumber(node, "strokeWidth", iconStroke.regular)}
           points={plot.points.map((p) => `${p.x},${p.y}`).join(" ")}
         />
+        {plot.labels.map((tick, i) => (
+          <SvgText
+            key={`label-${i}`}
+            x={tick.x}
+            y={plot.labelY}
+            textAnchor="middle"
+            fontSize={textStyles.footnote.fontSize}
+            fill={colors.textSecondary}
+          >
+            {tick.label}
+          </SvgText>
+        ))}
         {plot.points.map((p, i) => (
           <Fragment key={i}>
-            <Circle cx={p.x} cy={p.y} r={3} fill={colors.textPrimary} />
+            {node.props.showPoints !== false && (
+              <Circle
+                cx={p.x}
+                cy={p.y}
+                r={richNumber(node, "pointRadius", 3)}
+                fill={
+                  richColor(node.props.color, mode === "dark") ??
+                  colors.textPrimary
+                }
+              />
+            )}
             {plot.showValues ? (
               <SvgText
                 x={p.x}
@@ -494,34 +700,6 @@ function AnswerLineChart({
           </Fragment>
         ))}
       </Svg>
-      <View
-        style={[
-          plot.showValues ? styles.chartLabels : styles.stack,
-          plot.showValues && {
-            paddingLeft: plot.left,
-            paddingRight: plot.right,
-          },
-        ]}
-      >
-        {data.map((item, i) => (
-          <View
-            key={i}
-            style={plot.showValues ? styles.chartLabel : styles.labelRow}
-          >
-            <Text
-              style={[
-                styles.caption,
-                plot.showValues && styles.chartLabelText,
-              ]}
-            >
-              {item.label}
-            </Text>
-            {!plot.showValues ? (
-              <Text style={styles.caption}>{item.value}</Text>
-            ) : null}
-          </View>
-        ))}
-      </View>
     </View>
   );
 }
@@ -604,9 +782,6 @@ const makeStyles = (colors: ThemeColors) =>
       color: colors.textPrimary,
       fontWeight: fontWeight.medium,
     },
-    chartLabels: { flexDirection: "row" },
-    chartLabel: { flex: 1, minWidth: 0 },
-    chartLabelText: { textAlign: "center" },
     stack: { gap: spacing.lg, minWidth: 0 },
     content: { minWidth: 0, flexShrink: 1 },
     row: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },

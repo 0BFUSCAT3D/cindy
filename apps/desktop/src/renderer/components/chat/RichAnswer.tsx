@@ -14,6 +14,10 @@ import {
 } from 'lucide-react';
 import {
   Fragment,
+  cloneElement,
+  createElement,
+  isValidElement,
+  type ReactElement,
   useMemo,
   useRef,
   useState,
@@ -24,6 +28,9 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  richVisualStyle,
+  richColor,
+  richVector,
   RichAnswerStream,
   RichInteractionMemory,
   richAction,
@@ -46,6 +53,11 @@ import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import './rich-answer.css';
 
+const subscribeTheme = (listener: () => void) => {
+  const observer = new MutationObserver(listener);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  return () => observer.disconnect();
+};
 const answerIcons = {
   mail: Mail,
   calendar: CalendarDays,
@@ -112,6 +124,10 @@ function RichAnswerDocument({
   renderMarkdown: (source: string, id: string) => ReactNode;
 }) {
   const { t } = useTranslation();
+  const dark = useSyncExternalStore(subscribeTheme, () =>
+    document.documentElement.classList.contains('dark'),
+  );
+
   const parser = useRef(new RichAnswerStream());
   const doc = useMemo(() => parser.current.update(source, complete), [source, complete]);
   const edited = useSyncExternalStore(memory.subscribe, () => memory.get(stateKey));
@@ -130,6 +146,36 @@ function RichAnswerDocument({
   const render = (id: string): ReactNode => {
     const node = doc.nodes.get(id);
     if (!node) return null;
+    const result = renderContent(id),
+      visual = richVisualStyle(node, dark);
+    if (!isValidElement(result) || !Object.keys(visual).length) return result;
+    const element = result as ReactElement<{ style?: CSSProperties }>;
+    const media = ['image', 'video', 'audio'].includes(node.kind);
+    const box = { ...visual };
+    if (media) for (const key of ['height', 'minHeight', 'maxHeight']) delete box[key];
+    const variables: Record<string, string | number> = {};
+    for (const [key, value] of Object.entries(visual))
+      variables[`--rich-${key}`] =
+        typeof value === 'number' &&
+        !['fontWeight', 'opacity', 'flexGrow', 'flexShrink'].includes(key) &&
+        !(key === 'lineHeight' && value <= 4)
+          ? `${value}px`
+          : value;
+    return cloneElement(element, {
+      style: {
+        ...element.props.style,
+        ...box,
+        lineHeight:
+          typeof visual.lineHeight === 'number' && visual.lineHeight > 4
+            ? `${visual.lineHeight}px`
+            : visual.lineHeight,
+        ...variables,
+      } as CSSProperties,
+    });
+  };
+  const renderContent = (id: string): ReactNode => {
+    const node = doc.nodes.get(id);
+    if (!node) return null;
     if (richCalculationUnavailable(node, values))
       return (
         <p className="rich-answer-caption" role="status">
@@ -141,7 +187,7 @@ function RichAnswerDocument({
     const children = node.children.map((child) => <Fragment key={child}>{render(child)}</Fragment>);
     if (['image', 'video', 'audio'].includes(node.kind) && renderMedia)
       return (
-        <div className="rich-answer-content">
+        <div className="rich-answer-content rich-answer-media">
           {renderMedia(node)}
           {richString(node, 'caption') && (
             <div className="rich-answer-caption">{richString(node, 'caption')}</div>
@@ -159,6 +205,21 @@ function RichAnswerDocument({
         </div>
       );
     switch (node.kind) {
+      case 'svg': {
+        const vector = richVector(node, dark);
+        return (
+          <svg
+            role="img"
+            aria-label={label || richString(node, 'alt')}
+            viewBox={vector.viewBox}
+            style={{ width: '100%', height: 'auto', display: 'block' }}
+          >
+            {vector.shapes.map((shape, index) =>
+              createElement(shape.type, { ...shape.props, key: index }, shape.text),
+            )}
+          </svg>
+        );
+      }
       case 'heading':
         return <h3 className="rich-answer-heading">{richLabel(node, values)}</h3>;
       case 'text':
@@ -170,7 +231,11 @@ function RichAnswerDocument({
           : Info;
         return (
           <div className="rich-answer-icon-row">
-            <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
+            <Icon
+              size={richNumber(node, 'size', 20)}
+              strokeWidth={richNumber(node, 'strokeWidth', 1.75)}
+              aria-hidden="true"
+            />
             <div>
               <strong>{label || name}</strong>
               {richString(node, 'text') && (
@@ -189,12 +254,17 @@ function RichAnswerDocument({
         return (
           <div
             data-rich-node={id}
-            className={`rich-answer-layout rich-answer-${node.kind}${richString(node, 'layout') === 'aside' ? ' rich-answer-aside' : ''}`}
+            className={`rich-answer-layout rich-answer-${node.kind}${Array.isArray(node.props.weights) ? ' rich-answer-grid' : ''}${richString(node, 'layout') === 'aside' ? ' rich-answer-aside' : ''}`}
             style={
               {
-                '--rich-columns': Math.round(
-                  Math.max(1, Math.min(3, richNumber(node, 'columns', 2))),
-                ),
+                '--rich-mobile-columns': richNumber(node, 'mobileColumns', 1),
+                '--rich-ratio': Array.isArray(node.props.weights)
+                  ? node.props.weights
+                      .filter((v) => typeof v === 'number' && v > 0)
+                      .map((v) => `minmax(0, ${v}fr)`)
+                      .join(' ')
+                  : undefined,
+                '--rich-columns': Math.round(Math.max(1, richNumber(node, 'columns', 2))),
               } as CSSProperties
             }
           >
@@ -347,7 +417,7 @@ function RichAnswerDocument({
           <figure className="rich-answer-chart">
             <figcaption>{label}</figcaption>
             {richString(node, 'variant') === 'line' ? (
-              <AnswerLineChart data={data} label={label} />
+              <AnswerLineChart data={data} label={label} node={node} dark={dark} />
             ) : null}
             {richString(node, 'variant') !== 'line' && (
               <dl>
@@ -361,6 +431,9 @@ function RichAnswerDocument({
                       <div className="rich-answer-track">
                         <div
                           style={{
+                            backgroundColor:
+                              richColor((node.props.colors as unknown[])?.[i], dark) ??
+                              richColor(node.props.color, dark),
                             marginLeft: `${((Math.min(0, item.value) - min) / span) * 100}%`,
                             width: `${(Math.abs(item.value) / span) * 100}%`,
                           }}
@@ -395,9 +468,13 @@ function RichAnswerDocument({
 function AnswerLineChart({
   data,
   label,
+  node,
+  dark,
 }: {
   data: { label: string; value: number }[];
   label: string;
+  node: RichNode;
+  dark: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(480);
@@ -407,43 +484,63 @@ function AnswerLineChart({
     observer.observe(ref.current);
     return () => observer.disconnect();
   }, []);
-  const plot = richLinePlot(data, width);
+  const plot = richLinePlot(data, width, node.props);
   return (
     <div ref={ref}>
       <svg
         role="img"
         aria-label={`${label}. ${data.map((item) => `${item.label}: ${item.value}`).join(', ')}`}
         viewBox={`0 0 ${plot.width} ${plot.height}`}
-        style={{ height: plot.height }}
+        style={{ height: plot.height, maxHeight: 'none' }}
       >
         {plot.ticks.map((tick) => (
           <Fragment key={tick.value}>
-            <line
-              x1={plot.left}
-              x2={plot.width - plot.right}
-              y1={tick.y}
-              y2={tick.y}
-              className="rich-answer-chart-guide"
-            />
+            {node.props.showGrid !== false && (
+              <line
+                x1={plot.left}
+                x2={plot.width - plot.right}
+                y1={tick.y}
+                y2={tick.y}
+                className="rich-answer-chart-guide"
+              />
+            )}
             <text
               x={plot.left - 6}
               y={tick.y + 4}
               textAnchor="end"
               className="rich-answer-chart-axis"
             >
-              {Number(tick.value.toPrecision(3))}
+              {tick.label}
             </text>
           </Fragment>
         ))}
         <polyline
           fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
+          stroke={richColor(node.props.color, dark) ?? 'currentColor'}
+          strokeWidth={richNumber(node, 'strokeWidth', 2)}
           points={plot.points.map((p) => `${p.x},${p.y}`).join(' ')}
         />
+        {plot.labels.map((tick, i) => (
+          <text
+            key={`label-${i}`}
+            x={tick.x}
+            y={plot.labelY}
+            textAnchor="middle"
+            className="rich-answer-chart-axis"
+          >
+            {tick.label}
+          </text>
+        ))}
         {plot.points.map((p, i) => (
           <Fragment key={i}>
-            <circle cx={p.x} cy={p.y} r={3} fill="currentColor" />
+            {node.props.showPoints !== false && (
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={richNumber(node, 'pointRadius', 3)}
+                fill={richColor(node.props.color, dark) ?? 'currentColor'}
+              />
+            )}
             {plot.showValues && (
               <text x={p.x} y={p.y - 10} textAnchor="middle" className="rich-answer-chart-value">
                 {p.value}
@@ -452,17 +549,6 @@ function AnswerLineChart({
           </Fragment>
         ))}
       </svg>
-      <dl
-        className={plot.showValues ? 'rich-answer-chart-labels' : undefined}
-        style={plot.showValues ? { paddingLeft: plot.left, paddingRight: plot.right } : undefined}
-      >
-        {data.map((item, i) => (
-          <div key={i}>
-            <dt>{item.label}</dt>
-            {!plot.showValues && <dd>{item.value}</dd>}
-          </div>
-        ))}
-      </dl>
     </div>
   );
 }

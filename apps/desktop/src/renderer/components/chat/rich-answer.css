@@ -2,7 +2,7 @@
 .rich-answer {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--rich-gap, var(--space-4));
   min-width: 0;
   container-type: inline-size;
 }
@@ -13,13 +13,13 @@
 }
 .rich-answer h3.rich-answer-heading {
   margin: 0;
-  font-size: var(--text-lg);
-  font-weight: 500;
+  font-size: var(--rich-fontSize, var(--text-lg));
+  font-weight: var(--rich-fontWeight, 500);
   line-height: 1.5;
 }
 .rich-answer-layout {
   display: flex;
-  gap: var(--space-4);
+  gap: var(--rich-gap, var(--space-4));
   min-width: 0;
 }
 .rich-answer-stack,
@@ -35,10 +35,10 @@
 }
 .rich-answer-grid {
   display: grid;
-  grid-template-columns: repeat(var(--rich-columns, 2), minmax(0, 1fr));
+  grid-template-columns: var(--rich-ratio, repeat(var(--rich-columns, 2), minmax(0, 1fr)));
 }
 .rich-answer-aside {
-  grid-template-columns: minmax(100px, 0.7fr) minmax(0, 1.8fr);
+  grid-template-columns: var(--rich-ratio, minmax(100px, 0.7fr) minmax(0, 1.8fr));
 }
 .rich-answer-content {
   min-width: 0;
@@ -145,17 +145,17 @@
     flex-direction: column;
   }
   .rich-answer-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(var(--rich-mobile-columns, 1), minmax(0, 1fr));
   }
   .rich-answer-aside {
-    grid-template-columns: minmax(88px, 0.7fr) minmax(0, 1.8fr);
+    grid-template-columns: var(--rich-ratio, minmax(88px, 0.7fr) minmax(0, 1.8fr));
   }
 }
 
 .rich-answer-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--rich-gap, var(--space-4));
   min-width: 0;
 }
 
@@ -175,7 +175,7 @@
   gap: var(--space-2);
 }
 .rich-answer-icon-row strong {
-  font-weight: 500;
+  font-weight: var(--rich-fontWeight, 500);
 }
 .rich-answer-chart-guide {
   stroke: var(--border-default);
@@ -188,16 +188,33 @@
   fill: var(--text-primary);
   font-size: var(--text-xs);
 }
-.rich-answer-chart dl.rich-answer-chart-labels {
-  flex-direction: row;
-  gap: 0;
-  margin-top: 0;
+/* Model styles are inherited by the text inside compound primitives. */
+.rich-answer-caption {
+  color: var(--rich-color, var(--text-secondary));
+  font-size: var(--rich-fontSize, var(--text-xs));
 }
-.rich-answer-chart-labels > div {
-  flex: 1;
-  min-width: 0;
-  text-align: center;
-  overflow-wrap: anywhere;
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
+.rich-answer-stat output {
+  font-size: var(--rich-fontSize, var(--text-2xl));
+}
+.rich-answer-icon-row strong {
+  font-size: var(--rich-fontSize, inherit);
+}
+.rich-answer-text,
+.rich-answer-heading,
+.rich-answer-caption,
+.rich-answer-stat output {
+  line-height: var(--rich-lineHeight, 1.5);
+}
+
+/* Apply media dimensions to the image itself; limiting only its wrapper makes
+   a tall image overlap subsequent text. Host preview defaults remain fallbacks. */
+.rich-answer-media img,
+.rich-answer-media video {
+  width: var(--rich-width, auto) !important;
+  max-width: 100% !important;
+  height: var(--rich-height, auto) !important;
+  min-height: var(--rich-minHeight, 0) !important;
+  max-height: var(--rich-maxHeight, min(40vh, 420px)) !important;
+  border-radius: var(--rich-borderRadius, var(--radius-xl)) !important;
+  object-fit: contain;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RichAnswerStream, RichInteractionMemory, hasRichAnswer, splitRichAnswer, richDefaults, richEvaluate, richLabel, richResolvedValues, richChart, richCalculationUnavailable } from '../richAnswer';
+import { RichAnswerStream, RichInteractionMemory, hasRichAnswer, splitRichAnswer, richDefaults, richEvaluate, richLabel, richResolvedValues, richChart, richCalculationUnavailable, richVisualStyle, richVector, richLinePlot } from '../richAnswer';
 // Tier 1: actual stream reducer. Regression targets are partial transport, edits,
 // replay and preservation of user input; no DOM/source-string contracts.
 const line = (seq: number, op: Record<string, unknown>) => JSON.stringify({ seq, ...op }) + '\n';
@@ -105,4 +105,96 @@ it('keeps missing, cyclic and invalid calculations unavailable instead of report
   expect(richLabel(doc.nodes.get('a')!, richResolvedValues(doc))).toBe('25');
   expect(richEvaluate({ op: 'add', args: ['', 2] }, {})).toBeUndefined();
   expect(richEvaluate({ op: 'concat', args: Array(32).fill({ ref: 'text' }) }, { text: 'a'.repeat(4096) })).toBeUndefined();
+});
+
+// Tier 1: model visual attributes must reach both renderers without admitting
+// executable SVG/URL payloads; the reported stock data must not flatten at zero.
+it("preserves model colors and vector geometry, excludes executable attributes, and fits line domains", () => {
+  const source = line(1, {
+    op: "create",
+    id: "visual",
+    kind: "svg",
+    props: {
+      style: {
+        color: { light: "#1257ab", dark: "#89baff" },
+        fontSize: 28,
+        gap: 24,
+        backgroundColor: "url(https://example.test/track)",
+      },
+      viewBox: [0, 0, 400, 240],
+      shapes: [
+        {
+          type: "path",
+          d: "M 0 20 L 40 30",
+          stroke: { light: "#1257ab", dark: "#89baff" },
+          strokeWidth: 4,
+          onClick: "alert(1)",
+        },
+        { type: "script", text: "alert(1)" },
+        { type: "image", href: "file:///private" },
+        { type: "text", x: 20, y: 40, text: "Model label", fill: "#1257ab" },
+      ],
+    },
+  });
+  const doc = new RichAnswerStream().update(source, true),
+    node = doc.nodes.get("visual")!;
+  expect(doc.issues).toBe(0);
+  expect(richVisualStyle(node, true)).toEqual({
+    color: "#89baff",
+    fontSize: 28,
+    gap: 24,
+  });
+  const vector = richVector(node, true);
+  expect(vector.viewBox).toBe("0 0 400 240");
+  expect(vector.shapes).toHaveLength(2);
+  expect(vector.shapes[0].props).toEqual({
+    d: "M 0 20 L 40 30",
+    stroke: "#89baff",
+    strokeWidth: 4,
+  });
+  const data = [
+    23972.29, 24040.34, 24280.56, 24130.5, 23785.79, 24213.55, 24271.2,
+    24345.22, 24314.17, 24062.72, 24186.83,
+  ].map((value, i) => ({ label: String(i), value }));
+  const plot = richLinePlot(data, 640);
+  expect(plot.min).toBeGreaterThan(23000);
+  expect(plot.max).toBeGreaterThan(24345.22);
+  expect(plot.showValues).toBe(false);
+  const chosen = richLinePlot(data, 640, {
+    yMin: 23000,
+    yMax: 25000,
+    height: 300,
+    ticks: 6,
+    showValues: true,
+  });
+  expect(chosen).toMatchObject({
+    min: 23000,
+    max: 25000,
+    height: 300,
+    showValues: true,
+  });
+  expect(chosen.ticks).toHaveLength(6);
+});
+
+// Tier 1: small-valued series used to round every axis label to zero; mobile
+// nested charts also need x labels sampled independently of point annotations.
+it("keeps small-valued axes distinguishable and dense dates on the same coordinate system", () => {
+  const plot = richLinePlot(
+    Array.from({ length: 11 }, (_, i) => ({
+      label: `10/${i + 2}`,
+      value: 0.00001 + i * 0.000001,
+    })),
+    300,
+  );
+  expect(new Set(plot.ticks.map((t) => t.label)).size).toBe(plot.ticks.length);
+  expect(plot.labels.length).toBeLessThan(plot.points.length);
+  expect(
+    plot.labels.every((t) =>
+      plot.points.some((p) => p.x === t.x && p.label === t.label),
+    ),
+  ).toBe(true);
+  expect(
+    richLinePlot([{ label: "a", value: 24000 }], 300, { includeZero: true })
+      .min,
+  ).toBeLessThanOrEqual(0);
 });
