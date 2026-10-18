@@ -99,7 +99,7 @@ export function useRemoteResourceList(collectionId: string, targets: readonly Re
             key: JSON.stringify([host.deviceId, item.ref.collectionId, item.ref.kind, item.ref.id]) }));
           setState(old => ({ ...old,
             items: mergeRemoteCollectionHostShards(old.items, next, new Set([host.deviceId]), targets),
-            replies: { ...old.replies, [host.deviceId]: connectionEpoch }, settled: true,
+            replies: { ...old.replies, [host.deviceId]: connectionEpoch },
           }));
         } catch (error) {
           if (!current()) return;
@@ -129,10 +129,10 @@ export function useRemoteResourceList(collectionId: string, targets: readonly Re
 
   // Persist after commit, never from a React state updater (which may be replayed).
   useEffect(() => {
-    if (state.binding !== binding || !state.settled || hydrated !== binding) return;
+    if (state.binding !== binding || (!state.settled && Object.keys(state.replies).length === 0) || hydrated !== binding) return;
     writeRemoteCollectionCache(owner, collectionId, state.items);
     void cacheRemoteResourceItems(user?.id ?? '', collectionId, state.items);
-  }, [binding, collectionId, hydrated, owner, state.items, state.settled, state.binding, user?.id]);
+  }, [binding, collectionId, hydrated, owner, state.items, state.replies, state.settled, state.binding, user?.id]);
   useFocusEffect(useCallback(() => {
     if (!enabled) return;
     const start = () => {

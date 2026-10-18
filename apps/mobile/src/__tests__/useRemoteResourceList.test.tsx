@@ -208,6 +208,7 @@ it('commits and persists a successful host before a slow sibling settles', async
   expect(result.items.map(row => row.item.ref.id)).toEqual(['fresh-mac']);
   expect(result.isOnline(targets[0])).toBe(true);
   expect(result.syncing).toBe(true);
+  expect(result.loading).toBe(true);
   expect(h.persist).toHaveBeenCalledWith('owner', 'teammates', result.items);
   await act(async () => finish({ items: [] }));
   expect(result.syncing).toBe(false);
