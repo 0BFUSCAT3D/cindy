@@ -179,6 +179,8 @@ interface PendingToolUse {
   name: string;
   input: unknown;
   startedAt: number;
+  /** 本调用发出时,此前最近一次普通结果到达的时刻(没有则 null);连发判据用它算间隔。 */
+  precedingFinishedAt: number | null;
 }
 
 /**
@@ -342,8 +344,13 @@ export class ToolLoopGuard {
   onToolUse(toolUseId: string, toolName: unknown, input: unknown): void {
     if (toolUseId.length === 0) return;
     if (typeof toolName !== 'string' || toolName.length === 0) return;
-    const startedAt = this.pendingToolUses.get(toolUseId)?.startedAt ?? this.now();
-    this.pendingToolUses.set(toolUseId, { name: toolName, input, startedAt });
+    const previous = this.pendingToolUses.get(toolUseId);
+    this.pendingToolUses.set(toolUseId, {
+      name: toolName,
+      input,
+      startedAt: previous?.startedAt ?? this.now(),
+      precedingFinishedAt: previous ? previous.precedingFinishedAt : this.lastOrdinaryFinishedAt,
+    });
   }
 
   /** 最近一次结果是否被纳入判定;为 true 且判定为 ok 说明此前的疑似模式已被打破。 */
@@ -406,9 +413,11 @@ export class ToolLoopGuard {
     this.lastResultObservedValue = true;
 
     const finishedAt = this.now();
-    // 连发:上一次结果刚到、紧接着就又发出调用,中间没有模型采样的时间。
-    const chained = this.chainedCallGapMs !== undefined && this.lastOrdinaryFinishedAt !== null
-      && toolUse.startedAt - this.lastOrdinaryFinishedAt < this.chainedCallGapMs;
+    // 连发:发出时距此前最近一次结果到达不足 chainedCallGapMs,中间没有模型采样的时间。
+    // 用发出当时已到达的结果而不是现在最新的:后台调用可能在本调用发出之后才完成,
+    // 那样算出的间隔为负,会把间隔很长的真实重复误判为连发。
+    const chained = this.chainedCallGapMs !== undefined && toolUse.precedingFinishedAt !== null
+      && toolUse.startedAt - toolUse.precedingFinishedAt < this.chainedCallGapMs;
     const paced = chained || (this.lastOrdinaryStartedAt !== null
       && toolUse.startedAt - this.lastOrdinaryStartedAt >= this.pacedIntervalMs)
       || (this.lastOrdinaryFinishedAt !== null

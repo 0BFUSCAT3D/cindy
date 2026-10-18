@@ -787,6 +787,24 @@ describe('ToolLoopGuard pacing and final limits', () => {
     expect(captured.nested).toEqual({ a: [1, { b: 'c' }] });
     expect(captured).not.toBe(input);
   });
+
+  // codex P1(#6388):后台脚本调用在模型调用发出之后才完成时,间隔不能按「最新结果」算(为负),
+  // 否则间隔很长的真实重复会被误判为脚本连发而永远不计数。
+  it('measures the chained gap from results that arrived before the call started', () => {
+    const { guard, advance } = clockGuard({ chainedCallGapMs: 2_000 });
+    let last: ToolLoopGuardVerdict = { kind: 'ok' };
+    for (let round = 0; round < 6; round++) {
+      guard.onToolUse(`model-${round}`, 'read', { path: 'a' });
+      advance(500);
+      guard.onToolUse(`script-${round}`, 'read', { path: 'b' });
+      advance(500);
+      guard.onToolResult(`script-${round}`, 'same');
+      advance(500);
+      last = guard.onToolResult(`model-${round}`, 'same');
+      advance(8_500);
+    }
+    expect(last).toMatchObject({ kind: 'hard', reason: 'pingpong', count: 12 });
+  });
 });
 
 describe('classifyToolContractError', () => {
