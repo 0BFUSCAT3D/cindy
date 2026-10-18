@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   HistoryViewController, HistoryViewHandoff, projectHistoryView, renderHistoryView, historyViewLeaves, nextHistoryCacheReceipt,
 } from '@cindy/maker-shared/message-window';
-import { buildRenderItems, groupWorkRuns, selectVisibleMessages, collectTurnFinalAssistantClientIds,
+import { buildMessageStreamRenderProjection, buildRenderItems, groupWorkRuns, selectVisibleMessages, collectTurnFinalAssistantClientIds,
   findLastUserMessageClientId, planSessionBelongsToLatestUserTurn } from '../components/chat/MessageStream';
 import { deriveNavRailEntries } from '../components/chat/messageNavRailModel';
 import { collectAssistantTurnUsageDetails } from '../lib/userTurnUsage';
@@ -352,4 +352,36 @@ describe('desktop remote history uses the shared live-to-history handoff', () =>
     replacement.view.setActive(false);
     view.setActive(false);
   });
+});
+
+// Unit: exercise the projection used by MessageStream, including the lazy raw
+// fallback. Existing handoff cases call renderHistoryView below that boundary.
+it.each([false, true])('builds the displayed source and retains tool results (ready=%s)', async ready => {
+  const historyRows: HistoryChatMessage[] = [row('user'),
+    { ...row('call'), role: 'tool_use', toolName: 'Read', toolUseId: 'tool', toolInput: {} },
+    { ...row('result'), role: 'tool_result', toolUseId: 'tool', content: 'Tool output' },
+    { ...row('cached'), content: 'Cached answer' }];
+  const view = new HistoryViewController<HistoryChatMessage>({
+    page: async () => ({ version: 1, items: [{ type: 'messages', key: 'page', messages: historyRows }], hasMore: false, nextCursor: null }),
+    details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }),
+    expanded: async () => undefined,
+  });
+  if (ready) await view.refresh();
+  const buildRaw = vi.fn(() => buildRenderItems([{ ...row('raw'), content: 'Raw answer' }]));
+  const result = buildMessageStreamRenderProjection({
+    historyView: view, historySnapshot: view.getSnapshot(), historyLiveMessages: [],
+    isSessionStreaming: false, generatedFilesItemCache: new Map(), buildRaw,
+  });
+  expect(result.items.filter(item => item.type === 'message').map(item => item.message.content))
+    .toContain(ready ? 'Cached answer' : 'Raw answer');
+  expect(JSON.stringify(result.items)).not.toContain(ready ? 'Raw answer' : 'Cached answer');
+  expect(buildRaw).toHaveBeenCalledTimes(ready ? 0 : 1);
+  if (ready) {
+    const work = result.items.find(item => item.type === 'work_group');
+    const tool = work?.type === 'work_group' ? work.children.find(item => item.type === 'tool_segment') : undefined;
+    expect(tool?.type === 'tool_segment' && tool.resultMap.get('call')).toBe('Tool output');
+  } else {
+    expect(result.singleResultMap).toBe(buildRaw.mock.results[0].value.singleResultMap);
+  }
+  view.setActive(false);
 });
