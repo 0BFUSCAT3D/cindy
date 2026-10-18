@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
+import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
 import {
   shouldSuppressEmptyMessageState,
   shouldSuppressRemoteListEmptyState,
@@ -14,7 +16,23 @@ const detailSource = ts.createSourceFile('detail.tsx', readFileSync(
   resolve(process.cwd(), 'app/devices/[deviceId].tsx'), 'utf8',
 ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let syncCode = '';
+const presentation = new Map<string, string>();
+const pendingPlaceholders: string[] = [];
+function compileExpression(expression: ts.Expression) {
+  return ts.transpileModule(`const result = ${expression.getText(detailSource)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+  }).outputText + '\nreturn result;';
+}
 function findSync(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.initializer
+    && ['effectiveError', 'suppressListEmptyState'].includes(node.name.getText(detailSource))) {
+    presentation.set(node.name.getText(detailSource), compileExpression(node.initializer));
+  }
+  if (ts.isJsxAttribute(node) && node.name.getText(detailSource) === 'ListEmptyComponent'
+    && node.initializer && ts.isJsxExpression(node.initializer)
+    && node.initializer.expression && ts.isConditionalExpression(node.initializer.expression)) {
+    pendingPlaceholders.push(compileExpression(node.initializer.expression.whenTrue));
+  }
   if (ts.isVariableDeclaration(node) && node.name.getText(detailSource) === 'syncSessions'
     && node.initializer && ts.isCallExpression(node.initializer)) {
     syncCode = ts.transpileModule(`const sync = ${node.initializer.arguments[0].getText(detailSource)};`, {
@@ -24,6 +42,30 @@ function findSync(node: ts.Node) {
   ts.forEachChild(node, findSync);
 }
 findSync(detailSource);
+
+// PR #6381: the banner expires DEVICE_UNRESPONSIVE after recovery, while all
+// three list modes still hid feedback using the raw error. Existing policy
+// tests did not exercise those render branches. Unit: execute their real JSX
+// expressions through failure → recovery, with a previously synced empty list.
+it('uses the same effective failure for empty-state suppression and every pending placeholder', () => {
+  const bindings: Record<string, unknown> = {
+    error: '[DEVICE_UNRESPONSIVE] circuit open', deviceUnresponsive: true,
+    resolveEffectiveConnectionError, shouldSuppressRemoteListEmptyState,
+    syncedListQueryScope: 'current', listQueryScope: 'current', loading: false,
+    indexedSearch: { status: 'idle' }, React, RemoteListSyncingPlaceholder: 'syncing',
+  };
+  const evaluate = (code: string) => new Function(...Object.keys(bindings), code)(...Object.values(bindings));
+  for (const recovering of [true, false]) {
+    bindings.deviceUnresponsive = recovering;
+    bindings.effectiveError = evaluate(presentation.get('effectiveError')!);
+    expect(evaluate(presentation.get('suppressListEmptyState')!)).toBe(recovering);
+    for (const code of pendingPlaceholders) {
+      const element = evaluate(code);
+      expect(element === null).toBe(recovering);
+      if (element) expect(element.type).toBe('syncing');
+    }
+  }
+});
 
 it.each(['resolve', 'reject'])('keeps a new filter pending when the old request settles with %s', async (outcome) => {
   const firstScope = { deviceId: 'mac', filter: 'active' };

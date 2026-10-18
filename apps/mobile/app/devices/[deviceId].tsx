@@ -18,6 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ConnectionBanner, useShowConnectionBanner } from '@/components/ConnectionBanner';
+import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
 import { unresponsiveDevicesStore, useUnresponsiveDevices } from '@/device-link/unresponsiveDevicesStore';
 import { goBackGuarded } from '@/utils/backGuard';
 import { useGuardedPush } from '@/utils/useGuardedPush';
@@ -220,6 +221,7 @@ function DeviceDetailScreenContent() {
   // 熔断 open(电脑端未响应):relay 可能仍 online,可见性与 banner 文案单独入参。
   const unresponsiveDevices = useUnresponsiveDevices();
   const deviceUnresponsive = !!deviceId && unresponsiveDevices.has(deviceId);
+  const effectiveError = resolveEffectiveConnectionError(error, deviceUnresponsive);
   const searchOrigins = useMemo(() => (deviceId ? [{
     deviceId,
     deviceName,
@@ -505,7 +507,7 @@ function DeviceDetailScreenContent() {
     itemCount: 0,
     hasSyncedThisOpen: syncedListQueryScope === listQueryScope,
     loading: loading || indexedSearch.status === 'searching',
-    failed: !!error,
+    failed: !!effectiveError,
   });
   useEffect(() => {
     setSelectedSessionIds((prev) => {
@@ -760,7 +762,7 @@ function DeviceDetailScreenContent() {
             />
           )}
           ListEmptyComponent={suppressListEmptyState ? (
-            error ? null : <RemoteListSyncingPlaceholder testID="deviceDetail.automationSyncing" />
+            effectiveError ? null : <RemoteListSyncingPlaceholder testID="deviceDetail.automationSyncing" />
           ) : (
             <MainWindowEmptyState
               centered
@@ -898,7 +900,7 @@ function DeviceDetailScreenContent() {
               />
             )}
             ListEmptyComponent={suppressListEmptyState ? (
-              error ? null : <RemoteListSyncingPlaceholder testID="deviceDetail.projectSyncing" />
+              effectiveError ? null : <RemoteListSyncingPlaceholder testID="deviceDetail.projectSyncing" />
             ) : (
               <MainWindowEmptyState
                 centered
@@ -1231,7 +1233,7 @@ function DeviceDetailScreenContent() {
             section.title ? <Text style={styles.sectionTitle}>{section.title}</Text> : null
           )}
           ListEmptyComponent={suppressListEmptyState ? (
-            error ? null : <RemoteListSyncingPlaceholder testID="deviceDetail.syncing" />
+            effectiveError ? null : <RemoteListSyncingPlaceholder testID="deviceDetail.syncing" />
           ) : (
             <MainWindowEmptyState
               centered

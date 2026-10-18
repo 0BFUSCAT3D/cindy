@@ -17,7 +17,15 @@ function readSource(relativePath: string): string {
 const homeSource = ts.createSourceFile('HomeSurface.tsx', readSource('src/session/HomeSurface.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const feedbackExpressions = new Map<string, string>();
 const feedbackNames = new Set(['homeListScopePending', 'initialHomeLoading', 'initialHomeError', 'healthCopy', 'showConnectionRow', 'showHomeSyncAction', 'showHomeRecoveryProgress', 'connectionTitle']);
+let listScopeEffect = '';
 function collectFeedback(node: ts.Node) {
+  if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+    && node.expression.expression.getText(homeSource) === 'useLayoutEffect'
+    && node.expression.arguments[0]?.getText(homeSource).includes('homeListFilterRef.current === requestedListFilter')) {
+    listScopeEffect = ts.transpileModule(node.getText(homeSource), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+  }
   if (ts.isVariableDeclaration(node) && feedbackNames.has(node.name.getText(homeSource)) && node.initializer) {
     feedbackExpressions.set(node.name.getText(homeSource), ts.transpileModule(`const result = ${node.initializer.getText(homeSource)};`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -46,6 +54,33 @@ function homeFeedback(overrides: Record<string, unknown>) {
 }
 
 describe('mobile Home connection feedback', () => {
+  // PR #6381: an error from A masked B's loading state. Existing feedback tests
+  // never changed the selection after an error. Unit: run the production layout
+  // effect with React's dependency comparison, before deriving the next frame.
+  it('retires the previous computer error before painting a new selection', () => {
+    let previousDeps: unknown[] = [];
+    let error: string | null = null;
+    const bindings = {
+      useLayoutEffect: (effect: () => void, deps: unknown[]) => {
+        if (deps.some((value, index) => value !== previousDeps[index])) effect();
+        previousDeps = deps;
+      },
+      setError: (value: string | null) => { error = value; },
+      homeListFilterRef: { current: 'active' }, requestedListFilter: 'active',
+      selectedDeviceId: 'a', advanceHomeSyncGeneration: () => undefined,
+    };
+    const render = () => new Function(...Object.keys(bindings), listScopeEffect)(...Object.values(bindings));
+    render();
+    error = 'A failed';
+    render();
+    expect(error).toBe('A failed');
+    bindings.selectedDeviceId = 'b';
+    render();
+    expect(homeFeedback({
+      connectionError: error, homeListOwnedDeviceIdsRef: { current: new Set() },
+    })).toMatchObject({ initialHomeLoading: true, initialHomeError: false });
+  });
+
   // Unit regression for the reported active/archive flash: run Home's actual
   // presentation expressions after startup has already settled. Existing tests
   // only exercised connection banners and never a new list scope or search.

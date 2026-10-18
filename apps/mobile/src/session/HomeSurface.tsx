@@ -812,6 +812,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   }, [advanceHomeSyncGeneration, releaseHomeListOwner]);
 
   useLayoutEffect(() => {
+    // Neither the previous computer's error nor the previous filter's error
+    // describes the new list scope. Clear it before painting its loading state.
+    setError(null);
     if (homeListFilterRef.current === requestedListFilter) return;
     homeListFilterRef.current = requestedListFilter;
     // A new filter is a new list scope even on the same computer. Reuse the
@@ -825,8 +828,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       for (const deviceId of homeSyncTargetDeviceIdsRef.current) next[deviceId] = 'syncing';
       return next;
     });
-    setError(null);
-  }, [advanceHomeSyncGeneration, requestedListFilter]);
+  }, [advanceHomeSyncGeneration, requestedListFilter, selectedDeviceId]);
 
   useEffect(() => () => {
     const owned = [...homeListOwnedDeviceIdsRef.current];
