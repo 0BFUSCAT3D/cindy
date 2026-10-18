@@ -133,6 +133,12 @@ export const STALL_ABORT_RECOVERY_GRACE_MS = 10_000;
  * 端到端最长不超过 15s(review #944 第十一轮末尾调优)。
  */
 export const MANUAL_ABORT_RECOVERY_GRACE_MS = 15_000;
+/**
+ * Codex tool calls arriving sooner than this after the previous result cannot have
+ * had a model sampling in between (one sampling takes seconds), so they come from a
+ * script issuing them in sequence rather than from the model repeating itself.
+ */
+const CODEX_SCRIPT_CHAINED_CALL_GAP_MS = 2_000;
 
 /** Shared confirmation budget for provider interrupt ACK and send acceptance. */
 const GRACEFUL_STOP_CONFIRMATION_TIMEOUT_MS = 5_000;
@@ -2331,6 +2337,9 @@ export class Session {
         // not enable the retry-count rule without that evidence. Claude also
         // disables category-only retries; repetition rules stay active.
         contractConsecutiveLimit: Number.POSITIVE_INFINITY,
+        // Codex code mode: calls issued back-to-back by one background script
+        // carry no ownership marker; see ToolLoopGuardOptions.chainedCallGapMs.
+        ...(this.agentKind === 'codex' ? { chainedCallGapMs: CODEX_SCRIPT_CHAINED_CALL_GAP_MS } : {}),
       }), {
         reviewer: this.toolLoopReviewer,
         context: () => ({ sessionId: this.id, agentKind: this.agentKind, model: this.handle.model }),
@@ -3006,12 +3015,7 @@ export class Session {
     }
     if (typeof data.toolUseId !== 'string' || control.pendingToolLoop) return;
     if (event.type === 'tool_use') {
-      control.toolLoopMonitor.onToolUse(
-        data.toolUseId,
-        data.toolName,
-        data.input,
-        event.modelResponseId,
-      );
+      control.toolLoopMonitor.onToolUse(data.toolUseId, data.toolName, data.input);
       return;
     }
     if (event.type !== 'tool_result_full' || typeof data.fullText !== 'string') return;

@@ -177,11 +177,6 @@ export interface AgentEvent {
    */
   backgroundTurnStartedAt?: number;
   /**
-   * 发出该 tool_use 的模型回应(Codex code mode 下一次回应是一段脚本,内部可有多次调用)。
-   * 只供 Session 的工具循环检测合并同一回应内的重复调用;缺省时每次调用各算一次回应。
-   */
-  modelResponseId?: string;
-  /**
    * 本事件所属 turn 的发起来源,由 Session 在事件 fan-out 前打标(见 session.ts
    * 的 currentTurnOrigin)。turn 结束(isTerminalTurnEvent)后清空,不污染下一轮。
    * translator 不产生此字段;消费方(IM 转播等)按需读取,默认忽略。

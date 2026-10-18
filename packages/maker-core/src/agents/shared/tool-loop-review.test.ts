@@ -134,21 +134,27 @@ describe('ToolLoopMonitor', () => {
     expect(t.stops).toEqual([]);
   });
 
-  // greptile P1(#6388):同一模型回应内的重复调用不计数,但也不能当作「模式已打破」取消复核。
-  it('keeps a pending review when a repeat inside one model response is ignored', async () => {
+  // greptile P1(#6388):连发调用不计数,但也不能当作「模式已打破」取消进行中的复核。
+  it('keeps a pending review when a chained script call is ignored', async () => {
+    vi.useFakeTimers();
     const { reviewer, pending } = deferredReviewer();
-    const t = setup(reviewer);
+    const stops: HardToolLoopVerdict[] = [];
+    const monitor = new ToolLoopMonitor(new ToolLoopGuard({ chainedCallGapMs: 2_000 }), {
+      reviewer, context: () => ({ sessionId: 's1', agentKind: 'codex', model: 'm1' }),
+      onReviewedStop: (verdict) => stops.push(verdict), logger,
+    });
     for (let i = 0; i < 12; i++) {
-      t.monitor.onToolUse(`r${i}`, 'read', { path: 'same.ts' }, `response-${i}`);
-      expect(t.monitor.onToolResult(`r${i}`, `changed ${i}`).kind).toBe('ok');
+      vi.advanceTimersByTime(3_000);
+      monitor.onToolUse(`r${i}`, 'read', { path: 'same.ts' });
+      expect(monitor.onToolResult(`r${i}`, `changed ${i}`).kind).toBe('ok');
     }
     expect(reviewer).toHaveBeenCalledTimes(1);
-    t.monitor.onToolUse('dup', 'read', { path: 'same.ts' }, 'response-11');
-    expect(t.monitor.onToolResult('dup', 'changed again').kind).toBe('ok');
+    monitor.onToolUse('chained', 'read', { path: 'same.ts' });
+    expect(monitor.onToolResult('chained', 'changed again').kind).toBe('ok');
     expect(pending[0]?.signal.aborted).toBe(false);
     pending[0]?.resolve('stop');
     await vi.advanceTimersByTimeAsync(0);
-    expect(t.stops).toHaveLength(1);
+    expect(stops).toHaveLength(1);
   });
 
   it('discards a pending review once a different call replaces the flagged pattern', async () => {
