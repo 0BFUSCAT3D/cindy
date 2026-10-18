@@ -692,6 +692,7 @@ async function initStore(store: FileTreeStore): Promise<void> {
     (p) => p !== ROOT_KEY && !restored.has(p),
   );
   const refetchInherited = store.showIgnoredDirs ? inheritedExpanded : [];
+  invalidateBorrowedCollapsedEntries(store);
   await Promise.all([
     fetchDir(store, ROOT_KEY),
     ...[...restored].map((p) => fetchDir(store, p)),
@@ -699,6 +700,31 @@ async function initStore(store: FileTreeStore): Promise<void> {
   ]);
   store.snapshot = { ...store.snapshot, initialLoading: false };
   emit(store);
+}
+
+/**
+ * 切到 reveal 态时，让「借来且当前收起」的目录条目失效。
+ *
+ * seed 借的是另一半 scope 的 entries 快照。展开中的目录会被 refetchInherited 按新
+ * matcher 重拉；但「展开过又收起」的目录不在 expanded 里，既不会被重拉，
+ * toggleFolder 又见 entries.has() 就跳过请求 —— 那条缓存仍是 hidden 态的结果，
+ * 缺 packages/dist 这类被忽略目录，之后展开也补不回来（评审 P1）。
+ *
+ * 只在「借来的 + reveal 态」清理：首次挂载的 store 没有陈旧条目可清；切回 hidden
+ * 态时 seed 已由 filterSeedTreeForHiddenView 就地滤掉，不受影响。
+ */
+function invalidateBorrowedCollapsedEntries(store: FileTreeStore): void {
+  if (!store.seeded || !store.showIgnoredDirs) return;
+  const expanded = store.snapshot.expanded;
+  const entries = new Map(store.snapshot.entries);
+  let dropped = 0;
+  for (const path of [...entries.keys()]) {
+    if (path === ROOT_KEY || expanded.has(path)) continue;
+    entries.delete(path);
+    dropped++;
+  }
+  if (dropped === 0) return;
+  store.snapshot = { ...store.snapshot, entries };
 }
 
 /** 最后一个订阅者离开:停 watcher、从 stores 表移除。store 对象被回收。 */
