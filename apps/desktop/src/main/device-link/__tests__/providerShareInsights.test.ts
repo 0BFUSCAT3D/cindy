@@ -376,7 +376,7 @@ describe('provider share insights', () => {
   });
   it('rejects unauthorized members and a guest-supplied provider id', async () => {
     const { read, state } = fixture();
-    await expect(read('peer', { version: 1, providerId: 'other' })).rejects.toThrow(
+    await expect(read('peer', { ...request, providerId: 'other' })).rejects.toThrow(
       'INVALID_PARAMS',
     );
     state.active = false;
