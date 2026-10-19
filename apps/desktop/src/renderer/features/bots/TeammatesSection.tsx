@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  Users,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -44,6 +43,7 @@ import { CindyDeviceRow } from './CindyDeviceRow';
 import { cindyDeviceKey, cindyDeviceOptions, isCindyDeviceBot } from './cindyDeviceRoster';
 import { BotAvatar } from './BotAvatar';
 import { BotCreateMenu } from './BotCreateMenu';
+import { useBotMarketEntryHint } from './botMarketEntryHint';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
 import { BotGroupSidebarAvatar } from './BotGroupAvatars';
@@ -125,6 +125,7 @@ export function TeammatesSection() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { dataOwnerId } = useAuth();
+  const marketHint = useBotMarketEntryHint(dataOwnerId);
   // The sidebar lives in the shell, outside the child route's params context.
   const remoteRoute = matchPath('/bots/remote/:deviceId/:botId', pathname);
   const localRoute = [
@@ -502,18 +503,21 @@ export function TeammatesSection() {
             </Tip>
           </div>
         </div>
-        <div className={cn(HEADER_HOVER_ACTION_CLASS, 'flex items-center gap-0.5')}>
+        {/* 发现伙伴入口没看过时「+」常驻可见(带蓝点),其余动作仍只在悬停时浮现。 */}
+        <div className={cn('flex items-center gap-0.5', !marketHint.unseen && HEADER_HOVER_ACTION_CLASS)}>
           {roster.showHiddenSection && !collapsed ? (
-            <button
-              type="button"
-              onClick={() => setShowHidden((value) => !value)}
-              className={HEADER_ICON_BUTTON_CLASS}
-              aria-label={t(showHidden ? 'bots.list.hideHidden' : 'bots.list.showHidden')}
-            >
-              {showHidden ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
-            </button>
+            <span className={cn('flex', marketHint.unseen && HEADER_HOVER_ACTION_CLASS)}>
+              <button
+                type="button"
+                onClick={() => setShowHidden((value) => !value)}
+                className={HEADER_ICON_BUTTON_CLASS}
+                aria-label={t(showHidden ? 'bots.list.hideHidden' : 'bots.list.showHidden')}
+              >
+                {showHidden ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
+              </button>
+            </span>
           ) : null}
-          <BotCreateMenu variant="header" />
+          <BotCreateMenu variant="header" entryHint={marketHint} />
         </div>
       </div>
 
