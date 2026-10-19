@@ -3737,7 +3737,16 @@
         "pending": "憑證準備中",
         "unavailable": "暫時無法使用"
       },
-      "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱"
+      "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱",
+      "detection": {
+        "hint": "填寫網址和 API 金鑰後自動識別供應商。儲存後可在編輯連線中調整協定。",
+        "pending": "正在識別供應商…",
+        "matched": "已識別為 {{name}}",
+        "ambiguous": "符合多個設定，請繼續自訂或選擇供應商。",
+        "custom": "繼續自訂設定，可取得模型清單或手動新增。",
+        "configure": "前往設定",
+        "keepCustom": "繼續自訂"
+      }
     },
     "experimental": {
       "title": "實驗性功能",

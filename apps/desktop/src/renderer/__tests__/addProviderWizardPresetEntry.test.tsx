@@ -1493,3 +1493,75 @@ it('sets up Sub2API from one site address and retains discovered capabilities in
       contextWindow: 272000, contextWindowMax: 1050000, supportsFastMode: true, supportsImageInput: true });
   }
 });
+
+// Scheme-2 handoff must keep connection ownership and user choices; the managed-local
+// entry tests above do not cover an independently addressed LM Studio deployment.
+describe('identified provider handoff', () => {
+  const model = { id: 'private-alias', name: 'My model', contextWindow: 4096, route: { baseUrl: 'https://relay.example/team/v1', wireProtocol: 'openai-chat' as const } };
+  const detected = {
+    agent: 'pi' as const, apiKey: 'fake-key', keys: { pi: 'fake-key' },
+    preset: { id: 'lmstudio', name: 'LM Studio', runtimes: { pi: {
+      baseUrl: 'https://relay.example/team/v1', baseUrlEditable: true, wireProtocol: 'openai-chat' as const,
+      headers: { 'X-Project': 'test' }, models: [],
+    } } },
+    config: { id: 'draft', name: 'My remote server', runtimes: { pi: { baseUrl: 'https://relay.example/team/v1', models: [model] } } },
+    catalog: { ok: true, models: [{ id: 'private-alias', name: 'Upstream name' }, { id: 'unselected', name: 'Another' }] },
+  };
+  it.each([false, true])('saves an independent connection and retains overrides on its edited endpoint: %s', async edited => {
+    const managed = { ...anthropicProvider, id: 'cindy-local-lmstudio', name: 'LM Studio', source: 'user' } as ProviderView;
+    render(<AddProviderWizard providers={[managed]} detected={detected} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    const baseUrl = edited ? 'https://new-relay.example/team/v1' : detected.config.runtimes.pi.baseUrl;
+    if (edited) vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue(detected.catalog);
+    if (edited) fireEvent.change(await screen.findByDisplayValue(detected.config.runtimes.pi.baseUrl), { target: { value: baseUrl } });
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    const finish = await screen.findByRole('button', { name: 'settings.providers.wizard.finish' });
+    await waitFor(() => expect(finish.hasAttribute('disabled')).toBe(false));
+    if (!edited) expect(window.electronAPI.maker.fetchProviderModels).not.toHaveBeenCalled();
+    fireEvent.click(finish);
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
+    const [config, keys] = vi.mocked(createCustomProvider).mock.calls[0];
+    expect(config.id).not.toBe('cindy-local-lmstudio');
+    expect(config.runtimes.pi).toMatchObject({ baseUrl, wireProtocol: 'openai-chat', headers: { 'X-Project': 'test' } });
+    expect(config.runtimes.pi!.models.find(m => m.id === 'private-alias')).toMatchObject({ ...model, route: { ...model.route, baseUrl } });
+    expect(config.runtimes.pi!.models.find(m => m.id === 'unselected')?.defaultEnabled).toBe(false);
+    expect(keys).toEqual({ pi: 'fake-key' });
+  });
+  it('saves the explicit native image option carried by a Codex handoff', async () => {
+    const runtime = { ...detected.preset.runtimes.pi, wireProtocol: 'openai-responses' as const, supportsImageGeneration: true };
+    const handoff = { ...detected, agent: 'codex' as const, keys: { codex: 'fake-key' },
+      preset: { ...detected.preset, runtimes: { codex: runtime } },
+      config: { ...detected.config, runtimes: { codex: { ...runtime, models: [{ id: 'private-alias', name: 'Model' }] } } },
+    };
+    render(<AddProviderWizard providers={[]} detected={handoff} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    const finish = await screen.findByRole('button', { name: 'settings.providers.wizard.finish' });
+    await waitFor(() => expect(finish.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(finish);
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
+    expect(vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex).toMatchObject({ supportsImageGeneration: true, wireProtocol: 'openai-responses' });
+  });
+  it('retains a hand-entered model when OpenRouter returns a complete public catalog', async () => {
+    const baseUrl = 'https://openrouter.ai/api/v1';
+    const handoff = { ...detected,
+      preset: { ...detected.preset, id: 'openrouter', name: 'OpenRouter', runtimes: { pi: { ...detected.preset.runtimes.pi, baseUrl } } },
+      config: { ...detected.config, runtimes: { pi: { baseUrl, models: [{ ...model, route: { ...model.route, baseUrl } }] } } },
+      catalog: { ok: true, models: [{ id: 'public-only', name: 'Public' }] },
+    };
+    render(<AddProviderWizard providers={[]} detected={handoff} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    const finish = await screen.findByRole('button', { name: 'settings.providers.wizard.finish' });
+    await waitFor(() => expect(finish.hasAttribute('disabled')).toBe(false));
+    expect(screen.getByText('My model')).toBeTruthy();
+    fireEvent.click(finish);
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
+    expect(vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.pi!.models.find(m => m.id === model.id)).toMatchObject({ id: model.id, contextWindow: 4096 });
+  });
+  it('returns the draft instead of navigating to the provider gallery, keeping edited credentials', async () => {
+    const onReturnCustom = vi.fn();
+    render(<AddProviderWizard providers={[]} detected={detected} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'edited-fake-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    expect(onReturnCustom).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'edited-fake-key', config: expect.objectContaining({ name: 'My remote server' }) }));
+    expect(createCustomProvider).not.toHaveBeenCalled();
+  });
+});

@@ -5659,7 +5659,14 @@ interface ElectronAPI {
       detail?: string;
     }>;
     /** 供应商「获取模型列表」—— 表单值透传，结构化结果（code 走 providerError.* i18n）。 */
+    detectProvider?: (input: ({ requestId: string; cancel: true } | {
+      requestId: string; agent: 'claude-code' | 'codex' | 'pi'; baseUrl: string;
+      authMethod: 'apiKey' | 'none'; apiKey?: string | null; headers?: Record<string, string>;
+      wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
+    })) => Promise<import('../shared/providerDetection').DeploymentDetectionResult>;
     fetchProviderModels: (input: {
+      allowEmpty?: boolean;
+      redirect?: 'error';
       agent: 'claude-code' | 'codex' | 'pi';
       baseUrl: string;
       authMethod: 'apiKey' | 'oauth' | 'none';

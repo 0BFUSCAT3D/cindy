@@ -1,4 +1,5 @@
 import { setProviderPresentation, retainProviderPresentationAfterAuthChange } from '../maker-host/provider-presentation-store.js';
+import type { DeploymentDetectionResult } from '../../shared/providerDetection.js';
 import { pruneProviderGroupBindings } from '../provider-group/bindings.js';
 import { writeProviderGroup } from '../provider-group/store.js';
 /**
@@ -319,6 +320,7 @@ export interface ProviderHandlerDeps {
   testConnection(input: ProviderTestInput): Promise<ProviderTestResult>;
   /** 获取模型列表（生产 = fetchProviderModels；单测注入 stub 不联网）。 */
   fetchModels(spec: ProviderModelsFetchSpec): Promise<ProviderModelsFetchResult>;
+  detectProvider?(spec: ProviderModelsFetchSpec, signal: AbortSignal): Promise<DeploymentDetectionResult>;
   /** 内置四家的模型真源刷新；生产按 providerId 分派到既有 discovery 机制。 */
   refreshBuiltinModels(providerId: BuiltinRefreshableProviderId): Promise<void>;
   /** Renderer 自动刷新提示；Main 侧负责静默失败、冷却和跨窗口去重。 */
@@ -534,6 +536,8 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
 function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
   if (!input || typeof input !== 'object') return null;
   const spec = input as Record<string, unknown>;
+  if (spec.allowEmpty !== undefined && typeof spec.allowEmpty !== 'boolean') return null;
+  if (spec.redirect !== undefined && spec.redirect !== 'error') return null;
   if (typeof spec.agent !== 'string' || !VALID_AGENTS.includes(spec.agent)) return null;
   if (typeof spec.authMethod !== 'string' || !VALID_ADHOC_AUTH_METHODS.includes(spec.authMethod))
     return null;
@@ -580,6 +584,8 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
     baseUrl: spec.baseUrl,
     authMethod: spec.authMethod as ProviderModelsFetchSpec['authMethod'],
     modelsUrl: (spec.modelsUrl as string | null | undefined) ?? null,
+    ...(spec.allowEmpty === true ? { allowEmpty: true } : {}),
+    ...(spec.redirect === 'error' ? { redirect: 'error' as const } : {}),
     apiKey: (spec.apiKey as string | null | undefined) ?? null,
     headers: spec.headers as Record<string, string> | undefined,
     ...(typeof spec.savedProviderId === 'string' ? { savedProviderId: spec.savedProviderId } : {}),
@@ -2322,6 +2328,40 @@ export function registerProviderHandlers(
   });
 
   // 获取模型列表：查询型结构化返回（同上例外条款）；仅网络/上游失败在结果 code 里，不抛。
+  // Like provider creation, detection is local trusted settings only. Never expose keys via relay.
+  const detections = new Map<ProviderOAuthRendererSender, { id: string; controller: AbortController }>();
+  registry.handle(MAKER_INVOKE.PROVIDER_DETECT, async (event, input: unknown) => {
+    assertTrustedProviderMutationSender(event);
+    const sender = providerOAuthRendererSender(event);
+    if (!sender || !input || typeof input !== 'object') throwIpcError('INVALID_PARAMS', 'invalid detection input');
+    const value = input as Record<string, unknown>;
+    if (typeof value.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value.requestId)) throwIpcError('INVALID_PARAMS', 'invalid detection id');
+    const previous = detections.get(sender);
+    if (value.cancel === true) {
+      if (previous?.id === value.requestId) previous.controller.abort();
+      return { candidates: [], reason: 'insufficient_evidence' };
+    }
+    const parsed = parseModelsFetchInput(value);
+    if (!parsed || parsed.savedProviderId || parsed.authMethod === 'oauth' || parsed.baseUrl.length > 4096
+      || (parsed.apiKey?.length ?? 0) > 16384 || Object.entries(parsed.headers ?? {}).some(([k,v]) => k.length > 256 || v.length > 16384)
+      || Object.keys(parsed.headers ?? {}).length > 64) throwIpcError('INVALID_PARAMS', 'invalid detection input');
+    previous?.controller.abort();
+    const controller = new AbortController();
+    const operation = { id: value.requestId, controller };
+    detections.set(sender, operation);
+    const owner = captureProviderOwnerSession();
+    const abort = () => controller.abort();
+    sender.once?.('destroyed', abort);
+    try {
+      const result = await deps.detectProvider?.(parsed, controller.signal);
+      if (controller.signal.aborted || !providerMutationOwnerMatches(owner)) return { candidates: [], reason: 'insufficient_evidence' };
+      return result ?? { candidates: [], reason: 'insufficient_evidence' };
+    } finally {
+      sender.removeListener?.('destroyed', abort);
+      if (detections.get(sender) === operation) detections.delete(sender);
+    }
+  });
+
   registry.handle(MAKER_INVOKE.PROVIDER_MODELS_FETCH, async (event, input: unknown) => {
     // 这条查询会把 renderer 提供的 API key / 自定义 headers 带到目标 endpoint；
     // 与重新发现一样，必须先确认调用方是 Cindy 自有顶层页面，避免 WebView / 子 frame

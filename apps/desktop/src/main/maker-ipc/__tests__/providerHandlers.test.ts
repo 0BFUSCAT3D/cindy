@@ -4667,3 +4667,39 @@ it('preserves the actual Vertex API through the probe IPC and rejects unknown SD
     { kind: 'adhoc', spec: { ...spec, api: 'invented-sdk' } })).rejects.toThrow(/INVALID_PARAMS/);
   expect(deps.testConnection).toHaveBeenCalledOnce();
 });
+
+// Scheme-2 detection shares the existing local credential boundary. The new ingress
+// needs explicit sender/cancellation coverage; ordinary model fetch has no draft lifecycle.
+describe('provider detection drafts', () => {
+  const input = { requestId: 'draft-1', agent: 'pi', authMethod: 'apiKey', baseUrl: 'https://relay.example/v1', apiKey: 'fake-test-key' };
+  it('rejects untrusted senders and invalid inputs before dispatch', async () => {
+    const harness = new IpcHarness();
+    const detectProvider = vi.fn();
+    const guard = vi.fn<() => void>(() => { throwIpcError('PERMISSION_DENIED', 'untrusted'); });
+    registerProviderHandlers(harness, makeDeps({ detectProvider, assertTrustedSender: guard }));
+    await expect(harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, input)).rejects.toThrow(/PERMISSION_DENIED/);
+    guard.mockImplementation(() => undefined);
+    for (const invalid of [{ ...input, requestId: '../other' }, { ...input, savedProviderId: 'saved' }, { ...input, baseUrl: 'file:///tmp/key' }, { ...input, headers: { bad: 1 } }]) {
+      await expect(harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, invalid)).rejects.toThrow(/INVALID_PARAMS/);
+    }
+    expect(detectProvider).not.toHaveBeenCalled();
+  });
+  it('isolates cancellations by sender and request, and cancels destroyed windows', async () => {
+    const harness = new IpcHarness();
+    const signals: AbortSignal[] = [];
+    registerProviderHandlers(harness, makeDeps({ detectProvider: async (_spec, signal) => {
+      signals.push(signal);
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+      return { candidates: [], reason: 'insufficient_evidence' };
+    } }));
+    const first = harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, input);
+    const second = harness.invokeFrom(2, MAKER_INVOKE.PROVIDER_DETECT, input);
+    await harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { requestId: 'old-draft', cancel: true });
+    expect(signals.map(s => s.aborted)).toEqual([false, false]);
+    await harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { requestId: 'draft-1', cancel: true });
+    expect(signals.map(s => s.aborted)).toEqual([true, false]);
+    harness.destroySender(2);
+    await Promise.all([first, second]);
+    expect(signals[1].aborted).toBe(true);
+  });
+});

@@ -1,6 +1,10 @@
 import { useDialogExit } from '@/hooks/useDialogExit';
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { providerEndpointBindings, canonicalProviderEndpoint, BUNDLED_CATALOG, mergeModelMetadata } from '@cindy/model-providers';
+import { matchOfficialProviders, bindDetectedProvider, isAgentSelectableModel } from '@cindy/model-providers';
+import type { DetectedProviderDraft, DetectionCatalog } from '../../../shared/providerDetection';
+import { OFFICIAL_API_PRESETS } from './AddProviderWizard';
+let detectionRequestSequence = 0;
 /**
  * Connection credentials and advanced routing only. Model capabilities are imported into the
  * shared catalog and edited through standard model settings. Stored per-runtime credentials,
@@ -155,6 +159,8 @@ function defaultWireFor(agent: DialogAgentKind): ProviderWireProtocol {
 }
 
 interface ProviderConnectionDialogProps {
+  draft?: DetectedProviderDraft;
+  onDetected?: (draft: DetectedProviderDraft) => void;
   initial?: CustomProviderConfig;
   /** Effective modes from the same connection's active catalog, separate from editable overrides. */
   catalogModels?: ProviderView['models'];
@@ -411,6 +417,8 @@ function PresetDropdown({
 }
 
 export function ProviderConnectionDialog({
+  draft,
+  onDetected,
   initial,
   catalogModels,
   existingIds,
@@ -455,13 +463,17 @@ export function ProviderConnectionDialog({
     input?.focus();
     input?.scrollIntoView?.({ block: 'nearest' });
   }, [fieldError]);
-  const [name, setName] = useState(initial?.name ?? '');
+  const [name, setName] = useState(initial?.name ?? draft?.config.name ?? '');
   const [manualModel, setManualModel] = useState('');
   const [manualModelMode, setManualModelMode] = useState('inherit');
-  const [rt, setRt] = useState<Record<DialogAgentKind, RuntimeFields>>(() => initRuntimes(initial));
+  const [rt, setRt] = useState<Record<DialogAgentKind, RuntimeFields>>(() => {
+    const fields = initRuntimes(initial ?? draft?.config);
+    if (draft) for (const a of AGENTS) fields[a].apiKey = draft.keys?.[a] ?? (a === draft.agent ? draft.apiKey : '');
+    return fields;
+  });
   const [activeTab, setActiveTab] = useState<DialogAgentKind>(
     () =>
-      (focusAgent && VISIBLE_AGENTS.includes(focusAgent as DialogAgentKind) ? focusAgent as DialogAgentKind : null) ??
+      draft?.agent ?? (focusAgent && VISIBLE_AGENTS.includes(focusAgent as DialogAgentKind) ? focusAgent as DialogAgentKind : null) ??
       ((initial && VISIBLE_AGENTS.find((a) => initial.runtimes[a])) || 'claude-code'),
   );
   const [hasKey, setHasKey] = useState<Record<DialogAgentKind, boolean>>({
@@ -476,7 +488,7 @@ export function ProviderConnectionDialog({
   const [authMode, setAuthModeState] = useState<CustomProviderAuthMode>(
     initial?.auth?.method === 'oauth'
       ? 'oauth'
-      : initial?.auth?.method === 'none'
+      : (initial ?? draft?.config)?.auth?.method === 'none'
         ? 'none'
         : 'apiKey',
   );
@@ -892,6 +904,132 @@ export function ProviderConnectionDialog({
     },
     [i18n.language, setRtSynced],
   );
+
+  const detectionSuppressed = useRef(!!draft);
+  const [detection, setDetection] = useState<{ signature: string; preset?: ProviderPreset; pending?: boolean; ambiguous?: boolean; code?: string } | null>(null);
+  const discoveryCache = useRef(new Map<DialogAgentKind, { signature: string; promise: Promise<DetectionCatalog> }>(
+    draft?.catalog ? [[draft.agent, { signature: `${draft.agent}:${providerModelFetchRequestSignature(rt[draft.agent], authMode)}`,
+      promise: Promise.resolve(draft.catalog) }]] : [],
+  ));
+  const importedOnce = useRef(new Set<DialogAgentKind>(draft ? [draft.agent] : []));
+  const detectionSignature = `${activeTab}:${providerModelFetchRequestSignature(rt[activeTab], authMode)}`;
+  const detectionContext = useRef({ name, activeTab, onDetected, signature: detectionSignature });
+  const previousDetectionSignatures = useRef(new Map<DialogAgentKind, string>());
+  detectionContext.current = { name, activeTab, onDetected, signature: detectionSignature };
+
+  const enterDetectedProvider = useCallback((preset: ProviderPreset) => {
+    if (savingRef.current || childLayerRef.current || runtimeFillRef.current) return;
+    const context = detectionContext.current;
+    const agent = context.activeTab;
+    const fields = rtRef.current[agent];
+    const runtimes: CustomProviderConfig['runtimes'] = {};
+    const keys: Partial<Record<AgentKind, string>> = {};
+    for (const a of AGENTS) {
+      const value = rtRef.current[a];
+      if (!value.baseUrl.trim()) continue;
+      keys[a] = value.apiKey;
+      runtimes[a] = { baseUrl: value.baseUrl.trim(), models: value.models.filter(m => m.id.trim()),
+        wireProtocol: customProviderWireProtocolForSave(a, value.wireProtocol, defaultWireFor(a)),
+        headers: Object.fromEntries(value.headers.filter(h => h.name.trim()).map(h => [h.name.trim(), h.value])),
+        ...(value.requestPath ? { requestPath: value.requestPath } : {}),
+        ...(value.modelsUrl.trim() ? { modelsUrl: value.modelsUrl.trim() } : {}),
+        ...(value.catalogPresetId ? { catalogPresetId: value.catalogPresetId } : {}),
+        ...(value.piCatalogProviderId ? { piCatalogProviderId: value.piCatalogProviderId } : {}),
+        ...(value.imageApi ? { imageApi: value.imageApi } : {}),
+        ...(value.videoApi ? { videoApi: value.videoApi } : {}),
+        ...(a === 'codex' && value.supportsImageGeneration && canRuntimeUseNativeImageGeneration(value) ? { supportsImageGeneration: true } : {}),
+      };
+    }
+    const runtime = preset.runtimes[agent]!;
+    const bound = { ...preset, authMethod: authModeRef.current === 'none' ? 'none' as const : 'apiKey' as const,
+      runtimes: { [agent]: { ...runtime,
+        headers: { ...runtime.headers, ...runtimes[agent]?.headers },
+        ...(fields.requestPath ? { requestPath: fields.requestPath } : {}),
+        ...(fields.modelsUrl.trim() ? { modelsUrl: fields.modelsUrl.trim() } : {}),
+        ...(runtimes[agent]?.supportsImageGeneration ? { supportsImageGeneration: true } : {}),
+        ...(fields.wireProtocol !== defaultWireFor(agent) || runtimes[agent]?.supportsImageGeneration ? { wireProtocol: fields.wireProtocol } : {}),
+      } } };
+    // The cache is settled before announcing a match; no credentials enter saved detection data.
+    const cache = discoveryCache.current.get(agent);
+    void (cache?.signature === context.signature ? cache.promise : Promise.resolve(undefined)).then(catalog => {
+      if (detectionContext.current.signature !== context.signature || savingRef.current || childLayerRef.current || runtimeFillRef.current) return;
+      context.onDetected?.({ preset: bound, agent, apiKey: fields.apiKey, keys, catalog,
+        config: { id: 'draft', name: context.name, auth: { method: bound.authMethod }, runtimes } });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (editing || !onDetected || authMode === 'oauth' || saving || !dialog.open) return;
+    let live = true;
+    let jump: ReturnType<typeof setTimeout> | undefined;
+    // Correlation only, scoped to this renderer; randomUUID requires a secure context.
+    const requestId = `detect-${Date.now()}-${++detectionRequestSequence}`;
+    const agent = activeTab;
+    const fields = rt[agent];
+    const signature = detectionSignature;
+    const previousSignature = previousDetectionSignatures.current.get(agent);
+    previousDetectionSignatures.current.set(agent, signature);
+    if (previousSignature && previousSignature !== signature) {
+      setRtSynced(prev => ({ ...prev, [agent]: { ...prev[agent], models: prev[agent].models.map(model => {
+        const { discoveredMetadata: _metadata, discoveredCost: _cost, ...userFields } = model;
+        return userFields;
+      }) } }));
+    }
+    setDetection(null);
+    const timer = setTimeout(() => {
+      if (modelFetchInFlightRef.current || !fields.baseUrl.trim() || !areProviderRequestUrlsAllowed(authMode, fields.baseUrl)) return;
+      if (draft?.catalog && discoveryCache.current.get(agent)?.signature === signature) {
+        setDetection({ signature });
+        return;
+      }
+      setDetection({ signature, pending: true });
+      const all = [...presets, ...Object.values(OFFICIAL_API_PRESETS).filter(p => !presets.some(existing => existing.id === p.id))];
+      const official = matchOfficialProviders(fields.baseUrl.trim(), all);
+      const headers = Object.fromEntries(fields.headers.filter(h => h.name.trim()).map(h => [h.name.trim(), h.value]));
+      const spec = { agent, baseUrl: fields.baseUrl.trim(), apiKey: fields.apiKey.trim() || null,
+        authMethod: authMode, headers, wireProtocol: fields.wireProtocol };
+      const work = (async () => {
+        if (official.length) {
+          const preset = official.length === 1 ? bindDetectedProvider(official[0], agent, spec.baseUrl) : undefined;
+          if (!preset) return { preset, ambiguous: official.length > 1, catalog: undefined };
+          const runtime = preset.runtimes[agent]!;
+          const catalog = await window.electronAPI.maker.fetchProviderModels({ ...spec,
+            allowEmpty: true, redirect: 'error',
+            baseUrl: runtime.baseUrl, modelsUrl: fields.modelsUrl.trim() || runtime.modelsUrl, wireProtocol: runtime.wireProtocol ?? defaultWireFor(agent),
+            headers: { ...runtime.headers, ...headers } });
+          return { preset, catalog };
+        }
+        const result = await window.electronAPI.maker.detectProvider?.({ ...spec, requestId });
+        const preset = result?.candidates.length === 1 ? all.find(p => p.id === result.candidates[0]) : undefined;
+        return { preset: preset && bindDetectedProvider(preset, agent, spec.baseUrl), catalog: result?.catalog, ambiguous: result?.reason === 'conflict' };
+      })().catch(() => ({ preset: undefined, catalog: undefined, ambiguous: false }));
+      discoveryCache.current.set(agent, { signature, promise: work.then(r => r.catalog ?? { ok: false }) });
+      void work.then(({ preset, catalog, ambiguous }) => {
+        if (!live || detectionContext.current.signature !== signature) return;
+        if (catalog?.ok && catalog.models) {
+          const first = !importedOnce.current.has(agent);
+          importedOnce.current.add(agent);
+          if (first) setRtSynced(prev => ({ ...prev, [agent]: { ...prev[agent], models: [
+            ...prev[agent].models.filter(m => m.id.trim()),
+            ...catalog.models!.filter(m => !prev[agent].models.some(row => row.id === m.id) && isAgentSelectableModel({ id: m.id, mode: m.discoveredMetadata?.mode })).map(m => ({
+              id: m.id, name: m.name, discoveredMetadata: m.discoveredMetadata ?? { contextWindow: m.contextWindow }, discoveredCost: m.discoveredCost,
+            })),
+          ] } }));
+        }
+        setDetection({ signature, preset, ambiguous, code: catalog && !catalog.ok ? (catalog.code ?? 'UNKNOWN') : undefined });
+        if (preset && !detectionSuppressed.current) jump = setTimeout(() => {
+          if (live && !detectionSuppressed.current && detectionContext.current.signature === signature) enterDetectedProvider(preset);
+        }, 1200);
+      });
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      clearTimeout(jump);
+      void window.electronAPI.maker.detectProvider?.({ requestId, cancel: true }).catch(() => undefined);
+    };
+    // A model selection/name change is not a new connection or a reason to restart detection.
+  }, [detectionSignature, presets, editing, authMode, saving, dialog.open, !!onDetected, enterDetectedProvider, setRtSynced]);
 
   // 编辑态：回填各已配置 runtime 的已存明文密钥（用户本机自己的 key）——
   // 让密钥框「能看」(eye 显形 / 可核对)，而非空白遮罩；据此点亮「已保存」徽标。
@@ -1369,7 +1507,11 @@ export function ProviderConnectionDialog({
     modelFetchInFlightRef.current = true;
     setFetchingModels((prev) => ({ ...prev, [agent]: true }));
     try {
-      const result = await window.electronAPI.maker.fetchProviderModels({
+      const cached = !editing ? discoveryCache.current.get(agent) : undefined;
+      const cachedResult = cached?.signature === `${agent}:${requestSig}` ? await cached.promise : undefined;
+      if (providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !== requestSig) return;
+      const result = cachedResult?.ok ? cachedResult : await window.electronAPI.maker.fetchProviderModels({
+        allowEmpty: !editing,
         agent,
         baseUrl,
         authMethod: authMode,
@@ -1383,7 +1525,8 @@ export function ProviderConnectionDialog({
         providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !== requestSig
       )
         return; // 过期响应，静默丢弃
-      if (result.ok && result.models && result.models.length > 0) {
+      if (result.ok && result.models) {
+        if (!editing) discoveryCache.current.set(agent, { signature: `${agent}:${requestSig}`, promise: Promise.resolve(result) });
         // 用**响应到达时**的最新表单行构建弹层（rtRef），不是请求发出时的 rf 快照。
         const current = rtRef.current[agent].models
           .map((m) => ({
@@ -2104,6 +2247,18 @@ export function ProviderConnectionDialog({
             </div>
           )}
 
+          {!editing && detection?.signature === detectionSignature && (
+            <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-default)] p-3 text-13 text-[var(--text-secondary)]" role="status">
+              <span>{detection.pending ? t('settings.providers.detection.pending') : detection.preset
+                ? t('settings.providers.detection.matched', { name: presetDisplayName(detection.preset, i18n.language) })
+                : t(detection.ambiguous ? 'settings.providers.detection.ambiguous' : 'settings.providers.detection.custom')}</span>
+              {detection.code && <span className="text-[var(--error-fg)]">{t(`providerError.${detection.code}`)}</span>}
+              {detection.preset && <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" onClick={() => enterDetectedProvider(detection.preset!)}>{t('settings.providers.detection.configure')}</Button>
+                <Button type="button" variant="secondary" tone="quiet" onClick={() => { detectionSuppressed.current = true; setDetection(null); }}>{t('settings.providers.detection.keepCustom')}</Button>
+              </div>}
+            </div>
+          )}
           {/* 显示名称（共享） */}
           <div className="flex flex-col gap-[7px]">
             <FormField
@@ -2237,7 +2392,7 @@ export function ProviderConnectionDialog({
               })}
             />
             <span className="text-12 leading-snug text-[var(--text-tertiary)]">
-              {templateBound ? (boundPreset ? presetDisplayName(boundPreset, i18n.language) : name) : t(TAB_META[activeTab].helpKey)}
+              {templateBound ? (boundPreset ? presetDisplayName(boundPreset, i18n.language) : name) : t(!editing && onDetected ? 'settings.providers.detection.hint' : TAB_META[activeTab].helpKey)}
             </span>
           </div>
 
@@ -2249,7 +2404,7 @@ export function ProviderConnectionDialog({
               border: '1px solid var(--settings-theme-card-border)',
             }}
           >
-            {!templateBound && (
+            {(editing || !onDetected) && !templateBound && (
               <div className="flex flex-col gap-[7px]">
                 <FieldLabel>{t('settings.providers.custom.fields.wireProtocol')}</FieldLabel>
                 <div className="flex flex-wrap gap-1.5">
@@ -2337,7 +2492,7 @@ export function ProviderConnectionDialog({
             </div>
 
             {/* 精确推理路径：给非标准兼容端点使用；留空仍按所选协议推导。 */}
-            {!templateBound && activeTab !== 'pi' && f.wireProtocol !== 'google-generative-ai' && (
+            {(editing || !onDetected) && !templateBound && activeTab !== 'pi' && f.wireProtocol !== 'google-generative-ai' && (
               <div className="flex flex-col gap-[7px]">
                 <FormField
                   id={fieldId(`${activeTab}:requestPath`)}

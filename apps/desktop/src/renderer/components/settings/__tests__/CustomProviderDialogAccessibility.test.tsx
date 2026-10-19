@@ -2081,3 +2081,99 @@ it('main provider form contains Tab and blocks dismissal only during the actual 
   await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
   expect(screen.queryByRole('dialog')).toBeNull();
 });
+
+// New scheme-2 behavior: real dialog, fake IPC and clocks. Existing accessibility tests
+// do not cover delayed navigation or a previous connection's late model result.
+describe('new-connection identification', () => {
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+  const preset = { id: 'deepseek', name: 'DeepSeek', runtimes: { pi: { baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-chat' as const, models: [] } } };
+  async function openIdentification() {
+    vi.useFakeTimers();
+    const fetchProviderModels = vi.fn(async () => ({ ok: true, models: [{ id: 'private-model', name: 'Model' }] }));
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [preset] })), fetchProviderModels,
+      detectProvider: vi.fn(async () => ({ candidates: [], reason: 'insufficient_evidence', catalog: { ok: true, models: [{ id: 'custom-model', name: 'Custom' }] } })),
+    });
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog focusAgent="pi" onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await act(async () => {});
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://api.deepseek.com' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-key' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    return { onDetected, fetchProviderModels };
+  }
+  it('waits 1.2 seconds and hands off the URL, key and selected models without saving', async () => {
+    const { onDetected, fetchProviderModels } = await openIdentification();
+    expect(onDetected).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1199); });
+    expect(onDetected).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(onDetected).toHaveBeenCalledOnce();
+    expect(onDetected.mock.calls[0][0]).toMatchObject({ apiKey: 'fake-key', agent: 'pi', config: { runtimes: { pi: { baseUrl: 'https://api.deepseek.com', models: [{ id: 'private-model' }] } } } });
+    expect(fetchProviderModels).toHaveBeenCalledOnce();
+    expect(customProviderMocks.createCustomProvider).not.toHaveBeenCalled();
+  });
+  it('keeps the user in custom settings after cancellation, including later input edits', async () => {
+    const { onDetected } = await openIdentification();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'another-fake-key' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(onDetected).not.toHaveBeenCalled();
+  });
+  it('carries an explicit Codex image-generation option into the identified preset', async () => {
+    vi.useFakeTimers();
+    const codexPreset = { ...preset, runtimes: { codex: { ...preset.runtimes.pi, wireProtocol: 'openai-responses' as const } } };
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [codexPreset] })),
+      fetchProviderModels: vi.fn(async () => ({ ok: true, models: [{ id: 'responses-model', name: 'Responses model' }] })),
+    });
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog focusAgent="codex" onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.fields.runtimeAdvanced' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'settings.providers.custom.fields.runtimeSupportsImageGeneration' }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://api.deepseek.com' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-key' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).toHaveBeenCalledOnce();
+    expect(onDetected.mock.calls[0][0].preset.runtimes.codex).toMatchObject({ supportsImageGeneration: true, wireProtocol: 'openai-responses' });
+    expect(onDetected.mock.calls[0][0].config.runtimes.codex.supportsImageGeneration).toBe(true);
+  });
+  it('reuses the directory after returning to custom without restarting detection', async () => {
+    const { onDetected, fetchProviderModels } = await openIdentification();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    const draft = onDetected.mock.calls[0][0];
+    cleanup();
+    fetchProviderModels.mockClear();
+    const onReturnDetection = vi.fn();
+    render(<ProviderConnectionDialog draft={draft} focusAgent="pi" onDetected={onReturnDetection} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.fetch.button' }));
+    await act(async () => {});
+    expect(fetchProviderModels).not.toHaveBeenCalled();
+    expect(onReturnDetection).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('dialog')).toHaveLength(2);
+  });
+  it('does not navigate over an open model picker and opening it reuses the successful directory', async () => {
+    const { onDetected, fetchProviderModels } = await openIdentification();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.fetch.button' }));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    expect(onDetected).not.toHaveBeenCalled();
+    expect(fetchProviderModels).toHaveBeenCalledOnce();
+  });
+  it('ignores a late response after the connection changes', async () => {
+    const { onDetected, fetchProviderModels } = await openIdentification();
+    let finish!: (value: { ok: true; models: { id: string; name: string }[] }) => void;
+    fetchProviderModels.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const key = screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder');
+    fireEvent.change(key, { target: { value: 'old-fake-key' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    fireEvent.change(key, { target: { value: 'new-fake-key' } });
+    await act(async () => { finish({ ok: true, models: [{ id: 'obsolete-model', name: 'Obsolete' }] }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).toHaveBeenCalledOnce();
+    expect(onDetected.mock.calls[0][0].apiKey).toBe('new-fake-key');
+    expect(onDetected.mock.calls[0][0].config.runtimes.pi.models.map((m: { id: string }) => m.id)).not.toContain('obsolete-model');
+  });
+});

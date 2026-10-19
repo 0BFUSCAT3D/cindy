@@ -3737,7 +3737,16 @@
         "pending": "認証情報を準備中",
         "unavailable": "一時的に利用できません"
       },
-      "claudeAccountRetired": "Cindy では、この旧式の Claude 接続を使ったサブスクリプションへのログインに対応していません。Claude アカウントとサブスクリプションには影響ありません。「Claude Code でログイン」から接続してください。"
+      "claudeAccountRetired": "Cindy では、この旧式の Claude 接続を使ったサブスクリプションへのログインに対応していません。Claude アカウントとサブスクリプションには影響ありません。「Claude Code でログイン」から接続してください。",
+      "detection": {
+        "hint": "URL と API キーを入力するとプロバイダーを識別します。保存後、接続の編集でプロトコルを変更できます。",
+        "pending": "プロバイダーを識別中…",
+        "matched": "{{name}} として識別されました",
+        "ambiguous": "複数の設定が一致しました。カスタム設定を続けるか、プロバイダーを選択してください。",
+        "custom": "カスタム設定を続けます。モデル一覧を取得するか、手動で追加できます。",
+        "configure": "設定に進む",
+        "keepCustom": "カスタム設定を続ける"
+      }
     },
     "experimental": {
       "title": "実験的機能",

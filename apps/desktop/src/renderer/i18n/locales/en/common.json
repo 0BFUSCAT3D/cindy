@@ -3768,7 +3768,16 @@
         "pending": "Preparing credentials",
         "unavailable": "Temporarily unavailable"
       },
-      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect."
+      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect.",
+      "detection": {
+        "hint": "Enter the URL and API key to identify the provider. Protocol settings remain available when editing the saved connection.",
+        "pending": "Identifying provider…",
+        "matched": "Identified as {{name}}",
+        "ambiguous": "Multiple configurations match. Continue with custom settings or choose a provider.",
+        "custom": "Continue with custom settings. You can fetch models or add them manually.",
+        "configure": "Configure provider",
+        "keepCustom": "Continue with custom settings"
+      }
     },
     "experimental": {
       "title": "Experimental",

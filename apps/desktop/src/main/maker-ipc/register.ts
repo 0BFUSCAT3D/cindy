@@ -1125,6 +1125,7 @@ import { refreshOpenAiMediaModels } from '../maker-host/model-discovery/openai-m
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
 import { fetchProviderModels, fetchSavedOAuthProviderModels } from '../maker-host/provider-model-fetch.js';
+import { detectProviderDeployment } from '../maker-host/provider-detection.js';
 import {
   beginProviderRouteMutation,
   setPendingCredentialSwitchReader,
@@ -6781,6 +6782,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getProviderOrder: () => readProviderOrder(),
     listPresets: () => getActiveCatalog().presets ?? [],
     testConnection: (input) => testProviderConnection(input),
+    detectProvider: detectProviderDeployment,
     fetchModels: async (spec) => {
       if (spec.savedProviderId && subscriptionAccountKind(spec.savedProviderId)) {
         return { ok: await refreshSubscriptionAccountModels(spec.savedProviderId), models: [] };

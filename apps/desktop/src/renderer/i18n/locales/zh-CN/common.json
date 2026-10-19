@@ -3737,7 +3737,16 @@
         "pending": "凭据准备中",
         "unavailable": "暂时不可用"
       },
-      "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅"
+      "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅",
+      "detection": {
+        "hint": "填写地址和 API 密钥后自动识别供应商。保存后可在编辑连接中调整协议。",
+        "pending": "正在识别供应商…",
+        "matched": "已识别为 {{name}}",
+        "ambiguous": "匹配到多个配置，请继续自定义或选择供应商。",
+        "custom": "继续自定义配置，可获取模型列表或手动添加。",
+        "configure": "前往配置",
+        "keepCustom": "继续自定义"
+      }
     },
     "experimental": {
       "title": "实验性功能",
