@@ -530,6 +530,7 @@ export function useOrcaWorkerForm(params: {
 
   /** 切 Agent:带出该 Agent 上次的模型 / 推理强度 / Fast(对齐桌面)。 */
   const changeAgent = useCallback((agent: OrcaWorkerAgentKind) => {
+    if (formRef.current.agent === agent) return;
     touchedRef.current = true;
     agentChosenRef.current = true;
     const remembered = prefsRef.current.agents[agent];
