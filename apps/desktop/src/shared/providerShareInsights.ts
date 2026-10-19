@@ -151,6 +151,7 @@ export function parseProviderShareInsights(raw: unknown): ProviderShareInsights 
       value[key] = null;
       value.status[key] = 'disabled';
     } else if (value.status[key] !== 'ready') value[key] = null;
+    else if (value[key] === null) return null;
   }
   return value;
 }

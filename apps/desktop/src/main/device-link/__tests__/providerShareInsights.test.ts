@@ -414,6 +414,10 @@ describe('provider share insights', () => {
     const view = await read('peer', request);
     expect(parseProviderShareInsights({ ...view, version: 2 })).toBeNull();
     expect(parseProviderShareInsights({ version: 1, capabilities: view.capabilities })).toBeNull();
+    // #4317520064：ready+null 曾让已展开明细永久加载，原覆盖没有状态/数据矛盾。
+    for (const capability of ['quota', 'usage'] as const) {
+      expect(parseProviderShareInsights({ ...view, [capability]: null })).toBeNull();
+    }
     const parsed = parseProviderShareInsights({
       ...view,
       secret: 'no',
