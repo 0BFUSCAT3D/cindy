@@ -172,7 +172,6 @@ const REMOTE_AUTH_ERROR_FALLBACK_MS = 30_000;
 const ISLAND_ENTRY_ALERT_TTL_MS = 60_000;
 const MAX_ISLAND_ENTRY_SESSION_ID_LENGTH = 128;
 const REMOTE_COMPANION_ARTWORK_RETRY_MS = 60_000;
-const COMPANION_READ_MAX_ATTEMPTS = 3;
 const MAX_ISLAND_ENTRY_ID_LENGTH = 32;
 
 interface AgentIslandSessionMeta {
@@ -1460,19 +1459,19 @@ export class AgentIslandService {
    *  - A read is superseded (undefined) when a newer read for the same Session started, so an
    *    older, slower one never overwrites it.
    *  - A change that lands while a read is in flight (even before the Session's companion is
-   *    known, so no refresh could target it) bumps the epoch; that read is repeated.
+   *    known, so no refresh could target it) bumps the epoch; that read is repeated until a read
+   *    finishes with no change during it. Each repeat needs a new user edit, so this is not a
+   *    loop that can spin on its own, and giving up would leave an older identity on the card.
    */
   private async readCompanionIdentityFresh(sessionId: string): Promise<AgentIslandCompanionIdentity | null | undefined> {
     const seq = (this.companionReadSeq.get(sessionId) ?? 0) + 1;
     this.companionReadSeq.set(sessionId, seq);
-    let identity: AgentIslandCompanionIdentity | null = null;
-    for (let attempt = 0; attempt < COMPANION_READ_MAX_ATTEMPTS; attempt += 1) {
+    for (;;) {
       const epoch = this.companionChangeEpoch;
-      identity = await readAgentIslandCompanion(sessionId);
+      const identity = await readAgentIslandCompanion(sessionId);
       if (this.companionReadSeq.get(sessionId) !== seq) return undefined;
       if (epoch === this.companionChangeEpoch) return identity;
     }
-    return identity;
   }
 
   private refreshCompanionSessions(matches: (identity: AgentIslandCompanionIdentity) => boolean): void {

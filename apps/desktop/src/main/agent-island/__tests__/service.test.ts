@@ -1832,10 +1832,18 @@ describe('AgentIslandService native publishing', () => {
     service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir: '/home' }, 'hi');
     await vi.waitFor(() => expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1));
 
+    // Several edits during one slow first read: only a read that saw none of them may commit.
     service.handleCompanionProfileChanged('b1');
+    service.handleCompanionProfileChanged('b1');
+    service.handleCompanionProfileChanged('b1');
+    let releaseSecond!: (identity: AgentIslandCompanionIdentity) => void;
+    mocks.readAgentIslandCompanion.mockImplementationOnce(() => new Promise((resolve) => { releaseSecond = resolve; }));
     releaseFirst(named('旧名字'));
+    await vi.waitFor(() => expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(2));
+    service.handleCompanionProfileChanged('b1');
+    releaseSecond(named('中间名字'));
     await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.title).toBe('新名字'));
-    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(2);
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(3);
   });
 
   it('retries a remote companion avatar after a failed read instead of keeping the glyph forever', async () => {
