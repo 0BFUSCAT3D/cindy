@@ -251,7 +251,16 @@ it('resets identity-bound row state before a recycled cell displays another item
     expect(source).toContain('const [failedLocalUris, setFailedLocalUris] = usePreviewState<readonly string[]>([]);');
     expect(source.match(/const \[intrinsicSize, setIntrinsicSize\] = usePreviewState</g)).toHaveLength(2);
     expect(source.match(/usePreviewState=\{usePreviewState\}/g)).toHaveLength(2);
-    expect(source).not.toContain('usePreviewState={useState}');
+    // Rich answers also live outside LegendList. Their ordinary state is safe
+    // only behind a message/source identity key; keep the original list contract
+    // for every other preview. Regression: PR #6373 used unkeyed React state.
+    const richMediaStart = source.indexOf('function RichAnswerMedia(');
+    expect(richMediaStart).toBeGreaterThan(-1);
+    expect(source.slice(0, richMediaStart)).not.toContain('usePreviewState={useState}');
+    const richMediaSource = source.slice(richMediaStart);
+    expect(richMediaSource).toContain('const previewKey = JSON.stringify([origin?.deviceId, origin?.sessionId, body.richStateKey ?? body.markdownImageCacheKey, node.id, url]);');
+    expect(richMediaSource).toContain('<MediaPreview key={previewKey}');
+    expect(richMediaSource).toContain('usePreviewState={useState}');
     const groupSource = readFileSync(
       resolve(process.cwd(), 'src/session/BotGroupMessageAttachments.tsx'), 'utf8',
     );
@@ -260,10 +269,14 @@ it('resets identity-bound row state before a recycled cell displays another item
     expect(expandedStateSource).toContain('blockId ? store.subscribe(listener) : () => {}');
   });
 
-it('measures every mounted shareable message, including expanded group children', () => {
+it('measures mounted shareable messages for manual sharing sticky selection', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const readerStart = source.indexOf('const readActuallyVisibleShareableMessageIds');
-    const readerEnd = source.indexOf('useEffect(() => {', readerStart);
+    // Native measurements still drive manual sharing's pinned checkbox, including
+    // expanded group children. Screenshot-driven automatic selection was removed.
+    const readerStart = source.indexOf('const runStickyShareCheck');
+    const readerEnd = source.indexOf('const scheduleStickyShareCheck', readerStart);
+    expect(readerStart).toBeGreaterThan(-1);
+    expect(readerEnd).toBeGreaterThan(readerStart);
     const readerSource = source.slice(readerStart, readerEnd);
 
     expect(source).toContain('shareableMessageViewsRef = useRef(new Map<string, View>())');

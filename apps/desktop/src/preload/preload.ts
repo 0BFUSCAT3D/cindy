@@ -810,6 +810,7 @@ const fanOutBotGroupChanged = createIpcFanOut('maker:bot-group:changed');
 const fanOutCompanionCloudChanged = createIpcFanOut('maker:companion-cloud:changed');
 const fanOutBotProfileChanged = createIpcFanOut('maker:bot-profile:changed');
 const fanOutBotWorkbenchChanged = createIpcFanOut('maker:bot-workbench:changed');
+const fanOutBotAutonomyChanged = createIpcFanOut('maker:bot-autonomy:changed');
 const fanOutBotLifecycleChanged = createIpcFanOut('maker:bot-lifecycle:changed');
 const fanOutMakerPiPackagesChanged = createIpcFanOut('maker:pi-packages:changed');
 const fanOutMakerUsageTodaySpend = createIpcFanOut('usage:today-spend-changed'); // Claude USD
@@ -5632,6 +5633,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** interrupted-turn-resume:「疑似中断」(startedAt > endedAt)的 active 会话 id。 */
       interruptedPending: (): Promise<string[]> =>
         ipcRenderer.invoke('local-db:sessions:interrupted-pending'),
+      /** 启动「继续上次中断的任务」弹窗:中断会话 + 中断时间 + 中断前正在做的事。 */
+      interruptedResumeCandidates: (): Promise<
+        { sessionId: string; interruptedAt: number; activity: string | null }[]
+      > => ipcRenderer.invoke('local-db:sessions:interrupted-resume-candidates'),
       /** 红点派生的周期性重算源:尾部停在未 dismissed 错误行的 active 会话 id。
        *  与 interruptedPending 分开消费——后者只在启动首拉一次(它对正在跑的 turn
        *  天然成立,周期性重跑会把运行中的会话误判为中断)。 */
@@ -5693,16 +5698,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       workbench: {
         get: (botId: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:get', botId),
-        addDirectory: (botId: string, path: string): Promise<unknown> =>
-          ipcRenderer.invoke('local-db:bots:workbench:add-directory', botId, path),
-        removeDirectory: (botId: string, path: string, deviceId?: string): Promise<void> =>
-          ipcRenderer.invoke('local-db:bots:workbench:remove-directory', botId, path, deviceId),
         readTask: (botId: string, taskId: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:read-task', botId, taskId),
-        candidates: (botId: string): Promise<unknown> =>
-          ipcRenderer.invoke('local-db:bots:workbench:candidates', botId),
         followScopes: (): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:follow-scopes'),
+      },
+      /** 伙伴自主跟进：工作台「一眼」与「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
+      autonomy: {
+        glance: (botId: string): Promise<import('../shared/botAutonomy').BotGlance> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId),
+        getSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:settings-get'),
+        setSettings: (
+          patch: import('../shared/botAutonomy').BotAutonomySettings,
+        ): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:settings-set', patch),
+        resetSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:settings-reset'),
       },
       listSkills: (botId: string): Promise<import('../shared/botSkill').BotSkillSummary[]> =>
         ipcRenderer.invoke('local-db:bots:skills:list', botId),
@@ -6197,6 +6209,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:companion-avatar:resolve', request),
     onBotProfileChanged: fanOutBotProfileChanged,
     onBotWorkbenchChanged: fanOutBotWorkbenchChanged,
+    onBotAutonomyChanged: fanOutBotAutonomyChanged,
     runBotLifecycleAction: (
       request: import('../shared/botLifecycle').BotLifecycleActionRequest,
     ): Promise<import('../shared/botLifecycle').BotLifecycleActionResult> =>

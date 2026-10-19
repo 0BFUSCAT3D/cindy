@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { FileServiceRpcError } from '@cindy/remote-file-service/client';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 const mocks = vi.hoisted(() => ({
   handle: vi.fn(),
   trusted: vi.fn(),
@@ -61,13 +62,16 @@ it('rejects an untrusted guest before any filesystem or remote operation', async
   await expect(mocks.handle.mock.calls[0][1]({}, args)).rejects.toThrow('PERMISSION_DENIED');
   expect(stat).not.toHaveBeenCalled();
 });
-it('returns an actionable typed error when the remote cannot read files', async () => {
+it.each(['remote', sharedTaskHostPeer('shared', 'host')])('requires a remote read for %s even if a guest has old cached bytes', async (deviceId) => {
   const stat = vi.fn().mockRejectedValue(new Error('METHOD_NOT_FOUND'));
-  registerHtmlPreviewIpc({ stat, read: vi.fn() });
-  await expect(mocks.handle.mock.calls[0][1]({}, args)).rejects.toMatchObject({
+  const cached = vi.fn(async () => deviceId === 'remote' ? null : '/stale-guest.html');
+  const source = { ...args, origin: { kind: 'device', deviceId } };
+  registerHtmlPreviewIpc({ stat, read: vi.fn(), cached });
+  await expect(mocks.handle.mock.calls[0][1]({}, source)).rejects.toMatchObject({
     code: 'HTML_PREVIEW_UNSUPPORTED',
   });
-  expect(stat).toHaveBeenCalledExactlyOnceWith(args, '/remote/preview', 'index.html', expect.any(AbortSignal));
+  expect(stat).toHaveBeenCalledExactlyOnceWith(source, '/remote/preview', 'index.html', expect.any(AbortSignal));
+  if (deviceId !== 'remote') expect(cached).not.toHaveBeenCalled();
 });
 
 // Unit tier, fake clock: the real metadata reader must survive transient
@@ -214,6 +218,65 @@ it('opens a preview before downloading even a large entry file', async () => {
   });
   await expect(mocks.handle.mock.calls[0][1]({}, args)).resolves.toMatchObject({ ok: true });
   expect(read).not.toHaveBeenCalled();
+});
+it.each([1, 2])('serves cached HTML while stat is blocked, then refreshes with mtime %s', async (mtimeMs) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-swr-test-'));
+  let reply!: (value: any) => void;
+  const metadata = { relPath: 'index.html', type: 'file' as const, size: 3, mtimeMs: 1 };
+  const stat = vi.fn(async () => metadata);
+  let cached: string | null = null;
+  const read = vi.fn(async () => { cached = path.join(dir, 'old.html'); return cached; });
+  try {
+    await fs.writeFile(path.join(dir, 'old.html'), 'old');
+    await fs.writeFile(path.join(dir, 'new.html'), 'new');
+    registerHtmlPreviewIpc({ stat, read, cached: async () => cached });
+    const open = mocks.handle.mock.calls[0][1];
+    const first = await open({}, args);
+    expect(await (await readResource(first.url, '/index.html')).text()).toContain('old');
+    stat.mockImplementationOnce(() => new Promise(resolve => { reply = resolve; }));
+    const second = await open({}, args);
+    expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
+    expect(read).toHaveBeenCalledOnce();
+    read.mockImplementationOnce(async () => { cached = path.join(dir, 'new.html'); return cached; });
+    reply({ ...metadata, mtimeMs });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const third = await open({}, args);
+    expect(await (await readResource(third.url, '/index.html')).text()).toContain('new');
+    expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+// #6292 + #6288 integration, unit tier: previous cancellation cases only cover
+// uncached preparation. Cancel a cached preview during a stalled background stat;
+// its transport must abort and a later open must be able to revalidate again.
+it('releases a cancelled cached refresh so the next preview can revalidate', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-refresh-cancel-'));
+  const metadata = { relPath: 'index.html', type: 'file' as const, size: 3, mtimeMs: 1 };
+  const stat = vi.fn(async (_args, _root, _rel, _signal: AbortSignal) => metadata);
+  let cached: string | null = null;
+  const read = vi.fn(async () => { cached = path.join(dir, 'old.html'); return cached; });
+  try {
+    await fs.writeFile(path.join(dir, 'old.html'), 'old');
+    registerHtmlPreviewIpc({ stat, read, cached: async () => cached });
+    const open = mocks.handle.mock.calls[0][1];
+    const cancel = mocks.handle.mock.calls[1][1];
+    const first = await open({}, args);
+    expect(await (await readResource(first.url, '/index.html')).text()).toContain('old');
+    let refreshSignal!: AbortSignal;
+    stat.mockImplementationOnce((_args, _root, _rel, signal) => {
+      refreshSignal = signal;
+      return new Promise(() => {});
+    });
+    const sender = Object.assign(new EventEmitter(), { id: 20 });
+    const second = await open({ sender }, { ...args, requestId: 'cached-preview' });
+    expect(await (await readResource(second.url, '/index.html')).text()).toContain('old');
+    await cancel({ sender }, 'cached-preview');
+    expect(refreshSignal.aborted).toBe(true);
+    const callsBeforeReopen = stat.mock.calls.length;
+    const third = await open({}, args);
+    expect(await (await readResource(third.url, '/index.html')).text()).toContain('old');
+    expect(stat.mock.calls.length).toBeGreaterThan(callsBeforeReopen);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 it('passes the captured owner guard through reference-free cache ingestion', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-preview-owner-test-'));

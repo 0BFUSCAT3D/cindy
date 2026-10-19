@@ -214,15 +214,19 @@ describe("composer attachment tray overlay foreground", () => {
       uploading,
       delivered,
       showTray,
+      pendingUri,
     }: {
       uploading: boolean;
       delivered: boolean;
       showTray: boolean;
+      pendingUri: string;
     }) {
       const props = {
         attachments: delivered ? [attachment("done")] : [],
         previews: { done: "file:///durable.jpg" },
-        pendingUploads: uploading ? [pending("uploading")] : [],
+        pendingUploads: uploading
+          ? [{ ...pending("uploading"), previewUri: pendingUri }]
+          : [],
         getUploadedAttachmentId: (id: string) =>
           delivered && id === "uploading" ? "done" : undefined,
       };
@@ -242,13 +246,19 @@ describe("composer attachment tray overlay foreground", () => {
         </>
       );
     }
-    const render = (uploading: boolean, delivered = false, showTray = true) =>
+    const render = (
+      uploading: boolean,
+      delivered = false,
+      showTray = true,
+      pendingUri = "file:///uploading.jpg",
+    ) =>
       act(() =>
         root.render(
           <Composer
             uploading={uploading}
             delivered={delivered}
             showTray={showTray}
+            pendingUri={pendingUri}
           />,
         ),
       );
@@ -265,6 +275,14 @@ describe("composer attachment tray overlay foreground", () => {
     expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
       "file:///uploading.jpg",
     );
+    // The same open viewer upgrades from the picker thumbnail before PUT finishes.
+    theme.files.add("file:///original.jpg");
+    render(true, false, false, "file:///original.jpg");
+    expect(host.querySelector('[data-testid="lightbox"]')?.textContent).toBe(
+      "file:///original.jpg",
+    );
+    expect(theme.mounts).toBe(1);
+    theme.files.delete("file:///original.jpg");
     theme.files.delete("file:///uploading.jpg");
     theme.files.add("file:///durable.jpg");
     // onUploaded publishes the delivered attachment before the controller removes pending.

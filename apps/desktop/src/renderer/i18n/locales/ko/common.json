@@ -450,6 +450,20 @@
       "rejectedBody": "{{name}}님이 {{provider}} 공유를 거절했습니다",
       "reshareTitle": "새 사용 요청",
       "reshareBody": "{{name}}님이 {{owner}}님의 제공자 그룹을 통해 내가 공유한 {{provider}}을(를) 사용하려고 합니다"
+    },
+    "runLimits": {
+      "title": "원격 세션 수 제한",
+      "description": "내 다른 컴퓨터와 공유받은 기기를 포함해 이 컴퓨터의 모든 제공자에 적용됩니다. 응답이 끝나도 해제되지 않은 세션은 포함됩니다. 이 컴퓨터에서 직접 실행하는 세션은 제외됩니다.",
+      "perDevice": "연결된 기기당 최대 세션 수",
+      "total": "연결된 모든 기기의 총 최대 세션 수",
+      "invalid": "1~{{max}} 사이의 정수를 입력하세요. 기기당 한도는 전체 한도를 넘을 수 없습니다.",
+      "usage": "{{devices}}개 기기에서 {{used}} / {{total}}개 사용 중. 기기 한 대의 최대 사용 수는 {{largest}}개입니다.",
+      "applyHint": "저장 즉시 적용됩니다. 한도를 낮춰도 기존 세션은 중단되지 않고 새 세션만 제한됩니다. 그룹 중계는 직접 연결된 기기에 합산됩니다.",
+      "save": "저장",
+      "reset": "기본값 복원",
+      "saved": "원격 세션 수 제한을 저장했습니다",
+      "retry": "새로고침",
+      "loading": "불러오는 중…"
     }
   },
   "providerGroup": {
@@ -698,6 +712,9 @@
     "controlledByDevice": "{{name}}에서 데스크톱을 원격으로 제어 중",
     "viewedByDevice": "{{name}}에서 데스크톱을 원격으로 보는 중",
     "disconnect": "연결 끊기",
+    "disconnectChoiceDetail": "연결을 끊으면 이번 원격 데스크톱이 종료되며, 상대 기기는 나중에 다시 연결할 수 있습니다.",
+    "disconnectRevoke": "이 기기의 액세스 권한도 철회",
+    "disconnectRevokeHint": "철회하면 이 컴퓨터에 더 이상 연결할 수 없으며, 설정 → 원격 연결에서 복원할 수 있습니다.",
     "back": "뒤로",
     "connect": "연결",
     "connecting": "연결 중…",
@@ -1251,6 +1268,7 @@
     "tabs": {
       "storage": "저장 공간",
       "general": "일반",
+      "appearance": "외관",
       "billing": "사용량 및 결제",
       "usage": "사용 기록",
       "personalization": "개인화",
@@ -1577,6 +1595,7 @@
     "appearance": {
       "title": "외관",
       "modeLabel": "표시 모드",
+      "sidebarAndPanels": "사이드바 및 패널",
       "themeLabel": "테마",
       "themeAriaLabel": "테마 선택",
       "localBadge": "(로컬)",
@@ -1603,6 +1622,7 @@
       },
       "font": {
         "reset": "기본값으로 재설정",
+        "title": "글꼴",
         "defaultPreset": "기본값",
         "presets": "프리셋",
         "custom": "사용자 지정",
@@ -1641,8 +1661,12 @@
           "ui": "한글 글꼴은 또렷하고 읽기 쉬워요 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
         }
       },
-      "missingLightNotice": "{{name}} 테마는 라이트 변형을 제공하지 않아 다크 변형을 표시했습니다.",
-      "missingDarkNotice": "{{name}} 테마는 다크 변형을 제공하지 않아 라이트 변형을 표시했습니다.",
+      "singleVariant": {
+        "lightOnly": "라이트 전용",
+        "darkOnly": "다크 전용",
+        "lightNotice": "{{name}} 테마는 라이트 변형만 있어 표시 모드가 라이트로 고정됩니다. 다른 테마로 바꾸면 선택한 설정으로 돌아갑니다.",
+        "darkNotice": "{{name}} 테마는 다크 변형만 있어 표시 모드가 다크로 고정됩니다. 다른 테마로 바꾸면 선택한 설정으로 돌아갑니다."
+      },
       "theme": {
         "light": "라이트",
         "dark": "다크",
@@ -1682,31 +1706,18 @@
           "cindy-studio": "Cindy · 미래의 아틀리에",
           "cindy-dream": "Cindy · 꿈속 여행",
           "cindy-whisper": "Cindy · 속삭임",
-          "cindy-crimson": "Cindy · 진홍빛 세계",
           "cindy-night-glance": "Cindy · 밤의 눈길",
           "cindy-scarlet-stroll": "Cindy · 붉은 밤 산책",
           "cindy-neon": "Cindy · 네온 옆모습",
           "cindy-prism": "Cindy · 프리즘 조각",
-          "wheatfield-watch": "밀밭의 파수꾼",
-          "teacup-cat": "찻잔 속 검은 고양이",
-          "cloud-roaming": "구름 아래 여행",
           "night-launch": "밤하늘로의 비상",
-          "stardust-vortex": "별가루 소용돌이",
           "silent-orbits": "고요한 궤도",
           "dune-dawn": "모래 언덕의 새벽",
           "planet-dawn": "행성의 새벽",
-          "neon-valley": "네온 계곡",
-          "silent-circuit": "고요한 회로",
           "indigo-folds": "겹겹의 쪽빛",
-          "moon-solitude": "달을 바라보는 그림자",
           "dune-sphere": "모래 언덕의 구체",
           "ocean-clouds": "바다 위 흐르는 구름",
-          "blush-leaves": "연분홍 잎 그림자",
-          "white-wilderness": "하얀 들판의 홀로 여행",
           "rose-quartz": "장미 수정",
-          "silver-veins": "검은 바위의 은빛 결",
-          "dawn-arc": "새벽의 곡선",
-          "tidal-lines": "물결의 선",
           "custom": "사용자 지정 배경화면"
         },
         "visibilityLabel": "배경화면 표시 강도",
@@ -1735,7 +1746,7 @@
         "reset": "기본 레이아웃 복원",
         "resetSuccess": "기본 패널 레이아웃을 복원했습니다",
         "resetFailed": "패널 배치를 복원하지 못했습니다.",
-        "saved": "패널 위치를 저장했습니다. 설정 → 일반의 모양 섹션에서 기본 레이아웃으로 복원할 수 있습니다.",
+        "saved": "패널 위치를 저장했습니다. 설정 → 외관에서 기본 레이아웃으로 복원할 수 있습니다.",
         "saveFailed": "패널 위치를 저장하지 못했습니다."
       }
     },
@@ -4541,7 +4552,7 @@
     "agentResource": {
       "saveFailed": "저장하지 못했습니다. 다시 시도해 주세요.",
       "title": "Agent 리소스 사용량",
-      "description": "Agent의 명령줄 작업이 시스템 자원을 과도하게 사용하지 않도록 제한하여, 병렬 테스트나 빌드로 컴퓨터가 느려지는 것을 방지합니다. 기본값은 전속력(제한 없음)입니다. 동시 실행 상한은 즉시 적용됩니다. 우선순위 낮추기는 실행 중인 Agent 프로세스에도 약 15초 이내에 적용됩니다. 우선순위를 보통으로 되돌리는 것과 툴체인 스레드 상한은 새로 시작된 Agent 프로세스에만 적용됩니다. 이 설정은 로컬 Agent에만 적용되며, 원격(SSH) 컴퓨터의 Agent에는 적용되지 않습니다.",
+      "description": "Agent의 명령줄 작업이 사용하는 시스템 자원을 제한하여 병렬 테스트나 빌드로 컴퓨터가 느려지는 것을 방지합니다. 기본값은 전속력이며, 로컬 Agent에만 적용되고 원격(SSH) 컴퓨터에는 영향을 주지 않습니다.",
       "preset": "프로필",
       "presets": {
         "full": "전속력",
@@ -4557,18 +4568,19 @@
       "maxConcurrent": "동시 실행 명령 상한",
       "maxConcurrentHint": "Claude Code 엔진이 동시에 실행할 수 있는 명령 수의 상한이며, 초과분은 대기열에서 기다립니다. 0은 무제한입니다. Codex 명령은 자체 샌드박스에서 실행되어 이 상한의 적용을 받지 않으며, 우선순위와 스레드 상한으로 보완됩니다.",
       "priority": "프로세스 우선순위",
-      "priorityHint": "낮추면 Agent는 유휴 자원만 사용하고 전면 앱이 우선됩니다. 다시 높이면 새로 시작된 Agent 프로세스에만 적용됩니다.",
+      "priorityHint": "낮추면 Agent는 유휴 자원만 사용하고 전면 앱이 우선됩니다. 낮추기는 실행 중인 Agent에도 약 15초 이내에 적용되며, 보통으로 되돌리면 새로 시작된 Agent에만 적용됩니다.",
       "priorityOptions": {
         "normal": "보통",
         "low": "낮음",
         "lowest": "최저"
       },
       "capThreads": "툴체인 병렬 처리 제한",
-      "capThreadsHint": "VITEST_MAX_FORKS, MAKEFLAGS 등의 환경 변수를 주입하여 단일 테스트나 빌드 명령이 모든 CPU 코어를 점유하지 않도록 합니다. 직접 설정한 동일한 변수는 덮어쓰지 않습니다."
+      "capThreadsHint": "VITEST_MAX_FORKS, MAKEFLAGS 등의 환경 변수를 주입하여 단일 테스트나 빌드 명령이 모든 CPU 코어를 점유하지 않도록 합니다. 새로 시작된 Agent에만 적용되며, 직접 설정한 동일한 변수는 덮어쓰지 않습니다."
     },
     "piPackages": {
       "title": "Pi 확장",
       "entryTitle": "Pi 확장 설정",
+      "manageLabel": "확장 관리",
       "entryDescription": "Cindy의 Pi 확장을 설치, 활성화 또는 제거",
       "backToGeneral": "일반으로 돌아가기",
       "description": "확장은 이 기기의 Cindy에 설치됩니다. 이 기기의 일반 Pi에서 실행되는 작업이라면 기기 자체, 휴대전화 또는 다른 연결된 클라이언트 어디에서 시작해도 사용할 수 있습니다. Review에서는 불러오지 않습니다.",
@@ -8793,124 +8805,53 @@
     "workbench": {
       "title": "작업대",
       "open": "워크벤치 열기",
-      "emptyTitle": "{{name}}에게 프로젝트 맡기기",
-      "emptyDescription": "컴퓨터에 있는 작업을 {{name}}에게 넘겨 이어서 하게 합니다. 먼저 프로젝트의 문서, 최근 커밋과 PR, 지난 세션을 살펴보고, 끝나지 않았거나 해 볼 만한 것을 골라낸 뒤 무엇을 이어서 할지 물어봅니다.",
-      "scanning": "컴퓨터에서 프로젝트를 찾는 중…",
-      "noProjects": "세션이 있는 프로젝트가 아직 없습니다. 폴더를 골라 {{name}}에게 맡길 수 있습니다.",
-      "pickFolder": "다른 폴더 선택",
-      "cancelAdd": "취소",
-      "projectTasks_other": "세션 {{count}}개",
-      "projectAutomations_other": "자동화 {{count}}개",
-      "sourceCindy_other": "Cindy 세션 {{count}}개",
-      "sourceClaude_other": "Claude Code 세션 {{count}}개",
-      "sourceCodex_other": "Codex 세션 {{count}}개",
-      "moreProjects": "{{count}}개 더 보기",
-      "hideMoreProjects": "접기",
-      "grant": "{{name}}은(는) {{project}}의 {{scope}}을(를) 보고, 이어서 하고, 멈출 수 있으며 새 세션도 대신 시작합니다.",
-      "grantTasks_other": "세션 {{count}}개",
-      "grantCindy_other": "Cindy 세션 {{count}}개",
-      "grantClaude_other": "Claude Code 세션 {{count}}개",
-      "grantCodex_other": "Codex 세션 {{count}}개",
-      "grantAutomations_other": "자동화 {{count}}개",
-      "grantEverything": "세션과 자동화",
-      "handOver": "{{name}}에게 맡기기",
-      "handoverMessage": "{{project}}을(를) 맡길게요.",
-      "addProject": "{{name}}에게 다른 프로젝트 맡기기",
-      "removeProject": "{{name}}에게서 {{project}} 돌려받기",
-      "dirMissing": "폴더를 찾을 수 없습니다",
-      "dirUnavailable": "이 폴더를 열 수 없습니다. 다른 폴더를 선택하세요.",
-      "tooManyDirs": "{{name}}에게는 프로젝트를 최대 {{count}}개까지 맡길 수 있습니다",
-      "sendFailed": "{{name}}에게 보내지 못했습니다. 다시 시도하세요.",
-      "tasksEmpty": "이어서 할 세션이 아직 없습니다.",
-      "understanding": "{{name}}이(가) {{project}}을(를) 파악하는 중…",
       "untitled": "제목 없는 세션",
-      "continueMessage": "‘{{title}}’ 이어서: {{text}}",
-      "verdict": {
-        "unfinished": "미완료",
-        "idea": "후속 없음"
-      },
-      "detail": {
-        "back": "작업대로 돌아가기",
-        "stop": "이 세션 중지",
-        "openInTasks": "세션 화면에서 열기",
-        "placeholder": "{{name}}에게 이어서 하도록 한마디…",
-        "send": "보내기",
-        "sent": "{{name}}에게 전했습니다",
-        "judgment": "{{name}}의 판단",
-        "empty": "아직 표시할 내용이 없습니다.",
-        "loadFailed": "이 세션의 기록을 읽을 수 없습니다.",
-        "truncated": "최근 내용만 표시합니다",
-        "ref": "참고",
-        "noRef": "첨부된 참고 링크가 없습니다.",
-        "openPr": "GitHub에서 PR #{{number}} 열기",
-        "refBlocked": "맡긴 프로젝트 밖의 경로라서 열지 않았습니다.",
-        "stopLabel": "중지",
-        "doing": "지금 하는 일",
-        "outputs": "지금까지의 결과물",
-        "recent": "최근 내용"
-      },
-      "openTask": "‘{{title}}’ 열기({{state}})",
-      "outputs": "결과물",
-      "outputsEmpty": "{{name}}이(가) 만든 파일이 여기에 표시됩니다.",
-      "outputsAll": "전체",
-      "outputsLess": "접기",
-      "summary": {
-        "waiting_other": "응답 대기 {{count}}개",
-        "running_other": "실행 중 {{count}}개",
-        "todo_other": "할 일 {{count}}개"
-      },
-      "state": {
-        "running": "실행 중",
-        "waiting": "응답 대기",
-        "queued": "대기 중",
-        "stopped": "멈춤",
-        "automation": "자동화",
-        "done": "완료"
-      },
-      "group": {
-        "waiting": "응답 대기",
-        "running": "실행 중",
-        "todo": "할 일",
-        "done": "완료"
-      },
-      "followUp": {
-        "label": "진행",
-        "message": "「{{title}}」 이어서 진행해 줘",
-        "aria": "「{{title}}」 진행하기"
-      },
       "followingMark": "이 세션 담당: {{names}}",
-      "olderCount_other": "이전 {{count}}개",
-      "kind": {
-        "existing": "기존 세션",
-        "delegated": "요청한 일",
-        "claudeCode": "Claude Code에서",
-        "codex": "Codex에서",
-        "pi": "Pi에서",
-        "pr": "PR #{{number}}",
-        "issue": "Issue #{{number}}",
-        "idea": "제안",
-        "automationPlain": "자동화"
+      "glance": {
+        "waiting": "응답 대기",
+        "working": "실행 중",
+        "loadFailed": "작업대를 불러오지 못했습니다.",
+        "quiet": "실행 중인 일도, 응답을 기다리는 일도 없습니다.",
+        "allow": "허용",
+        "answer": "답하기",
+        "look": "살펴보기",
+        "waitedFor": "{{duration}} 대기",
+        "offline": "오프라인",
+        "deviceOffline": "{{device}} 오프라인",
+        "thisComputer": "이 컴퓨터",
+        "lessThanMinute": "1분 미만",
+        "minutes_other": "{{count}}분",
+        "hours_other": "{{count}}시간",
+        "days_other": "{{count}}일",
+        "notSeenYet": "아직 확인하지 않음",
+        "seenJust": "방금 확인함",
+        "seenMinutesAgo_other": "{{count}}분 전에 확인함",
+        "seenHoursAgo_other": "{{count}}시간 전에 확인함",
+        "doneToday_other": "오늘 {{count}}건 완료",
+        "devicesOffline": "{{devices}} 오프라인",
+        "allowFailed": "허용하지 못했습니다. 세션에서 처리하세요",
+        "more_other": "{{count}}건 더 보기",
+        "less": "접기"
+      }
+    },
+    "autonomy": {
+      "title": "모든 세션 자동 후속 관리",
+      "descriptionOn": "{{name}}이(가) 모든 세션을 주기적으로 확인하고, 응답을 기다리는 일이 있으면 알려 줍니다.",
+      "movedFrom": "{{name}}에서 여기로 옮겼습니다",
+      "heldBy": "지금은 {{name}}이(가) 맡고 있습니다. 켜면 여기로 옮겨집니다.",
+      "heldByNobody": "지금 맡은 동료가 없습니다.",
+      "restoreDefault": "기본값으로 복원({{name}})",
+      "saveFailed": "저장하지 못했습니다. 다시 시도하세요",
+      "turnOff": {
+        "title": "모든 세션 자동 후속 관리를 끌까요?",
+        "description": "끄면 모든 세션을 함께 챙기는 동료가 없습니다.",
+        "confirm": "끄기",
+        "cancel": "취소"
       },
-      "cycle": {
-        "manual": "수동",
-        "once": "1회",
-        "event": "이벤트 발생 시"
-      },
-      "line": {
-        "waiting": "응답을 기다리는 중",
-        "waitingPermission": "승인을 기다리는 중",
-        "waitingQuestion": "답변을 기다리는 중",
-        "waitingPlan": "계획 검토를 기다리는 중",
-        "waitingAction": "작업을 기다리는 중",
-        "waitingFor": "{{label}}: {{text}}",
-        "queued": "대기 중",
-        "interrupted": "지난번 실행이 끝나지 않았습니다",
-        "errored": "지난번 실행에서 오류가 났습니다",
-        "failed": "끝내지 못했습니다",
-        "paused": "일시 중지됨",
-        "disabled": "꺼짐"
-      },
-      "dirElsewhere": "“{{device}}”에 있음"
+      "allowSchedulerFollow": {
+        "title": "시작한 세션도 {{name}}에게 맡기기",
+        "description": "기본적으로 {{scheduler}}은(는) 보기만 하고 후속 관리는 하지 않습니다. 켜면 {{name}}이(가) 시작한 세션이 끝나지 않았을 때 {{scheduler}}도 이어서 챙깁니다."
+      }
     },
     "remoteSettings": {
       "empty": "아직 항목이 없습니다.",
@@ -9121,6 +9062,8 @@
     "globalSettings": {
       "restoreHint": "기본값으로 복원하면 클라이언트의 기본 모델 설정을 따릅니다. 개별 파트너의 사용자 지정 모델은 유지됩니다.",
       "restoreFailed": "기본값을 복원하지 못했습니다. 다시 시도해 주세요.",
+      "defaultModel": "기본 사용 모델",
+      "defaultModelHint": "파트너가 기본으로 사용하는 모델입니다. 개별 파트너는 각자의 설정에서 다른 모델을 선택할 수 있어요.",
       "title": "파트너",
       "description": "파트너 전체에 적용되는 설정입니다. 개별 파트너 설정은 각자의 페이지에 있어요.",
       "rosterNote": "기본 제공되는 구성원은 버전마다 늘어납니다."
@@ -9764,7 +9707,13 @@
       "imBotOwnerMissing": "소유자 사용자 ID를 찾지 못했습니다. 동료의 메시지 플랫폼 페이지에서 이 봇을 연결하세요.",
       "imBotGatewayRunning": "기존 게이트웨이가 아직 이 봇을 사용 중입니다. 중지한 다음 메시지 플랫폼에서 연결하세요.",
       "imBotInUse": "이 봇은 이미 이 컴퓨터에서 사용 중입니다 (설정 → IM 봇, 또는 다른 동료).",
-      "imBotConnectFailed": "이 봇에 연결하지 못했습니다. 동료의 메시지 플랫폼 페이지에서 다시 시도하세요."
+      "imBotConnectFailed": "이 봇에 연결하지 못했습니다. 동료의 메시지 플랫폼 페이지에서 다시 시도하세요.",
+      "imBotSourceStopUnconfirmed": "기존 봇이 아직 멈추지 않아 동료에게 넘기지 않았습니다. 나중에 동료의 메시지 플랫폼 페이지에서 연결할 수 있습니다.",
+      "imBotSourceChanged": "미리보기 후 기존 봇이 바뀌어 중지하지 않았습니다. 다시 읽은 뒤 가져오세요.",
+      "bots": "메시지 봇",
+      "botsNote": "가져온 후 {{source}}의 이 봇들은 중지되고 동료가 이어받습니다.",
+      "sourceDisabled": "원래 사용 중지됨",
+      "botOwner": "소유자 ID {{id}}"
     },
     "learning": {
       "memory": "기억했어요: {{title}}",
@@ -10967,6 +10916,7 @@
     "verificationFailed": "ChatGPT 로그인이 복구되었는지 확인할 수 없습니다. 다시 확인해 주세요."
   },
   "chat": {
+    "failedSamplingAttempt": "완료되지 않은 답변입니다. 내용은 참고용으로만 확인해 주세요.",
     "jumpToBottom": "맨 아래로 이동",
     "prevMessageJump": "이전 질문으로 이동: {{preview}}",
     "sessionLoading": "세션 불러오는 중",
@@ -11141,7 +11091,7 @@
     },
     "errorBanner": {
       "requestFormatError": "앱이 보낸 요청 형식에 문제가 있어 답변을 완료하지 못했습니다.",
-      "replyFailed": "답변을 완료하지 못했습니다. 오류 세부 정보에서 원인을 확인하세요.",
+      "replyFailed": "답변을 완료하지 못했습니다",
       "retryTitle": "마지막 메시지 다시 보내기",
       "cancelTitle": "오류 알림 닫기",
       "retry": "다시 시도",
@@ -11177,12 +11127,12 @@
       "syncAuthSuccess": "동기화되었습니다 — 「다시 시도」를 클릭하여 다시 보내세요",
       "syncAuthFailed": "동기화 실패: {{msg}}",
       "syncAuthDaemonRestartFailed": "자격 증명이 원격에 푸시되었지만 이전 daemon이 재시작되지 않았습니다 — 원격에 다시 연결한 후 재시도하세요",
-      "invalidEncryptedContent": "제공자 변경으로 이전 암호화를 사용할 수 없습니다. 이 세션은 원래 제공자에서만 계속할 수 있으며, 또는 Fork를 클릭하여 프로토콜 암호화 콘텐츠를 버리고 새 세션에서 계속할 수 있습니다.",
-      "readableHistoryRecovery": "읽을 수 있는 기록으로 새 작업 만들기",
-      "readableHistoryRecoveryDescription": "재시도해도 실패하면 읽을 수 있는 기록으로 새 작업을 만들 수 있습니다. 내부 암호화 정보는 제외됩니다. 기존 작업은 유지되며 실패한 메시지는 자동으로 다시 전송되지 않습니다.",
-      "forkStripEncrypted": "Fork 및 분리",
-      "forkStripEncryptedRunning": "Fork 중…",
-      "forkStripEncryptedTitle": "암호화 추론을 제거한 새 세션으로 Fork",
+      "invalidEncryptedContent": "현재 제공자가 기록의 일부를 읽을 수 없습니다. 원래 제공자로 돌아가거나 새 세션에서 계속하세요.",
+      "readableHistoryRecovery": "새 세션에서 계속하기",
+      "readableHistoryRecoveryDescription": "채팅 기록을 이어받아 새 세션을 만들 수 있습니다. 기존 세션은 유지됩니다. 새 세션이 열리면 마지막 메시지를 다시 보내 주세요.",
+      "forkStripEncrypted": "새 세션에서 계속하기",
+      "forkStripEncryptedRunning": "세션 만드는 중…",
+      "forkStripEncryptedTitle": "채팅 기록을 이어받아 새 세션 만들기",
       "forkStripOversizedHistory": "기록을 줄인 뒤 계속",
       "forkStripOversizedHistoryRunning": "Fork 중…",
       "forkStripOversizedHistoryTitle": "과대한 인라인 이미지를 제거한 새 작업으로 Fork",
@@ -11198,8 +11148,11 @@
       "overloadBusyNoRetry": "모델 서비스가 혼잡합니다. 상위 서비스에 여유 용량이 없습니다. 잠시 후 다시 시도하거나 다른 모델로 바꿔 보세요",
       "streamInterrupted": "모델 출력이 중간에 중단되었습니다. 보통은 일시적인 상위 서비스 장애입니다. \"재시도\"를 눌러 주세요",
       "streamInterruptedNoRetry": "모델 출력이 중간에 중단되었습니다. 보통은 일시적인 상위 서비스 장애입니다. 잠시 후 다시 시도해 주세요",
-      "networkShowRaw": "원본 오류 보기",
-      "networkHideRaw": "원본 오류 숨기기",
+      "networkShowRaw": "오류 상세 정보",
+      "networkHideRaw": "상세 정보 접기",
+      "diagnose": "진단",
+      "diagnoseTitle": "새 세션에서 이 오류 진단",
+      "diagnosePrompt": "이 오류를 진단해서 원인과 해결 방법을 알려 주세요.\n\n오류가 발생한 세션: {{sessionUrl}}\n오류 메시지: {{message}}\n오류 상세:\n{{details}}\n\nCindy 자체의 문제로 확인되면 알려 주세요. Cindy 팀에 issue를 제출할지는 제가 선택할게요.",
       "gatewayProxyTokenInvalid": "Cindy AI 자격 증명이 더 이상 유효하지 않습니다. 재시도를 클릭하세요. 반복되면 로그아웃 후 다시 로그인하세요",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 자격 증명이 더 이상 유효하지 않습니다. 반복되면 로그아웃 후 다시 로그인하세요",
       "modelAccessDenied": "연결된 서비스 계정에 이 모델의 접근 권한이 없습니다. 다른 모델로 전환하거나 제공자에게 모델 접근 권한을 확인하세요",
@@ -11227,6 +11180,21 @@
       "continuing": "계속하는 중…",
       "continueTitle": "중단된 지점부터 작업을 계속합니다(완료된 단계는 반복하지 않습니다)",
       "dismissTitle": "이 중단 알림 닫기"
+    },
+    "interruptedResumeDialog": {
+      "title": "중단된 세션 이어서 하기",
+      "description_one": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "description_other": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "selectAll": "모두 선택",
+      "selectedCount": "{{total}}개 중 {{selected}}개 선택",
+      "interruptedAgo": "{{time}} 전 중단",
+      "interruptedJustNow": "방금 중단",
+      "continueSelected_one": "세션 {{count}}개 이어서 하기",
+      "continueSelected_other": "세션 {{count}}개 이어서 하기",
+      "continueNone": "이어서 하기",
+      "later": "나중에",
+      "continueFailed_one": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요.",
+      "continueFailed_other": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요."
     },
     "unreadFailedScheduleBanner": {
       "text": "실패한 자동 실행이 있습니다.",
@@ -11385,7 +11353,8 @@
       "downloadUnsupported": "원격 컴퓨터가 아직 폴더 다운로드를 지원하지 않습니다. 해당 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요",
       "downloadNoSpace": "디스크 공간이 부족해 다운로드를 완료할 수 없습니다",
       "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다",
-      "cancelTransfer": "취소"
+      "cancelTransfer": "취소",
+      "downloadsInProgress": "다운로드 중 ({{count}}개)"
     },
     "mivoAction": {
       "promptPlaceholder": "프롬프트를 입력하고 Enter로 전송",
@@ -11873,7 +11842,9 @@
       "REMOTE_AGENT_SHARE_PAUSED": "공유한 사람이 나에 대한 공유를 일시 중지해서 재개될 때까지 이 모델을 사용할 수 없습니다. 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_REMOVED": "이 공유는 더 이상 사용할 수 없습니다(공유한 사람이 삭제했거나 내가 나갔습니다). 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",
-      "REMOTE_AGENT_GROUP_UNAVAILABLE": "제공자 그룹의 컴퓨터가 지금 이 세션을 실행할 수 없습니다. 모두 오프라인이거나, 배정이 일시 중지되었거나, 대기 중이거나, 이 모델이 없을 수 있습니다. 이 제공자의 원격 및 공유 페이지에서 그룹을 확인하세요."
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "제공자 그룹의 컴퓨터가 지금 이 세션을 실행할 수 없습니다. 모두 오프라인이거나, 배정이 일시 중지되었거나, 대기 중이거나, 이 모델이 없을 수 있습니다. 이 제공자의 원격 및 공유 페이지에서 그룹을 확인하세요.",
+      "REMOTE_AGENT_DEVICE_LIMIT": "이 기기의 원격 세션 수가 한도에 도달했습니다. 사용하지 않는 세션을 보관하거나 제공자에게 원격 및 공유에서 한도를 높여 달라고 요청하세요.",
+      "REMOTE_AGENT_TOTAL_LIMIT": "제공자 컴퓨터의 전체 원격 세션 수가 한도에 도달했습니다. 제공자에게 불필요한 세션을 해제하거나 원격 및 공유에서 한도를 높여 달라고 요청하세요."
     },
     "generatedFiles": {
       "title": "이 메시지에서 생성된 파일",
@@ -14836,6 +14807,7 @@
     "addUnavailable": "현재 분할 창에서 이 세션을 열 수 없습니다. 기본 영역에서 세션을 연 후 다시 시도하세요."
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo 라이브러리(읽기 전용)",
     "retryRemotePlugins": "원격 플러그인을 불러오지 못했습니다. 다시 시도",
     "menuAria": "작업 메뉴",
     "tooltipEmpty": "더 많은 작업",
@@ -15521,7 +15493,11 @@
     "checkCommand": "사전 확인 명령",
     "checkHint": "선택 사항입니다. 컴퓨터에서 먼저 확인합니다. 종료 코드 2는 이번 실행을 건너뛰고, 0은 계속합니다. 오류는 보고됩니다. 비우면 제거됩니다.",
     "timeoutMs": "확인 제한 시간(ms, 비우면 제한 없음)",
-    "advancedSettings": "고급 설정"
+    "advancedSettings": "고급 설정",
+    "builtinFollowUp": {
+      "name": "후속 관리(기본 제공)",
+      "hint": "세션이 멈추거나, 응답을 기다리거나, 오류가 나거나, 사용량 한도에 도달하거나, 끝나면 깨웁니다. 기본 제공 루틴이라 일시 중지와 재개만 할 수 있습니다."
+    }
   },
   "cindyMakeDoctor": {
     "description": "Cindy 빌드에 필요한 로컬 환경을 확인합니다. 사용법: /cindy-make-doctor",
@@ -16583,5 +16559,11 @@
     "messageSource": "$t(mcpApps.appName) “{{name}}”에서 전송",
     "serverId": "MCP 서버 ID: {{id}}",
     "exitFullscreen": "전체 화면 종료"
+  },
+  "richAnswer": {
+    "playVideo": "동영상 재생",
+    "openVideoSource": "원본 동영상 열기",
+    "calculationUnavailable": "이 값을 계산할 수 없습니다.",
+    "incomplete": "일부 내용을 표시하지 못했습니다."
   }
 }

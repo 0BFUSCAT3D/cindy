@@ -1859,7 +1859,7 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 \
 标记失败仍返回正文和 \`markReadFailed:true\`，由 Cindy 显示提示；新增 OAuth scope 不阻断已有授权的操作。
 适配器提供 providerName、draftStorage（server/local）、selectAccount、readDraft、writeDraft。
 通过 present 展示读回草稿，beforeTool 统一 get/send/update/delete，resolveDraft 获取最新位置。
-Host 负责样式、编辑同步、发送、任务续接与旧卡只读收起；插件保留凭据、MIME 和服务商请求。
+Host 负责样式、编辑同步、发送和任务续接；同一任务同一封邮件只显示最新卡片，旧快照保留但不重复展示。插件保留凭据、MIME 和服务商请求。
 插件重启后，下一次卡片编辑或工具操作会自动读回原草稿，使用 Host 卡片中上次同步的内容、卡片编辑和邮箱最新内容做三方合并；单边变化、相同变化和不重叠的文字修改自动合并，只有无法合并的修改才保留两边内容并提示具体字段。版本标记或预览地址变化本身不算冲突。适配器返回 execution:not_executed 和 stale 读回快照时可合并后重试一次，未知操作结果不能重试。发送倒计时结束时若发现实际内容变化，展示合并稿并重新倒计时。
 图文适配器的 attachmentItems 可为已有图片 key 添加 contentId，表示将同一附件插入 HTML 正文；必须核验实际图片字节、保留 MIME 引用，不能重复上传或把预览 URL 写入邮件。
 工具说明应要求默认展示草稿卡等用户确认；只有用户已明确确认该邮件，或有效的用户/任务指令明确授权该范围内直接发送，才不再询问。写信/回复请求、编辑及自动审批本身不代表确认。

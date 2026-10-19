@@ -49,7 +49,7 @@ import { useTheme } from '@/theme';
 
 /** The server serves only the downloaded manifest; every HTML has the same CSP and device guard. */
 export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInsets, onNavigationStateChange, loading }: {
-  preview: MobileHtmlPreview;
+  preview?: MobileHtmlPreview;
   onError(): void;
   loading?: ReactNode;
   webViewRef?: RefObject<WebView | null>;
@@ -57,7 +57,8 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
   onNavigationStateChange?(preview: MobileHtmlPreview, state: WebViewNavigation): void;
 }) {
   const { colors } = useTheme();
-  const source = useMemo(() => ({ uri: preview.url }), [preview.url]);
+  const url = preview?.url;
+  const source = useMemo(() => url ? { uri: url } : undefined, [url]);
   const localRef = useRef<WebView>(null);
   const readerRef = webViewRef ?? localRef;
   const { viewRef, measure, script, viewportStyle, obscuredContentInsets } = useHtmlBrowserViewport({
@@ -67,7 +68,7 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
   useEffect(() => { if (script) readerRef.current?.injectJavaScript(script); }, [script, readerRef, preview]);
   // WKWebView paints white until the first document load ends; keep the themed page behind it until then.
   const [paintedPreview, setPaintedPreview] = useState<MobileHtmlPreview | null>(null);
-  const currentPreview = useRef<MobileHtmlPreview | null>(preview);
+  const currentPreview = useRef<MobileHtmlPreview | null | undefined>(preview);
   useEffect(() => {
     currentPreview.current = preview;
     return () => { currentPreview.current = null; };
@@ -79,7 +80,9 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
     mobileDebugLog('warn', 'files', event, { ms: Date.now() - mountedAt, ...detail });
     onError();
   };
-  return <View ref={viewRef} onLayout={measure} collapsable={false} style={[styles.fill, viewportStyle]}><View style={styles.viewport}><WebView
+  // Keep the measured viewport and loading overlay mounted while preparing the local
+  // snapshot. Cached opens should not restart a spinner or first measure after WebKit loads.
+  return <View ref={viewRef} onLayout={measure} collapsable={false} style={[styles.fill, viewportStyle]}><View style={styles.viewport}>{preview ? <WebView
     key={preview.url}
     ref={readerRef}
     testID="filePreview.htmlRendered"
@@ -124,7 +127,7 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
     // Themed backing for the strips under the floating controls; the viewport script paints
     // the page canvas itself, so this never becomes the background of an unstyled page.
     style={[styles.fill, { backgroundColor: colors.surfaceElevated }, paintedPreview !== preview && styles.unpainted]}
-  />{paintedPreview !== preview && loading ? <View style={StyleSheet.absoluteFill} pointerEvents="none">{loading}</View> : null}</View></View>;
+  /> : null}{(!preview || paintedPreview !== preview) && loading ? <View key="loading" style={StyleSheet.absoluteFill} pointerEvents="none">{loading}</View> : null}</View></View>;
 }
 
 export function HtmlFileReader({ html, testID, javaScriptEnabled = true }: { html: string; testID?: string; javaScriptEnabled?: boolean }) {

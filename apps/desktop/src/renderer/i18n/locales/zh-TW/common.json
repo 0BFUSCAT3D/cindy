@@ -450,6 +450,20 @@
       "rejectedBody": "{{name}} 沒有同意分享 {{provider}}",
       "reshareTitle": "新的使用請求",
       "reshareBody": "{{name}} 想經 {{owner}} 的供應商組使用你分享的 {{provider}}"
+    },
+    "runLimits": {
+      "title": "遠端任務數量",
+      "description": "適用於這台電腦提供的所有供應商，包括自己的其他電腦和分享給他人的裝置。已回答完但尚未釋放的任務也佔名額，本機直接執行的任務不計入。",
+      "perDevice": "每台使用裝置最多保留的任務數",
+      "total": "所有使用裝置合計最多保留的任務數",
+      "invalid": "請填寫 1～{{max}} 的整數，單台裝置的上限不能超過合計上限。",
+      "usage": "目前佔用 {{used}} / {{total}}，來自 {{devices}} 台裝置；單台裝置最多佔用 {{largest}} 個。",
+      "applyHint": "儲存後立即生效。調低上限不會中斷現有任務，只會限制新增。供應商組轉送按直接連線的裝置計數。",
+      "save": "儲存",
+      "reset": "恢復預設",
+      "saved": "遠端任務數量設定已儲存",
+      "retry": "重新載入",
+      "loading": "正在載入…"
     }
   },
   "providerGroup": {
@@ -698,6 +712,9 @@
     "controlledByDevice": "{{name}} 正在遠端控制桌面",
     "viewedByDevice": "{{name}} 正在遠端檢視桌面",
     "disconnect": "中斷連線",
+    "disconnectChoiceDetail": "中斷後本次遠端桌面結束，對方之後仍可重新連線。",
+    "disconnectRevoke": "同時撤銷這台裝置的訪問權限",
+    "disconnectRevokeHint": "撤銷後對方無法再遠端連線本機，需在「設定 → 遠端連線」中恢復。",
     "back": "返回",
     "connect": "連線",
     "connecting": "連線中…",
@@ -1251,6 +1268,7 @@
     "tabs": {
       "storage": "儲存空間",
       "general": "通用",
+      "appearance": "外觀",
       "billing": "用量和計費",
       "usage": "用量歷史",
       "personalization": "個性化",
@@ -1577,6 +1595,7 @@
     "appearance": {
       "title": "外觀",
       "modeLabel": "顯示模式",
+      "sidebarAndPanels": "側邊欄與面板",
       "themeLabel": "主題",
       "themeAriaLabel": "主題選擇",
       "localBadge": "(本地)",
@@ -1603,6 +1622,7 @@
       },
       "font": {
         "reset": "恢復預設",
+        "title": "字體",
         "defaultPreset": "預設",
         "presets": "預設",
         "custom": "自定義",
@@ -1641,8 +1661,12 @@
           "ui": "中文字型預覽，清晰銳利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
         }
       },
-      "missingLightNotice": "{{name}} 主題沒有提供淺色方案，已顯示其深色方案。",
-      "missingDarkNotice": "{{name}} 主題沒有提供深色方案，已顯示其淺色方案。",
+      "singleVariant": {
+        "lightOnly": "僅淺色",
+        "darkOnly": "僅深色",
+        "lightNotice": "{{name}} 只有淺色方案，顯示模式固定為淺色；換成其他主題後恢復你的選擇。",
+        "darkNotice": "{{name}} 只有深色方案，顯示模式固定為深色；換成其他主題後恢復你的選擇。"
+      },
       "theme": {
         "light": "淺色",
         "dark": "深色",
@@ -1682,31 +1706,18 @@
           "cindy-studio": "Cindy · 未來工作室",
           "cindy-dream": "Cindy · 夢境漫遊",
           "cindy-whisper": "Cindy · 悄悄話",
-          "cindy-crimson": "Cindy · 緋紅之境",
           "cindy-night-glance": "Cindy · 夜色回眸",
           "cindy-scarlet-stroll": "Cindy · 赤夜漫步",
           "cindy-neon": "Cindy · 霓光側影",
           "cindy-prism": "Cindy · 稜鏡碎光",
-          "wheatfield-watch": "麥田守望",
-          "teacup-cat": "杯中黑貓",
-          "cloud-roaming": "雲下遠行",
           "night-launch": "夜航流光",
-          "stardust-vortex": "星塵漩渦",
           "silent-orbits": "靜謐星軌",
           "dune-dawn": "沙海晨光",
           "planet-dawn": "星海晨曦",
-          "neon-valley": "霓虹峽谷",
-          "silent-circuit": "靜默電路",
           "indigo-folds": "靛藍層疊",
-          "moon-solitude": "孤影望月",
           "dune-sphere": "沙丘圓石",
           "ocean-clouds": "滄海流雲",
-          "blush-leaves": "淺絳疏影",
-          "white-wilderness": "白原孤旅",
           "rose-quartz": "薔薇晶礦",
-          "silver-veins": "黛岩銀脈",
-          "dawn-arc": "暗界晨弧",
-          "tidal-lines": "潮汐流線",
           "custom": "自訂桌布"
         },
         "visibilityLabel": "桌布可見度",
@@ -1735,7 +1746,7 @@
         "reset": "恢復預設佈局",
         "resetSuccess": "已恢復預設面板佈局",
         "resetFailed": "無法恢復面板配置",
-        "saved": "面板位置已儲存；可在「設定 → 一般」的「外觀」區段恢復預設配置",
+        "saved": "面板位置已儲存；可在「設定 → 外觀」恢復預設配置",
         "saveFailed": "無法儲存面板位置"
       }
     },
@@ -4541,7 +4552,7 @@
     "agentResource": {
       "saveFailed": "儲存失敗，請重試。",
       "title": "Agent 資源佔用",
-      "description": "限制 Agent 命令列任務的系統資源佔用，避免並行測試、構建把機器拖卡。預設全速（不干預）。併發上限即刻生效；優先順序降檔對已在跑的 Agent 處理程序約 15 秒內生效；把優先順序調回正常和工具鏈限核只對新啟動的 Agent 處理程序生效。僅作用於本機 Agent；遠端（SSH）機器上的 Agent 不受本設定約束。",
+      "description": "限制 Agent 命令列任務佔用的系統資源，避免並行測試或構建拖慢電腦。預設全速，只作用於本機 Agent，不影響遠端（SSH）機器。",
       "preset": "檔位",
       "presets": {
         "full": "全速",
@@ -4557,18 +4568,19 @@
       "maxConcurrent": "併發命令上限",
       "maxConcurrentHint": "Claude Code 引擎所有命令的併發上限，超出的排隊等待；0 表示不限。Codex 命令在自身沙箱內執行、不經此閘門，由優先順序與限核層覆蓋。",
       "priority": "程序優先順序",
-      "priorityHint": "調低後 Agent 只用空閒資源，前臺應用優先。從低檔調回後只對新啟動的 Agent 程序生效。",
+      "priorityHint": "調低後 Agent 只用空閒資源，前臺應用優先；約 15 秒內對執行中的 Agent 生效，調回正常只對新啟動的 Agent 生效。",
       "priorityOptions": {
         "normal": "正常",
         "low": "低",
         "lowest": "最低"
       },
       "capThreads": "限制工具鏈並行度",
-      "capThreadsHint": "注入 VITEST_MAX_FORKS、MAKEFLAGS 等環境變數，防止單條測試或構建命令佔滿全部 CPU 核心；你自己設定過的同名變數不會被覆蓋。"
+      "capThreadsHint": "注入 VITEST_MAX_FORKS、MAKEFLAGS 等環境變數，防止單條測試或構建命令佔滿全部 CPU 核心；只對新啟動的 Agent 生效，你自己設定過的同名變數不會被覆蓋。"
     },
     "piPackages": {
       "title": "Pi 擴充功能",
       "entryTitle": "Pi 擴充功能設定",
+      "manageLabel": "管理擴充功能",
       "entryDescription": "安裝、啟用或解除安裝 Cindy 的 Pi 擴充功能",
       "backToGeneral": "返回一般",
       "description": "擴充功能安裝在這台裝置的 Cindy 中。無論任務由本機、手機或其他已連線用戶端發起，只要由這台裝置的普通 Pi 執行都會生效；Review 不載入。",
@@ -8793,124 +8805,53 @@
     "workbench": {
       "title": "工作台",
       "open": "打開工作台",
-      "emptyTitle": "交給{{name}}一個專案",
-      "emptyDescription": "把電腦裡已有的工作交給{{name}}接著做。它會先看一遍專案的文件、最近的提交和 PR、做過的任務，挑出沒做完和值得做的，再問你接著做哪件。",
-      "scanning": "正在尋找電腦上的專案…",
-      "noProjects": "還沒找到有任務的專案，可以選一個資料夾交給{{name}}。",
-      "pickFolder": "選其他資料夾",
-      "cancelAdd": "取消",
-      "projectTasks_other": "{{count}} 個任務",
-      "projectAutomations_other": "{{count}} 個自動化",
-      "sourceCindy_other": "Cindy {{count}} 個任務",
-      "sourceClaude_other": "Claude Code {{count}} 個任務",
-      "sourceCodex_other": "Codex {{count}} 個任務",
-      "moreProjects": "還有 {{count}} 個",
-      "hideMoreProjects": "收起",
-      "grant": "{{name}}可以查看、繼續和停止 {{project}} 裡的{{scope}}，也會替你開新任務。",
-      "grantTasks_other": "{{count}} 個任務",
-      "grantCindy_other": "Cindy 的 {{count}} 個任務",
-      "grantClaude_other": "Claude Code 的 {{count}} 個任務",
-      "grantCodex_other": "Codex 的 {{count}} 個任務",
-      "grantAutomations_other": "{{count}} 個自動化",
-      "grantEverything": "任務和自動化",
-      "handOver": "交給{{name}}",
-      "handoverMessage": "把 {{project}} 交給你了。",
-      "addProject": "再交給{{name}}一個專案",
-      "removeProject": "不再交給{{name}}：{{project}}",
-      "dirMissing": "找不到這個資料夾",
-      "dirUnavailable": "這個資料夾打不開，換一個試試",
-      "tooManyDirs": "最多交給{{name}} {{count}} 個專案",
-      "sendFailed": "沒能傳給{{name}}，請重試",
-      "tasksEmpty": "還沒有需要接著做的任務。",
-      "understanding": "{{name}}正在了解 {{project}}…",
       "untitled": "未命名任務",
-      "continueMessage": "接著做「{{title}}」：{{text}}",
-      "verdict": {
-        "unfinished": "沒做完",
-        "idea": "聊過沒下文"
-      },
-      "detail": {
-        "back": "返回工作台",
-        "stop": "停止這件任務",
-        "openInTasks": "在任務頁開啟",
-        "placeholder": "補一句，讓{{name}}接著做…",
-        "send": "傳送",
-        "sent": "已經告訴{{name}}了",
-        "judgment": "{{name}}的判斷",
-        "empty": "還沒有可顯示的內容。",
-        "loadFailed": "讀不到這件任務的記錄。",
-        "truncated": "只顯示最近的內容",
-        "ref": "參考",
-        "noRef": "沒有附參考連結。",
-        "openPr": "在 GitHub 開啟 PR #{{number}}",
-        "refBlocked": "這個路徑不在交給夥伴的專案裡，沒有開啟。",
-        "stopLabel": "停止",
-        "doing": "正在做",
-        "outputs": "到現在的產出",
-        "recent": "最近內容"
-      },
-      "openTask": "開啟「{{title}}」（{{state}}）",
-      "outputs": "產出",
-      "outputsEmpty": "{{name}}做出的檔案會放在這裡。",
-      "outputsAll": "全部",
-      "outputsLess": "收起",
-      "summary": {
-        "waiting_other": "{{count}} 件等你",
-        "running_other": "{{count}} 件在做",
-        "todo_other": "{{count}} 件待做"
-      },
-      "state": {
-        "running": "在做",
-        "waiting": "等你",
-        "queued": "排隊",
-        "stopped": "停著",
-        "automation": "自動化",
-        "done": "做完"
-      },
-      "group": {
-        "waiting": "等你",
-        "running": "在做",
-        "todo": "待做",
-        "done": "做完"
-      },
-      "followUp": {
-        "label": "跟進",
-        "message": "跟進「{{title}}」",
-        "aria": "跟進「{{title}}」"
-      },
       "followingMark": "{{names}}在跟進這個任務",
-      "olderCount_other": "更早的 {{count}} 個",
-      "kind": {
-        "existing": "原有任務",
-        "delegated": "你交代的",
-        "claudeCode": "來自 Claude Code",
-        "codex": "來自 Codex",
-        "pi": "來自 Pi",
-        "pr": "PR #{{number}}",
-        "issue": "Issue #{{number}}",
-        "idea": "建議",
-        "automationPlain": "自動化"
+      "glance": {
+        "waiting": "等你",
+        "working": "在做",
+        "loadFailed": "暫時讀不到工作台的內容。",
+        "quiet": "沒有在做的事，也沒有等你的。",
+        "allow": "允許",
+        "answer": "回答",
+        "look": "看看",
+        "waitedFor": "等了 {{duration}}",
+        "offline": "離線",
+        "deviceOffline": "{{device}} 離線",
+        "thisComputer": "這台電腦",
+        "lessThanMinute": "不到 1 分鐘",
+        "minutes_other": "{{count}} 分鐘",
+        "hours_other": "{{count}} 小時",
+        "days_other": "{{count}} 天",
+        "notSeenYet": "還沒看過一遍",
+        "seenJust": "剛看過一遍",
+        "seenMinutesAgo_other": "{{count}} 分鐘前看過一遍",
+        "seenHoursAgo_other": "{{count}} 小時前看過一遍",
+        "doneToday_other": "今天做完 {{count}} 件",
+        "devicesOffline": "{{devices}} 離線",
+        "allowFailed": "沒能允許，請到任務裡處理",
+        "more_other": "還有 {{count}} 件",
+        "less": "收起"
+      }
+    },
+    "autonomy": {
+      "title": "自動跟進所有任務",
+      "descriptionOn": "{{name}}會定時看一遍所有任務，有等你的就告訴你。",
+      "movedFrom": "已從{{name}}移到這裡",
+      "heldBy": "現在由{{name}}負責，打開就移到這裡。",
+      "heldByNobody": "現在沒有夥伴負責。",
+      "restoreDefault": "恢復預設（{{name}}）",
+      "saveFailed": "沒能儲存，請重試",
+      "turnOff": {
+        "title": "關閉自動跟進所有任務？",
+        "description": "關閉後沒有夥伴統一跟進所有任務。",
+        "confirm": "關閉",
+        "cancel": "取消"
       },
-      "cycle": {
-        "manual": "手動",
-        "once": "一次",
-        "event": "事件觸發"
-      },
-      "line": {
-        "waiting": "等你回覆",
-        "waitingPermission": "等你確認",
-        "waitingQuestion": "等你回答",
-        "waitingPlan": "等你看方案",
-        "waitingAction": "等你操作",
-        "waitingFor": "{{label}}：{{text}}",
-        "queued": "排隊中",
-        "interrupted": "上次沒跑完",
-        "errored": "上次出錯了",
-        "failed": "沒做完",
-        "paused": "已暫停",
-        "disabled": "已停用"
-      },
-      "dirElsewhere": "在「{{device}}」上"
+      "allowSchedulerFollow": {
+        "title": "它開的任務也交給{{name}}跟進",
+        "description": "預設{{scheduler}}只看不跟。打開後，{{name}}開的任務沒做完時，{{scheduler}}也會接著跟進。"
+      }
     },
     "remoteSettings": {
       "empty": "暫無內容",
@@ -9121,6 +9062,8 @@
     "globalSettings": {
       "restoreHint": "恢復預設後將跟隨用戶端預設模型設定，個別夥伴的自訂模型保持不變。",
       "restoreFailed": "恢復預設失敗，請重試。",
+      "defaultModel": "預設模型",
+      "defaultModelHint": "夥伴預設使用的模型，單個夥伴可以在自己的設定裡另選。",
       "title": "伙伴",
       "description": "和伙伴有關的通用設定。單個伙伴的設定在{{pronoun}}自己的頁面裡。",
       "rosterNote": "預置陣容會隨版本更新。"
@@ -9764,7 +9707,13 @@
       "imBotOwnerMissing": "沒找到主人的使用者 ID，請到夥伴的「訊息平台」頁把這個機器人連上。",
       "imBotGatewayRunning": "原本的閘道還在使用這個機器人。先停掉它，再到「訊息平台」頁連線。",
       "imBotInUse": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
-      "imBotConnectFailed": "沒能連上這個機器人，請到夥伴的「訊息平台」頁重試。"
+      "imBotConnectFailed": "沒能連上這個機器人，請到夥伴的「訊息平台」頁重試。",
+      "imBotSourceStopUnconfirmed": "原本的機器人還沒停下，暫時沒有接給夥伴。可以稍後在夥伴的「訊息平台」頁連線。",
+      "imBotSourceChanged": "原本的機器人在預覽後換過了，沒有停用它。請重新讀取後再匯入。",
+      "bots": "訊息機器人",
+      "botsNote": "匯入後，{{source}} 裡的這些機器人會停用，由夥伴接管。",
+      "sourceDisabled": "原本已停用",
+      "botOwner": "主人 ID {{id}}"
     },
     "learning": {
       "memory": "已記住：{{title}}",
@@ -10967,6 +10916,7 @@
     "verificationFailed": "暫時無法確認 ChatGPT 登入是否已恢復，請重新檢測。"
   },
   "chat": {
+    "failedSamplingAttempt": "此回覆未完成，內容僅供參考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一則提問：{{preview}}",
     "askUserQuestion": {
@@ -11140,7 +11090,7 @@
     },
     "errorBanner": {
       "requestFormatError": "應用程式送出的請求格式有誤，本次回覆未能完成。",
-      "replyFailed": "本次回覆未能完成。請查看錯誤詳情以瞭解原因。",
+      "replyFailed": "回覆未完成",
       "retryTitle": "重新傳送最後一條訊息",
       "cancelTitle": "關閉錯誤提示",
       "retry": "重試",
@@ -11176,12 +11126,12 @@
       "syncAuthSuccess": "已同步，請點選「重試」重新傳送",
       "syncAuthFailed": "同步失敗：{{msg}}",
       "syncAuthDaemonRestartFailed": "憑證已推送到遠端，但舊 daemon 沒重啟 — 請重連遠端後再點重試",
-      "invalidEncryptedContent": "由於更換供應商導致加密不可用，本任務只能在原供應商下使用，或點此 Fork 丟棄協議加密內容並在新任務繼續。",
-      "readableHistoryRecovery": "用可讀歷史建立新任務",
-      "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
-      "forkStripEncrypted": "Fork 並剝離",
-      "forkStripEncryptedRunning": "Fork 中…",
-      "forkStripEncryptedTitle": "Fork 並剝離出新任務(去掉加密推理內容)",
+      "invalidEncryptedContent": "目前的供應商無法讀取部分歷史內容。可切回原供應商，或在新任務中繼續。",
+      "readableHistoryRecovery": "在新任務中繼續",
+      "readableHistoryRecoveryDescription": "可帶上既有對話記錄，在新任務中繼續。原任務會保留；建立後，請重新傳送剛才的訊息。",
+      "forkStripEncrypted": "在新任務中繼續",
+      "forkStripEncryptedRunning": "正在建立任務…",
+      "forkStripEncryptedTitle": "保留對話記錄，建立新任務",
       "forkStripOversizedHistory": "瘦身後繼續",
       "forkStripOversizedHistoryRunning": "Fork 中…",
       "forkStripOversizedHistoryTitle": "去掉過大的歷史圖片後 Fork 成新任務",
@@ -11197,8 +11147,11 @@
       "overloadBusyNoRetry": "模型服務繁忙，上游暫時沒有可用容量。可稍後重試，或換一個模型。",
       "streamInterrupted": "模型輸出中途中斷了。通常是上游暫時故障，可點選「重試」。",
       "streamInterruptedNoRetry": "模型輸出中途中斷了。通常是上游暫時故障，請稍後重試。",
-      "networkShowRaw": "檢視原始錯誤",
-      "networkHideRaw": "收起原始錯誤",
+      "networkShowRaw": "錯誤詳情",
+      "networkHideRaw": "收起詳情",
+      "diagnose": "診斷",
+      "diagnoseTitle": "在新任務中診斷這個錯誤",
+      "diagnosePrompt": "請幫我診斷這個錯誤：找出原因，並告訴我怎麼解決。\n\n出錯任務：{{sessionUrl}}\n錯誤提示：{{message}}\n錯誤詳情：\n{{details}}\n\n如果確認是 Cindy 本身的問題，請告訴我，我可以選擇向 Cindy 團隊提交 issue。",
       "gatewayProxyTokenInvalid": "Cindy AI 憑據已失效。請點「重試」。若仍失敗，請退出後重新登入",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 憑據已失效。若後續仍失敗，請退出後重新登入",
       "modelAccessDenied": "目前上游帳號無權存取此模型。請切換模型，或向供應商確認模型存取權限",
@@ -11226,6 +11179,21 @@
       "continuing": "繼續中…",
       "continueTitle": "從中斷處繼續完成任務（不會重複已完成的步驟）",
       "dismissTitle": "關閉此中斷提示"
+    },
+    "interruptedResumeDialog": {
+      "title": "繼續上次中斷的任務",
+      "description_one": "{{appName}} 上次意外結束，有 {{count}} 個任務沒做完。選取的任務會根據對話紀錄判斷進度，從中斷的地方接著做。",
+      "description_other": "{{appName}} 上次意外結束，有 {{count}} 個任務沒做完。選取的任務會根據對話紀錄判斷進度，從中斷的地方接著做。",
+      "selectAll": "全選",
+      "selectedCount": "已選 {{selected}} / {{total}}",
+      "interruptedAgo": "{{time}}前中斷",
+      "interruptedJustNow": "剛剛中斷",
+      "continueSelected_one": "繼續 {{count}} 個任務",
+      "continueSelected_other": "繼續 {{count}} 個任務",
+      "continueNone": "繼續任務",
+      "later": "暫不繼續",
+      "continueFailed_one": "有 {{count}} 個任務未能繼續，可以開啟任務後重試。",
+      "continueFailed_other": "有 {{count}} 個任務未能繼續，可以開啟任務後重試。"
     },
     "unreadFailedScheduleBanner": {
       "text": "先前有自動執行失敗。",
@@ -11384,7 +11352,8 @@
       "downloadUnsupported": "遠端電腦暫不支援下載資料夾，請更新該電腦上的 Cindy 後重試",
       "downloadNoSpace": "磁碟空間不足，無法完成下載",
       "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載",
-      "cancelTransfer": "取消"
+      "cancelTransfer": "取消",
+      "downloadsInProgress": "正在下載 {{count}} 個檔案"
     },
     "mivoAction": {
       "promptPlaceholder": "輸入提示詞，按 Enter 傳送",
@@ -11872,7 +11841,9 @@
       "REMOTE_AGENT_SHARE_PAUSED": "對方已暫停對你的分享，恢復前不能使用這些模型。可以換成其他模型繼續。",
       "REMOTE_AGENT_SHARE_REMOVED": "這個分享已無法使用（對方刪除了分享或你已退出）。可以換成其他模型繼續。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供應商暫時無法使用：對方電腦可能不在線，或對方暫時關閉了分享。可以稍後再試，或換成其他模型繼續。",
-      "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以到這個供應商的「遠端與分享」頁查看組內電腦。"
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以到這個供應商的「遠端與分享」頁查看組內電腦。",
+      "REMOTE_AGENT_DEVICE_LIMIT": "這台裝置保留的遠端任務數已達上限。可封存暫時不用的任務，或請遠端電腦的主人在「遠端與分享」中提高上限。",
+      "REMOTE_AGENT_TOTAL_LIMIT": "遠端電腦保留的任務總數已達上限。請那台電腦的主人釋放暫時不用的任務，或在「遠端與分享」中提高上限。"
     },
     "generatedFiles": {
       "title": "本條訊息生成的檔案",
@@ -14836,6 +14807,7 @@
     "addUnavailable": "當前無法在分欄中開啟該任務，請先在主區域開啟一個任務再重試"
   },
   "extraDirs": {
+    "libraryReadOnlyLabel": "Mivo 作品庫（唯讀）",
     "retryRemotePlugins": "遠端插件載入失敗，點擊重試",
     "menuAria": "操作選單",
     "tooltipEmpty": "更多操作",
@@ -15521,7 +15493,11 @@
     "checkCommand": "前置檢查命令",
     "checkHint": "選填。在電腦上先檢查：結束代碼 2 跳過本次執行，0 繼續執行，異常仍會回報。清空可移除。",
     "timeoutMs": "檢查逾時（毫秒，留空不限時）",
-    "advancedSettings": "進階設定"
+    "advancedSettings": "進階設定",
+    "builtinFollowUp": {
+      "name": "跟進（內建）",
+      "hint": "任務卡住、等你、出錯、撞上用量上限或做完時叫醒它；內建，只能暫停或恢復。"
+    }
   },
   "cindyMakeDoctor": {
     "description": "檢查本機建置 Cindy 所需的環境。用法：/cindy-make-doctor",
@@ -16583,5 +16559,11 @@
     "messageSource": "由 $t(mcpApps.appName)「{{name}}」傳送",
     "serverId": "MCP 伺服器 ID：{{id}}",
     "exitFullscreen": "離開全螢幕"
+  },
+  "richAnswer": {
+    "playVideo": "播放影片",
+    "openVideoSource": "開啟原影片",
+    "calculationUnavailable": "此項暫時無法計算。",
+    "incomplete": "部分內容未能顯示。"
   }
 }

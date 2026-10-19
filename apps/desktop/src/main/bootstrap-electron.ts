@@ -90,6 +90,7 @@ import {
 import { isAllowedBillingMailtoRequest } from '../shared/billing.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import { textFilePreviewResult, TEXT_PREVIEW_LIMIT_MB } from './text-file-preview';
 import os from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync, spawn } from 'node:child_process';
@@ -1151,6 +1152,7 @@ import {
   getProjectAutomationLoader,
 } from './scheduler-host/index.js';
 import { configureRoutineHost } from './routines/service.js';
+import { configureBotAutonomyHost, initBotAutonomy } from './bot-autonomy/service.js';
 import { getBotRemoteResourceSource } from './localDb/ipc/bots.js';
 import {
   registerScheduleHandlers,
@@ -1212,6 +1214,9 @@ configureRoutineHost({
   getScheduler: getSchedulerIfInitialized,
   getScheduleStorage,
 });
+// 伙伴自主跟进：跟随例行任务引擎生命周期（引擎每次创建后重新登记 host:sessions 事件源）。
+configureBotAutonomyHost({ getMainWindow: () => mainWindowRef });
+initBotAutonomy();
 
 /**
  * Phase 4: 不再用 `_schedulerStarted` flag —— `startScheduler()` 内部以 `_scheduler`
@@ -7222,7 +7227,7 @@ const registerIpcHandlers = () => {
 
   // ── TextLightbox IPC (text-lightbox F4/F5) ──
   //
-  // Reads a text file for the TextLightbox preview. Hard cap is 20 MB per
+  // Reads a text file for the TextLightbox preview. Hard cap is 10 MiB per
   // text-lightbox spec; over-cap files are rejected with `oversize` so the
   // renderer can render the Oversize body without re-statting the file.
   // Reuses the same `isPathAllowed` blocklist as file-attachment IPCs.
@@ -7230,13 +7235,14 @@ const registerIpcHandlers = () => {
     'text-file:read-preview',
     async (
       _event: Electron.IpcMainInvokeEvent,
-      params: { filePath: string },
+      params: { filePath: string; allowFileTransfer?: boolean },
     ): Promise<{
       success: boolean;
       error?: string;
       /** 'oversize' = file > MAX_PREVIEW_MB; renderer should switch to Oversize body. */
       reason?: 'oversize' | 'not_found' | 'forbidden' | 'read_failed';
       data?: string;
+      transferRequired?: boolean;
       size: number;
       /** Preview cap in MB — surfaced so renderer can render dynamic copy
        * ("exceeding the {limitMb} MB preview limit") without hard-coding. */
@@ -7252,7 +7258,7 @@ const registerIpcHandlers = () => {
         // (renderer reads `limitMb` to render dynamic copy).
         // 10MB:预览走同步全文读 + 主线程高亮渲染,再大会明显卡;附件走路径透传
         // 不占这条预览成本(附件层已不在 renderer 做大小限制),两者解耦。
-        const MAX_PREVIEW_MB = 10;
+        const MAX_PREVIEW_MB = TEXT_PREVIEW_LIMIT_MB;
         const MAX_PREVIEW = MAX_PREVIEW_MB * 1024 * 1024;
 
         if (!filePath || !path.isAbsolute(filePath)) {
@@ -7294,8 +7300,8 @@ const registerIpcHandlers = () => {
           return { success: false, reason: 'oversize', size, limitMb: MAX_PREVIEW_MB };
         }
 
-        const data = await fs.promises.readFile(filePath, 'utf8');
-        return { success: true, data, size, limitMb: MAX_PREVIEW_MB };
+        const data = await fs.promises.readFile(filePath);
+        return textFilePreviewResult(data, params.allowFileTransfer === true);
       } catch (err) {
         return {
           success: false,

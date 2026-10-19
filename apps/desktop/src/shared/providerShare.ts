@@ -2,6 +2,8 @@
  * 供应商分享的 Renderer ↔ Main 契约(只在本机进程之间；服务端契约见
  * docs/provider-sharing-contract.md)。身份只有昵称与头像。
  */
+import type { RemoteAgentLimits, RemoteAgentLimitsView } from './remoteAgentLimits';
+
 import type {
   ProviderShareLinkPreview,
   ProviderShareMember,
@@ -186,6 +188,9 @@ export interface ProviderShareSettledEvent {
 }
 
 export type ProviderShareCommand =
+  | { action: 'get-run-limits' }
+  | { action: 'reset-run-limits' }
+  | { action: 'set-run-limits'; limits: Partial<RemoteAgentLimits> }
   | { action: 'owned'; range: ProviderShareUsageRange }
   /** 这个供应商按使用方的用量(本机与我的其他电脑)。不依赖分享服务。 */
   | { action: 'own-usage'; providerId: string; range: ProviderShareUsageRange }
@@ -213,6 +218,9 @@ export interface ProviderShareCredentialConsentView {
 }
 
 export interface ProviderShareCommandResult {
+  'get-run-limits': RemoteAgentLimitsView;
+  'set-run-limits': RemoteAgentLimitsView;
+  'reset-run-limits': RemoteAgentLimitsView;
   owned: ProviderShareOwnerState;
   'own-usage': ProviderOwnUsageView;
   'usage-history': ProviderUsageHistoryView;

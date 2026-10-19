@@ -21,13 +21,17 @@ const state = vi.hoisted(() => ({
   goBack: vi.fn(),
   goForward: vi.fn(),
   inject: vi.fn(),
+  appStateListeners: new Set<(value: string) => void>(),
 }));
 vi.mock('react-native', () => ({
   Platform: { OS: 'ios' },
   View: ({ children }: { children: unknown }) => children,
   ActivityIndicator: () => null,
   StyleSheet: { create: (value: unknown) => value },
-  AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
+  AppState: { currentState: 'active', addEventListener: (_event: string, listener: (value: string) => void) => {
+    state.appStateListeners.add(listener);
+    return { remove() { state.appStateListeners.delete(listener); } };
+  } },
 }));
 vi.mock('@/theme', () => ({ useTheme: () => ({ colors: { surfaceElevated: '#FFFFFC' } }) }));
 vi.mock('@/components/AppText', () => ({ Text: ({ children }: { children: unknown }) => children }));
@@ -66,6 +70,7 @@ afterEach(() => {
   state.unregisterInvoke.mockClear(); state.unregisterUpload.mockClear(); state.unregisterReset.mockClear();
   state.goBack.mockClear(); state.goForward.mockClear();
   state.inject.mockClear();
+  vi.useRealTimers();
 });
 
 it('installs geometry on each document and ignores scroll/load events from a disposed reader', () => {
@@ -177,6 +182,55 @@ it('starts a new native history for a refreshed snapshot and ignores navigation 
 });
 
 const hidden = () => [(state.props as Record<string, unknown>).style].flat(Infinity).some((style: any) => style?.opacity === 0);
+// Unit regression: cached preparation and WebView loading used to mount two separate
+// loading views. Keep one delayed indicator across both phases, with no flash on a fast open.
+it('keeps one loading lifetime from preparation through the first document paint', () => {
+  vi.useFakeTimers();
+  const container = document.createElement('div');
+  root = createRoot(container);
+  const preview: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/a/', documents: ['/index.html'], close: async () => {} };
+  const props = { onError() {}, loading: createElement(HtmlPreviewLoading) };
+  act(() => root!.render(createElement(HtmlSnapshotReader, props)));
+  expect(state.mounts).toBe(0);
+  expect(container.textContent).toBe('');
+  act(() => vi.advanceTimersByTime(150));
+  act(() => root!.render(createElement(HtmlSnapshotReader, { ...props, preview })));
+  expect(state.mounts).toBe(1);
+  expect(container.textContent).toBe('');
+  act(() => vi.advanceTimersByTime(50));
+  expect(container.textContent).toContain('files.preview.fetchingHtmlResources');
+  act(() => state.props.onLoadEnd());
+  expect(container.textContent).toBe('');
+  expect(hidden()).toBe(false);
+});
+
+// Unit regression: a duplicate foreground event must not discard a readable page.
+// Actual background/foreground transitions must still release and recreate the native server.
+it('keeps the page on duplicate active events and rebuilds only after suspension', async () => {
+  root = createRoot(document.createElement('div'));
+  const close = vi.fn().mockResolvedValue(undefined);
+  const preview: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/a/', documents: [], close };
+  const prepare = vi.fn().mockImplementation(async () => ({ ...preview }));
+  let snapshot!: ReturnType<typeof useHtmlSnapshot>;
+  function Harness() { snapshot = useHtmlSnapshot('/a.html', true, prepare); return null; }
+  await act(async () => root!.render(createElement(Harness)));
+  await act(async () => state.appStateListeners.forEach(listener => listener('active')));
+  expect(snapshot.preview).toEqual(preview);
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(close).not.toHaveBeenCalled();
+  expect(prepare.mock.lastCall?.[3]).toBe(true);
+  await act(async () => snapshot.retry());
+  expect(snapshot.preview).toEqual(preview);
+  expect(prepare.mock.lastCall?.[3]).toBe(false);
+  await act(async () => state.appStateListeners.forEach(listener => listener('background')));
+  expect(snapshot.preview).toBeUndefined();
+  expect(close).toHaveBeenCalledTimes(2);
+  await act(async () => state.appStateListeners.forEach(listener => listener('active')));
+  expect(snapshot.preview).toEqual(preview);
+  expect(prepare).toHaveBeenCalledTimes(3);
+  expect(prepare.mock.lastCall?.[3]).toBe(true);
+});
+
 it('hides each snapshot until its first document loads, then reveals it', () => {
   const container = document.createElement('div');
   root = createRoot(container);
@@ -234,4 +288,72 @@ it('ignores late failure events from a replaced preview', () => {
   expect(onError).not.toHaveBeenCalled();
   act(() => state.props.onError({ nativeEvent: { code: -1001 } }));
   expect(onError).toHaveBeenCalledOnce();
+});
+
+// Unit regression for PR #6323: real hook + reader navigation followed by a delayed
+// update must preserve the current inner page. Existing update cases had no navigation.
+// Minimal input: cached entry -> sibling document -> background update resolves.
+it.each(['sibling', 'entry', 'returned'] as const)('applies background updates only at the entry document (%s)', async (destination) => {
+  root = createRoot(document.createElement('div'));
+  let finishCheck!: (preview: MobileHtmlPreview) => void;
+  const initial: MobileHtmlPreview = {
+    url: 'http://127.0.0.1:1234/__cindy/token', documents: ['/report%20one.html', '/detail.html'],
+    close: vi.fn().mockResolvedValue(undefined),
+    updated: new Promise(resolve => { finishCheck = resolve; }),
+  };
+  const next = { ...initial, url: 'http://127.0.0.1:4321/__cindy/fresh', updated: undefined };
+  const prepare = vi.fn().mockResolvedValue(initial);
+  let snapshot!: ReturnType<typeof useHtmlSnapshot>;
+  function Harness() {
+    snapshot = useHtmlSnapshot('/report one.html', true, prepare);
+    return createElement(HtmlSnapshotReader, {
+      preview: snapshot.preview, onError() {}, onNavigationStateChange: snapshot.onNavigationStateChange,
+    });
+  }
+  await act(async () => root!.render(createElement(Harness)));
+  const navigate = (path: string) => act(() => state.props.onNavigationStateChange({ url: `http://127.0.0.1:1234/${path}` }));
+  navigate(destination === 'entry' ? 'report%20one.html#details' : 'detail.html');
+  if (destination === 'returned') navigate('report%20one.html');
+  await act(async () => finishCheck(next));
+  expect(snapshot.preview).toBe(destination === 'sibling' ? initial : next);
+  expect(state.mounts).toBe(destination === 'sibling' ? 1 : 2);
+  expect(initial.close).not.toHaveBeenCalled();
+  expect(prepare).toHaveBeenCalledOnce();
+  await act(async () => root!.unmount()); root = undefined;
+  expect(initial.close).toHaveBeenCalledOnce();
+});
+
+// Unit: the real hook must retain usable content during automatic replacement and
+// ignore late work after leaving. These timings were absent from manual-retry coverage.
+it.each(['changed', 'same', 'failed', 'left'] as const)('replaces a stale snapshot at most once and preserves its owner (%s)', async (outcome) => {
+  root = createRoot(document.createElement('div'));
+  let finishCheck!: (preview: MobileHtmlPreview | null) => void;
+  let failCheck!: (error: Error) => void;
+  const initial: MobileHtmlPreview = {
+    url: 'http://127.0.0.1:1234/old', documents: [], close: vi.fn().mockResolvedValue(undefined),
+    updated: new Promise((resolve, reject) => { finishCheck = resolve; failCheck = reject; }),
+  };
+  const next: MobileHtmlPreview = {
+    url: 'http://127.0.0.1:4321/new', documents: [], close: vi.fn().mockResolvedValue(undefined),
+    updated: Promise.resolve(null),
+  };
+  const prepare = vi.fn().mockResolvedValue(initial);
+  let snapshot!: ReturnType<typeof useHtmlSnapshot>;
+  function Harness({ enabled = true }: { enabled?: boolean }) {
+    snapshot = useHtmlSnapshot('/a.html', enabled, prepare); return null;
+  }
+  await act(async () => root!.render(createElement(Harness)));
+  expect(snapshot.preview).toBe(initial);
+  expect(initial.close).not.toHaveBeenCalled();
+  if (outcome === 'left') await act(async () => root!.render(createElement(Harness, { enabled: false })));
+  await act(async () => {
+    if (outcome === 'failed') failCheck(new Error('offline'));
+    else finishCheck(outcome === 'same' ? null : next);
+  });
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(snapshot.preview).toBe(outcome === 'changed' ? next : outcome === 'left' ? undefined : initial);
+  expect(snapshot.error).toBeUndefined();
+  if (outcome === 'left') expect(next.close).toHaveBeenCalledOnce();
+  await act(async () => root!.render(createElement(Harness, { enabled: false })));
+  expect(initial.close).toHaveBeenCalledOnce();
 });

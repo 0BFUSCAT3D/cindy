@@ -3,6 +3,7 @@ import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
   FILE_INLINE_MAX_BYTES,
   REMOTE_INVOKE_ALLOWLIST,
+  sharedTaskHostPeer,
 } from "@cindy/device-link";
 import {
   createMobileMakerTransport,
@@ -10,6 +11,8 @@ import {
 } from "@/device-link/mobileMakerTransport";
 import type { RemoteInvoke } from "@/device-link/mobileMakerTransport";
 import { installPeerFileDownload } from "@/device-link/peerFileRegistry";
+const fileCache = vi.hoisted(() => ({ readLatest: vi.fn(), readInline: vi.fn(), storeInline: vi.fn(), invalidate: vi.fn(), download: vi.fn() }));
+vi.mock('@/device-link/peerFileCache', () => ({ createPeerFileCache: async () => fileCache }));
 import { isDirectPreviewableMediaUrl, resolveMobileRemoteMedia } from "@/session/remoteMedia";
 import { fetchRemoteAbsFileOnce } from '@/session/remoteAbsFileFetch';
 import {
@@ -36,6 +39,89 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  // Unit: a visible text snapshot is already cached by the reader. Its refresh
+  // must await the Host, while retaining the existing confirmed-version cache.
+  it('revalidates text without returning stale bytes or invalidating a confirmed version', async () => {
+    setMobileAuthOwner('text-revalidation');
+    const stale = { ossKey: '', size: 3, mimeType: 'text/plain', version: 'a'.repeat(64), inlineBase64: 'b2xk' };
+    const current = { ...stale, version: 'b'.repeat(64), inlineBase64: 'bmV3' };
+    fileCache.readLatest.mockResolvedValue(stale);
+    fileCache.readInline.mockResolvedValue(current);
+    const invoke = vi.fn(async () => ({ ...current, inlineBase64: undefined, transferRequired: true }));
+    const maker = createMobileMakerTransport({ deviceId: 'text-host', invoke: invoke as RemoteInvoke });
+    try {
+      expect(await maker.fetchRemoteMedia('xdt-file://open?path=/text.txt', { stream: false, revalidate: true })).toEqual(current);
+      expect(fileCache.readLatest).not.toHaveBeenCalled();
+      expect(fileCache.invalidate).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      fileCache.readLatest.mockReset(); fileCache.readInline.mockReset();
+      authOwnerTesting.reset(); vi.clearAllMocks();
+    }
+  });
+  it('reads through an older shared host without sending unknown metadata-only fields', async () => {
+    const result = { ossKey: '', size: 3, mimeType: 'text/plain', inlineBase64: 'YWJj' };
+    const invoke = vi.fn(async (_device, _channel, [request]) => {
+      if ('metadataOnly' in request) throw new Error('PERMISSION_DENIED');
+      return result;
+    });
+    const maker = createMobileMakerTransport({ deviceId: sharedTaskHostPeer('shared', 'host'), invoke: invoke as RemoteInvoke });
+    expect(await maker.fetchRemoteMedia('xdt-file://open?path=/a.txt', { stream: false })).toEqual(result);
+    expect(await maker.fetchRemoteMedia('xdt-file://open?path=/a.txt', { stream: false })).toEqual(result);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+  it('opens a cached file without waiting for connection or host metadata, then refreshes in background', async () => {
+    setMobileAuthOwner('cache-first-owner');
+    const cached = { ossKey: '', size: 3, mimeType: 'application/pdf', version: 'a'.repeat(64), inlineBase64: 'YWJj' };
+    fileCache.readLatest.mockResolvedValueOnce(cached);
+    let connect!: () => void;
+    const beforeFetch = vi.fn(() => new Promise<void>(resolve => { connect = resolve; }));
+    const invoke = vi.fn(async () => ({ ...cached, inlineBase64: undefined, transferRequired: true }));
+    const maker = createMobileMakerTransport({ deviceId: 'cached-device', invoke: invoke as RemoteInvoke });
+    try {
+      expect(await maker.fetchRemoteMedia('xdt-file://open?path=/cached.pdf', { stream: false, beforeFetch })).toEqual(cached);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(beforeFetch).toHaveBeenCalledOnce();
+      connect();
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    } finally { authOwnerTesting.reset(); vi.clearAllMocks(); }
+  });
+  // #6292 + #6299, unit: HTML owns its visible cache. Its background fetch must
+  // return fresh bytes, not re-store the transport's stale snapshot indefinitely.
+  it('refreshes HTML from the host even when the transfer cache contains an older copy', async () => {
+    setMobileAuthOwner('html-refresh-owner');
+    const cached = { ossKey: '', size: 3, mimeType: 'text/html', version: 'a'.repeat(64), inlineBase64: 'b2xk' };
+    const fresh = { ...cached, version: 'b'.repeat(64), inlineBase64: 'bmV3' };
+    fileCache.readLatest.mockResolvedValue(cached);
+    const invoke = vi.fn(async () => fresh);
+    const maker = createMobileMakerTransport({ deviceId: 'html-refresh', invoke: invoke as RemoteInvoke });
+    try {
+      const result = await fetchRemoteAbsFileOnce({ maker, deviceId: 'html-refresh', openLink: async () => {},
+        presignGet: vi.fn() }, '/page.html');
+      expect(result.inlineBase64).toBe(fresh.inlineBase64);
+      expect(invoke).toHaveBeenCalled();
+      expect(fileCache.readLatest).not.toHaveBeenCalled();
+    } finally { fileCache.readLatest.mockReset(); authOwnerTesting.reset(); vi.clearAllMocks(); }
+  });
+  it('checks the host version on every small-file read, reuses disk bytes, and honors forced refresh', async () => {
+    setMobileAuthOwner('cache-owner');
+    const result = { ossKey: '', size: 3, mimeType: 'text/html', version: 'a'.repeat(64), inlineBase64: 'YWJj' };
+    let stored: typeof result | null = null;
+    fileCache.readInline.mockImplementation(async () => stored);
+    fileCache.storeInline.mockImplementation(async (_device, _url, value) => { stored = value; });
+    fileCache.invalidate.mockImplementation(async () => { stored = null; });
+    const invoke = vi.fn(async (_device, _channel, [args]) => args.metadataOnly
+      ? { ...result, inlineBase64: undefined, transferRequired: true } : result);
+    const maker = createMobileMakerTransport({ deviceId: 'd', invoke: invoke as RemoteInvoke });
+    try {
+      expect(await maker.fetchRemoteMedia('xdt-file://open?path=/a.html', { stream: false })).toEqual(result);
+      expect(await maker.fetchRemoteMedia('xdt-file://open?path=/a.html', { stream: false })).toEqual(result);
+      expect(invoke).toHaveBeenCalledTimes(3);
+      await maker.fetchRemoteMedia('xdt-file://open?path=/a.html', { stream: false, skipCache: true });
+      expect(fileCache.invalidate).toHaveBeenCalledWith('d', 'xdt-file://open?path=/a.html');
+      expect(invoke).toHaveBeenCalledTimes(5);
+    } finally { authOwnerTesting.reset(); vi.clearAllMocks(); }
+  });
   describe.each([
     ["video", "video/mp4", "mp4"],
     ["audio", "audio/mpeg", "mp3"],
@@ -837,7 +923,7 @@ describe("mobile maker transport", () => {
       ],
       [
         "device-link:media:fetch",
-        [{ url: "xdt-image://local/a.png", prepareOnly: true }],
+        [{ url: "xdt-image://local/a.png", prepareOnly: true, metadataOnly: true }],
       ],
       [
         "device-link:voice:transcribe",
