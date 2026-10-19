@@ -64,6 +64,11 @@ function publicUsage(
   viewer: string,
   owner: ReturnType<ProviderShareInsightsDeps['owner']>,
 ): ProviderShareUsageDetails {
+  const memberUsage = new Map(
+    history.members
+      .filter((item) => item.shareId === share.shareId)
+      .map((item) => [item.memberId, item]),
+  );
   return {
     todayKey: history.todayKey,
     coverageStart: history.coverageStart,
@@ -79,9 +84,7 @@ function publicUsage(
         days: publicDays(history.self.days),
       },
       ...share.members.map((member) => {
-        const usage = history.members.find(
-          (item) => item.shareId === share.shareId && item.memberId === member.memberId,
-        );
+        const usage = memberUsage.get(member.memberId);
         return {
           key: createHash('sha256')
             .update(JSON.stringify([share.shareId, member.memberId]))

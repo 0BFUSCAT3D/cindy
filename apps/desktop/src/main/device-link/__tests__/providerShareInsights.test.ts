@@ -9,6 +9,7 @@ import { createProviderShareInsightsReader } from '../providerShareInsights';
  * 最小失败输入：一项查询失败、在途关闭后重开、同 providerId 换账号、转来的一行用量。
  * 缓存回归：PR #6482 P1；旧覆盖仅单供应商，补 A→B→A、过期和旧失败晚于新读取的时序。
  * 回包预算：#4316096976，旧覆盖未包含昵称/头像膨胀；用大名单加已有预算内账本触发最终帧超限。
+ * 成员索引：#4316198438，扩展原投影用例验证不同成员及分享不会串账；复杂度另用诊断输入实测。
  * tier: unit；依赖注入，无 Electron/外网/真实等待。单文件耗时见执行报告。 */
 const day = {
   day: '2026-10-19',
@@ -117,7 +118,22 @@ describe('provider share insights', () => {
     expect(deps.history).toHaveBeenCalledTimes(Number(usage));
   });
   it('includes relayed totals without topology, private notes, or deleted members', async () => {
-    const { read } = fixture();
+    const { read, deps, history } = fixture();
+    deps
+      .shares()[0]
+      .members.push({ ...deps.shares()[0].members[0], memberId: 'bob', displayName: 'Bob' });
+    history.members.unshift({
+      shareId: 'other-share',
+      memberId: 'member',
+      lastUsedAt: 3,
+      days: [{ ...day, inputTokens: 999 }],
+    });
+    history.members.push({
+      shareId: 'share',
+      memberId: 'bob',
+      lastUsedAt: 3,
+      days: [{ ...day, inputTokens: 77 }],
+    });
     const view = await read('peer', request);
     expect(
       view.usage?.parties.map((p) => [
@@ -127,6 +143,7 @@ describe('provider share insights', () => {
     ).toEqual([
       ['Owner', 10],
       ['Alice', 10],
+      ['Bob', 77],
       ['relay', 20],
     ]);
     expect(view.usage?.parties[1].isYou).toBe(true);
