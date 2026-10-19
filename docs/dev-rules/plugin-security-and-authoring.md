@@ -223,6 +223,9 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
     全部条目。首次安装展示全部权限并确认；更新相对当前已装版本按 `diffInstalledGhostPermissionItems`
     比较，新增条目、同 key 条目内容变化或内置 OAuth 客户端变化才算权限变多，只删除不算；
     已装版本没有有效批准基线时按全部权限新增处理。
+    邮件的 `mail`、`mailReader.tool`、逐个 reader host 和 `markRead: true` 分别进入权限投影；
+    复用既有工具也不能隐藏新增邮件能力。域名重排／去重不算扩权，只移除邮件能力不要求确认。
+    同一投影用于插件详情、首装与更新确认；不新增批准记录或要求存量插件重新配置。
   - 入口与确认界面：插件页、拖入、双击 `.cindy` 与设置页导入由发起窗口弹确认框
     （`GhostInstallConsentWindowBridge` → `GhostInstallConsentHost`，只投给、也只接受发起安装
     的那个 webContents）；Agent 调用 `ghost_market_install`／`ghost_forge_install` 不论任务权限档
