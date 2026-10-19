@@ -1,5 +1,5 @@
 import { ipcMain, webContents, type IpcMainInvokeEvent } from 'electron';
-import type { AsrProvider } from '@cindy/voice-input-core';
+import type { AsrProvider, AudioGate } from '@cindy/voice-input-core';
 import {
   normalizeVoiceConversationSelection,
   normalizeSpeechModelSelection,
@@ -25,6 +25,7 @@ import {
 import { hasEnabledGhostAssistantHook } from '../cindy-brain/index.js';
 import type { VoiceInputSettings } from '../../shared/voiceInputData.js';
 import { createLogger } from '../logger.js';
+import { classifyVoiceExit } from './semanticExit.js';
 
 const log = createLogger('voice-conversation');
 
@@ -37,6 +38,7 @@ function boundedString(value: unknown, name: string, limit: number): string {
 /** Local top-level renderer only; deliberately absent from device-link and plugin allowlists. */
 export function registerVoiceConversationIpc(deps: {
   createProvider(): Promise<AsrProvider>;
+  createAudioGate(): AudioGate | undefined;
   hasDictation(): boolean;
   getSettings(): VoiceInputSettings;
   updateSettings(patch: Partial<VoiceInputSettings>): VoiceInputSettings;
@@ -67,6 +69,7 @@ export function registerVoiceConversationIpc(deps: {
     connection: (selection) => resolveSpeechConnection(catalogDeps(), selection),
     fetch: outboundFetch,
     hasReplyHook: hasEnabledGhostAssistantHook,
+    classifyExit: classifyVoiceExit,
     emit: (sender, event) => {
       const target = webContents.fromId(sender);
       if (target && !target.isDestroyed()) target.send('voice-conversation:event', event);
@@ -209,6 +212,20 @@ export function registerVoiceConversationIpc(deps: {
   handle('finish-utterance', (event, id) =>
     service.finishUtterance(event.sender.id, boundedString(id, 'callId', 64)),
   );
+  handle('classify-exit', (event, id, utteranceId, inputGeneration) => {
+    if (
+      typeof inputGeneration !== 'number' ||
+      !Number.isSafeInteger(inputGeneration) ||
+      inputGeneration < 0
+    )
+      throwIpcError('INVALID_PARAMS', 'Invalid input generation');
+    return service.classifyExit(
+      event.sender.id,
+      boundedString(id, 'callId', 64),
+      boundedString(utteranceId, 'utteranceId', 128),
+      inputGeneration,
+    );
+  });
   handle('set-input-muted', (event, id, muted) => {
     if (typeof muted !== 'boolean') throwIpcError('INVALID_PARAMS', 'Invalid microphone state');
     if (!muted && isAppSessionBoundaryPending()) throw new Error('changing_account');

@@ -1206,7 +1206,7 @@ export function ChatInput({
   fastMode = false,
   onFastModeChange,
   onWorkingDirChange,
-  disabled,
+  disabled: disabledProp,
   settingsLocked: settingsLockedProp = false,
   isStreaming = false,
   isAgentBusy,
@@ -1273,6 +1273,9 @@ export function ChatInput({
   onUnifiedDraftSelect,
   selectedFavoriteUid = null,
 }: ChatInputProps) {
+  // Keep the existing draft/editor mounted during a companion call, but reuse
+  // every disabled guard (typing, drop, button and hotkey sends) until it ends.
+  const disabled = disabledProp || voiceConversationActive;
   // device-link 远程会话:null = 已确认本地会话,undefined = 所有权尚未解析,string = 远程会话。
   // 预测守卫用原始值区分 null vs undefined,下游通路继续用 ?? undefined 归一化。
   const deviceLinkDeviceId = _deviceLinkDeviceId;

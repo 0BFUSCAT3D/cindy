@@ -725,6 +725,15 @@ export class RealtimeAsrWebSocketProvider implements AsrProvider {
     }
   }
 
+  get endpointing(): 'manual' | 'acoustic' {
+    return this.protocolProfile === 'qwen-asr-server-vad' ? 'acoustic' : 'manual';
+  }
+
+  private readonly itemEndpoints = new Map<string, {
+    turnEnd: 'acoustic' | 'manual'; audioEndMs?: number;
+  }>();
+  private audioClockAligned = true;
+
   private segmentCallback?: (segment: import('@cindy/voice-input-core').AsrSegment) => void;
 
   onSegment(callback: (segment: import('@cindy/voice-input-core').AsrSegment) => void): void {
@@ -1208,7 +1217,20 @@ export class RealtimeAsrWebSocketProvider implements AsrProvider {
         this.callback({ type: 'connected', at: Date.now() });
         this.startResolve?.();
         break;
+      case 'input_audio_buffer.speech_stopped':
+        if (this.protocolProfile === 'qwen-asr-server-vad' && typeof event.item_id === 'string') {
+          const audioEndMs = this.audioClockAligned
+            && typeof event.audio_end_ms === 'number' && Number.isFinite(event.audio_end_ms)
+            && event.audio_end_ms >= 0 && event.audio_end_ms <= this.sentAudioMs
+            ? event.audio_end_ms : undefined;
+          this.itemEndpoints.set(event.item_id, {
+            turnEnd: 'acoustic', ...(audioEndMs !== undefined ? { audioEndMs } : {}),
+          });
+        }
+        break;
       case 'input_audio_buffer.committed':
+        if (this.protocolProfile === 'openai-transcription-manual' && typeof event.item_id === 'string')
+          this.itemEndpoints.set(event.item_id, { turnEnd: 'manual' });
         if (typeof event.item_id === 'string') this.registerItem(event.item_id);
         if (this.protocolProfile === 'qwen-asr-server-vad') this.bufferedMs = 0;
         break;
@@ -1318,7 +1340,11 @@ export class RealtimeAsrWebSocketProvider implements AsrProvider {
     const aggregateBefore = this.aggregateTranscript();
     this.registerItem(event.item_id);
     this.finalsByItem.set(event.item_id, itemTranscript);
-    this.segmentCallback?.({ id: event.item_id, order: this.itemOrder.indexOf(event.item_id), text: itemTranscript, final: true });
+    this.segmentCallback?.({
+      id: event.item_id, order: this.itemOrder.indexOf(event.item_id), text: itemTranscript, final: true,
+      ...this.itemEndpoints.get(event.item_id),
+    });
+    this.itemEndpoints.delete(event.item_id);
     this.partialsByItem.delete(event.item_id);
     if (this.pendingCommitCount > 0) this.pendingCommitCount -= 1;
     // A completed item means the server consumed that utterance, not
@@ -1368,6 +1394,8 @@ export class RealtimeAsrWebSocketProvider implements AsrProvider {
     this.lastQueueLogAt = 0;
     this.sentChunkCount = 0;
     this.sentAudioMs = 0;
+    this.itemEndpoints.clear();
+    this.audioClockAligned = !this.inRecovery;
     this.inboundMsgCount = 0;
     this.lastInboundType = undefined;
     this.lastInboundAt = 0;

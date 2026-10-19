@@ -9927,6 +9927,21 @@
       }
     },
     "voiceMode": {
+      "showDetails": "音声の詳細を表示",
+      "hideDetails": "音声の詳細を閉じる",
+      "transcriptTitle": "現在の文字起こし",
+      "transcriptEmpty": "話した内容がここに表示されます。",
+      "composerPaused": "音声モードを終了すると入力できます…",
+      "microphoneMuted": "マイクはオフです",
+      "exit": {
+        "idle": "しばらく発話がないため、まもなく音声モードを終了します",
+        "farewell": "別れの言葉を認識しました。まもなく音声モードを終了します",
+        "semantic": "まもなく音声モードを終了します",
+        "countdown": "{{seconds}}秒後に音声モードを終了",
+        "cancel": "音声モードを続ける",
+        "hint": "話し始めるか「音声モードを続ける」を押すと、終了を取り消せます。進行中の作業には影響しません。",
+        "mutedHint": "マイクはミュートのままです。「音声モードを続ける」を押すと、終了を取り消せます。進行中の作業には影響しません。"
+      },
       "settingsTitle": "音声",
       "openSettings": "音声設定",
       "startConversation": "音声会話を開始",
@@ -9958,7 +9973,6 @@
       "readAloudFailed": "読み上げに失敗しました。チームメイトの設定でモデルと音声を確認してから、もう一度お試しください。",
       "finishBeforeDictation": "音声モードを終了してから音声入力を開始してください。",
       "title": "音声モード",
-      "close": "音声モードを閉じる",
       "model": "読み上げモデル",
       "refresh": "モデルを更新",
       "voice": "音声",

@@ -19,11 +19,11 @@ import { mergeRecoveredTranscript } from '../transcriptMerge.js';
 describe('VolcengineSaucAsrProvider protocol helpers', () => {
   it('keeps stable utterance identities for continuous speech, including repeated text and provisional segments', () => {
     expect(extractConversationSegments({ result: { utterances: [
-      { start_time: 0, text: '你好', definite: true },
-      { start_time: 1500, text: '你好', definite: false },
+      { start_time: 0, end_time: 800, text: '你好', definite: true },
+      { start_time: 1500, end_time: 1400, text: '你好', definite: false },
       { text: 'missing timestamp', definite: true },
     ] } })).toEqual([
-      { id: '0', order: 0, text: '你好', final: true },
+      { id: '0', order: 0, text: '你好', final: true, audioEndMs: 800 },
       { id: '1500', order: 1500, text: '你好', final: false },
     ]);
   });
@@ -159,14 +159,17 @@ describe('VolcengineSaucAsrProvider protocol helpers', () => {
         resourceId: 'volc.test',
       });
       provider.onEvent((event) => events.push(event));
+      const onSegment = vi.fn();
+      provider.onSegment(onSegment);
 
       await provider.start();
       await waitFor(() => sockets.length === 1);
       provider.appendAudio(makePcmChunk(), makeTrace(0));
       provider.appendAudio(makePcmChunk(), makeTrace(1));
       await waitFor(() => (messageCounts[0] ?? 0) >= 2);
-      sockets[0].send(serverTranscriptPacket('你好，今天', false));
+      sockets[0].send(serverTranscriptPacket('你好，今天', false, 0, 100));
       await waitFor(() => events.some((event) => event.text === '你好，今天'));
+      expect(onSegment).toHaveBeenLastCalledWith(expect.objectContaining({ audioEndMs: 100 }));
 
       provider.appendAudio(makePcmChunk(), makeTrace(2));
       sockets[0].close(1011, 'WebSocket passthrough error');
@@ -177,9 +180,12 @@ describe('VolcengineSaucAsrProvider protocol helpers', () => {
       await recoverPromise;
       await waitFor(() => sockets.length === 2);
       await waitFor(() => (messageCounts[1] ?? 0) >= 5);
-      sockets[1].send(serverTranscriptPacket('今天小镇周会', false));
+      sockets[1].send(serverTranscriptPacket('今天小镇周会', false, 0, 100));
 
       await waitFor(() => events.some((event) => event.text === '你好，今天小镇周会'));
+      // Replay starts a different provider clock; it cannot shorten a later
+      // conversation pause using the old capture offset.
+      expect(onSegment).toHaveBeenLastCalledWith(expect.objectContaining({ audioEndMs: undefined }));
     } finally {
       await provider?.stop();
       for (const socket of sockets) {
@@ -695,6 +701,7 @@ function serverTranscriptPacket(text: string, isFinal: boolean, flags = 0x0, end
       utterances: [
         {
           text,
+          start_time: 0,
           definite: isFinal,
           end_time: endTime,
         },

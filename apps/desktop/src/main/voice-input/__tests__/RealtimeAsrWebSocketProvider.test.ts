@@ -38,7 +38,11 @@ import {
 } from '../../../shared/voiceInputRefinerProfiles.js';
 
 describe('RealtimeAsrWebSocketProvider helpers', () => {
-  it('exposes item identities and commit order even when final transcriptions arrive out of order', async () => {
+  // Protocol regression: final text is not semantic completion. Qwen's explicit
+  // VAD stop supplies audio timing; manual OpenAI commit supplies no such clock.
+  // Existing loopback fixture verifies both without real ASR or microphone use.
+  it.each(['openai-transcription-manual', 'qwen-asr-server-vad'] as const)(
+    'preserves ordered segments and distinct endpoint evidence for %s', async (protocolProfile) => {
     const server = new WebSocketServer({ port: 0 });
     let socket: WebSocket | undefined;
     let provider: RealtimeAsrWebSocketProvider | undefined;
@@ -52,11 +56,16 @@ describe('RealtimeAsrWebSocketProvider helpers', () => {
       await waitFor(() => server.address() !== null);
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Expected local test server address.');
-      provider = new RealtimeAsrWebSocketProvider({ accessTokenProvider: async () => 'test-key', realtimeUrl: `ws://127.0.0.1:${address.port}/v1/realtime`, model: 'gpt-realtime-whisper' });
+      provider = new RealtimeAsrWebSocketProvider({ accessTokenProvider: async () => 'test-key', realtimeUrl: `ws://127.0.0.1:${address.port}/v1/realtime`, model: 'gpt-realtime-whisper', protocolProfile });
       const segment = vi.fn(); provider.onSegment(segment); provider.onEvent(() => {});
       await provider.start();
+      provider.appendAudio(new Int16Array(16 * 2_000).buffer);
+      const acoustic = protocolProfile === 'qwen-asr-server-vad';
+      expect(provider.endpointing).toBe(acoustic ? 'acoustic' : 'manual');
       for (const event of [
+        ...(acoustic ? [{ type: 'input_audio_buffer.speech_stopped', item_id: 'a', audio_end_ms: 800 }] : []),
         { type: 'input_audio_buffer.committed', item_id: 'a' },
+        ...(acoustic ? [{ type: 'input_audio_buffer.speech_stopped', item_id: 'b', audio_end_ms: 1_700 }] : []),
         { type: 'input_audio_buffer.committed', item_id: 'b' },
         { type: 'conversation.item.input_audio_transcription.completed', item_id: 'b', transcript: 'second' },
         { type: 'conversation.item.input_audio_transcription.completed', item_id: 'a', transcript: 'first' },
@@ -65,8 +74,10 @@ describe('RealtimeAsrWebSocketProvider helpers', () => {
       expect(segment.mock.calls.map(([value]) => value)).toEqual([
         { id: 'a', order: 0, text: '', final: false },
         { id: 'b', order: 1, text: '', final: false },
-        { id: 'b', order: 1, text: 'second', final: true },
-        { id: 'a', order: 0, text: 'first', final: true },
+        { id: 'b', order: 1, text: 'second', final: true,
+          ...(acoustic ? { turnEnd: 'acoustic', audioEndMs: 1_700 } : { turnEnd: 'manual' }) },
+        { id: 'a', order: 0, text: 'first', final: true,
+          ...(acoustic ? { turnEnd: 'acoustic', audioEndMs: 800 } : { turnEnd: 'manual' }) },
       ]);
     } finally {
       await provider?.stop(); socket?.terminate();

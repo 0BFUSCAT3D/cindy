@@ -9967,6 +9967,21 @@
       }
     },
     "voiceMode": {
+      "showDetails": "Show voice details",
+      "hideDetails": "Hide voice details",
+      "transcriptTitle": "Current transcription",
+      "transcriptEmpty": "Your speech will appear here.",
+      "composerPaused": "End voice mode to continue typing…",
+      "microphoneMuted": "Microphone off",
+      "exit": {
+        "idle": "No recent conversation. Voice mode will end soon.",
+        "farewell": "Goodbye heard. Voice mode will end soon.",
+        "semantic": "Voice mode is about to end",
+        "countdown": "Voice mode ends in {{seconds}} seconds",
+        "cancel": "Keep voice mode open",
+        "hint": "Speak again or keep voice mode open to cancel. Work in progress will continue.",
+        "mutedHint": "Your microphone is still muted. Keep voice mode open to cancel. Work in progress will continue."
+      },
       "settingsTitle": "Voice",
       "openSettings": "Voice settings",
       "startConversation": "Start voice conversation",
@@ -9998,7 +10013,6 @@
       "readAloudFailed": "Could not read this reply aloud. Check the model and voice in teammate settings, then try again.",
       "finishBeforeDictation": "End voice mode before starting dictation.",
       "title": "Voice Mode",
-      "close": "Close voice mode",
       "model": "Speech model",
       "refresh": "Refresh models",
       "voice": "Voice",

@@ -9927,6 +9927,21 @@
       }
     },
     "voiceMode": {
+      "showDetails": "展开语音详情",
+      "hideDetails": "收起语音详情",
+      "transcriptTitle": "当前识别文字",
+      "transcriptEmpty": "说话后，识别文字会显示在这里。",
+      "composerPaused": "结束语音后，继续输入消息…",
+      "microphoneMuted": "麦克风已关闭",
+      "exit": {
+        "idle": "暂时没有说话，即将退出语音模式",
+        "farewell": "已听到告别，即将退出语音模式",
+        "semantic": "即将结束语音模式",
+        "countdown": "{{seconds}} 秒后退出语音模式",
+        "cancel": "取消退出",
+        "hint": "继续说话或点击「取消退出」可保留语音模式。进行中的任务不受影响。",
+        "mutedHint": "麦克风仍已静音，点击「取消退出」可保留语音模式。进行中的任务不受影响。"
+      },
       "settingsTitle": "语音",
       "openSettings": "语音设置",
       "startConversation": "开始语音对话",
@@ -9958,7 +9973,6 @@
       "readAloudFailed": "朗读失败，请在伙伴设置中检查模型和音色后重试。",
       "finishBeforeDictation": "请先结束语音模式，再开始听写。",
       "title": "语音模式",
-      "close": "关闭语音模式",
       "model": "朗读模型",
       "refresh": "刷新模型",
       "voice": "音色",

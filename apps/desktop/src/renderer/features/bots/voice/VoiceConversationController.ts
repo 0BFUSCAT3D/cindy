@@ -9,8 +9,17 @@ import type { SpeechPlayer } from './PcmSpeechPlayer';
 import { speechChunks, VoiceReplyTracker } from './VoiceReplyTracker';
 import { SpeechPlaybackQueue } from './SpeechPlaybackQueue';
 import { microphoneDiagnostic } from './microphoneDiagnostics';
+import { voiceExitIntent } from './voiceExitIntent';
 
 const log = createLogger('voice-conversation');
+// Host idleness includes task/reply/audio activity. This is independent of the
+// ASR's 1.25s utterance endpoint and 150s transport rotation.
+const IDLE_EXIT_DELAY_MS = 60_000;
+const IDLE_COUNTDOWN_MS = 10_000;
+const FAREWELL_COUNTDOWN_MS = 3_000;
+type ExitReason =
+  'user' | 'idle_timeout' | 'voice_command' | 'farewell' | 'semantic' | 'remote_end';
+type QueuedUtterance = { text: string; id?: string };
 
 export type VoicePhase =
   | 'idle'
@@ -31,6 +40,7 @@ export type VoiceSnapshot = {
   muted: boolean;
   microphonePending: boolean;
   microphoneError: boolean;
+  exitCountdown: { reason: 'idle' | 'farewell' | 'semantic'; secondsRemaining: number } | null;
 };
 interface Microphone {
   onPcm16k(callback: (chunk: PcmChunk) => void): void;
@@ -49,9 +59,11 @@ export class VoiceConversationController {
     muted: false,
     microphonePending: false,
     microphoneError: false,
+    exitCountdown: null,
   };
   private listeners = new Set<() => void>();
   private epoch = 0;
+  private endVersion = 0;
   private speechEpoch = 0;
   private callId: string | null = null;
   private microphone: Microphone | null = null;
@@ -65,7 +77,9 @@ export class VoiceConversationController {
   private latestMessages: readonly ChatMessage[] = [];
   private sending = false;
   private inFlight: Promise<void> = Promise.resolve();
-  private queued: string[] = [];
+  private queued: QueuedUtterance[] = [];
+  private latestUtterance: QueuedUtterance | null = null;
+  private judgingExit: QueuedUtterance | null = null;
   private pendingStart: Promise<unknown> = Promise.resolve();
   private teardown: Promise<unknown> = Promise.resolve();
   private speechCandidate = false;
@@ -82,12 +96,19 @@ export class VoiceConversationController {
   private resumingInput = false;
   private inputChange: Promise<void> = Promise.resolve();
   private pendingCapture: Promise<unknown> = Promise.resolve();
+  private idleSince: number | null = null;
+  private exitDeadline = 0;
+  private exitTimer: ReturnType<typeof setTimeout> | undefined;
+  private exitVersion = 0;
 
   constructor(
     private readonly deps: {
       api: VoiceConversationApi;
       botId: string;
       sessionId: string;
+      /** Read the latest task/queue/background activity, including at expiry. */
+      isTaskBusy(): boolean;
+      onAutoEnd(): void;
       microphone(
         onInterrupted: () => void,
         onStateChange: (event: string, details?: Record<string, unknown>) => void,
@@ -119,6 +140,133 @@ export class VoiceConversationController {
     }
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener();
+    // PCM level updates are not evidence of speech and must not reset idleness.
+    if (Object.keys(patch).some((key) => key !== 'level' && key !== 'exitCountdown'))
+      this.refreshActivity();
+  }
+
+  private isIdle(): boolean {
+    return (
+      this.enabled &&
+      !!this.callId &&
+      !this.blocked &&
+      this.state.phase === 'listening' &&
+      !this.state.microphonePending &&
+      !this.speechCandidate &&
+      !this.state.transcript.trim() &&
+      !this.state.unsent.trim() &&
+      !this.sending &&
+      !this.queued.length &&
+      !this.pendingInput &&
+      !this.playback &&
+      !this.replyPhase &&
+      !this.deferringSpeech &&
+      !this.deps.isTaskBusy()
+    );
+  }
+
+  /** Called on task activity changes as well as call-local state changes. */
+  refreshActivity(): void {
+    if (this.hasIntentCountdown()) return;
+    if (!this.isIdle()) {
+      this.cancelCountdown('activity');
+      return;
+    }
+    this.idleSince ??= Date.now();
+    if (this.exitTimer || this.state.exitCountdown) return;
+    const remaining = IDLE_EXIT_DELAY_MS - (Date.now() - this.idleSince);
+    if (remaining <= 0) this.beginCountdown('idle', IDLE_COUNTDOWN_MS);
+    else this.scheduleExitCheck(remaining, () => this.refreshActivity());
+  }
+
+  private clearExitTimer(): void {
+    clearTimeout(this.exitTimer);
+    this.exitTimer = undefined;
+    ++this.exitVersion;
+  }
+
+  private scheduleExitCheck(delay: number, callback: () => void): void {
+    const epoch = this.epoch;
+    const version = ++this.exitVersion;
+    this.exitTimer = setTimeout(() => {
+      if (epoch !== this.epoch || version !== this.exitVersion || !this.enabled || !this.callId)
+        return;
+      this.exitTimer = undefined;
+      callback();
+    }, delay);
+  }
+
+  private hasIntentCountdown(): boolean {
+    return !!this.state.exitCountdown && this.state.exitCountdown.reason !== 'idle';
+  }
+
+  private beginCountdown(reason: 'idle' | 'farewell' | 'semantic', delay: number): void {
+    this.clearExitTimer();
+    this.exitDeadline = Date.now() + delay;
+    log.info('exit countdown started', {
+      callId: this.callId,
+      reason,
+      delayMs: delay,
+      ...(reason === 'idle' && this.idleSince !== null
+        ? { idleMs: Date.now() - this.idleSince }
+        : {}),
+    });
+    this.patch({ exitCountdown: { reason, secondsRemaining: delay / 1000 } });
+    this.tickCountdown();
+  }
+
+  private tickCountdown(): void {
+    const countdown = this.state.exitCountdown;
+    if (!countdown) return;
+    // Re-read all activity at every tick, including the final boundary. A new
+    // task can start after the warning, even without a new ASR event.
+    if (countdown.reason === 'idle' && !this.isIdle()) {
+      this.refreshActivity();
+      return;
+    }
+    const remaining = this.exitDeadline - Date.now();
+    if (remaining <= 0) {
+      this.autoEnd(countdown.reason === 'idle' ? 'idle_timeout' : countdown.reason);
+      return;
+    }
+    this.patch({ exitCountdown: { ...countdown, secondsRemaining: Math.ceil(remaining / 1000) } });
+    this.scheduleExitCheck(Math.min(1000, remaining), () => this.tickCountdown());
+  }
+
+  private cancelCountdown(
+    trigger: 'activity' | 'speech' | 'user_continue' | 'control' | 'release',
+    resume = true,
+  ): void {
+    this.clearExitTimer();
+    this.idleSince = null;
+    const countdown = this.state.exitCountdown;
+    if (!countdown) return;
+    log.info('exit countdown cancelled', {
+      callId: this.callId,
+      reason: countdown.reason,
+      trigger,
+    });
+    this.patch({ exitCountdown: null });
+    if (resume && countdown.reason !== 'idle' && !this.speechCandidate) {
+      this.player?.resume();
+      this.playback?.resume();
+      this.setReplyPhase(this.replyPhase);
+      this.updateMessages(this.latestMessages);
+    }
+  }
+
+  cancelExit(): void {
+    this.cancelCountdown('user_continue');
+    this.refreshActivity();
+  }
+
+  private autoEnd(reason: 'idle_timeout' | 'voice_command' | 'farewell' | 'semantic'): void {
+    // A countdown that reached its deadline completed; do not log it as cancelled
+    // when the shared release path clears the remaining call state.
+    this.clearExitTimer();
+    this.patch({ exitCountdown: null });
+    this.end(reason);
+    this.deps.onAutoEnd();
   }
 
   async start(
@@ -148,7 +296,7 @@ export class VoiceConversationController {
       this.unsubscribe = this.deps.api.onEvent(({ callId, inputGeneration = 0, event }) => {
         if (!current() || callId !== this.callId) return;
         if (event.type === 'ended') {
-          this.end();
+          this.end('remote_end');
           return;
         }
         if (inputGeneration !== this.inputGeneration) return;
@@ -159,10 +307,12 @@ export class VoiceConversationController {
           return;
         }
         if (event.type === 'speech-started') {
+          this.latestUtterance = null;
           // An acoustic onset can be noise. Pause playback without consuming
           // the reply; only a finalized, nonempty utterance replaces its owner.
           if (!this.speechCandidate) {
             this.speechCandidate = true;
+            this.cancelCountdown('speech');
             this.candidateStartedAt = Date.now();
             this.player?.pause();
             this.playback?.pause();
@@ -172,8 +322,10 @@ export class VoiceConversationController {
         } else if (event.type === 'speech-idle') {
           if (this.speechCandidate) {
             this.speechCandidate = false;
-            this.player?.resume();
-            this.playback?.resume();
+            if (!this.judgingExit) {
+              this.player?.resume();
+              this.playback?.resume();
+            }
             log.info('reply resumed after empty speech', {
               callId,
               pendingInput: this.pendingInput,
@@ -183,10 +335,38 @@ export class VoiceConversationController {
             this.updateMessages(this.latestMessages);
           }
         } else if (event.type === 'draft') {
+          if (event.text.trim()) {
+            this.latestUtterance = null;
+            this.cancelCountdown('speech');
+          }
           this.patch({ transcript: event.text });
         } else if (event.type === 'utterance') {
-          this.queued.push(event.text);
-          if ([this.state.unsent, ...this.queued].join(' ').length > 16_000) this.fail('send');
+          this.cancelCountdown('speech');
+          // Retained/queued text is part of the utterance's context, so a short
+          // trailing farewell must not discard an earlier unfinished thought.
+          const intent =
+            !this.state.unsent && !this.queued.length && !this.judgingExit
+              ? voiceExitIntent(event.text)
+              : null;
+          if (intent === 'command') {
+            this.autoEnd('voice_command');
+            return;
+          }
+          if (intent === 'farewell') {
+            this.speechCandidate = false;
+            this.player?.pause();
+            this.playback?.pause();
+            this.beginCountdown('farewell', FAREWELL_COUNTDOWN_MS);
+            this.patch({ transcript: '', level: 0 });
+            return;
+          }
+          const utterance = { text: event.text, id: event.id };
+          this.latestUtterance = utterance;
+          this.queued.push(utterance);
+          if (
+            [this.state.unsent, ...this.queued.map((item) => item.text)].join(' ').length > 16_000
+          )
+            this.fail('send');
           else void this.drain(epoch);
         } else if (event.type === 'error') {
           this.fail('connection', event.text);
@@ -290,11 +470,18 @@ export class VoiceConversationController {
 
   private setReplyPhase(phase: typeof this.replyPhase): void {
     this.replyPhase = phase;
-    this.patch({ phase: this.speechCandidate ? 'listening' : (phase ?? 'listening'), level: 0 });
+    this.patch({
+      phase:
+        this.speechCandidate || (this.judgingExit && !this.state.muted)
+          ? 'listening'
+          : (phase ?? 'listening'),
+      level: 0,
+    });
   }
 
   /** Explicit stop or a committed new utterance permanently relinquishes the old reply. */
   interrupt(reason: 'user_stop' | 'new_utterance' = 'user_stop'): void {
+    this.cancelCountdown('control');
     log.info('reply interrupted', {
       callId: this.callId,
       reason,
@@ -319,16 +506,20 @@ export class VoiceConversationController {
       this.state.phase === 'thinking'
     )
       this.patch({ phase: 'listening', level: 0 });
+    this.refreshActivity();
   }
 
-  private async submit(text: string, epoch: number): Promise<void> {
+  private async submit(text: string, epoch: number, preserveCurrentSpeech = false): Promise<void> {
     const captureVersion = this.captureVersion;
     const current = () => this.enabled && epoch === this.epoch && !this.blocked;
     const canEnqueue = () => current() && captureVersion === this.captureVersion;
     if (!current()) return;
+    const candidate = this.speechCandidate;
+    const transcript = this.state.transcript;
     this.interrupt('new_utterance');
+    if (preserveCurrentSpeech) this.speechCandidate = candidate;
     this.setReplyPhase('thinking');
-    this.patch({ transcript: '', unsent: '' });
+    this.patch({ transcript: preserveCurrentSpeech ? transcript : '', unsent: '' });
     const replyEpoch = this.speechEpoch;
     let clientId: string | null = null;
     try {
@@ -370,6 +561,57 @@ export class VoiceConversationController {
     }
   }
 
+  private async classifyAndSubmit(utterance: QueuedUtterance, epoch: number): Promise<void> {
+    const text = [this.state.unsent, utterance.text].filter(Boolean).join(' ');
+    // Never classify only a suffix of a retained/queued thought, nor reclassify
+    // a retry. Local rules above remain immediate and make no model request.
+    if (
+      utterance.id &&
+      this.latestUtterance === utterance &&
+      !this.state.unsent &&
+      !this.queued.length
+    ) {
+      const callId = this.callId!;
+      const captureVersion = this.captureVersion;
+      const endVersion = this.endVersion;
+      const current = () =>
+        this.enabled && this.epoch === epoch && this.callId === callId && !this.blocked;
+      this.judgingExit = utterance;
+      if (!this.speechCandidate && this.pendingInput) {
+        this.player?.pause();
+        this.playback?.pause();
+      }
+      this.speechCandidate = false;
+      // The pending final is owned here, not also in transcript: mute/permission
+      // recovery must retain it exactly once when this request settles.
+      this.patch({ transcript: '', phase: 'listening', level: 0 });
+      let shouldExit = false;
+      try {
+        shouldExit = await this.deps.api.classifyExit(callId, utterance.id, this.inputGeneration);
+      } catch {
+        // Failure is ordinary speech, never a failed send or an automatic exit.
+      } finally {
+        if (this.judgingExit === utterance) this.judgingExit = null;
+      }
+      if (!current() || captureVersion !== this.captureVersion || this.state.muted) {
+        if (this.enabled && this.endVersion === endVersion)
+          this.patch({ unsent: [text, this.state.unsent].filter(Boolean).join(' ') });
+        return;
+      }
+      if (
+        shouldExit &&
+        this.latestUtterance === utterance &&
+        !this.speechCandidate &&
+        !this.queued.length &&
+        !this.state.unsent
+      ) {
+        this.beginCountdown('semantic', FAREWELL_COUNTDOWN_MS);
+        return;
+      }
+    }
+    await this.submit(text, epoch, this.latestUtterance !== utterance);
+  }
+
   private async drain(epoch: number): Promise<void> {
     if (this.sending) return;
     this.sending = true;
@@ -377,25 +619,30 @@ export class VoiceConversationController {
       while (this.queued.length && this.enabled && epoch === this.epoch && !this.blocked) {
         // A muted preflight can settle after input has resumed. Merge retained
         // text here so a newer queued utterance cannot erase that late result.
-        const text = [this.state.unsent, this.queued.shift()!].filter(Boolean).join(' ');
-        this.inFlight = this.submit(text, epoch);
+        this.inFlight = this.classifyAndSubmit(this.queued.shift()!, epoch);
         await this.inFlight;
       }
     } finally {
       this.sending = false;
       if (this.queued.length && this.callId && this.enabled && !this.blocked)
         void this.drain(this.epoch);
+      this.refreshActivity();
     }
   }
 
   updateMessages(messages: readonly ChatMessage[]): void {
+    if (messages !== this.latestMessages && !this.hasIntentCountdown())
+      this.cancelCountdown('activity');
     this.latestMessages = messages;
+    this.refreshActivity();
     if (
       !this.enabled ||
       !this.callId ||
       this.blocked ||
       !this.pendingInput ||
       this.speechCandidate ||
+      this.hasIntentCountdown() ||
+      (this.judgingExit && !this.state.muted) ||
       this.deferringSpeech
     )
       return;
@@ -459,6 +706,7 @@ export class VoiceConversationController {
         if (!current()) return;
         this.pendingInput = null;
         this.playback = null;
+        this.refreshActivity();
       },
       deferred: (alreadyPlayed) => {
         if (!current()) return;
@@ -497,6 +745,7 @@ export class VoiceConversationController {
   }
 
   finishUtterance(): void {
+    this.cancelCountdown('control');
     const epoch = this.epoch;
     if (this.callId && !this.state.muted && !this.state.microphonePending)
       void this.deps.api.finishUtterance(this.callId).catch(() => {
@@ -508,7 +757,11 @@ export class VoiceConversationController {
     if (blocked === this.blocked) return;
     this.blocked = blocked;
     if (blocked && this.enabled) {
-      const unsent = [this.state.unsent, ...this.queued, this.state.transcript]
+      const unsent = [
+        this.state.unsent,
+        ...this.queued.map((item) => item.text),
+        this.state.transcript,
+      ]
         .filter(Boolean)
         .join(' ');
       this.release();
@@ -533,6 +786,7 @@ export class VoiceConversationController {
       return this.inputChange;
     const epoch = this.epoch;
     const callId = this.callId;
+    this.cancelCountdown('control');
     const unmuting = this.state.muted;
     this.resumingInput = unmuting;
     const startedAt = Date.now();
@@ -541,14 +795,18 @@ export class VoiceConversationController {
     this.patch({ microphonePending: true, microphoneError: false });
     if (!unmuting) {
       ++this.captureVersion;
-      const unsent = [this.state.unsent, ...this.queued, this.state.transcript]
+      const unsent = [
+        this.state.unsent,
+        ...this.queued.map((item) => item.text),
+        this.state.transcript,
+      ]
         .filter(Boolean)
         .join(' ');
       this.queued = [];
       this.patch({ muted: true, transcript: '', unsent });
       // A possible interruption can no longer be confirmed with the mic closed.
       // Restore the held reply instead of discarding its playback/ownership.
-      if (this.speechCandidate) {
+      if (this.speechCandidate || this.judgingExit) {
         this.speechCandidate = false;
         this.player?.resume();
         this.playback?.resume();
@@ -621,13 +879,16 @@ export class VoiceConversationController {
     if (!this.state.unsent || !this.callId || this.blocked) return;
     const text = this.state.unsent;
     this.patch({ unsent: '' });
-    this.queued.push(text);
+    this.queued.push({ text });
     void this.drain(this.epoch);
   }
 
   private fail(error: VoiceSnapshot['error'], text?: string): void {
     log.warn('voice mode failed', { callId: this.callId, phase: this.state.phase, reason: error });
-    const unsent = [text || this.state.transcript || this.state.unsent, ...this.queued]
+    const unsent = [
+      text || this.state.transcript || this.state.unsent,
+      ...this.queued.map((item) => item.text),
+    ]
       .filter(Boolean)
       .join(' ');
     this.release();
@@ -643,6 +904,7 @@ export class VoiceConversationController {
   }
 
   private release(): void {
+    this.cancelCountdown('release', false);
     ++this.epoch;
     this.resumingInput = false;
     ++this.captureVersion;
@@ -658,8 +920,11 @@ export class VoiceConversationController {
     this.speechCandidate = false;
     this.replyPhase = null;
     this.queued = [];
+    this.latestUtterance = null;
+    this.judgingExit = null;
     const callId = this.callId;
     const microphone = this.microphone;
+    const releasedAt = Date.now();
     this.callId = null;
     this.microphone = null;
     this.unsubscribe?.();
@@ -674,10 +939,19 @@ export class VoiceConversationController {
       this.inFlight,
       microphone?.stop(),
       callId ? this.deps.api.end(callId) : undefined,
-    ]);
+    ]).then((results) => {
+      if (callId)
+        log.info('voice resources released', {
+          callId,
+          elapsedMs: Date.now() - releasedAt,
+          failedOperations: results.filter((result) => result.status === 'rejected').length,
+        });
+    });
   }
 
-  end(): void {
+  end(reason: ExitReason = 'user'): void {
+    ++this.endVersion;
+    if (this.callId) log.info('voice mode ended', { callId: this.callId, reason });
     this.enabled = false;
     this.release();
     this.tracker.interrupt();

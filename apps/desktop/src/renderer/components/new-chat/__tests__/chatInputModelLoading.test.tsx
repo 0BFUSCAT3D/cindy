@@ -451,7 +451,16 @@ it('places the companion call action between dictation and send without consumin
   expect(call.disabled).toBe(true);
   h.listening = false;
   view.rerender(<ChatInput {...inputProps} voiceConversationActive />);
+  // The call now leaves the composer visible. Its production mutation lock
+  // must reject text sends (not just dim the controls) while retaining drafts.
+  expect(h.editor?.isEditable).toBe(false);
+  expect((send as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(send);
+  expect(onSend).not.toHaveBeenCalled();
+  expect(h.editor?.getText()).toBe('Keep this draft');
   view.rerender(<ChatInput {...inputProps} voiceConversationActive={false} />);
+  expect(h.editor?.isEditable).toBe(true);
+  expect(h.editor?.getText()).toBe('Keep this draft');
   expect(document.activeElement).toBe(call);
 
   view.rerender(<ChatInput {...props} onSend={onSend} />);

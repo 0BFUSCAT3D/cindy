@@ -1891,6 +1891,10 @@ export function registerVoiceInputIpc(): void {
   let pendingDictationStarts = 0;
   registerVoiceConversationIpc({
     getSettings: () => voiceInputDataStore.getSettings(),
+    // Reuse dictation's opt-in setting, local enrollment and strictness. A new
+    // microphone run (including unmute) reads current settings; ASR rotation
+    // keeps the same gate. No separate companion voiceprint or audio storage.
+    createAudioGate: () => getSpeakerFilterService().createGate(voiceInputDataStore.getSettings()),
     updateSettings: patch => voiceInputDataStore.updateSettings(patch),
     hasDictation: () => activeByWebContentsId.size > 0 || pendingDictationStarts > 0 || systemAudioMuteGuard.hasPendingOrActiveMute,
     createProvider: async () => {

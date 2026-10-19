@@ -1,4 +1,9 @@
-import { VoiceConversationInput, type AsrProvider, type AudioTrace } from '@cindy/voice-input-core';
+import {
+  VoiceConversationInput,
+  type AsrProvider,
+  type AudioGate,
+  type AudioTrace,
+} from '@cindy/voice-input-core';
 import {
   voiceModelKey,
   type SpeechModelSelection,
@@ -16,6 +21,8 @@ import { SpeechSynthesisSession, type SpeechConnection } from './speech.js';
 import { SpeechSynthesisQueue } from './speechQueue.js';
 import { loadSpeechVoices } from './voices.js';
 import type { Logger } from '../logger.js';
+import type { VoiceExitClassification } from './semanticExit.js';
+import { SEMANTIC_VOICE_EXIT_MAX_CHARACTERS } from './semanticExitConfig.js';
 
 type Call = {
   id: string;
@@ -28,6 +35,8 @@ type Call = {
   inputReady: Promise<void>;
   speech: SpeechSynthesisQueue;
   selection: VoiceConversationStart;
+  exitUtterance: { id: string; text: string } | null;
+  exitJudgment: AbortController | null;
 };
 type Preview = {
   id: string;
@@ -49,9 +58,11 @@ export class VoiceConversationService {
       assertCompanion(botId: string, sessionId: string): Promise<void>;
       models(): VoiceConversationModel[];
       createProvider(): Promise<AsrProvider>;
+      createAudioGate?(): AudioGate | undefined;
       connection(selection: SpeechModelSelection): SpeechConnection;
       fetch: typeof fetch;
       hasReplyHook?(): boolean;
+      classifyExit?(input: VoiceExitClassification): Promise<boolean>;
       emit(sender: number, event: VoiceConversationEvent): void;
       log?: Pick<Logger, 'info' | 'warn'>;
     },
@@ -198,6 +209,8 @@ export class VoiceConversationService {
       owner,
       sender,
       selection,
+      exitUtterance: null,
+      exitJudgment: null,
       speech,
       input: null,
       inputGeneration: 0,
@@ -229,7 +242,15 @@ export class VoiceConversationService {
   private createInput(call: Call): VoiceConversationInput {
     const inputGeneration = call.inputGeneration;
     const current = () => this.call === call && call.inputGeneration === inputGeneration;
+    const audioGate = this.deps.createAudioGate?.();
+    this.deps.log?.info('input filter configured', {
+      callId: call.id,
+      inputGeneration,
+      speakerFilterActive: Boolean(audioGate),
+    });
     return new VoiceConversationInput({
+      audioGate,
+      isCurrent: () => current() && this.deps.owner() === call.owner,
       diagnostic: (event) =>
         this.deps.log?.info('input settled', { callId: call.id, inputGeneration, ...event }),
       createProvider: async () => {
@@ -242,6 +263,17 @@ export class VoiceConversationService {
         if (this.deps.owner() !== call.owner) {
           void this.end(call.sender, call.id);
           return;
+        }
+        if (
+          event.type === 'speech-started' ||
+          (event.type === 'draft' && event.text.trim()) ||
+          event.type === 'utterance'
+        ) {
+          this.cancelExitJudgment(call);
+          // Only the most recent ASR final is eligible, once. The renderer
+          // supplies its ID, never an arbitrary prompt or a provider route.
+          if (event.type === 'utterance' && event.text.length <= SEMANTIC_VOICE_EXIT_MAX_CHARACTERS)
+            call.exitUtterance = { id: event.id, text: event.text };
         }
         if (event.type !== 'draft')
           this.deps.log?.[event.type === 'error' ? 'warn' : 'info']('input event', {
@@ -261,6 +293,7 @@ export class VoiceConversationService {
   }
 
   private async stopInput(call: Call): Promise<void> {
+    this.cancelExitJudgment(call);
     const input = call.input;
     call.input = null;
     ++call.inputGeneration;
@@ -323,6 +356,56 @@ export class VoiceConversationService {
 
   finishUtterance(sender: number, id: string): void {
     this.requireCall(sender, id).input?.finishUtterance(true);
+  }
+
+  private cancelExitJudgment(call: Call): void {
+    call.exitUtterance = null;
+    call.exitJudgment?.abort();
+    call.exitJudgment = null;
+  }
+
+  async classifyExit(
+    sender: number,
+    id: string,
+    utteranceId: string,
+    inputGeneration: number,
+  ): Promise<boolean> {
+    const call = this.requireCall(sender, id);
+    const utterance = call.exitUtterance;
+    if (
+      call.kind !== 'conversation' ||
+      !call.input ||
+      call.inputGeneration !== inputGeneration ||
+      !utterance ||
+      utterance.id !== utteranceId ||
+      !this.deps.classifyExit
+    )
+      return false;
+    this.cancelExitJudgment(call);
+    const judgment = new AbortController();
+    call.exitJudgment = judgment;
+    const isCurrent = () =>
+      this.call === call &&
+      call.exitJudgment === judgment &&
+      !judgment.signal.aborted &&
+      call.input !== null &&
+      call.inputGeneration === inputGeneration &&
+      this.deps.owner() === call.owner;
+    try {
+      const shouldExit = await this.deps.classifyExit({
+        callId: id,
+        botId: call.selection.botId,
+        sessionId: call.selection.sessionId,
+        text: utterance.text,
+        signal: judgment.signal,
+        isCurrent,
+      });
+      return isCurrent() && shouldExit;
+    } catch {
+      return false;
+    } finally {
+      if (call.exitJudgment === judgment) call.exitJudgment = null;
+    }
   }
 
   async speak(

@@ -9927,6 +9927,21 @@
       }
     },
     "voiceMode": {
+      "showDetails": "展開語音詳情",
+      "hideDetails": "收起語音詳情",
+      "transcriptTitle": "目前辨識文字",
+      "transcriptEmpty": "說話後，辨識文字會顯示在這裡。",
+      "composerPaused": "結束語音後，繼續輸入訊息…",
+      "microphoneMuted": "麥克風已關閉",
+      "exit": {
+        "idle": "暫時沒有說話，即將退出語音模式",
+        "farewell": "已聽到道別，即將退出語音模式",
+        "semantic": "即將結束語音模式",
+        "countdown": "{{seconds}} 秒後退出語音模式",
+        "cancel": "取消退出",
+        "hint": "繼續說話或點擊「取消退出」可保留語音模式。進行中的任務不受影響。",
+        "mutedHint": "麥克風仍已靜音，點擊「取消退出」可保留語音模式。進行中的任務不受影響。"
+      },
       "settingsTitle": "語音",
       "openSettings": "語音設定",
       "startConversation": "開始語音對話",
@@ -9958,7 +9973,6 @@
       "readAloudFailed": "朗讀失敗，請在夥伴設定中檢查模型和音色後重試。",
       "finishBeforeDictation": "請先結束語音模式，再開始聽寫。",
       "title": "語音模式",
-      "close": "關閉語音模式",
       "model": "朗讀模型",
       "refresh": "重新整理模型",
       "voice": "音色",

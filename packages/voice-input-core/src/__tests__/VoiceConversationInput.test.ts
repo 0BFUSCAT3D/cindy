@@ -5,8 +5,14 @@ import {
   type ConversationInputEvent,
 } from "../VoiceConversationInput.js";
 import { ConversationActivity } from "../conversationActivity.js";
+import {
+  SpeakerGate,
+  SPEAKER_GATE_VAD_FRAME,
+  type AudioGateEmit,
+} from "../SpeakerGate.js";
 
 class Provider implements AsrProvider {
+  endpointing?: AsrProvider["endpointing"];
   segment: (value: AsrSegment) => void = () => {};
   event: (value: AsrEvent) => void = () => {};
   start = vi.fn(async () => {});
@@ -61,6 +67,128 @@ describe("continuous speech input", () => {
     await input.stop();
   });
 
+  // Regression: delayed final text used to restart the complete pause timer.
+  // Unit/fake time through the real input: provider audio offsets distinguish
+  // already-captured speech from ASR-only speech with no reliable timing.
+  it("settles a delayed corrected final after text stability without restarting acoustic silence", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({ createProvider: async () => provider, emit });
+    await input.start();
+    input.appendAudio(pcm(2000, 200));
+    provider.segment({ id: "late", text: "partial", final: false });
+    await vi.advanceTimersByTimeAsync(1_500);
+    input.appendAudio(pcm(0, 1_500));
+    provider.segment({ id: "late", text: "corrected final", final: true, audioEndMs: 200 });
+    await vi.advanceTimersByTimeAsync(349);
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "corrected final" });
+    await input.stop();
+  });
+
+  it("uses audio progress for a quiet voice seen only by ASR and keeps the remaining pause", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({ createProvider: async () => provider, emit });
+    await input.start();
+    input.appendAudio(pcm(80, 200));
+    await vi.advanceTimersByTimeAsync(900);
+    input.appendAudio(pcm(0, 900));
+    provider.segment({ id: "soft", text: "hello", final: true, audioEndMs: 200 });
+    await vi.advanceTimersByTimeAsync(350);
+    // Elapsed wall time alone is not proof the remaining captured audio is quiet.
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    input.appendAudio(pcm(0, 350));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "hello" });
+    await input.stop();
+  });
+
+  it.each([undefined, -1, Number.NaN, 10_000])(
+    "falls back to 1.25 seconds for missing or invalid ASR audio end %s",
+    async (audioEndMs) => {
+      const provider = new Provider();
+      const emit = vi.fn();
+      const input = new VoiceConversationInput({ createProvider: async () => provider, emit });
+      await input.start();
+      input.appendAudio(pcm(0, 2_000));
+      provider.segment({ id: "soft", text: "hello", final: true, audioEndMs });
+      await vi.advanceTimersByTimeAsync(1_249);
+      expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "hello" });
+      await input.stop();
+    },
+  );
+
+  it.each(["segment-final", "acoustic", "manual", "semantic"] as const)(
+    "does not bypass the fallback pause just because the provider declares %s",
+    async (endpointing) => {
+      const provider = new Provider();
+      provider.endpointing = endpointing;
+      const emit = vi.fn();
+      const diagnostic = vi.fn();
+      const input = new VoiceConversationInput({ createProvider: async () => provider, emit, diagnostic });
+      await input.start();
+      provider.segment({ id: "a", text: "hello", final: true,
+        ...(endpointing !== "segment-final" ? { turnEnd: endpointing } : {}) });
+      await vi.advanceTimersByTimeAsync(1_249);
+      expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ endpointing, endSignal: endpointing }));
+      expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "hello" });
+      await input.stop();
+    },
+  );
+
+  it("new speech cancels settlement of a delayed final and keeps both parts in one message", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({ createProvider: async () => provider, emit });
+    await input.start();
+    input.appendAudio(pcm(2000, 200));
+    await vi.advanceTimersByTimeAsync(1_300);
+    input.appendAudio(pcm(0, 1_300));
+    provider.segment({ id: "a", text: "first", final: true, audioEndMs: 200 });
+    await vi.advanceTimersByTimeAsync(300);
+    input.appendAudio(pcm(2000, 200));
+    provider.segment({ id: "b", text: "second", final: false });
+    await vi.advanceTimersByTimeAsync(900);
+    input.appendAudio(pcm(0, 900));
+    provider.segment({ id: "b", text: "second", final: true, audioEndMs: 1_700 });
+    await vi.advanceTimersByTimeAsync(349);
+    input.appendAudio(pcm(0, 349));
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    await vi.advanceTimersByTimeAsync(1);
+    input.appendAudio(pcm(0, 1));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "first second" });
+    await input.stop();
+  });
+
+  it("rebases provider audio offsets after rotation and rejects the previous socket's final", async () => {
+    const a = new Provider();
+    const b = new Provider();
+    const createProvider = vi.fn().mockResolvedValueOnce(a).mockResolvedValue(b);
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({ createProvider, emit, rotationMs: 5_000 });
+    await input.start();
+    input.appendAudio(pcm(0, 5_000));
+    await vi.advanceTimersByTimeAsync(5_000);
+    input.appendAudio(pcm(80, 200));
+    input.appendAudio(pcm(0, 900));
+    b.segment({ id: "same", text: "new turn", final: true, audioEndMs: 200 });
+    a.segment({ id: "same", text: "stale", final: true, audioEndMs: 200 });
+    await vi.advanceTimersByTimeAsync(350);
+    // The old provider's 5s of audio cannot satisfy the new provider's pause.
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    input.appendAudio(pcm(0, 350));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "new turn" });
+    await input.stop();
+  });
+
   it("requires 1.25 quiet seconds for ASR-only soft speech and merges a thinking pause", async () => {
     const provider = new Provider();
     const events: ConversationInputEvent[] = [];
@@ -90,6 +218,9 @@ describe("continuous speech input", () => {
     expect(diagnostic).toHaveBeenCalledExactlyOnceWith({
       trigger: "silence",
       inactiveMs: 1_250,
+      pauseBasis: "text-fallback",
+      endpointing: "segment-final",
+      endSignal: "segment-final",
       finalStableMs: 1_250,
       segments: 2,
       characters: 22,
@@ -337,6 +468,241 @@ describe("continuous speech input", () => {
     ]);
     await input.stop();
   });
+});
+
+// Real input + SpeakerGate, synthetic VAD/embedding only. Prior input tests
+// bypassed speaker verification: a rejected 200ms voice could interrupt or
+// reach ASR. Unit/fake-time cases also protect short onsets and delayed audio
+// from being mistaken for silence; no model downloads or microphone access.
+describe("speaker-filtered conversation input", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function fixture(rotationMs?: number) {
+    const provider = new Provider();
+    const createProvider = vi.fn(async () => provider);
+    const emit = vi.fn();
+    const engine = {
+      resetVad: vi.fn(async () => {}),
+      detectSpeech: vi.fn(async (samples: Float32Array) =>
+        Array.from(
+          { length: samples.length / SPEAKER_GATE_VAD_FRAME },
+          (_, i) => Math.abs(samples[i * SPEAKER_GATE_VAD_FRAME]) > 0.01,
+        ),
+      ),
+      embed: vi.fn(
+        async (samples: Float32Array) =>
+          new Float32Array(
+            samples.reduce((sum, value) => sum + value, 0) > 0
+              ? [1, 0]
+              : [0, 1],
+          ),
+      ),
+    };
+    const audioGate = new SpeakerGate({
+      engine,
+      enrolledEmbedding: new Float32Array([1, 0]),
+    });
+    const input = new VoiceConversationInput({
+      createProvider,
+      audioGate,
+      emit,
+      rotationMs,
+    });
+    const feed = async (level: number, ms: number) => {
+      for (let elapsed = 0; elapsed < ms; elapsed += 40) {
+        input.appendAudio(pcm(level, Math.min(40, ms - elapsed)));
+        await vi.advanceTimersByTimeAsync(Math.min(40, ms - elapsed));
+      }
+    };
+    return { input, provider, emit, engine, audioGate, feed, createProvider };
+  }
+
+  it.each([160, 240])(
+    "preserves a %ims short phrase including its onset, without waiting for a full window",
+    async (duration) => {
+      const f = fixture();
+      f.provider.appendAudio.mockImplementation((chunk: ArrayBuffer) => {
+        if (new Int16Array(chunk).some((sample) => sample > 0))
+          f.provider.segment({ id: "short", text: "hello", final: true });
+      });
+      await f.input.start();
+      await f.feed(2000, duration);
+      expect(f.provider.appendAudio).not.toHaveBeenCalled();
+      expect(f.emit).not.toHaveBeenCalledWith({ type: "speech-started" });
+      await f.feed(0, 80);
+      expect(f.emit).toHaveBeenCalledWith({ type: "speech-started" });
+      const voicedSamples = f.provider.appendAudio.mock.calls.reduce(
+        (count, [chunk]) =>
+          count +
+          new Int16Array(chunk).filter((sample) => sample === 2000).length,
+        0,
+      );
+      expect(voicedSamples).toBe(16 * duration);
+      await f.feed(0, 2_000);
+      expect(
+        f.emit.mock.calls.filter(([event]) => event.type === "utterance"),
+      ).toEqual([[{ type: "utterance", id: "1", text: "hello" }]]);
+      await f.input.stop();
+    },
+  );
+
+  it("turns bystander speech into silence before ASR and interruption/exit activity", async () => {
+    const f = fixture();
+    await f.input.start();
+    await f.feed(-2000, 1_600);
+    await f.feed(0, 2_000);
+    expect(f.engine.embed).toHaveBeenCalled();
+    expect(f.provider.appendAudio).toHaveBeenCalled();
+    expect(
+      f.provider.appendAudio.mock.calls.every(([chunk]) =>
+        new Int16Array(chunk).every((sample) => sample === 0),
+      ),
+    ).toBe(true);
+    expect(f.emit.mock.calls).toEqual([[{ type: "ready" }]]);
+    await f.input.stop();
+  });
+
+  it("signals accepted continuous speech after the existing first decision window, without a second hold", async () => {
+    const f = fixture();
+    await f.input.start();
+    await f.feed(2000, 1_480);
+    expect(f.emit).not.toHaveBeenCalledWith({ type: "speech-started" });
+    await f.feed(2000, 80);
+    expect(
+      f.emit.mock.calls.filter(([event]) => event.type === "speech-started"),
+    ).toHaveLength(1);
+    await f.input.stop();
+  });
+
+  it("retains a short onset held across ASR rotation and forwards it only to the new transport", async () => {
+    const f = fixture(1_000);
+    const next = new Provider();
+    f.createProvider.mockResolvedValueOnce(f.provider).mockResolvedValue(next);
+    await f.input.start();
+    await f.feed(0, 960);
+    await f.feed(2000, 240);
+    await f.feed(0, 80);
+    expect(f.createProvider).toHaveBeenCalledTimes(2);
+    expect(
+      f.provider.appendAudio.mock.calls.every(([chunk]) =>
+        new Int16Array(chunk).every((sample) => sample === 0),
+      ),
+    ).toBe(true);
+    expect(
+      next.appendAudio.mock.calls.reduce(
+        (count, [chunk]) =>
+          count +
+          new Int16Array(chunk).filter((sample) => sample === 2000).length,
+        0,
+      ),
+    ).toBe(16 * 240);
+    expect(f.emit).toHaveBeenCalledWith({ type: "speech-started" });
+    await f.input.stop();
+  });
+
+  it("keeps the existing filter failure fallback usable for ASR and interruption", async () => {
+    const f = fixture();
+    f.engine.embed.mockRejectedValueOnce(new Error("engine unavailable"));
+    await f.input.start();
+    await f.feed(2000, 240);
+    await f.feed(0, 80);
+    expect(
+      f.provider.appendAudio.mock.calls.some(([chunk]) =>
+        new Int16Array(chunk).some((sample) => sample === 2000),
+      ),
+    ).toBe(true);
+    expect(f.emit).toHaveBeenCalledWith({ type: "speech-started" });
+    expect(f.emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "error" }),
+    );
+    await f.input.stop();
+  });
+
+  it.each([false, true])("does not count held audio as quiet and split a continued sentence (timed final: %s)", async (timed) => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    let release!: AudioGateEmit;
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider,
+      emit,
+      audioGate: {
+        begin: (callback) => {
+          release = callback;
+        },
+        push: () => {},
+        finish: async () => {},
+        abort: () => {},
+      },
+    });
+    await input.start();
+    release(pcm(2000, 200));
+    provider.segment({ id: "first", text: "first", final: true, ...(timed ? { audioEndMs: 200 } : {}) });
+    release(pcm(0, 900));
+    // The gate is still deciding the next voice. Wall-clock quiet alone would
+    // submit "first" while that voice is waiting for its speaker verdict.
+    input.appendAudio(pcm(2000, 800));
+    await vi.advanceTimersByTimeAsync(1_250);
+    expect(emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "utterance" }),
+    );
+    release(pcm(2000, 800));
+    provider.segment({ id: "second", text: "second", final: true, ...(timed ? { audioEndMs: 1900 } : {}) });
+    release(pcm(0, 1_250));
+    await vi.advanceTimersByTimeAsync(1_250);
+    expect(emit).toHaveBeenCalledWith({
+      type: "utterance",
+      id: "1",
+      text: "first second",
+    });
+    await input.stop();
+  });
+
+  it("lets Send submit verified text without flushing undecided speech or waiting for filtered silence", async () => {
+    const f = fixture();
+    const finish = vi.spyOn(f.audioGate, "finish");
+    await f.input.start();
+    await f.feed(2000, 240);
+    await f.feed(0, 80);
+    f.provider.segment({ id: "accepted", text: "send this", final: true });
+    await f.feed(-2000, 160);
+    const callsBeforeSend = f.provider.appendAudio.mock.calls.length;
+    f.input.finishUtterance(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.emit).toHaveBeenCalledWith({
+      type: "utterance",
+      id: "1",
+      text: "send this",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(f.provider.appendAudio).toHaveBeenCalledTimes(callsBeforeSend);
+    await f.input.stop();
+  });
+
+  it.each(["stop", "error"] as const)(
+    "discards an in-flight speaker verdict on %s",
+    async (action) => {
+      const f = fixture();
+      let finish!: (embedding: Float32Array<ArrayBuffer>) => void;
+      f.engine.embed.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      await f.input.start();
+      await f.feed(2000, 240);
+      await f.feed(0, 80);
+      expect(f.engine.embed).toHaveBeenCalledOnce();
+      if (action === "stop") await f.input.stop();
+      else f.provider.event({ type: "disconnected", at: 0 });
+      f.emit.mockClear();
+      finish(new Float32Array([1, 0]));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.provider.appendAudio).not.toHaveBeenCalled();
+      expect(f.emit).not.toHaveBeenCalled();
+    },
+  );
 });
 
 it("keeps soft speech active and does not end it on a short pause", () => {

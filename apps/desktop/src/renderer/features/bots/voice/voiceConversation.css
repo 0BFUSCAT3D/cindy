@@ -1,10 +1,105 @@
-.companion-voice-panel {
+.companion-voice-toolbar {
+  width: 100%;
+  max-width: 590px;
+  min-width: 0;
+  color: var(--text-primary);
+  container-type: inline-size;
   animation: companion-voice-enter var(--motion-enter) var(--motion-ease-out) both;
 }
 
+.companion-voice-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 70px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--surface-elevated);
+}
+
+.companion-voice-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.companion-voice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.companion-voice-activity {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 28px;
+  color: var(--text-secondary);
+}
+
+.companion-voice-meter {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
 .companion-voice-meter > span {
+  width: 3px;
+  height: 24px;
+  border-radius: 9999px;
+  background: currentColor;
   transform-origin: center;
   transition: transform var(--motion-instant) linear;
+}
+
+.companion-voice-details {
+  margin-bottom: 8px;
+  max-height: min(16rem, 35vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--surface-elevated);
+  animation: companion-voice-enter var(--motion-fast) var(--motion-ease-out) both;
+}
+
+.companion-voice-caption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 0;
+  color: var(--text-secondary);
+}
+
+.companion-voice-error {
+  margin-top: 8px;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--error-fg);
+}
+
+@container (max-width: 480px) {
+  .companion-voice-bar {
+    padding: 10px;
+    gap: 8px;
+  }
+  .companion-voice-mode-label {
+    display: none;
+  }
+  .companion-voice-identity {
+    flex-basis: 140px;
+    gap: 8px;
+  }
 }
 
 @keyframes companion-voice-enter {
@@ -19,7 +114,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .companion-voice-panel {
+  .companion-voice-toolbar,
+  .companion-voice-details {
     animation: none;
   }
   .companion-voice-meter > span {

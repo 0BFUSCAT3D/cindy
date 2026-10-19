@@ -110,6 +110,12 @@ export class FallbackAsrProvider implements AsrProvider {
     return this.activeKind;
   }
 
+  // Read the winning provider, not the first configured candidate. Optional
+  // capabilities and segment metadata survive connection fallback together.
+  get endpointing(): NonNullable<AsrProvider['endpointing']> {
+    return this.active?.endpointing ?? 'segment-final';
+  }
+
   async start(): Promise<void> {
     if (this.active) return;
     if (this.disposed) throw new Error('Voice input ASR fallback disposed during start.');

@@ -7,7 +7,12 @@ import {
 } from '@/../shared/voiceConversation';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { seconds?: number }) =>
+      options?.seconds ? `${key}:${options.seconds}` : key,
+  }),
+}));
 vi.mock('@/lib/logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn() }) }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
@@ -57,6 +62,7 @@ beforeEach(() => {
         preference: vi.fn(async () => ({ selection: null, customized: false })),
         setPreference: vi.fn(async (_botId, selection) => ({ selection, customized: !!selection })),
         start,
+        classifyExit: vi.fn(async () => false),
         setInputMuted: vi.fn(async () => ({ inputGeneration: 2 })),
         finishUtterance: vi.fn(async () => {}),
         end: vi.fn(async () => {}),
@@ -74,19 +80,87 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+afterEach(() => vi.useRealTimers());
 const configure = vi.fn();
 const close = vi.fn();
-const panel = (blocked = false) => (
+const panel = (blocked = false, taskBusy = false) => (
   <CompanionVoicePanel
     bot={{ id: 'bot', name: 'Partner' }}
     sessionId="canonical"
     messages={[]}
     blocked={blocked}
+    taskBusy={taskBusy}
     onSend={vi.fn(async () => true)}
     onClose={close}
     onConfigure={configure}
   />
 );
+
+// Contract: companion-voice-mode.md auto-exit warning. Existing panel cases only
+// covered manual End. Minimal regression: 60s idle has no visible/cancellable
+// warning. Unit/jsdom; real controller, fake timers and audio/API boundaries.
+// Standalone vitest run: 1.64s wall time, including the toolbar disclosure cases.
+it('shows a quiet countdown, lets the user keep the call, then closes through the host callback', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  render(panel());
+  await act(async () => {});
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.idle');
+  expect(screen.getByRole('timer').textContent).toBe('bots.voiceMode.exit.countdown:10');
+  expect(screen.getByRole('timer').getAttribute('aria-live')).toBe('off');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.exit.cancel' }));
+  expect(screen.queryByRole('timer')).toBeNull();
+  expect(document.activeElement).toBe(
+    screen.getByRole('heading', { name: 'bots.voiceMode.title' }),
+  );
+  expect(close).not.toHaveBeenCalled();
+  await act(() => vi.advanceTimersByTimeAsync(70_000));
+  expect(window.electronAPI.voiceConversation.end).toHaveBeenCalledWith('call');
+  expect(audio.stop).toHaveBeenCalledOnce();
+  expect(close).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('timer')).toBeNull();
+});
+
+it('keeps task activity authoritative, but allows an intentional farewell without stopping the task', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const view = render(panel(false, true));
+  await act(async () => {});
+  await act(() => vi.advanceTimersByTimeAsync(120_000));
+  expect(screen.queryByRole('timer')).toBeNull();
+  view.rerender(panel(false, false));
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(screen.getByRole('timer')).toBeTruthy();
+  view.rerender(panel(false, true));
+  expect(screen.queryByRole('timer')).toBeNull();
+  act(() => inputEvent({ callId: 'call', event: { type: 'utterance', id: 'bye', text: '再见' } }));
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.farewell');
+  expect(screen.getByRole('timer').textContent).toBe('bots.voiceMode.exit.countdown:3');
+  await act(() => vi.advanceTimersByTimeAsync(3_000));
+  expect(close).toHaveBeenCalledOnce();
+  expect(window.electronAPI.voiceConversation.end).toHaveBeenCalledOnce();
+});
+
+it('shows the same cancellable three-second control for a semantic exit', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  vi.mocked(window.electronAPI.voiceConversation.classifyExit).mockResolvedValue(true);
+  render(panel());
+  await act(async () => {});
+  await act(async () =>
+    inputEvent({
+      callId: 'call',
+      event: { type: 'utterance', id: 'natural-exit', text: '今天先聊到这里吧' },
+    }),
+  );
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.semantic');
+  expect(screen.getByRole('timer').textContent).toBe('bots.voiceMode.exit.countdown:3');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.exit.cancel' }));
+  await act(() => vi.advanceTimersByTimeAsync(3_000));
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByRole('timer')).toBeNull();
+});
 
 it('starts the saved route directly and releases capture when the panel unmounts', async () => {
   models = [
@@ -161,6 +235,7 @@ it('starts once under StrictMode and keeps end and settings actions separate fro
   render(<StrictMode>{panel()}</StrictMode>);
   await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
   expect(start).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.openSettings' }));
   expect(configure).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.end' }));
@@ -175,6 +250,10 @@ it('keeps permission cards authoritative and resumes only after another explicit
   expect(
     screen.getByRole('button', { name: 'bots.voiceMode.resume' }).hasAttribute('disabled'),
   ).toBe(true);
+  // The compact toolbar has no separate close icon: End remains reachable even
+  // when a permission card owns the composer and capture cannot be resumed.
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.end' }));
+  expect(close).toHaveBeenCalledOnce();
   view.rerender(panel());
   await act(async () => {});
   expect(start).not.toHaveBeenCalled();
@@ -280,6 +359,21 @@ it('keeps Send secondary and preserves a visible unsent draft when the microphon
   expect(screen.getByText('bots.voiceMode.unsent')).toBeTruthy();
   expect(screen.getByText('unfinished thought')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'bots.voiceMode.send' })).toBeTruthy();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
+
+  // Production disclosure contract: folding text must not replace the call,
+  // discard the unsent draft or resume a muted microphone. Old panel coverage
+  // had no disclosure. Minimal input: one draft, then mute + expand/Escape.
+  // Unit/jsdom, existing real controller with only audio/API boundaries faked.
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
+  expect(screen.getByText('unfinished thought')).toBeTruthy();
+  const disclosure = screen.getByRole('button', { name: 'bots.voiceMode.hideDetails' });
+  expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+  fireEvent.keyDown(disclosure, { key: 'Escape' });
+  expect(screen.getByText('unfinished thought')).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
+  expect(audio.start).toHaveBeenCalledOnce();
+  expect(start).toHaveBeenCalledOnce();
   expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
 });
 

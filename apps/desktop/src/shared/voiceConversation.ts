@@ -78,6 +78,8 @@ export interface VoiceConversationApi {
   start(input: VoiceConversationStart): Promise<{ callId: string }>;
   /** Explicit message read-aloud: the same TTS lease and queue, without ASR or microphone input. */
   startPlayback(input: VoiceConversationStart): Promise<{ callId: string }>;
+  /** One finalized ASR utterance, bound to the active local call; never creates a task. */
+  classifyExit(callId: string, utteranceId: string, inputGeneration: number): Promise<boolean>;
   audio(input: {
     callId: string;
     pcm: ArrayBuffer;

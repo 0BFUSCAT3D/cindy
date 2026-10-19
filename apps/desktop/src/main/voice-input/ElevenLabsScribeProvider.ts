@@ -75,6 +75,10 @@ export class ElevenLabsScribeProvider implements AsrProvider {
     this.connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   }
 
+  // VAD commit capability, not semantic completion. A committed transcript
+  // without timing/reason evidence still uses the controller's quiet fallback.
+  readonly endpointing = 'acoustic' as const;
+
   private segmentCallback?: (segment: import('@cindy/voice-input-core').AsrSegment) => void;
 
   onSegment(callback: (segment: import('@cindy/voice-input-core').AsrSegment) => void): void {

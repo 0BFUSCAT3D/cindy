@@ -4124,6 +4124,11 @@ function CCAgentSessionContent({
     || pendingPluginSetup || pendingIssueConfirm || pendingRenameSessionsConfirm
     || pendingGhostGrantConfirm || pendingRemoteDesktopConfirmation || pendingInputHandoff || sessionBinding.attached
     || remoteHandoffPreparing || cindyMakeInputLocked || queuePaused);
+  // Silence is only idle once the existing task/queue/background indicators are
+  // quiet too. Voice exit never calls the task's stop or stopAll actions.
+  const voiceTaskBusy = !historyLoaded || isAgentBusy || agentStatus.isRunning || isStreaming
+    || pendingQueue.length > 0 || continuationInFlightClientId !== null
+    || backgroundModelActive || backgroundBashTasks.length > 0 || runningWorkflow !== null;
   const messageReadAloud = useMessageReadAloud({
     botId: botChatIdentity?.id,
     sessionId: sessionId ?? '',
@@ -5637,6 +5642,12 @@ function CCAgentSessionContent({
               </InteractionPromptHost>
               {/* 会话内 /goal 进行中状态条(composer 上方);无 goal 时返回 null 不占位。 */}
               {!isSharedTaskPeer(remoteDeviceId ?? '') && <GoalIndicator sessionId={sessionId} />}
+              {/* The compact call surface stays in the composer stack so expanded text and
+                  permission cards reserve space instead of covering the latest reply. */}
+              {voiceModeOpen && voiceModeAvailable && botChatIdentity && sessionId ? (
+                <CompanionVoicePanel key={sessionId} bot={botChatIdentity} sessionId={sessionId} messages={messages}
+                  blocked={voiceModeBlocked} taskBusy={voiceTaskBusy} onSend={sendVoiceMessage} onClose={closeVoiceMode} onConfigure={openVoiceSettings} />
+              ) : null}
               {/* 互斥:控制端能终结的 pending interaction 会接管 composer；
                  Desktop-only 只读确认只能提示等待，必须保留 ChatInput，避免控制端
                  既处理不了确认又无法继续发送或排队消息。
@@ -5688,7 +5699,11 @@ function CCAgentSessionContent({
                   getContentWidth={getMessageWidth}
                 />
               ) : (
-                <div className={voiceModeOpen && voiceModeAvailable ? 'hidden' : 'contents'}>
+                <div
+                  className={voiceModeOpen && voiceModeAvailable ? 'w-full opacity-60' : 'contents'}
+                  inert={voiceModeOpen && voiceModeAvailable}
+                  aria-hidden={voiceModeOpen && voiceModeAvailable ? true : undefined}
+                >
                 <ChatInput
                   topSlot={cindyMakeRecoveryId && session ? (
                     <CindyMakeEditingActions
@@ -5753,7 +5768,9 @@ function CCAgentSessionContent({
                   steeringQueueClientIds={steeringQueueClientIds}
                   messages={messages}
                   placeholder={
-                    botChatIdentity
+                    voiceModeOpen && voiceModeAvailable
+                      ? t('bots.voiceMode.composerPaused')
+                      : botChatIdentity
                       ? t(botChatIdentity.deviceId ? 'bots.devicePicker.remotePlaceholder' : botComposerPlaceholderKey(botChatIdentity.name), {
                           name: botChatIdentity.name,
                           device: botChatIdentity.deviceName || botChatIdentity.deviceId,
@@ -5854,10 +5871,6 @@ function CCAgentSessionContent({
                 />
                 </div>
               )}
-              {voiceModeOpen && voiceModeAvailable && botChatIdentity && sessionId ? (
-                <CompanionVoicePanel key={sessionId} bot={botChatIdentity} sessionId={sessionId} messages={messages}
-                  blocked={voiceModeBlocked} onSend={sendVoiceMessage} onClose={closeVoiceMode} onConfigure={openVoiceSettings} />
-              ) : null}
 
               {/* F-FP-5: workingDir — always rendered to prevent layout shift
                 worktree-parallel-sessions:worktree 创建过程的反馈(creating/failed)

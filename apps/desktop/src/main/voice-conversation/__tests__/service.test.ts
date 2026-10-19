@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AsrSegment } from '@cindy/voice-input-core';
+import type { AsrSegment, AudioGate, AudioGateEmit } from '@cindy/voice-input-core';
 import { VoiceConversationService } from '../service.js';
 import { hasVoiceConversationLease } from '../lease.js';
+import type { VoiceExitClassification } from '../semanticExit.js';
 
 const active: VoiceConversationService[] = [];
 afterEach(async () => {
@@ -116,9 +117,11 @@ function fixture() {
     owner: vi.fn(() => 'owner-a'),
     hasDictation: vi.fn(() => false),
     hasReplyHook: vi.fn(() => false),
+    classifyExit: vi.fn<(input: VoiceExitClassification) => Promise<boolean>>(async () => true),
     assertCompanion: vi.fn(async () => {}),
     models: vi.fn(() => [{ id: 'tts', name: 'Speech' }]),
     createProvider: vi.fn(async () => provider),
+    createAudioGate: vi.fn<() => AudioGate | undefined>(() => undefined),
     connection: vi.fn(() => ({
       baseUrl: 'https://gateway.test/v1',
       protocol: 'openai' as const,
@@ -136,6 +139,90 @@ function fixture() {
   return { service, deps, provider };
 }
 
+// Production call service + real ASR finalization; only classification/network
+// seams are mocked. Rule: semantic judgments belong to one call/input/final.
+// Unit tier, fake time; no account data, audio devices or paid requests.
+describe('semantic exit call ownership', () => {
+  const final = async (
+    f: ReturnType<typeof fixture>,
+    text = 'Talk later',
+    segmentId: string = crypto.randomUUID(),
+  ) => {
+    f.provider.onSegment.mock.calls.at(-1)![0]({ id: segmentId, text, final: true });
+    await vi.advanceTimersByTimeAsync(1_250);
+    return f.deps.emit.mock.calls.filter(([, e]) => e.event.type === 'utterance').at(-1)![1].event
+      .id as string;
+  };
+
+  it('only judges a recognized final once, on its exact active call and capture generation', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.service.start(1, selection);
+    const id = await final(f);
+    await expect(f.service.classifyExit(2, selection.callId, id, 0)).rejects.toThrow();
+    expect(await f.service.classifyExit(1, selection.callId, id, 1)).toBe(false);
+    expect(await f.service.classifyExit(1, selection.callId, 'invented', 0)).toBe(false);
+    expect(f.deps.classifyExit).not.toHaveBeenCalled();
+    expect(await f.service.classifyExit(1, selection.callId, id, 0)).toBe(true);
+    expect(f.deps.classifyExit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        botId: 'bot',
+        sessionId: 'canonical',
+        text: 'Talk later',
+        callId: selection.callId,
+      }),
+    );
+    expect(await f.service.classifyExit(1, selection.callId, id, 0)).toBe(false);
+    expect(f.deps.classifyExit).toHaveBeenCalledOnce();
+    expect(f.provider.stop).not.toHaveBeenCalled(); // classification alone never exits
+  });
+
+  it.each(['speech', 'mute', 'end', 'owner'] as const)(
+    'discards late EXIT after %s',
+    async (change) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      let finish!: (result: boolean) => void;
+      f.deps.classifyExit.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      await f.service.start(1, selection);
+      const id = await final(f);
+      const pending = f.service.classifyExit(1, selection.callId, id, 0);
+      const request = f.deps.classifyExit.mock.calls[0]![0];
+      if (change === 'speech')
+        f.provider.onSegment.mock.calls[0]![0]({ id: 'next', text: 'wait', final: false });
+      else if (change === 'mute') await f.service.setInputMuted(1, selection.callId, true);
+      else if (change === 'owner') f.deps.owner.mockReturnValue('another-owner');
+      else {
+        await f.service.end(1, selection.callId);
+        await f.service.start(1, { ...selection, callId: 'new-call' });
+      }
+      expect(request.isCurrent()).toBe(false);
+      if (change !== 'owner') expect(request.signal.aborted).toBe(true);
+      finish(true);
+      expect(await pending).toBe(false);
+    },
+  );
+
+  it('skips playback-only calls, drafts and over-budget text without truncating it', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.service.startPlayback(1, selection);
+    expect(await f.service.classifyExit(1, selection.callId, '1', 0)).toBe(false);
+    await f.service.end(1);
+    await f.service.start(1, selection);
+    f.provider.onSegment.mock.calls[0]![0]({ id: 'partial', text: 'Talk later', final: false });
+    expect(await f.service.classifyExit(1, selection.callId, 'partial', 0)).toBe(false);
+    const id = await final(f, 'a'.repeat(513), 'partial');
+    expect(await f.service.classifyExit(1, selection.callId, id, 0)).toBe(false);
+    expect(f.deps.classifyExit).not.toHaveBeenCalled();
+  });
+});
+
 describe('message read-aloud ownership', () => {
   it('reuses synthesis without creating ASR and cannot be unmuted into a conversation', async () => {
     const { service, deps } = fixture();
@@ -143,6 +230,7 @@ describe('message read-aloud ownership', () => {
     expect(deps.assertCompanion).toHaveBeenCalledWith('bot', 'canonical');
     expect(deps.createProvider).not.toHaveBeenCalled();
     expect(deps.fetch).not.toHaveBeenCalled();
+    expect(deps.createAudioGate).not.toHaveBeenCalled();
     await expect(service.setInputMuted(1, selection.callId, false)).rejects.toThrow(
       'playback_only',
     );
@@ -263,6 +351,9 @@ describe('local companion call ownership', () => {
       inputGeneration: 0,
       trigger: 'silence',
       inactiveMs: 1_250,
+      pauseBasis: 'text-fallback',
+      endpointing: 'segment-final',
+      endSignal: 'segment-final',
       finalStableMs: 1_250,
       segments: 1,
       characters: 17,
@@ -386,6 +477,62 @@ it('cancels an existing body when credentials change before a PCM read', async (
 });
 
 describe('input-only mute', () => {
+  // Real call service/input; a held gate callback models delayed inference.
+  // Existing mute tests only delayed ASR, so they missed pre-ASR voiceprint work.
+  // Unit, in-memory: a 200ms held voice must not revive a muted/ended/other-owner
+  // call, interrupt TTS, or reach the new microphone's ASR after unmute.
+  it.each(['mute', 'end', 'owner'] as const)(
+    'fences delayed filtered audio on %s and rereads filter availability on unmute',
+    async (action) => {
+      const { service, deps, provider } = fixture();
+      let release!: AudioGateEmit;
+      const audioGate = {
+        begin: (callback: AudioGateEmit) => {
+          release = callback;
+        },
+        push: vi.fn(),
+        finish: vi.fn(async () => {}),
+        abort: vi.fn(),
+      };
+      deps.createAudioGate.mockReturnValueOnce(audioGate);
+      await service.start(1, selection);
+      await service.speak(1, selection.callId, 'reply', 'keep reading');
+      const voice = new Int16Array(3_200).fill(2_000).buffer;
+      service.audio(1, selection.callId, voice);
+      expect(provider.appendAudio).not.toHaveBeenCalled();
+      if (action === 'mute') await service.setInputMuted(1, selection.callId, true);
+      else if (action === 'end') await service.end(1, selection.callId);
+      else deps.owner.mockReturnValue('owner-b');
+      deps.emit.mockClear();
+      release(voice);
+      expect(provider.appendAudio).not.toHaveBeenCalled();
+      expect(deps.emit).not.toHaveBeenCalled();
+      expect(audioGate.finish).not.toHaveBeenCalled();
+      if (action !== 'owner') expect(audioGate.abort).toHaveBeenCalledOnce();
+      if (action === 'mute') {
+        expect((await service.readSpeech(1, selection.callId, 'reply')).pcm.byteLength).toBe(2);
+        // The shared switch/profile may have changed while muted: undefined
+        // retains normal input, with no second companion setting to override it.
+        const { inputGeneration } = await service.setInputMuted(1, selection.callId, false);
+        expect(deps.createAudioGate).toHaveBeenCalledTimes(2);
+        release(voice);
+        expect(provider.appendAudio).not.toHaveBeenCalled();
+        service.audio(1, selection.callId, voice, undefined, inputGeneration);
+        expect(provider.appendAudio).toHaveBeenCalledExactlyOnceWith(voice, undefined);
+        expect(deps.emit).toHaveBeenCalledWith(1, {
+          callId: selection.callId,
+          inputGeneration,
+          event: { type: 'speech-started' },
+        });
+        expect(deps.log.info).toHaveBeenCalledWith('input filter configured', {
+          callId: selection.callId,
+          inputGeneration,
+          speakerFilterActive: false,
+        });
+      }
+    },
+  );
+
   it('releases ASR, keeps synthesis and lease, and isolates resumed input from old PCM/results', async () => {
     vi.useFakeTimers();
     const { service, deps, provider } = fixture();

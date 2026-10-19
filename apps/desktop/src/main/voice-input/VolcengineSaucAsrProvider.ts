@@ -131,6 +131,8 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
     this.onAuthorizationRejected = options.onAuthorizationRejected;
   }
 
+  readonly endpointing = 'segment-final' as const;
+
   private segmentCallback?: (segment: import('@cindy/voice-input-core').AsrSegment) => void;
 
   onSegment(callback: (segment: import('@cindy/voice-input-core').AsrSegment) => void): void {
@@ -568,7 +570,10 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
     }
     this.startResolve?.();
 
-    for (const segment of extractConversationSegments(message.payload)) this.segmentCallback?.(segment);
+    for (const segment of extractConversationSegments(message.payload)) {
+      // Replay has a different audio origin; retain text but drop timing proof.
+      this.segmentCallback?.(this.recovered ? { ...segment, audioEndMs: undefined } : segment);
+    }
     const rawTranscript = extractTranscript(message.payload);
     const transcript = mergeRecoveredTranscript(this.sessionTranscriptPrefix, rawTranscript);
     const confirmation = getTranscriptConfirmation(message.payload, rawTranscript);
@@ -899,7 +904,15 @@ export function extractConversationSegments(payload: unknown): import('@cindy/vo
     return result.utterances.flatMap((utterance) => {
       if (!isRecord(utterance) || typeof utterance.text !== 'string'
         || typeof utterance.start_time !== 'number' || !Number.isFinite(utterance.start_time)) return [];
-      return [{ id: String(utterance.start_time), order: utterance.start_time, text: utterance.text, final: utterance.definite === true }];
+      const audioEndMs = typeof utterance.end_time === 'number'
+        && Number.isFinite(utterance.end_time) && utterance.end_time >= Math.max(0, utterance.start_time)
+        ? utterance.end_time : undefined;
+      // `definite` locks this segment's text; it is not a semantic end-of-turn.
+      return [{
+        id: String(utterance.start_time), order: utterance.start_time,
+        text: utterance.text, final: utterance.definite === true,
+        ...(audioEndMs !== undefined ? { audioEndMs } : {}),
+      }];
     });
   });
 }

@@ -43,8 +43,25 @@ export type AsrEvent =
   | { type: 'stable'; text: string; at: number }
   | { type: 'error'; message: string; at: number };
 
-/** One provider-owned utterance, independent of the cumulative dictation transcript. */
-export type AsrSegment = { id: string; text: string; final: boolean; order?: number };
+/** How a provider can delimit input; an acoustic boundary is not a semantic turn end. */
+export type AsrEndpointing = 'segment-final' | 'acoustic' | 'manual' | 'semantic';
+
+/** One provider-owned segment, independent of the cumulative dictation transcript. */
+export type AsrSegment = {
+  id: string;
+  text: string;
+  /** Text is immutable. This alone never means the user has finished their turn. */
+  final: boolean;
+  order?: number;
+  /**
+   * End of this segment's audio in milliseconds from this provider's first
+   * appendAudio(). Omit after replay/recovery if that clock cannot be preserved.
+   * Must describe audio, never the arrival time of a network message.
+   */
+  audioEndMs?: number;
+  /** Only emit with actual boundary evidence; never infer from punctuation/final. */
+  turnEnd?: Exclude<AsrEndpointing, 'segment-final'>;
+};
 
 export type VoiceInputDraftSource = 'partial' | 'stable' | 'refinement';
 
@@ -59,6 +76,8 @@ export type AudioTrace = {
 };
 
 export interface AsrProvider {
+  /** Optional continuous-input capability; absence means segment finalization only. */
+  readonly endpointing?: AsrEndpointing;
   /** Optional continuous-input contract. Existing dictation consumers are unchanged. */
   onSegment?(callback: (segment: AsrSegment) => void): void;
   /** Commit an utterance without closing the connection; server-VAD providers need no action. */

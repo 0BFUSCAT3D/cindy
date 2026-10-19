@@ -53,6 +53,7 @@ vi.mock('../../localDb/ipc/bots.js', () => ({
 vi.mock('../../utility-model/oneShotCandidates.js', () => ({
   isProviderModelRouteDisabled: () => false,
 }));
+vi.mock('../semanticExit.js', () => ({ classifyVoiceExit: vi.fn(async () => false) }));
 
 import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { registerVoiceConversationIpc } from '../index.js';
@@ -69,6 +70,7 @@ beforeEach(() => {
   vi.mocked(outboundFetch).mockReset();
   let settings = normalizeVoiceInputSettings({});
   registerVoiceConversationIpc({
+    createAudioGate: () => undefined,
     getSettings: () => settings,
     updateSettings: (patch) => {
       settings = normalizeVoiceInputSettings({ ...settings, ...patch });
@@ -270,4 +272,19 @@ it('validates microphone mute ownership and drops PCM from previous input genera
     throw new Error('untrusted frame');
   });
   await expect(call('set-input-muted', 'call', true)).rejects.toThrow('untrusted frame');
+});
+
+it('bounds semantic exit IPC to trusted local call/final/generation references', async () => {
+  await start();
+  expect(await call('classify-exit', 'call', 'unknown-final', 0)).toBe(false);
+  for (const generation of [-1, 0.5, '0', NaN, Infinity])
+    await expect(call('classify-exit', 'call', '1', generation)).rejects.toThrow();
+  await expect(call('classify-exit', 'call', 'x'.repeat(129), 0)).rejects.toThrow();
+  await expect(
+    h.handlers.get('voice-conversation:classify-exit')!(sender(2), 'call', '1', 0),
+  ).rejects.toThrow();
+  h.trusted.mockImplementation(() => {
+    throw new Error('untrusted frame');
+  });
+  await expect(call('classify-exit', 'call', '1', 0)).rejects.toThrow('untrusted frame');
 });
