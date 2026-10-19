@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, useState, type ReactNode } from 'react';
+import { act, useLayoutEffect, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { sharedTaskHostPeer } from '@cindy/device-link';
@@ -9,7 +9,8 @@ import { InteractionPanel, PluginSetupMessageContent } from '@/session/Interacti
 import { remoteSessionStore, useSessionPendingInteractions } from '@/session/remoteSessionStore';
 import { clearAllInteractionDrafts, readAskUserDraft, readPlanReviewDraft } from '@/session/interactionDraftStore';
 import { forwardNavigationLock } from '@/utils/navigationLock';
-import type { ChatFilePathContextValue } from '@/session/chatFilePathContext';
+import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/chatFilePathContext';
+import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 
 const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
@@ -140,6 +141,34 @@ it('opens question files on the controlled computer and URLs without resolving t
   expect(evidence.openURL).toHaveBeenCalledWith('https://example.com/view');
   expect(resolveInteraction).not.toHaveBeenCalled();
   expect(host.querySelector('[data-testid="interaction.ask.card"]')).not.toBeNull();
+});
+
+// Unit: a new question must not borrow the last file's verified state. The
+// existing click test never changed the href at a retained span index. Inspect
+// the first committed frame before passive effects can clear the stale verdict.
+it('keeps a changed question reference unclickable until its own verification', async () => {
+  const onOpenPath = vi.fn();
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath,
+    statPath: vi.fn((absPath: string) => absPath.endsWith('present.html')
+      ? Promise.resolve({ kind: 'file' as const, resolvedPath: absPath })
+      : new Promise<never>(() => {})),
+  };
+  const changedFrame: boolean[] = [];
+  function ReferenceFrame({ text }: { text: string }) {
+    useLayoutEffect(() => {
+      if (text !== 'missing.html') return;
+      const chip = host.querySelector<HTMLElement>('[data-testid="message.markdownPathChip"]');
+      changedFrame.push(!!chip);
+      chip?.click();
+    }, [text]);
+    return <ChatFilePathContext.Provider value={fileContext}><QuestionReferenceText text={text} /></ChatFilePathContext.Provider>;
+  }
+  await act(async () => root.render(<ReferenceFrame text="present.html" />));
+  expect(host.querySelector('[data-testid="message.markdownPathChip"]')).not.toBeNull();
+  await act(async () => root.render(<ReferenceFrame text="missing.html" />));
+  expect(changedFrame).toEqual([false]);
+  expect(onOpenPath).not.toHaveBeenCalled();
 });
 
 it.each(['push-first', 'receipt-first', 'lost-receipt', 'other-client'] as const)(
