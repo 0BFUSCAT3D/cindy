@@ -390,7 +390,9 @@ interface LoopbackEmbedRequestDetails {
 
 /**
  * 回环嵌入请求是否放行:
- * - 子帧导航(subFrame)到回环地址:父帧必须是本插件自己的页面;
+ * - 首层子帧(subFrame)到回环地址:父帧必须是本插件自己的页面;
+ * - 更深的子帧:父帧必须是同一回环主机:端口(插件自己那台本机服务内部的
+ *   分层页面),跨到另一个端口一律拒绝;
  * - 子帧内的其它请求(脚本/样式/XHR/WebSocket/媒体…):发起帧与目标必须是
  *   同一回环主机:端口;
  * - 顶层导航(mainFrame)与来自 cindy-ghost 页面自身的回环请求一律拒绝。
@@ -401,7 +403,7 @@ function loopbackEmbedRequestAllowed(details: LoopbackEmbedRequestDetails, selfP
   if (details.resourceType === 'mainFrame') return false;
   if (details.resourceType === 'subFrame') {
     const parent = details.frame?.parent?.url ?? details.referrer ?? '';
-    return parent.startsWith(selfPrefix);
+    return parent.startsWith(selfPrefix) || ghostLoopbackOrigin(parent) === target;
   }
   const from = details.frame?.url ?? details.referrer;
   return ghostLoopbackOrigin(from) === target;

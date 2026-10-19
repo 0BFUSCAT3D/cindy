@@ -634,6 +634,9 @@ describe('electronSandboxAdapter owner partition', () => {
     // 面板把本机页面装进 <iframe>
     expect(cancelled({ url: page, resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: panelUrl } } })).toBe(false);
     expect(cancelled({ url: page, resourceType: 'subFrame', referrer: panelUrl })).toBe(false);
+    // 本机页面自己的更深一层子帧(控制页把设备画面再套一层 iframe):同端口才放行
+    expect(cancelled({ url: 'http://127.0.0.1:50365/simulators/x?handheld=1', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: page } } })).toBe(false);
+    expect(cancelled({ url: 'http://127.0.0.1:50365/simulators/x?handheld=1', resourceType: 'subFrame', referrer: page })).toBe(false);
     // 子帧内回到同一主机:端口的资源与 WebSocket
     for (const [url, resourceType] of [
       ['http://127.0.0.1:50365/control.js', 'script'],
@@ -654,6 +657,9 @@ describe('electronSandboxAdapter owner partition', () => {
       { url: 'http://10.0.0.5:50365/x', resourceType: 'xhr', frame: { url: page } },
       { url: page, resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: 'cindy-ghost://other-ghost/panel.html' } } },
       { url: page, resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: 'https://evil.example/' } } },
+      // 更深的子帧跨到另一个回环端口/主机:拒绝
+      { url: 'http://127.0.0.1:1/control?udid=x', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: page } } },
+      { url: 'http://10.0.0.5:50365/control?udid=x', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: page } } },
       { url: page, resourceType: 'subFrame' },
       { url: 'http://user:pw@127.0.0.1:50365/x', resourceType: 'xhr', frame: { url: page } },
       { url: 'https://127.0.0.1:50365/x', resourceType: 'xhr', frame: { url: page } },
