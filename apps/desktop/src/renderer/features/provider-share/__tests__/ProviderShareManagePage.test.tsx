@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderView } from '@cindy/model-providers';
+import { toast } from '@/lib/toast';
 
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState, ProviderUsageHistoryView } from '../../../../shared/providerShare';
@@ -189,6 +190,7 @@ beforeEach(() => {
   remoteCatalog.loading = false;
   remoteCatalog.error = null;
   confirmSpy.mockClear();
+  vi.mocked(toast.success).mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
     if (cmd.action === 'owned') return owned();
@@ -634,10 +636,22 @@ describe('ProviderShareManagePage', () => {
   });
 
   // 转分享(provider-sharing.md §4.3)：成员想经自己的供应商组把这里的供应商转给别人用，主人逐人处理。
-  it.each([undefined, 'studio'])('handles reshare decisions on the provider’s computer (%s)', async (deviceId) => {
+  /* PR #6445 discussion_r4313147989：待处理转分享投影曾丢失成员备注。
+   * 生产入口：真实管理页面；观察申请说明、用量提示与同意后的 toast。
+   * 原覆盖只传没有备注的成员。最小输入：Lizi 的备注为 Alice，并有一个 pending 请求。
+   * tier: unit；扩展既有本机/跨电脑转分享 fixture，保留无备注回退验证。
+   * 单文件实测 10.64 秒：导入 4.87 秒、31 个用例 4.88 秒；复用既有完整页面 fixture，未新增测试文件。
+   */
+  it.each([
+    { deviceId: undefined, note: undefined },
+    { deviceId: undefined, note: 'Alice' },
+    { deviceId: 'studio', note: 'Alice' },
+  ])('handles reshare decisions on the provider’s computer ($deviceId, $note)', async ({ deviceId, note }) => {
+    const ownerName = note ?? 'Lizi';
     command.mockImplementation(async (cmd: { action: string }) => {
       if (cmd.action === 'owned') {
         const state = owned();
+        state.shares[0]!.members[0]!.note = note;
         state.shares[0]!.members[0]!.reshares = [
           { id: 'rs-pending', name: 'Carol', avatarUrl: null, state: 'pending', requestedAt: Date.now() - 1_000, decidedAt: null },
           { id: 'rs-approved', name: 'Dave', avatarUrl: null, state: 'approved', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
@@ -675,10 +689,14 @@ describe('ProviderShareManagePage', () => {
     renderPage('on', { deviceId });
     const pending = await screen.findByTestId('provider-share-reshare-row');
     expect(pending.textContent).toContain('Carol');
-    expect(pending.textContent).toContain('providerShare.manage.reshare.applying:{"owner":"Lizi"}');
+    expect(pending.textContent).toContain(`providerShare.manage.reshare.applying:${JSON.stringify({ owner: ownerName })}`);
+    expect(pending.textContent).toContain(`providerShare.manage.reshare.usageHint:${JSON.stringify({ name: 'Carol', owner: ownerName })}`);
     expect(getProviderSharePendingReshares().map((item) => item.reshare.id)).toEqual(deviceId ? [] : ['rs-pending']);
     fireEvent.click(within(pending).getByRole('button', { name: 'providerShare.manage.reshare.approve' }));
     await expectDecision('rs-pending', 'approve');
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
+      `providerShare.manage.reshare.toastApproved:${JSON.stringify({ name: 'Carol', owner: ownerName, provider: 'Cindy AI' })}`,
+    ));
 
     // 处理过的人列在这个成员那一行下方：已同意的可撤回，拒绝的可改为同意。
     await findMemberRow();
