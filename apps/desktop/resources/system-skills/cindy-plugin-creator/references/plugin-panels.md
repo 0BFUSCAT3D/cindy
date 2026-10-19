@@ -25,7 +25,7 @@
   自绘头,没有这套标准头,声明本字段拒装);
 - 与电子脑同源,用 `BroadcastChannel('<自定名>')` 通信(电子脑发,面板收);
 - 取自己的媒体:`cindy-ghost://<id>/media/<指纹><后缀>`(主机查账验归属,别人的图 404);
-- 重启回放:`fetch('cindy-ghost://<id>/gallery')` 返回本意识作品清单 `[{src, caption}]`;
+- 重启回放:`fetch('cindy-ghost://<id>/gallery')` 返回本插件作品清单 `[{src, caption}]`;
 - 唤醒电子脑:`fetch('cindy-ghost://<id>/wake')`(幂等,已在跑立即返回,回
   `{state}`)。电子脑是按需拉起的,面板刚打开时它多半没在跑、广播没人听;
   面板交互要经电子脑干活(BroadcastChannel 递活再转 cindy-request)时,先

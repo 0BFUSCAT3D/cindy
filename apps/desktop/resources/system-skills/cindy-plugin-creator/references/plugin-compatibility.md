@@ -8,14 +8,14 @@
 或其它分发渠道仍可能让不适配客户端安装插件，不能省略上述兼容处理。
 旧客户端已有拒装逻辑无法追改；整体协议格式变化仍受 schemaVersion 校验。
 
-- `id` 不合法(大写/下划线/超长)· 声明了 command 但没有 tools · command 与已装意识撞名
+- `id` 不合法(大写/下划线/超长)· 声明了 command 但没有 tools · command 与已装插件撞名
   · **未声明 command**:不拒装,但插件页"使用"按钮禁用,用户无法通过插件页一键启用
     或用 $command 点名;AI 工具调用不受影响(见 §2 说明)
 - `tools` 为空 · panel 详单缺少实际形态(既没有 html，也不是有效的 tab/停靠配置)
 - mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单
 - settingsHtml 路径不合法/文件不在包里 · settingsHeight 越界(160–800)或没配 settingsHtml 单独声明
 - panel.systemButtons 格式错(不是对象、已知键的值非布尔,或 position:"tab" 时声明——插件页内面板没有标准头)
-- keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion
+- keywords(已废弃字段,旧包兼容保留,新插件别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion
 - cindy 详单格式错(已知类目的动作不是合法标识、空数组或重复动作)
 - agent 详单格式错(background / errand / schedule 存在但不是 true；基础点击触发请写 `agent: {}`)
   · `hiddenTasks` 不是布尔值,或写了 `hiddenTasks: true` 却没有 `tasks: true`

@@ -153,7 +153,7 @@ await fetch('/oauth/acct/client', { method:'PUT', body: JSON.stringify({ clientI
 // 「连接账号」按钮 → 主机拉浏览器跑授权(等待时间可能数分钟,给用户 loading 提示):
 const connectInit = { method:'POST' };
 // broker 模式可选:必须等于 oauth.clientId 或 clientIdAlternatives 中一项;
-// 典型用法是先读 /app-context,由意识按 region 选择公开 App ID。
+// 典型用法是先读 /app-context,由插件按 region 选择公开 App ID。
 if (selectedClientId) connectInit.body = JSON.stringify({ clientId: selectedClientId });
 const r = await (await fetch('/oauth/acct/connect', connectInit)).json();
 // → { ok:true, account } 或 { ok:false, error: 'NO_CLIENT_CONFIG'|'ACCOUNT_LIMIT'|'VAULT_WRITE_FAILED'|'INVALID_CONFIG'|'LISTEN_FAILED'|'TIMEOUT'|'CANCELLED'|'CALLBACK_INVALID'|'EXCHANGE_FAILED'|'SERVICE_UNAVAILABLE'|'NETWORK', detail? }
@@ -190,7 +190,7 @@ identity.displayTemplate 时,`/oauth` 回查与连接结果里 account.label 给
 - `redirectPort`:回调固定端口。服务商要求回调 URI 与其后台注册值**精确匹配**
   (含端口,如 Atlassian)时声明,主机回调恒为 `http://127.0.0.1:<端口>/callback`;
   端口被占用时连接返回 LISTEN_FAILED(detail 带人话提示,settingsHtml 原样展示
-  即可;第一方官方内置意识会先自动结束占用进程并重试,第三方意识不享受此回收
+  即可;第一方官方内置插件会先自动结束占用进程并重试,第三方插件不享受此回收
   ——请选一个不易撞车的端口)。声明 `tokenBroker` 时必须提供；非 broker 模式下，
   Google 这类允许任意 loopback 端口的服务商不用声明。
 - `tokenBroker`:资格有三路:①随包官方种子或受信任公开市场的官方插件,名称本身不构成资格；②当前组织的服务端
@@ -236,7 +236,7 @@ const r = await cindy.fetch({
 
 只能上传**自己名下**的总仓媒体:出生自你(cindy 代办产物 / as:'media' 取件)、
 挂你画廊、或用户随消息把图交给你(附件过户,指纹在 args.attachments)。别人的
-指纹统一"不存在或不属于本意识"。Content-Type(boundary)由主机独占,你写了也
+指纹统一"不存在或不属于本插件"。Content-Type(boundary)由主机独占,你写了也
 会被覆盖;单文件 ≤64MB、单次总量 ≤128MB,超限整单拒。
 
 **目录上传(uploadDir,目录过户票据)**:要把用户的一个本地目录整体传给你的
@@ -302,9 +302,9 @@ label + inject 注入形态 + 可选 maxConnections);声明了 connections 时 h
 可缺省(静态域名与动态连接至少有其一),声明 connections 必须同时声明
 settingsHtml。语义要点:
 
-- **动态白名单**:用户添加的每条地址并入本意识的放行域(精确匹配裸域,
+- **动态白名单**:用户添加的每条地址并入本插件的放行域(精确匹配裸域,
   不吃通配;https + 默认端口限制照旧)。**每次新增地址,主机都会弹一个
-  受信确认弹窗**(系统模态,不是你的页面)向用户摊牌"该意识请求添加连接
+  受信确认弹窗**(系统模态,不是你的页面)向用户摊牌"该插件请求添加连接
   地址 xxx"——用户拒绝则添加失败(CONFIRM_DENIED),你的设置页如实提示即可;
   同一地址更新 token/label 不再弹(放行面没变)。
 - **凭证只注入对应地址**:每条连接的 token 只会注入到那条连接自己的域名
@@ -339,7 +339,7 @@ await fetch('/connections/gitlab/default', { method: 'POST', body: JSON.stringif
 maxConnections 收紧到 1–8);token ≤4096 字符。新连接添加成功时主机会自动
 弹「连接地址已添加」的系统提示(带你的身份头,无需声明 notify)。
 
-其它硬边界:每意识同时在途 4 个请求;媒体取件/上传共用全局串行闸,同时只
+其它硬边界:每个插件同时在途 4 个请求;媒体取件/上传共用全局串行闸,同时只
 处理一单(忙时返回结构化"正忙",稍后重试即可);重定向最多 3 跳且逐跳重验
 白名单;不支持流式/WebSocket。长任务用"提交 + 轮询"两个工具拆开做;在一次
 tool-call 内轮询时记得定期发 tool-progress 心跳续命(见 §4"长任务续命")。

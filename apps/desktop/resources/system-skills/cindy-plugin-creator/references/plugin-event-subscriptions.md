@@ -37,7 +37,7 @@ cindy.onHostMessage(function (msg) {
     // usage 各字段可选(各引擎上报详尽度不同,别假设字段必在):
     //   { inputTokens?, outputTokens?, cacheReadTokens?, cacheCreationTokens? }
     // error 终态也可带已消耗的 usage；Pi 输出上限会保留它，不要只统计 completed。
-    // msg.seq 每意识单调递增;msg.dropped(可选)= 你熄灯期溢出丢弃的事件数。
+    // msg.seq 每个插件单调递增;msg.dropped(可选)= 你熄灯期溢出丢弃的事件数。
     // 生命周期:会话被关掉或引擎被替换时,主机会给还在场的那一轮补发
     // endReason: 'interrupted',让 start/end 成对。但这不是投递保证——熄灯期
     // 缓冲溢出照样会丢(见 msg.dropped),状态机别只靠 end 归位。
@@ -113,7 +113,7 @@ cindy.onHostMessage(function (msg) {
   "有 thinking"直接等同于"用户本人正在用 Desktop";
 - **旁听是 fire-and-forget**:主机投完即走,你崩了/慢了不影响任何会话;熄灯期事件
   进队列(上限 100,溢出丢最旧,下一条带 `dropped` 计数),事件到达会把你按需
-  拉起补投——但订阅型意识**建议 `launch:"resident"`**(要秒收就得在场)。
+  拉起补投——但订阅型插件**建议 `launch:"resident"`**(要秒收就得在场)。
   **`dropped` 非零就必须重置你本地派生的状态**:被丢的可能正是某条
   `did-turn-end` 或 `did-*-end`,你要是继续拿旧状态往下推,就会永久停在
   "在忙 / 在等审批"。收到 `dropped` 时把状态清空、以此后到达的事件为准;
@@ -123,7 +123,7 @@ cindy.onHostMessage(function (msg) {
   但整段必须 3 秒内出裁决;
 - **三种动作**:`allow`(原样继续)/ `block`(打回,reason ≤200 字符,显示在被拦
   气泡)/ `rewrite`(改写正文再继续,`text` ≤16000 字符替换即将落库/显示/交给
-  agent 的正文)。多个钩子意识按装入序串行,**链式变换**(前一个改写的输出是后
+  agent 的正文)。多个钩子插件按装入序串行,**链式变换**(前一个改写的输出是后
   一个的输入),任一 block 即短路;
 - **block 的呈现**:消息发不出去(不落库不起 turn),气泡照常显示,其下渲一条
   **error 红条,内容 = 你返回的 reason 原文**(主机直接显示,不加框不署名——所以
@@ -132,13 +132,13 @@ cindy.onHostMessage(function (msg) {
 - **rewrite 静默替换**:气泡直接显示改写后的正文(与交给 AI 的一致),**无标记、
   无弹窗**;空改写 / 改写等于原文一律被忽略;
 - **UI 全主机画**:红条、气泡都由主机绘制,你只提供 reason / text 文本,伪装不了、
-  也冒充不了别的意识;
+  也冒充不了别的插件;
 - **钩子作用于发给 Agent 的用户消息**:即将启动新 turn 的消息和运行中 turn 里的
   用户插话(steer)都经同一道钩子。新 turn 的 `model` 是本轮已选模型,steer 的
   `model` 是当前运行中 turn 的模型;拦下新 turn = turn 不启动,拦下 steer = 不注入
   当前 turn;
 - **没有绕过通道(v1)**:被拦消息用户只能编辑后重发,重发仍会经你再审。即便
-  如此也别把拦截当硬性管控设计(意识是工具不是管理员):reason 要引导用户怎么
+  如此也别把拦截当硬性管控设计(插件是工具不是管理员):reason 要引导用户怎么
   改,而不是单纯说不;
 - **权限最重**:声明 hooks 在插件详情里是最重的一条(「可读取、拦截或改写你
   发出的消息」),用户会看得很清楚,只在真需要时申请。

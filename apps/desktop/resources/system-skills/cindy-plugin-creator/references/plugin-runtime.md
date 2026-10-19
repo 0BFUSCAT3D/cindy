@@ -23,7 +23,7 @@ cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: {
   //   kind: 'music',            // 'music'(完整卡:封面/tags/歌词/进度条)| 'sound_effect'(精简卡)
   //   title: '歌名', cover_url: 'cindy-media://….jpg', tags: '风格描述',
   //   lyrics: '歌词', duration_seconds: 176, suno_id: '…' }]      // 除 url 外全可选
-  // → 聊天气泡渲染成音频播放器卡。声明了 card 能力的意识也可把播放器直接画进
+  // → 聊天气泡渲染成音频播放器卡。声明了 card 能力的插件也可把播放器直接画进
   // 自己的卡(§4.5 data-ghost-audio 插槽),那时结果多带 xdt_audio_in_card: true
   // + xdt_anchor_card_id(主机验证卡里真含插槽才压基座的重复播放器;
   // xdt_audio_tracks 仍要发——手机端靠它)。
@@ -39,12 +39,12 @@ cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: {
   // 不受影响。另:主机会对"署名调用"(cindy-request / fetch 带 callId)期间
   // 入库的媒体独立记账,你没声明媒体字段时以 xdt_media_produced 兜底注入
   // ——但那是安全网,别依赖它,正路是老实声明字段。
-  // 内联意图令牌(读取类意识用):结果顶层带 xdt_media_inline: true = 这些
+  // 内联意图令牌(读取类插件用):结果顶层带 xdt_media_inline: true = 这些
   // 媒体是"从文档/消息里读出来的素材",桌面呈现应由主 agent 在最终回复里
   // markdown 内联(![](cindy-media://…)),主机不画卡、也不注"别嵌 markdown"
   // 禁令;IM/远程出站仍按账本自动送图。仅在你**没有**声明 xdt_image_urls 等
   // 复数媒体字段时有意义——声明了媒体字段一律走卡片语义,别两个都带。
-  // 生成类意识(画图/做视频)不要用它:生成产物走卡片语义体验才对。
+  // 生成类插件(画图/做视频)不要用它:生成产物走卡片语义体验才对。
   note: "干完了"
 }});
 // 失败交卷：errorCode 是可选的插件业务错误码；主机保留码
@@ -101,7 +101,7 @@ const search = await cindy.send({
   callerTool: msg.tool,            // 与 callId 配对验身,必须逐字透传
 });
 // search = { ok:true, provider:'cindy', results:[{ title, url, snippet }] }
-// 改图(需详单含 "edit";源图必须是本意识名下的,1–4 张——含用户过户给你的
+// 改图(需详单含 "edit";源图必须是本插件名下的,1–4 张——含用户过户给你的
 // args.attachments 指纹):
 //   { kind: 'edit_image', prompt, hashes: ['<指纹>'] }
 //   { kind: 'edit_image', prompt, hashes: ['<指纹>'], aspectRatio: '1:1' }  // 换画幅重绘
@@ -160,7 +160,7 @@ const search = await cindy.send({
 //   后台继续;用 { kind:'query_job', jobId } 轮询:进行中 { ok:true,
 //   status:'running', elapsedSeconds },完成 { ok:true, status:'done', url,
 //   hash, ext, model, modelLabel }(取件字段与同步返回同形),失败
-//   { ok:false, message }。完成结果保留 30 分钟(每意识最多缓存 16 单完成
+//   { ok:false, message }。完成结果保留 30 分钟(每个插件最多缓存 16 单完成
 //   记录,超出淘汰最旧),过期或应用重启后查无此单(按可重新提交处理);
 //   后台在途上限 2 单。建议把插件工具拆成"提交生成 + 查询结果"两个,
 //   让 AI 自己掌握轮询节奏。
@@ -169,15 +169,15 @@ const search = await cindy.send({
 //     意图,具体用哪个模型由主机决定。这是你唯一该主动用的选型参数。
 //   model:仅当**用户在会话里显式点名**某模型(如"用 nano banana")时,把
 //     用户点的名字原样透传;白名单外会被拒。**不要**自己替用户选模型——
-//     具体型号是主机资产,写死在意识里必腐烂。
+//     具体型号是主机资产,写死在插件里必腐烂。
 // 主机模型目录暂时不可用时(返回 ok:false 且 message 含"模型目录暂时取不到"):
-//   这是主机侧临时状态,不代表本意识缺这项能力——**不要频繁重试**,
+//   这是主机侧临时状态,不代表本插件缺这项能力——**不要频繁重试**,
 //   如实告诉用户"当前模型不可用,稍后再试或重启应用",然后结束本次操作。
 ```
 
 ### 4.0.1 寄存:让"用户自己的图"也能被 AI 改(deposit_media)
 
-改图/图生视频的 `hashes` **只认本意识名下的媒体**。主机生成的图天然在册,
+改图/图生视频的 `hashes` **只认本插件名下的媒体**。主机生成的图天然在册,
 但用户在你面板里**粘贴、拖入**的图,以及面板里早就存着的存量素材,字节只在
 面板侧(IndexedDB / 你自己的存档),总仓里没有账——所以在寄存之前,它们不能
 当源图。这就是"同一块画布上有的图能改、有的不能"的由来。
@@ -210,7 +210,7 @@ await cindy.send({ type: 'cindy-request', kind: 'release_media', hash: r.hash })
   文件名一概不参考,识别不出直接拒——别拿 svg、zip、json 来试;
 - **单次 ≤50MB**(解码后字节)。字节要以 base64 走一次 IPC,再大请自己在面板侧
   压缩或分片,别指望上限继续抬;
-- **每意识配额 1GB**,只算寄存物(你生成的图不占这个额)。同一张图反复寄存
+- **每个插件配额 1GB**,只算寄存物(你生成的图不占这个额)。同一张图反复寄存
   不重复占额(内容寻址天然去重)。**满了就拒**——不会静默淘汰旧的,因为
   "昨天能改今天改不了"是比"存不进去"更糟的体验。用 `release_media` 释放;
   返回里的 `quotaUsedBytes` / `quotaLimitBytes` 可用来提前提示用户;
