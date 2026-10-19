@@ -176,6 +176,7 @@ import type { MobileGoalLimitsInput } from '@cindy/maker-shared/device-link-cont
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from '@/session/ComposerAttachmentTray';
 import { useComposerPendingImagePreview } from '@/session/useComposerPendingImagePreview';
 import { SlowSendNotice, type SlowSendPhase } from '@/session/SlowSendNotice';
+import { useConfirmLeaveWhileUploading } from '@/session/useConfirmLeaveWhileUploading';
 import { ImageLightbox } from '@/session/ImageLightbox';
 import {
   useComposerImageAnnotations,
@@ -612,6 +613,7 @@ export default function NewRemoteSessionScreen() {
   const [creating, setCreating] = useState(false);
   const [createStartedAt, setCreateStartedAt] = useState<number | null>(null);
   const [createPhase, setCreatePhase] = useState<SlowSendPhase>('preparing');
+  const waitForLeaveDecision = useConfirmLeaveWhileUploading(creating && createPhase === 'uploading');
   const [error, setError] = useState<string | null>(() => {
     const creationError = readRouteString(params.creationError);
     return creationError ? t('session.screen.createFailedNotice', { message: creationError }) : null;
@@ -4568,9 +4570,11 @@ export default function NewRemoteSessionScreen() {
       }
       // 拍照 / 选图后立刻点创建是常见路径:等在途图片上传落定(乐观托盘)。
       // 有失败就中止创建——错误文案已由上传回调写入 attachmentError,让用户处理;
-      // 此时不该带着残缺附件去开新会话。
+      // 此时不该带着残缺附件去开新会话。等待期间离开会先确认;确认离开后在途上传随页面丢弃,同样放弃。
       setCreatePhase('uploading');
-      const { failedCount } = await waitForPendingUploads();
+      const { failedCount, abandoned } = await waitForPendingUploads();
+      // 离开确认弹窗未决时,等用户选择:选「放弃发送」就不发,选「继续等待」照常创建。
+      if (abandoned || await waitForLeaveDecision()) return;
       if (!isCurrentOwner()) return;
       if (!ensureDeviceAlive()) return;
       if (failedCount > 0) return;
