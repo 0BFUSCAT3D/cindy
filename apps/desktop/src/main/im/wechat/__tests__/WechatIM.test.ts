@@ -8,6 +8,10 @@ import {
 } from '@cindy/wechat-ilink';
 
 import type { DbClient } from '../../../localDb/client/DbClient';
+import {
+  beginInteractionRoute, installDesktopInteractionHandler, requestHostInteraction,
+} from '../../../maker-ipc/interactionRouter';
+import type { SharedPermission } from '../../../maker-ipc/sharedPermission';
 import { __testing, sessionIdFor, WechatIM, type WechatIMDeps } from '../WechatIM';
 
 const mediaMocks = vi.hoisted(() => ({
@@ -327,6 +331,67 @@ describe('WechatIM host boundary', () => {
       behavior: 'deny',
       reason: 'wechat_interaction_send_failed',
     });
+  });
+
+  // PR #6492 security regression (unit): existing text parser tests did not exercise
+  // a companion guest asking for a tool permission. Use the real router + adapter:
+  // no guest prompt/reply slot, owner decision wins, missing owner surface times out.
+  it.each([true, false])('keeps guest tool approval on the owner surface (available=%s)', async (hasDesktop) => {
+    const im = new WechatIM(deps());
+    im.attachTurnRuntime({ runner: { companionBotIdFor: () => 'cindy' } } as never);
+    const send = vi.spyOn(im, 'sendText').mockResolvedValue({ messageId: 'prompt' });
+    const session = { id: 'guest-lane', setInteractionListener: vi.fn() };
+    const request = { kind: 'permission' as const, requestId: 'guest-write',
+      toolName: 'Write', input: { file_path: '/tmp/guest-write', content: 'guest input' } };
+    let ownerPermission: SharedPermission | undefined;
+    if (hasDesktop) installDesktopInteractionHandler(session, async (_request, shared) => {
+      ownerPermission = shared;
+      return shared!.result;
+    });
+    const lease = beginInteractionRoute(session, {
+      route: { sessionId: session.id, turnId: 'turn', origin: { kind: 'im', channel: 'wechat' },
+        interactionSurface: 'channel-card', requesterAuthority: 'guest', timeoutMs: 1_000 },
+      handle: (req, sharedPermission) => im.handleTextInteraction('guest', req, { sharedPermission }),
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = requestHostInteraction(session, request, new AbortController().signal);
+      expect(send).not.toHaveBeenCalled();
+      expect(im.cancelTextInteraction('guest', request.requestId,
+        { kind: 'permission', behavior: 'allow' })).toBe(false);
+      if (hasDesktop) {
+        ownerPermission!.decide({ kind: 'permission', behavior: 'allow' });
+        await expect(pending).resolves.toEqual({ kind: 'permission', behavior: 'allow' });
+      } else {
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(pending).resolves.toMatchObject({ kind: 'permission', behavior: 'deny', reason: 'interaction_timeout' });
+        await expect(im.handleTextInteraction('guest', request)).resolves.toMatchObject({
+          kind: 'permission', behavior: 'deny', reason: 'desktop_confirmation_not_installed',
+        });
+      }
+      expect(send).not.toHaveBeenCalled();
+    } finally { lease.release(); vi.useRealTimers(); await im.dispose(); }
+  });
+
+  it('retains companion owner WeChat approvals and guest ordinary questions', async () => {
+    const { im } = restoredConnection(() => 0);
+    im.attachTurnRuntime({ runner: { companionBotIdFor: () => 'cindy' } } as never);
+    const send = vi.spyOn(im, 'sendText').mockResolvedValue({ messageId: 'prompt' });
+    await im.init();
+    try {
+      const permission = { kind: 'permission' as const, requestId: 'owner-write', toolName: 'Write', input: {} };
+      const ownerResult = im.handleTextInteraction('owner', permission);
+      expect(send).toHaveBeenCalledWith('owner', expect.stringContaining('允许'));
+      expect(im.cancelTextInteraction('owner', permission.requestId, { kind: 'permission', behavior: 'allow' })).toBe(true);
+      await expect(ownerResult).resolves.toEqual({ kind: 'permission', behavior: 'allow' });
+      const question = { kind: 'ask_user_question' as const, requestId: 'guest-question',
+        questions: [{ question: '选择格式', options: [{ label: '文本' }] }] };
+      const guestResult = im.handleTextInteraction('guest', question);
+      expect(send).toHaveBeenCalledWith('guest', expect.stringContaining('选择格式'));
+      const answer = { kind: 'ask_user_question' as const, answers: { 选择格式: '文本' } };
+      expect(im.cancelTextInteraction('guest', question.requestId, answer)).toBe(true);
+      await expect(guestResult).resolves.toEqual(answer);
+    } finally { await im.dispose(); }
   });
 
   it('fails closed before authorization when the signed compatibility policy disables it', async () => {

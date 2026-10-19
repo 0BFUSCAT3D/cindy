@@ -527,6 +527,15 @@ export class WechatIM extends BaseIM implements RichChannelIM {
   ): Promise<InteractionDecision> {
     const shared = options?.sharedPermission;
     if (shared?.decision) return shared.result;
+    if (request.kind === 'permission'
+      && this.#turnRuntime?.runner.companionBotIdFor?.(this.#epoch?.credentials.ilinkBotId ?? '')
+      && !this.isOwner(userId)) {
+      // The router already mirrors permissions to the owner's Desktop/mobile.
+      // A guest must never receive a prompt or a pending WeChat reply slot.
+      // The shared route owns cancellation/timeout; without it, fail closed.
+      return shared ? shared.result
+        : defaultWechatInteractionDecision(request, 'desktop_confirmation_not_installed');
+    }
     const previous = this.#pendingInteractions.get(userId);
     if (previous) {
       clearTimeout(previous.timer);
