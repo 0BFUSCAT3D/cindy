@@ -1046,6 +1046,12 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 - 源 Host 先入仓再发事件，以 data URL 单独携带字节，兼容仍优先读取 path 的旧控制端。
   新控制端接受旧事件；旧源 Host 已丢失字节的 path-only 事件只能呈现交付失败，升级源端
   后新产物才具备恢复能力。旧端未声明 capability 时不自动请求 `images`。
+- `images` 可选携带 `relay`，与 `open` 相同，scope 始终由已认证 caller、relay、任务 ID
+  派生；只有明确声明 `caps.imageRecoveryRelay` 的源端才发中转释放，避免旧端忽略 relay
+  后误确认。旧端未升级时保留中转回执，正常图片事件继续交付。
+- `open.imageDeliveryEpoch` / 图片 `deliveryEpoch` 是任务 Host 的清空代次（初始 0），
+  经供应商组透传，源端不使用自己的时钟换算。旧端忽略可选字段；缺少代次的旧产物在清空时
+  保守保留，删除任务仍可全部释放。新代次产物不能被此前离线清理回执删除。无需服务端升级。
 - Desktop / Mobile 手动重试走同账号 `maker:images:retry(sessionId, imageId)`，不进入
   共享任务访客清单，不进入自动重放。旧任务 Host 不认识通道时保留失败状态。
 - 失败半径是一个产物：恢复不重启 relay、不关闭其它任务、不重新调用生成模型。

@@ -1,12 +1,20 @@
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, or } from 'drizzle-orm';
 import type { AgentEvent, GeneratedImageEventData } from '@cindy/maker-core';
 import { REMOTE_AGENT_CHANNEL, REMOTE_AGENT_READ_MAX_BYTES } from '@cindy/device-link';
 import { sessions, messages } from '../localDb/schema';
 import { broadcastMessageRow, createMessage } from '../localDb/ipc/messages';
 import { captureDataOwnerBroadcastScope } from '../device-link/broadcast-tap';
-import { captureGeneratedImageStorage, generatedImageErrorCode } from './generatedImageStorage';
-import { generatedImageId, initialGeneratedImageRecord } from './generatedImageJournal';
+import {
+  captureGeneratedImageStorage,
+  generatedImageErrorCode,
+  releaseGeneratedImageUpstream,
+} from './generatedImageStorage';
+import {
+  generatedImageId,
+  initialGeneratedImageRecord,
+  type GeneratedImageCleanup,
+} from './generatedImageJournal';
 import { commitChatImageUrls } from './chatAttachments';
 import { MAX_GENERATED_IMAGE_BYTES } from './generatedMedia';
 import { t } from '../i18n';
@@ -150,6 +158,10 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
       return;
     }
     if (session.clearedAt !== null && session.clearedAt >= admittedAt) return;
+    if (image.deliveryEpoch !== undefined && image.deliveryEpoch !== (session.clearedAt ?? 0)) {
+      await cleanup(sessionId);
+      return;
+    }
     let record = await storage.journal.update(
       scope,
       id,
@@ -390,6 +402,54 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
     }
   }
 
+  // Release-only enumeration: never passes an unknown artifact to the message writer.
+  async function cleanupUnknown(receipt: GeneratedImageCleanup) {
+    const storage = captureGeneratedImageStorage();
+    const caps = await remote(receipt.agentDeviceId, { op: 'caps' }, storage.assertCurrent);
+    if (caps.imageRecovery !== true) return;
+    let offset = 0;
+    for (;;) {
+      const page = await remote(
+        receipt.agentDeviceId,
+        { op: 'images', sessionId: receipt.sessionId, action: 'list', offset },
+        storage.assertCurrent,
+      );
+      if (!Array.isArray(page.images) || page.images.length > 64)
+        throw new Error('INVALID_IMAGE_DELIVERY');
+      for (const value of page.images as Array<{ id?: unknown; image?: GeneratedImageEventData }>) {
+        if (
+          !value.image ||
+          value.image.kind !== 'generation' ||
+          typeof value.image.blockId !== 'string' ||
+          generatedImageId(value.image) !== value.id
+        )
+          throw new Error('INVALID_IMAGE_DELIVERY');
+        // Legacy source images without an epoch cannot safely be ordered across a clear.
+        const epoch = value.image.deliveryEpoch;
+        if (
+          !receipt.deleted &&
+          !(
+            typeof epoch === 'number' &&
+            Number.isSafeInteger(epoch) &&
+            epoch >= 0 &&
+            receipt.clearedAt !== null &&
+            epoch < receipt.clearedAt
+          )
+        )
+          continue;
+        await remote(
+          receipt.agentDeviceId,
+          { op: 'images', sessionId: receipt.sessionId, action: 'release', imageId: value.id },
+          storage.assertCurrent,
+        );
+      }
+      if (page.next === null) return;
+      if (typeof page.next !== 'number' || !Number.isSafeInteger(page.next) || page.next <= offset)
+        throw new Error('INVALID_IMAGE_DELIVERY');
+      offset = page.next;
+    }
+  }
+
   async function cleanup(sessionId: string) {
     const storage = captureGeneratedImageStorage();
     const [session] = await storage.db
@@ -398,6 +458,19 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
       .where(eq(sessions.id, sessionId))
       .limit(1);
     storage.assertCurrent();
+    if (session?.agentDeviceId && (session.status === 'deleted' || session.clearedAt !== null)) {
+      const scope = `cleanup:${sessionId}:${session.agentDeviceId}`;
+      const receipt = await storage.journal.updateCleanup(scope, (previous) => ({
+        version: 1,
+        scope,
+        sessionId,
+        agentDeviceId: session.agentDeviceId!,
+        clearedAt: Math.max(previous?.clearedAt ?? 0, session.clearedAt ?? 0),
+        deleted: previous?.deleted === true || session.status === 'deleted',
+      }));
+      await cleanupUnknown(receipt).catch(() => undefined);
+      storage.assertCurrent();
+    }
     for (const record of await storage.journal.list(`task:${sessionId}`)) {
       if (session && session.status !== 'deleted' && record.clearedAt === session.clearedAt)
         continue;
@@ -451,14 +524,9 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
       .from(sessions)
       .where(eq(sessions.id, sessionId))
       .limit(1);
-    if (!session?.agentDeviceId || session.status === 'deleted' || session.clearedAt !== null)
-      return;
-    // Unknown outputs must not revive messages the user has removed or rewound.
-    const removed = await storage.snapshot.client.queryOne(
-      'SELECT id FROM messages WHERE session_id = ? AND (rewind_at IS NOT NULL OR role = ?) LIMIT 1',
-      [sessionId, 'message_tombstone'],
-    );
-    if (removed) return;
+    if (!session?.agentDeviceId || session.status === 'deleted') return;
+    // Each stable result ID is checked by perform/assertTask. An unrelated tombstone or
+    // rewound row must not permanently disable recovery for all future paid outputs.
     const caps = await remote(session.agentDeviceId, { op: 'caps' }, storage.assertCurrent);
     if (caps.imageRecovery !== true) return;
     let offset = 0;
@@ -484,6 +552,7 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
           generatedImageId(value.image) !== value.id
         )
           throw new Error('INVALID_IMAGE_DELIVERY');
+        if (session.clearedAt !== null && value.image.deliveryEpoch !== session.clearedAt) continue;
         await deliver(sessionId, {
           type: 'image',
           source: 'codex',
@@ -513,10 +582,28 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
   async function reconcile() {
     const storage = captureGeneratedImageStorage();
     const tasks = new Set<string>();
+    // A crash may precede the first image journal or cleanup receipt write.
+    for (const session of await storage.db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(
+        and(
+          isNotNull(sessions.agentDeviceId),
+          or(isNotNull(sessions.clearedAt), eq(sessions.status, 'deleted')),
+        ),
+      ))
+      tasks.add(session.id);
+    for (const receipt of await storage.journal.listCleanups()) {
+      await cleanupUnknown(receipt).catch(() => undefined);
+      storage.assertCurrent();
+    }
     for (const record of await storage.journal.listAll()) {
       storage.assertCurrent();
       if (record.scope.startsWith('task:')) tasks.add(record.scope.slice(5));
-      else if (record.state === 'released') await storage.release(record.scope, record.id);
+      else {
+        if (record.state === 'released') await storage.release(record.scope, record.id);
+        await releaseGeneratedImageUpstream(storage, record, deps.invoke).catch(() => undefined);
+      }
     }
     for (const sessionId of tasks) {
       storage.assertCurrent();

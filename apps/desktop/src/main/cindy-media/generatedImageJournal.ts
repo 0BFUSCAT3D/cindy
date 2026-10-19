@@ -6,6 +6,21 @@ import { withCrossProcessLock } from '../device-link/crossProcessLock';
 import { readBoundedFileNoFollow } from '../utils/readBoundedFile';
 
 /** Only recovery metadata lives here. Image bytes always live in cindy-media. */
+export interface GeneratedImageUpstream {
+  agentDeviceId: string;
+  sessionId: string;
+  relay: string;
+}
+
+export interface GeneratedImageCleanup {
+  version: 1;
+  scope: string;
+  sessionId: string;
+  agentDeviceId: string;
+  clearedAt: number | null;
+  deleted: boolean;
+}
+
 export interface GeneratedImageRecord {
   version: 1;
   id: string;
@@ -22,6 +37,8 @@ export interface GeneratedImageRecord {
   remoteHostId?: string | null;
   workingDir?: string | null;
   sourceReleased?: boolean;
+  upstream?: GeneratedImageUpstream;
+  upstreamReleased?: boolean;
 }
 
 export function generatedImageId(
@@ -75,22 +92,32 @@ export function createGeneratedImageJournal(root: string, assertCurrent: () => v
       previous: GeneratedImageRecord | null,
     ) => Promise<GeneratedImageRecord> | GeneratedImageRecord,
   ): Promise<GeneratedImageRecord> {
+    fileFor(scope, id); // Validate before deriving a lock or temporary path.
+    return updateFile(scope, `${id}.json`, () => read(scope, id), change);
+  }
+
+  async function updateFile<T>(
+    scope: string,
+    name: string,
+    previous: () => Promise<T | null>,
+    change: (value: T | null) => Promise<T> | T,
+  ): Promise<T> {
     assertCurrent();
     const dir = scopeDir(scope);
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     const info = await fs.lstat(dir);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('INVALID_IMAGE_DELIVERY');
     return withCrossProcessLock(
-      `${fileFor(scope, id)}.lock`,
+      path.join(dir, `${name}.lock`),
       { label: 'generated-image-delivery' },
       async (lock) => {
         if (!lock.held) throw new Error('IMAGE_DELIVERY_BUSY');
         assertCurrent();
-        const next = await change(await read(scope, id));
+        const next = await change(await previous());
         assertCurrent();
         const encoded = JSON.stringify(next);
         if (Buffer.byteLength(encoded) > 128 * 1024) throw new Error('INVALID_IMAGE_DELIVERY');
-        const temporary = path.join(dir, `.${id}.${randomUUID()}.tmp`);
+        const temporary = path.join(dir, `.${name}.${randomUUID()}.tmp`);
         try {
           const handle = await fs.open(temporary, 'wx', 0o600);
           try {
@@ -100,7 +127,7 @@ export function createGeneratedImageJournal(root: string, assertCurrent: () => v
             await handle.close();
           }
           assertCurrent();
-          await fs.rename(temporary, fileFor(scope, id));
+          await fs.rename(temporary, path.join(dir, name));
           if (process.platform !== 'win32') {
             const directory = await fs.open(dir, 'r');
             try {
@@ -165,7 +192,64 @@ export function createGeneratedImageJournal(root: string, assertCurrent: () => v
     assertCurrent();
     return records;
   }
-  return { read, update, list, listAll };
+  async function readCleanup(scope: string): Promise<GeneratedImageCleanup | null> {
+    assertCurrent();
+    const file = path.join(scopeDir(scope), 'cleanup.json');
+    try {
+      await fs.lstat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    const raw = await readBoundedFileNoFollow(file, 128 * 1024, { nonBlocking: true });
+    assertCurrent();
+    if (!raw) throw new Error('INVALID_IMAGE_DELIVERY');
+    const value = JSON.parse(raw.toString('utf8')) as GeneratedImageCleanup;
+    if (
+      value.version !== 1 ||
+      value.scope !== scope ||
+      typeof value.sessionId !== 'string' ||
+      typeof value.agentDeviceId !== 'string' ||
+      typeof value.deleted !== 'boolean' ||
+      (value.clearedAt !== null && (!Number.isSafeInteger(value.clearedAt) || value.clearedAt < 0))
+    )
+      throw new Error('INVALID_IMAGE_DELIVERY');
+    return value;
+  }
+
+  const updateCleanup = (
+    scope: string,
+    change: (value: GeneratedImageCleanup | null) => GeneratedImageCleanup,
+  ) => updateFile(scope, 'cleanup.json', () => readCleanup(scope), change);
+
+  async function listCleanups(): Promise<GeneratedImageCleanup[]> {
+    assertCurrent();
+    const dirs = await fs.readdir(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    const result: GeneratedImageCleanup[] = [];
+    for (const dir of dirs) {
+      if (!/^[a-f0-9]{64}$/.test(dir)) continue;
+      const info = await fs.lstat(path.join(root, dir));
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      const file = path.join(root, dir, 'cleanup.json');
+      const raw = await readBoundedFileNoFollow(file, 128 * 1024, { nonBlocking: true }).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        },
+      );
+      if (!raw) continue;
+      const value = JSON.parse(raw.toString('utf8')) as { scope?: unknown };
+      if (typeof value.scope !== 'string' || path.basename(scopeDir(value.scope)) !== dir) continue;
+      const record = await readCleanup(value.scope);
+      if (record) result.push(record);
+    }
+    assertCurrent();
+    return result;
+  }
+  return { read, update, list, listAll, readCleanup, updateCleanup, listCleanups };
 }
 
 export function initialGeneratedImageRecord(
@@ -188,6 +272,7 @@ export function initialGeneratedImageRecord(
       ...(image.pathOrigin ? { pathOrigin: image.pathOrigin } : {}),
       ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
       ...(image.status ? { status: image.status } : {}),
+      ...(image.deliveryEpoch !== undefined ? { deliveryEpoch: image.deliveryEpoch } : {}),
     },
     ...(image.url && !image.url.startsWith('data:') ? { sourceUrl: image.url } : {}),
   };

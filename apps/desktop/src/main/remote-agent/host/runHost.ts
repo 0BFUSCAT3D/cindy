@@ -1,3 +1,4 @@
+import type { GeneratedImageUpstream } from '../../cindy-media/generatedImageJournal';
 import { parseProviderSharePeer } from '@cindy/device-link';
 import { DEFAULT_REMOTE_AGENT_LIMITS, type RemoteAgentLimits, type RemoteAgentLimitUsage } from '../../../shared/remoteAgentLimits.js';
 /**
@@ -163,7 +164,7 @@ export interface OwnerProviderRouteBinding {
 
 export interface RemoteAgentHostDeps {
   /** Persist native generated output before acknowledging its transport bytes. */
-  prepareImageEvent?(hostSessionId: string, event: AgentEvent): Promise<AgentEvent>;
+  prepareImageEvent?(hostSessionId: string, event: AgentEvent, upstream?: GeneratedImageUpstream): Promise<AgentEvent>;
   imageArtifacts?(hostSessionId: string, request: Extract<RemoteAgentRequest, { op: 'images' }>): Promise<unknown>;
   readLimits?(): RemoteAgentLimits;
   isAgentAvailable(kind: RemoteAgentKind): boolean;
@@ -344,6 +345,7 @@ interface Run {
   trust: RemoteAgentControllerTrust;
   /** 本机侧任务 id：影子目录按它存放，同一任务多次打开共用。 */
   hostSessionId?: string;
+  imageDeliveryEpoch?: number;
   owner: unknown;
   kind: RemoteAgentKind;
   log: EventLog;
@@ -796,8 +798,15 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
 
   const imagePreparation = new WeakMap<Run, Promise<void>>();
 
-  function append(run: Run, item: unknown): void {
-    const stream = item as { t?: string; event?: AgentEvent };
+  function append(run: Run, item: unknown, upstream?: GeneratedImageUpstream): void {
+    let stream = item as { t?: string; event?: AgentEvent };
+    if (stream.t === 'event' && stream.event?.type === 'image' && stream.event.source === 'codex') {
+      const data = stream.event.data as Record<string, unknown> | null;
+      if (data?.kind === 'generation') {
+        stream = { ...stream, event: { ...stream.event, data: { ...data, deliveryEpoch: run.imageDeliveryEpoch } } };
+        item = stream;
+      }
+    }
     const prepare = stream.t === 'event' && stream.event?.type === 'image'
       && stream.event.source === 'codex' && deps.prepareImageEvent && run.hostSessionId;
     const previous = imagePreparation.get(run);
@@ -806,7 +815,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         let next = item;
         if (prepare) {
           try {
-            next = { ...stream, event: await deps.prepareImageEvent!(run.hostSessionId!, stream.event!) };
+            next = { ...stream, event: await deps.prepareImageEvent!(run.hostSessionId!, stream.event!, upstream) };
           } catch {
             // Even a failed adapter must not advertise the source path as controller-local.
             const data = stream.event!.data as Record<string, unknown> | null;
@@ -1042,6 +1051,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   }
 
   async function startRun(run: Run, payload: RemoteAgentOpenPayload): Promise<void> {
+    run.imageDeliveryEpoch = payload.imageDeliveryEpoch;
     try {
       // 中转过来的任务按(控制端, relay)派生：不同受邀者即使任务 id 相同也不会共用本机侧任务。
       const hostSessionId = hostSessionIdFor(guestScopeOf(run.controller, run.relayKey), payload.sessionId);
@@ -1467,7 +1477,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       const relayClosed = (reason: string, error?: RemoteAgentErrorInfo) => {
         const finish = () => {
           if (run.closing) return;
-          run.log.append({ t: 'closed', reason, ...(error ? { error: relayErrorForGuest(error) } : {}) });
+          append(run, { t: 'closed', reason, ...(error ? { error: relayErrorForGuest(error) } : {}) });
           void finishRun(run, reason, 'navigation', false, true);
         };
         // 一轮进行中那台的任务意外结束(离线、崩溃等)：与终态错误一样可以换一台。
@@ -1490,7 +1500,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           if (run.closing || run.relay !== backend) return;
           meterRunUsage(run, backend.model, event as AgentEvent);
           const deliver = () => {
-            if (!run.closing) append(run, { t: 'event', event });
+            if (!run.closing) append(run, { t: 'event', event }, {
+              agentDeviceId: current.agentDeviceId,
+              sessionId: relaySessionIdFor(run.controller, payload.sessionId),
+              relay: relayKeyFor(run.controller),
+            });
           };
           const failure = relayRunFailureOf(event);
           if (failure) {
@@ -2079,7 +2093,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       case 'images': {
         if (!deps.imageArtifacts) fail('REMOTE_AGENT_INVALID', 'image recovery is unavailable');
         const owner = deps.captureOwner();
-        const result = await deps.imageArtifacts!(hostSessionIdFor(controller, request.sessionId), request);
+        const result = await deps.imageArtifacts!(hostSessionIdFor(guestScopeOf(controller, request.relay), request.sessionId), request);
         if (!deps.isOwnerCurrent(owner) || !deps.isControllerAuthorized(controller)) fail('REMOTE_AGENT_UNAVAILABLE', 'remote control is not allowed');
         return result;
       }
@@ -2095,7 +2109,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           uploadChunkBytes: REMOTE_AGENT_UPLOAD_CHUNK_BYTES,
           maxPayloadBytes: REMOTE_AGENT_MAX_PAYLOAD_BYTES,
           virtualWorkspace: true,
-          ...(deps.imageArtifacts ? { imageRecovery: true } : {}),
+          ...(deps.imageArtifacts ? { imageRecovery: true, imageRecoveryRelay: true } : {}),
           // 能按受邀者隔离运行(供应商级授权与出站边界都已接上)，才接受组所在电脑中转过来的受邀者任务。
           ...(deps.providerAccess && deps.bindGuestProviderRoute ? { guestRelay: true } : {}),
           // 转分享的同意只对受邀者(把这里分享的供应商放进自己组的人)有意义。
@@ -2273,6 +2287,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           const member = relayTo;
           // 先登记再中转：中转中途失败时，分享删除也能找到并清理(含通知那台组内电脑)。
           run.hostSessionId = hostSessionIdFor(controller, payload.sessionId);
+          run.imageDeliveryEpoch = payload.imageDeliveryEpoch;
           const load = reserved;
           void recordGuestSession(controller, undefined, run.hostSessionId, [])
             .then(() => startRelay(run, payload, member, { fresh: !payload.options.resumeSessionId, avoid, ...(load ? { load } : {}) }))

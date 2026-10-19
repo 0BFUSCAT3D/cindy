@@ -154,6 +154,8 @@ export interface RemoteAgentWirePersonal {
 }
 
 export interface RemoteAgentOpenPayload {
+  /** Task Host clear generation, preserved through provider-group relays. */
+  imageDeliveryEpoch?: number;
   /** 控制端任务 id。 */
   sessionId: string;
   /** 能力增量：Agent 使用本机虚拟工作区；新控制端在 open 前必须确认对端 caps 支持。 */
@@ -325,6 +327,8 @@ export function decodeOpenPayload(value: unknown): RemoteAgentOpenPayload {
   });
   return {
     sessionId,
+    ...(typeof value.imageDeliveryEpoch === 'number' && Number.isSafeInteger(value.imageDeliveryEpoch) && value.imageDeliveryEpoch >= 0
+      ? { imageDeliveryEpoch: value.imageDeliveryEpoch } : {}),
     ...(value.virtualWorkspace === true ? { virtualWorkspace: true } : {}),
     ...(value.groupAssigned === true ? { groupAssigned: true } : {}),
     ...(typeof value.relay === 'string' && REMOTE_AGENT_RELAY_KEY_PATTERN.test(value.relay) ? { relay: value.relay } : {}),

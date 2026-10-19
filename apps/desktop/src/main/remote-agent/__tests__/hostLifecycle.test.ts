@@ -196,10 +196,10 @@ it('drains image preparation before closing the event log', async () => {
         yield { type: 'done', source: 'codex', data: {} } as AgentEvent;
       },
     }) }),
-    prepareImageEvent: async (_id, event) => { entered.resolve(); await waiting; return { ...event, data: { kind: 'generation', blockId: 'native', url: 'data:image/png;base64,bytes' } }; },
+    prepareImageEvent: async (_id, event) => { expect(event.data).toMatchObject({ deliveryEpoch: 321 }); entered.resolve(); await waiting; return { ...event, data: { kind: 'generation', blockId: 'native', url: 'data:image/png;base64,bytes' } }; },
   });
   try {
-    await host.handle('controller', { op: 'open', runId: RUN_1, agentKind: 'codex', payload: { json: openPayload('task-1') } });
+    await host.handle('controller', { op: 'open', runId: RUN_1, agentKind: 'codex', payload: { json: { ...openPayload('task-1'), imageDeliveryEpoch: 321 } } });
     await entered.promise;
     await settle();
     let closeFinished = false;

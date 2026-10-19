@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { AgentEvent, GeneratedImageEventData } from '@cindy/maker-core';
-import { REMOTE_AGENT_READ_MAX_BYTES, type RemoteAgentRequest } from '@cindy/device-link';
+import {
+  REMOTE_AGENT_CHANNEL,
+  REMOTE_AGENT_READ_MAX_BYTES,
+  type RemoteAgentRequest,
+} from '@cindy/device-link';
 import {
   getActiveAppSession,
   isAppSessionBoundaryPending,
@@ -13,6 +17,7 @@ import {
   generatedImageId,
   initialGeneratedImageRecord,
   type GeneratedImageRecord,
+  type GeneratedImageUpstream,
 } from './generatedImageJournal';
 import { generatedImageBytes, readGeneratedImageFile } from './generatedMedia';
 import { blobUrl, extForMime, parseBlobUrl, resolveSafe } from './blobStore';
@@ -201,6 +206,17 @@ export function captureGeneratedImageStorage() {
   };
 }
 
+/** Read the task Host's logical clear boundary; source-device clocks are irrelevant. */
+export async function readGeneratedImageEpoch(sessionId: string): Promise<number> {
+  const storage = captureGeneratedImageStorage();
+  const row = await storage.snapshot.client.queryOne<{ cleared_at: number | null }>(
+    'SELECT cleared_at FROM sessions WHERE id = ?',
+    [sessionId],
+  );
+  storage.assertCurrent();
+  return row?.cleared_at ?? 0;
+}
+
 export function generatedImageErrorCode(error: unknown): string {
   const code = (error as { code?: unknown })?.code;
   if (code === 'ENOENT') return 'MEDIA_SOURCE_MISSING';
@@ -212,17 +228,83 @@ export function generatedImageErrorCode(error: unknown): string {
     : 'MEDIA_PUBLISH_FAILED';
 }
 
+export type GeneratedImageInvoke = (
+  deviceId: string,
+  channel: string,
+  args: unknown[],
+  options?: { preSend?: () => void },
+) => Promise<{ ok: boolean; result?: unknown }>;
+
+/** A relay owns its copy before it acknowledges the member's copy. Failed ACKs survive restart. */
+export async function releaseGeneratedImageUpstream(
+  storage: ReturnType<typeof captureGeneratedImageStorage>,
+  record: GeneratedImageRecord,
+  invoke: GeneratedImageInvoke,
+) {
+  if (!record.upstream || record.upstreamReleased) return;
+  if (record.state !== 'released') {
+    await storage.read(record);
+    const parsed = record.blobUrl && parseBlobUrl(record.blobUrl);
+    if (
+      !parsed ||
+      !(await hasRef(
+        { hash: parsed.hash, ...storage.reference(record.scope, record.id) },
+        storage.db,
+      ))
+    )
+      throw new Error('REMOTE_SOURCE_REQUIRED');
+  }
+  const { agentDeviceId, sessionId, relay } = record.upstream;
+  const call = async (request: object) => {
+    storage.assertCurrent();
+    const response = await invoke(agentDeviceId, REMOTE_AGENT_CHANNEL, [request], {
+      preSend: storage.assertCurrent,
+    });
+    storage.assertCurrent();
+    if (!response.ok) throw new Error('REMOTE_SOURCE_REQUIRED');
+    return response.result as Record<string, unknown> | undefined;
+  };
+  // An older image-recovery Host would silently discard relay and release the wrong namespace.
+  if ((await call({ op: 'caps' }))?.imageRecoveryRelay !== true)
+    throw new Error('REMOTE_SOURCE_REQUIRED');
+  if (
+    (await call({ op: 'images', sessionId, relay, action: 'release', imageId: record.id }))?.ok !==
+    true
+  )
+    throw new Error('REMOTE_SOURCE_REQUIRED');
+  await storage.journal.update(record.scope, record.id, (current) => ({
+    ...current!,
+    upstreamReleased: true,
+  }));
+}
+
 /** The source Host makes a durable copy before the event stream can acknowledge it. */
 export async function prepareGeneratedImageTransport(
   scope: string,
   event: AgentEvent,
+  upstream?: GeneratedImageUpstream,
+  invoke?: GeneratedImageInvoke,
 ): Promise<AgentEvent> {
   if (event.type !== 'image' || event.source !== 'codex') return event;
   const image = event.data as GeneratedImageEventData;
   if (image?.kind !== 'generation') return event;
   try {
     const storage = captureGeneratedImageStorage();
-    const { buffer, mimeType } = await storage.stage(scope, image);
+    if (upstream)
+      await storage.journal.update(scope, generatedImageId(image), (previous) => {
+        const current = previous ?? initialGeneratedImageRecord(scope, image);
+        if (
+          current.upstream &&
+          (current.upstream.agentDeviceId !== upstream.agentDeviceId ||
+            current.upstream.sessionId !== upstream.sessionId ||
+            current.upstream.relay !== upstream.relay)
+        )
+          throw new Error('IMAGE_DELIVERY_CONFLICT');
+        return { ...current, upstream };
+      });
+    const { record, buffer, mimeType } = await storage.stage(scope, image);
+    if (invoke) await releaseGeneratedImageUpstream(storage, record, invoke).catch(() => undefined);
+    storage.assertCurrent();
     // url keeps new-source/old-controller normal delivery compatible. Do not send
     // a path alongside it: old controllers prefer the path and lose the bytes.
     const { data: _data, path: _path, url: _url, ...metadata } = image;
@@ -259,6 +341,7 @@ export async function prepareGeneratedImageTransport(
 export async function handleGeneratedImageArtifacts(
   hostSessionId: string,
   request: Extract<RemoteAgentRequest, { op: 'images' }>,
+  invoke?: GeneratedImageInvoke,
 ) {
   const storage = captureGeneratedImageStorage();
   const scope = `remote:${hostSessionId}`;
@@ -277,6 +360,10 @@ export async function handleGeneratedImageArtifacts(
   }
   if (request.action === 'release') {
     await storage.release(scope, request.imageId);
+    const record = await storage.journal.read(scope, request.imageId);
+    if (record && invoke)
+      await releaseGeneratedImageUpstream(storage, record, invoke).catch(() => undefined);
+    storage.assertCurrent();
     return { ok: true };
   }
   const record = await storage.journal.read(scope, request.imageId);

@@ -19,6 +19,7 @@ import {
   captureGeneratedImageStorage,
   handleGeneratedImageArtifacts,
   prepareGeneratedImageTransport,
+  readGeneratedImageEpoch,
 } from '../generatedImageStorage';
 import { generatedImageId } from '../generatedImageJournal';
 import { resolveSafe } from '../blobStore';
@@ -296,6 +297,180 @@ describe('native image delivery', () => {
     });
     expect(state.broadcast.mock.lastCall?.[2]).toBeDefined();
   });
+
+  // PR #6420: upstream pins and unknown artifacts had no durable release path.
+  it('retains a relay receipt while the member is offline, then releases only its upstream copy after restart', async () => {
+    const source = await prepareGeneratedImageTransport(
+      'remote:member-task',
+      event({ data: png.toString('base64') }),
+    );
+    const upstream = { agentDeviceId: 'member', sessionId: 'member-task', relay: 'r'.repeat(16) };
+    let online = false;
+    let relayCapable = false;
+    const invoke = vi.fn(
+      async (
+        _device: string,
+        _channel: string,
+        args: unknown[],
+        options?: { preSend?: () => void },
+      ) => {
+        options?.preSend?.();
+        if (!online) throw new Error('offline');
+        const request = args[0] as Parameters<typeof handleGeneratedImageArtifacts>[1];
+        if (request.op !== 'images')
+          return { ok: true, result: { imageRecoveryRelay: relayCapable } };
+        expect(request).toMatchObject({
+          sessionId: upstream.sessionId,
+          relay: upstream.relay,
+          action: 'release',
+          imageId: id,
+        });
+        return { ok: true, result: await handleGeneratedImageArtifacts('member-task', request) };
+      },
+    );
+    await prepareGeneratedImageTransport('remote:relay-task', source, upstream, invoke);
+    expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(2);
+    expect(
+      (await captureGeneratedImageStorage().journal.read('remote:relay-task', id))
+        ?.upstreamReleased,
+    ).not.toBe(true);
+    online = true;
+    await createGeneratedImageDelivery({ invoke, publish: vi.fn() }).reconcile();
+    expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(2);
+    relayCapable = true;
+    await createGeneratedImageDelivery({ invoke, publish: vi.fn() }).reconcile();
+    expect(
+      (await captureGeneratedImageStorage().journal.read('remote:member-task', id))?.state,
+    ).toBe('released');
+    const relay = (await captureGeneratedImageStorage().journal.read('remote:relay-task', id))!;
+    expect(relay.upstreamReleased).toBe(true);
+    expect((await captureGeneratedImageStorage().read(relay)).buffer).toEqual(png);
+    expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(1);
+  });
+
+  it.each(['clear', 'delete'])(
+    'releases unknown source artifacts after an offline %s and restart without publishing messages',
+    async (boundary) => {
+      await prepareGeneratedImageTransport(
+        'remote:host-task',
+        event({ data: png.toString('base64'), deliveryEpoch: 0 }),
+      );
+      raw.exec("UPDATE sessions SET agent_device_id = 'source', cleared_at = 100");
+      if (boundary === 'delete') raw.exec("UPDATE sessions SET status = 'deleted'");
+      expect(await readGeneratedImageEpoch('task')).toBe(100);
+      const offline = createGeneratedImageDelivery({
+        invoke: vi.fn(async () => {
+          throw new Error('offline');
+        }),
+        publish: vi.fn(),
+      });
+      await offline.cleanup('task');
+      expect(await captureGeneratedImageStorage().journal.list('task:task')).toHaveLength(0);
+      expect(await captureGeneratedImageStorage().journal.listCleanups()).toHaveLength(1);
+      const newImage = { ...image, blockId: 'new-generation', deliveryEpoch: 100 };
+      await prepareGeneratedImageTransport(
+        'remote:host-task',
+        event({ ...newImage, data: png.toString('base64') }),
+      );
+      if (boundary === 'delete') raw.exec('DELETE FROM sessions'); // The receipt outlives task-row purging.
+      const restarted = controller();
+      await restarted.reconcile();
+      expect(
+        (await captureGeneratedImageStorage().journal.read('remote:host-task', id))?.state,
+      ).toBe('released');
+      const newer = await captureGeneratedImageStorage().journal.read(
+        'remote:host-task',
+        generatedImageId(newImage),
+      );
+      expect(newer?.state === 'released').toBe(boundary === 'delete');
+      const remaining = raw.prepare('SELECT * FROM media_refs').all();
+      expect(remaining).toHaveLength(boundary === 'clear' ? 1 : 0);
+      expect(raw.prepare('SELECT * FROM messages').all()).toHaveLength(0);
+      expect(restarted.publish).not.toHaveBeenCalled();
+      expect(state.broadcast).not.toHaveBeenCalled();
+      await restarted.deliver('task', event({ data: png.toString('base64'), deliveryEpoch: 0 }));
+      expect(raw.prepare('SELECT * FROM messages').all()).toHaveLength(0);
+    },
+  );
+
+  it('finds a cleared task with no local image or cleanup journal after a crash', async () => {
+    await prepareGeneratedImageTransport(
+      'remote:host-task',
+      event({ data: png.toString('base64'), deliveryEpoch: 0 }),
+    );
+    raw.exec("UPDATE sessions SET agent_device_id = 'source', cleared_at = 100");
+    await controller().reconcile();
+    expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(0);
+    expect(raw.prepare('SELECT * FROM messages').all()).toHaveLength(0);
+  });
+
+  it('recovers an unknown image from the new clear generation without reviving the old generation', async () => {
+    await prepareGeneratedImageTransport(
+      'remote:host-task',
+      event({ data: png.toString('base64'), deliveryEpoch: 0 }),
+    );
+    raw.exec("UPDATE sessions SET agent_device_id = 'source', cleared_at = 100");
+    const newer = { blockId: 'after-clear', data: png.toString('base64'), deliveryEpoch: 100 };
+    await prepareGeneratedImageTransport('remote:host-task', event(newer));
+    await controller().recover('task');
+    expect(result()).toMatchObject({
+      ok: true,
+      native_image_delivery: { id: generatedImageId({ ...image, ...newer }) },
+    });
+    expect(raw.prepare('SELECT * FROM messages').all()).toHaveLength(2);
+    expect((await captureGeneratedImageStorage().journal.read('remote:host-task', id))?.state).toBe(
+      'released',
+    );
+    expect(raw.prepare('SELECT ref_kind FROM media_refs').all()).toEqual([
+      { ref_kind: 'session-attachment' },
+    ]);
+  });
+
+  it.each(['message_tombstone', 'rewound'])(
+    'recovers a later unknown image despite an unrelated %s row',
+    async (removed) => {
+      await prepareGeneratedImageTransport(
+        'remote:host-task',
+        event({ data: png.toString('base64') }),
+      );
+      const removedImage = { ...image, blockId: 'removed-image' };
+      await prepareGeneratedImageTransport(
+        'remote:host-task',
+        event({ ...removedImage, data: png.toString('base64') }),
+      );
+      const removedId = generatedImageId(removedImage);
+      const removedClientId = `codex-image-${removedId}-result`;
+      raw.exec("UPDATE sessions SET agent_device_id = 'source'");
+      raw
+        .prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(
+          removedClientId,
+          'task',
+          removedClientId,
+          removed === 'rewound' ? 'assistant' : removed,
+          '"old"',
+          removed === 'rewound' ? 10 : null,
+          1,
+        );
+      await controller().recover('task');
+      expect(result().ok).toBe(true);
+      expect(
+        (await captureGeneratedImageStorage().journal.read('remote:host-task', id))?.state,
+      ).toBe('released');
+      expect(
+        raw.prepare('SELECT role, rewind_at FROM messages WHERE id = ?').get(removedClientId),
+      ).toMatchObject({
+        role: removed === 'rewound' ? 'assistant' : removed,
+        rewind_at: removed === 'rewound' ? 10 : null,
+      });
+      expect(
+        (await captureGeneratedImageStorage().journal.read('remote:host-task', removedId))?.state,
+      ).toBe('released');
+      expect(
+        await captureGeneratedImageStorage().journal.read('task:task', removedId),
+      ).toMatchObject({ state: 'released' });
+    },
+  );
 
   it('does not resurrect a removed result during retry', async () => {
     const host = controller();
