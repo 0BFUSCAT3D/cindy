@@ -161,7 +161,9 @@ describe('globalTabs', () => {
 
     // 缺省 position 的停靠面板 → left(与历史停靠面板一致);mainView.side 优先。
     expect(defaultGroupForGhost(ghost(undefined))).toBe('left');
-    expect(defaultGroupForGhost(ghost(undefined, { open: 'sidebar', side: 'right' }))).toBe('right');
+    expect(defaultGroupForGhost(ghost(undefined, { open: 'sidebar', side: 'right' }))).toBe(
+      'right',
+    );
     expect(defaultGroupForGhost(ghost(undefined, { open: 'page' }))).toBe('right');
   });
   // 测试价值
@@ -229,5 +231,32 @@ describe('globalTabs', () => {
     expect(ids).toHaveLength(23);
     expect(ids).not.toContain('g_p0');
     expect(ids).not.toContain('g_p1');
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:reconcileGlobalPluginTabs 读升级前 `xdt:ghostPanelBubble:v1`;可观察的是
+  //   旧版里被收进气泡(最小化)的停靠面板升级后不自动变成可见页签、记入已关闭,其余面板照常出现。
+  // - Bug / 规则依据:PR #6468 review「迁移最小化面板」;存量插件兼容红线(用户的隐藏偏好不丢)。
+  // - 现有覆盖缺口:上一个用例只覆盖全部面板自动迁移,没有旧最小化状态。
+  // - 最小失败输入:两个面板插件,其中一个在旧键里 minimized:true。
+  it('keeps a panel the user had minimized hidden after upgrade instead of auto-adding it', () => {
+    window.localStorage.setItem(
+      'xdt:ghostPanelBubble:v1',
+      JSON.stringify({ p0: { minimized: true }, p1: { minimized: false, x: 1, y: 2 } }),
+    );
+    const ghosts = ['p0', 'p1'].map((id) => ({
+      manifest: { id, name: id, panel: { html: 'p.html' } },
+      enabled: true,
+    })) as unknown as import('../../../../shared/ghost').InstalledGhost[];
+    reconcileGlobalPluginTabs(ghosts);
+    expect(getGlobalTabs().map((tab) => tab.id)).toEqual(['g_p1']);
+    expect(getGlobalTabsSnapshot().dismissedInstanceIds).toEqual(['p0']);
+    // 再对齐一次结果稳定;用户从「+」重开后正常出现,不再被旧记录挡住。
+    reconcileGlobalPluginTabs(ghosts);
+    expect(getGlobalTabs()).toHaveLength(1);
+    addGlobalPluginTab('p0', { ghost: ghosts[0] });
+    expect(getGlobalTabs().map((tab) => tab.id)).toEqual(['g_p1', 'g_p0']);
+    reconcileGlobalPluginTabs(ghosts);
+    expect(getGlobalTabs()).toHaveLength(2);
   });
 });

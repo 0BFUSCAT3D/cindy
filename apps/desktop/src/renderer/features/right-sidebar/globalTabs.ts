@@ -439,6 +439,26 @@ export function isGlobalTabCapableGhost(ghost: InstalledGhost): boolean {
   );
 }
 
+/** 升级前停靠面板「最小化到气泡」的持久化键(旧实现已移除,这里只读一次做迁移)。 */
+const LEGACY_PANEL_BUBBLE_KEY = 'xdt:ghostPanelBubble:v1';
+
+/** 旧版里被用户收进气泡(= 主动隐藏)的插件实例;读失败 / 坏数据视为没有。 */
+function legacyMinimizedInstanceIds(): Set<string> {
+  const out = new Set<string>();
+  try {
+    const raw = window.localStorage.getItem(LEGACY_PANEL_BUBBLE_KEY);
+    if (!raw) return out;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return out;
+    for (const [id, entry] of Object.entries(parsed)) {
+      if ((entry as { minimized?: unknown } | null)?.minimized === true) out.add(id);
+    }
+  } catch {
+    // 旧数据读不出来就当没有:最坏是面板作为页签重新出现,用户可关掉。
+  }
+  return out;
+}
+
 /**
  * 与已装清单对齐(启动 + ghosts:changed):
  *  - 已启用、声明停靠面板、未被用户关掉的插件 → 自动加页签(存量插件兼容:
@@ -452,16 +472,23 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
   let tabs = current.tabs.filter((tab) =>
     installed.has((tab.state as PluginViewTabState).instanceId),
   );
-  const dismissed = current.dismissedInstanceIds.filter((id) => installed.has(id));
+  let dismissed = current.dismissedInstanceIds.filter((id) => installed.has(id));
   let placed = current.placedInstanceIds.filter((id) => installed.has(id));
   const windowed = current.windowInstanceIds.filter((id) => installed.has(id));
   const present = new Set(tabs.map((tab) => (tab.state as PluginViewTabState).instanceId));
+  let legacyMinimized: Set<string> | undefined;
   for (const [instanceId, ghost] of installed) {
     if (!isAutoGlobalPanelGhost(ghost)) continue;
     if (present.has(instanceId) || dismissed.includes(instanceId)) continue;
     const tabId = globalTabIdForInstance(instanceId);
     // 首次出现:按插件声明放默认边(存量 panel.position 的插件回到它原来停的那一边)。
     if (!placed.includes(instanceId)) {
+      // 升级前用户把它收进了气泡 = 主动隐藏:迁成「已关闭」,不自动弹出;「+」菜单里可重开。
+      legacyMinimized ??= legacyMinimizedInstanceIds();
+      if (legacyMinimized.has(instanceId)) {
+        dismissed = [...dismissed, instanceId];
+        continue;
+      }
       setTabGroup(tabId, defaultGroupForGhost(ghost, 'panel'));
       placed = [...placed, instanceId];
     }
