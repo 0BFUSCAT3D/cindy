@@ -8020,7 +8020,7 @@
   "ghostPanel": {
     "disableConfirm": {
       "title": "停用「{{name}}」？",
-      "body": "關閉這個面板會停用插件並暫停其能力。你可以隨時在側邊欄「插件」中重新啟用。",
+      "body": "關閉這個面板會停用插件並暫停其能力。你可以隨時在左側導航「插件」中重新啟用。",
       "confirm": "停用"
     },
     "externalLinkConfirm": {
