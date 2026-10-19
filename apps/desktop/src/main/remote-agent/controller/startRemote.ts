@@ -253,8 +253,8 @@ export async function startRemoteAgentSession(
     ...(kind === 'claude-code' && deps.webFetch ? { webFetch: deps.webFetch } : {}),
     ...(credentialConsent
       ? {
-          confirm: async (action: ExecutorAction) =>
-            controller?.confirm(credentialConfirmation(action, credentialConsent.description)) ?? false,
+          confirm: async (action: ExecutorAction, signal: AbortSignal) =>
+            controller?.confirm(credentialConfirmation(action, credentialConsent.description), signal) ?? false,
           gitCredentials: sharedGitCredentials,
           ...(grant
             ? {
@@ -416,6 +416,7 @@ export async function startRemoteAgentSession(
     started,
     workspace,
     recordApproval: (action) => executor.recordApproval(action),
+    cancelPendingConfirmations: () => executor.cancelPendingConfirmations(),
     onInvalidResumeSession: opts.onInvalidResumeSession,
     mapEvent: deps.mapEvent?.(kind),
     newId: deps.newId,
