@@ -1,3 +1,4 @@
+import { ProviderShareVisibilitySection } from './ProviderShareVisibilitySection';
 import { RemoteAgentIdleReleaseSection } from './RemoteAgentIdleReleaseSection';
 import { RemoteAgentLimitsSection } from './RemoteAgentLimitsSection';
 /**
@@ -505,6 +506,8 @@ export function ProviderShareManagePage({
         providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
         initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
       />
+
+      <ProviderShareVisibilitySection key={`${deviceId ?? 'local'}:${providerId}`} providerId={providerId} deviceId={deviceId} />
 
       <RemoteAgentLimitsSection key={deviceId ?? 'local'} deviceId={deviceId} />
 
