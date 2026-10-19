@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PendingAgentSwitchIntent } from '../sessionAgentSwitchHandler.js';
 
 import type { CatalogModel, ProviderSource, ProviderView } from '@cindy/model-providers';
 
@@ -133,13 +134,20 @@ describe('followMovedCindyAutoRoutes', () => {
     const { stage, withSessionLock, deps: input } = deps();
     await expect(followMovedCindyAutoRoutes(input)).resolves.toBe(1);
     expect(withSessionLock).toHaveBeenCalledTimes(1);
-    expect(stage).toHaveBeenCalledWith('moved', {
-      agentKind: 'pi',
-      model: AUTO,
-      providerId: 'xd',
-      effort: 'medium',
-      fastMode: true,
-    });
+    expect(stage).toHaveBeenCalledWith(
+      'moved',
+      {
+        agentKind: 'pi',
+        model: AUTO,
+        providerId: 'xd',
+        effort: 'medium',
+        fastMode: true,
+      },
+      expect.objectContaining({
+        fromProviderId: expect.any(String),
+        targetProviderId: expect.any(String),
+      }),
+    );
   });
 
   it('加锁后重读：已有登记的切换或运行时改道（readRoute 返回 null）时不覆盖', async () => {
@@ -242,25 +250,39 @@ describe('Auto 没有推理档位时的跨来源跟随', () => {
   it('号池 → 平台：按无档位（null）登记，不把空串交给登记切换', async () => {
     const { stage, run } = follow(movedToPlatform, route({ providerId: 'org-pool', effort: '' }));
     await expect(run()).resolves.toBe(1);
-    expect(stage).toHaveBeenCalledWith('task', {
-      agentKind: 'pi',
-      model: AUTO,
-      providerId: 'xd',
-      effort: null,
-      fastMode: false,
-    });
+    expect(stage).toHaveBeenCalledWith(
+      'task',
+      {
+        agentKind: 'pi',
+        model: AUTO,
+        providerId: 'xd',
+        effort: null,
+        fastMode: false,
+      },
+      expect.objectContaining({
+        fromProviderId: expect.any(String),
+        targetProviderId: expect.any(String),
+      }),
+    );
   });
 
   it('平台 → 号池：同样按无档位（null）登记', async () => {
     const { stage, run } = follow(movedToPool, route({ providerId: 'xd', effort: '' }));
     await expect(run()).resolves.toBe(1);
-    expect(stage).toHaveBeenCalledWith('task', {
-      agentKind: 'pi',
-      model: AUTO,
-      providerId: 'org-pool',
-      effort: null,
-      fastMode: false,
-    });
+    expect(stage).toHaveBeenCalledWith(
+      'task',
+      {
+        agentKind: 'pi',
+        model: AUTO,
+        providerId: 'org-pool',
+        effort: null,
+        fastMode: false,
+      },
+      expect.objectContaining({
+        fromProviderId: expect.any(String),
+        targetProviderId: expect.any(String),
+      }),
+    );
   });
 
   it('负向：用户自己接的供应商上的 auto/... 不跟随，即使 Cindy 来源也有同名 Auto', async () => {
@@ -325,7 +347,14 @@ describe('号池 → 平台：目录刷新按旧路由重新加载过的进行�
         assertCurrent: () => {},
       }),
     ).resolves.toBe(1);
-    expect(stage).toHaveBeenCalledWith(TASK, { ...poolRoute, providerId: 'xd' });
+    expect(stage).toHaveBeenCalledWith(
+      TASK,
+      { ...poolRoute, providerId: 'xd' },
+      expect.objectContaining({
+        fromProviderId: expect.any(String),
+        targetProviderId: expect.any(String),
+      }),
+    );
   });
 
   it('负向：故障切换中的任务不跟随', () => {
@@ -413,7 +442,14 @@ describe('已登记的 Auto 换来源，在 Auto 又挪动后撤销或改写', (
     ];
     const { stage, cancelStagedSwitch, run } = follow(movedToOtherPool, stagedToPlatform);
     await run();
-    expect(stage).toHaveBeenCalledWith(TASK, { ...current, providerId: OTHER_POOL, effort: null });
+    expect(stage).toHaveBeenCalledWith(
+      TASK,
+      { ...current, providerId: OTHER_POOL, effort: null },
+      expect.objectContaining({
+        fromProviderId: expect.any(String),
+        targetProviderId: expect.any(String),
+      }),
+    );
     expect(cancelStagedSwitch).not.toHaveBeenCalled();
   });
 
@@ -492,4 +528,71 @@ describe('已登记的 Auto 换来源，在 Auto 又挪动后撤销或改写', (
     ).toBeNull();
     expect(stagedCindyAutoSwitch(undefined, current)).toBeNull();
   });
+});
+
+// PR #6355 Greptile P1：目录删除了登记目标后仍须撤销/改登记；原用例只移除模型，不移除来源。
+// unit：实际跟随入口登记一次，换目录再跟随；身份元数据存进同一份 pending intent。
+describe('Auto 登记后来源从目录消失', () => {
+  it.each([
+    { from: 'xd', target: 'old-pool', available: 'xd', expected: 'cancel' },
+    { from: 'xd', target: 'old-pool', available: 'new-pool', expected: 'new-pool' },
+    { from: 'xd', target: 'old-pool', available: null, expected: 'cancel' },
+    { from: 'old-pool', target: 'xd', available: 'new-pool', expected: 'new-pool' },
+  ])(
+    '$from → $target 登记后删除号池，Auto 在 $available 时 $expected',
+    async ({ from, target, available, expected }) => {
+      const current = route({ providerId: from });
+      let providers = [
+        provider('xd', 'builtin', target === 'xd' ? [AUTO] : []),
+        provider('old-pool', 'organization', target === 'old-pool' ? [AUTO] : []),
+      ];
+      let intent: PendingAgentSwitchIntent | undefined;
+      const stage = vi.fn(
+        async (
+          _id: string,
+          next: CindyAutoRoute,
+          identity?: { fromProviderId: string; targetProviderId: string },
+        ) => {
+          intent = {
+            configStaged: true,
+            sameAgentSelection: true,
+            targetAgentKind: next.agentKind,
+            model: next.model,
+            providerId: next.providerId,
+            cindyAutoRelocation: identity,
+          } as PendingAgentSwitchIntent;
+        },
+      );
+      const cancel = vi.fn(async () => {
+        intent = undefined;
+      });
+      const deps: CindyAutoRouteFollowDeps = {
+        listCandidates: async () => [{ sessionId: 'task', ...current }],
+        listProviders: async () => providers,
+        withSessionLock: async (_id, run) => run(),
+        readRoute: async () => (intent ? null : current),
+        readStagedSwitch: async () => stagedCindyAutoSwitch(intent, current),
+        cancelStagedSwitch: cancel,
+        stage,
+        assertCurrent: () => {},
+      };
+      expect(await followMovedCindyAutoRoutes(deps)).toBe(1);
+      expect(intent?.providerId).toBe(target);
+      providers = [
+        provider('xd', 'builtin', available === 'xd' ? [AUTO] : []),
+        provider('new-pool', 'organization', available === 'new-pool' ? [AUTO] : []),
+        provider('custom', 'user', [AUTO]),
+      ];
+      stage.mockClear();
+      await followMovedCindyAutoRoutes(deps);
+      if (expected === 'cancel') {
+        expect(cancel).toHaveBeenCalledOnce();
+        expect(intent).toBeUndefined();
+      } else {
+        expect(stage).toHaveBeenCalledOnce();
+        expect(intent?.providerId).toBe(expected);
+        expect(cancel).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

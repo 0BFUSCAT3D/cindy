@@ -15132,7 +15132,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return profiles ? stagedCindyAutoSwitch(intent, profiles.effective) : null;
       },
       cancelStagedSwitch: async (sessionId) => cancelPendingAgentSwitchHolder?.(sessionId),
-      stage: (sessionId, route) => stageSessionRouteSelection(sessionId, route, route.agentKind),
+      stage: async (sessionId, route, identity) => {
+        await stageSessionRouteSelection(sessionId, route, route.agentKind);
+        const intent = agentSwitchPending.get(sessionId);
+        if (
+          intent &&
+          stagedCindyAutoSwitch(intent, route) &&
+          intent.providerId === identity.targetProviderId
+        ) {
+          // 只标记本次 Auto 跟随写入的同模型/同来源登记；其它配置切换不携带此身份。
+          intent.cindyAutoRelocation = identity;
+        }
+      },
       assertCurrent: () => {
         if (getActiveAppSession().generation !== owner.generation) {
           throw new Error('Account changed during Cindy Auto provider follow');
