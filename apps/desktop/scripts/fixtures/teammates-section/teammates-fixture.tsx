@@ -1,10 +1,8 @@
-import { Route, Routes } from 'react-router-dom';
-import { AppFrame, mountPage } from '../../ui-page/harness';
+import { AppFrame, ctx, mountPage } from '../../ui-page/harness';
 import { TeammatesSection } from '../../../src/renderer/features/bots/TeammatesSection';
 
+// The production sidebar lives in the shell, outside child route elements.
 mountPage({
-  route: '/bots/mate-6',
-  render: () => <Routes><Route path="/bots/:botId" element={
-    <AppFrame header={false} sidebar={<TeammatesSection />} />
-  } /></Routes>,
+  route: ctx.data.route as string,
+  render: () => <AppFrame header={false} sidebar={<TeammatesSection />} />,
 });

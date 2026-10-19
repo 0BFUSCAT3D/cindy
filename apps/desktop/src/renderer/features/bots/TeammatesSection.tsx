@@ -15,13 +15,14 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react';
-import { matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { Tip } from '@/components/ui/tooltip';
 import { SectionCollapse } from '@/features/cc-agent/sidebar/SectionCollapse';
+import { useCollapsibleShowAll } from '@/features/cc-agent/sidebar/hooks/useCollapsibleShowAll';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupSummary } from '../../../shared/botGroupChat';
@@ -124,21 +125,28 @@ export function TeammatesSection() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { dataOwnerId } = useAuth();
-  const { botId, deviceId, groupId } = useParams();
-  // The registered sidebar slot can sit outside the group's route context.
+  // The sidebar lives in the shell, outside the child route's params context.
+  const remoteRoute = matchPath('/bots/remote/:deviceId/:botId', pathname);
+  const localRoute = [
+    '/bots/:botId',
+    '/bots/:botId/session/:sessionId',
+    '/bots/:botId/history/:sessionId',
+    '/bots/:botId/direct/:threadId',
+  ].map(pattern => matchPath(pattern, pathname)).find(Boolean);
+  const botId = remoteRoute?.params.botId ?? localRoute?.params.botId;
+  const deviceId = remoteRoute?.params.deviceId;
   const selectedGroupId = matchPath('/bots/groups/:groupId', pathname)?.params.groupId;
   const [collapsed, setCollapsed] = useState(() => readTeammatesSectionCollapsed(dataOwnerId));
-  const [showAllChats, setShowAllChats] = useState(false);
+  const [showAllChats, setShowAllChats] = useCollapsibleShowAll(collapsed);
   const avatarRowRef = useRef<HTMLDivElement>(null);
   const avatarCapacity = useAvatarRowCapacity(avatarRowRef, collapsed);
   useEffect(() => {
     setCollapsed(readTeammatesSectionCollapsed(dataOwnerId));
     setShowAllChats(false);
-  }, [dataOwnerId]);
+  }, [dataOwnerId, setShowAllChats]);
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
-    setShowAllChats(false);
     writeTeammatesSectionCollapsed(dataOwnerId, next);
   };
   const cloud = useCompanionCloud();
@@ -437,7 +445,7 @@ export function TeammatesSection() {
 
   const renderGroupRow = (group: BotGroupSummary) => (
     <BotGroupSidebarRow key={'group:' + group.id} group={group} bots={bots}
-      islandActivity={islandActivity} now={now} selected={group.id === groupId}
+      islandActivity={islandActivity} now={now} selected={group.id === selectedGroupId}
       onOpenGroup={id => navigate('/bots/groups/' + encodeURIComponent(id))}
       onContextMenu={event => {
         event.preventDefault(); event.stopPropagation();
@@ -519,7 +527,7 @@ export function TeammatesSection() {
                   : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
               const name = entry.kind === 'group' ? entry.group.name
                 : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
-              const selected = entry.kind === 'group' ? entry.group.id === groupId
+              const selected = entry.kind === 'group' ? entry.group.id === selectedGroupId
                 : entry.kind === 'cindy' ? Boolean(routeCindy)
                   : 'deviceId' in entry.bot ? entry.bot.id === botId && entry.bot.deviceId === deviceId
                     : !deviceId && entry.bot.id === botId;
