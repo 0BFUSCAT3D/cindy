@@ -663,6 +663,7 @@ export default function NewRemoteSessionScreen() {
     executionDevicesEnabled: true,
     // 按区域限定的账号键:Global 与中国大陆版同号不同人,记忆(含完全访问)不能串。
     prefsScope: outboxOwner.accountKey || null,
+    taskHostDeviceId: selectedDeviceId,
     active: contextSheetOpen && contextSheetView === 'collab',
     setSheetOpen: setContextSheetOpen,
     connectionEpoch,
