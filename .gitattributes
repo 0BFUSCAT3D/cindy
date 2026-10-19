@@ -1,4 +1,6 @@
 *.sh text eol=lf
+# Raw-imported plugin authoring chapters retain FORGE_GUIDE's LF bytes on Windows.
+apps/desktop/resources/system-skills/cindy-plugin-creator/references/*.md text eol=lf
 # Published teammate compatibility fixtures retain the exact source bytes for SHA-256 verification.
 apps/desktop/src/main/maker-ipc/__tests__/fixtures/released-teammate-host/*.ts.txt text eol=lf
 # .mjs 脚本大多带 #!/usr/bin/env node shebang:Windows autocrlf 检出成 CRLF 后,
