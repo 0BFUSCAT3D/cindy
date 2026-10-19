@@ -2173,7 +2173,7 @@ export async function updateSessionInDb(
  * use the normal status writer so native projection and all clients see active. */
 export async function restoreArchivedSessionForSend(
   sessionId: string,
-  options: { routeLockHeld?: boolean } = {},
+  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
 ): Promise<void> {
   const ownerScope = captureOwnerScope();
   const db = getDbClient().drizzle;
@@ -2188,7 +2188,7 @@ export async function restoreArchivedSessionForSend(
     if (row.source === 'bot' || row.orcaRole === 'worker' || row.orcaRemoteLead) {
       throwIpcError('PRECONDITION_FAILED', 'Restore the managed task before continuing');
     }
-    await patchSessionMetaInDb(sessionId, { status: 'active' }, { routeLockHeld: true });
+    await patchSessionMetaInDb(sessionId, { status: 'active' }, { ...options, routeLockHeld: true });
   };
   if (options.routeLockHeld) await restore();
   else await withSessionRouteLock(sessionId, restore);
@@ -2201,7 +2201,7 @@ export async function patchSessionMetaInDb(
     title?: string;
     pinnedAt?: string | null;
   },
-  options: { routeLockHeld?: boolean } = {},
+  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
 ): Promise<ReturnType<typeof sessionToCamel>> {
   const ownerScope = captureOwnerScope();
   for (const k of Object.keys(patch)) {
@@ -2245,6 +2245,9 @@ export async function patchSessionMetaInDb(
         await finalizeSharedTaskClosure(dbClient, prepared);
       }
     } else {
+      // All asynchronous preparation has finished. Once this write is issued,
+      // cancellation does not roll back a committed lifecycle transition.
+      if (options.signal?.aborted) throwIpcError('PRECONDITION_FAILED', 'Session send aborted');
       await writeSessionPatch(db, sessionId, setObj, patch.status);
     }
     const row = await selectSessionWithCount(db, sessionId);

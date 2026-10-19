@@ -10444,7 +10444,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const pendingSelection = agentSwitchPending.get(sessionId);
       if (!signal?.aborted && isUserPendingAgentSwitchIntent(pendingSelection)) {
         stage = 'direct-send:restoreArchivedSession';
-        await restoreArchivedSessionForSend(sessionId, { routeLockHeld: true });
+        await restoreArchivedSessionForSend(sessionId, { routeLockHeld: true, signal });
       }
       stage = 'direct-send:reconcileBotModelRoute';
       await reconcileBotModelRoute(sessionId, true);
