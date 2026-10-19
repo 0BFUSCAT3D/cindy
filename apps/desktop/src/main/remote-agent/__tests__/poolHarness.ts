@@ -40,9 +40,13 @@ export interface PoolScenarioOptions {
   afterResumedTurn?(handle: AgentSessionHandle): Promise<void> | void;
 }
 
-/** 闲置阈值(分钟)：测试里只要等 100ms。 */
+/** 闲置阈值(分钟)：100ms。 */
 const SHORT_IDLE_MINUTES = 100 / 60_000;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * 「闲置满阈值」靠把时钟拨快，不真等：场景里只假 `Date`(照常往前走，计时器与真实 Agent 进程不受影响)，
+ * 连接的最后活动时间与连接池判断用的都是它。
+ */
+const passTime = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
 export async function exerciseConnectionPool(options: PoolScenarioOptions): Promise<void> {
   const project = options.projectDir ?? path.join(options.root, `pool-project-${options.kind}`);
@@ -64,7 +68,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
     isOwnerCurrent: () => true,
     runsRoot: hostRoot,
   });
-  const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, checkMs: 3_600_000 });
+  const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, checkMs: 3_600_000, now: () => Date.now() });
   let opens = 0;
   /** 发出 close 的任务(让出名额或关闭)。 */
   const closedBy: string[] = [];
@@ -113,6 +117,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
       expect(seen!.filter((event) => event.type === 'done').length).toBeGreaterThan(doneBefore);
     }, { timeout: 90_000, interval: 50 });
   };
+  vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
   try {
     // ── 上限 1：打开前已满 → 让出；再发消息 → 接回同一个会话 ──
     const a = await open('a');
@@ -124,7 +129,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
     // 这样的任务不让出(接不回就会丢上下文)。
     const resumable = !hostRewritesResumeId(nativeA, { workingDir: project, homeDir: os.homedir(), extraDirs: [], writableDirs: [] });
     expect(resumable).toBe(options.expectResumable ?? true);
-    await sleep(150);
+    passTime(150);
     if (!resumable) {
       opens = 0;
       await expect(open('b')).rejects.toThrow('[REMOTE_AGENT_BUSY] [DEVICE_LIMIT]');
@@ -136,7 +141,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
       expect(host.limitUsage().total).toBe(1);
       expect(started.at(-1)!.options.resumeSessionId).toBeUndefined();
       await turn(b, 'Hello from b.');
-      await sleep(150);
+      passTime(150);
       const requestsBefore = options.modelRequests().length;
       await turn(a, 'What was the codeword?');
       expect(host.limitUsage().total).toBe(1);
@@ -155,7 +160,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
       expect(opens).toBe(1);
       // 设置为 0：同样不让。
       idleMinutes = 0;
-      await sleep(150);
+      passTime(150);
       opens = 0;
       await expect(open('c')).rejects.toThrow('[DEVICE_LIMIT]');
       expect(opens).toBe(1);
@@ -169,7 +174,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
     const e = await open('e');
     const outside = await open('outside', false);
     expect(host.limitUsage().total).toBe(2);
-    await sleep(150);
+    passTime(150);
     opens = 0;
     closedBy.length = 0;
     const d = await open('d');
@@ -182,12 +187,12 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
     // ── 上限 5：水位线 4，到了就在后台按最久没活动让出 ──
     limits = { perDevice: 5, total: 64 };
     const p1 = await open('p1');
-    await sleep(150);
+    passTime(150);
     const p2 = await open('p2');
-    await sleep(20);
+    passTime(20);
     const p3 = await open('p3');
     expect(host.limitUsage().total).toBe(3);
-    await sleep(150);
+    passTime(150);
     closedBy.length = 0;
     await open('p4');
     await vi.waitFor(() => expect(host.limitUsage().total).toBe(3), { timeout: 30_000 });
@@ -201,6 +206,7 @@ export async function exerciseConnectionPool(options: PoolScenarioOptions): Prom
     expect(started.at(-1)!.options.resumeSessionId).toBeUndefined();
     expect(events.get(released)!.some((event) => event.type === 'error')).toBe(false);
   } finally {
+    vi.useRealTimers();
     await Promise.allSettled(handles.map((handle) => handle.close({ reason: 'navigation' })));
     await host.abortAll();
     host.dispose();

@@ -342,7 +342,7 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
           scenario.releaseHold = resolve;
         });
       } else if (text === 'bg') {
-        say(await tool('Bash', { command: 'sleep 0.3; echo bg-finished', run_in_background: true }));
+        say(await tool('Bash', { command: 'while [ ! -e bg.go ]; do sleep 0.01; done; echo bg-finished', run_in_background: true }));
       } else if (text.startsWith('read ')) {
         say(await tool('BashOutput', { bash_id: text.slice(5) }));
       } else if (text === 'whoami') {
@@ -553,10 +553,12 @@ describe('remote connection pool with a real host', () => {
     await sleep(5);
     await start(pool);
     expect(scenario.started).toHaveLength(2);
-    await sleep(400);
-    const output = await ask(a, events, `read ${id}`);
-    expect(output).toContain('bg-finished');
+    // 让出、连回之后命令还在跑，按原 ID 读得到；放行后读到它跑完的输出。
+    expect(await ask(a, events, `read ${id}`)).toContain('<status>running</status>');
     expect(scenario.started[2].options.resumeSessionId).toBe(a.id);
+    fs.writeFileSync(path.join(project, 'bg.go'), '');
+    await vi.waitFor(async () => expect(await ask(a, events, `read ${id}`)).toContain('bg-finished'), { timeout: 5_000, interval: 20 });
+    expect(scenario.started).toHaveLength(3);
   });
 
   it('records setting changes while released and opens with them, without reconnecting just for them', async () => {
@@ -667,26 +669,18 @@ describe('remote connection pool with a real host', () => {
     expect(a.id).toBeTruthy();
   });
 
-  it('with a single slot and nothing eligible reports the rejection without retrying', async () => {
-    idleMinutes = 30;
-    const pool = newPool();
-    const a = await start(pool);
-    const events = watch(a);
-    await ask(a, events, 'hello');
-    opens = 0;
-    await expect(start(pool)).rejects.toThrow('[REMOTE_AGENT_BUSY] [DEVICE_LIMIT]');
-    expect(opens).toBe(1);
-  });
-
-  it('with 0 minutes never releases and does not retry', async () => {
-    idleMinutes = 0;
+  it.each([
+    ['0 minutes (the default: never release)', 0],
+    ['an idle threshold not reached yet', 30],
+  ])('with a single slot and %s reports the rejection without releasing or retrying', async (_label, minutes) => {
+    idleMinutes = minutes;
     const pool = newPool();
     const a = await start(pool);
     const events = watch(a);
     await ask(a, events, 'hello');
     await sleep(5);
     opens = 0;
-    await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
+    await expect(start(pool)).rejects.toThrow('[REMOTE_AGENT_BUSY] [DEVICE_LIMIT]');
     expect(opens).toBe(1);
     expect(scenario.closes).toBe(0);
   });

@@ -1334,7 +1334,7 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 - **控制端连接池：名额紧张时让出闲置任务的 Agent 进程**(2026-10-17)：B 按发起设备限制同时开着的 run(`caps.maxRuns`)，
   A 上开着的任务即使闲着也占名额。A 对每台 B 一个连接池(`controller/connectionPool.ts`，计数口径与 B 的 `limitDeviceOf`
   一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 A 本机设置(「远程与分享」页「这台电脑使用
-  其他电脑的模型」，只在管理本机时显示，默认 10，0～120，**0 = 从不让出**，与没有连接池时一样满了直接报错)。三条路径都只让有资格的：
+  其他电脑的模型」，只在管理本机时显示，0～120，**默认 0 = 从不让出**，与没有连接池时一样满了直接报错；升级后行为不变，用户自己打开才生效)。三条路径都只让有资格的：
   A 在这台 B 上开着的连接数到了水位线 `ceil(maxRuns×80%)`(只在水位线低于上限、即 maxRuns ≥ 5 时；每次 open 前与每分钟查一次)
   按最久没活动的顺序让，直到降到水位线以下；open 前已满先同步让一个；open 被拒且是名额类 `REMOTE_AGENT_BUSY`
   (`[DEVICE_LIMIT]` / `[TOTAL_LIMIT]`，旧 B 是 `too many tasks are running from this computer`；`too much staged data` 不算)
@@ -1370,7 +1370,12 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   - **已知限制**：B 的整机合计上限(`TOTAL_LIMIT`)A 看不到别的设备的占用，只能靠被拒后处理；A 在自己额度内不让出，可能挡住别的
     设备，第一期接受。A 作为供应商组所在电脑替受邀者中转的 run 不进连接池(由发起方决定让出，发起方让出后按原有逻辑关掉中转)；
     同一台 B 的多个分享入口(`share:<id>`)各算一个池，计数可能偏低，靠被拒后处理兜住。
-    回归见 `remote-agent/__tests__/connectionPool.test.ts`、`execServerRelayBusy.e2e.test.ts`，以及真实 Claude Code / Codex / Pi 的
+  - **已知限制：连回被拒时本机后台命令会结束**。触发条件：任务已让出，下一次发送(或其他要 B 干活的调用)连回时被 B 拒绝
+    (仍满的名额类 `REMOTE_AGENT_BUSY`，或 B 离线等任何在发出消息之前就失败的情况)。后果：错误照常报给用户，但 Maker 对发送失败
+    的通用处理会在约 250ms 后关闭这个会话句柄、等下次重建，本机执行器随之关闭，这个任务里还在跑的本机后台命令(`ShellSession`)
+    会结束，按原 ID 也读不到了。对话不丢：下一次从界面发送会重建句柄，并照常带原生会话 id 在 B 上接回原来的对话。第一期只记录不改；
+    第二期加上「等名额」的排队后，连回不再因为名额被直接拒绝，这种情况会少很多。
+    回归见 `remote-agent/__tests__/connectionPool.test.ts`、`execServerProjection.e2e.test.ts`(中继忙闲)，以及真实 Claude Code / Codex / Pi 的
     `claudeHosted` / `codexHosted` / `piHosted.e2e.test.ts`(共用 `poolHarness.ts`)。
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
