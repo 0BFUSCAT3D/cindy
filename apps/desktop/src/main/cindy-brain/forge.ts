@@ -4499,8 +4499,8 @@ if (!opened.ok) console.warn(opened.errorCode, opened.message);
   \`preview.hosts\` 里的 \`localhost\` / \`127.0.0.1\` 的插件,其面板页可以把随包 Node
   进程在本机提供的页面装进 \`<iframe>\`(主机为这类插件的页面 CSP 追加
   \`frame-src 'self' http://127.0.0.1:* http://localhost:*\`);嵌入帧内的脚本、样式、
-  XHR 与 WebSocket 只许回到同一主机:端口,嵌入页自己再套一层 \`<iframe>\` 也只许停在
-  同一主机:端口;面板页自身仍不能联网,嵌入页也不能申请摄像头 / 定位等权限。用它做"没有浏览器栏的本机实时画面"(如模拟器),不要用它
+  XHR 与 WebSocket 只许回到同一主机:端口,面板页自身仍不能联网,嵌入页也不能申请
+  摄像头 / 定位等权限。用它做"没有浏览器栏的本机实时画面"(如模拟器),不要用它
   绕开网络声明。
 
 ## 4.16 捆绑 Agent Skills(skill 能力)
