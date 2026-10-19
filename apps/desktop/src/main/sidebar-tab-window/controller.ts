@@ -89,6 +89,19 @@ export interface WindowSlot {
   openTimeout: NodeJS.Timeout | null;
 }
 
+/**
+ * 窗口 renderer 回传的页签快照只在「页签 id 与任务都对得上」时可信:来自被攻破或过期的 renderer 的
+ * 快照不能借自己的页签 id 把内容塞进别的任务的缓存;全局页签(无任务)没有快照可言。
+ */
+function snapshotBoundTo(
+  snapshot: SidebarTabReturnSnapshot | null,
+  tabId: string,
+  sessionId: string | null,
+): SidebarTabReturnSnapshot | null {
+  if (!snapshot || sessionId === null) return null;
+  return snapshot.tab.id === tabId && snapshot.sessionId === sessionId ? snapshot : null;
+}
+
 export class SidebarTabWindowsController {
   /** windowId → 已指派的窗口。 */
   private readonly slots = new Map<string, WindowSlot>();
@@ -292,7 +305,7 @@ export class SidebarTabWindowsController {
       this.deps.notifyTabReturned({
         sessionId: ref.sessionId,
         tabId,
-        snapshot: snapshot && snapshot.tab.id === tabId ? snapshot : null,
+        snapshot: snapshotBoundTo(snapshot, tabId, ref.sessionId),
         reason: 'merge',
       });
     }
@@ -344,7 +357,8 @@ export class SidebarTabWindowsController {
     }
     slot.assignment.tabs = [...slot.assignment.tabs, { tabId, sessionId }];
     this.tabToWindow.set(tabId, slot.assignment.windowId);
-    if (snapshot && snapshot.tab.id === tabId) slot.adoptedSnapshots.set(tabId, snapshot);
+    const bound = snapshotBoundTo(snapshot, tabId, sessionId);
+    if (bound) slot.adoptedSnapshots.set(tabId, bound);
     this.deliverAssignment(slot);
     this.broadcast();
   }

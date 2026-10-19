@@ -98,7 +98,9 @@ const plugin: TabKindPlugin<PluginViewTabState> = {
       typeof (raw as { instanceId?: unknown }).instanceId === 'string'
         ? (raw as { instanceId: string }).instanceId
         : '';
-    return { instanceId };
+    // 页签记着它承载的是 panel 还是 main 页面;丢了它就会一律回落成停靠面板那一份。
+    const view = (raw as { view?: unknown } | null)?.view;
+    return view === 'panel' || view === 'main' ? { instanceId, view } : { instanceId };
   },
 };
 

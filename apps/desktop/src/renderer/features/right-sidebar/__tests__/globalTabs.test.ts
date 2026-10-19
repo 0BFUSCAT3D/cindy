@@ -296,4 +296,24 @@ describe('globalTabs', () => {
       delete win.electronAPI;
     }
   });
+
+  // 测试价值
+  // - 生产入口与可观察结果:plugin-view 的 hydrateState(经 hydrateTabState);可观察的是页签状态里记着的
+  //   panel / main 视图在回读后保留,非法值被丢弃。
+  // - Bug / 规则依据:review「hydrate 丢掉 view,主视图页签回落成停靠面板」。
+  // - 现有覆盖缺口:此前没有测 hydrate。
+  // - 最小失败输入:{instanceId:'a', view:'main'}。
+  it('keeps the recorded plugin view when hydrating a plugin-view tab state', async () => {
+    await import('../plugins/plugin-view');
+    const { getTabKind } = await import('../registry');
+    const plugin = getTabKind('plugin-view');
+    const hydrate = (raw: unknown) => plugin?.hydrateState?.(raw);
+    expect(hydrate({ instanceId: 'a', view: 'main' })).toEqual({
+      instanceId: 'a',
+      view: 'main',
+    });
+    expect(hydrate({ instanceId: 'a', view: 'bogus' })).toEqual({
+      instanceId: 'a',
+    });
+  });
 });

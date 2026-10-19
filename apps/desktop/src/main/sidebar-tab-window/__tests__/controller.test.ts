@@ -378,6 +378,43 @@ describe('SidebarTabWindowsController', () => {
   });
 
   // 测试价值
+  // - 生产入口与可观察结果:mergeBack / adoptTab 带回的快照;可观察的是只有「页签 id 与该页签所属任务都
+  //   对得上」的快照才会交回主窗或用于崩溃恢复,别的任务的快照、全局页签的快照一律丢弃。
+  // - Bug / 规则依据:review「回传快照要绑定被指派的任务」(被攻破 / 过期 renderer 不能借页签 id
+  //   把内容写进别的任务缓存)。
+  // - 现有覆盖缺口:原用例只覆盖快照任务与页签任务一致的情况。
+  // - 最小失败输入:s1 窗口回传 sessionId 为 s2 的快照;全局页签回传快照。
+  // - tier:unit(mock deps)。
+  it('drops returned snapshots that are not bound to the tab and its assigned session', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+    h.controller.open({ ...request('tab-g', null), targetWindowId: 'w1' });
+
+    const foreign = { sessionId: 's2', tab: { id: 'tab-a', kind: 'web-browser', state: {} } };
+    h.controller.mergeBack(h.wc(win), 'tab-a', foreign);
+    expect(h.returned.at(-1)).toMatchObject({ tabId: 'tab-a', snapshot: null });
+
+    const globalSnap = { sessionId: 's1', tab: { id: 'tab-g', kind: 'plugin-view', state: {} } };
+    h.controller.mergeBack(h.wc(win), 'tab-g', globalSnap);
+    expect(h.returned.at(-1)).toMatchObject({ tabId: 'tab-g', snapshot: null });
+
+    // 收编:快照任务与指派任务不一致 → 不留作崩溃恢复用。
+    h.controller.open(request('tab-b'));
+    const win2 = h.created[1];
+    h.controller.markRendererReady(h.wc(win2));
+    h.controller.markPresentationReady(h.wc(win2));
+    h.controller.adoptTab(h.wc(win2), 'tab-n', 's1', {
+      sessionId: 's2',
+      tab: { id: 'tab-n', kind: 'web-browser', state: {} },
+    });
+    win2.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
+    expect(h.returned.find((payload) => payload.tabId === 'tab-n')?.snapshot).toBeNull();
+  });
+
+  // 测试价值
   // - 生产入口与可观察结果:任务页签合并回侧栏后,窗口只剩全局页签时 getAssignment 的 sessionId
   //   为 null,另一任务的页签可以搬进这扇窗,而不是被旧任务绑定挡在门外新开一扇。
   // - Bug / 规则依据:review「最后一个任务页签离开后窗口仍绑旧任务」。
