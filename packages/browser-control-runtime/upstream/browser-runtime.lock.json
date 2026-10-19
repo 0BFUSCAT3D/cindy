@@ -28,6 +28,10 @@
     },
     {
       "file": "extension/src/browser/chrome.ts",
+      "desc": "wait for actual Chrome exit after SIGTERM so login data can flush before force-stop"
+    },
+    {
+      "file": "extension/src/browser/chrome.ts",
       "desc": "start headed automation Chrome without an empty foreground window"
     },
     {
@@ -104,7 +108,7 @@
     }
   ],
   "fileCount": 335,
-  "contentHash": "8aac31b28f77b2d9ea66ff460bb674fbab7a0bedb8200aa253f3d579f816f948",
+  "contentHash": "2cd752b051eb29fd8db6b2feb2ff64881ce29fa2b0867e8e43baadc7cfe18295",
   "fsSafe": {
     "package": "@openclaw/fs-safe",
     "version": "0.4.0"

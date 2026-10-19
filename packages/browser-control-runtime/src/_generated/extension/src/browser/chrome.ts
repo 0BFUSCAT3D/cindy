@@ -1220,26 +1220,27 @@ export async function stopOpenClawChrome(
 ) {
   const proc = running.proc;
   try {
-    if (proc.killed) {
+    if (proc.exitCode != null || proc.signalCode != null) {
       return;
     }
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // ignore
+    // LOCAL PATCH (Cindy, via sync.mjs): killed means a signal was sent,
+    // not that Chrome exited. Give it the grace period to flush site data.
+    if (!proc.killed) {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
     }
 
     const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (!proc.exitCode && proc.killed) {
-        break;
-      }
-      if (
-        !(await isChromeReachable(cdpUrlForPort(running.cdpPort), CHROME_STOP_PROBE_TIMEOUT_MS))
-      ) {
+    while (true) {
+      // CDP can disappear while Chrome is still flushing its profile.
+      if (proc.exitCode != null || proc.signalCode != null) {
         return;
       }
       const remainingMs = timeoutMs - (Date.now() - start);
+      if (remainingMs <= 0) break;
       await new Promise((r) => {
         setTimeout(r, Math.max(1, Math.min(100, remainingMs)));
       });
