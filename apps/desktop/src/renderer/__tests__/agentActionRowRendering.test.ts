@@ -16,7 +16,7 @@
  *   - Codex file_change 与 Claude 文件编辑共用 diff lightbox
  */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 
@@ -60,6 +60,7 @@ vi.mock('@/lib/filePreview', () => ({ shouldOpenTextLightbox: async () => false 
 vi.mock('@/lib/localPathResolver', () => ({ toLocalFileUrl: (p: string) => `xdt-file://${p}` }));
 
 import { AgentActionRow, humanizeDocumentToolResult } from '@/components/chat/AgentActionRow';
+import { ChatSessionFileProvider } from '@/components/chat/ChatSessionFileContext';
 import { AgentActionsBlock } from '@/components/chat/AgentActionsBlock';
 import { __test_internals as expandMemory } from '@/hooks/useExpandedBlockMemory';
 import type { ChatMessage } from '@/lib/makerChatStore';
@@ -568,4 +569,29 @@ describe('AgentActionsBlock — 状态判定与块头', () => {
     expandBlock();
     expect(screen.getByLabelText('chat.agentActionRow.status.done')).toBeTruthy();
   });
+});
+
+// #6412: the retry button targets the existing artifact on the task-owning computer.
+it.each(['local', 'device'] as const)('retries image delivery through the %s task route without sending a model message', async (kind) => {
+  const retry = vi.fn(async () => {});
+  const invoke = vi.fn(async () => {});
+  const previous = window.electronAPI;
+  window.electronAPI = { maker: { input: { retryImageDelivery: retry } }, deviceLink: { invoke } } as never;
+  try {
+    render(createElement(ChatSessionFileProvider, { value: {
+      sessionId: 'task', workingDir: '/task', origin: kind === 'device' ? { kind, deviceId: 'task-host' } : { kind },
+    }, children: createElement(AgentActionRow, {
+      message: mkTool('image', 'imagegen', {}),
+      toolResult: JSON.stringify({ kind: 'generation', native_image_delivery: { id: 'a'.repeat(64), state: 'failed' } }),
+    }) }));
+    expect(screen.getByRole('status').textContent).toBe('chat.imageDelivery.failed');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chat.imageDelivery.retry' })); });
+    if (kind === 'device') {
+      expect(invoke).toHaveBeenCalledWith('task-host', 'maker:images:retry', ['task', 'a'.repeat(64)]);
+      expect(retry).not.toHaveBeenCalled();
+    } else {
+      expect(retry).toHaveBeenCalledWith('task', 'a'.repeat(64));
+      expect(invoke).not.toHaveBeenCalled();
+    }
+  } finally { window.electronAPI = previous; }
 });

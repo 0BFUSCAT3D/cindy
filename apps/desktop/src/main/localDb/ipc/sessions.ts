@@ -82,6 +82,7 @@ import type { SessionReference } from '../../../shared/sessionReference.js';
 import * as broadcastTap from '../../device-link/broadcast-tap.js';
 import { notifyAgentIslandSessionPatch } from '../agentIslandSessionPatch';
 import { ensureHiddenSessionRegistryLoaded } from '../hiddenSessionRegistry.js';
+import { recoverGeneratedImagesForHistory } from '../../cindy-media/generatedImageRecovery';
 import { noteSessionClearBoundary } from '../../messagePersistBroadcaster';
 import {
   ackSessionTurnEndedDurable,
@@ -1191,6 +1192,7 @@ export async function clearSessionContextInDb(sessionId: string, atMs?: number):
     .where(eq(sessions.id, sessionId))
     .limit(1);
   const effectiveClearedAt = updated?.clearedAt ?? ts;
+  if (isOwnerScopeCurrent(ownerScope)) void recoverGeneratedImagesForHistory(sessionId).catch(() => undefined);
   const effectiveUpdatedAt = updated?.updatedAt ?? effectiveClearedAt;
   // Concurrent clears can make SQLite return a newer monotonic boundary than
   // this request supplied. Mirror the effective value into the in-memory gate.
@@ -2589,6 +2591,7 @@ export async function deleteBotProfileAndDetachSessionsInDb(
  * 文件在 turn 送出后即无用。所有把 session 置为终态的路径都应调用。
  */
 function removeHookAttachmentDir(sessionId: string, status: unknown): void {
+  if (status === 'deleted') void recoverGeneratedImagesForHistory(sessionId).catch(() => undefined);
   if (status !== 'deleted' && status !== 'archived') return;
   if (status === 'deleted') {
     void removeTurnChangeSetsForSession(sessionId).catch((err) => {

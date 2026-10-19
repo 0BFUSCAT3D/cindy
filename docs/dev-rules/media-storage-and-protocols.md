@@ -234,6 +234,26 @@
   [xAI](https://docs.x.ai/developers/model-capabilities/images/generation)。
   回归覆盖 `imageParameters.test.ts`、`invocationService.test.ts` 和各图像通道测试。
 
+## Codex 原生生成图交付（#6412）
+
+- `imageGeneration` 完成事件保留 native thread / turn / item 标识、`savedPath` 与 `result`；
+  裸 Base64 是图片数据，路径不能覆盖同时返回的字节。翻译层不读文件、不解码图片。
+- 远程 Agent 的源 Host 在事件进入可确认的传输日志前读取源文件或验证原生字节，按真实
+  MIME 与 20 MiB 上限入 `cindy-media`。跨设备发送不带源文件路径的 data URL；控制端给
+  native 图片标注远端来源，不做工作区路径替换，不读本机同名文件。SSH 只走已有远端文件服务。
+- 图片字节只存在媒体总仓。账号私有 `cindy-media/generated-images-v1` 记录小型交付日志，
+  不保存 Base64；native 标识生成稳定交付 ID，任务 scope 和源 Host scope 隔离。待交付副本
+  复用 `integration-cache` 引用但设 `isCache: false`，不可按可再生缓存清掉已付费产物。
+- 任务 Host 先保存 blob、持久工具结果及 `session-attachment` 引用，再确认源副本可释放；
+  事件流 ACK 不等于持久交付。成功只表示任务 Host 已保存，不能宣称手机已下载。
+- 失败结果分别保留生成状态与交付状态。Desktop / Mobile 的“重试交付”只按交付 ID 重读
+  原产物；不发送 Agent 消息、不重新生图。首次历史读取触发后台恢复，不阻塞历史首屏。
+  重启后复用已有 blob 或源 Host 副本；原产物确已不存在时保留失败，不能假成功。
+- 每个异步边界检查账号；消息发布检查任务删除、清空与结果 tombstone / rewind。
+  清空后的未知远端产物不自动补入；已记录产物只释放自己的临时引用。删除/清空清理回执
+  失败留在日志，账号下次就绪重试。分享撤销清理同一受邀者的源 Host 引用。
+  同一任务并发交付/恢复合并，重复 native 完成事件复用消息 ID 与附件引用。
+
 ## 多端与远程
 
 - 将已有截图或本地图片保存为持久受管附件时，Agent 使用 Core `media(action: "import_image", path)`：Host

@@ -1036,6 +1036,21 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 
 ## 远程 Agent：Agent 在另一台电脑运行
 
+Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加可选
+`caps.imageRecovery: true` 与 `op: images`，不改变已有事件行格式与协议版本：
+
+- `list(sessionId, offset)` 每页最多 64 条，`read(sessionId, imageId, offset)` 每片最多
+  512 KiB，返回总长度和 SHA-256；接收方复核完整字节指纹与真实 MIME。
+  `release(sessionId, imageId)` 是持久交付回执，可重复调用。入参不接受任意文件路径；
+  Host 从已认证 caller 与任务 ID 派生私有 scope，返回前再次检查撤权。
+- 源 Host 先入仓再发事件，以 data URL 单独携带字节，兼容仍优先读取 path 的旧控制端。
+  新控制端接受旧事件；旧源 Host 已丢失字节的 path-only 事件只能呈现交付失败，升级源端
+  后新产物才具备恢复能力。旧端未声明 capability 时不自动请求 `images`。
+- Desktop / Mobile 手动重试走同账号 `maker:images:retry(sessionId, imageId)`，不进入
+  共享任务访客清单，不进入自动重放。旧任务 Host 不认识通道时保留失败状态。
+- 失败半径是一个产物：恢复不重启 relay、不关闭其它任务、不重新调用生成模型。
+  源文件、接收端消息、任务引用和释放回执分别验证，不把传输成功视为最终保存成功。
+
 同账号的 A(任务、项目文件与命令所在)可以让 B(打开了「允许远程控制」)用 B 自己的 Agent 程序、
 登录(含 Claude 订阅)、供应商与网络运行 Agent。新增 invoke channel `maker:remote-agent:v1`
 (`packages/device-link/src/remoteAgent.ts`)，只进同账号 allowlist，不进共享任务清单；被控端
