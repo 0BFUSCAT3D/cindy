@@ -26,6 +26,22 @@ export default {
     },
     subscription: { about: 'Read-only subscription windows with existing remaining bars' },
     organization: { about: 'Organization remaining balance and known budget' },
+    warning: {
+      about: '15% remaining uses the existing quota warning',
+      data: { remainingPercent: 15 },
+    },
+    critical: {
+      about: '10% remaining uses the existing quota danger',
+      data: { remainingPercent: 10 },
+    },
+    low: {
+      about: '5% remaining keeps the danger state and true fill',
+      data: { remainingPercent: 5 },
+    },
+    full: {
+      about: '100% remaining fills the track without warning',
+      data: { remainingPercent: 100 },
+    },
     unknown: { about: 'Unknown total has no fabricated percentage' },
     zero: { about: 'True zero balance has a zero progress bar' },
     'quota-only': { about: 'Only remaining allowance shared' },
@@ -79,7 +95,9 @@ export default {
         await ui.capture('collapsed-models');
       }
       const progress = page.getByRole('progressbar');
-      if (['default', 'organization', 'zero'].includes(ui.case)) {
+      if (
+        ['default', 'organization', 'zero', 'warning', 'critical', 'low', 'full'].includes(ui.case)
+      ) {
         const sizes = await progress.evaluateAll((tracks) =>
           tracks.map((track) => {
             const row = track.parentElement;
@@ -87,6 +105,8 @@ export default {
             const bounds = track.getBoundingClientRect();
             return {
               track: bounds.width,
+              leftOffset: track.firstElementChild.getBoundingClientRect().left - bounds.left,
+              fill: track.firstElementChild.getBoundingClientRect().width,
               content:
                 row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
               belowDetail:
@@ -95,7 +115,16 @@ export default {
           }),
         );
         assert.ok(sizes.length > 0);
-        for (const size of sizes) {
+        const remaining =
+          ui.case === 'default'
+            ? [(24.8 / 60) * 100, 100, 100]
+            : [ui.data.remainingPercent ?? (ui.case === 'zero' ? 0 : 64.8)];
+        for (const [index, size] of sizes.entries()) {
+          assert.ok(Math.abs(size.leftOffset) <= 1, 'Remaining fill starts at the left edge');
+          assert.ok(
+            Math.abs(size.fill - (size.track * remaining[index]) / 100) <= 1,
+            'Fill preserves the actual remaining ratio',
+          );
           assert.ok(Math.abs(size.track - size.content) <= 1, 'Balance track spans row content');
           assert.ok(size.belowDetail, 'Balance track sits below the amount description');
         }
@@ -104,12 +133,13 @@ export default {
         assert.equal(await progress.count(), 3);
         assert.ok(
           Math.abs(
-            Number(await progress.first().getAttribute('aria-valuenow')) - (24.8 / 60) * 100,
+            Number(await progress.first().getAttribute('aria-valuenow')) -
+              Math.round((24.8 / 60) * 100),
           ) < 0.01,
         );
       }
       if (ui.case === 'organization')
-        assert.equal(await progress.first().getAttribute('aria-valuenow'), '64.8');
+        assert.equal(await progress.first().getAttribute('aria-valuenow'), '65');
       if (ui.case === 'group') assert.equal(await progress.count(), 5);
       if (ui.case === 'unknown') assert.equal(await progress.count(), 0);
       if (ui.case === 'zero')

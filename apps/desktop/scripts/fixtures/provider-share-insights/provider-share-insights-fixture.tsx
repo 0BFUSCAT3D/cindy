@@ -98,6 +98,8 @@ const history = {
 
 void mountPage({
   host: (ctx) => {
+    const remainingPercent =
+      typeof ctx.data.remainingPercent === 'number' ? ctx.data.remainingPercent : null;
     const quota = ctx.case !== 'closed' && ctx.case !== 'usage-only';
     const allowUsage = ctx.case !== 'closed' && ctx.case !== 'quota-only';
     const subscriptionAccount: ProviderShareQuotaAccount = {
@@ -109,7 +111,7 @@ void mountPage({
           kind: 'session',
           label: null,
           windowMinutes: 300,
-          remainingPercent: 43,
+          remainingPercent: remainingPercent ?? 43,
           resetsAt: now + 7_200_000,
         },
         {
@@ -124,13 +126,13 @@ void mountPage({
     const displayedAccount: ProviderShareQuotaAccount =
       ctx.case === 'subscription'
         ? subscriptionAccount
-        : ['organization', 'unknown', 'zero'].includes(ctx.case)
+        : remainingPercent !== null || ['organization', 'unknown', 'zero'].includes(ctx.case)
           ? {
               ...account,
               balance: {
                 ...account.balance,
                 pools: [],
-                remaining: ctx.case === 'zero' ? 0 : 64.8,
+                remaining: remainingPercent ?? (ctx.case === 'zero' ? 0 : 64.8),
                 total: ctx.case === 'unknown' ? null : 100,
               },
             }

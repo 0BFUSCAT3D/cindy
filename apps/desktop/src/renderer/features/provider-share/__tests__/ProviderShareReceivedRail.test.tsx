@@ -423,17 +423,24 @@ describe('shared read-only insights', () => {
     expect(screen.queryByText('Shared Owner')).toBeNull();
     setDataOwnerGeneration(null);
   });
-  // 额度真实 0 与未知总额区分；订阅复用同一剩余比例展示。tier: unit。
+  // 分享余额曾把剩余比例当普通余额条，缺少低余额预警。经真实分享组件验证剩余/已用转换；
+  // 最小输入15%剩余应warn，未知总额不得预警。沿用QuotaBar阈值测试，不复制阈值算法。tier: unit。
   it.each([
-    { remaining: 25, total: 100, expected: '25' },
-    { remaining: 0, total: 0, expected: '0' },
-    { remaining: 25, total: null, expected: null },
-  ])('renders known balance progress without inventing unknown totals: %j', async ({ remaining, total, expected }) => {
+    { remaining: 100, total: 100, expected: '100', severity: 'normal' },
+    { remaining: 64.8, total: 100, expected: '65', severity: 'normal' },
+    { remaining: 15, total: 100, expected: '15', severity: 'warn' },
+    { remaining: 10, total: 100, expected: '10', severity: 'crit' },
+    { remaining: 5, total: 100, expected: '5', severity: 'crit' },
+    { remaining: 0, total: 0, expected: '0', severity: 'crit' },
+    { remaining: 25, total: null, expected: null, severity: null },
+  ])('renders known balance progress without inventing unknown totals: %j', async ({ remaining, total, expected, severity }) => {
     const data = insights(true, false);
     data.quota!.accounts[0].balance = { remaining, total, currency: 'USD', resetsAt: null, pools: [] };
     command.mockResolvedValue(data);
     await act(async () => { render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
-    expect(screen.queryByRole('progressbar')?.getAttribute('aria-valuenow') ?? null).toBe(expected);
+    const bar = screen.queryByRole('progressbar');
+    expect(bar?.getAttribute('aria-valuenow') ?? null).toBe(expected);
+    expect(bar?.getAttribute('data-severity') ?? null).toBe(severity);
   });
   it('uses remaining subscription progress without reset or management actions', async () => {
     const data = insights(true, false);

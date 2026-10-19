@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { QuotaBar } from '@/components/status/QuotaBar';
 
 /** 计费页和分享详情共用的只读余额行；未知总额不显示百分比。 */
 export function CreditPoolRowView({
@@ -29,21 +30,31 @@ export function CreditPoolRowView({
       >
         {detail}
       </p>
-      <div
-        className={`h-1 w-full self-center overflow-hidden rounded-full bg-[var(--surface-chip)] ${progressLayout === 'full-width' ? 'col-span-2' : ''}`}
-        role={percent === null ? undefined : 'progressbar'}
-        aria-label={t('billing.usage.progressLabel', { label })}
-        aria-valuemin={percent === null ? undefined : 0}
-        aria-valuemax={percent === null ? undefined : 100}
-        aria-valuenow={percent ?? undefined}
-      >
-        {percent !== null && (
-          <div
-            className="ml-auto h-full rounded-full bg-[var(--text-primary)]"
-            style={{ width: `${percent}%` }}
-          />
-        )}
-      </div>
+      {progressLayout === 'full-width' && percent !== null ? (
+        <QuotaBar
+          usedPercent={100 - percent}
+          showRemaining
+          ariaLabel={t('billing.usage.progressLabel', { label })}
+          aria-valuetext={t('quotaCard.remainingPercent', { percent: Math.round(percent) })}
+          className="col-span-2 self-center"
+        />
+      ) : (
+        <div
+          className={`h-1 w-full self-center overflow-hidden rounded-full bg-[var(--surface-chip)] ${progressLayout === 'full-width' ? 'col-span-2' : ''}`}
+          role={percent === null ? undefined : 'progressbar'}
+          aria-label={t('billing.usage.progressLabel', { label })}
+          aria-valuemin={percent === null ? undefined : 0}
+          aria-valuemax={percent === null ? undefined : 100}
+          aria-valuenow={percent ?? undefined}
+        >
+          {percent !== null && (
+            <div
+              className="ml-auto h-full rounded-full bg-[var(--text-primary)]"
+              style={{ width: `${percent}%` }}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
