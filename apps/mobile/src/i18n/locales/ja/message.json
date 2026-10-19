@@ -391,5 +391,11 @@
     "memory": "記憶しました：{{title}}",
     "skillCreated": "スキルを作成：{{title}}",
     "skillUpdated": "スキルを更新：{{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "動画を再生",
+    "openVideoSource": "元の動画を開く",
+    "calculationUnavailable": "この値を計算できません。",
+    "incomplete": "一部の内容を表示できませんでした。"
   }
 }

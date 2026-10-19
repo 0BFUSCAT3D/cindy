@@ -41,6 +41,8 @@
     "./math-markdown": "./src/mathMarkdown.ts",
     "./mention-ref": "./src/mentionRef.ts",
     "./mermaid-autofix": "./src/mermaidAutofix.ts",
+    "./rich-answer": "./src/richAnswer.ts",
+    "./rich-answer-guide": "./src/richAnswerGuide.ts",
     "./message-render": "./src/messageRender.ts",
     "./message-normalize": "./src/messageNormalize.ts",
     "./mcp-apps": "./src/mcpApps.ts",

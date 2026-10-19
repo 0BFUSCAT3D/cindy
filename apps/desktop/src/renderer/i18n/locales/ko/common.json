@@ -711,6 +711,9 @@
     "controlledByDevice": "{{name}}에서 데스크톱을 원격으로 제어 중",
     "viewedByDevice": "{{name}}에서 데스크톱을 원격으로 보는 중",
     "disconnect": "연결 끊기",
+    "disconnectChoiceDetail": "연결을 끊으면 이번 원격 데스크톱이 종료되며, 상대 기기는 나중에 다시 연결할 수 있습니다.",
+    "disconnectRevoke": "이 기기의 액세스 권한도 철회",
+    "disconnectRevokeHint": "철회하면 이 컴퓨터에 더 이상 연결할 수 없으며, 설정 → 원격 연결에서 복원할 수 있습니다.",
     "back": "뒤로",
     "connect": "연결",
     "connecting": "연결 중…",
@@ -11146,6 +11149,9 @@
       "streamInterruptedNoRetry": "모델 출력이 중간에 중단되었습니다. 보통은 일시적인 상위 서비스 장애입니다. 잠시 후 다시 시도해 주세요",
       "networkShowRaw": "오류 상세 정보",
       "networkHideRaw": "상세 정보 접기",
+      "diagnose": "진단",
+      "diagnoseTitle": "새 세션에서 이 오류 진단",
+      "diagnosePrompt": "이 오류를 진단해서 원인과 해결 방법을 알려 주세요.\n\n오류가 발생한 세션: {{sessionUrl}}\n오류 메시지: {{message}}\n오류 상세:\n{{details}}\n\nCindy 자체의 문제로 확인되면 알려 주세요. Cindy 팀에 issue를 제출할지는 제가 선택할게요.",
       "gatewayProxyTokenInvalid": "Cindy AI 자격 증명이 더 이상 유효하지 않습니다. 재시도를 클릭하세요. 반복되면 로그아웃 후 다시 로그인하세요",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI 자격 증명이 더 이상 유효하지 않습니다. 반복되면 로그아웃 후 다시 로그인하세요",
       "modelAccessDenied": "연결된 서비스 계정에 이 모델의 접근 권한이 없습니다. 다른 모델로 전환하거나 제공자에게 모델 접근 권한을 확인하세요",
@@ -11173,6 +11179,21 @@
       "continuing": "계속하는 중…",
       "continueTitle": "중단된 지점부터 작업을 계속합니다(완료된 단계는 반복하지 않습니다)",
       "dismissTitle": "이 중단 알림 닫기"
+    },
+    "interruptedResumeDialog": {
+      "title": "중단된 세션 이어서 하기",
+      "description_one": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "description_other": "{{appName}}이(가) 지난번에 예기치 않게 종료되어 세션 {{count}}개가 끝나지 않았습니다. 선택한 세션은 대화 기록으로 진행 상황을 확인하고 중단된 곳부터 이어서 진행합니다.",
+      "selectAll": "모두 선택",
+      "selectedCount": "{{total}}개 중 {{selected}}개 선택",
+      "interruptedAgo": "{{time}} 전 중단",
+      "interruptedJustNow": "방금 중단",
+      "continueSelected_one": "세션 {{count}}개 이어서 하기",
+      "continueSelected_other": "세션 {{count}}개 이어서 하기",
+      "continueNone": "이어서 하기",
+      "later": "나중에",
+      "continueFailed_one": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요.",
+      "continueFailed_other": "세션 {{count}}개를 이어서 진행하지 못했습니다. 세션을 열어 다시 시도하세요."
     },
     "unreadFailedScheduleBanner": {
       "text": "실패한 자동 실행이 있습니다.",
@@ -16527,5 +16548,11 @@
     "messageSource": "$t(mcpApps.appName) “{{name}}”에서 전송",
     "serverId": "MCP 서버 ID: {{id}}",
     "exitFullscreen": "전체 화면 종료"
+  },
+  "richAnswer": {
+    "playVideo": "동영상 재생",
+    "openVideoSource": "원본 동영상 열기",
+    "calculationUnavailable": "이 값을 계산할 수 없습니다.",
+    "incomplete": "일부 내용을 표시하지 못했습니다."
   }
 }

@@ -391,5 +391,11 @@
     "memory": "기억했어요: {{title}}",
     "skillCreated": "스킬 생성: {{title}}",
     "skillUpdated": "스킬 업데이트: {{title}}"
+  },
+  "richAnswer": {
+    "playVideo": "동영상 재생",
+    "openVideoSource": "원본 동영상 열기",
+    "calculationUnavailable": "이 값을 계산할 수 없습니다.",
+    "incomplete": "일부 내용을 표시하지 못했습니다."
   }
 }

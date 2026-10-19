@@ -3793,6 +3793,7 @@ export class PiAgent extends BaseAgent {
       ? ''
       : (this.deps.getGhostRosterPrompt?.({ workingDir: opts.workingDir }) ?? '');
     const appendSections = [
+      reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt?.trim(),
       reviewMode ? undefined : opts.botProfilePrompt?.trim(),
       opts.botRuntimeProfile ? undefined : this.deps.runtimeConfig.systemPrompt?.trim(),
       ghostRosterPrompt.trim(),

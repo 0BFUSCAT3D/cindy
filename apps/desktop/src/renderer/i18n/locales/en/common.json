@@ -723,6 +723,9 @@
     "controlledByDevice": "{{name}} is controlling your desktop",
     "viewedByDevice": "{{name}} is viewing your desktop",
     "disconnect": "Disconnect",
+    "disconnectChoiceDetail": "Disconnecting ends this remote desktop session; the device can connect again later.",
+    "disconnectRevoke": "Also revoke this device's access",
+    "disconnectRevokeHint": "It can no longer connect to this machine until you restore it under Settings → Remote Connection.",
     "back": "Back",
     "connect": "Connect",
     "connecting": "Connecting…",
@@ -11190,6 +11193,9 @@
       "streamInterruptedNoRetry": "The model stream was interrupted. This is usually a temporary upstream issue. Try again in a little while.",
       "networkShowRaw": "Error Details",
       "networkHideRaw": "Hide Details",
+      "diagnose": "Diagnose",
+      "diagnoseTitle": "Diagnose this error in a new session",
+      "diagnosePrompt": "Please diagnose this error: find the cause and tell me how to fix it.\n\nSession: {{sessionUrl}}\nError: {{message}}\nDetails:\n{{details}}\n\nIf you find it's a problem with Cindy itself, let me know so I can choose whether to file an issue with the Cindy team.",
       "gatewayProxyTokenInvalid": "Cindy AI credentials are no longer valid. Click Retry. If it happens again, sign out and sign back in",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI credentials are no longer valid. If it happens again, sign out and sign back in",
       "modelAccessDenied": "The upstream account cannot access this model. Select another model or check its access with the provider",
@@ -11217,6 +11223,21 @@
       "continuing": "Continuing…",
       "continueTitle": "Continue from where the task left off (completed steps will not be repeated)",
       "dismissTitle": "Dismiss this interruption notice"
+    },
+    "interruptedResumeDialog": {
+      "title": "Resume interrupted sessions",
+      "description_one": "{{appName}} quit unexpectedly and {{count}} session didn't finish. Selected sessions will check the conversation and pick up where they left off.",
+      "description_other": "{{appName}} quit unexpectedly and {{count}} sessions didn't finish. Selected sessions will check the conversation and pick up where they left off.",
+      "selectAll": "Select all",
+      "selectedCount": "{{selected}} of {{total}} selected",
+      "interruptedAgo": "interrupted {{time}} ago",
+      "interruptedJustNow": "interrupted just now",
+      "continueSelected_one": "Resume {{count}} session",
+      "continueSelected_other": "Resume {{count}} sessions",
+      "continueNone": "Resume",
+      "later": "Not now",
+      "continueFailed_one": "{{count}} session couldn't resume. Open it to try again.",
+      "continueFailed_other": "{{count}} sessions couldn't resume. Open them to try again."
     },
     "unreadFailedScheduleBanner": {
       "text": "An automatic run failed.",
@@ -16586,5 +16607,11 @@
     "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
     "serverId": "MCP Server ID: {{id}}",
     "exitFullscreen": "Exit Fullscreen"
+  },
+  "richAnswer": {
+    "playVideo": "Play video",
+    "openVideoSource": "Open original video",
+    "calculationUnavailable": "Unable to calculate this value.",
+    "incomplete": "Some content could not be displayed."
   }
 }

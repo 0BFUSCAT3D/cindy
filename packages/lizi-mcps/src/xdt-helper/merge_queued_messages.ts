@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { XdtHelperToolRegistry } from '../lizi_xdtHelperToolRegistry.js';
 import type { ControlResult } from '../types.js';
 import { errorPayload, okPayload } from './_payload.js';
+import { stringArrayParam } from './_array-param.js';
 import type { QueuedMessageControlErrorCode } from './update_queued_message.js';
 import type { WorkerQueuedMessageEntry } from './get_worker_queue_status.js';
 
@@ -25,28 +26,6 @@ export interface MergeQueuedMessagesDeps {
   >;
 }
 
-/**
- * 数组类参数的误传形态自愈,与 imagesListSchema(PR #5649)同一套口径。glm 等
- * openai-completions 兼容层把数组参数序列化成 <item> 重复标签,单元素时折叠成
- * 标量,实测四类形态:多套一层 [[a],[b]] → 拍平;XML 风格 {item:[a,b]} → 取
- * item;单元素折叠 {item:a} 与裸标量 a → [a]。其余原样交给 zod 报错。
- */
-function coerceStringArrayParam(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.some((item) => Array.isArray(item)) ? (value as unknown[]).flat(1) : value;
-  }
-  if (value && typeof value === 'object') {
-    const item = (value as { item?: unknown }).item;
-    if (item === undefined) return value;
-    value = item;
-    if (Array.isArray(value)) {
-      return value.some((x) => Array.isArray(x)) ? (value as unknown[]).flat(1) : value;
-    }
-  }
-  if (typeof value === 'string' && value.trim().length > 0) return [value];
-  return value;
-}
-
 const DESCRIPTION =
   '原子合并至少两条连续、尚未消费且由当前 Lead 发出的 worker 排队消息。' +
   '最前一条保留原位置与 queued_message_id,其余条目一次移除并结清暂存回调。' +
@@ -66,11 +45,7 @@ export function registerMergeQueuedMessagesTool(
         .string()
         .min(1)
         .describe('目标 worker 的 worker_id 或 session_id 任一'),
-      queued_message_ids: z
-        .preprocess(
-          coerceStringArrayParam,
-          z.array(z.string().min(1)).min(2),
-        )
+      queued_message_ids: stringArrayParam(z.array(z.string().min(1)).min(2))
         .describe(
           '按当前队列顺序排列的至少两个连续消息 id,不得重复; 必须是扁平字符串数组, 如 ["id_a", "id_b"]',
         ),

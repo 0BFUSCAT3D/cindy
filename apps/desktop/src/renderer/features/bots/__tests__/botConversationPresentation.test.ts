@@ -359,3 +359,10 @@ it('keeps an unanswered historical receipt visible while the next user turn stre
     message('next-answer', 'assistant', 'First words', { assistantPhase: 'final_answer', isStreaming: true })];
   expect(allKeys(project(next, true))).toEqual(['msg-old-user', 'msg-receipt', 'msg-next-user', 'msg-next-answer']);
 });
+
+it('keeps streaming component answers visible through commentary and later tools', () => {
+  const body = '```cindy-ui\n' + JSON.stringify({ seq: 1, op: 'create', id: 'heading', kind: 'heading', props: { text: 'Result' } }) + '\n';
+  const rows = [message('u', 'user'), message('rich', 'assistant', body, { assistantPhase: 'commentary', isStreaming: true }), tool('later')];
+  expect(proseIds(project(rows, true))).toContain('rich');
+  expect(rows[1].type === 'message' && rows[1].message.content).toBe(body);
+});

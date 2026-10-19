@@ -711,6 +711,9 @@
     "controlledByDevice": "{{name}} がデスクトップを操作しています",
     "viewedByDevice": "{{name}} がデスクトップを表示しています",
     "disconnect": "切断",
+    "disconnectChoiceDetail": "切断すると今回のリモートデスクトップが終了し、相手は後で再接続できます。",
+    "disconnectRevoke": "このデバイスのアクセス権も撤回する",
+    "disconnectRevokeHint": "撤回すると本機に接続できなくなります。「設定 → リモート接続」で復元できます。",
     "back": "戻る",
     "connect": "接続",
     "connecting": "接続中…",
@@ -11146,6 +11149,9 @@
       "streamInterruptedNoRetry": "モデル出力が途中で中断されました。一時的な上流障害であることが多いので、しばらくしてから再試行してください",
       "networkShowRaw": "エラーの詳細",
       "networkHideRaw": "詳細を閉じる",
+      "diagnose": "診断",
+      "diagnoseTitle": "新しいセッションでこのエラーを診断",
+      "diagnosePrompt": "このエラーを診断して、原因と解決方法を教えてください。\n\nエラーが起きたセッション：{{sessionUrl}}\nエラー表示：{{message}}\nエラー詳細：\n{{details}}\n\nCindy 自体の問題だと分かった場合は教えてください。Cindy チームに issue を提出するかどうかは私が選びます。",
       "gatewayProxyTokenInvalid": "Cindy AI の認証情報が無効になりました。「再試行」をクリックしてください。繰り返す場合はサインアウトしてから再ログインしてください",
       "gatewayProxyTokenInvalidNoRetry": "Cindy AI の認証情報が無効になりました。繰り返す場合はサインアウトしてから再ログインしてください",
       "modelAccessDenied": "接続先のアカウントにはこのモデルへのアクセス権限がありません。別のモデルに切り替えるか、プロバイダーにアクセス権限を確認してください",
@@ -11173,6 +11179,21 @@
       "continuing": "再開中…",
       "continueTitle": "中断した箇所からタスクを続行します（完了済みのステップは繰り返しません）",
       "dismissTitle": "この中断通知を閉じる"
+    },
+    "interruptedResumeDialog": {
+      "title": "中断したセッションを再開",
+      "description_one": "{{appName}} が前回予期せず終了し、{{count}} 件のセッションが完了していません。選択したセッションは会話履歴から進捗を確認し、中断したところから再開します。",
+      "description_other": "{{appName}} が前回予期せず終了し、{{count}} 件のセッションが完了していません。選択したセッションは会話履歴から進捗を確認し、中断したところから再開します。",
+      "selectAll": "すべて選択",
+      "selectedCount": "{{selected}} / {{total}} 件を選択",
+      "interruptedAgo": "{{time}}前に中断",
+      "interruptedJustNow": "たった今中断",
+      "continueSelected_one": "{{count}} 件を再開",
+      "continueSelected_other": "{{count}} 件を再開",
+      "continueNone": "再開",
+      "later": "後で",
+      "continueFailed_one": "{{count}} 件のセッションを再開できませんでした。セッションを開いて再試行してください。",
+      "continueFailed_other": "{{count}} 件のセッションを再開できませんでした。セッションを開いて再試行してください。"
     },
     "unreadFailedScheduleBanner": {
       "text": "自動実行に失敗した記録があります。",
@@ -16527,5 +16548,11 @@
     "messageSource": "$t(mcpApps.appName)「{{name}}」から送信",
     "serverId": "MCP サーバー ID：{{id}}",
     "exitFullscreen": "全画面表示を終了"
+  },
+  "richAnswer": {
+    "playVideo": "動画を再生",
+    "openVideoSource": "元の動画を開く",
+    "calculationUnavailable": "この値を計算できません。",
+    "incomplete": "一部の内容を表示できませんでした。"
   }
 }
