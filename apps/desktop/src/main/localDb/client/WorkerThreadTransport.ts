@@ -1,5 +1,6 @@
 import { runPluginUsageTransaction } from '../worker/opHandlers/pluginUsageTx.js';
 import { runTaskTagsTransaction } from '../worker/opHandlers/taskTagsTx.js';
+import { recordMediaSpend } from '../worker/opHandlers/mediaSpendTx.js';
 import { createAutoReviewIntentProjection } from '@cindy/maker-shared/auto-review-intent';
 import { batchAutoReviewProjection, readAutoReviewProjection } from '../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../sharedTaskClosureSql.js';
@@ -32,6 +33,7 @@ const batchAutoReviewProjection = ${batchAutoReviewProjection.toString()};
 const CLOSE_SHARED_TASKS_FOR_SESSION_SQL = ${JSON.stringify(CLOSE_SHARED_TASKS_FOR_SESSION_SQL)};
 const runPluginUsageTransaction = ${runPluginUsageTransaction.toString()};
 const runTaskTagsTransaction = ${runTaskTagsTransaction.toString()};
+const recordMediaSpend = ${recordMediaSpend.toString()};
 // 旧版 inline worker fallback。默认运行时走 .vite/build/dbWorker.js；
 // 这段只作为打包路径回滚口保留，后续验证 macOS / Windows packaged 后删除。
 const { parentPort, workerData } = require('node:worker_threads');
@@ -429,6 +431,8 @@ function dispatchTransaction(readyDb, payload) {
   const request = asRecord(payload, 'tx args');
   const name = expectString(request.name, 'name');
   switch (name) {
+    case 'usage.recordMediaSpend':
+      return recordMediaSpend(readyDb, request.args);
     case 'authorization.readProjection':
       return readAutoReviewProjection(readyDb, request.args, createAutoReviewIntentProjection);
     case 'codex.importMessages':
