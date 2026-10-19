@@ -6,7 +6,7 @@ import remarkParse from 'remark-parse';
 import { visit } from 'unist-util-visit';
 import { describeToolUse, createdPathsFromDescriptor } from '@cindy/maker-shared/tool-use-descriptor';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
-import { isToolResultFailureLike } from '@cindy/maker-shared/message-presentation';
+import { isContentToolFailureLike } from '@cindy/maker-shared/message-presentation';
 import { parseToolResultPayload } from '@cindy/maker-shared/payload-summary';
 import { extractCommandOutputPathCandidates } from '../../shared/commandOutputPaths.js';
 import { findPathMatches } from '../../shared/bareFilePathTokens.js';
@@ -27,12 +27,31 @@ function decode(value: string): unknown {
 }
 
 /** Transport success does not override a failure inside the tool's result. */
-function toolResultFailed(descriptor: ReturnType<typeof describeToolUse>, content: unknown): boolean {
+function toolResultFailed(content: unknown): boolean {
   let value = content;
   for (;;) {
-    if (isToolResultFailureLike(descriptor, typeof value === 'string' ? value : JSON.stringify(value))) return true;
-    const envelope = record(typeof value === 'string' ? decode(value) : value);
-    if (envelope?.ok !== true || !record(envelope.result)) return false;
+    const parsed = typeof value === 'string' ? decode(value) : value;
+    const envelope = record(parsed);
+    // Main persists actual harness failures with this marker. For legacy plain
+    // text use anchored diagnostics, never presentation's whole-body keywords.
+    if (!envelope) return typeof parsed === 'string' && isContentToolFailureLike({ body: '', secondaryBody: parsed });
+    if (envelope.ok === false || envelope.success === false || envelope.isError === true || envelope.is_error === true) return true;
+    const status = typeof envelope.status === 'string' ? envelope.status.toLowerCase() : '';
+    if (['error', 'failed', 'failure', 'denied', 'declined'].includes(status)) return true;
+    if ([envelope.exitCode, envelope.exit_code].some((code) => typeof code === 'number' && Number.isFinite(code) && code !== 0)) return true;
+    if (['error', 'errors', 'exception'].some((key) => {
+      const error = envelope[key];
+      if (typeof error === 'string') return error.trim().length > 0;
+      if (Array.isArray(error)) return error.length > 0;
+      return error === true || (typeof error === 'number' && error !== 0) || record(error) !== null;
+    })) return true;
+    // stderr, stdout and delivery URLs are data. An unqualified legacy message
+    // can still carry an error diagnostic, but explicit success takes precedence.
+    const success = envelope.ok === true || envelope.success === true || envelope.isError === false || envelope.is_error === false
+      || envelope.exitCode === 0 || envelope.exit_code === 0 || ['success', 'completed', 'ok'].includes(status);
+    if (!success && typeof envelope.message === 'string'
+      && isContentToolFailureLike({ body: '', secondaryBody: envelope.message })) return true;
+    if (envelope.ok !== true || !record(envelope.result)) return false;
     value = envelope.result;
   }
 }
@@ -163,7 +182,7 @@ export async function sharedTaskReferencesFile(
         // Their actual outputs are authorized via invocation output paths below;
         // delivery metadata is a contract of MCP/dynamic tool responses only.
         if (descriptor.kind !== 'mcp' && descriptor.kind !== 'dynamic') continue;
-        if (toolResultFailed(descriptor, content)) continue;
+        if (toolResultFailed(content)) continue;
       }
       if (row.role === 'tool_use') {
         // A queued/denied tool invocation is not delivery. Only completed output
@@ -180,7 +199,7 @@ export async function sharedTaskReferencesFile(
         if (!results.length) continue;
         const result = decode(results[0].content);
         const descriptor = describeToolUse(tool.toolName, tool.input);
-        if (toolResultFailed(descriptor, result)) continue;
+        if (toolResultFailed(result)) continue;
         if (descriptor.kind === 'command' || descriptor.kind === 'mcp') {
           // Shell destinations and MCP output arguments are only candidates.
           // Success must not expose an untouched, pre-existing destination file.

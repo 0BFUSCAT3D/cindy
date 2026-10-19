@@ -197,6 +197,46 @@ describe('shared task media access', () => {
       expect(deps.query.mock.calls[1][1]).toEqual(['task', 'run-1', 2]);
     }
   });
+  // Unit regression via assertSharedTaskMedia: a delivered error-report.pdf
+  // must open, while actual failures still deny it. Earlier provenance tests
+  // lacked successful payloads containing diagnostic words (review #4311987397).
+  it.each([
+    { status: { ok: true }, allowed: true },
+    { status: { success: true, stderr: 'warning: optional feature unavailable', errors: [] }, allowed: true },
+    { status: { exitCode: 0, stdout: 'completed with 0 errors' }, allowed: true },
+    { status: { isError: true }, allowed: false },
+    { status: { is_error: true }, allowed: false },
+    { status: { ok: false }, allowed: false },
+    { status: { success: false }, allowed: false },
+    { status: { status: 'failed' }, allowed: false },
+    { status: { exitCode: 2 }, allowed: false },
+    { status: { error: 'generation unavailable' }, allowed: false },
+  ])('uses actual MCP failure signals for delivery: $status', async ({ status, allowed }) => {
+    const file = path.resolve('deliveries/error-report.pdf');
+    const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+    const result = { ok: true, result: { ...status, xdt_media_produced: [url] } };
+    deps.query.mockResolvedValueOnce([{ rowid: 2, role: 'tool_result', toolUseId: 'generate-1', content: JSON.stringify(result) }])
+      .mockResolvedValueOnce([{ content: JSON.stringify({ toolName: 'mcp:reports:generate', input: {} }) }]);
+    const access = assertSharedTaskMedia(url, capture);
+    if (allowed) await expect(access).resolves.toEqual({ file });
+    else await expect(access).rejects.toThrow('PERMISSION_DENIED');
+  });
+  it.each([
+    { result: 'completed with 0 errors', allowed: true },
+    { result: { exitCode: 0, stdout: 'error count: 0', stderr: 'warning' }, allowed: true },
+    { result: '<tool_use_error>operation stopped</tool_use_error>', allowed: false },
+    { result: 'Error: operation stopped', allowed: false },
+    { result: { exitCode: 1, stdout: 'done' }, allowed: false },
+  ])('uses actual command failure signals before checking output evidence: $result', async ({ result, allowed }) => {
+    const file = path.join(path.parse(process.cwd()).root, 'deliveries', 'error-report.pdf');
+    deps.query.mockResolvedValueOnce([{ rowid: 1, role: 'tool_use', toolUseId: 'copy-1', createdAt: 100,
+      content: JSON.stringify({ toolName: 'Bash', input: { command: `cp /work/source.txt "${markdownPath(file)}"` } }) }])
+      .mockResolvedValueOnce([{ content: JSON.stringify(result), createdAt: 200 }]);
+    deps.stat.mockResolvedValue({ isFile: () => true, mtimeMs: 150 });
+    const access = assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture);
+    if (allowed) await expect(access).resolves.toEqual({ file });
+    else await expect(access).rejects.toThrow('PERMISSION_DENIED');
+  });
   // Outer transport success must not mask the producing tool's inner failure.
   it.each(['tool_use', 'tool_result'])('checks wrapped tool failures through the %s authorization route', async (role) => {
     const file = path.resolve('deliveries/report.pdf');
