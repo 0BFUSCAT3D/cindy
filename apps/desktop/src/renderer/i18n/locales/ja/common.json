@@ -10963,6 +10963,13 @@
     "verificationFailed": "ChatGPT ログインが復旧したか確認できませんでした。再確認してください。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "画像を受け取りました",
+      "failed": "画像の転送に失敗しました。既存の画像の転送を再試行できます。",
+      "retry": "転送を再試行",
+      "retrying": "転送中…",
+      "retryFailed": "転送できません。画像を生成したパソコンがオンラインか確認してください。"
+    },
     "failedSamplingAttempt": "この返信は完了しませんでした。内容は参考情報としてご覧ください。",
     "jumpToBottom": "一番下へ移動",
     "prevMessageJump": "前の質問へ移動：{{preview}}",

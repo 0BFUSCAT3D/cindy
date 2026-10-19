@@ -10963,6 +10963,13 @@
     "verificationFailed": "暂时无法确认 ChatGPT 登录是否已恢复，请重新检测。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "图片已交付",
+      "failed": "图片交付失败，可重试传输已有图片。",
+      "retry": "重试交付",
+      "retrying": "正在交付…",
+      "retryFailed": "暂时无法交付，请确认生成图片的电脑在线。"
+    },
     "failedSamplingAttempt": "此回复未完成，内容仅供参考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一条提问：{{preview}}",

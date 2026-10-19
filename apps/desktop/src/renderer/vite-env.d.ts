@@ -6258,6 +6258,7 @@ interface ElectronAPI {
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },
       ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
+      retryImageDelivery: (sessionId: string, imageId: string) => Promise<void>;
       retryLastError: (
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },

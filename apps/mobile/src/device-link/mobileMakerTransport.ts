@@ -862,6 +862,7 @@ export interface MobileMakerTransport {
       opts?: { keepQueue?: boolean; pauseQueue?: boolean },
     ): Promise<InputProjection>;
     resume(sessionId: string): Promise<InputProjection>;
+    retryImageDelivery(sessionId: string, imageId: string): Promise<void>;
     retryLastError(sessionId: string): Promise<InputProjection>;
     clearError(sessionId: string): Promise<InputProjection>;
     /** 取消账号限额重置后的自动继续;老被控端没有该通道时会被拒(调用方只在投影带等待时显示入口)。 */
@@ -1526,6 +1527,7 @@ export function createMobileMakerTransport({
       },
       stop: (sessionId, opts) => call("maker:input:stop", [sessionId, opts]),
       resume: (sessionId) => call("maker:input:resume", [sessionId]),
+      retryImageDelivery: (sessionId, imageId) => call("maker:images:retry", [sessionId, imageId]),
       retryLastError: (sessionId) =>
         call("maker:input:retry-last-error", [sessionId]),
       clearError: (sessionId) => call("maker:input:clear-error", [sessionId]),
