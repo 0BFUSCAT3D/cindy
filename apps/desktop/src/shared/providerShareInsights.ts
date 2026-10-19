@@ -109,8 +109,8 @@ const schema = z.object({
     .nullable(),
   usage: z
     .object({
-      todayKey: z.string(),
-      coverageStart: z.string().nullable(),
+      todayKey: z.iso.date(),
+      coverageStart: z.iso.date().nullable(),
       parties: z.array(
         z.object({
           key: z.string(),
@@ -123,7 +123,7 @@ const schema = z.object({
           days: z
             .array(
               z.object({
-                day: z.string(),
+                day: z.iso.date(),
                 kind: z.string(),
                 model: z.string(),
                 turns: number,

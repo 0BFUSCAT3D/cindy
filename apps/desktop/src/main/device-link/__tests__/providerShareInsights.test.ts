@@ -409,6 +409,26 @@ describe('provider share insights', () => {
       }
     },
   );
+  // #4317583971：任意字符串曾进入日期格式化；现有数值时间回归不覆盖日期键。tier: unit。
+  it.each(['todayKey', 'coverageStart', 'day'] as const)(
+    'requires a real calendar date for usage %s',
+    async (field) => {
+      const { read } = fixture();
+      const view = await read('peer', request);
+      const setDay = (value: string) => {
+        if (field === 'day') view.usage!.parties[0].days[0].day = value;
+        else view.usage![field] = value;
+      };
+      for (const invalid of ['2026-99-99', '2026-02-29', '2026-04-31', '', '2026-1-1']) {
+        setDay(invalid);
+        expect(parseProviderShareInsights(view)).toBeNull();
+      }
+      for (const valid of ['2024-02-29', '2026-10-19']) {
+        setDay(valid);
+        expect(parseProviderShareInsights(view)).toEqual(view);
+      }
+    },
+  );
   it('strips unknown fields and ignores data for disabled capabilities on the receiving boundary', async () => {
     const { read } = fixture();
     const view = await read('peer', request);
