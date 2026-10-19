@@ -243,6 +243,46 @@ it('does not borrow another computer\'s task identity or activity for the same i
   expect(h.invoke).not.toHaveBeenCalledWith('home', 'local-db:sessions:get', ['child']);
 });
 
+// Reverse collision ordering: the card owns the cached row, then another host
+// sends live signals for that ID. Assert the production card's visible status.
+it.each(['running', 'completed'] as const)('keeps the owning computer\'s %s state despite another host\'s pushes', async (phase) => {
+  remoteSessionStore.setDeviceSessions('home', 'Mac', [{ id: 'child', title: 'Own task', status: 'active' } as RemoteSession]);
+  remoteSessionStore.setDeviceSessions('other', 'Other Mac', [{ id: 'child', title: 'Other task', status: 'active' } as RemoteSession]);
+  remoteSessionStore.applyRemotePush('home', SESSION_ACTIVITY_CHANNEL, { sessionId: 'child', phase, attention: true });
+  h.invoke.mockRejectedValue(new Error('read failed'));
+  await render();
+  await act(async () => {
+    remoteSessionStore.applyRemotePush('other', SESSION_ACTIVITY_CHANNEL, {
+      sessionId: 'child', phase: phase === 'running' ? 'completed' : 'needs-interaction', attention: true,
+    });
+    remoteSessionStore.applyRemotePush('other', 'maker:event', {
+      sessionId: 'child', event: { type: phase === 'running' ? 'done' : 'status', data: { isRunning: true } },
+    });
+  });
+  expect(node.textContent).toContain(`devices.companions.status.${phase}`);
+  expect(node.textContent).not.toContain('devices.companions.status.waiting');
+  expect(openEntry()?.disabled).toBe(false);
+});
+
+// A missing activity relay must not hide an interaction already known to the list.
+it('shows waiting for pending interactions without activity and clears it after dismissal', async () => {
+  remoteSessionStore.setDeviceSessions('home', 'Mac', [{ id: 'child', title: 'Own task', status: 'active' } as RemoteSession]);
+  h.invoke.mockRejectedValue(new Error('read failed'));
+  await render();
+  await act(async () => remoteSessionStore.applyRemotePush('home', 'maker:interaction-request', {
+    sessionId: 'child', request: { kind: 'permission', requestId: 'permission-1' },
+  }));
+  expect(node.textContent).toContain('devices.companions.status.waiting');
+  await act(async () => remoteSessionStore.applyRemotePush('other', 'maker:interaction-dismissed', {
+    sessionId: 'child', requestId: 'permission-1',
+  }));
+  expect(node.textContent).toContain('devices.companions.status.waiting');
+  await act(async () => remoteSessionStore.applyRemotePush('home', 'maker:interaction-dismissed', {
+    sessionId: 'child', requestId: 'permission-1',
+  }));
+  expect(node.textContent).not.toContain('devices.companions.status.waiting');
+});
+
 it('keeps the task card when the host omits delegations or sends a broken status', async () => {
   h.invoke.mockResolvedValue({ ok: true });
   await render();

@@ -45,8 +45,8 @@ function messageAt(id: string, sessionId: string, createdAt: string): RemoteMess
   return { ...message(id, sessionId), createdAt };
 }
 
-function pushMakerStatus(sessionId: string, data: Record<string, unknown>): void {
-  remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+function pushMakerStatus(sessionId: string, data: Record<string, unknown>, deviceId = 'dev-1'): void {
+  remoteSessionStore.applyRemotePush(deviceId, 'maker:event', {
     sessionId,
     event: { type: 'status', data },
   });
@@ -3393,7 +3393,8 @@ describe('remoteSessionStore', () => {
         generationDurationMs: 400,
         generationActive: true,
         generationReliable: true,
-      });
+      }, id);
+      expect(remoteSessionStore.isSessionMakerTurnRunning(`s-${id}`)).toBe(true);
     }
     const notify = vi.fn();
     const unsubscribe = remoteSessionStore.subscribe(notify);

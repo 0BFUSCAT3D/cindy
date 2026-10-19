@@ -30,5 +30,8 @@ export function useCompanionTaskSession(deviceId: string, sessionId: string | nu
   const running = useSyncExternalStore(remoteSessionStore.subscribeHomeStatus, () =>
     readable && remoteSessionStore.isSessionRunning(sessionId!),
   );
-  return { session, activity, running, originConflict, refresh: query.refresh };
+  const waiting = useSyncExternalStore(remoteSessionStore.subscribeHomeStatus, () =>
+    readable && remoteSessionStore.getPendingInteractions(sessionId!).length > 0,
+  );
+  return { session, activity, running, waiting, originConflict, refresh: query.refresh };
 }
