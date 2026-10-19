@@ -11702,6 +11702,9 @@ function createRemoteHistoryView(sessionId: string) {
     return value as T;
   };
   const view = new HistoryViewController<HistoryChatMessage>({
+    diagnostic: (event) => log.debug('history view changed', {
+      hostRef: deviceId?.slice(0, 8) ?? 'local', sessionRef: sessionId.slice(0, 8), ...event,
+    }),
     page: async (before) => {
       const writer = deviceId ? remoteHistoryCacheWriter(deviceId, sessionId) : undefined;
       // Remote reads ask for Host-projected running lines; a local view already holds live rows.

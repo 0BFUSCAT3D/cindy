@@ -2213,6 +2213,9 @@ export function MessageRenderer({
     const debugFlags = Number(isDragSample) | (Number(isMomentumScrollingRef.current) << 1)
       | (Number(readingOlderRef.current) << 2) | (Number(nearBottomRef.current) << 3);
     if (mobileDebugEnabled() && sampleScrollDebug(debugFlags, isFinalDragSample)) mobileDebugLog('debug', 'scroll', 'list scroll', {
+      hostRef: remoteDeviceId?.slice(0, 8), sessionRef: scrollResetKey?.slice(0, 8),
+      itemCount: itemsForStructureRef.current.length, initialAnchorDone: initialAnchorDoneRef.current,
+      reopening: reopeningAnchorRef.current !== null,
       ...metrics, dragging: isDragSample, momentum: isMomentumScrollingRef.current,
       readingOlder: readingOlderRef.current, nearBottom: nearBottomRef.current,
     });
@@ -2301,6 +2304,8 @@ export function MessageRenderer({
     getCurrentHistoryTopOffsetAdjustment,
     revealPositionedHistory,
     readingPosition,
+    remoteDeviceId,
+    scrollResetKey,
     attemptAutoLoadEarlier,
     bottomOverlayHeight,
     handoffHistoryPrependToUser,

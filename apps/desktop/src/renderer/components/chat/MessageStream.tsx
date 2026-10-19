@@ -38,6 +38,8 @@ import {
 } from 'react';
 import {
   HistoryViewHandoff,
+  type HistoryViewController,
+  type HistoryViewSnapshot,
   renderHistoryView,
   historyPrefetchThreshold,
   historyViewLeaves,
@@ -2461,6 +2463,93 @@ export function buildCachedRenderItems(
   return projection;
 }
 
+/** Build the displayed remote history without evaluating the raw transcript fallback. */
+export function buildMessageStreamRenderProjection({
+  historyView, historySnapshot, historyLiveMessages, isSessionStreaming, handoff,
+  taskUpdates, ghostCardSnapshot, renderOptions, generatedFilesItemCache, buildRaw,
+}: {
+  historyView: HistoryViewController<HistoryChatMessage> | null | undefined;
+  historySnapshot: HistoryViewSnapshot<HistoryChatMessage> | null;
+  historyLiveMessages: readonly HistoryChatMessage[];
+  isSessionStreaming: boolean;
+  handoff?: ReturnType<HistoryViewHandoff<HistoryChatMessage>['reconcile']> | null;
+  taskUpdates?: Parameters<typeof buildRenderItems>[1];
+  ghostCardSnapshot?: Parameters<typeof buildRenderItems>[2];
+  renderOptions?: Parameters<typeof buildRenderItems>[3];
+  generatedFilesItemCache: Map<string, GeneratedFilesRenderItemRef>;
+  buildRaw: () => RenderProjection;
+}): RenderProjection {
+  if (historyView && historySnapshot?.ready) {
+    // Build only the displayed projection; the raw fallback is lazy below.
+    const results = new Map<string, string>();
+    const items = renderHistoryView<HistoryChatMessage, RenderItem>({
+      view: historyView,
+      snapshot: historySnapshot,
+      liveMessages: historyLiveMessages,
+      streaming: isSessionStreaming,
+      isLive: (row) => row.isStreaming === true,
+      pendingHandoff: handoff?.pending,
+      staleTail: handoff?.tail,
+      isLocalMessage: (row) => row.isLocalSystemCard === true,
+      isLocalUser: (row) =>
+        row.role === 'user' &&
+        (row.isPendingPersist === true ||
+          !!row.blockedByGhost ||
+          !!row.localSendPrecedingClientIds),
+      build: (rows, _streaming, historyArtifacts) => {
+        // History chunks are freshly assembled arrays, not reusable source snapshots.
+        const chunk = buildRenderItems([...rows], taskUpdates, ghostCardSnapshot, {
+          ...renderOptions,
+          historyWindowIncomplete: true,
+          historyArtifacts,
+        });
+        for (const [key, value] of chunk.singleResultMap) results.set(key, value);
+        return groupWorkRuns(chunk.items, isSessionStreaming);
+      },
+      structure: {
+        placeholder: (summary) => ({
+          id: summary.firstMessageId,
+          clientId: summary.anchorClientId ?? summary.key.slice('work-'.length),
+          role: 'thinking',
+          content: '',
+          createdAt: new Date(summary.startedAtMs).toISOString(),
+          thinkingDurationMs: Math.max(0, summary.endedAtMs - summary.startedAtMs),
+          thinkingRedacted: true,
+          isStreaming: summary.isStreaming,
+        }),
+        children: (item) => (item.type === 'work_group' ? item.children : undefined),
+        sourceIds: (item) =>
+          item.type === 'message'
+            ? [item.message.clientId]
+            : item.type === 'tool_segment'
+              ? item.toolCalls.map((tool) => tool.clientId)
+              : item.type === 'agent_task' && item.toolCall
+                ? [item.toolCall.clientId]
+                : [],
+        rebuild: (item, children, deferred) =>
+          item.type === 'work_group'
+            ? { ...item, children: children as WorkGroupChildItem[], deferred }
+            : item,
+      },
+    });
+    const keys = new Set<string>();
+    const unique = items.filter((item) => {
+      if (keys.has(item.key)) return false;
+      keys.add(item.key);
+      return true;
+    });
+    return {
+      items: reuseGeneratedFilesRenderItems(unique, generatedFilesItemCache),
+      singleResultMap: results,
+    };
+  }
+  const built = buildRaw();
+  return {
+    items: reuseGeneratedFilesRenderItems(built.items, generatedFilesItemCache),
+    singleResultMap: built.singleResultMap,
+  };
+}
+
 type GeneratedFilesRenderItemRef = Extract<RenderItem, { type: 'generated_files' }>;
 
 /**
@@ -3104,8 +3193,17 @@ export function MessageStream({
   // MessageStream scope so history pagination and live deltas can share the
   // parsed image targets without retaining state beyond the session mount.
   const markdownImageTargetCacheRef = useRef<MarkdownImageTargetCache>(new Map());
-  const { items: ungroupedRenderItems, singleResultMap } = useMemo(() => {
-    const built = streamProjection(
+  const { items: ungroupedRenderItems, singleResultMap } = useMemo(() => buildMessageStreamRenderProjection({
+    historyView, historySnapshot, historyLiveMessages, isSessionStreaming, handoff,
+    taskUpdates, ghostCardSnapshot,
+    generatedFilesItemCache: generatedFilesItemCacheRef.current,
+    renderOptions: {
+      turnChangeSets, workingDir,
+      botSessionId: simplifiedBotConversation ? sessionId : undefined,
+      markdownImageTargetCache: markdownImageTargetCacheRef.current,
+      cindyMakeSessionId, cindyMakeCompletionInComposer, subagentRunStatuses,
+    },
+    buildRaw: () => streamProjection(
       displayMessages,
       [
         getDataOwnerGeneration(),
@@ -3137,81 +3235,8 @@ export function MessageStream({
           subagentRunStatuses,
         }),
       !simplifiedBotConversation && !historyView,
-    );
-    if (historyView && historySnapshot?.ready) {
-      const results = new Map(built.singleResultMap);
-      const items = renderHistoryView<HistoryChatMessage, RenderItem>({
-        view: historyView,
-        snapshot: historySnapshot,
-        liveMessages: historyLiveMessages,
-        streaming: isSessionStreaming,
-        isLive: (row) => row.isStreaming === true,
-        pendingHandoff: handoff?.pending,
-        staleTail: handoff?.tail,
-        isLocalMessage: (row) => row.isLocalSystemCard === true,
-        isLocalUser: (row) =>
-          row.role === 'user' &&
-          (row.isPendingPersist === true ||
-            !!row.blockedByGhost ||
-            !!row.localSendPrecedingClientIds),
-        build: (rows, _streaming, historyArtifacts) => {
-          // History chunks are freshly assembled arrays, not reusable source snapshots.
-          const chunk = buildRenderItems([...rows], taskUpdates, ghostCardSnapshot, {
-            historyWindowIncomplete: true,
-            historyArtifacts,
-            turnChangeSets,
-            workingDir,
-            botSessionId: simplifiedBotConversation ? sessionId : undefined,
-            markdownImageTargetCache: markdownImageTargetCacheRef.current,
-            cindyMakeSessionId,
-            cindyMakeCompletionInComposer,
-            subagentRunStatuses,
-          });
-          for (const [key, value] of chunk.singleResultMap) results.set(key, value);
-          return groupWorkRuns(chunk.items, isSessionStreaming);
-        },
-        structure: {
-          placeholder: (summary) => ({
-            id: summary.firstMessageId,
-            clientId: summary.anchorClientId ?? summary.key.slice('work-'.length),
-            role: 'thinking',
-            content: '',
-            createdAt: new Date(summary.startedAtMs).toISOString(),
-            thinkingDurationMs: Math.max(0, summary.endedAtMs - summary.startedAtMs),
-            thinkingRedacted: true,
-            isStreaming: summary.isStreaming,
-          }),
-          children: (item) => (item.type === 'work_group' ? item.children : undefined),
-          sourceIds: (item) =>
-            item.type === 'message'
-              ? [item.message.clientId]
-              : item.type === 'tool_segment'
-                ? item.toolCalls.map((tool) => tool.clientId)
-                : item.type === 'agent_task' && item.toolCall
-                  ? [item.toolCall.clientId]
-                  : [],
-          rebuild: (item, children, deferred) =>
-            item.type === 'work_group'
-              ? { ...item, children: children as WorkGroupChildItem[], deferred }
-              : item,
-        },
-      });
-      const keys = new Set<string>();
-      const unique = items.filter((item) => {
-        if (keys.has(item.key)) return false;
-        keys.add(item.key);
-        return true;
-      });
-      return {
-        items: reuseGeneratedFilesRenderItems(unique, generatedFilesItemCacheRef.current),
-        singleResultMap: results,
-      };
-    }
-    return {
-      items: reuseGeneratedFilesRenderItems(built.items, generatedFilesItemCacheRef.current),
-      singleResultMap: built.singleResultMap,
-    };
-  }, [
+    ),
+  }), [
     displayMessages,
     cindyMakeSessionId,
     cindyMakeCompletionInComposer,
