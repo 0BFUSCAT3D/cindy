@@ -13,6 +13,8 @@ const listProviders = vi.hoisted(() => vi.fn());
 const identityCard = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
 const usageStores = vi.hoisted(() => ({ ownHistory: vi.fn(), memberHistory: vi.fn(), pricing: vi.fn() }));
+const memberNotes = vi.hoisted(() => ({ read: vi.fn(), set: vi.fn() }));
+vi.mock('../providerShareMemberNotes.js', () => ({ providerShareMemberNotes: memberNotes }));
 
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.owner,
@@ -88,6 +90,8 @@ beforeEach(() => {
   api.reject.mockResolvedValue({ ok: true });
   api.setMember.mockResolvedValue({ status: 'removed' });
   host.refresh.mockResolvedValue(undefined);
+  memberNotes.read.mockReturnValue({});
+  memberNotes.set.mockResolvedValue(undefined);
   host.snapshot.mockReturnValue([{ requests: [{ requestId: 'r1' }], members: [{ memberId: 'm1' }] }]);
   usageStores.ownHistory.mockReturnValue({ self: { lastUsedAt: null, days: [] }, relays: [] });
   usageStores.memberHistory.mockReturnValue([]);
@@ -159,6 +163,35 @@ describe('remote task limit management payloads', () => {
   });
   it.each([{}, { unknown: 1 }, { perDevice: '16' }, { perDevice: 0 }, { total: 1001 }, { total: 1.5 }])('rejects malformed patches %j', limits => {
     expect(() => parseProviderShareCommand({ action: 'set-run-limits', limits })).toThrow('INVALID_PARAMS');
+  });
+});
+
+/* 测试价值：2026-10-19 用户备注；生产 parser/管理执行入口此前未覆盖备注。
+ * 最小输入：空备注、超长/非字符串备注、不属于本机的成员，以及刷新中切账号。tier: unit。
+ */
+describe('member note management', () => {
+  it('normalizes a single-line note and accepts clearing it', () => {
+    expect(parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note: ' Alice\nTeam ' }))
+      .toEqual({ action: 'set-member-note', memberId: 'm1', note: 'Alice Team' });
+    expect(parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note: '' }))
+      .toEqual({ action: 'set-member-note', memberId: 'm1', note: '' });
+  });
+  it.each([null, 123, 'x'.repeat(81)])('rejects an invalid note %j', (note) => {
+    expect(() => parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note })).toThrow('INVALID_PARAMS');
+  });
+  it('saves an existing member note without changing sharing authorization', async () => {
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'm1', note: 'Alice' }))
+      .resolves.toEqual({ ok: true });
+    expect(memberNotes.set).toHaveBeenCalledWith('m1', 'Alice', expect.any(Function));
+    expect(api.setMember).not.toHaveBeenCalled();
+  });
+  it('refuses notes for absent members and a pending account transition', async () => {
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'absent', note: 'Alice' }))
+      .rejects.toThrow('NOT_FOUND');
+    host.refresh.mockImplementationOnce(async () => { state.boundaryPending = true; });
+    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'm1', note: 'Alice' }))
+      .rejects.toThrow('PRECONDITION_FAILED');
+    expect(memberNotes.set).not.toHaveBeenCalled();
   });
 });
 

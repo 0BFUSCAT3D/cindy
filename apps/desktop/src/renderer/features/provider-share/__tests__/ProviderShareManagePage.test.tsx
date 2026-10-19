@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderView } from '@cindy/model-providers';
@@ -262,6 +262,91 @@ function renderPage(
 }
 
 describe('ProviderShareManagePage', () => {
+  /* 测试价值：2026-10-19 用户备注；生产页面的新增入口、保存/清空、原用户名与筛选同步显示。
+   * 现有测试只有暂停/删除。最小输入：一个成员，分别在本机和 studio 管理。tier: unit。
+   * 单文件实测 17.21 秒，其中导入 7.16 秒、30 用例 8.61 秒；复用既有页面与完整用量图表 fixture，
+   * 未拆成第二套页面 fixture 或删除原断言。备注新增 4 个用例的执行合计 2.25 秒。
+   */
+  it.each([undefined, 'studio'])('sets and clears a member note through the managed computer (%s)', async (deviceId) => {
+    const snapshot = owned();
+    const staleSnapshot = owned();
+    let holdNextRead = false;
+    let finishOldRead!: (value: ProviderShareOwnerState) => void;
+    const oldRead = new Promise<ProviderShareOwnerState>((resolve) => { finishOldRead = resolve; });
+    let ownedChanged: () => void = () => undefined;
+    window.electronAPI.providerShare.onOwnedChanged = (listener) => { ownedChanged = listener; return () => undefined; };
+    const defaultCommand = command.getMockImplementation()!;
+    command.mockImplementation(async (cmd) => {
+      if (cmd.action === 'owned') {
+        if (holdNextRead) { holdNextRead = false; return oldRead; }
+        return snapshot;
+      }
+      if (cmd.action === 'set-member-note') {
+        snapshot.shares[0]!.members[0]!.note = cmd.note || null;
+        return { ok: true };
+      }
+      return defaultCommand(cmd);
+    });
+    const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
+    if (deviceId) remoteCommand.mockImplementation(async (cmd) => {
+      if (cmd.action === 'remote-manage' && cmd.request.action === 'manage-share') return command(cmd.request.command);
+      return { providerId: 'xd', config: null, members: [] };
+    });
+    renderPage('on', { deviceId });
+    fireEvent.click(within(await findMemberRow()).getByText('providerShare.manage.memberNote.add'));
+    const input = await screen.findByLabelText('providerShare.manage.memberNote.label');
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: ' Alice ' } });
+    // 模拟保存前已经发出但迟迟没返回的轮询；保存后仍必须重新读，旧回包不能还原用户名。
+    holdNextRead = true;
+    ownedChanged();
+    fireEvent.click(screen.getByText('providerShare.manage.memberNote.save'));
+    await waitFor(() => expect(within(screen.getAllByTestId('provider-usage-row')[1]!).getByRole('button', { name: 'Alice' })).toBeTruthy());
+    await act(async () => { finishOldRead(staleSnapshot); });
+    const row = await findMemberRow();
+    expect(row.textContent).toContain('providerShare.manage.memberNote.username:{"name":"Lizi"}');
+    const noteCommand = { action: 'set-member-note', memberId: 'mem-1', note: 'Alice' };
+    if (deviceId) expect(remoteCommand).toHaveBeenCalledWith({
+      action: 'remote-manage', deviceId, request: { action: 'manage-share', command: noteCommand },
+    });
+    else expect(command).toHaveBeenCalledWith(noteCommand);
+    fireEvent.click(within(row).getByRole('button', { name: 'Alice' }));
+    expect(screen.getByRole('combobox', { name: 'providerGroup.usage.filter.partyAria' }).textContent).toContain('Alice');
+    fireEvent.click(within(row).getByText('providerShare.manage.memberNote.edit'));
+    const editInput = await screen.findByLabelText('providerShare.manage.memberNote.label');
+    expect((editInput as HTMLInputElement).value).toBe('Alice');
+    fireEvent.change(editInput, { target: { value: '   ' } });
+    fireEvent.click(screen.getByText('providerShare.manage.memberNote.save'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect((await findMemberRow()).textContent).not.toContain('providerShare.manage.memberNote.username');
+    expect(screen.getByRole('combobox', { name: 'providerGroup.usage.filter.partyAria' }).textContent).toContain('Lizi');
+  });
+
+  // 保存失败不能关闭草稿或假装已改名；旧电脑明确提示更新，不退到控制端保存。
+  it.each([undefined, 'studio'])('keeps the note draft when saving fails (%s)', async (deviceId) => {
+    const defaultCommand = command.getMockImplementation()!;
+    command.mockImplementation(async (cmd) => {
+      if (cmd.action === 'set-member-note') throw new Error(deviceId ? '[UNSUPPORTED_CAPABILITY] Unknown command' : 'disk unavailable');
+      return defaultCommand(cmd);
+    });
+    if (deviceId) vi.spyOn(window.electronAPI.providerGroup, 'command').mockImplementation(async (cmd) => {
+      if (cmd.action === 'remote-manage' && cmd.request.action === 'manage-share') return command(cmd.request.command);
+      return { providerId: 'xd', config: null, members: [] };
+    });
+    renderPage('on', { deviceId });
+    fireEvent.click(within(await findMemberRow()).getByText('providerShare.manage.memberNote.add'));
+    const input = await screen.findByLabelText('providerShare.manage.memberNote.label');
+    fireEvent.change(input, { target: { value: 'Alice' } });
+    fireEvent.click(screen.getByText('providerShare.manage.memberNote.save'));
+    expect((await screen.findByRole('alert')).textContent).toContain(deviceId ? 'providerGroup.management.unsupported' : 'providerShare.manage.memberNote.saveFailed');
+    expect((input as HTMLInputElement).value).toBe('Alice');
+    expect((await findMemberRow()).textContent).not.toContain('Alice');
+    fireEvent.click(screen.getByText('settings.providers.button.cancel'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toContain('members.moreAria'));
+    expect(command.mock.calls.filter(([cmd]) => cmd.action === 'set-member-note')).toHaveLength(1);
+  });
+
   it('lists pending requests and members for this provider only, and publishes pending requests', async () => {
     renderPage();
     await findMemberRow();

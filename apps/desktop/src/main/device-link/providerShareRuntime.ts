@@ -46,6 +46,8 @@ import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricin
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { normalizeProviderShareMemberNote, PROVIDER_SHARE_MEMBER_NOTE_MAX_LENGTH } from '../../shared/providerShareMemberNote.js';
+import { providerShareMemberNotes } from './providerShareMemberNotes.js';
 import { captureProviderManagementScope } from '../provider-group/managementScope.js';
 import { readProviderManagementShares } from '../provider-group/managementClient.js';
 import type { ProviderShareManagementCommand } from '../../shared/providerManagement.js';
@@ -356,6 +358,12 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
       if (status !== 'pause' && status !== 'resume' && status !== 'remove') throwIpcError('INVALID_PARAMS', 'Invalid status');
       return { action: 'set-member', memberId: text(value.memberId, 'memberId', 128), status };
     }
+    case 'set-member-note': {
+      if (typeof value.note !== 'string' || value.note.length > PROVIDER_SHARE_MEMBER_NOTE_MAX_LENGTH) {
+        throwIpcError('INVALID_PARAMS', 'Invalid member note');
+      }
+      return { action: 'set-member-note', memberId: text(value.memberId, 'memberId', 128), note: normalizeProviderShareMemberNote(value.note) };
+    }
     case 'reshare-decide': {
       const decision = value.decision;
       if (decision !== 'approve' && decision !== 'reject') throwIpcError('INVALID_PARAMS', 'Invalid decision');
@@ -407,6 +415,7 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
   const shares = getProviderShareHostSnapshot();
   const usage = getProviderShareUsageStore()?.query(new Set(shares.map((share) => share.shareId)), range) ?? [];
   const reshares = listProviderShareReshares();
+  const notes = providerShareMemberNotes.read();
   const runningTasks = new Map<string, number>();
   for (const controller of providerShareActiveControllers()) {
     const peer = parseProviderSharePeer(controller);
@@ -426,6 +435,7 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
         const record = usage.find((item) => item.shareId === share.shareId && item.memberId === member.memberId);
         return {
           ...member,
+          note: notes[member.memberId] ?? null,
           lastUsedAt: record?.lastUsedAt ?? null,
           runningTasks: runningTasks.get(`${share.shareId}\u0000${member.memberId}`) ?? 0,
           reshares: reshares
@@ -717,6 +727,15 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       void refreshProviderShareHost('member');
       return { ok: true };
     }
+    case 'set-member-note': {
+      const assertOwner = captureProviderManagementScope();
+      requireRunning();
+      const member = getProviderShareHostSnapshot().some((share) => share.members.some((item) => item.memberId === command.memberId));
+      if (!member) throwIpcError('NOT_FOUND', 'This shared provider member is no longer available');
+      await providerShareMemberNotes.set(command.memberId, command.note, () => { assertCurrent(); assertOwner(); });
+      emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+      return { ok: true };
+    }
     case 'reshare-decide': {
       // 只改本机记录(不经服务端)；撤回立即结束这个人经组转来的任务。
       const decided = await decideProviderShareReshare(command.id, command.decision, Date.now(), assertCurrent);
@@ -761,12 +780,12 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
  */
 export async function executeProviderShareManagementCommand(command: ProviderShareManagementCommand): Promise<unknown> {
   const assertCurrent = captureProviderManagementScope();
-  if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member') {
+  if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member' || command.action === 'set-member-note') {
     requireRunning();
     await refreshProviderShareHost('management');
     assertCurrent();
     const shares = getProviderShareHostSnapshot();
-    const found = command.action === 'set-member'
+    const found = command.action === 'set-member' || command.action === 'set-member-note'
       ? shares.some((share) => share.members.some((member) => member.memberId === command.memberId))
       : shares.some((share) => share.requests.some((request) => request.requestId === command.requestId));
     if (!found) throwIpcError('NOT_FOUND', 'The share request or member is no longer on this computer');

@@ -276,6 +276,17 @@
         "toastRejected": "{{name}} のリクエストを拒否しました",
         "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました",
         "listTitle": "{{owner}} のプロバイダーグループ経由で利用"
+      },
+      "memberNote": {
+        "add": "メモを設定",
+        "edit": "メモを編集",
+        "title": "ユーザーのメモを設定",
+        "label": "メモ",
+        "username": "ユーザー名：{{name}}",
+        "hint": "{{count}}文字まで。空欄で消去できます。自分にのみ表示されます。",
+        "save": "メモを保存",
+        "saving": "メモを保存中…",
+        "saveFailed": "メモを保存できませんでした"
       }
     },
     "toast": {

@@ -42,6 +42,7 @@ import type {
   ProviderUsageHistoryView,
 } from '../../../shared/providerShare';
 import { DEFAULT_USAGE_CURRENCY, type RegionalMoney } from '../../../shared/regionalMoney';
+import { providerShareMemberName } from '../../../shared/providerShareMemberNote';
 import { formatShareMoney, formatShareTokens } from './providerShareFormat';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from './providerShareNames';
 import { deviceIdOfMemberKey, shareAgentDeviceIdOfMemberKey } from './providerUsageBreakdown';
@@ -180,7 +181,7 @@ export function ProviderUsageSection({
       const usage = history?.members.find((item) => item.memberId === member.memberId);
       list.push({
         key: memberParty(member.memberId),
-        name: member.displayName,
+        name: providerShareMemberName(member),
         tag: t('providerGroup.usage.shareSource'),
         person: { displayName: member.displayName, avatarUrl: member.avatarUrl },
         member,
@@ -675,6 +676,11 @@ function PartyTable({
                             <span className="text-12 text-[var(--text-secondary)]">{party.tag}</span>
                             {member && <ShareMemberStatus member={member} />}
                           </div>
+                          {member?.note && (
+                            <span className="truncate text-12 leading-[1.5] text-[var(--text-secondary)]" title={member.displayName}>
+                              {t('providerShare.manage.memberNote.username', { name: member.displayName })}
+                            </span>
+                          )}
                           <span className="truncate text-12 text-[var(--text-secondary)]">
                             {member
                               ? `${t('providerShare.manage.members.joined', { date: time.date(Date.parse(member.joinedAt)) })} · ${lastUsed}`
@@ -703,6 +709,7 @@ function PartyTable({
                             disabled={memberActions.busy(member.memberId)}
                             onTogglePause={() => memberActions.onTogglePause(member)}
                             onRemove={() => memberActions.onRemove(member)}
+                            onEditNote={(trigger) => memberActions.onEditNote(member, trigger)}
                           />
                         )}
                       </td>

@@ -276,6 +276,17 @@
         "toastRejected": "已拒绝 {{name}} 的请求",
         "toastRevoked": "已撤回对 {{name}} 的同意，正在运行的任务已停止",
         "listTitle": "经 {{owner}} 的供应商组使用"
+      },
+      "memberNote": {
+        "add": "设置备注",
+        "edit": "修改备注",
+        "title": "设置用户备注",
+        "label": "备注",
+        "username": "用户名：{{name}}",
+        "hint": "最多 {{count}} 字，留空可清除。仅你可见",
+        "save": "保存备注",
+        "saving": "正在保存备注…",
+        "saveFailed": "未能保存备注"
       }
     },
     "toast": {

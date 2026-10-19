@@ -553,8 +553,11 @@ describe('provider management receiver account boundary', () => {
     expect(reply.result).toEqual({ providerId: 'anthropic', config, members: [] });
   });
 
-  it('accepts reshare decisions as owner operations and keeps forwarding operations outside the management scope', async () => {
-    const command = { action: 'reshare-decide', id: 'rs-pending', decision: 'approve' } as const;
+  // 同账号管理：新增备注与转分享决定共用主人操作入口，受邀者读取仍不在此范围。
+  it.each([
+    { action: 'reshare-decide', id: 'rs-pending', decision: 'approve' },
+    { action: 'set-member-note', memberId: 'm1', note: 'Alice' },
+  ] as const)('accepts $action as an owner operation and keeps forwarding operations outside the management scope', async (command) => {
     vi.mocked(parseProviderShareCommand).mockReturnValue(command);
     expect(parseProviderManagementRequest({ action: 'manage-share', command })).toEqual({ action: 'manage-share', command });
     vi.mocked(executeProviderShareManagementCommand).mockResolvedValueOnce({ ok: true });
