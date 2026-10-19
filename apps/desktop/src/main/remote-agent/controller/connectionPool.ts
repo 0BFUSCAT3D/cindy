@@ -21,10 +21,11 @@ export const REMOTE_AGENT_POOL_CHECK_MS = 60_000;
 /** 让出时 close 没送到：隔这么久再原样发一次。 */
 export const REMOTE_AGENT_POOL_CLOSE_RETRY_MS = 2_000;
 /**
- * close 没送到时本机按仍占着名额计数的最长时间：对方这么久没被读取就自行回收这个任务
- * (与对方的 REMOTE_AGENT_HOST_IDLE_MS 一致)。
+ * close 没送到时本机按仍占着名额计数的最长时间。对方在任务超过 REMOTE_AGENT_HOST_IDLE_MS(3 分钟)没被
+ * 读取后，要到下一次回收检查(每 5 秒)才结束它；本机停止拉取前已在途的 poll(最长挂起 10 秒)还可能稍后
+ * 刷新对方的读取时间。占位覆盖这些最坏延迟并留余量：宁可多占一会儿，也不比对方更早认为名额已空。
  */
-export const REMOTE_AGENT_POOL_CLOSE_HOLD_MS = 3 * 60_000;
+export const REMOTE_AGENT_POOL_CLOSE_HOLD_MS = 3 * 60_000 + 30_000;
 
 export interface PooledRemoteConnection {
   /** 占着对方的名额(正在连、连着或正在断开)。 */
