@@ -440,17 +440,18 @@ describe('RightSidebarShell empty state', () => {
       expect(stripOf(left).textContent).toContain('rightSidebar.tabs.kinds.browser'),
     );
     expect(stripOf(right).textContent).not.toContain('rightSidebar.tabs.kinds.browser');
-    // 左侧组里它是激活页签(组内记忆),右侧组仍显示任务级激活页签。
+    // 搬过去的页签在左侧组被选中并成为任务级激活页签;右侧组回落到自己剩下的页签。
+    await waitFor(() => expect(getBucket('s1').activeTabId).toBe('tab-web'));
     expect(stripOf(left).querySelector('.group')?.className).toContain('font-medium');
     expect(
       right.getByText('rightSidebar.tabs.kinds.fileBrowser').closest('.group')?.className,
     ).toContain('font-medium');
 
-    // 在左侧组点它:任务级激活位照常落库。
+    // 在右侧组点文件页签:任务级激活位照常落库。
     tabsIpc.setActive.mockClear();
-    fireEvent.click(left.getByText('rightSidebar.tabs.kinds.browser'));
+    fireEvent.click(right.getByText('rightSidebar.tabs.kinds.fileBrowser'));
     await waitFor(() => expect(tabsIpc.setActive).toHaveBeenCalled());
-    expect(getBucket('s1').activeTabId).toBe('tab-web');
+    expect(getBucket('s1').activeTabId).toBe('tab-files');
 
     // 右侧组「关闭其他」只关本组的页签(本组只剩文件页签,无其它可关)。
     fireEvent.contextMenu(right.getByText('rightSidebar.tabs.kinds.fileBrowser').closest('.group')!);

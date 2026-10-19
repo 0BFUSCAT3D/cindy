@@ -61,6 +61,7 @@ import { browserWebviewPool } from '@/features/right-sidebar/lib/browserWebviewP
 import { findGlobalTab, setActiveGlobalTabId } from '@/features/right-sidebar/globalTabs';
 import { TabGroupHostProvider, type TabGroupHostValue } from '@/features/right-sidebar/tabGroupHost';
 import { useTabGroupPanes } from '@/features/right-sidebar/tabGroupPanes';
+import { TabDragController } from '@/features/right-sidebar/TabDragController';
 import {
   markAllPtyDetached,
   markPtyDetached,
@@ -1784,6 +1785,11 @@ export function MainLayout() {
           rowRef={rowRef}
           sidebarBlockRef={sidebarBlockRef}
           enabled={rightSidebarAvailable && !isRightSidebarMaximized}
+        />
+        {/* 页签拖到别的组 / 聊天区边缘(页签条内部的重排仍归 SortableList)。 */}
+        <TabDragController
+          sessionId={rightSidebarSessionId}
+          enabled={rightSidebarAvailable && !isRightSidebarMaximized && !isSettingsRoute}
         />
         {/* 意识面板「点图看大图」承接端:main 拦下面板 /preview/ 导航过闸后
             推送到本窗口,这里弹标准 ImageLightbox(整窗一份,纯监听无 UI)。

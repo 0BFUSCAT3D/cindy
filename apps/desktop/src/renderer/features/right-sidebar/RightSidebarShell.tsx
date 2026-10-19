@@ -78,11 +78,11 @@ import {
   mergeAvailableTabOrder,
   projectAvailableTabs,
 } from './tabAvailability';
+import { moveTabToGroup } from './moveTab';
 import {
   DEFAULT_TAB_GROUP,
   getGroupActiveTabId,
   setGroupActiveTabId,
-  setTabGroup,
   tabGroupOf,
   subscribeTabGroups,
   useTabGroupAssignments,
@@ -602,10 +602,7 @@ export function RightSidebarShell({
   // tabGroupPanes 按在场判定处理。
   const handleMoveTab = useCallback(
     (tabId: string, target: TabGroupId) => {
-      if (target === groupId) return;
-      setTabGroup(tabId, target);
-      setGroupActiveTabId(target, sessionId, tabId);
-      if (isGlobalTabId(tabId)) setActiveGlobalTabId(tabId);
+      if (target !== groupId) moveTabToGroup(tabId, target, sessionId);
     },
     [groupId, sessionId],
   );

@@ -62,6 +62,23 @@
 import { useEffect, useMemo, useRef, type AriaRole, type ReactNode } from 'react';
 import Sortable, { type SortableEvent } from 'sortablejs';
 
+/**
+ * 外部接管:别的手势控制器(页签拖到别的组 / 聊天区边缘)在拖动中途要接走指针时,
+ * 让当前活跃的 Sortable 实例按"被动取消"收尾(复位 DOM、不提交重排)。
+ * 与窗口失焦兜底同一条清理路径。没有活跃实例时 no-op。
+ */
+let externalAbortRequested = false;
+export function cancelActiveSortable(): void {
+  if (!Sortable.active) return;
+  externalAbortRequested = true;
+  try {
+    document.dispatchEvent(new Event('pointercancel'));
+  } catch {
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+  }
+  externalAbortRequested = false;
+}
+
 export interface SortableListProps<T> {
   /** 列表项数据（按当前希望渲染的顺序传入）。 */
   items: readonly T[];
@@ -190,7 +207,7 @@ export function SortableList<T>({
         document.body.classList.remove(SORTING_BODY_CLASS);
         onDragActiveChangeRef.current?.(false);
 
-        const aborted = abortNextEndRef.current;
+        const aborted = abortNextEndRef.current || externalAbortRequested;
         abortNextEndRef.current = false;
         const dropDisposition = nativeDropDispositionRef.current;
         nativeDropDispositionRef.current = null;

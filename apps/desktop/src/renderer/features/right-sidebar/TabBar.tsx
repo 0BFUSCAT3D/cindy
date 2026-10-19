@@ -384,6 +384,8 @@ export function TabStrip({
   return (
     <div
       data-testid="right-sidebar-tab-strip"
+      // 页签拖到别的组(TabDragController):本条是哪个组的落点 / 起点。
+      data-tab-group-strip={groupId}
       className={cn(
         'relative flex min-w-0 flex-1 gap-1',
         pillVariant === 'chip' ? 'items-center' : 'items-end',
@@ -667,6 +669,7 @@ function TabPill({
     <div
       ref={pillRef}
       data-pinned={pinned || undefined}
+      data-tab-pill={tab.id}
       onContextMenu={onContextMenu}
       // 中键(滚轮键)关闭当前 tab —— 对齐浏览器等多 tab 应用的通用习惯。
       // auxclick 对所有非主键(中/右键)都会触发,这里只认中键(button === 1);
