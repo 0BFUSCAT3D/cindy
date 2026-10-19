@@ -55,6 +55,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { NewTag } from './NewTag';
 import { SidebarNavigationCustomize } from './SidebarNavigationCustomize';
 import { useHoverOpenMenu } from './useHoverOpenMenu';
 import {
@@ -200,21 +201,6 @@ function useSidebarNavigationEntries(): {
     if (dataOwnerId) markSidebarAppArrivalsSeen(dataOwnerId);
   };
   return { order, hidden, isVisible, appFor, unseen, markSeen };
-}
-
-/** Quiet grayscale tag for entries that just joined More. */
-function NewTag({ className }: { className?: string }) {
-  const { t } = useTranslation();
-  return (
-    <span
-      className={cn(
-        'shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-px text-10 font-medium leading-4 text-[var(--text-primary)]',
-        className,
-      )}
-    >
-      {t('sidebar.navigation.new')}
-    </span>
-  );
 }
 
 /**

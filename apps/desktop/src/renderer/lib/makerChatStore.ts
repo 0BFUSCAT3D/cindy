@@ -1,3 +1,4 @@
+import { pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
 import { remoteAgentLimitErrorKey } from '../../shared/remoteAgentLimits';
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
@@ -10,6 +11,7 @@ import { normalizeTaskTags } from '@cindy/maker-shared';
 import type { ImMessageSource } from '../../shared/imMessageSource';
 import { sharedTaskAuthorMemberId, sharedTaskAuthorName } from '@cindy/maker-shared';
 import { readBotAuthorizationCard } from '../../shared/botAuthorization';
+import { readBotStarterOptions } from '../../shared/botStarterOptions';
 import { applyCindyMakeCardAttention } from './cindyMakeAttention';
 import { confirmRemoteUsers, reserveRemoteUser } from './remoteUserHandoff';
 import { readRemoteHistoryCache, remoteHistoryCacheWriter } from './remoteHistoryCache';
@@ -539,6 +541,8 @@ export interface ChatMessage {
   sourceGroup?: MessageSourceGroup;
   /** Host-stamped delivery remains visible after source identity is redacted. */
   explicitDelivery?: boolean;
+  /** Market opening: starter choices shown as buttons below this message (agentMeta.botStarterOptions). */
+  botStarterOptions?: string[];
   /** Provider phase survives live deltas and durable history projection. */
   assistantPhase?: string;
   failedSamplingAttempt?: boolean;
@@ -14908,6 +14912,11 @@ function sendMessage(
   if ((!text.trim() && (!files || files.length === 0)) || !workingDir)
     return Promise.resolve(false);
   if (isRemoteDeletedSessionSendBlocked(sessionId)) return Promise.resolve(false);
+  const formDelivery = pendingGhostCardFormDelivery(sessionId);
+  if (formDelivery) {
+    const beforeEnqueue = opts?.beforeEnqueue;
+    opts = { ...opts, beforeEnqueue: async () => await formDelivery && (beforeEnqueue ? await beforeEnqueue() : true) };
+  }
   const remoteScopeAtStart = captureRemoteOptimisticSendScope(
     sessionId,
     opts?.onRemoteOptimisticFailure,
@@ -17372,7 +17381,7 @@ function updatePendingPlanReviewContent(
  */
 /**
  * Toggle Fast Mode for a session.
- * Server-first: persist to DB, then update store + push to SDK via IPC.
+ * Host-first: Main owns the runtime/DB or pending-intent commit, then update UI.
  */
 async function setFastMode(
   sessionId: string,
@@ -17402,15 +17411,10 @@ async function setFastMode(
     return;
   }
   try {
-    await sessionService.update(sessionId, { fastMode: enabled });
+    await window.electronAPI.maker.setFastMode(sessionId, enabled);
     setState(sessionId, (s) => {
       if (s.fastMode === enabled) return s;
       return { ...s, fastMode: enabled };
-    });
-    // 无条件推 IPC:codex → agent setFastMode;claude-code → main 记 bridge 会话态
-    // (chatgpt/ 模型经订阅 handler 的 prefs 生效),其余在 main 侧安全 no-op。
-    await window.electronAPI.maker.setFastMode(sessionId, enabled).catch((err: unknown) => {
-      log.warn('setFastMode IPC failed:', err);
     });
   } catch (err) {
     log.warn('setFastMode persist failed:', err);
@@ -17474,7 +17478,7 @@ async function setPlanMode(sessionId: string, enabled: boolean): Promise<void> {
 
 /**
  * Reset Fast Mode to OFF.
- * Server-first: persist false to DB, then update store + push to SDK via IPC.
+ * Main owns the same commit as an explicit Fast change.
  * Used when model changes automatically invalidate fast mode.
  */
 async function resetFastMode(sessionId: string): Promise<void> {
@@ -17490,14 +17494,10 @@ async function resetFastMode(sessionId: string): Promise<void> {
     return;
   }
   try {
-    await sessionService.update(sessionId, { fastMode: false });
+    await window.electronAPI.maker.setFastMode(sessionId, false);
     setState(sessionId, (s) => {
       if (!s.fastMode) return s;
       return { ...s, fastMode: false };
-    });
-    // 与 setFastMode 同理:无条件推,main 按 agentKind / 模型分流。
-    await window.electronAPI.maker.setFastMode(sessionId, false).catch((err: unknown) => {
-      log.warn('resetFastMode IPC failed:', err);
     });
   } catch (err) {
     log.warn('resetFastMode persist failed:', err);
@@ -19434,6 +19434,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
           : (persistedTurnMoney?.amount ?? 0) > 0 || turnUsageDetails !== undefined
             ? true
             : undefined;
+    const botStarterOptions = m.role === 'assistant' ? readBotStarterOptions(m.agentMeta?.botStarterOptions) : [];
     return {
       clientId: m.clientId,
       role: m.role,
@@ -19442,6 +19443,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
       ...(m.role === 'assistant' && typeof m.agentMeta?.assistantPhase === 'string' ? { assistantPhase: m.agentMeta.assistantPhase } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.failedSamplingAttempt ? { failedSamplingAttempt: true } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.explicitDelivery === true ? { explicitDelivery: true } : {}),
+      ...(botStarterOptions.length ? { botStarterOptions } : {}),
       ...(m.role === 'assistant' ? { botLearning: m.agentMeta?.botLearning } : {}),
       ...(m.agentMeta?.botPrivateReply === true ? { botPrivateReply: true } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.turnCompleted === true

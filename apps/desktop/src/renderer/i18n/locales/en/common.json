@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"Could not sync read status. Check mailbox authorization and reopen this email.","title":"Mail","openMailbox":"Open in mailbox","loading":"Loading email…","failed":"Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.","retry":"Retry","to":"To","cc":"Cc","bcc":"Bcc","subject":"Subject","currentMessage":"Current email","messageCount_other":"{{count}} emails","messageCount_one":"{{count}} email","showMessages_other":"Show {{count}} emails","showMessages_one":"Show {{count}} email","expandMessage":"Expand email from {{from}}","collapseMessage":"Collapse email from {{from}}","conversationFailed":"Other emails in this conversation could not be loaded.","messageCount":"{{count}} emails","showMessages":"Show {{count}} emails"},
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
@@ -280,6 +281,17 @@
         "toastRejected": "Declined {{name}}’s request",
         "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped.",
         "listTitle": "Using it through {{owner}}’s provider group"
+      },
+      "memberNote": {
+        "add": "Set Note",
+        "edit": "Edit Note",
+        "title": "Set User Note",
+        "label": "Note",
+        "username": "Username: {{name}}",
+        "hint": "Up to {{count}} characters. Leave blank to clear. Only visible to you.",
+        "save": "Save Note",
+        "saving": "Saving note…",
+        "saveFailed": "Could not save note"
       }
     },
     "toast": {
@@ -3016,6 +3028,7 @@
           "quotaTitle": "Remaining this period",
           "quotaUsed": "Used {{used}} / Period allowance {{total}}",
           "loading": "Loading…",
+          "noPersonalLimit": "No personal spending limit set",
           "unavailable": "Temporarily unavailable. Refresh to retry.",
           "refresh": "Refresh allowance"
         },
@@ -6288,7 +6301,8 @@
         "updateTo": "Update to v{{version}}",
         "updateAria": "Update {{name}} to v{{version}}",
         "createWithCindy": "Create with Cindy",
-        "createPrompt": "I want to create a Cindy plugin. First call ghost_forge_guide to get the handbook's table of contents, read chapter 0 (design alignment) first, then read the relevant chapters via the section parameter (at minimum the capability overview, sandbox red-lines, and packaging chapters) before writing any code; do not start implementing yet. Begin by asking questions: prefer option-based question cards, one key decision per card with your recommended choice marked, and proactively surface design options I may not know about — such as the UI form (docked panel, panel inside the Plugins page, chat card, or no UI), a $ command word, launch mode, background abilities (event listening, in-app toast notifications, unread badges, confirmation dialogs), network access, whether a settings page is needed, whether a bundled Node process should do heavy lifting, and whether image/video media abilities are needed. Step by step, confirm the problem to solve, target users, interaction flow, required tools and connections, permission boundaries, and acceptance criteria. After I confirm the design, implement and validate it according to the specification, then call ghost_forge_pack to validate and produce the .cindy package; do not claim that it was installed.",
+        "createPrompt": "Help me create a Cindy plugin.",
+        "creatorUnavailable": "The built-in plugin creation Skill is unavailable.",
         "filterAll": "All",
         "filtersAria": "Filter plugins by source",
         "origin": {
@@ -6434,7 +6448,7 @@
         "bodyInvalid": "This plugin's installation verification record is damaged, so the plugin is paused. Reinstall the marketplace release or select the matching .cindy package again.",
         "bodyBuiltinRestart": "Something went wrong with this built-in plugin's installation verification record. Restart Cindy to recover automatically — no other action is needed."
       },
-      "install": "Install Plugin…",
+      "install": "Install from file…",
       "empty": "No plugins installed yet",
       "emptyHint": "Install from the market, or import a .cindy file from the menu above",
       "legacyRecovery": {
@@ -6458,14 +6472,19 @@
       "projectDisabledTag": "Off in this project",
       "projectSwitchLockedTip": "This plugin is disabled globally; enable it in the Global view first",
       "projectBanner": {
-        "title": "Configuring project \"{{name}}\"",
-        "desc": "Switches here only affect this project — turned-off plugins are unavailable in it",
+        "title": "Current Project: {{name}}",
+        "desc": "Switches affect only this project. Installation, updates, removal, and configuration apply to {{device}}.",
         "backToGlobal": "Back to global"
       },
       "scopePicker": {
         "global": "Global (default)",
         "ariaLabel": "Choose where plugins take effect",
-        "browse": "Choose another folder…"
+        "browse": "Choose another folder…",
+        "management": "Management scope",
+        "globalScope": "Global",
+        "computers": "Computers",
+        "projectScope": "Project Scope",
+        "projectsForComputer": "Projects on {{device}}"
       },
       "enableAria": "Enable {{name}}",
       "uninstall": "Uninstall",
@@ -6557,6 +6576,11 @@
         "unknownReviewerDetail": "The package claims a review, but this Cindy version does not recognize the reviewer key, so it is not shown as reviewed."
       },
       "perm": {
+        "mail": "Use mail drafts and send cards",
+        "mailDetail": "Edit and sync drafts in a card, with confirmation and an undo countdown before sending.",
+        "mailReader": "View mail in the app",
+        "mailReaderHost": "Open mail links from {{host}} in the app",
+        "mailMarkRead": "Mark messages as read when opened",
         "grantsTitle": "After installing it will have:",
         "toolsGroup": "Registered Tools",
         "toolsDiffGroup": "Registered Tool Changes",
@@ -6598,7 +6622,7 @@
         "command": "Chat command ${{command}}",
         "panelLeft": "Panel \"{{title}}\" · shown in the sidebar",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
-        "mainView": "Can add a “{{title}}” entry to Cindy's sidebar",
+        "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
         "code": "Executable code",
         "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
@@ -6617,7 +6641,7 @@
         "notify": "Can show system tips (light banner at the top of the screen)",
         "notifyDetail": "Tip text is provided by this plugin and labeled with its name; tips fade automatically and never block your work.",
         "badge": "Can light an unread mark on the Plugins entry",
-        "badgeDetail": "When it has something new, it can show a green dot on the sidebar Plugins entry and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
+        "badgeDetail": "When it has something new, it can show a green dot on the Plugins entry in the left navigation and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
         "confirm": "Can ask for your confirmation in a dialog",
         "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
         "fsWrite": "Can write files (create / modify)",
@@ -6741,9 +6765,9 @@
         "settingsUnavailableUntilRestore": "Restore the plugin to use this configuration again.",
         "oauthScopeStale": "This authorization does not include newly added permissions. Reconnect to grant them.",
         "configurationTitle": "Configuration",
-        "sidebarEntryTitle": "Sidebar entry",
-        "showInSidebar": "Show in sidebar",
-        "sidebarEntryDescription": "When turned on, “{{title}}” appears in the sidebar, either at the top or under More — choose where in More → Customize. Hiding it does not disable the plugin.",
+        "sidebarEntryTitle": "Navigation Entry",
+        "showInSidebar": "Show in Left Navigation",
+        "sidebarEntryDescription": "When turned on, “{{title}}” appears in the left navigation alongside Automations and Plugins, either at the top or under More — choose where in More → Customize. Hiding it does not disable the plugin.",
         "openTool": "View details for Tool {{name}}",
         "noToolDescription": "No description is available for this Tool.",
         "viewAllTools": "See All",
@@ -6965,6 +6989,49 @@
           "requirements": "Requires an Apple Silicon Mac, macOS 15 or later, and full Xcode.",
           "dataNotice": "Your original simulator devices and app data will not be deleted. Installing Baguette does not automatically migrate devices, apps, or sign-ins."
         }
+      },
+      "remote": {
+        "device": "Manage computer",
+        "thisComputer": "This computer",
+        "offline": "Offline",
+        "confirmOn": "{{name}} on {{device}}",
+        "targetOnly": "Configuration is saved on {{device}}.",
+        "hostPreferencesUnavailable": "This computer does not support remote editing of model, task or sidebar preferences. Configure them on {{device}}.",
+        "taskWorkdirBoundary": "The working directory stays on the target computer. Change it there.",
+        "configurationLoading": "Loading settings…",
+        "configurationReadFailed": "Could not load settings.",
+        "refreshConfiguration": "Refresh Settings",
+        "enableBeforeConfigure": "This plugin is disabled. Enable it with the switch above before configuring.",
+        "settingsPageUnavailable": "Open Cindy on {{device}} to use this plugin’s settings page. This version of the target computer cannot display it remotely.",
+        "offlineNotice": "{{device}} is offline. Management is unavailable until the connection is restored.",
+        "managingTarget": "Managing {{device}}",
+        "managingDescription": "Changes are saved on this computer.",
+        "viewingTarget": "Installed on {{device}}",
+        "unsupported": "The Cindy version on {{device}} does not support remote management yet. You can view its installed plugins here. To install, update, uninstall, enable, disable or configure plugins and manage project settings, update Cindy on that computer.",
+        "refresh": "Refresh Plugins",
+        "instanceId": "Plugin Instance",
+        "detailLoading": "Reading plugin details…",
+        "detailReadFailed": "Could not read plugin details.",
+        "refreshDetail": "Refresh Details",
+        "detailUnavailable": "This computer has not provided all plugin details. Only the information it returned is shown.",
+        "retry": "Retry",
+        "readFailed": "Could not read plugins.",
+        "unknown": "The result is not confirmed. Query the original operation to check it.",
+        "success": "Completed on the target computer.",
+        "cancelled": "Cancelled.",
+        "actionFailed": "The operation failed. Refresh the list before trying again.",
+        "changed": "The plugin changed. Refresh before trying again.",
+        "uninstallOn": "Uninstall {{name}} from {{device}}?",
+        "uninstall": "Uninstall",
+        "empty": "No plugins installed on this computer.",
+        "marketUnavailable": "The target computer’s plugin market is unavailable.",
+        "personalInstall": "Personal installation",
+        "loading": "Reading plugins…",
+        "installDestination": "Install to: {{device}}",
+        "projectsUnsupported": "Update Cindy on this computer to manage project settings.",
+        "noProjects": "No projects are available on this computer yet.",
+        "projectLoading": "Reading project settings…",
+        "projectReadFailed": "Could not read project settings. Try again."
       },
       "usage": {
         "title": "Your calls",
@@ -8951,6 +9018,7 @@
       "duplicate": "Duplicate teammate",
       "moreActions": "More actions for {{name}}",
       "sectionExpand": "Expand teammates",
+      "showLess": "Show less",
       "sectionCollapse": "Collapse teammates",
       "noResults": "No matching teammates or groups"
     },
@@ -9821,6 +9889,42 @@
       "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
       "transferFailed": "Couldn’t move {{name}} to “{{device}}”"
     },
+    "market": {
+      "heading": "Discover Teammates",
+      "description": "Practical methods and skills for moving work forward together.",
+      "invite": "Invite",
+      "open": "Open",
+      "remove": "Remove Teammate",
+      "back": "Back to List",
+      "loading": "Loading teammates…",
+      "empty": "No teammates found",
+      "loadFailed": "Teammates could not load. Try reopening this later.",
+      "installFailed": "Adding the teammate wasn't finished. Saved content is kept; you can try again.",
+      "nameExists": "A teammate already has this name. Rename them in teammate settings before inviting.",
+      "installing": "Saving teammate profile and skills…",
+      "memoryDisabled": "Memory is off, so reference knowledge was not imported. Memory stays off.",
+      "knowledge": "Knowledge and Memory",
+      "skills": "Skills",
+      "routines": "Routines",
+      "capabilities": "Key Capabilities",
+      "workTogether": "My Setup",
+      "tools": "Work Tools",
+      "remembersLead": "Remembers your",
+      "pluginInstalled": "Installed",
+      "pluginNotInstalled": "Not installed",
+      "routineOff": "Off by default",
+      "itemFailed": {
+        "routine": "Routine “{{name}}” could not be saved.",
+        "skill": "Skill “{{name}}” could not be saved.",
+        "knowledge": "Knowledge “{{name}}” could not be saved.",
+        "other": "“{{name}}” could not be saved.",
+        "unknown": "One item could not be saved."
+      },
+      "partialReady": "Everything else is ready, so you can start using the teammate.",
+      "partialUnsaved": "The teammate is not saved yet. Save again to finish.",
+      "retry": "Save Again"
+    },
+    "starterOptions": "Starter options",
     "channels": {
       "title": "Messaging platforms",
       "platform": {
@@ -10948,6 +11052,13 @@
     "verificationFailed": "Cindy couldn’t confirm whether the ChatGPT sign-in has recovered. Check again."
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "Image delivered",
+      "failed": "Image delivery failed. Retry transferring the existing image.",
+      "retry": "Retry delivery",
+      "retrying": "Delivering…",
+      "retryFailed": "Delivery is still unavailable. Check that the source computer is online."
+    },
     "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "jumpToBottom": "Jump to bottom",
     "prevMessageJump": "Jump to previous prompt: {{preview}}",
@@ -11989,7 +12100,17 @@
       "linkConfirmHint": "This link is provided by a plugin and will open in your browser:",
       "linkConfirmOpen": "Open",
       "linkConfirmCancel": "Cancel",
-      "linkOpenFailed": "Failed to open link"
+      "expandFields": "Expand",
+      "collapseFields": "Collapse",
+      "formSyncFailed": "Card edits have not synced. Check the connection and continue editing; the message has not been sent.",
+      "linkOpenFailed": "Failed to open link",
+      "mailPreview": "Email preview",
+      "mailEnlarge": "Enlarge preview",
+      "mailInsertImage": "Insert into message",
+      "mailAttach": "Add attachment",
+      "mailRemoveAttachment": "Remove {{name}}",
+      "mailUpdated": "Draft updated (read-only)",
+      "mailLegacy": "Draft history (read-only)"
     },
     "ghostHook": {
       "blockedFallback": "Message blocked by a plugin; not sent",
@@ -13914,6 +14035,17 @@
     "projectSkillNotLoaded": "This Pi task hasn't loaded this project Skill. New tasks will automatically try to load it."
   },
   "skillhub": {
+    "remote": {
+      "loading": "Loading skills…",
+      "readFailed": "Could not load skills. Try again.",
+      "unsupported": "Update Cindy on the target computer to manage skills remotely.",
+      "confirm": {
+        "install": "Install {{name}} on {{device}}?",
+        "update": "Update {{name}} on {{device}} to v{{version}}?",
+        "uninstall": "Uninstall {{name}} from {{device}}?",
+        "installDescription": "The skill will be saved on the selected computer. Updates keep a backup of the existing files."
+      }
+    },
     "unifiedDetail": {
       "contentSource": "Content source",
       "local": "Local",
@@ -13931,17 +14063,13 @@
     },
     "home": {
       "title": "Skills",
-      "description": "Manage local skills, or discover and install more from Skill Hub.",
+      "description": "Manage installed skills or discover more in SkillHub.",
       "descriptionLocalOnly": "Manage the local skills installed on this device.",
       "search": "Search skills",
       "clearSearch": "Clear skill search",
       "noSearchResults": "No matching skills found",
       "catalogFiltersAria": "SkillHub categories",
       "categoryFiltersAria": "Filter skills by category",
-      "scrollCategoriesLeft": "View more categories to the left",
-      "scrollCategoriesRight": "View more categories to the right",
-      "categoryScrollAtStart": "Already at the first category",
-      "categoryScrollAtEnd": "Already at the last category",
       "catalogFilter": {
         "public": "Public",
         "organization": "Organization",
@@ -13973,6 +14101,9 @@
       },
       "learn": {
         "description": "Distill a reusable Skill from this task, a described workflow, or a SkillHub Skill through Cindy's review flow."
+      },
+      "pluginCreator": {
+        "description": "Create, edit, debug, and package Cindy plugins, or publish them when requested."
       }
     },
     "common": {
