@@ -6266,6 +6266,7 @@
         "updateAria": "{{name}} を v{{version}} に更新",
         "createWithCindy": "Cindy で作成",
         "createPrompt": "Cindy のプラグインを作成してください。",
+        "creatorUnavailable": "内蔵のプラグイン作成スキルを利用できません。",
         "filterAll": "すべて",
         "filtersAria": "提供元でプラグインを絞り込む",
         "origin": {

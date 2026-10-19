@@ -6266,6 +6266,7 @@
         "updateAria": "将 {{name}} 更新到 v{{version}}",
         "createWithCindy": "使用 Cindy 创建",
         "createPrompt": "帮我创建一个 Cindy 插件。",
+        "creatorUnavailable": "内置插件创建技能暂不可用",
         "filterAll": "全部",
         "filtersAria": "按来源筛选插件",
         "origin": {

@@ -6297,6 +6297,7 @@
         "updateAria": "Update {{name}} to v{{version}}",
         "createWithCindy": "Create with Cindy",
         "createPrompt": "Help me create a Cindy plugin.",
+        "creatorUnavailable": "The built-in plugin creation Skill is unavailable.",
         "filterAll": "All",
         "filtersAria": "Filter plugins by source",
         "origin": {

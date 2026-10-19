@@ -230,11 +230,11 @@ export function isSlashCommandRosterReady(
 /**
  * 合并三源 → UnifiedCommand[]。
  * 优先级 (同名时谁覆盖谁) : agent-skill > desktop > agent-builtin。
- *   - agent-skill (用户自定义) 排第一: 体现"用户能盖默认"的语义
+ *   - agent-skill 排第一;同名时 Main 验证过的 Cindy 内置 Skill 优先。
  *   - desktop 第二: app 内置功能 (/help, /clear)
  *   - agent-builtin 兜底: agent 自带 (/compact)
  *
- * 同一类目内按 name 字母序; 不同类目之间按上述优先级排。
+ * Skill 类目内 Cindy 内置项优先，其余按 name 字母序；不同类目按上述优先级排。
  */
 export function mergeCommands(
   desktop: UnifiedCommand[],
@@ -247,7 +247,10 @@ export function mergeCommands(
   const availableSkills = agentSkill.filter((command) => !isSlashCommandUnavailable(command));
   const unavailableSkills = agentSkill.filter(isSlashCommandUnavailable);
   const tiers: UnifiedCommand[][] = [
-    availableSkills.sort((a, b) => a.name.localeCompare(b.name)),
+    availableSkills.sort((a, b) => (
+      Number(isCindyOfficialSlashCommand(b)) - Number(isCindyOfficialSlashCommand(a))
+      || a.name.localeCompare(b.name)
+    )),
     [...desktop].sort((a, b) => a.name.localeCompare(b.name)),
     [...agentBuiltin].sort((a, b) => a.name.localeCompare(b.name)),
     unavailableSkills.sort((a, b) => a.name.localeCompare(b.name)),

@@ -650,8 +650,10 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 
 内置 `cindy-plugin-creator` Skill 是 Agent 替用户编写插件的**唯一教材**，正本位于
 `apps/desktop/resources/system-skills/cindy-plugin-creator/`。`SKILL.md` 负责流程与按需阅读索引，
-`references/` 负责各章作者契约。插件页「让 Cindy 创建」预填 `/cindy-plugin-creator`，
-使用普通新任务的技能调用链路；技能随应用内置 bundle 升级，不另建安装或权限流程。
+`references/` 负责各章作者契约。插件页「让 Cindy 创建」从当前引擎的本机命令清单中选择
+已验证的内置 Skill，预填其实际命令名（Claude 同名冲突时带 `cindy:`）；始终优先内置版本，
+不可用时提示并保留原草稿，不回退到同名用户 Skill。使用普通新任务的技能调用链路；
+技能随应用内置 bundle 升级，不另建安装或权限流程。
 `forgeGuide.ts` 从这些 Markdown 构造兼容的 `FORGE_GUIDE`，供旧 `ghost_forge_guide`
 调用按原章节号读取。不要在 TypeScript、工具描述或界面文案中另存一套编写流程。
 修改随包 Skill 字节时同步递增 `BUILT_IN_SKILLS_BUNDLE_VERSION`。

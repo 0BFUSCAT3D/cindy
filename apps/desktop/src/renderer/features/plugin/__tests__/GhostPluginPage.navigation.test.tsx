@@ -17,8 +17,9 @@ import {
 } from '@/features/cc-agent/pendingPluginSuggestion';
 import { GhostPluginPage } from '../GhostPluginPage';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
-import { clearDraft, getDraft } from '@/lib/composerDraftStore';
-import { leadingSlashInvocation } from '@/lib/slashCommands';
+import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import { leadingSlashInvocation, loadAllCommands, rewriteAgentSkillInvocationForDispatch } from '@/lib/slashCommands';
+import { toast } from '@/lib/toast';
 import { getDraft as getWorkspaceDraft, patchDraft, resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 
 const { auth, translation, pickAndUpdateGhost } = vi.hoisted(() => ({
@@ -90,6 +91,7 @@ const suggestion: PluginSuggestionRequest = {
 };
 
 const loadDetail = vi.fn<() => Promise<PluginMarketDetail>>();
+const listAgentSkills = vi.fn();
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
@@ -99,8 +101,15 @@ beforeEach(() => {
   __resetInstalledGhostsStoreForTest();
   loadDetail.mockReset().mockResolvedValue(detail);
   pickAndUpdateGhost.mockReset().mockResolvedValue(undefined);
+  listAgentSkills.mockReset().mockResolvedValue({ success: true, skills: [] });
+  patchDraft({ vendor: 'cc' });
   vi.stubGlobal('electronAPI', {
     platform: 'win32',
+    maker: {
+      listDesktopCommands: async () => ({ success: true, commands: [] }),
+      listAgentCommands: async () => ({ success: true, commands: [] }),
+      listAgentSkills,
+    },
     sidebarSettings: {
       loadSnapshot: () => ({ hiddenMainViewGhostIds: [], dataOwnerId: null, ownerGeneration: 0 }),
       onHiddenMainViewGhostIdsChanged: () => () => {},
@@ -133,6 +142,7 @@ afterEach(() => {
   __resetInstalledGhostsStoreForTest();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 function RetirementNavigation() {
@@ -154,20 +164,52 @@ function page(entry: string, withRetirementNavigation = false) {
   );
 }
 
-// Unit: clicking the actual creation action must invoke the built-in Skill and
-// reset a previously selected remote workspace, instead of sending raw authoring
-// instructions to an unrelated host. Replaces the old prompt-wording assertions.
-it('starts plugin creation with the built-in Skill in a local new-task draft', async () => {
+// Unit: PR #6433 reproduced a user Skill stealing the creation action when Claude
+// namespaces the built-in command. Click the real action, then run the production
+// command lookup/dispatch rewrite; existing prompt checks never covered ownership.
+it.each([
+  ['cc', 'claude-code', 'cindy-plugin-creator', 'cindy:cindy-plugin-creator'],
+  ['cc', 'claude-code', 'cindy:cindy-plugin-creator', 'cindy:cindy-plugin-creator'],
+  ['pi', 'pi', 'cindy-plugin-creator', 'skill:cindy-plugin-creator'],
+] as const)('starts plugin creation through the built-in %s command %s / %s', async (vendor, agentKind, name, runtimeCommandName) => {
+  const official = { kind: 'agent-skill', source: 'skill', name, runtimeCommandName, builtIn: true };
+  listAgentSkills.mockResolvedValue({ success: true, skills: [
+    { kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator' },
+    official,
+  ] });
+  patchDraft({ vendor });
   patchDraft({ workingDir: '/remote/project', deviceLinkDeviceId: 'remote-device', extraDirs: ['/unrelated'] });
   render(page('/plugins'));
   fireEvent.keyDown(screen.getByRole('button', { name: 'settings.ghosts.page.addPluginAria' }), { key: 'ArrowDown' });
   fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.ghosts.page.createWithCindy' }));
+  await waitFor(() => expect(getDraft(NEW_MAKER_DRAFT_KEY)).toBeDefined());
   const draft = getDraft(NEW_MAKER_DRAFT_KEY)!;
   const text = draft.text!.content![0]!.content![0]!.text!;
-  expect(leadingSlashInvocation(text)?.name).toBe('cindy-plugin-creator');
+  const commands = await loadAllCommands(agentKind, null);
+  const selected = commands.find((command) => command.name === leadingSlashInvocation(text)?.name);
+  expect(selected).toEqual(official);
+  expect(rewriteAgentSkillInvocationForDispatch(text, selected)).toBe(`/${runtimeCommandName} settings.ghosts.page.createPrompt`);
+  expect(listAgentSkills).toHaveBeenCalledWith(agentKind, expect.not.objectContaining({ workingDir: '/remote/project' }));
   expect(draft.attachments).toEqual([]);
   expect(draft.focusAtEnd).toBe(true);
   expect(getWorkspaceDraft()).toMatchObject({ workingDir: null, deviceLinkDeviceId: null, extraDirs: [] });
+});
+
+it.each(['missing', 'disabled', 'failed'] as const)('preserves the draft when the built-in creator is %s instead of falling back to a user Skill', async (state) => {
+  const error = vi.spyOn(toast, 'error').mockReturnValue('creator-error');
+  listAgentSkills.mockResolvedValue({ success: state !== 'failed', skills: [
+    { kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator' },
+    ...(state === 'disabled' ? [{ kind: 'agent-skill', source: 'skill', name: 'cindy:cindy-plugin-creator', builtIn: true, enabled: false }] : []),
+  ] });
+  const original = { text: plainTextToTiptapDoc('Existing draft'), attachments: [] };
+  saveDraft(NEW_MAKER_DRAFT_KEY, original);
+  patchDraft({ workingDir: '/existing/project' });
+  render(page('/plugins'));
+  fireEvent.keyDown(screen.getByRole('button', { name: 'settings.ghosts.page.addPluginAria' }), { key: 'ArrowDown' });
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.ghosts.page.createWithCindy' }));
+  await waitFor(() => expect(error).toHaveBeenCalledWith('settings.ghosts.page.creatorUnavailable'));
+  expect(getDraft(NEW_MAKER_DRAFT_KEY)).toEqual(original);
+  expect(getWorkspaceDraft().workingDir).toBe('/existing/project');
 });
 
 it('keeps linked computer and project scope in the page heading without changing recommendation', async () => {

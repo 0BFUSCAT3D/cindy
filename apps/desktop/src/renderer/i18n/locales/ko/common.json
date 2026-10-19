@@ -6266,6 +6266,7 @@
         "updateAria": "{{name}}을(를) v{{version}}(으)로 업데이트",
         "createWithCindy": "Cindy로 만들기",
         "createPrompt": "Cindy 플러그인을 만들어 주세요.",
+        "creatorUnavailable": "내장 플러그인 생성 스킬을 사용할 수 없습니다.",
         "filterAll": "전체",
         "filtersAria": "출처별 플러그인 필터",
         "origin": {
