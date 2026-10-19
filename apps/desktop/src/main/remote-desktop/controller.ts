@@ -222,12 +222,15 @@ export class RemoteDesktopController {
   private privacyGeneration = 0;
   private privacyOperation: { enabled: boolean; promise: Promise<{ enabled: boolean }> } | null =
     null;
-  private async clearSafety(): Promise<void> {
-    this.privacyGeneration++;
-    this.privacyOperation = null;
+  private stopClipboardSync(): void {
     this.syncGeneration++;
     this.deps.stopClipboardVersion?.();
     if (this.active) this.active.clipboardSync = false;
+  }
+  private async clearSafety(): Promise<void> {
+    this.privacyGeneration++;
+    this.privacyOperation = null;
+    this.stopClipboardSync();
     try {
       this.deps.stopPrivacyScreen?.();
     } finally {
@@ -956,11 +959,11 @@ export class RemoteDesktopController {
         if (this.privacyOperation?.enabled === request.enabled)
           return this.privacyOperation.promise;
         const generation = ++this.privacyGeneration;
+        // Masks outlive control while PiP views the lease; every revocation
+        // that must expose the desktop clears safety and bumps the generation.
         const current = () => {
           this.tick();
-          return (
-            this.active === active && active.controlling && generation === this.privacyGeneration
-          );
+          return this.active === active && generation === this.privacyGeneration;
         };
         const promise = this.deps
           .privacyScreen(request.enabled, current)
@@ -1119,7 +1122,10 @@ export class RemoteDesktopController {
       case 'presentation': {
         this.setBackgroundViewing(active, request.enabled);
         if (request.enabled) {
-          await this.revokeControl();
+          // PiP keeps watching the same lease: the masked, muted desktop stays
+          // protected; only input and clipboard sync need control.
+          await this.revokeControl(true);
+          this.stopClipboardSync();
         } else {
           this.deps.changed();
         }
