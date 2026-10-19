@@ -19,6 +19,7 @@ import { remoteAgentEventMapper } from '../controller/eventMap';
 import { startRemoteAgentSession } from '../controller/startRemote';
 import { createRemoteAgentHost } from '../host/runHost';
 import { hostedStartOptions } from '../host/service';
+import { exerciseConnectionPool } from './poolHarness';
 import { getActiveCatalog, setCustomProviders } from '../../maker-host/active-catalog';
 import { createModelRoutingTransform, setClaudeProxyGatewayKeyReader, setClaudeProxySessionIdResolver } from '../../maker-host/anthropic-compat-proxy-host';
 import { setCustomProviderKeyReader } from '../../maker-host/provider-route';
@@ -84,6 +85,10 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
   let root = '';
   let steps: Array<{ name: string; input: unknown }> = [];
   const requests: MainRequest[] = [];
+  /** 主请求原文(连接池场景看接回后模型拿到的历史)。 */
+  const rawBodies: string[] = [];
+  /** 设了就按它决定这一步(可看已有工具结果与最后一条用户消息)；返回 null 时回一句话。 */
+  let script: ((ctx: { results: MainRequest['results']; lastUser: string }) => { name: string; input: unknown } | null) | null = null;
 
   beforeAll(async () => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-cc-hosted-')));
@@ -118,8 +123,11 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
           : Array.isArray(parsed.system) ? parsed.system.map((part: { text?: string }) => part.text ?? '').join('\n') : '';
         const results: MainRequest['results'] = [];
         let firstUser = '';
+        let lastUser = '';
+        rawBodies.push(body);
         for (const message of parsed.messages ?? []) {
           if (!firstUser && message.role === 'user') firstUser = contentText(message.content);
+          if (message.role === 'user' && contentText(message.content)) lastUser = contentText(message.content);
           if (!Array.isArray(message.content)) continue;
           for (const block of message.content as Array<Record<string, unknown>>) {
             if (block.type === 'tool_result') results.push({ text: contentText(block.content), isError: block.is_error === true });
@@ -130,7 +138,7 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
           sdkSessionId: String(req.headers['x-claude-code-session-id'] ?? ''),
           apiKey: String(req.headers['x-api-key'] ?? ''),
         });
-        const step = steps[results.length];
+        const step = script ? script({ results, lastUser }) : steps[results.length];
         res.end(step ? toolUse(results.length, step.name, step.input) : text('all done'));
       });
     });
@@ -342,6 +350,45 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
     expect(results[1].text).toContain('INVALID_FIXTURE=second');
     expect(requests.every((request) => request.system === requests[0].system)).toBe(true);
     expect(requests.every((request) => JSON.stringify(request.toolNames) === JSON.stringify(requests[0].toolNames))).toBe(true);
+  });
+
+  it('releases an idle task under slot pressure and resumes the same conversation, keeping background commands here', { timeout: 300_000 }, async () => {
+    const agent = new ClaudeCodeAgent(claudeDeps());
+    let backgroundId = '';
+    let afterStart = 0;
+    // 第一轮在本机执行器里起一条后台命令；接回后那一轮用原来的 ID 读它的输出。
+    script = ({ results, lastUser }) => {
+      if (lastUser.includes('codeword PINEAPPLE') && results.length === afterStart) {
+        return { name: 'mcp__cindy_exec__Bash', input: { command: 'echo bg-started; sleep 0.3; echo bg-done', run_in_background: true } };
+      }
+      if (lastUser.includes('What was the codeword') && results.length === afterStart + 1) {
+        return { name: 'mcp__cindy_exec__BashOutput', input: { bash_id: backgroundId } };
+      }
+      return null;
+    };
+    try {
+      await exerciseConnectionPool({
+        kind: 'claude-code',
+        root,
+        model: MODEL,
+        rgPath: RG,
+        startHosted: (input) => agent.startSession(hostedStartOptions(input)),
+        deps: { mapEvent: remoteAgentEventMapper },
+        modelRequests: () => rawBodies,
+        afterFirstTurn: () => {
+          const started = requests.at(-1)!.results.at(-1)!.text;
+          backgroundId = /with ID: (\S+?)\./.exec(started)?.[1] ?? '';
+          expect(backgroundId).not.toBe('');
+        },
+        afterResumedTurn: () => {
+          const output = requests.at(-1)!.results.at(-1)!;
+          expect(output.isError).toBe(false);
+          expect(output.text).toContain('bg-done');
+        },
+      });
+    } finally {
+      script = null;
+    }
   });
 
   async function withProviderProxy(
