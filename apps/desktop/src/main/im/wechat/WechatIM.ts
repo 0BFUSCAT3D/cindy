@@ -219,10 +219,20 @@ export class WechatIM extends BaseIM implements RichChannelIM {
         if (cancelPending) {
           if (!options.cancelPendingIf?.()) throw new Error('WECHAT_BINDING_CHANGED');
           // Deletion must also settle a disabled/offline connection's durable inbox.
-          if (binding) await db.tx('wechatStopAll', {
-            bindingEpoch: binding.bindingEpoch, now: this.#now(),
-            errorCode: 'COMPANION_DELETED', cancelPending: true,
-          });
+          if (binding) {
+            await db.tx('wechatStopAll', {
+              bindingEpoch: binding.bindingEpoch, now: this.#now(),
+              errorCode: 'COMPANION_DELETED', cancelPending: true,
+            });
+            // Retaining task history must not retain cancelled inbox files.
+            // Promoted attachments belong to that history and stay untouched.
+            const released = await db.query<{ absPath: string }>(
+              `SELECT abs_path AS absPath FROM wechat_file_attachments
+               WHERE binding_epoch = ? AND status = 'released'`,
+              [binding.bindingEpoch],
+            );
+            await removeReleasedWechatFiles(released.map(({ absPath }) => absPath));
+          }
         }
         // A poll already in flight may have persisted a message while we drained it.
         if (!cancelPending && binding && await countQueuedWechatTasks(db, binding.bindingEpoch)) {

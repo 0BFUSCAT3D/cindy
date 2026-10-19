@@ -620,9 +620,20 @@ describe('WechatIM host boundary', () => {
 
   // #6492 unit regression: deletion must include the late poll batch in its
   // cancellation, preserve authorization, and never restart after settlement failure.
+  // r4318071189: one released file must reach the bounded file cleanup before
+  // ownership changes; the previous regression only checked database settlement.
   it.each([false, true])('settles deletion after poll drain (failure=%s)', async (fail) => {
     const { im, transport, db, testHost } = restoredConnection(() => 1);
     const order: string[] = [];
+    const released = '/isolated/im-attachments/wechat/sessions/companion-owner/queued.pdf';
+    vi.mocked(db.query).mockImplementation(async (sql, params) => {
+      if (!sql.includes('FROM wechat_file_attachments')) return [];
+      expect(order).toContain('cancel');
+      expect(sql).toContain("status = 'released'");
+      expect(params).toEqual(['epoch']);
+      return [{ absPath: released }];
+    });
+    if (!fail) mediaMocks.removeReleasedWechatFiles.mockImplementationOnce(async () => { order.push('files'); });
     im.attachTurnRuntime({ runner: { companionBotIdFor: () => 'cindy',
       resolveRouteTarget: async () => ({ row: { id: 'companion-owner' } }) },
       repo: {}, config: {}, resetSessionToDefaults: vi.fn() } as never);
@@ -648,7 +659,9 @@ describe('WechatIM host boundary', () => {
       const changing = im.updateCompanionBinding(update, { cancelPendingIf: () => true });
       if (fail) await expect(changing).rejects.toThrow('DRAIN_FAILED');
       else await changing;
-      expect(order).toEqual(fail ? ['batch', 'cancel'] : ['batch', 'cancel', 'update']);
+      expect(order).toEqual(fail ? ['batch', 'cancel'] : ['batch', 'cancel', 'files', 'update']);
+      if (fail) expect(mediaMocks.removeReleasedWechatFiles).not.toHaveBeenCalled();
+      else expect(mediaMocks.removeReleasedWechatFiles).toHaveBeenCalledWith([released]);
       expect(transport.notifyStart).toHaveBeenCalledTimes(fail ? 1 : 2);
       expect(testHost.secrets.write).not.toHaveBeenCalled();
       expect(testHost.secrets.remove).not.toHaveBeenCalled();
