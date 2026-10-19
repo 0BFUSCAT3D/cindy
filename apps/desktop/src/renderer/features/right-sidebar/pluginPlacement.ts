@@ -23,6 +23,7 @@ import {
   findGlobalTabByInstance,
   resetPluginPlacement,
   tabShowsMainView,
+  type PluginViewKind,
   type PluginViewTabState,
   isPluginWindowPlacement,
   rememberPluginWindowPlacement,
@@ -70,10 +71,13 @@ async function returnPluginTabFromWindow(tabId: string): Promise<void> {
 }
 
 /** 作为全局页签放进侧边栏(默认边见模块说明),选中它;落在右侧组时展开右侧栏。 */
-export async function openPluginInSidebar(ghost: InstalledGhost): Promise<void> {
+export async function openPluginInSidebar(
+  ghost: InstalledGhost,
+  // 左侧导航入口放进侧栏的是主视图页面;详情页「在侧边栏中打开」放的是停靠面板页面。
+  view: PluginViewKind = 'main',
+): Promise<void> {
   const instanceId = installedGhostStoragePart(ghost);
-  // 左侧导航入口放进侧栏的是主视图页面(而不是停靠面板)。
-  const tab = addGlobalPluginTab(instanceId, { ghost, view: 'main' });
+  const tab = addGlobalPluginTab(instanceId, { ghost, view });
   if (!tab) return;
   await returnPluginTabFromWindow(tab.id);
   rememberPluginWindowPlacement(instanceId, false);
