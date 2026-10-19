@@ -29,6 +29,7 @@ import { AGENT_ISLAND_DISPLAY_CONFIG } from '../displayConfig.js';
 import type { AgentIslandNativeFrame } from '../MacAgentIslandNativeHost.js';
 import { markAppContentWindow } from '../../windowFocusClassifier.js';
 import type { AgentIslandService } from '../service.js';
+import type { AgentIslandCompanionIdentity } from '../companionIdentity.js';
 import { setDeepLinkMainWindow, takePendingDeepLink } from '../../deepLink.js';
 
 const REMOTE_DAEMON_CLOSED_REASON = 'remote_daemon_closed';
@@ -61,7 +62,9 @@ const mocks = vi.hoisted(() => ({
     userSendAt: number | null;
     workingDir: string | null;
     workspaceKind: string | null;
+    source?: string | null;
   } | null>>(() => Promise.resolve(null)),
+  readAgentIslandCompanion: vi.fn<(sessionId: string) => Promise<AgentIslandCompanionIdentity | null>>(() => Promise.resolve(null)),
   primaryDisplay: {
     id: 1,
     label: 'Built-in Retina Display',
@@ -137,6 +140,10 @@ vi.mock('../../localDb/ipc/sessions.js', () => ({
   getSessionRowSnapshot: mocks.getSessionRowSnapshot,
 }));
 
+vi.mock('../companionIdentity.js', () => ({
+  readAgentIslandCompanion: mocks.readAgentIslandCompanion,
+}));
+
 vi.mock('../layoutPreferenceStore.js', () => ({
   readAgentIslandDetachedLayoutPreferences: mocks.readDetachedLayoutPreferences,
   readAgentIslandLayoutPreferences: mocks.readLayoutPreferences,
@@ -156,6 +163,8 @@ beforeEach(() => {
   takePendingDeepLink();
   mocks.getSessionRowSnapshot.mockReset();
   mocks.getSessionRowSnapshot.mockResolvedValue(null);
+  mocks.readAgentIslandCompanion.mockReset();
+  mocks.readAgentIslandCompanion.mockResolvedValue(null);
   mocks.displays.splice(0, mocks.displays.length, mocks.primaryDisplay);
   mocks.getPrimaryDisplay.mockReset();
   mocks.getDisplayMatching.mockReset();
@@ -1711,6 +1720,52 @@ describe('AgentIslandService native publishing', () => {
       phase: 'running',
       permissionAction: null,
     });
+  });
+
+  // Companion Sessions are Bot Sessions whose title and home folder are not what the user
+  // knows them by; the island must load the companion and follow its renames.
+  it('loads a companion identity for Bot Sessions and refreshes it when the companion changes', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const workingDir = '/Users/alice/Library/Application Support/Cindy/owners/o1/bots/b1/workspace';
+    const identity = (name: string): AgentIslandCompanionIdentity => ({
+      botId: 'b1',
+      companion: { name, hue: 'violet', glyph: name[0]!, glyphIsInitial: true },
+    });
+    mocks.getSessionRowSnapshot.mockImplementation(async () => ({
+      status: 'active', title: 'Opus', userSendAt: null, workingDir, workspaceKind: null, source: 'bot',
+    }));
+    mocks.readAgentIslandCompanion.mockResolvedValue(identity('Opus'));
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish },
+    });
+    syncEnabledForTest(service, publish);
+
+    service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir }, 'hi');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      title: 'Opus',
+      projectName: null,
+      companion: identity('Opus').companion,
+    }));
+
+    // A title patch must not drop the companion that was already resolved.
+    service.handleSessionMetadataPatch('s1', { title: 'Renamed task' });
+    expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.companion?.name).toBe('Opus');
+
+    service.handleCompanionProfileChanged('another-bot');
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1);
+
+    mocks.readAgentIslandCompanion.mockResolvedValue(identity('Sonnet'));
+    service.handleCompanionProfileChanged('b1');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      title: 'Sonnet',
+      companion: { name: 'Sonnet' },
+    }));
   });
 
   it('refreshes placeholder titles and hides dialogue workspace folders', async () => {

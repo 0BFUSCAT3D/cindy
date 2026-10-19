@@ -17,6 +17,7 @@ import type { OpenDialogOptions } from 'electron';
 import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
 import { getDbClient, tryGetDbClient } from '../client/current';
+import { notifyAgentIslandCompanionChanged } from '../agentIslandSessionPatch.js';
 import type {
   BotsReparentDelegationsResult,
   BotsReplaceCanonicalSessionResult,
@@ -1355,6 +1356,7 @@ export function broadcastBotProfileChanged(payload: {
   broadcastBotRemoteResourceChanged(payload.botId);
   // 伙伴自主跟进：新建伙伴、改「它开的任务也交给总调度跟」立即生效。
   signalBotAutonomyBotsChanged();
+  if (payload.change === 'updated') notifyAgentIslandCompanionChanged(payload.botId);
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {

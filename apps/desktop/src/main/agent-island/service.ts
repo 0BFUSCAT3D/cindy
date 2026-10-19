@@ -64,6 +64,7 @@ import {
   type AgentIslandDisplayState,
   type AgentIslandPillSnapshot,
   type AgentIslandRemoteSessionInput,
+  type AgentIslandCompanionSnapshot,
   type AgentIslandSessionActivity,
   type AgentIslandSessionSnapshot,
   type AgentIslandDisplayTarget,
@@ -75,6 +76,7 @@ import {
   type AgentIslandScreenLayoutMetrics,
 } from '../../shared/agentIsland.js';
 import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
+import { readAgentIslandCompanion, type AgentIslandCompanionIdentity } from './companionIdentity.js';
 import { createLogger } from '../logger.js';
 import { t } from '../i18n.js';
 import { isAppContentWindow, isFocusedAppContentWindow } from '../windowFocusClassifier.js';
@@ -169,6 +171,14 @@ interface AgentIslandSessionMeta {
   agentKind?: string;
   workingDir?: string | null;
   workspaceKind?: string | null;
+}
+
+interface AgentIslandCachedMetadata {
+  title: string | null;
+  workingDir: string | null;
+  workspaceKind: string | null;
+  /** undefined until the Session row has been read; null for non-companion Sessions. */
+  companion?: AgentIslandCompanionIdentity | null;
 }
 
 interface AgentIslandPermissionAction {
@@ -313,11 +323,7 @@ export class AgentIslandService {
   private readonly nativeHost: AgentIslandNativeRenderer;
   private readonly headless: boolean;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly metadataCache = new Map<string, {
-    title: string | null;
-    workingDir: string | null;
-    workspaceKind: string | null;
-  }>();
+  private readonly metadataCache = new Map<string, AgentIslandCachedMetadata>();
   private readonly metadataLoading = new Set<string>();
   private readonly layoutPreferencesByDisplayId: Map<number, AgentIslandLayoutPreference>;
   private readonly detachedLayoutPreferences: AgentIslandLayoutPreference[];
@@ -1339,17 +1345,36 @@ export class AgentIslandService {
     sessionId: string,
     patch: { title?: string | null; workingDir?: string | null; workspaceKind?: string | null },
   ): void {
-    const current = this.metadataCache.get(sessionId) ?? {
+    const current: AgentIslandCachedMetadata = this.metadataCache.get(sessionId) ?? {
       title: null,
       workingDir: null,
       workspaceKind: null,
     };
     const next = {
+      ...current,
       title: patch.title !== undefined ? patch.title : current.title,
       workingDir: patch.workingDir !== undefined ? patch.workingDir : current.workingDir,
       workspaceKind: patch.workspaceKind !== undefined ? patch.workspaceKind : current.workspaceKind,
     };
     this.commitMetadata(sessionId, next);
+  }
+
+  /** A companion's name or avatar changed: redraw the Sessions that speak as it. */
+  handleCompanionProfileChanged(botId: string): void {
+    for (const [sessionId, cached] of this.metadataCache) {
+      if (cached.companion?.botId !== botId) continue;
+      void readAgentIslandCompanion(sessionId)
+        .then((companion) => {
+          const latest = this.metadataCache.get(sessionId);
+          if (latest) this.commitMetadata(sessionId, { ...latest, companion });
+        })
+        .catch((err) => {
+          log.warn('companion identity refresh failed', {
+            sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
   }
 
   /**
@@ -1374,16 +1399,20 @@ export class AgentIslandService {
    *     兜底文案,直到下一次 metadata 事件才纠正(PR #1031 review P1)。存原始值 +
    *     publish 时投影,切语言后的那次 republish 自然就是新语言,不需要任何重投影逻辑。
    */
-  private commitMetadata(
-    sessionId: string,
-    meta: { title: string | null; workingDir: string | null; workspaceKind: string | null },
-  ): void {
+  private commitMetadata(sessionId: string, meta: AgentIslandCachedMetadata): void {
     this.metadataCache.set(sessionId, meta);
-    if (!patchAgentIslandMetadata(this.state, { sessionId, ...meta })) return;
+    const { companion, ...rest } = meta;
+    if (!patchAgentIslandMetadata(this.state, {
+      sessionId,
+      ...rest,
+      ...(companion !== undefined ? { companion: companion?.companion ?? null } : {}),
+    })) return;
     this.publish();
   }
 
-  private hydrateMeta(meta: AgentIslandSessionMeta): AgentIslandSessionMeta & { title?: string | null } {
+  private hydrateMeta(
+    meta: AgentIslandSessionMeta,
+  ): AgentIslandSessionMeta & { title?: string | null; companion?: AgentIslandCompanionSnapshot | null } {
     const cached = this.metadataCache.get(meta.sessionId);
     return {
       ...meta,
@@ -1391,6 +1420,7 @@ export class AgentIslandService {
       title: cached?.title ?? null,
       workingDir: cached?.workingDir ?? meta.workingDir,
       workspaceKind: cached?.workspaceKind ?? meta.workspaceKind,
+      ...(cached?.companion !== undefined ? { companion: cached.companion?.companion ?? null } : {}),
     };
   }
 
@@ -1448,14 +1478,28 @@ export class AgentIslandService {
 
   private ensureMetadata(sessionId: string): void {
     const cached = this.metadataCache.get(sessionId);
-    if (this.metadataLoading.has(sessionId) || (cached && !isPlaceholderSessionTitle(cached.title))) return;
+    if (
+      this.metadataLoading.has(sessionId)
+      || (cached && cached.companion !== undefined && !isPlaceholderSessionTitle(cached.title))
+    ) return;
     this.metadataLoading.add(sessionId);
     void getSessionRowSnapshot(sessionId)
-      .then((row) => {
+      .then(async (row) => {
+        // Only Bot Sessions can speak as a companion; others skip the extra lookup.
+        const companion = row?.source === 'bot'
+          ? await readAgentIslandCompanion(sessionId).catch((err) => {
+            log.warn('companion identity load failed', {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return null;
+          })
+          : null;
         this.commitMetadata(sessionId, {
           title: row?.title ?? null,
           workingDir: row?.workingDir ?? null,
           workspaceKind: row?.workspaceKind ?? null,
+          companion,
         });
       })
       .catch((err) => {

@@ -3,7 +3,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Camera, Check, ChevronDown, Plus } from 'lucide-react';
-import cindyPortrait from '@/assets/bot-presets/cindy.png';
+import cindyPortrait from '../../../../resources/companion-preset-avatars/cindy.png';
 import { Tip } from '@/components/ui/tooltip';
 import gallery from '../../../../resources/teammate-portrait-gallery.png';
 import { BOT_AVATAR_MAX_BYTES } from '../../../shared/botAvatarValue';

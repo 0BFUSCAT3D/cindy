@@ -1181,7 +1181,7 @@ describe('Bot canonical Session lifecycle', () => {
       if (state === 'deleted') h.providers = [];
       if (state === 'empty') readDefault.mockResolvedValue([]);
       const sharp = (await import('sharp')).default;
-      const bytes = await sharp(resolve(__dirname, '../../../../renderer/assets/bot-presets/cindy.png')).resize(256, 256).jpeg({ quality: 80 }).toBuffer();
+      const bytes = await sharp(resolve(__dirname, '../../../../../resources/companion-preset-avatars/cindy.png')).resize(256, 256).jpeg({ quality: 80 }).toBuffer();
       await expect(botRemoteManagement.invoke(context, {
         collectionId: 'teammates', resourceRef: resource.ref, actionId: resource.actions![0].id,
         client: { protocolVersion: 1, primitives: ['form'], locale: 'en' },
@@ -1194,7 +1194,7 @@ describe('Bot canonical Session lifecycle', () => {
   it('reconciles mobile creation after a lost receipt without bypassing invitation preparation', async () => {
     const { botRemoteManagement } = await import('../botRemoteManagement');
     const sharp = (await import('sharp')).default;
-    const bytes = await sharp(resolve(__dirname, '../../../../renderer/assets/bot-presets/cindy.png')).resize(256, 256).jpeg({ quality: 80 }).toBuffer();
+    const bytes = await sharp(resolve(__dirname, '../../../../../resources/companion-preset-avatars/cindy.png')).resize(256, 256).jpeg({ quality: 80 }).toBuffer();
     const context = { controllerDeviceId: 'mobile-creation-test' };
     const client = { protocolVersion: 1, primitives: ['form'], locale: 'zh-CN' };
     const input = { name: '手机创建的伙伴', avatarImageBase64: bytes.toString('base64'), requestId: 'mobile-creation-intent-001' };
@@ -1243,7 +1243,7 @@ describe('Bot canonical Session lifecycle', () => {
     await invoke('local-db:bots:create', { id: 'removed-cindy', name: 'Cindy', templateId: 'cindy' });
     h.sqlite!.prepare("UPDATE bot_profiles SET status = 'archived' WHERE id = 'removed-cindy'").run();
     await h.tx!('bots.deleteProfile', { botId: 'removed-cindy', sessionIds: [], keepTaskHistory: true, at: Date.now() });
-    const bytes = readFileSync(resolve(__dirname, '../../../../renderer/assets/bot-presets/cindy.png'));
+    const bytes = readFileSync(resolve(__dirname, '../../../../../resources/companion-preset-avatars/cindy.png'));
     const created = await invoke('local-db:bots:create', {
       id: 'new-cindy', name: 'Cindy', avatarImageBase64: bytes.toString('base64'),
     });
@@ -1261,7 +1261,7 @@ describe('Bot canonical Session lifecycle', () => {
       botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
     });
     const before = await invoke('local-db:bots:get', 'bot-1');
-    const bytes = readFileSync(resolve(__dirname, '../../../../renderer/assets/bot-presets/cindy.png'));
+    const bytes = readFileSync(resolve(__dirname, '../../../../../resources/companion-preset-avatars/cindy.png'));
     const result = await invoke('local-db:bots:choose-avatar', {
       botId: 'bot-1', avatarImageBase64: bytes.toString('base64'),
     });

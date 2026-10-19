@@ -43,3 +43,10 @@ function toNullableString(value: unknown): string | null | undefined {
   if (value === null || typeof value === 'string') return value;
   return undefined;
 }
+
+/** 伙伴改名或换头像后，让灵动岛重画以它身份说话的任务。 */
+export function notifyAgentIslandCompanionChanged(botId: string): void {
+  void import('../agent-island/service.js')
+    .then(({ getAgentIslandService }) => getAgentIslandService()?.handleCompanionProfileChanged(botId))
+    .catch(() => undefined);
+}

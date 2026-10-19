@@ -1,5 +1,6 @@
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
+import type { BotAvatarHue } from './botAvatarHue.js';
 
 export type AgentIslandSessionPhase = 'running' | 'needs-interaction' | 'completed' | 'error';
 
@@ -21,6 +22,23 @@ export interface AgentIslandActivityLine {
 }
 
 /**
+ * The companion a Bot Session speaks for. The island draws this identity instead
+ * of the task's title, working directory and agent mark.
+ */
+export interface AgentIslandCompanionSnapshot {
+  name: string;
+  /** Group the member speaks in; absent for the companion's own chat. */
+  groupName?: string;
+  /** BotAvatar hue family member; the island resolves it to its dark tint. */
+  hue: BotAvatarHue;
+  /** Bounded JPEG thumbnail (base64) when the companion has artwork. */
+  imageJpeg?: string;
+  /** Emoji, or the name's initial, painted when there is no artwork. */
+  glyph: string;
+  glyphIsInitial: boolean;
+}
+
+/**
  * Renderer-facing session snapshot for the macOS Agent Island overlay.
  */
 export interface AgentIslandSessionSnapshot {
@@ -28,6 +46,7 @@ export interface AgentIslandSessionSnapshot {
   completionNotification?: 'silent';
   sessionId: string;
   title: string;
+  companion?: AgentIslandCompanionSnapshot;
   projectName: string | null;
   detail: string;
   compactDetail: string;
