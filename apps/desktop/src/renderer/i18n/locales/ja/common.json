@@ -9845,6 +9845,42 @@
       "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
       "transferFailed": "{{name}} を「{{device}}」に移せませんでした"
     },
+    "market": {
+      "heading": "仲間を探す",
+      "description": "仕事を一緒に進めるための手法とスキルを備えた仲間。",
+      "invite": "招待する",
+      "open": "仲間を開く",
+      "remove": "仲間を削除",
+      "back": "一覧に戻る",
+      "loading": "仲間を読み込み中…",
+      "empty": "仲間が見つかりません",
+      "loadFailed": "仲間を読み込めませんでした。後でもう一度開いてください。",
+      "installFailed": "追加は未完了です。保存済みの内容は保持されます。もう一度お試しください。",
+      "nameExists": "同じ名前の仲間がいます。仲間の設定で名前を変更してから招待してください。",
+      "installing": "仲間のプロフィールとスキルを保存中…",
+      "memoryDisabled": "メモリがオフのため参考知識はインポートされていません。メモリはオフのままです。",
+      "knowledge": "知識とメモリ",
+      "skills": "スキル",
+      "routines": "ルーティン",
+      "capabilities": "主な能力",
+      "workTogether": "私の構成",
+      "tools": "作業ツール",
+      "remembersLead": "覚えておくこと",
+      "pluginInstalled": "インストール済み",
+      "pluginNotInstalled": "未インストール",
+      "routineOff": "デフォルトでオフ",
+      "itemFailed": {
+        "routine": "ルーティン「{{name}}」を保存できませんでした。",
+        "skill": "スキル「{{name}}」を保存できませんでした。",
+        "knowledge": "知識「{{name}}」を保存できませんでした。",
+        "other": "「{{name}}」を保存できませんでした。",
+        "unknown": "保存できなかった項目があります。"
+      },
+      "partialReady": "ほかの内容は準備できているので、すぐに使い始められます。",
+      "partialUnsaved": "仲間はまだ保存されていません。もう一度保存してください。",
+      "retry": "もう一度保存"
+    },
+    "starterOptions": "スタートの選択肢",
     "channels": {
       "title": "メッセージプラットフォーム",
       "platform": {

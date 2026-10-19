@@ -9845,6 +9845,42 @@
       "transferOffline": "連不上伺服器，{{name}} 仍在這台電腦執行",
       "transferFailed": "未能把 {{name}} 交給「{{device}}」"
     },
+    "market": {
+      "heading": "發現夥伴",
+      "description": "帶著方法和技能加入，與你一起把工作往前推進。",
+      "invite": "邀請加入",
+      "open": "打開夥伴",
+      "remove": "移除夥伴",
+      "back": "返回列表",
+      "loading": "正在載入夥伴…",
+      "empty": "沒有找到夥伴",
+      "loadFailed": "暫時無法載入夥伴清單，請稍後重新開啟。",
+      "installFailed": "尚未完成新增。已儲存的內容會保留，可以再試一次。",
+      "nameExists": "已有同名夥伴。請先在夥伴設定中改名，再邀請加入。",
+      "installing": "正在儲存夥伴資料和技能…",
+      "memoryDisabled": "記憶已關閉，方法知識尚未匯入；不會自動開啟記憶。",
+      "knowledge": "知識與記憶",
+      "skills": "技能",
+      "routines": "例行任務",
+      "capabilities": "關鍵能力",
+      "workTogether": "我的配置",
+      "tools": "工作工具",
+      "remembersLead": "會記住你的",
+      "pluginInstalled": "已安裝",
+      "pluginNotInstalled": "未安裝",
+      "routineOff": "預設關閉",
+      "itemFailed": {
+        "routine": "例行任務「{{name}}」沒能儲存。",
+        "skill": "技能「{{name}}」沒能儲存。",
+        "knowledge": "知識「{{name}}」沒能儲存。",
+        "other": "「{{name}}」沒能儲存。",
+        "unknown": "有一項內容沒能儲存。"
+      },
+      "partialReady": "其他內容已就緒，可以先開始使用。",
+      "partialUnsaved": "夥伴還沒有儲存，請重新儲存。",
+      "retry": "重新儲存"
+    },
+    "starterOptions": "起步選項",
     "channels": {
       "title": "訊息平台",
       "platform": {
