@@ -46,7 +46,9 @@ export interface ExecServerRelayDeps {
   env?: NodeJS.ProcessEnv;
   log?: { warn(message: string, meta?: Record<string, unknown>): void };
   now?: () => number;
-  /** 最后一个在跑的进程(含后台终端)结束了：对连接池来说这是一次活动。 */
+  /**
+   * 由忙转闲：最后一个在跑的进程(含后台终端)结束，或带着工作的连接被整条关掉。对连接池来说这是一次活动。
+   */
   onProcessesEnded?(): void;
 }
 
@@ -547,6 +549,8 @@ export class ExecServerRelay {
   private dropConnection(connId: string, notifyRemote: boolean): void {
     const connection = this.connections.get(connId);
     if (!connection || connection.closed) return;
+    // 连接带着在跑的进程、启动中的请求或待确认的消息被整条删掉(异常退出、对方关闭)，同样是一次由忙转闲。
+    const hadWork = connection.processes.size > 0 || connection.starting.size > 0 || Boolean(connection.queue);
     connection.closed = true;
     this.connections.delete(connId);
     try {
@@ -556,6 +560,7 @@ export class ExecServerRelay {
       // 进程已退出。
     }
     if (notifyRemote) this.send({ connId, kind: 'close' });
+    if (hadWork && !this.busy()) this.deps.onProcessesEnded?.();
   }
 
   /** 一条消息：超过单帧上限时拆成多段(除最后一段外带 more)。 */

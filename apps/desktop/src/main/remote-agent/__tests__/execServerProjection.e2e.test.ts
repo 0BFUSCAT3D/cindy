@@ -84,7 +84,7 @@ describe.skipIf(!fs.existsSync(CODEX))('native exec-server workspace projection'
 // Codex 的后台终端在本机 exec-server 里：还有进程在跑时中继算忙，连接池不能让出名额
 // (对方 Codex 一退出，本机 exec-server 随连接关闭，后台终端就没了)。
 describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-server relay busy tracking', () => {
-  it('is busy while a started process runs, idle after it closes, and reset drops the exec-server', async () => {
+  it('is busy while a started process runs, idle after it closes or its connection is dropped, and reset drops the exec-server', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-exec-busy-')));
     const workspace = new ExecutorWorkspace({ workingDir: root });
     const messages: Array<{ id?: number; method?: string; params?: { processId?: string }; error?: unknown }> = [];
@@ -140,6 +140,14 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
       // closed / exited 可能都会来，只算一次。
       expect(ended).toBe(2);
+
+      // 连接带着还在跑的进程被整条关掉(对方关闭 WebSocket、exec-server 异常退出)，同样算一次由忙转闲。
+      start(6, 'dropped', 'sleep 30');
+      await expect.poll(() => messages.some((item) => item.id === 6), { timeout: 5000 }).toBe(true);
+      expect(relay.busy()).toBe(true);
+      relay.handle({ t: 'ws', connId: 'c1', kind: 'close' });
+      await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      expect(ended).toBe(3);
 
       // 让出名额后关掉 exec-server，中继本身还能接新的连接。
       relay.reset();
