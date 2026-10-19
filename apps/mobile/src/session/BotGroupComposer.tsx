@@ -101,7 +101,7 @@ export function BotGroupComposer({
   const [division, setDivision] = useState(false);
   const [sending, setSending] = useState(false);
   const [waitingUploads, setWaitingUploads] = useState(false);
-  useConfirmLeaveWhileUploading(waitingUploads);
+  const leaveConfirmedRef = useConfirmLeaveWhileUploading(waitingUploads);
   const [stopping, setStopping] = useState(false);
   const inputRef = useRef<NativeTextInput>(null);
   const textRef = useRef(text); textRef.current = text;
@@ -197,7 +197,7 @@ export function BotGroupComposer({
       setWaitingUploads(true);
       const { failedCount, abandoned } = await tray.waitForPendingUploads();
       setWaitingUploads(false);
-      if (abandoned) return;
+      if (abandoned || leaveConfirmedRef.current) return;
       const attachments = attachmentsSupported ? [...tray.attachmentsRef.current] : [];
       if (failedCount > 0 || (!draftText && attachments.length === 0)) {
         restoreDraft();

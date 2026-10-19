@@ -106,7 +106,7 @@ vi.mock('@/components/AppText', () => ({
   TextInput: ({ testID, ...props }: any) => { h.inputs[testID] = props; return el('input', { 'data-testid': testID, value: props.value ?? '', readOnly: true }); },
 }));
 vi.mock('@/components/PaperPlaneIcon', () => ({ PaperPlaneIcon: () => null }));
-vi.mock('@/session/useConfirmLeaveWhileUploading', () => ({ useConfirmLeaveWhileUploading: (active: boolean) => { h.leaveGuard.push(active); } }));
+vi.mock('@/session/useConfirmLeaveWhileUploading', () => ({ useConfirmLeaveWhileUploading: (active: boolean) => { h.leaveGuard.push(active); return { current: false }; } }));
 vi.mock('@/components/MobilePrimitives', () => ({
   MainWindowActionButton: ({ action }: any) => el('button', {
     'data-testid': action.testID, 'aria-label': action.accessibilityLabel, 'aria-busy': action.busy ? 'true' : undefined,
