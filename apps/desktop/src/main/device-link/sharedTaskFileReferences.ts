@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
@@ -124,8 +125,8 @@ export async function sharedTaskReferencesFile(
   const needles = [name, encodedName, encodedName.replace(/[!'()*]/g, (char) => '%' + char.charCodeAt(0).toString(16)), JSON.stringify(name).slice(1, -1)];
   let after = 0;
   while (capture.isCurrent()) {
-    const rows = await getDbClient().query<{ rowid: number; role: string; content: string; agentMeta: string | null; toolUseId: string | null }>(
-      `SELECT rowid, role, content, agent_meta AS agentMeta, tool_use_id AS toolUseId FROM messages
+    const rows = await getDbClient().query<{ rowid: number; role: string; content: string; agentMeta: string | null; toolUseId: string | null; createdAt: number }>(
+      `SELECT rowid, role, content, agent_meta AS agentMeta, tool_use_id AS toolUseId, created_at AS createdAt FROM messages
        WHERE session_id = ? AND rewind_at IS NULL AND rowid > ?
          AND ${visibleHistory}
          AND role IN ('user', 'assistant', 'tool_use', 'tool_result')
@@ -167,10 +168,10 @@ export async function sharedTaskReferencesFile(
       if (row.role === 'tool_use') {
         // A queued/denied tool invocation is not delivery. Only completed output
         // records can expose generated file chips outside the workspace.
-        const tool = parseMessageToolUse({ ...row, content });
+        const tool = parseMessageToolUse({ role: row.role, toolUseId: row.toolUseId, content });
         if (!tool.toolUseId) continue;
-        const results = await getDbClient().query<{ content: string }>(
-          `SELECT content FROM messages WHERE session_id = ? AND role = 'tool_result'
+        const results = await getDbClient().query<{ content: string; createdAt: number }>(
+          `SELECT content, created_at AS createdAt FROM messages WHERE session_id = ? AND role = 'tool_result'
            AND rewind_at IS NULL AND tool_use_id = ? AND rowid > ?
            AND ${visibleHistory} ORDER BY rowid LIMIT 1`,
           [capture.author.sessionId, tool.toolUseId, row.rowid],
@@ -178,7 +179,20 @@ export async function sharedTaskReferencesFile(
         if (!capture.isCurrent()) return false;
         if (!results.length) continue;
         const result = decode(results[0].content);
-        if (toolResultFailed(describeToolUse(tool.toolName, tool.input), result)) continue;
+        const descriptor = describeToolUse(tool.toolName, tool.input);
+        if (toolResultFailed(descriptor, result)) continue;
+        if (descriptor.kind === 'command') {
+          // Output-path extraction is lexical. A successful no-clobber command
+          // must not expose an untouched, pre-existing file at its destination.
+          const start = row.createdAt;
+          const end = results[0].createdAt;
+          if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+          const file = await stat(requested).catch(() => null);
+          if (!capture.isCurrent()) return false;
+          // Message timestamps have millisecond precision; include the result's
+          // final millisecond even when the filesystem reports fractional ms.
+          if (!file?.isFile() || !Number.isFinite(file.mtimeMs) || file.mtimeMs < start || file.mtimeMs >= end + 1) continue;
+        }
       }
       return true;
     }

@@ -2,9 +2,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const deps = vi.hoisted(() => ({ read: vi.fn(), session: vi.fn(), realpath: vi.fn(), query: vi.fn() }));
+const deps = vi.hoisted(() => ({ read: vi.fn(), session: vi.fn(), realpath: vi.fn(), stat: vi.fn(), query: vi.fn() }));
 vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ query: deps.query }) }));
-vi.mock('node:fs/promises', () => ({ realpath: deps.realpath }));
+vi.mock('node:fs/promises', () => ({ realpath: deps.realpath, stat: deps.stat }));
 vi.mock('../../cindy-media/blobStore.js', () => ({ parseBlobUrl: (url: string) => url === 'cindy-media://blobs/hash.png' ? { hash: 'hash' } : null }));
 vi.mock('../../cindy-media/ledger.js', () => ({ sessionCanRead: deps.read }));
 vi.mock('../../localDb/ipc/sessions.js', () => ({ getSessionFsSnapshot: deps.session }));
@@ -154,6 +154,24 @@ describe('shared task media access', () => {
       if (result === 'File written') await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
       else await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
     }
+  });
+  // A successful no-clobber command can leave a pre-existing target untouched.
+  // Lexical output paths need file/time evidence before granting outside access.
+  it.each(['written', 'unchanged', 'later-write', 'directory', 'stat-error', 'missing-time', 'revoked'])('checks command output file evidence: %s', async (kind) => {
+    // The extractor intentionally excludes temp directories; do not depend on
+    // whether this checkout itself happens to live under a temp directory.
+    const file = path.join(path.parse(process.cwd()).root, 'deliveries', 'private.pdf');
+    const row = { rowid: 1, role: 'tool_use', toolUseId: 'copy-1', createdAt: 100,
+      content: JSON.stringify({ toolName: 'Bash', input: { command: `cp -n /work/source.txt "${markdownPath(file)}"` } }) };
+    deps.query.mockResolvedValueOnce([row]).mockResolvedValueOnce([{ content: JSON.stringify(''), createdAt: kind === 'missing-time' ? null : 200 }]);
+    deps.stat.mockImplementation(async () => {
+      if (kind === 'stat-error') throw new Error('ENOENT');
+      if (kind === 'revoked') current = false;
+      return { isFile: () => kind !== 'directory', mtimeMs: kind === 'unchanged' ? 99 : kind === 'later-write' ? 201 : 150 };
+    });
+    const access = assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture);
+    if (kind === 'written') await expect(access).resolves.toEqual({ file });
+    else await expect(access).rejects.toThrow('PERMISSION_DENIED');
   });
   // Direct result links must pass the same completed/non-failed provenance gate
   // as tool-use outputs; an error message mentioning a URL is not a delivery.
