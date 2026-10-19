@@ -178,6 +178,8 @@ export interface RemoteHandleDeps {
   started: RemoteStartedInfo;
   workspace: ExecutorWorkspace;
   recordApproval(action: ExecutorAction): void;
+  /** 用户停止或关闭时立即收起本机确认，不等远端 RPC 返回。 */
+  cancelPendingConfirmations?(): void;
   onInvalidResumeSession?: (expectedSdkSessionId: string) => Promise<boolean>;
   /** 读本机图片(随消息带给对方)。 */
   readImage?: (path: string) => Promise<Buffer>;
@@ -211,7 +213,7 @@ export interface RemoteAgentHandleController {
    * 本机自己发起的确认(不是 Agent 发来的)：走与 Agent 确认同一个确认卡通道，桌面、手机远控与 IM 都能
    * 处理。只有本机提供了凭证授权建议的确认卡能返回会话级允许；交互还没接上或任务已结束时按拒绝处理。
    */
-  confirm(request: LocalConfirmation): Promise<ExecutorConfirmation>;
+  confirm(request: LocalConfirmation, signal?: AbortSignal): Promise<ExecutorConfirmation>;
 }
 
 export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHandleController {
@@ -298,9 +300,11 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     send: (message, opts) => sendLike('send', message, opts),
     steer: (message, opts) => sendLike('steer', message, opts),
     abort: async () => {
+      deps.cancelPendingConfirmations?.();
       await call('abort');
     },
     close: async (opts?: AgentSessionTeardownOptions) => {
+      deps.cancelPendingConfirmations?.();
       try {
         await client.close('close', opts?.reason ?? 'navigation');
       } finally {
@@ -308,6 +312,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       }
     },
     detach: async (opts?: AgentSessionTeardownOptions) => {
+      deps.cancelPendingConfirmations?.();
       try {
         await client.close('detach', opts?.reason ?? 'navigation');
       } finally {
@@ -456,10 +461,10 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       }
       return null;
     },
-    async confirm(request) {
-      if (!resolver || disposed) return false;
-      const decision = await resolver({ ...request, kind: 'permission', requestId: deps.newId() });
-      if (disposed || decision.kind !== 'permission' || decision.behavior !== 'allow') return false;
+    async confirm(request, signal) {
+      if (!resolver || disposed || signal?.aborted) return false;
+      const decision = await resolver({ ...request, kind: 'permission', requestId: deps.newId() }, signal);
+      if (disposed || signal?.aborted || decision.kind !== 'permission' || decision.behavior !== 'allow') return false;
       // 只能从本机生成的凭证确认卡建立授权；对方的 interaction 回包不经过这里。
       if (request.metadata?.hostOwnedConfirmation === 'shared_provider_credential'
         && isProviderShareCredentialSessionApproval(request.suggestions)

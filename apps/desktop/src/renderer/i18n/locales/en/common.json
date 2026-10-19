@@ -281,6 +281,17 @@
         "toastRejected": "Declined {{name}}’s request",
         "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped.",
         "listTitle": "Using it through {{owner}}’s provider group"
+      },
+      "memberNote": {
+        "add": "Set Note",
+        "edit": "Edit Note",
+        "title": "Set User Note",
+        "label": "Note",
+        "username": "Username: {{name}}",
+        "hint": "Up to {{count}} characters. Leave blank to clear. Only visible to you.",
+        "save": "Save Note",
+        "saving": "Saving note…",
+        "saveFailed": "Could not save note"
       }
     },
     "toast": {
@@ -6297,7 +6308,8 @@
         "updateTo": "Update to v{{version}}",
         "updateAria": "Update {{name}} to v{{version}}",
         "createWithCindy": "Create with Cindy",
-        "createPrompt": "I want to create a Cindy plugin. First call ghost_forge_guide to get the handbook's table of contents, read chapter 0 (design alignment) first, then read the relevant chapters via the section parameter (at minimum the capability overview, sandbox red-lines, and packaging chapters) before writing any code; do not start implementing yet. Begin by asking questions: prefer option-based question cards, one key decision per card with your recommended choice marked, and proactively surface design options I may not know about — such as the UI form (docked panel, panel inside the Plugins page, chat card, or no UI), a $ command word, launch mode, background abilities (event listening, in-app toast notifications, unread badges, confirmation dialogs), network access, whether a settings page is needed, whether a bundled Node process should do heavy lifting, and whether image/video media abilities are needed. Step by step, confirm the problem to solve, target users, interaction flow, required tools and connections, permission boundaries, and acceptance criteria. After I confirm the design, implement and validate it according to the specification, then call ghost_forge_pack to validate and produce the .cindy package; do not claim that it was installed.",
+        "createPrompt": "Help me create a Cindy plugin.",
+        "creatorUnavailable": "The built-in plugin creation Skill is unavailable.",
         "filterAll": "All",
         "filtersAria": "Filter plugins by source",
         "origin": {
@@ -6617,7 +6629,7 @@
         "command": "Chat command ${{command}}",
         "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
-        "mainView": "Can add a “{{title}}” entry to Cindy's sidebar",
+        "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
         "code": "Executable code",
         "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
@@ -6636,7 +6648,7 @@
         "notify": "Can show system tips (light banner at the top of the screen)",
         "notifyDetail": "Tip text is provided by this plugin and labeled with its name; tips fade automatically and never block your work.",
         "badge": "Can light an unread mark on the Plugins entry",
-        "badgeDetail": "When it has something new, it can show a green dot on the sidebar Plugins entry and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
+        "badgeDetail": "When it has something new, it can show a green dot on the Plugins entry in the left navigation and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
         "confirm": "Can ask for your confirmation in a dialog",
         "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
         "fsWrite": "Can write files (create / modify)",
@@ -6759,9 +6771,9 @@
         "settingsUnavailableUntilRestore": "Restore the plugin to use this configuration again.",
         "oauthScopeStale": "This authorization does not include newly added permissions. Reconnect to grant them.",
         "configurationTitle": "Configuration",
-        "sidebarEntryTitle": "Sidebar entry",
-        "showInSidebar": "Show in sidebar",
-        "sidebarEntryDescription": "When turned on, “{{title}}” appears in the sidebar, either at the top or under More — choose where in More → Customize. Hiding it does not disable the plugin.",
+        "sidebarEntryTitle": "Navigation Entry",
+        "showInSidebar": "Show in Left Navigation",
+        "sidebarEntryDescription": "When turned on, “{{title}}” appears in the left navigation alongside Automations and Plugins, either at the top or under More — choose where in More → Customize. Hiding it does not disable the plugin.",
         "openTool": "View details for Tool {{name}}",
         "noToolDescription": "No description is available for this Tool.",
         "viewAllTools": "See All",
@@ -8051,7 +8063,7 @@
   "ghostPanel": {
     "disableConfirm": {
       "title": "Disable \"{{name}}\"?",
-      "body": "Closing this panel disables the plugin and pauses its capabilities. You can re-enable it anytime from Plugins in the sidebar.",
+      "body": "Closing this panel disables the plugin and pauses its capabilities. You can re-enable it anytime from Plugins in the left navigation.",
       "confirm": "Disable"
     },
     "externalLinkConfirm": {
@@ -9013,6 +9025,7 @@
       "duplicate": "Duplicate teammate",
       "moreActions": "More actions for {{name}}",
       "sectionExpand": "Expand teammates",
+      "showLess": "Show less",
       "sectionCollapse": "Collapse teammates",
       "noResults": "No matching teammates or groups"
     },
@@ -9883,6 +9896,42 @@
       "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
       "transferFailed": "Couldn’t move {{name}} to “{{device}}”"
     },
+    "market": {
+      "heading": "Discover Teammates",
+      "description": "Practical methods and skills for moving work forward together.",
+      "invite": "Invite",
+      "open": "Open",
+      "remove": "Remove Teammate",
+      "back": "Back to List",
+      "loading": "Loading teammates…",
+      "empty": "No teammates found",
+      "loadFailed": "Teammates could not load. Try reopening this later.",
+      "installFailed": "Adding the teammate wasn't finished. Saved content is kept; you can try again.",
+      "nameExists": "A teammate already has this name. Rename them in teammate settings before inviting.",
+      "installing": "Saving teammate profile and skills…",
+      "memoryDisabled": "Memory is off, so reference knowledge was not imported. Memory stays off.",
+      "knowledge": "Knowledge and Memory",
+      "skills": "Skills",
+      "routines": "Routines",
+      "capabilities": "Key Capabilities",
+      "workTogether": "My Setup",
+      "tools": "Work Tools",
+      "remembersLead": "Remembers your",
+      "pluginInstalled": "Installed",
+      "pluginNotInstalled": "Not installed",
+      "routineOff": "Off by default",
+      "itemFailed": {
+        "routine": "Routine “{{name}}” could not be saved.",
+        "skill": "Skill “{{name}}” could not be saved.",
+        "knowledge": "Knowledge “{{name}}” could not be saved.",
+        "other": "“{{name}}” could not be saved.",
+        "unknown": "One item could not be saved."
+      },
+      "partialReady": "Everything else is ready, so you can start using the teammate.",
+      "partialUnsaved": "The teammate is not saved yet. Save again to finish.",
+      "retry": "Save Again"
+    },
+    "starterOptions": "Starter options",
     "channels": {
       "title": "Messaging platforms",
       "platform": {
@@ -14059,6 +14108,9 @@
       },
       "learn": {
         "description": "Distill a reusable Skill from this task, a described workflow, or a SkillHub Skill through Cindy's review flow."
+      },
+      "pluginCreator": {
+        "description": "Create, edit, debug, and package Cindy plugins, or publish them when requested."
       }
     },
     "common": {
