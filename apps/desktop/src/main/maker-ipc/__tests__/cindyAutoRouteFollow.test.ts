@@ -368,20 +368,24 @@ describe('已登记的 Auto 换来源，在 Auto 又挪动后撤销或改写', (
     fastMode: false,
   };
 
-  function follow(providers: ProviderView[], intent: typeof stagedToPlatform | undefined) {
+  function follow(
+    providers: ProviderView[],
+    intent: typeof stagedToPlatform | undefined,
+    currentRoute = current,
+  ) {
     const stage = vi.fn(async () => {});
     const cancelStagedSwitch = vi.fn(async () => {});
-    const readStagedSwitch = async () => stagedCindyAutoSwitch(intent, current);
+    const readStagedSwitch = async () => stagedCindyAutoSwitch(intent, currentRoute);
     return {
       stage,
       cancelStagedSwitch,
       run: () =>
         followMovedCindyAutoRoutes({
-          listCandidates: async () => [{ sessionId: TASK, ...current }],
+          listCandidates: async () => [{ sessionId: TASK, ...currentRoute }],
           listProviders: async () => providers,
           withSessionLock: async (_sessionId, run) => run(),
           // 已有登记时加锁重读一律不给路由（与真实 readRoute 一致）。
-          readRoute: async () => (intent ? null : current),
+          readRoute: async () => (intent ? null : currentRoute),
           readStagedSwitch,
           cancelStagedSwitch,
           stage,
@@ -434,6 +438,32 @@ describe('已登记的 Auto 换来源，在 Auto 又挪动后撤销或改写', (
     expect(cancelStagedSwitch).not.toHaveBeenCalled();
     expect(stage).not.toHaveBeenCalled();
   });
+
+  // PR #6355 Codex P1：配置登记也可能切向用户来源；现有撤销/改登记只覆盖 Cindy 两端。
+  // unit：走实际跟随入口，不能撤销或覆盖待生效的凭证/计费来源。
+  it.each([
+    { from: POOL, target: 'custom', availableAt: OTHER_POOL },
+    { from: POOL, target: 'custom', availableAt: POOL },
+    { from: 'custom', target: 'xd', availableAt: 'custom' },
+  ])(
+    '保留非 Cindy 两端的配置登记：$from → $target（Auto 在 $availableAt）',
+    async ({ from, target, availableAt }) => {
+      const providers = [
+        provider('xd', 'builtin', availableAt === 'xd' ? [REAL_AUTO] : ['auto']),
+        provider(POOL, 'organization', availableAt === POOL ? [REAL_AUTO] : []),
+        provider(OTHER_POOL, 'organization', availableAt === OTHER_POOL ? [REAL_AUTO] : []),
+        provider('custom', 'user', availableAt === 'custom' ? [REAL_AUTO] : []),
+      ];
+      const { stage, cancelStagedSwitch, run } = follow(
+        providers,
+        { ...stagedToPlatform, providerId: target },
+        { ...current, providerId: from },
+      );
+      expect(await run()).toBe(0);
+      expect(stage).not.toHaveBeenCalled();
+      expect(cancelStagedSwitch).not.toHaveBeenCalled();
+    },
+  );
 
   it('负向：只认系统登记、同引擎、同一个 Auto、只换来源的登记', () => {
     expect(stagedCindyAutoSwitch(stagedToPlatform, current)).toEqual({

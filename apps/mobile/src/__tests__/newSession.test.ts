@@ -946,6 +946,17 @@ describe('pickAgentDefaultRuntime', () => {
     expect(
       resolveRecentModelAndProvider(toPool, { model: auto, providerId: 'xd' }, 'pi', true),
     ).toEqual({ model: auto, providerId: 'org-pool' });
+    // PR #6355 Greptile P1：身份取完整目录，但隐藏的 Cindy AI 同名模型不能挤掉可见号池。
+    // unit：旧号池无行，平台组 Auto 无行，自定义来源排在前面；仍选可见的新号池。
+    const visible = [toPool[0], toPool[2]];
+    const fullCatalog = [
+      ...visible.map((row) => row.provider),
+      autoRow('old-pool', 'organization', [], 'unused').provider,
+      autoRow('xd', 'builtin', [auto], auto).provider,
+    ];
+    expect(
+      resolveRecentModelAndProvider(visible, { model: auto, providerId: 'old-pool' }, 'pi', true, undefined, fullCatalog),
+    ).toEqual({ model: auto, providerId: 'org-pool' });
     // 负向:用户自己接的供应商仍提供同名 auto/... 时原样保留,不被拉去 Cindy 来源。
     expect(
       resolveRecentModelAndProvider(toPlatform, { model: auto, providerId: 'custom' }, 'pi', true),

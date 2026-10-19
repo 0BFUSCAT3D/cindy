@@ -1,6 +1,7 @@
 import {
   effectiveSourceIdForModel,
   isCindyAutoModelId,
+  isCindyDistributedProvider,
   movedCindyAutoSourceId,
   type AgentKind,
   type ProviderView,
@@ -169,6 +170,16 @@ async function recheckStagedSwitch(
   // 其它引擎的默认来源不一定是 Cindy AI，判断不了就不动。
   if (!from) return false;
   const target = cindySourceId(current.agentKind, targetProviderId);
+  // configStaged 也用于伙伴/IM 的配置切换；只有两端都是 Cindy 来源才重核 Auto 登记。
+  const fromProvider = providers.find((provider) => provider.id === from);
+  const targetProvider = providers.find((provider) => provider.id === target);
+  if (
+    !fromProvider ||
+    !isCindyDistributedProvider(fromProvider) ||
+    !targetProvider ||
+    !isCindyDistributedProvider(targetProvider)
+  )
+    return false;
   const now = effectiveSourceIdForModel([...providers], from, current.model, current.agentKind);
   if (now === target) return false;
   if (!now || now === from) {

@@ -15,7 +15,7 @@ import type {
 import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache';
 import type { MobileModelOption } from './agentCapabilities';
 import { isCindyAutoModelId } from '@cindy/model-providers/provider-identity';
-import { effectiveSourceIdForModel } from '@cindy/model-providers/registry';
+import { effectiveSourceIdForModel, type ProviderView } from '@cindy/model-providers/registry';
 import { reconcileEffortForModel, type ProviderModelRow } from './providerModelSections';
 import type { RemoteSession } from './types';
 
@@ -477,6 +477,7 @@ export function resolveRecentModelAndProvider(
   agentKind: NewSessionAgentKind,
   catalogReady: boolean,
   visibilityOverrides?: Record<string, boolean> | null,
+  providers?: readonly ProviderView[],
 ): { model: string; providerId: string | null } {
   if (!catalogReady || modelNeedsReselection(visibilityOverrides, agentKind, recent.model, recent.providerId)) {
     return { model: recent.model, providerId: recent.providerId };
@@ -512,8 +513,12 @@ export function resolveRecentModelAndProvider(
   // 挪到企业号池(或反过来)后,记住的来源不再提供它 —— 改用当前提供它的那一家 Cindy 来源,
   // 不当失效处理。用户自己接的供应商不参与这条改道。
   if (isCindyAutoModelId(recent.model)) {
-    const rowProviders = [...new Map(modelRows.map((row) => [row.provider.id, row.provider])).values()];
-    const relocated = effectiveSourceIdForModel(rowProviders, recent.providerId, recent.model, agentKind);
+    // 旧来源可能已经没有模型行；身份从完整目录取，候选目标仍须有可见行。
+    const catalog = providers ?? [...new Map(modelRows.map((row) => [row.provider.id, row.provider])).values()];
+    const relocationProviders = catalog.filter((provider) =>
+      provider.id === recent.providerId || validateModelProviderId(modelRows, provider.id, recent.model, true),
+    );
+    const relocated = effectiveSourceIdForModel(relocationProviders, recent.providerId, recent.model, agentKind);
     if (relocated && validateModelProviderId(modelRows, relocated, recent.model, true)) {
       return { model: recent.model, providerId: relocated };
     }
@@ -793,6 +798,8 @@ export function pickAgentDefaultRuntime(args: {
   /** 被控电脑该 agent 的新建任务默认(hostDraftRuntimeFromDefaults);null = 无 / 旧被控端。 */
   hostRuntime: NewSessionRuntime | null;
   modelRows: readonly ProviderModelRow[];
+  /** 完整目录用于识别没有可见模型行的旧来源。 */
+  providers?: readonly ProviderView[];
   currentEffort: string;
   /** 供应商目录是否已就绪(加载完成);未就绪时来源校验信任被控电脑默认(见 validateModelProviderId)。 */
   catalogReady: boolean;
@@ -815,6 +822,7 @@ export function pickAgentDefaultRuntime(args: {
       agentKind,
       catalogReady,
       args.visibilityOverrides,
+      args.providers,
     ));
   } else if (catalogReady && modelRows[0]) {
     // 首项分支只在目录就绪时取——切到未缓存设备瞬间旧设备目录会短暂残留
@@ -961,6 +969,8 @@ export function resolveNewSessionAutoDefault(input: {
   /** 被控电脑 rowsAgentKind 的新建任务默认(hostDraftRuntimeFromDefaults);null = 无。 */
   hostRuntime: NewSessionRuntime | null;
   modelRows: readonly ProviderModelRow[];
+  /** 完整目录用于识别没有可见模型行的旧来源。 */
+  providers?: readonly ProviderView[];
   /** modelRows 是按哪个 agent 的目录构建的;被控电脑默认只在同一 agent 时采用。 */
   rowsAgentKind: NewSessionAgentKind;
   /** 供应商目录是否已就绪;未就绪时来源校验信任被控电脑默认(见 validateModelProviderId)。 */
@@ -998,6 +1008,7 @@ export function resolveNewSessionAutoDefault(input: {
       rowsAgentKind,
       catalogReady,
       input.visibilityOverrides,
+      input.providers,
     );
     const sectionModel = findSectionModelRow(modelRows, model, providerId)?.model;
     return {
