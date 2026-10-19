@@ -25,6 +25,7 @@ import { credentialGrantFor, forgetCredentialGrants } from '../executor/credenti
 import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
+import { DEFAULT_REMOTE_AGENT_LIMITS, type RemoteAgentLimits } from '../../../shared/remoteAgentLimits';
 
 const RG = path.resolve(__dirname, '../../../../../ripgrep-bin', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'rg.exe' : 'rg');
 const CONTROLLER = 'controller-device-1';
@@ -151,11 +152,11 @@ function fakeHostedAgent(input: HostedStartInput, credentialPaths?: string[]): A
   };
 }
 
-function makeDeps(host: ReturnType<typeof createRemoteAgentHost>): StartRemoteAgentDeps {
+function makeDeps(host: ReturnType<typeof createRemoteAgentHost>, controller = CONTROLLER): StartRemoteAgentDeps {
   return {
     invoke: async (args) => {
       // JSON 往返模拟设备互联的序列化。
-      const result = await host.handle(CONTROLLER, JSON.parse(JSON.stringify(args[0])));
+      const result = await host.handle(controller, JSON.parse(JSON.stringify(args[0])));
       return JSON.parse(JSON.stringify(result ?? null));
     },
     rgPath: RG,
@@ -183,8 +184,9 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function createHost() {
+function createHost(readLimits: () => RemoteAgentLimits = () => DEFAULT_REMOTE_AGENT_LIMITS) {
   return createRemoteAgentHost({
+    readLimits,
     isAgentAvailable: () => true,
     startHosted: async (input) => {
       hostInputs.push(input);
@@ -198,6 +200,35 @@ function createHost() {
 }
 
 describe('remote agent round trip', () => {
+  it('enforces limits through the controller and releases capacity after close', async () => {
+    let limits = { perDevice: 1, total: 2 };
+    const host = createHost(() => limits);
+    const opened: AgentSessionHandle[] = [];
+    const open = async (controller: string) => {
+      const handle = await startRemoteAgentSession('claude-code', {
+        sessionId: randomUUID(), workingDir: project, model: 'm',
+      }, makeDeps(host, controller));
+      opened.push(handle);
+      return handle;
+    };
+    try {
+      const first = await open('a');
+      await expect(open('a')).rejects.toThrow('[REMOTE_AGENT_BUSY] [DEVICE_LIMIT]');
+      await open('b');
+      await expect(open('c')).rejects.toThrow('[REMOTE_AGENT_BUSY] [TOTAL_LIMIT]');
+      limits = { perDevice: 1, total: 1 };
+      expect(host.limitUsage().total).toBe(2);
+      await first.close({ reason: 'navigation' });
+      await expect(open('c')).rejects.toThrow('[TOTAL_LIMIT]');
+      limits = { perDevice: 2, total: 3 };
+      await open('a');
+      expect(host.limitUsage()).toEqual({ total: 2, devices: 2, largestDevice: 1 });
+    } finally {
+      await Promise.all(opened.map(handle => handle.close({ reason: 'navigation' })));
+      await host.abortAll();
+      host.dispose();
+    }
+  });
   it('keeps a shared-provider credential grant on this computer across turns and resets it on reopen', async () => {
     const env = path.join(project, '.env');
     const production = path.join(project, '.env.production');
@@ -259,6 +290,59 @@ describe('remote agent round trip', () => {
       host.dispose();
     }
   });
+  it.each([false, true])('skips the shared-provider credential card only while trust is enabled (task grant wired: %s)', async (withTaskGrant) => {
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=one');
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => fakeHostedAgent(input, [env]),
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: hostRoot,
+    });
+    const opts = { sessionId: 'credentials-skip', workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    let skip = true;
+    const deps = {
+      ...makeDeps(host),
+      credentialConsent: {
+        description: 'Only this task; content passes through the sharer.',
+        skip: () => skip,
+        ...(withTaskGrant ? { grant: credentialGrantFor(opts.sessionId, 'share:skip') } : {}),
+      },
+    };
+    let localConfirmations = 0;
+    const run = async (handle: AgentSessionHandle) => {
+      handle.setInteractionResolver(async (request) => {
+        if (request.requestId !== 'forged') localConfirmations += 1;
+        return { kind: 'permission', behavior: 'allow' };
+      });
+      const reader = (async () => {
+        const results: string[] = [];
+        for await (const event of handle.events()) {
+          if (event.type === 'text') results.push((event.data as { text: string }).text);
+          if (event.type === 'done') return results;
+        }
+        return results;
+      })();
+      await handle.send({ type: 'user', content: 'read credentials' });
+      expect(await reader).toEqual(['credential:200']);
+    };
+    const handle = await startRemoteAgentSession('pi', opts, deps);
+    try {
+      // 受邀者在设置里打开了「信任 {分享者}」：读 .env 不弹卡、直接放行。
+      await run(handle);
+      expect(localConfirmations).toBe(0);
+      // 运行中关掉：下一次凭证操作就要确认。
+      skip = false;
+      await run(handle);
+      expect(localConfirmations).toBe(1);
+    } finally {
+      await handle.close({ reason: 'navigation' });
+      host.dispose();
+    }
+  });
+
   it('restores a task-level credential grant when the agent is rebuilt with the same share and permission mode', async () => {
     const env = path.join(project, '.env');
     fs.writeFileSync(env, 'TOKEN=one');
@@ -272,9 +356,14 @@ describe('remote agent round trip', () => {
     });
     const sessionId = `grant-${randomUUID()}`;
     const full = { sessionId, workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    let skip = false;
     const depsFor = (deviceId: string) => ({
       ...makeDeps(host),
-      credentialConsent: { description: 'Only this task.', grant: credentialGrantFor(sessionId, deviceId) },
+      credentialConsent: {
+        description: 'Only this task.',
+        skip: () => skip,
+        grant: credentialGrantFor(sessionId, deviceId),
+      },
     });
     let localConfirmations = 0;
     // 打开一次 Agent、跑一轮、关闭(相当于 Orca Worker 一轮结束后被回收)。
@@ -303,6 +392,13 @@ describe('remote agent round trip', () => {
       await openRunClose(full);
       expect(localConfirmations).toBe(1);
       // 同一任务、同一分享、权限档未变：重建后不再确认。
+      await openRunClose(full);
+      expect(localConfirmations).toBe(1);
+      // 重建期间暂时打开分享级信任：恢复任务级授权不能因此丢失。
+      skip = true;
+      await openRunClose(full);
+      expect(localConfirmations).toBe(1);
+      skip = false;
       await openRunClose(full);
       expect(localConfirmations).toBe(1);
       // 另一个分享不沿用。

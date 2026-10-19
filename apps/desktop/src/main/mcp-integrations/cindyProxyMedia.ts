@@ -13,6 +13,7 @@ import { createLogger } from '../logger.js';
 import { mediaErrorForLog } from '../cindy-media/mediaRequestLog.js';
 import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
+import { withCindyGatewayKeyRejectionReport } from '../model-access/gatewayKeyRejection.js';
 import { getAppCapabilities } from '../appCapabilities.js';
 
 const log = createLogger('art');
@@ -38,8 +39,11 @@ function getGatewayBaseUrl(): string {
   return effectiveXdGatewayBaseUrl();
 }
 
-/** Only Gateway creates are billable. Polling and CDN downloads bypass accounting. */
-const gatewayMediaFetch: typeof fetch = async (input, init) => {
+/**
+ * Only Gateway creates are billable. Polling and CDN downloads bypass accounting.
+ * Keep Gateway 401 key-rejection reporting for all requests carrying Authorization.
+ */
+const gatewayMediaFetch = withCindyGatewayKeyRejectionReport(async (input, init) => {
   if (init?.method?.toUpperCase() !== 'POST') return fetch(input, init);
   let model = 'unknown';
   if (typeof init.body === 'string') {
@@ -60,7 +64,7 @@ const gatewayMediaFetch: typeof fetch = async (input, init) => {
   } finally {
     recordBilling.finish();
   }
-};
+});
 
 /**
  * XD Gateway 图像/视频后端单例。lizi_art MCP 工具层已退役(2026-07-12),
@@ -113,8 +117,8 @@ function createGatewayVideoProviders(baseUrl: string) {
   return [
     createSeedanceProvider({
       baseUrl,
-      fetchImplementation: gatewayMediaFetch,
       getApiKey: readApiKey,
+      fetchImplementation: gatewayMediaFetch,
       logger: log,
     }),
     // Seedance 2.5 是独立 provider(值域与 2.0 差太远,capabilities 是
@@ -122,14 +126,14 @@ function createGatewayVideoProviders(baseUrl: string) {
     // seedance-fast 之后,不抢出厂默认。
     createSeedance25Provider({
       baseUrl,
-      fetchImplementation: gatewayMediaFetch,
       getApiKey: readApiKey,
+      fetchImplementation: gatewayMediaFetch,
       logger: log,
     }),
     createHappyhorseProvider({
       baseUrl,
-      fetchImplementation: gatewayMediaFetch,
       getApiKey: readApiKey,
+      fetchImplementation: gatewayMediaFetch,
       logger: log,
     }),
   ];
