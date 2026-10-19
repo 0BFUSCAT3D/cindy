@@ -1361,7 +1361,9 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
     已让出时只记在 A，`abort` / `requestGracefulStop` / `stopBackgroundTask` 已让出时什么也不做。会话里还没有对话(不是接回的旧会话、
     也没跑完过一轮)时连回直接开新会话，不带 id。连回带当前原生会话 id 与最新的
     模型、来源、推理强度、快速模式、思考开关、权限档、计划模式；回退 / 分叉用的一次性 `resumeSessionAt` /
-    `forkSession` 只在第一轮跑完前带(之后再带会再截断一次)；`setVendorOptions` 改过的内容、`libraryRoot`、`useCindyAutoReviewFallback` 连回后再告诉 B 一次。
+    `forkSession` 只在第一轮跑完前带(之后再带会再截断一次)；`setVendorOptions` 改过的内容、`libraryRoot`、`useCindyAutoReviewFallback` 连回后再告诉 B 一次；
+    补发的任一步失败就当这次连回失败(fail closed)：关掉刚开的 run 还回名额、回到已让出，待补发的内容保留，调用以
+    `[REMOTE_AGENT_UNAVAILABLE]` 报错，下次调用重新连回再补发，不会在缺设置的 Agent 上执行消息。
     **目录映射保证**：对话里出现过的每个虚拟路径，连回后仍指向同一个本机目录，绝不会指向另一个目录。B 按 open 里
     附加 / 可写目录的顺序起名(`additional/dir-<序号>`)，所以连回时原样给第一次打开时的列表与顺序；A 已有的映射
     (含运行中新增目录分配的 `additional/runtime-<n>`)只补不换。打开之后的增减(连着时或让出期间)在连回后按运行中

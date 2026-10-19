@@ -325,6 +325,8 @@ interface Scenario {
   pendingWake: number;
   /** send 'hold' 时卡住，直到调用它。 */
   releaseHold: (() => void) | null;
+  /** 接下来这么多次 setExtraDirs 报错。 */
+  failSetExtraDirs: number;
 }
 
 let scenario: Scenario;
@@ -434,6 +436,10 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
     },
     async setExtraDirs(dirs, libraryRoot) {
       record('setExtraDirs', [dirs, libraryRoot]);
+      if (scenario.failSetExtraDirs > 0) {
+        scenario.failSetExtraDirs -= 1;
+        throw new Error('extra dirs rejected');
+      }
     },
     async requiresModelSwitchRebuild() {
       record('requiresModelSwitchRebuild', []);
@@ -547,7 +553,7 @@ beforeEach(() => {
   project = path.join(root, 'project');
   hostRoot = path.join(root, 'host');
   fs.mkdirSync(project);
-  scenario = { started: [], calls: [], closes: 0, failResume: null, backgroundTasks: [], pendingWake: 0, releaseHold: null };
+  scenario = { started: [], calls: [], closes: 0, failResume: null, backgroundTasks: [], pendingWake: 0, releaseHold: null, failSetExtraDirs: 0 };
   limits = { perDevice: 1, total: 64 };
   intercept = null;
   opens = 0;
@@ -899,6 +905,28 @@ describe('remote connection pool with a real host', () => {
     expect(opens).toBe(1);
     // 再发的 close 送到后，对方结束 a。
     await vi.waitFor(() => expect(host.limitUsage().total).toBe(1));
+  });
+
+  // PR #6483 review：连回后补发设置失败只记日志，消息照样在缺设置的 Agent 上执行。
+  it('fails the reconnect when restoring settings fails: nothing is sent, the run is closed, and the next send restores them', async () => {
+    limits = { perDevice: 16, total: 64 };
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await a.setExtraDirs!([], path.join(root, 'library'));
+    await sleep(5);
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    expect(host.limitUsage().total).toBe(0);
+    scenario.failSetExtraDirs = 1;
+    const before = scenario.calls.length;
+    await expect(a.send({ type: 'user', content: 'one' })).rejects.toThrow('[REMOTE_AGENT_UNAVAILABLE]');
+    expect(scenario.calls.slice(before).map((call) => call.method)).toEqual(['setExtraDirs']);
+    // 这次开的进程关掉、名额还回去。
+    await vi.waitFor(() => expect(host.limitUsage().total).toBe(0));
+    expect(await ask(a, events, 'two')).toBe('ok:two');
+    expect(scenario.calls.slice(before).map((call) => call.method)).toEqual(['setExtraDirs', 'setExtraDirs', 'send']);
+    expect(scenario.started).toHaveLength(3);
   });
 
   it('gives up a release once a send has started', async () => {

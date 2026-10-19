@@ -395,25 +395,28 @@ export async function startRemoteAgentSession(
     && resumableAfterRelease();
 
   /** 连接池让出名额：只结束对方的 Agent 进程，本机部分与对话记录都留着。 */
+  /** 结束对方的这个 Agent 进程，本机部分留着，状态回到已让出(调用前已置为 releasing)。 */
+  async function closeRun(client: RemoteAgentRunClient): Promise<void> {
+    try {
+      // 用 close 而不是 detach：detach 不结束对方的进程，名额让不出来。
+      await client.close('close', 'navigation');
+    } catch (error) {
+      deps.log?.warn('remote agent: closing a released connection failed', { runId: client.runId, error: String(error) });
+      // 没送到：对方可能还占着名额，连接池继续给它占位并再试一次 close。
+      deps.pool?.holdAfterFailedClose(member, () => poller.invoke([{ op: 'close', runId: client.runId, mode: 'close', reason: 'navigation' }]));
+    } finally {
+      // 对方的 Codex 已退出：本机为它起的 exec-server 一并关掉，连回来的 Agent 会重新连。
+      relay?.reset();
+      if (active === client) active = null;
+      if (linkState === 'releasing') linkState = 'released';
+    }
+  }
+
   async function release(): Promise<boolean> {
     if (!isIdle() || !active) return false;
     const client = active;
     linkState = 'releasing';
-    const done = (async () => {
-      try {
-        // 用 close 而不是 detach：detach 不结束对方的进程，名额让不出来。
-        await client.close('close', 'navigation');
-      } catch (error) {
-        deps.log?.warn('remote agent: closing a released connection failed', { runId: client.runId, error: String(error) });
-        // 没送到：对方可能还占着名额，连接池继续给它占位并再试一次 close。
-        deps.pool?.holdAfterFailedClose(member, () => poller.invoke([{ op: 'close', runId: client.runId, mode: 'close', reason: 'navigation' }]));
-      } finally {
-        // 对方的 Codex 已退出：本机为它起的 exec-server 一并关掉，连回来的 Agent 会重新连。
-        relay?.reset();
-        if (active === client) active = null;
-        if (linkState === 'releasing') linkState = 'released';
-      }
-    })();
+    const done = closeRun(client);
     releasing = done;
     try {
       await done;
@@ -674,7 +677,8 @@ export async function startRemoteAgentSession(
   }
 
   /**
-   * 连回后补上对方进程里的状态(不在启动选项里的)。失败只记日志：不影响接着干活。
+   * 连回后补上对方进程里的状态(不在启动选项里的)。任一步失败就抛错：不能让消息在缺设置的 Agent 上执行
+   * (目录没给到，消息里的虚拟路径就落空；自动审查兜底没恢复则少了一道安全设置)。
    * 目录：打开时给的是第一次的列表，之后的增减在这里按运行中改目录的方式补发，与一直连着时的效果一致。
    */
   async function reapply(client: RemoteAgentRunClient): Promise<void> {
@@ -694,6 +698,8 @@ export async function startRemoteAgentSession(
         await client.call(method, args);
       } catch (error) {
         deps.log?.warn('remote agent: restoring state after reconnect failed', { method, error: String(error) });
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`[REMOTE_AGENT_UNAVAILABLE] Reconnected to the other computer but could not restore this task's settings (${method}): ${detail}`);
       }
     }
   }
@@ -719,7 +725,16 @@ export async function startRemoteAgentSession(
         });
         touch();
         deps.log?.info('remote agent reconnected', { kind, runId: client.runId });
-        await reapply(client);
+        try {
+          await reapply(client);
+        } catch (error) {
+          // 补发失败：关掉这次开的进程、还回名额，保持已让出；待补发的内容都还在，下次调用重新连回再补。
+          if (stateNow() === 'connected' && activeNow() === client) {
+            linkState = 'releasing';
+            await closeRun(client);
+          }
+          throw error;
+        }
         if (stateNow() !== 'connected' || activeNow() !== client) throw new Error('[REMOTE_AGENT_EXPIRED] The task has ended on this computer.');
         return client;
       } catch (error) {
