@@ -501,6 +501,44 @@ describe('已登记的 Auto 换来源，在 Auto 又挪动后撤销或改写', (
     },
   );
 
+  // 本轮内存标记不能扩大跟随范围；原负向矩阵没有携带新标记，也未走完整跟随入口。
+  // unit：即使遗留了标记，用户选择/跨引擎/跨电脑/非 Auto 意图的结果都保持不变。
+  it('带来源标记的其他切换意图仍不撤销或改登记', async () => {
+    for (const patch of [
+      { configStaged: undefined },
+      { sameAgentSelection: undefined },
+      { targetAgentKind: 'claude-code' as const },
+      { targetAgentDeviceId: 'device-2' },
+      { model: 'auto/other-group' },
+      { model: 'z-ai/glm-5.3-flash' },
+    ]) {
+      const intent = {
+        ...stagedToPlatform,
+        cindyAutoRelocation: { fromProviderId: POOL, targetProviderId: 'xd' },
+        ...patch,
+      };
+      const before = structuredClone(intent);
+      const stage = vi.fn(async () => {});
+      const cancel = vi.fn(async () => {});
+      await followMovedCindyAutoRoutes({
+        listCandidates: async () => [{ sessionId: TASK, ...current }],
+        listProviders: async () => [
+          provider(POOL, 'organization', []),
+          provider('xd', 'builtin', [REAL_AUTO]),
+        ],
+        withSessionLock: async (_id, run) => run(),
+        readRoute: async () => null,
+        readStagedSwitch: async () => stagedCindyAutoSwitch(intent, current),
+        cancelStagedSwitch: cancel,
+        stage,
+        assertCurrent: () => {},
+      });
+      expect(stage).not.toHaveBeenCalled();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(intent).toEqual(before);
+    }
+  });
+
   it('负向：只认系统登记、同引擎、同一个 Auto、只换来源的登记', () => {
     expect(stagedCindyAutoSwitch(stagedToPlatform, current)).toEqual({
       current,
