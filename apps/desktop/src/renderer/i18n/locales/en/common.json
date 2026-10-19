@@ -482,7 +482,7 @@
     },
     "idleRelease": {
       "title": "When this computer uses models on other computers",
-      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running or still have background work are never disconnected.",
+      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running are never disconnected; while a task is disconnected, its background commands on this computer keep running.",
       "minutes": "Idle release (minutes)",
       "hint": "The default is 0, which never disconnects; when the limit is reached you see the limit message. With 1–120, a task can disconnect only after it has been idle this long.",
       "invalid": "Enter a whole number from 0 to {{max}}.",
