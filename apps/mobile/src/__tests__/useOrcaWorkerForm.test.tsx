@@ -164,6 +164,52 @@ it.each(['agent-pc', 'share:s1', null])('remembers the submitted model route ind
   }
 });
 
+// PR #6453：完整路线恢复优先于 lastAgent；切 Agent 后成功提交不能再次恢复旧 Agent。
+// unit：已有用例未覆盖 select → remember → changeAgent → remember → reset 的连续操作；
+// 分别覆盖有效旧模型、收敛成默认模型，以及不能写进本机逐 Agent 槽的远程目录。
+it.each([
+  { location: null, remembered: 'pi-model', expected: 'pi-model' },
+  { location: null, remembered: 'retired', expected: null },
+  { location: 'agent-pc', remembered: 'pi-model', expected: null },
+])('replaces the saved Agent only after submitting an Agent switch ($location, $remembered)', async ({ location, remembered, expected }) => {
+  const maker = fakeMaker();
+  const defaults = defaultOrcaWorkerCreationPrefs();
+  const otherHostSelection = { agent: 'codex' as const, agentDeviceId: 'other-pc', model: { id: 'other-model', providerId: 'other-provider', effort: 'high', fast: false } };
+  saveOrcaWorkerCreationPrefs('user-1', {
+    ...defaults,
+    modelSelectionByHost: { 'host-b': otherHostSelection },
+    agents: { ...defaults.agents, pi: { model: remembered, effort: 'high', fast: false } },
+  });
+  await act(async () => { root.render(<LocationProbe maker={maker} lead={location} selectable />); await flush(); });
+  await act(async () => { latest!.reset(); await flush(); });
+  await act(async () => { await latest!.modelPicker.select(
+    { agent: 'codex', modelId: 'codex/gpt-5.5', providerId: 'chosen-provider', effort: 'high', fast: true },
+    { deviceId: location },
+  ); });
+  await act(async () => { latest!.remember(latest!.form); await flush(); });
+  const original = (await readOrcaWorkerCreationPrefs('user-1')).modelSelectionByHost?.['host-a'];
+
+  await act(async () => { latest!.changeAgent('pi'); await flush(); });
+  expect(latest!.form.model?.id ?? null).toBe(expected);
+  // 没有成功提交时，仅关闭重开不能删除旧完整路线。
+  await act(async () => { latest!.reset(); await flush(); });
+  expect(latest!.form).toMatchObject({ agent: 'codex', agentDeviceId: location });
+  expect((await readOrcaWorkerCreationPrefs('user-1')).modelSelectionByHost?.['host-a']).toEqual(original);
+
+  await act(async () => { latest!.changeAgent('pi'); await flush(); });
+  expect(latest!.form.model?.id ?? null).toBe(expected);
+  await act(async () => { latest!.remember(latest!.form); await flush(); });
+  await act(async () => root.render(null));
+  resetOrcaWorkerCreationPrefsMemory();
+  await act(async () => { root.render(<LocationProbe maker={maker} lead={location} selectable />); await flush(); });
+  await act(async () => { latest!.reset(); await flush(); });
+  expect(latest!.form.agent).toBe('pi');
+  expect(latest!.form.model?.id ?? null).toBe(expected);
+  const saved = await readOrcaWorkerCreationPrefs('user-1');
+  expect(saved.agents.pi.model).toBe(remembered);
+  expect(saved.modelSelectionByHost?.['host-b']).toEqual(otherHostSelection);
+});
+
 it('does not save cancelled picks or let a late saved route replace a new pick', async () => {
   const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
   const maker = fakeMaker();
@@ -198,11 +244,23 @@ it('leaves the Worker location unset when the controlled computer cannot honor i
   expect(latest!.form.model).toBeNull();
   await act(async () => {
     await latest!.modelPicker.select(
-      { agent: 'codex', modelId: 'codex/gpt-5.5', providerId: 'xd', effort: 'high', fast: false },
+      { agent: 'codex', modelId: 'remote-only-model', providerId: 'xd', effort: 'high', fast: false },
       { deviceId: 'agent-pc' },
     );
   });
   expect(latest!.form.agentDeviceId).toBeUndefined();
+  // PR #6453：旧端未指定位置表示跟随 Lead，选行不能把合法提交误禁用。
+  expect(latest!.valid).toBe(true);
+  await act(async () => { latest!.remember(latest!.form); await flush(); });
+  // 跟随远程 Lead 的模型不能写入本机旧槽，完整记忆仍需记录实际位置。
+  const prefs = await readOrcaWorkerCreationPrefs('user-1');
+  expect(prefs.agents.codex.model).toBe(defaultOrcaWorkerCreationPrefs().agents.codex.model);
+  expect(prefs.modelSelectionByHost?.['host-a']).toMatchObject({ agentDeviceId: 'agent-pc', model: { id: 'remote-only-model' } });
+  // 同一个远程 Lead 下，显式 null 是要求放在任务电脑，旧端不能兑现。
+  act(() => latest!.restore({ ...latest!.form, agentDeviceId: null }));
+  expect(latest!.valid).toBe(false);
+  act(() => latest!.restore({ ...latest!.form, agentDeviceId: 'agent-pc' }));
+  expect(latest!.valid).toBe(true);
 });
 
 it('keeps local Worker creation available on older Leads without the device-list channel', async () => {

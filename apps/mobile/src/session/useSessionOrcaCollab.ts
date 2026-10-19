@@ -549,13 +549,18 @@ export function useOrcaWorkerForm(params: {
   /** 提交成功后写回记忆(与桌面一样只在提交时记);读—合并—写由 rememberOrcaWorkerChoice 一处完成。 */
   const remember = useCallback((choice: OrcaWorkerFormValue) => {
     if (prefsScopeRef.current !== prefsScope || hostRef.current !== taskHostDeviceId) return;
+    // 未指定位置时按 Lead 的实际位置记忆，不能把旧端跟随远程 Lead 的模型写进本机旧槽。
+    const agentDeviceId = choice.agentDeviceId === undefined ? leadAgentDeviceIdRef.current : choice.agentDeviceId;
     // 完整路线按任务电脑隔离，运行设备与 SSH 不进入这份记忆。
     const submitted = {
       ...choice,
-      model: orcaWorkerAgentElsewhere(choice) || choice.executionDeviceId ? null : choice.model,
-      ...(!sshRemote && taskHostDeviceId && choice.modelSelectionExplicit && choice.model && !choice.executionDeviceId ? {
+      model: agentDeviceId !== null || choice.executionDeviceId ? null : choice.model,
+      ...(!sshRemote && taskHostDeviceId && !choice.executionDeviceId ? {
         taskHostDeviceId,
-        selection: { agent: choice.agent, agentDeviceId: choice.agentDeviceId === undefined ? leadAgentDeviceIdRef.current : choice.agentDeviceId, model: choice.model },
+        // 切 Agent 自动带出的模型仍按目录收敛；成功提交后不能再恢复上一条完整路线。
+        selection: choice.modelSelectionExplicit && choice.model
+          ? { agent: choice.agent, agentDeviceId, model: choice.model }
+          : null,
       } : {}),
     };
     prefsRef.current = mergeOrcaWorkerChoice(prefsRef.current, submitted);
@@ -665,7 +670,7 @@ export function useOrcaWorkerForm(params: {
     pickerAgents,
     valid: canSubmitOrcaWorkerForm(form, customRoleMode)
       && (!form.modelSelectionExplicit || params.agentLocationSelectable === true
-        || (form.agentDeviceId ?? null) === (params.leadAgentDeviceId ?? null))
+        || form.agentDeviceId === undefined || form.agentDeviceId === (params.leadAgentDeviceId ?? null))
       && (!form.executionDeviceId || executionDevices.some((device) => device.deviceId === form.executionDeviceId && device.supported)),
     /** 模型选择器是否列出远程供应商(被控电脑支持给 Worker 选 Agent 位置，且没选运行设备)。 */
     agentLocationSelectable: params.agentLocationSelectable === true && !form.executionDeviceId,

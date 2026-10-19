@@ -139,9 +139,10 @@ export function saveOrcaWorkerCreationPrefs(scope: string, prefs: OrcaWorkerCrea
 export interface OrcaWorkerSubmittedChoice {
   agent: OrcaWorkerAgentKind;
   permissionMode: OrcaWorkerPermissionMode;
-  /** 只有完整手动选择带 host；旧版逐 Agent 偏好仍可单独更新。 */
+  /** 普通任务的提交可更新该 host 的完整路线；SSH / 运行设备不传。 */
   taskHostDeviceId?: string;
-  selection?: OrcaWorkerModelSelection;
+  /** null = 本次提交改用逐 Agent 默认，删除该 host 的旧完整路线；缺省 = 不改。 */
+  selection?: OrcaWorkerModelSelection | null;
   model: { id: string; effort: string | null; fast: boolean } | null;
 }
 
@@ -150,11 +151,15 @@ export function mergeOrcaWorkerChoice(
   previous: OrcaWorkerCreationPrefs,
   submitted: OrcaWorkerSubmittedChoice,
 ): OrcaWorkerCreationPrefs {
+  let modelSelectionByHost = previous.modelSelectionByHost;
+  if (submitted.taskHostDeviceId && submitted.selection !== undefined) {
+    modelSelectionByHost = { ...modelSelectionByHost };
+    if (submitted.selection) modelSelectionByHost[submitted.taskHostDeviceId] = submitted.selection;
+    else delete modelSelectionByHost[submitted.taskHostDeviceId];
+  }
   return {
     ...previous,
-    ...(submitted.taskHostDeviceId && submitted.selection ? {
-      modelSelectionByHost: { ...previous.modelSelectionByHost, [submitted.taskHostDeviceId]: submitted.selection },
-    } : {}),
+    ...(modelSelectionByHost ? { modelSelectionByHost } : {}),
     lastAgent: submitted.agent,
     workerPermissionMode: submitted.permissionMode,
     agents: submitted.model
