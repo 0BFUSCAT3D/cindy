@@ -2,6 +2,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { __testing, useWechatBot } from '../useWechatBot';
 
 vi.mock('react-i18next', () => ({
@@ -45,6 +46,7 @@ function installWechatApi(initial: WechatBotState = disconnectedState()) {
       state: { ...channelState, workingDir: 'D:/project' },
     })),
     resetWorkingDirectory: vi.fn(async () => channelState),
+    setCompanion: vi.fn(async (botId: string | null) => ({ ...channelState, companionBotId: botId })),
     onStateChange: vi.fn((callback: (state: WechatBotState) => void) => {
       listeners.add(callback);
       return () => listeners.delete(callback);
@@ -66,6 +68,7 @@ function installWechatApi(initial: WechatBotState = disconnectedState()) {
 describe('useWechatBot', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setDataOwnerGeneration('owner-a');
     __testing.resetCache();
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
   });
@@ -157,6 +160,44 @@ describe('useWechatBot', () => {
     });
     expect(result.current.channelSettings?.workingDir).toBeNull();
     expect(api.resetWorkingDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  // #6492 r4318178122, unit: cached A + delayed directory response + B opening
+  // before its GET resolves must not expose A's binding or let A's action clear B.
+  // Existing unmount coverage only fences initial GETs, not cached/mutation results.
+  it('isolates cached settings and late mutations across account switches', async () => {
+    const a = installWechatApi({ phase: 'connected', bound: true, queuedTasks: 0 });
+    const settingsA = { version: 1 as const, workingDir: null, workingDirAvailable: true, companionBotId: 'bot-a' };
+    a.api.getChannelSettings.mockResolvedValue(settingsA);
+    const first = renderHook(() => useWechatBot());
+    await waitFor(() => expect(first.result.current.channelSettings?.companionBotId).toBe('bot-a'));
+    const staleUnlink = first.result.current.setCompanion;
+    let finishDirectory!: (value: Awaited<ReturnType<typeof a.api.chooseWorkingDirectory>>) => void;
+    a.api.chooseWorkingDirectory.mockReturnValueOnce(new Promise((resolve) => { finishDirectory = resolve; }));
+    let pending!: Promise<void>;
+    act(() => { pending = first.result.current.chooseWorkingDirectory(); });
+    first.unmount();
+
+    setDataOwnerGeneration('owner-b');
+    const b = installWechatApi();
+    let finishSettings!: (value: WechatChannelSettingsState) => void;
+    b.api.getChannelSettings.mockReturnValueOnce(new Promise((resolve) => { finishSettings = resolve; }));
+    const second = renderHook(() => useWechatBot());
+    expect(second.result.current.channelSettings).toBeNull();
+    expect(second.result.current.state).toEqual(disconnectedState());
+    await act(async () => {
+      expect(await staleUnlink(null)).toBe(false);
+      expect(await second.result.current.setCompanion(null)).toBe(false);
+      finishDirectory({ canceled: false, state: { ...settingsA, workingDir: 'D:/old-owner' } });
+      await pending;
+    });
+    expect(b.api.setCompanion).not.toHaveBeenCalled();
+    expect(__testing.getCache().channelSettings).toBeNull();
+    await act(async () => { finishSettings({ ...settingsA, companionBotId: 'bot-b' }); });
+    expect(second.result.current.channelSettings?.companionBotId).toBe('bot-b');
+    await act(async () => { expect(await second.result.current.setCompanion(null)).toBe(true); });
+    expect(b.api.setCompanion).toHaveBeenCalledWith(null);
+    second.unmount();
   });
 });
 

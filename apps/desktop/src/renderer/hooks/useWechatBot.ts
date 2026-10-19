@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerIdCurrent } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 
@@ -14,6 +15,7 @@ const EMPTY_STATE: WechatBotState = {
 
 let cachedState: WechatBotState | null = null;
 let cachedChannelSettings: WechatChannelSettingsState | null = null;
+let cacheOwnerId = getDataOwnerGeneration().dataOwnerId;
 
 export interface UseWechatBotReturn {
   state: WechatBotState;
@@ -32,6 +34,13 @@ export interface UseWechatBotReturn {
 
 export function useWechatBot(): UseWechatBotReturn {
   const { t } = useTranslation();
+  const [owner] = useState(getDataOwnerGeneration);
+  // ProtectedRoute remounts on owner changes; module caches survive that remount.
+  if (cacheOwnerId !== getDataOwnerGeneration().dataOwnerId) {
+    cacheOwnerId = getDataOwnerGeneration().dataOwnerId;
+    cachedState = null;
+    cachedChannelSettings = null;
+  }
   const [state, setState] = useState<WechatBotState>(() => cachedState ?? EMPTY_STATE);
   const [channelSettings, setChannelSettings] = useState<WechatChannelSettingsState | null>(
     () => cachedChannelSettings,
@@ -47,25 +56,26 @@ export function useWechatBot(): UseWechatBotReturn {
   useEffect(() => {
     let cancelled = false;
     const unsubscribe = window.electronAPI.wechatBot.onStateChange((next) => {
-      if (cancelled) return;
+      if (cancelled || !isDataOwnerIdCurrent(owner)) return;
       pushVersionRef.current += 1;
       cachedState = next;
       setState(next);
     });
     const unsubscribeSettings = window.electronAPI.wechatBot.onChannelSettingsChange?.((settings) => {
-      if (cancelled) return;
+      if (cancelled || !isDataOwnerIdCurrent(owner)) return;
       settingsVersionRef.current += 1;
       cachedChannelSettings = settings;
       setChannelSettings(settings);
     });
     const initialPushVersion = pushVersionRef.current;
     const initialSettingsVersion = settingsVersionRef.current;
+    const requestOwner = getDataOwnerGeneration();
     void Promise.all([
       window.electronAPI.wechatBot.getState(),
       window.electronAPI.wechatBot.getChannelSettings(),
     ])
       .then(([nextState, nextChannelSettings]) => {
-        if (cancelled) return;
+        if (cancelled || !isDataOwnerGenerationCurrent(requestOwner)) return;
         if (pushVersionRef.current === initialPushVersion) {
           cachedState = nextState;
           setState(nextState);
@@ -84,7 +94,7 @@ export function useWechatBot(): UseWechatBotReturn {
       unsubscribe();
       unsubscribeSettings?.();
     };
-  }, []);
+  }, [owner]);
 
   const authorize = useCallback(async (): Promise<boolean> => {
     if (isAuthorizing) return false;
@@ -127,10 +137,12 @@ export function useWechatBot(): UseWechatBotReturn {
   }, [isUnbinding, t]);
 
   const chooseWorkingDirectory = useCallback(async (): Promise<void> => {
-    if (isUpdatingWorkingDir) return;
+    if (isUpdatingWorkingDir || !isDataOwnerIdCurrent(owner)) return;
+    const requestOwner = getDataOwnerGeneration();
     setIsUpdatingWorkingDir(true);
     try {
       const result = await window.electronAPI.wechatBot.chooseWorkingDirectory();
+      if (!isDataOwnerGenerationCurrent(requestOwner)) return;
       cachedChannelSettings = result.state;
       setChannelSettings(result.state);
       if (!result.canceled) toast.success(t('settings.wechatBot.toasts.workingDirSaved'));
@@ -140,13 +152,15 @@ export function useWechatBot(): UseWechatBotReturn {
     } finally {
       setIsUpdatingWorkingDir(false);
     }
-  }, [isUpdatingWorkingDir, t]);
+  }, [isUpdatingWorkingDir, owner, t]);
 
   const resetWorkingDirectory = useCallback(async (): Promise<void> => {
-    if (isUpdatingWorkingDir) return;
+    if (isUpdatingWorkingDir || !isDataOwnerIdCurrent(owner)) return;
+    const requestOwner = getDataOwnerGeneration();
     setIsUpdatingWorkingDir(true);
     try {
       const next = await window.electronAPI.wechatBot.resetWorkingDirectory();
+      if (!isDataOwnerGenerationCurrent(requestOwner)) return;
       cachedChannelSettings = next;
       setChannelSettings(next);
       toast.success(t('settings.wechatBot.toasts.workingDirReset'));
@@ -156,14 +170,16 @@ export function useWechatBot(): UseWechatBotReturn {
     } finally {
       setIsUpdatingWorkingDir(false);
     }
-  }, [isUpdatingWorkingDir, t]);
+  }, [isUpdatingWorkingDir, owner, t]);
 
   const setCompanion = useCallback(async (botId: string | null): Promise<boolean> => {
-    if (companionBusyRef.current) return false;
+    if (companionBusyRef.current || !channelSettings || !isDataOwnerIdCurrent(owner)) return false;
+    const requestOwner = getDataOwnerGeneration();
     companionBusyRef.current = true;
     setIsUpdatingCompanion(true);
     try {
       const next = await window.electronAPI.wechatBot.setCompanion(botId);
+      if (!isDataOwnerGenerationCurrent(requestOwner)) return false;
       settingsVersionRef.current += 1;
       cachedChannelSettings = next;
       setChannelSettings(next);
@@ -175,7 +191,7 @@ export function useWechatBot(): UseWechatBotReturn {
       companionBusyRef.current = false;
       setIsUpdatingCompanion(false);
     }
-  }, [t]);
+  }, [channelSettings, owner, t]);
 
   return {
     state,
@@ -197,6 +213,7 @@ export const __testing = {
   resetCache(): void {
     cachedState = null;
     cachedChannelSettings = null;
+    cacheOwnerId = getDataOwnerGeneration().dataOwnerId;
   },
   getCache(): {
     state: WechatBotState | null;
