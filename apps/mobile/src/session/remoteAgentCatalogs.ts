@@ -7,6 +7,8 @@
  */
 import type { DeviceView } from '@cindy/device-link';
 import type { ProviderView } from '@cindy/model-providers/registry';
+import type { NewSessionRemoteAgentPick } from './newSession';
+import { matchesEntry, mobileUnifiedEntries } from './unifiedMobileModels';
 
 import { toDeviceListItems } from '@/device-link/devices';
 import type { ProviderShareCatalogEntry } from '@/device-link/providerShareCatalogCache';
@@ -107,4 +109,22 @@ export function providerShareRemoteCatalogs(input: {
     }
   }
   return catalogs;
+}
+
+/**
+ * 按记忆恢复的远程选择此刻还能不能用:清单读完后那台电脑 / 分享不在了、读不到、离线,或模型已不在
+ * 那份目录里「可选」的条目(供应商断开 / 停用、模型被隐藏)都算不能用。清单没读完先不下结论。
+ */
+export function restoredRemoteAgentUnusable(input: {
+  pick: NewSessionRemoteAgentPick;
+  catalog: RemoteAgentCatalog | undefined;
+  settled: boolean;
+}): boolean {
+  const { pick, catalog } = input;
+  if (!catalog) return input.settled;
+  if (catalog.status === 'loading') return false;
+  if (catalog.status === 'error' || catalog.offline) return true;
+  return !mobileUnifiedEntries(catalog.providers, [pick.agentKind], catalog.modelVisibilityOverrides, false)
+    .some((entry) => (pick.providerId === null || entry.providerId === pick.providerId)
+      && matchesEntry(entry, pick.model));
 }

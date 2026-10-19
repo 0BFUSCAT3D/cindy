@@ -401,7 +401,8 @@ import { mobileAgentLabel, mobileAgentVendor } from '@/session/sessionAgentSwitc
 import { MobileModelIconMark } from '@/session/MobileProviderMark';
 import { draftModelMemoryFor, hydrateDraftModelMemory } from '@/session/draftModelMemory';
 import { effortLabelFromRuntime, rowFastEditable } from '@/session/modelPickerRows';
-import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
+import { useRemoteAgentCatalogs, useRemoteAgentCatalogsWithStatus } from '@/session/useRemoteAgentCatalogs';
+import { restoredRemoteAgentUnusable as restoredRemoteAgentUnusableCheck } from '@/session/remoteAgentCatalogs';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, iconSize, iconStroke, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
 
@@ -1162,7 +1163,7 @@ export default function NewRemoteSessionScreen() {
     () => (remoteAgentPick ? [remoteAgentPick.deviceId] : []),
     [remoteAgentPick],
   );
-  const remoteAgentCatalogs = useRemoteAgentCatalogs({
+  const { catalogs: remoteAgentCatalogs, settled: remoteAgentCatalogsSettled } = useRemoteAgentCatalogsWithStatus({
     // 选择器打开时读其他电脑与分享;已选远程模型时还要按那份目录显示模型药丸。
     enabled: remoteAgentSupported && (modelSheetOpen || remoteAgentPick !== null),
     controlledDeviceId: selectedDeviceId,
@@ -1211,12 +1212,9 @@ export default function NewRemoteSessionScreen() {
   // → 退回被控电脑的默认;记忆保留,那台恢复后下次打开照样选回。
   const restoredRemoteAgentUnusable = !!remoteAgentChoice?.restored && !!remoteAgentPick && (
     (deviceProviders.ready && !remoteAgentSupported)
-    || (!!remoteAgentCatalog && (
-      remoteAgentCatalog.status === 'error'
-      || !!remoteAgentCatalog.offline
-      || (remoteAgentCatalog.status === 'ready'
-        && !(remoteAgentPillProvider && getModel(remoteAgentPillProvider, remoteAgentPick.model, remoteAgentPick.agentKind)))
-    ))
+    || (remoteAgentSupported && restoredRemoteAgentUnusableCheck({
+      pick: remoteAgentPick, catalog: remoteAgentCatalog ?? undefined, settled: remoteAgentCatalogsSettled,
+    }))
   );
   useEffect(() => {
     if (restoredRemoteAgentUnusable) setRemoteAgentChoice(null);

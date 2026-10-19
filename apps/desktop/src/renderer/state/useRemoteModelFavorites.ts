@@ -19,8 +19,18 @@ export interface FavoriteStore {
 // 上次从那台电脑读到的收藏(按数据归属代次 + 电脑):面板每次打开先显示它，再在后台读最新的。
 // 写入仍带 expected 交给那台电脑核对，旧快照改不坏真相。
 const lastFavorites = new Map<string, ModelFavoriteItem[]>();
+let lastFavoritesOwner = '';
+/** 数据归属换了(切换 / 退出账号)就丢掉上一个账号的快照,缓存里只留当前归属的。 */
+function rememberFavorites(owner: string, key: string, items: ModelFavoriteItem[]): void {
+  if (owner !== lastFavoritesOwner) {
+    lastFavorites.clear();
+    lastFavoritesOwner = owner;
+  }
+  lastFavorites.set(key, items);
+}
 export function __resetRemoteModelFavoritesCacheForTest(): void {
   lastFavorites.clear();
+  lastFavoritesOwner = '';
 }
 
 /** Remote views already hold the device's sessions topic. Only invalidate this
@@ -49,7 +59,7 @@ export function useRemoteModelFavorites(deviceId?: string) {
       )
         return;
       const next = parseModelFavorites(value) as ModelFavoriteItem[];
-      lastFavorites.set(key, next);
+      rememberFavorites(JSON.stringify(owner), key, next);
       setState({ key, items: next });
       setError(false);
       setErrorCode(null);
