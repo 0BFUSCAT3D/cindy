@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, isUserPendingAgentSwitchIntent, type MakerSessionAgentSwitchHandlerDeps, type PendingAgentSwitchIntent } from '../sessionAgentSwitchHandler';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { acquireSendToSessionLock, withSendToSessionLock } from '../sendToSessionLock';
+import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
+import { resolveSessionRuntimeAxes } from '../sessionRuntimeControl';
 
 // Execute the actual picker admission branches (local and agent-device), with
 // everything after admission represented by applyLive. No Electron bootstrap.
@@ -57,6 +59,82 @@ function compile(expression: string, bindings: Record<string, unknown>) {
   const js = ts.transpileModule(`return ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
 }
+
+function axisCatalogBindings(row: object = {}) {
+  const models = ['target', 'new'].map(id => ({ id, name: id, mode: 'chat', efforts: ['low', 'high'], defaultEffort: 'low', supportsFastMode: true }));
+  const providers = [{ id: 'provider', connected: true, agents: ['codex', 'pi'], routing: { codex: {}, pi: {} },
+    models: { codex: models, pi: models } }] as unknown as ProviderView[];
+  return {
+    effectiveSourceIdForModel, findCatalogModel, resolveSessionRuntimeAxes,
+    getActiveCatalog: () => ({}),
+    getDesktopProviderService: () => ({ listProviders: async () => providers }),
+    readUsableAgentDeviceProviders: vi.fn(async () => providers),
+    agentSwitchDeps: { getSessionRow: async () => row },
+    throwIpcError: (code: string, message: string) => { throw new Error(`[${code}] ${message}`); },
+  };
+}
+
+// Unit: stale UI axes must be admitted against the pending execution route,
+// before publishing or persisting a recovery tail. Previous send tests only
+// used target-compatible values and could not detect this bypass.
+describe('pending target axis admission', () => {
+  const routes = ['cross-engine', 'remote', 'remote-same-agent', 'inherited-remote', 'return-local', 'recovery'] as const;
+  it.each(routes.flatMap(route => ['effort', 'fastMode'].map(axis => ({ route, axis }))))(
+    'rejects stale $axis for $route without changing intent or DB', async ({ route, axis }) => {
+      const row = { agentDeviceId: route === 'inherited-remote' || route === 'remote-same-agent' || route === 'return-local' ? 'old-device' : null };
+      const bindings = axisCatalogBindings(row);
+      const providers = [{ id: 'provider', connected: true, models: { pi: [{ id: 'target', efforts: ['low'], defaultEffort: 'low', supportsFastMode: false }] } }] as unknown as ProviderView[];
+      bindings.getDesktopProviderService = () => ({ listProviders: async () => providers });
+      bindings.readUsableAgentDeviceProviders.mockResolvedValue(providers);
+      const pending = createPendingAgentSwitchRegistry();
+      const intent = { targetAgentKind: 'pi', model: 'target', providerId: 'provider', effort: 'low', fastMode: false,
+        confirmedContextWindow: 200000,
+        ...(route === 'remote' ? { targetAgentDeviceId: 'target-device' } : {}),
+        ...(route === 'remote-same-agent' ? { sameAgentSelection: true } : {}),
+        ...(route === 'return-local' ? { targetAgentDeviceId: null } : {}),
+        ...(route === 'recovery' ? { resumeFallbackRecovery: { boundaryClientId: 'boundary' } } : {}),
+      } as PendingAgentSwitchIntent;
+      pending.set('s1', intent);
+      const persist = vi.fn();
+      const changed = vi.fn();
+      const stage = compile(stageAxisAdapter, { ...bindings, agentSwitchPending: pending,
+        agentSwitchDeps: { ...bindings.agentSwitchDeps, onPendingSwitchChanged: changed,
+          selectSameAgentModel: vi.fn(async () => ({ deferred: true })) },
+        persistSessionFields: persist, projectPendingAgentSwitchIntent: (value: unknown) => value,
+        wakeSessionInputAfterCredentialSwitch: vi.fn() });
+      await expect(stage('s1', intent, axis === 'effort' ? { effort: 'xhigh' } : { fastMode: true }, vi.fn()))
+        .rejects.toThrow('INVALID_PARAMS');
+      expect(pending.get('s1')).toBe(intent);
+      expect(persist).not.toHaveBeenCalled();
+      expect(changed).not.toHaveBeenCalled();
+      const device = route === 'remote' ? 'target-device' : route === 'inherited-remote' || route === 'remote-same-agent' ? 'old-device' : null;
+      if (device) expect(bindings.readUsableAgentDeviceProviders).toHaveBeenCalledWith(device, 'pi', 'target', 'provider');
+      else expect(bindings.readUsableAgentDeviceProviders).not.toHaveBeenCalled();
+    });
+
+  it.each(['valid', 'owner-changed', 'catalog-failed'] as const)('uses the target device catalog and preserves the route: %s', async mode => {
+    const bindings = axisCatalogBindings();
+    const localRead = vi.fn(async () => []);
+    bindings.getDesktopProviderService = () => ({ listProviders: localRead });
+    if (mode === 'catalog-failed') bindings.readUsableAgentDeviceProviders.mockRejectedValue(new Error('device unavailable'));
+    const pending = createPendingAgentSwitchRegistry();
+    const intent = { targetAgentKind: 'pi', model: 'target', providerId: 'provider', effort: 'low', fastMode: false,
+      targetAgentDeviceId: 'target-device', confirmedContextWindow: 200000 } as PendingAgentSwitchIntent;
+    pending.set('s1', intent);
+    const stage = compile(stageAxisAdapter, { ...bindings, agentSwitchPending: pending,
+      projectPendingAgentSwitchIntent: (value: unknown) => value, wakeSessionInputAfterCredentialSwitch: vi.fn() });
+    const assertCurrent = () => { if (mode === 'owner-changed') throw new Error('owner changed'); };
+    const result = stage('s1', intent, { effort: 'high', fastMode: true }, assertCurrent);
+    if (mode === 'valid') {
+      await expect(result).resolves.toMatchObject({ pendingUntilSend: true });
+      expect(pending.get('s1')).toEqual({ ...intent, effort: 'high', fastMode: true });
+    } else {
+      await expect(result).rejects.toThrow(mode === 'owner-changed' ? 'owner changed' : 'device unavailable');
+      expect(pending.get('s1')).toBe(intent);
+    }
+    expect(localRead).not.toHaveBeenCalled();
+  });
+});
 
 // PR #6403 round 5: earlier closure tests pre-populated the intent and skipped
 // Renderer persistence. Exercise the real queue/lease and recovery boundary;
@@ -115,10 +193,10 @@ describe('complete selection commit boundaries', () => {
         if (fails) throw new Error('sqlite rejected');
         Object.assign(row, patch);
       });
-      const deps = { pendingSwitches: pending, getLiveSession: () => null,
+      const deps = { pendingSwitches: pending, getLiveSession: () => null, getSessionRow: async () => row,
         applyResumeFallbackAtomically: vi.fn(), setPendingHandoff: vi.fn(), onPendingSwitchChanged: vi.fn(),
         log: { warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
-      const stageAxis = compile(stageAxisAdapter, { agentSwitchPending: pending, agentSwitchDeps: deps,
+      const stageAxis = compile(stageAxisAdapter, { ...axisCatalogBindings(row), agentSwitchPending: pending, agentSwitchDeps: deps,
         persistSessionFields, projectPendingAgentSwitchIntent: (value: unknown) => value,
         wakeSessionInputAfterCredentialSwitch: vi.fn() });
       if (fails) {
@@ -182,10 +260,10 @@ describe('Orca model-only picker intent admission', () => {
       applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent, agentSwitchDeps: deps, contextOverflowRolloverHolder: null,
     });
     if (mode === 'cross-engine' || mode === 'relocation') {
-      const stageAxis = compile(stageAxisAdapter, { agentSwitchPending: pending, agentSwitchDeps: deps,
+      const stageAxis = compile(stageAxisAdapter, { ...axisCatalogBindings(row), agentSwitchPending: pending, agentSwitchDeps: deps,
         projectPendingAgentSwitchIntent: (intent: unknown) => intent, wakeSessionInputAfterCredentialSwitch: vi.fn() });
-      await stageAxis('s1', pending.get('s1'), { effort: 'high' });
-      await stageAxis('s1', pending.get('s1'), { fastMode: true });
+      await stageAxis('s1', pending.get('s1'), { effort: 'high' }, vi.fn());
+      await stageAxis('s1', pending.get('s1'), { fastMode: true }, vi.fn());
       expect(row).toMatchObject({ status: 'archived', model: 'old', effort: 'low', fastMode: false });
     }
     const controller = new AbortController();

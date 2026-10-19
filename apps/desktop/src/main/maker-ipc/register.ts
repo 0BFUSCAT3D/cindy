@@ -22142,12 +22142,45 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     patch: Pick<PendingAgentSwitchIntent, 'effort' | 'fastMode'>,
     assertCurrent: () => void,
   ) => {
-    const updated = { ...intent, ...patch };
+    let updated = { ...intent, ...patch };
+    const row = await agentSwitchDeps.getSessionRow(sessionId);
+    if (!row) throwIpcError('PRECONDITION_FAILED', 'session is unavailable during runtime axis update');
+    const targetDeviceId = intent.targetAgentDeviceId === undefined
+      ? row.agentDeviceId : intent.targetAgentDeviceId;
+    // Local same-engine selection already validates in SET_MODEL. Its remote
+    // branch only checks route availability, so admit its axes here as well.
+    if (!intent.sameAgentSelection || targetDeviceId) {
+      const providers = targetDeviceId
+        ? await readUsableAgentDeviceProviders(targetDeviceId, intent.targetAgentKind, intent.model, intent.providerId ?? null)
+        : await getDesktopProviderService().listProviders({ allowSideEffects: false, catalog: getActiveCatalog() });
+      const providerId = intent.providerId ?? effectiveSourceIdForModel(providers, null, intent.model, intent.targetAgentKind);
+      const provider = providers.find(candidate => candidate.id === providerId);
+      const model = findCatalogModel(provider, intent.model, intent.targetAgentKind, { exact: true });
+      if (!provider?.connected || !model) {
+        throwIpcError('INVALID_PARAMS', `model "${intent.model}" is unavailable from provider "${providerId ?? 'default'}"`);
+      }
+      const axes = resolveSessionRuntimeAxes({
+        model,
+        effort: (updated.effort ?? null) as SessionRuntimeProfile['effort'],
+        fastMode: updated.fastMode ?? false,
+        effortExplicit: patch.effort !== undefined,
+        fastExplicit: patch.fastMode !== undefined,
+        allowFixedEffortPlaceholder: true,
+      });
+      if (!axes.ok) {
+        throwIpcError('INVALID_PARAMS', axes.reason === 'effort-unavailable'
+          ? `effort "${patch.effort}" is unavailable for model "${intent.model}"`
+          : `Fast is unavailable for model "${intent.model}"`);
+      }
+      updated = { ...updated, effort: axes.effort ?? undefined, fastMode: axes.fastMode };
+    }
+    // Row/catalog reads can cross an account/shared-task ownership change.
+    assertCurrent();
     // Recovery is a post-commit tail: its target route already owns the DB
     // fields and the next bootstrap reads them. The tail itself only repairs
     // the resume boundary/handoff, so it cannot consume newly staged axes.
     if (intent.resumeFallbackRecovery) {
-      await persistSessionFields(sessionId, patch);
+      await persistSessionFields(sessionId, { effort: updated.effort, fastMode: updated.fastMode });
       assertCurrent();
     }
     if (intent.sameAgentSelection) {
