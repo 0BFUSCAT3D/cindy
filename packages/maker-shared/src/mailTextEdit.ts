@@ -88,7 +88,7 @@ export function safeMailDocument(source: string, inline = false, images: MailInl
         if (!tags.has(node.tagName) || node.namespaceURI !== htmlNames.NS.HTML) continue;
         node.attrs = node.attrs.filter(a => a.name === 'style' || (attrs.has(a.name) &&
           (a.name !== 'href' || /^(https?:|mailto:)/i.test(a.value)) &&
-          (a.name !== 'src' || /^(https:\/\/|cid:|data:image\/(png|jpeg|gif|webp);base64,)/i.test(a.value))));
+          (a.name !== 'src' || /^(cid:|data:image\/(png|jpeg|gif|webp);base64,)/i.test(a.value))));
         for (const attr of node.attrs) if (attr.name === 'style') attr.value = cleanCss(attr.value);
         if (node.tagName === 'style') {
           node.childNodes = node.childNodes.filter(n => 'value' in n);
@@ -131,7 +131,7 @@ export const validMailImageUrl = (url: string) => /^cindy-media:\/\/blobs\/[a-f0
 export const MAIL_PAPER_COLOR = 'white';
 export const MAIL_INLINE_STYLE = `html{color-scheme:light}body{margin:4px;background:${MAIL_PAPER_COLOR};color:#111;font:16px/1.6 Arial,Helvetica,sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}table{max-width:100%}[data-cindy-mail-run]{white-space:pre-wrap;outline:none}[data-cindy-mail-run]:empty{display:inline-block;min-width:1ch;min-height:1em}`;
 export function mailInlineDocument(source: string, images: MailInlineImage[] = []): string {
-  return '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'none\'; img-src https: data: cindy-media:; style-src \'unsafe-inline\'; form-action \'none\'; base-uri \'none\'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>' + MAIL_INLINE_STYLE + '</style>' + safeMailDocument(source, true, images);
+  return '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'none\'; img-src data: cindy-media:; style-src \'unsafe-inline\'; form-action \'none\'; base-uri \'none\'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>' + MAIL_INLINE_STYLE + '</style>' + safeMailDocument(source, true, images);
 }
 
 /** Executed only by the native WebView injection API. The document CSP allows

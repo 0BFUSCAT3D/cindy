@@ -44,7 +44,8 @@ card-update 可选 sourceCallId：只接受当前在途、同插件同任务的�
 公共邮件发送沿用 sending 状态，可选 pendingSend（deadline、label、cancelLabel、sendNowLabel）。
 Host 仅在此等待阶段接受 mail:cancel / mail:now；动作不提交表单，草稿编辑锁定。
 两端只显示倒计时，真正的 10 秒等待和发送由公共邮件 SDK 执行；同草稿重复请求共用一次等待。
-撤销、重新读取或修改草稿取消等待，重启不会恢复自动发送。旧端忽略 pendingSend，仍按 sending
+撤销、重新读取或修改草稿取消等待，重启不会恢复自动发送。重启后点击旧倒计时的撤销或立即发送，
+SDK 重新读取并恢复草稿；再次发送必须重新经过完整倒计时。旧端忽略 pendingSend，仍按 sending
 锁定编辑；旧手机可能无法操作新增按钮，完整撤销交互需升级查看端。没有新 channel 或原生配置。
 
 ## MCP Apps
@@ -2357,6 +2358,9 @@ kinds, with `bodyHtml` / `quoteHtml` (64k characters) and `attachmentItems` (bou
 JSON metadata). Ordinary text remains 16k. Only Host mail gets the 1 MiB card
 budget; arbitrary plugin HTML remains limited to 32 KiB. HTML previews are inert,
 sandboxed documents, not markup mounted in Cindy's privileged renderer DOM.
+Both clients block remote image sources and CSS fetches in mail previews; CSP
+permits only data and managed CID substitutions. Original outgoing HTML remains
+unchanged by this preview policy; remote images can be viewed in the mailbox.
 HTML supports typing directly into rendered text in both clients and the enlarged
 view, without an edit-mode button, formatting toolbar or source editor. Edits patch source text
 only, preserving styles, links and CID image references, and synchronize the

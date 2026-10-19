@@ -116,8 +116,8 @@ export function MailHtmlPreview(props: PreviewProps) {
     <PreviewFrame {...props} />
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40" />
-        <Dialog.Content aria-describedby={undefined} className="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-[min(960px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-border bg-[var(--surface-elevated)] p-4 shadow-xl">
+        <Dialog.Overlay className="modal-scrim fixed inset-0 z-50" />
+        <Dialog.Content aria-describedby={undefined} onPointerDownOutside={event => event.preventDefault()} className="modal-panel fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-[min(960px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col p-4">
           <div className="mb-3 flex items-center justify-between">
             <Dialog.Title className="text-sm font-medium">{t('chat.ghostCall.mailPreview')}</Dialog.Title>
             <Dialog.Close aria-label={t('chat.lightbox.close')} className="rounded p-1 text-muted-foreground hover:bg-[var(--surface-hover)]"><X className="h-4 w-4" /></Dialog.Close>

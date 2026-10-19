@@ -1,4 +1,4 @@
-import { parse, type DefaultTreeAdapterTypes } from 'parse5';
+import { parse, parseFragment, serialize, type DefaultTreeAdapterTypes } from 'parse5';
 
 /** Declarative, non-secret text fields. Plugins never supply executable controls. */
 export interface GhostCardFormField {
@@ -405,20 +405,21 @@ export function readGhostCardForm(html: string): GhostCardFormField[] | null {
 /** Omit the legacy preview only when a client will render the native fields. */
 export function omitGhostCardFormPreview(html: string): string {
   if (!readGhostCardForm(html)) return html;
-  const source = html.replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1>/gi, "");
-  let start = -1,
-    depth = 0;
-  for (const match of source.matchAll(/<\/?div\b[^>]*>/g)) {
-    if (start < 0) {
-      if (!/\sdata-ghost-form="/.test(match[0])) continue;
-      start = match.index!;
-      depth = 1;
-    } else if (match[0].startsWith("</")) {
-      if (--depth === 0)
-        return (
-          source.slice(0, start) + source.slice(match.index! + match[0].length)
-        );
-    } else depth++;
-  }
-  return html;
+  // Remove nodes, never source substrings: deletion must not join malformed
+  // markup into a new executable tag. Serialization escapes remaining text.
+  const doc = parseFragment(html);
+  let removed = false;
+  const visit = (parent: DefaultTreeAdapterTypes.ParentNode) => {
+    parent.childNodes = parent.childNodes.filter(node => {
+      if ('tagName' in node) {
+        const form = node.tagName === 'div' && node.attrs.find(a => a.name === 'data-ghost-form');
+        if (form && parseGhostCardForm(form.value)) { removed = true; return false; }
+        if (node.tagName === 'style' || node.tagName === 'script') return false;
+      }
+      if ('childNodes' in node) visit(node);
+      return true;
+    });
+  };
+  visit(doc);
+  return removed ? serialize(doc) : html;
 }

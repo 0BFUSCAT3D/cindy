@@ -866,7 +866,7 @@ var cindyMail = (function () {
         return;
       var key = match[2];
       var edit = mailEdits.get(key);
-      if (!edit && ['change', 'send', 'attach', 'image'].includes(match[1])) {
+      if (!edit && ['change', 'send', 'attach', 'image', 'cancel', 'now'].includes(match[1])) {
         await restoreMailDraft(key, message.callId);
         edit = mailEdits.get(key);
       }
@@ -946,16 +946,17 @@ var cindyMail = (function () {
         (record.state === "sent" || edit.sent || edit.sending)
       )
         return;
-      if (match[1] === "cancel") {
-        if (cancelMailSend(key)) {
+      if (match[1] === "cancel" || match[1] === "now") {
+        if (record.state !== "draft" || edit.sent || edit.sending) return;
+        if (match[1] === "now" && edit.pendingSend) {
+          await edit.pendingSend.finish();
+        } else if (cancelMailSend(key) || !edit.pendingSend) {
+          // After restart the persisted countdown has no live send behind it.
+          // Restore a draft; a new send request must start a fresh grace period.
           const selected = await adapter.selectAccount(record.account);
           if (selected.ok) await showMailDraft({ callId: record.callId },
             selected, edit.readBack, undefined, key, edit.fields, true);
         }
-        return;
-      }
-      if (match[1] === "now") {
-        await edit.pendingSend?.finish();
         return;
       }
       clearTimeout(edit.timer);

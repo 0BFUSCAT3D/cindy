@@ -102,7 +102,13 @@ function fixture({
       async send(card) {
         if (card.type === 'mail-draft-read') {
           const stored = cards.findLast(c => c.draft && c.callId === card.callId);
-          return stored && allowCardRead ? { ok: true, draft: copy(stored.draft) } : { ok: false };
+          if (!stored || !allowCardRead) return { ok: false };
+          const draft = copy(stored.draft);
+          // Host persists status-only patches as part of the same card.
+          for (const update of cards.slice(cards.indexOf(stored) + 1)) {
+            if (update.callId === card.callId && update.statusOnly) Object.assign(draft, copy(update.statusOnly));
+          }
+          return { ok: true, draft };
         }
         cards.push(copy(card));
         return { ok: acceptCard || !card.statusOnly?.pendingSend };
@@ -682,6 +688,10 @@ test('unknown writes allow inspecting the mailbox without unlocking or repeating
   const f = fixture({ write: async () => { throw new Error('lost response'); } });
   await f.present();
   assert.equal((await f.tool('send')).execution, 'unknown');
+  const unknownCardCount = f.cards.length;
+  await f.card('cancel', undefined, { formValues: undefined });
+  await f.card('now', undefined, { formValues: undefined });
+  assert.equal(f.cards.length, unknownCardCount);
   f.restart();
   assert.equal((await f.tool('get')).ok, true);
   assert.equal(f.cards.at(-1).draft.state, 'unconfirmed');
@@ -726,6 +736,11 @@ test("expiry sends exactly once and restart never resumes a waiting send", async
   await f.advance(1);
   assert.equal((await pending).data.sent, true);
   assert.equal(f.writes.length, 1);
+  const sentCardCount = f.cards.length;
+  await f.card('cancel', undefined, { formValues: undefined });
+  await f.card('now', undefined, { formValues: undefined });
+  assert.equal(f.cards.length, sentCardCount);
+  assert.equal(f.writes.length, 1);
 
   const restarted = fixture({ autoSend: false });
   await restarted.present();
@@ -740,6 +755,25 @@ test("expiry sends exactly once and restart never resumes a waiting send", async
   await restarted.card('cancel');
   assert.equal((await freshSend).execution, 'not_executed');
   assert.equal(restarted.writes.length, 0);
+});
+for (const action of ['cancel', 'now']) test(`stale countdown ${action} restores the draft after restart without sending`, async () => {
+  const f = fixture({ autoSend: false });
+  await f.present();
+  void f.tool('send');
+  await f.waitCountdown();
+  assert.equal(f.cards.at(-1).statusOnly.state, 'sending');
+  f.restart();
+  await f.card(action, undefined, { formValues: undefined });
+  assert.equal(f.reads.length, 1);
+  assert.equal(f.cards.at(-1).draft.state, 'draft');
+  assert.equal(f.cards.at(-1).draft.pendingSend, undefined);
+  await f.advance(10000);
+  assert.equal(f.writes.length, 0);
+  const fresh = f.tool('send');
+  await f.waitCountdown();
+  await f.card('cancel', undefined, { formValues: undefined });
+  assert.equal((await fresh).execution, 'not_executed');
+  assert.equal(f.writes.length, 0);
 });
 test("a rejected countdown card or a draft without a presented card cannot send", async () => {
   const f = fixture({ acceptCard: false });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyMailInlineEdits, mailInlineRuns, mailTextParagraphs, safeMailDocument } from '../mailTextEdit';
+import { parse, type DefaultTreeAdapterTypes } from 'parse5';
+import { applyMailInlineEdits, mailInlineDocument, mailInlineRuns, mailTextParagraphs, safeMailDocument } from '../mailTextEdit';
 import {
   parseGhostCardForm,
   parseGhostCardFormValues,
@@ -18,6 +19,34 @@ import {
 } from "../ghostCardForm";
 
 describe("declarative card forms", () => {
+  const elements = (node: DefaultTreeAdapterTypes.Node): DefaultTreeAdapterTypes.Element[] => [
+    ...('tagName' in node ? [node] : []),
+    ...('childNodes' in node ? node.childNodes.flatMap(elements) : []),
+  ];
+  // Both clients use this preview document. Rendering untrusted mail must not
+  // contact a sender's tracking endpoint, nor rewrite the outgoing source.
+  it('blocks remote images and CSS fetches while retaining managed inline images', () => {
+    const url = `cindy-media://blobs/${'a'.repeat(64)}.png`;
+    const source = '<p>Hello</p><img src="https://tracker.example.test/open" srcset="https://tracker.example.test/retina 2x"><img src="cid:photo"><img src="data:image/png;base64,YQ=="><div style="background:url(https://tracker.example.test/bg)">Footer</div>';
+    const nodes = elements(parse(mailInlineDocument(source, [{ cid: 'photo', url }])));
+    const images = nodes.filter(n => n.tagName === 'img');
+    expect(images.map(n => n.attrs.find(a => a.name === 'src')?.value)).toEqual([undefined, url, 'data:image/png;base64,YQ==']);
+    expect(images.some(n => n.attrs.some(a => a.name === 'srcset'))).toBe(false);
+    expect(nodes.find(n => n.tagName === 'div')?.attrs.find(a => a.name === 'style')?.value).toBe('background:none');
+    const csp = nodes.find(n => n.tagName === 'meta' && n.attrs.some(a => a.name === 'http-equiv' && a.value === 'Content-Security-Policy'))!;
+    expect(csp.attrs.find(a => a.name === 'content')?.value.split(';').map(s => s.trim())).toContain('img-src data: cindy-media:');
+    expect(applyMailInlineEdits(source, {})!.html).toBe(source);
+  });
+  it('omits legacy form nodes without joining malformed markup into executable tags', () => {
+    const form = '<div data-ghost-form="[{&quot;name&quot;:&quot;body&quot;,&quot;label&quot;:&quot;Body&quot;,&quot;value&quot;:&quot;text&quot;}]"><div>Preview</div></div>';
+    for (const split of ['<scr<style></style>ipt>alert(1)</script>', '<scr<script></script>ipt>alert(1)</script>']) {
+      const result = omitGhostCardFormPreview(split + form + '<p>Sender</p>');
+      const nodes = elements(parse(result));
+      expect(nodes.some(n => ['script', 'style'].includes(n.tagName))).toBe(false);
+      expect(nodes.some(n => n.attrs.some(a => a.name === 'data-ghost-form'))).toBe(false);
+      expect(result).toContain('<p>Sender</p>');
+    }
+  });
   // A failed view must not poison a task after remount; live edits still gate chat.
   it('retires a failed editor while preserving in-flight and replacement deliveries', async () => {
     let finish!: (ok: boolean) => void;
