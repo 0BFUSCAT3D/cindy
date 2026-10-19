@@ -193,6 +193,46 @@ describe('remote connection pool', () => {
     expect(await pool.releaseForRetry(self)).toBe(true);
   });
 
+  // PR #6483 review：让出时 close 没送到，对方还占着名额，本机却当已释放，会直接打开撞上限。
+  it('keeps counting a connection whose close did not get through until a retried close succeeds or the provider reclaims it', async () => {
+    vi.useFakeTimers();
+    try {
+      const pool = new RemoteConnectionPool({ idleMinutes: () => 10, now: () => now, checkMs: 60 * MINUTE, closeRetryMs: 2_000, closeHoldMs: 3 * MINUTE });
+      pool.noteMaxRuns(2);
+      const stuck = member('stuck', now - 60 * MINUTE);
+      stuck.occupied = false;
+      const other = member('other', now - 30 * MINUTE);
+      const self = member('self', now, false);
+      [stuck, other, self].forEach((item) => pool.add(item));
+      let retries = 0;
+      let reachable = false;
+      const retryClose = async () => {
+        retries += 1;
+        if (!reachable) throw new Error('link down');
+      };
+      pool.holdAfterFailedClose(stuck, retryClose);
+      // 仍占位：本机已满，打开前先让另一条有资格的。
+      await pool.beforeOpen(self);
+      expect(other.released).toBe(1);
+      expect(pool.occupied(self)).toBe(1);
+      // 再发一次也没送到：一直占到对方自行回收的时间。
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(retries).toBe(1);
+      expect(pool.occupied(self)).toBe(1);
+      await vi.advanceTimersByTimeAsync(3 * MINUTE);
+      expect(pool.occupied(self)).toBe(0);
+      // 再发送到了：立即不再占位。
+      reachable = true;
+      pool.holdAfterFailedClose(stuck, retryClose);
+      expect(pool.occupied(self)).toBe(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(retries).toBe(2);
+      expect(pool.occupied(self)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('checks the watermark periodically while connections are registered', async () => {
     vi.useFakeTimers();
     try {
@@ -833,6 +873,32 @@ describe('remote connection pool with a real host', () => {
     await expect(a.send({ type: 'user', content: 'lost' })).rejects.toThrow('offline');
     expect(await ask(a, events, 'again')).toBe('ok:again');
     expect(scenario.started).toHaveLength(2);
+  });
+
+  it('when a release close does not get through, makes room before opening instead of hitting the limit, then closes it', async () => {
+    limits = { perDevice: 2, total: 64 };
+    const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, checkMs: 3_600_000, closeRetryMs: 20 });
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    const b = await start(pool);
+    await ask(b, watch(b), 'hello');
+    // 让出 a 时 close 第一次没送到对方。
+    let dropped = false;
+    intercept = (request) => {
+      if (request.op !== 'close' || dropped) return undefined;
+      dropped = true;
+      throw new Error('[DEVICE_LINK_TIMEOUT] link down');
+    };
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    expect(host.limitUsage().total).toBe(2);
+    await sleep(5);
+    opens = 0;
+    await start(pool);
+    // 本机仍按 a 占着算：打开前先让了 b，没有白开一次撞上限。
+    expect(opens).toBe(1);
+    // 再发的 close 送到后，对方结束 a。
+    await vi.waitFor(() => expect(host.limitUsage().total).toBe(1));
   });
 
   it('gives up a release once a send has started', async () => {

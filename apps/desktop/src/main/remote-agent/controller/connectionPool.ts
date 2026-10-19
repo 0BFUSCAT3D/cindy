@@ -18,6 +18,13 @@
 export const REMOTE_AGENT_POOL_WATERMARK_RATIO = 0.8;
 /** 在水位线之上的连接会随时间变得有资格，定期再看一次。 */
 export const REMOTE_AGENT_POOL_CHECK_MS = 60_000;
+/** 让出时 close 没送到：隔这么久再原样发一次。 */
+export const REMOTE_AGENT_POOL_CLOSE_RETRY_MS = 2_000;
+/**
+ * close 没送到时本机按仍占着名额计数的最长时间：对方这么久没被读取就自行回收这个任务
+ * (与对方的 REMOTE_AGENT_HOST_IDLE_MS 一致)。
+ */
+export const REMOTE_AGENT_POOL_CLOSE_HOLD_MS = 3 * 60_000;
 
 export interface PooledRemoteConnection {
   /** 占着对方的名额(正在连、连着或正在断开)。 */
@@ -46,11 +53,15 @@ export interface RemoteConnectionPoolOptions {
   idleMinutes(): number;
   now?: () => number;
   checkMs?: number;
+  closeRetryMs?: number;
+  closeHoldMs?: number;
   log?: { info(message: string, meta?: Record<string, unknown>): void; warn(message: string, meta?: Record<string, unknown>): void };
 }
 
 export class RemoteConnectionPool {
   private readonly members = new Set<PooledRemoteConnection>();
+  /** 让出时 close 没送到、对方可能还占着名额的连接 → 结束占位。 */
+  private readonly held = new Map<PooledRemoteConnection, () => void>();
   private maxRuns: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 让出名额一次只做一个，避免几条路径同时挑中不同的连接、多让。 */
@@ -69,6 +80,7 @@ export class RemoteConnectionPool {
       (this.timer as { unref?: () => void }).unref?.();
     }
     return () => {
+      this.held.get(member)?.();
       this.members.delete(member);
       if (this.members.size === 0 && this.timer) {
         clearInterval(this.timer);
@@ -86,11 +98,37 @@ export class RemoteConnectionPool {
     return this.members.size;
   }
 
-  /** 本机在这台电脑上占着的名额数。 */
+  /** 本机在这台电脑上占着的名额数(含 close 没送到、对方可能还没结束的)。 */
   occupied(except?: PooledRemoteConnection): number {
     let count = 0;
-    for (const member of this.members) if (member !== except && member.occupiesSlot()) count += 1;
+    for (const member of this.members) if (member !== except && (member.occupiesSlot() || this.held.has(member))) count += 1;
     return count;
+  }
+
+  /**
+   * 让出时 close 没送到(链路抖动等)：对方的进程可能还占着名额。在本机计数里继续占位，隔一会儿用
+   * `retryClose` 原样再发一次 close；再发成功(对方不认识这个任务也算)或到了对方自行回收的时间后不再占位。
+   * 占位期间水位线与打开前的判断都算上它，会去让别的有资格的连接，而不是直接打开撞上限。
+   */
+  holdAfterFailedClose(member: PooledRemoteConnection, retryClose: () => Promise<unknown>): void {
+    this.held.get(member)?.();
+    let ended = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(retry);
+      clearTimeout(expire);
+      if (this.held.get(member) === end) this.held.delete(member);
+    };
+    const retry = setTimeout(() => {
+      retryClose().then(end, (error) => {
+        this.options.log?.warn('remote agent pool: closing a released connection failed again', { error: String(error) });
+      });
+    }, this.options.closeRetryMs ?? REMOTE_AGENT_POOL_CLOSE_RETRY_MS);
+    const expire = setTimeout(end, this.options.closeHoldMs ?? REMOTE_AGENT_POOL_CLOSE_HOLD_MS);
+    (retry as { unref?: () => void }).unref?.();
+    (expire as { unref?: () => void }).unref?.();
+    this.held.set(member, end);
   }
 
   /** 提前让出名额的水位线；上限太小(水位线不低于上限)时没有。 */

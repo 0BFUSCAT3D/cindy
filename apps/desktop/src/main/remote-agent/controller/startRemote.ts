@@ -405,6 +405,8 @@ export async function startRemoteAgentSession(
         await client.close('close', 'navigation');
       } catch (error) {
         deps.log?.warn('remote agent: closing a released connection failed', { runId: client.runId, error: String(error) });
+        // 没送到：对方可能还占着名额，连接池继续给它占位并再试一次 close。
+        deps.pool?.holdAfterFailedClose(member, () => poller.invoke([{ op: 'close', runId: client.runId, mode: 'close', reason: 'navigation' }]));
       } finally {
         // 对方的 Codex 已退出：本机为它起的 exec-server 一并关掉，连回来的 Agent 会重新连。
         relay?.reset();

@@ -199,11 +199,13 @@ export class RemoteAgentRunClient implements PolledRun {
 
   async close(mode: 'close' | 'detach', reason: RemoteAgentTeardownReason): Promise<void> {
     if (this.closed) return;
+    let delivered = false;
     try {
       await this.invoke([{ op: 'close', runId: this.runId, mode, reason }]);
+      delivered = true;
     } finally {
-      // 收尾事件仍会经 poll 到达；流结束时自行收口。
-      if (this.registered) await Promise.race([this.drained, sleep(CLOSE_DRAIN_MS)]);
+      // 收尾事件仍会经 poll 到达；流结束时自行收口。close 没送到时对方不会收尾，不用等。
+      if (this.registered && delivered) await Promise.race([this.drained, sleep(CLOSE_DRAIN_MS)]);
       this.finish('closed');
     }
   }
