@@ -101,7 +101,7 @@ export function BotGroupComposer({
   const [division, setDivision] = useState(false);
   const [sending, setSending] = useState(false);
   const [waitingUploads, setWaitingUploads] = useState(false);
-  const leaveConfirmedRef = useConfirmLeaveWhileUploading(waitingUploads);
+  const waitForLeaveDecision = useConfirmLeaveWhileUploading(waitingUploads);
   const [stopping, setStopping] = useState(false);
   const inputRef = useRef<NativeTextInput>(null);
   const textRef = useRef(text); textRef.current = text;
@@ -196,8 +196,9 @@ export function BotGroupComposer({
       // once the chat is gone the upload is dropped, so nothing is sent either.
       setWaitingUploads(true);
       const { failedCount, abandoned } = await tray.waitForPendingUploads();
+      const discarded = abandoned || await waitForLeaveDecision();
       setWaitingUploads(false);
-      if (abandoned || leaveConfirmedRef.current) return;
+      if (discarded) return;
       const attachments = attachmentsSupported ? [...tray.attachmentsRef.current] : [];
       if (failedCount > 0 || (!draftText && attachments.length === 0)) {
         restoreDraft();

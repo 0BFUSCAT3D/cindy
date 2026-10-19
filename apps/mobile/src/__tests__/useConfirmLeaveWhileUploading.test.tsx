@@ -24,14 +24,18 @@ beforeEach(() => {
 afterEach(() => act(() => root.unmount()));
 
 function mount(active: boolean) {
-  let confirmed!: { current: boolean };
+  let waitForLeaveDecision!: () => Promise<boolean>;
   function Harness() {
-    confirmed = useConfirmLeaveWhileUploading(active);
+    waitForLeaveDecision = useConfirmLeaveWhileUploading(active);
     return null;
   }
   act(() => root.render(<Harness />));
   const [enabled, onPrevent] = h.prevent.mock.calls.at(-1)!;
-  return { enabled, onPrevent, confirmed };
+  const action = { type: 'GO_BACK' };
+  const leave = () => onPrevent({ data: { action } });
+  const choose = (style: 'cancel' | 'destructive') => h.alert.mock.calls.at(-1)![2]
+    .find((button: { style?: string }) => button.style === style).onPress();
+  return { enabled, leave, choose, action, waitForLeaveDecision, dismiss: () => h.alert.mock.calls.at(-1)![3].onDismiss() };
 }
 
 describe('useConfirmLeaveWhileUploading', () => {
@@ -40,20 +44,41 @@ describe('useConfirmLeaveWhileUploading', () => {
     expect(mount(true).enabled).toBe(true);
   });
 
-  it('keeps waiting on cancel and leaves, marking the send abandoned, on discard', () => {
-    const { onPrevent, confirmed } = mount(true);
-    const action = { type: 'GO_BACK' };
-    onPrevent({ data: { action } });
-    const [, , buttons] = h.alert.mock.calls[0];
-    const stay = buttons.find((b: { style?: string }) => b.style === 'cancel');
-    const discard = buttons.find((b: { style?: string }) => b.style === 'destructive');
+  it('lets the send continue when nobody tried to leave', async () => {
+    await expect(mount(true).waitForLeaveDecision()).resolves.toBe(false);
+  });
 
-    stay.onPress?.();
+  // The native alert stays open after an upload settles, so the send must wait for the choice.
+  it('holds the send until the open dialog is answered', async () => {
+    const stay = mount(true);
+    stay.leave();
+    let settled: boolean | undefined;
+    const waiting = stay.waitForLeaveDecision().then((value) => { settled = value; });
+    await Promise.resolve();
+    expect(settled).toBeUndefined();
+    stay.choose('cancel');
+    await waiting;
+    expect(settled).toBe(false);
     expect(h.dispatch).not.toHaveBeenCalled();
-    expect(confirmed.current).toBe(false);
 
-    discard.onPress();
-    expect(h.dispatch).toHaveBeenCalledWith(action);
-    expect(confirmed.current).toBe(true);
+    const discard = mount(true);
+    discard.leave();
+    const discarding = discard.waitForLeaveDecision();
+    discard.choose('destructive');
+    await expect(discarding).resolves.toBe(true);
+    expect(h.dispatch).toHaveBeenCalledWith(discard.action);
+    await expect(discard.waitForLeaveDecision()).resolves.toBe(true);
+  });
+
+  it('treats dismissing the dialog as keep waiting, and never stacks a second dialog', async () => {
+    const harness = mount(true);
+    harness.leave();
+    harness.leave();
+    expect(h.alert).toHaveBeenCalledTimes(1);
+    const waiting = harness.waitForLeaveDecision();
+    harness.dismiss();
+    await expect(waiting).resolves.toBe(false);
+    harness.leave();
+    expect(h.alert).toHaveBeenCalledTimes(2);
   });
 });

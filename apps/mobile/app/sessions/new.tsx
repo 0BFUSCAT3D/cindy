@@ -612,7 +612,7 @@ export default function NewRemoteSessionScreen() {
   const [creating, setCreating] = useState(false);
   const [createStartedAt, setCreateStartedAt] = useState<number | null>(null);
   const [createPhase, setCreatePhase] = useState<SlowSendPhase>('preparing');
-  const leaveConfirmedRef = useConfirmLeaveWhileUploading(creating && createPhase === 'uploading');
+  const waitForLeaveDecision = useConfirmLeaveWhileUploading(creating && createPhase === 'uploading');
   const [error, setError] = useState<string | null>(() => {
     const creationError = readRouteString(params.creationError);
     return creationError ? t('session.screen.createFailedNotice', { message: creationError }) : null;
@@ -4528,7 +4528,8 @@ export default function NewRemoteSessionScreen() {
       // 此时不该带着残缺附件去开新会话。等待期间离开会先确认;确认离开后在途上传随页面丢弃,同样放弃。
       setCreatePhase('uploading');
       const { failedCount, abandoned } = await waitForPendingUploads();
-      if (abandoned || leaveConfirmedRef.current) return;
+      // 离开确认弹窗未决时,等用户选择:选「放弃发送」就不发,选「继续等待」照常创建。
+      if (abandoned || await waitForLeaveDecision()) return;
       if (!isCurrentOwner()) return;
       if (!ensureDeviceAlive()) return;
       if (failedCount > 0) return;
