@@ -1135,38 +1135,6 @@ export function ghostPreviewUrlAllowed(manifest: GhostManifest, rawUrl: string):
   return hosts.some((pattern) => ghostNetworkHostMatches(pattern, hostname));
 }
 
-const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-/**
- * 回环地址的「主机:端口」身份(http / ws,无凭证);非回环或其它协议返回 null。
- * 面板嵌入回环预览时,嵌入帧内的请求只许回到同一主机:端口。
- */
-export function ghostLoopbackOrigin(rawUrl: unknown): string | null {
-  if (typeof rawUrl !== 'string' || rawUrl.length === 0 || rawUrl.length > GHOST_PREVIEW_URL_MAX_CHARS) return null;
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-  if (url.username !== '' || url.password !== '') return null;
-  if (url.protocol !== 'http:' && url.protocol !== 'ws:') return null;
-  const hostname = url.hostname.toLowerCase();
-  if (!LOOPBACK_HOSTNAMES.has(hostname)) return null;
-  return `${hostname}:${url.port || '80'}`;
-}
-
-/**
- * 停靠面板能否嵌入本机回环预览页:身份卡必须同时声明 panel、node 工作进程
- * (页面由随包进程在本机提供)以及 preview.hosts 中的 localhost / 127.0.0.1。
- * 满足时主机放行面板内指向回环地址的子帧,以及该子帧回到同一主机:端口的请求;
- * 面板页自身仍不能联网。
- */
-export function ghostPanelLoopbackEmbedAllowed(manifest: GhostManifest): boolean {
-  if (!manifest.panel || !manifest.node) return false;
-  return (manifest.preview?.hosts ?? []).some((host) => host === 'localhost' || host === '127.0.0.1');
-}
-
 /**
  * 身份卡里声明过的全部外链地址(来源 = network.secrets[].url 与
  * node.secretBindings[].url,装包时
