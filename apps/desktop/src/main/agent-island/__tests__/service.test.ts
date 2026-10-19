@@ -1809,6 +1809,35 @@ describe('AgentIslandService native publishing', () => {
     expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('新群名');
   });
 
+  // Review of #6436 (round 5): a rename landing while the FIRST identity read was still
+  // encoding the avatar found no resolved companion to refresh, then the stale read committed.
+  it('re-reads an identity whose first load overlapped a companion change', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const named = (name: string): AgentIslandCompanionIdentity => ({
+      botId: 'b1', companion: { name, hue: 'teal', glyph: name[0]!, glyphIsInitial: true },
+    });
+    mocks.getSessionRowSnapshot.mockImplementation(async () => ({
+      status: 'active', title: 'x', userSendAt: null, workingDir: '/home', workspaceKind: null, source: 'bot',
+    }));
+    let releaseFirst!: (identity: AgentIslandCompanionIdentity) => void;
+    mocks.readAgentIslandCompanion.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }));
+    mocks.readAgentIslandCompanion.mockResolvedValue(named('新名字'));
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir: '/home' }, 'hi');
+    await vi.waitFor(() => expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1));
+
+    service.handleCompanionProfileChanged('b1');
+    releaseFirst(named('旧名字'));
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.title).toBe('新名字'));
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(2);
+  });
+
   it('retries a remote companion avatar after a failed read instead of keeping the glyph forever', async () => {
     vi.useFakeTimers();
     try {

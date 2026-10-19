@@ -172,6 +172,7 @@ const REMOTE_AUTH_ERROR_FALLBACK_MS = 30_000;
 const ISLAND_ENTRY_ALERT_TTL_MS = 60_000;
 const MAX_ISLAND_ENTRY_SESSION_ID_LENGTH = 128;
 const REMOTE_COMPANION_ARTWORK_RETRY_MS = 60_000;
+const COMPANION_READ_MAX_ATTEMPTS = 3;
 const MAX_ISLAND_ENTRY_ID_LENGTH = 32;
 
 interface AgentIslandSessionMeta {
@@ -339,8 +340,10 @@ export class AgentIslandService {
   private readonly metadataLoading = new Set<string>();
   private readonly remoteCompanions = new Map<string, { snapshot: AgentIslandCompanionSnapshot; retryAt: number | null }>();
   private readonly remoteCompanionKeysInUse = new Set<string>();
-  /** Latest refresh per Session: an older read that finishes late never overwrites a newer one. */
-  private readonly companionRefreshSeq = new Map<string, number>();
+  /** Latest identity read per Session: an older read that finishes late never overwrites a newer one. */
+  private readonly companionReadSeq = new Map<string, number>();
+  /** Bumped by every companion or group change, so reads already in flight know they may be stale. */
+  private companionChangeEpoch = 0;
   private lastDeviceSessionInputs: readonly AgentIslandRemoteSessionInput[] = [];
   private readonly layoutPreferencesByDisplayId: Map<number, AgentIslandLayoutPreference>;
   private readonly detachedLayoutPreferences: AgentIslandLayoutPreference[];
@@ -823,7 +826,8 @@ export class AgentIslandService {
     this.metadataLoading.clear();
     this.remoteCompanions.clear();
     this.remoteCompanionKeysInUse.clear();
-    this.companionRefreshSeq.clear();
+    this.companionReadSeq.clear();
+    this.companionChangeEpoch = 0;
     this.lastDeviceSessionInputs = [];
     this.lastSoundDisplayState = null;
     this.soundCooldownUntilByEvent.clear();
@@ -1440,22 +1444,43 @@ export class AgentIslandService {
 
   /** A companion's name or avatar changed: redraw the Sessions that speak as it. */
   handleCompanionProfileChanged(botId: string): void {
+    this.companionChangeEpoch += 1;
     this.refreshCompanionSessions((identity) => identity.botId === botId);
   }
 
   /** A group was renamed or removed: redraw the group lanes that show its name. */
   handleBotGroupChanged(groupId: string): void {
+    this.companionChangeEpoch += 1;
     this.refreshCompanionSessions((identity) => identity.groupId === groupId);
+  }
+
+  /**
+   * The only way a companion identity is read (first load and refresh alike). Invariant: what a
+   * Session shows is the result of a read that started after the latest identity change.
+   *  - A read is superseded (undefined) when a newer read for the same Session started, so an
+   *    older, slower one never overwrites it.
+   *  - A change that lands while a read is in flight (even before the Session's companion is
+   *    known, so no refresh could target it) bumps the epoch; that read is repeated.
+   */
+  private async readCompanionIdentityFresh(sessionId: string): Promise<AgentIslandCompanionIdentity | null | undefined> {
+    const seq = (this.companionReadSeq.get(sessionId) ?? 0) + 1;
+    this.companionReadSeq.set(sessionId, seq);
+    let identity: AgentIslandCompanionIdentity | null = null;
+    for (let attempt = 0; attempt < COMPANION_READ_MAX_ATTEMPTS; attempt += 1) {
+      const epoch = this.companionChangeEpoch;
+      identity = await readAgentIslandCompanion(sessionId);
+      if (this.companionReadSeq.get(sessionId) !== seq) return undefined;
+      if (epoch === this.companionChangeEpoch) return identity;
+    }
+    return identity;
   }
 
   private refreshCompanionSessions(matches: (identity: AgentIslandCompanionIdentity) => boolean): void {
     for (const [sessionId, cached] of this.metadataCache) {
       if (!cached.companion || !matches(cached.companion)) continue;
-      const seq = (this.companionRefreshSeq.get(sessionId) ?? 0) + 1;
-      this.companionRefreshSeq.set(sessionId, seq);
-      void readAgentIslandCompanion(sessionId)
+      void this.readCompanionIdentityFresh(sessionId)
         .then((companion) => {
-          if (this.companionRefreshSeq.get(sessionId) !== seq) return;
+          if (companion === undefined) return;
           const latest = this.metadataCache.get(sessionId);
           if (latest) this.commitMetadata(sessionId, { ...latest, companion });
         })
@@ -1578,7 +1603,7 @@ export class AgentIslandService {
       .then(async (row) => {
         // Only Bot Sessions can speak as a companion; others skip the extra lookup.
         const companion = row?.source === 'bot'
-          ? await readAgentIslandCompanion(sessionId).catch((err) => {
+          ? await this.readCompanionIdentityFresh(sessionId).catch((err) => {
             log.warn('companion identity load failed', {
               sessionId,
               error: err instanceof Error ? err.message : String(err),
@@ -1586,6 +1611,8 @@ export class AgentIslandService {
             return null;
           })
           : null;
+        // Superseded: a newer read of this Session owns the result.
+        if (companion === undefined) return;
         this.commitMetadata(sessionId, {
           title: row?.title ?? null,
           workingDir: row?.workingDir ?? null,
