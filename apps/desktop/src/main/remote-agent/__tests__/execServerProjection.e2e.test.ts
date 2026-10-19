@@ -90,6 +90,8 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
     const messages: Array<{ id?: number; method?: string; params?: { processId?: string }; error?: unknown }> = [];
     let parts = '';
     let ended = 0;
+    // 模拟交付链路断开：下一次推送失败，中继会丢掉未发帧并从本机这侧关掉全部连接。
+    let failNextPush = false;
     const relay = new ExecServerRelay({
       codexPath: CODEX,
       cwd: root,
@@ -100,6 +102,10 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
         ended += 1;
       },
       push: async (frames) => {
+        if (failNextPush) {
+          failNextPush = false;
+          throw new Error('link down');
+        }
         for (const frame of frames) {
           if (frame.kind !== 'message') continue;
           parts += frame.data;
@@ -141,13 +147,26 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
       // closed / exited 可能都会来，只算一次。
       expect(ended).toBe(2);
 
-      // 连接带着还在跑的进程被整条关掉(对方关闭 WebSocket、exec-server 异常退出)，同样算一次由忙转闲。
-      start(6, 'dropped', 'sleep 30');
+      // 本机这侧断开(推送失败、exec-server 异常退出)：先排进关闭帧再删连接，带着的工作同样算一次由忙转闲。
+      // 用对方不认识的方法只换来一条错误回复，进程仍在跑，不会经 process/closed 先报一次。
+      start(6, 'local', 'sleep 30');
       await expect.poll(() => messages.some((item) => item.id === 6), { timeout: 5000 }).toBe(true);
+      expect(relay.busy()).toBe(true);
+      failNextPush = true;
+      send({ id: 7, method: 'cindy/test-ping', params: {} });
+      await expect.poll(() => ended, { timeout: 5000 }).toBe(3);
+
+      // 对方关闭 WebSocket：连接带着还在跑的进程被整条删掉，同样算一次。
+      relay.handle({ t: 'ws', connId: 'c1', kind: 'open', path: '/ws/exec-server' });
+      send({ id: 8, method: 'initialize', params: { clientName: 'cindy-test', clientVersion: '1' } });
+      await expect.poll(() => messages.find((item) => item.id === 8), { timeout: 5000 }).toBeDefined();
+      send({ method: 'initialized', params: {} });
+      start(10, 'dropped', 'sleep 30');
+      await expect.poll(() => messages.some((item) => item.id === 10), { timeout: 5000 }).toBe(true);
       expect(relay.busy()).toBe(true);
       relay.handle({ t: 'ws', connId: 'c1', kind: 'close' });
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
-      expect(ended).toBe(3);
+      expect(ended).toBe(4);
 
       // 让出名额后关掉 exec-server，中继本身还能接新的连接。
       relay.reset();

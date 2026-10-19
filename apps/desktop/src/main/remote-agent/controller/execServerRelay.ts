@@ -362,7 +362,11 @@ export class ExecServerRelay {
    * 这时断开对方的 Agent 会丢掉它们，连接池不让出名额。
    */
   busy(): boolean {
-    if (this.outbox.length || this.flushing) return true;
+    return this.outbox.length > 0 || Boolean(this.flushing) || this.hasWork();
+  }
+
+  /** 各条连接上还有没有工作(在跑的进程、启动中的请求、待确认的消息)；还没推完的帧不算。 */
+  private hasWork(): boolean {
     for (const connection of this.connections.values()) {
       if (connection.processes.size || connection.starting.size || connection.queue) return true;
     }
@@ -549,7 +553,8 @@ export class ExecServerRelay {
   private dropConnection(connId: string, notifyRemote: boolean): void {
     const connection = this.connections.get(connId);
     if (!connection || connection.closed) return;
-    // 连接带着在跑的进程、启动中的请求或待确认的消息被整条删掉(异常退出、对方关闭)，同样是一次由忙转闲。
+    // 连接带着在跑的进程、启动中的请求或待确认的消息被整条删掉(异常退出、交付失败、对方关闭)，同样是一次
+    // 由忙转闲。只看各连接上的工作：本机这侧断开时紧接着排进去的关闭帧不算忙。
     const hadWork = connection.processes.size > 0 || connection.starting.size > 0 || Boolean(connection.queue);
     connection.closed = true;
     this.connections.delete(connId);
@@ -560,7 +565,7 @@ export class ExecServerRelay {
       // 进程已退出。
     }
     if (notifyRemote) this.send({ connId, kind: 'close' });
-    if (hadWork && !this.busy()) this.deps.onProcessesEnded?.();
+    if (hadWork && !this.hasWork()) this.deps.onProcessesEnded?.();
   }
 
   /** 一条消息：超过单帧上限时拆成多段(除最后一段外带 more)。 */
