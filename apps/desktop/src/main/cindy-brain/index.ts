@@ -487,6 +487,7 @@ import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js
 import {
   createBetterSqliteDatabase,
   resolveBetterSqliteModuleEntry,
+  resolveBetterSqliteNativeBinding,
 } from '../localDb/betterSqliteFactory.js';
 import { getGhostGrantConfirmBridge } from './ghostGrantConfirmBridge.js';
 import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
@@ -6030,6 +6031,7 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
       getDiskFreeBytes: (root) => statfsFreeBytes(root),
       workerScriptPath: defaultLibraryDbWorkerPath,
       betterSqliteModulePath: () => resolveBetterSqliteModuleEntry() ?? 'better-sqlite3',
+      betterSqliteNativeBinding: resolveBetterSqliteNativeBinding,
       log,
       syncAgentReadonlyExtraDir: syncMivoLibraryExtraDirFromSlot,
       showItemInFolder: (absPath) => {
