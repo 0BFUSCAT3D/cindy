@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
-import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, type MakerSessionAgentSwitchHandlerDeps } from '../sessionAgentSwitchHandler';
+import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, type MakerSessionAgentSwitchHandlerDeps, type PendingAgentSwitchIntent } from '../sessionAgentSwitchHandler';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 
 // Execute the actual picker admission branches (local and agent-device), with
@@ -52,14 +52,21 @@ describe('Orca model-only picker intent admission', () => {
   // PR #6403 P1: the composer already restores archived tasks, but Goal's
   // direct-send lease did not. Execute the real lease, send boundary and model
   // admission together; earlier picker tests stop before this boundary (unit).
-  it.each(['archived', 'restore-failed', 'cancelled'] as const)('handles archived direct-send selection: %s', async mode => {
+  const directSendCases = ['archived', 'cross-engine', 'relocation', 'repicked-during-restore', 'config', 'agent', 'restore-failed', 'cancelled'] as const;
+  it.each(directSendCases)('handles archived direct-send selection: %s', async mode => {
     const compile = (expression: string, bindings: Record<string, unknown>) => {
       const js = ts.transpileModule(`return ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
       return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
     };
-    const row = { status: 'archived' };
+    const row = { id: 's1', status: 'archived', agentKind: 'codex', model: 'old', providerId: 'provider',
+      sdkSessionId: null, remoteHostId: null, agentDeviceId: null };
     const pending = createPendingAgentSwitchRegistry();
-    pending.set('s1', { sameAgentSelection: true, targetAgentKind: 'codex', model: 'new', providerId: 'provider' });
+    const crossEngine = mode === 'cross-engine' || mode === 'repicked-during-restore';
+    const intent: PendingAgentSwitchIntent = { targetAgentKind: crossEngine ? 'pi' : 'codex', model: 'new', providerId: 'provider',
+      ...(mode === 'relocation' ? { targetAgentDeviceId: 'executor-device' } : !crossEngine ? { sameAgentSelection: true } : {}),
+      ...(mode === 'config' ? { configStaged: true } : mode === 'agent' ? { runtimeSource: 'agent' } : {}),
+    };
+    pending.set('s1', intent);
     const applied = vi.fn(() => ({ deferred: false }));
     const throwIpcError = (code: string, message: string) => { throw new Error(`[${code}] ${message}`); };
     const admission = compile(`(internalOptions) => {
@@ -72,12 +79,23 @@ describe('Orca model-only picker intent admission', () => {
     });
     const release = vi.fn();
     const acquire = vi.fn(async () => release);
+    let finishRestore: (() => void) | undefined;
     const restore = vi.fn(async () => {
       if (mode === 'restore-failed') throw new Error('restore failed');
+      if (mode === 'repicked-during-restore') await new Promise<void>(resolve => { finishRestore = resolve; });
       row.status = 'active';
     });
-    const deps = { pendingSwitches: pending, getLiveSession: () => ({ isTurnRunning: () => false }),
-      selectSameAgentModel, log: { info: vi.fn(), warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
+    const switchToDb = vi.fn(async (_id: string, patch: object) => {
+      expect(row.status).toBe('active');
+      Object.assign(row, patch);
+    });
+    const automatic = mode === 'config' || mode === 'agent';
+    const deps = { pendingSwitches: pending, getSessionRow: async () => row,
+      getLiveSession: () => ({ isTurnRunning: () => automatic }), selectSameAgentModel,
+      closeSession: vi.fn(), listMessagesForHandoff: async () => [], applyAgentSwitchToDb: switchToDb,
+      setSessionProvider: vi.fn(), insertBoundaryMessage: async () => 'boundary', setPendingHandoff: vi.fn(),
+      bootstrapSwitchedSession: vi.fn(), withCloseSuppressed: (_id: string, fn: () => Promise<unknown>) => fn(),
+      log: { info: vi.fn(), warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
     const directSend = compile(directSendAdapter, {
       agentSwitchPending: pending, restoreArchivedSessionForSend: restore,
       acquireSendToSessionLock: acquire, reconcileBotModelRoute: vi.fn(),
@@ -85,10 +103,31 @@ describe('Orca model-only picker intent admission', () => {
     });
     const controller = new AbortController();
     if (mode === 'cancelled') controller.abort();
-    if (mode === 'archived') {
+    if (automatic) {
       const lease = await directSend('s1', controller.signal);
+      expect(restore).not.toHaveBeenCalled();
+      expect(row.status).toBe('archived');
+      expect(pending.get('s1')).toBe(intent);
+      expect(applied).not.toHaveBeenCalled();
+      expect(switchToDb).not.toHaveBeenCalled();
+      lease.release();
+    } else if (mode !== 'restore-failed' && mode !== 'cancelled') {
+      const sending = directSend('s1', controller.signal);
+      // A later picker choice while restore awaits must be the one applied.
+      if (mode === 'repicked-during-restore') {
+        expect(restore).toHaveBeenCalledOnce();
+        pending.set('s1', { ...intent, model: 'latest' });
+        finishRestore!();
+      }
+      const lease = await sending;
       expect(row.status).toBe('active');
-      expect(applied).toHaveBeenCalledOnce();
+      if (mode === 'archived') expect(applied).toHaveBeenCalledOnce();
+      else {
+        expect(switchToDb).toHaveBeenCalledOnce();
+        expect(row.model).toBe(mode === 'repicked-during-restore' ? 'latest' : 'new');
+        expect(row.agentKind).toBe(mode === 'relocation' ? 'codex' : 'pi');
+        if (mode === 'relocation') expect(row.agentDeviceId).toBe('executor-device');
+      }
       expect(pending.get('s1')).toBeUndefined();
       expect(restore.mock.invocationCallOrder[0]).toBeLessThan(acquire.mock.invocationCallOrder[0]);
       expect(release).not.toHaveBeenCalled();
@@ -98,6 +137,7 @@ describe('Orca model-only picker intent admission', () => {
       await expect(directSend('s1', controller.signal)).rejects.toThrow(mode === 'restore-failed' ? 'restore failed' : /abort/i);
       expect(row.status).toBe('archived');
       expect(applied).not.toHaveBeenCalled();
+      expect(switchToDb).not.toHaveBeenCalled();
       expect(pending.get('s1')).toBeDefined();
       if (mode === 'cancelled') expect(restore).not.toHaveBeenCalled();
       else expect(acquire).not.toHaveBeenCalled();

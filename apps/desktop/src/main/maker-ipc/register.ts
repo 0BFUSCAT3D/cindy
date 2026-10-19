@@ -10436,7 +10436,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // Match composer sends: restore before applying a user's staged model.
     // The restore owns the same route lock, so run it before acquiring the
     // direct-send lease (which is deliberately held until the caller sends).
-    if (!signal?.aborted && agentSwitchPending.get(sessionId)?.sameAgentSelection) {
+    const pendingSelection = agentSwitchPending.get(sessionId);
+    if (!signal?.aborted && pendingSelection &&
+        pendingSelection.runtimeSource !== 'agent' && pendingSelection.configStaged !== true) {
       await restoreArchivedSessionForSend(sessionId);
     }
     let stage = 'direct-send:acquire';
