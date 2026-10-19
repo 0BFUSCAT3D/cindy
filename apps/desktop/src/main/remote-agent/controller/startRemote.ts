@@ -683,17 +683,21 @@ export async function startRemoteAgentSession(
     }
   }
 
-  /** 要对方 Agent 干活时：已让出名额就连回同一个会话。正在让就等它让完；同时只连一次。 */
+  /**
+   * 要对方 Agent 干活时：已让出名额就连回同一个会话。正在让就等它让完；同时只连一次。
+   * 连回期间(含连回后补发设置)其它调用都等它：打开成功时状态已是 connected，不能抢在设置恢复前用这条连接。
+   */
   async function ensureConnected(): Promise<RemoteAgentRunClient> {
     for (;;) {
       if (linkState === 'closed') throw new Error('[REMOTE_AGENT_EXPIRED] The task has ended on this computer.');
-      if (linkState === 'connected' && active) return active;
       if (reconnecting) return reconnecting;
+      if (linkState === 'connected' && active) return active;
       if (!releasing) break;
       await releasing.catch(() => undefined);
     }
     linkState = 'connecting';
-    const attempt = (async () => {
+    let attempt: Promise<RemoteAgentRunClient> | null = null;
+    attempt = (async () => {
       try {
         const client = await connect(true, (started) => {
           controller?.onReconnected(started);
@@ -707,14 +711,13 @@ export async function startRemoteAgentSession(
         // 连不回(对方忙、离线等)：保持已让出名额，下次发送再试。
         if (stateNow() === 'connecting') linkState = 'released';
         throw localizeRemoteError(error);
+      } finally {
+        // 在这次尝试结束的同时清掉：之后来的调用不会拿到已经失败的旧尝试。
+        if (reconnecting === attempt) reconnecting = null;
       }
     })();
     reconnecting = attempt;
-    try {
-      return await attempt;
-    } finally {
-      if (reconnecting === attempt) reconnecting = null;
-    }
+    return attempt;
   }
 
   const link: RemoteAgentLink = {

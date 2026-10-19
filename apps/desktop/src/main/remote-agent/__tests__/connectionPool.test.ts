@@ -776,6 +776,56 @@ describe('remote connection pool with a real host', () => {
     expect(scenario.calls.filter((call) => call.method === 'send')).toHaveLength(3);
   });
 
+  // PR #6483 review：连回后恢复设置(reapply)完成前就算连上了，并发的第二条消息会抢在恢复前、甚至第一条之前发给对方。
+  it('a second send during the post-reconnect restore waits for it and goes after the first', async () => {
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await a.setExtraDirs!([], path.join(root, 'library'));
+    await sleep(5);
+    await start(pool);
+    await sleep(5);
+    // 连回后补发 libraryRoot(setExtraDirs)时卡住。
+    let restoreGate: (() => void) | null = null;
+    intercept = (request) => {
+      if (restoreGate || request.op !== 'call' || request.method !== 'setExtraDirs') return undefined;
+      return new Promise((resolve) => {
+        restoreGate = () => resolve(host.handle(CONTROLLER, request).then((value) => value ?? null));
+      });
+    };
+    const before = scenario.calls.length;
+    const first = a.send({ type: 'user', content: 'one' });
+    await vi.waitFor(() => expect(restoreGate).not.toBeNull());
+    const second = a.send({ type: 'user', content: 'two' });
+    await sleep(5);
+    expect(scenario.calls.slice(before).filter((call) => call.method === 'send')).toEqual([]);
+    restoreGate!();
+    await Promise.all([first, second]);
+    await vi.waitFor(() => expect(scenario.calls.slice(before).map((call) => call.method === 'send'
+      ? `send:${(call.args[0] as { content: string }).content}`
+      : call.method)).toEqual(['setExtraDirs', 'send:one', 'send:two']));
+    expect(scenario.started).toHaveLength(3);
+  });
+
+  it('after a failed reconnect the next send tries again instead of reusing the failed attempt', async () => {
+    limits = { perDevice: 16, total: 64 };
+    const pool = newPool();
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    intercept = (request) => {
+      if (request.op !== 'open') return undefined;
+      intercept = null;
+      throw new Error('[REMOTE_AGENT_UNAVAILABLE] offline');
+    };
+    await expect(a.send({ type: 'user', content: 'lost' })).rejects.toThrow('offline');
+    expect(await ask(a, events, 'again')).toBe('ok:again');
+    expect(scenario.started).toHaveLength(2);
+  });
+
   it('gives up a release once a send has started', async () => {
     const pool = newPool();
     const a = await start(pool);
