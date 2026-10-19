@@ -189,6 +189,7 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
         document.removeEventListener('pointercancel', onCancel);
+        window.removeEventListener('blur', onCancel);
         window.removeEventListener('keydown', onKey, true);
         cleanupRef.current = null;
         if (commit && current) moveTabToGroup(tabId, current.group, sessionIdRef.current);
@@ -212,13 +213,17 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
       document.addEventListener('pointercancel', onCancel);
+      // 松手落在别的窗口 / 系统 UI 上时 pointerup 不会回来:失焦即取消,不让抓取态卡住。
+      window.addEventListener('blur', onCancel);
       window.addEventListener('keydown', onKey, true);
       cleanupRef.current = () => finish(false);
       return true;
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (activeRef.current || e.button !== 0) return;
+      // 上一次的松手没收到(极端情况):新按下视作上一次已结束,先收尾再接新手势。
+      if (activeRef.current) cleanupRef.current?.();
+      if (e.button !== 0) return;
       const target = e.target as HTMLElement | null;
       const pill = target?.closest<HTMLElement>('[data-tab-pill]');
       if (!pill || target?.closest('[data-no-drag]')) return;
