@@ -1120,6 +1120,7 @@ function ResolvedLocalLink({
   anchorProps,
   children,
   sessionId,
+  showFileIcon = true,
 }: {
   resolvedAbsPath: string;
   localKind: MarkdownLocalKind;
@@ -1131,6 +1132,7 @@ function ResolvedLocalLink({
   children: ReactNode;
   /** 当前会话 id;就位时 html 文件左键弹"打开方式"菜单(同 FileTargetChip)。 */
   sessionId?: string;
+  showFileIcon?: boolean;
 }) {
   const { t } = useTranslation();
   // 同 FileTargetChip:html + 有会话上下文时左键按偏好直开,「查看源文件」
@@ -1168,7 +1170,7 @@ function ResolvedLocalLink({
         onContextMenu={ctxMenu.onContextMenu}
         {...anchorProps}
       >
-        {localKind !== 'directory' && nodeToText(children).trim() && (
+        {showFileIcon && localKind !== 'directory' && nodeToText(children).trim() && (
           <FileTypeIcon name={resolvedAbsPath} size={14} className="mr-1 inline-block align-[-0.125em]" />
         )}
         {children}
@@ -1457,6 +1459,7 @@ export function QuestionReferenceText({ text, onPreviewOpenChange }: { text: str
         isStreaming={false}
         allowPrivilegedLinks
         fromBarePath
+        showFileIcon={false}
         anchorProps={{}}
         setLightboxSrc={setImage}
         setTextLightboxFile={setFile}
@@ -1483,6 +1486,7 @@ function MarkdownTargetLink({
   fromBarePath,
   remoteMediaOrigin,
   sessionId,
+  showFileIcon,
 }: {
   href?: string;
   children: ReactNode;
@@ -1500,6 +1504,8 @@ function MarkdownTargetLink({
    * shouldRenderCodeReferenceLabel 的调用点与 DESIGN.md §14.5。
    */
   fromBarePath?: boolean;
+  /** Plain question text preserves its layout when a file becomes clickable. */
+  showFileIcon?: boolean;
   /** 远程会话媒体来源:把 xdt-audio:// 等链接改写到 cindy-remote-media://;本地 undefined。 */
   remoteMediaOrigin?: RemoteMediaOrigin;
   /** 当前会话 id;就位时外链 / html 文件左键弹"打开方式"菜单。 */
@@ -1573,6 +1579,7 @@ function MarkdownTargetLink({
           onOpen={openResolvedTarget}
           anchorProps={anchorProps}
           sessionId={sessionId}
+          showFileIcon={showFileIcon}
         >
           {children}
         </ResolvedLocalLink>

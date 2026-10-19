@@ -90,6 +90,11 @@ describe('interaction shared model', () => {
       { text: windowsHosts, href: windowsHosts }, { text: ' 与 ' },
       { text: 'hosts', href: '/etc/hosts' },
     ]);
+    expect(splitQuestionReferences('请查看 HTTPS://en.wikipedia.org/wiki/Foo_(bar)。')).toEqual([
+      { text: '请查看 ' },
+      { text: 'HTTPS://en.wikipedia.org/wiki/Foo_(bar)', href: 'HTTPS://en.wikipedia.org/wiki/Foo_(bar)' },
+      { text: '。' },
+    ]);
   });
   it('keeps original questions attached to late answers without including skipped questions', () => {
     expect(formatAsyncQuestionSupplement([{ question: 'Scope?\nDetails?', header: 'Scope' }, { question: 'Skipped?' }],

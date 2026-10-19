@@ -36,7 +36,7 @@ export function splitQuestionReferences(text: string): QuestionReferencePart[] {
       BARE_HTTP_URL_RE_SOURCE,
       /(?<![^\s(（【「"'，、;；])[^\s，。！？；：（）【】「」、()"'<>\[\]\u0060]+/.source,
     ].join('|'),
-    'g',
+    'gi',
   );
   let from = 0;
   let unquotedAbsolutePath = false;
