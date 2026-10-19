@@ -18,7 +18,7 @@
  */
 
 import { parseGhostCardFormValues, readMailCard } from '@cindy/maker-shared/ghost-card-form';
-import type { MailAttachmentUpload, prepareMailAttachmentUpload } from './mailAttachmentUpload.js';
+import type { MailAttachmentUpload, PreparedMailAttachment, prepareMailAttachmentUpload } from './mailAttachmentUpload.js';
 import {
   GHOST_CARD_ACTION_ID_RE,
   GHOST_CARD_ACTION_PROMPT_MAX_LEN,
@@ -61,7 +61,7 @@ export interface CardActionDispatchDeps {
   onActivityStart?(key: string, sessionId: string): void;
   ownerScope?: GhostOwnerScope;
   now?(): number;
-  pickMailAttachment?(inline: boolean): Promise<{ path: string; filename: string; bytes: number; sha256: string; contentId?: string } | null>;
+  pickMailAttachment?(inline: boolean, sessionId: string): Promise<PreparedMailAttachment | null>;
   prepareMailUpload?: typeof prepareMailAttachmentUpload;
   log?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
@@ -144,8 +144,8 @@ export class GhostCardActionDispatcher {
       return { ok: false, reason: 'ghost-unavailable' };
     }
     let mailAction = false;
-    let mailAttachment: Awaited<ReturnType<NonNullable<CardActionDispatchDeps['pickMailAttachment']>>> = null;
-    let staged: Awaited<ReturnType<typeof prepareMailAttachmentUpload>> | undefined;
+    let mailAttachment: PreparedMailAttachment['attachment'] | null = null;
+    let staged: PreparedMailAttachment | undefined;
     if (upload && (!mobilePageId || change || !actionId.startsWith('mail:attach:'))) return { ok: false, reason: 'bad-mail-upload' };
     if (actionId.startsWith('mail:')) {
       const stored = await this.deps.resolvePersistedCard(callId);
@@ -165,12 +165,12 @@ export class GhostCardActionDispatcher {
           (mail.state === 'sent' && expected !== 'continue'))) return { ok: false, reason: 'mail-view-readonly' };
       if (!countdownAction && !deleteAction && expected !== 'continue' && (!fields || Object.keys(fields).length !== mail.fields.length || mail.fields.some(f => !(f.name in fields)))) return { ok: false, reason: 'bad-mail-fields' };
       if (attachmentAction) {
-        if (mobilePageId ? (!upload || !sessionId || !this.deps.prepareMailUpload) : !this.deps.pickMailAttachment) return { ok: false, reason: 'mail-attachment-picker-unavailable' };
+        if (!sessionId || (mobilePageId ? (!upload || !this.deps.prepareMailUpload) : !this.deps.pickMailAttachment)) return { ok: false, reason: 'mail-attachment-picker-unavailable' };
         try {
           if (mobilePageId) {
             staged = await this.deps.prepareMailUpload!(upload!, sessionId!);
-            mailAttachment = staged.attachment;
-          } else mailAttachment = await this.deps.pickMailAttachment!(actionId.startsWith('mail:image:'));
+          } else staged = await this.deps.pickMailAttachment!(actionId.startsWith('mail:image:'), sessionId) ?? undefined;
+          mailAttachment = staged?.attachment ?? null;
         }
         catch { return { ok: false, reason: 'mail-attachment-read-failed' }; }
         if (!ownerUsable()) { await staged?.discard(); return rejectStaleOwner(ghostId); }

@@ -334,7 +334,8 @@ import { GHOST_SCHEME, ghostExternalLinkUrls } from '../../shared/ghost.js';
 import { GhostPipeDispatcher } from './pipeDispatcher.js';
 import { GhostCardService, parseCardHeightReport } from './cardService.js';
 import { MailCardService } from './mailCards.js';
-import { prepareMailAttachmentUpload } from './mailAttachmentUpload.js';
+import { prepareMailAttachmentSelection, prepareMailAttachmentUpload } from './mailAttachmentUpload.js';
+import { writeTempFile } from '../maker-ipc/normalizeAttachments.js';
 import { GhostCardActionDispatcher } from './cardActionDispatch.js';
 import { GhostSessionActivityTracker } from './ghostSessionActivity.js';
 import { sanitizeGhostCardHtml } from './cardSanitizer.js';
@@ -2354,20 +2355,11 @@ export function getGhostCardActionDispatcher(): GhostCardActionDispatcher {
       },
       issueUserActionToken: (ghostId, sessionId) =>
         getGhostAgentSlot().issueUserActionToken(ghostId, sessionId),
-      pickMailAttachment: async inline => {
+      pickMailAttachment: async (inline, sessionId) => {
         const result = await dialog.showOpenDialog({ properties: ['openFile'],
           ...(inline ? { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] } : {}) });
         if (result.canceled || !result.filePaths[0]) return null;
-        const filePath = result.filePaths[0];
-        const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        try {
-          const stat = await handle.stat();
-          if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error('attachment-too-large');
-          const bytes = await handle.readFile();
-          return { path: filePath, filename: path.basename(filePath), bytes: bytes.length,
-            sha256: createHash('sha256').update(bytes).digest('hex'),
-            ...(inline ? { contentId: randomUUID() + '@cindy.local' } : {}) };
-        } finally { await handle.close(); }
+        return prepareMailAttachmentSelection(result.filePaths[0], sessionId, inline, writeTempFile);
       },
       prepareMailUpload: prepareMailAttachmentUpload,
       // 呼吸起点:点击成功投递即把该会话标为"意识活动中"(结束由 card-update

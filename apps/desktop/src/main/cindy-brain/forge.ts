@@ -1854,6 +1854,8 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 \
 邮件插件声明 \`mail: true\`，调用 Cindy 内置 \`cindyMail.register(adapter)\`
 （version 1），不生成卡片 HTML、不打包公共流程；纯邮件插件不需要 \`card\`。
 阅读邮件可声明 \`mailReader:{tool,hosts}\`，工具接收 \`{url}\` 并返回 MailMessage，默认只读。
+\`mail\` 只能省略或写字面量 \`true\`；声明 \`mailReader\` 时必须同时有 \`mail: true\`，
+且 \`tool\` 必须指向本清单 \`tools\` 中的工具。协议校验与桌面安装校验都会拒绝不完整组合。
 支持打开即已读时增加 \`mailReader.markRead:true\`，读取工具接受可选 \`markRead:true\`；
 声明中的 \`markRead\` 只能省略或为字面量 \`true\`，\`false\`、字符串等其它值不合法。
 仅用户主动打开时传入，AI 读取和邻近预加载不传。成功读取后只标记当前邮件，不标记整个会话或草稿。

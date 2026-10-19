@@ -3118,7 +3118,6 @@ function prepareGhostManifestForValidation(
     }
   }
 
-  if (value.mail !== undefined && value.mail !== true) return { ok: false, reason: 'mail 出现时必须是 true' };
   const syntheticSlots: string[] = [];
   for (const [field, slot] of V3_DECLARATION_TO_LEGACY_SLOT) {
     if (value[field] !== undefined) syntheticSlots.push(slot);
@@ -3829,9 +3828,14 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
   if (!preparation.ok) return preparation;
   const prepared = preparation.prepared;
   const raw = prepared.raw;
+  if (raw.mail !== undefined && raw.mail !== true) return { ok: false, reason: 'mail 出现时必须是 true' };
   const mailReader = raw.mailReader === undefined ? undefined : parseMailReader(raw.mailReader);
   if (raw.mailReader !== undefined && !mailReader) {
     return { ok: false, reason: 'mailReader 必须声明合法的 tool 与 hosts' };
+  }
+  if (mailReader && (raw.mail !== true || !Array.isArray(raw.tools) ||
+      !raw.tools.some(tool => isPlainObject(tool) && tool.name === mailReader.tool))) {
+    return { ok: false, reason: 'mailReader 必须同时声明 mail: true 与对应的 tools 工具' };
   }
   if (!isValidGhostId(raw.id)) {
     return { ok: false, reason: 'id 必须是 1–32 位小写字母/数字/连字符(不能以连字符开头)' };

@@ -358,18 +358,23 @@ it('only a live draft can open the host file picker, and a superseded view canno
     status: 'Synced', sendLabel: 'Send', fromLabel: 'From' };
   let html = renderMailCard(mail);
   const chosen = { path: '/selected/file.pdf', filename: 'file.pdf', bytes: 12, sha256: 'a'.repeat(64) };
-  const pickMailAttachment = vi.fn(async () => chosen);
+  const staged = { attachment: chosen, accepted: vi.fn(), discard: vi.fn(async () => {}) };
+  const pickMailAttachment = vi.fn(async () => staged);
   const f = makeDispatcher({ getGhost: () => ghost, pickMailAttachment,
-    resolvePersistedCard: async () => ({ ghostId: 'cindy-mivo', sessionId: null, html }) });
+    resolveLiveInfo: () => ({ ghostId: 'cindy-mivo', sessionId: 's' }),
+    resolvePersistedCard: async () => ({ ghostId: 'cindy-mivo', sessionId: 's', html }) });
   const values = Object.fromEntries(mail.fields.map(f => [f.name, f.value]));
   const attach = () => f.dispatcher.dispatch('call', `mail:attach:${mail.key}`, undefined, undefined, values);
   expect(await attach()).toEqual({ ok: true });
   expect(f.sendToGhost.mock.calls[0][1].mailAttachment).toEqual(chosen);
+  expect(pickMailAttachment).toHaveBeenCalledWith(false, 's');
+  expect(staged.accepted).toHaveBeenCalledTimes(1);
   html = renderMailCard({ ...mail, state: 'sent', continueLabel: 'Continue' });
   expect((await attach()).ok).toBe(false); expect(pickMailAttachment).toHaveBeenCalledTimes(1);
   html = renderMailCard(mail);
-  pickMailAttachment.mockImplementation(async () => { html = renderMailCard({ ...mail, supersededBy: 'new' }); return chosen; });
+  pickMailAttachment.mockImplementation(async () => { html = renderMailCard({ ...mail, supersededBy: 'new' }); return staged; });
   expect((await attach()).ok).toBe(false); expect(f.sendToGhost).toHaveBeenCalledTimes(1);
+  expect(staged.discard).toHaveBeenCalledTimes(1);
 });
 
 it('phone uploads use the task materializer and discard late files when the draft becomes readonly', async () => {

@@ -2384,7 +2384,11 @@ Desktop attachment actions `mail:attach` / `mail:image` are native Host gestures
 not plugin HTML controls. The dispatcher verifies current view, owner, mail
 capability and draft state before and after the native picker, and passes one
 transient hash/size-bound file descriptor to the provider event. No arbitrary
-path comes from form text. Pending or sent mail cannot open the picker. Mobile
+path comes from form text. Selected desktop bytes are copied into the existing
+session-owned temporary attachment store; only the staged descriptor crosses
+the plugin boundary, never the user's original path. Source replacement after
+selection cannot change the staged bytes. Failed/stale delivery discards the
+copy; accepted files retain normal session/orphan cleanup. Pending or sent mail cannot open the picker. Mobile
 resource metadata adds optional `mailUpload`; old hosts omit it and new phones
 hide the upload button. Supporting hosts accept `mail:attach:<key>` with optional
 `input.mailAttachment: {url,name}` and the complete form. Only existing OSS/peer
@@ -2440,6 +2444,8 @@ blocked; preview sanitization never mutates the saved HTML.
 ### Read-only mail preview
 
 Mail providers may declare `mailReader: { tool, hosts }` alongside `mail: true`.
+`mail` accepts only omission or literal `true` in both v2 and v3; both validators
+reject a reader without `mail: true` or without its matching tool in `tools`.
 Desktop and plugin-protocol validate this known declaration and retain future
 extension data; malformed declarations cannot survive as unknown top-level fields.
 The tool must be declared and read-only by default. Cindy matches exact HTTPS hosts

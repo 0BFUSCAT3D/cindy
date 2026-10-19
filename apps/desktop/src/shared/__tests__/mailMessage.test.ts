@@ -2,6 +2,25 @@ import { expect, it } from 'vitest';
 import { parseMailMessage, parseMailReader, mailMessageFields } from '@cindy/maker-shared/mail-message';
 import { validateGhostManifest } from '../ghost';
 import { validateGhostManifest as validateProtocolManifest } from '@cindy/plugin-protocol';
+// Unit: protocol and installer must reject an unusable known capability, not
+// silently accept it as a future extension (PR #6404 review). Prior tests only
+// exercised reader shape; malformed mail and cross-field links were accepted.
+it('validates mail and reader dependencies in both manifest entry points', () => {
+  for (const schemaVersion of [2, 3]) for (const validate of [validateGhostManifest, validateProtocolManifest]) {
+    const base = { schemaVersion, ...(schemaVersion === 2 ? { slots: ['tool'] } : { minCindyVersion: '0.1.92' }),
+      id: 'example-mail', name: 'Mail', version: '1.0.0', entry: 'main.js',
+      tools: [{ name: 'read_mail', description: 'Read only' }] };
+    for (const mail of [false, 'yes', null, {}, []]) expect(validate({ ...base, mail }).ok).toBe(false);
+    const valid = validate({ ...base, mail: true });
+    expect(valid.ok).toBe(true);
+    if (valid.ok) expect(valid.manifest.mail).toBe(true);
+    const mailReader = { tool: 'read_mail', hosts: ['mail.example.com'] };
+    for (const patch of [{}, { mail: true, tools: undefined }, { mail: true, tools: [{ name: 'other', description: 'Other' }] }]) {
+      expect(validate({ ...base, mailReader, ...patch }).ok).toBe(false);
+    }
+    expect(validate({ ...base, mail: true, mailReader }).ok).toBe(true);
+  }
+});
 it.each([null, false, [], { tool: 'read_mail', hosts: 'mail.example.com' }, { tool: 'read_mail', hosts: ['*.com'] }, { hosts: ['mail.example.com'] },
   ...[false, 'false', 'true', 0, 1, null, {}, []].map(markRead => ({ tool: 'read_mail', hosts: ['mail.example.com'], markRead })),
 ].map(mailReader => ({ mailReader })))('rejects a malformed known mailReader declaration: $mailReader', ({ mailReader }) => {

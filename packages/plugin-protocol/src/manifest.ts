@@ -856,6 +856,8 @@ export const GHOST_SETUP_KV_KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /** 已校验的 ghost.json 协议文档；Desktop 会再投影成无 slots 的运行时模型。 */
 export interface GhostManifest {
+  /** Host-owned mail editor; providers supply mailbox adapters only. */
+  mail?: true;
   /** Provider-owned read capability; Cindy owns mail presentation. */
   mailReader?: { tool: string; hosts: string[]; markRead?: true };
   /** Optional v3 extension; consumers validate it without changing legacy approval content. */
@@ -1174,6 +1176,7 @@ const GHOST_MANIFEST_KNOWN_TOP_LEVEL_FIELDS = new Set([
   'settingsHeight',
   'slots',
   'card',
+  'mail',
   'mailReader',
   'tools',
   'cindy',
@@ -1338,6 +1341,7 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
   if (!preparation.ok) return preparation;
   const prepared = preparation.prepared;
   const raw = prepared.raw;
+  if (raw.mail !== undefined && raw.mail !== true) return { ok: false, reason: 'mail 出现时必须是 true' };
   // Keep this shape aligned with maker-shared's runtime reader parser.
   const reader = raw.mailReader as Record<string, unknown> | undefined;
   if (raw.mailReader !== undefined && (!reader || typeof reader !== 'object' ||
@@ -1346,6 +1350,10 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
       !Array.isArray(reader.hosts) || !reader.hosts.length || reader.hosts.length > 16 ||
       !reader.hosts.every(h => typeof h === 'string' && h.length <= 253 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(h)))) {
     return { ok: false, reason: 'mailReader 必须声明合法的 tool 与 hosts' };
+  }
+  if (reader && (raw.mail !== true || !Array.isArray(raw.tools) ||
+      !raw.tools.some(tool => isPlainObject(tool) && tool.name === reader.tool))) {
+    return { ok: false, reason: 'mailReader 必须同时声明 mail: true 与对应的 tools 工具' };
   }
   if (!isValidGhostId(raw.id)) {
     return {
@@ -3765,6 +3773,7 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
         ? { card: card ?? {} }
         : {}),
       ...(tools !== undefined ? { tools } : {}),
+      ...(raw.mail === true ? { mail: true as const } : {}),
       ...(reader ? { mailReader: { ...reader, tool: reader.tool as string, hosts: [...new Set(reader.hosts as string[])] } } : {}),
       ...(cindy !== undefined ? { cindy } : {}),
       ...(subscribe !== undefined ? { subscribe } : {}),

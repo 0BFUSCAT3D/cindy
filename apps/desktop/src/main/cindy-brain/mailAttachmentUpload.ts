@@ -1,10 +1,40 @@
 import fs from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { parseAttachmentOssRef, parsePeerAttachmentRef } from '@cindy/device-link';
+import type { writeTempFile } from '../maker-ipc/normalizeAttachments.js';
 
 const parseUploadRef = (url: string) => parsePeerAttachmentRef(url) || parseAttachmentOssRef(url);
 
 export interface MailAttachmentUpload { url: string; name: string }
+/** Both local selection and phone uploads share the dispatch acceptance lifecycle. */
+export interface PreparedMailAttachment {
+  attachment: { path: string; filename: string; bytes: number; sha256: string; contentId?: string };
+  accepted(): void;
+  discard(): Promise<void>;
+}
+
+/** Snapshot the selected bytes into the existing session-owned temporary store.
+ * The sandbox/Node adapter never receives the user's source path or rereads it. */
+export async function prepareMailAttachmentSelection(filePath: string, sessionId: string, inline: boolean, writeSnapshot: typeof writeTempFile): Promise<PreparedMailAttachment> {
+  const handle = await fs.open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let bytes: Buffer;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error('attachment-too-large');
+    bytes = await handle.readFile();
+    if (bytes.length > 16 * 1024 * 1024) throw new Error('attachment-too-large');
+  } finally { await handle.close(); }
+  const stagedPath = await writeSnapshot(sessionId, bytes, undefined);
+  return {
+    attachment: { path: stagedPath, filename: path.basename(filePath), bytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      ...(inline ? { contentId: randomUUID() + '@cindy.local' } : {}) },
+    accepted: () => {}, // Session/orphan cleanup already owns accepted files.
+    discard: async () => { await fs.rm(stagedPath, { force: true }); },
+  };
+}
 export function parseMailAttachmentUpload(value: unknown): MailAttachmentUpload | null {
   if (!value || typeof value !== 'object') return null;
   const p = value as Record<string, unknown>;
@@ -18,7 +48,7 @@ export function parseMailAttachmentUpload(value: unknown): MailAttachmentUpload 
 
 /** Reuse task attachment materialization and its owner/session cleanup. Never
  * accept a phone-supplied desktop path, or create a second upload store. */
-export async function prepareMailAttachmentUpload(input: MailAttachmentUpload, sessionId: string) {
+export async function prepareMailAttachmentUpload(input: MailAttachmentUpload, sessionId: string): Promise<PreparedMailAttachment> {
   const upload = parseMailAttachmentUpload(input);
   if (!upload) throw new Error('INVALID_MAIL_ATTACHMENT');
   const ref = parseUploadRef(upload.url)!;
