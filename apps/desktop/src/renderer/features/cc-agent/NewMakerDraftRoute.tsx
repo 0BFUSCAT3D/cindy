@@ -159,6 +159,7 @@ import {
   leadingSlashInvocation,
   rebaseInlineRangesAfterSlashCommandRewrite,
   rewritePiSkillMessageForSend,
+  rewriteBuiltInSkillDraftForSend,
 } from '@/lib/slashCommands';
 import { worktreeCreationStore } from '@/lib/worktreeCreationStore';
 import { useRefreshWorktreeForSession } from '@/contexts/WorktreeContext';
@@ -3522,6 +3523,7 @@ export function NewMakerDraftRoute() {
         }
       }
       const dataOwnerAtSend = getDataOwnerGeneration();
+      const builtInSkillIntent = getComposerDraft(NEW_MAKER_DRAFT_KEY)?.builtInSkillIntent;
       const isCurrentDataOwner = () =>
         dataOwnerAtSend.dataOwnerId === dataOwnerId &&
         isDataOwnerGenerationCurrent(dataOwnerAtSend);
@@ -3549,6 +3551,35 @@ export function NewMakerDraftRoute() {
           });
           if (isDeviceLinkDraft && !isCurrentDataOwner()) return;
           if (!proceed) return;
+
+          if (builtInSkillIntent) {
+            if (!isCurrentDataOwner()) return;
+            // Skills belong to the task's computer, including when its Agent
+            // runs through a remote provider. Match the normal command catalog.
+            const rewritten = await rewriteBuiltInSkillDraftForSend({
+              message,
+              intent: builtInSkillIntent,
+              agentKind: capabilityAgentKind,
+              workingDir: selectedWorkingDir,
+              deviceId: effectiveDeviceLinkDeviceId,
+              remoteHostId: effectiveRemoteHostId,
+            });
+            if (!isCurrentDataOwner()) return;
+            if (rewritten === null) {
+              toast.error(t('settings.ghosts.page.creatorUnavailable'));
+              return;
+            }
+            if (rewritten !== message) {
+              const rebase = <T extends { start: number; end: number }>(ranges: readonly T[] | undefined) =>
+                ranges ? rebaseInlineRangesAfterSlashCommandRewrite(ranges, message, rewritten) : undefined;
+              opts = {
+                ...opts,
+                pastedTextRanges: rebase(opts?.pastedTextRanges),
+                slashCommandRanges: rebase(opts?.slashCommandRanges),
+              };
+              message = rewritten;
+            }
+          }
 
           // device-link 远程项目:在被控端走校验过的 maker:create-session 建会话(写被控 DB,
           // allowlist 内、非裸写),首条消息经 setPending 交给 SessionView 发送(与本地

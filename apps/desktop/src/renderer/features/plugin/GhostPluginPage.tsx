@@ -1235,6 +1235,7 @@ function LocalGhostPluginPage({
     }
     saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
       text: plainTextToTiptapDoc(`/${creator.name} ${t('settings.ghosts.page.createPrompt')}`),
+      builtInSkillIntent: { name: CINDY_PLUGIN_CREATOR_NAME, commandName: creator.name },
       attachments: [],
       focusAtEnd: true,
     });

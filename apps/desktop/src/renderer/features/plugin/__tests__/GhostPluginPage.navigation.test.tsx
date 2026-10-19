@@ -188,6 +188,7 @@ it.each([
   const commands = await loadAllCommands(agentKind, null);
   const selected = commands.find((command) => command.name === leadingSlashInvocation(text)?.name);
   expect(selected).toEqual(official);
+  expect(draft.builtInSkillIntent).toEqual({ name: 'cindy-plugin-creator', commandName: name });
   expect(rewriteAgentSkillInvocationForDispatch(text, selected)).toBe(`/${runtimeCommandName} settings.ghosts.page.createPrompt`);
   expect(listAgentSkills).toHaveBeenCalledWith(agentKind, expect.not.objectContaining({ workingDir: '/remote/project' }));
   expect(draft.attachments).toEqual([]);

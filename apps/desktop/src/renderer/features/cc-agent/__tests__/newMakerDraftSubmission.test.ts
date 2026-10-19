@@ -8,6 +8,9 @@ import { resolveSessionExecutionSelection } from '../../../../main/maker-ipc/ses
 import * as draftEffort from '../newMakerDraftModelPrefs';
 import { create as createSessionViaIpc } from '@/lib/sessionService';
 import type { Effort } from '@/lib/userPreferences.types';
+import type { AgentSkillCommand } from '@cindy/maker-core';
+import type { BuiltInSkillDraftIntent } from '@/lib/composerDraftStore';
+import { leadingSlashInvocation, rebaseInlineRangesAfterSlashCommandRewrite, rewriteBuiltInSkillDraftForSend } from '@/lib/slashCommands';
 
 vi.mock('@/lib/makerTransport', () => ({ makerApiFor: vi.fn() }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({ getSessionDeviceId: vi.fn() }));
@@ -63,6 +66,10 @@ async function submit(options: {
   agentKind?: 'pi' | 'codex';
   remoteHostId?: string;
   agentDeviceId?: string;
+  message?: string;
+  builtInSkillIntent?: BuiltInSkillDraftIntent;
+  skills?: AgentSkillCommand[];
+  slashCommandRanges?: Array<{ start: number; end: number }>;
 } = {}) {
   const providers = options.providers ?? [provider()];
   const backend = options.backendProviders ?? providers;
@@ -97,7 +104,12 @@ async function submit(options: {
   });
   // Real renderer adapter forwards to the simulated IPC transport, whose receiving
   // side runs Main's production admission. No real database or user profile is opened.
-  vi.stubGlobal('window', { electronAPI: { localDb: { sessions: { create: ipcCreate } }, maker: { setGoal } } });
+  const listAgentSkills = vi.fn(async () => ({ success: true, skills: options.skills ?? [] }));
+  vi.stubGlobal('window', { electronAPI: { localDb: { sessions: { create: ipcCreate } }, maker: {
+    setGoal, listAgentSkills,
+    listDesktopCommands: async () => ({ success: true, commands: [] }),
+    listAgentCommands: async () => ({ success: true, commands: [] }),
+  } } });
   const createSession = vi.fn(async (body) => {
     try { return await createSessionViaIpc(body); }
     catch (error) { errors.push(error); return null; }
@@ -109,6 +121,8 @@ async function submit(options: {
   let done!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
   const noop = () => {};
+  const setPending = vi.fn();
+  const toastError = vi.fn();
   const environment = {
     ...draftEffort, getModel, window,
     localProviders: providers, localProvidersLoading: false, providers,
@@ -138,9 +152,10 @@ async function submit(options: {
     createSession, toastCreateSessionFailed: noop, carryDraftFavoriteAnchorToSession: noop,
     makerChatStore: { setSessionRuntime: noop, sendMessage, autoNameSession: noop }, sessionsStore: { patchLocal: noop },
     markSessionStarting: noop, clearSessionStarting: noop,
-    rehomeDraftAttachments: async () => [], getComposerDraft: () => null,
+    rehomeDraftAttachments: async () => [], getComposerDraft: () => options.builtInSkillIntent
+      ? { builtInSkillIntent: options.builtInSkillIntent } : null,
     NEW_MAKER_DRAFT_KEY: 'fixture', rewriteBrowserCommentsFromRehomedFiles: () => [],
-    leadingSlashInvocation: () => null,
+    leadingSlashInvocation, rebaseInlineRangesAfterSlashCommandRewrite, rewriteBuiltInSkillDraftForSend, setPending,
     rewritePiSkillMessageForSend: async ({ message }: { message: string }) => message,
     clearComposerDraftAndNotify: noop, attachmentState: { clearFiles: noop },
     resetDraftWorkspaceAfterSend: noop, navigate: vi.fn(), setWtCreating: noop,
@@ -153,7 +168,7 @@ async function submit(options: {
     isLocalGoalWorktreeCleanupPendingError: () => false,
     plainTextToTiptapDoc: noop, excludeCommentScreenshots: () => [],
     log: { warn: (...args: unknown[]) => errors.push(args), error: (...args: unknown[]) => errors.push(args) },
-    toast: { error: noop, warning: noop },
+    toast: { error: toastError, warning: noop },
   };
   const localDraftEffort = runInNewContext(executable('localDraftEffort'), environment)();
   const selection = runInNewContext(executable('draftInitialSelection'), { ...environment, localDraftEffort })();
@@ -164,15 +179,46 @@ async function submit(options: {
       try { await callback('hello goal', goalLimits); }
       catch (error) { errors.push(error); }
     } else {
-      await callback('hello', selectedModel, options.submittedEffort ?? selection.effort ?? '',
-        'default', [], [], { providerId: selectedProviderId });
+      await callback(options.message ?? 'hello', selectedModel, options.submittedEffort ?? selection.effort ?? '',
+        'default', [], [], { providerId: selectedProviderId, slashCommandRanges: options.slashCommandRanges });
     }
     await finished;
-    return { createSession, ipcCreate, sendMessage, setGoal, errors, environment };
+    return { createSession, ipcCreate, sendMessage, setGoal, errors, environment, setPending, toastError, listAgentSkills };
   } finally { vi.unstubAllGlobals(); }
 }
 
 describe('homepage submission to Main admission and first-message handoff', () => {
+  // Unit: a Claude-prefilled creator draft must be resolved again after switching
+  // to Pi, including when Pi uses another computer as its provider. Exercise the
+  // actual home submit callback before any session creation/handoff.
+  it('re-resolves the built-in creator for the final engine before handing off the first message', async () => {
+    const result = await submit({
+      message: '/cindy:cindy-plugin-creator Make a plugin', agentDeviceId: 'provider-computer',
+      providers: [provider(providerId, ['medium'])],
+      slashCommandRanges: [{ start: 0, end: '/cindy:cindy-plugin-creator'.length }],
+      builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: 'cindy:cindy-plugin-creator' },
+      skills: [{ kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator', builtIn: true, runtimeCommandName: 'skill:cindy-plugin-creator' }],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.listAgentSkills).toHaveBeenCalledWith('pi', { forceReload: true });
+    expect(result.ipcCreate.mock.calls[0][0].agentDeviceId).toBe('provider-computer');
+    expect(result.setPending).toHaveBeenCalledWith('created', expect.objectContaining({
+      text: '/skill:cindy-plugin-creator Make a plugin',
+      slashCommandRanges: [{ start: 0, end: '/skill:cindy-plugin-creator'.length }],
+    }));
+  });
+  it('preserves the creator draft without creating a session when the final environment lacks the built-in', async () => {
+    const result = await submit({
+      message: '/cindy:cindy-plugin-creator Make a plugin',
+      builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: 'cindy:cindy-plugin-creator' },
+      skills: [{ kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator' }],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.createSession).not.toHaveBeenCalled();
+    expect(result.setPending).not.toHaveBeenCalled();
+    expect(result.toastError).toHaveBeenCalledWith('settings.ghosts.page.creatorUnavailable');
+    expect(result.environment.getComposerDraft()?.builtInSkillIntent).toBeDefined();
+  });
   it.each(['low', 'medium', 'high', 'xhigh'] as const)('omits remembered %s for a known no-effort Pi model', async effort => {
     const result = await submit({ effort, submittedEffort: effort });
     expect(result.errors).toEqual([]);

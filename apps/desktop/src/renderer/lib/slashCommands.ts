@@ -20,6 +20,7 @@ import type { UnifiedCommand, AgentKind } from '@cindy/maker-core';
 import { leadingSlashInvocation } from '@cindy/maker-shared';
 import type { PiPackageCommandRuntimeStatus } from '@/../shared/piPackages';
 import { isCindyBuiltInSkillMetadata } from '@/../shared/cindyBuiltInSkills';
+import type { BuiltInSkillDraftIntent } from './composerDraftStore';
 
 export { leadingSlashInvocation };
 
@@ -126,6 +127,33 @@ export async function rewritePiSkillMessageForSend(params: {
   const hit = commands.find((command) => command.name.toLowerCase() === leading.name.toLowerCase());
   return params.agentKind === 'pi' ? rewritePiSkillAliasFromCommand(params.message, hit)
     : rewriteAgentSkillInvocationForDispatch(params.message, hit);
+}
+
+/** Preserve a routed built-in choice when the user changes the draft's engine or computer. */
+export async function rewriteBuiltInSkillDraftForSend(params: {
+  message: string;
+  intent: BuiltInSkillDraftIntent;
+  agentKind: AgentKind;
+  workingDir?: string | null;
+  deviceId?: string;
+  remoteHostId?: string | null;
+}): Promise<string | null> {
+  const leading = leadingSlashInvocation(params.message);
+  if (!leading || leading.name !== params.intent.commandName) return params.message;
+  // SSH has no Cindy built-in catalog. Never resolve that task against local files.
+  if (params.remoteHostId) return null;
+  const commands = await loadAllCommands(params.agentKind, params.workingDir, {
+    forceReload: true,
+  }, params.deviceId);
+  const skill = commands.find((command) => (
+    command.kind === 'agent-skill'
+    && command.builtIn === true
+    && command.enabled !== false
+    && !isSlashCommandUnavailable(command)
+    && (command.name === params.intent.name || command.name === `cindy:${params.intent.name}`)
+  ));
+  if (!skill) return null;
+  return `${params.message.slice(0, leading.start)}/${slashCommandInvocationName(skill)}${params.message.slice(leading.end)}`;
 }
 
 /**
