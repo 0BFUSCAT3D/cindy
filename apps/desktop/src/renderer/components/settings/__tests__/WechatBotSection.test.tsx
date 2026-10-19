@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   unbind: vi.fn(),
   chooseWorkingDirectory: vi.fn(),
   resetWorkingDirectory: vi.fn(),
+  setCompanion: vi.fn(),
+  companionBotId: undefined as string | undefined,
   state: {
     phase: 'disconnected',
     bound: false,
@@ -35,6 +37,7 @@ vi.mock('@/hooks/useWechatBot', () => ({
       version: 1,
       workingDir: null,
       workingDirAvailable: true,
+      companionBotId: mocks.companionBotId,
     },
     isAuthorizing: false,
     isUnbinding: false,
@@ -44,6 +47,8 @@ vi.mock('@/hooks/useWechatBot', () => ({
     unbind: mocks.unbind,
     chooseWorkingDirectory: mocks.chooseWorkingDirectory,
     resetWorkingDirectory: mocks.resetWorkingDirectory,
+    setCompanion: mocks.setCompanion,
+    isUpdatingCompanion: false,
   }),
 }));
 
@@ -81,6 +86,36 @@ describe('WechatBotSection', () => {
     mocks.confirm.mockResolvedValue(true);
     mocks.authorize.mockResolvedValue(true);
     mocks.unbind.mockResolvedValue(true);
+    mocks.companionBotId = undefined;
+    mocks.setCompanion.mockResolvedValue(true);
+  });
+
+  // The teammate entry must use the existing authorization and binding APIs, without
+  // exposing independent model defaults or replacing another teammate's connection.
+  it('adopts an already connected WeChat account without reauthorizing it', async () => {
+    mocks.state = { phase: 'connected', bound: true, queuedTasks: 0 };
+    render(<WechatBotSection expanded onToggle={vi.fn()} companion={{ id: 'bot-cindy', name: 'Cindy' }} />);
+    expect(screen.queryByTestId('defaults')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.wechatBot.companion.useExisting' }));
+    await waitFor(() => expect(mocks.setCompanion).toHaveBeenCalledWith('bot-cindy'));
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.unbind).not.toHaveBeenCalled();
+  });
+
+  it('does not expose authorization or unbind controls for another teammate', () => {
+    mocks.state = { phase: 'connected', bound: true, queuedTasks: 0 };
+    mocks.companionBotId = 'bot-other';
+    render(<WechatBotSection expanded onToggle={vi.fn()} companion={{ id: 'bot-cindy', name: 'Cindy' }} />);
+    expect(screen.getByText('settings.wechatBot.companion.other')).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('does not open authorization if assigning the teammate fails', async () => {
+    mocks.setCompanion.mockResolvedValue(false);
+    render(<WechatBotSection expanded onToggle={vi.fn()} companion={{ id: 'bot-cindy', name: 'Cindy' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.wechatBot.actions.connect' }));
+    await waitFor(() => expect(mocks.setCompanion).toHaveBeenCalledWith('bot-cindy'));
+    expect(mocks.authorize).not.toHaveBeenCalled();
   });
 
   it('explains the external Tencent authorization flow before starting it', async () => {

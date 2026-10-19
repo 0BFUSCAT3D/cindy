@@ -3931,6 +3931,15 @@
         "workingDirSaved": "微信新对话工作目录已更新",
         "workingDirReset": "微信新对话已恢复使用默认目录",
         "workingDirFailed": "更新工作目录失败，请重新选择"
+      },
+      "companion": {
+        "assigned": "由绑定的伙伴回复",
+        "description": "在微信中与 {{name}} 对话，共用记忆和主任务。此电脑上的微信连接一次只能交给一位伙伴。",
+        "other": "微信已交给另一位伙伴。请先在该伙伴的连接设置或个人微信设置中移除绑定。",
+        "permissionNote": "微信继续使用逐次权限确认。请为伙伴选择 Claude Code 或 Codex，并使用自动审查或询问模式。",
+        "remove": "移除伙伴绑定",
+        "useExisting": "使用已连接的微信与 {{name}} 对话",
+        "updateFailed": "未能更新绑定。请等待微信中的任务结束后重试，并确认伙伴仍可用。"
       }
     },
     "discordBot": {
@@ -9913,7 +9922,7 @@
       },
       "remove": "移除",
       "removeAria": "移除 {{platform}}",
-      "empty": "{{name}} 还没有消息平台。把你在 Telegram、飞书、企业微信、钉钉或 Discord 申请的机器人加进来，{{name}} 就会在那里回复。",
+      "empty": "把你已有的机器人添加到平台，或在下方连接个人微信，{{name}} 就会在那里回复。",
       "externalNote": "给这个机器人发消息的人都是在和 {{name}} 对话。你自己的消息按 {{name}} 的权限执行；其他人各有一条隐藏任务，权限受限。",
       "sharedMemoryNote": "{{name}} 会把这里和其它对话里的信息放在一起用。想隔开记忆，请换一位伙伴。",
       "groups": {

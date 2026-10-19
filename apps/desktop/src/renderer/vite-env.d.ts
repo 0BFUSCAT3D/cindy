@@ -527,6 +527,7 @@ interface WechatChannelSettingsState {
   version: 1;
   workingDir: string | null;
   workingDirAvailable: boolean;
+  companionBotId?: string;
 }
 
 type DiscordBotSessionAuthCheckResult = {
@@ -2439,6 +2440,8 @@ interface ElectronAPI {
     cancelAuthorization: () => Promise<{ ok: true }>;
     unbind: () => Promise<{ ok: true }>;
     getChannelSettings: () => Promise<WechatChannelSettingsState>;
+    setCompanion: (botId: string | null) => Promise<WechatChannelSettingsState>;
+    onChannelSettingsChange: (callback: (state: WechatChannelSettingsState) => void) => () => void;
     chooseWorkingDirectory: () => Promise<{
       canceled: boolean;
       state: WechatChannelSettingsState;

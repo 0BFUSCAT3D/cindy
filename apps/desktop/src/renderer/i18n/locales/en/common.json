@@ -3962,6 +3962,15 @@
         "workingDirSaved": "Working directory for new WeChat conversations updated",
         "workingDirReset": "New WeChat conversations now use the default directory",
         "workingDirFailed": "Could not update the working directory. Select it again."
+      },
+      "companion": {
+        "assigned": "Replies come from the linked teammate",
+        "description": "Chat with {{name}} on WeChat, sharing memory and the main task. This computer’s WeChat connection can belong to one teammate at a time.",
+        "other": "WeChat is linked to another teammate. Remove that link in their connection settings or Personal WeChat settings first.",
+        "permissionNote": "WeChat keeps per-action permission checks. Choose Claude Code or Codex for this teammate, with Auto-review or Ask permissions.",
+        "remove": "Remove teammate link",
+        "useExisting": "Use connected WeChat with {{name}}",
+        "updateFailed": "Could not update the link. Wait for WeChat tasks to finish, then retry and check that the teammate is available."
       }
     },
     "discordBot": {
@@ -9952,7 +9961,7 @@
       },
       "remove": "Remove",
       "removeAria": "Remove {{platform}}",
-      "empty": "{{name}} has no messaging platform yet. Add a bot you created on Telegram, Feishu, WeCom, DingTalk or Discord, and {{name}} will reply there.",
+      "empty": "Add a bot you already have, or connect personal WeChat below, and {{name}} will reply there.",
       "externalNote": "Anyone who messages this bot is talking to {{name}}. Your own messages run with {{name}}’s permissions; everyone else gets a separate hidden task with restricted permissions.",
       "sharedMemoryNote": "{{name}} uses information from here and from other conversations together. To keep memories separate, use another teammate.",
       "groups": {

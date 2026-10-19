@@ -193,6 +193,38 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     return { ...this.#state, bound: this.#hasBinding };
   }
 
+  isOwner(userId: string): boolean {
+    return !!this.#epoch && this.#epoch.credentials.userId === userId;
+  }
+
+  /** Change routing only between messages; credentials and the authorization epoch stay intact. */
+  updateCompanionBinding(update: () => void): Promise<void> {
+    return this.#queueLifecycle(async () => {
+      if (this.#authorizationAbort || this.#activeTasks.size || this.#pendingInteractions.size) {
+        throw new Error('WECHAT_CONNECTION_BUSY');
+      }
+      const epoch = this.#epoch;
+      if (epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
+        throw new Error('WECHAT_CONNECTION_BUSY');
+      }
+      if (this.#activeTasks.size) throw new Error('WECHAT_CONNECTION_BUSY');
+      const revision = this.#compatibilityRevision;
+      await this.#stopEpoch();
+      try {
+        // A poll already in flight may have persisted a message while we drained it.
+        if (epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
+          throw new Error('WECHAT_CONNECTION_BUSY');
+        }
+        update();
+      } finally {
+        if (epoch && this.#isCompatibilityRevisionAllowed(revision)) {
+          const binding = await this.#requireStore().getActiveBinding();
+          if (binding) await this.#startEpoch(binding, epoch.credentials, revision);
+        }
+      }
+    });
+  }
+
   async init(): Promise<void> {
     await this.setCompatibilityDisabled(this.#deps.isCompatibilityDisabled());
     const revision = this.#compatibilityRevision;
@@ -912,6 +944,8 @@ export class WechatIM extends BaseIM implements RichChannelIM {
               if (!message || !task || (command !== '/stop' && command !== '/stop all')) {
                 continue;
               }
+              if (this.#turnRuntime?.runner.companionBotIdFor?.(this.#epoch?.credentials.ilinkBotId ?? '')
+                && !this.isOwner(message.senderId)) continue;
               await this.#requireStore().cancelForCommand({
                 bindingEpoch: binding.bindingEpoch,
                 commandTaskId: task.id,
@@ -1059,17 +1093,38 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     }
     const turnInput = prepareWechatTaskTurn(payload);
 
+    const botContextId = this.#epoch?.credentials.ilinkBotId ?? '';
+    const companion = runtime.runner.companionBotIdFor?.(botContextId);
+    const requesterIsOwner = this.isOwner(task.peerId);
     const active: ActiveTask = { task, terminalCommitted: false };
     this.#activeTasks.set(task.peerId, active);
     const stopTyping = await this.#startTyping(task);
     let dispatch;
     try {
       dispatch = await runtime.runner.dispatchAgentTurn({
-        botContextId: this.#epoch?.credentials.ilinkBotId ?? '',
+        botContextId,
         userId: task.peerId,
         userMessageId: task.id,
         // 个人微信只有私聊；渠道说明、引用与投递事实只进模型，落库保留原文。
-        channelNoteSource: { chatKind: 'direct', chatId: task.peerId },
+        channelNoteSource: {
+          chatKind: 'direct', chatId: task.peerId,
+          ...(companion ? {
+            senderId: task.peerId, senderIsOwner: requesterIsOwner,
+          } : {}),
+        },
+        ...(companion ? {
+          requesterIsOwner,
+          messageOrigin: { chat: { kind: 'direct' as const }, sender: { id: task.peerId, isOwner: requesterIsOwner } },
+          channelToolScope: {
+            channel: 'wechat' as const,
+            botId: botContextId,
+            laneUserId: task.peerId,
+            chatId: task.peerId,
+            chatKind: 'direct' as const,
+            requesterIsOwner,
+            companion: true as const,
+          },
+        } : {}),
         ...turnInput,
         attachments: payload.attachments,
         queueMode: 'external',
@@ -1257,6 +1312,16 @@ export class WechatIM extends BaseIM implements RichChannelIM {
   async #processCommand(task: WechatTask, command: string): Promise<void> {
     const runtime = this.#turnRuntime;
     if (!runtime) throw new Error('WECHAT_TURN_RUNTIME_NOT_ATTACHED');
+    const botContextId = this.#epoch?.credentials.ilinkBotId ?? '';
+    const companion = runtime.runner.companionBotIdFor?.(botContextId);
+    if (companion && !this.isOwner(task.peerId)) {
+      await this.#commitSimpleReply(task, '只有主人可以使用机器人命令。');
+      return;
+    }
+    if (companion && /^\/(?:permission|model|project)(?:\s|$)/.test(command)) {
+      await this.#commitSimpleReply(task, '请在 Cindy 的伙伴设置中调整模型和权限。');
+      return;
+    }
     if (/^\/permission(?:\s|$)/.test(command)) {
       await this.#processPermissionCommand(task, command, runtime);
       return;
@@ -1279,6 +1344,13 @@ export class WechatIM extends BaseIM implements RichChannelIM {
         await this.#commitSimpleReply(task, '已停止任务。');
         return;
       case '/new': {
+        if (companion) {
+          const result = await runtime.runner.rotateCompanionLane?.(botContextId, task.peerId);
+          if (result === 'owner-dm') {
+            await this.#commitSimpleReply(task, '这里与伙伴共用同一条长期任务，记录和记忆会保留。需要整理上下文时，请在 Cindy 中重启伙伴。');
+            return;
+          }
+        }
         const accepted = await this.#requireStore().markAccepted(task.bindingEpoch, task.id);
         if (!accepted) throw new Error('WECHAT_ACCEPT_CAS_REJECTED');
         const prepared = await runtime.repo.prepareNewSession(
@@ -1545,10 +1617,15 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     const runtime = this.#turnRuntime;
     if (!runtime) throw new Error('WECHAT_TURN_RUNTIME_NOT_ATTACHED');
     const botId = this.#epoch?.credentials.ilinkBotId ?? 'wechat';
-    const prepared = await runtime.repo.prepareNewSession(botId, message.senderId);
-    const existing = await runtime.repo.findActiveSession(botId, message.senderId);
-    const session =
-      existing ?? (await runtime.repo.createSession(botId, message.senderId, undefined, prepared));
+    // Resolve the companion before staging media and persisting the durable task: its
+    // message/media ownership must be the same as the session used by dispatch.
+    const companion = runtime.runner.companionBotIdFor?.(botId);
+    const target = companion ? await runtime.runner.resolveRouteTarget(botId, message.senderId) : null;
+    const session = target?.row ?? await (async () => {
+      const prepared = await runtime.repo.prepareNewSession(botId, message.senderId);
+      return await runtime.repo.findActiveSession(botId, message.senderId)
+        ?? await runtime.repo.createSession(botId, message.senderId, undefined, prepared);
+    })();
     const epoch = await this.#requireStore().getConversationEpoch(bindingEpoch, message.senderId);
     const taskId = randomUUID();
     const staged = await stageWechatTaskMedia({

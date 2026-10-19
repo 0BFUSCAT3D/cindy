@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
+import { WechatBotSection } from '@/components/settings/WechatBotSection';
 import { cn } from '@/lib/utils';
 import { formatRelative } from '@/hooks/useRelativeTime';
 import { extractIpcError } from '@/utils/ipcError';
@@ -104,6 +105,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
   const { payload, loading, apply } = useBotImConnections();
   const { confirm } = useConfirmDialog();
   const [adding, setAdding] = useState(false);
+  const [wechatExpanded, setWechatExpanded] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
   const mine = (payload?.connections ?? []).filter((item) => item.botId === bot.id);
@@ -226,6 +228,10 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
           {t('bots.channels.add.button')}
         </Button>
       </div>
+      {typeof window.electronAPI.wechatBot?.setCompanion === 'function' ? (
+        <WechatBotSection companion={{ id: bot.id, name: bot.name }} expanded={wechatExpanded}
+          onToggle={() => setWechatExpanded((expanded) => !expanded)} />
+      ) : null}
       <p className="px-1 text-12 leading-[1.5] text-[var(--text-tertiary)]">
         {t('bots.channels.externalNote', { name: bot.name })}
       </p>

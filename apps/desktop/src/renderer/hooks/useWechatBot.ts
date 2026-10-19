@@ -26,6 +26,8 @@ export interface UseWechatBotReturn {
   unbind: () => Promise<boolean>;
   chooseWorkingDirectory: () => Promise<void>;
   resetWorkingDirectory: () => Promise<void>;
+  setCompanion: (botId: string | null) => Promise<boolean>;
+  isUpdatingCompanion: boolean;
 }
 
 export function useWechatBot(): UseWechatBotReturn {
@@ -37,7 +39,10 @@ export function useWechatBot(): UseWechatBotReturn {
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [isUnbinding, setIsUnbinding] = useState(false);
   const [isUpdatingWorkingDir, setIsUpdatingWorkingDir] = useState(false);
+  const [isUpdatingCompanion, setIsUpdatingCompanion] = useState(false);
   const pushVersionRef = useRef(0);
+  const settingsVersionRef = useRef(0);
+  const companionBusyRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +52,14 @@ export function useWechatBot(): UseWechatBotReturn {
       cachedState = next;
       setState(next);
     });
+    const unsubscribeSettings = window.electronAPI.wechatBot.onChannelSettingsChange?.((settings) => {
+      if (cancelled) return;
+      settingsVersionRef.current += 1;
+      cachedChannelSettings = settings;
+      setChannelSettings(settings);
+    });
     const initialPushVersion = pushVersionRef.current;
+    const initialSettingsVersion = settingsVersionRef.current;
     void Promise.all([
       window.electronAPI.wechatBot.getState(),
       window.electronAPI.wechatBot.getChannelSettings(),
@@ -58,8 +70,10 @@ export function useWechatBot(): UseWechatBotReturn {
           cachedState = nextState;
           setState(nextState);
         }
-        cachedChannelSettings = nextChannelSettings;
-        setChannelSettings(nextChannelSettings);
+        if (settingsVersionRef.current === initialSettingsVersion) {
+          cachedChannelSettings = nextChannelSettings;
+          setChannelSettings(nextChannelSettings);
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -68,6 +82,7 @@ export function useWechatBot(): UseWechatBotReturn {
     return () => {
       cancelled = true;
       unsubscribe();
+      unsubscribeSettings?.();
     };
   }, []);
 
@@ -143,6 +158,25 @@ export function useWechatBot(): UseWechatBotReturn {
     }
   }, [isUpdatingWorkingDir, t]);
 
+  const setCompanion = useCallback(async (botId: string | null): Promise<boolean> => {
+    if (companionBusyRef.current) return false;
+    companionBusyRef.current = true;
+    setIsUpdatingCompanion(true);
+    try {
+      const next = await window.electronAPI.wechatBot.setCompanion(botId);
+      settingsVersionRef.current += 1;
+      cachedChannelSettings = next;
+      setChannelSettings(next);
+      return true;
+    } catch {
+      toast.error(t('settings.wechatBot.companion.updateFailed'));
+      return false;
+    } finally {
+      companionBusyRef.current = false;
+      setIsUpdatingCompanion(false);
+    }
+  }, [t]);
+
   return {
     state,
     channelSettings,
@@ -154,6 +188,8 @@ export function useWechatBot(): UseWechatBotReturn {
     unbind,
     chooseWorkingDirectory,
     resetWorkingDirectory,
+    setCompanion,
+    isUpdatingCompanion,
   };
 }
 

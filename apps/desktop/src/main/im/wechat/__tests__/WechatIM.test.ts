@@ -462,6 +462,58 @@ describe('WechatIM host boundary', () => {
     await im.dispose();
   });
 
+  // Regression: changing a teammate must retain credentials and cannot reroute queued messages.
+  // tier: unit; exercise the public lifecycle with a restored authorization and real task store.
+  it('switches an idle connection without reauthorizing and refuses queued work', async () => {
+    let queued = 0;
+    const { im, transport, testHost } = restoredConnection(() => queued);
+    await im.init();
+    try {
+      expect(im.isOwner('owner')).toBe(true);
+      expect(im.isOwner('guest')).toBe(false);
+      const update = vi.fn();
+      queued = 1;
+      await expect(im.updateCompanionBinding(update)).rejects.toThrow('WECHAT_CONNECTION_BUSY');
+      expect(update).not.toHaveBeenCalled();
+      expect(transport.notifyStop).not.toHaveBeenCalled();
+      queued = 0;
+      await im.updateCompanionBinding(update);
+      expect(update).toHaveBeenCalledOnce();
+      expect(im.getState().phase).toBe('connected');
+      expect(transport.notifyStart).toHaveBeenCalledTimes(2);
+      expect(testHost.secrets.write).not.toHaveBeenCalled();
+      expect(testHost.secrets.remove).not.toHaveBeenCalled();
+    } finally { await im.dispose(); }
+  });
+
+  // Regression: the durable inbox used to claim a personal session even for companion messages.
+  // tier: unit; feed transport ingress and inspect the real task-store transaction boundary.
+  it('persists companion ingress against the resolved task before dispatch', async () => {
+    const { im, transport, db } = restoredConnection(() => 0);
+    let receive!: (result: Awaited<ReturnType<WechatTransport['poll']>>) => void;
+    vi.mocked(transport.poll).mockImplementationOnce(() => new Promise((resolve) => { receive = resolve; }));
+    const resolveRouteTarget = vi.fn(async (_bot: string, peer: string) => ({ row: { id: `companion-${peer}` } }));
+    const prepareNewSession = vi.fn();
+    im.attachTurnRuntime({
+      runner: { companionBotIdFor: () => 'cindy', resolveRouteTarget },
+      repo: { prepareNewSession }, config: {}, resetSessionToDefaults: vi.fn(),
+    } as never);
+    await im.init();
+    try {
+      receive({ cursor: 'next', messages: ['owner', 'guest'].map((senderId) => ({
+        senderId, messageId: senderId, text: 'hello', contextToken: 'context', media: [],
+      })) });
+      await vi.waitFor(() => expect(db.tx).toHaveBeenCalledWith('wechatCommitPollBatch', expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ peerId: 'owner', sessionId: 'companion-owner' }),
+          expect.objectContaining({ peerId: 'guest', sessionId: 'companion-guest' }),
+        ]),
+      })));
+      expect(prepareNewSession).not.toHaveBeenCalled();
+      expect(resolveRouteTarget).toHaveBeenCalledTimes(2);
+    } finally { await im.dispose(); }
+  });
+
   it('removes staged files returned while replacing the previous binding', async () => {
     const previous = { bindingEpoch: 'binding-previous', cursor: 'cursor-previous' };
     const released = ['C:\\wechat-staged\\old-file.pdf'];
@@ -607,4 +659,21 @@ function blockingLiveTransport(): WechatTransport {
         }),
     ),
   } as unknown as WechatTransport;
+}
+
+function restoredConnection(queued: () => number) {
+  const credentials = { bindingEpoch: 'epoch', botToken: 'test-token', ilinkBotId: 'wechat-bot',
+    userId: 'owner', baseUrl: 'https://ilinkai.weixin.qq.com', boundAt: 1 };
+  const testHost = host({ secretRead: (name) => name === 'wechat_data_key_v1'
+    ? Buffer.alloc(32, 3).toString('base64') : name === 'wechat_credentials_epoch' ? JSON.stringify(credentials) : null });
+  const db = fakeDb({
+    queryOne: vi.fn(async (sql: string) => sql.includes('FROM wechat_sync_state')
+      ? { bindingEpoch: 'epoch', cursor: '' } : sql.includes('COUNT(*)') ? { count: queued() } : undefined) as DbClient['queryOne'],
+    query: vi.fn(async () => []),
+    tx: vi.fn(async (name: string) => name === 'wechatCommitPollBatch'
+      ? { committed: false, reason: 'stale-cursor' } : null),
+  });
+  const transport = blockingLiveTransport();
+  const im = new WechatIM(deps({ host: testHost, getDbClient: () => db, createTransport: () => transport }));
+  return { im, transport, db, testHost };
 }
