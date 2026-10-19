@@ -792,6 +792,7 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
     'resources/teammate-portrait-gallery.png',
     // Cindy-owned Agent Skills are materialized under userData on startup.
     'resources/system-skills',
+    // resources/bot-packages is deliberately absent: the Bot Market is closed in packaged builds. Add it back when it opens.
     'resources/tools',
     'drizzle',
     'resources/cc-manager',

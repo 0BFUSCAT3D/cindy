@@ -9837,6 +9837,42 @@
       "transferOffline": "连不上服务器，{{name}} 仍在这台电脑运行",
       "transferFailed": "未能把 {{name}} 交给「{{device}}」"
     },
+    "market": {
+      "heading": "发现伙伴",
+      "description": "带着方法和技能加入，与你一起把工作往前推进。",
+      "invite": "邀请加入",
+      "open": "打开伙伴",
+      "remove": "移除伙伴",
+      "back": "返回列表",
+      "loading": "正在加载伙伴…",
+      "empty": "没有找到伙伴",
+      "loadFailed": "暂时无法加载伙伴列表，请稍后重新打开。",
+      "installFailed": "尚未完成添加。已保存的内容会保留，可以再试一次。",
+      "nameExists": "已有同名伙伴。请先在伙伴设置中改名，再邀请加入。",
+      "installing": "正在保存伙伴资料和技能…",
+      "memoryDisabled": "记忆已关闭，方法知识尚未导入；不会自动开启记忆。",
+      "knowledge": "知识与记忆",
+      "skills": "技能",
+      "routines": "例行任务",
+      "capabilities": "关键能力",
+      "workTogether": "我的配置",
+      "tools": "工作工具",
+      "remembersLead": "会记住你的",
+      "pluginInstalled": "已安装",
+      "pluginNotInstalled": "未安装",
+      "routineOff": "默认关闭",
+      "itemFailed": {
+        "routine": "例行任务「{{name}}」没能保存。",
+        "skill": "技能「{{name}}」没能保存。",
+        "knowledge": "知识「{{name}}」没能保存。",
+        "other": "「{{name}}」没能保存。",
+        "unknown": "有一项内容没能保存。"
+      },
+      "partialReady": "其他内容已就绪，可以先开始使用。",
+      "partialUnsaved": "伙伴还没有保存，请重新保存。",
+      "retry": "重新保存"
+    },
+    "starterOptions": "起步选项",
     "channels": {
       "title": "消息平台",
       "platform": {

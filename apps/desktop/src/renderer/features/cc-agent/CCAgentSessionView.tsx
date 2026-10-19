@@ -235,8 +235,10 @@ import { openBackgroundTasksTab } from '@/features/right-sidebar/lib/openBackgro
 import { openSubagentsTab } from '@/features/right-sidebar/lib/openSubagentsTab';
 import { BotAvatar } from '@/features/bots/BotAvatar';
 import { BotSessionContentHeaderRegistration } from '@/features/bots/BotSessionContentHeader';
+import { BotOpeningPending } from '@/features/bots/BotOpeningPending';
 import {
   botComposerPlaceholderKey,
+  isBotOpeningPending,
   resolveBotChatIdentity,
   type BotChatBinding,
 } from '@/features/bots/botChatPresentation';
@@ -258,6 +260,7 @@ import {
   resolveSessionRoute,
 } from '@/lib/orcaSessionIdentity';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
+import { SessionQuickSendProvider, type SessionQuickSend } from '@/components/chat/SessionQuickSendContext';
 import type { AttachedFile, ComposerBotMention, MentionedResource } from '@/lib/fileTypes';
 import { serializeAttachedFiles } from '@/lib/messageAttachmentPayload';
 import { startReviewOnDevice } from '@/lib/startReviewOnDevice';
@@ -537,6 +540,8 @@ interface CCAgentSessionViewProps {
    * 调用方须先验证持久归属并绑定 sessionId；运行快照不决定伙伴界面身份。
    */
   botIdentity?: BotChatBinding;
+  /** The teammate's invitation stage (canonical chat only); `welcome` shows the first-hello wait while the chat is empty. */
+  botInvitationStage?: string;
   /** Entry-time read boundary for a Bot chat; preserved after the live read position advances. */
   botUnreadBoundaryAt?: number | null;
   onBotReadThrough?: (at: number) => void;
@@ -800,6 +805,7 @@ function CCAgentSessionContent({
   readOnly = false,
   botMentions,
   botIdentity,
+  botInvitationStage,
   botUnreadBoundaryAt,
   onBotReadThrough,
 }: CCAgentSessionViewProps = {}) {
@@ -4932,6 +4938,17 @@ function CCAgentSessionContent({
     />
   );
 
+  // Message-level controls (e.g. a Market teammate's starter buttons) send through this session's own path.
+  const quickSend = useMemo<SessionQuickSend>(() => ({
+    send: async (text: string) => {
+      if (!session) return false;
+      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode)) !== false;
+    },
+  }), [handleSend, session]);
+  const messageStreamWithQuickSend = (
+    <SessionQuickSendProvider value={quickSend}>{messageStreamEl}</SessionQuickSendProvider>
+  );
+
   const composerRuntimeVisible =
     !pendingPlanReview &&
     (agentStatus.isRunning || backgroundTasksActive || runningWorkflow !== null);
@@ -5165,11 +5182,14 @@ function CCAgentSessionContent({
             生产直接渲染 el(见上方 messageStreamEl),不引入多余 Profiler fiber。 */}
           {import.meta.env.DEV ? (
             <Profiler id="message-stream" onRender={onStreamProfile}>
-              {messageStreamEl}
+              {messageStreamWithQuickSend}
             </Profiler>
           ) : (
-            messageStreamEl
+            messageStreamWithQuickSend
           )}
+          {botChatIdentity && isBotOpeningPending({ invitationStage: botInvitationStage, historyLoaded, messageCount: messages.length }) ? (
+            <BotOpeningPending name={botChatIdentity.name} bottomInset={overlayHeight} />
+          ) : null}
         </div>
 
         {/* Input overlay — sticky at bottom with gradient fade.
