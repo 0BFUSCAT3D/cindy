@@ -83,6 +83,7 @@ vi.mock('../../../security/trustedAppRenderer', () => ({ assertTrustedAppRendere
 import {
   addBotImConnection,
   configureBotImConnectionRuntime,
+  getBotFeishuTransport,
   listBotImConnectionGroups,
   removeBotImConnection,
   setBotImConnectionGroupMode,
@@ -91,7 +92,7 @@ import {
   stopBotImConnections,
   __testing,
 } from '../botImConnectionRuntime';
-import { listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
+import { addBotImConnectionRecord, listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
 import { readWechatChannelSettings, writeWechatCompanionBinding, writeWechatWorkingDir } from '../../wechat/channelSettings';
 import {
   adoptPersonalBot,
@@ -323,6 +324,48 @@ describe('bot im connection runtime', () => {
       }),
       listKnownGroups: async () => [{ chatId: '-1001', chatName: 'Dev Group' }],
     });
+  });
+
+  // #6439: persisted connections can fail init and remain in instances. Exercise
+  // the real store/start/select lifecycle (unit) instead of a selector replica.
+  it('skips failed and ownerless Feishu connections without changing the resolved recipient', async () => {
+    const states = [
+      { kind: 'error', owner: 'ou_failed' },
+      { kind: 'connected', owner: null },
+      { kind: 'connected', owner: 'ou_target' },
+      { kind: 'connected', owner: 'ou_other' },
+    ];
+    const records: BotImConnectionRecord[] = [];
+    for (let index = 0; index < states.length; index += 1) {
+      records.push(await addBotImConnectionRecord({ botId: 'bot-mia', channel: 'feishu' }, { now: () => index }));
+    }
+    configureBotImConnectionRuntime({
+      removeWechatCompanionBinding: h.drainWechat,
+      create: (record) => {
+        const state = states[records.findIndex((candidate) => candidate.id === record.id)]!;
+        return {
+          kind: 'feishu',
+          im: {
+            init: async () => { if (state.kind === 'error') throw new Error('startup failed'); },
+            dispose: async () => undefined,
+            onStatusChange: () => () => undefined,
+            getStatus: () => ({ kind: state.kind }),
+            getOwnerOpenId: () => state.owner,
+          } as never,
+          orchestrator: fakeOrchestrator() as never,
+        };
+      },
+      settingsIdentity: () => ({ telegramToken: null, feishuAppId: null, wecomBotId: null, dingtalkAppKey: null, discordToken: null }),
+      listKnownGroups: async () => [],
+    });
+    await startBotImConnections();
+    expect(getBotFeishuTransport('bot-mia')?.getOwnerOpenId()).toBe('ou_target');
+    states[2]!.kind = 'error';
+    // A later tool phase must not retry a resolved target through another owner.
+    expect(getBotFeishuTransport('bot-mia', 'ou_target')).toBeNull();
+    expect(getBotFeishuTransport('unrelated-bot')).toBeNull();
+    await stopBotImConnections();
+    expect(getBotFeishuTransport('bot-mia')).toBeNull();
   });
 
   it('lists known groups with their per-connection activation and toggles it live', async () => {

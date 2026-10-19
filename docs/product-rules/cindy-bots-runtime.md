@@ -336,15 +336,21 @@ Mobile 使用电脑端已连接的模型目录；目录为空时保持创建禁�
   进专线的 MCP allowlist（`botProfileRuntime` 按 `telegramChatId` / `feishuChatId` 强制挂载，伙伴
   收窄工具集也不收掉），每条入站消息的 `[渠道说明]` 末尾点名本轮可用的工具，Agent 第一时间就知道
   自己在哪个渠道、能直接调哪些平台 API（发文字 / 媒体 / 文件、回复、表情、置顶、群信息与成员、读消息、
-  任意 Bot API / Open API）。出站永远走触发本轮的那条连接自己的 bot，不串到设置页那份；目标 chat
+  任意 Bot API / Open API）。轮次内原生 API 出站走触发本轮的那条连接自己的 bot，不串到设置页那份；目标 chat
   与触发者身份来自逐轮作用域租约（`im/shared/channelToolScope.ts`），不来自模型参数——群轮次只能操作
   本群，成员触发的轮次只能读取 / 发送，管理动作（置顶、撤回 / 删消息、改群）需主人触发，任意 API
   直通与删消息按次走会话权限档。伙伴主任务（主人私聊落点）与桌面共用、不带专线的 chat 字段，改由
   `botProfileRuntime` 按该伙伴**绑了哪些渠道**写 `cindyBotImChannels` 标记并强制挂载对应工具
   （`shared/botImConnection.ts` 的 `hasImChannelVendorOptions` 是三个 Harness 共用的判定：Claude Code 走
   provider `isEnabled`，Codex 走 `buildSessionMcpConfig` 逐线程 `enabled`，Pi 走 `capabilityGated`；Codex /
-  Pi 的共享 bridge 在空 ctx 阶段必须先注册该 server，否则永远挂不上）。桌面轮次没有作用域租约，工具
-  一律 fail closed；绑定或解绑渠道后主任务的工具面在下一次会话启动时更新。
+  Pi 的共享 bridge 在空 ctx 阶段必须先注册该 server，否则永远挂不上）。桌面轮次没有作用域租约，
+  **轮次内原生 API** fail closed；飞书 `send_message_to_user` / `send_file_to_user` 的主人通知是例外：
+  canonical 主任务的桌面或后台轮次可由宿主查询当前账号的伙伴归属，仅在伙伴 Profile 为 `active`
+  时经其已连接、已认主的飞书连接发送给主人，不生成租约、不扩大原生 API 权限。
+  伙伴连接不可用、账号边界 pending 或 owner
+  代次变化时拒绝发送，不回落个人 bot；完整路由与检查边界见
+  [`im-turn-flow.md` §2](../dev-rules/im-turn-flow.md#2-状态清单)（含实现及回归链接）。
+  绑定或解绑渠道后主任务的工具面在下一次会话启动时更新。
 - **IM 专线与主任务是同一个伙伴，专线不丢伙伴能力**（2026-10-17）。专线轮次可以用
   `save_teammate_skill` / `list_teammate_skills` 把学到的做法沉淀成这个伙伴自己的技能，提示词里的
   技能指引同样注入专线；写入只认主人触发的轮次（`botSkillService` 读逐轮渠道作用域租约判定，其他成员
