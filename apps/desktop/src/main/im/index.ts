@@ -64,7 +64,7 @@ import {
   captureSessionRuntimeControlOwnerEpoch,
   sessionRuntimeControlOwnerEpochMatches,
 } from '../maker-ipc/sessionRuntimeControl.js';
-import { botProfiles, sessions } from '../localDb/schema';
+import { sessions } from '../localDb/schema';
 import {
   im,
   feishuIm,
@@ -92,6 +92,7 @@ import { resetChannelGroupContextCursors } from './shared/channelGroupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
 import {
   configureBotImConnectionRuntime,
+  setWechatCompanionBinding,
   registerBotImConnectionIpc as registerBotImConnectionRuntimeIpc,
   startBotImConnections,
   stopBotImConnections,
@@ -127,7 +128,6 @@ import {
   readWechatChannelSettings,
   resetWechatWorkingDir,
   writeWechatWorkingDir,
-  writeWechatCompanionBinding,
 } from './wechat/channelSettings';
 
 /** 伙伴「消息平台」的 IPC: 连接增删 / 群聊 / 隐藏任务, 以及把个人 bot 移给伙伴。 */
@@ -421,21 +421,16 @@ export function startImOrchestrators(): void {
     return connectionLifecycle.runWhileStarted(async () => {
       const generation = captureImAccountGeneration();
       if (generation === null) throwIpcError('PRECONDITION_FAILED', 'Account unavailable');
-      if (botId) {
-        const [profile] = await getDbClient().drizzle.select({ status: botProfiles.status })
-          .from(botProfiles).where(eq(botProfiles.id, botId as string)).limit(1);
-        if (profile?.status !== 'active') throwIpcError('PRECONDITION_FAILED', 'BOT_INACTIVE');
-        const current = readWechatChannelSettings().companionBotId;
-        if (current && current !== botId) throwIpcError('PRECONDITION_FAILED', 'WECHAT_COMPANION_IN_USE');
-      }
       try {
-        await wechatIm.updateCompanionBinding(() => {
+        await setWechatCompanionBinding(botId as string | null, (commit) => wechatIm.updateCompanionBinding(() => {
           if (!isImAccountGenerationCurrent(generation)) throw new Error('ACCOUNT_CHANGED');
-          writeWechatCompanionBinding(botId as string | null);
-        });
+          commit();
+        }));
       } catch (error) {
-        throwIpcError('PRECONDITION_FAILED', error instanceof Error && error.message === 'WECHAT_CONNECTION_BUSY'
-          ? 'WECHAT_CONNECTION_BUSY' : 'WECHAT_COMPANION_UPDATE_FAILED');
+        const code = error instanceof Error ? error.message : '';
+        throwIpcError('PRECONDITION_FAILED',
+          ['WECHAT_CONNECTION_BUSY', 'BOT_INACTIVE', 'WECHAT_COMPANION_IN_USE'].includes(code)
+            ? code : 'WECHAT_COMPANION_UPDATE_FAILED');
       }
       BrowserWindow.getAllWindows().forEach((window) => {
         if (!window.isDestroyed()) window.webContents.send('wechatBot:channel-settings-changed', readWechatChannelSettings());

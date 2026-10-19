@@ -23,6 +23,7 @@ import { createLogger } from '../../logger';
 import { getDbClient } from '../../localDb/client/current';
 import { archiveBotChannelLanes } from '../../localDb/ipc/bots';
 import { botProfiles } from '../../localDb/schema';
+import { withBotProfileLocks } from '../../maker-ipc/botProfileLock';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer';
 import { throwIpcError } from '../../utils/ipcValidate';
 import { ownerScopedImSecrets } from '../ownerScopedStorage';
@@ -650,6 +651,23 @@ export async function removeBotImConnection(id: string): Promise<BotImConnection
   log.info(`bot im connection ${id} (${record.channel}) removed archivedLanes=${archivedSessionIds.length}`);
   broadcastChanged();
   return { ...buildBotImConnectionListPayload(), archivedSessionIds };
+}
+
+/** Keep profile validation and deferred WeChat persistence in one lifecycle operation. */
+export async function setWechatCompanionBinding(
+  botId: string | null,
+  apply: (commit: () => void) => Promise<void>,
+): Promise<void> {
+  const run = async () => {
+    if (botId) {
+      if (await readBotProfileStatus(botId) !== 'active') throw new Error('BOT_INACTIVE');
+      const current = readWechatChannelSettings().companionBotId;
+      if (current && current !== botId) throw new Error('WECHAT_COMPANION_IN_USE');
+    }
+    await apply(() => { writeWechatCompanionBinding(botId); });
+  };
+  // Match deletion lock order: profile first, then the WeChat transport lifecycle.
+  await withBotProfileLocks(botId ? [botId] : [], run);
 }
 
 /** 伙伴被删除 / 归档时带走它的全部连接。 */

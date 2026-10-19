@@ -83,6 +83,7 @@ vi.mock('../../../security/trustedAppRenderer', () => ({ assertTrustedAppRendere
 import {
   addBotImConnection,
   configureBotImConnectionRuntime,
+  setWechatCompanionBinding,
   getBotFeishuTransport,
   listBotImConnectionGroups,
   removeBotImConnection,
@@ -93,6 +94,7 @@ import {
   __testing,
 } from '../botImConnectionRuntime';
 import { addBotImConnectionRecord, listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
+import { withBotProfileLocks } from '../../../maker-ipc/botProfileLock';
 import { readWechatChannelSettings, writeWechatCompanionBinding, writeWechatWorkingDir } from '../../wechat/channelSettings';
 import {
   adoptPersonalBot,
@@ -483,6 +485,39 @@ describe('bot im connection runtime', () => {
     expect([...h.secrets.keys()]).toEqual([]);
     expect(listBotImConnections()).toEqual([]);
     expect(removed.connections).toEqual([]);
+  });
+
+  // #6492 r4318509719, unit: existing cleanup tests miss an initially unbound
+  // teammate being deleted during transport drain. Use the real binding/store
+  // entry and the same profile lock as botLifecycleService, with controlled gates.
+  it('does not resurrect a deleted teammate when its first WeChat binding is draining', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const draining = new Promise<void>((resolve) => { entered = resolve; });
+    const drained = new Promise<void>((resolve) => { release = resolve; });
+    const binding = setWechatCompanionBinding('bot-mia', async (commit) => {
+      entered();
+      await drained;
+      commit();
+    });
+    await draining;
+    const deletion = withBotProfileLocks(['bot-mia'], async () => {
+      h.botStatus = 'deleting';
+      await removeBotImConnectionsForBot('bot-mia');
+      h.botStatus = null;
+    });
+    // Run until deletion either completes or waits on the binding's profile lock.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([binding, deletion]);
+    expect(readWechatChannelSettings().companionBotId).toBeUndefined();
+    const apply = vi.fn(async (commit: () => void) => { commit(); });
+    await expect(setWechatCompanionBinding('bot-mia', apply)).rejects.toThrow('BOT_INACTIVE');
+    expect(apply).not.toHaveBeenCalled();
+    // A different active teammate can claim the shared connection afterwards.
+    h.botStatus = 'active';
+    await setWechatCompanionBinding('bot-other', apply);
+    expect(readWechatChannelSettings().companionBotId).toBe('bot-other');
   });
 
   // Regression #6492: a WeChat-only teammate has no connection-store records.
