@@ -3,6 +3,7 @@ import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, isUserPendingAgentSwitchIntent, type MakerSessionAgentSwitchHandlerDeps, type PendingAgentSwitchIntent } from '../sessionAgentSwitchHandler';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
+import { acquireSendToSessionLock, withSendToSessionLock } from '../sendToSessionLock';
 
 // Execute the actual picker admission branches (local and agent-device), with
 // everything after admission represented by applyLive. No Electron bootstrap.
@@ -51,6 +52,87 @@ const orcaIdentities = [
   { orcaRole: 'worker' },
   { orcaRole: null, orcaRemoteLead: JSON.stringify(remoteLead) },
 ];
+
+function compile(expression: string, bindings: Record<string, unknown>) {
+  const js = ts.transpileModule(`return ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
+}
+
+// PR #6403 round 5: earlier closure tests pre-populated the intent and skipped
+// Renderer persistence. Exercise the real queue/lease and recovery boundary;
+// Renderer-to-IPC persistence is covered in the existing cross-file guard suite.
+describe('complete selection commit boundaries', () => {
+  it('reads a picker intent staged while the direct send waits for the real route lock', async () => {
+    const pending = createPendingAgentSwitchRegistry();
+    let status = 'archived';
+    let finishPicker!: () => void;
+    let pickerStarted!: () => void;
+    const started = new Promise<void>(resolve => { pickerStarted = resolve; });
+    const picker = withSendToSessionLock('queued-picker', async () => {
+      pickerStarted();
+      await new Promise<void>(resolve => { finishPicker = resolve; });
+      pending.set('queued-picker', { targetAgentKind: 'codex', model: 'new', providerId: null, sameAgentSelection: true });
+    });
+    await started;
+    const selected = vi.fn(async () => {
+      if (status !== 'active') throw new Error('archived selection applied');
+      return {};
+    });
+    const deps = { pendingSwitches: pending, getLiveSession: () => null, selectSameAgentModel: selected,
+      bootstrapSwitchedSession: vi.fn(), log: { warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
+    const directSend = compile(directSendAdapter, { agentSwitchPending: pending, acquireSendToSessionLock,
+      restoreArchivedSessionForSend: async () => { status = 'active'; },
+      reconcileBotModelRoute: vi.fn(), applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent,
+      agentSwitchDeps: deps, contextOverflowRolloverHolder: null });
+    const sending = directSend('queued-picker');
+    finishPicker();
+    await picker;
+    const lease = await sending;
+    try {
+      expect(status).toBe('active');
+      expect(selected).toHaveBeenCalledOnce();
+      expect(pending.get('queued-picker')).toBeUndefined();
+      let subsequentStarted = false;
+      const subsequent = withSendToSessionLock('queued-picker', async () => { subsequentStarted = true; });
+      await Promise.resolve();
+      expect(subsequentStarted).toBe(false);
+      lease.release();
+      await subsequent;
+    } finally { lease.release(); }
+  });
+
+  it.each([false, true])('retains new axes through the recovery tail (persistence fails: %s)', async fails => {
+      const pending = createPendingAgentSwitchRegistry();
+      const row = { status: 'archived', model: 'target', effort: 'low', fastMode: false };
+      const intent: PendingAgentSwitchIntent = { targetAgentKind: 'codex', model: 'target', providerId: null,
+        effort: 'low', fastMode: false, resumeFallbackRecovery: {
+          boundaryClientId: 'boundary', boundaryContent: { fromAgentKind: 'cc', toAgentKind: 'codex',
+            fromModel: 'old', toModel: 'target', fromSdkSessionId: null, handoff: 'handoff', resumed: false },
+          handoff: 'handoff', handoffClearEpoch: 0,
+        } };
+      pending.set('s1', intent);
+      const persistSessionFields = vi.fn(async (_id: string, patch: object) => {
+        if (fails) throw new Error('sqlite rejected');
+        Object.assign(row, patch);
+      });
+      const deps = { pendingSwitches: pending, getLiveSession: () => null,
+        applyResumeFallbackAtomically: vi.fn(), setPendingHandoff: vi.fn(), onPendingSwitchChanged: vi.fn(),
+        log: { warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
+      const stageAxis = compile(stageAxisAdapter, { agentSwitchPending: pending, agentSwitchDeps: deps,
+        persistSessionFields, projectPendingAgentSwitchIntent: (value: unknown) => value,
+        wakeSessionInputAfterCredentialSwitch: vi.fn() });
+      if (fails) {
+        await expect(stageAxis('s1', intent, { effort: 'high', fastMode: true }, vi.fn())).rejects.toThrow('sqlite rejected');
+        expect(pending.get('s1')).toBe(intent);
+        expect(row).toMatchObject({ effort: 'low', fastMode: false });
+      } else {
+        await stageAxis('s1', intent, { effort: 'high', fastMode: true }, vi.fn());
+        await applyPendingAgentSwitchIfIdle(deps, 's1');
+        expect(pending.get('s1')).toBeUndefined();
+        expect(row).toMatchObject({ model: 'target', effort: 'high', fastMode: true });
+      }
+  });
+});
 
 describe('Orca model-only picker intent admission', () => {
   // PR #6403 P1: the composer already restores archived tasks, but Goal's
@@ -126,7 +208,7 @@ describe('Orca model-only picker intent admission', () => {
       const sending = directSend('s1', controller.signal);
       // A later picker choice while restore awaits must be the one applied.
       if (mode === 'repicked-during-restore') {
-        expect(restore).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
         pending.set('s1', { ...intent, model: 'latest' });
         finishRestore!();
       }
@@ -141,7 +223,8 @@ describe('Orca model-only picker intent admission', () => {
         if (mode === 'cross-engine' || mode === 'relocation') expect(row).toMatchObject({ effort: 'high', fastMode: true });
       }
       expect(pending.get('s1')).toBeUndefined();
-      expect(restore.mock.invocationCallOrder[0]).toBeLessThan(acquire.mock.invocationCallOrder[0]);
+      expect(acquire.mock.invocationCallOrder[0]).toBeLessThan(restore.mock.invocationCallOrder[0]);
+      expect(restore).toHaveBeenCalledWith('s1', { routeLockHeld: true });
       expect(release).not.toHaveBeenCalled();
       lease.release();
       expect(release).toHaveBeenCalledOnce();
@@ -152,7 +235,7 @@ describe('Orca model-only picker intent admission', () => {
       expect(switchToDb).not.toHaveBeenCalled();
       expect(pending.get('s1')).toBeDefined();
       if (mode === 'cancelled') expect(restore).not.toHaveBeenCalled();
-      else expect(acquire).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
     }
   });
 

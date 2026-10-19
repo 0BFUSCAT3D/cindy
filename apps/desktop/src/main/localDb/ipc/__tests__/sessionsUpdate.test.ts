@@ -764,11 +764,14 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(h.routeLock).toHaveBeenCalledWith('codex-local', expect.any(Function));
   });
 
-  it('restores an archived task for send through the normal locked status writer and broadcast', async () => {
+  it.each([false, true])('restores and broadcasts without reacquiring a held direct-send lease (held: %s)', async routeLockHeld => {
     h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
-    await restoreArchivedSessionForSend('codex-local');
+    // A lease is already held outside ALS by direct send. Any re-entry would
+    // deadlock; the ordinary composer still acquires this route lock once.
+    h.routeLock.mockClear();
+    await restoreArchivedSessionForSend('codex-local', { routeLockHeld });
     expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
-    expect(h.routeLock).toHaveBeenCalledWith('codex-local', expect.any(Function));
+    expect(h.routeLock).toHaveBeenCalledTimes(routeLockHeld ? 0 : 1);
     expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', expect.objectContaining({
       sessionId: 'codex-local', patch: { status: 'active' },
     }));

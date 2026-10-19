@@ -10435,17 +10435,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
   pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
-    // Match composer sends: restore before applying a user's staged model.
-    // The restore owns the same route lock, so run it before acquiring the
-    // direct-send lease (which is deliberately held until the caller sends).
-    const pendingSelection = agentSwitchPending.get(sessionId);
-    if (!signal?.aborted && isUserPendingAgentSwitchIntent(pendingSelection)) {
-      await restoreArchivedSessionForSend(sessionId);
-    }
     let stage = 'direct-send:acquire';
     let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
+      // Read after acquisition: a picker can have been queued ahead of this
+      // send. Restore under this same lease through dispatch, without re-taking it.
+      const pendingSelection = agentSwitchPending.get(sessionId);
+      if (!signal?.aborted && isUserPendingAgentSwitchIntent(pendingSelection)) {
+        stage = 'direct-send:restoreArchivedSession';
+        await restoreArchivedSessionForSend(sessionId, { routeLockHeld: true });
+      }
       stage = 'direct-send:reconcileBotModelRoute';
       await reconcileBotModelRoute(sessionId, true);
       if (beforeApply) {
@@ -22140,8 +22140,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     sessionId: string,
     intent: PendingAgentSwitchIntent,
     patch: Pick<PendingAgentSwitchIntent, 'effort' | 'fastMode'>,
+    assertCurrent: () => void,
   ) => {
     const updated = { ...intent, ...patch };
+    // Recovery is a post-commit tail: its target route already owns the DB
+    // fields and the next bootstrap reads them. The tail itself only repairs
+    // the resume boundary/handoff, so it cannot consume newly staged axes.
+    if (intent.resumeFallbackRecovery) {
+      await persistSessionFields(sessionId, patch);
+      assertCurrent();
+    }
     if (intent.sameAgentSelection) {
       return agentSwitchDeps.selectSameAgentModel!(sessionId, updated, false);
     }
@@ -22174,11 +22182,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const remoteInvoke = isDeviceLinkInvoke();
     const remoteResponse = remoteInvoke ? {} : undefined;
     const persistEffort = async () => {
-      if (!remoteResponse) return;
       assertOwnerCurrent();
       assertSharedTaskCurrent.admit();
       await persistSessionFields(sessionId, { effort });
-      markRemoteSettingPersistedInsideHandler(remoteResponse);
+      if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
     };
     const applyEffort = async () => {
       const [runtimeStatus] = await getDbClient()
@@ -22200,12 +22207,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (isUserPendingAgentSwitchIntent(userIntent)) {
         assertOwnerCurrent();
         assertSharedTaskCurrent.admit();
-        const result = await stagePendingUserRuntimeAxis(sessionId, userIntent, { effort });
+        const result = await stagePendingUserRuntimeAxis(sessionId, userIntent, { effort }, assertOwnerCurrent);
         if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
         return remoteResponse ?? result;
       }
       if (runtimeStatus.status === 'archived') {
-        // 本地由 renderer 落库，远控在此等待落库；不重建归档时清掉的 runtime 状态。
+        // Main owns both local and remote commits; Renderer must not write a
+        // target axis onto the old route while an intent is still pending.
         await persistEffort();
         return remoteResponse;
       }
@@ -22232,8 +22240,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 有 pending 凭证切换 = 本会话的 model/effort 变更已整体延迟到 turn 结束重建:
       // 跳过对仍在跑的旧 turn 的 runtime 推送(与 renderer 本地分支的 deferred 守卫同因,
       // 这里是唯一 choke point,同时覆盖 device-link 远程入口;review P2 2026-07-04)。
-      // 持久化不受影响:本地由 renderer sessionService.update 落盘,远程由 device-link
-      // dispatch 的 persistRemoteSetting 按请求值落被控端 DB,重建时生效。
+      // 本地与设备互联均由此 handler 等待落盘，重建时再应用。
       if (pendingCredentialSwitchHolder?.has(sessionId)) {
         await commitRuntimeAxisAfterPersistence({
           persist: persistEffort,
@@ -22244,9 +22251,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return remoteResponse;
       }
       try {
-        const previousProfile = remoteInvoke
-          ? (await readSessionRuntimeProfiles(sessionId))?.effective
-          : undefined;
+        const previousProfile = (await readSessionRuntimeProfiles(sessionId))?.effective;
         const result = await applyRuntimeEffortWithRecovery({
           applyRuntime: () => {
             assertOwnerCurrent();
@@ -22274,7 +22279,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           persist: persistEffort,
           commit: commitEffort,
           assertCanCommit: assertOwnerCurrent,
-          ...(remoteInvoke && result === 'applied' && previousProfile
+          ...(result === 'applied' && previousProfile
             ? {
                 recoverAfterPersistenceFailure: () =>
                   recoverRemoteRuntimeAxisPersistence(
@@ -22703,11 +22708,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const remoteInvoke = isDeviceLinkInvoke();
       const remoteResponse = remoteInvoke ? {} : undefined;
       const persistFastMode = async () => {
-        if (!remoteResponse) return;
         assertOwnerCurrent();
         assertSharedTaskCurrent.admit();
         await persistSessionFields(sessionId, { fastMode: enabled });
-        markRemoteSettingPersistedInsideHandler(remoteResponse);
+        if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
       };
       const applyFastMode = async () => {
         const [runtimeStatus] = await getDbClient()
@@ -22729,7 +22733,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (isUserPendingAgentSwitchIntent(userIntent)) {
           assertOwnerCurrent();
           assertSharedTaskCurrent.admit();
-          const result = await stagePendingUserRuntimeAxis(sessionId, userIntent, { fastMode: enabled });
+          const result = await stagePendingUserRuntimeAxis(sessionId, userIntent, { fastMode: enabled }, assertOwnerCurrent);
           if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
           return remoteResponse ?? result;
         }
@@ -22777,9 +22781,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           log.debug('set-fast-mode: skipped live push (pending credential switch)', { sessionId });
           return remoteResponse;
         }
-        const previousProfile = remoteInvoke
-          ? (await readSessionRuntimeProfiles(sessionId))?.effective
-          : undefined;
+        const previousProfile = (await readSessionRuntimeProfiles(sessionId))?.effective;
         assertOwnerCurrent();
         assertSharedTaskCurrent.admit();
         await sess.setFastMode(enabled);
@@ -22787,7 +22789,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           persist: persistFastMode,
           commit: commitFastMode,
           assertCanCommit: assertOwnerCurrent,
-          ...(remoteInvoke && previousProfile
+          ...(previousProfile
             ? {
                 recoverAfterPersistenceFailure: () =>
                   recoverRemoteRuntimeAxisPersistence(

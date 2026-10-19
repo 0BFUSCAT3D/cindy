@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
+import { createEffortChangeCoordinator, enqueueEffortChange } from '../../renderer/components/new-chat/effortChangeQueue';
 
 const mainRoot = resolve(__dirname, '..');
 const bootstrapSource = readFileSync(resolve(mainRoot, 'bootstrap-electron.ts'), 'utf8').replace(
@@ -59,7 +60,7 @@ const isUserPendingAgentSwitchIntent = new Function(ts.transpileModule(
 ).outputText)();
 function collectAxisHandlers(node: ts.Node): void {
   if (ts.isVariableDeclaration(node) && node.initializer &&
-      ['applyEffort', 'applyFastMode', 'stagePendingUserRuntimeAxis'].includes(node.name.getText(registerAst))) {
+      ['applyEffort', 'applyFastMode', 'persistEffort', 'persistFastMode', 'stagePendingUserRuntimeAxis'].includes(node.name.getText(registerAst))) {
     axisHandlers.set(node.name.getText(registerAst), ts.transpileModule(
       `return ${node.initializer.getText(registerAst)};`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -68,22 +69,37 @@ function collectAxisHandlers(node: ts.Node): void {
   ts.forEachChild(node, collectAxisHandlers);
 }
 collectAxisHandlers(registerAst);
+// Cross-file persistence contract: the real Renderer adapter must leave the
+// decision to Main even before its pending-intent projection reaches this UI.
+const rendererStoreAst = ts.createSourceFile('store.ts', readFileSync(
+  resolve(mainRoot, '../renderer/lib/makerChatStore.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+const rendererInputAst = ts.createSourceFile('ChatInput.tsx', readFileSync(
+  resolve(mainRoot, '../renderer/components/new-chat/ChatInput.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const fastSetter = rendererStoreAst.statements.find((node): node is ts.FunctionDeclaration =>
+  ts.isFunctionDeclaration(node) && node.name?.text === 'setFastMode')!;
+let effortPipeline = '';
+function findEffortPipeline(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.expression.getText(rendererInputAst) === 'enqueueEffortChange')
+    effortPipeline = node.arguments[3].getText(rendererInputAst);
+  ts.forEachChild(node, findEffortPipeline);
+}
+findEffortPipeline(rendererInputAst);
 
 describe.each([
   ['applyEffort', 'persistEffort', 'effort', 'high'],
   ['applyFastMode', 'persistFastMode', 'fastMode', true],
 ] as const)('archived settings: %s', (handler, persistName, field, value) => {
-  function setup(status: 'archived' | 'deleted') {
+  function setup(status: 'archived' | 'deleted', remote = true) {
     const row = { status, effort: 'low', fastMode: false } as Record<string, unknown>;
     const pending = new Map();
     const persist = vi.fn(async () => { row[field] = value; });
-    const response = {};
+    const response = remote ? {} : undefined;
     const query = { from: () => query, where: () => query, limit: async () => [row] };
     const getSession = vi.fn(() => { throw new Error('archived runtime must remain untouched'); });
     const bindings = {
       sessionId: 'archived-task', effort: 'high', enabled: true,
       sessions: {}, eq: vi.fn(), getDbClient: () => ({ drizzle: { select: () => query } }),
-      remoteResponse: response, [persistName]: persist, agentSwitchPending: pending,
+      remoteResponse: response, persistSessionFields: persist, agentSwitchPending: pending,
       assertOwnerCurrent: vi.fn(), assertSharedTaskCurrent: { admit: vi.fn() },
       markRemoteSettingPersistedInsideHandler: vi.fn(), maker: { getSession },
       isUserPendingAgentSwitchIntent, projectPendingAgentSwitchIntent: (intent: unknown) => intent,
@@ -92,8 +108,9 @@ describe.each([
         onPendingSwitchChanged: vi.fn() },
       throwIpcError: (code: string, message: string) => { throw new Error(`[${code}] ${message}`); },
     };
+    const persistAxis = new Function(...Object.keys(bindings), axisHandlers.get(persistName)!)(...Object.values(bindings));
     const stagePendingUserRuntimeAxis = new Function(...Object.keys(bindings), axisHandlers.get('stagePendingUserRuntimeAxis')!)(...Object.values(bindings));
-    const runBindings = { ...bindings, stagePendingUserRuntimeAxis };
+    const runBindings = { ...bindings, [persistName]: persistAxis, stagePendingUserRuntimeAxis };
     const run = new Function(...Object.keys(runBindings), axisHandlers.get(handler)!)(...Object.values(runBindings));
     return { run, row, persist, response, getSession, pending, changed: bindings.agentSwitchDeps.onPendingSwitchChanged };
   }
@@ -146,6 +163,33 @@ describe.each([
     h.persist.mockRejectedValueOnce(new Error('sqlite rejected'));
     await expect(h.run()).rejects.toThrow('sqlite rejected');
     expect(h.row).toMatchObject({ status: 'archived', effort: 'low', fastMode: false });
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('commits local Renderer changes through Main (pending intent: %s)', async hasIntent => {
+    const h = setup('archived', false);
+    if (hasIntent) h.pending.set('archived-task', { targetAgentKind: 'pi', model: 'next', effort: 'low', fastMode: false });
+    const compile = (expression: string, bindings: Record<string, unknown>) => new Function(...Object.keys(bindings),
+      ts.transpileModule(`return (${expression});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(bindings));
+    const bindings = { sessionService: { update: h.persist }, window: { electronAPI: { maker: {
+      setEffort: h.run, setFastMode: h.run,
+    } } }, log: { warn: vi.fn() }, getStickySessionDeviceId: () => undefined, setState: vi.fn(),
+      activeModel: undefined, fastMode: false, onEffortDidChange: vi.fn() };
+    if (field === 'fastMode') await compile(fastSetter.getText(rendererStoreAst), bindings)('archived-task', true);
+    else {
+      const coordinator = createEffortChangeCoordinator();
+      await enqueueEffortChange(coordinator, 'archived-task', 'high', compile(effortPipeline, bindings));
+      await coordinator.awaitRuntimeSettled('archived-task');
+    }
+    if (hasIntent) {
+      expect(h.pending.get('archived-task')).toMatchObject({ [field]: value });
+      expect(h.persist).not.toHaveBeenCalled();
+      h.pending.clear(); // restart before send loses only the volatile selection
+      expect(h.row).toEqual({ status: 'archived', effort: 'low', fastMode: false });
+    } else {
+      expect(h.persist).toHaveBeenCalledOnce();
+      expect(h.row).toMatchObject({ [field]: value });
+    }
     expect(h.getSession).not.toHaveBeenCalled();
   });
 });
