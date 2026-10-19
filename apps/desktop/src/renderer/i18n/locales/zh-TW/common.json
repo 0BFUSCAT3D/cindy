@@ -1,16 +1,5 @@
 {
-  "pluginTargetPicker": {
-    "project": "選擇專案",
-    "task": "選擇任務",
-    "bot": "選擇夥伴",
-    "bindDescription": "允許 {{name}} 今後直接向這個固定目標傳送。",
-    "onceDescription": "選擇 {{name}} 本次傳送的位置，不會改寫固定綁定。",
-    "bind": "固定到這裡",
-    "choose": "選擇目標",
-    "cancel": "取消",
-    "search": "搜尋名稱或專案",
-    "empty": "沒有可用目標"
-  },
+  "mailReader": {"markReadFailed":"未能同步已讀狀態，請檢查信箱授權後重新開啟。","title":"郵件","openMailbox":"在信箱中開啟","loading":"正在讀取郵件…","failed":"未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。","retry":"重試","to":"收件人","cc":"副本","bcc":"密件副本","subject":"主旨","currentMessage":"目前郵件","messageCount_other":"共 {{count}} 封郵件","messageCount_one":"共 {{count}} 封郵件","showMessages_other":"展開 {{count}} 封郵件","showMessages_one":"展開 {{count}} 封郵件","expandMessage":"展開來自 {{from}} 的郵件","collapseMessage":"收起來自 {{from}} 的郵件","conversationFailed":"暫時無法讀取前後郵件。","messageCount":"共 {{count}} 封郵件","showMessages":"展開 {{count}} 封郵件"},
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
@@ -3006,6 +2995,7 @@
           "quotaTitle": "本期剩餘額度",
           "quotaUsed": "已用 {{used}} / 本期額度 {{total}}",
           "loading": "正在取得…",
+          "noPersonalLimit": "未設定個人限額",
           "unavailable": "暫時無法取得，請重新整理。",
           "refresh": "重新整理額度"
         },
@@ -6550,6 +6540,11 @@
         "unknownReviewerDetail": "包裡帶有稽核宣告，但當前 Cindy 不認識這把稽核公鑰，因此不會顯示為已稽核。"
       },
       "perm": {
+        "mail": "使用郵件草稿與傳送卡片",
+        "mailDetail": "可在卡片中編輯和同步草稿，並在傳送前提供確認與撤銷倒數。",
+        "mailReader": "在應用程式內查看郵件",
+        "mailReaderHost": "在應用程式內開啟 {{host}} 的郵件連結",
+        "mailMarkRead": "開啟郵件時可將其標記為已讀",
         "grantsTitle": "安裝後它將擁有：",
         "toolsGroup": "註冊工具",
         "toolsDiffGroup": "註冊工具變化",
@@ -10975,6 +10970,13 @@
     "verificationFailed": "暫時無法確認 ChatGPT 登入是否已恢復，請重新檢測。"
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "圖片已交付",
+      "failed": "圖片交付失敗，可重試傳輸已有圖片。",
+      "retry": "重試交付",
+      "retrying": "正在交付…",
+      "retryFailed": "暫時無法交付，請確認產生圖片的電腦在線。"
+    },
     "failedSamplingAttempt": "此回覆未完成，內容僅供參考。",
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一則提問：{{preview}}",
@@ -12002,7 +12004,17 @@
       "linkConfirmHint": "該連結由插件提供，將在系統瀏覽器中開啟：",
       "linkConfirmOpen": "開啟",
       "linkConfirmCancel": "取消",
-      "linkOpenFailed": "連結開啟失敗"
+      "expandFields": "展開",
+      "collapseFields": "收起",
+      "formSyncFailed": "卡片修改尚未同步，請檢查連線後繼續編輯；訊息尚未傳送。",
+      "linkOpenFailed": "連結開啟失敗",
+      "mailPreview": "郵件預覽",
+      "mailEnlarge": "放大檢視",
+      "mailInsertImage": "插入內文",
+      "mailAttach": "新增附件",
+      "mailRemoveAttachment": "移除 {{name}}",
+      "mailUpdated": "草稿已更新（唯讀）",
+      "mailLegacy": "歷史草稿（唯讀）"
     },
     "ghostHook": {
       "blockedFallback": "訊息被插件攔下，未傳送",

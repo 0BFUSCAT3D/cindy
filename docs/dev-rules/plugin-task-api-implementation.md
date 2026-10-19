@@ -114,6 +114,11 @@ Host 每次调用都重新读取本插件的模型设置，复用创建任务的
 新任务选择；用户可为插件单独覆盖。模型、Agent、供应商、推理强度和 Fast 作为完整组合
 解析，绝不从另一 Agent 的历史草稿拼出一组值。权限独立设置，不随模型来源继承。
 
+插件可在 `ghost.json` 顶层声明 `showTaskPreferences: false`，隐藏 Desktop 和手机上的
+宿主「模型与任务」默认配置卡，并在自己的设置界面提供配置。省略或设为 `true` 保持原有显示条件。
+此字段仅控制卡片显示；以下任务 API、模型优先级、已有默认配置和权限检查全部保持原样。
+旧客户端不识别该字段时仍显示原卡片。
+
 | 入口 | 模型来源与复用 | 权限与结果 |
 | --- | --- | --- |
 | `tasks.create` | 显式 route → 插件任务设置 → 经验证的 callId 发起任务 → 当前新任务选择；保存准入后的完整 route | 用户插件权限，默认普通任务的 ask；返回普通任务及持久创建回执 |
@@ -329,25 +334,35 @@ Pi 子代理未成功投递的自动 allow 再次投递前重走现有核验，�
 `delegated-*` 正反对照（后者需要真实审阅模型，当前拆分 PR 未运行付费验证）。主机身份校验是确定性边界，动作与任务是否相符仍由 Auto 审阅，
 不宣称题目目录是系统沙箱。
 
-## 用户选择的投递目标（增量接口，尚未发布）
+## 通用投递目标（增量接口，尚未发布）
 
-`cindy.targets` 的作者契约见 `FORGE_GUIDE`，实现位于 `pluginTargetSlot.ts`、
-`pluginTargetCandidates.ts` 和 `PluginTargetPickerHost.tsx`。保留 `cindy.tasks` 自有任务边界，
-不把它的 get/list/send 放宽成任意任务权限。新入口复用 `agent.tasks` 的启用、批准和逻辑页身份校验，
-还必须取得用户在宿主选择器里的具体目标选择；插件不能直接提交 taskId、botId 或项目路径作为授权。
-不改变现存插件、旧任务 API、默认设置卡或 manifest 字段。
+`cindy.targets` 的作者契约见 `FORGE_GUIDE`，实现位于 `pluginTargetSlot.ts` 和
+`pluginTargetCandidates.ts`。查询、解析和投递相互独立，没有宿主目标选择弹窗、Renderer 接线或新增 UI。
+选择方式、固定目标及其配置由使用这些接口的插件维护；Host 不保存插件的固定目标绑定。
+入口复用 `agent.tasks` 的启用、批准和逻辑页身份校验，保留 `cindy.tasks` 自有任务边界，
+不放宽它的 get/list/send，不改变旧任务 API、默认设置卡或 manifest 字段。
 
-- 每次选择只产生临时句柄；固定选择落入 owner-scoped `plugin-targets.json`，只保存插件、目标标识和名称，不保存桌面内容或消息。
-- `get` 将固定绑定换成本次短期句柄。发送消费临时句柄，相同请求共享同一 Promise，不能更换 requestKey 或正文使同一句柄重复创建/投递；Host 重启后句柄失效。未知结果由调用方保留为待检查，不自动重放。
-- Picker 只投主窗口，绑定 webContents；回包必须来自受信宿主 Renderer。Owner stamp 在接收端校验，换账号清 UI；等待中还会复核原插件逻辑页、批准 revision 和 owner generation。
-- 新项目任务沿用插件模型选择和受限的动手权限，使用现有 `createPluginTaskSession`；目录来自宿主已有项目列表。存量任务和伙伴保留其模型、权限、目录；伙伴只通过唯一 canonical 注册解析，不使用兼容镜像或伪造伙伴身份。
-- `send` 的可选 `delivery` 为 `queue | steer`，缺省为 `queue`；project 仅接受 queue，新建任务不需要插话。delivery 参与请求幂等签名，缺省与显式 queue 等价，同键更换投递方式返回 REQUEST_KEY_CONFLICT。
-- queue 走 `sendToSessionInternal` 与既有输入队列；steer 复用 `steerControlInput` 同轮注入，不停止或重启当前轮。空闲、框架不支持或当前输入边界不允许插话时走普通队列，保留 Stop/pause 边界。返回 `{taskId,accepted:true,delivery:'queue'|'steer'}`，delivery 表示实际接受路径，不表示 AI 已执行完成。
-- main 盖 sourcePlugin 和 delegated-continuation 来源，沿用目标模型及权限。接受前、异步筛查后及 provider 派发前复核插件批准与目标。筛查拒绝返回 DELIVERY_REJECTED，不改走队列；ACK 未知保留宿主保护性暂停队列并返回 DELIVERY_UNCERTAIN，不再次排队。取消只按本插件 host-generated clientId 撤回排队输入，不停止整个会话或撤回已经接受的插话。
-- 仅本机 Desktop，不新增 Mobile/device-link 透传，也不承诺跨平台原生触发。
+- `list({targetKind})` 返回 `{targets:[{kind,id,label,detail}]}`，仅返回本机可用目标元数据，不返回消息历史。
+  项目使用 Cindy 已有目录分组（id 为目录路径），普通任务和伙伴使用其 ID。最近活动只排序，插件自行展示和选择。
+- `resolve({target:{kind,id}})` 返回最新目标元数据，供插件校验保存的固定目标；无写入、弹窗或隐式选中。
+  `send` 同样重新校验目标，不要求先 list/resolve，也不接受任意不可用路径或目标；失效返回 TARGET_UNAVAILABLE，不降级改投。
+- `send({target,requestKey,text,title?,route?,delivery?,attachments?})` 在指定项目中新建普通任务，或向指定普通任务/伙伴投递。
+  新任务使用现有 `createPluginTaskSession`，沿用插件模型选择和受限动手权限，可传统一模型目录的 route。
+  存量任务和伙伴保留其模型、权限、目录，不接受 route；伙伴通过唯一 canonical 注册解析，不使用兼容镜像或伪造伙伴身份。
+- 同键并发发送共享同一 Promise。owner-scoped `plugin-target-deliveries.json` 只保存请求摘要、Host 生成的 taskId/clientId 和状态，
+  不保存正文、图片或插件固定配置。执行前原子预留回执；已接受请求可在重启后返回原结果，尚未确定的回执返回 DELIVERY_UNCERTAIN，
+  不自动重派。幂等键按插件和 requestKey 隔离，不因插件升级或 Host 重启更换身份；同键修改目标、正文、附件或 delivery 返回 REQUEST_KEY_CONFLICT。
+- `delivery` 为 `queue | steer`，缺省 queue（与显式 queue 幂等签名一致）；project 仅接受 queue。
+  queue 走 `sendToSessionInternal` 与既有输入队列；steer 复用 `steerControlInput` 同轮注入，不停止或重启当前轮。
+  空闲、框架不支持或当前输入边界不允许插话时走普通队列，保留 Stop/pause 边界。
+  返回 `{taskId,accepted:true,delivery:'queue'|'steer'}` 表示实际接受路径，不表示 AI 已执行完成。
+- main 盖 sourcePlugin 和 delegated-continuation 来源；入队前复核插件批准与目标，插话还在异步筛查后及 provider 派发前复核。
+  筛查拒绝返回 DELIVERY_REJECTED，不改走队列；ACK 未知保留宿主保护性暂停队列并返回 DELIVERY_UNCERTAIN，不再次排队。
+  `cancel({requestKey})` 持久使迟到请求失效，只按本插件该请求的 clientId 撤回排队输入，不停止整个会话或撤回已经接受的插话。
+- 仅本机 Desktop，不新增 Mobile/device-link 透传，也不承诺跨平台原生触发。异步请求持续复核原逻辑页、批准 revision 和 owner generation。
 
-此能力供声明了 `agent.tasks` 的插件使用；目标由用户选择，投递沿用既有插件授权和目标任务权限。
-静态检查不等于设置 UI、取材、伙伴实际执行的联调验收；不得把 accepted 当成完成。
+此能力供声明了 `agent.tasks` 的插件使用；投递沿用既有插件授权和目标任务权限。
+静态检查与单元测试不等于真实 AI 执行的联调验收，不得把 accepted 当成完成。
 
 ### 消息图片附件
 

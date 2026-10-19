@@ -1275,6 +1275,7 @@ interface ElectronAPI {
 
   /** 意识仓库 —— 数据模型与校验见 shared/ghost.ts,main 端见 main/cindy-brain/。 */
   ghosts: {
+    mailPreview: (sessionId: string, url: string, read: boolean, opened?: boolean) => Promise<{ supported: boolean; message?: import('@cindy/maker-shared/mail-message').MailMessage; error?: string }>;
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget) => Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView>;
     closeRemoteSettings: (id: string) => Promise<void>;
     onRemoteSettingsDirectory: (callback: (value: import('../shared/remotePluginSettings').RemotePluginSettingsDirectory) => void) => () => void;
@@ -1442,6 +1443,7 @@ interface ElectronAPI {
     onCardUpdated: (
       callback: (payload: {
         callId: string;
+        sessionId?: string | null;
         ghostId: string;
         logicalGhostId?: string;
         toolUseId: string | null;
@@ -1475,6 +1477,8 @@ interface ElectronAPI {
       callId: string,
       actionId: string,
       prompt?: string,
+      formValues?: Record<string, string>,
+      formChange?: boolean,
     ) => Promise<{ ok: boolean }>;
     /** 订阅槽①:用户消息被意识钩子拦下(renderer 把乐观气泡原地降级为被拦态;
      *  没有既有气泡时用 text 补渲一条——排队消息被拦不无声蒸发)。 */
@@ -1560,9 +1564,6 @@ interface ElectronAPI {
     /** confirm 槽:插件请求弹主机同款确认框(main 已资格审+净化+限速+单飞)。
      *  main 只投单个窗口,所以收到即本窗口负责弹;答案用 resolveConfirm 回包。
      *  confirmText/cancelText 为 null 时用 renderer 自己的缺省文案(跟语言走)。 */
-    onTargetPicker: (callback: (payload: import('../shared/pluginTargets').PluginTargetPickerPush, ownerStamp: import('../shared/dataOwnerPush').DataOwnerPushStamp) => void) => () => void;
-    onTargetPickerDismiss: (callback: (payload: { requestId: string }) => void) => () => void;
-    resolveTargetPicker: (requestId: string, targetId: string | null) => Promise<{ handled: boolean }>;
     onConfirmRequest: (
       callback: (payload: {
         requestId: string;
@@ -6261,6 +6262,7 @@ interface ElectronAPI {
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },
       ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
+      retryImageDelivery: (sessionId: string, imageId: string) => Promise<void>;
       retryLastError: (
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },

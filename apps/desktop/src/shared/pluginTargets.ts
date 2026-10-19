@@ -3,31 +3,28 @@ import type { PluginMessageAttachment } from './pluginAttachments.js';
 
 export type PluginTargetKind = 'project' | 'task' | 'bot';
 export type PluginTargetDelivery = 'queue' | 'steer';
-export interface PluginTargetView {
-  bindingId: string;
+export interface PluginTargetRef {
   kind: PluginTargetKind;
-  label: string;
+  /** Project directory, task ID or companion ID from targets.list/resolve. */
+  id: string;
 }
-/** Only sent to Cindy's trusted desktop renderer, never to a plugin. */
+export interface PluginTargetView extends PluginTargetRef {
+  label: string;
+  detail: string;
+}
+/** Local target metadata; no messages or task history. */
 export interface PluginTargetCandidate {
   id: string;
   label: string;
   detail: string;
 }
-export interface PluginTargetPickerPush {
-  requestId: string;
-  pluginName: string;
-  kind: PluginTargetKind;
-  persistent: boolean;
-  candidates: PluginTargetCandidate[];
-}
 export type PluginTargetRequest =
-  | { kind: 'pick'; requestKey: string; targetKind: PluginTargetKind; persistent?: boolean }
-  | { kind: 'get'; bindingId: string }
+  | { kind: 'list'; targetKind: PluginTargetKind }
+  | { kind: 'resolve'; target: PluginTargetRef }
   | {
       kind: 'send';
       requestKey: string;
-      bindingId: string;
+      target: PluginTargetRef;
       text: string;
       attachments?: PluginMessageAttachment[];
       title?: string;

@@ -67,7 +67,7 @@ contextBridge.exposeInMainWorld('cindy', {
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'fs-request' }),
   library: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'library-request' }),
-  targets: Object.fromEntries(['pick', 'get', 'send', 'cancel'].map(kind => [kind,
+  targets: Object.fromEntries(['list', 'resolve', 'send', 'cancel'].map(kind => [kind,
     async (req: Record<string, unknown> = {}): Promise<unknown> => {
       const result = await ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'targets-request', kind });
       if (result?.ok === true) return result.data;
