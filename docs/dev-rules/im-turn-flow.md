@@ -58,8 +58,23 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | `pendingInteractions.pending` / `interactions.ts pending` | 两侧 | requestId / interactionId | 并入（批次 5：交互挂起表合一，超时策略按渠道参数） |
 | `groupHistoryAccess.activeBySession` | `im/shared` | sessionId | 已同源，不动 |
 | 群消息本地窗口（`hook_group_messages`）与上下文游标（`hook_group_context_cursors`） | `im/shared/groupWindowCore.ts`；个人渠道经 `im/shared/channelGroupWindow.ts`（Telegram / 企业微信 / 钉钉各一份 provider 前缀，`<渠道>-personal:<botContextId>`），官方经 `hook-control/groupWindow.ts` | provider + chat / cursorKey | 已同源，不另建存储：新渠道接群上下文时复用 `createChannelGroupWindow`，在 `prepareAgentTurnText` 入窗并拼前缀、受理后 `commit`，终稿发出后把机器人回复入窗 |
-| `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。Telegram、飞书 / Lark 各一种作用域，带着触发本轮那条连接自己的 transport；企业微信 / 钉钉 / Discord 没有渠道直通工具，伙伴专线轮次由 `messageHandler` 登记不带 transport 的 `LaneTurnScope`（只给触发者身份与当前对话）；`cindy_feishu_bot` 的 `send_*_to_user` 也按它选出站 bot（2026-10-17 前恒走设置页那份，伙伴绑定的飞书连接会从错的 bot 发出） |
+| `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。Telegram、飞书 / Lark 各一种作用域，带着触发本轮那条连接自己的 transport；企业微信 / 钉钉 / Discord 没有渠道直通工具，伙伴专线轮次由 `messageHandler` 登记不带 transport 的 `LaneTurnScope`（只给触发者身份与当前对话）；`cindy_feishu_bot` 的 `send_*_to_user` 优先按它选出站 bot，无租约时按下述主人通知规则解析 |
 | Telegram 传输层（`chatQueues` / `typingLoops` / 回挂目标） | `packages/lizi-im/src/telegram/index.ts` | chat | 保留（个人出站载体） |
+
+**飞书主人通知的无租约路径**：`send_message_to_user` / `send_file_to_user` 在伙伴 canonical
+主任务的后台回报、心跳或桌面轮次中可主动通知主人。无飞书逐轮作用域时，宿主异步查询当前账号的
+`bot_session_links`（`role='canonical'`，关联 `sessions.source='bot'`），确认伙伴 Profile 为 `active`，
+选择该伙伴已连接且已绑定主人的飞书连接；发送时校验连接的 owner 与已解析收件人一致。
+已识别伙伴但没有匹配的可用连接、伙伴 Profile 非 active 或缺失、数据库查询失败、账号边界处于 pending
+或 owner 代次变化，均拒绝发送，不回落个人 bot；查询前后
+及实际调用发送前都复核账号边界、owner 代次与所用 DB 快照。没有 canonical 伙伴归属的普通
+任务仍保留设置页个人 bot 的主人通知能力。使用个人 bot 发送时，已解析收件人必须匹配它当前的主人
+或宿主任务记录的显式 `feishuChatId`；两阶段之间 canonical 关联消失时，不将伙伴的收件人交给个人
+凭证发送。此路径不向主任务持久写入 `feishuChatId`，也不生成租约
+或授予轮次内原生 API 权限；`cindyBotImChannels` 只控制工具挂载，不作为归属或授权依据。
+实现见 [`feishuTransportRouting.ts`](../../apps/desktop/src/main/mcp-integrations/feishuTransportRouting.ts)
+与 [`botImConnectionRuntime.ts`](../../apps/desktop/src/main/im/shared/botImConnectionRuntime.ts)，
+真实 worker DB 路径回归见 [`feishuTransportRouting.test.ts`](../../apps/desktop/src/main/mcp-integrations/__tests__/feishuTransportRouting.test.ts)。
 
 **不为合并新增**全局状态机或持久化表：队列与停止交给已有公共入口持有的状态；合并只移动和
 删除现有状态。
@@ -77,8 +92,9 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 5. **session-new-v1**：`/new` 成功时新任务已落库并出现在列表；**turn-reopen-v1**：续跑轮
    断连即终局、`turn.end` 直发不缓存。
 6. **群历史租约与渠道工具租约**：`beginGroupHistoryAccess` / `beginChannelToolScope` 都在 provider 真正
-   开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。渠道工具的目标 chat 与
-   触发者身份只来自租约，不来自模型参数。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
+   开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。轮次内原生 API 的目标 chat 与
+   触发者身份只来自租约，不来自模型参数，无租约时 fail closed；飞书 `send_*_to_user` 的主人通知
+   例外见上节，不扩大原生 API 的作用域。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
    末尾给 `toolsHint` 点名本轮可用的渠道工具（Telegram：`TELEGRAM_TOOLS_HINT`；飞书：`feishuToolsHint`），
    Agent 不该靠摸瞎试工具才知道自己在哪个渠道；新增可绑定渠道时四件事一起补——渠道说明提示、
    `channelToolScopeFor` 作用域、轮次内直通工具、以及该渠道工具在**三个 Harness** 的挂载门禁
