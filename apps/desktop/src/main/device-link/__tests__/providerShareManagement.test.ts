@@ -228,6 +228,16 @@ describe('member note management', () => {
   });
 });
 
+describe('idle release setting payloads', () => {
+  it.each([0, 1, 10, 120])('accepts %i minutes', idleMinutes => {
+    expect(parseProviderShareCommand({ action: 'set-idle-release', value: { idleMinutes } }))
+      .toEqual({ action: 'set-idle-release', value: { idleMinutes } });
+  });
+  it.each([undefined, {}, { idleMinutes: -1 }, { idleMinutes: 121 }, { idleMinutes: 1.5 }, { idleMinutes: '10' }])('rejects %j', value => {
+    expect(() => parseProviderShareCommand({ action: 'set-idle-release', value })).toThrow('INVALID_PARAMS');
+  });
+});
+
 describe('same-account share management during account transitions', () => {
   it.each([
     createLink, ...mutations,

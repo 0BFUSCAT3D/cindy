@@ -479,6 +479,18 @@
       "saved": "Remote session limits saved",
       "retry": "Reload",
       "loading": "Loading…"
+    },
+    "idleRelease": {
+      "title": "When this computer uses models on other computers",
+      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running are never disconnected; while a task is disconnected, its background commands on this computer keep running.",
+      "minutes": "Idle release (minutes)",
+      "hint": "The default is 0, which never disconnects; when the limit is reached you see the limit message. With 1–120, a task can disconnect only after it has been idle this long.",
+      "invalid": "Enter a whole number from 0 to {{max}}.",
+      "save": "Save",
+      "reset": "Restore defaults",
+      "saved": "Idle release setting saved",
+      "retry": "Reload",
+      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -10070,6 +10082,19 @@
         "cancel": "Cancel",
         "failed": "Couldn’t remove it. Try again later.",
         "ok": "OK"
+      },
+      "officialX": {
+        "bind": "Assign to this teammate",
+        "remove": "Remove teammate assignment",
+        "bindTitle": "Let {{name}} handle X questions?",
+        "bindBody": "Your public questions to @askmycindy will use {{name}}’s identity, tools, shared memory and workspace. Replies are public. The X thread is separate from your private chat history. This replaces any existing teammate assignment.",
+        "removeTitle": "Remove the X assignment?",
+        "removeBody": "Your X account stays connected. Future questions become ordinary tasks. Replies already in progress will finish.",
+        "bound": "X questions are assigned to {{name}}. Enable X and authorize your account to start.",
+        "boundElsewhere": "X is assigned to another teammate. Assigning it here replaces that teammate.",
+        "unbound": "Let {{name}} handle your questions to the official @askmycindy bot.",
+        "managed": "A teammate handles X questions. Change the assignment in that teammate’s message platform settings.",
+        "riskBody": "X questions use the teammate’s shared memory, tools and workspace, and replies are public. Do not use X for private information. The X thread does not directly use your private chat history."
       }
     }
   },
@@ -12000,7 +12025,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
       "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
-      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing."
+      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
+      "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context."
     },
     "generatedFiles": {
       "title": "Files created this message",

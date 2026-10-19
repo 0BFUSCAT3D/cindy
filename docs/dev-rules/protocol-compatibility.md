@@ -1331,6 +1331,68 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   主进程拒绝。
 - **移动项目可用**：B 上的影子目录只按「控制端 + 任务 id」定址(虚拟工作区为必需能力)，与 A 的工作目录
   无关；A 换目录后关闭空闲 handle，下次发送按新目录重建，B 上的会话记录原样续用。
+- **控制端连接池：名额紧张时让出闲置任务的 Agent 进程**(2026-10-17)：B 按发起设备限制同时开着的 run(`caps.maxRuns`)，
+  A 上开着的任务即使闲着也占名额。A 对每台 B 一个连接池(`controller/connectionPool.ts`，计数口径与 B 的 `limitDeviceOf`
+  一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 A 本机设置(「远程与分享」页「这台电脑使用
+  其他电脑的模型」，只在管理本机时显示，0～120，**默认 0 = 从不让出**，与没有连接池时一样满了直接报错；升级后行为不变，用户自己打开才生效)。三条路径都只让有资格的：
+  A 在这台 B 上开着的连接数到了水位线 `ceil(maxRuns×80%)`(只在水位线低于上限、即 maxRuns ≥ 5 时；每次 open 前与每分钟查一次)
+  按最久没活动的顺序让，直到降到水位线以下；open 前已满先同步让一个；open 被拒且是名额类 `REMOTE_AGENT_BUSY`
+  (`[DEVICE_LIMIT]` / `[TOTAL_LIMIT]`，旧 B 是 `too many tasks are running from this computer`；`too much staged data` 不算)
+  让一个再**只重试一次**。没有有资格的就照常 open / 照原样报错，B 才是最终裁判；不排队等名额。
+  - **不改 wire**：让出用已有的 `close`(mode `close`、reason `navigation`；不用 `detach`，它不结束 B 上的进程)，连回用已有的
+    `open` + `options.resumeSessionId`(远程 Agent 第一版就有)；maxRuns 每次 open 前从 `caps` 读最新值(旧 B 固定回 16，正是它的
+    硬上限)。四种版本组合：A 新 × B 新 / B 旧都只用这两个 op；A 旧行为不变(不让出)；B 侧代码未改，没有新的会话状态字段，
+    手机端无感知。
+  - **本机部分跟句柄走**：执行器(含 `ShellSession` 后台命令，让出后仍可按原 ID 读取)、本机 MCP 身份、Codex exec-server 中继
+    都不随让出关闭；中继只关掉为 B 上 Codex 起的 exec-server(B 的 Codex 已退出)，连回来的 Codex 重新连。句柄对 Maker 一直是活的，
+    状态镜像(用量、模型、计划模式等)照常读；连回后新进程还没报有内容的用量前保留上一次的读数。
+  - **「不忙」**：A 侧没有进行中的方法调用、回包与推帧；状态镜像里没有在跑 / 在准备的回合、没有后台任务(`backgroundTasks`：
+    Claude Code 后台子代理与后台任务、Pi 子代理)与待唤醒续跑(`pendingWake`)；Codex 中继里没有仍在运行的 `process/start` 进程
+    (后台终端；按 exec-server 的 `process/closed` / `process/exited` 与启动失败判断，固定 Codex 0.159.2 实测)，也没有在等本机确认的消息；
+    回到某条消息后、下一轮跑完前也算忙(Claude Code 要到下一次发送才在 B 上截断)。A 本机执行器里的后台命令不算忙。「闲置满 N 分钟」从最后一次活动算起：由忙转闲(后台任务、待唤醒续跑清空，
+    Codex 中继里各连接上的工作——在跑的进程、启动中请求、待确认消息——由有变无：进程结束、启动失败、确认处理完，
+    或带着工作的 exec-server 连接被整条关掉)本身算一次活动，后台工作再久，结束后也要再闲置满 N 分钟才让。
+    会话 id 会被 B 改写的也不让：B 打开时把启动选项里的字符串按 A 的工作目录及各级上级目录、用户目录与附加目录投影到虚拟
+    工作区，`resumeSessionId` 也不例外；Pi 的会话 id 是 B 上的会话文件路径，两台同为 Mac(`/Users`)或同为 Windows 时
+    常落在这些前缀下，带过去会变成不存在的文件。A 按同一规则预判(`hostRewritesResumeId`)，这样的 Pi 任务不让出。
+    (App 重启后接回 Pi 走的也是这条投影，是此前就有的问题，本期未改 B。)
+  - **连回**：只有要 B 上的 Agent 干活的调用触发(`send` / `steer` / `resumeBackgroundTask` / `compactSession` / 回退，以及要 B 回答的
+    `previewModelSwitch` / `getContextUsage` / `getCodexContextWindowInfo`)；`requiresModelSwitchRebuild` 已让出时回 false(下一次连回
+    本来就是带新模型的冷启动接回)；只改设置的
+    (`setModel` / `setEffort` / `setFastMode` / `setPlanMode` / `setThinkingEnabled` / `setPermissionMode` / 目录 / `setVendorOptions`)
+    已让出时只记在 A，`abort` / `requestGracefulStop` / `stopBackgroundTask` 已让出时什么也不做。会话里还没有对话(不是接回的旧会话、
+    也没跑完过一轮)时连回直接开新会话，不带 id。连回带当前原生会话 id 与最新的
+    模型、来源、推理强度、快速模式、思考开关、权限档、计划模式；回退 / 分叉用的一次性 `resumeSessionAt` /
+    `forkSession` 只在第一轮跑完前带(之后再带会再截断一次)；`setVendorOptions` 改过的内容、`libraryRoot`、`useCindyAutoReviewFallback` 连回后再告诉 B 一次；
+    补发的任一步失败就当这次连回失败(fail closed)：关掉刚开的 run 还回名额、回到已让出，待补发的内容保留，调用以
+    `[REMOTE_AGENT_UNAVAILABLE]` 报错，下次调用重新连回再补发，不会在缺设置的 Agent 上执行消息。
+    **目录映射保证**：对话里出现过的每个虚拟路径，连回后仍指向同一个本机目录，绝不会指向另一个目录。B 按 open 里
+    附加 / 可写目录的顺序起名(`additional/dir-<序号>`)，所以连回时原样给第一次打开时的列表与顺序；A 已有的映射
+    (含运行中新增目录分配的 `additional/runtime-<n>`)只补不换。打开之后的增减(连着时或让出期间)在连回后按运行中
+    改目录的 `setExtraDirs` / `setWritableDirs` 补发，与一直连着时一致；已撤掉的目录 A 的执行器不再当作可访问的根。
+    消息里的路径在连回完成后才转换。连回期间(含补发设置)其它调用都等这次连回，不会抢在设置恢复前发给 B。受邀者归属校验、
+    供应商组 `relayMemberOf` 回到原组内电脑与 App 重启后接回同一条路径。B 接不回原会话时(会话失效回调里正是这次带的 id，或 B
+    返回了别的会话 id)沿用 `onInvalidResumeSession` 语义，同时在任务里插一条非终止的 `[REMOTE_AGENT_RESUME_LOST]` 提示，
+    不悄悄丢上下文；手机端同步补了 `session.remoteError.REMOTE_AGENT_RESUME_LOST`，旧手机没有这条文案，显示通用的「回复失败」。
+  - **并发**：让出进行中来的调用等它让完再连回；同时几个调用只连一次；调用开始后让出放弃；已让出时的关闭、归档、删除、换账号、
+    退出 App(`detach`)只收本机部分，不再联系 B。
+  - **让出时 close 没送到**(链路抖动等)：B 的进程可能还占着名额。A 的连接池继续把它算作占位，约 2 秒后原样再发一次
+    `close`(B 不认识这个 run 时直接回空，等同已关闭)；再发送到、或过了 B 自行回收的最坏时间后不再占位(`REMOTE_AGENT_POOL_CLOSE_HOLD_MS`，3 分 30 秒：
+    B 的 `REMOTE_AGENT_HOST_IDLE_MS` 3 分钟，加上每 5 秒一次的回收检查、停止拉取前在途 poll 最长 10 秒的挂起，再留余量，
+    不比 B 更早认为名额已空)；占位独立于任务存在，任务在这期间关闭或归档也不会让它消失。占位期间水位线与打开前的判断都算上它，会先让别的有资格的连接，而不是直接打开撞上限。
+    close 没送到时本机也不再等 B 的收尾事件(B 不会收尾)。这个任务自己要连回时，打开前与被拒后都先立刻对旧 run 再发
+    一次 close，关掉了才不再占位；计数时只排除它正要开的那个位置，旧 run 照样算(B 打开时的名额检查会算上旧 run，
+    同一任务的旧实例要到新进程启动时才被替换)。还是关不掉就照常让别的连接或按 B 的上限报错。
+  - **已知限制**：B 的整机合计上限(`TOTAL_LIMIT`)A 看不到别的设备的占用，只能靠被拒后处理；A 在自己额度内不让出，可能挡住别的
+    设备，第一期接受。A 作为供应商组所在电脑替受邀者中转的 run 不进连接池(由发起方决定让出，发起方让出后按原有逻辑关掉中转)；
+    同一台 B 的多个分享入口(`share:<id>`)各算一个池，计数可能偏低，靠被拒后处理兜住。
+  - **已知限制：连回被拒时本机后台命令会结束**。触发条件：任务已让出，下一次发送(或其他要 B 干活的调用)连回时被 B 拒绝
+    (仍满的名额类 `REMOTE_AGENT_BUSY`，或 B 离线等任何在发出消息之前就失败的情况)。后果：错误照常报给用户，但 Maker 对发送失败
+    的通用处理会在约 250ms 后关闭这个会话句柄、等下次重建，本机执行器随之关闭，这个任务里还在跑的本机后台命令(`ShellSession`)
+    会结束，按原 ID 也读不到了。对话不丢：下一次从界面发送会重建句柄，并照常带原生会话 id 在 B 上接回原来的对话。第一期只记录不改；
+    第二期加上「等名额」的排队后，连回不再因为名额被直接拒绝，这种情况会少很多。
+    回归见 `remote-agent/__tests__/connectionPool.test.ts`、`execServerProjection.e2e.test.ts`(中继忙闲)，以及真实 Claude Code / Codex / Pi 的
+    `claudeHosted` / `codexHosted` / `piHosted.e2e.test.ts`(共用 `poolHarness.ts`)。
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
