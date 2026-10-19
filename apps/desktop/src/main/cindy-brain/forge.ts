@@ -4495,6 +4495,13 @@ if (!opened.ok) console.warn(opened.errorCode, opened.message);
 - 每次打开,宿主都会弹带你身份头的提示("xxx 打开了一个预览页面"),用户永远
   知道页面是谁开的;
 - 标签开在用户自己的右侧栏浏览器里,关不关、看不看由用户决定。
+- **停靠面板嵌入本机页面**(窄例外):同时声明 \`panel\`、\`node\` 工作进程与
+  \`preview.hosts\` 里的 \`localhost\` / \`127.0.0.1\` 的插件,其面板页可以把随包 Node
+  进程在本机提供的页面装进 \`<iframe>\`(主机为这类插件的页面 CSP 追加
+  \`frame-src 'self' http://127.0.0.1:* http://localhost:*\`);嵌入帧内的脚本、样式、
+  XHR 与 WebSocket 只许回到同一主机:端口,面板页自身仍不能联网,嵌入页也不能申请
+  摄像头 / 定位等权限。用它做"没有浏览器栏的本机实时画面"(如模拟器),不要用它
+  绕开网络声明。
 
 ## 4.16 捆绑 Agent Skills(skill 能力)
 
