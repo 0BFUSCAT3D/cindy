@@ -202,7 +202,8 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     return this.#queueLifecycle(async () => {
       const cancelPending = options.cancelPendingIf?.() ?? false;
       if (options.cancelPendingIf && !cancelPending) return;
-      if (this.#authorizationAbort || (!cancelPending && (this.#activeTasks.size || this.#pendingInteractions.size))) {
+      if (cancelPending) this.cancelAuthorization();
+      if (!cancelPending && (this.#authorizationAbort || this.#activeTasks.size || this.#pendingInteractions.size)) {
         throw new Error('WECHAT_CONNECTION_BUSY');
       }
       const epoch = this.#epoch;

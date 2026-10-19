@@ -437,7 +437,10 @@ describe('WechatIM host boundary', () => {
     expect(im.getState()).toMatchObject({ phase: 'disconnected', bound: false });
   });
 
-  it('drops late authorization credentials after a compatibility revision changes', async () => {
+  // #6492 r4318608094, unit: existing policy-cancel coverage missed teammate
+  // deletion during QR confirmation. Public lifecycle must cancel, finish cleanup,
+  // and ignore a late authorization result without writing shared credentials.
+  it.each(['policy', 'companion-deletion'])('drops late authorization credentials after %s cancellation', async (reason) => {
     const testHost = host();
     let resolveCredentials!: (credentials: WechatCredentials) => void;
     const waitAuthorization = vi.fn(
@@ -459,7 +462,17 @@ describe('WechatIM host boundary', () => {
 
     await im.authorize();
     await vi.waitFor(() => expect(waitAuthorization).toHaveBeenCalledOnce());
-    await im.setCompatibilityDisabled(true);
+    if (reason === 'policy') await im.setCompatibilityDisabled(true);
+    else {
+      const update = vi.fn();
+      await expect(im.updateCompanionBinding(update)).rejects.toThrow('WECHAT_CONNECTION_BUSY');
+      await im.updateCompanionBinding(update, { cancelPendingIf: () => false });
+      expect(im.getState().phase).toBe('waiting_confirmation');
+      expect(update).not.toHaveBeenCalled();
+      await im.updateCompanionBinding(update, { cancelPendingIf: () => true });
+      expect(update).toHaveBeenCalledOnce();
+      expect(vi.mocked(authorizationTransport.waitAuthorization).mock.calls[0]![1].aborted).toBe(true);
+    }
     resolveCredentials({
       token: 'late-token',
       botId: 'late-bot',
@@ -470,7 +483,8 @@ describe('WechatIM host boundary', () => {
 
     expect(createTransport).toHaveBeenCalledOnce();
     expect(testHost.secrets.write).not.toHaveBeenCalled();
-    expect(im.getState()).toMatchObject({ phase: 'disabled_by_policy', bound: false });
+    expect(im.getState()).toMatchObject({ phase: reason === 'policy' ? 'disabled_by_policy' : 'disconnected', bound: false });
+    await im.dispose();
   });
 
   it('rolls back a newly activated binding when the account generation becomes stale', async () => {
