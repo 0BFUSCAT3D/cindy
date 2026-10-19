@@ -1,10 +1,32 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { withCdpSocket } from "../_generated/extension/src/browser/cdp.helpers.js";
+import { readChromeVersion } from "../_generated/extension/src/browser/chrome.diagnostics.js";
 
 import {
   stopOpenClawChrome,
   type RunningChrome,
 } from "../_generated/extension/src/browser/chrome.js";
+
+vi.mock(
+  "../_generated/extension/src/browser/cdp.helpers.js",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../_generated/extension/src/browser/cdp.helpers.js")
+    >()),
+    withCdpSocket: vi.fn(),
+  }),
+);
+vi.mock(
+  "../_generated/extension/src/browser/chrome.diagnostics.js",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../_generated/extension/src/browser/chrome.diagnostics.js")
+    >()),
+    readChromeVersion: vi.fn(),
+  }),
+);
 
 /**
  * Regression: stop treated ChildProcess.killed (signal sent) as process exit,
@@ -35,7 +57,16 @@ function runningChrome(alreadySignalled = false) {
   return { running, proc, release };
 }
 
-afterEach(() => vi.useRealTimers());
+beforeEach(() => {
+  vi.stubGlobal("process", { ...process, platform: "linux" });
+  vi.mocked(readChromeVersion).mockReset();
+  vi.mocked(withCdpSocket).mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("managed Chrome shutdown", () => {
   it.each([false, true])(
@@ -81,4 +112,56 @@ describe("managed Chrome shutdown", () => {
     expect(proc.kill).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledOnce();
   });
+
+  // Windows SIGTERM is a force-kill too. Browser.close must precede waiting,
+  // and CDP loss must not trigger a signal while Chrome flushes its profile.
+  it("closes Windows Chrome through CDP and waits for its actual exit", async () => {
+    vi.stubGlobal("process", { ...process, platform: "win32" });
+    vi.useFakeTimers();
+    const { running, proc, release } = runningChrome();
+    const send = vi.fn().mockResolvedValue({});
+    vi.mocked(readChromeVersion).mockResolvedValue({
+      webSocketDebuggerUrl: "ws://127.0.0.1:18800/devtools/browser/fake",
+    });
+    vi.mocked(withCdpSocket).mockImplementation(async (_url, fn) => fn(send));
+    const stopping = stopOpenClawChrome(running, 300);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(send.mock.calls).toEqual([["Browser.close"]]);
+    expect(proc.kill).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    proc.exitCode = 0;
+    await vi.advanceTimersByTimeAsync(100);
+    await stopping;
+    expect(proc.kill).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each(["discovery", "command"])(
+    "force-stops Windows Chrome only at the original deadline after CDP %s fails",
+    async (failure) => {
+      vi.stubGlobal("process", { ...process, platform: "win32" });
+      vi.useFakeTimers();
+      const { running, proc, release } = runningChrome();
+      vi.mocked(readChromeVersion).mockImplementation(
+        async (_url, timeoutMs) => {
+          await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+          if (failure === "discovery") throw new Error("CDP unavailable");
+          return {
+            webSocketDebuggerUrl: "ws://127.0.0.1:18800/devtools/browser/fake",
+          };
+        },
+      );
+      vi.mocked(withCdpSocket).mockRejectedValue(
+        new Error("CDP socket closed"),
+      );
+      const stopping = stopOpenClawChrome(running, 300);
+      await vi.advanceTimersByTimeAsync(299);
+      expect(proc.kill).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await stopping;
+      expect(proc.kill.mock.calls).toEqual([["SIGKILL"]]);
+      expect(release).toHaveBeenCalledOnce();
+    },
+  );
 });

@@ -45,6 +45,7 @@ import {
   isWebSocketUrl,
   normalizeCdpHttpBaseForJsonEndpoints,
   openCdpWebSocket,
+  withCdpSocket,
 } from "./cdp.helpers.js";
 import { normalizeCdpWsUrl } from "./cdp.js";
 import {
@@ -1223,9 +1224,27 @@ export async function stopOpenClawChrome(
     if (proc.exitCode != null || proc.signalCode != null) {
       return;
     }
-    // LOCAL PATCH (Cindy, via sync.mjs): killed means a signal was sent,
-    // not that Chrome exited. Give it the grace period to flush site data.
-    if (!proc.killed) {
+    // LOCAL PATCH (Cindy, via sync.mjs): Windows SIGTERM force-kills too.
+    // Ask Chrome to flush and close via CDP, within the existing grace period.
+    const start = Date.now();
+    if (!proc.killed && process.platform === "win32" && timeoutMs > 0) {
+      try {
+        // Discovery, WebSocket handshake and command each share the budget.
+        const cdpTimeoutMs = Math.max(1, Math.floor(timeoutMs / 3));
+        const wsUrl = await getChromeWebSocketUrl(
+          cdpUrlForPort(running.cdpPort), cdpTimeoutMs,
+        );
+        if (wsUrl && proc.exitCode == null && proc.signalCode == null && Date.now() - start < timeoutMs) {
+          await withCdpSocket(wsUrl, (send) => send("Browser.close"), {
+            handshakeTimeoutMs: cdpTimeoutMs,
+            commandTimeoutMs: cdpTimeoutMs,
+            handshakeRetries: 0,
+          });
+        }
+      } catch {
+        // Closing Chrome can drop CDP before replying. Still wait for exit.
+      }
+    } else if (!proc.killed && process.platform !== "win32") {
       try {
         proc.kill("SIGTERM");
       } catch {
@@ -1233,7 +1252,6 @@ export async function stopOpenClawChrome(
       }
     }
 
-    const start = Date.now();
     while (true) {
       // CDP can disappear while Chrome is still flushing its profile.
       if (proc.exitCode != null || proc.signalCode != null) {

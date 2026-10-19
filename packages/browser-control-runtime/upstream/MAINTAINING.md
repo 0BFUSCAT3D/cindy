@@ -13,6 +13,8 @@
 `--restore-last-session`，否则 Chrome 正常退出后不会恢复会话 Cookie（仅有固定目录不够）；
 退出必须等待子进程的 `exitCode` / `signalCode`，不能把 `ChildProcess.killed`（已发信号）
 或 CDP 不可达当成已退出，否则立即跟上的 SIGKILL 会打断登录数据落盘。
+Windows 的 SIGTERM 也会强杀进程，因此先通过 CDP `Browser.close` 请求正常关闭，
+发现、握手、命令和后续等待共用原有宽限期，只有期限耗尽才 SIGKILL；POSIX 保留 SIGTERM。
 退出修正由 `sync.mjs` 的 LOCAL_PATCH 保留，回归见 `src/__tests__/chrome-stop.test.ts`。
 
 「使用我的浏览器登录态」目前是**每次冷启动重新复制**，不是首次导入：只在 Agent 浏览器

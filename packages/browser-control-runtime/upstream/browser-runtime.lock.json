@@ -28,7 +28,11 @@
     },
     {
       "file": "extension/src/browser/chrome.ts",
-      "desc": "wait for actual Chrome exit after SIGTERM so login data can flush before force-stop"
+      "desc": "reuse the bounded CDP command helper for graceful Windows Chrome shutdown"
+    },
+    {
+      "file": "extension/src/browser/chrome.ts",
+      "desc": "close Windows Chrome via CDP and wait for actual process exit before force-stop"
     },
     {
       "file": "extension/src/browser/chrome.ts",
@@ -108,7 +112,7 @@
     }
   ],
   "fileCount": 335,
-  "contentHash": "2cd752b051eb29fd8db6b2feb2ff64881ce29fa2b0867e8e43baadc7cfe18295",
+  "contentHash": "9a4e02b5c865d4f3cec6e44b1862050ba706542d96a67f564c4c3b60cf7fdc97",
   "fsSafe": {
     "package": "@openclaw/fs-safe",
     "version": "0.4.0"
