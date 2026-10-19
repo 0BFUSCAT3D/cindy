@@ -34,6 +34,12 @@ Plugins (internally "意识" / Ghost) extend what the agents can do — they add
 - The server selects the release appropriate for this Cindy version before marketplace delivery. Desktop does not apply a second `minCindyVersion` gate; custom marketplaces and local `.cindy` packages follow the same install policy.
 - Updates from stable marketplace sources are applied automatically when the plugin is idle — **as long as the new version doesn't need more permissions**. If it does, the automatic update pauses, the old version keeps working, and the plugin card shows "New permissions need confirmation"; clicking Update shows the added permissions for you to confirm. Failed attempts retry later; you can still click Update to retry immediately.
 
+**Creating or updating your own plugin:**
+
+- Choose **Create with Cindy** from the Plugins page's add menu. Cindy opens a new-task draft with `/cindy-plugin-creator`; describe what you want and send it using your chosen Agent and model.
+- You can also invoke `/cindy-plugin-creator` directly to create, edit, debug, package, or publish a plugin. Its bundled references contain the authoring documentation for the current Cindy version.
+- Creating and packaging a plugin produces a `.cindy` file. Installation and publication are separate actions that you can request when ready.
+
 **Using a plugin with `$command`:**
 
 - Type its command at the **start** of a message — e.g. `$cindy-art a poster for…`. Only enabled plugins that declare that command match.

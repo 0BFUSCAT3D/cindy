@@ -16,6 +16,10 @@ import {
   type PluginSuggestionRequest,
 } from '@/features/cc-agent/pendingPluginSuggestion';
 import { GhostPluginPage } from '../GhostPluginPage';
+import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { clearDraft, getDraft } from '@/lib/composerDraftStore';
+import { leadingSlashInvocation } from '@/lib/slashCommands';
+import { getDraft as getWorkspaceDraft, patchDraft, resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 
 const { auth, translation, pickAndUpdateGhost } = vi.hoisted(() => ({
   pickAndUpdateGhost: vi.fn(),
@@ -123,6 +127,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  clearDraft(NEW_MAKER_DRAFT_KEY);
+  resetDraftWorkspaceTargets();
   cancelPendingPluginSuggestion();
   __resetInstalledGhostsStoreForTest();
   vi.unstubAllGlobals();
@@ -147,6 +153,22 @@ function page(entry: string, withRetirementNavigation = false) {
     </MemoryRouter>
   );
 }
+
+// Unit: clicking the actual creation action must invoke the built-in Skill and
+// reset a previously selected remote workspace, instead of sending raw authoring
+// instructions to an unrelated host. Replaces the old prompt-wording assertions.
+it('starts plugin creation with the built-in Skill in a local new-task draft', async () => {
+  patchDraft({ workingDir: '/remote/project', deviceLinkDeviceId: 'remote-device', extraDirs: ['/unrelated'] });
+  render(page('/plugins'));
+  fireEvent.keyDown(screen.getByRole('button', { name: 'settings.ghosts.page.addPluginAria' }), { key: 'ArrowDown' });
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.ghosts.page.createWithCindy' }));
+  const draft = getDraft(NEW_MAKER_DRAFT_KEY)!;
+  const text = draft.text!.content![0]!.content![0]!.text!;
+  expect(leadingSlashInvocation(text)?.name).toBe('cindy-plugin-creator');
+  expect(draft.attachments).toEqual([]);
+  expect(draft.focusAtEnd).toBe(true);
+  expect(getWorkspaceDraft()).toMatchObject({ workingDir: null, deviceLinkDeviceId: null, extraDirs: [] });
+});
 
 it('keeps linked computer and project scope in the page heading without changing recommendation', async () => {
   Object.assign(window.electronAPI, { showOpenDirectoryDialog: vi.fn(async () => ({ canceled: false, path: '/fixture/Cindy' })) });

@@ -50,6 +50,7 @@ import {
 } from '@/features/cc-agent/pendingPluginSuggestion';
 import { readPluginRecommendationSnapshot } from '@/features/cc-agent/pluginHomeSuggestions';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { CINDY_PLUGIN_CREATOR_NAME } from '../../../shared/cindyBuiltInSkills';
 import {
   getDraft as getComposerDraft,
   plainTextToTiptapDoc,
@@ -1215,7 +1216,7 @@ function LocalGhostPluginPage({
 
   const handleCreateWithCindy = useCallback(() => {
     saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
-      text: plainTextToTiptapDoc(t('settings.ghosts.page.createPrompt')),
+      text: plainTextToTiptapDoc(`/${CINDY_PLUGIN_CREATOR_NAME} ${t('settings.ghosts.page.createPrompt')}`),
       attachments: [],
       focusAtEnd: true,
     });
