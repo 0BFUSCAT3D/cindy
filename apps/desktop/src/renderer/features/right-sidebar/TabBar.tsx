@@ -93,7 +93,7 @@ interface TabBarProps {
   /** 页签右键菜单「移到 左侧 / 右侧栏 / 上方 / 下方」。不传 = 不显示。 */
   onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
   /** 「+」菜单插件分组新加了全局页签(独立窗口据此收编)。 */
-  onGlobalTabAdded?: (tabId: string) => void;
+  onGlobalTabSelected?: (tabId: string, existed: boolean) => void;
   /** 本条横带是否作为**窗口**拖拽区(B3):主窗口内嵌形态传 false —— 空白处是
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
@@ -119,10 +119,10 @@ interface TabStripProps {
   /** 见 TabBarProps.popoutWindows / onMergeBackTab。 */
   popoutWindows?: PopoutWindowOption[];
   onMergeBackTab?: (tabId: string) => void;
-  /** 见 TabBarProps.groupId / onMoveTab / onGlobalTabAdded。 */
+  /** 见 TabBarProps.groupId / onMoveTab / onGlobalTabSelected。 */
   groupId?: TabGroupId;
   onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
-  onGlobalTabAdded?: (tabId: string) => void;
+  onGlobalTabSelected?: (tabId: string, existed: boolean) => void;
   className?: string;
   /**
    * pill 视觉变体:
@@ -243,7 +243,7 @@ export function TabBar({
   onMergeBackTab,
   groupId,
   onMoveTab,
-  onGlobalTabAdded,
+  onGlobalTabSelected,
   chromeWindowDrag = true,
   subagentsAvailable = false,
 }: TabBarProps) {
@@ -274,7 +274,7 @@ export function TabBar({
         onMergeBackTab={onMergeBackTab}
         groupId={groupId}
         onMoveTab={onMoveTab}
-        onGlobalTabAdded={onGlobalTabAdded}
+        onGlobalTabSelected={onGlobalTabSelected}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
         subagentsAvailable={subagentsAvailable}
@@ -346,7 +346,7 @@ export function TabStrip({
   onMergeBackTab,
   groupId = 'right',
   onMoveTab,
-  onGlobalTabAdded,
+  onGlobalTabSelected,
   className,
   pillVariant = 'flush',
   addButtonWrapperClassName,
@@ -545,7 +545,7 @@ export function TabStrip({
             anchorRef={addButtonWrapperRef}
             sessionId={sessionId}
             groupId={groupId}
-            onGlobalTabAdded={onGlobalTabAdded}
+            onGlobalTabSelected={onGlobalTabSelected}
             onClose={closeDropdown}
             onSelect={onAdd}
             existingKinds={existingKinds}

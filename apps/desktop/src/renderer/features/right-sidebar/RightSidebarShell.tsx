@@ -67,6 +67,7 @@ import { TabBodyErrorBoundary } from './TabBodyErrorBoundary';
 import { useRetainedBrowserTabHosts } from './hooks/useRetainedBrowserTabHosts';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import {
+  isTabPoppedOut,
   summarizeSidebarTabWindows,
   useSidebarTabWindowsState,
 } from '@/lib/sidebarTabWindowState';
@@ -608,6 +609,26 @@ export function RightSidebarShell({
     [groupId, isPrimaryGroup, onTabCreated, sessionId, soloMode, subagentsEnabled, t, tabs],
   );
 
+  // 独立窗口里「+」菜单选了插件页签:新加的交给宿主收编;已打开的——本窗口承载就切过去,
+  // 在别的弹出窗口里就聚焦那扇窗口,在主窗侧栏里就收编进本窗口(主窗据弹出镜像把它隐藏)。
+  const handleGlobalTabSelected = useCallback(
+    (tabId: string, existed: boolean) => {
+      if (existed && tabs.some((tab) => tab.id === tabId)) {
+        setHostedActiveTabId(tabId);
+        return;
+      }
+      if (existed && isTabPoppedOut(tabId)) {
+        void window.electronAPI?.sidebarTabWindow
+          ?.focus(tabId)
+          .catch((err) => log.warn('focus plugin tab window failed', { tabId, err }));
+        return;
+      }
+      setHostedActiveTabId(tabId);
+      onTabCreated?.(tabId);
+    },
+    [onTabCreated, tabs],
+  );
+
   const handleClose = useCallback(
     (tabId: string) => {
       // 全局页签的关闭是全局动作(所有任务里一起消失),不进任务桶。
@@ -868,7 +889,7 @@ export function RightSidebarShell({
             popoutWindows={popoutWindows}
             groupId={groupId}
             onMoveTab={soloMode ? undefined : handleMoveTab}
-            onGlobalTabAdded={soloMode ? onTabCreated : undefined}
+            onGlobalTabSelected={soloMode ? handleGlobalTabSelected : undefined}
             pillVariant="chip"
             addButtonWrapperClassName="h-[30px]"
             subagentsAvailable={subagentsEnabled}
@@ -931,7 +952,7 @@ export function RightSidebarShell({
           popoutWindows={popoutWindows}
           groupId={groupId}
           onMoveTab={soloMode ? undefined : handleMoveTab}
-          onGlobalTabAdded={soloMode ? onTabCreated : undefined}
+          onGlobalTabSelected={soloMode ? handleGlobalTabSelected : undefined}
           onCloseOthers={handleCloseOthers}
           onCloseAll={handleCloseAll}
           chromeWindowDrag={chromeWindowDrag}

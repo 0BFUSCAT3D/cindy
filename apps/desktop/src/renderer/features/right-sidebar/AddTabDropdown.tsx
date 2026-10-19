@@ -61,8 +61,8 @@ interface AddTabDropdownProps {
   sessionId?: string | null;
   /** 本菜单所属的页签组:插件分组里新加的全局页签直接落在这一组。缺省右侧组。 */
   groupId?: TabGroupId;
-  /** 插件分组新加了全局页签(独立窗口据此收编)。已存在的不算。 */
-  onGlobalTabAdded?: (tabId: string) => void;
+  /** 插件分组里选了某个全局页签(独立窗口据此收编 / 聚焦);existed = 选之前就已打开。 */
+  onGlobalTabSelected?: (tabId: string, existed: boolean) => void;
   /** 锚点消失 / 面板收起时关闭(点外部与 Esc 由 DropdownMenu 根处理)。 */
   onClose: () => void;
   /** 选 kind。调用方负责真创建 tab + 关闭 dropdown。单例 kind 已存在时
@@ -141,7 +141,7 @@ export function AddTabDropdown({
   anchorRef,
   sessionId,
   groupId,
-  onGlobalTabAdded,
+  onGlobalTabSelected,
   onClose,
   onSelect,
   existingKinds,
@@ -266,7 +266,7 @@ export function AddTabDropdown({
                   ghost: entry.ghost,
                 });
                 if (tab) {
-                  if (!entry.open) onGlobalTabAdded?.(tab.id);
+                  onGlobalTabSelected?.(tab.id, entry.open);
                   setActiveGlobalTabId(tab.id);
                 }
                 onClose();
