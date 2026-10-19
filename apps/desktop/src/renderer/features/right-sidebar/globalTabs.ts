@@ -22,7 +22,8 @@
 
 import { useSyncExternalStore } from 'react';
 
-import type { InstalledGhost } from '../../../shared/ghost';
+import { ghostPanelKind, type InstalledGhost } from '../../../shared/ghost';
+import { paneEdgeRelativeToChat, type Layout } from '../../../shared/layoutTree';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
@@ -459,6 +460,16 @@ function legacyMinimizedInstanceIds(): Set<string> {
   return out;
 }
 
+/** 升级前该插件停靠面板在布局树里相对聊天区的边;树里没有 / 读不到返回 null。 */
+function legacyPanelEdge(instanceId: string): TabGroupId | null {
+  try {
+    const layout = window.electronAPI?.layout?.getStateSync().layout as Layout | undefined;
+    return layout ? paneEdgeRelativeToChat(layout, ghostPanelKind(instanceId)) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 与已装清单对齐(启动 + ghosts:changed):
  *  - 已启用、声明停靠面板、未被用户关掉的插件 → 自动加页签(存量插件兼容:
@@ -489,7 +500,8 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
         dismissed = [...dismissed, instanceId];
         continue;
       }
-      setTabGroup(tabId, defaultGroupForGhost(ghost, 'panel'));
+      // 用户在旧布局里把它拖到过别处的,按旧位置迁(相对聊天区的那一边),没有再取默认边。
+      setTabGroup(tabId, legacyPanelEdge(instanceId) ?? defaultGroupForGhost(ghost, 'panel'));
       placed = [...placed, instanceId];
     }
     // 自动出现的是停靠面板:显式记 panel,之后即使同时有 mainView 入口也不串页面。

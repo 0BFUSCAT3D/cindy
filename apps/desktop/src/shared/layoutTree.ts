@@ -517,6 +517,37 @@ export function isTabGroupId(value: unknown): value is TabGroupId {
   return typeof value === 'string' && (TAB_GROUP_IDS as readonly string[]).includes(value);
 }
 
+/**
+ * 某个 pane 相对聊天区(chat-main)在哪一边:取两者最近公共分割的方向与先后。
+ * 用于把升级前停靠在布局树里的插件面板(`ghost:<id>`)迁成对应边的页签组。
+ * 找不到 pane / chat-main,或两者不在同一棵分割树里,返回 null。
+ */
+export function paneEdgeRelativeToChat(layout: Layout, kind: PanelKind): TabGroupId | null {
+  const pathTo = (
+    node: LayoutNode,
+    target: PanelKind,
+  ): { split: SplitNode; index: number }[] | null => {
+    if (node.type === 'pane') return node.panelKind === target ? [] : null;
+    for (let i = 0; i < node.children.length; i++) {
+      const rest = pathTo(node.children[i].node, target);
+      if (rest) return [{ split: node, index: i }, ...rest];
+    }
+    return null;
+  };
+  const toPane = pathTo(layout.content, kind);
+  const toChat = pathTo(layout.content, 'chat-main');
+  if (!toPane || !toChat) return null;
+  for (let depth = 0; depth < Math.min(toPane.length, toChat.length); depth++) {
+    const a = toPane[depth];
+    const b = toChat[depth];
+    if (a.index === b.index) continue;
+    const before = a.index < b.index;
+    if (a.split.direction === 'row') return before ? 'left' : 'right';
+    return before ? 'top' : 'bottom';
+  }
+  return null;
+}
+
 /** 页签组对应的 panelKind:右侧组 = `right-tabs`,其余 = `tab-group:<id>`。 */
 export function tabGroupPanelKind(groupId: TabGroupId): PanelKind {
   return groupId === 'right' ? 'right-tabs' : `${TAB_GROUP_KIND_PREFIX}${groupId}`;

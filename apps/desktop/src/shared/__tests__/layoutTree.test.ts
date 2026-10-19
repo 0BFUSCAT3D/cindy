@@ -10,6 +10,7 @@ import {
   insertRootSplitPane,
   LAYOUT_SCHEMA_VERSION,
   MAX_TREE_DEPTH,
+  paneEdgeRelativeToChat,
   removeRootSplitPaneByKind,
   setPaneCollapsed,
   setSplitChildFraction,
@@ -643,5 +644,42 @@ describe('findSplitChildByPanelKind', () => {
     expect(findSplitChildByPanelKind(layout, 'right-tabs')).toBeNull();
     // sidebar 的 session-list 不在 content 树里,按约定不被本函数寻址。
     expect(findSplitChildByPanelKind(layout, 'session-list')).toBeNull();
+  });
+});
+
+// 测试价值
+// - 生产入口与可观察结果:paneEdgeRelativeToChat;可观察的是升级前停靠在布局树里的 `ghost:<id>`
+//   相对聊天区的边(左 / 右 / 上 / 下),以及树里没有该面板时返回 null。
+// - Bug / 规则依据:PR #6468 review「存量停靠面板被用户拖到别处,升级后不能被重置」。
+// - 现有覆盖缺口:新增函数。
+// - 最小失败输入:chat 右侧插入的面板、chat 左侧插入的面板、chat 所在列里上 / 下的面板。
+// - tier:unit(纯函数)。
+describe('paneEdgeRelativeToChat', () => {
+  it('derives the side of a legacy docked panel relative to chat-main', () => {
+    const base = createDefaultLayout();
+    const left = insertRootSplitPane(base, { id: 'g1', panelKind: 'ghost:a' }, { index: 0 });
+    const right = insertRootSplitPane(base, { id: 'g2', panelKind: 'ghost:b' }, { index: 2 });
+    expect(paneEdgeRelativeToChat(left.layout, 'ghost:a')).toBe('left');
+    expect(paneEdgeRelativeToChat(right.layout, 'ghost:b')).toBe('right');
+    expect(paneEdgeRelativeToChat(base, 'right-tabs')).toBe('right');
+    expect(paneEdgeRelativeToChat(base, 'ghost:missing')).toBeNull();
+
+    // 面板在聊天所在列的上 / 下:最近公共分割是纵向。
+    const column = makeLayout((l) => {
+      const root = l.content as SplitNode;
+      const chat = root.children[0].node;
+      root.children[0].node = {
+        type: 'split',
+        id: 'col',
+        direction: 'column',
+        children: [
+          { fraction: 0.2, node: { type: 'pane', id: 'gt', panelKind: 'ghost:top' } },
+          { fraction: 0.6, node: chat },
+          { fraction: 0.2, node: { type: 'pane', id: 'gb', panelKind: 'ghost:bottom' } },
+        ],
+      };
+    });
+    expect(paneEdgeRelativeToChat(column, 'ghost:top')).toBe('top');
+    expect(paneEdgeRelativeToChat(column, 'ghost:bottom')).toBe('bottom');
   });
 });

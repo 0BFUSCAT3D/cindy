@@ -259,4 +259,41 @@ describe('globalTabs', () => {
     reconcileGlobalPluginTabs(ghosts);
     expect(getGlobalTabs()).toHaveLength(2);
   });
+
+  // 测试价值
+  // - 生产入口与可观察结果:reconcileGlobalPluginTabs 读布局树里旧的 `ghost:<id>` 位置;可观察的是
+  //   用户把停靠面板拖到聊天区右侧后,升级首次对齐落在右侧组而不是插件声明的默认左侧,没有旧位置的照默认边。
+  // - Bug / 规则依据:PR #6468 review「迁移时保留用户自定义的面板位置」;存量插件兼容红线。
+  // - 现有覆盖缺口:其余用例都没有布局桥,只覆盖默认边。
+  // - 最小失败输入:默认布局(right-tabs 在聊天右侧)里插入 ghost:p0 到右侧,另一个插件不在树里。
+  it('keeps a legacy docked panel on the side the user had moved it to', () => {
+    const layout = {
+      schemaVersion: 1,
+      sidebar: { type: 'pane', id: 's', panelKind: 'session-list', edge: 'left' },
+      content: {
+        type: 'split',
+        id: 'root',
+        direction: 'row',
+        children: [
+          { fraction: 0.5, node: { type: 'pane', id: 'c', panelKind: 'chat-main' } },
+          { fraction: 0.2, node: { type: 'pane', id: 'g', panelKind: 'ghost:p0' } },
+          { fraction: 0.3, node: { type: 'pane', id: 'r', panelKind: 'right-tabs' } },
+        ],
+      },
+      float: [],
+    };
+    const win = window as unknown as { electronAPI?: unknown };
+    win.electronAPI = { layout: { getStateSync: () => ({ layout }) } };
+    try {
+      const ghosts = ['p0', 'p1'].map((id) => ({
+        manifest: { id, name: id, panel: { html: 'p.html' } },
+        enabled: true,
+      })) as unknown as import('../../../../shared/ghost').InstalledGhost[];
+      reconcileGlobalPluginTabs(ghosts);
+      expect(getTabGroup('g_p0')).toBe('right');
+      expect(getTabGroup('g_p1')).toBe('left');
+    } finally {
+      delete win.electronAPI;
+    }
+  });
 });
