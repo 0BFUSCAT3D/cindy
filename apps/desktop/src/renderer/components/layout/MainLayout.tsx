@@ -52,11 +52,17 @@ import {
   ensureHydrated,
   getBucket,
   getTabSnapshot,
+  importReturnedTabState,
   importTabSnapshot,
+  refreshSessionFromDb,
   resetCachesForHostTransition,
+  setActiveTab,
 } from '@/features/right-sidebar/store';
 import { browserWebviewPool } from '@/features/right-sidebar/lib/browserWebviewPool';
-import { markAllPtyDetached } from '@/features/right-sidebar/plugins/terminal/lib/xtermPool';
+import {
+  markAllPtyDetached,
+  markPtyDetached,
+} from '@/features/right-sidebar/plugins/terminal/lib/xtermPool';
 import {
   bootstrapRsbWindowState,
   getRsbWindowUiState,
@@ -335,6 +341,10 @@ export function MainLayout() {
     remoteHostId: string | null;
     deviceLinkDeviceId?: string | null;
   }>({ workdir: '', remoteHostId: null, deviceLinkDeviceId: undefined });
+  const rightSidebarWorkdirInfoRef = useRef(rightSidebarWorkdirInfo);
+  rightSidebarWorkdirInfoRef.current = rightSidebarWorkdirInfo;
+  const rightSidebarSubagentsAvailableRef = useRef(rightSidebarSubagentsAvailable);
+  rightSidebarSubagentsAvailableRef.current = rightSidebarSubagentsAvailable;
   const setRightSidebarWorkdir = useCallback(
     (workdir: string, remoteHostId: string | null = null, deviceLinkDeviceId?: string | null) =>
       // 同值 bailout(返回 prev 引用):恢复"字符串 state 同值不重渲染"的旧语义。
@@ -1076,14 +1086,72 @@ export function MainLayout() {
     void bootstrapRsbWindowState();
   }, []);
 
-  // 4) 「在新窗口打开」入口(mac 浮层 / win TabBar 按钮共用):开偏好 + 弹出。
-  const handleDetachRightSidebar = useCallback(() => {
+  // 4) 「在独立窗口中打开」页签(Shell 顶栏按钮作用于当前页签 / 页签右键菜单):
+  //    只把这一个页签弹出到自己的窗口,侧边栏继续留在主窗显示其余页签。
+  //    弹出前释放本窗对该页签的独占资源:浏览器 webview 归还池(弹出窗口会重新
+  //    物化并向 main 重新登记),终端标记 PTY 未附着(弹出窗口 re-attach 抢走 sink,
+  //    交回后本窗必须再 attach 一次)。不可持久化会话附整桶内存快照。
+  const handleDetachRightSidebarTab = useCallback((tabId: string) => {
     if (isSecondaryWindow()) return;
-    writeCollapsedFor(rightSidebarSessionId, false);
-    const snapshot = getTabSnapshot(rightSidebarSessionId);
-    const handoff = snapshot ? { snapshots: [snapshot] } : undefined;
-    void window.electronAPI.rightSidebarWindow.setDetached(true, handoff).catch(() => undefined);
-  }, [rightSidebarSessionId]);
+    const sessionId = rightSidebarSessionIdRef.current;
+    if (!sessionId) return;
+    const tab = getBucket(sessionId).tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) return;
+    const api = window.electronAPI.sidebarTabWindow;
+    if (!api?.open) return;
+    if (tab.kind === 'web-browser') browserWebviewPool.release(tabId);
+    if (tab.kind === 'terminal') markPtyDetached(tabId);
+    const info = rightSidebarWorkdirInfoRef.current;
+    void api
+      .open({
+        tabId,
+        sessionId,
+        context: {
+          workdir: info.workdir || null,
+          remoteHostId: info.remoteHostId,
+          deviceLinkDeviceId: info.deviceLinkDeviceId,
+          subagentsAvailable: rightSidebarSubagentsAvailableRef.current,
+        },
+        handoff: getTabSnapshot(sessionId),
+      })
+      .catch((err) => {
+        applicationMenuLog.warn('pop out sidebar tab failed', { sessionId, tabId, err });
+      });
+  }, []);
+
+  // 5) 页签从弹出窗口回到侧边栏(合并 / 关窗 / 崩溃):刷新它的数据副本并选中。
+  //    可持久化会话按 SQLite 强制刷新该页签(弹出期间的改动都在 DB);不可持久化
+  //    会话用交回的内存态覆盖。终端同样要重新 attach PTY。侧边栏若因「最后一个页签
+  //    被弹出」而收起,接回时展开。
+  useEffect(() => {
+    if (isSecondaryWindow()) return;
+    const api = window.electronAPI.sidebarTabWindow;
+    if (!api?.onTabReturned) return;
+    return api.onTabReturned(({ sessionId, tabId, snapshot }) => {
+      markPtyDetached(tabId);
+      const refreshed = snapshot
+        ? Promise.resolve(importReturnedTabState(snapshot))
+        : refreshSessionFromDb(sessionId, { forceTabIds: [tabId] });
+      void refreshed
+        .catch((err) => {
+          applicationMenuLog.warn('refresh returned sidebar tab failed', { sessionId, tabId, err });
+        })
+        .then(() => {
+          if (rightSidebarSessionIdRef.current !== sessionId) return;
+          void setActiveTab(sessionId, tabId).catch((err) => {
+            applicationMenuLog.warn('activate returned sidebar tab failed', {
+              sessionId,
+              tabId,
+              err,
+            });
+          });
+          if (isRightSidebarCollapsedRef.current && !rsbDetachedRef.current) {
+            writeCollapsedFor(sessionId, false);
+            setIsRightSidebarCollapsed(false);
+          }
+        });
+    });
+  }, []);
 
   const handlePageZoomIn = useCallback(() => {
     void window.electronAPI.pageZoomIn();
@@ -1644,7 +1712,7 @@ export function MainLayout() {
                   remoteHostId={rightSidebarWorkdirInfo.remoteHostId}
                   deviceLinkDeviceId={rightSidebarWorkdirInfo.deviceLinkDeviceId}
                   subagentsAvailable={rightSidebarSubagentsAvailable}
-                  onDetach={isSecondaryWindow() ? undefined : handleDetachRightSidebar}
+                  onDetachTab={isSecondaryWindow() ? undefined : handleDetachRightSidebarTab}
                   // M2:面板贴左时 detach / maximize 由 Shell 顶栏右端自渲染
                   // (面板自属控件跟面板走);折叠 toggle 恒在窗口右上浮层,不下沉。
                   panelSide={rightSidebarSide}

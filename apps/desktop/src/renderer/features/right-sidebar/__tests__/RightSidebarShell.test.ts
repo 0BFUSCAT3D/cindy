@@ -73,6 +73,10 @@ import {
   type SidebarVisibilityRequestOptions,
 } from '../lib/sidebarCommands';
 import { _resetStore, closeTab, getBucket, setActiveTab } from '../store';
+import {
+  __resetSidebarTabWindowsStateForTest,
+  __setSidebarTabWindowsStateForTest,
+} from '@/lib/sidebarTabWindowState';
 import { toast } from '@/lib/toast';
 import { writePanelCollapsed } from '@/layout/collapsePrefs';
 import { CHROME_ACTIONS_GEOMETRY } from '@/components/layout/chromeActionsGeometry';
@@ -294,6 +298,7 @@ describe('RightSidebarShell empty state', () => {
     _resetRsbBrowserBridgeForTests();
     _resetPopupRouterForTests();
     _resetNativePopupTabsForTests();
+    __resetSidebarTabWindowsStateForTest();
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
   });
 
@@ -1229,9 +1234,14 @@ describe('RightSidebarShell empty state', () => {
 
   it('keeps mac panel actions in the panel topbar without reserving a hidden show trigger', async () => {
     // 展开态没有固定唤起入口；detach / maximize / 收起始终属于面板自身。
-    const onDetach = vi.fn();
+    // 「在独立窗口中打开」作用于当前页签:有激活页签时才渲染,回调带该页签 id。
+    const onDetachTab = vi.fn();
     const onMaximize = vi.fn();
     const onCloseSidebar = vi.fn();
+    tabsIpc.list.mockResolvedValueOnce({
+      tabs: [{ id: 'tab-pop', kind: 'file-browser', state: null }],
+      activeTabId: 'tab-pop',
+    });
     const { unmount } = render(
       createElement(RightSidebarShell, {
         sessionId: 's1',
@@ -1240,23 +1250,29 @@ describe('RightSidebarShell empty state', () => {
         isMac: true,
         unifiedTopbar: true,
         panelSide: 'left',
-        onDetach,
+        onDetachTab,
         onMaximize,
         onCloseSidebar,
       }),
     );
 
-    await waitFor(() => expect(screen.getByText('rightSidebar.tabs.empty.title')).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'rightSidebar.tabs.controls.detachAria' }),
+      ).toBeTruthy(),
+    );
     const actions = screen.getByTestId('right-sidebar-topbar-actions');
     expect(actions).toBeTruthy();
     screen.getByRole('button', { name: 'rightSidebar.tabs.controls.detachAria' }).click();
-    expect(onDetach).toHaveBeenCalledOnce();
+    expect(onDetachTab).toHaveBeenCalledWith('tab-pop');
     screen.getByRole('button', { name: 'rightSidebar.tabs.controls.maximizeAria' }).click();
     expect(onMaximize).toHaveBeenCalledOnce();
     screen.getByRole('button', { name: 'contentHeader.collapsePanel' }).click();
     expect(onCloseSidebar).toHaveBeenCalledOnce();
     expect(screen.queryByTestId('right-sidebar-fixed-trigger-spacer')).toBeNull();
     unmount();
+    // 后两次渲染回到空会话(store 是模块级单例,先清掉上面水合进来的页签)。
+    _resetStore();
 
     // maximize 后面板占据最右边缘，仍保留自属控件，但不为隐藏的唤起入口留空。
     const { unmount: unmountMax } = render(
@@ -1268,7 +1284,7 @@ describe('RightSidebarShell empty state', () => {
         unifiedTopbar: true,
         panelSide: 'left',
         isMaximized: true,
-        onDetach,
+        onDetachTab,
         onMaximize,
         onCloseSidebar,
       }),
@@ -1276,6 +1292,10 @@ describe('RightSidebarShell empty state', () => {
     await waitFor(() => expect(screen.getByText('rightSidebar.tabs.empty.title')).toBeTruthy());
     expect(screen.getByTestId('right-sidebar-topbar-actions')).toBeTruthy();
     expect(screen.queryByTestId('right-sidebar-fixed-trigger-spacer')).toBeNull();
+    // 没有页签就没有可弹出的目标:按钮不渲染。
+    expect(
+      screen.queryByRole('button', { name: 'rightSidebar.tabs.controls.detachAria' }),
+    ).toBeNull();
     unmountMax();
 
     // 贴右时同样保留面板自属控件，不显示无效唤起入口，也不留空。
@@ -1286,7 +1306,7 @@ describe('RightSidebarShell empty state', () => {
         remoteHostId: null,
         isMac: true,
         unifiedTopbar: true,
-        onDetach,
+        onDetachTab,
         onMaximize,
         onCloseSidebar,
       }),
@@ -1294,7 +1314,6 @@ describe('RightSidebarShell empty state', () => {
     await waitFor(() => expect(screen.getByText('rightSidebar.tabs.empty.title')).toBeTruthy());
     expect(screen.getByTestId('right-sidebar-topbar-actions')).toBeTruthy();
     expect(screen.queryByTestId('right-sidebar-fixed-trigger-spacer')).toBeNull();
-    expect(screen.getByRole('button', { name: 'rightSidebar.tabs.controls.detachAria' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'contentHeader.collapsePanel' })).toBeTruthy();
   });
 
@@ -1310,7 +1329,7 @@ describe('RightSidebarShell empty state', () => {
         onCloseSidebar,
         onShowSidebar,
         onMaximize: vi.fn(),
-        onDetach: vi.fn(),
+        onDetachTab: vi.fn(),
       }),
     );
 
@@ -1344,7 +1363,7 @@ describe('RightSidebarShell empty state', () => {
         isMac: false,
         onCloseSidebar: vi.fn(),
         onMaximize: vi.fn(),
-        onDetach: vi.fn(),
+        onDetachTab: vi.fn(),
       }),
     );
 
@@ -1469,6 +1488,89 @@ describe('RightSidebarShell empty state', () => {
     await waitFor(() => expect(screen.getByText('rightSidebar.tabs.empty.title')).toBeTruthy());
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(onAllTabsClosed).not.toHaveBeenCalled();
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:RightSidebarShell 渲染同一会话桶;页签弹出到独立窗口
+  //   (sidebarTabWindowState 镜像)后主窗侧栏不再显示它的 pill 与 body,激活位落到
+  //   仍在侧栏的页签并落库;窗口关闭(镜像清空)后 pill 回来。弹出窗口自身
+  //   (soloTabId)只挂那一个页签、不画 TabBar / 空态、不写激活位。
+  // - Bug / 规则依据:侧栏「弹出」从整栏改为单页签(本 PR);webview / 终端不能双实例,
+  //   两个 renderer 投影同一页签就是双实例。
+  // - 现有覆盖缺口:相邻用例只覆盖可用性过滤(subagents / retired),没有跨窗口归属。
+  // - 最小失败输入:两页签会话 + 镜像标记 active 页签已弹出。
+  // - tier:unit(jsdom,进程内 store 与镜像,无 IPC)。
+  it('hides popped-out tabs from the sidebar and keeps the solo window on its own tab', async () => {
+    registerTabKind({
+      kind: 'terminal',
+      menu: { kind: 'terminal', labelKey: 'terminal', icon: Globe, order: 2, enabled: true },
+      TabPillTitle: () => createElement('span', null, 'terminal-pill'),
+      TabBody: () => createElement('div', null, 'terminal-body'),
+      defaultState: () => ({}),
+    });
+    try {
+      tabsIpc.list.mockResolvedValue({
+        tabs: [
+          { id: 'tab-files', kind: 'file-browser', state: null },
+          { id: 'tab-term', kind: 'terminal', state: {} },
+        ],
+        activeTabId: 'tab-term',
+      });
+      const { unmount } = render(
+        createElement(RightSidebarShell, {
+          sessionId: 's1',
+          workdir: '/tmp/repo',
+          remoteHostId: null,
+          isMac: true,
+          unifiedTopbar: true,
+          subagentsAvailable: false,
+        }),
+      );
+      await waitFor(() => expect(screen.getByText('terminal-pill')).toBeTruthy());
+      expect(screen.getByText('rightSidebar.tabs.kinds.fileBrowser')).toBeTruthy();
+
+      // 终端页签弹出:侧栏不再显示它,激活位移到文件页签并落库。
+      act(() => {
+        __setSidebarTabWindowsStateForTest({ 'tab-term': { sessionId: 's1', open: true } });
+      });
+      await waitFor(() => expect(screen.queryByText('terminal-pill')).toBeNull());
+      expect(screen.queryByText('terminal-body')).toBeNull();
+      expect(screen.getByText('rightSidebar.tabs.kinds.fileBrowser')).toBeTruthy();
+      await waitFor(() =>
+        expect(tabsIpc.setActive).toHaveBeenCalledWith({ sessionId: 's1', id: 'tab-files' }),
+      );
+      expect(getBucket('s1').tabs).toHaveLength(2);
+
+      // 窗口关闭(镜像清空):页签回到侧栏。
+      act(() => {
+        __setSidebarTabWindowsStateForTest({});
+      });
+      await waitFor(() => expect(screen.getByText('terminal-pill')).toBeTruthy());
+      unmount();
+
+      // 弹出窗口自身:只挂被指派页签,没有 TabBar / 空态,不改激活位。
+      tabsIpc.setActive.mockClear();
+      _resetStore();
+      render(
+        createElement(RightSidebarShell, {
+          sessionId: 's1',
+          workdir: '/tmp/repo',
+          remoteHostId: null,
+          isMac: true,
+          subagentsAvailable: false,
+          soloTabId: 'tab-term',
+        }),
+      );
+      await waitFor(() => expect(screen.getByText('terminal-body')).toBeTruthy());
+      expect(screen.queryByTestId('right-sidebar-tab-bar')).toBeNull();
+      expect(screen.queryByTestId('right-sidebar-unified-topbar')).toBeNull();
+      expect(screen.queryByText('rightSidebar.tabs.empty.title')).toBeNull();
+      expect(screen.queryByText('rightSidebar.tabs.kinds.fileBrowser')).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(tabsIpc.setActive).not.toHaveBeenCalled();
+    } finally {
+      unregisterTabKind('terminal');
+    }
   });
 });
 

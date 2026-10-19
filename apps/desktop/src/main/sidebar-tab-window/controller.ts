@@ -1,0 +1,542 @@
+/**
+ * SidebarTabWindowsController —— 右侧栏单页签独立窗口的状态机(main 侧单例,
+ * 依赖注入可测)。
+ *
+ * 模型:每个弹出的页签(tabId)一扇窗。主窗的侧边栏继续存在并显示其余页签;
+ * 弹出窗口关闭(合并按钮 / 红绿灯 / ⌘W / 崩溃)= 页签回到侧边栏。没有
+ * 「偏好」可落盘:弹出是本次运行期的视图态,客户端重启后所有页签都回到主窗。
+ *
+ * 生命周期基线对齐 docs/dev-rules/electron-security-and-process-boundaries.md §3.1
+ * 与 ghost-panel-window/controller.ts:
+ *   - 预热:主窗首帧稳定后后台创建一扇**未指派**的隐藏窗口(spare);弹出时直接
+ *     指派页签给它,用户点击路径只剩「指派 → 首份内容 → show+focus」。指派后再
+ *     延迟补一扇 spare。
+ *   - 双阶段就绪:renderer-ready(壳已挂载,可接收指派)→ presentation-ready
+ *     (被指派页签的首份内容已提交)后才 show;超时只展示已挂载的 Loading 壳。
+ *   - 关闭即销毁而非隐藏复用:页签回到侧边栏后窗口没有可复用的内容,隐藏保活
+ *     只会按页签数囤积 renderer;§3.1 的隐藏复用面向「同一内容反复打开」的窗口,
+ *     这里由 spare 预热承担「下次弹出不冷启动」。
+ *   - 故障隔离且恢复有界:弹出窗口崩溃 / 加载失败 → 销毁并把页签交回侧边栏
+ *     (侧边栏本身就是安全态,不重建 renderer 循环);spare 崩溃最多自动补建一次。
+ *
+ * 不直接 import electron —— BrowserWindow 的创建 / 广播全部由 bootstrap-electron
+ * 注入,单测用 mock deps 直接驱动状态机。
+ */
+
+import type { BrowserWindow, WebContents } from 'electron';
+
+import type { RsbWindowTabSnapshot } from '../../shared/rightSidebarWindow.js';
+import type {
+  SidebarTabReturnSnapshot,
+  SidebarTabReturnedPayload,
+  SidebarTabWindowAssignment,
+  SidebarTabWindowOpenRequest,
+  SidebarTabWindowsState,
+} from '../../shared/sidebarTabWindow.js';
+import {
+  SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS,
+  SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
+} from '../../shared/sidebarTabWindow.js';
+import type { SupportedLocale } from '../../shared/locale.js';
+
+interface ControllerLogger {
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
+export interface SidebarTabWindowsControllerDeps {
+  /** 创建隐藏窗口;cascadeIndex = 当前已指派窗口数,工厂据此层叠位置。 */
+  createWindow: (cascadeIndex: number) => BrowserWindow;
+  /** 状态变化广播(所有窗口)。 */
+  broadcastState: (state: SidebarTabWindowsState) => void;
+  /** main → 某扇弹出窗口。 */
+  sendToWindow: (win: BrowserWindow, channel: string, payload: unknown) => void;
+  /** 页签回到侧边栏:只发给主窗 renderer。 */
+  notifyTabReturned: (payload: SidebarTabReturnedPayload) => void;
+  isQuitting: () => boolean;
+  log: ControllerLogger;
+}
+
+const DEFAULT_OPEN_TIMEOUT_MS = 5000;
+const SPARE_REPLENISH_DELAY_MS = 1_500;
+const MAX_SPARE_RECOVERY_ATTEMPTS = 1;
+
+interface WindowSlot {
+  win: BrowserWindow;
+  /** null = 预热中的 spare,尚未承载任何页签。 */
+  assignment: SidebarTabWindowAssignment | null;
+  /** 随指派一次性交付的不可持久化会话快照。 */
+  handoff: RsbWindowTabSnapshot | null;
+  assignmentDelivered: boolean;
+  rendererReady: boolean;
+  presentationReady: boolean;
+  visible: boolean;
+  pendingOpen: boolean;
+  destroyingWindow: boolean;
+  mergeRequested: boolean;
+  openTimeout: NodeJS.Timeout | null;
+  mergeGraceTimeout: NodeJS.Timeout | null;
+}
+
+export class SidebarTabWindowsController {
+  private readonly slots = new Map<string, WindowSlot>();
+  private spare: WindowSlot | null = null;
+  private spareRecoveryAttempts = 0;
+  private replenishTimer: NodeJS.Timeout | null = null;
+  private disposed = false;
+  private locale: SupportedLocale | null = null;
+
+  constructor(private readonly deps: SidebarTabWindowsControllerDeps) {}
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 公共接口
+  // ══════════════════════════════════════════════════════════════════════
+
+  getState(): SidebarTabWindowsState {
+    const out: SidebarTabWindowsState = {};
+    for (const [tabId, slot] of this.slots) {
+      if (!slot.assignment || slot.win.isDestroyed()) continue;
+      out[tabId] = {
+        sessionId: slot.assignment.sessionId,
+        open: slot.visible || slot.pendingOpen,
+      };
+    }
+    return out;
+  }
+
+  /** 后台预热一扇未指派的隐藏窗口。幂等:已有活着的 spare 时 no-op。 */
+  prewarm(): void {
+    if (this.disposed) return;
+    if (this.spare && !this.spare.win.isDestroyed()) return;
+    this.spare = this.createSlot();
+  }
+
+  setLocale(locale: SupportedLocale): void {
+    this.locale = locale;
+    for (const slot of this.allSlots()) {
+      if (slot.win.isDestroyed()) continue;
+      try {
+        slot.win.webContents.send(SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL, locale);
+      } catch {
+        // Window may be tearing down.
+      }
+    }
+  }
+
+  /**
+   * 把页签弹出到独立窗口。已弹出则只聚焦。优先消费预热的 spare;没有时冷建
+   * (首份内容前不显示,超时展示 Loading 壳)。
+   */
+  open(request: SidebarTabWindowOpenRequest): void {
+    if (this.disposed) return;
+    const existing = this.slots.get(request.tabId);
+    if (existing) {
+      this.focus(request.tabId);
+      return;
+    }
+    const slot = this.takeSpare() ?? this.createSlot();
+    if (!slot) return;
+    slot.assignment = {
+      tabId: request.tabId,
+      sessionId: request.sessionId,
+      context: request.context,
+    };
+    slot.handoff = request.handoff ?? null;
+    slot.assignmentDelivered = false;
+    slot.presentationReady = false;
+    slot.pendingOpen = true;
+    this.slots.set(request.tabId, slot);
+    if (slot.rendererReady) this.deliverAssignment(slot);
+    this.scheduleOpenFallback(slot);
+    this.broadcast();
+    this.scheduleSpareReplenish();
+    this.deps.log.info('sidebar tab window assigned', {
+      tabId: request.tabId,
+      sessionId: request.sessionId,
+      prewarmed: slot.rendererReady,
+    });
+  }
+
+  /** 聚焦已弹出页签的窗口;未弹出 / 仍在等首份内容时 no-op。 */
+  focus(tabId: string): void {
+    const slot = this.slots.get(tabId);
+    if (!slot || slot.win.isDestroyed()) return;
+    if (!slot.visible) return;
+    if (slot.win.isMinimized()) slot.win.restore();
+    slot.win.show();
+    slot.win.focus();
+  }
+
+  /**
+   * 页签已在宿主 renderer 里关闭(agent close / 关闭全部 / guest 自关):销毁窗口,
+   * 不交回页签。
+   */
+  closeForTab(tabId: string): void {
+    const slot = this.slots.get(tabId);
+    if (!slot) return;
+    this.disposeSlot(slot);
+    this.broadcast();
+    this.deps.log.info('sidebar tab window closed for closed tab', { tabId });
+  }
+
+  /** 弹出窗口 renderer 请求合并回侧边栏(按钮 / ⌘W / 响应原生关窗请求)。 */
+  mergeBack(sender: WebContents, snapshot: SidebarTabReturnSnapshot | null): void {
+    const slot = this.slotForSender(sender);
+    if (!slot?.assignment) return;
+    this.finishSlot(slot, snapshot, 'merge');
+  }
+
+  getAssignment(sender: WebContents): SidebarTabWindowOpenRequest | null {
+    const slot = this.slotForSender(sender);
+    if (!slot?.assignment) return null;
+    slot.assignmentDelivered = true;
+    return { ...slot.assignment, handoff: slot.handoff };
+  }
+
+  // ── 双阶段就绪 ──────────────────────────────────────────────────────
+
+  markRendererReady(sender: WebContents): void {
+    const slot = this.slotForSender(sender);
+    if (!slot) return;
+    slot.rendererReady = true;
+    if (this.locale) {
+      try {
+        sender.send(SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL, this.locale);
+      } catch {
+        // Renderer may be tearing down.
+      }
+    }
+    if (slot.assignment && !slot.assignmentDelivered) this.deliverAssignment(slot);
+  }
+
+  markPresentationReady(sender: WebContents): void {
+    const slot = this.slotForSender(sender);
+    if (!slot?.assignment) return;
+    slot.presentationReady = true;
+    if (slot.pendingOpen) this.showAndFocus(slot);
+  }
+
+  /** 查找 sender 对应的 slot(含 spare);非本 controller 管理的窗口返回 null。 */
+  slotForSender(sender: WebContents): WindowSlot | null {
+    for (const slot of this.allSlots()) {
+      if (!slot.win.isDestroyed() && slot.win.webContents === sender) return slot;
+    }
+    return null;
+  }
+
+  /** 页签所在弹出窗口的 WebContents;未弹出返回 null。tab-op / 命令按页签路由用。 */
+  getWebContentsForTab(tabId: string): WebContents | null {
+    const slot = this.slots.get(tabId);
+    if (!slot || slot.win.isDestroyed()) return null;
+    return slot.win.webContents;
+  }
+
+  isTabPoppedOut(tabId: string): boolean {
+    const slot = this.slots.get(tabId);
+    return Boolean(slot && !slot.win.isDestroyed());
+  }
+
+  // ── 生命周期 ────────────────────────────────────────────────────────
+
+  /** 主窗口销毁时回收所有窗口(含 spare);主窗 renderer 已不在,不交回页签。 */
+  destroyAllWindows(): void {
+    this.clearReplenishTimer();
+    for (const slot of this.allSlots()) {
+      this.clearTimeouts(slot);
+      slot.destroyingWindow = true;
+      try {
+        if (!slot.win.isDestroyed()) slot.win.destroy();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.slots.clear();
+    this.spare = null;
+    this.spareRecoveryAttempts = 0;
+  }
+
+  /** 应用退出时永久停止。 */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.destroyAllWindows();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 内部:窗口创建与生命周期
+  // ══════════════════════════════════════════════════════════════════════
+
+  private allSlots(): WindowSlot[] {
+    const out = [...this.slots.values()];
+    if (this.spare) out.push(this.spare);
+    return out;
+  }
+
+  private takeSpare(): WindowSlot | null {
+    const spare = this.spare;
+    this.spare = null;
+    if (!spare || spare.win.isDestroyed()) return null;
+    return spare;
+  }
+
+  private createSlot(): WindowSlot | null {
+    let win: BrowserWindow;
+    try {
+      win = this.deps.createWindow(this.slots.size);
+    } catch (error) {
+      this.deps.log.warn('sidebar tab window creation failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    const slot: WindowSlot = {
+      win,
+      assignment: null,
+      handoff: null,
+      assignmentDelivered: false,
+      rendererReady: false,
+      presentationReady: false,
+      visible: false,
+      pendingOpen: false,
+      destroyingWindow: false,
+      mergeRequested: false,
+      openTimeout: null,
+      mergeGraceTimeout: null,
+    };
+
+    win.on('close', (event) => {
+      if (slot.destroyingWindow || this.disposed || this.deps.isQuitting()) return;
+      // 原生关窗 = 合并回侧边栏。先让 renderer 交回内存态快照,再销毁。
+      event.preventDefault();
+      this.requestMergeFromNative(slot);
+    });
+    win.on('show', () => this.onNativeVisibilityChanged(slot, true));
+    win.on('hide', () => this.onNativeVisibilityChanged(slot, false));
+    win.on('closed', () => this.onClosed(slot));
+    win.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) this.onRendererReloadStarted(slot);
+    });
+    win.webContents.on(
+      'did-fail-load',
+      (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+        if (isMainFrame && errorCode !== -3) {
+          this.invalidateSlot(slot, `load failed (${errorCode}): ${errorDescription}`);
+        }
+      },
+    );
+    win.webContents.on('render-process-gone', (_event, details) => {
+      this.invalidateSlot(slot, `renderer process gone: ${details.reason}`);
+    });
+    return slot;
+  }
+
+  private deliverAssignment(slot: WindowSlot): void {
+    if (!slot.assignment || slot.win.isDestroyed()) return;
+    slot.assignmentDelivered = true;
+    this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL, {
+      ...slot.assignment,
+      handoff: slot.handoff,
+    });
+  }
+
+  private showAndFocus(slot: WindowSlot): void {
+    this.clearOpenTimeout(slot);
+    slot.pendingOpen = false;
+    if (slot.win.isDestroyed()) return;
+    if (slot.win.isMinimized()) slot.win.restore();
+    slot.win.show();
+    slot.win.focus();
+    slot.visible = true;
+    this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL, {
+      visible: true,
+    });
+    this.broadcast();
+  }
+
+  private onNativeVisibilityChanged(slot: WindowSlot, visible: boolean): void {
+    if (slot.win.isDestroyed() || slot.destroyingWindow || this.disposed) return;
+    if (slot.visible === visible && !slot.pendingOpen) return;
+    slot.visible = visible;
+    if (visible) slot.pendingOpen = false;
+    try {
+      this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL, {
+        visible,
+      });
+    } catch {
+      // Native visibility can change while the renderer is tearing down.
+    }
+    if (slot.assignment) this.broadcast();
+  }
+
+  private requestMergeFromNative(slot: WindowSlot): void {
+    if (!slot.assignment) {
+      // spare 没有页签可交回,直接丢弃。
+      this.disposeSlot(slot);
+      return;
+    }
+    if (slot.mergeRequested) return;
+    slot.mergeRequested = true;
+    if (slot.rendererReady) {
+      this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL, undefined);
+    }
+    // renderer 卡死 / 未就绪时不能让窗口永远关不掉:超时按无快照合并。
+    slot.mergeGraceTimeout = setTimeout(() => {
+      slot.mergeGraceTimeout = null;
+      if (slot.win.isDestroyed()) return;
+      this.deps.log.warn('sidebar tab window merge grace elapsed, merging without snapshot', {
+        tabId: slot.assignment?.tabId,
+      });
+      this.finishSlot(slot, null, 'merge');
+    }, SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS);
+    slot.mergeGraceTimeout.unref?.();
+  }
+
+  /** 页签离开本窗口:销毁窗口、通知主窗接回页签、广播。 */
+  private finishSlot(
+    slot: WindowSlot,
+    snapshot: SidebarTabReturnSnapshot | null,
+    reason: SidebarTabReturnedPayload['reason'],
+  ): void {
+    const assignment = slot.assignment;
+    this.disposeSlot(slot);
+    if (assignment && !this.deps.isQuitting()) {
+      // 先交回页签再广播状态:主窗 renderer 按序处理,刷新状态时页签尚未重新
+      // 投影进侧边栏,避免先画旧状态再跳变。
+      this.deps.notifyTabReturned({
+        sessionId: assignment.sessionId,
+        tabId: assignment.tabId,
+        snapshot: snapshot && snapshot.tab.id === assignment.tabId ? snapshot : null,
+        reason,
+      });
+    }
+    this.broadcast();
+    this.deps.log.info('sidebar tab window finished', {
+      tabId: assignment?.tabId,
+      reason,
+      withSnapshot: snapshot !== null,
+    });
+  }
+
+  private onClosed(slot: WindowSlot): void {
+    this.clearTimeouts(slot);
+    if (this.spare === slot) this.spare = null;
+    const tabId = slot.assignment?.tabId;
+    if (tabId !== undefined && this.slots.get(tabId) === slot) this.slots.delete(tabId);
+    if (slot.destroyingWindow || this.deps.isQuitting()) return;
+    // 不经 controller 的销毁(理论上不该发生):页签照样交回侧边栏,不让它消失。
+    if (slot.assignment) {
+      this.deps.notifyTabReturned({
+        sessionId: slot.assignment.sessionId,
+        tabId: slot.assignment.tabId,
+        snapshot: null,
+        reason: 'crash',
+      });
+      this.broadcast();
+    }
+  }
+
+  // ── 超时 ────────────────────────────────────────────────────────────
+
+  private scheduleOpenFallback(slot: WindowSlot): void {
+    this.clearOpenTimeout(slot);
+    slot.openTimeout = setTimeout(() => {
+      slot.openTimeout = null;
+      if (slot.win.isDestroyed() || !slot.pendingOpen) return;
+      // 壳都没挂上:展示只会是空白窗口,按 §3.1 作废并让页签回到侧边栏。
+      if (!slot.rendererReady) {
+        this.invalidateSlot(slot, 'renderer readiness timed out');
+        return;
+      }
+      if (!slot.visible) this.showAndFocus(slot);
+    }, DEFAULT_OPEN_TIMEOUT_MS);
+    slot.openTimeout.unref?.();
+  }
+
+  private clearOpenTimeout(slot: WindowSlot): void {
+    if (!slot.openTimeout) return;
+    clearTimeout(slot.openTimeout);
+    slot.openTimeout = null;
+  }
+
+  private scheduleSpareReplenish(): void {
+    if (this.disposed || this.replenishTimer) return;
+    this.replenishTimer = setTimeout(() => {
+      this.replenishTimer = null;
+      this.prewarm();
+    }, SPARE_REPLENISH_DELAY_MS);
+    this.replenishTimer.unref?.();
+  }
+
+  private clearReplenishTimer(): void {
+    if (!this.replenishTimer) return;
+    clearTimeout(this.replenishTimer);
+    this.replenishTimer = null;
+  }
+
+  // ── 崩溃恢复 ────────────────────────────────────────────────────────
+
+  private onRendererReloadStarted(slot: WindowSlot): void {
+    if (slot.win.isDestroyed()) return;
+    slot.rendererReady = false;
+    slot.presentationReady = false;
+    slot.assignmentDelivered = false;
+    // 可见窗口重载:等新 renderer 重新拿指派并提交首份内容;窗口本身不隐藏,
+    // 避免闪烁。超时兜底与冷开一致。
+    if (slot.assignment && (slot.visible || slot.pendingOpen)) {
+      slot.pendingOpen = true;
+      this.scheduleOpenFallback(slot);
+    }
+  }
+
+  private invalidateSlot(slot: WindowSlot, reason: string): void {
+    if (slot.win.isDestroyed()) return;
+    if (!slot.assignment) {
+      // spare 坏了:丢弃,最多自动补建一次;稳定后由下一次 open 的 replenish 重置。
+      this.deps.log.warn('sidebar tab spare window invalidated', { reason });
+      this.disposeSlot(slot);
+      if (this.spareRecoveryAttempts >= MAX_SPARE_RECOVERY_ATTEMPTS) {
+        this.deps.log.error('sidebar tab spare window recovery exhausted', { reason });
+        return;
+      }
+      this.spareRecoveryAttempts += 1;
+      this.scheduleSpareReplenish();
+      return;
+    }
+    this.deps.log.warn('sidebar tab window invalidated, returning tab to sidebar', {
+      tabId: slot.assignment.tabId,
+      reason,
+    });
+    this.finishSlot(slot, null, 'crash');
+  }
+
+  // ── 销毁 ────────────────────────────────────────────────────────────
+
+  private disposeSlot(slot: WindowSlot): void {
+    this.clearTimeouts(slot);
+    if (this.spare === slot) this.spare = null;
+    const tabId = slot.assignment?.tabId;
+    if (tabId !== undefined && this.slots.get(tabId) === slot) this.slots.delete(tabId);
+    slot.destroyingWindow = true;
+    try {
+      if (!slot.win.isDestroyed()) slot.win.destroy();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  private clearTimeouts(slot: WindowSlot): void {
+    this.clearOpenTimeout(slot);
+    if (slot.mergeGraceTimeout) {
+      clearTimeout(slot.mergeGraceTimeout);
+      slot.mergeGraceTimeout = null;
+    }
+  }
+
+  private broadcast(): void {
+    this.deps.broadcastState(this.getState());
+  }
+}

@@ -8000,6 +8000,12 @@
       "mergeBack": "合併回主視窗",
       "followPlaceholder": "側邊欄跟隨主視窗的當前任務"
     },
+    "tabWindow": {
+      "title": "側邊欄標籤",
+      "mergeBack": "合併回側邊欄",
+      "loading": "正在載入…",
+      "closed": "該標籤已關閉"
+    },
     "emptyTitle": "預留區域",
     "emptyDesc": "右側邊欄內容將在後續迭代加入",
     "tabs": {
@@ -8028,12 +8034,13 @@
         "maximizeAria": "最大化側欄",
         "restoreAria": "退出最大化",
         "closeAria": "關閉側欄",
-        "detachAria": "在新視窗中開啟側邊欄"
+        "detachAria": "在獨立視窗中開啟目前標籤"
       },
       "contextMenu": {
         "close": "關閉",
         "closeOthers": "關閉其他",
-        "closeAll": "關閉所有"
+        "closeAll": "關閉所有",
+        "openInWindow": "在獨立視窗中開啟"
       },
       "empty": {
         "eyebrow": "右側欄",

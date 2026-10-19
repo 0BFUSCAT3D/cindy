@@ -8000,6 +8000,12 @@
       "mergeBack": "메인 창으로 되돌리기",
       "followPlaceholder": "사이드바는 메인 창의 현재 세션을 따라갑니다"
     },
+    "tabWindow": {
+      "title": "사이드바 탭",
+      "mergeBack": "사이드바로 되돌리기",
+      "loading": "불러오는 중…",
+      "closed": "이 탭은 닫혔습니다"
+    },
     "emptyTitle": "준비 중인 영역",
     "emptyDesc": "오른쪽 사이드바 콘텐츠는 향후 업데이트에서 추가됩니다.",
     "tabs": {
@@ -8028,12 +8034,13 @@
         "maximizeAria": "사이드바 최대화",
         "restoreAria": "최대화 해제",
         "closeAria": "사이드바 닫기",
-        "detachAria": "사이드바를 새 창에서 열기"
+        "detachAria": "현재 탭을 새 창에서 열기"
       },
       "contextMenu": {
         "close": "닫기",
         "closeOthers": "다른 탭 닫기",
-        "closeAll": "모두 닫기"
+        "closeAll": "모두 닫기",
+        "openInWindow": "새 창에서 열기"
       },
       "empty": {
         "eyebrow": "오른쪽 사이드바",

@@ -759,6 +759,18 @@ export const MAKER_INVOKE = {
   GHOST_PANEL_WINDOW_OPEN: 'maker:ghost-panel-window:open',
   GHOST_PANEL_WINDOW_SET_DETACHED: 'maker:ghost-panel-window:set-detached',
   /**
+   * 右侧栏单页签独立窗口(sidebar tab window)——每个弹出的页签一扇窗。
+   * 状态机见 main/sidebar-tab-window/controller.ts。
+   *  - GET_STATE: 拉全量 { <tabId>: { sessionId, open } }
+   *  - OPEN(request): 主窗把当前页签弹出到独立窗口(已弹出则聚焦)
+   *  - FOCUS(tabId): 聚焦已弹出页签的窗口(agent focus / 用户切换到被弹出页签)
+   *  - CLOSE_FOR_TAB(tabId): 页签已在宿主里关闭,销毁窗口且不交回页签
+   */
+  SIDEBAR_TAB_WINDOW_GET_STATE: 'maker:sidebar-tab-window:get-state',
+  SIDEBAR_TAB_WINDOW_OPEN: 'maker:sidebar-tab-window:open',
+  SIDEBAR_TAB_WINDOW_FOCUS: 'maker:sidebar-tab-window:focus',
+  SIDEBAR_TAB_WINDOW_CLOSE_FOR_TAB: 'maker:sidebar-tab-window:close-for-tab',
+  /**
    * 会话内 /goal 自主续跑(goal-host)——
    *  - GOAL_SET: 设/替换目标并立刻发首轮。入参 { sessionId, objective, agentKind, budgetTokens? }(budgetTokens 留空=不设预算)
    *  - GOAL_CLEAR: 用户清除目标(删行 + 停续跑 + 推 null 状态)
@@ -1055,6 +1067,18 @@ export const MAKER_PUSH = {
    * (主窗布局过滤 + 各子窗口自身都消费)。
    */
   GHOST_PANEL_WINDOW_STATE_CHANGED: 'maker:ghost-panel-window:state-changed',
+  /**
+   * 右侧栏单页签独立窗口状态广播(全量 SidebarTabWindowsState)——发所有窗口
+   * (主窗侧栏据此隐藏已弹出页签;弹出窗口自身不消费)。
+   */
+  SIDEBAR_TAB_WINDOW_STATE_CHANGED: 'maker:sidebar-tab-window:state-changed',
+  /** 页签从弹出窗口回到侧边栏,只发主窗口。payload = SidebarTabReturnedPayload。 */
+  SIDEBAR_TAB_WINDOW_TAB_RETURNED: 'maker:sidebar-tab-window:tab-returned',
+  /**
+   * 某会话的右侧栏页签持久化数据被另一个 renderer 改动(弹出窗口 ↔ 主窗)。
+   * 发给除改动发起方之外的所有窗口。payload = RightSidebarTabsChangedPayload。
+   */
+  RIGHT_SIDEBAR_TABS_CHANGED: 'maker:right-sidebar-tabs:changed',
 } as const;
 
 /**

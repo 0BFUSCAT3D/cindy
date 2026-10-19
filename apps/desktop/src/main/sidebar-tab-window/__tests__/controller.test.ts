@@ -1,0 +1,351 @@
+// SidebarTabWindowsController lifecycle state-machine tests (DI only, no electron).
+//
+// 测试价值
+// - 生产入口与可观察结果:controller.open / mergeBack / closeForTab / 握手与窗口事件;
+//   可观察的是 BrowserWindow 的 show / focus / destroy 时序、发给弹出窗口的指派 / 合并
+//   请求、发给主窗的 tab-returned 通知与全量状态广播。
+// - Bug / 规则依据:electron-security-and-process-boundaries.md §3.1(首份内容前不显示、
+//   预热不抢焦点、崩溃恢复有界、原生关窗不得卡住);本 PR 把侧栏「弹出」改为单页签窗口。
+// - 现有覆盖缺口:right-sidebar-window / ghost-panel-window 的用例针对各自状态机,
+//   本 controller 的 spare 预热 + 指派、合并交回、原生关窗宽限超时都是新路径。
+// - 最小失败输入:见各用例(单页签 open → 握手 → 关闭)。
+// - tier:unit(mock deps 驱动状态机,fake timers 走超时)。
+// - 实测耗时:< 1s。
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BrowserWindow, WebContents } from 'electron';
+
+import type {
+  SidebarTabReturnedPayload,
+  SidebarTabWindowsState,
+} from '../../../shared/sidebarTabWindow.js';
+import {
+  SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS,
+  SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
+} from '../../../shared/sidebarTabWindow.js';
+import {
+  SidebarTabWindowsController,
+  type SidebarTabWindowsControllerDeps,
+} from '../controller.js';
+
+interface FakeWindow {
+  on: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+  hide: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  restore: ReturnType<typeof vi.fn>;
+  isMinimized: () => boolean;
+  isVisible: () => boolean;
+  isDestroyed: () => boolean;
+  webContents: { id: number; on: ReturnType<typeof vi.fn>; isDestroyed: () => boolean };
+  emitWindowEvent: (event: string, ...args: unknown[]) => void;
+  emitWebContentsEvent: (event: string, ...args: unknown[]) => void;
+}
+
+let nextId = 1;
+function fakeWindow(): FakeWindow {
+  const id = nextId++;
+  const winListeners = new Map<string, (...args: unknown[]) => void>();
+  const wcListeners = new Map<string, (...args: unknown[]) => void>();
+  let destroyed = false;
+  let visible = false;
+  const win: FakeWindow = {
+    on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      winListeners.set(event, cb);
+    }),
+    close: vi.fn(() => {
+      let prevented = false;
+      winListeners.get('close')?.({
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+      if (prevented) return;
+      destroyed = true;
+      visible = false;
+      winListeners.get('closed')?.();
+    }),
+    destroy: vi.fn(() => {
+      destroyed = true;
+      visible = false;
+      winListeners.get('closed')?.();
+    }),
+    hide: vi.fn(() => {
+      visible = false;
+    }),
+    show: vi.fn(() => {
+      visible = true;
+    }),
+    focus: vi.fn(),
+    restore: vi.fn(),
+    isMinimized: () => false,
+    isVisible: () => visible,
+    isDestroyed: () => destroyed,
+    webContents: {
+      id,
+      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+        wcListeners.set(event, cb);
+      }),
+      isDestroyed: () => destroyed,
+    },
+    emitWindowEvent: (event, ...args) => {
+      if (event === 'hide') visible = false;
+      if (event === 'show') visible = true;
+      winListeners.get(event)?.(...args);
+    },
+    emitWebContentsEvent: (event, ...args) => wcListeners.get(event)?.(...args),
+  };
+  return win;
+}
+
+function makeHarness() {
+  let quitting = false;
+  const created: FakeWindow[] = [];
+  const broadcasts: SidebarTabWindowsState[] = [];
+  const sends: Array<{ winId: number; channel: string; payload: unknown }> = [];
+  const returned: SidebarTabReturnedPayload[] = [];
+  const deps: SidebarTabWindowsControllerDeps = {
+    createWindow: () => {
+      const win = fakeWindow();
+      created.push(win);
+      return win as unknown as BrowserWindow;
+    },
+    broadcastState: (state) => {
+      broadcasts.push(state);
+    },
+    sendToWindow: (win, channel, payload) => {
+      sends.push({ winId: (win as unknown as FakeWindow).webContents.id, channel, payload });
+    },
+    notifyTabReturned: (payload) => {
+      returned.push(payload);
+    },
+    isQuitting: () => quitting,
+    log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  };
+  const controller = new SidebarTabWindowsController(deps);
+  return {
+    controller,
+    created,
+    broadcasts,
+    sends,
+    returned,
+    setQuitting: (value: boolean) => {
+      quitting = value;
+    },
+    wc: (win: FakeWindow) => win.webContents as unknown as WebContents,
+  };
+}
+
+const request = (tabId: string, sessionId = 's1') => ({
+  tabId,
+  sessionId,
+  context: { workdir: '/repo', remoteHostId: null, deviceLinkDeviceId: null },
+  handoff: null,
+});
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('SidebarTabWindowsController', () => {
+  it('prewarms a hidden spare and only shows it after the assigned tab presents content', () => {
+    const h = makeHarness();
+    h.controller.prewarm();
+    expect(h.created).toHaveLength(1);
+    const spare = h.created[0];
+    expect(spare.show).not.toHaveBeenCalled();
+    expect(spare.focus).not.toHaveBeenCalled();
+    h.controller.markRendererReady(h.wc(spare));
+    // 预热窗口壳就绪但未指派:不展示、不广播任何页签状态。
+    expect(h.controller.getState()).toEqual({});
+
+    h.controller.open(request('tab-a'));
+    // spare 被直接消费,没有再冷建窗口;指派随即送达(壳已就绪)。
+    expect(h.created).toHaveLength(1);
+    const assigned = h.sends.find((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL);
+    expect(assigned?.payload).toMatchObject({ tabId: 'tab-a', sessionId: 's1' });
+    expect(h.controller.getState()).toEqual({ 'tab-a': { sessionId: 's1', open: true } });
+    // 首份内容前不显示。
+    expect(spare.show).not.toHaveBeenCalled();
+    h.controller.markPresentationReady(h.wc(spare));
+    expect(spare.show).toHaveBeenCalledOnce();
+    expect(spare.focus).toHaveBeenCalledOnce();
+    expect(
+      h.sends.some(
+        (s) =>
+          s.channel === SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL &&
+          (s.payload as { visible: boolean }).visible === true,
+      ),
+    ).toBe(true);
+    expect(h.controller.getWebContentsForTab('tab-a')).toBe(h.wc(spare));
+    expect(h.controller.isTabPoppedOut('tab-a')).toBe(true);
+
+    // 指派后延迟补一扇 spare,供下一次弹出。
+    vi.advanceTimersByTime(2_000);
+    expect(h.created).toHaveLength(2);
+    expect(h.created[1].show).not.toHaveBeenCalled();
+  });
+
+  it('cold-opens when no spare exists and delivers the assignment once the shell mounts', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    expect(h.created).toHaveLength(1);
+    const win = h.created[0];
+    expect(h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL)).toHaveLength(
+      0,
+    );
+    h.controller.markRendererReady(h.wc(win));
+    expect(h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL)).toHaveLength(
+      1,
+    );
+    // 重载后的 renderer 主动取指派也拿得到同一份。
+    expect(h.controller.getAssignment(h.wc(win))).toMatchObject({ tabId: 'tab-a' });
+    expect(win.show).not.toHaveBeenCalled();
+
+    // 同一页签再次 open = 聚焦已有窗口,不建第二扇。
+    h.controller.markPresentationReady(h.wc(win));
+    h.controller.open(request('tab-a'));
+    expect(h.created).toHaveLength(1);
+    expect(win.focus).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the tab to the sidebar with its snapshot on merge-back and destroys the window', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+
+    const snapshot = {
+      sessionId: 's1',
+      tab: { id: 'tab-a', kind: 'web-browser', state: { url: 'x' } },
+    };
+    h.controller.mergeBack(h.wc(win), snapshot);
+    expect(win.destroy).toHaveBeenCalledOnce();
+    expect(h.returned).toEqual([{ sessionId: 's1', tabId: 'tab-a', snapshot, reason: 'merge' }]);
+    expect(h.broadcasts.at(-1)).toEqual({});
+    expect(h.controller.getWebContentsForTab('tab-a')).toBeNull();
+    // 未知 sender 的 merge-back 被忽略。
+    h.controller.mergeBack({} as WebContents, null);
+    expect(h.returned).toHaveLength(1);
+  });
+
+  it('asks the renderer to merge on native close and merges without a snapshot after the grace period', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+
+    win.close();
+    // 原生关窗被拦下,先请求 renderer 交回快照。
+    expect(win.isDestroyed()).toBe(false);
+    expect(
+      h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL),
+    ).toHaveLength(1);
+    // 重复关窗不重复请求。
+    win.close();
+    expect(
+      h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL),
+    ).toHaveLength(1);
+    expect(h.returned).toHaveLength(0);
+
+    vi.advanceTimersByTime(SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS);
+    expect(win.destroy).toHaveBeenCalledOnce();
+    expect(h.returned).toEqual([
+      { sessionId: 's1', tabId: 'tab-a', snapshot: null, reason: 'merge' },
+    ]);
+  });
+
+  it('closes a window whose tab was closed in the sidebar without returning the tab', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.closeForTab('tab-a');
+    expect(win.destroy).toHaveBeenCalledOnce();
+    expect(h.returned).toHaveLength(0);
+    expect(h.controller.getState()).toEqual({});
+    // 未弹出的页签 no-op。
+    h.controller.closeForTab('tab-missing');
+    expect(h.created).toHaveLength(1);
+  });
+
+  it('returns the tab to the sidebar when the popped-out renderer crashes, with no rebuild loop', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+    win.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
+    expect(win.destroy).toHaveBeenCalledOnce();
+    expect(h.returned).toEqual([
+      { sessionId: 's1', tabId: 'tab-a', snapshot: null, reason: 'crash' },
+    ]);
+    // 不为崩溃的页签窗口自动重建 renderer:之后活着的只有补建的未指派 spare。
+    vi.advanceTimersByTime(10_000);
+    expect(h.controller.getState()).toEqual({});
+    expect(h.controller.isTabPoppedOut('tab-a')).toBe(false);
+    expect(h.created.filter((w) => !w.isDestroyed())).toHaveLength(1);
+    expect(h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL)).toHaveLength(
+      1,
+    );
+  });
+
+  it('replaces a crashed spare at most once', () => {
+    const h = makeHarness();
+    h.controller.prewarm();
+    h.created[0].emitWebContentsEvent('render-process-gone', {}, { reason: 'oom' });
+    vi.advanceTimersByTime(2_000);
+    expect(h.created).toHaveLength(2);
+    h.created[1].emitWebContentsEvent('render-process-gone', {}, { reason: 'oom' });
+    vi.advanceTimersByTime(10_000);
+    expect(h.created).toHaveLength(2);
+    expect(h.returned).toHaveLength(0);
+  });
+
+  it('falls back on the open timeout: shows a mounted shell, returns the tab if nothing mounted', () => {
+    const mounted = makeHarness();
+    mounted.controller.open(request('tab-a'));
+    const win = mounted.created[0];
+    mounted.controller.markRendererReady(mounted.wc(win));
+    vi.advanceTimersByTime(5_000);
+    // 壳已挂载但首份内容迟迟不来:展示 Loading 壳而不是永久隐藏。
+    expect(win.show).toHaveBeenCalledOnce();
+    expect(mounted.returned).toHaveLength(0);
+
+    const blank = makeHarness();
+    blank.controller.open(request('tab-b'));
+    vi.advanceTimersByTime(5_000);
+    // 壳都没挂上:不展示空白窗口,页签回到侧边栏。
+    expect(blank.created[0].show).not.toHaveBeenCalled();
+    expect(blank.created[0].destroy).toHaveBeenCalledOnce();
+    expect(blank.returned).toEqual([
+      { sessionId: 's1', tabId: 'tab-b', snapshot: null, reason: 'crash' },
+    ]);
+  });
+
+  it('ignores handshakes from unrelated senders and tears everything down on dispose', () => {
+    const h = makeHarness();
+    h.controller.prewarm();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markPresentationReady({} as WebContents);
+    expect(win.show).not.toHaveBeenCalled();
+
+    h.setQuitting(true);
+    h.controller.dispose();
+    expect(h.created.every((w) => w.isDestroyed())).toBe(true);
+    // 退出时的销毁不交回页签(主窗 renderer 已不在)。
+    expect(h.returned).toHaveLength(0);
+    h.controller.open(request('tab-b'));
+    expect(h.created).toHaveLength(1);
+  });
+});

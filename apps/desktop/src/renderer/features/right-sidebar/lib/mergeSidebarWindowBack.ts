@@ -5,9 +5,18 @@
  * setDetached(false) 交接给主窗；可持久化会话的快照为 null，主窗按 SQLite 重新水合。
  */
 
-import { getTabSnapshot } from '../store';
+import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
+import { getSingleTabSnapshot, getTabSnapshot } from '../store';
+import { getSoloTabId } from './tabHosting';
 
 export async function mergeSidebarWindowBack(sessionId: string | null | undefined): Promise<void> {
+  // 单页签独立窗口:只交回自己承载的那个页签(不可持久化会话附内存态),窗口随之关闭。
+  if (isSidebarTabWindow()) {
+    const tabId = getSoloTabId();
+    const snapshot = tabId ? getSingleTabSnapshot(sessionId, tabId) : null;
+    await window.electronAPI.sidebarTabWindow?.mergeBack?.(snapshot);
+    return;
+  }
   const snapshot = getTabSnapshot(sessionId);
   const handoff = snapshot ? { snapshots: [snapshot] } : undefined;
   await window.electronAPI.rightSidebarWindow.setDetached(false, handoff);

@@ -6,6 +6,11 @@ import type { TabState } from './types';
 export interface RightSidebarTabAvailability {
   installedGhosts: readonly InstalledGhost[];
   subagentsAvailable: boolean;
+  /**
+   * 已弹出到独立窗口的页签:数据仍在桶里,但本 Shell 不投影、不挂 body,其
+   * 窗口关闭后再回到投影。缺省 = 没有弹出。
+   */
+  hiddenTabIds?: ReadonlySet<string>;
 }
 
 function retiredTab(
@@ -30,6 +35,7 @@ function retiredTab(
 
 function isUnavailableTab(tab: TabState, availability: RightSidebarTabAvailability): boolean {
   return (
+    availability.hiddenTabIds?.has(tab.id) === true ||
     (!CINDY_MAKE_ENABLED && tab.kind === 'cindy-make') ||
     retiredTab(tab, availability) === null ||
     (tab.kind === 'subagents' && !availability.subagentsAvailable)

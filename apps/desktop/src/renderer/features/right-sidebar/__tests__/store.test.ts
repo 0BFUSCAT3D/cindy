@@ -1372,3 +1372,212 @@ describe('device-link remote sessions (memory-only tabs)', () => {
     expect(stub.upsert).toHaveBeenCalledTimes(1);
   });
 });
+
+// 测试价值
+// - 生产入口与可观察结果:refreshSessionFromDb / setActiveTab / closeTab / getSingleTabSnapshot /
+//   importReturnedTabState 与 localDb.rightSidebarTabs.onChanged 订阅;可观察的是同一会话桶在
+//   「主窗侧栏 + 弹出的单页签窗口」两个 renderer 并存时的合并结果:本 renderer 承载的页签
+//   以本地为准、弹出页签以 SQLite 为准、对方新增 / 关闭的页签同步进出、切到弹出页签 = 聚焦
+//   其窗口、关掉弹出页签 = 销毁其窗口。
+// - Bug / 规则依据:本 PR 把侧栏「弹出」从整栏改为单页签,首次出现两个 renderer 共享一个
+//   会话桶;没有合并规则会互相用旧快照覆盖(弹出窗口里改的 URL 合并回来后丢失)。
+// - 现有覆盖缺口:上面的 handoff 用例只覆盖整栏迁移(单宿主交接),没有双宿主并存。
+// - 最小失败输入:两页签会话,其中一个标记为已弹出,再按 DB 快照刷新。
+// - tier:unit(jsdom,进程内 store + 状态镜像)。
+// - 实测耗时:与本文件其余用例一起 < 5s。
+describe('cross-renderer sync for popped-out tabs', () => {
+  let ipc: IpcStub;
+  let sidebarTabWindow: { focus: ReturnType<typeof vi.fn>; closeForTab: ReturnType<typeof vi.fn> };
+  let onChangedListeners: Array<(payload: { sessionId: string }) => void>;
+  let popped: typeof import('@/lib/sidebarTabWindowState');
+
+  beforeEach(async () => {
+    store = await import('../store');
+    popped = await import('@/lib/sidebarTabWindowState');
+    store._resetStore();
+    popped.__resetSidebarTabWindowsStateForTest();
+    _resetTabKindRegistry();
+    ipc = makeIpcStub();
+    installIpc(ipc);
+    onChangedListeners = [];
+    sidebarTabWindow = {
+      focus: vi.fn(async () => undefined),
+      closeForTab: vi.fn(async () => undefined),
+    };
+    Object.assign((window as unknown as { electronAPI: Record<string, unknown> }).electronAPI, {
+      sidebarTabWindow,
+    });
+    Object.assign(ipc, {
+      onChanged: vi.fn((cb: (payload: { sessionId: string }) => void) => {
+        onChangedListeners.push(cb);
+        return () => undefined;
+      }),
+    });
+  });
+
+  afterEach(() => {
+    store._resetStore();
+    popped.__resetSidebarTabWindowsStateForTest();
+    _resetTabKindRegistry();
+    vi.useRealTimers();
+  });
+
+  async function hydrateTwoTabs(sessionId = 's1') {
+    ipc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'a' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://old' } },
+      ],
+      activeTabId: 'tab-files',
+    });
+    await store.ensureHydrated(sessionId);
+  }
+
+  it('merges a DB refresh: hosted tabs stay local, popped tabs take DB, foreign adds/removes apply', async () => {
+    await hydrateTwoTabs();
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    // 本窗对承载页签的乐观改动(写还在途)不能被对方的刷新覆盖。
+    void store.patchTabState('s1', 'tab-files', () => ({ path: 'local-edit' }));
+    ipc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'db-stale' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://new' } },
+        { id: 'tab-new', kind: 'terminal', state: { created: true } },
+      ],
+      activeTabId: 'tab-new',
+    });
+
+    await store.refreshSessionFromDb('s1');
+
+    expect(store.getBucket('s1')).toEqual({
+      hydrated: true,
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'local-edit' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://new' } },
+        { id: 'tab-new', kind: 'terminal', state: { created: true } },
+      ],
+      // 对方新建并激活、且由本窗承载的页签接管激活位。
+      activeTabId: 'tab-new',
+    });
+
+    // 对方关掉了 tab-new;本窗承载的 tab-files 仍以本地为准。
+    ipc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'db-stale' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://new' } },
+      ],
+      activeTabId: 'tab-files',
+    });
+    await store.refreshSessionFromDb('s1');
+    expect(store.getBucket('s1').tabs.map((t) => t.id)).toEqual(['tab-files', 'tab-web']);
+    expect(store.getBucket('s1').activeTabId).toBe('tab-files');
+  });
+
+  it('force-refreshes a returned tab from DB even though the mirror already marks it hosted', async () => {
+    await hydrateTwoTabs();
+    // 页签交回后镜像已清空(= 本窗承载),但本地副本是弹出前的旧值。
+    ipc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'a' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://edited-in-window' } },
+      ],
+      activeTabId: 'tab-files',
+    });
+    await store.refreshSessionFromDb('s1', { forceTabIds: ['tab-web'] });
+    expect(store.getBucket('s1').tabs[1].state).toEqual({ url: 'https://edited-in-window' });
+  });
+
+  it('does not resurrect a tab that this renderer is closing while the DB row still exists', async () => {
+    await hydrateTwoTabs();
+    let resolveClose!: (value: { ok: true }) => void;
+    ipc.close.mockImplementationOnce(
+      () =>
+        new Promise<{ ok: true }>((resolve) => {
+          resolveClose = resolve;
+        }),
+    );
+    const closing = store.closeTab('s1', 'tab-web');
+    await Promise.resolve();
+    expect(store.getBucket('s1').tabs.map((t) => t.id)).toEqual(['tab-files']);
+    ipc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'a' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://old' } },
+      ],
+      activeTabId: 'tab-files',
+    });
+    await store.refreshSessionFromDb('s1');
+    expect(store.getBucket('s1').tabs.map((t) => t.id)).toEqual(['tab-files']);
+    resolveClose({ ok: true });
+    await closing;
+  });
+
+  it('activating a popped-out tab focuses its window instead of moving the sidebar marker', async () => {
+    await hydrateTwoTabs();
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    await store.setActiveTab('s1', 'tab-web');
+    expect(sidebarTabWindow.focus).toHaveBeenCalledWith('tab-web');
+    expect(store.getBucket('s1').activeTabId).toBe('tab-files');
+    expect(ipc.setActive).not.toHaveBeenCalled();
+  });
+
+  it('closing a popped-out tab in the sidebar tears down its window without returning it', async () => {
+    await hydrateTwoTabs();
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    await store.closeTab('s1', 'tab-web');
+    expect(ipc.close).toHaveBeenCalledWith({ id: 'tab-web' });
+    expect(sidebarTabWindow.closeForTab).toHaveBeenCalledWith('tab-web');
+  });
+
+  it('coalesces change broadcasts into one DB refresh per session', async () => {
+    vi.useFakeTimers();
+    await hydrateTwoTabs();
+    expect(onChangedListeners).toHaveLength(1);
+    ipc.list.mockClear();
+    ipc.list.mockResolvedValue({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: { path: 'a' } },
+        { id: 'tab-web', kind: 'web-browser', state: { url: 'https://burst' } },
+      ],
+      activeTabId: 'tab-files',
+    });
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    onChangedListeners[0]({ sessionId: 's1' });
+    onChangedListeners[0]({ sessionId: 's1' });
+    onChangedListeners[0]({ sessionId: 's1' });
+    expect(ipc.list).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ipc.list).toHaveBeenCalledTimes(1);
+    expect(store.getBucket('s1').tabs[1].state).toEqual({ url: 'https://burst' });
+  });
+
+  it('hands a memory-only tab back through a single-tab snapshot', async () => {
+    ipc.list.mockResolvedValueOnce({ tabs: [], activeTabId: null, persistable: false });
+    await store.ensureHydrated('mem-s1');
+    const tab = await store.addTab('mem-s1', 'web-browser' as never, { url: 'https://a' });
+    expect(store.getSingleTabSnapshot('mem-s1', tab.id)).toEqual({
+      sessionId: 'mem-s1',
+      tab: { id: tab.id, kind: 'web-browser', state: { url: 'https://a' } },
+    });
+    // 可持久化会话不交内存态(以 SQLite 为准)。
+    await hydrateTwoTabs('s1');
+    expect(store.getSingleTabSnapshot('s1', 'tab-web')).toBeNull();
+
+    store.importReturnedTabState({
+      sessionId: 'mem-s1',
+      tab: { id: tab.id, kind: 'web-browser', state: { url: 'https://edited' } },
+    });
+    expect(store.getBucket('mem-s1').tabs[0].state).toEqual({ url: 'https://edited' });
+    // 未知页签 / 未加载会话:不新增、不报错。
+    store.importReturnedTabState({
+      sessionId: 'mem-s1',
+      tab: { id: 'ghost', kind: 'web-browser', state: {} },
+    });
+    store.importReturnedTabState({
+      sessionId: 'never-loaded',
+      tab: { id: 'x', kind: 'y', state: {} },
+    });
+    expect(store.getBucket('mem-s1').tabs).toHaveLength(1);
+    expect(store.getBucket('never-loaded').hydrated).toBe(false);
+  });
+});

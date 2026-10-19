@@ -68,11 +68,13 @@ interface TabBarProps {
   onCloseOthers?: (keepTabId: string) => void;
   /** Tab pill 右键菜单 "关闭所有"。 */
   onCloseAll?: () => void;
-  /** 「在新窗口中打开侧边栏」(开偏好 + 弹出子窗口);仅 showWindowControls=true
-   *  (Win 端)时渲染在 maximize 左侧。Mac 端按钮走 MainLayout 浮层。
+  /** 「在独立窗口中打开」当前激活页签;仅 showWindowControls=true(Win 端)时
+   *  渲染在 maximize 左侧。Mac 端按钮在 Shell 合并顶栏右端。
    *  Windows 主窗口展开态同时传入 onCloseSidebar,折叠按钮归属本 TabBar;
    *  折叠后再由聊天区角上的 chip 提供展开入口。 */
   onDetach?: () => void;
+  /** 页签右键菜单「在独立窗口中打开」:作用于被点的页签。 */
+  onDetachTab?: (tabId: string) => void;
   /** 本条横带是否作为**窗口**拖拽区(B3):主窗口内嵌形态传 false —— 空白处是
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
@@ -91,6 +93,8 @@ interface TabStripProps {
   onAdd: (kind: TabKindId) => void;
   onCloseOthers?: (keepTabId: string) => void;
   onCloseAll?: () => void;
+  /** Tab pill 右键菜单「在独立窗口中打开」。 */
+  onDetachTab?: (tabId: string) => void;
   className?: string;
   /**
    * pill 视觉变体:
@@ -150,11 +154,11 @@ const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
  * (2026-07-09 事故:dev 分支写入 kind='orca-workers',release 端
  *  KIND_ICON[kind] 取到 undefined 渲染 <undefined/> → React #130 全屏崩溃。)
  */
-function iconForTabKind(kind: TabKindId): LucideIcon {
+export function iconForTabKind(kind: TabKindId): LucideIcon {
   return (KIND_ICON as Partial<Record<string, LucideIcon>>)[kind] ?? Puzzle;
 }
 
-function labelKeyForTabKind(kind: TabKindId): string {
+export function labelKeyForTabKind(kind: TabKindId): string {
   // 插件页签的意识被停用/卸下(plugin 已注销)时,pill 兜底显示「插件面板」
   // 而非「未知标签页」——kind 前缀本身就能识别它是谁的地盘。
   if (kind.startsWith('ghost:')) return 'rightSidebar.tabs.kinds.ghostPanel';
@@ -201,6 +205,7 @@ export function TabBar({
   onCloseOthers,
   onCloseAll,
   onDetach,
+  onDetachTab,
   chromeWindowDrag = true,
   subagentsAvailable = false,
 }: TabBarProps) {
@@ -225,6 +230,7 @@ export function TabBar({
         onAdd={onAdd}
         onCloseOthers={onCloseOthers}
         onCloseAll={onCloseAll}
+        onDetachTab={onDetachTab}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
         subagentsAvailable={subagentsAvailable}
@@ -290,6 +296,7 @@ export function TabStrip({
   onAdd,
   onCloseOthers,
   onCloseAll,
+  onDetachTab,
   className,
   pillVariant = 'flush',
   addButtonWrapperClassName,
@@ -512,6 +519,17 @@ export function TabStrip({
               >
                 {t('rightSidebar.tabs.contextMenu.closeAll')}
               </DropdownMenuItem>
+              {onDetachTab && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    const id = contextMenu.tabId;
+                    closeContextMenu();
+                    onDetachTab(id);
+                  }}
+                >
+                  {t('rightSidebar.tabs.contextMenu.openInWindow')}
+                </DropdownMenuItem>
+              )}
             </>
           )}
         </DropdownMenuContent>

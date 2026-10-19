@@ -8000,6 +8000,12 @@
       "mergeBack": "メインウィンドウに戻す",
       "followPlaceholder": "サイドバーはメインウィンドウの現在のセッションに追従します"
     },
+    "tabWindow": {
+      "title": "サイドバーのタブ",
+      "mergeBack": "サイドバーに戻す",
+      "loading": "読み込み中…",
+      "closed": "このタブは閉じられました"
+    },
     "emptyTitle": "準備中の領域",
     "emptyDesc": "右サイドバーのコンテンツは今後のアップデートで追加されます。",
     "tabs": {
@@ -8028,12 +8034,13 @@
         "maximizeAria": "サイドバーを最大化",
         "restoreAria": "最大化を解除",
         "closeAria": "サイドバーを閉じる",
-        "detachAria": "サイドバーを新しいウィンドウで開く"
+        "detachAria": "現在のタブを新しいウィンドウで開く"
       },
       "contextMenu": {
         "close": "閉じる",
         "closeOthers": "他のタブを閉じる",
-        "closeAll": "すべて閉じる"
+        "closeAll": "すべて閉じる",
+        "openInWindow": "新しいウィンドウで開く"
       },
       "empty": {
         "eyebrow": "右サイドバー",

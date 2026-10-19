@@ -2067,6 +2067,42 @@ interface ElectronAPI {
     resolveCloseRequest: (approved: boolean) => Promise<void>;
   };
 
+  /**
+   * 右侧栏单页签独立窗口(每个弹出的页签一扇窗;状态机在 main)。
+   * 主窗用 open / focus / closeForTab / onStateChanged / onTabReturned;
+   * 弹出窗口自身(sidebarWindowPreload)另有 getAssignment / 握手 / mergeBack 等。
+   */
+  sidebarTabWindow: {
+    getState: () => Promise<import('../shared/sidebarTabWindow').SidebarTabWindowsState>;
+    open?: (
+      request: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest,
+    ) => Promise<void>;
+    focus: (tabId: string) => Promise<void>;
+    closeForTab: (tabId: string) => Promise<void>;
+    onStateChanged: (
+      cb: (state: import('../shared/sidebarTabWindow').SidebarTabWindowsState) => void,
+    ) => () => void;
+    onTabReturned?: (
+      cb: (payload: import('../shared/sidebarTabWindow').SidebarTabReturnedPayload) => void,
+    ) => () => void;
+    getAssignment?: () => Promise<
+      import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest | null
+    >;
+    onAssigned?: (
+      cb: (assignment: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest) => void,
+    ) => () => void;
+    rendererReady?: () => Promise<void>;
+    presentationReady?: () => Promise<void>;
+    mergeBack?: (
+      snapshot: import('../shared/sidebarTabWindow').SidebarTabReturnSnapshot | null,
+    ) => Promise<void>;
+    onMergeRequested?: (cb: () => void) => () => void;
+    onVisibilityChanged?: (cb: (payload: { visible: boolean }) => void) => () => void;
+    onLocaleChanged?: (
+      cb: (locale: import('../shared/locale').SupportedLocale) => void,
+    ) => () => void;
+  };
+
   agentIsland: {
     setVisibleSession: (sessionId: string | string[] | null) => Promise<{ ok: true }>;
     setEnabled: (enabled: boolean) => Promise<{ ok: true }>;
@@ -5011,6 +5047,8 @@ interface ElectronAPI {
       close: (input: { id: string }) => Promise<{ ok: true }>;
       setActive: (input: { sessionId: string; id: string | null }) => Promise<{ ok: true }>;
       reorder: (input: { sessionId: string; orderedIds: string[] }) => Promise<{ ok: true }>;
+      /** 其它 renderer(主窗 ↔ 弹出的单页签窗口)改动了某会话的页签持久化数据。 */
+      onChanged?: (cb: (payload: { sessionId: string }) => void) => () => void;
     };
     subagentRuns: {
       list: (

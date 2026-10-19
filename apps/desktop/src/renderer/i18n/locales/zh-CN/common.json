@@ -8000,6 +8000,12 @@
       "mergeBack": "合并回主窗口",
       "followPlaceholder": "侧边栏跟随主窗口的当前任务"
     },
+    "tabWindow": {
+      "title": "侧边栏标签",
+      "mergeBack": "合并回侧边栏",
+      "loading": "正在加载…",
+      "closed": "该标签已关闭"
+    },
     "emptyTitle": "预留区域",
     "emptyDesc": "右侧边栏内容将在后续迭代加入",
     "tabs": {
@@ -8028,12 +8034,13 @@
         "maximizeAria": "最大化侧栏",
         "restoreAria": "退出最大化",
         "closeAria": "关闭侧栏",
-        "detachAria": "在新窗口中打开侧边栏"
+        "detachAria": "在独立窗口中打开当前标签"
       },
       "contextMenu": {
         "close": "关闭",
         "closeOthers": "关闭其他",
-        "closeAll": "关闭所有"
+        "closeAll": "关闭所有",
+        "openInWindow": "在独立窗口中打开"
       },
       "empty": {
         "eyebrow": "右侧栏",
