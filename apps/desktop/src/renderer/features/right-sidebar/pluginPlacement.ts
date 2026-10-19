@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import type { InstalledGhost } from '../../../shared/ghost';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { createLogger } from '@/lib/logger';
+import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
 import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
 import {
   addGlobalPluginTab,
@@ -91,14 +92,15 @@ export function openPluginInWindow(ghost: InstalledGhost): void {
   const api = window.electronAPI?.sidebarTabWindow;
   const tab = addGlobalPluginTab(instanceId, { ghost, view: 'main' });
   if (!tab || !api) return;
+  // 弹出窗口里的 preload 同样暴露 api.open,但 main 只接受主窗 sender:副窗口退回侧边栏,
+  // 且不记「窗口放置」(记了用户看不到窗口,后续点击还会按这份记忆继续尝试开窗)。
+  if (isSidebarTabWindow() || !api.open) {
+    setActiveGlobalTabId(tab.id);
+    return;
+  }
   rememberPluginWindowPlacement(instanceId, true);
   if (isTabPoppedOut(tab.id)) {
     void api.focus(tab.id).catch((err) => log.warn('focus plugin window failed', { err }));
-    return;
-  }
-  if (!api.open) {
-    // 副窗口没有弹出权:退回侧边栏。
-    setActiveGlobalTabId(tab.id);
     return;
   }
   void api
@@ -108,7 +110,12 @@ export function openPluginInWindow(ghost: InstalledGhost): void {
       context: { workdir: null, remoteHostId: null },
       handoff: null,
     })
-    .catch((err) => log.warn('pop out plugin view failed', { instanceId, err }));
+    .catch((err) => {
+      // 没开成:撤销窗口放置记忆,页签回到侧边栏,避免留下错误记忆。
+      log.warn('pop out plugin view failed', { instanceId, err });
+      rememberPluginWindowPlacement(instanceId, false);
+      setActiveGlobalTabId(tab.id);
+    });
 }
 
 /**

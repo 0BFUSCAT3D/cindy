@@ -569,6 +569,15 @@ export function RightSidebarShell({
       // 单例 kind(当前仅 review)走 addOrFocusSingletonTab:已存在则切到现有,
       // 否则正常 addTab。menu meta 的 singleton 字段是数据来源,目前只有 review。
       const isSingleton = plugin?.menu?.singleton === true;
+      // 独立窗口:本窗口已承载该单例页签时直接切过去(窗口的激活位只在本地,走任务桶的
+      // 聚焦路径不会更新它,菜单里的「已打开」就成了无响应)。
+      if (soloMode && isSingleton) {
+        const existing = tabs.find((tab) => tab.kind === kind);
+        if (existing) {
+          setHostedActiveTabId(existing.id);
+          return;
+        }
+      }
       // 边组里点「+」:新页签直接落在本组(乐观插入那一帧就带着组归属,不闪过右侧栏)。
       // 独立窗口里点「+」:乐观插入那一刻交给宿主收编(登记为本窗口承载)。
       const addOpts = soloMode
@@ -596,7 +605,7 @@ export function RightSidebarShell({
         log.error('handleAdd failed', { sessionId, kind, err });
       });
     },
-    [groupId, isPrimaryGroup, onTabCreated, sessionId, soloMode, subagentsEnabled, t],
+    [groupId, isPrimaryGroup, onTabCreated, sessionId, soloMode, subagentsEnabled, t, tabs],
   );
 
   const handleClose = useCallback(
@@ -705,11 +714,11 @@ export function RightSidebarShell({
   );
 
   useAppShortcut('right-tab-prev', () => handleCycleTab('prev'), {
-    enabled: Boolean(sessionId) && isPrimaryGroup,
+    enabled: Boolean(sessionId) && (isPrimaryGroup || soloMode),
     stopImmediate: true,
   });
   useAppShortcut('right-tab-next', () => handleCycleTab('next'), {
-    enabled: Boolean(sessionId) && isPrimaryGroup,
+    enabled: Boolean(sessionId) && (isPrimaryGroup || soloMode),
     stopImmediate: true,
   });
 
@@ -760,7 +769,8 @@ export function RightSidebarShell({
   }, [sessionId]);
 
   useEffect(() => {
-    if (!sessionId || !isPrimaryGroup) return;
+    // 只排除主窗的边组;独立页签窗口自己就是页签的承载方,浏览器 webview 转发的快捷键要收。
+    if (!sessionId || (!isPrimaryGroup && !soloMode)) return;
     const off = window.electronAPI.onRsbBrowserCommand(({ command }) => {
       if (command === 'right-tab-prev') {
         handleCycleTab('prev');
@@ -769,7 +779,7 @@ export function RightSidebarShell({
       }
     });
     return off;
-  }, [handleCycleTab, isPrimaryGroup, sessionId]);
+  }, [handleCycleTab, isPrimaryGroup, sessionId, soloMode]);
 
   // 顶栏「在独立窗口中打开」作用于当前激活页签;没有激活页签时不渲染按钮。
   const handleDetachActiveTab = useMemo(
