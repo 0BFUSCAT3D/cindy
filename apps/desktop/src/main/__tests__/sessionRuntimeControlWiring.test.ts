@@ -47,9 +47,19 @@ function handlerBody(source: string, channel: string, nextChannel: string): stri
 // an archived row plus a remote effort/Fast write is the minimal regression.
 const axisHandlers = new Map<string, string>();
 const registerAst = ts.createSourceFile('register.ts', registerSource, ts.ScriptTarget.Latest, true);
+// Compile only the production predicate; importing its runtime module here
+// would load the entire harness dependency chain into this fast guard suite.
+const switchAst = ts.createSourceFile('sessionAgentSwitchHandler.ts', readFileSync(
+  resolve(mainRoot, 'maker-ipc/sessionAgentSwitchHandler.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+const userIntentPredicate = switchAst.statements.find((node): node is ts.FunctionDeclaration =>
+  ts.isFunctionDeclaration(node) && node.name?.text === 'isUserPendingAgentSwitchIntent')!;
+const isUserPendingAgentSwitchIntent = new Function(ts.transpileModule(
+  `return (intent) => ${userIntentPredicate.body!.getText(switchAst)};`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText)();
 function collectAxisHandlers(node: ts.Node): void {
   if (ts.isVariableDeclaration(node) && node.initializer &&
-      ['applyEffort', 'applyFastMode'].includes(node.name.getText(registerAst))) {
+      ['applyEffort', 'applyFastMode', 'stagePendingUserRuntimeAxis'].includes(node.name.getText(registerAst))) {
     axisHandlers.set(node.name.getText(registerAst), ts.transpileModule(
       `return ${node.initializer.getText(registerAst)};`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -76,11 +86,16 @@ describe.each([
       remoteResponse: response, [persistName]: persist, agentSwitchPending: pending,
       assertOwnerCurrent: vi.fn(), assertSharedTaskCurrent: { admit: vi.fn() },
       markRemoteSettingPersistedInsideHandler: vi.fn(), maker: { getSession },
-      agentSwitchDeps: { selectSameAgentModel: async (id: string, intent: unknown) => { pending.set(id, intent); } },
+      isUserPendingAgentSwitchIntent, projectPendingAgentSwitchIntent: (intent: unknown) => intent,
+      wakeSessionInputAfterCredentialSwitch: vi.fn(),
+      agentSwitchDeps: { selectSameAgentModel: async (id: string, intent: unknown) => { pending.set(id, intent); },
+        onPendingSwitchChanged: vi.fn() },
       throwIpcError: (code: string, message: string) => { throw new Error(`[${code}] ${message}`); },
     };
-    const run = new Function(...Object.keys(bindings), axisHandlers.get(handler)!)(...Object.values(bindings));
-    return { run, row, persist, response, getSession, pending };
+    const stagePendingUserRuntimeAxis = new Function(...Object.keys(bindings), axisHandlers.get('stagePendingUserRuntimeAxis')!)(...Object.values(bindings));
+    const runBindings = { ...bindings, stagePendingUserRuntimeAxis };
+    const run = new Function(...Object.keys(runBindings), axisHandlers.get(handler)!)(...Object.values(runBindings));
+    return { run, row, persist, response, getSession, pending, changed: bindings.agentSwitchDeps.onPendingSwitchChanged };
   }
 
   it('acknowledges the saved axis while the task stays archived and the runtime stays untouched', async () => {
@@ -91,13 +106,31 @@ describe.each([
     expect(h.getSession).not.toHaveBeenCalled();
   });
 
-  it('updates an already selected model instead of writing its axis onto the old route', async () => {
+  it.each(['same-agent', 'cross-engine', 'relocation'] as const)('updates the selected %s model instead of the old route', async kind => {
     const h = setup('archived');
-    h.pending.set('archived-task', { sameAgentSelection: true, model: 'next-model' });
+    const intent = { targetAgentKind: kind === 'cross-engine' ? 'pi' : 'codex', model: 'next-model',
+      providerId: 'next-provider', effort: 'low', fastMode: false, confirmedContextWindow: 200000,
+      ...(kind === 'same-agent' ? { sameAgentSelection: true } : {}),
+      ...(kind === 'relocation' ? { targetAgentDeviceId: 'other-device' } : {}),
+    };
+    h.pending.set('archived-task', intent);
     await h.run();
-    expect(h.pending.get('archived-task')).toMatchObject({ model: 'next-model', [field]: value });
+    expect(h.pending.get('archived-task')).toEqual({ ...intent, [field]: value });
+    if (kind !== 'same-agent') expect(h.changed).toHaveBeenCalledWith('archived-task',
+      expect.objectContaining({ model: 'next-model', [field]: value }));
     expect(h.row).toMatchObject({ status: 'archived', effort: 'low', fastMode: false });
     expect(h.persist).not.toHaveBeenCalled();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([{ configStaged: true }, { runtimeSource: 'agent' }])('keeps automatic intent %j separate from user axis writes', async source => {
+    const h = setup('archived');
+    const intent = { sameAgentSelection: true, model: 'automatic-model', ...source };
+    h.pending.set('archived-task', intent);
+    await h.run();
+    expect(h.pending.get('archived-task')).toBe(intent);
+    expect(h.row).toMatchObject({ status: 'archived', [field]: value });
+    expect(h.persist).toHaveBeenCalledOnce();
     expect(h.getSession).not.toHaveBeenCalled();
   });
 
@@ -938,7 +971,7 @@ describe('session runtime control wiring', () => {
       expect(body).toContain('return withSendToSessionLock(sessionId');
       expect(body).toContain("runtimeStatus.status !== 'active' && runtimeStatus.status !== 'archived'");
       const archiveStart = body.indexOf("if (runtimeStatus.status === 'archived')");
-      expect(archiveStart).toBeGreaterThan(body.indexOf('if (userIntent?.sameAgentSelection)'));
+      expect(archiveStart).toBeGreaterThan(body.indexOf('if (isUserPendingAgentSwitchIntent(userIntent))'));
       const archiveEnd = body.indexOf('const livePatch:', archiveStart);
       const archive = body.slice(archiveStart, archiveEnd);
       expect(archive).toContain(`await ${persist}();`);

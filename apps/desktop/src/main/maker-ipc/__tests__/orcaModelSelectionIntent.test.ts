@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
-import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, type MakerSessionAgentSwitchHandlerDeps, type PendingAgentSwitchIntent } from '../sessionAgentSwitchHandler';
+import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, isUserPendingAgentSwitchIntent, type MakerSessionAgentSwitchHandlerDeps, type PendingAgentSwitchIntent } from '../sessionAgentSwitchHandler';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 
 // Execute the actual picker admission branches (local and agent-device), with
@@ -15,7 +15,11 @@ let piWindowOverride = '';
 let directSendAdapter = '';
 let archivedAdmission = '';
 let terminalGuard = '';
+let stageAxisAdapter = '';
 function visit(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'stagePendingUserRuntimeAxis') {
+    stageAxisAdapter = node.initializer!.getText(source);
+  }
   if (ts.isBinaryExpression(node) && node.left.getText(source) === 'pendingAgentSwitchApplyHolder') {
     directSendAdapter = node.right.getText(source);
   }
@@ -58,7 +62,7 @@ describe('Orca model-only picker intent admission', () => {
       const js = ts.transpileModule(`return ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
       return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
     };
-    const row = { id: 's1', status: 'archived', agentKind: 'codex', model: 'old', providerId: 'provider',
+    const row = { id: 's1', status: 'archived', agentKind: 'codex', model: 'old', providerId: 'provider', effort: 'low', fastMode: false,
       sdkSessionId: null, remoteHostId: null, agentDeviceId: null };
     const pending = createPendingAgentSwitchRegistry();
     const crossEngine = mode === 'cross-engine' || mode === 'repicked-during-restore';
@@ -99,8 +103,15 @@ describe('Orca model-only picker intent admission', () => {
     const directSend = compile(directSendAdapter, {
       agentSwitchPending: pending, restoreArchivedSessionForSend: restore,
       acquireSendToSessionLock: acquire, reconcileBotModelRoute: vi.fn(),
-      applyPendingAgentSwitchIfIdle, agentSwitchDeps: deps, contextOverflowRolloverHolder: null,
+      applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent, agentSwitchDeps: deps, contextOverflowRolloverHolder: null,
     });
+    if (mode === 'cross-engine' || mode === 'relocation') {
+      const stageAxis = compile(stageAxisAdapter, { agentSwitchPending: pending, agentSwitchDeps: deps,
+        projectPendingAgentSwitchIntent: (intent: unknown) => intent, wakeSessionInputAfterCredentialSwitch: vi.fn() });
+      await stageAxis('s1', pending.get('s1'), { effort: 'high' });
+      await stageAxis('s1', pending.get('s1'), { fastMode: true });
+      expect(row).toMatchObject({ status: 'archived', model: 'old', effort: 'low', fastMode: false });
+    }
     const controller = new AbortController();
     if (mode === 'cancelled') controller.abort();
     if (automatic) {
@@ -127,6 +138,7 @@ describe('Orca model-only picker intent admission', () => {
         expect(row.model).toBe(mode === 'repicked-during-restore' ? 'latest' : 'new');
         expect(row.agentKind).toBe(mode === 'relocation' ? 'codex' : 'pi');
         if (mode === 'relocation') expect(row.agentDeviceId).toBe('executor-device');
+        if (mode === 'cross-engine' || mode === 'relocation') expect(row).toMatchObject({ effort: 'high', fastMode: true });
       }
       expect(pending.get('s1')).toBeUndefined();
       expect(restore.mock.invocationCallOrder[0]).toBeLessThan(acquire.mock.invocationCallOrder[0]);
