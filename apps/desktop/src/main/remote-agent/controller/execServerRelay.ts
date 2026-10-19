@@ -46,6 +46,8 @@ export interface ExecServerRelayDeps {
   env?: NodeJS.ProcessEnv;
   log?: { warn(message: string, meta?: Record<string, unknown>): void };
   now?: () => number;
+  /** 最后一个在跑的进程(含后台终端)结束了：对连接池来说这是一次活动。 */
+  onProcessesEnded?(): void;
 }
 
 /**
@@ -518,8 +520,9 @@ export class ExecServerRelay {
     }
     if ((message.method === 'process/closed' || message.method === 'process/exited') && typeof message.params?.processId === 'string') {
       const processId = message.params.processId;
-      connection.processes.delete(processId);
+      const ended = connection.processes.delete(processId);
       for (const [key, starting] of connection.starting) if (starting === processId) connection.starting.delete(key);
+      if (ended && ![...this.connections.values()].some((item) => item.processes.size)) this.deps.onProcessesEnded?.();
     }
   }
 

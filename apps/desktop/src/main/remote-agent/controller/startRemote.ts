@@ -377,6 +377,8 @@ export async function startRemoteAgentSession(
           await active?.push(frames);
         },
         log: deps.log,
+        // 后台终端跑完：闲置从这时算起。
+        onProcessesEnded: () => touch(),
       })
     : null;
 
@@ -502,7 +504,12 @@ export async function startRemoteAgentSession(
           delete state.workspaceProjection;
           if (!Object.keys(state).length) return;
         }
-        if (controller && opened) controller.onState(state);
+        if (controller && opened) {
+          // 对方的后台任务、待唤醒续跑等刚结束(由忙转闲)：工作结束本身算一次活动，闲置从这时算起。
+          const wasQuiet = controller.isQuiet();
+          controller.onState(state);
+          if (!wasQuiet && controller.isQuiet()) touch();
+        }
         else early.push({ type: 'state', value: state });
       },
       onRequest: async (request: RemoteAgentReverseRequest, signal): Promise<RemoteAgentReply> => {

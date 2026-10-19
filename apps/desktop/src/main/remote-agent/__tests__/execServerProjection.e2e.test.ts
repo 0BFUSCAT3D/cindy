@@ -89,11 +89,16 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
     const workspace = new ExecutorWorkspace({ workingDir: root });
     const messages: Array<{ id?: number; method?: string; params?: { processId?: string }; error?: unknown }> = [];
     let parts = '';
+    let ended = 0;
     const relay = new ExecServerRelay({
       codexPath: CODEX,
       cwd: root,
       workspace,
       authorize: (action) => (action.kind === 'exec' && action.command.includes('denied') ? { ok: false, reason: 'no' } : { ok: true }),
+      // 最后一个进程结束 = 一次活动(连接池的闲置从这时算起)。
+      onProcessesEnded: () => {
+        ended += 1;
+      },
       push: async (frames) => {
         for (const frame of frames) {
           if (frame.kind !== 'message') continue;
@@ -117,19 +122,24 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
       start(2, 'denied', 'echo denied');
       await expect.poll(() => messages.find((item) => item.id === 2)?.error, { timeout: 5000 }).toBeDefined();
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      expect(ended).toBe(0);
 
       // 短命令跑完就不忙。
       start(3, 'short', 'exit 0');
       await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params?.processId === 'short'), { timeout: 5000 }).toBe(true);
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      expect(ended).toBe(1);
 
       // 还在跑的(如 Codex 的后台终端)算忙。
       start(4, 'long', 'sleep 30');
       await expect.poll(() => messages.some((item) => item.id === 4), { timeout: 5000 }).toBe(true);
       expect(relay.busy()).toBe(true);
+      expect(ended).toBe(1);
       send({ id: 5, method: 'process/terminate', params: { processId: 'long' } });
       await expect.poll(() => messages.some((item) => item.method === 'process/closed' && item.params?.processId === 'long'), { timeout: 5000 }).toBe(true);
       await expect.poll(() => relay.busy(), { timeout: 5000 }).toBe(false);
+      // closed / exited 可能都会来，只算一次。
+      expect(ended).toBe(2);
 
       // 让出名额后关掉 exec-server，中继本身还能接新的连接。
       relay.reset();

@@ -320,7 +320,7 @@ interface Scenario {
   closes: number;
   /** 打开时接不回会话：先问控制端能不能清掉，再开新会话。 */
   failResume: 'callback' | 'silent' | null;
-  /** 下一个 Agent 报告的后台任务 / 待唤醒数。 */
+  /** 对方 Agent 当前报告的后台任务 / 待唤醒数(实时读取)。 */
   backgroundTasks: BackgroundTaskSnapshot[];
   pendingWake: number;
   /** send 'hold' 时卡住，直到调用它。 */
@@ -354,8 +354,6 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
   let planMode = input.options.planMode === true;
   let effort = input.options.effort;
   const failResume = resume ? scenario.failResume : null;
-  const backgroundTasks = scenario.backgroundTasks;
-  const pendingWake = scenario.pendingWake;
   if (failResume) {
     id = `native-${(nextNative += 1)}`;
     if (failResume === 'callback') void input.onInvalidResumeSession?.(resume!);
@@ -416,8 +414,8 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
     isTurnRunning: () => running,
     getPlanMode: () => planMode,
     getEffort: () => effort ?? null,
-    listBackgroundTasks: () => backgroundTasks,
-    countPendingWakeContinuations: () => pendingWake,
+    listBackgroundTasks: () => scenario.backgroundTasks,
+    countPendingWakeContinuations: () => scenario.pendingWake,
     async setPermissionMode(mode) {
       record('setPermissionMode', [mode]);
     },
@@ -724,6 +722,35 @@ describe('remote connection pool with a real host', () => {
     await sleep(5);
     await expect(start(pool)).rejects.toThrow('[DEVICE_LIMIT]');
     expect(a.id).toBeTruthy();
+  });
+
+  // PR #6483 复审：后台工作结束的状态更新不算活动，连接池拿后台工作开始前的时间判断，一结束就让出。
+  it.each([
+    ['background tasks', () => { scenario.backgroundTasks = [{ taskId: 't1', taskType: 'local_agent' }]; }, () => { scenario.backgroundTasks = []; }],
+    ['pending wake continuations', () => { scenario.pendingWake = 1; }, () => { scenario.pendingWake = 0; }],
+  ])('counts the end of long %s as activity and waits the full idle time after it', async (_label, arrange, finish) => {
+    // 只假时钟与对方的定时状态推送(每 2 秒)：时间用 setSystemTime 跳，推送由 advanceTimers 触发。
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    try {
+      limits = { perDevice: 16, total: 64 };
+      idleMinutes = 10;
+      arrange();
+      const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, now: () => Date.now(), checkMs: 3_600_000 });
+      const a = await start(pool);
+      await ask(a, watch(a), 'hello');
+      // 后台工作持续了 30 分钟，期间不让。
+      vi.setSystemTime(Date.now() + 30 * 60_000);
+      expect(await pool.releaseForRetry(member('other', 0, false))).toBe(false);
+      finish();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => expect(a.listBackgroundTasks!().length + a.countPendingWakeContinuations!()).toBe(0));
+      // 刚结束：从这时起算闲置，不立即让。
+      expect(await pool.releaseForRetry(member('other', 0, false))).toBe(false);
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
