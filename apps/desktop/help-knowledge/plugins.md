@@ -36,8 +36,8 @@ Plugins (internally "意识" / Ghost) extend what the agents can do — they add
 
 **Creating or updating your own plugin:**
 
-- Choose **Create with Cindy** from the Plugins page's add menu. Cindy opens a new-task draft with `/cindy-plugin-creator`; describe what you want and send it using your chosen Agent and model.
-- You can also invoke `/cindy-plugin-creator` directly to create, edit, debug, package, or publish a plugin. Its bundled references contain the authoring documentation for the current Cindy version.
+- Choose **Create with Cindy** from the Plugins page's add menu. Cindy opens a new-task draft with the built-in Plugin Creator's actual command, selecting the built-in version even if a user Skill has the same name. Describe what you want and send it using your chosen Agent and model.
+- The built-in `cindy-plugin-creator` Skill supports creating, editing, debugging, packaging, and publishing plugins. Its bundled references contain the authoring documentation for the current Cindy version. If it is unavailable, the page reports that and keeps your existing draft.
 - Creating and packaging a plugin produces a `.cindy` file. Installation and publication are separate actions that you can request when ready.
 
 **Using a plugin with `$command`:**

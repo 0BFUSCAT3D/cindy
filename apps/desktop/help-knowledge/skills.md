@@ -31,7 +31,7 @@ Skills are reusable agent capabilities you package as a folder and load into you
 
 **Creating or learning a Skill from the composer:**
 
-- To create a Cindy **plugin** (`.cindy` with `ghost.json`), use the separate built-in `/cindy-plugin-creator`. Its references cover plugin APIs and packaging; see the Plugins topic for the page entry point.
+- To create a Cindy **plugin** (`.cindy` with `ghost.json`), choose **Create with Cindy** from the Plugins page's add menu. This selects the separate built-in `cindy-plugin-creator` Skill, including when a user Skill has the same name. Its references cover plugin APIs and packaging; see the Plugins topic.
 
 - Cindy includes `/cindy-skill-creator`. Invoke it with a description of the Skill you want, such as `/cindy-skill-creator Create a Skill that checks release notes`. Invoking it without a description asks what you want to create.
 - The current Agent creates or updates the Skill directly with its normal file tools. It does not use the `/learn` staging flow.
