@@ -11,10 +11,12 @@
  *   - 46px 自绘 chrome:整条 drag region;mac 左端红绿灯让位、win 右端 WindowControls
  *     (close = 合并回侧边栏);中部页签图标 + 标题(复用插件的 TabPillIcon /
  *     TabPillTitle);右端「合并回侧边栏」按钮。
- *   - 合并回侧边栏是唯一出口(按钮 / ⌘W / 原生关窗请求 / 协同页签「在主窗查看」):
- *     不可持久化会话附本页签内存态,main 销毁窗口并把页签交回主窗。
- *   - 页签在本窗口里被关掉(guest 自关 / agent close):桶里找不到它 → 通知 main
- *     销毁窗口(不交回)。
+ *   - 「合并回侧边栏」(按钮 / 协同页签「在主窗查看」):不可持久化会话附本页签内存态,
+ *     main 销毁窗口并把页签交回主窗。
+ *   - 关窗 = 关闭页签(⌘W / 红绿灯 / Windows X / 原生关窗请求):走 store.closeTab,
+ *     与侧边栏里关页签同一流程(插件 onBeforeClose、确认拦截照常,被否决则窗口留着)。
+ *   - 页签从桶里消失(上面的关闭 / guest 自关 / agent close):通知 main 销毁窗口
+ *     (不交回)。
  *   - 显隐推送:隐藏时模糊焦点、重挂 chrome(复用隐藏窗口不继承上次 hover 态)。
  *
  * 与 SidebarWindowLayout 一样挂 useDeviceLinkRemoteProjects / makerChatStore 监听:
@@ -31,7 +33,7 @@ import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLin
 import { mergeSidebarWindowBack } from '@/features/right-sidebar/lib/mergeSidebarWindowBack';
 import { setSoloTabId } from '@/features/right-sidebar/lib/tabHosting';
 import { getTabKind, hydrateTabState } from '@/features/right-sidebar/registry';
-import { getBucket, importTabSnapshot, subscribe } from '@/features/right-sidebar/store';
+import { closeTab, getBucket, importTabSnapshot, subscribe } from '@/features/right-sidebar/store';
 import { iconForTabKind, labelKeyForTabKind } from '@/features/right-sidebar/TabBar';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
@@ -162,15 +164,24 @@ export function SidebarTabWindowLayout() {
     });
   }, [assignment]);
 
-  // 原生关窗(红绿灯 / 系统关闭 / Windows X):main 先请求本 renderer 交回快照。
-  useEffect(() => {
-    return api?.onMergeRequested?.(() => mergeBack()) ?? undefined;
-  }, [api, mergeBack]);
+  // 关窗 = 关闭这个页签。closeTab 内部跑插件 onBeforeClose / 确认拦截,被否决就什么
+  // 都不发生;页签真的消失后,上面的 effect 再请求 main 销毁窗口。
+  const closeOwnTab = useCallback(() => {
+    if (!assignment || leavingRef.current) return;
+    void closeTab(assignment.sessionId, assignment.tabId).catch((err) => {
+      log.warn('close popped-out tab failed', err);
+    });
+  }, [assignment]);
 
-  // ⌘W / Ctrl+W:本窗口整个就是一个页签,关窗 = 合并回侧边栏(不关页签)。
+  // 原生关窗(红绿灯 / 系统关闭 / Windows X):main 拦下后转达到这里。
+  useEffect(() => {
+    return api?.onCloseRequested?.(() => closeOwnTab()) ?? undefined;
+  }, [api, closeOwnTab]);
+
+  // ⌘W / Ctrl+W:本窗口整个就是一个页签,与侧边栏里 ⌘W 关当前页签同义。
   useCloseShortcutShellOwner();
   useAppShortcut('close-tab-or-window', () => {
-    mergeBack();
+    closeOwnTab();
     return true;
   });
 
@@ -221,7 +232,7 @@ export function SidebarTabWindowLayout() {
             className="flex h-full shrink-0 items-center"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <WindowControls key={windowChromeRevision} onClose={mergeBack} />
+            <WindowControls key={windowChromeRevision} onClose={closeOwnTab} />
           </div>
         )}
       </div>

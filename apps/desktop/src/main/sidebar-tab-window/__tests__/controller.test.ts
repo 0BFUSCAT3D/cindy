@@ -21,8 +21,7 @@ import type {
 } from '../../../shared/sidebarTabWindow.js';
 import {
   SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL,
-  SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS,
-  SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL,
   SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../../../shared/sidebarTabWindow.js';
 import {
@@ -238,7 +237,7 @@ describe('SidebarTabWindowsController', () => {
     expect(h.returned).toHaveLength(1);
   });
 
-  it('asks the renderer to merge on native close and merges without a snapshot after the grace period', () => {
+  it('turns native close into a tab-close request and never returns the tab by itself', () => {
     const h = makeHarness();
     h.controller.open(request('tab-a'));
     const win = h.created[0];
@@ -246,22 +245,32 @@ describe('SidebarTabWindowsController', () => {
     h.controller.markPresentationReady(h.wc(win));
 
     win.close();
-    // 原生关窗被拦下,先请求 renderer 交回快照。
+    // 原生关窗被拦下,转达给 renderer 走 closeTab;窗口留着等页签真正消失。
     expect(win.isDestroyed()).toBe(false);
     expect(
-      h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL),
+      h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL),
     ).toHaveLength(1);
-    // 重复关窗不重复请求。
+    // 上一次可能被插件确认框否决,再次关窗要再转达一次。
     win.close();
     expect(
-      h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL),
-    ).toHaveLength(1);
+      h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL),
+    ).toHaveLength(2);
+    vi.advanceTimersByTime(60_000);
+    expect(win.isDestroyed()).toBe(false);
     expect(h.returned).toHaveLength(0);
 
-    vi.advanceTimersByTime(SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS);
+    // renderer 关掉页签后请求销毁:不交回页签。
+    h.controller.closeForTab('tab-a');
     expect(win.destroy).toHaveBeenCalledOnce();
-    expect(h.returned).toEqual([
-      { sessionId: 's1', tabId: 'tab-a', snapshot: null, reason: 'merge' },
+    expect(h.returned).toHaveLength(0);
+
+    // renderer 还没挂上时没人能执行关闭流程:页签交回侧边栏而不是丢掉。
+    const cold = makeHarness();
+    cold.controller.open(request('tab-b'));
+    cold.created[0].close();
+    expect(cold.created[0].destroy).toHaveBeenCalledOnce();
+    expect(cold.returned).toEqual([
+      { sessionId: 's1', tabId: 'tab-b', snapshot: null, reason: 'merge' },
     ]);
   });
 

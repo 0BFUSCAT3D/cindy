@@ -2096,7 +2096,7 @@ interface ElectronAPI {
     mergeBack?: (
       snapshot: import('../shared/sidebarTabWindow').SidebarTabReturnSnapshot | null,
     ) => Promise<void>;
-    onMergeRequested?: (cb: () => void) => () => void;
+    onCloseRequested?: (cb: () => void) => () => void;
     onVisibilityChanged?: (cb: (payload: { visible: boolean }) => void) => () => void;
     onLocaleChanged?: (
       cb: (locale: import('../shared/locale').SupportedLocale) => void,

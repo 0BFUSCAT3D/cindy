@@ -3,7 +3,7 @@
  *
  * 与 shared/rightSidebarWindow.ts(整栏子窗口)的差异:按 **tabId 多实例**。
  * 用户把正在看的页签弹出到自己的窗口,主窗口的侧边栏继续存在并显示其余页签;
- * 弹出窗口关闭 = 页签合并回侧边栏。三方共用:main(controller / IPC)、preload
+ * 关闭弹出窗口 = 关闭该页签,「合并回侧边栏」按钮才把页签送回。三方共用:main(controller / IPC)、preload
  * (桥接签名)、renderer(主窗镜像 store + 弹出窗口根组件)。只放纯类型与
  * channel 常量,不放运行时代码。
  */
@@ -73,12 +73,13 @@ export const SIDEBAR_TAB_WINDOW_GET_ASSIGNMENT_CHANNEL = 'sidebar-tab-window:get
 export const SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL = 'sidebar-tab-window:merge-back';
 /** main → 弹出窗口(send):指派页签。 */
 export const SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL = 'sidebar-tab-window:assigned';
-/** main → 弹出窗口(send):用户经原生入口关窗,renderer 需带快照调用 merge-back。 */
-export const SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL = 'sidebar-tab-window:merge-requested';
+/**
+ * main → 弹出窗口(send):用户经原生入口关窗(红绿灯 / 系统关闭 / Windows X)。
+ * 关窗 = 关闭这个页签:renderer 走 store.closeTab(插件 onBeforeClose、确认拦截照常),
+ * 页签从桶里消失后再由 renderer 请求 close-for-tab 销毁窗口;被否决则窗口留着。
+ */
+export const SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL = 'sidebar-tab-window:close-requested';
 /** main → 弹出窗口(send):显示 / 隐藏切换。 */
 export const SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL =
   'sidebar-tab-window:visibility-changed';
 export const SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL = 'sidebar-tab-window:locale-changed';
-
-/** 原生关窗后等待 renderer 交回快照的上限;超时按无快照合并,窗口不会卡住不关。 */
-export const SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS = 1_500;

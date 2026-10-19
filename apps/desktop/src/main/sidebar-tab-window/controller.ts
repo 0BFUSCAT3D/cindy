@@ -3,7 +3,9 @@
  * 依赖注入可测)。
  *
  * 模型:每个弹出的页签(tabId)一扇窗。主窗的侧边栏继续存在并显示其余页签;
- * 弹出窗口关闭(合并按钮 / 红绿灯 / ⌘W / 崩溃)= 页签回到侧边栏。没有
+ * 「合并回侧边栏」按钮 = 页签回到侧边栏;关窗(红绿灯 / ⌘W / Windows X)= 关闭该页签
+ * (与侧边栏里关页签同一条 store.closeTab 流程,插件清理与确认拦截照常);崩溃 = 页签
+ * 回到侧边栏(数据不丢)。没有
  * 「偏好」可落盘:弹出是本次运行期的视图态,客户端重启后所有页签都回到主窗。
  *
  * 生命周期基线对齐 docs/dev-rules/electron-security-and-process-boundaries.md §3.1
@@ -13,8 +15,8 @@
  *     延迟补一扇 spare。
  *   - 双阶段就绪:renderer-ready(壳已挂载,可接收指派)→ presentation-ready
  *     (被指派页签的首份内容已提交)后才 show;超时只展示已挂载的 Loading 壳。
- *   - 关闭即销毁而非隐藏复用:页签回到侧边栏后窗口没有可复用的内容,隐藏保活
- *     只会按页签数囤积 renderer;§3.1 的隐藏复用面向「同一内容反复打开」的窗口,
+ *   - 关闭即销毁而非隐藏复用:页签关掉 / 回到侧边栏后窗口没有可复用的内容,隐藏
+ *     保活只会按页签数囤积 renderer;§3.1 的隐藏复用面向「同一内容反复打开」的窗口,
  *     这里由 spare 预热承担「下次弹出不冷启动」。
  *   - 故障隔离且恢复有界:弹出窗口崩溃 / 加载失败 → 销毁并把页签交回侧边栏
  *     (侧边栏本身就是安全态,不重建 renderer 循环);spare 崩溃最多自动补建一次。
@@ -35,9 +37,8 @@ import type {
 } from '../../shared/sidebarTabWindow.js';
 import {
   SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL,
   SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL,
-  SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS,
-  SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL,
   SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../../shared/sidebarTabWindow.js';
 import type { SupportedLocale } from '../../shared/locale.js';
@@ -77,9 +78,7 @@ interface WindowSlot {
   visible: boolean;
   pendingOpen: boolean;
   destroyingWindow: boolean;
-  mergeRequested: boolean;
   openTimeout: NodeJS.Timeout | null;
-  mergeGraceTimeout: NodeJS.Timeout | null;
 }
 
 export class SidebarTabWindowsController {
@@ -303,16 +302,14 @@ export class SidebarTabWindowsController {
       visible: false,
       pendingOpen: false,
       destroyingWindow: false,
-      mergeRequested: false,
       openTimeout: null,
-      mergeGraceTimeout: null,
     };
 
     win.on('close', (event) => {
       if (slot.destroyingWindow || this.disposed || this.deps.isQuitting()) return;
-      // 原生关窗 = 合并回侧边栏。先让 renderer 交回内存态快照,再销毁。
+      // 原生关窗 = 关闭这个页签:交给 renderer 走 closeTab,页签消失后它再请求销毁窗口。
       event.preventDefault();
-      this.requestMergeFromNative(slot);
+      this.requestCloseFromNative(slot);
     });
     win.on('show', () => this.onNativeVisibilityChanged(slot, true));
     win.on('hide', () => this.onNativeVisibilityChanged(slot, false));
@@ -372,27 +369,20 @@ export class SidebarTabWindowsController {
     if (slot.assignment) this.broadcast();
   }
 
-  private requestMergeFromNative(slot: WindowSlot): void {
+  private requestCloseFromNative(slot: WindowSlot): void {
     if (!slot.assignment) {
-      // spare 没有页签可交回,直接丢弃。
+      // spare 没有页签,直接丢弃。
       this.disposeSlot(slot);
       return;
     }
-    if (slot.mergeRequested) return;
-    slot.mergeRequested = true;
     if (slot.rendererReady) {
-      this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL, undefined);
+      // 每次关窗手势都转达:上一次可能被插件的确认框否决了。关闭流程(插件清理、
+      // 确认拦截、落库)全在 renderer 里,页签消失后它再调 close-for-tab。
+      this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL, undefined);
+      return;
     }
-    // renderer 卡死 / 未就绪时不能让窗口永远关不掉:超时按无快照合并。
-    slot.mergeGraceTimeout = setTimeout(() => {
-      slot.mergeGraceTimeout = null;
-      if (slot.win.isDestroyed()) return;
-      this.deps.log.warn('sidebar tab window merge grace elapsed, merging without snapshot', {
-        tabId: slot.assignment?.tabId,
-      });
-      this.finishSlot(slot, null, 'merge');
-    }, SIDEBAR_TAB_WINDOW_MERGE_GRACE_MS);
-    slot.mergeGraceTimeout.unref?.();
+    // renderer 还没挂上(冷开 / 重载中),无人能执行关闭流程:不丢数据,把页签交回侧边栏。
+    this.finishSlot(slot, null, 'merge');
   }
 
   /** 页签离开本窗口:销毁窗口、通知主窗接回页签、广播。 */
@@ -530,10 +520,6 @@ export class SidebarTabWindowsController {
 
   private clearTimeouts(slot: WindowSlot): void {
     this.clearOpenTimeout(slot);
-    if (slot.mergeGraceTimeout) {
-      clearTimeout(slot.mergeGraceTimeout);
-      slot.mergeGraceTimeout = null;
-    }
   }
 
   private broadcast(): void {

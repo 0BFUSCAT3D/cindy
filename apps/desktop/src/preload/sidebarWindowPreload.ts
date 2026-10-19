@@ -36,7 +36,7 @@ import {
   SIDEBAR_TAB_WINDOW_GET_ASSIGNMENT_CHANNEL,
   SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL,
   SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL,
-  SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL,
+  SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL,
   SIDEBAR_TAB_WINDOW_PRESENTATION_READY_CHANNEL,
   SIDEBAR_TAB_WINDOW_RENDERER_READY_CHANNEL,
   SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
@@ -424,8 +424,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_PRESENTATION_READY_CHANNEL),
     mergeBack: (snapshot: SidebarTabReturnSnapshot | null): Promise<void> =>
       ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL, snapshot),
-    onMergeRequested: (cb: () => void): (() => void) =>
-      onPayload(SIDEBAR_TAB_WINDOW_MERGE_REQUESTED_CHANNEL, cb),
+    onCloseRequested: (cb: () => void): (() => void) =>
+      onPayload(SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL, cb),
     onVisibilityChanged: (cb: (payload: { visible: boolean }) => void): (() => void) =>
       onPayload(SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL, cb),
     onLocaleChanged: (cb: (locale: SupportedLocale) => void): (() => void) =>
