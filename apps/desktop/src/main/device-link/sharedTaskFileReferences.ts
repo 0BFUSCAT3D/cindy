@@ -8,6 +8,7 @@ import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
 import { isToolResultFailureLike } from '@cindy/maker-shared/message-presentation';
 import { parseToolResultPayload } from '@cindy/maker-shared/payload-summary';
 import { extractCommandOutputPathCandidates } from '../../shared/commandOutputPaths.js';
+import { findPathMatches } from '../../shared/bareFilePathTokens.js';
 import { getDbClient } from '../localDb/client/current.js';
 import type { SharedTaskPeerCapture } from './sharedTaskDispatch.js';
 
@@ -22,6 +23,17 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 function decode(value: string): unknown {
   try { return JSON.parse(value); } catch { return value; }
+}
+
+/** Transport success does not override a failure inside the tool's result. */
+function toolResultFailed(descriptor: ReturnType<typeof describeToolUse>, content: unknown): boolean {
+  let value = content;
+  for (;;) {
+    if (isToolResultFailureLike(descriptor, typeof value === 'string' ? value : JSON.stringify(value))) return true;
+    const envelope = record(typeof value === 'string' ? decode(value) : value);
+    if (envelope?.ok !== true || !record(envelope.result)) return false;
+    value = envelope.result;
+  }
 }
 
 /** Only explicit file references count; a substring in source, a patch or a log does not. */
@@ -63,10 +75,12 @@ function references(content: unknown, role: string, includeText: boolean): strin
   visit(tree, 'definition', (node) => {
     if (!definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
   });
-  visit(tree, (node) => {
+  visit(tree, (node, _index, parent) => {
     if (node.type === 'link' || node.type === 'image') result.push(node.url);
     else if (node.type === 'inlineCode') result.push(node.value);
-    else if (node.type === 'linkReference' || node.type === 'imageReference') {
+    else if (node.type === 'text' && parent?.type !== 'link' && parent?.type !== 'linkReference') {
+      result.push(...findPathMatches(node.value).map((match) => match.value));
+    } else if (node.type === 'linkReference' || node.type === 'imageReference') {
       const url = definitions.get(node.identifier);
       if (url) result.push(url);
     }
@@ -148,7 +162,7 @@ export async function sharedTaskReferencesFile(
         // Their actual outputs are authorized via invocation output paths below;
         // delivery metadata is a contract of MCP/dynamic tool responses only.
         if (descriptor.kind !== 'mcp' && descriptor.kind !== 'dynamic') continue;
-        if (isToolResultFailureLike(descriptor, typeof content === 'string' ? content : JSON.stringify(content))) continue;
+        if (toolResultFailed(descriptor, content)) continue;
       }
       if (row.role === 'tool_use') {
         // A queued/denied tool invocation is not delivery. Only completed output
@@ -164,7 +178,7 @@ export async function sharedTaskReferencesFile(
         if (!capture.isCurrent()) return false;
         if (!results.length) continue;
         const result = decode(results[0].content);
-        if (isToolResultFailureLike(describeToolUse(tool.toolName, tool.input), typeof result === 'string' ? result : JSON.stringify(result))) continue;
+        if (toolResultFailed(describeToolUse(tool.toolName, tool.input), result)) continue;
       }
       return true;
     }

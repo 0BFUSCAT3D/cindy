@@ -85,6 +85,25 @@ describe('shared task media access', () => {
     await expect(assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture)).resolves.toEqual({ file });
     await expect(assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file + '.secret'), capture)).rejects.toThrow('PERMISSION_DENIED');
   });
+  it.each(['assistant', 'user', 'guest'])('recognizes bare file links in %s prose with the same author boundary', async (author) => {
+    const file = path.resolve('deliveries/report.pdf');
+    deps.query.mockResolvedValue([{ rowid: 1, role: author === 'guest' ? 'user' : author,
+      content: JSON.stringify(`Saved at ${markdownPath(file)}:42.`),
+      agentMeta: author === 'guest' ? JSON.stringify({ sharedTaskAuthor: { memberId: 'm' } }) : null }]);
+    const access = assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture);
+    if (author === 'guest') await expect(access).rejects.toThrow('PERMISSION_DENIED');
+    else await expect(access).resolves.toEqual({ file });
+  });
+  it.each(['fenced', 'link-label', 'reference-label', 'partial-token'])('does not extract bare-path authorization from %s text', async (kind) => {
+    const file = path.resolve('deliveries/report.pdf');
+    const local = markdownPath(file);
+    const content = kind === 'fenced' ? '```\nSaved at ' + local + '\n```'
+      : kind === 'link-label' ? `[${local}](https://example.com)`
+      : kind === 'reference-label' ? `[${local}][site]\n\n[site]: https://example.com`
+      : `Saved at ${local}_backup`;
+    deps.query.mockResolvedValue([{ rowid: 1, role: 'assistant', content: JSON.stringify(content) }]);
+    await expect(assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture)).rejects.toThrow('PERMISSION_DENIED');
+  });
   it('does not treat a guest message as authority for outside files', async () => {
     const file = path.resolve('other/private.pdf');
     deps.query.mockResolvedValue([{ rowid: 1, role: 'user', content: JSON.stringify({ text: `[file](<${markdownPath(file)}>)` }), agentMeta: JSON.stringify({ sharedTaskAuthor: { memberId: 'm' } }) }]);
@@ -153,6 +172,20 @@ describe('shared task media access', () => {
     if (kind !== 'missing-id') {
       expect(deps.query.mock.calls[1][0]).toContain('rewind_at IS NULL AND tool_use_id = ? AND rowid < ?');
       expect(deps.query.mock.calls[1][1]).toEqual(['task', 'run-1', 2]);
+    }
+  });
+  // Outer transport success must not mask the producing tool's inner failure.
+  it.each(['tool_use', 'tool_result'])('checks wrapped tool failures through the %s authorization route', async (role) => {
+    const file = path.resolve('deliveries/report.pdf');
+    const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+    const tool = { toolName: 'mcp:reports:generate', input: role === 'tool_use' ? { outPath: file } : {} };
+    for (const success of [false, true]) {
+      const result = { ok: true, result: { ok: success, xdt_media_produced: [url] } };
+      deps.query.mockResolvedValueOnce([{ rowid: role === 'tool_use' ? 1 : 2, role, toolUseId: 'generate-1', content: JSON.stringify(role === 'tool_use' ? tool : result) }])
+        .mockResolvedValueOnce([{ content: JSON.stringify(role === 'tool_use' ? result : tool) }]);
+      const access = assertSharedTaskMedia(url, capture);
+      if (success) await expect(access).resolves.toEqual({ file });
+      else await expect(access).rejects.toThrow('PERMISSION_DENIED');
     }
   });
   // Successful reading/echoing of guest-controlled content is not delivery.
