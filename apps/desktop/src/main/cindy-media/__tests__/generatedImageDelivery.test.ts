@@ -29,6 +29,8 @@ const state = vi.hoisted(() => ({
   failResult: false,
   beforeResult: undefined as (() => void) | undefined,
   insert: undefined as ((sessionId: string, body: Record<string, unknown>) => void) | undefined,
+  read: undefined as ((clientId: string) => { content: string; created_at: number }) | undefined,
+  broadcast: vi.fn(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => state.root } }));
 vi.mock('../../appSessionState', () => ({
@@ -41,6 +43,7 @@ vi.mock('../../appSessionState', () => ({
 }));
 vi.mock('../../device-link/broadcast-tap', () => ({ captureDataOwnerBroadcastScope: () => ({}) }));
 vi.mock('../../localDb/ipc/messages', () => ({
+  broadcastMessageRow: state.broadcast,
   createMessage: async (
     sid: string,
     body: Record<string, unknown>,
@@ -52,6 +55,14 @@ vi.mock('../../localDb/ipc/messages', () => ({
     }
     await options.beforePublish();
     state.insert!(sid, body);
+    const row = state.read!(body.clientId as string);
+    return {
+      ...body,
+      id: body.clientId,
+      sessionId: sid,
+      content: JSON.parse(row.content),
+      createdAt: new Date(row.created_at).toISOString(),
+    };
   },
 }));
 
@@ -76,6 +87,7 @@ beforeEach(async () => {
   state.generation = 1;
   state.failResult = false;
   state.beforeResult = undefined;
+  state.broadcast.mockClear();
   raw = new Database(':memory:');
   raw.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, status TEXT, cleared_at INTEGER, agent_device_id TEXT, remote_host_id TEXT, working_dir TEXT);
     CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT, client_id TEXT, role TEXT, content TEXT, rewind_at INTEGER, created_at INTEGER, UNIQUE(session_id, client_id));
@@ -104,6 +116,11 @@ beforeEach(async () => {
         JSON.stringify(body.content),
         body.createdAt,
       );
+  state.read = (clientId) =>
+    raw.prepare('SELECT content, created_at FROM messages WHERE client_id = ?').get(clientId) as {
+      content: string;
+      created_at: number;
+    };
 });
 afterEach(async () => {
   clearCurrentDbClient();
@@ -173,7 +190,9 @@ describe('native image delivery', () => {
     const restarted = controller();
     await restarted.recover('task');
     expect(result().ok).toBe(true);
-    expect((await fs.readFile(resolveSafe(result().xdt_image_url).absPath)).equals(large)).toBe(true);
+    expect((await fs.readFile(resolveSafe(result().xdt_image_url).absPath)).equals(large)).toBe(
+      true,
+    );
     expect(
       restarted.invoke.mock.calls.filter(
         (call) => (call[2][0] as { action?: string }).action === 'read',
@@ -240,6 +259,7 @@ describe('native image delivery', () => {
         0,
       );
       expect(host.publish).not.toHaveBeenCalled();
+      expect(state.broadcast).not.toHaveBeenCalled();
       if (boundary !== 'owner')
         expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(0);
     },
@@ -253,6 +273,11 @@ describe('native image delivery', () => {
       .mockResolvedValue({ buffer: png, mimeType: 'image/png' });
     const host = createGeneratedImageDelivery({ invoke: vi.fn(), publish: vi.fn(), readSource });
     await host.deliver('task', event({ path: '/original/image.png' }));
+    const failedRow = raw
+      .prepare("SELECT id, client_id AS clientId FROM messages WHERE role = 'tool_result'")
+      .get() as { id: string; clientId: string };
+    expect(result().native_image_delivery.state).toBe('failed');
+    state.broadcast.mockClear();
     raw.exec("UPDATE sessions SET remote_host_id = NULL, working_dir = '/local'");
     await host.recover('task', id);
     expect(readSource.mock.calls.map((call) => call[2])).toEqual([
@@ -260,6 +285,16 @@ describe('native image delivery', () => {
       { remoteHostId: 'original-ssh', workingDir: '/original' },
     ]);
     expect(result().ok).toBe(true);
+    // #6420: maker:event alone leaves Mobile's persisted result unchanged. Reuse the row ID.
+    const storedRow = state.broadcast.mock.lastCall?.[1];
+    expect(storedRow).toBeDefined();
+    expect(storedRow).toMatchObject({ id: failedRow.id, clientId: failedRow.clientId });
+    expect(JSON.parse(storedRow.content)).toMatchObject({
+      ok: true,
+      xdt_image_url: result().xdt_image_url,
+      native_image_delivery: { id, state: 'stored' },
+    });
+    expect(state.broadcast.mock.lastCall?.[2]).toBeDefined();
   });
 
   it('does not resurrect a removed result during retry', async () => {
@@ -267,8 +302,10 @@ describe('native image delivery', () => {
     await host.deliver('task', event({ pathOrigin: 'remote-agent' }));
     raw.exec("UPDATE messages SET role = 'message_tombstone' WHERE role = 'tool_result'");
     host.publish.mockClear();
+    state.broadcast.mockClear();
     await host.recover('task', id);
     expect(host.publish).not.toHaveBeenCalled();
+    expect(state.broadcast).not.toHaveBeenCalled();
     expect((await captureGeneratedImageStorage().journal.read('task:task', id))?.state).toBe(
       'released',
     );

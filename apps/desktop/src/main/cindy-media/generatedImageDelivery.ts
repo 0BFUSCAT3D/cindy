@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { AgentEvent, GeneratedImageEventData } from '@cindy/maker-core';
 import { REMOTE_AGENT_CHANNEL, REMOTE_AGENT_READ_MAX_BYTES } from '@cindy/device-link';
 import { sessions, messages } from '../localDb/schema';
-import { createMessage } from '../localDb/ipc/messages';
+import { broadcastMessageRow, createMessage } from '../localDb/ipc/messages';
 import { captureDataOwnerBroadcastScope } from '../device-link/broadcast-tap';
 import { captureGeneratedImageStorage, generatedImageErrorCode } from './generatedImageStorage';
 import { generatedImageId, initialGeneratedImageRecord } from './generatedImageJournal';
@@ -259,7 +259,7 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
         },
       );
       await assertTask();
-      await createMessage(
+      const resultMessage = await createMessage(
         sessionId,
         {
           clientId: resultClientId,
@@ -297,6 +297,9 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
           throw new Error('MEDIA_PUBLISH_FAILED');
         await assertTask();
       }
+      // Idempotent createMessage returns the previous row without broadcasting on retry.
+      // Mobile consumes persisted row updates, so publish the committed content with its stable ID.
+      broadcastMessageRow(sessionId, { ...resultMessage, content }, ownerScope);
       deps.publish(
         sessionId,
         {
