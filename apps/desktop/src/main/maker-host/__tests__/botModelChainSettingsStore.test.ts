@@ -14,8 +14,11 @@ import {
   writeBotModelChainSettings,
 } from '../bot-model-chain-settings-store';
 
+const providerService = vi.hoisted(() => ({
+  listProviders: vi.fn<() => Promise<ProviderView[]>>(),
+}));
 vi.mock('../createDesktopProviderService.js', () => ({
-  getDesktopProviderService: () => ({ listProviders: async () => [] }),
+  getDesktopProviderService: () => providerService,
 }));
 
 vi.mock('../index.js', () => ({ getMakerIfReady: () => ({ listAvailableAgents: () => ['claude-code', 'codex', 'pi'] }) }));
@@ -30,6 +33,7 @@ vi.mock('../../appSessionState.js', () => ({
 import { setModelVisibilityMirror } from '../model-visibility-mirror';
 import { setNewMakerDraftCache } from '../newMakerDefaultsCache';
 beforeEach(() => {
+  providerService.listProviders.mockReset().mockResolvedValue([]);
   setModelVisibilityMirror({}, { fallback: true });
   setNewMakerDraftCache({ selectedRoute: { harness: 'codex', providerId: 'openai', model: 'gpt-5.6-sol', effort: 'medium', fastMode: false }, lastByVendor: {}, effortByModel: {}, fastModeByModel: {} }, owner.key);
 });
@@ -271,6 +275,48 @@ describe('bot model chain settings store', () => {
         route('org-pool', 'pool-model'),
       ]);
       expect(config.modelChainOverride[0].providerId).toBe('org-pool');
+    });
+
+    // unit: #6355 / discussion_r4316083415。已有用例只传同步目录，未覆盖读目录时切账号。
+    // 真实读取入口必须拒绝旧账号的结果；deferred 精确控制退出/切账号，不做真实等待。
+    it.each([
+      ['owner-b:2', false],
+      ['signed-out:2', false],
+      ['owner-b:2', true],
+    ] as const)(
+      '读取 Auto 目录时 owner 变成 %s（读取失败=%s）就拒绝旧结果',
+      async (nextOwner, fails) => {
+        owner.key = 'owner-a:1';
+        let finish!: (providers: ProviderView[]) => void;
+        let fail!: (error: Error) => void;
+        providerService.listProviders.mockReturnValueOnce(
+          new Promise((resolve, reject) => {
+            finish = resolve;
+            fail = reject;
+          }),
+        );
+        const config = { modelChainOverride: [route('org-pool')] };
+        const pending = readEffectiveBotModelChain(config);
+        const rejected = expect(pending).rejects.toThrow('Bot model chain owner changed');
+        owner.key = nextOwner;
+        if (fails) fail(new Error('catalog unavailable'));
+        else finish(providers);
+        await rejected;
+        expect(config.modelChainOverride).toEqual([route('org-pool')]);
+        // 下一次读取在新账号下独立解析，不复用刚丢弃的目录。
+        providerService.listProviders.mockResolvedValueOnce([
+          view('xd', 'builtin', ['auto']),
+          view('org-pool', 'organization', [AUTO]),
+        ]);
+        expect(await readEffectiveBotModelChain(config)).toEqual([route('org-pool')]);
+      },
+    );
+
+    it('账号没变且目录读取失败时保留原链，交给既有路由校验', async () => {
+      providerService.listProviders.mockRejectedValueOnce(new Error('catalog unavailable'));
+      expect(await readEffectiveBotModelChain({ modelChainOverride: [route('org-pool')] })).toEqual(
+        [route('org-pool')],
+      );
     });
 
     it('用户自定义的伙伴默认同样跟随；没挪动、预设 auto 与普通模型原样', async () => {

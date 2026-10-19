@@ -166,14 +166,17 @@ async function followMovedCindyAuto(
     return chain;
   let views = providers;
   if (!views) {
+    const owner = activeOwnerScopeKey();
     try {
-      views = await readConnectedProviders(activeOwnerScopeKey());
+      views = await readConnectedProviders(owner);
     } catch (error) {
+      if (activeOwnerScopeKey() !== owner) throw new Error('Bot model chain owner changed');
       log.warn('Bot model chain Auto follow skipped: providers unavailable', {
         error: error instanceof Error ? error.message : String(error),
       });
       return chain;
     }
+    if (activeOwnerScopeKey() !== owner) throw new Error('Bot model chain owner changed');
   }
   const catalog = views;
   return chain.map((route) => {
