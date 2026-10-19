@@ -17,7 +17,8 @@ function isReference(href: string): boolean {
   const withoutLine = href.replace(/:[1-9]\d*(?:-[1-9]\d*)?(?::[1-9]\d*)?$/, '');
   if (OTHER_SCHEME.test(withoutLine) && !drivePath && !href.startsWith('file://')) return false;
   if (href.startsWith('~/') || (href[0] === '~' && href.charCodeAt(1) === 92)) return false;
-  return FILE_REFERENCE.test(href);
+  const absolutePath = withoutLine.startsWith('/') || drivePath || withoutLine.startsWith('file://');
+  return !/[?#\r\n]/.test(href) && (absolutePath || FILE_REFERENCE.test(href));
 }
 
 /** Preserve prose and answer keys; recognize labelled links, code and bare files/URLs. */
@@ -61,8 +62,11 @@ export function splitQuestionReferences(text: string): QuestionReferencePart[] {
       // trailing fragment into a relative link; code/labelled references can
       // preserve the complete spaced path without guessing prose boundaries.
       const absoluteFragment = href.startsWith('/') || (/^[A-Za-z]:/.test(href) && (href[2] === '/' || href.charCodeAt(2) === 92));
-      unquotedAbsolutePath = (continuesAbsolutePath || absoluteFragment) && !reference;
-      append(reference && !continuesAbsolutePath ? { text: href, href } : { text: href });
+      const hasExtension = FILE_REFERENCE.test(href);
+      const spacedAbsolutePrefix = raw === href && absoluteFragment && !hasExtension
+        && /^[ \t]+(?![A-Za-z]:[\\/]|\/|file:\/\/)[^\s]*[\\/]/.test(text.slice(index + raw.length));
+      unquotedAbsolutePath = (continuesAbsolutePath || spacedAbsolutePrefix) && !hasExtension;
+      append(reference && !continuesAbsolutePath && !spacedAbsolutePrefix ? { text: href, href } : { text: href });
       append({ text: raw.slice(href.length) });
     }
     from = index + raw.length;

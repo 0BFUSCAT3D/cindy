@@ -71,7 +71,24 @@ describe('interaction shared model', () => {
     expect(splitQuestionReferences(spacedPath)).toEqual([{ text: spacedPath }]);
     expect(splitQuestionReferences('`' + spacedPath + '`')).toEqual([{ text: spacedPath, href: spacedPath }]);
     expect(splitQuestionReferences('请查看 /tmp\n然后查看 notes.txt')).toEqual([
-      { text: '请查看 /tmp\n然后查看 ' }, { text: 'notes.txt', href: 'notes.txt' },
+      { text: '请查看 ' }, { text: '/tmp', href: '/tmp' },
+      { text: '\n然后查看 ' }, { text: 'notes.txt', href: 'notes.txt' },
+    ]);
+    const windowsHosts = String.raw`C:\Windows\System32\drivers\etc\hosts`;
+    expect(splitQuestionReferences(windowsHosts)).toEqual([{ text: windowsHosts, href: windowsHosts }]);
+    expect(splitQuestionReferences('/etc/hosts 和 /usr/bin/node')).toEqual([
+      { text: '/etc/hosts', href: '/etc/hosts' }, { text: ' 和 ' },
+      { text: '/usr/bin/node', href: '/usr/bin/node' },
+    ]);
+    expect(splitQuestionReferences('/etc/hosts, /usr/bin/node notes.txt')).toEqual([
+      { text: '/etc/hosts', href: '/etc/hosts' }, { text: ', ' },
+      { text: '/usr/bin/node', href: '/usr/bin/node' }, { text: ' ' },
+      { text: 'notes.txt', href: 'notes.txt' },
+    ]);
+    expect(splitQuestionReferences('/etc/hosts 和 `' + windowsHosts + '` 与 [hosts](/etc/hosts)')).toEqual([
+      { text: '/etc/hosts', href: '/etc/hosts' }, { text: ' 和 ' },
+      { text: windowsHosts, href: windowsHosts }, { text: ' 与 ' },
+      { text: 'hosts', href: '/etc/hosts' },
     ]);
   });
   it('keeps original questions attached to late answers without including skipped questions', () => {
