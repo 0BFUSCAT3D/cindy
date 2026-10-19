@@ -326,14 +326,15 @@ describe('provider group relay for shared users', () => {
     const waiting = new Promise<void>((resolve) => { finishPreparation = resolve; });
     const prepareImageEvent = vi.fn(async (_sessionId: string, event: AgentEvent) => { await waiting; return event; });
     const env = setup({ owner: { prepareImageEvent } });
-    const { client, stream, isClosed } = await openAsGuest(env, GUEST_A, openPayload(SESSION, { imageDeliveryEpoch: 123 }));
+    const { client, stream, isClosed } = await openAsGuest(env, GUEST_A, openPayload(SESSION, { imageDeliveryEpoch: 123, acceptsImageDeliveryReceipts: true }));
     try {
       env.memberStarted.mini[0].emit({ type: 'image', source: 'codex', data: { kind: 'generation', blockId: 'image', deliveryEpoch: 999, url: 'data:image/png;base64,bytes' } } as AgentEvent);
       env.memberStarted.mini[0].end();
       await vi.waitFor(() => expect(prepareImageEvent).toHaveBeenCalledTimes(1));
       expect(isClosed()).toBe(false);
       finishPreparation();
-      const call = prepareImageEvent.mock.calls[0] as unknown as [string, AgentEvent, { agentDeviceId: string; sessionId: string; relay: string }];
+      const call = prepareImageEvent.mock.calls[0] as unknown as [string, AgentEvent, { agentDeviceId: string; sessionId: string; relay: string }, boolean];
+      expect(call[3]).toBe(true);
       expect(call[0]).toBe(hostSessionIdFor(GUEST_A, SESSION));
       expect(call[1].data).toMatchObject({ deliveryEpoch: 123 });
       expect(call[2]).toMatchObject({ agentDeviceId: 'mini', relay: relayKeyFor(GUEST_A) });

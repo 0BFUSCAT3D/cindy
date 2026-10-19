@@ -1043,7 +1043,11 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   512 KiB，返回总长度和 SHA-256；接收方复核完整字节指纹与真实 MIME。
   `release(sessionId, imageId)` 是持久交付回执，可重复调用。入参不接受任意文件路径；
   Host 从已认证 caller 与任务 ID 派生私有 scope，返回前再次检查撤权。
-- 源 Host 先入仓再发事件，以 data URL 单独携带字节，兼容仍优先读取 path 的旧控制端。
+- 新控制端在 `open` 声明 `acceptsImageDeliveryReceipts: true`，源 Host 才建立持久恢复副本；
+  供应商组逐层透传该声明。旧控制端缺少声明时，源 Host 仍验证/读取图片并以 data URL
+  交付，但不建立无法确认释放的恢复引用。旧源端忽略可选声明，新控制端仍按其 caps 决定恢复能力。
+- 协商回执后源 Host 先入仓再发事件。两种路径均以 data URL 单独携带字节，
+  兼容仍优先读取 path 的旧控制端。
   新控制端接受旧事件；旧源 Host 已丢失字节的 path-only 事件只能呈现交付失败，升级源端
   后新产物才具备恢复能力。旧端未声明 capability 时不自动请求 `images`。
 - `images` 可选携带 `relay`，与 `open` 相同，scope 始终由已认证 caller、relay、任务 ID

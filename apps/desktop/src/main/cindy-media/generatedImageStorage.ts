@@ -292,32 +292,48 @@ export async function releaseGeneratedImageUpstream(
   }));
 }
 
-/** The source Host makes a durable copy before the event stream can acknowledge it. */
+/** Receipted controllers get durable source ownership; legacy controllers get transport bytes only. */
 export async function prepareGeneratedImageTransport(
   scope: string,
   event: AgentEvent,
-  upstream?: GeneratedImageUpstream,
-  invoke?: GeneratedImageInvoke,
+  options: {
+    retainForRecovery: boolean;
+    upstream?: GeneratedImageUpstream;
+    invoke?: GeneratedImageInvoke;
+  },
 ): Promise<AgentEvent> {
   if (event.type !== 'image' || event.source !== 'codex') return event;
   const image = event.data as GeneratedImageEventData;
   if (image?.kind !== 'generation') return event;
   try {
     const storage = captureGeneratedImageStorage();
-    if (upstream)
-      await storage.journal.update(scope, generatedImageId(image), (previous) => {
-        const current = previous ?? initialGeneratedImageRecord(scope, image);
-        if (
-          current.upstream &&
-          (current.upstream.agentDeviceId !== upstream.agentDeviceId ||
-            current.upstream.sessionId !== upstream.sessionId ||
-            current.upstream.relay !== upstream.relay)
-        )
-          throw new Error('IMAGE_DELIVERY_CONFLICT');
-        return { ...current, upstream };
-      });
-    const { record, buffer, mimeType } = await storage.stage(scope, image);
-    if (invoke) await releaseGeneratedImageUpstream(storage, record, invoke).catch(() => undefined);
+    const { upstream, invoke } = options;
+    let bytes: { buffer: Buffer; mimeType: string };
+    if (!options.retainForRecovery) {
+      // Legacy controllers cannot ACK durable recovery ownership. Still deliver bytes,
+      // but do not create an indefinitely pinned source artifact for them.
+      bytes =
+        generatedImageBytes(image) ??
+        (await storage.read(initialGeneratedImageRecord(scope, image)));
+    } else {
+      if (upstream)
+        await storage.journal.update(scope, generatedImageId(image), (previous) => {
+          const current = previous ?? initialGeneratedImageRecord(scope, image);
+          if (
+            current.upstream &&
+            (current.upstream.agentDeviceId !== upstream.agentDeviceId ||
+              current.upstream.sessionId !== upstream.sessionId ||
+              current.upstream.relay !== upstream.relay)
+          )
+            throw new Error('IMAGE_DELIVERY_CONFLICT');
+          return { ...current, upstream };
+        });
+      const staged = await storage.stage(scope, image);
+      if (invoke)
+        await releaseGeneratedImageUpstream(storage, staged.record, invoke).catch(() => undefined);
+      bytes = staged;
+    }
+    const { buffer, mimeType } = bytes;
     storage.assertCurrent();
     // url keeps new-source/old-controller normal delivery compatible. Do not send
     // a path alongside it: old controllers prefer the path and lose the bytes.

@@ -239,7 +239,8 @@
 - `imageGeneration` 完成事件保留 native thread / turn / item 标识、`savedPath` 与 `result`；
   裸 Base64 是图片数据，路径不能覆盖同时返回的字节。翻译层不读文件、不解码图片。
 - 远程 Agent 的源 Host 在事件进入可确认的传输日志前读取源文件或验证原生字节，按真实
-  MIME 与 20 MiB 上限入 `cindy-media`。跨设备发送不带源文件路径的 data URL；控制端给
+  MIME 与 20 MiB 上限校验；控制端声明支持持久交付回执时才入 `cindy-media` 建立恢复所有权。
+  旧控制端没有回执能力时只准备传输字节，不留下永久固定的源副本。跨设备发送不带源文件路径的 data URL；控制端给
   native 图片标注远端来源，不做工作区路径替换，不读本机同名文件。SSH 只走已有远端文件服务。
 - 图片字节只存在媒体总仓。账号私有 `cindy-media/generated-images-v1` 记录小型交付日志，
   不保存 Base64；native 标识生成稳定交付 ID，任务 scope 和源 Host scope 隔离。待交付副本

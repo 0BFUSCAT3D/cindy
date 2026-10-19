@@ -183,7 +183,7 @@ describe('duplicate op payloads', () => {
 });
 
 // #6412: asynchronous source reads used to lose the final image when the native stream ended.
-it('drains image preparation before closing the event log', async () => {
+it.each([false, true])('drains image preparation and forwards the controller receipt capability (%s)', async (receipts) => {
   let release!: () => void;
   const waiting = new Promise<void>((resolve) => { release = resolve; });
   const entered = whenStarted();
@@ -196,10 +196,10 @@ it('drains image preparation before closing the event log', async () => {
         yield { type: 'done', source: 'codex', data: {} } as AgentEvent;
       },
     }) }),
-    prepareImageEvent: async (_id, event) => { expect(event.data).toMatchObject({ deliveryEpoch: 321 }); entered.resolve(); await waiting; return { ...event, data: { kind: 'generation', blockId: 'native', url: 'data:image/png;base64,bytes' } }; },
+    prepareImageEvent: async (_id, event, _upstream, retainForRecovery) => { expect(retainForRecovery).toBe(receipts); expect(event.data).toMatchObject({ deliveryEpoch: 321 }); entered.resolve(); await waiting; return { ...event, data: { kind: 'generation', blockId: 'native', url: 'data:image/png;base64,bytes' } }; },
   });
   try {
-    await host.handle('controller', { op: 'open', runId: RUN_1, agentKind: 'codex', payload: { json: { ...openPayload('task-1'), imageDeliveryEpoch: 321 } } });
+    await host.handle('controller', { op: 'open', runId: RUN_1, agentKind: 'codex', payload: { json: { ...openPayload('task-1'), imageDeliveryEpoch: 321, ...(receipts ? { acceptsImageDeliveryReceipts: true } : {}) } } });
     await entered.promise;
     await settle();
     let closeFinished = false;

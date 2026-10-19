@@ -120,7 +120,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     log,
   });
   host = createRemoteAgentHost({
-    prepareImageEvent: (sessionId, event, upstream) => prepareGeneratedImageTransport(`remote:${sessionId}`, event, upstream, remoteBackgroundInvoke),
+    prepareImageEvent: (sessionId, event, upstream, retainForRecovery) => prepareGeneratedImageTransport(`remote:${sessionId}`, event, { upstream, retainForRecovery, invoke: remoteBackgroundInvoke }),
     imageArtifacts: async (sessionId, request) => {
       try { return await handleGeneratedImageArtifacts(sessionId, request, remoteBackgroundInvoke); }
       catch (error) { throw new Error(generatedImageErrorCode(error)); }

@@ -583,7 +583,7 @@ describe('remote agent round trip', () => {
         const handle = await startRemoteAgentSession('codex', { sessionId: 'image-task', workingDir: project, model: 'm' }, {
           ...base, invoke, readImageDeliveryEpoch: async (sessionId) => { expect(sessionId).toBe('image-task'); return epoch; },
         });
-        expect(opened.at(-1)?.imageDeliveryEpoch).toBe(epoch);
+        expect(opened.at(-1)).toMatchObject({ imageDeliveryEpoch: epoch, acceptsImageDeliveryReceipts: true });
         await handle.close({ reason: 'navigation' });
       }
     } finally { host.dispose(); }

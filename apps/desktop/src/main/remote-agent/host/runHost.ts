@@ -163,8 +163,8 @@ export interface OwnerProviderRouteBinding {
 }
 
 export interface RemoteAgentHostDeps {
-  /** Persist native generated output before acknowledging its transport bytes. */
-  prepareImageEvent?(hostSessionId: string, event: AgentEvent, upstream?: GeneratedImageUpstream): Promise<AgentEvent>;
+  /** Prepare native bytes; retain recovery ownership only for receipted controllers. */
+  prepareImageEvent?(hostSessionId: string, event: AgentEvent, upstream: GeneratedImageUpstream | undefined, retainForRecovery: boolean): Promise<AgentEvent>;
   imageArtifacts?(hostSessionId: string, request: Extract<RemoteAgentRequest, { op: 'images' }>): Promise<unknown>;
   readLimits?(): RemoteAgentLimits;
   isAgentAvailable(kind: RemoteAgentKind): boolean;
@@ -346,6 +346,7 @@ interface Run {
   /** 本机侧任务 id：影子目录按它存放，同一任务多次打开共用。 */
   hostSessionId?: string;
   imageDeliveryEpoch?: number;
+  acceptsImageDeliveryReceipts?: boolean;
   owner: unknown;
   kind: RemoteAgentKind;
   log: EventLog;
@@ -815,7 +816,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         let next = item;
         if (prepare) {
           try {
-            next = { ...stream, event: await deps.prepareImageEvent!(run.hostSessionId!, stream.event!, upstream) };
+            next = { ...stream, event: await deps.prepareImageEvent!(run.hostSessionId!, stream.event!, upstream, run.acceptsImageDeliveryReceipts === true) };
           } catch {
             // Even a failed adapter must not advertise the source path as controller-local.
             const data = stream.event!.data as Record<string, unknown> | null;
@@ -2260,6 +2261,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }
         const run: Run = {
           id: request.runId,
+          acceptsImageDeliveryReceipts: payload.acceptsImageDeliveryReceipts === true,
           controller,
           trust,
           ...(relayKey ? { relayKey } : {}),

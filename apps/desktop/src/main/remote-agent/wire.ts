@@ -154,6 +154,8 @@ export interface RemoteAgentWirePersonal {
 }
 
 export interface RemoteAgentOpenPayload {
+  /** Controller can acknowledge durable image delivery; absent on legacy controllers. */
+  acceptsImageDeliveryReceipts?: boolean;
   /** Task Host clear generation, preserved through provider-group relays. */
   imageDeliveryEpoch?: number;
   /** 控制端任务 id。 */
@@ -327,6 +329,7 @@ export function decodeOpenPayload(value: unknown): RemoteAgentOpenPayload {
   });
   return {
     sessionId,
+    ...(value.acceptsImageDeliveryReceipts === true ? { acceptsImageDeliveryReceipts: true } : {}),
     ...(typeof value.imageDeliveryEpoch === 'number' && Number.isSafeInteger(value.imageDeliveryEpoch) && value.imageDeliveryEpoch >= 0
       ? { imageDeliveryEpoch: value.imageDeliveryEpoch } : {}),
     ...(value.virtualWorkspace === true ? { virtualWorkspace: true } : {}),

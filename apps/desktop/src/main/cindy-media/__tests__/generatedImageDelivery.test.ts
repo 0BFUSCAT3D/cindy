@@ -131,6 +131,14 @@ afterEach(async () => {
   await fs.rm(state.root, { recursive: true, force: true });
 });
 
+function prepareTransport(
+  scope: string,
+  imageEvent: AgentEvent,
+  options: Partial<Parameters<typeof prepareGeneratedImageTransport>[2]> = {},
+) {
+  return prepareGeneratedImageTransport(scope, imageEvent, { retainForRecovery: true, ...options });
+}
+
 function controller() {
   const invoke = vi.fn(async (_device: string, _channel: string, args: unknown[]) => {
     const request = args[0] as Parameters<typeof handleGeneratedImageArtifacts>[1];
@@ -177,14 +185,28 @@ describe('native image delivery', () => {
     expect(host.invoke).not.toHaveBeenCalled();
   });
 
+  // #6420: legacy controllers never send images/release, so they must not own durable source pins.
+  it('delivers a source-only file to a legacy controller without retaining recovery ownership', async () => {
+    const file = path.join(state.root, 'legacy-native.png');
+    await fs.writeFile(file, png);
+    const transported = await prepareTransport('remote:legacy-task', event({ path: file }), {
+      retainForRecovery: false,
+    });
+    await fs.unlink(file);
+    expect(transported.data).toMatchObject({
+      url: `data:image/png;base64,${png.toString('base64')}`,
+    });
+    expect(transported.data).not.toHaveProperty('path');
+    expect(await captureGeneratedImageStorage().journal.list('remote:legacy-task')).toEqual([]);
+    expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(0);
+    expect(raw.prepare('SELECT * FROM media_blobs').all()).toHaveLength(0);
+  });
+
   it('recovers a source-only file after native file deletion and controller restart, then releases the source pin', async () => {
     const file = path.join(state.root, 'native.png');
     const large = Buffer.concat([png, Buffer.alloc(3_200_000)]);
     await fs.writeFile(file, large);
-    const transported = await prepareGeneratedImageTransport(
-      'remote:host-task',
-      event({ path: file }),
-    );
+    const transported = await prepareTransport('remote:host-task', event({ path: file }));
     expect(transported.data).not.toHaveProperty('path');
     expect((transported.data as GeneratedImageEventData).url).toMatch(/^data:image\/png;base64,/);
     await fs.unlink(file);
@@ -302,7 +324,7 @@ describe('native image delivery', () => {
 
   // PR #6420: upstream pins and unknown artifacts had no durable release path.
   it('retains a relay receipt while the member is offline, then releases only its upstream copy after restart', async () => {
-    const source = await prepareGeneratedImageTransport(
+    const source = await prepareTransport(
       'remote:member-task',
       event({ data: png.toString('base64') }),
     );
@@ -330,7 +352,7 @@ describe('native image delivery', () => {
         return { ok: true, result: await handleGeneratedImageArtifacts('member-task', request) };
       },
     );
-    await prepareGeneratedImageTransport('remote:relay-task', source, upstream, invoke);
+    await prepareTransport('remote:relay-task', source, { upstream, invoke });
     expect(raw.prepare('SELECT * FROM media_refs').all()).toHaveLength(2);
     expect(
       (await captureGeneratedImageStorage().journal.read('remote:relay-task', id))
@@ -353,7 +375,7 @@ describe('native image delivery', () => {
   it.each(['clear', 'delete'])(
     'releases unknown source artifacts after an offline %s and restart without publishing messages',
     async (boundary) => {
-      await prepareGeneratedImageTransport(
+      await prepareTransport(
         'remote:host-task',
         event({ data: png.toString('base64'), deliveryEpoch: 0 }),
       );
@@ -370,7 +392,7 @@ describe('native image delivery', () => {
       expect(await captureGeneratedImageStorage().journal.list('task:task')).toHaveLength(0);
       expect(await captureGeneratedImageStorage().journal.listCleanups()).toHaveLength(1);
       const newImage = { ...image, blockId: 'new-generation', deliveryEpoch: 100 };
-      await prepareGeneratedImageTransport(
+      await prepareTransport(
         'remote:host-task',
         event({ ...newImage, data: png.toString('base64') }),
       );
@@ -396,7 +418,7 @@ describe('native image delivery', () => {
   );
 
   it('finds a cleared task with no local image or cleanup journal after a crash', async () => {
-    await prepareGeneratedImageTransport(
+    await prepareTransport(
       'remote:host-task',
       event({ data: png.toString('base64'), deliveryEpoch: 0 }),
     );
@@ -407,13 +429,13 @@ describe('native image delivery', () => {
   });
 
   it('recovers an unknown image from the new clear generation without reviving the old generation', async () => {
-    await prepareGeneratedImageTransport(
+    await prepareTransport(
       'remote:host-task',
       event({ data: png.toString('base64'), deliveryEpoch: 0 }),
     );
     raw.exec("UPDATE sessions SET agent_device_id = 'source', cleared_at = 100");
     const newer = { blockId: 'after-clear', data: png.toString('base64'), deliveryEpoch: 100 };
-    await prepareGeneratedImageTransport('remote:host-task', event(newer));
+    await prepareTransport('remote:host-task', event(newer));
     await controller().recover('task');
     expect(result()).toMatchObject({
       ok: true,
@@ -431,12 +453,9 @@ describe('native image delivery', () => {
   it.each(['message_tombstone', 'rewound'])(
     'recovers a later unknown image despite an unrelated %s row',
     async (removed) => {
-      await prepareGeneratedImageTransport(
-        'remote:host-task',
-        event({ data: png.toString('base64') }),
-      );
+      await prepareTransport('remote:host-task', event({ data: png.toString('base64') }));
       const removedImage = { ...image, blockId: 'removed-image' };
-      await prepareGeneratedImageTransport(
+      await prepareTransport(
         'remote:host-task',
         event({ ...removedImage, data: png.toString('base64') }),
       );

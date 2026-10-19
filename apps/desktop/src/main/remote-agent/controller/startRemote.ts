@@ -367,6 +367,7 @@ export async function startRemoteAgentSession(
     : [];
   const payload: RemoteAgentOpenPayload = {
     sessionId: opts.sessionId,
+    acceptsImageDeliveryReceipts: true,
     ...(imageDeliveryEpoch !== undefined ? { imageDeliveryEpoch } : {}),
     virtualWorkspace: true,
     options: encodeStartOptions(opts),
