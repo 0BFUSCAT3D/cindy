@@ -8,13 +8,13 @@ export interface QuestionReferencePart {
 // Questions are plain text with optional evidence references, not full Markdown.
 // Only identify candidates here: each client still verifies files using its
 // existing session-aware resolver before making them clickable.
-const FILE_REFERENCE = /^[^?#\n]+\.[A-Za-z0-9]{1,10}(?::[1-9]\d*(?::[1-9]\d*)?)?$/;
+const FILE_REFERENCE = /^[^?#\n]+\.[A-Za-z0-9]{1,10}(?::[1-9]\d*(?:-[1-9]\d*)?(?::[1-9]\d*)?)?$/;
 const OTHER_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 
 function isReference(href: string): boolean {
   if (/^https?:\/\//i.test(href)) return true;
   const drivePath = /^[A-Za-z]:/.test(href) && (href[2] === '/' || href.charCodeAt(2) === 92);
-  const withoutLine = href.replace(/:[1-9]\d*(?::[1-9]\d*)?$/, '');
+  const withoutLine = href.replace(/:[1-9]\d*(?:-[1-9]\d*)?(?::[1-9]\d*)?$/, '');
   if (OTHER_SCHEME.test(withoutLine) && !drivePath && !href.startsWith('file://')) return false;
   if (href.startsWith('~/') || (href[0] === '~' && href.charCodeAt(1) === 92)) return false;
   return FILE_REFERENCE.test(href);
@@ -38,8 +38,11 @@ export function splitQuestionReferences(text: string): QuestionReferencePart[] {
     'g',
   );
   let from = 0;
+  let unquotedAbsolutePath = false;
   for (const match of text.matchAll(token)) {
     const index = match.index!;
+    const continuesAbsolutePath: boolean = unquotedAbsolutePath && /^[ \t]+$/.test(text.slice(from, index));
+    unquotedAbsolutePath = false;
     append({ text: text.slice(from, index) });
     const raw = match[0];
     if (match[1] !== undefined) {
@@ -53,7 +56,13 @@ export function splitQuestionReferences(text: string): QuestionReferencePart[] {
       append({ text: raw.slice(href.length) });
     } else {
       const href = raw.replace(/[.,;!?]+$/, '');
-      append(isReference(href) ? { text: href, href } : { text: href });
+      const reference = isReference(href);
+      // An unquoted absolute path may contain spaces. Never turn just its
+      // trailing fragment into a relative link; code/labelled references can
+      // preserve the complete spaced path without guessing prose boundaries.
+      const absoluteFragment = href.startsWith('/') || (/^[A-Za-z]:/.test(href) && (href[2] === '/' || href.charCodeAt(2) === 92));
+      unquotedAbsolutePath = (continuesAbsolutePath || absoluteFragment) && !reference;
+      append(reference && !continuesAbsolutePath ? { text: href, href } : { text: href });
       append({ text: raw.slice(href.length) });
     }
     from = index + raw.length;

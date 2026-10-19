@@ -1436,11 +1436,16 @@ async function activateResolvedLocalTarget(
 }
 
 /** Evidence in a question uses the same verified targets and previews as messages. */
-export function QuestionReferenceText({ text }: { text: string }) {
+export function QuestionReferenceText({ text, onPreviewOpenChange }: { text: string; onPreviewOpenChange?: (open: boolean) => void }) {
   const ctx = useChatSessionFile();
   const [image, setImage] = useState<string | null>(null);
   const [file, setFile] = useState<{ path: string; name: string; line?: number } | null>(null);
   const [model, setModel] = useState<string | null>(null);
+  const previewOpen = !!(image || file || model);
+  useEffect(() => {
+    onPreviewOpenChange?.(previewOpen);
+    return () => onPreviewOpenChange?.(false);
+  }, [previewOpen, onPreviewOpenChange]);
   return <>
     {splitQuestionReferences(text).map((part, index) => part.href ? (
       <MarkdownTargetLink

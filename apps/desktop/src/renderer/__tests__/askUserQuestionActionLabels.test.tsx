@@ -1,15 +1,25 @@
 // @vitest-environment jsdom
 
 import { createElement } from 'react';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
 import type { PendingAskUser } from '@/lib/makerChatStore';
 import { _clearSmartResolveCache } from '@/lib/localPathResolver';
 import { AskUserQuestionPrompt } from '../components/new-chat/AskUserQuestionPrompt';
+import { BotGroupPendingInteraction } from '../features/bots/BotGroupPendingInteraction';
+import { Tooltip } from '@/components/ui/tooltip';
 
-const links = vi.hoisted(() => ({ html: vi.fn(), url: vi.fn() }));
+const links = vi.hoisted(() => ({ html: vi.fn(), url: vi.fn(), lane: {} as Record<string, unknown>, answer: vi.fn() }));
+vi.mock('@/lib/makerChatStore', () => ({ makerChatStore: {
+  subscribeLight: () => () => undefined,
+  getLightSnapshot: () => links.lane,
+  answerUserQuestion: links.answer,
+  setAskUserDraft: vi.fn(),
+  setAskUserViewerState: vi.fn(),
+} }));
+vi.mock('@/state/agentIslandActivity', () => ({ useAgentIslandActivity: () => null }));
 vi.mock('@/components/chat/useOpenWithMenu', async (original) => ({
   ...await original<typeof import('@/components/chat/useOpenWithMenu')>(),
   openHtmlFileByPreference: links.html,
@@ -22,6 +32,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 function renderAskUser(
@@ -42,6 +54,56 @@ function renderAskUser(
 }
 
 describe('AskUserQuestionPrompt action labels', () => {
+  // Unit: previewing evidence must not answer the question while focus stays
+  // on its link. HTML-opening tests never mount the real TextLightbox.
+  it('keeps number keys and Escape in the file preview without answering', async () => {
+    _clearSmartResolveCache();
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 0));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
+      resolvePathBatch: vi.fn(async () => ({ 'notes.txt': { status: 'unique', candidates: ['/repo/notes.txt'], kind: 'file' } })),
+      readTextFilePreview: vi.fn(() => new Promise(() => {})),
+    } });
+    const onAnswer = vi.fn();
+    const view = render(createElement(Tooltip.Provider, null, createElement(AskUserQuestionPrompt, {
+      sessionId: 'preview-evidence', workingDir: '/repo',
+      pending: { requestId: 'preview', questions: [{ question: '请查看 notes.txt', options: [{ label: 'Accept' }] }] },
+      onAnswer, viewerState: 'expanded', onViewerStateChange: vi.fn(), draft: null, onDraftChange: vi.fn(),
+    })));
+    const link = await view.findByRole('link', { name: 'notes.txt' });
+    link.focus();
+    fireEvent.click(link);
+    await waitFor(() => expect(document.querySelector('[data-text-lightbox-card]')).not.toBeNull());
+    vi.useFakeTimers();
+    fireEvent.keyDown(link, { key: 'Escape' });
+    expect(onAnswer).not.toHaveBeenCalled();
+    fireEvent.keyDown(link, { key: '1' });
+    expect(onAnswer).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(200));
+    expect(document.querySelector('[data-text-lightbox-card]')).toBeNull();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+  // Unit: the real group prompt must resolve a relative file against the lane,
+  // not an empty directory. Task-page evidence tests do not exercise this caller.
+  it('opens group question evidence from the lane directory without answering', async () => {
+    _clearSmartResolveCache();
+    links.html.mockClear();
+    links.answer.mockClear();
+    links.lane = { pendingAskUser: { requestId: 'group-question', questions: [{
+      question: '请查看 sidebar-layout-v1.html', options: [{ label: 'Accept' }],
+    }] }, askUserViewerState: 'expanded', askUserDraft: null };
+    const get = vi.fn(async () => ({ id: 'lane', workingDir: '/group-project', remoteHostId: null }));
+    const resolvePathBatch = vi.fn(async ({ workingDir, hrefs }: { workingDir: string; hrefs: string[] }) =>
+      Object.fromEntries(hrefs.map((href) => [href, workingDir === '/group-project'
+        ? { status: 'unique', candidates: ['/group-project/sidebar-layout-v1.html'], kind: 'file' }
+        : { status: 'none', candidates: [] }])));
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { localDb: { sessions: { get } }, resolvePathBatch } });
+    const view = render(createElement(BotGroupPendingInteraction, { sessionId: 'lane', bot: { id: 'bot', name: 'Bot', avatar: '', avatarColor: 'red' } }));
+    fireEvent.click(await view.findByRole('link', { name: 'sidebar-layout-v1.html' }));
+    expect(links.html).toHaveBeenCalledWith('lane', '/group-project/sidebar-layout-v1.html', expect.any(Function),
+      expect.objectContaining({ workingDir: '/group-project' }));
+    expect(links.answer).not.toHaveBeenCalled();
+  });
   // Unit regression: the existing answer tests never opened evidence in a title.
   // Minimal input: a bare HTML filename + URL. The real prompt/resolver must
   // open the correct origin without answering, and preserve the original answer key.

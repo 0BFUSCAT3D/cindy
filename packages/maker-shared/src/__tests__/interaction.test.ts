@@ -63,6 +63,16 @@ describe('interaction shared model', () => {
       { text: '请查看 ' }, { text: '页面.html:42', href: '页面.html:42' },
       { text: ' 和 ' }, { text: 'docs/设计稿/index.html', href: 'docs/设计稿/index.html' },
     ]);
+    expect(splitQuestionReferences('`src/app.ts:10-20` 和 [实现](src/app.ts:10-20)')).toEqual([
+      { text: 'src/app.ts:10-20', href: 'src/app.ts:10-20' }, { text: ' 和 ' },
+      { text: '实现', href: 'src/app.ts:10-20' },
+    ]);
+    const spacedPath = String.raw`C:\Program Files\Cindy\app.log`;
+    expect(splitQuestionReferences(spacedPath)).toEqual([{ text: spacedPath }]);
+    expect(splitQuestionReferences('`' + spacedPath + '`')).toEqual([{ text: spacedPath, href: spacedPath }]);
+    expect(splitQuestionReferences('请查看 /tmp\n然后查看 notes.txt')).toEqual([
+      { text: '请查看 /tmp\n然后查看 ' }, { text: 'notes.txt', href: 'notes.txt' },
+    ]);
   });
   it('keeps original questions attached to late answers without including skipped questions', () => {
     expect(formatAsyncQuestionSupplement([{ question: 'Scope?\nDetails?', header: 'Scope' }, { question: 'Skipped?' }],

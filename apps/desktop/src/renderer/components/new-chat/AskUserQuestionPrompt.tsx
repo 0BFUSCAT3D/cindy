@@ -146,6 +146,7 @@ function AskUserQuestionForm({
   const { t } = useTranslation();
   const { requestId, questions } = pending;
   const totalQuestions = questions.length;
+  const [referencePreviewOpen, setReferencePreviewOpen] = useState(false);
 
   // ── Wizard state ──
   // F-AUQ-DRAFT: lazy-init from the per-session store so a remount caused by
@@ -425,6 +426,9 @@ function AskUserQuestionForm({
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // File previews can keep focus on their question link. Their keys must
+      // never select or skip an answer, including during the closing fade.
+      if (referencePreviewOpen) return;
       // F-AUQ-MIN-5: minimized 时数字键 1-N / 回车 / N+1 全部透传，
       // 避免"无视觉反馈地选中选项"。Escape 仍保留——满足 F-AUQ-MIN-5 的取消语义。
       if (viewerState === 'minimized' && e.key !== 'Escape') return;
@@ -482,6 +486,7 @@ function AskUserQuestionForm({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [
+    referencePreviewOpen,
     viewerState,
     options,
     showCustomInput,
@@ -715,7 +720,7 @@ function AskUserQuestionForm({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="min-w-0 break-words text-15 font-medium text-[var(--ask-header-text)]">
-              <QuestionReferenceText text={currentQ?.question ?? ''} />
+              <QuestionReferenceText text={currentQ?.question ?? ''} onPreviewOpenChange={setReferencePreviewOpen} />
             </span>
             {pageIndicator && (
               <span className="ml-4 shrink-0 text-13 text-[var(--ask-page-text)]">
