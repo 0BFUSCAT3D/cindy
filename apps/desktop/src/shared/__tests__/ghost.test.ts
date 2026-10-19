@@ -2352,6 +2352,13 @@ describe('ghost · panel.position 校验', () => {
     expect(validateGhostManifest(withView({ open: 'page', side: 'left' })).ok).toBe(false);
     expect(validateGhostManifest(withView({ side: 'left' })).ok).toBe(false);
     expect(validateGhostManifest(withView({ open: 'sidebar', side: 'middle' })).ok).toBe(false);
+    // multiple:只接受字面量 true(缺省单实例,主机互斥整页与页签)。
+    expect(validateGhostManifest(withView({ multiple: true }))).toMatchObject({
+      ok: true,
+      manifest: { mainView: { multiple: true } },
+    });
+    expect(validateGhostManifest(withView({ multiple: false })).ok).toBe(false);
+    expect(validateGhostManifest(withView({ multiple: 'yes' })).ok).toBe(false);
   });
 
   it("'tab'(右侧栏页签)通过;tab 时 minWidth/defaultFraction 收词明确拒绝", () => {

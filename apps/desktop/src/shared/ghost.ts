@@ -501,6 +501,13 @@ export interface GhostMainViewDecl {
   open?: GhostMainViewOpenMode;
   /** open:'sidebar' 时的默认边;其它 open 值下声明本字段拒装。 */
   side?: GhostTabSide;
+  /**
+   * 允许同一个视图同时开在多处(整页 + 侧栏页签 / 独立窗口各一份,各自独立的 webview)。
+   * 缺省单实例:主机保证同一插件视图同一时刻只活在一个地方——进整页就收掉页签,页签
+   * 出现时整页让位——避免两份界面各自保存整份数据互相覆盖。只有自己处理好多视图
+   * 一致性(共享写入方 / 版本号 / BroadcastChannel 同步)的插件才声明 true。
+   */
+  multiple?: true;
 }
 
 /**
@@ -4057,6 +4064,9 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
         reason: `mainView.open 必须是 ${GHOST_MAIN_VIEW_OPEN_MODES.join(' / ')}`,
       };
     }
+    if (raw.mainView.multiple !== undefined && raw.mainView.multiple !== true) {
+      return { ok: false, reason: 'mainView.multiple 只接受字面量 true(不需要时省略)' };
+    }
     if (raw.mainView.side !== undefined) {
       if (raw.mainView.open !== 'sidebar') {
         return { ok: false, reason: "mainView.side 只在 open:'sidebar' 时有效,其它打开方式请移除" };
@@ -4066,13 +4076,14 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       }
     }
     mainView = {
-      ...unknownDeclarationFields(raw.mainView, ['html', 'title', 'icon', 'open', 'side']),
+      ...unknownDeclarationFields(raw.mainView, ['html', 'title', 'icon', 'open', 'side', 'multiple']),
       ...(raw.mainView.title !== undefined ? { title: raw.mainView.title } : {}),
       ...(raw.mainView.icon !== undefined ? { icon: raw.mainView.icon as GhostMainViewIcon } : {}),
       ...(raw.mainView.open !== undefined
         ? { open: raw.mainView.open as GhostMainViewOpenMode }
         : {}),
       ...(raw.mainView.side !== undefined ? { side: raw.mainView.side as GhostTabSide } : {}),
+      ...(raw.mainView.multiple === true ? { multiple: true as const } : {}),
       html: raw.mainView.html,
     };
   }

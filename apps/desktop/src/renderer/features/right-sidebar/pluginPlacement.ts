@@ -11,6 +11,9 @@
  * panel.position,最后右侧组(见 globalTabs.defaultGroupForGhost)。
  */
 
+import { useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+
 import type { InstalledGhost } from '../../../shared/ghost';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { createLogger } from '@/lib/logger';
@@ -20,7 +23,9 @@ import {
   findGlobalTabByInstance,
   isPluginWindowPlacement,
   rememberPluginWindowPlacement,
+  removeGlobalTab,
   setActiveGlobalTabId,
+  useGlobalTabs,
 } from './globalTabs';
 import { requestRightSidebarVisibility } from './lib/sidebarCommands';
 import { getTabGroup } from './tabGroups';
@@ -88,4 +93,43 @@ export function focusExistingPluginTab(ghost: InstalledGhost): boolean {
   setActiveGlobalTabId(existing.id);
   if (getTabGroup(existing.id) === 'right') requestRightSidebarVisibility('open');
   return true;
+}
+
+/** 单实例视图(缺省):同一插件视图同一时刻只活在一个地方。插件声明 mainView.multiple 才放开。 */
+export function isSingleInstanceView(ghost: InstalledGhost): boolean {
+  return ghost.manifest.mainView?.multiple !== true;
+}
+
+/**
+ * 整页(/apps/<id>)的单实例守卫:
+ *   - 进整页时该实例的页签还在侧栏 / 独立窗口里 → 收掉页签(用户明确选了整页,整页赢;
+ *     弹出窗口随之关闭);
+ *   - 整页开着时页签又出现(用户点了「在侧边栏中打开」/ 弹出)→ 整页让位,回主入口。
+ * 两份同一界面各自保存整份数据会互相覆盖,主机在这里兜底;声明了 multiple 的插件不管。
+ */
+export function useSingleInstanceViewGuard(ghost: InstalledGhost | null): void {
+  const navigate = useNavigate();
+  const globalTabs = useGlobalTabs();
+  const instanceId = ghost ? installedGhostStoragePart(ghost) : null;
+  const single = ghost ? isSingleInstanceView(ghost) : false;
+  const settledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!instanceId || !single) {
+      settledRef.current = null;
+      return;
+    }
+    const existing = globalTabs.find(
+      (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === instanceId,
+    );
+    if (settledRef.current !== instanceId) {
+      // 刚进整页:页签在别处就收掉。
+      settledRef.current = instanceId;
+      if (existing) removeGlobalTab(existing.id);
+      return;
+    }
+    if (existing) {
+      // 整页开着时页签出现:整页让位。
+      navigate('/', { replace: true });
+    }
+  }, [globalTabs, instanceId, navigate, single]);
 }

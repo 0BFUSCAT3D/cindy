@@ -4669,6 +4669,10 @@ if (r.ok && r.confirmed) {
   \`bottom\`,缺省 right;其它 open 值下声明 side 拒装);\`window\` = 弹成独立 OS 窗口。
   这只是**默认**:用户把页签拖到别的边、弹出或合并回来之后,主机记住用户的放置,
   左侧栏入口此后按用户的位置打开,直到用户在插件详情页「恢复默认位置」;
+- **同一视图缺省单实例**:主机保证你的主视图同一时刻只活在一个地方——用户进整页时
+  侧栏 / 独立窗口里的页签会被收掉,页签出现时整页让位。两份同一界面各自保存整份数据
+  会互相覆盖,这条兜底让你不必自己做多视图防覆盖。只有自己已处理好多视图一致性(共享
+  写入方 / 保存带版本号 / BroadcastChannel 同步)的插件才声明 \`"multiple": true\` 放开;
 - \`mainView\` 与 \`panel\` 是两种独立 UI 贡献项。可以让两者指向同一 HTML，但必须分别
   声明；主视图不接受 position、宽度或 systemButtons；
 - 插件批准并启用后，入口默认显示。用户可以在插件详情关闭“显示在侧边栏”；这只隐藏
@@ -4921,7 +4925,7 @@ Cindy 统一归类、随机选择与排序，同批每个场景和每个插件�
     或用 $command 点名;AI 工具调用不受影响(见 §2 说明)
 - \`tools\` 为空 · panel 详单缺少实际形态(既没有 html，也不是有效的 tab/停靠配置)
 - mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单、open 不是 page / sidebar /
-  window、side 不是四条边之一或在 open 非 sidebar 时声明
+  window、side 不是四条边之一或在 open 非 sidebar 时声明、multiple 不是字面量 true
 - settingsHtml 路径不合法/文件不在包里 · settingsHeight 越界(160–800)或没配 settingsHtml 单独声明
 - panel.systemButtons 格式错(不是对象、已知键的值非布尔,或 position:"tab" 时声明——插件页内面板没有标准头)
 - keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion
