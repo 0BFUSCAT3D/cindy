@@ -4,6 +4,7 @@ import { app } from 'electron';
 import { and, eq, inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import type { AgentIslandCompanionSnapshot } from '../../shared/agentIsland.js';
+import { parseBotGroupIdFromRouteKey } from '../../shared/botGroupChat.js';
 import { botAvatarInitial, normalizeBotAvatarHue } from '../../shared/botAvatarHue.js';
 import { BOT_AVATAR_MAX_BYTES, isManagedBotAvatarUrl, isSingleBotAvatarGrapheme } from '../../shared/botAvatarValue.js';
 import { resolveSafe } from '../cindy-media/blobStore.js';
@@ -21,7 +22,12 @@ export interface AgentIslandCompanionIdentity {
 /** Links that speak as the companion; delegated executions stay ordinary tasks. */
 const COMPANION_SPEAKING_ROLES = ['canonical', 'history', 'group', 'channel'] as const;
 
-/** Bundled preset artwork, relative to the packaged resources directory. */
+/**
+ * Bundled preset artwork, relative to the packaged resources directory. The Cindy portrait is a
+ * byte copy of `src/renderer/assets/bot-presets/cindy.png`: that path is also read by the mobile
+ * notification plugin and its fingerprint config, so it must not move, while main can only read
+ * files shipped as resources (the renderer bundle inlines its asset).
+ */
 const PRESET_AVATAR_FILES: Readonly<Record<string, string>> = {
   'cindy://avatar/preset/cindy': 'companion-preset-avatars/cindy.png',
   'cindy://avatar/preset/dash': 'legacy-teammate-avatars/dash.png',
@@ -64,7 +70,8 @@ export async function readAgentIslandCompanion(sessionId: string): Promise<Agent
     ))
     .get();
   if (!row) return null;
-  const groupId = row.role === 'group' && row.routeKey?.startsWith('group:') ? row.routeKey.slice('group:'.length) : null;
+  // Lane, 分工 Session and authorized Chat Server lane keys all start `group:<groupId>`.
+  const groupId = row.role === 'group' ? parseBotGroupIdFromRouteKey(row.routeKey) : null;
   const group = groupId
     ? await db.select({ name: botGroups.name }).from(botGroups).where(eq(botGroups.id, groupId)).get()
     : undefined;

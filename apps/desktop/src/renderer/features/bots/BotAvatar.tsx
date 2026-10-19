@@ -24,7 +24,7 @@
 import { rewriteToRemoteMediaOrigin } from '@/../shared/remoteMediaUrl';
 import { useEffect, useState } from 'react';
 
-import cindyPresetAvatar from '../../../../resources/companion-preset-avatars/cindy.png';
+import cindyPresetAvatar from '@/assets/bot-presets/cindy.png';
 // Upgrade failure/older remote-host fallback only; migrated profiles use cindy-media.
 import dashPresetAvatar from '../../../../resources/legacy-teammate-avatars/dash.png';
 import liziPresetAvatar from '../../../../resources/legacy-teammate-avatars/lizi.png';
