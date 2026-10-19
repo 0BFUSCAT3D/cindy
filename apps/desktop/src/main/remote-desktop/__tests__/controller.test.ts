@@ -1708,6 +1708,7 @@ it('keeps privacy and host mute through phone picture-in-picture, stopping only 
   await h.controller.request('phone', { op: 'clipboardSync', lease, enabled: true });
   await h.controller.request('phone', { op: 'presentation', lease, enabled: true });
   expect(h.controller.state?.controlling).toBe(false);
+  expect(h.controller.viewOnlyBackground).toBe(true);
   // Long-lived mask owners (Linux) poll this while the phone shows PiP.
   expect(privacyCurrent()).toBe(true);
   expect(h.deps.stopPrivacyScreen).not.toHaveBeenCalled();
@@ -1726,6 +1727,27 @@ it('keeps privacy and host mute through phone picture-in-picture, stopping only 
   await h.controller.request('phone', { op: 'stop', lease });
   expect(h.deps.stopPrivacyScreen).toHaveBeenCalledOnce();
   expect(privacyCurrent()).toBe(false);
+});
+it('clears masks kept for picture-in-picture when control cannot be reacquired', async () => {
+  const h = harness(),
+    { lease } = await h.start();
+  h.deps.privacyScreen = vi.fn(async () => {});
+  h.deps.hostMute = vi.fn(async () => {});
+  h.deps.stopPrivacyScreen = vi.fn();
+  h.deps.stopHostMute = vi.fn(async () => {});
+  await h.controller.request('phone', { op: 'control', lease, enabled: true });
+  await h.controller.request('phone', { op: 'privacyScreen', lease, enabled: true });
+  await h.controller.request('phone', { op: 'hostMute', lease, enabled: true });
+  await h.controller.request('phone', { op: 'presentation', lease, enabled: true });
+  vi.mocked(h.deps.startInput).mockRejectedValueOnce(new Error('DESKTOP_INPUT_UNAVAILABLE'));
+  await expect(
+    h.controller.request('phone', { op: 'presentation', lease, enabled: false }),
+  ).resolves.toEqual({ controlling: false });
+  await expect(
+    h.controller.request('phone', { op: 'control', lease, enabled: true }),
+  ).rejects.toThrow('DESKTOP_INPUT_UNAVAILABLE');
+  expect(h.deps.stopPrivacyScreen).toHaveBeenCalledOnce();
+  expect(h.deps.stopHostMute).toHaveBeenCalledOnce();
 });
 it('joins duplicate privacy initialization and invalidates it on control loss', async () => {
   const h = harness(),

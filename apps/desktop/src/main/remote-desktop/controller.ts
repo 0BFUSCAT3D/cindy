@@ -298,6 +298,10 @@ export class RemoteDesktopController {
     if (active?.handoff?.requestId === requestId)
       void this.stop(active.peer, false, 'handoff-ended');
   }
+  /** Phone picture-in-picture views the lease without input: nothing to pause or restore. */
+  get viewOnlyBackground(): boolean {
+    return this.active?.backgroundViewing === true && !this.active.controlling;
+  }
   isBackgroundViewing(lease: string): boolean {
     return this.active?.lease === lease && this.active.backgroundViewing === true;
   }
@@ -669,6 +673,14 @@ export class RemoteDesktopController {
         }
         this.require(peer, active.lease);
         active.controlling = true;
+      } catch (error) {
+        // Leaving picture-in-picture kept the masks for a viewer about to resume
+        // control. If it cannot, a view-only lease must not stay masked and muted.
+        if (!recovering && this.active === active && generation === this.controlGeneration)
+          await this.clearSafety().catch((restoreError) =>
+            log.warn('Safety restoration failed after control reacquisition', restoreError),
+          );
+        throw error;
       } finally {
         this.inputStarting = false;
       }
