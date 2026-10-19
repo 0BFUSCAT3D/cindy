@@ -333,6 +333,9 @@ test("client CI keeps the complete sharded unit gate on Windows", () => {
 	assert.doesNotMatch(runnerChecks, /^    needs:/m);
 	assert.doesNotMatch(runnerChecks, /^    strategy:/m);
 	assert.equal([...runnerChecks.matchAll(/^        run: pnpm test:runner$/gm)].length, 1);
+	// CI #6429: the native mutex probe stays mandatory, on a separate runner from unit shards.
+	assert.match(runnerChecks, /^      - name: Run Windows native process checks\r?\n        run: pnpm run test:workspaces --tier windows-native --workspace desktop$/m);
+	assert.doesNotMatch(shards, /--tier windows-native/);
 	assert.match(runnerChecks, /botCanonicalSession\.test\.ts/);
 
 	const gate = workflowJob(workflow, "windows-unit");

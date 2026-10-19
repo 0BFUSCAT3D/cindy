@@ -84,6 +84,9 @@ const desktopDbExclude = [
 const desktopGitIntegrationInclude = [
   'src/main/**/*.git-integration.test.ts',
 ];
+const desktopWindowsNativeInclude = [
+  'src/main/__tests__/windowsPackagedInstanceBarrier.test.ts',
+];
 const makerCoreIntegrationInclude = [
   'src/agents/codex/*.integration.test.ts',
   'src/agents/claude-code/__tests__/*.integration.test.ts',
@@ -348,6 +351,7 @@ export default {
             '**/*.git-integration.test.ts',
             '**/*.integration.test.ts',
             '**/*.e2e.test.ts',
+            ...desktopWindowsNativeInclude,
             'src/main/localDb/**',
             'src/main/__tests__/*Migration.test.ts',
             'src/main/__tests__/schemaDriftRepair.test.ts',
@@ -369,6 +373,14 @@ export default {
           coverage: 'allowlist',
           command: vitestBin('run', `--maxWorkers=${desktopUnitWorkerCount()}`),
           include: desktopGitIntegrationInclude,
+        },
+        'windows-native': {
+          status: 'manual',
+          reason: 'Real PowerShell/CLR and named-mutex probes run separately from unit workers; Windows CI requires this tier.',
+          execution: 'exclusive',
+          coverage: 'allowlist',
+          command: vitestBin('run', '--pool=forks', '--maxWorkers=1'),
+          include: desktopWindowsNativeInclude,
         },
         e2e: {
           status: 'manual',
