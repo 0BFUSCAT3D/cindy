@@ -52,6 +52,7 @@ import {
   getBucket,
   getTabSnapshot,
   importReturnedTabState,
+  removeTabLocally,
   importTabSnapshot,
   refreshSessionFromDb,
   resetCachesForHostTransition,
@@ -1186,6 +1187,11 @@ export function MainLayout() {
     const api = window.electronAPI.sidebarTabWindow;
     if (!api?.onTabReturned) return;
     return api.onTabReturned(({ sessionId, tabId, snapshot, reason }) => {
+      // 页签在弹出窗口里被关掉:不是交回。丢掉本窗口缓存里的副本,免得窗口归属一清它又出现。
+      if (reason === 'closed') {
+        if (sessionId !== null) removeTabLocally(sessionId, tabId);
+        return;
+      }
       // 全局页签回来:数据一直在全局存储里,只需选中它并确保侧栏展开。
       if (sessionId === null) {
         const globalTab = findGlobalTab(tabId);

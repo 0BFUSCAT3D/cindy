@@ -761,6 +761,8 @@ export const MAKER_INVOKE = {
   SIDEBAR_TAB_WINDOW_OPEN: 'maker:sidebar-tab-window:open',
   SIDEBAR_TAB_WINDOW_FOCUS: 'maker:sidebar-tab-window:focus',
   SIDEBAR_TAB_WINDOW_CLOSE_FOR_TAB: 'maker:sidebar-tab-window:close-for-tab',
+  /** 主窗口把弹在独立窗口里的全局页签交回侧栏(无任务数据,不经窗口侧快照)。 */
+  SIDEBAR_TAB_WINDOW_RETURN_TAB: 'maker:sidebar-tab-window:return-tab',
   /**
    * 会话内 /goal 自主续跑(goal-host)——
    *  - GOAL_SET: 设/替换目标并立刻发首轮。入参 { sessionId, objective, agentKind, budgetTokens? }(budgetTokens 留空=不设预算)

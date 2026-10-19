@@ -66,6 +66,7 @@ function makeController() {
     slotOwnsTab: (slot: { assignment: { tabs: { tabId: string }[] } }, tabId: string) =>
       slot.assignment.tabs.some((tab) => tab.tabId === tabId),
     adoptTab: vi.fn(),
+    returnGlobalTab: vi.fn(() => true),
   };
 }
 
@@ -170,6 +171,19 @@ describe('sidebar-tab-window IPC', () => {
     );
     await expect(call(close, { sender: { id: 3 } }, 'tab-a')).rejects.toThrow(/PERMISSION_DENIED/);
     expect(controller.closeForTab).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets only the main window hand a global tab back from a window', async () => {
+    const controller = makeController();
+    register(controller);
+    const back = handlers().get(MAKER_INVOKE.SIDEBAR_TAB_WINDOW_RETURN_TAB)!;
+    await expect(call(back, { sender: otherSender }, 'g_plugin')).rejects.toThrow(
+      /PERMISSION_DENIED/,
+    );
+    expect(controller.returnGlobalTab).not.toHaveBeenCalled();
+    await expect(call(back, { sender: mainSender }, '')).rejects.toThrow(/INVALID_PARAMS/);
+    await call(back, { sender: mainSender }, 'g_plugin');
+    expect(controller.returnGlobalTab).toHaveBeenCalledWith('g_plugin');
   });
 
   it('accepts merge-back only from the owning tab window and validates the snapshot', async () => {

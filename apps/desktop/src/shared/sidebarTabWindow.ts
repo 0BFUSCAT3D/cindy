@@ -89,7 +89,11 @@ export interface SidebarTabReturnedPayload {
   tabId: string;
   /** 不可持久化会话交回的内存态;可持久化会话为 null,主窗按 SQLite 刷新。 */
   snapshot: SidebarTabReturnSnapshot | null;
-  reason: 'merge' | 'crash';
+  /**
+   * merge = 用户合并回侧栏;crash = 窗口崩溃 / 作废;closed = 页签在窗口里被关掉(不再显示,
+   * 主窗据此丢掉自己缓存里的副本——不可持久化会话没有数据库广播可依赖)。
+   */
+  reason: 'merge' | 'crash' | 'closed';
 }
 
 /** main → 所有窗口:某会话的页签持久化数据被其它 renderer 改动。 */

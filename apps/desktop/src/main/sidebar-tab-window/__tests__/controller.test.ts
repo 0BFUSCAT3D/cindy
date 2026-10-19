@@ -268,10 +268,13 @@ describe('SidebarTabWindowsController', () => {
     expect(win.isDestroyed()).toBe(false);
     expect(h.returned).toHaveLength(0);
 
-    // renderer 关掉页签后请求销毁:不交回页签。
+    // renderer 关掉页签后请求销毁:不交回页签,只告知主窗「已被关掉」(reason closed),
+    // 主窗据此丢掉自己缓存里的副本(不可持久化会话没有数据库广播可依赖)。
     h.controller.closeForTab('tab-a');
     expect(win.destroy).toHaveBeenCalledOnce();
-    expect(h.returned).toHaveLength(0);
+    expect(h.returned).toEqual([
+      { sessionId: 's1', tabId: 'tab-a', snapshot: null, reason: 'closed' },
+    ]);
 
     // renderer 还没挂上时没人能执行关闭流程:页签交回侧边栏而不是丢掉。
     const cold = makeHarness();
@@ -345,17 +348,29 @@ describe('SidebarTabWindowsController', () => {
       ).tabs.map((tab) => tab.tabId),
     ).toEqual(['tab-a', 'tab-g', 'tab-new']);
 
-    // 窗口里关掉一个页签:摘掉不交回,窗口留着。
+    // 窗口里关掉一个页签:摘掉不交回(只告知 closed),窗口留着。
     h.controller.closeForTab('tab-new');
     expect(win.isDestroyed()).toBe(false);
-    expect(h.returned).toHaveLength(1);
+    expect(h.returned.slice(1)).toEqual([
+      { sessionId: 's1', tabId: 'tab-new', snapshot: null, reason: 'closed' },
+    ]);
+
+    // 主窗把窗里的全局页签交回(只限全局页签;任务页签必须由窗口自己合并回来)。
+    expect(h.controller.returnGlobalTab('tab-a')).toBe(false);
+    expect(h.controller.returnGlobalTab('tab-g')).toBe(true);
+    expect(h.returned.at(-1)).toEqual({
+      sessionId: null,
+      tabId: 'tab-g',
+      snapshot: null,
+      reason: 'merge',
+    });
+    expect(h.controller.isTabPoppedOut('tab-g')).toBe(false);
 
     // 崩溃:剩下的页签全部交回。
     win.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
     expect(win.destroy).toHaveBeenCalledOnce();
-    expect(h.returned.slice(1)).toEqual([
+    expect(h.returned.slice(-1)).toEqual([
       { sessionId: 's1', tabId: 'tab-a', snapshot: null, reason: 'crash' },
-      { sessionId: null, tabId: 'tab-g', snapshot: null, reason: 'crash' },
     ]);
     expect(h.controller.getState()).toEqual({
       'tab-x': { windowId: 'w2', sessionId: 's2', open: true },
@@ -387,13 +402,38 @@ describe('SidebarTabWindowsController', () => {
     expect(positionWindow).toHaveBeenCalledTimes(1);
   });
 
+  // 测试价值
+  // - 生产入口与可观察结果:owner 提交边界调用的 destroyAllWindows;可观察的是所有页签窗口(含 spare)
+  //   被销毁、归属清空,并广播空状态让各 renderer 不再把页签当作「已弹出」。
+  // - Bug / 规则依据:PR #6468 review(切换账号后弹出窗口仍显示旧 owner 的任务 / 插件内容)。
+  // - 现有覆盖缺口:销毁只在主窗口关闭 / 退出时被测过,没有断言广播。
+  // - 最小失败输入:一扇已展示的窗口 + 一扇 spare,调用 destroyAllWindows。
+  // - tier:unit(mock deps)。
+  it('destroys every window and clears the popped-out mirror at an owner boundary', () => {
+    const h = makeHarness();
+    h.controller.prewarm();
+    h.controller.open(request('tab-a'));
+    h.controller.markRendererReady(h.wc(h.created[0]));
+    h.controller.markPresentationReady(h.wc(h.created[0]));
+    vi.advanceTimersByTime(2_000);
+    expect(h.created).toHaveLength(2);
+    h.controller.destroyAllWindows();
+    expect(h.created.every((win) => win.isDestroyed())).toBe(true);
+    expect(h.controller.getState()).toEqual({});
+    expect(h.controller.isTabPoppedOut('tab-a')).toBe(false);
+    expect(h.broadcasts.at(-1)).toEqual({});
+    // 旧窗口不当作崩溃把页签交回新 owner。
+    expect(h.returned).toHaveLength(0);
+  });
+
   it('closes a window whose tab was closed in the sidebar without returning the tab', () => {
     const h = makeHarness();
     h.controller.open(request('tab-a'));
     const win = h.created[0];
     h.controller.closeForTab('tab-a');
     expect(win.destroy).toHaveBeenCalledOnce();
-    expect(h.returned).toHaveLength(0);
+    // 只有 closed 通知,没有 merge / crash 形式的「交回」。
+    expect(h.returned.map((payload) => payload.reason)).toEqual(['closed']);
     expect(h.controller.getState()).toEqual({});
     // 未弹出的页签 no-op。
     h.controller.closeForTab('tab-missing');

@@ -62,10 +62,10 @@ import { GhostPluginIcon } from './GhostPluginIcon';
 import {
   addGlobalPluginTab,
   hasPluginPlacementMemory,
-  resetPluginPlacement,
   setActiveGlobalTabId,
   useGlobalTabs,
 } from '@/features/right-sidebar/globalTabs';
+import { resetPluginPlacementAndReturn } from '@/features/right-sidebar/pluginPlacement';
 import { useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
@@ -985,7 +985,7 @@ export function DetailsSection({
                   <button
                     type="button"
                     onClick={() => {
-                      const tab = addGlobalPluginTab(detail.id, { ghost: installedGhost });
+                      const tab = addGlobalPluginTab(detail.id, { ghost: installedGhost, view: 'panel' });
                       if (tab) setActiveGlobalTabId(tab.id);
                     }}
                     className={placementActionClass}
@@ -996,7 +996,9 @@ export function DetailsSection({
                 {canResetPlacement && (
                   <button
                     type="button"
-                    onClick={() => resetPluginPlacement(detail.id, installedGhost)}
+                    onClick={() => {
+                      if (installedGhost) void resetPluginPlacementAndReturn(installedGhost);
+                    }}
                     className={placementActionClass}
                   >
                     {t('settings.ghosts.detail.resetPlacement')}

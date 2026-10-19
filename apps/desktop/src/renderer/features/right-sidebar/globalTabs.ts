@@ -36,9 +36,45 @@ const log = createLogger('rightSidebar.globalTabs');
 const STORAGE_KEY_PREFIX = 'xdt:rightSidebarGlobalTabs:v1:';
 const MAX_GLOBAL_TABS = 20;
 
+/** 页签承载插件的哪个页面:停靠面板(panel.html)或主视图(mainView.html)。 */
+export type PluginViewKind = 'panel' | 'main';
+
 export interface PluginViewTabState {
   /** 插件物理实例 id(storage part)。 */
   instanceId: string;
+  /**
+   * 承载的页面。缺省(旧数据)按插件声明推导:有停靠面板 → panel,否则 main——
+   * 与升级前「panel 优先」的行为一致。
+   */
+  view?: PluginViewKind;
+}
+
+/** 插件有没有停靠形态(非 tab)的面板。 */
+export function ghostHasDockedPanel(ghost: InstalledGhost): boolean {
+  return ghost.manifest.panel !== undefined && ghost.manifest.panel.position !== 'tab';
+}
+
+/** 页签实际承载的页面:显式记录优先,旧数据按插件声明推导。 */
+export function effectivePluginView(
+  state: PluginViewTabState | null | undefined,
+  ghost: InstalledGhost | undefined,
+): PluginViewKind {
+  if (state?.view) return state.view;
+  return ghost && ghostHasDockedPanel(ghost) ? 'panel' : 'main';
+}
+
+/**
+ * 该页签承载的页面是不是插件的主视图(整页入口那一份)。panel 与 mainView 指向不同
+ * html 的插件,两个页面是不同的界面,可以并存;同一 html 或页签本身承载主视图才算同一视图。
+ */
+export function tabShowsMainView(
+  state: PluginViewTabState | null | undefined,
+  ghost: InstalledGhost,
+): boolean {
+  const view = effectivePluginView(state, ghost);
+  if (view === 'main') return true;
+  const panelHtml = ghost.manifest.panel?.html;
+  return panelHtml !== undefined && panelHtml === ghost.manifest.mainView?.html;
 }
 
 export interface GlobalTabsSnapshot {
@@ -92,7 +128,12 @@ export function sanitizeGlobalTabsSnapshot(raw: unknown): GlobalTabsSnapshot {
       tabs.push({
         id: entry.id,
         kind: 'plugin-view',
-        state: { instanceId: entry.state.instanceId } satisfies PluginViewTabState,
+        state: {
+          instanceId: entry.state.instanceId,
+          ...(entry.state.view === 'panel' || entry.state.view === 'main'
+            ? { view: entry.state.view }
+            : {}),
+        } satisfies PluginViewTabState,
       });
       if (tabs.length >= MAX_GLOBAL_TABS) break;
     }
@@ -178,18 +219,19 @@ export function globalTabIdForInstance(instanceId: string): string {
 }
 
 /**
- * 插件声明的默认放置边:mainView.open:'sidebar' 的 side;停靠面板的 panel.position
- * (缺省 left,与历史停靠面板「停在聊天区左侧」一致);其它(纯 mainView)右侧组。
+ * 插件声明的默认放置边,按页签承载的页面取:
+ *  - 主视图(main):`mainView.open:'sidebar'` 的 `side`,缺省右侧;
+ *  - 停靠面板(panel):`panel.position`,缺省 left(与历史停靠面板「停在聊天区左侧」一致)。
+ * 两个页面都声明时互不影响对方的默认边。
  */
-export function defaultGroupForGhost(ghost: InstalledGhost): TabGroupId {
+export function defaultGroupForGhost(ghost: InstalledGhost, view?: PluginViewKind): TabGroupId {
   const { manifest } = ghost;
-  if (manifest.mainView?.open === 'sidebar' && manifest.mainView.side) {
-    return manifest.mainView.side;
+  const resolved = view ?? (ghostHasDockedPanel(ghost) ? 'panel' : 'main');
+  if (resolved === 'main') {
+    return manifest.mainView?.open === 'sidebar' ? (manifest.mainView.side ?? 'right') : 'right';
   }
-  if (manifest.panel && manifest.panel.position !== 'tab') {
-    return manifest.panel.position ?? 'left';
-  }
-  return 'right';
+  const position = manifest.panel?.position;
+  return position && position !== 'tab' ? position : 'left';
 }
 
 /**
@@ -200,7 +242,7 @@ export function defaultGroupForGhost(ghost: InstalledGhost): TabGroupId {
  */
 export function addGlobalPluginTab(
   instanceId: string,
-  opts?: { groupId?: TabGroupId; ghost?: InstalledGhost },
+  opts?: { groupId?: TabGroupId; ghost?: InstalledGhost; view?: PluginViewKind },
 ): TabState | null {
   const current = getGlobalTabsSnapshot();
   const existing = current.tabs.find(
@@ -209,26 +251,40 @@ export function addGlobalPluginTab(
   const dismissed = current.dismissedInstanceIds.filter((id) => id !== instanceId);
   if (existing) {
     if (opts?.groupId) setTabGroup(existing.id, opts.groupId);
-    if (dismissed.length !== current.dismissedInstanceIds.length) {
-      persist({ ...current, dismissedInstanceIds: dismissed });
+    // 同一插件只有一个页签:明确要求另一个页面时把页签切过去(panel 与 mainView 不同页面时)。
+    const existingState = existing.state as PluginViewTabState;
+    const wantedView = opts?.view;
+    const switched =
+      wantedView !== undefined && effectivePluginView(existingState, opts?.ghost) !== wantedView;
+    const next = switched
+      ? { ...existing, state: { ...existingState, view: wantedView } as PluginViewTabState }
+      : existing;
+    if (switched || dismissed.length !== current.dismissedInstanceIds.length) {
+      persist({
+        ...current,
+        tabs: switched ? current.tabs.map((tab) => (tab === existing ? next : tab)) : current.tabs,
+        dismissedInstanceIds: dismissed,
+      });
     }
-    return existing;
+    return next;
   }
   if (current.tabs.length >= MAX_GLOBAL_TABS) {
     log.warn('global tab limit reached', { instanceId });
     return null;
   }
+  const view: PluginViewKind | undefined =
+    opts?.view ?? (opts?.ghost ? effectivePluginView(undefined, opts.ghost) : undefined);
   const tab: TabState = {
     id: globalTabIdForInstance(instanceId),
     kind: 'plugin-view',
-    state: { instanceId } satisfies PluginViewTabState,
+    state: { instanceId, ...(view ? { view } : {}) } satisfies PluginViewTabState,
   };
   let placed = current.placedInstanceIds;
   // 组归属先于页签出现落定,首帧就在目标组里。
   if (opts?.groupId) {
     setTabGroup(tab.id, opts.groupId);
   } else if (opts?.ghost && !placed.includes(instanceId)) {
-    setTabGroup(tab.id, defaultGroupForGhost(opts.ghost));
+    setTabGroup(tab.id, defaultGroupForGhost(opts.ghost, view));
     placed = [...placed, instanceId];
   }
   persist({
@@ -313,10 +369,16 @@ export function resetPluginPlacement(instanceId: string, ghost?: InstalledGhost)
   const current = getGlobalTabsSnapshot();
   const tabId = globalTabIdForInstance(instanceId);
   clearTabGroup(tabId);
-  const tabPresent = current.tabs.some((tab) => tab.id === tabId);
+  const presentTab = current.tabs.find((tab) => tab.id === tabId);
   let placed = current.placedInstanceIds.filter((id) => id !== instanceId);
-  if (tabPresent && ghost) {
-    setTabGroup(tabId, defaultGroupForGhost(ghost));
+  if (presentTab && ghost) {
+    setTabGroup(
+      tabId,
+      defaultGroupForGhost(
+        ghost,
+        effectivePluginView(presentTab.state as PluginViewTabState, ghost),
+      ),
+    );
     placed = [...placed, instanceId];
   }
   persist({
@@ -381,10 +443,11 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
     const tabId = globalTabIdForInstance(instanceId);
     // 首次出现:按插件声明放默认边(存量 panel.position 的插件回到它原来停的那一边)。
     if (!placed.includes(instanceId)) {
-      setTabGroup(tabId, defaultGroupForGhost(ghost));
+      setTabGroup(tabId, defaultGroupForGhost(ghost, 'panel'));
       placed = [...placed, instanceId];
     }
-    tabs = [...tabs, { id: tabId, kind: 'plugin-view', state: { instanceId } }];
+    // 自动出现的是停靠面板:显式记 panel,之后即使同时有 mainView 入口也不串页面。
+    tabs = [...tabs, { id: tabId, kind: 'plugin-view', state: { instanceId, view: 'panel' } }];
     present.add(instanceId);
   }
   if (

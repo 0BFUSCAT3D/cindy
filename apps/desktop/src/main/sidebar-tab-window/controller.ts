@@ -206,8 +206,9 @@ export class SidebarTabWindowsController {
         sessionId: request.sessionId,
         context: request.context,
       };
-      slot.handoff = request.handoff ?? slot.handoff;
     }
+    // 搬入的页签带着主窗此刻最新的内存快照:总是换成最新一份(renderer 只导入新增页签的数据)。
+    if (request.handoff) slot.handoff = request.handoff;
     slot.assignment.tabs = [
       ...slot.assignment.tabs,
       { tabId: request.tabId, sessionId: request.sessionId },
@@ -248,11 +249,21 @@ export class SidebarTabWindowsController {
   closeForTab(tabId: string): void {
     const slot = this.slotForTab(tabId);
     if (!slot?.assignment) return;
-    this.removeTabFromSlot(slot, tabId);
+    const ref = this.removeTabFromSlot(slot, tabId);
     if (slot.assignment.tabs.length === 0) {
       this.disposeSlot(slot);
     } else {
       this.deliverAssignment(slot);
+    }
+    // 先告知主窗「这个页签已被关掉」再广播状态:不可持久化会话的页签只存在于各 renderer
+    // 内存里,没有数据库广播;窗口归属一清,主窗缓存里的旧副本会重新显示出来(复活)。
+    if (ref && !this.deps.isQuitting()) {
+      this.deps.notifyTabReturned({
+        sessionId: ref.sessionId,
+        tabId,
+        snapshot: null,
+        reason: 'closed',
+      });
     }
     this.broadcast();
     this.deps.log.info('sidebar tab window dropped closed tab', { tabId });
@@ -279,6 +290,28 @@ export class SidebarTabWindowsController {
     }
     this.broadcast();
     this.deps.log.info('sidebar tab merged back', { tabId, withSnapshot: snapshot !== null });
+  }
+
+  /**
+   * 主窗口把弹在窗口里的**全局页签**交回侧栏(左侧导航入口 / 详情页「在侧边栏中打开」「恢复默认
+   * 位置」)。任务页签带内存态,必须由窗口自己合并回来(mergeBack),这里拒绝。
+   */
+  returnGlobalTab(tabId: string): boolean {
+    const slot = this.slotForTab(tabId);
+    if (!slot?.assignment) return false;
+    const ref = slot.assignment.tabs.find((tab) => tab.tabId === tabId);
+    if (!ref || ref.sessionId !== null) return false;
+    this.removeTabFromSlot(slot, tabId);
+    if (slot.assignment.tabs.length === 0) {
+      this.disposeSlot(slot);
+    } else {
+      this.deliverAssignment(slot);
+    }
+    if (!this.deps.isQuitting()) {
+      this.deps.notifyTabReturned({ sessionId: null, tabId, snapshot: null, reason: 'merge' });
+    }
+    this.broadcast();
+    return true;
   }
 
   /** 弹出窗口 renderer 在自己里面新建了页签:归它承载。已在别处的页签忽略。 */
@@ -375,6 +408,8 @@ export class SidebarTabWindowsController {
     this.tabToWindow.clear();
     this.spare = null;
     this.spareRecoveryAttempts = 0;
+    // 让各 renderer 的「已弹出」镜像清空(owner 切换时页签留在原 renderer 缓存里,不再被隐藏)。
+    if (!this.disposed) this.broadcast();
   }
 
   /** 应用退出时永久停止。 */

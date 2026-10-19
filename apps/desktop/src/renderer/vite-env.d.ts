@@ -2066,6 +2066,8 @@ interface ElectronAPI {
     ) => Promise<void>;
     focus: (tabId: string) => Promise<void>;
     closeForTab: (tabId: string) => Promise<void>;
+    /** 主窗口:把弹在独立窗口里的全局页签交回侧栏(任务页签不支持)。 */
+    returnTab?: (tabId: string) => Promise<boolean>;
     /** 主窗口:页签拖出窗口时的窗外预览卡。 */
     beginDragPreview?: (
       label: string,

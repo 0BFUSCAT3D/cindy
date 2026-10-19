@@ -31,12 +31,11 @@ const placementMock = vi.hoisted(() => ({
   focusExistingPluginTab: vi.fn(() => false),
   openPluginInSidebar: vi.fn(),
   openPluginInWindow: vi.fn(),
-  resetPluginPlacement: vi.fn(),
+  resetPluginPlacementAndReturn: vi.fn(),
   hasMemory: false,
 }));
 vi.mock('@/features/right-sidebar/globalTabs', () => ({
   hasPluginPlacementMemory: () => placementMock.hasMemory,
-  resetPluginPlacement: placementMock.resetPluginPlacement,
   useGlobalTabs: () => [],
 }));
 vi.mock('@/features/right-sidebar/tabGroups', () => ({
@@ -47,6 +46,7 @@ vi.mock('@/features/right-sidebar/pluginPlacement', () => ({
   focusExistingPluginTab: placementMock.focusExistingPluginTab,
   openPluginInSidebar: placementMock.openPluginInSidebar,
   openPluginInWindow: placementMock.openPluginInWindow,
+  resetPluginPlacementAndReturn: placementMock.resetPluginPlacementAndReturn,
 }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -118,7 +118,7 @@ describe('GhostMainViewNavEntries', () => {
     expect(placementMock.openPluginInWindow).toHaveBeenCalledWith(items[1].installedGhost);
     fireEvent.contextMenu(entry);
     fireEvent.click(screen.getByText('ghostMainView.resetPlacement'));
-    expect(placementMock.resetPluginPlacement).toHaveBeenCalledWith('workspace', items[1].installedGhost);
+    expect(placementMock.resetPluginPlacementAndReturn).toHaveBeenCalledWith(items[1].installedGhost);
     placementMock.hasMemory = false;
   });
 

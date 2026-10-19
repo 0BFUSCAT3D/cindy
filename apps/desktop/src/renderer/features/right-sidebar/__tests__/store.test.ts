@@ -1581,3 +1581,60 @@ describe('cross-renderer sync for popped-out tabs', () => {
     expect(store.getBucket('never-loaded').hydrated).toBe(false);
   });
 });
+
+// 测试价值
+// - 生产入口与可观察结果:importTabSnapshot({onlyTabIds}) / removeTabLocally / isTabClosing;可观察的是
+//   弹出窗口收到后续指派(搬入新页签)时只并入新增页签的内存态、窗口里已有页签刚改的状态不被旧
+//   整桶快照抹掉;窗口里关掉的页签经 closed 通知从主窗缓存里丢掉(不可持久化会话没有数据库广播)。
+// - Bug / 规则依据:PR #6468 review(旧快照覆盖窗口修改 / 关闭的远程页签复活 / 窗口过早销毁)。
+// - 现有覆盖缺口:上面只测整桶导入与交回,没有增量并入与本地丢弃。
+// - 最小失败输入:窗口已有 tab-a(URL 已改),再搬入 tab-b 的快照里 tab-a 仍是旧 URL。
+// - tier:unit(jsdom,进程内 store)。
+describe('multi-tab window handoff merge (memory-only sessions)', () => {
+  it('merges only newly assigned tabs and keeps window-local edits to existing ones', async () => {
+    store = await import('../store');
+    store._resetStore();
+    const stale = {
+      sessionId: 'remote-m1',
+      persistable: false as const,
+      activeTabId: 'tab-a',
+      tabs: [
+        { id: 'tab-a', kind: 'web-browser', state: { url: 'https://old.example/' } },
+        { id: 'tab-b', kind: 'web-browser', state: { url: 'https://b.example/' } },
+      ],
+    };
+    // 首次指派:整桶导入(此时只有 tab-a 归本窗口,但整桶可见)。
+    store.importTabSnapshot({ ...stale, tabs: [stale.tabs[0]] });
+    // 窗口里把 tab-a 导航到了新地址。
+    await store.patchTabState('remote-m1', 'tab-a', () => ({ url: 'https://new.example/' }));
+    // 后续指派:搬入 tab-b,握手快照里 tab-a 还是旧 URL。
+    store.importTabSnapshot(stale, { onlyTabIds: new Set(['tab-b']) });
+    const bucket = store.getBucket('remote-m1');
+    expect(bucket.tabs.map((tab) => tab.id)).toEqual(['tab-a', 'tab-b']);
+    expect(bucket.tabs.find((tab) => tab.id === 'tab-a')?.state).toEqual({
+      url: 'https://new.example/',
+    });
+    expect(bucket.activeTabId).toBe('tab-a');
+  });
+
+  it('removeTabLocally drops a tab closed elsewhere without issuing a close IPC', async () => {
+    store = await import('../store');
+    store._resetStore();
+    const stub = makeIpcStub();
+    installIpc(stub);
+    store.importTabSnapshot({
+      sessionId: 'remote-m2',
+      persistable: false,
+      activeTabId: 'tab-a',
+      tabs: [
+        { id: 'tab-a', kind: 'file-browser', state: null },
+        { id: 'tab-b', kind: 'file-browser', state: null },
+      ],
+    });
+    store.removeTabLocally('remote-m2', 'tab-a');
+    expect(store.getBucket('remote-m2').tabs.map((tab) => tab.id)).toEqual(['tab-b']);
+    expect(store.getBucket('remote-m2').activeTabId).toBe('tab-b');
+    expect(stub.close).not.toHaveBeenCalled();
+    expect(store.isTabClosing('tab-b')).toBe(false);
+  });
+});

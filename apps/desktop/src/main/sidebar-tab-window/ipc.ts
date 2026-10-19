@@ -178,6 +178,16 @@ export function registerSidebarTabWindowIpc(opts: {
     controller.focus(id);
   });
 
+  ipcMain.handle(MAKER_INVOKE.SIDEBAR_TAB_WINDOW_RETURN_TAB, (event, tabId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = requireId(tabId, 'tabId');
+    if (!isMainWindowSender(event.sender)) {
+      log.warn('SIDEBAR_TAB_WINDOW_RETURN_TAB from non-main-window sender, dropped');
+      throwIpcError('PERMISSION_DENIED', 'only the main window can return a global tab');
+    }
+    return controller.returnGlobalTab(id);
+  });
+
   ipcMain.handle(MAKER_INVOKE.SIDEBAR_TAB_WINDOW_CLOSE_FOR_TAB, (event, tabId: unknown) => {
     assertTrustedAppRendererEvent(event);
     const id = requireId(tabId, 'tabId');

@@ -36,7 +36,14 @@ import {
   setHostedTabIds,
   useHostedTabIds,
 } from '@/features/right-sidebar/lib/tabHosting';
-import { closeTab, getBucket, importTabSnapshot, subscribe } from '@/features/right-sidebar/store';
+import {
+  closeTab,
+  getBucket,
+  importTabSnapshot,
+  isTabClosing,
+  refreshSessionFromDb,
+  subscribe,
+} from '@/features/right-sidebar/store';
 import {
   findGlobalTab,
   isGlobalTabId,
@@ -59,6 +66,9 @@ import type {
 
 const log = createLogger('SidebarTabWindowLayout');
 
+/** 新搬入页签在本窗口出现前的宽限:数据库刷新回来 / 主窗创建写入落定所需的时间。 */
+const NEW_TAB_GRACE_MS = 5000;
+
 export function SidebarTabWindowLayout() {
   const { t } = useTranslation();
   const { effectiveLocale, setLocale } = useLocale();
@@ -77,17 +87,46 @@ export function SidebarTabWindowLayout() {
   const presentationReadySentRef = useRef(false);
   /** 已向 main 报过「在本窗口里消失了」的页签,避免重复 close-for-tab。 */
   const reportedGoneRef = useRef(new Set<string>());
+  /** 本窗口见到过「在场」的页签:没见过的新搬入页签有一段宽限,不立刻当作已消失。 */
+  const seenRef = useRef(new Set<string>());
+  /** 页签被指派给本窗口的时间(宽限起点)。 */
+  const assignedAtRef = useRef(new Map<string, number>());
+  const lastAssignedIdsRef = useRef<ReadonlySet<string> | null>(null);
+  const [recheck, setRecheck] = useState(0);
   const [windowChromeRevision, setWindowChromeRevision] = useState(0);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
   const applyAssignment = useCallback((next: SidebarTabWindowAssignmentPayload) => {
-    // 必须早于 Shell 的 ensureHydrated:不可持久化会话只能从这份快照水合。
-    if (next.handoff) importTabSnapshot(next.handoff);
-    setHostedTabIds(next.tabs.map((tab) => tab.tabId));
-    const stillAssigned = new Set(next.tabs.map((tab) => tab.tabId));
-    for (const id of [...reportedGoneRef.current]) {
-      if (!stillAssigned.has(id)) reportedGoneRef.current.delete(id);
+    const previousIds = lastAssignedIdsRef.current;
+    const nextIds = new Set(next.tabs.map((tab) => tab.tabId));
+    const addedIds = new Set([...nextIds].filter((id) => !previousIds?.has(id)));
+    lastAssignedIdsRef.current = nextIds;
+    // 必须早于 Shell 的 ensureHydrated:不可持久化会话只能从这份快照水合。首次指派整桶导入;
+    // 后续指派(搬入新页签)只并入新增页签的数据,不抹掉窗口里已有页签刚改的状态。
+    if (next.handoff) {
+      importTabSnapshot(next.handoff, previousIds === null ? {} : { onlyTabIds: addedIds });
     }
+    setHostedTabIds(next.tabs.map((tab) => tab.tabId));
+    const now = Date.now();
+    for (const id of addedIds) assignedAtRef.current.set(id, now);
+    // 搬入的任务页签在主窗刚改过的数据可能还没通过数据库广播传到本窗口缓存:按数据库强制取一次最新,
+    // 并让「已消失」判定等它回来(见下方宽限)。
+    if (previousIds !== null) {
+      const bySession = new Map<string, string[]>();
+      for (const ref of next.tabs) {
+        if (!addedIds.has(ref.tabId) || ref.sessionId === null) continue;
+        bySession.set(ref.sessionId, [...(bySession.get(ref.sessionId) ?? []), ref.tabId]);
+      }
+      for (const [sid, ids] of bySession) {
+        void refreshSessionFromDb(sid, { forceTabIds: ids }).catch((err) =>
+          log.warn('refresh moved-in tabs failed', { sessionId: sid, err }),
+        );
+      }
+    }
+    for (const id of [...reportedGoneRef.current]) {
+      if (!nextIds.has(id)) reportedGoneRef.current.delete(id);
+    }
+    for (const id of [...seenRef.current]) if (!nextIds.has(id)) seenRef.current.delete(id);
     setAssignment(next);
   }, []);
 
@@ -172,15 +211,40 @@ export function SidebarTabWindowLayout() {
   // 最后一个离开时 main 销毁窗口。
   useEffect(() => {
     if (!assignment || !contentReady) return;
+    let recheckDelay: number | null = null;
+    const needRecheck = (ms: number) => {
+      recheckDelay = recheckDelay === null ? ms : Math.min(recheckDelay, ms);
+    };
     for (const ref of assignment.tabs) {
-      if (isPresent(ref) || reportedGoneRef.current.has(ref.tabId)) continue;
+      if (isPresent(ref)) {
+        seenRef.current.add(ref.tabId);
+        continue;
+      }
+      if (reportedGoneRef.current.has(ref.tabId)) continue;
+      // 关闭还在进行(乐观移除已生效、close IPC / 状态写入在途):此刻销毁 renderer 会让删除请求
+      // 发不出去,记录留在数据库里下次又出现。等它收尾再判。
+      if (isTabClosing(ref.tabId)) {
+        needRecheck(150);
+        continue;
+      }
+      // 刚搬入、还没在本窗口见到过的页签:数据库刷新可能还没回来(或创建写入还在主窗途中),给一段宽限。
+      if (!seenRef.current.has(ref.tabId)) {
+        const waited = Date.now() - (assignedAtRef.current.get(ref.tabId) ?? 0);
+        if (waited < NEW_TAB_GRACE_MS) {
+          needRecheck(NEW_TAB_GRACE_MS - waited + 20);
+          continue;
+        }
+      }
       reportedGoneRef.current.add(ref.tabId);
       void api?.closeForTab(ref.tabId).catch((err) => {
         reportedGoneRef.current.delete(ref.tabId);
         log.warn('close-for-tab for a closed tab failed', { tabId: ref.tabId, err });
       });
     }
-  }, [api, assignment, contentReady, isPresent]);
+    if (recheckDelay === null) return;
+    const timer = window.setTimeout(() => setRecheck((n) => n + 1), recheckDelay);
+    return () => window.clearTimeout(timer);
+  }, [api, assignment, contentReady, isPresent, recheck]);
 
   const refFor = useCallback(
     (tabId: string) => assignment?.tabs.find((tab) => tab.tabId === tabId) ?? null,
@@ -209,6 +273,8 @@ export function SidebarTabWindowLayout() {
         return;
       }
       await closeTab(ref.sessionId, tabId);
+      // closeTab 成功收尾后立刻重判:此时页签已真正关完,可以放心请 main 摘掉。
+      setRecheck((n) => n + 1);
     },
     [refFor],
   );

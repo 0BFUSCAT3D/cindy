@@ -2506,6 +2506,8 @@ setAppSessionCommitBoundaryHook(() => {
   cancelClaudeCliLogin();
   clearAllSessionAttention();
   remoteDesktopViewerWindows.reset();
+  // 弹出的页签窗口带着旧 owner 的任务指派与 renderer 本地页签缓存:同步销毁,不让新 owner 看到旧内容。
+  sidebarTabWindowsController.destroyAllWindows();
   clearAllSessionProviders();
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();

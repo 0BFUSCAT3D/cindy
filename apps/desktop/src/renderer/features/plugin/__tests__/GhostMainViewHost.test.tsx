@@ -387,6 +387,19 @@ describe('GhostMainViewHost · 单实例视图守卫', () => {
     expect(getGlobalTabs()).toHaveLength(1);
   });
 
+  it('does not treat a docked panel tab on a different page as the main view', async () => {
+    const { addGlobalPluginTab, getGlobalTabs } = await import('@/features/right-sidebar/globalTabs');
+    // panel.html ≠ mainView.html:两个页面是不同界面,可以并存,整页不收页签。
+    const distinct = { ...manifest, panel: { html: 'panel.html' } };
+    mocks.routeCapable = [
+      { ...mocks.routeCapable[0], manifest: distinct, installedGhost: { ...ghostOf(), manifest: distinct } },
+    ];
+    addGlobalPluginTab('workspace', { ghost: ghostOf() });
+    renderInHeaderSlot();
+    expect(getGlobalTabs()).toHaveLength(1);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
   it('leaves both alive when the plugin declares mainView.multiple', async () => {
     const { addGlobalPluginTab, getGlobalTabs } = await import('@/features/right-sidebar/globalTabs');
     const { act } = await import('@testing-library/react');

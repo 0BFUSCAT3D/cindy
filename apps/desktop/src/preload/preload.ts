@@ -2026,6 +2026,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 页签已在侧边栏关闭:销毁其弹出窗口,不交回。 */
     closeForTab: (tabId: string): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-window:close-for-tab', tabId),
+    /** 把弹在独立窗口里的全局页签(插件视图)交回侧栏;任务页签由窗口自己合并回来。 */
+    returnTab: (tabId: string): Promise<boolean> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:return-tab', tabId),
     /** 页签拖出窗口:窗外跟随指针的预览卡(复用任务拖出的那扇预览窗口)。 */
     beginDragPreview: (label: string, palette: SessionDragPreviewPalette): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-drag-preview:start', label, palette),

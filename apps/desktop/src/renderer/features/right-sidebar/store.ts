@@ -510,22 +510,66 @@ export function getTabSnapshot(sessionId: string | null | undefined): RsbWindowT
   };
 }
 
-/** Import a non-persistable tab bucket received before the previous host is destroyed. */
-export function importTabSnapshot(snapshot: RsbWindowTabSnapshot): void {
+/**
+ * Import a non-persistable tab bucket received before the previous host is destroyed.
+ *
+ * `onlyTabIds`:页签独立窗口收到**后续**指派(搬入新页签)时,只把这些页签的数据并进现有桶,
+ * 其它页签保持本窗口当前的内存态——整桶替换会把窗口里刚改的 URL / 刚新建的页签抹掉。
+ */
+export function importTabSnapshot(
+  snapshot: RsbWindowTabSnapshot,
+  opts: { onlyTabIds?: ReadonlySet<string> } = {},
+): void {
   if (snapshot.persistable || !snapshot.sessionId) return;
+  if (opts.onlyTabIds) {
+    const existing = cache.get(snapshot.sessionId);
+    const incoming = snapshot.tabs
+      .filter((tab) => tab.id && tab.kind && opts.onlyTabIds!.has(tab.id))
+      .map((tab) => ({ ...tab, kind: tab.kind as TabKindId }));
+    if (incoming.length === 0) return;
+    memoryOnlySessions.add(snapshot.sessionId);
+    const byId = new Map((existing?.tabs ?? []).map((tab) => [tab.id, tab]));
+    for (const tab of incoming) byId.set(tab.id, tab);
+    setBucket(snapshot.sessionId, {
+      hydrated: true,
+      tabs: [...byId.values()],
+      activeTabId: existing?.activeTabId ?? null,
+    });
+    return;
+  }
   const seen = new Set<string>();
-  const tabs: TabState[] = snapshot.tabs.filter((tab) => {
-    if (!tab.id || !tab.kind || seen.has(tab.id)) return false;
-    seen.add(tab.id);
-    return true;
-  }).map((tab) => ({ ...tab, kind: tab.kind as TabKindId }));
-  const activeTabId = snapshot.activeTabId && seen.has(snapshot.activeTabId)
-    ? snapshot.activeTabId
-    : null;
+  const tabs: TabState[] = snapshot.tabs
+    .filter((tab) => {
+      if (!tab.id || !tab.kind || seen.has(tab.id)) return false;
+      seen.add(tab.id);
+      return true;
+    })
+    .map((tab) => ({ ...tab, kind: tab.kind as TabKindId }));
+  const activeTabId =
+    snapshot.activeTabId && seen.has(snapshot.activeTabId) ? snapshot.activeTabId : null;
   const bucket: TabBucket = { hydrated: true, tabs, activeTabId };
   memoryOnlySessions.add(snapshot.sessionId);
   pendingHandoffBuckets.set(snapshot.sessionId, bucket);
   setBucket(snapshot.sessionId, bucket);
+}
+
+/** 页签正在关闭(乐观移除已生效、close IPC 在途)。弹出窗口据此推迟「页签已消失」的上报。 */
+export function isTabClosing(tabId: string): boolean {
+  return closingTabIds.has(tabId);
+}
+
+/**
+ * 页签已在别的 renderer 里被关掉(弹出窗口关页签后 main 的 closed 通知):只丢本地副本并
+ * 释放资源,不发 close IPC(数据库那一侧已由关掉它的一方处理;不可持久化会话本就没有)。
+ */
+export function removeTabLocally(sessionId: string, tabId: string): void {
+  const bucket = cache.get(sessionId);
+  const tab = bucket?.tabs.find((candidate) => candidate.id === tabId);
+  if (!bucket || !tab) return;
+  const tabs = bucket.tabs.filter((candidate) => candidate.id !== tabId);
+  const activeTabId = bucket.activeTabId === tabId ? (tabs[0]?.id ?? null) : bucket.activeTabId;
+  setBucket(sessionId, { tabs, activeTabId });
+  forgetClosedTab(sessionId, tabId, tab.kind);
 }
 
 /** 弹出窗口合并回侧边栏时交回的单页签内存态(仅不可持久化会话;其余返回 null)。 */

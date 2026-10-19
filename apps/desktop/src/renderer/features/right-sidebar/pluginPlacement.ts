@@ -21,6 +21,9 @@ import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
 import {
   addGlobalPluginTab,
   findGlobalTabByInstance,
+  resetPluginPlacement,
+  tabShowsMainView,
+  type PluginViewTabState,
   isPluginWindowPlacement,
   rememberPluginWindowPlacement,
   removeGlobalTab,
@@ -34,10 +37,17 @@ const log = createLogger('rightSidebar.pluginPlacement');
 
 export type PluginOpenTarget = 'page' | 'sidebar' | 'window';
 
+/** 实例当前的页签若承载的就是主视图(整页入口那一份),返回它;承载别的页面(停靠面板)返回 null。 */
+function existingMainViewTab(ghost: InstalledGhost) {
+  const existing = findGlobalTabByInstance(installedGhostStoragePart(ghost));
+  if (!existing) return null;
+  return tabShowsMainView(existing.state as PluginViewTabState, ghost) ? existing : null;
+}
+
 /** 左侧栏入口点击时的打开目标(不含「已在侧边栏 / 窗口里」的聚焦分支)。 */
 export function resolvePluginOpenTarget(ghost: InstalledGhost): PluginOpenTarget {
   const instanceId = installedGhostStoragePart(ghost);
-  const existing = findGlobalTabByInstance(instanceId);
+  const existing = existingMainViewTab(ghost);
   if (existing) return isTabPoppedOut(existing.id) ? 'window' : 'sidebar';
   if (isPluginWindowPlacement(instanceId)) return 'window';
   const open = ghost.manifest.mainView?.open;
@@ -45,11 +55,27 @@ export function resolvePluginOpenTarget(ghost: InstalledGhost): PluginOpenTarget
   return 'page';
 }
 
+/**
+ * 页签正弹在独立窗口里时,先把它真正交回主窗(窗口登记与主窗投影一起切过来),
+ * 再谈放置:只改记忆不交回,主窗会继续把它当作「已弹出」隐藏。全局页签没有任务数据要带,
+ * 交回只需 main 把它从窗口摘掉。
+ */
+async function returnPluginTabFromWindow(tabId: string): Promise<void> {
+  if (!isTabPoppedOut(tabId)) return;
+  try {
+    await window.electronAPI?.sidebarTabWindow?.returnTab?.(tabId);
+  } catch (err) {
+    log.warn('return plugin tab from window failed', { tabId, err });
+  }
+}
+
 /** 作为全局页签放进侧边栏(默认边见模块说明),选中它;落在右侧组时展开右侧栏。 */
-export function openPluginInSidebar(ghost: InstalledGhost): void {
+export async function openPluginInSidebar(ghost: InstalledGhost): Promise<void> {
   const instanceId = installedGhostStoragePart(ghost);
-  const tab = addGlobalPluginTab(instanceId, { ghost });
+  // 左侧导航入口放进侧栏的是主视图页面(而不是停靠面板)。
+  const tab = addGlobalPluginTab(instanceId, { ghost, view: 'main' });
   if (!tab) return;
+  await returnPluginTabFromWindow(tab.id);
   rememberPluginWindowPlacement(instanceId, false);
   setActiveGlobalTabId(tab.id);
   if (getTabGroup(tab.id) === 'right') requestRightSidebarVisibility('open');
@@ -59,7 +85,7 @@ export function openPluginInSidebar(ghost: InstalledGhost): void {
 export function openPluginInWindow(ghost: InstalledGhost): void {
   const instanceId = installedGhostStoragePart(ghost);
   const api = window.electronAPI?.sidebarTabWindow;
-  const tab = addGlobalPluginTab(instanceId, { ghost });
+  const tab = addGlobalPluginTab(instanceId, { ghost, view: 'main' });
   if (!tab || !api) return;
   rememberPluginWindowPlacement(instanceId, true);
   if (isTabPoppedOut(tab.id)) {
@@ -81,10 +107,20 @@ export function openPluginInWindow(ghost: InstalledGhost): void {
     .catch((err) => log.warn('pop out plugin view failed', { instanceId, err }));
 }
 
-/** 已在侧边栏 / 窗口里的页签:聚焦它。返回 false = 还没有页签。 */
-export function focusExistingPluginTab(ghost: InstalledGhost): boolean {
+/**
+ * 恢复默认位置:弹在窗口里的页签先交回主窗,再清放置记忆并回到插件声明的默认边。
+ * (resetPluginPlacement 只管记忆,不碰窗口。)
+ */
+export async function resetPluginPlacementAndReturn(ghost: InstalledGhost): Promise<void> {
   const instanceId = installedGhostStoragePart(ghost);
   const existing = findGlobalTabByInstance(instanceId);
+  if (existing) await returnPluginTabFromWindow(existing.id);
+  resetPluginPlacement(instanceId, ghost);
+}
+
+/** 已在侧边栏 / 窗口里、且承载的就是主视图的页签:聚焦它。返回 false = 没有(含页签承载别的页面)。 */
+export function focusExistingPluginTab(ghost: InstalledGhost): boolean {
+  const existing = existingMainViewTab(ghost);
   if (!existing) return false;
   if (isTabPoppedOut(existing.id)) {
     void window.electronAPI?.sidebarTabWindow?.focus(existing.id).catch(() => undefined);
@@ -118,8 +154,12 @@ export function useSingleInstanceViewGuard(ghost: InstalledGhost | null): void {
       settledRef.current = null;
       return;
     }
+    // 只看承载主视图的页签:panel 与 mainView 是不同页面时可以并存。
     const existing = globalTabs.find(
-      (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === instanceId,
+      (tab) =>
+        (tab.state as PluginViewTabState | null)?.instanceId === instanceId &&
+        ghost !== null &&
+        tabShowsMainView(tab.state as PluginViewTabState, ghost),
     );
     if (settledRef.current !== instanceId) {
       // 刚进整页:页签在别处就收掉。
@@ -131,5 +171,5 @@ export function useSingleInstanceViewGuard(ghost: InstalledGhost | null): void {
       // 整页开着时页签出现:整页让位。
       navigate('/', { replace: true });
     }
-  }, [globalTabs, instanceId, navigate, single]);
+  }, [ghost, globalTabs, instanceId, navigate, single]);
 }

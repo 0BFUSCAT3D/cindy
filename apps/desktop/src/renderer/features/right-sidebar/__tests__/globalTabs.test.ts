@@ -18,6 +18,7 @@ import {
   __resetGlobalTabsForTest,
   addGlobalPluginTab,
   defaultGroupForGhost,
+  effectivePluginView,
   getActiveGlobalTabId,
   getGlobalTabs,
   getGlobalTabsSnapshot,
@@ -29,6 +30,7 @@ import {
   resetPluginPlacement,
   sanitizeGlobalTabsSnapshot,
   setActiveGlobalTabId,
+  tabShowsMainView,
 } from '../globalTabs';
 import { __resetTabGroupsForTest, getTabGroup, setTabGroup } from '../tabGroups';
 
@@ -160,5 +162,44 @@ describe('globalTabs', () => {
     expect(defaultGroupForGhost(ghost(undefined))).toBe('left');
     expect(defaultGroupForGhost(ghost(undefined, { open: 'sidebar', side: 'right' }))).toBe('right');
     expect(defaultGroupForGhost(ghost(undefined, { open: 'page' }))).toBe('right');
+  });
+  // 测试价值
+  // - 生产入口与可观察结果:addGlobalPluginTab({view}) / tabShowsMainView / defaultGroupForGhost(view);
+  //   可观察的是页签记录自己承载 panel 还是 mainView(panel 与 mainView 指向不同页面时互不串)、
+  //   同一插件的页签被明确要求另一个页面时切换、单实例判定只看主视图那一份、mainView.open:'sidebar'
+  //   未声明 side 时默认右侧(即使插件同时声明停靠面板)。
+  // - Bug / 规则依据:PR #6468 review(主视图入口显示面板 / 主视图默认边不符)。
+  // - 现有覆盖缺口:此前页签不记承载页面,panel 永远优先。
+  // - 最小失败输入:panel.html ≠ mainView.html 的插件,先自动出现 panel,再从入口要 main。
+  it('records which page a plugin-view tab hosts and defaults the side per page', () => {
+    const ghost = (extra: object = {}) =>
+      ({
+        manifest: {
+          id: 'gamma',
+          name: 'Gamma',
+          panel: { html: 'panel.html' },
+          mainView: { html: 'view.html', open: 'sidebar' },
+          ...extra,
+        },
+        enabled: true,
+      }) as unknown as import('../../../../shared/ghost').InstalledGhost;
+    const g = ghost();
+    // 停靠面板自动出现:panel(缺省边 left);主视图 open:sidebar 未声明 side 默认右侧,不被 panel 带偏。
+    const panelTab = addGlobalPluginTab('gamma', { ghost: g })!;
+    expect((panelTab.state as { view?: string }).view).toBe('panel');
+    expect(defaultGroupForGhost(g, 'panel')).toBe('left');
+    expect(defaultGroupForGhost(g, 'main')).toBe('right');
+    // 页面不同 → panel 页签不算主视图,整页单实例不互斥;入口要 main 时同一页签切到 main。
+    expect(tabShowsMainView(panelTab.state as never, g)).toBe(false);
+    const mainTab = addGlobalPluginTab('gamma', { ghost: g, view: 'main' })!;
+    expect(mainTab.id).toBe(panelTab.id);
+    expect((mainTab.state as { view?: string }).view).toBe('main');
+    expect(tabShowsMainView(mainTab.state as never, g)).toBe(true);
+    // 同一 html 的 panel 页签等于主视图那一份。
+    const same = ghost({ mainView: { html: 'panel.html' } });
+    expect(tabShowsMainView({ instanceId: 'gamma', view: 'panel' }, same)).toBe(true);
+    // 旧数据没有 view:按插件声明推导(有停靠面板 → panel)。
+    expect(effectivePluginView({ instanceId: 'gamma' }, g)).toBe('panel');
+    expect(effectivePluginView({ instanceId: 'gamma' }, ghost({ panel: undefined }))).toBe('main');
   });
 });

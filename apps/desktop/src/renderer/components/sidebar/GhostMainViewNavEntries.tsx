@@ -16,15 +16,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  hasPluginPlacementMemory,
-  resetPluginPlacement,
-  useGlobalTabs,
-} from '@/features/right-sidebar/globalTabs';
+import { hasPluginPlacementMemory, useGlobalTabs } from '@/features/right-sidebar/globalTabs';
 import {
   focusExistingPluginTab,
   openPluginInSidebar,
   openPluginInWindow,
+  resetPluginPlacementAndReturn,
   resolvePluginOpenTarget,
 } from '@/features/right-sidebar/pluginPlacement';
 import { useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
@@ -77,7 +74,7 @@ export function GhostMainViewNavEntry({
   const open = () => {
     if (focusExistingPluginTab(item.installedGhost)) return;
     const target = resolvePluginOpenTarget(item.installedGhost);
-    if (target === 'sidebar') openPluginInSidebar(item.installedGhost);
+    if (target === 'sidebar') void openPluginInSidebar(item.installedGhost);
     else if (target === 'window') openPluginInWindow(item.installedGhost);
     else openPage();
   };
@@ -94,9 +91,9 @@ export function GhostMainViewNavEntry({
     e.stopPropagation();
     setContextMenuPos({ x: e.clientX, y: e.clientY });
   };
-  const openInSidebar = () => openPluginInSidebar(item.installedGhost);
+  const openInSidebar = () => void openPluginInSidebar(item.installedGhost);
   const openInWindow = () => openPluginInWindow(item.installedGhost);
-  const resetPlacement = () => resetPluginPlacement(item.instanceId, item.installedGhost);
+  const resetPlacement = () => void resetPluginPlacementAndReturn(item.installedGhost);
   const contextMenu = (
     <DropdownMenu
       open={contextMenuPos !== null}

@@ -23,7 +23,11 @@ import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { MAIN_VIEW_ICONS } from '@/cindy-brain/mainViewIcons';
 import type { InstalledGhost } from '../../../../../shared/ghost';
 import { installedGhostStoragePart } from '../../../../../shared/pluginIdentity';
-import { globalTabTitleForGhost, type PluginViewTabState } from '../../globalTabs';
+import {
+  effectivePluginView,
+  globalTabTitleForGhost,
+  type PluginViewTabState,
+} from '../../globalTabs';
 import { registerTabKind } from '../../registry';
 import type { TabKindBodyProps, TabKindPlugin } from '../../types';
 
@@ -50,8 +54,12 @@ function PluginViewBody({ state }: TabKindBodyProps<PluginViewTabState>) {
   if (runtimeState === 'crashed' || runtimeState === 'fused') {
     return <GhostPanelError ghost={ghost} state={runtimeState} />;
   }
+  // 按页签记录的页面选内容:主视图入口放进侧栏的是 mainView,停靠面板自动出现的是 panel。
+  const view = effectivePluginView(state, ghost);
   const panelHtml =
-    ghost.manifest.panel?.position !== 'tab' ? ghost.manifest.panel?.html : undefined;
+    view === 'panel' && ghost.manifest.panel?.position !== 'tab'
+      ? ghost.manifest.panel?.html
+      : undefined;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {panelHtml ? (

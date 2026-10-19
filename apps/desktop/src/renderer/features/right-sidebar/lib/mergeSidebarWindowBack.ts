@@ -6,7 +6,8 @@
  */
 
 import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
-import { getSingleTabSnapshot, getTabSnapshot } from '../store';
+import { browserWebviewPool } from './browserWebviewPool';
+import { getBucket, getSingleTabSnapshot, getTabSnapshot } from '../store';
 
 export async function mergeSidebarWindowBack(
   sessionId: string | null | undefined,
@@ -16,6 +17,14 @@ export async function mergeSidebarWindowBack(
   if (isSidebarTabWindow()) {
     if (!tabId) return;
     const snapshot = getSingleTabSnapshot(sessionId, tabId);
+    // 多页签窗口合并回去后窗口往往还在:必须先把这个页签的浏览器 guest 释放掉,否则它在
+    // 本窗口后台继续跑,主窗又按同一状态新建一份,两份页面写同一个页签状态。
+    if (
+      sessionId &&
+      getBucket(sessionId).tabs.some((t) => t.id === tabId && t.kind === 'web-browser')
+    ) {
+      browserWebviewPool.release(tabId);
+    }
     await window.electronAPI.sidebarTabWindow?.mergeBack?.({ tabId, snapshot });
     return;
   }
