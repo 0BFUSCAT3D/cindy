@@ -2928,7 +2928,7 @@ const RenderItemView = memo(function RenderItemView({
       node = item.message.authorization
         ? <AuthorizationMessageCard message={item.message} />
         : item.message.companion
-        ? <CompanionMessageCard message={item.message}
+        ? <CompanionMessageCard message={item.message} deviceId={actions.remoteDeviceId ?? ''}
             renderMarkdown={(text) => <CompanionCardMarkdown messageKey={item.key} text={text} actions={actions} />} />
         : item.message.orcaCard
         ? (
