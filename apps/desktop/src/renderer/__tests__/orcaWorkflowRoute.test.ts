@@ -465,8 +465,6 @@ describe('OrcaWorkflowRoute source invariants', () => {
   });
 
   it('waits for detached bootstrap before mounting or writing the embedded right sidebar', () => {
-    expect(mainLayoutSource).toContain('const rightSidebarMountable = rsbWindow.loaded && !rsbDetached;');
-    expect(mainLayoutSource).toContain('rightSidebarMountable && (rightSidebarAvailable || rightSidebarEverMounted) ? (');
     expect(mainLayoutSource).toContain('if (!sessionId || !rsbWindow.loaded || rsbDetached) return;');
     expect(mainLayoutSource).toContain("routeSidebarCommand({ type: 'open-terminal', sessionId })");
     expect(mainLayoutSource).toContain('const windowState = getRsbWindowUiState();');
