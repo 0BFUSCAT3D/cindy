@@ -57,6 +57,7 @@ var cindyMail = (function () {
       // Preview URLs are Host-local. Reconnect to the same MIME image instead of
       // leaking a local address or sending a broken picture to the recipient.
       const checkImage = value => {
+        value = value.trim();
         const match = files.find(f => f.previewUrl === value && cid(f.contentId));
         if (match) return 'cid:' + cid(match.contentId);
         if (/^cid:/i.test(value)) {
@@ -66,19 +67,56 @@ var cindyMail = (function () {
         } else if (/^(?:cindy-media|xdt-image|blob|file):/i.test(value)) issue ||= 'localImage';
         return value;
       };
-      for (const element of doc.body.querySelectorAll('[src], [background], [style]')) {
+      const checkCss = value => value.replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/gi,
+        (all, doubleQuoted, singleQuoted, bare) => {
+          const url = doubleQuoted ?? singleQuoted ?? bare, next = checkImage(url);
+          return next === url.trim() ? all : 'url("' + next + '")';
+        });
+      const checkSrcset = value => {
+        // URLs end at ASCII whitespace, not commas (data URLs contain commas).
+        // Keep descriptors and separators verbatim; inspect every candidate.
+        let position = 0, copied = 0, output = '';
+        while (position < value.length) {
+          while (/[\t\n\f\r ,]/.test(value[position] || '') && position < value.length) position++;
+          const start = position;
+          while (position < value.length && !/[\t\n\f\r ]/.test(value[position])) position++;
+          const token = value.slice(start, position), url = token.replace(/,+$/, '');
+          if (!url) break;
+          output += value.slice(copied, start) + checkImage(url);
+          copied = start + url.length;
+          if (token.endsWith(',')) continue;
+          let depth = 0;
+          while (position < value.length) {
+            const char = value[position++];
+            if (char === '(') depth++;
+            else if (char === ')') depth = Math.max(0, depth - 1);
+            else if (char === ',' && !depth) break;
+          }
+        }
+        return output + value.slice(copied);
+      };
+      for (const element of doc.querySelectorAll('[src], [srcset], [background], [style], style')) {
         for (const attr of ['src', 'background']) if (element.hasAttribute(attr)) {
           const before = element.getAttribute(attr), after = checkImage(before);
           if (before !== after) { element.setAttribute(attr, after); changed = true; }
         }
-        if (element.hasAttribute('style')) {
-          const before = element.getAttribute('style');
-          const after = before.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi,
-            (all, quote, value) => { const next = checkImage(value.trim()); return next === value.trim() ? all : 'url("' + next + '")'; });
-          if (before !== after) { element.setAttribute('style', after); changed = true; }
+        for (const attr of ['style', 'srcset']) if (element.hasAttribute(attr)) {
+          const before = element.getAttribute(attr);
+          const after = attr === 'style' ? checkCss(before) : checkSrcset(before);
+          if (before !== after) { element.setAttribute(attr, after); changed = true; }
+        }
+        if (element.nodeName === 'STYLE') {
+          const before = element.textContent, after = checkCss(before);
+          if (before !== after) { element.textContent = after; changed = true; }
         }
       }
-      if (changed) fields[name] = doc.body.innerHTML;
+      if (changed) {
+        // A fragment starting with <style> is parsed into head. Retain it when
+        // serializing a repaired image URL instead of dropping authored CSS.
+        for (const node of [...doc.head.childNodes].reverse())
+          if (node.nodeType === 8 || node.nodeName === 'STYLE') doc.body.prepend(node);
+        fields[name] = doc.body.innerHTML;
+      }
       const plain = name === 'bodyHtml' ? 'body' : 'quote';
       if (format !== 'text' && !fields[plain]?.trim()) {
         // Only supply an absent fallback; never overwrite an authored text part.

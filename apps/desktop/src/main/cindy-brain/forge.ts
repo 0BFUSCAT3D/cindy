@@ -1859,6 +1859,7 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 \
 支持打开即已读时增加 \`mailReader.markRead:true\`，读取工具接受可选 \`markRead:true\`；
 声明中的 \`markRead\` 只能省略或为字面量 \`true\`，\`false\`、字符串等其它值不合法。
 仅用户主动打开时传入，AI 读取和邻近预加载不传。成功读取后只标记当前邮件，不标记整个会话或草稿。
+Host 派发器会移除普通工具参数中的此标记，仅可信阅读器打开请求可注入；其它明确授权的已读操作工具不受影响。
 标记失败仍返回正文和 \`markReadFailed:true\`，由 Cindy 显示提示；新增 OAuth scope 不阻断已有授权的操作。
 适配器提供 providerName、draftStorage（server/local）、selectAccount、readDraft、writeDraft。
 通过 present 展示读回草稿，beforeTool 统一 get/send/update/delete，resolveDraft 获取最新位置。

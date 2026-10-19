@@ -373,6 +373,41 @@ test('shared formatting derives missing plain text and replaces a preview URL wi
   assert.doesNotMatch(sent.bodyHtml, /cindy-media:/);
 });
 
+// #6404: src/background/inline-style tests missed stylesheet and srcset paths.
+// Production tool/card send entries must inspect body and quote using one policy.
+for (const name of ['bodyHtml', 'quoteHtml']) for (const syntax of ['css', 'srcset'])
+  for (const url of ['cid:missing@test', 'file:///private/image.png'])
+    test(`shared send validates ${name} ${syntax} image ${url}`, async () => {
+      const f = fixture({ richText: true });
+      f.externalEdit({ [name]: syntax === 'css'
+        ? `<style>.photo { background-image:url('${url}') }</style><p class="photo">Photo</p>`
+        : `<picture><source srcset="https://example.test/photo.png 1x, ${url} 2x"><img src="https://example.test/photo.png"></picture>` });
+      await f.present();
+      if (name === 'bodyHtml') {
+        const result = await f.tool('send');
+        assert.equal(result.ok, false);
+        assert.equal(result.execution, 'not_executed');
+      } else await f.card('send', Object.fromEntries(f.cards.findLast(c => c.draft).draft.fields.map(x => [x.name, x.value])));
+      assert.equal(f.writes.length, 0);
+    });
+
+test('shared formatting preserves styles and srcset descriptors while reconnecting image bytes', async () => {
+  const f = fixture({ richText: true });
+  const html = '<style>.photo{background:url("cindy-media://image")}</style><picture><source srcset="data:image/png;base64,AAAA 1x, cindy-media://image 2x"><img src="cid:photo@test"></picture>';
+  f.externalEdit({ bodyHtml: html, quoteHtml: html,
+    attachments: [{ key: 'image', filename: 'photo.png', mimeType: 'image/png', bytes: 123, contentId: 'photo@test', previewUrl: 'cindy-media://image' }] });
+  await f.present();
+  const shown = Object.fromEntries(f.cards.findLast(c => c.draft).draft.fields.map(x => [x.name, x.value]));
+  for (const name of ['bodyHtml', 'quoteHtml']) {
+    assert.doesNotMatch(shown[name], /cindy-media:/);
+    const doc = new DOMParser().parseFromString(shown[name], 'text/html');
+    assert.match(doc.querySelector('style').textContent, /url\("cid:photo@test"\)/);
+    assert.equal(doc.querySelector('source').getAttribute('srcset'), 'data:image/png;base64,AAAA 1x, cid:photo@test 2x');
+  }
+  assert.ok((await f.tool('send')).ok);
+  for (const name of ['bodyHtml', 'quoteHtml']) assert.equal(f.writes.find(x => x.send).fields[name], shown[name]);
+});
+
 test('a provider that reintroduces malformed HTML cannot proceed to sending', async () => {
   const f = fixture({ richText: true, write: request => {
     if (request.send) return;
