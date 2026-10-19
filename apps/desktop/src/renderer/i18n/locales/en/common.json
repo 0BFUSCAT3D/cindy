@@ -5374,13 +5374,6 @@
     },
     "tina": {
       "chat": {
-    "imageDelivery": {
-      "stored": "Image delivered",
-      "failed": "Image delivery failed. Retry transferring the existing image.",
-      "retry": "Retry delivery",
-      "retrying": "Delivering…",
-      "retryFailed": "Delivery is still unavailable. Check that the source computer is online."
-    },
         "title": "Chat",
         "description": "Plain conversations without any repository; select \"chat\" from Slack, Telegram, or X, one session per conversation lane."
       },
@@ -10962,6 +10955,13 @@
     "verificationFailed": "Cindy couldn’t confirm whether the ChatGPT sign-in has recovered. Check again."
   },
   "chat": {
+    "imageDelivery": {
+      "stored": "Image delivered",
+      "failed": "Image delivery failed. Retry transferring the existing image.",
+      "retry": "Retry delivery",
+      "retrying": "Delivering…",
+      "retryFailed": "Delivery is still unavailable. Check that the source computer is online."
+    },
     "failedSamplingAttempt": "This reply did not complete. Its content is for reference only.",
     "jumpToBottom": "Jump to bottom",
     "prevMessageJump": "Jump to previous prompt: {{preview}}",

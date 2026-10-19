@@ -1,5 +1,6 @@
 /** #6412: unit coverage of the native delivery entry, real blob/ledger/journal and restart recovery.
  * Existing materializer tests do not cross transport ACK, durable publication or owner/clear fences.
+ * Real main-process translations also cover the misplaced locale namespace reported on PR #6420.
  * The native generator and message writer are boundaries; retries never receive a generator API.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +13,7 @@ import type { AgentEvent, GeneratedImageEventData } from '@cindy/maker-core';
 import type { DbClient } from '../../localDb/client/DbClient';
 import * as schema from '../../localDb/schema';
 import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current';
+import { setMainLocale } from '../../i18n';
 import { createGeneratedImageDelivery } from '../generatedImageDelivery';
 import {
   captureGeneratedImageStorage,
@@ -38,7 +40,6 @@ vi.mock('../../appSessionState', () => ({
     path.join(state.root, 'owners', 'a'.repeat(20), ...parts),
 }));
 vi.mock('../../device-link/broadcast-tap', () => ({ captureDataOwnerBroadcastScope: () => ({}) }));
-vi.mock('../../i18n', () => ({ t: (key: string) => key }));
 vi.mock('../../localDb/ipc/messages', () => ({
   createMessage: async (
     sid: string,
@@ -70,6 +71,7 @@ const event = (data: Partial<GeneratedImageEventData> = {}): AgentEvent => ({
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 42]);
 let raw: Database.Database;
 beforeEach(async () => {
+  setMainLocale('en');
   state.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-native-image-'));
   state.generation = 1;
   state.failResult = false;
@@ -146,6 +148,7 @@ describe('native image delivery', () => {
     ]);
     await host.deliver('task', event({ data: png.toString('base64') }));
     expect(result()).toMatchObject({ ok: true, native_image_delivery: { id, state: 'stored' } });
+    expect(result().text).toBe('Image delivered');
     expect(await fs.readFile(resolveSafe(result().xdt_image_url).absPath)).toEqual(png);
     expect(raw.prepare('SELECT * FROM messages').all()).toHaveLength(2);
     expect(raw.prepare('SELECT ref_kind FROM media_refs').all()).toEqual([
@@ -208,6 +211,7 @@ describe('native image delivery', () => {
     expect(readSource).not.toHaveBeenCalled();
     expect(result()).toMatchObject({
       ok: false,
+      text: 'Image delivery failed. Retry transferring the existing image.',
       generation_status: 'completed',
       native_image_delivery: { state: 'failed', errorCode: 'REMOTE_SOURCE_REQUIRED' },
     });
