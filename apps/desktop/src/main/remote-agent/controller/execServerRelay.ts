@@ -47,7 +47,8 @@ export interface ExecServerRelayDeps {
   log?: { warn(message: string, meta?: Record<string, unknown>): void };
   now?: () => number;
   /**
-   * 由忙转闲：最后一个在跑的进程(含后台终端)结束，或带着工作的连接被整条关掉。对连接池来说这是一次活动。
+   * 由忙转闲：各连接上的工作(在跑的进程含后台终端、启动中的请求、待确认的消息)由有变无，包括进程结束、
+   * 启动失败、确认处理完、带着工作的连接被整条关掉。对连接池来说这是一次活动。
    */
   onProcessesEnded?(): void;
 }
@@ -488,7 +489,10 @@ export class ExecServerRelay {
     });
     connection.queue = next;
     void next.then(() => {
-      if (connection.queue === next) connection.queue = undefined;
+      if (connection.queue !== next) return;
+      const hadWork = this.hasWork();
+      connection.queue = undefined;
+      this.settleWork(hadWork);
     });
   }
 
@@ -520,16 +524,28 @@ export class ExecServerRelay {
       const key = JSON.stringify(message.id);
       const processId = connection.starting.get(key);
       if (processId === undefined) return;
+      const hadWork = this.hasWork();
       connection.starting.delete(key);
+      // 启动失败(JSON-RPC 错误)不会留下进程；等了很久才失败时同样是一次由忙转闲。
       if (message.error === undefined) connection.processes.add(processId);
+      this.settleWork(hadWork);
       return;
     }
     if ((message.method === 'process/closed' || message.method === 'process/exited') && typeof message.params?.processId === 'string') {
       const processId = message.params.processId;
-      const ended = connection.processes.delete(processId);
+      const hadWork = this.hasWork();
+      connection.processes.delete(processId);
       for (const [key, starting] of connection.starting) if (starting === processId) connection.starting.delete(key);
-      if (ended && ![...this.connections.values()].some((item) => item.processes.size)) this.deps.onProcessesEnded?.();
+      this.settleWork(hadWork);
     }
+  }
+
+  /**
+   * 改动连接上的工作记录之后调用：由有工作变为没有工作，就是一次由忙转闲(对连接池来说是一次活动)。
+   * 进程结束、启动失败、待确认的消息处理完、连接被整条删掉，都经过这里。
+   */
+  private settleWork(hadWork: boolean): void {
+    if (hadWork && !this.hasWork()) this.deps.onProcessesEnded?.();
   }
 
   private reject(connId: string, id: unknown, decision: ExecutorGateDecision): void {
@@ -555,7 +571,7 @@ export class ExecServerRelay {
     if (!connection || connection.closed) return;
     // 连接带着在跑的进程、启动中的请求或待确认的消息被整条删掉(异常退出、交付失败、对方关闭)，同样是一次
     // 由忙转闲。只看各连接上的工作：本机这侧断开时紧接着排进去的关闭帧不算忙。
-    const hadWork = connection.processes.size > 0 || connection.starting.size > 0 || Boolean(connection.queue);
+    const hadWork = this.hasWork();
     connection.closed = true;
     this.connections.delete(connId);
     try {
@@ -565,7 +581,7 @@ export class ExecServerRelay {
       // 进程已退出。
     }
     if (notifyRemote) this.send({ connId, kind: 'close' });
-    if (hadWork && !this.hasWork()) this.deps.onProcessesEnded?.();
+    this.settleWork(hadWork);
   }
 
   /** 一条消息：超过单帧上限时拆成多段(除最后一段外带 more)。 */

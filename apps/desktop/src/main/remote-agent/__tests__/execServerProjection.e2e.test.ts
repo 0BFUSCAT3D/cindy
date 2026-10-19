@@ -174,6 +174,16 @@ describe.skipIf(!fs.existsSync(CODEX) || process.platform === 'win32')('exec-ser
       relay.handle({ t: 'ws', connId: 'c2', kind: 'open', path: '/ws/exec-server' });
       relay.handle({ t: 'ws', connId: 'c2', kind: 'message', data: JSON.stringify({ id: 9, method: 'initialize', params: { clientName: 'cindy-test', clientVersion: '1' } }) });
       await expect.poll(() => messages.find((item) => item.id === 9), { timeout: 5000 }).toBeDefined();
+
+      // 启动失败(exec-server 回 JSON-RPC 错误)不会留下进程，同样算一次由忙转闲。
+      const sendC2 = (message: unknown) => relay.handle({ t: 'ws', connId: 'c2', kind: 'message', data: JSON.stringify(message) });
+      sendC2({ method: 'initialized', params: {} });
+      sendC2({ id: 11, method: 'process/start', params: {
+        processId: 'missing-binary', argv: [path.join(root, 'no-such-binary')], cwd: pathToFileURL(root).href, env: {}, tty: false,
+      } });
+      await expect.poll(() => messages.find((item) => item.id === 11), { timeout: 5000 }).toBeDefined();
+      expect(messages.find((item) => item.id === 11)?.error).toBeDefined();
+      await expect.poll(() => ended, { timeout: 5000 }).toBe(5);
     } finally {
       relay.close();
       fs.rmSync(root, { recursive: true, force: true });
