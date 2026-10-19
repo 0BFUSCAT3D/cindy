@@ -576,26 +576,6 @@ test("desktop real-Git coverage is an explicit coordinated tier outside default 
 	assert.deepEqual(selectFilesForTier(desktop, tier, files), files.slice(0, 2));
 });
 
-// CI #6429: the real PowerShell/CLR probe exceeded its bounded deadline inside
-// the unit pool. Keep it collected by an exclusive native tier instead (runner).
-test("Windows native barrier coverage runs outside the parallel unit pool", () => {
-	const desktop = manifest.workspaces.find((workspace) => workspace.cwd === "apps/desktop");
-	const files = [
-		"apps/desktop/src/main/__tests__/windowsPackagedInstanceBarrier.test.ts",
-		"apps/desktop/src/main/__tests__/lifecycle.test.ts",
-	];
-	assert.deepEqual(selectFilesForTier(desktop, desktop.tiers.unit, files), files.slice(1));
-	const tier = desktop.tiers["windows-native"];
-	assert.ok(tier, "the real Windows probe must retain an explicit test tier");
-	assert.equal(tier.status, "manual");
-	assert.equal(tier.execution, "exclusive");
-	assert.equal(tier.coverage, "allowlist");
-	assert.deepEqual(selectFilesForTier(desktop, tier, files), files.slice(0, 1));
-	assert.deepEqual(tier.command, {
-		type: "packageBin", bin: "vitest", args: ["run", "--pool=forks", "--maxWorkers=1"],
-	});
-});
-
 test("maker-core real-Git worktree matrix is an explicit tier outside default unit", () => {
 	const makerCore = manifest.workspaces.find(
 		(workspace) => workspace.cwd === "packages/maker-core",

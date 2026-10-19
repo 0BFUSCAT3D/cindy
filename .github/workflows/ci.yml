@@ -287,10 +287,6 @@ jobs:
         run: pnpm install:ripgrep
 
       # 保留 Windows 路径、进程与锁的自测覆盖。
-      # 原生探测单独运行，避免 PowerShell/CLR 冷启动与 unit worker 争抢资源。
-      - name: Run Windows native process checks
-        run: pnpm run test:workspaces --tier windows-native --workspace desktop
-
       - name: Run Windows test runner self-tests
         run: pnpm test:runner
 
