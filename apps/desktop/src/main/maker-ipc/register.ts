@@ -3459,6 +3459,18 @@ function bindSharedPermission(requestId: string, entry: PendingInteractionEntry,
   });
 }
 
+/** Host cancellation is final even while user answers are held by execution-pause. */
+function cancelPendingInteraction(requestId: string, decision: InteractionDecision): boolean {
+  const entry = pendingInteractionResolvers.get(requestId);
+  if (!entry) return false;
+  if (entry.sharedPermission) {
+    entry.sharedPermission.settle(decision);
+    decision = entry.sharedPermission.decision ?? decision;
+  }
+  // Use the same final-decision path as SharedPermission, never the paused answer gate.
+  return resolvePendingInteraction(requestId, decision, true);
+}
+
 function resolvePendingInteraction(requestId: string, decision: InteractionDecision, fromShared = false): boolean {
   const resolver = pendingInteractionResolvers.get(requestId);
   if (!resolver || (!fromShared && agentInputCoordinatorHolder?.isExecutionPaused(resolver.sessionId))) return false;
@@ -5147,7 +5159,7 @@ export function installDesktopInteractionListener(session: {
       );
     });
   }, (requestId, decision) => {
-    resolvePendingInteraction(requestId, decision);
+    cancelPendingInteraction(requestId, decision);
   });
 }
 
