@@ -61,17 +61,19 @@ export interface ProviderShareInsights {
 
 // 对端返回值只保留展示字段；未知版本或缺字段不当成零额度。
 const number = z.number().finite();
+// 有限数仍可能超出 Date 范围；拒绝会使接收端日期格式化抛错的时间戳。
+const timestamp = number.refine((value) => Number.isFinite(new Date(value).getTime()));
 const money = z.object({ amount: number, currency: z.enum(['USD', 'CNY']) });
 const quotaAccount = z.object({
   state: z.enum(['ready', 'unsupported', 'unavailable', 'offline', 'needs-update', 'unlimited']),
-  updatedAt: number.nullable(),
+  updatedAt: timestamp.nullable(),
   windows: z
     .array(
       z.object({
         kind: z.enum(['session', 'week', 'scoped']),
         label: z.string().max(128).nullable(),
         remainingPercent: number.min(0).max(100),
-        resetsAt: number.nullable(),
+        resetsAt: timestamp.nullable(),
         windowMinutes: number.nullable(),
       }),
     )
@@ -81,7 +83,7 @@ const quotaAccount = z.object({
       remaining: number,
       total: number.nullable(),
       currency: z.enum(['USD', 'CNY']),
-      resetsAt: number.nullable(),
+      resetsAt: timestamp.nullable(),
       pools: z
         .array(
           z.object({
@@ -117,7 +119,7 @@ const schema = z.object({
           isYou: z.boolean(),
           isOwner: z.boolean(),
           isRelay: z.boolean(),
-          lastUsedAt: number.nullable(),
+          lastUsedAt: timestamp.nullable(),
           days: z
             .array(
               z.object({

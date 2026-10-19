@@ -382,6 +382,33 @@ describe('provider share insights', () => {
     state.active = false;
     await expect(read('peer', request)).rejects.toThrow('PERMISSION_DENIED');
   });
+  // #4317443934：原边界只验证有限数，1e300 会让 Intl 日期格式化崩溃。
+  // 通过真实 reader→接收解析入口覆盖四类时间字段；既有测试仅有正常毫秒值。tier: unit。
+  it.each(['updatedAt', 'windowReset', 'balanceReset', 'lastUsedAt'] as const)(
+    'rejects invalid Date values in %s before displaying a host response',
+    async (field) => {
+      const { read } = fixture();
+      const view = await read('peer', request);
+      const account = view.quota!.accounts[0];
+      account.windows = [{
+        kind: 'week', label: null, remainingPercent: 15, resetsAt: null, windowMinutes: null,
+      }];
+      const setTime = (value: number | null) => {
+        if (field === 'updatedAt') account.updatedAt = value;
+        else if (field === 'windowReset') account.windows[0].resetsAt = value;
+        else if (field === 'balanceReset') account.balance!.resetsAt = value;
+        else view.usage!.parties[0].lastUsedAt = value;
+      };
+      for (const invalid of [1e300, -1e300, 8_640_000_000_000_001, -8_640_000_000_000_001]) {
+        setTime(invalid);
+        expect(parseProviderShareInsights(view)).toBeNull();
+      }
+      for (const valid of [null, 0, 1_792_425_600_000, 8_640_000_000_000_000, -8_640_000_000_000_000]) {
+        setTime(valid);
+        expect(parseProviderShareInsights(view)).toEqual(view);
+      }
+    },
+  );
   it('strips unknown fields and ignores data for disabled capabilities on the receiving boundary', async () => {
     const { read } = fixture();
     const view = await read('peer', request);
