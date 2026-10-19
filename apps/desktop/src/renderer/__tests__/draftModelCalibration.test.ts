@@ -5,11 +5,12 @@
  * 连了哪些来源无关；可连来源不提供那个 id 时，Send 直接禁用、只能弹「当前模型没有已
  * 连接的来源」。校准只作用于**没被显式选过**的默认值。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentKind, CatalogModel, ProviderView } from '@cindy/model-providers';
 
 import { resolveNewMakerDefaultTuple } from '../lib/newMakerDefaultTuple';
+import { getDraft, getDraftForPreferenceSync, setNewMakerDraftOwner } from '../state/newMakerDraft';
 
 import {
   calibrateDraftModel,
@@ -954,6 +955,153 @@ describe('模型组 Auto：服务端决定默认与来源', () => {
   ) => ({ ...provider(id, true, { pi: models }), source }) as ProviderView;
   const groupAuto = (marked: boolean) =>
     model('auto/group-1', marked ? { newSessionDefault: ['pi'] } : {});
+
+  // unit：旧服务端下的普通号池草稿不能被跨来源校准改成平台计费。
+  // 既有用例只覆盖组 Auto 搬迁，未覆盖没有合格组默认的普通草稿。
+  const oldPoolDraft = { model: 'pool-model', providerId: 'org-pool', chosenByUser: false };
+  const expectedPoolRoute = { model: 'pool-model', providerId: 'org-pool' };
+  const routesForDraft = (providers: ProviderView[], draft = oldPoolDraft) => ({
+    calibration: calibrateDraftModel({
+      providers,
+      agent: 'pi',
+      model: draft.model,
+      chosenByUser: draft.chosenByUser,
+      preferredProviderId: draft.providerId,
+      providersLoading: false,
+    }),
+    unattended: resolveNewTaskDefaultRoute({ providers, agent: 'pi', draft }),
+  });
+
+  it('旧目录只有预设 auto 时，两个入口都保留未手选的号池草稿来源', () => {
+    const providers = [
+      provider('xd', true, { pi: [model('auto', { newSessionDefault: ['pi'] })] }),
+      pool('org-pool', [model('pool-model')]),
+    ];
+    expect(routesForDraft(providers)).toEqual({
+      calibration: expectedPoolRoute,
+      unattended: expectedPoolRoute,
+    });
+  });
+
+  it.each([
+    ['未标默认', {}, {}],
+    ['只标其它引擎', { newSessionDefault: ['codex'] }, {}],
+    ['模型停用', { newSessionDefault: ['pi'], disabled: true }, {}],
+    ['模型退役', { newSessionDefault: ['pi'], status: 'retired' }, {}],
+    ['默认不可见', { newSessionDefault: ['pi'], defaultEnabled: false }, {}],
+    ['不可用于聊天', { newSessionDefault: ['pi'], mode: 'image_generation' }, {}],
+    ['需要付费', { newSessionDefault: ['pi'], availability: 'requires_payment' }, {}],
+    ['来源未连接', { newSessionDefault: ['pi'] }, { connected: false }],
+    ['来源停用', { newSessionDefault: ['pi'] }, { suspended: true }],
+  ] satisfies Array<[string, Partial<CatalogModel>, Partial<ProviderView>]>)(
+    '%s的组 Auto 不授权跨来源校准',
+    (_label, modelPatch, providerPatch) => {
+      const providers = [
+        provider('xd', true, { pi: [model('auto')] }),
+        pool('org-pool', [model('pool-model')]),
+        { ...pool('org-other', [model('auto/group-1', modelPatch)]), ...providerPatch },
+      ];
+      expect(routesForDraft(providers)).toEqual({
+        calibration: expectedPoolRoute,
+        unattended: expectedPoolRoute,
+      });
+    },
+  );
+
+  it('本地隐藏的组 Auto 不授权校准，用户重新显示后才跟随其默认', () => {
+    const providers = [
+      provider('xd', true, { pi: [model('auto'), groupAuto(true)] }),
+      pool('org-pool', [model('pool-model')]),
+    ];
+    for (const visible of [false, true]) {
+      expect(
+        calibrateDraftModel({
+          providers,
+          agent: 'pi',
+          ...oldPoolDraft,
+          preferredProviderId: 'org-pool',
+          providersLoading: false,
+          isModelEnabled: (_agent, _provider, candidate) =>
+            candidate.id !== 'auto/group-1' || visible,
+        }),
+      ).toEqual(visible ? { model: 'auto/group-1', providerId: 'xd' } : expectedPoolRoute);
+    }
+  });
+
+  it.each([false, true])(
+    '平台组默认生效，双来源标记=%s 时仍按平台与 sortOrder 取舍',
+    (poolMarked) => {
+      const providers = [
+        pool('org-pool', [model('pool-model'), ...(poolMarked ? [groupAuto(true)] : [])]),
+        provider('xd', true, {
+          pi: [
+            model('auto/platform-later', { newSessionDefault: ['pi'], sortOrder: 20 }),
+            model('auto/platform-first', { newSessionDefault: ['pi'], sortOrder: 10 }),
+            model('auto'),
+          ],
+        }),
+      ];
+      const expected = { model: 'auto/platform-first', providerId: 'xd' };
+      expect(routesForDraft(providers)).toEqual({ calibration: expected, unattended: expected });
+      expect(
+        resolveNewTaskDefaultRoute({
+          providers,
+          agent: 'pi',
+          draft: oldPoolDraft,
+          requiredProviderId: 'org-pool',
+        }),
+      ).toEqual(poolMarked ? { model: 'auto/group-1', providerId: 'org-pool' } : expectedPoolRoute);
+    },
+  );
+
+  it('草稿已记着组 Auto 时，撤销组默认仍能跨来源回退到预设 auto', () => {
+    const providers = [
+      provider('xd', true, { pi: [model('auto')] }),
+      pool('org-pool', [model('pool-model')]),
+    ];
+    const expected = { model: 'auto', providerId: 'xd' };
+    expect(routesForDraft(providers, { ...oldPoolDraft, model: 'auto/group-removed' })).toEqual({
+      calibration: expected,
+      unattended: expected,
+    });
+  });
+
+  it.each(['缺少手选标记', '空手选标记'])(
+    '旧版持久化草稿（%s）经过真实读取和规范化后仍保留号池',
+    (snapshotKind) => {
+      // 使用账号命名空间切换触发 loadFromStorage/sanitize；同一模块只加载一次。
+      const owner = `legacy-pool-${snapshotKind}`;
+      const key = `xdt:newMakerDraft:v1:${encodeURIComponent(owner)}`;
+      const raw = JSON.stringify({
+        vendor: 'pi',
+        lastByVendor: { pi: { model: 'pool-model', providerId: 'org-pool' } },
+        ...(snapshotKind === '空手选标记' ? { modelChosenByVendor: {} } : {}),
+      });
+      vi.stubGlobal('window', {
+        localStorage: { getItem: (name: string) => (name === key ? raw : null) },
+      });
+      try {
+        setNewMakerDraftOwner(owner);
+        const providers = [
+          provider('xd', true, { pi: [model('auto')] }),
+          pool('org-pool', [model('pool-model')]),
+        ];
+        for (const stored of [getDraft(), getDraftForPreferenceSync()]) {
+          expect(stored.modelChosenByVendor.pi).toBeUndefined();
+          expect(
+            routesForDraft(providers, {
+              model: stored.lastByVendor.pi.model,
+              providerId: stored.lastByVendor.pi.providerId!,
+              chosenByUser: stored.modelChosenByVendor.pi === true,
+            }),
+          ).toEqual({ calibration: expectedPoolRoute, unattended: expectedPoolRoute });
+        }
+      } finally {
+        setNewMakerDraftOwner(null);
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it('上次自动落点不钉住默认：服务端改标号池里的组 Auto 后，校准与无人值守入口同步跟随', () => {
     const gateway = provider('xd', true, { pi: [model('auto')] });

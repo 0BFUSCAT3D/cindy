@@ -1,5 +1,6 @@
 import {
   isCindyAutoModelId,
+  connectedProvidersForAgent,
   isCindyDistributedProvider,
   isModelSelectableForNewRoute,
   providerCatalogId,
@@ -104,7 +105,7 @@ export function isKnownProductDefaultTupleIdentity(args: {
 }
 
 /** Search passes in priority order: server-marked Auto, the policy's own ids, other models. */
-type ModelSearchPass = 'serverMarkedAuto' | 'preferred' | 'other';
+type ModelSearchPass = 'serverMarkedAuto' | 'serverMarkedGroupAuto' | 'preferred' | 'other';
 
 function bySortOrder(a: CatalogModel, b: CatalogModel): number {
   return (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER);
@@ -120,25 +121,52 @@ function matchingModel(
   agent: AgentKind,
   modelIds: readonly string[],
   pass: ModelSearchPass,
-  enabled?: (agent: AgentKind, providerId: string, model: { id: string; defaultEnabled?: boolean }) => boolean,
+  enabled?: (
+    agent: AgentKind,
+    providerId: string,
+    model: { id: string; defaultEnabled?: boolean },
+  ) => boolean,
 ) {
   const models = provider.models[agent] ?? [];
   // Both renderer and unattended callers keep the same-provider fallback.
   // Without local visibility overrides, use the catalog's default visibility.
   // Cindy Auto is an upstream route identity; do not substitute a fixed model.
   const candidates =
-    pass === 'serverMarkedAuto'
-      ? models.filter((model) => isServerMarkedAuto(model, agent)).sort(bySortOrder)
+    pass === 'serverMarkedAuto' || pass === 'serverMarkedGroupAuto'
+      ? models
+          .filter(
+            (model) =>
+              isServerMarkedAuto(model, agent) &&
+              (pass !== 'serverMarkedGroupAuto' || model.id !== 'auto'),
+          )
+          .sort(bySortOrder)
       : pass === 'preferred'
         ? modelIds.map((id) => models.find((model) => model.id === id))
         : models.slice().sort(bySortOrder);
-  return candidates
-    .find(
-      (model) =>
-        model !== undefined &&
-        (enabled ? enabled(agent, provider.id, model) : model.defaultEnabled !== false) &&
-        isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' }),
-    );
+  return candidates.find(
+    (model) =>
+      model !== undefined &&
+      (enabled ? enabled(agent, provider.id, model) : model.defaultEnabled !== false) &&
+      isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' }),
+  );
+}
+
+function isAvailableDefaultProvider(provider: ProviderView): boolean {
+  return provider.connected && !provider.suspended && !provider.modelDiscoveryFailure;
+}
+
+/** 普通草稿跨 Cindy 来源校准的前提：当前引擎已有可用的服务端组默认。 */
+export function hasAvailableServerMarkedGroupAuto(
+  providers: readonly ProviderView[],
+  agent: AgentKind,
+  isModelEnabled?: Parameters<typeof matchingModel>[4],
+): boolean {
+  return connectedProvidersForAgent([...providers], agent).some(
+    (provider) =>
+      isCindyDistributedProvider(provider) &&
+      isAvailableDefaultProvider(provider) &&
+      matchingModel(provider, agent, [], 'serverMarkedGroupAuto', isModelEnabled) !== undefined,
+  );
 }
 
 /**
@@ -166,9 +194,7 @@ export function resolveNewMakerDefaultTuples(args: {
         (candidate) =>
           ((isPolicyProvider(candidate) && candidate.access?.kind === policy.accessKind) ||
             (policy.serverMarkedAuto === true && isCindyDistributedProvider(candidate))) &&
-          candidate.connected &&
-          !candidate.suspended &&
-          !candidate.modelDiscoveryFailure,
+          isAvailableDefaultProvider(candidate),
       )
       // 服务端每个引擎只标一个默认；管理员恰在两次拉取之间改配置时，Cindy AI 与号池可能
       // 短暂各标一个，此时以 Cindy AI 为准，不取决于来源列表的顺序。

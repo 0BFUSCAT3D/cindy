@@ -13,6 +13,7 @@
 
 import {
   connectedProvidersForAgent,
+  isCindyAutoModelId,
   effectiveSourceIdForModel,
   isCindyDistributedProvider,
   isCustomRoutedProvider,
@@ -22,7 +23,10 @@ import {
   type CatalogModel,
   type ProviderView,
 } from '@cindy/model-providers';
-import { resolveNewMakerDefaultTuple } from './newMakerDefaultTuple.js';
+import {
+  hasAvailableServerMarkedGroupAuto,
+  resolveNewMakerDefaultTuple,
+} from './newMakerDefaultTuple.js';
 
 type ModelEnabledPredicate = Parameters<typeof resolveNewMakerDefaultTuple>[0]['isModelEnabled'];
 
@@ -255,9 +259,13 @@ export function calibrateDraftModel({
       )
     : undefined;
   if (connectedPreferred) {
-    // Cindy AI 与企业号池由服务端统一编排：默认 Auto 可能落在其中任一家，也可能被挪走。
-    // 用户没选过模型时，上次自动落点不能把出厂默认钉在原来那一家。
-    const factoryScope = isCindyDistributedProvider(connectedPreferred)
+    // 普通草稿只有在服务端提供可用的组默认时才跨 Cindy 来源校准；旧目录保留号池来源。
+    // 草稿本身已是组 Auto 时仍跨来源寻找，以保留搬迁及撤销后的回退。
+    const followsGroupDefault =
+      isCindyDistributedProvider(connectedPreferred) &&
+      ((model !== 'auto' && isCindyAutoModelId(model)) ||
+        hasAvailableServerMarkedGroupAuto(providers, agent, isModelEnabled));
+    const factoryScope = followsGroupDefault
       ? connectedProvidersForAgent([...providers], agent).filter(isCindyDistributedProvider)
       : [connectedPreferred];
     const factory = factoryModelForAgent(factoryScope, agent, isModelEnabled);
