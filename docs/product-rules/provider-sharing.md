@@ -347,6 +347,9 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
   关闭后重开不恢复旧回包。专用只读结果不进入通用完成缓存，不启动/接回远程 Agent。
   页面可见时最多每五秒复核，隐藏/换分享/账号/关系变化或查询失败清除旧展示；额度和用量失败分别处理。
   本机历史缓存十五秒、额度读取短缓存并合并在途查询，按账号隔离。
+  最终只读回包的字节预算包含额度、所有人的昵称/头像和历史行；超限时继续优先保留较新的历史行，并更新 `coverageStart`。
+  不静默删掉人员或把未返回的历史当作零用量；人员资料本身或一条历史都无法容纳时，用量显示不可用，额度仍独立返回。
+  额度本身超过回包预算时也只标额度不可用，不影响能够返回的用量。
 
 实现：`device-link/providerShareInsights.ts`、`providerShareQuota.ts`、`providerShareVisibility.ts` 与 renderer 同名功能组件；
 回归：`device-link/__tests__/providerShareInsights.test.ts`、`providerShareDispatch.test.ts`、`providerShareQuota.test.ts`、`providerShareVisibility.test.ts`。

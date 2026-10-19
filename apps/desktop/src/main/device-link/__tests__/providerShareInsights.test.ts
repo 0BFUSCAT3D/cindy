@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderShareOwned } from '@cindy/device-link';
+import { MAX_FRAME_BYTES, type ProviderShareOwned } from '@cindy/device-link';
 import type { ProviderUsageHistoryView } from '../../../shared/providerShare';
 import { parseProviderShareInsights } from '../../../shared/providerShareInsights';
 import { createProviderShareInsightsReader } from '../providerShareInsights';
@@ -8,6 +8,7 @@ import { createProviderShareInsightsReader } from '../providerShareInsights';
  * 依据：provider-sharing 的最小范围及账号隔离；旧 dispatch/management 测试没有新 reader。
  * 最小失败输入：一项查询失败、在途关闭后重开、同 providerId 换账号、转来的一行用量。
  * 缓存回归：PR #6482 P1；旧覆盖仅单供应商，补 A→B→A、过期和旧失败晚于新读取的时序。
+ * 回包预算：#4316096976，旧覆盖未包含昵称/头像膨胀；用大名单加已有预算内账本触发最终帧超限。
  * tier: unit；依赖注入，无 Electron/外网/真实等待。单文件耗时见执行报告。 */
 const day = {
   day: '2026-10-19',
@@ -245,6 +246,88 @@ describe('provider share insights', () => {
     expect((await old).status.usage).toBe('unavailable');
     expect((await read('peer', request)).status.usage).toBe('ready');
     expect(deps.history).toHaveBeenCalledTimes(2);
+  });
+  it('budgets final member metadata and quota together with newest usage rows', async () => {
+    const { deps, history } = fixture();
+    const share = deps.shares()[0];
+    share.members = Array.from({ length: 1_200 }, (_, index) => ({
+      ...share.members[0],
+      memberId: String(index),
+      displayName: '名字'.repeat(40),
+      avatarUrl: 'https://example.com/' + 'a'.repeat(600),
+    }));
+    history.self.days = Array.from({ length: 750 }, (_, index) => ({
+      ...day,
+      day: index < 375 ? '2026-10-18' : '2026-10-19',
+      model: '模型'.repeat(300) + index,
+    }));
+    history.members = [];
+    history.relays = [];
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThan(MAX_FRAME_BYTES - 1_024);
+    const read = createProviderShareInsightsReader({ ...deps, shares: () => [share] });
+    const result = await read('peer', request);
+    const frame = {
+      v: 1,
+      kind: 'invoke-result',
+      id: 'request',
+      dst: 'peer',
+      payload: { ok: true, result },
+    };
+    expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThan(MAX_FRAME_BYTES);
+    expect(result.status).toEqual({ quota: 'ready', usage: 'ready' });
+    expect(result.usage?.parties).toHaveLength(1_201);
+    const kept = result.usage!.parties[0].days;
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(750);
+    expect(kept.map((row) => row.model)).toEqual(
+      [...history.self.days]
+        .sort((a, b) => b.day.localeCompare(a.day))
+        .slice(0, kept.length)
+        .map((row) => row.model),
+    );
+    expect(result.usage?.coverageStart).toBe(kept.at(-1)?.day);
+    expect(parseProviderShareInsights(result)).toEqual(result);
+    expect(read.isCurrent('peer', result)).toBe(true);
+  });
+  it('keeps quota available when member metadata alone exceeds the frame budget', async () => {
+    const { deps } = fixture();
+    const share = deps.shares()[0];
+    share.members = Array.from({ length: 10_000 }, (_, index) => ({
+      ...share.members[0],
+      memberId: String(index),
+      displayName: '名字'.repeat(40),
+    }));
+    const read = createProviderShareInsightsReader({ ...deps, shares: () => [share] });
+    const result = await read('peer', request);
+    expect(result.status).toEqual({ quota: 'ready', usage: 'unavailable' });
+    expect(result.usage).toBeNull();
+    expect(result.quota?.accounts[0].balance?.remaining).toBe(0);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(MAX_FRAME_BYTES - 1_024);
+  });
+  it('keeps usage available when the quota projection alone exceeds the frame budget', async () => {
+    const { deps } = fixture();
+    const quota = await deps.quota();
+    const read = createProviderShareInsightsReader({
+      ...deps,
+      quota: async () => ({
+        ...quota,
+        accounts: Array.from({ length: 512 }, () => ({
+          ...quota.accounts[0],
+          windows: Array.from({ length: 32 }, () => ({
+            kind: 'scoped' as const,
+            label: '窗口'.repeat(64),
+            remainingPercent: 50,
+            resetsAt: null,
+            windowMinutes: null,
+          })),
+        })),
+      }),
+    });
+    const result = await read('peer', request);
+    expect(result.status).toEqual({ quota: 'unavailable', usage: 'ready' });
+    expect(result.quota).toBeNull();
+    expect(result.usage?.parties[0].days[0].inputTokens).toBe(10);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(MAX_FRAME_BYTES - 1_024);
   });
   it('rejects unauthorized members and a guest-supplied provider id', async () => {
     const { read, state } = fixture();

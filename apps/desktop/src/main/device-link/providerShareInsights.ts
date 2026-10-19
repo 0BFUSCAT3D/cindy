@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ProviderShareOwned } from '@cindy/device-link';
+import { MAX_FRAME_BYTES, type ProviderShareOwned } from '@cindy/device-link';
 import type { ProviderUsageHistoryView } from '../../shared/providerShare.js';
 import type {
   ProviderShareInsights,
@@ -118,6 +118,51 @@ function publicUsage(
   };
 }
 
+// Match the existing history budget, reserving room for the invoke envelope.
+const INSIGHTS_MAX_BYTES = MAX_FRAME_BYTES - 1_024;
+const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+function boundInsightsFrame(result: ProviderShareInsights): void {
+  // An oversized capability must not turn the other capability into a transport error.
+  if (result.quota && jsonBytes({ ...result, usage: null }) > INSIGHTS_MAX_BYTES) {
+    result.quota = null;
+    result.status.quota = 'unavailable';
+  }
+  const usage = result.usage;
+  if (!usage || jsonBytes(result) <= INSIGHTS_MAX_BYTES) return;
+  const rows = usage.parties.flatMap((party, index) => party.days.map((row) => ({ index, row })));
+  rows.sort((a, b) => b.row.day.localeCompare(a.row.day));
+  const bounded: ProviderShareUsageDetails = {
+    ...usage,
+    coverageStart: null,
+    parties: usage.parties.map((party) => ({ ...party, days: [] })),
+  };
+  let bytes = jsonBytes({ ...result, usage: bounded });
+  let kept = 0;
+  for (const { index, row } of rows) {
+    const days = bounded.parties[index]!.days;
+    // Account for JSON array separators and the coverage marker as well as UTF-8 row bytes.
+    const nextBytes =
+      bytes +
+      jsonBytes(row) +
+      (days.length ? 1 : 0) +
+      jsonBytes(row.day) -
+      jsonBytes(bounded.coverageStart);
+    if (nextBytes > INSIGHTS_MAX_BYTES) break;
+    days.push(row);
+    bounded.coverageStart = row.day;
+    bytes = nextBytes;
+    kept++;
+  }
+  // Never silently omit people or display zero usage when no history can fit.
+  if (bytes > INSIGHTS_MAX_BYTES || (rows.length > 0 && kept === 0)) {
+    result.usage = null;
+    result.status.usage = 'unavailable';
+  } else {
+    result.usage = bounded;
+  }
+}
+
 /** 最小只读投影；权限检查保留到实际发送，包括背压队列重发。 */
 export function createProviderShareInsightsReader(deps: ProviderShareInsightsDeps) {
   const checks = new WeakMap<object, { peer: string; assertCurrent(): void }>();
@@ -206,6 +251,7 @@ export function createProviderShareInsightsReader(deps: ProviderShareInsightsDep
       quota,
       usage: history ? publicUsage(history, share, access.memberId, deps.owner()) : null,
     };
+    boundInsightsFrame(result);
     checks.set(result, { peer, assertCurrent });
     return result;
   };
