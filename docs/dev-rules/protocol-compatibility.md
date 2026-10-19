@@ -1748,7 +1748,7 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
 - **`provider-group:remote` 新增 `action: 'manage-group'` / `'manage-share'`**(同一 channel、同一同账号 allowlist，
   受邀者与共享任务访客照旧 `CHANNEL_NOT_ALLOWED`)：请求 `{ action, command }`，`command` 与本机命令同构，结构与校验在
   `apps/desktop/src/shared/providerManagement.ts`。`manage-group` 只收 `get` / `candidates` / `save-if-current` / `delete-if-current`；
-  `manage-share` 只收 `owned` / `own-usage` / `usage-history` / `create-link` / `approve` / `reject` / `set-member` / `reshare-decide`，其余回
+  `manage-share` 只收 `owned` / `own-usage` / `usage-history` / `create-link` / `approve` / `reject` / `set-member` / `set-member-note` / `reshare-decide` / `get-run-limits` / `set-run-limits` / `reset-run-limits`，其余回
   `[PERMISSION_DENIED]`。回包 `{ result, respondedAt }`，`respondedAt` 只用于把链接有效期换算到 C 的时钟。
   - `usage-history`(2026-10-17，供应商组 §7)：只读，`{ action, providerId }`，回这个供应商用量的按天明细
     `{ providerId, todayKey, coverageStart, self, relays, members }`(结构在 `apps/desktop/src/shared/providerShare.ts`)，
@@ -1758,6 +1758,9 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
     `[INVALID_PARAMS] Unknown command`，C 的 Main 把 `manage-share` 的这个回包统一成 `[UNSUPPORTED_CAPABILITY]`(与
     `unknown provider group action` 同一处)，管理页退回 `own-usage` 与 `owned`(range=all)的所有时间合计并提示更新 O，不重试。
     旧 C 不发这个动作，照旧读 `own-usage` / `owned`，O 对两者的回包不变。
+  - `set-member-note`（2026-10-19）：`{ action, memberId, note }`，只允许已有成员，空字符串清除备注，最多 80 个 UTF-16 单元、保存前规范为单行。
+    O 按账号保存私人备注，`owned` 的成员投影新增可选 `note: string | null`，不改服务端成员合同或受邀者目录。
+    旧 C 忽略新增字段；旧 O 不认识命令时沿用 `INVALID_PARAMS → UNSUPPORTED_CAPABILITY` 映射，C 保留草稿、提示更新，不重放或改存本机。
   - O 在执行前后核对账号未切换；`approve` / `reject` / `set-member` 先刷新快照，申请或成员不在 O 的分享里回 `[NOT_FOUND]`；
     `owned` 的回包只含 `{ ready, shares }`，不带 O 自己的弹窗安排。不再转发给第三台电脑。
   - `reshare-decide` 只修改 O 当前账号的本机转分享记录，写锁内和返回前继续核对账号边界；撤回由 O 停止对应中转任务。
@@ -2638,3 +2641,5 @@ still use the same host-owned mail workflow as the chat card.
 会先在来源 Agent 里停用这些机器人再由伙伴连接；旧控制端的预览校验不认识新分类，所以照旧把 Telegram / Discord
 放在 `connections`、不停来源，也不出现飞书 / 企业微信 / 钉钉条目。分类随预览快照与加密检查点保存，开始导入和恢复
 都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
+
+Cindy AI 设置卡片保留可选读取返回的 `unlimited` 状态，显示“未设置个人限额”；它不代表部门或企业没有限制。`invalidated` 清除该状态，有限额快照覆盖该状态，切换账号不复用上一账号结果。旧 `null` push 无法区分失效与不限额，本地卡片收到后通过既有可选读取核对；同一账号的多个组件共享在途读取，收到读取自身的广播时复用该请求，避免多窗口之间反复触发刷新。主进程跨窗口共享在途读取，已知不限额参与既有节流，重复不限额结果不重复广播。IPC payload 与远程消费者保持兼容。

@@ -545,6 +545,7 @@ export function catalogSurfaces() {
       reachableComponents: [
         'BotsHomeView',
         'BotsListView',
+        'BotMarketDialog',
         'BotRosterView',
         'BotSessionView',
         'RemoteBotSessionView',
@@ -565,6 +566,7 @@ export function catalogSurfaces() {
       routerPaths: [
         '/bots',
         '/bots/list',
+        '/bots/market/:packageId?',
         '/bots/:botId',
         '/bots/:botId/direct/:threadId',
         '/bots/:botId/history/:sessionId',
@@ -576,6 +578,7 @@ export function catalogSurfaces() {
       routeEntryComponents: {
         '/bots': 'BotsHomeView',
         '/bots/list': 'BotsListView',
+        '/bots/market/:packageId?': 'BotMarketRoute',
         '/bots/:botId': 'BotsHomeView',
         '/bots/:botId/direct/:threadId': 'BotDirectMessageView',
         '/bots/:botId/history/:sessionId': 'BotHistorySessionView',
@@ -1425,7 +1428,7 @@ export function mobileCatalogSurfaces() {
     ['chat.sharing', '共享任务邀请与成员；供应商分享链接提示', ['shared-session.tsx', 'provider-share.tsx']],
     ['chat.new', '新建任务', ['sessions/new.tsx']],
     ['files', '任务文件与预览', ['files/[sessionId].tsx', 'files/preview/[sessionId].tsx']],
-    ['settings', '设置（含调试与日志上传可见入口）', ['settings.tsx', 'settings/device-name.tsx', 'settings/user-bubble.tsx', 'settings/voice-dictionary.tsx', 'settings/voice-speaker-filter.tsx']],
+    ['settings', '设置（含调试与日志上传可见入口）', ['settings.tsx', 'settings/developer.tsx', 'settings/device-name.tsx', 'settings/user-bubble.tsx', 'settings/voice-dictionary.tsx', 'settings/voice-speaker-filter.tsx']],
     ['auth', '登录与添加账号', ['(auth)/login.tsx', 'add-account.tsx']],
     ['account-deletion', '账号注销', ['account-deletion.tsx']],
   ];

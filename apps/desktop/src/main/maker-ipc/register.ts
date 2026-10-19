@@ -12,6 +12,7 @@ import { createPluginTaskStore } from './pluginTaskStore.js';
 import { createPluginBackgroundTaskHandlers, revealAllPluginHiddenTasks } from './pluginHiddenTasks.js';
 import { setSessionHidden } from '../localDb/ipc/sessionHidden.js';
 import { isSessionHiddenSync } from '../localDb/hiddenSessionRegistry.js';
+import { notifyAgentIslandBotGroupChanged } from '../localDb/agentIslandSessionPatch.js';
 import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
 import { hasAcceptedUserTaskInput } from './pluginTaskInput.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
@@ -3458,6 +3459,18 @@ function bindSharedPermission(requestId: string, entry: PendingInteractionEntry,
   });
 }
 
+/** Host cancellation is final even while user answers are held by execution-pause. */
+function cancelPendingInteraction(requestId: string, decision: InteractionDecision): boolean {
+  const entry = pendingInteractionResolvers.get(requestId);
+  if (!entry) return false;
+  if (entry.sharedPermission) {
+    entry.sharedPermission.settle(decision);
+    decision = entry.sharedPermission.decision ?? decision;
+  }
+  // Use the same final-decision path as SharedPermission, never the paused answer gate.
+  return resolvePendingInteraction(requestId, decision, true);
+}
+
 function resolvePendingInteraction(requestId: string, decision: InteractionDecision, fromShared = false): boolean {
   const resolver = pendingInteractionResolvers.get(requestId);
   if (!resolver || (!fromShared && agentInputCoordinatorHolder?.isExecutionPaused(resolver.sessionId))) return false;
@@ -5146,7 +5159,7 @@ export function installDesktopInteractionListener(session: {
       );
     });
   }, (requestId, decision) => {
-    resolvePendingInteraction(requestId, decision);
+    cancelPendingInteraction(requestId, decision);
   });
 }
 
@@ -11995,6 +12008,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const ownerScope = scope as ReturnType<typeof captureDataOwnerBroadcastScope> | undefined;
       if (ownerScope && !isDataOwnerBroadcastScopeCurrent(ownerScope)) return;
       broadcastToAllWindows(MAKER_PUSH.BOT_GROUP_CHANGED, payload, ownerScope);
+      if (payload.change === 'updated' || payload.change === 'deleted') notifyAgentIslandBotGroupChanged(payload.groupId);
       // Phones read groups as remote resources; any change re-reads the row and the chat.
       broadcastBotGroupRemoteResourceChanged(payload.groupId);
     },
