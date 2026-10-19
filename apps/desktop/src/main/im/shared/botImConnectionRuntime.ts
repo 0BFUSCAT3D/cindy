@@ -275,6 +275,23 @@ export function getBotImConnectionOrchestrator(id: string): ImOrchestrator | und
   return instances.get(id)?.transport.orchestrator;
 }
 
+/**
+ * 某位伙伴当前在线的飞书连接(伙伴主任务出站用)。
+ *
+ * 伙伴主任务(role='canonical')与桌面共用、不带专线的 `feishuChatId`, 所以非飞书入站轮次
+ * (后台任务回执 / 心跳 / scheduler)拿不到逐轮作用域。这些轮次必须仍走伙伴自己的连接,
+ * 不能回落到设置页那份可能已被清空的个人 bot —— 否则 `getOwnerOpenId()` 为 null 时
+ * `send_message_to_user` / `send_file_to_user` 会误报 NO_CHAT_CONTEXT。
+ */
+export function getBotFeishuTransport(botId: string): FeishuIM | null {
+  for (const record of listBotImConnectionsForBot(botId)) {
+    if (record.channel !== 'feishu') continue;
+    const live = instances.get(record.id);
+    if (live?.transport.kind === 'feishu') return live.transport.im;
+  }
+  return null;
+}
+
 async function readBotProfileStatus(botId: string): Promise<string | null> {
   const [row] = await getDbClient()
     .drizzle.select({ status: botProfiles.status })

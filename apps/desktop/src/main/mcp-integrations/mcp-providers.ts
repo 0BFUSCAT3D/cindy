@@ -43,6 +43,8 @@ import { getAndroidMcpDeps } from './android.js';
 import { getBrowserMcpDeps } from './browser.js';
 import { getComputerMcpDeps } from './computer.js';
 import { feishuIm, wechatIm } from '../im';
+import { getBotFeishuTransport } from '../im/shared/botImConnectionRuntime';
+import { selectFeishuTransport } from './feishuTransportRouting';
 import { readChannelToolScope, type FeishuToolTransport } from '../im/shared/channelToolScope';
 import { hasImChannelVendorOptions } from '../../shared/botImConnection.js';
 import { sendFeishuSessionNotification } from '../im/feishu/notificationOrigin';
@@ -168,6 +170,9 @@ export interface DesktopMcpProvidersDeps {
  * 当前 tool-call 所属的飞书逐轮作用域(个人 bot 或伙伴自有连接), 没有就是 null。
  * 用 sessionId + sessionInstanceId 查租约: 旧实例借不到新实例的权限。
  */
+/** 会话 → 伙伴主任务归属(tool-call 高频路径); 换账号 / 换连接时整表清空。 */
+const companionBotIdBySession = new Map<string, { dbClient: object; botId: string | null }>();
+
 function readFeishuTurnScope(
   session: { sessionId?: string; sessionInstanceId?: string } | undefined,
 ) {
@@ -179,14 +184,57 @@ function readFeishuTurnScope(
 }
 
 /**
- * cindy_feishu_bot 出站走哪个 bot: 轮次由伙伴自有连接触发时走那条连接自己的 FeishuIM,
- * 否则(个人 bot 轮次 / hook 会话 / 桌面任务的「飞书通知我」)走设置页那份。2026-10-17 之前
- * 这里永远是设置页那份 —— 伙伴绑定的飞书连接里 send_message_to_user 会从别的 bot 发出或直接失败。
+ * 这个 tool-call 所属的会话是哪位伙伴(没有 ≡ 不是伙伴会话)。
+ *
+ * 伙伴主任务(role='canonical')与桌面共用、不带专线的 `feishuChatId`, 所以后台任务回执 /
+ * 心跳 / scheduler / 对话输入触发的轮次没有逐轮作用域。出站仍必须走伙伴自己的连接。
+ */
+function companionBotIdForSession(sessionId: string | undefined): string | null {
+  if (!sessionId) return null;
+  const dbClient = tryGetDbClient();
+  if (!dbClient) return null;
+  const cached = companionBotIdBySession.get(sessionId);
+  if (cached && cached.dbClient === dbClient) return cached.botId;
+  let botId: string | null = null;
+  try {
+    const row = dbClient.drizzle
+      .select({ botId: botSessionLinks.botId })
+      .from(botSessionLinks)
+      .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
+      .where(and(
+        eq(botSessionLinks.sessionId, sessionId),
+        eq(sessions.source, 'bot'),
+        eq(botSessionLinks.role, 'canonical'),
+      ))
+      .limit(1)
+      .get();
+    botId = row?.botId ?? null;
+  } catch {
+    return null;
+  }
+  if (companionBotIdBySession.size > 512) companionBotIdBySession.clear();
+  companionBotIdBySession.set(sessionId, { dbClient, botId });
+  return botId;
+}
+
+/**
+ * cindy_feishu_bot 出站走哪个 bot: 飞书入站轮次走触发本轮的那条连接; 伙伴主任务
+ * (后台任务回执 / 心跳 / 桌面输入轮次)走该伙伴自己的连接; 其余(hook 会话 / 桌面
+ * 任务的「飞书通知我」)才走设置页那份。
+ *
+ * 不能把伙伴会话回落到设置页那份: 个人 bot 移交给伙伴后那份已被清空, owner 为空,
+ * `getChatId()` 会直接给 NO_CHAT_CONTEXT —— 用户明明已经私聊过机器人。
  */
 function feishuTransportFor(
   session: { sessionId?: string; sessionInstanceId?: string } | undefined,
 ): FeishuToolTransport {
-  return readFeishuTurnScope(session)?.im ?? feishuIm;
+  const companionBotId = companionBotIdForSession(session?.sessionId);
+  return selectFeishuTransport({
+    turnScopeIm: readFeishuTurnScope(session)?.im ?? null,
+    companionBotId,
+    companionIm: companionBotId ? getBotFeishuTransport(companionBotId) : null,
+    personalIm: feishuIm,
+  });
 }
 
 export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMcpProvider[] {
