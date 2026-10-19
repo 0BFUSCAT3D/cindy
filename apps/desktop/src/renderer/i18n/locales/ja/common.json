@@ -530,6 +530,18 @@
       "updated": "更新：{{time}}",
       "usageTitle": "使用量の詳細",
       "allowUsageDescription": "オンにすると、この共有のすべての利用者が、共有元と他のすべての利用者の表示名および過去の使用量の詳細を閲覧できます。"
+    },
+    "idleRelease": {
+      "title": "このパソコンで他のパソコンのモデルを使うとき",
+      "description": "このパソコンのセッションが他のパソコンのモデルを使うとき、そのパソコンで同時に実行できる数には上限があります。上限に近づいたとき、下の時間より長くアイドル状態のセッションを一時的に切断し、新しいセッションに枠を譲るように設定できます。そのセッションにメッセージを送ると自動で再接続され、それまでの会話はそのまま残ります。実行中のセッションは切断しません。切断中も、このパソコン上のバックグラウンドコマンドは実行を続けます。",
+      "minutes": "アイドル解放（分）",
+      "hint": "既定値は 0 で、切断しません。上限に達したときは上限のメッセージが表示されます。1～120 にすると、その分数だけアイドル状態が続いた場合にのみ切断します。",
+      "invalid": "0～{{max}} の整数を入力してください。",
+      "save": "保存",
+      "reset": "既定値に戻す",
+      "saved": "アイドル解放の設定を保存しました",
+      "retry": "再読み込み",
+      "loading": "読み込み中…"
     }
   },
   "providerGroup": {
@@ -1752,13 +1764,6 @@
         "label": "リストの表示",
         "hint": "ピン留め以外のセッションは、テキストなら1行、リストならプレビュー付きで表示します。",
         "aria": "セッションリストの表示を切り替える"
-      },
-      "ghostPanelRestore": {
-        "label": "プラグインパネルの復元場所",
-        "hint": "最小化したプラグインパネルを復元する場所を選択します。",
-        "aria": "プラグインパネルの復元場所を選択",
-        "bubble": "フローティングバブル",
-        "sidebar": "サイドバー"
       },
       "wallpaper": {
         "title": "壁紙",
@@ -6651,7 +6656,7 @@
         "nodeResidentDetail": "プラグインが有効な間は実行を続け、無効化、更新、アンインストール、または Cindy 終了時に停止します。",
         "tool": "ツール「{{name}}」",
         "command": "チャット指令 ${{command}}",
-        "panelLeft": "パネル「{{title}}」· チャットの左側にドッキング",
+        "panelLeft": "パネル「{{title}}」· サイドバーに表示",
         "panelTab": "パネル「{{title}}」· プラグインページ内で開く",
         "mainView": "Cindy の左側ナビゲーションに「{{title}}」への入口を追加できます",
         "mainViewDetail": "クリックするとプラグインのサンドボックス内でメインビューが開き、ファイル、ネットワーク、認証情報へのアクセスが追加で付与されることはありません。",
@@ -6748,8 +6753,9 @@
         "locationCopied": "インストール場所をコピーしました",
         "locationCopyFailed": "インストール場所をコピーできませんでした。手動でコピーしてください",
         "openLocation": "インストール場所を開く",
-        "panelDocked": "ドッキング済み · 最小幅 {{min}}px",
-        "panelNotDocked": "未ドッキング(レイアウトに位置記録なし)",
+        "panelInSidebar": "右サイドバーに表示（すべてのタスクで保持）",
+        "panelDismissed": "右サイドバーから閉じました · ここまたはサイドバーの「+」メニューから再度開けます",
+        "openInSidebar": "サイドバーで開く",
         "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
         "panelNone": "このプラグインにパネルはありません",
         "customSlotTitle": "プラグインのカスタム設定エリア",
@@ -6804,7 +6810,8 @@
         "collapseTools": "Tool を折りたたむ",
         "viewAllPermissions": "さらに表示",
         "permissionsDialogDescription": "この Plugin が要求する全 {{count}} 項目の権限",
-        "closeDialog": "ダイアログを閉じる"
+        "closeDialog": "ダイアログを閉じる",
+        "resetPlacement": "既定の位置に戻す"
       },
       "contents": {
         "mainView": "メインビュー",
@@ -8076,19 +8083,7 @@
     "collapsePanel": "折りたたみ",
     "expandPanel": "展開"
   },
-  "panelChrome": {
-    "maximizeAria": "パネルを最大化",
-    "restoreAria": "パネルのサイズを元に戻す",
-    "detachAria": "新しいウィンドウで開く",
-    "minimizeAria": "パネルを最小化",
-    "closeAria": "パネルを閉じてプラグインを無効化"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "「{{name}}」を無効にしますか？",
-      "body": "このパネルを閉じるとプラグインが無効になり、機能が停止します。左側ナビゲーションの「プラグイン」からいつでも再度有効にできます。",
-      "confirm": "無効にする"
-    },
     "externalLinkConfirm": {
       "title": "Cindy で外部ウェブサイトを開きますか？",
       "message": "Cindy で外部ウェブサイトを開きますか？",
@@ -8096,19 +8091,11 @@
       "cancel": "キャンセル"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "メインウィンドウに戻る",
-    "unavailable": "このプラグインパネルは現在利用できません"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "{{name}} パネルを元に戻す",
-    "stackExpandAria": "{{count}} 個のプラグインパネルを最小化中。クリックで展開",
-    "stackCollapseAria": "プラグインパネルの一覧を畳む"
-  },
-  "ghostPanelRestore": {
-    "single": "{{name}}を復元",
-    "multiple": "最小化したプラグインパネル",
-    "multipleAria": "{{count}}個のプラグインパネルが最小化されています。復元するパネルを選択"
+  "ghostMainView": {
+    "openInSidebar": "サイドバーで開く",
+    "openInPage": "ページで開く",
+    "openInWindow": "別ウィンドウで開く",
+    "resetPlacement": "既定の位置に戻す"
   },
   "rightSidebar": {
     "ariaLabel": "右サイドバー",
@@ -8122,16 +8109,24 @@
       "mergeBack": "メインウィンドウに戻す",
       "followPlaceholder": "サイドバーはメインウィンドウの現在のセッションに追従します"
     },
+    "tabWindow": {
+      "title": "サイドバーのタブ",
+      "mergeBack": "サイドバーに戻す",
+      "loading": "読み込み中…",
+      "closed": "このタブは閉じられました"
+    },
     "emptyTitle": "準備中の領域",
     "emptyDesc": "右サイドバーのコンテンツは今後のアップデートで追加されます。",
     "tabs": {
       "addAria": "タブを追加",
       "addFailed": "タブを追加できませんでした",
       "tabCloseAria": "タブを閉じる",
+      "pinnedAria": "グローバルタブ。タスクを切り替えても保持されます",
       "menu": {
         "addLabel": "タブを追加",
         "comingSoon": "近日対応",
-        "alreadyOpen": "開いています"
+        "alreadyOpen": "開いています",
+        "pluginsLabel": "プラグイン"
       },
       "kinds": {
         "fileBrowser": "ファイルブラウザ",
@@ -8143,19 +8138,23 @@
         "resourceUsage": "アクティビティモニタ",
         "collaboration": "コラボ",
         "unknown": "不明なタブ",
-        "ghostPanel": "プラグインパネル"
+        "ghostPanel": "プラグインパネル",
+        "pluginView": "プラグインビュー"
       },
       "controls": {
         "showAria": "サイドバーを表示",
         "maximizeAria": "サイドバーを最大化",
         "restoreAria": "最大化を解除",
         "closeAria": "サイドバーを閉じる",
-        "detachAria": "サイドバーを新しいウィンドウで開く"
+        "detachAria": "現在のタブを新しいウィンドウで開く"
       },
       "contextMenu": {
         "close": "閉じる",
         "closeOthers": "他のタブを閉じる",
-        "closeAll": "すべて閉じる"
+        "closeAll": "すべて閉じる",
+        "openInWindow": "新しいウィンドウで開く",
+        "moveTo": "{{target}}に移動",
+        "moveToWindow": "ウィンドウに移動："
       },
       "empty": {
         "eyebrow": "右サイドバー",
@@ -8177,6 +8176,12 @@
         "addMoreHint": "上部の + ボタンからほかのパネルタイプを選択できます"
       },
       "placeholderHint": "{{kind}} — コンテンツは後続フェーズで追加されます"
+    },
+    "tabGroups": {
+      "left": "左側",
+      "right": "右サイドバー",
+      "top": "上部",
+      "bottom": "下部"
     },
     "fileBrowser": {
       "noWorkdir": "このセッションにローカル作業ディレクトリが関連付けられていないため、ファイルブラウザは利用できません",
@@ -10083,6 +10088,19 @@
         "cancel": "キャンセル",
         "failed": "削除できませんでした。しばらくしてからもう一度お試しください",
         "ok": "OK"
+      },
+      "officialX": {
+        "bind": "このパートナーに割り当てる",
+        "remove": "パートナーの割り当てを解除",
+        "bindTitle": "X の質問を {{name}} に任せますか？",
+        "bindBody": "公式 @askmycindy への公開の質問を、{{name}} の個性、ツール、共有メモリ、作業フォルダーを使って処理します。返信は公開されます。X の履歴はプライベートチャットとは別です。既存のパートナーの割り当ては置き換わります。",
+        "removeTitle": "X の割り当てを解除しますか？",
+        "removeBody": "X アカウントの連携は維持され、以降の質問は通常のタスクになります。進行中の返信は完了まで続きます。",
+        "bound": "X の質問は {{name}} が担当します。X を有効にしてアカウントを認証すると利用できます。",
+        "boundElsewhere": "X は別のパートナーに割り当てられています。ここに割り当てると置き換わります。",
+        "unbound": "公式 @askmycindy への質問を {{name}} に任せられます。",
+        "managed": "X の質問はパートナーが担当しています。そのパートナーのメッセージプラットフォーム設定で変更できます。",
+        "riskBody": "X の質問にはパートナーの共有メモリ、ツール、作業フォルダーを使用し、返信は公開されます。個人情報を扱う用途には使用しないでください。プライベートチャットの履歴は直接使用しません。"
       }
     }
   },
@@ -12009,7 +12027,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "共有されたプロバイダーは一時的に利用できません。共有した人のパソコンがオフラインか、共有が一時的にオフになっている可能性があります。後でもう一度試すか、別のモデルに切り替えて続けられます。",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "プロバイダーグループ内のパソコンは現在このセッションを実行できません。オフライン、割り当て停止中、クールダウン中、またはこのモデルがない可能性があります。このプロバイダーの「リモートと共有」ページでグループを確認してください。",
       "REMOTE_AGENT_DEVICE_LIMIT": "このデバイスのリモートセッション数が上限に達しました。不要なセッションをアーカイブするか、提供者に「リモートと共有」で上限の変更を依頼してください。",
-      "REMOTE_AGENT_TOTAL_LIMIT": "提供者のパソコンのリモートセッション総数が上限に達しました。提供者に不要なセッションの解放、または「リモートと共有」での上限変更を依頼してください。"
+      "REMOTE_AGENT_TOTAL_LIMIT": "提供者のパソコンのリモートセッション総数が上限に達しました。提供者に不要なセッションの解放、または「リモートと共有」での上限変更を依頼してください。",
+      "REMOTE_AGENT_RESUME_LOST": "相手のパソコンでのこれまでの会話に再接続できなかったため、Agent はその文脈なしで続行します。"
     },
     "generatedFiles": {
       "title": "このメッセージで作成されたファイル",

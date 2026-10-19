@@ -534,6 +534,18 @@
       "updated": "Updated {{time}}",
       "usageTitle": "Usage Details",
       "allowUsageDescription": "When enabled, everyone using this shared provider can view the sharer's and every other user's display names and detailed usage history."
+    },
+    "idleRelease": {
+      "title": "When this computer uses models on other computers",
+      "description": "When tasks on this computer use models on another computer, that computer limits how many of them it runs at once. As the limit gets close, you can let tasks idle longer than the time below disconnect temporarily to make room for new tasks. Send one a message and it reconnects automatically, with the earlier conversation intact. Tasks that are running are never disconnected; while a task is disconnected, its background commands on this computer keep running.",
+      "minutes": "Idle release (minutes)",
+      "hint": "The default is 0, which never disconnects; when the limit is reached you see the limit message. With 1–120, a task can disconnect only after it has been idle this long.",
+      "invalid": "Enter a whole number from 0 to {{max}}.",
+      "save": "Save",
+      "reset": "Restore defaults",
+      "saved": "Idle release setting saved",
+      "retry": "Reload",
+      "loading": "Loading…"
     }
   },
   "providerGroup": {
@@ -1781,13 +1793,6 @@
         "label": "List Style",
         "hint": "For unpinned sessions: Text uses one line; List adds a preview.",
         "aria": "Switch session list style"
-      },
-      "ghostPanelRestore": {
-        "label": "Plugin panel restore entry",
-        "hint": "Choose where minimized plugin panels can be restored.",
-        "aria": "Choose the plugin panel restore entry",
-        "bubble": "Floating bubble",
-        "sidebar": "Sidebar"
       },
       "wallpaper": {
         "title": "Wallpaper",
@@ -6682,7 +6687,7 @@
         "nodeResidentDetail": "Runs while the plugin is enabled and stops when disabled, updated, uninstalled, or when Cindy exits.",
         "tool": "Tool \"{{name}}\"",
         "command": "Chat command ${{command}}",
-        "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
+        "panelLeft": "Panel \"{{title}}\" · shown in the sidebar",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
         "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
@@ -6779,8 +6784,9 @@
         "locationCopied": "Install location copied",
         "locationCopyFailed": "Could not copy the install location. Copy it manually.",
         "openLocation": "Open install location",
-        "panelDocked": "Docked · min width {{min}}px",
-        "panelNotDocked": "Not docked (no layout record yet)",
+        "panelInSidebar": "Shown in the right sidebar (kept across tasks)",
+        "panelDismissed": "Closed from the right sidebar · reopen here or from the sidebar “+” menu",
+        "openInSidebar": "Open in the sidebar",
         "panelPageHosted": "Opens from the Plugin page · closes when you leave",
         "panelNone": "This plugin has no panel",
         "customSlotTitle": "Plugin custom settings area",
@@ -6835,7 +6841,8 @@
         "collapseTools": "Collapse Tools",
         "viewAllPermissions": "See All",
         "permissionsDialogDescription": "All {{count}} permissions requested by this Plugin",
-        "closeDialog": "Close Dialog"
+        "closeDialog": "Close Dialog",
+        "resetPlacement": "Reset to default position"
       },
       "contents": {
         "mainView": "Main view",
@@ -8108,19 +8115,7 @@
     "collapsePanel": "Collapse",
     "expandPanel": "Expand"
   },
-  "panelChrome": {
-    "maximizeAria": "Maximize panel",
-    "restoreAria": "Restore panel size",
-    "detachAria": "Open in a new window",
-    "minimizeAria": "Minimize panel",
-    "closeAria": "Close panel and disable plugin"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "Disable \"{{name}}\"?",
-      "body": "Closing this panel disables the plugin and pauses its capabilities. You can re-enable it anytime from Plugins in the left navigation.",
-      "confirm": "Disable"
-    },
     "externalLinkConfirm": {
       "title": "Allow Cindy to open an external website?",
       "message": "Allow Cindy to open an external website?",
@@ -8128,19 +8123,11 @@
       "cancel": "Cancel"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "Return to main window",
-    "unavailable": "This plugin panel is currently unavailable"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "Restore {{name}} panel",
-    "stackExpandAria": "{{count}} plugin panels minimized. Click to expand",
-    "stackCollapseAria": "Collapse the plugin panel list"
-  },
-  "ghostPanelRestore": {
-    "single": "Restore {{name}}",
-    "multiple": "Minimized plugin panels",
-    "multipleAria": "{{count}} plugin panels minimized. Choose a panel to restore"
+  "ghostMainView": {
+    "openInSidebar": "Open in the sidebar",
+    "openInPage": "Open as page",
+    "openInWindow": "Open in a separate window",
+    "resetPlacement": "Reset to default position"
   },
   "rightSidebar": {
     "ariaLabel": "Right sidebar",
@@ -8154,16 +8141,24 @@
       "mergeBack": "Merge back to main window",
       "followPlaceholder": "The sidebar follows the main window's current session"
     },
+    "tabWindow": {
+      "title": "Sidebar tab",
+      "mergeBack": "Merge back into the sidebar",
+      "loading": "Loading…",
+      "closed": "This tab has been closed"
+    },
     "emptyTitle": "Reserved area",
     "emptyDesc": "Right sidebar content will be added in future iterations.",
     "tabs": {
       "addAria": "Add tab",
       "addFailed": "Failed to add tab",
       "tabCloseAria": "Close tab",
+      "pinnedAria": "Global tab, kept across tasks",
       "menu": {
         "addLabel": "Add tab",
         "comingSoon": "Coming soon",
-        "alreadyOpen": "Open"
+        "alreadyOpen": "Open",
+        "pluginsLabel": "Plugins"
       },
       "kinds": {
         "fileBrowser": "File browser",
@@ -8175,19 +8170,23 @@
         "resourceUsage": "Activity Monitor",
         "collaboration": "Team",
         "unknown": "Unknown tab",
-        "ghostPanel": "Plugin panel"
+        "ghostPanel": "Plugin panel",
+        "pluginView": "Plugin view"
       },
       "controls": {
         "showAria": "Show sidebar",
         "maximizeAria": "Maximize sidebar",
         "restoreAria": "Restore sidebar",
         "closeAria": "Close sidebar",
-        "detachAria": "Open sidebar in a new window"
+        "detachAria": "Open the current tab in a new window"
       },
       "contextMenu": {
         "close": "Close",
         "closeOthers": "Close others",
-        "closeAll": "Close all"
+        "closeAll": "Close all",
+        "openInWindow": "Open in a new window",
+        "moveTo": "Move to {{target}}",
+        "moveToWindow": "Move to window:"
       },
       "empty": {
         "eyebrow": "Right Sidebar",
@@ -8209,6 +8208,12 @@
         "addMoreHint": "Use the + button at the top to choose more panel types"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
+    },
+    "tabGroups": {
+      "left": "left side",
+      "right": "right sidebar",
+      "top": "top",
+      "bottom": "bottom"
     },
     "fileBrowser": {
       "noWorkdir": "This session has no local working directory; file browser unavailable",
@@ -10123,6 +10128,19 @@
         "cancel": "Cancel",
         "failed": "Couldn’t remove it. Try again later.",
         "ok": "OK"
+      },
+      "officialX": {
+        "bind": "Assign to this teammate",
+        "remove": "Remove teammate assignment",
+        "bindTitle": "Let {{name}} handle X questions?",
+        "bindBody": "Your public questions to @askmycindy will use {{name}}’s identity, tools, shared memory and workspace. Replies are public. The X thread is separate from your private chat history. This replaces any existing teammate assignment.",
+        "removeTitle": "Remove the X assignment?",
+        "removeBody": "Your X account stays connected. Future questions become ordinary tasks. Replies already in progress will finish.",
+        "bound": "X questions are assigned to {{name}}. Enable X and authorize your account to start.",
+        "boundElsewhere": "X is assigned to another teammate. Assigning it here replaces that teammate.",
+        "unbound": "Let {{name}} handle your questions to the official @askmycindy bot.",
+        "managed": "A teammate handles X questions. Change the assignment in that teammate’s message platform settings.",
+        "riskBody": "X questions use the teammate’s shared memory, tools and workspace, and replies are public. Do not use X for private information. The X thread does not directly use your private chat history."
       }
     }
   },
@@ -12053,7 +12071,8 @@
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
       "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
-      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing."
+      "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
+      "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context."
     },
     "generatedFiles": {
       "title": "Files created this message",
