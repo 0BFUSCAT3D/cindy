@@ -1038,6 +1038,43 @@ describe('remote connection pool with a real host', () => {
     await vi.waitFor(() => expect(pool.occupied()).toBe(1));
   });
 
+  // PR #6483 review：接回前就取走了供应商组的「新一轮」标记，接回失败后重试不再带 groupNewRound。
+  it('keeps the provider-group new-round mark until a reconnect succeeds', async () => {
+    limits = { perDevice: 16, total: 64 };
+    const pool = newPool();
+    let newRound = false;
+    const a = await startRemoteAgentSession('claude-code', {
+      sessionId: randomUUID(), workingDir: project, model: 'm1',
+    } as StartSessionOptions, {
+      ...deps(pool),
+      groupSwitch: { offer() {}, takeNewRound: () => { const taken = newRound; newRound = false; return taken; } },
+    });
+    opened.push(a);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    newRound = true;
+    const sentOptions: Array<Record<string, unknown>> = [];
+    let offline = true;
+    intercept = (request) => {
+      if (request.op === 'open' && offline) {
+        offline = false;
+        throw new Error('[REMOTE_AGENT_UNAVAILABLE] offline');
+      }
+      if (request.op === 'call' && request.method === 'send') {
+        sentOptions.push((request.payload as { json: unknown[] }).json[1] as Record<string, unknown>);
+      }
+      return undefined;
+    };
+    await expect(a.send({ type: 'user', content: 'lost' })).rejects.toThrow('offline');
+    expect(newRound).toBe(true);
+    expect(await ask(a, events, 'again')).toBe('ok:again');
+    expect(sentOptions).toHaveLength(1);
+    expect(sentOptions[0].groupNewRound).toBe(true);
+    expect(newRound).toBe(false);
+  });
+
   it('gives up a release once a send has started', async () => {
     const pool = newPool();
     const a = await start(pool);

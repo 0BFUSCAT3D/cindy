@@ -316,7 +316,6 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
 
   async function sendLike(method: 'send' | 'steer', message: UserMessage, opts?: SendOptions): Promise<void> {
     const encoded = await encodeSendOptions(opts, readImage);
-    if (method === 'send' && deps.takeGroupNewRound?.()) encoded.wire.groupNewRound = true;
     const wireMessage = await encodeUserMessage(message, readImage);
     const projectMessage = (wire: typeof wireMessage) => {
       if (typeof wire.content === 'string') wire.content = deps.workspace.mapTextForAgent(wire.content);
@@ -337,6 +336,8 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       }
     }
     const client = await link.ensure();
+    // 连回成功后才取供应商组的「新一轮」标记：连不回时消息没发出，标记要留给重试。
+    if (method === 'send' && deps.takeGroupNewRound?.()) encoded.wire.groupNewRound = true;
     // 连回之后才转换路径：让出期间改过的目录要等连回补发后才有虚拟路径。
     projectMessage(wireMessage);
     if (encoded.wire.cindy?.autoReviewSourceContent) projectMessage(encoded.wire.cindy.autoReviewSourceContent);
