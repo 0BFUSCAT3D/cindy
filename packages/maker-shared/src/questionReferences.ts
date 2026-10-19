@@ -56,7 +56,11 @@ export function splitQuestionReferences(text: string): QuestionReferencePart[] {
       append({ text: href, href });
       append({ text: raw.slice(href.length) });
     } else {
-      const href = raw.replace(/[.,;!?]+$/, '');
+      // Scan backwards once: an unanchored suffix regex retries at every
+      // punctuation character when the token ends with ordinary text.
+      let hrefEnd = raw.length;
+      while (hrefEnd > 0 && '.,;!?'.includes(raw[hrefEnd - 1])) hrefEnd--;
+      const href = raw.slice(0, hrefEnd);
       const reference = isReference(href);
       // An unquoted absolute path may contain spaces. Never turn just its
       // trailing fragment into a relative link; code/labelled references can
