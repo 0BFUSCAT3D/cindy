@@ -346,7 +346,10 @@ import {
 } from './atAgentCatalog.js';
 import * as imageCacheStore from '../imageCacheStore.js';
 import * as cindyChatAttachments from '../cindy-media/chatAttachments.js';
-import { materializeGeneratedImage } from '../cindy-media/generatedMedia.js';
+import { materializeSshRemoteMedia } from '../file-browser/ssh-media.js';
+import { readGeneratedImageFile, MAX_GENERATED_IMAGE_BYTES } from '../cindy-media/generatedMedia.js';
+import { createGeneratedImageDelivery } from '../cindy-media/generatedImageDelivery.js';
+import { setGeneratedImageRecovery } from '../cindy-media/generatedImageRecovery.js';
 import {
   getCurrentDbClientSnapshot,
   getDbClient,
@@ -2920,15 +2923,6 @@ function summarizeIpcUserMessage(message: IpcUserMessage): Record<string, unknow
     fileCount,
     mentionCount,
   };
-}
-
-interface CodexImageEventData {
-  kind?: 'view' | 'generation';
-  blockId?: string;
-  path?: string;
-  url?: string;
-  revisedPrompt?: string;
-  status?: string;
 }
 
 /**
@@ -19797,6 +19791,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return inputCoordinator.resume(sid);
   });
 
+  ipcMain.handle(MAKER_INVOKE.IMAGES_RETRY, async (event, sessionId: unknown, imageId: unknown) => {
+    const remote = isDeviceLinkInvoke();
+    if (!remote) assertTrustedAppRendererEvent(event);
+    const sid = requireSessionId(sessionId);
+    if (typeof imageId !== 'string' || !/^[a-f0-9]{64}$/.test(imageId)) throwIpcError('INVALID_PARAMS', 'invalid image id');
+    await assertRemoteInputControlBoundary(sid, remote, undefined);
+    try { await generatedImageDelivery.recover(sid, imageId as string); }
+    catch { throwIpcError('INTERNAL', 'Image delivery is unavailable'); }
+  });
+
   ipcMain.handle(
     MAKER_INVOKE.INPUT_RETRY_LAST_ERROR,
     async (_e, sessionId: unknown, opts?: unknown) => {
@@ -23370,66 +23374,36 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   log.info('maker:* IPC handlers registered');
 }
 
-async function broadcastCodexImageAsToolResult(
-  sessionId: string,
-  event: AgentEvent,
-): Promise<void> {
-  const data = event.data as CodexImageEventData | null;
-  if (data?.kind !== 'generation') return;
-
-  try {
-    const cached = await materializeCodexImage(sessionId, data);
-    if (!cached) {
-      log.warn('codex image event missing materializable image', {
-        sessionId,
-        blockId: data.blockId,
-        hasPath: !!data.path,
-        hasUrl: !!data.url,
-      });
-      return;
+const generatedImageDelivery = createGeneratedImageDelivery({
+  invoke: remoteBackgroundInvoke,
+  publish: (sessionId, event, persistId, resolvedContent) => {
+    broadcastToAllWindows(MAKER_PUSH.EVENT, { sessionId, event, persistId, resolvedContent }, captureDataOwnerBroadcastScope());
+  },
+  readSource: async (_sessionId, image, session) => {
+    if (image.pathOrigin === 'remote-agent') throw new Error('REMOTE_SOURCE_REQUIRED');
+    if (session.remoteHostId) {
+      if (!image.path || !session.workingDir) throw new Error('REMOTE_SOURCE_REQUIRED');
+      const result = await materializeSshRemoteMedia({ remoteHostId: session.remoteHostId, workdir: session.workingDir },
+        `xdt-file://?path=${encodeURIComponent(image.path)}`, undefined, { maxBytes: MAX_GENERATED_IMAGE_BYTES });
+      if (!result.ok) throw new Error('REMOTE_SOURCE_REQUIRED');
+      return readGeneratedImageFile(result.cachePath);
     }
+    const managed = image.url?.startsWith('cindy-media://') ? resolveCindyMediaUrl(image.url)
+      : image.url?.startsWith('xdt-image://') ? imageCacheStore.resolveSafe(image.url) : undefined;
+    if (managed) {
+      try { return await readGeneratedImageFile(managed.absPath); }
+      catch (error) { if (!image.path) throw error; }
+    }
+    const source = image.path;
+    if (!source) throw new Error('MEDIA_SOURCE_MISSING');
+    return readGeneratedImageFile(source);
+  },
+});
+setGeneratedImageRecovery((sessionId) => generatedImageDelivery.recover(sessionId), () => generatedImageDelivery.reconcile());
 
-    const toolUseId = data.blockId || `codex-image-${Date.now()}`;
-    const toolInput = {
-      ...(data.revisedPrompt ? { prompt: data.revisedPrompt } : {}),
-      ...(data.status ? { status: data.status } : {}),
-    };
-    const fullText = JSON.stringify({
-      ok: true,
-      kind: 'generation',
-      text: 'image generated',
-      xdt_image_url: cached.url,
-      filename: cached.filename,
-      ...(data.revisedPrompt ? { revised_prompt: data.revisedPrompt } : {}),
-      ...(data.status ? { status: data.status } : {}),
-      ...(data.path ? { original_path: data.path } : {}),
-    });
-
-    broadcastSyntheticToolEvent(sessionId, {
-      type: 'tool_use',
-      source: 'codex',
-      agentMeta: event.agentMeta,
-      data: { toolUseId, toolName: 'imagegen', input: toolInput },
-    } satisfies AgentEvent);
-    broadcastSyntheticToolEvent(sessionId, {
-      type: 'tool_result_full',
-      source: 'codex',
-      agentMeta: event.agentMeta,
-      data: { toolUseId, fullText, isError: false },
-    } satisfies AgentEvent);
-    broadcastSyntheticToolEvent(sessionId, {
-      type: 'tool_result',
-      source: 'codex',
-      agentMeta: event.agentMeta,
-      data: { summary: 'image generated', toolUseIds: [toolUseId] },
-    } satisfies AgentEvent);
-  } catch (err) {
-    log.warn('failed to materialize codex image event', {
-      sessionId,
-      blockId: data?.blockId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+async function broadcastCodexImageAsToolResult(sessionId: string, event: AgentEvent): Promise<void> {
+  try { await generatedImageDelivery.deliver(sessionId, event); }
+  catch { log.warn('Codex generated image delivery could not be persisted', { sessionId }); }
 }
 
 function broadcastSyntheticToolEvent(
@@ -23449,32 +23423,6 @@ function broadcastSyntheticToolEvent(
   });
 }
 
-async function materializeCodexImage(
-  sessionId: string,
-  data: CodexImageEventData,
-): Promise<{ url: string; filename: string } | null> {
-  // 规则 25:生成图入 cindy-media 总仓(零引用;合成 tool_result
-  // 消息落库时由 createMessage 的挂账钩子补 session-attachment 引用)。逻辑
-  // 本体在 cindy-media/generatedMedia.ts(规则 14 可测),这里只做 thin adapter。
-  try {
-    return await materializeGeneratedImage(data, {
-      verifyManagedUrl: async (url) => {
-        const resolved = url.startsWith('cindy-media://') ? resolveCindyMediaUrl(url) : imageCacheStore.resolveSafe(url);
-        const source = await fsp.stat(resolved.absPath);
-        if (!source.isFile()) throw new Error('[MEDIA_SOURCE_MISSING] Generated image is not a file');
-      },
-      ingestFromPath: cindyChatAttachments.ingestChatImageFromPath,
-      ingestBuffer: cindyChatAttachments.ingestChatImageBuffer,
-    });
-  } catch (err) {
-    // 白名单外 mime / 读盘失败:丢图不炸事件流(与旧行为的失败面一致)。
-    log.warn('materializeCodexImage: ingest failed, dropping image', {
-      sessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-}
 
 /**
  * 用户在 session 跑到一半把工作目录删了 / 重命名了，之后继续 send 会让 SDK 在

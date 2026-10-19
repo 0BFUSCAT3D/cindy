@@ -41,6 +41,7 @@ import { throwIpcError, requireString } from '../../utils/ipcValidate';
 import * as broadcastTap from '../../device-link/broadcast-tap';
 import { createLogger } from '../../logger';
 import { collectCindyMediaHashes, commitMessageMediaRefs } from '../../cindy-media/chatAttachments';
+import { recoverGeneratedImagesForHistory } from '../../cindy-media/generatedImageRecovery';
 import { restoreTaskImageRows } from '../../cindy-media/taskImageDelivery';
 import {
   removeRefs as removeMediaRefs,
@@ -249,6 +250,9 @@ export async function readMessagesList(sessionId: unknown, opts: unknown, skipIm
     const after = (opts as { after?: string } | undefined)?.after;
     const imageDbClient = getDbClient();
     const db = imageDbClient.drizzle;
+    if (!before && beforeTs == null && !after && !outline) {
+      void recoverGeneratedImagesForHistory(sid).catch(() => undefined);
+    }
 
     // 外部历史导入(Codex rollout / Claude transcript):device-link 隧道调用
     // 只在首页请求跑(分页跳过,#318 性能语义;首页判定 = 无任何分页游标),
@@ -1610,6 +1614,8 @@ export async function createMessage(
     /** Host-only admission guard, checked before and after the publication transaction.
      * Must be repeatable. A failed final check rolls back this exact row before delivery hooks. */
     beforePublish?: () => Promise<void>;
+    /** Host delivery owns its guarded attachment commit and compensation. */
+    deferMediaRefs?: boolean;
     /**
      * Optional clear-boundary compare-and-set for optimistic user sends.  The
      * insert is accepted only while the session still has this exact
@@ -1618,6 +1624,8 @@ export async function createMessage(
      * durable user row.
      */
     expectedClearBoundaryMs?: number | null;
+    /** Skip a host-written opening if the user has already spoken, checked in the insert transaction. */
+    requireNoUserMessage?: boolean;
     /**
      * Owner scope captured before an async main-side write.  A stale scope
      * must not broadcast a row into the next signed-in owner.
@@ -1670,6 +1678,7 @@ export async function createMessage(
     createdAt: insertRow.createdAt,
     guarded,
     expectedClearBoundaryMs: guarded ? (expected ?? null) : undefined,
+    ...(opts?.requireNoUserMessage ? { requireNoUserMessage: true } : {}),
   };
   try {
     const inserted = await dbClient.tx('message.insert', { ...insertArgs,
@@ -1816,8 +1825,10 @@ export async function createMessage(
     body.role === 'user' &&
     opts !== undefined &&
     Object.prototype.hasOwnProperty.call(opts, 'expectedClearBoundaryMs');
-  if (shouldAwaitMediaRefs) await commitMediaRefs();
-  else void commitMediaRefs();
+  if (!opts?.deferMediaRefs) {
+    if (shouldAwaitMediaRefs) await commitMediaRefs();
+    else void commitMediaRefs();
+  }
   // Broadcast 给所有 renderer window — 用于 main 端创建消息 (e.g. feishu /ctr
   // 接管路径下 persistUserMessage / persistAssistantMessage) 时让 renderer
   // 的 makerChatStore push 到 in-memory state, 让消息流实时刷新。

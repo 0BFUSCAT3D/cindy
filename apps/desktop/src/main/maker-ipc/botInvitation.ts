@@ -292,9 +292,17 @@ export function queueBotInvitation(
           assertOwner();
           // The chat is usable while the opening is composed. If the user wrote first, the opening would land after their message.
           if (!await userHasSpoken()) {
-            const write = (body: { text: string; options: string[] }) => createMessage(sessionId, { clientId: `bot-opening:${invitationId}`, role: 'assistant', content: body.text, agentKind: null,
-              ...(body.options.length ? { agentMeta: { botStarterOptions: body.options } } : {}) },
-            { broadcastOwnerScope: captureDataOwnerBroadcastScope() });
+            const write = async (body: { text: string; options: string[] }) => {
+              try {
+                await createMessage(sessionId, { clientId: `bot-opening:${invitationId}`, role: 'assistant', content: body.text, agentKind: null,
+                  ...(body.options.length ? { agentMeta: { botStarterOptions: body.options } } : {}) },
+                { broadcastOwnerScope: captureDataOwnerBroadcastScope(), requireNoUserMessage: true });
+              } catch (error) {
+                assertOwner();
+                // A user send won the atomic insert check. Finish the invitation without a greeting or retry.
+                if ((error as { code?: string }).code !== 'MESSAGE_USER_ALREADY_SPOKE') throw error;
+              }
+            };
             try {
               try { await write(opened); }
               catch (error) {

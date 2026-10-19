@@ -664,6 +664,23 @@ describe('Bot Market package opening', () => {
       expect(state()).toMatchObject({ stage: 'ready' });
     });
 
+    // PR #6425: the existing composition race test stops before createMessage.
+    // Unit: a user wins either the model write or its script retry; invitation must finish, not retry/fail.
+    it.each([false, true])('finishes without another greeting when the user wins the write (script retry: %s)', async scriptRetry => {
+      h.auxiliary.mockResolvedValue({ ok: true, text: JSON.stringify(modelReply) });
+      if (scriptRetry) h.createMessage.mockRejectedValueOnce(new Error('disk full'));
+      h.createMessage.mockImplementationOnce(async (_sessionId, _body, opts) => {
+        expect(opts.requireNoUserMessage).toBe(true);
+        throw Object.assign(new Error('User already spoke'), { code: 'MESSAGE_USER_ALREADY_SPOKE' });
+      });
+      seed({ id: 'import-welcome:req-1', stage: 'welcome', opening });
+      queueBotInvitation('bot-1');
+      await waitForIo(() => expect(state().stage).toBe('ready'));
+      expect(state().opening).toBeUndefined();
+      expect(h.createMessage).toHaveBeenCalledTimes(scriptRetry ? 2 : 1);
+      expect(h.auxiliary).toHaveBeenCalledOnce();
+    });
+
     it('re-queues a failed opening write as a pure script instead of leaving an empty chat', async () => {
       vi.useFakeTimers();
       try {
