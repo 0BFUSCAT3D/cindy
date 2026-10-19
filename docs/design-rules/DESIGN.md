@@ -658,6 +658,10 @@ download happens in the normal startup Splash, not in the row.
 - Centered-card layouts (login, empty states) follow the Surface + Card two-layer rule in §2.
 - Reading-width content (settings forms, document previews) is centered with a comfortable max width; full-bleed content (chat stream, file tree) fills its region.
 
+### Desktop teammate sidebar
+
+The expanded teammate section previews five chats (local teammates, remote teammates, groups and the merged Cindy device row share this limit). Keep the current chat visible within those five rows. Use the task list’s “Show all N” footer style, with “Show less” after expansion. Collapsing the section to its existing avatar strip resets the preview; the strip’s +N button opens the full list. This limit applies to the Desktop sidebar, not the Mobile teammate home list.
+
 ### Mobile iOS navigation chrome / iPhone Duo
 
 - Home modes are ordered tabs: Tasks on the left, Teammates on the right (owner decision, 2026-10-13); the slide below is iOS-only, Android switches in place because its bar lives inside each pane. All mode-selection entry points, including drawer tabs and title scope menus, use the same horizontal slide via HomeModePanes / HomeModeTransition. Switching to Teammates moves content left; switching back moves it right. One shared progress owned by `ResidentHomeListProvider` drives the panes and the wide resident task list over the same slide distance; it moves on the critically damped spring registered in §14.4. Retain both visited lists and their positions, retarget interrupted slides from the current position, and snap for reduced/unknown motion preference or initial preference restoration. The resident list follows without remounting; inactive pages cannot intercept touches or accessibility focus. This is a selection transition, not a new horizontal gesture that competes with list controls.

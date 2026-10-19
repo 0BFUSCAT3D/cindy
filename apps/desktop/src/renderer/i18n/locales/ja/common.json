@@ -8975,6 +8975,7 @@
       "duplicate": "仲間を複製",
       "moreActions": "{{name}} のその他の操作",
       "sectionExpand": "仲間を展開",
+      "showLess": "折りたたむ",
       "sectionCollapse": "仲間を折りたたむ",
       "noResults": "一致するパートナーやグループはありません"
     },

@@ -8975,6 +8975,7 @@
       "duplicate": "동료 복제",
       "moreActions": "{{name}} 추가 작업",
       "sectionExpand": "동료 펼치기",
+      "showLess": "접기",
       "sectionCollapse": "동료 접기",
       "noResults": "검색과 일치하는 파트너나 그룹이 없어요"
     },
