@@ -4450,8 +4450,8 @@ export const remoteSessionStore = {
       changed = writeSessionRunStatus(sessionId, next) || changed;
     }
     if (completeResponse) {
-      for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
-        if (indexedDeviceId !== deviceId || snapshotStates.has(sessionId)
+      for (const sessionId of sessionDeviceIndex.keys()) {
+        if (!sessionStateWriteAllowed(sessionId, deviceId) || snapshotStates.has(sessionId)
           || (sessionMakerActivityEpochs.get(sessionId) ?? 0) > activityEpochAtFetchStart) continue;
         // A runtime absent from a complete host snapshot has ended. Do not
         // discard a newer live push that arrived while this read was in flight.
