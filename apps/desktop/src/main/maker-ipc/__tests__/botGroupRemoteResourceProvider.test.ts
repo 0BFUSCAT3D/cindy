@@ -129,7 +129,7 @@ describe('bot group remote resources', () => {
     expect(result.items.map(item => item.ref.id)).toEqual(['active']);
     service.getGroup.mockResolvedValue({ ok: true, group: archived });
     const history = await remoteResourceRegistry.get(context, { client: client([BOT_GROUP_CHAT_PRIMITIVE]), ref: ref('g1') });
-    expect(history.blocks[0]).toMatchObject({ data: { archived: true, messages: archived.messages } });
+    expect(history.blocks?.[0]).toMatchObject({ data: { archived: true, messages: archived.messages } });
     expect(service.deleteGroup).not.toHaveBeenCalled();
     expect(service.chatServer.manage).not.toHaveBeenCalled();
   });
