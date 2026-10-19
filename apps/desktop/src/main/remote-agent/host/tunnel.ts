@@ -163,7 +163,8 @@ export async function createRunTunnel(handlers: TunnelHandlers): Promise<RunTunn
       if (execMessage?.kind === 'cancel') {
         // SDK 总超时/单次取消只发通知，不关闭 transport。复用原反向请求的取消信号，
         // 不新增跨端字段，也不关闭共享连接或重放工具操作。
-        pendingExecCalls.get(callKey!)?.();
+        const cancelPendingCall = pendingExecCalls.get(callKey!);
+        if (typeof cancelPendingCall === 'function') cancelPendingCall();
         res.writeHead(202).end();
         return;
       }
