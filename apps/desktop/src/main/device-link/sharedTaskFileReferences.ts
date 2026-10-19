@@ -181,9 +181,9 @@ export async function sharedTaskReferencesFile(
         const result = decode(results[0].content);
         const descriptor = describeToolUse(tool.toolName, tool.input);
         if (toolResultFailed(descriptor, result)) continue;
-        if (descriptor.kind === 'command') {
-          // Output-path extraction is lexical. A successful no-clobber command
-          // must not expose an untouched, pre-existing file at its destination.
+        if (descriptor.kind === 'command' || descriptor.kind === 'mcp') {
+          // Shell destinations and MCP output arguments are only candidates.
+          // Success must not expose an untouched, pre-existing destination file.
           const start = row.createdAt;
           const end = results[0].createdAt;
           if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;

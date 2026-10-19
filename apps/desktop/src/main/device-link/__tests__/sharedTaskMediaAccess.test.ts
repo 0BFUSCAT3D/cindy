@@ -155,23 +155,27 @@ describe('shared task media access', () => {
       else await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
     }
   });
-  // A successful no-clobber command can leave a pre-existing target untouched.
-  // Lexical output paths need file/time evidence before granting outside access.
-  it.each(['written', 'unchanged', 'later-write', 'directory', 'stat-error', 'missing-time', 'revoked'])('checks command output file evidence: %s', async (kind) => {
-    // The extractor intentionally excludes temp directories; do not depend on
-    // whether this checkout itself happens to live under a temp directory.
-    const file = path.join(path.parse(process.cwd()).root, 'deliveries', 'private.pdf');
-    const row = { rowid: 1, role: 'tool_use', toolUseId: 'copy-1', createdAt: 100,
-      content: JSON.stringify({ toolName: 'Bash', input: { command: `cp -n /work/source.txt "${markdownPath(file)}"` } }) };
-    deps.query.mockResolvedValueOnce([row]).mockResolvedValueOnce([{ content: JSON.stringify(''), createdAt: kind === 'missing-time' ? null : 200 }]);
-    deps.stat.mockImplementation(async () => {
-      if (kind === 'stat-error') throw new Error('ENOENT');
-      if (kind === 'revoked') current = false;
-      return { isFile: () => kind !== 'directory', mtimeMs: kind === 'unchanged' ? 99 : kind === 'later-write' ? 201 : 150 };
+  // Successful shell/MCP calls can leave a pre-existing target untouched.
+  // Input output paths need file/time evidence before granting outside access.
+  describe.each(['command', 'mcp'])('%s output candidates', (source) => {
+    it.each(['written', 'unchanged', 'later-write', 'directory', 'stat-error', 'missing-time', 'revoked'])('checks output file evidence: %s', async (kind) => {
+      // The extractor intentionally excludes temp directories; do not depend on
+      // whether this checkout itself happens to live under a temp directory.
+      const file = path.join(path.parse(process.cwd()).root, 'deliveries', 'private.pdf');
+      const row = { rowid: 1, role: 'tool_use', toolUseId: 'copy-1', createdAt: 100,
+        content: JSON.stringify(source === 'command'
+          ? { toolName: 'Bash', input: { command: `cp -n /work/source.txt "${markdownPath(file)}"` } }
+          : { toolName: 'mcp:reports:generate', input: { outPath: file } }) };
+      deps.query.mockResolvedValueOnce([row]).mockResolvedValueOnce([{ content: JSON.stringify(''), createdAt: kind === 'missing-time' ? null : 200 }]);
+      deps.stat.mockImplementation(async () => {
+        if (kind === 'stat-error') throw new Error('ENOENT');
+        if (kind === 'revoked') current = false;
+        return { isFile: () => kind !== 'directory', mtimeMs: kind === 'unchanged' ? 99 : kind === 'later-write' ? 201 : 150 };
+      });
+      const access = assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture);
+      if (kind === 'written') await expect(access).resolves.toEqual({ file });
+      else await expect(access).rejects.toThrow('PERMISSION_DENIED');
     });
-    const access = assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture);
-    if (kind === 'written') await expect(access).resolves.toEqual({ file });
-    else await expect(access).rejects.toThrow('PERMISSION_DENIED');
   });
   // Direct result links must pass the same completed/non-failed provenance gate
   // as tool-use outputs; an error message mentioning a URL is not a delivery.
@@ -187,6 +191,7 @@ describe('shared task media access', () => {
     });
     if (kind === 'ok') await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
     else await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
+    expect(deps.stat).not.toHaveBeenCalled();
     if (kind !== 'missing-id') {
       expect(deps.query.mock.calls[1][0]).toContain('rewind_at IS NULL AND tool_use_id = ? AND rowid < ?');
       expect(deps.query.mock.calls[1][1]).toEqual(['task', 'run-1', 2]);
@@ -197,10 +202,11 @@ describe('shared task media access', () => {
     const file = path.resolve('deliveries/report.pdf');
     const url = 'xdt-file://local?path=' + encodeURIComponent(file);
     const tool = { toolName: 'mcp:reports:generate', input: role === 'tool_use' ? { outPath: file } : {} };
+    deps.stat.mockResolvedValue({ isFile: () => true, mtimeMs: 150 });
     for (const success of [false, true]) {
       const result = { ok: true, result: { ok: success, xdt_media_produced: [url] } };
-      deps.query.mockResolvedValueOnce([{ rowid: role === 'tool_use' ? 1 : 2, role, toolUseId: 'generate-1', content: JSON.stringify(role === 'tool_use' ? tool : result) }])
-        .mockResolvedValueOnce([{ content: JSON.stringify(role === 'tool_use' ? result : tool) }]);
+      deps.query.mockResolvedValueOnce([{ rowid: role === 'tool_use' ? 1 : 2, role, toolUseId: 'generate-1', createdAt: 100, content: JSON.stringify(role === 'tool_use' ? tool : result) }])
+        .mockResolvedValueOnce([{ content: JSON.stringify(role === 'tool_use' ? result : tool), createdAt: 200 }]);
       const access = assertSharedTaskMedia(url, capture);
       if (success) await expect(access).resolves.toEqual({ file });
       else await expect(access).rejects.toThrow('PERMISSION_DENIED');
