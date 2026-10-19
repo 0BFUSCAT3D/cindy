@@ -236,6 +236,11 @@ function AskUserQuestionForm({
   dictationRef.current = dictation;
   const pendingVoiceStartRef = useRef(false);
   const voiceShortcutAtRef = useRef(0);
+  // A shortcut press emits `start` then, on release, `tap`. The flag lives in a
+  // ref because opening the free-text row re-creates the effect that owns the
+  // listener — an effect-local flag would be lost and the tap would stop the
+  // recording the same press just started.
+  const voiceShortcutStartedPressRef = useRef(false);
   const answerValue = dictation.liveText ?? customInput;
   const voiceShortcutLabel = formatVoiceInputShortcut(getVoiceInputSettings().shortcut);
   const voiceButtonLabel = dictation.isBusy
@@ -483,33 +488,27 @@ function AskUserQuestionForm({
   }, [showCustomInput]);
 
   useEffect(() => {
-    // A global-shortcut press emits `start` and, on release, `tap` (quick) or
-    // `end` (held). The tap of the press that just started dictation must not
-    // stop it again — otherwise a normal short press starts and immediately
-    // ends the recording.
-    let startedByThisPress = false;
     const claim = (phase?: 'start' | 'tap' | 'end') => {
-      if (viewerState === 'minimized') return;
+      // Minimized hides the microphone, so only let the shortcut stop a run
+      // that is already recording.
+      if (viewerState === 'minimized' && !dictationRef.current.isBusy) return;
       const now = performance.now();
       if (now - voiceShortcutAtRef.current < 250) return;
       voiceShortcutAtRef.current = now;
       const session = dictationRef.current;
       if (session.state === 'submitting' || session.state === 'refining') return;
-      if (phase === 'tap') {
-        if (startedByThisPress) {
-          startedByThisPress = false;
-          return;
-        }
-        if (session.isBusy) void session.stop();
+      if (phase === 'start') {
+        // A press while listening means stop; its release must not act again.
+        voiceShortcutStartedPressRef.current = !session.isBusy;
+        beginVoiceInput();
         return;
       }
-      if (phase === 'end') {
-        startedByThisPress = false;
-        if (session.isBusy) void session.stop();
+      // `tap` / `end` are the release of a press.
+      if (voiceShortcutStartedPressRef.current) {
+        voiceShortcutStartedPressRef.current = false;
         return;
       }
-      startedByThisPress = !session.isBusy;
-      beginVoiceInput();
+      if (session.isBusy) void session.stop();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.isComposing) return;
@@ -764,6 +763,9 @@ function AskUserQuestionForm({
                   else handleCustomSubmit();
                 }
                 if (e.key === 'Escape') {
+                  // Closing the row mid-dictation would leave the rest of the
+                  // transcript writing into a hidden field.
+                  if (dictation.isBusy) return;
                   e.preventDefault();
                   setShowCustomInput(false);
                   setAnswerText('');
@@ -976,6 +978,7 @@ function AskUserQuestionForm({
                   submitDirectAnswer();
                 }
                 if (e.key === 'Escape') {
+                  if (dictation.isBusy) return;
                   e.preventDefault();
                   handleSkip();
                 }

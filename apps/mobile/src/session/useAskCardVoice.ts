@@ -30,6 +30,7 @@ export function useAskCardVoice(input: {
   const [error, setError] = useState<string | null>(null);
   const runRef = useRef<VoiceRun | null>(null);
   const startingRef = useRef(false);
+  const stoppingRef = useRef<Promise<void> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -46,7 +47,10 @@ export function useAskCardVoice(input: {
     runRef.current = null;
     setListening(false);
     if (!run) return;
-    void run.stop().catch(() => undefined);
+    const stopping = run.stop().catch(() => undefined).finally(() => {
+      if (stoppingRef.current === stopping) stoppingRef.current = null;
+    });
+    stoppingRef.current = stopping;
   }, []);
 
   // The card unmounts when the answer is submitted, skipped or the request
@@ -61,6 +65,9 @@ export function useAskCardVoice(input: {
   }, []);
 
   const toggle = useCallback(() => {
+    // A session that is still closing must finish first; starting a new one
+    // now would race the microphone teardown.
+    if (stoppingRef.current) return;
     if (runRef.current || startingRef.current) {
       stop();
       return;

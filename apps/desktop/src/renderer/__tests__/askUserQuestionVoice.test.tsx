@@ -148,14 +148,16 @@ describe('AskUserQuestion voice entry', () => {
       trigger?.({ id: 'press-1', phase: 'start' });
       await waitFor(() => expect(start).toHaveBeenCalledOnce());
 
-      // Same press released quickly: `tap` must not cancel what `start` began.
+      // Short press: held past the 250ms dedupe window, still released quickly.
+      // The release must not cancel the recording this same press started.
+      await new Promise((resolve) => setTimeout(resolve, 300));
       trigger?.({ id: 'press-1', phase: 'tap' });
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(stop).not.toHaveBeenCalled();
 
-      // A separate press while listening stops it.
+      // A new press while listening stops it.
       await new Promise((resolve) => setTimeout(resolve, 300));
-      trigger?.({ id: 'press-2', phase: 'tap' });
+      trigger?.({ id: 'press-2', phase: 'start' });
       await waitFor(() => expect(stop).toHaveBeenCalledOnce());
     } finally {
       window.electronAPI = previous;
