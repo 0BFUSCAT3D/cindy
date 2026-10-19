@@ -1568,7 +1568,7 @@ describe('cross-renderer sync for popped-out tabs', () => {
       tab: { id: tab.id, kind: 'web-browser', state: { url: 'https://edited' } },
     });
     expect(store.getBucket('mem-s1').tabs[0].state).toEqual({ url: 'https://edited' });
-    // 未知页签 / 未加载会话:不新增、不报错。
+    // 主窗没见过的页签(窗口里新建、窗口崩溃时带回)追加回桶;未加载的会话:丢弃、不报错。
     store.importReturnedTabState({
       sessionId: 'mem-s1',
       tab: { id: 'ghost', kind: 'web-browser', state: {} },
@@ -1577,7 +1577,7 @@ describe('cross-renderer sync for popped-out tabs', () => {
       sessionId: 'never-loaded',
       tab: { id: 'x', kind: 'y', state: {} },
     });
-    expect(store.getBucket('mem-s1').tabs).toHaveLength(1);
+    expect(store.getBucket('mem-s1').tabs.map((t) => t.id)).toEqual([tab.id, 'ghost']);
     expect(store.getBucket('never-loaded').hydrated).toBe(false);
   });
 });
@@ -1615,6 +1615,22 @@ describe('multi-tab window handoff merge (memory-only sessions)', () => {
       url: 'https://new.example/',
     });
     expect(bucket.activeTabId).toBe('tab-a');
+  });
+
+  it('importReturnedTabState re-adds a returned tab the main window never saw', async () => {
+    store = await import('../store');
+    store._resetStore();
+    store.importTabSnapshot({
+      sessionId: 'remote-m3',
+      persistable: false,
+      activeTabId: null,
+      tabs: [{ id: 'tab-a', kind: 'file-browser', state: null }],
+    });
+    store.importReturnedTabState({
+      sessionId: 'remote-m3',
+      tab: { id: 'tab-new', kind: 'web-browser', state: { url: 'https://n.example/' } },
+    });
+    expect(store.getBucket('remote-m3').tabs.map((tab) => tab.id)).toEqual(['tab-a', 'tab-new']);
   });
 
   it('removeTabLocally drops a tab closed elsewhere without issuing a close IPC', async () => {

@@ -70,6 +70,11 @@ export interface SidebarTabWindowMergeBackRequest {
 export interface SidebarTabWindowAdoptRequest {
   tabId: string;
   sessionId: string | null;
+  /**
+   * 不可持久化会话(device-link 远程)里新建页签的内存态:页签只存在于该 renderer 里,
+   * main 留一份,窗口崩溃 / 作废时随交回通知带回侧栏,页签不会连同窗口一起消失。
+   */
+  snapshot?: SidebarTabReturnSnapshot | null;
 }
 
 /** 单个已弹出页签的运行时状态;只在当前进程有效,不跨重启。 */

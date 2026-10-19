@@ -239,6 +239,6 @@ export function registerSidebarTabWindowIpc(opts: {
       log.warn('SIDEBAR_TAB_WINDOW_ADOPT_TAB from non-tab-window sender, ignored', { tabId });
       return;
     }
-    controller.adoptTab(event.sender, tabId, sessionId);
+    controller.adoptTab(event.sender, tabId, sessionId, parseReturnSnapshot(obj.snapshot));
   });
 }

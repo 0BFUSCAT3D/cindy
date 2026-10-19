@@ -81,6 +81,8 @@ export interface WindowSlot {
   presentationReady: boolean;
   visible: boolean;
   pendingOpen: boolean;
+  /** 窗口里新建的不可持久化页签的内存态(tabId → 快照):崩溃 / 作废交回时带回,不让页签连窗口一起消失。 */
+  adoptedSnapshots: Map<string, SidebarTabReturnSnapshot>;
   /** 首次展示前要套用的位置(拖出窗口松手点);展示后清空。 */
   pendingPosition: { x: number; y: number } | null;
   destroyingWindow: boolean;
@@ -223,6 +225,7 @@ export class SidebarTabWindowsController {
     if (!ref) return null;
     slot.assignment.tabs = slot.assignment.tabs.filter((tab) => tab.tabId !== tabId);
     if (this.tabToWindow.get(tabId) === slot.assignment.windowId) this.tabToWindow.delete(tabId);
+    slot.adoptedSnapshots.delete(tabId);
     return ref;
   }
 
@@ -315,7 +318,12 @@ export class SidebarTabWindowsController {
   }
 
   /** 弹出窗口 renderer 在自己里面新建了页签:归它承载。已在别处的页签忽略。 */
-  adoptTab(sender: WebContents, tabId: string, sessionId: string | null): void {
+  adoptTab(
+    sender: WebContents,
+    tabId: string,
+    sessionId: string | null,
+    snapshot: SidebarTabReturnSnapshot | null = null,
+  ): void {
     const slot = this.slotForSender(sender);
     if (!slot?.assignment || this.tabToWindow.has(tabId)) return;
     if (
@@ -331,6 +339,7 @@ export class SidebarTabWindowsController {
     }
     slot.assignment.tabs = [...slot.assignment.tabs, { tabId, sessionId }];
     this.tabToWindow.set(tabId, slot.assignment.windowId);
+    if (snapshot && snapshot.tab.id === tabId) slot.adoptedSnapshots.set(tabId, snapshot);
     this.deliverAssignment(slot);
     this.broadcast();
   }
@@ -455,6 +464,7 @@ export class SidebarTabWindowsController {
       presentationReady: false,
       visible: false,
       pendingOpen: false,
+      adoptedSnapshots: new Map(),
       pendingPosition: null,
       destroyingWindow: false,
       openTimeout: null,
@@ -565,7 +575,7 @@ export class SidebarTabWindowsController {
         this.deps.notifyTabReturned({
           sessionId: tab.sessionId,
           tabId: tab.tabId,
-          snapshot: null,
+          snapshot: slot.adoptedSnapshots.get(tab.tabId) ?? null,
           reason,
         });
       }

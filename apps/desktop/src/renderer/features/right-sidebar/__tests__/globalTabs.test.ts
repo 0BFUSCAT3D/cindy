@@ -26,6 +26,7 @@ import {
   isPluginWindowPlacement,
   rememberPluginWindowPlacement,
   removeGlobalTab,
+  reconcileGlobalPluginTabs,
   reorderGlobalTabs,
   resetPluginPlacement,
   sanitizeGlobalTabsSnapshot,
@@ -50,7 +51,7 @@ afterEach(() => {
 describe('globalTabs', () => {
   it('adds one tab per plugin instance, persists per data owner and remembers dismissals', () => {
     const tab = addGlobalPluginTab('alpha')!;
-    expect(addGlobalPluginTab('alpha')).toBe(tab);
+    expect(addGlobalPluginTab('alpha')).toEqual(tab);
     expect(getGlobalTabs()).toHaveLength(1);
     expect(window.localStorage.getItem('xdt:rightSidebarGlobalTabs:v1:owner-a')).toContain('alpha');
 
@@ -201,5 +202,32 @@ describe('globalTabs', () => {
     // 旧数据没有 view:按插件声明推导(有停靠面板 → panel)。
     expect(effectivePluginView({ instanceId: 'gamma' }, g)).toBe('panel');
     expect(effectivePluginView({ instanceId: 'gamma' }, ghost({ panel: undefined }))).toBe('main');
+  });
+  // 测试价值
+  // - 生产入口与可观察结果:reconcileGlobalPluginTabs / removeGlobalTab / setTabGroup 的写路径;可观察的是
+  //   超过 20 个停靠面板的存量插件全部迁移成页签(不被会话页签的小上限截断),以及另一个窗口刚做的
+  //   修改(storage 事件还没送到、本窗口缓存是旧的)不会被本窗口接下来的写入整份覆盖回去。
+  // - Bug / 规则依据:PR #6468 review(迁移截断 / 跨窗口全局页签写入互相覆盖);存量插件兼容红线。
+  // - 现有覆盖缺口:此前只有单窗口读写。
+  // - 最小失败输入:25 个面板插件;窗口 A 缓存旧列表,localStorage 被窗口 B 改过后窗口 A 再关另一个页签。
+  it('migrates every stored docked panel and never overwrites another window with a stale cache', () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      manifest: { id: `p${i}`, name: `P${i}`, panel: { html: 'p.html' } },
+      enabled: true,
+    })) as unknown as import('../../../../shared/ghost').InstalledGhost[];
+    reconcileGlobalPluginTabs(many);
+    expect(getGlobalTabs()).toHaveLength(25);
+
+    // 本窗口缓存里是 25 个;另一个窗口把 p0 关掉并写回 localStorage(storage 事件尚未处理)。
+    const key = 'xdt:rightSidebarGlobalTabs:v1:owner-a';
+    const other = JSON.parse(window.localStorage.getItem(key)!);
+    other.tabs = other.tabs.filter((tab: { id: string }) => tab.id !== 'g_p0');
+    window.localStorage.setItem(key, JSON.stringify(other));
+    // 本窗口再关 p1:必须基于 localStorage 最新一份,p0 不会被写回来。
+    removeGlobalTab('g_p1');
+    const ids = getGlobalTabs().map((tab) => tab.id);
+    expect(ids).toHaveLength(23);
+    expect(ids).not.toContain('g_p0');
+    expect(ids).not.toContain('g_p1');
   });
 });

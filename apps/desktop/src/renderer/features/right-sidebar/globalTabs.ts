@@ -34,7 +34,11 @@ import type { TabState } from './types';
 const log = createLogger('rightSidebar.globalTabs');
 
 const STORAGE_KEY_PREFIX = 'xdt:rightSidebarGlobalTabs:v1:';
-const MAX_GLOBAL_TABS = 20;
+/**
+ * 全局页签数量上限只是防损坏存档的兜底,必须远大于已装插件的现实数量:存量停靠面板要全部迁移,
+ * 不能被会话页签那种小上限截断(截断 = 升级后部分面板插件静默不可用)。
+ */
+const MAX_GLOBAL_TABS = 500;
 
 /** 页签承载插件的哪个页面:停靠面板(panel.html)或主视图(mainView.html)。 */
 export type PluginViewKind = 'panel' | 'main';
@@ -170,6 +174,16 @@ function ensureStorageListener(): void {
   });
 }
 
+/**
+ * 写路径专用:先丢掉本窗口内存缓存、从 localStorage 重读最新一份再改。主窗与每扇弹出窗口各有
+ * 独立缓存,拿旧缓存做「读—改—写」会把别的窗口刚做的修改(刚关掉的页签等)整份覆盖回去。
+ * localStorage 同步且跨窗口共享,同一 JS 任务内「重读 + 写回」之间没有别的窗口能插进来。
+ */
+function freshSnapshot(): GlobalTabsSnapshot {
+  cache = null;
+  return getGlobalTabsSnapshot();
+}
+
 export function getGlobalTabsSnapshot(): GlobalTabsSnapshot {
   const key = ownerKey();
   if (cache === null || cacheOwnerKey !== key) {
@@ -244,7 +258,7 @@ export function addGlobalPluginTab(
   instanceId: string,
   opts?: { groupId?: TabGroupId; ghost?: InstalledGhost; view?: PluginViewKind },
 ): TabState | null {
-  const current = getGlobalTabsSnapshot();
+  const current = freshSnapshot();
   const existing = current.tabs.find(
     (tab) => (tab.state as PluginViewTabState | null)?.instanceId === instanceId,
   );
@@ -298,7 +312,7 @@ export function addGlobalPluginTab(
 
 /** 用户关闭全局页签:全局动作,同时记 dismissed,插件不再自动加回。 */
 export function removeGlobalTab(tabId: string): void {
-  const current = getGlobalTabsSnapshot();
+  const current = freshSnapshot();
   const tab = current.tabs.find((candidate) => candidate.id === tabId);
   if (!tab) return;
   const instanceId = (tab.state as PluginViewTabState).instanceId;
@@ -321,7 +335,7 @@ export function removeGlobalTab(tabId: string): void {
 }
 
 export function reorderGlobalTabs(orderedIds: string[]): void {
-  const current = getGlobalTabsSnapshot();
+  const current = freshSnapshot();
   if (orderedIds.length !== current.tabs.length) return;
   const byId = new Map(current.tabs.map((tab) => [tab.id, tab]));
   const next: TabState[] = [];
@@ -335,7 +349,7 @@ export function reorderGlobalTabs(orderedIds: string[]): void {
 
 /** 记住 / 忘记「这个插件上次弹在独立窗口里」。 */
 export function rememberPluginWindowPlacement(instanceId: string, inWindow: boolean): void {
-  const current = getGlobalTabsSnapshot();
+  const current = freshSnapshot();
   const has = current.windowInstanceIds.includes(instanceId);
   if (has === inWindow) return;
   persist({
@@ -366,7 +380,7 @@ export function hasPluginPlacementMemory(instanceId: string): boolean {
  * 弹在窗口里的页签由调用方先合并回侧边栏(这里不碰窗口)。
  */
 export function resetPluginPlacement(instanceId: string, ghost?: InstalledGhost): void {
-  const current = getGlobalTabsSnapshot();
+  const current = freshSnapshot();
   const tabId = globalTabIdForInstance(instanceId);
   clearTabGroup(tabId);
   const presentTab = current.tabs.find((tab) => tab.id === tabId);
@@ -427,7 +441,7 @@ export function isGlobalTabCapableGhost(ghost: InstalledGhost): boolean {
  * 停用的插件页签**保留**(投影时按可用性隐藏),重新启用原位回来。
  */
 export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): void {
-  const current = getGlobalTabsSnapshot();
+  const current = freshSnapshot();
   const installed = new Map(ghosts.map((ghost) => [installedGhostStoragePart(ghost), ghost]));
   let tabs = current.tabs.filter((tab) =>
     installed.has((tab.state as PluginViewTabState).instanceId),
@@ -439,7 +453,6 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
   for (const [instanceId, ghost] of installed) {
     if (!isAutoGlobalPanelGhost(ghost)) continue;
     if (present.has(instanceId) || dismissed.includes(instanceId)) continue;
-    if (tabs.length >= MAX_GLOBAL_TABS) break;
     const tabId = globalTabIdForInstance(instanceId);
     // 首次出现:按插件声明放默认边(存量 panel.position 的插件回到它原来停的那一边)。
     if (!placed.includes(instanceId)) {

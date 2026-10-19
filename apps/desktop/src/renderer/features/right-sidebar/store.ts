@@ -600,9 +600,18 @@ export function importReturnedTabState(snapshot: SidebarTabReturnSnapshot): void
     return;
   }
   const idx = bucket.tabs.findIndex((t) => t.id === snapshot.tab.id);
-  if (idx < 0) return;
+  const restored: TabState = {
+    id: snapshot.tab.id,
+    kind: snapshot.tab.kind as TabKindId,
+    state: snapshot.tab.state,
+  };
+  // 窗口里新建、主窗从未见过的页签(窗口崩溃时 main 带回快照):追加回桶里,不让它随窗口消失。
+  if (idx < 0) {
+    setBucket(snapshot.sessionId, { tabs: [...bucket.tabs, restored] });
+    return;
+  }
   const tabs = [...bucket.tabs];
-  tabs[idx] = { ...tabs[idx], kind: snapshot.tab.kind as TabKindId, state: snapshot.tab.state };
+  tabs[idx] = { ...tabs[idx], ...restored };
   setBucket(snapshot.sessionId, { tabs });
 }
 

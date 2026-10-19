@@ -80,6 +80,12 @@ function ensureStorageListener(): void {
   });
 }
 
+/** 写路径专用:丢掉本窗口缓存、从 localStorage 重读最新再改(理由同 globalTabs 的 freshSnapshot)。 */
+function freshAssignments(): TabGroupAssignments {
+  cache = null;
+  return getTabGroupAssignments();
+}
+
 export function getTabGroupAssignments(): TabGroupAssignments {
   const key = ownerKey();
   if (cache === null || cacheOwnerKey !== key) {
@@ -114,7 +120,7 @@ export function tabGroupOf(assignments: TabGroupAssignments, tabId: string): Tab
 
 /** 把页签放进某组。放回右侧组 = 删条目。超出上限时丢最早的条目。 */
 export function setTabGroup(tabId: string, groupId: TabGroupId): void {
-  const current = getTabGroupAssignments();
+  const current = freshAssignments();
   if (tabGroupOf(current, tabId) === groupId) return;
   const next: Record<string, TabGroupId> = { ...current };
   if (groupId === DEFAULT_TAB_GROUP) {
@@ -130,7 +136,7 @@ export function setTabGroup(tabId: string, groupId: TabGroupId): void {
 
 /** 页签关闭:清掉它的组记录(没有记录时 no-op,不触发通知)。 */
 export function clearTabGroup(tabId: string): void {
-  const current = getTabGroupAssignments();
+  const current = freshAssignments();
   if (!(tabId in current)) return;
   const next = { ...current };
   delete next[tabId];

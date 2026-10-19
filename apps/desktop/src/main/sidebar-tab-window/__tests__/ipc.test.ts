@@ -222,6 +222,6 @@ describe('sidebar-tab-window IPC', () => {
     await call(adopt, { sender: mainSender }, { tabId: 'tab-n', sessionId: 's1' });
     expect(controller.adoptTab).not.toHaveBeenCalled();
     await call(adopt, { sender: otherSender }, { tabId: 'tab-n', sessionId: null });
-    expect(controller.adoptTab).toHaveBeenCalledWith(otherSender, 'tab-n', null);
+    expect(controller.adoptTab).toHaveBeenCalledWith(otherSender, 'tab-n', null, null);
   });
 });

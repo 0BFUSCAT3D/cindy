@@ -426,6 +426,34 @@ describe('SidebarTabWindowsController', () => {
     expect(h.returned).toHaveLength(0);
   });
 
+  // 测试价值
+  // - 生产入口与可观察结果:adoptTab(snapshot) → 窗口崩溃;可观察的是不可持久化会话里窗口内新建的
+  //   页签,崩溃时交回通知带着当时的内存快照(主窗从未见过这个页签,否则它随窗口一起消失)。
+  // - Bug / 规则依据:PR #6468 review(保留崩溃窗口中新建的内存页签)。
+  // - 现有覆盖缺口:崩溃交回快照固定为 null。
+  // - 最小失败输入:adopt 一个带快照的页签后触发 render-process-gone。
+  // - tier:unit(mock deps)。
+  it('returns the snapshot of an adopted in-memory tab when the window crashes', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+    const snapshot = {
+      sessionId: 's1',
+      tab: { id: 'tab-n', kind: 'web-browser', state: { url: 'x' } },
+    };
+    h.controller.adoptTab(h.wc(win), 'tab-n', 's1', snapshot);
+    win.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
+    expect(h.returned.find((payload) => payload.tabId === 'tab-n')).toEqual({
+      sessionId: 's1',
+      tabId: 'tab-n',
+      snapshot,
+      reason: 'crash',
+    });
+    expect(h.returned.find((payload) => payload.tabId === 'tab-a')?.snapshot).toBeNull();
+  });
+
   it('closes a window whose tab was closed in the sidebar without returning the tab', () => {
     const h = makeHarness();
     h.controller.open(request('tab-a'));

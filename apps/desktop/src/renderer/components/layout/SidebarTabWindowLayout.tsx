@@ -39,6 +39,7 @@ import {
 import {
   closeTab,
   getBucket,
+  getSingleTabSnapshot,
   importTabSnapshot,
   isTabClosing,
   refreshSessionFromDb,
@@ -313,7 +314,9 @@ export function SidebarTabWindowLayout() {
     (tabId: string) => {
       addHostedTabId(tabId);
       const created = isGlobalTabId(tabId) ? null : sessionId;
-      void api?.adoptTab?.({ tabId, sessionId: created }).catch((err) => {
+      // 不可持久化会话的新页签只存在于本 renderer:带上内存态,窗口崩溃时 main 才能把它交回。
+      const snapshot = created ? getSingleTabSnapshot(created, tabId) : null;
+      void api?.adoptTab?.({ tabId, sessionId: created, snapshot }).catch((err) => {
         log.warn('adopt new tab failed', { tabId, err });
       });
     },
