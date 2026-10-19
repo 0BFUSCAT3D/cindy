@@ -91,6 +91,8 @@ export function providerShareRemoteCatalogs(input: {
       deviceId: share.agentDeviceId,
       name: input.deviceName(share),
       status: payload ? 'ready' : 'error',
+      // 已暂停 / 分享者电脑不在线的分享只因被选着才留在清单里:与留下的离线电脑一样标出,选不了。
+      ...(reachable ? {} : { offline: true as const }),
       providers: payload
         ? remoteAgentProviders(payload.providers).filter((provider) => provider.id === share.providerId)
         : [],

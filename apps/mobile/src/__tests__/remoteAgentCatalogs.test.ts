@@ -149,8 +149,10 @@ describe('provider shares in the remote Agent catalogs', () => {
       share('ready'),
     ];
     expect(build({ shares }).map((item) => item.deviceId)).toEqual(['share:ready']);
-    expect(build({ shares, keepDeviceIds: ['share:paused', 'share:offline'] }).map((item) => [item.deviceId, item.status]))
-      .toEqual([['share:paused', 'ready'], ['share:offline', 'error'], ['share:ready', 'ready']]);
+    // 留下来的不可用分享标 offline:恢复出来的新建任务选择据此退回被控电脑默认，收藏也先不显示。
+    expect(build({ shares, keepDeviceIds: ['share:paused', 'share:offline'] })
+      .map((item) => [item.deviceId, item.status, item.offline ?? false]))
+      .toEqual([['share:paused', 'ready', true], ['share:offline', 'error', true], ['share:ready', 'ready', false]]);
   });
 
   it('only returns kept shares when reading for the model pill', () => {

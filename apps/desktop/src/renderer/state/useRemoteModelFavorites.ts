@@ -16,6 +16,13 @@ export interface FavoriteStore {
   update(uid: string, patch: ModelFavoritePatch): void | Promise<void>;
   remove(uid: string): void | Promise<void>;
 }
+// 上次从那台电脑读到的收藏(按数据归属代次 + 电脑):面板每次打开先显示它，再在后台读最新的。
+// 写入仍带 expected 交给那台电脑核对，旧快照改不坏真相。
+const lastFavorites = new Map<string, ModelFavoriteItem[]>();
+export function __resetRemoteModelFavoritesCacheForTest(): void {
+  lastFavorites.clear();
+}
+
 /** Remote views already hold the device's sessions topic. Only invalidate this
  * device's favorites; never reset the link or touch the controller's local store. */
 export function useRemoteModelFavorites(deviceId?: string) {
@@ -28,7 +35,8 @@ export function useRemoteModelFavorites(deviceId?: string) {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [writeErrorKey, setWriteErrorKey] = useState<string | null>(null);
   const sequence = useRef(0);
-  const items = state?.key === key ? state.items : [];
+  const cached = lastFavorites.get(key);
+  const items = state?.key === key ? state.items : (cached ?? []);
   const refresh = async () => {
     if (!deviceId) return;
     const seq = ++sequence.current;
@@ -40,7 +48,9 @@ export function useRemoteModelFavorites(deviceId?: string) {
         JSON.stringify(getDataOwnerGeneration()) !== JSON.stringify(owner)
       )
         return;
-      setState({ key, items: parseModelFavorites(value) as ModelFavoriteItem[] });
+      const next = parseModelFavorites(value) as ModelFavoriteItem[];
+      lastFavorites.set(key, next);
+      setState({ key, items: next });
       setError(false);
       setErrorCode(null);
     } catch (err) {
@@ -88,7 +98,7 @@ export function useRemoteModelFavorites(deviceId?: string) {
     setWriteErrorKey(null);
     if (
       !deviceId ||
-      state?.key !== key ||
+      (state?.key !== key && cached === undefined) ||
       current.current !== key ||
       JSON.stringify(getDataOwnerGeneration()) !== JSON.stringify(owner)
     )
