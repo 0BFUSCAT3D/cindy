@@ -40,8 +40,8 @@ describe('shared task media access', () => {
         if (role === 'tool_use' || role === 'tool_result') {
           insert.run('task', 'tool_use', JSON.stringify(role === 'tool_use'
             ? { toolName: 'Write', input: { file_path: file, content: 'report' } }
-            : { toolName: 'Bash', input: { command: 'generate-report' } }), 'run-' + time, time);
-          insert.run('task', 'tool_result', JSON.stringify(role === 'tool_result' ? url : 'File written'), 'run-' + time, time);
+            : { toolName: 'mcp:reports:generate', input: {} }), 'run-' + time, time);
+          insert.run('task', 'tool_result', JSON.stringify(role === 'tool_result' ? { xdt_media_produced: [url] } : 'File written'), 'run-' + time, time);
         } else insert.run('task', role, JSON.stringify(url), null, time);
       };
       deliver(100);
@@ -64,8 +64,8 @@ describe('shared task media access', () => {
       const insert = db.prepare("INSERT INTO messages (session_id, role, content, tool_use_id, created_at) VALUES ('task', ?, ?, 'run', ?)");
       insert.run('tool_use', JSON.stringify(role === 'tool_use'
         ? { toolName: 'Write', input: { file_path: file, content: 'report' } }
-        : { toolName: 'Bash', input: { command: 'generate-report' } }), role === 'tool_use' ? 101 : 100);
-      insert.run('tool_result', JSON.stringify(role === 'tool_result' ? url : 'File written'), role === 'tool_result' ? 101 : 100);
+        : { toolName: 'mcp:reports:generate', input: {} }), role === 'tool_use' ? 101 : 100);
+      insert.run('tool_result', JSON.stringify(role === 'tool_result' ? { xdt_media_produced: [url] } : 'File written'), role === 'tool_result' ? 101 : 100);
       await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
       db.exec('UPDATE messages SET created_at = 101');
       await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
@@ -141,12 +141,12 @@ describe('shared task media access', () => {
   it.each(['ok', 'structured-error', 'text-error', 'missing-use', 'missing-id', 'revoked'])('checks direct tool-result provenance: %s', async (kind) => {
     const file = path.resolve('deliveries/report.pdf');
     const url = 'xdt-file://local?path=' + encodeURIComponent(file);
-    const content = kind === 'structured-error' ? { ok: false, error: 'failed to open ' + url }
-      : kind === 'text-error' ? 'Error: failed to open ' + url : url;
+    const content = { xdt_media_produced: [url], ...(kind === 'structured-error' ? { ok: false, error: 'failed to open ' + url }
+      : kind === 'text-error' ? { message: 'Error: failed to open ' + url } : {}) };
     deps.query.mockResolvedValueOnce([{ rowid: 2, role: 'tool_result', toolUseId: kind === 'missing-id' ? null : 'run-1', content: JSON.stringify(content) }]);
     deps.query.mockImplementationOnce(async () => {
       if (kind === 'revoked') current = false;
-      return kind === 'missing-use' ? [] : [{ content: JSON.stringify({ toolName: 'Bash', input: { command: 'generate-report' } }) }];
+      return kind === 'missing-use' ? [] : [{ content: JSON.stringify({ toolName: 'mcp:reports:generate', input: {} }) }];
     });
     if (kind === 'ok') await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
     else await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
@@ -154,6 +154,37 @@ describe('shared task media access', () => {
       expect(deps.query.mock.calls[1][0]).toContain('rewind_at IS NULL AND tool_use_id = ? AND rowid < ?');
       expect(deps.query.mock.calls[1][1]).toEqual(['task', 'run-1', 2]);
     }
+  });
+  // Successful reading/echoing of guest-controlled content is not delivery.
+  // Even JSON that resembles delivery metadata stays content for native readers.
+  it.each([
+    { toolName: 'Read', input: { file_path: 'workspace/guest.txt' } },
+    { toolName: 'Grep', input: { pattern: 'xdt-file', path: 'workspace' } },
+    { toolName: 'WebFetch', input: { url: 'https://example.com' } },
+    { toolName: 'Bash', input: { command: 'cat workspace/guest.txt' } },
+    { toolName: 'mcp:reports:read', input: {} },
+  ])('does not authorize links echoed by $toolName', async (tool) => {
+    const file = path.resolve('other/private.pdf');
+    const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+    const results: unknown[] = [url];
+    if (tool.toolName !== 'mcp:reports:read') results.push({ xdt_media_produced: [url] });
+    for (const result of results) {
+      deps.query.mockReset().mockResolvedValue([])
+        .mockResolvedValueOnce([{ rowid: 2, role: 'tool_result', toolUseId: 'read-1', content: JSON.stringify(result) }])
+        .mockResolvedValueOnce([{ content: JSON.stringify(tool) }]);
+      await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
+    }
+  });
+  it('accepts explicit model-file deliveries without granting unrelated payload links', async () => {
+    const file = path.resolve('deliveries/model.glb');
+    const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+    const other = path.resolve('other/private.pdf');
+    const content = { ok: true, result: { _xdt_model_files: [{ url, name: 'model' }], text: 'xdt-file://local?path=' + encodeURIComponent(other) } };
+    const row = { rowid: 2, role: 'tool_result', toolUseId: 'generate-1', content: JSON.stringify(content) };
+    deps.query.mockResolvedValueOnce([row]).mockResolvedValueOnce([{ content: JSON.stringify({ toolName: 'mcp:models:generate', input: {} }) }]);
+    await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
+    deps.query.mockResolvedValue([row]);
+    await expect(assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(other), capture)).rejects.toThrow('PERMISSION_DENIED');
   });
   it('does not cache file grants and scopes the history query to live messages in the current task', async () => {
     const file = path.resolve('deliveries/report.pdf');

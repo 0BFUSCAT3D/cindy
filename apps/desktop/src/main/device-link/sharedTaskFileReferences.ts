@@ -6,7 +6,7 @@ import { visit } from 'unist-util-visit';
 import { describeToolUse, createdPathsFromDescriptor } from '@cindy/maker-shared/tool-use-descriptor';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
 import { isToolResultFailureLike } from '@cindy/maker-shared/message-presentation';
-import { extractPayloadToolResultFiles } from '@cindy/maker-shared/payload-summary';
+import { parseToolResultPayload } from '@cindy/maker-shared/payload-summary';
 import { extractCommandOutputPathCandidates } from '../../shared/commandOutputPaths.js';
 import { getDbClient } from '../localDb/client/current.js';
 import type { SharedTaskPeerCapture } from './sharedTaskDispatch.js';
@@ -34,7 +34,13 @@ function references(content: unknown, role: string, includeText: boolean): strin
     return createdPathsFromDescriptor(descriptor);
   }
   if (role === 'tool_result') {
-    return extractPayloadToolResultFiles(typeof content === 'string' ? content : JSON.stringify(content)).map((file) => file.url);
+    // Display extractors also find URLs inside read/search/log output. Those
+    // URLs are content, not authority; only explicit delivery fields count here.
+    const payload = parseToolResultPayload(typeof content === 'string' ? content : JSON.stringify(content));
+    if (payload?._xdt_render_image === false) return [];
+    const produced = Array.isArray(payload?.xdt_media_produced) ? payload.xdt_media_produced : [];
+    const models = Array.isArray(payload?._xdt_model_files) ? payload._xdt_model_files.map((file) => record(file)?.url) : [];
+    return [...produced, ...models].filter((url): url is string => typeof url === 'string');
   }
   const result: string[] = [];
   // Persisted attachments have passed the host's input-reference admission and
@@ -137,7 +143,12 @@ export async function sharedTaskReferencesFile(
         if (!capture.isCurrent()) return false;
         if (!uses.length) continue;
         const tool = parseMessageToolUse({ role: 'tool_use', content: decode(uses[0].content) });
-        if (isToolResultFailureLike(describeToolUse(tool.toolName, tool.input), typeof content === 'string' ? content : JSON.stringify(content))) continue;
+        const descriptor = describeToolUse(tool.toolName, tool.input);
+        // Native readers and shell commands can echo JSON-shaped file contents.
+        // Their actual outputs are authorized via invocation output paths below;
+        // delivery metadata is a contract of MCP/dynamic tool responses only.
+        if (descriptor.kind !== 'mcp' && descriptor.kind !== 'dynamic') continue;
+        if (isToolResultFailureLike(descriptor, typeof content === 'string' ? content : JSON.stringify(content))) continue;
       }
       if (row.role === 'tool_use') {
         // A queued/denied tool invocation is not delivery. Only completed output
