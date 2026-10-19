@@ -25,13 +25,13 @@ export function useCompanionTaskSession(deviceId: string, sessionId: string | nu
     ? cached ?? (query.value?.id === sessionId ? query.value : null)
     : null;
   const activity = useSyncExternalStore(remoteSessionStore.subscribeHomeStatus, () =>
-    readable ? remoteSessionStore.getSessionLiveActivity(sessionId!) : null,
+    readable ? remoteSessionStore.getSessionLiveActivity(sessionId!, deviceId) : null,
   );
   const running = useSyncExternalStore(remoteSessionStore.subscribeHomeStatus, () =>
-    readable && remoteSessionStore.isSessionRunning(sessionId!),
+    readable && remoteSessionStore.isSessionRunning(sessionId!, deviceId),
   );
   const waiting = useSyncExternalStore(remoteSessionStore.subscribeHomeStatus, () =>
-    readable && remoteSessionStore.getPendingInteractions(sessionId!).length > 0,
+    readable && remoteSessionStore.getPendingInteractions(sessionId!, deviceId).length > 0,
   );
   return { session, activity, running, waiting, originConflict, refresh: query.refresh };
 }

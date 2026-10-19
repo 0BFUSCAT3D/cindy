@@ -130,6 +130,16 @@ let node: HTMLDivElement;
 const render = async () => {
   await act(async () => root.render(createElement(CompanionMessageCard, { deviceId: 'home', message })));
 };
+const renderTasks = async (ids: string[]) => {
+  await act(async () => root.render(ids.map((id, index) => createElement(CompanionMessageCard, {
+    key: index, deviceId: 'home', message: {
+      ...message,
+      companion: { ...message.companion, meta: {
+        ...message.companion!.meta, delegationId: `job-${id}`, childSessionId: id,
+      } },
+    } as NormalizedRemoteMessage,
+  }))));
+};
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   node = document.createElement('div');
@@ -239,8 +249,8 @@ it('opens the task from the whole card and keeps stop as a small action while it
 it('refreshes an off-list task title and follows the list when a completed task runs again', async () => {
   vi.useFakeTimers();
   let title = 'Updated task title';
-  h.invoke.mockImplementation(async (_device, channel) => channel === 'local-db:sessions:get'
-    ? { id: 'child', title }
+  h.invoke.mockImplementation(async (_device, channel) => channel === 'local-db:sessions:get-many'
+    ? [{ id: 'child', title }]
     : { ok: true, delegations: [{ id: 'job', childSessionId: 'child', status: 'completed', title: 'Old title' }] });
   await render();
   expect(node.textContent).toContain('Updated task title');
@@ -255,11 +265,100 @@ it('refreshes an off-list task title and follows the list when a completed task 
   });
   expect(node.textContent).toContain('devices.companions.status.running');
   expect(node.textContent).not.toContain('devices.companions.status.completed');
-  const taskReads = () => h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get').length;
+  const taskReads = () => h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get-many').length;
   const reads = taskReads();
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(taskReads()).toBe(reads);
   expect(node.textContent).toContain('Updated task title');
+});
+
+// Unit: mounted production cards must coalesce different IDs, not just duplicate
+// bindings. Nine unique tasks cross the eight-ID boundary without concurrent fanout.
+it('batches off-list cards and shares their polling wave', async () => {
+  vi.useFakeTimers();
+  const ids = Array.from({ length: 9 }, (_, i) => `child-${i}`);
+  let active = 0;
+  let peak = 0;
+  h.invoke.mockImplementation(async (_device, channel, args) => {
+    if (channel !== 'local-db:sessions:get-many') return { ok: true, delegations: [] };
+    peak = Math.max(peak, ++active);
+    await Promise.resolve();
+    active--;
+    return args[0].map((id: string) => ({ id, title: `Task ${id}` }));
+  });
+  await renderTasks([...ids, ids[0]!]);
+  const batches = () => h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get-many');
+  expect(batches().map((call) => call[2][0])).toEqual([ids.slice(0, 8), ids.slice(8)]);
+  ids.forEach((id) => expect(node.textContent).toContain(`Task ${id}`));
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(batches().map((call) => call[2][0])).toEqual([
+    ids.slice(0, 8), ids.slice(8), ids.slice(0, 8), ids.slice(8),
+  ]);
+  expect(peak).toBe(1);
+  expect(h.invoke.mock.calls.some((call) => call[1] === 'local-db:sessions:get')).toBe(false);
+});
+
+it.each(['[CHANNEL_NOT_ALLOWED] old host', '[PRECONDITION_FAILED] REMOTE_SESSION_BATCH_TOO_LARGE'])(
+  'uses serial single reads only for batch compatibility failure %s', async (error) => {
+    let active = 0;
+    let peak = 0;
+    h.invoke.mockImplementation(async (_device, channel, args) => {
+      if (channel === 'local-db:sessions:get-many') throw new Error(error);
+      if (channel !== 'local-db:sessions:get') return { ok: true, delegations: [] };
+      peak = Math.max(peak, ++active);
+      await Promise.resolve();
+      active--;
+      return { id: args[0], title: `Task ${args[0]}` };
+    });
+    await renderTasks(['one', 'two']);
+    expect(node.textContent).toContain('Task one');
+    expect(node.textContent).toContain('Task two');
+    expect(h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get')).toHaveLength(2);
+    expect(peak).toBe(1);
+  },
+);
+
+it.each(['INVOKE_TIMEOUT', 'ACCESS_REVOKED', 'malformed'])(
+  'does not multiply a failed batch into single reads: %s', async (failure) => {
+    h.invoke.mockImplementation(async (_device, channel) => {
+      if (channel !== 'local-db:sessions:get-many') return { ok: true, delegations: [] };
+      if (failure === 'malformed') return [{ id: 'unrequested', title: 'Wrong task' }];
+      throw Object.assign(new Error(failure), { code: failure });
+    });
+    await renderTasks(['one', 'two']);
+    expect(node.textContent).not.toContain('Wrong task');
+    expect(h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get-many')).toHaveLength(1);
+    expect(h.invoke.mock.calls.some((call) => call[1] === 'local-db:sessions:get')).toBe(false);
+  },
+);
+
+it('drops queued batch reads and late titles after account change', async () => {
+  let finish!: (value: unknown) => void;
+  h.invoke.mockImplementation((_device, channel) => channel === 'local-db:sessions:get-many'
+    ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true, delegations: [] }));
+  const ids = Array.from({ length: 9 }, (_, i) => `child-${i}`);
+  await renderTasks(ids);
+  h.accountGeneration++;
+  h.status = 'offline';
+  await renderTasks(ids);
+  await act(async () => finish(ids.slice(0, 8).map((id) => ({ id, title: 'Old private title' }))));
+  expect(node.textContent).not.toContain('Old private title');
+  expect(h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get-many')).toHaveLength(1);
+});
+
+it.each(['activity', 'interaction'])('filters another host\'s off-list %s even after it is removed', async (kind) => {
+  const push = (device: string) => kind === 'activity'
+    ? remoteSessionStore.applySessionActivity(device, { sessionId: 'child', phase: 'running' })
+    : remoteSessionStore.applyRemotePush(device, 'maker:interaction-request', {
+      sessionId: 'child', request: { kind: 'permission', requestId: 'permission-1' },
+    });
+  push('other');
+  remoteSessionStore.removeDevice('other');
+  h.invoke.mockRejectedValue(new Error('read failed'));
+  await render();
+  expect(node.textContent).toContain('devices.companions.status.unknown');
+  await act(async () => push('home'));
+  expect(node.textContent).toContain(`devices.companions.status.${kind === 'activity' ? 'running' : 'waiting'}`);
 });
 
 it('does not borrow another computer\'s task identity or activity for the same id', async () => {
@@ -551,7 +650,7 @@ it('refreshes associated PR state only while mounted and never replays task acti
   expect(node.querySelector('[data-testid="merged-pr"]')).not.toBeNull();
   expect(
     h.invoke.mock.calls.every((c) =>
-      ['maker:bot-delegations:list', 'local-db:sessions:get', 'git-context:pr-refs:list', 'git-context:pr-status'].includes(
+      ['maker:bot-delegations:list', 'local-db:sessions:get-many', 'git-context:pr-refs:list', 'git-context:pr-status'].includes(
         c[1],
       ),
     ),

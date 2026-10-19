@@ -1085,6 +1085,13 @@ function sessionStateWriteAllowed(sessionId: string, deviceId?: string): boolean
     || mergedSessionById.get(sessionId)?.canonicalDeviceId === deviceId;
 }
 
+function sessionStateReadAllowed(sessionId: string, deviceId: string | undefined, sources: Map<string, string>): boolean {
+  if (!deviceId) return true;
+  if (!sessionStateWriteAllowed(sessionId, deviceId)) return false;
+  const source = sources.get(sessionId);
+  return !source || source === deviceId || (sessionDeviceIndex.has(sessionId) && sessionStateWriteAllowed(sessionId, source));
+}
+
 function clearSourcedSessionState(sessionId: string, sources: Map<string, string>): void {
   sources.delete(sessionId);
   if (sources === sessionInteractionSources) {
@@ -5635,7 +5642,8 @@ export const remoteSessionStore = {
     return newMakerWorktreeBranchPreferences.get(deviceId)?.get(baseRepo.trim()) ?? null;
   },
 
-  getPendingInteractions(sessionId: string): PendingInteraction[] {
+  getPendingInteractions(sessionId: string, deviceId?: string): PendingInteraction[] {
+    if (!sessionStateReadAllowed(sessionId, deviceId, sessionInteractionSources)) return emptyPendingInteractions;
     return pendingInteractions.get(sessionId) ?? emptyPendingInteractions;
   },
 
@@ -5686,12 +5694,13 @@ export const remoteSessionStore = {
     return inputProjections.get(sessionId) ?? EMPTY_INPUT_PROJECTION;
   },
 
-  getSessionLiveActivity(sessionId: string): RemoteSessionLiveActivity | null {
+  getSessionLiveActivity(sessionId: string, deviceId?: string): RemoteSessionLiveActivity | null {
+    if (!sessionStateReadAllowed(sessionId, deviceId, sessionRuntimeSources)) return null;
     return sessionLiveActivity.get(sessionId) ?? null;
   },
 
-  isSessionRunning(sessionId: string): boolean {
-    return sessionRunning.get(sessionId) === true;
+  isSessionRunning(sessionId: string, deviceId?: string): boolean {
+    return sessionStateReadAllowed(sessionId, deviceId, sessionRuntimeSources) && sessionRunning.get(sessionId) === true;
   },
 
   getSessionRunStatus(sessionId: string): RemoteSessionRunStatus {
