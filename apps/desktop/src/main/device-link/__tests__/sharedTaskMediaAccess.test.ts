@@ -57,21 +57,23 @@ describe('shared task media access', () => {
     deps.query.mockImplementation(async () => { current = false; return [{ rowid: 1, role: 'assistant', content: JSON.stringify(`[report](<${markdownPath(file)}>)`) }]; });
     await expect(assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture)).rejects.toThrow('PERMISSION_DENIED');
   });
-  it.each(['inline', 'reference', 'encoded', 'audio', 'tool-result'])('recognizes an exact outside-file reference in %s form', async (kind) => {
+  it.each(['inline', 'reference', 'encoded', 'audio', 'sandbox', 'sandbox-slashes'])('recognizes an exact outside-file reference in %s form', async (kind) => {
     const file = path.resolve('deliveries/report (final).pdf');
     const url = 'xdt-file://local?path=' + encodeURIComponent(file).replace(/\(/g, '%28').replace(/\)/g, '%29');
     const content = kind === 'inline' ? '`' + file + '`'
       : kind === 'reference' ? `[report][r]\n\n[r]: <${markdownPath(file)}>`
       : kind === 'encoded' ? `[report](<${pathToFileURL(file).href}>)`
+      : kind.startsWith('sandbox') ? `[report](<sandbox:${kind === 'sandbox-slashes' ? '///' : '/'}${markdownPath(file)}>)`
       : url;
-    deps.query.mockResolvedValue([{ rowid: 1, role: kind === 'tool-result' ? 'tool_result' : 'assistant', content: JSON.stringify(content) }]);
+    deps.query.mockResolvedValue([{ rowid: 1, role: 'assistant', content: JSON.stringify(content) }]);
     await expect(assertSharedTaskMedia(kind === 'audio' ? url.replace('xdt-file:', 'xdt-audio:') : url, capture)).resolves.toEqual({ file });
   });
-  it.each(['fenced', 'unused-definition', 'prefix', 'remote-host'])('rejects %s text that does not deliver this local file', async (kind) => {
+  it.each(['fenced', 'unused-definition', 'prefix', 'remote-host', 'sandbox-relative'])('rejects %s text that does not deliver this local file', async (kind) => {
     const file = path.resolve('deliveries/report.pdf');
     const content = kind === 'fenced' ? '```md\n[report](<' + markdownPath(file) + '>)\n```'
       : kind === 'unused-definition' ? `[r]: <${markdownPath(file)}>`
       : kind === 'remote-host' ? `[report](xdt-file://local?path=${encodeURIComponent(file)}&remoteHostId=ssh)`
+      : kind === 'sandbox-relative' ? '[report](sandbox:../deliveries/report.pdf)'
       : `[report](<${markdownPath(file)}.secret>)`;
     deps.query.mockResolvedValue([{ rowid: 1, role: 'assistant', content: JSON.stringify(content) }]);
     await expect(assertSharedTaskMedia('xdt-file://local?path=' + encodeURIComponent(file), capture)).rejects.toThrow('PERMISSION_DENIED');
@@ -84,6 +86,25 @@ describe('shared task media access', () => {
       deps.query.mockResolvedValueOnce([row]).mockResolvedValueOnce(result === null ? [] : [{ content: JSON.stringify(result) }]);
       if (result === 'File written') await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
       else await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
+    }
+  });
+  // Direct result links must pass the same completed/non-failed provenance gate
+  // as tool-use outputs; an error message mentioning a URL is not a delivery.
+  it.each(['ok', 'structured-error', 'text-error', 'missing-use', 'missing-id', 'revoked'])('checks direct tool-result provenance: %s', async (kind) => {
+    const file = path.resolve('deliveries/report.pdf');
+    const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+    const content = kind === 'structured-error' ? { ok: false, error: 'failed to open ' + url }
+      : kind === 'text-error' ? 'Error: failed to open ' + url : url;
+    deps.query.mockResolvedValueOnce([{ rowid: 2, role: 'tool_result', toolUseId: kind === 'missing-id' ? null : 'run-1', content: JSON.stringify(content) }]);
+    deps.query.mockImplementationOnce(async () => {
+      if (kind === 'revoked') current = false;
+      return kind === 'missing-use' ? [] : [{ content: JSON.stringify({ toolName: 'Bash', input: { command: 'generate-report' } }) }];
+    });
+    if (kind === 'ok') await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
+    else await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
+    if (kind !== 'missing-id') {
+      expect(deps.query.mock.calls[1][0]).toContain('rewind_at IS NULL AND tool_use_id = ? AND rowid < ?');
+      expect(deps.query.mock.calls[1][1]).toEqual(['task', 'run-1', 2]);
     }
   });
   it('does not cache file grants and scopes the history query to live messages in the current task', async () => {

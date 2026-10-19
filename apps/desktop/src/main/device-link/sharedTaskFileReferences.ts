@@ -66,6 +66,10 @@ function references(content: unknown, role: string, includeText: boolean): strin
 
 function referencePath(reference: string, workingDir: string): string | null {
   let value = reference.trim();
+  // Match renderer/lib/markdownTarget.normalizeSandboxHref: lexical absolute
+  // path normalization only; task provenance and sensitive-path gates still apply.
+  const sandbox = value.match(/^sandbox:\/*(?:([a-z]:[\\/][^\n]*)|(\/[^\n]*))$/i);
+  if (sandbox) value = sandbox[1] ?? sandbox[2] ?? value;
   try {
     if (value.startsWith('xdt-file://') || value.startsWith('xdt-audio://')) {
       const url = new URL(value);
@@ -115,6 +119,20 @@ export async function sharedTaskReferencesFile(
         const candidate = referencePath(reference, workingDir);
         return candidate !== null && path.relative(requested, candidate) === '';
       })) continue;
+      if (row.role === 'tool_result') {
+        // A URL in a failed result (including error diagnostics) is not delivery.
+        // Pair with the live invocation so failure detection uses its tool kind.
+        if (!row.toolUseId) continue;
+        const uses = await getDbClient().query<{ content: string }>(
+          `SELECT content FROM messages WHERE session_id = ? AND role = 'tool_use'
+           AND rewind_at IS NULL AND tool_use_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 1`,
+          [capture.author.sessionId, row.toolUseId, row.rowid],
+        );
+        if (!capture.isCurrent()) return false;
+        if (!uses.length) continue;
+        const tool = parseMessageToolUse({ role: 'tool_use', content: decode(uses[0].content) });
+        if (isToolResultFailureLike(describeToolUse(tool.toolName, tool.input), typeof content === 'string' ? content : JSON.stringify(content))) continue;
+      }
       if (row.role === 'tool_use') {
         // A queued/denied tool invocation is not delivery. Only completed output
         // records can expose generated file chips outside the workspace.
