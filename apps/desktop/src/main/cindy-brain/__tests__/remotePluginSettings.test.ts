@@ -91,7 +91,9 @@ function fixture(namespace: string | null = null) {
   } as unknown as InstalledGhost;
   const stored = new Map<string, string>(),
     controllerStored = new Map<string, string>();
-  const settingsFetch = vi.fn(
+  const settingsFetch = vi.fn<
+    NonNullable<ConstructorParameters<typeof MobilePluginPages>[0]['settingsFetch']>
+  >(
     async (
       _ghost: InstalledGhost,
       path: string,
@@ -292,6 +294,50 @@ describe('original remote plugin settings', () => {
     expect(f.settingsFetch).toHaveBeenCalledTimes(1);
     expect(f.stored.get('/secrets/key')).toContain('submitted-once');
     expect(f.deps.trustIdentity).toHaveBeenCalledTimes(1);
+  });
+  it('renews while a save awaits confirmation, then returns the original save result', async () => {
+    const f = fixture(),
+      { fetch } = await f.open();
+    const html = await (await fetch('/settings.html')).text();
+    const internal = /src="([^"]+\.js)"/.exec(html)![1].slice(0, -3);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    let poll: Promise<Response> | undefined;
+    let writing: Promise<Response> | undefined;
+    try {
+      for (const elapsed of [100_000, 200_000, 239_000]) {
+        clock.mockReturnValue(now + elapsed);
+        expect((await fetch('/secrets')).status).toBe(200);
+      }
+      f.settingsFetch.mockImplementationOnce(
+        async (_ghost, path, _method, body, current, confirmConnection) => {
+          if (!(await confirmConnection!('New connection', 'example.invalid')) || !current())
+            throw new Error('CLOSED');
+          f.stored.set(path, body!);
+          return { status: 200, mime: 'application/json', base64: '' };
+        },
+      );
+      mock.dialog.mockResolvedValueOnce({ response: 0 });
+      writing = fetch('/connections/account', { method: 'PUT', body: '{"label":"new"}' });
+      await vi.waitFor(() => expect(f.settingsFetch).toHaveBeenCalledTimes(4));
+      clock.mockReturnValue(now + 241_000);
+      poll = fetch(internal, { method: 'POST', body: '{"kind":"poll","after":0}' });
+      await vi.waitFor(() => expect(mock.dialog).toHaveBeenCalledTimes(1));
+      expect((await poll).status).toBe(200);
+      expect((await writing).status).toBe(200);
+      expect(f.stored.get('/connections/account')).toBe('{"label":"new"}');
+      expect(f.deps.trustIdentity).toHaveBeenCalledTimes(2);
+      expect(f.settingsFetch).toHaveBeenCalledTimes(4);
+    } finally {
+      const pageId = [...(f.service as unknown as { pages: Map<string, unknown> }).pages.keys()][0];
+      await f.service.settingsRequest('controller-a', {
+        op: 'settings',
+        id: pageId,
+        command: { kind: 'close' },
+      });
+      await Promise.allSettled([poll, writing]);
+      clock.mockRestore();
+    }
   });
   it('renews all four open settings pages without closing any page or consuming another slot', async () => {
     const f = fixture();

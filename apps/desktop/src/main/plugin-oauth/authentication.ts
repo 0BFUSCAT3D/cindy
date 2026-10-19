@@ -82,7 +82,7 @@ interface Connection {
   binding: OauthCardBinding;
   started: boolean;
   finished: boolean;
-  pending: number;
+  current(): boolean;
   innerId?: string;
   messages: Map<string, { box: string; promise: Promise<unknown> }>;
 }
@@ -117,7 +117,8 @@ export class AuthenticatedOauthHost {
   }
   private assertCurrent(c: Connection): void {
     if (
-      this.connections.get(c.id) !== c ||
+      (this.connections.get(c.id) !== c && !c.binding.settingsPage) ||
+      !c.current() ||
       c.owner !== this.deps.owner() ||
       !this.deps.available(c.peer) ||
       this.now() >= c.expiresAtMs
@@ -160,6 +161,7 @@ export class AuthenticatedOauthHost {
       const generation = this.generation,
         peerGeneration = this.peerGenerations.get(peer) ?? 0;
       const binding = await this.deps.bind(hello.action);
+      const currentIdentity = await this.deps.identity();
       const previous = binding?.settingsPage
         ? [...this.connections.values()].filter(
             (c) =>
@@ -169,15 +171,7 @@ export class AuthenticatedOauthHost {
               sameAction(c.hello.action, hello.action),
           )
         : [];
-      // Keep each response on its original encrypted connection until it settles.
-      await Promise.allSettled(
-        previous.flatMap((c) => [...c.messages.values()].map((m) => m.promise)),
-      );
-      const currentIdentity = await this.deps.identity();
-      const replaceable = previous.filter(
-        (c) => this.connections.get(c.id) === c && c.pending === 0,
-      );
-      const remaining = [...this.connections.values()].filter((c) => !replaceable.includes(c));
+      const remaining = [...this.connections.values()].filter((c) => !previous.includes(c));
       if (
         !binding?.current() ||
         (binding.controllerDeviceId !== undefined && binding.controllerDeviceId !== peer) ||
@@ -210,7 +204,8 @@ export class AuthenticatedOauthHost {
           peer,
         ),
       );
-      for (const c of replaceable) this.connections.delete(c.id);
+      // Retire old keys for new requests; accepted responses keep their original key and lease.
+      for (const c of previous) this.connections.delete(c.id);
       this.connections.set(id, {
         id,
         peer,
@@ -221,7 +216,10 @@ export class AuthenticatedOauthHost {
         binding,
         started: false,
         finished: false,
-        pending: 0,
+        current: () =>
+          generation === this.generation &&
+          peerGeneration === (this.peerGenerations.get(peer) ?? 0) &&
+          (!binding.settingsPage || binding.current()),
         messages: new Map(),
       });
       return {
@@ -260,7 +258,6 @@ export class AuthenticatedOauthHost {
     } else if (request.op !== 'capabilities' && (!c.innerId || request.id !== c.innerId))
       throw fail();
     const requestNonce = payload.nonce;
-    c.pending++;
     const promise = (async () => {
       try {
         this.assertCurrent(c);
@@ -295,9 +292,7 @@ export class AuthenticatedOauthHost {
           }),
         };
       }
-    })().finally(() => {
-      c.pending--;
-    });
+    })();
     c.messages.set(requestNonce, { box: v.box, promise });
     return promise;
   }

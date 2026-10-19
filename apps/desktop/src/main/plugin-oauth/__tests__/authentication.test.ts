@@ -8,6 +8,7 @@ import {
 import { OauthBox } from '../box.js';
 import {
   parsePluginOauthHelloReply,
+  PLUGIN_OAUTH_TTL_MS,
   type PluginOauthAction,
   type PluginOauthPeerIdentity,
 } from '@cindy/device-link';
@@ -208,38 +209,57 @@ describe('signed OAuth transport with explicit peer trust', () => {
       otherPeer({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
     ).resolves.toBeDefined();
   });
-  it('lets an in-flight settings response finish on its original encrypted connection after renewal', async () => {
-    const f = fixture('test-plugin', undefined, true);
-    const options = {
-      ...f.options,
-      action: { requestId: 'page-1', actionId: 'settings-page', expectedRevision: 0 },
-    };
-    const call = await authenticateOauthController(options);
-    let start!: () => void, finish!: () => void;
-    const started = new Promise<void>((resolve) => {
-      start = resolve;
-    });
-    const completed = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    f.request.mockImplementationOnce(async () => {
-      start();
-      await completed;
-      return { phase: 'starting', marker: 'original-result' };
-    });
-    const pending = call({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } });
-    await started;
-    const renewal = authenticateOauthController(options);
-    finish();
-    await expect(pending).resolves.toMatchObject({ marker: 'original-result' });
-    const renewed = await renewal;
-    await expect(
-      renewed({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
-    ).resolves.toBeDefined();
-    await expect(
-      call({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
-    ).rejects.toThrow();
-  });
+  it.each(['none', 'owner', 'peer', 'all', 'binding', 'expiry'] as const)(
+    'renews without waiting for a settings response and rechecks %s invalidation before returning it',
+    async (change) => {
+      const f = fixture('test-plugin', undefined, true);
+      const options = {
+        ...f.options,
+        action: { requestId: 'page-1', actionId: 'settings-page', expectedRevision: 0 },
+      };
+      const call = await authenticateOauthController(options);
+      let start!: () => void, finish!: () => void;
+      const started = new Promise<void>((resolve) => {
+        start = resolve;
+      });
+      const completed = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      f.request.mockImplementationOnce(async () => {
+        start();
+        await completed;
+        return { phase: 'starting', marker: 'original-result' };
+      });
+      const pending = call({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } });
+      await started;
+      let renewed: typeof call | undefined;
+      const renewal = authenticateOauthController(options).then((value) => {
+        renewed = value;
+      });
+      try {
+        await vi.waitFor(() => expect(renewed).toBeDefined());
+        if (change === 'owner') f.owner('different-owner');
+        else if (change === 'peer') f.host.invalidate('desktop');
+        else if (change === 'all') f.host.invalidate();
+        else if (change === 'binding') f.invalidateBinding();
+        else if (change === 'expiry') f.now(f.target.observedAtMs + PLUGIN_OAUTH_TTL_MS);
+      } finally {
+        finish();
+      }
+      await renewal;
+      if (change !== 'none') {
+        await expect(pending).rejects.toThrow();
+        return;
+      }
+      await expect(pending).resolves.toMatchObject({ marker: 'original-result' });
+      await expect(
+        renewed!({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
+      ).resolves.toBeDefined();
+      await expect(
+        call({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
+      ).rejects.toThrow();
+    },
+  );
 
   it('rejects a mutated authenticated envelope without invoking the transaction', async () => {
     const f = fixture(),
