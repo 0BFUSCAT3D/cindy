@@ -170,7 +170,6 @@ const REMOTE_AUTH_ERROR_FALLBACK_MS = 30_000;
 // 点击卡片到主窗导航落地之间可能隔着一次 renderer 冷加载,与主窗导航保留同量级。
 const ISLAND_ENTRY_ALERT_TTL_MS = 60_000;
 const MAX_ISLAND_ENTRY_SESSION_ID_LENGTH = 128;
-const REMOTE_COMPANION_CACHE_LIMIT = 64;
 const REMOTE_COMPANION_ARTWORK_RETRY_MS = 60_000;
 const MAX_ISLAND_ENTRY_ID_LENGTH = 32;
 
@@ -334,6 +333,7 @@ export class AgentIslandService {
   private readonly metadataCache = new Map<string, AgentIslandCachedMetadata>();
   private readonly metadataLoading = new Set<string>();
   private readonly remoteCompanions = new Map<string, { snapshot: AgentIslandCompanionSnapshot; retryAt: number | null }>();
+  private readonly remoteCompanionKeysInUse = new Set<string>();
   /** Latest refresh per Session: an older read that finishes late never overwrites a newer one. */
   private readonly companionRefreshSeq = new Map<string, number>();
   private lastDeviceSessionInputs: readonly AgentIslandRemoteSessionInput[] = [];
@@ -720,6 +720,7 @@ export class AgentIslandService {
    */
   setDeviceSessions(inputs: readonly AgentIslandRemoteSessionInput[]): void {
     this.lastDeviceSessionInputs = inputs;
+    this.remoteCompanionKeysInUse.clear();
     setAgentIslandStrings(this.state, buildAgentIslandStrings());
     const result = syncAgentIslandDeviceSessions(
       this.state,
@@ -727,6 +728,11 @@ export class AgentIslandService {
       Date.now(),
       (input) => this.remoteCompanionSnapshot(input),
     );
+    // Keep exactly the identities this input still names: bounded by the input itself, and a
+    // large roster can never evict entries it is about to read again in the same pass.
+    for (const key of this.remoteCompanions.keys()) {
+      if (!this.remoteCompanionKeysInUse.has(key)) this.remoteCompanions.delete(key);
+    }
     for (const input of inputs) {
       if (input.phase === 'completed' && input.completionNotification === 'silent') {
         this.mutedCompletionSoundSessionIds.add(input.sessionId);
@@ -756,6 +762,7 @@ export class AgentIslandService {
     const identity = input.companion;
     if (!identity) return null;
     const key = JSON.stringify([input.deviceId, identity.name, identity.avatar, identity.avatarColor]);
+    this.remoteCompanionKeysInUse.add(key);
     const cached = this.remoteCompanions.get(key);
     if (cached) {
       // A failed read stays a glyph, but the next sync after the pause tries again; the
@@ -765,9 +772,6 @@ export class AgentIslandService {
     }
     const base = companionSnapshotWithoutArtwork(identity);
     this.remoteCompanions.set(key, { snapshot: base, retryAt: null });
-    if (this.remoteCompanions.size > REMOTE_COMPANION_CACHE_LIMIT) {
-      this.remoteCompanions.delete(this.remoteCompanions.keys().next().value!);
-    }
     this.loadRemoteCompanionArtwork(key, input, base);
     return base;
   }
@@ -813,6 +817,7 @@ export class AgentIslandService {
     this.metadataCache.clear();
     this.metadataLoading.clear();
     this.remoteCompanions.clear();
+    this.remoteCompanionKeysInUse.clear();
     this.companionRefreshSeq.clear();
     this.lastDeviceSessionInputs = [];
     this.lastSoundDisplayState = null;

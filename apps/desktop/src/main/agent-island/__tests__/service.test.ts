@@ -1842,6 +1842,30 @@ describe('AgentIslandService native publishing', () => {
     }
   });
 
+  // Review of #6436: a fixed 64-entry FIFO thrashed once more companions than that were active.
+  it('keeps every remote companion identity stable when more than 64 are active', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    const inputs = Array.from({ length: 70 }, (_, index) => ({
+      sessionId: `r${index}`, deviceId: 'd1', deviceName: 'Studio', title: `Bot${index}`, workingDir: null, workspaceKind: null,
+      agentKind: null, phase: 'running' as const, detail: 'x',
+      companion: { name: `Bot${index}`, avatar: '🦊', avatarColor: 'teal' },
+    }));
+    service.setDeviceSessions(inputs);
+    const first = publish.mock.calls.at(-1)?.[0].sessions.map((session) => session.companion);
+    const publishedBefore = publish.mock.calls.length;
+    service.setDeviceSessions(inputs);
+    expect(publish.mock.calls.length).toBe(publishedBefore);
+    expect(first).toHaveLength(70);
+    expect(new Set(first).size).toBe(70);
+  });
+
   it('refreshes placeholder titles and hides dialogue workspace folders', async () => {
     const { AgentIslandService } = await import('../service.js');
     const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
