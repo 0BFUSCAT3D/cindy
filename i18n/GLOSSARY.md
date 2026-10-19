@@ -185,7 +185,7 @@ Anthropic Messages API / wire protocol 的用户可见名称。四语统一保�
 
 ### Discover Teammates
 
-预制伙伴目录与邀请入口；本期 Desktop DEV-only。入口菜单项与弹窗标题同用 bots.market.heading，不再另设英文品牌名 Bot Market；英文句中小写 teammates（Discover teammates 作动作时），作功能名保持 Discover Teammates。
+预制伙伴目录与邀请入口，仅 Desktop。入口菜单项与弹窗标题同用 bots.market.heading，不再另设英文品牌名 Bot Market；英文句中小写 teammates（Discover teammates 作动作时），作功能名保持 Discover Teammates。
 
 ### reply (the bot's public post on X)
 

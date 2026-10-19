@@ -135,7 +135,7 @@ export const router = createHashRouter([
                       // 之前(React Router 也按静态优先定级),所以 /bots/roster 不会
                       // 被当成一个叫 "roster" 的伙伴。
                       { path: 'roster', element: <BotRosterView /> },
-                      ...(import.meta.env.DEV ? [{ path: 'market/:packageId?', element: <BotMarketRoute /> }] : []),
+                      { path: 'market/:packageId?', element: <BotMarketRoute /> },
                       // 伙伴群聊是独立对象(不是某位伙伴的任务),静态段 'groups' 同样排在
                       // :botId 之前,/bots/groups/<id> 不会被当成一个叫 "groups" 的伙伴。
                       { path: 'groups/:groupId', element: <BotGroupChatView /> },

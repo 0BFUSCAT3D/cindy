@@ -37,7 +37,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -75,16 +74,6 @@ describe('bot market entry hint on the teammates "+"', () => {
     expect(hasDot(screen.getByRole('button', { name: PLAIN, hidden: true }))).toBe(false);
   });
 
-  it('shows no hint and no entry when the market entry is unavailable', () => {
-    vi.stubEnv('DEV', false);
-    render(<Harness />);
-    const trigger = screen.getByRole('button', { name: PLAIN, hidden: true });
-    expect(hasDot(trigger)).toBe(false);
-    openMenu(PLAIN);
-    expect(screen.queryByRole('menuitem', { name: /bots\.market\.heading/ })).toBeNull();
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
-  });
-
   it('treats unreadable storage as already seen', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new Error('storage unavailable');
@@ -103,6 +92,16 @@ describe('bot market entry hint on the teammates "+"', () => {
     unmount();
 
     render(<Harness />);
+    expect(hasDot(screen.getByRole('button', { name: PLAIN, hidden: true }))).toBe(false);
+  });
+
+  it('drops the dot when another window of the same account marks it seen', () => {
+    render(<Harness />);
+    expect(hasDot(screen.getByRole('button', { name: WITH_HINT }))).toBe(true);
+    act(() => {
+      window.localStorage.setItem(STORAGE_KEY, 'seen');
+      window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY }));
+    });
     expect(hasDot(screen.getByRole('button', { name: PLAIN, hidden: true }))).toBe(false);
   });
 

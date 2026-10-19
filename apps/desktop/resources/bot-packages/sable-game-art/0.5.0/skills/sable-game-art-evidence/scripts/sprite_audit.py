@@ -98,6 +98,15 @@ def decode_png(encoded):
             "unsupported PNG (8-bit non-interlaced grayscale, RGB, palette, gray+alpha or RGBA only)")
     require(width > 0 and height > 0 and width * height <= MAX_PIXELS, "PNG larger than 1048576 pixels")
     require(ctype != 3 or (palette is not None and len(palette) % 3 == 0), "palette PNG without PLTE")
+    # tRNS: a palette PNG carries one alpha per index; grayscale and RGB PNGs carry one fully transparent colour (a 16-bit
+    # sample per channel; at 8 bits the high byte is 0). RGBA and gray+alpha images have their own alpha channel and no tRNS.
+    key = None
+    if trns is not None and ctype == 0:
+        require(len(trns) == 2 and trns[0] == 0, "invalid tRNS chunk for a grayscale PNG")
+        key = (trns[1],)
+    elif trns is not None and ctype == 2:
+        require(len(trns) == 6 and trns[0] == 0 and trns[2] == 0 and trns[4] == 0, "invalid tRNS chunk for an RGB PNG")
+        key = (trns[1], trns[3], trns[5])
     channels = CHANNELS[ctype]
     stride = width * channels
     expected = (stride + 1) * height
@@ -127,9 +136,9 @@ def decode_png(encoded):
         if ctype == 6:
             return line[i], line[i + 1], line[i + 2], line[i + 3]
         if ctype == 2:
-            return line[i], line[i + 1], line[i + 2], 255
+            return line[i], line[i + 1], line[i + 2], 0 if key == (line[i], line[i + 1], line[i + 2]) else 255
         if ctype == 0:
-            return line[i], line[i], line[i], 255
+            return line[i], line[i], line[i], 0 if key == (line[i],) else 255
         if ctype == 4:
             return line[i], line[i], line[i], line[i + 1]
         index = line[i]

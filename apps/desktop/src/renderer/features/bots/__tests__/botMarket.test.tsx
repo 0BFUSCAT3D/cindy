@@ -358,3 +358,26 @@ it('keeps the tool state labels in one grid cell so a longer language never chan
   expect(labels.every(label => label.getAttribute('aria-hidden') === 'true' && label.className.includes('opacity-0'))).toBe(true);
   expect(labels.every(label => label.className.includes('col-start-1') && label.className.includes('row-start-1'))).toBe(true);
 });
+const partial = { requestId: 'partial', botId: 'partial-bot', saved: true, status: 'needs-attention' as const, checks: [{ entryId: 'routine-pr-follow', status: 'needs-attention' as const }] };
+it('opens the detail when an invitation from the list saves only part of the teammate, so the failed item and retry are visible', async () => {
+  const testApi = api();
+  vi.mocked(testApi.invite).mockResolvedValue(partial);
+  render(<MemoryRouter><BotMarketDialog api={testApi} onClose={() => {}} /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.market.invite' }));
+  expect(await screen.findByText('bots.market.partialReady')).toBeTruthy();
+  expect(screen.getByText('bots.market.itemFailed.routine')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'bots.market.retry' })).toBeTruthy();
+});
+it('never shows or retries another teammate\'s partial result after the user moves to a different detail', async () => {
+  const testApi = api();
+  vi.mocked(testApi.list).mockResolvedValue([entry, { ...entry, packageId: 'other-bot', name: '另一个伙伴' }]);
+  let finish!: (value: typeof partial) => void;
+  vi.mocked(testApi.invite).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  render(<MemoryRouter><BotMarketDialog api={testApi} onClose={() => {}} /></MemoryRouter>);
+  fireEvent.click((await screen.findAllByRole('button', { name: 'bots.market.invite' }))[0]!);
+  fireEvent.click(await screen.findByRole('button', { name: '另一个伙伴' }));
+  await act(async () => finish(partial));
+  expect(screen.getAllByRole('heading', { name: '另一个伙伴' }).length).toBeGreaterThan(0);
+  expect(screen.queryByText('bots.market.partialReady')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'bots.market.retry' })).toBeNull();
+});

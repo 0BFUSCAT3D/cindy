@@ -84,10 +84,9 @@ function nativeOpeningReady(result: CompanionImportResult): boolean {
     || check.entryId.startsWith('routine-') || check.message === 'MEMORY_DISABLED');
 }
 
-/** Desktop catalog only; release remains closed until the separate distribution decision. */
+/** Desktop catalog of the packages bundled with the app. */
 export async function listNativeBotPackages(): Promise<BotMarketEntry[]> {
   const scope = owner();
-  if (app.isPackaged) return [];
   const receipts = await packageReceipts(scope.root, scope.assert);
   const entries: BotMarketEntry[] = [];
   for (const id of BOT_PACKAGE_IDS) {
@@ -100,7 +99,7 @@ export async function listNativeBotPackages(): Promise<BotMarketEntry[]> {
 /** Package admission shares the import owner and its single durable receipt. */
 export async function inviteNativeBotPackage(input: BotPackageIdentity & { locale?: string }, controller: string): Promise<CompanionImportResult> {
   const scope = owner();
-  if (app.isPackaged || !input || typeof input.packageId !== 'string') throw new CompanionImportError('INVALID_REQUEST');
+  if (!input || typeof input.packageId !== 'string') throw new CompanionImportError('INVALID_REQUEST');
   const pkg = await readNativeBotPackage(packageRoot(), input.packageId); scope.assert();
   if (input.packageVersion !== pkg.identity.packageVersion || input.packageHash !== pkg.identity.packageHash) throw new CompanionImportError('SELECTION_CHANGED');
   // A single Main owns all windows. Admission remains locked until the original

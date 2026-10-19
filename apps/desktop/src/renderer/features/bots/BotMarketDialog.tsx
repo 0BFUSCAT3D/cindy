@@ -53,7 +53,8 @@ export function BotMarketDialog({ onClose, initialPackageId, api = window.electr
   const [error, setError] = useState<string>();
   const [busyId, setBusyId] = useState<string>();
   const [deleting, setDeleting] = useState<string>();
-  const [result, setResult] = useState<CompanionImportResult>();
+  // The result belongs to the package that was invited, so another teammate's detail never shows or retries it.
+  const [result, setResult] = useState<{ packageId: string; value: CompanionImportResult }>();
   const [plugins, setPlugins] = useState<Record<string, BotMarketPluginInfo>>({});
   const [stuck, setStuck] = useState(false);
   const [skeleton, setSkeleton] = useState(false);
@@ -139,7 +140,7 @@ export function BotMarketDialog({ onClose, initialPackageId, api = window.electr
       let next = await api.invite({ packageId: entry.packageId, packageVersion: entry.packageVersion,
         packageHash: entry.packageHash, locale: language });
       if (!current()) return;
-      setResult(next);
+      setResult({ packageId: entry.packageId, value: next });
       // Closing only stops observing; the import owner retains the request.
       while (next.status === 'running' && current()) {
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -147,10 +148,12 @@ export function BotMarketDialog({ onClose, initialPackageId, api = window.electr
         const status = await api.status(next.requestId);
         if (!current()) return;
         if (!status) throw new Error('IMPORT_STATUS_UNAVAILABLE');
-        next = status; setResult(next);
+        next = status; setResult({ packageId: entry.packageId, value: next });
       }
       if (!current()) return;
       setEntries(items => items.map(item => item.packageId === entry.packageId ? { ...item, installation: next } : item));
+      // A partial save from the list opens its detail, where the failed items and the retry live; a user who already moved on is left alone.
+      if (next.status === 'needs-attention') setSelectedId(selected => selected ?? entry.packageId);
       if (next.status === 'complete' && next.saved) await openBot(next.botId);
     } catch (cause) {
       if (current()) setError(t(extractIpcError(cause)?.code === 'IMPORT_NAME_EXISTS' ? 'bots.market.nameExists' : 'bots.market.installFailed'));
@@ -169,7 +172,7 @@ export function BotMarketDialog({ onClose, initialPackageId, api = window.electr
     </Button>;
   };
   const back = () => { setSelectedId(undefined); setResult(undefined); setError(undefined); };
-  const visibleResult = result ?? selection?.installation;
+  const visibleResult = result && result.packageId === selection?.packageId ? result.value : selection?.installation;
   const failedChecks = visibleResult?.checks.filter(check => check.status === 'needs-attention') ?? [];
   const failedText = (entry: BotMarketEntry, check: { entryId: string; message?: string }) => {
     if (check.message === 'MEMORY_DISABLED') return t('bots.market.memoryDisabled');

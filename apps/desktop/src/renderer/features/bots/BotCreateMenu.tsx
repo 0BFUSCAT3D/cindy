@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { BotRosterView } from './BotRosterView';
 import { BotGroupCreateDialog } from './BotGroupCreateDialog';
 import { BotMarketDialog } from './BotMarketDialog';
-import { isBotMarketEntryAvailable, type BotMarketEntryHint } from './botMarketEntryHint';
+import type { BotMarketEntryHint } from './botMarketEntryHint';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { NewTag } from '@/components/sidebar/NewTag';
 import { ChatInviteDialog } from './ChatInviteDialog';
@@ -68,11 +68,11 @@ export function BotCreateMenu({ variant, label, entryHint }: {
           <DropdownMenuContent align="end" onCloseAutoFocus={event => {
             if (dialog) event.preventDefault();
           }}>
-            {isBotMarketEntryAvailable() && <DropdownMenuItem onSelect={() => setDialog('market')}>
+            <DropdownMenuItem onSelect={() => setDialog('market')}>
               <Store size={14} className="mr-2" />
               {t('bots.market.heading')}
               {tagShown && <NewTag className="ml-auto" />}
-            </DropdownMenuItem>}
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => setDialog('bot')}>
               <Bot size={14} className="mr-2" />
               {t('bots.list.createTeammate')}
