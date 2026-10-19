@@ -1369,6 +1369,37 @@ describe('connect_account ordinary task entry', () => {
 });
 
 describe('花名册 / ghost_list 过滤', () => {
+  // PR #6434: list already hides an unavailable owner projection; wrong-address
+  // info/manual/call/setup must preserve that boundary before any side effect.
+  it.each(['claude-code', 'codex', 'pi'] as const)(
+    '%s hides namespace recovery targets while the active owner is unavailable', async (agentKind) => {
+      listMock.mockReturnValue([{
+        ...(chipGhost('art', ['tool']) as object),
+        namespace: 'outgoing-owner',
+        dir: path.join(tmpUserData, '_ns', 'outgoing-owner', 'art'),
+      }]);
+      activeSessionAvailableMock.mockReturnValue(false);
+      const deps = makeDeps(agentKind);
+      expect(JSON.parse((await handleGhostList(deps)).content[0].text).ghosts).toEqual([]);
+      const target = { ghost_id: 'art', namespace: null };
+      for (const result of [
+        await handleGhostInfo(deps, target),
+        await handleGhostManual(deps, target),
+        await handleGhostCall(deps, { ...target, tool: 'run', attachments: ['cindy-media://blobs/example.png'] }),
+      ]) {
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, errorCode: 'GHOST_NOT_FOUND' });
+        expect(result.content[0].text).not.toContain('outgoing-owner');
+      }
+      const connection = await deps.connectAccount!({ kind: 'plugin', id: 'art', namespace: null });
+      expect(connection).toMatchObject({ ok: false, errorCode: 'GHOST_NOT_FOUND' });
+      expect(JSON.stringify(connection)).not.toContain('outgoing-owner');
+      expect(ensureReadyMock).not.toHaveBeenCalled();
+      expect(grantAttachmentsMock).not.toHaveBeenCalled();
+      expect(dispatchMock).not.toHaveBeenCalled();
+    },
+  );
+
   // Regression: a listed root was repeatedly addressed with the string "null".
   // Exercise the real MCP handlers and host resolver with the same session deps;
   // a rejected address must never reach setup, attachment grants or dispatch.

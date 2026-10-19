@@ -55,6 +55,31 @@ describe('classifyGhostVisibility namespace', () => {
     expect(result.message).toContain('JSON null');
   });
 
+  // PR #6434: an explicit wrong address must not disclose an unavailable owner's
+  // identities. Existing namespace cases only exercised available installations.
+  it.each([null, 'null'])('hides unavailable identities for namespace %s', (namespace) => {
+    const unavailableDeps = {
+      ...deps,
+      listGhosts: () => [enterprise],
+      isAvailableForActiveSession: () => false,
+    };
+    const result = classifyGhostVisibility('helper', null, unavailableDeps, namespace);
+    expect(result).toEqual(classifyGhostVisibility('missing', null, unavailableDeps, namespace));
+    expect(result).toMatchObject({ ok: false, errorCode: 'GHOST_NOT_FOUND' });
+    expect(JSON.stringify(result)).not.toContain('acme');
+  });
+
+  it('only includes active-session identities in namespace mismatch guidance', () => {
+    const result = classifyGhostVisibility('helper', null, {
+      ...deps,
+      isAvailableForActiveSession: (id) => id === 'helper',
+    }, 'wrong');
+    expect(result).toMatchObject({ ok: false, errorCode: 'GHOST_NAMESPACE_MISMATCH' });
+    if (result.ok) return;
+    expect(result.message).toContain('{"ghost_id":"helper","namespace":null}');
+    expect(result.message).not.toContain('acme');
+  });
+
   it('keeps the literal organization slug null distinct from JSON null', () => {
     const namedNull = ghost('helper', 'null');
     const stageDeps = { ...deps, listGhosts: () => [root, namedNull] };

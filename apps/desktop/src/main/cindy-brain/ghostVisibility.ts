@@ -56,7 +56,11 @@ export function classifyGhostVisibility(
           : { status: 'missing' as const };
       })();
   if (resolved.status === 'missing') {
-    const sameName = namespace === undefined ? [] : listed.filter((ghost) => ghost.manifest.id === ghostId);
+    // The outgoing owner projection can remain installed during account teardown.
+    // Match discovery's active-session gate before disclosing recovery identities.
+    const sameName = namespace === undefined ? [] : listed.filter((ghost) =>
+      ghost.manifest.id === ghostId && deps.isAvailableForActiveSession(installedGhostStoragePart(ghost)),
+    );
     if (sameName.length > 0) {
       // A model may quote JSON null as the valid organization slug "null".
       // Preserve exact addressing: explain the mismatch, never redirect a call
