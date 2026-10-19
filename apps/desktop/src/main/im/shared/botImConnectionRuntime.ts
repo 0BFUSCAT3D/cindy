@@ -26,6 +26,7 @@ import { botProfiles } from '../../localDb/schema';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer';
 import { throwIpcError } from '../../utils/ipcValidate';
 import { ownerScopedImSecrets } from '../ownerScopedStorage';
+import { readWechatChannelSettings, writeWechatCompanionBinding } from '../wechat/channelSettings';
 import {
   BOT_IM_CONNECTION_CHANGED_EVENT,
   type BotImChannel,
@@ -627,6 +628,14 @@ export async function removeBotImConnection(id: string): Promise<BotImConnection
 
 /** 伙伴被删除 / 归档时带走它的全部连接。 */
 export async function removeBotImConnectionsForBot(botId: string): Promise<void> {
+  // WeChat shares the personal transport: remove only the teammate assignment,
+  // even when there are no dedicated connections. Keep its authorization intact.
+  if (readWechatChannelSettings().companionBotId === botId) {
+    const settings = writeWechatCompanionBinding(null);
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('wechatBot:channel-settings-changed', settings);
+    }
+  }
   for (const record of listBotImConnectionsForBot(botId)) {
     try {
       await removeBotImConnection(record.id);

@@ -91,6 +91,7 @@ import {
   __testing,
 } from '../botImConnectionRuntime';
 import { listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
+import { readWechatChannelSettings, writeWechatCompanionBinding, writeWechatWorkingDir } from '../../wechat/channelSettings';
 import {
   adoptPersonalBot,
   configureBotImPersonalAdoption,
@@ -436,6 +437,25 @@ describe('bot im connection runtime', () => {
     expect([...h.secrets.keys()]).toEqual([]);
     expect(listBotImConnections()).toEqual([]);
     expect(removed.connections).toEqual([]);
+  });
+
+  // Regression #6492: a WeChat-only teammate has no connection-store records.
+  // unit tier: real deletion cleanup and settings store; keep shared auth and unrelated owners.
+  it('clears only the deleted teammate’s WeChat assignment and broadcasts without removing authorization', async () => {
+    writeWechatWorkingDir(h.root);
+    writeWechatCompanionBinding('bot-mia');
+    h.secrets.set('wechat_credentials_test', 'retained-test-credential');
+    h.secrets.set('wechat_data_key_v1', 'retained-test-key');
+    const before = readWechatChannelSettings();
+    const secrets = new Map(h.secrets);
+    await removeBotImConnectionsForBot('bot-other');
+    expect(readWechatChannelSettings()).toEqual(before);
+    expect(h.sent).toEqual([]);
+
+    await removeBotImConnectionsForBot('bot-mia');
+    expect(readWechatChannelSettings()).toEqual({ version: 1, workingDir: before.workingDir, workingDirAvailable: true });
+    expect(h.secrets).toEqual(secrets);
+    expect(h.sent).toEqual([{ channel: 'wechatBot:channel-settings-changed', payload: readWechatChannelSettings() }]);
   });
 
   it('starts recorded connections on login, keeps records across stop, and drops them with the teammate', async () => {
