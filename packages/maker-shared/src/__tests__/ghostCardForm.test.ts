@@ -6,6 +6,7 @@ import {
   readGhostCardForm,
   omitGhostCardFormPreview,
   trackGhostCardFormDelivery,
+  releaseGhostCardFormDelivery,
   pendingGhostCardFormDelivery,
   ghostCardRecipients,
   fitGhostCardRecipients,
@@ -17,6 +18,31 @@ import {
 } from "../ghostCardForm";
 
 describe("declarative card forms", () => {
+  // A failed view must not poison a task after remount; live edits still gate chat.
+  it('retires a failed editor while preserving in-flight and replacement deliveries', async () => {
+    let finish!: (ok: boolean) => void;
+    trackGhostCardFormDelivery('retiring', 'old', new Promise(resolve => { finish = resolve; }));
+    releaseGhostCardFormDelivery('retiring', 'old');
+    expect(pendingGhostCardFormDelivery('retiring')).toBeDefined();
+    finish(false);
+    await Promise.resolve(); await Promise.resolve();
+    expect(pendingGhostCardFormDelivery('retiring')).toBeUndefined();
+    trackGhostCardFormDelivery('retiring', 'new', Promise.resolve(false));
+    await Promise.resolve();
+    releaseGhostCardFormDelivery('retiring', 'new');
+    trackGhostCardFormDelivery('retiring', 'new', Promise.resolve(false));
+    await Promise.resolve();
+    expect(await pendingGhostCardFormDelivery('retiring')).toBe(false);
+    releaseGhostCardFormDelivery('retiring', 'new');
+    await Promise.resolve();
+    expect(pendingGhostCardFormDelivery('retiring')).toBeUndefined();
+  });
+  it('keeps preheaders hidden and out of editable text without changing outgoing HTML', () => {
+    const source = '<div hidden>Private preheader</div><p>Hello</p>';
+    expect(safeMailDocument(source, true)).toContain('<div hidden="">Private preheader</div>');
+    expect(mailInlineRuns(source).map(r => r.text)).toEqual(['Hello']);
+    expect(applyMailInlineEdits(source, { 0: 'Hi' })!.html).toBe('<div hidden>Private preheader</div><p>Hi</p>');
+  });
   // Shared presentation contract: inline images disappear only from the list,
   // never from the outgoing MIME data. Text, comments and CID prefixes do not count.
   it('lists ordinary attachments and restores images when their last HTML reference is removed', () => {

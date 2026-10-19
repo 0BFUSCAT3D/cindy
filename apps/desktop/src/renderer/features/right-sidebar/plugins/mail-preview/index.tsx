@@ -12,26 +12,27 @@ import { MailCardBody } from './MailCardBody';
 import { MailConversationView } from './MailConversationView';
 
 type State = { url: string; callId?: string };
-export function MailPreviewBody({ state, ctx }: TabKindBodyProps<State>) {
+export function MailPreviewBody({ state, ctx, active: tabActive = true, shellVisible = true }: TabKindBodyProps<State>) {
   const { t } = useTranslation();
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<{ binding: string; message?: MailMessage; error?: boolean }>();
   const owner = getDataOwnerGeneration();
   const binding = JSON.stringify([owner, ctx.sessionId, ctx.deviceLinkDeviceId, state.url, attempt]);
+  const visible = tabActive && shellVisible;
   useEffect(() => {
     let active = true;
-    if (ctx.deviceLinkDeviceId === undefined) return;
+    if (!visible || ctx.deviceLinkDeviceId === undefined) return;
     void readMailPreview(ctx.sessionId, state.url, true, ctx.deviceLinkDeviceId, true).then(r => {
       if (active && isDataOwnerGenerationCurrent(owner)) setResult({ binding, message: r.message ?? undefined, error: !r.message });
     }).catch(() => { if (active && isDataOwnerGenerationCurrent(owner)) setResult({ binding, error: true }); });
     return () => { active = false; };
-  }, [binding]);
+  }, [binding, visible]);
   const current = result?.binding === binding ? result : undefined;
   const mail = current?.message;
   const read = useCallback(async (url: string, opened = false) => {
-    const response = await readMailPreview(ctx.sessionId, url || state.url, true, ctx.deviceLinkDeviceId, opened);
+    const response = await readMailPreview(ctx.sessionId, url || state.url, true, ctx.deviceLinkDeviceId, opened && visible);
     return isDataOwnerGenerationCurrent(owner) ? response : { message: null };
-  }, [owner, ctx.sessionId, ctx.deviceLinkDeviceId, state.url]);
+  }, [owner, ctx.sessionId, ctx.deviceLinkDeviceId, state.url, visible]);
   const openMailbox = <Button tone="quiet" compact size="sm" aria-label={t('mailReader.openMailbox')} title={t('mailReader.openMailbox')}
     onClick={() => { void window.electronAPI.openExternal(state.url); }}><ExternalLink className="h-4 w-4" /></Button>;
   return <div className="h-full min-h-0">

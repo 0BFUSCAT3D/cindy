@@ -64,7 +64,7 @@ export function applyMailInlineEdits(source: string, edits: Record<string, strin
 }
 
 const tags = new Set('html head body style a b strong i em u s strike p div span br hr blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 table thead tbody tfoot tr td th colgroup col img font sub sup section header footer main article center'.split(' '));
-const attrs = new Set('class id href src alt title width height colspan rowspan align valign dir color bgcolor face size cellpadding cellspacing role'.split(' '));
+const attrs = new Set('class id href src alt title width height colspan rowspan align valign dir color bgcolor face size cellpadding cellspacing role hidden aria-hidden'.split(' '));
 const cleanCss = (value: string) => /expression|\\/i.test(value) ? '' : value.replace(/@import[^;]*;?/gi, '').replace(/url\s*\([^)]*\)/gi, 'none');
 export type MailInlineImage = { cid: string; url: string };
 

@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { MediaScrubber } from '@/components/ui/media-scrubber';
 import { GhostMailHistory } from './GhostMailHistory';
 import { GhostCardForm } from './GhostCardForm';
-import { readGhostCardForm, readMailCard, mailCardStatus, mailSendRemainingFraction, isLegacyMailCard, readGhostCardFormChange, mergeGhostCardFormValues, trackGhostCardFormDelivery, pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
+import { readGhostCardForm, readMailCard, mailCardStatus, mailSendRemainingFraction, isLegacyMailCard, readGhostCardFormChange, mergeGhostCardFormValues, trackGhostCardFormDelivery, releaseGhostCardFormDelivery, pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
 import { openMailCard } from '@/features/right-sidebar/lib/mailPreview';
 import sliderCss from '@/components/ui/slider.css?inline';
 /**
@@ -239,6 +239,10 @@ function GhostCardCanvas({
   }, [mail]);
   const changeAction = readGhostCardFormChange(html);
   const formKey = changeAction ?? JSON.stringify(formFields);
+  const formRetired = !!mail?.supersededBy || ['sent', 'deleted'].includes(mail?.state ?? '');
+  useEffect(() => () => {
+    if (sessionId) releaseGhostCardFormDelivery(sessionId, `${callId}:${editorId}`);
+  }, [sessionId, callId, editorId, formKey, formRetired]);
   const incoming = Object.fromEntries((formFields ?? []).map(field => [field.name, field.value]));
   const formState = useRef({ key: formKey, values: incoming, base: incoming, busy: false });
   const [formBusy, setFormBusy] = useState(false);

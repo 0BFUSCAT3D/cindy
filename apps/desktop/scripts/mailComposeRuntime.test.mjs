@@ -294,6 +294,29 @@ test('a draft read in another task still presents its own card', async () => {
   assert.equal(f.cards.at(-1).callId, 'agent-call');
 });
 
+// The plain quote editor and HTML MIME alternative must describe the same reply.
+for (const quote of ['Updated <quote>\nSecond line', '']) test('editing the plain quote updates or clears its HTML alternative: ' + JSON.stringify(quote), async () => {
+  const f = fixture({ richText: true });
+  f.externalEdit({ quote: 'Original quote', quoteHtml: '<blockquote><b>Original quote</b></blockquote>' });
+  await f.present();
+  const values = f.values();
+  await f.card('change', { ...values, quote: 'Intermediate' });
+  await f.card('change', { ...values, quote });
+  assert.ok((await f.tool('send')).ok);
+  const sent = f.writes.find(x => x.send).fields;
+  assert.equal(sent.quote, quote);
+  assert.equal(sent.quoteHtml, quote ? '<div>Updated &lt;quote&gt;<br>Second line</div>' : '');
+});
+test('editing other fields preserves authored HTML quotes byte for byte', async () => {
+  const f = fixture({ richText: true });
+  const quoteHtml = '<blockquote style="color:red"><b>Original quote</b></blockquote>';
+  f.externalEdit({ quote: 'Original quote', quoteHtml });
+  await f.present();
+  await f.card('change', { ...f.values(), subject: 'New subject' });
+  assert.ok((await f.tool('send')).ok);
+  assert.equal(f.writes.find(x => x.send).fields.quoteHtml, quoteHtml);
+});
+
 // Regression: the real sent reply nested a full HTML document inside its quote.
 // Existing adapter tests covered edits, not outgoing HTML structure or CID integrity.
 // Unit tier: production present/send entries, fake providers, no network or real sends.

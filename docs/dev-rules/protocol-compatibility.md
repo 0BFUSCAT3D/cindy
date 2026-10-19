@@ -2436,12 +2436,15 @@ blocked; preview sanitization never mutates the saved HTML.
 ### Read-only mail preview
 
 Mail providers may declare `mailReader: { tool, hosts }` alongside `mail: true`.
+Desktop and plugin-protocol validate this known declaration and retain future
+extension data; malformed declarations cannot survive as unknown top-level fields.
 The tool must be declared and read-only by default. Cindy matches exact HTTPS hosts
 and calls it with `{ url }`; the provider resolves the account and message without
 marking read or mutating drafts. Providers may opt in with `mailReader.markRead: true`
 and accept optional `markRead:true` on that same tool. Only an explicit user opening
-passes it; AI reads, probes and neighboring preloads remain read-only. Mark only the
-successfully resolved selected message, never the whole thread or drafts. A failed
+passes it; AI reads, probes and neighboring preloads remain read-only. Restored
+inactive tabs and a hidden sidebar must not mark mail read merely by mounting.
+Mark only the successfully resolved, visibly opened message, never the whole thread or drafts. A failed
 mark must retain the body and return `markReadFailed:true` for a non-blocking notice.
 It returns `MailMessage` (maker-shared/mail-message).
 Credentials and MIME parsing remain with the provider. Cindy validates the data

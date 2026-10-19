@@ -1,12 +1,25 @@
 import { expect, it } from 'vitest';
 import { parseMailMessage, parseMailReader, mailMessageFields } from '@cindy/maker-shared/mail-message';
 import { validateGhostManifest } from '../ghost';
+import { validateGhostManifest as validateProtocolManifest } from '@cindy/plugin-protocol';
+it.each([null, false, [], { tool: 'read_mail', hosts: 'mail.example.com' }, { tool: 'read_mail', hosts: ['*.com'] }, { hosts: ['mail.example.com'] }])('rejects a malformed known mailReader declaration: %j', mailReader => {
+  for (const validate of [validateGhostManifest, validateProtocolManifest]) {
+    const result = validate({ schemaVersion: 3, minCindyVersion: '0.1.92', id: 'example-mail', name: 'Mail', version: '1.0.0', entry: 'main.js', mailReader });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('mailReader');
+  }
+});
 it('preserves a declared reader through manifest normalization', () => {
-  const reader = { tool: 'read_mail', hosts: ['mail.example.com'], markRead: true };
+  const reader = { tool: 'read_mail', hosts: ['mail.example.com'], markRead: true, future: { mode: 'extension' } };
   const result = validateGhostManifest({ schemaVersion: 3, minCindyVersion: '0.1.92', id: 'example-mail', name: 'Mail', version: '1.0.0', entry: 'main.js', agent: {}, mail: true, mailReader: reader,
     tools: [{ name: 'read_mail', description: 'Read only', parameters: { type: 'object', properties: {} } }] });
   expect(result.ok, result.ok ? '' : result.reason).toBe(true);
   if (result.ok) expect(result.manifest.mailReader).toEqual(reader);
+  if (result.ok) {
+    const protocol = validateProtocolManifest(result.manifest);
+    expect(protocol.ok).toBe(true);
+    if (protocol.ok) expect(protocol.manifest.mailReader).toEqual(reader);
+  }
   expect(parseMailReader({ tool: 'read_mail', hosts: ['*.com'] })).toBeNull();
 });
 it('accepts large read-only HTML, filters untrusted preview URLs and preserves CID', () => {

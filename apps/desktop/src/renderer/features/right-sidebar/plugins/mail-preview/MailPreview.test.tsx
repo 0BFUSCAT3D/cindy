@@ -18,6 +18,16 @@ import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { ingestCardPush } from '@/cindy-brain/ghostCardStore';
 const ctx = { tabId: 'tab', sessionId: 'a', workdir: '', remoteHostId: null, deviceLinkDeviceId: null, patchState() {}, onVisibilityChange() {}, setCloseInterceptor: () => () => {} };
 const mail = (bodyText: string) => ({ accountId: 'account', messageId: bodyText, from: 'sender', to: 'to', cc: '', bcc: '', subject: 'Subject', date: '', bodyText, bodyHtml: '', attachments: [] });
+it.each(['inactive', 'hidden'])('does not mark a restored %s tab read until it is visible', async kind => {
+  h.read.mockResolvedValue({ message: mail('Selected') });
+  const view = render(<MailPreviewBody state={{ url: 'https://mail.example/a' }} ctx={ctx} active={kind !== 'inactive'} shellVisible={kind !== 'hidden'} />);
+  await act(async () => {});
+  expect(h.read).not.toHaveBeenCalled();
+  view.rerender(<MailPreviewBody state={{ url: 'https://mail.example/a' }} ctx={ctx} active shellVisible />);
+  await act(async () => {});
+  expect(h.read).toHaveBeenCalledExactlyOnceWith('a', 'https://mail.example/a', true, null, true);
+  expect(screen.getByText('Selected')).toBeTruthy();
+});
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); h.owner = 1; });
 
 // New sidebar entry: follow host edits/supersession, but never reuse another task's card.

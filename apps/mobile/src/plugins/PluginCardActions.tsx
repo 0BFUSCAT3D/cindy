@@ -7,6 +7,7 @@ import {
   type MailCardData,
   mergeGhostCardFormValues,
   trackGhostCardFormDelivery,
+  releaseGhostCardFormDelivery,
   GHOST_CARD_FORM_MAX_VALUE,
   visibleMailAttachments,
   removeMailAttachment,
@@ -193,6 +194,9 @@ function CardControls({
   const [prompt, setPrompt] = useState<Action>();
   const [draft, setDraft] = useState("");
   const formKey = changeAction ?? JSON.stringify(form);
+  const formRetired = history || ['sent', 'deleted'].includes(mail?.state ?? '');
+  useEffect(() => () => releaseGhostCardFormDelivery(JSON.stringify([deviceId, sessionId]), callId),
+    [deviceId, sessionId, callId, formKey, formRetired]);
   const changeQueue = useRef(Promise.resolve(true));
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const incoming = Object.fromEntries(
@@ -469,8 +473,8 @@ function CardControls({
     setUploading(true); setUploadError('');
     const isActive = () => current() && !controller.signal.aborted && mailEditable.current;
     try {
-      const file = await pickMobileMailAttachment({ deviceId, getAccessToken, signal: controller.signal, isActive });
-      if (file && isActive()) await submit({ id: `mail:attach:${mail.key}`, label: '', disabled: false, submit: true }, undefined, undefined, file);
+      await pickMobileMailAttachment({ deviceId, getAccessToken, signal: controller.signal, isActive,
+        deliver: file => isActive() ? submit({ id: `mail:attach:${mail.key}`, label: '', disabled: false, submit: true }, undefined, undefined, file) : Promise.resolve(false) });
     } catch (error) {
       if (isActive()) setUploadError(error instanceof Error && error.message === t('plugins.mailAttachTooLarge') ? error.message : t('plugins.mailAttachFailed'));
     } finally {

@@ -900,6 +900,13 @@ var cindyMail = (function () {
         const incoming = { ...edit.fields, ...message.formValues };
         const base = edit.error?.stale ? edit.conflictBase : edit.inputFields || edit.fields;
         const merged = mergeFields(base, incoming, edit.error?.stale ? draftValues(edit.readBack) : edit.fields);
+        // The quote text field edits the outgoing quote too. Preserve authored
+        // HTML unless that text changed, including an explicit deletion.
+        if (adapter.richText && incoming.quote !== base?.quote && incoming.quoteHtml === base?.quoteHtml) {
+          merged.fields.quoteHtml = merged.fields.quote
+            ? '<div>' + merged.fields.quote.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r\n?|\n/g, '<br>') + '</div>'
+            : '';
+        }
         edit.conflictBase = merged.conflicts.length ? base : undefined;
         edit.fields = merged.fields;
         edit.inputFields = incoming;

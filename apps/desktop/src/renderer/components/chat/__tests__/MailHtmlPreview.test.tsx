@@ -186,7 +186,7 @@ it('enlarges the read-only preview and reflects later AI updates without changin
   expect(screen.getAllByTitle('chat.ghostCall.mailPreview')).toHaveLength(2);
   rerender(<GhostCardForm fields={[{ ...fields[0], value: '<p>AI updated</p>' }]} disabled={false} onChange={change} />);
   expect(screen.getAllByTitle('chat.ghostCall.mailPreview').every(frame => frame.getAttribute('srcdoc')?.includes('AI updated'))).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: 'common.close' }));
+  fireEvent.click(screen.getByRole('button', { name: 'chat.lightbox.close' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(change).not.toHaveBeenCalled();
 });

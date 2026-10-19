@@ -15,7 +15,17 @@ beforeEach(() => {
   h.remove.mockResolvedValue(undefined);
   h.upload.mockResolvedValue({ path: 'uploaded-reference' });
 });
-const options = (isActive = () => true) => ({ deviceId: 'host', getAccessToken: async () => 'token', signal: new AbortController().signal, isActive });
+const options = (isActive = () => true) => ({ deviceId: 'host', getAccessToken: async () => 'token', signal: new AbortController().signal, isActive, deliver: vi.fn(async () => true) });
+it.each(['rejected', 'thrown'])('discards an upload when card delivery is %s', async failure => {
+  const input = options();
+  input.deliver.mockImplementation(async () => { if (failure === 'thrown') throw new Error('disconnected'); return false; });
+  if (failure === 'thrown') await expect(pickMobileMailAttachment(input)).rejects.toThrow('disconnected');
+  else expect(await pickMobileMailAttachment(input)).toBeNull();
+  expect(h.discard).toHaveBeenCalledWith({ path: 'uploaded-reference' }, expect.any(Object));
+  const cleanup = h.discard.mock.calls[0][1];
+  expect(await cleanup.getToken()).toBe('token');
+  expect(h.remove).toHaveBeenCalledOnce();
+});
 it('picker cancel performs no upload or file deletion', async () => {
   h.pick.mockResolvedValue({ canceled: true });
   expect(await pickMobileMailAttachment(options())).toBeNull();

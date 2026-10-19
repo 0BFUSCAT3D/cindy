@@ -4,6 +4,7 @@ import { uploadMobileAttachmentFromFile, discardMobileUploadedAttachment } from 
 /** Uses the existing phone picker/upload path; provider credentials stay on the Host. */
 export async function pickMobileMailAttachment(options: {
   deviceId: string; getAccessToken(): Promise<string | null>; signal: AbortSignal; isActive(): boolean;
+  deliver(file: { url: string; name: string }): Promise<boolean>;
 }) {
   const picker = await import('expo-document-picker');
   const selected = await picker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true });
@@ -20,10 +21,14 @@ export async function pickMobileMailAttachment(options: {
     if (!options.isActive()) return null;
     const uploaded = await uploadMobileAttachmentFromFile({ name: file.name, size, mimeType: file.mimeType }, file.uri,
       { token, deviceId: options.deviceId, signal: options.signal, isActive: options.isActive });
-    if (!options.isActive()) {
-      discardMobileUploadedAttachment(uploaded, { getToken: () => Promise.resolve(token) });
-      return null;
+    let delivered = false;
+    try {
+      if (!options.isActive()) return null;
+      const attachment = { url: uploaded.url || uploaded.path, name: file.name };
+      delivered = await options.deliver(attachment);
+      return delivered ? attachment : null;
+    } finally {
+      if (!delivered) discardMobileUploadedAttachment(uploaded, { getToken: () => Promise.resolve(token) });
     }
-    return { url: uploaded.url || uploaded.path, name: file.name };
   } finally { await fs.deleteAsync(file.uri, { idempotent: true }).catch(() => undefined); }
 }

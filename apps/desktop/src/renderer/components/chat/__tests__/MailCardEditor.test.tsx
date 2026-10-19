@@ -5,11 +5,35 @@ import { MailCardEditor } from '../GhostToolCard';
 import { renderMailCard } from '../../../../main/cindy-brain/mailCards';
 import { ingestCardPush } from '@/cindy-brain/ghostCardStore';
 import type { MailCardData } from '@cindy/maker-shared/ghost-card-form';
+import { pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/cindy-brain/useGhostCardThemeVars', () => ({ useGhostCardThemeVars: () => '' }));
 vi.mock('@/features/right-sidebar/lib/mailPreview', () => ({ openMailCard: vi.fn() }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+// Regression: an old useId must not block chat after the failed editor is gone.
+it('releases a failed view on unmount and allows the remounted editor to sync', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: true }));
+  const dispatch = vi.fn().mockResolvedValueOnce({ ok: false }).mockResolvedValue({ ok: true });
+  vi.stubGlobal('electronAPI', { ghosts: { dispatchCardAction: dispatch } });
+  const mail: MailCardData = { accountId: 'account', draftId: 'draft', key: '20000000-0000-0000-0000-000000000000',
+    from: 'sender', fields: ['to', 'cc', 'bcc', 'subject', 'body'].map(name => ({ name, label: name, value: '', multiline: name === 'body' })),
+    attachments: [], state: 'draft', status: 'Synced', sendLabel: 'Send', fromLabel: 'From' };
+  const props = { callId: 'failed-view', sessionId: 'reopened-session', height: 80, html: renderMailCard(mail) };
+  const first = render(<MailCardEditor {...props} />);
+  fireEvent.change(screen.getByLabelText('body'), { target: { value: 'First edit' } });
+  await act(async () => {});
+  expect(await pendingGhostCardFormDelivery(props.sessionId)).toBe(false);
+  first.unmount();
+  await act(async () => {});
+  expect(pendingGhostCardFormDelivery(props.sessionId)).toBeUndefined();
+  render(<MailCardEditor {...props} />);
+  fireEvent.change(screen.getByLabelText('body'), { target: { value: 'New edit' } });
+  await act(async () => {});
+  expect(dispatch).toHaveBeenCalledTimes(2);
+  expect(pendingGhostCardFormDelivery(props.sessionId)).toBeUndefined();
+});
 
 // Regression boundary (unit): two views of one draft. Form-only tests do not
 // cover the send bridge: sending from the stale view must use the delivered edit.

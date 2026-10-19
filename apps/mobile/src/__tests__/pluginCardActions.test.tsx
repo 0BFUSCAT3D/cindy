@@ -210,7 +210,10 @@ describe("native plugin card deliberate actions", () => {
     await act(async () => button().click());
     expect(dispatch).not.toHaveBeenCalled();
     const upload = { url: 'xdt-attach-oss://test-reference', name: 'plan.pdf' };
-    h.pick.mockResolvedValueOnce(upload);
+    h.pick.mockImplementationOnce(async ({ deliver }: { deliver(file: typeof upload): Promise<boolean> }) => {
+      await deliver(upload);
+      return upload;
+    });
     await act(async () => button().click());
     expect(h.pick).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: 'device', isActive: expect.any(Function) }));
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ actionId: `mail:attach:${key}`,

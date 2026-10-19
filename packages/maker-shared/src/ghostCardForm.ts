@@ -196,7 +196,17 @@ export function trackGhostCardFormDelivery(
   entries.set(key, settled);
   void settled.then((ok) => {
     if (ok && entries!.get(key) === settled) entries!.delete(key);
-    if (!entries!.size) deliveries.delete(scope);
+    if (!entries!.size && deliveries.get(scope) === entries) deliveries.delete(scope);
+  });
+}
+/** Retire an editor's failed barrier without letting chat overtake an in-flight edit. */
+export function releaseGhostCardFormDelivery(scope: string, key: string): void {
+  const entries = deliveries.get(scope);
+  const delivery = entries?.get(key);
+  if (!delivery) return;
+  void delivery.then(() => {
+    if (entries!.get(key) === delivery) entries!.delete(key);
+    if (!entries!.size && deliveries.get(scope) === entries) deliveries.delete(scope);
   });
 }
 export function pendingGhostCardFormDelivery(
