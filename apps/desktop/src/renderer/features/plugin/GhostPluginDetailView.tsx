@@ -65,8 +65,9 @@ import {
   setActiveGlobalTabId,
   useGlobalTabs,
 } from '@/features/right-sidebar/globalTabs';
+import { requestRightSidebarVisibility } from '@/features/right-sidebar/lib/sidebarCommands';
 import { resetPluginPlacementAndReturn } from '@/features/right-sidebar/pluginPlacement';
-import { useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
+import { getTabGroup, useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { ghostPluginSummary } from './lib/ghostPluginDetailModel';
@@ -985,8 +986,14 @@ export function DetailsSection({
                   <button
                     type="button"
                     onClick={() => {
-                      const tab = addGlobalPluginTab(detail.id, { ghost: installedGhost, view: 'panel' });
-                      if (tab) setActiveGlobalTabId(tab.id);
+                      const tab = addGlobalPluginTab(detail.id, {
+                        ghost: installedGhost,
+                        view: 'panel',
+                      });
+                      if (!tab) return;
+                      setActiveGlobalTabId(tab.id);
+                      // 落在右侧组时右侧栏可能是收起的:展开,否则用户点了没有任何反馈。
+                      if (getTabGroup(tab.id) === 'right') requestRightSidebarVisibility('open');
                     }}
                     className={placementActionClass}
                   >

@@ -402,10 +402,16 @@ export function resetPluginPlacement(instanceId: string, ghost?: InstalledGhost)
   });
 }
 
-/** 页签标题:停靠面板用 panel.title,整页视图用 mainView.title,都没有就用插件名。 */
-export function globalTabTitleForGhost(ghost: InstalledGhost): string {
+/**
+ * 页签标题,按页签实际承载的页面取:panel 用 panel.title,main 用 mainView.title,缺省回落到
+ * 另一个声明再回落插件名。不传 view 时按插件声明推导(有停靠面板 → panel,与升级前一致)。
+ */
+export function globalTabTitleForGhost(ghost: InstalledGhost, view?: PluginViewKind): string {
   const { manifest } = ghost;
-  return manifest.panel?.title ?? manifest.mainView?.title ?? manifest.name;
+  const resolved = view ?? effectivePluginView(undefined, ghost);
+  const first = resolved === 'main' ? manifest.mainView?.title : manifest.panel?.title;
+  const second = resolved === 'main' ? manifest.panel?.title : manifest.mainView?.title;
+  return first ?? second ?? manifest.name;
 }
 
 export function findGlobalTabByInstance(instanceId: string): TabState | null {

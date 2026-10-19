@@ -226,6 +226,11 @@ export class SidebarTabWindowsController {
     slot.assignment.tabs = slot.assignment.tabs.filter((tab) => tab.tabId !== tabId);
     if (this.tabToWindow.get(tabId) === slot.assignment.windowId) this.tabToWindow.delete(tabId);
     slot.adoptedSnapshots.delete(tabId);
+    // 最后一个任务页签离开后,窗口只剩全局页签:解除任务绑定,它才能再接别的任务的页签,
+    // 窗内「+」也不会继续往旧任务里建页签。
+    if (!slot.assignment.tabs.some((tab) => tab.sessionId !== null)) {
+      slot.assignment = { ...slot.assignment, sessionId: null };
+    }
     return ref;
   }
 

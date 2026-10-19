@@ -37,7 +37,13 @@ function useInstalledGhostByInstance(instanceId: string): InstalledGhost | undef
 
 function PluginViewTabPillTitle({ state, t }: { state: PluginViewTabState; t: TFunction }) {
   const ghost = useInstalledGhostByInstance(state.instanceId);
-  return <>{ghost ? globalTabTitleForGhost(ghost) : t('rightSidebar.tabs.kinds.pluginView')}</>;
+  return (
+    <>
+      {ghost
+        ? globalTabTitleForGhost(ghost, effectivePluginView(state, ghost))
+        : t('rightSidebar.tabs.kinds.pluginView')}
+    </>
+  );
 }
 
 function PluginViewTabPillIcon({ state }: { state: PluginViewTabState }) {

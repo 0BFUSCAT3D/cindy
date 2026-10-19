@@ -378,6 +378,30 @@ describe('SidebarTabWindowsController', () => {
   });
 
   // 测试价值
+  // - 生产入口与可观察结果:任务页签合并回侧栏后,窗口只剩全局页签时 getAssignment 的 sessionId
+  //   为 null,另一任务的页签可以搬进这扇窗,而不是被旧任务绑定挡在门外新开一扇。
+  // - Bug / 规则依据:review「最后一个任务页签离开后窗口仍绑旧任务」。
+  // - 现有覆盖缺口:多页签用例只在窗口持有任务页签时断言指派。
+  // - 最小失败输入:任务页签 + 全局页签同窗,合并回任务页签后再 open 另一任务页签。
+  // - tier:unit(mock deps)。
+  it('unbinds the window from its task once the last task tab leaves', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+    h.controller.open({ ...request('tab-g', null), targetWindowId: 'w1' });
+    expect(h.controller.getAssignment(h.wc(win))).toMatchObject({ sessionId: 's1' });
+
+    h.controller.mergeBack(h.wc(win), 'tab-a', null);
+    expect(h.controller.getAssignment(h.wc(win))).toMatchObject({ sessionId: null });
+
+    h.controller.open({ ...request('tab-x', 's2'), targetWindowId: 'w1' });
+    expect(h.created).toHaveLength(1);
+    expect(h.controller.getAssignment(h.wc(win))).toMatchObject({ sessionId: 's2' });
+  });
+
+  // 测试价值
   // - 生产入口与可观察结果:open({position}) → 首次展示前经 positionWindow 把窗口放到松手点,
   //   且只在 show 之前调一次;搬进已有窗口不改位置。
   // - Bug / 规则依据:页签拖出窗口松手即弹窗,新窗口要落在松手点附近而不是层叠默认位。
