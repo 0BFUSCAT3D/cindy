@@ -8047,7 +8047,8 @@
         "closeOthers": "Close others",
         "closeAll": "Close all",
         "openInWindow": "Open in a new window",
-        "moveTo": "Move to {{target}}"
+        "moveTo": "Move to {{target}}",
+        "moveToWindow": "Move to window:"
       },
       "empty": {
         "eyebrow": "Right Sidebar",

@@ -8015,7 +8015,8 @@
         "closeOthers": "他のタブを閉じる",
         "closeAll": "すべて閉じる",
         "openInWindow": "新しいウィンドウで開く",
-        "moveTo": "{{target}}に移動"
+        "moveTo": "{{target}}に移動",
+        "moveToWindow": "ウィンドウに移動："
       },
       "empty": {
         "eyebrow": "右サイドバー",

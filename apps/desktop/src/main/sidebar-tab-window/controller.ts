@@ -1,12 +1,12 @@
 /**
- * SidebarTabWindowsController —— 右侧栏单页签独立窗口的状态机(main 侧单例,
+ * SidebarTabWindowsController —— 右侧栏页签独立窗口的状态机(main 侧单例,
  * 依赖注入可测)。
  *
- * 模型:每个弹出的页签(tabId)一扇窗。主窗的侧边栏继续存在并显示其余页签;
- * 「合并回侧边栏」按钮 = 页签回到侧边栏;关窗(红绿灯 / ⌘W / Windows X)= 关闭该页签
- * (与侧边栏里关页签同一条 store.closeTab 流程,插件清理与确认拦截照常);崩溃 = 页签
- * 回到侧边栏(数据不丢)。没有
- * 「偏好」可落盘:弹出是本次运行期的视图态,客户端重启后所有页签都回到主窗。
+ * 模型:一扇窗口 = 一个住在别的窗口里的页签组,承载同一任务的若干页签 + 任意全局
+ * 页签。主窗的侧边栏继续存在并显示其余页签;「合并回侧边栏」按页签送回,窗口清空即
+ * 销毁;关窗(红绿灯 / Windows X)= 关闭窗口里的全部页签(与侧边栏里关页签同一条
+ * store.closeTab 流程,插件清理与确认拦截照常);崩溃 = 全部页签回到侧边栏(数据不丢)。
+ * 没有「偏好」可落盘:弹出是本次运行期的视图态,客户端重启后所有页签都回到主窗。
  *
  * 生命周期基线对齐 docs/dev-rules/electron-security-and-process-boundaries.md §3.1
  * (资源用量窗口 controller 为权威基线):
@@ -32,7 +32,9 @@ import type {
   SidebarTabReturnSnapshot,
   SidebarTabReturnedPayload,
   SidebarTabWindowAssignment,
+  SidebarTabWindowAssignmentPayload,
   SidebarTabWindowOpenRequest,
+  SidebarTabWindowTabRef,
   SidebarTabWindowsState,
 } from '../../shared/sidebarTabWindow.js';
 import {
@@ -66,7 +68,7 @@ const DEFAULT_OPEN_TIMEOUT_MS = 5000;
 const SPARE_REPLENISH_DELAY_MS = 1_500;
 const MAX_SPARE_RECOVERY_ATTEMPTS = 1;
 
-interface WindowSlot {
+export interface WindowSlot {
   win: BrowserWindow;
   /** null = 预热中的 spare,尚未承载任何页签。 */
   assignment: SidebarTabWindowAssignment | null;
@@ -82,7 +84,11 @@ interface WindowSlot {
 }
 
 export class SidebarTabWindowsController {
+  /** windowId → 已指派的窗口。 */
   private readonly slots = new Map<string, WindowSlot>();
+  /** tabId → windowId。 */
+  private readonly tabToWindow = new Map<string, string>();
+  private windowSeq = 0;
   private spare: WindowSlot | null = null;
   private spareRecoveryAttempts = 0;
   private replenishTimer: NodeJS.Timeout | null = null;
@@ -97,12 +103,15 @@ export class SidebarTabWindowsController {
 
   getState(): SidebarTabWindowsState {
     const out: SidebarTabWindowsState = {};
-    for (const [tabId, slot] of this.slots) {
+    for (const slot of this.slots.values()) {
       if (!slot.assignment || slot.win.isDestroyed()) continue;
-      out[tabId] = {
-        sessionId: slot.assignment.sessionId,
-        open: slot.visible || slot.pendingOpen,
-      };
+      for (const tab of slot.assignment.tabs) {
+        out[tab.tabId] = {
+          windowId: slot.assignment.windowId,
+          sessionId: tab.sessionId,
+          open: slot.visible || slot.pendingOpen,
+        };
+      }
     }
     return out;
   }
@@ -127,42 +136,99 @@ export class SidebarTabWindowsController {
   }
 
   /**
-   * 把页签弹出到独立窗口。已弹出则只聚焦。优先消费预热的 spare;没有时冷建
+   * 把页签弹出到独立窗口。已弹出则只聚焦。指定 targetWindowId 且该窗口能接(同一
+   * 任务或任一方是全局)→ 搬进去;否则新开一扇:优先消费预热的 spare,没有时冷建
    * (首份内容前不显示,超时展示 Loading 壳)。
    */
   open(request: SidebarTabWindowOpenRequest): void {
     if (this.disposed) return;
-    const existing = this.slots.get(request.tabId);
-    if (existing) {
+    if (this.tabToWindow.has(request.tabId)) {
       this.focus(request.tabId);
+      return;
+    }
+    const target = request.targetWindowId ? this.slots.get(request.targetWindowId) : undefined;
+    if (target?.assignment && !target.win.isDestroyed() && this.canHost(target, request)) {
+      this.addTabToSlot(target, request);
+      this.deliverAssignment(target);
+      this.broadcast();
+      this.focus(request.tabId);
+      this.deps.log.info('sidebar tab moved into window', {
+        tabId: request.tabId,
+        windowId: target.assignment.windowId,
+      });
       return;
     }
     const slot = this.takeSpare() ?? this.createSlot();
     if (!slot) return;
+    const windowId = `w${++this.windowSeq}`;
     slot.assignment = {
-      tabId: request.tabId,
+      windowId,
       sessionId: request.sessionId,
+      tabs: [{ tabId: request.tabId, sessionId: request.sessionId }],
       context: request.context,
     };
     slot.handoff = request.handoff ?? null;
     slot.assignmentDelivered = false;
     slot.presentationReady = false;
     slot.pendingOpen = true;
-    this.slots.set(request.tabId, slot);
+    this.slots.set(windowId, slot);
+    this.tabToWindow.set(request.tabId, windowId);
     if (slot.rendererReady) this.deliverAssignment(slot);
     this.scheduleOpenFallback(slot);
     this.broadcast();
     this.scheduleSpareReplenish();
     this.deps.log.info('sidebar tab window assigned', {
+      windowId,
       tabId: request.tabId,
       sessionId: request.sessionId,
       prewarmed: slot.rendererReady,
     });
   }
 
+  /** 窗口能否接下这个页签:全局页签哪里都能去;任务页签只进同任务或尚无任务的窗口。 */
+  private canHost(slot: WindowSlot, request: SidebarTabWindowOpenRequest): boolean {
+    if (!slot.assignment) return false;
+    if (request.sessionId === null || slot.assignment.sessionId === null) return true;
+    return slot.assignment.sessionId === request.sessionId;
+  }
+
+  private addTabToSlot(slot: WindowSlot, request: SidebarTabWindowOpenRequest): void {
+    if (!slot.assignment) return;
+    if (slot.assignment.sessionId === null && request.sessionId !== null) {
+      // 只有全局页签的窗口第一次接任务页签:接过任务上下文(与不可持久化会话的快照)。
+      slot.assignment = {
+        ...slot.assignment,
+        sessionId: request.sessionId,
+        context: request.context,
+      };
+      slot.handoff = request.handoff ?? slot.handoff;
+    }
+    slot.assignment.tabs = [
+      ...slot.assignment.tabs,
+      { tabId: request.tabId, sessionId: request.sessionId },
+    ];
+    this.tabToWindow.set(request.tabId, slot.assignment.windowId);
+  }
+
+  /** 从窗口里摘掉一个页签;返回它的引用(不在该窗口则 null)。不负责销毁 / 广播。 */
+  private removeTabFromSlot(slot: WindowSlot, tabId: string): SidebarTabWindowTabRef | null {
+    if (!slot.assignment) return null;
+    const ref = slot.assignment.tabs.find((tab) => tab.tabId === tabId) ?? null;
+    if (!ref) return null;
+    slot.assignment.tabs = slot.assignment.tabs.filter((tab) => tab.tabId !== tabId);
+    if (this.tabToWindow.get(tabId) === slot.assignment.windowId) this.tabToWindow.delete(tabId);
+    return ref;
+  }
+
+  private slotForTab(tabId: string): WindowSlot | null {
+    const windowId = this.tabToWindow.get(tabId);
+    const slot = windowId ? this.slots.get(windowId) : undefined;
+    return slot ?? null;
+  }
+
   /** 聚焦已弹出页签的窗口;未弹出 / 仍在等首份内容时 no-op。 */
   focus(tabId: string): void {
-    const slot = this.slots.get(tabId);
+    const slot = this.slotForTab(tabId);
     if (!slot || slot.win.isDestroyed()) return;
     if (!slot.visible) return;
     if (slot.win.isMinimized()) slot.win.restore();
@@ -171,25 +237,67 @@ export class SidebarTabWindowsController {
   }
 
   /**
-   * 页签已在宿主 renderer 里关闭(agent close / 关闭全部 / guest 自关):销毁窗口,
-   * 不交回页签。
+   * 页签已在宿主 renderer 里关闭(agent close / 关闭全部 / guest 自关 / 窗口里关页签):
+   * 从窗口里摘掉,不交回;窗口没有页签了就销毁。
    */
   closeForTab(tabId: string): void {
-    const slot = this.slots.get(tabId);
-    if (!slot) return;
-    this.disposeSlot(slot);
+    const slot = this.slotForTab(tabId);
+    if (!slot?.assignment) return;
+    this.removeTabFromSlot(slot, tabId);
+    if (slot.assignment.tabs.length === 0) {
+      this.disposeSlot(slot);
+    } else {
+      this.deliverAssignment(slot);
+    }
     this.broadcast();
-    this.deps.log.info('sidebar tab window closed for closed tab', { tabId });
+    this.deps.log.info('sidebar tab window dropped closed tab', { tabId });
   }
 
-  /** 弹出窗口 renderer 请求合并回侧边栏(按钮 / ⌘W / 响应原生关窗请求)。 */
-  mergeBack(sender: WebContents, snapshot: SidebarTabReturnSnapshot | null): void {
+  /** 弹出窗口 renderer 请求把某个页签合并回侧边栏(按钮 / 右键菜单)。 */
+  mergeBack(sender: WebContents, tabId: string, snapshot: SidebarTabReturnSnapshot | null): void {
     const slot = this.slotForSender(sender);
     if (!slot?.assignment) return;
-    this.finishSlot(slot, snapshot, 'merge');
+    const ref = this.removeTabFromSlot(slot, tabId);
+    if (!ref) return;
+    if (slot.assignment.tabs.length === 0) {
+      this.disposeSlot(slot);
+    } else {
+      this.deliverAssignment(slot);
+    }
+    if (!this.deps.isQuitting()) {
+      this.deps.notifyTabReturned({
+        sessionId: ref.sessionId,
+        tabId,
+        snapshot: snapshot && snapshot.tab.id === tabId ? snapshot : null,
+        reason: 'merge',
+      });
+    }
+    this.broadcast();
+    this.deps.log.info('sidebar tab merged back', { tabId, withSnapshot: snapshot !== null });
   }
 
-  getAssignment(sender: WebContents): SidebarTabWindowOpenRequest | null {
+  /** 弹出窗口 renderer 在自己里面新建了页签:归它承载。已在别处的页签忽略。 */
+  adoptTab(sender: WebContents, tabId: string, sessionId: string | null): void {
+    const slot = this.slotForSender(sender);
+    if (!slot?.assignment || this.tabToWindow.has(tabId)) return;
+    if (
+      sessionId !== null &&
+      slot.assignment.sessionId !== null &&
+      slot.assignment.sessionId !== sessionId
+    ) {
+      this.deps.log.warn('adopt tab rejected: session mismatch', { tabId, sessionId });
+      return;
+    }
+    if (slot.assignment.sessionId === null && sessionId !== null) {
+      slot.assignment = { ...slot.assignment, sessionId };
+    }
+    slot.assignment.tabs = [...slot.assignment.tabs, { tabId, sessionId }];
+    this.tabToWindow.set(tabId, slot.assignment.windowId);
+    this.deliverAssignment(slot);
+    this.broadcast();
+  }
+
+  getAssignment(sender: WebContents): SidebarTabWindowAssignmentPayload | null {
     const slot = this.slotForSender(sender);
     if (!slot?.assignment) return null;
     slot.assignmentDelivered = true;
@@ -229,14 +337,19 @@ export class SidebarTabWindowsController {
 
   /** 页签所在弹出窗口的 WebContents;未弹出返回 null。tab-op / 命令按页签路由用。 */
   getWebContentsForTab(tabId: string): WebContents | null {
-    const slot = this.slots.get(tabId);
+    const slot = this.slotForTab(tabId);
     if (!slot || slot.win.isDestroyed()) return null;
     return slot.win.webContents;
   }
 
   isTabPoppedOut(tabId: string): boolean {
-    const slot = this.slots.get(tabId);
+    const slot = this.slotForTab(tabId);
     return Boolean(slot && !slot.win.isDestroyed());
+  }
+
+  /** 某窗口承载哪些页签(IPC 的 sender 归属校验用)。 */
+  slotOwnsTab(slot: WindowSlot, tabId: string): boolean {
+    return slot.assignment?.tabs.some((tab) => tab.tabId === tabId) ?? false;
   }
 
   // ── 生命周期 ────────────────────────────────────────────────────────
@@ -254,6 +367,7 @@ export class SidebarTabWindowsController {
       }
     }
     this.slots.clear();
+    this.tabToWindow.clear();
     this.spare = null;
     this.spareRecoveryAttempts = 0;
   }
@@ -333,11 +447,14 @@ export class SidebarTabWindowsController {
 
   private deliverAssignment(slot: WindowSlot): void {
     if (!slot.assignment || slot.win.isDestroyed()) return;
+    // 壳还没挂上:等 renderer-ready 时再送(它会主动 getAssignment / 收推送)。
+    if (!slot.rendererReady) return;
     slot.assignmentDelivered = true;
-    this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL, {
+    const payload: SidebarTabWindowAssignmentPayload = {
       ...slot.assignment,
       handoff: slot.handoff,
-    });
+    };
+    this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL, payload);
   }
 
   private showAndFocus(slot: WindowSlot): void {
@@ -377,54 +494,61 @@ export class SidebarTabWindowsController {
     }
     if (slot.rendererReady) {
       // 每次关窗手势都转达:上一次可能被插件的确认框否决了。关闭流程(插件清理、
-      // 确认拦截、落库)全在 renderer 里,页签消失后它再调 close-for-tab。
+      // 确认拦截、落库)全在 renderer 里,页签消失后它再逐个调 close-for-tab。
       this.deps.sendToWindow(slot.win, SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL, undefined);
       return;
     }
-    // renderer 还没挂上(冷开 / 重载中),无人能执行关闭流程:不丢数据,把页签交回侧边栏。
-    this.finishSlot(slot, null, 'merge');
+    // renderer 还没挂上(冷开 / 重载中),无人能执行关闭流程:不丢数据,把页签全部交回侧边栏。
+    this.finishSlot(slot, 'merge');
   }
 
-  /** 页签离开本窗口:销毁窗口、通知主窗接回页签、广播。 */
-  private finishSlot(
-    slot: WindowSlot,
-    snapshot: SidebarTabReturnSnapshot | null,
-    reason: SidebarTabReturnedPayload['reason'],
-  ): void {
+  /** 整扇窗口结束:销毁窗口、把它承载的全部页签交回主窗、广播。 */
+  private finishSlot(slot: WindowSlot, reason: SidebarTabReturnedPayload['reason']): void {
     const assignment = slot.assignment;
     this.disposeSlot(slot);
     if (assignment && !this.deps.isQuitting()) {
       // 先交回页签再广播状态:主窗 renderer 按序处理,刷新状态时页签尚未重新
       // 投影进侧边栏,避免先画旧状态再跳变。
-      this.deps.notifyTabReturned({
-        sessionId: assignment.sessionId,
-        tabId: assignment.tabId,
-        snapshot: snapshot && snapshot.tab.id === assignment.tabId ? snapshot : null,
-        reason,
-      });
+      for (const tab of assignment.tabs) {
+        this.deps.notifyTabReturned({
+          sessionId: tab.sessionId,
+          tabId: tab.tabId,
+          snapshot: null,
+          reason,
+        });
+      }
     }
     this.broadcast();
     this.deps.log.info('sidebar tab window finished', {
-      tabId: assignment?.tabId,
+      windowId: assignment?.windowId,
+      tabIds: assignment?.tabs.map((tab) => tab.tabId),
       reason,
-      withSnapshot: snapshot !== null,
     });
   }
 
   private onClosed(slot: WindowSlot): void {
     this.clearTimeouts(slot);
     if (this.spare === slot) this.spare = null;
-    const tabId = slot.assignment?.tabId;
-    if (tabId !== undefined && this.slots.get(tabId) === slot) this.slots.delete(tabId);
+    const assignment = slot.assignment;
+    if (assignment && this.slots.get(assignment.windowId) === slot) {
+      this.slots.delete(assignment.windowId);
+      for (const tab of assignment.tabs) {
+        if (this.tabToWindow.get(tab.tabId) === assignment.windowId) {
+          this.tabToWindow.delete(tab.tabId);
+        }
+      }
+    }
     if (slot.destroyingWindow || this.deps.isQuitting()) return;
     // 不经 controller 的销毁(理论上不该发生):页签照样交回侧边栏,不让它消失。
-    if (slot.assignment) {
-      this.deps.notifyTabReturned({
-        sessionId: slot.assignment.sessionId,
-        tabId: slot.assignment.tabId,
-        snapshot: null,
-        reason: 'crash',
-      });
+    if (assignment) {
+      for (const tab of assignment.tabs) {
+        this.deps.notifyTabReturned({
+          sessionId: tab.sessionId,
+          tabId: tab.tabId,
+          snapshot: null,
+          reason: 'crash',
+        });
+      }
       this.broadcast();
     }
   }
@@ -496,11 +620,12 @@ export class SidebarTabWindowsController {
       this.scheduleSpareReplenish();
       return;
     }
-    this.deps.log.warn('sidebar tab window invalidated, returning tab to sidebar', {
-      tabId: slot.assignment.tabId,
+    this.deps.log.warn('sidebar tab window invalidated, returning tabs to sidebar', {
+      windowId: slot.assignment.windowId,
+      tabIds: slot.assignment.tabs.map((tab) => tab.tabId),
       reason,
     });
-    this.finishSlot(slot, null, 'crash');
+    this.finishSlot(slot, 'crash');
   }
 
   // ── 销毁 ────────────────────────────────────────────────────────────
@@ -508,8 +633,15 @@ export class SidebarTabWindowsController {
   private disposeSlot(slot: WindowSlot): void {
     this.clearTimeouts(slot);
     if (this.spare === slot) this.spare = null;
-    const tabId = slot.assignment?.tabId;
-    if (tabId !== undefined && this.slots.get(tabId) === slot) this.slots.delete(tabId);
+    const assignment = slot.assignment;
+    if (assignment && this.slots.get(assignment.windowId) === slot) {
+      this.slots.delete(assignment.windowId);
+      for (const tab of assignment.tabs) {
+        if (this.tabToWindow.get(tab.tabId) === assignment.windowId) {
+          this.tabToWindow.delete(tab.tabId);
+        }
+      }
+    }
     slot.destroyingWindow = true;
     try {
       if (!slot.win.isDestroyed()) slot.win.destroy();

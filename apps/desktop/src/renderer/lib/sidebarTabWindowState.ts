@@ -76,6 +76,30 @@ export function useSidebarTabWindowsState(): SidebarTabWindowsState {
   return useSyncExternalStore(subscribe, getSidebarTabWindowsState);
 }
 
+export interface SidebarTabWindowSummary {
+  windowId: string;
+  /** 窗口里任务页签所属任务;只有全局页签时为 null。 */
+  sessionId: string | null;
+  tabIds: string[];
+}
+
+/** 纯函数:按窗口归并镜像(tabId → 窗口)。页签顺序按镜像枚举序。 */
+export function summarizeSidebarTabWindows(
+  state: SidebarTabWindowsState,
+): SidebarTabWindowSummary[] {
+  const byWindow = new Map<string, SidebarTabWindowSummary>();
+  for (const [tabId, entry] of Object.entries(state)) {
+    let summary = byWindow.get(entry.windowId);
+    if (!summary) {
+      summary = { windowId: entry.windowId, sessionId: null, tabIds: [] };
+      byWindow.set(entry.windowId, summary);
+    }
+    summary.tabIds.push(tabId);
+    if (entry.sessionId !== null) summary.sessionId = entry.sessionId;
+  }
+  return [...byWindow.values()];
+}
+
 /** 仅测试用。 */
 export function __setSidebarTabWindowsStateForTest(next: SidebarTabWindowsState): void {
   wired = true;

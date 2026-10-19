@@ -1,22 +1,22 @@
 /**
- * SidebarTabWindowLayout —— 右侧栏单页签独立窗口的根组件。
+ * SidebarTabWindowLayout —— 右侧栏页签独立窗口的根组件(一扇窗 = 住在别的窗口里的页签组)。
  *
  * 窗口由 main/sidebar-tab-window/window.ts 打开(`?sidebarWindow=1&sidebarTabWindow=1`),
  * 由 sidebar-window-entry.tsx 分流进来。本组件:
- *   - 等 main 指派页签(预热的 spare 窗口在壳挂载后才收到指派;重载时主动
- *     getAssignment 拿回):登记 soloTabId、导入不可持久化会话的内存快照,再把
- *     会话交给 RightSidebarShell(soloTabId 形态:只投影 / 挂载这一个页签)。
- *   - 双阶段就绪握手:mount → rendererReady;被指派页签所在桶水合且页签在场 →
- *     presentationReady,main 这时才 show。
- *   - 46px 自绘 chrome:整条 drag region;mac 左端红绿灯让位、win 右端 WindowControls
- *     (close = 合并回侧边栏);中部页签图标 + 标题(复用插件的 TabPillIcon /
- *     TabPillTitle);右端「合并回侧边栏」按钮。
- *   - 「合并回侧边栏」(按钮 / 协同页签「在主窗查看」):不可持久化会话附本页签内存态,
- *     main 销毁窗口并把页签交回主窗。
- *   - 关窗 = 关闭页签(⌘W / 红绿灯 / Windows X / 原生关窗请求):走 store.closeTab,
- *     与侧边栏里关页签同一流程(插件 onBeforeClose、确认拦截照常,被否决则窗口留着)。
- *   - 页签从桶里消失(上面的关闭 / guest 自关 / agent close):通知 main 销毁窗口
- *     (不交回)。
+ *   - 等 main 指派(预热的 spare 窗口在壳挂载后才收到指派;重载时主动 getAssignment
+ *     拿回;页签加入 / 离开时 main 重发全量):登记本窗口承载的页签、导入不可持久化
+ *     会话的内存快照,再把会话交给 RightSidebarShell(hostedTabIds 形态:只投影 / 挂载
+ *     这些页签,页签条与「+」照常,激活位只在本窗口内存里)。
+ *   - 双阶段就绪握手:mount → rendererReady;至少一个被指派页签在场 → presentationReady,
+ *     main 这时才 show。
+ *   - 46px 自绘 chrome 由 Shell 的合并顶栏承担:mac 左端红绿灯让位、页签条、右端
+ *     「合并回侧边栏」(当前页签)+ win 端 WindowControls(close = 关闭全部页签)。
+ *   - 「合并回侧边栏」(按钮 / 右键菜单 / 协同页签「在主窗查看」):按页签交回(不可持久化
+ *     会话附内存态);窗口清空后 main 关窗。
+ *   - 关窗 = 关闭全部页签(红绿灯 / Windows X / 原生关窗请求);⌘W = 关闭当前页签。
+ *     都走 store.closeTab,与侧边栏里关页签同一流程(插件 onBeforeClose、确认拦截照常,
+ *     被否决则留着)。页签从桶里消失后通知 main 从本窗口摘掉(不交回),最后一个离开即关窗。
+ *   - 「+」新建的页签乐观登记为本窗口承载并请 main 收编,主窗不会把它画出来。
  *   - 显隐推送:隐藏时模糊焦点、重挂 chrome(复用隐藏窗口不继承上次 hover 态)。
  *
  * 与 SidebarWindowLayout 一样挂 useDeviceLinkRemoteProjects / makerChatStore 监听:
@@ -31,15 +31,18 @@ import { RightSidebarShell } from '@/features/right-sidebar/RightSidebarShell';
 import { ToastContainer } from '@/components/ui/toast';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
 import { mergeSidebarWindowBack } from '@/features/right-sidebar/lib/mergeSidebarWindowBack';
-import { setSoloTabId } from '@/features/right-sidebar/lib/tabHosting';
-import { getTabKind, hydrateTabState } from '@/features/right-sidebar/registry';
+import {
+  addHostedTabId,
+  setHostedTabIds,
+  useHostedTabIds,
+} from '@/features/right-sidebar/lib/tabHosting';
 import { closeTab, getBucket, importTabSnapshot, subscribe } from '@/features/right-sidebar/store';
 import {
   findGlobalTab,
+  isGlobalTabId,
   removeGlobalTab,
   useGlobalTabs,
 } from '@/features/right-sidebar/globalTabs';
-import { iconForTabKind, labelKeyForTabKind } from '@/features/right-sidebar/TabBar';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
 import { useAppShortcut } from '@/hooks/useAppShortcut';
@@ -49,7 +52,10 @@ import { createLogger } from '@/lib/logger';
 import { makerChatStore } from '@/lib/makerChatStore';
 import { GhostMediaLightboxHost } from '@/cindy-brain/GhostMediaLightboxHost';
 import { ensureGhostPanelsRegistered, useGhostPanelsSync } from '@/cindy-brain/ghostPanels';
-import type { SidebarTabWindowOpenRequest } from '../../../shared/sidebarTabWindow';
+import type {
+  SidebarTabWindowAssignmentPayload,
+  SidebarTabWindowTabRef,
+} from '../../../shared/sidebarTabWindow';
 
 const log = createLogger('SidebarTabWindowLayout');
 
@@ -65,23 +71,24 @@ export function SidebarTabWindowLayout() {
   }, []);
   const isMac = window.electronAPI?.platform === 'darwin';
   const api = window.electronAPI?.sidebarTabWindow;
-  const [assignment, setAssignment] = useState<SidebarTabWindowOpenRequest | null>(null);
+  const [assignment, setAssignment] = useState<SidebarTabWindowAssignmentPayload | null>(null);
   const [windowVisible, setWindowVisible] = useState(false);
   useDeviceLinkRemoteProjects(windowVisible, 'sidebar');
   const presentationReadySentRef = useRef(false);
-  const leavingRef = useRef(false);
+  /** 已向 main 报过「在本窗口里消失了」的页签,避免重复 close-for-tab。 */
+  const reportedGoneRef = useRef(new Set<string>());
   const [windowChromeRevision, setWindowChromeRevision] = useState(0);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
-  const applyAssignment = useCallback((next: SidebarTabWindowOpenRequest) => {
-    setAssignment((prev) => {
-      if (prev?.tabId === next.tabId && prev.sessionId === next.sessionId) return prev;
-      // 必须早于 Shell 的 ensureHydrated:不可持久化会话只能从这份快照水合。
-      if (next.handoff) importTabSnapshot(next.handoff);
-      setSoloTabId(next.tabId);
-      leavingRef.current = false;
-      presentationReadySentRef.current = false;
-      return next;
-    });
+  const applyAssignment = useCallback((next: SidebarTabWindowAssignmentPayload) => {
+    // 必须早于 Shell 的 ensureHydrated:不可持久化会话只能从这份快照水合。
+    if (next.handoff) importTabSnapshot(next.handoff);
+    setHostedTabIds(next.tabs.map((tab) => tab.tabId));
+    const stillAssigned = new Set(next.tabs.map((tab) => tab.tabId));
+    for (const id of [...reportedGoneRef.current]) {
+      if (!stillAssigned.has(id)) reportedGoneRef.current.delete(id);
+    }
+    setAssignment(next);
   }, []);
 
   // mount:订阅指派推送 + 主动拉一次(重载 / 推送早于订阅)+ renderer-ready 握手。
@@ -126,7 +133,6 @@ export function SidebarTabWindowLayout() {
   }, [api]);
 
   const sessionId = assignment?.sessionId ?? null;
-  const tabId = assignment?.tabId ?? null;
   const subscribeBucket = useCallback(
     (onChange: () => void) =>
       subscribe((changedSessionId) => {
@@ -136,122 +142,148 @@ export function SidebarTabWindowLayout() {
   );
   const getBucketSnapshot = useCallback(() => getBucket(sessionId), [sessionId]);
   const bucket = useSyncExternalStore(subscribeBucket, getBucketSnapshot);
-  // 全局页签(插件视图,sessionId=null)不在任务桶里,从全局存储找;它不需要任务桶水合。
   const globalTabs = useGlobalTabs();
-  const isGlobal = assignment !== null && assignment.sessionId === null;
-  const tab = useMemo(() => {
-    if (!tabId) return null;
-    if (isGlobal) return globalTabs.find((candidate) => candidate.id === tabId) ?? null;
-    return bucket.tabs.find((candidate) => candidate.id === tabId) ?? null;
-  }, [bucket.tabs, globalTabs, isGlobal, tabId]);
-  const contentReady = isGlobal || bucket.hydrated;
+  const hostedTabIds = useHostedTabIds();
+  // 任务桶水合后才知道任务页签在不在;只有全局页签的窗口不需要任务桶。
+  const needsBucket = assignment?.tabs.some((tab) => tab.sessionId !== null) ?? false;
+  const contentReady = assignment !== null && (!needsBucket || bucket.hydrated);
+  const isPresent = useCallback(
+    (ref: SidebarTabWindowTabRef) =>
+      ref.sessionId === null
+        ? globalTabs.some((tab) => tab.id === ref.tabId)
+        : bucket.tabs.some((tab) => tab.id === ref.tabId),
+    [bucket.tabs, globalTabs],
+  );
+  const presentTabs = useMemo(
+    () => (assignment ? assignment.tabs.filter(isPresent) : []),
+    [assignment, isPresent],
+  );
 
-  // presentation-ready:被指派页签的桶已水合且页签在场 → main 可以展示窗口。
+  // presentation-ready:至少一个被指派页签在场 → main 可以展示窗口。
   useEffect(() => {
-    if (presentationReadySentRef.current || !assignment || !contentReady || !tab) return;
+    if (presentationReadySentRef.current || !contentReady || presentTabs.length === 0) return;
     presentationReadySentRef.current = true;
     void api?.presentationReady?.().catch((err) => {
       log.warn('presentation-ready handshake failed', err);
     });
-  }, [api, assignment, contentReady, tab]);
+  }, [api, contentReady, presentTabs.length]);
 
-  // 页签已不在桶 / 全局列表里(本窗口内被关闭):销毁本窗口,不交回。
+  // 页签已不在桶 / 全局列表里(本窗口内被关闭 / 别处关掉):请 main 从本窗口摘掉,不交回;
+  // 最后一个离开时 main 销毁窗口。
   useEffect(() => {
-    if (!assignment || !contentReady || tab || leavingRef.current) return;
-    leavingRef.current = true;
-    void api?.closeForTab(assignment.tabId).catch((err) => {
-      leavingRef.current = false;
-      log.warn('close window for closed tab failed', err);
-    });
-  }, [api, assignment, contentReady, tab]);
-
-  const mergeBack = useCallback(() => {
-    if (!assignment || leavingRef.current) return;
-    leavingRef.current = true;
-    void mergeSidebarWindowBack(assignment.sessionId).catch((err) => {
-      leavingRef.current = false;
-      log.warn('merge tab back failed', err);
-    });
-  }, [assignment]);
-
-  // 关窗 = 关闭这个页签。closeTab 内部跑插件 onBeforeClose / 确认拦截,被否决就什么
-  // 都不发生;页签真的消失后,上面的 effect 再请求 main 销毁窗口。
-  const closeOwnTab = useCallback(() => {
-    if (!assignment || leavingRef.current) return;
-    if (assignment.sessionId === null) {
-      // 全局页签:关闭是全局动作,列表变化后上面的 effect 收窗。
-      if (findGlobalTab(assignment.tabId)) removeGlobalTab(assignment.tabId);
-      return;
+    if (!assignment || !contentReady) return;
+    for (const ref of assignment.tabs) {
+      if (isPresent(ref) || reportedGoneRef.current.has(ref.tabId)) continue;
+      reportedGoneRef.current.add(ref.tabId);
+      void api?.closeForTab(ref.tabId).catch((err) => {
+        reportedGoneRef.current.delete(ref.tabId);
+        log.warn('close-for-tab for a closed tab failed', { tabId: ref.tabId, err });
+      });
     }
-    void closeTab(assignment.sessionId, assignment.tabId).catch((err) => {
-      log.warn('close popped-out tab failed', err);
-    });
-  }, [assignment]);
+  }, [api, assignment, contentReady, isPresent]);
 
-  // 原生关窗(红绿灯 / 系统关闭 / Windows X):main 拦下后转达到这里。
+  const refFor = useCallback(
+    (tabId: string) => assignment?.tabs.find((tab) => tab.tabId === tabId) ?? null,
+    [assignment],
+  );
+
+  const mergeBackTab = useCallback(
+    (tabId: string) => {
+      const ref = refFor(tabId);
+      if (!ref) return;
+      void mergeSidebarWindowBack(ref.sessionId, tabId).catch((err) => {
+        log.warn('merge tab back failed', { tabId, err });
+      });
+    },
+    [refFor],
+  );
+
+  // 关页签走与侧边栏同一条流程(插件 onBeforeClose / 确认拦截);页签真的消失后,
+  // 上面的 effect 再请 main 摘掉。
+  const closeHostedTab = useCallback(
+    async (tabId: string) => {
+      const ref = refFor(tabId);
+      if (!ref) return;
+      if (ref.sessionId === null || isGlobalTabId(tabId)) {
+        if (findGlobalTab(tabId)) removeGlobalTab(tabId);
+        return;
+      }
+      await closeTab(ref.sessionId, tabId);
+    },
+    [refFor],
+  );
+
+  /** 原生关窗(红绿灯 / Windows X):关闭窗口里的全部页签;有被否决的就留着。 */
+  const closeAllHostedTabs = useCallback(() => {
+    if (!assignment) return;
+    void (async () => {
+      for (const ref of assignment.tabs) {
+        try {
+          await closeHostedTab(ref.tabId);
+        } catch (err) {
+          log.warn('close popped-out tab failed', { tabId: ref.tabId, err });
+        }
+      }
+    })();
+  }, [assignment, closeHostedTab]);
+
   useEffect(() => {
-    return api?.onCloseRequested?.(() => closeOwnTab()) ?? undefined;
-  }, [api, closeOwnTab]);
+    return api?.onCloseRequested?.(() => closeAllHostedTabs()) ?? undefined;
+  }, [api, closeAllHostedTabs]);
 
-  // ⌘W / Ctrl+W:本窗口整个就是一个页签,与侧边栏里 ⌘W 关当前页签同义。
+  // ⌘W / Ctrl+W:关闭当前页签(与侧边栏里 ⌘W 关当前页签同义)。
   useCloseShortcutShellOwner();
   useAppShortcut('close-tab-or-window', () => {
-    closeOwnTab();
+    if (activeTabId) {
+      void closeHostedTab(activeTabId).catch((err) => {
+        log.warn('close active popped-out tab failed', { tabId: activeTabId, err });
+      });
+    }
     return true;
   });
 
-  const plugin = tab ? getTabKind(tab.kind) : null;
-  const hydratedState = tab ? hydrateTabState(plugin, tab.state) : null;
-  const FallbackIcon = tab ? iconForTabKind(tab.kind) : PanelRight;
-  const IconNode = plugin?.TabPillIcon;
-  const TitleNode = plugin?.TabPillTitle;
-  const context = assignment?.context;
+  // 「+」新建的页签:乐观登记为本窗口承载,并请 main 收编(主窗据广播不画它)。
+  const handleTabCreated = useCallback(
+    (tabId: string) => {
+      addHostedTabId(tabId);
+      const created = isGlobalTabId(tabId) ? null : sessionId;
+      void api?.adoptTab?.({ tabId, sessionId: created }).catch((err) => {
+        log.warn('adopt new tab failed', { tabId, err });
+      });
+    },
+    [api, sessionId],
+  );
 
-  return (
-    <div className="flex h-screen flex-col bg-content-area text-foreground">
-      <div
-        className="relative flex h-[46px] shrink-0 items-center border-b border-[var(--border-default)] bg-[var(--panel-bg)]"
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <div className={isMac ? 'w-20 shrink-0' : 'w-3 shrink-0'} />
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="shrink-0 text-[var(--text-tertiary)]">
-            {tab && IconNode ? (
-              <IconNode state={hydratedState} sessionId={sessionId} active />
-            ) : (
-              <FallbackIcon size={14} />
-            )}
-          </span>
-          <span className="truncate text-13 text-[var(--text-secondary)]">
-            {tab ? (
-              TitleNode ? (
-                <TitleNode state={hydratedState} sessionId={sessionId} active t={t} />
-              ) : (
-                t(labelKeyForTabKind(tab.kind))
-              )
-            ) : (
-              t('rightSidebar.tabWindow.title')
-            )}
-          </span>
-        </div>
+  const context = assignment?.context;
+  const topbarLeading = <div className={isMac ? 'w-[72px] shrink-0' : 'w-1 shrink-0'} />;
+  const topbarTrailing = (
+    <>
+      {activeTabId && (
         <div
-          className="flex shrink-0 items-center gap-0.5 pr-2"
+          className="flex h-full shrink-0 items-center gap-0.5"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <ChromeIconButton onClick={mergeBack} aria-label={t('rightSidebar.tabWindow.mergeBack')}>
+          <ChromeIconButton
+            onClick={() => mergeBackTab(activeTabId)}
+            aria-label={t('rightSidebar.tabWindow.mergeBack')}
+          >
             <PanelRight size={14} />
           </ChromeIconButton>
         </div>
-        {!isMac && (
-          <div
-            className="flex h-full shrink-0 items-center"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <WindowControls key={windowChromeRevision} onClose={closeOwnTab} />
-          </div>
-        )}
-      </div>
+      )}
+      {!isMac && (
+        <div
+          className="flex h-full shrink-0 items-center"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <WindowControls key={windowChromeRevision} onClose={closeAllHostedTabs} />
+        </div>
+      )}
+    </>
+  );
 
+  return (
+    <div className="flex h-screen flex-col bg-content-area text-foreground">
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {assignment && (
           <RightSidebarShell
@@ -262,13 +294,19 @@ export function SidebarTabWindowLayout() {
             subagentsAvailable={context?.subagentsAvailable}
             shellVisible={windowVisible}
             isMac={isMac}
-            soloTabId={assignment.tabId}
+            unifiedTopbar
+            hostedTabIds={hostedTabIds}
+            onMergeBackTab={mergeBackTab}
+            onTabCreated={handleTabCreated}
+            onActiveTabChange={setActiveTabId}
+            topbarLeading={topbarLeading}
+            topbarTrailing={topbarTrailing}
           />
         )}
-        {(!windowVisible || !assignment || !tab) && (
+        {(!windowVisible || !assignment || presentTabs.length === 0) && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--panel-bg)]">
             <span className="text-13 text-[var(--text-tertiary)]">
-              {assignment && contentReady && !tab
+              {assignment && contentReady && presentTabs.length === 0
                 ? t('rightSidebar.tabWindow.closed')
                 : t('rightSidebar.tabWindow.loading')}
             </span>

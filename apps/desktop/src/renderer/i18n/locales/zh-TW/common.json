@@ -8015,7 +8015,8 @@
         "closeOthers": "關閉其他",
         "closeAll": "關閉所有",
         "openInWindow": "在獨立視窗中開啟",
-        "moveTo": "移到{{target}}"
+        "moveTo": "移到{{target}}",
+        "moveToWindow": "移到視窗："
       },
       "empty": {
         "eyebrow": "右側欄",

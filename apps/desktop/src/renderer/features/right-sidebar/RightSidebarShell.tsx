@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -40,7 +41,7 @@ import { RightSidebarDetach } from '@/components/layout/RightSidebarDetach';
 import { RightSidebarMaximize } from '@/components/layout/RightSidebarMaximize';
 import { RightSidebarToggle } from '@/components/layout/RightSidebarToggle';
 import { CHROME_ACTIONS_GEOMETRY } from '@/components/layout/chromeActionsGeometry';
-import { TabBar, TabStrip } from './TabBar';
+import { TabBar, TabStrip, TabTitleLabel, type PopoutWindowOption } from './TabBar';
 import { EmptyState } from './EmptyState';
 import { getTabKind, hydrateTabState } from './registry';
 import {
@@ -65,7 +66,10 @@ import { initPopupRouter, setPopupFallbackSession } from './lib/popupRouter';
 import { TabBodyErrorBoundary } from './TabBodyErrorBoundary';
 import { useRetainedBrowserTabHosts } from './hooks/useRetainedBrowserTabHosts';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
-import { useSidebarTabWindowsState } from '@/lib/sidebarTabWindowState';
+import {
+  summarizeSidebarTabWindows,
+  useSidebarTabWindowsState,
+} from '@/lib/sidebarTabWindowState';
 import {
   isGlobalTabId,
   removeGlobalTab,
@@ -103,7 +107,7 @@ type RightTabDirection = 'prev' | 'next';
 interface RightSidebarShellProps {
   /**
    * 本 Shell 承载哪个页签组(见 tabGroups.ts):只投影归属该组的页签。缺省右侧组
-   * (历史右侧栏);左 / 上 / 下边组由 TabGroupPanel 传入。弹出窗口(soloTabId)不分组。
+   * (历史右侧栏);左 / 上 / 下边组由 TabGroupPanel 传入。弹出窗口(hostedTabIds)不分组。
    */
   groupId?: TabGroupId;
   /**
@@ -147,17 +151,26 @@ interface RightSidebarShellProps {
   /** 工具面板处于最左 rail 邻位时，顶栏为浮动 ChromeActions 挖 no-drag 命中区并预留布局空间。 */
   railChromeActionsHitHole?: boolean;
   /**
-   * 「在独立窗口中打开」页签:主窗侧栏继续存在,只把该页签弹出到自己的窗口。
-   * 顶栏按钮作用于当前激活页签(没有激活页签时不渲染);页签右键菜单作用于被点
-   * 的页签。弹出窗口(soloTabId 形态)与会话副窗不传。
+   * 「在独立窗口中打开」页签:主窗侧栏继续存在,只把该页签弹出到自己的窗口;带
+   * targetWindowId 时搬进已有的弹出窗口。顶栏按钮作用于当前激活页签(没有激活页签时
+   * 不渲染);页签右键菜单作用于被点的页签。弹出窗口(hostedTabIds 形态)与会话副窗不传。
    */
-  onDetachTab?: (tabId: string) => void;
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
   /**
-   * 单页签独立窗口形态:Shell 只投影并挂载这一个页签,不渲染 TabBar / 合并顶栏 /
-   * 空态,不写激活位,也不向 main 上报「活跃侧栏会话」(主窗仍是侧栏宿主权威)。
-   * 该页签从桶里消失(被关闭)后 Shell 渲染为空,由 SidebarTabWindowLayout 关窗。
+   * 页签独立窗口形态:Shell 只投影并挂载 main 指派给本窗口的这些页签(不分组),
+   * 激活位只在本窗口内存里,不写任务桶,也不向 main 上报「活跃侧栏会话」(主窗仍是
+   * 侧栏宿主权威)。页签全部从桶里消失后 Shell 渲染为空,由 SidebarTabWindowLayout 关窗。
    */
-  soloTabId?: string;
+  hostedTabIds?: ReadonlySet<string>;
+  /** 独立窗口形态:右键菜单「合并回侧边栏」作用于被点的页签。 */
+  onMergeBackTab?: (tabId: string) => void;
+  /** 独立窗口形态:本窗口里经「+」新建的页签(乐观插入那一刻回调),宿主拿去收编。 */
+  onTabCreated?: (tabId: string) => void;
+  /** 当前激活页签变化(独立窗口的 ⌘W / 合并按钮要知道作用于谁)。 */
+  onActiveTabChange?: (tabId: string | null) => void;
+  /** 合并顶栏首 / 尾插槽(独立窗口的红绿灯让位、合并按钮与窗口控件)。 */
+  topbarLeading?: ReactNode;
+  topbarTrailing?: ReactNode;
   /** TabBar 横带是否作为窗口拖拽区(见 TabBar 同名 prop):主窗口内嵌形态传
    *  false(空白处 = 拖面板手势面);detached 子窗口不传,默认 true。 */
   chromeWindowDrag?: boolean;
@@ -189,16 +202,21 @@ export function RightSidebarShell({
   onMaximize,
   isMaximized,
   onDetachTab,
-  soloTabId,
+  hostedTabIds,
+  onMergeBackTab,
+  onTabCreated,
+  onActiveTabChange,
+  topbarLeading,
+  topbarTrailing,
   chromeWindowDrag = true,
   panelSide = 'right',
   onAllTabsClosed,
   reserveLeftChromeActions = false,
   railChromeActionsHitHole = false,
 }: RightSidebarShellProps) {
-  const soloMode = typeof soloTabId === 'string';
+  const soloMode = hostedTabIds !== undefined;
   /** 右侧组是页签系统的"主组":任务级的激活位对账、快捷键、浏览器桥的活跃会话上报只由它做。 */
-  const isPrimaryGroup = groupId === DEFAULT_TAB_GROUP;
+  const isPrimaryGroup = groupId === DEFAULT_TAB_GROUP && !soloMode;
   const { isFullscreen } = useMacFullscreen();
   const chromeActionsLeft =
     isMac && !isFullscreen
@@ -219,7 +237,7 @@ export function RightSidebarShell({
   const { t } = useTranslation();
   const installedGhosts = useInstalledGhosts();
   // 已弹出到独立窗口的页签:数据留在桶里,但本 Shell 不投影、不挂 body。
-  // 弹出窗口自身(soloMode)反过来只投影自己承载的那一个。
+  // 弹出窗口自身(soloMode)反过来只投影 main 指派给它承载的那几个。
   const poppedOutTabs = useSidebarTabWindowsState();
 
   // RSB browser bridge (Phase 2):在 Shell 整个生命周期内只 init 一次。bridge 内部
@@ -260,14 +278,14 @@ export function RightSidebarShell({
   // 承载全局页签就是这种形态。
   const contentReady = bucket.hydrated || sessionId === null;
   const hiddenTabIds = useMemo<ReadonlySet<string> | undefined>(() => {
-    if (soloMode) {
+    if (hostedTabIds) {
       return new Set(
-        [...globalTabs, ...bucket.tabs].map((tab) => tab.id).filter((id) => id !== soloTabId),
+        [...globalTabs, ...bucket.tabs].map((tab) => tab.id).filter((id) => !hostedTabIds.has(id)),
       );
     }
     const ids = Object.keys(poppedOutTabs);
     return ids.length > 0 ? new Set(ids) : undefined;
-  }, [bucket.tabs, globalTabs, poppedOutTabs, soloMode, soloTabId]);
+  }, [bucket.tabs, globalTabs, hostedTabIds, poppedOutTabs]);
   const previousShellVisibleRef = useRef(shellVisible);
   const subagentsEligibilityKnown = typeof subagentsAvailable === 'boolean';
   const subagentsEnabled = subagentsAvailable === true;
@@ -347,14 +365,23 @@ export function RightSidebarShell({
   // 激活位:用户选中的全局页签优先并跨任务保持;否则是任务自己的激活页签(在本组时);
   // 本组不含任务级激活页签时用组内上次选中的;再没有就落到第一个页签。
   const groupRememberedActiveId = groupActiveVersion;
-  const activeTabId =
-    activeGlobalTabId && pinnedTabs.some((tab) => tab.id === activeGlobalTabId)
+  // 独立窗口:激活位只在本窗口内存里(不写任务桶、不碰主窗的全局激活位)。
+  const [hostedActiveTabId, setHostedActiveTabId] = useState<string | null>(null);
+  const activeTabId = soloMode
+    ? hostedActiveTabId && tabs.some((tab) => tab.id === hostedActiveTabId)
+      ? hostedActiveTabId
+      : (tabs.at(-1)?.id ?? null)
+    : activeGlobalTabId && pinnedTabs.some((tab) => tab.id === activeGlobalTabId)
       ? activeGlobalTabId
       : sessionActiveTabId && sessionTabs.some((tab) => tab.id === sessionActiveTabId)
         ? sessionActiveTabId
         : groupRememberedActiveId && tabs.some((tab) => tab.id === groupRememberedActiveId)
           ? groupRememberedActiveId
-          : sessionTabs[0]?.id ?? pinnedTabs[0]?.id ?? null;
+          : (sessionTabs[0]?.id ?? pinnedTabs[0]?.id ?? null);
+
+  useEffect(() => {
+    onActiveTabChange?.(activeTabId);
+  }, [activeTabId, onActiveTabChange]);
 
   // 首帧只挂当前激活 tab。其余 tab 在浏览器空闲期逐个补挂载，随后继续按原有
   // keep-alive 语义保留组件 / webview / 编辑器状态。这样恢复一个多 tab 会话时，
@@ -543,7 +570,17 @@ export function RightSidebarShell({
       // 否则正常 addTab。menu meta 的 singleton 字段是数据来源,目前只有 review。
       const isSingleton = plugin?.menu?.singleton === true;
       // 边组里点「+」:新页签直接落在本组(乐观插入那一帧就带着组归属,不闪过右侧栏)。
-      const addOpts = isPrimaryGroup ? undefined : { groupId };
+      // 独立窗口里点「+」:乐观插入那一刻交给宿主收编(登记为本窗口承载)。
+      const addOpts = soloMode
+        ? {
+            onOptimisticAdd: (tabId: string) => {
+              setHostedActiveTabId(tabId);
+              onTabCreated?.(tabId);
+            },
+          }
+        : isPrimaryGroup
+          ? undefined
+          : { groupId };
       const action = isSingleton
         ? addOrFocusSingletonTab(sessionId, kind, initialState, addOpts)
         : addTab(sessionId, kind, initialState, addOpts);
@@ -559,7 +596,7 @@ export function RightSidebarShell({
         log.error('handleAdd failed', { sessionId, kind, err });
       });
     },
-    [groupId, isPrimaryGroup, sessionId, subagentsEnabled, t],
+    [groupId, isPrimaryGroup, onTabCreated, sessionId, soloMode, subagentsEnabled, t],
   );
 
   const handleClose = useCallback(
@@ -579,6 +616,10 @@ export function RightSidebarShell({
 
   const handleActivate = useCallback(
     (tabId: string) => {
+      if (soloMode) {
+        setHostedActiveTabId(tabId);
+        return;
+      }
       setGroupActiveTabId(groupId, sessionId, tabId);
       if (isGlobalTabId(tabId)) {
         setActiveGlobalTabId(tabId);
@@ -595,8 +636,27 @@ export function RightSidebarShell({
         log.error('handleActivate failed', { sessionId, tabId, err });
       });
     },
-    [activeGlobalTabId, groupId, pinnedTabs, sessionId],
+    [activeGlobalTabId, groupId, pinnedTabs, sessionId, soloMode],
   );
+
+  // 主窗:已弹出的页签窗口(同任务或只有全局页签的),右键菜单「移到窗口 …」的目标。
+  // 标签用窗口里第一个页签的标题(插件的 TabPillTitle 组件,不是字符串)。
+  const popoutWindows = useMemo<PopoutWindowOption[] | undefined>(() => {
+    if (soloMode || !onDetachTab) return undefined;
+    const options: PopoutWindowOption[] = [];
+    for (const summary of summarizeSidebarTabWindows(poppedOutTabs)) {
+      if (summary.sessionId !== null && summary.sessionId !== sessionId) continue;
+      const firstTab =
+        bucket.tabs.find((tab) => summary.tabIds.includes(tab.id)) ??
+        globalTabs.find((tab) => summary.tabIds.includes(tab.id));
+      if (!firstTab) continue;
+      options.push({
+        windowId: summary.windowId,
+        label: <TabTitleLabel tab={firstTab} sessionId={sessionId} />,
+      });
+    }
+    return options.length > 0 ? options : undefined;
+  }, [bucket.tabs, globalTabs, onDetachTab, poppedOutTabs, sessionId, soloMode]);
 
   // 右键菜单「移到 …」:改组归属,目标组里立刻选中它;组 pane 的出现 / 隐藏由
   // tabGroupPanes 按在场判定处理。
@@ -727,7 +787,7 @@ export function RightSidebarShell({
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      {soloMode ? null : unifiedTopbar ? (
+      {unifiedTopbar ? (
         <div
           data-testid="right-sidebar-unified-topbar"
           // bg 走 --panel-bg 与下方 TabBar / Body 同源(2026-07-21 用户裁决:CINDY 下
@@ -736,6 +796,7 @@ export function RightSidebarShell({
           className="relative flex h-[46px] shrink-0 flex-none items-center border-b border-[var(--border-default)] bg-[var(--panel-bg)] px-2"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
+          {topbarLeading}
           {!isFullscreen && railChromeActionsHitHole && (
             <div
               aria-hidden
@@ -791,9 +852,12 @@ export function RightSidebarShell({
             onAdd={handleAdd}
             onCloseOthers={handleCloseOthers}
             onCloseAll={handleCloseAll}
-            onDetachTab={onDetachTab}
+            onDetachTab={soloMode ? undefined : onDetachTab}
+            onMergeBackTab={onMergeBackTab}
+            popoutWindows={popoutWindows}
             groupId={groupId}
             onMoveTab={soloMode ? undefined : handleMoveTab}
+            onGlobalTabAdded={soloMode ? onTabCreated : undefined}
             pillVariant="chip"
             addButtonWrapperClassName="h-[30px]"
             subagentsAvailable={subagentsEnabled}
@@ -832,6 +896,7 @@ export function RightSidebarShell({
               style={{ width: MAC_HEADER_ACTION_SPACER_PX }}
             />
           )}
+          {topbarTrailing}
         </div>
       ) : (
         <TabBar
@@ -849,10 +914,13 @@ export function RightSidebarShell({
           onShowSidebar={onShowSidebar}
           panelSide={panelSide}
           isMaximized={isMaximized}
-          onDetach={handleDetachActiveTab}
-          onDetachTab={onDetachTab}
+          onDetach={soloMode ? undefined : handleDetachActiveTab}
+          onDetachTab={soloMode ? undefined : onDetachTab}
+          onMergeBackTab={onMergeBackTab}
+          popoutWindows={popoutWindows}
           groupId={groupId}
           onMoveTab={soloMode ? undefined : handleMoveTab}
+          onGlobalTabAdded={soloMode ? onTabCreated : undefined}
           onCloseOthers={handleCloseOthers}
           onCloseAll={handleCloseAll}
           chromeWindowDrag={chromeWindowDrag}

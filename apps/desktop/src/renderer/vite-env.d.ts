@@ -2064,15 +2064,20 @@ interface ElectronAPI {
       cb: (payload: import('../shared/sidebarTabWindow').SidebarTabReturnedPayload) => void,
     ) => () => void;
     getAssignment?: () => Promise<
-      import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest | null
+      import('../shared/sidebarTabWindow').SidebarTabWindowAssignmentPayload | null
     >;
     onAssigned?: (
-      cb: (assignment: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest) => void,
+      cb: (
+        assignment: import('../shared/sidebarTabWindow').SidebarTabWindowAssignmentPayload,
+      ) => void,
     ) => () => void;
     rendererReady?: () => Promise<void>;
     presentationReady?: () => Promise<void>;
     mergeBack?: (
-      snapshot: import('../shared/sidebarTabWindow').SidebarTabReturnSnapshot | null,
+      request: import('../shared/sidebarTabWindow').SidebarTabWindowMergeBackRequest,
+    ) => Promise<void>;
+    adoptTab?: (
+      request: import('../shared/sidebarTabWindow').SidebarTabWindowAdoptRequest,
     ) => Promise<void>;
     onCloseRequested?: (cb: () => void) => () => void;
     onVisibilityChanged?: (cb: (payload: { visible: boolean }) => void) => () => void;

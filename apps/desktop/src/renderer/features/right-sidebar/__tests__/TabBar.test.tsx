@@ -213,6 +213,39 @@ describe('TabStrip context menu · move to group', () => {
   });
 });
 
+// 测试价值
+// - 生产入口与可观察结果:页签右键菜单的「移到窗口 …」(主窗,按已弹出窗口列出)与
+//   「合并回侧边栏」(弹出窗口);可观察的是回调带被点页签与目标窗口 id。
+// - Bug / 规则依据:弹出窗口 = 多页签的页签组(本 PR),主窗能把页签搬进已有窗口。
+// - 现有覆盖缺口:右键菜单此前只有关闭 / 移组用例。
+// - 最小失败输入:一扇弹出窗口选项 + 右键一个页签。
+// - tier:unit(jsdom)。
+describe('TabStrip context menu · popped-out windows', () => {
+  it('offers existing popped-out windows as move targets and merge-back inside a window', () => {
+    const onDetachTab = vi.fn();
+    const onMergeBackTab = vi.fn();
+    render(
+      <TabStrip
+        tabs={TABS}
+        activeTabId={null}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={vi.fn()}
+        onAdd={vi.fn()}
+        onDetachTab={onDetachTab}
+        popoutWindows={[{ windowId: 'w7', label: <span>Docs</span> }]}
+        onMergeBackTab={onMergeBackTab}
+      />,
+    );
+    fireEvent.contextMenu(pillFor(LABEL_FILE));
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-move-window-w7'));
+    expect(onDetachTab).toHaveBeenCalledWith('tab-file', 'w7');
+    fireEvent.contextMenu(pillFor(LABEL_ORCA));
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-merge-back'));
+    expect(onMergeBackTab).toHaveBeenCalledWith('tab-orca');
+  });
+});
+
 afterEach(() => cleanup());
 
 describe('TabStrip 中键关闭 tab', () => {

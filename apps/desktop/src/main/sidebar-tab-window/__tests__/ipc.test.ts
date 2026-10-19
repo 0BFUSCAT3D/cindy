@@ -30,7 +30,10 @@ vi.mock('../../security/trustedAppRenderer.js', () => ({
 import { ipcMain, type BrowserWindow } from 'electron';
 
 import { MAKER_INVOKE } from '../../maker-ipc/channels.js';
-import { SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL } from '../../../shared/sidebarTabWindow.js';
+import {
+  SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL,
+  SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL,
+} from '../../../shared/sidebarTabWindow.js';
 import { registerSidebarTabWindowIpc } from '../ipc.js';
 import type { SidebarTabWindowsController } from '../controller.js';
 
@@ -57,7 +60,12 @@ function makeController() {
     getAssignment: vi.fn(() => null),
     markRendererReady: vi.fn(),
     markPresentationReady: vi.fn(),
-    slotForSender: vi.fn<(sender: unknown) => { assignment: { tabId: string } } | null>(() => null),
+    slotForSender: vi.fn<(sender: unknown) => { assignment: { tabs: { tabId: string }[] } } | null>(
+      () => null,
+    ),
+    slotOwnsTab: (slot: { assignment: { tabs: { tabId: string }[] } }, tabId: string) =>
+      slot.assignment.tabs.some((tab) => tab.tabId === tabId),
+    adoptTab: vi.fn(),
   };
 }
 
@@ -141,7 +149,7 @@ describe('sidebar-tab-window IPC', () => {
   it('lets the main window or the owning tab window close a window for a closed tab, nobody else', async () => {
     const controller = makeController();
     controller.slotForSender.mockImplementation((sender: unknown) =>
-      sender === otherSender ? { assignment: { tabId: 'tab-a' } } : null,
+      sender === otherSender ? { assignment: { tabs: [{ tabId: 'tab-a' }] } } : null,
     );
     register(controller);
     const close = handlers().get(MAKER_INVOKE.SIDEBAR_TAB_WINDOW_CLOSE_FOR_TAB)!;
@@ -156,30 +164,42 @@ describe('sidebar-tab-window IPC', () => {
     expect(controller.closeForTab).toHaveBeenCalledTimes(2);
   });
 
-  it('accepts merge-back only from a managed tab window and validates the snapshot', async () => {
+  it('accepts merge-back only from the owning tab window and validates the snapshot', async () => {
     const controller = makeController();
     controller.slotForSender.mockImplementation((sender: unknown) =>
-      sender === otherSender ? { assignment: { tabId: 'tab-a' } } : null,
+      sender === otherSender ? { assignment: { tabs: [{ tabId: 'tab-a' }] } } : null,
     );
     register(controller);
     const merge = handlers().get(SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL)!;
 
-    await call(merge, { sender: mainSender }, null);
+    await call(merge, { sender: mainSender }, { tabId: 'tab-a', snapshot: null });
+    // 别人的页签也不行。
+    await call(merge, { sender: otherSender }, { tabId: 'tab-b', snapshot: null });
     expect(controller.mergeBack).not.toHaveBeenCalled();
-    await expect(call(merge, { sender: otherSender }, { sessionId: 's1' })).rejects.toThrow(
-      /INVALID_PARAMS/,
-    );
+    await expect(
+      call(merge, { sender: otherSender }, { tabId: 'tab-a', snapshot: { sessionId: 's1' } }),
+    ).rejects.toThrow(/INVALID_PARAMS/);
     await call(
       merge,
       { sender: otherSender },
       {
-        sessionId: 's1',
-        tab: { id: 'tab-a', kind: 'terminal', state: { created: true } },
+        tabId: 'tab-a',
+        snapshot: {
+          sessionId: 's1',
+          tab: { id: 'tab-a', kind: 'terminal', state: { created: true } },
+        },
       },
     );
-    expect(controller.mergeBack).toHaveBeenCalledWith(otherSender, {
+    expect(controller.mergeBack).toHaveBeenCalledWith(otherSender, 'tab-a', {
       sessionId: 's1',
       tab: { id: 'tab-a', kind: 'terminal', state: { created: true } },
     });
+
+    // 收编新建页签:只认弹出窗口自身。
+    const adopt = handlers().get(SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL)!;
+    await call(adopt, { sender: mainSender }, { tabId: 'tab-n', sessionId: 's1' });
+    expect(controller.adoptTab).not.toHaveBeenCalled();
+    await call(adopt, { sender: otherSender }, { tabId: 'tab-n', sessionId: null });
+    expect(controller.adoptTab).toHaveBeenCalledWith(otherSender, 'tab-n', null);
   });
 });

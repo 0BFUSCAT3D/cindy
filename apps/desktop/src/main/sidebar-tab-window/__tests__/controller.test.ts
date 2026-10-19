@@ -139,7 +139,7 @@ function makeHarness() {
   };
 }
 
-const request = (tabId: string, sessionId = 's1') => ({
+const request = (tabId: string, sessionId: string | null = 's1') => ({
   tabId,
   sessionId,
   context: { workdir: '/repo', remoteHostId: null, deviceLinkDeviceId: null },
@@ -170,8 +170,14 @@ describe('SidebarTabWindowsController', () => {
     // spare 被直接消费,没有再冷建窗口;指派随即送达(壳已就绪)。
     expect(h.created).toHaveLength(1);
     const assigned = h.sends.find((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL);
-    expect(assigned?.payload).toMatchObject({ tabId: 'tab-a', sessionId: 's1' });
-    expect(h.controller.getState()).toEqual({ 'tab-a': { sessionId: 's1', open: true } });
+    expect(assigned?.payload).toMatchObject({
+      windowId: 'w1',
+      sessionId: 's1',
+      tabs: [{ tabId: 'tab-a', sessionId: 's1' }],
+    });
+    expect(h.controller.getState()).toEqual({
+      'tab-a': { windowId: 'w1', sessionId: 's1', open: true },
+    });
     // 首份内容前不显示。
     expect(spare.show).not.toHaveBeenCalled();
     h.controller.markPresentationReady(h.wc(spare));
@@ -206,7 +212,9 @@ describe('SidebarTabWindowsController', () => {
       1,
     );
     // 重载后的 renderer 主动取指派也拿得到同一份。
-    expect(h.controller.getAssignment(h.wc(win))).toMatchObject({ tabId: 'tab-a' });
+    expect(h.controller.getAssignment(h.wc(win))).toMatchObject({
+      tabs: [{ tabId: 'tab-a', sessionId: 's1' }],
+    });
     expect(win.show).not.toHaveBeenCalled();
 
     // 同一页签再次 open = 聚焦已有窗口,不建第二扇。
@@ -227,13 +235,13 @@ describe('SidebarTabWindowsController', () => {
       sessionId: 's1',
       tab: { id: 'tab-a', kind: 'web-browser', state: { url: 'x' } },
     };
-    h.controller.mergeBack(h.wc(win), snapshot);
+    h.controller.mergeBack(h.wc(win), 'tab-a', snapshot);
     expect(win.destroy).toHaveBeenCalledOnce();
     expect(h.returned).toEqual([{ sessionId: 's1', tabId: 'tab-a', snapshot, reason: 'merge' }]);
     expect(h.broadcasts.at(-1)).toEqual({});
     expect(h.controller.getWebContentsForTab('tab-a')).toBeNull();
     // 未知 sender 的 merge-back 被忽略。
-    h.controller.mergeBack({} as WebContents, null);
+    h.controller.mergeBack({} as WebContents, 'tab-a', null);
     expect(h.returned).toHaveLength(1);
   });
 
@@ -272,6 +280,85 @@ describe('SidebarTabWindowsController', () => {
     expect(cold.returned).toEqual([
       { sessionId: 's1', tabId: 'tab-b', snapshot: null, reason: 'merge' },
     ]);
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:open({targetWindowId}) / adoptTab / 按页签 mergeBack / closeForTab;
+  //   可观察的是同任务页签搬进已有窗口后指派重发为全量、状态按 tabId 指向同一 windowId、
+  //   只摘一个页签时窗口留着且重发指派、窗口清空才销毁、别的任务的页签不进这扇窗(新开)、
+  //   崩溃时窗口里全部页签都交回。
+  // - Bug / 规则依据:弹出窗口 = 住在别的窗口里的页签组(本 PR)。
+  // - 现有覆盖缺口:其余用例都是单页签窗口。
+  // - 最小失败输入:两个同任务页签 + targetWindowId。
+  // - tier:unit(mock deps)。
+  it('hosts several tabs per window: move-in, adopt, per-tab merge/close, crash returns all', () => {
+    const h = makeHarness();
+    h.controller.open(request('tab-a'));
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    h.controller.markPresentationReady(h.wc(win));
+
+    // 同任务页签搬进已有窗口:不建新窗,指派重发全量,状态指向同一扇窗。
+    h.controller.open({ ...request('tab-b'), targetWindowId: 'w1' });
+    expect(h.created).toHaveLength(1);
+    const assigned = h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL);
+    expect(assigned.at(-1)?.payload).toMatchObject({
+      windowId: 'w1',
+      tabs: [
+        { tabId: 'tab-a', sessionId: 's1' },
+        { tabId: 'tab-b', sessionId: 's1' },
+      ],
+    });
+    expect(h.controller.getState()).toEqual({
+      'tab-a': { windowId: 'w1', sessionId: 's1', open: true },
+      'tab-b': { windowId: 'w1', sessionId: 's1', open: true },
+    });
+    expect(h.controller.getWebContentsForTab('tab-b')).toBe(h.wc(win));
+
+    // 全局页签可以进任何窗口;别的任务的页签进不来 → 新开一扇。
+    h.controller.open({ ...request('tab-g', null), targetWindowId: 'w1' });
+    expect(h.created).toHaveLength(1);
+    h.controller.open({ ...request('tab-x', 's2'), targetWindowId: 'w1' });
+    expect(h.created).toHaveLength(2);
+    expect(h.controller.getState()['tab-x']).toMatchObject({ windowId: 'w2', sessionId: 's2' });
+
+    // 窗口里新建的页签被收编;别的 sender 收编无效。
+    h.controller.adoptTab(h.wc(win), 'tab-new', 's1');
+    h.controller.adoptTab({} as WebContents, 'tab-nope', 's1');
+    expect(Object.keys(h.controller.getState())).toEqual(
+      expect.arrayContaining(['tab-a', 'tab-b', 'tab-g', 'tab-new']),
+    );
+    expect(h.controller.isTabPoppedOut('tab-nope')).toBe(false);
+
+    // 合并回一个页签:窗口留着,指派重发,只交回那一个。
+    h.controller.mergeBack(h.wc(win), 'tab-b', null);
+    expect(win.isDestroyed()).toBe(false);
+    expect(h.returned).toEqual([
+      { sessionId: 's1', tabId: 'tab-b', snapshot: null, reason: 'merge' },
+    ]);
+    expect(h.controller.isTabPoppedOut('tab-b')).toBe(false);
+    expect(
+      (
+        h.sends.filter((s) => s.channel === SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL).at(-1)
+          ?.payload as { tabs: { tabId: string }[] }
+      ).tabs.map((tab) => tab.tabId),
+    ).toEqual(['tab-a', 'tab-g', 'tab-new']);
+
+    // 窗口里关掉一个页签:摘掉不交回,窗口留着。
+    h.controller.closeForTab('tab-new');
+    expect(win.isDestroyed()).toBe(false);
+    expect(h.returned).toHaveLength(1);
+
+    // 崩溃:剩下的页签全部交回。
+    win.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
+    expect(win.destroy).toHaveBeenCalledOnce();
+    expect(h.returned.slice(1)).toEqual([
+      { sessionId: 's1', tabId: 'tab-a', snapshot: null, reason: 'crash' },
+      { sessionId: null, tabId: 'tab-g', snapshot: null, reason: 'crash' },
+    ]);
+    expect(h.controller.getState()).toEqual({
+      'tab-x': { windowId: 'w2', sessionId: 's2', open: true },
+    });
   });
 
   it('closes a window whose tab was closed in the sidebar without returning the tab', () => {

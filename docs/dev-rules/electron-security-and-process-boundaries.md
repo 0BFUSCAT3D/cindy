@@ -116,8 +116,8 @@ Renderer 可以负责组件渲染、交互状态、表单状态、展示数据�
 必须区分冷启动与热打开，并确认热打开链路没有重新创建 BrowserWindow、重新加载 Renderer
 或同步等待业务数据。
 
-按内容多实例、内容回到主窗即结束的窗口（右侧栏单页签弹出窗口，
-`main/sidebar-tab-window/controller.ts`）对「隐藏复用」取另一种等价形式：关窗即关闭该页签
+按内容多实例、内容回到主窗即结束的窗口（右侧栏页签弹出窗口，一扇窗承载若干页签，
+`main/sidebar-tab-window/controller.ts`）对「隐藏复用」取另一种等价形式：关窗即关闭窗内页签
 （经 renderer 走与侧边栏相同的 closeTab 流程），页签关掉或合并回侧边栏后窗口没有可复用的
 内容，随即销毁；「准备成本移出点击路径」由一扇未指派的预热 spare
 窗口承担（弹出时只做指派 → 首份内容 → `show()`），指派后再延迟补一扇。崩溃不重建 renderer，
@@ -128,7 +128,7 @@ Renderer 可以负责组件渲染、交互状态、表单状态、展示数据�
 隔离要求仍然适用。
 
 `webviewTag` 默认关闭；受控例外目前只有两类——主界面与右侧栏子窗口（内置浏览器需要；
-右侧栏整栏子窗口与单页签弹出窗口共用 `main/right-sidebar-window/window.ts` 的
+右侧栏整栏子窗口与页签弹出窗口共用 `main/right-sidebar-window/window.ts` 的
 `createSidebarHostWindow` 工厂与 `sidebarWindowPreload`，`main/sidebar-tab-window/window.ts`
 只改启动参数、尺寸与位置记忆）。插件面板（ghost 分区 webview）不再有专属窗口：它以右侧栏
 全局页签承载，弹出时走同一扇页签窗口——所有例外都必须继续由 `webview-security.ts` 在 `will-attach-webview` 阶段

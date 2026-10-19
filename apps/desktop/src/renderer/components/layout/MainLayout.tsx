@@ -1102,10 +1102,11 @@ export function MainLayout() {
   //    弹出前释放本窗对该页签的独占资源:浏览器 webview 归还池(弹出窗口会重新
   //    物化并向 main 重新登记),终端标记 PTY 未附着(弹出窗口 re-attach 抢走 sink,
   //    交回后本窗必须再 attach 一次)。不可持久化会话附整桶内存快照。
-  const handleDetachRightSidebarTab = useCallback((tabId: string) => {
+  const handleDetachRightSidebarTab = useCallback((tabId: string, targetWindowId?: string) => {
     if (isSecondaryWindow()) return;
     const api = window.electronAPI.sidebarTabWindow;
     if (!api?.open) return;
+    const target = targetWindowId ? { targetWindowId } : {};
     const info = rightSidebarWorkdirInfoRef.current;
     const context = {
       workdir: info.workdir || null,
@@ -1115,7 +1116,7 @@ export function MainLayout() {
     };
     // 全局页签(插件视图)不属于任何任务:无桶快照,也没有任务级资源要释放。
     if (findGlobalTab(tabId)) {
-      void api.open({ tabId, sessionId: null, context, handoff: null }).catch((err) => {
+      void api.open({ tabId, sessionId: null, context, handoff: null, ...target }).catch((err) => {
         applicationMenuLog.warn('pop out global sidebar tab failed', { tabId, err });
       });
       return;
@@ -1127,7 +1128,7 @@ export function MainLayout() {
     if (tab.kind === 'web-browser') browserWebviewPool.release(tabId);
     if (tab.kind === 'terminal') markPtyDetached(tabId);
     void api
-      .open({ tabId, sessionId, context, handoff: getTabSnapshot(sessionId) })
+      .open({ tabId, sessionId, context, handoff: getTabSnapshot(sessionId), ...target })
       .catch((err) => {
         applicationMenuLog.warn('pop out sidebar tab failed', { sessionId, tabId, err });
       });

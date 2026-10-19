@@ -78,7 +78,7 @@ interface RightSidebarProps {
   railChromeActionsHitHole?: boolean;
   /** 「在独立窗口中打开」某个页签:主窗侧栏继续存在,只把该页签弹出到自己的窗口。
    *  Shell 的顶栏按钮作用于当前页签,页签右键菜单作用于被点的页签。 */
-  onDetachTab?: (tabId: string) => void;
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
   /** M2(mac 交换态):面板当前贴哪条边。透传给 Shell —— 'left' 时 Shell 顶栏
    *  右端渲染 detach / maximize 真按钮(折叠 toggle 恒在 MainLayout 窗口右上浮层)。 */
   panelSide?: 'left' | 'right';

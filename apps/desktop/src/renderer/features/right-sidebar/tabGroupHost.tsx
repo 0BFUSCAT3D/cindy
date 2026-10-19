@@ -12,8 +12,8 @@ export interface TabGroupHostValue {
   deviceLinkDeviceId?: string | null;
   subagentsAvailable?: boolean;
   isMac: boolean;
-  /** 「在独立窗口中打开」某个页签;副窗口不提供。 */
-  onDetachTab?: (tabId: string) => void;
+  /** 「在独立窗口中打开」某个页签(带 windowId = 搬进已有窗口);副窗口不提供。 */
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
   /**
    * mac 下窗口左上的红绿灯 / ChromeActions 会盖住最左面板的顶栏:左侧组贴着窗口
    * 顶边且左栏收起 / rail 时,为它们预留 no-drag 空位。

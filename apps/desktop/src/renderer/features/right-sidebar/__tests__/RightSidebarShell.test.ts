@@ -1655,7 +1655,7 @@ describe('RightSidebarShell empty state', () => {
   // - 生产入口与可观察结果:RightSidebarShell 渲染同一会话桶;页签弹出到独立窗口
   //   (sidebarTabWindowState 镜像)后主窗侧栏不再显示它的 pill 与 body,激活位落到
   //   仍在侧栏的页签并落库;窗口关闭(镜像清空)后 pill 回来。弹出窗口自身
-  //   (soloTabId)只挂那一个页签、不画 TabBar / 空态、不写激活位。
+  //   (hostedTabIds)只挂被指派的页签、不画空态、不写任务级激活位。
   // - Bug / 规则依据:侧栏「弹出」从整栏改为单页签(本 PR);webview / 终端不能双实例,
   //   两个 renderer 投影同一页签就是双实例。
   // - 现有覆盖缺口:相邻用例只覆盖可用性过滤(subagents / retired),没有跨窗口归属。
@@ -1692,7 +1692,9 @@ describe('RightSidebarShell empty state', () => {
 
       // 终端页签弹出:侧栏不再显示它,激活位移到文件页签并落库。
       act(() => {
-        __setSidebarTabWindowsStateForTest({ 'tab-term': { sessionId: 's1', open: true } });
+        __setSidebarTabWindowsStateForTest({
+          'tab-term': { windowId: 'w1', sessionId: 's1', open: true },
+        });
       });
       await waitFor(() => expect(screen.queryByText('terminal-pill')).toBeNull());
       expect(screen.queryByText('terminal-body')).toBeNull();
@@ -1709,7 +1711,7 @@ describe('RightSidebarShell empty state', () => {
       await waitFor(() => expect(screen.getByText('terminal-pill')).toBeTruthy());
       unmount();
 
-      // 弹出窗口自身:只挂被指派页签,没有 TabBar / 空态,不改激活位。
+      // 弹出窗口自身:只挂被指派的页签(页签条照常,供多页签切换),没有空态,不改任务级激活位。
       tabsIpc.setActive.mockClear();
       _resetStore();
       render(
@@ -1719,12 +1721,12 @@ describe('RightSidebarShell empty state', () => {
           remoteHostId: null,
           isMac: true,
           subagentsAvailable: false,
-          soloTabId: 'tab-term',
+          hostedTabIds: new Set(['tab-term']),
         }),
       );
       await waitFor(() => expect(screen.getByText('terminal-body')).toBeTruthy());
-      expect(screen.queryByTestId('right-sidebar-tab-bar')).toBeNull();
-      expect(screen.queryByTestId('right-sidebar-unified-topbar')).toBeNull();
+      expect(screen.getByTestId('right-sidebar-tab-bar')).toBeTruthy();
+      expect(screen.getByText('terminal-pill')).toBeTruthy();
       expect(screen.queryByText('rightSidebar.tabs.empty.title')).toBeNull();
       expect(screen.queryByText('rightSidebar.tabs.kinds.fileBrowser')).toBeNull();
       await new Promise((resolve) => setTimeout(resolve, 0));

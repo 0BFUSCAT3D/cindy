@@ -8015,7 +8015,8 @@
         "closeOthers": "다른 탭 닫기",
         "closeAll": "모두 닫기",
         "openInWindow": "새 창에서 열기",
-        "moveTo": "{{target}}(으)로 이동"
+        "moveTo": "{{target}}(으)로 이동",
+        "moveToWindow": "창으로 이동:"
       },
       "empty": {
         "eyebrow": "오른쪽 사이드바",

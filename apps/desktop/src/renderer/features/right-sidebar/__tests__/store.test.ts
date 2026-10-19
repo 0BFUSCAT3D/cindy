@@ -1435,7 +1435,7 @@ describe('cross-renderer sync for popped-out tabs', () => {
 
   it('merges a DB refresh: hosted tabs stay local, popped tabs take DB, foreign adds/removes apply', async () => {
     await hydrateTwoTabs();
-    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { windowId: 'w1', sessionId: 's1', open: true } });
     // 本窗对承载页签的乐观改动(写还在途)不能被对方的刷新覆盖。
     void store.patchTabState('s1', 'tab-files', () => ({ path: 'local-edit' }));
     ipc.list.mockResolvedValueOnce({
@@ -1514,7 +1514,7 @@ describe('cross-renderer sync for popped-out tabs', () => {
 
   it('activating a popped-out tab focuses its window instead of moving the sidebar marker', async () => {
     await hydrateTwoTabs();
-    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { windowId: 'w1', sessionId: 's1', open: true } });
     await store.setActiveTab('s1', 'tab-web');
     expect(sidebarTabWindow.focus).toHaveBeenCalledWith('tab-web');
     expect(store.getBucket('s1').activeTabId).toBe('tab-files');
@@ -1523,7 +1523,7 @@ describe('cross-renderer sync for popped-out tabs', () => {
 
   it('closing a popped-out tab in the sidebar tears down its window without returning it', async () => {
     await hydrateTwoTabs();
-    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { windowId: 'w1', sessionId: 's1', open: true } });
     await store.closeTab('s1', 'tab-web');
     expect(ipc.close).toHaveBeenCalledWith({ id: 'tab-web' });
     expect(sidebarTabWindow.closeForTab).toHaveBeenCalledWith('tab-web');
@@ -1541,7 +1541,7 @@ describe('cross-renderer sync for popped-out tabs', () => {
       ],
       activeTabId: 'tab-files',
     });
-    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { sessionId: 's1', open: true } });
+    popped.__setSidebarTabWindowsStateForTest({ 'tab-web': { windowId: 'w1', sessionId: 's1', open: true } });
     onChangedListeners[0]({ sessionId: 's1' });
     onChangedListeners[0]({ sessionId: 's1' });
     onChangedListeners[0]({ sessionId: 's1' });

@@ -1,10 +1,10 @@
 /**
- * registerSidebarTabWindowIpc —— 右侧栏单页签独立窗口的 IPC 注册。
+ * registerSidebarTabWindowIpc —— 右侧栏页签独立窗口的 IPC 注册。
  *
  * 全部委托给 SidebarTabWindowsController,这里只做:
- *  - sender 归属校验:弹出 / 聚焦 / 关闭由主窗发起(弹出窗口自己也可以
- *    对自己承载的页签发 close-for-tab:页签在它里面被 guest 自关时);
- *    就绪握手、取指派、合并回侧边栏只认弹出窗口自身;
+ *  - sender 归属校验:弹出 / 搬入 / 聚焦 / 关闭由主窗发起(弹出窗口自己也可以
+ *    对自己承载的页签发 close-for-tab:页签在它里面被关掉 / guest 自关时);
+ *    就绪握手、取指派、合并回侧边栏、收编新建页签只认弹出窗口自身;
  *  - payload 运行时校验(throwIpcError INVALID_PARAMS)。
  */
 
@@ -22,6 +22,7 @@ import type {
   SidebarTabWindowOpenRequest,
 } from '../../shared/sidebarTabWindow.js';
 import {
+  SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL,
   SIDEBAR_TAB_WINDOW_GET_ASSIGNMENT_CHANNEL,
   SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL,
   SIDEBAR_TAB_WINDOW_PRESENTATION_READY_CHANNEL,
@@ -118,12 +119,14 @@ function parseReturnSnapshot(raw: unknown): SidebarTabReturnSnapshot | null {
 
 function parseOpenRequest(raw: unknown): SidebarTabWindowOpenRequest {
   const obj = requireObject(raw, 'open request');
+  const targetWindowId = optionalNullableString(obj.targetWindowId, 'targetWindowId');
   return {
     tabId: requireId(obj.tabId, 'tabId'),
     // 全局页签(插件视图)不属于任何任务:sessionId 为 null。
     sessionId: optionalNullableString(obj.sessionId, 'sessionId') ?? null,
     context: parseContext(obj.context),
     handoff: parseHandoff(obj.handoff),
+    ...(targetWindowId ? { targetWindowId } : {}),
   };
 }
 
@@ -163,7 +166,7 @@ export function registerSidebarTabWindowIpc(opts: {
     assertTrustedAppRendererEvent(event);
     const id = requireId(tabId, 'tabId');
     const ownSlot = controller.slotForSender(event.sender);
-    const ownsTab = ownSlot?.assignment?.tabId === id;
+    const ownsTab = ownSlot ? controller.slotOwnsTab(ownSlot, id) : false;
     if (!isMainWindowSender(event.sender) && !ownsTab) {
       log.warn('SIDEBAR_TAB_WINDOW_CLOSE_FOR_TAB from unrelated sender, dropped', { tabId: id });
       throwIpcError('PERMISSION_DENIED', 'sender does not own this tab');
@@ -188,13 +191,28 @@ export function registerSidebarTabWindowIpc(opts: {
     controller.markPresentationReady(event.sender);
   });
 
-  ipcMain.handle(SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL, (event, rawSnapshot: unknown) => {
+  ipcMain.handle(SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL, (event, rawRequest: unknown) => {
     assertTrustedAppRendererEvent(event);
-    const snapshot = parseReturnSnapshot(rawSnapshot);
-    if (!controller.slotForSender(event.sender)) {
-      log.warn('SIDEBAR_TAB_WINDOW_MERGE_BACK from non-tab-window sender, ignored');
+    const obj = requireObject(rawRequest, 'merge-back request');
+    const tabId = requireId(obj.tabId, 'tabId');
+    const snapshot = parseReturnSnapshot(obj.snapshot);
+    const slot = controller.slotForSender(event.sender);
+    if (!slot || !controller.slotOwnsTab(slot, tabId)) {
+      log.warn('SIDEBAR_TAB_WINDOW_MERGE_BACK from non-owner sender, ignored', { tabId });
       return;
     }
-    controller.mergeBack(event.sender, snapshot);
+    controller.mergeBack(event.sender, tabId, snapshot);
+  });
+
+  ipcMain.handle(SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL, (event, rawRequest: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const obj = requireObject(rawRequest, 'adopt request');
+    const tabId = requireId(obj.tabId, 'tabId');
+    const sessionId = optionalNullableString(obj.sessionId, 'sessionId') ?? null;
+    if (!controller.slotForSender(event.sender)) {
+      log.warn('SIDEBAR_TAB_WINDOW_ADOPT_TAB from non-tab-window sender, ignored', { tabId });
+      return;
+    }
+    controller.adoptTab(event.sender, tabId, sessionId);
   });
 }

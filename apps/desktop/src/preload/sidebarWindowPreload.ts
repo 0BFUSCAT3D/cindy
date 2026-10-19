@@ -32,6 +32,7 @@ import {
 } from '../shared/rightSidebarWindow';
 import type { RsbWindowTabHandoff } from '../shared/rightSidebarWindow';
 import {
+  SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL,
   SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL,
   SIDEBAR_TAB_WINDOW_GET_ASSIGNMENT_CHANNEL,
   SIDEBAR_TAB_WINDOW_LOCALE_CHANGED_CHANNEL,
@@ -42,8 +43,9 @@ import {
   SIDEBAR_TAB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../shared/sidebarTabWindow';
 import type {
-  SidebarTabReturnSnapshot,
-  SidebarTabWindowOpenRequest,
+  SidebarTabWindowAdoptRequest,
+  SidebarTabWindowAssignmentPayload,
+  SidebarTabWindowMergeBackRequest,
   SidebarTabWindowsState,
 } from '../shared/sidebarTabWindow';
 
@@ -414,16 +416,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 本窗口承载的页签已被关闭:销毁本窗口,不交回页签。 */
     closeForTab: (tabId: string): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-window:close-for-tab', tabId),
-    getAssignment: (): Promise<SidebarTabWindowOpenRequest | null> =>
+    getAssignment: (): Promise<SidebarTabWindowAssignmentPayload | null> =>
       ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_GET_ASSIGNMENT_CHANNEL),
-    onAssigned: (cb: (assignment: SidebarTabWindowOpenRequest) => void): (() => void) =>
+    onAssigned: (cb: (assignment: SidebarTabWindowAssignmentPayload) => void): (() => void) =>
       onPayload(SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL, cb),
     rendererReady: (): Promise<void> =>
       ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_RENDERER_READY_CHANNEL),
     presentationReady: (): Promise<void> =>
       ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_PRESENTATION_READY_CHANNEL),
-    mergeBack: (snapshot: SidebarTabReturnSnapshot | null): Promise<void> =>
-      ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL, snapshot),
+    /** 把本窗口里的某个页签合并回侧边栏(窗口清空后 main 关窗)。 */
+    mergeBack: (request: SidebarTabWindowMergeBackRequest): Promise<void> =>
+      ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL, request),
+    /** 本窗口里新建的页签归本窗口承载。 */
+    adoptTab: (request: SidebarTabWindowAdoptRequest): Promise<void> =>
+      ipcRenderer.invoke(SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL, request),
     onCloseRequested: (cb: () => void): (() => void) =>
       onPayload(SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL, cb),
     onVisibilityChanged: (cb: (payload: { visible: boolean }) => void): (() => void) =>

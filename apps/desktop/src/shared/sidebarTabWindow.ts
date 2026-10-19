@@ -1,11 +1,12 @@
 /**
- * 右侧栏「单个页签独立窗口」(sidebar tab window)的跨进程共享类型。
+ * 右侧栏「页签独立窗口」(sidebar tab window)的跨进程共享类型。
  *
- * 与 shared/rightSidebarWindow.ts(整栏子窗口)的差异:按 **tabId 多实例**。
- * 用户把正在看的页签弹出到自己的窗口,主窗口的侧边栏继续存在并显示其余页签;
- * 关闭弹出窗口 = 关闭该页签,「合并回侧边栏」按钮才把页签送回。三方共用:main(controller / IPC)、preload
- * (桥接签名)、renderer(主窗镜像 store + 弹出窗口根组件)。只放纯类型与
- * channel 常量,不放运行时代码。
+ * 与 shared/rightSidebarWindow.ts(整栏子窗口)的差异:按 **窗口多实例**,一扇窗口
+ * 可以承载多个页签(同一任务的页签 + 任意全局页签),本质上是「住在别的窗口里的
+ * 页签组」。用户把正在看的页签弹出到自己的窗口,或搬进已有的弹出窗口;主窗口的
+ * 侧边栏继续存在并显示其余页签。关闭弹出窗口 = 关闭它承载的全部页签;「合并回侧边栏」
+ * 按页签送回。三方共用:main(controller / IPC)、preload(桥接签名)、renderer(主窗
+ * 镜像 store + 弹出窗口根组件)。只放纯类型与 channel 常量,不放运行时代码。
  */
 
 import type { RsbWindowTabSnapshot } from './rightSidebarWindow.js';
@@ -19,17 +20,36 @@ export interface SidebarTabWindowContext {
   subagentsAvailable?: boolean;
 }
 
-/** main 指派给某扇弹出窗口的页签身份;窗口整个生命周期只承载这一个页签。 */
+/** 窗口里的一个页签:任务页签带所属任务,全局页签(插件视图)为 null。 */
+export interface SidebarTabWindowTabRef {
+  tabId: string;
+  sessionId: string | null;
+}
+
+/** main 指派给某扇弹出窗口的内容;随页签加入 / 离开更新并重新下发。 */
 export interface SidebarTabWindowAssignment {
+  windowId: string;
+  /** 窗口里任务页签所属的任务;只有全局页签时为 null。一扇窗口只服务一个任务。 */
+  sessionId: string | null;
+  tabs: SidebarTabWindowTabRef[];
+  context: SidebarTabWindowContext;
+}
+
+/** 下发给弹出窗口的指派:附不可持久化会话的整桶内存快照(仅 device-link 远程会话非空)。 */
+export interface SidebarTabWindowAssignmentPayload extends SidebarTabWindowAssignment {
+  handoff: RsbWindowTabSnapshot | null;
+}
+
+/** 主窗 → main 的弹出 / 搬入请求。 */
+export interface SidebarTabWindowOpenRequest {
   tabId: string;
   /** 任务页签所属任务;全局页签(不跟对话,如插件视图)为 null。 */
   sessionId: string | null;
   context: SidebarTabWindowContext;
-}
-
-/** 主窗 → main 的弹出请求。handoff 只对不可持久化会话(device-link 远程)非空。 */
-export interface SidebarTabWindowOpenRequest extends SidebarTabWindowAssignment {
+  /** 只对不可持久化会话(device-link 远程)非空。 */
   handoff?: RsbWindowTabSnapshot | null;
+  /** 搬进已有的弹出窗口;缺省 / 窗口不存在或任务不符时新开一扇。 */
+  targetWindowId?: string;
 }
 
 /** 弹出窗口合并回侧边栏时交回的单页签内存态(仅不可持久化会话)。 */
@@ -38,17 +58,30 @@ export interface SidebarTabReturnSnapshot {
   tab: { id: string; kind: string; state: unknown };
 }
 
-/** 单扇弹出窗口的运行时状态;只在当前进程有效,不跨重启。 */
+/** 弹出窗口 → main:把某个页签合并回侧边栏。 */
+export interface SidebarTabWindowMergeBackRequest {
+  tabId: string;
+  snapshot: SidebarTabReturnSnapshot | null;
+}
+
+/** 弹出窗口 → main:在本窗口里新建的页签归本窗口承载。 */
+export interface SidebarTabWindowAdoptRequest {
+  tabId: string;
+  sessionId: string | null;
+}
+
+/** 单个已弹出页签的运行时状态;只在当前进程有效,不跨重启。 */
 export interface SidebarTabWindowEntryState {
+  windowId: string;
   sessionId: string | null;
   /** 窗口是否已经展示(或正在等待首份内容后展示)。 */
   open: boolean;
 }
 
-/** 全量状态:tabId → 窗口状态。没有条目 = 该页签没有弹出。 */
+/** 全量状态:tabId → 所在窗口。没有条目 = 该页签没有弹出。 */
 export type SidebarTabWindowsState = Record<string, SidebarTabWindowEntryState>;
 
-/** main → 主窗:页签离开弹出窗口,回到侧边栏(合并 / 窗口崩溃)。 */
+/** main → 主窗:页签离开弹出窗口,回到侧边栏(合并 / 崩溃)。 */
 export interface SidebarTabReturnedPayload {
   sessionId: string | null;
   tabId: string;
@@ -70,14 +103,17 @@ export const SIDEBAR_TAB_WINDOW_PRESENTATION_READY_CHANNEL =
   'sidebar-tab-window:presentation-ready';
 /** renderer → main(invoke):读取本窗口的指派(重载 / 预热窗口晚于指派挂载时用)。 */
 export const SIDEBAR_TAB_WINDOW_GET_ASSIGNMENT_CHANNEL = 'sidebar-tab-window:get-assignment';
-/** renderer → main(invoke):把页签合并回侧边栏并关闭本窗口。 */
+/** renderer → main(invoke):把某个页签合并回侧边栏;窗口清空后随之关闭。 */
 export const SIDEBAR_TAB_WINDOW_MERGE_BACK_CHANNEL = 'sidebar-tab-window:merge-back';
-/** main → 弹出窗口(send):指派页签。 */
+/** renderer → main(invoke):本窗口里新建的页签归本窗口承载。 */
+export const SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL = 'sidebar-tab-window:adopt-tab';
+/** main → 弹出窗口(send):指派(页签加入 / 离开时重发全量)。 */
 export const SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL = 'sidebar-tab-window:assigned';
 /**
  * main → 弹出窗口(send):用户经原生入口关窗(红绿灯 / 系统关闭 / Windows X)。
- * 关窗 = 关闭这个页签:renderer 走 store.closeTab(插件 onBeforeClose、确认拦截照常),
- * 页签从桶里消失后再由 renderer 请求 close-for-tab 销毁窗口;被否决则窗口留着。
+ * 关窗 = 关闭窗口里的全部页签:renderer 逐个走 store.closeTab(插件 onBeforeClose、
+ * 确认拦截照常),页签从桶里消失后再由 renderer 请求 close-for-tab;最后一个页签
+ * 离开时 main 销毁窗口;有页签被否决则窗口留着。
  */
 export const SIDEBAR_TAB_WINDOW_CLOSE_REQUESTED_CHANNEL = 'sidebar-tab-window:close-requested';
 /** main → 弹出窗口(send):显示 / 隐藏切换。 */

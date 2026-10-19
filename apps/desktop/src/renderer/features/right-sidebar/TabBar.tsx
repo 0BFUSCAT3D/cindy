@@ -18,7 +18,7 @@
  * i18n key 用 record 映射;Phase 2+ 改为从 plugin registry 取。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Pin, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TFunction } from 'i18next';
@@ -39,6 +39,12 @@ import { AddTabDropdown } from './AddTabDropdown';
 import { getTabKind, hydrateTabState } from './registry';
 import { TAB_GROUP_IDS, tabGroupLabelKey, type TabGroupId } from './tabGroups';
 import type { BuiltinTabKindId, TabKindId, TabState } from './types';
+
+/** 右键菜单里一扇可搬入的弹出窗口:标签是它第一个页签的标题(React 节点)。 */
+export interface PopoutWindowOption {
+  windowId: string;
+  label: ReactNode;
+}
 
 interface TabBarProps {
   tabs: TabState[];
@@ -76,12 +82,18 @@ interface TabBarProps {
    *  Windows 主窗口展开态同时传入 onCloseSidebar,折叠按钮归属本 TabBar;
    *  折叠后再由聊天区角上的 chip 提供展开入口。 */
   onDetach?: () => void;
-  /** 页签右键菜单「在独立窗口中打开」:作用于被点的页签。 */
-  onDetachTab?: (tabId: string) => void;
+  /** 页签右键菜单「在独立窗口中打开」:作用于被点的页签;带 windowId = 搬进已有窗口。 */
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
+  /** 已弹出的页签窗口(右键菜单「移到窗口 …」的目标);不传 / 空 = 不显示。 */
+  popoutWindows?: PopoutWindowOption[];
+  /** 独立窗口形态:右键菜单「合并回侧边栏」。 */
+  onMergeBackTab?: (tabId: string) => void;
   /** 本条属于哪个页签组;右键菜单「移到 …」列出其余各组。 */
   groupId?: TabGroupId;
   /** 页签右键菜单「移到 左侧 / 右侧栏 / 上方 / 下方」。不传 = 不显示。 */
   onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
+  /** 「+」菜单插件分组新加了全局页签(独立窗口据此收编)。 */
+  onGlobalTabAdded?: (tabId: string) => void;
   /** 本条横带是否作为**窗口**拖拽区(B3):主窗口内嵌形态传 false —— 空白处是
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
@@ -103,10 +115,14 @@ interface TabStripProps {
   onCloseOthers?: (keepTabId: string) => void;
   onCloseAll?: () => void;
   /** Tab pill 右键菜单「在独立窗口中打开」。 */
-  onDetachTab?: (tabId: string) => void;
-  /** 见 TabBarProps.groupId / onMoveTab。 */
+  onDetachTab?: (tabId: string, targetWindowId?: string) => void;
+  /** 见 TabBarProps.popoutWindows / onMergeBackTab。 */
+  popoutWindows?: PopoutWindowOption[];
+  onMergeBackTab?: (tabId: string) => void;
+  /** 见 TabBarProps.groupId / onMoveTab / onGlobalTabAdded。 */
   groupId?: TabGroupId;
   onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
+  onGlobalTabAdded?: (tabId: string) => void;
   className?: string;
   /**
    * pill 视觉变体:
@@ -221,8 +237,11 @@ export function TabBar({
   onCloseAll,
   onDetach,
   onDetachTab,
+  popoutWindows,
+  onMergeBackTab,
   groupId,
   onMoveTab,
+  onGlobalTabAdded,
   chromeWindowDrag = true,
   subagentsAvailable = false,
 }: TabBarProps) {
@@ -249,8 +268,11 @@ export function TabBar({
         onCloseOthers={onCloseOthers}
         onCloseAll={onCloseAll}
         onDetachTab={onDetachTab}
+        popoutWindows={popoutWindows}
+        onMergeBackTab={onMergeBackTab}
         groupId={groupId}
         onMoveTab={onMoveTab}
+        onGlobalTabAdded={onGlobalTabAdded}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
         subagentsAvailable={subagentsAvailable}
@@ -318,8 +340,11 @@ export function TabStrip({
   onCloseOthers,
   onCloseAll,
   onDetachTab,
+  popoutWindows,
+  onMergeBackTab,
   groupId = 'right',
   onMoveTab,
+  onGlobalTabAdded,
   className,
   pillVariant = 'flush',
   addButtonWrapperClassName,
@@ -518,6 +543,7 @@ export function TabStrip({
             anchorRef={addButtonWrapperRef}
             sessionId={sessionId}
             groupId={groupId}
+            onGlobalTabAdded={onGlobalTabAdded}
             onClose={closeDropdown}
             onSelect={onAdd}
             existingKinds={existingKinds}
@@ -613,11 +639,58 @@ export function TabStrip({
                   {t('rightSidebar.tabs.contextMenu.openInWindow')}
                 </DropdownMenuItem>
               )}
+              {onDetachTab &&
+                popoutWindows?.map((option) => (
+                  <DropdownMenuItem
+                    key={option.windowId}
+                    data-testid={`right-sidebar-tab-move-window-${option.windowId}`}
+                    onClick={() => {
+                      const id = contextMenu.tabId;
+                      closeContextMenu();
+                      onDetachTab(id, option.windowId);
+                    }}
+                  >
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="shrink-0">
+                        {t('rightSidebar.tabs.contextMenu.moveToWindow')}
+                      </span>
+                      <span className="truncate">{option.label}</span>
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              {onMergeBackTab && (
+                <DropdownMenuItem
+                  data-testid="right-sidebar-tab-merge-back"
+                  onClick={() => {
+                    const id = contextMenu.tabId;
+                    closeContextMenu();
+                    onMergeBackTab(id);
+                  }}
+                >
+                  {t('rightSidebar.tabWindow.mergeBack')}
+                </DropdownMenuItem>
+              )}
             </>
           )}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
+  );
+}
+
+/**
+ * 页签标题(复用插件的 TabPillTitle;未注册 kind 落到固定文案)。右键菜单「移到窗口 …」
+ * 用它给窗口起名:窗口里第一个页签叫什么,窗口就叫什么。
+ */
+export function TabTitleLabel({ tab, sessionId }: { tab: TabState; sessionId: string | null }) {
+  const { t } = useTranslation();
+  const plugin = getTabKind(tab.kind);
+  const TitleNode = plugin?.TabPillTitle;
+  const hydratedState = hydrateTabState(plugin, tab.state);
+  return TitleNode ? (
+    <TitleNode state={hydratedState} sessionId={sessionId} active={false} t={t} />
+  ) : (
+    <>{t(labelKeyForTabKind(tab.kind))}</>
   );
 }
 
