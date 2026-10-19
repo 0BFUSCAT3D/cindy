@@ -6663,7 +6663,8 @@
         "locationCopyFailed": "インストール場所をコピーできませんでした。手動でコピーしてください",
         "openLocation": "インストール場所を開く",
         "panelInSidebar": "右サイドバーに表示（すべてのタスクで保持）",
-        "panelDismissed": "右サイドバーから閉じました · 左サイドバーの入口を右クリックで再度開けます",
+        "panelDismissed": "右サイドバーから閉じました · ここまたはサイドバーの「+」メニューから再度開けます",
+        "openInSidebar": "サイドバーで開く",
         "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
         "panelNone": "このプラグインにパネルはありません",
         "customSlotTitle": "プラグインのカスタム設定エリア",
@@ -7986,7 +7987,8 @@
       "menu": {
         "addLabel": "タブを追加",
         "comingSoon": "近日対応",
-        "alreadyOpen": "開いています"
+        "alreadyOpen": "開いています",
+        "pluginsLabel": "プラグイン"
       },
       "kinds": {
         "fileBrowser": "ファイルブラウザ",

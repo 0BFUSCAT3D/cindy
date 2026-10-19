@@ -23,7 +23,7 @@ import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { MAIN_VIEW_ICONS } from '@/cindy-brain/mainViewIcons';
 import type { InstalledGhost } from '../../../../../shared/ghost';
 import { installedGhostStoragePart } from '../../../../../shared/pluginIdentity';
-import type { PluginViewTabState } from '../../globalTabs';
+import { globalTabTitleForGhost, type PluginViewTabState } from '../../globalTabs';
 import { registerTabKind } from '../../registry';
 import type { TabKindBodyProps, TabKindPlugin } from '../../types';
 
@@ -31,15 +31,9 @@ function useInstalledGhostByInstance(instanceId: string): InstalledGhost | undef
   return useInstalledGhosts().find((ghost) => installedGhostStoragePart(ghost) === instanceId);
 }
 
-/** 页签标题:停靠面板用 panel.title,整页视图用 mainView.title,都没有就用插件名。 */
-export function pluginViewTitle(ghost: InstalledGhost): string {
-  const { manifest } = ghost;
-  return manifest.panel?.title ?? manifest.mainView?.title ?? manifest.name;
-}
-
 function PluginViewTabPillTitle({ state, t }: { state: PluginViewTabState; t: TFunction }) {
   const ghost = useInstalledGhostByInstance(state.instanceId);
-  return <>{ghost ? pluginViewTitle(ghost) : t('rightSidebar.tabs.kinds.pluginView')}</>;
+  return <>{ghost ? globalTabTitleForGhost(ghost) : t('rightSidebar.tabs.kinds.pluginView')}</>;
 }
 
 function PluginViewTabPillIcon({ state }: { state: PluginViewTabState }) {

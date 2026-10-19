@@ -10,8 +10,28 @@
 
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, FileDiff, FolderTree, Globe, LayoutGrid, ListTodo, Terminal } from 'lucide-react';
+import {
+  Bot,
+  FileDiff,
+  FolderTree,
+  Globe,
+  LayoutGrid,
+  ListTodo,
+  Puzzle,
+  Terminal,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { MAIN_VIEW_ICONS } from '@/cindy-brain/mainViewIcons';
+import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
+import {
+  addGlobalPluginTab,
+  globalTabTitleForGhost,
+  isGlobalTabCapableGhost,
+  setActiveGlobalTabId,
+  useGlobalTabs,
+  type PluginViewTabState,
+} from './globalTabs';
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -121,6 +141,24 @@ export function AddTabDropdown({
   subagentsAvailable = false,
 }: AddTabDropdownProps) {
   const { t } = useTranslation();
+  // 插件分组:声明了面板或 mainView 的已启用插件,点选 = 作为全局页签(不跟对话)钉进
+  // 右侧栏。这是没有左侧栏入口的面板插件(关掉页签后)唯一的侧栏内重开入口。
+  const installedGhosts = useInstalledGhosts();
+  const globalTabs = useGlobalTabs();
+  const pluginEntries = installedGhosts
+    .filter(isGlobalTabCapableGhost)
+    .map((ghost) => {
+      const instanceId = installedGhostStoragePart(ghost);
+      return {
+        instanceId,
+        title: globalTabTitleForGhost(ghost),
+        icon: MAIN_VIEW_ICONS[ghost.manifest.mainView?.icon ?? 'puzzle'] ?? Puzzle,
+        open: globalTabs.some(
+          (tab) => (tab.state as PluginViewTabState | null)?.instanceId === instanceId,
+        ),
+      };
+    })
+    .sort((a, b) => a.title.localeCompare(b.title) || a.instanceId.localeCompare(b.instanceId));
   const bots = useBotProfiles();
   const bot = sessionId ? findBotProfileForSession(bots, sessionId) : undefined;
   const isBotSession = Boolean(bot);
@@ -203,6 +241,25 @@ export function AddTabDropdown({
           />
         );
       })}
+      {pluginEntries.length > 0 && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>{t('rightSidebar.tabs.menu.pluginsLabel')}</DropdownMenuLabel>
+          {pluginEntries.map((entry) => (
+            <AddTabItem
+              key={entry.instanceId}
+              icon={entry.icon}
+              label={entry.title}
+              trailing={entry.open ? t('rightSidebar.tabs.menu.alreadyOpen') : undefined}
+              onSelect={() => {
+                const tab = addGlobalPluginTab(entry.instanceId);
+                if (tab) setActiveGlobalTabId(tab.id);
+                onClose();
+              }}
+            />
+          ))}
+        </>
+      )}
       {coming.length > 0 && (
         <>
           <DropdownMenuSeparator />

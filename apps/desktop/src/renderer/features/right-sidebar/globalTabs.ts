@@ -217,6 +217,20 @@ export function reorderGlobalTabs(orderedIds: string[]): void {
   persist({ tabs: next, dismissedInstanceIds: current.dismissedInstanceIds });
 }
 
+/** 页签标题:停靠面板用 panel.title,整页视图用 mainView.title,都没有就用插件名。 */
+export function globalTabTitleForGhost(ghost: InstalledGhost): string {
+  const { manifest } = ghost;
+  return manifest.panel?.title ?? manifest.mainView?.title ?? manifest.name;
+}
+
+export function findGlobalTabByInstance(instanceId: string): TabState | null {
+  return (
+    getGlobalTabs().find(
+      (tab) => (tab.state as PluginViewTabState | null)?.instanceId === instanceId,
+    ) ?? null
+  );
+}
+
 /** 停靠形态(非 `tab`)的插件面板 = 应自动出现在右侧栏的全局页签。 */
 export function isAutoGlobalPanelGhost(ghost: InstalledGhost): boolean {
   return (

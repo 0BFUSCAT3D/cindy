@@ -6663,7 +6663,8 @@
         "locationCopyFailed": "複製安裝位置失敗，請手動複製",
         "openLocation": "開啟安裝位置",
         "panelInSidebar": "顯示在右側欄（所有任務中保留）",
-        "panelDismissed": "已從右側欄關閉 · 可在左側欄入口右鍵重新開啟",
+        "panelDismissed": "已從右側欄關閉 · 可在此處或右側欄「+」選單重新開啟",
+        "openInSidebar": "在側邊欄中開啟",
         "panelPageHosted": "從插件頁開啟 · 離開插件頁自動關閉",
         "panelNone": "這個插件不含面板",
         "customSlotTitle": "插件自定義設定區",
@@ -7986,7 +7987,8 @@
       "menu": {
         "addLabel": "新增標籤",
         "comingSoon": "即將支援",
-        "alreadyOpen": "已開啟"
+        "alreadyOpen": "已開啟",
+        "pluginsLabel": "插件"
       },
       "kinds": {
         "fileBrowser": "檔案瀏覽器",

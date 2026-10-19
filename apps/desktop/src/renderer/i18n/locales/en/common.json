@@ -6694,7 +6694,8 @@
         "locationCopyFailed": "Could not copy the install location. Copy it manually.",
         "openLocation": "Open install location",
         "panelInSidebar": "Shown in the right sidebar (kept across tasks)",
-        "panelDismissed": "Closed from the right sidebar · right-click its entry in the left sidebar to reopen",
+        "panelDismissed": "Closed from the right sidebar · reopen here or from the sidebar “+” menu",
+        "openInSidebar": "Open in the sidebar",
         "panelPageHosted": "Opens from the Plugin page · closes when you leave",
         "panelNone": "This plugin has no panel",
         "customSlotTitle": "Plugin custom settings area",
@@ -8018,7 +8019,8 @@
       "menu": {
         "addLabel": "Add tab",
         "comingSoon": "Coming soon",
-        "alreadyOpen": "Open"
+        "alreadyOpen": "Open",
+        "pluginsLabel": "Plugins"
       },
       "kinds": {
         "fileBrowser": "File browser",

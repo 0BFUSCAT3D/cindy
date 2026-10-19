@@ -4,6 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Sortable, { type SortableEvent } from 'sortablejs';
 
 // react-i18next 走 key 透传(仓库同款,见 RightSidebarShell.test.ts):label 直接是 i18n key。
+// 「+」菜单的插件分组:声明面板 / mainView 的已启用插件。无桥环境下用桩供数据。
+const installedGhostsMock = vi.hoisted(() => ({ list: [] as unknown[] }));
+vi.mock('@/cindy-brain/useInstalledGhosts', () => ({
+  useInstalledGhosts: () => installedGhostsMock.list,
+  readInstalledGhostsSnapshot: () => installedGhostsMock.list,
+}));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -133,6 +139,39 @@ describe('TabStrip Cindy Make menu visibility', () => {
     });
     fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
     expect(screen.queryByText('settings.cindyMake.title')).toBeNull();
+  });
+});
+
+// 测试价值
+// - 生产入口与可观察结果:TabStrip 的「+」菜单;可观察的是声明停靠面板的已启用插件出现在
+//   「插件」分组里,点选后成为右侧栏全局页签(globalTabs),再次打开菜单标「已打开」。
+// - Bug / 规则依据:停靠面板收束为右侧栏全局页签后,没有左侧栏入口的面板插件(如只声明
+//   panel 的 Mivo)关掉页签后必须仍有重开入口,否则用户视角等于插件不可用(插件兼容红线)。
+// - 现有覆盖缺口:其余「+」菜单用例只覆盖内置 kind。
+// - 最小失败输入:一个 enabled 且 panel.position 缺省的插件。
+// - tier:unit(jsdom)。
+describe('TabStrip add menu · plugins group', () => {
+  it('lists panel plugins and pins the chosen one as a global tab', async () => {
+    const { __resetGlobalTabsForTest, getGlobalTabs } = await import('../globalTabs');
+    __resetGlobalTabsForTest();
+    window.localStorage.clear();
+    installedGhostsMock.list = [
+      { manifest: { id: 'xd-mivo', name: 'XD Mivo', panel: { html: 'panel.html', title: 'Mivo 资产库' } }, enabled: true },
+      { manifest: { id: 'tool-only', name: 'Tool Only' }, enabled: true },
+    ];
+    renderStrip();
+    const addButton = screen.getByRole('button', { name: 'rightSidebar.tabs.addAria' });
+    vi.spyOn(addButton.parentElement as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 20, y: 20, top: 20, right: 44, bottom: 44, left: 20, width: 24, height: 24, toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
+    expect(screen.getByText('rightSidebar.tabs.menu.pluginsLabel')).toBeTruthy();
+    expect(screen.queryByText('Tool Only')).toBeNull();
+    fireEvent.click(screen.getByText('Mivo 资产库'));
+    expect(getGlobalTabs().map((tab) => (tab.state as { instanceId: string }).instanceId)).toEqual(['xd-mivo']);
+    installedGhostsMock.list = [];
+    __resetGlobalTabsForTest();
+    window.localStorage.clear();
   });
 });
 

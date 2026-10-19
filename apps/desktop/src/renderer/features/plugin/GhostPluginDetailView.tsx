@@ -57,6 +57,11 @@ import {
 } from '../../../shared/ghost';
 import { type GhostPluginDetail } from './lib/ghostPluginViewModel';
 import { GhostPluginIcon } from './GhostPluginIcon';
+import {
+  addGlobalPluginTab,
+  setActiveGlobalTabId,
+  useGlobalTabs,
+} from '@/features/right-sidebar/globalTabs';
 import { ghostPluginSummary } from './lib/ghostPluginDetailModel';
 import { ghostPrimaryAction } from './lib/ghostPluginViewModel';
 import { permissionItemIcon } from './lib/permissionItemIcon';
@@ -829,6 +834,10 @@ export function DetailsSection({
 }) {
   const { t } = useTranslation();
   const trustLabelKey = ghostTrustLabelKey(detail.trust);
+  const globalTabs = useGlobalTabs();
+  const inSidebar = globalTabs.some(
+    (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === detail.id,
+  );
   const facts: Array<{
     key: string;
     label: string;
@@ -882,6 +891,24 @@ export function DetailsSection({
         detail.panelMinWidth === null
           ? t('settings.ghosts.detail.panelNone')
           : panelStatus || t('settings.ghosts.detail.panelDismissed'),
+      // 停靠形态面板关掉页签后,这里是除右侧栏「+」菜单外的另一个重开入口
+      // (这类插件没有左侧栏入口)。已在侧栏、停用、tab 形态或无面板时不渲染。
+      ...(detail.panelMinWidth !== null && !detail.tabPanel && detail.enabled && !inSidebar
+        ? {
+            action: (
+              <button
+                type="button"
+                onClick={() => {
+                  const tab = addGlobalPluginTab(detail.id);
+                  if (tab) setActiveGlobalTabId(tab.id);
+                }}
+                className="shrink-0 rounded-md px-2 py-1 text-12 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+              >
+                {t('settings.ghosts.detail.openInSidebar')}
+              </button>
+            ),
+          }
+        : {}),
     },
     ...(detail.installDir
       ? [

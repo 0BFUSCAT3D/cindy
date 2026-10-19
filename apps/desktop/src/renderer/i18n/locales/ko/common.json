@@ -6663,7 +6663,8 @@
         "locationCopyFailed": "설치 위치를 복사하지 못했습니다. 수동으로 복사하세요",
         "openLocation": "설치 위치 열기",
         "panelInSidebar": "오른쪽 사이드바에 표시(모든 작업에서 유지)",
-        "panelDismissed": "오른쪽 사이드바에서 닫음 · 왼쪽 사이드바 항목을 우클릭해 다시 열 수 있습니다",
+        "panelDismissed": "오른쪽 사이드바에서 닫음 · 여기 또는 사이드바 “+” 메뉴에서 다시 열 수 있습니다",
+        "openInSidebar": "사이드바에서 열기",
         "panelPageHosted": "플러그인 페이지에서 열림 · 벗어나면 자동으로 닫힘",
         "panelNone": "이 플러그인에는 패널이 없습니다",
         "customSlotTitle": "플러그인 사용자 정의 설정 영역",
@@ -7986,7 +7987,8 @@
       "menu": {
         "addLabel": "탭 추가",
         "comingSoon": "지원 예정",
-        "alreadyOpen": "열림"
+        "alreadyOpen": "열림",
+        "pluginsLabel": "플러그인"
       },
       "kinds": {
         "fileBrowser": "파일 브라우저",
