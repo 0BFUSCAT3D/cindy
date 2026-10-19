@@ -695,7 +695,8 @@ export function RightSidebarShell({
 
   const handleCycleTab = useCallback(
     (direction: RightTabDirection): boolean => {
-      if (!sessionId) return false;
+      // 独立页签窗口的激活位只在窗口本地,只有全局页签的窗口没有任务也要能切。
+      if (!sessionId && !soloMode) return false;
       // 右侧栏存在但折叠 / 单 tab 时按键语义是 no-op,仍需消费以免漏给系统菜单。
       if (!shellVisible || tabs.length < 2) return true;
       const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId);
@@ -710,15 +711,15 @@ export function RightSidebarShell({
       handleActivate(nextTabId);
       return true;
     },
-    [activeTabId, handleActivate, sessionId, shellVisible, tabs],
+    [activeTabId, handleActivate, sessionId, shellVisible, soloMode, tabs],
   );
 
   useAppShortcut('right-tab-prev', () => handleCycleTab('prev'), {
-    enabled: Boolean(sessionId) && (isPrimaryGroup || soloMode),
+    enabled: soloMode || (Boolean(sessionId) && isPrimaryGroup),
     stopImmediate: true,
   });
   useAppShortcut('right-tab-next', () => handleCycleTab('next'), {
-    enabled: Boolean(sessionId) && (isPrimaryGroup || soloMode),
+    enabled: soloMode || (Boolean(sessionId) && isPrimaryGroup),
     stopImmediate: true,
   });
 
@@ -770,7 +771,7 @@ export function RightSidebarShell({
 
   useEffect(() => {
     // 只排除主窗的边组;独立页签窗口自己就是页签的承载方,浏览器 webview 转发的快捷键要收。
-    if (!sessionId || (!isPrimaryGroup && !soloMode)) return;
+    if (!soloMode && (!sessionId || !isPrimaryGroup)) return;
     const off = window.electronAPI.onRsbBrowserCommand(({ command }) => {
       if (command === 'right-tab-prev') {
         handleCycleTab('prev');

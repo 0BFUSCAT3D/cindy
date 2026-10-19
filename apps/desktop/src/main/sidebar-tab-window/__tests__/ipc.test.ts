@@ -53,7 +53,7 @@ function handlers() {
 function makeController() {
   return {
     getState: vi.fn(() => ({})),
-    open: vi.fn(),
+    open: vi.fn(() => true),
     focus: vi.fn(),
     closeForTab: vi.fn(),
     mergeBack: vi.fn(),
@@ -153,6 +153,10 @@ describe('sidebar-tab-window IPC', () => {
         persistable: false,
       },
     });
+
+    // 控制器没开出窗口:调用方必须收到拒绝,不能当成功。
+    controller.open.mockReturnValueOnce(false);
+    await expect(call(open, { sender: mainSender }, validRequest)).rejects.toThrow(/INTERNAL/);
   });
 
   it('lets the main window or the owning tab window close a window for a closed tab, nobody else', async () => {

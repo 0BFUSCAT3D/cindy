@@ -169,7 +169,9 @@ export function registerSidebarTabWindowIpc(opts: {
       log.warn('SIDEBAR_TAB_WINDOW_OPEN from non-main-window sender, dropped');
       throwIpcError('PERMISSION_DENIED', 'only the main window can pop out a tab');
     }
-    controller.open(request);
+    if (!controller.open(request)) {
+      throwIpcError('INTERNAL', 'failed to open the sidebar tab window');
+    }
   });
 
   ipcMain.handle(MAKER_INVOKE.SIDEBAR_TAB_WINDOW_FOCUS, (event, tabId: unknown) => {

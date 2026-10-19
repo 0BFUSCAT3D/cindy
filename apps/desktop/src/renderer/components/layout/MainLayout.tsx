@@ -1132,22 +1132,30 @@ export function MainLayout() {
     // 全局页签(插件视图)不属于任何任务:无桶快照,也没有任务级资源要释放。
     const globalTab = findGlobalTab(tabId);
     if (globalTab) {
-      // 插件视图弹过窗口:记住,下次从左侧栏入口点开直接进窗口。
+      // 插件视图弹过窗口:记住,下次从左侧栏入口点开直接进窗口(开成功后才记,开失败不留错误记忆)。
       const instanceId = (globalTab.state as PluginViewTabState | null)?.instanceId;
-      if (instanceId) rememberPluginWindowPlacement(instanceId, true);
-      void api.open({ tabId, sessionId: null, context, handoff: null, ...target }).catch((err) => {
-        applicationMenuLog.warn('pop out global sidebar tab failed', { tabId, err });
-      });
+      void api
+        .open({ tabId, sessionId: null, context, handoff: null, ...target })
+        .then(() => {
+          if (instanceId) rememberPluginWindowPlacement(instanceId, true);
+        })
+        .catch((err) => {
+          applicationMenuLog.warn('pop out global sidebar tab failed', { tabId, err });
+        });
       return;
     }
     const sessionId = rightSidebarSessionIdRef.current;
     if (!sessionId) return;
     const tab = getBucket(sessionId).tabs.find((candidate) => candidate.id === tabId);
     if (!tab) return;
-    if (tab.kind === 'web-browser') browserWebviewPool.release(tabId);
-    if (tab.kind === 'terminal') markPtyDetached(tabId);
+    // 窗口真的建出来之后才释放主窗里的浏览器 webview / 标记终端已分离:
+    // 开窗失败(main 抛错)时页面状态原样留在侧栏,不被销毁重载。
     void api
       .open({ tabId, sessionId, context, handoff: getTabSnapshot(sessionId), ...target })
+      .then(() => {
+        if (tab.kind === 'web-browser') browserWebviewPool.release(tabId);
+        if (tab.kind === 'terminal') markPtyDetached(tabId);
+      })
       .catch((err) => {
         applicationMenuLog.warn('pop out sidebar tab failed', { sessionId, tabId, err });
       });

@@ -415,6 +415,24 @@ describe('SidebarTabWindowsController', () => {
   });
 
   // 测试价值
+  // - 生产入口与可观察结果:open 在窗口创建失败时返回 false(成功为 true);调用方据此不释放浏览器
+  //   webview、不记窗口放置。
+  // - Bug / 规则依据:review「createWindow 抛错时 IPC 仍当成功,页签状态被提前释放」。
+  // - 现有覆盖缺口:创建失败路径没有断言。
+  // - 最小失败输入:createWindow 抛错且没有 spare。
+  it('reports a failed pop-out when no window can be created', () => {
+    const h = makeHarness({
+      createWindow: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(h.controller.open(request('tab-a'))).toBe(false);
+    expect(h.controller.isTabPoppedOut('tab-a')).toBe(false);
+    const ok = makeHarness();
+    expect(ok.controller.open(request('tab-a'))).toBe(true);
+  });
+
+  // 测试价值
   // - 生产入口与可观察结果:任务页签合并回侧栏后,窗口只剩全局页签时 getAssignment 的 sessionId
   //   为 null,另一任务的页签可以搬进这扇窗,而不是被旧任务绑定挡在门外新开一扇。
   // - Bug / 规则依据:review「最后一个任务页签离开后窗口仍绑旧任务」。

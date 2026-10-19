@@ -157,13 +157,13 @@ export class SidebarTabWindowsController {
   /**
    * 把页签弹出到独立窗口。已弹出则只聚焦。指定 targetWindowId 且该窗口能接(同一
    * 任务或任一方是全局)→ 搬进去;否则新开一扇:优先消费预热的 spare,没有时冷建
-   * (首份内容前不显示,超时展示 Loading 壳)。
+   * (首份内容前不显示,超时展示 Loading 壳)。返回 false = 没能开出窗口(已销毁 / 创建失败)。
    */
-  open(request: SidebarTabWindowOpenRequest): void {
-    if (this.disposed) return;
+  open(request: SidebarTabWindowOpenRequest): boolean {
+    if (this.disposed) return false;
     if (this.tabToWindow.has(request.tabId)) {
       this.focus(request.tabId);
-      return;
+      return true;
     }
     const target = request.targetWindowId ? this.slots.get(request.targetWindowId) : undefined;
     if (target?.assignment && !target.win.isDestroyed() && this.canHost(target, request)) {
@@ -175,10 +175,11 @@ export class SidebarTabWindowsController {
         tabId: request.tabId,
         windowId: target.assignment.windowId,
       });
-      return;
+      return true;
     }
     const slot = this.takeSpare() ?? this.createSlot();
-    if (!slot) return;
+    // 窗口没建出来:告诉调用方失败,它才能不释放浏览器 webview / 不记窗口放置。
+    if (!slot) return false;
     const windowId = `w${++this.windowSeq}`;
     slot.assignment = {
       windowId,
@@ -203,6 +204,7 @@ export class SidebarTabWindowsController {
       sessionId: request.sessionId,
       prewarmed: slot.rendererReady,
     });
+    return true;
   }
 
   /** 窗口能否接下这个页签:全局页签哪里都能去;任务页签只进同任务或尚无任务的窗口。 */
