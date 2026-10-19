@@ -85,6 +85,8 @@ export interface ProviderShareReshareView {
 }
 
 export interface ProviderShareMemberView extends ProviderShareMember {
+  /** 分享者给这个成员设置的备注；只用于管理页，不向受邀者公开。旧电脑可能缺省。 */
+  note?: string | null;
   lastUsedAt: number | null;
   runningTasks: number;
   models: ProviderShareModelUsageView[];
@@ -199,6 +201,7 @@ export type ProviderShareCommand =
   | { action: 'create-link'; providerId: string }
   | { action: 'approve' | 'reject'; requestId: string }
   | { action: 'set-member'; memberId: string; status: 'pause' | 'resume' | 'remove' }
+  | { action: 'set-member-note'; memberId: string; note: string }
   /** 转分享：同意或拒绝(拒绝已同意的 = 撤回)。 */
   | { action: 'reshare-decide'; id: string; decision: 'approve' | 'reject' }
   | { action: 'received' }
@@ -228,6 +231,7 @@ export interface ProviderShareCommandResult {
   approve: { ok: true };
   reject: { ok: true };
   'set-member': { ok: true };
+  'set-member-note': { ok: true };
   'reshare-decide': { ok: true };
   received: ProviderShareReceived[];
   'received-snapshot': ProviderShareReceivedSnapshot;

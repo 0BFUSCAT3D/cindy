@@ -277,6 +277,17 @@
         "toastRejected": "{{name}}님의 요청을 거절했습니다",
         "toastRevoked": "{{name}}님에 대한 동의를 철회했습니다. 실행 중인 세션은 중지되었습니다",
         "listTitle": "{{owner}}님의 제공자 그룹을 통해 사용"
+      },
+      "memberNote": {
+        "add": "메모 설정",
+        "edit": "메모 수정",
+        "title": "사용자 메모 설정",
+        "label": "메모",
+        "username": "사용자 이름: {{name}}",
+        "hint": "최대 {{count}}자. 비워 두면 삭제됩니다. 나에게만 표시됩니다.",
+        "save": "메모 저장",
+        "saving": "메모 저장 중…",
+        "saveFailed": "메모를 저장할 수 없습니다"
       }
     },
     "toast": {
