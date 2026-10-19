@@ -233,6 +233,25 @@ describe('remote connection pool', () => {
     }
   });
 
+  // PR #6483 第四轮：占位随任务注销一起消失，对方的旧 run 却还占着名额。
+  it('keeps a held old run counted after its task leaves the pool, until the provider reclaims it', async () => {
+    vi.useFakeTimers();
+    try {
+      const pool = new RemoteConnectionPool({ idleMinutes: () => 10, now: () => now, checkMs: 60 * MINUTE, closeRetryMs: 2_000, closeHoldMs: 3 * MINUTE });
+      const stuck = member('stuck', now - 60 * MINUTE);
+      stuck.occupied = false;
+      const leave = pool.add(stuck);
+      pool.holdAfterFailedClose(stuck, async () => { throw new Error('link down'); });
+      leave();
+      expect(pool.occupied()).toBe(1);
+      await vi.advanceTimersByTimeAsync(3 * MINUTE);
+      expect(pool.occupied()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('checks the watermark periodically while connections are registered', async () => {
     vi.useFakeTimers();
     try {
@@ -989,6 +1008,34 @@ describe('remote connection pool with a real host', () => {
       expect(opens).toBe(1);
       expect(dropped).toBeLessThanOrEqual(3);
     }
+  });
+
+  it('still counts the old run of a task closed while its release close was undelivered, then drops it once closed', async () => {
+    limits = { perDevice: 2, total: 64 };
+    const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, checkMs: 3_600_000, closeRetryMs: 50 });
+    const a = await start(pool);
+    await ask(a, watch(a), 'hello');
+    await sleep(5);
+    const b = await start(pool);
+    await ask(b, watch(b), 'hello');
+    let dropped = false;
+    intercept = (request) => {
+      if (request.op !== 'close' || dropped) return undefined;
+      dropped = true;
+      throw new Error('[DEVICE_LINK_TIMEOUT] link down');
+    };
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    // 占位期间关掉任务 a：对方的旧 run 还在。
+    await a.close({ reason: 'navigation' });
+    expect(host.limitUsage().total).toBe(2);
+    await sleep(5);
+    opens = 0;
+    await start(pool);
+    // 仍按 a 的旧 run 占着算：打开前先让了 b，只开一次，没有撞上限。
+    expect(opens).toBe(1);
+    // 重发的 close 送到后，对方结束 a 的旧 run，本机也不再占位。
+    await vi.waitFor(() => expect(host.limitUsage().total).toBe(1));
+    await vi.waitFor(() => expect(pool.occupied()).toBe(1));
   });
 
   it('gives up a release once a send has started', async () => {

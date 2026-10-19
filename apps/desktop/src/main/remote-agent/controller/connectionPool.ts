@@ -60,7 +60,10 @@ export interface RemoteConnectionPoolOptions {
 
 export class RemoteConnectionPool {
   private readonly members = new Set<PooledRemoteConnection>();
-  /** 让出时 close 没送到、对方可能还占着名额的连接 → 结束占位、再发一次 close。 */
+  /**
+   * 让出时 close 没送到、对方可能还占着名额的旧 run → 结束占位、再发一次 close。占位独立于任务存在：
+   * 任务关闭或归档(注销)后照样占着，直到再发成功或过了对方的回收期。
+   */
   private readonly held = new Map<PooledRemoteConnection, { end: () => void; retryClose: () => Promise<unknown> }>();
   private maxRuns: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -80,7 +83,6 @@ export class RemoteConnectionPool {
       (this.timer as { unref?: () => void }).unref?.();
     }
     return () => {
-      this.held.get(member)?.end();
       this.members.delete(member);
       if (this.members.size === 0 && this.timer) {
         clearInterval(this.timer);
@@ -103,11 +105,9 @@ export class RemoteConnectionPool {
    * 结束的旧 run 照样算(对方要到新进程启动时才替换同一任务的旧实例，打开时的名额检查会算上它)。
    */
   occupied(except?: PooledRemoteConnection): number {
-    let count = 0;
-    for (const member of this.members) {
-      if (member !== except && member.occupiesSlot()) count += 1;
-      if (this.held.has(member)) count += 1;
-    }
+    // 占位中的旧 run 都算，包括任务已注销的。
+    let count = this.held.size;
+    for (const member of this.members) if (member !== except && member.occupiesSlot()) count += 1;
     return count;
   }
 
