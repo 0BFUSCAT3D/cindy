@@ -17,6 +17,9 @@ export function useCompanionTaskSession(deviceId: string, sessionId: string | nu
   // without waiting for the parent delegation list or adding another list-wide fetch.
   const query = useRemoteCompanionQuery<RemoteSession>(deviceId, 'local-db:sessions:get', [sessionId], {
     enabled: readable && !cached,
+    // Off-list rows do not receive the list store's title patches. Keep their
+    // fallback fresh while focused; the shared query pauses reads in background.
+    refreshIntervalMs: 30_000,
   });
   const session = readable
     ? cached ?? (query.value?.id === sessionId ? query.value : null)

@@ -204,19 +204,32 @@ it('opens the task from the whole card and keeps stop as a small action while it
   expect(node.textContent).toContain('devices.companions.stopTask');
 });
 
-it('reads the original task outside the loaded list and keeps renewed running state after a completed delegation', async () => {
+// Review regression: a one-shot off-list title masked later renames indefinitely.
+// Unit: the rendered card must refresh that title, then stop extra reads once listed.
+it('refreshes an off-list task title and follows the list when a completed task runs again', async () => {
+  vi.useFakeTimers();
+  let title = 'Updated task title';
   h.invoke.mockImplementation(async (_device, channel) => channel === 'local-db:sessions:get'
-    ? { id: 'child', title: 'Updated task title' }
+    ? { id: 'child', title }
     : { ok: true, delegations: [{ id: 'job', childSessionId: 'child', status: 'completed', title: 'Old title' }] });
   await render();
   expect(node.textContent).toContain('Updated task title');
   expect(node.textContent).toContain('devices.companions.status.completed');
+  title = 'Renamed off-list task';
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(node.textContent).toContain('Renamed off-list task');
+  expect(node.textContent).not.toContain('Updated task title');
   await act(async () => {
     remoteSessionStore.setDeviceSessions('home', 'Mac', [{ id: 'child', title: 'Updated task title', status: 'active' } as RemoteSession]);
     remoteSessionStore.applyRemotePush('home', SESSION_ACTIVITY_CHANNEL, { sessionId: 'child', phase: 'running' });
   });
   expect(node.textContent).toContain('devices.companions.status.running');
   expect(node.textContent).not.toContain('devices.companions.status.completed');
+  const taskReads = () => h.invoke.mock.calls.filter((call) => call[1] === 'local-db:sessions:get').length;
+  const reads = taskReads();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(taskReads()).toBe(reads);
+  expect(node.textContent).toContain('Updated task title');
 });
 
 it('does not borrow another computer\'s task identity or activity for the same id', async () => {
