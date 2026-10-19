@@ -117,6 +117,7 @@ import { SessionHandoffCard } from './SessionHandoffCard';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
 import { ImageLightbox } from './ImageLightbox';
+import { splitQuestionReferences } from '@cindy/maker-shared/interaction';
 import { useImageClipboard } from './useImageClipboard';
 import { ImageHoverPreview } from './ImageHoverPreview';
 import { ImageMissingPlaceholder } from './ImageMissingPlaceholder';
@@ -1432,6 +1433,35 @@ async function activateResolvedLocalTarget(
     name: basename(target.absPath),
     ...(target.line !== undefined ? { line: target.line } : {}),
   });
+}
+
+/** Evidence in a question uses the same verified targets and previews as messages. */
+export function QuestionReferenceText({ text }: { text: string }) {
+  const ctx = useChatSessionFile();
+  const [image, setImage] = useState<string | null>(null);
+  const [file, setFile] = useState<{ path: string; name: string; line?: number } | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  return <>
+    {splitQuestionReferences(text).map((part, index) => part.href ? (
+      <MarkdownTargetLink
+        key={index}
+        href={part.href}
+        workingDir={ctx.workingDir}
+        sessionId={ctx.sessionId}
+        remoteMediaOrigin={toRemoteMediaOrigin(ctx.origin, ctx.workingDir)}
+        isStreaming={false}
+        allowPrivilegedLinks
+        fromBarePath
+        anchorProps={{}}
+        setLightboxSrc={setImage}
+        setTextLightboxFile={setFile}
+        setModelLightboxPath={setModel}
+      >{part.text}</MarkdownTargetLink>
+    ) : part.text)}
+    {image && <ImageLightbox src={image} onClose={() => setImage(null)} />}
+    {file && <TextLightbox filePath={file.path} fileName={file.name} initialLine={file.line} onClose={() => setFile(null)} />}
+    {model && <ModelLightbox source={{ kind: 'local', absPath: model }} onClose={() => setModel(null)} />}
+  </>;
 }
 
 function MarkdownTargetLink({

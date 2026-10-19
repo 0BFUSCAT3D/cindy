@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  splitQuestionReferences,
   asyncQuestionNeedsSupplement,
   formatAsyncQuestionSupplement,
   buildAskQuestionProgressSummary,
@@ -39,6 +40,30 @@ import {
 } from '../interaction.js';
 
 describe('interaction shared model', () => {
+  // Unit regression: existing question presentation tests only covered prose.
+  // Bug: review questions hid the only way to open their evidence.
+  // exercise the shared presentation entry, including punctuation and unsafe links.
+  it('finds question evidence without consuming prose or unsupported link targets', () => {
+    expect(splitQuestionReferences('请查看 sidebar-layout-v1.html 或 https://example.com/view。再确认。')).toEqual([
+      { text: '请查看 ' },
+      { text: 'sidebar-layout-v1.html', href: 'sidebar-layout-v1.html' },
+      { text: ' 或 ' },
+      { text: 'https://example.com/view', href: 'https://example.com/view' },
+      { text: '。再确认。' },
+    ]);
+    expect(splitQuestionReferences('[查看原型](<docs/my prototype.html>) 与 `src/app.ts:42`')).toEqual([
+      { text: '查看原型', href: 'docs/my prototype.html' },
+      { text: ' 与 ' },
+      { text: 'src/app.ts:42', href: 'src/app.ts:42' },
+    ]);
+    expect(splitQuestionReferences('[坏链接](javascript:evil.html) data:evil.html')).toEqual([
+      { text: '[坏链接](javascript:evil.html) data:evil.html' },
+    ]);
+    expect(splitQuestionReferences('请查看 页面.html:42 和 docs/设计稿/index.html')).toEqual([
+      { text: '请查看 ' }, { text: '页面.html:42', href: '页面.html:42' },
+      { text: ' 和 ' }, { text: 'docs/设计稿/index.html', href: 'docs/设计稿/index.html' },
+    ]);
+  });
   it('keeps original questions attached to late answers without including skipped questions', () => {
     expect(formatAsyncQuestionSupplement([{ question: 'Scope?\nDetails?', header: 'Scope' }, { question: 'Skipped?' }],
       { Scope: 'Mobile too', 'Skipped?': '' })).toBe('> Scope?\n> Details?\n\nMobile too');

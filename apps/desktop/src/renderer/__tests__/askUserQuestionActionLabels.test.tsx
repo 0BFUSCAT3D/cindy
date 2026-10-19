@@ -6,7 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
 import type { PendingAskUser } from '@/lib/makerChatStore';
+import { _clearSmartResolveCache } from '@/lib/localPathResolver';
 import { AskUserQuestionPrompt } from '../components/new-chat/AskUserQuestionPrompt';
+
+const links = vi.hoisted(() => ({ html: vi.fn(), url: vi.fn() }));
+vi.mock('@/components/chat/useOpenWithMenu', async (original) => ({
+  ...await original<typeof import('@/components/chat/useOpenWithMenu')>(),
+  openHtmlFileByPreference: links.html,
+  activateMessageUrl: links.url,
+}));
 
 beforeEach(async () => {
   await i18n.changeLanguage('en');
@@ -34,6 +42,42 @@ function renderAskUser(
 }
 
 describe('AskUserQuestionPrompt action labels', () => {
+  // Unit regression: the existing answer tests never opened evidence in a title.
+  // Minimal input: a bare HTML filename + URL. The real prompt/resolver must
+  // open the correct origin without answering, and preserve the original answer key.
+  it.each([null, 'ssh-host'])('opens verified question evidence for origin %s without answering', async (remoteHostId) => {
+    _clearSmartResolveCache();
+    links.html.mockClear();
+    links.url.mockImplementation((event) => event.preventDefault());
+    const resolvePathBatch = vi.fn(async ({ hrefs }: { hrefs: string[] }) => Object.fromEntries(hrefs.map((href) => [href,
+      href === 'sidebar-layout-v1.html'
+        ? { status: 'unique', candidates: ['/repo/sidebar-layout-v1.html'], kind: 'file' }
+        : { status: 'none', candidates: [] },
+    ])));
+    const chatStat = vi.fn(async ({ absPath }: { absPath: string }) => ({
+      verdict: absPath.endsWith('missing.html') ? 'nonfile' : 'file',
+    }));
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { resolvePathBatch, fileBrowser: { chatStat } } });
+    const question = '请查看 sidebar-layout-v1.html 或 https://example.com/view。 missing.html';
+    const onAnswer = vi.fn();
+    const view = render(createElement(AskUserQuestionPrompt, {
+      sessionId: 'evidence', workingDir: '/repo', remoteHostId,
+      pending: { requestId: 'review', questions: [{ question, options: [{ label: 'Accept' }] }] },
+      onAnswer, viewerState: 'expanded', onViewerStateChange: vi.fn(), draft: null, onDraftChange: vi.fn(),
+    }));
+    const file = await view.findByRole('link', { name: 'sidebar-layout-v1.html' });
+    fireEvent.click(file);
+    fireEvent.keyDown(file, { key: 'Enter' });
+    expect(links.html).toHaveBeenCalledWith('evidence', '/repo/sidebar-layout-v1.html', expect.any(Function),
+      expect.objectContaining({ workingDir: '/repo', origin: remoteHostId ? { kind: 'ssh', remoteHostId } : { kind: 'local' } }));
+    fireEvent.click(view.getByRole('link', { name: 'https://example.com/view' }));
+    expect(links.url).toHaveBeenCalledWith(expect.anything(), 'evidence', 'https://example.com/view', expect.any(Function));
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(view.queryByRole('link', { name: 'missing.html' })).toBeNull();
+    if (remoteHostId) expect(resolvePathBatch).not.toHaveBeenCalled();
+    fireEvent.click(view.getByText('Accept'));
+    expect(onAnswer).toHaveBeenCalledWith('review', { [question]: 'Accept' });
+  });
   it('distinguishes updating an answer from keeping it when revisiting a middle question', async () => {
     const view = renderAskUser({
       requestId: 'req-revisit',
