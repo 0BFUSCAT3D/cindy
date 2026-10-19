@@ -38,7 +38,6 @@ import {
   isBrokerEligibleGhostId,
   isFirstPartyHostPrivilegeGhostId,
   isValidGhostNetworkHostPattern,
-  layoutWithGhostPanel,
   parseGhostPartition,
   resolveGhostManifestLocale,
   validateGhostManifest,
@@ -47,7 +46,6 @@ import {
   withGhostResolvedLocale,
   type GhostManifest,
 } from '../ghost';
-import { createDefaultLayout, type SplitNode } from '../layoutTree';
 
 /** 一份全绿的清单基底(意识唯一形态:芯片,2026-07-12 单形态定案),单点破坏它来测各字段规则。 */
 function goodManifest(): Record<string, unknown> {
@@ -1835,83 +1833,6 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
       false,
     );
   });
-});
-
-describe('ghost · layoutWithGhostPanel(装入即停靠)', () => {
-  const manifest = (): GhostManifest => ({
-    schemaVersion: 2,
-    id: 'hello',
-    name: 'Hello 意识',
-    version: '1.0.0',
-    kind: 'chip',
-    entry: 'main.js',
-    slots: ['panel'],
-    panel: { html: 'panel.html', minWidth: 240, defaultFraction: 0.18 },
-  });
-
-  it('新装缺省 position:停在主聊天窗左侧(right 退役,2026-07-25 定案)', () => {
-    const next = layoutWithGhostPanel(createDefaultLayout(), manifest());
-    expect(next).not.toBeNull();
-    const split = next!.content as SplitNode;
-    expect(split.children.map((c) => (c.node.type === 'pane' ? c.node.panelKind : '?'))).toEqual([
-      'ghost:hello',
-      'chat-main',
-      'right-tabs',
-    ]);
-    const pane = split.children[0];
-    expect(pane.fraction).toBeCloseTo(0.18, 5);
-    expect(pane.node.type === 'pane' && pane.node.minWidth).toBe(240);
-    // 全体份额仍归一
-    expect(split.children.reduce((s, c) => s + c.fraction, 0)).toBeCloseTo(1, 5);
-  });
-
-  it("position: 'left' → 停在主聊天窗左侧(chat-main 之前)", () => {
-    const m = manifest();
-    m.panel!.position = 'left';
-    const next = layoutWithGhostPanel(createDefaultLayout(), m);
-    const split = next!.content as SplitNode;
-    expect(split.children.map((c) => (c.node.type === 'pane' ? c.node.panelKind : '?'))).toEqual([
-      'ghost:hello',
-      'chat-main',
-      'right-tabs',
-    ]);
-  });
-
-  it('重装:树上已有同 kind 的 pane → 返回 null(位置记忆保留,原位复活)', () => {
-    const first = layoutWithGhostPanel(createDefaultLayout(), manifest());
-    expect(layoutWithGhostPanel(first!, manifest())).toBeNull();
-  });
-
-  it('没声明面板的意识 → null,树不动', () => {
-    const m = manifest();
-    delete m.panel;
-    expect(layoutWithGhostPanel(createDefaultLayout(), m)).toBeNull();
-  });
-
-  it('清单未给 defaultFraction → 默认 0.2', () => {
-    const m = manifest();
-    delete m.panel!.defaultFraction;
-    const next = layoutWithGhostPanel(createDefaultLayout(), m);
-    // 缺省 position=left,面板在 chat-main 之前(下标 0)。
-    expect((next!.content as SplitNode).children[0].fraction).toBeCloseTo(0.2, 5);
-  });
-
-  it("position: 'tab' → null,不进布局树(页签形态由右侧栏承载)", () => {
-    const m = manifest();
-    m.panel = { html: 'panel.html', position: 'tab' };
-    expect(layoutWithGhostPanel(createDefaultLayout(), m)).toBeNull();
-  });
-  it('企业实例用 storage part 作为 panelKind,不与 root 同名面板撞车', () => {
-    const m = manifest();
-    const rootLayout = layoutWithGhostPanel(createDefaultLayout(), m);
-    expect(rootLayout).not.toBeNull();
-    const next = layoutWithGhostPanel(rootLayout!, m, '_ns__acme__hello');
-    expect(next).not.toBeNull();
-    const split = next!.content as SplitNode;
-    const kinds = split.children.map((c) => (c.node.type === 'pane' ? c.node.panelKind : '?'));
-    expect(kinds).toEqual(expect.arrayContaining(['ghost:hello', 'ghost:_ns__acme__hello', 'chat-main']));
-  });
-
 });
 
 describe('ghost · keywords(语义触发扩展词表)', () => {

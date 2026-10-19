@@ -88,6 +88,7 @@ import {
   addGlobalPluginTab,
   getActiveGlobalTabId,
 } from '../globalTabs';
+import { __resetTabGroupsForTest, getTabGroup } from '../tabGroups';
 import { toast } from '@/lib/toast';
 import { writePanelCollapsed } from '@/layout/collapsePrefs';
 import { CHROME_ACTIONS_GEOMETRY } from '@/components/layout/chromeActionsGeometry';
@@ -311,6 +312,7 @@ describe('RightSidebarShell empty state', () => {
     _resetNativePopupTabsForTests();
     __resetSidebarTabWindowsStateForTest();
     __resetGlobalTabsForTest();
+    __resetTabGroupsForTest();
     window.localStorage.clear();
     installedGhostsMock.list = [];
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
@@ -396,6 +398,68 @@ describe('RightSidebarShell empty state', () => {
     await waitFor(() => expect(screen.queryByTestId('right-sidebar-pinned-tabs')).toBeNull());
     expect(screen.getByText('rightSidebar.tabs.empty.title')).toBeTruthy();
     await waitFor(() => expect(onAllTabsClosed).toHaveBeenCalledOnce());
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:同一任务的右侧组与左侧组两个 Shell;可观察的是页签右键
+  //   「移到左侧」后从右侧条消失、出现在左侧条并被选中(组归属落 localStorage),在左侧
+  //   组点它仍写任务级激活位;「关闭其他」只作用于本组。
+  // - Bug / 规则依据:页签组模型——页签可移到聊天区任一边,两边投影同一任务桶不串。
+  // - 现有覆盖缺口:Shell 此前只有单组。
+  // - 最小失败输入:两个任务页签 + 一次「移到左侧」。
+  // - tier:unit(jsdom,进程内 store + localStorage 组归属)。
+  it('moves a task tab between groups; each group projects only its own tabs', async () => {
+    tabsIpc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: null },
+        { id: 'tab-web', kind: 'web-browser', state: null },
+      ],
+      activeTabId: 'tab-files',
+    });
+    const shellProps = {
+      sessionId: 's1',
+      workdir: '/tmp/repo',
+      remoteHostId: null,
+      isMac: false,
+      subagentsAvailable: false,
+    };
+    const right = render(createElement(RightSidebarShell, { ...shellProps, groupId: 'right' }));
+    await waitFor(() => expect(getBucket('s1').hydrated).toBe(true));
+    const left = render(createElement(RightSidebarShell, { ...shellProps, groupId: 'left' }));
+    const stripOf = (view: ReturnType<typeof render>) =>
+      view.container.querySelector('[data-testid="right-sidebar-tab-strip"]')!;
+    expect(stripOf(right).textContent).toContain('rightSidebar.tabs.kinds.browser');
+    expect(stripOf(left).textContent).not.toContain('rightSidebar.tabs.kinds.browser');
+
+    // 右键浏览器页签 →「移到左侧」。
+    const webPill = right.getByText('rightSidebar.tabs.kinds.browser').closest('.group')!;
+    fireEvent.contextMenu(webPill);
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-move-left'));
+    expect(getTabGroup('tab-web')).toBe('left');
+    await waitFor(() =>
+      expect(stripOf(left).textContent).toContain('rightSidebar.tabs.kinds.browser'),
+    );
+    expect(stripOf(right).textContent).not.toContain('rightSidebar.tabs.kinds.browser');
+    // 左侧组里它是激活页签(组内记忆),右侧组仍显示任务级激活页签。
+    expect(stripOf(left).querySelector('.group')?.className).toContain('font-medium');
+    expect(
+      right.getByText('rightSidebar.tabs.kinds.fileBrowser').closest('.group')?.className,
+    ).toContain('font-medium');
+
+    // 在左侧组点它:任务级激活位照常落库。
+    tabsIpc.setActive.mockClear();
+    fireEvent.click(left.getByText('rightSidebar.tabs.kinds.browser'));
+    await waitFor(() => expect(tabsIpc.setActive).toHaveBeenCalled());
+    expect(getBucket('s1').activeTabId).toBe('tab-web');
+
+    // 右侧组「关闭其他」只关本组的页签(本组只剩文件页签,无其它可关)。
+    fireEvent.contextMenu(right.getByText('rightSidebar.tabs.kinds.fileBrowser').closest('.group')!);
+    const closeOthers = screen
+      .getByText('rightSidebar.tabs.contextMenu.closeOthers')
+      .closest('[role="menuitem"]')!;
+    expect(closeOthers.getAttribute('data-disabled')).not.toBeNull();
+    left.unmount();
+    right.unmount();
   });
 
   it.each([

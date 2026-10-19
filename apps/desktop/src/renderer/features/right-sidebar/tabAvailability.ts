@@ -100,3 +100,42 @@ export function mergeAvailableTabOrder(
     isUnavailableTab(tab, availability) ? tab.id : (orderedVisibleIds[index++] ?? tab.id),
   );
 }
+
+export interface TabAvailabilityInput {
+  installedGhosts: readonly InstalledGhost[];
+  remoteHostId: string | null;
+  /** device-link 会话归属:null = 已确认本机,undefined = 尚未解析。 */
+  deviceLinkDeviceId?: string | null;
+  /** Subagents 资格三态:undefined = 会话行仍在加载,先不把它折成"不可用"。 */
+  subagentsAvailable?: boolean;
+  hiddenTabIds?: ReadonlySet<string>;
+}
+
+export interface TabAvailabilities {
+  /** 任务页签的可用性:远程 / 他机会话关闭本地插件能力。 */
+  session: RightSidebarTabAvailability;
+  /** 全局页签(插件视图)的可用性:只看本机已装插件,不随任务归属变化。 */
+  global: RightSidebarTabAvailability;
+}
+
+/**
+ * Shell 与页签组在场判定共用的可用性构造:两处必须用同一口径算"哪些页签可见",
+ * 否则会出现「组被判定为有页签而显示,Shell 里却一个都不投影」的空组。
+ */
+export function buildTabAvailabilities(input: TabAvailabilityInput): TabAvailabilities {
+  const eligibilityKnown = typeof input.subagentsAvailable === 'boolean';
+  return {
+    session: {
+      installedGhosts:
+        input.remoteHostId || input.deviceLinkDeviceId !== null ? [] : input.installedGhosts,
+      subagentsAvailable: input.subagentsAvailable === true || !eligibilityKnown,
+      hiddenTabIds: input.hiddenTabIds,
+    },
+    global: {
+      installedGhosts: [],
+      subagentsAvailable: true,
+      hiddenTabIds: input.hiddenTabIds,
+      pluginViewGhosts: input.installedGhosts,
+    },
+  };
+}

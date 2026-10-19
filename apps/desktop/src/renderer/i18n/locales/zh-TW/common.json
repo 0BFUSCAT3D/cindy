@@ -8014,7 +8014,8 @@
         "close": "關閉",
         "closeOthers": "關閉其他",
         "closeAll": "關閉所有",
-        "openInWindow": "在獨立視窗中開啟"
+        "openInWindow": "在獨立視窗中開啟",
+        "moveTo": "移到{{target}}"
       },
       "empty": {
         "eyebrow": "右側欄",
@@ -8036,6 +8037,12 @@
         "addMoreHint": "可透過頂部 + 按鈕選擇更多面板型別"
       },
       "placeholderHint": "{{kind}} — 內容將在後續階段加入"
+    },
+    "tabGroups": {
+      "left": "左側",
+      "right": "右側欄",
+      "top": "上方",
+      "bottom": "下方"
     },
     "fileBrowser": {
       "noWorkdir": "當前任務未關聯本地工作目錄，檔案瀏覽器不可用",

@@ -29,6 +29,7 @@ import { closeNativePopupForTab } from './lib/nativePopupTabs';
 import { isTabHostedHere } from './lib/tabHosting';
 import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
 import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
+import { clearTabGroup, setTabGroup, type TabGroupId } from './tabGroups';
 import type { TabKindId, TabState } from './types';
 import type { RsbWindowTabSnapshot } from '../../../shared/rightSidebarWindow';
 import type { SidebarTabReturnSnapshot } from '../../../shared/sidebarTabWindow';
@@ -776,12 +777,13 @@ export async function ensureHydrated(sessionId: string): Promise<void> {
  * `opts.activate === false`:追加 tab 但**不抢激活位**(cache 与 DB 的 active 都
  * 保持原样)。钉住面板的跨会话自动补挂用 —— 用户切到某会话时补挂的页签不该
  * 把他正看着的 tab 顶掉。默认 true 维持既有语义(用户手动加 tab = 看它)。
+ * `opts.groupId`:新页签落在哪个页签组(缺省右侧组);乐观插入前就登记,首帧不闪组。
  */
 export async function addTab(
   sessionId: string,
   kind: TabKindId,
   initialState: unknown = null,
-  opts?: { onOptimisticAdd?: (tabId: string) => void; activate?: boolean },
+  opts?: { onOptimisticAdd?: (tabId: string) => void; activate?: boolean; groupId?: TabGroupId },
 ): Promise<TabState> {
   const activate = opts?.activate !== false;
   const prev = getBucket(sessionId);
@@ -795,6 +797,7 @@ export async function addTab(
   const id = makeTabId();
   const position = prev.tabs.length;
   const newTab: TabState = { id, kind, state: initialState };
+  if (opts?.groupId) setTabGroup(id, opts.groupId);
   setBucket(sessionId, {
     tabs: [...prev.tabs, newTab],
     activeTabId: activate ? id : prev.activeTabId,
@@ -869,6 +872,7 @@ export async function addOrFocusSingletonTab(
   sessionId: string,
   kind: TabKindId,
   initialState: unknown = null,
+  opts?: { groupId?: TabGroupId },
 ): Promise<TabState> {
   const bucket = getBucket(sessionId);
   const existing = bucket.tabs.find((t) => t.kind === kind);
@@ -878,7 +882,7 @@ export async function addOrFocusSingletonTab(
     }
     return existing;
   }
-  return addTab(sessionId, kind, initialState);
+  return addTab(sessionId, kind, initialState, opts);
 }
 
 /**
@@ -982,6 +986,7 @@ function forgetClosedTab(sessionId: string, tabId: string, kind: TabKindId): voi
   const key = tabStateWriteKey(sessionId, tabId);
   patchRevisions.delete(key);
   persistedStateBaselines.delete(key);
+  clearTabGroup(tabId);
   if (kind === 'web-browser') browserWebviewPool.release(tabId);
   unmarkPopupSpawnedTab(tabId);
   closeNativePopupForTab(tabId);

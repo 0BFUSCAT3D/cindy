@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { AddTabDropdown } from './AddTabDropdown';
 import { getTabKind, hydrateTabState } from './registry';
+import { TAB_GROUP_IDS, tabGroupLabelKey, type TabGroupId } from './tabGroups';
 import type { BuiltinTabKindId, TabKindId, TabState } from './types';
 
 interface TabBarProps {
@@ -77,6 +78,10 @@ interface TabBarProps {
   onDetach?: () => void;
   /** 页签右键菜单「在独立窗口中打开」:作用于被点的页签。 */
   onDetachTab?: (tabId: string) => void;
+  /** 本条属于哪个页签组;右键菜单「移到 …」列出其余各组。 */
+  groupId?: TabGroupId;
+  /** 页签右键菜单「移到 左侧 / 右侧栏 / 上方 / 下方」。不传 = 不显示。 */
+  onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
   /** 本条横带是否作为**窗口**拖拽区(B3):主窗口内嵌形态传 false —— 空白处是
    *  "拖面板"手势面(窗口拖拽区收不到鼠标事件,二者物理互斥;拖窗走左栏顶行);
    *  detached 子窗口等其它宿主不传,默认 true 维持经典拖窗行为。 */
@@ -99,6 +104,9 @@ interface TabStripProps {
   onCloseAll?: () => void;
   /** Tab pill 右键菜单「在独立窗口中打开」。 */
   onDetachTab?: (tabId: string) => void;
+  /** 见 TabBarProps.groupId / onMoveTab。 */
+  groupId?: TabGroupId;
+  onMoveTab?: (tabId: string, groupId: TabGroupId) => void;
   className?: string;
   /**
    * pill 视觉变体:
@@ -213,6 +221,8 @@ export function TabBar({
   onCloseAll,
   onDetach,
   onDetachTab,
+  groupId,
+  onMoveTab,
   chromeWindowDrag = true,
   subagentsAvailable = false,
 }: TabBarProps) {
@@ -239,6 +249,8 @@ export function TabBar({
         onCloseOthers={onCloseOthers}
         onCloseAll={onCloseAll}
         onDetachTab={onDetachTab}
+        groupId={groupId}
+        onMoveTab={onMoveTab}
         addButtonWrapperClassName="h-[36px]"
         addButtonClassName="mt-[3px]"
         subagentsAvailable={subagentsAvailable}
@@ -306,6 +318,8 @@ export function TabStrip({
   onCloseOthers,
   onCloseAll,
   onDetachTab,
+  groupId = 'right',
+  onMoveTab,
   className,
   pillVariant = 'flush',
   addButtonWrapperClassName,
@@ -501,6 +515,7 @@ export function TabStrip({
             open={dropdownOpen}
             anchorRef={addButtonWrapperRef}
             sessionId={sessionId}
+            groupId={groupId}
             onClose={closeDropdown}
             onSelect={onAdd}
             existingKinds={existingKinds}
@@ -569,6 +584,22 @@ export function TabStrip({
                   {t('rightSidebar.tabs.contextMenu.closeAll')}
                 </DropdownMenuItem>
               )}
+              {onMoveTab &&
+                TAB_GROUP_IDS.filter((target) => target !== groupId).map((target) => (
+                  <DropdownMenuItem
+                    key={target}
+                    data-testid={`right-sidebar-tab-move-${target}`}
+                    onClick={() => {
+                      const id = contextMenu.tabId;
+                      closeContextMenu();
+                      onMoveTab(id, target);
+                    }}
+                  >
+                    {t('rightSidebar.tabs.contextMenu.moveTo', {
+                      target: t(tabGroupLabelKey(target)),
+                    })}
+                  </DropdownMenuItem>
+                ))}
               {onDetachTab && (
                 <DropdownMenuItem
                   onClick={() => {

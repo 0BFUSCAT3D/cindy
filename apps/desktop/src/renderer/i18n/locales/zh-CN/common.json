@@ -8014,7 +8014,8 @@
         "close": "关闭",
         "closeOthers": "关闭其他",
         "closeAll": "关闭所有",
-        "openInWindow": "在独立窗口中打开"
+        "openInWindow": "在独立窗口中打开",
+        "moveTo": "移到{{target}}"
       },
       "empty": {
         "eyebrow": "右侧栏",
@@ -8036,6 +8037,12 @@
         "addMoreHint": "可通过顶部 + 按钮选择更多面板类型"
       },
       "placeholderHint": "{{kind}} — 内容将在后续阶段加入"
+    },
+    "tabGroups": {
+      "left": "左侧",
+      "right": "右侧栏",
+      "top": "上方",
+      "bottom": "下方"
     },
     "fileBrowser": {
       "noWorkdir": "当前任务未关联本地工作目录，文件浏览器不可用",

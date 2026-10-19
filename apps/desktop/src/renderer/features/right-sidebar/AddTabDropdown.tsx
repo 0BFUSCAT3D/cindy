@@ -42,6 +42,7 @@ import { canonicalBotSessionId, useBotProfiles } from '@/features/bots/botStore'
 import { findBotProfileForSession } from '@/features/bots/botSessionOwners';
 import { sessionsStore } from '@/lib/sessionsStore';
 import { openBotWorkbenchTab } from './lib/openBotWorkbenchTab';
+import type { TabGroupId } from './tabGroups';
 import type { TabKindId, TabKindMenuMeta } from './types';
 
 const BOT_SECONDARY_KINDS = new Set<TabKindId>([
@@ -58,6 +59,8 @@ interface AddTabDropdownProps {
   anchorRef: React.RefObject<HTMLElement | null>;
   /** 当前会话。伙伴任务用来把工程面板从默认菜单里收掉。 */
   sessionId?: string | null;
+  /** 本菜单所属的页签组:插件分组里新加的全局页签直接落在这一组。缺省右侧组。 */
+  groupId?: TabGroupId;
   /** 锚点消失 / 面板收起时关闭(点外部与 Esc 由 DropdownMenu 根处理)。 */
   onClose: () => void;
   /** 选 kind。调用方负责真创建 tab + 关闭 dropdown。单例 kind 已存在时
@@ -135,6 +138,7 @@ export function AddTabDropdown({
   open,
   anchorRef,
   sessionId,
+  groupId,
   onClose,
   onSelect,
   existingKinds,
@@ -252,7 +256,7 @@ export function AddTabDropdown({
               label={entry.title}
               trailing={entry.open ? t('rightSidebar.tabs.menu.alreadyOpen') : undefined}
               onSelect={() => {
-                const tab = addGlobalPluginTab(entry.instanceId);
+                const tab = addGlobalPluginTab(entry.instanceId, { groupId });
                 if (tab) setActiveGlobalTabId(tab.id);
                 onClose();
               }}

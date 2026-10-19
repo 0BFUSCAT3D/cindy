@@ -9,7 +9,6 @@ import {
   type GhostLocale,
   type GhostManifestLocales,
 } from '@cindy/plugin-protocol';
-import { findSplitChildByPanelKind, insertRootSplitPane, type Layout } from './layoutTree';
 import { PLUGIN_STORAGE_PART_RE } from './pluginStoragePartPattern.js';
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from './locale';
 
@@ -2911,46 +2910,6 @@ export function ghostWebviewEntryPaths(manifest: GhostManifest): string[] {
     if (!paths.includes(p)) paths.push(p);
   }
   return paths;
-}
-
-/**
- * 装入带面板的意识后,把面板停进布局树(main 侧随 install 调用)。
- * - 树上已有同 kind 的 pane(重装)→ 返回 null:不动树,位置记忆保留、原位复活;
- * - 意识没声明面板 → null;
- * - position:'tab' → null:页签形态不进布局树,由插件页(GhostPagePanelHost)承载;
- * - 否则停在聊天区左侧,宽度占比/最小宽取清单声明。
- * 卸下时**不做**逆操作 —— 树数据保留正是"重装复活"的记忆来源(§6 规则 5)。
- */
-export function layoutWithGhostPanel(
-  layout: Layout,
-  manifest: GhostManifest,
-  instanceId: string = manifest.id,
-): Layout | null {
-  if (!manifest.panel) return null;
-  if (manifest.panel.position === 'tab') return null;
-  const kind = ghostPanelKind(instanceId);
-  if (findSplitChildByPanelKind(layout, kind)) return null;
-  // 停靠位置(相对主聊天窗):按 chat-main 的实际下标定插入点,不写死
-  // 序号(未来树形态变化不至于错位)。停靠恒在聊天区左侧(2026-07-25 Lizi
-  // 定案:right 退役,右侧留给右侧边栏;用户要右侧自己拖拽换位——已在树里
-  // 的 pane 是用户布局记忆,本函数只管首次装入,不搬动存量)。
-  const chatIndex =
-    layout.content.type === 'split'
-      ? layout.content.children.findIndex(
-          (c) => c.node.type === 'pane' && c.node.panelKind === 'chat-main',
-        )
-      : -1;
-  const index = chatIndex < 0 ? 0 : chatIndex;
-  const result = insertRootSplitPane(
-    layout,
-    {
-      id: `ghost-${instanceId}`,
-      panelKind: kind,
-      ...(manifest.panel.minWidth !== undefined ? { minWidth: manifest.panel.minWidth } : {}),
-    },
-    { index, fraction: manifest.panel.defaultFraction ?? 0.2 },
-  );
-  return result.applied ? result.layout : null;
 }
 
 export type ManifestValidation =

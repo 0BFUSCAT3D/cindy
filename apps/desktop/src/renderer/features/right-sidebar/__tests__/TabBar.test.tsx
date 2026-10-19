@@ -175,6 +175,44 @@ describe('TabStrip add menu · plugins group', () => {
   });
 });
 
+// 测试价值
+// - 生产入口与可观察结果:页签右键菜单的「移到 …」项;可观察的是列出除本组外的三个
+//   目标组、点选回调带目标组 id、未提供 onMoveTab(弹出窗口)时不出现。
+// - Bug / 规则依据:页签组模型——页签可移到聊天区左 / 上 / 下边。
+// - 现有覆盖缺口:右键菜单此前无用例。
+// - 最小失败输入:groupId='right' + 一个页签,右键。
+// - tier:unit(jsdom)。
+describe('TabStrip context menu · move to group', () => {
+  it('lists the other three groups and reports the chosen target', () => {
+    const onMoveTab = vi.fn();
+    render(
+      <TabStrip
+        tabs={TABS}
+        activeTabId={null}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={vi.fn()}
+        onAdd={vi.fn()}
+        groupId="right"
+        onMoveTab={onMoveTab}
+      />,
+    );
+    fireEvent.contextMenu(pillFor(LABEL_WEB));
+    expect(screen.queryByTestId('right-sidebar-tab-move-right')).toBeNull();
+    expect(screen.getByTestId('right-sidebar-tab-move-top')).toBeTruthy();
+    expect(screen.getByTestId('right-sidebar-tab-move-bottom')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('right-sidebar-tab-move-left'));
+    expect(onMoveTab).toHaveBeenCalledWith('tab-web', 'left');
+  });
+
+  it('offers no move items when the host does not support moving (popped-out window)', () => {
+    renderStrip();
+    fireEvent.contextMenu(pillFor(LABEL_FILE));
+    expect(screen.getByText('rightSidebar.tabs.contextMenu.close')).toBeTruthy();
+    expect(screen.queryByTestId('right-sidebar-tab-move-left')).toBeNull();
+  });
+});
+
 afterEach(() => cleanup());
 
 describe('TabStrip 中键关闭 tab', () => {

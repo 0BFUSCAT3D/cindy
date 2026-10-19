@@ -59,6 +59,8 @@ import {
 } from '@/features/right-sidebar/store';
 import { browserWebviewPool } from '@/features/right-sidebar/lib/browserWebviewPool';
 import { findGlobalTab, setActiveGlobalTabId } from '@/features/right-sidebar/globalTabs';
+import { TabGroupHostProvider, type TabGroupHostValue } from '@/features/right-sidebar/tabGroupHost';
+import { useTabGroupPanes } from '@/features/right-sidebar/tabGroupPanes';
 import {
   markAllPtyDetached,
   markPtyDetached,
@@ -973,6 +975,14 @@ export function MainLayout() {
   const handleMaximizeRightSidebar = useCallback(() => {
     setIsRightSidebarMaximized((v) => !v);
   }, []);
+  // 左 / 上 / 下边页签组:按「组里有没有可见页签」注册 / 注销 pane,并保证树里有它。
+  useTabGroupPanes({
+    sessionId: rightSidebarSessionId,
+    enabled: rightSidebarAvailable && rsbWindow.loaded && !rsbDetached && !isSettingsRoute,
+    remoteHostId: rightSidebarWorkdirInfo.remoteHostId,
+    deviceLinkDeviceId: rightSidebarWorkdirInfo.deviceLinkDeviceId,
+    subagentsAvailable: rightSidebarSubagentsAvailable,
+  });
   useEffect(() => {
     if (!isRightSidebarMaximized) return;
     const handler = (e: KeyboardEvent) => {
@@ -1121,6 +1131,30 @@ export function MainLayout() {
         applicationMenuLog.warn('pop out sidebar tab failed', { sessionId, tabId, err });
       });
   }, []);
+
+  // 边页签组(左 / 上 / 下)的宿主上下文:与右侧栏拿到的会话上下文同一份。
+  const tabGroupHost = useMemo<TabGroupHostValue>(
+    () => ({
+      sessionId: rightSidebarSessionId,
+      workdir: rightSidebarWorkdirInfo.workdir,
+      remoteHostId: rightSidebarWorkdirInfo.remoteHostId,
+      deviceLinkDeviceId: rightSidebarWorkdirInfo.deviceLinkDeviceId,
+      subagentsAvailable: rightSidebarSubagentsAvailable,
+      isMac,
+      onDetachTab: isSecondaryWindow() ? undefined : handleDetachRightSidebarTab,
+      // 左栏完全收起或 rail 态时,窗口左上的红绿灯 / ChromeActions 会压到最左面板顶栏。
+      reserveLeftChromeActions: isSidebarCollapsed || hasRailChromeActions,
+    }),
+    [
+      handleDetachRightSidebarTab,
+      hasRailChromeActions,
+      isMac,
+      isSidebarCollapsed,
+      rightSidebarSessionId,
+      rightSidebarSubagentsAvailable,
+      rightSidebarWorkdirInfo,
+    ],
+  );
 
   // 5) 页签从弹出窗口回到侧边栏(合并 / 关窗 / 崩溃):刷新它的数据副本并选中。
   //    可持久化会话按 SQLite 强制刷新该页签(弹出期间的改动都在 DB);不可持久化
@@ -1735,7 +1769,9 @@ export function MainLayout() {
         >
           {/* 面板稳态宽度由 LayoutRoot 输出 CSS 百分比/clamp，BrowserWindow live resize
               不再逐像素回灌 React；设置页接管时非 chat 面板统一歇业。 */}
-          <LayoutRoot suppressNonChatPanels={isSettingsRoute} />
+          <TabGroupHostProvider value={tabGroupHost}>
+            <LayoutRoot suppressNonChatPanels={isSettingsRoute} />
+          </TabGroupHostProvider>
         </BuiltinPanelBridgeProvider>
         {/* 拖面板换位(B3 转正;M3 起 mac 同步开闸——mac 顶栏全部保留窗口拖拽,
             手势天然只剩长按窗体)。总开关只管全局语境(内容区路由在场、非

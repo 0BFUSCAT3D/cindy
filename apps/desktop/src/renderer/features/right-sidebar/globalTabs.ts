@@ -23,6 +23,7 @@ import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
 import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
 import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
+import { clearTabGroup, setTabGroup, type TabGroupId } from './tabGroups';
 import type { TabState } from './types';
 
 const log = createLogger('rightSidebar.globalTabs');
@@ -157,7 +158,10 @@ function makeTabId(): string {
  * 加入(或返回已有的)某个插件的全局页签。幂等:同一实例只有一个页签。
  * 用户手动加入会清掉它的 dismissed 记录。
  */
-export function addGlobalPluginTab(instanceId: string): TabState | null {
+export function addGlobalPluginTab(
+  instanceId: string,
+  opts?: { groupId?: TabGroupId },
+): TabState | null {
   const current = getGlobalTabsSnapshot();
   const existing = current.tabs.find(
     (tab) => (tab.state as PluginViewTabState | null)?.instanceId === instanceId,
@@ -178,6 +182,8 @@ export function addGlobalPluginTab(instanceId: string): TabState | null {
     kind: 'plugin-view',
     state: { instanceId } satisfies PluginViewTabState,
   };
+  // 组归属先于页签出现落定,首帧就在目标组里。
+  if (opts?.groupId) setTabGroup(tab.id, opts.groupId);
   persist({ tabs: [...current.tabs, tab], dismissedInstanceIds: dismissed });
   return tab;
 }
@@ -196,6 +202,7 @@ export function removeGlobalTab(tabId: string): void {
     tabs: current.tabs.filter((candidate) => candidate.id !== tabId),
     dismissedInstanceIds: dismissed,
   });
+  clearTabGroup(tabId);
   // 页签正弹在独立窗口里:窗口没有内容可交回,直接销毁(与任务页签同一规则)。
   if (!isSidebarTabWindow() && isTabPoppedOut(tabId)) {
     void window.electronAPI?.sidebarTabWindow?.closeForTab(tabId).catch((err) => {
@@ -280,6 +287,7 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
   if (activeGlobalTabId && !tabs.some((tab) => tab.id === activeGlobalTabId)) {
     activeGlobalTabId = null;
   }
+  for (const tab of current.tabs) if (!tabs.includes(tab)) clearTabGroup(tab.id);
   persist({ tabs, dismissedInstanceIds: dismissed });
 }
 

@@ -8046,7 +8046,8 @@
         "close": "Close",
         "closeOthers": "Close others",
         "closeAll": "Close all",
-        "openInWindow": "Open in a new window"
+        "openInWindow": "Open in a new window",
+        "moveTo": "Move to {{target}}"
       },
       "empty": {
         "eyebrow": "Right Sidebar",
@@ -8068,6 +8069,12 @@
         "addMoreHint": "Use the + button at the top to choose more panel types"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
+    },
+    "tabGroups": {
+      "left": "left side",
+      "right": "right sidebar",
+      "top": "top",
+      "bottom": "bottom"
     },
     "fileBrowser": {
       "noWorkdir": "This session has no local working directory; file browser unavailable",

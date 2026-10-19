@@ -8014,7 +8014,8 @@
         "close": "닫기",
         "closeOthers": "다른 탭 닫기",
         "closeAll": "모두 닫기",
-        "openInWindow": "새 창에서 열기"
+        "openInWindow": "새 창에서 열기",
+        "moveTo": "{{target}}(으)로 이동"
       },
       "empty": {
         "eyebrow": "오른쪽 사이드바",
@@ -8036,6 +8037,12 @@
         "addMoreHint": "위쪽 + 버튼에서 다른 패널 유형을 선택할 수 있어요"
       },
       "placeholderHint": "{{kind}} — 콘텐츠는 이후 단계에서 추가됩니다"
+    },
+    "tabGroups": {
+      "left": "왼쪽",
+      "right": "오른쪽 사이드바",
+      "top": "위쪽",
+      "bottom": "아래쪽"
     },
     "fileBrowser": {
       "noWorkdir": "현재 세션에 로컬 작업 디렉터리가 연결되지 않아 파일 브라우저를 사용할 수 없습니다",
