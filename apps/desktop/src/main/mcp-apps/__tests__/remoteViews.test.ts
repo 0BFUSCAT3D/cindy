@@ -33,16 +33,17 @@ const closeCode = ts.transpileModule(linkSource.statements.filter((node): node i
   .map((node) => node.getText(linkSource).replace(/^export /, '')).join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
-function linkFixture(): { closeEpoch: (device: string) => number; close: (device: string) => void; closeLink: ReturnType<typeof vi.fn> } {
+function linkFixture(): { closeEpoch: (device: string) => number; close: (device: string) => void; closeLink: ReturnType<typeof vi.fn>; stopFilePeers: ReturnType<typeof vi.fn> } {
   const closeLink = vi.fn();
+  const stopFilePeers = vi.fn();
   const deps = {
     openLinkCloseEpochs: new Map<string, number>(), openLinkInFlight: new Map(),
     invalidatePluginOauth: vi.fn(), transportTimeoutReopen: { cancel: vi.fn() },
-    cancelSubscriptionReplay: vi.fn(), client: { closeLink },
+    cancelSubscriptionReplay: vi.fn(), client: { closeLink }, stopFilePeers,
   };
   const api = new Function(...Object.keys(deps), closeCode +
     '; return { closeEpoch: getRemoteLinkCloseEpoch, close: closeRemoteLink };')(...Object.values(deps));
-  return { ...api, closeLink };
+  return { ...api, closeLink, stopFilePeers };
 }
 function fixture() {
   let owner: object | undefined = {};
@@ -91,6 +92,7 @@ describe('Main-bound remote MCP App Views', () => {
       expect(state.mounts.has(local.viewId)).toBe(false);
       expect(await otherFrame({ op: 'poll' })).toEqual([]);
       expect(f.link.closeLink).toHaveBeenCalledExactlyOnceWith('device-a', 'user');
+      expect(f.link.stopFilePeers).toHaveBeenCalledExactlyOnceWith('device-a');
       // A fresh explicit open can use the new generation; the old frame stays revoked.
       expect(await f.open()).toHaveProperty('transport', 'sandbox');
       await expect(frame({ op: 'poll' })).rejects.toThrow('MCP_APP_LINK_CLOSED');

@@ -19,6 +19,7 @@ import {
   FolderOpen,
   History,
   Info,
+  MessageCircle,
   Settings2,
   Sparkles,
   UserRound,
@@ -59,14 +60,18 @@ import {
 import { useCompanionCloud } from './companionCloudStore';
 import { withoutShadowedBots } from './companionCloudPresentation';
 import { BotHomeComputerSetting } from './BotHomeComputerSetting';
+import { CindyMergeSetting } from './CindyMergeSetting';
 import { BotLifecycleSettings } from './BotLifecycleSettings';
 import { BotInvitationWelcome } from './BotInvitationWelcome';
 import { BotModelChainEditor } from './BotModelChainEditor';
 import { BotTaskModelEditor } from './BotTaskModelEditor';
 import { BotCapabilitySettings } from './BotCapabilitySettings';
 import { BotRoutines } from './BotRoutines';
+import { BotAutonomySettings } from './BotAutonomySettings';
+import { BotTodoList } from './BotTodoList';
 import { BotMemorySettings } from './BotMemorySettings';
 import { CompanionVoiceSettings } from './voice/CompanionVoiceSettings';
+import { BotChannelsPage } from './BotChannelsPage';
 import {
   botSettingsChanges,
   normalizeBotSettingsPayload,
@@ -106,7 +111,7 @@ export function BotSettings({
   beforeCloseRef,
   initialPage = 'home',
 }: {
-  initialPage?: 'home' | 'memory' | 'capabilities' | 'model' | 'voice';
+  initialPage?: 'home' | 'memory' | 'capabilities' | 'model' | 'voice' | 'channels';
   bot: BotProfile;
   beforeCloseRef?: { current: (() => Promise<boolean>) | null };
   onBack: () => void;
@@ -147,6 +152,7 @@ export function BotSettings({
     | 'model'
     | 'voice'
     | 'capabilities'
+    | 'channels'
     | 'history'
     | 'advanced'
     | 'routines'
@@ -160,21 +166,23 @@ export function BotSettings({
   const pageTitle =
     page === 'voice'
       ? t('bots.voiceMode.settingsTitle')
-      : page === 'memory'
-        ? t('bots.memory.title')
-        : page === 'model'
-          ? t('bots.settingsTabs.model')
-          : page === 'routines'
-            ? t('routines.title')
-            : page === 'history'
-              ? t('bots.historySearch.title')
-              : page === 'advanced'
-                ? t('bots.homeFolder.title')
-                : page === 'capabilities'
-                  ? t('bots.capabilities.title')
-                  : page === 'personality'
-                    ? t('bots.profile.personality')
-                    : t('bots.profile.title');
+      : page === 'channels'
+        ? t('bots.channels.title')
+        : page === 'memory'
+          ? t('bots.memory.title')
+          : page === 'model'
+            ? t('bots.settingsTabs.model')
+            : page === 'routines'
+              ? t('routines.title')
+              : page === 'history'
+                ? t('bots.historySearch.title')
+                : page === 'advanced'
+                  ? t('bots.homeFolder.title')
+                  : page === 'capabilities'
+                    ? t('bots.capabilities.title')
+                    : page === 'personality'
+                      ? t('bots.profile.personality')
+                      : t('bots.profile.title');
   const [folderError, setFolderError] = useState<string | null>(null);
   const avatarInFlight = useRef(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -421,6 +429,7 @@ export function BotSettings({
     ['model', Sparkles, t('bots.settingsTabs.model')],
     ['voice', AudioLines, t('bots.voiceMode.settingsTitle')],
     ['capabilities', Settings2, t('bots.capabilities.title')],
+    ['channels', MessageCircle, t('bots.channels.title')],
     ['routines', Clock3, t('routines.title')],
     ['history', History, t('bots.historySearch.title')],
     ['advanced', FolderOpen, t('bots.homeFolder.title')],
@@ -524,6 +533,7 @@ export function BotSettings({
               ))}
             </div>
             <BotHomeComputerSetting bot={bot} />
+            <CindyMergeSetting bot={bot} />
             <div className="mt-6">
               <BotLifecycleSettings
                 bot={bot}
@@ -689,6 +699,7 @@ export function BotSettings({
             </div>
           </div>
         )}
+        {page === 'channels' ? <BotChannelsPage bot={bot} /> : null}
         {page === 'history' ? (
           <BotLifecycleSettings
             bot={bot}
@@ -756,6 +767,21 @@ export function BotSettings({
             botId={bot.id}
             beforeLeaveRef={routineLeaveRef}
             backRef={routineBackRef}
+            header={
+              <BotAutonomySettings
+                botId={bot.id}
+                botName={displayName}
+                allowSchedulerFollow={capabilities.allowSchedulerFollow === true}
+                onAllowSchedulerFollowChange={(value) => updateCapability('allowSchedulerFollow', value)}
+              />
+            }
+            footer={
+              // 伙伴被叫醒后维护的待办：工作台里不再平铺，主人在这里查看与处理。
+              // 待办面板自带 20px 水平内边距，这里收回 8px，与例行任务行的文字起点对齐。
+              <div className="-mx-2 border-t border-[var(--border-default)] pt-2">
+                <BotTodoList botId={bot.id} />
+              </div>
+            }
           />
         ) : null}
       </div>

@@ -237,7 +237,7 @@ describe('MessageActionBar', () => {
     expect(screen.queryByText('chat.messageActionBar.turnTokens')).toBeNull();
 
     const reply = screen.getByRole('button', { name: 'chat.messageActionBar.reply' });
-    expect(reply.querySelector('.lucide-message-square-reply')).toBeTruthy();
+    expect(reply.querySelector('.lucide-chat-reply')).toBeTruthy();
     fireEvent.click(reply);
     expect(onAddToChat).toHaveBeenCalledTimes(1);
 

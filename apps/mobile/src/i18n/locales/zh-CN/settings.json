@@ -245,7 +245,7 @@
     "profile": {
       "title": "声纹",
       "missing": "还没有录入声纹",
-      "missingHint": "录入声纹后才会生效，大约需要 20 秒。",
+      "missingHint": "录入声纹后才会生效。",
       "enrolled": "已录入声纹",
       "enrolledAt": "{{date}} 录入",
       "enroll": "录入声纹",
@@ -269,11 +269,12 @@
       }
     },
     "enroll": {
-      "description": "请在平时使用语音输入的地方，用平常的语气朗读下面 {{clips}} 段文字，每段录音 {{seconds}} 秒。录音时请不要让别人说话。",
+      "description": "请用平常的语气朗读下面 {{clips}} 段文字。每段最多录音 {{seconds}} 秒，读完点击结束录音。请在平时使用语音输入的地方录制，避免其他人同时说话。",
       "step": "第 {{current}} / {{total}} 段",
       "record": "开始朗读",
+      "stop": "结束录音",
       "rerecord": "重录这段",
-      "recording": "还剩 {{seconds}} 秒",
+      "recording": "正在录音…还剩 {{seconds}} 秒",
       "saving": "正在生成声纹…",
       "submit": "完成录入",
       "cancel": "取消",
@@ -283,7 +284,7 @@
         "p3": "请帮我把这段内容改得更简洁一些，保留关键数字和结论，然后用三到五句话总结一下重点。"
       },
       "errors": {
-        "too_short": "第 {{index}} 段里说话的时间太短，请重录这段，朗读时不要停顿太久。",
+        "too_short": "第 {{index}} 段检测到的语音不足，请重新录制。",
         "no_embedding": "第 {{index}} 段没能识别出声纹，请重录这段。",
         "inconsistent": "第 {{index}} 段和其他几段不像同一个人，可能混进了别人的声音或噪音，请重录这段。",
         "models_missing": "识别模型还没有下载完成，请稍后再试。",
@@ -291,7 +292,17 @@
         "failed": "生成声纹失败，请重试。",
         "microphone": "无法使用麦克风，请检查麦克风权限后重试。",
         "noAudio": "麦克风没有传来声音，请检查后重试。"
-      }
+      },
+      "stepChoice": "第 {{index}} 段，{{status}}",
+      "stepStatus": {
+        "pending": "待录音",
+        "recorded": "已录音",
+        "retry": "待重录",
+        "recording": "录音中"
+      },
+      "rerecordStep": "重录第 {{index}} 段",
+      "readHint": "准备好后开始朗读，读完点击结束录音。",
+      "otherClipsKept": "其他段录音已保留。"
     }
   },
   "deviceNameEditor": {

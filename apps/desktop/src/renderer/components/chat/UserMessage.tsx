@@ -114,6 +114,7 @@ import { splitHostCapabilityDirective } from '@/cindy-brain/hostCapabilityInvoca
 import {
   GhostFulfillmentContext,
   GhostSummonCard,
+  hasGhostSummonFulfillment,
   type GhostSummonDisplay,
 } from './GhostSummonCard';
 import { MessageSourceLabels } from './MessageSourceLabels';
@@ -971,7 +972,7 @@ export function UserMessage({
   const ghostMentionFulfilled =
     ghostDirective?.kind === 'mention' &&
     Boolean(
-      ghostFulfilledIds && ghostDirective.ghosts.some((g) => ghostFulfilledIds.has(g.ghostId)),
+      ghostDirective.ghosts.some((g) => hasGhostSummonFulfillment(ghostFulfilledIds, g.ghostId)),
     );
   // 语义自主召唤:消息一个触发词都没命中(无任何追加段),AI 本轮仍真调了
   // ghost_call → 合成 semantic 展示数据,渲染同一行召唤标注(与硬指令/兑现
@@ -1416,6 +1417,7 @@ export function UserMessage({
             {fileAttachmentNodes}
             <HookTaskCard
               im={hookSource.im}
+              origin={hookSource.origin}
               userText={displayContent}
               collapseUserText={hookSource.contentFormat === 'user-text'}
               threadContext={hookSource.threadContext}

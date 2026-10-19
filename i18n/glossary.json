@@ -7,6 +7,7 @@
   "terms": [
     {"id": "read-by-sentence", "status": "proposed", "en": "Read by sentence", "translations": {"zh-CN": "按句朗读", "zh-TW": "逐句朗讀", "ja": "文ごとに読み上げ", "ko": "문장별로 읽기"}, "checkCase": false, "note": "伙伴语音设置：默认在最终答复生成过程中按完整句子提前朗读；关闭后等待完整回复。需要回复后处理或无法识别最终答复阶段时延后。"},
     {"id": "voice-mode", "status": "proposed", "en": "Voice Mode", "translations": {"zh-CN": "语音模式", "zh-TW": "語音模式", "ja": "音声モード", "ko": "음성 모드"}, "checkCase": false, "note": "桌面伙伴一对一的连续语音交互方式；停顿发送、最终回复朗读和插话，沿用伙伴主任务。"},
+    {"id": "mivo-library", "status": "proposed", "en": "Mivo Library", "translations": {"zh-CN": "Mivo 作品库", "zh-TW": "Mivo 作品庫", "ja": "Mivo ライブラリ", "ko": "Mivo 라이브러리"}, "note": "#5929：引用目录系统项沿用 Mivo 品牌，仅本地化展示；通用 library 能力的品牌命名仍待维护者裁决。"},
     {"id": "mcp-app", "status": "proposed", "en": "MCP App", "translations": {"zh-CN": "MCP App", "zh-TW": "MCP App", "ja": "MCP App", "ko": "MCP App"}, "note": "标准 MCP Apps 协议提供的交互应用；卡片标题与消息来源沿用协议名称，各语言保留 MCP App，待术语评审后固化。"},
     {"id": "dissolve-group", "status": "proposed", "en": "Dissolve group", "translations": {"zh-CN": "解散群聊", "zh-TW": "解散群聊", "ja": "グループを解散", "ko": "그룹 해산"}, "checkCase": false, "note": "Irreversible group termination, distinct from archive, leave and personal list removal."},
     {"id": "input-handoff", "status": "proposed", "en": "Input Handoff", "translations": {"zh-CN": "代输入", "zh-TW": "代輸入", "ja": "代理入力", "ko": "대리 입력"}, "checkCase": false, "note": "Agent 遇到需要主人填写的界面（选择、文本、密码、验证码、授权）时，由宿主读出当前一步，主人在本机或远程设备上填写，值只交给宿主、不进模型与记录。不是远程控制。"},
@@ -2457,7 +2458,20 @@
         "ja": "ワークベンチ",
         "ko": "작업대"
       },
-      "note": "伙伴主任务右侧栏里的标签：主人交给伙伴的项目，以及项目里的任务、自动化与产出（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。"
+      "note": "伙伴主任务右侧栏里的标签：一眼看清这位伙伴手上「等你」与「在做」的任务，加一行页脚（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。"
+    },
+    {
+      "id": "follow-up-all-sessions",
+      "status": "proposed",
+      "en": "Follow Up on All Sessions",
+      "translations": {
+        "zh-CN": "自动跟进所有任务",
+        "zh-TW": "自動跟進所有任務",
+        "ja": "すべてのセッションを自動でフォロー",
+        "ko": "모든 세션 자동 후속 관리"
+      },
+      "checkCase": false,
+      "note": "伙伴设置里的开关与工作台小标：账号里只有一位伙伴负责定时看一遍所有任务（实现里叫 scheduler / 总调度，默认 Cindy 助理）。面向用户不写「总调度」「调度员」，一律用这句；在别的伙伴上打开就移过去，关闭则没有伙伴统一跟进。session 按已裁决译法写「任务 / Session / セッション / 세션」。"
     },
     {
       "id": "teammate-todo",
