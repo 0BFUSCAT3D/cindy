@@ -201,7 +201,7 @@ describe("iOS chrome presenters stay on the system menu path", () => {
       "accessibilityLabel={t('settings.notifications.taskDone')}",
     );
     // Beta 渠道开关在二级页「开发者」。
-    expect(readFileSync(resolve(process.cwd(), "app/settings/developer.tsx"), "utf8")).toContain(
+    expect(readTextLf(resolve(process.cwd(), "app/settings/developer.tsx"), "utf8")).toContain(
       "accessibilityLabel={t('settings.betaChannel.title')}",
     );
     expect(settings).toContain(
