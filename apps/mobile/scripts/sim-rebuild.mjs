@@ -79,7 +79,7 @@ import {
 } from './sim-metro.mjs';
 
 import { readSimEnvironment } from './lib/sim-environment.mjs';
-import { extractSimWhoamiUdidArgs, resolveMobileSimulatorBundleId, classifySimMetroListener, validateSimMetroIdentity, resolveSimulatorDeviceSets, selectBootedSimulator, simctlArgs } from './lib/sim-whoami.mjs';
+import { extractSimWhoamiUdidArgs, resolveMobileSimulatorBundleId, classifySimMetroListener, validateSimMetroIdentity, resolveSimulatorDeviceSets, selectBootedSimulator, findSimulatorDeviceSet, simctlArgs } from './lib/sim-whoami.mjs';
 
 const mobileDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const worktreeRoot = resolve(mobileDir, '../..');
@@ -168,6 +168,15 @@ if (!buildOnly) {
   }
   deviceSet = selected.deviceSet;
   console.log(`==> 目标模拟器(${deviceSet.name}):${selected.targetBooted[0].trim()}`);
+} else if (simulatorUdid) {
+  // 仅构建不要求设备已启动,但 xcodebuild 的精确目标只对系统目录有效:先确认 UDID 属于哪个目录。
+  try {
+    deviceSet = findSimulatorDeviceSet(resolveSimulatorDeviceSets(), (set) =>
+      capture('xcrun', simctlArgs(set, ['list', 'devices'])), simulatorUdid);
+  } catch (error) {
+    console.error(`✗ ${error.message}`);
+    process.exit(1);
+  }
 }
 
 async function ensureMetroOwnershipBeforeLaunch(packageName) {

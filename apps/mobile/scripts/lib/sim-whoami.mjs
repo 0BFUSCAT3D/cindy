@@ -96,15 +96,36 @@ export function simctlArgs(deviceSet, args) {
   return deviceSet?.path ? ["simctl", "--set", deviceSet.path, ...args] : ["simctl", ...args];
 }
 
-/** Use the set holding the exact UDID, otherwise the first set with a booted device. */
+/**
+ * Use the set holding the exact UDID, otherwise the first set with a booted device.
+ * An unreadable fallback candidate is skipped; a pinned (single) set still reports its error.
+ */
 export function selectBootedSimulator(deviceSets, listBooted, simulatorUdid) {
   for (const deviceSet of deviceSets) {
-    const lines = listBooted(deviceSet).split("\n");
+    let lines;
+    try {
+      lines = listBooted(deviceSet).split("\n");
+    } catch (error) {
+      if (deviceSets.length === 1) throw error;
+      continue;
+    }
     const booted = bootedSimulatorLinesForTarget(lines, null);
     const targetBooted = bootedSimulatorLinesForTarget(lines, simulatorUdid);
     if (simulatorUdid ? targetBooted.length : booted.length) return { deviceSet, booted, targetBooted };
   }
   return { deviceSet: deviceSets[0], booted: [], targetBooted: [] };
+}
+
+/** Find the set that knows this UDID in any state (build-only runs need no booted device). */
+export function findSimulatorDeviceSet(deviceSets, listDevices, simulatorUdid) {
+  for (const deviceSet of deviceSets) {
+    try {
+      if (listDevices(deviceSet).toUpperCase().includes(`(${simulatorUdid.toUpperCase()})`)) return deviceSet;
+    } catch {
+      // An unreadable candidate cannot own the device; keep looking.
+    }
+  }
+  return null;
 }
 
 /** Probe app installation on the exact Host-owned Simulator without fallback. */

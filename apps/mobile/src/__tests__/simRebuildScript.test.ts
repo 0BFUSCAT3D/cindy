@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mobileClientBundleEnv } from '../../../../scripts/shared/client-endpoint-build-env.mjs';
 import { resolvePnpmInvocation, usablePnpmExecPath } from '../../../../scripts/shared/pnpm-invocation.mjs';
 import { extractMobileDevRegionArgs, withLocalMobileRegionConfig } from '../../scripts/lib/mobile-dev-region.mjs';
-import { extractSimWhoamiUdidArgs, resolveMobileSimulatorBundleId, selectBootedSimulator, simctlArgs } from '../../scripts/lib/sim-whoami.mjs';
+import { extractSimWhoamiUdidArgs, resolveMobileSimulatorBundleId, selectBootedSimulator, findSimulatorDeviceSet, simctlArgs } from '../../scripts/lib/sim-whoami.mjs';
 
 const source = readFileSync(resolve(process.cwd(), 'scripts/sim-rebuild.mjs'), 'utf8');
 const start = source.indexOf('const iosDir =');
@@ -36,7 +36,7 @@ async function rebuild(options: {
     if (command === 'xcrun' && args.includes('get_app_container')) return '/installed/Cindy.app';
     if (command === 'xcrun' && args.includes('list')) {
       const inCindySet = args.includes(cindySet.path);
-      return inCindySet === Boolean(options.cindyBooted) ? `iPhone (${udid}) (Booted)` : '';
+      return inCindySet === Boolean(options.cindyBooted) ? `iPhone (${udid}) (${args.includes('booted') ? 'Booted' : 'Shutdown'})` : '';
     }
     if (['pnpm', '/node', 'xcodebuild', 'cmd.exe', '/sdk/adb', 'xcrun'].includes(command)) return '';
     throw new Error(`unexpected executable ${command}`);
@@ -59,7 +59,7 @@ async function rebuild(options: {
     mobileDir, worktreeRoot: '/repo', join: posix.join, resolve: posix.resolve, homedir: () => '/home/test',
     process: processStub, console: { log, error: log, warn: log }, execFileSync, spawnSync,
     mobileClientBundleEnv, extractMobileDevRegionArgs, withLocalMobileRegionConfig,
-    extractSimWhoamiUdidArgs, selectBootedSimulator, simctlArgs,
+    extractSimWhoamiUdidArgs, selectBootedSimulator, findSimulatorDeviceSet, simctlArgs,
     resolveSimulatorDeviceSets: () => [cindySet, { name: 'system', path: null }],
     resolveMobileSimulatorBundleId: (region: string) => resolveMobileSimulatorBundleId(region, { execFile: () => JSON.stringify({ ios: { bundleIdentifier: 'com.xd.cindy' } }) }),
     resolvePnpmInvocation: (args: string[], opts: object) => resolvePnpmInvocation(args, { ...opts, platform: processStub.platform, execPath: '/node' }),
@@ -110,7 +110,9 @@ describe('sim-rebuild workflow', () => {
       expect(result.utimesSync.mock.calls[0][1].getTime()).toBeGreaterThan(0);
       expect(result.cpSync).not.toHaveBeenCalled();
     }
-    expect(result.execFileSync.mock.calls.some(([cmd]) => cmd === 'xcrun')).toBe(false);
+    // build-only never touches the device; with --udid it only reads the device list to find the owning set.
+    expect(result.execFileSync.mock.calls.some(([cmd, args]) => cmd === 'xcrun'
+      && ['install', 'launch', 'uninstall', 'get_app_container'].some((action) => args.includes(action)))).toBe(false);
   });
 
   it.each(['fingerprint-failure', 'cached-architecture-mismatch'])('falls back to a full build for %s', async (reason) => {
@@ -129,6 +131,12 @@ describe('sim-rebuild workflow', () => {
       const call = result.execFileSync.mock.calls.find(([cmd, args]) => cmd === 'xcrun' && args.includes(action));
       expect(call?.[1].slice(0, 3)).toEqual(['simctl', '--set', '/home/test/Library/Application Support/BaguetteCindy/devices']);
     }
+  });
+
+  it('uses the generic destination for a build-only UDID that lives in Cindy\'s set, even when shut down', async () => {
+    const result = await rebuild({ cindyBooted: true, args: ['--build-only', '--force-build', '--udid', udid] });
+    expect(result.error).toEqual(new Error('exit:0'));
+    expect(result.execFileSync).toHaveBeenCalledWith('xcodebuild', expect.arrayContaining(['-destination', 'generic/platform=iOS Simulator']), expect.any(Object));
   });
 
   it('falls back to the system simulator when Cindy has no booted device', async () => {

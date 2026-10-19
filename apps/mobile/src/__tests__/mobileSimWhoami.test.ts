@@ -1,4 +1,5 @@
 // @ts-nocheck —— 被测对象是 .mjs 开发工具模块，vitest 跑其纯函数。
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   bootedSimulatorLinesForTarget,
@@ -12,6 +13,7 @@ import {
   resolveSimMetroHandoff,
   resolveSimulatorDeviceSets,
   selectBootedSimulator,
+  findSimulatorDeviceSet,
   simctlArgs,
 } from '../../scripts/lib/sim-whoami.mjs';
 
@@ -280,7 +282,7 @@ describe('mobile:sim:whoami exact Simulator target', () => {
 
 describe('mobile:sim simulator choice', () => {
   const root = '/home/test/Library/Application Support/BaguetteCindy';
-  const cindy = { name: 'cindy', path: `${root}/devices` };
+  const cindy = { name: 'cindy', path: join(root, 'devices') };
   const system = { name: 'system', path: null };
   const settings = (value?: string) => () => {
     if (value === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
@@ -326,6 +328,27 @@ describe('mobile:sim simulator choice', () => {
     expect(selectBootedSimulator([cindy, system], (set: { name: 'cindy' | 'system' }) => (set.name === 'cindy' ? '' : listing.system), null))
       .toMatchObject({ deviceSet: system });
     expect(selectBootedSimulator([cindy, system], () => '', null)).toEqual({ deviceSet: cindy, booted: [], targetBooted: [] });
+  });
+
+  it('skips an unreadable Cindy set in auto mode but still reports a pinned set', () => {
+    const line = `iPhone B (${SIMULATOR_UDID}) (Booted)`;
+    const listBooted = (set: { name: string }) => {
+      if (set.name === 'cindy') throw new Error('cannot read device set');
+      return line;
+    };
+    expect(selectBootedSimulator([cindy, system], listBooted, null)).toMatchObject({ deviceSet: system, targetBooted: [line] });
+    expect(() => selectBootedSimulator([cindy], listBooted, null)).toThrow(/cannot read/);
+  });
+
+  it('finds the owning device set for a UDID in any state', () => {
+    const listing = { cindy: `iPhone A (${SIMULATOR_UDID.toLowerCase()}) (Shutdown)`, system: '' };
+    const list = (set: { name: 'cindy' | 'system' }) => listing[set.name];
+    expect(findSimulatorDeviceSet([cindy, system], list, SIMULATOR_UDID)).toBe(cindy);
+    expect(findSimulatorDeviceSet([cindy, system], list, '11111111-2222-4333-8444-555555555555')).toBeNull();
+    expect(findSimulatorDeviceSet([cindy, system], (set: { name: string }) => {
+      if (set.name === 'cindy') throw new Error('unreadable');
+      return `iPhone B (${SIMULATOR_UDID}) (Shutdown)`;
+    }, SIMULATOR_UDID)).toBe(system);
   });
 });
 
