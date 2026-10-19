@@ -75,7 +75,8 @@ export function useWechatBot(): UseWechatBotReturn {
       window.electronAPI.wechatBot.getChannelSettings(),
     ])
       .then(([nextState, nextChannelSettings]) => {
-        if (cancelled || !isDataOwnerGenerationCurrent(requestOwner)) return;
+        // Same-owner repair keeps this page mounted and these read-only settings valid.
+        if (cancelled || !isDataOwnerIdCurrent(requestOwner)) return;
         if (pushVersionRef.current === initialPushVersion) {
           cachedState = nextState;
           setState(nextState);

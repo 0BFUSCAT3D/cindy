@@ -94,7 +94,11 @@ describe('useWechatBot', () => {
     await waitFor(() => expect(result.current.state).toEqual(connected));
   });
 
-  it('ignores the initial load after unmounting', async () => {
+  // #6492 r4318273410, unit: owner repair during the initial GET must finish
+  // loading without remounting; unmount and a different owner must still drop it.
+  it.each([
+    'unmounted', 'same-owner-repair', 'different-owner',
+  ])('handles the initial load after %s', async (boundary) => {
     let resolveState!: (state: WechatBotState) => void;
     let resolveChannelSettings!: (state: WechatChannelSettingsState) => void;
     const harness = installWechatApi();
@@ -108,9 +112,10 @@ describe('useWechatBot', () => {
         resolveChannelSettings = resolve;
       }),
     );
-    const { unmount } = renderHook(() => useWechatBot());
+    const { result, unmount } = renderHook(() => useWechatBot());
 
-    unmount();
+    if (boundary === 'unmounted') unmount();
+    else setDataOwnerGeneration(boundary === 'same-owner-repair' ? 'owner-a' : 'owner-b');
     await act(async () => {
       resolveState({
         phase: 'connected',
@@ -125,10 +130,14 @@ describe('useWechatBot', () => {
       await Promise.resolve();
     });
 
-    expect(__testing.getCache()).toEqual({
-      state: null,
-      channelSettings: null,
-    });
+    if (boundary === 'same-owner-repair') {
+      expect(result.current.state.phase).toBe('connected');
+      expect(result.current.channelSettings?.workingDir).toBe('D:/late-result');
+      expect(harness.api.getChannelSettings).toHaveBeenCalledTimes(1);
+    } else {
+      expect(__testing.getCache()).toEqual({ state: null, channelSettings: null });
+    }
+    unmount();
   });
 
   it('starts and cancels authorization through the credential-free bridge', async () => {
