@@ -497,18 +497,24 @@ function AskUserQuestionForm({
       voiceShortcutAtRef.current = now;
       const session = dictationRef.current;
       if (session.state === 'submitting' || session.state === 'refining') return;
-      if (phase === 'start') {
-        // A press while listening means stop; its release must not act again.
-        voiceShortcutStartedPressRef.current = !session.isBusy;
-        beginVoiceInput();
+      // `tap` closes a quick press, `end` closes a held one; no phase means the
+      // local keyboard handler (a plain modifier combo) pressed the shortcut.
+      if (phase === 'tap') {
+        // The tap of the press that just started dictation must not stop it.
+        if (voiceShortcutStartedPressRef.current) {
+          voiceShortcutStartedPressRef.current = false;
+          return;
+        }
+        if (session.isBusy) void session.stop();
         return;
       }
-      // `tap` / `end` are the release of a press.
-      if (voiceShortcutStartedPressRef.current) {
+      if (phase === 'end') {
         voiceShortcutStartedPressRef.current = false;
+        if (session.isBusy) void session.stop();
         return;
       }
-      if (session.isBusy) void session.stop();
+      voiceShortcutStartedPressRef.current = !session.isBusy;
+      beginVoiceInput();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.isComposing) return;

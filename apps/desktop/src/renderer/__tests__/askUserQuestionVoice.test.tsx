@@ -164,6 +164,55 @@ describe('AskUserQuestion voice entry', () => {
     }
   });
 
+  it('starts dictation from a shortcut trigger without a phase (plain modifier combo)', async () => {
+    const previous = window.electronAPI;
+    let trigger: ((payload?: { id?: string; phase?: 'start' | 'tap' | 'end' }) => void) | undefined;
+    window.electronAPI = {
+      voiceInput: {
+        onGlobalShortcutTrigger: (callback: typeof trigger) => {
+          trigger = callback;
+          return () => { trigger = undefined; };
+        },
+        claimGlobalShortcutTrigger: () => {},
+        getDataSnapshot: () => ({ settings: { shortcut: null } }),
+      },
+    } as unknown as typeof window.electronAPI;
+    try {
+      renderAsk([{ question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] }]);
+      // Plain modifier combos arrive without a phase; they must still start.
+      trigger?.({ id: 'combo-1' });
+      await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    } finally {
+      window.electronAPI = previous;
+    }
+  });
+
+  it('stops when a held shortcut press is released', async () => {
+    const previous = window.electronAPI;
+    let trigger: ((payload?: { id?: string; phase?: 'start' | 'tap' | 'end' }) => void) | undefined;
+    window.electronAPI = {
+      voiceInput: {
+        onGlobalShortcutTrigger: (callback: typeof trigger) => {
+          trigger = callback;
+          return () => { trigger = undefined; };
+        },
+        claimGlobalShortcutTrigger: () => {},
+        getDataSnapshot: () => ({ settings: { shortcut: null } }),
+      },
+    } as unknown as typeof window.electronAPI;
+    try {
+      renderAsk([{ question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] }]);
+      trigger?.({ id: 'hold-1', phase: 'start' });
+      await waitFor(() => expect(start).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Held press released: `end` must stop, unlike the `tap` of a quick press.
+      trigger?.({ id: 'hold-1', phase: 'end' });
+      await waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    } finally {
+      window.electronAPI = previous;
+    }
+  });
+
   it('blocks question navigation and submit while dictation owns the answer', async () => {
     const { view } = renderAsk([
       { question: '第一题？', options: [{ label: '甲' }, { label: '乙' }] },
