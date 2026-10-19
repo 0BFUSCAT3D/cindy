@@ -12,6 +12,10 @@ import { getDbClient } from '../localDb/client/current.js';
 import type { SharedTaskPeerCapture } from './sharedTaskDispatch.js';
 
 const markdown = unified().use(remarkParse);
+// /clear retains message rows. Resolve the live boundary in each query, including
+// tool pairing, rather than reusing a snapshot from before the owner cleared it.
+const visibleHistory = `EXISTS (SELECT 1 FROM sessions s WHERE s.id = messages.session_id
+  AND (s.cleared_at IS NULL OR messages.created_at > s.cleared_at))`;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -103,6 +107,7 @@ export async function sharedTaskReferencesFile(
     const rows = await getDbClient().query<{ rowid: number; role: string; content: string; agentMeta: string | null; toolUseId: string | null }>(
       `SELECT rowid, role, content, agent_meta AS agentMeta, tool_use_id AS toolUseId FROM messages
        WHERE session_id = ? AND rewind_at IS NULL AND rowid > ?
+         AND ${visibleHistory}
          AND role IN ('user', 'assistant', 'tool_use', 'tool_result')
          AND (instr(lower(content), lower(?)) > 0 OR instr(lower(content), lower(?)) > 0 OR instr(lower(content), lower(?)) > 0 OR instr(lower(content), lower(?)) > 0)
        ORDER BY rowid LIMIT 64`,
@@ -125,7 +130,8 @@ export async function sharedTaskReferencesFile(
         if (!row.toolUseId) continue;
         const uses = await getDbClient().query<{ content: string }>(
           `SELECT content FROM messages WHERE session_id = ? AND role = 'tool_use'
-           AND rewind_at IS NULL AND tool_use_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 1`,
+           AND rewind_at IS NULL AND tool_use_id = ? AND rowid < ?
+           AND ${visibleHistory} ORDER BY rowid DESC LIMIT 1`,
           [capture.author.sessionId, row.toolUseId, row.rowid],
         );
         if (!capture.isCurrent()) return false;
@@ -140,7 +146,8 @@ export async function sharedTaskReferencesFile(
         if (!tool.toolUseId) continue;
         const results = await getDbClient().query<{ content: string }>(
           `SELECT content FROM messages WHERE session_id = ? AND role = 'tool_result'
-           AND rewind_at IS NULL AND tool_use_id = ? AND rowid > ? ORDER BY rowid LIMIT 1`,
+           AND rewind_at IS NULL AND tool_use_id = ? AND rowid > ?
+           AND ${visibleHistory} ORDER BY rowid LIMIT 1`,
           [capture.author.sessionId, tool.toolUseId, row.rowid],
         );
         if (!capture.isCurrent()) return false;

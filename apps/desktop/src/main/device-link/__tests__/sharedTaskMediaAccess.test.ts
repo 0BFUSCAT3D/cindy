@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const deps = vi.hoisted(() => ({ read: vi.fn(), session: vi.fn(), realpath: vi.fn(), query: vi.fn() }));
 vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ query: deps.query }) }));
@@ -23,6 +24,53 @@ beforeEach(() => {
   deps.query.mockResolvedValue([]);
 });
 describe('shared task media access', () => {
+  // DB regression: /clear keeps rows but removes their authority. Exercise the
+  // production queries, including both tool-pair directions, against real SQLite.
+  it.each(['user', 'assistant', 'tool_use', 'tool_result'])('expires %s file references at the clear boundary and accepts new delivery', async (role) => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, cleared_at INTEGER);
+        CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, agent_meta TEXT, tool_use_id TEXT, rewind_at INTEGER, created_at INTEGER);
+        INSERT INTO sessions VALUES ('task', NULL);`);
+      deps.query.mockImplementation(async (sql: string, params: unknown[]) => db.prepare(sql).all(...params));
+      const file = path.resolve('deliveries/report.pdf');
+      const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+      const insert = db.prepare('INSERT INTO messages (session_id, role, content, tool_use_id, created_at) VALUES (?, ?, ?, ?, ?)');
+      const deliver = (time: number) => {
+        if (role === 'tool_use' || role === 'tool_result') {
+          insert.run('task', 'tool_use', JSON.stringify(role === 'tool_use'
+            ? { toolName: 'Write', input: { file_path: file, content: 'report' } }
+            : { toolName: 'Bash', input: { command: 'generate-report' } }), 'run-' + time, time);
+          insert.run('task', 'tool_result', JSON.stringify(role === 'tool_result' ? url : 'File written'), 'run-' + time, time);
+        } else insert.run('task', role, JSON.stringify(url), null, time);
+      };
+      deliver(100);
+      await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
+      db.exec("UPDATE sessions SET cleared_at = 100 WHERE id = 'task'");
+      await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
+      deliver(101);
+      await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
+    } finally { db.close(); }
+  });
+  it.each(['tool_use', 'tool_result'])('rejects a fresh %s reference paired with a cleared tool row', async (role) => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, cleared_at INTEGER);
+        CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, agent_meta TEXT, tool_use_id TEXT, rewind_at INTEGER, created_at INTEGER);
+        INSERT INTO sessions VALUES ('task', 100);`);
+      deps.query.mockImplementation(async (sql: string, params: unknown[]) => db.prepare(sql).all(...params));
+      const file = path.resolve('deliveries/report.pdf');
+      const url = 'xdt-file://local?path=' + encodeURIComponent(file);
+      const insert = db.prepare("INSERT INTO messages (session_id, role, content, tool_use_id, created_at) VALUES ('task', ?, ?, 'run', ?)");
+      insert.run('tool_use', JSON.stringify(role === 'tool_use'
+        ? { toolName: 'Write', input: { file_path: file, content: 'report' } }
+        : { toolName: 'Bash', input: { command: 'generate-report' } }), role === 'tool_use' ? 101 : 100);
+      insert.run('tool_result', JSON.stringify(role === 'tool_result' ? url : 'File written'), role === 'tool_result' ? 101 : 100);
+      await expect(assertSharedTaskMedia(url, capture)).rejects.toThrow('PERMISSION_DENIED');
+      db.exec('UPDATE messages SET created_at = 101');
+      await expect(assertSharedTaskMedia(url, capture)).resolves.toEqual({ file });
+    } finally { db.close(); }
+  });
   // Regression: a delivered file outside the workdir must be readable, without
   // granting its directory or trusting a guest's pasted path (unit tier).
   it.each(['assistant', 'user'])('reads an outside file linked by the %s in this task', async (role) => {
