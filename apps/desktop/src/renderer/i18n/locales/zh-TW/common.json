@@ -1,4 +1,5 @@
 {
+  "mailReader": {"markReadFailed":"未能同步已讀狀態，請檢查信箱授權後重新開啟。","title":"郵件","openMailbox":"在信箱中開啟","loading":"正在讀取郵件…","failed":"未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。","retry":"重試","to":"收件人","cc":"副本","bcc":"密件副本","subject":"主旨","currentMessage":"目前郵件","messageCount_other":"共 {{count}} 封郵件","messageCount_one":"共 {{count}} 封郵件","showMessages_other":"展開 {{count}} 封郵件","showMessages_one":"展開 {{count}} 封郵件","expandMessage":"展開來自 {{from}} 的郵件","collapseMessage":"收起來自 {{from}} 的郵件","conversationFailed":"暫時無法讀取前後郵件。","messageCount":"共 {{count}} 封郵件","showMessages":"展開 {{count}} 封郵件"},
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
@@ -11971,7 +11972,17 @@
       "linkConfirmHint": "該連結由插件提供，將在系統瀏覽器中開啟：",
       "linkConfirmOpen": "開啟",
       "linkConfirmCancel": "取消",
-      "linkOpenFailed": "連結開啟失敗"
+      "expandFields": "展開",
+      "collapseFields": "收起",
+      "formSyncFailed": "卡片修改尚未同步，請檢查連線後繼續編輯；訊息尚未傳送。",
+      "linkOpenFailed": "連結開啟失敗",
+      "mailPreview": "郵件預覽",
+      "mailEnlarge": "放大檢視",
+      "mailInsertImage": "插入內文",
+      "mailAttach": "新增附件",
+      "mailRemoveAttachment": "移除 {{name}}",
+      "mailUpdated": "草稿已更新（唯讀）",
+      "mailLegacy": "歷史草稿（唯讀）"
     },
     "ghostHook": {
       "blockedFallback": "訊息被插件攔下，未傳送",

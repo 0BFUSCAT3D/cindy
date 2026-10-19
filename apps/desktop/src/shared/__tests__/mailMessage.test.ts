@@ -1,0 +1,29 @@
+import { expect, it } from 'vitest';
+import { parseMailMessage, parseMailReader, mailMessageFields } from '@cindy/maker-shared/mail-message';
+import { validateGhostManifest } from '../ghost';
+it('preserves a declared reader through manifest normalization', () => {
+  const reader = { tool: 'read_mail', hosts: ['mail.example.com'], markRead: true };
+  const result = validateGhostManifest({ schemaVersion: 3, minCindyVersion: '0.1.92', id: 'example-mail', name: 'Mail', version: '1.0.0', entry: 'main.js', agent: {}, mail: true, mailReader: reader,
+    tools: [{ name: 'read_mail', description: 'Read only', parameters: { type: 'object', properties: {} } }] });
+  expect(result.ok, result.ok ? '' : result.reason).toBe(true);
+  if (result.ok) expect(result.manifest.mailReader).toEqual(reader);
+  expect(parseMailReader({ tool: 'read_mail', hosts: ['*.com'] })).toBeNull();
+});
+it('accepts large read-only HTML, filters untrusted preview URLs and preserves CID', () => {
+  const message = parseMailMessage({ accountId: 'a', messageId: 'm', from: 'A', to: 'B', cc: '', bcc: '', subject: 'Subject', date: '', bodyText: 'text', bodyHtml: '<p>' + 'x'.repeat(70000) + '</p>',
+    attachments: [{ key: 'part', filename: 'image.png', contentId: 'photo', previewUrl: 'https://tracker.example/a' }] });
+  expect(message).not.toBeNull();
+  expect(message!.attachments[0].previewUrl).toBeUndefined();
+  expect(message!.attachments[0].contentId).toBe('photo');
+  expect(mailMessageFields(message!, k => k).some(f => f.kind === 'mail-html')).toBe(true);
+});
+it('drops invalid history without losing the selected message or accepting duplicate IDs', () => {
+  const mail = { accountId: 'a', messageId: 'm', from: '', to: '', cc: '', bcc: '', subject: '', date: '', bodyText: 'selected', bodyHtml: '', attachments: [] };
+  const summary = { messageId: 'm', url: 'https://mail.example.com/m', from: '', date: '', subject: '', snippet: '' };
+  for (const messages of [[summary, summary], [{ ...summary, messageId: 'other' }], [{ ...summary, url: 'javascript:alert(1)' }]]) {
+    const parsed = parseMailMessage({ ...mail, conversation: { threadId: 'thread', messages } });
+    expect(parsed?.bodyText).toBe('selected');
+    expect(parsed?.conversation).toBeUndefined();
+    expect(parsed?.conversationUnavailable).toBe(true);
+  }
+});

@@ -1,5 +1,8 @@
 import { capturePluginOauthPeer } from '../plugin-oauth/runtime.js';
 import { readMobilePreview } from './mobilePreview.js';
+import { createMailReader, mailReaderRemoteProvider } from './mailReader.js';
+import { assertRemoteBotInvocationAllowed } from '../device-link/remoteBotSessionBoundary.js';
+import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { MobileTaskSettings } from './mobileTaskSettings.js';
 import { MobilePluginPages } from './mobilePageService.js';
 import { listMobilePageFiles, readMobilePageChunk } from './mobilePageAssets.js';
@@ -330,6 +333,8 @@ import {
 import { GHOST_SCHEME, ghostExternalLinkUrls } from '../../shared/ghost.js';
 import { GhostPipeDispatcher } from './pipeDispatcher.js';
 import { GhostCardService, parseCardHeightReport } from './cardService.js';
+import { MailCardService } from './mailCards.js';
+import { prepareMailAttachmentUpload } from './mailAttachmentUpload.js';
 import { GhostCardActionDispatcher } from './cardActionDispatch.js';
 import { GhostSessionActivityTracker } from './ghostSessionActivity.js';
 import { sanitizeGhostCardHtml } from './cardSanitizer.js';
@@ -2312,6 +2317,14 @@ export function getGhostCardService(): GhostCardService {
 }
 
 let cardActionDispatcherSingleton: GhostCardActionDispatcher | null = null;
+let mailCardServiceSingleton: MailCardService | null = null;
+function getMailCardService(): MailCardService {
+  return mailCardServiceSingleton ??= new MailCardService({
+    cards: getGhostCardService(), read: getGhostCard, list: listGhostCardsBySession,
+    persist: persistGhostCardWithRemoteChange,
+    broadcast: payload => broadcastGhostWindowPush(GHOST_CARD_UPDATED_CHANNEL, payload),
+  });
+}
 
 /** 交互卡(v2)按钮点击派发器单例:归属查证(内存卡服务→持久卡库兜底)+
  *  唤醒 + 管子下发 card-action。wake/sendToGhost/isRunning 与订阅网关同源。 */
@@ -2321,7 +2334,7 @@ export function getGhostCardActionDispatcher(): GhostCardActionDispatcher {
       resolveLiveInfo: (callId) => getGhostCardService().callInfoOf(callId),
       resolvePersistedCard: async (callId) => {
         const c = await getGhostCard(callId);
-        return c ? { ghostId: c.ghostId, sessionId: c.sessionId ?? null } : null;
+        return c ? { ghostId: c.ghostId, sessionId: c.sessionId ?? null, html: c.html } : null;
       },
       reopenForAction: (callId, info) => getGhostCardService().reopenForAction(callId, info),
       getGhost: findGhostForPhysicalStoragePart,
@@ -2341,6 +2354,22 @@ export function getGhostCardActionDispatcher(): GhostCardActionDispatcher {
       },
       issueUserActionToken: (ghostId, sessionId) =>
         getGhostAgentSlot().issueUserActionToken(ghostId, sessionId),
+      pickMailAttachment: async inline => {
+        const result = await dialog.showOpenDialog({ properties: ['openFile'],
+          ...(inline ? { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] } : {}) });
+        if (result.canceled || !result.filePaths[0]) return null;
+        const filePath = result.filePaths[0];
+        const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error('attachment-too-large');
+          const bytes = await handle.readFile();
+          return { path: filePath, filename: path.basename(filePath), bytes: bytes.length,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            ...(inline ? { contentId: randomUUID() + '@cindy.local' } : {}) };
+        } finally { await handle.close(); }
+      },
+      prepareMailUpload: prepareMailAttachmentUpload,
       // 呼吸起点:点击成功投递即把该会话标为"意识活动中"(结束由 card-update
       // state / TTL 收口)。
       onActivityStart: (key, sessionId) => getGhostSessionActivityTracker().begin(key, sessionId),
@@ -7852,14 +7881,32 @@ export function registerGhostIpc(): void {
     return ghost ? { name: ghost.manifest.name, iconDataUrl: ghost.iconDataUrl } : undefined;
   }, {
     externalLinks: id => findGhostForPhysicalStoragePart(id)?.manifest.card?.externalLinks === true,
-    dispatch: async (callId, actionId, prompt, pageId, ghostId, controllerId) => {
+    dispatch: async (callId, actionId, prompt, pageId, ghostId, controllerId, formValues, formChange, mailUpload) => {
       if (!mobilePluginPages) return false;
       mobilePluginPages.assertInteraction(pageId, ghostId, controllerId);
-      return (await getGhostCardActionDispatcher().dispatch(callId, actionId, prompt, pageId)).ok;
+      return (await getGhostCardActionDispatcher().dispatch(callId, actionId, prompt, pageId, formValues, formChange, mailUpload)).ok;
     },
   });
   if (ipcRegistered) return;
   ipcRegistered = true;
+  const readMail = createMailReader({
+    plugins: () => availableGhosts().flatMap(g => g.enabled && g.approval.state === 'approved' && g.manifest.mail === true && g.manifest.mailReader &&
+      g.manifest.tools?.some(t => t.name === g.manifest.mailReader!.tool)
+      ? [{ id: g.instanceKey || g.manifest.id, namespace: g.instanceKey ? undefined : g.namespace, enabled: true, reader: g.manifest.mailReader }] : []),
+    authorize: async sessionId => {
+      // A shared task does not grant access to the owner's mailbox.
+      if (getDeviceLinkInvokeContext()?.sharedTask || !await getSessionRowSnapshot(sessionId))
+        throwIpcError('NOT_FOUND', 'Mail preview unavailable');
+      await assertRemoteBotInvocationAllowed([sessionId]);
+    },
+    captureScope: () => { const scope = captureDataOwnerBroadcastScope(); return () => isDataOwnerBroadcastScopeCurrent(scope); },
+    call: (plugin, sessionId, url, markRead) => getGhostPipeDispatcher().callGhostTool({ ghostId: plugin.id, namespace: plugin.namespace, tool: plugin.reader.tool, args: { url, ...(markRead ? { markRead: true } : {}) }, sessionId }),
+  });
+  remoteResourceRegistry.register(mailReaderRemoteProvider(readMail));
+  ipcMain.handle('ghosts:mail-preview', (event, sessionId: unknown, url: unknown, read: unknown, opened: unknown = false) => {
+    assertTrustedAppRendererEvent(event);
+    return readMail(sessionId, url, read, opened);
+  });
   const manager = getGhostManager();
   const runtime = getGhostRuntime();
   mobilePluginPages = new MobilePluginPages({
@@ -8551,9 +8598,25 @@ export function registerGhostIpc(): void {
     if (type === 'schedule-request') {
       return getGhostScheduleSlot().handleRequest(id, payload);
     }
+    if (type === 'mail-draft-update' || type === 'mail-draft-read') {
+      const scope = captureDataOwnerBroadcastScope();
+      const current = () => isDataOwnerBroadcastScopeCurrent(scope) && ghostIdForLogicWebContents(event.sender.id) === id;
+      const ghost = findGhostForInstanceId(id);
+      if (!ghost?.enabled || (ghost.manifest as { mail?: unknown }).mail !== true) return { ok: false };
+      return type === 'mail-draft-read' ? getMailCardService().restore(id, payload, current) : getMailCardService().handle(id, payload, current);
+    }
     if (type === 'card-update') {
       // 卡槽③供片:校验链(归属/卡槽/限速/净化)在 cardService,拒绝原因
       // 只进日志,恒回 { ok: true }(与 tool-result 同纪律,不给沙箱探测面)。
+      const card = payload as { callId?: unknown; sourceCallId?: unknown };
+      if (card.sourceCallId !== undefined) {
+        if (typeof card.sourceCallId !== 'string' || typeof card.callId !== 'string') return { ok: true };
+        const scope = captureDataOwnerBroadcastScope();
+        const service = getGhostCardService();
+        const target = service.callInfoOf(card.callId) ?? await getGhostCard(card.callId);
+        if (!target || !isDataOwnerBroadcastScopeCurrent(scope) || ghostIdForLogicWebContents(event.sender.id) !== id ||
+            !service.reopenForTool(id, card.callId, card.sourceCallId, { ghostId: target.ghostId, sessionId: target.sessionId ?? null })) return { ok: true };
+      }
       getGhostCardService().handleCardUpdate(id, payload);
       return { ok: true };
     }
@@ -8706,9 +8769,9 @@ export function registerGhostIpc(): void {
   // 派发器内部永不抛;意识随后自绘 card-update 换新卡走既有回放路径。
   ipcMain.handle(
     'ghosts:card:action',
-    async (event, callId: unknown, actionId: unknown, prompt?: unknown) => {
+    async (event, callId: unknown, actionId: unknown, prompt?: unknown, formValues?: unknown, formChange?: unknown) => {
       assertTrustedAppRendererEvent(event);
-      const r = await getGhostCardActionDispatcher().dispatch(callId, actionId, prompt);
+      const r = await getGhostCardActionDispatcher().dispatch(callId, actionId, prompt, undefined, formValues, formChange === true);
       return { ok: r.ok };
     },
   );

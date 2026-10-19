@@ -1,3 +1,4 @@
+import { pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
 import {
   tryMobilePeerFile,
   peerMediaUri,
@@ -1192,6 +1193,8 @@ export function createMobileMakerTransport({
     aroundMessagesByClientId: (sessionId, clientId, opts) =>
       call("local-db:messages:around-client-id", [sessionId, clientId, opts]),
     send: async (sessionId, message, createOpts, sendOpts) => {
+      const delivery = pendingGhostCardFormDelivery(JSON.stringify([deviceId, sessionId]));
+      if (delivery && !await delivery) throw new Error((await import('@/i18n')).i18n.t('plugins.formSyncFailed'));
       const content = typeof message === 'string' ? message : message.content;
       const first = Array.isArray(content) ? content[0] : undefined;
       const head = typeof content === 'string' ? content
