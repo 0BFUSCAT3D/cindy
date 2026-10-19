@@ -488,10 +488,14 @@ function ModelGroup({ state }: { state: MobileSpeakerFilterSnapshot }) {
   const failed = state.modelState === 'failed';
   return (
     <SettingsGroup
-      footer={failed
-        ? t(`settings.voiceSpeakerFilter.model.failed.${state.downloadError ?? 'network'}`)
-        : t('settings.voiceSpeakerFilter.model.needed', { size: total })}
+      footer={failed ? null : t('settings.voiceSpeakerFilter.model.needed', { size: total })}
       footerTestID="settings.voiceSpeakerFilter.model.footer"
+      messages={[failed
+        ? {
+            text: t(`settings.voiceSpeakerFilter.model.failed.${state.downloadError ?? 'network'}`),
+            testID: 'settings.voiceSpeakerFilter.model.failed',
+          }
+        : null]}
       title={t('settings.voiceSpeakerFilter.model.title')}
     >
       <ActionInfoRow

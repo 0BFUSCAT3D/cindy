@@ -768,14 +768,10 @@ export default function SettingsScreen() {
           </SettingsGroup>
         ) : null}
 
-        {/* 法律信息:隐私政策/用户协议始终显示(链接区域分流走 legalLinks 单点);
-            使用统计开关与它们同组(合规要求关闭途径可被找到),放在组末,
-            说明紧接在开关下方的分组 footer;App 备案号仅国内版显示。 */}
-        <SettingsGroup
-          footer={t('settings.legal.analyticsHint')}
-          messages={[analyticsMessage ? { text: analyticsMessage, testID: 'settings.analyticsMessage' } : null]}
-          title={t('settings.legal.sectionTitle')}
-        >
+        {/* 法律信息:隐私政策/用户协议始终显示(链接区域分流走 legalLinks 单点);App 备案号仅国内版显示。
+            使用统计开关(合规要求关闭途径可被找到)单独成组,说明与保存失败紧接在开关下方的 footer;
+            「恢复默认」再单独成组,避免 footer 被夹在开关和它之间。 */}
+        <SettingsGroup title={t('settings.legal.sectionTitle')}>
           <ActionInfoRow
             accessibilityLabel={t('settings.legal.openPrivacyPolicy')}
             accessibilityRole="link"
@@ -802,6 +798,12 @@ export default function SettingsScreen() {
               value="沪ICP备11033765号-89A"
             />
           ) : null}
+        </SettingsGroup>
+
+        <SettingsGroup
+          footer={t('settings.legal.analyticsHint')}
+          messages={[analyticsMessage ? { text: analyticsMessage, testID: 'settings.analyticsMessage' } : null]}
+        >
           <SettingsSwitchRow
             accessibilityLabel={t('settings.legal.analytics')}
             disabled={analyticsBusy || !analyticsReady}
@@ -812,18 +814,19 @@ export default function SettingsScreen() {
             testID="settings.analyticsToggleRow"
             value={analyticsEnabled}
           />
-          {analyticsCustomized ? (
+        </SettingsGroup>
+        {analyticsCustomized ? (
+          <SettingsGroup>
             <ActionInfoRow
               accessibilityLabel={t('settings.legal.analyticsReset')}
               chevron={false}
-              key="analytics-reset"
-              label={t('settings.legal.analyticsReset')}
               onPress={() => void resetAnalytics()}
+              label={t('settings.legal.analyticsReset')}
               testID="settings.analyticsReset"
               value={t('settings.legal.analyticsResetAction')}
             />
-          ) : null}
-        </SettingsGroup>
+          </SettingsGroup>
+        ) : null}
 
         {/* 开发者:Debug 日志、Beta 渠道、标识与更新信息在二级页,按用途分组。 */}
         <SettingsGroup testID="settings.debugGroup">

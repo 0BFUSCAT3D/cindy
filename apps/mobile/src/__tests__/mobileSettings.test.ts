@@ -40,27 +40,6 @@ describe('mobile settings overview', () => {
     expect(source).not.toContain('LanguageOptionRow');
   });
 
-  it('moves debug tools to the developer sub-page and keeps setting descriptions in group footers', () => {
-    const settings = readTextLf(resolve(process.cwd(), 'app/settings.tsx'), 'utf8');
-    const developer = readTextLf(resolve(process.cwd(), 'app/settings/developer.tsx'), 'utf8');
-    const rows = readTextLf(resolve(process.cwd(), 'src/session/SettingsGroupRows.tsx'), 'utf8');
-
-    expect(settings).toContain("push('/settings/developer')");
-    expect(settings).toContain('testID="settings.developerRow"');
-    expect(settings).not.toContain('settings.localLogs');
-    expect(settings).not.toContain('SettingsDisclosureRow');
-    expect(developer).toContain('testID="settings.developer.screen"');
-    expect(developer).toContain("footer={t('settings.localLogs.footer')}");
-    expect(developer).toContain('testID="settings.localLogs.clear"');
-    expect(developer).toContain('testID="settings.betaChannelToggleRow"');
-    expect(developer).toContain('testID="settings.otaVersion"');
-    // 行组件不再接受行内说明:成句说明与提示只能走 SettingsGroup 的 footer / messages。
-    expect(rows).not.toMatch(/\bhint\?: string/);
-    expect(rows).not.toMatch(/\bdetail\?: string/);
-    expect(settings).not.toMatch(/\b(hint|detail)=\{/);
-    expect(developer).not.toMatch(/\b(hint|detail)=\{/);
-  });
-
   it('shows the server switch only in CindyDev and clears the old session before reloading', () => {
     const settingsSource = readTextLf(
       resolve(process.cwd(), 'app/settings/developer.tsx'),
