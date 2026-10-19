@@ -826,7 +826,8 @@ export interface AgentIslandRemoteCompanionInput {
   avatarColor: string;
 }
 
-const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
+/** Upper bound the IPC parser accepts; builders trim to it so one extra entry never voids the payload. */
+export const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
 const AGENT_ISLAND_REMOTE_ID_MAX_LENGTH = 256;
 const AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH = 1024;
 const AGENT_ISLAND_SESSION_PHASES: readonly AgentIslandSessionPhase[] = [

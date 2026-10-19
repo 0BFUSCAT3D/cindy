@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => ({
     source?: string | null;
   } | null>>(() => Promise.resolve(null)),
   readAgentIslandCompanion: vi.fn<(sessionId: string) => Promise<AgentIslandCompanionIdentity | null>>(() => Promise.resolve(null)),
+  companionAvatarThumbnail: vi.fn<(avatar: string, deviceId?: string | null) => Promise<string | undefined>>(() => Promise.resolve(undefined)),
   primaryDisplay: {
     id: 1,
     label: 'Built-in Retina Display',
@@ -140,8 +141,10 @@ vi.mock('../../localDb/ipc/sessions.js', () => ({
   getSessionRowSnapshot: mocks.getSessionRowSnapshot,
 }));
 
-vi.mock('../companionIdentity.js', () => ({
+vi.mock('../companionIdentity.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../companionIdentity.js')>()),
   readAgentIslandCompanion: mocks.readAgentIslandCompanion,
+  companionAvatarThumbnail: mocks.companionAvatarThumbnail,
 }));
 
 vi.mock('../layoutPreferenceStore.js', () => ({
@@ -165,6 +168,8 @@ beforeEach(() => {
   mocks.getSessionRowSnapshot.mockResolvedValue(null);
   mocks.readAgentIslandCompanion.mockReset();
   mocks.readAgentIslandCompanion.mockResolvedValue(null);
+  mocks.companionAvatarThumbnail.mockReset();
+  mocks.companionAvatarThumbnail.mockResolvedValue(undefined);
   mocks.displays.splice(0, mocks.displays.length, mocks.primaryDisplay);
   mocks.getPrimaryDisplay.mockReset();
   mocks.getDisplayMatching.mockReset();
@@ -1766,6 +1771,75 @@ describe('AgentIslandService native publishing', () => {
       title: 'Sonnet',
       companion: { name: 'Sonnet' },
     }));
+  });
+
+  // Review of #6436: a group rename never reached open group-lane cards, an older slow read
+  // could overwrite a newer one, and a failed remote avatar read stayed a glyph forever.
+  it('refreshes group-lane cards on a group rename, keeping only the latest of overlapping reads', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const lane = (groupName: string): AgentIslandCompanionIdentity => ({
+      botId: 'b1', groupId: 'g1', companion: { name: 'Opus', groupName, hue: 'teal', glyph: 'O', glyphIsInitial: true },
+    });
+    mocks.getSessionRowSnapshot.mockImplementation(async () => ({
+      status: 'active', title: 'Opus', userSendAt: null, workingDir: '/home', workspaceKind: null, source: 'bot',
+    }));
+    mocks.readAgentIslandCompanion.mockResolvedValue(lane('旧群名'));
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    service.handleUserPrompt({ sessionId: 's1', agentKind: 'claude-code', workingDir: '/home' }, 'hi');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('旧群名'));
+
+    service.handleBotGroupChanged('other-group');
+    expect(mocks.readAgentIslandCompanion).toHaveBeenCalledTimes(1);
+
+    let releaseSlow!: (identity: AgentIslandCompanionIdentity) => void;
+    mocks.readAgentIslandCompanion.mockImplementationOnce(() => new Promise((resolve) => { releaseSlow = resolve; }));
+    service.handleBotGroupChanged('g1');
+    mocks.readAgentIslandCompanion.mockResolvedValueOnce(lane('新群名'));
+    service.handleBotGroupChanged('g1');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('新群名'));
+    releaseSlow(lane('过期群名'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('新群名');
+  });
+
+  it('retries a remote companion avatar after a failed read instead of keeping the glyph forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const { AgentIslandService } = await import('../service.js');
+      const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+        void state;
+        void frameOrFrames;
+        return true;
+      });
+      const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+      syncEnabledForTest(service, publish);
+      const input = {
+        sessionId: 'r1', deviceId: 'd1', deviceName: 'Studio', title: 'Opus', workingDir: null, workspaceKind: null,
+        agentKind: null, phase: 'running' as const, detail: 'x',
+        companion: { name: 'Opus', avatar: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png', avatarColor: 'teal' },
+      };
+      service.setDeviceSessions([input]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.companionAvatarThumbnail).toHaveBeenCalledTimes(1);
+      service.setDeviceSessions([input]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.companionAvatarThumbnail).toHaveBeenCalledTimes(1);
+
+      mocks.companionAvatarThumbnail.mockResolvedValue('JPEGDATA');
+      await vi.advanceTimersByTimeAsync(61_000);
+      service.setDeviceSessions([input]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.companion?.imageJpeg).toBe('JPEGDATA');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refreshes placeholder titles and hides dialogue workspace folders', async () => {

@@ -44,6 +44,13 @@ function toNullableString(value: unknown): string | null | undefined {
   return undefined;
 }
 
+/** 伙伴群改名或解散后，让灵动岛重读以该群群专线说话的任务。 */
+export function notifyAgentIslandBotGroupChanged(groupId: string): void {
+  void import('../agent-island/service.js')
+    .then(({ getAgentIslandService }) => getAgentIslandService()?.handleBotGroupChanged(groupId))
+    .catch(() => undefined);
+}
+
 /** 伙伴改名或换头像后，让灵动岛重画以它身份说话的任务。 */
 export function notifyAgentIslandCompanionChanged(botId: string): void {
   void import('../agent-island/service.js')

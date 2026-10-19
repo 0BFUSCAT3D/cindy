@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { AgentIslandRemoteSessionInput } from '../../../shared/agentIsland';
+import { AGENT_ISLAND_REMOTE_SESSIONS_MAX, type AgentIslandRemoteSessionInput } from '../../../shared/agentIsland';
 import type { Session } from '@/lib/ccAgent.types';
 import type { RemoteBot } from '@/features/bots/remoteBotRoster';
 import { useRemoteBots } from '@/features/bots/useRemoteBots';
@@ -32,6 +32,7 @@ export function buildAgentIslandRemoteSessionInputs(
   // another device reports its chat here whatever machine the sidebar is scoped to. Its chat is
   // a hidden Session, so it is never also in the remote task list.
   for (const bot of remoteBots) {
+    if (inputs.length >= AGENT_ISLAND_REMOTE_SESSIONS_MAX) break;
     if (!bot.sessionId || !bot.online) continue;
     const activity = readActivity(bot.sessionId, bot.deviceId);
     if (!activity) continue;
@@ -52,6 +53,8 @@ export function buildAgentIslandRemoteSessionInputs(
     const deviceId = session.deviceLinkDeviceId;
     if (!deviceId || session.deviceLinkConnectionStatus === 'disconnected') continue;
     if (companionSessionIds.has(session.id)) continue;
+    // Companions were added first, so the cap trims tasks, never a companion.
+    if (inputs.length >= AGENT_ISLAND_REMOTE_SESSIONS_MAX) break;
     const activity = readActivity(session.id, deviceId);
     if (!activity) continue;
     inputs.push({

@@ -13,6 +13,8 @@ import { encodeNotificationAvatar } from '../notificationAvatar.js';
 
 export interface AgentIslandCompanionIdentity {
   botId: string;
+  /** Set for a group lane: a rename of that group changes what the card shows. */
+  groupId?: string;
   companion: AgentIslandCompanionSnapshot;
 }
 
@@ -57,7 +59,7 @@ export async function readAgentIslandCompanion(sessionId: string): Promise<Agent
   const groupName = group?.name.trim();
   const base = companionSnapshotWithoutArtwork({ name: row.name, avatar: row.avatar, avatarColor: row.avatarColor, groupName });
   const imageJpeg = companionAvatarHasArtwork(row.avatar) ? await companionAvatarThumbnail(row.avatar) : undefined;
-  return { botId: row.botId, companion: imageJpeg ? { ...base, imageJpeg } : base };
+  return { botId: row.botId, ...(groupId ? { groupId } : {}), companion: imageJpeg ? { ...base, imageJpeg } : base };
 }
 
 /** Name, tint and glyph: everything but the artwork, available without any read. */

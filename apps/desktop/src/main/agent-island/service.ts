@@ -171,6 +171,7 @@ const REMOTE_AUTH_ERROR_FALLBACK_MS = 30_000;
 const ISLAND_ENTRY_ALERT_TTL_MS = 60_000;
 const MAX_ISLAND_ENTRY_SESSION_ID_LENGTH = 128;
 const REMOTE_COMPANION_CACHE_LIMIT = 64;
+const REMOTE_COMPANION_ARTWORK_RETRY_MS = 60_000;
 const MAX_ISLAND_ENTRY_ID_LENGTH = 32;
 
 interface AgentIslandSessionMeta {
@@ -332,7 +333,9 @@ export class AgentIslandService {
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly metadataCache = new Map<string, AgentIslandCachedMetadata>();
   private readonly metadataLoading = new Set<string>();
-  private readonly remoteCompanions = new Map<string, AgentIslandCompanionSnapshot>();
+  private readonly remoteCompanions = new Map<string, { snapshot: AgentIslandCompanionSnapshot; retryAt: number | null }>();
+  /** Latest refresh per Session: an older read that finishes late never overwrites a newer one. */
+  private readonly companionRefreshSeq = new Map<string, number>();
   private lastDeviceSessionInputs: readonly AgentIslandRemoteSessionInput[] = [];
   private readonly layoutPreferencesByDisplayId: Map<number, AgentIslandLayoutPreference>;
   private readonly detachedLayoutPreferences: AgentIslandLayoutPreference[];
@@ -754,20 +757,42 @@ export class AgentIslandService {
     if (!identity) return null;
     const key = JSON.stringify([input.deviceId, identity.name, identity.avatar, identity.avatarColor]);
     const cached = this.remoteCompanions.get(key);
-    if (cached) return cached;
+    if (cached) {
+      // A failed read stays a glyph, but the next sync after the pause tries again; the
+      // avatar copy keeps its own failure backoff, so this never hammers the other computer.
+      if (cached.retryAt !== null && cached.retryAt <= Date.now()) this.loadRemoteCompanionArtwork(key, input, cached.snapshot);
+      return cached.snapshot;
+    }
     const base = companionSnapshotWithoutArtwork(identity);
-    this.remoteCompanions.set(key, base);
+    this.remoteCompanions.set(key, { snapshot: base, retryAt: null });
     if (this.remoteCompanions.size > REMOTE_COMPANION_CACHE_LIMIT) {
       this.remoteCompanions.delete(this.remoteCompanions.keys().next().value!);
     }
-    if (identity.avatar && companionAvatarHasArtwork(identity.avatar)) {
-      void companionAvatarThumbnail(identity.avatar, input.deviceId).then((imageJpeg) => {
-        if (!imageJpeg || this.remoteCompanions.get(key) !== base) return;
-        this.remoteCompanions.set(key, { ...base, imageJpeg });
-        this.setDeviceSessions(this.lastDeviceSessionInputs);
-      });
-    }
+    this.loadRemoteCompanionArtwork(key, input, base);
     return base;
+  }
+
+  private loadRemoteCompanionArtwork(
+    key: string,
+    input: AgentIslandRemoteSessionInput,
+    base: AgentIslandCompanionSnapshot,
+  ): void {
+    const avatar = input.companion?.avatar;
+    if (!avatar || !companionAvatarHasArtwork(avatar)) return;
+    const entry = this.remoteCompanions.get(key);
+    if (!entry || entry.retryAt === Number.POSITIVE_INFINITY) return;
+    // Marks the read as in flight until it settles.
+    entry.retryAt = Number.POSITIVE_INFINITY;
+    void companionAvatarThumbnail(avatar, input.deviceId).then((imageJpeg) => {
+      const current = this.remoteCompanions.get(key);
+      if (!current || current.snapshot !== base) return;
+      if (!imageJpeg) {
+        current.retryAt = Date.now() + REMOTE_COMPANION_ARTWORK_RETRY_MS;
+        return;
+      }
+      this.remoteCompanions.set(key, { snapshot: { ...base, imageJpeg }, retryAt: null });
+      this.setDeviceSessions(this.lastDeviceSessionInputs);
+    });
   }
 
   waitForCompletionNotification(sessionId: string): Promise<boolean> | undefined {
@@ -788,6 +813,7 @@ export class AgentIslandService {
     this.metadataCache.clear();
     this.metadataLoading.clear();
     this.remoteCompanions.clear();
+    this.companionRefreshSeq.clear();
     this.lastDeviceSessionInputs = [];
     this.lastSoundDisplayState = null;
     this.soundCooldownUntilByEvent.clear();
@@ -1404,10 +1430,22 @@ export class AgentIslandService {
 
   /** A companion's name or avatar changed: redraw the Sessions that speak as it. */
   handleCompanionProfileChanged(botId: string): void {
+    this.refreshCompanionSessions((identity) => identity.botId === botId);
+  }
+
+  /** A group was renamed or removed: redraw the group lanes that show its name. */
+  handleBotGroupChanged(groupId: string): void {
+    this.refreshCompanionSessions((identity) => identity.groupId === groupId);
+  }
+
+  private refreshCompanionSessions(matches: (identity: AgentIslandCompanionIdentity) => boolean): void {
     for (const [sessionId, cached] of this.metadataCache) {
-      if (cached.companion?.botId !== botId) continue;
+      if (!cached.companion || !matches(cached.companion)) continue;
+      const seq = (this.companionRefreshSeq.get(sessionId) ?? 0) + 1;
+      this.companionRefreshSeq.set(sessionId, seq);
       void readAgentIslandCompanion(sessionId)
         .then((companion) => {
+          if (this.companionRefreshSeq.get(sessionId) !== seq) return;
           const latest = this.metadataCache.get(sessionId);
           if (latest) this.commitMetadata(sessionId, { ...latest, companion });
         })

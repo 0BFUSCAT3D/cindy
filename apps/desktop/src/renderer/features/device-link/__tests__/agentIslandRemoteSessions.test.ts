@@ -176,6 +176,17 @@ describe('buildAgentIslandRemoteSessionInputs', () => {
     expect(state.sessions.get('a-1')).toMatchObject({ companion, title: 'Opus', projectName: 'Mac Studio' });
   });
 
+  // Review of #6436: companions are prepended, so near the parser cap one extra entry voided the whole payload.
+  it('never exceeds the IPC cap, trimming tasks before companions', () => {
+    const many = Array.from({ length: 600 }, (_, index) => remoteSession(`t-${index}`, 'device-a'));
+    const everyActivity = (sessionId: string): RemoteSessionActivity => ({ sessionId, phase: 'running', compactDetail: '', attention: false });
+    const bot = { id: 'opus', deviceId: 'device-a', deviceName: 'Mac', name: 'Opus', avatar: '', avatarColor: '', description: '', preview: '', activityAt: 1, sessionId: 'bot-s', online: true };
+    const inputs = buildAgentIslandRemoteSessionInputs(many, MACHINE_ALL, everyActivity, [bot]);
+    expect(inputs).toHaveLength(500);
+    expect(inputs[0]?.sessionId).toBe('bot-s');
+    expect(parseAgentIslandRemoteSessions(inputs)).not.toBeNull();
+  });
+
   it('skips Bot tasks and disconnected devices', () => {
     expect(
       buildAgentIslandRemoteSessionInputs(
