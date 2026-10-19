@@ -4151,7 +4151,8 @@ export function NewMakerDraftRoute() {
               let rehomedComments = preNavBrowserComments;
               const restoreFirstMessageDraft = () => {
                 saveComposerDraft(newSession.id, {
-                  text: preNavDraftDoc ?? plainTextToTiptapDoc(message),
+                  text: preNavDraftDoc ?? plainTextToTiptapDoc(builtInSkillIntent ? builtInSkillDraftMessage : message),
+                  ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
                   attachments: excludeCommentScreenshots(rehomedFiles, rehomedComments),
                   browserComments: rehomedComments,
                 });
@@ -4226,19 +4227,6 @@ export function NewMakerDraftRoute() {
                 // 才进入 1.6s 平滑期, overlay 从 "空 ChatView" 自然过渡到 "已在
                 // streaming 的 ChatView", 不暴露中间空窗。clear 时机见本 async 块末尾。
 
-                // The selected source branch can have a different project skill
-                // collision from baseRepo. Resolve after checkout, before dispatch.
-                if (!(await resolveBuiltInSkillForDirectory(newDir))) {
-                  if (!isCurrentDataOwner()) return;
-                  worktreeCreationStore.set(newSession.id, {
-                    status: 'failed',
-                    name: branchName,
-                    error: t('settings.ghosts.page.creatorUnavailable'),
-                  });
-                  restoreFirstMessageDraft();
-                  return;
-                }
-
                 let deferredUiAssignment: DeferredUiAssignment | undefined;
                 if (shouldEnableCollab) {
                   try {
@@ -4277,7 +4265,20 @@ export function NewMakerDraftRoute() {
                   }
                 }
 
-                const dispatchedMessage = await rewritePiSkillMessageForSend({
+                // The selected source branch can have a different project skill
+                // collision from baseRepo. Resolve after checkout and collaboration preparation, immediately before dispatch.
+                if (!(await resolveBuiltInSkillForDirectory(newDir))) {
+                  if (!isCurrentDataOwner()) return;
+                  worktreeCreationStore.set(newSession.id, {
+                    status: 'failed',
+                    name: branchName,
+                    error: t('settings.ghosts.page.creatorUnavailable'),
+                  });
+                  restoreFirstMessageDraft();
+                  return;
+                }
+
+                const dispatchedMessage = builtInSkillIntent ? message : await rewritePiSkillMessageForSend({
                   agentKind: persistedAgentKind === 'cc' ? 'claude-code' : persistedAgentKind,
                   message,
                   workingDir: newDir,
@@ -4444,7 +4445,8 @@ export function NewMakerDraftRoute() {
             // FIFO 插回失败的首条,不覆盖用户在等待期间已经写进新任务输入框的内容。
             restoreRemoteOptimisticDraft(newSession.id, {
               clientId: `local-first:${newSession.id}`,
-              text: preNavDraftDoc ?? plainTextToTiptapDoc(message),
+              text: preNavDraftDoc ?? plainTextToTiptapDoc(builtInSkillIntent ? builtInSkillDraftMessage : message),
+              ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
               attachments: excludeCommentScreenshots(rehydratedFiles, preNavBrowserComments),
               browserComments: preNavBrowserComments,
             });

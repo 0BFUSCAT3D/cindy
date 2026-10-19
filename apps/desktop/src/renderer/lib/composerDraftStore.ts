@@ -84,6 +84,7 @@ export interface ComposerDraft {
 }
 
 export interface RemoteOptimisticDraftFragment {
+  builtInSkillIntent?: BuiltInSkillDraftIntent;
   clientId: string;
   text: JSONContent | null;
   attachments: readonly AttachedFile[];
@@ -91,6 +92,7 @@ export interface RemoteOptimisticDraftFragment {
 }
 
 export interface RemoteOptimisticDraftSnapshot {
+  builtInSkillIntent?: BuiltInSkillDraftIntent;
   text: JSONContent | null;
   attachments: readonly AttachedFile[];
   browserComments: readonly BrowserCommentDraftItem[];
@@ -646,6 +648,7 @@ export function restoreRemoteOptimisticDraft(
     ...(effectiveOverride?.browserComments ?? existing?.browserComments ?? []),
   ];
   const baseDraft: ComposerDraft = {
+    builtInSkillIntent: effectiveOverride?.builtInSkillIntent ?? existing?.builtInSkillIntent,
     text: currentText,
     attachments: currentAttachments,
     quotes: [],
@@ -655,6 +658,7 @@ export function restoreRemoteOptimisticDraft(
   };
   const rememberBatchSnapshot = (draft: ComposerDraft): void => {
     batchSnapshots?.set(key, {
+      builtInSkillIntent: draft.builtInSkillIntent,
       text: draft.text,
       attachments: draft.attachments,
       browserComments: draft.browserComments ?? [],
@@ -687,7 +691,10 @@ export function restoreRemoteOptimisticDraft(
   if (!startsWithIds(commentIds, recovery.commentPrefixIds)) recovery.commentPrefixIds = [];
 
   let restoredText = currentText;
+  let restoredIntent = baseDraft.builtInSkillIntent;
   if (tiptapDocHasContent(fragment.text)) {
+    // Identity belongs to the leading restored message, not a later FIFO fragment.
+    if (recovery.textPrefix.length === 0) restoredIntent = fragment.builtInSkillIntent;
     const insertion = insertComposerDocumentForRestore(
       fragment.text!,
       currentText ?? { type: 'doc', content: [] },
@@ -721,11 +728,11 @@ export function restoreRemoteOptimisticDraft(
 
   const restored: ComposerDraft = {
     ...baseDraft,
+    builtInSkillIntent: restoredIntent,
     text: restoredText,
     attachments: restoredAttachments,
     browserComments: restoredComments,
   };
-  rememberBatchSnapshot(restored);
   saveDraft(sessionId, restored, {
     // A live caller applies the returned snapshot itself to preserve its focus
     // and selection. A background recovery must notify any mounted view that
@@ -733,7 +740,9 @@ export function restoreRemoteOptimisticDraft(
     silent: effectiveOverride !== undefined,
     preserveRemoteOptimisticRecovery: true,
   });
-  return restored;
+  const saved = drafts.get(key) ?? restored;
+  rememberBatchSnapshot(saved);
+  return saved;
 }
 
 /**

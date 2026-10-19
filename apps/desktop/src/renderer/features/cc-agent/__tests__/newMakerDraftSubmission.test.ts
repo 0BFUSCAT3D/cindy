@@ -73,6 +73,7 @@ async function submit(options: {
   skills?: AgentSkillCommand[];
   worktreeSkills?: AgentSkillCommand[];
   deviceId?: string;
+  worktreeSkillsAfterCollab?: AgentSkillCommand[];
   slashCommandRanges?: Array<{ start: number; end: number }>;
 } = {}) {
   const providers = options.providers ?? [provider()];
@@ -112,8 +113,9 @@ async function submit(options: {
   const baseRepo = '/fixture/repo';
   const worktreePath = '/fixture/repo/.cindy-worktrees/creator';
   const hasWorktree = options.worktreeSkills !== undefined;
+  let worktreeSkills = options.worktreeSkills;
   const listAgentSkills = vi.fn(async (_agent, params) => ({ success: true,
-    skills: params?.workingDir === worktreePath ? options.worktreeSkills : options.skills ?? [],
+    skills: params?.workingDir === worktreePath ? worktreeSkills : options.skills ?? [],
   }));
   const invokeRemote = vi.fn(async (_deviceId, channel, args) => {
     if (channel === 'maker:list-agent-skills') return listAgentSkills(args[0], args[1]);
@@ -127,6 +129,7 @@ async function submit(options: {
     deviceLink: { invoke: invokeRemote },
     worktreeCreate: vi.fn(async () => ({ ok: true, meta: { path: worktreePath, branch: 'cindy/creator' } })),
     localDb: { sessions: { create: ipcCreate } }, maker: {
+    enableOrca: async () => { worktreeSkills = options.worktreeSkillsAfterCollab; return { workerSessionId: 'worker' }; },
     setGoal, listAgentSkills,
     listDesktopCommands: async () => ({ success: true, commands: [] }),
     listAgentCommands: async () => ({ success: true, commands: [] }),
@@ -153,8 +156,8 @@ async function submit(options: {
     calibratedDraftModel: selectedModel, chatPrefs, getProviderModelEffort: () => undefined,
     chatInitialProviderId: selectedProviderId, chatInitialPermissionMode: 'default',
     effectiveSourceId: selectedProviderId,
-    sendInFlightRef: { current: false }, effectiveCollab: { enabled: false },
-    collabPolicy: { enabled: false }, collabPolicyEligible: false,
+    sendInFlightRef: { current: false }, effectiveCollab: { enabled: !!options.worktreeSkillsAfterCollab },
+    collabPolicy: { enabled: true }, collabPolicyEligible: true,
     usesDeviceCatalog: !!options.agentDeviceId || !!options.deviceId, deviceLinkInitial: null,
     isDeviceLinkDraft: !!options.deviceId, isRemoteProjectDraft: !!options.remoteHostId,
     isAgentDeviceDraft: !!options.agentDeviceId, remoteModelListStatus: 'ready', remoteDraftState: { status: 'ready' },
@@ -200,6 +203,8 @@ async function submit(options: {
       if (state.status === 'failed') finishWorktree();
     } },
     saveComposerDraft: vi.fn(),
+    draftEnableOrcaOptions: () => ({}), createDeferredUiAssignment: () => undefined,
+    rememberDeferredUiAssignment: () => {}, getCurrentRoutePath: () => '/elsewhere',
     dispatchDeferredUiAssignment: async () => {},
     isRemotePrecreatedWorktreeOwnerChangedError: () => false,
     isRemotePrecreatedWorktreeCleanupPendingError: () => false,
@@ -290,6 +295,19 @@ describe('homepage submission to Main admission and first-message handoff', () =
         expect.objectContaining({ slashCommandRanges: [{ start: 0, end: after.length + 1 }] }));
     }
   });
+  it('resolves the built-in identity after asynchronous collaboration preparation', async () => {
+    const p = provider();
+    p.models['claude-code'] = [{ ...p.models.pi![0], efforts: ['medium'], defaultEffort: 'medium' }];
+    const official: AgentSkillCommand = { kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator', builtIn: true };
+    const result = await submit({
+      agentKind: 'claude-code', providers: [p], message: '/cindy-plugin-creator Make a plugin',
+      builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: 'cindy-plugin-creator' },
+      skills: [official], worktreeSkills: [official],
+      worktreeSkillsAfterCollab: [{ ...official, builtIn: false }, { ...official, name: 'cindy:cindy-plugin-creator' }],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.sendMessage.mock.calls[0]?.[1]).toBe('/cindy:cindy-plugin-creator Make a plugin');
+  });
   it.each([undefined, 'task-computer'])('retains the first message when the final worktree on %s lacks the built-in creator', async deviceId => {
     const result = await submit({
       message: '/cindy-plugin-creator Make a plugin', deviceId,
@@ -310,6 +328,7 @@ describe('homepage submission to Main admission and first-message handoff', () =
     } else {
       expect(result.environment.saveComposerDraft).toHaveBeenCalledWith('created', expect.objectContaining({
         text: plainTextToTiptapDoc('/cindy-plugin-creator Make a plugin'),
+        builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: 'cindy-plugin-creator' },
       }));
     }
     expect(result.toastError).toHaveBeenCalledWith('settings.ghosts.page.creatorUnavailable');
