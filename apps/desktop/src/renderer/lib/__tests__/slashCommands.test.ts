@@ -97,6 +97,16 @@ describe('routed built-in draft dispatch', () => {
     await expect(rewriteBuiltInSkillDraftForSend({ ...request, remoteHostId: 'ssh-host' })).resolves.toBeNull();
     expect(window.electronAPI.maker.listAgentSkills).not.toHaveBeenCalled();
   });
+  it('refreshes a handed-off identity when project skills change after preflight', async () => {
+    const catalog = { success: true, skills: [skill({ name: intent.name, builtIn: true })] };
+    stubCommandLists(catalog);
+    const request = { message: '/cindy-plugin-creator Make a plugin', intent, agentKind: 'claude-code' as const, workingDir: '/project' };
+    expect(await rewriteBuiltInSkillDraftForSend(request)).toBe(request.message);
+    catalog.skills = [skill({ name: intent.name }), skill({ name: `cindy:${intent.name}`, builtIn: true })];
+    expect(await rewriteBuiltInSkillDraftForSend(request)).toBe('/cindy:cindy-plugin-creator Make a plugin');
+    catalog.skills = [skill({ name: intent.name })];
+    expect(await rewriteBuiltInSkillDraftForSend(request)).toBeNull();
+  });
   it('respects an explicitly edited command instead of restoring the routed Skill', async () => {
     stubCommandLists({ success: true, skills: [] });
     await expect(rewriteBuiltInSkillDraftForSend({

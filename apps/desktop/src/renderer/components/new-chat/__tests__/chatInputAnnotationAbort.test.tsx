@@ -540,6 +540,7 @@ it('rechecks the built-in creator on every restored-task retry', async () => {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' })); });
   await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
   expect(onSend.mock.calls[0][0]).toBe('/cindy:cindy-plugin-creator Make a plugin');
+  expect(onSend.mock.calls[0][6].builtInSkillIntent).toEqual({ ...intent, commandName: 'cindy:cindy-plugin-creator' });
   expect(h.listAgentSkills).toHaveBeenCalledWith('claude-code', { workingDir: '/fixture/worktree', forceReload: true });
   await waitFor(() => expect(h.editor?.getText().trim()).toBe(text));
   expect(getDraft('composer-regression')?.builtInSkillIntent).toEqual(intent);

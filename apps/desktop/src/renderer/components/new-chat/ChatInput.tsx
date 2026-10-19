@@ -101,6 +101,7 @@ import {
   getOrCreateRemoteOptimisticTransitionCheckpoint,
   removeRemoteOptimisticDraftFragment,
   type RemoteOptimisticTransitionCheckpoint,
+  type BuiltInSkillDraftIntent,
   saveDraft as saveComposerDraft,
   saveComposerTextAfterAsyncTransition,
   clearDraft as clearComposerDraft,
@@ -270,6 +271,7 @@ import {
   nextAvailableSlashCommandIndex,
   PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
   rewriteBuiltInSkillDraftForSend,
+  leadingSlashInvocation,
   rebaseInlineRangesAfterSlashCommandRewrite,
   type SlashCommandRosterState,
   type UnifiedCommand,
@@ -491,6 +493,7 @@ interface ChatInputProps {
     mentions?: MentionedResource[],
     opts?: {
       deliveryMode?: MessageDeliveryMode;
+      builtInSkillIntent?: BuiltInSkillDraftIntent;
       providerId?: string | null;
       /** chat-text-quote:message 开头的 blockquote 为引用功能拼接产出。 */
       quotesEncoded?: boolean;
@@ -6046,6 +6049,14 @@ export function ChatInput({
             {
               deliveryMode,
               providerId: sendProviderId,
+              ...(builtInSkillIntent
+                ? {
+                    builtInSkillIntent: {
+                      ...builtInSkillIntent,
+                      commandName: leadingSlashInvocation(routedText)?.name ?? builtInSkillIntent.commandName,
+                    },
+                  }
+                : {}),
               ...(hasQuotes ? { quotesEncoded: true } : {}),
               ...(agentReferences.length > 0 ? { agentReferences } : {}),
               ...(pastedTextRanges.length > 0 ? { pastedTextRanges } : {}),

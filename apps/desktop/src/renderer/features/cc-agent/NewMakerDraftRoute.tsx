@@ -3586,6 +3586,12 @@ export function NewMakerDraftRoute() {
             }
             return true;
           };
+          const currentBuiltInSkillIntent = () => builtInSkillIntent
+            ? {
+                ...builtInSkillIntent,
+                commandName: leadingSlashInvocation(message)?.name ?? builtInSkillIntent.commandName,
+              }
+            : undefined;
           if (!(await resolveBuiltInSkillForDirectory(selectedWorkingDir))) return;
 
           // device-link 远程项目:在被控端走校验过的 maker:create-session 建会话(写被控 DB,
@@ -3882,8 +3888,8 @@ export function NewMakerDraftRoute() {
             // 可恢复副本紧贴提交点落下,**排在下面的附件迁移 await 之前**(codex P2 第五轮)。
             // 提交点之后每多一次 await,「对端会话已建好、正文却还没有第二份」的窗口就长一分;
             // rehomeDraftAttachments 是本机 IPC,但含 base64 / 草稿缓存图片时并不快,期间
-            // 应用退出或崩溃,正文就没了。副本只存正文、不依赖附件迁移结果,所以可以先落。
-            rememberRecoverableHandoff(remoteSessionId, 'message', message);
+            // 应用退出或崩溃,正文就没了。副本存正文及内置 Skill 调用意图、不依赖附件迁移结果,所以可以先落。
+            rememberRecoverableHandoff(remoteSessionId, 'message', message, currentBuiltInSkillIntent());
             // F-COLLAB / device-link:草稿开了协同 → **不在这里 await**,把「开协同」连同
             // 首条消息一起交接给 SessionView(见 pendingFirstMessage.PendingRemoteCollab)。
             //
@@ -3989,6 +3995,7 @@ export function NewMakerDraftRoute() {
             }
             setPending(remoteSessionId, {
               text: message,
+              builtInSkillIntent: currentBuiltInSkillIntent(),
               files: rehydratedFiles,
               mentions,
               ...(shouldEnableCollab
@@ -4494,6 +4501,7 @@ export function NewMakerDraftRoute() {
             if (slashMatch || leading) {
               setPending(newSession.id, {
                 text: message,
+                builtInSkillIntent: currentBuiltInSkillIntent(),
                 files: rehydratedFiles,
                 mentions,
                 ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),

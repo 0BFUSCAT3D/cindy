@@ -251,6 +251,7 @@ describe('homepage submission to Main admission and first-message handoff', () =
     expect(result.ipcCreate.mock.calls[0][0].agentDeviceId).toBe('provider-computer');
     expect(result.setPending).toHaveBeenCalledWith('created', expect.objectContaining({
       text: '/skill:cindy-plugin-creator Make a plugin',
+      builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: 'skill:cindy-plugin-creator' },
       slashCommandRanges: [{ start: 0, end: '/skill:cindy-plugin-creator'.length }],
     }));
   });
@@ -287,7 +288,7 @@ describe('homepage submission to Main admission and first-message handoff', () =
     expect(result.errors).toEqual([]);
     if (deviceId) {
       expect(result.setPending).toHaveBeenCalledWith('remote-created', expect.objectContaining({
-        text: `/${after} Make a plugin`, slashCommandRanges: [{ start: 0, end: after.length + 1 }],
+        text: `/${after} Make a plugin`, builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: after }, slashCommandRanges: [{ start: 0, end: after.length + 1 }],
       }));
     } else {
       expect(result.sendMessage).toHaveBeenCalledWith('created', `/${after} Make a plugin`,
