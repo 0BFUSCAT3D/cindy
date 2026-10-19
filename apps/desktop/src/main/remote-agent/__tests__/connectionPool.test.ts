@@ -1247,16 +1247,17 @@ describe('remote connection pool with a real host', () => {
     // 让出期间再加一个：只记在本机，连回后按运行中改目录补发。
     await a.setExtraDirs!([live, later]);
     await sleep(5);
-    await ask(a, events, `look at ${live}/f.txt and ${later}/f.txt`);
+    // 路径一律用 path.join 拼：Windows 上投影后的路径用反斜杠。
+    await ask(a, events, `look at ${path.join(live, 'f.txt')} and ${path.join(later, 'f.txt')}`);
     expect(scenario.started).toHaveLength(3);
     expect(scenario.started[2].extraDirs).toEqual([]);
     const replayed = lastExtraDirs();
     expect(replayed[0]).toBe(liveVirtual);
     // 对方收到的消息里是连回后的虚拟路径。
     const sent = scenario.calls.filter((call) => call.method === 'send').at(-1)!.args[0] as { content: string };
-    expect(sent.content).toBe(`look at ${replayed[0]}/f.txt and ${replayed[1]}/f.txt`);
-    expect(await readVirtual(a, events, `${liveVirtual}/f.txt`)).toContain('in-live');
-    expect(await readVirtual(a, events, `${replayed[1]}/f.txt`)).toContain('in-later');
+    expect(sent.content).toBe(`look at ${path.join(replayed[0], 'f.txt')} and ${path.join(replayed[1], 'f.txt')}`);
+    expect(await readVirtual(a, events, path.join(liveVirtual, 'f.txt'))).toContain('in-live');
+    expect(await readVirtual(a, events, path.join(replayed[1], 'f.txt'))).toContain('in-later');
   });
 
   it('never points an old virtual path at another directory after a middle directory is removed and the task reconnects', async () => {
