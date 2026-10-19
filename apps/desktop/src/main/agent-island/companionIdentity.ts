@@ -28,6 +28,18 @@ const PRESET_AVATAR_FILES: Readonly<Record<string, string>> = {
   'cindy://avatar/preset/lizi': 'legacy-teammate-avatars/lizi.png',
 };
 
+/**
+ * Local copy of an avatar held by another computer or the cloud. Registered at startup
+ * (bootstrap) rather than imported: the avatar cache pulls in the media store and device-link,
+ * which this module must not load (and main forbids runtime dynamic imports).
+ */
+type CompanionAvatarResolver = (request: { avatar: string; deviceId: string | null; fetch: boolean }) => Promise<string | null>;
+let resolveCompanionAvatarCopy: CompanionAvatarResolver | null = null;
+
+export function setCompanionAvatarResolver(resolver: CompanionAvatarResolver | null): void {
+  resolveCompanionAvatarCopy = resolver;
+}
+
 const THUMBNAIL_CACHE_LIMIT = 32;
 // Content-addressed avatar values: a changed avatar is a new key, never a stale hit.
 const thumbnails = new Map<string, Promise<string | undefined>>();
@@ -116,8 +128,7 @@ async function readAvatarBytes(avatar: string, deviceId: string | null): Promise
   }
   let local: string | null = isManagedBotAvatarUrl(avatar) && !deviceId ? avatar : null;
   if (!local && (deviceId || avatar.startsWith('https://'))) {
-    const { companionAvatarCache } = await import('../companion-cloud/avatarCacheHost.js');
-    local = await companionAvatarCache.resolve({ avatar, deviceId, fetch: true });
+    local = (await resolveCompanionAvatarCopy?.({ avatar, deviceId, fetch: true })) ?? null;
   }
   if (!local || !isManagedBotAvatarUrl(local)) return undefined;
   const bytes = await readFile(resolveSafe(local).absPath);

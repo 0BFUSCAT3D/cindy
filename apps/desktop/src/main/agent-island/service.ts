@@ -76,6 +76,7 @@ import {
   type AgentIslandScreenLayoutMetrics,
 } from '../../shared/agentIsland.js';
 import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
+import { setAgentIslandCompanionChangeSink } from '../localDb/agentIslandSessionPatch.js';
 import {
   companionAvatarHasArtwork,
   companionAvatarThumbnail,
@@ -251,6 +252,10 @@ export function initAgentIslandService(deps: AgentIslandServiceDeps): AgentIslan
   serviceSingleton = new AgentIslandService({
     ...deps,
     nativeHost: deps.nativeHost ?? (supportsNativeIsland ? undefined : HEADLESS_AGENT_ISLAND_NATIVE_HOST),
+  });
+  setAgentIslandCompanionChangeSink({
+    companionChanged: (botId) => serviceSingleton?.handleCompanionProfileChanged(botId),
+    groupChanged: (groupId) => serviceSingleton?.handleBotGroupChanged(groupId),
   });
   // 远程任务同步与原生岛面无关:无原生岛的平台也要靠它发桌面通知。
   serviceSingleton.registerDeviceSessionIpc();
