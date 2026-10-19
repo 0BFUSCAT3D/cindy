@@ -7,22 +7,14 @@ import { useProviderOnboarding } from '@/hooks/useProviderOnboarding';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { MainViewHistoryContext } from '@/contexts/MainViewHistoryContext';
 import { BotPortraitPicker } from './BotPortraitPicker';
+import { botSettingsIcons } from './botSettingsIcons';
 import {
   ArrowLeft,
-  AudioLines,
   Bot,
-  Brain,
   Camera,
   Check,
   ChevronRight,
-  Clock3,
   FolderOpen,
-  History,
-  Info,
-  MessageCircle,
-  Settings2,
-  Sparkles,
-  UserRound,
 } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useBotTranslation } from './botPronounContext';
@@ -423,16 +415,16 @@ export function BotSettings({
     && !(bot.invitation.stage === 'avatar' && bot.canonicalSessionId);
 
   const settingsRows = [
-    ['profile', Info, t('bots.profile.title')],
-    ['personality', UserRound, t('bots.profile.personality')],
-    ['memory', Brain, t('bots.memory.title')],
-    ['model', Sparkles, t('bots.settingsTabs.model')],
-    ['voice', AudioLines, t('bots.voiceMode.settingsTitle')],
-    ['capabilities', Settings2, t('bots.capabilities.title')],
-    ['channels', MessageCircle, t('bots.channels.title')],
-    ['routines', Clock3, t('routines.title')],
-    ['history', History, t('bots.historySearch.title')],
-    ['advanced', FolderOpen, t('bots.homeFolder.title')],
+    ['profile', botSettingsIcons.profile, t('bots.profile.title')],
+    ['personality', botSettingsIcons.personality, t('bots.profile.personality')],
+    ['memory', botSettingsIcons.memory, t('bots.memory.title')],
+    ['model', botSettingsIcons.model, t('bots.settingsTabs.model')],
+    ['voice', botSettingsIcons.voice, t('bots.voiceMode.settingsTitle')],
+    ['capabilities', botSettingsIcons.capabilities, t('bots.capabilities.title')],
+    ['channels', botSettingsIcons.channels, t('bots.channels.title')],
+    ['routines', botSettingsIcons.routines, t('routines.title')],
+    ['history', botSettingsIcons.history, t('bots.historySearch.title')],
+    ['advanced', botSettingsIcons.advanced, t('bots.homeFolder.title')],
   ] as const;
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8">

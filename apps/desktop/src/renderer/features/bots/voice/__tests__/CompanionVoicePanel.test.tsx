@@ -83,8 +83,9 @@ afterEach(cleanup);
 afterEach(() => vi.useRealTimers());
 const configure = vi.fn();
 const close = vi.fn();
-const panel = (blocked = false, taskBusy = false) => (
+const panel = (blocked = false, taskBusy = false, open = true) => (
   <CompanionVoicePanel
+    open={open}
     bot={{ id: 'bot', name: 'Partner' }}
     sessionId="canonical"
     messages={[]}
@@ -95,6 +96,60 @@ const panel = (blocked = false, taskBusy = false) => (
     onConfigure={configure}
   />
 );
+
+// Exit animation retains the real panel briefly. The old unmount-only cleanup
+// would keep recording/playing until that animation ended. Existing cases only
+// unmount immediately; these unit cases close a still-mounted panel and reopen
+// it, or resolve an old configuration load during exit. Audio/API boundaries are
+// faked; the production panel and controller own all lifecycle transitions.
+it('releases voice immediately during exit and can reopen before the visual unmount', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const view = render(panel(false, false, false));
+  await act(async () => {});
+  expect(start).not.toHaveBeenCalled();
+  view.rerender(panel());
+  await act(async () => {});
+  expect(audio.start).toHaveBeenCalledOnce();
+  view.rerender(panel(false, false, false));
+  expect(audio.stop).toHaveBeenCalledOnce();
+  expect(audio.close).toHaveBeenCalledOnce();
+  expect(window.electronAPI.voiceConversation.end).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('status')).toBeNull();
+  // Freeze the last visible state rather than flashing idle/Resume during exit.
+  expect(screen.getByRole('status', { hidden: true }).textContent).toBe(
+    'bots.voiceMode.status.listening',
+  );
+
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  view.rerender(panel());
+  await act(async () => {});
+  await act(() => vi.advanceTimersByTimeAsync(250));
+  expect(audio.start).toHaveBeenCalledTimes(2);
+  expect(audio.stop).toHaveBeenCalledOnce();
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.listening');
+  view.rerender(panel(false, false, false));
+  await act(() => vi.advanceTimersByTimeAsync(250));
+  expect(screen.queryByRole('status', { hidden: true })).toBeNull();
+  expect(audio.stop).toHaveBeenCalledTimes(2);
+});
+
+it('ignores late configuration while the closed toolbar is still fading out', async () => {
+  let release!: (value: { selection: null; customized: boolean }) => void;
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockReturnValue(
+    new Promise((resolve) => {
+      release = resolve;
+    }),
+  );
+  const view = render(panel());
+  view.rerender(panel(false, false, false));
+  await act(async () => {
+    release({ selection: null, customized: false });
+  });
+  expect(start).not.toHaveBeenCalled();
+  expect(configure).not.toHaveBeenCalled();
+});
 
 // Contract: companion-voice-mode.md auto-exit warning. Existing panel cases only
 // covered manual End. Minimal regression: 60s idle has no visible/cancellable
@@ -371,7 +426,9 @@ it('keeps Send secondary and preserves a visible unsent draft when the microphon
   expect(disclosure.getAttribute('aria-expanded')).toBe('true');
   fireEvent.keyDown(disclosure, { key: 'Escape' });
   expect(screen.getByText('unfinished thought')).toBeTruthy();
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
+  expect(document.activeElement).toBe(
+    screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }),
+  );
   expect(audio.start).toHaveBeenCalledOnce();
   expect(start).toHaveBeenCalledOnce();
   expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();

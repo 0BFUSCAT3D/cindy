@@ -1,10 +1,30 @@
+.companion-voice-presence {
+  width: 100%;
+  max-width: 590px;
+  min-width: 0;
+  /* Own the composer's 10px gap inside the collapsing content, so an empty
+     presence wrapper neither leaves space nor jumps at the final unmount. */
+  margin-bottom: -10px;
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--motion-ease-move);
+}
+
+.companion-voice-presence-content {
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--motion-ease-move);
+}
+
+.companion-voice-presence .companion-voice-toolbar {
+  margin-bottom: 10px;
+}
+
 .companion-voice-toolbar {
   width: 100%;
   max-width: 590px;
   min-width: 0;
   color: var(--text-primary);
   container-type: inline-size;
-  animation: companion-voice-enter var(--motion-enter) var(--motion-ease-out) both;
+  animation: companion-voice-enter var(--motion-base) var(--motion-ease-out) both;
 }
 
 .companion-voice-bar {
@@ -114,6 +134,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .companion-voice-presence,
+  .companion-voice-presence-content {
+    transition: none;
+  }
   .companion-voice-toolbar,
   .companion-voice-details {
     animation: none;

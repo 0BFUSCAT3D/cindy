@@ -5,12 +5,14 @@ import type { ChatMessage } from '@/lib/makerChatStore';
 import { WebMicAudioEngine } from '@/voice-input/WebMicAudioEngine';
 import { getVoiceInputWorkletUrl } from '@/voice-input/workletUrl';
 import type { BotChatIdentity } from '../BotSessionContentHeader';
+import { SectionCollapse } from '../../cc-agent/sidebar/SectionCollapse';
 import { VoiceConversationController } from './VoiceConversationController';
 import { PcmSpeechPlayer } from './PcmSpeechPlayer';
 import { resolveVoiceConfiguration } from './voiceConfiguration';
 import { CompanionVoiceToolbar } from './CompanionVoiceToolbar';
 
 type Props = {
+  open: boolean;
   bot: BotChatIdentity;
   sessionId: string;
   messages: readonly ChatMessage[];
@@ -22,6 +24,19 @@ type Props = {
 };
 
 export function CompanionVoicePanel(props: Props) {
+  return (
+    <SectionCollapse
+      collapsed={!props.open}
+      inert={!props.open}
+      className="companion-voice-presence"
+      innerClassName="companion-voice-presence-content"
+    >
+      <CompanionVoiceCall {...props} />
+    </SectionCollapse>
+  );
+}
+
+function CompanionVoiceCall(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -58,6 +73,7 @@ export function CompanionVoicePanel(props: Props) {
   );
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const start = useCallback(async () => {
+    if (!latest.current.open) return;
     const version = ++launchVersion.current;
     setLoading(true);
     setConfigurationError(false);
@@ -66,7 +82,8 @@ export function CompanionVoicePanel(props: Props) {
         window.electronAPI.voiceConversation.models(),
         window.electronAPI.voiceConversation.preference(props.bot.id),
       ]);
-      if (version !== launchVersion.current || latest.current.blocked) return;
+      if (version !== launchVersion.current || !latest.current.open || latest.current.blocked)
+        return;
       const { selection, protocol } = resolveVoiceConfiguration(models, preference.selection);
       if (!selection || !protocol) {
         latest.current.onConfigure();
@@ -74,7 +91,8 @@ export function CompanionVoicePanel(props: Props) {
       }
       controller.setBlocked(false);
       await controller.start(selection, preference.sentencePlayback ?? true);
-      if (version === launchVersion.current && !latest.current.blocked) controller.retryUnsent();
+      if (version === launchVersion.current && latest.current.open && !latest.current.blocked)
+        controller.retryUnsent();
     } catch {
       if (version === launchVersion.current) setConfigurationError(true);
     } finally {
@@ -83,23 +101,32 @@ export function CompanionVoicePanel(props: Props) {
   }, [controller, props.bot.id]);
 
   useEffect(() => {
+    if (!props.open) return;
     titleRef.current?.focus();
     void start();
     return () => {
+      // Closing retains only the visual surface for its exit transition. Release
+      // capture/playback now, and invalidate late loads before visual unmount.
       ++launchVersion.current;
       controller.end();
     };
-  }, [controller, start]);
+  }, [controller, start, props.open]);
   useEffect(() => {
+    if (!props.open) return;
     controller.setBlocked(props.blocked);
     if (props.blocked) {
       ++launchVersion.current;
       setLoading(false);
     }
-  }, [controller, props.blocked]);
-  useEffect(() => controller.updateMessages(props.messages), [controller, props.messages]);
-  useEffect(() => controller.refreshActivity(), [controller, props.taskBusy]);
+  }, [controller, props.blocked, props.open]);
   useEffect(() => {
+    if (props.open) controller.updateMessages(props.messages);
+  }, [controller, props.messages, props.open]);
+  useEffect(() => {
+    if (props.open) controller.refreshActivity();
+  }, [controller, props.taskBusy, props.open]);
+  useEffect(() => {
+    if (!props.open) return;
     const initialOwner = getDataOwnerGeneration();
     const owner = `${initialOwner.dataOwnerId}:${initialOwner.generation}`;
     const removeAuth = window.electronAPI.onAuthStateChange((next) => {
@@ -118,14 +145,16 @@ export function CompanionVoicePanel(props: Props) {
       removeAuth();
       removePower();
     };
-  }, [controller]);
+  }, [controller, props.open]);
+  // end() resets the live controller immediately. Keep its last visible frame
+  // while fading out so idle/Resume does not flash during the exit animation.
+  const presentation = useRef({ state, loading, blocked: props.blocked, configurationError });
+  if (props.open)
+    presentation.current = { state, loading, blocked: props.blocked, configurationError };
   return (
     <CompanionVoiceToolbar
       bot={props.bot}
-      state={state}
-      loading={loading}
-      blocked={props.blocked}
-      configurationError={configurationError}
+      {...presentation.current}
       titleRef={titleRef}
       onResume={() => void start()}
       onMute={() => void controller.toggleMute()}
