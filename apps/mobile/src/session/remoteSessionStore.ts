@@ -389,6 +389,10 @@ const INPUT_PROJECTION_REMOTE_EVIDENCE_LIMIT = 256;
 const sessionLiveActivity = new Map<string, RemoteSessionLiveActivity>();
 const sessionRunning = new Map<string, boolean>();
 const sessionRunStatus = new Map<string, RemoteSessionRunStatus>();
+// Pushes can precede the first task list. Keep their provenance until list
+// reconciliation can decide whether they belong to the selected task row.
+const sessionRuntimeSources = new Map<string, string>();
+const sessionInteractionSources = new Map<string, string>();
 // `maker:list-active` snapshots race live maker pushes during reconnect hydration. A snapshot
 // may clear an older transient reconnect attempt, but must not erase a newer retry event that
 // arrived after the request started.
@@ -1081,6 +1085,36 @@ function sessionStateWriteAllowed(sessionId: string, deviceId?: string): boolean
     || mergedSessionById.get(sessionId)?.canonicalDeviceId === deviceId;
 }
 
+function clearSourcedSessionState(sessionId: string, sources: Map<string, string>): void {
+  sources.delete(sessionId);
+  if (sources === sessionInteractionSources) {
+    deletePendingInteractionState(sessionId);
+    pendingInteractionsAuthoritative.delete(sessionId);
+  } else {
+    deleteSessionLiveActivity(sessionId);
+    writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS);
+    writeMakerTurnRunning(sessionId, false);
+    sessionMakerActivityEpochs.delete(sessionId);
+  }
+}
+
+function acceptSessionStateSource(
+  sessionId: string,
+  deviceId: string | undefined,
+  sources: Map<string, string>,
+): boolean {
+  if (!sessionStateWriteAllowed(sessionId, deviceId)) return false;
+  if (!deviceId) return true; // Local optimistic updates retain their remote provenance.
+  const previous = sources.get(sessionId);
+  if (previous && previous !== deviceId && !(sessionDeviceIndex.has(sessionId)
+    && sessionStateWriteAllowed(sessionId, previous))) {
+    clearSourcedSessionState(sessionId, sources);
+    emit();
+  }
+  sources.set(sessionId, deviceId);
+  return true;
+}
+
 function normalizeWindowForRetention(
   sessionId: string,
   list: readonly RemoteMessage[],
@@ -1136,6 +1170,8 @@ function invalidateSessionMessageWindowState(
 }
 
 function removeSessionRuntimeState(sessionId: string): void {
+  sessionRuntimeSources.delete(sessionId);
+  sessionInteractionSources.delete(sessionId);
   protectedQuestions.delete(sessionId);
   visibleInteractionCache.delete(sessionId);
   void clearHistoryDisk(undefined, sessionId);
@@ -1669,6 +1705,13 @@ function recomputeSessions(): void {
   reconcileVisibleSessions();
   mergedSessionById.clear();
   for (const session of mergedSessions) mergedSessionById.set(session.id, session);
+  for (const sources of [sessionRuntimeSources, sessionInteractionSources]) {
+    for (const [sessionId, deviceId] of sources) {
+      if (sessionDeviceIndex.has(sessionId) && !sessionStateWriteAllowed(sessionId, deviceId)) {
+        clearSourcedSessionState(sessionId, sources);
+      }
+    }
+  }
   // Usage-only patches bypass this projection and cannot change Home fields.
   // Reuse the list comparison above to skip its scan and allocations entirely.
   if (sessionsChanged) reconcileHomeSessions();
@@ -4175,8 +4218,9 @@ export const remoteSessionStore = {
   setPendingInteractions(
     sessionId: string,
     list: readonly PendingInteraction[],
-    options: { finalizeStreaming?: boolean } = {},
+    options: { finalizeStreaming?: boolean; deviceId?: string } = {},
   ): void {
+    if (!acceptSessionStateSource(sessionId, options.deviceId, sessionInteractionSources)) return;
     // 已确认 dismiss 的延长抑制条目按「缺席即过期」回收:本轮快照不含该
     // requestId = 被控端已确认移除,慢的旧快照此后不可能再带着它(权威读取按
     // 请求序返回),条目可以安全解除;仍含 = 这是 resolve 前发出的旧快照,保留
@@ -4369,6 +4413,7 @@ export const remoteSessionStore = {
     }
     let changed = false;
     for (const [sessionId, { running, activityPhase, activityAttention }] of snapshotStates) {
+      acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources);
       if (!running) {
         changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
         changed = writeMakerTurnRunning(sessionId, false) || changed;
@@ -4687,7 +4732,7 @@ export const remoteSessionStore = {
     if (channel === 'maker:status-changed' && isRecord(payload)) {
       const sessionId = readString(payload, 'sessionId');
       const status = readString(payload, 'status');
-      if (sessionId && status === 'closed' && sessionStateWriteAllowed(sessionId, deviceId)) this.setSessionRunning(sessionId, false);
+      if (sessionId && status === 'closed' && acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources)) this.setSessionRunning(sessionId, false);
       return;
     }
     if (channel === 'usage:message-turn-cost' && isRecord(payload)) {
@@ -4786,7 +4831,7 @@ export const remoteSessionStore = {
     if (channel === 'maker:interaction-request' && isRecord(payload)) {
       const sessionId = readString(payload, 'sessionId');
       const request = isRecord(payload.request) ? payload.request : null;
-      if (sessionId && request && sessionStateWriteAllowed(sessionId, deviceId)) {
+      if (sessionId && request && acceptSessionStateSource(sessionId, deviceId, sessionInteractionSources)) {
         this.applyInteractionRequest(sessionId, {
           request: request as PendingInteraction['request'],
           persistId: readString(payload, 'persistId') ?? undefined,
@@ -4797,7 +4842,7 @@ export const remoteSessionStore = {
     if (channel === 'maker:interaction-dismissed' && isRecord(payload)) {
       const sessionId = readString(payload, 'sessionId');
       const requestId = readString(payload, 'requestId');
-      if (sessionId && requestId && sessionStateWriteAllowed(sessionId, deviceId)) {
+      if (sessionId && requestId && acceptSessionStateSource(sessionId, deviceId, sessionInteractionSources)) {
         if (payload.reason === 'resolved' && !(isRecord(payload.decision) && payload.decision.dismissed === true)) {
           this.confirmProtectedQuestion(sessionId, requestId);
         }
@@ -4838,7 +4883,7 @@ export const remoteSessionStore = {
     const sessionId = readString(payload, 'sessionId');
     const phase = readString(payload, 'phase');
     if (!sessionId || !isRemoteSessionLiveActivityPhase(phase)
-      || !sessionStateWriteAllowed(sessionId, deviceId)) return;
+      || !acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources)) return;
     markSessionMakerActivity(sessionId);
     const compactDetail = typeof payload.compactDetail === 'string' ? payload.compactDetail : '';
     let changed = false;
@@ -4906,7 +4951,7 @@ export const remoteSessionStore = {
     // Text has its own transport replacement/retention rules; only fence the
     // runtime signals here, so reconnecting transports keep their existing data path.
     if ((type === 'status' || type === 'done' || type === 'error')
-      && !sessionStateWriteAllowed(sessionId, deviceId)) return;
+      && !acceptSessionStateSource(sessionId, deviceId, sessionRuntimeSources)) return;
     markSessionMakerActivity(sessionId);
     const reconnectCleared = type !== null && type !== 'error' && type !== 'done'
       ? clearSessionReconnectAttempt(sessionId)
@@ -5358,6 +5403,8 @@ export const remoteSessionStore = {
       bumpHomeStatusVersion();
     }
     sessionRunStatus.clear();
+    sessionRuntimeSources.clear();
+    sessionInteractionSources.clear();
     sessionMakerActivityEpochs.clear();
     makerActivityEpoch = 0;
     sessionMessageSyncMarkers.clear();

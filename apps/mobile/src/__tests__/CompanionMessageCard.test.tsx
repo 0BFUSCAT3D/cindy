@@ -264,6 +264,40 @@ it.each(['running', 'completed'] as const)('keeps the owning computer\'s %s stat
   expect(openEntry()?.disabled).toBe(false);
 });
 
+// Review regression: a push can beat both task lists during reconnect. Choosing
+// the row must retain same-host evidence and discard a different host's evidence.
+it.each(['home', 'other'])('reconciles %s activity received before the task list', async (source) => {
+  remoteSessionStore.applyRemotePush(source, SESSION_ACTIVITY_CHANNEL, { sessionId: 'child', phase: 'running' });
+  h.invoke.mockRejectedValue(new Error('read failed'));
+  await render();
+  await act(async () => remoteSessionStore.setDeviceSessions('home', 'Mac', [
+    { id: 'child', title: 'Own task', status: 'active' } as RemoteSession,
+  ]));
+  expect(node.textContent).toContain(`devices.companions.status.${source === 'home' ? 'running' : 'unknown'}`);
+  expect(openEntry()?.disabled).toBe(false);
+});
+
+// Detail/reconnect snapshots share this production store entry. Exercise both
+// arrival orders and retain same-host snapshots, including an authoritative clear.
+it.each(['before', 'after'])('scopes pending snapshots received %s the owning row', async (order) => {
+  const row = () => remoteSessionStore.setDeviceSessions('home', 'Mac', [
+    { id: 'child', title: 'Own task', status: 'active' } as RemoteSession,
+  ]);
+  const pending = [{ request: { kind: 'permission' as const, requestId: 'permission-1' } }];
+  if (order === 'after') row();
+  remoteSessionStore.setPendingInteractions('child', pending, { deviceId: 'other', finalizeStreaming: true });
+  if (order === 'before') row();
+  h.invoke.mockRejectedValue(new Error('read failed'));
+  await render();
+  expect(node.textContent).toContain('devices.companions.status.unknown');
+  await act(async () => remoteSessionStore.setPendingInteractions('child', pending, { deviceId: 'home' }));
+  expect(node.textContent).toContain('devices.companions.status.waiting');
+  await act(async () => remoteSessionStore.setPendingInteractions('child', [], { deviceId: 'other' }));
+  expect(node.textContent).toContain('devices.companions.status.waiting');
+  await act(async () => remoteSessionStore.setPendingInteractions('child', [], { deviceId: 'home' }));
+  expect(node.textContent).not.toContain('devices.companions.status.waiting');
+});
+
 // A missing activity relay must not hide an interaction already known to the list.
 it('shows waiting for pending interactions without activity and clears it after dismissal', async () => {
   remoteSessionStore.setDeviceSessions('home', 'Mac', [{ id: 'child', title: 'Own task', status: 'active' } as RemoteSession]);
