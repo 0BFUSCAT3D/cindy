@@ -541,6 +541,13 @@ describe('WechatIM host boundary', () => {
   it('switches an idle connection without reauthorizing and refuses queued work', async () => {
     let queued = 0;
     const { im, transport, testHost } = restoredConnection(() => queued);
+    let release!: () => void;
+    let entered!: () => void;
+    const disposing = new Promise<void>((resolve) => { entered = resolve; });
+    const disposed = new Promise<void>((resolve) => { release = resolve; });
+    const disposeAllSessions = vi.fn(() => { entered(); return disposed; });
+    im.attachTurnRuntime({ runner: { disposeAllSessions },
+      repo: {}, config: {}, resetSessionToDefaults: vi.fn() } as never);
     await im.init();
     try {
       expect(im.isOwner('owner')).toBe(true);
@@ -550,8 +557,17 @@ describe('WechatIM host boundary', () => {
       await expect(im.updateCompanionBinding(update)).rejects.toThrow('WECHAT_CONNECTION_BUSY');
       expect(update).not.toHaveBeenCalled();
       expect(transport.notifyStop).not.toHaveBeenCalled();
+      expect(disposeAllSessions).not.toHaveBeenCalled();
       queued = 0;
-      await im.updateCompanionBinding(update);
+      const changing = im.updateCompanionBinding(update);
+      // r4318350746: old background-output listeners must be gone before routing
+      // changes or polling restarts. Exercise the public lifecycle, tier: unit.
+      await Promise.race([disposing, changing]);
+      expect(disposeAllSessions).toHaveBeenCalledOnce();
+      expect(update).not.toHaveBeenCalled();
+      expect(transport.notifyStart).toHaveBeenCalledOnce();
+      release();
+      await changing;
       expect(update).toHaveBeenCalledOnce();
       expect(im.getState().phase).toBe('connected');
       expect(transport.notifyStart).toHaveBeenCalledTimes(2);
@@ -635,7 +651,8 @@ describe('WechatIM host boundary', () => {
     });
     if (!fail) mediaMocks.removeReleasedWechatFiles.mockImplementationOnce(async () => { order.push('files'); });
     im.attachTurnRuntime({ runner: { companionBotIdFor: () => 'cindy',
-      resolveRouteTarget: async () => ({ row: { id: 'companion-owner' } }) },
+      resolveRouteTarget: async () => ({ row: { id: 'companion-owner' } }),
+      disposeAllSessions: async () => { order.push('dispose'); } },
       repo: {}, config: {}, resetSessionToDefaults: vi.fn() } as never);
     vi.mocked(transport.poll).mockImplementationOnce((_cursor, signal) => new Promise((resolve) => {
       signal.addEventListener('abort', () => resolve({ cursor: 'next', messages: [{
@@ -659,7 +676,7 @@ describe('WechatIM host boundary', () => {
       const changing = im.updateCompanionBinding(update, { cancelPendingIf: () => true });
       if (fail) await expect(changing).rejects.toThrow('DRAIN_FAILED');
       else await changing;
-      expect(order).toEqual(fail ? ['batch', 'cancel'] : ['batch', 'cancel', 'files', 'update']);
+      expect(order).toEqual(fail ? ['batch', 'cancel'] : ['batch', 'cancel', 'files', 'dispose', 'update']);
       if (fail) expect(mediaMocks.removeReleasedWechatFiles).not.toHaveBeenCalled();
       else expect(mediaMocks.removeReleasedWechatFiles).toHaveBeenCalledWith([released]);
       expect(transport.notifyStart).toHaveBeenCalledTimes(fail ? 1 : 2);

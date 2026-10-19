@@ -238,6 +238,8 @@ export class WechatIM extends BaseIM implements RichChannelIM {
         if (!cancelPending && binding && await countQueuedWechatTasks(db, binding.bindingEpoch)) {
           throw new Error('WECHAT_CONNECTION_BUSY');
         }
+        // End the old route's background-output listeners before reusing this transport.
+        await this.#turnRuntime?.runner.disposeAllSessions();
         update();
         updated = true;
       } finally {
