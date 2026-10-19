@@ -326,8 +326,6 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
         return block;
       });
     };
-    projectMessage(wireMessage);
-    if (encoded.wire.cindy?.autoReviewSourceContent) projectMessage(encoded.wire.cindy.autoReviewSourceContent);
     const callId = deps.newId();
     if (encoded.onTranscriptUserEntry || encoded.onInteractionStateChange) {
       sendCallbacks.set(callId, {
@@ -338,7 +336,11 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
         sendCallbacks.delete(sendCallbacks.keys().next().value as string);
       }
     }
-    await (await link.ensure()).callWithId(callId, method, [wireMessage, encoded.wire]);
+    const client = await link.ensure();
+    // 连回之后才转换路径：让出期间改过的目录要等连回补发后才有虚拟路径。
+    projectMessage(wireMessage);
+    if (encoded.wire.cindy?.autoReviewSourceContent) projectMessage(encoded.wire.cindy.autoReviewSourceContent);
+    await client.callWithId(callId, method, [wireMessage, encoded.wire]);
   }
 
   async function sendLikeTracked(method: 'send' | 'steer', message: UserMessage, opts?: SendOptions): Promise<void> {

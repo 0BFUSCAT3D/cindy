@@ -276,6 +276,11 @@ export async function startRemoteAgentSession(
   // 否则新授予的目录过不了本机 shell/root 判定，撤掉的还被本机上限当可信根。
   let extraDirs = [...new Set(opts.extraDirs ?? [])];
   let writableDirs = [...new Set(opts.writableDirs ?? [])];
+  /**
+   * 第一次打开时交给对方的目录列表。对方按它的顺序给目录起虚拟名(additional/dir-<序号>)，连回时原样再给一次，
+   * 对话里出现过的虚拟路径才会指向同一个目录；之后的增减按运行中改目录的方式补发(见 reapply)。
+   */
+  const openedDirs = { extraDirs: [...(opts.extraDirs ?? [])], writableDirs: [...(opts.writableDirs ?? [])] };
   const workspace = new ExecutorWorkspace({ workingDir: opts.workingDir, extraDirs: [...extraDirs, ...writableDirs] });
   const applyDirs = () => workspace.setExtraDirs([...new Set([...extraDirs, ...writableDirs])]);
   let permissionMode = opts.permissionMode;
@@ -378,7 +383,7 @@ export async function startRemoteAgentSession(
   /** 让出后能不能接回原来的会话：没有对话就不用接；会话 id 会被对方改写的(见 hostRewritesResumeId)不让出。 */
   const resumableAfterRelease = () => {
     if (!hasHistory || !controller || !isNativeSessionId(controller.handle.id)) return true;
-    return !hostRewritesResumeId(controller.handle.id, { workingDir: opts.workingDir, homeDir: os.homedir(), extraDirs, writableDirs });
+    return !hostRewritesResumeId(controller.handle.id, { workingDir: opts.workingDir, homeDir: os.homedir(), ...openedDirs });
   };
 
   const isIdle = () => linkState === 'connected'
@@ -459,6 +464,13 @@ export async function startRemoteAgentSession(
     let resumeLost = false;
     // 只处理当前这条连接的往来；正在让出名额的那条剩下的收尾不再进任务。
     const isCurrent = () => active === client && linkState !== 'releasing';
+    // 连回时只补新映射，不替换已有的(见 ExecutorWorkspace.addAliases)。
+    const applyProjection = (projection: Parameters<typeof shadowAliases>[0], virtualRoot: string | undefined) => {
+      const aliases = shadowAliases(projection, workspace.workingDir, personalRoots, openedDirs);
+      if (reconnect) workspace.addAliases(aliases);
+      else workspace.setAliases(aliases);
+      workspace.setVirtualRoot(virtualRoot);
+    };
     const client: RemoteAgentRunClient = new RemoteAgentRunClient(deps.newId(), poller, {
       onEvent: (event) => {
         if (!isCurrent()) return;
@@ -479,8 +491,7 @@ export async function startRemoteAgentSession(
         let state = remaining;
         const projection = state.workspaceProjection as Parameters<typeof shadowAliases>[0] | undefined;
         if (projection?.virtualWorkspace === true && typeof projection.shadowDir === 'string') {
-          workspace.setAliases(shadowAliases(projection, workspace.workingDir, personalRoots, { extraDirs, writableDirs }));
-          workspace.setVirtualRoot(projection.mirrorRoot);
+          applyProjection(projection, projection.mirrorRoot);
           projectionReady = true;
           state = { ...state };
           delete state.workspaceProjection;
@@ -540,10 +551,7 @@ export async function startRemoteAgentSession(
         throw new Error('[REMOTE_AGENT_EXPIRED] The task has ended on this computer.');
       }
       const started = parseStartedInfo(raw, kind);
-      if (!projectionReady) {
-        workspace.setAliases(shadowAliases(started, workspace.workingDir, personalRoots, { extraDirs, writableDirs }));
-        workspace.setVirtualRoot(started.virtualWorkspace ? started.mirrorRoot : undefined);
-      }
+      if (!projectionReady) applyProjection(started, started.virtualWorkspace ? started.mirrorRoot : undefined);
       opened = true;
       linkState = 'connected';
       lastStarted = started;
@@ -588,8 +596,7 @@ export async function startRemoteAgentSession(
       thinkingEnabled,
       permissionMode,
       planMode: typeof state.planMode === 'boolean' ? state.planMode : planMode,
-      extraDirs,
-      writableDirs,
+      ...openedDirs,
       vendorOptions: vendor,
       resumeSessionId: resumeId,
       codexHistoryHasProductPrompt: historyHasProductPrompt,
@@ -621,8 +628,7 @@ export async function startRemoteAgentSession(
       options: encodeStartOptions(startOptions),
       workspace: {
         workingDir: opts.workingDir,
-        extraDirs: reconnect ? extraDirs : opts.extraDirs ?? [],
-        writableDirs: reconnect ? writableDirs : opts.writableDirs ?? [],
+        ...openedDirs,
         platform: process.platform,
         shell: shellName(),
         osVersion: `${os.type()} ${os.release()}`,
@@ -665,13 +671,20 @@ export async function startRemoteAgentSession(
     }
   }
 
-  /** 连回后补上对方进程里的状态(不在启动选项里的)。失败只记日志：不影响接着干活。 */
+  /**
+   * 连回后补上对方进程里的状态(不在启动选项里的)。失败只记日志：不影响接着干活。
+   * 目录：打开时给的是第一次的列表，之后的增减在这里按运行中改目录的方式补发，与一直连着时的效果一致。
+   */
   async function reapply(client: RemoteAgentRunClient): Promise<void> {
     const methods = new Set(firstStarted?.methods ?? []);
     const steps: Array<[RemoteAgentMethod, unknown[]]> = [];
+    const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((dir, index) => dir === b[index]);
     if (Object.keys(vendorPatches).length && methods.has('setVendorOptions')) steps.push(['setVendorOptions', [vendorPatches]]);
-    if (libraryRoot && methods.has('setExtraDirs')) {
-      steps.push(['setExtraDirs', [workspace.virtualizeDirs(extraDirs), workspace.virtualizeDirs([libraryRoot])[0]]]);
+    if ((libraryRoot || !same(extraDirs, openedDirs.extraDirs)) && methods.has('setExtraDirs')) {
+      steps.push(['setExtraDirs', [workspace.virtualizeDirs(extraDirs), libraryRoot ? workspace.virtualizeDirs([libraryRoot])[0] : null]]);
+    }
+    if (!same(writableDirs, openedDirs.writableDirs) && methods.has('setWritableDirs')) {
+      steps.push(['setWritableDirs', [workspace.virtualizeDirs(writableDirs)]]);
     }
     if (autoReviewFallback && methods.has('useCindyAutoReviewFallback')) steps.push(['useCindyAutoReviewFallback', []]);
     for (const [method, args] of steps) {

@@ -289,6 +289,11 @@ interface Scenario {
 
 let scenario: Scenario;
 let nextNative = 0;
+/**
+ * 假 Agent 收到 'cat' 时按这个虚拟路径读文件。不写进消息：测试里对方的目录也在本机临时目录下，
+ * 落在工作目录的上级目录里，写进消息会被当成本机路径再投影一次。
+ */
+let catTarget = '';
 /** 下一个 Agent 的会话 id(模拟 Pi 的会话文件路径)。 */
 let nextNativeId: string | null = null;
 
@@ -346,6 +351,8 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
         say(await tool('Bash', { command: 'while [ ! -e bg.go ]; do sleep 0.01; done; echo bg-finished', run_in_background: true }));
       } else if (text.startsWith('read ')) {
         say(await tool('BashOutput', { bash_id: text.slice(5) }));
+      } else if (text === 'cat') {
+        say(await tool('Read', { file_path: catTarget }));
       } else if (text === 'whoami') {
         say(`${id} ${model} ${effort ?? ''} plan:${planMode}`);
       } else {
@@ -590,7 +597,9 @@ describe('remote connection pool with a real host', () => {
       model: 'm2', providerId: 'p2', effort: 'high', permissionMode: 'acceptEdits', planMode: true,
       resumeSessionId: a.id,
     });
-    expect(reopened.workspace.extraDirs).toEqual([extra]);
+    // 目录：打开时仍给第一次的列表，连回后按运行中改目录补发。
+    expect(reopened.workspace.extraDirs).toEqual([]);
+    expect(scenario.calls.filter((call) => call.method === 'setExtraDirs').map((call) => (call.args[0] as string[]).length)).toEqual([1]);
   });
 
   it('does not reapply one-shot rewind or fork options when reconnecting', async () => {
@@ -965,6 +974,68 @@ describe('remote connection pool with a real host', () => {
     const before = scenario.calls.length;
     await ask(a, events, 'again');
     expect(scenario.calls.slice(before).map((call) => call.method)).toEqual(['send']);
+  });
+
+  /** 建一个带标记文件的目录。 */
+  const dirWith = (name: string) => {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'f.txt'), `in-${name}`);
+    return dir;
+  };
+  const lastExtraDirs = () => scenario.calls.filter((call) => call.method === 'setExtraDirs').at(-1)!.args[0] as string[];
+  /** 让对方 Agent 按虚拟路径读文件。 */
+  const readVirtual = (handle: AgentSessionHandle, watcher: ReturnType<typeof watch>, file: string) => {
+    catTarget = file;
+    return ask(handle, watcher, 'cat');
+  };
+
+  // PR #6483 review：连回时用新的打开结果整体替换路径映射，运行中分配的 runtime-* 丢失；
+  // 消息里的路径又在连回前按旧映射转换。
+  it('keeps directories added while connected or released at their virtual paths after reconnecting', async () => {
+    const pool = newPool();
+    const live = dirWith('live');
+    const later = dirWith('later');
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await a.setExtraDirs!([live]);
+    const [liveVirtual] = lastExtraDirs();
+    expect(liveVirtual).toContain('runtime-');
+    await sleep(5);
+    await start(pool);
+    // 让出期间再加一个：只记在本机，连回后按运行中改目录补发。
+    await a.setExtraDirs!([live, later]);
+    await sleep(5);
+    await ask(a, events, `look at ${live}/f.txt and ${later}/f.txt`);
+    expect(scenario.started).toHaveLength(3);
+    expect(scenario.started[2].extraDirs).toEqual([]);
+    const replayed = lastExtraDirs();
+    expect(replayed[0]).toBe(liveVirtual);
+    // 对方收到的消息里是连回后的虚拟路径。
+    const sent = scenario.calls.filter((call) => call.method === 'send').at(-1)!.args[0] as { content: string };
+    expect(sent.content).toBe(`look at ${replayed[0]}/f.txt and ${replayed[1]}/f.txt`);
+    expect(await readVirtual(a, events, `${liveVirtual}/f.txt`)).toContain('in-live');
+    expect(await readVirtual(a, events, `${replayed[1]}/f.txt`)).toContain('in-later');
+  });
+
+  it('never points an old virtual path at another directory after a middle directory is removed and the task reconnects', async () => {
+    const pool = newPool();
+    const dirs = ['x', 'a', 'b'].map(dirWith);
+    const a = await start(pool, { extraDirs: dirs });
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    const virtual = scenario.started[0].extraDirs!;
+    expect(virtual).toHaveLength(3);
+    await a.setExtraDirs!(dirs.slice(1));
+    await sleep(5);
+    await start(pool);
+    await sleep(5);
+    expect(await readVirtual(a, events, `${virtual[1]}/f.txt`)).toContain('in-a');
+    expect(await readVirtual(a, events, `${virtual[2]}/f.txt`)).toContain('in-b');
+    // 打开时给对方的仍是第一次的列表(序号不变)，删掉的那个由补发去掉。
+    expect(scenario.started[2].extraDirs).toEqual(virtual);
+    expect(lastExtraDirs()).toEqual(virtual.slice(1));
   });
 
   it('answers that a model switch needs no extra rebuild while released, without reconnecting', async () => {
