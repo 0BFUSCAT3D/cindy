@@ -17,23 +17,31 @@ import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import {
   __resetGlobalTabsForTest,
   addGlobalPluginTab,
+  defaultGroupForGhost,
   getActiveGlobalTabId,
   getGlobalTabs,
   getGlobalTabsSnapshot,
+  hasPluginPlacementMemory,
+  isPluginWindowPlacement,
+  rememberPluginWindowPlacement,
   removeGlobalTab,
   reorderGlobalTabs,
+  resetPluginPlacement,
   sanitizeGlobalTabsSnapshot,
   setActiveGlobalTabId,
 } from '../globalTabs';
+import { __resetTabGroupsForTest, getTabGroup, setTabGroup } from '../tabGroups';
 
 beforeEach(() => {
   window.localStorage.clear();
   __resetGlobalTabsForTest();
+  __resetTabGroupsForTest();
   setDataOwnerGeneration('owner-a', 1);
 });
 
 afterEach(() => {
   __resetGlobalTabsForTest();
+  __resetTabGroupsForTest();
   window.localStorage.clear();
 });
 
@@ -97,7 +105,60 @@ describe('globalTabs', () => {
     ).toEqual({
       tabs: [{ id: 'ok', kind: 'plugin-view', state: { instanceId: 'alpha' } }],
       dismissedInstanceIds: ['x'],
+      placedInstanceIds: [],
+      windowInstanceIds: [],
     });
-    expect(sanitizeGlobalTabsSnapshot('nope')).toEqual({ tabs: [], dismissedInstanceIds: [] });
+    expect(sanitizeGlobalTabsSnapshot('nope')).toEqual({
+      tabs: [],
+      dismissedInstanceIds: [],
+      placedInstanceIds: [],
+      windowInstanceIds: [],
+    });
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:addGlobalPluginTab({ghost}) / removeGlobalTab / resetPluginPlacement /
+  //   rememberPluginWindowPlacement;可观察的是页签 id 跟插件实例走(关掉再打开同一 id)、首次
+  //   出现按 panel.position / mainView.side 放默认边、关掉再打开保留用户拖到的边、「恢复默认
+  //   位置」清掉窗口记忆并回到默认边。
+  // - Bug / 规则依据:页签组模型第三阶段——插件给默认放置,用户的放置记忆优先。
+  // - 现有覆盖缺口:新行为。
+  // - 最小失败输入:一个 panel.position:'bottom' 的插件 + add → setTabGroup('top') → remove → add。
+  // - tier:unit(jsdom localStorage)。
+  it('keeps placement memory per plugin instance and resets it on demand', () => {
+    const ghost = (position?: 'left' | 'right' | 'top' | 'bottom', mainView?: object) =>
+      ({
+        manifest: {
+          id: 'beta',
+          name: 'Beta',
+          ...(position !== undefined || mainView === undefined
+            ? { panel: { html: 'p.html', ...(position ? { position } : {}) } }
+            : {}),
+          ...(mainView ? { mainView: { html: 'm.html', ...mainView } } : {}),
+        },
+        enabled: true,
+      }) as unknown as import('../../../../shared/ghost').InstalledGhost;
+
+    const tab = addGlobalPluginTab('beta', { ghost: ghost('bottom') })!;
+    expect(tab.id).toBe('g_beta');
+    expect(getTabGroup('g_beta')).toBe('bottom');
+    // 用户拖到上方,关掉再打开:还在上方,不重新套默认边。
+    setTabGroup('g_beta', 'top');
+    removeGlobalTab('g_beta');
+    expect(addGlobalPluginTab('beta', { ghost: ghost('bottom') })!.id).toBe('g_beta');
+    expect(getTabGroup('g_beta')).toBe('top');
+    expect(hasPluginPlacementMemory('beta')).toBe(true);
+
+    // 弹过窗口的记忆;恢复默认位置 = 清窗口记忆、回到声明的边。
+    rememberPluginWindowPlacement('beta', true);
+    expect(isPluginWindowPlacement('beta')).toBe(true);
+    resetPluginPlacement('beta', ghost('bottom'));
+    expect(isPluginWindowPlacement('beta')).toBe(false);
+    expect(getTabGroup('g_beta')).toBe('bottom');
+
+    // 缺省 position 的停靠面板 → left(与历史停靠面板一致);mainView.side 优先。
+    expect(defaultGroupForGhost(ghost(undefined))).toBe('left');
+    expect(defaultGroupForGhost(ghost(undefined, { open: 'sidebar', side: 'right' }))).toBe('right');
+    expect(defaultGroupForGhost(ghost(undefined, { open: 'page' }))).toBe('right');
   });
 });

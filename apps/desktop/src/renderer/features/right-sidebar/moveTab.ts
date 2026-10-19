@@ -5,7 +5,13 @@
  */
 
 import { createLogger } from '@/lib/logger';
-import { isGlobalTabId, setActiveGlobalTabId } from './globalTabs';
+import {
+  findGlobalTab,
+  isGlobalTabId,
+  rememberPluginWindowPlacement,
+  setActiveGlobalTabId,
+  type PluginViewTabState,
+} from './globalTabs';
 import { requestRightSidebarVisibility } from './lib/sidebarCommands';
 import { setActiveTab } from './store';
 import { getTabGroup, setGroupActiveTabId, setTabGroup, type TabGroupId } from './tabGroups';
@@ -22,6 +28,9 @@ export function moveTabToGroup(
   setGroupActiveTabId(target, sessionId, tabId);
   if (isGlobalTabId(tabId)) {
     setActiveGlobalTabId(tabId);
+    // 插件视图放回侧边栏的某一边 = 不再记它「在独立窗口里」。
+    const instanceId = (findGlobalTab(tabId)?.state as PluginViewTabState | null)?.instanceId;
+    if (instanceId) rememberPluginWindowPlacement(instanceId, false);
   } else if (sessionId) {
     void setActiveTab(sessionId, tabId).catch((err) => {
       log.warn('activate moved tab failed', { sessionId, tabId, err });

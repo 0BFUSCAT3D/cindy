@@ -1,5 +1,11 @@
 import { useState } from 'react';
-import { PanelRight, SlidersHorizontal } from 'lucide-react';
+import {
+  AppWindow,
+  PanelRight,
+  RotateCcw,
+  SlidersHorizontal,
+  SquareArrowOutUpRight,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMatch, useNavigate } from 'react-router-dom';
 
@@ -10,8 +16,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { addGlobalPluginTab, setActiveGlobalTabId } from '@/features/right-sidebar/globalTabs';
-import { requestRightSidebarVisibility } from '@/features/right-sidebar/lib/sidebarCommands';
+import {
+  hasPluginPlacementMemory,
+  resetPluginPlacement,
+  useGlobalTabs,
+} from '@/features/right-sidebar/globalTabs';
+import {
+  focusExistingPluginTab,
+  openPluginInSidebar,
+  openPluginInWindow,
+  resolvePluginOpenTarget,
+} from '@/features/right-sidebar/pluginPlacement';
+import { useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
 import { cn } from '@/lib/utils';
 
 import { SIDEBAR_RAIL_ICON_BUTTON_CLASS } from './SidebarIconButton';
@@ -56,22 +72,31 @@ export function GhostMainViewNavEntry({
       className="shrink-0"
     />
   );
-  const open = () => navigate(`/apps/${encodeURIComponent(item.instanceId)}`);
+  const openPage = () => navigate(`/apps/${encodeURIComponent(item.instanceId)}`);
+  // 点击:已在侧边栏 / 窗口里就聚焦;否则按用户放置记忆 → 插件声明 → 内置默认(页面)。
+  const open = () => {
+    if (focusExistingPluginTab(item.installedGhost)) return;
+    const target = resolvePluginOpenTarget(item.installedGhost);
+    if (target === 'sidebar') openPluginInSidebar(item.installedGhost);
+    else if (target === 'window') openPluginInWindow(item.installedGhost);
+    else openPage();
+  };
   const openDetails = () =>
     navigate(`/settings?tab=ghosts&ghost=${encodeURIComponent(item.instanceId)}`);
-  // 右键菜单:「在侧边栏中打开」= 把这个插件视图作为全局页签(不跟对话)钉进右侧栏。
+  // 右键菜单:在页面 / 侧边栏 / 独立窗口中打开;有放置记忆时可恢复默认位置。
+  // 订阅全局页签与组归属,记忆变化时菜单项同步。
+  useGlobalTabs();
+  useTabGroupAssignments();
+  const canReset = hasPluginPlacementMemory(item.instanceId);
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setContextMenuPos({ x: e.clientX, y: e.clientY });
   };
-  const openInSidebar = () => {
-    const tab = addGlobalPluginTab(item.instanceId);
-    if (!tab) return;
-    setActiveGlobalTabId(tab.id);
-    requestRightSidebarVisibility('open');
-  };
+  const openInSidebar = () => openPluginInSidebar(item.installedGhost);
+  const openInWindow = () => openPluginInWindow(item.installedGhost);
+  const resetPlacement = () => resetPluginPlacement(item.instanceId, item.installedGhost);
   const contextMenu = (
     <DropdownMenu
       open={contextMenuPos !== null}
@@ -96,12 +121,41 @@ export function GhostMainViewNavEntry({
         <DropdownMenuItem
           onClick={() => {
             setContextMenuPos(null);
+            openPage();
+          }}
+        >
+          <SquareArrowOutUpRight size={14} aria-hidden="true" />
+          {t('ghostMainView.openInPage')}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            setContextMenuPos(null);
             openInSidebar();
           }}
         >
           <PanelRight size={14} aria-hidden="true" />
           {t('ghostMainView.openInSidebar')}
         </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            setContextMenuPos(null);
+            openInWindow();
+          }}
+        >
+          <AppWindow size={14} aria-hidden="true" />
+          {t('ghostMainView.openInWindow')}
+        </DropdownMenuItem>
+        {canReset && (
+          <DropdownMenuItem
+            onClick={() => {
+              setContextMenuPos(null);
+              resetPlacement();
+            }}
+          >
+            <RotateCcw size={14} aria-hidden="true" />
+            {t('ghostMainView.resetPlacement')}
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

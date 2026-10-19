@@ -22,6 +22,7 @@ import {
   type PluginViewTabState,
 } from '../../features/right-sidebar/globalTabs';
 import { pickGhostPanelMediaUri, syncGhostPanelRegistrations } from '../ghostPanels';
+import { __resetTabGroupsForTest, getTabGroup } from '../../features/right-sidebar/tabGroups';
 
 function ghost(
   id: string,
@@ -57,10 +58,12 @@ const instanceIds = () =>
 beforeEach(() => {
   window.localStorage.clear();
   __resetGlobalTabsForTest();
+  __resetTabGroupsForTest();
 });
 
 afterEach(() => {
   __resetGlobalTabsForTest();
+  __resetTabGroupsForTest();
   window.localStorage.clear();
 });
 
@@ -73,6 +76,8 @@ describe('syncGhostPanelRegistrations · 停靠面板插件自动成为右侧栏
       ghost('view-only', { panel: null, mainView: true }),
     ]);
     expect(instanceIds()).toEqual(['docked-panel']);
+    // 存量停靠面板缺省 position = 停在聊天区左侧:自动页签首次出现落在左侧组。
+    expect(getTabGroup('g_docked-panel')).toBe('left');
     // 再同步一次不重复加。
     syncGhostPanelRegistrations([ghost('docked-panel')]);
     expect(instanceIds()).toEqual(['docked-panel']);

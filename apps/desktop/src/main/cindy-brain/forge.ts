@@ -1729,17 +1729,20 @@ my-ghost/
   "panel": { "title": "面板标题", "html": "panel.html", "position": "left",
              "minWidth": 240, "defaultFraction": 0.24,
              "systemButtons": { "maximize": false } },
-  // panel.position:面板显示形态。left(缺省)= 右侧栏常驻面板:启用后自动成为
-  // 右侧栏里一个不跟对话的全局页签(切任务保留、可最大化、可弹成独立窗口、
-  // 用户可关闭);"tab" = 插件页内的独占面板(用户在插件页点插件卡的「使用」打开,
-  // 离开插件页即关闭;同一时刻至多一个;此形态没有拖缝宽度,声明 minWidth /
-  // defaultFraction 会被拒装,请移除)。right 已退役(旧包声明 right 自动并入 left)。
-  // top/bottom 暂未支持(排期中)。minWidth / defaultFraction 仍可声明(兼容),当前
-  // 右侧栏宿主不消费。
+  // panel.position:面板显示形态。left(缺省)/ right / top / bottom = 右侧栏常驻面板:
+  // 启用后自动成为聊天区对应边页签组里一个不跟对话的全局页签(切任务保留、可最大化、
+  // 可弹成独立窗口、用户可拖到任何一边或关闭;用户放置过后主机记住用户的位置,
+  // 你的声明只是首次出现时的默认);"tab" = 插件页内的独占面板(用户在插件页点插件卡的
+  // 「使用」打开,离开插件页即关闭;同一时刻至多一个;此形态没有拖缝宽度,声明 minWidth /
+  // defaultFraction 会被拒装,请移除)。minWidth / defaultFraction 仍可声明(兼容),当前
+  // 页签组宿主不消费。
   // panel.systemButtons(可选):历史字段,保留兼容、当前不生效(右侧栏页签的
   // 关闭 / 最大化 / 弹出按钮由主机统一提供);position:"tab" 时声明本字段拒装
   // 一级主视图是独立能力，见 §4.20。使用时直接声明：
   // "mainView": { "title": "工作台", "icon": "puzzle", "html": "main-view.html" }
+  // 可选 "open": "page"(缺省,撑满内容区)/ "sidebar"(作为页签进聊天区某一边,配 "side":
+  // left / right / top / bottom)/ "window"(弹成独立窗口);只是左侧栏入口的默认打开方式,
+  // 用户拖过 / 弹过后以用户的放置为准。
   "settingsHtml": "settings.html",  // 可选:设置页「自定义设置区」自绘界面(见 §4.8;声明了用户填的凭证时仍必填,用于长期管理/替换/清除;调用前缺失时主机也会在统一 Setup 卡内联收单,见 §4.7)
   "settingsHeight": 360             // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮,高至 800);内容会动态增减时才声明,避免抖动
 }
@@ -4661,6 +4664,11 @@ if (r.ok && r.confirmed) {
   替代或修改根级 \`icon\` 品牌图片。可用值与 Cindy 系统图标名完全一致：
   \`puzzle\`、\`globe\`、\`code\`、\`folder\`、\`database\`、\`chart-column\`、
   \`image\`、\`message-circle\`、\`calendar-days\`；不接受别名、任意图标名或图片路径；
+- \`mainView.open\` 可省略(缺省 \`page\`:左侧栏入口点开后撑满内容区)。\`sidebar\` =
+  作为不跟对话的页签放进聊天区某一边的页签组(\`side\`:\`left\` / \`right\` / \`top\` /
+  \`bottom\`,缺省 right;其它 open 值下声明 side 拒装);\`window\` = 弹成独立 OS 窗口。
+  这只是**默认**:用户把页签拖到别的边、弹出或合并回来之后,主机记住用户的放置,
+  左侧栏入口此后按用户的位置打开,直到用户在插件详情页「恢复默认位置」;
 - \`mainView\` 与 \`panel\` 是两种独立 UI 贡献项。可以让两者指向同一 HTML，但必须分别
   声明；主视图不接受 position、宽度或 systemButtons；
 - 插件批准并启用后，入口默认显示。用户可以在插件详情关闭“显示在侧边栏”；这只隐藏
@@ -4702,10 +4710,11 @@ Cindy 统一归类、随机选择与排序，同批每个场景和每个插件�
 
 ## 5. 面板(panel.html/css/js)
 
-- 显示形态由 \`panel.position\` 决定:\`left\`(缺省)= **右侧栏常驻面板**——插件
-  启用后自动成为右侧栏里一个不跟对话的全局页签,切任务时留在原位,用户可以把它
-  最大化、弹成独立 OS 窗口或关闭(关闭后在左侧栏入口右键可重新打开;\`right\` 已退役,
-  旧包声明 right 自动并入 left);\`"tab"\` = **插件页内的独占面板**——由插件页
+- 显示形态由 \`panel.position\` 决定:\`left\`(缺省)/ \`right\` / \`top\` / \`bottom\` =
+  **右侧栏常驻面板**——插件启用后自动成为聊天区对应边页签组里一个不跟对话的全局页签,
+  切任务时留在原位,用户可以把它拖到任何一边、最大化、弹成独立 OS 窗口或关闭(关闭后
+  在右侧栏「+」菜单或插件详情页可重新打开;用户放置过后主机记住用户的位置,声明只是
+  首次出现时的默认);\`"tab"\` = **插件页内的独占面板**——由插件页
   自己承载(不进右侧栏页签容器):用户在插件页点你这张卡的「使用」按钮打开,
   同一时刻至多一个,**用户离开插件页即关闭卸载**(面板收束,2026-08-02 定案:
   插件面板不再常驻右侧栏干扰其它会话)。从插件页导入 tab 型插件后，宿主会
@@ -4911,7 +4920,8 @@ Cindy 统一归类、随机选择与排序，同批每个场景和每个插件�
   · **未声明 command**:不拒装,但插件页"使用"按钮禁用,用户无法通过插件页一键启用
     或用 $command 点名;AI 工具调用不受影响(见 §2 说明)
 - \`tools\` 为空 · panel 详单缺少实际形态(既没有 html，也不是有效的 tab/停靠配置)
-- mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单
+- mainView.html 文件缺失/路径不安全、icon 不在系统图标白名单、open 不是 page / sidebar /
+  window、side 不是四条边之一或在 open 非 sidebar 时声明
 - settingsHtml 路径不合法/文件不在包里 · settingsHeight 越界(160–800)或没配 settingsHtml 单独声明
 - panel.systemButtons 格式错(不是对象、已知键的值非布尔,或 position:"tab" 时声明——插件页内面板没有标准头)
 - keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion

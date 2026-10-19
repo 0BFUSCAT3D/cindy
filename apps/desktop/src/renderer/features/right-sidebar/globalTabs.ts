@@ -13,6 +13,11 @@
  * 出现(reconcileGlobalPluginTabs),用户关掉后记入 dismissed 不再自动加回;卸载即
  * 清掉它的页签与 dismissed 记录,重装再按首次启用处理。`mainView` 插件不自动加,
  * 由左侧栏入口「在侧边栏中打开」加入。
+ *
+ * 放置记忆:全局页签的 id 由插件实例决定(`g_<instanceId>`),所以组归属(tabGroups)在
+ * 关掉再打开后仍然有效;首次出现时按插件声明放到默认边(panel.position / mainView.side),
+ * 之后以用户拖到的位置为准;弹到独立窗口过的插件下次从左侧栏入口点开也进窗口。
+ * 「恢复默认位置」清掉这些记忆。
  */
 
 import { useSyncExternalStore } from 'react';
@@ -23,7 +28,7 @@ import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
 import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
 import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
-import { clearTabGroup, setTabGroup, type TabGroupId } from './tabGroups';
+import { clearTabGroup, getTabGroupAssignments, setTabGroup, type TabGroupId } from './tabGroups';
 import type { TabState } from './types';
 
 const log = createLogger('rightSidebar.globalTabs');
@@ -40,12 +45,22 @@ export interface GlobalTabsSnapshot {
   tabs: TabState[];
   /** 用户主动关掉过、不再自动加回的插件实例。 */
   dismissedInstanceIds: string[];
+  /** 已按插件声明放过默认边的实例(之后不再重新套默认,以用户放置为准)。 */
+  placedInstanceIds: string[];
+  /** 上次是弹在独立窗口里的实例:左侧栏入口点开时直接进窗口。 */
+  windowInstanceIds: string[];
 }
 
 const EMPTY: GlobalTabsSnapshot = Object.freeze({
   tabs: [],
   dismissedInstanceIds: [],
+  placedInstanceIds: [],
+  windowInstanceIds: [],
 }) as GlobalTabsSnapshot;
+
+function stringList(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string' && !!id) : [];
+}
 
 let cache: GlobalTabsSnapshot | null = null;
 let cacheOwnerKey: string | null = null;
@@ -82,10 +97,12 @@ export function sanitizeGlobalTabsSnapshot(raw: unknown): GlobalTabsSnapshot {
       if (tabs.length >= MAX_GLOBAL_TABS) break;
     }
   }
-  const dismissedInstanceIds = Array.isArray(raw.dismissedInstanceIds)
-    ? raw.dismissedInstanceIds.filter((id): id is string => typeof id === 'string' && !!id)
-    : [];
-  return { tabs, dismissedInstanceIds };
+  return {
+    tabs,
+    dismissedInstanceIds: stringList(raw.dismissedInstanceIds),
+    placedInstanceIds: stringList(raw.placedInstanceIds),
+    windowInstanceIds: stringList(raw.windowInstanceIds),
+  };
 }
 
 function load(): GlobalTabsSnapshot {
@@ -139,7 +156,12 @@ function persist(next: GlobalTabsSnapshot): void {
   cache = next;
   cacheOwnerKey = key;
   try {
-    if (next.tabs.length === 0 && next.dismissedInstanceIds.length === 0) {
+    if (
+      next.tabs.length === 0 &&
+      next.dismissedInstanceIds.length === 0 &&
+      next.placedInstanceIds.length === 0 &&
+      next.windowInstanceIds.length === 0
+    ) {
       window.localStorage.removeItem(key);
     } else {
       window.localStorage.setItem(key, JSON.stringify(next));
@@ -150,17 +172,35 @@ function persist(next: GlobalTabsSnapshot): void {
   notify();
 }
 
-function makeTabId(): string {
-  return `g_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+/** 全局页签 id 由插件实例决定:关掉再打开仍是同一个 id,组归属等记忆因此跟着实例走。 */
+export function globalTabIdForInstance(instanceId: string): string {
+  return `g_${instanceId}`;
+}
+
+/**
+ * 插件声明的默认放置边:mainView.open:'sidebar' 的 side;停靠面板的 panel.position
+ * (缺省 left,与历史停靠面板「停在聊天区左侧」一致);其它(纯 mainView)右侧组。
+ */
+export function defaultGroupForGhost(ghost: InstalledGhost): TabGroupId {
+  const { manifest } = ghost;
+  if (manifest.mainView?.open === 'sidebar' && manifest.mainView.side) {
+    return manifest.mainView.side;
+  }
+  if (manifest.panel && manifest.panel.position !== 'tab') {
+    return manifest.panel.position ?? 'left';
+  }
+  return 'right';
 }
 
 /**
  * 加入(或返回已有的)某个插件的全局页签。幂等:同一实例只有一个页签。
  * 用户手动加入会清掉它的 dismissed 记录。
+ * 放置:显式 `groupId` 优先;否则首次出现的实例按插件声明放默认边(之后以用户放置为准,
+ * 不再重新套默认);都没有就沿用已有组归属(缺省右侧组)。
  */
 export function addGlobalPluginTab(
   instanceId: string,
-  opts?: { groupId?: TabGroupId },
+  opts?: { groupId?: TabGroupId; ghost?: InstalledGhost },
 ): TabState | null {
   const current = getGlobalTabsSnapshot();
   const existing = current.tabs.find(
@@ -168,8 +208,9 @@ export function addGlobalPluginTab(
   );
   const dismissed = current.dismissedInstanceIds.filter((id) => id !== instanceId);
   if (existing) {
+    if (opts?.groupId) setTabGroup(existing.id, opts.groupId);
     if (dismissed.length !== current.dismissedInstanceIds.length) {
-      persist({ tabs: current.tabs, dismissedInstanceIds: dismissed });
+      persist({ ...current, dismissedInstanceIds: dismissed });
     }
     return existing;
   }
@@ -178,13 +219,24 @@ export function addGlobalPluginTab(
     return null;
   }
   const tab: TabState = {
-    id: makeTabId(),
+    id: globalTabIdForInstance(instanceId),
     kind: 'plugin-view',
     state: { instanceId } satisfies PluginViewTabState,
   };
+  let placed = current.placedInstanceIds;
   // 组归属先于页签出现落定,首帧就在目标组里。
-  if (opts?.groupId) setTabGroup(tab.id, opts.groupId);
-  persist({ tabs: [...current.tabs, tab], dismissedInstanceIds: dismissed });
+  if (opts?.groupId) {
+    setTabGroup(tab.id, opts.groupId);
+  } else if (opts?.ghost && !placed.includes(instanceId)) {
+    setTabGroup(tab.id, defaultGroupForGhost(opts.ghost));
+    placed = [...placed, instanceId];
+  }
+  persist({
+    ...current,
+    tabs: [...current.tabs, tab],
+    dismissedInstanceIds: dismissed,
+    placedInstanceIds: placed,
+  });
   return tab;
 }
 
@@ -198,11 +250,12 @@ export function removeGlobalTab(tabId: string): void {
     ? current.dismissedInstanceIds
     : [...current.dismissedInstanceIds, instanceId];
   if (activeGlobalTabId === tabId) activeGlobalTabId = null;
+  // 组归属不清:关掉再打开回到用户上次放的那一边(放置记忆)。
   persist({
+    ...current,
     tabs: current.tabs.filter((candidate) => candidate.id !== tabId),
     dismissedInstanceIds: dismissed,
   });
-  clearTabGroup(tabId);
   // 页签正弹在独立窗口里:窗口没有内容可交回,直接销毁(与任务页签同一规则)。
   if (!isSidebarTabWindow() && isTabPoppedOut(tabId)) {
     void window.electronAPI?.sidebarTabWindow?.closeForTab(tabId).catch((err) => {
@@ -221,7 +274,56 @@ export function reorderGlobalTabs(orderedIds: string[]): void {
     if (!tab) return;
     next.push(tab);
   }
-  persist({ tabs: next, dismissedInstanceIds: current.dismissedInstanceIds });
+  persist({ ...current, tabs: next });
+}
+
+/** 记住 / 忘记「这个插件上次弹在独立窗口里」。 */
+export function rememberPluginWindowPlacement(instanceId: string, inWindow: boolean): void {
+  const current = getGlobalTabsSnapshot();
+  const has = current.windowInstanceIds.includes(instanceId);
+  if (has === inWindow) return;
+  persist({
+    ...current,
+    windowInstanceIds: inWindow
+      ? [...current.windowInstanceIds, instanceId]
+      : current.windowInstanceIds.filter((id) => id !== instanceId),
+  });
+}
+
+export function isPluginWindowPlacement(instanceId: string): boolean {
+  return getGlobalTabsSnapshot().windowInstanceIds.includes(instanceId);
+}
+
+/** 用户是否放置过这个插件(拖到别的边 / 弹过窗口 / 已套过默认边):有记忆才给「恢复默认位置」。 */
+export function hasPluginPlacementMemory(instanceId: string): boolean {
+  const current = getGlobalTabsSnapshot();
+  const tabId = globalTabIdForInstance(instanceId);
+  return (
+    current.windowInstanceIds.includes(instanceId) ||
+    current.placedInstanceIds.includes(instanceId) ||
+    tabId in getTabGroupAssignments()
+  );
+}
+
+/**
+ * 恢复默认位置:清掉窗口记忆与组归属;页签还在时按插件声明重新放到默认边。
+ * 弹在窗口里的页签由调用方先合并回侧边栏(这里不碰窗口)。
+ */
+export function resetPluginPlacement(instanceId: string, ghost?: InstalledGhost): void {
+  const current = getGlobalTabsSnapshot();
+  const tabId = globalTabIdForInstance(instanceId);
+  clearTabGroup(tabId);
+  const tabPresent = current.tabs.some((tab) => tab.id === tabId);
+  let placed = current.placedInstanceIds.filter((id) => id !== instanceId);
+  if (tabPresent && ghost) {
+    setTabGroup(tabId, defaultGroupForGhost(ghost));
+    placed = [...placed, instanceId];
+  }
+  persist({
+    ...current,
+    placedInstanceIds: placed,
+    windowInstanceIds: current.windowInstanceIds.filter((id) => id !== instanceId),
+  });
 }
 
 /** 页签标题:停靠面板用 panel.title,整页视图用 mainView.title,都没有就用插件名。 */
@@ -269,26 +371,45 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
     installed.has((tab.state as PluginViewTabState).instanceId),
   );
   const dismissed = current.dismissedInstanceIds.filter((id) => installed.has(id));
+  let placed = current.placedInstanceIds.filter((id) => installed.has(id));
+  const windowed = current.windowInstanceIds.filter((id) => installed.has(id));
   const present = new Set(tabs.map((tab) => (tab.state as PluginViewTabState).instanceId));
   for (const [instanceId, ghost] of installed) {
     if (!isAutoGlobalPanelGhost(ghost)) continue;
     if (present.has(instanceId) || dismissed.includes(instanceId)) continue;
     if (tabs.length >= MAX_GLOBAL_TABS) break;
-    tabs = [...tabs, { id: makeTabId(), kind: 'plugin-view', state: { instanceId } }];
+    const tabId = globalTabIdForInstance(instanceId);
+    // 首次出现:按插件声明放默认边(存量 panel.position 的插件回到它原来停的那一边)。
+    if (!placed.includes(instanceId)) {
+      setTabGroup(tabId, defaultGroupForGhost(ghost));
+      placed = [...placed, instanceId];
+    }
+    tabs = [...tabs, { id: tabId, kind: 'plugin-view', state: { instanceId } }];
     present.add(instanceId);
   }
   if (
     tabs.length === current.tabs.length &&
     tabs.every((tab, index) => tab === current.tabs[index]) &&
-    dismissed.length === current.dismissedInstanceIds.length
+    dismissed.length === current.dismissedInstanceIds.length &&
+    placed.length === current.placedInstanceIds.length &&
+    windowed.length === current.windowInstanceIds.length
   ) {
     return;
   }
   if (activeGlobalTabId && !tabs.some((tab) => tab.id === activeGlobalTabId)) {
     activeGlobalTabId = null;
   }
+  // 卸载的实例:页签与全部记忆(组归属 / 默认边 / 窗口)一起清。
+  for (const id of current.placedInstanceIds) {
+    if (!installed.has(id)) clearTabGroup(globalTabIdForInstance(id));
+  }
   for (const tab of current.tabs) if (!tabs.includes(tab)) clearTabGroup(tab.id);
-  persist({ tabs, dismissedInstanceIds: dismissed });
+  persist({
+    tabs,
+    dismissedInstanceIds: dismissed,
+    placedInstanceIds: placed,
+    windowInstanceIds: windowed,
+  });
 }
 
 export function getActiveGlobalTabId(): string | null {

@@ -6565,7 +6565,7 @@
         "nodeResidentDetail": "插件启用期间会一直运行；停用、更新、卸载或退出 Cindy 时关闭。",
         "tool": "工具「{{name}}」",
         "command": "对话指令 ${{command}}",
-        "panelLeft": "面板「{{title}}」· 显示在右侧栏",
+        "panelLeft": "面板「{{title}}」· 显示在侧边栏",
         "panelTab": "面板「{{title}}」· 插件页内打开",
         "mainView": "可在 Cindy 侧边栏添加“{{title}}”入口",
         "mainViewDetail": "点击后将在插件沙箱中打开主视图，不会因此获得文件、网络或凭证访问权限。",
@@ -6719,7 +6719,8 @@
         "collapseTools": "收起 Tool",
         "viewAllPermissions": "查看更多",
         "permissionsDialogDescription": "该插件申请的全部 {{count}} 项权限",
-        "closeDialog": "关闭弹窗"
+        "closeDialog": "关闭弹窗",
+        "resetPlacement": "恢复默认位置"
       },
       "contents": {
         "mainView": "主视图",
@@ -7957,7 +7958,10 @@
     }
   },
   "ghostMainView": {
-    "openInSidebar": "在侧边栏中打开"
+    "openInSidebar": "在侧边栏中打开",
+    "openInPage": "在页面中打开",
+    "openInWindow": "在独立窗口中打开",
+    "resetPlacement": "恢复默认位置"
   },
   "rightSidebar": {
     "ariaLabel": "右侧边栏",

@@ -58,7 +58,12 @@ import {
   setActiveTab,
 } from '@/features/right-sidebar/store';
 import { browserWebviewPool } from '@/features/right-sidebar/lib/browserWebviewPool';
-import { findGlobalTab, setActiveGlobalTabId } from '@/features/right-sidebar/globalTabs';
+import {
+  findGlobalTab,
+  rememberPluginWindowPlacement,
+  setActiveGlobalTabId,
+  type PluginViewTabState,
+} from '@/features/right-sidebar/globalTabs';
 import { TabGroupHostProvider, type TabGroupHostValue } from '@/features/right-sidebar/tabGroupHost';
 import { useTabGroupPanes } from '@/features/right-sidebar/tabGroupPanes';
 import { TabDragController } from '@/features/right-sidebar/TabDragController';
@@ -1115,7 +1120,11 @@ export function MainLayout() {
       subagentsAvailable: rightSidebarSubagentsAvailableRef.current,
     };
     // 全局页签(插件视图)不属于任何任务:无桶快照,也没有任务级资源要释放。
-    if (findGlobalTab(tabId)) {
+    const globalTab = findGlobalTab(tabId);
+    if (globalTab) {
+      // 插件视图弹过窗口:记住,下次从左侧栏入口点开直接进窗口。
+      const instanceId = (globalTab.state as PluginViewTabState | null)?.instanceId;
+      if (instanceId) rememberPluginWindowPlacement(instanceId, true);
       void api.open({ tabId, sessionId: null, context, handoff: null, ...target }).catch((err) => {
         applicationMenuLog.warn('pop out global sidebar tab failed', { tabId, err });
       });
@@ -1166,10 +1175,16 @@ export function MainLayout() {
     if (isSecondaryWindow()) return;
     const api = window.electronAPI.sidebarTabWindow;
     if (!api?.onTabReturned) return;
-    return api.onTabReturned(({ sessionId, tabId, snapshot }) => {
+    return api.onTabReturned(({ sessionId, tabId, snapshot, reason }) => {
       // 全局页签回来:数据一直在全局存储里,只需选中它并确保侧栏展开。
       if (sessionId === null) {
-        if (findGlobalTab(tabId)) setActiveGlobalTabId(tabId);
+        const globalTab = findGlobalTab(tabId);
+        if (globalTab) {
+          setActiveGlobalTabId(tabId);
+          // 用户主动合并回来 = 不再记「在独立窗口里」;崩溃回来保留记忆。
+          const instanceId = (globalTab.state as PluginViewTabState | null)?.instanceId;
+          if (instanceId && reason === 'merge') rememberPluginWindowPlacement(instanceId, false);
+        }
         if (isRightSidebarCollapsedRef.current && !rsbDetachedRef.current) {
           writeCollapsedFor(rightSidebarSessionIdRef.current, false);
           setIsRightSidebarCollapsed(false);

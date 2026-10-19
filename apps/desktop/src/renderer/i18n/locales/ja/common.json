@@ -6565,7 +6565,7 @@
         "nodeResidentDetail": "プラグインが有効な間は実行を続け、無効化、更新、アンインストール、または Cindy 終了時に停止します。",
         "tool": "ツール「{{name}}」",
         "command": "チャット指令 ${{command}}",
-        "panelLeft": "パネル「{{title}}」· 右サイドバーに表示",
+        "panelLeft": "パネル「{{title}}」· サイドバーに表示",
         "panelTab": "パネル「{{title}}」· プラグインページ内で開く",
         "mainView": "Cindy のサイドバーに「{{title}}」への入口を追加できます",
         "mainViewDetail": "クリックするとプラグインのサンドボックス内でメインビューが開き、ファイル、ネットワーク、認証情報へのアクセスが追加で付与されることはありません。",
@@ -6719,7 +6719,8 @@
         "collapseTools": "Tool を折りたたむ",
         "viewAllPermissions": "さらに表示",
         "permissionsDialogDescription": "この Plugin が要求する全 {{count}} 項目の権限",
-        "closeDialog": "ダイアログを閉じる"
+        "closeDialog": "ダイアログを閉じる",
+        "resetPlacement": "既定の位置に戻す"
       },
       "contents": {
         "mainView": "メインビュー",
@@ -7957,7 +7958,10 @@
     }
   },
   "ghostMainView": {
-    "openInSidebar": "サイドバーで開く"
+    "openInSidebar": "サイドバーで開く",
+    "openInPage": "ページで開く",
+    "openInWindow": "別ウィンドウで開く",
+    "resetPlacement": "既定の位置に戻す"
   },
   "rightSidebar": {
     "ariaLabel": "右サイドバー",

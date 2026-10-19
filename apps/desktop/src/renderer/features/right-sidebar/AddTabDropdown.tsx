@@ -158,6 +158,7 @@ export function AddTabDropdown({
       const instanceId = installedGhostStoragePart(ghost);
       return {
         instanceId,
+        ghost,
         title: globalTabTitleForGhost(ghost),
         icon: MAIN_VIEW_ICONS[ghost.manifest.mainView?.icon ?? 'puzzle'] ?? Puzzle,
         open: globalTabs.some(
@@ -259,7 +260,11 @@ export function AddTabDropdown({
               label={entry.title}
               trailing={entry.open ? t('rightSidebar.tabs.menu.alreadyOpen') : undefined}
               onSelect={() => {
-                const tab = addGlobalPluginTab(entry.instanceId, { groupId });
+                // 本组显式指定;没有指定组(右侧组菜单)时按插件声明 / 放置记忆落位。
+                const tab = addGlobalPluginTab(entry.instanceId, {
+                  ...(groupId && groupId !== 'right' ? { groupId } : {}),
+                  ghost: entry.ghost,
+                });
                 if (tab) {
                   if (!entry.open) onGlobalTabAdded?.(tab.id);
                   setActiveGlobalTabId(tab.id);

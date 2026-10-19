@@ -2314,23 +2314,44 @@ describe('ghost · description(自我介绍)', () => {
 });
 
 describe('ghost · panel.position 校验', () => {
-  it('left 通过;right 退役兼容归一化为 left;top/bottom 收词但明确拒绝;野值拒', () => {
+  it('left / right / top / bottom 都是真实的边(页签组落地后 right 不再并入 left);野值拒', () => {
     const withPos = (position: unknown) => ({
       ...goodManifest(),
       panel: { title: 'Hello', html: 'panel.html', position },
     });
-    const left = validateGhostManifest(withPos('left'));
-    expect(left.ok && left.manifest.panel?.position).toBe('left');
-    // 旧包兼容:right 不拒装(已装插件每次启动重过校验),归一化为 left。
-    const right = validateGhostManifest(withPos('right'));
-    expect(right.ok && right.manifest.panel?.position).toBe('left');
-
-    for (const pending of ['top', 'bottom']) {
-      const v = validateGhostManifest(withPos(pending));
-      expect(v.ok).toBe(false);
-      expect(!v.ok && v.reason).toContain('暂未支持');
+    for (const side of ['left', 'right', 'top', 'bottom'] as const) {
+      const v = validateGhostManifest(withPos(side));
+      expect(v.ok && v.manifest.panel?.position).toBe(side);
     }
     expect(validateGhostManifest(withPos('center')).ok).toBe(false);
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:validateGhostManifest 对 mainView.open / side 的校验;可观察的是
+  //   合法组合原样保留、open 野值拒、side 在 open 非 sidebar 时拒(规则 9 不静默忽略)。
+  // - Bug / 规则依据:插件可声明左侧栏入口的默认打开方式(页签组模型第三阶段)。
+  // - 现有覆盖缺口:mainView 此前只有 html / title / icon 用例。
+  // - 最小失败输入:{ open: 'sidebar', side: 'left' }。
+  // - tier:unit。
+  it('mainView.open / side:合法组合保留,open 野值与 open 非 sidebar 时的 side 都拒', () => {
+    const withView = (mainView: Record<string, unknown>) => ({
+      ...goodChipManifest(),
+      minCindyVersion: '1.2.3',
+      slots: ['panel', 'main-view'],
+      mainView: { html: 'main-view.html', ...mainView },
+    });
+    expect(validateGhostManifest(withView({ open: 'sidebar', side: 'left' }))).toMatchObject({
+      ok: true,
+      manifest: { mainView: { open: 'sidebar', side: 'left' } },
+    });
+    expect(validateGhostManifest(withView({ open: 'window' }))).toMatchObject({
+      ok: true,
+      manifest: { mainView: { open: 'window' } },
+    });
+    expect(validateGhostManifest(withView({ open: 'popup' })).ok).toBe(false);
+    expect(validateGhostManifest(withView({ open: 'page', side: 'left' })).ok).toBe(false);
+    expect(validateGhostManifest(withView({ side: 'left' })).ok).toBe(false);
+    expect(validateGhostManifest(withView({ open: 'sidebar', side: 'middle' })).ok).toBe(false);
   });
 
   it("'tab'(右侧栏页签)通过;tab 时 minWidth/defaultFraction 收词明确拒绝", () => {

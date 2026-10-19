@@ -6565,7 +6565,7 @@
         "nodeResidentDetail": "플러그인이 활성화된 동안 실행되며 비활성화, 업데이트, 제거 또는 Cindy 종료 시 중지됩니다.",
         "tool": "도구 \"{{name}}\"",
         "command": "채팅 명령 ${{command}}",
-        "panelLeft": "패널 \"{{title}}\" · 오른쪽 사이드바에 표시",
+        "panelLeft": "패널 \"{{title}}\" · 사이드바에 표시",
         "panelTab": "패널 \"{{title}}\" · 플러그인 페이지에서 열기",
         "mainView": "Cindy 사이드바에 “{{title}}” 항목을 추가할 수 있음",
         "mainViewDetail": "클릭하면 플러그인 샌드박스에서 메인 보기가 열리며 파일, 네트워크 또는 자격 증명 접근 권한이 추가로 부여되지 않습니다.",
@@ -6719,7 +6719,8 @@
         "collapseTools": "Tool 접기",
         "viewAllPermissions": "더 보기",
         "permissionsDialogDescription": "이 Plugin이 요청하는 전체 {{count}}개 권한",
-        "closeDialog": "대화 상자 닫기"
+        "closeDialog": "대화 상자 닫기",
+        "resetPlacement": "기본 위치로 복원"
       },
       "contents": {
         "mainView": "메인 보기",
@@ -7957,7 +7958,10 @@
     }
   },
   "ghostMainView": {
-    "openInSidebar": "사이드바에서 열기"
+    "openInSidebar": "사이드바에서 열기",
+    "openInPage": "페이지로 열기",
+    "openInWindow": "별도 창에서 열기",
+    "resetPlacement": "기본 위치로 복원"
   },
   "rightSidebar": {
     "ariaLabel": "오른쪽 사이드바",
