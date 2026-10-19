@@ -194,7 +194,8 @@ export async function openRemotePluginSettings(
   const internal = '/__cindy_remote_settings_' + randomUUID();
   let exchange: ((request: PluginOauthRequest) => Promise<unknown>) | undefined;
   let renew: Promise<void> | undefined,
-    renewedAt = 0;
+    renewedAt = 0,
+    sent = 0;
   const connect = async () => {
     const target = await deps.identity(input.deviceId, assertCurrent);
     if (target.deviceId !== input.deviceId) throw unavailable();
@@ -214,17 +215,21 @@ export async function openRemotePluginSettings(
       },
     });
     renewedAt = Date.now();
+    sent = 0;
   };
   const send = async (command: PluginSettingsCommand) => {
     assertCurrent();
-    // Renew before expiry, never replay a submitted command after a lost response.
-    if (!exchange || Date.now() - renewedAt > 240_000) {
+    // Reserve before sending; leave room under the Host's 1024-message limit.
+    // A lost response must never cause a submitted command to be replayed.
+    while (!exchange || Date.now() - renewedAt > 240_000 || sent >= 1000) {
       renew ??= connect().finally(() => {
         renew = undefined;
       });
       await renew;
+      assertCurrent();
     }
     assertCurrent();
+    sent++;
     return exchange!({ op: 'settings', id: doc.pageId, command });
   };
   await connect();

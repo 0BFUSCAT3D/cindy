@@ -12,6 +12,7 @@ import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import { extractIpcError } from '@/utils/ipcError';
 import { CatalogManagementNotice } from '@/features/plugin/PluginManagementLayout';
 import type { CatalogDevice, CatalogDeviceControl } from '@/features/plugin/useCatalogDevice';
 import {
@@ -290,8 +291,22 @@ export function RemoteSkillsPage({
           );
           if (!current() || operation.current?.id !== id) return;
           accept(next);
-        } catch {
+        } catch (error) {
           if (current() && operation.current?.id === id) {
+            const code = extractIpcError(error)?.code;
+            if (
+              code &&
+              [
+                'NOT_FOUND',
+                'INVALID_PARAMS',
+                'UNSUPPORTED_CAPABILITY',
+                'PERMISSION_DENIED',
+              ].includes(code)
+            ) {
+              accept({ operationId: id, phase: 'failed' });
+              void refresh();
+              return;
+            }
             setReceipt({ operationId: id, phase: 'running' });
             setStatus('unknown');
           }
@@ -299,7 +314,7 @@ export function RemoteSkillsPage({
       })();
       return completion;
     },
-    [accept, capabilities.management, current, device.deviceId, invoke, writable],
+    [accept, capabilities.management, current, invoke, refresh, writable],
   );
   const api = useMemo<SkillhubBrowseApi>(() => {
     const catalog = async <T,>(method: string, input: Record<string, unknown>): Promise<T> => {

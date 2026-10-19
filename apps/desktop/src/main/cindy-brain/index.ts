@@ -7340,6 +7340,8 @@ export async function installOrUpdateMarketGhostPackage(
     /** 自定义 Git/本地市场在打包前读取的 Manifest，用于防止打包窗口内能力扩张。 */
     manifestCap?: GhostManifest;
     beforeCommitInLock?: () => void;
+    /** Caller owner/peer/cancellation guard, valid after the directory swap. */
+    assertCurrent?: () => void;
     /** 新包已经原子换位；后续异常不能再按落位失败回滚来源路由。 */
     onPackagePlacedInLock?: () => void;
     /** 包与 receipt 已提交，仍持 owner mutation lease；用于原子写入来源账本。 */
@@ -7380,6 +7382,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     reclaimLegacyBareInstance?: boolean;
     manifestCap?: GhostManifest;
     beforeCommitInLock?: () => void;
+    assertCurrent?: () => void;
     /** 新包已经原子换位；后续异常不能再按落位失败回滚来源路由。 */
     onPackagePlacedInLock?: () => void;
     /** 包与 receipt 已提交，仍持 owner mutation lease；用于原子写入来源账本。 */
@@ -7501,7 +7504,10 @@ async function installOrUpdateMarketGhostPackageLocked(
         ...(expected.reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
         expectedPackageSha256: inspected.packageSha256,
         consent: { decision: expected.consent, manifest: inspected.manifest },
-        beforePackagePlacement: expected.beforeCommitInLock,
+        beforePackagePlacement: () => {
+          expected.assertCurrent?.();
+          expected.beforeCommitInLock?.();
+        },
         deferUsageBinding: true,
         ...(trustOverride ? { trustOverride } : {}),
         namespace: marketNamespace,
@@ -7543,12 +7549,14 @@ async function installOrUpdateMarketGhostPackageLocked(
           ...(expected.sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(installed) } : {}),
           ...(trustOverride ? { trustOverride } : {}),
           namespace: marketNamespace,
-          beforePackageCommit: () =>
-            getGhostOauthAccountManager().prepareAccountsForChangedClients(
+          beforePackageCommit: () => {
+            expected.assertCurrent?.();
+            return getGhostOauthAccountManager().prepareAccountsForChangedClients(
               installed.manifest,
               inspected.canonicalManifest,
               installedGhostStoragePart(installed),
-            ),
+            );
+          },
           onPackagePlaced: () => {
             packagePlaced = true;
             expected.onPackagePlacedInLock?.();
@@ -7980,8 +7988,8 @@ export function registerGhostIpc(): void {
     market: {
       snapshot: () => requireRemotePluginManagementServices().market.snapshot(),
       detail: id => requireRemotePluginManagementServices().market.detail(id),
-      install: async (id, options, prompt, assertCurrent) => {
-        await requireRemotePluginManagementServices().market.install(id, options, prompt, assertCurrent);
+      install: async (id, options, prompt, assertCurrent, assertScope) => {
+        await requireRemotePluginManagementServices().market.install(id, options, prompt, assertCurrent, assertScope);
       },
     },
     setEnabled: async (id, enabled, approval, assertCurrent) => { await setGhostEnabledForUser(id, enabled, approval, assertCurrent); },

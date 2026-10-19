@@ -29,6 +29,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -86,6 +87,7 @@ import {
   splitEntriesByDevice,
   type MainListDeviceSection,
   type MainListEntry,
+  type MainListPriorityContext,
   type ViewedPriorityHoldState,
 } from '../../lib/mainListModel';
 import { useMainListEntries } from '../../hooks/useMainListEntries';
@@ -96,7 +98,7 @@ import { buildSessionSourceLabelMap } from '../../lib/sessionSourceLabel';
 import { aggregateSessionLamps, type SessionLampAggregate } from '../../lib/sessionLampAggregation';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { SidebarRightStatusIndicator } from '../SidebarRightStatusIndicator';
-import { useSessionAttentionKinds } from '@/lib/sessionAttentionStore';
+import { useSessionAttentionKindsWithOrcaLeads } from '../../lib/orcaLeadWorkerAttention';
 import { useSessionAttentionUrgencySet } from '../../contexts/SessionAttentionUrgencyContext';
 import {
   getRemoteSessionActivity,
@@ -218,6 +220,13 @@ export interface ProjectsSectionProps {
    * 优先级排序用它钉住打开时的档位;只有从完成未读切走才置顶。
    */
   viewedSessionId?: string;
+  /**
+   * 折叠侧栏已经用同一次时钟投影好的优先级上下文。传入后展开列表直接使用，
+   * 不再自己调用 Date.now() 做第二次 held / recently viewed 投影。
+   */
+  priorityContext?: MainListPriorityContext;
+  /** 与 priorityContext 同一次投影的 hold，由展开列表在 layout 提交回模块状态。 */
+  priorityHold?: ViewedPriorityHoldState;
   runningSessionIds: ReadonlySet<string>;
   /** /ctr 接管中的 sessionIds — SessionItem 用来切换左侧 icon */
   attachedSessionIds: ReadonlySet<string>;
@@ -285,6 +294,8 @@ export function ProjectsSection({
   collapsed,
   activeSessionId,
   viewedSessionId,
+  priorityContext: suppliedPriorityContext,
+  priorityHold,
   runningSessionIds,
   attachedSessionIds,
   notifications,
@@ -470,7 +481,8 @@ export function ProjectsSection({
   // 整表订阅仅限本聚合组件(两个 store 头注的性能边界):本组件本就随
   // notifications 整集变化重渲染,不额外放大;远程镜像走整表版本号 + 逐 id 读,
   // 与 CCAgentSidebarUpper.projectAgg 同款先例。
-  const attentionKinds = useSessionAttentionKinds();
+  // Lead 的 kind 已并入其 Worker 的出错 / 等待确认(notifications 由上层同口径合并)。
+  const attentionKinds = useSessionAttentionKindsWithOrcaLeads();
   const urgentSet = useSessionAttentionUrgencySet();
   const remoteActivityRevision = useRemoteSessionActivityRevision();
   const collapsedAttentionToneFor = useCallback(
@@ -516,8 +528,14 @@ export function ProjectsSection({
     bots,
     remoteActivityRevision,
   ]);
-  const hold = useViewedPriorityHold(viewedPriorityHold, viewedIdForSort, naturalPriorityContext);
-  const priorityContext = useMemo(
+  const hasPairedPriority = suppliedPriorityContext != null && priorityHold != null;
+  const hold = useViewedPriorityHold(
+    viewedPriorityHold,
+    viewedIdForSort,
+    naturalPriorityContext,
+    { project: !hasPairedPriority },
+  );
+  const derivedPriorityContext = useMemo(
     () => ({
       ...naturalPriorityContext,
       heldPriorityRanks: hold.heldPriorityRanks,
@@ -525,6 +543,13 @@ export function ProjectsSection({
     }),
     [naturalPriorityContext, hold],
   );
+  const priorityContext = hasPairedPriority ? suppliedPriorityContext : derivedPriorityContext;
+  useLayoutEffect(() => {
+    if (!hasPairedPriority || !priorityHold) return;
+    viewedPriorityHold.prevViewedId = priorityHold.prevViewedId;
+    viewedPriorityHold.heldPriorityRanks = priorityHold.heldPriorityRanks;
+    viewedPriorityHold.recentlyViewedAtMs = priorityHold.recentlyViewedAtMs;
+  }, [hasPairedPriority, priorityHold]);
 
   // 聚合灯(2026-08 用户反馈:未读点只亮在最底层会话行,项目层与设备层没有
   // 灯,多设备下找未读要逐层展开翻找)——项目行 / 对话组行 / 设备段头都从

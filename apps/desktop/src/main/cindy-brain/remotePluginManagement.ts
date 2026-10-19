@@ -57,6 +57,7 @@ export interface RemotePluginManagementDeps {
       options: PluginMarketInstallOptions,
       prompt: GhostInstallConsentPrompt,
       assertCurrent: () => void,
+      assertScope: () => void,
     ): Promise<void>;
   };
   setEnabled(
@@ -407,6 +408,8 @@ export class RemotePluginManagement {
               },
               prompt,
               assertCurrent,
+              // The installer owns approval checks; this guard survives its directory swap.
+              () => this.assertScope(op),
             );
             break;
           case 'install-file':

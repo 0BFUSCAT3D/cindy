@@ -379,7 +379,9 @@ describe('full Skill Hub bound to the selected computer', () => {
     fireEvent.click(await screen.findByText('Public skill'));
     await screen.findByText('# Published target content');
     fireEvent.click(screen.getByRole('button', { name: 'skillhub.marketCard.clone' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Target project/ }));
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: /Target project/ }),
+    );
     await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
     ui.rerender(page('B', false));
     ui.rerender(page());
@@ -404,6 +406,61 @@ describe('full Skill Hub bound to the selected computer', () => {
     await waitFor(() => expect(mocks.confirm).toHaveBeenCalledWith('B', expect.any(String)));
     expect(requests('begin')[1][2][0].input.kind).toBe('uninstall');
     expect(requests('answer')).toHaveLength(0);
+  });
+  it.each(['NOT_FOUND', 'INVALID_PARAMS', 'UNSUPPORTED_CAPABILITY', 'PERMISSION_DENIED'])(
+    'unlocks and refreshes after begin is explicitly rejected with %s',
+    async (code) => {
+      const original = mocks.invoke.getMockImplementation()!;
+      let rejected = false;
+      mocks.invoke.mockImplementation(async (device, channel, args) => {
+        if (args[0].actionId === 'management:begin' && !rejected) {
+          rejected = true;
+          throw new Error(`[${code}] Request rejected`);
+        }
+        return original(device, channel, args);
+      });
+      render(page());
+      fireEvent.click(screen.getByRole('radio', { name: 'skillhub.home.local' }));
+      fireEvent.click(await screen.findByText('B installed'));
+      await screen.findByText('# Target local content');
+      const reads = requests('snapshot').length;
+      fireEvent.click(screen.getByRole('switch'));
+      await waitFor(() => {
+        expect(requests('begin')).toHaveLength(1);
+        expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(false);
+        expect(requests('snapshot').length).toBeGreaterThan(reads);
+      });
+      fireEvent.click(screen.getByRole('switch'));
+      await waitFor(() => expect(requests('begin')).toHaveLength(2));
+      expect(requests('begin')[1][2][0].input.operationId).not.toBe(
+        requests('begin')[0][2][0].input.operationId,
+      );
+    },
+  );
+  it('queries the same receipt after a lost begin response without replaying begin', async () => {
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (device, channel, args) => {
+      if (args[0].actionId === 'management:begin') throw new Error('[TIMEOUT] Response lost');
+      if (args[0].actionId === 'management:operation')
+        return { result: { operationId: args[0].input.operationId, phase: 'succeeded' } };
+      return original(device, channel, args);
+    });
+    const ui = render(page());
+    fireEvent.click(screen.getByRole('radio', { name: 'skillhub.home.local' }));
+    fireEvent.click(await screen.findByText('B installed'));
+    await screen.findByText('# Target local content');
+    fireEvent.click(screen.getByRole('switch'));
+    await screen.findByText('settings.ghosts.remote.unknown');
+    expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(true);
+    ui.rerender(page('B', false));
+    ui.rerender(page());
+    await waitFor(() =>
+      expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(requests('begin')).toHaveLength(1);
+    expect(requests('operation')[0][2][0].input.operationId).toBe(
+      requests('begin')[0][2][0].input.operationId,
+    );
   });
   it('keeps offline content visible, disables writes and does not replay', async () => {
     const ui = render(page());

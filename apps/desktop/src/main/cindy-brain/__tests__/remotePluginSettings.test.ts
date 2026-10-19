@@ -264,6 +264,35 @@ describe('original remote plugin settings', () => {
       { accounts: [{ label: 'Existing account' }] },
     ]);
   });
+  it('renews before the authenticated message budget runs out, including concurrent reads', async () => {
+    const f = fixture(),
+      { fetch } = await f.open();
+    for (let offset = 0; offset < 1050; offset += 50) {
+      const responses = await Promise.all(Array.from({ length: 50 }, () => fetch('/secrets')));
+      expect(responses.every((response) => response.status === 200)).toBe(true);
+    }
+    expect(f.deps.trustIdentity).toHaveBeenCalledTimes(2);
+    expect(
+      (await fetch('/secrets/key', { method: 'PUT', body: '{"value":"after-renewal"}' })).status,
+    ).toBe(200);
+    expect(f.stored.get('/secrets/key')).toContain('after-renewal');
+  });
+  it('does not renew and replay a write after its response is lost', async () => {
+    const f = fixture(),
+      { fetch } = await f.open();
+    const original = f.deps.invoke;
+    f.deps.invoke = async (device, channel, args) => {
+      const response = await original(device, channel, args);
+      if (channel === PLUGIN_OAUTH_CHANNEL) throw new Error('Response lost');
+      return response;
+    };
+    expect(
+      (await fetch('/secrets/key', { method: 'PUT', body: '{"value":"submitted-once"}' })).status,
+    ).toBe(503);
+    expect(f.settingsFetch).toHaveBeenCalledTimes(1);
+    expect(f.stored.get('/secrets/key')).toContain('submitted-once');
+    expect(f.deps.trustIdentity).toHaveBeenCalledTimes(1);
+  });
   it.each(['owner', 'revision', 'revoke', 'peer'] as const)(
     'rejects a late write after %s changes',
     async (change) => {

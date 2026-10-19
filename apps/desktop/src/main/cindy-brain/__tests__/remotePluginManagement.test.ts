@@ -204,26 +204,42 @@ describe('remote plugin management receipt boundaries', () => {
   });
   it('resolves a browsed target directory once as a scope, then uses only its Host id for project writes', async () => {
     const f = projectsFixture();
-    const browsed = { id: 'browsed', name: 'Other', path: '/target/other', workdir: '/target/other' };
+    const browsed = {
+      id: 'browsed',
+      name: 'Other',
+      path: '/target/other',
+      workdir: '/target/other',
+    };
     f.deps.projects!.resolve = vi.fn(async () => browsed);
     expect(await f.invoke('snapshot', {})).toHaveProperty('projectBrowse', true);
-    expect(await f.invoke('project-select', { path: browsed.path })).toEqual({ id: 'browsed', name: 'Other', path: browsed.path });
+    expect(await f.invoke('project-select', { path: browsed.path })).toEqual({
+      id: 'browsed',
+      name: 'Other',
+      path: browsed.path,
+    });
     expect(f.deps.projects!.resolve).toHaveBeenCalledWith(browsed.path);
     expect(f.projects).toHaveLength(2); // Browsing must not create a task or persist a recent project.
-    await expect(f.invoke('project-state', { projectId: browsed.id }, 'desktop-b')).rejects.toThrow();
+    await expect(
+      f.invoke('project-state', { projectId: browsed.id }, 'desktop-b'),
+    ).rejects.toThrow();
     await expect(f.read(browsed.path)).rejects.toThrow();
     await f.toggle('browsed-disable', 'disable', await f.read(browsed.id));
     await flush();
     expect(f.disabled.get(browsed.workdir)).toEqual(['weather']);
     expect(f.ghosts[0].enabled).toBe(true);
     expect(f.deps.setEnabled).not.toHaveBeenCalled();
-    f.deps.projects!.resolve = vi.fn(async () => { throw new Error('directory removed'); });
+    f.deps.projects!.resolve = vi.fn(async () => {
+      throw new Error('directory removed');
+    });
     await expect(f.read(browsed.id)).rejects.toThrow('directory removed');
     f.switchOwner();
-    expect((await f.invoke('snapshot', {})) as unknown as { projects: unknown[] }).toHaveProperty('projects', [
-      { id: 'project-a', name: 'Cindy', path: '/host/project-a' },
-      { id: 'project-b', name: 'Cindy' },
-    ]);
+    expect((await f.invoke('snapshot', {})) as unknown as { projects: unknown[] }).toHaveProperty(
+      'projects',
+      [
+        { id: 'project-a', name: 'Cindy', path: '/host/project-a' },
+        { id: 'project-b', name: 'Cindy' },
+      ],
+    );
     await expect(f.read(browsed.id)).rejects.toThrow();
   });
   it('rejects unsupported browsing and late directory resolutions after owner or connection changes', async () => {
@@ -232,7 +248,12 @@ describe('remote plugin management receipt boundaries', () => {
     for (const transition of ['switchOwner', 'disconnect'] as const) {
       const f = projectsFixture();
       let resolve!: (value: { id: string; name: string; workdir: string }) => void;
-      f.deps.projects!.resolve = vi.fn(() => new Promise<{ id: string; name: string; workdir: string }>(done => { resolve = done; }));
+      f.deps.projects!.resolve = vi.fn(
+        () =>
+          new Promise<{ id: string; name: string; workdir: string }>((done) => {
+            resolve = done;
+          }),
+      );
       const request = f.invoke('project-select', { path: '/target/project' });
       f[transition]();
       resolve({ id: 'late', name: 'Late', workdir: '/target/project' });
@@ -541,9 +562,48 @@ describe('remote plugin management receipt boundaries', () => {
     },
   );
 
+  it.each(['disconnect', 'revoke', 'owner', 'cancel', 'package-swap'])(
+    'checks market-install scope at the late commit after %s',
+    async (change) => {
+      const f = fixture();
+      let resume!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let committed = false;
+      f.deps.market.install = vi.fn(async (_id, _options, _prompt, current, scope) => {
+        current();
+        await gate;
+        scope();
+        committed = true;
+      });
+      await f.invoke(
+        'begin',
+        {
+          operationId: 'market-update',
+          kind: 'install',
+          pluginId: 'market-plugin',
+          expectedReleaseId: 'release',
+          expectedInstalledApproval: ghostInstallApprovalToken(f.ghosts[0].approval),
+        },
+        'desktop-a',
+        installedGhostStoragePart(f.ghosts[0]),
+      );
+      if (change === 'disconnect') f.disconnect();
+      if (change === 'revoke') f.revoke('desktop-a');
+      if (change === 'owner') f.switchOwner();
+      if (change === 'cancel') await f.invoke('cancel', { operationId: 'market-update' });
+      if (change === 'package-swap') f.ghosts[0].approval = { state: 'invalid' };
+      resume();
+      await flush();
+      expect(committed).toBe(change === 'package-swap');
+    },
+  );
   it('rejects the superseded task-card configuration action', async () => {
     const f = fixture();
-    await expect(f.begin('configure', 'configure')).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    await expect(f.begin('configure', 'configure')).rejects.toMatchObject({
+      code: 'INVALID_PARAMS',
+    });
   });
   it('revokes an offline prompt while retaining a queryable cancelled receipt', async () => {
     const f = fixture();
