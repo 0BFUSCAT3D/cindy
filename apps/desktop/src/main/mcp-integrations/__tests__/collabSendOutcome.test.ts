@@ -234,6 +234,8 @@ describe('collab send outcome semantics', () => {
       commitVolatileAppSession('cloud', 'feishu-test-owner');
       await client.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT)');
       await client.exec('CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, role TEXT)');
+      await client.exec('CREATE TABLE bot_profiles (id TEXT PRIMARY KEY, status TEXT)');
+      await client.exec("INSERT INTO bot_profiles VALUES ('bot-feishu', 'active')");
       await client.exec("INSERT INTO sessions VALUES ('background-receipt', 'bot')");
       await client.exec("INSERT INTO bot_session_links VALUES ('background-receipt', 'bot-feishu', 'canonical')");
       setCurrentDbClient(client, 'feishu-test-owner');
@@ -278,6 +280,23 @@ describe('collab send outcome semantics', () => {
             release?.();
           }
         }
+      }
+
+      // A paused profile may still have a live tool call and connected transport.
+      // The persisted pause must block both sends even though its link survives.
+      await client.exec("UPDATE bot_profiles SET status = 'paused' WHERE id = 'bot-feishu'");
+      try {
+        await expect(feishu.getOwnerOpenId(session)).rejects.toThrow('Companion is not active');
+        expect(await feishu.sendMessage(owner!, 'paused', session.sessionId, session))
+          .toMatchObject({ ok: false, reason: 'SEND_FAIL' });
+        expect(await feishu.sendFile(owner!, '/tmp/report.txt', 'report.txt', session))
+          .toMatchObject({ ok: false, reason: 'SEND_FAIL' });
+        expect(mockState.companionFeishu.sendMarkdownText).not.toHaveBeenCalled();
+        expect(mockState.companionFeishu.sendFile).not.toHaveBeenCalled();
+        expect(mockState.personalFeishu.sendMarkdownText).not.toHaveBeenCalled();
+        expect(mockState.personalFeishu.sendFile).not.toHaveBeenCalled();
+      } finally {
+        await client.exec("UPDATE bot_profiles SET status = 'active' WHERE id = 'bot-feishu'");
       }
 
       // Same-account archive removes canonical membership without changing the

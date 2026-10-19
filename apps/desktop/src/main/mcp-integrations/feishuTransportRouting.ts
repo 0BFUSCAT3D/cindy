@@ -3,7 +3,7 @@ import type { FeishuBotHostSession } from '@cindy/mcps';
 
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getCurrentDbClientSnapshot, type CurrentDbClientSnapshot } from '../localDb/client/current.js';
-import { botSessionLinks, sessions } from '../localDb/schema.js';
+import { botProfiles, botSessionLinks, sessions } from '../localDb/schema.js';
 import type { FeishuToolTransport } from '../im/shared/channelToolScope.js';
 
 type Caller = FeishuBotHostSession | undefined;
@@ -50,9 +50,10 @@ export function createFeishuTransportResolver(deps: {
     snapshot = getCurrentDbClientSnapshot();
     if (!snapshot) throw new Error('DbClient not ready');
     const row = await snapshot.client.drizzle
-      .select({ botId: botSessionLinks.botId })
+      .select({ botId: botSessionLinks.botId, profileStatus: botProfiles.status })
       .from(botSessionLinks)
       .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
+      .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
       .where(and(
         eq(botSessionLinks.sessionId, session.sessionId),
         eq(sessions.source, 'bot'),
@@ -62,6 +63,9 @@ export function createFeishuTransportResolver(deps: {
       .get();
     assertCurrent();
     if (!row?.botId) return personalTransport();
+    // Keep canonical identity even if its profile is missing/inactive, so pause
+    // cannot turn into a personal-bot fallback while a tool call is still alive.
+    if (row.profileStatus !== 'active') throw new Error('Companion is not active');
     const im = deps.getCompanionTransport(row.botId, ownerOpenId);
     if (!im) throw new Error('Companion Feishu connection unavailable');
     return { im, assertCurrent };

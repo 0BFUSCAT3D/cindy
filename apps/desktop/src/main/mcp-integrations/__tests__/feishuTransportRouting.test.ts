@@ -26,6 +26,8 @@ beforeAll(async () => {
   client = await createDbClient({ transport: 'worker-thread', useInlineWorker: true });
   await client.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT)');
   await client.exec('CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, role TEXT)');
+  await client.exec('CREATE TABLE bot_profiles (id TEXT PRIMARY KEY, status TEXT)');
+  await client.exec("INSERT INTO bot_profiles VALUES ('bot-a', 'active')");
   await client.exec("INSERT INTO sessions VALUES ('canonical', 'bot'), ('desktop', 'desktop'), ('late', 'bot')");
   await client.exec("INSERT INTO bot_session_links VALUES ('canonical', 'bot-a', 'canonical')");
 });
@@ -63,6 +65,21 @@ describe('Feishu transport with worker database', () => {
   it('never falls back to personal credentials when a companion is unavailable', async () => {
     getCompanionTransport.mockReturnValue(null);
     await expect(resolve({ sessionId: 'canonical' })).rejects.toThrow('Companion Feishu connection unavailable');
+  });
+
+  // PR #6443: pause persists profile status before closing live sessions; a
+  // failed close leaves tools callable. Unit tier, unchanged canonical link/DB.
+  it('rejects a paused companion without selecting either transport, and permits resume', async () => {
+    await client.exec("UPDATE bot_profiles SET status = 'paused' WHERE id = 'bot-a'");
+    getCompanionTransport.mockClear();
+    try {
+      await expect(resolve({ sessionId: 'canonical' })).rejects.toThrow('Companion is not active');
+      await expect(resolve({ sessionId: 'canonical' }, 'ou_companion')).rejects.toThrow('Companion is not active');
+      expect(getCompanionTransport).not.toHaveBeenCalled();
+    } finally {
+      await client.exec("UPDATE bot_profiles SET status = 'active' WHERE id = 'bot-a'");
+    }
+    expect((await resolve({ sessionId: 'canonical' })).im).toBe(companion);
   });
 
   // PR #6443: canonical membership can disappear between recipient lookup and

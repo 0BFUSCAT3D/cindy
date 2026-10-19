@@ -341,8 +341,9 @@ Mobile 使用电脑端已连接的模型目录；目录为空时保持创建禁�
   provider `isEnabled`，Codex 走 `buildSessionMcpConfig` 逐线程 `enabled`，Pi 走 `capabilityGated`；Codex /
   Pi 的共享 bridge 在空 ctx 阶段必须先注册该 server，否则永远挂不上）。桌面轮次没有作用域租约，
   **轮次内原生 API** fail closed；飞书 `send_message_to_user` / `send_file_to_user` 的主人通知是例外：
-  canonical 主任务的桌面或后台轮次可由宿主查询当前账号的伙伴归属，经该伙伴已连接、已认主的飞书
-  连接发送给主人，不生成租约、不扩大原生 API 权限。伙伴连接不可用、账号边界 pending 或 owner
+  canonical 主任务的桌面或后台轮次可由宿主查询当前账号的伙伴归属，仅在伙伴 Profile 为 `active`
+  时经其已连接、已认主的飞书连接发送给主人，不生成租约、不扩大原生 API 权限。
+  伙伴连接不可用、账号边界 pending 或 owner
   代次变化时拒绝发送，不回落个人 bot；完整路由与检查边界见
   [`im-turn-flow.md` §2](../dev-rules/im-turn-flow.md#2-状态清单)（含实现及回归链接）。
   绑定或解绑渠道后主任务的工具面在下一次会话启动时更新。
