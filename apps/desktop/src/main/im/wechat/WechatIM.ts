@@ -855,7 +855,6 @@ export class WechatIM extends BaseIM implements RichChannelIM {
 
   async #stopEpoch(): Promise<void> {
     const epoch = this.#epoch;
-    this.#epoch = null;
     if (!epoch) return;
     epoch.abort.abort();
     for (const [peerId, pending] of this.#pendingInteractions) {
@@ -869,6 +868,9 @@ export class WechatIM extends BaseIM implements RichChannelIM {
       this.#activeTasks.keys(),
     );
     await epoch.drain;
+    // A returned poll can still resolve routes and persist its batch while
+    // draining. Keep its bot/owner identity until that work has settled.
+    this.#epoch = null;
     try {
       await epoch.transport.notifyStop(new AbortController().signal);
     } catch (error) {

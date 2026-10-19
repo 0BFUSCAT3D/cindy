@@ -551,6 +551,43 @@ describe('WechatIM host boundary', () => {
     } finally { await im.dispose(); }
   });
 
+  // PR #6492: idle-switch coverage missed a poll response arriving during abort.
+  // Unit: public binding switch + real task-store boundary must retain the owner
+  // task and original bot context, then reject switching once that task is queued.
+  it('retains the old owner identity while draining a late poll response', async () => {
+    let queued = 0;
+    const { im, transport, db } = restoredConnection(() => queued);
+    vi.mocked(transport.poll).mockImplementationOnce((_cursor, signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve({ cursor: 'next', messages: [{
+        senderId: 'owner', messageId: 'late-owner', text: 'hello', contextToken: 'context', media: [],
+      }] }), { once: true });
+    }));
+    const resolveRouteTarget = vi.fn(async (_bot: string, peer: string) => ({
+      row: { id: im.isOwner(peer) ? 'companion-owner' : 'companion-guest' },
+    }));
+    im.attachTurnRuntime({ runner: { companionBotIdFor: () => 'cindy', resolveRouteTarget },
+      repo: {}, config: {}, resetSessionToDefaults: vi.fn() } as never);
+    vi.mocked(db.tx).mockImplementation(async (name, args) => {
+      if (name !== 'wechatCommitPollBatch') return null;
+      queued += 1;
+      const batch = args as { messages: Array<{ id: string }> };
+      return { committed: true, insertedTaskIds: batch.messages.map((message) => message.id),
+        duplicateTaskIds: [], rejectedTaskIds: [] };
+    });
+    await im.init();
+    try {
+      const update = vi.fn();
+      await expect(im.updateCompanionBinding(update)).rejects.toThrow('WECHAT_CONNECTION_BUSY');
+      expect(update).not.toHaveBeenCalled();
+      expect(resolveRouteTarget).toHaveBeenCalledWith('wechat-bot', 'owner');
+      expect(db.tx).toHaveBeenCalledWith('wechatCommitPollBatch', expect.objectContaining({
+        messages: [expect.objectContaining({ peerId: 'owner', sessionId: 'companion-owner' })],
+      }));
+      expect(im.isOwner('owner')).toBe(true);
+      expect(im.getState().phase).toBe('connected');
+    } finally { await im.dispose(); }
+  });
+
   // Regression: the durable inbox used to claim a personal session even for companion messages.
   // tier: unit; feed transport ingress and inspect the real task-store transaction boundary.
   it('persists companion ingress against the resolved task before dispatch', async () => {
