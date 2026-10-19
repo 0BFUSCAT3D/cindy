@@ -20439,6 +20439,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       agentSwitchDeps.onPendingSwitchChanged?.(sessionId, projectPendingAgentSwitchIntent(intent));
       wakeSessionInputAfterCredentialSwitch(sessionId);
       const response = { deferred: true, superseded: false, pendingUntilSend: true };
+      if (isDeviceLinkInvoke()) markRemoteSettingPersistedInsideHandler(response);
       return response;
     }
     if (supersededByOwnerBoundary()) return { deferred: false, superseded: true };
@@ -20651,9 +20652,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (supersededByOwnerBoundary()) {
         return { deferred: false, superseded: true };
       }
-      // 归档/删除写入与本 handler 共用同一把 session route lock。拿锁后重读持久
-      // 状态可封住两种次序：本请求先拿锁时终态写等待并在之后清理 override；终态
-      // 先拿锁时旧请求看到非 active，不能在 cleanup 后重新建立 pending/override。
+      // 归档/删除写入与本 handler 共用 session route lock。归档后仍允许用户
+      // 暂存下一次发送的选择，但不得应用 runtime 或允许自动更新重建 override。
+      // 删除任务始终拒绝；先选后归档时仍由归档 cleanup 清除旧意图。
       const [runtimeStatus] = await getDbClient()
         .drizzle.select({
           status: sessions.status,
@@ -20678,7 +20679,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (!runtimeStatus) {
         return { deferred: false, superseded: true };
       }
-      if (runtimeStatus.status !== 'active') {
+      const canStageArchivedSelection = runtimeStatus.status === 'archived' &&
+        internalOptions.source === 'user' && !internalOptions.applyingUserSelectionOnSend;
+      if (runtimeStatus.status !== 'active' && !canStageArchivedSelection) {
         if (internalOptions.source === 'user') {
           throwIpcError(
             'PRECONDITION_FAILED',
@@ -20865,7 +20868,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // A picker click records intent only. Keep the persisted route and native binding
       // authoritative until a real send holds this same lock and consumes the final choice.
       if (internalOptions.source === 'user' && !internalOptions.applyingUserSelectionOnSend &&
-          !runtimeStatus.remoteHostId) {
+          (!runtimeStatus.remoteHostId || canStageArchivedSelection)) {
         if (internalOptions.beforeMutation) await internalOptions.beforeMutation();
         assertRuntimeOwnerCurrent();
         assertSharedTaskCurrent.admit();
@@ -22160,10 +22163,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
         return remoteResponse;
       }
-      if (runtimeStatus.status !== 'active') {
+      if (runtimeStatus.status !== 'active' && runtimeStatus.status !== 'archived') {
         throwIpcError(
           'PRECONDITION_FAILED',
-          'archived or deleted task cannot change runtime effort',
+          'deleted task cannot change runtime effort',
         );
       }
       const userIntent = agentSwitchPending.get(sessionId);
@@ -22174,6 +22177,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           { ...userIntent, effort: effort }, false);
         if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
         return remoteResponse ?? result;
+      }
+      if (runtimeStatus.status === 'archived') {
+        // 本地由 renderer 落库，远控在此等待落库；不重建归档时清掉的 runtime 状态。
+        await persistEffort();
+        return remoteResponse;
       }
       const livePatch: SessionRuntimeAxisPatch = {
         effort: effort as SessionRuntimeProfile['effort'],
@@ -22685,10 +22693,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
           return remoteResponse;
         }
-        if (runtimeStatus.status !== 'active') {
+        if (runtimeStatus.status !== 'active' && runtimeStatus.status !== 'archived') {
           throwIpcError(
             'PRECONDITION_FAILED',
-            'archived or deleted task cannot change runtime Fast mode',
+            'deleted task cannot change runtime Fast mode',
           );
         }
         const userIntent = agentSwitchPending.get(sessionId);
@@ -22699,6 +22707,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             { ...userIntent, fastMode: enabled }, false);
           if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
           return remoteResponse ?? result;
+        }
+        if (runtimeStatus.status === 'archived') {
+          await persistFastMode();
+          return remoteResponse;
         }
         const livePatch: SessionRuntimeAxisPatch = { fastMode: enabled };
         const pendingPatch = await resolvePendingRuntimeAxisPatch(sessionId, livePatch);

@@ -47,6 +47,15 @@ thread 配置，同时设置窗口和 90% 自动压缩预算，保留原生 5% �
 相关规则：[`configuration-and-overrides.md`](configuration-and-overrides.md)、
 [`pi-harness.md`](pi-harness.md)、[`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)。
 
+### 归档任务的模型设置
+
+归档任务允许用户调整模型、推理强度与 Fast，不要求先恢复，也不因设置变化恢复任务。
+模型选择沿用活动任务的暂存意图，下一次发送先恢复任务再应用；暂存意图仍只在被控端
+内存中保留，不新增跨进程恢复。已有模型意图时，推理强度与 Fast 更新该意图；否则
+只保存任务字段，不重建归档时清掉的 runtime 状态。自动模型变更与已删除任务仍拒绝。
+本机桌面、设备互联与手机共用此处理，见 `maker-ipc/register.ts` 和
+`sessionRuntimeControlWiring.test.ts` 的归档生命周期回归。
+
 ### 默认型号与预览版的选择
 
 以下描述既有默认陈列策略；默认开启的产品合同与实现差异见

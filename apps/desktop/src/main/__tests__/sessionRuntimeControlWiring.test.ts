@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 const mainRoot = resolve(__dirname, '..');
@@ -39,6 +40,82 @@ function handlerBody(source: string, channel: string, nextChannel: string): stri
   expect(end).toBeGreaterThan(start);
   return source.slice(start, end);
 }
+
+// Run the production axis closures without importing the Electron bootstrap.
+// Guard tier: verifies the lifecycle/persistence contract shared by Desktop and
+// Device Link. The previous tests only checked that terminal guards existed;
+// an archived row plus a remote effort/Fast write is the minimal regression.
+const axisHandlers = new Map<string, string>();
+const registerAst = ts.createSourceFile('register.ts', registerSource, ts.ScriptTarget.Latest, true);
+function collectAxisHandlers(node: ts.Node): void {
+  if (ts.isVariableDeclaration(node) && node.initializer &&
+      ['applyEffort', 'applyFastMode'].includes(node.name.getText(registerAst))) {
+    axisHandlers.set(node.name.getText(registerAst), ts.transpileModule(
+      `return ${node.initializer.getText(registerAst)};`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    ).outputText);
+  }
+  ts.forEachChild(node, collectAxisHandlers);
+}
+collectAxisHandlers(registerAst);
+
+describe.each([
+  ['applyEffort', 'persistEffort', 'effort', 'high'],
+  ['applyFastMode', 'persistFastMode', 'fastMode', true],
+] as const)('archived settings: %s', (handler, persistName, field, value) => {
+  function setup(status: 'archived' | 'deleted') {
+    const row = { status, effort: 'low', fastMode: false } as Record<string, unknown>;
+    const pending = new Map();
+    const persist = vi.fn(async () => { row[field] = value; });
+    const response = {};
+    const query = { from: () => query, where: () => query, limit: async () => [row] };
+    const getSession = vi.fn(() => { throw new Error('archived runtime must remain untouched'); });
+    const bindings = {
+      sessionId: 'archived-task', effort: 'high', enabled: true,
+      sessions: {}, eq: vi.fn(), getDbClient: () => ({ drizzle: { select: () => query } }),
+      remoteResponse: response, [persistName]: persist, agentSwitchPending: pending,
+      assertOwnerCurrent: vi.fn(), assertSharedTaskCurrent: { admit: vi.fn() },
+      markRemoteSettingPersistedInsideHandler: vi.fn(), maker: { getSession },
+      agentSwitchDeps: { selectSameAgentModel: async (id: string, intent: unknown) => { pending.set(id, intent); } },
+      throwIpcError: (code: string, message: string) => { throw new Error(`[${code}] ${message}`); },
+    };
+    const run = new Function(...Object.keys(bindings), axisHandlers.get(handler)!)(...Object.values(bindings));
+    return { run, row, persist, response, getSession, pending };
+  }
+
+  it('acknowledges the saved axis while the task stays archived and the runtime stays untouched', async () => {
+    const h = setup('archived');
+    await expect(h.run()).resolves.toBe(h.response);
+    expect(h.row).toMatchObject({ status: 'archived', [field]: value });
+    expect(h.persist).toHaveBeenCalledOnce();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it('updates an already selected model instead of writing its axis onto the old route', async () => {
+    const h = setup('archived');
+    h.pending.set('archived-task', { sameAgentSelection: true, model: 'next-model' });
+    await h.run();
+    expect(h.pending.get('archived-task')).toMatchObject({ model: 'next-model', [field]: value });
+    expect(h.row).toMatchObject({ status: 'archived', effort: 'low', fastMode: false });
+    expect(h.persist).not.toHaveBeenCalled();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deleted task before saving anything', async () => {
+    const h = setup('deleted');
+    await expect(h.run()).rejects.toThrow('PRECONDITION_FAILED');
+    expect(h.persist).not.toHaveBeenCalled();
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+
+  it('reports a persistence failure without applying the axis to a runtime', async () => {
+    const h = setup('archived');
+    h.persist.mockRejectedValueOnce(new Error('sqlite rejected'));
+    await expect(h.run()).rejects.toThrow('sqlite rejected');
+    expect(h.row).toMatchObject({ status: 'archived', effort: 'low', fastMode: false });
+    expect(h.getSession).not.toHaveBeenCalled();
+  });
+});
 
 describe('session runtime control wiring', () => {
   it('replays Windows attention after the main window is shown independently of inventory loading', () => {
@@ -771,7 +848,10 @@ describe('session runtime control wiring', () => {
     );
   });
 
-  it('rejects terminal tasks inside the shared route lock before runtime mutations', () => {
+  // Guard tier: archive/delete and settings share the route lock. A picker may
+  // stage an archived task, but automatic changes and send-time application must
+  // still stop before recreating runtime state. The old guard rejected all three.
+  it('allows only user picker staging on archived tasks inside the shared route lock', () => {
     const setModel = handlerBody(
       registerSource,
       'const handleSetModel = async (',
@@ -784,6 +864,12 @@ describe('session runtime control wiring', () => {
     expect(setModel).toContain(
       'internalOptions.sessionLockHeld ? applyLocked() : withSendToSessionLock(sessionId, applyLocked)',
     );
+    const archiveAdmission = setModel.slice(setModel.indexOf('const canStageArchivedSelection'), terminalGuard);
+    expect(archiveAdmission).toContain("runtimeStatus.status === 'archived'");
+    expect(archiveAdmission).toContain("internalOptions.source === 'user'");
+    expect(archiveAdmission).toContain('!internalOptions.applyingUserSelectionOnSend');
+    expect(setModel).toContain("runtimeStatus.status !== 'active' && !canStageArchivedSelection");
+    expect(setModel).toContain("(!runtimeStatus.remoteHostId || canStageArchivedSelection)");
   });
 
   it('stages user routes before every runtime mutation and prevents remote persistence of the source route', () => {
@@ -827,7 +913,10 @@ describe('session runtime control wiring', () => {
     );
   });
 
-  it('rejects terminal tasks before effort or Fast mutations recreate runtime state', () => {
+  // Regression: desktop persisted effort before the rejected runtime IPC, while
+  // Mobile rejected the whole action. Archived axes must acknowledge persistence
+  // without restoring the runtime stores cleared by archive cleanup.
+  it('saves archived effort and Fast without recreating runtime state, and rejects deleted tasks', () => {
     const effort = handlerBody(
       registerSource,
       'ipcMain.handle(MAKER_INVOKE.SET_EFFORT',
@@ -838,15 +927,25 @@ describe('session runtime control wiring', () => {
       'MAKER_INVOKE.SET_FAST_MODE',
       'MAKER_INVOKE.SET_THINKING_ENABLED',
     );
-    for (const [body, commit] of [
-      [effort, 'commit: commitEffort'],
-      [fast, 'commit: commitFastMode'],
+    for (const [body, commit, persist] of [
+      [effort, 'commit: commitEffort', 'persistEffort'],
+      [fast, 'commit: commitFastMode', 'persistFastMode'],
     ] as const) {
       const terminalGuard = body.indexOf("runtimeStatus.status !== 'active'");
       expect(terminalGuard).toBeGreaterThan(-1);
       expect(terminalGuard).toBeLessThan(body.indexOf(commit));
       expect(body.indexOf('.select({ status: sessions.status })')).toBeLessThan(terminalGuard);
       expect(body).toContain('return withSendToSessionLock(sessionId');
+      expect(body).toContain("runtimeStatus.status !== 'active' && runtimeStatus.status !== 'archived'");
+      const archiveStart = body.indexOf("if (runtimeStatus.status === 'archived')");
+      expect(archiveStart).toBeGreaterThan(body.indexOf('if (userIntent?.sameAgentSelection)'));
+      const archiveEnd = body.indexOf('const livePatch:', archiveStart);
+      const archive = body.slice(archiveStart, archiveEnd);
+      expect(archive).toContain(`await ${persist}();`);
+      expect(archive).toContain('return remoteResponse;');
+      expect(archive).not.toContain('setSession');
+      expect(archive).not.toContain('recordUserSessionRuntime');
+      expect(archiveStart).toBeLessThan(body.indexOf('const sess = maker.getSession'));
     }
   });
 

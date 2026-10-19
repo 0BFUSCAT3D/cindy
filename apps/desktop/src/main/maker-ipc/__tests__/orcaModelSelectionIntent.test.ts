@@ -69,6 +69,9 @@ describe('Orca model-only picker intent admission', () => {
       expect(pending.get('s1')).toMatchObject({ sameAgentSelection: true, targetAgentKind: 'codex',
         model: 'new', providerId: 'provider', effort: 'high', fastMode: true });
       expect(changed).toHaveBeenCalledTimes(1);
+      // A deferred choice must not let Device Link overwrite the source route,
+      // including when this task's Agent runs on another computer.
+      expect(bindings.markRemoteSettingPersistedInsideHandler).toHaveBeenCalledOnce();
       expect(applyLive).not.toHaveBeenCalled();
       expect(runtimeStatus.model).toBe('old');
       if (!onOtherDevice) {
