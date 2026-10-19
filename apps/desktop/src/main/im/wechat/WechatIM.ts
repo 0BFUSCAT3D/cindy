@@ -1470,7 +1470,8 @@ export class WechatIM extends BaseIM implements RichChannelIM {
   }
 
   async #commitPreDispatchFailure(task: WechatTask, reason: string): Promise<void> {
-    const text = wechatPreDispatchFailureText(reason);
+    const companion = this.#turnRuntime?.runner.companionBotIdFor?.(this.#epoch?.credentials.ilinkBotId ?? '');
+    const text = wechatPreDispatchFailureText(reason, Boolean(companion));
     const chunks = chunkWechatText(text);
     await this.#requireStore().commitPreDispatchFailure({
       bindingEpoch: task.bindingEpoch,
@@ -2029,7 +2030,14 @@ function safeMachineCode(value: string): string {
  *  - 'missing_auth' — 未连接模型服务;
  *  - 其余 — 通用重试提示。
  */
-export function wechatPreDispatchFailureText(reason: string): string {
+export function wechatPreDispatchFailureText(reason: string, companion = false): string {
+  if (companion && (
+    reason.includes(WECHAT_TURN_PERMISSION_POLICY_UNSUPPORTED)
+    || reason.includes('unsupported_turn_permission')
+  )) {
+    return '当前伙伴的模型或权限模式不支持微信的逐次权限确认，消息无法启动。\n'
+      + '请主人在 Cindy 的伙伴设置中选择 Claude Code 或 Codex，并将权限设为自动审查或询问，然后重试。';
+  }
   if (reason.includes(`${WECHAT_TURN_PERMISSION_POLICY_UNSUPPORTED}:agent`)) {
     // 当前权限模式若是换 Agent 后仍不兼容的档位(bypassPermissions / acceptEdits),
     // 仅换 Agent 会在新 Agent 上再次命中权限模式错误,补一条 /permission 提示。

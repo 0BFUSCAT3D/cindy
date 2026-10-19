@@ -151,6 +151,15 @@ describe('WechatIM host boundary', () => {
     expect(__testing.wechatPreDispatchFailureText('unsupported_turn_permission')).toContain('权限模式');
     expect(__testing.wechatPreDispatchFailureText('missing_auth')).toContain('模型服务');
     expect(__testing.wechatPreDispatchFailureText('boom')).toContain('稍后重试');
+    // Linked companions inherit their runtime: the personal-channel settings and
+    // /permission advice cannot fix their configuration (PR #6492, unit).
+    const companionFailure = __testing.wechatPreDispatchFailureText(
+      'TURN_PERMISSION_POLICY_UNSUPPORTED:agent:bypassPermissions', true,
+    );
+    expect(companionFailure).toContain('伙伴设置');
+    expect(companionFailure).toContain('Claude Code 或 Codex');
+    expect(companionFailure).toContain('自动审查或询问');
+    expect(companionFailure).not.toContain('/permission');
   });
 
   it('dispatches attachment-only WeChat messages to the agent', () => {
