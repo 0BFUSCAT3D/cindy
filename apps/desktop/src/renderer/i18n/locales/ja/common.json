@@ -3991,6 +3991,15 @@
         "workingDirSaved": "WeChat の新しい会話の作業ディレクトリを更新しました",
         "workingDirReset": "WeChat の新しい会話はデフォルトディレクトリを使用します",
         "workingDirFailed": "作業ディレクトリを更新できませんでした。もう一度選択してください。"
+      },
+      "companion": {
+        "assigned": "連携したチームメイトが返信します",
+        "description": "WeChat で {{name}} と話し、記憶とメインタスクを共有します。このパソコンの WeChat 接続を連携できるチームメイトは一度に 1 人です。",
+        "other": "WeChat は別のチームメイトと連携しています。そのチームメイトの接続設定、または個人 WeChat の設定で先に連携を解除してください。",
+        "permissionNote": "WeChat では操作ごとの権限確認を維持します。チームメイトに Claude Code または Codex を選び、権限を自動審査または確認に設定してください。",
+        "remove": "チームメイトとの連携を解除",
+        "useExisting": "接続済みの WeChat で {{name}} と話す",
+        "updateFailed": "連携を更新できませんでした。WeChat のタスクが終わってから再試行し、チームメイトが利用可能か確認してください。"
       }
     },
     "discordBot": {
@@ -9973,7 +9982,7 @@
       },
       "remove": "削除",
       "removeAria": "{{platform}} を削除",
-      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram、飛書、WeCom、DingTalk、Discord で作成したボットを追加すると、{{name}} がそこで返信します。",
+      "empty": "既存のボットを追加するか、下で個人用 WeChat を接続すると、{{name}} がそこで返信します。",
       "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
       "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
       "groups": {

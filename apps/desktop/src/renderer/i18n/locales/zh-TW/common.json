@@ -3991,6 +3991,15 @@
         "workingDirSaved": "微信新對話工作目錄已更新",
         "workingDirReset": "微信新對話已恢復使用預設目錄",
         "workingDirFailed": "更新工作目錄失敗，請重新選擇"
+      },
+      "companion": {
+        "assigned": "由繫結的夥伴回覆",
+        "description": "在微信中與 {{name}} 對話，共用記憶和主要任務。此電腦上的微信連線一次只能交給一位夥伴。",
+        "other": "微信已交給另一位夥伴。請先在該夥伴的連線設定或個人微信設定中移除繫結。",
+        "permissionNote": "微信繼續使用逐次權限確認。請為夥伴選擇 Claude Code 或 Codex，並使用自動審查或詢問模式。",
+        "remove": "移除夥伴繫結",
+        "useExisting": "使用已連線的微信與 {{name}} 對話",
+        "updateFailed": "無法更新繫結。請等微信中的工作結束後重試，並確認夥伴仍可用。"
       }
     },
     "discordBot": {
@@ -9973,7 +9982,7 @@
       },
       "remove": "移除",
       "removeAria": "移除 {{platform}}",
-      "empty": "{{name}} 還沒有訊息平台。把你在 Telegram、飛書、企業微信、釘釘或 Discord 申請的機器人加進來，{{name}} 就會在那裡回覆。",
+      "empty": "新增你已有的機器人，或在下方連接個人微信，{{name}} 就會在那裡回覆。",
       "externalNote": "傳訊息給這個機器人的人都是在和 {{name}} 對話。你自己的訊息依 {{name}} 的權限執行；其他人各有一條隱藏任務，權限受限。",
       "sharedMemoryNote": "{{name}} 會把這裡和其它對話裡的資訊一起使用。想隔開記憶，請換一位夥伴。",
       "groups": {
