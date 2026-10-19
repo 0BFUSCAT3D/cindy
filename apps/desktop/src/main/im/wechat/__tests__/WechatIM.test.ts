@@ -560,6 +560,27 @@ describe('WechatIM host boundary', () => {
     } finally { await im.dispose(); }
   });
 
+  // #6492 unit regression: disabling polling must not allow persisted input to
+  // switch owners, including a cold start where no credential-backed store exists.
+  it.each([false, true])('protects the policy-disabled inbox (cold start=%s)', async (cold) => {
+    let queued = 1;
+    const { im, transport, testHost } = restoredConnection(() => queued, cold);
+    await im.init();
+    if (!cold) await im.setCompatibilityDisabled(true);
+    try {
+      const update = vi.fn();
+      await expect(im.updateCompanionBinding(update)).rejects.toThrow('WECHAT_CONNECTION_BUSY');
+      expect(update).not.toHaveBeenCalled();
+      queued = 0;
+      await im.updateCompanionBinding(update);
+      expect(update).toHaveBeenCalledOnce();
+      expect(im.getState().phase).toBe('disabled_by_policy');
+      expect(transport.notifyStart).toHaveBeenCalledTimes(cold ? 0 : 1);
+      expect(testHost.secrets.write).not.toHaveBeenCalled();
+      expect(testHost.secrets.remove).not.toHaveBeenCalled();
+    } finally { await im.dispose(); }
+  });
+
   // PR #6492: idle-switch coverage missed a poll response arriving during abort.
   // Unit: public binding switch + real task-store boundary must retain the owner
   // task and original bot context, then reject switching once that task is queued.
@@ -823,7 +844,7 @@ function blockingLiveTransport(): WechatTransport {
   } as unknown as WechatTransport;
 }
 
-function restoredConnection(queued: () => number) {
+function restoredConnection(queued: () => number, policyDisabled = false) {
   const credentials = { bindingEpoch: 'epoch', botToken: 'test-token', ilinkBotId: 'wechat-bot',
     userId: 'owner', baseUrl: 'https://ilinkai.weixin.qq.com', boundAt: 1 };
   const testHost = host({ secretRead: (name) => name === 'wechat_data_key_v1'
@@ -836,6 +857,7 @@ function restoredConnection(queued: () => number) {
       ? { committed: false, reason: 'stale-cursor' } : null),
   });
   const transport = blockingLiveTransport();
-  const im = new WechatIM(deps({ host: testHost, getDbClient: () => db, createTransport: () => transport }));
+  const im = new WechatIM(deps({ host: testHost, getDbClient: () => db, createTransport: () => transport,
+    isCompatibilityDisabled: () => policyDisabled }));
   return { im, transport, db, testHost };
 }

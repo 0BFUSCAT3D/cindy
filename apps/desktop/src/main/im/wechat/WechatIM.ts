@@ -47,7 +47,7 @@ import {
   resolvePermissionMode,
 } from '../shared/permissionModeControl';
 import { ui } from './uiText';
-import { WechatTaskStore, type WechatActiveBinding, type WechatTask } from './taskStore';
+import { countQueuedWechatTasks, WechatTaskStore, type WechatActiveBinding, type WechatTask } from './taskStore';
 import type { DbClient } from '../../localDb/client/DbClient';
 import {
   removeUncommittedWechatFiles,
@@ -206,26 +206,26 @@ export class WechatIM extends BaseIM implements RichChannelIM {
         throw new Error('WECHAT_CONNECTION_BUSY');
       }
       const epoch = this.#epoch;
-      if (!cancelPending && epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
+      const db = this.#deps.getDbClient();
+      const binding = epoch?.binding ?? await this.#readActiveBindingWithoutKey(db);
+      if (!cancelPending && binding && await countQueuedWechatTasks(db, binding.bindingEpoch)) {
         throw new Error('WECHAT_CONNECTION_BUSY');
       }
       if (!cancelPending && this.#activeTasks.size) throw new Error('WECHAT_CONNECTION_BUSY');
       const revision = this.#compatibilityRevision;
-      const db = cancelPending ? this.#deps.getDbClient() : null;
       await this.#stopEpoch();
       let updated = false;
       try {
-        if (cancelPending && db) {
+        if (cancelPending) {
           if (!options.cancelPendingIf?.()) throw new Error('WECHAT_BINDING_CHANGED');
           // Deletion must also settle a disabled/offline connection's durable inbox.
-          const binding = epoch?.binding ?? await this.#readActiveBindingWithoutKey(db);
           if (binding) await db.tx('wechatStopAll', {
             bindingEpoch: binding.bindingEpoch, now: this.#now(),
             errorCode: 'COMPANION_DELETED', cancelPending: true,
           });
         }
         // A poll already in flight may have persisted a message while we drained it.
-        if (!cancelPending && epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
+        if (!cancelPending && binding && await countQueuedWechatTasks(db, binding.bindingEpoch)) {
           throw new Error('WECHAT_CONNECTION_BUSY');
         }
         update();
