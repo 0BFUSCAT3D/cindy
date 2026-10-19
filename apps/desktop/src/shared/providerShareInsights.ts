@@ -150,7 +150,8 @@ export function parseProviderShareInsights(raw: unknown): ProviderShareInsights 
     if (!value.capabilities[key]) {
       value[key] = null;
       value.status[key] = 'disabled';
-    } else if (value.status[key] !== 'ready') value[key] = null;
+    } else if (value.status[key] === 'disabled') return null;
+    else if (value.status[key] !== 'ready') value[key] = null;
     else if (value[key] === null) return null;
   }
   return value;

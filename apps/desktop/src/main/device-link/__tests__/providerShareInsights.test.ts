@@ -437,6 +437,12 @@ describe('provider share insights', () => {
     // #4317520064：ready+null 曾让已展开明细永久加载，原覆盖没有状态/数据矛盾。
     for (const capability of ['quota', 'usage'] as const) {
       expect(parseProviderShareInsights({ ...view, [capability]: null })).toBeNull();
+      // #4318099606：开启能力却标 disabled 同样会使展开明细永久加载。
+      expect(parseProviderShareInsights({
+        ...view,
+        status: { ...view.status, [capability]: 'disabled' },
+        [capability]: null,
+      })).toBeNull();
     }
     const parsed = parseProviderShareInsights({
       ...view,
