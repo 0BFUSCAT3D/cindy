@@ -11,7 +11,7 @@ import {
 import { __resetBuiltinPanelsForTest } from '../../panels/builtinPanels';
 import { __resetPanelRegistryForTest, registerPanelKind } from '../../panels/registry';
 import { LayoutRoot, normalizeSubMinFractions } from '../LayoutRoot';
-import { usePaneAtWindowTop, usePaneFill } from '../panePlacement';
+import { usePaneAtWindowTop, usePaneFill, usePaneAtWindowLeft } from '../panePlacement';
 
 const ghostPanelSyncMock = vi.hoisted(() => ({ version: 0 }));
 
@@ -319,7 +319,18 @@ describe('LayoutRoot · 树驱动的顺序与在场', () => {
   it('聊天列:chat-main 与下方页签组同列,列是根级弹性区域;接管态只剩聊天区', () => {
     registerPanelKind({
       kind: 'tab-group:bottom',
-      Component: () => <div data-testid="p-bottom" data-fill={String(usePaneFill())} />,
+      Component: () => (
+        <div
+          data-testid="p-bottom"
+          data-fill={String(usePaneFill())}
+          data-window-left={String(usePaneAtWindowLeft())}
+        />
+      ),
+      collapseMemory: 'none',
+    });
+    registerPanelKind({
+      kind: 'tab-group:probe-right',
+      Component: () => <div data-testid="p-probe" data-window-left={String(usePaneAtWindowLeft())} />,
       collapseMemory: 'none',
     });
     currentLayout = {
@@ -341,11 +352,16 @@ describe('LayoutRoot · 树驱动的顺序与在场', () => {
               ],
             },
           },
-          { fraction: 0.3, node: { type: 'pane', id: 'right', panelKind: 'right-tabs' } },
+          { fraction: 0.2, node: { type: 'pane', id: 'right', panelKind: 'right-tabs' } },
+          { fraction: 0.1, node: { type: 'pane', id: 'probe', panelKind: 'tab-group:probe-right' } },
         ],
       },
     };
     const rendered = renderLayoutRoot();
+    // 聊天列是最左的根级区域:列里的下方组贴着内容区左边(左栏收起时就是窗口左上角,
+    // 顶栏要给红绿灯让位);右边的面板不贴。
+    expect(screen.getByTestId('p-bottom').getAttribute('data-window-left')).toBe('true');
+    expect(screen.getByTestId('p-probe').getAttribute('data-window-left')).toBe('false');
     const column = document.querySelector<HTMLElement>('[data-layout-root-child-id="chat-column"]');
     expect(column).not.toBeNull();
     expect(column!.className).toContain('flex-1');
@@ -353,7 +369,7 @@ describe('LayoutRoot · 树驱动的顺序与在场', () => {
     expect(screen.getByTestId('p-chat')).toBeTruthy();
     expect(screen.getByTestId('p-bottom').getAttribute('data-fill')).toBe('true');
     // 列内一条横缝 + 根级一条竖缝。
-    expect(screen.getAllByTestId('layout-divider')).toHaveLength(2);
+    expect(screen.getAllByTestId('layout-divider')).toHaveLength(3);
 
     rendered.rerender(
       <BuiltinPanelBridgeProvider value={bridge}>

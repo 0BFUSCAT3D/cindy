@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next';
 
 import { tabGroupPanelKind, type TabGroupId } from '../../../shared/layoutTree';
 import { usePanelMaximize } from '@/layout/panelMaximize';
-import { usePaneAtWindowTop, usePaneFill } from '@/layout/panePlacement';
+import { usePaneAtWindowLeft, usePaneAtWindowTop, usePaneFill } from '@/layout/panePlacement';
 import { usePanelWidth } from '@/layout/paneWidths';
 import type { PanelComponentProps } from '@/panels/registry';
 import { RightSidebarShell } from './RightSidebarShell';
@@ -27,6 +27,7 @@ function TabGroupPanelBody({ groupId }: { groupId: TabGroupId }): ReactNode {
   const host = useTabGroupHost();
   const fill = usePaneFill();
   const atWindowTop = usePaneAtWindowTop();
+  const atWindowLeft = usePaneAtWindowLeft();
   const maximize = usePanelMaximize();
   const kind = tabGroupPanelKind(groupId);
   const engineWidth = usePanelWidth(kind);
@@ -55,8 +56,13 @@ function TabGroupPanelBody({ groupId }: { groupId: TabGroupId }): ReactNode {
         subagentsAvailable={host.subagentsAvailable}
         isMac={host.isMac}
         unifiedTopbar={host.isMac && atWindowTop}
+        // 贴着窗口左上角(左栏收起后左侧组 / 聊天列里的上方组都可能):给红绿灯与
+        // ChromeActions 让位,否则页签与关闭按钮压在它们下面。
         reserveLeftChromeActions={
-          host.isMac && atWindowTop && groupId === 'left' && host.reserveLeftChromeActions
+          host.isMac && atWindowTop && atWindowLeft && host.sidebarCollapsed
+        }
+        railChromeActionsHitHole={
+          host.isMac && atWindowTop && atWindowLeft && host.hasRailChromeActions
         }
         onMaximize={maximize ? () => maximize.toggle(kind) : undefined}
         isMaximized={isMaximized}

@@ -29,7 +29,11 @@ import {
 } from '../panels/registry';
 import { installLayoutDevTools } from './layoutDevTools';
 import { PanelMaximizeContext, type PanelMaximizeState } from './panelMaximize';
-import { PaneAtWindowTopProvider, PaneFillProvider } from './panePlacement';
+import {
+  PaneAtWindowLeftProvider,
+  PaneAtWindowTopProvider,
+  PaneFillProvider,
+} from './panePlacement';
 import { PaneWidthProvider, useContentAvailableWidth } from './paneWidths';
 
 /**
@@ -102,20 +106,24 @@ const PanelHost = memo(function PanelHost({
   visible,
   fill = false,
   atWindowTop = true,
+  atWindowLeft = true,
 }: {
   node: PaneNode;
   definition: PanelDefinition | null;
   visible: boolean;
   fill?: boolean;
   atWindowTop?: boolean;
+  atWindowLeft?: boolean;
 }): ReactNode {
   if (!definition || !visible) return null;
   const Component = definition.Component;
   return (
     <PaneAtWindowTopProvider value={atWindowTop}>
-      <PaneFillProvider value={fill}>
-        <Component paneId={node.id} />
-      </PaneFillProvider>
+      <PaneAtWindowLeftProvider value={atWindowLeft}>
+        <PaneFillProvider value={fill}>
+          <Component paneId={node.id} />
+        </PaneFillProvider>
+      </PaneAtWindowLeftProvider>
     </PaneAtWindowTopProvider>
   );
 });
@@ -302,6 +310,8 @@ interface NodeViewProps {
   node: LayoutNode;
   fillPane?: boolean;
   atWindowTop?: boolean;
+  /** 本节点是否贴着内容区左边(根横排里的第一块,及它的聊天列里的全部格)。 */
+  atWindowLeft?: boolean;
   liveFractions: Record<string, number> | null;
   maximizedKind: string | null;
   /** 接管态(设置页):聊天列里只渲染聊天区,上下页签组连同横缝一起不画。 */
@@ -315,6 +325,7 @@ function NodeView({
   node,
   fillPane = false,
   atWindowTop = true,
+  atWindowLeft = true,
   liveFractions,
   maximizedKind,
   chatOnly = false,
@@ -330,6 +341,7 @@ function NodeView({
         visible={isPanelKindVisible(node.panelKind)}
         fill={fillPane}
         atWindowTop={atWindowTop}
+        atWindowLeft={atWindowLeft}
       />
     );
   }
@@ -369,6 +381,9 @@ function NodeView({
     const childAtWindowTop =
       atWindowTop &&
       (node.direction === 'row' || (maximizedKind !== null ? entryHasMaximized : i === 0));
+    const childAtWindowLeft =
+      atWindowLeft &&
+      (node.direction === 'column' || (maximizedKind !== null ? entryHasMaximized : i === 0));
     // 接管态下列里只剩聊天区一格:撑满整列,不按旧份额留空。
     const fillsColumn = entryHasMaximized || (chatOnly && visible.length === 1);
     items.push(
@@ -392,6 +407,7 @@ function NodeView({
           node={entry.node}
           fillPane
           atWindowTop={childAtWindowTop}
+          atWindowLeft={childAtWindowLeft}
           liveFractions={liveFractions}
           maximizedKind={maximizedKind}
           chatOnly={chatOnly}
@@ -958,6 +974,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
               <div key={entry.node.id} aria-hidden className="flex w-0 flex-none overflow-hidden">
                 <NodeView
                   node={entry.node}
+                  atWindowLeft={false}
                   liveFractions={liveFractions}
                   maximizedKind={maximizedKind}
                   onLive={setLiveFractions}
@@ -1031,6 +1048,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
             <NodeView
               node={entry.node}
               fillPane
+              atWindowLeft={i === 0}
               liveFractions={liveFractions}
               maximizedKind={null}
               chatOnly={suppressNonChatPanels}
@@ -1044,6 +1062,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
           <NodeView
             key={entry.node.id}
             node={entry.node}
+            atWindowLeft={i === 0}
             liveFractions={liveFractions}
             maximizedKind={null}
             onLive={setLiveFractions}

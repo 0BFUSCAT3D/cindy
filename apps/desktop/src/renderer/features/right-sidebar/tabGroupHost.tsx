@@ -15,10 +15,12 @@ export interface TabGroupHostValue {
   /** 「在独立窗口中打开」某个页签(带 windowId = 搬进已有窗口);副窗口不提供。 */
   onDetachTab?: (tabId: string, targetWindowId?: string) => void;
   /**
-   * mac 下窗口左上的红绿灯 / ChromeActions 会盖住最左面板的顶栏:左侧组贴着窗口
-   * 顶边且左栏收起 / rail 时,为它们预留 no-drag 空位。
+   * 左栏完全收起:mac 下窗口左上的红绿灯 / ChromeActions 浮在内容区最左面板的顶栏上,
+   * 贴着窗口左上角的组要为它们预留 no-drag 空位。
    */
-  reserveLeftChromeActions: boolean;
+  sidebarCollapsed: boolean;
+  /** 左栏为 rail:ChromeActions 跨到内容区,贴着窗口左上角的组顶栏要挖 no-drag 命中洞。 */
+  hasRailChromeActions: boolean;
 }
 
 const TabGroupHostContext = createContext<TabGroupHostValue | null>(null);
