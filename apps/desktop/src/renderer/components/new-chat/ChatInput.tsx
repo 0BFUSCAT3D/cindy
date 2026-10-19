@@ -6095,8 +6095,13 @@ export function ChatInput({
     [onQueueSteer],
   );
   steerSoleQueuedMessageRef.current = () => {
-    // 输入框里有任何待发内容(正文、附件、评论、语音稿)时快捷键仍发送输入框本身。
-    if (!onQueueSteer || voiceBusyOnCurrentComposer || !composerFullyEmptyRef.current()) {
+    // 可见推荐也是待发内容，和正文、附件、评论、语音稿一样保留原发送路径。
+    if (
+      !onQueueSteer ||
+      voiceBusyOnCurrentComposer ||
+      showRecommendationRef.current ||
+      !composerFullyEmptyRef.current()
+    ) {
       return false;
     }
     const clientId = resolveSoleSteerableQueuedMessage(pendingQueue ?? [], {
