@@ -349,6 +349,49 @@ it('deletion requires an active host draft with provider support and rejects all
   expect(f.sendToGhost).toHaveBeenCalledTimes(1);
 });
 
+// PR #6404 P1: picker/upload + wake can yield while the other draft view edits.
+// Existing tests covered terminal states after picking, but not changed fields
+// or a terminal state reached during wake. Unit: DI dispatch, no OS or sleeps.
+it('attachment delivery rebases disjoint edits after selection and wake, and rejects conflicts or terminal drafts', async () => {
+  const { renderMailCard } = await import('../mailCards');
+  for (const source of ['file', 'image', 'phone'] as const) for (const phase of ['selection', 'wake'] as const) {
+    for (const outcome of ['merge', 'conflict', 'sent', 'superseded'] as const) {
+      const ghost = fakeGhost({ card: false }); ghost.manifest.mail = true;
+      const mail = { accountId: 'a', draftId: 'd', key: '12345678-1234-1234-1234-123456789abc', from: 'a@example.test',
+        fields: [...['to', 'cc', 'bcc', 'subject', 'body'].map(name => ({ name, label: name, value: name })),
+          { name: 'attachmentItems', label: 'Files', value: '[]', kind: 'mail-attachments' as const }],
+        attachments: [], state: 'draft' as const, status: 'Synced', sendLabel: 'Send', fromLabel: 'From' };
+      let html = renderMailCard(mail);
+      const values = Object.fromEntries(mail.fields.map(f => [f.name, f.value]));
+      values.subject = 'unsynced click edit';
+      const newer = { ...mail, fields: mail.fields.map(f => ({ ...f, value: f.name === 'body' ? 'other view body' :
+        f.name === 'attachmentItems' ? '[{"key":"existing-file","filename":"existing.pdf"}]' :
+        outcome === 'conflict' && f.name === 'subject' ? 'other view subject' : f.value })),
+        ...(outcome === 'sent' ? { state: 'sent' as const } : {}), ...(outcome === 'superseded' ? { supersededBy: 'new-call' } : {}) };
+      const staged = { attachment: { path: '/selected/file.pdf', filename: 'file.pdf', bytes: 12, sha256: 'a'.repeat(64) },
+        accepted: vi.fn(), discard: vi.fn(async () => {}) };
+      const select = async () => { if (phase === 'selection') html = renderMailCard(newer); return staged; };
+      const f = makeDispatcher({ getGhost: () => ghost, pickMailAttachment: select, prepareMailUpload: select,
+        isRunning: () => false, wake: async () => { if (phase === 'wake') html = renderMailCard(newer); },
+        resolveLiveInfo: () => ({ ghostId: 'cindy-mivo', sessionId: 's' }),
+        resolvePersistedCard: async () => ({ ghostId: 'cindy-mivo', sessionId: 's', html }) });
+      const result = await f.dispatcher.dispatch('call', `mail:${source === 'image' ? 'image' : 'attach'}:${mail.key}`, undefined,
+        source === 'phone' ? 'phone-page' : undefined, values, false,
+        source === 'phone' ? { url: 'provider-validated-reference', name: 'file.pdf' } : undefined);
+      if (outcome === 'merge') {
+        expect(result).toEqual({ ok: true });
+        expect(f.sendToGhost.mock.calls[0][1]).toMatchObject({ formValues: { body: 'other view body', subject: 'unsynced click edit',
+          attachmentItems: '[{"key":"existing-file","filename":"existing.pdf"}]' }, mailAttachment: staged.attachment });
+        expect(staged.accepted).toHaveBeenCalledOnce(); expect(staged.discard).not.toHaveBeenCalled();
+      } else {
+        expect(result).toEqual({ ok: false, reason: 'mail-view-expired' });
+        expect(f.sendToGhost).not.toHaveBeenCalled(); expect(staged.accepted).not.toHaveBeenCalled();
+        expect(staged.discard).toHaveBeenCalledOnce();
+      }
+    }
+  }
+});
+
 it('only a live draft can open the host file picker, and a superseded view cannot deliver its selected file', async () => {
   const { renderMailCard } = await import('../mailCards');
   const ghost = fakeGhost({ card: false }); ghost.manifest.mail = true;

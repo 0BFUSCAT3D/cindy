@@ -146,6 +146,8 @@ export class GhostCardActionDispatcher {
     let mailAction = false;
     let mailAttachment: PreparedMailAttachment['attachment'] | null = null;
     let staged: PreparedMailAttachment | undefined;
+    let deliveryFields = fields;
+    let attachmentView: ReturnType<typeof readMailCard> = null;
     if (upload && (!mobilePageId || change || !actionId.startsWith('mail:attach:'))) return { ok: false, reason: 'bad-mail-upload' };
     if (actionId.startsWith('mail:')) {
       const stored = await this.deps.resolvePersistedCard(callId);
@@ -165,6 +167,7 @@ export class GhostCardActionDispatcher {
           (mail.state === 'sent' && expected !== 'continue'))) return { ok: false, reason: 'mail-view-readonly' };
       if (!countdownAction && !deleteAction && expected !== 'continue' && (!fields || Object.keys(fields).length !== mail.fields.length || mail.fields.some(f => !(f.name in fields)))) return { ok: false, reason: 'bad-mail-fields' };
       if (attachmentAction) {
+        attachmentView = mail;
         if (!sessionId || (mobilePageId ? (!upload || !this.deps.prepareMailUpload) : !this.deps.pickMailAttachment)) return { ok: false, reason: 'mail-attachment-picker-unavailable' };
         try {
           if (mobilePageId) {
@@ -175,9 +178,6 @@ export class GhostCardActionDispatcher {
         catch { return { ok: false, reason: 'mail-attachment-read-failed' }; }
         if (!ownerUsable()) { await staged?.discard(); return rejectStaleOwner(ghostId); }
         if (!mailAttachment) return { ok: true };
-        const latest = await this.deps.resolvePersistedCard(callId);
-        const current = latest?.html ? readMailCard(latest.html) : null;
-        if (!current || current.key !== mail.key || current.supersededBy || !['draft', 'syncing', 'error'].includes(current.state)) { await staged?.discard(); return { ok: false, reason: 'mail-view-expired' }; }
       }
       mailAction = ghost.manifest.mail === true;
     }
@@ -206,6 +206,29 @@ export class GhostCardActionDispatcher {
         await this.deps.wake(ghost);
         if (!ownerUsable()) { await staged?.discard(); return rejectStaleOwner(ghostId); }
       }
+      if (attachmentView && mailAttachment) {
+        // Selection/materialization and wake may outlive edits in another view.
+        // Rebase only the click's actual edits onto the latest host fields;
+        // never replay its entire old form over a newer draft.
+        const latest = await this.deps.resolvePersistedCard(callId);
+        if (!ownerUsable()) { await staged?.discard(); return rejectStaleOwner(ghostId); }
+        const current = latest?.html ? readMailCard(latest.html) : null;
+        if (!current || latest?.ghostId !== ghostId || latest.sessionId !== sessionId ||
+            current.key !== attachmentView.key || current.supersededBy || !['draft', 'syncing', 'error'].includes(current.state) ||
+            current.fields.length !== attachmentView.fields.length || current.fields.some(f => !attachmentView!.fields.some(base => base.name === f.name))) {
+          await staged?.discard(); return { ok: false, reason: 'mail-view-expired' };
+        }
+        const rebased: Record<string, string> = {};
+        for (const field of current.fields) {
+          const base = attachmentView.fields.find(f => f.name === field.name)!.value;
+          const local = fields![field.name];
+          if (local !== base && field.value !== base && local !== field.value) {
+            await staged?.discard(); return { ok: false, reason: 'mail-view-expired' };
+          }
+          rebased[field.name] = local !== base ? local : field.value;
+        }
+        deliveryFields = rebased;
+      }
       // 卡片路径只发这一张一次性票；不另记面板手势，避免一次点击两份凭据。
       const userActionToken = change ? null : this.deps.issueUserActionToken?.(ghostId, sessionId) ?? null;
       if (!ownerUsable()) { await staged?.discard(); return rejectStaleOwner(ghostId); }
@@ -219,7 +242,7 @@ export class GhostCardActionDispatcher {
         ...(sessionId ? { sessionId } : {}),
         ...(userActionToken ? { userActionToken } : {}),
         ...(promptText !== undefined ? { prompt: promptText } : {}),
-        ...(fields ? { formValues: fields } : {}),
+        ...(deliveryFields ? { formValues: deliveryFields } : {}),
         ...(mailAttachment ? { mailAttachment } : {}),
         spawnCallId,
         ts: this.now(),
