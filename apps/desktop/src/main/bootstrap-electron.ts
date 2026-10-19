@@ -750,6 +750,7 @@ import { createResourceUsageWindow } from './resource-usage-window/window.js';
 import { registerResourceUsageWindowIpc } from './resource-usage-window/ipc.js';
 import { isResourceUsageOpenSender } from './resource-usage-window/open-sender.js';
 import { SidebarTabWindowsController } from './sidebar-tab-window/controller.js';
+import { resolveWindowBoundsNearPoint } from './windowBounds.js';
 import { createSidebarTabWindow } from './sidebar-tab-window/window.js';
 import { registerSidebarTabWindowIpc } from './sidebar-tab-window/ipc.js';
 import { setRightSidebarTabsChangeBroadcaster } from './localDb/ipc/rightSidebarTabs.js';
@@ -969,9 +970,11 @@ import {
 } from './secondary-windows.js';
 import {
   beginSessionDragPreview,
+  beginSidebarTabDragPreview,
   consumeNativeSessionDragOpenResult,
   disposeSessionDragPreview,
   endSessionDragPreview,
+  endSidebarTabDragPreview,
   prewarmSessionDragReleaseHelper,
 } from './session-drag-preview.js';
 import {
@@ -2293,6 +2296,14 @@ registerRsbWindowIpc({
 // sidebar-tab-window/controller.ts。deps 同样全 lazy(isQuitting 声明在后)。
 const sidebarTabWindowsController = new SidebarTabWindowsController({
   createWindow: (cascadeIndex) => createSidebarTabWindow(cascadeIndex),
+  // 拖出窗口松手弹窗:窗口的标题栏落在松手点附近,整窗保持在所在显示器可见范围内。
+  positionWindow: (win, point) => {
+    const bounds = win.getBounds();
+    const workArea = screen.getDisplayNearestPoint(point).workArea;
+    win.setBounds(
+      resolveWindowBoundsNearPoint(point, { width: bounds.width, height: bounds.height }, workArea),
+    );
+  },
   broadcastState: (state) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
@@ -4525,6 +4536,26 @@ const registerIpcHandlers = () => {
       );
     },
   );
+
+  // 右侧栏页签拖出窗口的窗外预览卡:与任务拖出同一扇预览窗口,只是没有原生 mouse-up 协调。
+  ipcMain.handle(
+    MAKER_IPC_INVOKE.SIDEBAR_TAB_DRAG_PREVIEW_START,
+    (event, labelRaw: unknown, paletteRaw: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      if (typeof labelRaw !== 'string') throwIpcError('INVALID_PARAMS', 'label required');
+      const palette = parseSessionDragPreviewPalette(paletteRaw);
+      if (!palette) throwIpcError('INVALID_PARAMS', 'invalid drag preview palette');
+      const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+      if (!sourceWindow || sourceWindow.isDestroyed()) return;
+      beginSidebarTabDragPreview(sourceWindow, truncateSessionDragPreviewLabel(labelRaw), palette);
+    },
+  );
+  ipcMain.on(MAKER_SEND.SIDEBAR_TAB_DRAG_PREVIEW_END, (event) => {
+    if (!isTrustedAppRendererEvent(event)) return;
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!sourceWindow || sourceWindow.isDestroyed()) return;
+    endSidebarTabDragPreview(sourceWindow);
+  });
 
   ipcMain.on(MAKER_SEND.SESSION_DRAG_PREVIEW_END, (event, dragEndAtMsRaw: unknown) => {
     // Fire-and-forget callers cannot receive an IPC error. Drop stale or

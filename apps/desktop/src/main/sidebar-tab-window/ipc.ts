@@ -117,9 +117,24 @@ function parseReturnSnapshot(raw: unknown): SidebarTabReturnSnapshot | null {
   return { sessionId, tab };
 }
 
+function parsePosition(raw: unknown): { x: number; y: number } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const obj = requireObject(raw, 'position');
+  if (
+    typeof obj.x !== 'number' ||
+    typeof obj.y !== 'number' ||
+    !Number.isFinite(obj.x) ||
+    !Number.isFinite(obj.y)
+  ) {
+    throwIpcError('INVALID_PARAMS', 'position must have finite x / y');
+  }
+  return { x: obj.x as number, y: obj.y as number };
+}
+
 function parseOpenRequest(raw: unknown): SidebarTabWindowOpenRequest {
   const obj = requireObject(raw, 'open request');
   const targetWindowId = optionalNullableString(obj.targetWindowId, 'targetWindowId');
+  const position = parsePosition(obj.position);
   return {
     tabId: requireId(obj.tabId, 'tabId'),
     // 全局页签(插件视图)不属于任何任务:sessionId 为 null。
@@ -127,6 +142,7 @@ function parseOpenRequest(raw: unknown): SidebarTabWindowOpenRequest {
     context: parseContext(obj.context),
     handoff: parseHandoff(obj.handoff),
     ...(targetWindowId ? { targetWindowId } : {}),
+    ...(position ? { position } : {}),
   };
 }
 

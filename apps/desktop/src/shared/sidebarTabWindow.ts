@@ -50,6 +50,8 @@ export interface SidebarTabWindowOpenRequest {
   handoff?: RsbWindowTabSnapshot | null;
   /** 搬进已有的弹出窗口;缺省 / 窗口不存在或任务不符时新开一扇。 */
   targetWindowId?: string;
+  /** 拖出窗口松手的屏幕坐标(DIP):新窗口落在这附近;缺省沿用层叠位置。 */
+  position?: { x: number; y: number };
 }
 
 /** 弹出窗口合并回侧边栏时交回的单页签内存态(仅不可持久化会话)。 */

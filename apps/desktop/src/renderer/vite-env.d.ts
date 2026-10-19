@@ -2057,6 +2057,12 @@ interface ElectronAPI {
     ) => Promise<void>;
     focus: (tabId: string) => Promise<void>;
     closeForTab: (tabId: string) => Promise<void>;
+    /** 主窗口:页签拖出窗口时的窗外预览卡。 */
+    beginDragPreview?: (
+      label: string,
+      palette: import('../shared/sessionDragPreview').SessionDragPreviewPalette,
+    ) => Promise<void>;
+    endDragPreview?: () => void;
     onStateChanged: (
       cb: (state: import('../shared/sidebarTabWindow').SidebarTabWindowsState) => void,
     ) => () => void;

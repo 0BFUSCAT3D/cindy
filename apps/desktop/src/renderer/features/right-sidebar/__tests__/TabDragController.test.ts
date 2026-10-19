@@ -11,7 +11,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { computeChatEdgeZones, pickTabDropZone } from '../TabDragController';
+import {
+  computeChatEdgeZones,
+  isPointerOutsideWindow,
+  pickTabDropZone,
+} from '../TabDragController';
 
 describe('computeChatEdgeZones / pickTabDropZone', () => {
   const chat = { left: 100, top: 50, width: 1000, height: 800 };
@@ -36,5 +40,14 @@ describe('computeChatEdgeZones / pickTabDropZone', () => {
     expect(pickTabDropZone(1090, 840, zones)?.group).toBe('right');
     expect(pickTabDropZone(600, 400, zones)).toBeNull();
     expect(pickTabDropZone(600, 400, [])).toBeNull();
+  });
+
+  it('窗外判定:可视区外(含右 / 下边界本身)为真,区内为假', () => {
+    expect(isPointerOutsideWindow(-1, 10, 800, 600)).toBe(true);
+    expect(isPointerOutsideWindow(10, -1, 800, 600)).toBe(true);
+    expect(isPointerOutsideWindow(800, 10, 800, 600)).toBe(true);
+    expect(isPointerOutsideWindow(10, 600, 800, 600)).toBe(true);
+    expect(isPointerOutsideWindow(0, 0, 800, 600)).toBe(false);
+    expect(isPointerOutsideWindow(799, 599, 800, 600)).toBe(false);
   });
 });

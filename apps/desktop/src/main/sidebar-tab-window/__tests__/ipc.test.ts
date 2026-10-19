@@ -118,7 +118,15 @@ describe('sidebar-tab-window IPC', () => {
         },
       ),
     ).rejects.toThrow(/INVALID_PARAMS/);
+    await expect(
+      call(open, { sender: mainSender }, { ...validRequest, position: { x: 'left', y: 2 } }),
+    ).rejects.toThrow(/INVALID_PARAMS/);
     expect(controller.open).not.toHaveBeenCalled();
+
+    await call(open, { sender: mainSender }, { ...validRequest, position: { x: 640, y: 480 } });
+    expect(controller.open).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tabId: 'tab-a', position: { x: 640, y: 480 } }),
+    );
 
     await call(
       open,

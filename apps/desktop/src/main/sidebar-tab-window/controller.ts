@@ -60,6 +60,8 @@ export interface SidebarTabWindowsControllerDeps {
   sendToWindow: (win: BrowserWindow, channel: string, payload: unknown) => void;
   /** 页签回到侧边栏:只发给主窗 renderer。 */
   notifyTabReturned: (payload: SidebarTabReturnedPayload) => void;
+  /** 拖出窗口松手弹窗:首次展示前把窗口放到松手点附近(缺省不动)。 */
+  positionWindow?: (win: BrowserWindow, point: { x: number; y: number }) => void;
   isQuitting: () => boolean;
   log: ControllerLogger;
 }
@@ -79,6 +81,8 @@ export interface WindowSlot {
   presentationReady: boolean;
   visible: boolean;
   pendingOpen: boolean;
+  /** 首次展示前要套用的位置(拖出窗口松手点);展示后清空。 */
+  pendingPosition: { x: number; y: number } | null;
   destroyingWindow: boolean;
   openTimeout: NodeJS.Timeout | null;
 }
@@ -171,6 +175,7 @@ export class SidebarTabWindowsController {
     slot.assignmentDelivered = false;
     slot.presentationReady = false;
     slot.pendingOpen = true;
+    slot.pendingPosition = request.position ?? null;
     this.slots.set(windowId, slot);
     this.tabToWindow.set(request.tabId, windowId);
     if (slot.rendererReady) this.deliverAssignment(slot);
@@ -415,6 +420,7 @@ export class SidebarTabWindowsController {
       presentationReady: false,
       visible: false,
       pendingOpen: false,
+      pendingPosition: null,
       destroyingWindow: false,
       openTimeout: null,
     };
@@ -461,6 +467,17 @@ export class SidebarTabWindowsController {
     this.clearOpenTimeout(slot);
     slot.pendingOpen = false;
     if (slot.win.isDestroyed()) return;
+    if (slot.pendingPosition) {
+      const point = slot.pendingPosition;
+      slot.pendingPosition = null;
+      try {
+        this.deps.positionWindow?.(slot.win, point);
+      } catch (error) {
+        this.deps.log.warn('position sidebar tab window failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     if (slot.win.isMinimized()) slot.win.restore();
     slot.win.show();
     slot.win.focus();

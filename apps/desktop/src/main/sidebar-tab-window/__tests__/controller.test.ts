@@ -101,7 +101,7 @@ function fakeWindow(): FakeWindow {
   return win;
 }
 
-function makeHarness() {
+function makeHarness(extra: Partial<SidebarTabWindowsControllerDeps> = {}) {
   let quitting = false;
   const created: FakeWindow[] = [];
   const broadcasts: SidebarTabWindowsState[] = [];
@@ -124,6 +124,7 @@ function makeHarness() {
     },
     isQuitting: () => quitting,
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    ...extra,
   };
   const controller = new SidebarTabWindowsController(deps);
   return {
@@ -359,6 +360,31 @@ describe('SidebarTabWindowsController', () => {
     expect(h.controller.getState()).toEqual({
       'tab-x': { windowId: 'w2', sessionId: 's2', open: true },
     });
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:open({position}) → 首次展示前经 positionWindow 把窗口放到松手点,
+  //   且只在 show 之前调一次;搬进已有窗口不改位置。
+  // - Bug / 规则依据:页签拖出窗口松手即弹窗,新窗口要落在松手点附近而不是层叠默认位。
+  // - 现有覆盖缺口:新增的 position 通道。
+  // - 最小失败输入:open(request + position) 后 presentation-ready。
+  // - tier:unit(mock deps)。
+  it('positions a dragged-out window at the release point once, before showing it', () => {
+    const positionWindow = vi.fn();
+    const h = makeHarness({ positionWindow });
+    h.controller.open({ ...request('tab-a'), position: { x: 1200, y: 300 } });
+    const win = h.created[0];
+    h.controller.markRendererReady(h.wc(win));
+    expect(positionWindow).not.toHaveBeenCalled();
+    h.controller.markPresentationReady(h.wc(win));
+    expect(positionWindow).toHaveBeenCalledWith(win, { x: 1200, y: 300 });
+    expect(win.show).toHaveBeenCalledOnce();
+    expect(positionWindow.mock.invocationCallOrder[0]).toBeLessThan(
+      win.show.mock.invocationCallOrder[0],
+    );
+    // 搬进已有窗口:不再定位。
+    h.controller.open({ ...request('tab-b'), targetWindowId: 'w1', position: { x: 1, y: 1 } });
+    expect(positionWindow).toHaveBeenCalledTimes(1);
   });
 
   it('closes a window whose tab was closed in the sidebar without returning the tab', () => {

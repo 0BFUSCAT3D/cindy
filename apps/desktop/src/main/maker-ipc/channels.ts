@@ -729,6 +729,8 @@ export const MAKER_INVOKE = {
     'maker:open-session-in-new-window-if-dropped-outside',
   /** Start the transient task drag preview shown outside Cindy windows. */
   SESSION_DRAG_PREVIEW_START: 'maker:session-drag-preview:start',
+  /** 右侧栏页签拖出窗口:复用任务拖出的窗外预览卡(松手在窗外 = 弹成独立窗口)。 */
+  SIDEBAR_TAB_DRAG_PREVIEW_START: 'maker:sidebar-tab-drag-preview:start',
   /**
    * 右侧栏独立子窗口(RSB window)——「侧边栏在新窗口中显示」全局偏好 + 窗口生命周期。
    * 状态机 / 窗口管理见 main/right-sidebar-window/controller.ts。
@@ -844,6 +846,8 @@ export const MAKER_SEND = {
    * and has no response payload, so it must not pay an invoke/ack round trip.
    */
   SESSION_DRAG_PREVIEW_END: 'maker:session-drag-preview:end',
+  /** 右侧栏页签拖出窗口的预览卡收起(与任务拖出同款 fire-and-forget)。 */
+  SIDEBAR_TAB_DRAG_PREVIEW_END: 'maker:sidebar-tab-drag-preview:end',
   /**
    * macOS permission coach: begin a native drag of the real Computer Use app
    * bundle into System Settings. Main validates that the sender is the

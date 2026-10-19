@@ -1107,11 +1107,18 @@ export function MainLayout() {
   //    弹出前释放本窗对该页签的独占资源:浏览器 webview 归还池(弹出窗口会重新
   //    物化并向 main 重新登记),终端标记 PTY 未附着(弹出窗口 re-attach 抢走 sink,
   //    交回后本窗必须再 attach 一次)。不可持久化会话附整桶内存快照。
-  const handleDetachRightSidebarTab = useCallback((tabId: string, targetWindowId?: string) => {
+  const handleDetachRightSidebarTab = useCallback((
+    tabId: string,
+    targetWindowId?: string,
+    position?: { x: number; y: number },
+  ) => {
     if (isSecondaryWindow()) return;
     const api = window.electronAPI.sidebarTabWindow;
     if (!api?.open) return;
-    const target = targetWindowId ? { targetWindowId } : {};
+    const target = {
+      ...(targetWindowId ? { targetWindowId } : {}),
+      ...(position ? { position } : {}),
+    };
     const info = rightSidebarWorkdirInfoRef.current;
     const context = {
       workdir: info.workdir || null,
@@ -1807,6 +1814,11 @@ export function MainLayout() {
         <TabDragController
           sessionId={rightSidebarSessionId}
           enabled={rightSidebarAvailable && !isRightSidebarMaximized && !isSettingsRoute}
+          onPopOut={
+            isSecondaryWindow()
+              ? undefined
+              : (tabId, point) => handleDetachRightSidebarTab(tabId, undefined, point)
+          }
         />
         {/* 意识面板「点图看大图」承接端:main 拦下面板 /preview/ 导航过闸后
             推送到本窗口,这里弹标准 ImageLightbox(整窗一份,纯监听无 UI)。

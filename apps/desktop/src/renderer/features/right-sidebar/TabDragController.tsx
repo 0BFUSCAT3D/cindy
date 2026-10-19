@@ -5,7 +5,10 @@
  * 指针**拖出页签条**后接管:取消 Sortable 的这次拖动(复位 DOM、不提交重排),
  * 浮起一张页签拖影,点亮可落的目标:
  *   - 其它组的页签条(整条 = 落点,落下 = 搬到那一组);
- *   - 聊天区的四条边(各一道边带,落下 = 搬到对应边的组;右边带 = 右侧栏,收着时会展开)。
+ *   - 聊天区的四条边(各一道边带,落下 = 搬到对应边的组;右边带 = 右侧栏,收着时会展开);
+ *   - 窗口外(指针离开本窗口可视区):松手 = 弹成独立窗口,新窗口落在松手点附近。
+ *     窗外看不到本窗口里的拖影,借用任务拖出窗口那扇跟随指针的预览卡
+ *     (main 的 session-drag-preview,它只在指针位于所有 Cindy 窗口之外时显示)。
  * 松手落在亮区才搬(moveTabToGroup),否则什么都不发生;Esc 取消。
  *
  * 性能口径同 PanelDragController:起拖时量一次几何;pointermove 热路径直改拖影
@@ -17,6 +20,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { cancelActiveSortable } from '@/components/sidebar/SortableList';
+import { resolveSessionDragPreviewPalette } from '@/features/cc-agent/splitGroupDnd';
 import { moveTabToGroup } from './moveTab';
 import { TAB_GROUP_IDS, type TabGroupId } from './tabGroups';
 
@@ -75,6 +79,16 @@ export function computeChatEdgeZones(
   return zones;
 }
 
+/** 纯函数:指针是否已离开本窗口的可视区(pointer 事件按住按钮时窗外照样送达)。 */
+export function isPointerOutsideWindow(
+  clientX: number,
+  clientY: number,
+  innerWidth: number,
+  innerHeight: number,
+): boolean {
+  return clientX < 0 || clientY < 0 || clientX >= innerWidth || clientY >= innerHeight;
+}
+
 /** 纯函数:指针落在哪个落点里(先到先得);都不在 → null。 */
 export function pickTabDropZone(
   x: number,
@@ -121,6 +135,8 @@ function collectZones(sourceGroup: TabGroupId): TabDropZone[] {
 interface DragRenderState {
   label: string;
   zone: TabDropZone | null;
+  /** 指针在窗口外:本窗口的拖影隐藏,由 main 的窗外预览卡接棒。 */
+  outside: boolean;
 }
 
 interface TabDragControllerProps {
@@ -128,9 +144,15 @@ interface TabDragControllerProps {
   sessionId: string | null;
   /** 内容区在聊天路由上且非撑满态时开启。 */
   enabled: boolean;
+  /** 松手在窗口外:把页签弹成独立窗口,窗口落在松手点(屏幕坐标)附近。不传 = 不支持拖出。 */
+  onPopOut?: (tabId: string, point: { x: number; y: number }) => void;
 }
 
-export function TabDragController({ sessionId, enabled }: TabDragControllerProps): ReactNode {
+export function TabDragController({
+  sessionId,
+  enabled,
+  onPopOut,
+}: TabDragControllerProps): ReactNode {
   const [drag, setDrag] = useState<DragRenderState | null>(null);
   const activeRef = useRef(false);
   const ghostRef = useRef<HTMLDivElement | null>(null);
@@ -138,6 +160,8 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
   const cleanupRef = useRef<(() => void) | null>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  const onPopOutRef = useRef(onPopOut);
+  onPopOutRef.current = onPopOut;
 
   useEffect(() => {
     if (!enabled) return;
@@ -156,12 +180,21 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
       y: number,
     ) => {
       const zones = collectZones(sourceGroup);
-      if (zones.length === 0) return false;
+      const canPopOut = Boolean(onPopOutRef.current);
+      if (zones.length === 0 && !canPopOut) return false;
       cancelActiveSortable();
       activeRef.current = true;
       let current: TabDropZone | null = null;
+      let outside = false;
+      let lastScreen = { x: 0, y: 0 };
       pointRef.current = { x, y };
-      setDrag({ label, zone: null });
+      setDrag({ label, zone: null, outside: false });
+      // 窗外预览卡:main 只在指针离开所有 Cindy 窗口时显示它,这里一开拖就登记。
+      const previewApi = canPopOut ? window.electronAPI?.sidebarTabWindow : undefined;
+      const palette = previewApi?.beginDragPreview ? resolveSessionDragPreviewPalette() : undefined;
+      if (previewApi?.beginDragPreview && palette) {
+        void previewApi.beginDragPreview(label, palette).catch(() => undefined);
+      }
       document.body.classList.add('resizing-pane');
       const prevUserSelect = document.body.style.userSelect;
       const prevPointerEvents = document.body.style.pointerEvents;
@@ -173,10 +206,15 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
 
       const onMove = (e: PointerEvent) => {
         moveGhost(e.clientX, e.clientY);
-        const next = pickTabDropZone(e.clientX, e.clientY, zones);
-        if (next !== current) {
+        lastScreen = { x: e.screenX, y: e.screenY };
+        const nextOutside =
+          canPopOut &&
+          isPointerOutsideWindow(e.clientX, e.clientY, window.innerWidth, window.innerHeight);
+        const next = nextOutside ? null : pickTabDropZone(e.clientX, e.clientY, zones);
+        if (next !== current || nextOutside !== outside) {
           current = next;
-          setDrag({ label, zone: next });
+          outside = nextOutside;
+          setDrag({ label, zone: next, outside: nextOutside });
         }
       };
       const finish = (commit: boolean) => {
@@ -192,7 +230,16 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
         window.removeEventListener('blur', onCancel);
         window.removeEventListener('keydown', onKey, true);
         cleanupRef.current = null;
-        if (commit && current) moveTabToGroup(tabId, current.group, sessionIdRef.current);
+        try {
+          previewApi?.endDragPreview?.();
+        } catch {
+          // preload 可能已随窗口拆除而不可用;本地收尾照常。
+        }
+        if (commit && outside) {
+          onPopOutRef.current?.(tabId, lastScreen);
+        } else if (commit && current) {
+          moveTabToGroup(tabId, current.group, sessionIdRef.current);
+        }
         // 松手落点下方可能是按钮:吞掉紧随其后的那一次 click。
         const swallow = (ce: MouseEvent) => {
           ce.preventDefault();
@@ -205,7 +252,18 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
           100,
         );
       };
-      const onUp = () => finish(true);
+      const onUp = (e: PointerEvent) => {
+        lastScreen = { x: e.screenX, y: e.screenY };
+        if (canPopOut) {
+          outside = isPointerOutsideWindow(
+            e.clientX,
+            e.clientY,
+            window.innerWidth,
+            window.innerHeight,
+          );
+        }
+        finish(true);
+      };
       const onCancel = () => finish(false);
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Escape') finish(false);
@@ -213,7 +271,8 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
       document.addEventListener('pointercancel', onCancel);
-      // 松手落在别的窗口 / 系统 UI 上时 pointerup 不会回来:失焦即取消,不让抓取态卡住。
+      // 失焦即取消,不让抓取态卡住。按住按钮拖到窗外时窗口不会失焦(指针仍归本窗口),
+      // 真正松手在窗外会以 pointerup 回来;只有切到别的应用 / 系统 UI 才走这里。
       window.addEventListener('blur', onCancel);
       window.addEventListener('keydown', onKey, true);
       cleanupRef.current = () => finish(false);
@@ -265,6 +324,8 @@ export function TabDragController({ sessionId, enabled }: TabDragControllerProps
 
   if (!drag) return null;
   const zone = drag.zone ? insetRect(drag.zone.rect) : null;
+  // 指针在窗口外:本窗口里的拖影无处可画(也不该贴在窗口边缘),交给 main 的预览卡。
+  if (drag.outside) return null;
   return createPortal(
     <>
       {zone && (
