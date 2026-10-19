@@ -6,10 +6,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildUserProvider, getModel, type PiReasoningEffort, type ProviderView } from '@cindy/model-providers';
 import { resolveSessionExecutionSelection } from '../../../../main/maker-ipc/sessionExecutionSelection';
 import * as draftEffort from '../newMakerDraftModelPrefs';
+import { resolveDeviceLinkSubmission } from '../deviceLinkCreateArgs';
+import { parseRemoteWorktreeCreateResult } from '../remotePrecreatedWorktree';
 import { create as createSessionViaIpc } from '@/lib/sessionService';
 import type { Effort } from '@/lib/userPreferences.types';
 import type { AgentSkillCommand } from '@cindy/maker-core';
-import type { BuiltInSkillDraftIntent } from '@/lib/composerDraftStore';
+import { plainTextToTiptapDoc, type BuiltInSkillDraftIntent } from '@/lib/composerDraftStore';
 import { leadingSlashInvocation, rebaseInlineRangesAfterSlashCommandRewrite, rewriteBuiltInSkillDraftForSend } from '@/lib/slashCommands';
 
 vi.mock('@/lib/makerTransport', () => ({ makerApiFor: vi.fn() }));
@@ -63,12 +65,14 @@ async function submit(options: {
   providers?: ProviderView[];
   backendProviders?: ProviderView[];
   providerId?: string;
-  agentKind?: 'pi' | 'codex';
+  agentKind?: 'pi' | 'codex' | 'claude-code';
   remoteHostId?: string;
   agentDeviceId?: string;
   message?: string;
   builtInSkillIntent?: BuiltInSkillDraftIntent;
   skills?: AgentSkillCommand[];
+  worktreeSkills?: AgentSkillCommand[];
+  deviceId?: string;
   slashCommandRanges?: Array<{ start: number; end: number }>;
 } = {}) {
   const providers = options.providers ?? [provider()];
@@ -104,8 +108,25 @@ async function submit(options: {
   });
   // Real renderer adapter forwards to the simulated IPC transport, whose receiving
   // side runs Main's production admission. No real database or user profile is opened.
-  const listAgentSkills = vi.fn(async () => ({ success: true, skills: options.skills ?? [] }));
-  vi.stubGlobal('window', { electronAPI: { localDb: { sessions: { create: ipcCreate } }, maker: {
+  // Synthetic IPC paths; no filesystem is touched by these renderer fixtures.
+  const baseRepo = '/fixture/repo';
+  const worktreePath = '/fixture/repo/.cindy-worktrees/creator';
+  const hasWorktree = options.worktreeSkills !== undefined;
+  const listAgentSkills = vi.fn(async (_agent, params) => ({ success: true,
+    skills: params?.workingDir === worktreePath ? options.worktreeSkills : options.skills ?? [],
+  }));
+  const invokeRemote = vi.fn(async (_deviceId, channel, args) => {
+    if (channel === 'maker:list-agent-skills') return listAgentSkills(args[0], args[1]);
+    if (channel === 'maker:list-agent-commands') return { success: true, commands: [] };
+    if (channel === 'worktree:create') return { ok: true,
+      meta: { ...args[0], path: worktreePath, branch: 'cindy/creator', createdAt: new Date().toISOString() } };
+    if (channel === 'maker:create-session') return { sessionId: args[0].id, workDir: args[0].workingDir };
+    throw new Error(`Unexpected remote invoke: ${channel}`);
+  });
+  vi.stubGlobal('window', { electronAPI: {
+    deviceLink: { invoke: invokeRemote },
+    worktreeCreate: vi.fn(async () => ({ ok: true, meta: { path: worktreePath, branch: 'cindy/creator' } })),
+    localDb: { sessions: { create: ipcCreate } }, maker: {
     setGoal, listAgentSkills,
     listDesktopCommands: async () => ({ success: true, commands: [] }),
     listAgentCommands: async () => ({ success: true, commands: [] }),
@@ -120,6 +141,8 @@ async function submit(options: {
   });
   let done!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
+  let finishWorktree!: () => void;
+  const worktreeFinished = new Promise<void>(resolve => { finishWorktree = resolve; });
   const noop = () => {};
   const setPending = vi.fn();
   const toastError = vi.fn();
@@ -132,15 +155,18 @@ async function submit(options: {
     effectiveSourceId: selectedProviderId,
     sendInFlightRef: { current: false }, effectiveCollab: { enabled: false },
     collabPolicy: { enabled: false }, collabPolicyEligible: false,
-    usesDeviceCatalog: !!options.agentDeviceId, deviceLinkInitial: null,
-    isDeviceLinkDraft: false, isRemoteProjectDraft: !!options.remoteHostId,
+    usesDeviceCatalog: !!options.agentDeviceId || !!options.deviceId, deviceLinkInitial: null,
+    isDeviceLinkDraft: !!options.deviceId, isRemoteProjectDraft: !!options.remoteHostId,
     isAgentDeviceDraft: !!options.agentDeviceId, remoteModelListStatus: 'ready', remoteDraftState: { status: 'ready' },
     effectiveRemoteHostId: options.remoteHostId, effectiveAgentDeviceId: options.agentDeviceId,
-    effectiveWorkingDir: options.remoteHostId ? '/remote/project' : null,
+    effectiveWorkingDir: hasWorktree ? baseRepo : options.remoteHostId ? '/remote/project' : null,
     effectiveExtraDirs: [], effectiveWritableDirs: [], effectiveFastMode: false, effectivePlanMode: false,
-    effectiveDeviceLinkDeviceId: undefined, catalogDeviceId: undefined,
+    effectiveDeviceLinkDeviceId: options.deviceId, effectiveDeviceLinkDeviceName: options.deviceId, catalogDeviceId: options.deviceId,
+    agentCatalogProviders: providers, deviceProvidersLoading: false,
     matchNavigationCommandName: () => null,
-    wtRef: { current: { enabled: false, confirmedIneligible: true } },
+    wtRef: { current: hasWorktree
+      ? { enabled: true, confirmedIneligible: false, baseRepo, name: 'creator', sourceBranch: 'other-branch', branchPreferenceReady: true, supportsRecoveryKeyDiscard: true }
+      : { enabled: false, confirmedIneligible: true } },
     wtPreferenceSavingRef: { current: false }, wtPreferenceAuthorityUnknownRef: { current: false },
     wtBranchPreferenceSavingRef: { current: false },
     getDataOwnerGeneration: () => ({ dataOwnerId: 'fixture' }), dataOwnerId: 'fixture',
@@ -159,6 +185,21 @@ async function submit(options: {
     rewritePiSkillMessageForSend: async ({ message }: { message: string }) => message,
     clearComposerDraftAndNotify: noop, attachmentState: { clearFiles: noop },
     resetDraftWorkspaceAfterSend: noop, navigate: vi.fn(), setWtCreating: noop,
+    makeDraftSessionId: () => 'remote-created', resolveDeviceLinkSubmission, parseRemoteWorktreeCreateResult,
+    recoverPendingRemotePrecreatedWorktrees: vi.fn(async () => ({ storageReadable: true, retained: 0 })),
+    registerPendingRemotePrecreatedWorktree: async () => true,
+    createRemoteSessionWithPrecreatedWorktree: async ({ invoke, createArgs }: {
+      invoke: (channel: string, args: unknown[]) => Promise<{ sessionId: string }>; createArgs: unknown;
+    }) => (await invoke('maker:create-session', [createArgs])).sessionId,
+    commitRemoteSessionHandoff: () => {}, rememberRecoverableHandoff: () => {},
+    getBranchName: (name: string) => `cindy/${name}`,
+    sessionService: { touchUserSend: async () => {}, get: async () => ({ status: 'active' }), update: async () => {} },
+    crossAgentConvertService: { detect: async () => ({ items: [] }) },
+    refreshWorktreeForSession: async () => {},
+    worktreeCreationStore: { clear: finishWorktree, set: (_id: string, state: { status: string }) => {
+      if (state.status === 'failed') finishWorktree();
+    } },
+    saveComposerDraft: vi.fn(),
     dispatchDeferredUiAssignment: async () => {},
     isRemotePrecreatedWorktreeOwnerChangedError: () => false,
     isRemotePrecreatedWorktreeCleanupPendingError: () => false,
@@ -166,7 +207,7 @@ async function submit(options: {
     emitAutoTitlePreviewCleared: noop, restoreRemoteOptimisticDraft: noop,
     normalizeAutoTitle: () => null,
     isLocalGoalWorktreeCleanupPendingError: () => false,
-    plainTextToTiptapDoc: noop, excludeCommentScreenshots: () => [],
+    plainTextToTiptapDoc, excludeCommentScreenshots: () => [],
     log: { warn: (...args: unknown[]) => errors.push(args), error: (...args: unknown[]) => errors.push(args) },
     toast: { error: toastError, warning: noop },
   };
@@ -183,7 +224,8 @@ async function submit(options: {
         'default', [], [], { providerId: selectedProviderId, slashCommandRanges: options.slashCommandRanges });
     }
     await finished;
-    return { createSession, ipcCreate, sendMessage, setGoal, errors, environment, setPending, toastError, listAgentSkills };
+    if (hasWorktree && createSession.mock.calls.length) await worktreeFinished;
+    return { createSession, ipcCreate, sendMessage, setGoal, errors, environment, setPending, toastError, listAgentSkills, invokeRemote };
   } finally { vi.unstubAllGlobals(); }
 }
 
@@ -218,6 +260,59 @@ describe('homepage submission to Main admission and first-message handoff', () =
     expect(result.setPending).not.toHaveBeenCalled();
     expect(result.toastError).toHaveBeenCalledWith('settings.ghosts.page.creatorUnavailable');
     expect(result.environment.getComposerDraft()?.builtInSkillIntent).toBeDefined();
+  });
+  // PR #6433: the selected source branch can add/remove a conflicting project
+  // skill. The complete send callback must use the post-checkout catalog (unit).
+  it.each([
+    [undefined, 'cindy-plugin-creator', 'cindy:cindy-plugin-creator'],
+    [undefined, 'cindy:cindy-plugin-creator', 'cindy-plugin-creator'],
+    ['task-computer', 'cindy-plugin-creator', 'cindy:cindy-plugin-creator'],
+    ['task-computer', 'cindy:cindy-plugin-creator', 'cindy-plugin-creator'],
+  ])('resolves the final worktree command on %s: %s to %s', async (deviceId, before, after) => {
+    const original = 'cindy:cindy-plugin-creator';
+    const p = provider();
+    p.models['claude-code'] = [{ ...p.models.pi![0], efforts: ['medium'], defaultEffort: 'medium' }];
+    const result = await submit({
+      agentKind: 'claude-code', providers: [p], message: `/${original} Make a plugin`, deviceId,
+      slashCommandRanges: [{ start: 0, end: original.length + 1 }],
+      builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: original },
+      skills: [{ kind: 'agent-skill', source: 'skill', name: before, builtIn: true }],
+      worktreeSkills: [{ kind: 'agent-skill', source: 'skill', name: after, builtIn: true }],
+    });
+    expect(result.errors).toEqual([]);
+    if (deviceId) {
+      expect(result.setPending).toHaveBeenCalledWith('remote-created', expect.objectContaining({
+        text: `/${after} Make a plugin`, slashCommandRanges: [{ start: 0, end: after.length + 1 }],
+      }));
+    } else {
+      expect(result.sendMessage).toHaveBeenCalledWith('created', `/${after} Make a plugin`,
+        modelId, 'medium', 'default', '/fixture/repo/.cindy-worktrees/creator', [], [],
+        expect.objectContaining({ slashCommandRanges: [{ start: 0, end: after.length + 1 }] }));
+    }
+  });
+  it.each([undefined, 'task-computer'])('retains the first message when the final worktree on %s lacks the built-in creator', async deviceId => {
+    const result = await submit({
+      message: '/cindy-plugin-creator Make a plugin', deviceId,
+      builtInSkillIntent: { name: 'cindy-plugin-creator', commandName: 'cindy-plugin-creator' },
+      skills: [{ kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator', builtIn: true }],
+      worktreeSkills: [{ kind: 'agent-skill', source: 'skill', name: 'cindy-plugin-creator' }],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.sendMessage).not.toHaveBeenCalled();
+    if (deviceId) {
+      expect(result.setPending).not.toHaveBeenCalled();
+      expect(result.invokeRemote.mock.calls.some(([, channel]) => channel === 'maker:create-session')).toBe(false);
+      expect(result.environment.recoverPendingRemotePrecreatedWorktrees).toHaveBeenCalledTimes(2);
+      expect(result.environment.recoverPendingRemotePrecreatedWorktrees).toHaveBeenLastCalledWith(expect.objectContaining({
+        deviceId, dataOwnerId: 'fixture',
+      }));
+      expect(result.invokeRemote.mock.calls.every(([target]) => target === deviceId)).toBe(true);
+    } else {
+      expect(result.environment.saveComposerDraft).toHaveBeenCalledWith('created', expect.objectContaining({
+        text: plainTextToTiptapDoc('/cindy-plugin-creator Make a plugin'),
+      }));
+    }
+    expect(result.toastError).toHaveBeenCalledWith('settings.ghosts.page.creatorUnavailable');
   });
   it.each(['low', 'medium', 'high', 'xhigh'] as const)('omits remembered %s for a known no-effort Pi model', async effort => {
     const result = await submit({ effort, submittedEffort: effort });

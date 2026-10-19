@@ -3552,34 +3552,41 @@ export function NewMakerDraftRoute() {
           if (isDeviceLinkDraft && !isCurrentDataOwner()) return;
           if (!proceed) return;
 
-          if (builtInSkillIntent) {
-            if (!isCurrentDataOwner()) return;
+          // Keep the original invocation so a second lookup after checkout is
+          // still tied to its built-in identity, even if preflight changed its alias.
+          const builtInSkillDraftMessage = message;
+          const resolveBuiltInSkillForDirectory = async (workingDir: string | undefined) => {
+            if (!builtInSkillIntent) return true;
+            if (!isCurrentDataOwner()) return false;
             // Skills belong to the task's computer, including when its Agent
             // runs through a remote provider. Match the normal command catalog.
             const rewritten = await rewriteBuiltInSkillDraftForSend({
-              message,
+              message: builtInSkillDraftMessage,
               intent: builtInSkillIntent,
               agentKind: capabilityAgentKind,
-              workingDir: selectedWorkingDir,
+              workingDir,
               deviceId: effectiveDeviceLinkDeviceId,
               remoteHostId: effectiveRemoteHostId,
             });
-            if (!isCurrentDataOwner()) return;
+            if (!isCurrentDataOwner()) return false;
             if (rewritten === null) {
               toast.error(t('settings.ghosts.page.creatorUnavailable'));
-              return;
+              return false;
             }
             if (rewritten !== message) {
               const rebase = <T extends { start: number; end: number }>(ranges: readonly T[] | undefined) =>
                 ranges ? rebaseInlineRangesAfterSlashCommandRewrite(ranges, message, rewritten) : undefined;
               opts = {
                 ...opts,
+                agentReferences: rebase(opts?.agentReferences),
                 pastedTextRanges: rebase(opts?.pastedTextRanges),
                 slashCommandRanges: rebase(opts?.slashCommandRanges),
               };
               message = rewritten;
             }
-          }
+            return true;
+          };
+          if (!(await resolveBuiltInSkillForDirectory(selectedWorkingDir))) return;
 
           // device-link 远程项目:在被控端走校验过的 maker:create-session 建会话(写被控 DB,
           // allowlist 内、非裸写),首条消息经 setPending 交给 SessionView 发送(与本地
@@ -3741,6 +3748,19 @@ export function NewMakerDraftRoute() {
               } finally {
                 setWtCreating(false);
               }
+            }
+            if (precreatedWorktree && !(await resolveBuiltInSkillForDirectory(remoteWorkingDir))) {
+              // No session has claimed this worktree. Reuse its owner-scoped
+              // recovery ledger; an unavailable peer retains the cleanup record.
+              if (isCurrentDataOwner()) {
+                await recoverPendingRemotePrecreatedWorktrees({
+                  deviceId,
+                  dataOwnerId: ownerAtSend ?? undefined,
+                  invoke: invokeRemote,
+                  isCurrent: isCurrentDataOwner,
+                });
+              }
+              return;
             }
             // 提出来存一份:交接收尾要按**实际提交的** model / effort / permission / workspaceKind
             // 组装临时会话行(见 commitRemoteSessionHandoff),不能再各自推一遍。
@@ -4205,6 +4225,19 @@ export function NewMakerDraftRoute() {
                 // true 到 sendMessage 已经 push 第一条 user message + isStreaming=true
                 // 才进入 1.6s 平滑期, overlay 从 "空 ChatView" 自然过渡到 "已在
                 // streaming 的 ChatView", 不暴露中间空窗。clear 时机见本 async 块末尾。
+
+                // The selected source branch can have a different project skill
+                // collision from baseRepo. Resolve after checkout, before dispatch.
+                if (!(await resolveBuiltInSkillForDirectory(newDir))) {
+                  if (!isCurrentDataOwner()) return;
+                  worktreeCreationStore.set(newSession.id, {
+                    status: 'failed',
+                    name: branchName,
+                    error: t('settings.ghosts.page.creatorUnavailable'),
+                  });
+                  restoreFirstMessageDraft();
+                  return;
+                }
 
                 let deferredUiAssignment: DeferredUiAssignment | undefined;
                 if (shouldEnableCollab) {
