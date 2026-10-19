@@ -393,7 +393,11 @@ export function TabStrip({
               chrome 风格),chip 用 items-center(与宿主栏其它控件同一中线)。 */}
       <div
         ref={tabsScrollRef}
-        className="min-w-0 overflow-x-auto scrollbar-hide"
+        // 钉住的全局页签与可拖拽的任务页签列表并排在同一条横向滚动容器里。
+        className={cn(
+          'flex min-w-0 gap-1 overflow-x-auto scrollbar-hide',
+          pillVariant === 'chip' ? 'items-center' : 'items-end',
+        )}
         style={
           {
             WebkitAppRegion: 'no-drag',
@@ -409,7 +413,10 @@ export function TabStrip({
         {pinnedTabs.length > 0 && (
           <div
             data-testid="right-sidebar-pinned-tabs"
-            className={cn('flex w-max gap-1', pillVariant === 'chip' ? 'items-center' : 'items-end')}
+            className={cn(
+              'flex w-max shrink-0 gap-1',
+              pillVariant === 'chip' ? 'items-center' : 'items-end',
+            )}
           >
             {pinnedTabs.map((tab) => (
               <TabPill
