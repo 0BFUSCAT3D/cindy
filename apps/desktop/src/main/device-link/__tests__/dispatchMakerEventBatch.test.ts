@@ -243,6 +243,35 @@ it.each([SESSION_ACTIVITY_CHANNEL, 'local-db:sessions:patched'])('rechecks %s ca
   expect(h.sent.map(push => push.payload)).toEqual([payload('completed')]);
 });
 
+// Review regression (unit): a lifecycle patch can overtake activity still in the
+// stage, including the item awaiting authorization. Existing ordering tests only
+// covered maker-event batches. Observe outgoing pushes through real dispatch.
+it.each(['deleted', 'archived'] as const)('drops older activity before a %s patch across staging boundaries', async (status) => {
+  for (const boundary of ['authorizing', 'queued', 'backpressure'] as const) {
+    const h = mkClient();
+    __testing.setActiveClient(h.client as never);
+    subscriptions.subscribe('phone', ['sessions']);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    setRemoteBotSessionLookup(async () => { await pending; return 'visible'; });
+    if (boundary === 'backpressure') h.client.getReliableSendQueueDepth.mockReturnValue(8);
+    if (boundary === 'queued') __testing.forwardPush(SESSION_ACTIVITY_CHANNEL, { sessionId: 's0', phase: 'working' });
+    __testing.forwardPush(SESSION_ACTIVITY_CHANNEL, { sessionId: 's1', phase: 'working' });
+    __testing.forwardPush('local-db:sessions:patched', { sessionId: 's1', patch: { status } });
+    __testing.forwardPush(SESSION_ACTIVITY_CHANNEL, { sessionId: 's2', phase: 'completed' });
+    h.client.getReliableSendQueueDepth.mockReturnValue(0);
+    release();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.sent.filter(push => push.channel === SESSION_ACTIVITY_CHANNEL).map(push => push.payload))
+      .toEqual(boundary === 'queued'
+        ? [{ sessionId: 's0', phase: 'working' }, { sessionId: 's2', phase: 'completed' }]
+        : [{ sessionId: 's2', phase: 'completed' }]);
+    expect(h.sent.filter(push => push.channel === 'local-db:sessions:patched').map(push => push.payload))
+      .toEqual([{ sessionId: 's1', patch: { status } }]);
+    handleControllerOffline('phone');
+  }
+});
+
 it.each(['superseded', 'offline', 'hidden'] as const)('discards %s activity while authorization is pending', async (outcome) => {
   const h = mkClient();
   __testing.setActiveClient(h.client as never);

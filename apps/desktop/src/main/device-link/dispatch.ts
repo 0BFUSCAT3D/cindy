@@ -2216,6 +2216,11 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
     }
     if (channel === 'local-db:sessions:patched') {
       const item = targetPayload as SessionPatch;
+      // A terminal patch supersedes older activity still staged or awaiting
+      // authorization. The drain's identity check also cancels its in-flight item.
+      if (item?.patch?.status === 'deleted' || item?.patch?.status === 'archived') {
+        sessionActivityStages.get(dst)?.queue.delete(item.sessionId);
+      }
       // Engine/lifecycle fields are barriers for following maker events. Only
       // independent list metadata may wait; fold older metadata into a barrier.
       if (item?.patch && Object.keys(item.patch).every((key) => key === 'title' || key === 'extraDirs')) {
