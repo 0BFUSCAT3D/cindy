@@ -21,6 +21,11 @@ const mockState = vi.hoisted(() => ({
     _sessionInstanceId: string | undefined,
   ) => ({ ok: true as const })),
   capturedProvidersConfig: null as null | Record<string, unknown>,
+  companionFeishu: {
+    getOwnerOpenId: () => 'ou_companion',
+    sendMarkdownText: vi.fn(async () => ({ messageId: 'om_companion_text' })),
+    sendFile: vi.fn(async () => ({ ok: true, messageId: 'om_companion_file' })),
+  },
 }));
 
 vi.mock('electron', () => ({
@@ -72,8 +77,13 @@ vi.mock('../../scheduler-host/index.js', () => ({
 
 vi.mock('../../im/index.js', () => ({
   feishuIm: {
+    getOwnerOpenId: () => null,
     sendFile: vi.fn(),
   },
+}));
+
+vi.mock('../../im/shared/botImConnectionRuntime', () => ({
+  getBotFeishuTransport: (botId: string) => botId === 'bot-feishu' ? mockState.companionFeishu : null,
 }));
 
 vi.mock('../cindyProxyMedia.js', () => ({
@@ -116,6 +126,9 @@ import {
   resolveCollabDispatchResult,
 } from '../../maker-ipc/collabSendOutcome.js';
 import { createDesktopMcpProviders } from '../mcp-providers.js';
+import { createDbClient } from '../../localDb/client/DbClient.js';
+import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
+import type { FeishuBotMcpHostDeps } from '@cindy/mcps';
 
 const botCapabilities = {
   list: vi.fn(async () => ({ ok: true as const, capabilities: [] })),
@@ -204,6 +217,39 @@ describe('collab send outcome semantics', () => {
       } as never),
     ).toBe(true);
 
+  });
+
+  // #6439: real Desktop host callbacks + worker DB, only the external IM service
+  // is replaced. Covers missing awaits at host call sites, beyond resolver tests.
+  it('sends canonical background text and files through companion host callbacks with a worker DB', async () => {
+    const client = await createDbClient({ transport: 'worker-thread', useInlineWorker: true });
+    try {
+      await client.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT)');
+      await client.exec('CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, role TEXT)');
+      await client.exec("INSERT INTO sessions VALUES ('background-receipt', 'bot')");
+      await client.exec("INSERT INTO bot_session_links VALUES ('background-receipt', 'bot-feishu', 'canonical')");
+      setCurrentDbClient(client, 'feishu-test-owner');
+      createDesktopMcpProviders({
+        botCapabilities,
+        getMakerMemoryManager: vi.fn(),
+        lspPool: {} as never,
+        pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
+        invokeRemote: vi.fn(),
+      });
+      const feishu = mockState.capturedProvidersConfig!.feishuBot as FeishuBotMcpHostDeps;
+      const session = { sessionId: 'background-receipt', sessionInstanceId: 'runtime' };
+      const owner = await feishu.getOwnerOpenId(session);
+      expect(owner).toBe('ou_companion');
+      expect(await feishu.sendMessage(owner!, 'task complete', session.sessionId, session))
+        .toMatchObject({ ok: true, messageId: 'om_companion_text' });
+      expect(await feishu.sendFile(owner!, '/tmp/report.txt', 'report.txt', session))
+        .toMatchObject({ ok: true, messageId: 'om_companion_file' });
+      expect(mockState.companionFeishu.sendMarkdownText).toHaveBeenCalledWith('ou_companion', 'task complete');
+      expect(mockState.companionFeishu.sendFile).toHaveBeenCalledWith('ou_companion', '/tmp/report.txt', 'report.txt');
+    } finally {
+      clearCurrentDbClient(client);
+      await client.dispose();
+    }
   });
 
   it('rejects start_skill_learning after the built-in Learn Skill is disabled', async () => {

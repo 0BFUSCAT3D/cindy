@@ -283,11 +283,18 @@ export function getBotImConnectionOrchestrator(id: string): ImOrchestrator | und
  * 不能回落到设置页那份可能已被清空的个人 bot —— 否则 `getOwnerOpenId()` 为 null 时
  * `send_message_to_user` / `send_file_to_user` 会误报 NO_CHAT_CONTEXT。
  */
-export function getBotFeishuTransport(botId: string): FeishuIM | null {
+export function getBotFeishuTransport(botId: string, ownerOpenId?: string): FeishuIM | null {
   for (const record of listBotImConnectionsForBot(botId)) {
     if (record.channel !== 'feishu') continue;
     const live = instances.get(record.id);
-    if (live?.transport.kind === 'feishu') return live.transport.im;
+    if (live?.transport.kind !== 'feishu' || live.record.botId !== botId) continue;
+    const im = live.transport.im;
+    const owner = im.getOwnerOpenId();
+    if (im.getStatus().kind !== 'connected' || !owner) continue;
+    // open_id belongs to this app. Never send a previously resolved recipient
+    // through a different owner's connection after a disconnect/reconfiguration.
+    if (ownerOpenId && owner !== ownerOpenId) continue;
+    return im;
   }
   return null;
 }
