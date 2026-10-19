@@ -1352,10 +1352,12 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
     回到某条消息后、下一轮跑完前也算忙(Claude Code 要到下一次发送才在 B 上截断)。A 本机执行器里的后台命令不算忙。「闲置满 N 分钟」从最后一次活动算起：由忙转闲(后台任务、待唤醒续跑清空，
     Codex 中继里各连接上的工作——在跑的进程、启动中请求、待确认消息——由有变无：进程结束、启动失败、确认处理完，
     或带着工作的 exec-server 连接被整条关掉)本身算一次活动，后台工作再久，结束后也要再闲置满 N 分钟才让。
-    会话 id 会被 B 改写的也不让：B 打开时把启动选项里的字符串按 A 的工作目录及各级上级目录、用户目录与附加目录投影到虚拟
+    会话 id 在旧 B 上可能被改写的仍不让：旧 B 打开时把启动选项里的字符串按 A 的工作目录及各级上级目录、用户目录与附加目录投影到虚拟
     工作区，`resumeSessionId` 也不例外；Pi 的会话 id 是 B 上的会话文件路径，两台同为 Mac(`/Users`)或同为 Windows 时
     常落在这些前缀下，带过去会变成不存在的文件。A 按同一规则预判(`hostRewritesResumeId`)，这样的 Pi 任务不让出。
-    (App 重启后接回 Pi 走的也是这条投影，是此前就有的问题，本期未改 B。)
+    修正 #6479 后的 B 仅将 `resumeSessionId` 逐字传给 Agent 启动入口，其它字段与提示仍按原规则投影；
+    受邀者的会话归属、Pi 会话目录和供应商授权检查保持不变。这是既有字段在 Host 内的处理修正，未新增能力位或改变解析协议。
+    A 尚不能由能力声明区分新旧 B 或确认组内实际执行端，因此继续按 `hostRewritesResumeId` 保守预判，不随此修正放开让出。
   - **连回**：只有要 B 上的 Agent 干活的调用触发(`send` / `steer` / `resumeBackgroundTask` / `compactSession` / 回退，以及要 B 回答的
     `previewModelSwitch` / `getContextUsage` / `getCodexContextWindowInfo`)；`requiresModelSwitchRebuild` 已让出时回 false(下一次连回
     本来就是带新模型的冷启动接回)；只改设置的
