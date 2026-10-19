@@ -22,7 +22,12 @@ import {
 import { generatedImageBytes, readGeneratedImageFile } from './generatedMedia';
 import { blobUrl, extForMime, parseBlobUrl, resolveSafe } from './blobStore';
 import { ingestMedia } from './ingest';
-import { hasRef, removeRefs, withSessionMediaRefLock } from './ledger';
+import {
+  hasRef,
+  removeRefs,
+  removeSessionAttachmentRefIfUnreferencedByLiveMessage,
+  withSessionMediaRefLock,
+} from './ledger';
 
 export function captureGeneratedImageStorage() {
   const owner = getActiveAppSession();
@@ -182,7 +187,8 @@ export function captureGeneratedImageStorage() {
         threadId: record!.image.threadId,
         turnId: record!.image.turnId,
       },
-      blobUrl: undefined,
+      // Retain the managed address so restart can finish attachment compensation.
+      blobUrl: record!.blobUrl,
       sourceUrl: undefined,
       errorCode: undefined,
     }));
@@ -190,6 +196,14 @@ export function captureGeneratedImageStorage() {
       removeRefs(reference(scope, id), db),
     );
     assertCurrent();
+    const blob = current.blobUrl && parseBlobUrl(current.blobUrl);
+    if (scope.startsWith('task:') && blob) {
+      await removeSessionAttachmentRefIfUnreferencedByLiveMessage(
+        { sessionId: scope.slice(5), hash: blob.hash, visibleOnly: true },
+        db,
+      );
+      assertCurrent();
+    }
   }
   const unpin = (scope: string, id: string) => removeRefs(reference(scope, id), db);
   return {

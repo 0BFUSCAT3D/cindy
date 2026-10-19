@@ -263,6 +263,7 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
         },
         {
           beforePublish: assertTask,
+          deferMediaRefs: true,
           broadcastOwnerScope: ownerScope,
           shouldBroadcast: () => {
             storage.assertCurrent();
@@ -284,6 +285,7 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
         },
         {
           beforePublish: assertTask,
+          deferMediaRefs: true,
           broadcastOwnerScope: ownerScope,
           shouldBroadcast: () => {
             storage.assertCurrent();
@@ -305,9 +307,9 @@ export function createGeneratedImageDelivery(deps: GeneratedImageDeliveryDeps) {
           { sessionId, urls: [record.blobUrl!], originKind: 'tool', assertStillValid: assertTask },
           storage.db,
         );
+        await assertTask();
         if (refs.failed || refs.committed + refs.skipped !== 1)
           throw new Error('MEDIA_PUBLISH_FAILED');
-        await assertTask();
       }
       // Idempotent createMessage returns the previous row without broadcasting on retry.
       // Mobile consumes persisted row updates, so publish the committed content with its stable ID.

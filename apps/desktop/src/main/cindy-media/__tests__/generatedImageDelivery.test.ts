@@ -23,6 +23,7 @@ import {
 } from '../generatedImageStorage';
 import { generatedImageId } from '../generatedImageJournal';
 import { resolveSafe } from '../blobStore';
+import * as ledger from '../ledger';
 
 const state = vi.hoisted(() => ({
   root: '',
@@ -124,6 +125,7 @@ beforeEach(async () => {
     };
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   clearCurrentDbClient();
   raw.close();
   await fs.rm(state.root, { recursive: true, force: true });
@@ -469,6 +471,84 @@ describe('native image delivery', () => {
       expect(
         await captureGeneratedImageStorage().journal.read('task:task', removedId),
       ).toMatchObject({ state: 'released' });
+    },
+  );
+
+  // #6420: clearing while pin/lookup/INSERT is awaiting must not retain a hidden attachment.
+  it.each(['pin', 'lookup', 'insert', 'restart', 'borrowed'] as const)(
+    'compensates a clear racing attachment %s while preserving unrelated references',
+    async (boundary) => {
+      const pin = ledger.pinBlob,
+        lookup = ledger.hasRef,
+        add = ledger.addRef;
+      let cleared = false;
+      const clear = async (hash: string) => {
+        if (cleared) return;
+        cleared = true;
+        const at = Date.now() + 1000;
+        raw.prepare('UPDATE sessions SET cleared_at = ?').run(at);
+        await add(
+          {
+            hash,
+            refKind: 'session-attachment',
+            refId: 'other-task',
+            originSessionId: 'other-task',
+          },
+          captureGeneratedImageStorage().db,
+        );
+        if (boundary === 'borrowed')
+          raw
+            .prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL, ?)')
+            .run(
+              'new-message',
+              'task',
+              'new-message',
+              'assistant',
+              JSON.stringify(`cindy-media://blobs/${hash}.png`),
+              at + 1,
+            );
+      };
+      vi.spyOn(ledger, 'pinBlob').mockImplementation(async (hash, db) => {
+        await pin(hash, db);
+        if (boundary === 'pin') await clear(hash);
+      });
+      vi.spyOn(ledger, 'hasRef').mockImplementation(async (params, db) => {
+        const exists = await lookup(params, db);
+        if (boundary === 'lookup' && params.refKind === 'session-attachment')
+          await clear(params.hash);
+        return exists;
+      });
+      vi.spyOn(ledger, 'addRef').mockImplementation(async (params, db) => {
+        const added = await add(params, db);
+        if (
+          ['insert', 'restart', 'borrowed'].includes(boundary) &&
+          params.refKind === 'session-attachment'
+        )
+          await clear(params.hash);
+        return added;
+      });
+      const cleanup = vi.spyOn(ledger, 'removeSessionAttachmentRefIfUnreferencedByLiveMessage');
+      if (boundary === 'restart') cleanup.mockRejectedValueOnce(new Error('cleanup unavailable'));
+      const host = controller();
+      const delivery = host.deliver('task', event({ data: png.toString('base64') }));
+      if (boundary === 'restart') {
+        await expect(delivery).rejects.toThrow('cleanup unavailable');
+        const released = await captureGeneratedImageStorage().journal.read('task:task', id);
+        expect(released).toMatchObject({
+          state: 'released',
+          blobUrl: expect.stringMatching(/^cindy-media:/),
+        });
+        await controller().reconcile();
+      } else await delivery;
+      expect(cleared).toBe(true);
+      const refs = raw.prepare('SELECT ref_id FROM media_refs ORDER BY ref_id').all();
+      expect(refs).toEqual(
+        boundary === 'borrowed'
+          ? [{ ref_id: 'other-task' }, { ref_id: 'task' }]
+          : [{ ref_id: 'other-task' }],
+      );
+      expect(host.publish).not.toHaveBeenCalled();
+      expect(state.broadcast).not.toHaveBeenCalled();
     },
   );
 

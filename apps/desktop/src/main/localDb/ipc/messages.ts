@@ -1614,6 +1614,8 @@ export async function createMessage(
     /** Host-only admission guard, checked before and after the publication transaction.
      * Must be repeatable. A failed final check rolls back this exact row before delivery hooks. */
     beforePublish?: () => Promise<void>;
+    /** Host delivery owns its guarded attachment commit and compensation. */
+    deferMediaRefs?: boolean;
     /**
      * Optional clear-boundary compare-and-set for optimistic user sends.  The
      * insert is accepted only while the session still has this exact
@@ -1820,8 +1822,10 @@ export async function createMessage(
     body.role === 'user' &&
     opts !== undefined &&
     Object.prototype.hasOwnProperty.call(opts, 'expectedClearBoundaryMs');
-  if (shouldAwaitMediaRefs) await commitMediaRefs();
-  else void commitMediaRefs();
+  if (!opts?.deferMediaRefs) {
+    if (shouldAwaitMediaRefs) await commitMediaRefs();
+    else void commitMediaRefs();
+  }
   // Broadcast 给所有 renderer window — 用于 main 端创建消息 (e.g. feishu /ctr
   // 接管路径下 persistUserMessage / persistAssistantMessage) 时让 renderer
   // 的 makerChatStore push 到 in-memory state, 让消息流实时刷新。

@@ -192,6 +192,7 @@ async function commitChatImageUrlsUnlocked(
         skipped += 1;
         continue;
       }
+      await params.assertStillValid?.();
       await ledger.addRef(
         {
           hash: parsed.hash,
