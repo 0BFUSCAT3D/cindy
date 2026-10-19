@@ -82,6 +82,7 @@ interface Connection {
   binding: OauthCardBinding;
   started: boolean;
   finished: boolean;
+  pending: number;
   innerId?: string;
   messages: Map<string, { box: string; promise: Promise<unknown> }>;
 }
@@ -156,15 +157,27 @@ export class AuthenticatedOauthHost {
     if ((raw as { op?: unknown })?.op === 'hello') {
       const hello = parsePluginOauthHello(raw);
       for (const [id, c] of this.connections) if (c.finished) this.connections.delete(id);
-      if (
-        this.connections.size >= 16 ||
-        [...this.connections.values()].filter((c) => c.peer === peer).length >= 4
-      )
-        throw fail();
       const generation = this.generation,
         peerGeneration = this.peerGenerations.get(peer) ?? 0;
       const binding = await this.deps.bind(hello.action);
+      const previous = binding?.settingsPage
+        ? [...this.connections.values()].filter(
+            (c) =>
+              c.peer === peer &&
+              c.binding.settingsPage &&
+              c.binding.ghostId === binding.ghostId &&
+              sameAction(c.hello.action, hello.action),
+          )
+        : [];
+      // Keep each response on its original encrypted connection until it settles.
+      await Promise.allSettled(
+        previous.flatMap((c) => [...c.messages.values()].map((m) => m.promise)),
+      );
       const currentIdentity = await this.deps.identity();
+      const replaceable = previous.filter(
+        (c) => this.connections.get(c.id) === c && c.pending === 0,
+      );
+      const remaining = [...this.connections.values()].filter((c) => !replaceable.includes(c));
       if (
         !binding?.current() ||
         (binding.controllerDeviceId !== undefined && binding.controllerDeviceId !== peer) ||
@@ -173,8 +186,8 @@ export class AuthenticatedOauthHost {
         generation !== this.generation ||
         peerGeneration !== (this.peerGenerations.get(peer) ?? 0) ||
         currentIdentity?.key !== identity.key ||
-        this.connections.size >= 16 ||
-        [...this.connections.values()].filter((c) => c.peer === peer).length >= 4
+        remaining.length >= 16 ||
+        remaining.filter((c) => c.peer === peer).length >= 4
       )
         throw fail();
       const key = new OauthBox(),
@@ -189,6 +202,15 @@ export class AuthenticatedOauthHost {
         ghostId: binding.ghostId,
         expiresAtMs,
       };
+      const signature = identity.key.sign(
+        transcript(
+          hello,
+          reply,
+          { ...identity, publicKey: identity.key.descriptor.publicKey },
+          peer,
+        ),
+      );
+      for (const c of replaceable) this.connections.delete(c.id);
       this.connections.set(id, {
         id,
         peer,
@@ -199,18 +221,12 @@ export class AuthenticatedOauthHost {
         binding,
         started: false,
         finished: false,
+        pending: 0,
         messages: new Map(),
       });
       return {
         ...reply,
-        signature: identity.key.sign(
-          transcript(
-            hello,
-            reply,
-            { ...identity, publicKey: identity.key.descriptor.publicKey },
-            peer,
-          ),
-        ),
+        signature,
       };
     }
     const v = oauthExact(raw, ['op', 'id', 'box']);
@@ -244,6 +260,7 @@ export class AuthenticatedOauthHost {
     } else if (request.op !== 'capabilities' && (!c.innerId || request.id !== c.innerId))
       throw fail();
     const requestNonce = payload.nonce;
+    c.pending++;
     const promise = (async () => {
       try {
         this.assertCurrent(c);
@@ -278,7 +295,9 @@ export class AuthenticatedOauthHost {
           }),
         };
       }
-    })();
+    })().finally(() => {
+      c.pending--;
+    });
     c.messages.set(requestNonce, { box: v.box, promise });
     return promise;
   }

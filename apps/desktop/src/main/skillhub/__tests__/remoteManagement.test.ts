@@ -278,6 +278,80 @@ describe('remote Skills reuse the Host instances and mutation services', () => {
     expect((await invoke('operation', { operationId: 'cancel' })).phase).toBe('cancelled');
     expect(mutate).not.toHaveBeenCalled();
   });
+  it('cancels a running update before its commit without replaying the operation', async () => {
+    let start!: () => void, finish!: () => void;
+    const started = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const downloaded = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let committed = false;
+    mutate.mockImplementationOnce(async (_kind, _record, _market, current) => {
+      start();
+      await downloaded;
+      if (!current()) throw new Error('CANCELLED');
+      committed = true;
+    });
+    const input = {
+      operationId: 'running-cancel',
+      kind: 'update',
+      expectedRevision: 'r1',
+      version: '2.0.0',
+    };
+    const receipt = await invoke('begin', input, 'global-instance');
+    await invoke('answer', {
+      operationId: receipt.operationId,
+      requestId: receipt.confirmation!.requestId,
+      accepted: true,
+    });
+    await started;
+    await expect(
+      invoke('cancel', { operationId: receipt.operationId }, undefined, 'control-b'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await invoke('cancel', { operationId: receipt.operationId });
+    finish();
+    await vi.waitFor(async () =>
+      expect((await invoke('operation', { operationId: receipt.operationId })).phase).toBe(
+        'cancelled',
+      ),
+    );
+    expect(committed).toBe(false);
+    expect((await invoke('begin', input, 'global-instance')).phase).toBe('cancelled');
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+  it('preserves a committed result when cancellation arrives before the receipt settles', async () => {
+    let start!: () => void, finish!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const completed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    mutate.mockImplementationOnce(async () => {
+      start();
+      await completed;
+    });
+    const receipt = await invoke(
+      'begin',
+      { operationId: 'late-cancel', kind: 'update', expectedRevision: 'r1', version: '2.0.0' },
+      'global-instance',
+    );
+    await invoke('answer', {
+      operationId: receipt.operationId,
+      requestId: receipt.confirmation!.requestId,
+      accepted: true,
+    });
+    await committed;
+    await invoke('cancel', { operationId: receipt.operationId });
+    finish();
+    await vi.waitFor(async () =>
+      expect((await invoke('operation', { operationId: receipt.operationId })).phase).toBe(
+        'succeeded',
+      ),
+    );
+    expect(mutate).toHaveBeenCalledOnce();
+  });
   it('allocates one receipt for overlapping requests with the same operation id', async () => {
     const input = { operationId: 'overlap', kind: 'uninstall', expectedRevision: 'r1' };
     const [first, second] = await Promise.all([

@@ -293,6 +293,28 @@ describe('original remote plugin settings', () => {
     expect(f.stored.get('/secrets/key')).toContain('submitted-once');
     expect(f.deps.trustIdentity).toHaveBeenCalledTimes(1);
   });
+  it('renews all four open settings pages without closing any page or consuming another slot', async () => {
+    const f = fixture();
+    const pages = await Promise.all(Array.from({ length: 4 }, () => f.open()));
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      for (const elapsed of [100_000, 200_000, 241_000]) {
+        clock.mockReturnValue(now + elapsed);
+        const responses = await Promise.all(pages.map(({ fetch }) => fetch('/secrets')));
+        expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+      }
+      expect(f.deps.trustIdentity).toHaveBeenCalledTimes(8);
+      expect(f.disconnect).not.toHaveBeenCalled();
+      expect(
+        (await pages[0].fetch('/secrets/key', { method: 'PUT', body: '{"value":"renewed"}' }))
+          .status,
+      ).toBe(200);
+      expect(f.stored.get('/secrets/key')).toContain('renewed');
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it.each(['owner', 'revision', 'revoke', 'peer'] as const)(
     'rejects a late write after %s changes',
     async (change) => {

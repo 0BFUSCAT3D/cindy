@@ -36,7 +36,12 @@ function fixture(ghostId = 'test-plugin', controllerDeviceId?: string, settingsP
     identity: () => identity,
     owner: () => owner,
     available: () => true,
-    bind: async () => ({ ghostId, controllerDeviceId, ...(settingsPage ? { settingsPage: true as const } : {}), current: () => current }),
+    bind: async () => ({
+      ghostId,
+      controllerDeviceId,
+      ...(settingsPage ? { settingsPage: true as const } : {}),
+      current: () => current,
+    }),
     request,
     now: () => now,
   });
@@ -165,6 +170,75 @@ describe('signed OAuth transport with explicit peer trust', () => {
     expect(await f.host.request('desktop', first)).toEqual(result);
     await expect(f.host.request('desktop', frame())).rejects.toThrow();
     expect(f.request).toHaveBeenCalledTimes(1);
+  });
+  it('replaces only the same peer and settings page without exhausting the connection quota', async () => {
+    const f = fixture('test-plugin', undefined, true);
+    const settingsAction = { requestId: 'page-1', actionId: 'settings-page', expectedRevision: 0 };
+    const options = { ...f.options, action: settingsAction };
+    const calls = [];
+    for (let i = 0; i < 4; i++) {
+      calls.push(
+        await authenticateOauthController({
+          ...options,
+          action: { ...settingsAction, requestId: `page-${i + 1}` },
+        }),
+      );
+    }
+    const otherPeer = await authenticateOauthController({
+      ...options,
+      peer: 'desktop-b',
+      invoke: (raw) => f.host.request('desktop-b', raw),
+    });
+    for (let i = 0; i < 6; i++) {
+      const renewed = await authenticateOauthController(options);
+      await expect(
+        renewed({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
+      ).resolves.toBeDefined();
+    }
+    await expect(
+      authenticateOauthController({
+        ...options,
+        action: { ...settingsAction, requestId: 'page-5' },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      calls[1]({ op: 'settings', id: 'page-2', command: { kind: 'poll', after: 0 } }),
+    ).resolves.toBeDefined();
+    await expect(
+      otherPeer({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
+    ).resolves.toBeDefined();
+  });
+  it('lets an in-flight settings response finish on its original encrypted connection after renewal', async () => {
+    const f = fixture('test-plugin', undefined, true);
+    const options = {
+      ...f.options,
+      action: { requestId: 'page-1', actionId: 'settings-page', expectedRevision: 0 },
+    };
+    const call = await authenticateOauthController(options);
+    let start!: () => void, finish!: () => void;
+    const started = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const completed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    f.request.mockImplementationOnce(async () => {
+      start();
+      await completed;
+      return { phase: 'starting', marker: 'original-result' };
+    });
+    const pending = call({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } });
+    await started;
+    const renewal = authenticateOauthController(options);
+    finish();
+    await expect(pending).resolves.toMatchObject({ marker: 'original-result' });
+    const renewed = await renewal;
+    await expect(
+      renewed({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
+    ).resolves.toBeDefined();
+    await expect(
+      call({ op: 'settings', id: 'page-1', command: { kind: 'poll', after: 0 } }),
+    ).rejects.toThrow();
   });
 
   it('rejects a mutated authenticated envelope without invoking the transaction', async () => {

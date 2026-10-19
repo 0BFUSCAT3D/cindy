@@ -43,6 +43,7 @@ type Operation = {
   peer: string;
   fingerprint: string;
   receipt: RemoteSkillReceipt;
+  cancelled: boolean;
   current(): boolean;
   visible(): boolean;
   run(): Promise<void>;
@@ -77,6 +78,8 @@ export class RemoteSkillsManagement<T> {
     if (request.actionId === 'management:cancel' || request.actionId === 'management:answer') {
       const operation = this.operation(peer, input.operationId);
       if (request.actionId === 'management:cancel') {
+        if (['confirmation', 'running'].includes(operation.receipt.phase))
+          operation.cancelled = true;
         if (operation.receipt.phase === 'confirmation')
           operation.receipt = { operationId: operation.receipt.operationId, phase: 'cancelled' };
       } else if (operation.receipt.phase === 'confirmation') {
@@ -261,13 +264,15 @@ export class RemoteSkillsManagement<T> {
       peer,
       fingerprint,
       receipt,
+      cancelled: false,
       ...access,
+      current: () => !operation.cancelled && access.current(),
       timer: setTimeout(() => {
         this.operations.delete(operationId);
       }, 15 * 60_000),
       run: async () => {
         try {
-          if (!access.current()) fail('NOT_FOUND');
+          if (!operation.current()) fail('NOT_FOUND');
           if (
             record &&
             !(await this.deps.scan()).some(
@@ -276,7 +281,7 @@ export class RemoteSkillsManagement<T> {
             )
           )
             fail('NOT_FOUND');
-          if (!access.current()) fail('NOT_FOUND');
+          if (!operation.current()) fail('NOT_FOUND');
           if (
             project &&
             !(await this.deps.projects!()).some(
@@ -284,10 +289,10 @@ export class RemoteSkillsManagement<T> {
             )
           )
             fail('NOT_FOUND');
-          await this.deps.mutate(kind, record, market, access.current, project);
+          await this.deps.mutate(kind, record, market, operation.current, project);
           operation.receipt = { operationId, phase: 'succeeded' };
         } catch {
-          operation.receipt = { operationId, phase: 'failed' };
+          operation.receipt = { operationId, phase: operation.cancelled ? 'cancelled' : 'failed' };
         }
       },
     };

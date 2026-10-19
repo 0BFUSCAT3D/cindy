@@ -193,10 +193,13 @@ export async function openRemotePluginSettings(
   const src = origin + '/' + doc.entry;
   const internal = '/__cindy_remote_settings_' + randomUUID();
   let exchange: ((request: PluginOauthRequest) => Promise<unknown>) | undefined;
+  const inFlight = new Set<Promise<unknown>>();
   let renew: Promise<void> | undefined,
     renewedAt = 0,
     sent = 0;
   const connect = async () => {
+    await Promise.allSettled(inFlight);
+    assertCurrent();
     const target = await deps.identity(input.deviceId, assertCurrent);
     if (target.deviceId !== input.deviceId) throw unavailable();
     exchange = await authenticateOauthController({
@@ -230,7 +233,13 @@ export async function openRemotePluginSettings(
     }
     assertCurrent();
     sent++;
-    return exchange!({ op: 'settings', id: doc.pageId, command });
+    const response = exchange!({ op: 'settings', id: doc.pageId, command });
+    inFlight.add(response);
+    try {
+      return await response;
+    } finally {
+      inFlight.delete(response);
+    }
   };
   await connect();
   assertCurrent();
