@@ -8,6 +8,7 @@ import { toast } from '@/lib/toast';
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState, ProviderUsageHistoryView } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
+import { ProviderShareVisibilitySection } from '../ProviderShareVisibilitySection';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
 import {
   getProviderSharePendingRequests,
@@ -196,6 +197,7 @@ beforeEach(() => {
   vi.mocked(toast.success).mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
+    if (cmd.action === 'get-visibility') return { quota: false, usage: false };
     if (cmd.action === 'owned') return owned();
     if (cmd.action === 'own-usage') return ownUsage();
     if (cmd.action === 'usage-history') return usageHistory();
@@ -224,7 +226,7 @@ beforeEach(() => {
             if (action === 'owned') return owned();
             if (action === 'own-usage') return ownUsage();
             if (action === 'usage-history') return usageHistory();
-            if (action === 'get-run-limits') return command(cmd.request?.command);
+            if (action === 'get-run-limits' || action === 'get-visibility') return command(cmd.request?.command);
             if (action === 'approve' || action === 'reject') return { ok: true };
           }
           return { providerId: cmd.providerId, config: null, members: [] };
@@ -850,5 +852,34 @@ describe('ProviderShareManagePage', () => {
       expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
     );
     expect(screen.getByTestId('provider-share-claude-email-callout')).toBeTruthy();
+  });
+});
+
+/* 可见性保存要到供应商所在电脑；旧读不能覆盖刚写成功的开关。tier: unit。 */
+describe('share visibility switches', () => {
+  it('saves through remote management without changing the control computer', async () => {
+    const remote = vi.spyOn(window.electronAPI.providerGroup, 'command').mockImplementation(async (raw) => {
+      if (raw.action !== 'remote-manage' || raw.request.action !== 'manage-share') throw new Error('unexpected route');
+      return raw.request.command.action === 'set-visibility' ? { quota: true, usage: false } : { quota: false, usage: false };
+    });
+    await act(async () => { render(<ProviderShareVisibilitySection providerId="xd" deviceId="studio" />); });
+    await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' })); });
+    expect(remote).toHaveBeenCalledWith({ action: 'remote-manage', deviceId: 'studio', request: { action: 'manage-share', command: { action: 'set-visibility', providerId: 'xd', visibility: { quota: true } } } });
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'set-visibility' }));
+    expect(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' }).getAttribute('aria-checked')).toBe('true');
+  });
+  it('keeps the saved value when an older poll completes afterwards', async () => {
+    vi.useFakeTimers();
+    try {
+      command.mockResolvedValue({ quota: false, usage: false });
+      await act(async () => { render(<ProviderShareVisibilitySection providerId="xd" />); });
+      let finish!: (value: { quota: boolean; usage: boolean }) => void;
+      command.mockImplementation(async (cmd) => cmd.action === 'get-visibility'
+        ? new Promise((resolve) => { finish = resolve; }) : { quota: true, usage: false });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' })); });
+      await act(async () => { finish({ quota: false, usage: false }); });
+      expect(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' }).getAttribute('aria-checked')).toBe('true');
+    } finally { vi.useRealTimers(); }
   });
 });

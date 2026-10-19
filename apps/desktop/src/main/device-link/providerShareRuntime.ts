@@ -34,7 +34,12 @@ import {
   type ProviderUsageDayView,
   type ProviderUsageHistoryView,
 } from '../../shared/providerShare.js';
-import { getDeviceId } from '../authManager.js';
+import { getAuthState, getDeviceId } from '../authManager.js';
+import { parseProviderShareInsights, PROVIDER_SHARE_INSIGHTS_CHANNEL } from '../../shared/providerShareInsights.js';
+import { isProviderGroupProviderId } from '../../shared/providerGroup.js';
+import { providerShareVisibility } from './providerShareVisibility.js';
+import { createProviderShareInsightsReader } from './providerShareInsights.js';
+import { readProviderShareQuota, readProviderShareQuotaAccount } from './providerShareQuota.js';
 import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
@@ -45,7 +50,7 @@ import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
-import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { normalizeProviderShareMemberNote, PROVIDER_SHARE_MEMBER_NOTE_MAX_LENGTH } from '../../shared/providerShareMemberNote.js';
 import { providerShareMemberNotes } from './providerShareMemberNotes.js';
 import { captureProviderManagementScope } from '../provider-group/managementScope.js';
@@ -64,6 +69,7 @@ import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } 
 import { configureProviderShareApprovalWindows } from './providerShareApprovalWindows.js';
 import {
   findReceivedShare,
+  providerShareReceivedRevision,
   getReceivedShares,
   isReceivedSharesReady,
   getReceivedSharesSnapshot,
@@ -92,6 +98,7 @@ import {
   getProviderShareWatchedRequests,
   markProviderShareHostActive,
   providerShareGuestAccess,
+  providerShareAccessRevision,
   providerShareGuestDenial,
   providerShareMemberMatcher,
   quietProviderShareRequests,
@@ -336,6 +343,22 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'Invalid command');
   const value = raw as Record<string, unknown>;
   switch (value.action) {
+    case 'get-visibility':
+    case 'quota-account':
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      return { action: value.action, providerId: value.providerId };
+    case 'set-visibility': {
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      const patch = value.visibility;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)
+        || Object.keys(patch).length === 0 || Object.entries(patch).some(([key, entry]) =>
+          !['quota', 'usage'].includes(key) || typeof entry !== 'boolean')) {
+        throwIpcError('INVALID_PARAMS', 'Invalid share visibility');
+      }
+      return { action: 'set-visibility', providerId: value.providerId, visibility: patch };
+    }
+    case 'insights':
+      return { action: 'insights', shareId: text(value.shareId, 'shareId', 128) };
     case 'get-run-limits':
     case 'reset-run-limits':
       return { action: value.action };
@@ -687,6 +710,43 @@ async function createLink(
 async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
   assertCurrent();
   switch (command.action) {
+    case 'get-visibility':
+      return providerShareVisibility.read(command.providerId);
+    case 'set-visibility': {
+      const assertOwner = captureProviderManagementScope();
+      const result = await providerShareVisibility.set(command.providerId, command.visibility, () => { assertCurrent(); assertOwner(); });
+      emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+      return result;
+    }
+    case 'quota-account':
+      return readProviderShareQuotaAccount(command.providerId);
+    case 'insights': {
+      const assertOwner = captureProviderManagementScope();
+      const share = findReceivedShare(command.shareId);
+      const revision = providerShareReceivedRevision();
+      if (!share || share.status !== 'active') throwIpcError('PERMISSION_DENIED', 'Provider share is not available');
+      if (!share.hostOnline) throwIpcError('DEVICE_LINK_DEVICE_OFFLINE', 'Provider share host is offline');
+      if (!shareInvoke) throwIpcError('DEVICE_LINK_NOT_CONNECTED', 'Provider share connection is not ready');
+      const assertShare = () => {
+        assertOwner();
+        const latest = findReceivedShare(command.shareId);
+        if (providerShareReceivedRevision() !== revision || !latest || latest.memberId !== share.memberId || latest.status !== 'active' || !latest.hostOnline) {
+          throwIpcError('PERMISSION_DENIED', 'Provider share changed');
+        }
+      };
+      const response = await shareInvoke(`share:${command.shareId}`, PROVIDER_SHARE_INSIGHTS_CHANNEL, [{ version: 1 }], { preSend: assertShare });
+      assertShare();
+      if (!response.ok) {
+        throwIpcError(response.error.code === 'CHANNEL_NOT_ALLOWED' ? 'UNSUPPORTED_CAPABILITY'
+          : response.error.code === 'DEVICE_OFFLINE' ? 'DEVICE_LINK_DEVICE_OFFLINE'
+          : response.error.code === 'INVOKE_TIMEOUT' ? 'DEVICE_LINK_TIMEOUT'
+          : response.error.code === 'NOT_CONNECTED' || response.error.code === 'LINK_NOT_OPEN' ? 'DEVICE_LINK_NOT_CONNECTED'
+          : 'PERMISSION_DENIED', 'Provider share insights are not available');
+      }
+      const result = parseProviderShareInsights(response.result);
+      if (!result) throwIpcError('UNSUPPORTED_CAPABILITY', 'Provider share insights require an update');
+      return result;
+    }
     case 'get-run-limits':
     case 'set-run-limits':
     case 'reset-run-limits': {
@@ -868,7 +928,20 @@ async function receivedCatalogs(args: unknown[]): Promise<{ ready: boolean; shar
 export function registerProviderShareIpc(): void {
   // 受邀者对每个分享的本机偏好(「信任 {分享者}」)：按当前账号存放，读写时解析。
   configureProviderShareGuestPrefs({ resolvePath: () => ownerScopedUserDataPath('provider-share-guest-prefs.json') });
+  const insights = createProviderShareInsightsReader({
+    scopeKey: activeOwnerScopeKey,
+    captureScope: captureProviderManagementScope,
+    access: providerShareGuestAccess,
+    revision: providerShareAccessRevision,
+    visibility: (providerId) => providerShareVisibility.read(providerId),
+    shares: getProviderShareHostSnapshot,
+    owner: () => ({ displayName: getAuthState().user?.name ?? '', avatarUrl: getAuthState().user?.avatar ?? null }),
+    history: usageHistory,
+    quota: readProviderShareQuota,
+  });
   setProviderShareAccess({
+    insights,
+    insightsCurrent: insights.isCurrent,
     guestAccess: providerShareGuestAccess,
     ensureKnown: ensureProviderSharePeerKnown,
     hasShares: () => getProviderShareHostSnapshot().length > 0,

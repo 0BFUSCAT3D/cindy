@@ -1,3 +1,4 @@
+import { ProviderShareVisibilitySection } from './ProviderShareVisibilitySection';
 import { RemoteAgentLimitsSection } from './RemoteAgentLimitsSection';
 /**
  * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
@@ -504,6 +505,8 @@ export function ProviderShareManagePage({
         providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
         initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
       />
+
+      <ProviderShareVisibilitySection key={`${deviceId ?? 'local'}:${providerId}`} providerId={providerId} deviceId={deviceId} />
 
       <RemoteAgentLimitsSection key={deviceId ?? 'local'} deviceId={deviceId} />
 

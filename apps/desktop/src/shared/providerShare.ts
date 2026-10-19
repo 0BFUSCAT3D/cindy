@@ -12,6 +12,7 @@ import type {
   ProviderShareRequestState,
 } from '@cindy/device-link';
 import type { DataOwnerPushStamp } from './dataOwnerPush';
+import type { ProviderShareInsights, ProviderShareQuotaAccount, ProviderShareVisibility } from './providerShareInsights';
 
 /** 本机收藏清理依据。未加载、断线和账号切换的空列表不能用于撤权清理。 */
 export interface ProviderShareReceivedSnapshot {
@@ -190,6 +191,10 @@ export interface ProviderShareSettledEvent {
 }
 
 export type ProviderShareCommand =
+  | { action: 'get-visibility'; providerId: string }
+  | { action: 'set-visibility'; providerId: string; visibility: Partial<ProviderShareVisibility> }
+  | { action: 'quota-account'; providerId: string }
+  | { action: 'insights'; shareId: string }
   | { action: 'get-run-limits' }
   | { action: 'reset-run-limits' }
   | { action: 'set-run-limits'; limits: Partial<RemoteAgentLimits> }
@@ -221,6 +226,10 @@ export interface ProviderShareCredentialConsentView {
 }
 
 export interface ProviderShareCommandResult {
+  'get-visibility': ProviderShareVisibility;
+  'set-visibility': ProviderShareVisibility;
+  'quota-account': ProviderShareQuotaAccount;
+  insights: ProviderShareInsights;
   'get-run-limits': RemoteAgentLimitsView;
   'set-run-limits': RemoteAgentLimitsView;
   'reset-run-limits': RemoteAgentLimitsView;
