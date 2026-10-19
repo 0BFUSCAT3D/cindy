@@ -162,13 +162,16 @@ describe('buildAgentIslandRemoteSessionInputs', () => {
     const parsed = parseAgentIslandRemoteSessions([
       ...inputs,
       { ...inputs[0], sessionId: 'x-1', companion: { name: 'X', avatar: '/etc/passwd', avatarColor: 'red' } },
+      // Oversized values are dropped before any trimming or grapheme parsing.
+      { ...inputs[0], sessionId: 'x-2', companion: { name: 'Y', avatar: '🦊'.repeat(3_000_000), avatarColor: 'red' } },
     ]);
     expect(parsed?.[0]).toMatchObject({
       sessionId: 'a-1', deviceId: 'device-a', title: 'Opus', phase: 'running', detail: 'Reading files',
       companion: { name: 'Opus', avatar: bot.avatar, avatarColor: 'teal' },
     });
-    expect(parsed?.map((input) => input.sessionId)).toEqual(['a-1', 'x-1']);
+    expect(parsed?.map((input) => input.sessionId)).toEqual(['a-1', 'x-1', 'x-2']);
     expect(parsed?.[1]?.companion?.avatar).toBe('');
+    expect(parsed?.[2]?.companion?.avatar).toBe('');
 
     const state = createAgentIslandState();
     const companion = { name: 'Opus', hue: 'teal' as const, glyph: 'O', glyphIsInitial: true };
