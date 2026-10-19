@@ -1342,6 +1342,7 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
   const reader = raw.mailReader as Record<string, unknown> | undefined;
   if (raw.mailReader !== undefined && (!reader || typeof reader !== 'object' ||
       typeof reader.tool !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,127}$/.test(reader.tool) ||
+      (reader.markRead !== undefined && reader.markRead !== true) ||
       !Array.isArray(reader.hosts) || !reader.hosts.length || reader.hosts.length > 16 ||
       !reader.hosts.every(h => typeof h === 'string' && h.length <= 253 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(h)))) {
     return { ok: false, reason: 'mailReader 必须声明合法的 tool 与 hosts' };

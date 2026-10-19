@@ -21,7 +21,7 @@ export function createMailReader(deps: {
     if (!read) return { supported: true };
     if (candidates.length !== 1) return { supported: true, error: 'MAIL_PROVIDER_AMBIGUOUS' };
     const provider = candidates[0];
-    const result = opened && provider.reader.markRead
+    const result = opened && provider.reader.markRead === true
       ? await deps.call(provider, sessionId, url, true)
       : await deps.call(provider, sessionId, url);
     check();

@@ -2445,7 +2445,11 @@ extension data; malformed declarations cannot survive as unknown top-level field
 The tool must be declared and read-only by default. Cindy matches exact HTTPS hosts
 and calls it with `{ url }`; the provider resolves the account and message without
 marking read or mutating drafts. Providers may opt in with `mailReader.markRead: true`
-and accept optional `markRead:true` on that same tool. Only an explicit user opening
+and accept optional `markRead:true` on that same tool. The declaration permits only
+omission or literal `true`; `false`, strings, null and other values are invalid in
+both manifest validators. Runtime dispatch also requires literal `true`, including
+for declarations retained by older validators. Future unknown metadata remains
+preserved by manifest normalization and never grants permission. Only an explicit user opening
 passes it; AI reads, probes and neighboring preloads remain read-only. Restored
 inactive tabs and a hidden sidebar must not mark mail read merely by mounting.
 Mark only the successfully resolved, visibly opened message, never the whole thread or drafts. A failed

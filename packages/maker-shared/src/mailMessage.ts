@@ -11,6 +11,7 @@ export function parseMailReader(value: unknown): MailReaderDeclaration | null {
   if (!value || typeof value !== 'object') return null;
   const p = value as Record<string, unknown>;
   if (typeof p.tool !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,127}$/.test(p.tool) ||
+      (p.markRead !== undefined && p.markRead !== true) ||
       !Array.isArray(p.hosts) || !p.hosts.length || p.hosts.length > 16 ||
       !p.hosts.every(h => typeof h === 'string' && h.length <= 253 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(h))) return null;
   return { tool: p.tool, hosts: [...new Set(p.hosts as string[])], ...(p.markRead === true ? { markRead: true } : {}) };

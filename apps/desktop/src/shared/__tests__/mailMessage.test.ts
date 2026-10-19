@@ -2,15 +2,19 @@ import { expect, it } from 'vitest';
 import { parseMailMessage, parseMailReader, mailMessageFields } from '@cindy/maker-shared/mail-message';
 import { validateGhostManifest } from '../ghost';
 import { validateGhostManifest as validateProtocolManifest } from '@cindy/plugin-protocol';
-it.each([null, false, [], { tool: 'read_mail', hosts: 'mail.example.com' }, { tool: 'read_mail', hosts: ['*.com'] }, { hosts: ['mail.example.com'] }])('rejects a malformed known mailReader declaration: %j', mailReader => {
+it.each([null, false, [], { tool: 'read_mail', hosts: 'mail.example.com' }, { tool: 'read_mail', hosts: ['*.com'] }, { hosts: ['mail.example.com'] },
+  ...[false, 'false', 'true', 0, 1, null, {}, []].map(markRead => ({ tool: 'read_mail', hosts: ['mail.example.com'], markRead })),
+].map(mailReader => ({ mailReader })))('rejects a malformed known mailReader declaration: $mailReader', ({ mailReader }) => {
+  expect(parseMailReader(mailReader)).toBeNull();
   for (const validate of [validateGhostManifest, validateProtocolManifest]) {
     const result = validate({ schemaVersion: 3, minCindyVersion: '0.1.92', id: 'example-mail', name: 'Mail', version: '1.0.0', entry: 'main.js', mailReader });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('mailReader');
   }
 });
-it('preserves a declared reader through manifest normalization', () => {
-  const reader = { tool: 'read_mail', hosts: ['mail.example.com'], markRead: true, future: { mode: 'extension' } };
+it.each([undefined, true])('preserves a valid reader and future metadata through normalization (markRead=%j)', markRead => {
+  const reader = { tool: 'read_mail', hosts: ['mail.example.com'], ...(markRead === undefined ? {} : { markRead }), future: { mode: 'extension' } };
+  expect(parseMailReader(reader)).toEqual({ tool: reader.tool, hosts: reader.hosts, ...(markRead === undefined ? {} : { markRead }) });
   const result = validateGhostManifest({ schemaVersion: 3, minCindyVersion: '0.1.92', id: 'example-mail', name: 'Mail', version: '1.0.0', entry: 'main.js', agent: {}, mail: true, mailReader: reader,
     tools: [{ name: 'read_mail', description: 'Read only', parameters: { type: 'object', properties: {} } }] });
   expect(result.ok, result.ok ? '' : result.reason).toBe(true);

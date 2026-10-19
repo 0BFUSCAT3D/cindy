@@ -1,16 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMailReader, mailReaderRemoteProvider } from '../mailReader.js';
+import type { MailReaderDeclaration } from '@cindy/maker-shared/mail-message';
 
 const message = { accountId: 'a', messageId: 'm', from: 'from@test.com', to: 'to@test.com', cc: '', bcc: '', subject: 'Subject', date: '', bodyText: 'Hello', bodyHtml: '<p>Hello</p>', attachments: [] };
 const plugin = { id: 'test-mail', namespace: null, enabled: true, reader: { tool: 'read_mail', hosts: ['mail.example.com'] } };
-function setup(markRead = false) {
+function setup(markRead: unknown = undefined) {
   const call = vi.fn<Parameters<typeof createMailReader>[0]['call']>(async () => ({ ok: true, result: message }));
   const authorize = vi.fn(async () => {});
   let current = true;
-  const reader = createMailReader({ plugins: () => [{ ...plugin, reader: { ...plugin.reader, ...(markRead ? { markRead: true as const } : {}) } }], call, authorize, captureScope: () => () => current });
+  // Raw values also exercise declarations retained from an older manifest validator.
+  const reader = createMailReader({ plugins: () => [{ ...plugin, reader: { ...plugin.reader, ...(markRead === undefined ? {} : { markRead }) } as MailReaderDeclaration }], call, authorize, captureScope: () => () => current });
   return { reader, call, authorize, expire: () => { current = false; } };
 }
 describe('common mailbox reader', () => {
+  it.each([undefined, true, false, 'false', 'true', 0, 1, null, {}, []].map(markRead => ({ markRead })))('requires literal opt-in across local and remote reads (markRead=$markRead)', async ({ markRead }) => {
+    const f = setup(markRead), url = 'https://mail.example.com/m';
+    await f.reader('session', url, false, true);
+    expect(f.call).not.toHaveBeenCalled();
+    await f.reader('session', url, true);
+    expect(f.call.mock.calls.at(-1)).toHaveLength(3);
+    await f.reader('session', url, true, true);
+    expect(f.call.mock.calls.at(-1)).toHaveLength(markRead === true ? 4 : 3);
+    const provider = mailReaderRemoteProvider(f.reader);
+    const request = { client: { protocolVersion: 1, primitives: ['mail-message'] }, ref: { collectionId: 'mail-messages', kind: 'message', id: JSON.stringify(['session', url, true]) } };
+    await provider.get!({ controllerDeviceId: 'controller' }, request);
+    expect(f.call.mock.calls.at(-1)).toHaveLength(3);
+    await provider.get!({ controllerDeviceId: 'controller' }, { ...request, query: 'open' });
+    expect(f.call.mock.calls.at(-1)).toHaveLength(markRead === true ? 4 : 3);
+  });
   // Opening may mark read; probing, AI reads and neighboring preloads must not.
   it('passes read intent only for an authorized opening with an opted-in provider', async () => {
     const f = setup(true), url = 'https://mail.example.com/m';

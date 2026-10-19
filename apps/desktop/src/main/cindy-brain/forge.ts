@@ -1855,6 +1855,7 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 \
 （version 1），不生成卡片 HTML、不打包公共流程；纯邮件插件不需要 \`card\`。
 阅读邮件可声明 \`mailReader:{tool,hosts}\`，工具接收 \`{url}\` 并返回 MailMessage，默认只读。
 支持打开即已读时增加 \`mailReader.markRead:true\`，读取工具接受可选 \`markRead:true\`；
+声明中的 \`markRead\` 只能省略或为字面量 \`true\`，\`false\`、字符串等其它值不合法。
 仅用户主动打开时传入，AI 读取和邻近预加载不传。成功读取后只标记当前邮件，不标记整个会话或草稿。
 标记失败仍返回正文和 \`markReadFailed:true\`，由 Cindy 显示提示；新增 OAuth scope 不阻断已有授权的操作。
 适配器提供 providerName、draftStorage（server/local）、selectAccount、readDraft、writeDraft。
