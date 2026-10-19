@@ -79,6 +79,19 @@ const mutations: ProviderShareManagementCommand[] = [
   { action: 'set-member', memberId: 'm1', status: 'remove' },
 ];
 
+function saveMemberNote(entry: 'local' | 'same-account'): Promise<unknown> {
+  const command = { action: 'set-member-note', memberId: 'm1', note: 'Alice' } as const;
+  if (entry === 'same-account') return executeProviderShareManagementCommand(command);
+  const handle = vi.spyOn(ipcMain, 'handle');
+  try {
+    registerProviderShareIpc();
+    const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
+    return handler({} as Electron.IpcMainInvokeEvent, command);
+  } finally {
+    handle.mockRestore();
+  }
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   state.owner = 'owner-a';
@@ -179,11 +192,31 @@ describe('member note management', () => {
   it.each([null, 123, 'x'.repeat(81)])('rejects an invalid note %j', (note) => {
     expect(() => parseProviderShareCommand({ action: 'set-member-note', memberId: 'm1', note })).toThrow('INVALID_PARAMS');
   });
-  it('saves an existing member note without changing sharing authorization', async () => {
-    await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'm1', note: 'Alice' }))
+  it.each(['local', 'same-account'] as const)('saves an existing member note without changing sharing authorization (%s)', async (entry) => {
+    await expect(saveMemberNote(entry))
       .resolves.toEqual({ ok: true });
     expect(memberNotes.set).toHaveBeenCalledWith('m1', 'Alice', expect.any(Function));
+    expect(host.refresh).toHaveBeenCalledExactlyOnceWith('management');
     expect(api.setMember).not.toHaveBeenCalled();
+  });
+  /* PR #6445 discussion_r4312429158：本机真实 IPC 之前绕过管理入口的刷新。
+   * 现有缺口：只测远程入口与已缺席成员，未测缓存仍有、刷新后退出的成员。
+   * 最小输入：m1 在刷新后消失；或刷新期间切账号。结果必须拒绝保存，不写备注。
+   * tier: unit；复用本文件内存 fixture 与生产 IPC / 管理入口，不新增网络或等待。
+   * 单文件实测：50 项通过，1.58 秒。
+   */
+  it.each(['local', 'same-account'] as const)('refuses a note when the cached member has left before saving (%s)', async (entry) => {
+    host.refresh.mockImplementationOnce(async () => { host.snapshot.mockReturnValue([]); });
+    await expect(saveMemberNote(entry)).rejects.toThrow('NOT_FOUND');
+    expect(memberNotes.set).not.toHaveBeenCalled();
+  });
+  it.each(['pending', 'switched'] as const)('refuses a local note when the account changes during refresh (%s)', async (boundary) => {
+    host.refresh.mockImplementationOnce(async () => {
+      if (boundary === 'pending') state.boundaryPending = true;
+      else state.owner = 'owner-b';
+    });
+    await expect(saveMemberNote('local')).rejects.toThrow('PRECONDITION_FAILED');
+    expect(memberNotes.set).not.toHaveBeenCalled();
   });
   it('refuses notes for absent members and a pending account transition', async () => {
     await expect(executeProviderShareManagementCommand({ action: 'set-member-note', memberId: 'absent', note: 'Alice' }))

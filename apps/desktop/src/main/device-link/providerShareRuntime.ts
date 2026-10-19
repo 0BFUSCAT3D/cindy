@@ -730,6 +730,10 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
     case 'set-member-note': {
       const assertOwner = captureProviderManagementScope();
       requireRunning();
+      // 本机 IPC 与同账号管理共用刷新，避免用旧名单给已退出的成员保存备注。
+      await refreshProviderShareHost('management');
+      assertCurrent();
+      assertOwner();
       const member = getProviderShareHostSnapshot().some((share) => share.members.some((item) => item.memberId === command.memberId));
       if (!member) throwIpcError('NOT_FOUND', 'This shared provider member is no longer available');
       await providerShareMemberNotes.set(command.memberId, command.note, () => { assertCurrent(); assertOwner(); });
@@ -780,12 +784,12 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
  */
 export async function executeProviderShareManagementCommand(command: ProviderShareManagementCommand): Promise<unknown> {
   const assertCurrent = captureProviderManagementScope();
-  if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member' || command.action === 'set-member-note') {
+  if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member') {
     requireRunning();
     await refreshProviderShareHost('management');
     assertCurrent();
     const shares = getProviderShareHostSnapshot();
-    const found = command.action === 'set-member' || command.action === 'set-member-note'
+    const found = command.action === 'set-member'
       ? shares.some((share) => share.members.some((member) => member.memberId === command.memberId))
       : shares.some((share) => share.requests.some((request) => request.requestId === command.requestId));
     if (!found) throwIpcError('NOT_FOUND', 'The share request or member is no longer on this computer');
