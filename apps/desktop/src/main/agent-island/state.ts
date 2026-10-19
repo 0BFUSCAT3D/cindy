@@ -1153,6 +1153,8 @@ export function syncAgentIslandDeviceSessions(
   state: AgentIslandState,
   inputs: readonly AgentIslandRemoteSessionInput[],
   now: number,
+  /** Display identity of a remote companion chat; must return a stable object per identity. */
+  resolveCompanion: (input: AgentIslandRemoteSessionInput) => AgentIslandCompanionSnapshot | null = () => null,
 ): AgentIslandDeviceSessionSyncResult {
   const result: AgentIslandDeviceSessionSyncResult = { changed: false, baselineSessionIds: [], events: [] };
   const incoming = new Map(inputs.map((input) => [input.sessionId, input]));
@@ -1173,7 +1175,7 @@ export function syncAgentIslandDeviceSessions(
       result.baselineSessionIds.push(input.sessionId);
       result.changed = true;
     }
-    if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    if (applyDeviceSessionMeta(session, input, resolveCompanion(input))) result.changed = true;
     const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
     if (input.phase === 'completed') {
@@ -1200,14 +1202,20 @@ export function syncAgentIslandDeviceSessions(
 function applyDeviceSessionMeta(
   session: AgentIslandSessionState,
   input: AgentIslandRemoteSessionInput,
+  companion: AgentIslandCompanionSnapshot | null,
 ): boolean {
-  const project = projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
+  // A companion's home folder on that computer is not a project; its group is the context.
+  const project = companion
+    ? companion.groupName ?? null
+    : projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
   const projectName = [project, input.deviceName].filter(Boolean).join(' · ') || null;
   const agentKind = dbToMakerAgentKind(input.agentKind);
   const changed = session.title !== input.title
+    || session.companion !== companion
     || session.projectName !== projectName
     || session.agentKind !== agentKind;
   session.title = input.title;
+  session.companion = companion;
   session.projectName = projectName;
   session.agentKind = agentKind;
   return changed;

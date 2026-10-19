@@ -54,48 +54,70 @@ export async function readAgentIslandCompanion(sessionId: string): Promise<Agent
   const group = groupId
     ? await db.select({ name: botGroups.name }).from(botGroups).where(eq(botGroups.id, groupId)).get()
     : undefined;
-  const avatar = row.avatar.trim();
-  const emoji = isSingleBotAvatarGrapheme(avatar) ? avatar : null;
-  const imageJpeg = emoji ? undefined : await avatarThumbnail(avatar);
   const groupName = group?.name.trim();
+  const base = companionSnapshotWithoutArtwork({ name: row.name, avatar: row.avatar, avatarColor: row.avatarColor, groupName });
+  const imageJpeg = companionAvatarHasArtwork(row.avatar) ? await companionAvatarThumbnail(row.avatar) : undefined;
+  return { botId: row.botId, companion: imageJpeg ? { ...base, imageJpeg } : base };
+}
+
+/** Name, tint and glyph: everything but the artwork, available without any read. */
+export function companionSnapshotWithoutArtwork(identity: {
+  name: string;
+  avatar: string;
+  avatarColor: string;
+  groupName?: string;
+}): AgentIslandCompanionSnapshot {
+  const avatar = identity.avatar.trim();
+  const emoji = isSingleBotAvatarGrapheme(avatar) ? avatar : null;
   return {
-    botId: row.botId,
-    companion: {
-      name: row.name,
-      ...(groupName ? { groupName } : {}),
-      hue: normalizeBotAvatarHue(row.avatarColor),
-      ...(imageJpeg ? { imageJpeg } : {}),
-      glyph: emoji ?? botAvatarInitial(row.name),
-      glyphIsInitial: !emoji,
-    },
+    name: identity.name,
+    ...(identity.groupName ? { groupName: identity.groupName } : {}),
+    hue: normalizeBotAvatarHue(identity.avatarColor),
+    glyph: emoji ?? botAvatarInitial(identity.name),
+    glyphIsInitial: !emoji,
   };
 }
 
-function avatarThumbnail(avatar: string): Promise<string | undefined> {
-  const cached = thumbnails.get(avatar);
+export function companionAvatarHasArtwork(avatar: string): boolean {
+  return !isSingleBotAvatarGrapheme(avatar.trim());
+}
+
+/**
+ * Bounded JPEG of the companion's artwork. `deviceId` names the computer that holds a
+ * `cindy-media://` avatar of a companion running elsewhere; it is read through this
+ * computer's companion avatar copy, the same one the roster shows.
+ */
+export function companionAvatarThumbnail(avatar: string, deviceId?: string | null): Promise<string | undefined> {
+  const key = `${deviceId ?? ''}\n${avatar.trim()}`;
+  const cached = thumbnails.get(key);
   if (cached) return cached;
-  const pending = encodeAvatarThumbnail(avatar).catch(() => undefined);
-  thumbnails.set(avatar, pending);
+  const pending = encodeAvatarThumbnail(avatar.trim(), deviceId ?? null).catch(() => undefined);
+  thumbnails.set(key, pending);
   if (thumbnails.size > THUMBNAIL_CACHE_LIMIT) thumbnails.delete(thumbnails.keys().next().value!);
   // Artwork is optional: a failed read falls back to the glyph and retries on the next lookup.
-  void pending.then((value) => { if (!value && thumbnails.get(avatar) === pending) thumbnails.delete(avatar); });
+  void pending.then((value) => { if (!value && thumbnails.get(key) === pending) thumbnails.delete(key); });
   return pending;
 }
 
-async function encodeAvatarThumbnail(avatar: string): Promise<string | undefined> {
-  const bytes = await readAvatarBytes(avatar);
+async function encodeAvatarThumbnail(avatar: string, deviceId: string | null): Promise<string | undefined> {
+  const bytes = await readAvatarBytes(avatar, deviceId);
   if (!bytes) return undefined;
   const encoded = await encodeNotificationAvatar(bytes, sharp);
   return encoded?.kind === 'jpeg' ? encoded.value : undefined;
 }
 
-async function readAvatarBytes(avatar: string): Promise<Buffer | undefined> {
+async function readAvatarBytes(avatar: string, deviceId: string | null): Promise<Buffer | undefined> {
   const preset = PRESET_AVATAR_FILES[avatar.toLowerCase()];
   if (preset) {
     const root = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
     return readFile(path.join(root, preset));
   }
-  if (!isManagedBotAvatarUrl(avatar)) return undefined;
-  const bytes = await readFile(resolveSafe(avatar).absPath);
+  let local: string | null = isManagedBotAvatarUrl(avatar) && !deviceId ? avatar : null;
+  if (!local && (deviceId || avatar.startsWith('https://'))) {
+    const { companionAvatarCache } = await import('../companion-cloud/avatarCacheHost.js');
+    local = await companionAvatarCache.resolve({ avatar, deviceId, fetch: true });
+  }
+  if (!local || !isManagedBotAvatarUrl(local)) return undefined;
+  const bytes = await readFile(resolveSafe(local).absPath);
   return bytes.length > BOT_AVATAR_MAX_BYTES ? undefined : bytes;
 }

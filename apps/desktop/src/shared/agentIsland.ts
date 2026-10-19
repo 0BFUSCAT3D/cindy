@@ -1,6 +1,7 @@
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 import type { BotAvatarHue } from './botAvatarHue.js';
+import { isSupportedBotAvatarValue } from './botAvatarValue.js';
 
 export type AgentIslandSessionPhase = 'running' | 'needs-interaction' | 'completed' | 'error';
 
@@ -814,6 +815,15 @@ export interface AgentIslandRemoteSessionInput {
   detail: string;
   workingPhase?: string;
   interactionKind?: AgentIslandInteractionKind;
+  /** The companion this chat speaks for, when its main computer is the other device. */
+  companion?: AgentIslandRemoteCompanionInput;
+}
+
+export interface AgentIslandRemoteCompanionInput {
+  name: string;
+  /** Stored avatar value as the other computer reports it (grapheme, preset, its blob or a cloud image). */
+  avatar: string;
+  avatarColor: string;
 }
 
 const AGENT_ISLAND_REMOTE_SESSIONS_MAX = 500;
@@ -851,6 +861,7 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       ? record.interactionKind as AgentIslandInteractionKind
       : undefined;
     const workingPhase = readBoundedString(record.workingPhase, 64);
+    const companion = readRemoteCompanion(record.companion);
     out.push({
       sessionId,
       deviceId,
@@ -865,9 +876,26 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       detail: readBoundedString(record.detail, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH) ?? '',
       ...(workingPhase ? { workingPhase } : {}),
       ...(interactionKind ? { interactionKind } : {}),
+      ...(companion ? { companion } : {}),
     });
   }
   return out;
+}
+
+function readRemoteCompanion(value: unknown): AgentIslandRemoteCompanionInput | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const name = readBoundedString(record.name, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH);
+  if (!name) return null;
+  const avatar = typeof record.avatar === 'string' ? record.avatar.trim() : '';
+  // Only values a companion avatar can hold: never an arbitrary local path or data URI.
+  const supportedAvatar = (avatar.startsWith('https://') && avatar.length <= 2048)
+    || isSupportedBotAvatarValue(avatar);
+  return {
+    name,
+    avatar: supportedAvatar ? avatar : '',
+    avatarColor: readBoundedString(record.avatarColor, 64) ?? '',
+  };
 }
 
 function readBoundedString(value: unknown, maxLength: number): string | null {

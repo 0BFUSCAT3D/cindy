@@ -146,6 +146,36 @@ describe('buildAgentIslandRemoteSessionInputs', () => {
     );
   });
 
+  // A companion whose main computer is another device never reached the island: its chat is a
+  // hidden Bot Session, skipped with the task list. It is account-wide, so the task scope does not apply.
+  it('shows a remote companion chat as the companion, whatever the task scope', () => {
+    const bot = {
+      id: 'opus', deviceId: 'device-a', deviceName: 'Mac Studio', name: 'Opus',
+      avatar: 'cindy-media://blobs/' + 'a'.repeat(64) + '.png', avatarColor: 'teal',
+      description: '', preview: '', activityAt: 1, sessionId: 'a-1', online: true,
+    };
+    const offline = { ...bot, id: 'away', sessionId: 'b-2', online: false };
+    const inputs = buildAgentIslandRemoteSessionInputs(
+      [remoteSession('a-1', 'device-a', { source: 'bot' })], [MACHINE_LOCAL], readActivity, [bot, offline],
+    );
+    // A local path is not a companion avatar value: it never reaches main.
+    const parsed = parseAgentIslandRemoteSessions([
+      ...inputs,
+      { ...inputs[0], sessionId: 'x-1', companion: { name: 'X', avatar: '/etc/passwd', avatarColor: 'red' } },
+    ]);
+    expect(parsed?.[0]).toMatchObject({
+      sessionId: 'a-1', deviceId: 'device-a', title: 'Opus', phase: 'running', detail: 'Reading files',
+      companion: { name: 'Opus', avatar: bot.avatar, avatarColor: 'teal' },
+    });
+    expect(parsed?.map((input) => input.sessionId)).toEqual(['a-1', 'x-1']);
+    expect(parsed?.[1]?.companion?.avatar).toBe('');
+
+    const state = createAgentIslandState();
+    const companion = { name: 'Opus', hue: 'teal' as const, glyph: 'O', glyphIsInitial: true };
+    syncAgentIslandDeviceSessions(state, parsed!.slice(0, 1), 2_000, (input) => (input.companion ? companion : null));
+    expect(state.sessions.get('a-1')).toMatchObject({ companion, title: 'Opus', projectName: 'Mac Studio' });
+  });
+
   it('skips Bot tasks and disconnected devices', () => {
     expect(
       buildAgentIslandRemoteSessionInputs(

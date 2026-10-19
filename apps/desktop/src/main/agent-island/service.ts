@@ -76,7 +76,13 @@ import {
   type AgentIslandScreenLayoutMetrics,
 } from '../../shared/agentIsland.js';
 import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
-import { readAgentIslandCompanion, type AgentIslandCompanionIdentity } from './companionIdentity.js';
+import {
+  companionAvatarHasArtwork,
+  companionAvatarThumbnail,
+  companionSnapshotWithoutArtwork,
+  readAgentIslandCompanion,
+  type AgentIslandCompanionIdentity,
+} from './companionIdentity.js';
 import { createLogger } from '../logger.js';
 import { t } from '../i18n.js';
 import { isAppContentWindow, isFocusedAppContentWindow } from '../windowFocusClassifier.js';
@@ -164,6 +170,7 @@ const REMOTE_AUTH_ERROR_FALLBACK_MS = 30_000;
 // 点击卡片到主窗导航落地之间可能隔着一次 renderer 冷加载,与主窗导航保留同量级。
 const ISLAND_ENTRY_ALERT_TTL_MS = 60_000;
 const MAX_ISLAND_ENTRY_SESSION_ID_LENGTH = 128;
+const REMOTE_COMPANION_CACHE_LIMIT = 64;
 const MAX_ISLAND_ENTRY_ID_LENGTH = 32;
 
 interface AgentIslandSessionMeta {
@@ -325,6 +332,8 @@ export class AgentIslandService {
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly metadataCache = new Map<string, AgentIslandCachedMetadata>();
   private readonly metadataLoading = new Set<string>();
+  private readonly remoteCompanions = new Map<string, AgentIslandCompanionSnapshot>();
+  private lastDeviceSessionInputs: readonly AgentIslandRemoteSessionInput[] = [];
   private readonly layoutPreferencesByDisplayId: Map<number, AgentIslandLayoutPreference>;
   private readonly detachedLayoutPreferences: AgentIslandLayoutPreference[];
   private nativeFailureLogged = false;
@@ -707,8 +716,14 @@ export class AgentIslandService {
    * 本机活动快照,也就不会被 relay 当作本机任务再推给控制端。
    */
   setDeviceSessions(inputs: readonly AgentIslandRemoteSessionInput[]): void {
+    this.lastDeviceSessionInputs = inputs;
     setAgentIslandStrings(this.state, buildAgentIslandStrings());
-    const result = syncAgentIslandDeviceSessions(this.state, inputs, Date.now());
+    const result = syncAgentIslandDeviceSessions(
+      this.state,
+      inputs,
+      Date.now(),
+      (input) => this.remoteCompanionSnapshot(input),
+    );
     for (const input of inputs) {
       if (input.phase === 'completed' && input.completionNotification === 'silent') {
         this.mutedCompletionSoundSessionIds.add(input.sessionId);
@@ -729,6 +744,32 @@ export class AgentIslandService {
     }
   }
 
+  /**
+   * A remote companion's identity is drawn at once with its tint and glyph; its artwork is
+   * read through this computer's avatar copy and swapped in when ready. One object per
+   * identity, so an unchanged companion never republishes the island.
+   */
+  private remoteCompanionSnapshot(input: AgentIslandRemoteSessionInput): AgentIslandCompanionSnapshot | null {
+    const identity = input.companion;
+    if (!identity) return null;
+    const key = JSON.stringify([input.deviceId, identity.name, identity.avatar, identity.avatarColor]);
+    const cached = this.remoteCompanions.get(key);
+    if (cached) return cached;
+    const base = companionSnapshotWithoutArtwork(identity);
+    this.remoteCompanions.set(key, base);
+    if (this.remoteCompanions.size > REMOTE_COMPANION_CACHE_LIMIT) {
+      this.remoteCompanions.delete(this.remoteCompanions.keys().next().value!);
+    }
+    if (identity.avatar && companionAvatarHasArtwork(identity.avatar)) {
+      void companionAvatarThumbnail(identity.avatar, input.deviceId).then((imageJpeg) => {
+        if (!imageJpeg || this.remoteCompanions.get(key) !== base) return;
+        this.remoteCompanions.set(key, { ...base, imageJpeg });
+        this.setDeviceSessions(this.lastDeviceSessionInputs);
+      });
+    }
+    return base;
+  }
+
   waitForCompletionNotification(sessionId: string): Promise<boolean> | undefined {
     return this.sessionActivityRelay.waitForCompletionNotification(sessionId);
   }
@@ -746,6 +787,8 @@ export class AgentIslandService {
     this.emitSessionActivityTransitions([], Date.now());
     this.metadataCache.clear();
     this.metadataLoading.clear();
+    this.remoteCompanions.clear();
+    this.lastDeviceSessionInputs = [];
     this.lastSoundDisplayState = null;
     this.soundCooldownUntilByEvent.clear();
     this.silencedRunSessionIds.clear();
