@@ -298,11 +298,13 @@ describe('RightSidebarShell empty state', () => {
   });
 
   it.each([
-    { otherBrowser: false, release: 'close' },
-    { otherBrowser: true, release: 'close' },
-    { otherBrowser: false, release: 'evict' },
-    { otherBrowser: true, release: 'evict' },
-  ])('keeps a live browser connected across task switches ($otherBrowser) until $release', async ({ otherBrowser, release }) => {
+    { otherBrowser: false, release: 'close', away: 'task-b' },
+    { otherBrowser: true, release: 'close', away: 'task-b' },
+    { otherBrowser: false, release: 'evict', away: 'task-b' },
+    { otherBrowser: true, release: 'evict', away: 'task-b' },
+    // New-task page without a project: the shell stays mounted with no foreground session (#6485).
+    { otherBrowser: false, release: 'close', away: null },
+  ])('keeps a live browser connected across task switches ($otherBrowser, away: $away) until $release', async ({ otherBrowser, release, away }) => {
     Object.assign(window.electronAPI, { onRsbBrowserFocusUrlBar: () => () => undefined });
     registerTabKind({
       kind: 'web-browser',
@@ -353,8 +355,8 @@ describe('RightSidebarShell empty state', () => {
       });
       observer.observe(view.container, { childList: true, subtree: true });
       for (let i = 0; i < 3; i++) {
-        view.rerender(createElement(RightSidebarShell, { ...props, workdir: '/tmp/task-b', sessionId: 'task-b' }));
-        await waitFor(() => expect(getBucket('task-b').hydrated).toBe(true));
+        view.rerender(createElement(RightSidebarShell, { ...props, workdir: '/tmp/task-b', sessionId: away }));
+        if (away) await waitFor(() => expect(getBucket(away).hydrated).toBe(true));
         expect(entry.wrapper.parentElement).toBe(slot);
         expect(slot.isConnected).toBe(true);
         expect(slot.closest('[aria-hidden="true"]')).not.toBeNull();
@@ -366,7 +368,7 @@ describe('RightSidebarShell empty state', () => {
       observer.disconnect();
       expect(removedAncestors).toHaveLength(0);
       // A's event writes to A's bucket even while B is the foreground task.
-      view.rerender(createElement(RightSidebarShell, { ...props, workdir: '/tmp/task-b', sessionId: 'task-b' }));
+      view.rerender(createElement(RightSidebarShell, { ...props, workdir: '/tmp/task-b', sessionId: away }));
       await act(async () => {
         entry.webview.dispatchEvent(Object.assign(new Event('page-title-updated'), { title: 'A in background' }));
       });

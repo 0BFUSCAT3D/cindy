@@ -291,6 +291,15 @@ export function MainLayout() {
   // 实例）会经 Outlet context 的 setRightSidebarAvailable 置 true，卸载时置 false。
   // 据此决定是否渲染右栏面板：离开聊天视图 → 面板卸载，不会卡在展开态且无入口关闭。
   const [rightSidebarAvailable, setRightSidebarAvailable] = useState(false);
+  // 右栏一旦在场过，经过不声明右栏的路由（如无项目目录的新建页）时仍保持挂载并强制折叠：
+  // 卸载 Shell 会把内置浏览器的 webview 宿主移出 DOM，销毁 guest 并丢失页面内存态（#6485）。
+  // detached / 窗口状态未就绪时内嵌右栏本就不渲染，标记随之复位。
+  const rightSidebarMountable = rsbWindow.loaded && !rsbDetached;
+  const [rightSidebarEverMounted, setRightSidebarEverMounted] = useState(false);
+  useEffect(() => {
+    if (!rightSidebarMountable) setRightSidebarEverMounted(false);
+    else if (rightSidebarAvailable) setRightSidebarEverMounted(true);
+  }, [rightSidebarAvailable, rightSidebarMountable]);
   // 当前 cc-agent session id —— 由 CCAgentSessionView 的路由主实例(ownsRoute=true)经 outlet context
   // 推上来,Shell 据此从 module-level store 拉对应桶的 tab 列表持久化数据。null = 不在聊天会话内。
   const [rightSidebarSessionId, setRightSidebarSessionId] = useState<string | null>(null);
@@ -1617,14 +1626,16 @@ export function MainLayout() {
                 </ContentHeaderSlot>
               </main>
             ),
-            // 右侧边栏 —— 工具面板。在场性沿用原语义:路由声明 rightSidebarAvailable
-            // (仅全屏聊天视图在场)+ detached(在新窗口显示)时内嵌不渲染
+            // 右侧边栏 —— 工具面板。首次在场沿用原语义:路由声明 rightSidebarAvailable
+            // (仅全屏聊天视图在场),此后保持挂载(不可用时强制折叠);detached(在新窗口显示)时内嵌不渲染
             // (webview 池 / 终端等资源不能双实例,内容由子窗口 renderer 独占)。
             rightTabs:
-              rightSidebarAvailable && rsbWindow.loaded && !rsbDetached ? (
+              rightSidebarMountable && (rightSidebarAvailable || rightSidebarEverMounted) ? (
                 <RightSidebar
                   ref={rightSidebarRef}
-                  isCollapsed={isRightSidebarCollapsed}
+                  // 路由不声明右栏时仅派生强制折叠，不写入 isRightSidebarCollapsed，
+                  // 也不落按会话记忆的折叠偏好。
+                  isCollapsed={isRightSidebarCollapsed || !rightSidebarAvailable}
                   // width 只在非 maximize 受控,且只是兜底 —— RSB 优先消费
                   // 引擎 PaneWidthContext 的实时值;maximize 时 RightSidebar 内部走
                   // flex-1 自己撑满(2026-07-01 bug 修)。拖宽把手 = 引擎分割线。
