@@ -200,9 +200,9 @@ export function CompanionTaskCard({
   // Without either live evidence or a delegation snapshot, keep the unknown/loading state.
   const resolved = value !== null || error || !online;
   const status =
-    task.waiting || task.activity?.phase === 'needs-interaction' || row?.status === 'waiting' ? 'waiting'
+    task.activity?.phase === 'error' ? 'failed'
+    : task.waiting || task.activity?.phase === 'needs-interaction' || row?.status === 'waiting' ? 'waiting'
     : task.running || row?.status === 'running' ? 'running'
-    : task.activity?.phase === 'error' ? 'failed'
     : task.activity?.phase === 'completed' ? 'completed'
     : row && (BOT_DELEGATION_STATUSES as readonly string[]).includes(row.status)
       ? row.status

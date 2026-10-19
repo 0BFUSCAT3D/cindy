@@ -197,6 +197,36 @@ it('keeps the original task title, live status and opening when the delegation r
   expect(node.textContent).toContain('devices.companions.status.waiting');
 });
 
+// Unit regression: a failed delegation refresh retains its old active row. An
+// authoritative task error must still win, even while an interaction is pending.
+it.each(['running', 'waiting'])('shows task errors ahead of a stale %s delegation', async (status) => {
+  remoteSessionStore.setDeviceSessions('home', 'Mac', [
+    { id: 'child', title: 'Own task', status: 'active' } as RemoteSession,
+  ]);
+  h.invoke.mockResolvedValue({ ok: true, delegations: [
+    { id: 'job', status, title: 'Report', childSessionId: 'child' },
+  ] });
+  await render();
+  h.invoke.mockRejectedValue(new Error('read failed'));
+  vi.useFakeTimers();
+  await act(async () => {
+    h.changed('home', 'maker:bot-delegation:changed', { parentSessionId: 'parent' });
+    await vi.advanceTimersByTimeAsync(400);
+  });
+  expect(node.textContent).toContain('devices.companions.stale');
+  await act(async () => {
+    if (status === 'waiting') remoteSessionStore.setPendingInteractions('child', [
+      { request: { kind: 'permission', requestId: 'permission-1' } },
+    ], { deviceId: 'home' });
+    remoteSessionStore.applyRemotePush('home', SESSION_ACTIVITY_CHANNEL, {
+      sessionId: 'child', phase: 'error', attention: true,
+    });
+  });
+  expect(node.textContent).toContain('devices.companions.status.failed');
+  expect(node.textContent).not.toContain(`devices.companions.status.${status}`);
+  expect(openEntry()?.disabled).toBe(false);
+});
+
 it('opens the task from the whole card and keeps stop as a small action while it runs', async () => {
   await render();
   expect(openEntry()?.disabled).toBe(false);
