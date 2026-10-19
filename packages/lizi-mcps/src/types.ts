@@ -103,6 +103,8 @@ export interface FeishuBotSendMessageResult {
 export interface FeishuBotHostSession {
   sessionId?: string;
   sessionInstanceId?: string;
+  /** Trusted host session metadata; preserves an explicit Feishu reply target. */
+  vendorOptions?: Readonly<Record<string, unknown>>;
 }
 
 /**

@@ -22,6 +22,11 @@ const mockState = vi.hoisted(() => ({
   ) => ({ ok: true as const })),
   capturedProvidersConfig: null as null | Record<string, unknown>,
   afterSelectCompanion: null as null | (() => void),
+  personalFeishu: {
+    getOwnerOpenId: () => 'ou_personal',
+    sendMarkdownText: vi.fn(async () => ({ messageId: 'om_personal_text' })),
+    sendFile: vi.fn(async () => ({ ok: true, messageId: 'om_personal_file' })),
+  },
   companionFeishu: {
     getOwnerOpenId: () => 'ou_companion',
     sendMarkdownText: vi.fn(async () => ({ messageId: 'om_companion_text' })),
@@ -77,10 +82,7 @@ vi.mock('../../scheduler-host/index.js', () => ({
 }));
 
 vi.mock('../../im/index.js', () => ({
-  feishuIm: {
-    getOwnerOpenId: () => null,
-    sendFile: vi.fn(),
-  },
+  feishuIm: mockState.personalFeishu,
 }));
 
 vi.mock('../../im/shared/botImConnectionRuntime', () => ({
@@ -277,6 +279,18 @@ describe('collab send outcome semantics', () => {
           }
         }
       }
+
+      // Same-account archive removes canonical membership without changing the
+      // DB snapshot. An app-scoped recipient must not cross to personal credentials.
+      await client.exec("UPDATE bot_session_links SET role = 'history' WHERE session_id = 'background-receipt'");
+      for (const send of [
+        () => feishu.sendMessage(owner!, 'must not switch bots', session.sessionId, session),
+        () => feishu.sendFile(owner!, '/tmp/report.txt', 'report.txt', session),
+      ]) {
+        expect(await send()).toMatchObject({ ok: false, reason: 'SEND_FAIL' });
+      }
+      expect(mockState.personalFeishu.sendMarkdownText).not.toHaveBeenCalled();
+      expect(mockState.personalFeishu.sendFile).not.toHaveBeenCalled();
     } finally {
       commitVolatileAppSession('signed-out');
       clearCurrentDbClient(client);

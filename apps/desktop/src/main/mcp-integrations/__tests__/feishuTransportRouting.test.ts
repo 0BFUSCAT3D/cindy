@@ -65,6 +65,26 @@ describe('Feishu transport with worker database', () => {
     await expect(resolve({ sessionId: 'canonical' })).rejects.toThrow('Companion Feishu connection unavailable');
   });
 
+  // PR #6443: canonical membership can disappear between recipient lookup and
+  // dispatch. Unit tier; keep the real worker DB and mutate only the link role.
+  it('rejects a companion recipient after its canonical association disappears', async () => {
+    const { im } = await resolve({ sessionId: 'canonical' });
+    const recipient = im.getOwnerOpenId()!;
+    await client.exec("UPDATE bot_session_links SET role = 'history' WHERE session_id = 'canonical'");
+    try {
+      await expect(resolve({ sessionId: 'canonical' }, recipient)).rejects.toThrow('Feishu recipient changed');
+      expect((await resolve({ sessionId: 'desktop' }, 'ou_personal')).im).toBe(personal);
+      // Legacy personal Feishu sessions can explicitly address a non-owner DM
+      // or group without using the owner fallback; do not restrict those replies.
+      for (const feishuChatId of ['ou_explicit', 'oc_group']) {
+        expect((await resolve({ sessionId: 'desktop', vendorOptions: { feishuChatId } }, feishuChatId)).im)
+          .toBe(personal);
+      }
+    } finally {
+      await client.exec("UPDATE bot_session_links SET role = 'canonical' WHERE session_id = 'canonical'");
+    }
+  });
+
   it('rejects a lookup that completes across an account switch', async () => {
     const pending = resolve({ sessionId: 'canonical' });
     setCurrentDbClient(client, 'account-b');

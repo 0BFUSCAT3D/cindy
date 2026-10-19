@@ -67,7 +67,9 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 主人的飞书连接；发送时校验连接的 owner 与已解析收件人一致。已识别伙伴但没有匹配的可用连接、
 数据库查询失败、账号边界处于 pending 或 owner 代次变化，均拒绝发送，不回落个人 bot；查询前后
 及实际调用发送前都复核账号边界、owner 代次与所用 DB 快照。没有 canonical 伙伴归属的普通
-任务仍保留设置页个人 bot 的主人通知能力。此路径不向主任务持久写入 `feishuChatId`，也不生成租约
+任务仍保留设置页个人 bot 的主人通知能力。使用个人 bot 发送时，已解析收件人必须匹配它当前的主人
+或宿主任务记录的显式 `feishuChatId`；两阶段之间 canonical 关联消失时，不将伙伴的收件人交给个人
+凭证发送。此路径不向主任务持久写入 `feishuChatId`，也不生成租约
 或授予轮次内原生 API 权限；`cindyBotImChannels` 只控制工具挂载，不作为归属或授权依据。
 实现见 [`feishuTransportRouting.ts`](../../apps/desktop/src/main/mcp-integrations/feishuTransportRouting.ts)
 与 [`botImConnectionRuntime.ts`](../../apps/desktop/src/main/im/shared/botImConnectionRuntime.ts)，

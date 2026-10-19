@@ -1,11 +1,12 @@
 import { and, eq } from 'drizzle-orm';
+import type { FeishuBotHostSession } from '@cindy/mcps';
 
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getCurrentDbClientSnapshot, type CurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { botSessionLinks, sessions } from '../localDb/schema.js';
 import type { FeishuToolTransport } from '../im/shared/channelToolScope.js';
 
-type Caller = { sessionId?: string; sessionInstanceId?: string } | undefined;
+type Caller = FeishuBotHostSession | undefined;
 type ResolvedTransport = { im: FeishuToolTransport; assertCurrent: () => void };
 
 /** Resolve each notification against the current account and live connection.
@@ -30,7 +31,21 @@ export function createFeishuTransportResolver(deps: {
     assertCurrent();
     const scope = deps.readTurnScope(session);
     if (scope) return { im: scope.im, assertCurrent };
-    if (!session?.sessionId) return { im: deps.personalIm, assertCurrent };
+    const personalTransport = (): ResolvedTransport => {
+      const assertPersonalCurrent = () => {
+        assertCurrent();
+        // Canonical membership may disappear between owner lookup and send.
+        // Never use personal credentials for another app's resolved open_id.
+        // Explicit host-recorded reply targets retain their existing behavior.
+        if (ownerOpenId && ownerOpenId !== deps.personalIm.getOwnerOpenId() &&
+            ownerOpenId !== session?.vendorOptions?.feishuChatId) {
+          throw new Error('Feishu recipient changed');
+        }
+      };
+      assertPersonalCurrent();
+      return { im: deps.personalIm, assertCurrent: assertPersonalCurrent };
+    };
+    if (!session?.sessionId) return personalTransport();
 
     snapshot = getCurrentDbClientSnapshot();
     if (!snapshot) throw new Error('DbClient not ready');
@@ -46,7 +61,7 @@ export function createFeishuTransportResolver(deps: {
       .limit(1)
       .get();
     assertCurrent();
-    if (!row?.botId) return { im: deps.personalIm, assertCurrent };
+    if (!row?.botId) return personalTransport();
     const im = deps.getCompanionTransport(row.botId, ownerOpenId);
     if (!im) throw new Error('Companion Feishu connection unavailable');
     return { im, assertCurrent };
