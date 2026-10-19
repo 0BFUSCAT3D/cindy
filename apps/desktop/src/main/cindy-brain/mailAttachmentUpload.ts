@@ -3,7 +3,19 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { parseAttachmentOssRef, parsePeerAttachmentRef } from '@cindy/device-link';
-import type { writeTempFile } from '../maker-ipc/normalizeAttachments.js';
+import type { writeTempFile, materializeDirectSendOssAttachments } from '../maker-ipc/normalizeAttachments.js';
+
+interface MailAttachmentHost {
+  writeTempFile: typeof writeTempFile;
+  materializeDirectSendOssAttachments: typeof materializeDirectSendOssAttachments;
+}
+let attachmentHost: MailAttachmentHost | undefined;
+/** Main bootstrap owns assembly; importing the plugin runtime must not load maker-ipc. */
+export function configureMailAttachmentHost(host: MailAttachmentHost): void { attachmentHost = host; }
+function requireAttachmentHost(): MailAttachmentHost {
+  if (!attachmentHost) throw new Error('MAIL_ATTACHMENT_HOST_NOT_READY');
+  return attachmentHost;
+}
 
 const parseUploadRef = (url: string) => parsePeerAttachmentRef(url) || parseAttachmentOssRef(url);
 
@@ -17,7 +29,7 @@ export interface PreparedMailAttachment {
 
 /** Snapshot the selected bytes into the existing session-owned temporary store.
  * The sandbox/Node adapter never receives the user's source path or rereads it. */
-export async function prepareMailAttachmentSelection(filePath: string, sessionId: string, inline: boolean, writeSnapshot: typeof writeTempFile): Promise<PreparedMailAttachment> {
+export async function prepareMailAttachmentSelection(filePath: string, sessionId: string, inline: boolean, writeSnapshot = requireAttachmentHost().writeTempFile): Promise<PreparedMailAttachment> {
   const handle = await fs.open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   let bytes: Buffer;
   try {
@@ -48,12 +60,11 @@ export function parseMailAttachmentUpload(value: unknown): MailAttachmentUpload 
 
 /** Reuse task attachment materialization and its owner/session cleanup. Never
  * accept a phone-supplied desktop path, or create a second upload store. */
-export async function prepareMailAttachmentUpload(input: MailAttachmentUpload, sessionId: string): Promise<PreparedMailAttachment> {
+export async function prepareMailAttachmentUpload(input: MailAttachmentUpload, sessionId: string, materialize = requireAttachmentHost().materializeDirectSendOssAttachments): Promise<PreparedMailAttachment> {
   const upload = parseMailAttachmentUpload(input);
   if (!upload) throw new Error('INVALID_MAIL_ATTACHMENT');
   const ref = parseUploadRef(upload.url)!;
-  const { materializeDirectSendOssAttachments } = await import('../maker-ipc/normalizeAttachments.js');
-  const staged = await materializeDirectSendOssAttachments(sessionId, {
+  const staged = await materialize(sessionId, {
     type: 'user', content: [{ type: 'file', path: upload.url, name: upload.name, mimeType: ref.mimeType }],
   }, {});
   const discard = async () => { await staged.cleanupBeforeAcceptance?.(); };

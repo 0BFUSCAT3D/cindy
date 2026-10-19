@@ -2329,6 +2329,20 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
       });
     }
   }
+  if (manifest.mail === true) {
+    items.push({ key: 'mail', kind: 'card', labelKey: 'mail', detailKey: 'mailDetail' });
+    const reader = parseMailReader(manifest.mailReader);
+    if (reader) {
+      items.push({ key: `mail-reader:${reader.tool}`, kind: 'card', labelKey: 'mailReader' });
+      for (const host of reader.hosts) {
+        items.push({ key: `mail-reader:host:${host}`, kind: 'preview',
+          labelKey: 'mailReaderHost', labelArgs: { host } });
+      }
+      if (reader.markRead === true) {
+        items.push({ key: 'mail-reader:mark-read', kind: 'card', labelKey: 'mailMarkRead' });
+      }
+    }
+  }
   if (manifest.notify === true) {
     items.push({ key: 'notify', kind: 'notify', labelKey: 'notify', detailKey: 'notifyDetail' });
   }

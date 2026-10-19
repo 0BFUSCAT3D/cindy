@@ -2448,6 +2448,10 @@ Mail providers may declare `mailReader: { tool, hosts }` alongside `mail: true`.
 reject a reader without `mail: true` or without its matching tool in `tools`.
 Desktop and plugin-protocol validate this known declaration and retain future
 extension data; malformed declarations cannot survive as unknown top-level fields.
+Install/detail permission projection includes `mail`, the reader tool, individual
+reader hosts and optional read-state writes; adding any of them requires the existing
+update consent even when the tool was already registered. Reordering/deduplicating
+hosts or removing capabilities does not expand permissions.
 The tool must be declared and read-only by default. Cindy matches exact HTTPS hosts
 and calls it with `{ url }`; the provider resolves the account and message without
 marking read or mutating drafts. Providers may opt in with `mailReader.markRead: true`

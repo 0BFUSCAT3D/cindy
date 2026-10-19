@@ -6565,6 +6565,11 @@
         "unknownReviewerDetail": "The package claims a review, but this Cindy version does not recognize the reviewer key, so it is not shown as reviewed."
       },
       "perm": {
+        "mail": "Use mail drafts and send cards",
+        "mailDetail": "Edit and sync drafts in a card, with confirmation and an undo countdown before sending.",
+        "mailReader": "View mail in the app",
+        "mailReaderHost": "Open mail links from {{host}} in the app",
+        "mailMarkRead": "Mark messages as read when opened",
         "grantsTitle": "After installing it will have:",
         "toolsGroup": "Registered Tools",
         "toolsDiffGroup": "Registered Tool Changes",

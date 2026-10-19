@@ -7,13 +7,12 @@ import { isDataOwnerBroadcastScopeCurrent, tapWindowBroadcast } from '../../devi
 import { buildAttachmentOssRef } from '@cindy/device-link';
 import { renderMailCard } from '../mailCards';
 import { parseMailAttachmentUpload } from '../mailAttachmentUpload';
-import { prepareMailAttachmentUpload } from '../mailAttachmentUpload';
+import { configureMailAttachmentHost, prepareMailAttachmentUpload } from '../mailAttachmentUpload';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 const uploadFixture = vi.hoisted(() => ({ materialize: vi.fn() }));
-vi.mock('../../maker-ipc/normalizeAttachments.js', () => ({ materializeDirectSendOssAttachments: uploadFixture.materialize }));
 const image = `cindy-media://blobs/${'b'.repeat(64)}.png`;
 const audio = `cindy-media://blobs/${'c'.repeat(64)}.mp3`;
 const request = { ref: { collectionId: 'plugin-results', kind: 'card', id: JSON.stringify(['s', 'c']) }, client: { protocolVersion: 1, primitives: [] } };
@@ -28,6 +27,7 @@ it('mail imports reuse task attachment cleanup and verify downloaded bytes befor
     uploadFixture.materialize.mockResolvedValue({ message: { content: [{ type: 'file', path: file }] },
       cleanupAfterAcceptance: accepted, cleanupBeforeAcceptance: discard });
     const upload = { name: 'plan.pdf', url: buildAttachmentOssRef({ ossKey: 'fixture', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }) };
+    configureMailAttachmentHost({ writeTempFile: vi.fn(), materializeDirectSendOssAttachments: uploadFixture.materialize });
     const result = await prepareMailAttachmentUpload(upload, 'task');
     expect(uploadFixture.materialize).toHaveBeenCalledWith('task', expect.objectContaining({ type: 'user' }), {});
     expect(result.attachment).toMatchObject({ path: file, filename: 'plan.pdf', bytes: bytes.length });

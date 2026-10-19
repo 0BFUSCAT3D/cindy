@@ -44,7 +44,7 @@ import * as cindyMediaBlobStore from '../../cindy-media/blobStore.js';
 import { ingestMedia } from '../../cindy-media/ingest.js';
 import { downloadToFile, removeRemote } from '../../device-link/mediaTransfer.js';
 import { buildAttachmentOssRef } from '../../../shared/attachmentOssRef.js';
-import { prepareMailAttachmentSelection } from '../../cindy-brain/mailAttachmentUpload.js';
+import { configureMailAttachmentHost, prepareMailAttachmentSelection } from '../../cindy-brain/mailAttachmentUpload.js';
 
 const tempDirs: string[] = [];
 
@@ -52,6 +52,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   tempRoot.value = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-review-inline-test-'));
   tempDirs.push(tempRoot.value);
+  configureMailAttachmentHost({ writeTempFile, materializeDirectSendOssAttachments });
   configureTempAttachmentOwner({
     instanceId: 'normalize-attachments-test-owner',
     processId: process.pid,
@@ -71,7 +72,7 @@ describe('inline attachment temporary files', () => {
     const source = path.join(tempRoot.value, 'personal-name.txt');
     for (const inline of [false, true]) {
       await fs.writeFile(source, 'selected');
-      const staged = await prepareMailAttachmentSelection(source, 'mail-selection', inline, writeTempFile);
+      const staged = await prepareMailAttachmentSelection(source, 'mail-selection', inline);
       expect(staged.attachment.filename).toBe('personal-name.txt');
       expect(staged.attachment.path).not.toBe(source);
       expect(staged.attachment.path).not.toContain('personal-name');

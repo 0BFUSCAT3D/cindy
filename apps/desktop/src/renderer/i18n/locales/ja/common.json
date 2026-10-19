@@ -6534,6 +6534,11 @@
         "unknownReviewerDetail": "審査情報はありますが、現在の Cindy は審査キーを認識していないため、審査済みとは表示しません。"
       },
       "perm": {
+        "mail": "メールの下書き・送信カードを使用",
+        "mailDetail": "カードで下書きを編集・同期し、送信前に確認と取り消しカウントダウンを表示します。",
+        "mailReader": "アプリ内でメールを表示",
+        "mailReaderHost": "{{host}} のメールリンクをアプリ内で開く",
+        "mailMarkRead": "開いたメールを既読にする",
         "grantsTitle": "インストール後に持つ権限:",
         "toolsGroup": "登録ツール",
         "toolsDiffGroup": "登録ツールの変更",

@@ -6534,6 +6534,11 @@
         "unknownReviewerDetail": "包里带有审核声明，但当前 Cindy 不认识这把审核公钥，因此不会显示为已审核。"
       },
       "perm": {
+        "mail": "使用邮件草稿与发送卡片",
+        "mailDetail": "可在卡片中编辑和同步草稿，并在发送前提供确认和撤销倒计时。",
+        "mailReader": "在应用内查看邮件",
+        "mailReaderHost": "在应用内打开 {{host}} 的邮件链接",
+        "mailMarkRead": "打开邮件时可将其标记为已读",
         "grantsTitle": "安装后它将拥有：",
         "toolsGroup": "注册工具",
         "toolsDiffGroup": "注册工具变化",

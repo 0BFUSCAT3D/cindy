@@ -335,7 +335,6 @@ import { GhostPipeDispatcher } from './pipeDispatcher.js';
 import { GhostCardService, parseCardHeightReport } from './cardService.js';
 import { MailCardService } from './mailCards.js';
 import { prepareMailAttachmentSelection, prepareMailAttachmentUpload } from './mailAttachmentUpload.js';
-import { writeTempFile } from '../maker-ipc/normalizeAttachments.js';
 import { GhostCardActionDispatcher } from './cardActionDispatch.js';
 import { GhostSessionActivityTracker } from './ghostSessionActivity.js';
 import { sanitizeGhostCardHtml } from './cardSanitizer.js';
@@ -2359,7 +2358,7 @@ export function getGhostCardActionDispatcher(): GhostCardActionDispatcher {
         const result = await dialog.showOpenDialog({ properties: ['openFile'],
           ...(inline ? { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] } : {}) });
         if (result.canceled || !result.filePaths[0]) return null;
-        return prepareMailAttachmentSelection(result.filePaths[0], sessionId, inline, writeTempFile);
+        return prepareMailAttachmentSelection(result.filePaths[0], sessionId, inline);
       },
       prepareMailUpload: prepareMailAttachmentUpload,
       // 呼吸起点:点击成功投递即把该会话标为"意识活动中"(结束由 card-update
