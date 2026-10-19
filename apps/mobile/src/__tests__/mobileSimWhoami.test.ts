@@ -10,6 +10,9 @@ import {
   getSimulatorAppContainer,
   resolveMobileSimulatorBundleId,
   resolveSimMetroHandoff,
+  resolveSimulatorDeviceSets,
+  selectBootedSimulator,
+  simctlArgs,
 } from '../../scripts/lib/sim-whoami.mjs';
 
 const SIMULATOR_UDID = 'A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6';
@@ -272,6 +275,57 @@ describe('mobile:sim:whoami exact Simulator target', () => {
       'app',
     ]);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('mobile:sim simulator choice', () => {
+  const root = '/home/test/Library/Application Support/BaguetteCindy';
+  const cindy = { name: 'cindy', path: `${root}/devices` };
+  const system = { name: 'system', path: null };
+  const settings = (value?: string) => () => {
+    if (value === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    return value;
+  };
+  const resolve = (choice: string, readFile = settings(), exists = () => true) =>
+    resolveSimulatorDeviceSets({ choice, root, exists, readFile });
+
+  it('prefers Cindy only while it is installed and allowed to run', () => {
+    expect(resolve('auto')).toEqual([cindy, system]);
+    expect(resolve('auto', settings('{"enabled":true,"idleMinutes":15}'))).toEqual([cindy, system]);
+    expect(resolve('auto', settings('{"enabled":false,"idleMinutes":15}'))).toEqual([system]);
+    expect(resolve('auto', settings('{broken'))).toEqual([system]);
+    expect(resolve('auto', settings(), () => false)).toEqual([system]);
+  });
+
+  it('pins one simulator when chosen outside the repository', () => {
+    expect(resolve('system')).toEqual([system]);
+    expect(resolve('cindy')).toEqual([cindy]);
+    expect(resolve('/tmp/devices')).toEqual([{ name: '/tmp/devices', path: '/tmp/devices' }]);
+    expect(() => resolve('cindy', settings('{"enabled":false,"idleMinutes":15}'))).toThrow(/关闭了运行/);
+    expect(() => resolve('cindy', settings(), () => false)).toThrow(/没有找到 Cindy 模拟器/);
+    expect(() => resolve('relative/devices')).toThrow(/绝对路径/);
+  });
+
+  it('scopes simctl to the selected device set', () => {
+    expect(simctlArgs(cindy, ['launch', 'booted', 'com.xd.cindy'])).toEqual([
+      'simctl', '--set', cindy.path, 'launch', 'booted', 'com.xd.cindy',
+    ]);
+    expect(simctlArgs(system, ['list'])).toEqual(['simctl', 'list']);
+    const run = vi.fn(() => '/cindy/Cindy.app');
+    getSimulatorAppContainer(run, null, 'com.xd.cindy', cindy);
+    expect(run).toHaveBeenCalledWith('xcrun', ['simctl', '--set', cindy.path, 'get_app_container', 'booted', 'com.xd.cindy', 'app']);
+  });
+
+  it('uses Cindy first, falls back to the system set, and follows an exact UDID', () => {
+    const otherUdid = '11111111-2222-4333-8444-555555555555';
+    const listing = { cindy: `iPhone A (${SIMULATOR_UDID}) (Booted)`, system: `iPhone B (${otherUdid}) (Booted)` };
+    const listBooted = (set: { name: 'cindy' | 'system' }) => listing[set.name];
+
+    expect(selectBootedSimulator([cindy, system], listBooted, null)).toMatchObject({ deviceSet: cindy, targetBooted: [listing.cindy] });
+    expect(selectBootedSimulator([cindy, system], listBooted, otherUdid)).toMatchObject({ deviceSet: system, targetBooted: [listing.system] });
+    expect(selectBootedSimulator([cindy, system], (set: { name: 'cindy' | 'system' }) => (set.name === 'cindy' ? '' : listing.system), null))
+      .toMatchObject({ deviceSet: system });
+    expect(selectBootedSimulator([cindy, system], () => '', null)).toEqual({ deviceSet: cindy, booted: [], targetBooted: [] });
   });
 });
 
