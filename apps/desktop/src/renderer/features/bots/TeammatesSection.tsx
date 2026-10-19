@@ -92,6 +92,7 @@ const HEADER_ICON_BUTTON_CLASS =
 
 /** 收起态头像行:28px 头像 + 8px 间距。 */
 const AVATAR_SLOT_PX = 36;
+const CHAT_PREVIEW_LIMIT = 5;
 
 /**
  * 收起态只占一行:按内容宽度算出能放几个头像(含末尾「+N」),伙伴再多也不换行。
@@ -127,14 +128,17 @@ export function TeammatesSection() {
   // The registered sidebar slot can sit outside the group's route context.
   const selectedGroupId = matchPath('/bots/groups/:groupId', pathname)?.params.groupId;
   const [collapsed, setCollapsed] = useState(() => readTeammatesSectionCollapsed(dataOwnerId));
+  const [showAllChats, setShowAllChats] = useState(false);
   const avatarRowRef = useRef<HTMLDivElement>(null);
   const avatarCapacity = useAvatarRowCapacity(avatarRowRef, collapsed);
   useEffect(() => {
     setCollapsed(readTeammatesSectionCollapsed(dataOwnerId));
+    setShowAllChats(false);
   }, [dataOwnerId]);
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
+    setShowAllChats(false);
     writeTeammatesSectionCollapsed(dataOwnerId, next);
   };
   const cloud = useCompanionCloud();
@@ -325,6 +329,17 @@ export function TeammatesSection() {
     ...(showCindy && currentCindy ? [{ kind: 'cindy' as const, pinned: cindyOptions.some(option => 'pinnedAt' in option.bot && Boolean(option.bot.pinnedAt)),
       activityAt: Math.max(...cindyOptions.map(option => 'activityAt' in option.bot ? option.bot.activityAt : option.bot.lastMessageAt ?? option.bot.createdAt)) }] : []),
   ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.activityAt - a.activityAt);
+
+  // Keep the open chat in the five-row preview without growing the section.
+  const selectedChat = visibleChats.find(entry => entry.kind === 'group'
+    ? entry.group.id === selectedGroupId
+    : entry.kind === 'cindy' ? Boolean(routeCindy)
+      : entry.bot.id === botId && ('deviceId' in entry.bot ? entry.bot.deviceId === deviceId : !deviceId));
+  const previewChats = visibleChats.slice(0, CHAT_PREVIEW_LIMIT);
+  if (selectedChat && !previewChats.includes(selectedChat)) {
+    previewChats[CHAT_PREVIEW_LIMIT - 1] = selectedChat;
+  }
+  const displayedChats = showAllChats ? visibleChats : previewChats;
 
   useEffect(() => {
     if (roster.visible.length + remoteBots.length + groups.length === 0) return;
@@ -550,7 +565,7 @@ export function TeammatesSection() {
                   <Tip text={t('bots.list.sectionExpand')} side="bottom">
                     <button
                       type="button"
-                      onClick={toggleCollapsed}
+                      onClick={() => { toggleCollapsed(); setShowAllChats(true); }}
                       aria-label={`${t('bots.list.sectionExpand')} · +${hidden.length}`}
                       className="relative flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-chip)] px-1.5 text-11 font-medium tabular-nums text-[var(--sidebar-nav-text)] outline-none hover:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-ring"
                     >
@@ -579,7 +594,7 @@ export function TeammatesSection() {
           </div>
         ) : (
           <div className="flex flex-col gap-1">
-            {visibleChats.map(entry => {
+            {displayedChats.map(entry => {
               if (entry.kind === 'group') return renderGroupRow(entry.group);
               if (entry.kind === 'cindy') {
                 if (!currentCindy) return null;
@@ -762,6 +777,20 @@ export function TeammatesSection() {
                 </div>
               );
             })}
+            {visibleChats.length > CHAT_PREVIEW_LIMIT ? (
+              <button
+                type="button"
+                aria-expanded={showAllChats}
+                onClick={() => setShowAllChats(value => !value)}
+                className={cn(
+                  'flex h-6 w-full items-center justify-center rounded-full px-2 text-xs font-normal',
+                  'text-[var(--cmd-palette-item-meta)] transition-colors hover:bg-sidebar-item-hover hover:text-foreground',
+                  'focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--focus-ring)]',
+                )}
+              >
+                {showAllChats ? t('bots.list.showLess') : t('ccAgent.sidebar.showAllSessions', { count: visibleChats.length })}
+              </button>
+            ) : null}
             {roster.showHiddenSection ? (
               <div className="mt-3 border-t border-[var(--border-default)] pt-3">
                 <button

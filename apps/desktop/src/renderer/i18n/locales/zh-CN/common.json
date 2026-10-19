@@ -8974,6 +8974,7 @@
       "duplicate": "复制伙伴",
       "moreActions": "{{name}} 的更多操作",
       "sectionExpand": "展开伙伴",
+      "showLess": "收起",
       "sectionCollapse": "收起伙伴",
       "noResults": "没有匹配的伙伴或群聊"
     },

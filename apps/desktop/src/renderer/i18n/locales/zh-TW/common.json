@@ -8974,6 +8974,7 @@
       "duplicate": "複製夥伴",
       "moreActions": "{{name}} 的更多操作",
       "sectionExpand": "展開夥伴",
+      "showLess": "收起",
       "sectionCollapse": "收起夥伴",
       "noResults": "找不到符合的夥伴或群組"
     },
