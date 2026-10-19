@@ -194,7 +194,7 @@ export type ProviderShareCommand =
   | { action: 'get-visibility'; providerId: string }
   | { action: 'set-visibility'; providerId: string; visibility: Partial<ProviderShareVisibility> }
   | { action: 'quota-account'; providerId: string }
-  | { action: 'insights'; shareId: string }
+  | { action: 'insights'; shareId: string; includeUsage: boolean }
   | { action: 'get-run-limits' }
   | { action: 'reset-run-limits' }
   | { action: 'set-run-limits'; limits: Partial<RemoteAgentLimits> }

@@ -347,22 +347,23 @@ describe('share visibility management and guest query', () => {
     expect(visibility.set).toHaveBeenCalledWith('anthropic', { quota: true }, expect.any(Function));
     expect(() => parseProviderShareCommand({ action: 'set-visibility', providerId: 'anthropic', visibility: { quota: 'true' } })).toThrow('INVALID_PARAMS');
   });
-  it.each(['revision', 'owner', 'removed', 'old-version'])('rejects a stale or unsupported guest response: %s', async (change) => {
+  it.each(['revision', 'owner', 'removed', 'old-version', 'old-unscoped'])('rejects a stale or unsupported guest response: %s', async (change) => {
     guest.share = { shareId: 's', memberId: 'm', status: 'active', hostOnline: true };
     guest.revision = 0;
     const invoke = vi.fn(async () => {
       if (change === 'revision') guest.revision += 2; // pause then resume: same current share, different generation
       if (change === 'owner') state.owner = 'owner-b';
       if (change === 'removed') guest.share = null;
-      return { ok: true, result: {} } as const;
+      return { ok: true, result: change === 'old-unscoped' ? { version: 1, capabilities: { quota: false, usage: true }, status: { quota: 'disabled', usage: 'ready' }, quota: null, usage: { todayKey: '2026-10-19', coverageStart: null, parties: [] } } : {} } as const;
     });
     stopProviderShareRuntime(); startProviderShareRuntime(vi.fn(), { invoke });
     const handle = vi.spyOn(ipcMain, 'handle');
     registerProviderShareIpc();
     const handler = handle.mock.calls.find(([channel]) => channel === 'provider-share:command')![1];
     handle.mockRestore();
-    await expect(handler({} as Electron.IpcMainInvokeEvent, { action: 'insights', shareId: 's' })).rejects.toThrow(
-      change === 'old-version' ? 'UNSUPPORTED_CAPABILITY' : change === 'owner' ? 'PRECONDITION_FAILED' : 'PERMISSION_DENIED');
-    expect(invoke).toHaveBeenCalledWith('share:s', 'provider-share:insights:v1', [{ version: 1 }], expect.any(Object));
+    await expect(handler({} as Electron.IpcMainInvokeEvent, { action: 'insights', shareId: 's', includeUsage: false })).rejects.toThrow(
+      change.startsWith('old-') ? 'UNSUPPORTED_CAPABILITY' : change === 'owner' ? 'PRECONDITION_FAILED' : 'PERMISSION_DENIED');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('share:s', 'provider-share:insights:v1', [{ version: 1, includeUsage: false }], expect.any(Object));
   });
 });

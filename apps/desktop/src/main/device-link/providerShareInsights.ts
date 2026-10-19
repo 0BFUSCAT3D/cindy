@@ -183,11 +183,13 @@ export function createProviderShareInsightsReader(deps: ProviderShareInsightsDep
       !raw ||
       typeof raw !== 'object' ||
       Array.isArray(raw) ||
-      Object.keys(raw).length !== 1 ||
+      Object.keys(raw).length !== 2 ||
+      typeof (raw as { includeUsage?: unknown }).includeUsage !== 'boolean' ||
       (raw as { version?: unknown }).version !== 1
     ) {
       throwIpcError('INVALID_PARAMS', 'Invalid provider share insights request');
     }
+    const includeUsage = (raw as { includeUsage: boolean }).includeUsage;
     const assertOwner = deps.captureScope();
     const owner = deps.scopeKey();
     const access = deps.access(peer);
@@ -227,7 +229,7 @@ export function createProviderShareInsightsReader(deps: ProviderShareInsightsDep
     let cached = histories.get(access.providerId);
     if (!visibility.usage) {
       histories.delete(access.providerId);
-    } else if (!cached) {
+    } else if (includeUsage && !cached) {
       const read = deps.history(access.providerId);
       cached = { visibilityRevision: visibility.revision, expiresAt: now + 15_000, read };
       histories.set(access.providerId, cached);
@@ -236,7 +238,7 @@ export function createProviderShareInsightsReader(deps: ProviderShareInsightsDep
       });
     }
     const [historyResult, quotaResult] = await Promise.allSettled([
-      visibility.usage ? cached!.read : null,
+      visibility.usage && includeUsage ? cached!.read : null,
       visibility.quota ? deps.quota(access.providerId) : null,
     ]);
     assertCurrent();
@@ -249,7 +251,13 @@ export function createProviderShareInsightsReader(deps: ProviderShareInsightsDep
       capabilities: { quota: visibility.quota, usage: visibility.usage },
       status: {
         quota: !visibility.quota ? 'disabled' : quota ? 'ready' : 'unavailable',
-        usage: !visibility.usage ? 'disabled' : history ? 'ready' : 'unavailable',
+        usage: !visibility.usage
+          ? 'disabled'
+          : !includeUsage
+            ? 'not-requested'
+            : history
+              ? 'ready'
+              : 'unavailable',
       },
       quota,
       usage: history ? publicUsage(history, share, access.memberId, deps.owner()) : null,

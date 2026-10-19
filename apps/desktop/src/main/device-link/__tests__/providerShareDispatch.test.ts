@@ -386,7 +386,7 @@ describe('provider share insights delivery', () => {
     });
     setProviderShareAccess({ guestAccess: () => state.access, ensureKnown: async () => undefined, hasShares: () => true, insights, insightsCurrent: insights.isCurrent });
     const client = fakeClient(); __testing.setActiveClient(client);
-    const payload = { channel: 'provider-share:insights:v1', args: [{ version: 1 }] };
+    const payload = { channel: 'provider-share:insights:v1', args: [{ version: 1, includeUsage: false }] };
     return { visibility, client, payload };
   }
   it.each([false, true])('refuses outbox data after closing permissions (reopened=%s)', async (reopened) => {

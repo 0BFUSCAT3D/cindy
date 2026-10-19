@@ -358,7 +358,8 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
       return { action: 'set-visibility', providerId: value.providerId, visibility: patch };
     }
     case 'insights':
-      return { action: 'insights', shareId: text(value.shareId, 'shareId', 128) };
+      if (typeof value.includeUsage !== 'boolean') throwIpcError('INVALID_PARAMS', 'Invalid insights scope');
+      return { action: 'insights', shareId: text(value.shareId, 'shareId', 128), includeUsage: value.includeUsage };
     case 'get-run-limits':
     case 'reset-run-limits':
       return { action: value.action };
@@ -734,7 +735,7 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
           throwIpcError('PERMISSION_DENIED', 'Provider share changed');
         }
       };
-      const response = await shareInvoke(`share:${command.shareId}`, PROVIDER_SHARE_INSIGHTS_CHANNEL, [{ version: 1 }], { preSend: assertShare });
+      const response = await shareInvoke(`share:${command.shareId}`, PROVIDER_SHARE_INSIGHTS_CHANNEL, [{ version: 1, includeUsage: command.includeUsage }], { preSend: assertShare });
       assertShare();
       if (!response.ok) {
         throwIpcError(response.error.code === 'CHANNEL_NOT_ALLOWED' ? 'UNSUPPORTED_CAPABILITY'
@@ -744,7 +745,9 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
           : 'PERMISSION_DENIED', 'Provider share insights are not available');
       }
       const result = parseProviderShareInsights(response.result);
-      if (!result) throwIpcError('UNSUPPORTED_CAPABILITY', 'Provider share insights require an update');
+      if (!result || (command.includeUsage && result.status.usage === 'not-requested') || (!command.includeUsage && (result.usage !== null || !['disabled', 'not-requested'].includes(result.status.usage)))) {
+        throwIpcError('UNSUPPORTED_CAPABILITY', 'Provider share insights require an update');
+      }
       return result;
     }
     case 'get-run-limits':

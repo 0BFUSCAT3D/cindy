@@ -241,7 +241,7 @@ describe('ProviderShareReceivedDetail', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
     expect(toggle.getAttribute('aria-checked')).toBe(String(initial));
 
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     expect(command).toHaveBeenCalledWith({ action: 'set-credential-consent', shareId: 'share-1', skip: !initial });
     expect(toggle.hasAttribute('disabled')).toBe(true);
     expect(toggle.getAttribute('aria-checked')).toBe(String(initial));
@@ -275,7 +275,7 @@ describe('ProviderShareReceivedDetail', () => {
     const view = render(<ProviderShareReceivedDetail share={share} />);
     const toggle = await consentSwitch();
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-consent', shareId: 'share-1', skip: false }));
 
     view.rerender(<ProviderShareReceivedDetail share={{ ...share, shareId: 'share-2', memberId: 'mem-2' }} />);
@@ -302,12 +302,12 @@ describe('ProviderShareReceivedDetail', () => {
     const view = render(<ProviderShareReceivedDetail share={share} />);
     const toggle = await consentSwitch();
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     await waitFor(() => expect(saves.has('share-1')).toBe(true));
 
     view.rerender(<ProviderShareReceivedDetail share={{ ...share, shareId: 'share-2', memberId: 'mem-2' }} />);
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     await waitFor(() => expect(saves.has('share-2')).toBe(true));
     await act(async () => { saves.get('share-1')!({ skip: false }); });
     expect(toggle.hasAttribute('disabled')).toBe(true);
@@ -335,7 +335,7 @@ describe('ProviderShareReceivedDetail', () => {
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-consent', shareId: 'share-1', skip: false }));
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
     expect(toast.error).not.toHaveBeenCalled();
@@ -353,36 +353,36 @@ describe('ProviderShareReceivedDetail', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
     expect(toggle.getAttribute('aria-checked')).toBe('false');
 
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('providerShare.received.credentialConsent.writeFailed'));
     expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 });
 
 /* 真实详情组件验证两开关组合及轮询/身份切换时清空；不覆盖已有模型目录测试。tier: unit。 */
-const insights = (quota = true, usage = true): ProviderShareInsights => ({
-  version: 1, capabilities: { quota, usage }, status: { quota: quota ? 'ready' : 'disabled', usage: usage ? 'ready' : 'disabled' },
+const insights = (quota = true, usage = true, includeUsage = true): ProviderShareInsights => ({
+  version: 1, capabilities: { quota, usage }, status: { quota: quota ? 'ready' : 'disabled', usage: !usage ? 'disabled' : includeUsage ? 'ready' : 'not-requested' },
   quota: quota ? { group: false, partial: false, accounts: [{ state: 'ready', updatedAt: null, windows: [], balance: { remaining: 12.34, total: null, currency: 'USD', resetsAt: null, pools: [] } }] } : null,
-  usage: usage ? { todayKey: '2026-10-19', coverageStart: null, parties: [{ key: 'owner', displayName: 'Shared Owner', avatarUrl: null, isYou: false, isOwner: true, isRelay: false, lastUsedAt: null, days: [] }] } : null,
+  usage: usage && includeUsage ? { todayKey: '2026-10-19', coverageStart: null, parties: [{ key: 'owner', displayName: 'Shared Owner', avatarUrl: null, isYou: false, isOwner: true, isRelay: false, lastUsedAt: null, days: [] }] } : null,
 });
 describe('shared read-only insights', () => {
   it.each([[false, false], [true, false], [false, true], [true, true]])('renders independent quota=%s usage=%s permissions', async (quota, usage) => {
     const original = command.getMockImplementation()!;
-    command.mockImplementation((cmd) => cmd.action === 'insights' ? Promise.resolve(insights(quota, usage)) : original(cmd));
+    command.mockImplementation((cmd) => cmd.action === 'insights' ? Promise.resolve(insights(quota, usage, cmd.includeUsage)) : original(cmd));
     await act(async () => { render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />); });
     expect(Boolean(screen.queryByText('$12.34'))).toBe(quota);
     expect(screen.queryByText('Shared Owner')).toBeNull();
-    if (usage) fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' }));
+    if (usage) await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' })); });
     expect(Boolean(screen.queryByText('Shared Owner'))).toBe(usage);
     expect(screen.queryByText('providerGroup.usage.stack.computer')).toBeNull();
     expect(screen.queryByTestId('share-member-menu')).toBeNull();
   });
   it('clears the previous display when polling observes closed permissions', async () => {
     vi.useFakeTimers();
-    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights() : []);
+    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights(true, true, cmd.includeUsage) : []);
     await act(async () => { render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
     expect(screen.getByText('$12.34')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' })); });
     expect(screen.getByText('Shared Owner')).toBeTruthy();
     command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights(false, false) : []);
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
@@ -391,7 +391,7 @@ describe('shared read-only insights', () => {
   // 默认收起不挡模型；轮询不改变用户选择，切换身份不能继承展开状态。tier: unit。
   it('keeps usage collapsed by default and preserves explicit toggles across polling', async () => {
     vi.useFakeTimers();
-    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights() : []);
+    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights(true, true, cmd.includeUsage) : []);
     await act(async () => { render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
     const toggle = screen.getByRole('button', { name: 'providerShare.insights.usageTitle' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -399,21 +399,45 @@ describe('shared read-only insights', () => {
     expect(screen.getByText('$12.34')).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('Shared Owner')).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    fireEvent.click(toggle);
+    await act(async () => { fireEvent.click(toggle); });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('Shared Owner')).toBeNull();
     expect(screen.getByText('$12.34')).toBeTruthy();
   });
+  // 明细请求失败后仍可看额度和重新展开；仅折叠轮询不能伪装成重试成功。
+  it('keeps quota and the actual usage failure until an explicit retry', async () => {
+    vi.useFakeTimers();
+    let fail = true;
+    command.mockImplementation(async (cmd) => {
+      if (cmd.action !== 'insights') return [];
+      const view = insights(true, true, cmd.includeUsage);
+      return cmd.includeUsage && fail ? { ...view, status: { ...view.status, usage: 'unavailable' }, usage: null } : view;
+    });
+    await act(async () => { render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
+    expect(screen.queryByText('providerShare.insights.usageUnavailable')).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'providerShare.insights.usageTitle' });
+    await act(async () => { fireEvent.click(toggle); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByText('$12.34')).toBeTruthy();
+    expect(screen.getByText('providerShare.insights.usageUnavailable')).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(command.mock.lastCall?.[0].includeUsage).toBe(false);
+    expect(screen.getByText('providerShare.insights.usageUnavailable')).toBeTruthy();
+    fail = false;
+    await act(async () => { fireEvent.click(toggle); });
+    expect(screen.getByText('Shared Owner')).toBeTruthy();
+    expect(screen.queryByText('providerShare.insights.usageUnavailable')).toBeNull();
+  });
   it.each(['share', 'account'])('resets expanded usage after %s changes', async (change) => {
-    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights() : []);
+    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights(true, true, cmd.includeUsage) : []);
     let view!: ReturnType<typeof render>;
     await act(async () => { view = render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
-    fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' })); });
     expect(screen.getByText('Shared Owner')).toBeTruthy();
     await act(async () => {
       if (change === 'account') setDataOwnerGeneration('new-owner');
@@ -421,6 +445,7 @@ describe('shared read-only insights', () => {
     });
     expect(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' }).getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('Shared Owner')).toBeNull();
+    expect(command.mock.calls.filter(([cmd]) => cmd.action === 'insights').at(-1)?.[0].includeUsage).toBe(false);
     setDataOwnerGeneration(null);
   });
   // 分享余额曾把剩余比例当普通余额条，缺少低余额预警。经真实分享组件验证剩余/已用转换；
@@ -458,9 +483,9 @@ describe('shared read-only insights', () => {
     ['DEVICE_LINK_DEVICE_OFFLINE', 'offline'],
   ])('clears the previous display when polling returns %s', async (code, message) => {
     vi.useFakeTimers();
-    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights() : []);
+    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights(true, true, cmd.includeUsage) : []);
     await act(async () => { render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
-    fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' })); });
     expect(screen.getByText('Shared Owner')).toBeTruthy();
     command.mockRejectedValue(new Error(`[${code}] unavailable`));
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
@@ -477,7 +502,7 @@ describe('shared read-only insights', () => {
     await act(async () => { render(<ProviderShareInsightsSection share={{ ...share, status: 'active' }} />); });
     await act(async () => { listener([{ ...share, status: 'paused' }]); listener([{ ...share, status: 'active' }]); finish(insights()); });
     expect(screen.queryByText('$12.34')).toBeNull();
-    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights() : []);
+    command.mockImplementation(async (cmd) => cmd.action === 'insights' ? insights(true, true, cmd.includeUsage) : []);
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(screen.getByText('$12.34')).toBeTruthy();
   });

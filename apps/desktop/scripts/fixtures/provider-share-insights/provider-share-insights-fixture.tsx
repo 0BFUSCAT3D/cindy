@@ -140,6 +140,7 @@ void mountPage({
     let visibility = { quota, usage: allowUsage };
     const command = async (cmd: {
       action: string;
+      includeUsage?: boolean;
       visibility?: Partial<typeof visibility>;
       favoriteRecovery?: { ownerStamp: unknown };
     }) => {
@@ -155,7 +156,7 @@ void mountPage({
             capabilities: visibility,
             status: {
               quota: quota ? 'ready' : 'disabled',
-              usage: allowUsage ? 'ready' : 'disabled',
+              usage: !allowUsage ? 'disabled' : cmd.includeUsage ? 'ready' : 'not-requested',
             },
             quota: quota
               ? {
@@ -165,7 +166,7 @@ void mountPage({
                     ctx.case === 'group' ? [account, subscriptionAccount] : [displayedAccount],
                 }
               : null,
-            usage: allowUsage ? usage : null,
+            usage: allowUsage && cmd.includeUsage ? usage : null,
           } satisfies ProviderShareInsights;
         case 'received':
           return [share];

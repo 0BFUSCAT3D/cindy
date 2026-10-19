@@ -1620,9 +1620,13 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
 
 ## 供应商分享：按授权查看额度与用量（2026-10-19）
 
-- 新只读通道 `provider-share:insights:v1` 仅接受分享身份，参数严格为 `{ version: 1 }`，供应商由已验证身份决定。
+- 新只读通道 `provider-share:insights:v1` 仅接受分享身份，参数严格为 `{ version: 1, includeUsage: boolean }`，供应商由已验证身份决定。
   返回 `{ version, capabilities, status, quota, usage }`，结构和接收端白名单解析在 `shared/providerShareInsights.ts`；
   两项能力默认关闭，未开放无数据，读取失败分别标 unavailable。无版本/能力/状态或未知版本提示更新，不降为管理通道。
+  `includeUsage: false` 仍返回独立能力位；获准用量标 `not-requested`、usage 为 null，不读账本、不投影或返回缓存历史。
+  仅主动展开时传 true，收起后恢复 false，离开/隐藏详情不再发请求，未请求与未开放/失败/零用量明确区分。
+  新通道 v1 首次发布即要求 includeUsage；缺少或非布尔值拒绝，不回退为全量读取。
+  已发布旧端不支持此新通道；新端提示更新。接收端同时拒绝折叠请求却附带历史的响应，不降为全量查询。
 - 同账号 `manage-share` 追加 `get-visibility`、`set-visibility`（按供应商，仅 quota/usage 布尔补丁）、`quota-account`。
   写入仍只在供应商所在电脑执行；旧端的 Unknown command 映射为 UNSUPPORTED_CAPABILITY，不改存控制端、不重放写入。
   受邀者不能调用这些管理动作，也不能指定另一个 providerId 或借通道读取全量账本。

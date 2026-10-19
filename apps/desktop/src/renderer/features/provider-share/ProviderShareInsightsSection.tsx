@@ -3,7 +3,7 @@ import { Collapse } from '@/components/ui/collapse';
 import { QuotaHoverCard } from '@/components/status/QuotaHoverCard';
 import { CreditPoolRowView } from '@/features/billing/CreditPoolRowView';
 import { formatBillingAmount } from '@/features/billing/money';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ProviderShareReceived } from '@cindy/device-link';
 import { useOptionalAuthUser } from '@/contexts/AuthContext';
@@ -23,8 +23,25 @@ import { useShareTimeFormat } from './useShareTimeFormat';
 
 /** 可见页面每五秒复核权限；不持久化数据，身份变化、失败与隐藏都丢弃旧结果。 */
 export function ProviderShareInsightsSection({ share }: { share: ProviderShareReceived }) {
-  const { t, i18n } = useTranslation();
   useOptionalAuthUser();
+  const owner = getDataOwnerGeneration();
+  return (
+    <InsightsView
+      key={JSON.stringify([
+        owner,
+        share.shareId,
+        share.memberId,
+        share.status,
+        share.hostOnline,
+        share.hostCapable,
+      ])}
+      share={share}
+    />
+  );
+}
+
+function InsightsView({ share }: { share: ProviderShareReceived }) {
+  const { t, i18n } = useTranslation();
   const owner = getDataOwnerGeneration();
   const identity = JSON.stringify([
     share.shareId,
@@ -39,27 +56,51 @@ export function ProviderShareInsightsSection({ share }: { share: ProviderShareRe
     view: ProviderShareInsights | null;
     error: string | null;
   } | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [usageFailed, setUsageFailed] = useState(false);
   const available = share.status === 'active' && share.hostOnline && share.hostCapable;
+  const valid = useRef(available);
+  const expandedRef = useRef(false);
+  const generation = useRef(0);
   useEffect(() => {
     let alive = true;
-    let generation = 0;
     let reading = false;
-    let valid = available;
-    const clear = (error: string | null) => setResult({ identity, owner, view: null, error });
-    clear(null);
+    const clear = (error: string | null) => {
+      setResult({ identity, owner, view: null, error });
+      expandedRef.current = false;
+      setUsageFailed(false);
+      setExpanded(false);
+    };
     const load = async () => {
-      if (!alive || !valid || reading || document.visibilityState === 'hidden') return;
+      if (
+        !alive ||
+        !valid.current ||
+        reading ||
+        !isDataOwnerGenerationCurrent(owner) ||
+        document.visibilityState === 'hidden'
+      )
+        return;
       reading = true;
-      const current = ++generation;
+      const current = ++generation.current;
       try {
         const view = await window.electronAPI.providerShare.command({
           action: 'insights',
           shareId: share.shareId,
+          includeUsage: expanded && expandedRef.current,
         });
-        if (alive && current === generation && isDataOwnerGenerationCurrent(owner))
+        if (alive && current === generation.current && isDataOwnerGenerationCurrent(owner)) {
           setResult({ identity, owner, view, error: null });
+          if (!view.capabilities.usage) setUsageFailed(false);
+          else if (expanded && expandedRef.current)
+            setUsageFailed(view.status.usage === 'unavailable');
+          if (!view.capabilities.usage || view.status.usage === 'unavailable') {
+            expandedRef.current = false;
+            setExpanded(false);
+          }
+        }
       } catch (reason) {
-        if (!alive || current !== generation || !isDataOwnerGenerationCurrent(owner)) return;
+        if (!alive || current !== generation.current || !isDataOwnerGenerationCurrent(owner))
+          return;
         const code = extractIpcError(reason)?.code;
         clear(
           code === 'UNSUPPORTED_CAPABILITY'
@@ -87,16 +128,16 @@ export function ProviderShareInsightsSection({ share }: { share: ProviderShareRe
           latest.hostCapable,
         ]);
       if (next !== identity) {
-        valid = false;
-        generation++;
+        valid.current = false;
+        generation.current++;
         clear('denied');
-      } else if (!valid) {
-        valid = available;
+      } else if (!valid.current) {
+        valid.current = available;
         void load();
       }
     });
     const visibility = () => {
-      generation++;
+      generation.current++;
       clear(null);
       if (document.visibilityState !== 'hidden') void load();
     };
@@ -106,12 +147,12 @@ export function ProviderShareInsightsSection({ share }: { share: ProviderShareRe
     }, 5_000);
     return () => {
       alive = false;
-      generation++;
+      generation.current++;
       off();
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility);
     };
-  }, [available, identity, owner, share.shareId]);
+  }, [available, expanded, identity, owner, share.shareId]);
   const current =
     result?.identity === identity && isDataOwnerGenerationCurrent(result.owner) ? result : null;
   const view = available ? current?.view : null;
@@ -173,11 +214,33 @@ export function ProviderShareInsightsSection({ share }: { share: ProviderShareRe
               )}
             </div>
           )}
-          {view.capabilities.usage && view.status.usage === 'ready' && view.usage ? (
+          {view.capabilities.usage ? (
             <SharedUsageDetails
               key={JSON.stringify([share.shareId, share.memberId, owner])}
               providerId={share.providerId}
-              usage={view.usage}
+              usage={expanded ? view.usage : null}
+              failed={usageFailed}
+              expanded={expanded}
+              onExpandedChange={(next) => {
+                generation.current++;
+                expandedRef.current = next;
+                if (next) setUsageFailed(false);
+                setExpanded(next);
+                // 收起即丢弃明细；保留额度，切换查询范围不闪空整个卡片。
+                if (!next)
+                  setResult((previous) =>
+                    previous?.view
+                      ? {
+                          ...previous,
+                          view: {
+                            ...previous.view,
+                            usage: null,
+                            status: { ...previous.view.status, usage: 'not-requested' },
+                          },
+                        }
+                      : previous,
+                  );
+              }}
             />
           ) : (
             <p className="mt-6 text-12 leading-[1.5] text-[var(--text-secondary)]">
@@ -197,13 +260,18 @@ export function ProviderShareInsightsSection({ share }: { share: ProviderShareRe
 function SharedUsageDetails({
   providerId,
   usage,
+  failed,
+  expanded,
+  onExpandedChange,
 }: {
   providerId: string;
-  usage: ProviderShareUsageDetails;
+  usage: ProviderShareUsageDetails | null;
+  failed: boolean;
+  expanded: boolean;
+  onExpandedChange(value: boolean): void;
 }) {
   const { t } = useTranslation();
   const time = useShareTimeFormat();
-  const [expanded, setExpanded] = useState(false);
   const id = useId();
   return (
     <div className="mt-4 border-t border-[var(--border-default)] pt-2">
@@ -212,7 +280,7 @@ function SharedUsageDetails({
         id={`${id}-trigger`}
         aria-expanded={expanded}
         aria-controls={`${id}-content`}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => onExpandedChange(!expanded)}
         className="flex min-h-9 w-full items-center gap-1.5 text-left text-13 font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)]"
       >
         <ChevronRight
@@ -221,6 +289,11 @@ function SharedUsageDetails({
         />
         {t('providerShare.insights.usageTitle')}
       </button>
+      {failed && (
+        <p role="status" className="mt-2 text-12 text-[var(--text-secondary)]">
+          {t('providerShare.insights.usageUnavailable')}
+        </p>
+      )}
       <Collapse
         open={expanded}
         id={`${id}-content`}
@@ -230,22 +303,28 @@ function SharedUsageDetails({
         <p className="mt-2 text-12 leading-[1.5] text-[var(--text-secondary)]">
           {t('providerShare.insights.usageNote')}
         </p>
-        {usage.parties.some((party) => party.isRelay) && (
+        {usage?.parties.some((party) => party.isRelay) && (
           <p className="mt-1 text-12 leading-[1.5] text-[var(--text-secondary)]">
             {t('providerShare.insights.relayNote')}
           </p>
         )}
-        <ProviderUsageSection
-          providerId={providerId}
-          sharedUsage={usage}
-          history={null}
-          status="ready"
-          legacyOwn={null}
-          members={[]}
-          selfDeviceName={null}
-          groupConfig={null}
-          time={time}
-        />
+        {!usage ? (
+          <p role="status" className="mt-2 text-12 text-[var(--text-tertiary)]">
+            {t('providerShare.manage.loading')}
+          </p>
+        ) : (
+          <ProviderUsageSection
+            providerId={providerId}
+            sharedUsage={usage}
+            history={null}
+            status="ready"
+            legacyOwn={null}
+            members={[]}
+            selfDeviceName={null}
+            groupConfig={null}
+            time={time}
+          />
+        )}
       </Collapse>
     </div>
   );

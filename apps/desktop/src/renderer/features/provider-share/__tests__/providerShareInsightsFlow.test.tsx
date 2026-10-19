@@ -2,7 +2,8 @@
 /**
  * 跨模块集成：真实 renderer → IPC handler → guest runtime → host dispatch → insights
  * reader/文件权限 → wire DTO → renderer。现有单段测试没有覆盖这条接线。
- * 最小失败输入：一份有效分享，开启后读取，再关闭用量并刷新。unit runner；集成场景。
+ * 最小失败输入：一份获准的分享，默认折叠却查历史；展开→收起/隐藏/离页期间迟到的回包。
+ * 既有测试仅验证显示折叠，未检查真实 host 读取与传输。unit runner；集成场景。
  * Electron、传输、账号关系快照、上游额度和账本为替身，不是真实跨账号/跨电脑 E2E。
  */
 import fs from 'node:fs';
@@ -18,7 +19,7 @@ import {
   type ProviderShareReceived,
 } from '@cindy/device-link';
 
-const state = vi.hoisted(() => ({ root: '', active: true }));
+const state = vi.hoisted(() => ({ root: '', active: true, historyReads: 0 }));
 vi.mock('electron-store', () => ({ default: class {} }));
 vi.mock('electron', () => ({
   app: { getAppPath: () => state.root, getPath: () => state.root, getVersion: () => '0.0.0-test' },
@@ -133,25 +134,28 @@ vi.mock('../../../../main/device-link/providerShareQuota.js', () => ({
 }));
 vi.mock('../../../../main/usage/providerPartyUsageStore.js', () => ({
   currentProviderPartyUsageStore: () => ({
-    history: () => ({
-      self: {
-        lastUsedAt: null,
-        days: [
-          {
-            day: '2026-10-19',
-            kind: 'codex',
-            model: 'model-a',
-            memberKey: 'private-device',
-            turns: 1,
-            inputTokens: 10,
-            outputTokens: 2,
-            cacheReadTokens: 0,
-            cacheCreateTokens: 0,
-          },
-        ],
-      },
-      relays: [],
-    }),
+    history: () => (
+      state.historyReads++,
+      {
+        self: {
+          lastUsedAt: null,
+          days: [
+            {
+              day: '2026-10-19',
+              kind: 'codex',
+              model: 'model-a',
+              memberKey: 'private-device',
+              turns: 1,
+              inputTokens: 10,
+              outputTokens: 2,
+              cacheReadTokens: 0,
+              cacheCreateTokens: 0,
+            },
+          ],
+        },
+        relays: [],
+      }
+    ),
   }),
 }));
 vi.mock('../../../../main/device-link/providerShareUsageStore.js', () => ({
@@ -232,6 +236,8 @@ afterEach(() => {
   if (state.root) fs.rmSync(state.root, { recursive: true, force: true });
 });
 it('round-trips permissions, private projection and live revocation through the real query stack', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+  state.historyReads = 0;
   state.root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-share-flow-'));
   const peer = providerShareGuestPeer('flow', 'guest', 'test-device');
   const received: InvokeResultPayload[] = [];
@@ -247,11 +253,14 @@ it('round-trips permissions, private projection and live revocation through the 
   const agent = vi.fn();
   setRemoteAgentHandler({ handle: agent, abortAll: vi.fn() });
   let request = 0;
+  let holdResponse: Promise<void> | null = null;
   startProviderShareRuntime(vi.fn(), {
     invoke: async (_target, channel, args, options) => {
       options?.preSend?.();
       await dispatch.handleInvoke(client, peer, `query-${request++}`, { channel, args });
-      return received.at(-1)!;
+      const response = received.at(-1)!;
+      await holdResponse;
+      return response;
     },
   });
   const registration = vi.spyOn(ipcMain, 'handle');
@@ -269,12 +278,24 @@ it('round-trips permissions, private projection and live revocation through the 
     command({ action: 'get-visibility', providerId: 'anthropic' }),
   ).resolves.toMatchObject({ quota: false, usage: false });
   await save(true, true);
+  expect(request).toBe(0);
+  expect(state.historyReads).toBe(0);
+  let page!: ReturnType<typeof render>;
   await act(async () => {
-    render(<ProviderShareInsightsSection share={share} />);
+    page = render(<ProviderShareInsightsSection share={share} />);
   });
   expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('25');
   expect(screen.queryByText('Guest Alice')).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'providerShare.insights.usageTitle' }));
+  expect(state.historyReads).toBe(0);
+  expect(received.at(-1)).toMatchObject({
+    ok: true,
+    result: { capabilities: { usage: true }, status: { usage: 'not-requested' }, usage: null },
+  });
+  const toggle = () => screen.getByRole('button', { name: 'providerShare.insights.usageTitle' });
+  await act(async () => {
+    fireEvent.click(toggle());
+  });
+  expect(state.historyReads).toBe(1);
   expect(screen.getByText('Guest Alice')).toBeTruthy();
   expect(screen.getByText('Shared Owner')).toBeTruthy();
   fireEvent.click(screen.getByRole('tab', { name: 'providerGroup.usage.stack.model' }));
@@ -295,6 +316,92 @@ it('round-trips permissions, private projection and live revocation through the 
   expect(JSON.stringify(received)).not.toMatch(
     /private-device|private-guest|memberKey|hostDeviceId/,
   );
+  // 折叠后即使越过缓存有效期仍不读历史，额度继续刷新且模型区域不被明细占据。
+  await act(async () => {
+    fireEvent.click(toggle());
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20_000);
+  });
+  expect(state.historyReads).toBe(1);
+  expect(received.at(-1)).toMatchObject({
+    ok: true,
+    result: { usage: null, status: { usage: 'not-requested' } },
+  });
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('25');
+  let release!: () => void;
+  holdResponse = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await act(async () => {
+    fireEvent.click(toggle());
+  });
+  expect(state.historyReads).toBe(2);
+  const lateUsage = release;
+  holdResponse = null;
+  await act(async () => {
+    fireEvent.click(toggle());
+    lateUsage();
+  });
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByText('Guest Alice')).toBeNull();
+  expect(screen.getByRole('progressbar')).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(toggle());
+  });
+  expect(screen.getByText('Guest Alice')).toBeTruthy();
+  holdResponse = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  await act(async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  const hiddenRequests = request;
+  const hiddenReads = state.historyReads;
+  await act(async () => {
+    release();
+  });
+  holdResponse = null;
+  expect(screen.queryByRole('progressbar')).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20_000);
+  });
+  expect(request).toBe(hiddenRequests);
+  expect(state.historyReads).toBe(hiddenReads);
+  expect(screen.queryByText('Guest Alice')).toBeNull();
+  await act(async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+  expect(state.historyReads).toBe(hiddenReads);
+  // 已发请求不声称跨端取消；离页后到达的真实 host 回包不能进入新页面。
+  holdResponse = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await act(async () => {
+    fireEvent.click(toggle());
+  });
+  const leftReads = state.historyReads;
+  page.unmount();
+  const leftRequests = request;
+  await act(async () => {
+    release();
+    await vi.advanceTimersByTimeAsync(20_000);
+  });
+  expect(request).toBe(leftRequests);
+  expect(state.historyReads).toBe(leftReads);
+  holdResponse = null;
+  await act(async () => {
+    page = render(<ProviderShareInsightsSection share={share} />);
+  });
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByText('Guest Alice')).toBeNull();
+  expect(state.historyReads).toBe(leftReads);
   const reopened = createProviderShareVisibilityStore({
     filePath: () => path.join(state.root, 'provider-share-visibility.json'),
     scopeKey: () => 'isolated-owner',
@@ -302,6 +409,8 @@ it('round-trips permissions, private projection and live revocation through the 
   expect(reopened.read('anthropic')).toMatchObject({ quota: true, usage: true });
   // 重新挂载触发同一真实查询；不依赖真实时间等待，也不以伪造响应替代撤权。
   cleanup();
+  // 文件权限写入使用真实文件锁时钟；轮询与缓存过期已用虚拟时间验证完毕。
+  vi.useRealTimers();
   await save(true, false);
   await act(async () => {
     render(<ProviderShareInsightsSection share={share} />);

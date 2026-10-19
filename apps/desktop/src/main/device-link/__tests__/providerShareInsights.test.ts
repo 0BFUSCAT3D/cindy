@@ -99,7 +99,7 @@ function fixture() {
   };
   return { state, deps, history, read: createProviderShareInsightsReader(deps) };
 }
-const request = { version: 1 };
+const request = { version: 1, includeUsage: true };
 describe('provider share insights', () => {
   afterEach(() => vi.restoreAllMocks());
   it.each([
@@ -116,6 +116,34 @@ describe('provider share insights', () => {
     expect(view.usage !== null).toBe(usage);
     expect(deps.quota).toHaveBeenCalledTimes(Number(quota));
     expect(deps.history).toHaveBeenCalledTimes(Number(usage));
+  });
+  // 默认折叠曾读取全部历史；通过真实 reader 验证未请求不会读账本、投影或发送缓存。
+  it('returns permissions and quota without touching usage until explicitly requested', async () => {
+    const { read, deps } = fixture();
+    const owner = vi.spyOn(deps, 'owner');
+    const collapsed = { version: 1, includeUsage: false };
+    const initial = await read('peer', collapsed);
+    expect(initial).toMatchObject({
+      capabilities: { usage: true },
+      status: { usage: 'not-requested' },
+      usage: null,
+    });
+    expect(initial.quota).not.toBeNull();
+    expect(deps.history).not.toHaveBeenCalled();
+    expect(owner).not.toHaveBeenCalled();
+    expect((await read('peer', request)).usage?.parties.length).toBe(3);
+    expect(deps.history).toHaveBeenCalledTimes(1);
+    owner.mockClear();
+    expect(await read('peer', collapsed)).toMatchObject({
+      status: { usage: 'not-requested' },
+      usage: null,
+    });
+    expect(owner).not.toHaveBeenCalled();
+    expect(deps.history).toHaveBeenCalledTimes(1);
+    await expect(read('peer', { version: 1 })).rejects.toThrow('INVALID_PARAMS');
+    await expect(read('peer', { version: 1, includeUsage: 'true' })).rejects.toThrow(
+      'INVALID_PARAMS',
+    );
   });
   it('includes relayed totals without topology, private notes, or deleted members', async () => {
     const { read, deps, history } = fixture();

@@ -53,7 +53,7 @@ export interface ProviderShareInsights {
   capabilities: ProviderShareVisibility;
   status: {
     quota: 'disabled' | 'ready' | 'unavailable';
-    usage: 'disabled' | 'ready' | 'unavailable';
+    usage: 'disabled' | 'not-requested' | 'ready' | 'unavailable';
   };
   quota: { group: boolean; partial: boolean; accounts: ProviderShareQuotaAccount[] } | null;
   usage: ProviderShareUsageDetails | null;
@@ -98,7 +98,10 @@ const status = z.enum(['disabled', 'ready', 'unavailable']);
 const schema = z.object({
   version: z.literal(1),
   capabilities: z.object({ quota: z.boolean(), usage: z.boolean() }),
-  status: z.object({ quota: status, usage: status }),
+  status: z.object({
+    quota: status,
+    usage: z.enum(['disabled', 'not-requested', 'ready', 'unavailable']),
+  }),
   quota: z
     .object({ group: z.boolean(), partial: z.boolean(), accounts: z.array(quotaAccount).max(512) })
     .nullable(),
