@@ -1,3 +1,4 @@
+import type { PluginMessageAttachment } from './pluginAttachments.js';
 /** Ordinary local Session API. No Bot/Orca identity or permission override is accepted. */
 export interface PluginTaskRoute {
   agentKind: 'cc' | 'codex' | 'pi';
@@ -103,6 +104,7 @@ export type PluginTaskRequest = (
       requestKey: string;
       expectedRevision: number;
       text: string;
+      attachments?: PluginMessageAttachment[];
     }
   | { type: 'tasks-request'; kind: 'getRun'; runId: string }
   | { type: 'tasks-request'; kind: 'listRuns'; taskId: string; after?: string; limit?: number }

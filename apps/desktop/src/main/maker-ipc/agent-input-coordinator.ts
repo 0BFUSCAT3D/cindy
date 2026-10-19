@@ -206,6 +206,8 @@ function hasRetryableQueuedContent(item: AgentInputQueuedMessage): boolean {
 }
 
 export interface AgentInputSendOpts {
+  /** Main-only authorization recheck after async steer preparation, before provider dispatch. */
+  beforeProviderStart?: () => Promise<void>;
   /** Main-only App grant, checked by the send/steer transaction at dispatch. */
   readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
@@ -2208,7 +2210,7 @@ export class AgentInputCoordinator {
   async steerControlInput(
     sessionId: string,
     target: { item: AgentInputQueuedMessage } | { queuedClientId: string },
-    expectedTurn: { session: object; turnGeneration: number },
+    expectedTurn: { session: object; turnGeneration: number; beforeMutation?: () => Promise<void> },
   ): Promise<ControlSteerOutcome> {
     await this.ensureQueueRestored(sessionId).catch(() => undefined);
     const state = this.getState(sessionId);
@@ -2229,6 +2231,7 @@ export class AgentInputCoordinator {
       controlInput: { fromQueue },
       expectedTurnSession: expectedTurn.session,
       expectedTurnGeneration: expectedTurn.turnGeneration,
+      beforeMutation: expectedTurn.beforeMutation,
     });
     if (observed.providerAccepted) return 'steered';
     // Input screening discarded the content: a definitive refusal, never a retry candidate.
@@ -2552,6 +2555,10 @@ export class AgentInputCoordinator {
       );
       const appMessageGuard = queuedAppMessageGuard(item);
       await this.deps.steerToAgent(sessionId, buildMakerUserMessage(item, referenceContexts), {
+        ...(opts?.beforeMutation ? { beforeProviderStart: async () => {
+          try { await opts.beforeMutation!(); }
+          catch (error) { authorizationFailed = true; throw error; }
+        } } : {}),
         ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: appMessageGuard } : {}),
         ...(item.sharedTaskAuthor ? { sharedTaskAuthor: item.sharedTaskAuthor } : {}),
         [AUTO_REVIEW_SOURCE_CONTENT]: queuedAutoReviewText(item),

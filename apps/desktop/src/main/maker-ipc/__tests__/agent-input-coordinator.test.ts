@@ -1558,6 +1558,27 @@ describe('agent-chosen control steering', () => {
   function expected(h: ReturnType<typeof createHarness>) {
     return { session: h.getTurnSessionIdentity(), turnGeneration: 0 };
   }
+  // Production entry: steerControlInput. Plugin target grants must survive screening
+  // and provider preparation; existing turn-boundary cases do not revoke grants. In-memory unit tier.
+  it.each(['screening', 'provider-preparation'])('does not queue or accept input revoked during %s', async (stage) => {
+    const h = createHarness();
+    h.setRunning(true);
+    let revoked = false;
+    const beforeMutation = async () => { if (revoked) throw new Error('PERMISSION_DENIED'); };
+    if (stage === 'screening') h.setScreenUserMessage(async () => {
+      revoked = true;
+      return { action: 'allow' };
+    });
+    else h.steerToAgent.mockImplementationOnce(async (_id, _message, sendOpts) => {
+      revoked = true;
+      await sendOpts.beforeProviderStart?.();
+    });
+    await expect(h.coordinator.steerControlInput(sid, { item: makeItem('report', 'context') },
+      { ...expected(h), beforeMutation })).rejects.toThrow('PERMISSION_DENIED');
+    expect(h.coordinator.hasPendingQueueItem(sid, 'report')).toBe(false);
+    expect(h.onSteerAccepted).not.toHaveBeenCalled();
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+  });
   it('joins a running turn even though ordinary new turns must queue', async () => {
     const h = createHarness();
     h.setRunning(true);

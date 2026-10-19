@@ -157,7 +157,7 @@ describe('delivery-path wiring (source contract)', () => {
   it('plugin task dispatch stamps the plugin identity without an origin kind', () => {
     const pluginDispatch = between(
       register,
-      'dispatch: async (pluginId, taskId, clientId, text) => {',
+      'dispatch: async (pluginId, taskId, clientId, text',
       'inspect: async taskId =>',
     );
     expect(pluginDispatch).toContain(

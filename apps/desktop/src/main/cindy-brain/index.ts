@@ -72,6 +72,8 @@ import { getDesktopProviderService } from '../maker-host/createDesktopProviderSe
 import { PluginDownloadSlot } from './downloadSlot.js';
 import { createDownloader } from '../downloader/index.js';
 import { handlePluginTaskRequest, type PluginTaskHandler } from './taskSlot.js';
+import { PluginTargetSlot, type PluginTargetAdapter } from './pluginTargetSlot.js';
+import type { PluginTargetPickerPush } from '../../shared/pluginTargets.js';
 import { ensurePluginTaskApproval, hasPluginTaskApproval, PluginTaskApprovalGate } from './taskCapability.js';
 import {
   registerGhostCardRemoteProvider,
@@ -2091,6 +2093,22 @@ export function setGhostSessionRevealer(reveal: ((sessionId: string) => void) | 
   getGhostAgentSlot().setRevealSession(reveal);
   getGhostErrandSlot().setRevealSession(reveal);
 }
+
+const pluginTargetSlot = new PluginTargetSlot({
+  name: id => findGhostForInstanceId(id)?.manifest.name ?? id,
+  revision: getPluginTaskInstallRevision,
+  open: (payload: PluginTargetPickerPush) => {
+    const window = getDeepLinkMainWindow();
+    if (!window || window.isDestroyed() || !isTrustedAppRendererWindow(window)) throw new Error('HOST_NOT_READY');
+    const owner = getActiveDataOwnerPushStamp();
+    window.show(); window.focus();
+    sendGhostWindowPush(window, 'ghosts:target-picker', payload, owner);
+    return { senderId: window.webContents.id, close: () => {
+      if (!window.isDestroyed()) sendGhostWindowPush(window, 'ghosts:target-picker-dismiss', { requestId: payload.requestId }, owner);
+    } };
+  },
+});
+export function setPluginTargetAdapter(adapter: PluginTargetAdapter): void { pluginTargetSlot.adapter = adapter; }
 
 let pluginTaskHandler: PluginTaskHandler | null = null;
 export function setPluginTaskHandler(handler: PluginTaskHandler | null): void { pluginTaskHandler = handler; }
@@ -8608,7 +8626,7 @@ export function registerGhostIpc(): void {
     // 专属 errand 会话跑一轮,最终回复文字取回给插件;任务文本同样只进
     // 普通 user 消息。资格审/频控/任务表在 errandSlot,会话与收口在注入
     // 的 runner(maker-ipc)。
-    if (type === 'tasks-request') {
+    if (type === 'tasks-request' || type === 'targets-request') {
       const owner = getActiveDataOwnerPushStamp();
       const pageId = (payload as { mobilePageId?: unknown }).mobilePageId;
       const pageCurrent = pageId === undefined ? undefined : mobilePluginPages?.captureSource(pageId, id);
@@ -8618,7 +8636,8 @@ export function registerGhostIpc(): void {
         return owner.dataOwnerId === current.dataOwnerId && owner.ownerGeneration === current.ownerGeneration &&
           !event.sender.isDestroyed() && ghostIdForLogicWebContents(event.sender.id) === id && (!pageCurrent || pageCurrent());
       };
-      return handlePluginTaskRequest(id, payload, {
+      if (type === 'targets-request' && pageId !== undefined) throw new Error('UNSUPPORTED_CAPABILITY');
+      const result = await handlePluginTaskRequest(id, type === 'targets-request' ? { type: 'tasks-request', kind: 'capabilities' } : payload, {
         getGhost: findGhostForInstanceId, handler: pluginTaskHandler,
         isCurrent,
         ensureAuthorized: () => requestPluginTaskApproval(id, isCurrent, facts => {
@@ -8637,6 +8656,18 @@ export function registerGhostIpc(): void {
             return createWindowGhostInstallConsentPrompt(window.webContents)({ purpose: 'task-capability', initiator: 'user', origin: 'local-file', facts });
         }),
       });
+      if (type !== 'targets-request' || !result.ok) return result;
+      const revision = pluginTaskAuthorizationRevision(id);
+      const assertAuthorized = () => {
+        if (!isCurrent() || !revision || pluginTaskAuthorizationRevision(id) !== revision || !isPluginTaskAuthorized(id))
+          throw Object.assign(new Error('PERMISSION_DENIED'), { code: 'PERMISSION_DENIED' });
+      };
+      try { return { ok: true, data: await pluginTargetSlot.handle(id, payload, assertAuthorized) }; }
+      catch (error) {
+        const rawCode = (error as { code?: unknown })?.code ?? (error instanceof Error ? error.message : '');
+        const code = ['PERMISSION_DENIED', 'HOST_NOT_READY', 'INVALID_PARAMS', 'INVALID_ATTACHMENTS', 'TARGET_UNAVAILABLE', 'SUPERSEDED', 'REQUEST_KEY_CONFLICT', 'DELIVERY_UNCERTAIN', 'DELIVERY_REJECTED', 'STALE_REVISION', 'ROUTE_UNAVAILABLE'].includes(String(rawCode)) ? String(rawCode) : 'HOST_NOT_READY';
+        return { ok: false, error: { code, message: code, retryable: false } };
+      }
     }
     if (type === 'agent-errand-request') {
       return getGhostErrandSlot().handleRequest(id, payload);
@@ -8721,6 +8752,13 @@ export function registerGhostIpc(): void {
       return getGhostConfirmSlot().handleRequest(id, payload);
     }
     throwIpcError('INVALID_PARAMS', '未知的管子消息类型');
+  });
+
+  // User-selected destination replies are accepted only from the trusted receiving window.
+  ipcMain.handle('ghosts:target-picker:resolve', (event, raw: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const value = raw as { requestId?: unknown; targetId?: unknown } | null;
+    return { handled: typeof value?.requestId === 'string' && pluginTargetSlot.resolve(value.requestId, event.sender.id, value.targetId) };
   });
 
   // ── 确认弹窗回包(confirm 槽)────────────────────────────────────────

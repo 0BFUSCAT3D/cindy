@@ -3995,7 +3995,18 @@ const r = await cindy.agent.requestSchedule({
 用户拒绝或确认界面不可用时返回 \`PERMISSION_DENIED\`，不影响插件其它功能；不得自动循环重试确认。
 面板通过既有逻辑页通道调用，不获得新的 preload 或内部 IPC 权限。
 
-先调用 \`capabilities()\` 获取实际支持操作。当前仅支持本插件创建的本机普通任务：
+用户要把内容交给自己选定的项目、已有任务或伙伴时，使用独立的 \`cindy.targets\`（仅本机 Desktop 逻辑页，同样需要已批准的 \`agent.tasks\`）。先检查 \`typeof cindy.targets?.pick === 'function'\`；旧客户端没有此入口，不调用私有 IPC 或自动改投别处。
+
+- \`pick({requestKey,targetKind:'project'|'task'|'bot',persistent?:boolean})\`：由 Cindy 展示目标列表、搜索和插件身份。用户取消返回 \`{cancelled:true}\`；成功返回 \`{bindingId,kind,label}\`，不向插件返回整份候选或消息历史。
+- 默认只用于本次：返回的 bindingId 是 5 分钟有效、只可用于一次投递的句柄。
+- \`persistent:true\` 明确让用户绑定今后可直接投递的固定目标。把 bindingId 存入插件配置；该 ID 不能直接 send。每次触发先 \`get({bindingId})\` 复核目标并换取本次临时句柄，再 send；临时选择不改写固定绑定。
+- \`send({bindingId,requestKey,text,title?,route?,delivery?,attachments?})\`：仅接受本次临时句柄。project 在选定目录中新建普通任务，可传统一目录的 route；task/bot 沿用接收方模型和权限，不接受 route。\`delivery\` 可选 \`queue | steer\`，缺省 queue；project 不接受 steer。steer 尝试同轮注入，不停止当前轮，空闲或插话暂不可用时入队。返回 \`{taskId,accepted:true,delivery:"queue"|"steer"}\` 表示实际接受路径，不表示执行完成。筛查拒绝返回 DELIVERY_REJECTED，不入队重试；ACK 未知返回 DELIVERY_UNCERTAIN，宿主保留保护性暂停队列，不能重发。不开放读取任意任务历史或改模。
+- \`tasks.send\` 和 \`targets.send\` 均支持可选 \`attachments:[{base64,name?}]\`：只接收插件提供的图片字节，不接受本机路径、URL、媒体 URI 或自报 MIME。Host 检测 PNG/JPEG/WebP，最多 4 张、合计 20 MiB。先检查 \`tasks.capabilities().messageAttachments.kinds\` 包含 image；旧客户端不支持时停止，不静默丢图或改投临时路径。截图进既有 cindy-media，作为消息附件展示并进入模型输入；不需要额外声明 media.deposit。附件内容及名称参与幂等签名，更换附件不能复用同键。
+- 同一次 send 重试沿用相同 requestKey、句柄、内容和 delivery（缺省与 queue 等价）；主机运行期间共享原投递结果。句柄用后不能换键再发；Host 重启后旧临时句柄失效。结果未知不得重新 get/pick 绕过后重发，应先让用户在 Cindy 检查。
+- \`cancel({requestKey})\`：关闭该请求的选择器、使迟到选择失效，并仅撤回本插件尚未执行的输入；不会停止接收方其他输入，也不保证撤销已经开始的工作。
+- 候选只包含本机可见、可用的项目、普通任务或有唯一 canonical 对话的活跃伙伴。最近活动只排序，不替用户选中；固定目标失效返回 TARGET_UNAVAILABLE，不自动降级。项目使用 Cindy 已有目录分组，不伪造 projectId。
+
+原有 \`cindy.tasks\` 的归属限制不变。先调用 \`capabilities()\` 获取实际支持操作。当前仅支持本插件创建的本机普通任务：
 \`models\`、\`create\`、\`get\`、\`setModel\`、\`list\`、\`send\`、\`getRun\`、\`listRuns\`、\`readMessages\`、\`cancel\`、\`setHidden\`。
 可对自有任务调用 \`startTeam({taskId})\` 启用 Orca 主任务，并用 \`getTeam({taskId})\` 读取实际协同状态。协调主任务需经用户授权 Auto，Worker 自动沿用 Auto。
 这些任务及其 Worker 不提供 \`cindy_helper\` 的账号级历史或跨任务控制能力，\`cindy_memory.session_search\` 也拒绝历史检索；协调使用独立 Orca 工具，结果由插件通过 \`readMessages/getTeam\` 读取。旧 errand/workspace 不因来源标记受到限制；明确卸载撤销归属后，调用方已无正在执行的输入或已接受新真人输入时，保留的用户任务恢复普通 helper 与历史检索能力；仍执行旧插件输入时继续受限，自动回报和插件输入重试不构成真人接管。这不恢复插件控制权，也不保证停止已接受执行，不构成通用执行沙箱。

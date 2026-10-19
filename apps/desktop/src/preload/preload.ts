@@ -726,6 +726,8 @@ const fanOutGhostBadge = createIpcFanOut('ghosts:badge');
 const fanOutGhostUnreadSnapshot = createIpcFanOut('ghosts:unread-snapshot');
 // 意识确认弹窗(confirm 槽:renderer 用主机同款 ConfirmDialog 弹,答案回 main)。
 // main 只投单个窗口(不广播),所以这里落地的窗口就是该弹框的唯一归属。
+const fanOutGhostTargetPicker = createIpcFanOut('ghosts:target-picker');
+const fanOutGhostTargetPickerDismiss = createIpcFanOut('ghosts:target-picker-dismiss');
 const fanOutGhostConfirmRequest = createIpcFanOut('ghosts:confirm-request');
 const fanOutForgeOidcInstallConfirmRequest = createIpcFanOut('forge-oidc-install:confirm-request');
 // 插件安装／更新确认(main 只投给发起安装的那个窗口;超时或取消时再发 dismissed 收起)。
@@ -1425,6 +1427,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onNotify: fanOutGhostNotify,
     onBadge: fanOutGhostBadge,
     onUnreadSnapshot: fanOutGhostUnreadSnapshot,
+    onTargetPicker: fanOutGhostTargetPicker,
+    onTargetPickerDismiss: fanOutGhostTargetPickerDismiss,
+    resolveTargetPicker: (requestId: string, targetId: string | null): Promise<{ handled: boolean }> =>
+      ipcRenderer.invoke('ghosts:target-picker:resolve', { requestId, targetId }),
     onConfirmRequest: fanOutGhostConfirmRequest,
     // 确认弹窗回包(confirm 槽):renderer 把用户的点击送回 main 结算那条挂起的
     // 管子请求。requestId 是 main 铸的,陌生/重复 id 由桥忽略。

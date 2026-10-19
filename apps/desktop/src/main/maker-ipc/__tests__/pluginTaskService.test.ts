@@ -166,6 +166,20 @@ function fixture() {
   };
 }
 
+it('includes message images in owned-task replay identity without persisting screenshot bytes', async () => {
+  const f = fixture(), task = await f.create();
+  const base64 = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64');
+  const request = { taskId: task.taskId, requestKey: 'image', expectedRevision: task.revision,
+    text: 'context', attachments: [{ base64, name: 'window.png' }] };
+  await f.service.send('p', request);
+  await f.service.send('p', structuredClone(request));
+  expect(f.deps.dispatch).toHaveBeenCalledOnce();
+  expect(vi.mocked(f.deps.dispatch).mock.calls[0]?.[4]?.[0]).toMatchObject({ mimeType: 'image/png' });
+  expect(JSON.stringify([...f.rows.values()])).not.toContain(base64);
+  await expect(f.service.send('p', { ...request, attachments: [{ base64, name: 'other.png' }] }))
+    .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+});
+
 describe('plugin dispatch uses live Plan execution authority', () => {
   it.each(['send', 'accept'] as const)('%s rejects consumed Pi intent while execution is active, unknown or switching', async entry => {
     const f = fixture(), task = await f.create();

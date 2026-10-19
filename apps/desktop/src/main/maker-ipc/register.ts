@@ -15,7 +15,9 @@ import { isSessionHiddenSync } from '../localDb/hiddenSessionRegistry.js';
 import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
 import { hasAcceptedUserTaskInput } from './pluginTaskInput.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
-import { showMobilePluginTaskPermission, setPluginTaskHandler, getPluginTaskSourceSessionId, setPluginTaskUninstaller, setPluginTaskRelocator, isPluginTaskAuthorized, getPluginTaskInstallRevision, pluginTaskAuthorizationRevision } from '../cindy-brain/index.js';
+import { showMobilePluginTaskPermission, setPluginTaskHandler, setPluginTargetAdapter, getPluginTaskSourceSessionId, setPluginTaskUninstaller, setPluginTaskRelocator, isPluginTaskAuthorized, getPluginTaskInstallRevision, pluginTaskAuthorizationRevision } from '../cindy-brain/index.js';
+import { listPluginTargetCandidates, resolvePluginTargetSession } from './pluginTargetCandidates.js';
+import { collectPluginAttachmentPayloadTexts, withPluginMessageAttachments } from '../cindy-media/pluginMessageAttachments.js';
 import type { PluginTaskRoute, PluginTaskRequest } from '../../shared/pluginTasks.js';
 import { createHash as pluginTaskConfigHash } from 'node:crypto';
 import { finishCompanionEnvironmentRemoval } from '../bot-import/runtime.js';
@@ -4322,7 +4324,7 @@ export async function withSessionInputStoppedForRewind<T>(
  * 内存队列,空集合语义正确。
  */
 export function collectAgentInputQueueScanTexts(): string[] {
-  return agentInputCoordinatorHolder?.collectQueuedPayloadTexts() ?? [];
+  return [...collectPluginAttachmentPayloadTexts(), ...(agentInputCoordinatorHolder?.collectQueuedPayloadTexts() ?? [])];
 }
 
 export interface AutomationUserTurnGitBaselineHooks {
@@ -10811,6 +10813,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     targetSessionId?: string;
     message: string;
     persistedContent?: string;
+    /** Host-managed images; attachment callers always use the durable queue. */
+    files?: AgentInputQueuedMessage['files'];
     clientId?: string;
     dispatcherSessionId?: string;
     title?: string;
@@ -11245,7 +11249,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // Pending selections also need the canonical send transaction: it consumes the intent,
       // then refreshes queued createOpts from DB before starting the target harness.
       // enqueue does not await dispatch, so the drain can acquire this lock after we return.
-      if (params.forceQueue || explicitClientId?.startsWith('bot-dm:') || explicitClientId?.startsWith(BOT_GROUP_CLIENT_ID_PREFIX) || explicitClientId?.startsWith('bot-authorization-resume:') || inputCoordinator.shouldQueueNewTurn(targetSessionId) || agentSwitchPending.get(targetSessionId)) {
+      if (params.files?.length || params.forceQueue || explicitClientId?.startsWith('bot-dm:') || explicitClientId?.startsWith(BOT_GROUP_CLIENT_ID_PREFIX) || explicitClientId?.startsWith('bot-authorization-resume:') || inputCoordinator.shouldQueueNewTurn(targetSessionId) || agentSwitchPending.get(targetSessionId)) {
         lockStage = 'enqueue-queued-message';
         const qClientId = explicitClientId ?? createId();
         await enqueueSendToSessionMessage({
@@ -11263,6 +11267,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           autoReviewUserText: params.autoReviewUserText,
           botTaskCoordination: params.botTaskCoordination,
           authorizationGuard: params.authorizationGuard,
+          files: params.files,
         });
         return {
           ok: true as const,
@@ -12841,14 +12846,21 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const revision = Number.parseInt(pluginTaskConfigHash('sha256').update(JSON.stringify([resolvedConfig, row.permissionMode, row.planModeEnabled, row.workingDir, row.status, row.orcaRole])).digest('hex').slice(0, 12), 16);
         return { taskId, title: row.title, status: row.status, revision, resolvedConfig, workingDir: row.workingDir ?? undefined, permissionMode: row.permissionMode, planModeEnabled: !!row.planModeEnabled, hidden: row.hiddenAt != null };
       },
-      dispatch: async (pluginId, taskId, clientId, text) => {
+      dispatch: async (pluginId, taskId, clientId, text, images = []) => {
         assertPlugin(pluginId);
         // 插件来源只用于标签与 `[消息来源]` 说明;不新增 origin 类型,也不是权限判据。
         const pluginName = sanitizeSourceName(getInstalledGhostName(pluginId));
-        const outcome = await sendToSessionInternal({ targetSessionId: taskId, clientId, message: text, autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true, sourcePlugin: { pluginId, ...(pluginName ? { name: pluginName } : {}) }, onAccepted: async () => { assertPlugin(pluginId); await pluginTaskServiceForCurrentOwner!().assertDispatch(pluginId, taskId); assertPlugin(pluginId); } });
-        await awaitAgentInputQueueSnapshotPersistence(taskId);
-        assertCurrent();
-        return outcome;
+        const validate = async () => { assertPlugin(pluginId); await pluginTaskServiceForCurrentOwner!().assertDispatch(pluginId, taskId); assertPlugin(pluginId); };
+        return withPluginMessageAttachments(images, () => assertPlugin(pluginId), async files => {
+          await validate();
+          const outcome = await sendToSessionInternal({ targetSessionId: taskId, clientId, message: text, files,
+            autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true,
+            sourcePlugin: { pluginId, ...(pluginName ? { name: pluginName } : {}) },
+            authorizationGuard: { validate, assertCurrent: () => assertPlugin(pluginId) }, onAccepted: validate });
+          await awaitAgentInputQueueSnapshotPersistence(taskId);
+          assertCurrent();
+          return outcome;
+        });
       },
       inspect: async taskId => {
         assertCurrent(); await inputCoordinator.ensureQueueRestored(taskId); assertCurrent();
@@ -13203,6 +13215,89 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
   };
   setPluginTaskHandler(handlePluginTask);
+  setPluginTargetAdapter({
+    candidates: listPluginTargetCandidates,
+    session: resolvePluginTargetSession,
+    create: async (pluginId, project, taskId, title, route, guard) => {
+      guard();
+      const snapshot = getCurrentDbClientSnapshot();
+      const config = readPluginTaskConfig(pluginId);
+      const configSnapshot = JSON.stringify(config);
+      const guardCreate = () => { guard(); if (JSON.stringify(readPluginTaskConfig(pluginId)) !== configSnapshot) throw new Error('STALE_REVISION'); };
+      const execution = await resolveSessionExecution({ ...config, ...route });
+      guardCreate();
+      await createPluginTaskSession({ ghostId: pluginId, sessionId: taskId, title,
+        ...execution, agentKind: execution.agentKind === 'claude-code' ? 'cc' : execution.agentKind,
+        permissionMode: clampPluginTaskPermissionMode(config.permissionMode), workingDir: project,
+        shouldContinue: () => { guardCreate(); return getCurrentDbClientSnapshot() === snapshot; },
+        notifySessionCreated: ({ sessionId, workdir }) => {
+          notifyGhostSessionEvent('created', { sessionId, workdir }); broadcastSessionCreated(sessionId);
+        },
+      });
+    },
+    send: async (pluginId, taskId, clientId, text, guard, validateTarget, delivery, images = []) => {
+      guard();
+      const snapshot = getCurrentDbClientSnapshot();
+      const assertCurrent = () => { guard(); if (snapshot !== getCurrentDbClientSnapshot()) throw new Error('PERMISSION_DENIED'); };
+      const name = sanitizeSourceName(getInstalledGhostName(pluginId));
+      const sourcePlugin = { pluginId, ...(name ? { name } : {}) };
+      const validate = async () => { assertCurrent(); await validateTarget(); assertCurrent(); };
+      await validate();
+      return withPluginMessageAttachments(images, assertCurrent, async files => {
+        if (delivery === 'steer') {
+          const outcome = await withSendToSessionLock(taskId, async () => {
+            await validate();
+            await assertReviewExternalInputAllowed(taskId);
+            const session = maker.getSession(taskId);
+            if (!session?.isTurnRunning() || !session.capabilities.sameTurnSteer.supported) return 'not-attempted';
+            const turnGeneration = session.getTurnGeneration();
+            const meta = await maker.getSessionMeta(taskId);
+            await validate();
+            if (!meta) throw new Error('TARGET_UNAVAILABLE');
+            const item = await buildSessionControlInputItem({ targetSessionId: taskId, clientId,
+              message: text, persistedContent: text, meta, sourcePlugin, files,
+              autoReviewUserText: { kind: 'delegated-continuation' },
+            });
+            await validate();
+            return inputCoordinator.steerControlInput(taskId, { item }, {
+              session, turnGeneration, beforeMutation: validate,
+            });
+          });
+          if (outcome === 'steered') {
+            await awaitAgentInputQueueSnapshotPersistence(taskId);
+            return 'steer';
+          }
+          if (outcome === 'rejected') throw new Error('DELIVERY_REJECTED');
+          // The coordinator owns ACK-uncertain input in a paused queue. Never enqueue a copy.
+          if (outcome === 'queued') {
+            await awaitAgentInputQueueSnapshotPersistence(taskId);
+            throw new Error('DELIVERY_UNCERTAIN');
+          }
+        }
+        const result = await sendToSessionInternal({ targetSessionId: taskId, clientId, message: text, files,
+          autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true,
+          resumeWithStoredPermissionMode: true,
+          sourcePlugin,
+          authorizationGuard: { validate, assertCurrent },
+          onAccepted: validate,
+        });
+        if (!result.ok) throw Object.assign(new Error(result.message), { code: result.errorCode });
+        await awaitAgentInputQueueSnapshotPersistence(taskId);
+        return 'queue';
+      });
+    },
+    withdraw: async (taskId, clientId, guard) => {
+      guard();
+      await withdrawOwnedSessionInputs({ sessionId: taskId,
+        queue: {
+          ensureQueueRestored: async id => { await inputCoordinator.ensureQueueRestored(id); guard(); },
+          getQueueControlSnapshot: id => inputCoordinator.getQueueControlSnapshot(id),
+          remove: (id, inputId) => inputCoordinator.remove(id, inputId),
+        },
+        owns: id => { guard(); return id === clientId; }, flush: awaitAgentInputQueueSnapshotPersistence,
+      });
+    },
+  });
   setPluginTaskUninstaller((pluginId, remove) => pluginTaskServiceForCurrentOwner!().withUninstall(pluginId, remove));
   setPluginTaskRelocator((from, to) => pluginTaskServiceForCurrentOwner!().relocatePlugin(from, to));
 
@@ -13474,6 +13569,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     inheritTargetPlanMode?: boolean;
     message: string;
     persistedContent: string;
+    files?: AgentInputQueuedMessage['files'];
     clientId: string;
     meta: NonNullable<Awaited<ReturnType<typeof maker.getSessionMeta>>>;
     dbRow: NonNullable<Awaited<ReturnType<typeof getSessionRowSnapshot>>>;
@@ -16944,6 +17040,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       messageUuid?: string;
       userName?: string;
       signal?: AbortSignal;
+      beforeProviderStart?: () => Promise<void>;
       /** coordinator 从队列项透传的手机来源(main 构造,非 wire 输入)。 */
       fromMobileClient?: boolean;
       uiLanguage?: string;
@@ -17087,6 +17184,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       assertCurrentInputGeneration(sessionId, readExpectedInputGeneration(sendOpts));
       if (so[MCP_APP_MESSAGE_GUARD]) await so[MCP_APP_MESSAGE_GUARD]!();
+      await so.beforeProviderStart?.();
       sess = readCurrentSteerSession();
       // 同轮插话也属于新输入。必须在 vendor await 前通知，旧轮可能先于 steer ack 结束。
       // 共用入口同时覆盖 INPUT_STEER、队列提升和旧 STEER IPC。
@@ -17094,10 +17192,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // A channel route vouches only for its triggering sender; steered input ends that.
       noteInteractionRouteSteer(sess);
       await sess.steer(steerPayload as never, {
-        ...(so[MCP_APP_MESSAGE_GUARD] || appContext?.text ? {
+        ...(so[MCP_APP_MESSAGE_GUARD] || so.beforeProviderStart || appContext?.text ? {
           beforeProviderStart: async () => {
             await so[MCP_APP_MESSAGE_GUARD]?.();
             await appContext?.assertCurrent();
+            await so.beforeProviderStart?.();
           },
         } : {}),
         logTitle: meta?.title,

@@ -1,4 +1,16 @@
 {
+  "pluginTargetPicker": {
+    "project": "选择项目",
+    "task": "选择任务",
+    "bot": "选择伙伴",
+    "bindDescription": "允许 {{name}} 今后直接向这个固定目标投递。",
+    "onceDescription": "选择 {{name}} 本次投递的位置，不会改写固定绑定。",
+    "bind": "固定到这里",
+    "choose": "选择目标",
+    "cancel": "取消",
+    "search": "搜索名称或项目",
+    "empty": "没有可用目标"
+  },
   "logSupport": {
     "title": "日志与反馈",
     "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",

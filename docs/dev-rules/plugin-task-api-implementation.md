@@ -328,3 +328,38 @@ Pi 子代理未成功投递的自动 allow 再次投递前重走现有核验，�
 `auto-review-context.test.ts`、Pi/Claude Code 审批接线回归以及 `eval-auto-approval.mts` 的
 `delegated-*` 正反对照（后者需要真实审阅模型，当前拆分 PR 未运行付费验证）。主机身份校验是确定性边界，动作与任务是否相符仍由 Auto 审阅，
 不宣称题目目录是系统沙箱。
+
+## 用户选择的投递目标（增量接口，尚未发布）
+
+`cindy.targets` 的作者契约见 `FORGE_GUIDE`，实现位于 `pluginTargetSlot.ts`、
+`pluginTargetCandidates.ts` 和 `PluginTargetPickerHost.tsx`。保留 `cindy.tasks` 自有任务边界，
+不把它的 get/list/send 放宽成任意任务权限。新入口复用 `agent.tasks` 的启用、批准和逻辑页身份校验，
+还必须取得用户在宿主选择器里的具体目标选择；插件不能直接提交 taskId、botId 或项目路径作为授权。
+不改变现存插件、旧任务 API、默认设置卡或 manifest 字段。
+
+- 每次选择只产生临时句柄；固定选择落入 owner-scoped `plugin-targets.json`，只保存插件、目标标识和名称，不保存桌面内容或消息。
+- `get` 将固定绑定换成本次短期句柄。发送消费临时句柄，相同请求共享同一 Promise，不能更换 requestKey 或正文使同一句柄重复创建/投递；Host 重启后句柄失效。未知结果由调用方保留为待检查，不自动重放。
+- Picker 只投主窗口，绑定 webContents；回包必须来自受信宿主 Renderer。Owner stamp 在接收端校验，换账号清 UI；等待中还会复核原插件逻辑页、批准 revision 和 owner generation。
+- 新项目任务沿用插件模型选择和受限的动手权限，使用现有 `createPluginTaskSession`；目录来自宿主已有项目列表。存量任务和伙伴保留其模型、权限、目录；伙伴只通过唯一 canonical 注册解析，不使用兼容镜像或伪造伙伴身份。
+- `send` 的可选 `delivery` 为 `queue | steer`，缺省为 `queue`；project 仅接受 queue，新建任务不需要插话。delivery 参与请求幂等签名，缺省与显式 queue 等价，同键更换投递方式返回 REQUEST_KEY_CONFLICT。
+- queue 走 `sendToSessionInternal` 与既有输入队列；steer 复用 `steerControlInput` 同轮注入，不停止或重启当前轮。空闲、框架不支持或当前输入边界不允许插话时走普通队列，保留 Stop/pause 边界。返回 `{taskId,accepted:true,delivery:'queue'|'steer'}`，delivery 表示实际接受路径，不表示 AI 已执行完成。
+- main 盖 sourcePlugin 和 delegated-continuation 来源，沿用目标模型及权限。接受前、异步筛查后及 provider 派发前复核插件批准与目标。筛查拒绝返回 DELIVERY_REJECTED，不改走队列；ACK 未知保留宿主保护性暂停队列并返回 DELIVERY_UNCERTAIN，不再次排队。取消只按本插件 host-generated clientId 撤回排队输入，不停止整个会话或撤回已经接受的插话。
+- 仅本机 Desktop，不新增 Mobile/device-link 透传，也不承诺跨平台原生触发。
+
+此能力供声明了 `agent.tasks` 的插件使用；目标由用户选择，投递沿用既有插件授权和目标任务权限。
+静态检查不等于设置 UI、取材、伙伴实际执行的联调验收；不得把 accepted 当成完成。
+
+### 消息图片附件
+
+`tasks.send` 与 `targets.send` 支持 `attachments?: Array<{base64:string,name?:string}>`。
+插件先核对 `tasks.capabilities().messageAttachments`，无此能力时停止发送截图，不能静默丢图或回退文件路径。
+只接受插件自己提供的字节；不接受 Host 路径、URL、其他会话的媒体 URI 或自报 MIME。
+Host 校验规范 base64，嗅探 PNG/JPEG/WebP，最多 4 张、合计 20 MiB；附件字节指纹和名称参与幂等签名，回执不保存 base64。
+
+`pluginMessageAttachments.ts` 复用 `ingestMedia` 和草稿/排队消息提交链路。入库前同步登记内容地址到现有回收器的活引用集合，
+覆盖去重旧 blob 的入库、取消和派发在途窗口。调用方等待既有持久队列写入或插话落库后释放在途保护；
+之后由内存队列、恢复快照和 `createMessage → commitMessageMediaRefs` 的会话附件引用保护。
+失败或取消且未采用的图片不保留永久引用，由既有零引用缓冲与手动回收处理。无新目录、数据表、媒体协议或 media.deposit 授权。
+
+queue 与 steer 都把托管 URL 写入 files、chatMessage.images 和持久消息信封；模型输入由既有附件装配器生成。
+正文/附件来源仍是插件续行，不把截图变为新用户授权；目标、批准、owner 和取消闸保持不变。

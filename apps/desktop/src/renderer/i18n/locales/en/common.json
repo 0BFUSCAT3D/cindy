@@ -1,4 +1,16 @@
 {
+  "pluginTargetPicker": {
+    "project": "Choose a project",
+    "task": "Choose a task",
+    "bot": "Choose a companion",
+    "bindDescription": "Allow {{name}} to send to this fixed target in future.",
+    "onceDescription": "Choose where {{name}} sends this time. This does not change its fixed binding.",
+    "bind": "Use this target",
+    "choose": "Choose Target",
+    "cancel": "Cancel",
+    "search": "Search by name or project",
+    "empty": "No available targets"
+  },
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",

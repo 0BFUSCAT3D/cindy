@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Session } from '@cindy/maker-core';
 import type { PluginTaskRoute, PluginTaskRun, PluginTaskView, PluginTeamPlan } from '../../shared/pluginTasks.js';
 import { isPluginTeamPlanWithinBudget, PLUGIN_TASK_RECEIPT_MAX_JSON_CHARS } from '../../shared/pluginTasks.js';
+import type { PluginMessageAttachment } from '../../shared/pluginAttachments.js';
+import { parsePluginMessageAttachments, type PluginMessageImage } from '../cindy-media/pluginMessageAttachments.js';
 import {
   isSameSessionExecution,
   queuedInputBelongsTo,
@@ -135,6 +137,7 @@ export interface PluginTaskServiceDeps {
     taskId: string,
     clientId: string,
     text: string,
+    images?: PluginMessageImage[],
   ): Promise<{ ok: boolean; message?: string }>;
   inspect(
     taskId: string,
@@ -437,11 +440,16 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
       }),
     send: async (
       pluginId: string,
-      request: { taskId: string; requestKey: string; expectedRevision: number; text: string },
+      request: { taskId: string; requestKey: string; expectedRevision: number; text: string; attachments?: PluginMessageAttachment[] },
     ): Promise<PluginTaskRun> => completeOperation(async () => {
+      let images: PluginMessageImage[];
+      try { images = parsePluginMessageAttachments(request.attachments); }
+      catch { throw new PluginTaskError('INVALID_ATTACHMENTS', 'Invalid message images'); }
       const prepared = await exclusive(async () => {
         const view = await ownTask(pluginId, request.taskId);
-        const fingerprint = hash([request.text, request.expectedRevision]);
+        const fingerprint = hash(images.length
+          ? [request.text, request.expectedRevision, images.map(({ hash, name }) => [hash, name])]
+          : [request.text, request.expectedRevision]);
         const previous = replay(
           await deps.store.find(pluginId, 'send', request.taskId, request.requestKey),
           fingerprint,
@@ -487,6 +495,7 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
           prepared.run.taskId,
           prepared.run.inputMessageId,
           request.text,
+          images,
         );
         if (!outcome.ok) failure = 'failed';
       } catch {

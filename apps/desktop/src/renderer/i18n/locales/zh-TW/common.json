@@ -1,4 +1,16 @@
 {
+  "pluginTargetPicker": {
+    "project": "選擇專案",
+    "task": "選擇任務",
+    "bot": "選擇夥伴",
+    "bindDescription": "允許 {{name}} 今後直接向這個固定目標傳送。",
+    "onceDescription": "選擇 {{name}} 本次傳送的位置，不會改寫固定綁定。",
+    "bind": "固定到這裡",
+    "choose": "選擇目標",
+    "cancel": "取消",
+    "search": "搜尋名稱或專案",
+    "empty": "沒有可用目標"
+  },
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
