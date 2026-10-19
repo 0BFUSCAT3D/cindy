@@ -65,7 +65,8 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 主任务的后台回报、心跳或桌面轮次中可主动通知主人。无飞书逐轮作用域时，宿主异步查询当前账号的
 `bot_session_links`（`role='canonical'`，关联 `sessions.source='bot'`），选择该伙伴已连接且已绑定
 主人的飞书连接；发送时校验连接的 owner 与已解析收件人一致。已识别伙伴但没有匹配的可用连接、
-数据库查询失败或查询期间切换账号，均拒绝发送，不回落个人 bot。没有 canonical 伙伴归属的普通
+数据库查询失败、账号边界处于 pending 或 owner 代次变化，均拒绝发送，不回落个人 bot；查询前后
+及实际调用发送前都复核账号边界、owner 代次与所用 DB 快照。没有 canonical 伙伴归属的普通
 任务仍保留设置页个人 bot 的主人通知能力。此路径不向主任务持久写入 `feishuChatId`，也不生成租约
 或授予轮次内原生 API 权限；`cindyBotImChannels` 只控制工具挂载，不作为归属或授权依据。
 实现见 [`feishuTransportRouting.ts`](../../apps/desktop/src/main/mcp-integrations/feishuTransportRouting.ts)

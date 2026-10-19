@@ -369,10 +369,16 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // the current session isn't a feishu one — semantically "notify the
       // bot's human owner". Same TOFU accessor scheduler completion
       // notifications use; returns null before the user has DM'd the bot.
-      getOwnerOpenId: async (session) => (await feishuTransportFor(session)).getOwnerOpenId(),
+      getOwnerOpenId: async (session) => {
+        const { im, assertCurrent } = await feishuTransportFor(session);
+        assertCurrent();
+        return im.getOwnerOpenId();
+      },
       sendFile: async (chatId: string, absPath: string, displayName?: string, session?) => {
         try {
-          return await (await feishuTransportFor(session, chatId)).sendFile(chatId, absPath, displayName);
+          const { im, assertCurrent } = await feishuTransportFor(session, chatId);
+          assertCurrent();
+          return await im.sendFile(chatId, absPath, displayName);
         } catch (err) {
           createLogger('mcp/cindy_feishu_bot').warn(
             'sendFile failed target=...%s detail=%s',
@@ -389,7 +395,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // into `reason` for logging without leaking axios internals to the tool.
       sendMessage: async (chatId, markdown, notificationSessionId, session) => {
         try {
-          const im = await feishuTransportFor(session, chatId);
+          const { im, assertCurrent } = await feishuTransportFor(session, chatId);
+          assertCurrent();
           // 只有个人 bot 维护通知到普通任务的回复关联; 伙伴连接已有自己的主任务。
           if (im === feishuIm && notificationSessionId && chatId === feishuIm.getOwnerOpenId()) {
             const { messageId, sessionLinked } = await sendFeishuSessionNotification(

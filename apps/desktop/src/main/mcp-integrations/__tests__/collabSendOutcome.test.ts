@@ -21,6 +21,7 @@ const mockState = vi.hoisted(() => ({
     _sessionInstanceId: string | undefined,
   ) => ({ ok: true as const })),
   capturedProvidersConfig: null as null | Record<string, unknown>,
+  afterSelectCompanion: null as null | (() => void),
   companionFeishu: {
     getOwnerOpenId: () => 'ou_companion',
     sendMarkdownText: vi.fn(async () => ({ messageId: 'om_companion_text' })),
@@ -83,7 +84,10 @@ vi.mock('../../im/index.js', () => ({
 }));
 
 vi.mock('../../im/shared/botImConnectionRuntime', () => ({
-  getBotFeishuTransport: (botId: string) => botId === 'bot-feishu' ? mockState.companionFeishu : null,
+  getBotFeishuTransport: (botId: string) => {
+    if (mockState.afterSelectCompanion) queueMicrotask(mockState.afterSelectCompanion);
+    return botId === 'bot-feishu' ? mockState.companionFeishu : null;
+  },
 }));
 
 vi.mock('../cindyProxyMedia.js', () => ({
@@ -129,6 +133,7 @@ import { createDesktopMcpProviders } from '../mcp-providers.js';
 import { createDbClient } from '../../localDb/client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
 import type { FeishuBotMcpHostDeps } from '@cindy/mcps';
+import { beginAppSessionBoundary, commitVolatileAppSession } from '../../appSessionState.js';
 
 const botCapabilities = {
   list: vi.fn(async () => ({ ok: true as const, capabilities: [] })),
@@ -224,6 +229,7 @@ describe('collab send outcome semantics', () => {
   it('sends canonical background text and files through companion host callbacks with a worker DB', async () => {
     const client = await createDbClient({ transport: 'worker-thread', useInlineWorker: true });
     try {
+      commitVolatileAppSession('cloud', 'feishu-test-owner');
       await client.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT)');
       await client.exec('CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, role TEXT)');
       await client.exec("INSERT INTO sessions VALUES ('background-receipt', 'bot')");
@@ -246,7 +252,33 @@ describe('collab send outcome semantics', () => {
         .toMatchObject({ ok: true, messageId: 'om_companion_file' });
       expect(mockState.companionFeishu.sendMarkdownText).toHaveBeenCalledWith('ou_companion', 'task complete');
       expect(mockState.companionFeishu.sendFile).toHaveBeenCalledWith('ou_companion', '/tmp/report.txt', 'report.txt');
+
+      // A boundary may start after the resolver fulfills but before its caller
+      // resumes. Both production send callbacks must recheck before dispatch.
+      for (const transition of ['pending', 'generation'] as const) {
+        for (const send of [
+          () => feishu.sendMessage(owner!, 'must not send', session.sessionId, session),
+          () => feishu.sendFile(owner!, '/tmp/report.txt', 'report.txt', session),
+        ]) {
+          let release: (() => void) | undefined;
+          mockState.companionFeishu.sendMarkdownText.mockClear();
+          mockState.companionFeishu.sendFile.mockClear();
+          mockState.afterSelectCompanion = () => {
+            if (transition === 'pending') release = beginAppSessionBoundary();
+            else commitVolatileAppSession('cloud', 'feishu-test-owner', true);
+          };
+          try {
+            expect(await send()).toMatchObject({ ok: false, reason: 'SEND_FAIL' });
+            expect(mockState.companionFeishu.sendMarkdownText).not.toHaveBeenCalled();
+            expect(mockState.companionFeishu.sendFile).not.toHaveBeenCalled();
+          } finally {
+            mockState.afterSelectCompanion = null;
+            release?.();
+          }
+        }
+      }
     } finally {
+      commitVolatileAppSession('signed-out');
       clearCurrentDbClient(client);
       await client.dispose();
     }
