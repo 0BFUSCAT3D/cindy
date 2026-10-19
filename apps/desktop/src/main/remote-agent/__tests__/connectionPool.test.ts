@@ -956,6 +956,41 @@ describe('remote connection pool with a real host', () => {
     expect(scenario.started).toHaveLength(3);
   });
 
+  // PR #6483 第三轮：self 让出时 close 没送到，接回前本机不算自己的旧 run，对方按上限拒绝，且不会选 self 让出。
+  it.each([
+    ['gets through', 1, 'ok:again'],
+    ['still fails', Infinity, '[DEVICE_LIMIT]'],
+  ])('when its own release close did not get through and the retried close %s, a reconnect closes the old run first', async (_label, drops, outcome) => {
+    const pool = new RemoteConnectionPool({ idleMinutes: () => idleMinutes, checkMs: 3_600_000, closeRetryMs: 3_600_000 });
+    const a = await start(pool);
+    const events = watch(a);
+    await ask(a, events, 'hello');
+    await sleep(5);
+    let dropped = 0;
+    intercept = (request) => {
+      if (request.op !== 'close' || dropped >= drops) return undefined;
+      dropped += 1;
+      throw new Error('[DEVICE_LINK_TIMEOUT] link down');
+    };
+    expect(await pool.releaseForRetry(member('other', 0, false))).toBe(true);
+    // 对方还开着 a 的旧 run(名额 1 已占满)。
+    expect(host.limitUsage().total).toBe(1);
+    opens = 0;
+    if (outcome.startsWith('ok:')) {
+      expect(await ask(a, events, 'again')).toBe(outcome);
+      // 先关掉了 a 的旧 run 再打开，没有撞上限。
+      expect(opens).toBe(1);
+      expect(dropped).toBe(1);
+      expect(host.limitUsage().total).toBe(1);
+      expect(scenario.started).toHaveLength(2);
+    } else {
+      // 旧 run 还是关不掉：照常按对方的上限报错，不死循环。
+      await expect(a.send({ type: 'user', content: 'again' })).rejects.toThrow(outcome);
+      expect(opens).toBe(1);
+      expect(dropped).toBeLessThanOrEqual(3);
+    }
+  });
+
   it('gives up a release once a send has started', async () => {
     const pool = newPool();
     const a = await start(pool);

@@ -60,8 +60,8 @@ export interface RemoteConnectionPoolOptions {
 
 export class RemoteConnectionPool {
   private readonly members = new Set<PooledRemoteConnection>();
-  /** 让出时 close 没送到、对方可能还占着名额的连接 → 结束占位。 */
-  private readonly held = new Map<PooledRemoteConnection, () => void>();
+  /** 让出时 close 没送到、对方可能还占着名额的连接 → 结束占位、再发一次 close。 */
+  private readonly held = new Map<PooledRemoteConnection, { end: () => void; retryClose: () => Promise<unknown> }>();
   private maxRuns: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 让出名额一次只做一个，避免几条路径同时挑中不同的连接、多让。 */
@@ -80,7 +80,7 @@ export class RemoteConnectionPool {
       (this.timer as { unref?: () => void }).unref?.();
     }
     return () => {
-      this.held.get(member)?.();
+      this.held.get(member)?.end();
       this.members.delete(member);
       if (this.members.size === 0 && this.timer) {
         clearInterval(this.timer);
@@ -98,10 +98,16 @@ export class RemoteConnectionPool {
     return this.members.size;
   }
 
-  /** 本机在这台电脑上占着的名额数(含 close 没送到、对方可能还没结束的)。 */
+  /**
+   * 本机在这台电脑上占着的名额数。`except` 只排除它正要开的那个位置：它让出时 close 没送到、对方可能还没
+   * 结束的旧 run 照样算(对方要到新进程启动时才替换同一任务的旧实例，打开时的名额检查会算上它)。
+   */
   occupied(except?: PooledRemoteConnection): number {
     let count = 0;
-    for (const member of this.members) if (member !== except && (member.occupiesSlot() || this.held.has(member))) count += 1;
+    for (const member of this.members) {
+      if (member !== except && member.occupiesSlot()) count += 1;
+      if (this.held.has(member)) count += 1;
+    }
     return count;
   }
 
@@ -111,15 +117,16 @@ export class RemoteConnectionPool {
    * 占位期间水位线与打开前的判断都算上它，会去让别的有资格的连接，而不是直接打开撞上限。
    */
   holdAfterFailedClose(member: PooledRemoteConnection, retryClose: () => Promise<unknown>): void {
-    this.held.get(member)?.();
+    this.held.get(member)?.end();
     let ended = false;
     const end = () => {
       if (ended) return;
       ended = true;
       clearTimeout(retry);
       clearTimeout(expire);
-      if (this.held.get(member) === end) this.held.delete(member);
+      if (this.held.get(member) === record) this.held.delete(member);
     };
+    const record = { end, retryClose };
     const retry = setTimeout(() => {
       retryClose().then(end, (error) => {
         this.options.log?.warn('remote agent pool: closing a released connection failed again', { error: String(error) });
@@ -128,7 +135,21 @@ export class RemoteConnectionPool {
     const expire = setTimeout(end, this.options.closeHoldMs ?? REMOTE_AGENT_POOL_CLOSE_HOLD_MS);
     (retry as { unref?: () => void }).unref?.();
     (expire as { unref?: () => void }).unref?.();
-    this.held.set(member, end);
+    this.held.set(member, record);
+  }
+
+  /** 立刻再发一次 close 关掉这个连接 close 没送到的旧 run；关掉了(对方不认识也算)就不再占位。 */
+  private async closeHeld(member: PooledRemoteConnection): Promise<boolean> {
+    const record = this.held.get(member);
+    if (!record) return false;
+    try {
+      await record.retryClose();
+    } catch (error) {
+      this.options.log?.warn('remote agent pool: closing a released connection failed again', { error: String(error) });
+      return false;
+    }
+    record.end();
+    return true;
   }
 
   /** 提前让出名额的水位线；上限太小(水位线不低于上限)时没有。 */
@@ -190,6 +211,8 @@ export class RemoteConnectionPool {
    */
   async beforeOpen(self: PooledRemoteConnection): Promise<void> {
     await this.serial(async () => {
+      // 自己让出时没关掉的旧 run：先关掉它再看名额。
+      await this.closeHeld(self);
       if (this.maxRuns === null || this.occupied(self) < this.maxRuns) return;
       if (await this.releaseNext(self)) {
         this.options.log?.info('remote agent pool: made room before opening', { maxRuns: this.maxRuns });
@@ -198,10 +221,10 @@ export class RemoteConnectionPool {
     void this.trim();
   }
 
-  /** 对方以名额已满拒绝了打开：让一个，让出了就由调用方重试一次。 */
+  /** 对方以名额已满拒绝了打开：先试着关掉自己没关掉的旧 run，否则让一个；腾出了就由调用方重试一次。 */
   releaseForRetry(self: PooledRemoteConnection): Promise<boolean> {
     return this.serial(async () => {
-      const released = await this.releaseNext(self);
+      const released = await this.closeHeld(self) || await this.releaseNext(self);
       this.options.log?.info('remote agent pool: open rejected for capacity', { released, maxRuns: this.maxRuns });
       return released;
     });
