@@ -127,11 +127,11 @@ Renderer 可以负责组件渲染、交互状态、表单状态、展示数据�
 注释和测试中写明冲突点；例外只豁免冲突项，其余预热、就绪握手、安全配置、状态清理与故障
 隔离要求仍然适用。
 
-`webviewTag` 默认关闭；受控例外目前有三类——主界面与右侧栏子窗口（内置浏览器需要；
+`webviewTag` 默认关闭；受控例外目前只有两类——主界面与右侧栏子窗口（内置浏览器需要；
 右侧栏整栏子窗口与单页签弹出窗口共用 `main/right-sidebar-window/window.ts` 的
 `createSidebarHostWindow` 工厂与 `sidebarWindowPreload`，`main/sidebar-tab-window/window.ts`
-只改启动参数、尺寸与位置记忆），以及插件面板独立窗口（`main/ghost-panel-window/window.ts`，
-仅承载 ghost 分区面板 webview）——所有例外都必须继续由 `webview-security.ts` 在 `will-attach-webview` 阶段
+只改启动参数、尺寸与位置记忆）。插件面板（ghost 分区 webview）不再有专属窗口：它以右侧栏
+全局页签承载，弹出时走同一扇页签窗口——所有例外都必须继续由 `webview-security.ts` 在 `will-attach-webview` 阶段
 覆盖 Renderer 传入的全部安全选项（hardener 挂在 `web-contents-created`，对所有窗口
 全局生效，ghost 附加闸只认分区与地址、不认宿主窗口）。
 

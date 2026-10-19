@@ -747,18 +747,6 @@ export const MAKER_INVOKE = {
   RSB_WINDOW_READY: 'maker:rsb-window:ready',
   RSB_WINDOW_SEND_COMMAND: 'maker:rsb-window:send-command',
   /**
-   * 插件停靠面板独立窗口(ghost panel window)——每 ghostId 一扇窗。
-   * 状态机见 main/ghost-panel-window/controller.ts。
-   *  - GET_STATE: 拉全量 { <ghostId>: { detached, lastOpen, open } }
-   *  - OPEN(ghostId): 幂等开(已开则 focus);资格不符清条目
-   *  - SET_DETACHED(ghostId, boolean): true 开窗抽离,false 关窗回停靠;返回新全量 state
-   * 首帧同步读走裸 sendSync 通道 'ghost-panel-window:get-state-sync'
-   * (与 layout:get / ghosts:list 同模式,规则 7 首帧无跳变)。
-   */
-  GHOST_PANEL_WINDOW_GET_STATE: 'maker:ghost-panel-window:get-state',
-  GHOST_PANEL_WINDOW_OPEN: 'maker:ghost-panel-window:open',
-  GHOST_PANEL_WINDOW_SET_DETACHED: 'maker:ghost-panel-window:set-detached',
-  /**
    * 右侧栏单页签独立窗口(sidebar tab window)——每个弹出的页签一扇窗。
    * 状态机见 main/sidebar-tab-window/controller.ts。
    *  - GET_STATE: 拉全量 { <tabId>: { sessionId, open } }
@@ -1062,11 +1050,6 @@ export const MAKER_PUSH = {
   RSB_WINDOW_COMMAND: 'maker:rsb-window:command',
   /** 子窗口合并回主窗口前交接不可持久化 session 的 tab 快照，只发主窗口。 */
   RSB_WINDOW_TAB_HANDOFF: 'maker:rsb-window:tab-handoff',
-  /**
-   * 插件面板独立窗口状态广播(全量 GhostPanelWindowsState)——发所有窗口
-   * (主窗布局过滤 + 各子窗口自身都消费)。
-   */
-  GHOST_PANEL_WINDOW_STATE_CHANGED: 'maker:ghost-panel-window:state-changed',
   /**
    * 右侧栏单页签独立窗口状态广播(全量 SidebarTabWindowsState)——发所有窗口
    * (主窗侧栏据此隐藏已弹出页签;弹出窗口自身不消费)。

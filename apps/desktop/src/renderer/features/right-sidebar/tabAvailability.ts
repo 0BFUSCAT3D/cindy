@@ -1,6 +1,8 @@
 import type { InstalledGhost } from '../../../shared/ghost';
 import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
 import { FEATURE_RETIREMENTS } from '../../../shared/featureRetirements';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
+import { isGlobalTabCapableGhost, type PluginViewTabState } from './globalTabs';
 import type { TabState } from './types';
 
 export interface RightSidebarTabAvailability {
@@ -11,6 +13,25 @@ export interface RightSidebarTabAvailability {
    * 窗口关闭后再回到投影。缺省 = 没有弹出。
    */
   hiddenTabIds?: ReadonlySet<string>;
+  /**
+   * 插件视图页签(`plugin-view`)可承载的本机已装插件。与 installedGhosts 分开:
+   * 后者在远程任务下被清空以关闭本地专属能力,而插件视图是全局页签、运行在本机,
+   * 不随任务归属变化。缺省 = 不做可用性过滤。
+   */
+  pluginViewGhosts?: readonly InstalledGhost[];
+}
+
+function isUnavailablePluginView(
+  tab: TabState,
+  availability: RightSidebarTabAvailability,
+): boolean {
+  if (tab.kind !== 'plugin-view' || !availability.pluginViewGhosts) return false;
+  const instanceId = (tab.state as PluginViewTabState | null)?.instanceId;
+  if (!instanceId) return true;
+  const ghost = availability.pluginViewGhosts.find(
+    (candidate) => installedGhostStoragePart(candidate) === instanceId,
+  );
+  return !ghost || !isGlobalTabCapableGhost(ghost);
 }
 
 function retiredTab(
@@ -36,6 +57,7 @@ function retiredTab(
 function isUnavailableTab(tab: TabState, availability: RightSidebarTabAvailability): boolean {
   return (
     availability.hiddenTabIds?.has(tab.id) === true ||
+    isUnavailablePluginView(tab, availability) ||
     (!CINDY_MAKE_ENABLED && tab.kind === 'cindy-make') ||
     retiredTab(tab, availability) === null ||
     (tab.kind === 'subagents' && !availability.subagentsAvailable)

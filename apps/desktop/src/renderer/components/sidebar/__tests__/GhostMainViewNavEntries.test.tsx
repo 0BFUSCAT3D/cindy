@@ -26,6 +26,18 @@ const items = [
 vi.mock('@/cindy-brain/ghostMainViews', () => ({
   useGhostMainViews: () => ({ declared: items, routeCapable: items, sidebarVisible: items }),
 }));
+const globalTabsMock = vi.hoisted(() => ({
+  addGlobalPluginTab: vi.fn((instanceId: string) => ({ id: `g-${instanceId}`, kind: 'plugin-view', state: { instanceId } })),
+  setActiveGlobalTabId: vi.fn(),
+  requestRightSidebarVisibility: vi.fn(),
+}));
+vi.mock('@/features/right-sidebar/globalTabs', () => ({
+  addGlobalPluginTab: globalTabsMock.addGlobalPluginTab,
+  setActiveGlobalTabId: globalTabsMock.setActiveGlobalTabId,
+}));
+vi.mock('@/features/right-sidebar/lib/sidebarCommands', () => ({
+  requestRightSidebarVisibility: globalTabsMock.requestRightSidebarVisibility,
+}));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { name?: string }) =>
@@ -75,6 +87,22 @@ describe('GhostMainViewNavEntries', () => {
     expect(manageAlphaButton.querySelector('.lucide-sliders-horizontal')).toBeTruthy();
     fireEvent.click(manageAlphaButton);
     expect(screen.getByTestId('location').textContent).toBe('/settings?tab=ghosts&ghost=alpha');
+  });
+
+  // 右键「在侧边栏中打开」= 把该插件视图钉进右侧栏(全局页签)、选中并展开侧栏。
+  it('offers "open in the sidebar" from the context menu and pins the plugin view as a global tab', () => {
+    render(
+      <MemoryRouter initialEntries={['/apps/alpha']}>
+        <Routes>
+          <Route path="*" element={<GhostMainViewNavEntries variant="row" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Workspace' }));
+    fireEvent.click(screen.getByText('ghostMainView.openInSidebar'));
+    expect(globalTabsMock.addGlobalPluginTab).toHaveBeenCalledWith('workspace');
+    expect(globalTabsMock.setActiveGlobalTabId).toHaveBeenCalledWith('g-workspace');
+    expect(globalTabsMock.requestRightSidebarVisibility).toHaveBeenCalledWith('open');
   });
 
   it('uses the native 18px rail icon geometry without a fallback tile', () => {

@@ -32,6 +32,12 @@ vi.mock('@/lib/toast', () => ({
 
 vi.mock('../plugins', () => ({}));
 
+const installedGhostsMock = vi.hoisted(() => ({ list: [] as unknown[] }));
+vi.mock('@/cindy-brain/useInstalledGhosts', () => ({
+  useInstalledGhosts: () => installedGhostsMock.list,
+  readInstalledGhostsSnapshot: () => installedGhostsMock.list,
+}));
+
 // Real guest preload and host, joined only at the Electron IPC boundary.
 const commentIpc = vi.hoisted(() => ({
   listeners: new Map<string, (event: unknown, payload: unknown) => void>(),
@@ -77,6 +83,11 @@ import {
   __resetSidebarTabWindowsStateForTest,
   __setSidebarTabWindowsStateForTest,
 } from '@/lib/sidebarTabWindowState';
+import {
+  __resetGlobalTabsForTest,
+  addGlobalPluginTab,
+  getActiveGlobalTabId,
+} from '../globalTabs';
 import { toast } from '@/lib/toast';
 import { writePanelCollapsed } from '@/layout/collapsePrefs';
 import { CHROME_ACTIONS_GEOMETRY } from '@/components/layout/chromeActionsGeometry';
@@ -299,7 +310,92 @@ describe('RightSidebarShell empty state', () => {
     _resetPopupRouterForTests();
     _resetNativePopupTabsForTests();
     __resetSidebarTabWindowsStateForTest();
+    __resetGlobalTabsForTest();
+    window.localStorage.clear();
+    installedGhostsMock.list = [];
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  });
+
+  // 测试价值
+  // - 生产入口与可观察结果:RightSidebarShell 同时投影全局页签(globalTabs,不跟对话)与任务
+  //   页签;可观察的是全局页签钉在条首并带图钉、切任务后仍在、点它只改本窗口的全局激活位
+  //   而不写任务桶的 setActive、有全局页签在场时任务页签关空不触发自动收起、关闭全局页签
+  //   是全局动作、插件停用后它从投影里消失但数据保留。
+  // - Bug / 规则依据:右侧栏「跟对话 / 不跟对话」两类页签模型(本 PR)。
+  // - 现有覆盖缺口:其余用例只覆盖任务桶。
+  // - 最小失败输入:一个 plugin-view 全局页签 + 一个任务页签,切换任务。
+  // - tier:unit(jsdom,localStorage 全局页签 + 进程内 store)。
+  it('pins global plugin-view tabs across tasks without touching the task bucket active marker', async () => {
+    installedGhostsMock.list = [
+      { manifest: { id: 'alpha', name: 'Alpha', panel: { html: 'p.html', title: 'Alpha Panel' } }, enabled: true },
+    ];
+    const globalTab = addGlobalPluginTab('alpha')!;
+    const onAllTabsClosed = vi.fn();
+    tabsIpc.list.mockResolvedValueOnce({
+      tabs: [{ id: 'tab-files', kind: 'file-browser', state: null }],
+      activeTabId: 'tab-files',
+    });
+    const { rerender } = render(
+      createElement(RightSidebarShell, {
+        sessionId: 's1',
+        workdir: '/tmp/repo',
+        remoteHostId: null,
+        isMac: true,
+        unifiedTopbar: true,
+        subagentsAvailable: false,
+        onAllTabsClosed,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('rightSidebar.tabs.kinds.fileBrowser')).toBeTruthy());
+    const pinned = screen.getByTestId('right-sidebar-pinned-tabs');
+    expect(pinned.textContent).toContain('rightSidebar.tabs.kinds.pluginView');
+    expect(pinned.querySelector('[data-pinned]')).toBeTruthy();
+
+    // 选中全局页签:只改本窗口的全局激活位,任务桶的 setActive 不落库。
+    tabsIpc.setActive.mockClear();
+    fireEvent.click(screen.getByText('rightSidebar.tabs.kinds.pluginView'));
+    expect(getActiveGlobalTabId()).toBe(globalTab.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tabsIpc.setActive).not.toHaveBeenCalled();
+
+    // 切到空任务:全局页签还在、仍是激活页签;任务没有页签但不渲染空态、不触发收起。
+    tabsIpc.list.mockResolvedValueOnce({ tabs: [], activeTabId: null });
+    rerender(
+      createElement(RightSidebarShell, {
+        sessionId: 's2',
+        workdir: '/tmp/repo',
+        remoteHostId: null,
+        isMac: true,
+        unifiedTopbar: true,
+        subagentsAvailable: false,
+        onAllTabsClosed,
+      }),
+    );
+    await waitFor(() => expect(getBucket('s2').hydrated).toBe(true));
+    expect(screen.getByTestId('right-sidebar-pinned-tabs').textContent).toContain(
+      'rightSidebar.tabs.kinds.pluginView',
+    );
+    expect(screen.queryByText('rightSidebar.tabs.empty.title')).toBeNull();
+    expect(onAllTabsClosed).not.toHaveBeenCalled();
+
+    // 插件停用:页签从投影消失(数据保留),没有别的页签了才算关空。
+    installedGhostsMock.list = [
+      { manifest: { id: 'alpha', name: 'Alpha', panel: { html: 'p.html', title: 'Alpha Panel' } }, enabled: false },
+    ];
+    rerender(
+      createElement(RightSidebarShell, {
+        sessionId: 's2',
+        workdir: '/tmp/other',
+        remoteHostId: null,
+        isMac: true,
+        unifiedTopbar: true,
+        subagentsAvailable: false,
+        onAllTabsClosed,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('right-sidebar-pinned-tabs')).toBeNull());
+    expect(screen.getByText('rightSidebar.tabs.empty.title')).toBeTruthy();
+    await waitFor(() => expect(onAllTabsClosed).toHaveBeenCalledOnce());
   });
 
   it.each([

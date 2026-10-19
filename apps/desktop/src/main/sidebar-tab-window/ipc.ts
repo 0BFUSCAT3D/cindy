@@ -120,7 +120,8 @@ function parseOpenRequest(raw: unknown): SidebarTabWindowOpenRequest {
   const obj = requireObject(raw, 'open request');
   return {
     tabId: requireId(obj.tabId, 'tabId'),
-    sessionId: requireId(obj.sessionId, 'sessionId'),
+    // 全局页签(插件视图)不属于任何任务:sessionId 为 null。
+    sessionId: optionalNullableString(obj.sessionId, 'sessionId') ?? null,
     context: parseContext(obj.context),
     handoff: parseHandoff(obj.handoff),
   };

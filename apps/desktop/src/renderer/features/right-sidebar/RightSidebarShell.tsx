@@ -67,6 +67,13 @@ import { useRetainedBrowserTabHosts } from './hooks/useRetainedBrowserTabHosts';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { useSidebarTabWindowsState } from '@/lib/sidebarTabWindowState';
 import {
+  isGlobalTabId,
+  removeGlobalTab,
+  setActiveGlobalTabId,
+  useActiveGlobalTabId,
+  useGlobalTabs,
+} from './globalTabs';
+import {
   mergeAvailableTabOrder,
   projectAvailableTabs,
 } from './tabAvailability';
@@ -220,13 +227,21 @@ export function RightSidebarShell({
   );
   const getBucketSnapshot = useCallback(() => getBucket(sessionId), [sessionId]);
   const bucket = useSyncExternalStore(subscribeBucket, getBucketSnapshot);
+  // 全局页签(不跟对话):在所有任务里都在场,切任务留在原位;与任务页签一起投影。
+  const globalTabs = useGlobalTabs();
+  const activeGlobalTabId = useActiveGlobalTabId();
+  // 没有任务(sessionId=null)时任务桶不存在,但全局页签照常可展示——弹出窗口里
+  // 承载全局页签就是这种形态。
+  const contentReady = bucket.hydrated || sessionId === null;
   const hiddenTabIds = useMemo<ReadonlySet<string> | undefined>(() => {
     if (soloMode) {
-      return new Set(bucket.tabs.map((tab) => tab.id).filter((id) => id !== soloTabId));
+      return new Set(
+        [...globalTabs, ...bucket.tabs].map((tab) => tab.id).filter((id) => id !== soloTabId),
+      );
     }
     const ids = Object.keys(poppedOutTabs);
     return ids.length > 0 ? new Set(ids) : undefined;
-  }, [bucket.tabs, poppedOutTabs, soloMode, soloTabId]);
+  }, [bucket.tabs, globalTabs, poppedOutTabs, soloMode, soloTabId]);
   const previousShellVisibleRef = useRef(shellVisible);
   const subagentsEligibilityKnown = typeof subagentsAvailable === 'boolean';
   const subagentsEnabled = subagentsAvailable === true;
@@ -283,8 +298,30 @@ export function RightSidebarShell({
     () => projectAvailableTabs(bucket.tabs, bucket.activeTabId, tabAvailability),
     [bucket.activeTabId, bucket.tabs, tabAvailability],
   );
-  const tabs = projectedTabs.tabs;
-  const activeTabId = projectedTabs.activeTabId;
+  // 全局页签的可用性只看本机已装插件(插件视图运行在本机,不随任务归属变化)。
+  const globalAvailability = useMemo(
+    () => ({
+      installedGhosts: [] as typeof installedGhosts,
+      subagentsAvailable: true,
+      hiddenTabIds,
+      pluginViewGhosts: installedGhosts,
+    }),
+    [hiddenTabIds, installedGhosts],
+  );
+  const pinnedTabs = useMemo(
+    () => projectAvailableTabs(globalTabs, null, globalAvailability).tabs,
+    [globalAvailability, globalTabs],
+  );
+  const sessionTabs = projectedTabs.tabs;
+  const sessionActiveTabId = projectedTabs.activeTabId;
+  /** 侧栏可见页签 = 全局页签(钉在前) + 当前任务页签。 */
+  const tabs = useMemo(() => [...pinnedTabs, ...sessionTabs], [pinnedTabs, sessionTabs]);
+  // 激活位:用户选中的全局页签优先并跨任务保持;否则是任务自己的激活页签;
+  // 任务没有页签时落到第一个全局页签。
+  const activeTabId =
+    activeGlobalTabId && pinnedTabs.some((tab) => tab.id === activeGlobalTabId)
+      ? activeGlobalTabId
+      : sessionActiveTabId ?? pinnedTabs[0]?.id ?? null;
 
   // 首帧只挂当前激活 tab。其余 tab 在浏览器空闲期逐个补挂载，随后继续按原有
   // keep-alive 语义保留组件 / webview / 编辑器状态。这样恢复一个多 tab 会话时，
@@ -358,16 +395,16 @@ export function RightSidebarShell({
   useEffect(() => {
     // 单页签独立窗口不写激活位:它只投影自己承载的页签,激活位归主窗侧栏管。
     if (soloMode || !subagentsEligibilityKnown) return;
-    if (!bucket.hydrated || !sessionId || bucket.activeTabId === activeTabId) return;
-    void setActiveTab(sessionId, activeTabId).catch((err) => {
+    if (!bucket.hydrated || !sessionId || bucket.activeTabId === sessionActiveTabId) return;
+    void setActiveTab(sessionId, sessionActiveTabId).catch((err) => {
       log.error('unavailable active-tab reconciliation failed', {
         sessionId,
-        activeTabId,
+        activeTabId: sessionActiveTabId,
         err,
       });
     });
   }, [
-    activeTabId,
+    sessionActiveTabId,
     bucket.activeTabId,
     bucket.hydrated,
     sessionId,
@@ -437,14 +474,15 @@ export function RightSidebarShell({
   //   - hydrated 后首帧 prev===null 不触发(区分"刚加载出来就是空"与"关到空");
   //   - 展开一个本就 0-tab 的 session 也不会被立刻折叠,用户仍能在 EmptyState 加 tab。
   // sessionId 变化时重置计数,避免"切到一个空 session"被误判成"关空"。
+  // 全局页签计入可见页签数:有全局页签在场时侧栏不会因任务页签关空而自动收起。
   useEffect(() => {
-    if (!bucket.hydrated) return; // 未 hydrate 的空数组不算"关空"
+    if (!contentReady) return; // 未 hydrate 的空数组不算"关空"
     const prev = prevTabCountRef.current;
     prevTabCountRef.current = tabs.length;
     if (prev !== null && prev > 0 && tabs.length === 0) {
       onAllTabsClosed?.();
     }
-  }, [bucket.hydrated, tabs.length, onAllTabsClosed]);
+  }, [contentReady, tabs.length, onAllTabsClosed]);
 
   const handleAdd = useCallback(
     (kind: TabKindId) => {
@@ -489,6 +527,11 @@ export function RightSidebarShell({
 
   const handleClose = useCallback(
     (tabId: string) => {
+      // 全局页签的关闭是全局动作(所有任务里一起消失),不进任务桶。
+      if (isGlobalTabId(tabId)) {
+        removeGlobalTab(tabId);
+        return;
+      }
       if (!sessionId) return;
       void closeTab(sessionId, tabId).catch((err) => {
         log.error('handleClose failed', { sessionId, tabId, err });
@@ -499,6 +542,12 @@ export function RightSidebarShell({
 
   const handleActivate = useCallback(
     (tabId: string) => {
+      if (isGlobalTabId(tabId)) {
+        setActiveGlobalTabId(tabId);
+        return;
+      }
+      // 选中任务页签 = 离开全局页签;任务自己的激活位照常落库。
+      setActiveGlobalTabId(null);
       if (!sessionId) return;
       void setActiveTab(sessionId, tabId).catch((err) => {
         log.error('handleActivate failed', { sessionId, tabId, err });
@@ -532,12 +581,10 @@ export function RightSidebarShell({
           : (activeIndex + (direction === 'next' ? 1 : -1) + tabs.length) % tabs.length;
       const nextTabId = tabs[nextIndex]?.id;
       if (!nextTabId || nextTabId === activeTabId) return false;
-      void setActiveTab(sessionId, nextTabId).catch((err) => {
-        log.error('cycle right sidebar tab failed', { sessionId, direction, nextTabId, err });
-      });
+      handleActivate(nextTabId);
       return true;
     },
-    [activeTabId, sessionId, shellVisible, tabs],
+    [activeTabId, handleActivate, sessionId, shellVisible, tabs],
   );
 
   useAppShortcut('right-tab-prev', () => handleCycleTab('prev'), {
@@ -555,7 +602,8 @@ export function RightSidebarShell({
   const handleCloseOthers = useCallback(
     async (keepTabId: string) => {
       if (!sessionId) return;
-      const targets = tabs.filter((t) => t.id !== keepTabId).map((t) => t.id);
+      // 「关闭其他 / 关闭所有」只作用于任务页签;全局页签要用户逐个显式关闭。
+      const targets = sessionTabs.filter((t) => t.id !== keepTabId).map((t) => t.id);
       for (const tabId of targets) {
         try {
           await closeTab(sessionId, tabId);
@@ -565,13 +613,13 @@ export function RightSidebarShell({
         }
       }
     },
-    [sessionId, tabs],
+    [sessionId, sessionTabs],
   );
 
   // 右键菜单"关闭所有":关掉本 session 的全部 tab。
   const handleCloseAll = useCallback(async () => {
     if (!sessionId) return;
-    const targets = tabs.map((t) => t.id);
+    const targets = sessionTabs.map((t) => t.id);
     for (const tabId of targets) {
       try {
         await closeTab(sessionId, tabId);
@@ -580,7 +628,7 @@ export function RightSidebarShell({
         break;
       }
     }
-  }, [sessionId, tabs]);
+  }, [sessionId, sessionTabs]);
 
   // popup 路由已挪到窗口级常驻模块(lib/popupRouter.ts):订阅不随 Shell 生命
   // 周期,用户离开聊天视图 / main 端归属等待期间 route 切换都不再丢 popup。
@@ -613,7 +661,7 @@ export function RightSidebarShell({
   );
 
   const bodyHosts = useRetainedBrowserTabHosts(
-    bucket.hydrated
+    contentReady
       ? tabs
           .filter((tab) => tab.id === activeTabId || deferredMountedTabIds.has(tab.id))
           .map((tab) => ({ tab, sessionId, workdir, remoteHostId, deviceLinkDeviceId }))
@@ -676,7 +724,8 @@ export function RightSidebarShell({
               「+」wrapper 传 h-[30px](pill 高)而非 h-full:TabStrip 根高度由
               内容驱动,百分比高度会退化。 */}
           <TabStrip
-            tabs={tabs}
+            tabs={sessionTabs}
+            pinnedTabs={pinnedTabs}
             activeTabId={activeTabId}
             sessionId={sessionId}
             onActivate={handleActivate}
@@ -727,7 +776,8 @@ export function RightSidebarShell({
         </div>
       ) : (
         <TabBar
-          tabs={tabs}
+          tabs={sessionTabs}
+          pinnedTabs={pinnedTabs}
           activeTabId={activeTabId}
           sessionId={sessionId}
           onActivate={handleActivate}
@@ -752,7 +802,7 @@ export function RightSidebarShell({
         {/* 首次切到某 session 时 cache 尚未 hydrate(等 IPC list 回包),保留 panel
             背景而非闪 EmptyState —— EmptyState 是"真的没 tab"的 Welcome 内容。
             sessionId 为 null 也走这条:Shell 不显示任何内容(无激活会话)。 */}
-        {!bucket.hydrated || soloMode ? null : tabs.length === 0 ? (
+        {!contentReady || soloMode || !sessionId ? null : tabs.length === 0 ? (
           // tab 列表为空时永远渲染 EmptyState。审查页签只通过「+」dropdown 或
           // EmptyState 的"打开审查"入口由用户主动创建。
           <EmptyState

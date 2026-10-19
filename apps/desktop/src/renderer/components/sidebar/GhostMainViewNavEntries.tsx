@@ -1,22 +1,18 @@
-import {
-  CalendarDays,
-  ChartColumn,
-  Code,
-  Database,
-  Folder,
-  Globe,
-  Image,
-  MessageCircle,
-  Puzzle,
-  SlidersHorizontal,
-  type LucideIcon,
-} from 'lucide-react';
+import { useState } from 'react';
+import { PanelRight, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMatch, useNavigate } from 'react-router-dom';
 
 import { useGhostMainViews, type GhostMainViewItem } from '@/cindy-brain/ghostMainViews';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { addGlobalPluginTab, setActiveGlobalTabId } from '@/features/right-sidebar/globalTabs';
+import { requestRightSidebarVisibility } from '@/features/right-sidebar/lib/sidebarCommands';
 import { cn } from '@/lib/utils';
-import type { GhostMainViewIcon } from '../../../shared/ghost';
 
 import { SIDEBAR_RAIL_ICON_BUTTON_CLASS } from './SidebarIconButton';
 import { Tip } from '../ui/tooltip';
@@ -28,17 +24,8 @@ const ROW_ACTIVE_CLASS =
 const RAIL_ACTIVE_CLASS =
   '[--button-face-bg:var(--chat-input-chip-bg)] text-[var(--msg-assistant-text)] enabled:hover:[--button-face-bg:var(--chat-input-chip-bg)] enabled:active:[--button-face-bg:var(--chat-input-chip-bg)]';
 
-export const MAIN_VIEW_ICONS: Record<GhostMainViewIcon, LucideIcon> = {
-  puzzle: Puzzle,
-  globe: Globe,
-  code: Code,
-  folder: Folder,
-  database: Database,
-  'chart-column': ChartColumn,
-  image: Image,
-  'message-circle': MessageCircle,
-  'calendar-days': CalendarDays,
-};
+export { MAIN_VIEW_ICONS } from '@/cindy-brain/mainViewIcons';
+import { MAIN_VIEW_ICONS } from '@/cindy-brain/mainViewIcons';
 
 /** Expanded and rail variants consume the exact same sorted visibility projection. */
 export function GhostMainViewNavEntries({ variant }: { variant: 'row' | 'rail' }) {
@@ -72,25 +59,79 @@ export function GhostMainViewNavEntry({
   const open = () => navigate(`/apps/${encodeURIComponent(item.instanceId)}`);
   const openDetails = () =>
     navigate(`/settings?tab=ghosts&ghost=${encodeURIComponent(item.instanceId)}`);
+  // 右键菜单:「在侧边栏中打开」= 把这个插件视图作为全局页签(不跟对话)钉进右侧栏。
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenuPos({ x: e.clientX, y: e.clientY });
+  };
+  const openInSidebar = () => {
+    const tab = addGlobalPluginTab(item.instanceId);
+    if (!tab) return;
+    setActiveGlobalTabId(tab.id);
+    requestRightSidebarVisibility('open');
+  };
+  const contextMenu = (
+    <DropdownMenu
+      open={contextMenuPos !== null}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) setContextMenuPos(null);
+      }}
+    >
+      <DropdownMenuTrigger asChild>
+        <span
+          aria-hidden
+          style={{
+            position: 'fixed',
+            left: contextMenuPos?.x ?? 0,
+            top: contextMenuPos?.y ?? 0,
+            width: 0,
+            height: 0,
+            pointerEvents: 'none',
+          }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" sideOffset={2}>
+        <DropdownMenuItem
+          onClick={() => {
+            setContextMenuPos(null);
+            openInSidebar();
+          }}
+        >
+          <PanelRight size={14} aria-hidden="true" />
+          {t('ghostMainView.openInSidebar')}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
   if (variant === 'rail') {
     return (
-      <Tip text={item.title} side="right">
-        <button
-          type="button"
-          aria-label={item.title}
-          aria-current={active ? 'page' : undefined}
-          onClick={open}
-          className={cn(SIDEBAR_RAIL_ICON_BUTTON_CLASS, active && RAIL_ACTIVE_CLASS)}
-        >
-          {icon}
-        </button>
-      </Tip>
+      <>
+        <Tip text={item.title} side="right">
+          <button
+            type="button"
+            aria-label={item.title}
+            aria-current={active ? 'page' : undefined}
+            onClick={open}
+            onContextMenu={onContextMenu}
+            className={cn(SIDEBAR_RAIL_ICON_BUTTON_CLASS, active && RAIL_ACTIVE_CLASS)}
+          >
+            {icon}
+          </button>
+        </Tip>
+        {contextMenu}
+      </>
     );
   }
 
   return (
-    <div className={cn(ROW_CLASS, 'group/main-view gap-0 px-0', active && ROW_ACTIVE_CLASS)}>
+    <div
+      className={cn(ROW_CLASS, 'group/main-view gap-0 px-0', active && ROW_ACTIVE_CLASS)}
+      onContextMenu={onContextMenu}
+    >
+      {contextMenu}
       <button
         type="button"
         aria-label={item.title}

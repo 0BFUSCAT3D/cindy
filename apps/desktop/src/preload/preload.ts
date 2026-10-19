@@ -553,10 +553,6 @@ const fanOutRsbWindowStateChanged = createIpcFanOut('maker:rsb-window:state-chan
 const fanOutRsbWindowContextChanged = createIpcFanOut('maker:rsb-window:context-changed');
 const fanOutRsbWindowCommand = createIpcFanOut('maker:rsb-window:command');
 const fanOutRsbWindowTabHandoff = createIpcFanOut(RSB_WINDOW_TAB_HANDOFF_CHANNEL);
-// 插件停靠面板独立窗口(ghost panel window)状态推送
-const fanOutGhostPanelWindowStateChanged = createIpcFanOut(
-  'maker:ghost-panel-window:state-changed',
-);
 // 右侧栏单页签独立窗口(sidebar tab window)状态 / 页签交回 / 页签持久化变更推送
 const fanOutSidebarTabWindowStateChanged = createIpcFanOut(
   'maker:sidebar-tab-window:state-changed',
@@ -1994,30 +1990,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fanOutRsbWindowTabHandoff((data) => cb(data as RsbWindowTabHandoff)),
   },
 
-  // ── 插件停靠面板独立窗口(ghost panel window)──────────────────────────
-  // 每 ghostId 一扇窗。状态机在 main(ghost-panel-window/controller.ts),
-  // renderer 只 invoke + 订阅广播;首帧走 sendSync(规则 7 无跳变)。
-  ghostPanelWindow: {
-    /** 首帧同步读全量状态(ghostId → { detached, lastOpen, open })。 */
-    getStateSync: (): Record<string, { detached: boolean; lastOpen: boolean; open: boolean }> =>
-      ipcRenderer.sendSync('ghost-panel-window:get-state-sync') as Record<
-        string,
-        { detached: boolean; lastOpen: boolean; open: boolean }
-      >,
-    getState: (): Promise<
-      Record<string, { detached: boolean; lastOpen: boolean; open: boolean }>
-    > => ipcRenderer.invoke('maker:ghost-panel-window:get-state'),
-    /** 幂等:已开则 show + focus。 */
-    open: (ghostId: string): Promise<void> =>
-      ipcRenderer.invoke('maker:ghost-panel-window:open', ghostId),
-    /** 写偏好;true 开窗抽离,false 关窗回停靠。返回新全量 state。 */
-    setDetached: (
-      ghostId: string,
-      detached: boolean,
-    ): Promise<Record<string, { detached: boolean; lastOpen: boolean; open: boolean }>> =>
-      ipcRenderer.invoke('maker:ghost-panel-window:set-detached', ghostId, detached),
-    onStateChanged: fanOutGhostPanelWindowStateChanged,
-  },
 
   // ── 资源用量独立子窗口 ──────────────────────────────────────────────
   // 主窗口只持有打开能力；资源窗口的关闭与就绪能力在专用 preload 中暴露。

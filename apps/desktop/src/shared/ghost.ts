@@ -445,7 +445,7 @@ export type GhostPanelPosition = (typeof GHOST_PANEL_POSITIONS)[number];
 
 /** 面板声明(五个卡槽中的「面板」槽,一段意识至多一块)。 */
 export interface GhostPanelDecl {
-  /** 面板标准头(PanelChrome)标题;缺省用意识 name。 */
+  /** 面板标题(右侧栏页签 / 插件页标题);缺省用意识 name。 */
   title?: string;
   /** 显示形态:left 停靠主聊天窗左侧(缺省),或 'tab' 插件页内独占面板
    *  (2026-08-02 面板收束:只从插件页打开,离开插件页即关闭);

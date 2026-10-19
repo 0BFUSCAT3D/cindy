@@ -1715,13 +1715,6 @@
         "hint": "For unpinned sessions: Text uses one line; List adds a preview.",
         "aria": "Switch session list style"
       },
-      "ghostPanelRestore": {
-        "label": "Plugin panel restore entry",
-        "hint": "Choose where minimized plugin panels can be restored.",
-        "aria": "Choose the plugin panel restore entry",
-        "bubble": "Floating bubble",
-        "sidebar": "Sidebar"
-      },
       "wallpaper": {
         "title": "Wallpaper",
         "description": "Choose a Cindy scene, image or video for the whole app, independently of the theme.",
@@ -6603,7 +6596,7 @@
         "nodeResidentDetail": "Runs while the plugin is enabled and stops when disabled, updated, uninstalled, or when Cindy exits.",
         "tool": "Tool \"{{name}}\"",
         "command": "Chat command ${{command}}",
-        "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
+        "panelLeft": "Panel \"{{title}}\" · shown in the right sidebar",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
         "mainView": "Can add a “{{title}}” entry to Cindy's sidebar",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
@@ -6700,8 +6693,8 @@
         "locationCopied": "Install location copied",
         "locationCopyFailed": "Could not copy the install location. Copy it manually.",
         "openLocation": "Open install location",
-        "panelDocked": "Docked · min width {{min}}px",
-        "panelNotDocked": "Not docked (no layout record yet)",
+        "panelInSidebar": "Shown in the right sidebar (kept across tasks)",
+        "panelDismissed": "Closed from the right sidebar · right-click its entry in the left sidebar to reopen",
         "panelPageHosted": "Opens from the Plugin page · closes when you leave",
         "panelNone": "This plugin has no panel",
         "customSlotTitle": "Plugin custom settings area",
@@ -7986,19 +7979,7 @@
     "collapsePanel": "Collapse",
     "expandPanel": "Expand"
   },
-  "panelChrome": {
-    "maximizeAria": "Maximize panel",
-    "restoreAria": "Restore panel size",
-    "detachAria": "Open in a new window",
-    "minimizeAria": "Minimize panel",
-    "closeAria": "Close panel and disable plugin"
-  },
   "ghostPanel": {
-    "disableConfirm": {
-      "title": "Disable \"{{name}}\"?",
-      "body": "Closing this panel disables the plugin and pauses its capabilities. You can re-enable it anytime from Plugins in the sidebar.",
-      "confirm": "Disable"
-    },
     "externalLinkConfirm": {
       "title": "Allow Cindy to open an external website?",
       "message": "Allow Cindy to open an external website?",
@@ -8006,19 +7987,8 @@
       "cancel": "Cancel"
     }
   },
-  "ghostPanelWindow": {
-    "mergeBack": "Return to main window",
-    "unavailable": "This plugin panel is currently unavailable"
-  },
-  "ghostPanelBubble": {
-    "restoreAria": "Restore {{name}} panel",
-    "stackExpandAria": "{{count}} plugin panels minimized. Click to expand",
-    "stackCollapseAria": "Collapse the plugin panel list"
-  },
-  "ghostPanelRestore": {
-    "single": "Restore {{name}}",
-    "multiple": "Minimized plugin panels",
-    "multipleAria": "{{count}} plugin panels minimized. Choose a panel to restore"
+  "ghostMainView": {
+    "openInSidebar": "Open in the sidebar"
   },
   "rightSidebar": {
     "ariaLabel": "Right sidebar",
@@ -8044,6 +8014,7 @@
       "addAria": "Add tab",
       "addFailed": "Failed to add tab",
       "tabCloseAria": "Close tab",
+      "pinnedAria": "Global tab, kept across tasks",
       "menu": {
         "addLabel": "Add tab",
         "comingSoon": "Coming soon",
@@ -8059,7 +8030,8 @@
         "resourceUsage": "Activity Monitor",
         "collaboration": "Team",
         "unknown": "Unknown tab",
-        "ghostPanel": "Plugin panel"
+        "ghostPanel": "Plugin panel",
+        "pluginView": "Plugin view"
       },
       "controls": {
         "showAria": "Show sidebar",

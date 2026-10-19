@@ -34,6 +34,11 @@ import { mergeSidebarWindowBack } from '@/features/right-sidebar/lib/mergeSideba
 import { setSoloTabId } from '@/features/right-sidebar/lib/tabHosting';
 import { getTabKind, hydrateTabState } from '@/features/right-sidebar/registry';
 import { closeTab, getBucket, importTabSnapshot, subscribe } from '@/features/right-sidebar/store';
+import {
+  findGlobalTab,
+  removeGlobalTab,
+  useGlobalTabs,
+} from '@/features/right-sidebar/globalTabs';
 import { iconForTabKind, labelKeyForTabKind } from '@/features/right-sidebar/TabBar';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
@@ -131,29 +136,34 @@ export function SidebarTabWindowLayout() {
   );
   const getBucketSnapshot = useCallback(() => getBucket(sessionId), [sessionId]);
   const bucket = useSyncExternalStore(subscribeBucket, getBucketSnapshot);
-  const tab = useMemo(
-    () => (tabId ? (bucket.tabs.find((candidate) => candidate.id === tabId) ?? null) : null),
-    [bucket.tabs, tabId],
-  );
+  // 全局页签(插件视图,sessionId=null)不在任务桶里,从全局存储找;它不需要任务桶水合。
+  const globalTabs = useGlobalTabs();
+  const isGlobal = assignment !== null && assignment.sessionId === null;
+  const tab = useMemo(() => {
+    if (!tabId) return null;
+    if (isGlobal) return globalTabs.find((candidate) => candidate.id === tabId) ?? null;
+    return bucket.tabs.find((candidate) => candidate.id === tabId) ?? null;
+  }, [bucket.tabs, globalTabs, isGlobal, tabId]);
+  const contentReady = isGlobal || bucket.hydrated;
 
   // presentation-ready:被指派页签的桶已水合且页签在场 → main 可以展示窗口。
   useEffect(() => {
-    if (presentationReadySentRef.current || !assignment || !bucket.hydrated || !tab) return;
+    if (presentationReadySentRef.current || !assignment || !contentReady || !tab) return;
     presentationReadySentRef.current = true;
     void api?.presentationReady?.().catch((err) => {
       log.warn('presentation-ready handshake failed', err);
     });
-  }, [api, assignment, bucket.hydrated, tab]);
+  }, [api, assignment, contentReady, tab]);
 
-  // 页签已不在桶里(本窗口内被关闭):销毁本窗口,不交回。
+  // 页签已不在桶 / 全局列表里(本窗口内被关闭):销毁本窗口,不交回。
   useEffect(() => {
-    if (!assignment || !bucket.hydrated || tab || leavingRef.current) return;
+    if (!assignment || !contentReady || tab || leavingRef.current) return;
     leavingRef.current = true;
     void api?.closeForTab(assignment.tabId).catch((err) => {
       leavingRef.current = false;
       log.warn('close window for closed tab failed', err);
     });
-  }, [api, assignment, bucket.hydrated, tab]);
+  }, [api, assignment, contentReady, tab]);
 
   const mergeBack = useCallback(() => {
     if (!assignment || leavingRef.current) return;
@@ -168,6 +178,11 @@ export function SidebarTabWindowLayout() {
   // 都不发生;页签真的消失后,上面的 effect 再请求 main 销毁窗口。
   const closeOwnTab = useCallback(() => {
     if (!assignment || leavingRef.current) return;
+    if (assignment.sessionId === null) {
+      // 全局页签:关闭是全局动作,列表变化后上面的 effect 收窗。
+      if (findGlobalTab(assignment.tabId)) removeGlobalTab(assignment.tabId);
+      return;
+    }
     void closeTab(assignment.sessionId, assignment.tabId).catch((err) => {
       log.warn('close popped-out tab failed', err);
     });
@@ -253,7 +268,7 @@ export function SidebarTabWindowLayout() {
         {(!windowVisible || !assignment || !tab) && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--panel-bg)]">
             <span className="text-13 text-[var(--text-tertiary)]">
-              {assignment && bucket.hydrated && !tab
+              {assignment && contentReady && !tab
                 ? t('rightSidebar.tabWindow.closed')
                 : t('rightSidebar.tabWindow.loading')}
             </span>

@@ -22,7 +22,8 @@ export interface SidebarTabWindowContext {
 /** main 指派给某扇弹出窗口的页签身份;窗口整个生命周期只承载这一个页签。 */
 export interface SidebarTabWindowAssignment {
   tabId: string;
-  sessionId: string;
+  /** 任务页签所属任务;全局页签(不跟对话,如插件视图)为 null。 */
+  sessionId: string | null;
   context: SidebarTabWindowContext;
 }
 
@@ -39,7 +40,7 @@ export interface SidebarTabReturnSnapshot {
 
 /** 单扇弹出窗口的运行时状态;只在当前进程有效,不跨重启。 */
 export interface SidebarTabWindowEntryState {
-  sessionId: string;
+  sessionId: string | null;
   /** 窗口是否已经展示(或正在等待首份内容后展示)。 */
   open: boolean;
 }
@@ -49,7 +50,7 @@ export type SidebarTabWindowsState = Record<string, SidebarTabWindowEntryState>;
 
 /** main → 主窗:页签离开弹出窗口,回到侧边栏(合并 / 窗口崩溃)。 */
 export interface SidebarTabReturnedPayload {
-  sessionId: string;
+  sessionId: string | null;
   tabId: string;
   /** 不可持久化会话交回的内存态;可持久化会话为 null,主窗按 SQLite 刷新。 */
   snapshot: SidebarTabReturnSnapshot | null;

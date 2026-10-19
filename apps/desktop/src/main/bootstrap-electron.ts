@@ -749,19 +749,10 @@ import { ResourceUsageWindowController } from './resource-usage-window/controlle
 import { createResourceUsageWindow } from './resource-usage-window/window.js';
 import { registerResourceUsageWindowIpc } from './resource-usage-window/ipc.js';
 import { isResourceUsageOpenSender } from './resource-usage-window/open-sender.js';
-import { GhostPanelWindowsController } from './ghost-panel-window/controller.js';
-import { createGhostPanelWindow } from './ghost-panel-window/window.js';
-import { registerGhostPanelWindowIpc } from './ghost-panel-window/ipc.js';
 import { SidebarTabWindowsController } from './sidebar-tab-window/controller.js';
 import { createSidebarTabWindow } from './sidebar-tab-window/window.js';
 import { registerSidebarTabWindowIpc } from './sidebar-tab-window/ipc.js';
 import { setRightSidebarTabsChangeBroadcaster } from './localDb/ipc/rightSidebarTabs.js';
-import {
-  patchGhostPanelWindowEntry,
-  readGhostPanelWindowsSettings,
-  removeGhostPanelWindowEntry,
-  resetGhostPanelWindowSettingsForStartup,
-} from './ghost-panel-window/settings-store.js';
 import {
   readRsbWindowSettings,
   resetRsbWindowSettingsForStartup,
@@ -1115,18 +1106,15 @@ import {
   getGhostManager,
   getGhostSessionActivityTracker,
   interruptGhostCallsForAccountBoundary,
-  isGhostAvailableForActiveSession,
   reconcileGhostOauthAccountsForActiveOwner,
   refreshGhostLocalization,
   refreshPluginUsageBindings,
   registerGhostIpc,
   runStableOwnerPostCommitTask,
   setGhostNodeRuntimeStartAttemptContextReader,
-  setGhostsChangedObserver,
   suspendAllGhosts,
   waitForGhostMutations,
 } from './cindy-brain/index.js';
-import { installedGhostStoragePart } from '../shared/pluginIdentity.js';
 import { setCodexImageAuthBinding } from './cindy-brain/codexImageAuthBinding.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
@@ -2297,58 +2285,6 @@ registerRsbWindowIpc({
   getMainWindow: () => mainWindowRef,
 });
 
-// ── 插件停靠面板独立窗口(ghost panel window)────────────────────────────
-// 每 ghostId 一扇窗:PanelChrome「独立窗口」按钮 → setDetached(id, true) 开窗,
-// 主窗布局树里该 pane 停止渲染(树不动);关窗/合并即回停靠。装/卸/启停广播
-// 经 setGhostsChangedObserver 喂 reconcile,失去资格的窗口即时收掉。
-// deps 同样全 lazy(isQuitting 声明在后),状态机见 ghost-panel-window/controller.ts。
-resetGhostPanelWindowSettingsForStartup();
-const ghostPanelWindowsController = new GhostPanelWindowsController({
-  settings: {
-    read: readGhostPanelWindowsSettings,
-    patchEntry: patchGhostPanelWindowEntry,
-    removeEntry: removeGhostPanelWindowEntry,
-  },
-  createWindow: (ghostId) => {
-    const ghost = getGhostManager()
-      .list()
-      .find((g) => installedGhostStoragePart(g) === ghostId);
-    const title = ghost?.manifest.panel?.title ?? ghost?.manifest.name ?? ghostId;
-    return createGhostPanelWindow(ghostId, title);
-  },
-  isGhostDetachable: (ghostId) => {
-    const ghost = getGhostManager()
-      .list()
-      .find((g) => installedGhostStoragePart(g) === ghostId);
-    return (
-      ghost !== undefined &&
-      ghost.enabled !== false &&
-      ghost.manifest.panel !== undefined &&
-      ghost.manifest.panel.position !== 'tab' &&
-      isGhostAvailableForActiveSession(ghostId)
-    );
-  },
-  broadcastState: (state) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue;
-      try {
-        win.webContents.send(MAKER_PUSH.GHOST_PANEL_WINDOW_STATE_CHANGED, state);
-      } catch {
-        // window torn down mid-broadcast — ignore
-      }
-    }
-  },
-  sendToWindow: (win, channel, payload) => {
-    try {
-      win.webContents.send(channel, payload);
-    } catch {
-      /* ignore */
-    }
-  },
-  isQuitting: () => isQuitting,
-  log: createLogger('ghost-panel-window-controller'),
-});
-registerGhostPanelWindowIpc(ghostPanelWindowsController);
 
 // ── 右侧栏单页签独立窗口(sidebar tab window)────────────────────────────
 // 每个弹出的页签一扇窗:侧栏「在独立窗口中打开」→ open(request);主窗侧栏把该
@@ -2437,10 +2373,6 @@ const remoteDesktopViewerWindows = new RemoteDesktopViewerWindows((sender) =>
   }),
 );
 remoteDesktopViewerWindows.register();
-
-setGhostsChangedObserver((ghosts) => {
-  ghostPanelWindowsController.reconcile(ghosts);
-});
 
 const rsbBrowserRegistry = getRsbBrowserBridge();
 registerRsbNativePopupSurfaceIpc(rsbBrowserRegistry);
@@ -2540,7 +2472,6 @@ setAppSessionCommitBoundaryHook(() => {
   cancelClaudeCliLogin();
   clearAllSessionAttention();
   remoteDesktopViewerWindows.reset();
-  ghostPanelWindowsController.closeForOwnerChange();
   clearAllSessionProviders();
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();
@@ -3099,7 +3030,6 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   resourceUsageWindowController.setLocale(currentApplicationMenuLocale);
   remoteDesktopViewerWindows.setLocale(currentApplicationMenuLocale);
   rsbWindowController.setLocale(currentApplicationMenuLocale);
-  ghostPanelWindowsController.setLocale(currentApplicationMenuLocale);
   sidebarTabWindowsController.setLocale(currentApplicationMenuLocale);
   refreshGhostLocalization();
   const mainWindow = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
@@ -4004,7 +3934,6 @@ const createWindow = () => {
     resourceUsageWindowController.destroyWindow();
     remoteDesktopViewerWindows.reset();
     rsbWindowController.destroyWindow();
-    ghostPanelWindowsController.destroyAllWindows();
     sidebarTabWindowsController.destroyAllWindows();
     if (mainWindowRef === mainWindow) mainWindowRef = null;
     setDeepLinkMainWindow(null);
@@ -9928,7 +9857,6 @@ onQuit('auth-manager', () => authManager.dispose(), 'sync');
 onQuit('windows-process-scan-workers', disposeWindowsProcessScanWorkers, 'sync');
 onQuit('resource-usage-window', () => resourceUsageWindowController.dispose(), 'sync');
 onQuit('rsb-window', () => rsbWindowController.dispose(), 'sync');
-onQuit('ghost-panel-windows', () => ghostPanelWindowsController.dispose(), 'sync');
 onQuit('sidebar-tab-windows', () => sidebarTabWindowsController.dispose(), 'sync');
 onQuit('app-badge-clear', () => clearAllSessionAttention(), 'sync');
 onQuit('session-drag-preview', () => disposeSessionDragPreview(), 'sync');

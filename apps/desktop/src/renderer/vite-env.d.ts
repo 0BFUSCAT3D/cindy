@@ -2044,28 +2044,6 @@ interface ElectronAPI {
     ) => () => void;
   };
 
-  /** 插件停靠面板独立窗口(每 ghostId 一扇窗;状态机在 main)。 */
-  ghostPanelWindow: {
-    /** 首帧同步读全量状态(ghostId → entry)。 */
-    getStateSync: () => import('../shared/ghostPanelWindow').GhostPanelWindowsState;
-    getState: () => Promise<import('../shared/ghostPanelWindow').GhostPanelWindowsState>;
-    /** 幂等:已开则 show + focus。 */
-    open: (ghostId: string) => Promise<void>;
-    /** 写偏好;true 开窗抽离,false 关窗回停靠。返回新全量 state。 */
-    setDetached: (
-      ghostId: string,
-      detached: boolean,
-    ) => Promise<import('../shared/ghostPanelWindow').GhostPanelWindowsState>;
-    onStateChanged: (
-      cb: (state: import('../shared/ghostPanelWindow').GhostPanelWindowsState) => void,
-    ) => () => void;
-    rendererReady: () => Promise<void>;
-    presentationReady: () => Promise<void>;
-    onVisibilityChanged: (cb: (payload: { visible: boolean }) => void) => () => void;
-    onCloseRequested: (cb: () => void) => () => void;
-    onMinimizeRequested: (cb: () => void) => () => void;
-    resolveCloseRequest: (approved: boolean) => Promise<void>;
-  };
 
   /**
    * 右侧栏单页签独立窗口(每个弹出的页签一扇窗;状态机在 main)。

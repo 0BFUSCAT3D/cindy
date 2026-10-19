@@ -9,7 +9,7 @@
  * 「偏好」可落盘:弹出是本次运行期的视图态,客户端重启后所有页签都回到主窗。
  *
  * 生命周期基线对齐 docs/dev-rules/electron-security-and-process-boundaries.md §3.1
- * 与 ghost-panel-window/controller.ts:
+ * (资源用量窗口 controller 为权威基线):
  *   - 预热:主窗首帧稳定后后台创建一扇**未指派**的隐藏窗口(spare);弹出时直接
  *     指派页签给它,用户点击路径只剩「指派 → 首份内容 → show+focus」。指派后再
  *     延迟补一扇 spare。

@@ -20,7 +20,6 @@ import { getSplitSessionIds, useSplitGroup } from '@/features/cc-agent/splitGrou
 import { LayoutRoot } from '@/layout/LayoutRoot';
 import { PanelDragController } from '@/layout/PanelDragController';
 import { GhostMediaLightboxHost } from '@/cindy-brain/GhostMediaLightboxHost';
-import { GhostPanelBubbleLayer } from '@/cindy-brain/GhostPanelBubbleLayer';
 import {
   migrateLegacySidebarCollapsed,
   readPanelCollapsed,
@@ -59,6 +58,7 @@ import {
   setActiveTab,
 } from '@/features/right-sidebar/store';
 import { browserWebviewPool } from '@/features/right-sidebar/lib/browserWebviewPool';
+import { findGlobalTab, setActiveGlobalTabId } from '@/features/right-sidebar/globalTabs';
 import {
   markAllPtyDetached,
   markPtyDetached,
@@ -1093,27 +1093,30 @@ export function MainLayout() {
   //    交回后本窗必须再 attach 一次)。不可持久化会话附整桶内存快照。
   const handleDetachRightSidebarTab = useCallback((tabId: string) => {
     if (isSecondaryWindow()) return;
+    const api = window.electronAPI.sidebarTabWindow;
+    if (!api?.open) return;
+    const info = rightSidebarWorkdirInfoRef.current;
+    const context = {
+      workdir: info.workdir || null,
+      remoteHostId: info.remoteHostId,
+      deviceLinkDeviceId: info.deviceLinkDeviceId,
+      subagentsAvailable: rightSidebarSubagentsAvailableRef.current,
+    };
+    // 全局页签(插件视图)不属于任何任务:无桶快照,也没有任务级资源要释放。
+    if (findGlobalTab(tabId)) {
+      void api.open({ tabId, sessionId: null, context, handoff: null }).catch((err) => {
+        applicationMenuLog.warn('pop out global sidebar tab failed', { tabId, err });
+      });
+      return;
+    }
     const sessionId = rightSidebarSessionIdRef.current;
     if (!sessionId) return;
     const tab = getBucket(sessionId).tabs.find((candidate) => candidate.id === tabId);
     if (!tab) return;
-    const api = window.electronAPI.sidebarTabWindow;
-    if (!api?.open) return;
     if (tab.kind === 'web-browser') browserWebviewPool.release(tabId);
     if (tab.kind === 'terminal') markPtyDetached(tabId);
-    const info = rightSidebarWorkdirInfoRef.current;
     void api
-      .open({
-        tabId,
-        sessionId,
-        context: {
-          workdir: info.workdir || null,
-          remoteHostId: info.remoteHostId,
-          deviceLinkDeviceId: info.deviceLinkDeviceId,
-          subagentsAvailable: rightSidebarSubagentsAvailableRef.current,
-        },
-        handoff: getTabSnapshot(sessionId),
-      })
+      .open({ tabId, sessionId, context, handoff: getTabSnapshot(sessionId) })
       .catch((err) => {
         applicationMenuLog.warn('pop out sidebar tab failed', { sessionId, tabId, err });
       });
@@ -1128,6 +1131,15 @@ export function MainLayout() {
     const api = window.electronAPI.sidebarTabWindow;
     if (!api?.onTabReturned) return;
     return api.onTabReturned(({ sessionId, tabId, snapshot }) => {
+      // 全局页签回来:数据一直在全局存储里,只需选中它并确保侧栏展开。
+      if (sessionId === null) {
+        if (findGlobalTab(tabId)) setActiveGlobalTabId(tabId);
+        if (isRightSidebarCollapsedRef.current && !rsbDetachedRef.current) {
+          writeCollapsedFor(rightSidebarSessionIdRef.current, false);
+          setIsRightSidebarCollapsed(false);
+        }
+        return;
+      }
       markPtyDetached(tabId);
       const refreshed = snapshot
         ? Promise.resolve(importReturnedTabState(snapshot))
@@ -1741,10 +1753,6 @@ export function MainLayout() {
             推送到本窗口,这里弹标准 ImageLightbox(整窗一份,纯监听无 UI)。
             sessionId = 当前聊天会话 → lightbox 里「发送到对话」可用。 */}
         <GhostMediaLightboxHost sessionId={rightSidebarSessionId ?? undefined} />
-        {/* 最小化插件面板的浮动气泡层(portal 到 body,z-[9900];点击气泡
-            恢复停靠,拖动换位并持久化)。设置页等接管态也保持在场——气泡是
-            被最小化面板的唯一恢复入口。 */}
-        <GhostPanelBubbleLayer />
         {/* Windows 顶层浮层 chrome：窗口控制按钮(min/max/close)，所有路由常驻
             （含设置页），永远钉在窗口角，开/关右栏都不动 —— 解决「右栏作为 <main>
             sibling 会把窗口按钮挤左」的问题。no-drag（按钮可点），周围窗口拖拽区由

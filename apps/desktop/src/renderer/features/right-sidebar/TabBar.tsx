@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
+import { Activity, Bot, FolderTree, Globe, Terminal, GitPullRequestArrow, UsersRound, LayoutGrid, ListTodo, Pin, Plus, Puzzle, X, Maximize2, Minimize2, PanelRightClose, PictureInPicture2, Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -41,6 +41,8 @@ import type { BuiltinTabKindId, TabKindId, TabState } from './types';
 
 interface TabBarProps {
   tabs: TabState[];
+  /** 全局页签(不跟对话):钉在条首,不参与拖拽排序,切任务不变。 */
+  pinnedTabs?: TabState[];
   activeTabId: string | null;
   sessionId?: string | null;
   onActivate: (id: string) => void;
@@ -85,6 +87,8 @@ interface TabBarProps {
 
 interface TabStripProps {
   tabs: TabState[];
+  /** 全局页签(不跟对话):钉在条首,不参与拖拽排序,切任务不变。 */
+  pinnedTabs?: TabState[];
   activeTabId: string | null;
   sessionId?: string | null;
   onActivate: (id: string) => void;
@@ -129,6 +133,7 @@ const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
   'bot-workbench': LayoutGrid,
   'resource-usage': Activity,
   'cindy-make': Wrench,
+  'plugin-view': Puzzle,
 };
 
 const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
@@ -144,6 +149,7 @@ const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
   'bot-workbench': 'bots.workbench.title',
   'resource-usage': 'rightSidebar.tabs.kinds.resourceUsage',
   'cindy-make': 'settings.cindyMake.title',
+  'plugin-view': 'rightSidebar.tabs.kinds.pluginView',
 };
 
 /**
@@ -190,6 +196,7 @@ function scrollTabIntoContainerView(container: HTMLElement | null, tab: HTMLElem
 
 export function TabBar({
   tabs,
+  pinnedTabs,
   activeTabId,
   sessionId,
   onActivate,
@@ -222,6 +229,7 @@ export function TabBar({
     >
       <TabStrip
         tabs={tabs}
+        pinnedTabs={pinnedTabs}
         activeTabId={activeTabId}
         sessionId={sessionId}
         onActivate={onActivate}
@@ -288,6 +296,7 @@ export function TabBar({
 
 export function TabStrip({
   tabs,
+  pinnedTabs = [],
   activeTabId,
   sessionId = null,
   onActivate,
@@ -315,6 +324,8 @@ export function TabStrip({
   const [contextMenu, setContextMenu] = useState<{
     pos: { x: number; y: number };
     tabId: string;
+    /** 全局页签:右键只有「关闭」与「在独立窗口中打开」,不提供关闭其他 / 全部。 */
+    pinned: boolean;
   } | null>(null);
   const closeContextMenu = () => setContextMenu(null);
 
@@ -395,6 +406,34 @@ export function TabStrip({
           } as React.CSSProperties
         }
       >
+        {pinnedTabs.length > 0 && (
+          <div
+            data-testid="right-sidebar-pinned-tabs"
+            className={cn('flex w-max gap-1', pillVariant === 'chip' ? 'items-center' : 'items-end')}
+          >
+            {pinnedTabs.map((tab) => (
+              <TabPill
+                key={tab.id}
+                tab={tab}
+                active={tab.id === activeTabId}
+                pinned
+                pillVariant={pillVariant}
+                sessionId={sessionId}
+                fallbackLabel={t(labelKeyForTabKind(tab.kind))}
+                t={t}
+                onActivate={() => onActivate(tab.id)}
+                onClose={() => onClose(tab.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({ pos: { x: e.clientX, y: e.clientY }, tabId: tab.id, pinned: true });
+                }}
+                scrollContainerRef={tabsScrollRef}
+                closeAriaLabel={t('rightSidebar.tabs.tabCloseAria')}
+              />
+            ))}
+          </div>
+        )}
         <SortableList
           items={tabs}
           getId={(tab) => tab.id}
@@ -418,7 +457,7 @@ export function TabStrip({
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                setContextMenu({ pos: { x: e.clientX, y: e.clientY }, tabId: tab.id });
+                setContextMenu({ pos: { x: e.clientX, y: e.clientY }, tabId: tab.id, pinned: false });
               }}
               scrollContainerRef={tabsScrollRef}
               closeAriaLabel={t('rightSidebar.tabs.tabCloseAria')}
@@ -500,25 +539,29 @@ export function TabStrip({
               >
                 {t('rightSidebar.tabs.contextMenu.close')}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={tabs.length <= 1}
-                onClick={() => {
-                  if (tabs.length <= 1) return;
-                  const id = contextMenu.tabId;
-                  closeContextMenu();
-                  onCloseOthers?.(id);
-                }}
-              >
-                {t('rightSidebar.tabs.contextMenu.closeOthers')}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  closeContextMenu();
-                  onCloseAll?.();
-                }}
-              >
-                {t('rightSidebar.tabs.contextMenu.closeAll')}
-              </DropdownMenuItem>
+              {!contextMenu.pinned && (
+                <DropdownMenuItem
+                  disabled={tabs.length <= 1}
+                  onClick={() => {
+                    if (tabs.length <= 1) return;
+                    const id = contextMenu.tabId;
+                    closeContextMenu();
+                    onCloseOthers?.(id);
+                  }}
+                >
+                  {t('rightSidebar.tabs.contextMenu.closeOthers')}
+                </DropdownMenuItem>
+              )}
+              {!contextMenu.pinned && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    closeContextMenu();
+                    onCloseAll?.();
+                  }}
+                >
+                  {t('rightSidebar.tabs.contextMenu.closeAll')}
+                </DropdownMenuItem>
+              )}
               {onDetachTab && (
                 <DropdownMenuItem
                   onClick={() => {
@@ -541,6 +584,7 @@ export function TabStrip({
 function TabPill({
   tab,
   active,
+  pinned = false,
   pillVariant,
   sessionId,
   fallbackLabel,
@@ -553,6 +597,8 @@ function TabPill({
 }: {
   tab: TabState;
   active: boolean;
+  /** 全局页签:标题前带图钉,提示它不随任务切换。 */
+  pinned?: boolean;
   /** 见 TabStripProps.pillVariant:flush = 贴底三边框 tab,chip = 居中四边框 chip。 */
   pillVariant: 'flush' | 'chip';
   sessionId: string | null;
@@ -582,6 +628,7 @@ function TabPill({
   return (
     <div
       ref={pillRef}
+      data-pinned={pinned || undefined}
       onContextMenu={onContextMenu}
       // 中键(滚轮键)关闭当前 tab —— 对齐浏览器等多 tab 应用的通用习惯。
       // auxclick 对所有非主键(中/右键)都会触发,这里只认中键(button === 1);
@@ -615,6 +662,13 @@ function TabPill({
         onClick={onActivate}
         className="flex items-center gap-1.5 max-w-[160px]"
       >
+        {pinned && (
+          <Pin
+            size={10}
+            aria-label={t('rightSidebar.tabs.pinnedAria')}
+            className="shrink-0 text-[var(--text-tertiary)]"
+          />
+        )}
         <span
           className={cn(
             'shrink-0',

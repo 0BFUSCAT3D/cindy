@@ -881,7 +881,7 @@ export function DetailsSection({
       value:
         detail.panelMinWidth === null
           ? t('settings.ghosts.detail.panelNone')
-          : panelStatus || t('settings.ghosts.detail.panelNotDocked'),
+          : panelStatus || t('settings.ghosts.detail.panelDismissed'),
     },
     ...(detail.installDir
       ? [
