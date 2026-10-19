@@ -266,6 +266,17 @@ export function startImOrchestrators(): void {
   // 伙伴自有 IM 连接: 每条记录一份传输层 + 编排器, 与上面设置页那份并存。
   // 实例在 initializeImConnection 里按记录起, 这里只注入装配方式。
   configureBotImConnectionRuntime({
+    removeWechatCompanionBinding: (update, isCurrent) => {
+      const generation = captureImAccountGeneration();
+      if (generation === null) return Promise.reject(new Error('ACCOUNT_CHANGED'));
+      return wechatIm.updateCompanionBinding(() => {
+        if (!isImAccountGenerationCurrent(generation)) throw new Error('ACCOUNT_CHANGED');
+        update();
+      }, { cancelPendingIf: () => {
+        if (!isImAccountGenerationCurrent(generation)) throw new Error('ACCOUNT_CHANGED');
+        return isCurrent();
+      } });
+    },
     create: (record) => {
       const prefix = secretKeyPrefixFor(record.id);
       if (record.channel === 'telegram') {

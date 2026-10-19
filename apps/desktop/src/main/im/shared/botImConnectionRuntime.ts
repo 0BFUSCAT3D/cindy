@@ -74,6 +74,8 @@ export interface BotImSettingsIdentity {
 }
 
 export interface BotImConnectionRuntimeDeps {
+  /** Drain the shared WeChat transport and cancel queued work before clearing its owner. */
+  removeWechatCompanionBinding(update: () => void, isCurrent: () => boolean): Promise<void>;
   /** 为一条记录装配传输层 + 编排器(不 init)。渠道尚未支持时抛错。 */
   create(record: BotImConnectionRecord): BotImTransportInstance;
   /** 设置页那份个人 bot 当前用的平台身份(用于拒绝同一个 bot 两处同时用)。 */
@@ -631,10 +633,13 @@ export async function removeBotImConnectionsForBot(botId: string): Promise<void>
   // WeChat shares the personal transport: remove only the teammate assignment,
   // even when there are no dedicated connections. Keep its authorization intact.
   if (readWechatChannelSettings().companionBotId === botId) {
-    const settings = writeWechatCompanionBinding(null);
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send('wechatBot:channel-settings-changed', settings);
-    }
+    await requireDeps().removeWechatCompanionBinding(() => {
+      if (readWechatChannelSettings().companionBotId !== botId) return;
+      const settings = writeWechatCompanionBinding(null);
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('wechatBot:channel-settings-changed', settings);
+      }
+    }, () => readWechatChannelSettings().companionBotId === botId);
   }
   for (const record of listBotImConnectionsForBot(botId)) {
     try {

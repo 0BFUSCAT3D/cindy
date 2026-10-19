@@ -197,27 +197,42 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     return !!this.#epoch && this.#epoch.credentials.userId === userId;
   }
 
-  /** Change routing only between messages; credentials and the authorization epoch stay intact. */
-  updateCompanionBinding(update: () => void): Promise<void> {
+  /** Change routing between messages, or cancel pending input when its companion is deleted. */
+  updateCompanionBinding(update: () => void, options: { cancelPendingIf?: () => boolean } = {}): Promise<void> {
     return this.#queueLifecycle(async () => {
-      if (this.#authorizationAbort || this.#activeTasks.size || this.#pendingInteractions.size) {
+      const cancelPending = options.cancelPendingIf?.() ?? false;
+      if (options.cancelPendingIf && !cancelPending) return;
+      if (this.#authorizationAbort || (!cancelPending && (this.#activeTasks.size || this.#pendingInteractions.size))) {
         throw new Error('WECHAT_CONNECTION_BUSY');
       }
       const epoch = this.#epoch;
-      if (epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
+      if (!cancelPending && epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
         throw new Error('WECHAT_CONNECTION_BUSY');
       }
-      if (this.#activeTasks.size) throw new Error('WECHAT_CONNECTION_BUSY');
+      if (!cancelPending && this.#activeTasks.size) throw new Error('WECHAT_CONNECTION_BUSY');
       const revision = this.#compatibilityRevision;
+      const db = cancelPending ? this.#deps.getDbClient() : null;
       await this.#stopEpoch();
+      let updated = false;
       try {
+        if (cancelPending && db) {
+          if (!options.cancelPendingIf?.()) throw new Error('WECHAT_BINDING_CHANGED');
+          // Deletion must also settle a disabled/offline connection's durable inbox.
+          const binding = epoch?.binding ?? await this.#readActiveBindingWithoutKey(db);
+          if (binding) await db.tx('wechatStopAll', {
+            bindingEpoch: binding.bindingEpoch, now: this.#now(),
+            errorCode: 'COMPANION_DELETED', cancelPending: true,
+          });
+        }
         // A poll already in flight may have persisted a message while we drained it.
-        if (epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
+        if (!cancelPending && epoch && await this.#requireStore().countQueuedTasks(epoch.binding.bindingEpoch)) {
           throw new Error('WECHAT_CONNECTION_BUSY');
         }
         update();
+        updated = true;
       } finally {
-        if (epoch && this.#isCompatibilityRevisionAllowed(revision)) {
+        // A failed deletion cleanup must not resume work against an archived teammate.
+        if ((!cancelPending || updated) && epoch && this.#isCompatibilityRevisionAllowed(revision)) {
           const binding = await this.#requireStore().getActiveBinding();
           if (binding) await this.#startEpoch(binding, epoch.credentials, revision);
         }
@@ -1041,10 +1056,15 @@ export class WechatIM extends BaseIM implements RichChannelIM {
   ): Promise<void> {
     while (!signal.aborted && this.#isGenerationCurrent(generation)) {
       await this.#pollBarrier;
+      if (signal.aborted) break;
       const task = await this.#requireStore().leaseNextTask({
         bindingEpoch: binding.bindingEpoch,
         now: this.#now(),
       });
+      if (signal.aborted) {
+        if (task) await this.#requireStore().releaseDispatch(task.bindingEpoch, task.id);
+        break;
+      }
       if (!task) {
         await delay(IDLE_PUMP_DELAY_MS, signal);
         continue;
@@ -1105,6 +1125,7 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     const turnInput = prepareWechatTaskTurn(payload);
 
     const botContextId = this.#epoch?.credentials.ilinkBotId ?? '';
+    const signal = this.#epoch?.abort.signal;
     const companion = runtime.runner.companionBotIdFor?.(botContextId);
     const requesterIsOwner = this.isOwner(task.peerId);
     const active: ActiveTask = { task, terminalCommitted: false };
@@ -1112,6 +1133,7 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     const stopTyping = await this.#startTyping(task);
     let dispatch;
     try {
+      if (!signal || signal.aborted) throw new Error('WECHAT_CONNECTION_STOPPED');
       dispatch = await runtime.runner.dispatchAgentTurn({
         botContextId,
         userId: task.peerId,
@@ -1140,8 +1162,10 @@ export class WechatIM extends BaseIM implements RichChannelIM {
         attachments: payload.attachments,
         queueMode: 'external',
         beforeProviderStart: async () => {
+          if (signal.aborted) throw new Error('WECHAT_CONNECTION_STOPPED');
           const accepted = await this.#requireStore().markAccepted(task.bindingEpoch, task.id);
           if (!accepted) throw new Error('WECHAT_ACCEPT_CAS_REJECTED');
+          if (signal.aborted) throw new Error('WECHAT_CONNECTION_STOPPED');
         },
         onRouteResolved: (sessionId) => {
           if (this.#activeTasks.get(task.peerId) === active) {
@@ -1679,8 +1703,8 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     };
   }
 
-  async #readActiveBindingWithoutKey(): Promise<WechatActiveBinding | null> {
-    const row = await this.#deps.getDbClient().queryOne<{
+  async #readActiveBindingWithoutKey(db = this.#deps.getDbClient()): Promise<WechatActiveBinding | null> {
+    const row = await db.queryOne<{
       bindingEpoch: string;
       cursor: string;
     }>(

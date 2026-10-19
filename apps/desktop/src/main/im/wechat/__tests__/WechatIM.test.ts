@@ -597,6 +597,57 @@ describe('WechatIM host boundary', () => {
     } finally { await im.dispose(); }
   });
 
+  // #6492 unit regression: deletion must include the late poll batch in its
+  // cancellation, preserve authorization, and never restart after settlement failure.
+  it.each([false, true])('settles deletion after poll drain (failure=%s)', async (fail) => {
+    const { im, transport, db, testHost } = restoredConnection(() => 1);
+    const order: string[] = [];
+    im.attachTurnRuntime({ runner: { companionBotIdFor: () => 'cindy',
+      resolveRouteTarget: async () => ({ row: { id: 'companion-owner' } }) },
+      repo: {}, config: {}, resetSessionToDefaults: vi.fn() } as never);
+    vi.mocked(transport.poll).mockImplementationOnce((_cursor, signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve({ cursor: 'next', messages: [{
+        senderId: 'owner', messageId: 'late-owner', text: 'hello', contextToken: 'context', media: [],
+      }] }), { once: true });
+    }));
+    vi.mocked(db.tx).mockImplementation(async (name, args) => {
+      if (name === 'wechatCommitPollBatch') {
+        order.push('batch');
+        return { committed: true, insertedTaskIds: [], duplicateTaskIds: [], rejectedTaskIds: [] };
+      }
+      if (name === 'wechatStopAll' && (args as { cancelPending?: boolean }).cancelPending) {
+        order.push('cancel');
+        if (fail) throw new Error('DRAIN_FAILED');
+      }
+      return null;
+    });
+    await im.init();
+    try {
+      const update = vi.fn(() => { order.push('update'); });
+      const changing = im.updateCompanionBinding(update, { cancelPendingIf: () => true });
+      if (fail) await expect(changing).rejects.toThrow('DRAIN_FAILED');
+      else await changing;
+      expect(order).toEqual(fail ? ['batch', 'cancel'] : ['batch', 'cancel', 'update']);
+      expect(transport.notifyStart).toHaveBeenCalledTimes(fail ? 1 : 2);
+      expect(testHost.secrets.write).not.toHaveBeenCalled();
+      expect(testHost.secrets.remove).not.toHaveBeenCalled();
+    } finally { await im.dispose(); }
+  });
+
+  it('settles a stored inbox without starting an offline transport and skips a changed owner', async () => {
+    const { im, transport, db } = restoredConnection(() => 1);
+    const update = vi.fn();
+    await im.updateCompanionBinding(update, { cancelPendingIf: () => false });
+    expect(db.tx).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    await im.updateCompanionBinding(update, { cancelPendingIf: () => true });
+    expect(db.tx).toHaveBeenCalledWith('wechatStopAll', expect.objectContaining({
+      bindingEpoch: 'epoch', cancelPending: true, errorCode: 'COMPANION_DELETED',
+    }));
+    expect(update).toHaveBeenCalledOnce();
+    expect(transport.notifyStart).not.toHaveBeenCalled();
+  });
+
   // Regression: the durable inbox used to claim a personal session even for companion messages.
   // tier: unit; feed transport ingress and inspect the real task-store transaction boundary.
   it('persists companion ingress against the resolved task before dispatch', async () => {

@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   archiveCalls: [] as unknown[],
   sent: [] as Array<{ channel: string; payload: unknown }>,
   ownerKey: 'owner-a',
+  drainWechat: vi.fn(async (update: () => void, isCurrent: () => boolean) => { if (isCurrent()) update(); }),
   /** 每次 Telegram setConfig 落盘前调用(测并发添加 / 建连期间切账号)。 */
   beforeTelegramSetConfig: null as (() => Promise<void> | void) | null,
 }));
@@ -293,7 +294,9 @@ describe('bot im connection runtime', () => {
     connectOutcome = true;
     telegramConflictAfterConnect = false;
     adoptionTesting.reset();
+    h.drainWechat.mockClear();
     configureBotImConnectionRuntime({
+      removeWechatCompanionBinding: h.drainWechat,
       create: (record) => {
         const prefix = secretKeyPrefixFor(record.id);
         const orchestrator = fakeOrchestrator();
@@ -452,7 +455,12 @@ describe('bot im connection runtime', () => {
     expect(readWechatChannelSettings()).toEqual(before);
     expect(h.sent).toEqual([]);
 
+    h.drainWechat.mockRejectedValueOnce(new Error('DRAIN_FAILED'));
+    await expect(removeBotImConnectionsForBot('bot-mia')).rejects.toThrow('DRAIN_FAILED');
+    expect(readWechatChannelSettings()).toEqual(before);
+    expect(h.sent).toEqual([]);
     await removeBotImConnectionsForBot('bot-mia');
+    expect(h.drainWechat).toHaveBeenCalledTimes(2);
     expect(readWechatChannelSettings()).toEqual({ version: 1, workingDir: before.workingDir, workingDirAvailable: true });
     expect(h.secrets).toEqual(secrets);
     expect(h.sent).toEqual([{ channel: 'wechatBot:channel-settings-changed', payload: readWechatChannelSettings() }]);
