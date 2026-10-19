@@ -12,7 +12,19 @@ const branches: string[] = [];
 const confirmationChecks: string[] = [];
 let applySelectionAdapter = '';
 let piWindowOverride = '';
+let directSendAdapter = '';
+let archivedAdmission = '';
+let terminalGuard = '';
 function visit(node: ts.Node) {
+  if (ts.isBinaryExpression(node) && node.left.getText(source) === 'pendingAgentSwitchApplyHolder') {
+    directSendAdapter = node.right.getText(source);
+  }
+  if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'canStageArchivedSelection') {
+    archivedAdmission = node.initializer!.getText(source);
+  }
+  if (ts.isIfStatement(node) && node.expression.getText(source) === "runtimeStatus.status !== 'active' && !canStageArchivedSelection") {
+    terminalGuard = node.getText(source);
+  }
   if (ts.isPropertyAssignment(node)) {
     if (node.name.getText(source) === 'confirmedTargetPressure' && node.initializer.getText(source).includes('runtimeStatus.orcaRole')) {
       confirmationChecks.push(node.initializer.getText(source));
@@ -37,6 +49,61 @@ const orcaIdentities = [
 ];
 
 describe('Orca model-only picker intent admission', () => {
+  // PR #6403 P1: the composer already restores archived tasks, but Goal's
+  // direct-send lease did not. Execute the real lease, send boundary and model
+  // admission together; earlier picker tests stop before this boundary (unit).
+  it.each(['archived', 'restore-failed', 'cancelled'] as const)('handles archived direct-send selection: %s', async mode => {
+    const compile = (expression: string, bindings: Record<string, unknown>) => {
+      const js = ts.transpileModule(`return ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
+    };
+    const row = { status: 'archived' };
+    const pending = createPendingAgentSwitchRegistry();
+    pending.set('s1', { sameAgentSelection: true, targetAgentKind: 'codex', model: 'new', providerId: 'provider' });
+    const applied = vi.fn(() => ({ deferred: false }));
+    const throwIpcError = (code: string, message: string) => { throw new Error(`[${code}] ${message}`); };
+    const admission = compile(`(internalOptions) => {
+      const canStageArchivedSelection = ${archivedAdmission};
+      ${terminalGuard}
+      return applied();
+    }`, { runtimeStatus: row, applied, throwIpcError });
+    const selectSameAgentModel = compile(applySelectionAdapter, { throwIpcError,
+      applySessionRuntimeSelection: (_id: string, _model: string, _provider: unknown, _axes: unknown, opts: unknown) => admission(opts),
+    });
+    const release = vi.fn();
+    const acquire = vi.fn(async () => release);
+    const restore = vi.fn(async () => {
+      if (mode === 'restore-failed') throw new Error('restore failed');
+      row.status = 'active';
+    });
+    const deps = { pendingSwitches: pending, getLiveSession: () => ({ isTurnRunning: () => false }),
+      selectSameAgentModel, log: { info: vi.fn(), warn: vi.fn() } } as unknown as MakerSessionAgentSwitchHandlerDeps;
+    const directSend = compile(directSendAdapter, {
+      agentSwitchPending: pending, restoreArchivedSessionForSend: restore,
+      acquireSendToSessionLock: acquire, reconcileBotModelRoute: vi.fn(),
+      applyPendingAgentSwitchIfIdle, agentSwitchDeps: deps, contextOverflowRolloverHolder: null,
+    });
+    const controller = new AbortController();
+    if (mode === 'cancelled') controller.abort();
+    if (mode === 'archived') {
+      const lease = await directSend('s1', controller.signal);
+      expect(row.status).toBe('active');
+      expect(applied).toHaveBeenCalledOnce();
+      expect(pending.get('s1')).toBeUndefined();
+      expect(restore.mock.invocationCallOrder[0]).toBeLessThan(acquire.mock.invocationCallOrder[0]);
+      expect(release).not.toHaveBeenCalled();
+      lease.release();
+      expect(release).toHaveBeenCalledOnce();
+    } else {
+      await expect(directSend('s1', controller.signal)).rejects.toThrow(mode === 'restore-failed' ? 'restore failed' : /abort/i);
+      expect(row.status).toBe('archived');
+      expect(applied).not.toHaveBeenCalled();
+      expect(pending.get('s1')).toBeDefined();
+      if (mode === 'cancelled') expect(restore).not.toHaveBeenCalled();
+      else expect(acquire).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(['lead', 'worker'] as const)('stages %s model and axes on both execution locations until send', async orcaRole => {
     expect(branches).toHaveLength(2);
     for (const branch of branches) {

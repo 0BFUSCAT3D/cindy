@@ -10433,6 +10433,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
   pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
+    // Match composer sends: restore before applying a user's staged model.
+    // The restore owns the same route lock, so run it before acquiring the
+    // direct-send lease (which is deliberately held until the caller sends).
+    if (!signal?.aborted && agentSwitchPending.get(sessionId)?.sameAgentSelection) {
+      await restoreArchivedSessionForSend(sessionId);
+    }
     let stage = 'direct-send:acquire';
     let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
@@ -20654,7 +20660,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       // 归档/删除写入与本 handler 共用 session route lock。归档后仍允许用户
       // 暂存下一次发送的选择，但不得应用 runtime 或允许自动更新重建 override。
-      // 删除任务始终拒绝；先选后归档时仍由归档 cleanup 清除旧意图。
+      // 删除任务始终拒绝；暂存意图留到发送前先恢复任务再应用。
       const [runtimeStatus] = await getDbClient()
         .drizzle.select({
           status: sessions.status,
