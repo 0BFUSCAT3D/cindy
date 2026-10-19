@@ -1275,6 +1275,11 @@ interface ElectronAPI {
 
   /** 意识仓库 —— 数据模型与校验见 shared/ghost.ts,main 端见 main/cindy-brain/。 */
   ghosts: {
+    mailPreview: (sessionId: string, url: string, read: boolean, opened?: boolean) => Promise<{ supported: boolean; message?: import('@cindy/maker-shared/mail-message').MailMessage; error?: string }>;
+    openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget) => Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView>;
+    closeRemoteSettings: (id: string) => Promise<void>;
+    onRemoteSettingsDirectory: (callback: (value: import('../shared/remotePluginSettings').RemotePluginSettingsDirectory) => void) => () => void;
+    answerRemoteSettingsDirectory: (answer: import('../shared/remotePluginSettings').RemotePluginSettingsDirectoryAnswer) => Promise<void>;
     recommendationsSync: () => import('../shared/homePluginRecommendations').HomePluginRecommendationsSnapshot;
     /** 首帧同步拉取已装清单(规则 7:意识面板与内置面板同帧注册,无跳变)。 */
     listSync: () => { ghosts: import('../shared/ghost').InstalledGhost[] };
@@ -1438,6 +1443,7 @@ interface ElectronAPI {
     onCardUpdated: (
       callback: (payload: {
         callId: string;
+        sessionId?: string | null;
         ghostId: string;
         logicalGhostId?: string;
         toolUseId: string | null;
@@ -1471,6 +1477,8 @@ interface ElectronAPI {
       callId: string,
       actionId: string,
       prompt?: string,
+      formValues?: Record<string, string>,
+      formChange?: boolean,
     ) => Promise<{ ok: boolean }>;
     /** 订阅槽①:用户消息被意识钩子拦下(renderer 把乐观气泡原地降级为被拦态;
      *  没有既有气泡时用 text 补渲一条——排队消息被拦不无声蒸发)。 */
@@ -4034,6 +4042,8 @@ interface ElectronAPI {
     onChanged(cb: (event: { providerId: string }) => void): () => void;
   };
   deviceLink: {
+    confirmSkillMutation: (deviceId: string, operationId: string) => Promise<import('../shared/remoteSkills').RemoteSkillReceipt>;
+    pickPluginPackage: (deviceId: string) => Promise<{ attachment: string } | null>;
     taskMigration: (deviceId: string | null, request: import('@cindy/device-link').TaskMigrationRequest) => Promise<import('@cindy/device-link').TaskMigrationView>;
     getState: () => Promise<{
       remoteControlEnabled: boolean;
@@ -4845,6 +4855,10 @@ interface ElectronAPI {
       setPinnedCardSummaries: (enabled: boolean) => Promise<void>;
       /** interrupted-turn-resume:「疑似中断」(startedAt > endedAt)的 active 会话 id。 */
       interruptedPending: () => Promise<string[]>;
+      /** 启动「继续上次中断的任务」弹窗:中断会话 + 中断时间 + 中断前正在做的事。 */
+      interruptedResumeCandidates: () => Promise<
+        { sessionId: string; interruptedAt: number; activity: string | null }[]
+      >;
       /** 红点派生的周期性重算源:尾部停在未 dismissed 错误行的 active 会话 id。 */
       errorTailPending: () => Promise<string[]>;
       /** 批量处置未处理告警(「全部标为已读」)。failed = 未处置成功的会话 id。 */
@@ -4906,12 +4920,6 @@ interface ElectronAPI {
       };
       workbench: {
         get: (botId: string) => Promise<import('../shared/botWorkbench').BotWorkbench | null>;
-        addDirectory: (
-          botId: string,
-          path: string,
-        ) => Promise<{ ok: true } | { ok: false; errorCode: 'NOT_A_DIRECTORY' | 'TOO_MANY' }>;
-        /** `deviceId`: the folder is on that computer (cloud companions); absent for this computer's. */
-        removeDirectory: (botId: string, path: string, deviceId?: string) => Promise<void>;
         readTask: (
           botId: string,
           taskId: string,
@@ -4919,23 +4927,18 @@ interface ElectronAPI {
           | { ok: true; taskId: string; transcript: import('../shared/botWorkbench').WorkbenchTranscript }
           | { ok: false; errorCode: string; message: string }
         >;
-        candidates: (
-          botId: string,
-        ) => Promise<
-          | {
-              ok: true;
-              candidates: Array<{
-                source: 'claude' | 'codex' | 'pi';
-                id: string;
-                projectDir: string | null;
-                updatedAt: string;
-                archived: boolean;
-              }>;
-            }
-          | { ok: false; errorCode: string; message: string }
-        >;
         /** 每个在用本机伙伴的逐任务责任 ID；旧宿主缺字段时不推断。`delegatedSessionIds` 只含伙伴自己开的后台任务。 */
         followScopes: () => Promise<Array<{ botId: string; sessionIds?: string[]; delegatedSessionIds?: string[] }>>;
+      };
+      /** 伙伴自主跟进：工作台「一眼」投影与账号级「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
+      autonomy: {
+        glance: (botId: string) => Promise<import('../shared/botAutonomy').BotGlance>;
+        getSettings: () => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
+        setSettings: (
+          patch: import('../shared/botAutonomy').BotAutonomySettings,
+        ) => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
+        /** 删除 override，重新跟随当前版本默认。 */
+        resetSettings: () => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
       };
       listSkills: (botId: string) => Promise<import('../shared/botSkill').BotSkillSummary[]>;
       memory: {
@@ -5503,6 +5506,8 @@ interface ElectronAPI {
       cb: (payload: { botId: string; change: 'created' | 'updated' }) => void,
     ) => () => void;
     onBotWorkbenchChanged: (cb: (payload: { botId: string }) => void) => () => void;
+    /** 状态表或「自动跟进所有任务」设置变化（节流 ≤ 1 次/秒）；缺 botIds = 全部伙伴。 */
+    onBotAutonomyChanged: (cb: (payload: { botIds?: string[] }) => void) => () => void;
     runBotLifecycleAction: (
       request: import('../shared/botLifecycle').BotLifecycleActionRequest,
     ) => Promise<import('../shared/botLifecycle').BotLifecycleActionResult>;
@@ -6257,6 +6262,7 @@ interface ElectronAPI {
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },
       ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
+      retryImageDelivery: (sessionId: string, imageId: string) => Promise<void>;
       retryLastError: (
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },

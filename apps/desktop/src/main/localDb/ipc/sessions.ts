@@ -82,6 +82,7 @@ import type { SessionReference } from '../../../shared/sessionReference.js';
 import * as broadcastTap from '../../device-link/broadcast-tap.js';
 import { notifyAgentIslandSessionPatch } from '../agentIslandSessionPatch';
 import { ensureHiddenSessionRegistryLoaded } from '../hiddenSessionRegistry.js';
+import { recoverGeneratedImagesForHistory } from '../../cindy-media/generatedImageRecovery';
 import { noteSessionClearBoundary } from '../../messagePersistBroadcaster';
 import {
   ackSessionTurnEndedDurable,
@@ -92,6 +93,9 @@ import {
   listInterruptedPendingSessionIds,
   setOnSessionTurnEndedPersisted,
 } from '../sessionActiveTurn';
+import { listInterruptedResumeCandidateRows } from '../interruptedResumeCandidates';
+import { formatIslandToolDetail } from '../../agent-island/toolDetail';
+import { createLocalizedToolRowWording } from '../../agent-island/toolWording';
 import { dismissErrorMessage, rebroadcastAgentSwitchBoundary } from './messages';
 import { SESSION_READ_BATCH_LIMIT } from '../../../shared/sessionRead';
 import { isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
@@ -1188,6 +1192,7 @@ export async function clearSessionContextInDb(sessionId: string, atMs?: number):
     .where(eq(sessions.id, sessionId))
     .limit(1);
   const effectiveClearedAt = updated?.clearedAt ?? ts;
+  if (isOwnerScopeCurrent(ownerScope)) void recoverGeneratedImagesForHistory(sessionId).catch(() => undefined);
   const effectiveUpdatedAt = updated?.updatedAt ?? effectiveClearedAt;
   // Concurrent clears can make SQLite return a newer monotonic boundary than
   // this request supplied. Mirror the effective value into the in-memory gate.
@@ -1519,6 +1524,23 @@ export function registerSessionIpc(
   // 断定飞行中的 turn 来自上一个进程。周期性重跑会把运行中的会话误判为中断。
   ipcMain.handle('local-db:sessions:interrupted-pending', async () => {
     return listInterruptedPendingSessionIds();
+  });
+
+  // 启动「继续上次中断的任务」弹窗:同一批中断会话,附中断时间与中断那一轮最后一次
+  // 工具调用的文案(与灵动岛同源)。查询带 bootAt 守卫,任何时刻调用都不会把本进程
+  // 正在跑的 turn 算进来。只服务本机顶层 renderer,不进 device-link allowlist。
+  ipcMain.handle('local-db:sessions:interrupted-resume-candidates', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const rows = await listInterruptedResumeCandidateRows();
+    const wording = createLocalizedToolRowWording();
+    return rows.map(({ sessionId, interruptedAt, lastToolUse }) => ({
+      sessionId,
+      interruptedAt,
+      activity: lastToolUse
+        ? (formatIslandToolDetail(lastToolUse.toolName, lastToolUse.input, { wording })
+          ?? lastToolUse.toolName)
+        : null,
+    }));
   });
 
   // 「尾部停在未 dismissed 错误行」的 active 会话 id —— 红点派生的周期性重算源。
@@ -2151,10 +2173,13 @@ export async function updateSessionInDb(
 
 /** Sending continues an ordinary archived task. Serialize with archive/delete and
  * use the normal status writer so native projection and all clients see active. */
-export async function restoreArchivedSessionForSend(sessionId: string): Promise<void> {
+export async function restoreArchivedSessionForSend(
+  sessionId: string,
+  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
+): Promise<void> {
   const ownerScope = captureOwnerScope();
   const db = getDbClient().drizzle;
-  await withSessionRouteLock(sessionId, async () => {
+  const restore = async () => {
     const [row] = await db.select({
       status: sessions.status, source: sessions.source, orcaRole: sessions.orcaRole,
       orcaRemoteLead: sessions.orcaRemoteLead,
@@ -2165,8 +2190,10 @@ export async function restoreArchivedSessionForSend(sessionId: string): Promise<
     if (row.source === 'bot' || row.orcaRole === 'worker' || row.orcaRemoteLead) {
       throwIpcError('PRECONDITION_FAILED', 'Restore the managed task before continuing');
     }
-    await patchSessionMetaInDb(sessionId, { status: 'active' });
-  });
+    await patchSessionMetaInDb(sessionId, { status: 'active' }, { ...options, routeLockHeld: true });
+  };
+  if (options.routeLockHeld) await restore();
+  else await withSessionRouteLock(sessionId, restore);
 }
 
 export async function patchSessionMetaInDb(
@@ -2176,6 +2203,7 @@ export async function patchSessionMetaInDb(
     title?: string;
     pinnedAt?: string | null;
   },
+  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
 ): Promise<ReturnType<typeof sessionToCamel>> {
   const ownerScope = captureOwnerScope();
   for (const k of Object.keys(patch)) {
@@ -2219,6 +2247,9 @@ export async function patchSessionMetaInDb(
         await finalizeSharedTaskClosure(dbClient, prepared);
       }
     } else {
+      // All asynchronous preparation has finished. Once this write is issued,
+      // cancellation does not roll back a committed lifecycle transition.
+      if (options.signal?.aborted) throwIpcError('PRECONDITION_FAILED', 'Session send aborted');
       await writeSessionPatch(db, sessionId, setObj, patch.status);
     }
     const row = await selectSessionWithCount(db, sessionId);
@@ -2233,7 +2264,7 @@ export async function patchSessionMetaInDb(
       await closeSharedTaskForTask(sessionId, dbClient);
     }
     return sessionToCamel(row);
-  });
+  }, options.routeLockHeld);
   if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
     clearSessionAttention(sessionId, 'explicit');
   }
@@ -2569,6 +2600,7 @@ export async function deleteBotProfileAndDetachSessionsInDb(
  * 文件在 turn 送出后即无用。所有把 session 置为终态的路径都应调用。
  */
 function removeHookAttachmentDir(sessionId: string, status: unknown): void {
+  if (status === 'deleted') void recoverGeneratedImagesForHistory(sessionId).catch(() => undefined);
   if (status !== 'deleted' && status !== 'archived') return;
   if (status === 'deleted') {
     void removeTurnChangeSetsForSession(sessionId).catch((err) => {
