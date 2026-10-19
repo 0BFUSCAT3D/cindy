@@ -557,6 +557,8 @@ import {
 import { initNotificationService, showDeviceSessionDesktopEvent } from './notificationService';
 import { initWecomGroupNotificationIpc } from './wecomGroupNotification';
 import { getAgentIslandService, initAgentIslandService } from './agent-island/service.js';
+import { setCompanionAvatarResolver } from './agent-island/companionIdentity.js';
+import { companionAvatarCache } from './companion-cloud/avatarCacheHost.js';
 import { attachWorkLouderCodexWindowReveal } from './worklouder-codex/index.js';
 import {
   disposeInputDevices,
@@ -4450,6 +4452,7 @@ const registerIpcHandlers = () => {
     feishuIm,
   });
   initWecomGroupNotificationIpc();
+  setCompanionAvatarResolver((request) => companionAvatarCache.resolve(request));
   initAgentIslandService({
     // The relay waits for native done before checking the durable result handoff.
     isCompletionHandledByTeammate,
