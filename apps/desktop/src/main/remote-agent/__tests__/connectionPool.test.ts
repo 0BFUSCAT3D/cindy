@@ -315,9 +315,10 @@ function fakeAgent(input: HostedStartInput): AgentSessionHandle {
   }
   const auth = { authorization: `Bearer ${input.tunnel.token}` };
   const tool = async (name: string, args: Record<string, unknown>) => {
+    // 只收 JSON：声明 text/event-stream 时隧道会改回 SSE(给真实 Claude Code 保活用)。
     const response = await fetch(`${input.tunnel.url}/mcp/cindy_exec`, {
       method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      headers: { ...auth, 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
     });
     const body = await response.json() as { result: { content: Array<{ text: string }> } };
@@ -554,6 +555,7 @@ describe('remote connection pool with a real host', () => {
     await start(pool);
     expect(scenario.started).toHaveLength(2);
     // 让出、连回之后命令还在跑，按原 ID 读得到；放行后读到它跑完的输出。
+    await sleep(5);
     expect(await ask(a, events, `read ${id}`)).toContain('<status>running</status>');
     expect(scenario.started[2].options.resumeSessionId).toBe(a.id);
     fs.writeFileSync(path.join(project, 'bg.go'), '');
