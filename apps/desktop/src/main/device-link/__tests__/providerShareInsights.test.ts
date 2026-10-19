@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderShareOwned } from '@cindy/device-link';
 import type { ProviderUsageHistoryView } from '../../../shared/providerShare';
 import { parseProviderShareInsights } from '../../../shared/providerShareInsights';
@@ -7,6 +7,7 @@ import { createProviderShareInsightsReader } from '../providerShareInsights';
 /* 测试价值：通过新只读 reader 验证四种能力组合、匿名投影、独立失败和撤权时序。
  * 依据：provider-sharing 的最小范围及账号隔离；旧 dispatch/management 测试没有新 reader。
  * 最小失败输入：一项查询失败、在途关闭后重开、同 providerId 换账号、转来的一行用量。
+ * 缓存回归：PR #6482 P1；旧覆盖仅单供应商，补 A→B→A、过期和旧失败晚于新读取的时序。
  * tier: unit；依赖注入，无 Electron/外网/真实等待。单文件耗时见执行报告。 */
 const day = {
   day: '2026-10-19',
@@ -94,10 +95,11 @@ function fixture() {
       ],
     })),
   };
-  return { state, deps, read: createProviderShareInsightsReader(deps) };
+  return { state, deps, history, read: createProviderShareInsightsReader(deps) };
 }
 const request = { version: 1 };
 describe('provider share insights', () => {
+  afterEach(() => vi.restoreAllMocks());
   it.each([
     [false, false],
     [true, false],
@@ -178,6 +180,70 @@ describe('provider share insights', () => {
     expect(deps.history).toHaveBeenCalledTimes(1);
     state.owner = 'b';
     await read('peer', request);
+    expect(deps.history).toHaveBeenCalledTimes(2);
+  });
+  it('retains each provider history and coalesces only that provider while reads are in flight', async () => {
+    const { deps, history } = fixture();
+    let finish!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const load = vi.fn(async (providerId: string) => {
+      await wait;
+      return { ...history, self: { ...history.self, days: [{ ...day, model: providerId }] } };
+    });
+    const read = createProviderShareInsightsReader({
+      ...deps,
+      access: (peer) => ({ ...deps.access()!, providerId: peer, shareId: peer }),
+      shares: () => ['a', 'b'].map((id) => ({ ...deps.shares()[0], providerId: id, shareId: id })),
+      history: load,
+    });
+    const pending = ['a', 'b', 'a', 'b'].map((peer) => read(peer, request));
+    finish();
+    const views = await Promise.all(pending);
+    expect(views.map((view) => view.usage?.parties[0].days[0].model)).toEqual(['a', 'b', 'a', 'b']);
+    await read('a', request);
+    await read('b', request);
+    expect(load.mock.calls).toEqual([['a'], ['b']]);
+    // A failing retry must not remove B's still-current history.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 15_000);
+    await read('b', request);
+    load.mockRejectedValueOnce(new Error('ledger failed'));
+    expect((await read('a', request)).status.usage).toBe('unavailable');
+    await read('a', request);
+    await read('b', request);
+    expect(load.mock.calls).toEqual([['a'], ['b'], ['b'], ['a'], ['a']]);
+  });
+  it.each(['expiry', 'membership', 'visibility'] as const)(
+    'reloads cached history after %s changes',
+    async (change) => {
+      const { read, deps, state } = fixture();
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      await read('peer', request);
+      if (change === 'expiry') now.mockReturnValue(16_000);
+      if (change === 'membership') state.revision += 1;
+      if (change === 'visibility') state.visibility.revision += 2;
+      await read('peer', request);
+      await read('peer', request);
+      expect(deps.history).toHaveBeenCalledTimes(2);
+    },
+  );
+  it('does not let an expired in-flight failure evict its successful replacement', async () => {
+    const { read, deps } = fixture();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    let fail!: (error: Error) => void;
+    deps.history.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+    );
+    const old = read('peer', request);
+    now.mockReturnValue(16_000);
+    expect((await read('peer', request)).status.usage).toBe('ready');
+    fail(new Error('old failure'));
+    expect((await old).status.usage).toBe('unavailable');
+    expect((await read('peer', request)).status.usage).toBe('ready');
     expect(deps.history).toHaveBeenCalledTimes(2);
   });
   it('rejects unauthorized members and a guest-supplied provider id', async () => {

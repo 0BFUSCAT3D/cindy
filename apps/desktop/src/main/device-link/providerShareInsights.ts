@@ -121,13 +121,15 @@ function publicUsage(
 /** 最小只读投影；权限检查保留到实际发送，包括背压队列重发。 */
 export function createProviderShareInsightsReader(deps: ProviderShareInsightsDeps) {
   const checks = new WeakMap<object, { peer: string; assertCurrent(): void }>();
-  let cached: {
-    owner: string;
-    providerId: string;
-    revision: number;
-    expiresAt: number;
-    read: Promise<ProviderUsageHistoryView>;
-  } | null = null;
+  let cacheScope: { owner: string; revision: number } | null = null;
+  const histories = new Map<
+    string,
+    {
+      visibilityRevision: number;
+      expiresAt: number;
+      read: Promise<ProviderUsageHistoryView>;
+    }
+  >();
   const read = async (peer: string, raw: unknown): Promise<ProviderShareInsights> => {
     if (
       !raw ||
@@ -160,24 +162,29 @@ export function createProviderShareInsightsReader(deps: ProviderShareInsightsDep
       }
     };
     assertCurrent();
-    if (
-      visibility.usage &&
-      (!cached ||
-        cached.owner !== owner ||
-        cached.providerId !== access.providerId ||
-        cached.revision !== revision ||
-        cached.expiresAt <= Date.now())
-    ) {
+    if (cacheScope?.owner !== owner || cacheScope.revision !== revision) {
+      histories.clear();
+      cacheScope = { owner, revision };
+    }
+    const now = Date.now();
+    // Retain only current, unexpired provider entries, not historical authorization generations.
+    for (const [providerId, entry] of histories) {
+      if (
+        entry.expiresAt <= now ||
+        entry.visibilityRevision !== deps.visibility(providerId).revision
+      ) {
+        histories.delete(providerId);
+      }
+    }
+    let cached = histories.get(access.providerId);
+    if (!visibility.usage) {
+      histories.delete(access.providerId);
+    } else if (!cached) {
       const read = deps.history(access.providerId);
-      cached = {
-        owner,
-        providerId: access.providerId,
-        revision,
-        expiresAt: Date.now() + 15_000,
-        read,
-      };
+      cached = { visibilityRevision: visibility.revision, expiresAt: now + 15_000, read };
+      histories.set(access.providerId, cached);
       void read.catch(() => {
-        if (cached?.read === read) cached = null;
+        if (histories.get(access.providerId)?.read === read) histories.delete(access.providerId);
       });
     }
     const [historyResult, quotaResult] = await Promise.allSettled([
