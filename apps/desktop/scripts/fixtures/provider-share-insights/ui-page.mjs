@@ -79,6 +79,27 @@ export default {
         await ui.capture('collapsed-models');
       }
       const progress = page.getByRole('progressbar');
+      if (['default', 'organization', 'zero'].includes(ui.case)) {
+        const sizes = await progress.evaluateAll((tracks) =>
+          tracks.map((track) => {
+            const row = track.parentElement;
+            const style = row.ownerDocument.defaultView.getComputedStyle(row);
+            const bounds = track.getBoundingClientRect();
+            return {
+              track: bounds.width,
+              content:
+                row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+              belowDetail:
+                bounds.top >= track.previousElementSibling.getBoundingClientRect().bottom,
+            };
+          }),
+        );
+        assert.ok(sizes.length > 0);
+        for (const size of sizes) {
+          assert.ok(Math.abs(size.track - size.content) <= 1, 'Balance track spans row content');
+          assert.ok(size.belowDetail, 'Balance track sits below the amount description');
+        }
+      }
       if (ui.case === 'default') {
         assert.equal(await progress.count(), 3);
         assert.ok(

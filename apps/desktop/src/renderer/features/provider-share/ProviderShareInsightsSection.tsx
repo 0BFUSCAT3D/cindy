@@ -279,6 +279,7 @@ function QuotaAccount({
         label={label}
         remaining={money(remaining, balance!.currency)}
         percent={percent}
+        progressLayout="full-width"
         detail={
           total === null
             ? t('billing.usage.historyUnavailable')

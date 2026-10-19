@@ -6,11 +6,13 @@ export function CreditPoolRowView({
   remaining,
   detail,
   percent,
+  progressLayout = 'inline',
 }: {
   label: string;
   remaining: string;
   detail: string;
   percent: number | null;
+  progressLayout?: 'inline' | 'full-width';
 }) {
   const { t } = useTranslation();
   return (
@@ -22,9 +24,13 @@ export function CreditPoolRowView({
           {remaining}
         </span>
       </p>
-      <p className="min-w-0 text-11 leading-4 text-[var(--text-tertiary)]">{detail}</p>
+      <p
+        className={`min-w-0 text-11 leading-4 text-[var(--text-tertiary)] ${progressLayout === 'full-width' ? 'col-span-2' : ''}`}
+      >
+        {detail}
+      </p>
       <div
-        className="h-1 w-full self-center overflow-hidden rounded-full bg-[var(--surface-chip)]"
+        className={`h-1 w-full self-center overflow-hidden rounded-full bg-[var(--surface-chip)] ${progressLayout === 'full-width' ? 'col-span-2' : ''}`}
         role={percent === null ? undefined : 'progressbar'}
         aria-label={t('billing.usage.progressLabel', { label })}
         aria-valuemin={percent === null ? undefined : 0}
