@@ -16,8 +16,9 @@ vi.mock('react-native', async () => {
     React.createElement('div', { 'data-testid': testID, style: flatten(style), ref: (node: HTMLDivElement | null) => {
       if (node && onLayout) nativeLayout.set(node, height => onLayout({ nativeEvent: { layout: { height } } }));
     } }, children);
-  const ScrollView = ({ children, testID, scrollEnabled }: { children?: ReactNode; testID?: string; scrollEnabled?: boolean }) =>
-    React.createElement('div', { 'data-testid': testID, 'data-scroll': String(scrollEnabled) }, children);
+  const ScrollView = ({ children, testID, scrollEnabled, style, contentContainerStyle }: { children?: ReactNode; testID?: string; scrollEnabled?: boolean; style?: unknown; contentContainerStyle?: unknown }) =>
+    React.createElement('div', { 'data-testid': testID, 'data-scroll': String(scrollEnabled),
+      'data-grow': `${flatten(style).flexGrow}/${flatten(contentContainerStyle).flexGrow}` }, children);
   return { View, ScrollView, Pressable: View, Platform: { OS: 'ios' },
     StyleSheet: { hairlineWidth: 1, absoluteFill: {} }, Animated: {}, Easing: {} };
 });
@@ -68,9 +69,13 @@ it('keeps send/voice/grabber outside the scrolling body and retains the editor a
     render(false);
     expect(container.querySelector('textarea')).toBe(editor);
     expect(body.getAttribute('data-scroll')).toBe('false');
+    // Collapsed: viewport and content fill the taller pill so the row stays vertically centred.
+    expect(body.getAttribute('data-grow')).toBe('1/1');
     render(true);
     expect(container.querySelector('textarea')).toBe(editor);
     expect(body.getAttribute('data-scroll')).toBe('true');
+    // Expanded: size to children so removed attachments release their height (#6291).
+    expect(body.getAttribute('data-grow')).toBe('0/0');
   } finally { act(() => root.unmount()); }
 });
 
