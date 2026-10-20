@@ -791,6 +791,8 @@ describe('sessionActiveTurn', () => {
   // #6513: the old query scans non-rewound messages globally, blocking the shared
   // worker. Inspect the executed production query's SQLite plan with the real
   // message indexes; the previous index-free fixture only protected results.
+  // Both the outer row lookup and the tail subquery must stay bounded; a
+  // rowid lookup alone can conceal a full messages scan inside that subquery.
   // Minimal failure: one eligible session/error plus these indexes. Unit tier;
   // the 584k-row timing/worker validation stays outside the default unit suite.
   it('listErrorTailPendingRows looks up message rowids instead of scanning global candidates', async () => {
@@ -810,6 +812,10 @@ describe('sessionActiveTurn', () => {
     expect(plan.some(({ detail }) =>
       /SEARCH messages USING INTEGER PRIMARY KEY \(rowid=\?\)/.test(detail),
     )).toBe(true);
+    expect(plan.some(({ detail }) =>
+      /SEARCH tail USING INDEX idx_messages_session_created \(session_id=\? AND created_at>\?\)/.test(detail),
+    )).toBe(true);
+    expect(plan.some(({ detail }) => /SCAN (messages|tail)(\s|$)/.test(detail))).toBe(false);
   });
 
   // 回归(PR #879 review P1):批量处置先取快照再逐个 ack,快照之后该会话可能已启动
