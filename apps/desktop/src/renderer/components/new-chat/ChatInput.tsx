@@ -6508,7 +6508,8 @@ export function ChatInput({
         .invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref', [
           {
             agent: agentKind,
-            providerId: draftProviderId ?? '',
+            // 保持原来的隐式值：旧被控端按它直接写草稿，新被控端用 taskProviderId 自己决定写哪个来源。
+            providerId: activeProviderId ?? '',
             modelId,
             active: true,
             markModelChoice,

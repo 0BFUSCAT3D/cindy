@@ -1204,10 +1204,10 @@ export function patchVendorPrefsFromTaskModelSwitch(
   }
   // 走到这里说明新建默认的实际来源已确认等于任务来源(或任务来源未知的旧行为)。草稿本来跟随默认
   // 路由(providerId=null)就保持跟随，不因为任务显式用了某来源就把它固化成 override；草稿显式存着
-  // 来源时写入已确认的那个来源——存着的旧来源可能已被搬走，不能复活。
+  // 来源时写入已确认的任务来源(不信任 patch 里可能过期的值)——存着的旧来源可能已被搬走，不能复活。
   patchVendorPrefs(vendor, {
     ...patch,
-    providerId: saved.providerId ? (patch.providerId ?? taskProviderId ?? saved.providerId) : null,
+    providerId: saved.providerId ? (taskProviderId ?? patch.providerId ?? saved.providerId) : null,
   });
   return true;
 }
