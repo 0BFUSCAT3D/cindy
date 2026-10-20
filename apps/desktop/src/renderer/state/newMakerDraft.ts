@@ -1195,7 +1195,9 @@ export function patchVendorPrefsFromTaskModelSwitch(
   rebaseStoredDefaultTuplePreference();
   const saved = currentDraft.lastByVendor[vendor];
   if (taskProviderId) {
-    const draftProviderId = saved.providerId ?? resolveDraftProviderId?.(saved) ?? null;
+    // 存着的来源可能已被服务端搬走(例如企业号池 Auto 搬到 XD)，先按实际路由解析，
+    // 解析不出再用存的值。
+    const draftProviderId = resolveDraftProviderId?.(saved) ?? saved.providerId ?? null;
     // 只有确认新建默认就在任务的来源上才写回；来源不明(目录未就绪、账号切换中、没有来源提供该
     // 模型)按保守处理，宁可这次不写，也不把默认搬到任务的来源。
     if (draftProviderId !== taskProviderId) return false;

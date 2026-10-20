@@ -6509,6 +6509,9 @@ export function ChatInput({
         if (patch.fast !== undefined) setFastModeForModel(modelId, patch.fast);
         return;
       }
+      // 任务来源确认不了：被控端无从判断新建默认是否在同一来源，且迁移前的旧草稿没有选择标记可保护，
+      // 这次活动写穿整个不下发。
+      if (sourceUnknownModelSwitch) return;
       window.electronAPI.deviceLink
         .invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref', [
           {

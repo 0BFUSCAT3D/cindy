@@ -848,6 +848,32 @@ describe('newMakerDraft store', () => {
     expect(m1.getDraft().modelChosenByVendor).toEqual({ cc: true });
   });
 
+  it('patchVendorPrefsFromTaskModelSwitch:存着的来源已被搬走时按实际路由比较', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'auto/pool', providerId: 'org-pool' });
+    // 服务端把该 Auto 搬到了 xd:实际来源是 xd，不是存着的 org-pool。
+    const moved = () => 'xd';
+
+    expect(
+      m1.patchVendorPrefsFromTaskModelSwitch(
+        'cc',
+        { model: 'auto/pool', providerId: 'org-pool' },
+        'org-pool',
+        moved,
+      ),
+    ).toBe(false);
+    expect(m1.getDraft().lastByVendor.cc.providerId).toBe('org-pool');
+    // 解析不出来时回退用存着的来源比较。
+    expect(
+      m1.patchVendorPrefsFromTaskModelSwitch(
+        'cc',
+        { model: 'auto/pool', providerId: 'org-pool' },
+        'org-pool',
+        () => null,
+      ),
+    ).toBe(true);
+  });
+
   it('patchVendorPrefsFromTaskModelSwitch:任务跟随默认路由时保留草稿显式选过的同一来源', async () => {
     const m1 = await loadModule();
     m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });
