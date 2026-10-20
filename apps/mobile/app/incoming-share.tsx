@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useIsFocused, useNavigation, useRouter } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
@@ -78,13 +78,17 @@ export default function IncomingShareScreen() {
   const matches = (title: string) => title.normalize('NFKC').toLocaleLowerCase(i18n.language).includes(needle);
   const text = batch ? incomingShareText(batch.payloads) : '';
   const files = batch?.payloads.filter(item => item.shareType !== 'text' && item.shareType !== 'url') ?? [];
+  const handoffBatchId = useRef<string | null>(null);
   const choose = (destination: string, action: () => void) => {
-    if (batch && selectIncomingShareDestination(batch.id, destination)) action();
+    if (!batch) return;
+    handoffBatchId.current = batch.id;
+    if (selectIncomingShareDestination(batch.id, destination)) action();
+    else handoffBatchId.current = null;
   };
-  // Covers the header, iOS edge swipe and system back without cancelling a
-  // forward push to the chosen composer. Failed acknowledgement keeps the share.
+  // Removing the chooser during a handoff retains the batch for its composer.
+  // Header/gesture cancellation still acknowledges and cleans the owned copies.
   usePreventRemove(!!batch, ({ data }) => {
-    try { if (batch) discardIncomingShareBatch(batch.id); }
+    try { if (batch && handoffBatchId.current !== batch.id) discardIncomingShareBatch(batch.id); }
     catch { setDismissError(t('composer.upload.shareReceiveFailed')); return; }
     navigation.dispatch(data.action);
   });
@@ -105,7 +109,7 @@ export default function IncomingShareScreen() {
         placeholder={t('composer.incomingShare.search')} accessibilityLabel={t('composer.incomingShare.search')}
         placeholderTextColor={colors.textPlaceholder} autoCorrect={false} />
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.list}>
-        <Pressable accessibilityRole="button" style={styles.row} onPress={() => choose('new', () => router.push('/sessions/new'))}>
+        <Pressable accessibilityRole="button" style={styles.row} onPress={() => choose('new', () => router.dismissTo('/sessions/new'))}>
           <Text style={styles.title}>{t('composer.incomingShare.newTask')}</Text>
         </Pressable>
         <Text style={styles.sectionLabel}>{t('composer.incomingShare.companions')}</Text>
@@ -114,7 +118,7 @@ export default function IncomingShareScreen() {
           const conversation = row.item.links.find(link => link.rel === 'conversation')?.target;
           return <Pressable key={row.key} accessibilityRole="button" style={styles.row}
             disabled={conversation?.kind !== 'session'} onPress={() => {
-              if (conversation?.kind === 'session') choose(incomingShareDestination(row.host.deviceId, conversation.sessionId), () => router.push(route));
+              if (conversation?.kind === 'session') choose(incomingShareDestination(row.host.deviceId, conversation.sessionId), () => router.dismissTo(route));
             }}>
             <Text style={styles.title}>{resolveRemoteText(row.item.display.title, i18n.language)}</Text>
             <Text style={styles.note}>{row.host.deviceName}{conversation?.kind !== 'session' ? ` · ${t('composer.incomingShare.unavailable')}` : ''}</Text>
@@ -126,7 +130,7 @@ export default function IncomingShareScreen() {
         <Text style={styles.sectionLabel}>{t('composer.incomingShare.tasks')}</Text>
         {tasks.filter(row => matches(row.session.title)).map(row => <Pressable
           key={incomingShareDestination(row.deviceId, row.session.id)} accessibilityRole="button" style={styles.row}
-          onPress={() => choose(incomingShareDestination(row.deviceId, row.session.id), () => router.push({
+          onPress={() => choose(incomingShareDestination(row.deviceId, row.session.id), () => router.dismissTo({
             pathname: '/sessions/[sessionId]', params: { deviceId: row.deviceId, deviceName: row.deviceName, sessionId: row.session.id },
           }))}>
           <Text style={styles.title}>{row.session.title}</Text><Text style={styles.note}>{row.deviceName}</Text>
