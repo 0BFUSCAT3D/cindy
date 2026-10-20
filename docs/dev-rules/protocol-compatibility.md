@@ -2745,3 +2745,20 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 不重连共享 relay。恢复由插件持久状态对账，不恢复失效请求。
 实现与 unit 回归：`cindy-brain/deviceSyncSlot.ts` / `__tests__/deviceSyncSlot.test.ts`。
 完整体验需要两台电脑都更新 Host 和插件；本地回归不能代替双机稳定版/Beta 实测。
+
+## 跨电脑任务行动回执
+
+`maker:session:handoff` 增量支持 `task-action-capability` 与 `validate-task-action`。
+新发送端先查询 `taskActionVersion: 1`，再发送带 Host 生成 `taskActionReceipt` 的消息；
+缺能力时明确拒绝，不回退到旧发送方式。新接收端拒绝缺回执的旧请求，要求发送端更新。
+完整任务互发需要两台电脑均升级；同账号鉴权、隐藏任务和共享访客限制不扩大。
+
+回执只存在发送 Host 内存，绑定接收设备、发送任务、目标任务与正文，最长一小时；
+接收端一次认领，强制经队列，在消费前回调发送 Host 复核。
+确定未发送的本机失败或目标明确未接受时，发送端立即释放回执，避免离线尝试耗尽容量；
+在途断连、超时、远端写后回执查询失败和无法识别的结果保留原有效期，不自动重发。
+队列派发或丢弃后通过同一 `validate-task-action` 请求的可选 `release` 标志释放回执；
+发送端删除回执后返回 `released: true`，重放无法通过验证，接收端才清除认领。
+旧端没有该确认或未收到释放回执时保留原过期清理，不把旧端的普通验证成功当作释放成功。断线、撤销、账号切换或重启后
+无法复核时不投递，不自动重放；已送达历史保留。未知投递结果仍要求先读取目标核实。
+没有新 relay channel、服务端变更、数据库 migration 或 Mobile 原生指纹变化。
