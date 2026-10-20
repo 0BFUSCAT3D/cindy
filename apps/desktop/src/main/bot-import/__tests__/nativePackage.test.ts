@@ -42,7 +42,10 @@ it('loads all ten immutable recipes with complete skills, knowledge, portraits, 
     expect(options.length).toBeGreaterThanOrEqual(3);
     expect(options.length).toBeLessThanOrEqual(4);
     for (const option of options) expect(onboarding).toContain(`- ${option}`);
-    expect(onboarding.indexOf('## 起步选项')).toBeLessThan(onboarding.indexOf('## 连接（用户选定后）'));
+    expect(onboarding.indexOf('## 起步选项')).toBeLessThan(onboarding.indexOf('## 工具（用户选定后）'));
+    // Tools are named by capability category with examples: look at what the user already has, recommend only when nothing fits.
+    for (const phrase of ['ghost_list', 'ghost_market_search', '这只是举例', '不自动安装', '默认只读', '一次只显示用得上的那一张连接卡']) expect(onboarding, `${id}: ${phrase}`).toContain(phrase);
+    expect(manifest.profile.identitySource, id).toContain('工具按能力类别用，不绑定某个插件');
     expect(pkg.snapshot.source.kind).toBe('cindy');
     expect(pkg.snapshot.items.some(item => item.role === 'user' || item.role === 'instructions' || item.env || item.credential)).toBe(false);
     for (const item of pkg.snapshot.items) {
@@ -112,14 +115,16 @@ it('reads the detail page fields from the authored detailZh copy, not from Skill
     { name: '来源去重', description: '按网址合并重复来源，避免同一条消息反复提醒你' }]);
   expect(cooper.knowledge).toEqual([{ title: '信号判断方法', summary: '区分「新出现」与「重要」，注明发布时间和来源覆盖，不把热度当事实' }]);
   expect(cooper.remembers).toEqual(['关注的主题', '必看的来源', '要盯的公司', '提醒门槛', '简报时间', '时区']);
-  expect(cooper.tools).toEqual([{ id: 'cindy-web-search', purpose: '检索公开主题与来源' }]);
+  expect(cooper.tools).toEqual([{ id: 'cindy-web-search', purpose: '检索公开主题与来源' }, { id: 'x-manager', purpose: '搜索 X 上的讨论' }]);
   expect(cooper.routines.map(routine => routine.cron)).toEqual(['0 8 * * *', '0 13 * * 1-5', '0 16 * * 1-5']);
   expect(cooper.routines[0]).toEqual({ name: '每日研究简报', summary: '汇总选定主题的新动态，附出处', cron: '0 8 * * *' });
   expect((await readNativeBotPackage(root, 'engineer-bot')).entry.routines[0]!.cron).toBe('0,30 * * * *');
 });
 it('ships authored copy within the field limits for all ten packages, with public-market plugins only', async () => {
   const wording = /配方|本包|离线示例|UTC|原作者|USER\.md|脚本|\.py\b|水位|游标|字段名/;
-  const publicPlugins = new Set(['cindy-web-search', 'cindy-gitlab', 'google-gmail', 'google-sheets', 'cindy-art', 'opendesign-trial']);
+  // Public-market plugins only (never organisation-only xd-* ones); the page lists representative ones, teammates use whatever the user has.
+  const publicPlugins = new Set(['cindy-github', 'cindy-gitlab', 'cindy-notion', 'google-sheets', 'google-gmail', 'outlook-mail', 'google-drive',
+    'cindy-web-search', 'x-manager', 'cindy-art', 'opendesign-trial', 'baguette-simulator']);
   const shape: Record<string, number[]> = {};
   for (const id of BOT_PACKAGE_IDS) {
     const manifest = JSON.parse(await fs.readFile(path.join(root, id, version, 'manifest.json'), 'utf8'));
@@ -148,9 +153,9 @@ it('ships authored copy within the field limits for all ten packages, with publi
   }
   // [skills, knowledge, remembers, tools, routines] per package.
   expect(shape).toEqual({
-    'cooper': [2, 1, 6, 1, 3], 'engineer-bot': [2, 1, 7, 1, 1], 'nightly-audit-engineer': [2, 1, 6, 1, 1], 'proto-bot': [2, 1, 5, 2, 2],
-    'seo-aeo-desk': [2, 1, 8, 1, 3], 'startup-qa-bot': [2, 1, 7, 0, 1], 'video-editor': [2, 1, 7, 1, 0],
-    'ad-spend-watch': [2, 1, 8, 2, 3], 'apple-search-ads-review': [2, 1, 8, 2, 2], 'sable-game-art': [2, 1, 8, 2, 2],
+    'cooper': [2, 1, 6, 2, 3], 'engineer-bot': [2, 1, 7, 3, 1], 'nightly-audit-engineer': [2, 1, 6, 2, 1], 'proto-bot': [2, 1, 5, 4, 2],
+    'seo-aeo-desk': [2, 1, 8, 3, 3], 'startup-qa-bot': [2, 1, 7, 3, 1], 'video-editor': [2, 1, 7, 2, 0],
+    'ad-spend-watch': [2, 1, 8, 3, 3], 'apple-search-ads-review': [2, 1, 8, 3, 2], 'sable-game-art': [2, 1, 8, 4, 2],
   });
 });
 interface Detail { skills: Array<{ ref: string; title: string; summary: string }>; memory: { knowledge: unknown[]; remembers: string[] };
