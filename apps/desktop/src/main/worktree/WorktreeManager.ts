@@ -411,6 +411,10 @@ export const detectCwd = createCwdProbeScheduler(detectCwdOnce);
 const CWD_PROBE_GIT_OPTS = { timeoutMs: 10_000 };
 
 async function detectCwdOnce(cwd: string): Promise<DetectCwdResp> {
+  // Git resolves relative metadata paths from the physical process cwd. A
+  // symlink spelling can otherwise make an ordinary repo look like a linked
+  // worktree. Keep Git's existing error handling if the directory is unavailable.
+  cwd = await fs.realpath(cwd).catch(() => cwd);
   // One Git process returns the same snapshot that previously needed five.
   // Unborn HEADs, older Git versions and newline-containing paths retain the
   // individual-query fallback below rather than changing the IPC contract.

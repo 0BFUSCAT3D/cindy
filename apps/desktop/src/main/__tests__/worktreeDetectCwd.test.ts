@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { detectCwd } from '../worktree/WorktreeManager';
 import { GitExecError, type GitExecOpts } from '../worktree/gitExec';
 
@@ -27,9 +28,14 @@ vi.mock('../worktree/gitExec', async () => {
 
 beforeEach(() => {
   gitExecMock.mockReset();
+  // Synthetic paths need no filesystem I/O, including fake-timer timeout tests.
+  vi.spyOn(fs, 'realpath').mockRejectedValue(Object.assign(new Error('missing directory'), { code: 'ENOENT' }));
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function timeoutError() {
   return new GitExecError({ args: ['rev-parse'], exitCode: null, stderr: 'timed out', stdout: '', timedOut: true });
@@ -62,6 +68,20 @@ function setupGitMock(opts: {
 }
 
 describe('detectCwd → isInsideWorktree (I-1 fix)', () => {
+  // #6409: a failed physical-cwd lookup must preserve Git's partial/error result.
+  it.each([true, false])('preserves missing-directory results when gitInstalled=%s', async (gitInstalled) => {
+    gitExecMock.mockImplementation(async (args: readonly string[]) => {
+      if (gitInstalled && args[0] === '--version') return { stdout: 'git version 2.45.0\n', stderr: '' };
+      throw new GitExecError({ args, exitCode: null, stderr: '', stdout: '',
+        cause: Object.assign(new Error('not found'), { code: 'ENOENT' }) });
+    });
+    expect(await detectCwd('/missing')).toMatchObject({
+      isGitRepo: false,
+      isInsideWorktree: false,
+      gitInstalled,
+    });
+  });
+
   it('releases all four hung probes after Git timeout and allows queued work and same-path retries', async () => {
     vi.useFakeTimers();
     gitExecMock.mockImplementation((_args: readonly string[], _cwd: string, opts: GitExecOpts) => (
