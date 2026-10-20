@@ -80,7 +80,9 @@ export async function apiFetchRaw<T>(
         if (nextResponse.status === 204 || nextResponse.status === 205) {
           return { response: nextResponse, data: null };
         }
-        mobileDebugLog('warn', 'network', 'response read failed', { status: nextResponse.status }, error);
+        // JSON SyntaxError messages/stacks can include response contents.
+        mobileDebugLog('warn', 'network', 'response read failed', { status: nextResponse.status },
+          error instanceof SyntaxError ? 'SyntaxError' : error);
         if (nextResponse.ok) {
           throw new ApiError('INVALID_RESPONSE', nextResponse.status, i18n.t('apiErrors.requestFailed'));
         }

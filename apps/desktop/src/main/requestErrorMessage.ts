@@ -9,7 +9,12 @@ export function requestErrorMessage(error: unknown): string {
         messages.push(String(error));
         break;
       }
-      const value = error as { message?: unknown; code?: unknown; cause?: unknown };
+      const value = error as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+      // JSON parsers can quote response contents in both the message and stack.
+      if (value.name === 'SyntaxError') {
+        messages.push('SyntaxError');
+        break;
+      }
       const message = typeof value.message === 'string' ? value.message : 'Unknown error';
       messages.push(typeof value.code === 'string' ? `${message} (${value.code})` : message);
       error = value.cause;

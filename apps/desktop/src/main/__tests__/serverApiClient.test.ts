@@ -51,14 +51,19 @@ describe('serverApiFetch', () => {
     expect(logged).not.toContain('private-token');
   });
 
-  it('logs the original response parse failure without changing the existing empty-response error', async () => {
-    mocks.netFetch.mockResolvedValueOnce({ ok: true, status: 200,
-      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); } });
+  // Native JSON errors can quote the response body; transport read failures must stay diagnosable.
+  it.each([
+    { response: new Response('private display name'), logged: 'SyntaxError' },
+    { response: { ok: true, status: 200,
+      json: async () => { throw new TypeError('response stream closed'); } }, logged: 'response stream closed' },
+  ])('logs a response failure without exposing its body or changing EMPTY_RESPONSE: $logged', async ({ response, logged }) => {
+    mocks.netFetch.mockResolvedValueOnce(response);
     await expect(serverApiFetch('/api/resource', { baseUrl: 'https://api.example.invalid' }))
       .rejects.toMatchObject({ code: 'EMPTY_RESPONSE', statusCode: 200 });
     expect(mocks.logger.warn).toHaveBeenCalledWith(
-      'response read failed', '/api/resource', { status: 200 }, 'Unexpected end of JSON input',
+      'response read failed', '/api/resource', { status: 200 }, logged,
     );
+    expect(JSON.stringify(mocks.logger.warn.mock.calls)).not.toContain('private display name');
   });
 
   it('TOKEN_EXPIRED refresh 后用新 token 和重新生成的 body 重试', async () => {

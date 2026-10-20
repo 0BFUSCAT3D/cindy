@@ -46,6 +46,15 @@ describe('uploadPublicAsset', () => {
     expect(JSON.stringify(onError.mock.calls)).not.toContain('private-signature');
   });
 
+  it('does not log response excerpts when presign returns malformed JSON', async () => {
+    const onError = vi.fn();
+    const result = await uploadPublicAsset({
+      ...makeDeps(async () => new Response('private display name')), onError,
+    }, { scene: 'avatar', contentType: 'image/png', body: BODY });
+    expect(result).toEqual({ ok: false, stage: 'presign', status: 0 });
+    expect(onError).toHaveBeenCalledExactlyOnceWith('presign', 'SyntaxError');
+  });
+
   it('成功链路:presign 带 Bearer/scene/size,PUT 原样携带返回 headers', async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {

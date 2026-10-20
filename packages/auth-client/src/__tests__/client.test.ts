@@ -81,6 +81,22 @@ describe("CindyAuthClient", () => {
     expect(onRequestError).not.toHaveBeenCalled();
   });
 
+  // Native SyntaxError.message includes body excerpts even when no response object is logged.
+  it.each([200, 400])("logs only the JSON error type for a malformed %s response", async (status) => {
+    const onRequestError = vi.fn();
+    const instance = new CindyAuthClient({
+      baseUrl: "https://auth.example.com", region: "cn", deviceId: "device-1", clientType: "desktop",
+      fetch: async () => new Response("private display name", { status }),
+      onRequestError,
+    });
+    await expect(instance.refresh("unused-token")).rejects.toMatchObject({
+      code: "INVALID_RESPONSE", statusCode: status,
+    });
+    expect(onRequestError).toHaveBeenCalledExactlyOnceWith(
+      "/api/auth/refresh", status, "SyntaxError",
+    );
+  });
+
   it.each([
     ["120", 120_000],
     ["Wed, 07 Oct 2026 06:02:00 GMT", 120_000],

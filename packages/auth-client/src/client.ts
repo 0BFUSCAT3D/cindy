@@ -57,7 +57,7 @@ export interface AuthClientOptions {
   locale?: string;
   fetch: AuthFetch;
   timeoutMs?: number;
-  /** Original failure before UI error mapping; platform adapters handle log redaction. */
+  /** Original failure before UI mapping; JSON syntax errors omit body excerpts. Adapters redact logs. */
   onRequestError?: (path: string, status: number, error: unknown) => void;
 }
 
@@ -600,7 +600,11 @@ export class CindyAuthClient {
 
   private logRequestError(path: string, status: number, error: unknown): void {
     try {
-      this.options.onRequestError?.(path, status, error);
+      // JSON SyntaxError messages/stacks can include the response body.
+      const detail = error && typeof error === "object" && "name" in error && error.name === "SyntaxError"
+        ? "SyntaxError"
+        : error;
+      this.options.onRequestError?.(path, status, detail);
     } catch {
       // A logging failure cannot affect auth, retries or rotated credentials.
     }

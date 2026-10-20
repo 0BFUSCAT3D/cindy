@@ -20,15 +20,19 @@ describe('apiFetchRaw', () => {
     setMobileDebugSink(undefined);
   });
 
-  it.each([new SyntaxError('Unexpected end of JSON input'), new TypeError('response stream closed')])(
-    'rejects a failed successful-response body and logs its original message: %s', async (error) => {
+  it.each([
+    { response: new Response('private response body'), logged: 'SyntaxError' },
+    { response: { ok: true, status: 200,
+      json: async () => { throw new TypeError('response stream closed'); } }, logged: 'response stream closed' },
+  ])(
+    'rejects a failed successful-response body and logs its cause without body excerpts: $logged', async ({ response, logged }) => {
       const logs: string[] = [];
       setMobileDebugSink((level, scope, args) => { logs.push(serializeMobileDebugRecord(level, scope, args)); });
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200,
-        json: async () => { throw error; } }));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
       await expect(apiFetchRaw('/api/resource', { baseUrl: 'https://api.example.invalid' }))
         .rejects.toMatchObject({ code: 'INVALID_RESPONSE', status: 200 });
-      expect(logs.join('')).toContain(error.message);
+      expect(logs.join('')).toContain(logged);
+      expect(logs.join('')).not.toContain('private response body');
     },
   );
 
