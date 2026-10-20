@@ -37,7 +37,7 @@ import { lineHeight, navigationChrome, spacing } from "@/theme/tokens";
 export const HomeNativeStackHeader = memo(function HomeNativeStackHeader({
   displayA11y,
   displayActions,
-  displayBadge = false,
+  displayBadge,
   menuA11y,
   onDisplayAction,
   onOpenDeviceMenu,
@@ -55,7 +55,7 @@ export const HomeNativeStackHeader = memo(function HomeNativeStackHeader({
   displayA11y: string;
   displayActions: readonly NativePullDownAction[];
   /** 在看已归档任务时,显示菜单按钮带一个点提醒。 */
-  displayBadge?: boolean;
+  displayBadge: boolean;
   menuA11y: string;
   onDisplayAction(id: string): void;
   onOpenDeviceMenu(): void;
