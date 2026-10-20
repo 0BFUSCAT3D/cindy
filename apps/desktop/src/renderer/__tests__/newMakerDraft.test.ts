@@ -878,8 +878,12 @@ describe('newMakerDraft store', () => {
     const m1 = await loadModule();
     m1.patchVendorPrefs('cc', { model: 'auto/pool', providerId: 'org-pool' });
     // Auto 已搬到 xd：旧 org-pool 对任何模型都解析不到，实际落点是 xd。
-    const resolve = (prefs: { model: string; providerId: string | null }) =>
-      prefs.model === 'auto/pool' ? 'xd' : prefs.providerId === 'org-pool' ? null : prefs.providerId;
+    const resolve = (prefs: { model: string; providerId?: string | null }) =>
+      prefs.model === 'auto/pool'
+        ? 'xd'
+        : prefs.providerId === 'org-pool'
+          ? null
+          : (prefs.providerId ?? null);
 
     const written = m1.patchVendorPrefsFromTaskModelSwitch(
       'cc',
