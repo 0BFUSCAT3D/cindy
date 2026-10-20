@@ -6699,6 +6699,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       thinking?: unknown;
       active?: unknown;
       markModelChoice?: unknown;
+      taskProviderId?: unknown;
     };
     if (p.agent !== 'claude-code' && p.agent !== 'codex' && p.agent !== 'pi') {
       throwIpcError('INVALID_PARAMS', 'agent must be claude-code|codex|pi');
@@ -6724,12 +6725,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (p.markModelChoice !== undefined && typeof p.markModelChoice !== 'boolean') {
       throwIpcError('INVALID_PARAMS', 'markModelChoice must be boolean');
     }
+    if (
+      p.taskProviderId !== undefined &&
+      (typeof p.taskProviderId !== 'string' || p.taskProviderId.length > 256)
+    ) {
+      throwIpcError('INVALID_PARAMS', 'taskProviderId must be a string of at most 256 chars');
+    }
     broadcastToAllWindows(MAKER_PUSH.DRAFT_PREF_APPLY, {
       agent: p.agent,
       providerId: p.providerId ?? '',
       modelId: p.modelId,
       active: p.active === true,
       ...(p.markModelChoice === false ? { markModelChoice: false } : {}),
+      // 已有任务里只换模型:来源沿用任务的,被控端据此判断是否改写自己的新建默认。
+      ...(p.taskProviderId ? { taskProviderId: p.taskProviderId } : {}),
       ...(p.effort !== undefined ? { effort: p.effort } : {}),
       ...(p.fast !== undefined ? { fast: p.fast } : {}),
       ...(p.thinking !== undefined ? { thinking: p.thinking } : {}),
