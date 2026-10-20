@@ -137,7 +137,8 @@ describe("Android home chrome menus follow the iOS pull-down", () => {
     const nativeHeader = readSource("src/platform/chrome/HomeNativeStackHeader.tsx");
     expect(nativeHeader).toContain("export const HomeNativeStackHeader = memo(");
     // 三层菜单(分组 → 选项)只能走 Stack.Toolbar.Menu;MenuView 的 iOS 原生层只转两层。
-    expect(nativeHeader).toContain('<Stack.Toolbar.Menu icon="ellipsis"');
+    expect(nativeHeader).toMatch(/<Stack\.Toolbar\.Menu\s+icon=\{displayBadge \? homeDisplayAttentionIcon/);
+    expect(nativeHeader).toContain("homeDisplayIcon");
   });
 
   it("opens Teammates from both scope menus through the teammate home path", () => {
