@@ -17,11 +17,22 @@ import UniformTypeIdentifiers
 let testRoot = URL(fileURLWithPath: CommandLine.arguments[1])
 let NSExtensionJavaScriptPreprocessingResultsKey = "NSExtensionJavaScriptPreprocessingResultsKey"
 class UIImage: NSObject { func pngData() -> Data? { nil } }
+final class EphemeralProvider: NSItemProvider {
+  var url: URL!
+  override func loadItem(forTypeIdentifier identifier: String, options: [AnyHashable: Any]? = nil, completionHandler: NSItemProvider.CompletionHandler? = nil) {
+    Thread.current.threadDictionary["owning-provider-callback"] = true
+    completionHandler?(url as NSURL, nil)
+    Thread.current.threadDictionary.removeObject(forKey: "owning-provider-callback")
+    try? FileManager.default.removeItem(at: url)
+  }
+}
 enum ShareType { case text, url, image, video, audio, file }
 struct SharePayload { let type: ShareType; let value: String; let mimeType: String?; let metadata: String? }
 final class Adapter {
+  var requireProviderCallback = false
   func parse(_ provider: NSItemProvider) async -> SharePayload? { await parseProvider(provider) }
   func copyAndProcessFile(url: URL, type: ShareType) -> SharePayload? {
+    precondition(!requireProviderCallback || Thread.current.threadDictionary["owning-provider-callback"] as? Bool == true, "URL escaped provider callback")
     guard url.isFileURL, let bytes = try? Data(contentsOf: url) else { return nil }
     return saveDataToAppGroup(data: bytes, fileName: url.lastPathComponent, type: type, mimeType: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType)
   }
@@ -70,6 +81,48 @@ final class Adapter {
       guard let payload = await adapter.parse(provider) else { fatalError("Missing text preview") }
       precondition(payload.type == .text && payload.value == "shared passage")
     }
+    let selected = CommandLine.arguments[2]
+    if selected != "file-url" {
+      for type in [UTType.pdf, .mpeg4Movie] {
+        let provider = NSItemProvider()
+        let name = "original." + type.preferredFilenameExtension!
+        let bytes = Data("original document or movie".utf8)
+        provider.suggestedName = name
+        // Advertise the thumbnail first, as real source apps may do.
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.image.identifier, visibility: .all) { done in
+          done(Data("thumbnail".utf8), nil); return nil
+        }
+        provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { done in
+          done(bytes, nil); return nil
+        }
+        guard let payload = await adapter.parse(provider),
+              payload.type == (type.conforms(to: .movie) ? .video : .file),
+              let url = URL(string: payload.value) else { fatalError("Thumbnail replaced original export") }
+        precondition(url.lastPathComponent == name && payload.mimeType == type.preferredMIMEType)
+        precondition(try! Data(contentsOf: url) == bytes)
+      }
+      let image = NSItemProvider()
+      image.suggestedName = "original.png"
+      image.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { done in
+        done(Data("image bytes".utf8), nil); return nil
+      }
+      guard let payload = await adapter.parse(image) else { fatalError("Missing image") }
+      precondition(payload.type == .image && payload.mimeType == UTType.png.preferredMIMEType)
+      print("PASS: original documents/videos beat thumbnails; real images remain images")
+    }
+    if selected != "thumbnails" {
+      let url = root.appendingPathComponent("ephemeral.pdf")
+      let bytes = Data("ephemeral bytes".utf8)
+      try! bytes.write(to: url)
+      let provider = EphemeralProvider()
+      provider.url = url
+      provider.registerItem(forTypeIdentifier: UTType.fileURL.identifier, loadHandler: { _, _, _ in })
+      adapter.requireProviderCallback = true
+      guard let payload = await adapter.parse(provider), let result = URL(string: payload.value) else { fatalError("Missing ephemeral file") }
+      precondition(try! Data(contentsOf: result) == bytes)
+      precondition(!FileManager.default.fileExists(atPath: url.path))
+      print("PASS: temporary file URL copied inside provider callback")
+    }
     print("PASS: concrete Markdown/source files and plain text previews")
   }
 }
@@ -80,8 +133,14 @@ try {
   const binary = join(dir, 'formats');
   writeFileSync(file, harness);
   for (const [command, args, timeout] of [
-    ['swiftc', ['-parse-as-library', file, '-o', binary], 120_000],
-    [binary, [dir], 15_000],
+    ['swiftc', ['-parse-as-library', file, '-o', binary], 60_000],
+    [binary, [dir, process.argv[2] ?? "all"], 15_000],
+    ['swiftc', [
+      join(dirname(fileURLToPath(import.meta.url)), '../modules/cindy-incoming-share/ios/IncomingShareSlot.swift'),
+      join(dirname(fileURLToPath(import.meta.url)), 'test-incoming-share-slot.swift'),
+      '-o', join(dir, 'slot'),
+    ], 30_000],
+    [join(dir, 'slot'), [], 15_000],
   ]) {
     const result = spawnSync(command, args, { stdio: 'inherit', timeout, killSignal: 'SIGKILL' });
     if (result.error?.code === 'ENOENT' && command === 'swiftc') process.exitCode = 77;

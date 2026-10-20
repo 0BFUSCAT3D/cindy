@@ -6,8 +6,24 @@ import { mobileDebugLog } from '@/debug/mobileDebugLog';
 const native = requireOptionalNativeModule<{
   readSnapshot(): string | null;
   clearSnapshot(expected: string): boolean;
+  discardSnapshot?(expected: string): boolean;
 }>('CindyIncomingShare');
 const snapshots = new WeakMap<SharePayload[], string>();
+let rejectedSnapshot: string | null = null;
+
+/** Account-boundary discard persists an exact tombstone before App Group I/O. */
+export function discardSharedPayloads(expected: SharePayload[]): void {
+  const snapshot = snapshots.get(expected);
+  if (snapshot === undefined) return;
+  rejectedSnapshot = snapshot;
+  if (native?.discardSnapshot) {
+    native.discardSnapshot(snapshot);
+    rejectedSnapshot = null;
+    return;
+  }
+  clearSharedPayloads(expected);
+  rejectedSnapshot = null;
+}
 
 /** Only discard a managed copy when a successful directory listing proves it is gone.
  * File.exists alone also returns false for inaccessible files (e.g. device protection).
@@ -31,7 +47,13 @@ function isMissingShareCopy(uri: string): boolean {
 
 export function getSharedPayloads(): SharePayload[] {
   const snapshot = native?.readSnapshot();
-  if (!snapshot) return [];
+  if (!snapshot) { rejectedSnapshot = null; return []; }
+  if (snapshot === rejectedSnapshot) {
+    // Fence before filtering deleted files: surviving text is still old content.
+    try { if (native?.clearSnapshot(snapshot)) rejectedSnapshot = null; } catch { /* Retry on refresh. */ }
+    return [];
+  }
+  rejectedSnapshot = null;
   const raw: SharePayload[] = JSON.parse(snapshot).map((item: { value: string; type: SharePayload['shareType']; mimeType?: string }) => ({
     value: item.value, shareType: item.type, mimeType: item.mimeType,
   }));

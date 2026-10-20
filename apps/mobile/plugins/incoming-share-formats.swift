@@ -11,17 +11,16 @@
       return SharePayload(type: .text, value: text, mimeType: "text/plain", metadata: nil)
     }
     if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-      if let value = await loadShareItem(provider, identifier: UTType.fileURL.identifier) as? URL,
-         let file = copyAndProcessFile(url: value, type:
-           (provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
-             || UTType(filenameExtension: value.pathExtension)?.conforms(to: .image) == true) ? .image : .file) { return file }
+      if let file = await loadSharePayload(provider, identifier: UTType.fileURL.identifier) { return file }
     }
-    let formats: [(UTType, ShareType)] = [(.image, .image), (.movie, .video), (.audio, .audio), (.directory, .file)]
+    let formats: [(UTType, ShareType)] = [(.movie, .video), (.audio, .audio), (.directory, .file)]
     for (format, kind) in formats where provider.hasItemConformingToTypeIdentifier(format.identifier) {
       if let file = await loadShareFile(provider, format: format, kind: kind) { return file }
     }
-    // Prefer an exported document to its plain-text/link preview.
-    if let file = await loadShareFile(provider, format: .data, kind: .file, excludePlainText: true) { return file }
+    // Concrete exports win over thumbnails as well as text/link previews.
+    if let file = await loadShareFile(provider, format: .data, kind: .file, excludePlainText: true, excludeImages: true) { return file }
+    if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
+       let image = await loadShareFile(provider, format: .image, kind: .image) { return image }
     if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
        let value = await loadShareItem(provider, identifier: UTType.url.identifier) {
       let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:))
@@ -49,7 +48,7 @@
     }
   }
 
-  private func loadShareFile(_ provider: NSItemProvider, format: UTType, kind: ShareType, excludePlainText: Bool = false) async -> SharePayload? {
+  private func loadShareFile(_ provider: NSItemProvider, format: UTType, kind: ShareType, excludePlainText: Bool = false, excludeImages: Bool = false) async -> SharePayload? {
     // These exact representations are text previews. Concrete subtypes such as
     // Markdown and source code also conform to plainText, but remain files.
     let textPreviews = [UTType.plainText, .utf8PlainText, .utf16PlainText, .utf16ExternalPlainText]
@@ -58,6 +57,7 @@
       let type = UTType($0)
       return type?.conforms(to: format) == true && type?.conforms(to: .url) != true
         && (!excludePlainText || (!textPreviews.contains($0) && type?.conforms(to: .propertyList) != true))
+        && (!excludeImages || ($0 != UTType.data.identifier && type?.conforms(to: .image) != true))
     }
     for identifier in identifiers {
       // Copy inside the callback: provider-owned URLs expire when it returns.
@@ -72,10 +72,25 @@
         }
       }
       if let file { return file }
-      guard let value = await loadShareItem(provider, identifier: identifier) else { continue }
-      if let url = value as? URL, let file = copyAndProcessFile(url: url, type: kind) { return file }
-      let data = (value as? Data) ?? (value as? UIImage)?.pngData()
-      if let data {
+      if let file = await loadSharePayload(provider, identifier: identifier, kind: kind) { return file }
+    }
+    return nil
+  }
+
+  private func loadSharePayload(_ provider: NSItemProvider, identifier: String, kind: ShareType? = nil) async -> SharePayload? {
+    await withCheckedContinuation { continuation in
+      provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, _ in
+        // URL lifetime belongs to this callback, including loadItem fallbacks.
+        if let url = value as? URL {
+          let image = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image)
+            ?? provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+          continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind ?? (image ? .image : .file)))
+          return
+        }
+        guard let kind, let data = (value as? Data) ?? (value as? UIImage)?.pngData() else {
+          continuation.resume(returning: nil)
+          return
+        }
         let isRenderedImage = value is UIImage
         let type = isRenderedImage ? UTType.png : UTType(identifier)
         let ext = type?.preferredFilenameExtension ?? "bin"
@@ -83,8 +98,7 @@
         let name = suggested.isEmpty || suggested == "." || suggested == ".." ? UUID().uuidString : suggested
         let filename = isRenderedImage ? (name as NSString).deletingPathExtension + ".png"
           : (name as NSString).pathExtension.isEmpty ? name + "." + ext : name
-        if let file = saveDataToAppGroup(data: data, fileName: filename, type: kind, mimeType: type?.preferredMIMEType) { return file }
+        continuation.resume(returning: self.saveDataToAppGroup(data: data, fileName: filename, type: kind, mimeType: type?.preferredMIMEType))
       }
     }
-    return nil
   }

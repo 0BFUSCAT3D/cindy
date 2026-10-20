@@ -40,6 +40,7 @@ let currentBatch: IncomingShareBatch | null = null;
 const pendingBatches: IncomingShareBatch[] = [];
 const listeners = new Set<() => void>();
 let unsubscribeOwner: (() => void) | undefined;
+let rejectedNativeSnapshots = new WeakMap<IncomingShareNative, string | null>();
 
 function isFilePayload(payload: Pick<SharePayload, 'shareType'>): boolean {
   return payload.shareType !== 'text' && payload.shareType !== 'url';
@@ -120,7 +121,13 @@ function updateIncomingShareOwner(
 type IncomingShareNative = {
   getSharedPayloads(): SharePayload[];
   clearSharedPayloads(expected: SharePayload[]): void;
+  discardSharedPayloads?(expected: SharePayload[]): void;
 };
+
+function discardNativeShare(native: IncomingShareNative, raw: SharePayload[]): void {
+  if (native.discardSharedPayloads) native.discardSharedPayloads(raw);
+  else native.clearSharedPayloads(raw);
+}
 
 /** Also clear a native payload not yet observed by the JS mailbox on logout/switch. */
 export function watchIncomingShareAccount(
@@ -129,11 +136,17 @@ export function watchIncomingShareAccount(
 ): () => void {
   return observeIncomingShareOwner((previous, current, restored) => {
     if (!canRetainShareOwner(previous, current, restored)) {
+      let raw: SharePayload[] | undefined;
       try {
-        const raw = native.getSharedPayloads();
-        native.clearSharedPayloads(raw);
+        raw = native.getSharedPayloads();
+        discardNativeShare(native, raw);
+        rejectedNativeSnapshots.delete(native);
         void deleteIncomingSharedFiles(raw.filter(isFilePayload).map((payload) => payload.value)).catch(() => undefined);
-      } catch { /* Sharing is unavailable in older native binaries. */ }
+      } catch {
+        // Also fence older binaries, or a failure to persist the native tombstone.
+        // null means the slot was unreadable: its first readable batch must clear.
+        rejectedNativeSnapshots.set(native, raw ? JSON.stringify(raw) : null);
+      }
     }
   }, previous);
 }
@@ -237,6 +250,16 @@ export function leaveIncomingShareChooser(cancelBatchId: string | null, leave: (
 export function receiveIncomingShare(native: IncomingShareNative): void {
   if (getMobileAuthOwner().switching) return;
   const raw = native.getSharedPayloads();
+  if (rejectedNativeSnapshots.has(native)) {
+    const rejected = rejectedNativeSnapshots.get(native);
+    if (rejected === null || rejected === JSON.stringify(raw)) {
+      try { discardNativeShare(native, raw); } catch { return; }
+      rejectedNativeSnapshots.delete(native);
+      return;
+    }
+    // A different snapshot (or a durably empty slot) cannot expose old content.
+    rejectedNativeSnapshots.delete(native);
+  }
   if (raw.length === 0) return;
   const payloads = raw.map((payload): ResolvedSharePayload => {
     const common = { ...payload, contentMimeType: payload.mimeType ?? null,
@@ -347,4 +370,5 @@ export function __resetIncomingShareForTest(): void {
   currentBatch = null;
   pendingBatches.length = 0;
   listeners.clear();
+  rejectedNativeSnapshots = new WeakMap();
 }

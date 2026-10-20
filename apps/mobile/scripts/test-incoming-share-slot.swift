@@ -6,6 +6,12 @@ import Darwin
 enum IncomingShareSlotTest {
   static func main() throws {
     let arguments = CommandLine.arguments
+    if arguments.count > 1 && arguments[1] == "--rejected" {
+      let persisted = UserDefaults(suiteName: arguments[2])!
+      precondition(persisted.synchronize())
+      precondition(IncomingShareSlot.read(Data("A".utf8), rejections: persisted) { _ in throw POSIXError(.EIO) } == nil)
+      return
+    }
     if arguments.count > 1 {
       let lock = URL(fileURLWithPath: arguments[1])
       // Prove that the other process cannot enter the compare/clear window.
@@ -62,6 +68,33 @@ enum IncomingShareSlotTest {
     // An error must release the lock as well.
     do { try IncomingShareSlot.withLock(at: lock) { throw POSIXError(.EIO) } } catch {}
     try IncomingShareSlot.withLock(at: lock) {}
+    let rejectionSuite = suite + "-rejections"
+    let rejections = UserDefaults(suiteName: rejectionSuite)!
+    defer { rejections.removePersistentDomain(forName: rejectionSuite); rejections.synchronize() }
+    do {
+      _ = try IncomingShareSlot.discard(a, rejections: rejections) { _ in throw POSIXError(.EIO) }
+      fatalError("Expected failed App Group cleanup")
+    } catch {}
+    let reader = Process()
+    reader.executableURL = URL(fileURLWithPath: arguments[0])
+    reader.arguments = ["--rejected", rejectionSuite]
+    try reader.run()
+    reader.waitUntilExit()
+    precondition(reader.terminationStatus == 0)
+    // A fresh instance models restart after account A's App Group clear failed.
+    let restarted = UserDefaults(suiteName: rejectionSuite)!
+    for _ in 0..<2 {
+      precondition(IncomingShareSlot.read(a, rejections: restarted) { _ in throw POSIXError(.EIO) } == nil)
+    }
+    precondition(IncomingShareSlot.read(a, rejections: restarted) { _ in true } == nil)
+    // Clearing succeeded: a deliberate identical share is eligible again.
+    precondition(IncomingShareSlot.read(a, rejections: restarted) { _ in fatalError("Not rejected") } == a)
+    try IncomingShareSlot.reject(a, in: rejections)
+    precondition(IncomingShareSlot.read(b, rejections: restarted) { _ in fatalError("Never clear newer bytes") } == b)
+    let discarded = try IncomingShareSlot.discard(a, rejections: rejections) { _ in true }
+    precondition(discarded)
+    precondition(IncomingShareSlot.read(a, rejections: restarted) { _ in fatalError("Already cleared") } == a)
+    print("PASS: durable exact-snapshot rejection, retry and replacement")
     print("PASS: cross-process exclusion, stale/current/duplicate acknowledgement, error unlock")
   }
 }

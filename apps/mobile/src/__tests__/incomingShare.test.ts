@@ -272,6 +272,33 @@ describe('incoming Share Extension payloads', () => {
     expect(consumeIncomingShareBatch(loggedOutBatch.id)).toBe(false);
   });
 
+  it.each(['text', 'url'] as const)('fences uncleared %s from the next account until retry succeeds', (shareType) => {
+    let raw = [{ value: shareType === 'text' ? 'account A private text' : 'https://private.example/a', shareType }];
+    const native = {
+      getSharedPayloads: () => raw.map(item => ({ ...item })),
+      clearSharedPayloads: vi.fn((): void => { throw new Error('App Group unavailable'); }),
+    };
+    const stop = watchIncomingShareAccount(native);
+    setMobileAuthOwner('account-b');
+    // Foreground refresh must not relabel the surviving native snapshot as B.
+    receiveIncomingShare(native);
+    const next = stageIncomingShareBatch([payload({ value: 'file:///new.pdf', contentUri: 'file:///new.pdf' })], vi.fn())!;
+    expect(consumeIncomingShareBatch(next.id)).toBe(true);
+    native.clearSharedPayloads.mockImplementation(() => { raw = []; });
+    receiveIncomingShare(native);
+    // Once clearing has succeeded, a deliberate identical share belongs to B.
+    raw = [{ value: shareType === 'text' ? 'account A private text' : 'https://private.example/a', shareType }];
+    receiveIncomingShare(native);
+    const id = incomingShareBatchId([payload({
+      ...(shareType === 'text'
+        ? { value: raw[0]!.value, shareType, contentUri: null, contentType: 'text', originalName: raw[0]!.value }
+        : { value: raw[0]!.value, shareType, contentUri: raw[0]!.value, contentType: 'website', originalName: 'a' }),
+      contentSize: null, contentMimeType: null, mimeType: undefined,
+    })]);
+    expect(consumeIncomingShareBatch(id)).toBe(true);
+    stop();
+  });
+
   it('clears an unobserved native slot on switch and allows new shares for the new account', () => {
     let raw = [{ value: 'file:///shared/report.pdf', shareType: 'file' as const }];
     const native = { getSharedPayloads: () => raw, clearSharedPayloads: vi.fn(() => { raw = []; }) };

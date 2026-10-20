@@ -144,7 +144,7 @@ describe("incoming share native file ownership", () => {
   });
 });
 
-it("preserves concrete text exports ahead of their plain-text previews", ({ skip }) => {
+it("preserves original exports ahead of previews and copies temporary URLs within callbacks", ({ skip }) => {
   const script = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/test-incoming-share-formats.mjs");
   const result = spawnSync(process.execPath, [script], {
     encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: 150_000, killSignal: "SIGKILL",
@@ -153,4 +153,7 @@ it("preserves concrete text exports ahead of their plain-text previews", ({ skip
   if (result.status === 77) return skip();
   expect(result.status).toBe(0);
   expect(result.stdout).toContain("PASS: concrete Markdown/source files and plain text previews");
+  expect(result.stdout).toContain("PASS: original documents/videos beat thumbnails; real images remain images");
+  expect(result.stdout).toContain("PASS: temporary file URL copied inside provider callback");
+  expect(result.stdout).toContain("PASS: durable exact-snapshot rejection, retry and replacement");
 }, 180_000);
