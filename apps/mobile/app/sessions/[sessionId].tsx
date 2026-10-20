@@ -424,6 +424,7 @@ import { findErrorTailClientId, isContinuationQueueItem, resolveSessionTailBanne
 import { SessionTailBanner } from '@/session/SessionTailBanner';
 import { buildErrorDiagnosisPrompt, type ErrorDiagnosisSource } from '@/session/errorDiagnosisPrompt';
 import { useHistoryRecoveryNavigation } from '@/session/useHistoryRecoveryNavigation';
+import { useSessionActivityInvalidation } from '@/session/useSessionActivityInvalidation';
 import { canOfferCodexHistoryRecovery } from '@cindy/maker-shared/error-redaction';
 import {
   CONTINUE_AFTER_APP_EXIT_PROMPT,
@@ -4213,20 +4214,16 @@ function SessionScreenContent() {
     if (!activity) return 'none';
     return `${activity.phase}|${activity.attention === true ? 1 : 0}|${activity.compactDetail}`;
   });
-  const prevLiveActivitySigRef = useRef<string | null>(null);
-  useEffect(() => {
-    const prevSig = prevLiveActivitySigRef.current ?? liveActivitySig;
-    if (liveAttention && liveActivitySig !== prevSig) {
-      setReadAckSyncedKey(null);
-      setSessionMetadataSyncedKey(null);
-      setMessageHistoryRead({ key: sessionSubscriptionIdentity, synced: false });
-      // 代号递增:变化点之前启动的 in-flight load / 在飞重试(数据不含本 turn 终帧)
-      // 不得重新落 key / 不得继续发送。
-      readAckGateGenRef.current += 1;
-      void load();
-    }
-    prevLiveActivitySigRef.current = liveActivitySig;
-  }, [liveActivitySig, liveAttention, load, sessionSubscriptionIdentity]);
+  useSessionActivityInvalidation({
+    liveActivitySig,
+    liveAttention,
+    sessionSubscriptionIdentity,
+    readAckGateGenRef,
+    setReadAckSyncedKey,
+    setSessionMetadataSyncedKey,
+    setMessageHistoryRead,
+    load,
+  });
 
   // 领取其它路由(文件浏览器「发送到会话」等)投递的 composer 附件:会话页在
   // 栈下层保持挂载,返回不会重新 mount,靠 focus 时机领取信箱。

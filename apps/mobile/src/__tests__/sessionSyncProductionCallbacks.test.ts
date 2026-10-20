@@ -37,11 +37,6 @@ function pageCallback(name: string, bindings: Record<string, unknown>): (...args
       && node.initializer.expression.getText(source) === 'useCallback') {
       expression = node.initializer.arguments[0];
     }
-    if (!expression && ts.isCallExpression(node) && node.expression.getText(source) === 'useEffect'
-      && node.arguments[1] && ts.isArrayLiteralExpression(node.arguments[1])
-      && node.arguments[1].elements.some((dependency) => dependency.getText(source) === name)) {
-      expression = node.arguments[0];
-    }
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -226,24 +221,6 @@ describe('production session recovery callbacks', () => {
     expect(emptyPresentation(f, { status, targetAvailable: presence })).toEqual({ syncing, copy });
   });
 
-  it.each([false, true])('invalidates a confirmed empty result on new activity (restored cache=%s)', async (ready) => {
-    const f = fixture();
-    f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
-    await f.sync();
-    const historySnapshot = { ready, items: [] };
-    expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: false, copy: undefined });
-    await pageCallback('liveActivitySig', {
-      ...f.bindings, liveAttention: true, liveActivitySig: 'completed|1|new result',
-      prevLiveActivitySigRef: { current: 'completed|1|previous result' }, load: async () => undefined,
-    })();
-    expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: true, copy: undefined });
-    expect(emptyPresentation(f, { historySnapshot, status: 'stopped' })).toEqual({
-      syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
-    });
-    await f.sync();
-    expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: false, copy: undefined });
-  });
-
   // #6527 reconnect review, unit: prior activity tests retained connection 1.
   // An invalidated ready empty cache plus connection 2 must remain unknown even
   // when its first history read fails; only a successful read can confirm empty.
@@ -251,10 +228,9 @@ describe('production session recovery callbacks', () => {
     const f = fixture();
     f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
     await f.sync();
-    await pageCallback('liveActivitySig', {
-      ...f.bindings, liveAttention: true, liveActivitySig: 'completed|1|new result',
-      prevLiveActivitySigRef: { current: 'completed|1|previous result' }, load: async () => undefined,
-    })();
+    // The real hook lifecycle producing this state is covered separately in
+    // useSessionActivityInvalidation.test.tsx; this Node test covers sync recovery.
+    f.state.historyRead = { key: JSON.stringify(['d1', 's1', 1]), synced: false };
     const subscriptionIdentity = JSON.stringify(['d1', 's1', 2]);
     const presentation = { subscriptionIdentity, historySnapshot: { ready: true, items: [] } };
     f.bindings.readAckEpochRef.current = 2;
