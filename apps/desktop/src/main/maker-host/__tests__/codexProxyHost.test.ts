@@ -8350,7 +8350,8 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       provider: {
         id, name: id, connectionRevision: 1,
         models: [{ id: `${id}/chat`, mode: 'chat', agents: ['codex'], currency: 'CNY',
-          perAgent: { codex: { wireProtocol: 'openai-responses' } } }],
+          perAgent: { codex: { wireProtocol: 'openai-responses' } } },
+          { id: `${id}/gpt-image-2`, mode: 'image_generation', currency: 'CNY', perAgent: {} }],
         imageBinding: { enabled: true, modelId: 'gpt-image-2', wireModel: 'gpt-image-2',
           litellmModel: `${id}/gpt-image-2`, supportsEdit: true },
       },
@@ -8435,58 +8436,69 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       // allowed chat model silently authorized JSON and opaque image requests.
       // Cover native wire IDs and frozen BYOK aliases without another server.
       const { bindHostedSessionProvider } = await import('../session-provider-store.js');
+      const { registerGuestProviderRoute } = await import('../guest-provider-route-store.js');
       let allowedImage: string | undefined;
-      const owner = bindHostedSessionProvider('remote-image-owner', 'byok-a', (providerId, model) =>
-        providerId === 'byok-a' && (model === 'byok-a/chat' || model === allowedImage));
-      host.registerComposed('remote-image-owner', 'remote-image-thread', 'prompt');
-      try {
-        for (const bound of [true, false]) {
-          const imageRoute = { ...routes[0]!, routing: { ...routes[0]!.routing } };
-          if (!bound) delete imageRoute.routing.imageModel;
-          const contextId = `remote-image-${bound}`;
-          await host.ensureCodexCustomContextProxyReady(contextId, 'env-key', [imageRoute]);
-          const endpoint = host.getCodexCustomContextProxyEndpoint(contextId);
-          const post = (multipart: boolean) => {
-            const form = new FormData();
-            form.set('model', 'gpt-image-2');
-            form.set('image', new Blob([new Uint8Array([0, 255, 128])], { type: 'image/png' }), 'input.png');
-            return fetch(`${endpoint}/_cindy/custom-provider/${imageRoute.routeId}/images/${multipart ? 'edits' : 'generations'}`, {
-              method: 'POST', headers: { 'thread-id': 'remote-image-thread', ...(!multipart ? { 'content-type': 'application/json' } : {}) },
-              body: multipart ? form : JSON.stringify(payload),
-            });
-          };
-          allowedImage = undefined;
-          for (const multipart of [false, true]) {
-            const before = received.length;
-            const denied = await post(multipart);
-            expect(denied.status).toBe(multipart ? 502 : 403);
-            await denied.text();
-            expect(received).toHaveLength(before);
+      // Reviews 4328897464/4328897455 (unit): the old fixture only bound an owner.
+      // A catalog ID distinct from the native wire ID plus a headerless
+      // guest must permit its catalog grant and send no JSON/multipart on denial.
+      for (const scope of ['owner', 'guest']) {
+        const allowsModel = (model: string) => model === 'byok-a/chat' || model === allowedImage;
+        const sessionId = `remote-image-${scope}`;
+        const binding = scope === 'owner'
+          ? bindHostedSessionProvider(sessionId, 'byok-a', (providerId, model) => providerId === 'byok-a' && allowsModel(model))
+          : registerGuestProviderRoute(sessionId, 'byok-a', allowsModel, () => true);
+        host.registerComposed(sessionId, 'remote-image-thread', 'prompt');
+        try {
+          for (const bound of [true, false]) {
+            const imageRoute = { ...routes[0]!, routing: { ...routes[0]!.routing } };
+            if (!bound) delete imageRoute.routing.imageModel;
+            const contextId = `remote-image-${scope}-${bound}`;
+            await host.ensureCodexCustomContextProxyReady(contextId, 'env-key', [imageRoute],
+              scope === 'guest' ? 'byok-a' : undefined, scope === 'guest' ? sessionId : undefined);
+            const endpoint = host.getCodexCustomContextProxyEndpoint(contextId);
+            const post = (multipart: boolean) => {
+              const form = new FormData();
+              form.set('model', 'gpt-image-2');
+              form.set('image', new Blob([new Uint8Array([0, 255, 128])], { type: 'image/png' }), 'input.png');
+              return fetch(`${endpoint}/_cindy/custom-provider/${imageRoute.routeId}/images/${multipart ? 'edits' : 'generations'}`, {
+                method: 'POST', headers: { ...(scope === 'owner' ? { 'thread-id': 'remote-image-thread' } : {}),
+                  ...(!multipart ? { 'content-type': 'application/json' } : {}) },
+                body: multipart ? form : JSON.stringify(payload),
+              });
+            };
+            allowedImage = undefined;
+            for (const multipart of [false, true]) {
+              const before = received.length;
+              const denied = await post(multipart);
+              expect(denied.status).toBe(multipart ? 502 : 403);
+              await denied.text();
+              expect(received).toHaveLength(before);
+            }
+            allowedImage = bound ? 'byok-a/gpt-image-2' : 'gpt-image-2';
+            for (const multipart of [false, true]) {
+              const allowed = await post(multipart);
+              expect(allowed.status).toBe(200);
+              await allowed.text();
+              const upstreamRequest = received.at(-1)!;
+              const parsed = multipart
+                ? await new Response(new Uint8Array(upstreamRequest.body), { headers: { 'content-type': String(upstreamRequest.headers['content-type']) } }).formData()
+                : JSON.parse(upstreamRequest.body.toString());
+              expect(multipart ? parsed.get('model') : parsed.model).toBe(bound ? 'byok-a/gpt-image-2' : 'gpt-image-2');
+              if (multipart) expect(new Uint8Array(await (parsed.get('image') as File).arrayBuffer())).toEqual(new Uint8Array([0, 255, 128]));
+            }
+            allowedImage = undefined;
+            for (const multipart of [false, true]) {
+              const before = received.length;
+              const revoked = await post(multipart);
+              expect(revoked.status).toBe(multipart ? 502 : 403);
+              await revoked.text();
+              expect(received).toHaveLength(before);
+            }
           }
-          allowedImage = bound ? 'byok-a/gpt-image-2' : 'gpt-image-2';
-          for (const multipart of [false, true]) {
-            const allowed = await post(multipart);
-            expect(allowed.status).toBe(200);
-            await allowed.text();
-            const upstreamRequest = received.at(-1)!;
-            const parsed = multipart
-              ? await new Response(new Uint8Array(upstreamRequest.body), { headers: { 'content-type': String(upstreamRequest.headers['content-type']) } }).formData()
-              : JSON.parse(upstreamRequest.body.toString());
-            expect(multipart ? parsed.get('model') : parsed.model).toBe(allowedImage);
-            if (multipart) expect(new Uint8Array(await (parsed.get('image') as File).arrayBuffer())).toEqual(new Uint8Array([0, 255, 128]));
-          }
-          allowedImage = undefined;
-          for (const multipart of [false, true]) {
-            const before = received.length;
-            const revoked = await post(multipart);
-            expect(revoked.status).toBe(multipart ? 502 : 403);
-            await revoked.text();
-            expect(received).toHaveLength(before);
-          }
+        } finally {
+          binding.release();
+          host.unregister(sessionId);
         }
-      } finally {
-        owner.release();
-        host.unregister('remote-image-owner');
       }
     } finally {
       await host.disposeCodexProxy();
