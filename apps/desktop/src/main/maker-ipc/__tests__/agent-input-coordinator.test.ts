@@ -8,7 +8,7 @@ import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, appendAutoReviewUs
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
+import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
@@ -1641,6 +1641,50 @@ describe('agent-chosen control steering', () => {
   function expected(h: ReturnType<typeof createHarness>) {
     return { session: h.getTurnSessionIdentity(), turnGeneration: 0 };
   }
+  // #6399, unit: real coordinator + action admission. Existing tests covered turn
+  // changes, not a current tool's revoked authority over an otherwise valid row.
+  it.each([
+    ['new', 'screening'], ['queued', 'screening'],
+    ['new', 'provider'], ['queued', 'provider'],
+  ] as const)(
+    'preserves input and never accepts a %s control steer revoked during %s',
+    async (source, boundary) => {
+      const h = createHarness();
+      h.setRunning(true);
+      await h.coordinator.ensureQueueRestored(sid);
+      const item = makeItem('report', 'worker result');
+      if (source === 'queued') h.coordinator.enqueue(sid, item);
+      let current = true;
+      const decision = await admitTaskAction(
+        { server: 'cindy_helper', sessionId: 'caller', tool: 'steer_session', args: {} },
+        {
+          key: 'input', ownerInput: true, delegated: false,
+          assertCurrent: async () => {
+            if (!current) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+          },
+        },
+      );
+      if (!decision.ok || !decision.run) throw new Error('missing action scope');
+      const accepted = vi.fn();
+      h.setScreenUserMessage(async () => {
+        if (boundary === 'screening') current = false;
+        return { action: 'allow' };
+      });
+      h.steerToAgent.mockImplementationOnce(async (_id, _message, sendOpts) => {
+        current = false;
+        await sendOpts?.[MCP_APP_MESSAGE_GUARD]?.();
+        accepted();
+      });
+      await expect(decision.run(() => h.coordinator.steerControlInput(
+        sid, source === 'queued' ? { queuedClientId: item.clientId } : { item }, expected(h),
+      ))).rejects.toThrow('TASK_ACTION_AUTHORIZATION_EXPIRED');
+      if (boundary === 'screening') expect(h.steerToAgent).not.toHaveBeenCalled();
+      expect(accepted).not.toHaveBeenCalled();
+      expect(h.sendToAgent).not.toHaveBeenCalled();
+      expect(h.onSteerAccepted).not.toHaveBeenCalled();
+      expect(h.coordinator.hasPendingQueueItem(sid, item.clientId)).toBe(source === 'queued');
+    },
+  );
   it('joins a running turn even though ordinary new turns must queue', async () => {
     const h = createHarness();
     h.setRunning(true);

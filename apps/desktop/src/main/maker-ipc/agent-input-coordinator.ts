@@ -2,7 +2,7 @@ import { FORWARDED_REQUEST_RECEIPT, type ForwardedRequestSource } from '../../sh
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT } from '@cindy/maker-core';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { assertSharedTaskQueueMutation } from './sharedTaskInput.js';
-import { combineInputGuards, taskActionInputGuard, TASK_ACTION_INPUT_GUARD } from './taskActionAuthorization.js';
+import { assertTaskActionCurrent, combineInputGuards, hasTaskActionAuthorization, taskActionInputGuard, TASK_ACTION_INPUT_GUARD } from './taskActionAuthorization.js';
 import { isBotGroupClientId } from '../../shared/botGroupChat.js';
 import { SchedulerQueuedPreparationError } from './schedulerQueuedPreparation.js';
 import { MCP_APP_MESSAGE_GUARD, isUnrestorableMcpAppMessage, queuedAppMessageGuard, type McpAppMessageGuard } from '../mcp-apps/message.js';
@@ -2521,14 +2521,23 @@ export class AgentInputCoordinator {
     }
 
     let authorizationFailed = false;
-    try {
-      const referenceContexts = await this.resolveReferenceContexts(item);
+    // A tool promoting an existing row needs its own current authority as well
+    // as the row's original delivery guard. UI-only calls have no action scope.
+    const beforeMutation = combineInputGuards(
+      opts?.beforeMutation,
+      hasTaskActionAuthorization() ? assertTaskActionCurrent : undefined,
+    );
+    const assertSteerAuthority = async () => {
       try {
-        await opts?.beforeMutation?.();
+        await beforeMutation?.();
       } catch (error) {
         authorizationFailed = true;
         throw error;
       }
+    };
+    try {
+      const referenceContexts = await this.resolveReferenceContexts(item);
+      await assertSteerAuthority();
       // A pause/Stop can arrive while references are being prepared. Recheck
       // before crossing the provider boundary, including direct UI/IM callers.
       const current = this.getState(sessionId);
@@ -2555,7 +2564,11 @@ export class AgentInputCoordinator {
         item.persistedContent,
         referenceContexts,
       );
-      const appMessageGuard = combineInputGuards(queuedAppMessageGuard(item), taskActionInputGuard(sessionId, item));
+      const appMessageGuard = combineInputGuards(
+        queuedAppMessageGuard(item),
+        taskActionInputGuard(sessionId, item),
+        beforeMutation ? assertSteerAuthority : undefined,
+      );
       await this.deps.steerToAgent(sessionId, buildMakerUserMessage(item, referenceContexts), {
         ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: appMessageGuard } : {}),
         ...(item.sharedTaskAuthor ? { sharedTaskAuthor: item.sharedTaskAuthor } : {}),
