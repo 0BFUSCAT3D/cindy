@@ -54,6 +54,7 @@ import {
 import * as store from './worktreeStore';
 import { assertPrecreatedSessionNotCancelled, sealPrecreatedSessionCancellation, withPrecreatedSessionOperationLock } from './precreatedCancellation';
 import { createLogger } from '../logger';
+import { realpathWorkingDirectory } from '../workdir-probe-host/index';
 import { getDbClient } from '../localDb/client/current';
 import {
   getManagedWorktreeBasePath,
@@ -414,7 +415,12 @@ async function detectCwdOnce(cwd: string): Promise<DetectCwdResp> {
   // Git resolves relative metadata paths from the physical process cwd. A
   // symlink spelling can otherwise make an ordinary repo look like a linked
   // worktree. Keep Git's existing error handling if the directory is unavailable.
-  cwd = await fs.realpath(cwd).catch(() => cwd);
+  cwd = await realpathWorkingDirectory(cwd).catch((err) => {
+    // Keep timeout/pool exhaustion unknown; falling back to a symlink spelling
+    // could recreate the false linked-worktree result we are trying to avoid.
+    if (err?.code === 'WORKDIR_PROBE_TIMEOUT' || err?.code === 'WORKDIR_PROBE_UNAVAILABLE') throw err;
+    return cwd;
+  });
   // One Git process returns the same snapshot that previously needed five.
   // Unborn HEADs, older Git versions and newline-containing paths retain the
   // individual-query fallback below rather than changing the IPC contract.
