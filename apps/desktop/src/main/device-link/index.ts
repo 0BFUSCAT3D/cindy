@@ -1,5 +1,6 @@
 import { pluginDeviceSync } from '../cindy-brain/index.js';
 import { PLUGIN_SYNC_CHANNEL } from '../cindy-brain/deviceSyncSlot.js';
+import { PluginSyncAccess } from './pluginSyncAccess.js';
 /**
  * device-link host —— 跨设备远程控制的 main 进程接线层。
  *
@@ -576,6 +577,20 @@ function isDeviceRevoked(deviceId: string): boolean {
   return readDeviceLinkSettings().revokedControllers.includes(deviceId);
 }
 
+const pluginSyncAccess = new PluginSyncAccess({
+  eligible: deviceId => !!client && !isAppSessionBoundaryPending() && !isScopedPeer(deviceId) &&
+    deviceId !== client.getSelfDeviceId() && shouldExchangeDictionaryWith({
+      online: presenceOnlineByDevice.get(deviceId) === true,
+      platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId),
+    }),
+  revokedByRemote: deviceId => revokedByRemote.has(deviceId),
+  invalidate: deviceId => pluginDeviceSync.invalidatePeer(deviceId),
+  send: (deviceId, frame) => {
+    if (!client) throw new Error('device link unavailable');
+    client.sendPush(deviceId, PLUGIN_SYNC_CHANNEL, frame);
+  },
+});
+
 /**
  * relay 连续报 auth-failed 时,两次主动 refresh 之间的最小间隔。
  * refresh 是 token-rotating 端点,不节流会在「refresh 成功但 relay 仍拒」的
@@ -1036,7 +1051,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
         // 撤权后在途请求会陆续超时——那不是「设备无响应」,是访问被收回。清熔断并
         // 作废在途结果(翻代),避免 unresponsive 状态与撤权状态并存(对齐 mobile 语义)。
         revokedByRemote.add(env.src);
-        pluginDeviceSync.invalidatePeer(env.src);
+        pluginSyncAccess.invalidate(env.src);
         responsivenessTracker?.clearDevice(env.src);
         broadcast(DEVICE_LINK_PUSH.ACCESS_REVOKED, { deviceId: env.src });
       }
@@ -1063,6 +1078,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       return;
     }
     if (p?.channel === PLUGIN_SYNC_CHANNEL) {
+      if (pluginSyncAccess.receive(env.src, p.payload)) return;
       void pluginDeviceSync.receive(env.src, p.payload);
       return;
     }
@@ -1133,11 +1149,13 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
   });
   pluginDeviceSync.connect({
     self: () => client?.getSelfDeviceId() ?? null,
-    peers: () => [...presenceOnlineByDevice.entries()]
-      .filter(([deviceId, online]) => !isScopedPeer(deviceId) && !revokedByRemote.has(deviceId) && deviceId !== client?.getSelfDeviceId() && shouldExchangeDictionaryWith({ online, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }))
-      .map(([deviceId]) => ({ deviceId, deviceName: presenceNameByDevice.get(deviceId) ?? deviceId.slice(0, 8) })),
-    allowed: deviceId => !isScopedPeer(deviceId) && !revokedByRemote.has(deviceId) && deviceId !== client?.getSelfDeviceId() &&
-      shouldExchangeDictionaryWith({ online: presenceOnlineByDevice.get(deviceId) === true, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }),
+    peers: () => [...presenceOnlineByDevice.keys()]
+      .filter(deviceId => {
+        pluginSyncAccess.probe(deviceId);
+        return pluginSyncAccess.allowed(deviceId);
+      })
+      .map(deviceId => ({ deviceId, deviceName: presenceNameByDevice.get(deviceId) ?? deviceId.slice(0, 8) })),
+    allowed: deviceId => pluginSyncAccess.allowed(deviceId),
     send: (deviceId, frame) => { if (!client) throw new Error('device link unavailable'); client.sendPush(deviceId, PLUGIN_SYNC_CHANNEL, frame); },
   });
   initContactsDeviceSync({
@@ -1376,6 +1394,7 @@ export function getMobileNotifyGeneration(): number {
  */
 function teardownActiveLink(): void {
   pluginDeviceSync.reset();
+  pluginSyncAccess.reset();
   invalidatePluginOauth();
   void stopSharedTaskRuntime().catch((error) => log.warn('sharedTask runtime teardown failed', error));
   stopProviderShareRuntime();
@@ -1527,30 +1546,34 @@ export function disconnectAllControllers(): void {
  */
 export async function revokeController(deviceId: string): Promise<void> {
   invalidatePluginOauth(deviceId);
-  pluginDeviceSync.invalidatePeer(deviceId);
-  // 先消化并 enforce 盘上的外部变化,避免快照刷新吞掉别的实例刚写入的撤销(见 setRemoteControlEnabled)
-  pollExternalSettingsChange();
-  // updater 在写锁内基于盘上最新名单追加,不能锁外算好整数组再整值写
-  // (两个实例并发撤销不同控制端时,后写者的旧数组会覆盖掉先写者刚加的那条)
-  await updateDeviceLinkSetting('revokedControllers', (latest) =>
-    latest.includes(deviceId) ? latest : [...latest, deviceId],
-  );
-  pluginDeviceSync.invalidatePeer(deviceId);
-  // 在线连着的:发 link-close('revoked'),控制端据此立即移除本机项目/对话 + 标记「已撤销」。
+  const releaseRevocation = pluginSyncAccess.beginRevocation(deviceId);
   try {
-    client?.closeLink(deviceId, 'revoked', 'inbound');
-  } catch (err) {
-    log.warn(`closeLink failed while revoking ${deviceId.slice(0, 8)}: ${String(err)}`);
+    // 先消化并 enforce 盘上的外部变化,避免快照刷新吞掉别的实例刚写入的撤销(见 setRemoteControlEnabled)
+    pollExternalSettingsChange();
+    // updater 在写锁内基于盘上最新名单追加,不能锁外算好整数组再整值写
+    // (两个实例并发撤销不同控制端时,后写者的旧数组会覆盖掉先写者刚加的那条)
+    await updateDeviceLinkSetting('revokedControllers', (latest) =>
+      latest.includes(deviceId) ? latest : [...latest, deviceId],
+    );
+    pluginSyncAccess.invalidate(deviceId);
+    // 在线连着的:发 link-close('revoked'),控制端据此立即移除本机项目/对话 + 标记「已撤销」。
+    try {
+      client?.closeLink(deviceId, 'revoked', 'inbound');
+    } catch (err) {
+      log.warn(`closeLink failed while revoking ${deviceId.slice(0, 8)}: ${String(err)}`);
+    }
+    forgetControllerInvokeState(deviceId);
+    // 踢掉它的订阅 registry + 重算转发/横幅(复用对等下线的单设备清理路径)。
+    handleControllerOffline(deviceId);
+    purgeRevokedController(deviceId);
+    // 末尾再 poll 一次(而非仅刷新基线):写锁释放到这里之间,别的实例可能已插入
+    // 新授权变更,仅刷新基线会把它静默记为已生效、永不 enforce;poll 是幂等的,
+    // 本地刚做过的动作重复 enforce 无害,同时能捕获这条竞态窗口里的外部变更。
+    pollExternalSettingsChange();
+    log.info(`access revoked for controller ${deviceId.slice(0, 8)}`);
+  } finally {
+    releaseRevocation();
   }
-  forgetControllerInvokeState(deviceId);
-  // 踢掉它的订阅 registry + 重算转发/横幅(复用对等下线的单设备清理路径)。
-  handleControllerOffline(deviceId);
-  purgeRevokedController(deviceId);
-  // 末尾再 poll 一次(而非仅刷新基线):写锁释放到这里之间,别的实例可能已插入
-  // 新授权变更,仅刷新基线会把它静默记为已生效、永不 enforce;poll 是幂等的,
-  // 本地刚做过的动作重复 enforce 无害,同时能捕获这条竞态窗口里的外部变更。
-  pollExternalSettingsChange();
-  log.info(`access revoked for controller ${deviceId.slice(0, 8)}`);
 }
 
 /**
@@ -1631,7 +1654,7 @@ function pollExternalSettingsChange(): void {
 
   const newlyRevoked = revokedControllers.filter((id) => !prev.revokedControllers.includes(id));
   for (const deviceId of newlyRevoked) {
-    pluginDeviceSync.invalidatePeer(deviceId);
+    pluginSyncAccess.invalidate(deviceId);
     try {
       client.closeLink(deviceId, 'revoked', 'inbound');
     } catch (err) {

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { PluginDeviceSync } from '../deviceSyncSlot.js';
+import { PluginSyncAccess } from '../../device-link/pluginSyncAccess.js';
 import { generateContactsSyncIdentity } from '../../contacts-sync/crypto.js';
 import {
   ghostPermissionItems,
@@ -67,13 +68,20 @@ function pair() {
       listGhosts: () => ghosts,
       deliver,
     });
+    const remoteBlocked = new Set<string>();
+    const access = new PluginSyncAccess({
+      eligible: peer => sides.has(peer) && peer !== id && !blocked.has(peer),
+      revokedByRemote: peer => remoteBlocked.has(peer),
+      invalidate: peer => svc.invalidatePeer(peer),
+      send: (to, data) => { frames.push({ from: id, to, data }); },
+    });
     svc.connect({
       self: () => id,
       peers: () =>
         [...sides.keys()]
-          .filter((x) => x !== id)
+          .filter(x => { access.probe(x); return access.allowed(x); })
           .map((deviceId) => ({ deviceId, deviceName: deviceId })),
-      allowed: (peer) => sides.has(peer) && peer !== id && !blocked.has(peer),
+      allowed: peer => access.allowed(peer),
       send: (to, data) => {
         frames.push({ from: id, to, data });
       },
@@ -82,6 +90,8 @@ function pair() {
     cleanups.push(() => svc.reset());
     return {
       svc,
+      access,
+      remoteBlocked,
       keys,
       deliver,
       addPlugin: (id: string) => ghosts.push({ ...g, manifest: { ...manifest, id }, instanceKey: id } as InstalledGhost),
@@ -100,7 +110,8 @@ function pair() {
   async function flush() {
     while (frames.length) {
       const f = frames.shift()!;
-      await sides.get(f.to)!.svc.receive(f.from, f.data);
+      const side = sides.get(f.to)!;
+      if (!side.access.receive(f.from, f.data)) await side.svc.receive(f.from, f.data);
     }
   }
   async function ready() {
@@ -396,4 +407,93 @@ it('does not revive old inbound or outbound requests when peer access is restore
   await Promise.resolve(); await Promise.resolve(); await flush();
   expect(b.delivered.map(m => m.data)).toEqual([{ fresh: true }]);
   a.svc.invalidatePeer('b'); expect(await fresh).toMatchObject({ errorCode: 'SYNC_RESULT_UNKNOWN' });
+});
+
+// Review #6569: earlier epoch tests missed admission during the mutation itself.
+// Real handler + wire (unit); the approved catalog remains visible while work is pending.
+it('denies new and queued frames for the entire plugin mutation, including rollback', async () => {
+  const { a, b, frames, ready, flush } = pair(); await ready();
+  let releaseKeys!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  b.keys.prepare.mockImplementationOnce(() => { entered(); return new Promise<void>(resolve => { releaseKeys = resolve; }); });
+  const stale = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: 'stale' });
+  await Promise.resolve(); await Promise.resolve();
+  const frame = frames.shift()!;
+  const receiving = b.svc.receive(frame.from, frame.data); await started;
+  const release = b.svc.beginMutation('example-sync');
+  const nested = b.svc.beginMutation('example-sync'); release();
+  const during = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: 'during' });
+  await Promise.resolve(); await Promise.resolve();
+  const next = frames.shift()!;
+  const queued = b.svc.receive(next.from, next.data);
+  expect(await b.svc.handle('example-sync', { op: 'request', peer: 'a', data: {} }))
+    .toMatchObject({ errorCode: 'SYNC_NOT_ALLOWED' });
+  // Rollback can leave the same approval; neither old nor during-mutation frames can run.
+  nested(); releaseKeys(); await receiving; await queued;
+  expect(b.delivered).toHaveLength(0);
+  a.svc.reset(); a.svc.setActive(true); await Promise.all([stale, during]);
+  const fresh = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: 'fresh' });
+  await Promise.resolve(); await Promise.resolve(); await flush();
+  expect(b.delivered.map(m => m.data)).toEqual(['fresh']);
+  a.svc.reset(); await fresh;
+});
+
+// Unit: actual admission controller + encrypted RPC; restore must work without control open.
+// Existing tests used a mutable boolean and missed both handshake and persistence windows.
+it('restores sync through a fresh authenticated challenge without restoring control access', async () => {
+  const { a, b, ready, flush, frames } = pair(); await ready();
+  b.blocked.add('a'); a.remoteBlocked.add('b'); a.access.invalidate('b');
+  expect(await a.svc.handle('example-sync', { op: 'status' })).toMatchObject({ peers: [] });
+  await flush(); // B still denies access and must not acknowledge.
+  expect(a.access.allowed('b')).toBe(false);
+  b.blocked.delete('a');
+  await vi.advanceTimersByTimeAsync(30001);
+  await a.svc.handle('example-sync', { op: 'status' });
+  const probe = frames.shift()!;
+  b.access.receive(probe.from, probe.data);
+  const ack = frames.shift()!;
+  // An old acknowledgement cannot cross another revoke/restore or come from another peer.
+  a.access.invalidate('b'); a.access.receive('b', ack.data);
+  expect(a.access.allowed('b')).toBe(false);
+  await a.svc.handle('example-sync', { op: 'status' });
+  const freshProbe = frames.shift()!;
+  await vi.advanceTimersByTimeAsync(5001);
+  b.access.receive(freshProbe.from, freshProbe.data);
+  const freshAck = frames.shift()!;
+  a.access.receive('unknown', freshAck.data);
+  expect(a.access.allowed('b')).toBe(false);
+  a.access.receive('b', freshAck.data);
+  expect(a.remoteBlocked.has('b')).toBe(true);
+  expect(await a.svc.handle('example-sync', { op: 'status' })).toMatchObject({ peers: [{ deviceId: 'b' }] });
+  const request = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: 'restored' });
+  await Promise.resolve(); await Promise.resolve(); await flush();
+  expect(b.delivered.map(m => m.data)).toEqual(['restored']);
+  await b.svc.handle('example-sync', { op: 'reply', requestId: b.delivered[0].requestId, data: 'stored' });
+  await flush(); expect(await request).toEqual({ ok: true, data: 'stored' });
+  a.access.reset(); a.access.receive('b', freshAck.data);
+  expect(a.access.allowed('b')).toBe(false);
+});
+
+it('denies sync during revoke persistence and releases the temporary deny on failure', async () => {
+  const { a, b, ready, flush, frames } = pair(); await ready();
+  const release = b.access.beginRevocation('a'); // Disk still reports allowed.
+  const secondRelease = b.access.beginRevocation('a'); release();
+  expect(b.access.allowed('a')).toBe(false);
+  const request = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: 'during-write' });
+  await Promise.resolve(); await Promise.resolve(); await flush();
+  expect(b.delivered).toHaveLength(0);
+  a.remoteBlocked.add('b'); a.access.invalidate('b');
+  await a.svc.handle('example-sync', { op: 'status' }); await flush();
+  expect(a.access.allowed('b')).toBe(false); expect(frames).toHaveLength(0);
+  secondRelease(); // Failed write: only fresh frames can proceed.
+  expect(b.access.allowed('a')).toBe(true);
+  a.svc.reset(); a.svc.setActive(true); await request;
+  await vi.advanceTimersByTimeAsync(30001);
+  await a.svc.handle('example-sync', { op: 'status' }); await flush();
+  const fresh = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: 'after-rollback' });
+  await Promise.resolve(); await Promise.resolve(); await flush();
+  expect(b.delivered.map(m => m.data)).toEqual(['after-rollback']);
+  a.svc.reset(); await fresh;
+  const committed = b.access.beginRevocation('a'); b.blocked.add('a'); committed();
+  expect(b.access.allowed('a')).toBe(false);
 });

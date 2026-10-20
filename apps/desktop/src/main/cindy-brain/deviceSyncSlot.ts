@@ -84,6 +84,7 @@ export class PluginDeviceSync {
   private receivingCount = 0;
   private readonly epochs = new Map<string, number>();
   private readonly peerEpochs = new Map<string, number>();
+  private readonly mutations = new Map<string, number>();
   constructor(private readonly deps: Deps) {}
   connect(transport: PluginSyncTransport): void {
     this.reset();
@@ -123,6 +124,20 @@ export class PluginDeviceSync {
         this.incoming.delete(id);
       }
   }
+  /** Hold admission closed from before stop through package/receipt commit or rollback. */
+  beginMutation(instance: string): () => void {
+    this.mutations.set(instance, (this.mutations.get(instance) ?? 0) + 1);
+    this.invalidate(instance);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.mutations.get(instance) ?? 1) - 1;
+      if (remaining) this.mutations.set(instance, remaining);
+      else this.mutations.delete(instance);
+      this.invalidate(instance);
+    };
+  }
   invalidatePeer(peer: string): void {
     this.peerEpochs.set(peer, (this.peerEpochs.get(peer) ?? 0) + 1);
     this.keyReplies.delete(peer);
@@ -139,7 +154,7 @@ export class PluginDeviceSync {
   }
   private capture(instance: string): (() => boolean) | null {
     const ghost = this.deps.getGhost(instance);
-    if (!identity(ghost)) return null;
+    if (this.mutations.has(instance) || !identity(ghost)) return null;
     const epoch = this.epochs.get(instance) ?? 0;
     const plugin = identity(ghost)!;
     const approval = ghostInstallApprovalToken(ghost!.approval);
@@ -149,6 +164,7 @@ export class PluginDeviceSync {
       const current = this.deps.getGhost(instance);
       return (
         this.active &&
+        !this.mutations.has(instance) &&
         generation === this.generation &&
         epoch === (this.epochs.get(instance) ?? 0) &&
         scope === this.deps.scope() &&
@@ -165,7 +181,7 @@ export class PluginDeviceSync {
   async handle(instance: string, raw: unknown): Promise<unknown> {
     if (this.scope !== this.deps.scope()) this.reset();
     const plugin = identity(this.deps.getGhost(instance));
-    if (!plugin) return error('SYNC_NOT_ALLOWED');
+    if (!plugin || this.mutations.has(instance)) return error('SYNC_NOT_ALLOWED');
     if (!record(raw)) return error('INVALID_PARAMS');
     if (raw.op === 'status')
       return {

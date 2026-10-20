@@ -7045,96 +7045,101 @@ async function updateLocalGhostPackageLocked(
   );
   if (sourceChanged) assertGhostRelocationIdle(instanceId);
   rejectUnauthorizedTokenBroker(inspected.canonicalManifest, authorizationOverrides);
-  runtime.stop(instanceId);
-  // 等待失败表示旧进程仍可能存活；此时不能恢复 resident，否则会产生
-  // 两份后台进程。仅在确认退出后的更新阶段失败时恢复旧版本。
-  await getGhostNodeRuntimeBroker().stopAndWait(instanceId);
-  // 用户已明确选择了这份本地真实包：同 id 可以原位替换，市场来源不是永久所有权。
-  // 替换前先切断旧市场更新路由；用户状态由安装事务隔离归档，落位失败再恢复。
-  const detachMarketRecord = Boolean(marketRecord?.installed);
-  const restoreMarketRecord = (): void => {
-    if (!detachMarketRecord || !marketRecord) return;
-    try {
-      // 来源解绑不触碰 opt-out，失败恢复同样只恢复旧路由；用户过去的显式
-      // 卸载决定因此既不会被新增，也不会被清除。
-      marketLedger.restoreInstallation(marketRecord);
-    } catch (error) {
-      // 恢复失败时保持路由失效是安全降级：不能让旧市场自动覆盖用户明确选择的本地包。
-      log.error('failed to restore Plugin market provenance after local update failure', {
-        ghostId: inspected.manifest.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-  if (detachMarketRecord && marketRecord) {
-    try {
-      // 先持久化切断自动更新路由，再改真实包。普通本地/Forge 换源不是
-      // 用户显式卸载，不得产生 default-install opt-out。
-      marketLedger.markRemovedRecord(marketRecord, null);
-    } catch (error) {
-      restoreMarketRecord();
-      spawnIfResident(previousGhost);
-      log.warn('failed to detach Plugin market provenance before local update', {
-        ghostId: inspected.manifest.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');
-    }
-  }
-  getGhostAgentSlot().clearGhost(instanceId);
-  getGhostErrandSlot().clearGhost(instanceId);
-  let result: Awaited<ReturnType<typeof manager.update>>;
-  let packagePlaced = false;
+  const releaseSync = pluginDeviceSync.beginMutation(instanceId);
   try {
-    result = await withActiveOwnerGhostOauthMutationLock(
-      instanceId,
-      () =>
-        manager.update(cindyFilePath, {
-        taskCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest),
-        expectedPackageSha256,
-        expectedInstalledApproval,
-        installOrigin: installOrigin ?? 'manual',
-        ...(sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(previousGhost) } : {}),
-        ...deliveryNamespaceFields(previousGhost),
-        beforePackageCommit: () => {
-          if (isCurrent?.() === false) throwIpcError('PRECONDITION_FAILED', 'Plugin operation is no longer current');
-          return getGhostOauthAccountManager().prepareAccountsForChangedClients(
-            previousGhost.manifest, inspected.canonicalManifest, instanceId,
-          );
-        },
-        onPackagePlaced: () => {
-          packagePlaced = true;
-        },
-      }),
-    );
-  } catch (err) {
-    if (!packagePlaced) {
-      restoreMarketRecord();
-      spawnIfResident(previousGhost);
-      throw err;
+    runtime.stop(instanceId);
+    // 等待失败表示旧进程仍可能存活；此时不能恢复 resident，否则会产生
+    // 两份后台进程。仅在确认退出后的更新阶段失败时恢复旧版本。
+    await getGhostNodeRuntimeBroker().stopAndWait(instanceId);
+    // 用户已明确选择了这份本地真实包：同 id 可以原位替换，市场来源不是永久所有权。
+    // 替换前先切断旧市场更新路由；用户状态由安装事务隔离归档，落位失败再恢复。
+    const detachMarketRecord = Boolean(marketRecord?.installed);
+    const restoreMarketRecord = (): void => {
+      if (!detachMarketRecord || !marketRecord) return;
+      try {
+        // 来源解绑不触碰 opt-out，失败恢复同样只恢复旧路由；用户过去的显式
+        // 卸载决定因此既不会被新增，也不会被清除。
+        marketLedger.restoreInstallation(marketRecord);
+      } catch (error) {
+        // 恢复失败时保持路由失效是安全降级：不能让旧市场自动覆盖用户明确选择的本地包。
+        log.error('failed to restore Plugin market provenance after local update failure', {
+          ghostId: inspected.manifest.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    if (detachMarketRecord && marketRecord) {
+      try {
+        // 先持久化切断自动更新路由，再改真实包。普通本地/Forge 换源不是
+        // 用户显式卸载，不得产生 default-install opt-out。
+        marketLedger.markRemovedRecord(marketRecord, null);
+      } catch (error) {
+        restoreMarketRecord();
+        spawnIfResident(previousGhost);
+        log.warn('failed to detach Plugin market provenance before local update', {
+          ghostId: inspected.manifest.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');
+      }
     }
-    const placed = findInstalledGhostByInstanceId(manager.list(), instanceId) ??
-      manager.list().find((ghost) => ghost.dir === previousGhost.dir);
-    if (!placed) throw err;
-    log.warn('local ghost post-placement notification failed', {
-      ghostId: inspected.manifest.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    result = { ghost: placed };
-  }
-  if ('rejection' in result) {
-    // 回滚失败时安装目录可能已是新字节或缺失，不能恢复旧 runtime 或旧市场来源路由。
-    if (!(result.rejection.code === 'io' && result.rejection.rollbackFailed)) {
-      restoreMarketRecord();
-      spawnIfResident(previousGhost);
+    getGhostAgentSlot().clearGhost(instanceId);
+    getGhostErrandSlot().clearGhost(instanceId);
+    let result: Awaited<ReturnType<typeof manager.update>>;
+    let packagePlaced = false;
+    try {
+      result = await withActiveOwnerGhostOauthMutationLock(
+        instanceId,
+        () =>
+          manager.update(cindyFilePath, {
+          taskCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest),
+          expectedPackageSha256,
+          expectedInstalledApproval,
+          installOrigin: installOrigin ?? 'manual',
+          ...(sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(previousGhost) } : {}),
+          ...deliveryNamespaceFields(previousGhost),
+          beforePackageCommit: () => {
+            if (isCurrent?.() === false) throwIpcError('PRECONDITION_FAILED', 'Plugin operation is no longer current');
+            return getGhostOauthAccountManager().prepareAccountsForChangedClients(
+              previousGhost.manifest, inspected.canonicalManifest, instanceId,
+            );
+          },
+          onPackagePlaced: () => {
+            packagePlaced = true;
+          },
+        }),
+      );
+    } catch (err) {
+      if (!packagePlaced) {
+        restoreMarketRecord();
+        spawnIfResident(previousGhost);
+        throw err;
+      }
+      const placed = findInstalledGhostByInstanceId(manager.list(), instanceId) ??
+        manager.list().find((ghost) => ghost.dir === previousGhost.dir);
+      if (!placed) throw err;
+      log.warn('local ghost post-placement notification failed', {
+        ghostId: inspected.manifest.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      result = { ghost: placed };
     }
-    throwInstallError(result.rejection);
+    if ('rejection' in result) {
+      // 回滚失败时安装目录可能已是新字节或缺失，不能恢复旧 runtime 或旧市场来源路由。
+      if (!(result.rejection.code === 'io' && result.rejection.rollbackFailed)) {
+        restoreMarketRecord();
+        spawnIfResident(previousGhost);
+      }
+      throwInstallError(result.rejection);
+    }
+    runtime.resetFuse(instanceId);
+    await bindPluginUsage(result.ghost,
+      !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
+    spawnIfResident(result.ghost);
+    return result.ghost;
+  } finally {
+    releaseSync();
   }
-  runtime.resetFuse(instanceId);
-  await bindPluginUsage(result.ghost,
-    !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
-  spawnIfResident(result.ghost);
-  return result.ghost;
 }
 
 /**
@@ -7401,6 +7406,7 @@ async function installOrUpdateMarketGhostPackageLocked(
 ): Promise<InstalledGhost> {
   const mutationOwner = captureGhostMutationOwner();
   let releaseMutation: (() => void) | null = null;
+  let releaseSync: (() => void) | undefined;
   try {
     const manager = getGhostManager();
     const registryError = blockedInstanceRegistryMarketError(manager.isInstanceRegistryBlocked());
@@ -7525,6 +7531,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     expected.beforeCommitInLock?.();
     if (expected.sourceChanged) assertGhostRelocationIdle(installedGhostStoragePart(installed));
     const runtime = getGhostRuntime();
+    releaseSync = pluginDeviceSync.beginMutation(installedGhostStoragePart(installed));
     runtime.stop(installedGhostStoragePart(installed));
     // 无法确认旧进程已退出时保持停止态，不能启动第二份 resident。只有旧进程
     // 已确认退出、后续目录更新失败时，才恢复原版本。
@@ -7595,6 +7602,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     await bindPluginUsage(result.ghost);
     return result.ghost;
   } finally {
+    releaseSync?.();
     releaseMutation?.();
   }
 }
@@ -7642,6 +7650,7 @@ async function uninstallGhostAndCleanupLocked(
   options?: { skipMarketLedger?: boolean; assertCurrent?: () => void },
 ): Promise<void> {
   const releaseMutation = beginGhostMutation();
+  let releaseSync: (() => void) | undefined;
   try {
     options?.assertCurrent?.();
     requireGhostAvailableForActiveSession(id);
@@ -7660,6 +7669,7 @@ async function uninstallGhostAndCleanupLocked(
     const runtime = getGhostRuntime();
     // Library 的 orphaned 标记要在 uninstall 之前取显示名(收走后 list 里就没了)。
     const libraryDisplayName = ghost.manifest.name;
+    releaseSync = pluginDeviceSync.beginMutation(storagePart);
     runtime.stop(storagePart);
     await getGhostNodeRuntimeBroker().stopAndWait(storagePart);
     getGhostAgentSlot().clearGhost(storagePart);
@@ -7771,6 +7781,7 @@ async function uninstallGhostAndCleanupLocked(
       });
     }
   } finally {
+    releaseSync?.();
     releaseMutation();
   }
 }
@@ -7835,6 +7846,7 @@ async function setGhostEnabledForUser(id: string, enabled: boolean, expectedInst
     // 安装目录)再动态写 receipt —— 不持租约,这个异步窗口里切号落定会拿 A 的镜像
     // 状态改 B 的 receipt(启停同时落在两个 owner 的两半)。
     const releaseMutation = beginGhostMutation(captureGhostMutationOwner());
+    const releaseSync = pluginDeviceSync.beginMutation(storagePart);
     try {
       if (!enabled) {
         runtime.stop(storagePart); // 沉睡立即熄灯
@@ -7880,6 +7892,7 @@ async function setGhostEnabledForUser(id: string, enabled: boolean, expectedInst
       return { ok: true };
     } finally {
       releaseMutation();
+      releaseSync();
     }
 }
 
