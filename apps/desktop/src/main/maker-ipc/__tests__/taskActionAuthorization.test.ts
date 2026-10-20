@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withToolCallAuthority } from '../../../../../../packages/lizi-mcps/src/tool-call-authority.js';
+import { createOrcaMcpServer } from '../../../../../../packages/lizi-mcps/src/orca/server.js';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
 import {
   approvedTaskDelegation,
@@ -279,9 +280,49 @@ const ownerWrites = [
   ['cindy_helper', 'set_session_runtime'],
   ['cindy_orca', 'create_worker'],
   ['cindy_orca', 'send_to_worker'],
+  ['cindy_orca', 'switch_focus'],
 ] as const;
 
 describe('Desktop owner input task actions', () => {
+  // #6399, unit: the action-set loop cannot detect a missing tool. Invoke the
+  // registered DirectToolSink handler: an automatic focus request must not reach
+  // the Host callback that persists focus/resumes an idle Worker; owner input can.
+  it('guards switch_focus through the registered Orca entry without adding an owner confirmation', async () => {
+    const h = desktopFixture('automatic');
+    const switchFocus = vi.fn(async () => ({ ok: true as const, workerId: 'worker' }));
+    const unused = async (): Promise<never> => { throw new Error('Unexpected Orca operation'); };
+    const server = createOrcaMcpServer(
+      {
+        authorizeCall: h.authorize, switchFocus,
+        startTeam: unused, createWorker: unused, listWorkers: unused,
+        sendToWorker: unused, interruptWorker: unused, listWorkerQueuedMessages: unused,
+        updateWorkerQueuedMessage: unused, cancelWorkerQueuedMessage: unused,
+        mergeWorkerQueuedMessages: unused, steerWorkerQueuedMessage: unused,
+        moveWorkerQueuedMessage: unused, idleWorker: unused, endTeam: unused,
+        archiveWorker: unused, listAvailableModels: unused, getWorkspaceInfo: unused,
+        getWorkerStatus: unused, readWorker: unused,
+      },
+      { sessionId: 'companion', agentKind: 'codex', workingDir: '/tmp/test' },
+    );
+    const handler = (server as unknown as {
+      _registeredTools: Record<string, { handler(args: unknown): Promise<unknown> }>;
+    })._registeredTools.switch_focus.handler;
+    try {
+      expect(await handler({ worker_id_or_label: 'worker' })).toMatchObject({ isError: true });
+      expect(switchFocus).not.toHaveBeenCalled();
+      h.activeInput.key = 'explicit-owner-request';
+      h.activeInput.ownerInput = true;
+      h.activeInput.automatic = false;
+      expect(await handler({ worker_id_or_label: 'worker' })).not.toMatchObject({ isError: true });
+      expect(switchFocus).toHaveBeenCalledExactlyOnceWith({
+        leadSessionId: 'companion', workerIdOrLabel: 'worker',
+      });
+      expect(h.confirm).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   // #6399, unit: an async admission is not a transport preSend generation check.
   it.each(['input', 'account', 'group'] as const)('invalidates a captured synchronous guard on %s replacement', async change => {
     const h = desktopFixture(change === 'group' ? 'group' : 'private');
@@ -457,7 +498,7 @@ describe('Existing execution authority', () => {
     h.caller.source = 'desktop';
     h.activeInput.orcaSenderSessionId = 'worker-session';
     h.rows.team = { id: 'owned-active-team' };
-    for (const tool of ['create_worker', 'send_to_worker', 'end_team']) {
+    for (const tool of ['create_worker', 'send_to_worker', 'switch_focus', 'end_team']) {
       expect(
         await withToolCallAuthority(
           h.authorize,

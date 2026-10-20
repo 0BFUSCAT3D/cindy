@@ -33,6 +33,7 @@ export const ORCA_TASK_ACTION_TOOLS: ReadonlySet<string> = new Set([
   'start_team',
   'create_worker',
   'create_workers',
+  'switch_focus',
   'send_to_worker',
   'interrupt_worker',
   'update_queued_message',
