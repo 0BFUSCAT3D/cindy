@@ -3174,6 +3174,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
           syncing={quietSyncing}
           displayA11y={t('devices.list.a11y.openDisplaySettings')}
           displayActions={stableDisplayActions}
+          displayBadge={statusFilter === 'archived'}
           menuA11y={t('devices.list.a11y.openMenu')}
           onDisplayAction={stableDisplayAction}
           onOpenDeviceMenu={openDeviceMenu}
@@ -3260,7 +3261,11 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
             {/* 系统菜单不可用(未编进 MenuView 的旧 iOS 包)时退回同一份菜单模型的 Cindy 自绘菜单。 */}
             <HomeDisplayMenu actions={homeDisplayPullDownActions} onAction={handleDisplayAction}>
               <HomeHeaderGlassButton accessibilityLabel={t('devices.list.a11y.openDisplaySettings')} onPress={() => undefined} testID="home.displaySettingsButton">
-                <Ellipsis color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+                <View>
+                  <Ellipsis color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+                  {/* 在看已归档任务时标一个点,提醒列表不是平常的进行中任务。 */}
+                  {statusFilter === 'archived' ? <View style={styles.displayFilterDot} testID="home.displayFilterDot" /> : null}
+                </View>
               </HomeHeaderGlassButton>
             </HomeDisplayMenu>
           </View>
@@ -4955,6 +4960,15 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   headerActionsWide: {
     width: navigationChrome.target * 2 + spacing.xs,
+  },
+  displayFilterDot: {
+    position: 'absolute',
+    top: -1,
+    right: -2,
+    width: 6,
+    height: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.statusAccent,
   },
   // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
   headerTitleSlot: {

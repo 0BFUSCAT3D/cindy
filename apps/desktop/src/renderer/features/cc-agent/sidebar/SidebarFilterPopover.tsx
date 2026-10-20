@@ -525,7 +525,8 @@ export function SidebarFilterPopover({
           )
           .join(t('ccAgent.sidebar.taskInfoSummarySeparator'))
       : t('ccAgent.sidebar.taskInfoSummaryNone');
-  const taskInfoIsDefault = taskInfoFields.length === DEFAULT_TASK_INFO_FIELDS.length &&
+  const taskInfoIsDefault =
+    taskInfoFields.length === DEFAULT_TASK_INFO_FIELDS.length &&
     DEFAULT_TASK_INFO_FIELDS.every((field, index) => taskInfoFields[index] === field);
 
   const ariaLabel = t('ccAgent.sidebar.filterAria', {
@@ -575,12 +576,20 @@ export function SidebarFilterPopover({
               aria-pressed={isFilterActive}
               className={cn(
                 // 配色与段头其余按钮统一(侧栏 token 对),不用通用 text-tertiary。
-                'flex h-7 w-7 items-center justify-center rounded-md',
+                'relative flex h-7 w-7 items-center justify-center rounded-md',
                 'text-[var(--sidebar-list-muted)]',
                 'transition-colors hover:text-[var(--sidebar-nav-text)]',
               )}
             >
               <SlidersHorizontal size={14} strokeWidth={2} />
+              {/* 正在看已归档任务时标一个点(与搜索筛选按钮同款),提醒列表
+                  不是平常的进行中任务;段头会让这个按钮常驻显示。 */}
+              {status === 'archived' && (
+                <span
+                  aria-hidden
+                  className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--status-bar-accent)]"
+                />
+              )}
             </button>
           </Tip>
         )}
