@@ -2735,6 +2735,29 @@ describe('assistant isFinal burst DUP-SKIP(P1:main 对称去重,防重复 isFina
     expect(assistantCreates).toHaveLength(1);
   });
 
+  it.each(['next-delta', 'tool-result', 'clear', 'owner'] as const)('keeps accepted boundary corrections until clear/owner changes (%s)', async (boundary) => {
+    const persistId = onAssistantTextEvent(SESSION, { text: 'Draft', isFinal: false }, null);
+    flushAssistantBlock(SESSION, null);
+    onInteractionMessage(SESSION, {
+      kind: 'ask_user_question', requestId: 'queued-final', questions: [{ question: 'Continue?' }],
+    });
+    await flushWrites();
+    let savedText = 'Draft';
+    vi.mocked(updateMessageContent).mockImplementationOnce(async (_sessionId, _clientId, text, _scope, options) => {
+      if (options?.isCurrent && !options.isCurrent()) return null;
+      if (typeof text !== 'string') throw new Error('Expected assistant text');
+      savedText = text;
+      return {} as Awaited<ReturnType<typeof updateMessageContent>>;
+    });
+    expect(onAssistantTextEvent(SESSION, { text: 'Corrected', isFinal: true, isFullText: true }, null)).toBe(persistId);
+    if (boundary === 'clear') noteSessionClearBoundary(SESSION, Date.now() + 1000);
+    else if (boundary === 'owner') ownerScopeState.current = false;
+    else if (boundary === 'tool-result') onToolResultEvent(SESSION, { toolUseIds: ['queued-tool'], summary: 'done' }, null);
+    else onAssistantTextEvent(SESSION, { text: 'Next reply', isFinal: false }, null);
+    await flushWrites();
+    expect(savedText).toBe(boundary === 'clear' || boundary === 'owner' ? 'Draft' : 'Corrected');
+  });
+
   it('边界后落过别的消息(tool_use)时同文本快照不复用,仍单独落行', async () => {
     const persistId = onAssistantTextEvent(SESSION, { text: 'Done.', isFinal: false }, null);
     flushAssistantBlock(SESSION, null);
@@ -2920,6 +2943,30 @@ describe('stale-idle assistant late final identity', () => {
       expect.objectContaining({ isCurrent: expect.any(Function) }));
     expect(patchMessageAgentMetaWithResult).not.toHaveBeenCalled();
     expect(broadcastMessageRow).toHaveBeenCalled();
+  });
+
+  it.each(['next-seal', 'clear', 'owner'] as const)('keeps an accepted sealed correction across candidate replacement (%s)', async (boundary) => {
+    const meta = { requestId: 'sealed-a', uuid: 'sealed-a' };
+    onAssistantTextEvent(SESSION, { text: 'Draft', isFinal: false }, meta);
+    sealAssistantBlockForLateFinal(SESSION);
+    resetTurnPersistState(SESSION);
+    await flushWrites();
+    let savedText = 'Draft';
+    vi.mocked(updateMessageContent).mockImplementationOnce(async (_sessionId, _clientId, text, _scope, options) => {
+      if (options?.isCurrent && !options.isCurrent()) return null;
+      if (typeof text !== 'string') throw new Error('Expected assistant text');
+      savedText = text;
+      return {} as Awaited<ReturnType<typeof updateMessageContent>>;
+    });
+    onAssistantTextEvent(SESSION, { text: 'Corrected', isFinal: true, isFullText: true }, meta);
+    if (boundary === 'clear') noteSessionClearBoundary(SESSION, Date.now() + 1000);
+    else if (boundary === 'owner') ownerScopeState.current = false;
+    else {
+      onAssistantTextEvent(SESSION, { text: 'Next reply', isFinal: false }, { requestId: 'sealed-b', uuid: 'sealed-b' });
+      sealAssistantBlockForLateFinal(SESSION);
+    }
+    await flushWrites();
+    expect(savedText).toBe(boundary === 'next-seal' ? 'Corrected' : 'Draft');
   });
 
   it('keeps identical text from a different SDK request as a separate message', async () => {

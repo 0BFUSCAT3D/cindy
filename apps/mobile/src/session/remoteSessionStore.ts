@@ -625,6 +625,9 @@ const sessionTaskUpdates = new Map<string, ReadonlyMap<string, AgentTaskUpdate>>
 // Keep one temporary assistant row per session and reconcile it with the persisted row by
 // clientId/persistId when the database push arrives.
 const streamingAssistantClientIds = new Map<string, string>();
+// A final for an item already present when an anonymous stream began cannot
+// claim that newer stream. Keep the observation boundary until its id resolves.
+const generatedStreamPriorIdentities = new Map<string, ReadonlySet<string>>();
 // The same persisted streaming identity can be replayed by a stale transport after
 // re-link. Track the transport currently assembling that identity so a device switch
 // replaces the stale live text instead of concatenating two transports into one row.
@@ -697,6 +700,7 @@ function forgetStreamingAssistantDeviceId(sessionId: string, clientId: string): 
 }
 
 function clearStreamingAssistantPointer(sessionId: string): boolean {
+  generatedStreamPriorIdentities.delete(sessionId);
   return streamingAssistantClientIds.delete(sessionId);
 }
 
@@ -1262,7 +1266,7 @@ function discardTransportOwnedPendingSessionState(
   }
   const streamingClientId = streamingAssistantClientIds.get(sessionId);
   if (streamingClientId && pendingAnchorIds.has(streamingClientId)) {
-    streamingAssistantClientIds.delete(sessionId);
+    clearStreamingAssistantPointer(sessionId);
   }
   for (const id of pendingAnchorIds) forgetStreamingAssistantDeviceId(sessionId, id);
   if (pendingAnchors) {
@@ -2435,7 +2439,7 @@ function reanchorPendingLiveAssistantRows(
 
 function retireGeneratedStreamingFallback(sessionId: string): void {
   const current = streamingAssistantClientIds.get(sessionId);
-  if (isGeneratedStreamingClientId(current)) streamingAssistantClientIds.delete(sessionId);
+  if (isGeneratedStreamingClientId(current)) clearStreamingAssistantPointer(sessionId);
   forgetGeneratedPendingLiveAssistantClientIds(sessionId);
 }
 
@@ -2495,6 +2499,7 @@ interface StreamingClientIdResolution {
 }
 
 function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId: string, persistId: string): boolean {
+  generatedStreamPriorIdentities.delete(sessionId);
   streamingAssistantClientIds.set(sessionId, persistId);
 
   const hadPendingLiveId = pendingLiveAssistantClientIds.get(sessionId)?.has(generatedClientId) === true;
@@ -2553,12 +2558,16 @@ function streamingClientIdFor(sessionId: string, persistId: string | undefined):
         changed: migrateGeneratedStreamingClientId(sessionId, existing, normalizedPersistId),
       };
     }
+    generatedStreamPriorIdentities.delete(sessionId);
     streamingAssistantClientIds.set(sessionId, normalizedPersistId);
     return { clientId: normalizedPersistId, changed: false };
   }
   const existing = streamingAssistantClientIds.get(sessionId);
   if (existing) return { clientId: existing, changed: false };
   const generated = `mobile-stream-${++streamingFallbackSequence}`;
+  generatedStreamPriorIdentities.set(sessionId, new Set(
+    (messages.get(sessionId) ?? []).flatMap((row) => [row.id, row.clientId].filter((id): id is string => Boolean(id))),
+  ));
   streamingAssistantClientIds.set(sessionId, generated);
   return { clientId: generated, changed: false };
 }
@@ -2570,6 +2579,8 @@ function upsertMessage(
     /** Caller already resolved this exact identity in the current message array. */
     knownIndex?: number;
     retirePendingAssistantIdentityOnEqual?: boolean;
+    /** An older final with no proven link must not retire an anonymous new stream. */
+    preserveGeneratedStreamingFallback?: boolean;
     /** A streaming text replacement changes row content but not list structure or identities. */
     preserveStructureOnReplace?: boolean;
     /** Streaming replacement preserves the already sorted message order. */
@@ -2577,6 +2588,10 @@ function upsertMessage(
   } = {},
 ): boolean {
   const existing = messages.get(sessionId) ?? [];
+  const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
+  const preservesGeneratedStream = options.preserveGeneratedStreamingFallback === true
+    || priorIdentities?.has(message.id) === true
+    || (message.clientId ? priorIdentities?.has(message.clientId) === true : false);
   const candidateIndex = options.knownIndex ?? -1;
   const index = candidateIndex >= 0
     && candidateIndex < existing.length
@@ -2588,6 +2603,7 @@ function upsertMessage(
     fallbackIndex = findPendingGeneratedStreamingFallbackIndex(sessionId, existing);
     if (
       fallbackIndex >= 0
+      && !preservesGeneratedStream
       && generatedFallbackMatchesPersistedMessage(existing[fallbackIndex], message)
     ) {
       // A producer without persistId creates a temporary mobile-stream-* row. The
@@ -2604,7 +2620,7 @@ function upsertMessage(
   if (index < 0) {
     messages.set(sessionId, normalizeMessages([...existing, message]));
     applyMessageWriteRetention(sessionId);
-    if (isPersistedAssistantMessage(message) && fallbackIndex < 0) {
+    if (isPersistedAssistantMessage(message) && fallbackIndex < 0 && !preservesGeneratedStream) {
       retireGeneratedStreamingFallback(sessionId);
     }
     bumpMessageVersion(sessionId);
@@ -2631,7 +2647,7 @@ function upsertMessage(
       message.id,
       message.clientId,
     );
-    if (isPersistedAssistantMessage(message)) retireGeneratedStreamingFallback(sessionId);
+    if (isPersistedAssistantMessage(message) && !preservesGeneratedStream) retireGeneratedStreamingFallback(sessionId);
     return hadPendingIdentity;
   }
   const next = existing.slice();
@@ -2655,7 +2671,7 @@ function upsertMessage(
       message.id,
       message.clientId,
     );
-    if (isPersistedAssistantMessage(message)) retireGeneratedStreamingFallback(sessionId);
+    if (isPersistedAssistantMessage(message) && !preservesGeneratedStream) retireGeneratedStreamingFallback(sessionId);
   }
   bumpMessageVersion(sessionId);
   return true;
@@ -2737,17 +2753,24 @@ function mergeRemoteTextEvent(
   const normalizedPersistId = persistId?.trim();
   // A completed older item may deliver its full text after a newer stream has
   // started. Its exact row owns this correction, not the current stream pointer.
+  const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
   const finalReusesExistingItem = isFinal && data?.isFullText === true && normalizedPersistId
-    && currentMessages.some((row) => row.role === 'assistant'
-      && (row.clientId === normalizedPersistId || row.id === normalizedPersistId));
+    && (priorIdentities?.has(normalizedPersistId) === true
+      || currentMessages.some((row) => row.role === 'assistant'
+        && (row.clientId === normalizedPersistId || row.id === normalizedPersistId)));
   const itemBoundaryClientId = !finalReusesExistingItem && normalizedPersistId
     && previousStreamingClientId
     && !isGeneratedStreamingClientId(previousStreamingClientId)
     && previousStreamingClientId !== normalizedPersistId
     ? previousStreamingClientId
     : undefined;
+  const generatedStream = finalReusesExistingItem && isGeneratedStreamingClientId(previousStreamingClientId)
+    ? currentMessages.find((row) => row.id === previousStreamingClientId || row.clientId === previousStreamingClientId)
+    : undefined;
+  const finalCanClaimGeneratedStream = Boolean(normalizedPersistId && generatedStream
+    && priorIdentities && !priorIdentities.has(normalizedPersistId));
   const clientIdResolution = finalReusesExistingItem && normalizedPersistId
-    && (!previousStreamingClientId || !isGeneratedStreamingClientId(previousStreamingClientId))
+    && !finalCanClaimGeneratedStream
     ? { clientId: normalizedPersistId, changed: false }
     : streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
@@ -2909,6 +2932,7 @@ function mergeRemoteTextEvent(
     ),
   }, {
     knownIndex: matchedExistingIndex,
+    preserveGeneratedStreamingFallback: Boolean(finalReusesExistingItem && generatedStream && !finalCanClaimGeneratedStream),
     preserveOrderOnReplace: !changesCreatedAt,
     preserveStructureOnReplace: !isFinal && existing !== undefined && !changesCreatedAt,
   });
@@ -5429,6 +5453,7 @@ export const remoteSessionStore = {
     sessionLiveStreamAcked.clear();
     sessionTaskUpdates.clear();
     streamingAssistantClientIds.clear();
+    generatedStreamPriorIdentities.clear();
     streamingAssistantDeviceIds.clear();
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();

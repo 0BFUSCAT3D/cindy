@@ -2298,20 +2298,20 @@ function assembleAssistantTextEvent(
     ) {
       const contentChanged = visible !== lateFinalCandidate.text;
       if (contentChanged) {
-        const isCandidateCurrent = () =>
-          sealedAssistantLateFinalBySession.get(sessionId) === lateFinalCandidate;
+        const clearBoundary = clearBoundaryBySession.get(sessionId);
+        const isCurrentBoundary = () => clearBoundaryBySession.get(sessionId) === clearBoundary;
         enqueueWrite(
           `assistant_late_final:${sessionId}:${lateFinalCandidate.persistId}`,
           async (ownerScope) => {
-            if (!isCandidateCurrent()) return;
+            if (!isCurrentBoundary()) return;
             const updated = await updateDbMessageContent(
               sessionId,
               lateFinalCandidate.persistId,
               visible,
               undefined,
-              { isCurrent: () => isCandidateCurrent() && isOwnerScopeCurrent(ownerScope) },
+              { isCurrent: () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope) },
             );
-            if (updated && isCandidateCurrent()) {
+            if (updated && isCurrentBoundary() && isOwnerScopeCurrent(ownerScope)) {
               lateFinalCandidate.text = visible;
               broadcastMessageRow(sessionId, updated, ownerScope);
             }
@@ -2373,6 +2373,10 @@ function assembleAssistantTextEvent(
       // delta 未消费 / 流式纠错),此时用全文更新既有行,而不是要求逐字相等后另起
       // 一行(否则仍是"部分文本 + 提问卡 + 完整文本"两行)。
       if (isFullText && boundaryFlushed.text !== visible) {
+        // Eligibility ends at the next block, but an already accepted correction
+        // still owns its durable row. Only clear/account changes invalidate it.
+        const clearBoundary = clearBoundaryBySession.get(sessionId);
+        const isCurrentBoundary = () => clearBoundaryBySession.get(sessionId) === clearBoundary;
         enqueueWrite(
           `boundary_flushed_content:${sessionId}:${boundaryFlushed.persistId}`,
           async (ownerScope) => {
@@ -2381,7 +2385,7 @@ function assembleAssistantTextEvent(
               boundaryFlushed.persistId,
               visible,
               undefined,
-              { isCurrent: () => lastBoundaryFlushedAssistantBySession.get(sessionId) === boundaryFlushed && isOwnerScopeCurrent(ownerScope) },
+              { isCurrent: () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope) },
             );
             if (updated) {
               // 缓存已落库的全文:重复投递同一份快照时不再重复 UPDATE。

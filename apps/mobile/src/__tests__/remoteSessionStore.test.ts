@@ -888,14 +888,16 @@ describe('remoteSessionStore', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it.each([false, true])('calibrates a late final by identity without taking over a newer stream (newer=%s)', (newer) => {
+  it.each([false, true, 'anonymous', 'anonymous-same-prefix'] as const)('calibrates a late final by identity without taking over a newer stream (newer=%s)', (newer) => {
     vi.useFakeTimers();
     try {
       remoteSessionStore.setMessages('s1', [{
         ...message('host-a', 's1'), clientId: 'item-a', content: 'Incorrect long draft',
       }]);
+      const anonymous = typeof newer === 'string';
+      const nextText = newer === 'anonymous-same-prefix' ? 'Correct' : 'Next';
       if (newer) {
-        pushMakerText('s1', 'item-b', 'Next', false);
+        pushMakerText('s1', anonymous ? undefined : 'item-b', nextText, false);
         vi.runOnlyPendingTimers();
       }
       remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
@@ -905,16 +907,45 @@ describe('remoteSessionStore', () => {
       });
       expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === 'item-a')?.content).toBe('Corrected');
       if (newer) {
+        remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+          sessionId: 's1', message: { ...message('host-a', 's1'), clientId: 'item-a', content: 'Corrected' },
+        });
         pushMakerText('s1', undefined, ' tail', false);
         vi.runOnlyPendingTimers();
-        expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === 'item-b'))
-          .toMatchObject({ content: 'Next tail', agentMeta: { isStreaming: true } });
+        expect(remoteSessionStore.getMessages('s1').find((row) => anonymous ? row.clientId?.startsWith('mobile-stream-') : row.clientId === 'item-b'))
+          .toMatchObject({ content: `${nextText} tail`, agentMeta: { isStreaming: true } });
       }
       expect(remoteSessionStore.getMessages('s1')).toHaveLength(newer ? 2 : 1);
     } finally { vi.useRealTimers(); }
   });
 
-  it('migrates a short anonymous stream when its DB row arrives before the identified final', () => {
+  it.each(['db-row', 'full-final'] as const)('keeps an anonymous stream when an older row reappears outside the current window (%s)', (arrival) => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setMessages('s1', [{ ...message('host-a', 's1'), clientId: 'item-a', content: 'Old draft' }]);
+      const prefix = 'A shared introductory sentence';
+      pushMakerText('s1', undefined, prefix, false);
+      vi.runOnlyPendingTimers();
+      const newer = remoteSessionStore.getMessages('s1').find((row) => row.clientId?.startsWith('mobile-stream-'))!;
+      remoteSessionStore.setMessages('s1', [newer]);
+      if (arrival === 'full-final') {
+        remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+          sessionId: 's1', persistId: 'item-a', event: {
+            type: 'text', data: { text: `${prefix} from the older reply`, isFinal: true, isFullText: true },
+          },
+        });
+      }
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', message: { ...message('host-a', 's1'), clientId: 'item-a', content: `${prefix} from the older reply` },
+      });
+      pushMakerText('s1', undefined, ' tail', false);
+      vi.runOnlyPendingTimers();
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
+      expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === newer.clientId)?.content).toBe(`${prefix} tail`);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['Sure, checked', 'Corrected'])('migrates a short anonymous stream when its DB row precedes the identified final (%s)', (finalText) => {
     vi.useFakeTimers();
     try {
       pushMakerText('s1', undefined, 'Sure', false);
@@ -925,14 +956,14 @@ describe('remoteSessionStore', () => {
       expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
       remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
         sessionId: 's1', persistId: 'item-a', event: {
-          type: 'text', data: { text: 'Sure, checked', isFinal: true, isFullText: true },
+          type: 'text', data: { text: finalText, isFinal: true, isFullText: true },
         },
       });
       expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
       pushMakerText('s1', undefined, ' tail', false);
       vi.runOnlyPendingTimers();
       expect(remoteSessionStore.getMessages('s1')).toEqual([expect.objectContaining({
-        id: 'host-a', clientId: 'item-a', content: 'Sure, checked tail',
+        id: 'host-a', clientId: 'item-a', content: `${finalText} tail`,
       })]);
     } finally { vi.useRealTimers(); }
   });
