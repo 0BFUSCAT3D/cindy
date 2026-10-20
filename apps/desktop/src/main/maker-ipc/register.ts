@@ -182,7 +182,9 @@ import {
   readInputDeliveryClientIds,
 } from '@cindy/device-link';
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
-import { applyScheduledModelSelection, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
+import { applyScheduledModelSelection, createScheduledModelScope, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
+import { parseScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
+import { recordTurnModelChange, type TurnModelIdentity } from './turnModelChange';
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import {
   activeOwnerScopeKey,
@@ -4208,8 +4210,20 @@ let pendingAgentSwitchApplyHolder:
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
     beforeApply?: () => Promise<boolean | void>,
-  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
+  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection; restore?: () => Promise<void> }>) | null = null;
 let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
+let preserveScheduledModelPreferencesHolder: ((sessionId: string) => Promise<() => Promise<void>>) | null = null;
+let recordDispatchedModelHolder: ((sessionId: string, clientId: string) => void) | null = null;
+
+export function recordDispatchedModel(sessionId: string, clientId: string): void {
+  recordDispatchedModelHolder?.(sessionId, clientId);
+}
+
+/** Scheduler caller already owns the send lock; cleanup reacquires it after the run. */
+export async function preserveScheduledModelPreferencesUnderLock(sessionId: string) {
+  if (!preserveScheduledModelPreferencesHolder) throw new Error('Scheduled model selection is not initialized');
+  return preserveScheduledModelPreferencesHolder(sessionId);
+}
 
 /** 会话级完整路由选择(引擎 + 模型 + 来源 + 档位 + Fast)。 */
 export interface SessionRouteSelection {
@@ -4495,7 +4509,7 @@ export async function acquirePendingAgentSwitchForDirectSend(
     lease?.release();
     throw new Error('Scheduled model selection was not resolved');
   }
-  return { release: lease.release, selection: lease.selection };
+  return { release: lease.release, selection: lease.selection, restore: lease.restore };
 }
 
 /** 直发路径在 createSession / 重读 live session 之前关掉不健康原生会话。 */
@@ -6106,6 +6120,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     sessionId: string,
     baselineOverride?: SessionRuntimeProfile,
   ): Promise<void> => {
+    const [saved] = await getDbClient().drizzle
+      .select({ value: sessions.scheduledModelBaseline }).from(sessions)
+      .where(eq(sessions.id, sessionId)).limit(1);
+    const scheduledBaseline = parseScheduledModelBaseline(saved?.value);
+    if (scheduledBaseline) {
+      broadcastSessionPatched(sessionId, projectScheduledPreferences(sessionId, scheduledBaseline));
+      return;
+    }
     let baseline = baselineOverride;
     if (!baseline) {
       const [row] = await getDbClient()
@@ -6133,15 +6155,34 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       projectSessionRuntimeControl(sessionId, baseline) as Record<string, unknown>,
     );
   };
-  setSessionRuntimeProjector((session) =>
-    projectSessionRuntimeControl(session.id, {
+  const projectScheduledPreferences = (sessionId: string, saved: ScheduledModelSelection) => {
+    const baseline: ScheduledModelSelection = {
+      agentKind: saved.agentKind, model: saved.model, providerId: saved.providerId,
+      effort: saved.effort, fastMode: saved.fastMode,
+    };
+    return {
+      ...projectSessionRuntimeControl(sessionId, baseline),
+      agentKind: makerToDbAgentKind(baseline.agentKind),
+      model: baseline.model,
+      providerId: baseline.providerId,
+      effort: baseline.effort ?? '',
+      fastMode: baseline.fastMode,
+      runtimeBaseline: baseline,
+      runtimeEffective: baseline,
+      runtimePending: null,
+    };
+  };
+  setSessionRuntimeProjector((session) => {
+    const baseline = parseScheduledModelBaseline(session.scheduledModelBaseline);
+    if (baseline) return projectScheduledPreferences(session.id, baseline);
+    return projectSessionRuntimeControl(session.id, {
       agentKind: dbToMakerAgentKind(session.agentKind),
       model: session.model,
       providerId: session.providerId?.trim() || null,
       effort: session.effort as SessionRuntimeProfile['effort'],
       fastMode: session.fastMode,
-    }),
-  );
+    });
+  });
   setSessionRuntimeCleanup((sessionId) => {
     workingDirectoryRecovery.discard(sessionId);
     clearSessionRuntimeControlState(sessionId);
@@ -10350,7 +10391,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       broadcastSessionPatched(sessionId, { agentSwitchIntent: intent });
     },
     // 用户选择落地 → 给 IM 任务打「脱离跟随」标记(同值重选也永久脱离, PR #5155)。
-    onUserRouteSelectionLanded: (sessionId) => markImSessionManualRouteOverride(sessionId),
+    onUserRouteSelectionLanded: async (sessionId) => {
+      await updateScheduledPreference(sessionId, null);
+      await markImSessionManualRouteOverride(sessionId);
+    },
     log,
   };
   registerMakerSessionAgentSwitchHandler(makerSessionRegistry, agentSwitchDeps);
@@ -10522,11 +10566,141 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     withCloseSuppressed: withRehydrateCloseSuppressed,
     log,
   });
+  const applyScheduledProfile = async (
+    sessionId: string, selection: ScheduledModelSelection, signal?: AbortSignal,
+  ) => applyScheduledModelSelection(selection, {
+    getTarget: async () => {
+      const row = await agentSwitchDeps.getSessionRow(sessionId);
+      return row ? { agentKind: dbToMakerAgentKind(row.agentKind), status: row.status,
+        remoteHostId: row.remoteHostId, orcaRole: row.orcaRole } : null;
+    },
+    isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
+    resolveSelection: async (route) => {
+      const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
+      return resolveScheduledModelSelectionLive({ ...route,
+        providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
+          ? reroute : route.providerId,
+      });
+    },
+    switchHarness: async (route) => {
+      const [savedModes] = await getDbClient().drizzle
+        .select({ planMode: sessions.planModeEnabled }).from(sessions)
+        .where(eq(sessions.id, sessionId)).limit(1);
+      const result = await performSessionAgentSwitch({
+        ...agentSwitchDeps, pendingSwitches: undefined, onPendingSwitchChanged: undefined,
+      }, {
+        sessionId, targetAgentKind: route.agentKind, model: route.model,
+        providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
+        applyNow: true, configStaged: true, signal,
+      });
+      // An automatic model choice does not exit the owner's plan mode.
+      if (savedModes?.planMode) {
+        await persistSessionFields(sessionId, { planModeEnabled: true });
+        await maker.getSession(sessionId)?.setPlanMode(true);
+      }
+      return result;
+    },
+    applyModel: async (route) => {
+      if (signal?.aborted) throw new Error('Scheduled model selection aborted');
+      const result = await applySessionRuntimeSelection(sessionId, route.model, route.providerId,
+        { effort: route.effort, fastMode: route.fastMode },
+        { source: 'user', configStaged: true, sessionLockHeld: true, applyingUserSelectionOnSend: true });
+      if (result.deferred) throw new ScheduledModelSelectionBusyError('Scheduled model selection deferred');
+      if (result.superseded || runtimeSelectionRequiresModelWindowConfirmation(result)) {
+        throw new Error('Scheduled model selection could not be applied');
+      }
+    },
+  });
+  const scheduledModelScope = createScheduledModelScope({
+    createId,
+    ownerEpoch: captureSessionRuntimeControlOwnerEpoch,
+    read: async (sessionId) => {
+      const [row] = await getDbClient().drizzle.select({
+        agentKind: sessions.agentKind, model: sessions.model, providerId: sessions.providerId,
+        effort: sessions.effort, fastMode: sessions.fastMode, baseline: sessions.scheduledModelBaseline,
+        status: sessions.status,
+      }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      return row?.status === 'active' ? { baseline: row.baseline, profile: {
+        agentKind: dbToMakerAgentKind(row.agentKind), model: row.model, providerId: row.providerId,
+        effort: row.effort, fastMode: row.fastMode,
+      } } : null;
+    },
+    write: async (sessionId, baseline) => {
+      const owner = captureSessionRuntimeControlOwnerEpoch();
+      const db = getDbClient().drizzle;
+      const [row] = baseline ? [] : await db.select({ baseline: sessions.scheduledModelBaseline })
+        .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      const saved = parseScheduledModelBaseline(row?.baseline);
+      if (!sessionRuntimeControlOwnerEpochMatches(owner)) throw new Error('Account changed during scheduled model selection');
+      await db.update(sessions)
+        .set({
+          scheduledModelBaseline: baseline ? JSON.stringify(baseline) : null,
+          ...(saved ? {
+            agentKind: makerToDbAgentKind(saved.agentKind), model: saved.model,
+            providerId: saved.providerId, effort: saved.effort ?? undefined, fastMode: saved.fastMode,
+          } : {}),
+        })
+        .where(eq(sessions.id, sessionId));
+      await broadcastSessionRuntimeProjection(sessionId);
+    },
+    isBusy: (sessionId) => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning() ||
+      isUserPendingAgentSwitchIntent(agentSwitchPending.get(sessionId)),
+    apply: async (sessionId, profile) => { await applyScheduledProfile(sessionId, profile); },
+  });
+  const updateScheduledPreference = async (
+    sessionId: string, patch: { effort?: ScheduledModelSelection['effort']; fastMode?: boolean } | null,
+  ) => {
+    const db = getDbClient().drizzle;
+    const [row] = await db.select({ baseline: sessions.scheduledModelBaseline }).from(sessions)
+      .where(eq(sessions.id, sessionId)).limit(1);
+    const baseline = parseScheduledModelBaseline(row?.baseline);
+    if (!baseline) return;
+    await db.update(sessions).set({
+      scheduledModelBaseline: patch ? JSON.stringify({ ...baseline, ...patch }) : null,
+    }).where(eq(sessions.id, sessionId));
+    await broadcastSessionRuntimeProjection(sessionId);
+  };
+  const updateSavedScheduledAxis = async (
+    sessionId: string,
+    patch: { effort?: ScheduledModelSelection['effort']; fastMode?: boolean },
+    assertCurrent: () => void,
+  ): Promise<boolean> => {
+    const [row] = await getDbClient().drizzle.select({ baseline: sessions.scheduledModelBaseline })
+      .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    const baseline = parseScheduledModelBaseline(row?.baseline);
+    if (!baseline) return false;
+    const providers = await getDesktopProviderService().listProviders({
+      allowSideEffects: false, catalog: getActiveCatalog(),
+    });
+    const providerId = baseline.providerId ??
+      effectiveSourceIdForModel(providers, null, baseline.model, baseline.agentKind);
+    const model = findCatalogModel(providers.find(p => p.id === providerId),
+      baseline.model, baseline.agentKind, { exact: true });
+    if (!model) throwIpcError('INVALID_PARAMS', `model "${baseline.model}" is unavailable`);
+    const axes = resolveSessionRuntimeAxes({
+      model, effort: patch.effort ?? baseline.effort,
+      fastMode: patch.fastMode ?? baseline.fastMode,
+      effortExplicit: patch.effort !== undefined, fastExplicit: patch.fastMode !== undefined,
+      allowFixedEffortPlaceholder: true,
+    });
+    if (!axes.ok) throwIpcError('INVALID_PARAMS', `setting is unavailable for model "${baseline.model}"`);
+    assertCurrent();
+    // The picker describes the owner's next turn, not the automation currently running.
+    await updateScheduledPreference(sessionId, patch);
+    return true;
+  };
+  preserveScheduledModelPreferencesHolder = async (sessionId) => {
+    const scopeId = await scheduledModelScope.begin(sessionId);
+    return scopeId
+      ? () => withSendToSessionLock(sessionId, () => scheduledModelScope.restore(sessionId, scopeId))
+      : async () => {};
+  };
   pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
     let stage = 'direct-send:acquire';
     let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
+      await scheduledModelScope.restore(sessionId);
       // Read after acquisition: a picker can have been queued ahead of this
       // send. Restore under this same lease through dispatch, without re-taking it.
       const pendingSelection = agentSwitchPending.get(sessionId);
@@ -10552,44 +10726,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
       }
       let resolvedSelection: ScheduledModelSelection | undefined;
+      let scheduledScopeId: string | undefined;
       if (selection) {
         stage = 'direct-send:applyScheduledModelSelection';
-        resolvedSelection = await applyScheduledModelSelection(selection, {
-          getTarget: async () => {
-            const row = await agentSwitchDeps.getSessionRow(sessionId);
-            return row ? { agentKind: dbToMakerAgentKind(row.agentKind), status: row.status,
-              remoteHostId: row.remoteHostId, orcaRole: row.orcaRole } : null;
-          },
-          isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
-          resolveSelection: async (route) => {
-            const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
-            return resolveScheduledModelSelectionLive({ ...route,
-              providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
-                ? reroute : route.providerId,
-            });
-          },
-          switchHarness: (route) => performSessionAgentSwitch(agentSwitchDeps, {
-            sessionId, targetAgentKind: route.agentKind, model: route.model,
-            providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
-            applyNow: true, signal,
-          }),
-          applyModel: async (route) => {
-            if (signal?.aborted) throw new Error('Scheduled model selection aborted');
-            const result = await applySessionRuntimeSelection(sessionId, route.model, route.providerId,
-              { effort: route.effort, fastMode: route.fastMode },
-              { source: 'user', sessionLockHeld: true, applyingUserSelectionOnSend: true });
-            if (result.deferred) throw new ScheduledModelSelectionBusyError('Scheduled model selection deferred');
-            if (result.superseded || runtimeSelectionRequiresModelWindowConfirmation(result)) {
-              throw new Error('Scheduled model selection could not be applied');
-            }
-          },
-        });
+        scheduledScopeId = await scheduledModelScope.begin(sessionId);
+        resolvedSelection = await applyScheduledProfile(sessionId, selection, signal);
       }
       stage = 'direct-send:prepareUnhealthySession';
       await contextOverflowRolloverHolder?.prepareUnhealthySession(sessionId);
       // The caller retains the lease through runtime refresh and Session.send.
       stage = 'direct-send:caller-dispatch';
-      return { release, selection: resolvedSelection };
+      return { release, selection: resolvedSelection,
+        ...(scheduledScopeId ? { restore: () => withSendToSessionLock(sessionId,
+          () => scheduledModelScope.restore(sessionId, scheduledScopeId)) } : {}),
+      };
     } catch (err) {
       release();
       throw err;
@@ -16661,6 +16811,48 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         patchMessageAgentMeta(sessionId, clientId, { piEntryId }),
       ),
     beforeDispatchDirectUserTurn: (sessionId) => gitSnapshotCoordinator?.onTurnStart(sessionId),
+    onModelDispatched: recordDispatchedModelHolder = (sessionId, clientId) => {
+      const live = maker.getSession(sessionId);
+      if (!live) return;
+      const current: TurnModelIdentity = {
+        agentKind: live.agentKind, model: live.model, providerId: getSessionProvider(sessionId),
+      };
+      const owner = captureDataOwnerBroadcastScope();
+      const db = getDbClient().drizzle;
+      const createdAt = Date.now();
+      void enqueueDurableWrite(`turn-model:${sessionId}:${clientId}`, async () => {
+        if (!isDataOwnerBroadcastScopeCurrent(owner)) return;
+        const [input] = await db.select({ content: messages.content }).from(messages)
+          .where(and(eq(messages.sessionId, sessionId), eq(messages.clientId, clientId),
+            eq(messages.role, 'user'), isNull(messages.rewindAt))).limit(1);
+        // Hidden coordination/routine inputs must not leak a visible model boundary.
+        if (!input || input.content.startsWith(UI_ACTION_TRIGGER_PREFIX)) return;
+        await recordTurnModelChange(current, {
+          readPrevious: async () => {
+            const [previous] = await db.select({ meta: messages.agentMeta }).from(messages)
+              .innerJoin(sessions, eq(sessions.id, messages.sessionId))
+              .where(and(
+                eq(messages.sessionId, sessionId), eq(messages.role, 'user'),
+                sql`${messages.clientId} <> ${clientId}`, isNull(messages.rewindAt),
+                or(isNull(sessions.clearedAt), sql`${messages.createdAt} > ${sessions.clearedAt}`),
+                sql`CASE WHEN json_valid(${messages.agentMeta}) THEN json_extract(${messages.agentMeta}, '$.executionModel') END IS NOT NULL`,
+              )).orderBy(desc(messages.createdAt), desc(sql`${messages}.rowid`)).limit(1);
+            return previous?.meta
+              ? (JSON.parse(previous.meta) as { executionModel?: TurnModelIdentity }).executionModel ?? null
+              : null;
+          },
+          record: async (executionModel) => isDataOwnerBroadcastScopeCurrent(owner) &&
+            await patchMessageAgentMeta(sessionId, clientId, { executionModel }),
+          publish: async (modelChange) => {
+            if (!isDataOwnerBroadcastScopeCurrent(owner)) return;
+            await createDbMessage(sessionId, {
+              clientId: `model-change:${clientId}`, role: 'assistant', content: '',
+              agentMeta: { modelChange }, agentKind: makerToDbAgentKind(current.agentKind), createdAt,
+            });
+          },
+        });
+      }).catch((error) => log.warn('turn model attribution failed', { sessionId, error }));
+    },
     assertBeforeVendorDispatch: (sessionId, sendOpts) => {
       const remote = isDeviceLinkInvoke();
       assertRemoteInputClearNotInFlight(sessionId, remote);
@@ -16752,6 +16944,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     consumeWorkingMemoryRefresh: (sessionId, generation) => workingMemoryRefresh.consume(sessionId, generation),
     planRepeatableWireNotes: (sessionId, notes, opts) => wireNoteMemory.plan(sessionId, notes, opts),
     applyPendingAgentSwitch: async (sessionId, options) => {
+      if (!options?.scheduled) await scheduledModelScope.restore(sessionId);
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
       // Queued Orca delivery and resume both use this transaction. A failed
       // cross-engine preparation may retain its intent without throwing.
@@ -20794,6 +20987,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       patch.fastMode = targetFastMode;
     }
     await persistSessionFields(sessionId, patch);
+    if (internalOptions.source === 'user' && !internalOptions.configStaged) {
+      await updateScheduledPreference(sessionId, null);
+    }
     if (!internalOptions.applyingUserSelectionOnSend) {
       agentSwitchPending.clear(sessionId);
       broadcastSessionPatched(sessionId, { agentSwitchIntent: null, agentSwitchIntentCanceled: true });
@@ -22149,6 +22345,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
         let generation: number;
         if (internalOptions.source === 'user') {
+          if (!internalOptions.configStaged) await updateScheduledPreference(sessionId, null);
           generation = recordUserSessionRuntimeMutation(sessionId);
         } else if (internalOptions.applyingPendingGeneration !== undefined) {
           if (!response.deferred) {
@@ -22478,6 +22675,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       assertOwnerCurrent();
       assertSharedTaskCurrent.admit();
       await persistSessionFields(sessionId, { effort });
+      await updateScheduledPreference(sessionId, { effort: effort as ScheduledModelSelection['effort'] });
       if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
     };
     const applyEffort = async () => {
@@ -22503,6 +22701,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const result = await stagePendingUserRuntimeAxis(sessionId, userIntent, { effort }, assertOwnerCurrent);
         if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
         return remoteResponse ?? result;
+      }
+      if (await updateSavedScheduledAxis(sessionId, { effort: effort as ScheduledModelSelection['effort'] }, () => {
+        assertOwnerCurrent();
+        assertSharedTaskCurrent.admit();
+      })) {
+        if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
+        return remoteResponse;
       }
       if (runtimeStatus.status === 'archived') {
         // Main owns both local and remote commits; Renderer must not write a
@@ -23004,6 +23209,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertOwnerCurrent();
         assertSharedTaskCurrent.admit();
         await persistSessionFields(sessionId, { fastMode: enabled });
+        await updateScheduledPreference(sessionId, { fastMode: enabled });
         if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
       };
       const applyFastMode = async () => {
@@ -23029,6 +23235,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const result = await stagePendingUserRuntimeAxis(sessionId, userIntent, { fastMode: enabled }, assertOwnerCurrent);
           if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
           return remoteResponse ?? result;
+        }
+        if (await updateSavedScheduledAxis(sessionId, { fastMode: enabled }, () => {
+          assertOwnerCurrent();
+          assertSharedTaskCurrent.admit();
+        })) {
+          if (remoteResponse) markRemoteSettingPersistedInsideHandler(remoteResponse);
+          return remoteResponse;
         }
         if (runtimeStatus.status === 'archived') {
           await persistFastMode();
