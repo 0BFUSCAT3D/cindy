@@ -89,6 +89,10 @@ function notAutoResumeAgentMetaSql() {
   return sql`(${messages.agentMeta} IS NULL OR CASE WHEN json_valid(${messages.agentMeta}) THEN json_extract(${messages.agentMeta}, '$.autoResume') END IS NOT 1)`;
 }
 
+// Publication hooks stay asynchronous for normal messages. A terminal retraction
+// waits for its exact row's hook before rebuilding derived PR references.
+const pendingPrRefWrites = new WeakMap<DbClient, Map<string, Promise<void>>>();
+
 type MessageRow = typeof messages.$inferSelect;
 type MessageRowWithRowid = MessageRow & { rowid: number };
 type DataOwnerBroadcastScope = ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope>;
@@ -1484,7 +1488,12 @@ export async function discardPersistedAssistantMessage(
     agentMeta: row.agentMeta, agentKind: row.agentKind, createdAt: row.createdAt,
     guarded: false, publication: 'rollback',
   });
-  return result.changes > 0;
+  if (result.changes === 0) return false;
+  await pendingPrRefWrites.get(dbClient)?.get(row.id);
+  if (isCurrent() && isOwnerBroadcastScopeCurrent(ownerScope)) {
+    await recomputePrRefsForSession(sessionId);
+  }
+  return true;
 }
 
 export async function updateMessageContent(
@@ -1874,8 +1883,17 @@ export async function createMessage(
   });
   // session-git-pr-context hook —— fire-and-forget。内部限定 user/assistant 角色,
   // 每条消息跑一次锚定正则线性扫描(开销可忽略);失败仅 log warn。
-  void recordPrRefsForMessage(msg).catch(() => {
+  const prRefsWrite = recordPrRefsForMessage(msg).catch(() => {
     // recordPrRefsForMessage 内部已 try/catch,此处兜底防御 refactor 漏网异常。
+  });
+  let pendingPrRefs = pendingPrRefWrites.get(dbClient);
+  if (!pendingPrRefs) {
+    pendingPrRefs = new Map();
+    pendingPrRefWrites.set(dbClient, pendingPrRefs);
+  }
+  pendingPrRefs.set(msg.id, prRefsWrite);
+  void prRefsWrite.then(() => {
+    if (pendingPrRefs.get(msg.id) === prRefsWrite) pendingPrRefs.delete(msg.id);
   });
   return msg;
 }
