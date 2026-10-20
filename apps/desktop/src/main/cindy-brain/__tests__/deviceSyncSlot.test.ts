@@ -317,3 +317,83 @@ it.each([2, 32])('counts incoming requests toward the combined %i request budget
   expect(await extra).toMatchObject({ errorCode: 'SYNC_RESULT_UNKNOWN' });
   expect(await Promise.all(requests)).toEqual(Array.from({ length: count }, () => ({ ok: false, errorCode: 'SYNC_RESULT_UNKNOWN' })));
 });
+
+// Async boundary regressions (unit): real encrypted traffic and fake time.
+it('releases a timed-out startup so a later healthy plugin frame can proceed', async () => {
+  const { a, b, frames, ready, flush } = pair(); await ready();
+  let release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  b.deliver.mockImplementationOnce(async (_ghost, msg, valid) => {
+    entered(); await loading;
+    if (!valid()) return false;
+    b.delivered.push(msg); return true;
+  });
+  const stuck = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: { stuck: true } });
+  await Promise.resolve(); await Promise.resolve();
+  const first = frames.shift()!; let settled = false;
+  const receiving = b.svc.receive(first.from, first.data).then(() => { settled = true; });
+  await started; await vi.advanceTimersByTimeAsync(15000);
+  const healthy = a.svc.handle('other-sync', { op: 'request', peer: 'b', data: { healthy: true } });
+  await Promise.resolve(); await Promise.resolve();
+  const second = frames.shift()!;
+  const queued = b.svc.receive(second.from, second.data);
+  await vi.advanceTimersByTimeAsync(15001);
+  expect(settled).toBe(true);
+  await receiving; await queued;
+  expect(b.delivered.map(m => m.data)).toEqual([{ healthy: true }]);
+  await b.svc.handle('other-sync', { op: 'reply', requestId: b.delivered[0].requestId, data: 'stored' });
+  await flush(); expect(await healthy).toEqual({ ok: true, data: 'stored' });
+  expect(await stuck).toMatchObject({ errorCode: 'SYNC_RESULT_UNKNOWN' });
+  release(); await Promise.resolve(); await Promise.resolve();
+  expect(b.delivered).toHaveLength(1);
+});
+
+it('rejects pre-replacement frames waiting for keys or behind another frame', async () => {
+  const { a, b, frames, ready, flush } = pair(); await ready();
+  let release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  b.keys.prepare.mockImplementationOnce(() => { entered(); return loading; });
+  const requests = [0, 1].map(n => a.svc.handle('example-sync', { op: 'request', peer: 'b', data: { n } }));
+  await Promise.resolve(); await Promise.resolve();
+  const receiving = frames.splice(0).map(f => b.svc.receive(f.from, f.data));
+  await started; b.g.approval = { state: 'approved', revision: '2' };
+  release(); await Promise.all(receiving);
+  expect(b.delivered).toHaveLength(0);
+  a.svc.reset(); a.svc.setActive(true); await Promise.all(requests);
+  const fresh = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: { fresh: true } });
+  await Promise.resolve(); await Promise.resolve(); await flush();
+  expect(b.delivered.map(m => m.data)).toEqual([{ fresh: true }]);
+  a.svc.reset(); await fresh;
+});
+
+it('does not revive old inbound or outbound requests when peer access is restored', async () => {
+  const { a, b, frames, ready, flush } = pair(); await ready();
+  let release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  b.deliver.mockImplementationOnce(async (_ghost, msg, valid) => {
+    entered(); await loading;
+    if (!valid()) return false;
+    b.delivered.push(msg); return true;
+  });
+  const request = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: {} });
+  await Promise.resolve(); await Promise.resolve();
+  const frame = frames.shift()!;
+  const receiving = b.svc.receive(frame.from, frame.data);
+  await started; b.blocked.add('a'); b.svc.invalidatePeer('a'); b.blocked.delete('a');
+  release(); await receiving;
+  expect(b.delivered).toHaveLength(0);
+  a.svc.reset(); a.svc.setActive(true); await request;
+  let releaseKeys!: () => void;
+  a.keys.prepare.mockImplementationOnce(() => new Promise<void>(resolve => { releaseKeys = resolve; }));
+  const oldGrant = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: {} });
+  a.blocked.add('b'); a.svc.invalidatePeer('b'); a.blocked.delete('b'); releaseKeys();
+  expect(await oldGrant).toMatchObject({ errorCode: 'SYNC_OFFLINE' });
+  expect(frames).toHaveLength(0);
+  const fresh = a.svc.handle('example-sync', { op: 'request', peer: 'b', data: { fresh: true } });
+  await Promise.resolve(); await Promise.resolve(); await flush();
+  expect(b.delivered.map(m => m.data)).toEqual([{ fresh: true }]);
+  a.svc.invalidatePeer('b'); expect(await fresh).toMatchObject({ errorCode: 'SYNC_RESULT_UNKNOWN' });
+});

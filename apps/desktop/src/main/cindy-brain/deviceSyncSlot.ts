@@ -83,6 +83,7 @@ export class PluginDeviceSync {
   private readonly receiving = new Map<string, Promise<void>>();
   private receivingCount = 0;
   private readonly epochs = new Map<string, number>();
+  private readonly peerEpochs = new Map<string, number>();
   constructor(private readonly deps: Deps) {}
   connect(transport: PluginSyncTransport): void {
     this.reset();
@@ -103,6 +104,7 @@ export class PluginDeviceSync {
     this.pending.clear();
     this.incoming.clear();
     this.keyReplies.clear();
+    this.peerEpochs.clear();
     this.receiving.clear();
     this.receivingCount = 0;
     this.scope = this.deps.scope();
@@ -120,6 +122,20 @@ export class PluginDeviceSync {
         clearTimeout(p.timer);
         this.incoming.delete(id);
       }
+  }
+  invalidatePeer(peer: string): void {
+    this.peerEpochs.set(peer, (this.peerEpochs.get(peer) ?? 0) + 1);
+    this.keyReplies.delete(peer);
+    for (const [id, p] of this.pending) if (p.peer === peer) {
+      clearTimeout(p.timer); this.pending.delete(id); p.finish(error('SYNC_RESULT_UNKNOWN'));
+    }
+    for (const [id, p] of this.incoming) if (p.peer === peer) {
+      clearTimeout(p.timer); this.incoming.delete(id);
+    }
+  }
+  private capturePeer(peer: string): () => boolean {
+    const epoch = this.peerEpochs.get(peer) ?? 0;
+    return () => epoch === (this.peerEpochs.get(peer) ?? 0) && this.transport?.allowed(peer) === true;
   }
   private capture(instance: string): (() => boolean) | null {
     const ghost = this.deps.getGhost(instance);
@@ -173,9 +189,11 @@ export class PluginDeviceSync {
       }
     }
     if (raw.op !== 'request' || typeof raw.peer !== 'string') return error('INVALID_PARAMS');
-    const current = this.capture(instance),
-      peer = raw.peer;
-    if (!current?.() || !this.transport?.allowed(peer)) return error('SYNC_OFFLINE');
+    const pluginCurrent = this.capture(instance),
+      peer = raw.peer,
+      peerCurrent = this.capturePeer(peer);
+    const current = () => pluginCurrent?.() === true && peerCurrent();
+    if (!current()) return error('SYNC_OFFLINE');
     if (this.atCapacity(instance)) return error('SYNC_BUSY');
     try {
       await this.deps.keys.prepare();
@@ -250,26 +268,45 @@ export class PluginDeviceSync {
       (raw.kind === 'key' && !isValidContactsSyncPublicKey(raw.publicKey))) return;
     const generation = this.generation,
       scope = this.deps.scope(),
-      receivedAt = Date.now();
+      receivedAt = Date.now(),
+      peerCurrent = this.capturePeer(peer);
+    let expired = false;
     const current = () =>
-      this.active &&
+      !expired && this.active &&
       generation === this.generation &&
       scope === this.deps.scope() &&
       Date.now() - receivedAt < TIMEOUT_MS &&
-      this.transport?.allowed(peer) === true;
+      peerCurrent();
     const previous = this.receiving.get(peer);
     let release!: () => void;
     const turn = new Promise<void>((resolve) => { release = resolve; });
     this.receiving.set(peer, turn);
     this.receivingCount++;
+    let deadlineTimer!: ReturnType<typeof setTimeout>;
+    let incomingId: string | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        expired = true;
+        reject(new Error('sync frame expired'));
+      }, Math.max(0, receivedAt + TIMEOUT_MS - Date.now()));
+      deadlineTimer.unref?.();
+    });
+    const wait = <T>(work: Promise<T>): Promise<T> => Promise.race([work, deadline]);
     try {
-      await previous;
+      // The encrypted target is not known until after key preparation. Capture eligible
+      // installs now so queued frames cannot acquire a replacement's new approval.
+      const targets = raw.kind === 'data' ? this.deps.listGhosts().flatMap(ghost => {
+        const plugin = identity(ghost), instance = installedGhostStoragePart(ghost);
+        const valid = this.capture(instance);
+        return plugin && valid ? [{ ghost, plugin, instance, valid }] : [];
+      }) : [];
+      await wait(Promise.resolve(previous));
       if (!current()) return;
-      await this.deps.keys.prepare();
+      await wait(this.deps.keys.prepare());
       if (!current()) return;
       if (raw.kind === 'key') {
         if (!isValidContactsSyncPublicKey(raw.publicKey)) return;
-        await this.deps.keys.pinPeerPublicKey(peer, raw.publicKey);
+        await wait(this.deps.keys.pinPeerPublicKey(peer, raw.publicKey));
         if (!current()) return;
         if (Date.now() - (this.keyReplies.get(peer) ?? 0) > 5000) {
           this.keyReplies.set(peer, Date.now());
@@ -326,23 +363,20 @@ export class PluginDeviceSync {
         clearTimeout(pending.timer);
         pending.finish({ ok: true, data: p.data });
       } else if (p.kind === 'request') {
-        const ghost = this.deps.listGhosts().find((g) => {
-          const i = identity(g);
-          return i && same(i, packet.plugin);
-        });
-        if (!ghost) return;
-        const instance = installedGhostStoragePart(ghost),
-          pluginCurrent = this.capture(instance);
-        if (!pluginCurrent?.() || this.atCapacity(instance)) return;
+        const target = targets.find(t => same(t.plugin, packet.plugin));
+        if (!target) return;
+        const { ghost, instance, valid: pluginCurrent } = target;
+        if (!pluginCurrent() || this.atCapacity(instance)) return;
         const requestId = randomUUID();
+        incomingId = requestId;
         // A queued/startup-delayed request must still belong to this peer grant,
         // account, plugin revision and unexpired incoming request at actual delivery.
         const valid = () => current() && pluginCurrent();
-        const timer = setTimeout(() => this.incoming.delete(requestId), TIMEOUT_MS);
+        const timer = setTimeout(() => this.incoming.delete(requestId), Math.max(0, receivedAt + TIMEOUT_MS - Date.now()));
         timer.unref?.();
         this.incoming.set(requestId, { peer, packet, instance, current: valid, timer });
         if (
-          !(await this.deps.deliver(
+          !(await wait(this.deps.deliver(
             ghost,
             {
               type: 'device-sync-request',
@@ -351,7 +385,7 @@ export class PluginDeviceSync {
               data: p.data,
             },
             () => valid() && this.incoming.has(requestId),
-          )) ||
+          ))) ||
           !valid()
         ) {
           clearTimeout(timer);
@@ -361,6 +395,12 @@ export class PluginDeviceSync {
     } catch {
       /* Invalid/unauthenticated frames never surface their contents or mutate plugin data. */
     } finally {
+      clearTimeout(deadlineTimer);
+      if (incomingId && !current()) {
+        const incoming = this.incoming.get(incomingId);
+        if (incoming) clearTimeout(incoming.timer);
+        this.incoming.delete(incomingId);
+      }
       release();
       if (generation === this.generation) {
         this.receivingCount--;

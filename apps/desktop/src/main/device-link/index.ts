@@ -1036,6 +1036,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
         // 撤权后在途请求会陆续超时——那不是「设备无响应」,是访问被收回。清熔断并
         // 作废在途结果(翻代),避免 unresponsive 状态与撤权状态并存(对齐 mobile 语义)。
         revokedByRemote.add(env.src);
+        pluginDeviceSync.invalidatePeer(env.src);
         responsivenessTracker?.clearDevice(env.src);
         broadcast(DEVICE_LINK_PUSH.ACCESS_REVOKED, { deviceId: env.src });
       }
@@ -1526,6 +1527,7 @@ export function disconnectAllControllers(): void {
  */
 export async function revokeController(deviceId: string): Promise<void> {
   invalidatePluginOauth(deviceId);
+  pluginDeviceSync.invalidatePeer(deviceId);
   // 先消化并 enforce 盘上的外部变化,避免快照刷新吞掉别的实例刚写入的撤销(见 setRemoteControlEnabled)
   pollExternalSettingsChange();
   // updater 在写锁内基于盘上最新名单追加,不能锁外算好整数组再整值写
@@ -1533,6 +1535,7 @@ export async function revokeController(deviceId: string): Promise<void> {
   await updateDeviceLinkSetting('revokedControllers', (latest) =>
     latest.includes(deviceId) ? latest : [...latest, deviceId],
   );
+  pluginDeviceSync.invalidatePeer(deviceId);
   // 在线连着的:发 link-close('revoked'),控制端据此立即移除本机项目/对话 + 标记「已撤销」。
   try {
     client?.closeLink(deviceId, 'revoked', 'inbound');
@@ -1628,6 +1631,7 @@ function pollExternalSettingsChange(): void {
 
   const newlyRevoked = revokedControllers.filter((id) => !prev.revokedControllers.includes(id));
   for (const deviceId of newlyRevoked) {
+    pluginDeviceSync.invalidatePeer(deviceId);
     try {
       client.closeLink(deviceId, 'revoked', 'inbound');
     } catch (err) {
