@@ -5,6 +5,7 @@ import { getMobileAuthOwner, invalidateMobileAuthOwnerForSwitch, isMobileAuthOwn
 import {
   __resetIncomingShareForTest,
   consumeIncomingShareBatch,
+  discardIncomingShareBatch,
   incomingShareBatchId,
   selectIncomingShareUploadCandidates,
   stageIncomingShareBatch,
@@ -59,6 +60,20 @@ describe('incoming Share Extension payloads', () => {
     convertToJpeg.mockClear();
   });
 
+  it('never interprets file-URL text as an upload or cleanup capability', async () => {
+    const text = payload({ shareType: 'text', value: 'file:///private/document.txt', contentUri: 'file:///private/document.txt', contentType: 'text' });
+    expect(selectIncomingShareUploadCandidates([text]).candidates).toEqual([]);
+    const batch = stageIncomingShareBatch([text], vi.fn())!;
+    expect(discardIncomingShareBatch(batch.id)).toBe(true);
+    const clearSharedPayloads = vi.fn();
+    const stop = watchIncomingShareAccount({ getSharedPayloads: () => [text], clearSharedPayloads });
+    stageIncomingShareBatch([text], vi.fn());
+    setMobileAuthOwner('account-b');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(deleteAsync).not.toHaveBeenCalled();
+    stop();
+  });
+
   it('converts non-sendable iOS image formats before entering the attachment uploader', async () => {
     const result = selectIncomingShareUploadCandidates([
       payload({
@@ -86,6 +101,14 @@ describe('incoming Share Extension payloads', () => {
       skipPreprocess: true,
     });
     expect(convertToJpeg).toHaveBeenCalledWith('file:///shared/IMG_0001.HEIC');
+  });
+
+  it.each(['svg', 'psd', 'dng'])('preserves %s image exports as files instead of forcing a JPEG decoder', (extension) => {
+    const input = payload({ shareType: 'image', contentType: 'image', originalName: `drawing.${extension}` });
+    const result = selectIncomingShareUploadCandidates([input]);
+    expect(result.candidates).toEqual([expect.objectContaining({ kind: 'file', name: `drawing.${extension}` })]);
+    expect(result.candidates[0]!.resolve).toBeUndefined();
+    expect(convertToJpeg).not.toHaveBeenCalled();
   });
 
   it('converts supported files and images into the existing attachment upload candidates', () => {

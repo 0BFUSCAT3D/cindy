@@ -12,7 +12,7 @@ import {
 
 /**
  * 根级 Share Extension 桥：未登录时先保留 App Group payload；登录、路由都就绪后
- * 再进入新建任务。真正清除原生 payload 的时机由新建页领取成功后触发。
+ * 再选择任务或伙伴。目标编辑器领取成功后才清除原生 payload。
  */
 export function IncomingShareBridge() {
   const auth = useAuth();
@@ -74,14 +74,14 @@ export function IncomingShareBridge() {
     ) {
       return;
     }
-    if (segments.join('/') === 'sessions/new') {
+    if (segments.join('/') === 'incoming-share') {
       presentedBatchId.current = batch.id;
       return;
     }
     // A storage error leaves the batch pending. Let the user leave the error
     // screen and return to retry instead of repeatedly forcing it back open.
     presentedBatchId.current = batch.id;
-    router.navigate('/sessions/new');
+    router.navigate('/incoming-share');
   }, [auth.initialized, auth.isAuthenticated, batch, router, segments]);
 
   return null;

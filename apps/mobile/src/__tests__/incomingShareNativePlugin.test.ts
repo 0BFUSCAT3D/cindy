@@ -122,6 +122,8 @@ describe("incoming share native file ownership", () => {
         "failedTitle",
         "receivedMessage",
         "receivedTitle",
+        "tooManyMessage",
+        "tooManyTitle",
       ]);
       expect(
         Object.values(values).every((value) => value.trim().length > 0),

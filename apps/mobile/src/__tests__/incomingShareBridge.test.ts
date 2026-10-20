@@ -49,8 +49,8 @@ function navigatePendingShare() {
 it('lets users leave a failed handoff and navigates again for a fresh share', () => {
   mock.batch = { id: 'first' };
   navigatePendingShare();
-  expect(mock.navigate).toHaveBeenCalledExactlyOnceWith('/sessions/new');
-  mock.segments = ['sessions', 'new'];
+  expect(mock.navigate).toHaveBeenCalledExactlyOnceWith('/incoming-share');
+  mock.segments = ['incoming-share'];
   navigatePendingShare();
   mock.segments = [];
   navigatePendingShare();
@@ -63,12 +63,12 @@ it('lets users leave a failed handoff and navigates again for a fresh share', ()
 it('does not mark a batch presented until authentication is ready', () => {
   mock.batch = { id: 'pending-login' };
   mock.auth.initialized = false;
-  mock.segments = ['sessions', 'new'];
+  mock.segments = ['incoming-share'];
   navigatePendingShare();
   mock.segments = [];
   mock.auth.initialized = true;
   navigatePendingShare();
-  expect(mock.navigate).toHaveBeenCalledExactlyOnceWith('/sessions/new');
+  expect(mock.navigate).toHaveBeenCalledExactlyOnceWith('/incoming-share');
 });
 
 it('finishes expiry before reading the native slot', async () => {

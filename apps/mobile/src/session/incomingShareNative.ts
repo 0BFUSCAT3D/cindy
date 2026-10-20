@@ -35,7 +35,7 @@ export function getSharedPayloads(): SharePayload[] {
   const raw: SharePayload[] = JSON.parse(snapshot).map((item: { value: string; type: SharePayload['shareType']; mimeType?: string }) => ({
     value: item.value, shareType: item.type, mimeType: item.mimeType,
   }));
-  const payloads = raw.filter((payload) => !isMissingShareCopy(payload.value));
+  const payloads = raw.filter((payload) => payload.shareType === 'text' || payload.shareType === 'url' || !isMissingShareCopy(payload.value));
   snapshots.set(payloads, snapshot);
   if (raw.length > 0 && payloads.length === 0) {
     // Do not navigate to an empty draft, even when native acknowledgement fails.

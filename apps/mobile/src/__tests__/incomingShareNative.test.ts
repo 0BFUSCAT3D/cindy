@@ -156,3 +156,11 @@ it.each(['throw', 'false'])('preserves all mixed payloads after acknowledgement 
   slot = snapshot;
   expect(restarted.getSharedPayloads()).toHaveLength(1);
 });
+
+// A shared string that looks like a managed path is still content, not a file capability.
+it('preserves literal file-URL text without consulting or deleting the filesystem', () => {
+  fs.listings.set(root, []);
+  native.readSnapshot.mockReturnValue(JSON.stringify([{ type: 'text', value: uri }]));
+  expect(getSharedPayloads()).toEqual([{ shareType: 'text', value: uri, mimeType: undefined }]);
+  expect(native.clearSnapshot).not.toHaveBeenCalled();
+});

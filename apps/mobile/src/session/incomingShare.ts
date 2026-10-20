@@ -1,8 +1,8 @@
 /**
- * iOS Share Extension → 新建任务附件信箱。
+ * iOS Share Extension → 任务/伙伴的内容信箱。
  *
  * expo-sharing 把扩展收到的文件复制进 App Group，并在主 App 激活后提供本地
- * payload。根导航只负责把 payload 放进这个进程内信箱；新建会话页领取后复用现有
+ * payload。根导航把 payload 放进这个进程内信箱；用户选择的目标编辑器领取后复用现有
  * MobileLocalAttachmentUpload 管线。原生 payload 在领取成功前不清，避免登录/导航
  * 期间丢文件。
  */
@@ -28,6 +28,7 @@ export interface IncomingShareBatch {
   payloads: readonly ResolvedSharePayload[];
   acknowledge: () => void;
   owner: MobileAuthOwnerGeneration;
+  destination?: string;
 }
 
 export interface IncomingShareUploadSelection {
@@ -39,6 +40,10 @@ let currentBatch: IncomingShareBatch | null = null;
 const pendingBatches: IncomingShareBatch[] = [];
 const listeners = new Set<() => void>();
 let unsubscribeOwner: (() => void) | undefined;
+
+function isFilePayload(payload: Pick<SharePayload, 'shareType'>): boolean {
+  return payload.shareType !== 'text' && payload.shareType !== 'url';
+}
 
 export async function deleteIncomingSharedFiles(uris: readonly string[]): Promise<void> {
   const FileSystem = await import('expo-file-system/legacy');
@@ -100,7 +105,7 @@ function updateIncomingShareOwner(
   for (const batch of discarded) {
     pendingBatches.splice(pendingBatches.indexOf(batch), 1);
     acknowledgeBatch(batch);
-    void deleteIncomingSharedFiles(batch.payloads.map((payload) => payload.contentUri ?? payload.value))
+    void deleteIncomingSharedFiles(batch.payloads.filter(isFilePayload).map((payload) => payload.contentUri ?? payload.value))
       .catch(() => undefined);
   }
   // New snapshots also wake the focused consumer after a rollback/first login.
@@ -127,7 +132,7 @@ export function watchIncomingShareAccount(
       try {
         const raw = native.getSharedPayloads();
         native.clearSharedPayloads(raw);
-        void deleteIncomingSharedFiles(raw.map((payload) => payload.value)).catch(() => undefined);
+        void deleteIncomingSharedFiles(raw.filter(isFilePayload).map((payload) => payload.value)).catch(() => undefined);
       } catch { /* Sharing is unavailable in older native binaries. */ }
     }
   }, previous);
@@ -179,6 +184,24 @@ export function stageIncomingShareBatch(
   return batch;
 }
 
+/** Only the destination explicitly chosen by the user may claim this batch. */
+export function selectIncomingShareDestination(id: string, destination: string): boolean {
+  if (!currentBatch || currentBatch.id !== id || !isMobileAuthOwnerCurrent(currentBatch.owner)) return false;
+  currentBatch = { ...currentBatch, destination };
+  pendingBatches[0] = currentBatch;
+  emit();
+  return true;
+}
+
+export function incomingShareText(payloads: readonly ResolvedSharePayload[]): string {
+  return payloads.filter(payload => payload.shareType === 'text' || payload.shareType === 'url')
+    .map(payload => payload.value).filter(value => value.trim()).join('\n\n');
+}
+
+export function incomingShareDestination(deviceId: string, sessionId: string): string {
+  return JSON.stringify([deviceId, sessionId]);
+}
+
 export function consumeIncomingShareBatch(id: string): boolean {
   if (getMobileAuthOwner().switching || !currentBatch || currentBatch.id !== id
     || !currentBatch.owner.accountKey || !isMobileAuthOwnerCurrent(currentBatch.owner)) return false;
@@ -192,19 +215,27 @@ export function consumeIncomingShareBatch(id: string): boolean {
   return true;
 }
 
+/** Cancelling the chooser discards only this share, never the source app's files. */
+export function discardIncomingShareBatch(id: string): boolean {
+  const batch = currentBatch;
+  if (!batch || !consumeIncomingShareBatch(id)) return false;
+  void deleteIncomingSharedFiles(batch.payloads.filter(isFilePayload).map(payload => payload.contentUri ?? payload.value)).catch(() => undefined);
+  return true;
+}
+
 /** Raw local files need no asynchronous resolver; the uploader stats their size. */
 export function receiveIncomingShare(native: IncomingShareNative): void {
   if (getMobileAuthOwner().switching) return;
   const raw = native.getSharedPayloads();
   if (raw.length === 0) return;
-  const payloads = raw.map((payload): ResolvedSharePayload => ({
-    ...payload,
-    contentUri: payload.value,
-    contentType: payload.shareType === 'image' ? 'image' : 'file',
-    contentMimeType: payload.mimeType ?? null,
-    originalName: basenameFromUri(payload.value),
-    contentSize: null,
-  }));
+  const payloads = raw.map((payload): ResolvedSharePayload => {
+    const common = { ...payload, contentMimeType: payload.mimeType ?? null,
+      originalName: basenameFromUri(payload.value), contentSize: null };
+    return payload.shareType === 'text'
+      ? { ...common, contentUri: null, contentType: 'text' }
+      : { ...common, contentUri: payload.value,
+        contentType: payload.shareType === 'url' ? 'website' : payload.shareType === 'image' ? 'image' : 'file' };
+  });
   stageIncomingShareBatch(payloads, () => {
     // Native compares the captured bytes and clears under the writer's lock.
     native.clearSharedPayloads(raw);
@@ -243,6 +274,7 @@ export function selectIncomingShareUploadCandidates(
   const rejectedUris: string[] = [];
 
   for (const payload of payloads) {
+    if (!isFilePayload(payload)) continue;
     const uri = payload.contentUri?.trim()
       || (payload.shareType === 'file' || payload.shareType === 'image'
         ? payload.value.trim()
@@ -262,8 +294,11 @@ export function selectIncomingShareUploadCandidates(
       && payload.contentSize > 0
       ? payload.contentSize
       : 0;
-    // 系统判定为图片、但扩展名不是可直传的图片格式(如 HEIC):转 JPEG 后按图片发送。
-    if (category === 'file' && isImage) {
+    // Convert known raster encodings only. Vector/source images such as SVG or
+    // PSD remain original files rather than failing UIKit's raster decoder.
+    const imageExtension = extractRemoteFileExt(name).replace(/^\./, '');
+    const convertibleImage = isImage && (!imageExtension || ['heic', 'heif', 'tif', 'tiff', 'bmp'].includes(imageExtension));
+    if (category === 'file' && convertibleImage) {
       const index = candidates.length;
       candidates.push({
         kind: 'image',
