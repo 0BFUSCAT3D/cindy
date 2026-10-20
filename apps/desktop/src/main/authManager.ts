@@ -4538,6 +4538,7 @@ export async function updateServerProfile(
 }
 
 export async function initialize(options: AuthInitializeOptions = {}): Promise<AuthState> {
+  const initializeStartEpoch = authStateEpoch;
   // A renderer can mount after the boundary-pending broadcast. Keep startup
   // fail-closed until the serialized owner transition settles instead of
   // restoring the outgoing owner's credentials and turns from disk.
@@ -4714,7 +4715,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
   // 黑洞 / captive-portal 网络护栏:限时等待,超时先以未登录返回解锁 splash,
   // 流程继续后台跑;迟到成功由流程内部广播登录态(renderer 自动跳回主界面)。
   const coldStartCompletion = coldStartAuthInFlight;
-  const startupTimeoutEpoch = authStateEpoch;
+  const startupTimeoutEpoch = initializeStartEpoch;
   return awaitWithStartupTimeout(coldStartCompletion, {
     timeoutMs: COLD_START_AUTH_GATE_TIMEOUT_MS,
     onTimeout: async () => {
@@ -4732,6 +4733,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       // the transition's own commit/rollback broadcast publish the settled state.
       const recovery = await resolveColdStartTimeoutRecovery({
         ownerTransitionPending: ownerChangeShellGate.isPending(),
+        authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
         timeoutStartEpoch: startupTimeoutEpoch,
         currentEpoch: authStateEpoch,
         currentState: snapshotAuthState(),

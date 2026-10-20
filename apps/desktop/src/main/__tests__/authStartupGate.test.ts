@@ -192,6 +192,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     const recover = vi.fn(async () => ({ mode: 'signed-out', ownerBoundaryPending: false }));
     const result = await resolveColdStartTimeoutRecovery({
       ownerTransitionPending: true,
+      authChangedSinceInitialize: false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
       currentState: { mode: 'cloud', ownerBoundaryPending: false },
@@ -209,6 +210,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     const recover = vi.fn(async () => recoveredState);
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
+      authChangedSinceInitialize: false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
       currentState,
@@ -224,8 +226,31 @@ describe('ColdStartAuthFallbackRegistry', () => {
 
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
+      authChangedSinceInitialize: false,
       timeoutStartEpoch: 7,
       currentEpoch: 8,
+      currentState: loggedInState,
+      pendingState: { mode: 'signed-out', ownerBoundaryPending: true },
+      recover,
+    })).resolves.toBe(loggedInState);
+
+    expect(recover).not.toHaveBeenCalled();
+  });
+
+  it('preserves login completed during async startup prereads before the sibling timeout', async () => {
+    const initializeStartEpoch = 7;
+    let authStateEpoch = initializeStartEpoch;
+    const loggedInState = { mode: 'cloud', userId: 'new-owner' } as const;
+    const recover = vi.fn(async () => ({ mode: 'signed-out' as const }));
+
+    // reconcileDesktopActiveAuthSession/loadClientEndpointsForRealm are awaited
+    // before the shared refresh starts; login may commit while either is pending.
+    authStateEpoch += 1;
+    await expect(resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: false,
+      authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
+      timeoutStartEpoch: initializeStartEpoch,
+      currentEpoch: authStateEpoch,
       currentState: loggedInState,
       pendingState: { mode: 'signed-out', ownerBoundaryPending: true },
       recover,
@@ -248,15 +273,15 @@ describe('ColdStartAuthFallbackRegistry', () => {
       const previousEpoch = currentEpoch;
       currentEpoch += 1;
       registry.record(previousEpoch, currentEpoch);
-      return { isAuthenticated: false };
+      return Promise.resolve('signed-out');
     };
 
     // Two renderer windows share the same refresh, but each owns a startup timer.
     const primary = awaitWithStartupTimeout(refresh, { timeoutMs: 1000, onTimeout: recover });
     const secondary = awaitWithStartupTimeout(refresh, { timeoutMs: 1500, onTimeout: recover });
     await vi.advanceTimersByTimeAsync(1500);
-    await expect(primary).resolves.toEqual({ isAuthenticated: false });
-    await expect(secondary).resolves.toEqual({ isAuthenticated: false });
+    await expect(primary).resolves.toBe('signed-out');
+    await expect(secondary).resolves.toBe('signed-out');
     expect(currentEpoch).toBe(9);
 
     resolveRefresh('owner');

@@ -79,6 +79,7 @@ export async function awaitWithStartupTimeout<T>(
 
 export async function resolveColdStartTimeoutRecovery<TCurrent, TPending, TRecovered>(input: {
   ownerTransitionPending: boolean;
+  authChangedSinceInitialize: boolean;
   timeoutStartEpoch: number;
   currentEpoch: number;
   currentState: TCurrent;
@@ -93,7 +94,9 @@ export async function resolveColdStartTimeoutRecovery<TCurrent, TPending, TRecov
   // Sibling renderers share one refresh but own independent startup timers. A
   // user may complete login after one timeout exposes the login page and before
   // another timer fires; that later timeout must preserve the authenticated state.
-  if (input.currentEpoch !== input.timeoutStartEpoch) return input.currentState;
+  if (input.authChangedSinceInitialize || input.currentEpoch !== input.timeoutStartEpoch) {
+    return input.currentState;
+  }
   return input.recover();
 }
 
