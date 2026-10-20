@@ -8,6 +8,51 @@ import {
   type AgentKind,
   type ProviderView,
 } from '@cindy/model-providers';
+import { isProviderSharePeer } from '@cindy/device-link';
+import { registerGuestProviderRoute } from '../../maker-host/guest-provider-route-store.js';
+import type { RemoteAgentHostDeps } from './runHost.js';
+
+/** Shared users and same-account group relays both need a guest-isolated proxy binding. */
+export function createGuestProviderRouteBinder(deps: {
+  readProviders(): Promise<readonly ProviderView[]>;
+  guestAccess(controller: string): { providerId: string; memberId: string } | null;
+  ownerAllowed(controller: string): boolean;
+  providerAllowed(providerId: string): boolean;
+  modelAccess: {
+    allows(providerId: string, model: string, memberId?: string): boolean;
+    read(providerId: string, memberId?: string): { models: readonly string[] | null; providerModels: readonly string[] | null };
+  };
+}): NonNullable<RemoteAgentHostDeps['bindGuestProviderRoute']> {
+  return async ({ kind, hostSessionId, providerId, controller, isCurrent }) => {
+    const views = await deps.readProviders();
+    // An obsolete asynchronous launch must never replace the current binding.
+    if (!isCurrent()) return null;
+    // A same-account group relay is isolated as a guest, but the group owner is
+    // not a direct-share member of this computer. Its grants are provider-wide.
+    const sharedPeer = isProviderSharePeer(controller);
+    const memberId = sharedPeer ? deps.guestAccess(controller)?.memberId : undefined;
+    const providerAllowed = (): boolean => {
+      const access = sharedPeer ? deps.guestAccess(controller) : null;
+      return (sharedPeer
+        ? !!access && access.memberId === memberId && access.providerId === providerId
+        : deps.ownerAllowed(controller)) && deps.providerAllowed(providerId);
+    };
+    if (!providerAllowed()) return null;
+    const allowsModel = (model: string) => providerAllowed() && deps.modelAccess.allows(providerId, model, memberId);
+    const binding = registerGuestProviderRoute(hostSessionId, providerId, allowsModel, () => {
+      try {
+        const rule = deps.modelAccess.read(providerId, memberId);
+        return rule.models !== null || rule.providerModels !== null;
+      } catch { return true; }
+    });
+    return {
+      routeToken: binding.token,
+      // Keep the CLI catalog stable; the proxy checks live grants per request.
+      modelIds: guestProviderModelIds(views, providerId, kind),
+      release: binding.release,
+    };
+  };
+}
 
 /**
  * 对方指定了来源时只核对它是否开放；没指定时按本机默认规则在开放的供应商里挑(新路由口径

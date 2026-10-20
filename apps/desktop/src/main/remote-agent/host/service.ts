@@ -30,10 +30,9 @@ import { currentProviderPartyUsageStore, flushProviderPartyUsage } from '../../u
 import { readDeviceLinkSettings } from '../../device-link/settings-store.js';
 import { readTurnUsageResetAt } from '../../goal-host/usageLimit.js';
 import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService.js';
-import { registerGuestProviderRoute } from '../../maker-host/guest-provider-route-store.js';
 import { bindHostedSessionProvider } from '../../maker-host/session-provider-store.js';
 import { isRemoteProviderInvocationAllowed } from '../../maker-host/remote-provider-access-store.js';
-import { guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
+import { createGuestProviderRouteBinder, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
 import { createRemoteAgentHost, type HostedStartInput, type RemoteAgentHost, type RunUsageRecord } from './runHost';
 import { purgeClaudeHostedSessionArtifacts, purgeClaudeHostedTranscripts, purgePiHostedSubagentRuns } from './transcripts';
 import { captureGeneratedImageStorage, generatedImageErrorCode, handleGeneratedImageArtifacts, prepareGeneratedImageTransport } from '../../cindy-media/generatedImageStorage';
@@ -103,6 +102,11 @@ function guestAllows(controller: string, providerId: string): boolean {
 export function installRemoteAgentHost(options: { getMaker: () => Maker; userDataDir: string }): void {
   if (host) return;
   const usage = installProviderShareUsageStore(options.userDataDir);
+  const isControllerAuthorized = (controller: string): boolean => {
+    if (isProviderSharePeer(controller)) return providerShareGuestAccess(controller) !== null;
+    const settings = readDeviceLinkSettings();
+    return settings.remoteControlEnabled && !settings.revokedControllers.includes(controller);
+  };
   // 同一份受邀者分配器同时提供匿名状态，沿用实际分配时记录的版本兼容情况。
   const groupRelay = createProviderGroupGuestRelay({
     scope: getProviderGroupOwnerScope,
@@ -136,11 +140,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     },
     startHosted: (input) => options.getMaker().startHostedAgentSession(input.kind, hostedStartOptions(input)),
     bindOwnerProviderRoute: bindHostedSessionProvider,
-    isControllerAuthorized: (controller) => {
-      if (isProviderSharePeer(controller)) return providerShareGuestAccess(controller) !== null;
-      const settings = readDeviceLinkSettings();
-      return settings.remoteControlEnabled && !settings.revokedControllers.includes(controller);
-    },
+    isControllerAuthorized,
     controllerTrust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
     providerAccess: {
       resolve: async (kind, model, providerId, controller) => {
@@ -167,29 +167,13 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       },
     },
     // 受邀者任务的出站登记：本机 proxy 只让它经分享的供应商、用它提供的模型。
-    bindGuestProviderRoute: async ({ kind, hostSessionId, providerId, controller, isCurrent }) => {
-      const views = await getDesktopProviderService().listProviders({ allowSideEffects: false });
-      // 读目录期间这次启动可能已被取代：此时不再登记(登记与检查之间没有 await)。
-      if (!isCurrent()) return null;
-      const access = providerShareGuestAccess(controller);
-      if (!access || access.providerId !== providerId || !guestAllows(controller, providerId)) return null;
-      const memberId = access.memberId;
-      const allowsModel = (model: string) => providerShareGuestAccess(controller)?.memberId === memberId
-        && guestAllows(controller, providerId) && remoteModelAccess.allows(providerId, model, memberId);
-      const binding = registerGuestProviderRoute(hostSessionId, providerId, allowsModel, () => {
-        try {
-          const rule = remoteModelAccess.read(providerId, memberId);
-          return rule.models !== null || rule.providerModels !== null;
-        } catch { return true; }
-      });
-      return {
-        routeToken: binding.token,
-        // Keep the provider catalog stable for the CLI; the proxy checks the live grant on every request.
-        // Filtering this launch-time snapshot would prevent using newly granted models until the task restarts.
-        modelIds: guestProviderModelIds(views, providerId, kind),
-        release: binding.release,
-      };
-    },
+    bindGuestProviderRoute: createGuestProviderRouteBinder({
+      readProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
+      guestAccess: providerShareGuestAccess,
+      ownerAllowed: isControllerAuthorized,
+      providerAllowed: isRemoteProviderInvocationAllowed,
+      modelAccess: remoteModelAccess,
+    }),
     // Codex 与 Pi 的会话历史在受邀者目录里，随它整体删除；这里清 Claude Code 的项目记录与 Pi 子代理运行目录。
     purgeHostedTranscripts: async (hostSessionIds, nativeIds) => {
       const images = captureGeneratedImageStorage();

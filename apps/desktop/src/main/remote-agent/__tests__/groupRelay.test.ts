@@ -21,6 +21,8 @@ import { decideProviderGroupFailure } from '../../provider-group/failurePolicy';
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
 import { relayKeyFor, reshareKeyFor, type RelayRunFailure } from '../host/groupRelay';
+import { createGuestProviderRouteBinder } from '../host/providerAccess';
+import { guestProviderRouteForToken } from '../../maker-host/guest-provider-route-store';
 import {
   createRemoteAgentHost,
   hostSessionIdFor,
@@ -62,6 +64,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
   /** 转分享的同意(本机是分享者)。 */
   reshare?: Parameters<typeof createRemoteAgentHost>[0]['reshare'];
   resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve'];
+  bindGuestProviderRoute?: Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
 }) {
   return createRemoteAgentHost({
     prepareImageEvent: options.prepareImageEvent,
@@ -121,7 +124,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
       isAllowed: () => true,
     },
     ...(options.guestRelayCapable === false ? {} : {
-      bindGuestProviderRoute: async () => ({ routeToken: 'route', modelIds: ['claude-opus'], release: () => {} }),
+      bindGuestProviderRoute: options.bindGuestProviderRoute ?? (async () => ({ routeToken: 'route', modelIds: ['claude-opus'], release: () => {} })),
     }),
     ...(options.purge ? { purgeHostedTranscripts: options.purge } : {}),
     ...(options.groupRelay ? { groupRelay: options.groupRelay } : {}),
@@ -199,6 +202,7 @@ function setup(options: {
   switchWorthy?: (failure: RelayRunFailure) => boolean;
   /** mini 这台的 Agent 表现。 */
   mini?: { failStart?: boolean; endImmediately?: boolean };
+  memberBinder?: Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
   /** 组所在电脑本机的 Agent 表现(组选中本机这一台时)。 */
   owner?: { failStart?: boolean; prepareImageEvent?: Parameters<typeof createRemoteAgentHost>[0]['prepareImageEvent'] };
   /** 截住组所在电脑发给组内电脑的请求(模拟回包丢失、应答慢)。 */
@@ -209,6 +213,7 @@ function setup(options: {
     mini: fakeAgentHost('mini', memberStarted.mini, {
       trust: () => 'owner',
       guestRelayCapable: options.miniCapable ?? true,
+      bindGuestProviderRoute: options.memberBinder,
       purge: async () => undefined,
       ...options.mini,
     }),
@@ -301,6 +306,36 @@ function switchTokenIn(stream: Awaited<ReturnType<typeof openAsGuest>>['stream']
 }
 
 describe('provider group relay for shared users', () => {
+  // Unit regression for review 4328468761: existing three-computer tests stubbed
+  // the production binding. The real binder must start an owner-relayed guest,
+  // keep its isolated home/provider, and release the proxy token on close.
+  it('starts and releases a same-account group relay through the production guest binder', async () => {
+    const binder = createGuestProviderRouteBinder({
+      readProviders: async () => [],
+      guestAccess: () => null,
+      ownerAllowed: controller => controller === OWNER_DEVICE,
+      providerAllowed: provider => provider === MEMBER_MINI.providerId,
+      modelAccess: { allows: () => true, read: () => ({ models: null, providerModels: null }) },
+    });
+    const env = setup({ memberBinder: binder });
+    try {
+      const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+      try {
+        const input = env.memberStarted.mini[0].input;
+        expect(input.guest).toBe(true);
+        expect(input.guestHome).toContain(path.join('mini', 'guest-homes'));
+        const token = input.guestProvider!.routeToken;
+        expect(guestProviderRouteForToken(token)).toEqual({ sessionId: input.hostSessionId, providerId: MEMBER_MINI.providerId });
+        await client.call('send', [{ content: 'hello', attachments: [] }, {}]);
+        expect(env.memberStarted.mini[0].sends).toHaveLength(1);
+        await client.close('close', 'navigation');
+        await vi.waitFor(() => expect(guestProviderRouteForToken(token)).toBeNull());
+      } finally { await client.close('close', 'navigation'); }
+    } finally {
+      for (const host of [env.owner, ...Object.values(env.members)]) { await host.abortAll(); host.dispose(); }
+    }
+  });
+
   it('hands a shared user’s new task to the chosen computer, which runs it isolated as a shared user', async () => {
     const env = setup();
     const { client, started } = await openAsGuest(env, GUEST_A, openPayload(SESSION));

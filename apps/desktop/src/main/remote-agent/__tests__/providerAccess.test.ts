@@ -9,11 +9,13 @@ import path from 'node:path';
 
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
 import type { ProviderView } from '@cindy/model-providers';
+import { providerShareGuestPeer } from '@cindy/device-link';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { startRemoteAgentSession } from '../controller/startRemote';
-import { guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from '../host/providerAccess';
+import { createGuestProviderRouteBinder, guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from '../host/providerAccess';
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
+import { guestProviderModelAllowed, guestProviderRouteForToken, resetGuestProviderRoutesForTest } from '../../maker-host/guest-provider-route-store';
 
 const RG = path.resolve(__dirname, '../../../../../ripgrep-bin', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'rg.exe' : 'rg');
 
@@ -82,7 +84,52 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetGuestProviderRoutesForTest();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+// Unit regression for review 4328468761 / provider-groups §4, sharing §12.
+// The host tests stubbed this production binder and missed that relay controllers
+// have no direct-share member. Minimum: an authorized same-account controller
+// binding a guest-isolated task. Verify the real proxy grant, including revocation.
+describe('guest proxy binding for direct shares and same-account group relays', () => {
+  it.each(['relay', 'share'])('binds a %s with its live model permissions and a stable CLI catalog', async (kind) => {
+    const controller = kind === 'relay' ? 'owner-device' : providerShareGuestPeer('share-1', 'member-1', 'guest-device');
+    let active = true;
+    let providerEnabled = true;
+    const providerModels = new Set(['opus']);
+    const memberModels = new Set(['opus']);
+    const binder = createGuestProviderRouteBinder({
+      readProviders: async () => [view('spark', ['opus', 'sonnet'])],
+      guestAccess: () => kind === 'share' && active ? { providerId: 'spark', memberId: 'member-1' } : null,
+      ownerAllowed: () => active,
+      providerAllowed: () => providerEnabled,
+      modelAccess: {
+        allows: (_providerId, model, memberId) => providerModels.has(model) && (!memberId || memberModels.has(model)),
+        read: (_providerId, memberId) => ({ models: [...(memberId ? memberModels : providerModels)], providerModels: [...providerModels] }),
+      },
+    });
+    const input = { kind: 'claude-code' as const, hostSessionId: 'bound-guest', providerId: 'spark', controller, isCurrent: () => true };
+    const binding = await binder(input);
+    expect(binding).not.toBeNull();
+    expect(binding!.modelIds).toEqual(['opus', 'sonnet']);
+    expect(guestProviderRouteForToken(binding!.routeToken)).toEqual({ sessionId: input.hostSessionId, providerId: 'spark' });
+    const allows = (model: string) => guestProviderModelAllowed('spark', model, input.hostSessionId);
+    expect(allows('opus')).toBe(true);
+    expect(allows('sonnet')).toBe(false);
+    providerModels.add('sonnet');
+    expect(allows('sonnet')).toBe(kind === 'relay');
+    memberModels.add('sonnet');
+    expect(allows('sonnet')).toBe(true);
+    providerEnabled = false;
+    expect(allows('opus')).toBe(false);
+    providerEnabled = true;
+    active = false;
+    expect(allows('opus')).toBe(false);
+    expect(await binder(input)).toBeNull();
+    binding!.release();
+    expect(guestProviderRouteForToken(binding!.routeToken)).toBeNull();
+  });
 });
 
 function recordingHandle(input: HostedStartInput, calls: { sends: number; models: unknown[][] }): AgentSessionHandle {
