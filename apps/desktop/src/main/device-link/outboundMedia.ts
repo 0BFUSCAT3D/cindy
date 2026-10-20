@@ -36,6 +36,7 @@ import { buildLegacyAttachmentOssRef, parseAttachmentOssRef } from '../../shared
 import { readStartReviewRequest } from '../maker-ipc/reviewStartHandler.js';
 import { withPreparedOutboundReview } from '../maker-ipc/reviewOutboundInput.js';
 import { createSourceFileAccessError, isSourceFileAccessError } from './sourceFileError';
+import { readWithSourceFileAccessRecovery } from './sourceFileAccessRecovery';
 
 const log = createLogger('device-link:outboundMedia');
 
@@ -117,8 +118,8 @@ async function uploadAttachment(src: AttachmentSource): Promise<string> {
     await direct(bytes, options?.contentType) ?? buildUploadedAttachmentRef(await uploadBuffer(bytes, options), originalName));
   const fileRef = async (file: string, options: Parameters<typeof uploadLocalFile>[1]) => {
     try {
-      return await retain(file,
-        await direct(file, options?.contentType) ?? buildUploadedAttachmentRef(await uploadLocalFile(file, options), originalName));
+      return await readWithSourceFileAccessRecovery(file, async () => retain(file,
+        await direct(file, options?.contentType) ?? buildUploadedAttachmentRef(await uploadLocalFile(file, options), originalName)));
     } catch (error) {
       if (isSourceFileAccessError(error, file)) {
         // Do not send Node's private source path across IPC or persist it in chat history.

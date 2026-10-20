@@ -1,4 +1,9 @@
 {
+  "attachmentAccessConfirmation": {
+    "title": "Confirm Attachment Access",
+    "message": "Cindy cannot read this attachment. Select the original file to continue sending this message. Cancelling keeps your draft.",
+    "button": "Use Original File"
+  },
   "mailReader": {
     "markReadFailed": "Could not sync read status. Check mailbox authorization and reopen this email.",
     "title": "Mail",

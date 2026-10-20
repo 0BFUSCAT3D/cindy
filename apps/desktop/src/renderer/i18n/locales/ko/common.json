@@ -1,4 +1,9 @@
 {
+  "attachmentAccessConfirmation": {
+    "title": "첨부 파일 접근 확인",
+    "message": "Cindy가 이 첨부 파일을 읽을 수 없습니다. 원본 파일을 선택하면 이 메시지 전송을 계속합니다. 취소하면 초안이 유지됩니다.",
+    "button": "원본 파일 사용"
+  },
   "mailReader": {
     "markReadFailed": "읽음 상태를 동기화하지 못했습니다. 메일함 인증을 확인하고 다시 여세요.",
     "title": "메일",
