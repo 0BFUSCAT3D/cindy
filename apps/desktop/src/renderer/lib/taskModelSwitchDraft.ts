@@ -24,13 +24,17 @@ export function resolveTaskModelSwitchDraftWrite(input: {
   modelOnly: boolean;
   sourceUnknown: boolean;
   taskProviderId: string | null;
+  /** 写回草稿用的来源：只换模型时是已确认的任务来源，否则是这次显式选的来源。 */
+  draftProviderId: string | null;
 } {
   const sameEngine = input.agentKind === input.currentAgentKind;
-  const taskProviderId = input.activeProviderId ?? input.memoryProviderId ?? null;
+  // 记忆 / 生效来源优先于持久化的显式来源：Auto 被服务端搬走后，后者可能已过期。
+  const taskProviderId = input.memoryProviderId ?? input.activeProviderId ?? null;
   const taskSourceId = input.effectiveSourceId ?? input.initialProviderId ?? null;
   const sourceUnknown =
     input.requestedMarkModelChoice && sameEngine && !taskSourceId && !input.activeProviderId;
   const markModelChoice = input.requestedMarkModelChoice && !sourceUnknown;
   const modelOnly = markModelChoice && sameEngine && !!taskSourceId && taskProviderId === taskSourceId;
-  return { markModelChoice, modelOnly, sourceUnknown, taskProviderId };
+  const draftProviderId = modelOnly ? taskProviderId : (input.activeProviderId ?? null);
+  return { markModelChoice, modelOnly, sourceUnknown, taskProviderId, draftProviderId };
 }

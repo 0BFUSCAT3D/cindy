@@ -24,6 +24,18 @@ describe('resolveTaskModelSwitchDraftWrite', () => {
     ).toMatchObject({ modelOnly: true, markModelChoice: true, sourceUnknown: false, taskProviderId: 'xd' });
   });
 
+  it('持久化的显式来源已因 Auto 搬迁过期时，用生效来源识别并写回它', () => {
+    expect(
+      resolveTaskModelSwitchDraftWrite({
+        ...base,
+        activeProviderId: 'org-pool',
+        initialProviderId: 'org-pool',
+        memoryProviderId: 'xd',
+        effectiveSourceId: 'xd',
+      }),
+    ).toMatchObject({ modelOnly: true, taskProviderId: 'xd', draftProviderId: 'xd' });
+  });
+
   it('这次选了别的来源 = 显式换来源，不是只换模型', () => {
     expect(
       resolveTaskModelSwitchDraftWrite({
@@ -32,7 +44,7 @@ describe('resolveTaskModelSwitchDraftWrite', () => {
         memoryProviderId: 'anthropic',
         effectiveSourceId: 'xd',
       }),
-    ).toMatchObject({ modelOnly: false, markModelChoice: true });
+    ).toMatchObject({ modelOnly: false, markModelChoice: true, draftProviderId: 'anthropic' });
   });
 
   it('跨引擎不算只换模型', () => {

@@ -6445,7 +6445,7 @@ export function ChatInput({
       }
       const remoteDeviceId =
         opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId;
-      const { markModelChoice, modelOnly, sourceUnknown, taskProviderId } =
+      const { markModelChoice, modelOnly, sourceUnknown, taskProviderId, draftProviderId } =
         resolveTaskModelSwitchDraftWrite({
           requestedMarkModelChoice: opts.markModelChoice === true,
           agentKind,
@@ -6464,7 +6464,7 @@ export function ChatInput({
             vendor,
             {
               model: modelId,
-              providerId: activeProviderId ?? null,
+              providerId: draftProviderId,
               ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
             },
             taskProviderId,
@@ -6508,7 +6508,7 @@ export function ChatInput({
         .invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref', [
           {
             agent: agentKind,
-            providerId: activeProviderId ?? '',
+            providerId: draftProviderId ?? '',
             modelId,
             active: true,
             markModelChoice,
