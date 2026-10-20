@@ -345,6 +345,7 @@ import { useSshCodexProviders } from '@/hooks/useSshCodexProviders';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { chatEligibleSourcesForModel, effectiveSourceIdForModel } from '@cindy/model-providers';
 import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
+import { resolveTaskModelSwitchDraftWrite } from '@/lib/taskModelSwitchDraft';
 import { isModelEnabled } from '@/state/modelVisibilityPrefs';
 import {
   deriveModelsFromProviders,
@@ -6444,25 +6445,16 @@ export function ChatInput({
       }
       const remoteDeviceId =
         opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId;
-      // 同引擎且写回的来源就是任务换模前的来源 = 只换了模型，来源是沿用任务的而非这次选的。
-      // 各条换模链路(普通换模 / 意图期改选 / 同引擎重选转来源链路)都在这里统一识别。
-      const taskProviderId = activeProviderId ?? memoryProviderId ?? null;
-      // 任务当前模型被停用时 effectiveSourceId 会是 null(旧模型不再满足新路由准入)，任务自己
-      // 记着的显式来源仍然有效，用它识别同来源换模。
-      const taskSourceId = effectiveSourceId ?? initialProviderId ?? null;
-      // 任务来源确认不了(跟随默认路由且模型 / 来源被停用)，这次写回又没带显式来源：无法确认新建默认
-      // 是否在同一来源，保守地不打显式选择标记(沿用 markModelChoice=false 的只同步路径)。
-      const sourceUnknownModelSwitch =
-        opts.markModelChoice === true &&
-        agentKind === currentModelAgentKind &&
-        !taskSourceId &&
-        !activeProviderId;
-      const markModelChoice = opts.markModelChoice === true && !sourceUnknownModelSwitch;
-      const modelOnly =
-        markModelChoice &&
-        agentKind === currentModelAgentKind &&
-        !!taskSourceId &&
-        taskProviderId === taskSourceId;
+      const { markModelChoice, modelOnly, sourceUnknown, taskProviderId } =
+        resolveTaskModelSwitchDraftWrite({
+          requestedMarkModelChoice: opts.markModelChoice === true,
+          agentKind,
+          currentAgentKind: currentModelAgentKind,
+          activeProviderId,
+          memoryProviderId,
+          effectiveSourceId,
+          initialProviderId,
+        });
       if (!remoteDeviceId) {
         const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
         if (modelOnly) {
@@ -6511,7 +6503,7 @@ export function ChatInput({
       }
       // 任务来源确认不了：被控端无从判断新建默认是否在同一来源，且迁移前的旧草稿没有选择标记可保护，
       // 这次活动写穿整个不下发。
-      if (sourceUnknownModelSwitch) return;
+      if (sourceUnknown) return;
       window.electronAPI.deviceLink
         .invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref', [
           {
