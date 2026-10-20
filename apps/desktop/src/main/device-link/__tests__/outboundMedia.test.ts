@@ -101,10 +101,10 @@ describe('rewriteOutboundMedia — channel gating', () => {
     });
   });
 
-  it('does not try OSS after the peer source file is denied', async () => {
+  it.each(['open', 'fstat', 'read'])('does not try OSS after the peer source %s is denied', async syscall => {
     const file = '/private/source.xlsx';
     const direct = vi.fn().mockRejectedValue(Object.assign(new Error('access denied'), {
-      code: 'EPERM', syscall: 'open', path: file,
+      code: 'EPERM', syscall, path: file,
     }));
     await expect(withPeerAttachmentUpload(direct, () => rewriteOutboundMedia('maker:send', ['session', {
       type: 'user', content: [{ type: 'file', path: file }],
@@ -116,6 +116,8 @@ describe('rewriteOutboundMedia — channel gating', () => {
     for (const details of [
       { code: 'EACCES', syscall: 'connect' },
       { code: 'EPERM', syscall: 'open', path: '/other/cache' },
+      { code: 'EACCES', syscall: 'fstat' },
+      { code: 'EPERM', syscall: 'read' },
       {},
     ]) {
       const error = Object.assign(new Error('upload failed'), details);

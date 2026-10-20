@@ -626,8 +626,10 @@ warn/warning 状态检查项、等待或处理中的检查项和 warning issue
 
 ## 桌面出站附件的本机读取拒绝（#6530）
 
-控制端上传附件时，仅将源路径一致的文件系统 `open/stat/read` 的 `EPERM/EACCES`
-标记为 `DEVICE_LINK_MEDIA_ACCESS_DENIED`。源文件拒绝不触发直连冷却、连接关闭或 OSS
+控制端上传附件时，仅将源路径一致的文件系统 `open/stat/fstat/read` 的 `EPERM/EACCES`
+标记为 `DEVICE_LINK_MEDIA_ACCESS_DENIED`。已知由该源文件打开的句柄，其 `stat/read` 操作
+产生的无路径 `fstat/read` 拒绝在操作边界补齐来源；不覆盖已有路径，不对网络或写入操作补齐。
+源文件拒绝不触发直连冷却、连接关闭或 OSS
 回退；消息仍整条不派发。网络、远端和其他路径的错误保留原有传输失败语义。
 该错误经现有 IPC 错误封装返回，不携带原始私人路径；Desktop 与 Mobile 的错误展示
 提供五语“另存到可访问文件夹、移除旧附件、用附件按钮重选”指引。
