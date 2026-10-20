@@ -655,6 +655,55 @@ describe('automatic voice exit', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  // #5718 review: ordinary reply waiting is covered, but accepted input with
+  // no reply after a terminal failure was stuck forever. Unit/fake time:
+  // correlated terminal input resumes listening without resending or ending work.
+  // Standalone file validation including both review fixes: 2.72s wall time.
+  it.each(['error', 'cancelled'] as const)('releases reply ownership on task %s and restores idle exit', async (reason) => {
+    const f = fixture();
+    await f.controller.start(selection);
+    f.utterance();
+    await vi.advanceTimersByTimeAsync(0);
+    f.taskBusy.mockReturnValue(true); // Independent background work stays busy.
+    f.controller.updateMessages([user()], { clientId: 'user-1', reason });
+    expect(f.controller.getSnapshot().phase).toBe('listening');
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
+    f.taskBusy.mockReturnValue(false);
+    f.controller.refreshActivity();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.controller.getSnapshot().exitCountdown?.reason).toBe('idle');
+    f.controller.end();
+  });
+
+  it('ignores another input failure and handles a matching failure received before send acknowledgement', async () => {
+    const f = fixture();
+    let accept!: () => void;
+    f.send.mockImplementationOnce(async (_text, created) => {
+      created('user-1');
+      await new Promise<void>((resolve) => { accept = resolve; });
+      return true;
+    });
+    await f.controller.start(selection);
+    f.utterance();
+    f.controller.updateMessages([user()], { clientId: 'older', reason: 'error' });
+    expect(f.controller.getSnapshot().phase).toBe('thinking');
+    f.controller.updateMessages([user()], { clientId: 'user-1', reason: 'error' });
+    f.emit({ type: 'speech-started' });
+    f.emit({ type: 'draft', text: 'still speaking' });
+    accept();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'listening', transcript: 'still speaking' });
+    f.emit({ type: 'draft', text: '' });
+    f.emit({ type: 'speech-idle' });
+    expect(f.controller.getSnapshot().phase).toBe('listening');
+    f.controller.updateMessages([user(), reply()]);
+    expect(f.api.speak).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
   it('waits through send preflight, reply generation, synthesis, playback and gaps between sentences', async () => {
     const f = fixture();
     let accept!: () => void;
@@ -1206,6 +1255,45 @@ describe('companion voice loop', () => {
     await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe('error'));
     expect(f.controller.getSnapshot().unsent).toBe('first second');
     expect(f.send).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
+  // #5718 review: queued finals were covered, but a newer partial was lost on
+  // send rejection. Unit: real controller, deferred send + ASR events; preserve
+  // chronological input once, including deliberate repetition, through retry.
+  it.each(['second draft', 'first'])('retains a newer partial after send failure (%s)', async (draft) => {
+    const f = fixture();
+    let reject!: (value: boolean) => void;
+    f.send.mockImplementationOnce(() => new Promise((resolve) => { reject = resolve; }));
+    await f.controller.start(selection);
+    f.utterance('first');
+    f.emit({ type: 'draft', text: 'queued' });
+    f.utterance('queued');
+    f.emit({ type: 'draft', text: '' });
+    f.emit({ type: 'speech-started' });
+    f.emit({ type: 'draft', text: draft });
+    reject(false);
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe('error'));
+    expect(f.controller.getSnapshot()).toMatchObject({
+      unsent: `first queued ${draft}`,
+      transcript: '',
+    });
+    await f.controller.start(selection);
+    f.controller.retryUnsent();
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2));
+    expect(f.send.mock.calls[1][0]).toBe(`first queued ${draft}`);
+    f.controller.end();
+  });
+
+  it('retains a finalized draft only once when it exceeds the send queue limit', async () => {
+    const f = fixture();
+    await f.controller.start(selection);
+    const text = 'a'.repeat(16_001);
+    f.emit({ type: 'draft', text });
+    // Queue rejection runs synchronously, before the ASR's next empty draft.
+    f.utterance(text);
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'error', unsent: text, transcript: '' });
+    expect(f.send).not.toHaveBeenCalled();
     f.controller.end();
   });
 

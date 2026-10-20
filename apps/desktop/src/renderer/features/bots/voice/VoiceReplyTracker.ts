@@ -1,7 +1,26 @@
-import type { ChatMessage } from '@/lib/makerChatStore';
+import type { ChatMessage, SessionChatState } from '@/lib/makerChatStore';
 import { completeSpeechPrefix, streamingSpeechText } from './SpeechTextBuffer';
 
 export type VoiceReply = { id: string; text: string; complete: boolean; invalidated?: true };
+export type VoiceTaskFailure = { clientId: string; reason: 'error' | 'cancelled' };
+
+/** Use the host's terminal state; idle alone can mean queued or retrying. */
+export function voiceTaskFailure(state: Pick<SessionChatState,
+  'messages' | 'agentStatus' | 'isStreaming' | 'error' | 'inputRecovery'
+  | 'usageLimitWait' | 'turnStoppedByUser' | 'lastStopWasSideTask'
+>): VoiceTaskFailure | null {
+  if (state.agentStatus.isRunning || state.isStreaming || state.usageLimitWait
+    || state.lastStopWasSideTask) return null;
+  // Failed input ownership comes from the canonical recovery projection, not
+  // the latest bubble (which may belong to a different queued input).
+  if (state.error && state.inputRecovery?.kind === 'active-turn')
+    return { clientId: state.inputRecovery.item.clientId, reason: 'error' };
+  if (state.turnStoppedByUser) {
+    const input = state.messages.findLast((message) => message.role === 'user');
+    if (input) return { clientId: input.clientId, reason: 'cancelled' };
+  }
+  return null;
+}
 
 /** Correlate one voice input with its final answer, emitting each stable prefix once. */
 export class VoiceReplyTracker {

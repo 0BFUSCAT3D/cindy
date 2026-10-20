@@ -1,4 +1,5 @@
 import { CompanionVoicePanel } from '../bots/voice/CompanionVoicePanel';
+import { voiceTaskFailure } from '../bots/voice/VoiceReplyTracker';
 import { useMessageReadAloud } from '../bots/voice/useMessageReadAloud';
 import { MessageReadAloudContext } from '@/components/chat/MessageReadAloudContext';
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
@@ -4187,6 +4188,7 @@ function CCAgentSessionContent({
   const voiceTaskBusy = !historyLoaded || isAgentBusy || agentStatus.isRunning || isStreaming
     || pendingQueue.length > 0 || continuationInFlightClientId !== null
     || backgroundModelActive || backgroundBashTasks.length > 0 || runningWorkflow !== null;
+  const voiceFailure = sessionId ? voiceTaskFailure(makerChatStore.getSnapshot(sessionId)) : null;
   const messageReadAloud = useMessageReadAloud({
     botId: botChatIdentity?.id,
     sessionId: sessionId ?? '',
@@ -5744,7 +5746,7 @@ function CCAgentSessionContent({
                   permission cards reserve space instead of covering the latest reply. */}
               {voiceModeAvailable && botChatIdentity && sessionId ? (
                 <CompanionVoicePanel key={sessionId} open={voiceModeOpen} bot={botChatIdentity} sessionId={sessionId} messages={messages}
-                  blocked={voiceModeBlocked} taskBusy={voiceTaskBusy} onSend={sendVoiceMessage} onClose={closeVoiceMode} onConfigure={openVoiceSettings} />
+                  blocked={voiceModeBlocked} taskBusy={voiceTaskBusy} taskFailure={voiceFailure} onSend={sendVoiceMessage} onClose={closeVoiceMode} onConfigure={openVoiceSettings} />
               ) : null}
               {/* 互斥:控制端能终结的 pending interaction 会接管 composer；
                  Desktop-only 只读确认只能提示等待，必须保留 ChatInput，避免控制端

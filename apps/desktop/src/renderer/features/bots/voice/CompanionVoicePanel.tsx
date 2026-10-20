@@ -10,6 +10,7 @@ import { VoiceConversationController } from './VoiceConversationController';
 import { PcmSpeechPlayer } from './PcmSpeechPlayer';
 import { resolveVoiceConfiguration } from './voiceConfiguration';
 import { CompanionVoiceToolbar } from './CompanionVoiceToolbar';
+import type { VoiceTaskFailure } from './VoiceReplyTracker';
 
 type Props = {
   open: boolean;
@@ -18,6 +19,7 @@ type Props = {
   messages: readonly ChatMessage[];
   blocked: boolean;
   taskBusy: boolean;
+  taskFailure?: VoiceTaskFailure | null;
   onClose(): void;
   onConfigure(): void;
   onSend(text: string, onCreated: (id: string) => void, isCurrent: () => boolean): Promise<boolean>;
@@ -122,8 +124,8 @@ function CompanionVoiceCall(props: Props) {
     }
   }, [controller, props.blocked, props.open]);
   useEffect(() => {
-    if (props.open) controller.updateMessages(props.messages);
-  }, [controller, props.messages, props.open]);
+    if (props.open) controller.updateMessages(props.messages, props.taskFailure ?? null);
+  }, [controller, props.messages, props.taskFailure, props.open]);
   useEffect(() => {
     if (props.open) controller.refreshActivity();
   }, [controller, props.taskBusy, props.open]);

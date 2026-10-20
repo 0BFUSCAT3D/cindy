@@ -44,6 +44,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
 }));
 
 import { CompanionVoicePanel } from '../CompanionVoicePanel';
+import type { VoiceTaskFailure } from '../VoiceReplyTracker';
 let models: VoiceConversationModel[];
 let inputEvent: (event: VoiceConversationEvent) => void;
 const start = vi.fn(async () => ({ callId: 'call' }));
@@ -85,7 +86,7 @@ afterEach(cleanup);
 afterEach(() => vi.useRealTimers());
 const configure = vi.fn();
 const close = vi.fn();
-const panel = (blocked = false, taskBusy = false, open = true) => (
+const panel = (blocked = false, taskBusy = false, open = true, taskFailure?: VoiceTaskFailure) => (
   <CompanionVoicePanel
     open={open}
     bot={{ id: 'bot', name: 'Partner' }}
@@ -93,6 +94,7 @@ const panel = (blocked = false, taskBusy = false, open = true) => (
     messages={[]}
     blocked={blocked}
     taskBusy={taskBusy}
+    taskFailure={taskFailure}
     onSend={vi.fn(async (_text, created) => {
       created('input');
       return true;
@@ -101,6 +103,27 @@ const panel = (blocked = false, taskBusy = false, open = true) => (
     onConfigure={configure}
   />
 );
+
+// #5718 review: real panel/controller wiring must observe a terminal failure
+// even without a final assistant message. Earlier cases only used busy/idle.
+// Unit/jsdom, fake audio/IPC: accepted input -> matching error -> listening.
+// Standalone file validation: 1.39s wall time.
+it('passes terminal input failure to the live call without stopping capture', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const view = render(panel());
+  await act(async () => {});
+  await act(async () => {
+    inputEvent({ callId: 'call', event: { type: 'utterance', id: 'utterance', text: 'Hello' } });
+  });
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.thinking');
+  view.rerender(panel(false, false, true, { clientId: 'input', reason: 'error' }));
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.listening');
+  expect(audio.stop).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(screen.getByRole('timer')).toBeTruthy();
+});
 
 // Exit animation retains the real panel briefly. The old unmount-only cleanup
 // would keep recording/playing until that animation ended. Existing cases only

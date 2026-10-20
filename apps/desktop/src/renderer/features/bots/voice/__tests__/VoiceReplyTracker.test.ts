@@ -1,10 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/lib/makerChatStore';
-import { speechChunks, speechText, VoiceReplyTracker } from '../VoiceReplyTracker';
+import { speechChunks, speechText, voiceTaskFailure, VoiceReplyTracker } from '../VoiceReplyTracker';
 import { Pcm16Decoder } from '../PcmSpeechPlayer';
 
 const message = (clientId: string, role: ChatMessage['role'], extra: Partial<ChatMessage> = {}) =>
   ({ clientId, role, content: 'Hello', ...extra }) as ChatMessage;
+
+// #5718 review: the host projection must distinguish a failed input from idle,
+// queue errors and automatic recovery. Earlier reply tests only inspected
+// messages. Unit: canonical active-turn failure with a different latest bubble.
+// Standalone file validation: 0.26s wall time.
+it('projects only terminal foreground failures with their input owner', () => {
+  type State = Parameters<typeof voiceTaskFailure>[0];
+  const state: State = {
+    messages: [message('mine', 'user'), message('other', 'user')],
+    agentStatus: { isRunning: false } as State['agentStatus'],
+    isStreaming: false,
+    error: 'failed',
+    inputRecovery: {
+      kind: 'active-turn',
+      item: { clientId: 'mine' } as Extract<NonNullable<State['inputRecovery']>, { kind: 'active-turn' }>['item'],
+    },
+    usageLimitWait: null,
+    turnStoppedByUser: false,
+    lastStopWasSideTask: false,
+  };
+  expect(voiceTaskFailure(state)).toEqual({ clientId: 'mine', reason: 'error' });
+  expect(voiceTaskFailure({ ...state, error: null })).toBeNull();
+  expect(voiceTaskFailure({ ...state, inputRecovery: { kind: 'queue-head', clientId: 'queued' } })).toBeNull();
+  expect(voiceTaskFailure({ ...state, agentStatus: { ...state.agentStatus, isRunning: true } })).toBeNull();
+  expect(voiceTaskFailure({ ...state, isStreaming: true })).toBeNull();
+  expect(voiceTaskFailure({ ...state, usageLimitWait: { resumeAt: 123 } })).toBeNull();
+  expect(voiceTaskFailure({ ...state, lastStopWasSideTask: true })).toBeNull();
+  expect(voiceTaskFailure({ ...state, error: null, inputRecovery: null, turnStoppedByUser: true }))
+    .toEqual({ clientId: 'other', reason: 'cancelled' });
+});
+
 describe('voice reply correlation', () => {
   it('excludes history, commentary, tool/subagent/group replies and failed turns', () => {
     const tracker = new VoiceReplyTracker();

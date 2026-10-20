@@ -7,7 +7,7 @@ import type { ChatMessage } from '@/lib/makerChatStore';
 import { createLogger } from '@/lib/logger';
 import type { PcmChunk } from '@/voice-input/WebMicAudioEngine';
 import type { SpeechPlayer } from './PcmSpeechPlayer';
-import { speechChunks, VoiceReplyTracker } from './VoiceReplyTracker';
+import { speechChunks, VoiceReplyTracker, type VoiceTaskFailure } from './VoiceReplyTracker';
 import { SpeechPlaybackQueue } from './SpeechPlaybackQueue';
 import { microphoneDiagnostic } from './microphoneDiagnostics';
 import { voiceExitIntent } from './voiceExitIntent';
@@ -89,6 +89,7 @@ export class VoiceConversationController {
   private tracker = new VoiceReplyTracker();
   private pendingInput: string | null = null;
   private latestMessages: readonly ChatMessage[] = [];
+  private latestTaskFailure: VoiceTaskFailure | null = null;
   private sending = false;
   private inFlight: Promise<void> = Promise.resolve();
   private queued: QueuedUtterance[] = [];
@@ -419,6 +420,9 @@ export class VoiceConversationController {
           const utterance = { text: event.text, id: event.id };
           this.queued.push(utterance);
           this.latestUtterance = utterance;
+          // The finalized draft now belongs to the queue. Do not retain it
+          // again if a send/queue-limit failure runs before ASR's empty draft.
+          this.patch({ transcript: '' });
           if (
             [this.state.unsent, ...this.queued.map((item) => item.text)].join(' ').length > 16_000
           )
@@ -533,7 +537,7 @@ export class VoiceConversationController {
   }
 
   /** Explicit stop or a committed new utterance permanently relinquishes the old reply. */
-  interrupt(reason: 'user_stop' | 'new_utterance' = 'user_stop'): void {
+  interrupt(reason: 'user_stop' | 'new_utterance' | 'task_error' | 'task_cancelled' = 'user_stop'): void {
     if (reason === 'user_stop') this.cancelCountdown('control');
     log.info('reply interrupted', {
       callId: this.callId,
@@ -698,16 +702,27 @@ export class VoiceConversationController {
     }
   }
 
-  updateMessages(messages: readonly ChatMessage[]): void {
+  updateMessages(
+    messages: readonly ChatMessage[],
+    failure: VoiceTaskFailure | null = this.latestTaskFailure,
+  ): void {
     if (messages !== this.latestMessages && !this.hasIntentCountdown())
       this.cancelCountdown('activity');
     this.latestMessages = messages;
+    // A terminal projection can arrive before send acknowledgement. Keep it
+    // alongside the messages so submit() can reconcile the accepted input.
+    this.latestTaskFailure = failure;
     this.refreshActivity();
+    if (!this.enabled || !this.callId || this.blocked || !this.pendingInput) return;
+    if (failure?.clientId === this.pendingInput && !this.replyComplete) {
+      const speechCandidate = this.speechCandidate;
+      this.interrupt(failure.reason === 'error' ? 'task_error' : 'task_cancelled');
+      // Relinquish only the failed reply, preserving an in-progress new draft.
+      this.speechCandidate = speechCandidate;
+      this.setReplyPhase(null);
+      return;
+    }
     if (
-      !this.enabled ||
-      !this.callId ||
-      this.blocked ||
-      !this.pendingInput ||
       this.speechCandidate ||
       this.hasIntentCountdown() ||
       this.deferringSpeech
@@ -957,8 +972,11 @@ export class VoiceConversationController {
     log.warn('voice mode failed', { callId: this.callId, phase: this.state.phase, reason: error });
     const unsent = [
       this.state.unsent,
-      text || this.state.transcript,
+      // Send failure text owns the in-flight utterance; connection failure
+      // text is the ASR's copy of the current draft, not a second utterance.
+      error === 'send' ? text : '',
       ...this.queued.map((item) => item.text),
+      error === 'send' ? this.state.transcript : text || this.state.transcript,
     ]
       .filter(Boolean)
       .join(' ');

@@ -336,6 +336,53 @@ describe("continuous speech input", () => {
     await input.stop();
   });
 
+  // #5718 review: existing soft-speech cases deliver a final, and timeout
+  // coverage manually finishes input. Unit/fake time through the production
+  // input: a partial without local VAD must time out after quiet, retaining text.
+  // Standalone file validation: 0.40s wall time.
+  it("bounds finalization for ASR-only speech and preserves the partial", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const failureDiagnostic = vi.fn();
+    const input = new VoiceConversationInput({ createProvider: async () => provider, emit, failureDiagnostic });
+    await input.start();
+    input.appendAudio(pcm(80, 200));
+    provider.segment({ id: "soft", text: "keep this", final: false });
+    await vi.advanceTimersByTimeAsync(4_000);
+    provider.segment({ id: "soft", text: "keep this", final: false });
+    await vi.advanceTimersByTimeAsync(5_249);
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "error", text: "keep this" });
+    expect(failureDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "final_timeout", finalWaitMs: 8_000,
+    }));
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    await input.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("extends the soft-speech deadline on new words and cancels it on real speech or a final", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({ createProvider: async () => provider, emit });
+    await input.start();
+    provider.segment({ id: "soft", text: "first", final: false });
+    await vi.advanceTimersByTimeAsync(8_000);
+    provider.segment({ id: "soft", text: "first second", final: false });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    input.appendAudio(pcm(2_000, 200));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    input.appendAudio(pcm(0, 900));
+    provider.segment({ id: "soft", text: "first second third", final: true });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "first second third" });
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await input.stop();
+  });
+
   it("releases a noise-only onset after the quiet window without sending or waiting for an ASR segment", async () => {
     const provider = new Provider();
     const emit = vi.fn();

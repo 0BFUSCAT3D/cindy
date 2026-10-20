@@ -212,8 +212,12 @@ export class VoiceConversationInput {
     // continuous gate: audio awaiting verification must still be judged.
     this.provider?.commitUtterance?.();
     this.scheduleSettlement();
+    this.startFinalWait();
+  }
+
+  private startFinalWait(quietUntil = Date.now()): void {
     this.clearFinalWait();
-    this.finalWaitStartedAt = Date.now();
+    this.finalWaitStartedAt = quietUntil;
     this.finalTimer = setTimeout(() => {
       if (
         this.segments.size &&
@@ -221,7 +225,7 @@ export class VoiceConversationInput {
       )
         this.fail("final_timeout");
       else this.clearFinalWait();
-    }, FINAL_TIMEOUT_MS);
+    }, Math.max(0, quietUntil - Date.now()) + FINAL_TIMEOUT_MS);
   }
 
   private clearFinalWait(): void {
@@ -284,7 +288,8 @@ export class VoiceConversationInput {
         && segment.audioEndMs <= this.providerAudioMs
         ? audioOffsetMs + segment.audioEndMs
         : undefined;
-      const textQuietAfter = (text && text !== prior?.text.trim()) || !prior
+      const textChanged = (text && text !== prior?.text.trim()) || !prior;
+      const textQuietAfter = textChanged
         ? Date.now() + AUTO_SEND_QUIET_MS
         : prior.textQuietAfter;
       this.stableAfter = Date.now() + FINAL_STABLE_MS;
@@ -293,6 +298,13 @@ export class VoiceConversationInput {
       this.segments.set(key, {
         ...segment, generation, audioEndPositionMs, textQuietAfter,
       });
+      // ASR can hear soft speech below local VAD's threshold. Such a partial
+      // has no activity.ended to arm finalization: use its quiet boundary.
+      // New words extend that boundary; repeated partials do not. Real acoustic
+      // speech clears this timer above, and a final still follows normal settling.
+      if (!segment.final && !this.speaking && !this.manual
+        && (textChanged || this.finalWaitStartedAt === null))
+        this.startFinalWait(Math.max(textQuietAfter, this.acousticQuietAfter, Date.now()));
       this.options.emit({ type: "draft", text: this.draft() });
       if (this.draft().length > 16_000) {
         this.fail("transcript_limit");
@@ -521,7 +533,10 @@ export class VoiceConversationInput {
       pendingFinalSegments: segments.filter((segment) => !segment.final).length,
       characters: this.draft().length,
       pendingMs: this.awaitingSettlement ? now - this.pendingSince : 0,
-      finalWaitMs: this.finalWaitStartedAt === null ? null : now - this.finalWaitStartedAt,
+      // A soft-speech timer includes the quiet window. Until that ends, an
+      // upstream failure is not time spent waiting for finalization.
+      finalWaitMs: this.finalWaitStartedAt === null || now < this.finalWaitStartedAt
+        ? null : now - this.finalWaitStartedAt,
       asrUpdateAgeMs: this.lastAsrUpdateAt === null ? null : now - this.lastAsrUpdateAt,
       bufferedAudioMs: this.pendingBytes / 32,
     });
