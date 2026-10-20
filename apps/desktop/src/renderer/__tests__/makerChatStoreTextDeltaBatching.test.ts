@@ -5605,8 +5605,13 @@ describe('makerChatStore text delta batching', () => {
   });
 
   // #6530: the specific source-access error must release the outbox into editable draft recovery.
-  it.each(['permission denied', '[DEVICE_LINK_MEDIA_ACCESS_DENIED] Cannot read the source attachment.'])(
-    'calls the composer recovery callback after permanent failure: %s', async failure => {
+  it.each([
+    ['permission denied', false],
+    ['[DEVICE_LINK_MEDIA_ACCESS_DENIED] Cannot read the source attachment.', false],
+    // #6530 / r4322420405: the source failure proves no dispatch even if the target goes offline.
+    ['[DEVICE_LINK_MEDIA_ACCESS_DENIED] Cannot read the source attachment.', true],
+  ] as const)(
+    'calls the composer recovery callback after permanent failure: %s (offline=%s)', async (failure, offline) => {
     remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
     const recoveryUrl = 'cindy-media://blobs/recover-me.png';
     let enqueueAttempts = 0;
@@ -5630,7 +5635,10 @@ describe('makerChatStore text delta batching', () => {
         if (enqueueAttempts === 1) throw new Error('[NOT_CONNECTED] target offline');
         throw new Error(failure);
       }
-      if (channel === 'maker:input:get-projection') return projection(SESSION_ID);
+      if (channel === 'maker:input:get-projection') {
+        if (offline && enqueueAttempts >= 2) throw new Error('[NOT_CONNECTED] target offline');
+        return projection(SESSION_ID);
+      }
       throw new Error(`unexpected remote channel: ${channel}`);
     });
 

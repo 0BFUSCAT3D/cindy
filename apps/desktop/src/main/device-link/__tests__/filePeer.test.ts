@@ -93,12 +93,17 @@ describe('peer attachment upload preflight', () => {
   // #6530: an unreadable local file must not cool down a healthy peer or trigger OSS fallback.
   it.each(['EPERM', 'EACCES'])('keeps the peer usable after source open fails with %s', async code => {
     const source = path.resolve('unreadable-inventory.xlsx');
-    const error = Object.assign(new Error('source access denied'), { code, syscall: 'open', path: source });
+    const error = Object.assign(new Error(`${code}: open '${source}'`), { code, syscall: 'open', path: source });
     const open = vi.spyOn(fsPromises, 'open').mockRejectedValueOnce(error);
     const invoke = vi.fn(async () => ({ ok: true, result: { version: 1 } }));
     const peer = `source-access-${code}`;
     try {
-      await expect(tryUploadPeerAttachment(peer, source, undefined, invoke)).rejects.toBe(error);
+      // The generic helper also serves plugin picking and directory export, outside outboundMedia.
+      const failure = await tryUploadPeerAttachment(peer, source, undefined, invoke).catch(error => error);
+      expect(failure).toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+      expect(String(failure)).not.toContain(source);
+      expect(failure).not.toHaveProperty('path');
+      expect(failure).not.toHaveProperty('cause');
       expect(invoke).not.toHaveBeenCalled();
       // A subsequent readable attachment still probes the peer (no permission-error cooldown).
       await tryUploadPeerAttachment(peer, Buffer.from('readable copy'), undefined, invoke);
@@ -740,6 +745,9 @@ describe('authorized file peer source', () => {
         await tryUploadPeerAttachment(peer, file, undefined, invoke);
       } catch (error) { caught = error; }
       expect(isSourceFileAccessError(caught, file)).toBe(true);
+      expect(caught).toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+      expect(caught).not.toHaveProperty('path');
+      expect(caught).not.toHaveProperty('cause');
       expect(close).toHaveBeenCalledOnce();
       if (phase === 'transfer') expect(ops()).toEqual(['begin', 'cancel']);
       else expect(ops()).toEqual([]);

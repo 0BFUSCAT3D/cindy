@@ -1917,6 +1917,9 @@ function isRemoteAroundClientIdMiss(error: unknown): boolean {
  * settling outbox record.
  */
 function isTerminalRemoteInputError(error: unknown): boolean {
+  // Local attachment preparation failed before dispatch. A disconnected target cannot
+  // make that delivery ambiguous; restore the draft without a remote reconciliation probe.
+  if (extractIpcError(error)?.code === 'DEVICE_LINK_MEDIA_ACCESS_DENIED') return true;
   const formatted = formatRemoteError(error);
   return formatted.includes('NOT_FOUND') || formatted.includes('REMOTE_OPTIMISTIC_SESSION_PURGED');
 }

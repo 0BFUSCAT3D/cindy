@@ -41,7 +41,7 @@ import { createLogger } from '../logger.js';
 import { handlePeerAttachment } from './peerAttachmentStore';
 import { fileVersion } from './fileVersion';
 import { remoteFileVersionCache, type FileVersionMetadata } from './remoteFileVersionCache';
-import { isSourceFileAccessError, withSourceFileHandleContext } from './sourceFileError';
+import { createSourceFileAccessError, isSourceFileAccessError, withSourceFileHandleContext } from './sourceFileError';
 
 // Local-only diagnostics (scope is not upload-allowlisted): stages, sizes and timings, never paths.
 const log = createLogger('device-link:filePeer');
@@ -1106,7 +1106,7 @@ export async function tryUploadPeerAttachment(
       if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
       // The source is unreadable on this computer; another transport cannot fix it.
       // Leave the healthy peer connection and its cooldown untouched.
-      if (isSourceFileAccessError(error, source)) throw error;
+      if (isSourceFileAccessError(error, source)) throw createSourceFileAccessError();
       cooldown.fail(peer);
       const failed = outgoing.get(peer);
       if (failed) stopConnection(failed.id, 'upload-failed');

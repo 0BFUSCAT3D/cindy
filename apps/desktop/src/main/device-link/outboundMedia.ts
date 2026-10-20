@@ -35,8 +35,7 @@ import {
 import { buildLegacyAttachmentOssRef, parseAttachmentOssRef } from '../../shared/attachmentOssRef';
 import { readStartReviewRequest } from '../maker-ipc/reviewStartHandler.js';
 import { withPreparedOutboundReview } from '../maker-ipc/reviewOutboundInput.js';
-import { throwIpcError } from '../utils/ipcValidate';
-import { isSourceFileAccessError } from './sourceFileError';
+import { createSourceFileAccessError, isSourceFileAccessError } from './sourceFileError';
 
 const log = createLogger('device-link:outboundMedia');
 
@@ -123,8 +122,7 @@ async function uploadAttachment(src: AttachmentSource): Promise<string> {
     } catch (error) {
       if (isSourceFileAccessError(error, file)) {
         // Do not send Node's private source path across IPC or persist it in chat history.
-        throwIpcError('DEVICE_LINK_MEDIA_ACCESS_DENIED',
-          'Cannot read the source attachment. Save a copy to an accessible folder, remove the original attachment, and add the copy again.');
+        throw createSourceFileAccessError();
       }
       throw error;
     }

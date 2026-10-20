@@ -38,6 +38,7 @@ import { deviceLinkApiBase } from './index.js';
 import { sharedTaskMediaId } from './sharedTaskMediaContext.js';
 import { describeErrorChain } from '../utils/errorChain.js';
 import { createLogger } from '../logger.js';
+import { sourceFileReadError, withSourceFileHandleContext } from './sourceFileError';
 
 const log = createLogger('device-link:mediaTransfer');
 
@@ -419,7 +420,7 @@ export async function uploadLocalFile(
     signal?: AbortSignal;
   } = {},
 ): Promise<UploadResult> {
-  const st = await stat(localPath);
+  const st = await withSourceFileHandleContext(localPath, () => stat(localPath));
   if (!st.isFile()) throw new Error(`不是文件: ${localPath}`);
   const size = st.size;
   if (opts.maxBytes !== undefined) {
@@ -456,14 +457,17 @@ export async function uploadLocalFile(
           ...(opts.signal ? { signal: opts.signal } : {}),
         });
         sourcesClosed.push(new Promise((resolve) => source.once('close', () => resolve())));
-        for await (const chunk of source) {
-          received += chunk.length;
-          if (received > size) throw new Error('REMOTE_FILE_TOO_LARGE');
-          chunks.push(chunk);
-        }
+        await withSourceFileHandleContext(localPath, async () => {
+          for await (const chunk of source) {
+            received += chunk.length;
+            if (received > size) throw new Error('REMOTE_FILE_TOO_LARGE');
+            chunks.push(chunk);
+          }
+        });
         buf = Buffer.concat(chunks);
       } else {
-        buf = await readFile(localPath, opts.signal ? { signal: opts.signal } : undefined);
+        buf = await withSourceFileHandleContext(localPath, () =>
+          readFile(localPath, opts.signal ? { signal: opts.signal } : undefined));
       }
       if (buf.byteLength !== size) {
         throw new Error(`文件在上传前发生变化:预期 ${size} 字节,实际 ${buf.byteLength} 字节`);
@@ -531,8 +535,9 @@ export async function uploadLocalFile(
           // 必须同时把错误推给下游:`pipe` 不转发 error,只记不推的话 counter
           // 既不 end 也不 error,web body 就此挂住,PUT 会一直干等到超时。
           source.on('error', (err) => {
-            current.sourceError = err;
-            counter.destroy(err);
+            const failure = sourceFileReadError(err, localPath);
+            current.sourceError = failure;
+            counter.destroy(failure);
           });
           attempts.push(current);
           return Readable.toWeb(source.pipe(counter)) as unknown as ReadableStream;
