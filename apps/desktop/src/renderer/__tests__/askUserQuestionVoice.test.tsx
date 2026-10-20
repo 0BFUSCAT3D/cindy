@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createElement, useState } from 'react';
-import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
@@ -42,6 +42,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 function renderAsk(questions: PendingAskUser['questions']) {
@@ -123,7 +124,7 @@ describe('AskUserQuestion voice entry', () => {
       renderAsk([
         { question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] },
       ]);
-      trigger?.({ id: 'shortcut-1', phase: 'start' });
+      await act(async () => { trigger?.({ id: 'shortcut-1', phase: 'start' }); });
       await waitFor(() => expect(start).toHaveBeenCalledOnce());
     } finally {
       window.electronAPI = previous;
@@ -131,6 +132,7 @@ describe('AskUserQuestion voice entry', () => {
   });
 
   it('does not stop the recording on the tap that ends the press which started it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const previous = window.electronAPI;
     let trigger: ((payload?: { id?: string; phase?: 'start' | 'tap' | 'end' }) => void) | undefined;
     window.electronAPI = {
@@ -145,20 +147,21 @@ describe('AskUserQuestion voice entry', () => {
     } as unknown as typeof window.electronAPI;
     try {
       renderAsk([{ question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] }]);
-      trigger?.({ id: 'press-1', phase: 'start' });
-      await waitFor(() => expect(start).toHaveBeenCalledOnce());
+      // Fake performance starts at zero; pass the initial 250ms shortcut guard.
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      await act(async () => { trigger?.({ id: 'press-1', phase: 'start' }); });
+      expect(start).toHaveBeenCalledOnce();
 
       // Short press: held past the 250ms dedupe window, still released quickly.
       // The release must not cancel the recording this same press started.
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      trigger?.({ id: 'press-1', phase: 'tap' });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      await act(async () => { trigger?.({ id: 'press-1', phase: 'tap' }); });
       expect(stop).not.toHaveBeenCalled();
 
       // A new press while listening stops it.
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      trigger?.({ id: 'press-2', phase: 'start' });
-      await waitFor(() => expect(stop).toHaveBeenCalledOnce());
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      await act(async () => { trigger?.({ id: 'press-2', phase: 'start' }); });
+      expect(stop).toHaveBeenCalledOnce();
     } finally {
       window.electronAPI = previous;
     }
@@ -180,7 +183,7 @@ describe('AskUserQuestion voice entry', () => {
     try {
       renderAsk([{ question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] }]);
       // Plain modifier combos arrive without a phase; they must still start.
-      trigger?.({ id: 'combo-1' });
+      await act(async () => { trigger?.({ id: 'combo-1' }); });
       await waitFor(() => expect(start).toHaveBeenCalledOnce());
     } finally {
       window.electronAPI = previous;
@@ -188,6 +191,7 @@ describe('AskUserQuestion voice entry', () => {
   });
 
   it('stops when a held shortcut press is released', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const previous = window.electronAPI;
     let trigger: ((payload?: { id?: string; phase?: 'start' | 'tap' | 'end' }) => void) | undefined;
     window.electronAPI = {
@@ -202,12 +206,14 @@ describe('AskUserQuestion voice entry', () => {
     } as unknown as typeof window.electronAPI;
     try {
       renderAsk([{ question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] }]);
-      trigger?.({ id: 'hold-1', phase: 'start' });
-      await waitFor(() => expect(start).toHaveBeenCalledOnce());
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Fake performance starts at zero; pass the initial 250ms shortcut guard.
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      await act(async () => { trigger?.({ id: 'hold-1', phase: 'start' }); });
+      expect(start).toHaveBeenCalledOnce();
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
       // Held press released: `end` must stop, unlike the `tap` of a quick press.
-      trigger?.({ id: 'hold-1', phase: 'end' });
-      await waitFor(() => expect(stop).toHaveBeenCalledOnce());
+      await act(async () => { trigger?.({ id: 'hold-1', phase: 'end' }); });
+      expect(stop).toHaveBeenCalledOnce();
     } finally {
       window.electronAPI = previous;
     }
