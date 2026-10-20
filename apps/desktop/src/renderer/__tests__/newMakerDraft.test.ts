@@ -899,6 +899,45 @@ describe('newMakerDraft store', () => {
     });
   });
 
+  it('patchVendorPrefsFromTaskModelSwitch:旧来源搬走后即使仍能提供新模型也不复活', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'auto/pool', providerId: 'org-pool' });
+    // Auto 已搬到 xd：存着的 org-pool 实际落点是 xd；org-pool 对普通模型仍然能提供。
+    const resolve = (prefs: { model: string; providerId?: string | null }) =>
+      prefs.model === 'auto/pool' ? 'xd' : (prefs.providerId ?? null);
+
+    expect(
+      m1.patchVendorPrefsFromTaskModelSwitch(
+        'cc',
+        { model: 'plain-model', providerId: null },
+        'xd',
+        resolve,
+      ),
+    ).toBe(true);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'plain-model',
+      providerId: 'xd',
+    });
+  });
+
+  it('patchVendorPrefsFromTaskModelSwitch:草稿本来跟随默认路由时保持跟随', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: null });
+
+    expect(
+      m1.patchVendorPrefsFromTaskModelSwitch(
+        'cc',
+        { model: 'claude-sonnet-5-5', providerId: null },
+        'anthropic',
+        () => 'anthropic',
+      ),
+    ).toBe(true);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'claude-sonnet-5-5',
+      providerId: null,
+    });
+  });
+
   it('patchVendorPrefsFromTaskModelSwitch:任务跟随默认路由时保留草稿显式选过的同一来源', async () => {
     const m1 = await loadModule();
     m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });
