@@ -317,7 +317,7 @@ export function App() {
         const vendor = agentKindToVendor(agent);
         if (active && taskProviderId && markModelChoice !== false) {
           // 控制端在本机任务里只换了模型:按本机自己的新建默认判断是否写回(同本机换模)。
-          const written = patchVendorPrefsFromTaskModelSwitch(
+          patchVendorPrefsFromTaskModelSwitch(
             vendor,
             {
               model: modelId,
@@ -335,8 +335,6 @@ export function App() {
                 isModelEnabled,
               }),
           );
-          // 新建默认没被改写时，同模型 id 共享的档位预设也不能被任务内选择改掉。
-          if (!written) return;
         } else if (active) {
           const patch =
             markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;
