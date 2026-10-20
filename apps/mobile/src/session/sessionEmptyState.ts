@@ -16,9 +16,9 @@ export interface MessageEmptyStateInput {
   showSyncingShell: boolean;
   /** 当前已加载的消息条数。 */
   messageCount: number;
-  /** 本次打开是否已完成过至少一次同步(lastSyncedAt != null)。 */
+  /** 当前任务、设备、连接及本次访问的消息历史是否已成功读取。 */
   hasSyncedThisOpen: boolean;
-  /** 远端不可用(离线/被撤销)——此时保留原阻塞占位,不进抑制分支。 */
+  /** 远端不可用(离线/被撤销)——允许显示历史未缓存说明，不进同步占位分支。 */
   remoteUnavailable: boolean;
 }
 

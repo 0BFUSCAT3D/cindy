@@ -1771,6 +1771,8 @@ function SessionScreenContent() {
     error: string | null;
   } | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  // 空态只认当前任务/设备/连接的历史读取，不等待其它快照，也不沿用上一任务的时间戳。
+  const [messageHistorySyncedKey, setMessageHistorySyncedKey] = useState<string | null>(null);
   // 会话已读回执的同步门槛 key:`${sessionId}:${connectionEpoch}`,由 syncSession 尾部写入。
   // 与 lastSyncedAt 不同,它按 session + 连接代区分——屏实例复用、原地切 session 时
   // lastSyncedAt 不会归零,不能用来判断「当前会话本次连接已同步」。epoch 经 ref 读取,
@@ -1821,6 +1823,7 @@ function SessionScreenContent() {
     setReadAckSyncedKey(null);
     setSessionMetadataSyncedKey(null);
     setContentSyncedKey(null);
+    setMessageHistorySyncedKey(null);
     readAckGateGenRef.current += 1;
   }
   // 远程媒体取件队列:屏实例级缓存 + 同 url 去重 + 并发上限(每次取件都让桌面端
@@ -2539,18 +2542,16 @@ function SessionScreenContent() {
   // 立即渲染真壳(标题乐观显示、消息区骨架、输入框可编辑、发送禁用),而不是阻塞式占位。
   const showSyncingShell = sessionOperationLayout.composerSlot === 'missing-session'
     && !remoteUnavailableReason;
-  // 同步/加载期消息区不显示「暂无消息」(会话其实在加载、不是空),改为渲染「正在同步」
-  // loading 占位(MessageRenderer 的 SyncingMessages);看过的会话
-  // 此时已被本地缓存(②)填充正常渲染,不进 empty 分支。还包含冷开首帧:currentSession 立即
-  // 就有但消息未到、loading 尚未翻 true 的窗口(本次打开未同步过)。只有同步完成过
-  // (lastSyncedAt 有值)且确实 0 条时才显示「暂无消息」;离线/被撤销(remoteUnavailableReason)
-  // 不进此分支,保留原占位。判定见 shouldSuppressEmptyMessageState。
+  // 无内容且读取结果未知时显示同步占位；已知远端不可用时解释历史未缓存。
+  // 只有当前访问的历史成功读取且确实为零条时，才显示「暂无消息」。
+  const hasSyncedMessageHistory = messageHistorySyncedKey === sessionSubscriptionIdentity;
+  const messageHistoryUnavailable = !!remoteUnavailableReason || status !== 'online' || targetAvailableForDispatch === false;
   const syncingWhileEmpty = shouldSuppressEmptyMessageState({
     loading,
     showSyncingShell,
     messageCount: historyView.snapshot.ready ? historyView.snapshot.items.length : messages.length,
-    hasSyncedThisOpen: lastSyncedAt !== null,
-    remoteUnavailable: !!remoteUnavailableReason || status !== 'online' || targetAvailableForDispatch === false,
+    hasSyncedThisOpen: hasSyncedMessageHistory,
+    remoteUnavailable: messageHistoryUnavailable,
   });
   const voiceIsProcessing = voiceState === 'submitting' || voiceState === 'refining';
   const composerSendUnavailableReason = canUseComposer ? null : composerDisabledReason;
@@ -3798,6 +3799,11 @@ function SessionScreenContent() {
       const contentKeyAtStart = ackAtReadStart === null ? null
         : JSON.stringify([deviceId, sessionId, readAckEpochAtStart, ackAtReadStart]);
       const isCurrent = () => !syncRun.isStale() && messageAuthorityCurrent();
+      const markHistorySynced = () => {
+        if (isCurrent() && readAckGateGenRef.current === readAckGateGenAtStart) {
+          setMessageHistorySyncedKey(subscriptionIdentityAtStart);
+        }
+      };
       const pushRefresh = notificationResponse !== null
         && syncedNotificationResponseRef.current !== notificationResponse;
       let usedHistoryView = false;
@@ -3839,7 +3845,11 @@ function SessionScreenContent() {
         },
         isCurrent,
         commitMessages: (history) => {
-          if (usedHistoryView) { messageWindowReconciledRef.current = true; return; }
+          if (usedHistoryView) {
+            messageWindowReconciledRef.current = true;
+            markHistorySynced();
+            return;
+          }
           const historyPage: RemoteMessage[] = Array.isArray(history.messages) ? history.messages : [];
           const moreBeyondWindow = shouldKeepOlderMessagesAffordance(history);
           if (options.replaceMessages) {
@@ -3853,6 +3863,7 @@ function SessionScreenContent() {
           // Even failed metadata must not hide pagination for a successful page.
           messageWindowReconciledRef.current = true;
           setHasOlderMessages(moreBeyondWindow);
+          markHistorySynced();
         },
         commit: (sessionMeta, history) => {
           if (history !== null && !usedHistoryView) {
@@ -3864,6 +3875,7 @@ function SessionScreenContent() {
             setHasOlderMessages(hasOlderMessagesAfterReopen(
               sessionMeta._count?.messages, remoteSessionStore.getMessages(sessionId),
             ));
+            markHistorySynced();
           }
         },
       });
@@ -10096,8 +10108,7 @@ function SessionScreenContent() {
                     busyClientId={messageActionBusy?.clientId ?? null}
                     canLoadEarlier={canLoadEarlierHistory}
                     emptyTestID="session.messageList.empty"
-                    emptyMessage={companionChat && lastSyncedAt === null
-                      && (status !== 'online' || targetAvailableForDispatch === false)
+                    emptyMessage={!hasSyncedMessageHistory && messageHistoryUnavailable
                       ? t('message.renderer.historyNotCached') : undefined}
                     focusedItemKey={focusedMessageItemKey ?? null}
                     focusedRequestKey={focusedMessageRequestKey}
