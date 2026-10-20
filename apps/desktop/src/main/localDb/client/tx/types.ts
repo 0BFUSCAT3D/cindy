@@ -428,6 +428,8 @@ export interface MessageInsertArgs {
   createdAt: number;
   guarded: boolean;
   expectedClearBoundaryMs?: number | null;
+  /** Host-only opening guard, evaluated atomically with the insert. */
+  requireNoUserMessage?: boolean;
   /** Host-only publication; stages belong to a connection-local TEMP table. */
   publication?: 'stage' | 'publish' | 'discard' | 'rollback';
 }
@@ -1250,10 +1252,13 @@ export interface WechatStopAllArgs {
   bindingEpoch: string;
   now: number;
   errorCode: string;
+  /** Permanent companion deletion cancels pre-accepted work instead of replaying it. */
+  cancelPending?: boolean;
 }
 
 export interface WechatStopAllResult {
   requeued: number;
+  cancelled: number;
   interrupted: number;
   expired: number;
   repaired: number;
