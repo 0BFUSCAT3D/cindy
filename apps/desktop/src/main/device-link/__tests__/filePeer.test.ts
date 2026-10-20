@@ -89,6 +89,24 @@ import { DesktopCaptureWindow } from '../../remote-desktop/captureWindow';
 import { createHash } from 'node:crypto';
 
 describe('peer attachment upload preflight', () => {
+  // #6530: an unreadable local file must not cool down a healthy peer or trigger OSS fallback.
+  it.each(['EPERM', 'EACCES'])('keeps the peer usable after source open fails with %s', async code => {
+    const source = path.resolve('unreadable-inventory.xlsx');
+    const error = Object.assign(new Error('source access denied'), { code, syscall: 'open', path: source });
+    const open = vi.spyOn(fsPromises, 'open').mockRejectedValueOnce(error);
+    const invoke = vi.fn(async () => ({ ok: true, result: { version: 1 } }));
+    const peer = `source-access-${code}`;
+    try {
+      await expect(tryUploadPeerAttachment(peer, source, undefined, invoke)).rejects.toBe(error);
+      expect(invoke).not.toHaveBeenCalled();
+      // A subsequent readable attachment still probes the peer (no permission-error cooldown).
+      await tryUploadPeerAttachment(peer, Buffer.from('readable copy'), undefined, invoke);
+      expect(invoke).toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it('checks the peer before reading a large file and never connects to an old peer', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'cindy-peer-upload-'));
     try {

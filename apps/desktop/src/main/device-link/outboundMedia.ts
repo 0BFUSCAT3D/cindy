@@ -4,7 +4,8 @@
  * ---------------------------------------------------------------------------
  * 在 device-link handleInvoke 里、deps.invoke 之前对 maker:send / maker:steer /
  * maker:input:enqueue / maker:input:update-content 调用(这些 channel 才携带用户消息附件)。失败抛错 → handleInvoke
- * 转 throwIpcError(DEVICE_LINK_MEDIA_TRANSFER_FAILED) → 整条消息不发(产品决策)。
+ * 转 DEVICE_LINK_MEDIA_TRANSFER_FAILED；源文件权限拒绝保留 MEDIA_ACCESS_DENIED。
+ * 两者均整条消息不发(产品决策)。
  *
  * 被控端 normalizeUserMessage 识别 OSS 引用串 → presign-get 下载 → 物化喂 agent。
  *
@@ -34,6 +35,8 @@ import {
 import { buildLegacyAttachmentOssRef, parseAttachmentOssRef } from '../../shared/attachmentOssRef';
 import { readStartReviewRequest } from '../maker-ipc/reviewStartHandler.js';
 import { withPreparedOutboundReview } from '../maker-ipc/reviewOutboundInput.js';
+import { throwIpcError } from '../utils/ipcValidate';
+import { isSourceFileAccessError } from './sourceFileError';
 
 const log = createLogger('device-link:outboundMedia');
 
@@ -113,8 +116,19 @@ async function uploadAttachment(src: AttachmentSource): Promise<string> {
   };
   const bufferRef = async (bytes: Buffer, options: Parameters<typeof uploadBuffer>[1]) => retain(bytes,
     await direct(bytes, options?.contentType) ?? buildUploadedAttachmentRef(await uploadBuffer(bytes, options), originalName));
-  const fileRef = async (file: string, options: Parameters<typeof uploadLocalFile>[1]) => retain(file,
-    await direct(file, options?.contentType) ?? buildUploadedAttachmentRef(await uploadLocalFile(file, options), originalName));
+  const fileRef = async (file: string, options: Parameters<typeof uploadLocalFile>[1]) => {
+    try {
+      return await retain(file,
+        await direct(file, options?.contentType) ?? buildUploadedAttachmentRef(await uploadLocalFile(file, options), originalName));
+    } catch (error) {
+      if (isSourceFileAccessError(error, file)) {
+        // Do not send Node's private source path across IPC or persist it in chat history.
+        throwIpcError('DEVICE_LINK_MEDIA_ACCESS_DENIED',
+          'Cannot read the source attachment. Save a copy to an accessible folder, remove the original attachment, and add the copy again.');
+      }
+      throw error;
+    }
+  };
 
   // 1) 内存 base64(剪贴板/截图,视觉上下文语义)→ 压缩 → uploadBuffer(不把字节内联进 relay)
   if (typeof src.base64 === 'string' && src.base64) {

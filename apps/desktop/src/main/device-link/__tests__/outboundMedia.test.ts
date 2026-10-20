@@ -86,6 +86,46 @@ describe('rewriteOutboundMedia — channel gating', () => {
       sourceSessionId: 'source', attachments: [{ name: 'notes.md', path: '/controller/notes.md' }],
     }])).rejects.toThrow('upload failed');
   });
+  // #6530: a source-file permission denial needs recovery guidance, not a network retry.
+  // Existing upload-failure coverage did not distinguish local open/stat from transport errors.
+  it.each(['EPERM', 'EACCES'])('classifies %s on the source file without exposing its path', async code => {
+    const file = '/private/wechat/temp/drag/inventory.xlsx';
+    uploadLocalFile.mockRejectedValue(Object.assign(new Error(`${code}: open '${file}'`), {
+      code, syscall: 'open', path: file,
+    }));
+    await expect(rewriteOutboundMedia('maker:send', ['session', {
+      type: 'user', content: [{ type: 'file', path: file }],
+    }])).rejects.toMatchObject({
+      code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED',
+      message: '[DEVICE_LINK_MEDIA_ACCESS_DENIED] Cannot read the source attachment. Save a copy to an accessible folder, remove the original attachment, and add the copy again.',
+    });
+  });
+
+  it('does not try OSS after the peer source file is denied', async () => {
+    const file = '/private/source.xlsx';
+    const direct = vi.fn().mockRejectedValue(Object.assign(new Error('access denied'), {
+      code: 'EPERM', syscall: 'open', path: file,
+    }));
+    await expect(withPeerAttachmentUpload(direct, () => rewriteOutboundMedia('maker:send', ['session', {
+      type: 'user', content: [{ type: 'file', path: file }],
+    }]))).rejects.toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
+
+  it('does not classify transport or another file permission error as source access denial', async () => {
+    for (const details of [
+      { code: 'EACCES', syscall: 'connect' },
+      { code: 'EPERM', syscall: 'open', path: '/other/cache' },
+      {},
+    ]) {
+      const error = Object.assign(new Error('upload failed'), details);
+      uploadLocalFile.mockRejectedValue(error);
+      await expect(rewriteOutboundMedia('maker:send', ['session', {
+        type: 'user', content: [{ type: 'file', path: '/source.xlsx' }],
+      }])).rejects.toBe(error);
+    }
+  });
+
   it('uses peer staging for exact file bytes, preserves the name and retains OSS fallback', async () => {
     const direct = vi.fn(async () => buildPeerAttachmentRef({ ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', size: 10, sha256: SHA256, mimeType: 'text/plain' }));
     const args = ['session', { type: 'user', content: [{ type: 'file', path: '/controller/a.txt', originalName: 'a.txt' }] }];

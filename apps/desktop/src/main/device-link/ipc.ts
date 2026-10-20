@@ -725,7 +725,8 @@ export async function handleInvoke(
           () => existing ? deps.rewriteOutboundMedia!(channel, callArgs, existing) : deps.rewriteOutboundMedia!(channel, callArgs)),
         createSentImageRetainer(normalizedDeviceId));
      } catch (err) {
-       if (isIpcError(err) && err.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED') {
+       if (isIpcError(err) && (err.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED'
+         || err.code === 'DEVICE_LINK_MEDIA_ACCESS_DENIED')) {
          throw err;
        }
        // Review 走同一条出方向改写管线, 但它的授权/校验拒绝不是媒体传输失败:

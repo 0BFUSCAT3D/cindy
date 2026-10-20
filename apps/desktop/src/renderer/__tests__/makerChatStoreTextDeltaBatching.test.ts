@@ -5604,7 +5604,9 @@ describe('makerChatStore text delta batching', () => {
     ).toBeUndefined();
   });
 
-  it('calls the composer recovery callback when a deferred remote send later fails permanently', async () => {
+  // #6530: the specific source-access error must release the outbox into editable draft recovery.
+  it.each(['permission denied', '[DEVICE_LINK_MEDIA_ACCESS_DENIED] Cannot read the source attachment.'])(
+    'calls the composer recovery callback after permanent failure: %s', async failure => {
     remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
     const recoveryUrl = 'cindy-media://blobs/recover-me.png';
     let enqueueAttempts = 0;
@@ -5626,7 +5628,7 @@ describe('makerChatStore text delta batching', () => {
         enqueueAttempts += 1;
         queued = args[1] as AgentInputQueuedMessage;
         if (enqueueAttempts === 1) throw new Error('[NOT_CONNECTED] target offline');
-        throw new Error('permission denied');
+        throw new Error(failure);
       }
       if (channel === 'maker:input:get-projection') return projection(SESSION_ID);
       throw new Error(`unexpected remote channel: ${channel}`);
