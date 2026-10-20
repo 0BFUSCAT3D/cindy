@@ -11285,6 +11285,8 @@
     "errorBanner": {
       "requestFormatError": "应用发送的请求格式有误，本次回复未能完成。",
       "replyFailed": "回复未完成",
+      "attachmentAccessDeniedTitle": "Cindy 无法读取源附件，消息未发送。",
+      "attachmentAccessDeniedRecovery": "请将文件另存到“下载”或其他可访问的文件夹，移除原附件，再用附件按钮添加副本后发送。",
       "retryTitle": "重新发送最后一条消息",
       "cancelTitle": "关闭错误提示",
       "retry": "重试",

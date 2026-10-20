@@ -5665,6 +5665,10 @@ describe('makerChatStore text delta batching', () => {
     await flushPromises();
 
     expect(enqueueAttempts).toBe(2);
+    // #6530 real-device regression: keep the code until the visible banner localizes it.
+    if (failure.includes('DEVICE_LINK_MEDIA_ACCESS_DENIED')) {
+      expect(makerChatStore.getSnapshot(SESSION_ID).error).toContain('[DEVICE_LINK_MEDIA_ACCESS_DENIED]');
+    }
     expect(onRemoteOptimisticFailure).toHaveBeenCalledWith(queued?.clientId, expect.any(Error));
     expect(onRemoteOptimisticFailure.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(setRemoteOptimisticAttachmentUrls).mock.invocationCallOrder[

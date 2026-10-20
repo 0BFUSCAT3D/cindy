@@ -11327,7 +11327,8 @@ function settleRemoteOptimisticFailure(sessionId: string, clientId: string, erro
     ),
     ...(error !== undefined
       ? {
-          error: decodeRemoteErrorMessage(error instanceof Error ? error.message : String(error)),
+          // Keep the code so the banner can expose recovery guidance in its active locale.
+          error: remoteErrorMessageForBanner(error instanceof Error ? error.message : String(error)),
           usageLimitRecovery: null,
           errorReason: null,
           toolLoop: null,

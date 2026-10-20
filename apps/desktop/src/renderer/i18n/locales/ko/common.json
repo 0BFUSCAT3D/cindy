@@ -11285,6 +11285,8 @@
     "errorBanner": {
       "requestFormatError": "앱이 보낸 요청 형식에 문제가 있어 답변을 완료하지 못했습니다.",
       "replyFailed": "답변을 완료하지 못했습니다",
+      "attachmentAccessDeniedTitle": "Cindy가 원본 첨부 파일을 읽을 수 없어 메시지가 전송되지 않았습니다.",
+      "attachmentAccessDeniedRecovery": "다운로드 등 접근 가능한 폴더에 사본을 저장하고, 원본 첨부 파일을 제거한 뒤 첨부 버튼으로 사본을 추가하여 다시 전송하세요.",
       "retryTitle": "마지막 메시지 다시 보내기",
       "cancelTitle": "오류 알림 닫기",
       "retry": "다시 시도",

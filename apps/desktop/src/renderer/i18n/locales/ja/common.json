@@ -11285,6 +11285,8 @@
     "errorBanner": {
       "requestFormatError": "アプリが送信したリクエストの形式に問題があり、返信を完了できませんでした。",
       "replyFailed": "返信を完了できませんでした",
+      "attachmentAccessDeniedTitle": "Cindy が元の添付ファイルを読み取れないため、メッセージは送信されていません。",
+      "attachmentAccessDeniedRecovery": "「ダウンロード」などアクセス可能なフォルダーにコピーを保存し、元の添付ファイルを削除してから、添付ボタンでコピーを追加し、再送信してください。",
       "retryTitle": "最後のメッセージを再送信",
       "cancelTitle": "エラーを閉じる",
       "retry": "再試行",

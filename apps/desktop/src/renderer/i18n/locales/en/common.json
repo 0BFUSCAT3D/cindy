@@ -11329,6 +11329,8 @@
     "errorBanner": {
       "requestFormatError": "The app sent an invalid request, so this reply could not be completed.",
       "replyFailed": "Could not complete the reply",
+      "attachmentAccessDeniedTitle": "Cindy cannot read the source attachment; the message was not sent.",
+      "attachmentAccessDeniedRecovery": "Save a copy to Downloads or another accessible folder, remove the original attachment, and add the copy using the attachment button before sending again.",
       "retryTitle": "Resend the last message",
       "cancelTitle": "Dismiss error",
       "retry": "Retry",
