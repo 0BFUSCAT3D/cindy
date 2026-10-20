@@ -1696,6 +1696,7 @@ export function createResponsesReasoningContentRecoveryRule(opts: {
 } = {}): RecoveryRule {
   return {
     id: 'responses_reasoning_content',
+    useUpstreamModel: true,
     enabled: () => true,
     matches: (text) => RESPONSES_REASONING_CONTENT_RE.test(text),
     strip: stripResponsesReasoningContentFromBody,

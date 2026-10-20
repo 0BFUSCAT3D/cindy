@@ -1621,7 +1621,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       };
       const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-      const forcedRouteTransform = transforms[5];
+      const forcedRouteTransform = transforms[4];
       if (!forcedRouteTransform) throw new Error('expected locked Subagent route transform');
       mockState.injectionTransform.mockImplementationOnce((body) => {
         // 首个 collab_spawn 请求必须先懒登记血缘，同一轮 instructions transform 才能
@@ -1711,7 +1711,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       )).toBeNull();
 
-      const execGuardTransform = transforms[7];
+      const execGuardTransform = transforms[6];
       if (!execGuardTransform) throw new Error('expected locked Subagent exec guard transform');
       const guarded = execGuardTransform({
         model: 'deepseek/deepseek-v4-flash',
@@ -1808,7 +1808,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       };
       const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-      const forcedRouteTransform = transforms[5];
+      const forcedRouteTransform = transforms[4];
       if (!forcedRouteTransform) throw new Error('expected smart Subagent route transform');
       expect(forcedRouteTransform({
         model: 'smart/model-cheap',
@@ -2732,14 +2732,14 @@ describe('codex proxy host', () => {
         // upstream 是函数形态(每请求现取,model-access 下发可运行期换 endpoint);
         // 断言其当前求值 = 网关 base + /v1
         upstream: expect.any(Function),
-        // [armed HTTP recovery strip(WS 错误后落回 HTTP 即激活对应 strip), encrypted activeStrip, image generation activeStrip, raw reasoning activeStrip, provider-aware Guardian reviewer, locked Subagent route, instructions 注入, locked Subagent exec guard, Gateway 原生 web_search, 跨来源压缩块兼容, xAI ModelInput activeStrip, responses item id activeStrip(#4738), responses item id length activeStrip(#4227), exec function adapter, strict gateway history 兼容, xAI ModelInput sanitize, DeepSeek V4 custom tool 兼容, xAI Responses 兼容, XD Gateway Grok 兼容, ByteDance Seed tool 兼容, MiniMax effort 兼容, provider model rewrite, provider 参数归一, 视觉桥(controller 未注入 → 短路透传), 工具 ID 校正, stripNonAnthropicFields]
+        // [armed HTTP recovery strip(WS 错误后落回 HTTP 即激活对应 strip), encrypted activeStrip, image generation activeStrip, provider-aware Guardian reviewer, locked Subagent route, instructions 注入, locked Subagent exec guard, Gateway 原生 web_search, 跨来源压缩块兼容, xAI ModelInput activeStrip, responses item id activeStrip(#4738), responses item id length activeStrip(#4227), exec function adapter, strict gateway history 兼容, xAI ModelInput sanitize, DeepSeek V4 custom tool 兼容, xAI Responses 兼容, XD Gateway Grok 兼容, ByteDance Seed tool 兼容, MiniMax effort 兼容, provider model rewrite, provider 参数归一, routed-model armed HTTP recovery strip, raw reasoning activeStrip, 视觉桥(controller 未注入 → 短路透传), 工具 ID 校正, stripNonAnthropicFields]
         transformRequest: [
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
-          expect.any(Function), expect.any(Function), // frozen custom-provider effort
+          expect.any(Function), expect.any(Function), expect.any(Function), // frozen custom-provider effort
           expect.any(Function), expect.any(Function),
         ],
         transformResponse: expect.any(Function),
@@ -3113,6 +3113,80 @@ describe('codex proxy host', () => {
       host.unregister('session-reasoning'); host.unregister('session-sibling'); host.unregister('session-http-only');
       await host.disposeCodexProxy();
       await new Promise<void>(resolve => wss.close(() => resolve()));
+      upstream.closeAllConnections();
+      await new Promise<void>(resolve => upstream.close(() => resolve()));
+      mockState.realStripTransforms = false;
+    }
+  });
+
+  // The client keeps codex-auto-review while the parent changes its routed model.
+  // Exercise the real proxy so both retry callbacks and pre-cleaning must agree
+  // on the effective model (unit tier; the old constant alias deleted valid history).
+  it('preserves Guardian reasoning after switching its routed model back', async () => {
+    const host = await freshCodexProxyHost(true);
+    const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
+    const actual = await vi.importActual<typeof import('@cindy/anthropic-compat-proxy')>('@cindy/anthropic-compat-proxy');
+    const errorMessage = "Invalid 'input[0].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.";
+    const history = {
+      model: 'codex-auto-review',
+      input: [
+        { type: 'reasoning', summary: [], content: [{ type: 'reasoning_text', text: 'Valid DeepSeek reasoning' }], encrypted_content: 'deepseek-blob' },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Review the change' }] },
+      ],
+    };
+    const original = JSON.stringify(history);
+    const headers = {
+      'thread-id': 'guardian-reasoning-child',
+      'x-openai-subagent': 'guardian',
+      'x-codex-parent-thread-id': 'guardian-reasoning-parent',
+    };
+    const bodies: Array<typeof history> = [];
+    const upstream = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      bodies.push(body);
+      const rejected = body.model === 'gpt-6.1-sol' && body.input.some((item: { type?: string }) => item.type === 'reasoning');
+      res.writeHead(rejected ? 400 : 200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(rejected ? { error: { message: errorMessage } } : { output: [] }));
+    });
+    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    mockState.createAnthropicCompatProxy.mockImplementation((opts: Parameters<typeof actual.createAnthropicCompatProxy>[0]) =>
+      actual.createAnthropicCompatProxy({
+        ...opts, upstream: upstreamUrl, resolveOutboundProxy: () => null,
+        routingTransform: async (body, ctx) => ({ ...(await opts.routingTransform?.(body, ctx)), upstreamOverride: upstreamUrl }),
+      }),
+    );
+    try {
+      host.setCodexProxyAuthInjection('env-key');
+      host.setCodexProxyGatewayKeyReader(() => 'fixture-gateway-key');
+      setSessionProvider('guardian-reasoning-session', 'xd');
+      host.registerReviewerRouteContext('guardian-reasoning-session', 'guardian-reasoning-parent', 'gpt-6.1-sol');
+      await host.ensureCodexProxyReady();
+      const proxyUrl = host.getCodexProxyEndpoint()!;
+      const post = () => new Promise<number | undefined>((resolve, reject) => {
+        const req = httpRequest(proxyUrl + '/v1/responses', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' } }, res => {
+          res.resume(); res.once('end', () => resolve(res.statusCode));
+        });
+        req.once('error', reject); req.end(original);
+      });
+      expect(await post()).toBe(200);
+      expect(bodies).toHaveLength(2);
+      expect(bodies.at(-1)?.input).toEqual(history.input.slice(1));
+      const afterRecovery = bodies.length;
+      expect(await post()).toBe(200);
+      expect(bodies).toHaveLength(afterRecovery + 1); // No repeated rejection for the same effective model.
+      expect(bodies.at(-1)?.input).toEqual(history.input.slice(1));
+      host.registerReviewerRouteContext('guardian-reasoning-session', 'guardian-reasoning-parent', 'deepseek/deepseek-v4');
+      expect(await post()).toBe(200);
+      expect(bodies).toHaveLength(afterRecovery + 2);
+      expect(bodies.at(-1)?.input).toEqual(history.input);
+      expect(JSON.stringify(history)).toBe(original);
+    } finally {
+      host.unregister('guardian-reasoning-session');
+      clearSessionProvider('guardian-reasoning-session');
+      await host.disposeCodexProxy();
       upstream.closeAllConnections();
       await new Promise<void>(resolve => upstream.close(() => resolve()));
       mockState.realStripTransforms = false;
@@ -3678,8 +3752,8 @@ describe('codex proxy host', () => {
     setSessionProvider('session-openai-review', 'openai');
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    // armed HTTP recovery strip, active strips ×3, then provider-aware Guardian rewrite。
-    const reviewerTransform = transforms[4];
+    // armed HTTP recovery strip, active strips ×2, then provider-aware Guardian rewrite。
+    const reviewerTransform = transforms[3];
     if (!reviewerTransform) throw new Error('expected Guardian reviewer transform');
     const body = { model: 'codex-auto-review', input: [{ role: 'user', content: 'review' }] };
     const guardianHeaders = (parentThreadId: string) => ({
@@ -3746,7 +3820,7 @@ describe('codex proxy host', () => {
     await host.ensureCodexControlPlaneProxyReady('oauth-bearer');
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    const reviewerTransform = transforms[4];
+    const reviewerTransform = transforms[3];
     if (!reviewerTransform) throw new Error('expected Guardian reviewer transform');
     expect(reviewerTransform(
       { model: 'codex-auto-review', input: [] },
@@ -6982,7 +7056,7 @@ describe('codex proxy host', () => {
     await host.ensureCodexProxyReady();
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    expect(transforms).toHaveLength(28); // ordinary transforms + dump + frozen custom-provider effort
+    expect(transforms).toHaveLength(29); // ordinary transforms + dump + frozen custom-provider effort
     const ctx = {
       method: 'POST',
       url: '/v1/responses',

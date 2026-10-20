@@ -350,16 +350,18 @@ export function armCodexHttpRecovery(args: {
  * 同一历史走 HTTP 时却回 200 + SSE error 事件；只认 400/422 的 recoveryRules 永远不触发，
  * 任务每轮都以 "stream closed before response.completed" 失败（2026-10-18 实测）。
  * 激活与上游 400 触发的 rule.onRetry 等价：按本次请求的 model 标记，换模型后照常 reconcile。
- * 必须排在各 active strip transform 之前，同一请求即生效。
+ * 必须排在各 active strip transform 之前，同一请求即生效。使用最终模型的规则
+ * 在 provider model rewrite 后激活，避免 Guardian 等固定别名掩盖真实模型切换。
  */
-function createArmedHttpRecoveryStripTransform(): RequestTransform {
+function createArmedHttpRecoveryStripTransform(useUpstreamModel = false): RequestTransform {
   return (body, ctx) => {
     if (!isPlainObject(body) || typeof body.model !== 'string' || !body.model) return null;
     const threadId = selectedThreadIdFromHeaders(ctx.headers);
     const reason = pendingHttpRecoveryStripByThread.get(threadId);
     if (!reason) return null;
-    pendingHttpRecoveryStripByThread.delete(threadId);
     const rule = CODEX_BODY_RECOVERY_RULES.find((candidate) => candidate.id === reason);
+    if (Boolean(rule?.useUpstreamModel) !== useUpstreamModel) return null;
+    pendingHttpRecoveryStripByThread.delete(threadId);
     if (!rule?.enabled() || !rule.onRetry) return null;
     rule.onRetry(threadId, body.model);
     log.info('codex HTTP recovery strip activated from websocket error', { threadId, reason, model: body.model });
@@ -3188,12 +3190,6 @@ function createTransformRequestChain(
       enabled: () => true,
       strip: stripImageGenerationItemsWithoutIdFromBody,
     }),
-    createActiveStripTransform({
-      controller: responsesReasoningContentStripController,
-      enabled: () => true,
-      strip: stripResponsesReasoningContentFromBody,
-    }),
-
     // Guardian uses an isolated child thread. Resolve its parent business
     // session and select that session's real provider model before provider
     // compatibility transforms inspect the request.
@@ -3242,6 +3238,12 @@ function createTransformRequestChain(
     createMiniMaxResponsesCompatTransform(),
     createProviderModelRewriteTransform(frozenAuthInjection),
     providerRequestTransform,
+    createArmedHttpRecoveryStripTransform(true),
+    createActiveStripTransform({
+      controller: responsesReasoningContentStripController,
+      enabled: () => true,
+      strip: stripResponsesReasoningContentFromBody,
+    }),
     // 视觉桥透明替换（层 A，Responses 格式）：controller 未注入时短路透传，零干扰；
     // 注入后把纯文本模型请求 input[] 里的 input_image 转成文字描述。放在 strip 之前与
     // Anthropic 链一致，避免未来 strip 扩展覆盖 Responses input_image 时吃掉图。
