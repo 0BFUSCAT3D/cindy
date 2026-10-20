@@ -205,8 +205,9 @@ async function maybeBroadcastSessionListPreview(
   sessionId: string,
   row: MessageRow,
   ownerScope?: DataOwnerBroadcastScope | null,
+  isCurrent?: () => boolean,
 ): Promise<void> {
-  if (!isVisibleSessionListPreviewRow(row)) return;
+  if (isCurrent?.() === false || !isVisibleSessionListPreviewRow(row)) return;
   let latest: Awaited<ReturnType<typeof latestVisiblePreviewRow>>;
   try {
     latest = await latestVisiblePreviewRow(sessionId);
@@ -218,7 +219,7 @@ async function maybeBroadcastSessionListPreview(
     });
     return;
   }
-  if (latest?.clientId !== row.clientId) return;
+  if (isCurrent?.() === false || latest?.clientId !== row.clientId) return;
   if (!isOwnerBroadcastScopeCurrent(ownerScope)) return;
   const preview = extractMessagePreview(row.content, row.role);
   // 不在这里落库。insert/update 事务已经把 list_preview 置空；事后 persist 无法
@@ -1619,8 +1620,7 @@ export async function updateMessageContent(
   const row: MessageRow | undefined = narrow
     ? (await restoreTaskImageRows(dbClient, [{ ...narrow, content: serialized }]))[0]
     : undefined;
-  if (row) {
-    if (finalSnapshot && !isCurrent()) return messageToCamel(row);
+  if (row && (!finalSnapshot || isCurrent())) {
     // 挂账钩子同样覆盖"先摘要 create、后全文 update"的 tool_result 顺序
     // (review P2:vendor 事件顺序一变,首现于 update 的 blob URL 若不在这里
     // 挂账就永久零引用);幂等,create 时已挂的 hasRef 跳过。
@@ -1635,11 +1635,11 @@ export async function updateMessageContent(
         error: err instanceof Error ? err.message : String(err),
       });
     }));
-    await maybeBroadcastSessionListPreview(sessionId, row, ownerScope);
-    if (original && isCurrent()) {
-      await reconcileAssistantDerivedState(original, dbClient, isCurrent, ownerScope, false);
-    }
+    await maybeBroadcastSessionListPreview(sessionId, row, ownerScope, finalSnapshot?.isCurrent);
   }
+  // The correction already committed: settle its original publication even if
+  // clear/owner changed or another deletion removed the row during readback.
+  if (original) await reconcileAssistantDerivedState(original, dbClient, isCurrent, ownerScope, false);
   return row ? messageToCamel(row) : null;
 }
 

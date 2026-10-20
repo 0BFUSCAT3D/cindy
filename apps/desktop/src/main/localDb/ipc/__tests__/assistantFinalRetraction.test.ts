@@ -6,6 +6,7 @@ import { messages, sessions } from '../../schema';
 import { tx } from '../../worker/opHandlers/tx';
 import { discardPersistedAssistantMessage } from '../messages';
 import * as prRefsStore from '../../../git-context/prRefsStore';
+import * as previewRows from '../../latestMessageText';
 import { commitMessageMediaRefs } from '../../../cindy-media/chatAttachments';
 import { onAssistantTextEvent, clearSessionPersistState, drainPersistQueue,
   flushAssistantBlock, noteSessionClearBoundary } from '../../../messagePersistBroadcaster';
@@ -377,3 +378,55 @@ it.each([false, true])('reconciles replaced media without releasing another live
     .toEqual((shared ? [oldHash, newHash] : [newHash]).map((hash) => ({ hash })));
   expect(h.sqlite!.prepare('SELECT count(*) AS n FROM media_blobs').get()).toEqual({ n: 2 });
 });
+
+
+it.each(['after-update', 'during-preview', 'row-deleted'] as const)(
+  'settles replaced media publication when clear interrupts a committed final (%s)', async (phase) => {
+    const hash = 'a'.repeat(64);
+    const url = `cindy-media://blobs/${hash}.png`;
+    h.sqlite!.prepare("INSERT INTO media_blobs VALUES (?, '.png', 'image/png', 8, 0, 1, 1)").run(hash);
+    const actual = await vi.importActual<typeof import('../../../cindy-media/chatAttachments')>('../../../cindy-media/chatAttachments');
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(commitMessageMediaRefs).mockImplementationOnce(async (params, db) => {
+      await pending;
+      return actual.commitMessageMediaRefs(params, db);
+    });
+    onAssistantTextEvent('s1', { text: url, agentMessageId: 'correct-clear-media' }, null);
+    flushAssistantBlock('s1');
+    await drainPersistQueue();
+    const clear = () => {
+      const boundary = Date.now() + 1000;
+      h.sqlite!.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(boundary, 's1');
+      noteSessionClearBoundary('s1', boundary);
+      release();
+    };
+    const originalTx = h.client!.tx;
+    h.client!.tx = async (name, args) => {
+      const result = await originalTx(name, args);
+      if (name === 'message.updateContent') {
+        if (phase === 'after-update') clear();
+        if (phase === 'row-deleted') {
+          h.sqlite!.prepare("DELETE FROM messages WHERE session_id = 's1'").run();
+          release();
+        }
+      }
+      return result;
+    };
+    const latest = previewRows.latestVisiblePreviewRow;
+    const preview = vi.spyOn(previewRows, 'latestVisiblePreviewRow').mockImplementationOnce(async (sessionId) => {
+      const row = await latest(sessionId);
+      if (phase === 'during-preview') clear();
+      return row;
+    });
+    h.broadcast.mockClear();
+    try {
+      onAssistantTextEvent('s1', { text: 'Corrected without media', agentMessageId: 'correct-clear-media', isFinal: true, isFullText: true }, null);
+      await drainPersistQueue();
+      await vi.mocked(commitMessageMediaRefs).mock.results[0].value;
+      expect(h.sqlite!.prepare("SELECT count(*) AS n FROM media_refs WHERE ref_kind = 'session-attachment'").get()).toEqual({ n: 0 });
+      expect(h.sqlite!.prepare('SELECT count(*) AS n FROM media_blobs').get()).toEqual({ n: 1 });
+      expect(h.broadcast.mock.calls.filter(([channel]) => channel === 'local-db:sessions:patched')).toHaveLength(0);
+    } finally { release(); preview.mockRestore(); }
+  },
+);
