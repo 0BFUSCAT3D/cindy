@@ -1,3 +1,4 @@
+import { requestRevealSessionTab } from '../globalTabs';
 import { addTab, ensureHydrated, getBucket, setActiveTab } from '../store';
 import type { PluginTaskTabState } from '../plugins/plugin-task';
 import { routeSidebarCommand } from './detachedSidebarRouting';
@@ -26,11 +27,14 @@ export async function openPluginTaskTab(
         tab.kind === 'plugin-task' &&
         (tab.state as PluginTaskTabState | null)?.instanceId === instanceId,
     );
+    let tabId = existing?.id;
     if (existing) {
       if (bucket.activeTabId !== existing.id) await setActiveTab(sessionId, existing.id);
     } else {
-      await addTab(sessionId, 'plugin-task', { instanceId } satisfies PluginTaskTabState);
+      tabId = (await addTab(sessionId, 'plugin-task', { instanceId } satisfies PluginTaskTabState))
+        .id;
     }
+    if (tabId) requestRevealSessionTab(sessionId, tabId);
   }
   if (route === 'attached' || route === 'routed') {
     requestRightSidebarVisibility('open', { sessionId, userInitiated });

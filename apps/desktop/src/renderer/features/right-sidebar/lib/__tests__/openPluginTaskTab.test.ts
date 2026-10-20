@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 // - 生产入口与可观察结果:openPluginTaskTab 对真实 store 的写入(任务桶里的页签、激活页签、可见性请求)。
-// - Bug / 规则依据:同一任务里每个插件实例至多一个任务页;不同任务各有自己的一份。
+// - Bug / 规则依据:同一任务里每个插件实例至多一个任务页;不同任务各有自己的一份;
+//   全局页签在前时,打开的任务页要请求露出(实机:全局「模拟器」挡住了刚开的任务页)。
 // - 现有覆盖缺口:新入口。最小失败输入:同一插件在同一任务里连开两次。
 // - tier:unit。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetStore, addTab, ensureHydrated, getBucket } from '../../store';
 import { routeSidebarCommand } from '../detachedSidebarRouting';
+import { subscribeRevealSessionTab } from '../../globalTabs';
 import { openPluginTaskTab } from '../openPluginTaskTab';
 import { _resetSidebarCommandsForTests, onRequestRightSidebarVisibility } from '../sidebarCommands';
 
@@ -40,6 +42,8 @@ const taskTabs = (sessionId: string) =>
 
 describe('openPluginTaskTab', () => {
   it('keeps one task page per plugin per task, refocusing it instead of adding another', async () => {
+    const reveal = vi.fn();
+    const stop = subscribeRevealSessionTab(reveal);
     await openPluginTaskTab('task-1', 'sim', { userInitiated: false });
     await ensureHydrated('task-1');
     const files = await addTab('task-1', 'file-browser');
@@ -48,7 +52,9 @@ describe('openPluginTaskTab', () => {
     expect(taskTabs('task-1')).toEqual([{ instanceId: 'sim' }]);
     const simTab = getBucket('task-1').tabs.find((tab) => tab.kind === 'plugin-task')!;
     expect(getBucket('task-1').activeTabId).toBe(simTab.id);
+    expect(reveal.mock.calls).toEqual([['task-1', simTab.id], ['task-1', simTab.id]]);
     expect(visibility).toHaveBeenLastCalledWith('open', { sessionId: 'task-1', userInitiated: false });
+    stop();
   });
 
   it('gives every task its own page, and every plugin its own tab within a task', async () => {

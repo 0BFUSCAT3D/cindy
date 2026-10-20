@@ -76,6 +76,7 @@ import {
   isGlobalTabId,
   removeGlobalTab,
   setActiveGlobalTabId,
+  subscribeRevealSessionTab,
   useActiveGlobalTabId,
   useGlobalTabs,
 } from './globalTabs';
@@ -678,6 +679,23 @@ export function RightSidebarShell({
     },
     [activeGlobalTabId, groupId, pinnedTabs, sessionId, soloMode],
   );
+
+  // 程序打开的任务页签(插件任务页)要露出来:与用户点选同口径离开本组的全局页签。
+  const revealContextRef = useRef({ activeGlobalTabId, inGroup, pinnedTabs });
+  revealContextRef.current = { activeGlobalTabId, inGroup, pinnedTabs };
+  useEffect(() => {
+    if (soloMode || !sessionId) return undefined;
+    return subscribeRevealSessionTab((targetSessionId, tabId) => {
+      if (targetSessionId !== sessionId) return;
+      const context = revealContextRef.current;
+      if (!context.inGroup(tabId)) return;
+      setGroupActiveTabId(groupId, sessionId, tabId);
+      const activeGlobal = context.activeGlobalTabId;
+      if (activeGlobal && context.pinnedTabs.some((tab) => tab.id === activeGlobal)) {
+        setActiveGlobalTabId(null);
+      }
+    });
+  }, [groupId, sessionId, soloMode]);
 
   // 主窗:已弹出的页签窗口(同任务或只有全局页签的),右键菜单「移到窗口 …」的目标。
   // 标签用窗口里第一个页签的标题(插件的 TabPillTitle 组件,不是字符串)。
