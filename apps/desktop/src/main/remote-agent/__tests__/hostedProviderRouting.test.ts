@@ -84,6 +84,7 @@ function setup(hooks: {
   requestSessionId?: (input: HostedStartInput) => string;
   isOwnerCurrent?: () => boolean;
   trust?: 'owner' | 'guest';
+  allowsModel?: (providerId: string, model: string) => boolean;
 } = {}) {
   const starts: HostedStartInput[] = [];
   const routes: unknown[] = [];
@@ -95,7 +96,7 @@ function setup(hooks: {
     controllerTrust: () => hooks.trust ?? 'owner',
     providerAccess: {
       resolve: async (_kind, _model, providerId) => providerId === 'forbidden' ? null : providerId ?? 'fp',
-      isAllowed: (providerId) => providerId !== 'forbidden',
+      isAllowed: (providerId, _controller, model) => providerId !== 'forbidden' && (hooks.allowsModel?.(providerId, model ?? '') ?? true),
     },
     bindOwnerProviderRoute: bindHostedSessionProvider,
     bindGuestProviderRoute: async () => ({ routeToken: 'test-guest-route', modelIds: [MODEL], release() {} }),
@@ -169,6 +170,31 @@ async function switchProvider(runId: string, providerId?: string | null) {
 }
 
 describe('same-account hosted provider routing', () => {
+  // Unit regression for review 4327641928: real host registration must reach the
+  // proxy before the first request and read live grants. Previous tests only checked
+  // provider selection; minimum is a hosted session allowed one of two catalog models.
+  it('binds live owner model authorization before routing hosted Claude requests', async () => {
+    let allowedModel = MODEL;
+    const sdkSessionId = randomUUID();
+    setup({ requestSessionId: () => sdkSessionId, allowsModel: (_providerId, model) => model === allowedModel });
+    const runId = await open('fp', 'task-1', OWNER, 'claude-code');
+    await waitForEvent(runId, 'started');
+    const request = (model: string) => createModelRoutingTransform()({ model }, {
+      reqId: 1, method: 'POST', url: '/v1/messages', headers: { 'x-claude-code-session-id': sdkSessionId },
+    });
+    const expectDenied = async (model: string) => {
+      const decision = await request(model);
+      let status: number | undefined;
+      await decision?.localHandler?.({ res: { writeHead: (code: number) => { status = code; }, end() {} } } as never);
+      expect(status).toBe(403);
+    };
+    expect(await request(MODEL)).toMatchObject({ upstreamOverride: 'https://fp.example.invalid/anthropic' });
+    await expectDenied(CLAUDE_MODEL);
+    allowedModel = CLAUDE_MODEL;
+    await expectDenied(MODEL);
+    expect(await request(CLAUDE_MODEL)).toMatchObject({ upstreamOverride: 'https://fp.example.invalid/anthropic' });
+  });
+
   it.each([CLAUDE_MODEL, MODEL])('routes Claude SDK-ID requests to the selected provider for %s', async (model) => {
     const sdkSessionId = randomUUID();
     setup({ requestSessionId: () => sdkSessionId });

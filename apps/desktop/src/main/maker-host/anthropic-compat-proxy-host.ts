@@ -80,10 +80,11 @@ import {
 } from './claude-session-route-registry.js';
 import { createClaudeGatewayErrorObserver } from './claude-gateway-error-observer.js';
 import { shouldApplyExclusiveProviderReroute } from './model-route-guard.js';
-import { getSessionProvider } from './session-provider-store.js';
+import { getSessionProvider, hasHostedSessionModelAccess } from './session-provider-store.js';
 import {
   GUEST_ROUTE_HEADER,
   guestProviderOffersModel,
+  hostedProviderOffersModel,
   guestProviderRouteForSession,
   guestProviderRouteForToken,
   type GuestProviderRoute,
@@ -687,7 +688,8 @@ export function createModelRoutingTransform(): RoutingTransform {
     if (piGuest && !piRequestStaysOnGuestProvider(piGuest, piProviderId, registeredPiProviderId)) {
       return refuseGuestProviderRoute(403, 'shared_provider_only', 'This request is outside the provider shared with you.');
     }
-    if (piGuest) {
+    if (piGuest || hasHostedSessionModelAccess(piSessionId)) {
+      const providerId = piGuest?.providerId ?? piProviderId ?? selectedPiProviderId;
       // Check the live member grant before native handlers and all other Pi routing branches.
       // Google's native API puts the authoritative model in the URL instead of body.model.
       const requestModels: string[] = [];
@@ -695,15 +697,18 @@ export function createModelRoutingTransform(): RoutingTransform {
         if (typeof body.model === 'string' && body.model) requestModels.push(body.model);
         // Subscription forwarders use body.model and rebuild their own URL; a forged Google
         // path cannot stand in for a missing/opaque subscription request body.
-        if (!isOpenAiSubscriptionProviderId(piGuest.providerId) && !isXaiSubscriptionProviderId(piGuest.providerId)) {
+        if (!isOpenAiSubscriptionProviderId(providerId) && !isXaiSubscriptionProviderId(providerId)) {
           const pathname = new URL(ctx.url, 'http://127.0.0.1').pathname;
           const pathModel = /\/models\/(.+):(?:streamGenerateContent|generateContent|countTokens)$/.exec(pathname);
           if (pathModel) requestModels.push(decodeURIComponent(pathModel[1]));
         }
       }
-      const deniedModel = requestModels.find(model => !guestProviderOffersModel(piGuest.providerId, 'pi', model, piGuest.sessionId));
+      const deniedModel = requestModels.find(model => piGuest
+        ? !guestProviderOffersModel(piGuest.providerId, 'pi', model, piGuest.sessionId)
+        : !hostedProviderOffersModel(piSessionId, providerId, 'pi', model));
       if (requestModels.length === 0 || deniedModel !== undefined) {
-        return refuseGuestForeignRoute(deniedModel ?? '');
+        return piGuest ? refuseGuestForeignRoute(deniedModel ?? '')
+          : refuseGuestProviderRoute(403, 'remote_model_not_allowed', 'This model is not available for this remote task.');
       }
     }
     if (piSessionId && piProviderId && (isOpenAiSubscriptionProviderId(piProviderId) || isXaiSubscriptionProviderId(piProviderId))) {
@@ -752,6 +757,9 @@ export function createModelRoutingTransform(): RoutingTransform {
     if (pendingRoute) return pendingRoute;
 
     const selectedProviderId = sessionId ? getSessionProvider(sessionId) : null;
+    if (!piSessionId && !hostedProviderOffersModel(sessionId, selectedProviderId, 'claude-code', wireModel)) {
+      return refuseGuestProviderRoute(403, 'remote_model_not_allowed', 'This model is not available for this remote task.');
+    }
     if (guest && selectedProviderId !== guest.providerId) return refuseGuestForeignRoute(wireModel);
     const applyExclusiveReroute = shouldApplyExclusiveProviderReroute(
       selectedProviderId,

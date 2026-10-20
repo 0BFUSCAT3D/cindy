@@ -199,8 +199,8 @@ export interface RemoteAgentHostDeps {
     resolve(kind: RemoteAgentKind, model: string, providerId: string | null | undefined, controller: string): Promise<string | null>;
     isAllowed(providerId: string, controller: string, model?: string): boolean;
   };
-  /** 同账号任务也须在启动前登记已核对开放的来源，不能只把 providerId 传给 Agent。 */
-  bindOwnerProviderRoute?(hostSessionId: string, providerId: string): OwnerProviderRouteBinding;
+  /** 同账号任务在启动前登记来源和逐请求的实时模型授权，子代理同样受此约束。 */
+  bindOwnerProviderRoute?(hostSessionId: string, providerId: string, allowsModel?: (providerId: string, model: string) => boolean): OwnerProviderRouteBinding;
   /**
    * 受邀者任务的出站边界(只对 guest 调用；不提供 = 不接受受邀者)。启动前登记任务用的供应商：本机
    * proxy 只让这条任务的请求经这个供应商、用它提供的模型。release 在任务结束时调用。
@@ -1119,7 +1119,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }
         guestProvider = { providerId: run.providerId, modelIds: [...binding.modelIds], routeToken: binding.routeToken };
       } else if (run.providerId) {
-        run.ownerRoute = deps.bindOwnerProviderRoute?.(hostSessionId, run.providerId);
+        run.ownerRoute = deps.bindOwnerProviderRoute?.(hostSessionId, run.providerId, deps.providerAccess
+          ? (providerId, model) => !run.closing && deps.isControllerAuthorized(run.controller)
+            && deps.providerAccess!.isAllowed(providerId, run.controller, model)
+          : undefined);
       }
       const handle = await deps.startHosted({
         kind: run.kind,

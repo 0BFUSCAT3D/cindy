@@ -29,11 +29,12 @@ vi.mock('../logger-adapter', () => ({
 import { buildUserProvider } from '@cindy/model-providers';
 import type { RoutingDecision } from '@cindy/anthropic-compat-proxy';
 
-import { setCustomProviders } from '../active-catalog';
-import { createCodexGuestRoutingGuard, registerComposed, registerReviewerRouteContext, unregister } from '../codex-proxy-host';
-import { CODEX_CUSTOM_PROVIDER_ROUTE_ROOT } from '../codex-custom-provider-route';
+import { getActiveCatalog, setCustomProviders, setDiscoveredCodexModels } from '../active-catalog';
+import { createCodexGuestRoutingGuard, createModelRoutingTransform, registerComposed, registerReviewerRouteContext, unregister } from '../codex-proxy-host';
+import { CODEX_CUSTOM_PROVIDER_ROUTE_ROOT, deriveCodexCustomProviderRoutes } from '../codex-custom-provider-route';
 import { registerGuestProviderRoute, resetGuestProviderRoutesForTest } from '../guest-provider-route-store';
-import { clearAllSessionProviders, setSessionProvider } from '../session-provider-store';
+import { bindHostedSessionProvider, clearAllSessionProviders, setSessionProvider } from '../session-provider-store';
+import { setCustomProviderKeyReader } from '../provider-route';
 
 function ctx(url: string, headers: Record<string, string> = {}, method = 'POST') {
   return { reqId: 1, method, url, headers } as never;
@@ -62,9 +63,27 @@ describe('Codex proxy guard for shared-provider guests', () => {
   afterEach(() => {
     unregister('guest-session');
     unregister('owner-session');
+    unregister('local-session');
     resetGuestProviderRoutesForTest();
     clearAllSessionProviders();
     setCustomProviders([]);
+    setCustomProviderKeyReader(() => null);
+    setDiscoveredCodexModels([]);
+  });
+
+  it('authorizes an owner Guardian request using the registered parent model', async () => {
+    let allowed = true;
+    const parentModel = 'gpt-5.5';
+    setDiscoveredCodexModels([{ id: parentModel, name: parentModel, contextWindow: 272000, efforts: [], defaultEffort: null }]);
+    bindHostedSessionProvider('owner-session', 'openai', (providerId, model) => allowed && providerId === 'openai' && model === parentModel);
+    registerReviewerRouteContext('owner-session', 'owner-thread', parentModel);
+    const transform = createModelRoutingTransform('oauth-bearer');
+    const request = () => transform({ model: 'codex-auto-review' }, ctx('/responses', {
+      'thread-id': 'owner-review', 'x-openai-subagent': 'guardian', 'x-codex-parent-thread-id': 'owner-thread',
+    }));
+    expect(await request()).toMatchObject({ upstreamOverride: 'https://chatgpt.com/backend-api/codex' });
+    allowed = false;
+    expect(await statusOf(await request())).toBe(403);
   });
 
   it('lets a guest request for a shared model continue to the session route', () => {
@@ -90,6 +109,38 @@ describe('Codex proxy guard for shared-provider guests', () => {
     allowed = false;
     expect(await statusOf(request())).toBe(403);
     expect(await statusOf(guard({ model: 'other-model' }, ctx(path, { 'thread-id': 'guest-thread' })))).toBe(403);
+  });
+
+  // Unit regression for review 4327641928 / provider-sharing §12. Guest-only tests
+  // missed same-account hosted requests. Minimum: authorized parent A and child B
+  // at the same provider; the production proxy must deny B and observe live grants.
+  it.each(['ordinary', 'custom'].flatMap(pathKind => ['shared-a', 'other-b'].map(childProvider => ({ pathKind, childProvider }))))('checks same-account child grants on $pathKind routes to $childProvider', async ({ pathKind, childProvider }) => {
+    setCustomProviders(['shared-a', 'other-b'].map(id => buildUserProvider({ id, name: id, runtimes: {
+      codex: { baseUrl: `https://${id}.example/v1`, wireProtocol: 'openai-responses', supportsImageGeneration: true,
+        models: ['shared-model', 'private-model'].map(id => ({ id, name: id })) },
+    } })));
+    setCustomProviderKeyReader(() => 'fixture-key');
+    let allowedModel = 'shared-model';
+    bindHostedSessionProvider('owner-session', 'shared-a', (id, model) => model === allowedModel && id === (model === 'shared-model' ? 'shared-a' : childProvider));
+    registerComposed('owner-session', 'owner-thread', 'prompt', {
+      subagentRoute: { providerId: childProvider, catalogModel: 'private-model', reasoningEffort: null },
+    });
+    const routes = deriveCodexCustomProviderRoutes(getActiveCatalog());
+    const path = pathKind === 'custom' ? `${CODEX_CUSTOM_PROVIDER_ROUTE_ROOT}/${routes[0].routeId}/responses` : '/responses';
+    const transform = createModelRoutingTransform('env-key', routes);
+    const request = (child: boolean) => transform({ model: 'shared-model' }, ctx(path, child ? {
+      'thread-id': 'owner-child', 'x-openai-subagent': 'collab_spawn', 'x-codex-parent-thread-id': 'owner-thread',
+    } : { 'thread-id': 'owner-thread' }));
+    expect(await request(false)).toMatchObject({ upstreamOverride: 'https://shared-a.example/v1' });
+    expect(await statusOf(await request(true))).toBe(403);
+    allowedModel = 'private-model';
+    expect(await request(true)).toMatchObject({ upstreamOverride: `https://${childProvider}.example/v1` });
+    allowedModel = '';
+    expect(await statusOf(await request(true))).toBe(403);
+    setSessionProvider('local-session', 'shared-a');
+    registerComposed('local-session', 'local-thread', 'prompt');
+    expect(await transform({ model: 'private-model' }, ctx(path, { 'thread-id': 'local-thread' })))
+      .toMatchObject({ upstreamOverride: 'https://shared-a.example/v1' });
   });
 
   // Unit regression for review 4326610462: the public guard must authorize Guardian's

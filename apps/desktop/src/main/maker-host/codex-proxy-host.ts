@@ -122,8 +122,8 @@ import {
   rewriteSessionModelIdForRoute,
 } from './provider-route.js';
 import type { CodexSubagentRouteSnapshot } from './codex-subagent-config.js';
-import { getSessionProvider } from './session-provider-store.js';
-import { guestProviderModelAllowed, guestProviderOffersModel, guestProviderRouteForSession } from './guest-provider-route-store.js';
+import { getSessionProvider, hasHostedSessionModelAccess } from './session-provider-store.js';
+import { guestProviderModelAllowed, guestProviderOffersModel, guestProviderRouteForSession, hostedProviderOffersModel } from './guest-provider-route-store.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import { composeResponseObservers } from './claude-rate-limit-headers-observer.js';
 import { createProviderUpstreamErrorObserver, reportProviderUpstreamError } from './provider-upstream-error-observer.js';
@@ -2815,6 +2815,9 @@ function resolveCodexCustomProviderRoutingDecision(
     return codexCustomProviderRouteFailure(403, 'custom_provider_model_mismatch');
   }
   const wireModel = parsed.pathKind === 'responses' ? requestModel : undefined;
+  if (wireModel && !hostedProviderOffersModel(sessionIdFromHeaders(ctx.headers), route.providerId, 'codex', wireModel)) {
+    return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
+  }
   return resolveFrozenProviderRouteDecision(
     route.providerId,
     frozenRouting,
@@ -2974,6 +2977,11 @@ export function createModelRoutingTransform(
     const model = subagentRoute?.catalogModel ?? reportedModel;
     const explicitProviderId = subagentRoute?.providerId
       ?? (sessionId ? getSessionProvider(sessionId) : null);
+    const authorizationModel = model === CODEX_AUTO_REVIEW_MODEL && guardianParentThreadIdFromHeaders(ctx.headers) && sessionId
+      ? reviewerModelBySession.get(sessionId) ?? model : model;
+    if (model && !hostedProviderOffersModel(sessionId, explicitProviderId, 'codex', authorizationModel)) {
+      return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
+    }
     // 推理请求钉在 Claude 订阅上(旧会话 / 子代理快照):本地拒绝,不落任何默认上游。
     if (model && explicitProviderId && isClaudeSubscriptionProviderId(explicitProviderId)) {
       return claudeSubscriptionCodexRefusalDecision();
@@ -3499,6 +3507,8 @@ async function createCodexProxyHandle(
      */
     resolveWebSocketUpstream: ({ headers }) => {
       if ((frozenAuthInjection ?? getCodexProxyAuthInjection()) !== 'oauth-bearer') return null;
+      // Hosted owner tasks need HTTP so every model request (and later revocation) reaches the live grant check.
+      if (hasHostedSessionModelAccess(sessionIdFromHeaders(headers))) return null;
       const threadId = selectedThreadIdFromHeaders(headers);
       const recoveryReason = httpRecoveryReasonByThread.get(threadId);
       if (recoveryReason) {

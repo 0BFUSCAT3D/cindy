@@ -2800,6 +2800,24 @@ describe('codex proxy host', () => {
     );
   });
 
+  // Review 4327641928 / unit: opaque WS frames would bypass the live remote model
+  // gate. Earlier transport tests had only local sessions; the minimum input is
+  // one registered hosted owner task on an OAuth proxy.
+  it('uses HTTP for hosted owner requests while preserving local WebSockets', async () => {
+    const host = await freshCodexProxyHost();
+    const { bindHostedSessionProvider } = await import('../session-provider-store');
+    mockState.createAnthropicCompatProxy.mockResolvedValueOnce({ url: 'http://127.0.0.1:43210', dispose: vi.fn(async () => undefined) });
+    await host.ensureCodexProxyReady();
+    host.setCodexProxyAuthInjection('oauth-bearer');
+    host.registerComposed('remote-owner', 'remote-thread', 'prompt');
+    const binding = bindHostedSessionProvider('remote-owner', 'openai', () => true);
+    try {
+      const resolve = mockState.createAnthropicCompatProxy.mock.calls[0][0].resolveWebSocketUpstream;
+      expect(resolve({ headers: { 'thread-id': 'remote-thread' } })).toBeNull();
+      expect(resolve({ headers: { 'thread-id': 'local-thread' } })).toBe('https://chatgpt.com/backend-api/codex');
+    } finally { binding.release(); }
+  });
+
   it('forgets only the closing session websocket proofs before a provider-route resume', async () => {
     const host = await freshCodexProxyHost();
     const forgetWebSocketStateForThread = vi.fn(() => 1);

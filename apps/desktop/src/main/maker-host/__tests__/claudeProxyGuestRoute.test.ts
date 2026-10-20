@@ -62,7 +62,7 @@ import {
   setProviderOAuthTokenReader,
   setProviderViewsReader,
 } from '../provider-route';
-import { clearAllSessionProviders, getSessionProvider } from '../session-provider-store';
+import { bindHostedSessionProvider, clearAllSessionProviders, getSessionProvider } from '../session-provider-store';
 import { registerPiProxySession } from '../pi-proxy-session-auth';
 
 const SHARED_UPSTREAM = 'https://shared.example/api/anthropic';
@@ -265,7 +265,7 @@ describe('Claude proxy routing for shared-provider guests', () => {
   // Unit regression for #6592 / provider-sharing §12: the production routing transform must
   // deny an ungranted Pi model before any upstream/native handler. Earlier coverage only
   // changed providers. Minimal failure: two models at one provider, only the first granted.
-  it.each(['shared-a', 'openai', 'xai', 'xd'])('rechecks live Pi model grants for %s root and child routes', async providerId => {
+  it.each(['guest', 'owner'].flatMap(trust => ['shared-a', 'openai', 'xai', 'xd'].map(providerId => ({ trust, providerId }))))('rechecks live Pi model grants for $trust $providerId root and child routes', async ({ trust, providerId }) => {
     const models = getActiveCatalog().providers.find(provider => provider.id === providerId)!.models.pi!;
     const [first, second] = models.filter(model => !model.disabled);
     expect(first).toBeDefined();
@@ -273,7 +273,8 @@ describe('Claude proxy routing for shared-provider guests', () => {
     const wireId = (id: string) => providerId === 'openai' ? id.replace(/^chatgpt\//, '')
       : providerId === 'xai' ? id.replace(/^xai\//, '') : id;
     let allowedModel = first.id;
-    registerGuestProviderRoute('pi-model-guest', providerId, model => model === allowedModel);
+    if (trust === 'guest') registerGuestProviderRoute('pi-model-guest', providerId, model => model === allowedModel);
+    else bindHostedSessionProvider('pi-model-guest', providerId, (id, model) => id === providerId && model === allowedModel);
     registerGuestProviderRoute('other-person', providerId, () => false);
     const disposers = [
       registerPiProxySession('pi-model-guest', 'root-token', () => providerId),
@@ -325,6 +326,20 @@ describe('Claude proxy routing for shared-provider guests', () => {
     } finally {
       for (const dispose of disposers) dispose();
     }
+  });
+
+  it('allows an authorized owner child provider independently of the parent provider', async () => {
+    let childAllowed = true;
+    bindHostedSessionProvider('owner-parent', 'shared-a', (providerId, model) => childAllowed && providerId === 'other-b' && model === 'other-model');
+    const dispose = registerPiProxySession('owner-parent', 'owner-child', () => 'other-b', { scope: 'subagent-route' });
+    const request = () => transform({ model: 'other-model' }, ctxWith({
+      'x-cindy-pi-session-id': 'owner-parent', 'x-cindy-pi-session-token': 'owner-child', 'x-cindy-pi-provider-id': 'other-b',
+    }));
+    try {
+      expect(await request()).toMatchObject({ upstreamOverride: OTHER_UPSTREAM });
+      childAllowed = false;
+      expect(await statusOf(await request())).toBe(403);
+    } finally { dispose(); }
   });
 
   it('keeps requests without a route token on the existing routing (same-account unchanged)', async () => {
