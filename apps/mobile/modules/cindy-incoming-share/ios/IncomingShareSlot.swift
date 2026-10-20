@@ -18,10 +18,9 @@ enum IncomingShareSlot {
                       clear: (Data) throws -> Bool) throws -> Bool {
     try reject(expected, in: rejections)
     let cleared = try clear(expected)
-    if cleared {
-      rejections.removeObject(forKey: rejectedKey)
-      rejections.synchronize()
-    }
+    // A false comparison also means the old bytes are absent or replaced.
+    // Finish the rejection even when a previous attempt already cleared the slot.
+    try removeRejection(expected, from: rejections)
     return cleared
   }
 
@@ -30,11 +29,20 @@ enum IncomingShareSlot {
     guard let rejected = rejections.data(forKey: rejectedKey) else { return snapshot }
     if let snapshot, snapshot == rejected {
       // Retry clearing, but never return rejected bytes even if it still fails.
-      guard (try? clear(snapshot)) == true else { return nil }
+      do { _ = try clear(snapshot) } catch { return nil }
     }
-    rejections.removeObject(forKey: rejectedKey)
-    rejections.synchronize()
+    // Empty/replaced snapshots are safe too, but a failed flush must leave a
+    // marker in this process so subsequent reads can retry its durable removal.
+    try? removeRejection(rejected, from: rejections)
     return snapshot == rejected ? nil : snapshot
+  }
+
+  private static func removeRejection(_ rejected: Data, from defaults: UserDefaults) throws {
+    defaults.removeObject(forKey: rejectedKey)
+    guard defaults.synchronize() else {
+      defaults.set(rejected, forKey: rejectedKey)
+      throw POSIXError(.EIO)
+    }
   }
 
   static func withLock<T>(at url: URL, _ operation: () throws -> T) throws -> T {

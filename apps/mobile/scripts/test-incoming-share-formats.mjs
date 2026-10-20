@@ -81,6 +81,29 @@ final class Adapter {
       guard let payload = await adapter.parse(provider) else { fatalError("Missing text preview") }
       precondition(payload.type == .text && payload.value == "shared passage")
     }
+    // A concrete property list is a document, not Safari's preprocessing envelope.
+    for type in [UTType.propertyList, .xmlPropertyList, .binaryPropertyList] {
+      let bytes = try! PropertyListSerialization.data(fromPropertyList: ["original": "document"], format: type == .binaryPropertyList ? .binary : .xml, options: 0)
+      for preview in [UTType.image, .url, .plainText] {
+        let provider = NSItemProvider()
+        provider.suggestedName = "original.plist"
+        provider.registerItem(forTypeIdentifier: preview.identifier, loadHandler: { done, _, _ in
+          done?(preview == .url ? NSURL(string: "https://example.com/preview")! : NSData(data: Data("preview only".utf8)), nil)
+        })
+        provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { done in done(bytes, nil); return nil }
+        guard let payload = await adapter.parse(provider), payload.type == .file,
+              let url = URL(string: payload.value) else { fatalError("Preview replaced concrete property list: " + type.identifier + "/" + preview.identifier) }
+        precondition(url.lastPathComponent == "original.plist" && payload.mimeType == type.preferredMIMEType)
+        precondition(try! Data(contentsOf: url) == bytes)
+      }
+    }
+    let safari = NSItemProvider()
+    safari.registerItem(forTypeIdentifier: UTType.propertyList.identifier, loadHandler: { done, _, _ in
+      done?([NSExtensionJavaScriptPreprocessingResultsKey: ["title": "Page title", "url": "https://example.com/page", "selection": "Selected text"]] as NSDictionary, nil)
+    })
+    guard let page = await adapter.parse(safari) else { fatalError("Missing Safari page") }
+    precondition(page.type == .text && page.value == "Page title\\n\\nhttps://example.com/page\\n\\nSelected text")
+    print("PASS: concrete property lists beat previews; Safari preprocessing remains text")
     let selected = CommandLine.arguments[2]
     let link = NSItemProvider()
     let sharedURL = URL(string: "https://example.com/shared-page?source=provider")!

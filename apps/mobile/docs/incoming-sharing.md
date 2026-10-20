@@ -16,7 +16,7 @@ It never dispatches a message just because an external app opened Cindy.
 | Safari preprocessing result | Page title, URL and selection when Safari supplies them |
 | Image (including UIImage / raw data) | Attachment; HEIC/HEIF/TIFF/BMP follow the existing JPEG conversion path; vector/source encodings remain original files |
 | Movie, audio | File attachment |
-| PDF, Office, HTML/RTF, Markdown, JSON, archives | Original exported file |
+| PDF, Office, HTML/RTF, Markdown, JSON, property lists, archives | Original exported file |
 | vCard, calendar, models, custom data types | Original exported file through the generic data adapter |
 | File URL / security-scoped document | Owned copy, retaining its filename |
 | Directory / document package | Coordinated upload snapshot (ZIP) |
@@ -64,7 +64,9 @@ Provider temporary URLs are copied **inside** the `loadFileRepresentation` or
 Security-scoped access is balanced; directories use `NSFileCoordinator.forUploading`.
 Each input owns a unique App Group directory, so equal filenames cannot overwrite.
 The native slot is acknowledged only by the selected, focused, hydrated composer;
-account changes and upload cleanup use the existing ownership fences. The existing
+account changes and upload cleanup use the existing ownership fences. Rejection-marker
+removal is acknowledged only after a successful durable flush; failures retain the
+marker for retry, including when the App Group slot has already been cleared. The existing
 native inbox is a single persistent slot, with an in-process JS queue; this change does
 not promise a durable history of multiple shares received before Cindy opens.
 

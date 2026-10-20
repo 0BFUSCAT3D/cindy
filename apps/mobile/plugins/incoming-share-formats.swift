@@ -17,7 +17,8 @@
     for (format, kind) in formats where provider.hasItemConformingToTypeIdentifier(format.identifier) {
       if let file = await loadShareFile(provider, format: format, kind: kind) { return file }
     }
-    // Concrete exports win over thumbnails as well as text/link previews.
+    // Concrete exports (including ordinary property lists) win over previews.
+    // Only the positively identified Safari envelope above is composer text.
     if let file = await loadShareFile(provider, format: .data, kind: .file, excludePlainText: true, excludeImages: true) { return file }
     // Web links may also advertise a thumbnail; retain the actionable URL.
     if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
@@ -58,7 +59,7 @@
     let identifiers = provider.registeredTypeIdentifiers.filter {
       let type = UTType($0)
       return type?.conforms(to: format) == true && type?.conforms(to: .url) != true
-        && (!excludePlainText || (!textPreviews.contains($0) && type?.conforms(to: .propertyList) != true))
+        && (!excludePlainText || !textPreviews.contains($0))
         && (!excludeImages || ($0 != UTType.data.identifier && type?.conforms(to: .image) != true))
     }
     for identifier in identifiers {
