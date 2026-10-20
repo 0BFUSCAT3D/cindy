@@ -193,6 +193,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     const result = await resolveColdStartTimeoutRecovery({
       ownerTransitionPending: true,
       authChangedSinceInitialize: false,
+      isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
       currentState: { mode: 'cloud', ownerBoundaryPending: false },
@@ -211,6 +212,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
+      isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
       currentState,
@@ -227,6 +229,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
+      isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 8,
       currentState: loggedInState,
@@ -249,6 +252,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
+      isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: initializeStartEpoch,
       currentEpoch: authStateEpoch,
       currentState: loggedInState,
@@ -298,6 +302,49 @@ describe('ColdStartAuthFallbackRegistry', () => {
 
     expect(commit).toEqual({ superseded: false, flowEpoch: 9, value: 'owner' });
     expect(committedUser).toBe('owner');
+  });
+
+  it('keeps every unobserved sibling timeout edge until the shared refresh commits', async () => {
+    const registry = new ColdStartAuthFallbackRegistry();
+    const flowEpoch = 7;
+    let currentEpoch = flowEpoch;
+    const recover = vi.fn(async () => {
+      const fromEpoch = currentEpoch;
+      currentEpoch += 1;
+      registry.record(fromEpoch, currentEpoch);
+      return { mode: 'signed-out' as const };
+    });
+    const loggedOut = { mode: 'signed-out' as const };
+
+    await expect(resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: false,
+      authChangedSinceInitialize: false,
+      isStartupFallbackEpoch: (epoch) => registry.containsOnlyFallbacks(flowEpoch, epoch),
+      timeoutStartEpoch: flowEpoch,
+      currentEpoch,
+      currentState: loggedOut,
+      pendingState: { mode: 'signed-out', ownerBoundaryPending: true },
+      recover,
+    })).resolves.toEqual(loggedOut);
+    await expect(resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: false,
+      authChangedSinceInitialize: false,
+      isStartupFallbackEpoch: (epoch) => registry.containsOnlyFallbacks(flowEpoch, epoch),
+      timeoutStartEpoch: flowEpoch,
+      currentEpoch,
+      currentState: loggedOut,
+      pendingState: { mode: 'signed-out', ownerBoundaryPending: true },
+      recover,
+    })).resolves.toEqual(loggedOut);
+
+    expect(currentEpoch).toBe(9);
+    expect(commitColdStartRefreshIfCurrent({
+      registry,
+      flowEpoch,
+      currentEpoch,
+      commit: () => 'owner',
+    })).toEqual({ superseded: false, flowEpoch: 9, value: 'owner' });
+    expect(recover).toHaveBeenCalledTimes(2);
   });
 
   it('does not commit a refresh after an explicit login interrupts the fallback chain', () => {

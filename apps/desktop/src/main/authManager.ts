@@ -4734,6 +4734,9 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       const recovery = await resolveColdStartTimeoutRecovery({
         ownerTransitionPending: ownerChangeShellGate.isPending(),
         authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
+        isStartupFallbackEpoch: (epoch) =>
+          epoch > initializeStartEpoch &&
+          coldStartTimeoutFallbacks.containsOnlyFallbacks(initializeStartEpoch, epoch),
         timeoutStartEpoch: startupTimeoutEpoch,
         currentEpoch: authStateEpoch,
         currentState: snapshotAuthState(),
