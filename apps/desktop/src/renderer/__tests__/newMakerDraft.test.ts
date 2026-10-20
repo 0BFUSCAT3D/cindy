@@ -927,7 +927,7 @@ describe('newMakerDraft store', () => {
     expect(
       m1.patchVendorPrefsFromTaskModelSwitch(
         'cc',
-        { model: 'claude-sonnet-5-5', providerId: null },
+        { model: 'claude-sonnet-5-5', providerId: 'anthropic' },
         'anthropic',
         () => 'anthropic',
       ),
