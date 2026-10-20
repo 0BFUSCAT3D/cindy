@@ -3,11 +3,7 @@ import { Folder, X } from 'lucide-react';
 import { Spinner } from '@/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import { isSharedTaskPeer } from '@cindy/device-link';
-import {
-  observeFileTransferProgress,
-  createFileTransferProgressText,
-  createFileTransferProgressValues,
-} from '@/lib/fileTransferProgress';
+import { observeFileTransferProgress } from '@/lib/fileTransferProgress';
 import { formatBytes } from '@/features/cc-agent/workdir-browse/lib/fileMeta';
 import {
   getDataOwnerGeneration,
@@ -76,20 +72,15 @@ export function useComposerFolderTransfers(options: {
       const owner = getDataOwnerGeneration();
       const isCurrent = () =>
         current.current.scope === target.scope && isDataOwnerGenerationCurrent(owner);
-      const format = createFileTransferProgressText();
-      const values = createFileTransferProgressValues();
       let resolveCancellation!: (value: boolean) => void;
       const cancellation = new Promise<boolean>((resolve) => {
         resolveCancellation = resolve;
       });
       const progress = observeFileTransferProgress((event) => {
-        if (!isCurrent() || job.cancelled) return;
-        job.message =
-          event.phase === 'pack'
-            ? t('chat.remoteFile.folderPacking', { size: formatBytes(event.received) })
-            : event.phase === 'upload'
-              ? t('chat.remoteFile.folderUploading', values(event))
-              : format(event);
+        // This card covers local preparation only. Sending the resulting archive
+        // uses the ordinary attachment upload.
+        if (!isCurrent() || job.cancelled || event.phase !== 'pack') return;
+        job.message = t('chat.remoteFile.folderPacking', { size: formatBytes(event.received) });
         refresh();
       });
       const job: Transfer = {
@@ -216,7 +207,7 @@ export function ComposerFolderTransfers({
           <button
             type="button"
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
-            aria-label={t('chat.remoteFile.cancelTransfer')}
+            aria-label={t('chat.remoteFile.cancelFolderPreparation')}
             onClick={() => onRemove(row.id)}
           >
             <X className="h-3 w-3" />

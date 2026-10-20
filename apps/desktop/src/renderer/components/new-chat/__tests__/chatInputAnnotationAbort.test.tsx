@@ -513,30 +513,41 @@ it.each([
   }
 });
 
-it.each(['cancel', 'switch'] as const)('does not insert a late folder path after %s', async action => {
+it.each(['cancel', 'switch', 'queue-switch'] as const)('does not submit a late folder after %s', async action => {
   supplyRangeGeometry();
   let finish!: (result: { ok: true; path: string; size: number }) => void;
   h.uploadChatFolder.mockReturnValue(new Promise(resolve => { finish = resolve; }));
-  function RemoteComposer({ device = 'target' }: { device?: string }) {
+  const onSubmit = vi.fn();
+  function RemoteComposer({ device = 'target', queueId = 'queue-a' }: { device?: string; queueId?: string }) {
     const attachmentState = useAttachments(undefined, 'composer-regression');
     return <>
       <button onClick={() => attachmentState.addFolderPath('/controller/docs', new File([], 'docs'))}>Drop folder</button>
       <ChatInput draftKey="composer-regression" deviceLinkDeviceId={device}
         sessionId="remote-folder-session" initialModel="gpt-6-sol"
         attachmentState={attachmentState} hideRuntimeControls showFolderPicker={false}
-        disableAutofocus onSend={vi.fn()} />
+        queueEditingClientId={action === 'queue-switch' ? queueId : null}
+        onQueueEditSubmit={onSubmit}
+        disableAutofocus onSend={onSubmit} />
     </>;
   }
   const view = render(<RemoteComposer />);
   await waitFor(() => expect(h.editor).not.toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Drop folder' }));
   await waitFor(() => expect(h.uploadChatFolder).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole('button', {
+    name: action === 'queue-switch' ? 'newChat.pendingQueue.editSaveAria' : 'newChat.sendButton.send',
+  }));
+  await waitFor(() => expect(h.editor!.isEditable).toBe(false));
   if (action === 'cancel') {
-    fireEvent.click(screen.getByRole('button', { name: 'chat.remoteFile.cancelTransfer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'chat.remoteFile.cancelFolderPreparation' }));
+  } else if (action === 'queue-switch') {
+    view.rerender(<RemoteComposer queueId="queue-b" />);
   } else {
     view.rerender(<RemoteComposer device="another-computer" />);
   }
   await act(async () => finish({ ok: true, path: '/cache/docs.bin', size: 100 }));
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(view.container.querySelector('[title="docs"]')).toBeNull();
   expect(view.container.querySelector('[data-kind="dir"]')).toBeNull();
 });
 
@@ -560,7 +571,16 @@ it('keeps a folder dragged from the remote task browser as a reference without u
 
 // PR #6551: the outer drop zone remains usable while Send waits. A second folder
 // must join the same message, and its failure must preserve the original draft.
-it.each([true, false])('waits for a folder added during Send (second succeeds: %s)', async success => {
+// Unit regression for #6551: the previous Send-only coverage missed queue edits.
+// Submit while A is packing, then drop B: both entry points must use the completed
+// attachment snapshot (including an otherwise empty edit) or preserve the draft.
+it.each([
+  { queueEdit: false, success: true, text: 'Read both folders' },
+  { queueEdit: false, success: false, text: 'Read both folders' },
+  { queueEdit: true, success: true, text: 'Read both folders' },
+  { queueEdit: true, success: true, text: '' },
+  { queueEdit: true, success: false, text: 'Read both folders' },
+])('waits for folders added during submission ($queueEdit, $success, $text)', async ({ queueEdit, success, text }) => {
   supplyRangeGeometry();
   const completions: Array<(value: unknown) => void> = [];
   h.uploadChatFolder.mockImplementation(() => new Promise(resolve => completions.push(resolve)));
@@ -573,15 +593,21 @@ it.each([true, false])('waits for a folder added during Send (second succeeds: %
       <ChatInput draftKey="composer-regression" deviceLinkDeviceId="target"
         sessionId="remote-folder-session" initialModel="gpt-6-sol"
         attachmentState={attachmentState} hideRuntimeControls showFolderPicker={false}
+        queueEditingClientId={queueEdit ? 'queued-message' : null}
+        onQueueEditSubmit={queueEdit ? onSend : undefined}
         disableAutofocus onSend={onSend} />
     </>;
   }
   render(<RemoteComposer />);
   await waitFor(() => expect(h.editor).not.toBeNull());
-  await act(async () => h.editor!.commands.setContent('<p>Read both folders</p>'));
+  await act(async () => h.editor!.commands.setContent(`<p>${text}</p>`));
   fireEvent.click(screen.getByRole('button', { name: 'Drop A' }));
   await waitFor(() => expect(completions).toHaveLength(1));
-  fireEvent.click(screen.getByRole('button', { name: 'newChat.sendButton.send' }));
+  const submit = screen.getByRole('button', {
+    name: queueEdit ? 'newChat.pendingQueue.editSaveAria' : 'newChat.sendButton.send',
+  });
+  expect((submit as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(submit);
   await waitFor(() => expect(h.editor!.isEditable).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Drop B' }));
   await waitFor(() => expect(completions).toHaveLength(2));
@@ -598,7 +624,7 @@ it.each([true, false])('waits for a folder added during Send (second succeeds: %
     expect(sent).not.toContain('/controller/');
   } else {
     expect(onSend).not.toHaveBeenCalled();
-    expect(h.editor!.getText()).toContain('Read both folders');
+    expect(h.editor!.getText()).toContain(text);
   }
 });
 

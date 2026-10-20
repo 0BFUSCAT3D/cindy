@@ -4279,7 +4279,7 @@ export function ChatInput({
   );
 
   const folderTransfers = useComposerFolderTransfers({
-    scope: `${storageKey ?? sessionId ?? ''}:${deviceLinkDeviceId ?? ''}:${remoteHostId ?? ''}`,
+    scope: `${storageKey ?? sessionId ?? ''}:${deviceLinkDeviceId ?? ''}:${remoteHostId ?? ''}:${queueEditingClientId ?? ''}`,
     deviceId: deviceLinkDeviceId,
     remoteHostId,
     insert: (folderPath, folderName) => {
@@ -4290,6 +4290,7 @@ export function ChatInput({
       latestAttachmentsRef.current = restoreFiles([file]);
     },
   });
+  const hasPreparedOrPendingAttachments = hasAttachments || folderTransfers.hasPending;
   const waitForFolders = useCallback(async () => {
     if (waitingForFoldersRef.current) return false;
     if (!folderTransfers.hasPending) return true;
@@ -6196,11 +6197,12 @@ export function ChatInput({
     if ((folderTransfers.hasPending || waitingForFoldersRef.current) &&
         (!(await waitForFolders()) || editor.isDestroyed)) return;
     const content = serializeEditorContent(editor);
-    if (content.text.trim().length === 0 && attachments.length === 0) return;
+    const completedAttachments = [...latestAttachmentsRef.current];
+    if (content.text.trim().length === 0 && completedAttachments.length === 0) return;
 
     setSendDispatchInFlight(true);
     try {
-      const saved = await onQueueEditSubmit(queueEditingClientId, content, [...attachments]);
+      const saved = await onQueueEditSubmit(queueEditingClientId, content, completedAttachments);
       if (!saved) toast.error(t('ipcError.INTERNAL'));
     } catch (error) {
       log.warn('queue edit rejected:', error instanceof Error ? error.message : String(error));
@@ -6213,7 +6215,6 @@ export function ChatInput({
       setSendDispatchInFlight(false);
     }
   }, [
-    attachments,
     disabled,
     editor,
     onQueueEditSubmit,
@@ -6257,7 +6258,7 @@ export function ChatInput({
         return;
       }
       if (voiceBusyOnCurrentComposer) {
-        const currentCanSend = !isEditorEmpty(editor) || hasAttachments;
+        const currentCanSend = !isEditorEmpty(editor) || hasPreparedOrPendingAttachments;
         if (!voiceInput.isListening && !currentCanSend && voiceInput.draftText.trim().length === 0)
           return;
         if (voiceInputStopAndSendPromiseRef.current) {
@@ -6291,7 +6292,7 @@ export function ChatInput({
       dispatchSend,
       editor,
       handleVoiceInputStop,
-      hasAttachments,
+      hasPreparedOrPendingAttachments,
       queueEditActive,
       submitQueueEdit,
       voiceBusyOnCurrentComposer,
@@ -8618,7 +8619,7 @@ export function ChatInput({
 
   const hasMessage = !isEditorEmpty(editor);
   renderSnapshotRef.current = composerRenderSnapshot(trigger, hasMessage);
-  const hasComposerPayload = hasMessage || hasAttachments || browserComments.length > 0;
+  const hasComposerPayload = hasMessage || hasPreparedOrPendingAttachments || browserComments.length > 0;
   const hasVoiceDraftText = voiceBusyOnCurrentComposer && voiceInput.draftText.trim().length > 0;
   const recommendationComposerState = {
     enabled: recommendationEnabled,
@@ -8627,7 +8628,7 @@ export function ChatInput({
       storageKeyForDraftRef.current === storageKey &&
       !isRestoringRef.current,
     hasMessage,
-    hasAttachments,
+    hasAttachments: hasPreparedOrPendingAttachments,
     hasBrowserComments: browserComments.length > 0,
     hasVoiceDraftText,
     mutationLocked: composerMutationLocked,
@@ -8716,9 +8717,9 @@ export function ChatInput({
     return () => observer.disconnect();
   }, [showPromptPreview]);
   // 可见推荐本身就是一次可发送输入：按钮点击时会先把它同步写入正文，再走现有发送链。
-  const canSend = hasComposerPayload || showRecommendationOverlay || folderTransfers.hasPending;
+  const canSend = hasComposerPayload || showRecommendationOverlay;
   const makeNeedsNoModel = CINDY_MAKE_ENABLED && (noConnectedSource || selectedSourceDisconnected) && !!editor &&
-    !hasAttachments && classifyCindyMakeCommand(
+    !hasPreparedOrPendingAttachments && classifyCindyMakeCommand(
       serializeEditorContent(editor).text, slashCommandsReady ? mergedCommands : null,
     ).kind === 'start';
   const [voiceReleaseToSendActive, setVoiceReleaseToSendActive] = useState(false);
@@ -8727,7 +8728,7 @@ export function ChatInput({
         disabled || waitingForFolders ||
           sendDispatchInFlight ||
           voiceBusyOnCurrentComposer ||
-          (!hasMessage && !hasAttachments),
+          (!hasMessage && !hasPreparedOrPendingAttachments),
       )
     : Boolean(
     disabled || sessionModelLoading || waitingForFolders ||
