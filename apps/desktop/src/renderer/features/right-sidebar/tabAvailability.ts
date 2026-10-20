@@ -34,6 +34,20 @@ function isUnavailablePluginView(
   return !ghost || !isGlobalTabCapableGhost(ghost);
 }
 
+/** 任务页签(plugin-task):本机已装、启用且仍声明 taskView 的插件实例才投影。 */
+function isUnavailablePluginTask(
+  tab: TabState,
+  availability: RightSidebarTabAvailability,
+): boolean {
+  if (tab.kind !== 'plugin-task') return false;
+  const instanceId = (tab.state as { instanceId?: unknown } | null)?.instanceId;
+  if (typeof instanceId !== 'string' || !instanceId) return true;
+  const ghost = availability.installedGhosts.find(
+    (candidate) => installedGhostStoragePart(candidate) === instanceId,
+  );
+  return !ghost || ghost.enabled === false || !ghost.manifest.taskView;
+}
+
 function retiredTab(
   tab: TabState,
   availability: RightSidebarTabAvailability,
@@ -58,6 +72,7 @@ function isUnavailableTab(tab: TabState, availability: RightSidebarTabAvailabili
   return (
     availability.hiddenTabIds?.has(tab.id) === true ||
     isUnavailablePluginView(tab, availability) ||
+    isUnavailablePluginTask(tab, availability) ||
     (!CINDY_MAKE_ENABLED && tab.kind === 'cindy-make') ||
     retiredTab(tab, availability) === null ||
     (tab.kind === 'subagents' && !availability.subagentsAvailable)

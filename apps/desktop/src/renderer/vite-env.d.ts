@@ -1581,6 +1581,10 @@ interface ElectronAPI {
     ) => () => void;
     /** confirm 槽回包:把用户的点击送回 main 结算挂起的管子请求。 */
     resolveConfirm: (requestId: string, confirmed: boolean) => Promise<{ handled: boolean }>;
+    /** taskView 槽:插件请求在指定任务的右侧栏打开 / 聚焦它的任务页页签(main 已资格审)。 */
+    onTaskViewOpen: (
+      callback: (payload: { instanceId: string; sessionId: string }) => void,
+    ) => () => void;
     /** preview 槽:插件请求在右侧栏内置浏览器开预览标签(main 已白名单守门+限速)。 */
     onPreviewOpen: (
       callback: (payload: {

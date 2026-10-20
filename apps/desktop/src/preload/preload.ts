@@ -749,6 +749,7 @@ const fanOutGhostInstallConsentRequest = createIpcFanOut('ghosts:install-consent
 const fanOutGhostInstallConsentDismissed = createIpcFanOut('ghosts:install-consent:dismissed');
 // 插件预览开页(preview 槽:renderer 在右侧栏开 web-browser 标签)。
 const fanOutGhostPreviewOpen = createIpcFanOut('ghosts:preview-open');
+const fanOutGhostTaskViewOpen = createIpcFanOut('ghosts:task-view-open');
 // 插件自动化草稿(agent 槽 schedule 加档:renderer 开自动化创建面板并预填)。
 const fanOutGhostScheduleDraft = createIpcFanOut('ghosts:schedule-draft');
 const fanOutVoiceInputModifierShortcutKeys = createIpcFanOut('voice-input:modifier-shortcut-keys');
@@ -1485,6 +1486,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolveInstallConsent: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('ghosts:install-consent:resolve', { requestId, confirmed }),
     onPreviewOpen: fanOutGhostPreviewOpen,
+    onTaskViewOpen: fanOutGhostTaskViewOpen,
     onScheduleDraft: fanOutGhostScheduleDraft,
     getCard: (
       callId: string,
