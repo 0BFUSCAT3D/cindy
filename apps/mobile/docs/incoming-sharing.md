@@ -49,9 +49,9 @@ new sending privileges: normal conversation hydration and authorization still ap
 - `src/session/incomingShare.ts`: account-fenced mailbox, explicit destination identity,
   text normalization and attachment conversion selection.
 - `src/session/useIncomingShareComposer.ts`: shared handoff into new-task and existing
-  task/companion composers. Upload, retries and send stay in the established pipeline.
+  task/companion composers. Share batch positions survive concurrent upload completion and durable outbox handoff; successfully staged non-image copies are released, while failed uploads retain retry inputs. Upload, retries and send stay in the established pipeline.
 - `app/incoming-share.tsx`: destination discovery; companion identities come from their
-  advertised conversation links, not names or guessed sessions. Hosts without a
+  permanent resource IDs, with live canonical-conversation verification before claiming a share. Hosts without a
   conversation link remain visible but unavailable. Tasks use the existing active-list
   API (latest 500 per computer plus pinned tasks); archived/worker/bot sessions are not
   duplicated in the task section.

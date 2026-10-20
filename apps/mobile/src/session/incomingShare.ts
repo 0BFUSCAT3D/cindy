@@ -198,8 +198,11 @@ export function incomingShareText(payloads: readonly ResolvedSharePayload[]): st
     .map(payload => payload.value).filter(value => value.trim()).join('\n\n');
 }
 
-export function incomingShareDestination(deviceId: string, sessionId: string): string {
-  return JSON.stringify([deviceId, sessionId]);
+export function incomingShareDestination(deviceId: string, sessionId: string,
+  resource?: { collectionId: string; kind: string; id: string }): string {
+  return resource?.collectionId && resource.kind && resource.id
+    ? JSON.stringify([deviceId, 'resource', resource.collectionId, resource.kind, resource.id])
+    : JSON.stringify([deviceId, sessionId]);
 }
 
 export function consumeIncomingShareBatch(id: string): boolean {

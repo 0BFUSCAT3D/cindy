@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 /** Shares enter the real composer: its existing upload, retry and send pipeline owns delivery. */
 export function useIncomingShareComposer(options: {
-  destination: string;
+  destination: string | readonly string[];
   ready: boolean;
   appendText(text: string): void;
   attachmentCount: number;
@@ -26,7 +26,8 @@ export function useIncomingShareComposer(options: {
   const pendingCount = options.getPendingUploadCount();
   useEffect(() => {
     const target = latest.current;
-    if (!focused || !target.ready || !batch || batch.destination !== target.destination
+    const destinations = typeof target.destination === 'string' ? [target.destination] : target.destination;
+    if (!focused || !target.ready || !batch || !batch.destination || !destinations.includes(batch.destination)
       || !auth.isAuthenticated || getMobileAuthOwner().accountId !== auth.user?.id) return;
     const selection = selectIncomingShareUploadCandidates(batch.payloads);
     if (selection.candidates.length + target.attachmentCount + target.getPendingUploadCount() > MOBILE_MAX_ATTACHMENTS) {
@@ -42,8 +43,8 @@ export function useIncomingShareComposer(options: {
     }
     const text = incomingShareText(batch.payloads);
     if (text) target.appendText(text);
-    if (selection.candidates.length) target.enqueueUploads(selection.candidates.map(candidate => ({
-      ...candidate, cleanupLocalUris: deleteIncomingSharedFiles,
+    if (selection.candidates.length) target.enqueueUploads(selection.candidates.map((candidate, index) => ({
+      ...candidate, incomingShareOrder: { batchId: batch.id, index }, cleanupLocalUris: deleteIncomingSharedFiles,
     })), { token: auth.getAccessToken() });
     if (selection.rejectedUris.length) void deleteIncomingSharedFiles(selection.rejectedUris).catch(() => undefined);
     target.onError(selection.rejectedUris.length ? t('composer.upload.noFileRead') : null);

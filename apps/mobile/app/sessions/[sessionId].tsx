@@ -1,3 +1,4 @@
+import { incomingShareSlotOrder } from '@/session/mobileLocalAttachmentUpload';
 import { useIncomingShareComposer } from '@/session/useIncomingShareComposer';
 import { incomingShareDestination } from '@/session/incomingShare';
 import { useSessionHistorySearch } from '@/session/useSessionHistorySearch';
@@ -1350,6 +1351,7 @@ function SessionScreenContent() {
     waitForPendingUploads,
     beginOutboxAttachmentHandoff,
     getUploadedSource,
+    insertUploadedAttachment,
     getUploadedAttachmentId,
     releaseUploadedSources,
     waitForPastePlaceholdersSettled,
@@ -1367,7 +1369,7 @@ function SessionScreenContent() {
         ?.decorateUploadedAttachment(rawAttachment, candidate) ?? rawAttachment;
       // send() 在 waitForPendingUploads 落定后同步读 ref,而 setState 到 commit 有
       // 微任务延迟——这里派发时同步镜像,保证「上传完成→立即发送」不丢刚落定的附件。
-      attachmentsRef.current = [...attachmentsRef.current, attachment];
+      attachmentsRef.current = insertUploadedAttachment(attachmentsRef.current, attachment);
       if (candidate.kind === 'image') {
         setAttachmentPreviews((current) => ({ ...current, [attachment.id]: candidate.uri }));
       }
@@ -1376,7 +1378,7 @@ function SessionScreenContent() {
         const sourceId = candidate.sourceId;
         setMediaAssetAttachments((current) => ({ ...current, [sourceId]: attachment.id }));
       }
-      setAttachments((current) => [...current, attachment]);
+      setAttachments((current) => insertUploadedAttachment(current, attachment));
     },
     onError: (message) => {
       setAttachmentError(message);
@@ -3229,8 +3231,11 @@ function SessionScreenContent() {
   }, [applyComposerDraft]);
 
   useIncomingShareComposer({
-    destination: incomingShareDestination(deviceId, sessionId),
-    ready: composerDraftHydrated && canUseComposer && !queueEditingRef.current,
+    destination: [incomingShareDestination(deviceId, sessionId), incomingShareDestination(deviceId, sessionId, {
+      collectionId: readRouteParam(params.resourceCollectionId) ?? '',
+      kind: readRouteParam(params.resourceKind) ?? '', id: readRouteParam(params.resourceId) ?? '',
+    })],
+    ready: composerDraftHydrated && canUseComposer && companionEntry.ready && !queueEditingRef.current,
     appendText: text => setComposerDraft(current => [current, text].filter(Boolean).join('\n\n')),
     attachmentCount: attachments.length,
     enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
@@ -6640,6 +6645,10 @@ function SessionScreenContent() {
             sessionRefs: sessionRefsAtSend, agentReferences: agentReferencesAtSend,
             pastedTextRanges: pastedTextRangesAtSend, slashCommandRanges: slashCommandRangesAtSend ?? [],
             permissionModeAtSend, planModeAtSend, readyAttachments, readyPreviews,
+            attachmentOrder: incomingShareSlotOrder([
+              ...readyAttachments.map(attachment => getUploadedSource(attachment.id)?.incomingShareOrder),
+              ...pendingSources.map(({ source }) => source.incomingShareOrder),
+            ]),
             claimedUploads: pendingSources.map(({ localId, source }) => ({ localId, failed: false, kind: source.kind, previewUri: source.uri })),
           });
           const clearedAt = currentSession.clearedAt ? Date.parse(currentSession.clearedAt) : null;
@@ -6654,7 +6663,7 @@ function SessionScreenContent() {
             const source = getUploadedSource(readyAttachments[slot].id);
             if (!source && !outboxAttachmentNeedsLocalBytes(readyAttachments[slot])) continue;
             if (!source) throw new Error(t('session.screen.attachmentsNotCarriedBack', { count: 1 }));
-            record.uploads.push(await retainOutboxFile(record, slot, source));
+            record.uploads.push(await retainOutboxFile(record, item.attachmentSlots.findIndex(attachment => attachment?.id === readyAttachments[slot].id), source));
           }
           for (const { localId, source } of pendingSources) {
             record.uploads.push(await retainOutboxFile(record, item.slotByLocalId[localId]!, source));
@@ -6677,9 +6686,9 @@ function SessionScreenContent() {
             applyComposerDocument(documentAfterOptimisticClear);
           }
           rememberSentAttachmentPreviews(record.item.clientId, readyAttachments, (attachment) => {
-            const slot = readyAttachments.findIndex((a) => a.id === attachment.id);
+            const slot = item.attachmentSlots.findIndex((a) => a?.id === attachment.id);
             const upload = record?.uploads.find((u) => u.slot === slot);
-            return record && upload ? durableOutboxUploadUri(record, upload) : readyPreviews[slot] ?? null;
+            return record && upload ? durableOutboxUploadUri(record, upload) : readyPreviews[readyAttachments.findIndex(a => a.id === attachment.id)] ?? null;
           }, (attachment) => {
             const slot = item.attachmentSlots.findIndex((entry) => entry?.id === attachment.id);
             return slot >= 0 ? `${item.clientId}-slot-${slot}` : undefined;

@@ -149,7 +149,7 @@ export default function IncomingShareScreen() {
             const conversation = item.item.links.find(link => link.rel === 'conversation')?.target;
             return <Pressable accessibilityRole="button" style={styles.row}
               disabled={conversation?.kind !== 'session'} onPress={() => {
-                if (conversation?.kind === 'session') choose(incomingShareDestination(item.host.deviceId, conversation.sessionId),
+                if (conversation?.kind === 'session') choose(incomingShareDestination(item.host.deviceId, conversation.sessionId, item.item.ref),
                   () => router.dismissTo(teammateResourceRoute(item, i18n.language)));
               }}>
               <Text style={styles.title}>{resolveRemoteText(item.item.display.title, i18n.language)}</Text>

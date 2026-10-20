@@ -924,6 +924,7 @@ export default function NewRemoteSessionScreen() {
     getPendingUploadCount,
     hasAttachmentInput,
     getUploadedSource,
+    insertUploadedAttachment,
     getUploadedAttachmentId,
     releaseUploadedSources,
   } = useMobileLocalAttachments({
@@ -935,7 +936,7 @@ export default function NewRemoteSessionScreen() {
         ?.decorateUploadedAttachment(rawAttachment, candidate) ?? rawAttachment;
       // create() 在 waitForPendingUploads 落定后同步读 ref,而 setState 到 commit 有
       // 微任务延迟——这里派发时同步镜像,保证「上传完成→立即创建」不丢刚落定的附件。
-      attachmentsRef.current = [...attachmentsRef.current, attachment];
+      attachmentsRef.current = insertUploadedAttachment(attachmentsRef.current, attachment);
       if (candidate.kind === 'image') {
         setAttachmentPreviews((current) => ({ ...current, [attachment.id]: candidate.uri }));
       }
@@ -944,7 +945,7 @@ export default function NewRemoteSessionScreen() {
         const sourceId = candidate.sourceId;
         setMediaAssetAttachments((current) => ({ ...current, [sourceId]: attachment.id }));
       }
-      setAttachments((current) => [...current, attachment]);
+      setAttachments((current) => insertUploadedAttachment(current, attachment));
     },
     onError: setAttachmentError,
     onPicked: () => setContextSheetOpen(false),
