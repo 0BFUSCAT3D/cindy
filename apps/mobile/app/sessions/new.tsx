@@ -962,7 +962,7 @@ export default function NewRemoteSessionScreen() {
   }), [auth.getAccessToken, discardAllPendingUploads]);
   const incomingShareBatch = useIncomingShareBatch();
   const incomingShareReceivedRef = useRef(false);
-  if (incomingShareBatch) incomingShareReceivedRef.current = true;
+  if (incomingShareBatch?.destination === 'new') incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
   useAutoResumeNewSessionDraft({
     enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
