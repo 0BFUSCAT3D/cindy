@@ -207,6 +207,7 @@ describe('Codex done completion boundary', () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(updateMessageContent).mockReset().mockResolvedValue({} as never);
   vi.mocked(findVisibleToolUseMessageByAliases).mockResolvedValue(null);
   vi.mocked(getSubagentRunDetail).mockResolvedValue(null);
   ownerScopeState.current = true;
