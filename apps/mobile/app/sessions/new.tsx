@@ -971,12 +971,6 @@ export default function NewRemoteSessionScreen() {
     hasInput: hasRecoveryInput,
     onResume: next => router.setParams(next),
   });
-  useIncomingShareComposer({
-    destination: 'new', ready: isShareTargetFocused && newSessionPreferencesLoaded && !creating,
-    appendText: text => setDraft(current => ({ ...current, firstMessage: [current.firstMessage, text].filter(Boolean).join('\n\n') })),
-    attachmentCount: attachments.length,
-    enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
-  });
   const pendingGoalSkillRef = useRef<string | null>(null);
   useEffect(() => {
     pendingGoalSkillRef.current = null;
@@ -1921,6 +1915,13 @@ export default function NewRemoteSessionScreen() {
     setDraft((current) => ({ ...current, firstMessage: value }));
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(value);
   }, [editRecoveredDraft]);
+
+  useIncomingShareComposer({
+    destination: 'new', ready: isShareTargetFocused && newSessionPreferencesLoaded && !creating,
+    appendText: text => setFirstMessageDraft(current => [current, text].filter(Boolean).join('\n\n')),
+    attachmentCount: attachments.length,
+    enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
+  });
 
   const handleFirstMessageInputContentSizeChange = useCallback((event: TextInputContentSizeChangeEvent) => {
     const nextHeight = Math.max(

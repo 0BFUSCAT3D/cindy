@@ -50,3 +50,46 @@ it.each([['', false], ['new-host', false], ['old-host', true]] as const)(
     else expect(bindings.setAttachments).not.toHaveBeenCalled();
   },
 );
+
+it('keeps shared text when opening plugins without typing first', async () => {
+  const { appendComposerPluginTrigger } = await import('@/session/composerPlugins');
+  const { textComposerDocument, composerDocumentProjectedText } = await import('@/session/composerDocument');
+  const names = ['setFirstMessageDraft', 'patchDraft', 'openPluginPalette'];
+  const declarations: string[] = [];
+  let appendText = '';
+  function collect(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && names.includes(node.name.getText(page))
+      && node.initializer && ts.isCallExpression(node.initializer)) {
+      declarations.push(`const ${node.name.getText(page)} = ${node.initializer.arguments[0].getText(page)};`);
+    }
+    if (ts.isCallExpression(node) && node.expression.getText(page) === 'useIncomingShareComposer') {
+      const options = node.arguments[0];
+      if (ts.isObjectLiteralExpression(options)) {
+        const property = options.properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(page) === 'appendText');
+        if (property && ts.isPropertyAssignment(property)) appendText = property.initializer.getText(page);
+      }
+    }
+    ts.forEachChild(node, collect);
+  }
+  collect(page);
+  expect(appendText).not.toBe('');
+  let draft = { firstMessage: 'Existing instruction' };
+  const ref = { current: draft.firstMessage };
+  const bindings = {
+    firstMessageRef: ref, creatingRef: { current: false }, editRecoveredDraft: vi.fn(),
+    voiceDictionaryLearningTrackerRef: { current: null },
+    setDraft: (update: (current: typeof draft) => typeof draft) => { draft = update(draft); },
+    appendComposerPluginTrigger, textComposerDocument, composerDocumentProjectedText,
+    firstMessageSelectionRef: { current: null }, setFirstMessageSelection: vi.fn(),
+    composerPillOpen: { onCollapsedPress: vi.fn() },
+  };
+  const source = ts.transpileModule(`${declarations.join('\n')}\nconst appendText = ${appendText};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  const actions = new Function(...Object.keys(bindings), `${source}; return { appendText, openPluginPalette };`)(...Object.values(bindings));
+  actions.appendText('Shared webpage instruction');
+  actions.openPluginPalette();
+  expect(draft.firstMessage).toContain('Existing instruction\n\nShared webpage instruction');
+  expect(ref.current).toBe(draft.firstMessage);
+  expect(bindings.editRecoveredDraft).toHaveBeenCalledWith({ firstMessage: draft.firstMessage });
+});
