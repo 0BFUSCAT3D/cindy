@@ -207,6 +207,20 @@ it('validates remote task routes without reading or falling back to local provid
   expect(await validateTaskModel(shared)).toBe(true);
   expect(await validateTaskModel({ ...shared, effort: 'ultra' })).toBe(false);
   host.remote.mockRejectedValue(new Error('revoked'));
-  await expect(validateTaskModel(shared)).rejects.toThrow('revoked');
+  expect(await resolveAvailableTaskModels([shared])).toEqual([null]);
+  expect(await validateTaskModel(shared)).toBe(false);
   expect(host.providers).not.toHaveBeenCalled();
+});
+
+it('rejects an owner change even when the remote default lookup fails', async () => {
+  host.remote.mockImplementation(async () => {
+    host.owner = 'owner:2';
+    throw new Error('disconnected');
+  });
+  await expect(resolveAvailableTaskModels([{ ...route, agentDeviceId: 'share:one' }])).rejects.toThrow('账号已变化');
+});
+
+it('keeps available alternatives when a remote default is offline', async () => {
+  host.remote.mockRejectedValue(new Error('offline'));
+  expect(await resolveAvailableTaskModels([{ ...route, agentDeviceId: 'share:one' }, route])).toEqual([null, route]);
 });

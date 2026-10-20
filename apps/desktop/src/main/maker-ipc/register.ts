@@ -15582,8 +15582,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           return result;
         });
         if (selected.agentKind !== currentForFallback.agentKind
-          || (selected.agentDeviceId ?? null) !== (currentForFallback.agentDeviceId ?? null)
-          || selected.agentDeviceId) {
+          || (selected.agentDeviceId ?? null) !== (currentForFallback.agentDeviceId ?? null)) {
           try {
             const result = await withSendToSessionLock(sessionId, async () => {
               if (!isCurrent() || !sessionRuntimeControlOwnerEpochMatches(runtimeOwnerEpoch) ||
@@ -20707,6 +20706,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
     const profile: SessionRuntimeProfile = {
       agentKind,
+      agentDeviceId: runtimeStatus.agentDeviceId,
       model,
       providerId: targetProviderId,
       effort: targetEffort ?? (getSessionEffort(sessionId) as SessionRuntimeProfile['effort']) ?? null,

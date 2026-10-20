@@ -104,11 +104,19 @@ export async function resolveAvailableTaskModels(routes: readonly BotModelRoute[
   return Promise.all(routes.map(async route => {
     if (route.agentDeviceId) {
       const { readRemoteProviderRoute } = await import('../remote-agent/controller/deviceCatalog.js');
-      const { provider, model } = await readRemoteProviderRoute({
+      // An unavailable saved source must leave the form open for reselection.
+      // Owner changes still invalidate the whole read, including failed requests.
+      const assertOwner = () => {
+        if (activeOwnerScopeKey() !== owner || isAppSessionBoundaryPending()) throw new Error('账号已变化，请重新选择');
+      };
+      assertOwner();
+      const resolved = await readRemoteProviderRoute({
         agentDeviceId: route.agentDeviceId, agentKind: route.harness === 'claude' ? 'claude-code' : route.harness,
         providerId: route.providerId, model: route.model,
-      });
-      if (activeOwnerScopeKey() !== owner || isAppSessionBoundaryPending()) throw new Error('账号已变化，请重新选择');
+      }).catch(() => { assertOwner(); return null; });
+      assertOwner();
+      if (!resolved) return null;
+      const { provider, model } = resolved;
       if ((route.effort && !model.efforts.some(effort => effort === route.effort)) || (route.fastMode && !model.supportsFastMode)) return null;
       return { ...route, providerId: provider.id };
     }
