@@ -13,7 +13,7 @@ import {
   MAX_CACHED_TEXT_CHARS,
 } from '../device-link/mirrorCacheStore.js';
 import { getDbClient } from '../localDb/client/current.js';
-import { sessions } from '../localDb/schema.js';
+import { botSessionLinks, sessions } from '../localDb/schema.js';
 import type { RsbWindowContext } from '../../shared/rightSidebarWindow.js';
 
 export function contextFromLocalSessionRow(row: {
@@ -21,6 +21,8 @@ export function contextFromLocalSessionRow(row: {
   workingDir: string | null;
   remoteHostId: string | null;
   agentKind: string;
+  botId?: string | null;
+  botRole?: string | null;
 }): RsbWindowContext {
   return {
     sessionId: row.id,
@@ -29,6 +31,7 @@ export function contextFromLocalSessionRow(row: {
     deviceLinkDeviceId: null,
     available: true,
     subagentsAvailable: row.agentKind === 'pi' && !row.remoteHostId,
+    ...(row.botId ? { botOwner: { botId: row.botId, canonical: row.botRole === 'canonical' } } : {}),
   };
 }
 
@@ -80,8 +83,11 @@ async function readLocalSessionContext(sessionId: string): Promise<RsbWindowCont
         remoteHostId: sessions.remoteHostId,
         agentKind: sessions.agentKind,
         status: sessions.status,
+        botId: botSessionLinks.botId,
+        botRole: botSessionLinks.role,
       })
       .from(sessions)
+      .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
       .where(eq(sessions.id, sessionId))
       .limit(1);
     const row = rows[0];

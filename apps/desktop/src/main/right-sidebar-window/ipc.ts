@@ -70,6 +70,13 @@ function parseContext(raw: unknown): RsbWindowContext {
     'deviceLinkDeviceId',
     MAX_CONTEXT_SESSION_ID_LENGTH,
   );
+  const botOwner = r.botOwner === undefined || r.botOwner === null
+    ? r.botOwner
+    : requireObject(r.botOwner, 'botOwner');
+  if (botOwner && (typeof botOwner.botId !== 'string' || !botOwner.botId ||
+      botOwner.botId.length > MAX_CONTEXT_SESSION_ID_LENGTH || typeof botOwner.canonical !== 'boolean')) {
+    throwIpcError('INVALID_PARAMS', 'botOwner must contain a valid botId and canonical flag');
+  }
   return {
     sessionId: nullableString(r.sessionId, 'sessionId', MAX_CONTEXT_SESSION_ID_LENGTH),
     workdir: nullableString(r.workdir, 'workdir', MAX_CONTEXT_PATH_LENGTH),
@@ -78,6 +85,9 @@ function parseContext(raw: unknown): RsbWindowContext {
     ...(r.subagentsAvailable === undefined
       ? {}
       : { subagentsAvailable: r.subagentsAvailable }),
+    ...(botOwner === undefined ? {} : { botOwner: botOwner === null ? null : {
+      botId: botOwner.botId as string, canonical: botOwner.canonical as boolean,
+    } }),
     available: r.available,
   };
 }

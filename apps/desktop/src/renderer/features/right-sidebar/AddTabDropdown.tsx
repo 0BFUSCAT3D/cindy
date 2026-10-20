@@ -8,7 +8,7 @@
  * Phase 1 menu meta 硬编码;Phase 2 改从 TabKindRegistry 汇总。
  */
 
-import { useEffect } from 'react';
+import { useContext, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Bot,
@@ -40,6 +40,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { canonicalBotSessionId, useBotProfiles } from '@/features/bots/botStore';
 import { findBotProfileForSession } from '@/features/bots/botSessionOwners';
+import { DetachedBotMenuOwnerContext } from './botMenuOwnerContext';
 import { sessionsStore } from '@/lib/sessionsStore';
 import { openBotWorkbenchTab } from './lib/openBotWorkbenchTab';
 import type { TabGroupId } from './tabGroups';
@@ -169,16 +170,17 @@ export function AddTabDropdown({
     .sort((a, b) => a.title.localeCompare(b.title) || a.instanceId.localeCompare(b.instanceId));
   const bots = useBotProfiles();
   const bot = sessionId ? findBotProfileForSession(bots, sessionId) : undefined;
-  const isBotSession = Boolean(bot);
+  const detachedOwner = useContext(DetachedBotMenuOwnerContext);
+  const linkedOwner = detachedOwner?.sessionId === sessionId ? detachedOwner : null;
+  const isBotSession = Boolean(bot || linkedOwner);
   // 工作台只属于本机伙伴的主任务(渠道 / 历史 / 群专线任务与远端任务都没有)。
   const sessionRow = sessionId ? sessionsStore.findById(sessionId) : null;
   const workbenchBotId =
-    bot &&
     sessionId &&
-    canonicalBotSessionId(bot) === sessionId &&
+    (bot ? canonicalBotSessionId(bot) === sessionId : linkedOwner?.canonical) &&
     !sessionRow?.remoteHostId &&
     !sessionRow?.deviceLinkDeviceId
-      ? bot.id
+      ? bot?.id ?? linkedOwner?.botId ?? null
       : null;
   // 跟随:Radix Popper 负责摆位与视口碰撞。打开期间用 rAF 轮询 anchor —— 从布局中
   // 消失(关掉最后一个 tab 面板收起)直接关闭,避免菜单悬空残留在旧坐标。

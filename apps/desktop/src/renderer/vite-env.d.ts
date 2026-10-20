@@ -1996,6 +1996,7 @@ interface ElectronAPI {
       remoteHostId: string | null;
       deviceLinkDeviceId?: string | null;
       subagentsAvailable?: boolean;
+      botOwner?: { botId: string; canonical: boolean } | null;
       available: boolean;
     } | null>;
     /** 子窗口根组件挂载握手。 */
@@ -2016,6 +2017,7 @@ interface ElectronAPI {
       remoteHostId: string | null;
       deviceLinkDeviceId?: string | null;
       subagentsAvailable?: boolean;
+      botOwner?: { botId: string; canonical: boolean } | null;
       available: boolean;
     }) => void;
     onStateChanged: (
@@ -2033,6 +2035,7 @@ interface ElectronAPI {
         remoteHostId: string | null;
         deviceLinkDeviceId?: string | null;
         subagentsAvailable?: boolean;
+        botOwner?: { botId: string; canonical: boolean } | null;
         available: boolean;
       }) => void,
     ) => () => void;

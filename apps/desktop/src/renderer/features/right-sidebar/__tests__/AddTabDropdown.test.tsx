@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { AddTabDropdown } from '../AddTabDropdown';
+import { DetachedBotMenuOwnerContext } from '../botMenuOwnerContext';
 import { __resetGlobalTabsForTest } from '../globalTabs';
 import { __resetTabGroupsForTest } from '../tabGroups';
 
@@ -11,6 +12,7 @@ const m = vi.hoisted(() => ({
   ghosts: [] as unknown[],
   open: vi.fn(async () => undefined),
   rows: new Map<string, { remoteHostId?: string | null; deviceLinkDeviceId?: string | null }>(),
+  profiles: [] as Array<{ id: string; sessions: Array<{ id: string; role: string }> }>,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 // Radix 浮层在 jsdom 里不需要真的开合:菜单摊平成按钮,只验证有哪些项、点了做什么。
@@ -25,15 +27,7 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   ),
 }));
 vi.mock('@/features/bots/botStore', () => ({
-  useBotProfiles: () => [
-    {
-      id: 'bot-1',
-      sessions: [
-        { id: 'bot-main', role: 'canonical' },
-        { id: 'bot-history', role: 'history' },
-      ],
-    },
-  ],
+  useBotProfiles: () => m.profiles,
   canonicalBotSessionId: (bot: { sessions: Array<{ id: string; role: string }> }) =>
     bot.sessions.find((session) => session.role === 'canonical')?.id,
 }));
@@ -41,10 +35,16 @@ vi.mock('@/lib/sessionsStore', () => ({ sessionsStore: { findById: (id: string) 
 vi.mock('../lib/openBotWorkbenchTab', () => ({ openBotWorkbenchTab: m.open }));
 vi.mock('@/cindy-brain/useInstalledGhosts', () => ({ useInstalledGhosts: () => m.ghosts }));
 
-function renderMenu(sessionId: string, onSelect = vi.fn()) {
+function renderMenu(
+  sessionId: string,
+  onSelect = vi.fn(),
+  detachedOwner: { sessionId: string; botId: string; canonical: boolean } | null = null,
+) {
   const anchorRef = createRef<HTMLElement>();
   render(
-    <AddTabDropdown open={false} anchorRef={anchorRef} sessionId={sessionId} onClose={vi.fn()} onSelect={onSelect} />,
+    <DetachedBotMenuOwnerContext.Provider value={detachedOwner}>
+      <AddTabDropdown open={false} anchorRef={anchorRef} sessionId={sessionId} onClose={vi.fn()} onSelect={onSelect} />
+    </DetachedBotMenuOwnerContext.Provider>,
   );
   return onSelect;
 }
@@ -52,6 +52,9 @@ function renderMenu(sessionId: string, onSelect = vi.fn()) {
 beforeEach(() => {
   vi.clearAllMocks();
   m.rows = new Map();
+  m.profiles = [{ id: 'bot-1', sessions: [
+    { id: 'bot-main', role: 'canonical' }, { id: 'bot-history', role: 'history' },
+  ] }];
   m.ghosts = [];
   window.localStorage.clear();
   __resetGlobalTabsForTest();
@@ -65,6 +68,32 @@ it('offers the workbench in a local teammate main task and reopens it with the t
   fireEvent.click(screen.getByText('bots.workbench.title'));
   expect(m.open).toHaveBeenCalledWith('bot-main', 'bot-1');
   expect(onSelect).not.toHaveBeenCalled();
+});
+
+it('uses the linked identity in a detached window without Bot profiles', () => {
+  m.profiles = [];
+  renderMenu('bot-main', vi.fn(), { sessionId: 'bot-main', botId: 'bot-1', canonical: true });
+  expect(screen.getByText('bots.workbench.title')).toBeTruthy();
+  for (const kind of ['review', 'subagents', 'backgroundTasks', 'terminal']) {
+    expect(screen.queryByText(`rightSidebar.tabs.kinds.${kind}`)).toBeNull();
+  }
+  fireEvent.click(screen.getByText('bots.workbench.title'));
+  expect(m.open).toHaveBeenCalledWith('bot-main', 'bot-1');
+});
+
+it('does not reuse a detached owner after switching to another session', () => {
+  m.profiles = [];
+  renderMenu('task-1', vi.fn(), { sessionId: 'bot-main', botId: 'bot-1', canonical: true });
+  expect(screen.queryByText('bots.workbench.title')).toBeNull();
+  expect(screen.getByText('rightSidebar.tabs.kinds.review')).toBeTruthy();
+});
+
+it('filters a detached Bot history task without offering the canonical workbench', () => {
+  m.profiles = [];
+  renderMenu('bot-history', vi.fn(), { sessionId: 'bot-history', botId: 'bot-1', canonical: false });
+  expect(screen.queryByText('bots.workbench.title')).toBeNull();
+  expect(screen.queryByText('rightSidebar.tabs.kinds.review')).toBeNull();
+  expect(screen.getByText('rightSidebar.tabs.kinds.fileBrowser')).toBeTruthy();
 });
 
 it('keeps the other entries on the generic add path', () => {

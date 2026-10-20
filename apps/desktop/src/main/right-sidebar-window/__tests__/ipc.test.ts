@@ -91,7 +91,7 @@ describe('right-sidebar-window IPC', () => {
       .rejects.toThrow(/command.focusTab/);
   });
 
-  it('forwards the optional device-link origin and Pi-only Subagents eligibility', () => {
+  it('forwards the optional device-link origin, Subagents eligibility and Bot identity', () => {
     const controller = makeController();
     const { mainWebContents } = registerController(controller);
     const setContextCall = (ipcMain.on as ReturnType<typeof vi.fn>).mock.calls.find(
@@ -110,6 +110,7 @@ describe('right-sidebar-window IPC', () => {
         remoteHostId: null,
         deviceLinkDeviceId: 'device-1',
         subagentsAvailable: true,
+        botOwner: { botId: 'bot-1', canonical: false },
         available: true,
       },
     );
@@ -120,6 +121,7 @@ describe('right-sidebar-window IPC', () => {
       remoteHostId: null,
       deviceLinkDeviceId: 'device-1',
       subagentsAvailable: true,
+      botOwner: { botId: 'bot-1', canonical: false },
       available: true,
     });
   });
