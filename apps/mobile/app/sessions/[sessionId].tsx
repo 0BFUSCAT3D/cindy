@@ -3807,15 +3807,16 @@ function SessionScreenContent() {
       const contentKeyAtStart = ackAtReadStart === null ? null
         : JSON.stringify([deviceId, sessionId, readAckEpochAtStart, ackAtReadStart]);
       const isCurrent = () => !syncRun.isStale() && messageAuthorityCurrent();
-      const markHistorySynced = () => {
-        if (isCurrent() && readAckGateGenRef.current === readAckGateGenAtStart) {
-          setMessageHistoryRead({ key: subscriptionIdentityAtStart, synced: true });
-        }
-      };
       const pushRefresh = notificationResponse !== null
         && syncedNotificationResponseRef.current !== notificationResponse;
       let usedHistoryView = false;
       const messageRead = syncSessionMessageWindow({
+        historyConfirmation: {
+          key: subscriptionIdentityAtStart,
+          generation: readAckGateGenAtStart,
+          generationRef: readAckGateGenRef,
+          commit: setMessageHistoryRead,
+        },
         readMetadata: () => retryRead(fetchSessionMetadata),
         isReopen,
         storedSession: storedSessionAtStart,
@@ -3855,7 +3856,6 @@ function SessionScreenContent() {
         commitMessages: (history) => {
           if (usedHistoryView) {
             messageWindowReconciledRef.current = true;
-            markHistorySynced();
             return;
           }
           const historyPage: RemoteMessage[] = Array.isArray(history.messages) ? history.messages : [];
@@ -3871,7 +3871,6 @@ function SessionScreenContent() {
           // Even failed metadata must not hide pagination for a successful page.
           messageWindowReconciledRef.current = true;
           setHasOlderMessages(moreBeyondWindow);
-          markHistorySynced();
         },
         commit: (sessionMeta, history) => {
           if (history !== null && !usedHistoryView) {
@@ -3883,7 +3882,6 @@ function SessionScreenContent() {
             setHasOlderMessages(hasOlderMessagesAfterReopen(
               sessionMeta._count?.messages, remoteSessionStore.getMessages(sessionId),
             ));
-            markHistorySynced();
           }
         },
       });

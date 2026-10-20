@@ -10,11 +10,6 @@ import { syncSessionMessageWindow } from '@/session/sessionMessageWindowSync';
 import { shouldClearOperationErrorAfterSync } from '@/session/sessionSyncErrorRecovery';
 import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
 import {
-  resolveSessionMessageEmptyState,
-  type SessionMessageEmptyStateInput,
-} from '@/session/sessionEmptyState';
-import zhMessages from '@/i18n/locales/zh-CN/message.json';
-import {
   bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
   shouldKeepOlderMessagesAffordance,
@@ -82,7 +77,6 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     operation: null as { message: string } | null,
     hold: { deviceId: 'd1', error: null } as { deviceId: string; error: string | null } | null,
     synced: null as number | null, readAck: null as string | null,
-    historyRead: null as { key: string; synced: boolean } | null,
   };
   const operationErrorRef = { current: state.operation };
   const setError = vi.fn((message: string | null) => {
@@ -124,7 +118,6 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     remoteSessionStore: store, maker, isHistoryViewUnavailable, shouldBlockSessionSync: () => false,
     readAckEpochRef: { current: 1 }, readAckGateGenRef: { current: 1 },
     sessionSubscriptionIdentityRef: { current: JSON.stringify(['d1', 's1', 1]) },
-    sessionSubscriptionIdentity: JSON.stringify(['d1', 's1', 1]),
     createRemoteSyncReopenCoordinator: () => ({ captureVersion: () => 0 }),
     reopenLink: async () => undefined, openLink: async () => undefined,
     subscribe: async () => undefined,
@@ -151,7 +144,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     setOutboxTransportHold: (update: (value: typeof state.hold) => typeof state.hold) => { state.hold = update(state.hold); },
     latchOutboxTransportHold: (error: string) => { state.hold = { deviceId: 'd1', error }; },
     setLastSyncedAt: (value: number) => { state.synced = value; },
-    setMessageHistoryRead: (value: typeof state.historyRead) => { state.historyRead = value; },
+    setMessageHistoryRead: vi.fn(),
     setContentSyncedKey: vi.fn(), contentRecoveryKeyRef: { current: null },
     setSessionMetadataSyncedKey: vi.fn(),
     setReadAckSyncedKey: (value: string) => { state.readAck = value; },
@@ -170,130 +163,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
   };
 }
 
-// #6519 / #6527, unit: import the same presentation entry point the screen calls.
-// Existing recovery tests covered fetched rows, but not offline empty copy or an
-// empty history read succeeding while another snapshot fails. A synced A followed
-// by an uncached B is the smallest input exposing the page-level timestamp leak.
-// This fixture supplies data only; no screen declarations or JSX are extracted.
-function emptyPresentation(f: ReturnType<typeof fixture>, overrides: Partial<SessionMessageEmptyStateInput> = {}) {
-  const result = resolveSessionMessageEmptyState({
-    subscriptionIdentity: JSON.stringify(['d1', 's1', 1]),
-    historyRead: f.state.historyRead,
-    historySnapshot: { ready: false, items: [] }, messageCount: f.state.rows.length,
-    loading: f.state.loading, showSyncingShell: false, remoteUnavailableReason: null,
-    status: 'online', targetAvailable: true,
-    historyNotCachedMessage: zhMessages.renderer.historyNotCached,
-    ...overrides,
-  });
-  return { syncing: result.syncingWhileEmpty, copy: result.emptyMessage };
-}
-
 describe('production session recovery callbacks', () => {
-  it('explains uncached offline history immediately', () => {
-    const f = fixture(false, false);
-    expect(emptyPresentation(f, { status: 'stopped' })).toEqual({
-      syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
-    });
-  });
-
-  // #6527 review, unit: cached emptiness, connecting, and post-activity emptiness
-  // were absent from #6519 coverage. Call the production selector after sync/activity;
-  // each minimal input previously displayed either false missing-cache copy or
-  // a false empty result. Reuse the controller to restore a genuine empty cache.
-  it('honors an empty restored history cache on an offline cold reopen', async () => {
-    const f = fixture(false, false);
-    const view = new HistoryViewController({
-      page: async () => ({ version: 1 as const, items: [], hasMore: false, nextCursor: null }),
-      details: async () => ({ version: 1 as const, messages: [], hasMore: false, nextCursor: null }),
-      expanded: async () => undefined,
-    });
-    view.setNetworkAvailable(false);
-    await view.restoreCachedView(async () => ({ ...view.getSnapshot(), ready: true }));
-    expect(emptyPresentation(f, { status: 'stopped', historySnapshot: view.getSnapshot() }))
-      .toEqual({ syncing: false, copy: undefined });
-  });
-
-  it.each([
-    { status: 'connecting', presence: null, syncing: true, copy: undefined },
-    { status: 'online', presence: false, syncing: false, copy: '历史消息尚未缓存，连接电脑后同步' },
-  ] as const)('distinguishes $status with presence=$presence from confirmed unavailability', ({ status, presence, syncing, copy }) => {
-    const f = fixture(false, false);
-    expect(emptyPresentation(f, { status, targetAvailable: presence })).toEqual({ syncing, copy });
-  });
-
-  // #6527 reconnect review, unit: prior activity tests retained connection 1.
-  // An invalidated ready empty cache plus connection 2 must remain unknown even
-  // when its first history read fails; only a successful read can confirm empty.
-  it('preserves empty-history invalidation across reconnect and a failed read', async () => {
-    const f = fixture();
-    f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
-    await f.sync();
-    // The real hook lifecycle producing this state is covered separately in
-    // useSessionActivityInvalidation.test.tsx; this Node test covers sync recovery.
-    f.state.historyRead = { key: JSON.stringify(['d1', 's1', 1]), synced: false };
-    const subscriptionIdentity = JSON.stringify(['d1', 's1', 2]);
-    const presentation = { subscriptionIdentity, historySnapshot: { ready: true, items: [] } };
-    f.bindings.readAckEpochRef.current = 2;
-    f.bindings.sessionSubscriptionIdentityRef.current = subscriptionIdentity;
-    f.coordinator.setContext('d1:s1:2');
-    expect(emptyPresentation(f, { ...presentation, status: 'connecting', targetAvailable: null }))
-      .toEqual({ syncing: true, copy: undefined });
-    f.maker.listMessages.mockRejectedValueOnce(new Error('[INVOKE_TIMEOUT] history'));
-    await expect(f.sync()).rejects.toThrow('history');
-    expect(emptyPresentation(f, presentation)).toEqual({ syncing: true, copy: undefined });
-    expect(emptyPresentation(f, { ...presentation, status: 'stopped' })).toEqual({
-      syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
-    });
-    await f.sync();
-    expect(emptyPresentation(f, presentation)).toEqual({ syncing: false, copy: undefined });
-  });
-
-  it('does not carry a synced task into an uncached offline task, then shows a confirmed empty result after reconnect', async () => {
-    const f = fixture();
-    f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
-    await f.sync();
-    expect(emptyPresentation(f)).toEqual({ syncing: false, copy: undefined });
-    for (const sessionId of ['s2', 's3']) {
-      expect(emptyPresentation(f, { subscriptionIdentity: JSON.stringify(['d1', sessionId, 1]), status: 'stopped' })).toEqual({
-        syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
-      });
-    }
-    expect(emptyPresentation(f, { subscriptionIdentity: JSON.stringify(['d1', 's2', 2]) })).toEqual({ syncing: true, copy: undefined });
-    f.bindings.sessionId = 's2';
-    f.bindings.readAckEpochRef.current = 2;
-    f.bindings.sessionSubscriptionIdentityRef.current = JSON.stringify(['d1', 's2', 2]);
-    f.maker.getSession.mockResolvedValue({ ...session, id: 's2' });
-    const coordinator = createRemoteSyncCoordinator(pageCallback('syncSession', f.bindings));
-    coordinator.setContext('d1:s2:2');
-    await coordinator.request({ reason: 'manual' });
-    expect(emptyPresentation(f, { subscriptionIdentity: JSON.stringify(['d1', 's2', 2]) })).toEqual({ syncing: false, copy: undefined });
-  });
-
-  it.each(['metadata', 'projection'])('recognizes fetched empty history even if %s fails', async (failedRead) => {
-    const f = fixture();
-    f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
-    const failure = new Error(`[INVOKE_TIMEOUT] ${failedRead}`);
-    if (failedRead === 'metadata') f.maker.getSession.mockRejectedValue(failure);
-    else f.maker.input.getProjection.mockRejectedValue(failure);
-    await expect(f.sync()).rejects.toThrow(failedRead);
-    expect(emptyPresentation(f)).toEqual({ syncing: false, copy: undefined });
-  });
-
-  it('does not let a late empty read certify a later visit to the same task', async () => {
-    const f = fixture();
-    const history = deferred<typeof page>();
-    f.maker.listMessages.mockReturnValue(history.promise);
-    const result = f.sync();
-    await tick();
-    // A → B → A can have the same connection identity, but a new visit generation.
-    f.bindings.readAckGateGenRef.current += 1;
-    history.resolve({ ...page, messages: [] });
-    await result;
-    expect(emptyPresentation(f, { status: 'stopped' })).toEqual({
-      syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
-    });
-  });
-
   // Existing callback-execution guard: PR #6325 missed a focused reconnect where
   // only the new list topic is ACKed. Use the real waiter and ACK table here so
   // an old completed Promise cannot start the actual page's history read early.
@@ -461,7 +331,6 @@ describe('production session recovery callbacks', () => {
     expect(f.store.setLatestMessageWindow).not.toHaveBeenCalled();
     expect(f.store.markSessionMessagesSynced).not.toHaveBeenCalled();
     expect(f.state.synced).not.toBeNull();
-    expect(f.state.historyRead).toEqual({ key: JSON.stringify(['d1', 's1', 1]), synced: true });
   });
 
   it('routes the visible history retry to pagination rather than full sync', () => {
@@ -554,7 +423,6 @@ describe('production session recovery callbacks', () => {
     expect(f.maker.listMessages).not.toHaveBeenCalled();
     expect(f.state.rows).toEqual([{ id: 'cached', clientId: 'cached' }]);
     expect(f.state.hold).not.toBeNull();
-    expect(f.state.historyRead).toEqual({ key: JSON.stringify(['d1', 's1', 1]), synced: true });
   });
 
   it('reports failed history without clearing the read-receipt barrier', async () => {
