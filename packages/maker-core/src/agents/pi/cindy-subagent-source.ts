@@ -350,6 +350,30 @@ function parentContextSnapshot(ctx) {
     .map(function (entry) { return entry[1]; }).join('\n\n');
 }
 
+function routeMatchesProvider(route, provider) {
+  // Cindy 的来源 id 与 pi 的 runtime provider 名可以不同(cindy-gateway / cindy,
+  // openai / openai-codex),调用方拿到的通常是前者,两个都认。
+  return route.provider === provider || route.sourceProviderId === provider;
+}
+
+function routeProviders(candidates) {
+  const providers = [];
+  for (const route of candidates) {
+    const label = route.sourceProviderId || route.provider;
+    if (providers.indexOf(label) < 0) providers.push(label);
+  }
+  return providers;
+}
+
+function modelProviderMap(runtime) {
+  const map = {};
+  for (const [id, routes] of Object.entries(runtime.modelRoutes || {})) {
+    const providers = routeProviders(routes);
+    if (providers.length > 0) map[id] = providers;
+  }
+  return map;
+}
+
 function resolveTaskModelRoutes(tasks, runtime) {
   const availableModels = Object.keys(runtime.modelRoutes || {}).sort();
   const availableModelHint = availableModels.length > 0
@@ -357,7 +381,7 @@ function resolveTaskModelRoutes(tasks, runtime) {
       + (availableModels.length > 24 ? ', ...' : '') + '.'
     : ' No models are available in this session.';
   for (const task of tasks) {
-    if (!task.model) {
+    if (!task.model && !task.provider) {
       const currentRoutes = runtime.modelRoutes && Array.isArray(runtime.modelRoutes[runtime.model])
         ? runtime.modelRoutes[runtime.model]
         : [];
@@ -370,9 +394,45 @@ function resolveTaskModelRoutes(tasks, runtime) {
       task.routeProxySessionAuth = !!(currentRoute && currentRoute.proxySessionAuth === true);
       continue;
     }
-    const candidates = runtime.modelRoutes && Array.isArray(runtime.modelRoutes[task.model])
-      ? runtime.modelRoutes[task.model]
+    const modelId = task.model || runtime.model;
+    const candidates = runtime.modelRoutes && Array.isArray(runtime.modelRoutes[modelId])
+      ? runtime.modelRoutes[modelId]
       : [];
+    if (task.provider) {
+      // 显式 provider 压过父 provider 与下面的 id 前缀推断:裸 id 在两个真实连接下重名时,
+      // 只有调用方知道要哪一条。仍然只认快照里存在的路由 —— 不按名字拼 endpoint。
+      const matching = candidates.filter(function (route) {
+        return routeMatchesProvider(route, task.provider);
+      });
+      const exact = matching.filter(function (route) { return route.model === modelId; });
+      const route = matching.length === 1
+        ? matching[0]
+        : exact.length === 1
+          ? exact[0]
+          : null;
+      if (!route) {
+        if (candidates.length === 0) {
+          throw new Error(
+            'subagent: model "' + modelId + '" is not available in this session.' + availableModelHint,
+          );
+        }
+        if (matching.length > 1) {
+          throw new Error(
+            'subagent: provider "' + task.provider + '" has several routes for model "' + modelId + '": '
+            + matching.map(function (route) { return route.model; }).join(', ') + '.',
+          );
+        }
+        throw new Error(
+          'subagent: provider "' + task.provider + '" does not offer model "' + modelId + '" in this session. '
+          + 'Providers for this model: ' + routeProviders(candidates).join(', ') + '.',
+        );
+      }
+      task.routeProvider = route.provider;
+      task.routeModel = route.model;
+      task.routeSourceProviderId = route.sourceProviderId;
+      task.routeProxySessionAuth = route.proxySessionAuth === true;
+      continue;
+    }
     const explicitSource = task.model.startsWith('xai/')
       ? 'xai'
       : task.model.startsWith('chatgpt/')
@@ -396,8 +456,9 @@ function resolveTaskModelRoutes(tasks, runtime) {
     if (!route) {
       if (candidates.length > 1) {
         throw new Error(
-          'subagent: model "' + task.model + '" is available from multiple providers; '
-          + 'switch the parent to the intended provider before delegating.',
+          'subagent: model "' + task.model + '" is available from multiple providers: '
+          + routeProviders(candidates).join(', ') + '. Pass provider to choose one, or switch the parent '
+          + 'to the intended provider before delegating.',
         );
       }
       throw new Error(
@@ -616,9 +677,11 @@ async function writeDurableControl(status, action, message, childId, signal) {
 async function managementResult(params, ctx, signal, delivery) {
   const action = params.action;
   if (action === 'capabilities') {
+    const runtime = readRuntimeSnapshot();
     return JSON.stringify({ roles: Object.keys(PROFILES).map(function (agent) {
       return { agent: agent, tools: toolsFor(agent).split(',') };
-    }), models: Object.keys(readRuntimeSnapshot().modelRoutes || {}),
+    }), models: Object.keys(runtime.modelRoutes || {}),
+      modelProviders: modelProviderMap(runtime),
       maxTasks: MAX_TASKS, concurrency: MAX_CONCURRENCY, context: ['fresh', 'fork'],
       actions: ['run', 'list', 'get', 'wait', 'stop', 'steer', 'follow_up', 'resume'] });
   }
@@ -1231,6 +1294,14 @@ function normalizeInvocation(params) {
     if (model.length > MAX_MODEL_CHARS) {
       throw new Error('subagent: model id exceeds ' + MAX_MODEL_CHARS + ' characters');
     }
+    const provider = typeof item.provider === 'string' && item.provider.trim()
+      ? item.provider.trim()
+      : typeof input.provider === 'string' && input.provider.trim()
+        ? input.provider.trim()
+        : '';
+    if (provider.length > MAX_MODEL_CHARS) {
+      throw new Error('subagent: provider id exceeds ' + MAX_MODEL_CHARS + ' characters');
+    }
     const thinking = typeof item.thinking === 'string' && item.thinking.trim()
       ? item.thinking.trim()
       : typeof input.thinking === 'string' && input.thinking.trim()
@@ -1246,6 +1317,7 @@ function normalizeInvocation(params) {
       title: title,
       task: task,
       model: model,
+      provider: provider,
       thinking: thinking,
       customProfile: false,
       customTools: 'read',
@@ -1419,7 +1491,8 @@ export default async function cindySubagent(pi: any) {
     description: 'Delegate work to a PI child with its own context and durable session. '
       + 'Available roles: ' + profileNames() + '. Read-only roles cannot edit. worker uses the parent '
       + 'permission mode; Ask/Auto requests are forwarded to Cindy approval. Pass model/thinking to override the '
-      + 'parent model for a child. Pass async:true for a detached background run that survives parent navigation. '
+      + 'parent model for a child, and provider to choose which provider serves that model (see capabilities '
+      + 'modelProviders). Pass async:true for a detached background run that survives parent navigation. '
       + 'Results are collected before this parent turn settles; notify:false leaves collection explicit. '
       + 'Pass {agent, task} for one, or {tasks:[{agent, task}, ...]} to fan out in parallel. '
       + 'Use action:capabilities/list/get/wait/stop/steer/follow_up/resume for durable runs. Select childId to control one child. Children cannot spawn further subagents.',
@@ -1442,6 +1515,10 @@ export default async function cindySubagent(pi: any) {
         },
         title: { type: 'string', description: 'Optional user-facing name describing the task value.' },
         model: { type: 'string', description: 'Optional exact child model id.' },
+        provider: {
+          type: 'string',
+          description: 'Optional provider id for the child (from capabilities modelProviders). Must serve the chosen model; defaults to the parent provider.',
+        },
         thinking: { type: 'string', description: 'Optional thinking level: ' + THINKING_LEVELS },
         async: { type: 'boolean', description: 'Run in Cindy durable background mode.' },
         notify: { type: 'boolean', description: 'Default true: collect async/resume results before the parent finishes. false: use wait/get explicitly.' },
@@ -1471,6 +1548,7 @@ export default async function cindySubagent(pi: any) {
               title: { type: 'string', description: 'Optional user-facing name for this task.' },
               task: { type: 'string' },
               model: { type: 'string' },
+              provider: { type: 'string' },
               thinking: { type: 'string' },
             },
             required: ['agent', 'task'],
