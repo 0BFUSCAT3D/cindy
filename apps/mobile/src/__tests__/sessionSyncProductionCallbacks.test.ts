@@ -244,6 +244,34 @@ describe('production session recovery callbacks', () => {
     expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: false, copy: undefined });
   });
 
+  // #6527 reconnect review, unit: prior activity tests retained connection 1.
+  // An invalidated ready empty cache plus connection 2 must remain unknown even
+  // when its first history read fails; only a successful read can confirm empty.
+  it('preserves empty-history invalidation across reconnect and a failed read', async () => {
+    const f = fixture();
+    f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
+    await f.sync();
+    await pageCallback('liveActivitySig', {
+      ...f.bindings, liveAttention: true, liveActivitySig: 'completed|1|new result',
+      prevLiveActivitySigRef: { current: 'completed|1|previous result' }, load: async () => undefined,
+    })();
+    const subscriptionIdentity = JSON.stringify(['d1', 's1', 2]);
+    const presentation = { subscriptionIdentity, historySnapshot: { ready: true, items: [] } };
+    f.bindings.readAckEpochRef.current = 2;
+    f.bindings.sessionSubscriptionIdentityRef.current = subscriptionIdentity;
+    f.coordinator.setContext('d1:s1:2');
+    expect(emptyPresentation(f, { ...presentation, status: 'connecting', targetAvailable: null }))
+      .toEqual({ syncing: true, copy: undefined });
+    f.maker.listMessages.mockRejectedValueOnce(new Error('[INVOKE_TIMEOUT] history'));
+    await expect(f.sync()).rejects.toThrow('history');
+    expect(emptyPresentation(f, presentation)).toEqual({ syncing: true, copy: undefined });
+    expect(emptyPresentation(f, { ...presentation, status: 'stopped' })).toEqual({
+      syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
+    });
+    await f.sync();
+    expect(emptyPresentation(f, presentation)).toEqual({ syncing: false, copy: undefined });
+  });
+
   it('does not carry a synced task into an uncached offline task, then shows a confirmed empty result after reconnect', async () => {
     const f = fixture();
     f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });

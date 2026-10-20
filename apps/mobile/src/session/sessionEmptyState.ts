@@ -31,6 +31,7 @@ export function shouldSuppressEmptyMessageState(input: MessageEmptyStateInput): 
   return false;
 }
 
+/** 当前访问的历史结果：切换任务/设备/通知访问时由页面清空，重连保留。 */
 export type MessageHistoryRead = { key: string; synced: boolean };
 
 export interface SessionMessageEmptyStateInput {
@@ -53,8 +54,9 @@ export function shouldShowCachedHistoryNotice(status: DeviceLinkStatus, targetAv
 
 /** 结合历史读取结果与连接状态，统一决定同步占位和未缓存文案。 */
 export function resolveSessionMessageEmptyState(input: SessionMessageEmptyStateInput) {
-  const hasSyncedHistory = input.historyRead?.key === input.subscriptionIdentity
-    ? input.historyRead.synced : input.historySnapshot.ready;
+  // 新活动作废的是本次访问的旧历史；连接代推进不能凭旧缓存撤销失效标记。
+  const hasSyncedHistory = input.historyRead?.synced !== false
+    && (input.historyRead?.key === input.subscriptionIdentity || input.historySnapshot.ready);
   const remoteUnavailable = !!input.remoteUnavailableReason
     || shouldShowCachedHistoryNotice(input.status, input.targetAvailable);
   return {
