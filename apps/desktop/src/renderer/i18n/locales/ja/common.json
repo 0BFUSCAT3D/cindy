@@ -11224,6 +11224,7 @@
     },
     "messageActionBar": {
       "copy": "メッセージをコピー",
+      "copied": "コピーしました",
       "reply": "返信",
       "linkCopied": "リンクをコピーしました",
       "moreActions": "その他のメッセージ操作",
