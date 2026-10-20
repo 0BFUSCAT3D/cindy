@@ -34,6 +34,8 @@ vi.mock('../worktree/gitExec', async () => {
 
 beforeEach(() => {
   gitExecMock.mockReset();
+  // Synchronous Git fixtures consume no work budget; fake-timer cases replace this clock.
+  vi.spyOn(performance, 'now').mockReturnValue(0);
   // Synthetic paths need no filesystem I/O, including fake-timer timeout tests.
   realpathMock.mockReset().mockRejectedValue(Object.assign(new Error('missing directory'), { code: 'ENOENT' }));
 });
@@ -74,6 +76,42 @@ function setupGitMock(opts: {
 }
 
 describe('detectCwd → isInsideWorktree (I-1 fix)', () => {
+  // PR #6544: 5s realpath + 10s Git leaves no headroom in Mobile's 15s wait.
+  // Existing coverage bounds each phase separately, not their sum (unit tier).
+  it.each([
+    { fallback: false, realpathMs: 4_999 },
+    { fallback: true, realpathMs: 4_999 },
+    { fallback: true, realpathMs: 4_000 },
+  ])('shares the deadline across slow realpath and Git ($fallback, $realpathMs ms)', async ({ fallback, realpathMs }) => {
+    vi.useFakeTimers();
+    realpathMock.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(path.resolve('/repo')), realpathMs);
+    }));
+    gitExecMock.mockImplementation((args: readonly string[], _cwd: string, opts: GitExecOpts) => {
+      const duration = fallback ? 2_000 : 6_000;
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (duration > opts.timeoutMs!) reject(timeoutError());
+          else resolve({ stdout: args.length > 3 && !fallback ? '/repo\nmain\n.git\n.git\n'
+            : args.includes('--show-toplevel') && args.length === 2 ? '/repo' : '.git' });
+        }, Math.min(duration, opts.timeoutMs!));
+      });
+    });
+    let failure: unknown;
+    const probe = detectCwd('/repo').catch((error) => { failure = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(failure).toMatchObject({ timedOut: true });
+      await probe;
+      expect(gitExecMock.mock.calls[0][2].timeoutMs).toBe(10_000 - realpathMs);
+      if (realpathMs === 4_000) expect(gitExecMock).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      await probe;
+    }
+  });
+
   // PR #6544: Git deadlines do not cover a stalled realpath. Four unresolved
   // lookups must reject as unknown state and release queued probes (unit tier).
   it('bounds physical-directory lookups and releases queued probes and same-path retries', async () => {
