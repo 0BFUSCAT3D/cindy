@@ -30,7 +30,7 @@ import { buildUserProvider } from '@cindy/model-providers';
 import type { RoutingDecision } from '@cindy/anthropic-compat-proxy';
 
 import { setCustomProviders } from '../active-catalog';
-import { createCodexGuestRoutingGuard, registerComposed, unregister } from '../codex-proxy-host';
+import { createCodexGuestRoutingGuard, registerComposed, registerReviewerRouteContext, unregister } from '../codex-proxy-host';
 import { CODEX_CUSTOM_PROVIDER_ROUTE_ROOT } from '../codex-custom-provider-route';
 import { registerGuestProviderRoute, resetGuestProviderRoutesForTest } from '../guest-provider-route-store';
 import { clearAllSessionProviders, setSessionProvider } from '../session-provider-store';
@@ -90,6 +90,31 @@ describe('Codex proxy guard for shared-provider guests', () => {
     allowed = false;
     expect(await statusOf(request())).toBe(403);
     expect(await statusOf(guard({ model: 'other-model' }, ctx(path, { 'thread-id': 'guest-thread' })))).toBe(403);
+  });
+
+  // Unit regression for review 4326610462: the public guard must authorize Guardian's
+  // actual reviewer model, including live revocation. Existing tests only sent catalog ids;
+  // the minimal failure is an allowlisted parent with the internal codex-auto-review marker.
+  it.each([
+    ['shared-a', '/responses'],
+    ['shared-a', `${CODEX_CUSTOM_PROVIDER_ROUTE_ROOT}/0123456789abcdef0123/responses`],
+    ['openai', '/responses'],
+  ])('authorizes Guardian by its parent model on %s %s', async (providerId, path) => {
+    const model = providerId === 'openai' ? 'gpt-5.5' : 'shared-model';
+    let allowed = true;
+    registerGuestProviderRoute('guest-session', providerId, candidate => allowed && candidate === model, () => true);
+    registerReviewerRouteContext('guest-session', 'guest-thread', model);
+    const guard = createCodexGuestRoutingGuard(providerId, providerId === 'openai' ? 'oauth-bearer' : 'env-key');
+    const body = { model: 'codex-auto-review' };
+    const request = () => guard(body, ctx(path, {
+      'thread-id': 'guardian-child',
+      'x-openai-subagent': 'guardian',
+      'x-codex-parent-thread-id': 'guest-thread',
+    }));
+    expect(request()).toBeUndefined();
+    expect(await statusOf(guard(body, ctx(path, { 'thread-id': 'guest-thread' })))).toBe(403);
+    allowed = false;
+    expect(await statusOf(request())).toBe(403);
   });
 
   it('refuses requests that do not belong to the registered guest session', async () => {

@@ -2540,7 +2540,12 @@ export function createCodexGuestRoutingGuard(
     const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
     if (!requestModel) return undefined;
     const sessionId = sessionIdFromHeaders(ctx.headers);
-    if (!guestProviderModelAllowed(providerId, requestModel, sessionId)) return codexGuestRouteRefusal();
+    // Guardian's internal marker is not a catalog model. Authorize its registered
+    // parent model, including when native OpenAI keeps the marker on the wire.
+    const reviewerModel = requestModel === CODEX_AUTO_REVIEW_MODEL && guardianParentThreadIdFromHeaders(ctx.headers) && sessionId
+      ? reviewerModelBySession.get(sessionId)
+      : undefined;
+    if (!guestProviderModelAllowed(providerId, reviewerModel ?? requestModel, sessionId)) return codexGuestRouteRefusal();
     if (parseCodexCustomProviderPath(ctx.url).kind !== 'not-custom-provider-route') return undefined;
     const authInjection = frozenAuthInjection ?? getCodexProxyAuthInjection();
     if (ctx.url.split('?', 1)[0]?.endsWith('/responses')) {
