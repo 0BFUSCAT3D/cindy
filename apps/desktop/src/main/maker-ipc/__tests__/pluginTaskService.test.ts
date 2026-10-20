@@ -166,6 +166,32 @@ function fixture() {
   };
 }
 
+// Targets create in a selected project through the same service, not directly through
+// session persistence. Without its create receipt, helper tools and uninstall lose ownership.
+// Minimal regression: a Host-supplied task ID + project, then get and uninstall (unit).
+it('retains task ownership and uninstall revocation for Host-selected project creation', async () => {
+  const f = fixture();
+  const context = { taskId: 'target-project-task', workingDir: '/selected-project', assertCurrent: vi.fn() };
+  const task = await f.service.create('p', { requestKey: 'target-create', title: 'Selected project' }, context);
+  expect(task.taskId).toBe(context.taskId);
+  expect(await f.service.get('p', context.taskId)).toMatchObject({ taskId: context.taskId });
+  expect(f.rows.get(context.taskId)).toMatchObject({ operation: 'create', pluginId: 'p' });
+  expect(vi.mocked(f.deps.createSession).mock.calls[0]?.[9]).toBe(context);
+  await f.service.withUninstall('p', async () => {});
+  await expect(f.service.get('p', context.taskId)).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' });
+});
+it('rechecks Host target context after route resolution before persisting a task', async () => {
+  const f = fixture();
+  let current = true;
+  vi.mocked(f.deps.resolveRoute).mockImplementationOnce(async () => { current = false; return f.route; });
+  await expect(f.service.create('p', { requestKey: 'target-create', title: 'Selected project' }, {
+    taskId: 'target-project-task', workingDir: '/selected-project',
+    assertCurrent: () => { if (!current) throw new PluginTaskError('PERMISSION_DENIED', 'Target changed'); },
+  })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+  expect(f.tasks.size).toBe(0);
+  expect(f.rows.size).toBe(0);
+});
+
 it('includes message images in owned-task replay identity without persisting screenshot bytes', async () => {
   const f = fixture(), task = await f.create();
   const base64 = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64');

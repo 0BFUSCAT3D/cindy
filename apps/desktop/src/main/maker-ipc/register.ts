@@ -15,8 +15,9 @@ import { isSessionHiddenSync } from '../localDb/hiddenSessionRegistry.js';
 import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
 import { hasAcceptedUserTaskInput } from './pluginTaskInput.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
-import { showMobilePluginTaskPermission, setPluginTaskHandler, setPluginTargetAdapter, getPluginTaskSourceSessionId, setPluginTaskUninstaller, setPluginTaskRelocator, isPluginTaskAuthorized, getPluginTaskInstallRevision, pluginTaskAuthorizationRevision } from '../cindy-brain/index.js';
+import { showMobilePluginTaskPermission, setPluginTaskHandler, setPluginTargetAdapter, assertPluginTargetQueuedDelivery, getPluginTaskSourceSessionId, setPluginTaskUninstaller, setPluginTaskRelocator, pluginTargetAuthorizationRevision, isPluginTaskAuthorized, getPluginTaskInstallRevision, pluginTaskAuthorizationRevision } from '../cindy-brain/index.js';
 import { listPluginTargetCandidates, resolvePluginTargetSession } from './pluginTargetCandidates.js';
+import { createPluginTargetStore } from './pluginTargetStore.js';
 import { collectPluginAttachmentPayloadTexts, withPluginMessageAttachments } from '../cindy-media/pluginMessageAttachments.js';
 import type { PluginTaskRoute, PluginTaskRequest } from '../../shared/pluginTasks.js';
 import { createHash as pluginTaskConfigHash } from 'node:crypto';
@@ -12774,10 +12775,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertCurrent();
         if (workers.length || reservations.length) throw new PluginTaskError('TASK_BUSY', 'Register the team plan before creating Workers');
       },
-      createSession: async (pluginId, taskId, title, route, isolatedWorkspace, requestedRoute, onPersistenceStarted, callId, hidden) => {
+      createSession: async (pluginId, taskId, title, route, isolatedWorkspace, requestedRoute, onPersistenceStarted, callId, hidden, targetContext) => {
         assertPlugin(pluginId);
         const cfg = readPluginTaskConfig(pluginId);
         const configurationIsCurrent = () => {
+          targetContext?.assertCurrent();
           const current = readPluginTaskConfig(pluginId);
           return current.workingDir === cfg.workingDir && current.permissionMode === cfg.permissionMode
             && current.agentKind === cfg.agentKind && current.model === cfg.model
@@ -12790,7 +12792,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const currentRoute = await resolveRoute(pluginId, requestedRoute, callId);
         if ((Object.keys(currentRoute) as Array<keyof PluginTaskRoute>).some(key => currentRoute[key] !== route[key]))
           throw new PluginTaskError('ROUTE_UNAVAILABLE', 'Plugin task route changed');
-        const workingDir = !isolatedWorkspace && cfg.workingDir
+        const workingDir = targetContext?.workingDir ?? (!isolatedWorkspace && cfg.workingDir
           ? await resolvePluginWorkerDirectory({
               requested: cfg.workingDir, configuredDirectory: cfg.workingDir,
               isPickedDirectory: () => false,
@@ -12799,7 +12801,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 if (!configurationIsCurrent()) throw new PluginTaskError('PERMISSION_DENIED', 'Plugin task configuration changed');
               },
             })
-          : undefined;
+          : undefined);
         assertPlugin(pluginId);
         if (!configurationIsCurrent()) throw new PluginTaskError('PERMISSION_DENIED', 'Plugin task configuration changed');
         await createPluginTaskSession({
@@ -12856,8 +12858,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const validate = async () => { assertPlugin(pluginId); await pluginTaskServiceForCurrentOwner!().assertDispatch(pluginId, taskId); assertPlugin(pluginId); };
         return withPluginMessageAttachments(images, () => assertPlugin(pluginId), async files => {
           await validate();
-          const outcome = await sendToSessionInternal({ targetSessionId: taskId, clientId, message: text, files,
-            autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true,
+          const outcome = await sendToSessionInternal({ targetSessionId: taskId, clientId,
+            message: text, autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true, files,
             sourcePlugin: { pluginId, ...(pluginName ? { name: pluginName } : {}) },
             authorizationGuard: { validate, assertCurrent: () => assertPlugin(pluginId) }, onAccepted: validate });
           await awaitAgentInputQueueSnapshotPersistence(taskId);
@@ -13219,24 +13221,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
   setPluginTaskHandler(handlePluginTask);
   setPluginTargetAdapter({
+    store: () => {
+      const snapshot = getCurrentDbClientSnapshot();
+      if (!snapshot) throw new Error('HOST_NOT_READY');
+      return createPluginTargetStore(snapshot.client, () => {
+        if (getCurrentDbClientSnapshot() !== snapshot) throw new Error('PERMISSION_DENIED');
+      });
+    },
+    approvalRevision: pluginTargetAuthorizationRevision,
     candidates: listPluginTargetCandidates,
     session: resolvePluginTargetSession,
     create: async (pluginId, project, taskId, title, route, guard) => {
       guard();
-      const snapshot = getCurrentDbClientSnapshot();
-      const config = readPluginTaskConfig(pluginId);
-      const configSnapshot = JSON.stringify(config);
-      const guardCreate = () => { guard(); if (JSON.stringify(readPluginTaskConfig(pluginId)) !== configSnapshot) throw new Error('STALE_REVISION'); };
-      const execution = await resolveSessionExecution({ ...config, ...route });
-      guardCreate();
-      await createPluginTaskSession({ ghostId: pluginId, sessionId: taskId, title,
-        ...execution, agentKind: execution.agentKind === 'claude-code' ? 'cc' : execution.agentKind,
-        permissionMode: clampPluginTaskPermissionMode(config.permissionMode), workingDir: project,
-        shouldContinue: () => { guardCreate(); return getCurrentDbClientSnapshot() === snapshot; },
-        notifySessionCreated: ({ sessionId, workdir }) => {
-          notifyGhostSessionEvent('created', { sessionId, workdir }); broadcastSessionCreated(sessionId);
-        },
-      });
+      await pluginTaskServiceForCurrentOwner!().create(pluginId, {
+        requestKey: `target-project:${taskId}`, title, route,
+      }, { taskId, workingDir: project, assertCurrent: guard });
+      guard();
     },
     send: async (pluginId, taskId, clientId, text, guard, validateTarget, delivery, images = []) => {
       guard();
@@ -18256,6 +18256,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       orcaInterAgentDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
     },
     onAcceptedQueuedMessage: async (sessionId, item, restoredFromSnapshot): Promise<void> => {
+      if (item.clientId.startsWith('plugin-target:')) {
+        try { await assertPluginTargetQueuedDelivery(sessionId, item.clientId); }
+        catch { throw new AcceptedCallbackDispatchCancelled('Plugin target delivery is no longer authorized'); }
+      }
       if (restoredFromSnapshot && item.clientId.startsWith('bot-dm:')) {
         if (!botDirectMessageServiceHolder) throw new AcceptedCallbackDispatchCancelled('Bot message recovery unavailable');
         await botDirectMessageServiceHolder.assertRestoredQueuedDelivery(sessionId, item.clientId);

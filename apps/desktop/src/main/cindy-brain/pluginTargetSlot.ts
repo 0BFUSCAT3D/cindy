@@ -8,26 +8,30 @@ import type {
   PluginTargetView,
 } from '../../shared/pluginTargets.js';
 import type { PluginTaskRoute } from '../../shared/pluginTasks.js';
-import {
-  getActiveDataOwnerPushStamp,
-  ownerScopedUserDataPath,
-  activeOwnerScopeKey,
-} from '../appSessionState.js';
-import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
-import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
+import { getActiveDataOwnerPushStamp, activeOwnerScopeKey } from '../appSessionState.js';
 import { parsePluginMessageAttachments, type PluginMessageImage } from '../cindy-media/pluginMessageAttachments.js';
 
-interface Receipt {
+export interface PluginTargetReceipt {
+  id: string;
+  pluginId: string;
+  requestKey: string;
   hash: string | null;
-  clientId: string;
   taskId?: string;
+  target?: PluginTargetRef;
+  approvalRevision?: string;
   status: 'pending' | 'accepted' | 'cancelled';
   delivery?: PluginTargetDelivery;
 }
-interface Ledger {
-  receipts: Record<string, Receipt>;
+export interface PluginTargetStore {
+  get(pluginId: string, requestKey: string): Promise<PluginTargetReceipt | undefined>;
+  getById(id: string): Promise<PluginTargetReceipt | undefined>;
+  reserve(receipt: PluginTargetReceipt): Promise<boolean>;
+  cancel(pluginId: string, requestKey: string): Promise<PluginTargetReceipt>;
+  accept(id: string, delivery: PluginTargetDelivery): Promise<void>;
 }
 export interface PluginTargetAdapter {
+  store(): PluginTargetStore;
+  approvalRevision(pluginId: string): string | null;
   candidates(kind: PluginTargetKind): Promise<PluginTargetCandidate[]>;
   create(
     pluginId: string,
@@ -61,28 +65,26 @@ const isTarget = (value: unknown): value is PluginTargetRef => {
   return !!target && kinds.includes(target.kind) && typeof target.id === 'string' &&
     target.id.length > 0 && target.id.length <= 4096 && !target.id.includes('\0');
 };
-const ledger = createOverrideSettingsFile<Ledger>({
-  filePath: () => ownerScopedUserDataPath('plugin-target-deliveries.json'),
-  scopeKey: activeOwnerScopeKey,
-  defaults: { receipts: {} },
-  normalize: (raw) => {
-    const value = raw as Ledger | null;
-    return { receipts: value?.receipts && typeof value.receipts === 'object' ? value.receipts : {} };
-  },
-  log: desktopMakerLogger.child('plugin-target-deliveries'),
-  label: 'plugin-target-deliveries',
-  preserveUnreadableFile: true,
-  logLoadedValue: false,
-  logReadErrorDetails: false,
-});
 /** UI and fixed target configuration belong to plugins; the Host validates and delivers. */
 export class PluginTargetSlot {
   adapter: PluginTargetAdapter | null = null;
-  private inFlight = new Map<string, { hash: string; result: Promise<unknown> }>();
-  private cancelled = new Set<string>();
-  private readReceipt(key: string): Receipt | undefined {
-    ledger.invalidateIfChanged();
-    return ledger.read().receipts[key];
+  private inFlight = new Map<string, { hash: string; cancelled: boolean; result?: Promise<unknown> }>();
+  /** Used by the existing queue acceptance boundary, including restored snapshots. */
+  async assertQueuedDelivery(taskId: string, clientId: string): Promise<void> {
+    if (!this.adapter) fail('HOST_NOT_READY');
+    const adapter = this.adapter!;
+    const store = adapter.store();
+    const receipt = await store.getById(clientId);
+    const assertReceipt = (current: PluginTargetReceipt | undefined) => {
+      if (!receipt?.target || !current || current.status === 'cancelled' || current.taskId !== taskId ||
+        current.hash !== receipt.hash || !current.approvalRevision ||
+        adapter.approvalRevision(current.pluginId) !== current.approvalRevision) fail('PERMISSION_DENIED');
+    };
+    assertReceipt(receipt);
+    const target = receipt!.target!;
+    if (!(await adapter.candidates(target.kind)).some(item => item.id === target.id)) fail('TARGET_UNAVAILABLE');
+    if (target.kind !== 'project' && await adapter.session(target.kind, target.id) !== taskId) fail('TARGET_UNAVAILABLE');
+    assertReceipt(await store.getById(clientId));
   }
   async handle(pluginId: string, raw: unknown, authorized: () => void): Promise<unknown> {
     authorized();
@@ -109,28 +111,21 @@ export class PluginTargetSlot {
       return resolve(request.target);
     }
     if (!keyString(request.requestKey)) return fail('INVALID_PARAMS');
-    // Stable across Host restarts and plugin upgrades; owner isolation comes from the file path.
-    const receiptKey = createHash('sha256').update(JSON.stringify([pluginId, request.requestKey])).digest('hex');
+    const store = adapter.store();
     const runtimeKey = JSON.stringify([
-      activeOwnerScopeKey(), getActiveDataOwnerPushStamp().ownerGeneration, receiptKey,
+      activeOwnerScopeKey(), getActiveDataOwnerPushStamp().ownerGeneration, pluginId, request.requestKey,
     ]);
     if (request.kind === 'cancel') {
-      this.cancelled.add(runtimeKey);
-      let previous: Receipt | undefined;
-      await ledger.updateAtomic(({ value }) => {
-        authorized();
-        previous = value.receipts[receiptKey];
-        return { receipts: { ...value.receipts, [receiptKey]: {
-          ...(previous ?? { hash: null, clientId: randomUUID() }), status: 'cancelled',
-        } } };
-      });
+      const pending = this.inFlight.get(runtimeKey);
+      if (pending) pending.cancelled = true;
+      const receipt = await store.cancel(pluginId, request.requestKey);
       authorized();
-      if (previous?.taskId) {
+      if (receipt.taskId) {
         // Withdraw only this plugin input. Never stop another user's running turn.
-        await adapter.withdraw(previous.taskId, previous.clientId, authorized);
+        await adapter.withdraw(receipt.taskId, receipt.id, authorized);
         authorized();
       }
-      return { cancelled: true, runningWorkMayHaveStarted: !!previous?.taskId };
+      return { cancelled: true, runningWorkMayHaveStarted: !!receipt.taskId };
     }
     if (
       !isTarget(request.target) ||
@@ -159,49 +154,46 @@ export class PluginTargetSlot {
       .update(JSON.stringify([target.kind, target.id, request.text, request.title, route, delivery,
         images.map(({ hash, name }) => [hash, name])]))
       .digest('hex');
-    const guard = () => {
-      authorized();
-      if (this.cancelled.has(runtimeKey) || this.readReceipt(receiptKey)?.status === 'cancelled')
-        fail('SUPERSEDED');
-    };
-    guard();
     const pending = this.inFlight.get(runtimeKey);
     if (pending) {
+      if (pending.cancelled) return fail('SUPERSEDED');
       if (pending.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
-      return pending.result;
+      return pending.result!;
     }
+    const operation = { hash, cancelled: false, result: undefined as Promise<unknown> | undefined };
+    const guard = () => {
+      authorized();
+      if (operation.cancelled) fail('SUPERSEDED');
+    };
+    const replay = (previous: PluginTargetReceipt) => {
+      if (previous.status === 'cancelled') return fail('SUPERSEDED');
+      if (previous.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
+      if (previous.status === 'accepted')
+        return { taskId: previous.taskId, accepted: true, delivery: previous.delivery };
+      return fail('DELIVERY_UNCERTAIN');
+    };
     const deliver = async () => {
-      const existing = this.readReceipt(receiptKey);
-      if (existing) {
-        if (existing.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
-        if (existing.status === 'accepted')
-          return { taskId: existing.taskId, accepted: true, delivery: existing.delivery };
-        return fail('DELIVERY_UNCERTAIN');
-      }
+      const existing = await store.get(pluginId, request.requestKey);
+      guard();
+      if (existing) return replay(existing);
       const candidate = await resolve(target);
       guard();
-      const receipt: Receipt = {
-        hash, clientId: randomUUID(), status: 'pending',
+      const approvalRevision = adapter.approvalRevision(pluginId);
+      if (!approvalRevision) return fail('PERMISSION_DENIED');
+      const receipt: PluginTargetReceipt = {
+        id: `plugin-target:${randomUUID()}`, pluginId, requestKey: request.requestKey,
+        hash, target, approvalRevision, status: 'pending',
         taskId: target.kind === 'project' ? randomUUID() : await adapter.session(target.kind, target.id),
       };
       guard();
-      // Reserve before creating a task or delivering. An interrupted reservation never replays.
-      await ledger.updateAtomic(({ value }) => {
-        guard();
-        const previous = value.receipts[receiptKey];
-        if (previous) {
-          if (previous.hash !== hash) fail('REQUEST_KEY_CONFLICT');
-          fail('DELIVERY_UNCERTAIN');
-        }
-        return { receipts: { ...value.receipts, [receiptKey]: receipt } };
-      });
+      // A per-key reservation uses the existing receipt DB, never a whole-history rewrite.
+      const reserved = await store.reserve(receipt);
       guard();
+      if (!reserved) return replay((await store.get(pluginId, request.requestKey))!);
       const taskId = receipt.taskId!;
       const validateTarget = async () => {
-        await resolve(target);
         guard();
-        if (target.kind !== 'project' && (await adapter.session(target.kind, target.id)) !== taskId)
-          fail('TARGET_UNAVAILABLE');
+        await this.assertQueuedDelivery(taskId, receipt.id);
         guard();
       };
       await validateTarget();
@@ -209,25 +201,21 @@ export class PluginTargetSlot {
         await adapter.create(pluginId, target.id, taskId, request.title || candidate.label, route, guard);
       guard();
       const actualDelivery = await adapter.send(
-        pluginId, taskId, receipt.clientId, request.text, guard, validateTarget, delivery, images,
+        pluginId, taskId, receipt.id, request.text, guard, validateTarget, delivery, images,
       );
-      await ledger.updateAtomic(({ value }) => {
-        authorized();
-        const current = value.receipts[receiptKey];
-        if (current?.status === 'cancelled') return {};
-        return { receipts: { ...value.receipts, [receiptKey]: {
-          ...receipt, status: 'accepted', delivery: actualDelivery,
-        } } };
-      });
       authorized();
-      if (this.cancelled.has(runtimeKey) || this.readReceipt(receiptKey)?.status === 'cancelled') {
-        await adapter.withdraw(taskId, receipt.clientId, authorized);
+      await store.accept(receipt.id, actualDelivery);
+      authorized();
+      const current = await store.getById(receipt.id);
+      authorized();
+      if (operation.cancelled || current?.status === 'cancelled') {
+        await adapter.withdraw(taskId, receipt.id, authorized);
         return fail('SUPERSEDED');
       }
       return { taskId, accepted: true, delivery: actualDelivery };
     };
-    const result = deliver().finally(() => this.inFlight.delete(runtimeKey));
-    this.inFlight.set(runtimeKey, { hash, result });
-    return result;
+    operation.result = deliver().finally(() => this.inFlight.delete(runtimeKey));
+    this.inFlight.set(runtimeKey, operation);
+    return operation.result;
   }
 }

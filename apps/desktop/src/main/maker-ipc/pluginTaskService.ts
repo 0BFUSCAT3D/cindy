@@ -14,7 +14,7 @@ import {
 export interface PluginTaskReceipt {
   id: string;
   pluginId: string;
-  operation: 'create' | 'send';
+  operation: 'create' | 'send' | 'target';
   targetId: string;
   requestKey: string;
   fingerprint: string;
@@ -95,6 +95,12 @@ const hash = (data: unknown) => createHash('sha256').update(JSON.stringify(data,
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
     : value,
 )).digest('hex');
+/** Main-only context; never populated from tasks.create's wire request. */
+export interface PluginTaskCreateContext {
+  taskId: string;
+  workingDir: string;
+  assertCurrent(): void;
+}
 export interface PluginTaskServiceDeps {
   store: PluginTaskStore;
   /** Bound to the captured account/database epoch and plugin availability. */
@@ -115,6 +121,7 @@ export interface PluginTaskServiceDeps {
     callId?: string,
     /** Background task: the Session row is inserted with hidden_at set (never flashes into lists). */
     hidden?: boolean,
+    targetContext?: PluginTaskCreateContext,
   ): Promise<void>;
   /**
    * Re-checks `agent.hiddenTasks` (with tasks) for this plugin; throws PERMISSION_DENIED.
@@ -302,14 +309,16 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
     create: (
       pluginId: string,
       request: { requestKey: string; title: string; route?: PluginTaskRoute; isolatedWorkspace?: boolean; callId?: string; hidden?: boolean },
+      targetContext?: PluginTaskCreateContext,
     ) =>
       exclusive(async () => {
+        targetContext?.assertCurrent();
         deps.assertAuthorized(pluginId);
         const hidden = request.hidden === true;
         if (hidden) assertHiddenTasksAllowed(pluginId);
         // hidden:false is the default; only a background request changes the fingerprint,
         // so existing visible receipts replay unchanged.
-        const input = [request.title, request.route ?? null, ...(request.isolatedWorkspace ? [true] : []), ...(request.callId ? [{ callId: request.callId }] : []), ...(hidden ? [{ hidden: true }] : [])];
+        const input = [request.title, request.route ?? null, ...(request.isolatedWorkspace ? [true] : []), ...(request.callId ? [{ callId: request.callId }] : []), ...(hidden ? [{ hidden: true }] : []), ...(targetContext ? [{ workingDir: targetContext.workingDir }] : [])];
         const fingerprint = hash(input);
         let row = replay(
           await deps.store.find(pluginId, 'create', '', request.requestKey),
@@ -323,7 +332,8 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
         }
         const route = await deps.resolveRoute(pluginId, request.route, request.callId);
         deps.assertCurrent();
-        const taskId = id();
+        targetContext?.assertCurrent();
+        const taskId = targetContext?.taskId ?? id();
         row = newReceipt(
           pluginId,
           'create',
@@ -339,7 +349,11 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
           deps.assertCurrent();
           const onPersistenceStarted = () => { persistenceStarted = true; };
           // Visible creation keeps its original call shape; only background tasks add the flag.
-          if (hidden) {
+          if (targetContext) {
+            targetContext.assertCurrent();
+            await deps.createSession(pluginId, taskId, request.title, route, undefined, request.route,
+              onPersistenceStarted, undefined, undefined, targetContext);
+          } else if (hidden) {
             assertHiddenTasksAllowed(pluginId);
             await deps.createSession(pluginId, taskId, request.title, route, request.isolatedWorkspace, request.route,
               onPersistenceStarted, request.callId, true);

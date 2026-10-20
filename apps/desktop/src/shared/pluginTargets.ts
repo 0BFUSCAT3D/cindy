@@ -1,6 +1,7 @@
 import type { PluginTaskRoute } from './pluginTasks.js';
 import type { PluginMessageAttachment } from './pluginAttachments.js';
 
+/** Requires agent.tasks + agent.targets and independent Host consent; does not read history. */
 export type PluginTargetKind = 'project' | 'task' | 'bot';
 export type PluginTargetDelivery = 'queue' | 'steer';
 export interface PluginTargetRef {

@@ -1,23 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ receipts: {} as Record<string, unknown> }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => 'owner',
-  ownerScopedUserDataPath: () => '/not-written.json',
   getActiveDataOwnerPushStamp: () => ({ ownerGeneration: 1 }),
 }));
-vi.mock('../../maker-host/logger-adapter.js', () => ({
-  desktopMakerLogger: { child: () => ({}) },
-}));
-vi.mock('../../maker-host/override-settings-file.js', () => ({
-  createOverrideSettingsFile: () => ({
-    invalidateIfChanged: () => {},
-    read: () => state,
-    updateAtomic: async (update: (input: { value: typeof state }) => Partial<typeof state>) =>
-      Object.assign(state, update({ value: state })),
-  }),
-}));
-import { PluginTargetSlot, type PluginTargetAdapter } from '../pluginTargetSlot.js';
+import { PluginTargetSlot, type PluginTargetAdapter, type PluginTargetReceipt, type PluginTargetStore } from '../pluginTargetSlot.js';
+
+const receipts = new Map<string, PluginTargetReceipt>();
+const key = (pluginId: string, requestKey: string) => JSON.stringify([pluginId, requestKey]);
+const store: PluginTargetStore = {
+  get: async (pluginId, requestKey) => structuredClone(receipts.get(key(pluginId, requestKey))),
+  getById: async id => structuredClone([...receipts.values()].find(row => row.id === id)),
+  reserve: async receipt => {
+    const identity = key(receipt.pluginId, receipt.requestKey);
+    if (receipts.has(identity)) return false;
+    receipts.set(identity, structuredClone(receipt));
+    return true;
+  },
+  cancel: async (pluginId, requestKey) => {
+    const identity = key(pluginId, requestKey);
+    const receipt: PluginTargetReceipt = { ...(receipts.get(identity) ?? {
+      id: 'cancelled', pluginId, requestKey, hash: null,
+    }), status: 'cancelled' };
+    receipts.set(identity, receipt);
+    return structuredClone(receipt);
+  },
+  accept: async (id, delivery) => {
+    const receipt = [...receipts.values()].find(row => row.id === id)!;
+    if (receipt.status !== 'cancelled') Object.assign(receipt, { status: 'accepted', delivery });
+  },
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -26,7 +38,7 @@ function deferred<T>() {
 }
 
 describe('plugin target queries and delivery', () => {
-  beforeEach(() => { state.receipts = {}; });
+  beforeEach(() => { receipts.clear(); });
   function fixture() {
     const slot = new PluginTargetSlot();
     const send = vi.fn<PluginTargetAdapter['send']>(async () => 'queue');
@@ -35,12 +47,13 @@ describe('plugin target queries and delivery', () => {
     const candidates = vi.fn<PluginTargetAdapter['candidates']>(async () => [
       { id: 'chosen', label: 'Chosen target', detail: '/workspace/example' },
     ]);
-    slot.adapter = { candidates, session: async () => 'chosen', send, create, withdraw };
+    const approvalRevision = vi.fn<PluginTargetAdapter['approvalRevision']>(() => 'approved-install');
+    slot.adapter = { store: () => store, approvalRevision, candidates, session: async () => 'chosen', send, create, withdraw };
     const guard = vi.fn();
     const call = (payload: unknown, plugin = 'plugin') => slot.handle(plugin, payload, guard);
     const request = { kind: 'send', target: { kind: 'task', id: 'chosen' },
       requestKey: 'send', text: 'context' };
-    return { slot, call, request, send, create, withdraw, candidates, guard };
+    return { slot, call, request, send, create, withdraw, candidates, guard, approvalRevision };
   }
   // Production entry: PluginTargetSlot.handle, called by the authorized logic-page pipe.
   // Contract: query/resolve without UI, explicit target delivery, durable deduplication and cancellation.
@@ -51,7 +64,7 @@ describe('plugin target queries and delivery', () => {
     const view = { ...target, label: 'Chosen target', detail: '/workspace/example' };
     expect(await f.call({ kind: 'list', targetKind: kind })).toEqual({ targets: [view] });
     expect(await f.call({ kind: 'resolve', target })).toEqual(view);
-    expect(state.receipts).toEqual({});
+    expect(receipts.size).toBe(0);
     expect(f.create).not.toHaveBeenCalled();
     expect(f.send).not.toHaveBeenCalled();
   });
@@ -80,8 +93,8 @@ describe('plugin target queries and delivery', () => {
     expect(f.send.mock.calls[0]?.[7]?.[0]).toMatchObject({ mimeType: 'image/png', name: 'window.png' });
     await expect(f.call({ ...request, attachments: [{ base64, name: 'other.png' }] }))
       .rejects.toMatchObject({ code: 'REQUEST_KEY_CONFLICT' });
-    expect(JSON.stringify(state)).not.toContain(base64);
-    expect(JSON.stringify(state)).not.toContain('window.png');
+    expect(JSON.stringify([...receipts.values()])).not.toContain(base64);
+    expect(JSON.stringify([...receipts.values()])).not.toContain('window.png');
   });
   it('rejects a forged media URL before creating or sending a target task', async () => {
     const f = fixture();
@@ -201,7 +214,7 @@ describe('plugin target queries and delivery', () => {
     await expect(f.call(f.request)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
     expect(f.send).not.toHaveBeenCalled();
     expect(f.create).not.toHaveBeenCalled();
-    expect(state.receipts).toEqual({});
+    expect(receipts.size).toBe(0);
   });
   it('rechecks the canonical companion session immediately before delivery', async () => {
     const f = fixture();
@@ -210,4 +223,34 @@ describe('plugin target queries and delivery', () => {
       .rejects.toMatchObject({ code: 'TARGET_UNAVAILABLE' });
     expect(f.send).not.toHaveBeenCalled();
   });
+  // Production queue acceptance reuses this entry for live and restored snapshots.
+  // Regression: callbacks in memory disappear on restart; a saved clientId must still
+  // reject revocation/cancellation and canonical changes before the provider starts (unit).
+  it.each(['disabled', 'new approval', 'cancelled', 'missing target', 'canonical changed'] as const)(
+    'rejects restored queued delivery when %s', async change => {
+      const f = fixture();
+      await f.call(f.request);
+      const [, taskId, clientId] = f.send.mock.calls[0]!;
+      if (change === 'disabled') f.approvalRevision.mockReturnValue(null);
+      if (change === 'new approval') f.approvalRevision.mockReturnValue('replacement-install');
+      if (change === 'cancelled') await f.call({ kind: 'cancel', requestKey: f.request.requestKey });
+      if (change === 'missing target') f.candidates.mockResolvedValue([]);
+      if (change === 'canonical changed') f.slot.adapter!.session = async () => 'new-session';
+      const restarted = new PluginTargetSlot();
+      restarted.adapter = f.slot.adapter;
+      await expect(restarted.assertQueuedDelivery(taskId, clientId)).rejects.toMatchObject({
+        code: change === 'missing target' || change === 'canonical changed' ? 'TARGET_UNAVAILABLE' : 'PERMISSION_DENIED',
+      });
+    },
+  );
+  it('accepts an authorized restored receipt without needing its original logic page', async () => {
+    const f = fixture();
+    await f.call(f.request);
+    const [, taskId, clientId] = f.send.mock.calls[0]!;
+    const restarted = new PluginTargetSlot();
+    restarted.adapter = f.slot.adapter;
+    await expect(restarted.assertQueuedDelivery(taskId, clientId)).resolves.toBeUndefined();
+    expect(f.send).toHaveBeenCalledOnce();
+  });
+
 });

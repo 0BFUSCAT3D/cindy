@@ -337,31 +337,32 @@ Pi 子代理未成功投递的自动 allow 再次投递前重走现有核验，�
 ## 通用投递目标（增量接口，尚未发布）
 
 `cindy.targets` 的作者契约见 `FORGE_GUIDE`，实现位于 `pluginTargetSlot.ts` 和
-`pluginTargetCandidates.ts`。查询、解析和投递相互独立，没有宿主目标选择弹窗、Renderer 接线或新增 UI。
+`pluginTargetCandidates.ts`。查询、解析和投递相互独立，没有宿主目标选择弹窗、Renderer 目标选择接线。权限说明复用既有安装/更新确认界面。
 选择方式、固定目标及其配置由使用这些接口的插件维护；Host 不保存插件的固定目标绑定。
-入口复用 `agent.tasks` 的启用、批准和逻辑页身份校验，保留 `cindy.tasks` 自有任务边界，
-不放宽它的 get/list/send，不改变旧任务 API、默认设置卡或 manifest 字段。
+入口要求 `agent.tasks: true` 与独立的 `agent.targets: true`，后者单列为 `agent:targets` 权限，需 Host receipt 的 `targetCapabilityApproved` 明确批准事实。
+安装/更新确认只授予实际展示的新能力；旧 tasks 批准与历史未知字段不授予 targets。存量插件的原有能力不变，缺独立批准只阻止新接口；首次新接口调用复用既有宿主确认。
+保留 `cindy.tasks` 自有任务边界，不放宽它的 get/list/send，也不改变默认设置卡。
 
 - `list({targetKind})` 返回 `{targets:[{kind,id,label,detail}]}`，仅返回本机可用目标元数据，不返回消息历史。
   项目使用 Cindy 已有目录分组（id 为目录路径），普通任务和伙伴使用其 ID。最近活动只排序，插件自行展示和选择。
 - `resolve({target:{kind,id}})` 返回最新目标元数据，供插件校验保存的固定目标；无写入、弹窗或隐式选中。
   `send` 同样重新校验目标，不要求先 list/resolve，也不接受任意不可用路径或目标；失效返回 TARGET_UNAVAILABLE，不降级改投。
 - `send({target,requestKey,text,title?,route?,delivery?,attachments?})` 在指定项目中新建普通任务，或向指定普通任务/伙伴投递。
-  新任务使用现有 `createPluginTaskSession`，沿用插件模型选择和受限动手权限，可传统一模型目录的 route。
+  新任务经现有 `PluginTaskService.create` 登记归属后使用 `createPluginTaskSession`，沿用插件模型选择、受限动手权限及卸载撤销流程，可传统一模型目录的 route。
   存量任务和伙伴保留其模型、权限、目录，不接受 route；伙伴通过唯一 canonical 注册解析，不使用兼容镜像或伪造伙伴身份。
-- 同键并发发送共享同一 Promise。owner-scoped `plugin-target-deliveries.json` 只保存请求摘要、Host 生成的 taskId/clientId 和状态，
+- 同键并发发送共享同一 Promise。回执复用当前账号 SQLite 的 `plugin_task_requests`，以 `operation=target` 按插件和请求键读写单行；只保存请求摘要、Host 生成的 taskId/clientId、批准修订和状态，
   不保存正文、图片或插件固定配置。执行前原子预留回执；已接受请求可在重启后返回原结果，尚未确定的回执返回 DELIVERY_UNCERTAIN，
   不自动重派。幂等键按插件和 requestKey 隔离，不因插件升级或 Host 重启更换身份；同键修改目标、正文、附件或 delivery 返回 REQUEST_KEY_CONFLICT。
 - `delivery` 为 `queue | steer`，缺省 queue（与显式 queue 幂等签名一致）；project 仅接受 queue。
   queue 走 `sendToSessionInternal` 与既有输入队列；steer 复用 `steerControlInput` 同轮注入，不停止或重启当前轮。
   空闲、框架不支持或当前输入边界不允许插话时走普通队列，保留 Stop/pause 边界。
   返回 `{taskId,accepted:true,delivery:'queue'|'steer'}` 表示实际接受路径，不表示 AI 已执行完成。
-- main 盖 sourcePlugin 和 delegated-continuation 来源；入队前复核插件批准与目标，插话还在异步筛查后及 provider 派发前复核。
+- main 盖 sourcePlugin 和 delegated-continuation 来源；入队前及实际受理时复核插件批准与目标。受理通过持久 clientId 查回执，重启恢复后仍检查当前批准修订、取消状态和伙伴 canonical 归属；失效以队列取消信号拦下派发。插话还在异步筛查后及 provider 派发前复核。
   筛查拒绝返回 DELIVERY_REJECTED，不改走队列；ACK 未知保留宿主保护性暂停队列并返回 DELIVERY_UNCERTAIN，不再次排队。
   `cancel({requestKey})` 持久使迟到请求失效，只按本插件该请求的 clientId 撤回排队输入，不停止整个会话或撤回已经接受的插话。
 - 仅本机 Desktop，不新增 Mobile/device-link 透传，也不承诺跨平台原生触发。异步请求持续复核原逻辑页、批准 revision 和 owner generation。
 
-此能力供声明了 `agent.tasks` 的插件使用；投递沿用既有插件授权和目标任务权限。
+此能力供同时声明并获批 `agent.tasks` 与 `agent.targets` 的插件使用；投递沿用目标任务权限，不授予读取历史、修改配置或停止其他任务的权限。
 静态检查与单元测试不等于真实 AI 执行的联调验收，不得把 accepted 当成完成。
 
 ### 消息图片附件

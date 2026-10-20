@@ -4035,7 +4035,7 @@ const r = await cindy.agent.requestSchedule({
 用户拒绝或确认界面不可用时返回 \`PERMISSION_DENIED\`，不影响插件其它功能；不得自动循环重试确认。
 面板通过既有逻辑页通道调用，不获得新的 preload 或内部 IPC 权限。
 
-插件需要向项目、已有任务或伙伴投递内容时，使用独立的 \`cindy.targets\`（仅本机 Desktop 逻辑页，同样需要已批准的 \`agent.tasks\`）。先检查 \`typeof cindy.targets?.list === 'function'\`；旧客户端没有此入口，不调用私有 IPC 或自动改投别处。Host 只提供查询、解析和投递；选择 UI、临时选择及固定目标配置由插件自己维护。
+插件需要向项目、已有任务或伙伴投递内容时，使用独立的 \`cindy.targets\`（仅本机 Desktop 逻辑页，需要同时声明并获批 \`agent.tasks: true\` 与独立的 \`agent.targets: true\`）。先检查 \`typeof cindy.targets?.list === 'function'\`；旧客户端没有此入口，不调用私有 IPC 或自动改投别处。Host 只提供查询、解析和投递；选择 UI、临时选择及固定目标配置由插件自己维护。独立权限 \`agent:targets\` 会在既有安装/更新确认中展示；旧 tasks 批准和历史未知字段不授予目标访问。缺新批准只阻止新接口，首次调用复用既有宿主确认，不影响旧插件能力。
 
 - \`list({targetKind:'project'|'task'|'bot'})\`：返回 \`{targets:[{kind,id,label,detail}]}\`，只含本机可用目标的名称和目录/说明，不含消息历史。插件可自行搜索和展示列表，最近活动只用于排序。
 - \`resolve({target:{kind,id}})\`：复核已保存或本次选择的目标，返回最新 \`{kind,id,label,detail}\`。只查询，不创建任务、不打开 UI、不保存绑定；固定目标失效返回 TARGET_UNAVAILABLE，不自动替换。插件可将 \`{kind,id}\` 存入自己的配置。project 的 id 是 Cindy 已有项目目录，task/bot 的 id 是任务/伙伴标识。

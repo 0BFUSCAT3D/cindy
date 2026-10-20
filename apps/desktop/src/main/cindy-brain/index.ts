@@ -76,7 +76,7 @@ import { PluginDownloadSlot } from './downloadSlot.js';
 import { createDownloader } from '../downloader/index.js';
 import { handlePluginTaskRequest, type PluginTaskHandler } from './taskSlot.js';
 import { PluginTargetSlot, type PluginTargetAdapter } from './pluginTargetSlot.js';
-import { ensurePluginTaskApproval, hasPluginTaskApproval, PluginTaskApprovalGate } from './taskCapability.js';
+import { ensurePluginTaskApproval, hasPluginTaskApproval, hasPluginTargetApproval, PluginTaskApprovalGate } from './taskCapability.js';
 import {
   registerGhostCardRemoteProvider,
   persistGhostCardWithRemoteChange,
@@ -112,10 +112,10 @@ import { isDeepStrictEqual } from 'node:util';
 import type { GhostInstallConsentFacts } from '../../shared/ghostInstallConsent.js';
 
 const taskApprovalGate = new PluginTaskApprovalGate();
-function requestPluginTaskApproval(id: string, isCurrent: () => boolean, confirm: (facts: GhostInstallConsentFacts) => Promise<boolean>, explicit = false): Promise<boolean> {
+function requestPluginTaskApproval(id: string, isCurrent: () => boolean, confirm: (facts: GhostInstallConsentFacts) => Promise<boolean>, explicit = false, capability: 'tasks' | 'targets' = 'tasks'): Promise<boolean> {
   const ghost = findGhostForInstanceId(id);
   if (!isCurrent()) return Promise.resolve(false);
-  if (hasPluginTaskApproval(ghost)) return Promise.resolve(true);
+  if ((capability === 'targets' ? hasPluginTargetApproval : hasPluginTaskApproval)(ghost)) return Promise.resolve(true);
   const owner = getActiveDataOwnerPushStamp();
   const manager = getGhostManager();
   const revision = ghostInstallApprovalToken(ghost?.approval);
@@ -124,10 +124,10 @@ function requestPluginTaskApproval(id: string, isCurrent: () => boolean, confirm
     return isCurrent() && owner.dataOwnerId === current.dataOwnerId && owner.ownerGeneration === current.ownerGeneration &&
       ghostInstallApprovalToken(findGhostForInstanceId(id)?.approval) === revision;
   };
-  return taskApprovalGate.request(id, JSON.stringify([owner.dataOwnerId, owner.ownerGeneration, revision]), explicit, () => ensurePluginTaskApproval(id, {
+  return taskApprovalGate.request(`${capability}:${id}`, JSON.stringify([owner.dataOwnerId, owner.ownerGeneration, revision]), explicit, () => ensurePluginTaskApproval(id, {
     getGhost: findGhostForInstanceId, isCurrent: active, confirm,
-    approve: (pluginId, expected, current) => manager.approveTaskCapability(pluginId, expected, current),
-  }));
+    approve: (pluginId, expected, current) => manager.approveTaskCapability(pluginId, expected, current, capability),
+  }, capability));
 }
 
 import { isValidPluginNamespace, supportsCindyVersion, PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES } from '@cindy/plugin-protocol';
@@ -2101,6 +2101,9 @@ export function setGhostSessionRevealer(reveal: ((sessionId: string) => void) | 
 
 const pluginTargetSlot = new PluginTargetSlot();
 export function setPluginTargetAdapter(adapter: PluginTargetAdapter): void { pluginTargetSlot.adapter = adapter; }
+export async function assertPluginTargetQueuedDelivery(taskId: string, clientId: string): Promise<void> {
+  await pluginTargetSlot.assertQueuedDelivery(taskId, clientId);
+}
 
 let pluginTaskHandler: PluginTaskHandler | null = null;
 export function setPluginTaskHandler(handler: PluginTaskHandler | null): void { pluginTaskHandler = handler; }
@@ -2123,6 +2126,11 @@ export function pluginTaskAuthorizationRevision(id: string): string | null {
   const ghost = findGhostForInstanceId(id);
   return ghost?.enabled && ghost.manifest.agent?.tasks && ghost.approval.state === 'approved'
     ? ghost.approval.revision : null;
+}
+
+export function pluginTargetAuthorizationRevision(id: string): string | null {
+  const ghost = findGhostForInstanceId(id);
+  return hasPluginTargetApproval(ghost) ? pluginTaskAuthorizationRevision(id) : null;
 }
 
 export function isPluginTaskAuthorized(id: string): boolean {
@@ -6909,6 +6917,7 @@ async function installAndDockLocked(
   // 则走 manager.update 延续既有状态。保留 false 缺省以兼容内部受控调用方。
   const result = await manager.install(lizFilePath, {
     taskCapabilityApproved: confirmedTaskCapability(opts.consent.decision, installedBefore, opts.consent.manifest),
+    targetCapabilityApproved: confirmedTaskCapability(opts.consent.decision, installedBefore, opts.consent.manifest, 'targets'),
     initiallyEnabled: opts.enable ?? false,
     expectedPackageSha256: opts.expectedPackageSha256,
     ...(opts.trustOverride ? { trustOverride: opts.trustOverride } : {}),
@@ -7100,6 +7109,7 @@ async function updateLocalGhostPackageLocked(
       () =>
         manager.update(cindyFilePath, {
         taskCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest),
+        targetCapabilityApproved: confirmedTaskCapability(consent, previousGhost, inspected.manifest, 'targets'),
         expectedPackageSha256,
         expectedInstalledApproval,
         installOrigin: installOrigin ?? 'manual',
@@ -7569,6 +7579,7 @@ async function installOrUpdateMarketGhostPackageLocked(
       result = await withActiveOwnerGhostOauthMutationLock(installedGhostStoragePart(installed), () =>
         manager.update(cindyFilePath, {
           taskCapabilityApproved: confirmedTaskCapability(expected.consent, installed, inspected.manifest),
+          targetCapabilityApproved: confirmedTaskCapability(expected.consent, installed, inspected.manifest, 'targets'),
           expectedPackageSha256: inspected.packageSha256,
           expectedInstalledApproval: expected.expectedInstalledApproval!,
           ...(expected.sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(installed) } : {}),
@@ -8666,29 +8677,39 @@ export function registerGhostIpc(): void {
           !event.sender.isDestroyed() && ghostIdForLogicWebContents(event.sender.id) === id && (!pageCurrent || pageCurrent());
       };
       if (type === 'targets-request' && pageId !== undefined) throw new Error('UNSUPPORTED_CAPABILITY');
+      if (type === 'targets-request' && findGhostForInstanceId(id)?.manifest.agent?.targets !== true) {
+        return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'PERMISSION_DENIED', retryable: false } };
+      }
+      const confirmCapability = (facts: GhostInstallConsentFacts) => {
+        const pageId = (payload as { mobilePageId?: string }).mobilePageId;
+        if (pageId) {
+          const permissions = facts.kind === 'update' ? facts.added : facts.permissions;
+          const interpolate = (key: string, args: Record<string, string> = {}) => Object.entries(args).reduce((value, [name, replacement]) => value.replaceAll(`{{${name}}}`, replacement), t(key));
+          return showMobilePluginTaskPermission(id, pageId, {
+            title: t('settings.ghosts.installConsent.addedTitle'), message: '',
+            detail: permissions.map(item => [interpolate(`settings.ghosts.perm.${item.labelKey}`, item.labelArgs), item.detailKey ? interpolate(`settings.ghosts.perm.${item.detailKey}`, item.detailArgs) : item.detail].filter(Boolean).join('\n')).join('\n\n'),
+            allow: t('settings.ghosts.connections.confirmAllow'), cancel: t('settings.ghosts.installConsent.cancel'),
+          });
+        }
+        const window = getDeepLinkMainWindow();
+        if (!window || !isTrustedAppRendererWindow(window)) return Promise.resolve(false);
+        return createWindowGhostInstallConsentPrompt(window.webContents)({ purpose: 'task-capability', initiator: 'user', origin: 'local-file', facts });
+      };
       const result = await handlePluginTaskRequest(id, type === 'targets-request' ? { type: 'tasks-request', kind: 'capabilities' } : payload, {
-        getGhost: findGhostForInstanceId, handler: pluginTaskHandler,
-        isCurrent,
-        ensureAuthorized: () => requestPluginTaskApproval(id, isCurrent, facts => {
-            const pageId = (payload as { mobilePageId?: string }).mobilePageId;
-            if (pageId) {
-              const permissions = facts.kind === 'update' ? facts.added : facts.permissions;
-              const interpolate = (key: string, args: Record<string, string> = {}) => Object.entries(args).reduce((value, [name, replacement]) => value.replaceAll(`{{${name}}}`, replacement), t(key));
-              return showMobilePluginTaskPermission(id, pageId, {
-                title: t('settings.ghosts.installConsent.addedTitle'), message: '',
-                detail: permissions.map(item => [interpolate(`settings.ghosts.perm.${item.labelKey}`, item.labelArgs), item.detailKey ? interpolate(`settings.ghosts.perm.${item.detailKey}`, item.detailArgs) : item.detail].filter(Boolean).join('\n')).join('\n\n'),
-                allow: t('settings.ghosts.connections.confirmAllow'), cancel: t('settings.ghosts.installConsent.cancel'),
-              });
-            }
-            const window = getDeepLinkMainWindow();
-            if (!window || !isTrustedAppRendererWindow(window)) return Promise.resolve(false);
-            return createWindowGhostInstallConsentPrompt(window.webContents)({ purpose: 'task-capability', initiator: 'user', origin: 'local-file', facts });
-        }),
+        getGhost: findGhostForInstanceId, handler: pluginTaskHandler, isCurrent,
+        ensureAuthorized: () => requestPluginTaskApproval(id, isCurrent, confirmCapability),
       });
       if (type !== 'targets-request' || !result.ok) return result;
-      const revision = pluginTaskAuthorizationRevision(id);
+      try {
+        if (!await requestPluginTaskApproval(id, isCurrent, confirmCapability, false, 'targets')) {
+          return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'PERMISSION_DENIED', retryable: false } };
+        }
+      } catch {
+        return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'PERMISSION_DENIED', retryable: false } };
+      }
+      const revision = pluginTargetAuthorizationRevision(id);
       const assertAuthorized = () => {
-        if (!isCurrent() || !revision || pluginTaskAuthorizationRevision(id) !== revision || !isPluginTaskAuthorized(id))
+        if (!isCurrent() || !revision || pluginTargetAuthorizationRevision(id) !== revision)
           throw Object.assign(new Error('PERMISSION_DENIED'), { code: 'PERMISSION_DENIED' });
       };
       try { return { ok: true, data: await pluginTargetSlot.handle(id, payload, assertAuthorized) }; }
