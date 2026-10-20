@@ -7,7 +7,7 @@ import { tx } from '../../worker/opHandlers/tx';
 import { discardPersistedAssistantMessage } from '../messages';
 import * as prRefsStore from '../../../git-context/prRefsStore';
 import { onAssistantTextEvent, clearSessionPersistState, drainPersistQueue,
-  flushAssistantBlock } from '../../../messagePersistBroadcaster';
+  flushAssistantBlock, noteSessionClearBoundary } from '../../../messagePersistBroadcaster';
 
 const h = vi.hoisted(() => ({
   sqlite: null as Database.Database | null,
@@ -199,4 +199,50 @@ it('orders retraction cleanup after the original asynchronous PR publication hoo
     await hook.mock.results[0].value;
     expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
   } finally { release(); hook.mockRestore(); }
+});
+
+
+it('does not restore pre-clear PR references when retraction cleanup resumes after clear', async () => {
+  onAssistantTextEvent('s1', { text: 'https://github.com/o/r/pull/1', agentMessageId: 'keep' }, null);
+  flushAssistantBlock('s1');
+  onAssistantTextEvent('s1', { text: 'https://github.com/o/r/pull/2', agentMessageId: 'withdraw' }, null);
+  flushAssistantBlock('s1');
+  await drainPersistQueue();
+  let release!: () => void;
+  const resume = new Promise<void>((resolve) => { release = resolve; });
+  let captured!: () => void;
+  const snapshotTaken = new Promise<void>((resolve) => { captured = resolve; });
+  const db = h.client!.drizzle;
+  const select = db.select.bind(db);
+  let paused = false;
+  const spy = vi.spyOn(db, 'select').mockImplementation((fields) => {
+    const query = select(fields);
+    const from = query.from.bind(query);
+    vi.spyOn(query, 'from').mockImplementation((table) => {
+      const builder = from(table);
+      if (table === messages && !paused) {
+        const orderBy = builder.orderBy.bind(builder);
+        vi.spyOn(builder, 'orderBy').mockImplementationOnce((...columns) => {
+          paused = true;
+          const snapshot = orderBy(...columns).all();
+          captured();
+          return resume.then(() => snapshot) as unknown as ReturnType<typeof orderBy>;
+        });
+      }
+      return builder;
+    });
+    return query;
+  });
+  try {
+    onAssistantTextEvent('s1', { text: '', agentMessageId: 'withdraw', isFinal: true, isFullText: true }, null);
+    await snapshotTaken;
+    const boundary = Date.now() + 1000;
+    h.sqlite!.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(boundary, 's1');
+    noteSessionClearBoundary('s1', boundary);
+    await prRefsStore.recomputePrRefsForSession('s1');
+    expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
+    release();
+    await drainPersistQueue();
+    expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
+  } finally { release(); spy.mockRestore(); }
 });

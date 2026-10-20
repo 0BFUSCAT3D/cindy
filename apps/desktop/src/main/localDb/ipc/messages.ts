@@ -1491,7 +1491,9 @@ export async function discardPersistedAssistantMessage(
   if (result.changes === 0) return false;
   await pendingPrRefWrites.get(dbClient)?.get(row.id);
   if (isCurrent() && isOwnerBroadcastScopeCurrent(ownerScope)) {
-    await recomputePrRefsForSession(sessionId);
+    await recomputePrRefsForSession(sessionId, {
+      dbClient, isCurrent: () => isCurrent() && isOwnerBroadcastScopeCurrent(ownerScope),
+    });
   }
   return true;
 }

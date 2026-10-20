@@ -13,6 +13,7 @@ import { createId } from '@paralleldrive/cuid2';
 import { and, asc, desc, eq, gt, inArray, isNull, like, or, sql } from 'drizzle-orm';
 
 import { getDbClient, getCurrentDbClientUserId } from '../localDb/client/current';
+import type { DbClient } from '../localDb/client/DbClient';
 import { messages, migrationMeta, sessionPrRefs, sessions } from '../localDb/schema';
 import { createLogger } from '../logger.js';
 import { extractPrRefs, messageContentToText, type PrRef } from './prRefExtractor.js';
@@ -127,15 +128,21 @@ export async function recordPrRefsForImportedMessages(
  * authoritative=true(重算路径,按 createdAt 升序处理)则直接覆盖——
  * 被 rewind/clear 掉的"更晚提及"残留的时间戳必须被纠正回存活集的真实值。
  */
+interface PrRefsRecomputeScope {
+  dbClient: DbClient;
+  isCurrent: () => boolean;
+}
+
 async function upsertPrRefs(
   sessionId: string,
   refs: PrRef[],
   atMs?: number,
-  opts?: { authoritative?: boolean },
+  opts?: { authoritative?: boolean; scope?: PrRefsRecomputeScope },
 ): Promise<void> {
-  const db = getDbClient().drizzle;
+  const db = (opts?.scope?.dbClient ?? getDbClient()).drizzle;
   const ts = atMs ?? Date.now();
   for (const ref of refs) {
+    if (opts?.scope && !opts.scope.isCurrent()) return;
     await db
       .insert(sessionPrRefs)
       .values({
@@ -251,14 +258,19 @@ export async function ensurePrRefsBackfill(): Promise<void> {
  * 做法:删全量后按存活消息重提取,时间戳用消息原始 createdAt;完成广播刷新。
  * rewind / clear 都是低频操作,全量重算可接受。
  */
-export async function recomputePrRefsForSession(sessionId: string): Promise<void> {
+export async function recomputePrRefsForSession(
+  sessionId: string,
+  scope?: PrRefsRecomputeScope,
+): Promise<void> {
   try {
-    const db = getDbClient().drizzle;
+    if (scope && !scope.isCurrent()) return;
+    const db = (scope?.dbClient ?? getDbClient()).drizzle;
     const [sessionRow] = await db
       .select({ clearedAt: sessions.clearedAt })
       .from(sessions)
       .where(eq(sessions.id, sessionId))
       .limit(1);
+    if (scope && !scope.isCurrent()) return;
     const clearedAt = sessionRow?.clearedAt ?? null;
 
     const conds = [
@@ -279,14 +291,17 @@ export async function recomputePrRefsForSession(sessionId: string): Promise<void
     // 已写不会自愈(Greptile review P1)。改为先 upsert 存活集(authoritative
     // 时间戳,升序处理保证 lastSeenAt 终值正确),最后再删不在存活集里的旧行:
     // 任何中断点都只会"多"不会"少",下次重算自然收敛,无需事务。
+    if (scope && !scope.isCurrent()) return;
     const keep = new Set<string>();
     for (const row of rows) {
+      if (scope && !scope.isCurrent()) return;
       const refs = extractPrRefs(row.content);
       if (refs.length === 0) continue;
       for (const ref of refs) keep.add(`${ref.owner}/${ref.repo}#${ref.prNumber}`);
-      await upsertPrRefs(sessionId, refs, row.createdAt, { authoritative: true });
+      await upsertPrRefs(sessionId, refs, row.createdAt, { authoritative: true, scope });
     }
 
+    if (scope && !scope.isCurrent()) return;
     const existing = await db
       .select({
         id: sessionPrRefs.id,
@@ -296,13 +311,14 @@ export async function recomputePrRefsForSession(sessionId: string): Promise<void
       })
       .from(sessionPrRefs)
       .where(eq(sessionPrRefs.sessionId, sessionId));
+    if (scope && !scope.isCurrent()) return;
     const staleIds = existing
       .filter((r) => !keep.has(`${r.owner}/${r.repo}#${r.prNumber}`))
       .map((r) => r.id);
     if (staleIds.length > 0) {
       await db.delete(sessionPrRefs).where(inArray(sessionPrRefs.id, staleIds));
     }
-    onRefsChanged?.(sessionId);
+    if (!scope || scope.isCurrent()) onRefsChanged?.(sessionId);
   } catch (err) {
     log.warn('recompute pr refs failed', {
       sessionId,
