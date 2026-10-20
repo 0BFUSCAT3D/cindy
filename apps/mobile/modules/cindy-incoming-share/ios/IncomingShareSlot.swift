@@ -14,6 +14,12 @@ enum IncomingShareSlot {
     guard defaults.synchronize() else { throw POSIXError(.EIO) }
   }
 
+  // An empty marker cannot be a JSON payload. It rejects the first readable
+  // slot after an account transition whose App Group read failed, across restart.
+  static func rejectUnreadable(in defaults: UserDefaults = .standard) throws {
+    try reject(Data(), in: defaults)
+  }
+
   static func discard(_ expected: Data, rejections: UserDefaults = .standard,
                       clear: (Data) throws -> Bool) throws -> Bool {
     try reject(expected, in: rejections)
@@ -26,7 +32,13 @@ enum IncomingShareSlot {
 
   static func read(_ snapshot: Data?, rejections: UserDefaults = .standard,
                    clear: (Data) throws -> Bool) -> Data? {
-    guard let rejected = rejections.data(forKey: rejectedKey) else { return snapshot }
+    guard var rejected = rejections.data(forKey: rejectedKey) else { return snapshot }
+    if rejected.isEmpty, let snapshot {
+      // Pin the recovered bytes before cleanup. Later, different shares remain
+      // eligible even if clearing this old slot fails again.
+      do { try reject(snapshot, in: rejections) } catch { return nil }
+      rejected = snapshot
+    }
     if let snapshot, snapshot == rejected {
       // Retry clearing, but never return rejected bytes even if it still fails.
       do { _ = try clear(snapshot) } catch { return nil }

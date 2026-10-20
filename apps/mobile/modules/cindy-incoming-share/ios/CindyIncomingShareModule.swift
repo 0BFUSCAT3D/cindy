@@ -23,6 +23,10 @@ public final class CindyIncomingShareModule: Module {
         try IncomingShareSlot.clear(Data(expected.utf8), from: defaults)
       }
     }
+    Function("rejectUnreadableSnapshot") { () throws -> Void in
+      // Deliberately independent of self.group / App Group locks and I/O.
+      try IncomingShareSlot.rejectUnreadable()
+    }
     Function("discardSnapshot") { (expected: String) throws -> Bool in
       let bytes = Data(expected.utf8)
       return try IncomingShareSlot.discard(bytes) { expected in

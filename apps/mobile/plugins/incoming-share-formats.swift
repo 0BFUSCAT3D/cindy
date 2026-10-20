@@ -20,6 +20,9 @@
     // Concrete exports (including ordinary property lists) win over previews.
     // Only the positively identified Safari envelope above is composer text.
     if let file = await loadShareFile(provider, format: .data, kind: .file, excludePlainText: true, excludeImages: true) { return file }
+    // Concrete image files are primary exports; only abstract public.image
+    // remains behind a source URL, where it commonly represents a thumbnail.
+    if let image = await loadShareFile(provider, format: .image, kind: .image, includeAbstract: false) { return image }
     // Web links may also advertise a thumbnail; retain the actionable URL.
     if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
        let value = await loadShareItem(provider, identifier: UTType.url.identifier) {
@@ -51,7 +54,7 @@
     }
   }
 
-  private func loadShareFile(_ provider: NSItemProvider, format: UTType, kind: ShareType, excludePlainText: Bool = false, excludeImages: Bool = false) async -> SharePayload? {
+  private func loadShareFile(_ provider: NSItemProvider, format: UTType, kind: ShareType, excludePlainText: Bool = false, excludeImages: Bool = false, includeAbstract: Bool = true) async -> SharePayload? {
     // These exact representations are text previews. Concrete subtypes such as
     // Markdown and source code also conform to plainText, but remain files.
     let textPreviews = [UTType.plainText, .utf8PlainText, .utf16PlainText, .utf16ExternalPlainText]
@@ -59,6 +62,7 @@
     let identifiers = provider.registeredTypeIdentifiers.filter {
       let type = UTType($0)
       return type?.conforms(to: format) == true && type?.conforms(to: .url) != true
+        && (includeAbstract || $0 != format.identifier)
         && (!excludePlainText || !textPreviews.contains($0))
         && (!excludeImages || ($0 != UTType.data.identifier && type?.conforms(to: .image) != true))
     }

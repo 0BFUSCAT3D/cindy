@@ -7,6 +7,7 @@ const native = requireOptionalNativeModule<{
   readSnapshot(): string | null;
   clearSnapshot(expected: string): boolean;
   discardSnapshot?(expected: string): boolean;
+  rejectUnreadableSnapshot?(): void;
 }>('CindyIncomingShare');
 const snapshots = new WeakMap<SharePayload[], string>();
 let rejectedSnapshot: string | null = null;
@@ -23,6 +24,11 @@ export function discardSharedPayloads(expected: SharePayload[]): void {
   }
   clearSharedPayloads(expected);
   rejectedSnapshot = null;
+}
+
+/** Account changed while the App Group was unreadable: fence its next snapshot. */
+export function rejectUnreadableSharedPayloads(): void {
+  native?.rejectUnreadableSnapshot?.();
 }
 
 /** Only discard a managed copy when a successful directory listing proves it is gone.

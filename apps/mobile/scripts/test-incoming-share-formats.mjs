@@ -104,6 +104,22 @@ final class Adapter {
     guard let page = await adapter.parse(safari) else { fatalError("Missing Safari page") }
     precondition(page.type == .text && page.value == "Page title\\n\\nhttps://example.com/page\\n\\nSelected text")
     print("PASS: concrete property lists beat previews; Safari preprocessing remains text")
+    // A concrete image export is the primary content even with a source URL.
+    for type in [UTType.png, .jpeg, .heic] {
+      let provider = NSItemProvider()
+      let name = "original." + type.preferredFilenameExtension!
+      let bytes = Data("original image export".utf8)
+      provider.suggestedName = name
+      provider.registerItem(forTypeIdentifier: UTType.url.identifier, loadHandler: { done, _, _ in
+        done?(NSURL(string: "https://example.com/image-source")!, nil)
+      })
+      provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { done in done(bytes, nil); return nil }
+      guard let payload = await adapter.parse(provider), payload.type == .image,
+            let result = URL(string: payload.value) else { fatalError("Source URL replaced concrete image: " + type.identifier) }
+      precondition(result.lastPathComponent == name && payload.mimeType == type.preferredMIMEType)
+      precondition(try! Data(contentsOf: result) == bytes)
+    }
+    print("PASS: concrete images beat source URLs; abstract thumbnails remain previews")
     let selected = CommandLine.arguments[2]
     let link = NSItemProvider()
     let sharedURL = URL(string: "https://example.com/shared-page?source=provider")!

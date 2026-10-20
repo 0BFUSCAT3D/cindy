@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 
-const native = vi.hoisted(() => ({ readSnapshot: vi.fn(), clearSnapshot: vi.fn(), discardSnapshot: vi.fn() }));
+const native = vi.hoisted(() => ({ readSnapshot: vi.fn(), clearSnapshot: vi.fn(), discardSnapshot: vi.fn(), rejectUnreadableSnapshot: vi.fn() }));
 const fs = vi.hoisted(() => {
   const listings = new Map<string, Array<{ uri: string; name: string }> | Error>();
   class Directory {
@@ -20,7 +20,7 @@ const fs = vi.hoisted(() => {
 });
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => native }));
 vi.mock('expo-file-system', () => ({ Directory: fs.Directory }));
-import { getSharedPayloads, clearSharedPayloads, discardSharedPayloads } from '@/session/incomingShareNative';
+import { getSharedPayloads, clearSharedPayloads, discardSharedPayloads, rejectUnreadableSharedPayloads } from '@/session/incomingShareNative';
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -197,4 +197,14 @@ it('fences old text before filtering files that account cleanup deleted', () => 
   expect(getSharedPayloads()).toEqual([]);
   native.readSnapshot.mockReturnValue('[{"type":"text","value":"private A text"}]');
   expect(getSharedPayloads()).toEqual([{ shareType: 'text', value: 'private A text', mimeType: undefined }]);
+});
+
+// The boundary must be persisted without a second read of the unavailable slot.
+it('persists unknown snapshot rejection without App Group reads', () => {
+  native.readSnapshot.mockImplementation(() => { throw new Error('App Group I/O'); });
+  rejectUnreadableSharedPayloads();
+  expect(native.rejectUnreadableSnapshot).toHaveBeenCalledOnce();
+  expect(native.readSnapshot).not.toHaveBeenCalled();
+  native.rejectUnreadableSnapshot.mockImplementation(() => { throw new Error('rejection flush failed'); });
+  expect(() => rejectUnreadableSharedPayloads()).toThrow('rejection flush failed');
 });

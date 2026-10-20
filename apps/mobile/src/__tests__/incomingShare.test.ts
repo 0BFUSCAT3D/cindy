@@ -299,6 +299,19 @@ describe('incoming Share Extension payloads', () => {
     stop();
   });
 
+  it('persists an unknown-slot fence when the account transition cannot read native storage', () => {
+    const native = {
+      getSharedPayloads: vi.fn(() => { throw new Error('App Group unavailable'); }),
+      clearSharedPayloads: vi.fn(),
+      rejectUnreadableSharedPayloads: vi.fn(),
+    };
+    const stop = watchIncomingShareAccount(native);
+    setMobileAuthOwner('account-b');
+    expect(native.rejectUnreadableSharedPayloads).toHaveBeenCalledOnce();
+    expect(native.clearSharedPayloads).not.toHaveBeenCalled();
+    stop();
+  });
+
   it('clears an unobserved native slot on switch and allows new shares for the new account', () => {
     let raw = [{ value: 'file:///shared/report.pdf', shareType: 'file' as const }];
     const native = { getSharedPayloads: () => raw, clearSharedPayloads: vi.fn(() => { raw = []; }) };

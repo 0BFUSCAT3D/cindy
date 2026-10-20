@@ -23,10 +23,11 @@ final class RejectionDefaults: UserDefaults {
 enum IncomingShareSlotTest {
   static func main() throws {
     let arguments = CommandLine.arguments
-    if arguments.count > 1 && arguments[1] == "--rejected" {
+    if arguments.count > 1 && ["--rejected", "--unknown"].contains(arguments[1]) {
       let persisted = UserDefaults(suiteName: arguments[2])!
       precondition(persisted.synchronize())
       precondition(IncomingShareSlot.read(Data("A".utf8), rejections: persisted) { _ in throw POSIXError(.EIO) } == nil)
+      precondition(persisted.data(forKey: IncomingShareSlot.rejectedKey) == Data("A".utf8))
       return
     }
     if arguments.count > 1 {
@@ -151,6 +152,28 @@ enum IncomingShareSlotTest {
     newer.failRemoval = false
     precondition(IncomingShareSlot.read(b, rejections: newer) { _ in fatalError("Never clear newer bytes") } == b)
     precondition(newer.durable == nil)
+    // Read failure cannot capture exact bytes: persist unknown before App Group
+    // recovery, then verify a new process rejects and pins the recovered bytes.
+    try IncomingShareSlot.rejectUnreadable(in: rejections)
+    let unknownReader = Process()
+    unknownReader.executableURL = URL(fileURLWithPath: arguments[0])
+    unknownReader.arguments = ["--unknown", rejectionSuite]
+    try unknownReader.run()
+    unknownReader.waitUntilExit()
+    precondition(unknownReader.terminationStatus == 0)
+    precondition(rejections.synchronize())
+    precondition(IncomingShareSlot.read(a, rejections: rejections) { _ in throw POSIXError(.EIO) } == nil)
+    precondition(IncomingShareSlot.read(b, rejections: rejections) { _ in fatalError("New bytes remain eligible") } == b)
+    try IncomingShareSlot.rejectUnreadable(in: rejections)
+    precondition(IncomingShareSlot.read(a, rejections: rejections) { _ in true } == nil)
+    precondition(IncomingShareSlot.read(a, rejections: rejections) { _ in fatalError("New identical share after recovery") } == a)
+    let unknownEmpty = RejectionDefaults(Data())
+    precondition(IncomingShareSlot.read(nil, rejections: unknownEmpty) { _ in fatalError("Empty slot") } == nil)
+    precondition(unknownEmpty.cached == Data() && unknownEmpty.durable == Data())
+    unknownEmpty.failRemoval = false
+    precondition(IncomingShareSlot.read(nil, rejections: unknownEmpty) { _ in fatalError("Empty slot") } == nil)
+    precondition(unknownEmpty.durable == nil)
+    print("PASS: unreadable account-boundary fence survives process restart and recovery")
     print("PASS: failed rejection removal retains retry state until durable recovery")
     print("PASS: durable exact-snapshot rejection, retry and replacement")
     print("PASS: cross-process exclusion, stale/current/duplicate acknowledgement, error unlock")

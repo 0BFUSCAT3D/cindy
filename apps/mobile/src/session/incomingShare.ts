@@ -122,6 +122,7 @@ type IncomingShareNative = {
   getSharedPayloads(): SharePayload[];
   clearSharedPayloads(expected: SharePayload[]): void;
   discardSharedPayloads?(expected: SharePayload[]): void;
+  rejectUnreadableSharedPayloads?(): void;
 };
 
 function discardNativeShare(native: IncomingShareNative, raw: SharePayload[]): void {
@@ -146,6 +147,11 @@ export function watchIncomingShareAccount(
         // Also fence older binaries, or a failure to persist the native tombstone.
         // null means the slot was unreadable: its first readable batch must clear.
         rejectedNativeSnapshots.set(native, raw ? JSON.stringify(raw) : null);
+        if (raw === undefined) {
+          // Persist without touching the unavailable App Group. A fresh process
+          // must reject its first readable slot before the new owner can see it.
+          try { native.rejectUnreadableSharedPayloads?.(); } catch { /* Keep the in-process fence too. */ }
+        }
       }
     }
   }, previous);
