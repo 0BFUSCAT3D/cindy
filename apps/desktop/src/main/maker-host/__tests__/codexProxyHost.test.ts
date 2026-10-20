@@ -31,6 +31,7 @@ const mockState = vi.hoisted(() => {
       error: vi.fn(),
     },
     createAnthropicCompatProxy: vi.fn(),
+    realStripTransforms: false,
     createPiProviderFetch: vi.fn(() => vi.fn()),
     handlePiProviderRequest: vi.fn(async () => undefined),
     createResponsesChatHandler: vi.fn(() => ({ handle: vi.fn(async () => undefined) })),
@@ -99,8 +100,9 @@ vi.mock('@cindy/anthropic-compat-proxy', async (importOriginal) => {
     ...actual,
     createAnthropicCompatProxy: mockState.createAnthropicCompatProxy,
     createInstructionsInjectionTransform: mockState.createInstructionsInjectionTransform,
-    createActiveStripTransform: () => (() => null),
-    createThreadStripController: () => ({ markActive: () => {}, reconcile: () => {}, shouldStrip: () => false, clear: () => {} }),
+    createActiveStripTransform: (...args: Parameters<typeof actual.createActiveStripTransform>) =>
+      mockState.realStripTransforms ? actual.createActiveStripTransform(...args) : (() => null),
+    createThreadStripController: actual.createThreadStripController,
     createEncryptedContentRecoveryRule: (opts: { enabled: () => boolean }) => ({
       id: 'encrypted_content',
       enabled: opts.enabled,
@@ -162,7 +164,8 @@ vi.mock('@cindy/responses-anthropic-bridge', () => ({
 // generations) plus the boot-time injections a case may have overridden.
 // Re-importing the whole graph per case instead cost 105s for this file versus
 // ~7s (2026-10-16), and order-shuffled runs confirm cases stay independent.
-async function freshCodexProxyHost() {
+async function freshCodexProxyHost(realStripTransforms = false) {
+  mockState.realStripTransforms = realStripTransforms;
   const host = await import('../codex-proxy-host.js');
   await host.disposeCodexProxy();
   host.resetCodexThreadUpstreamForTest();
@@ -1618,7 +1621,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       };
       const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-      const forcedRouteTransform = transforms[4];
+      const forcedRouteTransform = transforms[5];
       if (!forcedRouteTransform) throw new Error('expected locked Subagent route transform');
       mockState.injectionTransform.mockImplementationOnce((body) => {
         // 首个 collab_spawn 请求必须先懒登记血缘，同一轮 instructions transform 才能
@@ -1631,7 +1634,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         reasoning: { effort: 'medium' },
         input: [],
       };
-      for (const transform of transforms.slice(0, 5)) {
+      for (const transform of transforms.slice(0, 7)) {
         const next = transform(transformed, requestContext);
         if (next !== null && next !== undefined) transformed = next;
       }
@@ -1708,7 +1711,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       )).toBeNull();
 
-      const execGuardTransform = transforms[6];
+      const execGuardTransform = transforms[7];
       if (!execGuardTransform) throw new Error('expected locked Subagent exec guard transform');
       const guarded = execGuardTransform({
         model: 'deepseek/deepseek-v4-flash',
@@ -1805,7 +1808,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       };
       const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-      const forcedRouteTransform = transforms[4];
+      const forcedRouteTransform = transforms[5];
       if (!forcedRouteTransform) throw new Error('expected smart Subagent route transform');
       expect(forcedRouteTransform({
         model: 'smart/model-cheap',
@@ -2729,7 +2732,7 @@ describe('codex proxy host', () => {
         // upstream 是函数形态(每请求现取,model-access 下发可运行期换 endpoint);
         // 断言其当前求值 = 网关 base + /v1
         upstream: expect.any(Function),
-        // [armed HTTP recovery strip(WS 错误后落回 HTTP 即激活对应 strip), encrypted activeStrip, image generation activeStrip, provider-aware Guardian reviewer, locked Subagent route, instructions 注入, locked Subagent exec guard, Gateway 原生 web_search, 跨来源压缩块兼容, xAI ModelInput activeStrip, responses item id activeStrip(#4738), responses item id length activeStrip(#4227), exec function adapter, strict gateway history 兼容, xAI ModelInput sanitize, DeepSeek V4 custom tool 兼容, xAI Responses 兼容, XD Gateway Grok 兼容, ByteDance Seed tool 兼容, MiniMax effort 兼容, provider model rewrite, provider 参数归一, 视觉桥(controller 未注入 → 短路透传), 工具 ID 校正, stripNonAnthropicFields]
+        // [armed HTTP recovery strip(WS 错误后落回 HTTP 即激活对应 strip), encrypted activeStrip, image generation activeStrip, raw reasoning activeStrip, provider-aware Guardian reviewer, locked Subagent route, instructions 注入, locked Subagent exec guard, Gateway 原生 web_search, 跨来源压缩块兼容, xAI ModelInput activeStrip, responses item id activeStrip(#4738), responses item id length activeStrip(#4227), exec function adapter, strict gateway history 兼容, xAI ModelInput sanitize, DeepSeek V4 custom tool 兼容, xAI Responses 兼容, XD Gateway Grok 兼容, ByteDance Seed tool 兼容, MiniMax effort 兼容, provider model rewrite, provider 参数归一, 视觉桥(controller 未注入 → 短路透传), 工具 ID 校正, stripNonAnthropicFields]
         transformRequest: [
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
@@ -2737,7 +2740,7 @@ describe('codex proxy host', () => {
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function),
           expect.any(Function), expect.any(Function), // frozen custom-provider effort
-          expect.any(Function),
+          expect.any(Function), expect.any(Function),
         ],
         transformResponse: expect.any(Function),
         routingTransform: expect.any(Function),
@@ -2747,6 +2750,7 @@ describe('codex proxy host', () => {
           expect.objectContaining({ id: 'image_generation_id' }),
           expect.objectContaining({ id: 'responses_item_id_prefix' }),
           expect.objectContaining({ id: 'responses_item_id_length' }),
+          expect.objectContaining({ id: 'responses_reasoning_content' }),
           expect.objectContaining({ id: 'xai_model_input' }),
         ]),
       }),
@@ -2987,6 +2991,131 @@ describe('codex proxy host', () => {
       await new Promise<void>(resolve => wss.close(() => resolve()));
       upstream.closeAllConnections();
       await new Promise<void>(resolve => upstream.close(() => resolve()));
+    }
+  });
+
+  it.each((['shared', 'custom-context', 'control-plane'] as const).flatMap(proxyKind =>
+    ['gpt-6.1-sol', 'gpt-6-astra'].map(model => ({ proxyKind, model })),
+  ))('recovers DeepSeek reasoning on $proxyKind → $model without losing conversation history', async ({ proxyKind, model }) => {
+    const host = await freshCodexProxyHost(true);
+    const errorMessage = "Invalid 'input[15].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.";
+    const reasoning = { type: 'reasoning', summary: [], content: [{ type: 'reasoning_text', text: 'Provider-private reasoning' }], encrypted_content: 'deepseek-blob' };
+    const kept = [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Continue verification' }] },
+      { type: 'reasoning', id: 'rs_native', summary: [], encrypted_content: 'openai-blob' },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'The service is running.' }] },
+      { type: 'function_call', id: 'fc_native', call_id: 'call_native', name: 'inspect', arguments: '{}' },
+      { type: 'function_call_output', id: 'fco_native', call_id: 'call_native', output: 'Verified' },
+      { type: 'compaction', encrypted_content: 'compaction-blob' },
+    ];
+    const history = { model, input: [reasoning, ...kept] };
+    const original = JSON.stringify(history);
+    const httpBodies: Array<{ input: unknown[] }> = [];
+    const wsBodies: unknown[] = [];
+    let rejectRawReasoning = true;
+    const upstream = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      httpBodies.push(body);
+      const valid = !rejectRawReasoning || !body.input.some((item: { content?: unknown; type?: string }) => item.type === 'reasoning' && Array.isArray(item.content) && item.content.length > 0);
+      res.writeHead(valid ? 200 : 400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(valid ? { output: [] } : { error: { message: errorMessage, code: 'array_above_max_length' } }));
+    });
+    const wss = new WebSocketServer({ noServer: true });
+    upstream.on('upgrade', (req, socket, head) => wss.handleUpgrade(req, socket, head, ws => {
+      ws.on('message', data => {
+        const body = JSON.parse(data.toString());
+        wsBodies.push(body);
+        ws.send(JSON.stringify(body.input ? { error: { message: errorMessage } } : { pong: true }));
+      });
+    }));
+    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    const actual = await vi.importActual<typeof import('@cindy/anthropic-compat-proxy')>('@cindy/anthropic-compat-proxy');
+    mockState.createAnthropicCompatProxy.mockImplementation((opts: Parameters<typeof actual.createAnthropicCompatProxy>[0]) =>
+      actual.createAnthropicCompatProxy({
+        ...opts, upstream: upstreamUrl, resolveOutboundProxy: () => null,
+        resolveWebSocketUpstream: ctx => opts.resolveWebSocketUpstream?.(ctx) ? upstreamUrl : null,
+        routingTransform: async (body, ctx) => ({ ...(await opts.routingTransform?.(body, ctx)), upstreamOverride: upstreamUrl }),
+      }),
+    );
+    host.setCodexProxyAuthInjection('oauth-bearer');
+    const clients: WebSocket[] = [];
+    try {
+      let proxyUrl: string;
+      if (proxyKind === 'shared') {
+        await host.ensureCodexProxyReady();
+        proxyUrl = host.getCodexProxyEndpoint()!;
+      } else if (proxyKind === 'custom-context') {
+        await host.ensureCodexCustomContextProxyReady('context-reasoning', 'oauth-bearer', []);
+        proxyUrl = host.getCodexCustomContextProxyEndpoint('context-reasoning');
+      } else {
+        await host.ensureCodexControlPlaneProxyReady('oauth-bearer');
+        proxyUrl = host.getCodexControlPlaneProxyEndpoint('oauth-bearer');
+      }
+      host.registerComposed('session-reasoning', 'thread-reasoning', 'PRODUCT_PROMPT');
+      host.registerComposed('session-sibling', 'thread-sibling', 'PRODUCT_PROMPT');
+      const connect = async (thread: string) => {
+        const client = new WebSocket(proxyUrl.replace(/^http/, 'ws') + '/v1/responses', { headers: { 'thread-id': thread } });
+        clients.push(client);
+        await once(client, 'open');
+        return client;
+      };
+      const bad = await connect('thread-reasoning');
+      const sibling = await connect('thread-sibling');
+      expect(host.armCodexHttpRecovery({ sessionId: 'unknown', threadId: 'unknown', message: errorMessage })).toBeNull();
+      const rejection = once(bad, 'message');
+      bad.send(original);
+      const [payload] = await rejection;
+      expect(wsBodies[0]).toEqual(history);
+      // Codex can close the rejected socket before delivering the error callback.
+      const closed = once(bad, 'close'); bad.close(); await closed;
+      expect(host.armCodexHttpRecovery({ sessionId: 'session-reasoning', threadId: 'thread-reasoning', message: 'Bad request', additionalDetails: JSON.parse(payload.toString()).error.message })).toBe('responses_reasoning_content');
+      const retry = new WebSocket(proxyUrl.replace(/^http/, 'ws') + '/v1/responses', { headers: { 'thread-id': 'thread-reasoning' } });
+      clients.push(retry);
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        retry.once('unexpected-response', (_req, res) => { res.resume(); resolve(res.statusCode); });
+        retry.once('error', reject);
+      });
+      expect(status).toBe(426);
+      const post = (threadId = 'thread-reasoning') => new Promise<number | undefined>((resolve, reject) => {
+        const req = httpRequest(proxyUrl + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json', 'thread-id': threadId } }, res => {
+          res.resume(); res.once('end', () => resolve(res.statusCode));
+        });
+        req.once('error', reject); req.end(original);
+      });
+      expect(await post()).toBe(200);
+      expect(httpBodies).toHaveLength(1); // WS rejection activates the strip before the first HTTP replay.
+      expect(httpBodies[0].input).toEqual(kept);
+      expect(await post()).toBe(200);
+      expect(httpBodies).toHaveLength(2); // Subsequent turn pre-cleans without another 400.
+      expect(httpBodies[1].input).toEqual(kept);
+      // HTTP-only requests have no WS evidence: retain history until an explicit rejection.
+      host.registerComposed('session-http-only', 'thread-http-only', 'PRODUCT_PROMPT');
+      expect(await post('thread-http-only')).toBe(200);
+      expect(httpBodies).toHaveLength(4);
+      expect(httpBodies[2].input).toEqual(history.input);
+      expect(httpBodies[3].input).toEqual(kept);
+      expect(JSON.stringify(history)).toBe(original);
+      expect(sibling.readyState).toBe(WebSocket.OPEN);
+      const pong = once(sibling, 'message'); sibling.send(JSON.stringify({ ping: true }));
+      expect(JSON.parse((await pong)[0].toString())).toEqual({ pong: true });
+      host.unregister('session-reasoning');
+      host.registerComposed('session-reasoning', 'thread-reasoning', 'PRODUCT_PROMPT');
+      rejectRawReasoning = false;
+      expect(await post()).toBe(200);
+      expect(httpBodies).toHaveLength(5);
+      expect(httpBodies[4].input).toEqual(history.input); // Unregister cleared the pre-clean marker.
+    } finally {
+      for (const client of clients) { client.on('error', () => {}); client.terminate(); }
+      for (const ws of wss.clients) ws.terminate();
+      host.unregister('session-reasoning'); host.unregister('session-sibling'); host.unregister('session-http-only');
+      await host.disposeCodexProxy();
+      await new Promise<void>(resolve => wss.close(() => resolve()));
+      upstream.closeAllConnections();
+      await new Promise<void>(resolve => upstream.close(() => resolve()));
+      mockState.realStripTransforms = false;
     }
   });
 
@@ -3549,8 +3678,8 @@ describe('codex proxy host', () => {
     setSessionProvider('session-openai-review', 'openai');
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    // armed HTTP recovery strip, active strips ×2, then provider-aware Guardian rewrite。
-    const reviewerTransform = transforms[3];
+    // armed HTTP recovery strip, active strips ×3, then provider-aware Guardian rewrite。
+    const reviewerTransform = transforms[4];
     if (!reviewerTransform) throw new Error('expected Guardian reviewer transform');
     const body = { model: 'codex-auto-review', input: [{ role: 'user', content: 'review' }] };
     const guardianHeaders = (parentThreadId: string) => ({
@@ -3617,7 +3746,7 @@ describe('codex proxy host', () => {
     await host.ensureCodexControlPlaneProxyReady('oauth-bearer');
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    const reviewerTransform = transforms[3];
+    const reviewerTransform = transforms[4];
     if (!reviewerTransform) throw new Error('expected Guardian reviewer transform');
     expect(reviewerTransform(
       { model: 'codex-auto-review', input: [] },
@@ -6853,7 +6982,7 @@ describe('codex proxy host', () => {
     await host.ensureCodexProxyReady();
 
     const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
-    expect(transforms).toHaveLength(27); // ordinary transforms + dump + frozen custom-provider effort
+    expect(transforms).toHaveLength(28); // ordinary transforms + dump + frozen custom-provider effort
     const ctx = {
       method: 'POST',
       url: '/v1/responses',

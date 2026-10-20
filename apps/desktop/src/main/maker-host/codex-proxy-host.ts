@@ -44,6 +44,7 @@ import {
   createAnthropicCompatProxy,
   createActiveStripTransform,
   createEncryptedContentRecoveryRule,
+  createResponsesReasoningContentRecoveryRule,
   createImageGenerationIdRecoveryRule,
   createResponsesItemIdPrefixRecoveryRule,
   createResponsesItemIdLengthRecoveryRule,
@@ -55,6 +56,7 @@ import {
   sanitizeXaiModelInputBody,
   sanitizeXaiModelInputFromBody,
   stripEncryptedContentFromBody,
+  stripResponsesReasoningContentFromBody,
   stripImageGenerationItemsWithoutIdFromBody,
   stripNonCanonicalResponsesItemIdsFromBody,
   shortenOversizedResponsesItemIdsFromBody,
@@ -132,6 +134,7 @@ import {
   imageGenerationStripController,
   responsesItemIdStripController,
   responsesItemIdLengthStripController,
+  responsesReasoningContentStripController,
   xaiModelInputStripController,
 } from './thread-strip-controllers.js';
 import { createMakerLogger } from './logger-adapter.js';
@@ -233,6 +236,9 @@ const responsesItemIdPrefixRecoveryRule = createResponsesItemIdPrefixRecoveryRul
 const responsesItemIdLengthRecoveryRule = createResponsesItemIdLengthRecoveryRule({
   onRetry: (threadId, model) => responsesItemIdLengthStripController.markActive(threadId, model),
 });
+const responsesReasoningContentRecoveryRule = createResponsesReasoningContentRecoveryRule({
+  onRetry: (threadId, model) => responsesReasoningContentStripController.markActive(threadId, model),
+});
 const xaiModelInputRecoveryRule = createXaiModelInputRecoveryRule({
   onRetry: (threadId, model) => xaiModelInputStripController.markActive(threadId, model),
 });
@@ -242,6 +248,7 @@ const CODEX_BODY_RECOVERY_RULES = [
   imageGenerationIdRecoveryRule,
   responsesItemIdPrefixRecoveryRule,
   responsesItemIdLengthRecoveryRule,
+  responsesReasoningContentRecoveryRule,
   xaiModelInputRecoveryRule,
   vllmResponsesCompatibilityRule,
 ] as const;
@@ -3181,6 +3188,11 @@ function createTransformRequestChain(
       enabled: () => true,
       strip: stripImageGenerationItemsWithoutIdFromBody,
     }),
+    createActiveStripTransform({
+      controller: responsesReasoningContentStripController,
+      enabled: () => true,
+      strip: stripResponsesReasoningContentFromBody,
+    }),
 
     // Guardian uses an isolated child thread. Resolve its parent business
     // session and select that session's real provider model before provider
@@ -3912,6 +3924,7 @@ function clearSessionThreads(sessionId: string): string[] {
       observedSubagentIdentityByThread.delete(threadId);
       httpRecoveryReasonByThread.delete(threadId);
       pendingHttpRecoveryStripByThread.delete(threadId);
+      responsesReasoningContentStripController.clear(threadId);
     }
   }
   return threadIds;
@@ -3949,6 +3962,7 @@ export async function disposeCodexProxy(): Promise<void> {
   dumpSeq = 0;
   for (const threadId of threadToSession.keys()) {
     registry.delete(threadId);
+    responsesReasoningContentStripController.clear(threadId);
   }
   sessionToThread.clear();
   sessionToThreads.clear();
