@@ -456,6 +456,8 @@ function resolveTaskModelRoutes(tasks, runtime) {
         : candidates.length === 1
           ? candidates[0]
           : null;
+    // 未传 provider 时的**既有**顺序:模型 id 前缀隐含的来源 > 父会话 provider > 唯一候选。
+    // 本 PR 只给显式 provider 加分支,不调整它(review: 正文曾把这段误写成“父来源优先”)。
     if (!route) {
       if (candidates.length > 1) {
         throw new Error(
@@ -1520,7 +1522,7 @@ export default async function cindySubagent(pi: any) {
         model: { type: 'string', description: 'Optional exact child model id.' },
         provider: {
           type: 'string',
-          description: 'Optional provider id for the child (from capabilities modelProviders). Must serve the chosen model; defaults to the parent provider.',
+          description: 'Optional provider id for the child (from capabilities modelProviders). Must serve the chosen model and match exactly one connection. Without it, resolution keeps its existing order: a source implied by a xai/, chatgpt/ or claude- model id, then the parent provider.',
         },
         thinking: { type: 'string', description: 'Optional thinking level: ' + THINKING_LEVELS },
         async: { type: 'boolean', description: 'Run in Cindy durable background mode.' },

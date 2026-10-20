@@ -324,6 +324,11 @@ describe('Pi subagent provider selection', () => {
         { provider: 'openai-codex', model: 'gpt-5.4', sourceProviderId: 'openai', proxySessionAuth: true },
         { provider: 'cindy-byom-openai-codex', model: 'chatgpt/gpt-5.4', sourceProviderId: 'openai-codex' },
       ],
+      // 父会话 provider 与前缀隐含来源各命中一条不同连接。
+      'claude-5-sonnet': [
+        { provider: 'anthropic', model: 'claude-5-sonnet', sourceProviderId: 'anthropic', proxySessionAuth: true },
+        { provider: 'parent', model: 'claude-5-sonnet', sourceProviderId: 'parent' },
+      ],
     },
   };
   const route = (task: { model?: string; provider?: string }) => {
@@ -390,6 +395,19 @@ describe('Pi subagent provider selection', () => {
   it('lists only names that resolve to one connection in capabilities', () => {
     expect(extension.modelProviderMap(runtime)['chatgpt/gpt-5.4'])
       .toEqual(['openai', 'cindy-byom-openai-codex']);
+  });
+
+  it('keeps the pre-existing prefix-before-parent order when no provider is given', () => {
+    // 本 PR 不调整未传 provider 时的优先级:前缀隐含来源仍然压过父会话 provider。
+    expect(route({ model: 'claude-5-sonnet' })).toMatchObject({
+      routeProvider: 'anthropic',
+      routeSourceProviderId: 'anthropic',
+    });
+    // 显式 provider 则可以越过这条顺序,直接选父会话那个连接。
+    expect(route({ model: 'claude-5-sonnet', provider: 'parent' })).toMatchObject({
+      routeProvider: 'parent',
+      routeSourceProviderId: 'parent',
+    });
   });
 
   it('accepts provider at call level and per task, and exposes it in the tool schema', async () => {
