@@ -6,6 +6,7 @@ import { messages, sessions } from '../../schema';
 import { tx } from '../../worker/opHandlers/tx';
 import { discardPersistedAssistantMessage } from '../messages';
 import * as prRefsStore from '../../../git-context/prRefsStore';
+import { commitMessageMediaRefs } from '../../../cindy-media/chatAttachments';
 import { onAssistantTextEvent, clearSessionPersistState, drainPersistQueue,
   flushAssistantBlock, noteSessionClearBoundary } from '../../../messagePersistBroadcaster';
 
@@ -40,14 +41,10 @@ vi.mock('../../../maker-host/claude-local-sessions', () => ({
 vi.mock('../../../embedders/chat-history-embedder', () => ({
   onMessageCreated: vi.fn(async () => undefined),
 }));
-vi.mock('../../../cindy-media/chatAttachments', () => ({
-  commitMessageMediaRefs: vi.fn(async () => null),
-  collectCindyMediaHashes: vi.fn(() => []),
-}));
-vi.mock('../../../cindy-media/ledger', () => ({
-  removeRefs: vi.fn(async () => undefined),
-  removeSessionAttachmentRefIfUnreferencedByLiveMessage: vi.fn(async () => undefined),
-}));
+vi.mock('../../../cindy-media/chatAttachments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../cindy-media/chatAttachments')>();
+  return { ...actual, commitMessageMediaRefs: vi.fn(actual.commitMessageMediaRefs) };
+});
 vi.mock('../../../device-link/invoke-context', () => ({
   isDeviceLinkInvoke: vi.fn(() => false),
 }));
@@ -84,6 +81,16 @@ function setupDb(): void {
       rewind_at INTEGER
     );
     CREATE UNIQUE INDEX uniq_messages_session_client ON messages(session_id, client_id);
+    CREATE TABLE media_blobs (
+      hash TEXT PRIMARY KEY, ext TEXT NOT NULL, mime_type TEXT NOT NULL,
+      bytes INTEGER NOT NULL, is_cache INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL, last_access_at INTEGER NOT NULL
+    );
+    CREATE TABLE media_refs (
+      id TEXT PRIMARY KEY, hash TEXT NOT NULL REFERENCES media_blobs(hash),
+      ref_kind TEXT NOT NULL, ref_id TEXT NOT NULL, origin_session_id TEXT,
+      origin_kind TEXT, origin_id TEXT, label TEXT, created_at INTEGER NOT NULL
+    );
     CREATE TABLE session_pr_refs (
       id TEXT PRIMARY KEY, session_id TEXT NOT NULL, owner TEXT NOT NULL,
       repo TEXT NOT NULL, pr_number INTEGER NOT NULL, url TEXT NOT NULL,
@@ -245,4 +252,128 @@ it('does not restore pre-clear PR references when retraction cleanup resumes aft
     await drainPersistQueue();
     expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
   } finally { release(); spy.mockRestore(); }
+});
+
+
+it.each(['none', 'previous', 'newer'] as const)(
+  'broadcasts the surviving canonical list preview after retracting the draft (%s)', async (survivor) => {
+    if (survivor === 'previous') {
+      h.sqlite!.prepare("INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES ('u', 'u', 's1', 'user', ?, 1)").run('Previous question');
+    }
+    onAssistantTextEvent('s1', { text: 'Rejected draft', agentMessageId: 'a' }, null);
+    flushAssistantBlock('s1');
+    await drainPersistQueue();
+    if (survivor === 'newer') {
+      onAssistantTextEvent('s1', { text: 'Newer answer', agentMessageId: 'b' }, null);
+      flushAssistantBlock('s1');
+      await drainPersistQueue();
+    }
+    h.broadcast.mockClear();
+    onAssistantTextEvent('s1', { text: '', agentMessageId: 'a', isFinal: true, isFullText: true }, null);
+    await drainPersistQueue();
+    const patches = h.broadcast.mock.calls.filter(([channel]) => channel === 'local-db:sessions:patched');
+    expect(patches.at(-1)?.[1]).toEqual({ sessionId: 's1', patch: {
+      preview: survivor === 'none' ? null : survivor === 'previous' ? 'Previous question' : 'Newer answer',
+    } });
+  },
+);
+
+it.each(['Corrected without a link', 'https://github.com/o/r/pull/3'])(
+  'reconciles PR references after nonempty final correction and a delayed original hook (%s)', async (text) => {
+    onAssistantTextEvent('s1', { text: 'https://github.com/o/r/pull/1', agentMessageId: 'keep' }, null);
+    flushAssistantBlock('s1');
+    await drainPersistQueue();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const original = prRefsStore.recordPrRefsForMessage;
+    const hook = vi.spyOn(prRefsStore, 'recordPrRefsForMessage').mockImplementationOnce(async (msg) => {
+      await pending;
+      await original(msg);
+    });
+    let corrected!: () => void;
+    const written = new Promise<void>((resolve) => { corrected = resolve; });
+    const originalTx = h.client!.tx;
+    h.client!.tx = async (name, args) => {
+      const result = await originalTx(name, args);
+      if (name === 'message.updateContent') corrected();
+      return result;
+    };
+    try {
+      onAssistantTextEvent('s1', { text: 'https://github.com/o/r/pull/2', agentMessageId: 'correct' }, null);
+      flushAssistantBlock('s1');
+      await drainPersistQueue();
+      onAssistantTextEvent('s1', { text, agentMessageId: 'correct', isFinal: true, isFullText: true }, null);
+      await written;
+      release();
+      await drainPersistQueue();
+      await hook.mock.results[0].value;
+      expect((await prRefsStore.listPrRefs('s1')).map((ref) => ref.prNumber).sort())
+        .toEqual(text.includes('/pull/') ? [1, 3] : [1]);
+    } finally { release(); hook.mockRestore(); }
+  },
+);
+
+it.each([{ shared: false, clear: false }, { shared: true, clear: false }, { shared: false, clear: true }])(
+  'settles pending media publication before reconciling withdrawn references (%j)', async ({ shared, clear }) => {
+  const hash = 'a'.repeat(64);
+  const url = `cindy-media://blobs/${hash}.png`;
+  h.sqlite!.prepare("INSERT INTO media_blobs VALUES (?, '.png', 'image/png', 8, 0, 1, 1)").run(hash);
+  if (shared) {
+    h.sqlite!.prepare("INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES ('keep-media', 'keep-media', 's1', 'user', ?, 1)").run(url);
+  }
+  const actual = await vi.importActual<typeof import('../../../cindy-media/chatAttachments')>('../../../cindy-media/chatAttachments');
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  vi.mocked(commitMessageMediaRefs).mockImplementationOnce(async (params, db) => {
+    await pending;
+    return actual.commitMessageMediaRefs(params, db);
+  });
+  let deleted!: () => void;
+  const rollback = new Promise<void>((resolve) => { deleted = resolve; });
+  const originalTx = h.client!.tx;
+  h.client!.tx = async (name, args) => {
+    const result = await originalTx(name, args);
+    if ((args as { publication?: string }).publication === 'rollback') deleted();
+    return result;
+  };
+  try {
+    onAssistantTextEvent('s1', { text: url, agentMessageId: 'withdraw-media' }, null);
+    flushAssistantBlock('s1');
+    await drainPersistQueue();
+    onAssistantTextEvent('s1', { text: '', agentMessageId: 'withdraw-media', isFinal: true, isFullText: true }, null);
+    await rollback;
+    if (clear) {
+      const boundary = Date.now() + 1000;
+      h.sqlite!.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(boundary, 's1');
+      noteSessionClearBoundary('s1', boundary);
+    }
+    release();
+    await drainPersistQueue();
+    await vi.mocked(commitMessageMediaRefs).mock.results[0].value;
+    expect(h.sqlite!.prepare("SELECT count(*) AS n FROM media_refs WHERE ref_kind = 'session-attachment'").get())
+      .toEqual({ n: shared ? 1 : 0 });
+    expect(h.sqlite!.prepare('SELECT count(*) AS n FROM media_blobs').get()).toEqual({ n: 1 });
+  } finally { release(); }
+});
+
+
+it.each([false, true])('reconciles replaced media without releasing another live message reference (shared=%s)', async (shared) => {
+  const oldHash = 'a'.repeat(64);
+  const newHash = 'b'.repeat(64);
+  const oldUrl = `cindy-media://blobs/${oldHash}.png`;
+  const newUrl = `cindy-media://blobs/${newHash}.png`;
+  for (const hash of [oldHash, newHash]) {
+    h.sqlite!.prepare("INSERT INTO media_blobs VALUES (?, '.png', 'image/png', 8, 0, 1, 1)").run(hash);
+  }
+  if (shared) {
+    h.sqlite!.prepare("INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES ('keep-media', 'keep-media', 's1', 'user', ?, 1)").run(oldUrl);
+  }
+  onAssistantTextEvent('s1', { text: oldUrl, agentMessageId: 'replace-media' }, null);
+  flushAssistantBlock('s1');
+  await drainPersistQueue();
+  onAssistantTextEvent('s1', { text: newUrl, agentMessageId: 'replace-media', isFinal: true, isFullText: true }, null);
+  await drainPersistQueue();
+  expect(h.sqlite!.prepare("SELECT hash FROM media_refs WHERE ref_kind = 'session-attachment' ORDER BY hash").all())
+    .toEqual((shared ? [oldHash, newHash] : [newHash]).map((hash) => ({ hash })));
+  expect(h.sqlite!.prepare('SELECT count(*) AS n FROM media_blobs').get()).toEqual({ n: 2 });
 });

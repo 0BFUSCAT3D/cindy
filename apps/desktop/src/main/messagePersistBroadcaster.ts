@@ -2256,7 +2256,9 @@ function assembleAssistantTextEvent(
         }
         return;
       }
-      const updated = await updateDbMessageContent(sessionId, linkedPersistId, visible);
+      const updated = await updateDbMessageContent(sessionId, linkedPersistId, visible, undefined, {
+        isCurrent: () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope),
+      });
       if (!isCurrentBoundary() || !isOwnerScopeCurrent(ownerScope)) return;
       if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
       if (agentMeta) {
@@ -2306,6 +2308,8 @@ function assembleAssistantTextEvent(
               sessionId,
               lateFinalCandidate.persistId,
               visible,
+              undefined,
+              { isCurrent: () => isCandidateCurrent() && isOwnerScopeCurrent(ownerScope) },
             );
             if (updated && isCandidateCurrent()) {
               lateFinalCandidate.text = visible;
@@ -2376,6 +2380,8 @@ function assembleAssistantTextEvent(
               sessionId,
               boundaryFlushed.persistId,
               visible,
+              undefined,
+              { isCurrent: () => lastBoundaryFlushedAssistantBySession.get(sessionId) === boundaryFlushed && isOwnerScopeCurrent(ownerScope) },
             );
             if (updated) {
               // 缓存已落库的全文:重复投递同一份快照时不再重复 UPDATE。

@@ -2412,6 +2412,20 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getSessionListMessagePreview('s1')).toBe('');
   });
 
+  it.each([null, 'previous user', 'newer reply'])('uses the canonical preview after a draft is retracted: %s', (preview) => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', { preview: 'rejected draft' })]);
+    remoteSessionStore.setMessages('s1', [{ ...message('draft', 's1'), content: 'rejected draft' }]);
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:sessions:patched', {
+      sessionId: 's1', patch: { preview },
+    });
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:deleted', {
+      sessionId: 's1', clientIds: ['draft'],
+    });
+    expect(remoteSessionStore.getMessages('s1')).toHaveLength(0);
+    expect(remoteSessionStore.getSessions().find((row) => row.id === 's1')?.preview).toBe(preview);
+    expect(remoteSessionStore.getSessionListMessagePreview('s1')).toBe(preview ?? undefined);
+  });
+
   it('tracks which session metadata the message window has been synced against', () => {
     const meta = session('s1', {
       updatedAt: '2026-01-01T00:00:01.000Z',

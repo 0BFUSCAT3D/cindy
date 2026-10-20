@@ -2727,7 +2727,8 @@ describe('assistant isFinal burst DUP-SKIP(P1:main 对称去重,防重复 isFina
     );
     expect(lateFinalId).toBe(persistId);
     await flushWrites();
-    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, persistId, '选哪个?');
+    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, persistId, '选哪个?', undefined,
+      expect.objectContaining({ isCurrent: expect.any(Function) }));
     expect(broadcastMessageRow).toHaveBeenCalled();
     const assistantCreates = vi.mocked(createMessage).mock.calls
       .filter(([, message]) => message.role === 'assistant');
@@ -2915,7 +2916,8 @@ describe('stale-idle assistant late final identity', () => {
     const assistantCreates = (createMessage as unknown as { mock: { calls: unknown[][] } }).mock.calls
       .filter((c) => (c[1] as { role?: string }).role === 'assistant');
     expect(assistantCreates).toHaveLength(1);
-    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, persistId, 'partial output');
+    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, persistId, 'partial output', undefined,
+      expect.objectContaining({ isCurrent: expect.any(Function) }));
     expect(patchMessageAgentMetaWithResult).not.toHaveBeenCalled();
     expect(broadcastMessageRow).toHaveBeenCalled();
   });
@@ -3035,7 +3037,8 @@ describe('streamed assistant final calibration', () => {
       { model: 'test-model' })).toBe(firstId);
     expect(getSessionTextSnapshot(SESSION)).toEqual(before);
     await flushWrites();
-    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, firstId, 'Corrected');
+    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, firstId, 'Corrected', undefined,
+      expect.objectContaining({ isCurrent: expect.any(Function) }));
     expect(patchMessageAgentMetaWithResult).toHaveBeenCalledWith(SESSION, firstId, { model: 'test-model' });
     expect(broadcastMessageRow).toHaveBeenCalled();
     expect(vi.mocked(createMessage).mock.calls.filter(([, message]) => message.role === 'assistant')).toHaveLength(1);
