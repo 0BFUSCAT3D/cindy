@@ -1,6 +1,12 @@
 import type { AudioTrace, ConversationInputEvent } from '@cindy/voice-input-core';
 import type { AgentKind } from '@cindy/model-providers';
 
+/** Call-local exit decision, observed alongside normal message dispatch.
+ * true offers a cancellable countdown after acceptance; submit_then_exit closes
+ * immediately after acceptance. Neither result retracts or resends the message.
+ * Keep boolean outcomes for local bridge/test compatibility. */
+export type VoiceExitDecision = boolean | 'submit_then_exit';
+
 /** Local Desktop voice UI contract. No credentials, raw paths or remote invoke access. */
 export type SpeechProtocol = 'openai' | 'elevenlabs' | 'minimax';
 // Missing provider/runtime is the original Cindy AI selection, never another connection.
@@ -79,7 +85,11 @@ export interface VoiceConversationApi {
   /** Explicit message read-aloud: the same TTS lease and queue, without ASR or microphone input. */
   startPlayback(input: VoiceConversationStart): Promise<{ callId: string }>;
   /** One finalized ASR utterance, bound to the active local call; never creates a task. */
-  classifyExit(callId: string, utteranceId: string, inputGeneration: number): Promise<boolean>;
+  classifyExit(
+    callId: string,
+    utteranceId: string,
+    inputGeneration: number,
+  ): Promise<VoiceExitDecision>;
   audio(input: {
     callId: string;
     pcm: ArrayBuffer;

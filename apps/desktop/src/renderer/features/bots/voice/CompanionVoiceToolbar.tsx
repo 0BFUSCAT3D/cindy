@@ -140,10 +140,14 @@ export function CompanionVoiceToolbar(props: Props) {
               aria-live="polite"
             >
               {state.exitCountdown
-                ? t(`bots.voiceMode.exit.${state.exitCountdown.reason}`)
+                ? t(
+                    state.exitCountdown.waitingForSend
+                      ? 'bots.voiceMode.exit.sending'
+                      : `bots.voiceMode.exit.${state.exitCountdown.reason}`,
+                  )
                 : t(`bots.voiceMode.status.${status}`)}
             </p>
-            {state.exitCountdown ? (
+            {state.exitCountdown && !state.exitCountdown.waitingForSend ? (
               <p
                 role="timer"
                 aria-live="off"

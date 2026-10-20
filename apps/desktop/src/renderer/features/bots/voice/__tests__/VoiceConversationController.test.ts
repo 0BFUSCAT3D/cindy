@@ -122,7 +122,112 @@ describe('automatic voice exit', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('uses a cancellable countdown for semantic exit without creating a companion turn', async () => {
+  // Acceptance regression: semantic HTTP latency previously blocked dispatch.
+  // Real controller + final ASR event, deferred verdict/acceptance and fake time
+  // exercise independent sending, TTS and cancellation without external calls.
+  // Unit tier; this file runs in about 3 seconds locally.
+  it('dispatches immediately and keeps subsequent sends and TTS independent of a pending classifier', async () => {
+    const f = fixture();
+    let resolve!: (value: boolean) => void;
+    f.api.classifyExit.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    await f.controller.start(selection);
+    f.utterance('请给我一个建议');
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.send.mock.calls[0]![0]).toBe('请给我一个建议');
+    await vi.advanceTimersByTimeAsync(0);
+    f.controller.updateMessages([user(), reply()]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.speak).toHaveBeenCalledOnce();
+    f.utterance('再解释一下');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.send.mock.calls.map((call) => call[0])).toEqual(['请给我一个建议', '再解释一下']);
+    resolve(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledTimes(2);
+    f.controller.end();
+  });
+
+  it.each([true, 'submit_then_exit'] as const)(
+    'applies late %s only to the already accepted message without resending it',
+    async (decision) => {
+      const f = fixture();
+      let resolve!: (value: typeof decision) => void;
+      f.api.classifyExit.mockReturnValueOnce(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+      await f.controller.start(selection);
+      f.utterance('请继续工作，我先离开了');
+      expect(f.send).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(0);
+      f.taskBusy.mockReturnValue(true);
+      resolve(decision);
+      await vi.advanceTimersByTimeAsync(0);
+      if (decision === true) {
+        expect(f.controller.getSnapshot().exitCountdown?.secondsRemaining).toBe(3);
+        expect(f.onAutoEnd).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(3_000);
+      }
+      expect(f.onAutoEnd).toHaveBeenCalledOnce();
+      expect(f.send).toHaveBeenCalledOnce();
+      expect(f.taskBusy()).toBe(true);
+    },
+  );
+
+  it('waits for acceptance before starting a pure semantic countdown', async () => {
+    const f = fixture();
+    f.api.classifyExit.mockResolvedValue(true);
+    let accept!: () => void;
+    f.send.mockImplementation(async (_text, created) => {
+      await new Promise<void>((done) => {
+        accept = done;
+      });
+      created('input');
+      return true;
+    });
+    await f.controller.start(selection);
+    f.utterance('我想先离开了');
+    expect(f.send).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.controller.getSnapshot().exitCountdown).toBeNull();
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    accept();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.controller.getSnapshot().exitCountdown?.secondsRemaining).toBe(3);
+    f.controller.cancelExit();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot().unsent).toBe('');
+    f.controller.end();
+  });
+
+  it('does not revive a background verdict after an explicit cancel before it returned', async () => {
+    const f = fixture();
+    let resolve!: (value: 'submit_then_exit') => void;
+    f.api.classifyExit.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    await f.controller.start(selection);
+    f.utterance('帮我写计划，然后结束语音');
+    await vi.advanceTimersByTimeAsync(0);
+    f.controller.cancelExit();
+    resolve('submit_then_exit');
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(f.controller.getSnapshot().exitCountdown).toBeNull();
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
+  it('sends first and then offers a cancellable countdown for semantic exit', async () => {
     const f = fixture();
     f.api.classifyExit.mockResolvedValue(true);
     await f.controller.start(selection);
@@ -133,13 +238,232 @@ describe('automatic voice exit', () => {
       reason: 'semantic',
       secondsRemaining: 3,
     });
-    expect(f.send).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(2_999);
     expect(f.api.end).not.toHaveBeenCalled();
     f.controller.cancelExit();
     await vi.advanceTimersByTimeAsync(1);
     expect(f.api.end).not.toHaveBeenCalled();
     expect(f.player.resume).toHaveBeenCalled();
+    f.controller.end();
+  });
+
+  // Regression entry is the real controller + finalized ASR event. Deferred
+  // send() models auth/enqueue latency; fake time proves no early teardown or
+  // duplicate send, without microphone, account, network or background jobs.
+  it('keeps a misclassified message accepted and never duplicates it on cancel or retry', async () => {
+    const f = fixture();
+    const text = '帮我整理资料，然后退出语音模式';
+    f.api.classifyExit.mockResolvedValue(true);
+    await f.controller.start(selection);
+    f.utterance(text);
+    await vi.advanceTimersByTimeAsync(0);
+    f.controller.cancelExit();
+    f.controller.cancelExit();
+    expect(f.controller.getSnapshot().unsent).toBe('');
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    f.controller.retryUnsent();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.send.mock.calls[0]![0]).toBe(text);
+    expect(f.api.classifyExit).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot().unsent).toBe('');
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain(text);
+    f.controller.end();
+  });
+
+  it.each(['speech', 'mute', 'block', 'failure'] as const)(
+    'cancels a countdown across %s without restoring or duplicating accepted input',
+    async (action) => {
+      const f = fixture();
+      f.api.classifyExit.mockResolvedValue(true);
+      await f.controller.start(selection);
+      f.utterance('please do this, then hang up');
+      await vi.advanceTimersByTimeAsync(0);
+      if (action === 'speech') f.emit({ type: 'speech-started' });
+      else if (action === 'mute') await f.controller.toggleMute();
+      else if (action === 'block') f.controller.setBlocked(true);
+      else f.emit({ type: 'error', text: '' });
+      expect(f.controller.getSnapshot().unsent).toBe('');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.send).toHaveBeenCalledOnce();
+      expect(f.onAutoEnd).not.toHaveBeenCalled();
+      f.controller.end();
+    },
+  );
+
+  it('submits the complete compound request and exits immediately after acceptance without stopping work', async () => {
+    const f = fixture();
+    const text = '帮我查资料，然后退出语音模式';
+    f.api.classifyExit.mockResolvedValue('submit_then_exit');
+    let accept!: () => void;
+    f.send.mockImplementation(async (_text, created, current) => {
+      await new Promise<void>((done) => {
+        accept = done;
+      });
+      expect(current()).toBe(true);
+      created('accepted-task');
+      return true;
+    });
+    await f.controller.start(selection);
+    f.utterance(text);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.send.mock.calls[0]![0]).toBe(text);
+    expect(f.controller.getSnapshot().exitCountdown?.waitingForSend).toBe(true);
+    expect(f.api.end).not.toHaveBeenCalled();
+    f.taskBusy.mockReturnValue(true);
+    accept();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.controller.getSnapshot().exitCountdown).toBeNull();
+    expect(f.onAutoEnd).toHaveBeenCalledOnce();
+    expect(f.microphone.stop).toHaveBeenCalledOnce();
+    expect(f.api.end).toHaveBeenCalledOnce();
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.taskBusy()).toBe(true);
+    expect(f.controller.getSnapshot().unsent).toBe('');
+  });
+
+  it.each(['结束语音模式', '拜拜'])(
+    'defers %s while an earlier send has left the queue but is not accepted',
+    async (exitText) => {
+      const f = fixture();
+      let accept!: () => void;
+      f.send.mockImplementation(async (_text, created, current) => {
+        await new Promise<void>((done) => {
+          accept = done;
+        });
+        expect(current()).toBe(true);
+        created('accepted-task');
+        return true;
+      });
+      await f.controller.start(selection);
+      f.utterance('帮我整理资料');
+      await vi.advanceTimersByTimeAsync(0);
+      f.emit({ type: 'speech-started' });
+      f.utterance(exitText);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.controller.getSnapshot().exitCountdown?.waitingForSend).toBe(true);
+      expect(f.api.end).not.toHaveBeenCalled();
+      accept();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.onAutoEnd).toHaveBeenCalledOnce();
+      expect(f.send).toHaveBeenCalledOnce();
+      expect(f.send.mock.calls[0]![0]).toBe('帮我整理资料');
+    },
+  );
+
+  it.each(['rejected', 'throw'] as const)(
+    'retains the compound request after send %s and cancels automatic exit',
+    async (failure) => {
+      const f = fixture();
+      const text = '帮我继续整理，提交后关闭语音';
+      f.api.classifyExit.mockResolvedValue('submit_then_exit');
+      f.send.mockImplementationOnce(async () => {
+        if (failure === 'throw') throw new Error('send failed');
+        return false;
+      });
+      await f.controller.start(selection);
+      f.utterance(text);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.controller.getSnapshot()).toMatchObject({
+        unsent: text,
+        phase: 'error',
+        error: 'send',
+        exitCountdown: null,
+      });
+      expect(f.onAutoEnd).not.toHaveBeenCalled();
+      await f.controller.start(selection);
+      f.controller.retryUnsent();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.send.mock.calls.map((call) => call[0])).toEqual([text, text]);
+      expect(f.onAutoEnd).not.toHaveBeenCalled();
+      expect(f.api.classifyExit).toHaveBeenCalledOnce();
+      f.controller.end();
+    },
+  );
+
+  it('cancels pending exit before acceptance without resending the compound request', async () => {
+    const f = fixture();
+    f.api.classifyExit.mockResolvedValue('submit_then_exit');
+    let accept!: () => void;
+    f.send.mockImplementation(async (_text, created, current) => {
+      await new Promise<void>((done) => {
+        accept = done;
+      });
+      expect(current()).toBe(true);
+      created('accepted-task');
+      return true;
+    });
+    await f.controller.start(selection);
+    f.utterance('Please write the report in the background and end voice mode');
+    await vi.advanceTimersByTimeAsync(0);
+    f.controller.cancelExit();
+    accept();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    f.controller.retryUnsent();
+    expect(f.controller.getSnapshot().unsent).toBe('');
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
+  it.each(['mute', 'block', 'end'] as const)(
+    'does not revive a pending exit or duplicate accepted input after %s',
+    async (boundary) => {
+      const f = fixture();
+      f.api.classifyExit.mockResolvedValue('submit_then_exit');
+      let accept!: () => void;
+      f.send.mockImplementation(async (_text, created) => {
+        await new Promise<void>((done) => {
+          accept = done;
+        });
+        created('already-accepted');
+        return true;
+      });
+      await f.controller.start(selection);
+      f.utterance('Keep working in the background and end voice chat');
+      await vi.advanceTimersByTimeAsync(0);
+      if (boundary === 'mute') await f.controller.toggleMute();
+      else if (boundary === 'block') f.controller.setBlocked(true);
+      else f.controller.end();
+      accept();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.onAutoEnd).not.toHaveBeenCalled();
+      expect(f.controller.getSnapshot().exitCountdown).toBeNull();
+      expect(f.controller.getSnapshot().unsent).toBe('');
+      expect(f.send).toHaveBeenCalledOnce();
+      f.controller.end();
+    },
+  );
+
+  it('cancels pending exit on new speech while preserving both sends', async () => {
+    const f = fixture();
+    f.api.classifyExit.mockResolvedValueOnce('submit_then_exit');
+    let accept!: () => void;
+    f.send.mockImplementationOnce(async (_text, created, current) => {
+      await new Promise<void>((done) => {
+        accept = done;
+      });
+      expect(current()).toBe(true);
+      created('first');
+      return true;
+    });
+    await f.controller.start(selection);
+    f.utterance('Write the report, then exit voice');
+    await vi.advanceTimersByTimeAsync(0);
+    f.emit({ type: 'speech-started' });
+    f.utterance('Add a summary too');
+    accept();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.send.mock.calls.map((call) => call[0])).toEqual([
+      'Write the report, then exit voice',
+      'Add a summary too',
+    ]);
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
     f.controller.end();
   });
 
@@ -153,7 +477,7 @@ describe('automatic voice exit', () => {
     expect(f.onAutoEnd).toHaveBeenCalledOnce();
     expect(f.microphone.stop).toHaveBeenCalledOnce();
     expect(f.api.end).toHaveBeenCalledOnce();
-    expect(f.send).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
     expect(log.info).toHaveBeenCalledWith('voice mode ended', {
       callId: 'call-1',
       reason: 'semantic',
@@ -216,16 +540,16 @@ describe('automatic voice exit', () => {
     await f.controller.start(selection);
     f.utterance('Talk later');
     f.controller.end();
-    const restarting = f.controller.start(selection);
+    // Opening another call must not await the old classifier either.
+    await f.controller.start(selection);
     resolve(true);
-    await restarting;
     await vi.advanceTimersByTimeAsync(3_000);
     expect(f.controller.getSnapshot()).toMatchObject({
       phase: 'listening',
       unsent: '',
       exitCountdown: null,
     });
-    expect(f.send).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledOnce();
     expect(f.onAutoEnd).not.toHaveBeenCalled();
     f.controller.end();
   });
@@ -248,8 +572,8 @@ describe('automatic voice exit', () => {
       resolve(true);
       await vi.advanceTimersByTimeAsync(3_000);
       expect(f.onAutoEnd).not.toHaveBeenCalled();
-      expect(f.send).not.toHaveBeenCalled();
-      if (action !== 'end') expect(f.controller.getSnapshot().unsent).toBe('Talk later');
+      expect(f.send).toHaveBeenCalledOnce();
+      expect(f.controller.getSnapshot().unsent).toBe('');
       f.controller.end();
     },
   );

@@ -7,6 +7,50 @@ import type { AudioGate } from "./SpeakerGate.js";
 // ASR transport rotation is separate from that policy.
 const AUTO_SEND_QUIET_MS = 1_250;
 const FINAL_STABLE_MS = 350;
+const BLOCKED_DIAGNOSTIC_INTERVAL_MS = 5_000;
+const FINAL_TIMEOUT_MS = 8_000;
+
+type InputFailureReason =
+  | "final_timeout"
+  | "upstream_disconnected"
+  | "upstream_error"
+  | "audio_buffer_overflow"
+  | "transcript_limit"
+  | "rotation_unfinalized"
+  | "rotation_failed";
+
+type SettlementBlocker =
+  | "speaking"
+  | "transport-rotation"
+  | "asr-final"
+  | "filtered-silence"
+  | "audio-silence"
+  | "acoustic-silence"
+  | "text-silence"
+  | "text-stability";
+
+type BlockedDiagnostic = {
+  reasons: SettlementBlocker[];
+  pendingMs: number;
+  speaking: boolean;
+  manual: boolean;
+  rotating: boolean;
+  segments: number;
+  pendingFinalSegments: number;
+  characters: number;
+  speakerFilterActive: boolean;
+  acousticQuietRemainingMs: number;
+  textQuietRemainingMs: number;
+  finalStableRemainingMs: number;
+  filteredQuietRemainingMs: number;
+  audioQuietRemainingMs: number;
+  captureAgeMs: number | null;
+  forwardedAudioAgeMs: number | null;
+  asrUpdateAgeMs: number | null;
+  rms: number | null;
+  threshold: number | null;
+  noiseFloor: number | null;
+};
 
 export type ConversationInputEvent =
   | { type: "ready" }
@@ -42,6 +86,13 @@ export class VoiceConversationInput {
   private settleTimer?: ReturnType<typeof setTimeout>;
   private rotationTimer?: ReturnType<typeof setTimeout>;
   private finalTimer?: ReturnType<typeof setTimeout>;
+  private finalWaitStartedAt: number | null = null;
+  private blockedDiagnosticTimer?: ReturnType<typeof setInterval>;
+  private pendingSince = 0;
+  private lastCaptureAt: number | null = null;
+  private lastForwardedAt: number | null = null;
+  private lastAsrUpdateAt: number | null = null;
+  private lastActivity: ReturnType<ConversationActivity["push"]> | null = null;
   private awaitingSettlement = false;
   private acousticQuietAfter = 0;
   private audioPositionMs = 0;
@@ -69,6 +120,22 @@ export class VoiceConversationInput {
         characters: number;
         filteredQuietMs?: number;
       }) => void;
+      blockedDiagnostic?: (event: BlockedDiagnostic) => void;
+      failureDiagnostic?: (event: {
+        reason: InputFailureReason;
+        endpointing: AsrEndpointing;
+        generation: number;
+        manual: boolean;
+        rotating: boolean;
+        speaking: boolean;
+        segments: number;
+        pendingFinalSegments: number;
+        characters: number;
+        pendingMs: number;
+        finalWaitMs: number | null;
+        asrUpdateAgeMs: number | null;
+        bufferedAudioMs: number;
+      }) => void;
     },
   ) {}
 
@@ -85,6 +152,7 @@ export class VoiceConversationInput {
 
   appendAudio(pcm: ArrayBuffer, trace?: AudioTrace): void {
     if (this.closed) return;
+    this.lastCaptureAt = Date.now();
     if (this.options.audioGate) {
       this.options.audioGate.push(pcm, trace);
       return;
@@ -96,6 +164,8 @@ export class VoiceConversationInput {
     if (this.closed || this.options.isCurrent?.() === false) return;
     this.audioPositionMs += pcm.byteLength / 32;
     const activity = this.activity.push(pcm);
+    this.lastActivity = activity;
+    this.lastForwardedAt = Date.now();
     this.speaking = activity.active;
     // Wall-clock silence while the gate is still deciding a speaker is not a
     // pause. Require actual released quiet audio too, without adding another
@@ -113,8 +183,8 @@ export class VoiceConversationInput {
       if (!this.manual) clearTimeout(this.settleTimer);
     }
     if (activity.started) {
-      this.awaitingSettlement = true;
-      clearTimeout(this.finalTimer);
+      this.markAwaitingSettlement();
+      this.clearFinalWait();
       if (!this.manual) clearTimeout(this.settleTimer);
       this.options.emit({ type: "speech-started" });
     }
@@ -122,7 +192,7 @@ export class VoiceConversationInput {
       this.pending.push({ pcm, trace });
       this.pendingBytes += pcm.byteLength;
       // Five seconds of 16 kHz PCM. Never silently discard a user's speech.
-      if (this.pendingBytes > 160_000) this.fail();
+      if (this.pendingBytes > 160_000) this.fail("audio_buffer_overflow");
       return;
     }
     this.appendToProvider(pcm, trace);
@@ -142,14 +212,22 @@ export class VoiceConversationInput {
     // continuous gate: audio awaiting verification must still be judged.
     this.provider?.commitUtterance?.();
     this.scheduleSettlement();
-    clearTimeout(this.finalTimer);
+    this.clearFinalWait();
+    this.finalWaitStartedAt = Date.now();
     this.finalTimer = setTimeout(() => {
       if (
         this.segments.size &&
         [...this.segments.values()].some((part) => !part.final)
       )
-        this.fail();
-    }, 8_000);
+        this.fail("final_timeout");
+      else this.clearFinalWait();
+    }, FINAL_TIMEOUT_MS);
+  }
+
+  private clearFinalWait(): void {
+    clearTimeout(this.finalTimer);
+    this.finalTimer = undefined;
+    this.finalWaitStartedAt = null;
   }
 
   async stop(): Promise<void> {
@@ -159,7 +237,8 @@ export class VoiceConversationInput {
     ++this.generation;
     clearTimeout(this.settleTimer);
     clearTimeout(this.rotationTimer);
-    clearTimeout(this.finalTimer);
+    this.clearFinalWait();
+    clearInterval(this.blockedDiagnosticTimer);
     this.pending = [];
     this.pendingBytes = 0;
     const provider = this.provider;
@@ -192,7 +271,8 @@ export class VoiceConversationInput {
       if (this.consumed.has(key)) return;
       const prior = this.segments.get(key);
       if (prior?.final) return;
-      this.awaitingSettlement = true;
+      this.markAwaitingSettlement();
+      this.lastAsrUpdateAt = Date.now();
       const text = segment.text.trim();
       // Only provider audio offsets can prove that delayed/revised text belongs
       // to speech whose quiet window has already elapsed. Without them, keep the
@@ -215,7 +295,7 @@ export class VoiceConversationInput {
       });
       this.options.emit({ type: "draft", text: this.draft() });
       if (this.draft().length > 16_000) {
-        this.fail();
+        this.fail("transcript_limit");
         return;
       }
       this.scheduleSettlement();
@@ -223,7 +303,8 @@ export class VoiceConversationInput {
     provider.onEvent((event) => {
       if (this.closed || generation !== this.generation || this.rotating)
         return;
-      if (event.type === "error" || event.type === "disconnected") this.fail();
+      if (event.type === "error") this.fail("upstream_error");
+      else if (event.type === "disconnected") this.fail("upstream_disconnected");
     });
     await provider.start();
     if (this.closed || generation !== this.generation) return;
@@ -234,7 +315,7 @@ export class VoiceConversationInput {
     this.pendingBytes = 0;
     if (hadBufferedAudio && !this.speaking) provider.commitUtterance?.();
     this.rotationTimer = setTimeout(() => {
-      void this.rotate().catch(() => this.fail());
+      void this.rotate().catch(() => this.fail("rotation_failed"));
     }, this.options.rotationMs ?? 150_000);
     this.options.emit({ type: "ready" });
   }
@@ -246,6 +327,7 @@ export class VoiceConversationInput {
           a.generation - b.generation || (a.order ?? 0) - (b.order ?? 0),
       )
       .map((segment) => segment.text.trim())
+      .filter(Boolean)
       .join(" ")
       .trim();
   }
@@ -271,6 +353,74 @@ export class VoiceConversationInput {
     // semantic endpointing requires a separately validated policy, not a flag.
     return Math.max(0, this.acousticQuietAfter - Date.now(),
       textQuietAfter - Date.now(), this.stableAfter - Date.now());
+  }
+
+  private markAwaitingSettlement(): void {
+    if (this.awaitingSettlement) return;
+    this.awaitingSettlement = true;
+    this.pendingSince = Date.now();
+    // Independent of audio/ASR callbacks: stalled capture must remain observable.
+    // This timer only reports evidence; settlementWait remains the send policy.
+    if (this.options.blockedDiagnostic) {
+      this.blockedDiagnosticTimer = setInterval(
+        () => this.reportSettlementBlockers(),
+        BLOCKED_DIAGNOSTIC_INTERVAL_MS,
+      );
+    }
+  }
+
+  private reportSettlementBlockers(): void {
+    if (this.closed || this.options.isCurrent?.() === false
+      || !this.awaitingSettlement || this.settlementWait() === 0) return;
+    const now = Date.now();
+    const remaining = (deadline: number) => Math.max(0, deadline - now);
+    const age = (at: number | null) => at === null ? null : Math.max(0, now - at);
+    const segments = [...this.segments.values()];
+    const pendingFinalSegments = segments.filter((segment) => !segment.final).length;
+    const acousticQuietRemainingMs = remaining(this.acousticQuietAfter);
+    const textQuietRemainingMs = remaining(Math.max(0, ...segments
+      .filter((segment) => segment.audioEndPositionMs === undefined)
+      .map((segment) => segment.textQuietAfter)));
+    const finalStableRemainingMs = remaining(this.stableAfter);
+    const filteredQuietRemainingMs = this.options.audioGate
+      ? Math.max(0, AUTO_SEND_QUIET_MS - this.filteredQuietMs) : 0;
+    const audioQuietRemainingMs = Math.max(0, ...segments
+      .filter((segment) => segment.audioEndPositionMs !== undefined)
+      .map((segment) => AUTO_SEND_QUIET_MS
+        - (this.audioPositionMs - segment.audioEndPositionMs!)));
+    const reasons: SettlementBlocker[] = [];
+    if (this.speaking && !this.manual) reasons.push("speaking");
+    if (this.rotating) reasons.push("transport-rotation");
+    if (pendingFinalSegments) reasons.push("asr-final");
+    if (!this.manual) {
+      if (filteredQuietRemainingMs) reasons.push("filtered-silence");
+      if (audioQuietRemainingMs) reasons.push("audio-silence");
+      if (acousticQuietRemainingMs) reasons.push("acoustic-silence");
+      if (textQuietRemainingMs) reasons.push("text-silence");
+      if (finalStableRemainingMs) reasons.push("text-stability");
+    }
+    this.options.blockedDiagnostic?.({
+      reasons,
+      pendingMs: now - this.pendingSince,
+      speaking: this.speaking,
+      manual: this.manual,
+      rotating: this.rotating,
+      segments: segments.length,
+      pendingFinalSegments,
+      characters: this.draft().length,
+      speakerFilterActive: Boolean(this.options.audioGate),
+      acousticQuietRemainingMs,
+      textQuietRemainingMs,
+      finalStableRemainingMs,
+      filteredQuietRemainingMs,
+      audioQuietRemainingMs,
+      captureAgeMs: age(this.lastCaptureAt),
+      forwardedAudioAgeMs: age(this.lastForwardedAt),
+      asrUpdateAgeMs: age(this.lastAsrUpdateAt),
+      rms: this.lastActivity ? Math.round(this.lastActivity.rms) : null,
+      threshold: this.lastActivity ? Math.round(this.lastActivity.threshold) : null,
+      noiseFloor: this.lastActivity ? Math.round(this.lastActivity.noiseFloor) : null,
+    });
   }
 
   private scheduleSettlement(): void {
@@ -314,10 +464,11 @@ export class VoiceConversationInput {
         for (const key of this.segments.keys()) this.consumed.add(key);
         this.segments.clear();
         this.awaitingSettlement = false;
+        clearInterval(this.blockedDiagnosticTimer);
         this.acousticQuietAfter = 0;
         this.stableAfter = 0;
         this.manual = false;
-        clearTimeout(this.finalTimer);
+        this.clearFinalWait();
         if (text)
           this.options.emit({
             type: "utterance",
@@ -341,7 +492,7 @@ export class VoiceConversationInput {
     await previous.flushAudio();
     if (this.closed) return;
     if ([...this.segments.values()].some((segment) => !segment.final)) {
-      this.fail();
+      this.fail("rotation_unfinalized");
       return;
     }
     ++this.generation;
@@ -353,8 +504,27 @@ export class VoiceConversationInput {
     this.scheduleSettlement();
   }
 
-  private fail(): void {
+  private fail(reason: InputFailureReason): void {
     if (this.closed) return;
+    const now = Date.now();
+    const segments = [...this.segments.values()];
+    // Stable, content-free reason codes. Never log the upstream error message,
+    // segment IDs, recognized words or audio; the host owns the existing logger.
+    this.options.failureDiagnostic?.({
+      reason,
+      endpointing: this.provider?.endpointing ?? "segment-final",
+      generation: this.generation,
+      manual: this.manual,
+      rotating: this.rotating,
+      speaking: this.speaking,
+      segments: segments.length,
+      pendingFinalSegments: segments.filter((segment) => !segment.final).length,
+      characters: this.draft().length,
+      pendingMs: this.awaitingSettlement ? now - this.pendingSince : 0,
+      finalWaitMs: this.finalWaitStartedAt === null ? null : now - this.finalWaitStartedAt,
+      asrUpdateAgeMs: this.lastAsrUpdateAt === null ? null : now - this.lastAsrUpdateAt,
+      bufferedAudioMs: this.pendingBytes / 32,
+    });
     this.options.emit({ type: "error", text: this.draft() });
     void this.stop().catch(() => undefined);
   }

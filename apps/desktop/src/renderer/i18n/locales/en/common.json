@@ -10081,6 +10081,7 @@
         "idle": "No recent conversation. Voice mode will end soon.",
         "farewell": "Goodbye heard. Voice mode will end soon.",
         "semantic": "Voice mode is about to end",
+        "sending": "Sending your message before ending voice mode…",
         "countdown": "Voice mode ends in {{seconds}} seconds",
         "cancel": "Keep voice mode open",
         "hint": "Speak again or keep voice mode open to cancel. Work in progress will continue.",

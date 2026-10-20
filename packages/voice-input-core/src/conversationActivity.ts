@@ -19,12 +19,16 @@ export class ConversationActivity {
     ended: boolean;
     active: boolean;
     sound: boolean;
+    rms: number;
+    threshold: number;
+    noiseFloor: number;
   } {
     const samples = new Int16Array(pcm);
     let energy = 0;
     for (const sample of samples) energy += sample * sample;
     const rms = Math.sqrt(energy / Math.max(1, samples.length));
     const duration = (samples.length / sampleRate) * 1_000;
+    const noiseFloor = this.noise;
     const threshold = Math.max(
       this.active ? 180 : 320,
       this.noise * (this.active ? 2 : 3.5),
@@ -55,6 +59,9 @@ export class ConversationActivity {
       ended,
       active: this.active,
       sound,
+      rms,
+      threshold,
+      noiseFloor,
     };
   }
 }

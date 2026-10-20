@@ -35,6 +35,114 @@ describe("continuous speech input", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  // Source: office-noise acceptance report. Successful-settlement diagnostics
+  // cannot explain a send that never happens. Exercise the real input with fake
+  // PCM/ASR and time: unit tier, no microphone, network or wall-clock waits.
+  // Measured: this file's 38 tests take 56ms in the focused core run.
+  it("rate-limits blocked diagnostics during sustained noise without changing auto-send timing", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const blockedDiagnostic = vi.fn();
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider, emit, blockedDiagnostic,
+    });
+    await input.start();
+    input.appendAudio(pcm(2000, 200));
+    provider.segment({ id: "private-id", text: "private utterance", final: true });
+    for (let frame = 0; frame < 99; frame++) {
+      input.appendAudio(pcm(500));
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(blockedDiagnostic).toHaveBeenCalledTimes(1);
+    expect(blockedDiagnostic).toHaveBeenLastCalledWith(expect.objectContaining({
+      reasons: ["speaking", "acoustic-silence"],
+      pendingMs: 5_000,
+      speaking: true,
+      pendingFinalSegments: 0,
+      rms: 500,
+      threshold: 180,
+      noiseFloor: 80,
+      speakerFilterActive: false,
+    }));
+    input.appendAudio(pcm(500));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(blockedDiagnostic).toHaveBeenCalledTimes(2);
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    // Once sound actually stops, the same 1.25s acoustic pause still applies.
+    input.appendAudio(pcm(0, 900));
+    await vi.advanceTimersByTimeAsync(1_149);
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "utterance" }));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "utterance", id: "1", text: "private utterance" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(blockedDiagnostic).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(blockedDiagnostic.mock.calls)).not.toMatch(/private/);
+    await input.stop();
+  });
+
+  it("distinguishes stalled ASR finalization from noise and stops diagnostics on teardown or stale ownership", async () => {
+    const provider = new Provider();
+    const blockedDiagnostic = vi.fn();
+    let current = true;
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider, emit: vi.fn(), blockedDiagnostic,
+      isCurrent: () => current,
+    });
+    await input.start();
+    input.appendAudio(pcm(0));
+    provider.segment({ id: "a", text: "partial", final: false });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(blockedDiagnostic).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      reasons: ["asr-final"],
+      speaking: false,
+      pendingFinalSegments: 1,
+      captureAgeMs: 5_000,
+      forwardedAudioAgeMs: 5_000,
+      asrUpdateAgeMs: 5_000,
+    }));
+    current = false;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(blockedDiagnostic).toHaveBeenCalledOnce();
+    current = true;
+    await input.stop();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(blockedDiagnostic).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports audio held by the speaker gate even when capture continues", async () => {
+    const provider = new Provider();
+    const blockedDiagnostic = vi.fn();
+    let release!: AudioGateEmit;
+    let hold = false;
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider, emit: vi.fn(), blockedDiagnostic,
+      audioGate: {
+        begin: (emit) => { release = emit; },
+        push: (pcm, trace) => { if (!hold) release(pcm, trace); },
+        abort: vi.fn(),
+        finish: vi.fn(async () => {}),
+      },
+    });
+    await input.start();
+    input.appendAudio(pcm(0, 100));
+    provider.segment({ id: "a", text: "soft speech", final: true, audioEndMs: 100 });
+    input.finishUtterance();
+    hold = true;
+    await vi.advanceTimersByTimeAsync(4_900);
+    input.appendAudio(pcm(0));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(blockedDiagnostic).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      reasons: ["filtered-silence", "audio-silence"],
+      speakerFilterActive: true,
+      captureAgeMs: 100,
+      forwardedAudioAgeMs: 5_000,
+      filteredQuietRemainingMs: 1_150,
+      audioQuietRemainingMs: 1_250,
+    }));
+    await input.stop();
+  });
+
   it("rejects a short click, commits on a pause, waits for final text and sends each segment once", async () => {
     const provider = new Provider();
     const events: ConversationInputEvent[] = [];

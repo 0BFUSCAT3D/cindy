@@ -108,7 +108,9 @@ function CompanionVoiceCall(props: Props) {
       // Closing retains only the visual surface for its exit transition. Release
       // capture/playback now, and invalidate late loads before visual unmount.
       ++launchVersion.current;
-      controller.end();
+      // Effect cleanup can also come from navigation or dev hot reload. Do not
+      // diagnose these as an explicit End click from the shared default reason.
+      controller.end(latest.current.open ? 'view_cleanup' : 'view_closed');
     };
   }, [controller, start, props.open]);
   useEffect(() => {
@@ -132,7 +134,7 @@ function CompanionVoiceCall(props: Props) {
     const removeAuth = window.electronAPI.onAuthStateChange((next) => {
       if (next.ownerBoundaryPending || `${next.dataOwnerId}:${next.ownerGeneration}` !== owner) {
         ++launchVersion.current;
-        controller.end();
+        controller.end('account_changed');
         latest.current.onClose();
       }
     });

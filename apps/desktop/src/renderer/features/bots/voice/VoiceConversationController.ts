@@ -1,6 +1,7 @@
 import type {
   VoiceConversationApi,
   VoiceConversationSelection,
+  VoiceExitDecision,
 } from '@/../shared/voiceConversation';
 import type { ChatMessage } from '@/lib/makerChatStore';
 import { createLogger } from '@/lib/logger';
@@ -18,8 +19,17 @@ const IDLE_EXIT_DELAY_MS = 60_000;
 const IDLE_COUNTDOWN_MS = 10_000;
 const FAREWELL_COUNTDOWN_MS = 3_000;
 type ExitReason =
-  'user' | 'idle_timeout' | 'voice_command' | 'farewell' | 'semantic' | 'remote_end';
+  | 'user'
+  | 'idle_timeout'
+  | 'voice_command'
+  | 'farewell'
+  | 'semantic'
+  | 'remote_end'
+  | 'view_closed'
+  | 'view_cleanup'
+  | 'account_changed';
 type QueuedUtterance = { text: string; id?: string };
+type IntentExitReason = 'voice_command' | 'farewell' | 'semantic';
 
 export type VoicePhase =
   | 'idle'
@@ -40,7 +50,11 @@ export type VoiceSnapshot = {
   muted: boolean;
   microphonePending: boolean;
   microphoneError: boolean;
-  exitCountdown: { reason: 'idle' | 'farewell' | 'semantic'; secondsRemaining: number } | null;
+  exitCountdown: {
+    reason: 'idle' | 'farewell' | 'semantic';
+    secondsRemaining: number;
+    waitingForSend?: boolean;
+  } | null;
 };
 interface Microphone {
   onPcm16k(callback: (chunk: PcmChunk) => void): void;
@@ -63,7 +77,7 @@ export class VoiceConversationController {
   };
   private listeners = new Set<() => void>();
   private epoch = 0;
-  private endVersion = 0;
+  private semanticVersion = 0;
   private speechEpoch = 0;
   private callId: string | null = null;
   private microphone: Microphone | null = null;
@@ -79,7 +93,6 @@ export class VoiceConversationController {
   private inFlight: Promise<void> = Promise.resolve();
   private queued: QueuedUtterance[] = [];
   private latestUtterance: QueuedUtterance | null = null;
-  private judgingExit: QueuedUtterance | null = null;
   private pendingStart: Promise<unknown> = Promise.resolve();
   private teardown: Promise<unknown> = Promise.resolve();
   private speechCandidate = false;
@@ -100,6 +113,7 @@ export class VoiceConversationController {
   private exitDeadline = 0;
   private exitTimer: ReturnType<typeof setTimeout> | undefined;
   private exitVersion = 0;
+  private exitAfterSend: { reason: IntentExitReason } | null = null;
 
   constructor(
     private readonly deps: {
@@ -239,6 +253,10 @@ export class VoiceConversationController {
   ): void {
     this.clearExitTimer();
     this.idleSince = null;
+    this.exitAfterSend = null;
+    // New input/control invalidates any background judgment, even before a
+    // countdown is visible. Ordinary task projections must not invalidate it.
+    if (trigger !== 'activity') ++this.semanticVersion;
     const countdown = this.state.exitCountdown;
     if (!countdown) return;
     log.info('exit countdown cancelled', {
@@ -260,7 +278,47 @@ export class VoiceConversationController {
     this.refreshActivity();
   }
 
+  private waitForSendBeforeExit(reason: IntentExitReason): void {
+    this.clearExitTimer();
+    this.exitAfterSend = { reason };
+    this.patch({
+      exitCountdown: {
+        reason: reason === 'voice_command' ? 'semantic' : reason,
+        secondsRemaining: 0,
+        waitingForSend: true,
+      },
+    });
+    log.info('exit waiting for input acceptance', { callId: this.callId, reason });
+  }
+
+  private finishExitAfterSend(): void {
+    const pending = this.exitAfterSend;
+    if (!pending || this.sending || this.queued.length) return;
+    // Only drain's accepted path can reach here with no retained input. Mute,
+    // new speech, failures and lifecycle boundaries cancel this intent first.
+    if (
+      !this.enabled ||
+      !this.callId ||
+      this.blocked ||
+      this.state.unsent ||
+      this.speechCandidate ||
+      this.state.transcript.trim()
+    ) {
+      this.cancelCountdown('activity');
+      return;
+    }
+    this.exitAfterSend = null;
+    log.info('exit input acceptance confirmed', { callId: this.callId, reason: pending.reason });
+    this.autoEnd(pending.reason);
+  }
+
   private autoEnd(reason: 'idle_timeout' | 'voice_command' | 'farewell' | 'semantic'): void {
+    // A final utterance can already have left queued[] while send preflight is
+    // still awaiting auth/dispatch. Do not invalidate its beforeEnqueue guard.
+    if (reason !== 'idle_timeout' && (this.sending || this.queued.length)) {
+      this.waitForSendBeforeExit(reason);
+      return;
+    }
     // A countdown that reached its deadline completed; do not log it as cancelled
     // when the shared release path clears the remaining call state.
     this.clearExitTimer();
@@ -322,10 +380,8 @@ export class VoiceConversationController {
         } else if (event.type === 'speech-idle') {
           if (this.speechCandidate) {
             this.speechCandidate = false;
-            if (!this.judgingExit) {
-              this.player?.resume();
-              this.playback?.resume();
-            }
+            this.player?.resume();
+            this.playback?.resume();
             log.info('reply resumed after empty speech', {
               callId,
               pendingInput: this.pendingInput,
@@ -345,10 +401,10 @@ export class VoiceConversationController {
           // Retained/queued text is part of the utterance's context, so a short
           // trailing farewell must not discard an earlier unfinished thought.
           const intent =
-            !this.state.unsent && !this.queued.length && !this.judgingExit
-              ? voiceExitIntent(event.text)
-              : null;
+            !this.state.unsent && !this.queued.length ? voiceExitIntent(event.text) : null;
           if (intent === 'command') {
+            this.speechCandidate = false;
+            this.patch({ transcript: '', level: 0 });
             this.autoEnd('voice_command');
             return;
           }
@@ -361,8 +417,8 @@ export class VoiceConversationController {
             return;
           }
           const utterance = { text: event.text, id: event.id };
-          this.latestUtterance = utterance;
           this.queued.push(utterance);
+          this.latestUtterance = utterance;
           if (
             [this.state.unsent, ...this.queued.map((item) => item.text)].join(' ').length > 16_000
           )
@@ -471,17 +527,14 @@ export class VoiceConversationController {
   private setReplyPhase(phase: typeof this.replyPhase): void {
     this.replyPhase = phase;
     this.patch({
-      phase:
-        this.speechCandidate || (this.judgingExit && !this.state.muted)
-          ? 'listening'
-          : (phase ?? 'listening'),
+      phase: this.speechCandidate ? 'listening' : (phase ?? 'listening'),
       level: 0,
     });
   }
 
   /** Explicit stop or a committed new utterance permanently relinquishes the old reply. */
   interrupt(reason: 'user_stop' | 'new_utterance' = 'user_stop'): void {
-    this.cancelCountdown('control');
+    if (reason === 'user_stop') this.cancelCountdown('control');
     log.info('reply interrupted', {
       callId: this.callId,
       reason,
@@ -509,11 +562,15 @@ export class VoiceConversationController {
     this.refreshActivity();
   }
 
-  private async submit(text: string, epoch: number, preserveCurrentSpeech = false): Promise<void> {
+  private async submit(
+    text: string,
+    epoch: number,
+    preserveCurrentSpeech = false,
+  ): Promise<boolean> {
     const captureVersion = this.captureVersion;
     const current = () => this.enabled && epoch === this.epoch && !this.blocked;
     const canEnqueue = () => current() && captureVersion === this.captureVersion;
-    if (!current()) return;
+    if (!current()) return false;
     const candidate = this.speechCandidate;
     const transcript = this.state.transcript;
     this.interrupt('new_utterance');
@@ -531,85 +588,95 @@ export class VoiceConversationController {
         canEnqueue,
       );
       if (!current()) {
-        // A permission/mute boundary can cancel preflight before enqueue. Wait
-        // for its outcome before resuming, retaining only genuinely unsent text.
+        // Retain only genuinely unsent text across permission/mute boundaries.
         if (!accepted && this.enabled)
           this.patch({ unsent: [text, this.state.unsent].filter(Boolean).join(' ') });
-        return;
+        return accepted && !!clientId;
       }
       if (!accepted || !clientId) {
         if (!canEnqueue()) {
           this.patch({ unsent: [text, this.state.unsent].filter(Boolean).join(' ') });
           this.setReplyPhase(null);
-          return;
+          return false;
         }
         this.fail('send', text);
-        return;
+        return false;
       }
-      if (replyEpoch !== this.speechEpoch) return;
+      if (replyEpoch !== this.speechEpoch) return true;
       log.info('voice input accepted', { callId: this.callId, clientId, characters: text.length });
       this.pendingInput = clientId;
       this.replyStartedAt = Date.now();
       this.tracker.expect(clientId);
       this.updateMessages(this.latestMessages);
+      return true;
     } catch {
       if (canEnqueue()) this.fail('send', text);
       else if (this.enabled) {
         this.patch({ unsent: [text, this.state.unsent].filter(Boolean).join(' ') });
         if (current() && replyEpoch === this.speechEpoch) this.setReplyPhase(null);
       }
+      return false;
     }
   }
 
-  private async classifyAndSubmit(utterance: QueuedUtterance, epoch: number): Promise<void> {
+  private async submitAndCheckExit(utterance: QueuedUtterance, epoch: number): Promise<void> {
     const text = [this.state.unsent, utterance.text].filter(Boolean).join(' ');
-    // Never classify only a suffix of a retained/queued thought, nor reclassify
-    // a retry. Local rules above remain immediate and make no model request.
-    if (
-      utterance.id &&
+    // Never classify only a suffix of retained/queued input or a manual retry.
+    const canJudge =
+      !!utterance.id &&
       this.latestUtterance === utterance &&
       !this.state.unsent &&
-      !this.queued.length
-    ) {
-      const callId = this.callId!;
-      const captureVersion = this.captureVersion;
-      const endVersion = this.endVersion;
-      const current = () =>
-        this.enabled && this.epoch === epoch && this.callId === callId && !this.blocked;
-      this.judgingExit = utterance;
-      if (!this.speechCandidate && this.pendingInput) {
-        this.player?.pause();
-        this.playback?.pause();
-      }
-      this.speechCandidate = false;
-      // The pending final is owned here, not also in transcript: mute/permission
-      // recovery must retain it exactly once when this request settles.
-      this.patch({ transcript: '', phase: 'listening', level: 0 });
-      let shouldExit = false;
-      try {
-        shouldExit = await this.deps.api.classifyExit(callId, utterance.id, this.inputGeneration);
-      } catch {
-        // Failure is ordinary speech, never a failed send or an automatic exit.
-      } finally {
-        if (this.judgingExit === utterance) this.judgingExit = null;
-      }
-      if (!current() || captureVersion !== this.captureVersion || this.state.muted) {
-        if (this.enabled && this.endVersion === endVersion)
-          this.patch({ unsent: [text, this.state.unsent].filter(Boolean).join(' ') });
-        return;
-      }
-      if (
-        shouldExit &&
-        this.latestUtterance === utterance &&
-        !this.speechCandidate &&
-        !this.queued.length &&
-        !this.state.unsent
-      ) {
-        this.beginCountdown('semantic', FAREWELL_COUNTDOWN_MS);
-        return;
-      }
+      !this.queued.length;
+    const callId = this.callId!;
+    const captureVersion = this.captureVersion;
+    const semanticVersion = this.semanticVersion;
+    const current = () =>
+      this.enabled &&
+      this.epoch === epoch &&
+      this.callId === callId &&
+      !this.blocked &&
+      captureVersion === this.captureVersion &&
+      semanticVersion === this.semanticVersion &&
+      !this.state.muted &&
+      this.latestUtterance === utterance &&
+      !this.speechCandidate &&
+      !this.queued.length &&
+      !this.state.unsent;
+
+    // Dispatch through the normal companion path immediately. Semantic judging
+    // is a sidecar: it cannot delay the user message, the next send or TTS. Once
+    // submitted, even a pure semantic EXIT never retracts/restores that message.
+    // Local whole-utterance controls above remain voice-only and are not sent.
+    log.info('voice input dispatch started', { callId, characters: text.length });
+    const submitted = this.submit(text, epoch, this.latestUtterance !== utterance);
+    if (canJudge) void this.checkExitAfterSubmit(callId, utterance.id!, submitted, current);
+    await submitted;
+  }
+
+  private async checkExitAfterSubmit(
+    callId: string,
+    utteranceId: string,
+    submitted: Promise<boolean>,
+    current: () => boolean,
+  ): Promise<void> {
+    let decision: VoiceExitDecision = false;
+    try {
+      decision = await this.deps.api.classifyExit(callId, utteranceId, this.inputGeneration);
+    } catch {
+      // Failure/timeout affects only automatic exit; the message is already on
+      // its normal send path and must not be retried by this observer.
     }
-    await this.submit(text, epoch, this.latestUtterance !== utterance);
+    if (!decision || !current()) return;
+    if (decision === 'submit_then_exit') this.waitForSendBeforeExit('semantic');
+    if (!(await submitted) || !current()) return;
+    if (decision === 'submit_then_exit') {
+      // If drain still owns the send, its finally completes this same check.
+      this.finishExitAfterSend();
+    } else {
+      this.player?.pause();
+      this.playback?.pause();
+      this.beginCountdown('semantic', FAREWELL_COUNTDOWN_MS);
+    }
   }
 
   private async drain(epoch: number): Promise<void> {
@@ -619,11 +686,12 @@ export class VoiceConversationController {
       while (this.queued.length && this.enabled && epoch === this.epoch && !this.blocked) {
         // A muted preflight can settle after input has resumed. Merge retained
         // text here so a newer queued utterance cannot erase that late result.
-        this.inFlight = this.classifyAndSubmit(this.queued.shift()!, epoch);
+        this.inFlight = this.submitAndCheckExit(this.queued.shift()!, epoch);
         await this.inFlight;
       }
     } finally {
       this.sending = false;
+      this.finishExitAfterSend();
       if (this.queued.length && this.callId && this.enabled && !this.blocked)
         void this.drain(this.epoch);
       this.refreshActivity();
@@ -642,7 +710,6 @@ export class VoiceConversationController {
       !this.pendingInput ||
       this.speechCandidate ||
       this.hasIntentCountdown() ||
-      (this.judgingExit && !this.state.muted) ||
       this.deferringSpeech
     )
       return;
@@ -757,6 +824,7 @@ export class VoiceConversationController {
     if (blocked === this.blocked) return;
     this.blocked = blocked;
     if (blocked && this.enabled) {
+      this.cancelCountdown('control', false);
       const unsent = [
         this.state.unsent,
         ...this.queued.map((item) => item.text),
@@ -806,7 +874,7 @@ export class VoiceConversationController {
       this.patch({ muted: true, transcript: '', unsent });
       // A possible interruption can no longer be confirmed with the mic closed.
       // Restore the held reply instead of discarding its playback/ownership.
-      if (this.speechCandidate || this.judgingExit) {
+      if (this.speechCandidate) {
         this.speechCandidate = false;
         this.player?.resume();
         this.playback?.resume();
@@ -877,6 +945,7 @@ export class VoiceConversationController {
 
   retryUnsent(): void {
     if (!this.state.unsent || !this.callId || this.blocked) return;
+    this.cancelCountdown('control');
     const text = this.state.unsent;
     this.patch({ unsent: '' });
     this.queued.push({ text });
@@ -884,9 +953,11 @@ export class VoiceConversationController {
   }
 
   private fail(error: VoiceSnapshot['error'], text?: string): void {
+    this.cancelCountdown('control', false);
     log.warn('voice mode failed', { callId: this.callId, phase: this.state.phase, reason: error });
     const unsent = [
-      text || this.state.transcript || this.state.unsent,
+      this.state.unsent,
+      text || this.state.transcript,
       ...this.queued.map((item) => item.text),
     ]
       .filter(Boolean)
@@ -921,7 +992,6 @@ export class VoiceConversationController {
     this.replyPhase = null;
     this.queued = [];
     this.latestUtterance = null;
-    this.judgingExit = null;
     const callId = this.callId;
     const microphone = this.microphone;
     const releasedAt = Date.now();
@@ -950,7 +1020,6 @@ export class VoiceConversationController {
   }
 
   end(reason: ExitReason = 'user'): void {
-    ++this.endVersion;
     if (this.callId) log.info('voice mode ended', { callId: this.callId, reason });
     this.enabled = false;
     this.release();

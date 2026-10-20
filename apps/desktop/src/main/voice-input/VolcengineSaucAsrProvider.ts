@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import type { ClientRequest, IncomingMessage } from 'node:http';
-import { StopSoundActivity, type AsrEvent, type AsrProvider, type AudioTrace } from '@cindy/voice-input-core';
+import { StopSoundActivity, type AsrEvent, type AsrProvider, type AsrSegment, type AudioTrace } from '@cindy/voice-input-core';
 import { createLogger } from '../logger.js';
 import { createOutboundHttpAgent } from '../maker-host/outbound-fetch.js';
 import { resamplePcm16 } from './RealtimeAsrWebSocketProvider.js';
@@ -133,9 +133,11 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
 
   readonly endpointing = 'segment-final' as const;
 
-  private segmentCallback?: (segment: import('@cindy/voice-input-core').AsrSegment) => void;
+  private segmentCallback?: (segment: AsrSegment) => void;
+  private conversationSegments = new Map<string, AsrSegment>();
+  private conversationSequence = 0;
 
-  onSegment(callback: (segment: import('@cindy/voice-input-core').AsrSegment) => void): void {
+  onSegment(callback: (segment: AsrSegment) => void): void {
     this.segmentCallback = callback;
   }
 
@@ -414,6 +416,8 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
     this.recovered = false;
     this.lastTranscript = '';
     this.sessionTranscriptPrefix = '';
+    this.conversationSegments.clear();
+    this.conversationSequence = 0;
     this.clearUnconfirmedAudio();
     this.finalRequested = false;
     this.stableEmitted = false;
@@ -570,10 +574,7 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
     }
     this.startResolve?.();
 
-    for (const segment of extractConversationSegments(message.payload)) {
-      // Replay has a different audio origin; retain text but drop timing proof.
-      this.segmentCallback?.(this.recovered ? { ...segment, audioEndMs: undefined } : segment);
-    }
+    this.publishConversationSnapshot(message.payload);
     const rawTranscript = extractTranscript(message.payload);
     const transcript = mergeRecoveredTranscript(this.sessionTranscriptPrefix, rawTranscript);
     const confirmation = getTranscriptConfirmation(message.payload, rawTranscript);
@@ -595,6 +596,49 @@ export class VolcengineSaucAsrProvider implements AsrProvider {
     if (this.finalRequested && isLastResponse) {
       this.resolveFlushWaiters();
     }
+  }
+
+  private publishConversationSnapshot(payload: unknown): void {
+    if (!this.segmentCallback || !isRecord(payload)) return;
+    const results = Array.isArray(payload.result) ? payload.result : [payload.result];
+    // We request result_type=full. Only a well-formed utterance snapshot can
+    // replace its provisional tail; ACKs/missing fields are not deletions.
+    const authoritative = results.length > 0 && !results.some((result) => !isRecord(result)
+      || !Array.isArray(result.utterances)
+      || result.utterances.some((item) => !isRecord(item) || typeof item.text !== 'string'
+        || typeof item.start_time !== 'number' || !Number.isFinite(item.start_time)));
+    const segments = extractConversationSegments(payload);
+    const keys = new Set(segments.map((segment) => segment.id));
+    if (keys.size !== segments.length) return;
+    let replacedPartials = 0;
+    for (const [key, previous] of this.conversationSegments) {
+      if (!authoritative || previous.final || keys.has(key)) continue;
+      // Until definite=true, SAUC may revise timestamps or split/merge a
+      // sentence. Retire the superseded draft instead of waiting for a final
+      // that no longer exists. Empty final removes text through the existing
+      // segment contract; it never promotes provisional words into a message.
+      this.segmentCallback({ ...previous, text: '', final: true, audioEndMs: undefined });
+      this.conversationSegments.delete(key);
+      replacedPartials++;
+    }
+    for (const segment of segments) {
+      const previous = this.conversationSegments.get(segment.id);
+      if (previous?.final) continue;
+      const projected = {
+        ...segment,
+        // A timestamp can reappear after a provisional revision. Never reuse
+        // its retired ID, which the continuous consumer may already consume.
+        id: previous?.id ?? `sauc:${++this.conversationSequence}`,
+        audioEndMs: this.recovered ? undefined : segment.audioEndMs,
+      };
+      this.conversationSegments.set(segment.id, projected);
+      this.segmentCallback(projected);
+    }
+    if (replacedPartials) log.debug('conversation snapshot reconciled', {
+      replacedPartials,
+      segments: segments.length,
+      pendingFinalSegments: segments.filter((segment) => !segment.final).length,
+    });
   }
 
   private nextSequence(): number {
@@ -895,8 +939,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** SAUC utterance timestamps are stable within one transport; text can be revised. */
-export function extractConversationSegments(payload: unknown): import('@cindy/voice-input-core').AsrSegment[] {
+/** Snapshot coordinates only; provisional timestamps are not durable segment IDs. */
+export function extractConversationSegments(payload: unknown): AsrSegment[] {
   if (!isRecord(payload)) return [];
   const results = Array.isArray(payload.result) ? payload.result : [payload.result];
   return results.flatMap((result) => {

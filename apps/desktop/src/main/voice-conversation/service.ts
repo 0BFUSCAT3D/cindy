@@ -10,6 +10,7 @@ import {
   type SpeechPreviewStart,
   type SpeechVoiceCatalog,
   type SpeechStartResult,
+  type VoiceExitDecision,
 } from '../../shared/voiceConversation.js';
 import type {
   VoiceConversationEvent,
@@ -62,9 +63,9 @@ export class VoiceConversationService {
       connection(selection: SpeechModelSelection): SpeechConnection;
       fetch: typeof fetch;
       hasReplyHook?(): boolean;
-      classifyExit?(input: VoiceExitClassification): Promise<boolean>;
+      classifyExit?(input: VoiceExitClassification): Promise<VoiceExitDecision>;
       emit(sender: number, event: VoiceConversationEvent): void;
-      log?: Pick<Logger, 'info' | 'warn'>;
+      log?: Pick<Logger, 'debug' | 'info' | 'warn'>;
     },
   ) {}
 
@@ -253,6 +254,10 @@ export class VoiceConversationService {
       isCurrent: () => current() && this.deps.owner() === call.owner,
       diagnostic: (event) =>
         this.deps.log?.info('input settled', { callId: call.id, inputGeneration, ...event }),
+      blockedDiagnostic: (event) =>
+        this.deps.log?.debug('input settlement blocked', { callId: call.id, inputGeneration, ...event }),
+      failureDiagnostic: (event) =>
+        this.deps.log?.warn('input failed', { callId: call.id, inputGeneration, ...event }),
       createProvider: async () => {
         this.requireCall(call.sender, call.id);
         if (!current()) throw new Error('input_ended');
@@ -369,7 +374,7 @@ export class VoiceConversationService {
     id: string,
     utteranceId: string,
     inputGeneration: number,
-  ): Promise<boolean> {
+  ): Promise<VoiceExitDecision> {
     const call = this.requireCall(sender, id);
     const utterance = call.exitUtterance;
     if (
@@ -400,7 +405,10 @@ export class VoiceConversationService {
         signal: judgment.signal,
         isCurrent,
       });
-      return isCurrent() && shouldExit;
+      // Fail open on unknown results; never treat a nonempty payload as EXIT.
+      return isCurrent() && (shouldExit === true || shouldExit === 'submit_then_exit')
+        ? shouldExit
+        : false;
     } catch {
       return false;
     } finally {

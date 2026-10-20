@@ -1,6 +1,8 @@
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { once } from 'node:events';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
+import { VoiceConversationInput, type ConversationInputEvent } from '@cindy/voice-input-core';
 
 const diagnosticLog = vi.hoisted(() => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock('../../logger.js', () => ({ createLogger: () => diagnosticLog }));
@@ -17,7 +19,7 @@ import { volcengineSaucLanguageCode } from '../language.js';
 import { mergeRecoveredTranscript } from '../transcriptMerge.js';
 
 describe('VolcengineSaucAsrProvider protocol helpers', () => {
-  it('keeps stable utterance identities for continuous speech, including repeated text and provisional segments', () => {
+  it('projects snapshot timestamps and definite flags without treating partials as final', () => {
     expect(extractConversationSegments({ result: { utterances: [
       { start_time: 0, end_time: 800, text: '你好', definite: true },
       { start_time: 1500, end_time: 1400, text: '你好', definite: false },
@@ -26,6 +28,76 @@ describe('VolcengineSaucAsrProvider protocol helpers', () => {
       { id: '0', order: 0, text: '你好', final: true, audioEndMs: 800 },
       { id: '1500', order: 1500, text: '你好', final: false },
     ]);
+  });
+
+  // Regression: a revised SAUC full snapshot left an obsolete partial waiting
+  // forever, duplicating the draft and eventually failing the 8s final wait.
+  // Existing parser tests used fixed timestamps. Exercise the real provider +
+  // continuous input over one loopback socket; no credentials or external ASR.
+  it('reconciles revised full snapshots without orphaning partials or replaying finalized speech', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    let socket: WebSocket | undefined;
+    server.on('connection', (client) => { socket = client; client.send(serverAckPacket()); });
+    const events: ConversationInputEvent[] = [];
+    let input: VoiceConversationInput | undefined;
+    try {
+      await waitFor(() => server.address() !== null);
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected loopback address.');
+      const provider = new VolcengineSaucAsrProvider({
+        proxyApiKey: 'test-key', baseUrl: `http://127.0.0.1:${address.port}`,
+        endpointPath: '/asr', resourceId: 'volc.test',
+      });
+      input = new VoiceConversationInput({ createProvider: async () => provider, emit: (event) => events.push(event) });
+      await input.start();
+      const payload = async (value: unknown) => {
+        const pong = once(socket!, 'pong');
+        socket!.send(serverPayloadPacket(value));
+        socket!.ping();
+        // Same socket: pong observes the preceding frame's synchronous parser,
+        // including frames that intentionally produce no segment callbacks.
+        await pong;
+      };
+      const snapshot = (utterances: unknown[]) => payload({ result: { utterances } });
+      const part = (start_time: number, text: string, definite = false) =>
+        ({ start_time, text, definite });
+      const draft = () => events.filter((event) => event.type === 'draft').at(-1)?.text;
+      await snapshot([part(100, 'obsolete draft')]);
+      // Missing/malformed utterances are not an authoritative empty snapshot.
+      await payload({ result: {} });
+      await payload({ result: { utterances: [{ text: 'malformed' }] } });
+      expect(draft()).toBe('obsolete draft');
+      // A timestamp correction and split replaces the entire provisional tail.
+      await snapshot([part(120, 'first'), part(600, 'provisional tail')]);
+      expect(draft()).toBe('first provisional tail');
+      // The first timestamp returns after a revision; its retired ID cannot be
+      // reused or the consumer would discard this corrected, now-final text.
+      await snapshot([part(100, 'first', true), part(620, 'second', true)]);
+      expect(draft()).toBe('first second');
+      input.finishUtterance(true);
+      await waitFor(() => events.some((event) => event.type === 'utterance'));
+      expect(events.filter((event) => event.type === 'utterance')).toEqual([
+        { type: 'utterance', id: '1', text: 'first second' },
+      ]);
+      // Repeated full snapshots must not send the finalized prefix again.
+      await snapshot([part(100, 'first', true), part(620, 'second', true),
+        part(1000, 'next draft'), part(1300, 'merged tail')]);
+      expect(draft()).toBe('next draft merged tail');
+      await snapshot([part(100, 'first', true), part(620, 'second', true), part(1000, 'next', true)]);
+      input.finishUtterance(true);
+      await waitFor(() => events.filter((event) => event.type === 'utterance').length === 2);
+      expect(events.filter((event) => event.type === 'utterance').at(-1)).toEqual({
+        type: 'utterance', id: '2', text: 'next',
+      });
+      expect(events.some((event) => event.type === 'error')).toBe(false);
+      expect(diagnosticLog.debug).toHaveBeenCalledWith('conversation snapshot reconciled', {
+        replacedPartials: 2, segments: 2, pendingFinalSegments: 0,
+      });
+    } finally {
+      await input?.stop();
+      socket?.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
   it('requires all utterances to cover the aggregate transcript', () => {
     const check = (utterances: unknown[]) => getTranscriptConfirmation({ result: { text: '一句。二句。', utterances } }, '一句。二句。');
@@ -695,7 +767,7 @@ describe('VolcengineSaucAsrProvider protocol helpers', () => {
 });
 
 function serverTranscriptPacket(text: string, isFinal: boolean, flags = 0x0, endTime?: number): Buffer {
-  const payload = gzipSync(Buffer.from(JSON.stringify({
+  return serverPayloadPacket({
     result: {
       text,
       utterances: [
@@ -707,7 +779,11 @@ function serverTranscriptPacket(text: string, isFinal: boolean, flags = 0x0, end
         },
       ],
     },
-  })));
+  }, flags);
+}
+
+function serverPayloadPacket(value: unknown, flags = 0x0): Buffer {
+  const payload = gzipSync(Buffer.from(JSON.stringify(value)));
   const size = Buffer.alloc(4);
   size.writeUInt32BE(payload.length, 0);
   const sequence = flags === 0x1 || flags === 0x3 ? Buffer.alloc(4) : Buffer.alloc(0);

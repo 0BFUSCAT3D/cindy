@@ -13,7 +13,8 @@ vi.mock('react-i18next', () => ({
       options?.seconds ? `${key}:${options.seconds}` : key,
   }),
 }));
-vi.mock('@/lib/logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn() }) }));
+const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock('@/lib/logger', () => ({ createLogger: () => log }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
 }));
@@ -66,6 +67,7 @@ beforeEach(() => {
         setInputMuted: vi.fn(async () => ({ inputGeneration: 2 })),
         finishUtterance: vi.fn(async () => {}),
         end: vi.fn(async () => {}),
+        interrupt: vi.fn(async () => {}),
         onEvent: (callback: typeof inputEvent) => {
           inputEvent = callback;
           return () => {
@@ -91,7 +93,10 @@ const panel = (blocked = false, taskBusy = false, open = true) => (
     messages={[]}
     blocked={blocked}
     taskBusy={taskBusy}
-    onSend={vi.fn(async () => true)}
+    onSend={vi.fn(async (_text, created) => {
+      created('input');
+      return true;
+    })}
     onClose={close}
     onConfigure={configure}
   />
@@ -114,6 +119,10 @@ it('releases voice immediately during exit and can reopen before the visual unmo
   view.rerender(panel(false, false, false));
   expect(audio.stop).toHaveBeenCalledOnce();
   expect(audio.close).toHaveBeenCalledOnce();
+  expect(log.info).toHaveBeenCalledWith('voice mode ended', {
+    callId: 'call',
+    reason: 'view_closed',
+  });
   expect(window.electronAPI.voiceConversation.end).toHaveBeenCalledOnce();
   expect(screen.queryByRole('status')).toBeNull();
   // Freeze the last visible state rather than flashing idle/Resume during exit.
@@ -217,6 +226,149 @@ it('shows the same cancellable three-second control for a semantic exit', async 
   expect(screen.queryByRole('timer')).toBeNull();
 });
 
+// Real panel/controller with a deferred send: waiting must remain cancellable,
+// must not advertise a zero-second timer, and cannot close before acceptance.
+it('shows sending-before-exit until accepted, then closes immediately without a countdown', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  vi.mocked(window.electronAPI.voiceConversation.classifyExit).mockResolvedValue(
+    'submit_then_exit',
+  );
+  let accept!: () => void;
+  const onSend = vi.fn(
+    async (_text: string, created: (id: string) => void, current: () => boolean) => {
+      await new Promise<void>((done) => {
+        accept = done;
+      });
+      expect(current()).toBe(true);
+      created('input');
+      return true;
+    },
+  );
+  render(<CompanionVoicePanel {...panel().props} onSend={onSend} />);
+  await act(async () => {});
+  await act(async () =>
+    inputEvent({
+      callId: 'call',
+      event: { type: 'utterance', id: 'compound', text: '帮我查资料，然后退出语音模式' },
+    }),
+  );
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.sending');
+  expect(screen.queryByRole('timer')).toBeNull();
+  expect(screen.getByRole('button', { name: 'bots.voiceMode.exit.cancel' })).toBeTruthy();
+  await act(() => vi.advanceTimersByTimeAsync(10_000));
+  expect(close).not.toHaveBeenCalled();
+  await act(async () => accept());
+  expect(onSend).toHaveBeenCalledOnce();
+  expect(onSend.mock.calls[0]![0]).toBe('帮我查资料，然后退出语音模式');
+  expect(close).toHaveBeenCalledOnce();
+  expect(window.electronAPI.voiceConversation.end).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('timer')).toBeNull();
+});
+
+// Acceptance coverage through the real panel + controller: the controller's
+// state tests alone cannot detect a missing full-text recovery view, a broken
+// Retry button, or a Cancel button wired to closing the panel. Inject only the
+// send boundary (false/throw/deferred acknowledgement), with no live account.
+// Contract: companion-voice-mode.md, original-text retention and cancellable
+// submit-then-exit. Unit/jsdom with fake time.
+it.each(['rejected', 'throw'] as const)(
+  'shows the complete original after send %s and retries it once without reviving exit',
+  async (failure) => {
+    vi.useFakeTimers();
+    models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+    vi.mocked(window.electronAPI.voiceConversation.classifyExit).mockResolvedValue(
+      'submit_then_exit',
+    );
+    const text = '请在后台整理一份三条的周末读书计划，收到这条请求就退出语音模式，不用等你完成。';
+    let fail!: () => void;
+    const accepted: string[] = [];
+    const onSend = vi.fn(
+      async (original: string, created: (id: string) => void, current: () => boolean) => {
+        expect(current()).toBe(true);
+        accepted.push(original);
+        created('accepted-input');
+        return true;
+      },
+    );
+    onSend.mockImplementationOnce(async () => {
+      await new Promise<void>((done) => {
+        fail = done;
+      });
+      if (failure === 'throw') throw new Error('injected send failure');
+      return false;
+    });
+    render(<CompanionVoicePanel {...panel().props} onSend={onSend} />);
+    await act(async () => {});
+    await act(async () =>
+      inputEvent({ callId: 'call', event: { type: 'utterance', id: 'compound', text } }),
+    );
+    expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.sending');
+    await act(async () => fail());
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(screen.getByText(text)).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toBe('bots.voiceMode.errors.send');
+    expect(screen.queryByRole('button', { name: 'bots.voiceMode.exit.cancel' })).toBeNull();
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    expect(accepted).toEqual([]);
+    expect(onSend).toHaveBeenCalledOnce();
+
+    await act(async () =>
+      fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.retrySend' })),
+    );
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(onSend.mock.calls.map(([original]) => original)).toEqual([text, text]);
+    expect(accepted).toEqual([text]);
+    expect(screen.queryByText(text)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    expect(window.electronAPI.voiceConversation.classifyExit).toHaveBeenCalledOnce();
+  },
+);
+
+it('cancels through the waiting-for-send button and keeps the accepted work without closing', async () => {
+  vi.useFakeTimers();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  vi.mocked(window.electronAPI.voiceConversation.classifyExit).mockResolvedValue(
+    'submit_then_exit',
+  );
+  const text = '帮我用三条列出整理桌面的步骤，然后退出语音模式。';
+  let accept!: () => void;
+  const accepted: string[] = [];
+  const onSend = vi.fn(
+    async (original: string, created: (id: string) => void, current: () => boolean) => {
+      await new Promise<void>((done) => {
+        accept = done;
+      });
+      expect(current()).toBe(true);
+      accepted.push(original);
+      created('accepted-input');
+      return true;
+    },
+  );
+  render(<CompanionVoicePanel {...panel().props} onSend={onSend} />);
+  await act(async () => {});
+  await act(async () =>
+    inputEvent({ callId: 'call', event: { type: 'utterance', id: 'compound', text } }),
+  );
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.sending');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.exit.cancel' }));
+  expect(screen.queryByRole('button', { name: 'bots.voiceMode.exit.cancel' })).toBeNull();
+  expect(screen.queryByRole('timer')).toBeNull();
+  expect(close).not.toHaveBeenCalled();
+  await act(async () => accept());
+  await act(() => vi.advanceTimersByTimeAsync(5_000));
+  expect(accepted).toEqual([text]);
+  expect(onSend).toHaveBeenCalledOnce();
+  expect(screen.queryByText(text)).toBeNull();
+  expect(screen.queryByRole('timer')).toBeNull();
+  expect(close).not.toHaveBeenCalled();
+  expect(audio.stop).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
+});
+
 it('starts the saved route directly and releases capture when the panel unmounts', async () => {
   models = [
     {
@@ -250,6 +402,10 @@ it('starts the saved route directly and releases capture when the panel unmounts
   view.unmount();
   expect(audio.stop).toHaveBeenCalledOnce();
   expect(audio.close).toHaveBeenCalledOnce();
+  expect(log.info).toHaveBeenCalledWith('voice mode ended', {
+    callId: 'call',
+    reason: 'view_cleanup',
+  });
 });
 
 it.each(['empty', 'missing-model', 'missing-voice', 'unknown-api', 'mismatched-api'])(

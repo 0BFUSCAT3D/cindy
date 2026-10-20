@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AsrSegment, AudioGate, AudioGateEmit } from '@cindy/voice-input-core';
 import { VoiceConversationService } from '../service.js';
 import { hasVoiceConversationLease } from '../lease.js';
+import type { VoiceExitDecision } from '../../../shared/voiceConversation.js';
 import type { VoiceExitClassification } from '../semanticExit.js';
 
 const active: VoiceConversationService[] = [];
@@ -117,7 +118,9 @@ function fixture() {
     owner: vi.fn(() => 'owner-a'),
     hasDictation: vi.fn(() => false),
     hasReplyHook: vi.fn(() => false),
-    classifyExit: vi.fn<(input: VoiceExitClassification) => Promise<boolean>>(async () => true),
+    classifyExit: vi.fn<(input: VoiceExitClassification) => Promise<VoiceExitDecision>>(
+      async () => true,
+    ),
     assertCompanion: vi.fn(async () => {}),
     models: vi.fn(() => [{ id: 'tts', name: 'Speech' }]),
     createProvider: vi.fn(async () => provider),
@@ -132,7 +135,7 @@ function fixture() {
         new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/pcm' } }),
     ),
     emit: vi.fn(),
-    log: { info: vi.fn(), warn: vi.fn() },
+    log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
   };
   const service = new VoiceConversationService(deps);
   active.push(service);
@@ -177,36 +180,48 @@ describe('semantic exit call ownership', () => {
     expect(f.provider.stop).not.toHaveBeenCalled(); // classification alone never exits
   });
 
-  it.each(['speech', 'mute', 'end', 'owner'] as const)(
-    'discards late EXIT after %s',
-    async (change) => {
-      vi.useFakeTimers();
-      const f = fixture();
-      let finish!: (result: boolean) => void;
-      f.deps.classifyExit.mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            finish = resolve;
-          }),
-      );
-      await f.service.start(1, selection);
-      const id = await final(f);
-      const pending = f.service.classifyExit(1, selection.callId, id, 0);
-      const request = f.deps.classifyExit.mock.calls[0]![0];
-      if (change === 'speech')
-        f.provider.onSegment.mock.calls[0]![0]({ id: 'next', text: 'wait', final: false });
-      else if (change === 'mute') await f.service.setInputMuted(1, selection.callId, true);
-      else if (change === 'owner') f.deps.owner.mockReturnValue('another-owner');
-      else {
-        await f.service.end(1, selection.callId);
-        await f.service.start(1, { ...selection, callId: 'new-call' });
-      }
-      expect(request.isCurrent()).toBe(false);
-      if (change !== 'owner') expect(request.signal.aborted).toBe(true);
-      finish(true);
-      expect(await pending).toBe(false);
-    },
-  );
+  it.each(
+    (['speech', 'mute', 'end', 'owner'] as const).flatMap((change) =>
+      ([true, 'submit_then_exit'] as const).map((decision) => ({ change, decision })),
+    ),
+  )('discards late $decision after $change', async ({ change, decision }) => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let finish!: (result: VoiceExitDecision) => void;
+    f.deps.classifyExit.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await f.service.start(1, selection);
+    const id = await final(f);
+    const pending = f.service.classifyExit(1, selection.callId, id, 0);
+    const request = f.deps.classifyExit.mock.calls[0]![0];
+    if (change === 'speech')
+      f.provider.onSegment.mock.calls[0]![0]({ id: 'next', text: 'wait', final: false });
+    else if (change === 'mute') await f.service.setInputMuted(1, selection.callId, true);
+    else if (change === 'owner') f.deps.owner.mockReturnValue('another-owner');
+    else {
+      await f.service.end(1, selection.callId);
+      await f.service.start(1, { ...selection, callId: 'new-call' });
+    }
+    expect(request.isCurrent()).toBe(false);
+    if (change !== 'owner') expect(request.signal.aborted).toBe(true);
+    finish(decision);
+    expect(await pending).toBe(false);
+  });
+
+  it('returns submit-then-exit only for the recognized final without ending the call itself', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.deps.classifyExit.mockResolvedValue('submit_then_exit');
+    await f.service.start(1, selection);
+    const id = await final(f, '帮我查资料，然后退出语音模式');
+    expect(await f.service.classifyExit(1, selection.callId, id, 0)).toBe('submit_then_exit');
+    expect(await f.service.classifyExit(1, selection.callId, id, 0)).toBe(false);
+    expect(f.provider.stop).not.toHaveBeenCalled();
+  });
 
   it('skips playback-only calls, drafts and over-budget text without truncating it', async () => {
     vi.useFakeTimers();
@@ -371,7 +386,9 @@ describe('local companion call ownership', () => {
         bytes: 2,
       }),
     );
-    const logs = JSON.stringify([...deps.log.info.mock.calls, ...deps.log.warn.mock.calls]);
+    const logs = JSON.stringify([
+      ...deps.log.debug.mock.calls, ...deps.log.info.mock.calls, ...deps.log.warn.mock.calls,
+    ]);
     for (const privateValue of [
       'private utterance',
       'private reply',
@@ -381,6 +398,82 @@ describe('local companion call ownership', () => {
     ])
       expect(logs).not.toContain(privateValue);
   });
+
+  // Office-noise report: settled-only logs had no evidence while ASR was pending.
+  // Real service/input + one partial segment, unit/fake time; verify the logger
+  // boundary and cleanup without recording speech, IDs or provider credentials.
+  // Measured: this file runs in 0.60s wall time (39 tests, 192ms test time).
+  it('writes rate-limited blocked input diagnostics to the existing debug logger', async () => {
+    vi.useFakeTimers();
+    const { service, deps, provider } = fixture();
+    await service.start(1, selection);
+    provider.onSegment.mock.calls[0][0]({
+      id: 'private-segment', text: 'private utterance', final: false,
+    });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(deps.log.debug).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(deps.log.debug).toHaveBeenCalledExactlyOnceWith(
+      'input settlement blocked',
+      expect.objectContaining({
+        callId: selection.callId, inputGeneration: 0,
+        reasons: ['asr-final'], pendingFinalSegments: 1, characters: 17,
+      }),
+    );
+    const logs = JSON.stringify(deps.log.debug.mock.calls);
+    for (const value of ['private-segment', 'private utterance', 'test-key', 'gateway.test'])
+      expect(logs).not.toContain(value);
+    await service.end(1, selection.callId);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(deps.log.debug).toHaveBeenCalledOnce();
+  });
+
+  // 14:39 acceptance failure: every ASR error previously looked like
+  // "connection". Real service/input, fake clock and upstream events verify
+  // reason classification, preserved draft and the existing logger's privacy
+  // boundary. Earlier coverage only checked waiting, never terminal causes.
+  it.each(['final_timeout', 'upstream_disconnected', 'upstream_error'] as const)(
+    'diagnoses %s once and preserves the unsent text without logging provider content',
+    async (reason) => {
+      vi.useFakeTimers();
+      const { service, deps, provider } = fixture();
+      await service.start(1, selection);
+      const segment = provider.onSegment.mock.calls[0][0];
+      const event = provider.onEvent.mock.calls[0][0];
+      segment({ id: 'private-segment', text: 'private utterance', final: false });
+      if (reason === 'final_timeout') {
+        service.finishUtterance(1, selection.callId);
+        await vi.advanceTimersByTimeAsync(7_999);
+        expect(deps.log.warn).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+      } else {
+        event({ type: reason === 'upstream_error' ? 'error' : 'disconnected',
+          message: 'private upstream error Bearer test-key', at: Date.now() });
+      }
+      expect(deps.log.warn).toHaveBeenCalledWith('input failed', {
+        callId: selection.callId, inputGeneration: 0,
+        reason, endpointing: 'segment-final', generation: 1,
+        manual: reason === 'final_timeout', rotating: false, speaking: false,
+        segments: 1, pendingFinalSegments: 1, characters: 17,
+        pendingMs: reason === 'final_timeout' ? 8_000 : 0,
+        finalWaitMs: reason === 'final_timeout' ? 8_000 : null,
+        asrUpdateAgeMs: reason === 'final_timeout' ? 8_000 : 0,
+        bufferedAudioMs: 0,
+      });
+      expect(deps.emit).toHaveBeenCalledWith(1, {
+        callId: selection.callId, inputGeneration: 0,
+        event: { type: 'error', text: 'private utterance' },
+      });
+      event({ type: 'disconnected', at: Date.now() });
+      segment({ id: 'private-segment', text: 'late final', final: true });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(deps.log.warn.mock.calls.filter(([name]) => name === 'input failed')).toHaveLength(1);
+      expect(deps.emit.mock.calls.some(([, value]) => value.event.type === 'utterance')).toBe(false);
+      const logs = JSON.stringify([...deps.log.debug.mock.calls, ...deps.log.info.mock.calls, ...deps.log.warn.mock.calls]);
+      for (const value of ['private-segment', 'private utterance', 'private upstream error', 'test-key'])
+        expect(logs).not.toContain(value);
+    },
+  );
 
   it('requires a real available speech model and the canonical companion task before allocating ASR', async () => {
     const { service, deps } = fixture();
