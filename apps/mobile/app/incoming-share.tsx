@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useIsFocused, useNavigation, useRouter } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
+import { goBackGuarded } from '@/utils/backGuard';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { resolveRemoteText } from '@cindy/device-link';
@@ -87,7 +88,7 @@ export default function IncomingShareScreen() {
     catch { setDismissError(t('composer.upload.shareReceiveFailed')); return; }
     navigation.dispatch(data.action);
   });
-  const back = () => router.canGoBack() ? router.back() : router.replace('/');
+  const back = () => goBackGuarded(router);
   return <SafeAreaView edges={simpleScreenSafeAreaEdges()} style={styles.root}>
     <SimpleStackHeader title={t('composer.incomingShare.title')} onBack={back} />
     {!!dismissError && <Text style={styles.note}>{dismissError}</Text>}
