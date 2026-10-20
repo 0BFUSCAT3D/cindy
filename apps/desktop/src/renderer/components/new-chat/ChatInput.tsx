@@ -6444,13 +6444,20 @@ export function ChatInput({
       }
       const remoteDeviceId =
         opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId;
-      const markModelChoice = opts.markModelChoice === true;
       // 同引擎且写回的来源就是任务换模前的来源 = 只换了模型，来源是沿用任务的而非这次选的。
       // 各条换模链路(普通换模 / 意图期改选 / 同引擎重选转来源链路)都在这里统一识别。
       const taskProviderId = activeProviderId ?? memoryProviderId ?? null;
       // 任务当前模型被停用时 effectiveSourceId 会是 null(旧模型不再满足新路由准入)，任务自己
       // 记着的显式来源仍然有效，用它识别同来源换模。
       const taskSourceId = effectiveSourceId ?? initialProviderId ?? null;
+      // 任务来源确认不了(跟随默认路由且模型 / 来源被停用)，这次写回又没带显式来源：无法确认新建默认
+      // 是否在同一来源，保守地不打显式选择标记(沿用 markModelChoice=false 的只同步路径)。
+      const sourceUnknownModelSwitch =
+        opts.markModelChoice === true &&
+        agentKind === currentModelAgentKind &&
+        !taskSourceId &&
+        !activeProviderId;
+      const markModelChoice = opts.markModelChoice === true && !sourceUnknownModelSwitch;
       const modelOnly =
         markModelChoice &&
         agentKind === currentModelAgentKind &&

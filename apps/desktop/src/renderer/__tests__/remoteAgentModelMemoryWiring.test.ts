@@ -78,6 +78,9 @@ describe('ChatInput:远程 Agent 的模型记忆', () => {
     expect(body).toContain('const taskSourceId = effectiveSourceId ?? initialProviderId ?? null;');
     expect(body).toMatch(/modelOnly =[\s\S]*!!taskSourceId[\s\S]*taskProviderId === taskSourceId/);
     expect(body).toContain('effectiveSourceId, initialProviderId, sshCodexHostId');
+    // 任务来源确认不了且没有显式来源时，不打显式选择标记，避免用空来源覆盖另一来源的显式新建默认。
+    expect(body).toMatch(/sourceUnknownModelSwitch =[\s\S]*!taskSourceId[\s\S]*!activeProviderId/);
+    expect(body).toContain('opts.markModelChoice === true && !sourceUnknownModelSwitch');
   });
 
   it('Agent 在另一台电脑的任务:换模后意图期调档记进那台的记忆,不写新建任务记忆', () => {
