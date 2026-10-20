@@ -122,7 +122,7 @@ import {
   rewriteSessionModelIdForRoute,
 } from './provider-route.js';
 import type { CodexSubagentRouteSnapshot } from './codex-subagent-config.js';
-import { getSessionProvider, hasHostedSessionModelAccess } from './session-provider-store.js';
+import { getSessionProvider, hasHostedSessionModelAccess, hostedSessionModelAllowed } from './session-provider-store.js';
 import { guestProviderModelAllowed, guestProviderOffersModel, guestProviderRouteForSession, hostedProviderOffersModel } from './guest-provider-route-store.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import { composeResponseObservers } from './claude-rate-limit-headers-observer.js';
@@ -2815,7 +2815,16 @@ function resolveCodexCustomProviderRoutingDecision(
     return codexCustomProviderRouteFailure(403, 'custom_provider_model_mismatch');
   }
   const wireModel = parsed.pathKind === 'responses' ? requestModel : undefined;
-  if (wireModel && !hostedProviderOffersModel(sessionIdFromHeaders(ctx.headers), route.providerId, 'codex', wireModel)) {
+  const sessionId = sessionIdFromHeaders(ctx.headers);
+  if (wireModel && !hostedProviderOffersModel(sessionId, route.providerId, 'codex', wireModel)) {
+    return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
+  }
+  // Images use their own model IDs, not the parent's Responses model. The
+  // request-local transform also checks opaque multipart edits before dispatch.
+  const allowsImageModel = parsed.pathKind === 'images' && sessionId && hasHostedSessionModelAccess(sessionId)
+    ? (model: string) => hostedSessionModelAllowed(sessionId, route.providerId, model)
+    : undefined;
+  if (allowsImageModel && requestModel && !allowsImageModel(frozenRouting.imageModel?.litellmModel ?? requestModel)) {
     return codexCustomProviderRouteFailure(403, 'remote_model_not_allowed');
   }
   return resolveFrozenProviderRouteDecision(
@@ -2874,8 +2883,8 @@ function resolveCodexCustomProviderRoutingDecision(
         ...(headerDelete.size > 0 ? { headerDelete: [...headerDelete] } : {}),
         ...(parsed.pathKind === 'images'
           ? {
-              ...(frozenRouting.imageModel ? {
-                transformRequestBody: createCodexImageModelRewrite(frozenRouting.imageModel),
+              ...(frozenRouting.imageModel || allowsImageModel ? {
+                transformRequestBody: createCodexImageModelRewrite(frozenRouting.imageModel, allowsImageModel),
               } : {}),
               forwardLifecycle: createCodexImageGenerationForwardLifecycleObserver(
                 parsed.routeId,

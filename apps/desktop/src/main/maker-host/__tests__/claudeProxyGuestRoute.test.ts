@@ -30,7 +30,10 @@ vi.mock('../claude-fast-mode-log', () => ({
   createClaudeFastModeResponseObserver: () => () => undefined,
 }));
 vi.mock('../anthropic-responses-bridge-host', () => ({
-  getResponsesBridgeHandler: () => null,
+  getResponsesBridgeHandler: () => ({ handle: async ({ res }: { res: { writeHead(status: number): void; end(): void } }) => {
+    res.writeHead(204);
+    res.end();
+  } }),
   getPiNativeSubscriptionHandler: () => async ({ res }: { res: { writeHead(status: number): void; end(): void } }) => {
     res.writeHead(204);
     res.end();
@@ -340,6 +343,26 @@ describe('Claude proxy routing for shared-provider guests', () => {
       childAllowed = false;
       expect(await statusOf(await request())).toBe(403);
     } finally { dispose(); }
+  });
+
+  // Unit regression for review 4328205893 / provider-sharing §12. Pi coverage
+  // missed CC's per-request provider inference. A hosted child must use
+  // the actual custom/subscription provider's live grant, not its parent's.
+  it.each(['implicit', 'subscription'])('authorizes the resolved Claude child provider on the %s route', async (routeKind) => {
+    const childProvider = routeKind === 'implicit' ? 'other-b' : 'xai';
+    const parentProvider = routeKind === 'implicit' ? 'xai' : 'xd';
+    const model = routeKind === 'implicit' ? 'other-model' : getActiveCatalog().providers.find(p => p.id === 'xai')!.models['claude-code']![0].id;
+    let childAllowed = true;
+    bindHostedSessionProvider('owner-parent', parentProvider, (providerId, id) => childAllowed && providerId === childProvider && id === model);
+    setClaudeProxySessionIdResolver(() => 'owner-parent');
+    const request = () => transform({ model }, ctxWith({ 'x-claude-code-session-id': 'owner-sdk', 'x-api-key': 'sk-gw' }));
+    if (routeKind === 'implicit') expect(await request()).toMatchObject({ upstreamOverride: OTHER_UPSTREAM });
+    else expect(await statusOf(await request())).toBe(204);
+    childAllowed = false;
+    expect(await statusOf(await request())).toBe(403);
+    // Granting only the parent cannot authorize a request routed elsewhere.
+    bindHostedSessionProvider('owner-parent', parentProvider, providerId => providerId === parentProvider);
+    expect(await statusOf(await request())).toBe(403);
   });
 
   it('keeps requests without a route token on the existing routing (same-account unchanged)', async () => {
