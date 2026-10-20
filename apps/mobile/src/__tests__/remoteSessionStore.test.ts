@@ -871,6 +871,32 @@ describe('remoteSessionStore', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it.each([false, true])('calibrates a late final by identity without taking over a newer stream (newer=%s)', (newer) => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setMessages('s1', [{
+        ...message('host-a', 's1'), clientId: 'item-a', content: 'Incorrect long draft',
+      }]);
+      if (newer) {
+        pushMakerText('s1', 'item-b', 'Next', false);
+        vi.runOnlyPendingTimers();
+      }
+      remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+        sessionId: 's1', persistId: 'item-a', event: {
+          type: 'text', data: { text: 'Corrected', isFinal: true, isFullText: true },
+        },
+      });
+      expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === 'item-a')?.content).toBe('Corrected');
+      if (newer) {
+        pushMakerText('s1', undefined, ' tail', false);
+        vi.runOnlyPendingTimers();
+        expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === 'item-b'))
+          .toMatchObject({ content: 'Next tail', agentMeta: { isStreaming: true } });
+      }
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(newer ? 2 : 1);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('still accepts a legacy final full-text event after its partial row was persisted', () => {
     remoteSessionStore.setMessages('s1', [{
       ...message('host-id', 's1'), clientId: 'legacy-id', content: 'partial',

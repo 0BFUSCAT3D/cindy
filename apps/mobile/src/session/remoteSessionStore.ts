@@ -2735,13 +2735,20 @@ function mergeRemoteTextEvent(
 
   const previousStreamingClientId = streamingAssistantClientIds.get(sessionId);
   const normalizedPersistId = persistId?.trim();
-  const itemBoundaryClientId = normalizedPersistId
+  // A completed older item may deliver its full text after a newer stream has
+  // started. Its exact row owns this correction, not the current stream pointer.
+  const finalReusesExistingItem = isFinal && data?.isFullText === true && normalizedPersistId
+    && currentMessages.some((row) => row.role === 'assistant'
+      && (row.clientId === normalizedPersistId || row.id === normalizedPersistId));
+  const itemBoundaryClientId = !finalReusesExistingItem && normalizedPersistId
     && previousStreamingClientId
     && !isGeneratedStreamingClientId(previousStreamingClientId)
     && previousStreamingClientId !== normalizedPersistId
     ? previousStreamingClientId
     : undefined;
-  const clientIdResolution = streamingClientIdFor(sessionId, persistId);
+  const clientIdResolution = finalReusesExistingItem && normalizedPersistId
+    ? { clientId: normalizedPersistId, changed: false }
+    : streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
   const previousStreamingDeviceId = streamingAssistantDeviceId(sessionId, clientId);
   const currentAfterClientIdResolution = messages.get(sessionId) ?? [];
@@ -2854,7 +2861,9 @@ function mergeRemoteTextEvent(
   const nextText = isFinal
     ? (finalTextWasTruncated && existing
       ? currentText
-      : existing && currentText
+      : data?.isFullText === true
+        ? text
+        : existing && currentText
         ? (text.startsWith(currentText)
           ? text
           : currentText.startsWith(text)

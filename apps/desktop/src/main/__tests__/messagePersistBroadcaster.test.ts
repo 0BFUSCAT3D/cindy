@@ -2976,6 +2976,132 @@ describe('stale-idle assistant late final identity', () => {
 });
 
 describe('streamed assistant final calibration', () => {
+  it.each(['tool_use', 'tool_result'])('reuses a Codex item after an intervening %s', async (boundary) => {
+    const persistId = onAssistantTextEvent(SESSION,
+      { text: 'Checking branch', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    onToolUseEvent(SESSION, { toolUseId: 'cmd-a', toolName: 'exec', input: {} }, null);
+    if (boundary === 'tool_result') {
+      onToolResultEvent(SESSION, { toolUseIds: ['cmd-a'], summary: 'main' }, null);
+    }
+    const final = { text: 'Checking branch', isFinal: true, isFullText: true, agentMessageId: 'msg-a' };
+    expect(onAssistantTextEvent(SESSION, final, null)).toBe(persistId);
+    expect(onAssistantTextEvent(SESSION, final, null)).toBe(persistId);
+    await flushWrites();
+    expect(vi.mocked(createMessage).mock.calls.filter(([, message]) => message.role === 'assistant')).toHaveLength(1);
+  });
+
+  it('calibrates an older item without flushing or replacing the newer stream', async () => {
+    const firstId = onAssistantTextEvent(SESSION,
+      { text: 'Incorrect long draft', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    onToolUseEvent(SESSION, { toolUseId: 'cmd-a', toolName: 'exec', input: {} }, null);
+    const nextId = onAssistantTextEvent(SESSION,
+      { text: 'Next step', agentMessageId: 'msg-b' }, null);
+    const before = getSessionTextSnapshot(SESSION);
+    expect(onAssistantTextEvent(SESSION,
+      { text: 'Corrected', isFinal: true, isFullText: true, agentMessageId: 'msg-a' },
+      { model: 'test-model' })).toBe(firstId);
+    expect(getSessionTextSnapshot(SESSION)).toEqual(before);
+    await flushWrites();
+    expect(updateMessageContent).toHaveBeenCalledWith(SESSION, firstId, 'Corrected');
+    expect(patchMessageAgentMetaWithResult).toHaveBeenCalledWith(SESSION, firstId, { model: 'test-model' });
+    expect(broadcastMessageRow).toHaveBeenCalled();
+    expect(vi.mocked(createMessage).mock.calls.filter(([, message]) => message.role === 'assistant')).toHaveLength(1);
+    flushAssistantBlock(SESSION);
+    await flushWrites();
+    expect(vi.mocked(createMessage).mock.calls.filter(([, message]) => message.role === 'assistant')
+      .map(([, message]) => message.clientId)).toEqual([firstId, nextId]);
+  });
+
+  it('persists a final snapshot when the preceding empty block was discarded', async () => {
+    onAssistantTextEvent(SESSION, { text: '', agentMessageId: 'msg-empty' }, null);
+    flushAssistantBlock(SESSION);
+    onToolUseEvent(SESSION, { toolUseId: 'cmd-a', toolName: 'exec', input: {} }, null);
+    const persistId = onAssistantTextEvent(SESSION,
+      { text: 'Recovered text', isFinal: true, isFullText: true, agentMessageId: 'msg-empty' }, null);
+    await flushWrites();
+    expect(createMessage).toHaveBeenCalledWith(SESSION,
+      expect.objectContaining({ clientId: persistId, role: 'assistant', content: 'Recovered text' }), broadcastGuard());
+  });
+
+  it('does not publish a queued old-item correction after the transcript is cleared', async () => {
+    const persistId = onAssistantTextEvent(SESSION,
+      { text: 'Before clear', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    await flushWrites();
+    onAssistantTextEvent(SESSION,
+      { text: 'Late correction', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null);
+    noteSessionClearBoundary(SESSION, Date.now() + 1000);
+    await flushWrites();
+    expect(updateMessageContent).not.toHaveBeenCalledWith(SESSION, persistId, 'Late correction');
+    expect(broadcastMessageRow).not.toHaveBeenCalled();
+  });
+
+  it.each(['clear', 'owner'])('stops an in-flight old-item correction when %s changes', async (boundary) => {
+    onAssistantTextEvent(SESSION, { text: 'Before boundary', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    await flushWrites();
+    vi.mocked(updateMessageContent).mockImplementationOnce(async () => {
+      if (boundary === 'clear') noteSessionClearBoundary(SESSION, Date.now() + 1000);
+      else ownerScopeState.current = false;
+      return {} as never;
+    });
+    onAssistantTextEvent(SESSION,
+      { text: 'Late correction', isFinal: true, isFullText: true, agentMessageId: 'msg-a' },
+      { model: 'test-model' });
+    await flushWrites();
+    expect(broadcastMessageRow).not.toHaveBeenCalled();
+    expect(patchMessageAgentMetaWithResult).not.toHaveBeenCalled();
+  });
+
+  it('keeps the newer item as the completion target after an older final snapshot', async () => {
+    onAssistantTextEvent(SESSION, { text: 'Opening', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    const nextId = onAssistantTextEvent(SESSION,
+      { text: 'Done', isFinal: true, isFullText: true, agentMessageId: 'msg-b' }, null);
+    onAssistantTextEvent(SESSION,
+      { text: 'Opening corrected', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null);
+    expect(consumeLastTopLevelAssistantPersistId(SESSION)).toBe(nextId);
+    await flushWrites();
+  });
+
+  it('keeps equal text from different items separate across a tool boundary', async () => {
+    const firstId = onAssistantTextEvent(SESSION,
+      { text: 'Checking', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    onToolUseEvent(SESSION, { toolUseId: 'cmd-a', toolName: 'exec', input: {} }, null);
+    const nextId = onAssistantTextEvent(SESSION,
+      { text: 'Checking', isFinal: true, isFullText: true, agentMessageId: 'msg-b' }, null);
+    expect(nextId).not.toBe(firstId);
+    await flushWrites();
+    expect(vi.mocked(createMessage).mock.calls.filter(([, message]) => message.role === 'assistant')).toHaveLength(2);
+  });
+
+  it('does not borrow foreground item identity for background text', async () => {
+    const firstId = onAssistantTextEvent(SESSION,
+      { text: 'Foreground', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    onToolUseEvent(SESSION, { toolUseId: 'cmd-a', toolName: 'exec', input: {} }, null);
+    const backgroundId = onAssistantTextEvent(SESSION,
+      { text: 'Background', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null, 'background');
+    expect(backgroundId).not.toBe(firstId);
+    await flushWrites();
+    expect(updateMessageContent).not.toHaveBeenCalled();
+  });
+
+  it.each(['turn', 'clear', 'session'])('does not reuse an item across a %s boundary', async (boundary) => {
+    const firstId = onAssistantTextEvent(SESSION,
+      { text: 'Ready', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null);
+    if (boundary === 'turn') resetTurnPersistState(SESSION);
+    if (boundary === 'clear') noteSessionClearBoundary(SESSION, new Date(Date.now() + 1000).toISOString());
+    if (boundary === 'session') clearSessionPersistState(SESSION);
+    const nextId = onAssistantTextEvent(SESSION,
+      { text: 'New turn', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null);
+    expect(nextId).not.toBe(firstId);
+    await flushWrites();
+  });
+
   it('persists commentary and final_answer as separate rows when Codex item ids change', async () => {
     const commentaryId = onAssistantTextEvent(
       SESSION,
