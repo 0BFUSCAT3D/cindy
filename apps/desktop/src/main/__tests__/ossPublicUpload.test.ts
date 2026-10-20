@@ -38,12 +38,15 @@ describe('uploadPublicAsset', () => {
     const onError = vi.fn();
     const deps = makeDeps(async (url) => {
       if (stage === 'put' && url.endsWith('/api/oss/presign-put')) return jsonResponse(200, PRESIGN_OK);
-      throw new Error(`socket closed: https://bucket.example.invalid/image?Signature=private-signature`);
+      throw new Error(`socket closed: ${url}`);
     });
     const result = await uploadPublicAsset({ ...deps, onError }, { scene: 'avatar', contentType: 'image/png', body: BODY });
     expect(result).toEqual({ ok: false, stage, status: 0 });
     expect(onError).toHaveBeenCalledExactlyOnceWith(stage, expect.stringContaining('socket closed'));
-    expect(JSON.stringify(onError.mock.calls)).not.toContain('private-signature');
+    const logged = JSON.stringify(onError.mock.calls);
+    expect(logged).toContain(stage === 'put' ? 'https://bucket.oss.example.invalid' : 'https://oss.example.invalid');
+    expect(logged).not.toContain('/cindy/public/avatar/u1/x.png');
+    expect(logged).not.toContain('?sig=1');
   });
 
   it('does not log response excerpts when presign returns malformed JSON', async () => {

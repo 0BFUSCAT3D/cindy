@@ -37,7 +37,8 @@ describe('serverApiFetch', () => {
   });
 
   it('keeps an unfamiliar original error and its cause while redacting secrets before logging', async () => {
-    const cause = Object.assign(new Error('proxy refused tunnel'), { code: 'NEW_PROXY_FAILURE' });
+    const cause = Object.assign(new Error('proxy refused tunnel https://api.example.invalid/account/private-account#private-fragment'),
+      { code: 'NEW_PROXY_FAILURE' });
     const error = new TypeError('fetch failed: https://api.example.invalid/?key=private-value', { cause });
     Object.assign(error, { request: { body: 'private request body', token: 'private-token' } });
     mocks.netFetch.mockRejectedValueOnce(error);
@@ -46,6 +47,9 @@ describe('serverApiFetch', () => {
     expect(logged).toContain('fetch failed');
     expect(logged).toContain('proxy refused tunnel');
     expect(logged).toContain('NEW_PROXY_FAILURE');
+    expect(logged).toContain('https://api.example.invalid');
+    expect(logged).not.toContain('private-account');
+    expect(logged).not.toContain('private-fragment');
     expect(logged).not.toContain('private-value');
     expect(logged).not.toContain('private request body');
     expect(logged).not.toContain('private-token');

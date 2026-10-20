@@ -19,7 +19,12 @@ export function requestErrorMessage(error: unknown): string {
       messages.push(typeof value.code === 'string' ? `${message} (${value.code})` : message);
       error = value.cause;
     }
-    return redact(messages.join('\nCaused by: ') || 'Unknown error').slice(0, 8000);
+    // Resource paths can contain account/object IDs; retain only the transport origin.
+    const message = (messages.join('\nCaused by: ') || 'Unknown error').replace(/https?:\/\/\S+/gi, (url) => {
+      try { return new URL(url).origin; }
+      catch { return '[redacted-url]'; }
+    });
+    return redact(message).slice(0, 8000);
   } catch {
     return '[error message unavailable]';
   }
