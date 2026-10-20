@@ -687,6 +687,25 @@ export function createModelRoutingTransform(): RoutingTransform {
     if (piGuest && !piRequestStaysOnGuestProvider(piGuest, piProviderId, registeredPiProviderId)) {
       return refuseGuestProviderRoute(403, 'shared_provider_only', 'This request is outside the provider shared with you.');
     }
+    if (piGuest) {
+      // Check the live member grant before native handlers and all other Pi routing branches.
+      // Google's native API puts the authoritative model in the URL instead of body.model.
+      const requestModels: string[] = [];
+      if (isPlainObject(body)) {
+        if (typeof body.model === 'string' && body.model) requestModels.push(body.model);
+        // Subscription forwarders use body.model and rebuild their own URL; a forged Google
+        // path cannot stand in for a missing/opaque subscription request body.
+        if (!isOpenAiSubscriptionProviderId(piGuest.providerId) && !isXaiSubscriptionProviderId(piGuest.providerId)) {
+          const pathname = new URL(ctx.url, 'http://127.0.0.1').pathname;
+          const pathModel = /\/models\/(.+):(?:streamGenerateContent|generateContent|countTokens)$/.exec(pathname);
+          if (pathModel) requestModels.push(decodeURIComponent(pathModel[1]));
+        }
+      }
+      const deniedModel = requestModels.find(model => !guestProviderOffersModel(piGuest.providerId, 'pi', model, piGuest.sessionId));
+      if (requestModels.length === 0 || deniedModel !== undefined) {
+        return refuseGuestForeignRoute(deniedModel ?? '');
+      }
+    }
     if (piSessionId && piProviderId && (isOpenAiSubscriptionProviderId(piProviderId) || isXaiSubscriptionProviderId(piProviderId))) {
       return {
         // PI has already built the provider-native request. The local handler

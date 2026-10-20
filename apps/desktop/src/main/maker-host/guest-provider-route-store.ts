@@ -10,7 +10,7 @@
  */
 import { randomBytes } from 'node:crypto';
 
-import type { AgentKind } from '@cindy/model-providers';
+import { findCatalogModel, type AgentKind } from '@cindy/model-providers';
 
 import { getActiveCatalog } from './active-catalog.js';
 import { clearSessionProvider, getSessionProvider, setSessionProvider } from './session-provider-store.js';
@@ -90,12 +90,18 @@ function bareModelId(model: string): string {
   return model.trim().replace(/\[1m\]$/i, '');
 }
 
-/** 分享的供应商是否为这个 Agent 提供这个模型(请求里的模型串，忽略 1M 通道后缀)。 */
+/** 按请求模型核对目录与授权；Claude Code 忽略 1M 通道后缀，Pi 保留精确的窗口档位。 */
 export function guestProviderOffersModel(providerId: string, agent: AgentKind, wireModel: string, sessionId?: string): boolean {
   const requested = bareModelId(wireModel);
   if (!requested) return false;
   const provider = getActiveCatalog().providers.find((candidate) => candidate.id === providerId);
   const binding = sessionId ? bySession.get(sessionId) : undefined;
+  if (agent === 'pi') {
+    // Pi native subscriptions send bare wire ids; grants use the catalog's namespaced ids.
+    // Keep distinct context profiles exact so one profile cannot borrow another's grant.
+    const model = findCatalogModel(provider, wireModel, agent, { exact: true });
+    return Boolean(model && !model.disabled && (!binding?.allowsModel || binding.allowsModel(model.id)));
+  }
   return (provider?.models[agent] ?? []).some((model) => !model.disabled && bareModelId(model.id) === requested
     && (!binding?.allowsModel || binding.allowsModel(model.id)));
 }
