@@ -197,7 +197,7 @@ export interface RemoteAgentHostDeps {
    */
   providerAccess?: {
     resolve(kind: RemoteAgentKind, model: string, providerId: string | null | undefined, controller: string): Promise<string | null>;
-    isAllowed(providerId: string, controller: string): boolean;
+    isAllowed(providerId: string, controller: string, model?: string): boolean;
   };
   /** 同账号任务也须在启动前登记已核对开放的来源，不能只把 providerId 传给 Agent。 */
   bindOwnerProviderRoute?(hostSessionId: string, providerId: string): OwnerProviderRouteBinding;
@@ -211,6 +211,7 @@ export interface RemoteAgentHostDeps {
     kind: RemoteAgentKind;
     hostSessionId: string;
     providerId: string;
+    controller: string;
     isCurrent(): boolean;
   }): Promise<GuestProviderRouteBinding | null>;
   /**
@@ -366,6 +367,8 @@ interface Run {
   pushParts: Map<string, string>;
   /** 这个任务正在用的本机供应商(已核对开放)；没接供应商授权时为空。 */
   providerId?: string;
+  /** Last authorized model, independent of delayed Agent state frames. */
+  authorizedModel?: string;
   /** 受邀者任务的出站登记，任务结束时撤销。 */
   guestRoute?: GuestProviderRouteBinding;
   ownerRoute?: OwnerProviderRouteBinding;
@@ -1102,6 +1105,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           kind: run.kind,
           hostSessionId,
           providerId: run.providerId,
+          controller: run.controller,
           isCurrent: () => !run.closing,
         });
         if (!binding) {
@@ -1671,7 +1675,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       if (method === 'setWritableDirs') callArgs = [confineGuestDirs(args[0], run.virtualRoot)];
       const access = deps.providerAccess;
-      if (access && method === 'send' && run.providerId && !access.isAllowed(run.providerId, run.controller)) {
+      if (access && (method === 'send' || method === 'steer') && run.providerId
+        && !access.isAllowed(run.providerId, run.controller, run.authorizedModel)) {
         failProviderNotAllowed();
       }
       if (method === 'setModel') {
@@ -1684,6 +1689,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         callArgs = [args[0], { ...opts, providerId: relay.member.providerId }, ...args.slice(2)];
       }
       const value = await relay.client.callWithId(callId, method, callArgs);
+      if (method === 'setModel' && typeof args[0] === 'string') run.authorizedModel = args[0];
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: relayErrorInfoFrom(error) });
@@ -1821,22 +1827,23 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       // 受邀者每次换模型都复核：来源钉在分享的供应商上(没带来源也显式带上)，且它要提供这个模型。
       let nextProviderId: string | undefined;
       const access = deps.providerAccess;
-      if (access && method === 'send' && run.providerId && !access.isAllowed(run.providerId, run.controller)) {
+      if (access && (method === 'send' || method === 'steer') && run.providerId
+        && !access.isAllowed(run.providerId, run.controller, run.authorizedModel)) {
         failProviderNotAllowed();
       }
       if (access && method === 'setModel') {
         const opts = args[1];
         const optsObject = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : undefined;
         const explicitProvider = optsObject !== undefined && 'providerId' in optsObject;
+        const requested = explicitProvider ? (optsObject as { providerId?: unknown }).providerId : run.providerId;
+        const resolved = await access.resolve(
+          run.kind,
+          typeof args[0] === 'string' ? args[0] : '',
+          typeof requested === 'string' ? requested : null,
+          run.controller,
+        );
+        if (!resolved) failProviderNotAllowed();
         if (explicitProvider || run.trust === 'guest') {
-          const requested = explicitProvider ? (optsObject as { providerId?: unknown }).providerId : run.providerId;
-          const resolved = await access.resolve(
-            run.kind,
-            typeof args[0] === 'string' ? args[0] : '',
-            typeof requested === 'string' ? requested : null,
-            run.controller,
-          );
-          if (!resolved) failProviderNotAllowed();
           nextProviderId = resolved;
           callArgs = [args[0], { ...(optsObject ?? {}), providerId: resolved }, ...args.slice(2)];
         }
@@ -1869,6 +1876,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         throw error;
       }
       if (nextProviderId && !run.closing) run.providerId = nextProviderId;
+      if (method === 'setModel' && typeof args[0] === 'string' && !run.closing) run.authorizedModel = args[0];
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: remoteAgentErrorInfo(error) });
@@ -2257,6 +2265,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           failProviderNotAllowed();
         }
         // 供应商查询/组分配有 await；最终检查与登记间不能再等待，防止并发 open 超额。
+        if (providerId && deps.providerAccess && !deps.providerAccess.isAllowed(providerId, controller, payload.options.model)) {
+          reserved?.release();
+          failProviderNotAllowed();
+        }
         try {
           assertRunCapacity(controller);
         } catch (error) {
@@ -2265,6 +2277,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }
         const run: Run = {
           id: request.runId,
+          authorizedModel: payload.options.model,
           acceptsImageDeliveryReceipts: payload.acceptsImageDeliveryReceipts === true,
           controller,
           trust,

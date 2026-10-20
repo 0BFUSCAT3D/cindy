@@ -116,7 +116,7 @@ function recordingHandle(input: HostedStartInput, calls: { sends: number; models
   } as unknown as AgentSessionHandle;
 }
 
-async function setup(allowed: Set<string>, guest?: { sharedProviderId: string }) {
+async function setup(allowed: Set<string>, guest?: { sharedProviderId: string }, modelAllowed: (id: string, model: string) => boolean = () => true) {
   const project = path.join(root, 'proj');
   fs.mkdirSync(project, { recursive: true });
   const inputs: HostedStartInput[] = [];
@@ -134,9 +134,9 @@ async function setup(allowed: Set<string>, guest?: { sharedProviderId: string })
     ...(guest ? { controllerTrust: () => 'guest' as const } : {}),
     providerAccess: {
       resolve: async (kind, model, providerId) => guest
-        ? resolveGuestProviderId(views, guest.sharedProviderId, (id) => allowed.has(id), kind, model, providerId)
-        : resolveSharedProviderId(views, (id) => allowed.has(id), kind, model, providerId),
-      isAllowed: (id) => allowed.has(id),
+        ? resolveGuestProviderId(views, guest.sharedProviderId, (id) => allowed.has(id) && modelAllowed(id, model), kind, model, providerId)
+        : resolveSharedProviderId(views, (id) => allowed.has(id) && modelAllowed(id, model), kind, model, providerId),
+      isAllowed: (id, _controller, model) => allowed.has(id) && modelAllowed(id, model ?? ''),
     },
     ...(guest ? {
       bindGuestProviderRoute: async ({ hostSessionId, providerId }: { hostSessionId: string; providerId: string }) => {
@@ -202,7 +202,7 @@ describe('remote agent provider access on the computer running the agent', () =>
     const { host, calls, start } = await setup(new Set(['spark']));
     const handle = await start('spark');
     await handle.setModel!('opus');
-    // 不带来源的换模型原样到达 Agent(沿用当前来源)，不经授权核对。
+    // 不带来源的换模型仍原样到达 Agent；现在也会复核远程型号范围。
     expect(calls.models.at(-1)).toEqual(['opus', null]);
     await handle.close({ reason: 'navigation' });
     host.dispose();
@@ -238,5 +238,27 @@ describe('shared-provider guest models on the computer running the agent', () =>
     await handle.close({ reason: 'navigation' });
     await vi.waitFor(() => expect(releases.count).toBe(1));
     host.dispose();
+  });
+});
+
+/* 用户要求的型号授权此前只有目录隐藏；最小输入为允许一个型号，随后撤回。
+ * 经生产 startRemoteAgentSession → host 协议验证创建、无来源切模型、发消息与插话；沿用本文件 unit fixture。 */
+describe.each([false, true])('remote model access, shared guest=%s', (guest) => {
+  it('blocks a model on start, a model-only switch, and sends after access is revoked', async () => {
+    const models = new Set(['opus']);
+    const { host, calls, inputs, start } = await setup(new Set(['spark']), guest ? { sharedProviderId: 'spark' } : undefined, (_id, model) => models.has(model));
+    try {
+      await expect(start('spark', 'sonnet')).rejects.toThrow('REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+      expect(inputs).toHaveLength(0);
+      const handle = await start('spark', 'opus');
+      await expect(handle.setModel!('sonnet')).rejects.toThrow('REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+      expect(calls.models).toHaveLength(0);
+      await handle.send({ content: [{ type: 'text', text: 'allowed' }] } as never);
+      models.clear();
+      await expect(handle.send({ content: [{ type: 'text', text: 'blocked' }] } as never)).rejects.toThrow('REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+      await expect(handle.steer!({ content: [{ type: 'text', text: 'blocked' }] } as never)).rejects.toThrow('REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+      expect(calls.sends).toBe(1);
+      await handle.close({ reason: 'navigation' });
+    } finally { host.dispose(); }
   });
 });

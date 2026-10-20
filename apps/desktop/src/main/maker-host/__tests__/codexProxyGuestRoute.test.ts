@@ -78,6 +78,20 @@ describe('Codex proxy guard for shared-provider guests', () => {
     expect(await statusOf(guard({ model: 'codex/gpt-5.5' }, ctx('/responses', { 'thread-id': 'guest-thread' })))).toBe(403);
   });
 
+  // A member allowlist must also guard the frozen custom path and take effect without restarting the task.
+  it('rechecks model grants for custom routes and refuses requests without a task identity', async () => {
+    let allowed = true;
+    registerGuestProviderRoute('guest-session', 'shared-a', (model) => allowed && model === 'shared-model', () => true);
+    const guard = createCodexGuestRoutingGuard('shared-a', 'env-key');
+    const path = `${CODEX_CUSTOM_PROVIDER_ROUTE_ROOT}/0123456789abcdef0123/responses`;
+    const request = () => guard({ model: 'shared-model' }, ctx(path, { 'thread-id': 'guest-thread' }));
+    expect(request()).toBeUndefined();
+    expect(await statusOf(guard({ model: 'shared-model' }, ctx(path)))).toBe(403);
+    allowed = false;
+    expect(await statusOf(request())).toBe(403);
+    expect(await statusOf(guard({ model: 'other-model' }, ctx(path, { 'thread-id': 'guest-thread' })))).toBe(403);
+  });
+
   it('refuses requests that do not belong to the registered guest session', async () => {
     const guard = createCodexGuestRoutingGuard('shared-a', 'env-key');
     // 认不出会话：分享的是自定义供应商，没有可直达的默认路由。

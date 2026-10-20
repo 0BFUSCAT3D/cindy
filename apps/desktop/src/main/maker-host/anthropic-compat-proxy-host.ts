@@ -1066,7 +1066,7 @@ export function createModelRoutingTransform(): RoutingTransform {
           : refuseGuestProviderRoute(403, 'shared_provider_only', 'This request is outside the provider shared with you.');
       }
       const wireModel = typeof body.model === 'string' ? body.model : '';
-      if (!guestProviderOffersModel(guest.providerId, 'claude-code', wireModel)) return refuseGuestForeignRoute(wireModel);
+      if (!guestProviderOffersModel(guest.providerId, 'claude-code', wireModel, guest.sessionId)) return refuseGuestForeignRoute(wireModel);
       return route(body, ctx, guest);
     };
     try {

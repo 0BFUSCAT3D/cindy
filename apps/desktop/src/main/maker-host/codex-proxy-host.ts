@@ -123,7 +123,7 @@ import {
 } from './provider-route.js';
 import type { CodexSubagentRouteSnapshot } from './codex-subagent-config.js';
 import { getSessionProvider } from './session-provider-store.js';
-import { guestProviderOffersModel, guestProviderRouteForSession } from './guest-provider-route-store.js';
+import { guestProviderModelAllowed, guestProviderOffersModel, guestProviderRouteForSession } from './guest-provider-route-store.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import { composeResponseObservers } from './claude-rate-limit-headers-observer.js';
 import { createProviderUpstreamErrorObserver, reportProviderUpstreamError } from './provider-upstream-error-observer.js';
@@ -2537,18 +2537,20 @@ export function createCodexGuestRoutingGuard(
   frozenAuthInjection?: CodexProxyAuthInjection,
 ): (body: unknown, ctx: RequestTransformCtx) => RoutingDecision | null | undefined {
   return (body, ctx) => {
-    if (parseCodexCustomProviderPath(ctx.url).kind !== 'not-custom-provider-route') return undefined;
     const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
     if (!requestModel) return undefined;
+    const sessionId = sessionIdFromHeaders(ctx.headers);
+    if (!guestProviderModelAllowed(providerId, requestModel, sessionId)) return codexGuestRouteRefusal();
+    if (parseCodexCustomProviderPath(ctx.url).kind !== 'not-custom-provider-route') return undefined;
     const authInjection = frozenAuthInjection ?? getCodexProxyAuthInjection();
     if (ctx.url.split('?', 1)[0]?.endsWith('/responses')) {
       const effectiveModel = providerAwareGuardianReviewerModel(body, ctx.headers, authInjection) ?? requestModel;
+      if (effectiveModel !== requestModel && !guestProviderModelAllowed(providerId, effectiveModel, sessionId)) return codexGuestRouteRefusal();
       const offered = effectiveModel === CODEX_AUTO_REVIEW_MODEL
         ? isOpenAiSubscriptionProviderId(providerId)
-        : guestProviderOffersModel(providerId, 'codex', effectiveModel);
+        : guestProviderOffersModel(providerId, 'codex', effectiveModel, sessionIdFromHeaders(ctx.headers) ?? undefined);
       if (!offered) return codexGuestRouteRefusal();
     }
-    const sessionId = sessionIdFromHeaders(ctx.headers);
     if (sessionId) {
       return guestProviderRouteForSession(sessionId)?.providerId === providerId
         && getSessionProvider(sessionId) === providerId

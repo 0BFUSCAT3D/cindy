@@ -30,6 +30,8 @@ export interface GuestProviderRoute {
 
 interface Binding extends GuestProviderRoute {
   token: string;
+  allowsModel?: (model: string) => boolean;
+  modelAccessRestricted?: () => boolean;
 }
 
 const byToken = new Map<string, Binding>();
@@ -41,9 +43,11 @@ const bySession = new Map<string, Binding>();
 export function registerGuestProviderRoute(
   sessionId: string,
   providerId: string,
+  allowsModel?: (model: string) => boolean,
+  modelAccessRestricted?: () => boolean,
 ): { token: string; release(): void } {
   const token = randomBytes(32).toString('base64url');
-  const binding: Binding = { sessionId, providerId, token };
+  const binding: Binding = { sessionId, providerId, token, allowsModel, modelAccessRestricted };
   const previous = bySession.get(sessionId);
   if (previous) byToken.delete(previous.token);
   byToken.set(token, binding);
@@ -87,11 +91,22 @@ function bareModelId(model: string): string {
 }
 
 /** 分享的供应商是否为这个 Agent 提供这个模型(请求里的模型串，忽略 1M 通道后缀)。 */
-export function guestProviderOffersModel(providerId: string, agent: AgentKind, wireModel: string): boolean {
+export function guestProviderOffersModel(providerId: string, agent: AgentKind, wireModel: string, sessionId?: string): boolean {
   const requested = bareModelId(wireModel);
   if (!requested) return false;
   const provider = getActiveCatalog().providers.find((candidate) => candidate.id === providerId);
-  return (provider?.models[agent] ?? []).some((model) => bareModelId(model.id) === requested);
+  const binding = sessionId ? bySession.get(sessionId) : undefined;
+  return (provider?.models[agent] ?? []).some((model) => !model.disabled && bareModelId(model.id) === requested
+    && (!binding?.allowsModel || binding.allowsModel(model.id)));
+}
+
+/** A shared proxy without a task identity cannot bypass an active member's model restrictions. */
+export function guestProviderModelAllowed(providerId: string, model: string, sessionId: string | null | undefined): boolean {
+  if (sessionId) {
+    const binding = bySession.get(sessionId);
+    return binding?.providerId === providerId && (!binding.allowsModel || binding.allowsModel(model));
+  }
+  return ![...bySession.values()].some((binding) => binding.providerId === providerId && binding.modelAccessRestricted?.());
 }
 
 /**

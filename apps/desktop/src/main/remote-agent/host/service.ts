@@ -18,6 +18,7 @@ import {
 import { setRemoteAgentHandler } from '../../device-link/dispatch.js';
 import { remoteBackgroundInvoke } from '../../device-link/index.js';
 import { providerShareGuestAccess } from '../../device-link/providerShareHost.js';
+import { remoteModelAccess } from '../../device-link/remoteModelAccess.js';
 import { handleProviderShareReshare, providerShareReshareAllows } from '../../device-link/providerShareReshare.js';
 import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay.js';
 import { providerGroupReshare } from '../../provider-group/reshareRuntime.js';
@@ -144,30 +145,47 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     providerAccess: {
       resolve: async (kind, model, providerId, controller) => {
         const views = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+        const memberId = isProviderSharePeer(controller) ? providerShareGuestAccess(controller)?.memberId : undefined;
+        const allowed = (id: string) => isRemoteProviderInvocationAllowed(id) && remoteModelAccess.allows(id, model, memberId);
         // 受邀者：来源钉在分享的供应商上，且要它提供所选模型(启动与每次换模型都核对)。
         if (isProviderSharePeer(controller)) {
           return resolveGuestProviderId(
             views,
             providerShareGuestAccess(controller)?.providerId,
-            (id) => guestAllows(controller, id),
+            (id) => guestAllows(controller, id) && allowed(id),
             kind,
             model,
             providerId,
           );
         }
-        return resolveSharedProviderId(views, isRemoteProviderInvocationAllowed, kind, model, providerId);
+        return resolveSharedProviderId(views, allowed, kind, model, providerId);
       },
-      isAllowed: (providerId, controller) =>
-        isProviderSharePeer(controller) ? guestAllows(controller, providerId) : isRemoteProviderInvocationAllowed(providerId),
+      isAllowed: (providerId, controller, model) => {
+        const access = isProviderSharePeer(controller) ? providerShareGuestAccess(controller) : null;
+        return (isProviderSharePeer(controller) ? guestAllows(controller, providerId) : isRemoteProviderInvocationAllowed(providerId))
+          && remoteModelAccess.allows(providerId, model ?? '', access?.memberId);
+      },
     },
     // 受邀者任务的出站登记：本机 proxy 只让它经分享的供应商、用它提供的模型。
-    bindGuestProviderRoute: async ({ kind, hostSessionId, providerId, isCurrent }) => {
+    bindGuestProviderRoute: async ({ kind, hostSessionId, providerId, controller, isCurrent }) => {
       const views = await getDesktopProviderService().listProviders({ allowSideEffects: false });
       // 读目录期间这次启动可能已被取代：此时不再登记(登记与检查之间没有 await)。
       if (!isCurrent()) return null;
-      const binding = registerGuestProviderRoute(hostSessionId, providerId);
+      const access = providerShareGuestAccess(controller);
+      if (!access || access.providerId !== providerId || !guestAllows(controller, providerId)) return null;
+      const memberId = access.memberId;
+      const allowsModel = (model: string) => providerShareGuestAccess(controller)?.memberId === memberId
+        && guestAllows(controller, providerId) && remoteModelAccess.allows(providerId, model, memberId);
+      const binding = registerGuestProviderRoute(hostSessionId, providerId, allowsModel, () => {
+        try {
+          const rule = remoteModelAccess.read(providerId, memberId);
+          return rule.models !== null || rule.providerModels !== null;
+        } catch { return true; }
+      });
       return {
         routeToken: binding.token,
+        // Keep the provider catalog stable for the CLI; the proxy checks the live grant on every request.
+        // Filtering this launch-time snapshot would prevent using newly granted models until the task restarts.
         modelIds: guestProviderModelIds(views, providerId, kind),
         release: binding.release,
       };

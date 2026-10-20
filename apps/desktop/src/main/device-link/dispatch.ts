@@ -384,6 +384,8 @@ export function setRemoteReviewInputGuard(guard: RemoteReviewInputGuard | null):
  * 都被拒绝(fail-closed)，也让本模块不必静态依赖账号与分享运行时。
  */
 export interface ProviderShareAccessPort {
+  remoteModels?(providerId: string): string[] | null;
+  modelAllowed?(controller: string, providerId: string, model: string): boolean;
   insights?(controller: string, request: unknown): Promise<unknown>;
   insightsCurrent?(controller: string, result: unknown): boolean;
   guestAccess(controller: string): { shareId: string; memberId: string; providerId: string } | null;
@@ -813,6 +815,9 @@ function projectInvokeResultForTunnel(
       rest.logoKind = logoKind;
     }
     const providerId = typeof p.id === 'string' ? p.id : '';
+    delete rest.remoteModelIds;
+    const remoteModels = providerShareAccess?.remoteModels?.(providerId);
+    if (remoteModels != null) rest.remoteModelIds = remoteModels;
     const visibility = modelVisibilityOverrides ?? {};
     rest.models = projectModelsForController(p.models, providerId, visibility);
     // Media uses the same preference key as the host visibility snapshot.
@@ -4238,7 +4243,7 @@ async function sharedProviderView(
   // Own timing: the slow-invoke log must not file this read under the guest's channel.
   const listed = await runAuthorizedInvoke(src, { channel: 'maker:provider:list', args: [] }, new RemoteInvokeTiming());
   if (!listed.ok) return listed;
-  const projected = projectProviderListForShare(listed.result, providerId) as { providers?: Array<Record<string, unknown>> };
+  const projected = projectProviderListForShare(listed.result, providerId, null, null, src) as { providers?: Array<Record<string, unknown>> };
   const provider = projected.providers?.[0];
   if (!provider) return null;
   const agents = Array.isArray(provider.agents) ? provider.agents.filter((agent): agent is string => typeof agent === 'string') : [];
@@ -4272,7 +4277,7 @@ async function projectProviderShareRead(
     const states = wantsStatus && offered
       ? await remoteAgentHandler?.sharedGroupStatus?.(providerId, src).catch(() => null) ?? null
       : null;
-    return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src), states) };
+    return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src), states, src) };
   }
   const view = await sharedProviderView(src, providerId);
   if (view && 'ok' in view) return view;
@@ -4323,6 +4328,7 @@ function providerShareGuestRunning(src: string): number | null {
  */
 function projectProviderListForShare(
   result: unknown, providerId: string, guestRunning: number | null = null, groupStatus: ProviderShareGroupState[] | null = null,
+  controller?: string,
 ): unknown {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   const value = result as { providers?: unknown; modelVisibilityOverrides?: unknown; providerOrder?: unknown };
@@ -4341,6 +4347,19 @@ function projectProviderListForShare(
     ...rest,
     providers: providers.map((provider) => {
       const scrubbed: Record<string, unknown> = { ...scrubSharedProvider(provider) };
+      if (controller && providerShareAccess?.modelAllowed) {
+        const allowed = (model: unknown) => Boolean(model) && typeof model === 'object'
+          && typeof (model as { id?: unknown }).id === 'string'
+          && providerShareAccess!.modelAllowed!(controller, providerId, (model as { id: string }).id);
+        if (scrubbed.models && typeof scrubbed.models === 'object') {
+          scrubbed.models = Object.fromEntries(Object.entries(scrubbed.models as Record<string, unknown>).map(([agent, models]) => [
+            agent, Array.isArray(models) ? models.filter(allowed) : [],
+          ]));
+        }
+        for (const field of ['imageModels', 'videoModels', 'audioModels', 'embeddingModels']) {
+          if (Array.isArray(scrubbed[field])) scrubbed[field] = (scrubbed[field] as unknown[]).filter(allowed);
+        }
+      }
       delete scrubbed[PROVIDER_SHARE_GROUP_SIZE_FIELD];
       delete scrubbed[PROVIDER_SHARE_GROUP_STATUS_FIELD];
       if (groupSize !== null) scrubbed[PROVIDER_SHARE_GROUP_SIZE_FIELD] = groupSize;

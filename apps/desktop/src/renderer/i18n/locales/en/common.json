@@ -228,6 +228,25 @@
     "closeAllDescription": "Guests will lose access. Task history is kept."
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "Models allowed for remote use",
+      "description": "Only limits remote use. Local use is unchanged. Saved changes apply when creating a task, switching models, or sending the next message.",
+      "all": "All models",
+      "selected": "{{count}} models allowed",
+      "choose": "Choose models",
+      "memberTitle": "Allowed models",
+      "memberDescription": "Choose which models {{name}} can use, within the models open for remote use. These limits also apply to use reshared through this person.",
+      "inherit": "Follow remote model access",
+      "allFuture": "Allow all models, including future additions",
+      "search": "Search models",
+      "notOpen": "Not open remotely",
+      "empty": "No matching models",
+      "none": "No models selected. Remote calls will be blocked.",
+      "loading": "Loading model access…",
+      "loadFailed": "Could not load model access. Reopen these settings.",
+      "saveFailed": "Could not save model access. Try again.",
+      "needsUpdate": "Update Cindy on the provider’s computer to manage model access."
+    },
     "entry": {
       "label": "Remote & Sharing",
       "pending_one": "{{count}} share request waiting",
@@ -12083,7 +12102,7 @@
       "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
       "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
       "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t granted you remote access to this provider or the selected model. Ask its owner to adjust access in Remote & Sharing, or pick another model.",
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",

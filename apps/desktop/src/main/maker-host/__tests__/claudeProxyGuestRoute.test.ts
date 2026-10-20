@@ -160,6 +160,20 @@ describe('Claude proxy routing for shared-provider guests', () => {
     expect(getSessionProvider('guest-session')).toBeNull();
   });
 
+  // The catalog offers this model, but each person's current grant must remain the authority.
+  it('isolates model grants for two people and enforces revocation on the next proxy request', async () => {
+    let allowed = true;
+    const first = registerGuestProviderRoute('first-person', 'shared-a', () => allowed);
+    const second = registerGuestProviderRoute('second-person', 'shared-a', () => false);
+    const request = (token: string) => Promise.resolve(transform(
+      { model: 'shared-model' }, ctxWith({ [GUEST_ROUTE_HEADER]: token, 'x-api-key': 'placeholder' }),
+    ));
+    expect((await request(first.token))?.upstreamOverride).toBe(SHARED_UPSTREAM);
+    expect(await statusOf(await request(second.token))).toBe(403);
+    allowed = false;
+    expect(await statusOf(await request(first.token))).toBe(403);
+  });
+
   it('refuses a body-less request unless the shared provider is the default gateway', async () => {
     const { token } = registerGuestProviderRoute('guest-session', 'shared-a');
     const decision = await Promise.resolve(transform(undefined, ctxWith({ [GUEST_ROUTE_HEADER]: token })));

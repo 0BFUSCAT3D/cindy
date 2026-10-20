@@ -2763,6 +2763,17 @@ view. This is a local desktop trial, not a new plugin or device-link capability.
 Older URL-based reader tabs remain valid. Draft edits, deletion and delayed send
 still use the same host-owned mail workflow as the chat card.
 
+## 远程供应商的模型范围
+
+既有供应商管理通道新增 `get-model-access` / `set-model-access` action，返回 `version: 1`、
+`models`、`providerModels` 与 `availableModels`；仅提供方主人可管理，`memberId` 必须属于该供应商的分享。
+`null` 表示全部／继承，空数组表示不开放。新界面连接不认识此 action 的旧电脑时提示更新，不回退成只改控制端偏好。
+
+同账号 `maker:provider:list` 的 `ProviderView` 可追加 `remoteModelIds`，省略保留原有全部开放语义。
+仅远程 Agent 选择入口按此字段过滤；同账号远控和本机列表仍保留完整 `models`。跨账号分享目录直接按成员权限过滤模型。
+旧控制端忽略新增字段仍由提供方执行调用权限检查；现有错误码 `REMOTE_AGENT_PROVIDER_NOT_ALLOWED` 也覆盖模型未开放。
+权限保存于客户端按账号隔离的配置，不改服务端 schema、数据库或 Mobile 原生指纹。
+
 ## 伙伴导入的消息机器人分类
 
 `companion-import` Remote Resource 的 client primitives 可追加 `companion-import-bots-v1`。只有声明它的控制端
