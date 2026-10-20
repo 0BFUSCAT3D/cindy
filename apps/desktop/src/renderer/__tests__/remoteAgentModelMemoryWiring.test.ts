@@ -72,6 +72,14 @@ describe('ChatInput:远程 Agent 的模型记忆', () => {
     expect(body).toContain('memory.setFast(agent, providerId, modelId, patch.fast)');
   });
 
+  it('任务当前模型被停用(effectiveSourceId 为空)时，只换模型仍按任务显式来源识别', () => {
+    const start = chatInputSource.indexOf('const syncSessionDraftModelPrefs = useCallback(');
+    const body = chatInputSource.slice(start, chatInputSource.indexOf('const persistFastModeChange'));
+    expect(body).toContain('const taskSourceId = effectiveSourceId ?? initialProviderId ?? null;');
+    expect(body).toMatch(/modelOnly =[\s\S]*!!taskSourceId[\s\S]*taskProviderId === taskSourceId/);
+    expect(body).toContain('effectiveSourceId, initialProviderId, sshCodexHostId');
+  });
+
   it('Agent 在另一台电脑的任务:换模后意图期调档记进那台的记忆,不写新建任务记忆', () => {
     const start = chatInputSource.indexOf('const syncSessionDraftModelPrefs = useCallback(');
     expect(start).toBeGreaterThan(0);

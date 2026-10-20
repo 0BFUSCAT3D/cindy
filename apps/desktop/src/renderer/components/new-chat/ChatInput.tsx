@@ -6448,11 +6448,14 @@ export function ChatInput({
       // 同引擎且写回的来源就是任务换模前的来源 = 只换了模型，来源是沿用任务的而非这次选的。
       // 各条换模链路(普通换模 / 意图期改选 / 同引擎重选转来源链路)都在这里统一识别。
       const taskProviderId = activeProviderId ?? memoryProviderId ?? null;
+      // 任务当前模型被停用时 effectiveSourceId 会是 null(旧模型不再满足新路由准入)，任务自己
+      // 记着的显式来源仍然有效，用它识别同来源换模。
+      const taskSourceId = effectiveSourceId ?? initialProviderId ?? null;
       const modelOnly =
         markModelChoice &&
         agentKind === currentModelAgentKind &&
-        !!effectiveSourceId &&
-        taskProviderId === effectiveSourceId;
+        !!taskSourceId &&
+        taskProviderId === taskSourceId;
       if (!remoteDeviceId) {
         const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
         if (modelOnly) {
@@ -6517,7 +6520,7 @@ export function ChatInput({
           log.warn('session draft model preference sync failed:', err);
         });
     },
-    [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, sshCodexHostId, localProviders.providers],
+    [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, initialProviderId, sshCodexHostId, localProviders.providers],
   );
 
   const persistFastModeChange = useCallback(
