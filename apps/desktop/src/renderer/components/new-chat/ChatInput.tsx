@@ -6478,7 +6478,9 @@ export function ChatInput({
                 isModelEnabled,
               }),
           );
-        } else {
+        } else if (!sourceUnknown) {
+          // 来源不明时与远程分支一致：整次不写新建默认(连思考档也不写，payload 没有 model 时它会被
+          // 当成草稿已存模型的档位)。
           const persistPrefs = markModelChoice
             ? patchVendorPrefs
             : patchVendorPrefsPreservingModelChoice;
