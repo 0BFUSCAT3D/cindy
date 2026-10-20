@@ -2731,3 +2731,17 @@ still use the same host-owned mail workflow as the chat card.
 都按当时的分类执行。不改 relay 帧、服务端 schema 或 Mobile 原生指纹。
 
 Cindy AI 设置卡片保留可选读取返回的 `unlimited` 状态，显示“未设置个人限额”；它不代表部门或企业没有限制。`invalidated` 清除该状态，有限额快照覆盖该状态，切换账号不复用上一账号结果。旧 `null` push 无法区分失效与不限额，本地卡片收到后通过既有可选读取核对；同一账号的多个组件共享在途读取，收到读取自身的广播时复用该请求，避免多窗口之间反复触发刷新。主进程跨窗口共享在途读取，已知不限额参与既有节流，重复不限额结果不重复广播。IPC payload 与远程消费者保持兼容。
+
+## 插件资料设备同步
+
+`device-link:plugin-sync:v1` 只在 Desktop Main 消费，wire 定义在
+`packages/device-link/src/pluginSyncProtocol.ts`。同账号、未撤权的在线电脑交换已确认
+namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独立能力，权限区同步展示。
+手机继续操作执行电脑上的插件，不建立独立副本；共享任务和供应商分享不准入。
+旧客户端忽略新通道，插件探测 API 后保留本地功能；超时不代表未执行，不自动重试非幂等动作。
+复用现有设备密钥库，AES-GCM AAD 使用 `plugin-sync:` transfer 标记与源/目标设备绑定。
+每请求 64 KiB、每插件 2 个/全机 32 个在途、30 秒超时；应用持久化后才回复。
+账号/owner、安装 revision、插件启停和撤权每次重新核验，旧请求失效只影响其调用，
+不重连共享 relay。恢复由插件持久状态对账，不恢复失效请求。
+实现与 unit 回归：`cindy-brain/deviceSyncSlot.ts` / `__tests__/deviceSyncSlot.test.ts`。
+完整体验需要两台电脑都更新 Host 和插件；本地回归不能代替双机稳定版/Beta 实测。

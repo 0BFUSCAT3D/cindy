@@ -1,3 +1,5 @@
+import { pluginDeviceSync } from '../cindy-brain/index.js';
+import { PLUGIN_SYNC_CHANNEL } from '../cindy-brain/deviceSyncSlot.js';
 /**
  * device-link host —— 跨设备远程控制的 main 进程接线层。
  *
@@ -1059,6 +1061,10 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       }
       return;
     }
+    if (p?.channel === PLUGIN_SYNC_CHANNEL) {
+      void pluginDeviceSync.receive(env.src, p.payload);
+      return;
+    }
     if (p?.channel === DL_CONTACTS_SYNC_CHANNEL) {
       if (
         shouldExchangeDictionaryWith({
@@ -1123,6 +1129,15 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
             !isDeviceRevoked(deviceId),
         )
         .map(([deviceId]) => deviceId),
+  });
+  pluginDeviceSync.connect({
+    self: () => client?.getSelfDeviceId() ?? null,
+    peers: () => [...presenceOnlineByDevice.entries()]
+      .filter(([deviceId, online]) => !isScopedPeer(deviceId) && deviceId !== client?.getSelfDeviceId() && shouldExchangeDictionaryWith({ online, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }))
+      .map(([deviceId]) => ({ deviceId, deviceName: presenceNameByDevice.get(deviceId) ?? deviceId.slice(0, 8) })),
+    allowed: deviceId => !isScopedPeer(deviceId) && deviceId !== client?.getSelfDeviceId() &&
+      shouldExchangeDictionaryWith({ online: presenceOnlineByDevice.get(deviceId) === true, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }),
+    send: (deviceId, frame) => { if (!client) throw new Error('device link unavailable'); client.sendPush(deviceId, PLUGIN_SYNC_CHANNEL, frame); },
   });
   initContactsDeviceSync({
     getSelfDeviceId: () => client?.getSelfDeviceId() ?? null,
@@ -1193,6 +1208,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       // 接管后对本机仍在控制、且 link 未就绪的设备补发一次重建,避免启动竞态留下
       // 半开链路,不必等对端下一帧。
       setTimeout(retriggerReopenForControlledDevices, 250);
+      pluginDeviceSync.setActive(true);
       setContactsDeviceLinkOwnerActive(true);
       refreshAppliedSettingsSnapshot();
       pollContactsDeviceSyncSettingChange();
@@ -1358,6 +1374,7 @@ export function getMobileNotifyGeneration(): number {
  * 同进程换账号登录还会把上一账号的控制端串到新账号。
  */
 function teardownActiveLink(): void {
+  pluginDeviceSync.reset();
   invalidatePluginOauth();
   void stopSharedTaskRuntime().catch((error) => log.warn('sharedTask runtime teardown failed', error));
   stopProviderShareRuntime();

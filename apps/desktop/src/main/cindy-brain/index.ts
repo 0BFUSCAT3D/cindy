@@ -1,3 +1,5 @@
+import { PluginDeviceSync } from './deviceSyncSlot.js';
+import { contactsSyncKeyStore } from '../contacts-sync/keyStore.js';
 import { RemotePluginPreferences } from './remotePluginPreferences.js';
 import { readDeviceLinkSettings } from '../device-link/settings-store.js';
 import { isSharedTaskPeer, isProviderSharePeer } from '@cindy/device-link';
@@ -1247,6 +1249,7 @@ export async function interruptGhostCallsForAccountBoundary(): Promise<void> {
   // Drain in-flight staging.release (tombstone/fsync) before tearing Library
   // sessions. Owner mutation leases stay held until each call unwinds; waiting
   // for idle first would let marker-window teardown race the lease.
+  pluginDeviceSync.reset();
   await getGhostLibrarySlot().disposeAll();
   if (libraryExtraDirSync) {
     await libraryExtraDirSync(null).catch((error) => {
@@ -2008,6 +2011,7 @@ export function getGhostRuntime(): GhostRuntime {
         const storagePart = isValidPluginInstallRelId(id) ? pluginInstallStoragePart(id) : id;
         log.info('ghost runtime state', { id, state });
         if (state !== 'running') disconnectRoutineSource(storagePart);
+        if (['off', 'stopping', 'crashed', 'fused'].includes(state)) pluginDeviceSync.invalidate(storagePart);
         // 崩溃/熄灯时把该意识名下的在途工具调用收掉(结构化失败给 agent)。
         getGhostPipeDispatcher().onRuntimeState(storagePart, state);
         broadcastGhostRuntimeStates();
@@ -2016,6 +2020,21 @@ export function getGhostRuntime(): GhostRuntime {
   }
   return runtimeSingleton;
 }
+
+export const pluginDeviceSync = new PluginDeviceSync({
+  scope: activeOwnerScopeKey,
+  keys: contactsSyncKeyStore,
+  getGhost: findGhostForInstanceId,
+  listGhosts: () => getGhostManager().list(),
+  deliver: async (ghost, message, isCurrent) => {
+    if (!isCurrent()) return false;
+    const scope = activeOwnerScopeKey();
+    const id = installedGhostStoragePart(ghost);
+    const started = await getGhostRuntime().spawn(ghost);
+    return started.ok && isCurrent() && scope === activeOwnerScopeKey() &&
+      ghostInstallApprovalToken(findGhostForInstanceId(id)?.approval) === ghostInstallApprovalToken(ghost.approval) && sendToGhostLogic(id, message);
+  },
+});
 
 let dispatcherSingleton: GhostPipeDispatcher | null = null;
 
@@ -8591,6 +8610,7 @@ export function registerGhostIpc(): void {
     }
     // library-request = library 持久作品库(资格审/binding 根解析/owner scope
     // 复核/SQL 语句门在 librarySlot;结果结构化 errorCode,永不 reject)。
+    if (type === 'device-sync-request') return pluginDeviceSync.handle(id, payload);
     if (type === 'library-request') {
       return getGhostLibrarySlot().handleLibraryRequest(id, payload);
     }
