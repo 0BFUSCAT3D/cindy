@@ -184,7 +184,13 @@ describe('Codex text-only request policy', () => {
     expect(() => validateCodexTextOnlyResponse({ type: 'response.future_metadata', response: { output: [{ type }] } })).toThrow();
   });
 
-  it.each(['response.function_call_arguments.delta', 'response.custom_tool_call_input.done'])('rejects executable deltas without an output item (%s)', type => {
+  // Tool input can arrive before an output item, including shell commands and
+  // code interpreter snippets. Keep these families closed in the shared validator.
+  it.each([
+    'response.function_call_arguments.delta', 'response.custom_tool_call_input.done',
+    'response.shell_call_command.added', 'response.shell_call_command.delta', 'response.shell_call_command.done',
+    'response.code_interpreter_call_code.delta', 'response.code_interpreter_call_code.done',
+  ])('rejects executable deltas without an output item (%s)', type => {
     expect(() => validateCodexTextOnlyResponse({ type, delta: 'private arguments' })).toThrow(`type=${type}`);
   });
 

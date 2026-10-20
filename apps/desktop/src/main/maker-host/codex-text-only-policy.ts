@@ -77,7 +77,8 @@ export function validateCodexTextOnlyResponse(value: unknown): void {
     }
     return;
   }
-  if (!type || /^response\.[^.]*_(?:call|call_arguments|call_input)(?:\.|$)/.test(type)) {
+  // Match the whole call family, including _call_command and _call_code inputs.
+  if (!type || /^response\.[^.]*_call(?:[._]|$)/.test(type)) {
     reject('tool event or missing event type', type);
   }
   // Rate limits, timing and other protocol metadata are not executable items.
