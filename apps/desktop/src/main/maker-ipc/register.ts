@@ -896,7 +896,7 @@ import {
   type OrcaInterAgentMessageSource,
 } from './orcaInterAgentDispatcher.js';
 import { OrcaWorkerPermissionConfirmBridge } from './orcaWorkerPermissionConfirmBridge.js';
-import { assertTaskActionCurrent, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, settleTaskActionInput, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
+import { assertTaskActionCurrent, captureTaskActionGuard, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, settleTaskActionInput, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
 import {
   getOrcaWorkspaceInfoReadOnly,
   getOrcaWorkerDiagnosticStatusReadOnly,
@@ -14539,6 +14539,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   const captureOrcaPluginAuthority = async (leadSessionId: string) => {
+    // All Orca lifecycle/control paths already retain this guard through lookup,
+    // preparation and acceptance. Bind the originating call even outside its ALS.
+    const assertActionCurrent = captureTaskActionGuard();
     const epoch = getCurrentDbClientSnapshot();
     if (!epoch) throw new PluginTaskError('HOST_NOT_READY', 'Task storage unavailable', true);
     const input = inputCoordinator.getAcceptedInputProvenance(leadSessionId);
@@ -14567,10 +14570,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const current = await store.get(leadSessionId);
       const currentPluginId = current?.operation === 'create' && !hasRevokedPluginTaskOwnership(current) ? current.pluginId : null;
       if (epoch !== getCurrentDbClientSnapshot() || currentPluginId !== pluginId) throw new PluginTaskError('PERMISSION_DENIED', 'Orca task ownership changed');
+      if (assertActionCurrent) await assertActionCurrent();
       if (pluginId === null) return;
       const task = await pluginTaskServiceForCurrentOwner!().get(pluginId, leadSessionId);
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
       assertPluginWorkerAutoAuthorized(pluginId, task);
+      if (assertActionCurrent) await assertActionCurrent();
     };
     await assertCurrent();
     return { permissionMode: pluginId === null ? undefined : 'auto' as const, assertCurrent };

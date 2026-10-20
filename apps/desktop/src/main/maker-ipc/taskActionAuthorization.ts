@@ -164,6 +164,11 @@ export async function assertTaskActionCurrent(): Promise<void> {
   await actionContext.getStore()?.assertCurrent();
 }
 
+/** Existing lifecycle callbacks can outlive the AsyncLocalStorage call itself. */
+export function captureTaskActionGuard(): (() => Promise<void>) | undefined {
+  return actionContext.getStore()?.assertCurrent;
+}
+
 export function hasTaskActionAuthorization(callerSessionId?: string): boolean {
   const current = actionContext.getStore();
   return !!current && (!callerSessionId || current.sessionId === callerSessionId);

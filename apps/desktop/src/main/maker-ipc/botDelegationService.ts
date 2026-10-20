@@ -2465,7 +2465,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
 
           return { permissionMode, parentSessionId };
         },
-      }, async childRow => {
+      }, async (childRow, assertCurrent) => {
+        // Model admission and Git preparation yield after initial admission.
+        // Reuse openSession's final commit boundary; never persist a revoked grant.
+        await assertTaskActionCurrent();
+        assertCurrent();
+        if (!isCreationPermissionCurrent()) throw new Error('CALLER_PERMISSION_UNAVAILABLE');
         await getDbClient().tx('bots.createDelegation', {
           maxActiveChildren,
           session: {
@@ -2510,7 +2515,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       // The worker transaction yields: a permission switch may complete while
       // creation is pending. Never publish or start the stale Full Access child.
       const groupPermissionCurrent = await input.caller.groupAuthority?.refresh().then(() => true, () => false) ?? true;
-      if (!groupPermissionCurrent || !isCreationPermissionCurrent()) {
+      const actionCurrent = await assertTaskActionCurrent().then(() => true, () => false);
+      if (!actionCurrent || !groupPermissionCurrent || !isCreationPermissionCurrent()) {
         await getDbClient().drizzle.update(sessions)
           .set({ permissionMode: 'ask' }).where(eq(sessions.id, childSessionId));
         await updateTerminal({ delegationId, status: 'failed',

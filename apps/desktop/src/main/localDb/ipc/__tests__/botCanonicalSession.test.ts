@@ -1,4 +1,5 @@
 import { captureAgentRequest } from '../../../maker-ipc/forwardedRequest';
+import { admitTaskAction } from '../../../maker-ipc/taskActionAuthorization';
 import { formatForwardedRequest } from '../../../../shared/forwardedRequest';
 const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
 const supplement = (text: string): string => JSON.parse(text.split('\n').find(line => line.startsWith('Agent supplement:'))!.slice('Agent supplement:'.length));
@@ -6058,6 +6059,53 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally {
       runtime.dispose();
     }
+  });
+
+  // Regression #6399: a live permission mode is insufficient when the initiating
+  // input is revoked during preparation. Reuse the existing SQLite runtime fixture.
+  it.each(['revoked', 'commit-revoked', 'healthy'])('checks action authority after workspace preparation: %s', async state => {
+    await seedPair();
+    let current = true;
+    h.ensureGit.mockImplementationOnce(async () => { current = state !== 'revoked'; });
+    const realTx = h.tx!;
+    h.tx = async (name, args) => {
+      const result = await realTx(name, args);
+      if (name === 'bots.createDelegation' && state === 'commit-revoked') current = false;
+      return result;
+    };
+    const discardUnusedWorktree = vi.fn(async () => undefined);
+    const runtime = createDelegationRuntime({
+      prepareWorktree: async () => ({ ok: true, sessionId: 'action-child', workingDir: h.userDataDir }),
+      discardUnusedWorktree,
+    });
+    try {
+      const decision = await admitTaskAction({
+        sessionId: 'session-1', server: 'cindy_helper', tool: 'start_session_task', args: {},
+      }, {
+        key: 'owner-input', ownerInput: true, delegated: false,
+        assertCurrent: async () => { if (!current) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED'); },
+      });
+      if (!decision.ok || !decision.run) throw new Error('missing admission');
+      const starting = decision.run(() => runtime.delegation.startSessionTask({
+        callerSessionId: 'session-1', objective: 'Fixture work', workingDir: h.userDataDir, useWorktree: true,
+      }));
+      if (state === 'revoked') {
+        await expect(starting).rejects.toThrow('TASK_ACTION_AUTHORIZATION_EXPIRED');
+        expect(h.sqlite!.prepare('SELECT count(*) FROM bot_delegations').pluck().get()).toBe(0);
+        expect(h.sqlite!.prepare("SELECT count(*) FROM sessions WHERE id = 'action-child'").pluck().get()).toBe(0);
+        expect(runtime.started).toEqual([]);
+        expect(discardUnusedWorktree).toHaveBeenCalledWith('action-child');
+      } else if (state === 'commit-revoked') {
+        expect(await starting).toMatchObject({ ok: false, errorCode: 'CALLER_PERMISSION_UNAVAILABLE' });
+        expect(h.sqlite!.prepare('SELECT status FROM bot_delegations').pluck().get()).toBe('failed');
+        expect(runtime.started).toEqual([]);
+        expect(discardUnusedWorktree).not.toHaveBeenCalled();
+      } else {
+        expect(await starting).toMatchObject({ ok: true });
+        expect(runtime.started).toHaveLength(1);
+        expect(discardUnusedWorktree).not.toHaveBeenCalled();
+      }
+    } finally { h.tx = realTx; runtime.dispose(); }
   });
 
   it.each(['ask', 'auto', null])('uses stable permission after asynchronous workspace preparation: %s', async (settledMode) => {
