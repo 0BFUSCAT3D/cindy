@@ -51,6 +51,7 @@ import { compactToolCardResult } from '../../shared/toolResultPersistCap.js';
  */
 
 import { RemoteInvokeTiming } from './remoteInvokeTiming.js';
+import { observeRemoteSendPush } from './remoteSendTrace.js';
 import {
   computeAllowlistHash,
   canCoalesceRemoteListing,
@@ -2117,6 +2118,7 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
     return [...new Set([...ordinary, ...shared])];
   };
   const dsts = targetsFor(false);
+  observeRemoteSendPush(channel, payload, dsts.length);
   // The active registry describes peer topic intent, not whether this host can
   // currently write to the relay. During host-side reconnects sendPush is a
   // silent no-op, so route queueable pushes through the offline backlog instead.
@@ -3128,7 +3130,8 @@ async function handleInvoke(
   try {
     result = normalizeInvokeResultForWire(await resultPromise);
     const executionWaitMs = Math.round(performance.now() - handlerStartedAt);
-    if (executionWaitMs >= 1_000) {
+    // debug only: 300ms already shows up as a visible send delay over the relay.
+    if (executionWaitMs >= 300) {
       log.debug(`remote invoke slow execution request=${shortId(requestId)} from=${shortId(src)}`
         + ` channel=${payload && REMOTE_INVOKE_ALLOWLIST.has(payload.channel) ? payload.channel : 'unknown'}`
         + ` executionWaitMs=${executionWaitMs} ok=${result.ok} stagesMs=${JSON.stringify(timing.stages)}`);

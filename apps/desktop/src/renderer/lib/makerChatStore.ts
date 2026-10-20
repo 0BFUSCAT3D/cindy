@@ -152,6 +152,7 @@ import {
   dismissErrorMessageFor,
   isRemoteSession,
   isRemoteSessionSticky,
+  prewarmSessionFor,
   type RoutableMaker,
 } from '@/lib/makerTransport';
 import {
@@ -177,6 +178,13 @@ import type { Effort } from '@/lib/userPreferences.types';
 import { emitAutoTitlePreview, emitAutoTitlePreviewCleared, emitPatch } from '@/lib/sessionsBus';
 import { clearSessionStarting, markSessionStarting } from '@/lib/sessionStartingStore';
 import { createLogger } from '@/lib/logger';
+import {
+  traceRemoteSendAccepted,
+  traceRemoteSendDispatching,
+  traceRemoteSendDropped,
+  traceRemoteSendEcho,
+  traceRemoteSendRegistered,
+} from '@/lib/remoteSendTrace';
 import {
   markSessionAutomaticHistoryLoadCompleted,
   readSessionScroll,
@@ -1676,6 +1684,7 @@ function registerRemoteOptimisticSend(
     composerResolvedOptimistically: false,
   };
   remoteOptimisticSendRecords(sessionId, true)!.set(queued.clientId, record);
+  traceRemoteSendRegistered(queued.clientId);
   const composerTransition = findRemoteOptimisticComposerTransition(
     sessionId,
     opts?.onRemoteOptimisticFailure,
@@ -1843,6 +1852,7 @@ function markRemoteOptimisticSendAccepted(
 ): void {
   const record = remoteOptimisticSendRecords(sessionId)?.get(clientId);
   if (!record) return;
+  traceRemoteSendAccepted(clientId);
   record.accepted = true;
   record.currentlyQueued = true;
   record.phase = 'accepted';
@@ -8851,6 +8861,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     if (isBeforeOrAtRendererClearBoundary(sessionId, message.createdAt)) return;
     const [mapped] = mapServerMessages([message]);
     if (!mapped) return;
+    traceRemoteSendEcho(mapped.clientId, mapped.role);
     clearRemoteOptimisticSend(sessionId, mapped.clientId);
     const current = getOrCreateState(sessionId);
     const existing = current.messages.find((candidate) => candidate.clientId === mapped.clientId);
@@ -11184,6 +11195,7 @@ async function dispatchRemoteOptimisticSend(
   record.dispatching = true;
   record.phase = 'dispatching';
   record.attempt += 1;
+  traceRemoteSendDispatching(record.queued.clientId);
   clearRemoteOptimisticRetryTimer(sessionId);
 
   const operation = beginInputProjectionOperation(sessionId, record.deviceId);
@@ -11310,6 +11322,7 @@ async function dispatchRemoteOptimisticSend(
 }
 
 function settleRemoteOptimisticFailure(sessionId: string, clientId: string, error?: unknown): void {
+  traceRemoteSendDropped(clientId);
   const record = remoteOptimisticSendRecords(sessionId)?.get(clientId);
   if (record?.composerResolvedOptimistically && isDataOwnerGenerationCurrent(record.dataOwner)) {
     try {
@@ -14152,6 +14165,47 @@ export function buildCreateOptsForCurrentSession(
         ? { providerId: current.sessionProviderId }
         : {}),
   };
+}
+
+/** 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。 */
+const PREWARM_REQUEST_INTERVAL_MS = 30_000;
+const lastPrewarmRequestAt = new Map<string, number>();
+
+/**
+ * 输入框开始打字：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
+ * 没有排队或在途发送时请求；createOpts 与下一次发送构造的相同，执行字段由任务所在
+ * 电脑按数据库校正。尽力而为，结果不影响发送。
+ */
+function prewarmSession(
+  sessionId: string,
+  model: string,
+  effort: string,
+  permissionMode: string,
+  workingDir: string,
+): void {
+  if (!sessionId || !workingDir) return;
+  const current = getOrCreateState(sessionId);
+  if (
+    current.agentStatus.isRunning ||
+    current.isStreaming ||
+    current.pendingQueue.length > 0 ||
+    current.agentSwitchIntent ||
+    remoteOptimisticSendRecords(sessionId)?.size
+  ) {
+    return;
+  }
+  const now = Date.now();
+  const last = lastPrewarmRequestAt.get(sessionId);
+  if (last !== undefined && now - last < PREWARM_REQUEST_INTERVAL_MS) return;
+  lastPrewarmRequestAt.set(sessionId, now);
+  const createOpts = buildCreateOptsForCurrentSession(
+    sessionId,
+    model,
+    effort,
+    permissionMode,
+    workingDir,
+  );
+  void prewarmSessionFor(sessionId, createOpts).catch(() => undefined);
 }
 
 function touchSessionUserSend(sessionId: string, workingDir: string, wasFirst: boolean): void {
@@ -18181,6 +18235,7 @@ export const makerChatStore = {
   loadAroundMessage,
   loadAroundMessageClientId,
   sendMessage,
+  prewarmSession,
   /** #2194: MessageStream 强 pin 门控——区分本端发送与外部注入的 user 消息。 */
   isLocalSentUserMessage,
   beginRemoteOptimisticComposerTransition,

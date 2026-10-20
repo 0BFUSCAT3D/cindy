@@ -1,0 +1,63 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { createAgentPrewarmer, type AgentPrewarmDeps } from '../agentPrewarm.js';
+
+function harness(maxWarm = 2) {
+  const timers = new Map<number, () => void>();
+  let nextTimer = 0;
+  const start = vi.fn<AgentPrewarmDeps['start']>(async () => true);
+  const closeIfUnused = vi.fn<AgentPrewarmDeps['closeIfUnused']>(async () => {});
+  const prewarmer = createAgentPrewarmer(
+    {
+      start,
+      closeIfUnused,
+      setTimer: (fn) => {
+        const id = ++nextTimer;
+        timers.set(id, fn);
+        return id;
+      },
+      clearTimer: (id) => timers.delete(id as number),
+      log: { info: vi.fn(), warn: vi.fn() },
+    },
+    { maxWarm, idleMs: 1_000 },
+  );
+  const fireAll = () => {
+    const pending = [...timers.values()];
+    timers.clear();
+    for (const fn of pending) fn();
+  };
+  return { prewarmer, start, closeIfUnused, fireAll, timers };
+}
+
+describe('Agent prewarm lifecycle', () => {
+  it('keeps at most the newest unused runtimes and closes the oldest', async () => {
+    const { prewarmer, closeIfUnused } = harness(2);
+    for (const id of ['a', 'b', 'c']) await prewarmer.request(id, {});
+    expect(prewarmer.warmSessionIds()).toEqual(['b', 'c']);
+    expect(closeIfUnused.mock.calls.map(([id]) => id)).toEqual(['a']);
+  });
+
+  it('closes an unused runtime after the idle window but never one a send has used', async () => {
+    const { prewarmer, closeIfUnused, fireAll, start } = harness();
+    await prewarmer.request('idle', {});
+    await prewarmer.request('used', {});
+    // Typing again in a warm task only extends its window; it does not start twice.
+    await expect(prewarmer.request('idle', {})).resolves.toBe('warm');
+    prewarmer.markUsed('used');
+    fireAll();
+    await Promise.resolve();
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(closeIfUnused.mock.calls.map(([id]) => id)).toEqual(['idle']);
+    expect(prewarmer.warmSessionIds()).toEqual([]);
+  });
+
+  it('does not track a task whose runtime was not started by prewarm', async () => {
+    const { prewarmer, start, timers } = harness();
+    start.mockResolvedValueOnce(false);
+    start.mockRejectedValueOnce(new Error('credential switch busy'));
+    await expect(prewarmer.request('live', {})).resolves.toBe('skipped');
+    await expect(prewarmer.request('broken', {})).resolves.toBe('skipped');
+    expect(prewarmer.warmSessionIds()).toEqual([]);
+    expect(timers.size).toBe(0);
+  });
+});

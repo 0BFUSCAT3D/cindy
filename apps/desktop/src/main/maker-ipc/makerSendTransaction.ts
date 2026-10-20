@@ -586,6 +586,13 @@ export interface MakerSendTransaction {
     createOpts?: unknown,
     sendOpts?: unknown,
   ): Promise<DesktopMakerSendResult>;
+  /**
+   * Start the Agent runtime the next send would otherwise start lazily, using
+   * the same bootstrap path. `createOpts` must already be reconciled with the
+   * task row. Returns false when a runtime already exists or startup failed;
+   * the next send then follows its normal path.
+   */
+  prewarmSession(sessionId: string, createOpts: CreateOpts): Promise<boolean>;
 }
 
 type ResolveSessionResult =
@@ -1009,6 +1016,11 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
   }
 
   return {
+    async prewarmSession(sessionId, createOpts) {
+      if (deps.getSession(sessionId)) return false;
+      const lazy = await lazyCreateSession(sessionId, createOpts);
+      return lazy.kind === 'session';
+    },
     async sendToAgentAccepted(
       sessionId,
       message,

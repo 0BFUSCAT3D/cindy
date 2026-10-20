@@ -3864,6 +3864,18 @@ function CCAgentSessionContent({
     [fastMode, insertSystemCard, remoteDeviceId, session, sessionId, t, updateSystemCardData],
   );
 
+  // 开始打字时提前启动 Agent，把冷启动藏进打字时间（本机与远程任务相同）。
+  const handleComposerTyping = useCallback(() => {
+    if (readOnly || cindyMakeInputLocked || !sessionId || !session?.workingDir) return;
+    makerChatStore.prewarmSession(
+      sessionId,
+      session.model,
+      session.effort,
+      session.permissionMode,
+      session.workingDir,
+    );
+  }, [cindyMakeInputLocked, readOnly, session, sessionId]);
+
   const handleSend = useCallback(
     async (
       message: string,
@@ -5786,6 +5798,7 @@ function CCAgentSessionContent({
                     />
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
+                  onComposerTyping={handleComposerTyping}
                   onBeforeVoiceInputStart={handleBeforeVoiceInputStart}
                   sessionId={sessionId}
                   ownsHardwareComposerActions={ownsHardwareTaskActions}

@@ -7242,6 +7242,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // preload 不重复枚举 (避免 capabilities 加新值时这里也要改)。
     setEffort: (sessionId: string, effort: string): Promise<void> =>
       ipcRenderer.invoke('maker:set-effort', sessionId, effort),
+    // 输入框开始打字时提前启动 Agent；尽力而为,main 决定是否真的启动。
+    prewarmSession: (sessionId: string, createOpts: unknown): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('maker:session:prewarm', sessionId, createOpts),
     setPermissionMode: (sessionId: string, mode: string): Promise<void> =>
       ipcRenderer.invoke('maker:set-permission-mode', sessionId, mode),
     getPluginWriteAccessRecovery: (sessionId: string): Promise<{available: boolean}> =>
