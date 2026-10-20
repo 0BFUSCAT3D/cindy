@@ -2574,6 +2574,7 @@ export class CodexAgent extends BaseAgent {
       historyHome?: string;
       /** 受邀者任务的 app-server：值是分享给它的供应商(见 prepareCodexExtraSpawnConfig)。 */
       deviceHostedGuestProviderId?: string;
+      deviceHostedGuestSessionId?: string;
     } = {},
   ): Promise<AppServerHost> {
     const key = opts.keyOverride ?? (opts.providerId ? `local-account:${opts.providerId}` : hostKey(remoteHostId));
@@ -2802,6 +2803,7 @@ assertRouteCurrent();
         opts.routeIsCurrent,
         opts.deviceHostedGuestProviderId,
         opts.nativeStorageOnly,
+        opts.deviceHostedGuestSessionId,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -3051,6 +3053,7 @@ assertRouteCurrent();
     routeIsCurrent?: () => boolean,
     deviceHostedGuestProviderId?: string,
     nativeStorageOnly?: boolean,
+    deviceHostedGuestSessionId?: string,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3195,7 +3198,7 @@ assertRouteCurrent();
                     customContextHostKey: `${key}:${generation}`,
                   }
                 : {}),
-              ...(deviceHostedGuestProviderId ? { deviceHostedGuestProviderId } : {}),
+              ...(deviceHostedGuestProviderId ? { deviceHostedGuestProviderId, deviceHostedGuestSessionId } : {}),
             },
           );
           hostRetirementCleanup = cfg.onHostRetired;
@@ -5151,7 +5154,7 @@ assertRouteCurrent();
           ? { keyOverride: currentHostKey }
           : {}),
         ...(localAuthPolicy === 'isolated' ? { localAuthPolicy } : {}),
-        ...(guestCodexHome && guestProviderId ? { deviceHostedGuestProviderId: guestProviderId } : {}),
+        ...(guestCodexHome && guestProviderId ? { deviceHostedGuestProviderId: guestProviderId, deviceHostedGuestSessionId: sid } : {}),
         ...(reviewMode
           ? { hostPurpose: 'review' as const }
           : usesCustomContextHost

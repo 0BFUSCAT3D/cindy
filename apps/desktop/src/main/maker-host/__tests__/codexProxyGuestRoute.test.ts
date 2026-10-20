@@ -104,7 +104,7 @@ describe('Codex proxy guard for shared-provider guests', () => {
     let allowed = true;
     registerGuestProviderRoute('guest-session', providerId, candidate => allowed && candidate === model, () => true);
     registerReviewerRouteContext('guest-session', 'guest-thread', model);
-    const guard = createCodexGuestRoutingGuard(providerId, providerId === 'openai' ? 'oauth-bearer' : 'env-key');
+    const guard = createCodexGuestRoutingGuard(providerId, providerId === 'openai' ? 'oauth-bearer' : 'env-key', 'guest-session');
     const body = { model: 'codex-auto-review' };
     const request = () => guard(body, ctx(path, {
       'thread-id': 'guardian-child',

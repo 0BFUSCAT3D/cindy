@@ -2535,11 +2535,18 @@ function codexGuestRouteRefusal(): RoutingDecision {
 export function createCodexGuestRoutingGuard(
   providerId: string,
   frozenAuthInjection?: CodexProxyAuthInjection,
+  guestSessionId?: string,
 ): (body: unknown, ctx: RequestTransformCtx) => RoutingDecision | null | undefined {
   return (body, ctx) => {
     const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
     if (!requestModel) return undefined;
-    const sessionId = sessionIdFromHeaders(ctx.headers);
+    const requestSessionId = sessionIdFromHeaders(ctx.headers);
+    // This proxy belongs to one guest. Headerless calls use that binding, and
+    // headers cannot borrow another guest's grants, even on the same provider.
+    if (guestSessionId && ((requestSessionId && requestSessionId !== guestSessionId)
+      || guestProviderRouteForSession(guestSessionId)?.providerId !== providerId
+      || getSessionProvider(guestSessionId) !== providerId)) return codexGuestRouteRefusal();
+    const sessionId = requestSessionId ?? guestSessionId;
     // Guardian's internal marker is not a catalog model. Authorize its registered
     // parent model, including when native OpenAI keeps the marker on the wire.
     const reviewerModel = requestModel === CODEX_AUTO_REVIEW_MODEL && guardianParentThreadIdFromHeaders(ctx.headers) && sessionId
@@ -2553,12 +2560,12 @@ export function createCodexGuestRoutingGuard(
       if (effectiveModel !== requestModel && !guestProviderModelAllowed(providerId, effectiveModel, sessionId)) return codexGuestRouteRefusal();
       const offered = effectiveModel === CODEX_AUTO_REVIEW_MODEL
         ? isOpenAiSubscriptionProviderId(providerId)
-        : guestProviderOffersModel(providerId, 'codex', effectiveModel, sessionIdFromHeaders(ctx.headers) ?? undefined);
+        : guestProviderOffersModel(providerId, 'codex', effectiveModel, sessionId ?? undefined);
       if (!offered) return codexGuestRouteRefusal();
     }
-    if (sessionId) {
-      return guestProviderRouteForSession(sessionId)?.providerId === providerId
-        && getSessionProvider(sessionId) === providerId
+    if (requestSessionId) {
+      return guestProviderRouteForSession(requestSessionId)?.providerId === providerId
+        && getSessionProvider(requestSessionId) === providerId
         ? undefined
         : codexGuestRouteRefusal();
     }
@@ -3362,6 +3369,7 @@ async function createCodexProxyHandle(
   frozenAuthInjection?: CodexProxyAuthInjection,
   frozenCustomProviderRoutes?: readonly CodexCustomProviderRoute[],
   guestProviderId?: string,
+  guestSessionId?: string,
 ): Promise<ProxyHandle> {
   const execAdapter = createCodexResponsesCompatibilityAdapter();
   let alive = true;
@@ -3373,7 +3381,7 @@ async function createCodexProxyHandle(
   const modelRoute = createModelRoutingTransform(frozenAuthInjection, frozenCustomProviderRoutes, () => alive,
     ctx => { crossProviderRequests.add(ctx.headers); });
   // 供应商分享受邀者的任务：先过受邀者守门，只经分享的那一个供应商出站。
-  const guestGuard = guestProviderId ? createCodexGuestRoutingGuard(guestProviderId, frozenAuthInjection) : undefined;
+  const guestGuard = guestProviderId ? createCodexGuestRoutingGuard(guestProviderId, frozenAuthInjection, guestSessionId) : undefined;
   const route: RoutingTransform = guestGuard
     ? (body, ctx) => {
       const guarded = guestGuard(body, ctx);
@@ -3641,11 +3649,13 @@ export async function ensureCodexCustomContextProxyReady(
   routes: readonly CodexCustomProviderRoute[],
   /** 供应商分享受邀者的任务：proxy 只经这个供应商出站(见 createCodexGuestRoutingGuard)。 */
   guestProviderId?: string,
+  guestSessionId?: string,
 ): Promise<void> {
   const key = scopeKey.trim();
   if (!key) throw new Error('custom-context Codex proxy requires a scope key');
+  if (guestProviderId && !guestSessionId?.trim()) throw new Error('shared-provider Codex proxy requires a guest session');
   const routeSignature = codexCustomProviderRoutesSignature(routes)
-    + (guestProviderId ? `\u0000guest:${guestProviderId}` : '');
+    + (guestProviderId ? `\u0000guest:${guestProviderId}\u0000session:${guestSessionId}` : '');
   const current = _customContextHandles.get(key);
   if (
     current?.authInjection === authInjection
@@ -3663,7 +3673,7 @@ export async function ensureCodexCustomContextProxyReady(
   let promise!: Promise<void>;
   promise = (async () => {
     try {
-      const handle = await createCodexProxyHandle(authInjection, [...routes], guestProviderId);
+      const handle = await createCodexProxyHandle(authInjection, [...routes], guestProviderId, guestSessionId);
       if (
         disposeGeneration !== _disposeGeneration
         || scopeGeneration !== (_customContextGenerations.get(key) ?? 0)

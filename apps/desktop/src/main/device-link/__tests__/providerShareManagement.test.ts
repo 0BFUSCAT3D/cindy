@@ -368,6 +368,25 @@ describe('remote model access management', () => {
     expect(result).toMatchObject({ version: 1, availableModels: [{ id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }] });
     expect(api.setMember).not.toHaveBeenCalled();
   });
+  // Unit regression for review 4326867264: the management command must offer every
+  // enabled media model; the old fixture only covered chat models. Media-only providers
+  // and duplicated ids must yield a usable, deduplicated authorization selection too.
+  it.each([false, true])('offers media models alongside chat models or on their own: mediaOnly=%s', async (mediaOnly) => {
+    listProviders.mockResolvedValue([{
+      id: 'anthropic',
+      models: mediaOnly ? {} : { codex: [{ id: 'chat', name: 'Chat' }], pi: [{ id: 'chat', name: 'Chat' }] },
+      imageModels: [{ id: 'image', name: 'Image' }, { id: 'disabled-image', disabled: true }],
+      videoModels: [{ id: 'video', name: 'Video' }],
+      audioModels: [{ id: 'audio', name: 'Audio' }],
+      embeddingModels: [{ id: 'embedding' }, { id: 'image', name: 'Image' }],
+    }]);
+    const result = await executeProviderShareManagementCommand({ action: 'get-model-access', providerId: 'anthropic', memberId: 'm1' });
+    expect(result).toMatchObject({ availableModels: [
+      ...(mediaOnly ? [] : [{ id: 'chat', name: 'Chat' }]),
+      { id: 'image', name: 'Image' }, { id: 'video', name: 'Video' },
+      { id: 'audio', name: 'Audio' }, { id: 'embedding', name: 'embedding' },
+    ] });
+  });
   it('refuses to modify a person who belongs to a different provider', async () => {
     host.snapshot.mockReturnValue([{ providerId: 'other', members: [{ memberId: 'm1' }] }]);
     await expect(executeProviderShareManagementCommand({ action: 'set-model-access', providerId: 'anthropic', memberId: 'm1', models: [] })).rejects.toThrow('NOT_FOUND');

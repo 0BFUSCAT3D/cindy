@@ -1853,8 +1853,9 @@ export function getMaker(): Maker {
         // 供应商分享受邀者的任务：独占的 proxy 只登记分享的那个供应商的路由并过受邀者守门，
         // 不开智能子代理调配。没有独占 proxy 就不能安全地收窄，直接失败。
         const guestProviderId = ctx.deviceHostedGuestProviderId?.trim() || undefined;
-        if (ctx.deviceHostedGuestProviderId !== undefined && (!guestProviderId || !usesScopedProxy)) {
-          const error = new Error('shared-provider Codex host requires its own scoped proxy');
+        const guestSessionId = ctx.deviceHostedGuestSessionId?.trim() || undefined;
+        if (ctx.deviceHostedGuestProviderId !== undefined && (!guestProviderId || !guestSessionId || !usesScopedProxy)) {
+          const error = new Error('shared-provider Codex host requires its own session-bound scoped proxy');
           (error as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
           throw error;
         }
@@ -1943,6 +1944,7 @@ export function getMaker(): Maker {
             authInjection,
             customContextProviderRoutes,
             guestProviderId,
+            guestSessionId,
           );
           // 受邀者不走「proxy 不可用时直连网关」的退路：那条路不经受邀者守门。
           if (guestProviderId && !isCodexCustomContextProxyHandleReady(scopedProxyKey)) {

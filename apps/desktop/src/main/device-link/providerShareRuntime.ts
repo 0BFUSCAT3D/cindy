@@ -8,6 +8,7 @@ import { readRemoteAgentIdleReleaseState, saveRemoteAgentIdleRelease } from '../
  * Renderer 的命令通道。账号操作只接受本机应用窗口，不能经设备互联从别的电脑调用。
  */
 import { app, BrowserWindow, ipcMain, Notification } from 'electron';
+import { PROVIDER_MEDIA_FIELDS } from '@cindy/model-providers';
 
 import {
   PROVIDER_SHARE_LINK_TTL_MS,
@@ -755,7 +756,7 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
         tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});
       }
       const availableModels = new Map<string, { id: string; name: string }>();
-      for (const entries of Object.values(provider.models)) for (const model of entries ?? []) {
+      for (const entries of [...Object.values(provider.models), ...PROVIDER_MEDIA_FIELDS.map(field => provider[field])]) for (const model of entries ?? []) {
         if (!model.disabled) availableModels.set(model.id, { id: model.id, name: model.name || model.id });
       }
       return { version: 1, ...remoteModelAccess.read(command.providerId, command.memberId),

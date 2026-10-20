@@ -3923,6 +3923,60 @@ describe('codex proxy host', () => {
     expect(secondDispose).toHaveBeenCalledOnce();
   });
 
+  // Unit regression for review 4326867248: a headerless custom request must use
+  // its proxy's guest binding. Existing proxy tests had no simultaneous members;
+  // one restricted member must not deny an unrestricted member or lend its identity.
+  it('binds headerless custom requests to the scoped guest and checks live model grants', async () => {
+    const host = await freshCodexProxyHost();
+    const { buildUserProvider } = await import('@cindy/model-providers');
+    const { setCustomProviders, getActiveCatalog } = await import('../active-catalog.js');
+    const { setCustomProviderKeyReader } = await import('../provider-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
+    const { registerGuestProviderRoute, resetGuestProviderRoutesForTest } = await import('../guest-provider-route-store.js');
+    const providerId = 'guest-scope-provider';
+    setCustomProviders([buildUserProvider({ id: providerId, name: 'Shared', runtimes: { codex: {
+      baseUrl: 'https://guest-scope.example/v1', wireProtocol: 'openai-responses', supportsImageGeneration: true,
+      models: [{ id: 'allowed', name: 'Allowed' }, { id: 'private', name: 'Private' }],
+    } } })]);
+    const routes = deriveCodexCustomProviderRoutes(getActiveCatalog()).filter(route => route.providerId === providerId);
+    const first = registerGuestProviderRoute('member-a-session', providerId, model => model === 'allowed', () => true);
+    let secondAllowed = true;
+    const second = registerGuestProviderRoute('member-b-session', providerId, () => secondAllowed, () => false);
+    host.registerComposed('member-b-session', 'member-b-thread', 'prompt');
+    setCustomProviderKeyReader(() => 'shared-provider-key');
+    mockState.createAnthropicCompatProxy
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:41001', dispose: vi.fn(async () => undefined) })
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:41002', dispose: vi.fn(async () => undefined) });
+    try {
+      await host.ensureCodexCustomContextProxyReady('member-a-proxy', 'env-key', routes, providerId, 'member-a-session');
+      await host.ensureCodexCustomContextProxyReady('member-b-proxy', 'env-key', routes, providerId, 'member-b-session');
+      const request = async (index: number, model: string, headers: Record<string, string> = {}) => {
+        const decision = await mockState.createAnthropicCompatProxy.mock.calls[index]![0].routingTransform({ model }, {
+          reqId: 1, method: 'POST', url: `/_cindy/custom-provider/${routes[0]!.routeId}/responses`, headers,
+        });
+        return decision?.localHandler ? (await runLocalRefusal(decision)).status : decision?.upstreamOverride;
+      };
+      expect(await request(1, 'private')).toBe('https://guest-scope.example/v1');
+      expect(await request(0, 'allowed')).toBe('https://guest-scope.example/v1');
+      expect(await request(0, 'private')).toBe(403);
+      expect(await request(0, 'private', { 'thread-id': 'member-b-thread' })).toBe(403);
+      secondAllowed = false;
+      expect(await request(1, 'private')).toBe(403);
+      expect(await request(0, 'allowed')).toBe('https://guest-scope.example/v1');
+      secondAllowed = true;
+      second.release();
+      expect(await request(1, 'private')).toBe(403);
+    } finally {
+      await host.releaseCodexCustomContextProxy('member-a-proxy');
+      await host.releaseCodexCustomContextProxy('member-b-proxy');
+      first.release(); second.release();
+      host.unregister('member-b-session');
+      resetGuestProviderRoutesForTest();
+      setCustomProviders([]);
+      setCustomProviderKeyReader(() => null);
+    }
+  });
+
   it('keeps Gateway provider search tools out of Guardian review requests', async () => {
     const host = await freshCodexProxyHost();
     const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
