@@ -425,6 +425,7 @@ import { SessionTailBanner } from '@/session/SessionTailBanner';
 import { buildErrorDiagnosisPrompt, type ErrorDiagnosisSource } from '@/session/errorDiagnosisPrompt';
 import { useHistoryRecoveryNavigation } from '@/session/useHistoryRecoveryNavigation';
 import { useSessionActivityInvalidation } from '@/session/useSessionActivityInvalidation';
+import { useSessionMessageHistoryRead } from '@/session/useSessionMessageHistoryRead';
 import { canOfferCodexHistoryRecovery } from '@cindy/maker-shared/error-redaction';
 import {
   CONTINUE_AFTER_APP_EXIT_PROMPT,
@@ -588,7 +589,6 @@ import {
 import {
   resolveSessionMessageEmptyState,
   shouldShowCachedHistoryNotice,
-  type MessageHistoryRead,
 } from '@/session/sessionEmptyState';
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
@@ -1775,8 +1775,6 @@ function SessionScreenContent() {
     error: string | null;
   } | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-  // 记录当前任务/设备/连接的历史读取；新活动作废旧结果时，也不能凭旧缓存确认空态。
-  const [messageHistoryRead, setMessageHistoryRead] = useState<MessageHistoryRead | null>(null);
   // 会话已读回执的同步门槛 key:`${sessionId}:${connectionEpoch}`,由 syncSession 尾部写入。
   // 与 lastSyncedAt 不同,它按 session + 连接代区分——屏实例复用、原地切 session 时
   // lastSyncedAt 不会归零,不能用来判断「当前会话本次连接已同步」。epoch 经 ref 读取,
@@ -1798,6 +1796,9 @@ function SessionScreenContent() {
   // 后台订阅重试不能越过任务/设备/连接代切换，也不能在页面卸载后把已清理的 owner
   // 重新登记回来。render 阶段先发布最新 identity；旧 effect 的 cleanup 只清自己。
   const sessionSubscriptionIdentity = JSON.stringify([deviceId, sessionId, connectionEpoch]);
+  const [messageHistoryRead, setMessageHistoryRead] = useSessionMessageHistoryRead({
+    deviceId, sessionId, notificationResponse, subscriptionIdentity: sessionSubscriptionIdentity,
+  });
   const sessionSubscriptionIdentityRef = useRef<string | null>(sessionSubscriptionIdentity);
   sessionSubscriptionIdentityRef.current = sessionSubscriptionIdentity;
   useEffect(() => () => {
@@ -1827,7 +1828,6 @@ function SessionScreenContent() {
     setReadAckSyncedKey(null);
     setSessionMetadataSyncedKey(null);
     setContentSyncedKey(null);
-    setMessageHistoryRead(null);
     readAckGateGenRef.current += 1;
   }
   // 远程媒体取件队列:屏实例级缓存 + 同 url 去重 + 并发上限(每次取件都让桌面端

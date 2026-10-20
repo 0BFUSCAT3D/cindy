@@ -31,7 +31,7 @@ export function shouldSuppressEmptyMessageState(input: MessageEmptyStateInput): 
   return false;
 }
 
-/** 当前访问的历史结果：切换任务/设备/通知访问时由页面清空，重连保留。 */
+/** 当前访问的历史结果：切换任务/设备时重置，通知或新活动作废旧结果，重连保留。 */
 export type MessageHistoryRead = { key: string; synced: boolean };
 
 export interface SessionMessageEmptyStateInput {

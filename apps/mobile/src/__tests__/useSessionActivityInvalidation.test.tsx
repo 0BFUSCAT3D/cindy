@@ -3,6 +3,7 @@ import { act, createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useSessionActivityInvalidation } from '@/session/useSessionActivityInvalidation';
+import { useSessionMessageHistoryRead } from '@/session/useSessionMessageHistoryRead';
 import { resolveSessionMessageEmptyState, type MessageHistoryRead } from '@/session/sessionEmptyState';
 import zhMessages from '@/i18n/locales/zh-CN/message.json';
 
@@ -16,13 +17,15 @@ afterEach(() => { cleanups.splice(0).forEach(cleanup => cleanup()); });
 const initialIdentity = JSON.stringify(['d1', 's1', 1]);
 const reconnectIdentity = JSON.stringify(['d1', 's1', 2]);
 type ActivityProps = Pick<Parameters<typeof useSessionActivityInvalidation>[0],
-  'liveActivitySig' | 'liveAttention' | 'sessionSubscriptionIdentity' | 'load'>;
+  'liveActivitySig' | 'liveAttention' | 'sessionSubscriptionIdentity' | 'load'>
+  & Pick<Parameters<typeof useSessionMessageHistoryRead>[0], 'deviceId' | 'sessionId' | 'notificationResponse'>;
 
-function mountActivity(ready = true) {
+function mountActivity(ready = true, notificationResponse: string | null = null) {
   const gate = { current: 1 };
   const loadGenerations: number[] = [];
   const load = vi.fn(async () => { loadGenerations.push(gate.current); });
   let props: ActivityProps = {
+    deviceId: 'd1', sessionId: 's1', notificationResponse,
     liveActivitySig: 'completed|1|old result', liveAttention: true,
     sessionSubscriptionIdentity: initialIdentity, load,
   };
@@ -43,7 +46,9 @@ function mountActivity(ready = true) {
     });
   }
   function Harness({ value }: { value: ActivityProps }) {
-    const [historyRead, setHistoryRead] = useState<MessageHistoryRead | null>({ key: initialIdentity, synced: true });
+    const [historyRead, setHistoryRead] = useSessionMessageHistoryRead({
+      ...value, subscriptionIdentity: value.sessionSubscriptionIdentity,
+    });
     const [readAck, setReadAck] = useState<string | null>('read');
     const [metadata, setMetadata] = useState<string | null>('metadata');
     useSessionActivityInvalidation({
@@ -66,6 +71,28 @@ function mountActivity(ready = true) {
 }
 
 describe('useSessionActivityInvalidation', () => {
+  // #6527 notification review, unit/jsdom: activity-only cases never changed the
+  // visit. A new notification plus a ready empty cache must stay unknown before
+  // a successful read, including on the first mount and after reconnect.
+  it.each(['cold-open', 'new-visit'])('invalidates cached empty history for a notification %s', (entry) => {
+    const h = mountActivity(true, entry === 'cold-open' ? 'notification-1' : null);
+    if (entry === 'new-visit') {
+      expect(h.state.emptyState).toEqual({ syncingWhileEmpty: false, emptyMessage: undefined });
+      h.rerender({ notificationResponse: 'notification-1' });
+    }
+    expect(h.state.emptyState).toEqual({ syncingWhileEmpty: true, emptyMessage: undefined });
+    expect(h.offline()).toEqual({ syncingWhileEmpty: false, emptyMessage: '历史消息尚未缓存，连接电脑后同步' });
+    h.rerender({ sessionSubscriptionIdentity: reconnectIdentity });
+    expect(h.state.emptyState).toEqual({ syncingWhileEmpty: true, emptyMessage: undefined });
+    act(() => h.state.setHistoryRead({ key: reconnectIdentity, synced: true }));
+    expect(h.state.emptyState).toEqual({ syncingWhileEmpty: false, emptyMessage: undefined });
+    h.rerender({ notificationResponse: 'notification-2' });
+    expect(h.state.emptyState).toEqual({ syncingWhileEmpty: true, emptyMessage: undefined });
+    h.rerender({ deviceId: 'd2', sessionId: 's2', notificationResponse: null,
+      sessionSubscriptionIdentity: JSON.stringify(['d2', 's2', 1]) });
+    expect(h.offline()).toEqual({ syncingWhileEmpty: false, emptyMessage: undefined });
+  });
+
   it('keeps the existing empty result on mount and unrelated renders', () => {
     const h = mountActivity();
     h.rerender();
