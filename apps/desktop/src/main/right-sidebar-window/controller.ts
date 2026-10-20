@@ -953,7 +953,11 @@ export class RsbWindowController {
     }
     if (this.pinnedSessionId !== sessionId) this.replacePinnedSession(sessionId);
     const cached = this.knownContexts.get(sessionId);
-    if (cached) {
+    // Bot ownership can change while this session is not focused. In particular,
+    // a cached canonical session may have become history, and a null owner may
+    // have been sent before the renderer's Bot profiles finished loading.
+    const needsFreshBotOwner = cached?.botOwner !== undefined && !!this.deps.resolveHostContext;
+    if (cached && !needsFreshBotOwner) {
       this.applyAdoptedContext(cached);
       return;
     }
@@ -963,14 +967,24 @@ export class RsbWindowController {
         if (this.disposed) return;
         if (resolved) this.rememberContext(resolved);
         if (this.pinnedSessionId !== sessionId) return;
-        this.finishAdoptHostSession(sessionId, resolved);
+        this.finishAdoptHostSession(sessionId, resolved, cached);
       });
     }
-    this.finishAdoptHostSession(sessionId, (pending as RsbWindowContext | null | undefined) ?? null);
+    this.finishAdoptHostSession(sessionId, (pending as RsbWindowContext | null | undefined) ?? null, cached);
   }
 
-  private finishAdoptHostSession(sessionId: string, resolved: RsbWindowContext | null): void {
+  private finishAdoptHostSession(
+    sessionId: string,
+    resolved: RsbWindowContext | null,
+    cached?: RsbWindowContext,
+  ): void {
     if (!resolved) {
+      if (cached) {
+        // Draft sessions may not be in the DB yet. Keep their usable host
+        // context, but never publish an unverified cached Bot owner.
+        this.applyAdoptedContext({ ...cached, botOwner: undefined });
+        return;
+      }
       this.scheduleAdoptRetry(sessionId);
       return;
     }

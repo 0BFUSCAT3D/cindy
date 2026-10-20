@@ -1149,6 +1149,40 @@ describe('setContext / routeCommand', () => {
     expect(h.controller.getState().hostSessionId).toBe('s1');
   });
 
+  it('refreshes cached canonical Bot ownership before adopting an old session', async () => {
+    const lookup = vi.fn(() => ({ ...ctx, botOwner: { botId: 'bot-1', canonical: false } }));
+    const h = makeHarness({ detached: true }, { resolveHostContext: lookup });
+    h.controller.setContext({ ...ctx, botOwner: { botId: 'bot-1', canonical: true } });
+    h.controller.setContext({ ...ctx, sessionId: 's2' });
+    const pending = h.controller.routeCommand(terminalRequest());
+    markReady(h.controller, h.windows[0]);
+    await expect(pending).resolves.toBe('routed');
+    expect(lookup).toHaveBeenCalledWith('s1');
+    expect(h.controller.getContext()?.botOwner).toEqual({ botId: 'bot-1', canonical: false });
+  });
+
+  it('refreshes a cached null Bot owner sent before profiles hydrated', async () => {
+    const h = makeHarness({ detached: true }, {
+      resolveHostContext: () => ({ ...ctx, botOwner: { botId: 'bot-1', canonical: true } }),
+    });
+    h.controller.setContext({ ...ctx, botOwner: null });
+    h.controller.setContext({ ...ctx, sessionId: 's2' });
+    const pending = h.controller.routeCommand(terminalRequest());
+    markReady(h.controller, h.windows[0]);
+    await expect(pending).resolves.toBe('routed');
+    expect(h.controller.getContext()?.botOwner).toEqual({ botId: 'bot-1', canonical: true });
+  });
+
+  it('does not trust cached Bot ownership when the authoritative lookup misses', async () => {
+    const h = makeHarness({ detached: true }, { resolveHostContext: () => null });
+    h.controller.setContext({ ...ctx, botOwner: { botId: 'bot-1', canonical: true } });
+    h.controller.setContext({ ...ctx, sessionId: 's2' });
+    const pending = h.controller.routeCommand(terminalRequest());
+    markReady(h.controller, h.windows[0]);
+    await expect(pending).resolves.toBe('routed');
+    expect(h.controller.getContext()?.botOwner).toBeUndefined();
+  });
+
   it('does not forge a local host when resolve misses', async () => {
     const focused = { ...ctx, sessionId: 's2' };
     const h = makeHarness({ detached: true }, { resolveHostContext: () => null });
