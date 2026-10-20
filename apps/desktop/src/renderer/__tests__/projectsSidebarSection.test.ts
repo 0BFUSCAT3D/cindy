@@ -94,11 +94,7 @@ describe('Projects sidebar section', () => {
     expect(headerSource).not.toContain(
       'group-focus-within/sidebar-header:pointer-events-auto',
     );
-    // 折叠按钮始终只在 hover 时出现;筛选(整理侧边栏)按钮仅在查看「已归档」时常驻。
-    expect(headerSource).toContain('<div className={HEADER_HOVER_ACTION_CLASS}>');
-    expect(headerSource).toContain(
-      "filter.status === 'archived' ? undefined : HEADER_HOVER_ACTION_CLASS",
-    );
+    // 各按钮在 hover/归档下的显隐由 MainListScopeHeader.test.tsx 通过组件渲染验证。
   });
 
   it('the project tree renders unconditionally (section collapse removed)', () => {
