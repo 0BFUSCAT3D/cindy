@@ -426,6 +426,12 @@ async function resolveForkNativeSource(
       LIMIT 1`,
     positionParams,
   );
+  const parsedNextSwitch = nextSwitch ? parseAgentSwitchBoundary(nextSwitch.content) : null;
+  // Device ownership belongs to the historical segment, even when a rebuild
+  // invalidated its native session. Explicit null means local; legacy records
+  // without the field retain the current task's device.
+  const agentDeviceId = parsedNextSwitch && Object.hasOwn(parsedNextSwitch, 'fromAgentDeviceId')
+    ? parsedNextSwitch.fromAgentDeviceId ?? null : source.agentDeviceId ?? null;
   if (
     nextSwitch &&
     (!invalidated ||
@@ -434,7 +440,7 @@ async function resolveForkNativeSource(
         { createdAt: invalidated.created_at, rowid: invalidated.rowid },
       ))
   ) {
-    const parsed = parseAgentSwitchBoundary(nextSwitch.content);
+    const parsed = parsedNextSwitch;
     if (!parsed?.fromSdkSessionId) {
       throw forkError('UNSUPPORTED_HISTORY', '目标消息对应的历史引擎会话不可用');
     }
@@ -471,8 +477,7 @@ async function resolveForkNativeSource(
     }
     return {
       agentKind: parsed.fromAgentKind,
-      agentDeviceId: Object.hasOwn(parsed, 'fromAgentDeviceId')
-        ? parsed.fromAgentDeviceId ?? null : source.agentDeviceId ?? null,
+      agentDeviceId,
       sdkSessionId: parsed.fromSdkSessionId,
       model,
       providerId,
@@ -484,7 +489,7 @@ async function resolveForkNativeSource(
     if (rebuildBoundary?.sourceAgentKind) {
       return {
         agentKind: rebuildBoundary.sourceAgentKind,
-        agentDeviceId: source.agentDeviceId ?? null,
+        agentDeviceId,
         sdkSessionId: null,
         model: rebuildBoundary.sourceModel ?? source.model,
         providerId: Object.hasOwn(rebuildBoundary, 'sourceProviderId')
@@ -503,7 +508,7 @@ async function resolveForkNativeSource(
     }
     return {
       agentKind: normalizeDbAgentKind(source.agentKind),
-      agentDeviceId: source.agentDeviceId ?? null,
+      agentDeviceId,
       sdkSessionId: null,
       model: source.model,
       providerId: source.providerId,
@@ -517,7 +522,7 @@ async function resolveForkNativeSource(
   }
   return {
     agentKind: normalizeDbAgentKind(source.agentKind),
-    agentDeviceId: source.agentDeviceId ?? null,
+    agentDeviceId,
     sdkSessionId: source.sdkSessionId,
     model: source.model,
     providerId: source.providerId,

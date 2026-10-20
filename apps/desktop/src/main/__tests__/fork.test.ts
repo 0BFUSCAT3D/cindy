@@ -1339,7 +1339,14 @@ describe('forkSessionAtMessage', () => {
     expect(createMessageMock).toHaveBeenCalled();
   });
 
-  it('uses the rebuild boundary engine when history crosses a later engine switch', async () => {
+  // Review #6563: native-session routing tests did not cover rebuild-before-switch.
+  // Public fork entry must persist the historical device even without a reusable SDK session (unit).
+  it.each([
+    ['device-b', 'device-c', 'device-b'],
+    [null, 'device-c', null],
+    ['device-b', null, 'device-b'],
+    [undefined, 'device-c', 'device-c'],
+  ])('uses the rebuild boundary engine and historical device %s after moving to %s', async (historicalDevice, currentDevice, expectedDevice) => {
     const target = makeMessageRow({
       id: 'historical-claude-assistant',
       clientId: 'historical-claude-assistant-client',
@@ -1359,6 +1366,7 @@ describe('forkSessionAtMessage', () => {
     selectQueue.push([
       makeSourceRow({
         agentKind: 'codex',
+        agentDeviceId: currentDevice,
         model: 'gpt-5.6',
         sdkSessionId: 'current-codex-thread',
       }),
@@ -1391,6 +1399,7 @@ describe('forkSessionAtMessage', () => {
       .mockResolvedValueOnce({
         content: JSON.stringify({
           fromAgentKind: 'cc',
+          ...(historicalDevice !== undefined ? { fromAgentDeviceId: historicalDevice } : {}),
           toAgentKind: 'codex',
           fromModel: 'claude-sonnet-4-6',
           fromSdkSessionId: null,
@@ -1406,6 +1415,9 @@ describe('forkSessionAtMessage', () => {
     };
     expect(txArgs.newSession.agentKind).toBe('cc');
     expect(txArgs.newSession.model).toBe('claude-sonnet-4-6');
+    expect(txArgs.newSession.agentDeviceId).toBe(expectedDevice);
+    expect(txArgs.newSession.sdkSessionId).toBeNull();
+    expect(remoteInvokeMock).not.toHaveBeenCalled();
     expect(forkSdkSessionMock).not.toHaveBeenCalled();
   });
   it('rejects a historical engine boundary without a parked native session id', async () => {
