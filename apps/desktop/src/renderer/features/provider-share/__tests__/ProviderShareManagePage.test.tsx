@@ -8,7 +8,9 @@ import { toast } from '@/lib/toast';
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState, ProviderUsageHistoryView } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
+import { ProviderShareVisibilitySection } from '../ProviderShareVisibilitySection';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
+import { RemoteAgentIdleReleaseSection } from '../RemoteAgentIdleReleaseSection';
 import {
   getProviderSharePendingRequests,
   getProviderSharePendingReshares,
@@ -196,6 +198,7 @@ beforeEach(() => {
   vi.mocked(toast.success).mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
+    if (cmd.action === 'get-visibility') return { quota: false, usage: false };
     if (cmd.action === 'owned') return owned();
     if (cmd.action === 'own-usage') return ownUsage();
     if (cmd.action === 'usage-history') return usageHistory();
@@ -204,6 +207,7 @@ beforeEach(() => {
       value: { perDevice: 16, total: 64 }, defaults: { perDevice: 16, total: 64 },
       isCustomized: false, customizedKeys: [], usage: { total: 0, devices: 0, largestDevice: 0 },
     };
+    if (cmd.action === 'get-idle-release') return { value: { idleMinutes: 0 }, defaults: { idleMinutes: 0 }, isCustomized: false };
     if (cmd.action === 'received-snapshot') return { ownerStamp: { dataOwnerId: null, ownerGeneration: 0 }, received: [], confirmedRegions: [] };
     if (cmd.action === 'set-member' || cmd.action === 'approve' || cmd.action === 'reject') return { ok: true };
     throw new Error(`unexpected ${cmd.action}`);
@@ -224,7 +228,7 @@ beforeEach(() => {
             if (action === 'owned') return owned();
             if (action === 'own-usage') return ownUsage();
             if (action === 'usage-history') return usageHistory();
-            if (action === 'get-run-limits') return command(cmd.request?.command);
+            if (action === 'get-run-limits' || action === 'get-visibility') return command(cmd.request?.command);
             if (action === 'approve' || action === 'reject') return { ok: true };
           }
           return { providerId: cmd.providerId, config: null, members: [] };
@@ -361,6 +365,19 @@ describe('ProviderShareManagePage', () => {
     expect(command).toHaveBeenCalledWith({ action: 'owned', range: 'all' });
     expect(getProviderSharePendingRequests().map((item) => item.request.requestId)).toEqual(['req-1']);
     expect(screen.getByText(/providerShare\.manage\.members\.statusRunning/)).toBeTruthy();
+  });
+
+  // 闲置释放只对这台电脑生效：管理另一台电脑时不显示，免得以为改的是那台。
+  it('shows the idle release setting only when managing this computer', async () => {
+    renderPage();
+    expect(await screen.findByTestId('remote-agent-idle-release')).toBeTruthy();
+    expect(command).toHaveBeenCalledWith({ action: 'get-idle-release' });
+    cleanup();
+    command.mockClear();
+    renderPage('on', { deviceId: 'studio' });
+    await screen.findByTestId('remote-agent-limits');
+    expect(screen.queryByTestId('remote-agent-idle-release')).toBeNull();
+    expect(command).not.toHaveBeenCalledWith({ action: 'get-idle-release' });
   });
 
   /*
@@ -850,5 +867,83 @@ describe('ProviderShareManagePage', () => {
       expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
     );
     expect(screen.getByTestId('provider-share-claude-email-callout')).toBeTruthy();
+  });
+});
+
+/* 可见性保存要到供应商所在电脑；旧读不能覆盖刚写成功的开关。tier: unit。 */
+describe('share visibility switches', () => {
+  it('saves through remote management without changing the control computer', async () => {
+    const remote = vi.spyOn(window.electronAPI.providerGroup, 'command').mockImplementation(async (raw) => {
+      if (raw.action !== 'remote-manage' || raw.request.action !== 'manage-share') throw new Error('unexpected route');
+      return raw.request.command.action === 'set-visibility' ? { quota: true, usage: false } : { quota: false, usage: false };
+    });
+    await act(async () => { render(<ProviderShareVisibilitySection providerId="xd" deviceId="studio" />); });
+    await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' })); });
+    expect(remote).toHaveBeenCalledWith({ action: 'remote-manage', deviceId: 'studio', request: { action: 'manage-share', command: { action: 'set-visibility', providerId: 'xd', visibility: { quota: true } } } });
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'set-visibility' }));
+    expect(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' }).getAttribute('aria-checked')).toBe('true');
+  });
+  it('keeps the saved value when an older poll completes afterwards', async () => {
+    vi.useFakeTimers();
+    try {
+      command.mockResolvedValue({ quota: false, usage: false });
+      await act(async () => { render(<ProviderShareVisibilitySection providerId="xd" />); });
+      let finish!: (value: { quota: boolean; usage: boolean }) => void;
+      command.mockImplementation(async (cmd) => cmd.action === 'get-visibility'
+        ? new Promise((resolve) => { finish = resolve; }) : { quota: true, usage: false });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' })); });
+      await act(async () => { finish({ quota: false, usage: false }); });
+      expect(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' }).getAttribute('aria-checked')).toBe('true');
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+/*
+ * 测试价值
+ * - 生产入口与可观察结果：RemoteAgentIdleReleaseSection 读、存、恢复默认这台电脑的闲置释放分钟数，非法值不能保存。
+ * - Bug／规则依据：protocol-compatibility.md「控制端连接池」，设置 0～120、默认 0 = 从不让出。
+ * - 现有覆盖缺口：页面用例只断言显示与否；主进程校验见 providerShareManagement.test.ts，界面这一侧的输入拦截与命令没有覆盖。
+ * - 最小失败输入：输入 121 / -1 / 1.5 / 空；保存 0 与默认值相同时也要按用户改过记下。
+ * - tier：unit(jsdom)，并入同一功能的页面测试文件，共用宿主 mock。
+ */
+const idleView = (idleMinutes = 0, isCustomized = false) => ({ value: { idleMinutes }, defaults: { idleMinutes: 0 }, isCustomized });
+const idleInput = () => screen.getByTestId('remote-agent-idle-release-minutes') as HTMLInputElement;
+const idleButton = (key: 'save' | 'reset') => screen.getByRole('button', { name: `providerShare.idleRelease.${key}` }) as HTMLButtonElement;
+
+describe('RemoteAgentIdleReleaseSection', () => {
+  beforeEach(() => {
+    command.mockImplementation(async (cmd: { action: string; value?: { idleMinutes: number } }) => (
+      cmd.action === 'set-idle-release' ? idleView(cmd.value!.idleMinutes, true) : idleView()
+    ));
+  });
+
+  it('reads and saves the setting on this computer, including 0 and an explicit default', async () => {
+    render(<RemoteAgentIdleReleaseSection />);
+    await waitFor(() => expect(idleInput().value).toBe('0'));
+    expect(command).toHaveBeenCalledWith({ action: 'get-idle-release' });
+    expect(screen.getByText('providerShare.idleRelease.hint')).toBeTruthy();
+    expect(idleButton('save').disabled).toBe(true);
+    fireEvent.change(idleInput(), { target: { value: '10' } });
+    fireEvent.click(idleButton('save'));
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith({ action: 'set-idle-release', value: { idleMinutes: 10 } }));
+    await waitFor(() => expect(idleButton('reset').disabled).toBe(false));
+    fireEvent.change(idleInput(), { target: { value: '0' } });
+    fireEvent.click(idleButton('save'));
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith({ action: 'set-idle-release', value: { idleMinutes: 0 } }));
+  });
+
+  it('rejects values outside 0–120 and restores the default', async () => {
+    command.mockImplementation(async (cmd: { action: string }) => (cmd.action === 'reset-idle-release' ? idleView() : idleView(30, true)));
+    render(<RemoteAgentIdleReleaseSection />);
+    await waitFor(() => expect(idleInput().value).toBe('30'));
+    for (const value of ['121', '-1', '1.5', '']) {
+      fireEvent.change(idleInput(), { target: { value } });
+      expect(idleButton('save').disabled).toBe(true);
+    }
+    expect(screen.getByRole('alert').textContent).toContain('providerShare.idleRelease.invalid');
+    fireEvent.click(idleButton('reset'));
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith({ action: 'reset-idle-release' }));
+    await waitFor(() => expect(idleInput().value).toBe('0'));
   });
 });
