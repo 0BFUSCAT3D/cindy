@@ -104,6 +104,9 @@ describe('detectCwd → isInsideWorktree (I-1 fix)', () => {
       expect(failure).toMatchObject({ timedOut: true });
       await probe;
       expect(gitExecMock.mock.calls[0][2].timeoutMs).toBe(10_000 - realpathMs);
+      for (const [, , opts] of gitExecMock.mock.calls) {
+        expect(opts.deadlineAtMs).toBe(10_000);
+      }
       if (realpathMs === 4_000) expect(gitExecMock).toHaveBeenCalledTimes(3);
       expect(vi.getTimerCount()).toBe(0);
     } finally {

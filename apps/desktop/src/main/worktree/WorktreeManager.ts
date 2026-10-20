@@ -421,7 +421,7 @@ async function detectCwdOnce(cwd: string): Promise<DetectCwdResp> {
         args, exitCode: null, stdout: '', stderr: 'directory probe deadline exceeded', timedOut: true,
       });
     }
-    return gitExec(args, dir, { timeoutMs });
+    return gitExec(args, dir, { timeoutMs, deadlineAtMs: deadline });
   };
   // Git resolves relative metadata paths from the physical process cwd. A
   // symlink spelling can otherwise make an ordinary repo look like a linked
