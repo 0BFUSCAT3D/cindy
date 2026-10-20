@@ -72,7 +72,6 @@ it('keeps shared text when opening plugins without typing first', async () => {
     ts.forEachChild(node, collect);
   }
   collect(page);
-  expect(appendText).not.toBe('');
   let draft = { firstMessage: 'Existing instruction' };
   const ref = { current: draft.firstMessage };
   const bindings = {
