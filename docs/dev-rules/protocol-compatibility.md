@@ -691,6 +691,29 @@ SSH 远程不经 file-service，直接在 SSH exec 通道上流式传回远端 `
 relay 类型、allowlist 或持久化 schema，服务端无需改动；Mobile 未接入。实现见
 `apps/desktop/src/main/file-browser/chat-download.ts`、`dir-export.ts` 与 `dir-archive.ts`。
 
+## 远程聊天发送本机文件夹
+
+桌面拖入／粘贴本机文件夹时，控制端通过本地 `maker:chat-folder:upload` 自动打包，
+作为普通文件附件放入现有草稿暂存区；发送时复用附件传输（直连优先、OSS 回退），
+大小限制和重试行为与普通文件一致。preload 桥只接受原生 `File`，
+由隔离世界的 Electron `webUtils.getPathForFile` 取路径；拒绝内存构造的 File，
+不接受 Renderer 自选的源路径。`file-browser:remote-op` 的 `caps` 新增可选
+`folderAttachment`；缺少能力时明确提示更新，不把控制端路径当作远程目录发送。
+归档携带 `application/x-cindy-folder-tar` MIME；接收端通过普通附件物化入口下载到对应
+任务，再安全解包到归档旁的 `.contents` 目录，Agent 和消息历史引用解包后的路径。
+聊天附件的符号链接必须为相对路径且最终指向解包树内已有条目；绝对路径、越界、
+悬空或循环链接导致解包失败并回滚。目录内有效链接链保留，普通目录下载策略不变。
+归档与目录共用附件的发送失败回滚、排队移除和任务删除清理，不新增文件夹归属记录、
+导入任务或回收定时器。发送前对端只有普通附件传输暂存，复用直传／OSS 原有过期回收。
+本机草稿归档复用 `chat-attachment-cache` 的账号隔离与显式丢弃清理；不会因短 TTL
+删除仍在使用的草稿。新建任务草稿无需工作目录。打包／解包不完整时整次失败。
+发送等待打包完成，失败保留草稿；切换任务／取消后清理迟到暂存结果。
+等待发送期间从聊天区外层拖入的后续文件夹也必须完成，任意一项失败均保留原草稿。
+当前任务文件栏的目录拖拽携带来源标记，继续直接引用。SSH 入口目前明确提示不支持，
+不传本机路径；手机没有本机目录拖拽入口。本次不改 relay、服务端或持久化 schema。
+实现与回归见 `file-browser/chat-folder-transfer.ts`、`chatFolderTransfer.test.ts` 和
+`chatInputAnnotationAbort.test.tsx`。
+
 ## 任务列表标签目录
 
 `sessions:list` 第三个参数可追加 `tagCatalog: 1`。支持的主机仅对该请求返回
@@ -1544,10 +1567,10 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   回归见 `shared/__tests__/providerGroup.test.ts`、`provider-group/__tests__/` 下 `ipc`、`directory`、`removedShares`、
   `sharedStatus`、`remoteHandler` 测试与界面、手机同名测试。
 
-## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+## 供应商组：订阅配额筛选与用量均衡（2026-10-12，OpenAI 于 2026-10-20 接入）
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
-再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+再按所选策略分配；Claude Code 与 OpenAI 订阅均可参与配额排序，旧策略 `usage` 沿用 `least`。
 
 - **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
   旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
@@ -1557,6 +1580,12 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
   订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
   避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+  OpenAI 并行复用 `maker:usage:account` 的 `['codex', member.providerId]` 和 `maker:usage:codex-rate-limits`
+  的 `[member.providerId]`；两个回包分别校验 `providerId`，无回显的旧端仅允许默认 `openai`。原生限额 RPC 的
+  窗口按本次读取时刻记录新鲜度，账号用量回包保留各模型桶与 web 槽自己的时间戳；单路失败仍使用另一路的可信数据。
+  不调用兑换重置卡接口，不把重置卡、账号标识或凭证放进内部目录的配额快照。本机和远端读取合并在途，短缓存 15 秒。
+- **可选框架信息**：同账号 `view` 请求增加可选 `agentKind: 'codex' | 'pi' | 'claude-code'`，供 OpenAI 发送前检查
+  选择原生模型桶或 web 槽；缺省仍按原生模型桶处理，旧组所在电脑忽略该字段。原有仅带模型的查询和回包形状不变。
 - **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
   分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
   的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
