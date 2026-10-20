@@ -377,6 +377,7 @@ import {
 import {
   getDraft,
   patchVendorPrefs,
+  patchVendorPrefsFromTaskModelSwitch,
   patchVendorPrefsPreservingModelChoice,
   setEffortForModel,
   setFastModeForModel,
@@ -6442,17 +6443,39 @@ export function ChatInput({
       const remoteDeviceId =
         opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId;
       const markModelChoice = opts.markModelChoice === true;
+      // 同引擎且写回的来源就是任务换模前的来源 = 只换了模型，来源是沿用任务的而非这次选的。
+      // 各条换模链路(普通换模 / 意图期改选 / 同引擎重选转来源链路)都在这里统一识别。
+      const taskProviderId = activeProviderId ?? memoryProviderId ?? null;
+      const modelOnly =
+        markModelChoice &&
+        agentKind === currentModelAgentKind &&
+        !!effectiveSourceId &&
+        taskProviderId === effectiveSourceId;
       if (!remoteDeviceId) {
         const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
-        const persistPrefs = markModelChoice
-          ? patchVendorPrefs
-          : patchVendorPrefsPreservingModelChoice;
-        persistPrefs(vendor, {
-          // 换模才带配对并打标记。本机只改思考档 / Fast 不写回活动模型,
-          // 避免未打标用户把区域默认改成当前任务模型。
-          ...(markModelChoice ? { model: modelId, providerId: activeProviderId ?? null } : {}),
-          ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
-        });
+        if (modelOnly) {
+          patchVendorPrefsFromTaskModelSwitch(
+            vendor,
+            {
+              model: modelId,
+              providerId: activeProviderId ?? null,
+              ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+            },
+            taskProviderId,
+            (prefs) =>
+              effectiveSourceIdForModel(localProviders.providers, null, prefs.model, agentKind),
+          );
+        } else {
+          const persistPrefs = markModelChoice
+            ? patchVendorPrefs
+            : patchVendorPrefsPreservingModelChoice;
+          persistPrefs(vendor, {
+            // 换模才带配对并打标记。本机只改思考档 / Fast 不写回活动模型,
+            // 避免未打标用户把区域默认改成当前任务模型。
+            ...(markModelChoice ? { model: modelId, providerId: activeProviderId ?? null } : {}),
+            ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+          });
+        }
         if (memoryProviderId) {
           if (patch.effort !== undefined) {
             setProviderModelChoice(agentKind, memoryProviderId, modelId, patch.effort);
@@ -6473,6 +6496,8 @@ export function ChatInput({
             modelId,
             active: true,
             markModelChoice,
+            // 被控端按自己的新建默认判断是否写回;旧被控端忽略该字段,行为不变。
+            ...(modelOnly && taskProviderId ? { taskProviderId } : {}),
             ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
             ...(patch.fast !== undefined ? { fast: patch.fast } : {}),
           },
@@ -6481,7 +6506,7 @@ export function ChatInput({
           log.warn('session draft model preference sync failed:', err);
         });
     },
-    [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, sshCodexHostId],
+    [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, sshCodexHostId, localProviders.providers],
   );
 
   const persistFastModeChange = useCallback(

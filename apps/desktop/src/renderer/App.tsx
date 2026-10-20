@@ -60,8 +60,11 @@ import {
   setFastModeForModel,
   setWorktreePreference,
   patchVendorPrefs,
+  patchVendorPrefsFromTaskModelSwitch,
   patchVendorPrefsPreservingModelChoice,
 } from '@/state/newMakerDraft';
+import { getCachedProvidersSnapshot } from '@/lib/providersSnapshotStore';
+import { effectiveSourceIdForModel } from '@cindy/model-providers';
 import {
   snapshotForSeed,
   setProviderModelChoice,
@@ -292,6 +295,7 @@ export function App() {
         fast,
         thinking,
         markModelChoice,
+        taskProviderId,
         appDefaultSelection,
       }) => {
         if (appDefaultSelection) {
@@ -309,7 +313,25 @@ export function App() {
           return;
         }
         const vendor = agentKindToVendor(agent);
-        if (active) {
+        if (active && taskProviderId && markModelChoice !== false) {
+          // 控制端在本机任务里只换了模型:按本机自己的新建默认判断是否写回(同本机换模)。
+          patchVendorPrefsFromTaskModelSwitch(
+            vendor,
+            {
+              model: modelId,
+              providerId: providerId || null,
+              ...(effort !== undefined ? { effort: effort as Effort } : {}),
+            },
+            taskProviderId,
+            (prefs) =>
+              effectiveSourceIdForModel(
+                getCachedProvidersSnapshot()?.providers ?? [],
+                null,
+                prefs.model,
+                agent,
+              ),
+          );
+        } else if (active) {
           const patch =
             markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;
           const shouldPatchActiveModel = markModelChoice !== false || effort !== undefined;

@@ -811,6 +811,74 @@ describe('newMakerDraft store', () => {
     expect(m2.getPersistedVendorModel('cc')).toBe('claude-opus-4-8');
   });
 
+  it('patchVendorPrefsFromTaskModelSwitch:新建默认在另一个来源上时,任务内只换模型不改写', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic', effort: 'high' });
+
+    const written = m1.patchVendorPrefsFromTaskModelSwitch(
+      'cc',
+      { model: 'anthropic/claude-sonnet-5-5', providerId: 'xd', effort: 'medium' },
+      'xd',
+    );
+
+    expect(written).toBe(false);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+      effort: 'high',
+    });
+  });
+
+  it('patchVendorPrefsFromTaskModelSwitch:来源一致时照常写回并打标', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });
+
+    const written = m1.patchVendorPrefsFromTaskModelSwitch(
+      'cc',
+      { model: 'claude-sonnet-5-5', providerId: 'anthropic', effort: 'xhigh' },
+      'anthropic',
+    );
+
+    expect(written).toBe(true);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'claude-sonnet-5-5',
+      providerId: 'anthropic',
+      effort: 'xhigh',
+    });
+    expect(m1.getDraft().modelChosenByVendor).toEqual({ cc: true });
+  });
+
+  it('patchVendorPrefsFromTaskModelSwitch:跟随默认路由的新建默认按解析出的来源比较', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: null });
+    const resolve = (prefs: { model: string }) =>
+      prefs.model === 'claude-opus-5-5' ? 'anthropic' : null;
+
+    expect(
+      m1.patchVendorPrefsFromTaskModelSwitch(
+        'cc',
+        { model: 'anthropic/claude-opus-5-5', providerId: 'xd' },
+        'xd',
+        resolve,
+      ),
+    ).toBe(false);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({ model: 'claude-opus-5-5', providerId: null });
+
+    // 新建默认的来源解析不出来(目录未到)时不拦,保持原有「下次新建跟随」语义。
+    expect(
+      m1.patchVendorPrefsFromTaskModelSwitch(
+        'cc',
+        { model: 'anthropic/claude-opus-5-5', providerId: 'xd' },
+        'xd',
+        () => null,
+      ),
+    ).toBe(true);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'anthropic/claude-opus-5-5',
+      providerId: 'xd',
+    });
+  });
+
   it('patchVendorPrefsPreservingModelChoice:只改思考档不打显式选择标记', async () => {
     const m1 = await loadModule();
     m1.patchVendorPrefsPreservingModelChoice('cc', {

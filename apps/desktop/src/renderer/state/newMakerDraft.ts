@@ -1174,6 +1174,32 @@ export function patchVendorPrefsPreservingModelChoice(
   patchVendorPrefsInternal(vendor, patch, { markModelChoice: false });
 }
 
+/**
+ * 已有任务里只换模型(来源沿用任务自己的)时写回新建默认。
+ *
+ * 任务的来源不是这次选择的一部分：新建默认落在另一个来源上时整次不写，否则以后的新建
+ * 任务会被悄悄搬到这个任务的来源(例：在 Cindy AI 任务里换个模型，新建默认就从 Anthropic
+ * 变成 Cindy AI)。来源一致或新建默认的来源无法确定时照常写回并打标。换来源、跨引擎等
+ * 显式选择仍走 patchVendorPrefs。
+ *
+ * `taskProviderId` 是任务实际生效的来源(null = 未知，照常写回)，只用于比较；`resolveDraftProviderId` 给跟随默认
+ * 路由(providerId=null)的新建默认解析生效来源。返回是否写入。
+ */
+export function patchVendorPrefsFromTaskModelSwitch(
+  vendor: MakerVendor,
+  patch: Pick<VendorPrefs, 'model' | 'providerId'> & { effort?: Effort },
+  taskProviderId: string | null,
+  resolveDraftProviderId?: (prefs: VendorPrefs) => string | null,
+): boolean {
+  if (taskProviderId) {
+    const saved = currentDraft.lastByVendor[vendor];
+    const draftProviderId = saved.providerId ?? resolveDraftProviderId?.(saved) ?? null;
+    if (draftProviderId && draftProviderId !== taskProviderId) return false;
+  }
+  patchVendorPrefs(vendor, patch);
+  return true;
+}
+
 /** 单字段写入当前 vendor 的某个 pref(用户在 ChatInput 改 model 等时同步落地)。 */
 export function patchCurrentVendorPrefs(patch: Partial<VendorPrefs>): void {
   patchVendorPrefs(currentDraft.vendor, patch);
