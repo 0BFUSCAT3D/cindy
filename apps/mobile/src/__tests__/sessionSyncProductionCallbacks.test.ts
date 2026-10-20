@@ -23,12 +23,21 @@ import { HistoryViewController, isHistoryViewUnavailable, projectHistoryView } f
 const source = ts.createSourceFile('screen.tsx', readFileSync(
   resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8',
 ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const compiledCallbacks = new Map<string, string>();
 function pageCallback(name: string, bindings: Record<string, unknown>): (...args: any[]) => Promise<void> {
+  const cached = compiledCallbacks.get(name);
+  if (cached) return new Function(...Object.keys(bindings), `${cached}\nreturn callback;`)(...Object.values(bindings));
   let expression: ts.Expression | undefined;
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && node.name.getText(source) === name
-      && node.initializer && ts.isCallExpression(node.initializer)) {
+      && node.initializer && ts.isCallExpression(node.initializer)
+      && node.initializer.expression.getText(source) === 'useCallback') {
       expression = node.initializer.arguments[0];
+    }
+    if (!expression && ts.isCallExpression(node) && node.expression.getText(source) === 'useEffect'
+      && node.arguments[1] && ts.isArrayLiteralExpression(node.arguments[1])
+      && node.arguments[1].elements.some((dependency) => dependency.getText(source) === name)) {
+      expression = node.arguments[0];
     }
     ts.forEachChild(node, visit);
   };
@@ -37,6 +46,7 @@ function pageCallback(name: string, bindings: Record<string, unknown>): (...args
   const compiled = ts.transpileModule(`const callback = ${expression.getText(source)};`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText;
+  compiledCallbacks.set(name, compiled);
   return new Function(...Object.keys(bindings), `${compiled}\nreturn callback;`)(...Object.values(bindings));
 }
 function deferred<T>() {
@@ -74,7 +84,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     operation: null as { message: string } | null,
     hold: { deviceId: 'd1', error: null } as { deviceId: string; error: string | null } | null,
     synced: null as number | null, readAck: null as string | null,
-    historySyncedKey: null as string | null,
+    historyRead: null as { key: string; synced: boolean } | null,
   };
   const operationErrorRef = { current: state.operation };
   const setError = vi.fn((message: string | null) => {
@@ -116,6 +126,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     remoteSessionStore: store, maker, isHistoryViewUnavailable, shouldBlockSessionSync: () => false,
     readAckEpochRef: { current: 1 }, readAckGateGenRef: { current: 1 },
     sessionSubscriptionIdentityRef: { current: JSON.stringify(['d1', 's1', 1]) },
+    sessionSubscriptionIdentity: JSON.stringify(['d1', 's1', 1]),
     createRemoteSyncReopenCoordinator: () => ({ captureVersion: () => 0 }),
     reopenLink: async () => undefined, openLink: async () => undefined,
     subscribe: async () => undefined,
@@ -142,7 +153,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     setOutboxTransportHold: (update: (value: typeof state.hold) => typeof state.hold) => { state.hold = update(state.hold); },
     latchOutboxTransportHold: (error: string) => { state.hold = { deviceId: 'd1', error }; },
     setLastSyncedAt: (value: number) => { state.synced = value; },
-    setMessageHistorySyncedKey: (value: string) => { state.historySyncedKey = value; },
+    setMessageHistoryRead: (value: typeof state.historyRead) => { state.historyRead = value; },
     setContentSyncedKey: vi.fn(), contentRecoveryKeyRef: { current: null },
     setSessionMetadataSyncedKey: vi.fn(),
     setReadAckSyncedKey: (value: string) => { state.readAck = value; },
@@ -168,10 +179,11 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
 function emptyPresentation(f: ReturnType<typeof fixture>, overrides: Record<string, unknown> = {}) {
   const bindings: Record<string, unknown> = {
     deviceId: 'd1', sessionId: 's1', connectionEpoch: 1,
-    messageHistorySyncedKey: f.state.historySyncedKey, lastSyncedAt: f.state.synced,
+    messageHistoryRead: f.state.historyRead, lastSyncedAt: f.state.synced,
     historyView: { snapshot: { ready: false } }, messages: f.state.rows,
     loading: f.state.loading, showSyncingShell: false, remoteUnavailableReason: null,
     status: 'online', targetAvailableForDispatch: true, companionChat: false,
+    getPresenceAvailability: () => overrides.targetAvailableForDispatch ?? true,
     shouldSuppressEmptyMessageState,
     t: (key: string) => key === 'message.renderer.historyNotCached' ? zhMessages.renderer.historyNotCached : key,
     ...overrides,
@@ -190,7 +202,7 @@ function emptyPresentation(f: ReturnType<typeof fixture>, overrides: Record<stri
   };
   visit(source);
   if (!emptyMessage) throw new Error('Missing production empty-message prop');
-  const code = ['sessionSubscriptionIdentity', 'hasSyncedMessageHistory', 'messageHistoryUnavailable', 'syncingWhileEmpty']
+  const code = ['sessionSubscriptionIdentity', 'showCachedHistoryNotice', 'hasSyncedMessageHistory', 'messageHistoryUnavailable', 'syncingWhileEmpty']
     .filter((name) => declarations.has(name))
     .map((name) => `const ${name} = ${declarations.get(name)!.getText(source)};`).join('\n');
   const compiled = ts.transpileModule(`${code}\nconst result = { syncing: syncingWhileEmpty, copy: ${emptyMessage.getText(source)} };`, {
@@ -205,6 +217,50 @@ describe('production session recovery callbacks', () => {
     expect(emptyPresentation(f, { status: 'offline', companionChat })).toEqual({
       syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
     });
+  });
+
+  // #6527 review, unit: cached emptiness, connecting, and post-activity emptiness
+  // were absent from #6519 coverage. Execute the screen's expressions/effect;
+  // each minimal input previously displayed either false missing-cache copy or
+  // a false empty result. Reuse the controller to restore a genuine empty cache.
+  it('honors an empty restored history cache on an offline cold reopen', async () => {
+    const f = fixture(false, false);
+    const view = new HistoryViewController({
+      page: async () => ({ version: 1 as const, items: [], hasMore: false, nextCursor: null }),
+      details: async () => ({ version: 1 as const, messages: [], hasMore: false, nextCursor: null }),
+      expanded: async () => undefined,
+    });
+    view.setNetworkAvailable(false);
+    await view.restoreCachedView(async () => ({ ...view.getSnapshot(), ready: true }));
+    expect(emptyPresentation(f, { status: 'offline', historyView: { snapshot: view.getSnapshot() } }))
+      .toEqual({ syncing: false, copy: undefined });
+  });
+
+  it.each([
+    { status: 'connecting', presence: null, syncing: true, copy: undefined },
+    { status: 'online', presence: false, syncing: false, copy: '历史消息尚未缓存，连接电脑后同步' },
+  ])('distinguishes $status with presence=$presence from confirmed unavailability', ({ status, presence, syncing, copy }) => {
+    const f = fixture(false, false);
+    expect(emptyPresentation(f, { status, targetAvailableForDispatch: presence,
+      getPresenceAvailability: () => presence })).toEqual({ syncing, copy });
+  });
+
+  it.each([false, true])('invalidates a confirmed empty result on new activity (restored cache=%s)', async (ready) => {
+    const f = fixture();
+    f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
+    await f.sync();
+    const historyView = { snapshot: { ready, items: [] } };
+    expect(emptyPresentation(f, { historyView })).toEqual({ syncing: false, copy: undefined });
+    await pageCallback('liveActivitySig', {
+      ...f.bindings, liveAttention: true, liveActivitySig: 'completed|1|new result',
+      prevLiveActivitySigRef: { current: 'completed|1|previous result' }, load: async () => undefined,
+    })();
+    expect(emptyPresentation(f, { historyView })).toEqual({ syncing: true, copy: undefined });
+    expect(emptyPresentation(f, { historyView, status: 'offline' })).toEqual({
+      syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
+    });
+    await f.sync();
+    expect(emptyPresentation(f, { historyView })).toEqual({ syncing: false, copy: undefined });
   });
 
   it('does not carry a synced task into an uncached offline task, then shows a confirmed empty result after reconnect', async () => {
@@ -420,7 +476,7 @@ describe('production session recovery callbacks', () => {
     expect(f.store.setLatestMessageWindow).not.toHaveBeenCalled();
     expect(f.store.markSessionMessagesSynced).not.toHaveBeenCalled();
     expect(f.state.synced).not.toBeNull();
-    expect(f.state.historySyncedKey).toBe(JSON.stringify(['d1', 's1', 1]));
+    expect(f.state.historyRead).toEqual({ key: JSON.stringify(['d1', 's1', 1]), synced: true });
   });
 
   it('routes the visible history retry to pagination rather than full sync', () => {
@@ -513,7 +569,7 @@ describe('production session recovery callbacks', () => {
     expect(f.maker.listMessages).not.toHaveBeenCalled();
     expect(f.state.rows).toEqual([{ id: 'cached', clientId: 'cached' }]);
     expect(f.state.hold).not.toBeNull();
-    expect(f.state.historySyncedKey).toBe(JSON.stringify(['d1', 's1', 1]));
+    expect(f.state.historyRead).toEqual({ key: JSON.stringify(['d1', 's1', 1]), synced: true });
   });
 
   it('reports failed history without clearing the read-receipt barrier', async () => {

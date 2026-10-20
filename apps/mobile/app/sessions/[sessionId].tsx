@@ -1771,8 +1771,8 @@ function SessionScreenContent() {
     error: string | null;
   } | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-  // 空态只认当前任务/设备/连接的历史读取，不等待其它快照，也不沿用上一任务的时间戳。
-  const [messageHistorySyncedKey, setMessageHistorySyncedKey] = useState<string | null>(null);
+  // 记录当前任务/设备/连接的历史读取；新活动作废旧结果时，也不能凭旧缓存确认空态。
+  const [messageHistoryRead, setMessageHistoryRead] = useState<{ key: string; synced: boolean } | null>(null);
   // 会话已读回执的同步门槛 key:`${sessionId}:${connectionEpoch}`,由 syncSession 尾部写入。
   // 与 lastSyncedAt 不同,它按 session + 连接代区分——屏实例复用、原地切 session 时
   // lastSyncedAt 不会归零,不能用来判断「当前会话本次连接已同步」。epoch 经 ref 读取,
@@ -1823,7 +1823,7 @@ function SessionScreenContent() {
     setReadAckSyncedKey(null);
     setSessionMetadataSyncedKey(null);
     setContentSyncedKey(null);
-    setMessageHistorySyncedKey(null);
+    setMessageHistoryRead(null);
     readAckGateGenRef.current += 1;
   }
   // 远程媒体取件队列:屏实例级缓存 + 同 url 去重 + 并发上限(每次取件都让桌面端
@@ -2543,9 +2543,10 @@ function SessionScreenContent() {
   const showSyncingShell = sessionOperationLayout.composerSlot === 'missing-session'
     && !remoteUnavailableReason;
   // 无内容且读取结果未知时显示同步占位；已知远端不可用时解释历史未缓存。
-  // 只有当前访问的历史成功读取且确实为零条时，才显示「暂无消息」。
-  const hasSyncedMessageHistory = messageHistorySyncedKey === sessionSubscriptionIdentity;
-  const messageHistoryUnavailable = !!remoteUnavailableReason || status !== 'online' || targetAvailableForDispatch === false;
+  // 成功读取的历史（含恢复的空缓存）可以确认空态，新活动后的旧结果必须等待重读。
+  const hasSyncedMessageHistory = messageHistoryRead?.key === sessionSubscriptionIdentity
+    ? messageHistoryRead.synced : historyView.snapshot.ready;
+  const messageHistoryUnavailable = !!remoteUnavailableReason || showCachedHistoryNotice;
   const syncingWhileEmpty = shouldSuppressEmptyMessageState({
     loading,
     showSyncingShell,
@@ -3801,7 +3802,7 @@ function SessionScreenContent() {
       const isCurrent = () => !syncRun.isStale() && messageAuthorityCurrent();
       const markHistorySynced = () => {
         if (isCurrent() && readAckGateGenRef.current === readAckGateGenAtStart) {
-          setMessageHistorySyncedKey(subscriptionIdentityAtStart);
+          setMessageHistoryRead({ key: subscriptionIdentityAtStart, synced: true });
         }
       };
       const pushRefresh = notificationResponse !== null
@@ -4212,13 +4213,14 @@ function SessionScreenContent() {
     if (liveAttention && liveActivitySig !== prevSig) {
       setReadAckSyncedKey(null);
       setSessionMetadataSyncedKey(null);
+      setMessageHistoryRead({ key: sessionSubscriptionIdentity, synced: false });
       // 代号递增:变化点之前启动的 in-flight load / 在飞重试(数据不含本 turn 终帧)
       // 不得重新落 key / 不得继续发送。
       readAckGateGenRef.current += 1;
       void load();
     }
     prevLiveActivitySigRef.current = liveActivitySig;
-  }, [liveActivitySig, liveAttention, load]);
+  }, [liveActivitySig, liveAttention, load, sessionSubscriptionIdentity]);
 
   // 领取其它路由(文件浏览器「发送到会话」等)投递的 composer 附件:会话页在
   // 栈下层保持挂载,返回不会重新 mount,靠 focus 时机领取信箱。
