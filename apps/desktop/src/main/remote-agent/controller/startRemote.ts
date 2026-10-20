@@ -616,7 +616,7 @@ export async function startRemoteAgentSession(
       model,
       providerId,
       effort: typeof state.effort === 'string' ? state.effort as Effort : effort,
-      fastMode: typeof state.fastMode === 'boolean' ? state.fastMode : fastMode,
+      fastMode: (typeof state.fastMode === 'boolean' || state.fastMode === 'ultrafast') ? state.fastMode : fastMode,
       thinkingEnabled,
       permissionMode,
       planMode: typeof state.planMode === 'boolean' ? state.planMode : planMode,
