@@ -1179,10 +1179,10 @@ export function patchVendorPrefsPreservingModelChoice(
  *
  * 任务的来源不是这次选择的一部分：新建默认落在另一个来源上时整次不写，否则以后的新建
  * 任务会被悄悄搬到这个任务的来源(例：在 Cindy AI 任务里换个模型，新建默认就从 Anthropic
- * 变成 Cindy AI)。来源一致或新建默认的来源无法确定时照常写回并打标。换来源、跨引擎等
+ * 变成 Cindy AI)。只有确认来源一致才照常写回并打标；来源无法确定时不写。换来源、跨引擎等
  * 显式选择仍走 patchVendorPrefs。
  *
- * `taskProviderId` 是任务实际生效的来源(null = 未知，照常写回)，只用于比较；`resolveDraftProviderId` 给跟随默认
+ * `taskProviderId` 是任务实际生效的来源(null = 任务来源未知，照常写回)，只用于比较；`resolveDraftProviderId` 给跟随默认
  * 路由(providerId=null)的新建默认解析生效来源。返回是否写入。
  */
 export function patchVendorPrefsFromTaskModelSwitch(
@@ -1196,7 +1196,9 @@ export function patchVendorPrefsFromTaskModelSwitch(
   const saved = currentDraft.lastByVendor[vendor];
   if (taskProviderId) {
     const draftProviderId = saved.providerId ?? resolveDraftProviderId?.(saved) ?? null;
-    if (draftProviderId && draftProviderId !== taskProviderId) return false;
+    // 只有确认新建默认就在任务的来源上才写回；来源不明(目录未就绪、账号切换中、没有来源提供该
+    // 模型)按保守处理，宁可这次不写，也不把默认搬到任务的来源。
+    if (draftProviderId !== taskProviderId) return false;
   }
   // 任务跟随默认路由(providerId=null)时，不能用空值清掉草稿显式选过的同一来源。
   patchVendorPrefs(vendor, { ...patch, providerId: patch.providerId ?? saved.providerId });

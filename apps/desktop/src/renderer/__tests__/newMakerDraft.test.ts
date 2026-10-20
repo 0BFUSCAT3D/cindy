@@ -881,7 +881,7 @@ describe('newMakerDraft store', () => {
     ).toBe(false);
     expect(m1.getDraft().lastByVendor.cc).toMatchObject({ model: 'claude-opus-5-5', providerId: null });
 
-    // 新建默认的来源解析不出来(目录未到)时不拦,保持原有「下次新建跟随」语义。
+    // 新建默认的来源解析不出来(目录未就绪等)时不能放行，否则会绕过保护把默认搬到任务的来源。
     expect(
       m1.patchVendorPrefsFromTaskModelSwitch(
         'cc',
@@ -889,11 +889,11 @@ describe('newMakerDraft store', () => {
         'xd',
         () => null,
       ),
-    ).toBe(true);
-    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
-      model: 'anthropic/claude-opus-5-5',
-      providerId: 'xd',
-    });
+    ).toBe(false);
+    expect(m1.patchVendorPrefsFromTaskModelSwitch('cc', { model: 'x', providerId: 'xd' }, 'xd')).toBe(
+      false,
+    );
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({ model: 'claude-opus-5-5', providerId: null });
   });
 
   it('patchVendorPrefsFromTaskModelSwitch:先吸收另一窗口刚保存的默认再比较来源', async () => {
