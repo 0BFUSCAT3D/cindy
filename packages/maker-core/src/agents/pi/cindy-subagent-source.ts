@@ -350,16 +350,18 @@ function parentContextSnapshot(ctx) {
     .map(function (entry) { return entry[1]; }).join('\n\n');
 }
 
-function routeMatchesProvider(route, provider) {
-  // Cindy 的来源 id 与 pi 的 runtime provider 名可以不同(cindy-gateway / cindy,
-  // openai / openai-codex),调用方拿到的通常是前者,两个都认。
-  return route.provider === provider || route.sourceProviderId === provider;
-}
-
 function routeProviders(candidates) {
   const providers = [];
   for (const route of candidates) {
-    const label = route.sourceProviderId || route.provider;
+    // 同一个字符串可以既是某条路由的来源 id、又是另一条路由的运行期 provider 名
+    // (ChatGPT 的 openai-codex vs 来源 id 为 openai-codex 的自定义连接)。这种时候
+    // 列能唯一定位的那一个,不要让调用方拿到两个都能命中两条连接的名字。
+    const preferred = route.sourceProviderId || route.provider;
+    const collides = candidates.some(function (other) {
+      return other !== route
+        && (other.provider === preferred || (other.sourceProviderId || other.provider) === preferred);
+    });
+    const label = collides ? route.provider : preferred;
     if (providers.indexOf(label) < 0) providers.push(label);
   }
   return providers;
@@ -399,27 +401,28 @@ function resolveTaskModelRoutes(tasks, runtime) {
       ? runtime.modelRoutes[modelId]
       : [];
     if (task.provider) {
-      // 显式 provider 压过父 provider 与下面的 id 前缀推断:裸 id 在两个真实连接下重名时,
-      // 只有调用方知道要哪一条。仍然只认快照里存在的路由 —— 不按名字拼 endpoint。
-      const matching = candidates.filter(function (route) {
-        return routeMatchesProvider(route, task.provider);
+      // 显式 provider 压过父 provider 与下面的 id 前缀推断。运行期 provider 名和 Cindy
+      // 来源 id 是两个命名空间:同一字符串可能同时命中两条**不同**的连接(ChatGPT 的
+      // openai-codex 与来源 id 为 openai-codex 的自定义连接),所以按路径身份取并集,
+      // 多于一条就拒绝派发 —— 绝不拿“模型名相等”去替调用方选来源(review)。
+      const runtimeMatches = candidates.filter(function (route) {
+        return route.provider === task.provider;
       });
-      const exact = matching.filter(function (route) { return route.model === modelId; });
-      const route = matching.length === 1
-        ? matching[0]
-        : exact.length === 1
-          ? exact[0]
-          : null;
+      const matches = runtimeMatches.concat(candidates.filter(function (route) {
+        return route.sourceProviderId === task.provider && runtimeMatches.indexOf(route) < 0;
+      }));
+      if (matches.length > 1) {
+        throw new Error(
+          'subagent: provider "' + task.provider + '" matches ' + matches.length
+          + ' connections for model "' + modelId + '". Pass one of: '
+          + routeProviders(matches).join(', ') + '.',
+        );
+      }
+      const route = matches[0];
       if (!route) {
         if (candidates.length === 0) {
           throw new Error(
             'subagent: model "' + modelId + '" is not available in this session.' + availableModelHint,
-          );
-        }
-        if (matching.length > 1) {
-          throw new Error(
-            'subagent: provider "' + task.provider + '" has several routes for model "' + modelId + '": '
-            + matching.map(function (route) { return route.model; }).join(', ') + '.',
           );
         }
         throw new Error(

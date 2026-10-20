@@ -9,7 +9,7 @@ import { CINDY_SUBAGENT_EXTENSION_SOURCE } from '../cindy-subagent-source.js';
 
 // Execute the exact staged extension, including its filesystem mailbox and
 // lifecycle handlers. Export helpers only in this test's in-memory module.
-const compiled = ts.transpileModule(CINDY_SUBAGENT_EXTENSION_SOURCE + '\nexport { parentContextSnapshot, createResultDelivery, resolveTaskModelRoutes, normalizeInvocation };', {
+const compiled = ts.transpileModule(CINDY_SUBAGENT_EXTENSION_SOURCE + '\nexport { parentContextSnapshot, createResultDelivery, resolveTaskModelRoutes, normalizeInvocation, modelProviderMap };', {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const nativeRequire = createRequire(import.meta.url);
@@ -319,6 +319,11 @@ describe('Pi subagent provider selection', () => {
         { provider: 'cindy', model: 'gateway-model', sourceProviderId: 'cindy-gateway', proxySessionAuth: true },
         { provider: 'commandcode', model: 'gateway-model', sourceProviderId: 'commandcode' },
       ],
+      // ChatGPT 订阅与一条来源 id 恰好叫 openai-codex 的自定义连接提供同一个模型。
+      'chatgpt/gpt-5.4': [
+        { provider: 'openai-codex', model: 'gpt-5.4', sourceProviderId: 'openai', proxySessionAuth: true },
+        { provider: 'cindy-byom-openai-codex', model: 'chatgpt/gpt-5.4', sourceProviderId: 'openai-codex' },
+      ],
     },
   };
   const route = (task: { model?: string; provider?: string }) => {
@@ -361,6 +366,30 @@ describe('Pi subagent provider selection', () => {
     expect(() => route({ model: 'glm-5.3-flash' })).toThrow(
       'is available from multiple providers: opencode-go, glm-coding-plan. Pass provider',
     );
+  });
+
+  it('rejects a name that is both a runtime provider and another connection source id', () => {
+    expect(() => route({ model: 'chatgpt/gpt-5.4', provider: 'openai-codex' })).toThrow(
+      'provider "openai-codex" matches 2 connections for model "chatgpt/gpt-5.4". '
+      + 'Pass one of: openai, cindy-byom-openai-codex.',
+    );
+  });
+
+  it('sends each colliding name to its own connection', () => {
+    expect(route({ model: 'chatgpt/gpt-5.4', provider: 'openai' })).toMatchObject({
+      routeProvider: 'openai-codex',
+      routeSourceProviderId: 'openai',
+      routeProxySessionAuth: true,
+    });
+    expect(route({ model: 'chatgpt/gpt-5.4', provider: 'cindy-byom-openai-codex' })).toMatchObject({
+      routeProvider: 'cindy-byom-openai-codex',
+      routeSourceProviderId: 'openai-codex',
+    });
+  });
+
+  it('lists only names that resolve to one connection in capabilities', () => {
+    expect(extension.modelProviderMap(runtime)['chatgpt/gpt-5.4'])
+      .toEqual(['openai', 'cindy-byom-openai-codex']);
   });
 
   it('accepts provider at call level and per task, and exposes it in the tool schema', async () => {
