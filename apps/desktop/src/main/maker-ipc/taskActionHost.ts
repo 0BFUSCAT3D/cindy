@@ -77,7 +77,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
             ? (call.args as Record<string, unknown>)
             : {};
         const taskId = typeof args.task_id === 'string' ? args.task_id : undefined;
-        const readDelegation = async () => {
+        const readDelegation = async (rechecking = false) => {
           if (
             !taskId ||
             !DELEGATED_TASK_ACTIONS.includes(call.tool as (typeof DELEGATED_TASK_ACTIONS)[number])
@@ -103,7 +103,11 @@ export function createDesktopTaskActionAuthorizer(deps: {
           const grant = snapshot.taskActionAuthority;
           // Paused work only resumes following a new owner request. Permission answers
           // and model changes are also exact decisions, never a standing message grant.
-          if (snapshot.taskPause || args.decision || args.answers || args.mode === 'resume')
+          // An admitted pause writes its intent before stopping the execution.
+          // That intent cannot revoke the very same stop; it still blocks every
+          // new admission and every message/resume delivery.
+          const completingPause = rechecking && call.tool === 'stop_session_task' && args.mode === 'pause';
+          if ((snapshot.taskPause && !completingPause) || args.decision || args.answers || args.mode === 'resume')
             return null;
           return grant?.version === 1 && grant.actions?.includes(call.tool) ? row : null;
         };
@@ -162,7 +166,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
           )
             throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           if (delegation) {
-            const current = await readDelegation();
+            const current = await readDelegation(true);
             if (!current || current.runSequence !== delegation.runSequence)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
@@ -174,15 +178,23 @@ export function createDesktopTaskActionAuthorizer(deps: {
           if (db !== tryGetDbClient() || isAppSessionBoundaryPending())
             throw new Error('OWNER_SCOPE_CHANGED');
         };
+        const assertCurrentSync = () => {
+          group?.assertCurrent();
+          const current = deps.input(sessionId);
+          if (
+            isAppSessionBoundaryPending() || db !== tryGetDbClient() ||
+            current.boundary !== input.boundary || current.key !== input.key
+          ) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+        };
         const scope: TaskActionScope = {
           key: input.key,
           ownerInput,
           delegated: !!delegation || !!orcaTeam,
           assertDeliveryCurrent,
+          assertCurrentSync,
           assertCurrent: async () => {
             await assertDeliveryCurrent();
-            if (deps.input(sessionId).key !== input.key)
-              throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+            assertCurrentSync();
           },
         };
         if (ownerInput) {

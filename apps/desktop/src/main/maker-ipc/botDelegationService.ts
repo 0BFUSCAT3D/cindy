@@ -1,7 +1,7 @@
 import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import { readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { openSession } from '../localDb/sessionOpening.js';
-import { approvedTaskDelegation, assertTaskActionCurrent } from './taskActionAuthorization.js';
+import { approvedTaskDelegation, captureTaskActionGuard, captureTaskActionSyncGuard, TaskActionAuthorizationError } from './taskActionAuthorization.js';
 import { authorizeGroupTool, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
 import { existsSync, statSync } from 'node:fs';
@@ -60,6 +60,10 @@ import { ownerScopedUserDataPath } from '../appSessionState.js';
 import type { SessionRuntimeProfile } from './sessionRuntimeControl.js';
 import { readBotTaskModelOverride, type BotModelRoute } from '../../shared/botModelChain.js';
 import { validateTaskModel, resolveTaskModelSelection, type TaskModelSelection } from './appDefaultModelControl.js';
+
+type TaskMutationAuthority = Pick<Awaited<ReturnType<typeof authorizeGroupTool>>, 'refresh' | 'assertCurrent'>;
+const isTaskAuthorityError = (error: unknown): error is GroupToolAuthorizationError | TaskActionAuthorizationError =>
+  error instanceof GroupToolAuthorizationError || error instanceof TaskActionAuthorizationError;
 
 const ACTIVE_DELEGATION_STATUSES = ['queued', 'running', 'waiting'] as const;
 const DEFAULT_MAX_DEPTH = 1;
@@ -572,7 +576,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     row: DelegationRow,
     input: { clientId: string; message: string; persistedContent?: string; dispatcherSessionId?: string; autoReviewUserText?: AgentRequestReceipt },
     retryAttempt = false,
-    groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    groupAuthority?: TaskMutationAuthority | null,
   ): Promise<{ result: DispatchResult; row: DelegationRow; clientId: string }> => {
     const db = getDbClient().drizzle;
     if (input.dispatcherSessionId && !input.autoReviewUserText) {
@@ -1587,8 +1591,22 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       || !['canonical', 'delegation', 'group'].includes(link.role)
     ) return null;
     // Delegating full independent work is an owner action, not a guest tool grant.
-    const groupAuthority = link.role === 'group' && !ownerUi
+    const group = link.role === 'group' && !ownerUi
       ? await authorizeGroupTool(callerSessionId, link.botId, 'owner-action') : null;
+    const action = ownerUi ? undefined : captureTaskActionGuard();
+    const actionSync = ownerUi ? undefined : captureTaskActionSyncGuard();
+    // Share the existing mutation checkpoints and rollback paths for every caller,
+    // including private owner requests whose source can change while a call waits.
+    const groupAuthority: TaskMutationAuthority | null = action ? {
+      refresh: async () => {
+        await group?.refresh();
+        try { await action(); } catch { throw new TaskActionAuthorizationError(); }
+      },
+      assertCurrent: () => {
+        group?.assertCurrent();
+        try { actionSync?.(); } catch { throw new TaskActionAuthorizationError(); }
+      },
+    } : group;
     return { ...link, groupAuthority };
   };
 
@@ -1856,7 +1874,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     ].filter(Boolean).join('\n\n')),
   ].join('\n\n');
 
-  const reconcileTaskWorktree = async (sessionId: string, authority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null) => {
+  const reconcileTaskWorktree = async (sessionId: string, authority?: TaskMutationAuthority | null) => {
     await authority?.refresh();
     try { await deps.reconcileWorktree?.(sessionId, authority?.refresh); }
     finally { await authority?.refresh(); }
@@ -1864,7 +1882,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
 
   const validateDispatchPlan = async (
     row: DelegationRow,
-    groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    groupAuthority?: TaskMutationAuthority | null,
   ): Promise<BotDelegationResult> => {
     await groupAuthority?.refresh();
     const plan = parseBotDelegationPlanSnapshot(row.permissionSnapshotJson);
@@ -1879,7 +1897,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       return { ok: false, errorCode: 'CHILD_SESSION_MISSING', message: '后台任务不存在' };
     }
     try { await reconcileTaskWorktree(row.childSessionId, groupAuthority); }
-    catch (error) { if (error instanceof GroupToolAuthorizationError) throw error; return { ok: false, errorCode: 'WORKTREE_TRANSFER_PENDING', message: 'Task worktree ownership is awaiting reconciliation' }; }
+    catch (error) { if (isTaskAuthorityError(error)) throw error; return { ok: false, errorCode: 'WORKTREE_TRANSFER_PENDING', message: 'Task worktree ownership is awaiting reconciliation' }; }
     const db = getDbClient().drizzle;
     const liveRequesterSessionId = await requesterLiveSessionId(
       row.requestingBotId,
@@ -2422,7 +2440,6 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     const { source: taskSource, ...sessionBody } = input.session;
     try {
       await input.caller.groupAuthority?.refresh();
-      await assertTaskActionCurrent();
       await openSession({ id: childSessionId, now: createdAt, source: taskSource,
         body: { ...sessionBody, workspaceKind: input.session.workspaceKind ?? 'dialogue' },
         finalize: () => {
@@ -2468,7 +2485,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       }, async (childRow, assertCurrent) => {
         // Model admission and Git preparation yield after initial admission.
         // Reuse openSession's final commit boundary; never persist a revoked grant.
-        await assertTaskActionCurrent();
+        await input.caller.groupAuthority?.refresh();
         assertCurrent();
         if (!isCreationPermissionCurrent()) throw new Error('CALLER_PERMISSION_UNAVAILABLE');
         await getDbClient().tx('bots.createDelegation', {
@@ -2515,8 +2532,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       // The worker transaction yields: a permission switch may complete while
       // creation is pending. Never publish or start the stale Full Access child.
       const groupPermissionCurrent = await input.caller.groupAuthority?.refresh().then(() => true, () => false) ?? true;
-      const actionCurrent = await assertTaskActionCurrent().then(() => true, () => false);
-      if (!actionCurrent || !groupPermissionCurrent || !isCreationPermissionCurrent()) {
+      if (!groupPermissionCurrent || !isCreationPermissionCurrent()) {
         await getDbClient().drizzle.update(sessions)
           .set({ permissionMode: 'ask' }).where(eq(sessions.id, childSessionId));
         await updateTerminal({ delegationId, status: 'failed',
@@ -2675,7 +2691,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         return { ok: false, errorCode: 'TASK_MODEL_UNAVAILABLE', message: '任务模型不可用，请在伙伴模型设置中重新选择后重试' };
       }
     } catch (error) {
-      if (error instanceof GroupToolAuthorizationError) throw error;
+      if (isTaskAuthorityError(error)) throw error;
       await caller.groupAuthority?.refresh();
       return { ok: false, errorCode: 'TASK_MODEL_UNAVAILABLE', message: '无法确认任务模型或参数，请重新查询可用模型并检查伙伴模型设置后重试' };
     }
@@ -2935,7 +2951,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   const cancelDelegation = async (
     callerSessionId: string,
     delegationId: string,
-    inheritedAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    inheritedAuthority?: TaskMutationAuthority | null,
     { ownerUi = false }: { ownerUi?: boolean } = {},
   ): Promise<BotDelegationResult<{ delegationId: string; childSessionId: string | null; control?: { state: string; queue_held: boolean; stop_status: string } }>> => {
     const caller = await resolveCaller(callerSessionId, { ownerUi });
@@ -2994,7 +3010,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           await deps.abortSession(row.childSessionId!);
         });
       } catch (error) {
-        if (error instanceof GroupToolAuthorizationError) {
+        if (isTaskAuthorityError(error)) {
           if (!admitted && deps.taskControl) {
             // Rejected group control must not leave an independently running
             // task cancelling. Undo only our intent, never a newer task state.
@@ -3046,7 +3062,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     delegationId: string,
     text: string,
     idempotencyToken?: string,
-    inheritedAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    inheritedAuthority?: TaskMutationAuthority | null,
   ): Promise<BotDelegationInterjectResult & { queuedMessageId?: string }> => {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -3217,7 +3233,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     callerBotId: string,
     row: DelegationRow,
     text: string,
-    groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    groupAuthority?: TaskMutationAuthority | null,
   ): Promise<BotDelegationResult<{
     delegationId: string;
     childSessionId: string;
@@ -3446,7 +3462,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     callerSessionId: string,
     delegationId: string,
     input: SessionTaskMessage,
-    inheritedAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    inheritedAuthority?: TaskMutationAuthority | null,
   ): Promise<BotDelegationResult<{
     delegationId: string;
     childSessionId: string | null;
@@ -3757,7 +3773,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   /** Release only a committed resume; repeat receipts never enqueue a second turn. */
-  const finishTaskResume = async (row: DelegationRow, groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null) => {
+  const finishTaskResume = async (row: DelegationRow, groupAuthority?: TaskMutationAuthority | null) => {
     await groupAuthority?.refresh();
     if (!row.childSessionId || !deps.taskControl) throw new Error('Missing task input control');
     let status = row.status as DelegationStatus;
@@ -3791,7 +3807,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       control: { state: 'active', queue_held: false } };
   };
 
-  const resumeTask = async (callerSessionId: string, row: DelegationRow, text?: string, groupAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null) => {
+  const resumeTask = async (callerSessionId: string, row: DelegationRow, text?: string, groupAuthority?: TaskMutationAuthority | null) => {
     await groupAuthority?.refresh();
     const pause = readTaskPause(row);
     const control = deps.taskControl;
@@ -3855,7 +3871,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       await groupAuthority?.refresh();
       await control.flushInput(row.childSessionId!);
     } catch (error) {
-      if (error instanceof GroupToolAuthorizationError) throw error;
+      if (isTaskAuthorityError(error)) throw error;
       // The durable pause and token remain intact for an idempotent retry.
       return { ok: false as const, errorCode: 'RESUME_FAILED', message: error instanceof Error ? error.message : String(error) };
     }
@@ -3877,7 +3893,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         .returning({ id: botDelegations.id });
       if (!resumed) throw new Error('Task changed before resume committed');
     } catch (error) {
-      if (error instanceof GroupToolAuthorizationError) throw error;
+      if (isTaskAuthorityError(error)) throw error;
       // SQLite can commit before the worker/RPC receipt fails. Only release the
       // barrier after reading the exact committed snapshot; otherwise leave the
       // durable queue and pause token intact for an explicit retry.
@@ -3897,7 +3913,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     try {
       return await finishTaskResume({ ...row, status, updatedAt: resumedAt, permissionSnapshotJson: JSON.stringify(snapshot) }, groupAuthority);
     } catch (error) {
-      if (error instanceof GroupToolAuthorizationError) {
+      if (isTaskAuthorityError(error)) {
         // The resume write can finish after revocation. Keep accepted input
         // receipts for retry, but restore the pause if this exact transition
         // still owns the row; never overwrite a newer run or terminal result.
@@ -3944,7 +3960,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           delivery: input.kind === 'edit' ? 'queued' : 'withdrawn' } : result;
       }
       try { if (row.childSessionId) await reconcileTaskWorktree(row.childSessionId, found.groupAuthority); }
-      catch (error) { if (error instanceof GroupToolAuthorizationError) throw error; return { ok: false as const, errorCode: 'WORKTREE_TRANSFER_PENDING', message: 'Task worktree ownership is awaiting reconciliation' }; }
+      catch (error) { if (isTaskAuthorityError(error)) throw error; return { ok: false as const, errorCode: 'WORKTREE_TRANSFER_PENDING', message: 'Task worktree ownership is awaiting reconciliation' }; }
       await found.groupAuthority?.refresh();
       if (input.kind === 'resume') return resumeTask(callerSessionId, row, input.text, found.groupAuthority);
       if (readTaskPause(row) && isActiveDelegation(row.status as DelegationStatus)) {
@@ -4081,7 +4097,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       return { ok: true as const, childSessionId: row.childSessionId,
         control: { ...taskControlView({ ...row, permissionSnapshotJson: snapshot }), stop_status: result.status } };
     } catch (error) {
-      if (error instanceof GroupToolAuthorizationError) {
+      if (isTaskAuthorityError(error)) {
         if (!persisted) holdTaskInput(row.childSessionId, wasHeld);
         else if (!admitted) {
           // No native stop was admitted. Restore the previous pause/hold rather
@@ -4559,7 +4575,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
 
   const expose = <A extends unknown[], R>(operation: (...args: A) => Promise<R>) => async (...args: A) => {
     try { return await operation(...args); } catch (error) {
-      if (error instanceof GroupToolAuthorizationError) return { ok: false as const, errorCode: error.code, message: error.message };
+      if (isTaskAuthorityError(error)) return { ok: false as const, errorCode: error.code, message: error.message };
       throw error;
     }
   };

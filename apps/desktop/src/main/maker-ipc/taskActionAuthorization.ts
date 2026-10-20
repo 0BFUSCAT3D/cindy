@@ -56,6 +56,8 @@ export interface TaskActionScope {
   delegated: boolean;
   /** Rechecked at mutation/delivery; includes account, target and delegation revocation. */
   assertCurrent(): Promise<void>;
+  /** Host generation check for existing synchronous commit/pre-send callbacks. */
+  assertCurrentSync?(): void;
   assertDeliveryCurrent?(): Promise<void>;
 }
 
@@ -64,6 +66,7 @@ interface ActionContext {
   tool: string;
   fingerprint: string;
   assertCurrent(): Promise<void>;
+  assertCurrentSync?(): void;
   assertDeliveryCurrent(): Promise<void>;
 }
 const actionContext = new AsyncLocalStorage<ActionContext>();
@@ -142,6 +145,7 @@ export async function admitTaskAction(
           tool: call.tool,
           fingerprint,
           assertCurrent: scope.assertCurrent,
+          assertCurrentSync: scope.assertCurrentSync,
           assertDeliveryCurrent: scope.assertDeliveryCurrent ?? scope.assertCurrent,
         },
         operation,
@@ -167,6 +171,23 @@ export async function assertTaskActionCurrent(): Promise<void> {
 /** Existing lifecycle callbacks can outlive the AsyncLocalStorage call itself. */
 export function captureTaskActionGuard(): (() => Promise<void>) | undefined {
   return actionContext.getStore()?.assertCurrent;
+}
+
+export class TaskActionAuthorizationError extends Error {
+  readonly code = 'TASK_ACTION_AUTHORIZATION_EXPIRED';
+  constructor() {
+    super('TASK_ACTION_AUTHORIZATION_EXPIRED');
+  }
+}
+
+/** Capture once; late callbacks must not pick up another invocation's authority. */
+export function captureTaskActionSyncGuard(): (() => void) | undefined {
+  const current = actionContext.getStore();
+  if (!current) return undefined;
+  return () => {
+    if (!current.assertCurrentSync) throw new TaskActionAuthorizationError();
+    current.assertCurrentSync();
+  };
 }
 
 export function hasTaskActionAuthorization(callerSessionId?: string): boolean {

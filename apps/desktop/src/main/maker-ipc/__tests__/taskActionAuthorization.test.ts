@@ -16,6 +16,8 @@ import {
   hasTaskActionAuthorization,
   TASK_ACTION_TOOLS,
   ORCA_TASK_ACTION_TOOLS,
+  captureTaskActionSyncGuard,
+  captureTaskActionGuard,
 } from '../taskActionAuthorization.js';
 
 function fixture(ownerInput = false, delegated = false) {
@@ -266,7 +268,7 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
     boundary: 'runtime-1',
   };
   const confirm = vi.fn(async () => true);
-  const authorize = createDesktopTaskActionAuthorizer({ input: () => activeInput, confirm });
+  const authorize = createDesktopTaskActionAuthorizer({ input: () => ({ ...activeInput }), confirm });
   return { authorize, confirm, activeInput, caller, rows };
 }
 const ownerWrites = [
@@ -280,6 +282,24 @@ const ownerWrites = [
 ] as const;
 
 describe('Desktop owner input task actions', () => {
+  // #6399, unit: an async admission is not a transport preSend generation check.
+  it.each(['input', 'account', 'group'] as const)('invalidates a captured synchronous guard on %s replacement', async change => {
+    const h = desktopFixture(change === 'group' ? 'group' : 'private');
+    let groupCurrent = true;
+    if (change === 'group') releases.push(registerGroupToolAuthority('companion', {
+      botId: 'bot', mode: 'owner', isCurrent: () => groupCurrent, validate: async () => {},
+    }));
+    const decision = await h.authorize(call('archive_sessions'));
+    if (!decision.ok || !decision.run) throw new Error('Expected owner admission');
+    const guard = await decision.run(async () => captureTaskActionSyncGuard()!);
+    expect(() => guard()).not.toThrow();
+    if (change === 'input') h.activeInput.key = 'replacement';
+    if (change === 'account') hostFacts.boundaryPending.mockReturnValue(true);
+    if (change === 'group') groupCurrent = false;
+    expect(() => guard()).toThrow();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
   it.each(['private', 'group'] as const)(
     'accepts %s owner input without a second confirmation, including downstream authorization',
     async (kind) => {
@@ -412,11 +432,19 @@ describe('Existing execution authority', () => {
     await withToolCallAuthority(h.authorize, call('message_session_task'), async () =>
       bindTaskActionInput('target', queued),
     );
+    const pauseCall = { ...call('stop_session_task'), args: { task_id: 'task', mode: 'pause' } };
+    const pauseDecision = await h.authorize(pauseCall);
+    if (!pauseDecision.ok || !pauseDecision.run) throw new Error('Expected pause admission');
+    const completingPause = await pauseDecision.run(async () => captureTaskActionGuard()!);
     h.rows.delegation.permissionSnapshotJson = JSON.stringify({
       ...grant,
       taskPause: { reason: 'owner' },
     });
     expect(await h.authorize(call('message_session_task'))).toMatchObject({ ok: false });
+    expect(await h.authorize(pauseCall)).toMatchObject({ ok: false });
+    await expect(completingPause()).resolves.toBeUndefined();
+    h.rows.delegation = { ...h.rows.delegation, runSequence: 2 };
+    await expect(completingPause()).rejects.toThrow('AUTHORIZATION_EXPIRED');
     await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
       'AUTHORIZATION_EXPIRED',
     );
