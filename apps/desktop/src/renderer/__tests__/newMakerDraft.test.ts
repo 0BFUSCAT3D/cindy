@@ -874,6 +874,27 @@ describe('newMakerDraft store', () => {
     ).toBe(true);
   });
 
+  it('patchVendorPrefsFromTaskModelSwitch:保留的草稿来源对新模型已失效时改写入任务实际来源', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'auto/pool', providerId: 'org-pool' });
+    // Auto 已搬到 xd：旧 org-pool 对任何模型都解析不到，实际落点是 xd。
+    const resolve = (prefs: { model: string; providerId: string | null }) =>
+      prefs.model === 'auto/pool' ? 'xd' : prefs.providerId === 'org-pool' ? null : prefs.providerId;
+
+    const written = m1.patchVendorPrefsFromTaskModelSwitch(
+      'cc',
+      { model: 'plain-model', providerId: null },
+      'xd',
+      resolve,
+    );
+
+    expect(written).toBe(true);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'plain-model',
+      providerId: 'xd',
+    });
+  });
+
   it('patchVendorPrefsFromTaskModelSwitch:任务跟随默认路由时保留草稿显式选过的同一来源', async () => {
     const m1 = await loadModule();
     m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });

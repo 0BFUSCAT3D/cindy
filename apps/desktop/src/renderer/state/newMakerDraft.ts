@@ -1202,8 +1202,18 @@ export function patchVendorPrefsFromTaskModelSwitch(
     // 模型)按保守处理，宁可这次不写，也不把默认搬到任务的来源。
     if (draftProviderId !== taskProviderId) return false;
   }
-  // 任务跟随默认路由(providerId=null)时，不能用空值清掉草稿显式选过的同一来源。
-  patchVendorPrefs(vendor, { ...patch, providerId: patch.providerId ?? saved.providerId });
+  // 任务跟随默认路由(providerId=null)时，不能用空值清掉草稿显式选过的同一来源；但保留的来源
+  // 必须对新模型仍然有效(例如 Auto 搬走后失效的旧号池)，否则写入已确认的任务实际来源。
+  const keepSaved =
+    !!saved.providerId &&
+    (!taskProviderId ||
+      !resolveDraftProviderId ||
+      resolveDraftProviderId({ ...saved, model: patch.model }) === saved.providerId);
+  patchVendorPrefs(vendor, {
+    ...patch,
+    providerId:
+      patch.providerId ?? (keepSaved ? saved.providerId : (taskProviderId ?? saved.providerId)),
+  });
   return true;
 }
 
