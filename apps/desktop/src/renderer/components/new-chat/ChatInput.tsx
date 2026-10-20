@@ -345,6 +345,7 @@ import { useSshCodexProviders } from '@/hooks/useSshCodexProviders';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { chatEligibleSourcesForModel, effectiveSourceIdForModel } from '@cindy/model-providers';
 import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
+import { isModelEnabled } from '@/state/modelVisibilityPrefs';
 import {
   deriveModelsFromProviders,
   filterChatBridgedCodexProviders,
@@ -6420,9 +6421,10 @@ export function ChatInput({
         /** 已有任务里换模 / 换来源时为 true,下次新建跟随这次选择。只改思考档 / Fast 保持 false。 */
         markModelChoice?: boolean;
       } = {},
-    ) => {
+    ): boolean => {
+      // 返回 false = 新建默认在别的来源上，整次没写；调用方据此跳过自己随后的共享预设写入。
       const agentKind = opts.agentKind ?? currentModelAgentKind;
-      if (!sessionId || !agentKind || !modelId || sshCodexHostId) return;
+      if (!sessionId || !agentKind || !modelId || sshCodexHostId) return true;
       const activeProviderId =
         opts.activeProviderId !== undefined ? opts.activeProviderId : selectedProviderId;
       const memoryProviderId =
@@ -6439,7 +6441,7 @@ export function ChatInput({
           patch,
           taskComputerModelMemory,
         );
-        return;
+        return true;
       }
       const remoteDeviceId =
         opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId;
@@ -6471,6 +6473,7 @@ export function ChatInput({
                 model: prefs.model,
                 providerId: prefs.providerId,
                 chosenByUser: getDraft().modelChosenByVendor[vendor] === true,
+                isModelEnabled,
               }),
           );
         } else {
@@ -6485,7 +6488,7 @@ export function ChatInput({
           });
         }
         // 新建默认没被改写时，同模型 id 共享的档位 / Fast 预设同样不写，整次不影响新建任务。
-        if (!draftWritten) return;
+        if (!draftWritten) return false;
         if (memoryProviderId) {
           if (patch.effort !== undefined) {
             setProviderModelChoice(agentKind, memoryProviderId, modelId, patch.effort);
@@ -6496,7 +6499,7 @@ export function ChatInput({
         }
         if (patch.effort !== undefined) setEffortForModel(modelId, patch.effort);
         if (patch.fast !== undefined) setFastModeForModel(modelId, patch.fast);
-        return;
+        return true;
       }
       window.electronAPI.deviceLink
         .invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref', [
@@ -6515,6 +6518,7 @@ export function ChatInput({
         .catch((err) => {
           log.warn('session draft model preference sync failed:', err);
         });
+      return true;
     },
     [sessionId, deviceLinkDeviceId, agentDeviceId, taskComputerModelMemory, currentModelAgentKind, selectedProviderId, effectiveSourceId, sshCodexHostId, localProviders.providers],
   );
@@ -7653,6 +7657,7 @@ export function ChatInput({
         fastSupported: modelFastSupported(newModelId, effectiveSourceId),
         requestedFast: restoredFast,
       });
+      let draftSynced = true;
       try {
         if (sessionId) {
           // 切模型时 fast 恢复该 (供应商, 模型) 的记忆值(对齐 effort);模型不支持 → false。
@@ -7769,14 +7774,14 @@ export function ChatInput({
               // 默认 success 1200ms 读不完这句;拉长到 4s。
               toast.success(t('newChat.chatInput.credentialSwitchDeferred'), { duration: 4000 });
             }
-            syncSessionDraftModelPrefs(
+            draftSynced = syncSessionDraftModelPrefs(
               newModelId,
               { effort: newEffort, fast: restoredFast },
               {
                 markModelChoice: true,
               },
             );
-            if (currentModelAgentKind && effectiveSourceId) {
+            if (draftSynced && currentModelAgentKind && effectiveSourceId) {
               modelMemory?.setFast(
                 currentModelAgentKind,
                 effectiveSourceId,
@@ -7800,7 +7805,8 @@ export function ChatInput({
           onModelDidChange?.(newModelId);
           onEffortDidChange?.(newEffort, sessionId, sourceRemoteDeviceId);
           // 记进当前来源的槽:切回该来源时恢复这次选的 (model, effort)。
-          rememberProviderChoice(newModelId, newEffort);
+          // 新建默认没被改写时不写：该预设按 (agent, model) 共享，会连带改掉新建任务的档位。
+          if (draftSynced) rememberProviderChoice(newModelId, newEffort);
           return;
         }
 

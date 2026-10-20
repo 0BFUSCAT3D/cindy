@@ -1313,6 +1313,23 @@ describe('resolveDraftEffectiveProviderId', () => {
     ).toBe('xd');
   });
 
+  it('用户隐藏了出厂推荐模型时跟随新建页的可见性谓词，落到下一个可用来源', () => {
+    const base = {
+      providers: [
+        provider('anthropic', true, { 'claude-code': [model('claude-opus-5-5')] }, 'subscription'),
+        provider('xai', true, { 'claude-code': [model('grok-4.6')] }, 'subscription'),
+      ],
+      agent: 'claude-code' as AgentKind,
+      model: 'claude-opus-5-5',
+      providerId: null,
+      chosenByUser: false,
+    };
+    const hideOpus = (_agent: AgentKind, _providerId: string, m: { id: string }) =>
+      m.id !== 'claude-opus-5-5';
+    expect(resolveDraftEffectiveProviderId(base)).toBe('anthropic');
+    expect(resolveDraftEffectiveProviderId({ ...base, isModelEnabled: hideOpus })).toBe('xai');
+  });
+
   it('没有任何来源提供该模型时返回 null', () => {
     expect(
       resolveDraftEffectiveProviderId({

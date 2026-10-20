@@ -84,7 +84,7 @@ describe('ChatInput:远程 Agent 的模型记忆', () => {
     expect(agentDeviceBranch).toBeGreaterThan(start);
     expect(remember).toBeGreaterThan(0);
     // 分支在本机写入、写穿被控电脑之前 return,不掺本机预设与两边的新建任务记忆。
-    const earlyReturn = chatInputSource.indexOf('return;', agentDeviceBranch + remember);
+    const earlyReturn = chatInputSource.indexOf('return true;', agentDeviceBranch + remember);
     expect(earlyReturn).toBeGreaterThan(agentDeviceBranch + remember);
     expect(localWrites).toBeGreaterThan(earlyReturn);
     expect(remoteWrites).toBeGreaterThan(earlyReturn);

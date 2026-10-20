@@ -426,6 +426,8 @@ export function resolveDraftEffectiveProviderId(args: {
   model: string;
   providerId: string | null | undefined;
   chosenByUser: boolean;
+  /** 与新建页同源的模型可见性谓词：用户隐藏的推荐模型不参与校准。 */
+  isModelEnabled?: ModelEnabledPredicate;
 }): string | null {
   const { providers, agent, model, chosenByUser } = args;
   const providerId = args.providerId ?? null;
@@ -439,6 +441,7 @@ export function resolveDraftEffectiveProviderId(args: {
     chosenByUser,
     preferredProviderId: providerId,
     providersLoading: false,
+    isModelEnabled: args.isModelEnabled,
   });
   return effectiveSourceIdForModel(
     [...candidates],

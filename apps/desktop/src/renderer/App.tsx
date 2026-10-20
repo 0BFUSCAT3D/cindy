@@ -66,6 +66,7 @@ import {
 } from '@/state/newMakerDraft';
 import { getCachedProvidersSnapshot } from '@/lib/providersSnapshotStore';
 import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
+import { isModelEnabled } from '@/state/modelVisibilityPrefs';
 import {
   snapshotForSeed,
   setProviderModelChoice,
@@ -331,6 +332,7 @@ export function App() {
                 model: prefs.model,
                 providerId: prefs.providerId,
                 chosenByUser: getDraft().modelChosenByVendor[vendor] === true,
+                isModelEnabled,
               }),
           );
           // 新建默认没被改写时，同模型 id 共享的档位预设也不能被任务内选择改掉。
