@@ -580,9 +580,7 @@ export class CindyAuthClient {
             parsed.data.message ??
             "Authentication request failed")
           : "Authentication request failed";
-        const error = new AuthApiError(code, response.status, message, retryAt);
-        this.logRequestError(path, response.status, error);
-        throw error;
+        throw new AuthApiError(code, response.status, message, retryAt);
       }
       const parsed = schema.safeParse(data);
       if (!parsed.success) {

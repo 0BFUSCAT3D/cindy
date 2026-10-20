@@ -194,8 +194,7 @@ describe('apiFetchRaw', () => {
       message: 'remote disabled',
       details: { reason: 'private server details' },
     });
-    expect(logs.join('')).toContain('remote disabled');
-    expect(logs.join('')).not.toContain('private server details');
+    expect(logs).toEqual([]);
   });
 
   it('notifies the terminal auth boundary for ACCOUNT_UNAVAILABLE', async () => {

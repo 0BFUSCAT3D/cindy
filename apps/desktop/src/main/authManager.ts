@@ -2304,10 +2304,6 @@ async function apiFetch<T>(
       return { ok: false, status: response.status, data: null as T, retryAt };
     }
     const errorCode = (data as AuthErrorResponse | null)?.error?.code;
-    if (!response.ok) {
-      log.warn('auth response rejected', apiPath, { status: response.status },
-        requestErrorMessage((data as AuthErrorResponse | null)?.error));
-    }
     if (response.status === 401 && errorCode === 'ACCOUNT_UNAVAILABLE' && currentUser) {
       // Internal auth-server calls (profile/feature flags/refresh) do not pass
       // through serverApiClient, but share the same terminal auth contract.

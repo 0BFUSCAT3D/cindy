@@ -120,7 +120,6 @@ export async function uploadPublicAsset(
       try {
         const data = (await response.json()) as { error?: { code?: string } } | null;
         code = data?.error?.code;
-        logError('presign', data?.error);
       } catch (error) {
         logError('presign', error);
         // 非 JSON 错误体,只保留 status

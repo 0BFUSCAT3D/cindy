@@ -129,8 +129,6 @@ export async function apiFetchRaw<T>(
   if (!response.ok) {
     const error = readError(data);
     const code = error.code ?? `HTTP_${response.status}`;
-    const failure = new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'), error.details);
-    mobileDebugLog('warn', 'network', 'response rejected', { status: response.status, code }, failure.message);
     if (response.status === 401 && code === 'ACCOUNT_UNAVAILABLE') {
       try {
         await accountUnavailableHandler?.();
@@ -138,7 +136,7 @@ export async function apiFetchRaw<T>(
         // Preserve the original typed API error even if local cleanup fails.
       }
     }
-    throw failure;
+    throw new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'), error.details);
   }
 
   return data as T;

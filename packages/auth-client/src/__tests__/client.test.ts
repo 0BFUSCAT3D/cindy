@@ -52,19 +52,33 @@ describe("CindyAuthClient", () => {
     );
   });
 
-  it("keeps server error messages and ignores a failing error logger", async () => {
+  it("ignores a failing error logger without changing the mapped request error", async () => {
     const onRequestError = vi.fn(() => { throw new Error("logger unavailable"); });
+    const original = new TypeError("proxy refused tunnel");
     const instance = new CindyAuthClient({
       baseUrl: "https://auth.example.com", region: "cn", deviceId: "device-1", clientType: "desktop",
-      fetch: async () => response(401, { error: { code: "INVALID_REFRESH_TOKEN", message: "Refresh token was revoked" } }),
+      fetch: async () => { throw original; },
       onRequestError,
     });
     await expect(instance.refresh("unused-token")).rejects.toMatchObject({
-      code: "INVALID_REFRESH_TOKEN", message: "Refresh token was revoked",
+      code: "NETWORK_ERROR",
     });
     expect(onRequestError).toHaveBeenCalledExactlyOnceWith(
-      "/api/auth/refresh", 401, expect.objectContaining({ message: "Refresh token was revoked" }),
+      "/api/auth/refresh", 0, original,
     );
+  });
+
+  it("returns parsed HTTP error text to the caller without sending it to the exception logger", async () => {
+    const onRequestError = vi.fn();
+    const instance = new CindyAuthClient({
+      baseUrl: "https://auth.example.com", region: "cn", deviceId: "device-1", clientType: "desktop",
+      fetch: async () => response(400, { error: { code: "INVALID_PARAMS", message: "private display name rejected" } }),
+      onRequestError,
+    });
+    await expect(instance.refresh("unused-token")).rejects.toMatchObject({
+      code: "INVALID_PARAMS", message: "private display name rejected",
+    });
+    expect(onRequestError).not.toHaveBeenCalled();
   });
 
   it.each([
