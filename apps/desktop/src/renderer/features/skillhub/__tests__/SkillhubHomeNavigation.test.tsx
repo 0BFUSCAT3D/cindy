@@ -178,6 +178,44 @@ describe('Skill home navigation', () => {
     expect(screen.getByTestId('location').textContent).toBe('/before');
   });
 
+  // Unit regression: the real catalog/header/router must retain IME drafts without
+  // filtering or replacing history. Existing navigation cases cover only committed text.
+  // Minimal failure: compositionstart followed by a single change used to navigate.
+  it.each(['/skillhub/local', '/settings?tab=ghosts#catalog'])(
+    'commits Chinese search only after composition ends in %s',
+    (entry) => {
+      mocks.store.skills[0].name = '中文技能';
+      renderCatalog(entry);
+      fireEvent.click(screen.getByRole('radio', { name: 'skillhub.home.local' }));
+      const input = screen.getByRole('textbox', { name: 'skillhub.home.search' }) as HTMLInputElement;
+      const initialState = screen.getByTestId('navigation-state').textContent;
+      input.focus();
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: 'zhong' } });
+      expect(input.value).toBe('zhong');
+      expect(screen.getByTestId('navigation-state').textContent).toBe(initialState);
+      expect(screen.getByRole('button', { name: /design-tools/ })).toBeTruthy();
+      fireEvent.keyDown(input, { key: 'Escape', isComposing: true });
+      expect(document.activeElement).toBe(input);
+      expect(input.value).toBe('zhong');
+
+      fireEvent.change(input, { target: { value: '中文' } });
+      fireEvent.compositionEnd(input, { data: '中文' });
+      expect(screen.getByRole('textbox', { name: 'skillhub.home.search' })).toBe(input);
+      expect(input.value).toBe('中文');
+      expect(document.activeElement).toBe(input);
+      expect(JSON.parse(screen.getByTestId('navigation-state').textContent!).skillhubHome.query)
+        .toBe('中文');
+      expect(screen.getByRole('button', { name: /中文技能/ })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /design-tools/ })).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: /中文技能/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Detail Back' }));
+      expect((screen.getByRole('textbox', { name: 'skillhub.home.search' }) as HTMLInputElement).value)
+        .toBe('中文');
+    },
+  );
+
   it.each([
     ['global', 'Detail Back'], ['global', 'Browser Back'],
     ['project', 'Detail Back'], ['project', 'Browser Back'],
