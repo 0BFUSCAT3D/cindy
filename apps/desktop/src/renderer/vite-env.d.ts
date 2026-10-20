@@ -2549,6 +2549,8 @@ interface ElectronAPI {
       modelId: string;
       active: boolean;
       markModelChoice?: boolean;
+      /** 已有任务里只换模型时,任务沿用的来源(见 patchVendorPrefsFromTaskModelSwitch)。 */
+      taskProviderId?: string;
       effort?: string;
       fast?: boolean;
       thinking?: boolean;
@@ -5193,6 +5195,11 @@ interface ElectronAPI {
       }) => Promise<{ kind: 'share' | 'directory' | 'other' }>;
     };
     orcaWorkflows: {
+      projectContext: {
+        (leadSessionId: string): Promise<import('../shared/orca-worker-project').WorkerProjectContext>;
+        (leadSessionId: string, directory: string): Promise<import('../shared/orca-worker-project').WorkerProjectInfo>;
+      };
+      projectLabel: (workerSessionId: string) => Promise<{name: string; path: string} | null>;
       getByLeadSession: (leadSessionId: string) => Promise<OrcaTeamRecord | null>;
       getByWorkerSession: (workerSessionId: string) => Promise<OrcaTeamRecord | null>;
       listWorkersByLead: (leadSessionId: string) => Promise<OrcaWorkerRecord[]>;
@@ -6144,6 +6151,8 @@ interface ElectronAPI {
         executionDeviceId?: string;
         /** 运行设备上的工作目录；缺省由那台分配。 */
         workingDir?: string;
+        worktree?: import('../shared/orca-worker-project').WorkerWorktreeRequest;
+        projectPath?: string;
         /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 任务所在电脑，缺省 = 跟 Lead。 */
         agentDeviceId?: string | null;
       },
