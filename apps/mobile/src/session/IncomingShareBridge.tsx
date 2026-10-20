@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppState, Linking, Platform } from 'react-native';
 import { useRouter, useSegments } from 'expo-router';
 
@@ -19,6 +19,7 @@ export function IncomingShareBridge() {
   const router = useRouter();
   const segments = useSegments();
   const batch = useIncomingShareBatch();
+  const [shareLinkAttempt, setShareLinkAttempt] = useState(0);
   const presentedBatchId = useRef<string | null>(null);
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
@@ -29,7 +30,7 @@ export function IncomingShareBridge() {
     void import('@/session/incomingShareNative').then((sharing) => {
       if (!active) return;
       stopWatchingAccount = watchIncomingShareAccount(sharing, initialOwner);
-      const refresh = () => {
+      const refresh = (explicitShare = false) => {
         void import('@/session/incomingShareCleanup')
           .then(({ cleanupExpiredIncomingShares }) => cleanupExpiredIncomingShares())
           .catch(() => undefined)
@@ -40,6 +41,10 @@ export function IncomingShareBridge() {
             // copies before they can trigger navigation.
             try {
               receiveIncomingShare(sharing);
+              if (explicitShare) {
+                presentedBatchId.current = null;
+                setShareLinkAttempt(value => value + 1);
+              }
             } catch {
               // Inbound sharing is unavailable in older native binaries.
             }
@@ -47,7 +52,7 @@ export function IncomingShareBridge() {
       };
       subscriptions = [
         AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); }),
-        Linking.addEventListener('url', refresh),
+        Linking.addEventListener('url', ({ url }) => refresh(/^[a-z][a-z0-9+.-]*:\/\/expo-sharing(?:[/?#]|$)/i.test(url))),
         { remove: subscribeMobileAuthOwner(() => {
           if (!getMobileAuthOwner().switching && AppState.currentState === 'active') refresh();
         }) },
@@ -82,7 +87,7 @@ export function IncomingShareBridge() {
     // screen and return to retry instead of repeatedly forcing it back open.
     presentedBatchId.current = batch.id;
     router.navigate('/incoming-share');
-  }, [auth.initialized, auth.isAuthenticated, batch, router, segments]);
+  }, [auth.initialized, auth.isAuthenticated, batch, router, segments, shareLinkAttempt]);
 
   return null;
 }

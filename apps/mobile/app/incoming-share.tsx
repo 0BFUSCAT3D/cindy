@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, FlatList, StyleSheet, View } from 'react-native';
 import { useIsFocused, useNavigation, useRouter } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { goBackGuarded } from '@/utils/backGuard';
@@ -13,7 +13,7 @@ import { toDeviceListItems } from '@/device-link/devices';
 import { useRevokedDevices } from '@/device-link/revokedDevicesStore';
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { useAuth } from '@/auth/AuthContext';
-import { discardIncomingShareBatch, incomingShareDestination, incomingShareText, selectIncomingShareDestination, useIncomingShareBatch } from '@/session/incomingShare';
+import { leaveIncomingShareChooser, incomingShareDestination, incomingShareText, selectIncomingShareDestination, useIncomingShareBatch } from '@/session/incomingShare';
 import { useTeammateRoster } from '@/session/useTeammateRoster';
 import { teammateResourceRoute } from '@/session/teammateNavigation';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
@@ -21,6 +21,14 @@ import type { RemoteSession } from '@/session/types';
 import { fontWeight, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 
 type Task = { deviceId: string; deviceName: string; session: RemoteSession };
+
+type Row = { key: string } & (
+  | { kind: 'new' }
+  | { kind: 'heading'; label: string }
+  | { kind: 'status'; label?: string; loading?: boolean; retry?: 'roster' | 'tasks' }
+  | { kind: 'companion'; item: ReturnType<typeof useTeammateRoster>['items'][number] }
+  | { kind: 'task'; item: Task }
+);
 
 /** A destination chooser, not a second sending pipeline. Nothing is sent by selecting a row. */
 export default function IncomingShareScreen() {
@@ -36,7 +44,6 @@ export default function IncomingShareScreen() {
   const revoked = useRevokedDevices();
   const roster = useTeammateRoster(focused && !!batch);
   const [query, setQuery] = useState('');
-  const [dismissError, setDismissError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -75,7 +82,23 @@ export default function IncomingShareScreen() {
     return () => { disposed = true; };
   }, [focused, batch?.id, accountGeneration, readDeviceList, openLink, invoke, status, presenceVersion, attempt, revoked]);
   const needle = query.normalize('NFKC').trim().toLocaleLowerCase(i18n.language);
-  const matches = (title: string) => title.normalize('NFKC').toLocaleLowerCase(i18n.language).includes(needle);
+  const rows = useMemo<Row[]>(() => {
+    const matches = (title: string) => title.normalize('NFKC').toLocaleLowerCase(i18n.language).includes(needle);
+    const result: Row[] = [{ key: 'new', kind: 'new' },
+      { key: 'companions', kind: 'heading', label: t('composer.incomingShare.companions') }];
+    for (const item of roster.items) if (matches(resolveRemoteText(item.item.display.title, i18n.language)))
+      result.push({ key: `companion:${item.key}`, kind: 'companion', item });
+    if (roster.loading) result.push({ key: 'companions-loading', kind: 'status', loading: true });
+    else if (!roster.items.length) result.push({ key: 'companions-empty', kind: 'status', label: t('composer.incomingShare.noCompanions') });
+    if (roster.error) result.push({ key: 'companions-retry', kind: 'status', retry: 'roster', label: t('composer.incomingShare.retry') });
+    result.push({ key: 'tasks', kind: 'heading', label: t('composer.incomingShare.tasks') });
+    for (const item of tasks) if (matches(item.session.title))
+      result.push({ key: `task:${incomingShareDestination(item.deviceId, item.session.id)}`, kind: 'task', item });
+    if (loading) result.push({ key: 'tasks-loading', kind: 'status', loading: true });
+    else if (!tasks.length) result.push({ key: 'tasks-empty', kind: 'status', label: t('composer.incomingShare.noTasks') });
+    if (error) result.push({ key: 'tasks-retry', kind: 'status', retry: 'tasks', label: t('composer.incomingShare.retry') });
+    return result;
+  }, [needle, i18n.language, t, roster.items, roster.loading, roster.error, tasks, loading, error]);
   const text = batch ? incomingShareText(batch.payloads) : '';
   const files = batch?.payloads.filter(item => item.shareType !== 'text' && item.shareType !== 'url') ?? [];
   const handoffBatchId = useRef<string | null>(null);
@@ -88,14 +111,12 @@ export default function IncomingShareScreen() {
   // Removing the chooser during a handoff retains the batch for its composer.
   // Header/gesture cancellation still acknowledges and cleans the owned copies.
   usePreventRemove(!!batch, ({ data }) => {
-    try { if (batch && handoffBatchId.current !== batch.id) discardIncomingShareBatch(batch.id); }
-    catch { setDismissError(t('composer.upload.shareReceiveFailed')); return; }
-    navigation.dispatch(data.action);
+    leaveIncomingShareChooser(batch && handoffBatchId.current !== batch.id ? batch.id : null,
+      () => navigation.dispatch(data.action));
   });
   const back = () => goBackGuarded(router);
   return <SafeAreaView edges={simpleScreenSafeAreaEdges()} style={styles.root}>
     <SimpleStackHeader title={t('composer.incomingShare.title')} onBack={back} />
-    {!!dismissError && <Text style={styles.note}>{dismissError}</Text>}
     {!batch ? <Text style={styles.note}>{t('composer.incomingShare.empty')}</Text> : <>
       <View style={styles.preview}>
         {!!text && <Text numberOfLines={4} style={styles.body}>{text}</Text>}
@@ -108,37 +129,41 @@ export default function IncomingShareScreen() {
       <TextInput value={query} onChangeText={setQuery} style={styles.search}
         placeholder={t('composer.incomingShare.search')} accessibilityLabel={t('composer.incomingShare.search')}
         placeholderTextColor={colors.textPlaceholder} autoCorrect={false} />
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.list}>
-        <Pressable accessibilityRole="button" style={styles.row} onPress={() => choose('new', () => router.dismissTo('/sessions/new'))}>
-          <Text style={styles.title}>{t('composer.incomingShare.newTask')}</Text>
-        </Pressable>
-        <Text style={styles.sectionLabel}>{t('composer.incomingShare.companions')}</Text>
-        {roster.items.filter(row => matches(resolveRemoteText(row.item.display.title, i18n.language))).map(row => {
-          const route = teammateResourceRoute(row, i18n.language);
-          const conversation = row.item.links.find(link => link.rel === 'conversation')?.target;
-          return <Pressable key={row.key} accessibilityRole="button" style={styles.row}
-            disabled={conversation?.kind !== 'session'} onPress={() => {
-              if (conversation?.kind === 'session') choose(incomingShareDestination(row.host.deviceId, conversation.sessionId), () => router.dismissTo(route));
-            }}>
-            <Text style={styles.title}>{resolveRemoteText(row.item.display.title, i18n.language)}</Text>
-            <Text style={styles.note}>{row.host.deviceName}{conversation?.kind !== 'session' ? ` · ${t('composer.incomingShare.unavailable')}` : ''}</Text>
+      <FlatList<Row> data={rows} keyExtractor={row => row.key}
+        keyboardShouldPersistTaps="handled" contentContainerStyle={styles.list}
+        initialNumToRender={12} maxToRenderPerBatch={12} windowSize={7}
+        renderItem={({ item: row }) => {
+          if (row.kind === 'heading') return <Text style={styles.sectionLabel}>{row.label}</Text>;
+          if (row.kind === 'status') {
+            if (row.loading) return <ActivityIndicator color={colors.textSecondary} />;
+            if (row.retry) return <Pressable style={styles.row} onPress={() => row.retry === 'roster'
+              ? void roster.refresh() : setAttempt(value => value + 1)}><Text style={styles.note}>{row.label}</Text></Pressable>;
+            return <Text style={styles.note}>{row.label}</Text>;
+          }
+          if (row.kind === 'new') return <Pressable accessibilityRole="button" style={styles.row}
+            onPress={() => choose('new', () => router.dismissTo('/sessions/new'))}>
+            <Text style={styles.title}>{t('composer.incomingShare.newTask')}</Text>
           </Pressable>;
-        })}
-        {roster.loading && <ActivityIndicator color={colors.textSecondary} />}
-        {!roster.loading && !roster.items.length && <Text style={styles.note}>{t('composer.incomingShare.noCompanions')}</Text>}
-        {!!roster.error && <Pressable style={styles.row} onPress={() => void roster.refresh()}><Text style={styles.note}>{t('composer.incomingShare.retry')}</Text></Pressable>}
-        <Text style={styles.sectionLabel}>{t('composer.incomingShare.tasks')}</Text>
-        {tasks.filter(row => matches(row.session.title)).map(row => <Pressable
-          key={incomingShareDestination(row.deviceId, row.session.id)} accessibilityRole="button" style={styles.row}
-          onPress={() => choose(incomingShareDestination(row.deviceId, row.session.id), () => router.dismissTo({
-            pathname: '/sessions/[sessionId]', params: { deviceId: row.deviceId, deviceName: row.deviceName, sessionId: row.session.id },
-          }))}>
-          <Text style={styles.title}>{row.session.title}</Text><Text style={styles.note}>{row.deviceName}</Text>
-        </Pressable>)}
-        {loading && <ActivityIndicator color={colors.textSecondary} />}
-        {!loading && !tasks.length && <Text style={styles.note}>{t('composer.incomingShare.noTasks')}</Text>}
-        {error && <Pressable style={styles.row} onPress={() => setAttempt(value => value + 1)}><Text style={styles.note}>{t('composer.incomingShare.retry')}</Text></Pressable>}
-      </ScrollView>
+          if (row.kind === 'companion') {
+            const item = row.item;
+            const conversation = item.item.links.find(link => link.rel === 'conversation')?.target;
+            return <Pressable accessibilityRole="button" style={styles.row}
+              disabled={conversation?.kind !== 'session'} onPress={() => {
+                if (conversation?.kind === 'session') choose(incomingShareDestination(item.host.deviceId, conversation.sessionId),
+                  () => router.dismissTo(teammateResourceRoute(item, i18n.language)));
+              }}>
+              <Text style={styles.title}>{resolveRemoteText(item.item.display.title, i18n.language)}</Text>
+              <Text style={styles.note}>{item.host.deviceName}{conversation?.kind !== 'session' ? ` · ${t('composer.incomingShare.unavailable')}` : ''}</Text>
+            </Pressable>;
+          }
+          const item = row.item;
+          return <Pressable accessibilityRole="button" style={styles.row}
+            onPress={() => choose(incomingShareDestination(item.deviceId, item.session.id), () => router.dismissTo({
+              pathname: '/sessions/[sessionId]', params: { deviceId: item.deviceId, deviceName: item.deviceName, sessionId: item.session.id },
+            }))}>
+            <Text style={styles.title}>{item.session.title}</Text><Text style={styles.note}>{item.deviceName}</Text>
+          </Pressable>;
+        }} />
     </>}
   </SafeAreaView>;
 }

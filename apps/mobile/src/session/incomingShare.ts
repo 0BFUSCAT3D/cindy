@@ -223,6 +223,13 @@ export function discardIncomingShareBatch(id: string): boolean {
   return true;
 }
 
+/** A failed native acknowledgement retains the batch, but must not trap navigation. */
+export function leaveIncomingShareChooser(cancelBatchId: string | null, leave: () => void): void {
+  try { if (cancelBatchId) discardIncomingShareBatch(cancelBatchId); }
+  catch { /* Keep the unacknowledged batch and owned files available for retry. */ }
+  leave();
+}
+
 /** Raw local files need no asynchronous resolver; the uploader stats their size. */
 export function receiveIncomingShare(native: IncomingShareNative): void {
   if (getMobileAuthOwner().switching) return;

@@ -6,6 +6,7 @@ import {
   __resetIncomingShareForTest,
   consumeIncomingShareBatch,
   discardIncomingShareBatch,
+  leaveIncomingShareChooser,
   incomingShareBatchId,
   selectIncomingShareUploadCandidates,
   stageIncomingShareBatch,
@@ -58,6 +59,18 @@ describe('incoming Share Extension payloads', () => {
     setMobileAuthOwner('account-a');
     deleteAsync.mockClear();
     convertToJpeg.mockClear();
+  });
+
+  it('leaves after native cancellation fails without losing files or the retryable batch', () => {
+    const acknowledge = vi.fn().mockImplementationOnce(() => { throw new Error('storage unavailable'); });
+    const batch = stageIncomingShareBatch([payload({})], acknowledge)!;
+    const leave = vi.fn();
+    leaveIncomingShareChooser(batch.id, leave);
+    expect(leave).toHaveBeenCalledOnce();
+    expect(deleteAsync).not.toHaveBeenCalled();
+    expect(stageIncomingShareBatch([payload({})], vi.fn())).toBe(batch);
+    expect(consumeIncomingShareBatch(batch.id)).toBe(true);
+    expect(acknowledge).toHaveBeenCalledTimes(2);
   });
 
   it('never interprets file-URL text as an upload or cleanup capability', async () => {
