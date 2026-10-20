@@ -1133,9 +1133,9 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
   pluginDeviceSync.connect({
     self: () => client?.getSelfDeviceId() ?? null,
     peers: () => [...presenceOnlineByDevice.entries()]
-      .filter(([deviceId, online]) => !isScopedPeer(deviceId) && deviceId !== client?.getSelfDeviceId() && shouldExchangeDictionaryWith({ online, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }))
+      .filter(([deviceId, online]) => !isScopedPeer(deviceId) && !revokedByRemote.has(deviceId) && deviceId !== client?.getSelfDeviceId() && shouldExchangeDictionaryWith({ online, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }))
       .map(([deviceId]) => ({ deviceId, deviceName: presenceNameByDevice.get(deviceId) ?? deviceId.slice(0, 8) })),
-    allowed: deviceId => !isScopedPeer(deviceId) && deviceId !== client?.getSelfDeviceId() &&
+    allowed: deviceId => !isScopedPeer(deviceId) && !revokedByRemote.has(deviceId) && deviceId !== client?.getSelfDeviceId() &&
       shouldExchangeDictionaryWith({ online: presenceOnlineByDevice.get(deviceId) === true, platform: getControllerPlatform(deviceId), revoked: isDeviceRevoked(deviceId) }),
     send: (deviceId, frame) => { if (!client) throw new Error('device link unavailable'); client.sendPush(deviceId, PLUGIN_SYNC_CHANNEL, frame); },
   });

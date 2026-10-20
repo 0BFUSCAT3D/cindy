@@ -2753,6 +2753,9 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 旧客户端忽略新通道，插件探测 API 后保留本地功能；超时不代表未执行，不自动重试非幂等动作。
 复用现有设备密钥库，AES-GCM AAD 使用 `plugin-sync:` transfer 标记与源/目标设备绑定。
 每请求 64 KiB、每插件 2 个/全机 32 个在途、30 秒超时；应用持久化后才回复。
+接收按 peer 顺序排队，全机最多 64 帧；等待不会拦住其他 peer，账号重置后旧队列失效。
+投递等待同一插件沙箱入口加载完成，并在实际发送前重查撤权与请求有效期。
+显式断开远程控制后此通道可走 unlinked legacy；不重新打开控制链路，仍执行同账号与撤权检查。
 账号/owner、安装 revision、插件启停和撤权每次重新核验，旧请求失效只影响其调用，
 不重连共享 relay。恢复由插件持久状态对账，不恢复失效请求。
 实现与 unit 回归：`cindy-brain/deviceSyncSlot.ts` / `__tests__/deviceSyncSlot.test.ts`。

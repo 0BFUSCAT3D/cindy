@@ -80,7 +80,8 @@ export class PluginDeviceSync {
   private readonly pending = new Map<string, Pending>();
   private readonly incoming = new Map<string, Incoming>();
   private readonly keyReplies = new Map<string, number>();
-  private readonly receiving = new Set<string>();
+  private readonly receiving = new Map<string, Promise<void>>();
+  private receivingCount = 0;
   private readonly epochs = new Map<string, number>();
   constructor(private readonly deps: Deps) {}
   connect(transport: PluginSyncTransport): void {
@@ -88,7 +89,7 @@ export class PluginDeviceSync {
     this.transport = transport;
   }
   setActive(active: boolean): void {
-    if (!active) this.reset();
+    if (!active || this.scope !== this.deps.scope()) this.reset();
     this.active = active;
   }
   reset(): void {
@@ -103,6 +104,7 @@ export class PluginDeviceSync {
     this.incoming.clear();
     this.keyReplies.clear();
     this.receiving.clear();
+    this.receivingCount = 0;
     this.scope = this.deps.scope();
   }
   invalidate(instance: string): void {
@@ -140,6 +142,10 @@ export class PluginDeviceSync {
       );
     };
   }
+  private atCapacity(instance: string): boolean {
+    return this.pending.size + this.incoming.size >= 32 ||
+      [...this.pending.values(), ...this.incoming.values()].filter(p => p.instance === instance).length >= 2;
+  }
   async handle(instance: string, raw: unknown): Promise<unknown> {
     if (this.scope !== this.deps.scope()) this.reset();
     const plugin = identity(this.deps.getGhost(instance));
@@ -170,19 +176,11 @@ export class PluginDeviceSync {
     const current = this.capture(instance),
       peer = raw.peer;
     if (!current?.() || !this.transport?.allowed(peer)) return error('SYNC_OFFLINE');
-    if (
-      this.pending.size >= 32 ||
-      [...this.pending.values()].filter((p) => p.instance === instance).length >= 2
-    )
-      return error('SYNC_BUSY');
+    if (this.atCapacity(instance)) return error('SYNC_BUSY');
     try {
       await this.deps.keys.prepare();
       if (!current() || !this.transport?.allowed(peer)) return error('SYNC_OFFLINE');
-      if (
-        this.pending.size >= 32 ||
-        [...this.pending.values()].filter((p) => p.instance === instance).length >= 2
-      )
-        return error('SYNC_BUSY');
+      if (this.atCapacity(instance)) return error('SYNC_BUSY');
       if (!this.deps.keys.getPeerPublicKey(peer)) {
         this.transport.send(peer, {
           version: 1,
@@ -244,16 +242,29 @@ export class PluginDeviceSync {
       raw.version !== 1
     )
       return;
-    if (this.receiving.has(peer) || this.receiving.size >= 32) return;
+    // Keep concurrent requests (including different plugins) in arrival order.
+    // At most 64 bounded frames across peers: request/response slots plus key exchange.
+    if (this.receivingCount >= 64 ||
+      (raw.kind !== 'key' && raw.kind !== 'data') ||
+      (raw.kind === 'data' && (typeof raw.data !== 'string' || raw.data.length > Math.ceil(MAX_BYTES / 3) * 4)) ||
+      (raw.kind === 'key' && !isValidContactsSyncPublicKey(raw.publicKey))) return;
     const generation = this.generation,
-      scope = this.deps.scope();
+      scope = this.deps.scope(),
+      receivedAt = Date.now();
     const current = () =>
       this.active &&
       generation === this.generation &&
       scope === this.deps.scope() &&
-      this.transport?.allowed(peer);
-    this.receiving.add(peer);
+      Date.now() - receivedAt < TIMEOUT_MS &&
+      this.transport?.allowed(peer) === true;
+    const previous = this.receiving.get(peer);
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => { release = resolve; });
+    this.receiving.set(peer, turn);
+    this.receivingCount++;
     try {
+      await previous;
+      if (!current()) return;
       await this.deps.keys.prepare();
       if (!current()) return;
       if (raw.kind === 'key') {
@@ -314,16 +325,19 @@ export class PluginDeviceSync {
         this.pending.delete(p.id);
         clearTimeout(pending.timer);
         pending.finish({ ok: true, data: p.data });
-      } else if (p.kind === 'request' && this.incoming.size < 32) {
+      } else if (p.kind === 'request') {
         const ghost = this.deps.listGhosts().find((g) => {
           const i = identity(g);
           return i && same(i, packet.plugin);
         });
         if (!ghost) return;
         const instance = installedGhostStoragePart(ghost),
-          valid = this.capture(instance);
-        if (!valid?.()) return;
+          pluginCurrent = this.capture(instance);
+        if (!pluginCurrent?.() || this.atCapacity(instance)) return;
         const requestId = randomUUID();
+        // A queued/startup-delayed request must still belong to this peer grant,
+        // account, plugin revision and unexpired incoming request at actual delivery.
+        const valid = () => current() && pluginCurrent();
         const timer = setTimeout(() => this.incoming.delete(requestId), TIMEOUT_MS);
         timer.unref?.();
         this.incoming.set(requestId, { peer, packet, instance, current: valid, timer });
@@ -336,7 +350,7 @@ export class PluginDeviceSync {
               peer,
               data: p.data,
             },
-            valid,
+            () => valid() && this.incoming.has(requestId),
           )) ||
           !valid()
         ) {
@@ -347,7 +361,11 @@ export class PluginDeviceSync {
     } catch {
       /* Invalid/unauthenticated frames never surface their contents or mutate plugin data. */
     } finally {
-      if (generation === this.generation) this.receiving.delete(peer);
+      release();
+      if (generation === this.generation) {
+        this.receivingCount--;
+        if (this.receiving.get(peer) === turn) this.receiving.delete(peer);
+      }
     }
   }
 }

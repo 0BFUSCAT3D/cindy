@@ -2030,7 +2030,9 @@ export const pluginDeviceSync = new PluginDeviceSync({
     if (!isCurrent()) return false;
     const scope = activeOwnerScopeKey();
     const id = installedGhostStoragePart(ghost);
-    const started = await getGhostRuntime().spawn(ghost);
+    const runtime = getGhostRuntime();
+    const started = await runtime.spawn(ghost);
+    if (!started.ok || !await runtime.waitUntilRunning(id)) return false;
     return started.ok && isCurrent() && scope === activeOwnerScopeKey() &&
       ghostInstallApprovalToken(findGhostForInstanceId(id)?.approval) === ghostInstallApprovalToken(ghost.approval) && sendToGhostLogic(id, message);
   },
