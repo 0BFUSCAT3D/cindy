@@ -2,6 +2,7 @@
  * 供应商分享的 Renderer ↔ Main 契约(只在本机进程之间；服务端契约见
  * docs/provider-sharing-contract.md)。身份只有昵称与头像。
  */
+import type { RemoteAgentIdleRelease, RemoteAgentIdleReleaseView } from './remoteAgentIdleRelease';
 import type { RemoteAgentLimits, RemoteAgentLimitsView } from './remoteAgentLimits';
 
 import type {
@@ -12,6 +13,7 @@ import type {
   ProviderShareRequestState,
 } from '@cindy/device-link';
 import type { DataOwnerPushStamp } from './dataOwnerPush';
+import type { ProviderShareInsights, ProviderShareQuotaAccount, ProviderShareVisibility } from './providerShareInsights';
 
 /** 本机收藏清理依据。未加载、断线和账号切换的空列表不能用于撤权清理。 */
 export interface ProviderShareReceivedSnapshot {
@@ -190,9 +192,17 @@ export interface ProviderShareSettledEvent {
 }
 
 export type ProviderShareCommand =
+  | { action: 'get-visibility'; providerId: string }
+  | { action: 'set-visibility'; providerId: string; visibility: Partial<ProviderShareVisibility> }
+  | { action: 'quota-account'; providerId: string }
+  | { action: 'insights'; shareId: string; includeUsage: boolean }
   | { action: 'get-run-limits' }
   | { action: 'reset-run-limits' }
   | { action: 'set-run-limits'; limits: Partial<RemoteAgentLimits> }
+  /** 本机作为使用方的闲置让出设置；只在本机窗口可用，不进同账号管理通道。 */
+  | { action: 'get-idle-release' }
+  | { action: 'reset-idle-release' }
+  | { action: 'set-idle-release'; value: RemoteAgentIdleRelease }
   | { action: 'owned'; range: ProviderShareUsageRange }
   /** 这个供应商按使用方的用量(本机与我的其他电脑)。不依赖分享服务。 */
   | { action: 'own-usage'; providerId: string; range: ProviderShareUsageRange }
@@ -221,9 +231,16 @@ export interface ProviderShareCredentialConsentView {
 }
 
 export interface ProviderShareCommandResult {
+  'get-visibility': ProviderShareVisibility;
+  'set-visibility': ProviderShareVisibility;
+  'quota-account': ProviderShareQuotaAccount;
+  insights: ProviderShareInsights;
   'get-run-limits': RemoteAgentLimitsView;
   'set-run-limits': RemoteAgentLimitsView;
   'reset-run-limits': RemoteAgentLimitsView;
+  'get-idle-release': RemoteAgentIdleReleaseView;
+  'set-idle-release': RemoteAgentIdleReleaseView;
+  'reset-idle-release': RemoteAgentIdleReleaseView;
   owned: ProviderShareOwnerState;
   'own-usage': ProviderOwnUsageView;
   'usage-history': ProviderUsageHistoryView;

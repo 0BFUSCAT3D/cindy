@@ -1,3 +1,5 @@
+import { ProviderShareVisibilitySection } from './ProviderShareVisibilitySection';
+import { RemoteAgentIdleReleaseSection } from './RemoteAgentIdleReleaseSection';
 import { RemoteAgentLimitsSection } from './RemoteAgentLimitsSection';
 /**
  * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
@@ -505,6 +507,8 @@ export function ProviderShareManagePage({
         initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
       />
 
+      <ProviderShareVisibilitySection key={`${deviceId ?? 'local'}:${providerId}`} providerId={providerId} deviceId={deviceId} />
+
       <RemoteAgentLimitsSection key={deviceId ?? 'local'} deviceId={deviceId} />
 
       <ProviderUsageSection
@@ -519,6 +523,9 @@ export function ProviderShareManagePage({
         groupConfig={deviceId ? remoteGroup : undefined}
         time={time}
       />
+
+      {/* 这台电脑作为使用方的设置(与上面提供方的额度分开)：只对这台生效，管理另一台电脑时不显示，免得以为改的是那台。 */}
+      {!deviceId && <RemoteAgentIdleReleaseSection />}
 
       {linkOpen && (
         <ProviderShareLinkDialog
