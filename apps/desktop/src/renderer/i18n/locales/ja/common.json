@@ -21,6 +21,11 @@
     "messageCount": "{{count}} 件のメール",
     "showMessages": "{{count}} 件のメールを表示"
   },
+  "taskActionConfirmation": {
+    "title": "セッション操作の確認",
+    "once": "以下の対象、操作、全文を確認してください。許可は今回の操作にのみ適用されます。",
+    "delegation": "独立セッションの目的と設定を確認してください。許可すると開始し、この委任が終了するまで範囲内のメッセージ送信と停止が可能になります。代理回答、一時停止の解除、モデル変更は別途確認が必要です。"
+  },
   "logSupport": {
     "title": "ログとフィードバック",
     "localFiles": "問題が発生した日のログを選択してください。未マスキングのため、共有前に内容を確認してください。",
@@ -16751,7 +16756,26 @@
     "nothingToReset": "リセットが必要な利用上限はありません",
     "offerExpired": "アカウントまたはリセットの状態が変わりました。使用量を更新してからリセットを使用してください。",
     "resetFailed": "リセットの結果を確認できませんでした。使用量を更新して、利用枠が回復したか確認してください。",
-    "limitAction": "リセットを使用 · 残り {{count}} 回"
+    "limitAction": "リセットを使用 · 残り {{count}} 回",
+    "autoUse": {
+      "label": "自動使用",
+      "rules": "自動使用ルール",
+      "lowQuota": "週間配分の残りが 1% 未満で使用",
+      "resetDistance": "配分リセットまでの残り時間",
+      "days": "{{count}} 日以上",
+      "unlimited": "制限なし",
+      "custom": "カスタム…",
+      "customDays": "日数を指定",
+      "dayUnit": "日以上",
+      "apply": "適用",
+      "expiring": "カードの有効期限前に使用",
+      "leadTime": "使用するタイミング",
+      "minutes": "有効期限の {{count}} 分前",
+      "hours": "有効期限の {{count}} 時間前",
+      "hint": "いずれかの条件で、期限が近いカードから使用します。全配分が満量の場合は使用しません。このパソコンで Cindy の起動中に実行します。",
+      "failed": "保存できませんでした。再試行してください。",
+      "restore": "既定に戻す"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "このカードを操作できるのはセッションのオーナーだけです。",
@@ -16769,5 +16793,14 @@
     "openVideoSource": "元の動画を開く",
     "calculationUnavailable": "この値を計算できません。",
     "incomplete": "一部の内容を表示できませんでした。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[出典] ホストがユーザーの原文を依頼の背景としてそのまま保持しています。現在の依頼は Agent の補足にあります。",
+    "sourceMissing": "[出典] 確認可能なユーザーの原文が見つかりません。",
+    "userPrefix": "ユーザーの原文：",
+    "agentPrefix": "Agent の補足：",
+    "taskSource": "[タスクの出典] このタスクはパートナーが開始しました。",
+    "taskId": "タスク ID：",
+    "contextReferences": "参考資料："
   }
 }

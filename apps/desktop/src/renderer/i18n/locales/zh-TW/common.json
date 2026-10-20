@@ -21,6 +21,11 @@
     "messageCount": "共 {{count}} 封郵件",
     "showMessages": "展開 {{count}} 封郵件"
   },
+  "taskActionConfirmation": {
+    "title": "確認任務操作",
+    "once": "請核對下方的目標、動作與完整內容。允許僅對本次操作生效。",
+    "delegation": "請核對獨立任務的目標與設定。允許後將啟動任務，並可在本次委託結束前傳送範圍內的訊息或停止任務。代答、恢復暫停與切換模型仍需另行確認。"
+  },
   "logSupport": {
     "title": "日誌與回饋",
     "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
@@ -16751,7 +16756,26 @@
     "nothingToReset": "目前沒有需要重置的用量上限",
     "offerExpired": "帳號或重置狀態已變更，請重新整理用量後再使用重置",
     "resetFailed": "無法確認重置結果，請重新整理用量查看額度是否已恢復",
-    "limitAction": "使用重置 · 剩餘 {{count}} 次"
+    "limitAction": "使用重置 · 剩餘 {{count}} 次",
+    "autoUse": {
+      "label": "自動使用",
+      "rules": "自動使用規則",
+      "lowQuota": "每週剩餘低於 1% 時自動用",
+      "resetDistance": "距離配額重設還剩",
+      "days": "{{count}} 天以上",
+      "unlimited": "不限",
+      "custom": "自訂…",
+      "customDays": "自訂天數",
+      "dayUnit": "天以上",
+      "apply": "套用",
+      "expiring": "臨近卡到期時自動用",
+      "leadTime": "提前多久使用",
+      "minutes": "到期前 {{count}} 分鐘",
+      "hours": "到期前 {{count}} 小時",
+      "hint": "任一條件滿足時，優先用最早到期的卡。配額全滿時略過。由這台電腦執行，需保持 Cindy 執行。",
+      "failed": "儲存失敗，請重試。",
+      "restore": "恢復預設"
+    }
   },
   "mcpApps": {
     "sharedTaskReadOnly": "此卡片僅任務擁有者可操作。",
@@ -16769,5 +16793,14 @@
     "openVideoSource": "開啟原影片",
     "calculationUnavailable": "此項暫時無法計算。",
     "incomplete": "部分內容未能顯示。"
+  },
+  "forwardedRequest": {
+    "sourcePresent": "[來源] 使用者原話由宿主原樣保留，作為請求背景；目前的請求在 Agent補充。",
+    "sourceMissing": "[來源] 未找到可核驗的使用者原話。",
+    "userPrefix": "使用者原話：",
+    "agentPrefix": "Agent補充：",
+    "taskSource": "[任務來源] 本任務由夥伴發起。",
+    "taskId": "任務 ID：",
+    "contextReferences": "參考資料："
   }
 }
