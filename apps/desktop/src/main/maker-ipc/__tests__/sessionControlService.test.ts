@@ -510,6 +510,7 @@ describe('session control domain service', () => {
       }),
     ).resolves.toMatchObject({ ok: true, status: 'applied', generation: 1 });
     expect(deps.setSessionRuntime).toHaveBeenCalledWith({
+      beforeMutation: expect.any(Function),
       targetSessionId: 'target',
       expectedGeneration: 4,
       patch: { model: 'next', effort: 'high', fastMode: true },

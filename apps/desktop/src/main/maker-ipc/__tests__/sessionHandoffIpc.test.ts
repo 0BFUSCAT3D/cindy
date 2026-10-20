@@ -1,3 +1,7 @@
+import { createRemoteSessionHandoff } from '../../mcp-integrations/sessionHandoffRemote.js';
+import { validateRemoteTaskActionReceipt } from '../remoteTaskActionReceipt.js';
+import { bindTaskActionInput, settleTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
+import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
 import { SUPPORTED_LOCALES } from '../../../shared/locale.js';
 import { formatForwardedRequest } from '../../../shared/forwardedRequest.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -201,4 +205,40 @@ describe('maker:session:handoff (receiving computer)', () => {
       message: 'session archived',
     });
   });
+});
+
+// Review regression, unit/protocol: successful queued deliveries used to exhaust
+// the pending-receipt limit. Exercise both real transport ends, body binding and cleanup.
+it('releases consumed receipts without allowing replay, including formatted owner requests', async () => {
+  let lastWire: unknown;
+  let pending: AgentInputQueuedMessage | undefined;
+  const handle = createSessionHandoffHandler({
+    validate: validateRemoteTaskActionReceipt,
+    send: async params => {
+      const queued = { clientId: params.clientId!, text: params.message } as AgentInputQueuedMessage;
+      bindTaskActionInput(params.targetSessionId, queued, params.taskActionDeliveryGuard);
+      pending = queued;
+      return { ok: true, agentKind: 'codex', wakeKind: 'queued', targetTitle: null, targetLastUserSendAt: null };
+    },
+  });
+  const send = createRemoteSessionHandoff({
+    captureAccess: () => () => {},
+    captureRequest: async () => ({ message: formatForwardedRequest({ userText: 'Owner request', sessionId: 'sender', clientId: 'owner-input' }, 'Agent supplement'),
+      autoReviewUserText: { kind: 'agent-request', request: { userText: 'Owner request', sessionId: 'sender', clientId: 'owner-input' } } }),
+    invoke: async (_device, _channel, args) => {
+      if ((args[0] as { action?: string }).action === 'task-action-capability')
+        return { ok: true, result: { taskActionVersion: 1 } };
+      lastWire = args[0];
+      return { ok: true, result: await handle('target-device', args[0]) };
+    },
+  });
+  for (let i = 0; i < 260; i++) {
+    expect(await send({ deviceId: 'target-device', sessionId: 'target' },
+      { message: 'Agent supplement', sender: async () => ({ sessionId: 'sender' }) })).toMatchObject({ ok: true });
+    if (i === 0) expect(await handle('target-device', lastWire)).toMatchObject({ ok: false });
+    await taskActionInputGuard('target', pending!)!(); // pre-persist after sender returned queued
+    await taskActionInputGuard('target', pending!)!(); // pre-vendor
+    await settleTaskActionInput(pending!); // dispatched/steered/discarded lifecycle cleanup
+  }
+  expect(await handle('target-device', lastWire)).toMatchObject({ ok: false });
 });

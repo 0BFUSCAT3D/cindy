@@ -10,6 +10,7 @@ type Decision = Awaited<ReturnType<ToolCallAuthorizer>>;
 export const TASK_ACTION_TOOLS: ReadonlySet<string> = new Set([
   'send_to_agent',
   'continue_workbench_task',
+  'set_workbench_task_responsibility',
   'send_to_session',
   'steer_session',
   'stop_session_turn',
@@ -53,7 +54,7 @@ export interface TaskActionScope {
   ownerInput: boolean;
   /** Existing, explicitly confirmed delegation; never inferred from creator/follower. */
   delegated: boolean;
-  /** Rechecked at mutation/delivery; includes account, target and routine revocation. */
+  /** Rechecked at mutation/delivery; includes account, target and delegation revocation. */
   assertCurrent(): Promise<void>;
   assertDeliveryCurrent?(): Promise<void>;
 }
@@ -67,8 +68,13 @@ interface ActionContext {
 }
 const actionContext = new AsyncLocalStorage<ActionContext>();
 export const TASK_ACTION_INPUT_GUARD = Symbol('task-action-input-guard');
+export type TaskActionDeliveryGuard = (() => Promise<void>) & {
+  onSettled?: () => Promise<void>;
+};
 type GuardedInput = AgentInputQueuedMessage & {
-  [TASK_ACTION_INPUT_GUARD]?: (target: string, item: AgentInputQueuedMessage) => Promise<void>;
+  [TASK_ACTION_INPUT_GUARD]?: ((target: string, item: AgentInputQueuedMessage) => Promise<void>) & {
+    onSettled?: () => Promise<void>;
+  };
 };
 
 const denied = (errorCode = 'TASK_ACTION_AUTHORIZATION_REQUIRED'): Decision => ({
@@ -172,11 +178,13 @@ export function captureTaskActionDeliveryGuard(): (() => Promise<void>) | undefi
 export function bindTaskActionInput(
   target: string,
   item: AgentInputQueuedMessage,
-  deliveryGuard?: () => Promise<void>,
+  deliveryGuard?: TaskActionDeliveryGuard,
 ): void {
   const current = actionContext.getStore();
   const validate = deliveryGuard ?? current?.assertDeliveryCurrent;
   if (!validate) return;
+  const onSettled =
+    deliveryGuard?.onSettled ?? (item as GuardedInput)[TASK_ACTION_INPUT_GUARD]?.onSettled;
   const text = item.text;
   const clientId = item.clientId;
   item.taskActionRequiresAuthorization = true;
@@ -185,6 +193,12 @@ export function bindTaskActionInput(
       throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
     await validate();
   };
+  (item as GuardedInput)[TASK_ACTION_INPUT_GUARD]!.onSettled = onSettled;
+}
+
+/** Delivery/discard cleanup uses the existing queue lifecycle, never authorizes a retry. */
+export async function settleTaskActionInput(item: AgentInputQueuedMessage): Promise<void> {
+  await (item as GuardedInput)[TASK_ACTION_INPUT_GUARD]?.onSettled?.();
 }
 
 /** Restored legacy Bot input has attribution, not consent. Never infer a grant from that data. */

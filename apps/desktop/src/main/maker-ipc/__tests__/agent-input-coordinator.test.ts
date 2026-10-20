@@ -8,7 +8,7 @@ import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, appendAutoReviewUs
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { bindTaskActionInput } from '../taskActionAuthorization.js';
+import { bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
@@ -103,6 +103,56 @@ describe('task action dispatch authorization', () => {
     expect(h.sendToAgent.mock.calls[1]![3].persistUserMessage?.clientId).toBe('owner');
     expect(h.onDiscardedQueuedMessage).toHaveBeenCalledWith(sid, expect.objectContaining({ clientId: 'automatic' }));
     expect(h.coordinator.getProjection(sid).pendingQueue).toEqual([]);
+  });
+});
+
+// #6399 queue-edit regression: run the actual trusted IPC finalizer plus the
+// coordinator edit/dispatch path. The old immutable body discarded owner edits.
+// Guard tier wiring is exercised here alongside the existing coordinator cases.
+describe('trusted owner queue edits', () => {
+  const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8');
+  const start = registerSource.indexOf('  function stampQueuedEditProvenance(');
+  const end = registerSource.indexOf('  ipcMain.handle(', start);
+  const loadFinalizer = new Function('inputCoordinator', 'getDeviceLinkInvokeContext',
+    'captureDataOwnerBroadcastScope', 'isDataOwnerBroadcastScopeCurrent',
+    'bindTaskActionInput', 'taskActionInputGuard', 'stampTrustedDeviceLinkQueuedOrigin',
+    'stampTrustedDesktopQueuedOrigin', 'stampMobileClientOrigin',
+    transpileModule(registerSource.slice(start, end) + '\nreturn stampQueuedEditProvenance;',
+      { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText);
+
+  it.each(['text', 'content', 'guest'] as const)('handles a %s edit without inheriting stale body authorization', async mode => {
+    const h = createHarness(), sid = 'edited-target';
+    const finalized = loadFinalizer(h.coordinator, () => mode === 'guest' ? { sharedTask: {} } : null,
+      () => 'account', () => true, bindTaskActionInput, taskActionInputGuard,
+      stampTrustedDeviceLinkQueuedOrigin, stampTrustedDesktopQueuedOrigin, stampMobileClientOrigin);
+    const dispatched = vi.fn();
+    h.sendToAgent.mockImplementation(async (_id, message, _opts, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched(message);
+      return sendSuccess();
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    const queued = { ...makeItem('edited', 'Original body'), origin: {
+      kind: 'session' as const, senderSessionId: 'sender', senderBotId: 'bot', displayText: 'Original body',
+    } };
+    bindTaskActionInput(sid, queued, async () => {});
+    h.coordinator.enqueue(sid, queued);
+    await flush();
+    const finalize = (item: AgentInputQueuedMessage) => finalized(sid, item, mode === 'guest', { isMobile: false });
+    if (mode === 'content') h.coordinator.updateContentWithResult(sid, 'edited', makeItem('edited', 'Edited body'), finalize);
+    else h.coordinator.updateText(sid, 'edited', 'Edited body', undefined, undefined, false, finalize);
+    expect(h.coordinator.getProjection(sid).pendingQueue[0]?.origin).toMatchObject({ kind: 'session', senderSessionId: 'sender' });
+    h.setRunning(false);
+    h.coordinator.wakeSession(sid, 'idle');
+    if (mode === 'guest') {
+      await vi.waitFor(() => expect(h.onDiscardedQueuedMessage).toHaveBeenCalled());
+      expect(dispatched).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(dispatched).toHaveBeenCalledOnce());
+      expect(JSON.stringify(dispatched.mock.calls)).toContain('Edited body');
+      expect(h.onDiscardedQueuedMessage).not.toHaveBeenCalled();
+    }
   });
 });
 

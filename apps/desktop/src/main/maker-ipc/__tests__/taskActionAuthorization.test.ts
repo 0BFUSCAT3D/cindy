@@ -200,6 +200,7 @@ vi.mock('../../appSessionState.js', () => ({
 vi.mock('../../routines/service.js', () => ({
   readActiveFollowUpRoutine: () => ({ enabled: false, revision: 1 }),
 }));
+import { botDelegations, orcaTeams } from '../../localDb/schema.js';
 import { createDesktopTaskActionAuthorizer } from '../taskActionHost.js';
 import {
   registerGroupToolAuthority,
@@ -214,22 +215,51 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
   const caller = {
     source: 'bot',
     role: kind === 'group' ? 'group' : 'canonical',
-    botId: 'bot',
+    botId: 'bot' as string | null,
     botStatus: 'active',
     status: 'active',
     archivedAt: null,
     clearedAt: null,
   };
-  const query = {
-    from: () => query,
-    leftJoin: () => query,
-    where: () => query,
-    limit: async () => [caller],
+  const rows = {
+    delegation: null as null | {
+      status: string;
+      runSequence: number;
+      permissionSnapshotJson: string;
+    },
+    team: null as null | { id: string },
   };
-  const db = { drizzle: { select: () => query } };
+  const db = {
+    drizzle: {
+      select: () => {
+        let table: unknown;
+        const query = {
+          from: (value: unknown) => {
+            table = value;
+            return query;
+          },
+          leftJoin: () => query,
+          innerJoin: () => query,
+          where: () => query,
+          limit: async () =>
+            table === botDelegations
+              ? rows.delegation
+                ? [rows.delegation]
+                : []
+              : table === orcaTeams
+                ? rows.team
+                  ? [rows.team]
+                  : []
+                : [caller],
+        };
+        return query;
+      },
+    },
+  };
   hostFacts.getDb.mockReturnValue(db);
   hostFacts.boundaryPending.mockReturnValue(false);
   const activeInput = {
+    orcaSenderSessionId: undefined as string | undefined,
     key: 'owner-request',
     ownerInput: kind === 'private',
     automatic: kind !== 'private',
@@ -237,12 +267,13 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
   };
   const confirm = vi.fn(async () => true);
   const authorize = createDesktopTaskActionAuthorizer({ input: () => activeInput, confirm });
-  return { authorize, confirm, activeInput, caller };
+  return { authorize, confirm, activeInput, caller, rows };
 }
 const ownerWrites = [
   ['cindy_helper', 'start_session_task'],
   ['cindy_helper', 'send_to_session'],
   ['cindy_helper', 'continue_workbench_task'],
+  ['cindy_helper', 'set_workbench_task_responsibility'],
   ['cindy_helper', 'set_session_runtime'],
   ['cindy_orca', 'create_worker'],
   ['cindy_orca', 'send_to_worker'],
@@ -355,6 +386,73 @@ describe('Desktop owner input task actions', () => {
     await expect(decision.run(effect)).rejects.toThrow();
     await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow();
     expect(effect).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+});
+
+// Review regressions: caller identity must not erase scoped delegation or mint it.
+// Existing owner-input cases did not exercise automatic continuations. Unit tier.
+describe('Existing execution authority', () => {
+  it('keeps delegated work independent of follow-up enablement, but respects pause/revocation', async () => {
+    const h = desktopFixture('automatic');
+    const grant = {
+      taskActionAuthority: { version: 1, actions: ['message_session_task', 'stop_session_task'] },
+    };
+    h.rows.delegation = {
+      status: 'running',
+      runSequence: 1,
+      permissionSnapshotJson: JSON.stringify(grant),
+    };
+    for (const tool of ['message_session_task', 'stop_session_task']) {
+      expect(await withToolCallAuthority(h.authorize, call(tool), async () => 'continued')).toBe(
+        'continued',
+      );
+    }
+    const queued = input();
+    await withToolCallAuthority(h.authorize, call('message_session_task'), async () =>
+      bindTaskActionInput('target', queued),
+    );
+    h.rows.delegation.permissionSnapshotJson = JSON.stringify({
+      ...grant,
+      taskPause: { reason: 'owner' },
+    });
+    expect(await h.authorize(call('message_session_task'))).toMatchObject({ ok: false });
+    await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow(
+      'AUTHORIZATION_EXPIRED',
+    );
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  it('continues an ordinary Lead on a verified Worker report only within its active team', async () => {
+    const h = desktopFixture('automatic');
+    h.caller.botId = null;
+    h.caller.source = 'desktop';
+    h.activeInput.orcaSenderSessionId = 'worker-session';
+    h.rows.team = { id: 'owned-active-team' };
+    for (const tool of ['create_worker', 'send_to_worker', 'end_team']) {
+      expect(
+        await withToolCallAuthority(
+          h.authorize,
+          { ...call(tool), server: 'cindy_orca' },
+          async () => 'continued',
+        ),
+      ).toBe('continued');
+    }
+    expect(await h.authorize(call('send_to_session'))).toMatchObject({ ok: false });
+    const decision = await h.authorize({ ...call('send_to_worker'), server: 'cindy_orca' });
+    h.rows.team = null; // closed team or a sender not in this Lead's active team
+    if (!decision.ok || !decision.run) throw new Error('missing scoped admission');
+    const write = vi.fn(async () => 'changed');
+    await expect(decision.run(write)).rejects.toThrow('AUTHORIZATION_EXPIRED');
+    expect(await h.authorize({ ...call('create_worker'), server: 'cindy_orca' })).toMatchObject({
+      ok: false,
+    });
+    h.rows.team = { id: 'owned-active-team' };
+    h.activeInput.orcaSenderSessionId = undefined; // scheduler/forwarded input, not a Worker report
+    expect(await h.authorize({ ...call('create_worker'), server: 'cindy_orca' })).toMatchObject({
+      ok: false,
+    });
+    expect(write).not.toHaveBeenCalled();
     expect(h.confirm).not.toHaveBeenCalled();
   });
 });

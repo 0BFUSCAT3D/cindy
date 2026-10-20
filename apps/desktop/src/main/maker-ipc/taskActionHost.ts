@@ -1,9 +1,15 @@
 import { and, eq } from 'drizzle-orm';
 import type { ToolCallAuthorizer } from '@cindy/mcps';
-import { botDelegations, botProfiles, botSessionLinks, sessions } from '../localDb/schema.js';
+import {
+  botDelegations,
+  botProfiles,
+  botSessionLinks,
+  sessions,
+  orcaTeams,
+  orcaWorkers,
+} from '../localDb/schema.js';
 import { tryGetDbClient } from '../localDb/client/current.js';
 import { isAppSessionBoundaryPending } from '../appSessionState.js';
-import { readActiveFollowUpRoutine } from '../routines/service.js';
 import { authorizeGroupTool } from './botGroupToolAuthorization.js';
 import {
   admitTaskAction,
@@ -18,6 +24,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
     key: string;
     ownerInput: boolean;
     automatic?: boolean;
+    orcaSenderSessionId?: string;
     boundary: string;
   };
   confirm(sessionId: string, tool: string, args: unknown): Promise<boolean>;
@@ -101,8 +108,32 @@ export function createDesktopTaskActionAuthorizer(deps: {
           return grant?.version === 1 && grant.actions?.includes(call.tool) ? row : null;
         };
         const delegation = ownerInput ? null : await readDelegation();
-        const routine =
-          !ownerInput && caller.botId ? readActiveFollowUpRoutine(caller.botId) : null;
+        // A real Worker report continues its ordinary Lead's existing team. It
+        // cannot authorize helper writes to unrelated tasks or create a new team.
+        const readOrcaTeam = async () => {
+          if (
+            caller.botId ||
+            caller.source === 'bot' ||
+            caller.source === 'scheduler' ||
+            call.server !== 'cindy_orca' ||
+            !input.orcaSenderSessionId
+          )
+            return null;
+          const [team] = await db.drizzle
+            .select({ id: orcaTeams.id })
+            .from(orcaTeams)
+            .innerJoin(orcaWorkers, eq(orcaWorkers.teamId, orcaTeams.id))
+            .where(
+              and(
+                eq(orcaTeams.leadSessionId, sessionId),
+                eq(orcaTeams.status, 'active'),
+                eq(orcaWorkers.sessionId, input.orcaSenderSessionId),
+              ),
+            )
+            .limit(1);
+          return team ?? null;
+        };
+        const orcaTeam = ownerInput ? null : await readOrcaTeam();
         const assertDeliveryCurrent = async () => {
           await group?.refresh();
           if (
@@ -135,9 +166,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
             if (!current || current.runSequence !== delegation.runSequence)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
-          if (!ownerInput && caller.botId) {
-            const current = readActiveFollowUpRoutine(caller.botId);
-            if (!routine?.enabled || !current?.enabled || current.revision !== routine.revision)
+          if (orcaTeam) {
+            if ((await readOrcaTeam())?.id !== orcaTeam.id)
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
           group?.assertCurrent();
@@ -147,7 +177,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
         const scope: TaskActionScope = {
           key: input.key,
           ownerInput,
-          delegated: !!delegation,
+          delegated: !!delegation || !!orcaTeam,
           assertDeliveryCurrent,
           assertCurrent: async () => {
             await assertDeliveryCurrent();

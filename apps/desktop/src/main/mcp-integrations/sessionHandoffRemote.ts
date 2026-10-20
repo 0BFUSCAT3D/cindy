@@ -162,7 +162,7 @@ export function createRemoteSessionHandoff(deps: {
       if (!support.ok || (support.result as { taskActionVersion?: unknown } | null)?.taskActionVersion !== 1)
         return { ok: false, errorCode: 'REMOTE_UNSUPPORTED', message: 'The other computer must support task-action authorization before a message can be sent.' };
       assertCurrent();
-      const taskActionReceipt = issueRemoteTaskActionReceipt({ ...target, senderSessionId: sender.sessionId, message: request.message }, assertCurrent);
+      const taskActionReceipt = issueRemoteTaskActionReceipt({ ...target, senderSessionId: sender.sessionId, message: captured?.message ?? request.message }, assertCurrent);
       const wire: RemoteSessionHandoffRequest = {
         sessionId: target.sessionId,
         message: captured?.message ?? request.message,
