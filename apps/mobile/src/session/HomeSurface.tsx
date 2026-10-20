@@ -87,6 +87,7 @@ import { TEAMMATE_COLLECTION_ID } from '@/session/useTeammateRoster';
 import { AccountSwitcherSheet } from '@/session/AccountSwitcherSheet';
 import { HomeChromeFrost } from '@/session/HomeChromeFrost';
 import { HomeGlassMenuPanel, HomeMenuScrim } from '@/session/HomeGlassMenuPanel';
+import { FilterReminderDot } from '@/components/FilterReminderDot';
 import { HomeHeaderGlassButton } from '@/session/HomeHeaderGlassButton';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { useBalancedTitle } from '@/platform/chrome/balancedTitle';
@@ -3270,7 +3271,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
                 <View>
                   <Ellipsis color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
                   {/* 在看已归档任务时标一个点,提醒列表不是平常的进行中任务。 */}
-                  {archivedReminder ? <View style={styles.displayFilterDot} testID="home.displayFilterDot" /> : null}
+                  {archivedReminder ? <FilterReminderDot offset={styles.displayFilterDotOffset} testID="home.displayFilterDot" /> : null}
                 </View>
               </HomeHeaderGlassButton>
             </HomeDisplayMenu>
@@ -4967,15 +4968,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   headerActionsWide: {
     width: navigationChrome.target * 2 + spacing.xs,
   },
-  displayFilterDot: {
-    position: 'absolute',
-    top: -1,
-    right: -2,
-    width: 6,
-    height: 6,
-    borderRadius: radius.pill,
-    backgroundColor: colors.statusAccent,
-  },
+  displayFilterDotOffset: { top: -1, right: -2 },
   // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
   headerTitleSlot: {
     flex: 1,

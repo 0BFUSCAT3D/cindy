@@ -90,6 +90,7 @@ import { DIALOGUE_FILTER_KEY, projectFilterIncludes } from '../hooks/helpers/sid
 import { DEFAULT_TASK_INFO_FIELDS } from '../hooks/helpers/sidebarFilterCore';
 import { useTaskInfoFields, type TaskInfoField } from '../hooks/useTaskInfoFields';
 import { MENU_ITEM_CLASS, MENU_ROW_CLASS } from './menuStyles';
+import { FilterReminderDot } from './FilterReminderDot';
 
 type Option<T extends string> = {
   value: T;
@@ -582,14 +583,9 @@ export function SidebarFilterPopover({
               )}
             >
               <SlidersHorizontal size={14} strokeWidth={2} />
-              {/* 正在看已归档任务时标一个点(与搜索筛选按钮同款),提醒列表
-                  不是平常的进行中任务;段头会让这个按钮常驻显示。 */}
-              {status === 'archived' && (
-                <span
-                  aria-hidden
-                  className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--status-bar-accent)]"
-                />
-              )}
+              {/* 正在看已归档任务时标一个点,提醒列表不是平常的进行中任务;
+                  段头会让这个按钮常驻显示。 */}
+              {status === 'archived' && <FilterReminderDot />}
             </button>
           </Tip>
         )}
