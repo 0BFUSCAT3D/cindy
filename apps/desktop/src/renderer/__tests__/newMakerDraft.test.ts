@@ -848,6 +848,23 @@ describe('newMakerDraft store', () => {
     expect(m1.getDraft().modelChosenByVendor).toEqual({ cc: true });
   });
 
+  it('patchVendorPrefsFromTaskModelSwitch:任务跟随默认路由时保留草稿显式选过的同一来源', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });
+
+    const written = m1.patchVendorPrefsFromTaskModelSwitch(
+      'cc',
+      { model: 'claude-sonnet-5-5', providerId: null },
+      'anthropic',
+    );
+
+    expect(written).toBe(true);
+    expect(m1.getDraft().lastByVendor.cc).toMatchObject({
+      model: 'claude-sonnet-5-5',
+      providerId: 'anthropic',
+    });
+  });
+
   it('patchVendorPrefsFromTaskModelSwitch:跟随默认路由的新建默认按解析出的来源比较', async () => {
     const m1 = await loadModule();
     m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: null });

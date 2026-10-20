@@ -1193,12 +1193,13 @@ export function patchVendorPrefsFromTaskModelSwitch(
 ): boolean {
   // 先吸收另一窗口刚保存的默认，再比较来源，避免用过期的内存值放行后覆盖它。
   rebaseStoredDefaultTuplePreference();
+  const saved = currentDraft.lastByVendor[vendor];
   if (taskProviderId) {
-    const saved = currentDraft.lastByVendor[vendor];
     const draftProviderId = saved.providerId ?? resolveDraftProviderId?.(saved) ?? null;
     if (draftProviderId && draftProviderId !== taskProviderId) return false;
   }
-  patchVendorPrefs(vendor, patch);
+  // 任务跟随默认路由(providerId=null)时，不能用空值清掉草稿显式选过的同一来源。
+  patchVendorPrefs(vendor, { ...patch, providerId: patch.providerId ?? saved.providerId });
   return true;
 }
 
