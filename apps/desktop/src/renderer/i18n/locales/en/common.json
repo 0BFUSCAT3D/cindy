@@ -6746,6 +6746,8 @@
         "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
         "fsWrite": "Can write files (create / modify)",
         "fsWriteDetail": "Its own private data folder is always writable. Writes into the current session's working directory follow the session's permission mode (auto-approve modes write directly; per-action modes ask you first). Any other folder always requires your confirmation. Files are always written by the host — the plugin itself never touches your file system.",
+        "deviceSync": "Sync plugin data between your computers",
+        "deviceSyncDetail": "Exchanges this plugin’s data with the same plugin on your other online computers signed in to the same Cindy account. Transfers are encrypted. The plugin controls merging and deletions; no credentials or other plugins’ data are shared.",
         "libraryPersist": "Can use a durable library (large files and databases)",
         "libraryPersistDetail": "It gets a Cindy-managed storage area for your work (canvases, images, databases) with no normal plugin data quota. All file and database operations are executed by the host; the plugin only uses relative paths inside its own library and cannot touch your other files. It can also ask Cindy to show a library file in Finder or Explorer, or open the system Save As dialog so you choose where a copy goes; cancelling Save As copies nothing. It can also write a PNG bitmap to the system clipboard with no confirmation dialog; this overwrites the current clipboard. Uninstalling the plugin does not delete this data; deletion requires separate confirmation in Cindy settings.",
         "networkHost": "Accesses the network domain {{host}}",
@@ -10671,6 +10673,12 @@
         "providerGroupRunningOn": "Running on {{device}}",
         "providerGroupRunningHere": "Running on this computer",
         "providerGroupUnassigned": "The Provider Group picks a computer when the task starts; usage then shows for that computer"
+      },
+      "speed": {
+        "label": "Speed",
+        "standard": "Standard",
+        "fast": "Fast",
+        "ultrafast": "Ultrafast"
       }
     },
     "permissionSelector": {
@@ -10767,6 +10775,7 @@
       "recent": "Recent",
       "browseFolder": "Choose a different folder",
       "browseProjectFolder": "Choose another project folder",
+      "browseFailed": "Could not open the folder picker. Please try again.",
       "dialogue": "Chat",
       "dialogueOrSelectProject": "Chat or select project",
       "searchProjects": "Search projects",
@@ -11283,6 +11292,7 @@
     },
     "messageActionBar": {
       "copy": "Copy message",
+      "copied": "Copied",
       "reply": "Reply",
       "linkCopied": "Link copied",
       "moreActions": "More message actions",
@@ -12096,7 +12106,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "The remote working directory is unavailable. Check that the folder still exists on that computer, then try again.",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "The computer cannot yet confirm whether this message was sent. Wait a moment and try again. Do not send the same message twice.",
       "REMOTE_AGENT_UNAVAILABLE": "Can't reach the computer running the Agent. Make sure it's online and allows remote control, then try again.",
-      "REMOTE_AGENT_PEER_TOO_OLD": "Cindy on the other computer is too old to run the Agent for this one. Update Cindy there first.",
+      "REMOTE_AGENT_PEER_TOO_OLD": "Cindy on the other computer is too old for this action. Update Cindy there first.",
       "REMOTE_AGENT_EXPIRED": "This session already ended on the computer running the Agent. Send your message again.",
       "REMOTE_AGENT_NOT_FOUND": "This session already ended on the computer running the Agent. Send your message again.",
       "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
@@ -14984,7 +14994,7 @@
       "codexBinaryMissingTitle": "Codex component not ready",
       "codexBinaryMissingDescription": "The Codex component is not ready yet, so this feature cannot be used. Try again later or check the Codex connection in Settings → Providers.",
       "piBinaryMissingTitle": "Pi component not ready",
-      "piBinaryMissingDescription": "The Pi component is not ready yet, so this feature cannot be used. Try again later or check the Pi connection in Settings → Providers.",
+      "piBinaryMissingDescription": "The Pi component is not ready yet, so this feature cannot be used. Try again later, or open Settings → About to manage or restore Pi.",
       "goToSettings": "Open Settings",
       "remoteCodexBinaryMissingTitle": "Codex component not ready on the remote device",
       "remotePiBinaryMissingTitle": "Pi component not ready on the remote device",
@@ -15100,6 +15110,25 @@
       "remoteWorkerLoading": "Loading the task on {{device}}…",
       "remoteWorkerUnreachable": "{{device}} can't be reached right now. This Worker's task will appear again once it reconnects.",
       "closeAria": "Close"
+    },
+    "workerProject": {
+      "missingDirectory": "This directory no longer exists. Please choose another directory.",
+      "label": "Project",
+      "current": "Current project",
+      "shared": "Shared with Lead: {{project}} · {{branch}}",
+      "direct": "Changes will be made directly in {{project}} on {{branch}}",
+      "inferred": "Identified from Lead’s recent actions",
+      "dirty": "This directory has uncommitted changes. The Worker will continue working with them.",
+      "newWorktree": "Create a worktree for this Worker",
+      "from": "Branch from",
+      "fromSuffix": "(changeable)",
+      "splitWarning": "A new branch will start at the latest commit on {{branch}}. Lead’s uncommitted changes will not carry over. Later changes stay separate until merged.",
+      "dialogue": "The current session has no project, so a worktree cannot be created. The Worker will work in {{directory}}.",
+      "notGit": "This directory is not a Git repository, so a worktree cannot be created. The Worker will work in {{directory}}.",
+      "emptyRepo": "This repository has no commits yet, so a worktree cannot be created. The Worker will work in {{directory}}.",
+      "detachedHead": "Detached HEAD · {{sha}}",
+      "directDetached": "Changes will be made directly in {{project}} at {{branch}}",
+      "loadFailed": "Could not read the project directory."
     }
   },
   "splitGroup": {
@@ -15709,6 +15738,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "Model selection is handled by the provider.",
     "longContext": "Optional long-context version; longer inputs may cost more.",
     "security": "For security analysis and code review.",
     "research": "For research, complex questions, coding and document creation.",

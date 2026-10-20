@@ -6715,6 +6715,8 @@
         "confirmDetail": "它动手前可以弹一个和 Cindy 同款的确认框来问你，问句由它提供、框上会标注它的名字；同意还是取消都由你亲手点，它自己点不了。同时最多一个确认框，弹得太频会被拦下。",
         "fsWrite": "可写入文件(创建/修改)",
         "fsWriteDetail": "它自己的专属数据目录随时可写；当前任务的工作目录跟随任务的权限模式(免批模式直接写，逐条确认模式先征求你同意)；其它目录每次都需要你确认。文件始终由主机代写，插件本身无法直接访问你的文件系统。",
+        "deviceSync": "在你的电脑间同步插件资料",
+        "deviceSyncDetail": "与登录同一 Cindy 账号的其他在线电脑上的同一插件加密交换资料。合并和删除由插件处理，不共享凭证或其他插件的资料。",
         "libraryPersist": "可使用持久作品库(大量文件与数据库)",
         "libraryPersistDetail": "它会获得一个由 Cindy 管理的独立存储区，用来保存你的作品数据(如画布、图片、数据库)，不受普通插件数据配额限制。文件与数据库操作全部由主机代执行，插件只能使用库内相对路径，无法触碰你的其它文件。它还可以让 Cindy 在系统文件夹中显示库内文件，或弹出系统另存为窗口由你选择拷贝位置；取消则不会拷出任何文件。它还可以把 PNG 位图写入系统剪贴板；没有确认框，会覆盖当前剪贴板内容。卸载插件不会删除这些数据；删除必须在 Cindy 设置中单独确认。",
         "networkHost": "访问网络域名 {{host}}",
@@ -10631,6 +10633,12 @@
         "providerGroupRunningOn": "当前在 {{device}} 上运行",
         "providerGroupRunningHere": "当前在这台电脑上运行",
         "providerGroupUnassigned": "开始后由供应商组选一台电脑，用量按那台显示"
+      },
+      "speed": {
+        "label": "速度",
+        "standard": "标准",
+        "fast": "快速",
+        "ultrafast": "超快"
       }
     },
     "permissionSelector": {
@@ -10727,6 +10735,7 @@
       "recent": "最近",
       "browseFolder": "选择其他文件夹",
       "browseProjectFolder": "选择其他项目文件夹",
+      "browseFailed": "无法打开文件夹选择框，请重试。",
       "dialogue": "对话",
       "dialogueOrSelectProject": "对话或选择项目",
       "searchProjects": "搜索项目",
@@ -11243,6 +11252,7 @@
     },
     "messageActionBar": {
       "copy": "复制消息",
+      "copied": "已复制",
       "reply": "回复",
       "linkCopied": "链接已复制",
       "moreActions": "更多消息操作",
@@ -12052,7 +12062,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "远端工作目录现在不可用。请确认那台电脑上的目录还在，然后重试。",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "电脑端暂时无法确认这条消息是否已经发出。请稍后再试，不要重复发送同一条。",
       "REMOTE_AGENT_UNAVAILABLE": "运行 Agent 的电脑暂时连不上。确认那台电脑在线并允许远程控制后重试。",
-      "REMOTE_AGENT_PEER_TOO_OLD": "那台电脑上的 Cindy 版本过旧，还不能替这台电脑运行 Agent。请先在那台电脑上更新 Cindy。",
+      "REMOTE_AGENT_PEER_TOO_OLD": "那台电脑上的 Cindy 版本过旧，暂不支持此操作。请先在那台电脑上更新 Cindy。",
       "REMOTE_AGENT_EXPIRED": "这个任务在运行 Agent 的电脑上已经结束。请重新发送。",
       "REMOTE_AGENT_NOT_FOUND": "这个任务在运行 Agent 的电脑上已经结束。请重新发送。",
       "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
@@ -14930,7 +14940,7 @@
       "codexBinaryMissingTitle": "Codex 组件未就绪",
       "codexBinaryMissingDescription": "Codex 组件尚未准备好，暂时无法使用这个功能。请稍后重试，或前往「模型供应商」检查 Codex 连接状态。",
       "piBinaryMissingTitle": "Pi 组件未就绪",
-      "piBinaryMissingDescription": "Pi 组件尚未准备好，暂时无法使用这个功能。请稍后重试，或前往「模型供应商」检查 Pi 连接状态。",
+      "piBinaryMissingDescription": "Pi 组件尚未准备好，暂时无法使用这个功能。请稍后重试，或前往「设置 → 关于」管理或恢复 Pi。",
       "goToSettings": "前往设置",
       "remoteCodexBinaryMissingTitle": "远程电脑 Codex 组件未就绪",
       "remotePiBinaryMissingTitle": "远程电脑 Pi 组件未就绪",
@@ -15045,6 +15055,25 @@
       "remoteWorkerLoading": "正在读取 {{device}} 上的任务…",
       "remoteWorkerUnreachable": "{{device}} 当前无法连接，恢复后会自动显示这个 Worker 的任务。",
       "closeAria": "关闭"
+    },
+    "workerProject": {
+      "missingDirectory": "目录已不存在，请重新选择。",
+      "label": "项目",
+      "current": "当前项目",
+      "shared": "与 Lead 共用：{{project}} · {{branch}}",
+      "direct": "将直接在 {{project}} 的 {{branch}} 分支上修改",
+      "inferred": "根据 Lead 最近的操作识别",
+      "dirty": "这个目录有未提交的改动，Worker 会在这些改动上继续工作。",
+      "newWorktree": "为 Worker 新建 worktree",
+      "from": "从",
+      "fromSuffix": "拉出（可更换）",
+      "splitWarning": "会从 {{branch}} 的最新提交拉出新分支。Lead 未提交的改动不会带过去，之后双方改动互不可见，需要再合并。",
+      "dialogue": "当前任务没有绑定项目，不能新建 worktree。Worker 将在 {{directory}} 工作。",
+      "notGit": "这个目录不是 Git 仓库，不能新建 worktree。Worker 将在 {{directory}} 工作。",
+      "emptyRepo": "仓库还没有任何提交，不能新建 worktree。Worker 将在 {{directory}} 工作。",
+      "detachedHead": "分离 HEAD · {{sha}}",
+      "directDetached": "将直接在 {{project}} 的 {{branch}} 上修改",
+      "loadFailed": "未能读取项目目录。"
     }
   },
   "splitGroup": {
@@ -15654,6 +15683,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "由供应商选择模型。",
     "longContext": "可选的长上下文版本，长输入可能产生更高费用。",
     "security": "用于安全分析与代码审查。",
     "research": "用于资料研究、复杂问题、编程与文档创作。",

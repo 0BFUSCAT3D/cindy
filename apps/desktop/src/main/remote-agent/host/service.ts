@@ -139,6 +139,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       }
     },
     startHosted: (input) => options.getMaker().startHostedAgentSession(input.kind, hostedStartOptions(input)),
+    forkHosted: (kind, opts) => options.getMaker().forkSdkSession(kind, opts),
     bindOwnerProviderRoute: bindHostedSessionProvider,
     isControllerAuthorized,
     controllerTrust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
