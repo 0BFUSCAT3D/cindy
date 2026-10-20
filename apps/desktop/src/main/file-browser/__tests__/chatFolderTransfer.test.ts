@@ -6,6 +6,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Header, type HeaderData } from 'tar';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({ root: '' }));
@@ -135,4 +136,64 @@ it('removes a partial extraction when the archive is corrupt', async () => {
   await fs.writeFile(archive, 'not a tar archive');
   await expect(extractChatFolder(archive)).rejects.toThrow();
   await expect(fs.stat(`${archive}.contents`)).rejects.toThrow();
+});
+
+// Write tar headers directly so hostile targets can be tested even when the
+// machine cannot create symlinks (for example an unprivileged Windows runner).
+async function linkArchive(entries: HeaderData[]) {
+  const archive = path.join(state.root, 'links.tar');
+  const blocks = entries.map((entry) => {
+    const block = Buffer.alloc(512);
+    new Header({ size: 0, mode: 0o755, ...entry }).encode(block);
+    return block;
+  });
+  await fs.writeFile(archive, Buffer.concat([...blocks, Buffer.alloc(1024)]));
+  return archive;
+}
+
+it.each([
+  ['absolute', '/outside/private'],
+  ['relative escape', '../../private'],
+  ['Windows drive', 'C:\\private'],
+  ['Windows UNC', '\\\\server\\share\\private'],
+  ['dangling', 'missing'],
+])('rejects a %s symlink and removes the partial chat attachment', async (_kind, target) => {
+  const archive = await linkArchive([{ path: 'link', type: 'SymbolicLink', linkpath: target }]);
+  await expect(extractChatFolder(archive)).rejects.toThrow('INCOMPLETE_FOLDER');
+  await expect(fs.lstat(`${archive}.contents`)).rejects.toThrow();
+});
+
+it('rejects a symlink chain that escapes after resolving an intermediate directory', async () => {
+  await fs.mkdir(path.join(state.root, 'private'));
+  const archive = await linkArchive([
+    { path: 'sub/', type: 'Directory' },
+    { path: 'sub/up', type: 'SymbolicLink', linkpath: '..' },
+    // Lexically inside the attachment; resolving "up" makes it escape.
+    { path: 'escape', type: 'SymbolicLink', linkpath: 'sub/up/../private' },
+  ]);
+  await expect(extractChatFolder(archive)).rejects.toThrow('INCOMPLETE_FOLDER');
+  await expect(fs.lstat(`${archive}.contents`)).rejects.toThrow();
+  expect((await fs.stat(path.join(state.root, 'private'))).isDirectory()).toBe(true);
+});
+
+it('keeps in-tree relative symlink chains usable', async (context) => {
+  try {
+    await fs.symlink('.', path.join(state.root, 'symlink-probe'), 'dir');
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'ENOTSUP'].includes((error as NodeJS.ErrnoException).code ?? ''))
+      throw error;
+    context.skip();
+    return;
+  }
+  const archive = await linkArchive([
+    { path: 'Versions/', type: 'Directory' },
+    { path: 'Versions/A/', type: 'Directory' },
+    { path: 'Versions/A/file', type: 'File' },
+    { path: 'file', type: 'SymbolicLink', linkpath: 'Versions/Current/file' },
+    { path: 'Versions/Current', type: 'SymbolicLink', linkpath: 'A' },
+  ]);
+  const dest = await extractChatFolder(archive);
+  expect(await fs.realpath(path.join(dest, 'file'))).toBe(
+    path.join(await fs.realpath(dest), 'Versions', 'A', 'file'),
+  );
 });

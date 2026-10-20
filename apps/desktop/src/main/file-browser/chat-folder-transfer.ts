@@ -38,11 +38,7 @@ export async function uploadChatFolder(
     deps.assertCurrent();
   };
   check();
-  if (
-    !args?.deviceId ||
-    typeof args.sourcePath !== 'string' ||
-    !path.isAbsolute(args.sourcePath)
-  )
+  if (!args?.deviceId || typeof args.sourcePath !== 'string' || !path.isAbsolute(args.sourcePath))
     throw new Error('BAD_ARGS');
   const source = await fs.realpath(args.sourcePath);
   if (
@@ -104,7 +100,11 @@ export async function extractChatFolder(archive: string): Promise<string> {
   const destination = `${archive}.contents`;
   await fs.mkdir(destination);
   try {
-    if (await extractDirectoryArchive(createReadStream(archive), destination))
+    if (
+      await extractDirectoryArchive(createReadStream(archive), destination, {
+        confineSymlinks: true,
+      })
+    )
       throw new Error('INCOMPLETE_FOLDER');
     return destination;
   } catch (error) {
