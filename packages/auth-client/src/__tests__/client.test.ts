@@ -33,6 +33,40 @@ function client(fetch: AuthFetch = vi.fn(async () => response(200, {}))) {
 }
 
 describe("CindyAuthClient", () => {
+  it.each(["request", "response"] as const)("reports the original %s error before mapping it", async (stage) => {
+    const original = new TypeError("socket closed", { cause: new Error("proxy rejected CONNECT") });
+    const onRequestError = vi.fn();
+    const instance = new CindyAuthClient({
+      baseUrl: "https://auth.example.com", region: "cn", deviceId: "device-1", clientType: "desktop",
+      fetch: async () => {
+        if (stage === "request") throw original;
+        return { ok: true, status: 200, json: async () => { throw original; } };
+      },
+      onRequestError,
+    });
+    await expect(instance.refresh("unused-token")).rejects.toMatchObject({
+      code: stage === "request" ? "NETWORK_ERROR" : "INVALID_RESPONSE",
+    });
+    expect(onRequestError).toHaveBeenCalledExactlyOnceWith(
+      "/api/auth/refresh", stage === "request" ? 0 : 200, original,
+    );
+  });
+
+  it("keeps server error messages and ignores a failing error logger", async () => {
+    const onRequestError = vi.fn(() => { throw new Error("logger unavailable"); });
+    const instance = new CindyAuthClient({
+      baseUrl: "https://auth.example.com", region: "cn", deviceId: "device-1", clientType: "desktop",
+      fetch: async () => response(401, { error: { code: "INVALID_REFRESH_TOKEN", message: "Refresh token was revoked" } }),
+      onRequestError,
+    });
+    await expect(instance.refresh("unused-token")).rejects.toMatchObject({
+      code: "INVALID_REFRESH_TOKEN", message: "Refresh token was revoked",
+    });
+    expect(onRequestError).toHaveBeenCalledExactlyOnceWith(
+      "/api/auth/refresh", 401, expect.objectContaining({ message: "Refresh token was revoked" }),
+    );
+  });
+
   it.each([
     ["120", 120_000],
     ["Wed, 07 Oct 2026 06:02:00 GMT", 120_000],

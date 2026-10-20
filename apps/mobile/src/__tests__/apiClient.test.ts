@@ -1,5 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
+import { setMobileDebugSink } from '@/debug/mobileDebugLog';
+import { serializeMobileDebugRecord } from '@/debug/mobileDebugRecord';
 import {
   ApiError,
   apiFetchRaw,
@@ -15,6 +17,36 @@ describe('apiFetchRaw', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    setMobileDebugSink(undefined);
+  });
+
+  it.each([new SyntaxError('Unexpected end of JSON input'), new TypeError('response stream closed')])(
+    'rejects a failed successful-response body and logs its original message: %s', async (error) => {
+      const logs: string[] = [];
+      setMobileDebugSink((level, scope, args) => { logs.push(serializeMobileDebugRecord(level, scope, args)); });
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200,
+        json: async () => { throw error; } }));
+      await expect(apiFetchRaw('/api/resource', { baseUrl: 'https://api.example.invalid' }))
+        .rejects.toMatchObject({ code: 'INVALID_RESPONSE', status: 200 });
+      expect(logs.join('')).toContain(error.message);
+    },
+  );
+
+  it('logs the original transport cause through the existing redactor before mapping the UI error', async () => {
+    const logs: string[] = [];
+    setMobileDebugSink((level, scope, args) => { logs.push(serializeMobileDebugRecord(level, scope, args)); });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Network request failed', {
+      cause: new Error('proxy rejected CONNECT https://api.example.invalid/?key=private-key'),
+    })));
+    await expect(apiFetchRaw('/api/resource', { baseUrl: 'https://api.example.invalid' }))
+      .rejects.toMatchObject({ code: 'NETWORK_UNAVAILABLE' });
+    expect(logs.join('')).toContain('proxy rejected CONNECT');
+    expect(logs.join('')).not.toContain('private-key');
+  });
+
+  it('still accepts an explicitly empty 204 response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    await expect(apiFetchRaw('/api/resource', { baseUrl: 'https://api.example.invalid' })).resolves.toBeNull();
   });
 
   it('sends extra headers without letting them replace auth or content type', async () => {
@@ -145,10 +177,13 @@ describe('apiFetchRaw', () => {
   });
 
   it('parses top-level device-link relay errors', async () => {
+    const logs: string[] = [];
+    setMobileDebugSink((level, scope, args) => { logs.push(serializeMobileDebugRecord(level, scope, args)); });
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,
       status: 403,
-      json: async () => ({ code: 'REMOTE_DISABLED', message: 'remote disabled' }),
+      json: async () => ({ code: 'REMOTE_DISABLED', message: 'remote disabled',
+        details: { reason: 'private server details' } }),
     } as Response)));
 
     await expect(apiFetchRaw('/api/device-link/devices', {
@@ -157,7 +192,10 @@ describe('apiFetchRaw', () => {
       code: 'REMOTE_DISABLED',
       status: 403,
       message: 'remote disabled',
+      details: { reason: 'private server details' },
     });
+    expect(logs.join('')).toContain('remote disabled');
+    expect(logs.join('')).not.toContain('private server details');
   });
 
   it('notifies the terminal auth boundary for ACCOUNT_UNAVAILABLE', async () => {

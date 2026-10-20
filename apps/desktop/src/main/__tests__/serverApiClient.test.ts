@@ -36,6 +36,31 @@ describe('serverApiFetch', () => {
     vi.clearAllMocks();
   });
 
+  it('keeps an unfamiliar original error and its cause while redacting secrets before logging', async () => {
+    const cause = Object.assign(new Error('proxy refused tunnel'), { code: 'NEW_PROXY_FAILURE' });
+    const error = new TypeError('fetch failed: https://api.example.invalid/?key=private-value', { cause });
+    Object.assign(error, { request: { body: 'private request body', token: 'private-token' } });
+    mocks.netFetch.mockRejectedValueOnce(error);
+    await expect(serverApiFetch('/api/resource', { baseUrl: 'https://api.example.invalid' })).rejects.toBeTruthy();
+    const logged = JSON.stringify(mocks.logger.error.mock.calls);
+    expect(logged).toContain('fetch failed');
+    expect(logged).toContain('proxy refused tunnel');
+    expect(logged).toContain('NEW_PROXY_FAILURE');
+    expect(logged).not.toContain('private-value');
+    expect(logged).not.toContain('private request body');
+    expect(logged).not.toContain('private-token');
+  });
+
+  it('logs the original response parse failure without changing the existing empty-response error', async () => {
+    mocks.netFetch.mockResolvedValueOnce({ ok: true, status: 200,
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); } });
+    await expect(serverApiFetch('/api/resource', { baseUrl: 'https://api.example.invalid' }))
+      .rejects.toMatchObject({ code: 'EMPTY_RESPONSE', statusCode: 200 });
+    expect(mocks.logger.warn).toHaveBeenCalledWith(
+      'response read failed', '/api/resource', { status: 200 }, 'Unexpected end of JSON input',
+    );
+  });
+
   it('TOKEN_EXPIRED refresh 后用新 token 和重新生成的 body 重试', async () => {
     mocks.getAccessToken.mockReturnValueOnce('token-a').mockReturnValueOnce('token-b');
     mocks.refresh.mockResolvedValue(true);

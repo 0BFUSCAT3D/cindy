@@ -1,4 +1,5 @@
 import { i18n } from '@/i18n';
+import { mobileDebugLog } from '@/debug/mobileDebugLog';
 
 export class ApiError extends Error {
   constructor(
@@ -75,7 +76,14 @@ export async function apiFetchRaw<T>(
       let nextData: unknown = null;
       try {
         nextData = await nextResponse.json();
-      } catch {
+      } catch (error) {
+        if (nextResponse.status === 204 || nextResponse.status === 205) {
+          return { response: nextResponse, data: null };
+        }
+        mobileDebugLog('warn', 'network', 'response read failed', { status: nextResponse.status }, error);
+        if (nextResponse.ok) {
+          throw new ApiError('INVALID_RESPONSE', nextResponse.status, i18n.t('apiErrors.requestFailed'));
+        }
         nextData = null;
       }
       return { response: nextResponse, data: nextData };
@@ -95,6 +103,9 @@ export async function apiFetchRaw<T>(
     response = result.response;
     data = result.data;
   } catch (err) {
+    if (!(err instanceof ApiError) || err.code === 'REQUEST_TIMEOUT') {
+      mobileDebugLog('warn', 'network', 'request failed', err);
+    }
     if (err instanceof ApiError) throw err;
     if (isAbortError(err)) {
       throw new ApiError('REQUEST_TIMEOUT', 0, i18n.t('apiErrors.requestTimeout'));
@@ -118,6 +129,8 @@ export async function apiFetchRaw<T>(
   if (!response.ok) {
     const error = readError(data);
     const code = error.code ?? `HTTP_${response.status}`;
+    const failure = new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'), error.details);
+    mobileDebugLog('warn', 'network', 'response rejected', { status: response.status, code }, failure.message);
     if (response.status === 401 && code === 'ACCOUNT_UNAVAILABLE') {
       try {
         await accountUnavailableHandler?.();
@@ -125,7 +138,7 @@ export async function apiFetchRaw<T>(
         // Preserve the original typed API error even if local cleanup fails.
       }
     }
-    throw new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'), error.details);
+    throw failure;
   }
 
   return data as T;

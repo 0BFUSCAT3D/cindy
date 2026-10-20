@@ -57,6 +57,8 @@ export interface AuthClientOptions {
   locale?: string;
   fetch: AuthFetch;
   timeoutMs?: number;
+  /** Original failure before UI error mapping; platform adapters handle log redaction. */
+  onRequestError?: (path: string, status: number, error: unknown) => void;
 }
 
 /** Structured auth-server failure preserved across platform adapters. */
@@ -534,6 +536,7 @@ export class CindyAuthClient {
           ...(timeoutMs > 0 || external ? { signal: controller.signal } : {}),
         });
       } catch (error) {
+        this.logRequestError(path, 0, error);
         throw this.describeTransportFailure(error, external);
       }
 
@@ -543,6 +546,7 @@ export class CindyAuthClient {
       try {
         data = await response.json();
       } catch (error) {
+        this.logRequestError(path, response.status, error);
         // body 读取同样可能因取消/超时中断,此时按传输失败归类而不是"响应非法 JSON"
         if (error instanceof Error && error.name === "AbortError") {
           throw this.describeTransportFailure(error, external);
@@ -576,10 +580,13 @@ export class CindyAuthClient {
             parsed.data.message ??
             "Authentication request failed")
           : "Authentication request failed";
-        throw new AuthApiError(code, response.status, message, retryAt);
+        const error = new AuthApiError(code, response.status, message, retryAt);
+        this.logRequestError(path, response.status, error);
+        throw error;
       }
       const parsed = schema.safeParse(data);
       if (!parsed.success) {
+        this.logRequestError(path, response.status, parsed.error);
         throw new AuthApiError(
           "INVALID_RESPONSE",
           response.status,
@@ -590,6 +597,14 @@ export class CindyAuthClient {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       external?.removeEventListener("abort", forwardAbort);
+    }
+  }
+
+  private logRequestError(path: string, status: number, error: unknown): void {
+    try {
+      this.options.onRequestError?.(path, status, error);
+    } catch {
+      // A logging failure cannot affect auth, retries or rotated credentials.
     }
   }
 
