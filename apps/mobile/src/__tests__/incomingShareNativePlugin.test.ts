@@ -154,6 +154,7 @@ it("preserves original exports ahead of previews and copies temporary URLs withi
   expect(result.status).toBe(0);
   expect(result.stdout).toContain("PASS: concrete Markdown/source files and plain text previews");
   expect(result.stdout).toContain("PASS: original documents/videos beat thumbnails; real images remain images");
+  expect(result.stdout).toContain("PASS: web URL survives its image thumbnail");
   expect(result.stdout).toContain("PASS: temporary file URL copied inside provider callback");
   expect(result.stdout).toContain("PASS: durable exact-snapshot rejection, retry and replacement");
 }, 180_000);

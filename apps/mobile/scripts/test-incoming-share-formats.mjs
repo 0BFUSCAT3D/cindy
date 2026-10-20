@@ -82,6 +82,17 @@ final class Adapter {
       precondition(payload.type == .text && payload.value == "shared passage")
     }
     let selected = CommandLine.arguments[2]
+    let link = NSItemProvider()
+    let sharedURL = URL(string: "https://example.com/shared-page?source=provider")!
+    link.registerDataRepresentation(forTypeIdentifier: UTType.image.identifier, visibility: .all) { done in
+      done(Data("link thumbnail".utf8), nil); return nil
+    }
+    link.registerItem(forTypeIdentifier: UTType.url.identifier, loadHandler: { completion, _, _ in
+      completion?(sharedURL as NSURL, nil)
+    })
+    guard let linked = await adapter.parse(link) else { fatalError("Missing web URL") }
+    precondition(linked.type == .url && linked.value == sharedURL.absoluteString && linked.mimeType == "text/uri-list", "Thumbnail replaced web URL")
+    print("PASS: web URL survives its image thumbnail")
     if selected != "file-url" {
       for type in [UTType.pdf, .mpeg4Movie] {
         let provider = NSItemProvider()
@@ -95,6 +106,9 @@ final class Adapter {
         provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { done in
           done(bytes, nil); return nil
         }
+        provider.registerItem(forTypeIdentifier: UTType.url.identifier, loadHandler: { completion, _, _ in
+          completion?(sharedURL as NSURL, nil)
+        })
         guard let payload = await adapter.parse(provider),
               payload.type == (type.conforms(to: .movie) ? .video : .file),
               let url = URL(string: payload.value) else { fatalError("Thumbnail replaced original export") }

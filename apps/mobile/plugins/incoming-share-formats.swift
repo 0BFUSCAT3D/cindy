@@ -19,15 +19,17 @@
     }
     // Concrete exports win over thumbnails as well as text/link previews.
     if let file = await loadShareFile(provider, format: .data, kind: .file, excludePlainText: true, excludeImages: true) { return file }
-    if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
-       let image = await loadShareFile(provider, format: .image, kind: .image) { return image }
+    // Web links may also advertise a thumbnail; retain the actionable URL.
     if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
        let value = await loadShareItem(provider, identifier: UTType.url.identifier) {
-      let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:))
+      let text = (value as? String) ?? (value as? Data).flatMap { String(data: $0, encoding: .utf8) }
+      let url = (value as? URL) ?? text.flatMap(URL.init(string:))
       if let url, !url.isFileURL {
         return SharePayload(type: .url, value: url.absoluteString, mimeType: "text/uri-list", metadata: nil)
       }
     }
+    if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
+       let image = await loadShareFile(provider, format: .image, kind: .image) { return image }
     if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
        let value = await loadShareItem(provider, identifier: UTType.plainText.identifier) {
       let text = (value as? String) ?? (value as? NSAttributedString)?.string

@@ -43,6 +43,9 @@ new sending privileges: normal conversation hydration and authorization still ap
   formats need no extension allowlist.
 - `plugins/with-incoming-share-formats.js`: generated Expo controller integration.
   Checked patch anchors fail prebuild if the upstream template changes.
+- `fingerprint.config.cjs`: explicitly hashes the share extension's Swift, strings
+  and Safari script resources. Register additional native resources here so format
+  changes invalidate cached binaries and require a compatible native release.
 - `plugins/with-incoming-share-files.js`: App Group file ownership, activation predicate,
   Safari script packaging and existing native-slot write/launch feedback. Expo Xcode
   mods run in reverse registration order; keep this plugin before `expo-sharing`.
@@ -56,7 +59,8 @@ new sending privileges: normal conversation hydration and authorization still ap
   API (latest 500 per computer plus pinned tasks); archived/worker/bot sessions are not
   duplicated in the task section.
 
-Provider temporary URLs are copied **inside** the `loadFileRepresentation` callback.
+Provider temporary URLs are copied **inside** the `loadFileRepresentation` or
+`loadItem` callback. Web URLs precede image previews but follow concrete file exports.
 Security-scoped access is balanced; directories use `NSFileCoordinator.forUploading`.
 Each input owns a unique App Group directory, so equal filenames cannot overwrite.
 The native slot is acknowledged only by the selected, focused, hydrated composer;
