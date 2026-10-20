@@ -1461,6 +1461,32 @@ export async function supersedeRetriedUserTurn(
   return clientIds;
 }
 
+/** Retract an assistant draft rejected by its authoritative empty final.
+ * Reuse the exact-row publication rollback so preview/count invalidation is
+ * atomic and a concurrent edit or replacement can never be removed.
+ */
+export async function discardPersistedAssistantMessage(
+  sessionId: string,
+  clientId: string,
+  isCurrent: () => boolean,
+): Promise<boolean> {
+  const ownerScope = captureOwnerBroadcastScope();
+  const dbClient = getDbClient();
+  if (!isCurrent() || !isOwnerBroadcastScopeCurrent(ownerScope)) return false;
+  const [row] = await dbClient.drizzle.select().from(messages).where(and(
+    eq(messages.sessionId, sessionId), eq(messages.clientId, clientId),
+    eq(messages.role, 'assistant'), isNull(messages.rewindAt),
+  )).limit(1);
+  if (!row || !isCurrent() || !isOwnerBroadcastScopeCurrent(ownerScope)) return false;
+  const result = await dbClient.tx('message.insert', {
+    id: row.id, clientId: row.clientId, sessionId: row.sessionId,
+    role: row.role, content: row.content, toolUseId: row.toolUseId,
+    agentMeta: row.agentMeta, agentKind: row.agentKind, createdAt: row.createdAt,
+    guarded: false, publication: 'rollback',
+  });
+  return result.changes > 0;
+}
+
 export async function updateMessageContent(
   sessionId: string,
   clientId: string,

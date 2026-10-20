@@ -73,6 +73,8 @@ it('marks exact failed assistant items, including a live block, without rewritin
 vi.mock('../localDb/ipc/messages.js', () => ({
   broadcastMessageAgentMetaUpdate: vi.fn(async () => true),
   broadcastMessageRow: vi.fn(),
+  broadcastMessageDeleted: vi.fn(),
+  discardPersistedAssistantMessage: vi.fn(async () => true),
   createMessage: vi.fn(async () => ({}) as unknown),
   findVisibleToolUseMessageByAliases: vi.fn(async () => null),
   patchMessageAgentMetaWithResult: vi.fn(async (_sessionId, _clientId, patch) => ({
@@ -114,6 +116,8 @@ vi.mock('../device-link/broadcast-tap.js', () => ({
 import {
   broadcastMessageAgentMetaUpdate,
   broadcastMessageRow,
+  broadcastMessageDeleted,
+  discardPersistedAssistantMessage,
   createMessage,
   findVisibleToolUseMessageByAliases,
   patchMessageAgentMetaWithResult,
@@ -2989,6 +2993,33 @@ describe('streamed assistant final calibration', () => {
     expect(onAssistantTextEvent(SESSION, final, null)).toBe(persistId);
     await flushWrites();
     expect(vi.mocked(createMessage).mock.calls.filter(([, message]) => message.role === 'assistant')).toHaveLength(1);
+  });
+
+  it('retracts a persisted item on an empty authoritative final without disturbing the newer stream', async () => {
+    const firstId = onAssistantTextEvent(SESSION,
+      { text: 'Withdrawn draft', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    onToolUseEvent(SESSION, { toolUseId: 'cmd-a', toolName: 'exec', input: {} }, null);
+    onAssistantTextEvent(SESSION, { text: 'Next step', agentMessageId: 'msg-b' }, null);
+    const before = getSessionTextSnapshot(SESSION);
+    onAssistantTextEvent(SESSION,
+      { text: '', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null);
+    await flushWrites();
+    expect(updateMessageContent).not.toHaveBeenCalledWith(SESSION, firstId, '');
+    expect(discardPersistedAssistantMessage).toHaveBeenCalledWith(SESSION, firstId, expect.any(Function));
+    expect(broadcastMessageDeleted).toHaveBeenCalledWith({ sessionId: SESSION,
+      clientId: firstId, clientIds: [firstId] }, expect.anything());
+    expect(getSessionTextSnapshot(SESSION)).toEqual(before);
+  });
+
+  it('does not leave a retracted item as the completion or cost target', async () => {
+    onAssistantTextEvent(SESSION, { text: 'Withdrawn', agentMessageId: 'msg-a' }, null);
+    flushAssistantBlock(SESSION);
+    onAssistantTextEvent(SESSION,
+      { text: '', isFinal: true, isFullText: true, agentMessageId: 'msg-a' }, null);
+    expect(consumeLastAssistantPersistId(SESSION)).toBeUndefined();
+    expect(consumeLastTopLevelAssistantPersistId(SESSION)).toBeUndefined();
+    await flushWrites();
   });
 
   it('calibrates an older item without flushing or replacing the newer stream', async () => {

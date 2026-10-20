@@ -2747,6 +2747,7 @@ function mergeRemoteTextEvent(
     ? previousStreamingClientId
     : undefined;
   const clientIdResolution = finalReusesExistingItem && normalizedPersistId
+    && (!previousStreamingClientId || !isGeneratedStreamingClientId(previousStreamingClientId))
     ? { clientId: normalizedPersistId, changed: false }
     : streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;

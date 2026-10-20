@@ -37,6 +37,8 @@ import { desc, eq } from 'drizzle-orm';
 
 import {
   broadcastMessageRow,
+  broadcastMessageDeleted,
+  discardPersistedAssistantMessage,
   broadcastMessageAgentMetaUpdate,
   createMessage as createDbMessage,
   findVisibleToolUseMessageByAliases,
@@ -2246,6 +2248,14 @@ function assembleAssistantTextEvent(
     const isCurrentBoundary = () => clearBoundaryBySession.get(sessionId) === clearBoundary;
     enqueueWrite(`assistant_item_final:${sessionId}:${linkedPersistId}`, async (ownerScope) => {
       if (!isCurrentBoundary()) return;
+      if (!visible) {
+        const discarded = await discardPersistedAssistantMessage(sessionId, linkedPersistId,
+          () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope));
+        if (discarded && isCurrentBoundary() && isOwnerScopeCurrent(ownerScope)) {
+          broadcastMessageDeleted({ sessionId, clientId: linkedPersistId, clientIds: [linkedPersistId] }, ownerScope);
+        }
+        return;
+      }
       const updated = await updateDbMessageContent(sessionId, linkedPersistId, visible);
       if (!isCurrentBoundary() || !isOwnerScopeCurrent(ownerScope)) return;
       if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
@@ -2256,7 +2266,13 @@ function assembleAssistantTextEvent(
         }
       }
     });
-    // Preserve the newer stream and the turn's existing completion/cost target.
+    if (!visible && lastTopLevelAssistantPersistIdBySession.get(sessionId) === linkedPersistId) {
+      lastTopLevelAssistantPersistIdBySession.delete(sessionId);
+    }
+    if (!visible && lastAssistantPersistIdBySession.get(sessionId) === linkedPersistId) {
+      lastAssistantPersistIdBySession.delete(sessionId);
+    }
+    // Preserve the newer stream and its completion/cost target.
     return linkedPersistId;
   }
   if (

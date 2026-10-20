@@ -831,6 +831,23 @@ describe('remoteSessionStore', () => {
     })).toBe(false);
   });
 
+  it('removes a rejected persisted draft while a newer assistant keeps streaming', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setMessages('s1', [{ ...message('host-a', 's1'), clientId: 'item-a', content: 'Withdrawn' }]);
+      pushMakerText('s1', 'item-b', 'Next', false);
+      vi.runOnlyPendingTimers();
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:deleted', {
+        sessionId: 's1', clientId: 'item-a', clientIds: ['item-a'],
+      });
+      pushMakerText('s1', undefined, ' tail', false);
+      vi.runOnlyPendingTimers();
+      expect(remoteSessionStore.getMessages('s1')).toEqual([expect.objectContaining({
+        clientId: 'item-b', content: 'Next tail', agentMeta: expect.objectContaining({ isStreaming: true }),
+      })]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('removes an orphan task update even when its deleted message is not cached', () => {
     remoteSessionStore.setMessages('s1', [message('m1', 's1')]);
     pushMakerTaskUpdate('s1', 'orphan-task');
@@ -894,6 +911,29 @@ describe('remoteSessionStore', () => {
           .toMatchObject({ content: 'Next tail', agentMeta: { isStreaming: true } });
       }
       expect(remoteSessionStore.getMessages('s1')).toHaveLength(newer ? 2 : 1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('migrates a short anonymous stream when its DB row arrives before the identified final', () => {
+    vi.useFakeTimers();
+    try {
+      pushMakerText('s1', undefined, 'Sure', false);
+      vi.runOnlyPendingTimers();
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', message: { ...message('host-a', 's1'), clientId: 'item-a', content: 'Sure, checking' },
+      });
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
+      remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+        sessionId: 's1', persistId: 'item-a', event: {
+          type: 'text', data: { text: 'Sure, checked', isFinal: true, isFullText: true },
+        },
+      });
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
+      pushMakerText('s1', undefined, ' tail', false);
+      vi.runOnlyPendingTimers();
+      expect(remoteSessionStore.getMessages('s1')).toEqual([expect.objectContaining({
+        id: 'host-a', clientId: 'item-a', content: 'Sure, checked tail',
+      })]);
     } finally { vi.useRealTimers(); }
   });
 
