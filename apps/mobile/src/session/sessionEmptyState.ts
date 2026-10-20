@@ -1,3 +1,5 @@
+import type { DeviceLinkStatus } from '@cindy/device-link';
+
 /**
  * 会话消息区"空状态"(暂无消息)是否应被抑制的纯判定。判定为 true 时消息区渲染
  * 「正在同步」loading 占位(MessageRenderer 的 SyncingMessages)而非「暂无消息」。
@@ -27,6 +29,44 @@ export function shouldSuppressEmptyMessageState(input: MessageEmptyStateInput): 
   // 冷开未同步窗口:还没首次同步完成、0 条、且不是离线/被撤销 → 渲染同步占位而非闪"暂无消息"。
   if (input.messageCount === 0 && !input.hasSyncedThisOpen && !input.remoteUnavailable) return true;
   return false;
+}
+
+export type MessageHistoryRead = { key: string; synced: boolean };
+
+export interface SessionMessageEmptyStateInput {
+  loading: boolean;
+  showSyncingShell: boolean;
+  subscriptionIdentity: string;
+  historyRead: MessageHistoryRead | null;
+  historySnapshot: { ready: boolean; items: readonly unknown[] };
+  messageCount: number;
+  status: DeviceLinkStatus;
+  targetAvailable: boolean | null;
+  remoteUnavailableReason: string | null;
+  historyNotCachedMessage: string;
+}
+
+/** 连接中且可用性未知时继续等待，不据此要求用户重新连接电脑。 */
+export function shouldShowCachedHistoryNotice(status: DeviceLinkStatus, targetAvailable: boolean | null): boolean {
+  return status !== 'connecting' && (status !== 'online' || targetAvailable === false);
+}
+
+/** 结合历史读取结果与连接状态，统一决定同步占位和未缓存文案。 */
+export function resolveSessionMessageEmptyState(input: SessionMessageEmptyStateInput) {
+  const hasSyncedHistory = input.historyRead?.key === input.subscriptionIdentity
+    ? input.historyRead.synced : input.historySnapshot.ready;
+  const remoteUnavailable = !!input.remoteUnavailableReason
+    || shouldShowCachedHistoryNotice(input.status, input.targetAvailable);
+  return {
+    syncingWhileEmpty: shouldSuppressEmptyMessageState({
+      loading: input.loading,
+      showSyncingShell: input.showSyncingShell,
+      messageCount: input.historySnapshot.ready ? input.historySnapshot.items.length : input.messageCount,
+      hasSyncedThisOpen: hasSyncedHistory,
+      remoteUnavailable,
+    }),
+    emptyMessage: !hasSyncedHistory && remoteUnavailable ? input.historyNotCachedMessage : undefined,
+  };
 }
 
 /**

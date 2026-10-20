@@ -9,7 +9,10 @@ import { runConnectionScopedSessionMetadataRead, waitForIndependentSnapshotReads
 import { syncSessionMessageWindow } from '@/session/sessionMessageWindowSync';
 import { shouldClearOperationErrorAfterSync } from '@/session/sessionSyncErrorRecovery';
 import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
-import { shouldSuppressEmptyMessageState } from '@/session/sessionEmptyState';
+import {
+  resolveSessionMessageEmptyState,
+  type SessionMessageEmptyStateInput,
+} from '@/session/sessionEmptyState';
 import zhMessages from '@/i18n/locales/zh-CN/message.json';
 import {
   bridgeLatestMessagePage,
@@ -172,55 +175,34 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
   };
 }
 
-// #6519, unit: execute the page's actual empty-state expressions and copy prop.
+// #6519 / #6527, unit: import the same presentation entry point the screen calls.
 // Existing recovery tests covered fetched rows, but not offline empty copy or an
 // empty history read succeeding while another snapshot fails. A synced A followed
 // by an uncached B is the smallest input exposing the page-level timestamp leak.
-function emptyPresentation(f: ReturnType<typeof fixture>, overrides: Record<string, unknown> = {}) {
-  const bindings: Record<string, unknown> = {
-    deviceId: 'd1', sessionId: 's1', connectionEpoch: 1,
-    messageHistoryRead: f.state.historyRead, lastSyncedAt: f.state.synced,
-    historyView: { snapshot: { ready: false } }, messages: f.state.rows,
+// This fixture supplies data only; no screen declarations or JSX are extracted.
+function emptyPresentation(f: ReturnType<typeof fixture>, overrides: Partial<SessionMessageEmptyStateInput> = {}) {
+  const result = resolveSessionMessageEmptyState({
+    subscriptionIdentity: JSON.stringify(['d1', 's1', 1]),
+    historyRead: f.state.historyRead,
+    historySnapshot: { ready: false, items: [] }, messageCount: f.state.rows.length,
     loading: f.state.loading, showSyncingShell: false, remoteUnavailableReason: null,
-    status: 'online', targetAvailableForDispatch: true, companionChat: false,
-    getPresenceAvailability: () => overrides.targetAvailableForDispatch ?? true,
-    shouldSuppressEmptyMessageState,
-    t: (key: string) => key === 'message.renderer.historyNotCached' ? zhMessages.renderer.historyNotCached : key,
+    status: 'online', targetAvailable: true,
+    historyNotCachedMessage: zhMessages.renderer.historyNotCached,
     ...overrides,
-  };
-  const declarations = new Map<string, ts.Expression>();
-  let emptyMessage: ts.Expression | undefined;
-  const visit = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) && node.initializer) declarations.set(node.name.getText(source), node.initializer);
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'MessageRenderer') {
-      for (const prop of node.attributes.properties) {
-        if (ts.isJsxAttribute(prop) && prop.name.getText(source) === 'emptyMessage'
-          && prop.initializer && ts.isJsxExpression(prop.initializer)) emptyMessage = prop.initializer.expression;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  if (!emptyMessage) throw new Error('Missing production empty-message prop');
-  const code = ['sessionSubscriptionIdentity', 'showCachedHistoryNotice', 'hasSyncedMessageHistory', 'messageHistoryUnavailable', 'syncingWhileEmpty']
-    .filter((name) => declarations.has(name))
-    .map((name) => `const ${name} = ${declarations.get(name)!.getText(source)};`).join('\n');
-  const compiled = ts.transpileModule(`${code}\nconst result = { syncing: syncingWhileEmpty, copy: ${emptyMessage.getText(source)} };`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  return new Function(...Object.keys(bindings), `${compiled}\nreturn result;`)(...Object.values(bindings));
+  });
+  return { syncing: result.syncingWhileEmpty, copy: result.emptyMessage };
 }
 
 describe('production session recovery callbacks', () => {
-  it.each([false, true])('explains uncached offline history immediately (companion=%s)', (companionChat) => {
+  it('explains uncached offline history immediately', () => {
     const f = fixture(false, false);
-    expect(emptyPresentation(f, { status: 'offline', companionChat })).toEqual({
+    expect(emptyPresentation(f, { status: 'stopped' })).toEqual({
       syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
     });
   });
 
   // #6527 review, unit: cached emptiness, connecting, and post-activity emptiness
-  // were absent from #6519 coverage. Execute the screen's expressions/effect;
+  // were absent from #6519 coverage. Call the production selector after sync/activity;
   // each minimal input previously displayed either false missing-cache copy or
   // a false empty result. Reuse the controller to restore a genuine empty cache.
   it('honors an empty restored history cache on an offline cold reopen', async () => {
@@ -232,35 +214,34 @@ describe('production session recovery callbacks', () => {
     });
     view.setNetworkAvailable(false);
     await view.restoreCachedView(async () => ({ ...view.getSnapshot(), ready: true }));
-    expect(emptyPresentation(f, { status: 'offline', historyView: { snapshot: view.getSnapshot() } }))
+    expect(emptyPresentation(f, { status: 'stopped', historySnapshot: view.getSnapshot() }))
       .toEqual({ syncing: false, copy: undefined });
   });
 
   it.each([
     { status: 'connecting', presence: null, syncing: true, copy: undefined },
     { status: 'online', presence: false, syncing: false, copy: '历史消息尚未缓存，连接电脑后同步' },
-  ])('distinguishes $status with presence=$presence from confirmed unavailability', ({ status, presence, syncing, copy }) => {
+  ] as const)('distinguishes $status with presence=$presence from confirmed unavailability', ({ status, presence, syncing, copy }) => {
     const f = fixture(false, false);
-    expect(emptyPresentation(f, { status, targetAvailableForDispatch: presence,
-      getPresenceAvailability: () => presence })).toEqual({ syncing, copy });
+    expect(emptyPresentation(f, { status, targetAvailable: presence })).toEqual({ syncing, copy });
   });
 
   it.each([false, true])('invalidates a confirmed empty result on new activity (restored cache=%s)', async (ready) => {
     const f = fixture();
     f.maker.listMessages.mockResolvedValue({ ...page, messages: [] });
     await f.sync();
-    const historyView = { snapshot: { ready, items: [] } };
-    expect(emptyPresentation(f, { historyView })).toEqual({ syncing: false, copy: undefined });
+    const historySnapshot = { ready, items: [] };
+    expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: false, copy: undefined });
     await pageCallback('liveActivitySig', {
       ...f.bindings, liveAttention: true, liveActivitySig: 'completed|1|new result',
       prevLiveActivitySigRef: { current: 'completed|1|previous result' }, load: async () => undefined,
     })();
-    expect(emptyPresentation(f, { historyView })).toEqual({ syncing: true, copy: undefined });
-    expect(emptyPresentation(f, { historyView, status: 'offline' })).toEqual({
+    expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: true, copy: undefined });
+    expect(emptyPresentation(f, { historySnapshot, status: 'stopped' })).toEqual({
       syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
     });
     await f.sync();
-    expect(emptyPresentation(f, { historyView })).toEqual({ syncing: false, copy: undefined });
+    expect(emptyPresentation(f, { historySnapshot })).toEqual({ syncing: false, copy: undefined });
   });
 
   it('does not carry a synced task into an uncached offline task, then shows a confirmed empty result after reconnect', async () => {
@@ -269,11 +250,11 @@ describe('production session recovery callbacks', () => {
     await f.sync();
     expect(emptyPresentation(f)).toEqual({ syncing: false, copy: undefined });
     for (const sessionId of ['s2', 's3']) {
-      expect(emptyPresentation(f, { sessionId, status: 'offline' })).toEqual({
+      expect(emptyPresentation(f, { subscriptionIdentity: JSON.stringify(['d1', sessionId, 1]), status: 'stopped' })).toEqual({
         syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
       });
     }
-    expect(emptyPresentation(f, { sessionId: 's2', connectionEpoch: 2 })).toEqual({ syncing: true, copy: undefined });
+    expect(emptyPresentation(f, { subscriptionIdentity: JSON.stringify(['d1', 's2', 2]) })).toEqual({ syncing: true, copy: undefined });
     f.bindings.sessionId = 's2';
     f.bindings.readAckEpochRef.current = 2;
     f.bindings.sessionSubscriptionIdentityRef.current = JSON.stringify(['d1', 's2', 2]);
@@ -281,7 +262,7 @@ describe('production session recovery callbacks', () => {
     const coordinator = createRemoteSyncCoordinator(pageCallback('syncSession', f.bindings));
     coordinator.setContext('d1:s2:2');
     await coordinator.request({ reason: 'manual' });
-    expect(emptyPresentation(f, { sessionId: 's2', connectionEpoch: 2 })).toEqual({ syncing: false, copy: undefined });
+    expect(emptyPresentation(f, { subscriptionIdentity: JSON.stringify(['d1', 's2', 2]) })).toEqual({ syncing: false, copy: undefined });
   });
 
   it.each(['metadata', 'projection'])('recognizes fetched empty history even if %s fails', async (failedRead) => {
@@ -304,7 +285,7 @@ describe('production session recovery callbacks', () => {
     f.bindings.readAckGateGenRef.current += 1;
     history.resolve({ ...page, messages: [] });
     await result;
-    expect(emptyPresentation(f, { status: 'offline' })).toEqual({
+    expect(emptyPresentation(f, { status: 'stopped' })).toEqual({
       syncing: false, copy: '历史消息尚未缓存，连接电脑后同步',
     });
   });

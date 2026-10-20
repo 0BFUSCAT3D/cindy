@@ -584,7 +584,11 @@ import {
   commitMobileStreamingPrefixItems,
   type MobileStreamingRenderPrefixCache,
 } from '@/session/messageRenderStreamingCache';
-import { shouldSuppressEmptyMessageState } from '@/session/sessionEmptyState';
+import {
+  resolveSessionMessageEmptyState,
+  shouldShowCachedHistoryNotice,
+  type MessageHistoryRead,
+} from '@/session/sessionEmptyState';
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 import { markSessionScheduleRunsRead, unreadRunIdFromProjection } from '@/session/scheduleRunRead';
@@ -1123,8 +1127,7 @@ function SessionScreenContent() {
   // blocking both history and sync until a presence change happens to arrive.
   const remoteHistoryAvailable = status === 'online' && getPresenceAvailability(deviceId) !== false;
   // Unknown presence while connecting is loading, not evidence of a lost computer.
-  const showCachedHistoryNotice = status !== 'connecting'
-    && (status !== 'online' || getPresenceAvailability(deviceId) === false);
+  const showCachedHistoryNotice = shouldShowCachedHistoryNotice(status, getPresenceAvailability(deviceId));
   const historyView = useRemoteHistoryView(deviceId, sessionId, maker,
     () => messageScreenFocusedRef.current && messageAppActiveRef.current, remoteHistoryAvailable);
   useEffect(() => {
@@ -1772,7 +1775,7 @@ function SessionScreenContent() {
   } | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   // 记录当前任务/设备/连接的历史读取；新活动作废旧结果时，也不能凭旧缓存确认空态。
-  const [messageHistoryRead, setMessageHistoryRead] = useState<{ key: string; synced: boolean } | null>(null);
+  const [messageHistoryRead, setMessageHistoryRead] = useState<MessageHistoryRead | null>(null);
   // 会话已读回执的同步门槛 key:`${sessionId}:${connectionEpoch}`,由 syncSession 尾部写入。
   // 与 lastSyncedAt 不同,它按 session + 连接代区分——屏实例复用、原地切 session 时
   // lastSyncedAt 不会归零,不能用来判断「当前会话本次连接已同步」。epoch 经 ref 读取,
@@ -2544,16 +2547,19 @@ function SessionScreenContent() {
     && !remoteUnavailableReason;
   // 无内容且读取结果未知时显示同步占位；已知远端不可用时解释历史未缓存。
   // 成功读取的历史（含恢复的空缓存）可以确认空态，新活动后的旧结果必须等待重读。
-  const hasSyncedMessageHistory = messageHistoryRead?.key === sessionSubscriptionIdentity
-    ? messageHistoryRead.synced : historyView.snapshot.ready;
-  const messageHistoryUnavailable = !!remoteUnavailableReason || showCachedHistoryNotice;
-  const syncingWhileEmpty = shouldSuppressEmptyMessageState({
+  const messageEmptyState = resolveSessionMessageEmptyState({
     loading,
     showSyncingShell,
-    messageCount: historyView.snapshot.ready ? historyView.snapshot.items.length : messages.length,
-    hasSyncedThisOpen: hasSyncedMessageHistory,
-    remoteUnavailable: messageHistoryUnavailable,
+    subscriptionIdentity: sessionSubscriptionIdentity,
+    historyRead: messageHistoryRead,
+    historySnapshot: historyView.snapshot,
+    messageCount: messages.length,
+    status,
+    targetAvailable: targetAvailableForDispatch,
+    remoteUnavailableReason,
+    historyNotCachedMessage: t('message.renderer.historyNotCached'),
   });
+  const { syncingWhileEmpty } = messageEmptyState;
   const voiceIsProcessing = voiceState === 'submitting' || voiceState === 'refining';
   const composerSendUnavailableReason = canUseComposer ? null : composerDisabledReason;
   // 手机语音只保留官方托管路径,错误引导仅剩系统麦克风权限一条。
@@ -10110,8 +10116,7 @@ function SessionScreenContent() {
                     busyClientId={messageActionBusy?.clientId ?? null}
                     canLoadEarlier={canLoadEarlierHistory}
                     emptyTestID="session.messageList.empty"
-                    emptyMessage={!hasSyncedMessageHistory && messageHistoryUnavailable
-                      ? t('message.renderer.historyNotCached') : undefined}
+                    emptyMessage={messageEmptyState.emptyMessage}
                     focusedItemKey={focusedMessageItemKey ?? null}
                     focusedRequestKey={focusedMessageRequestKey}
                     followLatestRequestKey={messageListFollowLatestRequestKey}
