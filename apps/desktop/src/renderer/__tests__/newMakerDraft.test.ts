@@ -879,6 +879,27 @@ describe('newMakerDraft store', () => {
     });
   });
 
+  it('patchVendorPrefsFromTaskModelSwitch:先吸收另一窗口刚保存的默认再比较来源', async () => {
+    const m1 = await loadModule();
+    m1.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'xd' });
+    // 另一窗口把新建默认改成 anthropic，本窗口的 storage 事件还没送达。
+    const stored = JSON.parse(memStorage.getItem([...(memStorage as any).store.keys()][0]) as string);
+    stored.lastByVendor.cc = { ...stored.lastByVendor.cc, model: 'claude-opus-5-5', providerId: 'anthropic' };
+    stored.modelChosenByVendor = { cc: true };
+    stored.defaultTupleCustomized = true;
+    stored.defaultTupleSelectionCustomized = true;
+    memStorage.setItem([...(memStorage as any).store.keys()][0], JSON.stringify(stored));
+
+    const written = m1.patchVendorPrefsFromTaskModelSwitch(
+      'cc',
+      { model: 'anthropic/claude-sonnet-5-5', providerId: 'xd' },
+      'xd',
+    );
+
+    expect(written).toBe(false);
+    expect(m1.getDraft().lastByVendor.cc.providerId).toBe('anthropic');
+  });
+
   it('patchVendorPrefsPreservingModelChoice:只改思考档不打显式选择标记', async () => {
     const m1 = await loadModule();
     m1.patchVendorPrefsPreservingModelChoice('cc', {

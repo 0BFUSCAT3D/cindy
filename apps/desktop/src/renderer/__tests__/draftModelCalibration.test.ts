@@ -16,6 +16,7 @@ import {
   calibrateDraftModel,
   pickConnectedModelForAgent,
   pickFirstConnectedModelForAgent,
+  resolveDraftEffectiveProviderId,
   resolveDraftSessionProviderId,
   resolveNewTaskDefaultRoute,
   type DraftModelCalibrationInput,
@@ -1281,5 +1282,46 @@ describe('模型组 Auto：服务端决定默认与来源', () => {
         effectiveProviderId: 'xd',
       }),
     ).toBe('custom-litellm');
+  });
+});
+
+describe('resolveDraftEffectiveProviderId', () => {
+  const sonnet = model('claude-sonnet-5-5');
+  const anthropic = provider('anthropic', true, { 'claude-code': [sonnet] }, 'subscription');
+  const xd = provider('xd', true, { 'claude-code': [sonnet] }, 'managed');
+
+  it('草稿没存来源时按校准结果(订阅优先)解析，而不是按模型 id 直接取原生默认的 XD', () => {
+    const args = {
+      providers: [xd, anthropic],
+      agent: 'claude-code' as AgentKind,
+      model: 'claude-sonnet-5-5',
+      providerId: null,
+      chosenByUser: false,
+    };
+    expect(resolveDraftEffectiveProviderId(args)).toBe('anthropic');
+  });
+
+  it('草稿存了仍然可用的来源时原样返回', () => {
+    expect(
+      resolveDraftEffectiveProviderId({
+        providers: [xd, anthropic],
+        agent: 'claude-code',
+        model: 'claude-sonnet-5-5',
+        providerId: 'xd',
+        chosenByUser: true,
+      }),
+    ).toBe('xd');
+  });
+
+  it('没有任何来源提供该模型时返回 null', () => {
+    expect(
+      resolveDraftEffectiveProviderId({
+        providers: [],
+        agent: 'claude-code',
+        model: 'claude-sonnet-5-5',
+        providerId: null,
+        chosenByUser: false,
+      }),
+    ).toBeNull();
   });
 });

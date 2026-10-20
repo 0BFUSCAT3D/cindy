@@ -1191,6 +1191,8 @@ export function patchVendorPrefsFromTaskModelSwitch(
   taskProviderId: string | null,
   resolveDraftProviderId?: (prefs: VendorPrefs) => string | null,
 ): boolean {
+  // 先吸收另一窗口刚保存的默认，再比较来源，避免用过期的内存值放行后覆盖它。
+  rebaseStoredDefaultTuplePreference();
   if (taskProviderId) {
     const saved = currentDraft.lastByVendor[vendor];
     const draftProviderId = saved.providerId ?? resolveDraftProviderId?.(saved) ?? null;

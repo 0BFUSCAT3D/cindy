@@ -53,6 +53,7 @@ import {
 } from '@/lib/localCatalogSnapshot';
 import { useResyncAgentIslandSettingsAfterLogin } from '@/hooks/useAgentIslandSettings';
 import {
+  getDraft,
   getDraftForOwnerPreferenceSync,
   applyAppDefaultModelSelection,
   subscribeDraft,
@@ -64,7 +65,7 @@ import {
   patchVendorPrefsPreservingModelChoice,
 } from '@/state/newMakerDraft';
 import { getCachedProvidersSnapshot } from '@/lib/providersSnapshotStore';
-import { effectiveSourceIdForModel } from '@cindy/model-providers';
+import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
 import {
   snapshotForSeed,
   setProviderModelChoice,
@@ -315,7 +316,7 @@ export function App() {
         const vendor = agentKindToVendor(agent);
         if (active && taskProviderId && markModelChoice !== false) {
           // 控制端在本机任务里只换了模型:按本机自己的新建默认判断是否写回(同本机换模)。
-          patchVendorPrefsFromTaskModelSwitch(
+          const written = patchVendorPrefsFromTaskModelSwitch(
             vendor,
             {
               model: modelId,
@@ -324,13 +325,16 @@ export function App() {
             },
             taskProviderId,
             (prefs) =>
-              effectiveSourceIdForModel(
-                getCachedProvidersSnapshot()?.providers ?? [],
-                null,
-                prefs.model,
+              resolveDraftEffectiveProviderId({
+                providers: getCachedProvidersSnapshot()?.providers ?? [],
                 agent,
-              ),
+                model: prefs.model,
+                providerId: prefs.providerId,
+                chosenByUser: getDraft().modelChosenByVendor[vendor] === true,
+              }),
           );
+          // 新建默认没被改写时，同模型 id 共享的档位预设也不能被任务内选择改掉。
+          if (!written) return;
         } else if (active) {
           const patch =
             markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;

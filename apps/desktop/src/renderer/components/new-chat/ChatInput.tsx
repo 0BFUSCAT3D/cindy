@@ -344,6 +344,7 @@ import { useProviders } from '@/hooks/useProviders';
 import { useSshCodexProviders } from '@/hooks/useSshCodexProviders';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { chatEligibleSourcesForModel, effectiveSourceIdForModel } from '@cindy/model-providers';
+import { resolveDraftEffectiveProviderId } from '@/lib/draftModelCalibration';
 import {
   deriveModelsFromProviders,
   filterChatBridgedCodexProviders,
@@ -6453,8 +6454,9 @@ export function ChatInput({
         taskProviderId === effectiveSourceId;
       if (!remoteDeviceId) {
         const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
+        let draftWritten = true;
         if (modelOnly) {
-          patchVendorPrefsFromTaskModelSwitch(
+          draftWritten = patchVendorPrefsFromTaskModelSwitch(
             vendor,
             {
               model: modelId,
@@ -6463,7 +6465,13 @@ export function ChatInput({
             },
             taskProviderId,
             (prefs) =>
-              effectiveSourceIdForModel(localProviders.providers, null, prefs.model, agentKind),
+              resolveDraftEffectiveProviderId({
+                providers: localProviders.providers,
+                agent: agentKind,
+                model: prefs.model,
+                providerId: prefs.providerId,
+                chosenByUser: getDraft().modelChosenByVendor[vendor] === true,
+              }),
           );
         } else {
           const persistPrefs = markModelChoice
@@ -6476,6 +6484,8 @@ export function ChatInput({
             ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
           });
         }
+        // 新建默认没被改写时，同模型 id 共享的档位 / Fast 预设同样不写，整次不影响新建任务。
+        if (!draftWritten) return;
         if (memoryProviderId) {
           if (patch.effort !== undefined) {
             setProviderModelChoice(agentKind, memoryProviderId, modelId, patch.effort);
