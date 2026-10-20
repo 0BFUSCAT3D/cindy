@@ -143,3 +143,14 @@ describe("incoming share native file ownership", () => {
     ).toThrow("expo-sharing template changed");
   });
 });
+
+it("preserves concrete text exports ahead of their plain-text previews", ({ skip }) => {
+  const script = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/test-incoming-share-formats.mjs");
+  const result = spawnSync(process.execPath, [script], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: 150_000, killSignal: "SIGKILL",
+  });
+  if (result.error) throw result.error;
+  if (result.status === 77) return skip();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("PASS: concrete Markdown/source files and plain text previews");
+}, 180_000);

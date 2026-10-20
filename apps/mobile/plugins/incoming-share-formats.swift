@@ -50,10 +50,14 @@
   }
 
   private func loadShareFile(_ provider: NSItemProvider, format: UTType, kind: ShareType, excludePlainText: Bool = false) async -> SharePayload? {
+    // These exact representations are text previews. Concrete subtypes such as
+    // Markdown and source code also conform to plainText, but remain files.
+    let textPreviews = [UTType.plainText, .utf8PlainText, .utf16PlainText, .utf16ExternalPlainText]
+      .map(\.identifier)
     let identifiers = provider.registeredTypeIdentifiers.filter {
       let type = UTType($0)
       return type?.conforms(to: format) == true && type?.conforms(to: .url) != true
-        && (!excludePlainText || (type?.conforms(to: .plainText) != true && type?.conforms(to: .propertyList) != true))
+        && (!excludePlainText || (!textPreviews.contains($0) && type?.conforms(to: .propertyList) != true))
     }
     for identifier in identifiers {
       // Copy inside the callback: provider-owned URLs expire when it returns.
