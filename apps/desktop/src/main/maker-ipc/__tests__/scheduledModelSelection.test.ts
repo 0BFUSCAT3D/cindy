@@ -10,12 +10,12 @@ const selection: ScheduledModelSelection = {
 // model/provider/effort/Fast. Existing selection tests only covered applying the
 // automation choice. Unit tier, including restart, failure and late cleanup.
 describe('one-run automation model preferences', () => {
-  function scopeFixture() {
+  function scopeFixture(effort: ScheduledModelSelection['effort'] | '' = 'high') {
     const original: ScheduledModelSelection = {
       agentKind: 'codex', model: 'owner-model', providerId: 'owner-provider',
-      effort: 'high', fastMode: true,
+      effort: effort || null, fastMode: true,
     };
-    let profile = { ...original };
+    let profile = { ...original, effort };
     let baseline: string | null = null;
     let id = 0;
     const deps = {
@@ -40,6 +40,23 @@ describe('one-run automation model preferences', () => {
     h.automate();
     const scope = mode === 'restart' ? createScheduledModelScope(h.deps) : h.scope;
     await scope.restore('task');
+    expect(h.state()).toEqual({ profile: h.original, baseline: null });
+  });
+  // PR #6579 P1: prior coverage only saved valid effort tiers. The scope must
+  // restore a no-effort owner after automation, including persisted legacy ''.
+  // Unit tier: exercise begin/restore with the raw session sentinel and reload.
+  it.each(['new-save', 'legacy-restart'])('restores a no-effort owner after %s', async (mode) => {
+    const h = scopeFixture('');
+    const scopeId = await h.scope.begin('task');
+    expect(JSON.parse(h.state().baseline!).effort).toBeNull();
+    if (mode === 'legacy-restart') {
+      await h.deps.write('task', { ...h.original, effort: '', scopeId });
+    }
+    h.automate();
+    const scope = mode === 'legacy-restart' ? createScheduledModelScope(h.deps) : h.scope;
+    // Queue preparation must retain the original owner even for legacy records.
+    expect(await scope.begin('task')).toBe(scopeId);
+    await scope.restore('task', scopeId);
     expect(h.state()).toEqual({ profile: h.original, baseline: null });
   });
   it('retains the owner selection through a busy turn and a failed restore', async () => {

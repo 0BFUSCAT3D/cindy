@@ -13,14 +13,18 @@ export interface ScheduledModelBaseline {
 export function parseScheduledModelBaseline(value: unknown): ScheduledModelBaseline | null {
   if (typeof value !== 'string' || !value) return null;
   try {
-    const parsed = JSON.parse(value) as ScheduledModelBaseline;
+    const parsed = JSON.parse(value) as Omit<ScheduledModelBaseline, 'effort'> & {
+      effort: ScheduledModelBaseline['effort'] | '';
+    };
+    // Older session rows used an empty string for models without adjustable effort.
+    const effort = parsed?.effort === '' ? null : parsed?.effort;
     if (!parsed || typeof parsed.scopeId !== 'string' ||
       !['claude-code', 'codex', 'pi'].includes(parsed.agentKind) ||
       typeof parsed.model !== 'string' || !parsed.model ||
       (parsed.providerId !== null && typeof parsed.providerId !== 'string') ||
-      (parsed.effort !== null && !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(parsed.effort)) ||
+      (effort !== null && !['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) ||
       typeof parsed.fastMode !== 'boolean') return null;
-    return parsed;
+    return { ...parsed, effort };
   } catch {
     return null;
   }

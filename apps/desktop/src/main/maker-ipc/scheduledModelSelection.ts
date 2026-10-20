@@ -21,7 +21,9 @@ export interface ScheduledModelSelectionLease {
 /** All calls run under the existing session send lock. The saved preference survives restart. */
 export function createScheduledModelScope(deps: {
   read: (sessionId: string) => Promise<{
-    profile: ScheduledModelSelection;
+    profile: Omit<ScheduledModelSelection, 'effort'> & {
+      effort: ScheduledModelSelection['effort'] | '';
+    };
     baseline: string | null;
   } | null>;
   write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
@@ -42,7 +44,7 @@ export function createScheduledModelScope(deps: {
       const existing = parseScheduledModelBaseline(row.baseline);
       if (existing) return existing.scopeId;
       const scopeId = deps.createId();
-      await deps.write(sessionId, { ...row.profile, scopeId });
+      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
       return scopeId;
     },
     async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
