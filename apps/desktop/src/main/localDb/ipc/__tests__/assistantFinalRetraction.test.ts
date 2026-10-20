@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { messages, sessions } from '../../schema';
 import { tx } from '../../worker/opHandlers/tx';
-import { discardPersistedAssistantMessage } from '../messages';
+import { discardPersistedAssistantMessage, updateMessageContent } from '../messages';
 import * as prRefsStore from '../../../git-context/prRefsStore';
 import * as previewRows from '../../latestMessageText';
 import { commitMessageMediaRefs } from '../../../cindy-media/chatAttachments';
@@ -430,3 +430,51 @@ it.each(['after-update', 'during-preview', 'row-deleted'] as const)(
     } finally { release(); preview.mockRestore(); }
   },
 );
+
+
+// Replaces sessionTaskSummary's source-spelling assertion (CI #6532): invoke
+// the production update with real SQLite and inspect the saved body/cache/push.
+// Unit tier; existing retraction cases did not cover ordinary nonempty updates.
+it.each([
+  { authoritative: false, newer: false },
+  { authoritative: false, newer: true },
+  { authoritative: true, newer: false },
+  { authoritative: true, newer: true },
+])('refreshes only the latest visible preview after a message rewrite (%j)', async ({ authoritative, newer }) => {
+  h.sqlite!.prepare("UPDATE sessions SET cleared_at = 5, list_preview = 'Stale draft', list_message_count = 9 WHERE id = 's1'").run();
+  const insert = h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, agent_meta, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  insert.run('target', 'target', 's1', 'assistant', 'Stale draft', null, 10, null);
+  if (newer) insert.run('newer', 'newer', 's1', 'assistant', 'Newer answer', null, 10, null);
+  insert.run('pre-clear', 'pre-clear', 's1', 'assistant', 'Cleared answer', null, 4, null);
+  insert.run('rewound', 'rewound', 's1', 'assistant', 'Hidden answer', null, 30, 31);
+  insert.run('resume', 'resume', 's1', 'user', 'Internal resume', JSON.stringify({ autoResume: true }), 40, null);
+  await updateMessageContent('s1', 'target', 'Corrected answer', undefined,
+    authoritative ? { isCurrent: () => true } : undefined);
+  expect(h.sqlite!.prepare("SELECT content FROM messages WHERE client_id = 'target'").get())
+    .toEqual({ content: 'Corrected answer' });
+  expect(h.sqlite!.prepare("SELECT list_preview FROM sessions WHERE id = 's1'").get())
+    .toEqual({ list_preview: null });
+  const patches = h.broadcast.mock.calls.filter(([channel]) => channel === 'local-db:sessions:patched');
+  expect(patches.map(([, payload]) => payload)).toEqual(newer ? [] : [
+    { sessionId: 's1', patch: { preview: 'Corrected answer' } },
+  ]);
+});
+
+it('publishes a null preview when an ordinary latest-message rewrite has an empty body', async () => {
+  h.sqlite!.prepare("INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES ('target', 'target', 's1', 'assistant', 'Old body', 1)").run();
+  await updateMessageContent('s1', 'target', '');
+  expect(h.broadcast).toHaveBeenCalledWith('local-db:sessions:patched', {
+    sessionId: 's1', patch: { preview: null },
+  });
+});
+
+
+it('does not republish a rewritten message at the session clear boundary', async () => {
+  h.sqlite!.prepare("INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES ('target', 'target', 's1', 'assistant', 'Old body', 10)").run();
+  h.sqlite!.prepare("UPDATE sessions SET cleared_at = 10 WHERE id = 's1'").run();
+  await updateMessageContent('s1', 'target', 'Rewritten hidden body');
+  expect(h.sqlite!.prepare("SELECT content FROM messages WHERE client_id = 'target'").get())
+    .toEqual({ content: 'Rewritten hidden body' });
+  expect(h.broadcast.mock.calls.filter(([channel]) => channel === 'local-db:sessions:patched'))
+    .toHaveLength(0);
+});
