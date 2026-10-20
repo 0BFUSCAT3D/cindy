@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { messages, sessions } from '../../schema';
 import { tx } from '../../worker/opHandlers/tx';
-import { discardPersistedAssistantMessage, updateMessageContent } from '../messages';
+import { createMessage, discardPersistedAssistantMessage, updateMessageContent } from '../messages';
 import * as prRefsStore from '../../../git-context/prRefsStore';
 import * as previewRows from '../../latestMessageText';
 import { commitMessageMediaRefs } from '../../../cindy-media/chatAttachments';
@@ -247,9 +247,10 @@ it('does not restore pre-clear PR references when retraction cleanup resumes aft
     const boundary = Date.now() + 1000;
     h.sqlite!.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(boundary, 's1');
     noteSessionClearBoundary('s1', boundary);
-    await prRefsStore.recomputePrRefsForSession('s1');
-    expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
+    const clearedRefs = prRefsStore.recomputePrRefsForSession('s1');
     release();
+    await clearedRefs;
+    expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
     await drainPersistQueue();
     expect(await prRefsStore.listPrRefs('s1')).toHaveLength(0);
   } finally { release(); spy.mockRestore(); }
@@ -477,4 +478,62 @@ it('does not republish a rewritten message at the session clear boundary', async
     .toEqual({ content: 'Rewritten hidden body' });
   expect(h.broadcast.mock.calls.filter(([channel]) => channel === 'local-db:sessions:patched'))
     .toHaveLength(0);
+});
+
+it.each(['correction', 'retraction'])('preserves concurrent new-message PR refs during final %s', async (mode) => {
+  onAssistantTextEvent('s1', { text: 'https://github.com/o/r/pull/1', agentMessageId: 'a' }, null);
+  flushAssistantBlock('s1'); await drainPersistQueue();
+  let release!: () => void, captured!: () => void;
+  const resume = new Promise<void>(resolve => { release = resolve; });
+  const snapshotTaken = new Promise<void>(resolve => { captured = resolve; });
+  const db = h.client!.drizzle, select = db.select.bind(db);
+  let paused = false;
+  const spy = vi.spyOn(db, 'select').mockImplementation((fields) => {
+    const query = select(fields);
+    if (!fields || Object.keys(fields).sort().join(',') !== 'content,createdAt') return query;
+    const from = query.from.bind(query);
+    vi.spyOn(query, 'from').mockImplementation((table) => {
+      const builder = from(table);
+      if (table === messages && !paused) {
+        const orderBy = builder.orderBy.bind(builder);
+        vi.spyOn(builder, 'orderBy').mockImplementationOnce((...columns) => {
+          paused = true; const snapshot = orderBy(...columns).all(); captured();
+          return resume.then(() => snapshot) as unknown as ReturnType<typeof orderBy>;
+        });
+      }
+      return builder;
+    }); return query;
+  });
+  const hook = vi.spyOn(prRefsStore, 'recordPrRefsForMessage');
+  try {
+    onAssistantTextEvent('s1', { text: mode === 'retraction' ? '' : 'Corrected final without a link', agentMessageId: 'a', isFinal: true, isFullText: true }, null);
+    await snapshotTaken;
+    await createMessage('s1', { clientId: 'new-user', role: 'user', content: 'https://github.com/o/r/pull/2' });
+    const newMessagePrWrite = hook.mock.results.at(-1)!.value;
+    // A blocked recompute in s1 must not block another task's publication.
+    await prRefsStore.recordPrRefsForMessage({ sessionId: 's2', role: 'user',
+      content: 'https://github.com/o/r/pull/3', createdAt: Date.now() });
+    expect((await prRefsStore.listPrRefs('s2')).map(ref => ref.prNumber)).toEqual([3]);
+    // Let a non-serialized publication finish; a correctly queued hook waits
+    // for the recompute. Do not await that hook while holding its predecessor.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await newMessagePrWrite;
+    await drainPersistQueue();
+    expect(h.sqlite!.prepare("SELECT client_id FROM messages WHERE client_id='new-user'").get()).toBeTruthy();
+    expect((await prRefsStore.listPrRefs('s1')).map(ref => ref.prNumber)).toContain(2);
+  } finally { release(); spy.mockRestore(); hook.mockRestore(); }
+});
+
+it('releases the PR write queue after a failed publication', async () => {
+  const insert = vi.spyOn(h.client!.drizzle, 'insert').mockImplementationOnce(() => {
+    throw new Error('simulated PR write failure');
+  });
+  try {
+    await prRefsStore.recordPrRefsForMessage({ sessionId: 's1', role: 'user',
+      content: 'https://github.com/o/r/pull/1', createdAt: Date.now() });
+    await prRefsStore.recordPrRefsForMessage({ sessionId: 's1', role: 'user',
+      content: 'https://github.com/o/r/pull/2', createdAt: Date.now() });
+    expect((await prRefsStore.listPrRefs('s1')).map(ref => ref.prNumber)).toEqual([2]);
+  } finally { insert.mockRestore(); }
 });

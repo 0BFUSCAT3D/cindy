@@ -133,13 +133,55 @@ interface PrRefsRecomputeScope {
   isCurrent: () => boolean;
 }
 
+// Recompute and publication share a per-DB/session queue so an old history
+// snapshot cannot prune a concurrently published PR. Other sessions are independent.
+const pendingPrWrites = new WeakMap<DbClient, Map<string, Promise<void>>>();
+
+async function acquirePrWrite(dbClient: DbClient, sessionId: string): Promise<() => void> {
+  let sessions = pendingPrWrites.get(dbClient);
+  if (!sessions) {
+    sessions = new Map();
+    pendingPrWrites.set(dbClient, sessions);
+  }
+  const previous = sessions.get(sessionId) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  // Queue promises only represent lock release and never reject. Each caller
+  // releases in finally, so a failed write cannot block subsequent publications.
+  const pending = previous.then(() => held);
+  sessions.set(sessionId, pending);
+  const queue = sessions;
+  void pending.then(() => {
+    if (queue.get(sessionId) === pending) queue.delete(sessionId);
+  });
+  await previous;
+  return release;
+}
+
 async function upsertPrRefs(
   sessionId: string,
   refs: PrRef[],
   atMs?: number,
   opts?: { authoritative?: boolean; scope?: PrRefsRecomputeScope },
 ): Promise<void> {
-  const db = (opts?.scope?.dbClient ?? getDbClient()).drizzle;
+  const dbClient = opts?.scope?.dbClient ?? getDbClient();
+  const release = await acquirePrWrite(dbClient, sessionId);
+  try {
+    await upsertPrRefsWithinWrite(dbClient, sessionId, refs, atMs, opts);
+  } finally {
+    release();
+  }
+}
+
+/** Caller holds the session's PR write queue, including during recomputation. */
+async function upsertPrRefsWithinWrite(
+  dbClient: DbClient,
+  sessionId: string,
+  refs: PrRef[],
+  atMs?: number,
+  opts?: { authoritative?: boolean; scope?: PrRefsRecomputeScope },
+): Promise<void> {
+  const db = dbClient.drizzle;
   const ts = atMs ?? Date.now();
   for (const ref of refs) {
     if (opts?.scope && !opts.scope.isCurrent()) return;
@@ -255,16 +297,20 @@ export async function ensurePrRefsBackfill(): Promise<void> {
  * 重算某 session 的 PR 引用,只统计"对用户可见"的消息——rewind(rewind_at
  * 置位软删)与 /clear(clearedAt 边界之前隐藏)之后调用,只出现在被回滚/被
  * clear 段里的 PR 不该再挂在会话上(Codex review P2 ×2)。
- * 做法:删全量后按存活消息重提取,时间戳用消息原始 createdAt;完成广播刷新。
- * rewind / clear 都是低频操作,全量重算可接受。
+ * 按存活消息 upsert 后剪除过期引用,时间戳用消息原始 createdAt;完成广播刷新。
+ * 与同任务的 PR 写入串行,避免迟到全文校准用旧快照剪除并发新消息的引用。
  */
 export async function recomputePrRefsForSession(
   sessionId: string,
   scope?: PrRefsRecomputeScope,
 ): Promise<void> {
+  let release: (() => void) | undefined;
   try {
     if (scope && !scope.isCurrent()) return;
-    const db = (scope?.dbClient ?? getDbClient()).drizzle;
+    const dbClient = scope?.dbClient ?? getDbClient();
+    release = await acquirePrWrite(dbClient, sessionId);
+    if (scope && !scope.isCurrent()) return;
+    const db = dbClient.drizzle;
     const [sessionRow] = await db
       .select({ clearedAt: sessions.clearedAt })
       .from(sessions)
@@ -298,7 +344,7 @@ export async function recomputePrRefsForSession(
       const refs = extractPrRefs(row.content);
       if (refs.length === 0) continue;
       for (const ref of refs) keep.add(`${ref.owner}/${ref.repo}#${ref.prNumber}`);
-      await upsertPrRefs(sessionId, refs, row.createdAt, { authoritative: true, scope });
+      await upsertPrRefsWithinWrite(dbClient, sessionId, refs, row.createdAt, { authoritative: true, scope });
     }
 
     if (scope && !scope.isCurrent()) return;
@@ -324,6 +370,8 @@ export async function recomputePrRefsForSession(
       sessionId,
       err: err instanceof Error ? err.message : String(err),
     });
+  } finally {
+    release?.();
   }
 }
 
