@@ -555,6 +555,14 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   `ghost_call.attachments` 显式交接；Host 复用已有的通用授权链，将授权后的指纹注入
   `args.attachments`，绝不把本地绝对路径暴露给插件。插件自行保存业务状态和更新 UI。
   Host 不自动回调插件，也不得新增画廊等插件业务语义。
+- 回环嵌入是第二个、也是更窄的页面网络例外：插件同时声明 `panel`、`node` 工作进程和
+  `preview.hosts` 中的 `localhost` / `127.0.0.1` 时（`ghostPanelLoopbackEmbedAllowed`），
+  其页面 CSP 追加 `frame-src 'self' http://127.0.0.1:* http://localhost:*`，分区请求闸放行
+  两类请求：面板页作为父帧发起的回环子帧导航；该子帧内回到**同一主机:端口**的资源、
+  XHR 与 WebSocket。面板页自身发出的回环 fetch/XHR、顶层导航到回环地址、换端口或换主机
+  的请求、带凭证的 URL 与 HTTPS 伪装一律继续拒绝。嵌入页由插件自己的随包 Node 进程在
+  本机提供，因此不扩大插件可达的网络范围；权限请求处理器不变（嵌入页不能申请摄像头、
+  定位等权限）。首个消费者是官方 `baguette-simulator`（iOS 模拟器停靠面板）。
 - 所有插件 HTML 页面（`settingsHtml`、panel、mainView 与逻辑页）都可以通过 `<img>` 或
   CSS 图片直接加载任意 HTTPS 地址，这是唯一的页面网络直连例外。Host 统一生成包含
   `img-src https:` 的 CSP，并由 owner × plugin session 请求闸把外部请求严格限定为
