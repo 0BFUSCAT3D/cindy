@@ -28,7 +28,7 @@ import { createProviderGroupRemoteClient, type ProviderGroupRemoteClient } from 
 import { createProviderGroupRouter, type ProviderGroupRouter } from './router.js';
 import type { ProviderGroupRemoteGroups } from './service.js';
 import { readProviderGroup } from './store.js';
-import { createProviderGroupUsageReader, providerGroupUsageSnapshot, providerGroupCodexUsageSnapshot, providerGroupCodexUsageFromReads } from './usage.js';
+import { createProviderGroupUsageReader, providerGroupUsageSnapshot, providerGroupCodexUsageSnapshot, providerGroupCodexUsageFromReads, type ProviderGroupCodexUsageSnapshot } from './usage.js';
 
 interface OwnerRuntime {
   owner: string;
@@ -99,6 +99,13 @@ function runtimeForActiveOwner(): OwnerRuntime {
     isCurrent: () => activeOwnerScopeKey() === owner,
     now: () => Date.now(),
   });
+  const mergeCodexUsage = (account: ProviderGroupCodexUsageSnapshot | null, limits: ProviderGroupCodexUsageSnapshot | null) => {
+    if (activeOwnerScopeKey() !== owner) return null;
+    return providerGroupCodexUsageSnapshot({
+      appServerBuckets: limits?.appServerBuckets ?? account?.appServerBuckets,
+      webSnapshot: account?.webSnapshot,
+    });
+  };
   const directory = createProviderGroupDirectory({
     listLocalProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
     localDeviceName: () => deviceName(),
@@ -111,12 +118,9 @@ function runtimeForActiveOwner(): OwnerRuntime {
     readClaudeUsage: (member) => usage.read(member),
     readCodexUsage: async (member) => {
       const [account, limits] = await Promise.all([codexUsage.read(member), codexLimits.read(member)]);
-      if (activeOwnerScopeKey() !== owner) return null;
-      return providerGroupCodexUsageSnapshot({
-        appServerBuckets: limits?.appServerBuckets ?? account?.appServerBuckets,
-        webSnapshot: account?.webSnapshot,
-      });
+      return mergeCodexUsage(account, limits);
     },
+    peekCodexUsage: (member) => mergeCodexUsage(codexUsage.peek(member), codexLimits.peek(member)),
     invalidateUsage: () => { usage.invalidate(); codexUsage.invalidate(); codexLimits.invalidate(); },
     now: () => Date.now(),
   });

@@ -197,6 +197,15 @@ export function createProviderGroupUsageReader<T>(deps: ProviderGroupUsageReader
   }
 
   return {
+    /** Completed sources remain usable when a caller's overall deadline precedes a sibling read's timeout. */
+    peek(member: ProviderGroupMember): T | null {
+      if (!deps.isCurrent() || member.kind === 'share'
+        || (member.agentDeviceId && isProviderShareAgentDeviceId(member.agentDeviceId))
+        || (member.kind === 'local' && !deps.cacheLocal)) return null;
+      const previous = cached.get(JSON.stringify([member.agentDeviceId, member.providerId]));
+      return previous && deps.now() - previous.at < REMOTE_USAGE_CACHE_MS
+        ? deps.parseSnapshot(previous.snapshot, deps.now()) : null;
+    },
     async read(member: ProviderGroupMember): Promise<T | null> {
       if (!deps.isCurrent() || member.kind === 'share'
         || (member.agentDeviceId && isProviderShareAgentDeviceId(member.agentDeviceId))) return null;

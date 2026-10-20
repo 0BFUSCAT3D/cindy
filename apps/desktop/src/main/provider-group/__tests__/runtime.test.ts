@@ -3,7 +3,8 @@
  */
 import type { ProviderView } from '@cindy/model-providers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { normalizeProviderGroupConfig } from '../../../shared/providerGroup.js';
+import { normalizeProviderGroupConfig, type ProviderGroupConfig } from '../../../shared/providerGroup.js';
+import { PROVIDER_GROUP_PICK_QUICK_MS } from '../router.js';
 import { PROVIDER_GROUP_USAGE_READ_TIMEOUT_MS, providerGroupMemberUsageState } from '../usage.js';
 
 let owner = 'owner-a';
@@ -12,6 +13,7 @@ const io = vi.hoisted(() => ({
   devices: vi.fn(),
   catalog: vi.fn(),
   invoke: vi.fn(),
+  group: vi.fn(() => null as ProviderGroupConfig | null),
 }));
 
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => owner }));
@@ -25,12 +27,12 @@ vi.mock('../../maker-host/createDesktopProviderService.js', () => ({
 }));
 vi.mock('../../remote-agent/controller/deviceCatalog.js', () => ({ readDeviceProviderViews: io.catalog }));
 vi.mock('../bindings.js', () => ({ listProviderGroupBindings: () => ({}) }));
-vi.mock('../store.js', () => ({ readProviderGroup: () => null }));
+vi.mock('../store.js', () => ({ readProviderGroup: io.group }));
 vi.mock('../coolingStore.js', () => ({ readProviderGroupCooling: () => ({}), writeProviderGroupCooling: vi.fn() }));
 
 const { getProviderGroupDirectory, getProviderGroupOwnerScope, getProviderGroupRouter, setProviderGroupClaudeUsageReader, setProviderGroupCodexUsageReader } = await import('../runtime.js');
 
-afterEach(() => { setProviderGroupClaudeUsageReader(null); setProviderGroupCodexUsageReader(null); vi.useRealTimers(); });
+afterEach(() => { setProviderGroupClaudeUsageReader(null); setProviderGroupCodexUsageReader(null); io.group.mockReset(); vi.useRealTimers(); });
 
 describe('provider group runtime', () => {
   it('keeps the affected model through the runtime facade', () => {
@@ -103,7 +105,7 @@ describe('provider group runtime quota account selection', () => {
     const config = normalizeProviderGroupConfig({ members: [{ kind: 'local' },
       { kind: 'device', agentDeviceId: 'mini', providerId }] }, localId)!;
     const read = () => getProviderGroupDirectory().resolveMembers(localId, config);
-    return { read };
+    return { read, config, localId };
   }
 
   it('uses each member’s provider ID through the injected reader and existing same-account channel', async () => {
@@ -198,7 +200,7 @@ describe('provider group runtime quota account selection', () => {
   // Unit: real runtime/directory quota eligibility must retain a completed source after the other times out.
   // P1 regression: immediate unsupported-channel cases miss a fast exhausted quota plus a pending sibling read.
   // Minimal input: native or WHAM at 100%, the other source deferred beyond 1.5s; cover local and same-account peers.
-  // Standalone runtime.test.ts: 1.69s Vitest / 3.40s command wall time.
+  // Standalone runtime.test.ts: 1.51s Vitest / 3.21s command wall time (including quick-pick regressions below).
   it.each([true, false])('keeps completed OpenAI quota while the other source is pending and merges its late result (native=%s)', async (native) => {
     vi.useFakeTimers();
     const h = harness('openai-second', 'codex');
@@ -249,6 +251,46 @@ describe('provider group runtime quota account selection', () => {
     getProviderGroupDirectory().invalidate();
     await h.read();
     expect(io.invoke).toHaveBeenCalledTimes(4);
+  });
+
+  // Unit / PR #6562 P1: runtime → directory → router must retain quota at the outer quick-pick deadline.
+  // Existing source-timeout cases start with an immediate catalog and never cross that deadline.
+  // Minimal input: the first member's catalog takes 2s, one quota is 100%, its sibling never returns;
+  // the second member is usable with unknown quota. Both source directions must pick the second at 3s.
+  it.each([true, false])('avoids an exhausted member at the quick-pick deadline after a slow catalog (native=%s)', async (native) => {
+    vi.useFakeTimers();
+    const h = harness('openai-second', 'codex');
+    const model = 'gpt-5.3-codex';
+    const provider = (id: string) => ({
+      id, connected: true, auth: { method: 'oauth', native: 'codex' }, agents: ['codex', 'pi'],
+      models: Object.fromEntries(['codex', 'pi'].map((agent) => [agent,
+        [{ id: model, name: model, efforts: [], defaultEffort: null }]])), routing: { codex: {}, pi: {} },
+    }) as unknown as ProviderView;
+    io.local.mockResolvedValue([provider(h.localId)]);
+    io.catalog.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve([provider('openai-second')]), 2_000);
+    }));
+    h.config.strategy = 'order';
+    h.config.members.reverse();
+    io.group.mockReturnValue(h.config);
+    setProviderGroupCodexUsageReader(async () => null, async () => null);
+    const raw = { updatedAt: Date.now(), primary: {
+      usedPercent: 100, windowMinutes: 300, resetsAt: Date.now() / 1000 + 3600,
+    } };
+    io.invoke.mockImplementation(async (_device, channel) => {
+      if ((channel === 'maker:usage:codex-rate-limits') !== native) return new Promise(() => {});
+      return { ok: true, result: { providerId: 'openai-second',
+        ...(native ? { rateLimits: raw } : { source: 'openai-web', ...raw }) } };
+    });
+    const picked = getProviderGroupRouter().pick({ providerId: h.localId, model, agentKind: native ? 'codex' : 'pi' });
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_PICK_QUICK_MS);
+    const result = await picked;
+    expect(result).toMatchObject({ kind: 'member', member: { key: 'local' } });
+    if (result.kind === 'member') {
+      expect(providerGroupMemberUsageState(result.resolved[0], model, Date.now(), native ? 'codex' : 'pi'))
+        .toMatchObject({ limited: true, usagePercent: 100 });
+    }
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_USAGE_READ_TIMEOUT_MS);
   });
 
   it('discards completed OpenAI quota if the owner changes while its sibling source is pending', async () => {

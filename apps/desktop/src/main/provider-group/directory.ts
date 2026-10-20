@@ -43,6 +43,8 @@ export interface ProviderGroupDirectoryDeps {
   /** Same-account subscription snapshots only; absence/failure keeps the member usable. */
   readClaudeUsage?(member: ProviderGroupMember): Promise<ClaudeSubscriptionUsageSnapshot | null>;
   readCodexUsage?(member: ProviderGroupMember): Promise<ProviderGroupCodexUsageSnapshot | null>;
+  /** At the quick-pick deadline, include completed sources without waiting for a pending sibling. */
+  peekCodexUsage?(member: ProviderGroupMember): ProviderGroupCodexUsageSnapshot | null;
   invalidateUsage?(): void;
   now(): number;
 }
@@ -293,7 +295,15 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       clearTimeout(timer);
     }
     const enough = options.enough;
-    const resolved = members.map((member, index) => settled[index] ?? partial[index] ?? pendingMember(member));
+    const resolved = members.map((member, index) => {
+      if (settled[index]) return settled[index];
+      const value = partial[index];
+      if (value?.state === 'ok' && member.kind !== 'share' && value.view
+        && providerWeeklyQuotaSource(value.view) === 'codex' && deps.peekCodexUsage) {
+        return { ...value, codexUsage: deps.peekCodexUsage(member) };
+      }
+      return value ?? pendingMember(member);
+    });
     if (!enough || !resolved.some(enough)) return all;
     return resolved;
   }
