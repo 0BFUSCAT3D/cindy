@@ -99,8 +99,21 @@ export async function resolveTaskModelSelection(selection: TaskModelSelection): 
 
 /** Resolve legacy implicit sources using the ordinary default policy, without persisting changes. */
 export async function resolveAvailableTaskModels(routes: readonly BotModelRoute[]): Promise<Array<BotModelRoute | null>> {
-  const { available, inputs } = await readSelection();
-  return routes.map(route => {
+  const owner = activeOwnerScopeKey();
+  const local = routes.some(route => !route.agentDeviceId) ? await readSelection() : null;
+  return Promise.all(routes.map(async route => {
+    if (route.agentDeviceId) {
+      const { readRemoteProviderRoute } = await import('../remote-agent/controller/deviceCatalog.js');
+      const { provider, model } = await readRemoteProviderRoute({
+        agentDeviceId: route.agentDeviceId, agentKind: route.harness === 'claude' ? 'claude-code' : route.harness,
+        providerId: route.providerId, model: route.model,
+      });
+      if (activeOwnerScopeKey() !== owner || isAppSessionBoundaryPending()) throw new Error('账号已变化，请重新选择');
+      if ((route.effort && !model.efforts.some(effort => effort === route.effort)) || (route.fastMode && !model.supportsFastMode)) return null;
+      return { ...route, providerId: provider.id };
+    }
+    if (!local) return null;
+    const { available, inputs } = local;
     const resolved = defaultBotModelChain({ providers: inputs.providers, providersLoading: false,
       availableAgents: inputs.availableAgents, availableAgentsLoaded: true,
       preferredRoute: route, isModelEnabled: inputs.enabled })[0];
@@ -109,7 +122,7 @@ export async function resolveAvailableTaskModels(routes: readonly BotModelRoute[
       && item.route.model === resolved.model && item.route.providerId === resolved.providerId);
     return entry && (!resolved.effort || entry.efforts.some(effort => effort === resolved.effort))
       && (!resolved.fastMode || entry.supportsFastMode) ? resolved : null;
-  });
+  }));
 }
 
 /** Check a saved full route without changing the application or teammate's primary model. */

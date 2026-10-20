@@ -12181,6 +12181,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const session = maker.getSession(sessionId);
       return session ? {
         agentKind: makerToDbAgentKind(session.agentKind),
+        agentDeviceId: session.agentDeviceId ?? null,
         model: session.model,
         providerId: getSessionProvider(sessionId) ?? null,
         effort: (getSessionEffort(sessionId) ?? undefined) as CreateOpts['effort'],
@@ -15005,6 +15006,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient()
         .drizzle.select({
           agentKind: sessions.agentKind,
+          agentDeviceId: sessions.agentDeviceId,
           model: sessions.model,
           providerId: sessions.providerId,
           effort: sessions.effort,
@@ -15016,6 +15018,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (row) {
         baseline = {
           agentKind: dbToMakerAgentKind(row.agentKind),
+          agentDeviceId: row.agentDeviceId,
           model: row.model,
           providerId: row.providerId?.trim() || null,
           effort: row.effort,
@@ -15031,6 +15034,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const control = getSessionRuntimeControlSnapshot(sessionId);
     const live = maker.getSession(sessionId);
     const effective: SessionRuntimeProfile = control.effectiveOverride ?? {
+      agentDeviceId: baseline.agentDeviceId,
       agentKind: live?.agentKind ?? meta.agentKind,
       model: live?.model ?? meta.model,
       providerId: hasSessionProvider(sessionId)
@@ -15055,10 +15059,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     route: SessionRouteSelection,
     currentAgentKind: AgentKind,
   ): Promise<void> => {
-    // 未指定位置的调用方(伙伴模型)仍只管本机；IM 默认携带明确位置，允许跨电脑跟随。
+    // Legacy callers without a location must not move a remote session implicitly.
     const currentDeviceId = await readSessionAgentDeviceId(sessionId);
     if (route.agentDeviceId === undefined && currentDeviceId) return;
-    if (route.agentKind !== currentAgentKind || currentDeviceId !== (route.agentDeviceId ?? null)) {
+    if (route.agentKind !== currentAgentKind || currentDeviceId !== (route.agentDeviceId ?? null) || currentDeviceId) {
       await performSessionAgentSwitch(agentSwitchDeps, {
         sessionId, targetAgentKind: route.agentKind, model: route.model,
         providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
@@ -15165,6 +15169,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient().drizzle.select({
         capabilitiesJson: botProfileVersions.capabilitiesJson,
         agentKind: sessions.agentKind,
+        agentDeviceId: sessions.agentDeviceId,
         model: sessions.model,
         providerId: sessions.providerId,
         effort: sessions.effort,
@@ -15197,6 +15202,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         chain: selection.chain,
         followsCindyDefault: selection.followsCindyDefault,
         current: {
+          agentDeviceId: row.agentDeviceId,
           agentKind: live?.agentKind ?? dbToMakerAgentKind(row.agentKind),
           model: live?.model ?? row.model ?? '',
           providerId: live && hasSessionProvider(sessionId)
@@ -15205,13 +15211,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           fastMode: live ? getSessionFastMode(sessionId) : !!row.fastMode,
         },
         hasRuntimeOverride: control.effectiveOverride !== null || control.pending !== null || !!intent,
-        next: intent ? { agentKind: intent.targetAgentKind, model: intent.model,
+        next: intent ? { agentDeviceId: intent.targetAgentDeviceId === undefined ? row.agentDeviceId : intent.targetAgentDeviceId, agentKind: intent.targetAgentKind, model: intent.model,
           providerId: intent.providerId ?? null, effort: intent.effort ?? null, fastMode: intent.fastMode ?? false }
           : control.pending?.profile ?? control.effectiveOverride ?? undefined,
       };
     },
     apply: async (sessionId, route, current) => {
-      await stageSessionRouteSelection(sessionId, route, current.agentKind);
+      await stageSessionRouteSelection(sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind);
       // Consume the same model/Harness intent as the normal send path. Its
       // verified window protection and history handoff also apply here; a Bot
       // settings save need not wait for a second user message. Busy runtimes
@@ -15355,7 +15361,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .from(sessions).where(eq(sessions.id, controlSessionId)).limit(1);
     const route = nextBotModelRoute(
       chain,
-      { harness: currentHarness, model: current.model, providerId: current.providerId },
+      { harness: currentHarness, model: current.model, providerId: current.providerId, agentDeviceId: current.agentDeviceId },
       control.visitedRoutes,
       (candidate) => !controlSession?.remoteHostId || candidate.harness === currentHarness,
     );
@@ -15364,6 +15370,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       candidate: route
         ? {
             agentKind: toAgentKind(route.harness),
+            agentDeviceId: route.agentDeviceId ?? null,
             model: route.model,
             providerId: route.providerId,
             effort: (route.effort || null) as SessionRuntimeProfile['effort'],
@@ -15426,10 +15433,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     try {
       const profiles = await readSessionRuntimeProfiles(sessionId);
       if (!profiles || !isCurrent()) return { session: null, outcome: 'superseded' };
-      // 自动换模型的候选来自本机目录；Agent 在另一台电脑运行的任务不在本机换，照常重试原路由。
-      if (await readSessionAgentDeviceId(sessionId)) {
-        return { session: null, outcome: requireRouteChange ? 'exhausted' : 'unchanged' };
-      }
       // A previously accepted Agent/fallback mutation owns the next boundary.
       // Do not let a later infrastructure retry replace that pending intent.
       if (profiles.control.pending ||
@@ -15447,6 +15450,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let currentForFallback = profiles.effective;
       let candidate = botFallback.candidate;
       if (!botFallback.isBot) {
+        if (await readSessionAgentDeviceId(sessionId)) return { session: null, outcome: requireRouteChange ? 'exhausted' : 'unchanged' };
         if (requireRouteChange) return { session: null, outcome: 'exhausted' };
         if (episodeAttempt < 2 || !readSessionRuntimeFallbackSettings().enabled) return { session: null, outcome: 'unchanged' };
         const providers = await getDesktopProviderService().listProviders({
@@ -15554,7 +15558,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
           return result;
         });
-        if (selected.agentKind !== currentForFallback.agentKind) {
+        if (selected.agentKind !== currentForFallback.agentKind
+          || (selected.agentDeviceId ?? null) !== (currentForFallback.agentDeviceId ?? null)
+          || selected.agentDeviceId) {
           try {
             const result = await withSendToSessionLock(sessionId, async () => {
               if (!isCurrent() || !sessionRuntimeControlOwnerEpochMatches(runtimeOwnerEpoch) ||
@@ -15562,6 +15568,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               const switched = await performSessionAgentSwitch(agentSwitchDeps, {
                 sessionId,
                 targetAgentKind: selected.agentKind,
+                agentDeviceId: selected.agentDeviceId ?? null,
                 model: selected.model,
                 providerId: selected.providerId,
                 effort: selected.effort,

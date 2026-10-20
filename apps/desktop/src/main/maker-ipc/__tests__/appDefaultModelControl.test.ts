@@ -5,7 +5,8 @@ import { changeAppDefaultModel, configureAppDefaultModelSelection, inspectAppDef
 import { setNewMakerDraftCache, syncNewMakerDraftCache } from '../../maker-host/newMakerDefaultsCache';
 
 const host = vi.hoisted(() => ({ owner: 'owner:1', enabled: true, connected: true, agents: ['codex'],
-  enableSecond: false, providers: vi.fn() }));
+  enableSecond: false, providers: vi.fn(), remote: vi.fn() }));
+vi.mock('../../remote-agent/controller/deviceCatalog.js', () => ({ readRemoteProviderRoute: host.remote }));
 vi.mock('../../maker-host/index.js', () => ({ getMakerIfReady: () => ({ listAvailableAgents: () => host.agents }) }));
 vi.mock('../../maker-host/createDesktopProviderService.js', () => ({
   getDesktopProviderService: () => ({ listProviders: host.providers }),
@@ -195,4 +196,17 @@ describe('Bot control of the real Cindy default', () => {
     await expect(changeAppDefaultModel(id, 'ultra')).rejects.toThrow('不可用');
     expect(dispatch).not.toHaveBeenCalled();
   });
+});
+
+// A shared account is independent of the recipient's installed harnesses and local credentials.
+it('validates remote task routes without reading or falling back to local providers', async () => {
+  host.agents = [];
+  host.providers.mockClear();
+  const shared = { ...route, agentDeviceId: 'share:one' };
+  host.remote.mockResolvedValue({ provider: { id: 'openai' }, model: { efforts: ['medium'], supportsFastMode: false } });
+  expect(await validateTaskModel(shared)).toBe(true);
+  expect(await validateTaskModel({ ...shared, effort: 'ultra' })).toBe(false);
+  host.remote.mockRejectedValue(new Error('revoked'));
+  await expect(validateTaskModel(shared)).rejects.toThrow('revoked');
+  expect(host.providers).not.toHaveBeenCalled();
 });
