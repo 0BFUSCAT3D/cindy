@@ -85,12 +85,12 @@ export function guestProviderRouteForSession(sessionId: string): GuestProviderRo
   return binding ? { sessionId: binding.sessionId, providerId: binding.providerId } : null;
 }
 
-/** 1M 通道后缀只是窗口标记，不是另一个模型。 */
+/** Legacy SDK aliases may differ by the 1M suffix when the catalog has only one profile. */
 function bareModelId(model: string): string {
   return model.trim().replace(/\[1m\]$/i, '');
 }
 
-/** 按请求模型核对目录与授权；Claude Code 忽略 1M 通道后缀，Pi 保留精确的窗口档位。 */
+/** 核对目录与授权时优先匹配请求的窗口档位；单条目的旧 SDK 后缀别名仍兼容。 */
 export function guestProviderOffersModel(providerId: string, agent: AgentKind, wireModel: string, sessionId?: string): boolean {
   const requested = bareModelId(wireModel);
   if (!requested) return false;
@@ -102,7 +102,12 @@ export function guestProviderOffersModel(providerId: string, agent: AgentKind, w
     const model = findCatalogModel(provider, wireModel, agent, { exact: true });
     return Boolean(model && !model.disabled && (!binding?.allowsModel || binding.allowsModel(model.id)));
   }
-  return (provider?.models[agent] ?? []).some((model) => !model.disabled && bareModelId(model.id) === requested
+  const profiles = (provider?.models[agent] ?? []).filter(model => bareModelId(model.id) === requested);
+  const longContext = /\[1m\]$/i.test(wireModel.trim());
+  const exactProfiles = profiles.filter(model => /\[1m\]$/i.test(model.id.trim()) === longContext);
+  // Select the catalog profile before checking grants or disabled state; neither
+  // a denied nor a disabled profile may borrow access from its sibling.
+  return (exactProfiles.length ? exactProfiles : profiles).some((model) => !model.disabled
     && (!binding?.allowsModel || binding.allowsModel(model.id)));
 }
 

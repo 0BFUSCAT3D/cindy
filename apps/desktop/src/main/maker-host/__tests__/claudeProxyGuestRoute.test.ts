@@ -188,6 +188,44 @@ describe('Claude proxy routing for shared-provider guests', () => {
     expect(await statusOf(await request(first.token))).toBe(403);
   });
 
+  // Unit regression for review 4327117965: the real proxy must return 403 when
+  // only the other catalog profile is granted. Existing coverage had one model
+  // with a compatible [1m] wire alias, never two independently authorized entries.
+  it.each([
+    ['shared-model', 'shared-model[1m]'],
+    ['shared-model[1m]', 'shared-model'],
+  ])('keeps 1M catalog profiles distinct when only %s is granted', async (granted, denied) => {
+    setCustomProviders([buildUserProvider({
+      id: 'shared-a', name: 'Shared', runtimes: { 'claude-code': {
+        baseUrl: SHARED_UPSTREAM, wireProtocol: 'anthropic-messages',
+        models: [{ id: 'shared-model', name: 'Standard' }, { id: 'shared-model[1m]', name: '1M' }],
+      } },
+    })]);
+    const { token } = registerGuestProviderRoute('guest-session', 'shared-a', model => model === granted);
+    const request = (model: string) => Promise.resolve(transform(
+      { model }, ctxWith({ [GUEST_ROUTE_HEADER]: token, 'x-api-key': 'placeholder' }),
+    ));
+    expect((await request(granted))?.upstreamOverride).toBe(SHARED_UPSTREAM);
+    expect(await statusOf(await request(denied))).toBe(403);
+    if (denied.endsWith('[1m]')) expect(await statusOf(await request(denied.replace('[1m]', '[1M]')))).toBe(403);
+  });
+
+  it('keeps disabled 1M catalog profiles from borrowing an enabled base profile', async () => {
+    const provider = buildUserProvider({
+      id: 'shared-a', name: 'Shared', runtimes: { 'claude-code': {
+        baseUrl: SHARED_UPSTREAM, wireProtocol: 'anthropic-messages',
+        models: [{ id: 'shared-model', name: 'Standard' }, { id: 'shared-model[1m]', name: '1M' }],
+      } },
+    });
+    provider.models['claude-code']![1]!.disabled = true;
+    setCustomProviders([provider]);
+    const { token } = registerGuestProviderRoute('guest-session', 'shared-a', () => true);
+    const decision = await Promise.resolve(transform(
+      { model: 'shared-model[1m]' }, ctxWith({ [GUEST_ROUTE_HEADER]: token, 'x-api-key': 'placeholder' }),
+    ));
+    expect(await statusOf(decision)).toBe(403);
+  });
+
   it('refuses a body-less request unless the shared provider is the default gateway', async () => {
     const { token } = registerGuestProviderRoute('guest-session', 'shared-a');
     const decision = await Promise.resolve(transform(undefined, ctxWith({ [GUEST_ROUTE_HEADER]: token })));
