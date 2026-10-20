@@ -69,7 +69,7 @@ function pair() {
       deliver,
     });
     const remoteBlocked = new Set<string>();
-    const access = new PluginSyncAccess({
+    const access: PluginSyncAccess = new PluginSyncAccess({
       eligible: peer => sides.has(peer) && peer !== id && !blocked.has(peer),
       revokedByRemote: peer => remoteBlocked.has(peer),
       invalidate: peer => svc.invalidatePeer(peer),
