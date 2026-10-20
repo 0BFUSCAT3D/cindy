@@ -1,5 +1,6 @@
 import { DeviceLinkError, type InvokeResultPayload } from '@cindy/device-link';
 import type { ArchiveSessionsDeps, SessionStatusChangeItem } from '@cindy/mcps';
+import { assertTaskActionCurrent } from '../maker-ipc/taskActionAuthorization.js';
 
 type Failure = { errorCode: string; message: string };
 const unknownOutcome = (): Failure => ({
@@ -86,6 +87,17 @@ export function createRemoteSessionsStatusSetter(deps: {
         // Preserve receipts without returning the previous account's metadata.
         changed.forEach((item) => { item.title = null; item.workingDir = null; });
         return fail(index, { errorCode: 'HOST_NOT_READY', message: '账号已切换，当前项及后续项未执行。' });
+      }
+      try {
+        await assertTaskActionCurrent();
+        assertCurrent();
+      } catch {
+        // The async authorization check can also cross an account boundary.
+        changed.forEach((item) => { item.title = null; item.workingDir = null; });
+        return fail(index, {
+          errorCode: 'TASK_ACTION_AUTHORIZATION_EXPIRED',
+          message: '请求来源已失效，当前项及后续项未执行。',
+        });
       }
       let response: InvokeResultPayload;
       try {

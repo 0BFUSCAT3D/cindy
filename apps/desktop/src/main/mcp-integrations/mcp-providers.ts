@@ -91,6 +91,7 @@ import { createTaskDigestReader } from './taskDigest.js';
 import { createDesktopTaskDigestDeps, createRemoteWorkbenchMessageReader } from './taskDigestHost.js';
 import { createTaskToolCallAuthorizer } from '../maker-ipc/taskToolCallAuthorizer.js';
 import { createDesktopTaskActionAuthorizer } from '../maker-ipc/taskActionHost.js';
+import { assertTaskActionCurrent } from '../maker-ipc/taskActionAuthorization.js';
 import {
   getSessionRowSnapshot,
   patchSessionMetaInDb,
@@ -801,7 +802,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'localDb not ready' };
         }
         try {
-          const renamed = await renameSessionTitlesInDb(changes, dryRun);
+          const renamed = await renameSessionTitlesInDb(changes, dryRun, assertTaskActionCurrent);
           return { ok: true, changes: renamed };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -824,7 +825,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'localDb not ready' };
         }
         try {
-          const changed = await setSessionsStatusInDb(sessionIds, status);
+          const changed = await setSessionsStatusInDb(sessionIds, status, assertTaskActionCurrent);
           return { ok: true, changed };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
