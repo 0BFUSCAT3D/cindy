@@ -2877,6 +2877,12 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     vendorFilter,
     viewMode,
   }), [displayedProjectOrder, groupByProject, groupDialogue, lastActivityFilter, projectFilter, sortBy, statusFilter, taskInfoFields, vendorFilter, viewMode]);
+  // 在看已归档任务时,顶栏「⋯」带提醒点(iOS 系统顶栏 / 自绘按钮两条路径共用这一个判据),
+  // 同时把状态写进无障碍名称,读屏用户不用打开菜单也知道列表不是平常的进行中任务。
+  const archivedReminder = statusFilter === 'archived';
+  const displayA11y = archivedReminder
+    ? t('devices.list.a11y.openDisplaySettingsWithStatus', { status: t('devices.list.search.filter.status.archived') })
+    : t('devices.list.a11y.openDisplaySettings');
   const homeDisplayPullDownActions = useMemo(
     () => buildHomeDisplayPullDownActions({
       // 与项目候选的 sessionCount 同口径:自动化组行按组内运行数计。
@@ -3172,9 +3178,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         <HomeNativeStackHeader
           keepMenuTopLeft={keepMenuTopLeft}
           syncing={quietSyncing}
-          displayA11y={t('devices.list.a11y.openDisplaySettings')}
+          displayA11y={displayA11y}
           displayActions={stableDisplayActions}
-          displayBadge={statusFilter === 'archived'}
+          displayBadge={archivedReminder}
           menuA11y={t('devices.list.a11y.openMenu')}
           onDisplayAction={stableDisplayAction}
           onOpenDeviceMenu={openDeviceMenu}
@@ -3260,11 +3266,11 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
             ) : null}
             {/* 系统菜单不可用(未编进 MenuView 的旧 iOS 包)时退回同一份菜单模型的 Cindy 自绘菜单。 */}
             <HomeDisplayMenu actions={homeDisplayPullDownActions} onAction={handleDisplayAction}>
-              <HomeHeaderGlassButton accessibilityLabel={t('devices.list.a11y.openDisplaySettings')} onPress={() => undefined} testID="home.displaySettingsButton">
+              <HomeHeaderGlassButton accessibilityLabel={displayA11y} onPress={() => undefined} testID="home.displaySettingsButton">
                 <View>
                   <Ellipsis color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
                   {/* 在看已归档任务时标一个点,提醒列表不是平常的进行中任务。 */}
-                  {statusFilter === 'archived' ? <View style={styles.displayFilterDot} testID="home.displayFilterDot" /> : null}
+                  {archivedReminder ? <View style={styles.displayFilterDot} testID="home.displayFilterDot" /> : null}
                 </View>
               </HomeHeaderGlassButton>
             </HomeDisplayMenu>
