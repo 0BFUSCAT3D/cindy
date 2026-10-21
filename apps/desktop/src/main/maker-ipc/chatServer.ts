@@ -66,7 +66,7 @@ interface Room {
   created_at: string; updated_at: string; revision: number; archived: boolean; dissolved_at?: string | null; organizer_id?: string | null; kind?: string;
 }
 /** `reads`: this reader's read position per Thread (`thread_key` = root ID, `main` for the main timeline); older servers omit it. */
-interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string }> }
+interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string; following?: boolean }> }
 interface Execution {
   id: string; conversation_id: string; source_message_id: string; bot_id: string;
   requester_id?: string;
@@ -1037,6 +1037,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     for (const m of known) if (!m.threadRootId && (m.replyCount ?? 0) > 0) rootIds.add(m.id);
     // A root outside the window is read in the background; its summary fills in on the next refresh.
     const roots = threads.sources(roomId, [...rootIds], known);
+    const followed = new Set(s.reads?.filter(read => read.following).map(read => read.thread_key));
     return [...rootIds].map((rootId): BotGroupThreadSummary => {
       const root = roots.get(rootId) ?? undefined;
       const rootView = root ? messageView(root, s.members) : null;
@@ -1046,7 +1047,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       return { rootId, rootAuthorName: rootView?.authorName ?? '', rootAuthorBotId: rootView?.authorBotId ?? null,
         rootText: root && !root.deleted ? threadPreviewText(root) || mediaNames(root) : '',
         replyCount: root?.replyCount ?? s.messages.filter(m => m.threadRootId === rootId).length,
-        unread: threadUnread(rootId, s.messages, reads),
+        unread: threadUnread(rootId, s.messages, reads), following: followed.has(rootId),
         lastReply: last && lastView ? { authorName: lastView.authorName, text: threadPreviewText(last) || mediaNames(last), createdAt: lastView.createdAt } : null };
     }).sort((a, b) => Number(b.unread.count > 0) - Number(a.unread.count > 0) || (b.lastReply?.createdAt ?? 0) - (a.lastReply?.createdAt ?? 0))
       .slice(0, THREAD_LIST_LIMIT);
@@ -1178,6 +1179,22 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
     }
     return Number(before);
+  }
+  /**
+   * Whether the reader follows this Thread, after first setting it when `next` is given; undefined
+   * when the server keeps no read state. Following is only ever the reader's choice: it is what
+   * makes later replies notify them (bot-group-chat.md §10「话题未读与提示」).
+   */
+  async function threadFollowing(roomId: string, rootId: string, next?: boolean): Promise<boolean | undefined> {
+    const s = await recentSnapshot(roomId);
+    if (!s.reads) return undefined;
+    const read = s.reads.find(entry => entry.thread_key === rootId);
+    if (next === undefined) return read?.following === true;
+    // The read position the server keeps never moves back, so restating it changes nothing else.
+    const written = await api<{ following: boolean }>(`/conversations/${roomId}/read`, 'POST', {
+      operationId: randomUUID(), threadRootId: rootId, readSeq: read?.read_seq ?? '0', following: next });
+    changed(roomId);
+    return written.following;
   }
   async function detail(roomId: string, options?: unknown, summaryOnly = false): Promise<BotGroupDetail> {
     id.parse(roomId);
@@ -1959,8 +1976,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     status: async () => ({ enabled: true, connected: current() && connected }),
     thread: input => result(async () => {
       const i = z.object({ groupId: id, rootId: id, before: z.number().int().positive().optional(), sourceMessageIds: z.array(id).optional(),
-        markRead: z.boolean().optional() }).parse(input);
+        markRead: z.boolean().optional(), following: z.boolean().optional() }).parse(input);
       i.groupId = await groupRoom(i.groupId);
+      const followingWrite = i.following === undefined ? undefined : threadFollowing(i.groupId, i.rootId, i.following);
+      followingWrite?.catch(() => undefined);
       // One round trip; awaited in the former order so the same failure is reported first.
       const membersRead = api<Member[]>(`/conversations/${i.groupId}/members`);
       const rootRead = api<Message>(`/conversations/${i.groupId}/messages/${i.rootId}`);
@@ -1973,10 +1992,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       // A share in the main chat can itself be a thread root.
       const rootViews = await messageViews(i.groupId, [root], members);
       await decorateThreads(i.groupId, rootViews, [root], page, members, false);
+      // An older page is history being scrolled: it says nothing about the Thread's switches.
+      const following = await (followingWrite ?? (i.before ? undefined : threadFollowing(i.groupId, root.id)));
       const readBefore = i.markRead && !i.before ? await markThreadRead(i.groupId, root, page) : undefined;
       return { root: rootViews[0], executionFailures,
         replies: await messageViews(i.groupId, page.reverse(), members), hasMore: page.length === 50,
-        ...(readBefore !== undefined ? { readBefore } : {}) };
+        ...(readBefore !== undefined ? { readBefore } : {}), ...(following !== undefined ? { following } : {}) };
     }),
     shareToMain: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id }).strict().parse(input);

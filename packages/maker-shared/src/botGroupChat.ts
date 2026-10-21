@@ -200,6 +200,8 @@ export interface BotGroupThreadSummary {
   rootText: string;
   replyCount: number;
   unread: BotGroupThreadUnread;
+  /** The reader chose to follow it; absent when the server keeps no read state. */
+  following?: boolean;
   lastReply: { authorName: string; text: string; createdAt: number } | null;
 }
 
@@ -747,12 +749,15 @@ export interface ChatServerApi {
   /**
    * `markRead` (latest page only): the reader is looking at the Thread, so its server read state
    * moves to the newest reply read here; `readBefore` is where it stood before this read.
+   * `following` first sets whether the reader follows the Thread (bot-group-chat.md §10); the
+   * result's `following` is absent when the server keeps no read state.
    */
-  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[]; markRead?: boolean }): Promise<ChatServerResult<{
+  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[]; markRead?: boolean; following?: boolean }): Promise<ChatServerResult<{
     root: BotGroupMessageView; replies: BotGroupMessageView[]; hasMore: boolean;
     /** Same authoritative state as the main timeline; root and replies use one projection. */
     executionFailures?: BotGroupExecutionFailureView[];
     readBefore?: number;
+    following?: boolean;
   }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
   /**

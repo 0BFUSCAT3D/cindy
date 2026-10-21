@@ -7,7 +7,7 @@
  * 服务器的回复到了原地替换；失败撤掉、文字放回，原因写在输入框上方。
  */
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
+import { Bell, BellRing, Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -138,6 +138,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   /** Where the reader had read up to when the panel opened; fixed for the panel's life. */
   const [readBefore, setReadBefore] = useState<number | null>(null);
   const readBeforeRef = useRef<number | null>(null);
+  /** Whether the reader follows this Thread; undefined until known, or when the server keeps no read state. */
+  const [following, setFollowing] = useState<boolean | undefined>(undefined);
+  /** A follow change being written: reads that started before it must not undo it on screen. */
+  const followWriteRef = useRef(0);
 
   /**
    * Reads the latest page, or the page before `before`. `rereadOnly` re-reads an opened page for a
@@ -155,9 +159,11 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       // Reading the latest page marks the Thread read only while the reader is at the newest reply:
       // a reply that arrives while they read further up stays unread until they scroll down to it.
       const markRead = !before && stickToBottomRef.current;
+      const followWrite = followWriteRef.current;
       const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
+      if (!before && followWrite === followWriteRef.current) setFollowing(result.following);
       if (readBeforeRef.current === null && result.readBefore !== undefined) {
         readBeforeRef.current = result.readBefore;
         setReadBefore(result.readBefore);
@@ -207,6 +213,23 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   }, [read]);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+  /** Following is the reader's own switch, off by default: replying or being named never turns it on. */
+  const toggleFollowing = useCallback(async () => {
+    if (following === undefined) return;
+    const next = !following;
+    const write = ++followWriteRef.current;
+    const owner = getDataOwnerGeneration();
+    setFollowing(next);
+    try {
+      const result = await api().thread({ groupId: group.id, rootId, following: next });
+      if (!aliveRef.current || !isDataOwnerGenerationCurrent(owner) || write !== followWriteRef.current) return;
+      if (result.ok) { setFollowing(result.following); return; }
+      setFollowing(!next);
+      toast.error(t(chatErrorKey(result.errorCode)));
+    } catch {
+      if (aliveRef.current && write === followWriteRef.current) { setFollowing(!next); toast.error(t(key('requestFailed'))); }
+    }
+  }, [following, group.id, rootId, t]);
   useEffect(() => {
     aliveRef.current = true;
     refreshRef.current();
@@ -393,11 +416,23 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
           <h2 id={titleId} className="text-15 font-medium text-[var(--text-primary)]">{t(key('topic'))}</h2>
-          <Tip text={t('bots.close')}>
-            <Button variant="secondary" tone="quiet" size="md"
-              className="w-8 rounded-none px-0 [&::before]:rounded-full"
-              aria-label={t('bots.close')} onClick={onClose}><X size={17} aria-hidden /></Button>
-          </Tip>
+          <div className="flex items-center gap-1">
+            {following !== undefined ? (
+              <Tip text={t(key(following ? 'thread.unfollowTip' : 'thread.followTip'))}>
+                <Button variant="secondary" tone="quiet" size="sm" aria-pressed={following} data-thread-follow=""
+                  className={cn('gap-1.5 px-2.5', following ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]')}
+                  onClick={() => void toggleFollowing()}>
+                  {following ? <BellRing size={14} aria-hidden /> : <Bell size={14} aria-hidden />}
+                  {t(key(following ? 'thread.following' : 'thread.follow'))}
+                </Button>
+              </Tip>
+            ) : null}
+            <Tip text={t('bots.close')}>
+              <Button variant="secondary" tone="quiet" size="md"
+                className="w-8 rounded-none px-0 [&::before]:rounded-full"
+                aria-label={t('bots.close')} onClick={onClose}><X size={17} aria-hidden /></Button>
+            </Tip>
+          </div>
         </header>
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 pb-4 pt-3"
           onScroll={(event) => {
