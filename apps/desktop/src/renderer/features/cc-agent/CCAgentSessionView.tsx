@@ -1174,6 +1174,15 @@ function CCAgentSessionContent({
           if (!isCurrentSubagentRunsChange(payload, ownerStamp, sessionId)) return;
           onChanged();
         }),
+      // The data-owning device forwards its own change push over the link (session
+      // topic); discovery only listens once that Host's list reply declared it.
+      subscribeRemoteChanges: (onChanged) =>
+        window.electronAPI.deviceLink.onRemotePush((push, localOwnerStamp) => {
+          if (push.deviceId !== remoteDeviceId || push.channel !== 'local-db:subagent-runs:changed') return;
+          if ((push.payload as { sessionId?: unknown } | null)?.sessionId !== sessionId) return;
+          if (!isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) return;
+          onChanged();
+        }),
       registerTab: () => openSubagentsTab(sessionId, SUBAGENT_TAB_REGISTER_ONLY),
       isRequestOwnerCurrent: () => isDataOwnerGenerationCurrent(requestOwner),
       onPresenceChange: (present) => setSessionOwningDurablePiRuns(present ? sessionId : null),
@@ -3864,6 +3873,18 @@ function CCAgentSessionContent({
     [fastMode, insertSystemCard, remoteDeviceId, session, sessionId, t, updateSystemCardData],
   );
 
+  // 开始打字时提前启动 Agent，把冷启动藏进打字时间（本机与远程任务相同）。
+  const handleComposerTyping = useCallback(() => {
+    if (readOnly || cindyMakeInputLocked || !sessionId || !session?.workingDir) return;
+    makerChatStore.prewarmSession(
+      sessionId,
+      session.model,
+      session.effort,
+      session.permissionMode,
+      session.workingDir,
+    );
+  }, [cindyMakeInputLocked, readOnly, session, sessionId]);
+
   const handleSend = useCallback(
     async (
       message: string,
@@ -5786,6 +5807,7 @@ function CCAgentSessionContent({
                     />
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
+                  onComposerTyping={handleComposerTyping}
                   onBeforeVoiceInputStart={handleBeforeVoiceInputStart}
                   sessionId={sessionId}
                   ownsHardwareComposerActions={ownsHardwareTaskActions}

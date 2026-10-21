@@ -1,5 +1,46 @@
 # 跨端协议兼容
 
+## 远程链路流量治理：交互优先名额与 Subagent 变更推送
+
+交互类 invoke（`maker:send`、`maker:abort-session`、`maker:input:enqueue` / `steer` / `stop` /
+`resume` / `retry-last-error` / `remove`、`maker:resolve-interaction`、`maker:agent-task:stop`，
+集合见 `packages/device-link/src/invokePolicy.ts` 的 `isInteractiveInvoke`）在控制端
+`InvokeScheduler` 与被控端 dispatch 准入上各多 2 个（被控端全局多 4 个）消息名额，且在控制端
+排队时先于普通前台请求出队；字节上限、超时、重试、授权与 wire 格式都不变。旧控制端没有本地
+名额但仍可被新被控端多放行；旧被控端对新控制端照原上限拒绝，控制端沿用既有 BACKPRESSURE
+重试。`maker:predict-prompt` 改为控制端后台档（只影响本地排队顺序）。
+
+`local-db:subagent-runs:list` 的响应新增可选 `changePush: true`，表示该被控端会把本机
+`local-db:subagent-runs:changed`（payload 顶层 `sessionId`，路由到 `session:<id>` topic）经
+link 转发给订阅了该任务的控制端。新桌面控制端收到该标记后改为按推送重读、只保留 60 秒的
+兜底轮询；旧被控端不带标记，控制端保持原 5 秒 / 20 秒轮询；旧控制端忽略该字段和未知推送
+（Mobile 当前不消费此推送）。不新增 relay 类型、数据库 schema、权限或 Mobile 原生指纹，
+云端无需改动。
+
+桌面控制端的持久推送修复读（`messages:created` / 带 persistId 的 `maker:event` 之后 1.5 秒
+重读最新页 + 交互快照）只在「窗口内最后一条推送之后已有一次成功应用的最新页读取」时才省掉；
+读取失败或晚于该读取的推送仍会触发修复读。本地行为，不进入 wire。
+
+## Agent 预热与远程发送路径
+
+新增 invoke `maker:session:prewarm(sessionId, createOpts)`，Desktop 本机 Renderer 与 device-link
+控制端共用，登记在 `REMOTE_INVOKE_ALLOWLIST` 并归入后台调度档；共享任务访客不在其准入表内。
+控制端在已有任务的输入框里开始打字时调用（同一任务 30 秒最多一次），`createOpts` 与下一次发送
+构造的相同；被控端立即回 `{ accepted }`，在同一把会话发送锁里复用发送路径的懒创建启动 Agent，
+执行字段（agentKind、model、resume、provider、权限、Agent 所在电脑）照常按数据库校正。只对来源为
+user / desktop / plugin / side-chat、状态 active、非协同、Agent 在本机且非 SSH 工作区、且用户已在该任务里真实发送过（有原生会话 ID）的任务生效——启动会加载目录自带的设置与钩子，只打字不构成同意，从未发送过的任务等第一次真实发送；
+已有运行时、待切换引擎、已有排队输入时不做任何事。预热出来、尚未发送使用的运行时最多 2 个，
+10 分钟未发送即关闭；任何真实发送会接管它。旧被控端返回 CHANNEL_NOT_ALLOWED，控制端静默忽略，
+下一次发送照常冷启动；旧控制端不调用，行为不变。
+
+`maker:input:enqueue` 与 `maker:input:get-projection` 的 wire 不变。Mobile 已从同一被控端的
+projection 见过 `inputDeliveryVersion: 1`、并从 projection / enqueue 回包得知该任务的
+`clearBoundaryMs` 时，首次发送跳过发送前的 projection，直接带该边界 enqueue；被控端仍按原规则
+校验，若以 `REMOTE_OPTIMISTIC_INPUT_CLEARED` 拒绝，Mobile 撤回本地准备并按原流程查询一次
+projection 后重发（被控端拒绝时尚未收下，不产生重复）。旧被控端不回 `inputDeliveryVersion`，
+Mobile 始终走原流程。Mobile 学到的这些结论绑定 device-link 连接代次，重连后清空并重新确认。
+没有新的 push、数据库迁移或 Mobile 原生指纹变化。
+
 ## 伙伴个人聊天全文搜索
 
 既有 `local-db:conversations:search` 的结果 `session` 增加可选
@@ -1594,6 +1635,15 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   `sharedStatus`、`remoteHandler` 测试与界面、手机同名测试。
 
 ## 供应商组：订阅配额筛选与用量均衡（2026-10-12，OpenAI 于 2026-10-20 接入）
+
+2026-10-21：同账号 `pick` 的 `{ kind: 'unavailable' }` 回包可选增加
+`usageLimit: { resetAtMs: number | null }`，仅表示已验证的订阅额度耗尽；时刻为可分配成员中
+最早的已知恢复时间（unix ms）。不发送账号信息、用量快照或成员名单。控制端保留已知／未知
+重置语义，以 `REMOTE_AGENT_GROUP_USAGE_LIMIT` 错误接入现有输入投影与限额等待；
+手机和桌面沿用 `usageLimitWait` 显示时间、取消等待。新组配旧控制端忽略可选字段，
+新控制端配旧组保留原通用错误，不猜测限额或自动等待；旧查看端仍可显示通用错误和既有等待。
+完整体验需要组所在电脑与任务所在电脑更新，查看端更新后有对应本地化文案。
+不新增 channel、持久状态、权限或服务端改动。
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
 再按所选策略分配；Claude Code 与 OpenAI 订阅均可参与配额排序，旧策略 `usage` 沿用 `least`。

@@ -1065,7 +1065,7 @@ function AskUserVoiceButton({
         onClick();
       }}
       className={cn(
-        'flex shrink-0 items-center justify-center rounded-[8px]',
+        'flex shrink-0 items-center justify-center rounded-full',
         size === 'md' ? 'h-8 w-8' : 'h-7 w-7',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
         busy

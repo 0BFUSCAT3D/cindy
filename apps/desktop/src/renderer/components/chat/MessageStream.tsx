@@ -2912,6 +2912,7 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
       childItems={childItems}
       compact={compact}
       deferred={item.deferred}
+      fitHeader={Boolean(replyColumnSpacer)}
     />
   );
   return (
@@ -6551,7 +6552,7 @@ export function MessageStream({
                           item={item}
                           context={workGroupRenderContext}
                           // 伙伴聊天与普通任务同一套工作过程：运行中露最近 5 条活动与计时，
-                          // 完成后收成「已工作 Xs」，不另走 compact 分支。
+                          // 组头按内容宽；做完整块不再出现（simplifyBotRenderItems 丢弃完成组）。
                           compact={false}
                           replyColumnSpacer={botReplyColumnSpacer}
                         />
@@ -6940,34 +6941,44 @@ const MessageItem = memo(function MessageItem({
   switch (message.role) {
     case 'user':
       return (
-        <UserMessage
-          sharedAuthorName={message.sharedAuthorName}
-          sharedAuthorMemberId={message.sharedAuthorMemberId}
-          workingDir={workingDir}
-          content={message.content}
-          quotesEncoded={message.quotesEncoded}
-          agentReferences={message.agentReferences}
-          pastedTextRanges={message.pastedTextRanges}
-          slashCommandRanges={message.slashCommandRanges}
-          images={message.images}
-          files={message.files}
-          createdAt={message.createdAt}
-          sessionId={sessionId}
-          agentKind={agentKind}
-          remoteHostId={remoteHostId}
-          messageClientId={message.clientId}
-          sessionRunning={sessionRunning}
-          isFirstUserMessage={isFirstUserMessage}
-          isLastUserMessage={isLastUserMessage}
-          automationOrigin={message.automationOrigin}
-          hookSource={message.hookSource}
-          sourceDevice={message.sourceDevice}
-          sourcePlugin={message.sourcePlugin}
-          delivery={message.delivery}
-          goalBadge={message.goalBadge}
-          blockedByGhost={message.blockedByGhost}
-          simplifiedBotConversation={simplifiedBotConversation}
-        />
+        <>
+          <UserMessage
+            sharedAuthorName={message.sharedAuthorName}
+            sharedAuthorMemberId={message.sharedAuthorMemberId}
+            workingDir={workingDir}
+            content={message.content}
+            quotesEncoded={message.quotesEncoded}
+            agentReferences={message.agentReferences}
+            pastedTextRanges={message.pastedTextRanges}
+            slashCommandRanges={message.slashCommandRanges}
+            images={message.images}
+            files={message.files}
+            createdAt={message.createdAt}
+            sessionId={sessionId}
+            agentKind={agentKind}
+            remoteHostId={remoteHostId}
+            messageClientId={message.clientId}
+            sessionRunning={sessionRunning}
+            isFirstUserMessage={isFirstUserMessage}
+            isLastUserMessage={isLastUserMessage}
+            automationOrigin={message.automationOrigin}
+            hookSource={message.hookSource}
+            sourceDevice={message.sourceDevice}
+            sourcePlugin={message.sourcePlugin}
+            delivery={message.delivery}
+            goalBadge={message.goalBadge}
+            blockedByGhost={message.blockedByGhost}
+            simplifiedBotConversation={simplifiedBotConversation}
+          />
+          {message.usageLimitAutoResumeInfo && (
+            <SystemCard
+              cardType="auto-resume"
+              data={message.usageLimitAutoResumeInfo}
+              sessionId={sessionId}
+              workingDir={workingDir}
+            />
+          )}
+        </>
       );
     case 'assistant':
       if (message.systemCardType === 'mcp-app') {

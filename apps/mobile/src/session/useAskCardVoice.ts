@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { i18n } from '@/i18n';
 import { useAskCardAuth } from '@/session/askCardAuth';
 import type { MobileVoiceSelection } from '@/session/mobileVoiceInput';
 
@@ -75,7 +76,7 @@ export function useAskCardVoice(input: {
     const deviceId = inputRef.current.deviceId?.trim();
     const currentAuth = authRef.current;
     if (!deviceId || !currentAuth) {
-      setError('语音输入需要先登录手机端。');
+      setError(i18n.t('composer.voice.loginRequired'));
       return;
     }
     startingRef.current = true;

@@ -12,6 +12,7 @@ import { forwardNavigationLock } from '@/utils/navigationLock';
 import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/chatFilePathContext';
 import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
+import { i18n } from '@/i18n';
 
 const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
 // As in LegendList, setters are inert outside a list item. The composer card
@@ -118,6 +119,27 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// Unit regression for PR #6306 review: a signed-out microphone tap used to
+// render hardcoded Chinese. Existing receipt tests never tapped this entry.
+// Exercise the real card and hook in each supported locale, without auth.
+it.each(['en', 'zh-CN', 'zh-TW', 'ja', 'ko'])('localizes the signed-out voice error in %s', async (locale) => {
+  const previousLanguage = i18n.language;
+  try {
+    await i18n.changeLanguage(locale);
+    remoteSessionStore.setPendingInteractions('s1', [{ request: {
+      kind: 'ask_user_question', requestId, questions: [{ question: 'Answer?' }],
+    } }]);
+    await act(async () => root.render(<Harness />));
+    expect(host.querySelector('[data-testid="interaction.ask.voiceError"]')).toBeNull();
+    await click('interaction.ask.voice');
+    expect(host.querySelector('[data-testid="interaction.ask.voiceError"]')?.textContent)
+      .toBe(i18n.t('composer.voice.loginRequired'));
+    expect(resolveInteraction).not.toHaveBeenCalled();
+  } finally {
+    await i18n.changeLanguage(previousLanguage);
+  }
+});
 
 // Unit regression: receipt tests never opened evidence in a question title.
 // Minimal input: a bare HTML filename + URL. Real card + remote stat must open

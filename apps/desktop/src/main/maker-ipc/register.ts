@@ -1,6 +1,6 @@
 import { createOrcaWorkerProjectHandlers } from './orcaWorkerProjectHandlers';
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore';
-import { readWorkerProjectContext, createWorkerWorktree, rememberWorkerProject, probeWorkerProject } from './orcaWorkerProject';
+import { readWorkerProjectContext, createWorkerWorktree, rememberWorkerProject, probeWorkerProject, resolveWorkerWorktreeSource, getWorkerOwnedWorktree } from './orcaWorkerProject';
 import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
 import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
@@ -920,6 +920,7 @@ import {
   stampTrustedDesktopQueuedOrigin,
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
+import { createAgentPrewarmer, isAgentPrewarmEligible } from './agentPrewarm.js';
 import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
@@ -1332,6 +1333,7 @@ import {
   readDeviceLinkInvokeSourceDevice,
   runOutsideDeviceLinkInvokeContext,
 } from '../device-link/invoke-context.js';
+import { beginRemoteSendTrace } from '../device-link/remoteSendTrace.js';
 import { stampSharedTaskInput } from './sharedTaskInput.js';
 import { createSharedTaskContextUsageGuard } from './sharedTaskContextUsage.js';
 import { createSharedTaskSettingGuard } from './sharedTaskSetting.js';
@@ -1566,6 +1568,9 @@ async function resolveSessionUsageResetAt(
   sessionId: string,
   signals: InterruptedTurnErrorSignals,
 ): Promise<number | null> {
+  // A pending model/location switch has not updated the saved route yet. The group's
+  // verified result is authoritative, including an unknown reset; never read the old account.
+  if (signals.providerGroupUsageLimit) return signals.providerGroupUsageLimit.resetAtMs;
   const row = await getSessionRowSnapshot(sessionId);
   const agentKind = row?.agentKind ? dbToMakerAgentKind(row.agentKind) : null;
   if (!row || !agentKind) return null;
@@ -2482,6 +2487,7 @@ interface OrcaCollabService {
     workerPermissionMode?: OrcaWorkerPermissionMode;
     label: string;
     workingDir?: string;
+    worktree?: { sourceBranch?: string };
     initialTask?: string;
     executionDeviceId?: string;
     /** Worker 的 Agent 所在位置；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
@@ -2491,6 +2497,8 @@ interface OrcaCollabService {
         ok: true;
         workerId: string;
         workerSessionId: string;
+        workingDir?: string;
+        worktree?: { path: string; branch: string };
         softLimitExceeded?: boolean;
         dispatched?: boolean;
         dispatchOutcome?: CollabDispatchOutcome;
@@ -2555,6 +2563,8 @@ interface OrcaCollabService {
           effort: string | null;
           focused: boolean;
           working_dir: string;
+          owns_worktree: boolean;
+          worktree?: { path: string; branch: string };
           execution_device?: {
             device_id: string;
             device_name: string | null;
@@ -7884,6 +7894,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   function createOrcaDiagnosticsDeps() {
     const remoteRuntime = orcaRemoteWorkersForHost?.runtime;
     return {
+      getWorkerWorktree: getWorkerOwnedWorktree,
       readActiveTeam: readActiveOrcaTeamByLeadReadOnly,
       listWorkersByLead,
       // 远端 Worker 的本机代理行从不运行；状态取运行设备的轮询投影。
@@ -14917,6 +14928,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       );
       return resolved;
     },
+    resolveWorkerWorktreeSource,
+    getWorkerWorktree: getWorkerOwnedWorktree,
     createWorkerWorktree,
     discardWorkerWorktree,
     getAvailableModels: (agent) => maker.getCapabilities(agent).availableModels,
@@ -16747,7 +16760,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     };
   }));
 
-  const { sendToAgentAccepted: sendToAgentAcceptedUnlocked } = createMakerSendTransaction({
+  const {
+    sendToAgentAccepted: sendToAgentAcceptedUnlocked,
+    prewarmSession: prewarmSessionRuntime,
+  } = createMakerSendTransaction({
     restoreArchivedSessionForSend,
     prepareProductTurn: (sessionId) => {
       const dispatch = prepareUpstreamMergeTurn(sessionId);
@@ -17057,6 +17073,54 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
 
+  // 输入框开始打字时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
+  // 任务、且 Agent 在本机运行；Bot / IM / 定时 / 审查 / 共享 / 协同 / 远程主机等任务的
+  // 启动另有专门的路由与权限检查，仍由真实发送处理。启动走发送路径的同一个懒创建，
+  // 并在同一把会话发送锁里执行，真实发送不会与预热并发重复启动。
+  const agentPrewarmer = createAgentPrewarmer({
+    start: (sessionId, createOpts) => withSendToSessionLock(sessionId, async () => {
+      if (maker.getSession(sessionId)) return false;
+      if (agentSwitchPending.get(sessionId) || cindyMakeManager.isTaskPreparing(sessionId)) return false;
+      // Queued work starts the runtime itself through the normal drain.
+      if (agentInputCoordinatorHolder?.hasPendingQueuedWork(sessionId)) return false;
+      const [row] = await getDbClient().drizzle
+        .select({
+          status: sessions.status,
+          source: sessions.source,
+          workingDir: sessions.workingDir,
+          remoteHostId: sessions.remoteHostId,
+          agentDeviceId: sessions.agentDeviceId,
+          orcaRole: sessions.orcaRole,
+          sdkSessionId: sessions.sdkSessionId,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      if (!isAgentPrewarmEligible(row)) return false;
+      const co = buildCreateOptsWithStderr({ ...(createOpts as CreateOpts), id: sessionId });
+      await reconcileCreateOptsAgainstDb(sessionId, co);
+      if (co.remoteHostId || co.agentDeviceId) return false;
+      return prewarmSessionRuntime(sessionId, co);
+    }),
+    // Runs under the send lock: a send that got there first has marked the runtime used
+    // (and its turn is running), one that arrives later waits for the close to finish and
+    // then cold-starts, instead of meeting a runtime that is half closed.
+    closeIfUnused: (sessionId, stillUnused) => withSendToSessionLock(sessionId, async () => {
+      if (!stillUnused()) return;
+      if (agentInputCoordinatorHolder?.hasPendingQueuedWork(sessionId)) return;
+      const live = maker.getSession(sessionId);
+      if (!live || live.isTurnRunning()) return;
+      await live.closeIfIdle();
+    }),
+    setTimer: (fn, ms) => {
+      const timer = setTimeout(fn, ms);
+      timer.unref?.();
+      return timer;
+    },
+    clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+    log,
+  });
+
   // Host-only hints belong to the dispatched input, not a persistent session cache.
   // The fallback transaction still rechecks the authoritative Bot link and chain.
   const botFallbackInputs = new WeakSet<object>();
@@ -17067,6 +17131,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   const sendToAgentAccepted: typeof sendToAgentAcceptedUnlocked = async (...args) => {
     const [sessionId] = args;
     if (typeof sessionId !== 'string') return await sendToAgentAcceptedUnlocked(...args);
+    agentPrewarmer.markUsed(sessionId);
     if (cindyMakeManager.isTaskPreparing(sessionId) && (args[3] as Record<PropertyKey, unknown> | undefined)?.[CINDY_MAKE_TASK_DISPATCH] !== true) {
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
@@ -17871,6 +17936,21 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
   );
 
+  // 尽力而为：立即返回，启动在后台进行；不支持、已在运行或启动失败都只是下一次发送照常冷启动。
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_PREWARM,
+    async (event, sessionId: unknown, createOpts?: unknown): Promise<{ accepted: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
+      if (getDeviceLinkInvokeContext()?.sharedTask) return { accepted: false };
+      if (!createOpts || typeof createOpts !== 'object' || Array.isArray(createOpts)) {
+        throwIpcError('INVALID_PARAMS', 'createOpts required');
+      }
+      void agentPrewarmer.request(sid, createOpts);
+      return { accepted: true };
+    },
+  );
+
   /**
    * Reconcile the in-memory turn boundary after a vendor abort/close when the
    * normal terminal event was lost. The vendor Session is authoritative for
@@ -18330,7 +18410,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         : null,
     onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
       // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
-      if (!providerGroupService) {
+      if (!providerGroupService || signals.providerGroupUsageLimit) {
         usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken);
         return;
       }
@@ -18732,6 +18812,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
     noteSessionClearBoundary,
+    // 复用真人活跃边界：队首 Retry / Continue 和新输入尚未落库时也开始新限额周期。
+    onUserAction: (sessionId) => usageLimitAutoResume.noteUserAction(sessionId),
     // 失败 turn 重试 → hook 侧把这一轮接回渠道那条已收口的消息。source 区分
     // 人工与自动续跑：只有真人接手才作废 scheduler waiter，自动路径不能取消自己。
     onUiRetry: (sessionId, clientId, source, attemptToken) => {
@@ -18748,7 +18830,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // persistence/vendor await, so a failed manual retry still starts a fresh episode.
         silentStopAutoResumeGuard.noteUserSend(sessionId);
         interruptedTurnAutoResumeGuard.noteUserSend(sessionId);
-        usageLimitAutoResume.noteUserAction(sessionId);
         providerGroupService?.noteUserAction(sessionId);
       }
       publishUiContinuation(sessionId, clientId);
@@ -19824,6 +19905,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await withSessionPermissionChange(sid, async () => undefined);
       if (!inputOwner || inputOwner !== getCurrentDbClientSnapshot()) throwIpcError('PRECONDITION_FAILED', 'Account changed before input');
       const parsed = await prepareSharedTaskInput(sid, requireQueuedMessage(item));
+      // debug 日志：远程发送在被控端各阶段的耗时，不影响任何判定。
+      const sendTrace = deviceLinkInvoke ? beginRemoteSendTrace(sid, parsed.clientId) : undefined;
       if (parsed.durableDelivery) await awaitAgentInputQueueSnapshotPersistence(sid);
       assertRemoteInputClearNotInFlight(sid, deviceLinkInvoke);
       const clearBoundaryPrecondition = readRemoteInputClearBoundaryPrecondition(opts);
@@ -19847,6 +19930,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertExpectedRemoteInputClearBoundary(sid, clearBoundaryPrecondition, inputSessionRow);
       }
       assertCurrentInputGeneration();
+      sendTrace?.stage('gate');
       // 恢复先于入队:普通新输入保持 FIFO；「继续任务」由 coordinator 在完整旧队列
       // 恢复后再明确插到队首，避免恢复竞态把它重新压到后面。
       const restoreQueue = inputCoordinator.ensureQueueRestored(sid);
@@ -19862,17 +19946,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           inputSessionRow = await getInputSessionRow(sid);
           inputCoordinator.observeClearBoundary(sid, inputSessionRow.clearedAt);
           assertExpectedRemoteInputClearBoundary(sid, clearBoundaryPrecondition, inputSessionRow);
+          sendTrace?.finish('already-persisted');
           return inputCoordinator.getProjection(sid);
         }
       } else {
         await restoreQueue.catch(() => undefined);
       }
       assertCurrentInputGeneration();
+      sendTrace?.stage('restore');
       // A concurrent weak-link resend may already own this clientId in the
       // coordinator. Return the current projection before materialising a new
       // copy of its attachments.
       if (inputCoordinator.hasKnownClientId(sid, parsed.clientId)) {
         if (parsed.durableDelivery) await awaitAgentInputQueueSnapshotPersistence(sid);
+        sendTrace?.finish('known');
         return inputCoordinator.getProjection(sid);
       }
       const materialized = await materializeQueuedOssAttachmentsDeferred(sid, parsed);
@@ -19913,6 +20000,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           },
         );
         assertCurrentInputGeneration();
+        sendTrace?.stage('prepare');
         const commitAutoTitle = await prepareDeviceLinkAutoTitle(sid, queued);
         assertCurrentInputGeneration();
         if (deviceLinkInvoke) {
@@ -19923,6 +20011,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
         assertCurrentInputGeneration();
         assertRemoteInputClearNotInFlight(sid, deviceLinkInvoke);
+        sendTrace?.stage('recheck');
 
         if (parsed.durableDelivery) {
           await awaitAgentInputQueueSnapshotPersistence(sid);
@@ -19933,8 +20022,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             await materialized.cleanupBeforeAcceptance?.();
             if (attachmentOwnerId) await discardSpecificQueuedAttachmentOwnership(sid, parsed.clientId, attachmentOwnerId);
             await awaitAgentInputQueueSnapshotPersistence(sid);
+            sendTrace?.finish(persisted ? 'already-persisted' : 'cancelled');
             return inputCoordinator.getProjection(sid);
           }
+          sendTrace?.stage('dedupe');
         }
 
         // 「继续任务」durable ack 延后到 vendor dispatch 成功（onDispatchedUserTurn）：
@@ -19957,15 +20048,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             await discardSpecificQueuedAttachmentOwnership(sid, parsed.clientId, attachmentOwnerId);
           }
           if (parsed.durableDelivery) await awaitAgentInputQueueSnapshotPersistence(sid);
+          sendTrace?.finish('duplicate');
           return projection;
         }
         acceptedByCoordinator = true;
+        sendTrace?.stage('coordinator');
+        sendTrace?.accepted();
         if (attachmentOwnerId) {
           queuedAttachmentOwnership.activateCurrentOwner(sid, parsed.clientId, attachmentOwnerId);
         }
         markQueuedAttachmentDurableAfterSnapshot(sid, parsed.clientId, attachmentOwnerId);
         commitAutoTitle();
         if (parsed.durableDelivery) await awaitAgentInputQueueSnapshotPersistence(sid);
+        sendTrace?.stage('snapshot');
+        sendTrace?.finish('accepted');
         return projection;
       } catch (err) {
         if (!acceptedByCoordinator) {

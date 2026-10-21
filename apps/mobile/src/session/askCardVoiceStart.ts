@@ -4,6 +4,7 @@
  */
 import { AppState } from 'react-native';
 
+import { i18n } from '@/i18n';
 import type { AskCardAuth } from '@/session/askCardAuth';
 import {
   CINDY_MANAGED_REFINER_PROVIDER,
@@ -26,7 +27,7 @@ type AppStateListener = (state: string) => void;
 /** Startup aborted because the user stopped or the card went away. */
 export class AskCardVoiceCancelledError extends Error {
   constructor() {
-    super('语音输入已取消。');
+    super(i18n.t('composer.voice.cancelled'));
     this.name = 'AskCardVoiceCancelledError';
   }
 }

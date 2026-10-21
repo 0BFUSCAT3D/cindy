@@ -226,7 +226,8 @@ Worker 项目历史写入时按规范化路径字符串去重，保留最近 10 
 已删除或无遥测都回退记录目录。候选先按 realpath 后的 checkout 根目录比较：同一 checkout
 始终保留记录目录；另一个 worktree 使用其根目录，若记录目录是 monorepo 子项目且同样的相对
 路径仍存在，则保留该子项目位置。文件编辑产生的子目录不会改变 Worker 默认目录。
-这个新封装不改变顶栏分支徽标，也尚未改 MCP 默认继承。
+这个新封装不改变顶栏分支徽标，也不用于 MCP 默认继承。面板默认继承实际目录是 UI 行为；
+工具省略 working_dir 时仍静默继承 Lead 任务记录目录，Agent 要共用当前 worktree 必须显式传参。
 推断等于记录目录时不传 workingDir，否则显式传入面板展示的目录，再经现有目录与项目策略校验。
 
 新 worktree 勾选及源分支均不记忆；换项目重置勾选、分支和 dirty 状态。资格取决于当前目标：
@@ -244,8 +245,24 @@ SSH、device-link 控制端、手机端与其他运行设备维持原界面和�
 项目读取与标签读取使用仅本机 preload 方法，不进入 device-link allowlist；原创建协议只增加可选字段。
 Worker 与 Lead 不同项目时在模型副行显示文件夹图标和项目名，同项目不额外标注。
 
+Agent 工具也可通过 `new_worktree: { source_branch?: string }` 为单个或批量中的每个 Worker
+新建独立 worktree。仅支持本机执行；SSH Lead、其他运行设备以及对话 Lead 未指定其他目标时
+在预留名额和创建会话前拒绝。目标必须为有提交的 Git 仓库，省略源分支时取目标目录当前分支
+（分离 HEAD 时取当前提交）；创建、子项目路径保留和失败补偿复用上述面板流程。
+`new_worktree` 的出现（包括空对象或非法值）与 `working_dir` 一样进入现有权限审批，
+可信 MCP server 不得绕过；Full Access、Auto、Ask 仍按各自权限流程执行。
+创建成功返回实际 `working_dir`，自有 worktree 另返回 `worktree: { path, branch }`。
+`get_workspace_info` 的每个 Worker 返回 `owns_worktree`，有所有权时附同样的元数据；
+所有权仅由 WorktreeManager 按 Worker sessionId 查询，不能按路径推断。继承 Lead 或模型
+自行创建的目录不会成为 Worker 的自有 worktree。Pi 从动态 MCP 工具列表读取同一份 schema，
+不维护另一份 Worker 参数定义。
+
 `create_worker` / `create_workers` 的每个 Worker 可显式指定 `working_dir`（Worker
-所在主机上已存在的绝对目录）。省略时仍继承 Lead；显式指定时，在 reservation、session
+所在主机上已存在的绝对目录）。省略时仍继承 Lead 任务记录的工作目录（启动时的目录，
+保持 #4332 的既有语义），不跟随之后 cd 或编辑操作推断出的目录。Agent 若希望共用正在操作的
+worktree（含 git worktree add 自建的），显式传其绝对路径；需要独立检出时传 new_worktree。
+显式 working_dir / new_worktree 按会话权限审批，返回的 working_dir 用于核对实际启动目录。
+显式指定时，在 reservation、session
 bootstrap 和首条任务派发之前校验并绑定，项目上下文与 agent 进程使用同一目录。
 本机目录解析真实路径并检查目录及协同开关；SSH 目录通过继承的 remoteHostId 在远端校验，
 探测前复用该主机的就绪/重连入口，不触碰其他主机；解析保留 shell 前置输出兼容与路径空格，
