@@ -104,6 +104,35 @@ function goodManifest(id = 'hello'): Record<string, unknown> {
 }
 
 describe('GhostManager enable revision boundary', () => {
+  // Unit regression: an unreadable installation subtree used to become an empty
+  // scan and persist active:false. Exercise list(), retain the approved install
+  // and registry bytes, then recover without reinstalling (compatibility §5).
+  it.each(['root', 'namespaces', 'namespace'] as const)(
+    'does not persist missing installations when the %s directory cannot be read',
+    async (scope) => {
+      await manager.install(await makeCindy('unreadable.cindy', goodManifest()));
+      expect(manager.list()[0].enabled).toBe(true);
+      const registryPath = path.join(workDir, 'ghosts-install-state', 'plugin-instances.v2.json');
+      const before = fs.readFileSync(registryPath, 'utf8');
+      const target = scope === 'root' ? rootDir : scope === 'namespaces'
+        ? path.join(rootDir, '_ns') : path.join(rootDir, '_ns', '_root');
+      const realReaddir = fs.readdirSync;
+      const read = vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: never, options: never) => {
+        if (String(dir) === target) throw Object.assign(new Error('scan unavailable'), { code: 'EACCES' });
+        return realReaddir(dir, options);
+      }) as never);
+      try {
+        if (scope === 'root') expect(() => manager.list()).toThrow('scan unavailable');
+        else {
+          expect(manager.list()).toEqual([]);
+          expect(manager.isInstallationScanComplete()).toBe(false);
+        }
+        expect(fs.readFileSync(registryPath, 'utf8')).toBe(before);
+      } finally { read.mockRestore(); }
+      expect(manager.list()[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+    },
+  );
+
   // Regression: one list() used two validated receipt reads per plugin. Unit
   // coverage also rejects a cross-call cache: the next scan must see revocation.
   it('reads each receipt once per scan and observes changed approval on the next scan', async () => {

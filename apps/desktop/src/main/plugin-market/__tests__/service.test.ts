@@ -16,6 +16,7 @@ import {
 } from '../../../shared/ghost.js';
 const runtime = vi.hoisted(() => ({
   listScans: 0,
+  installationScanComplete: true,
   onList: undefined as (() => void) | undefined,
   confirmLegacyLibraryReattach: vi.fn<(plugin: unknown) => Promise<boolean>>(async () => false),
   ghosts: [] as Array<{
@@ -109,6 +110,7 @@ vi.mock('../../cindy-brain/index.js', () => ({
   refreshPluginUsageBindings: vi.fn(async () => undefined),
   confirmLegacyLibraryReattach: (plugin: unknown) => runtime.confirmLegacyLibraryReattach(plugin),
   getGhostManager: () => ({
+    isInstallationScanComplete: () => runtime.installationScanComplete,
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
     list: () => {
@@ -259,6 +261,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 afterEach(() => {
   runtime.listScans = 0;
+  runtime.installationScanComplete = true;
   runtime.onList = undefined;
   runtime.ghosts = [];
   runtime.confirmLegacyLibraryReattach.mockReset();
@@ -1065,6 +1068,77 @@ describe('PluginMarketService migration and defaultInstall', () => {
     } finally {
       if (queued) clearImmediate(queued);
     }
+  });
+
+  // Unit regression: focus, icon renewal and mounted catalog consumers could
+  // independently fetch and scan the same owner. Joined callers share one round.
+  it('coalesces concurrent catalog projections and keeps later reads fresh', async () => {
+    const h = harness([]);
+    const results = await Promise.all(Array.from({ length: 3 }, () => h.service.snapshot({ discoveryOnly: true })));
+    expect(results.map((result) => result.items)).toEqual([[], [], []]);
+    expect(h.api.listAll).toHaveBeenCalledTimes(1);
+    expect(runtime.listScans).toBe(1);
+    await h.service.snapshot({ discoveryOnly: true });
+    expect(h.api.listAll).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not add a catalog fetch or installation scan when foreground overlaps full maintenance', async () => {
+    const h = harness([]);
+    const catalog = h.api.listAll.getMockImplementation()!;
+    const gate = deferred();
+    h.api.listAll.mockImplementationOnce(async () => { await gate.promise; return catalog(); });
+    const full = h.service.snapshot();
+    const foreground = h.service.refreshCatalogForForeground();
+    gate.resolve();
+    await Promise.all([full, foreground]);
+    expect(h.api.listAll).toHaveBeenCalledOnce();
+    const overlappingScans = runtime.listScans;
+    runtime.listScans = 0;
+    await h.service.snapshot();
+    // Compare with an explicit full pass, so independent scheduling cannot
+    // silently add disk work when both triggers see the same catalog.
+    expect(overlappingScans).toBe(runtime.listScans);
+  });
+
+  it('rejects a catalog request if its owner changes before asynchronous work begins', async () => {
+    const h = harness([]);
+    const request = h.service.snapshot({ discoveryOnly: true });
+    runtime.session = { ...runtime.session, dataOwnerId: 'user-2', generation: runtime.session.generation + 1 };
+    await expect(request).rejects.toThrow('active account changed');
+    expect(h.api.listAll).not.toHaveBeenCalled();
+  });
+
+  it('does not provision plugins from an incomplete installation scan', async () => {
+    const h = harness([summary({ defaultInstall: true })]);
+    runtime.installationScanComplete = false;
+    await expect(h.service.snapshot()).rejects.toThrow('installation scan is incomplete');
+    expect(h.api.download).not.toHaveBeenCalled();
+    expect(h.ledger.read().installations).toEqual({});
+  });
+
+  it('reports a failed namespace transaction instead of marking the round completed', async () => {
+    const h = harness([]);
+    runtime.reconcilePendingRootNamespaces.mockRejectedValueOnce(new Error('namespace receipt write failed'));
+    const outcome = vi.fn();
+    await h.service.snapshot({ onDefaultReconciliationOutcome: outcome });
+    expect(outcome).toHaveBeenCalledWith('failed');
+  });
+
+  it('does not rescan installations on foreground when reconciled catalog facts have not changed', async () => {
+    const items: VisiblePluginSummary[] = [summary()];
+    items[0]!.currentRelease.icon = {
+      url: 'https://icons.test.invalid/icon?signature=old', expiresAt: '2099-01-01T00:00:00.000Z',
+      mimeType: 'image/png', sizeBytes: 42, sha256: 'b'.repeat(64),
+    };
+    const h = harness(items);
+    await h.service.snapshot();
+    runtime.listScans = 0;
+    items[0]!.currentRelease.icon.url = 'https://icons.test.invalid/icon?signature=new';
+    await h.service.refreshCatalogForForeground();
+    expect(runtime.listScans).toBe(0);
+    items[0]!.currentRelease.version = '2.0.0';
+    await h.service.refreshCatalogForForeground();
+    expect(runtime.listScans).toBeGreaterThan(0);
   });
 
   it('backfills a pre-digest server record only from matching modern receipt evidence', async () => {
@@ -2149,14 +2223,28 @@ describe('PluginMarketService migration and defaultInstall', () => {
       return ghost;
     });
 
+    const firstOutcome = vi.fn();
+    const secondOutcome = vi.fn();
+    const settled = deferred();
     const snapshot = await h.service.snapshot({
       deferReconciliation: true,
+      onDefaultReconciliationOutcome: firstOutcome,
+      onDeferredReconciliationSettled: () => settled.resolve(),
     });
 
     expect(snapshot.items[0]?.installState).toBe('not-installed');
     await vi.waitFor(() => expect(h.api.download).toHaveBeenCalledOnce());
+    // A later query must join the still-running writer even after the first
+    // snapshot returned, and both callers must receive its final outcome.
+    expect(await h.service.snapshot({
+      deferReconciliation: true, onDefaultReconciliationOutcome: secondOutcome,
+    })).toBe(snapshot);
+    expect(h.api.listAll).toHaveBeenCalledOnce();
     downloadGate.resolve();
-    await vi.waitFor(() => expect(runtime.install).toHaveBeenCalledOnce());
+    await settled.promise;
+    expect(runtime.install).toHaveBeenCalledOnce();
+    expect(firstOutcome).toHaveBeenCalledWith('completed');
+    expect(secondOutcome).toHaveBeenCalledWith('completed');
   });
 
   it('auto-installs the verified package when its capabilities exceed stale catalog metadata', async () => {
@@ -6153,6 +6241,14 @@ describe('PluginMarketService install consent', () => {
     // 同一 release 只下载一次真实包，确认前不会反复重下。
     expect(h.api.download).toHaveBeenCalledTimes(1);
     expect(h.ledger.installationForGhost('cindy-test')).toMatchObject({ releaseId: 'release-1' });
+  });
+
+  it('keeps the Renderer consent listener when background maintenance has no listener', async () => {
+    const { h } = upgradeFixture({ nextCapabilities: ['notify', 'fs'] });
+    const onConsentHoldsChanged = vi.fn();
+    await h.service.snapshot({ discoveryOnly: true, onConsentHoldsChanged });
+    await h.service.snapshot();
+    expect(onConsentHoldsChanged).toHaveBeenCalledOnce();
   });
 
   it('notifies after deferred reconciliation records a new consent hold', async () => {
