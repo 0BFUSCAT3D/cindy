@@ -948,6 +948,17 @@ function PluginDirectory() {
         enabled={enabled}
         busy={busy || detailLoading || managementPending}
         statusRecoveryBusy={busy || detailLoading}
+        managementNotice={management.state?.outcome === "unknown" ? {
+          testID: "plugins.managementUnknown",
+          title: t("plugins.notice.title.resultUnknown"),
+          icon: "warning",
+          actions: [{
+            label: t("plugins.management.checkResult"),
+            testID: "plugins.checkManagementResult",
+            disabled: !online || management.state.busy,
+            onPress: () => { void management.controller?.reconcile(); },
+          }],
+        } : undefined}
         online={online}
         model={model}
         previewLabel={

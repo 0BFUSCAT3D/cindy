@@ -155,6 +155,7 @@
   "mailAttachTooLarge": "Each email attachment must be 16 MB or smaller.",
   "mailRemoveAttachment": "Remove {{name}}",
   "management": {
+    "checkResult": "Check result",
     "manage": "Manage plugin",
     "update": "Update",
     "uninstall": "Uninstall",

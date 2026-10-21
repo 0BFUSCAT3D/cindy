@@ -525,3 +525,62 @@ it.each([false, true])(
     expect(state.clients[0].fetch).toHaveBeenCalledTimes(2);
   },
 );
+
+// Production document lifecycle: late polls retain consumed Host notices but cannot
+// deliver A's broadcasts or prompts to B; pending native answers belong to A too.
+it.each(["poll", "prompt"])("isolates a pending %s across package navigation", async (pending) => {
+  vi.useFakeTimers();
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  let finish!: (value: any) => void;
+  const gate = new Promise<any>((resolve) => { finish = resolve; });
+  const onConfirm = vi.fn(() => gate), onNotice = vi.fn(), onError = vi.fn();
+  const root = createRoot(document.createElement("div"));
+  cleanup = async () => { await act(async () => root.unmount()); };
+  await act(async () => root.render(createElement(PluginSettingsCard, {
+    identity: { deviceId: "host", instanceId: "plugin", expectedInstalledApproval: "approval" },
+    active: true, generation: 1, assertCurrent() {}, invokeTarget: vi.fn(), openSession: vi.fn(), onConfirm, onNotice, onError,
+  })));
+  const old = { events: [{ sequence: 1, channel: "test", data: "old" }], notifications: [{ text: "Saved on Host" }],
+    confirms: [{ id: "first", expiresAt: Date.now() + 60_000 }, { id: "queued", expiresAt: Date.now() + 60_000 }] };
+  state.clients[0].send.mockImplementationOnce(() => pending === "poll" ? gate : Promise.resolve(old));
+  await act(async () => state.web.onLoad());
+  if (pending === "prompt") expect(onConfirm).toHaveBeenCalledTimes(1);
+  await act(async () => state.web.onLoadStart());
+  state.inject.mockClear();
+  await act(async () => finish(pending === "poll" ? old : true));
+  expect(state.inject).not.toHaveBeenCalled();
+  expect(onNotice).toHaveBeenCalledWith("Saved on Host");
+  expect(onConfirm).toHaveBeenCalledTimes(pending === "poll" ? 0 : 1);
+  expect(state.clients[0].send.mock.calls.some(([command]: any[]) => command.kind === "confirm")).toBe(false);
+  // Host repeats unanswered prompts: they must not reappear on B's next poll.
+  state.clients[0].send.mockResolvedValueOnce({ ...old, events: [], notifications: [] });
+  await act(async () => vi.advanceTimersByTimeAsync(800));
+  expect(onConfirm).toHaveBeenCalledTimes(pending === "poll" ? 0 : 1);
+  expect(onError).not.toHaveBeenCalled();
+  expect(onNotice).toHaveBeenCalledTimes(1);
+  onConfirm.mockResolvedValueOnce(true);
+  state.clients[0].send.mockResolvedValueOnce({ events: [], notifications: [], confirms: [{ id: "new-document", expiresAt: Date.now() + 60_000 }] });
+  await act(async () => vi.advanceTimersByTimeAsync(800));
+  expect(state.clients[0].send).toHaveBeenCalledWith({ kind: "confirm", requestId: "new-document", accepted: true });
+});
+
+it("releases old subscriptions before the new document subscribes, including an in-flight subscribe", async () => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const root = createRoot(document.createElement("div"));
+  cleanup = async () => { await act(async () => root.unmount()); };
+  await act(async () => root.render(createElement(PluginSettingsCard, {
+    identity: { deviceId: "host", instanceId: "plugin", expectedInstalledApproval: "approval" },
+    active: true, generation: 1, assertCurrent() {}, invokeTarget: vi.fn(), openSession: vi.fn(),
+  })));
+  let finish!: () => void;
+  state.clients[0].send.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const subscribe = () => state.web.onMessage({ nativeEvent: { data: JSON.stringify({ settings: "page", id: 1, command: { kind: "subscribe", channels: ["test"] } }) } });
+  await act(async () => subscribe());
+  await act(async () => state.web.onLoadStart());
+  await act(async () => subscribe());
+  expect(state.clients[0].send).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
+  expect(state.clients[0].send.mock.calls.map(([command]: any[]) => command)).toEqual([
+    { kind: "subscribe", channels: ["test"] }, { kind: "unsubscribe", channel: "test" }, { kind: "subscribe", channels: ["test"] },
+  ]);
+});

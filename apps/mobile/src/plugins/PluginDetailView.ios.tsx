@@ -222,6 +222,11 @@ export function PluginDetailView(p: PluginDetailViewProps) {
               </VStack>
             ) : null}
             {status}
+            {p.managementNotice ? (
+              <VStack modifiers={[listRowSeparator("hidden")]}>
+                <PluginNativeNotice {...p.managementNotice} />
+              </VStack>
+            ) : null}
             {notices.loading ? (
               <VStack
                 testID="plugins.loading"

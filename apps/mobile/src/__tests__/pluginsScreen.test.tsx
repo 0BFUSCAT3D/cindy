@@ -1051,3 +1051,28 @@ it("refreshes an unknown management result using its original operation without 
   expect(requests.filter((request) => request?.actionId === "management:begin")).toHaveLength(1);
   expect(requests.filter((request) => request?.actionId === "management:operation").map((request) => request.input.operationId)).toEqual(["screen-operation"]);
 });
+
+// Narrow detail hides the directory refresh. Recovery must remain reachable while
+// mutations/settings are blocked, and query the same operation rather than replay it.
+it("checks an unknown operation from the phone detail and restores actions", async () => {
+  realManagementHost();
+  const readHost = fixture.wire.getMockImplementation()!;
+  fixture.wire.mockImplementation(async (...args) => {
+    const request = args[2]?.[0];
+    if (request?.actionId === "management:begin") throw new Error("CONNECTION_LOST");
+    if (request?.actionId === "management:operation") return { result: { operationId: request.input.operationId, phase: "succeeded" } };
+    return readHost(...args);
+  });
+  await openDetail();
+  await act(async () => fixture.props.get("header").rightToolbar.props.onAction("uninstall"));
+  await act(async () => fixture.alert.mock.calls.at(-1)![2][1].onPress());
+  const detail = fixture.props.get("detail");
+  expect(detail.busy).toBe(true);
+  expect(detail.managementNotice?.actions?.[0].disabled).toBe(false);
+  await act(async () => detail.managementNotice.actions[0].onPress());
+  const requests = fixture.wire.mock.calls.map((call) => call[2]?.[0]);
+  expect(requests.filter((request) => request?.actionId === "management:begin")).toHaveLength(1);
+  expect(requests.filter((request) => request?.actionId === "management:operation").map((request) => request.input.operationId)).toEqual(["screen-operation"]);
+  expect(fixture.props.get("detail").managementNotice).toBeUndefined();
+  expect(fixture.props.get("detail").busy).toBe(false);
+});

@@ -29,7 +29,7 @@ import type { PluginDetailModel } from "./pluginDetailModel";
 import { useMobileKeyboardState } from "@/session/useMobileKeyboardState";
 import { PluginPermissionCard } from "./PluginPermissionCard";
 import { PluginToolChips } from "./PluginToolChips";
-import { PluginNotice } from "./PluginNotice";
+import { PluginNotice, type PluginNoticeProps } from "./PluginNotice";
 import { pluginDetailNotices } from "./pluginDetailNotices";
 
 export interface PluginDetailViewProps {
@@ -43,6 +43,7 @@ export interface PluginDetailViewProps {
   settingsOpen: boolean;
   previewLabel?: string;
   settingsContent?: ReactNode;
+  managementNotice?: PluginNoticeProps;
   onEnabledChange(enabled: boolean): void;
   onOpen(surface: PluginPageSurface): void;
   onNewTask(): void;
@@ -146,6 +147,7 @@ export function PluginDetailView(p: PluginDetailViewProps) {
             }
           />
         ) : null}
+        {p.managementNotice ? <PluginNotice {...p.managementNotice} /> : null}
         {notices.loading ? (
           <ActivityIndicator
             testID="plugins.loading"

@@ -1129,3 +1129,25 @@ it.each([PluginDetailView, AndroidDetailView])("limits permission summaries to f
   rerender({ ...p, row: { ...row, key: "other-device:other-plugin" }, model: { ...p.model, permissions } });
   expect(card().textContent).not.toContain("Full permission title 5");
 });
+
+// The normal phone detail must expose recovery independently of its mutation gate
+// on both native renderers; controller identity/replay behavior is covered by pluginsScreen.
+it.each([PluginDetailView, AndroidDetailView])("keeps unknown-result recovery reachable while detail mutations are blocked (%#)", (DetailView) => {
+  const onPress = vi.fn();
+  const managementNotice = { title: "Result unconfirmed", actions: [{ label: "Check result", testID: "check-result", disabled: false, onPress }] };
+  const p = { row, enabled: true, online: true, busy: true, settingsOpen: false,
+    model: { ...pluginDetailModel(row as any, row.item as any, true, false, false), canUseTasks: true }, managementNotice,
+    onEnabledChange: vi.fn(), onOpen: vi.fn(), onNewTask: vi.fn(), onChooseTask: vi.fn(), onResolveStatus: vi.fn() };
+  const { container, rerender } = mount(DetailView, p);
+  expect(container.textContent).toContain("Result unconfirmed");
+  const disabled = (id: string) => {
+    const value = bridge.props.get(id);
+    return value.disabled ?? value.modifiers?.find((m: any) => 'disabled' in m)?.disabled;
+  };
+  expect(disabled("plugins.newTask")).toBe(true);
+  expect(disabled("check-result")).toBe(false);
+  act(() => bridge.props.get("check-result").onPress());
+  expect(onPress).toHaveBeenCalledTimes(1);
+  rerender({ ...p, managementNotice: undefined });
+  expect(container.textContent).not.toContain("Result unconfirmed");
+});

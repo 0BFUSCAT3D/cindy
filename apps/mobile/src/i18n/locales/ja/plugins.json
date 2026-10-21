@@ -155,6 +155,7 @@
   "mailAttachTooLarge": "添付ファイルは1件につき16 MB以下にしてください。",
   "mailRemoveAttachment": "{{name}} を削除",
   "management": {
+    "checkResult": "結果を確認",
     "manage": "プラグインを管理",
     "update": "更新",
     "uninstall": "アンインストール",

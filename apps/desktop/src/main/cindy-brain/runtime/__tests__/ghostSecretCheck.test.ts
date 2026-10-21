@@ -96,6 +96,18 @@ describe('credential check protocol', () => {
     expect(checkSecret).toHaveBeenCalledWith('api_key', value);
     expect(vault.store).not.toHaveBeenCalled(); expect(vault.remove).not.toHaveBeenCalled();
   });
+  // Exercise the HTTP entry and real projection: short credentials can coincide with
+  // locally generated JSON without reflecting any upstream credential field.
+  it.each([['true', 'fake-token'], ['fake-key', '2033']])('accepts a valid projection with candidate %s and token %s', async (candidate, token) => {
+    const fetch = vi.fn().mockResolvedValueOnce(ok({ session: token }))
+      .mockResolvedValueOnce(ok({ status: 'active', expiresAtMs: 2000000000000, private: candidate }));
+    const store = vi.fn(), remove = vi.fn();
+    const result = await handleGhostSecretsRequest({ ...args, method: 'POST', pathname: '/secrets/api_key/check',
+      vault: { ...vault, store, remove }, readBodyText: async () => JSON.stringify({ value: candidate }),
+      checkSecret: async (_key, input) => run(fetch, undefined, input) });
+    expect(result).toMatchObject({ status: 200, body: '{"valid":true,"expiresAt":"2033-05-18T03:33:20.000Z"}' });
+    expect(store).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+  });
   it('keeps unsupported checks separate from the existing save endpoint', async () => {
     expect((await handleGhostSecretsRequest({ ...args, checkSecretKeys: [], method: 'POST', pathname: '/secrets/api_key/check' })).status).toBe(404);
     vault.store.mockReturnValueOnce(true);

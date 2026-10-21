@@ -90,7 +90,8 @@ export async function checkGhostSecret(args: {
       }
     }
     const body = JSON.stringify(result);
-    if (body.includes(value) || body.includes(token)) throw new Error('reflection');
+    // Only locally constructed boolean/ISO fields leave this boundary. Substring
+    // matching credentials against that JSON rejects valid short keys (e.g. 'true').
     return { status: 200, body };
   } catch {
     return { status: !isCurrent() ? 403 : controller.signal.aborted ? 504 : 502,

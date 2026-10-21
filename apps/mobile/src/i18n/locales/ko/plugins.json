@@ -155,6 +155,7 @@
   "mailAttachTooLarge": "메일 첨부 파일 하나의 크기는 16 MB 이하여야 합니다.",
   "mailRemoveAttachment": "{{name}} 삭제",
   "management": {
+    "checkResult": "결과 확인",
     "manage": "플러그인 관리",
     "update": "업데이트",
     "uninstall": "제거",

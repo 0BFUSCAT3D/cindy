@@ -83,6 +83,7 @@ function NoticeScene({ scenario, settingsOptions }: { scenario: string; settings
   </View> : undefined;
   return <View style={{ flex: 1 }}>
     <PluginDetailView row={row} enabled={enabled} online={online} busy={loading || state.busy || ["running", "confirmation", "unknown"].includes(outcome)} statusRecoveryBusy={loading || state.busy} model={model} settingsOpen={false}
+      managementNotice={outcome === "unknown" ? { testID: "plugins.managementUnknown", title: t("plugins.notice.title.resultUnknown"), icon: "warning", actions: [{ label: t("plugins.management.checkResult"), testID: "plugins.checkManagementResult", disabled: !online || state.busy, onPress: () => { void controller.reconcile(); } }] } : undefined}
       previewLabel={`QA fixture · ${scenario}${errorKind ? " · bridge-only failure; no page reply" : ""}${feedback ? " · " + feedback : ""}`} settingsContent={settingsContent}
       onEnabledChange={(value) => { setEnabled(value); setFeedback("QA · local switch"); }}
       onOpen={() => Alert.alert("QA only", "No Host was opened")}

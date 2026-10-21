@@ -155,6 +155,7 @@
   "mailAttachTooLarge": "單個郵件附件不能超過 16 MB。",
   "mailRemoveAttachment": "移除 {{name}}",
   "management": {
+    "checkResult": "核實結果",
     "manage": "管理插件",
     "update": "升級",
     "uninstall": "解除安裝",

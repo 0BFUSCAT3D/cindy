@@ -6,6 +6,7 @@ import {
   type PluginPageConfirm,
   type PluginPagePoll,
   type PluginDirectoryRequest,
+  type PluginSettingsCommand,
 } from "@cindy/device-link";
 import {
   motionDuration,
@@ -86,6 +87,10 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
   const webview = useRef<WebView>(null);
   const clientRef = useRef<PluginSettingsClient | undefined>(undefined);
   const documentEpoch = useRef(0);
+  const documentChannels = useRef<{
+    send(command: PluginSettingsCommand, epoch: number): Promise<unknown>;
+    reset(): void;
+  } | undefined>(undefined);
   const pollRef = useRef<(() => void) | undefined>(undefined);
   const covered = useRef(0);
   const openingLink = useRef<object | null>(null);
@@ -155,6 +160,8 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
     const abort = new AbortController();
     const prompts = new Set<string>();
     let promptQueue = Promise.resolve();
+    let channelQueue = Promise.resolve();
+    const channels = new Set<string>();
     const check = () => {
       if (
         disposed ||
@@ -188,10 +195,12 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
     const prompt = async (
       request: PluginPageConfirm | PluginDirectoryRequest,
       directory: boolean,
+      epoch: number,
     ) => {
       let presented = false;
       try {
         check();
+        if (epoch !== documentEpoch.current) return;
         covered.current++;
         presented = true;
         const answer =
@@ -205,7 +214,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
                   request as PluginPageConfirm,
                 )) ?? false);
         check();
-        if (Date.now() >= request.expiresAt) return;
+        if (epoch !== documentEpoch.current || Date.now() >= request.expiresAt) return;
         await client!.send(
           directory
             ? {
@@ -220,7 +229,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
               },
         );
       } catch (error) {
-        report(error);
+        if (epoch === documentEpoch.current) report(error);
       } finally {
         if (presented && !disposed)
           covered.current = Math.max(0, covered.current - 1);
@@ -229,14 +238,21 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
     const enqueue = (
       request: PluginPageConfirm | PluginDirectoryRequest,
       directory: boolean,
+      epoch: number,
     ) => {
       if (prompts.has(request.id)) return;
       prompts.add(request.id);
-      promptQueue = promptQueue.then(() => prompt(request, directory));
+      promptQueue = promptQueue.then(() => prompt(request, directory, epoch));
     };
     const poll = async () => {
+      const epoch = documentEpoch.current;
       try {
+        await channelQueue;
         check();
+        if (epoch !== documentEpoch.current) {
+          timer = setTimeout(() => void poll(), 800);
+          return;
+        }
         // Host retains the authorization lease; do not consume notices while the browser owns the UI.
         if (!foregroundRef.current || authorizationActive.current) {
           timer = setTimeout(() => void poll(), 800);
@@ -254,6 +270,13 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
           !Array.isArray(result.notifications)
         )
           throw new Error("PLUGIN_SETTINGS_INVALID_POLL");
+        if (epoch !== documentEpoch.current) {
+          for (const event of result.events)
+            after = Math.max(after, event.sequence);
+          // Host repeats unanswered prompts; remember these even though A is gone.
+          for (const request of [...result.confirms, ...(result.directories ?? [])])
+            prompts.add(request.id);
+        }
         if (!foregroundRef.current || authorizationActive.current) {
           // An in-flight poll has already consumed these notices on Host. Keep them across resource reload.
           deferredNotices.current = {
@@ -263,17 +286,23 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
           timer = setTimeout(() => void poll(), 800);
           return;
         }
-        inject({ kind: "events", events: result.events });
-        for (const event of result.events)
-          after = Math.max(after, event.sequence);
+        if (epoch === documentEpoch.current) {
+          inject({ kind: "events", events: result.events });
+          for (const event of result.events)
+            after = Math.max(after, event.sequence);
+        }
         for (const notice of result.notifications)
           latest.current.onNotice?.(notice.text);
         for (const confirmation of result.confirms)
-          enqueue(confirmation, false);
+          enqueue(confirmation, false, epoch);
         for (const directory of result.directories ?? [])
-          enqueue(directory, true);
+          enqueue(directory, true, epoch);
         if (!disposed) timer = setTimeout(() => void poll(), 800);
       } catch (error) {
+        if (!disposed && epoch !== documentEpoch.current) {
+          timer = setTimeout(() => void poll(), 800);
+          return;
+        }
         report(error);
         if (!disposed) {
           void client?.close().catch(() => {});
@@ -310,6 +339,40 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
         });
         check();
         clientRef.current = client;
+        documentChannels.current = {
+          send(command, epoch) {
+            const work = channelQueue.then(async () => {
+              check();
+              if (epoch !== documentEpoch.current) throw new Error("PLUGIN_SETTINGS_CLOSED");
+              // Track before awaiting: a lost acknowledgement can still have subscribed on Host.
+              if (command.kind === "subscribe")
+                for (const channel of command.channels) channels.add(channel);
+              const result = await client!.send(command);
+              if (command.kind === "unsubscribe") channels.delete(command.channel);
+              return result;
+            });
+            channelQueue = work.then(() => {}, () => {});
+            return work;
+          },
+          reset() {
+            // Keep the lease/authorization, but release A's channels before B can subscribe.
+            // Host unsubscribe also removes buffered events for those channels.
+            channelQueue = channelQueue.then(async () => {
+              check();
+              for (const channel of channels) {
+                await client!.send({ kind: "unsubscribe", channel });
+                channels.delete(channel);
+              }
+            });
+            void channelQueue.catch((error) => {
+              report(error);
+              clearTimeout(timer);
+              abort.abort();
+              void client?.close().catch(() => {});
+              if (!disposed) setSource(undefined);
+            });
+          },
+        };
         resource = await preparePluginSettingsResources(
           client,
           themeRef.current,
@@ -338,6 +401,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
       browserBackground.current = false;
       setAuthorizing(false);
       pollRef.current = undefined;
+      documentChannels.current = undefined;
       if (clientRef.current === client) clientRef.current = undefined;
       void resource?.close().catch(() => {});
       void client?.close().catch(() => {});
@@ -488,6 +552,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
         onLoadStart={() => {
           if (!pageCurrent()) return;
           documentEpoch.current++;
+          documentChannels.current?.reset();
           latest.current.onLoading?.(true);
         }}
         onLoad={() => {
@@ -547,7 +612,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps) {
                 : command.kind === "fetch"
                   ? client.fetch(command.path, command.method, command.body)
                   : ["subscribe", "unsubscribe", "post"].includes(command.kind)
-                    ? client.send(command)
+                    ? documentChannels.current!.send(command, requestDocument)
                     : Promise.reject(
                         new Error("PLUGIN_SETTINGS_COMMAND_BLOCKED"),
                       );
