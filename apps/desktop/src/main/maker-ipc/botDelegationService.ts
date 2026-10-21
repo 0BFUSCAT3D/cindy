@@ -1382,7 +1382,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         && parent.botId === requestingBotId
         // A group lane is a live requester only for the task it started (bot-group-chat.md §10);
         // the lane is never woken by this service, its group gets the messages instead.
-        && (parent.role === 'canonical' || parent.role === 'delegation' || parent.role === 'group')
+        // A private-chat topic gets the results of the tasks started in it (cindy-bots-runtime.md).
+        && (parent.role === 'canonical' || parent.role === 'thread' || parent.role === 'delegation' || parent.role === 'group')
       );
     };
     if (parentSessionId && (await liveRequesterTask(parentSessionId))) return parentSessionId;
@@ -1597,7 +1598,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       || link.sessionSource !== 'bot'
       || link.profileStatus !== 'active'
       || link.linkArchivedAt !== null
-      || !['canonical', 'delegation', 'group'].includes(link.role)
+      || !['canonical', 'thread', 'delegation', 'group'].includes(link.role)
     ) return null;
     // Delegating full independent work is an owner action, not a guest tool grant.
     const group = link.role === 'group' && !ownerUi
@@ -1625,7 +1626,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       ? sql`CASE WHEN json_valid(${botDelegations.permissionSnapshotJson}) THEN
           json_extract(${botDelegations.permissionSnapshotJson}, '$.groupOriginRoute') = ${caller.routeKey}
           ELSE 0 END`
-      : undefined,
+      // A private-chat topic sees the tasks started in it; the main Chat still sees them all.
+      : caller.role === 'thread'
+        ? sql`CASE WHEN json_valid(${botDelegations.permissionSnapshotJson}) THEN
+            json_extract(${botDelegations.permissionSnapshotJson}, '$.threadOriginRoute') = ${caller.routeKey}
+            ELSE 0 END`
+        : undefined,
   );
 
   const interactionSummary = (request: InteractionRequest): string => {
@@ -2485,6 +2491,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           permissionSnapshotJson = JSON.stringify({ ...plan,
             ...(approvedTaskDelegation(input.callerSessionId) ? { taskActionAuthority: approvedTaskDelegation(input.callerSessionId) } : {}),
             ...(input.caller.role === 'group' ? { groupOriginRoute: input.caller.routeKey, groupOriginSessionId: input.callerSessionId } : {}),
+            ...(input.caller.role === 'thread' ? { threadOriginRoute: input.caller.routeKey } : {}),
             ...(input.taskModelOverride ? { taskModelOverride: input.taskModelOverride } : {}),
             taskInput: { runSequence: 1, originalObjective: input.objective, followUp: null, requestSource: request.autoReviewUserText.request } satisfies SessionTaskInputSnapshot,
           });
@@ -2800,7 +2807,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       || caller.sessionSource !== 'bot'
       || (caller.sessionStatus !== 'active' && caller.sessionStatus !== 'archived')
       || caller.profileStatus === 'deleting'
-      || !['canonical', 'history', 'delegation', 'group'].includes(caller.role)) {
+      || !['canonical', 'history', 'thread', 'delegation', 'group'].includes(caller.role)) {
       return { ok: false, errorCode: 'NOT_A_BOT_SESSION', message: '当前任务不属于任何伙伴' };
     }
     const db = getDbClient().drizzle;

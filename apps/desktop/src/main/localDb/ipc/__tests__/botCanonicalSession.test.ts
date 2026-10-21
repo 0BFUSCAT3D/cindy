@@ -1778,6 +1778,51 @@ describe('Bot canonical Session lifecycle', () => {
     expect(fresh.ok && fresh.sessionId).not.toBe(first.sessionId);
   });
 
+  it('opens one private-chat topic per main-chat message, with its own context note and timeline entry', async () => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    const chatId = created.session.id;
+    const insert = h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+    insert.run('m-root', 'root-1', chatId, 'user', JSON.stringify({ text: 'Plan the launch post' }), 1_000);
+    const root = { botId: 'bot-1', rootSessionId: chatId, rootClientId: 'root-1' };
+
+    // A root outside the companion's main Chat cannot carry a topic.
+    await expect(invoke('local-db:bots:dm-thread:ensure', { ...root, rootClientId: 'missing' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'ROOT_UNAVAILABLE' });
+    const first = await invoke('local-db:bots:dm-thread:ensure', { ...root, title: 'Plan the launch post' });
+    expect(first).toMatchObject({ ok: true, created: true });
+    await expect(invoke('local-db:bots:dm-thread:ensure', root))
+      .resolves.toEqual({ ok: true, sessionId: first.sessionId, created: false });
+    const canonical = h.sqlite!.prepare('SELECT working_dir AS workingDir, permission_mode AS permissionMode FROM sessions WHERE id = ?')
+      .get(chatId);
+    expect(h.sqlite!.prepare(`SELECT s.source, s.working_dir AS workingDir, s.permission_mode AS permissionMode,
+        l.role, l.route_key AS routeKey FROM sessions s JOIN bot_session_links l ON l.session_id = s.id WHERE s.id = ?`)
+      .get(first.sessionId)).toEqual({ source: 'bot', role: 'thread', routeKey: `dm-thread:${chatId}:root-1`, ...canonical as object });
+    const [profile] = await invoke('local-db:bots:list', undefined);
+    expect(profile.sessions).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: first.sessionId, kind: 'thread', threadRoot: { rootSessionId: chatId, rootClientId: 'root-1' },
+    })]));
+
+    // Opened and left empty: no entry under the root yet.
+    await expect(invoke('local-db:bots:dm-thread:list', { botId: 'bot-1', rootSessionId: chatId })).resolves.toEqual([]);
+    insert.run('t-1', 'topic-1', first.sessionId, 'user', JSON.stringify({ text: 'Shorter, please' }), 2_000);
+    insert.run('t-2', 'topic-2', first.sessionId, 'assistant', JSON.stringify('Here is a shorter draft.'), 3_000);
+    await expect(invoke('local-db:bots:dm-thread:list', { botId: 'bot-1', rootSessionId: chatId })).resolves.toEqual([{
+      sessionId: first.sessionId, rootSessionId: chatId, rootClientId: 'root-1',
+      replyCount: 2, lastReplyAt: 3_000, lastAssistantAt: 3_000, createdAt: expect.any(Number),
+    }]);
+
+    // The topic's model context names its root; a rewound root is reported as unavailable, not guessed.
+    const { readBotDmThreadContextNote } = await import('../../../maker-ipc/botDmThreadContext');
+    await expect(readBotDmThreadContextNote(first.sessionId)).resolves.toContain('Plan the launch post');
+    await expect(readBotDmThreadContextNote(chatId)).resolves.toBeNull();
+    h.sqlite!.prepare("UPDATE messages SET rewind_at = 5000 WHERE id = 'm-root'").run();
+    const note = await readBotDmThreadContextNote(first.sessionId);
+    expect(note).toContain('不可用');
+    expect(note).not.toContain('Plan the launch post');
+  });
+
   it('records runtime preparation separately from successful Agent startup', async () => {
     const created = await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1',
@@ -4423,6 +4468,36 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({
         groupId: 'fixture', clientId: `bot-delegation-task:${result.delegationId}:1:result`, threadRootId: 'root-1' }));
     } finally { release(); runtime.dispose(); }
+  });
+
+  it('reports work started in a private-chat topic back into that topic, which alone sees it beside the main chat', async () => {
+    await seedPair();
+    const seedTopic = (id: string, root: string) => {
+      h.sqlite!.prepare(`INSERT INTO sessions (id, source, status, working_dir, model, agent_kind, provider_id, permission_mode, created_at, updated_at)
+        SELECT ?, source, status, working_dir, model, agent_kind, provider_id, permission_mode, created_at, updated_at FROM sessions WHERE id='session-1'`).run(id);
+      h.sqlite!.prepare(`INSERT INTO bot_session_links (id, bot_id, session_id, profile_version, role, route_key, created_at)
+        VALUES (?, 'bot-a', ?, 1, 'thread', ?, 1)`).run(`${id}-link`, id, `dm-thread:session-1:${root}`);
+    };
+    seedTopic('dm-topic', 'root-1');
+    seedTopic('other-topic', 'root-2');
+    const runtime = createDelegationRuntime({ readCallerPermission: vi.fn(() => ({ mode: 'auto' as const, generation: 2 })) });
+    try {
+      const result = await runtime.delegation.startSessionTask({ callerSessionId: 'dm-topic', objective: 'Fixture-only topic task' });
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result).not.toHaveProperty('completionDestination');
+      expect(h.sqlite!.prepare('SELECT parent_session_id FROM bot_delegations WHERE id=?').pluck().get(result.delegationId)).toBe('dm-topic');
+      await runtime.runPendingTurns();
+      // The result lands in the topic and wakes the topic, never the main private chat.
+      expect(h.sqlite!.prepare('SELECT session_id FROM messages WHERE client_id=?').pluck()
+        .all(`bot-delegation-result:${result.delegationId}:1`)).toEqual(['dm-topic']);
+      expect(runtime.dispatch.mock.calls.some(([params]) => params.targetSessionId === 'dm-topic')).toBe(true);
+      expect(runtime.dispatch.mock.calls.some(([params]) => params.targetSessionId === 'session-1')).toBe(false);
+      expect(await runtime.delegation.getSessionTask('dm-topic', result.delegationId)).toMatchObject({ ok: true });
+      expect(await runtime.delegation.getSessionTask('other-topic', result.delegationId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      // The owner still manages everything from the main private chat.
+      expect(await runtime.delegation.getSessionTask('session-1', result.delegationId)).toMatchObject({ ok: true });
+    } finally { runtime.dispose(); }
   });
 
   it('never lets the result card overtake a start card still on its way to the group', async () => {
