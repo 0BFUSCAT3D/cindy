@@ -9,9 +9,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { BotAutonomyRuntime } from '../runtime.js';
 import type { RoutineEngine } from '@cindy/maker-scheduler';
 import type { LocalSessionMeta } from '../taskWatch.js';
+import type { BotGlance } from '../../../shared/botAutonomy.js';
 
 const h = vi.hoisted(() => ({
-  scope: 'a', scheduler: 'sched' as string | null,
+  scope: 'a', scheduler: 'sched' as string | null, ready: true,
+  glance: vi.fn(), refreshRemote: vi.fn(),
   readMetas: vi.fn(), readOwnership: vi.fn(),
 }));
 vi.mock('../../appSessionState.js', () => ({
@@ -37,12 +39,16 @@ const events = ['mine', 'delegated', 'shared', 'deleted'].map(subject => ({
   sourceId: 'host:sessions', event: { id: subject, type: 'finished', subject, occurredAt: 2, data: {} },
 }));
 beforeEach(() => {
-  h.scope = 'a'; h.scheduler = 'sched';
+  h.scope = 'a'; h.scheduler = 'sched'; h.ready = true;
+  h.refreshRemote.mockReset().mockResolvedValue(undefined);
+  h.glance.mockReset().mockReturnValue({
+    botId: 'sched', scope: 'all', waiting: [], working: [], lastSweepAt: 0, doneToday: 0, offlineDevices: [],
+  } satisfies BotGlance);
   const bots = new Map([['sched', { status: 'active', allowSchedulerFollow: false }]]);
   h.readMetas.mockReset().mockResolvedValue([meta('mine'), meta('delegated'), meta('shared', 'shared')]);
   h.readOwnership.mockReset().mockResolvedValue({ bots, creatorBySession: new Map([['delegated', 'sched']]), responsibleByBot: new Map() });
   setActiveBotAutonomy({ scope: 'a', engine: {} as RoutineEngine,
-    runtime: { watch: { isReady: () => true, list: () => [], getBots: () => bots } } as unknown as BotAutonomyRuntime });
+    runtime: { glance: h.glance, watch: { isReady: () => h.ready, getSchedulerBotId: () => h.scheduler, refreshRemote: h.refreshRemote, list: () => [], getBots: () => bots } } as unknown as BotAutonomyRuntime });
 });
 afterEach(() => setActiveBotAutonomy(null));
 
@@ -62,12 +68,30 @@ it('defers rather than authorizing a durable read that crossed the account bound
   expect(await currentFollowUpEvents('sched', events)).toBeNull();
 });
 
+// #6508: the public glance reader must not report a successful empty workbench
+// before its host/ownership is ready. Existing coverage only exercised follow-up
+// authorization. Minimal unit inputs: missing, stale, or unready runtime.
+it.each(['missing', 'stale', 'unready'] as const)('rejects a %s runtime instead of reporting no work', (state) => {
+  if (state === 'missing') setActiveBotAutonomy(null);
+  if (state === 'stale') h.scope = 'other';
+  if (state === 'unready') h.ready = false;
+  expect(() => getBotAutonomyGlance('sched')).toThrow(/\[PRECONDITION_FAILED\]/u);
+  expect(h.glance).not.toHaveBeenCalled();
+  expect(h.refreshRemote).not.toHaveBeenCalled();
+});
+
+it('returns the actual empty projection once ready, preserving scope and visibility options', () => {
+  const options = { excludeBotIds: new Set(['hidden']) };
+  expect(getBotAutonomyGlance('sched', options)).toMatchObject({ botId: 'sched', scope: 'all', waiting: [], working: [] });
+  expect(h.glance).toHaveBeenCalledWith('sched', options);
+});
+
 // Unit §6.3: UI probe versus explicit view read, including an owner change while IO waits.
 it('only refreshes remote state for an explicit scheduler workbench read and discards cross-account results', async () => {
   const remote = vi.fn(async () => {});
   const projection = { botId: 'sched', waiting: [] };
   setActiveBotAutonomy({ scope: 'a', engine: {} as RoutineEngine, runtime: {
-    watch: { getSchedulerBotId: () => 'sched', refreshRemote: remote },
+    watch: { isReady: () => true, getSchedulerBotId: () => 'sched', refreshRemote: remote },
     glance: () => projection,
   } as unknown as BotAutonomyRuntime });
   expect(await getBotAutonomyGlance('sched', undefined, false)).toBe(projection);
@@ -86,7 +110,7 @@ it('returns the cached glance while a remote peer is still pending or fails', as
   const pending = new Promise<void>((_resolve, reject) => { rejectRemote = reject; });
   const projection = { botId: 'sched', working: [{ sessionId: 'local' }] };
   setActiveBotAutonomy({ scope: 'a', engine: {} as RoutineEngine, runtime: {
-    watch: { getSchedulerBotId: () => 'sched', refreshRemote: () => pending },
+    watch: { isReady: () => true, getSchedulerBotId: () => 'sched', refreshRemote: () => pending },
     glance: () => projection,
   } as unknown as BotAutonomyRuntime });
   try {
