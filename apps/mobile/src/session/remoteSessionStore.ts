@@ -625,9 +625,9 @@ const sessionTaskUpdates = new Map<string, ReadonlyMap<string, AgentTaskUpdate>>
 // Keep one temporary assistant row per session and reconcile it with the persisted row by
 // clientId/persistId when the database push arrives.
 const streamingAssistantClientIds = new Map<string, string>();
-// A final for an item already present when an anonymous stream began cannot
-// claim that newer stream. Keep the observation boundary until its id resolves.
-const generatedStreamPriorIdentities = new Map<string, ReadonlySet<string>>();
+// Identities known to be separate from the current anonymous stream: rows present
+// at its start, plus persisted rows kept separate from it. Retain until it resolves.
+const generatedStreamPriorIdentities = new Map<string, Set<string>>();
 // The same persisted streaming identity can be replayed by a stale transport after
 // re-link. Track the transport currently assembling that identity so a device switch
 // replaces the stale live text instead of concatenating two transports into one row.
@@ -2548,6 +2548,12 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
   return true;
 }
 
+function excludeFromGeneratedStream(sessionId: string, ...ids: (string | undefined)[]): void {
+  const identities = generatedStreamPriorIdentities.get(sessionId);
+  if (!identities) return;
+  for (const id of ids) if (id) identities.add(id);
+}
+
 function streamingClientIdFor(sessionId: string, persistId: string | undefined): StreamingClientIdResolution {
   const normalizedPersistId = persistId?.trim();
   if (normalizedPersistId) {
@@ -2589,7 +2595,7 @@ function upsertMessage(
 ): boolean {
   const existing = messages.get(sessionId) ?? [];
   const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
-  const preservesGeneratedStream = options.preserveGeneratedStreamingFallback === true
+  let preservesGeneratedStream = options.preserveGeneratedStreamingFallback === true
     || priorIdentities?.has(message.id) === true
     || (message.clientId ? priorIdentities?.has(message.clientId) === true : false);
   const candidateIndex = options.knownIndex ?? -1;
@@ -2616,6 +2622,12 @@ function upsertMessage(
       bumpMessageVersion(sessionId);
       return true;
     }
+  }
+  if (isPersistedAssistantMessage(message)
+    && isGeneratedStreamingClientId(streamingAssistantClientIds.get(sessionId))) {
+    // This row did not merge with the live fallback. Keep that separation on replay.
+    excludeFromGeneratedStream(sessionId, message.id, message.clientId);
+    preservesGeneratedStream = true;
   }
   if (index < 0) {
     messages.set(sessionId, normalizeMessages([...existing, message]));
@@ -3885,7 +3897,11 @@ export const remoteSessionStore = {
       if (isPersistedAssistantMessage(item)) {
         const fallbackIndex = findPendingGeneratedStreamingFallbackIndex(sessionId, existing);
         const fallback = fallbackIndex >= 0 ? existing[fallbackIndex] : undefined;
-        if (fallback && generatedFallbackMatchesPersistedMessage(fallback, item)) {
+        const priorIdentities = generatedStreamPriorIdentities.get(sessionId);
+        const knownSeparateIdentity = priorIdentities?.has(item.id) === true
+          || (item.clientId ? priorIdentities?.has(item.clientId) === true : false)
+          || messageIdentityIndexHas(existingIdentityIndex, item);
+        if (fallback && !knownSeparateIdentity && generatedFallbackMatchesPersistedMessage(fallback, item)) {
           // History sync may be the first place the authoritative DB identity
           // arrives. Remove the generated key before inserting the persisted row;
           // otherwise the newer temporary row is kept as a tail and the DB row
@@ -3905,6 +3921,7 @@ export const remoteSessionStore = {
           continue;
         }
       }
+      if (isPersistedAssistantMessage(item)) excludeFromGeneratedStream(sessionId, item.id, item.clientId);
       const directKey = messageKey(item);
       const identityKey = findMessageMergeKey(byKey, item);
       const key = identityKey ?? directKey;

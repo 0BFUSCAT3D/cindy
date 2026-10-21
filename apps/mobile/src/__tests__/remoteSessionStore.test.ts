@@ -888,7 +888,7 @@ describe('remoteSessionStore', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it.each(['db-row', 'history'] as const)('keeps anonymous B when initially unseen old A arrives before its final (%s)', (arrival) => {
+  it.each([['db-row', 'item-a'], ['db-row', 'host-a'], ['history', 'item-a'], ['history', 'host-a']] as const)('keeps anonymous B when initially unseen old A arrives before its final (%s, %s)', (arrival, finalId) => {
     vi.useFakeTimers();
     try {
       pushMakerText('s1', undefined, 'Sure', false);
@@ -902,11 +902,20 @@ describe('remoteSessionStore', () => {
       } else {
         remoteSessionStore.setLatestMessageWindow('s1', [older]);
       }
+      // An equal DB replay must not retire B before the full correction either.
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', message: older,
+      });
       remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
-        sessionId: 's1', persistId: 'item-a', event: {
+        sessionId: 's1', persistId: finalId, event: {
           type: 'text', data: { text: 'Corrected older reply', isFinal: true, isFullText: true },
         },
       });
+      const corrected = { ...older, content: 'Corrected older reply' };
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', message: corrected,
+      });
+      remoteSessionStore.setLatestMessageWindow('s1', [corrected]);
       pushMakerText('s1', undefined, ' tail', false);
       vi.runOnlyPendingTimers();
       expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
@@ -970,6 +979,35 @@ describe('remoteSessionStore', () => {
       vi.runOnlyPendingTimers();
       expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
       expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === newer.clientId)?.content).toBe(`${prefix} tail`);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([false, true, 'db-first'] as const)('keeps a known older row from claiming a matching anonymous stream through history (cropped=%s)', (cropped) => {
+    vi.useFakeTimers();
+    try {
+      const older = { ...message('host-a', 's1'), clientId: 'item-a', content: 'partial answer from earlier' };
+      if (cropped !== 'db-first') remoteSessionStore.setMessages('s1', [older]);
+      pushMakerText('s1', undefined, cropped === 'db-first' ? 'partial' : 'partial answer', false);
+      vi.runOnlyPendingTimers();
+      const newer = remoteSessionStore.getMessages('s1').find((row) => row.clientId?.startsWith('mobile-stream-'))!;
+      if (cropped === 'db-first') {
+        remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', { sessionId: 's1', message: older });
+        pushMakerText('s1', undefined, ' answer', false);
+        vi.runOnlyPendingTimers();
+      }
+      if (cropped) remoteSessionStore.setMessages('s1', [remoteSessionStore.getMessages('s1').find((row) => row.clientId === newer.clientId)!]);
+      remoteSessionStore.setLatestMessageWindow('s1', [older]);
+      remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+        sessionId: 's1', persistId: 'item-a', event: {
+          type: 'text', data: { text: 'Corrected older reply', isFinal: true, isFullText: true },
+        },
+      });
+      pushMakerText('s1', undefined, ' tail', false);
+      vi.runOnlyPendingTimers();
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
+      expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === newer.clientId))
+        .toMatchObject({ content: 'partial answer tail', agentMeta: { isStreaming: true } });
+      expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === 'item-a')?.content).toBe('Corrected older reply');
     } finally { vi.useRealTimers(); }
   });
 
