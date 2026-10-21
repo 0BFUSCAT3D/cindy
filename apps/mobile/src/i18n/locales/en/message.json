@@ -240,7 +240,15 @@
     "sendingMessage": "Sending message: {{text}}",
     "uploadingAttachments": "Uploading attachments {{uploaded}}/{{total}}",
     "delete": "Delete",
-    "retry": "Retry"
+    "retry": "Retry",
+    "notSent": "Not sent",
+    "imagesNotUploaded_one": "{{count}} image didn't upload",
+    "imagesNotUploaded_other": "{{count}} images didn't upload",
+    "waitingForComputer": "Sends when your computer is back",
+    "waitingForNetwork": "Sends when you’re back online",
+    "queued": "Queued",
+    "retryImage": "Upload this image again",
+    "waitingMessage": "Waiting to send: {{text}}"
   },
   "systemCard": {
     "contextRebuild": {

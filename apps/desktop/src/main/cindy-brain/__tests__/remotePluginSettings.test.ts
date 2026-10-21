@@ -71,7 +71,8 @@ afterEach(() => {
 function fixture(namespace: string | null = null) {
   let owner: string | null = 'owner',
     revision = 'installed-1',
-    allowed = true;
+    allowed = true,
+    nowOffset = 0;
   const file = Buffer.from(
     '<!doctype html><html><head></head><body><input id="original"><script src="settings.js"></script></body></html>',
   );
@@ -125,6 +126,7 @@ function fixture(namespace: string | null = null) {
     async () => '/target/resolved',
   );
   const service = new MobilePluginPages({
+    now: () => Date.now() + nowOffset,
     list: () => [ghost],
     revision: () => revision,
     captureOwner: () => {
@@ -209,6 +211,8 @@ function fixture(namespace: string | null = null) {
     return { view, fetch };
   };
   return {
+    advance: (ms: number) => { nowOffset += ms; },
+    now: () => Date.now() + nowOffset,
     service,
     ghost,
     stored,
@@ -236,6 +240,14 @@ function fixture(namespace: string | null = null) {
 }
 
 describe('original remote plugin settings', () => {
+  it('advertises controller-routed settings authorization in the opened document', async () => {
+    const f = fixture();
+    const response = await f.service.provider().invoke!(
+      { controllerDeviceId: 'controller-a' },
+      { collectionId: 'plugins', actionId: 'settings:open', resourceRef: { collectionId: 'plugins', kind: 'plugin', id: f.ghost.instanceKey }, input: { expectedInstalledApproval: ghostInstallApprovalToken(f.ghost.approval) } } as never,
+    );
+    expect(response).toMatchObject({ result: { controllerAuthorization: true, pluginId: f.ghost.instanceKey } });
+  });
   it.each([null, 'org'])(
     'serves the original HTML in a unique, hardened session for namespace %s',
     async (ns) => {
@@ -254,6 +266,15 @@ describe('original remote plugin settings', () => {
       expect(ses.setPermissionCheckHandler).toHaveBeenCalled();
     },
   );
+  it('carries a credential check only inside the encrypted settings session', async () => {
+    const f = fixture(), { fetch } = await f.open();
+    f.settingsFetch.mockResolvedValueOnce({ status: 200, mime: 'application/json', base64: Buffer.from('{"valid":true}').toString('base64') });
+    const value = 'synthetic-check-candidate';
+    expect(await (await fetch('/secrets/key/check', { method: 'POST', body: JSON.stringify({ value }) })).json()).toEqual({ valid: true });
+    expect(f.settingsFetch).toHaveBeenCalledWith(expect.anything(), '/secrets/key/check', 'POST', JSON.stringify({ value }), expect.any(Function), expect.any(Function));
+    expect(JSON.stringify(f.wire)).not.toContain(value);
+    expect(f.controllerStored.size).toBe(0);
+  });
   it('writes a new key only to B through the signed encrypted exchange, then reads B status', async ({ onTestFinished }) => {
     // Unit regression: the real handshake/write must work when each clock read advances 1 ms.
     // The wall-clock fixture previously missed this boundary and intermittently failed in CI.
@@ -511,6 +532,69 @@ describe('original remote plugin settings', () => {
     expect(Buffer.from(result.base64, 'base64').toString()).toBe('{"ok":true}');
     expect(f.service.settingsAuthorizationBinding(action)).toBeNull();
   });
+  // Production settingsRequest/binding must survive a phone backgrounding during OAuth.
+  // Existing happy-path coverage never advances time; 121s idle is the minimal failure.
+  // Unit tier: in-memory endpoint/context, no provider tokens or external OAuth involved.
+  it.each([['page', true], ['sweep', false]] as const)('retains only an in-flight OAuth lease through %s after 120s idle (success=%s)', async (entry, success) => {
+    const f = fixture();
+    await f.open();
+    const pageId = [...(f.service as unknown as { pages: Map<string, unknown> }).pages.keys()][0];
+    const action = await f.service.settingsRequest('controller-a', {
+      op: 'settings', id: pageId, command: {kind: 'authorize', path: '/oauth/login/connect'},
+    }) as {requestId: string; actionId: string; expectedRevision: number};
+    let resolve!: (result: {status: number; mime: string; base64: string}) => void;
+    f.settingsFetch.mockImplementationOnce(() => new Promise(done => {resolve = done;}));
+    const finish = vi.fn();
+    const cancelled = new AbortController();
+    withRemoteOauthContext({scope: 'fixture', peer: 'controller-a', expiresAt: f.now() + 300_000,
+      cancelled: cancelled.signal, assertCurrent() {}, authorize: vi.fn(), finish},
+      () => expect(f.service.runSettingsAuthorization(action)).toBe(true));
+    f.advance(121_000);
+    if (entry === 'sweep') f.service.notify(pageId, 'example', 'fixture notification');
+    expect(f.service.settingsAuthorizationBinding(action)?.current()).toBe(true);
+    resolve({status: 200, mime: 'application/json', base64: Buffer.from(JSON.stringify({ok: success})).toString('base64')});
+    await Promise.resolve();
+    expect(finish).toHaveBeenCalledWith(success);
+    // A terminal authorization stays single-use until its result is consumed.
+    withRemoteOauthContext({scope: 'replay', peer: 'controller-a', expiresAt: f.now() + 300_000,
+      assertCurrent() {}, authorize: vi.fn(), finish},
+      () => expect(f.service.runSettingsAuthorization(action)).toBe(false));
+    expect(f.settingsFetch).toHaveBeenCalledTimes(1);
+    f.advance(121_000);
+    await expect(f.service.settingsRequest('controller-a', {op: 'settings', id: pageId,
+      command: {kind: 'poll', after: 0}})).rejects.toThrow();
+  });
+  it.each(['deadline', 'cancel', 'close', 'owner', 'controller', 'approval', 'no-deadline', 'not-started'] as const)(
+    'does not retain an OAuth page after %s', async (reason) => {
+      const f = fixture();
+      await f.open();
+      const pageId = [...(f.service as unknown as {pages: Map<string, unknown>}).pages.keys()][0];
+      const action = await f.service.settingsRequest('controller-a', {op: 'settings', id: pageId,
+        command: {kind: 'authorize', path: '/oauth/login/connect'}}) as {requestId: string; actionId: string; expectedRevision: number};
+      let resolve!: (result: {status: number; mime: string; base64: string}) => void;
+      const cancelled = new AbortController();
+      const finish = vi.fn();
+      if (reason !== 'not-started') {
+        f.settingsFetch.mockImplementationOnce(() => new Promise(done => {resolve = done;}));
+        withRemoteOauthContext({scope: 'fixture', peer: 'controller-a',
+          expiresAt: reason === 'no-deadline' ? undefined : f.now() + 300_000,
+          cancelled: cancelled.signal, assertCurrent() {}, authorize: vi.fn(), finish},
+          () => expect(f.service.runSettingsAuthorization(action)).toBe(true));
+      }
+      f.advance(reason === 'deadline' ? 300_000 : 121_000);
+      if (reason === 'cancel') cancelled.abort();
+      if (reason === 'close') await f.service.settingsRequest('controller-a', {op: 'settings', id: pageId, command: {kind: 'close'}});
+      if (reason === 'owner') f.owner('replacement');
+      if (reason === 'controller') f.revoke();
+      if (reason === 'approval') f.revision();
+      f.service.notify(pageId, 'example', 'fixture notification');
+      expect(f.service.settingsAuthorizationBinding(action)?.current() ?? false).toBe(false);
+      await expect(f.service.settingsRequest('controller-a', {op: 'settings', id: pageId,
+        command: {kind: 'poll', after: 0}})).rejects.toThrow();
+      resolve?.({status: 200, mime: 'application/json', base64: Buffer.from('{"ok":true}').toString('base64')});
+      await Promise.resolve();
+      if (reason !== 'not-started') expect(finish).toHaveBeenCalledWith(false);
+    });
   it('rejects foreign identities and unsafe package descriptors', () => {
     expect(() =>
       parseSettingsDocument({ pageId: 'p', pluginId: 'elsewhere' }, 'example'),

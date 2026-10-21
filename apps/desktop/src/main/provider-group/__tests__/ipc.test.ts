@@ -93,7 +93,9 @@ describe('parseProviderGroupCommand', () => {
     const d = deps([]);
     d.rebalanceDecision = vi.fn(async () => true);
     const request = { action: 'rebalance-decision', sessionId: 's1', memberKey: MINI.key, remember: false, clientId: 'message-a' };
-    expect(await executeProviderGroupCommand(d, parseProviderGroupCommand(request))).toEqual({ ok: true });
+    const command = parseProviderGroupCommand(request);
+    if (command.action !== 'rebalance-decision') throw new Error('Expected the rebalance decision command');
+    expect(await executeProviderGroupCommand(d, command)).toEqual({ ok: true });
     expect(d.rebalanceDecision).toHaveBeenCalledWith('s1', MINI.key, false, 'message-a');
     expect(() => parseProviderGroupCommand({ ...request, clientId: 'bad id' })).toThrow();
   });
