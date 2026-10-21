@@ -2118,12 +2118,14 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
     return [...new Set([...ordinary, ...shared])];
   };
   const dsts = targetsFor(false);
-  observeRemoteSendPush(channel, payload, dsts.length);
   // The active registry describes peer topic intent, not whether this host can
   // currently write to the relay. During host-side reconnects sendPush is a
   // silent no-op, so route queueable pushes through the offline backlog instead.
   const relayOnline = activeClient.getStatus() === 'online';
   const liveTargets = relayOnline ? dsts : [];
+  // Telemetry only for pushes that go out live now; an offline backlog replay is
+  // not a send latency, and the trace simply expires.
+  if (liveTargets.length > 0) observeRemoteSendPush(channel, payload, liveTargets.length);
   // 微批只对声明了能力的控制端启用;只在 maker:event 这一条 channel 上查询,
   // 不给其它 channel 增加每帧 capability 查询开销。
   const batchTargets = channel === MAKER_PUSH.EVENT && liveTargets.length > 0
