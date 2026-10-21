@@ -140,8 +140,16 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const readBeforeRef = useRef<number | null>(null);
   /** Whether the reader follows this Thread; undefined until known, or when the server keeps no read state. */
   const [following, setFollowing] = useState<boolean | undefined>(undefined);
-  /** A follow change being written: reads that started before it must not undo it on screen. */
+  /**
+   * Bumped when a follow change starts and again when it is saved: a read that began before the
+   * save finished may carry the old value and must not undo the switch on screen.
+   */
   const followWriteRef = useRef(0);
+  /**
+   * Follow changes are saved one at a time and the newest click is saved last, so the server
+   * keeps the reader's final choice however fast they toggle.
+   */
+  const followSaveRef = useRef<{ saving: boolean; wanted: boolean | null; saved: boolean | undefined }>({ saving: false, wanted: null, saved: undefined });
 
   /**
    * Reads the latest page, or the page before `before`. `rereadOnly` re-reads an opened page for a
@@ -163,7 +171,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
-      if (!before && followWrite === followWriteRef.current) setFollowing(result.following);
+      if (!before && followWrite === followWriteRef.current) {
+        followSaveRef.current.saved = result.following;
+        setFollowing(result.following);
+      }
       if (readBeforeRef.current === null && result.readBefore !== undefined) {
         readBeforeRef.current = result.readBefore;
         setReadBefore(result.readBefore);
@@ -216,18 +227,34 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   /** Following is the reader's own switch, off by default: replying or being named never turns it on. */
   const toggleFollowing = useCallback(async () => {
     if (following === undefined) return;
-    const next = !following;
-    const write = ++followWriteRef.current;
+    const save = followSaveRef.current;
+    save.wanted = !following;
+    setFollowing(save.wanted);
+    if (save.saving) return;
+    save.saving = true;
+    followWriteRef.current += 1;
     const owner = getDataOwnerGeneration();
-    setFollowing(next);
+    const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
     try {
-      const result = await api().thread({ groupId: group.id, rootId, following: next });
-      if (!aliveRef.current || !isDataOwnerGenerationCurrent(owner) || write !== followWriteRef.current) return;
-      if (result.ok) { setFollowing(result.following); return; }
-      setFollowing(!next);
-      toast.error(t(chatErrorKey(result.errorCode)));
-    } catch {
-      if (aliveRef.current && write === followWriteRef.current) { setFollowing(!next); toast.error(t(key('requestFailed'))); }
+      while (save.wanted !== null && save.wanted !== save.saved) {
+        const wanted: boolean = save.wanted;
+        save.wanted = null;
+        let failure: string | null = null;
+        try {
+          const result = await api().followThread({ groupId: group.id, rootId, following: wanted });
+          if (result.ok) save.saved = result.following;
+          else failure = t(chatErrorKey(result.errorCode));
+        } catch { failure = t(key('requestFailed')); }
+        if (!current()) return;
+        // A newer click is saved next; only the last outcome is shown.
+        if (save.wanted !== null) continue;
+        setFollowing(save.saved);
+        if (failure) toast.error(failure);
+      }
+    } finally {
+      save.saving = false;
+      save.wanted = null;
+      followWriteRef.current += 1;
     }
   }, [following, group.id, rootId, t]);
   useEffect(() => {

@@ -1983,10 +1983,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     status: async () => ({ enabled: true, connected: current() && connected }),
     thread: input => result(async () => {
       const i = z.object({ groupId: id, rootId: id, before: z.number().int().positive().optional(), sourceMessageIds: z.array(id).optional(),
-        markRead: z.boolean().optional(), following: z.boolean().optional() }).parse(input);
+        markRead: z.boolean().optional() }).parse(input);
       i.groupId = await groupRoom(i.groupId);
-      const followingWrite = i.following === undefined ? undefined : threadFollowing(i.groupId, i.rootId, i.following);
-      followingWrite?.catch(() => undefined);
       // One round trip; awaited in the former order so the same failure is reported first.
       const membersRead = api<Member[]>(`/conversations/${i.groupId}/members`);
       const rootRead = api<Message>(`/conversations/${i.groupId}/messages/${i.rootId}`);
@@ -2000,11 +1998,19 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const rootViews = await messageViews(i.groupId, [root], members);
       await decorateThreads(i.groupId, rootViews, [root], page, members, false);
       // An older page is history being scrolled: it says nothing about the Thread's switches.
-      const following = await (followingWrite ?? (i.before ? undefined : threadFollowing(i.groupId, root.id)));
+      const following = i.before ? undefined : await threadFollowing(i.groupId, root.id);
       const readBefore = i.markRead && !i.before ? await markThreadRead(i.groupId, root, page) : undefined;
       return { root: rootViews[0], executionFailures,
         replies: await messageViews(i.groupId, page.reverse(), members), hasMore: page.length === 50,
         ...(readBefore !== undefined ? { readBefore } : {}), ...(following !== undefined ? { following } : {}) };
+    }),
+    followThread: input => result(async () => {
+      const i = z.object({ groupId: id, rootId: id, following: z.boolean() }).strict().parse(input);
+      const room = await groupRoom(i.groupId);
+      const following = await threadFollowing(room, i.rootId, i.following);
+      // The switch only shows when the server keeps read state.
+      if (following === undefined) throw new Error('CHAT_UNAVAILABLE');
+      return { following };
     }),
     shareToMain: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id }).strict().parse(input);

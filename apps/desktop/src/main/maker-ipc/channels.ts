@@ -809,6 +809,7 @@ export const MAKER_INVOKE = {
   CHAT_SERVER_REFRESHPROFILE: 'maker:chat-server:refreshProfile',
   CHAT_SERVER_STATUS: 'maker:chat-server:status',
   CHAT_SERVER_THREAD: 'maker:chat-server:thread',
+  CHAT_SERVER_FOLLOWTHREAD: 'maker:chat-server:followThread',
   CHAT_SERVER_REPLY: 'maker:chat-server:reply',
   CHAT_SERVER_SHARETOMAIN: 'maker:chat-server:shareToMain',
   CHAT_SERVER_REACT: 'maker:chat-server:react',

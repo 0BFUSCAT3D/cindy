@@ -768,16 +768,21 @@ export interface ChatServerApi {
   /**
    * `markRead` (latest page only): the reader is looking at the Thread, so its server read state
    * moves to the newest reply read here; `readBefore` is where it stood before this read.
-   * `following` first sets whether the reader follows the Thread (bot-group-chat.md §10); the
-   * result's `following` is absent when the server keeps no read state.
+   * `following` (latest page only) is whether the reader follows the Thread; absent when the
+   * server keeps no read state.
    */
-  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[]; markRead?: boolean; following?: boolean }): Promise<ChatServerResult<{
+  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[]; markRead?: boolean }): Promise<ChatServerResult<{
     root: BotGroupMessageView; replies: BotGroupMessageView[]; hasMore: boolean;
     /** Same authoritative state as the main timeline; root and replies use one projection. */
     executionFailures?: BotGroupExecutionFailureView[];
     readBefore?: number;
     following?: boolean;
   }>>;
+  /**
+   * Sets whether the reader follows a Thread (bot-group-chat.md §10「关注开关」) and answers what
+   * the server saved. Only the reader's own choice ever follows a Thread.
+   */
+  followThread(input: { groupId: string; rootId: string; following: boolean }): Promise<ChatServerResult<{ following: boolean }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
   /**
    * Re-post a thread reply to the main chat as the current user. Repeating it for the same

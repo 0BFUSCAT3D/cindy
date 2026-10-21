@@ -175,8 +175,11 @@ void mountPage({
     const data = ctx.data as unknown as GroupData;
     const group = groupFrom(data);
     let following = false;
-    const thread = async (input: { rootId: string; following?: boolean }) => {
-      if (input.following !== undefined) following = input.following;
+    const followThread = async (input: { following: boolean }) => {
+      following = input.following;
+      return { ok: true, following };
+    };
+    const thread = async (input: { rootId: string }) => {
       const root = group.messages.find(m => m.id === input.rootId);
       const replies = ((root?.threadPreview as { replies?: Array<Record<string, unknown>> } | undefined)?.replies ?? []).map((reply, index) => message({
         id: reply.id, sequence: 100 + index, threadRootId: input.rootId, authorKind: reply.authorKind, authorBotId: reply.authorBotId,
@@ -194,7 +197,7 @@ void mountPage({
         chatServer: {
           reactors: async () => ({ ok: true, reactors: [{ actorId: 'me', isSelf: true, name: 'You', formerMember: false }] }),
           react: forbid('maker.chatServer.react'),
-          ...(data.threadPanel ? { thread } : {}),
+          ...(data.threadPanel ? { thread, followThread } : {}),
         },
       },
       deviceLink: {

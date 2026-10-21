@@ -2493,13 +2493,15 @@ describe('Chat Server result delivery and refresh', () => {
       const writes = () => fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/read` && method === 'POST');
       expect(await service.chatServer!.thread({ groupId: roomId, rootId })).toMatchObject({ ok: true, following: false });
       expect(writes()).toHaveLength(0);
-      expect(await service.chatServer!.thread({ groupId: roomId, rootId, following: true })).toMatchObject({ ok: true, following: true });
+      expect(await service.chatServer!.followThread({ groupId: roomId, rootId, following: true })).toEqual({ ok: true, following: true });
       expect(writes()).toHaveLength(1);
       expect(writes()[0]![2]).toMatchObject({ threadRootId: rootId, readSeq: '3', following: true });
       await vi.advanceTimersByTimeAsync(150);
       const listed = await service.getGroup(roomId);
       if (!listed.ok) throw new Error('Expected group');
       expect(listed.group.threads?.find(thread => thread.rootId === rootId)?.following).toBe(true);
+      // Saving the switch reads no Thread page, so a failing page read cannot turn a saved choice into an error.
+      expect(fixture.handle.mock.calls.filter(([route]) => route.includes('threadRootId=')).length).toBe(1);
     });
 
     it('projects distinct responders independently of repeated-author summaries', async () => {
