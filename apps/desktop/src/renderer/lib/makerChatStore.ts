@@ -1,4 +1,5 @@
 import { pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
+import { isVoiceCallTaskMessage } from '../../shared/voiceConversation';
 import { remoteAgentLimitErrorKey } from '../../shared/remoteAgentLimits';
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
@@ -571,6 +572,8 @@ export interface ChatMessage {
    * agentMeta.goalCompletion 派生(仿 fork divider 从 session 元数据派生),重开会话仍在。
    */
   systemCardType?:
+    | 'voice-call'
+    | 'voice-call-task'
     | 'cindy-make-doctor'
     | 'cindy-make'
     | 'help'
@@ -18965,6 +18968,11 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
   const ordered = filtered.sort(compareMessageTimeline);
   const legacyUserTurnCosts = projectLegacyUserTurnCosts(ordered);
   const mapped = ordered.map((m) => {
+    if (m.role === 'assistant' && m.agentMeta?.voiceCall?.version === 1) return {
+      clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
+      systemCardType: 'voice-call' as const, systemCardData: { record: m.agentMeta.voiceCall },
+      createdAt: new Date(m.createdAt).toISOString(),
+    };
     const mcpApp = m.role === 'assistant' && m.agentMeta?.mcpApp === true ? parseMcpAppHistory(m.content) : undefined;
     if (mcpApp) return {
       clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
@@ -19351,6 +19359,9 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
         role: m.role,
         content: parsed.text,
         isStreaming: false,
+        ...(isVoiceCallTaskMessage(m.clientId, m.sessionId, parsed.text, m.agentMeta?.autoReviewUserText)
+          ? { systemCardType: 'voice-call-task' as const, systemCardData: { text: parsed.text } }
+          : {}),
         ...(parsed.images.length > 0 && { images: parsed.images }),
         ...(parsed.files.length > 0 && { files: parsed.files }),
         ...(parsed.quotesEncoded === true && { quotesEncoded: true }),

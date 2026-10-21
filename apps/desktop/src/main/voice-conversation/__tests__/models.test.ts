@@ -39,6 +39,33 @@ function custom(
   );
 }
 
+// Protocol authority comes from the real endpoint, not the UI's override.
+it('rejects unsupported speed on an official binding before opening a call', () => {
+  const d = deps([
+    custom('eleven', 'https://api.elevenlabs.io/v1', [
+      { id: 'eleven_flash_v2_5', name: 'Flash', mode: 'audio_speech' },
+      { id: 'eleven_v3', name: 'V3', mode: 'audio_speech' },
+    ]),
+  ]);
+  const choice = {
+    providerId: 'eleven',
+    agent: 'codex' as const,
+    modelId: 'eleven_flash_v2_5',
+    voice: 'voice',
+    protocol: 'openai' as const,
+  };
+  expect(resolveSpeechConnection(d, { ...choice, speed: 1.2 }).protocol).toBe('elevenlabs');
+  expect(() => resolveSpeechConnection(d, { ...choice, speed: 1.5 })).toThrow(
+    'invalid_speech_speed',
+  );
+  expect(() => resolveSpeechConnection(d, { ...choice, modelId: 'eleven_v3', speed: 1 })).toThrow(
+    'invalid_speech_speed',
+  );
+  expect(resolveSpeechConnection(d, { ...choice, modelId: 'eleven_v3' }).protocol).toBe(
+    'elevenlabs',
+  );
+});
+
 it('keeps Gateway entitlement and supported-protocol gates', () => {
   const d = deps([
     {

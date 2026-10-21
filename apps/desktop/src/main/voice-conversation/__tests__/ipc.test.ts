@@ -55,6 +55,13 @@ vi.mock('../../utility-model/oneShotCandidates.js', () => ({
 }));
 vi.mock('../semanticExit.js', () => ({ classifyVoiceExit: vi.fn(async () => false) }));
 
+vi.mock('../dialogue.js', () => ({ CompanionCallDialogue: class {
+  async start() {}
+  async end() {}
+  async submit() { return true; }
+  async promote() { return true; }
+} }));
+
 import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { registerVoiceConversationIpc } from '../index.js';
 import { outboundFetch } from '../../maker-host/outbound-fetch.js';
@@ -102,7 +109,7 @@ const start = () =>
   });
 
 it('patches playback without replacing the saved route and validates boolean overrides', async () => {
-  const choice = { modelId: 'voice-test', voice: 'alloy' };
+  const choice = { modelId: 'voice-test', voice: 'alloy', speed: 1.15 };
   await call('set-preference', 'bot-a', choice);
   await call('set-preference', 'bot-a', undefined, false);
   expect(await call('preference', 'bot-a')).toEqual({
@@ -122,6 +129,13 @@ it('patches playback without replacing the saved route and validates boolean ove
   await expect(
     call('speak', { callId: 'call', requestId: 'a', text: 'hi', streaming: 'true' }),
   ).rejects.toThrow();
+});
+
+it.each([NaN, Infinity, '1.2', 0.1, 4.1])('rejects invalid speed %s without replacing the saved preference', async (speed) => {
+  const choice = { modelId: 'voice-test', voice: 'alloy', speed: 1.15 };
+  await call('set-preference', 'bot', choice);
+  await expect(call('set-preference', 'bot', { ...choice, speed })).rejects.toThrow();
+  expect(await call('preference', 'bot')).toMatchObject({ selection: choice });
 });
 
 it('rejects an untrusted sender before returning models or opening a connection', async () => {

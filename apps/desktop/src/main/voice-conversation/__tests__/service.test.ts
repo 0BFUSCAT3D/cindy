@@ -22,7 +22,7 @@ const previewSelection = {
 describe('voice preview ownership', () => {
   it('synthesizes the exact selection without allocating ASR, and excludes concurrent calls', async () => {
     const { service, deps } = fixture();
-    expect(await service.startPreview(1, previewSelection)).toEqual({ sampleRate: 24000 });
+    expect(await service.startPreview(1, { ...previewSelection, speed: 0.8 })).toEqual({ sampleRate: 24000 });
     expect(deps.assertCompanion).toHaveBeenCalledWith('bot', 'canonical');
     expect(deps.createProvider).not.toHaveBeenCalled();
     expect(deps.fetch).toHaveBeenCalledWith(
@@ -33,6 +33,7 @@ describe('voice preview ownership', () => {
           voice: 'alloy',
           input: 'voice sample',
           response_format: 'pcm',
+          speed: 0.8,
         }),
       }),
     );
@@ -104,6 +105,19 @@ const selection = {
   modelId: 'tts',
   voice: 'alloy',
 };
+
+// The real call and message-playback entrances previously dropped speed before
+// the shared transport. Both must carry the same preference on every sentence.
+it.each(['start', 'startPlayback'] as const)('keeps synthesis speed through %s and sentence prefetch', async (method) => {
+  const { service, deps } = fixture();
+  await service[method](1, { ...selection, speed: 1.15 });
+  await service.speak(1, selection.callId, 'sentence-1', 'First sentence.');
+  await service.speak(1, selection.callId, 'sentence-2', 'Second sentence.');
+  expect(deps.fetch).toHaveBeenCalledTimes(2);
+  for (const [, request] of vi.mocked(deps.fetch as typeof fetch).mock.calls) {
+    expect(JSON.parse(String(request?.body))).toMatchObject({ speed: 1.15 });
+  }
+});
 function fixture() {
   const provider = {
     start: vi.fn(async () => {}),
@@ -301,6 +315,26 @@ describe('message read-aloud ownership', () => {
 });
 
 describe('local companion call ownership', () => {
+  // Startup failure must release the real service's ASR and lease before retry.
+  // Existing ownership tests did not cover rejection after ASR allocation.
+  // Unit tier, failed provider only; diagnostics must not expose its error text.
+  it('cleans up a failed input start, logs its stage, and allows another call', async () => {
+    const { service, deps, provider } = fixture();
+    provider.start.mockRejectedValueOnce(new Error('private upstream response'));
+    await expect(service.start(1, selection)).rejects.toThrow();
+    expect(hasVoiceConversationLease()).toBe(false);
+    expect(deps.log.warn).toHaveBeenCalledWith('call start failed', {
+      callId: selection.callId, stage: 'input', elapsedMs: expect.any(Number),
+    });
+    expect(JSON.stringify(deps.log.warn.mock.calls)).not.toContain('private upstream response');
+    expect(deps.emit).toHaveBeenCalledWith(1, {
+      callId: selection.callId, event: { type: 'ended' },
+    });
+    expect(provider.dispose).toHaveBeenCalled();
+    await expect(service.start(1, { ...selection, callId: 'retry' })).resolves.toEqual({ callId: 'retry' });
+    expect(hasVoiceConversationLease()).toBe(true);
+  });
+
   it('checks outgoing reply hooks before every unfinished request without issuing paid synthesis', async () => {
     const { service, deps } = fixture();
     await service.start(1, selection);

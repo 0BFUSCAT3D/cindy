@@ -1,4 +1,5 @@
 import { CompanionVoicePanel } from '../bots/voice/CompanionVoicePanel';
+import { visibleVoiceCallMessages } from '../bots/voice/VoiceCallTranscript';
 import { voiceTaskFailure } from '../bots/voice/VoiceReplyTracker';
 import { useMessageReadAloud } from '../bots/voice/useMessageReadAloud';
 import { MessageReadAloudContext } from '@/components/chat/MessageReadAloudContext';
@@ -105,6 +106,7 @@ import { GhostGrantConfirmCard } from './GhostGrantConfirmCard';
 import { InputHandoffCard } from '@/features/input-handoff/InputHandoffCard';
 import { RemoteDesktopConfirmationNotice } from './RemoteDesktopConfirmationNotice';
 import { AskUserQuestionPrompt } from '@/components/new-chat/AskUserQuestionPrompt';
+import type { VoiceQuestionTarget } from '@/components/new-chat/voiceQuestionSelection';
 import { PluginSetupPrompt } from '@/components/new-chat/PluginSetupPrompt';
 import { PlanViewerCard } from '@/components/new-chat/PlanViewerCard';
 import { PlanActionCard } from '@/components/new-chat/PlanActionCard';
@@ -249,7 +251,7 @@ import {
 } from '@/features/bots/botChatPresentation';
 import { isCurrentSubagentRunsChange } from '@/features/right-sidebar/plugins/subagents/subagentChangeFence';
 import { startSubagentTabDiscovery } from './subagentTabDiscovery';
-import { subscribeChatTaskFocus } from '@/features/right-sidebar/plugins/background-tasks/chatTaskFocusIntent';
+import { requestChatTaskFocus, subscribeChatTaskFocus } from '@/features/right-sidebar/plugins/background-tasks/chatTaskFocusIntent';
 import { canFocusWithoutJumpLoad } from '@/lib/searchJumpTargeting';
 import { getMakerMemoryEnabled } from '@/lib/memorySettingsStore';
 import { useWorktreeCreation, worktreeCreationStore } from '@/lib/worktreeCreationStore';
@@ -1021,6 +1023,8 @@ function CCAgentSessionContent({
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+  const [activeVoiceCallId, setActiveVoiceCallId] = useState<string | null>(null);
+  const voiceQuestionBridge = useRef<VoiceQuestionTarget | null>(null);
   const closeVoiceMode = useCallback(() => setVoiceModeOpen(false), []);
   const botChatIdentity = resolveBotChatIdentity(botIdentity, sessionId);
   const companionSettingsOpen = new URLSearchParams(location.search).get('settings') === '1';
@@ -4179,7 +4183,7 @@ function CCAgentSessionContent({
   const voiceModeAvailable = Boolean(botChatIdentity && !botChatIdentity.deviceId && sessionId
     && !remoteDeviceId && !session?.remoteHostId && !readOnly && ownsRoute && viewVisible && !companionSettingsOpen);
   useEffect(() => { if (!voiceModeAvailable) setVoiceModeOpen(false); }, [voiceModeAvailable]);
-  const voiceModeBlocked = Boolean(pendingPermission || pendingAskUser || pendingPlanReview
+  const voiceModeBlocked = Boolean(pendingPermission || pendingPlanReview
     || pendingPluginSetup || pendingIssueConfirm || pendingRenameSessionsConfirm
     || pendingGhostGrantConfirm || pendingRemoteDesktopConfirmation || pendingInputHandoff || sessionBinding.attached
     || remoteHandoffPreparing || cindyMakeInputLocked || queuePaused);
@@ -4206,7 +4210,7 @@ function CCAgentSessionContent({
     });
   }, [sessionId, messageReadAloud.stopForVoiceMode]);
   const sendVoiceMessage = useCallback(async (text: string, onCreated: (id: string) => void, isCurrent: () => boolean) => {
-    if (!session?.workingDir || !session.model || voiceModeBlocked || !isCurrent()) return false;
+    if (!session?.workingDir || !session.model || voiceModeBlocked || pendingAskUser || !isCurrent()) return false;
     const accepted = await handleSend(text, session.model, session.effort ?? '', session.permissionMode ?? 'default', undefined, undefined, {
       deliveryMode: isRunningRef.current ? 'steer' : 'queue',
       literalText: true,
@@ -4215,7 +4219,7 @@ function CCAgentSessionContent({
       onInputCreated: onCreated,
     });
     return accepted === true;
-  }, [session, voiceModeBlocked, handleSend]);
+  }, [session, voiceModeBlocked, pendingAskUser, handleSend]);
 
   const handleStopSession = useCallback(() => {
     if (remoteSessionUnavailable) {
@@ -5027,6 +5031,19 @@ function CCAgentSessionContent({
 
   // MessageStream 提成变量:perf/session-switch 的 <Profiler> 是纯诊断,只在 DEV
   // 包裹(见下方渲染处),生产直接渲染此 el,不引入多余 Profiler fiber。
+  const timelineMessages = useMemo(
+    () => visibleVoiceCallMessages(messages, activeVoiceCallId),
+    [messages, activeVoiceCallId],
+  );
+  const openVoiceTask = useCallback((clientId: string) => {
+    // Accepted queued work may not have a timeline row yet. Reveal its existing
+    // queue instead of inventing another task or claiming it has begun running.
+    if (pendingQueue.some(entry => entry.clientId === clientId)) {
+      setQueueExpanded(true);
+    } else if (sessionId) {
+      requestChatTaskFocus(sessionId, clientId);
+    }
+  }, [pendingQueue, sessionId, setQueueExpanded]);
   const messageStreamEl = (
     <MessageReadAloudContext.Provider value={messageReadAloud.value}>
     <MessageStream
@@ -5049,7 +5066,8 @@ function CCAgentSessionContent({
       simplifiedBotConversation={Boolean(botChatIdentity)}
       botUnreadBoundaryAt={botChatIdentity ? botUnreadBoundaryAt : null}
       onBotReadThrough={viewVisible ? onBotReadThrough : undefined}
-      messages={messages}
+      messages={timelineMessages}
+      activeVoiceCallId={activeVoiceCallId}
       cindyMakeSessionId={session?.source === 'cindy-make' ? sessionId : undefined}
       cindyMakeCompletionInComposer={session?.source === 'cindy-make' && (remoteMakeCards.supported || (!remoteDeviceId && !readOnly && typeof window.electronAPI.cindyMakeTest === 'function'))}
       historyLoaded={historyLoaded}
@@ -5688,6 +5706,7 @@ function CCAgentSessionContent({
                   />
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt
+                    voiceBridge={voiceModeOpen && voiceModeAvailable && !voiceModeBlocked ? voiceQuestionBridge : undefined}
                     sessionId={sessionId}
                     workingDir={session?.workingDir ?? ''}
                     remoteHostId={session?.remoteHostId}
@@ -5742,10 +5761,12 @@ function CCAgentSessionContent({
               </InteractionPromptHost>
               {/* 会话内 /goal 进行中状态条(composer 上方);无 goal 时返回 null 不占位。 */}
               {!isSharedTaskPeer(remoteDeviceId ?? '') && <GoalIndicator sessionId={sessionId} />}
-              {/* The compact call surface stays in the composer stack so expanded text and
-                  permission cards reserve space instead of covering the latest reply. */}
+              {/* Only the compact bar reserves composer space; its transcript is a
+                  dismissible popover, so expansion does not move the main timeline. */}
               {voiceModeAvailable && botChatIdentity && sessionId ? (
                 <CompanionVoicePanel key={sessionId} open={voiceModeOpen} bot={botChatIdentity} sessionId={sessionId} messages={messages}
+                  onCallIdChange={setActiveVoiceCallId} onOpenTask={openVoiceTask}
+                  questionPending={Boolean(pendingAskUser)} questionBridge={voiceQuestionBridge}
                   blocked={voiceModeBlocked} taskBusy={voiceTaskBusy} taskFailure={voiceFailure} onSend={sendVoiceMessage} onClose={closeVoiceMode} onConfigure={openVoiceSettings} />
               ) : null}
               {/* 互斥:控制端能终结的 pending interaction 会接管 composer；

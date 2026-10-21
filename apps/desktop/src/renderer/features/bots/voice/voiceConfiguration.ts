@@ -1,5 +1,7 @@
 import {
   normalizeVoiceConversationSelection,
+  resolveSpeechSpeed,
+  speechSpeedRange,
   voiceModelKey,
   type VoiceConversationModel,
   type VoiceConversationSelection,
@@ -10,6 +12,7 @@ export function resolveVoiceConfiguration(
   models: readonly VoiceConversationModel[],
   preference: VoiceConversationSelection | null,
   voice?: string,
+  speed = preference?.speed,
 ) {
   const selectedModel = preference
     ? models.find((model) => voiceModelKey(model) === voiceModelKey(preference))
@@ -29,6 +32,9 @@ export function resolveVoiceConfiguration(
     protocolOverride ??
     selectedModel?.protocol ??
     ((selectedModel?.providerId ?? 'xd') === 'xd' ? 'openai' : undefined);
+  const resolvedSpeed = selectedModel
+    ? resolveSpeechSpeed(selectedModel.id, protocol, speed)
+    : undefined;
   const selection = selectedModel
     ? normalizeVoiceConversationSelection({
         providerId: selectedModel.providerId,
@@ -36,6 +42,7 @@ export function resolveVoiceConfiguration(
         modelId: selectedModel.id,
         protocol: protocolOverride,
         voice: selectedVoice,
+        ...(resolvedSpeed !== undefined ? { speed: resolvedSpeed } : {}),
       })
     : null;
   return {
@@ -45,5 +52,8 @@ export function resolveVoiceConfiguration(
     selectedVoice,
     protocol,
     selection,
+    speedRange: selectedModel ? speechSpeedRange(selectedModel.id, protocol) : null,
+    speed: resolvedSpeed,
+    speedAdjusted: speed !== undefined && speed !== resolvedSpeed,
   };
 }

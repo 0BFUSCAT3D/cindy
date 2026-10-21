@@ -37,6 +37,7 @@ export class SpeechSynthesisSession {
     modelId: string;
     voice: string;
     text: string;
+    speed?: number;
   }): Promise<{ sampleRate: number }> {
     this.cancel();
     const epoch = this.epoch;

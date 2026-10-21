@@ -5,8 +5,8 @@ import {
   updateCompanionVoicePreference,
   updateSentencePlaybackPreference,
 } from '../preferences.js';
-const a = { providerId: 'a', agent: 'codex' as const, modelId: 'tts', voice: 'alloy' };
-const b = { ...a, providerId: 'b', voice: 'nova' };
+const a = { providerId: 'a', agent: 'codex' as const, modelId: 'tts', voice: 'alloy', speed: 1.15 };
+const b = { ...a, providerId: 'b', voice: 'nova', speed: 0.8 };
 it('persists each companion independently, preserves legacy inheritance, and deletes only a reset override', () => {
   let settings = normalizeVoiceInputSettings({
     conversationSelection: { modelId: 'old', voice: 'alloy' },

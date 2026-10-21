@@ -1,3 +1,4 @@
+import type { CompanionCallDialogue } from './dialogue.js';
 import {
   VoiceConversationInput,
   type AsrProvider,
@@ -38,6 +39,7 @@ type Call = {
   selection: VoiceConversationStart;
   exitUtterance: { id: string; text: string } | null;
   exitJudgment: AbortController | null;
+  dialogue?: CompanionCallDialogue;
 };
 type Preview = {
   id: string;
@@ -58,6 +60,7 @@ export class VoiceConversationService {
       hasDictation(): boolean;
       assertCompanion(botId: string, sessionId: string): Promise<void>;
       models(): VoiceConversationModel[];
+      createDialogue?(selection: VoiceConversationStart, emit: (record: import("@cindy/maker-core").VoiceCallRecord) => void): CompanionCallDialogue;
       createProvider(): Promise<AsrProvider>;
       createAudioGate?(): AudioGate | undefined;
       connection(selection: SpeechModelSelection): SpeechConnection;
@@ -129,6 +132,7 @@ export class VoiceConversationService {
         requestId: preview.id,
         modelId: selection.modelId,
         voice: selection.voice,
+        speed: selection.speed,
         text: selection.text,
       });
     } catch (error) {
@@ -220,11 +224,19 @@ export class VoiceConversationService {
     };
     this.call = call;
     const startedAt = Date.now();
+    let stage: 'companion' | 'call_record' | 'input' = 'companion';
     this.deps.log?.info('call starting', { callId: id, kind, protocol: binding.protocol });
     try {
       await this.deps.assertCompanion(selection.botId, selection.sessionId);
       assertCurrent();
       if (kind === 'conversation') {
+        stage = 'call_record';
+        call.dialogue = this.deps.createDialogue?.(selection, record => {
+          if (call.owner === this.deps.owner()) this.deps.emit(sender, { callId: id, event: { type: 'call-record', record } });
+        });
+        await call.dialogue?.start();
+        assertCurrent();
+        stage = 'input';
         const input = this.createInput(call);
         call.input = input;
         call.inputReady = input.start();
@@ -234,7 +246,7 @@ export class VoiceConversationService {
       this.deps.log?.info('call ready', { callId: id, elapsedMs: Date.now() - startedAt });
       return { callId: id };
     } catch (error) {
-      this.deps.log?.warn('call start failed', { callId: id, elapsedMs: Date.now() - startedAt });
+      this.deps.log?.warn('call start failed', { callId: id, stage, elapsedMs: Date.now() - startedAt });
       await this.end(sender, id);
       throw error;
     }
@@ -435,6 +447,7 @@ export class VoiceConversationService {
       text,
       modelId: call.selection.modelId,
       voice: call.selection.voice,
+      speed: call.selection.speed,
     });
   }
 
@@ -450,6 +463,16 @@ export class VoiceConversationService {
     this.requireCall(sender, id).speech.cancel();
   }
 
+  async promoteTurn(sender: number, id: string, inputId: string): Promise<boolean> {
+    return this.requireCall(sender, id).dialogue?.promote(inputId) ?? false;
+  }
+
+  async submitTurn(sender: number, id: string, inputId: string, text: string, forceHandoff: boolean): Promise<boolean> {
+    const call = this.requireCall(sender, id);
+    if (!call.dialogue || call.kind !== "conversation") return false;
+    return call.dialogue.submit(inputId, text, forceHandoff);
+  }
+
   async end(sender: number, id?: string): Promise<void> {
     if (!id) this.stopPreview(sender);
     const call = this.call;
@@ -458,8 +481,10 @@ export class VoiceConversationService {
     this.deps.log?.info('call ended', { callId: call.id });
     this.deps.emit(call.sender, { callId: call.id, event: { type: 'ended' } });
     call.speech.cancel();
+    const dialogueClosed = call.dialogue?.end();
     try {
       await this.stopInput(call);
+      await dialogueClosed;
     } catch {
       /* Ownership release must survive provider teardown. */
     } finally {

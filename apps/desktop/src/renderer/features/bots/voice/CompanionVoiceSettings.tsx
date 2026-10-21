@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Select } from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { makerChatStore, EMPTY_LIGHT_STATE } from '@/lib/makerChatStore';
@@ -20,7 +21,11 @@ import type {
   VoiceConversationModel,
   VoiceConversationSelection,
 } from '@/../shared/voiceConversation';
-import { normalizeVoiceConversationSelection, voiceModelKey } from '@/../shared/voiceConversation';
+import {
+  normalizeVoiceConversationSelection,
+  resolveSpeechSpeed,
+  voiceModelKey,
+} from '@/../shared/voiceConversation';
 import { referenceSpeechVoices } from '@/../shared/speechVoices';
 import { PcmSpeechPlayer } from './PcmSpeechPlayer';
 import { VoicePreviewController } from './VoicePreviewController';
@@ -62,6 +67,8 @@ export function CompanionVoiceSettings(props: Props) {
   const [catalogError, setCatalogError] = useState(false);
   const [preference, setPreference] = useState<VoiceConversationSelection | null>(null);
   const [voice, setVoice] = useState<string>();
+  const [speed, setSpeed] = useState<number>();
+  const [speedNotice, setSpeedNotice] = useState<number>();
   const [customized, setCustomized] = useState(false);
   const [sentencePlayback, setSentencePlayback] = useState(true);
   const [preferenceOwner, setPreferenceOwner] = useState<string>();
@@ -77,7 +84,13 @@ export function CompanionVoiceSettings(props: Props) {
     selectedVoice,
     selection,
     protocol,
-  } = resolveVoiceConfiguration(models, preference, voice);
+    speedRange,
+    speedAdjusted,
+    speed: effectiveSpeed,
+  } = resolveVoiceConfiguration(models, preference, voice, speed);
+  const selectedSpeed = effectiveSpeed ?? 1;
+  const speedLabel = (value: number) =>
+    t('bots.voiceMode.speedValue', { speed: value.toFixed(2).replace(/0$/, '') });
   const validModel = !!selectedModel;
   const preview = useMemo(
     () =>
@@ -114,6 +127,8 @@ export function CompanionVoiceSettings(props: Props) {
     setPreferenceError(false);
     setPreference(null);
     setVoice(undefined);
+    setSpeed(undefined);
+    setSpeedNotice(undefined);
     setCustomized(false);
     setSentencePlayback(true);
     setSaving(false);
@@ -190,6 +205,8 @@ export function CompanionVoiceSettings(props: Props) {
           if (next !== undefined) {
             setPreference(result.selection);
             setVoice(undefined);
+            setSpeed(undefined);
+            if (next === null) setSpeedNotice(undefined);
             dirty.current = false;
           }
           setCustomized(result.customized);
@@ -228,16 +245,24 @@ export function CompanionVoiceSettings(props: Props) {
       ref.current = null;
     };
   }, [props.beforeLeaveRef, persist, ready, selection, protocol, preview]);
+  const carrySpeed = (next: VoiceConversationSelection): VoiceConversationSelection => {
+    const previousSpeed = speed ?? preference?.speed;
+    const nextProtocol = resolveVoiceConfiguration(models, next).protocol;
+    const nextSpeed = resolveSpeechSpeed(next.modelId, nextProtocol, previousSpeed);
+    setSpeed(undefined);
+    setSpeedNotice(previousSpeed !== nextSpeed ? (nextSpeed ?? 1) : undefined);
+    return { ...next, ...(nextSpeed !== undefined ? { speed: nextSpeed } : {}) };
+  };
   const chooseModel = (key: string) => {
     const model = models.find((item) => voiceModelKey(item) === key);
     if (!model) return;
-    const next = {
+    const next = carrySpeed({
       providerId: model.providerId,
       agent: model.agent,
       modelId: model.id,
       // Voice compatibility is model-specific, even within the same connection/protocol.
       voice: model.defaultVoice ?? '',
-    };
+    });
     void preview.stop();
     dirty.current = true;
     setCustomized(true);
@@ -361,14 +386,14 @@ export function CompanionVoiceSettings(props: Props) {
                 ]}
                 disabled={!ready || saving}
                 onValueChange={(value) => {
-                  const next = {
+                  const next = carrySpeed({
                     providerId: selectedModel.providerId,
                     agent: selectedModel.agent,
                     modelId: selectedModel.id,
                     voice:
                       referenceSpeechVoices(selectedModel.id, value as SpeechProtocol)[0] ?? '',
                     protocol: value as SpeechProtocol,
-                  };
+                  });
                   void preview.stop();
                   dirty.current = true;
                   setCustomized(true);
@@ -398,8 +423,9 @@ export function CompanionVoiceSettings(props: Props) {
           }}
           protocol={protocol}
           voice={selectedVoice}
+          speed={effectiveSpeed}
           disabled={!ready || saving || blocked}
-          previewDisabled={!ready || blocked || !props.sessionId}
+          previewDisabled={!ready || saving || blocked || !props.sessionId}
           preview={preview}
           onChange={(value, save) => {
             dirty.current = true;
@@ -410,10 +436,63 @@ export function CompanionVoiceSettings(props: Props) {
               modelId: selectedModel.id,
               protocol: protocolOverride,
               voice: value,
+              speed: resolveSpeechSpeed(selectedModel.id, protocol, speed ?? preference?.speed),
             });
             if (save && next && validModel && protocol) void persist(next);
           }}
-        />
+        >
+          {protocol ? (
+            <FormField label={t('bots.voiceMode.speed')}>
+              {(control) =>
+                speedRange ? (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2">
+                      <Slider
+                        id={control.id}
+                        aria-describedby={control['aria-describedby']}
+                        aria-label={t('bots.voiceMode.speed')}
+                        aria-valuetext={speedLabel(selectedSpeed)}
+                        min={speedRange.min}
+                        max={speedRange.max}
+                        step={0.05}
+                        value={[selectedSpeed]}
+                        disabled={!ready || saving}
+                        onValueChange={([value]) => {
+                          void preview.stop();
+                          dirty.current = true;
+                          setSpeed(value);
+                          setSpeedNotice(undefined);
+                        }}
+                        onValueCommit={([value]) => {
+                          if (selection) void persist({ ...selection, speed: value });
+                        }}
+                      />
+                      <span className="w-12 shrink-0 text-right text-13 tabular-nums text-[var(--text-primary)]">
+                        {speedLabel(selectedSpeed)}
+                      </span>
+                      <div
+                        aria-hidden="true"
+                        className="col-start-1 flex justify-between text-12 tabular-nums text-[var(--text-tertiary)]"
+                      >
+                        <span>{speedLabel(speedRange.min)}</span>
+                        <span>{speedLabel(speedRange.max)}</span>
+                      </div>
+                    </div>
+                    {speedAdjusted || speedNotice !== undefined ? (
+                      <p role="status" className="text-12 text-[var(--text-secondary)]">
+                        {t('bots.voiceMode.speedAdjusted', { speed: speedNotice ?? selectedSpeed })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-12 text-[var(--text-secondary)]">
+                    {t('bots.voiceMode.speedUnavailable')}
+                  </p>
+                )
+              }
+            </FormField>
+          ) : null}
+        </SpeechVoicePicker>
       ) : null}
       {dirty.current && (!selection || !protocol) ? (
         <p className="text-12 text-[var(--text-secondary)]">

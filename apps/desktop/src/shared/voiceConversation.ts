@@ -1,5 +1,46 @@
+import type { VoiceCallRecord } from '@cindy/maker-core';
+export type { VoiceCallRecord } from '@cindy/maker-core';
 import type { AudioTrace, ConversationInputEvent } from '@cindy/voice-input-core';
 import type { AgentKind } from '@cindy/model-providers';
+import type { AgentRequestReceipt } from './forwardedRequest.js';
+
+/** Display-only recognition of the existing host-generated dispatch id and
+ * protected source receipt. Never use this marker as permission or acceptance.
+ * It works even when the call card is outside the current history page. */
+export function isVoiceCallTaskMessage(
+  clientId: string,
+  sessionId: string,
+  text: string,
+  receipt: unknown,
+): boolean {
+  if (!receipt || typeof receipt !== 'object') return false;
+  const candidate = receipt as Partial<AgentRequestReceipt>;
+  const source = candidate.kind === 'agent-request' ? candidate.request : undefined;
+  if (typeof source?.clientId !== 'string' || !source.clientId
+    || source.sessionId !== sessionId || source.userText !== text) return false;
+  const prefix = 'voice-task:';
+  const suffix = `:${source.clientId}`;
+  return clientId.startsWith(prefix) && clientId.endsWith(suffix)
+    && clientId.length > prefix.length + suffix.length;
+}
+
+/** Persisted metadata can come from an older or incomplete history projection. */
+export function readVoiceCallRecord(value: unknown): VoiceCallRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<VoiceCallRecord>;
+  if (record.version !== 1 || typeof record.callId !== 'string'
+    || !Number.isFinite(record.startedAt)
+    || (record.endedAt !== undefined && !Number.isFinite(record.endedAt))
+    || !Array.isArray(record.turns) || record.turns.length > 2_000
+    || !Array.isArray(record.handoffs) || record.handoffs.length > 2_000) return null;
+  if (!record.turns.every(turn => turn && typeof turn.id === 'string'
+    && (turn.role === 'user' || turn.role === 'assistant') && typeof turn.text === 'string'
+    && Number.isFinite(turn.createdAt) && typeof turn.complete === 'boolean')) return null;
+  if (!record.handoffs.every(task => task && typeof task.id === 'string'
+    && typeof task.inputId === 'string' && typeof task.text === 'string'
+    && ['sending', 'accepted', 'failed', 'completed'].includes(task.state))) return null;
+  return record as VoiceCallRecord;
+}
 
 /** Call-local exit decision, observed alongside normal message dispatch.
  * true offers a cancellable countdown after acceptance; submit_then_exit closes
@@ -9,6 +50,44 @@ export type VoiceExitDecision = boolean | 'submit_then_exit';
 
 /** Local Desktop voice UI contract. No credentials, raw paths or remote invoke access. */
 export type SpeechProtocol = 'openai' | 'elevenlabs' | 'minimax';
+
+/** Native synthesis limits, shared by settings and Main. Compatible proxies must
+ * implement their selected protocol; this is not a claim about gateway forwarding.
+ * Eleven v3 currently excludes speed: https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech#speed
+ */
+export function speechSpeedRange(modelId: string, protocol?: SpeechProtocol) {
+  switch (protocol) {
+    case 'elevenlabs':
+      return /(?:^|\/)eleven_v3(?:_|$)/i.test(modelId)
+        ? null
+        : { min: 0.7, max: 1.2 };
+    case 'minimax':
+      return { min: 0.5, max: 2 };
+    case 'openai':
+      return { min: 0.25, max: 4 };
+    default:
+      return null;
+  }
+}
+
+export function isSpeechSpeedSupported(
+  modelId: string,
+  protocol: SpeechProtocol,
+  speed: number | undefined,
+): boolean {
+  if (speed === undefined) return true;
+  const range = speechSpeedRange(modelId, protocol);
+  return !!range && Number.isFinite(speed) && speed >= range.min && speed <= range.max;
+}
+
+/** Reconcile an explicit choice when the user changes models, without storing
+ * a default for companions that have never customized speed. */
+export function resolveSpeechSpeed(modelId: string, protocol: SpeechProtocol | undefined, speed?: number) {
+  const range = speechSpeedRange(modelId, protocol);
+  return range && speed !== undefined && Number.isFinite(speed)
+    ? Math.min(range.max, Math.max(range.min, speed))
+    : undefined;
+}
 // Missing provider/runtime is the original Cindy AI selection, never another connection.
 export type SpeechModelSelection = {
   providerId?: string;
@@ -17,7 +96,11 @@ export type SpeechModelSelection = {
   /** Custom endpoints allow overrides; official endpoints always use their own adapter. */
   protocol?: SpeechProtocol;
 };
-export type VoiceConversationSelection = SpeechModelSelection & { voice: string };
+export type VoiceConversationSelection = SpeechModelSelection & {
+  voice: string;
+  /** Explicit per-companion synthesis speed. Absent keeps the provider default (1×). */
+  speed?: number;
+};
 export type SpeechVoice = { id: string; name: string };
 export type SpeechVoiceCatalog = {
   voices: SpeechVoice[];
@@ -61,7 +144,7 @@ export type VoiceConversationEvent = {
   callId: string;
   /** Identifies the ASR capture generation; ended events have no input generation. */
   inputGeneration?: number;
-  event: ConversationInputEvent | { type: 'ended' };
+  event: ConversationInputEvent | { type: 'ended' } | { type: 'call-record'; record: VoiceCallRecord };
 };
 export type VoiceConversationStart = VoiceConversationSelection & {
   callId: string;
@@ -83,6 +166,8 @@ export interface VoiceConversationApi {
   ): Promise<VoiceConversationPreference>;
   start(input: VoiceConversationStart): Promise<{ callId: string }>;
   /** Explicit message read-aloud: the same TTS lease and queue, without ASR or microphone input. */
+  promoteTurn?(callId: string, inputId: string): Promise<boolean>;
+  submitTurn?(callId: string, inputId: string, text: string, forceHandoff: boolean): Promise<boolean>;
   startPlayback(input: VoiceConversationStart): Promise<{ callId: string }>;
   /** One finalized ASR utterance, bound to the active local call; never creates a task. */
   classifyExit(
@@ -117,7 +202,12 @@ export function normalizeVoiceConversationSelection(
   if (!value || typeof value !== 'object') return undefined;
   const route = normalizeSpeechModelSelection(value);
   const voice = normalizeSpeechVoiceId((value as Partial<VoiceConversationSelection>).voice);
-  return route && voice ? { ...route, voice } : undefined;
+  const speed = (value as Partial<VoiceConversationSelection>).speed;
+  // Check the broad protocol envelope here; Main checks the resolved adapter's
+  // narrower range, never a renderer-supplied protocol for an official endpoint.
+  if (speed !== undefined && (typeof speed !== 'number' || !Number.isFinite(speed) || speed < 0.25 || speed > 4))
+    return undefined;
+  return route && voice ? { ...route, voice, ...(speed !== undefined ? { speed } : {}) } : undefined;
 }
 
 /** Voice IDs are opaque provider identifiers; MiniMax IDs include spaces and parentheses. */

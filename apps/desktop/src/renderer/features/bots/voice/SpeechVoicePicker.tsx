@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw, Square, Volume2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { Spinner } from '@/components/ui/spinner';
 import {
   getDataOwnerGeneration,
   isDataOwnerGenerationCurrent,
@@ -17,6 +17,7 @@ import {
 } from '@/../shared/voiceConversation';
 import type { VoicePreviewController } from './VoicePreviewController';
 import { readSpeechVoiceLabel, rememberSpeechVoiceLabel } from './speechVoiceLabelCache';
+import { SpeechVoiceMenu } from './SpeechVoiceMenu';
 
 const MANUAL = 'manual';
 const LOADING = 'loading';
@@ -30,6 +31,8 @@ type Props = {
   route: SpeechModelSelection;
   protocol?: SpeechProtocol;
   voice: string;
+  speed?: number;
+  children?: ReactNode;
   disabled: boolean;
   previewDisabled: boolean;
   preview: VoicePreviewController;
@@ -41,6 +44,8 @@ export function SpeechVoicePicker({
   route,
   protocol,
   voice,
+  speed,
+  children,
   disabled,
   previewDisabled,
   preview,
@@ -50,6 +55,7 @@ export function SpeechVoicePicker({
   const [catalogState, setCatalogState] = useState<CatalogState>();
   const [revision, setRevision] = useState(0);
   const [manualRouteKey, setManualRouteKey] = useState<string>();
+  const [previewVoice, setPreviewVoice] = useState<string>();
   const version = useRef(0);
   const owner = getDataOwnerGeneration();
   const selectionRouteKey = JSON.stringify([route, protocol]);
@@ -64,7 +70,7 @@ export function SpeechVoicePicker({
   const manual = manualRouteKey === routeKey;
   const phase = useSyncExternalStore(preview.subscribe, preview.getSnapshot);
   const previewing = phase === 'preparing' || phase === 'playing';
-  const selection = normalizeVoiceConversationSelection({ ...route, voice });
+  const selection = normalizeVoiceConversationSelection({ ...route, voice, speed });
   const listed = catalog?.voices.some((item) => item.id === voice);
   const cachedLabel = useMemo(
     () => readSpeechVoiceLabel(owner, botId, selectionRouteKey, voice),
@@ -166,14 +172,28 @@ export function SpeechVoicePicker({
   }, [routeKey, preview]);
   useEffect(() => {
     void preview.stop();
-  }, [voice, preview]);
+    setPreviewVoice(undefined);
+  }, [voice, speed, preview]);
+
+  const previewOption = (id: string) => {
+    if (previewing && previewVoice === id) {
+      void preview.stop();
+      setPreviewVoice(undefined);
+      return;
+    }
+    const candidate = normalizeVoiceConversationSelection({ ...route, voice: id, speed });
+    if (previewDisabled || !protocol || !candidate) return;
+    setPreviewVoice(id);
+    void preview.start(candidate, t('bots.voiceMode.previewText'));
+  };
 
   return (
     <div className="min-w-0 space-y-3">
-      <FormField label={t('bots.voiceMode.voice')} hint={t('bots.voiceMode.voiceCatalogHint')}>
+      <FormField label={t('bots.voiceMode.voice')}>
         {(control) => (
           <div className="flex min-w-0 items-center gap-2">
-            <Select
+            <SpeechVoiceMenu
+              key={routeKey}
               {...control}
               label={t('bots.voiceMode.voice')}
               value={
@@ -200,7 +220,14 @@ export function SpeechVoicePicker({
                 if (value !== MANUAL) onChange(value.slice(6), true);
               }}
               className="min-w-0 flex-1"
-              truncateOptions
+              previewVoice={previewVoice}
+              previewPhase={phase}
+              previewDisabled={previewDisabled || !protocol}
+              onPreview={previewOption}
+              onOpenChange={() => {
+                void preview.stop();
+                setPreviewVoice(undefined);
+              }}
             />
             <Button
               variant="secondary"
@@ -221,47 +248,61 @@ export function SpeechVoicePicker({
         {catalogHint || (loading ? t('bots.voiceMode.voicesLoading') : '')}
       </p>
       {showManual ? (
-        <FormField label={t('bots.voiceMode.voiceId')} hint={t('bots.voiceMode.voiceIdHint')}>
-          {(control) => (
-            <Input
-              {...control}
-              value={voice}
-              maxLength={128}
-              disabled={disabled}
-              onChange={(value) => {
-                void preview.stop();
-                setManualRouteKey(routeKey);
-                onChange(value, false);
-              }}
-              onBlur={() => {
-                if (selection) onChange(selection.voice, true);
-              }}
-              className="w-full"
-            />
-          )}
-        </FormField>
+        <div className="space-y-2">
+          <FormField label={t('bots.voiceMode.voiceId')} hint={t('bots.voiceMode.voiceIdHint')}>
+            {(control) => (
+              <div
+                className="flex min-w-0 items-center gap-2"
+                onBlur={(event) => {
+                  // Auditioning the draft stays inside this field. Saving on the
+                  // input's blur would disable the preview before its click lands.
+                  if (!event.currentTarget.contains(event.relatedTarget) && selection)
+                    onChange(selection.voice, true);
+                }}
+              >
+                <Input
+                  {...control}
+                  value={voice}
+                  maxLength={128}
+                  disabled={disabled}
+                  onChange={(value) => {
+                    void preview.stop();
+                    setManualRouteKey(routeKey);
+                    onChange(value, false);
+                  }}
+                  className="min-w-0 flex-1"
+                />
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  className="w-9 shrink-0 px-0"
+                  aria-label={t(
+                    previewing ? 'bots.voiceMode.stopPreview' : 'bots.voiceMode.preview',
+                  )}
+                  title={t(previewing ? 'bots.voiceMode.stopPreview' : 'bots.voiceMode.preview')}
+                  disabled={!previewing && (previewDisabled || !selection || !protocol)}
+                  onClick={() => {
+                    if (previewing) void preview.stop();
+                    else if (selection) previewOption(selection.voice);
+                  }}
+                >
+                  {phase === 'preparing' ? (
+                    <Spinner size={14} />
+                  ) : previewing ? (
+                    <Square size={14} aria-hidden="true" />
+                  ) : (
+                    <Volume2 size={16} aria-hidden="true" />
+                  )}
+                </Button>
+              </div>
+            )}
+          </FormField>
+          <p role="status" className="text-12 text-[var(--text-secondary)]">
+            {t(`bots.voiceMode.previewStatus.${phase}`)}
+          </p>
+        </div>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="secondary"
-          size="lg"
-          disabled={!previewing && (previewDisabled || !selection || !protocol)}
-          onClick={() => {
-            if (previewing) void preview.stop();
-            else if (selection) void preview.start(selection, t('bots.voiceMode.previewText'));
-          }}
-        >
-          {previewing ? (
-            <Square size={14} aria-hidden="true" />
-          ) : (
-            <Volume2 size={16} aria-hidden="true" />
-          )}
-          {t(previewing ? 'bots.voiceMode.stopPreview' : 'bots.voiceMode.preview')}
-        </Button>
-        <p role="status" className="min-w-0 flex-1 text-12 text-[var(--text-secondary)]">
-          {t(`bots.voiceMode.previewStatus.${phase}`)}
-        </p>
-      </div>
+      {children}
     </div>
   );
 }

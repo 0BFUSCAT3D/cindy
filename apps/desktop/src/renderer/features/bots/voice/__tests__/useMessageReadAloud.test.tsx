@@ -27,7 +27,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
     }
   },
 }));
-const selection = { modelId: 'speech', voice: 'saved-voice' };
+const selection = { modelId: 'speech', voice: 'saved-voice', speed: 1.15 };
 const options = { botId: 'bot', sessionId: 'task', enabled: true, voiceModeOpen: false };
 let settingsChanged: () => void;
 let providersChanged: () => void;

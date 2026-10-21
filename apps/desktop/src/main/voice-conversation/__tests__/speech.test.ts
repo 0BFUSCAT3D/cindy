@@ -128,7 +128,7 @@ describe('speech transport', () => {
   });
 });
 
-function nativeSession(protocol: 'elevenlabs' | 'minimax', response: Response) {
+function nativeSession(protocol: 'openai' | 'elevenlabs' | 'minimax', response: Response) {
   const fetcher = vi.fn(async () => response);
   const speech = new SpeechSynthesisSession({
     connection: () => ({
@@ -144,6 +144,45 @@ function nativeSession(protocol: 'elevenlabs' | 'minimax', response: Response) {
   });
   return { speech, fetcher };
 }
+
+// Unit tier: real transport serialization at the network seam. A selection's
+// optional speed must use the provider's field, with no PCM/sample-rate changes.
+it.each([
+  ['openai', 4, { speed: 4 }],
+  ['elevenlabs', 0.7, { voice_settings: { speed: 0.7 } }],
+  ['minimax', 2, { voice_setting: { voice_id: 'alloy', speed: 2 } }],
+] as const)(
+  'serializes native %s speed while retaining the streaming audio format',
+  async (protocol, speed, body) => {
+    const { speech, fetcher } = nativeSession(
+      protocol,
+      protocol === 'minimax'
+        ? sse([{ data: { status: 1, audio: '0102' } }, { data: { status: 2 } }])
+        : new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/pcm' } }),
+    );
+    expect(await speech.start({ ...input, modelId: 'eleven_flash_v2_5', speed })).toEqual({
+      sampleRate: 24000,
+    });
+    const request = vi.mocked(fetcher as typeof fetch).mock.calls[0][1];
+    expect(JSON.parse(String(request?.body))).toMatchObject(body);
+    expect([...new Uint8Array((await speech.read(input.requestId)).pcm)]).toEqual([1, 2]);
+    speech.cancel();
+  },
+);
+
+it.each([
+  ['openai', 'tts', 4.1],
+  ['elevenlabs', 'eleven_flash_v2_5', 1.25],
+  ['elevenlabs', 'eleven_v3', 1],
+  ['minimax', 'speech-02-hd', 0.4],
+] as const)(
+  'refuses unsupported speed for %s %s before sending a request',
+  async (protocol, modelId, speed) => {
+    const { speech, fetcher } = nativeSession(protocol, new Response());
+    await expect(speech.start({ ...input, modelId, speed })).rejects.toThrow('unavailable');
+    expect(fetcher).not.toHaveBeenCalled();
+  },
+);
 function sse(events: unknown[], split = 7) {
   const bytes = new TextEncoder().encode(
     events.map((event) => `data: ${JSON.stringify(event)}\r\n\r\n`).join(''),

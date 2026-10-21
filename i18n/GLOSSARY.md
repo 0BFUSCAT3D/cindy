@@ -617,6 +617,10 @@ macOS TCC 的 kTCCServiceListenEvent(系统设置里叫「输入监控」)在 Ci
 
 Codex Subagent 的可选扩展调配开关。默认关闭以保留 Codex 原生 Sol/Terra 调配；开启后允许 Codex 从 Cindy 已连接的更多模型中按任务选择。
 
+### Speech speed
+
+伙伴语音设置的合成语速；按伙伴保存，通话朗读、消息朗读和试听共用。区别于播放器倍速和语音输入停顿时间。
+
 ### Tag
 
 任务列表的 Finder 式颜色标签；仅标识任务，不改变运行状态。用户已确认显示为重叠色球，整合现有任务菜单，当前不增加筛选入口。

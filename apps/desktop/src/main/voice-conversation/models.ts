@@ -8,6 +8,7 @@ import {
 } from '@cindy/model-providers';
 import {
   voiceModelKey,
+  isSpeechSpeedSupported,
   type SpeechProtocol,
   type VoiceConversationModel,
   type SpeechModelSelection,
@@ -208,5 +209,10 @@ export function resolveSpeechConnection(
     (entry) => voiceModelKey(entry.model) === voiceModelKey(selection),
   );
   if (!binding?.connection) throw new Error('model_unavailable');
+  if (
+    'speed' in selection &&
+    !isSpeechSpeedSupported(selection.modelId, binding.connection.protocol, selection.speed)
+  )
+    throw new Error('invalid_speech_speed');
   return binding.connection;
 }

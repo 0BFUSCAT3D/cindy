@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   voiceModelKey,
   type SpeechVoiceCatalog,
@@ -37,7 +37,12 @@ vi.mock('@/components/ui/select', () => ({
     </select>
   ),
 }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { voice?: string }) =>
+      options?.voice ? `${key}: ${options.voice}` : key,
+  }),
+}));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
 }));
@@ -48,6 +53,7 @@ const audio = vi.hoisted(() => ({
   stop: vi.fn(async () => {}),
   onPcm16k: vi.fn(),
   close: vi.fn(),
+  play: vi.fn(async () => {}),
 }));
 vi.mock('@/voice-input/WebMicAudioEngine', () => ({
   WebMicAudioEngine: class {
@@ -62,7 +68,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
     pause() {}
     resume() {}
     cancel() {}
-    async play() {}
+    play = audio.play;
   },
 }));
 
@@ -78,6 +84,15 @@ const refresh = vi.fn(async () => undefined);
 const openProviders = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
+  audio.play.mockReset().mockResolvedValue(undefined);
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
   window.localStorage.clear();
   setDataOwnerGeneration('owner-a', 1);
   models = [];
@@ -103,11 +118,277 @@ beforeEach(() => {
     },
   });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 const renderSettings = (botId = 'bot') =>
   render(
     <CompanionVoiceSettings botId={botId} sessionId="canonical" onOpenProviders={openProviders} />,
   );
+
+const voicePicker = () =>
+  screen.getByRole('button', { name: 'bots.voiceMode.voice' }) as HTMLButtonElement;
+const openVoices = async () => {
+  await screen.findByRole('button', { name: 'bots.voiceMode.voice' });
+  await waitFor(() => expect(voicePicker().disabled).toBe(false));
+  if (voicePicker().getAttribute('aria-expanded') !== 'true') fireEvent.click(voicePicker());
+  return within(screen.getByRole('dialog', { name: 'bots.voiceMode.voice' }));
+};
+const closeVoices = () =>
+  fireEvent.keyDown(screen.getByRole('dialog', { name: 'bots.voiceMode.voice' }), {
+    key: 'Escape',
+  });
+
+const listedVoices = () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'river' }];
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'provider',
+    voices: [
+      { id: 'river', name: 'River' },
+      { id: 'bella', name: 'Bella' },
+    ],
+  });
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: { modelId: 'tts', voice: 'river', speed: 0.95 },
+    customized: true,
+  });
+};
+
+// Real settings -> menu -> shared preview controller: browsing/previewing must
+// never commit a voice, even while an older synthesis request is unresolved.
+it('previews unselected voices with the saved speed, switches and stops without saving', async () => {
+  listedVoices();
+  const pending: Array<() => void> = [];
+  vi.mocked(window.electronAPI.voiceConversation.preview).mockImplementation(
+    () => new Promise((resolve) => pending.push(() => resolve({ sampleRate: 24000 }))),
+  );
+  renderSettings();
+  const menu = await openVoices();
+  const river = menu.getByRole('button', { name: 'River' });
+  const bella = menu.getByRole('button', { name: 'Bella' });
+  expect(document.activeElement).toBe(river);
+  fireEvent.mouseEnter(bella);
+  fireEvent.keyDown(river, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(bella);
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+  fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: Bella' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledTimes(1),
+  );
+  expect(window.electronAPI.voiceConversation.preview).toHaveBeenLastCalledWith(
+    expect.objectContaining({ voice: 'bella', speed: 0.95 }),
+  );
+  const firstId = vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0]
+    .previewId;
+  expect(voicePicker().value).toBe('voice:river');
+  fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: River' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledTimes(2),
+  );
+  expect(window.electronAPI.voiceConversation.stopPreview).toHaveBeenCalledWith(firstId);
+  expect(window.electronAPI.voiceConversation.preview).toHaveBeenLastCalledWith(
+    expect.objectContaining({ voice: 'river', speed: 0.95 }),
+  );
+  fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.stopPreviewVoice: River' }));
+  await act(async () => {
+    pending.forEach((resolve) => resolve());
+  });
+  expect(audio.play).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(start).not.toHaveBeenCalled();
+  expect(audio.start).not.toHaveBeenCalled();
+  fireEvent.click(bella);
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledTimes(1),
+  );
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+    'bot',
+    expect.objectContaining({ voice: 'bella', speed: 0.95 }),
+  );
+  expect(screen.queryByRole('dialog', { name: 'bots.voiceMode.voice' })).toBeNull();
+});
+
+it('keeps the menu and saved voice on preview failure, retries and stops playback on Escape', async () => {
+  listedVoices();
+  vi.mocked(window.electronAPI.voiceConversation.preview).mockRejectedValueOnce(
+    new Error('offline'),
+  );
+  let finishPlayback!: () => void;
+  audio.play.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishPlayback = resolve;
+      }),
+  );
+  renderSettings();
+  const menu = await openVoices();
+  fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: Bella' }));
+  await menu.findByText('bots.voiceMode.previewStatus.error');
+  expect(voicePicker().value).toBe('voice:river');
+  fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: Bella' }));
+  await menu.findByText('bots.voiceMode.previewStatus.playing');
+  const previewId = vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[1][0]
+    .previewId;
+  closeVoices();
+  await waitFor(() => expect(document.activeElement).toBe(voicePicker()));
+  expect(window.electronAPI.voiceConversation.stopPreview).toHaveBeenCalledWith(previewId);
+  expect(audio.close).toHaveBeenCalled();
+  await act(async () => finishPlayback());
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(voicePicker().value).toBe('voice:river');
+});
+
+it.each(['no-session', 'permission'] as const)(
+  'keeps inline preview disabled with %s',
+  async (reason) => {
+    listedVoices();
+    if (reason === 'permission') sessionState.value = { pendingPermission: {} };
+    render(
+      <CompanionVoiceSettings
+        botId="bot"
+        sessionId={reason === 'no-session' ? undefined : 'canonical'}
+        onOpenProviders={openProviders}
+      />,
+    );
+    if (reason === 'permission') {
+      await screen.findByText('River');
+      expect(voicePicker().disabled).toBe(true);
+      fireEvent.click(voicePicker());
+      expect(screen.queryByRole('dialog', { name: 'bots.voiceMode.voice' })).toBeNull();
+      expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+      return;
+    }
+    const menu = await openVoices();
+    const button = menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: Bella' });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+    expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  },
+);
+
+// Unit tier: exercise the real numeric slider, persisted selection and preview
+// boundary; previous settings could neither retain nor send a speed override.
+it('saves speed by keyboard, previews it, reloads it and removes it on reset', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const view = renderSettings();
+  const slider = await screen.findByRole('slider', { name: 'bots.voiceMode.speed' });
+  expect(slider.getAttribute('aria-valuenow')).toBe('1');
+  fireEvent.keyDown(slider, { key: 'ArrowRight' });
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+      'bot',
+      expect.objectContaining({ voice: 'alloy', speed: 1.05 }),
+    ),
+  );
+  await waitFor(() => expect(slider.getAttribute('aria-disabled')).not.toBe('true'));
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
+      expect.objectContaining({ speed: 1.05, voice: 'alloy' }),
+    ),
+  );
+  view.unmount();
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValueOnce({
+    selection: { modelId: 'tts', voice: 'alloy', speed: 1.05 },
+    customized: true,
+  });
+  renderSettings();
+  expect((await screen.findByRole('slider')).getAttribute('aria-valuenow')).toBe('1.05');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resetPreference' }));
+  await waitFor(() => expect(screen.getByRole('slider').getAttribute('aria-valuenow')).toBe('1'));
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith(
+    'bot',
+    null,
+    null,
+  );
+});
+
+it('preserves a failed speed edit and retries it before leaving', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const beforeLeaveRef = { current: null as (() => Promise<boolean>) | null };
+  render(
+    <CompanionVoiceSettings
+      botId="bot"
+      sessionId="canonical"
+      onOpenProviders={openProviders}
+      beforeLeaveRef={beforeLeaveRef}
+    />,
+  );
+  const slider = await screen.findByRole('slider');
+  vi.mocked(window.electronAPI.voiceConversation.setPreference).mockRejectedValueOnce(
+    new Error('disk'),
+  );
+  fireEvent.keyDown(slider, { key: 'ArrowRight' });
+  await screen.findByRole('alert');
+  expect(slider.getAttribute('aria-valuenow')).toBe('1.05');
+  await act(async () => {
+    expect(await beforeLeaveRef.current!()).toBe(true);
+  });
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith(
+    'bot',
+    expect.objectContaining({ speed: 1.05 }),
+  );
+});
+
+it('reconciles the saved speed on model changes and keeps it when changing the voice', async () => {
+  const mini = {
+    id: 'speech-02-hd',
+    name: 'MiniMax',
+    providerId: 'mini',
+    agent: 'codex' as const,
+    protocol: 'minimax' as const,
+    protocolLocked: true,
+    defaultVoice: 'voice',
+  };
+  const eleven = {
+    ...mini,
+    id: 'eleven_flash_v2_5',
+    name: 'Flash',
+    providerId: 'eleven',
+    protocol: 'elevenlabs' as const,
+  };
+  const v3 = { ...eleven, id: 'eleven_v3', name: 'V3' };
+  models = [mini, eleven, v3];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValueOnce({
+    selection: {
+      providerId: mini.providerId,
+      agent: mini.agent,
+      modelId: mini.id,
+      voice: 'voice',
+      speed: 1.8,
+    },
+    customized: true,
+  });
+  renderSettings();
+  const model = await screen.findByLabelText('bots.voiceMode.model');
+  await waitFor(() => expect((model as HTMLSelectElement).disabled).toBe(false));
+  fireEvent.change(model, { target: { value: voiceModelKey(eleven) } });
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith(
+      'bot',
+      expect.objectContaining({ modelId: eleven.id, speed: 1.2 }),
+    ),
+  );
+  expect(screen.getByText('bots.voiceMode.speedAdjusted')).toBeTruthy();
+  const voice = await screen.findByLabelText('bots.voiceMode.voiceId');
+  await waitFor(() => expect((voice as HTMLInputElement).disabled).toBe(false));
+  fireEvent.change(voice, { target: { value: 'another-voice' } });
+  fireEvent.blur(voice);
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith(
+      'bot',
+      expect.objectContaining({ voice: 'another-voice', speed: 1.2 }),
+    ),
+  );
+  await waitFor(() => expect((model as HTMLSelectElement).disabled).toBe(false));
+  fireEvent.change(model, { target: { value: voiceModelKey(v3) } });
+  await screen.findByText('bots.voiceMode.speedUnavailable');
+  expect(screen.queryByRole('slider')).toBeNull();
+  const saved = vi.mocked(window.electronAPI.voiceConversation.setPreference).mock.calls.at(-1)![1];
+  expect(saved).not.toHaveProperty('speed');
+});
 
 it('defaults to sentence playback, persists a playback-only change, and restores the default', async () => {
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
@@ -573,22 +854,25 @@ it('loads in the picker without a manual-input flash and keeps the saved name du
   });
   renderSettings();
   await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(1));
-  const picker = screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement;
+  const picker = voicePicker();
   expect(picker.value).toBe('loading');
   expect(picker.disabled).toBe(true);
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   expect(screen.queryByText(voice)).toBeNull();
   await act(async () => release({ source: 'provider', voices: [{ id: voice, name }] }));
-  const option = (await screen.findByRole('option', { name })) as HTMLOptionElement;
-  expect(option.selected).toBe(true);
+  const option = (await openVoices()).getByRole('button', {
+    name,
+  }) as HTMLButtonElement;
+  expect(option.getAttribute('aria-pressed')).toBe('true');
   expect(option.value).toBe(`voice:${voice}`);
   expect(screen.queryByText('bots.voiceMode.voiceId')).toBeNull();
   expect(screen.queryByText(voice)).toBeNull();
+  closeVoices();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
   await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(2));
   expect(picker.value).toBe(`voice:${voice}`);
   expect(picker.disabled).toBe(false);
-  expect(option.selected).toBe(true);
+  expect(picker.textContent).toBe(name);
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   expect(
     screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }).getAttribute('aria-busy'),
@@ -615,13 +899,13 @@ it('shows the last selected label on re-entry, refreshes renamed voices, and ret
     .mockReturnValueOnce(new Promise((resolve) => (release = resolve)))
     .mockRejectedValueOnce(new Error('offline'));
   const first = renderSettings();
-  await screen.findByRole('option', { name: 'River' });
+  await screen.findByText('River');
   first.unmount();
   const reopened = renderSettings();
   await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(2));
-  const picker = screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement;
+  const picker = voicePicker();
   expect(picker.value).toBe(`voice:${voice}`);
-  expect(picker.selectedOptions[0].textContent).toBe('River');
+  expect(picker.textContent).toBe('River');
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   expect(
     screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }).getAttribute('aria-busy'),
@@ -630,13 +914,12 @@ it('shows the last selected label on re-entry, refreshes renamed voices, and ret
     release({ source: 'provider', voices: [{ id: voice, name: 'River Updated' }] }),
   );
   expect(picker.value).toBe(`voice:${voice}`);
-  expect(picker.selectedOptions[0].textContent).toBe('River Updated');
+  expect(picker.textContent).toBe('River Updated');
   reopened.unmount();
   renderSettings();
   await screen.findByText('bots.voiceMode.voicesError');
-  expect(
-    (screen.getByRole('option', { name: 'River Updated' }) as HTMLOptionElement).selected,
-  ).toBe(true);
+  expect(voicePicker().value).toBe(`voice:${voice}`);
+  expect(voicePicker().textContent).toBe('River Updated');
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   // Name refreshes are derived metadata, not edits to the user's full-ID preference.
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
@@ -662,7 +945,7 @@ it('does not display or cache a late catalog from the previous account', async (
   await act(async () =>
     release({ source: 'provider', voices: [{ id: 'private', name: 'Private voice' }] }),
   );
-  expect(screen.queryByRole('option', { name: 'Private voice' })).toBeNull();
+  expect(screen.queryByText('Private voice')).toBeNull();
   expect(window.localStorage.length).toBe(0);
 });
 
@@ -722,16 +1005,15 @@ it('disambiguates duplicate names even when short ID suffixes collide and preser
     ],
   });
   renderSettings();
-  await screen.findByRole('option', { name: 'River · …a-123456' });
-  const other = (await screen.findByRole('option', {
+  const menu = await openVoices();
+  expect(menu.getByRole('button', { name: 'River · …a-123456' })).toBeTruthy();
+  const other = menu.getByRole('button', {
     name: 'River · …b-123456',
-  })) as HTMLOptionElement;
+  }) as HTMLButtonElement;
   expect(other.value).toBe('voice:voice-b-123456');
-  expect(screen.getByRole('option', { name: 'unnamed-voice-id' })).toBeTruthy();
-  expect(screen.getByRole('option', { name: 'already-the-name' })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
-    target: { value: other.value },
-  });
+  expect(menu.getByRole('button', { name: 'unnamed-voice-id' })).toBeTruthy();
+  expect(menu.getByRole('button', { name: 'already-the-name' })).toBeTruthy();
+  fireEvent.click(other);
   await waitFor(() =>
     expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
       providerId: 'mine',
@@ -753,10 +1035,7 @@ it('keeps a known voice on refresh failure, allows explicit manual input, and pr
     })
     .mockRejectedValueOnce(new Error('offline'));
   renderSettings();
-  await screen.findByRole('option', { name: 'News Anchor' });
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
-    target: { value: 'voice:Chinese (Mandarin)_News_Anchor' },
-  });
+  fireEvent.click((await openVoices()).getByRole('button', { name: 'News Anchor' }));
   await waitFor(() =>
     expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
       'bot',
@@ -766,7 +1045,9 @@ it('keeps a known voice on refresh failure, allows explicit manual input, and pr
       }),
     ),
   );
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
+  fireEvent.click(
+    (await openVoices()).getByRole('button', { name: 'bots.voiceMode.previewVoice: News Anchor' }),
+  );
   await waitFor(() =>
     expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -784,13 +1065,13 @@ it('keeps a known voice on refresh failure, allows explicit manual input, and pr
   ).toBeUndefined();
   expect(start).not.toHaveBeenCalled();
   expect(audio.start).not.toHaveBeenCalled();
+  closeVoices();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
   await screen.findByText('bots.voiceMode.voicesError');
-  expect((screen.getByRole('option', { name: 'News Anchor' }) as HTMLOptionElement).selected).toBe(
-    true,
-  );
+  expect(voicePicker().value).toBe('voice:Chinese (Mandarin)_News_Anchor');
+  expect(voicePicker().textContent).toBe('News Anchor');
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), { target: { value: 'manual' } });
+  fireEvent.click((await openVoices()).getByRole('button', { name: 'bots.voiceMode.manualVoice' }));
   expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
     'Chinese (Mandarin)_News_Anchor',
   );
@@ -826,30 +1107,26 @@ it('resets a voice when switching models on the same connection and ignores a la
       }),
     );
   renderSettings();
-  await screen.findByRole('option', { name: 'Old voice' });
+  await screen.findByText('Old voice');
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
   await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(2));
   fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
     target: { value: voiceModelKey(models[1]) },
   });
   await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(3));
-  expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement).value).toBe(
-    'loading',
-  );
-  expect(screen.queryByRole('option', { name: 'Old voice' })).toBeNull();
+  expect(voicePicker().value).toBe('loading');
+  expect(screen.queryByText('Old voice')).toBeNull();
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   await act(async () =>
     releaseOld({ source: 'provider', voices: [{ id: 'old', name: 'Old voice' }] }),
   );
-  expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement).value).toBe(
-    'loading',
-  );
-  expect(screen.queryByRole('option', { name: 'Old voice' })).toBeNull();
+  expect(voicePicker().value).toBe('loading');
+  expect(screen.queryByText('Old voice')).toBeNull();
   await act(async () =>
     releaseNew({ source: 'provider', voices: [{ id: 'new', name: 'New voice' }] }),
   );
-  await screen.findByRole('option', { name: 'New voice' });
-  expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement).value).toBe('');
+  expect((await openVoices()).getByRole('button', { name: 'New voice' })).toBeTruthy();
+  expect(voicePicker().value).toBe('');
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
 });

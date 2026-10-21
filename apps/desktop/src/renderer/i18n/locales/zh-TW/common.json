@@ -10113,8 +10113,8 @@
       }
     },
     "voiceMode": {
-      "showDetails": "展開語音詳情",
-      "hideDetails": "收起語音詳情",
+      "showDetails": "展開通話記錄",
+      "hideDetails": "收起通話記錄",
       "transcriptTitle": "目前辨識文字",
       "transcriptEmpty": "說話後，辨識文字會顯示在這裡。",
       "composerPaused": "結束語音後，繼續輸入訊息…",
@@ -10137,7 +10137,6 @@
       "previewNeedsChat": "與夥伴開始對話後可試聽。",
       "voiceId": "音色 ID",
       "manualVoice": "手動輸入音色 ID",
-      "voiceCatalogHint": "選擇音色後試聽，確認目前的模型可以使用它。",
       "refreshVoices": "重新整理音色清單",
       "voicesLoading": "正在取得音色…",
       "voicesError": "無法取得音色清單。請重試，或手動輸入音色 ID。",
@@ -10146,6 +10145,8 @@
       "voicesManual": "此介面沒有可用的音色清單，請手動輸入音色 ID。",
       "preview": "試聽",
       "stopPreview": "停止試聽",
+      "previewVoice": "試聽 {{voice}}",
+      "stopPreviewVoice": "停止試聽 {{voice}}",
       "previewText": "你好，這是我的聲音。很高興與你交流。",
       "previewStatus": {
         "idle": "試聽會呼叫所選模型，可能產生用量。",
@@ -10182,11 +10183,12 @@
       "status": {
         "idle": "準備好就開始",
         "connecting": "正在連接語音辨識…",
-        "listening": "正在聽 · 停頓後傳送",
+        "listening": "正在聽",
         "thinking": "正在思考…",
         "speaking": "正在朗讀…",
         "paused": "已暫停 · 麥克風已關閉",
         "error": "已暫停 · 麥克風已關閉",
+        "question": "等待選擇 · 可說選項編號或名稱",
         "confirmation": "等待你的確認 · 麥克風已關閉",
         "preparing": "正在準備語音…",
         "loading": "正在讀取語音設定…",
@@ -10200,6 +10202,10 @@
         "speech": "回覆朗讀失敗，文字回覆仍保留在對話中。請檢查朗讀模型和音色。"
       },
       "voiceIdHint": "填寫該供應商帳號可用的音色 ID。",
+      "speed": "語速",
+      "speedAdjusted": "已依所選模型調整為 {{speed}}×。",
+      "speedUnavailable": "目前模型暫不支援調整語速。",
+      "speedValue": "{{speed}}×",
       "sentencePlayback": "逐句朗讀",
       "sentencePlaybackHint": "回覆產生時，儘早按完整句子朗讀；關閉後等完整回覆再朗讀。需要等待回覆處理時，會自動延後。",
       "preferenceHint": "語音設定僅為目前夥伴儲存。",
@@ -10211,7 +10217,24 @@
       "protocolCorrectedHint": "已依官方位址修正介面，請重新選擇音色。",
       "unmute": "取消靜音",
       "mutedHint": "麥克風已關閉，夥伴回覆仍會朗讀。取消靜音後可繼續說話。",
-      "microphoneResumeError": "無法開啟麥克風，仍可繼續收聽。請檢查權限和裝置後重試取消靜音。"
+      "microphoneResumeError": "無法開啟麥克風，仍可繼續收聽。請檢查權限和裝置後重試取消靜音。",
+      "callRecord": "本次通話",
+      "callHistoryTitle": "語音通話",
+      "you": "你",
+      "companion": "夥伴",
+      "callInProgress": "通話中",
+      "callSendFailed": "傳送失敗，原話已保留。",
+      "handoff": {
+        "sending": "正在交接…",
+        "accepted": "已交給夥伴處理",
+        "failed": "交接失敗，原話已保留",
+        "completed": "結果已返回"
+      },
+      "callSaved": "記錄已儲存",
+      "taskFromCall": "來自通話的工作",
+      "viewTaskProgress": "查看進度",
+      "liveDraft": "正在辨識",
+      "questionDraft": "待確認"
     }
   },
   "common": {
@@ -11213,6 +11236,14 @@
     "jumpToBottom": "跳到底部",
     "prevMessageJump": "跳到上一則提問：{{preview}}",
     "askUserQuestion": {
+      "voice": {
+        "hint": "可以說「第一項」或選項名稱；多選後請說「確認選擇」。",
+        "freeTextHint": "可以直接說出回答，檢查後說「確認選擇」提交。",
+        "confirm": "請檢查目前選擇，說「確認選擇」提交，或說「取消選擇」重選。",
+        "ambiguous": "無法確定你的選擇，請再說一個選項編號或完整名稱，也可以手動選擇。",
+        "unknown": "未辨識到明確選項，請說選項編號或完整名稱，也可以手動選擇。",
+        "cancelled": "已取消語音選擇，請重新選擇。"
+      },
       "skippedAnswer": "已跳過",
       "pendingTitle": "等待回答",
       "restoreAriaLabel": "展開問題卡片",

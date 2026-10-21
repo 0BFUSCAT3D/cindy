@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   type VoiceConversationModel,
@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
+    i18n: { language: 'en', resolvedLanguage: 'en' },
     t: (key: string, options?: { seconds?: number }) =>
       options?.seconds ? `${key}:${options.seconds}` : key,
   }),
@@ -44,6 +45,10 @@ vi.mock('../PcmSpeechPlayer', () => ({
 }));
 
 import { CompanionVoicePanel } from '../CompanionVoicePanel';
+import { visibleVoiceCallMessages, VoiceCallCard, VoiceCallTranscript } from '../VoiceCallTranscript';
+import { collectBotMessageTimeGroups } from '../../botConversationTimeline';
+import type { VoiceCallRecord } from '@/../shared/voiceConversation';
+import type { ChatMessage } from '@/lib/makerChatStore';
 import type { VoiceTaskFailure } from '../VoiceReplyTracker';
 let models: VoiceConversationModel[];
 let inputEvent: (event: VoiceConversationEvent) => void;
@@ -139,7 +144,12 @@ it('releases voice immediately during exit and can reopen before the visual unmo
   view.rerender(panel());
   await act(async () => {});
   expect(audio.start).toHaveBeenCalledOnce();
+  // A portal is outside the fading/inert call wrapper. Closing must dismiss it
+  // immediately, and reopening must not resurrect the previous transcript.
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
+  expect(screen.getByRole('dialog')).toBeTruthy();
   view.rerender(panel(false, false, false));
+  expect(screen.queryByRole('dialog')).toBeNull();
   expect(audio.stop).toHaveBeenCalledOnce();
   expect(audio.close).toHaveBeenCalledOnce();
   expect(log.info).toHaveBeenCalledWith('voice mode ended', {
@@ -158,6 +168,7 @@ it('releases voice immediately during exit and can reopen before the visual unmo
   await act(async () => {});
   await act(() => vi.advanceTimersByTimeAsync(250));
   expect(audio.start).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole('dialog')).toBeNull();
   expect(audio.stop).toHaveBeenCalledOnce();
   expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.listening');
   view.rerender(panel(false, false, false));
@@ -329,6 +340,7 @@ it.each(['rejected', 'throw'] as const)(
     expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.exit.sending');
     await act(async () => fail());
     await act(() => vi.advanceTimersByTimeAsync(5_000));
+    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
     expect(screen.getByText(text)).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toBe('bots.voiceMode.errors.send');
     expect(screen.queryByRole('button', { name: 'bots.voiceMode.exit.cancel' })).toBeNull();
@@ -470,10 +482,161 @@ it('starts once under StrictMode and keeps end and settings actions separate fro
   await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
   expect(start).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.openSettings' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.openSettings' }));
   expect(configure).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.end' }));
   expect(close).toHaveBeenCalledOnce();
+});
+
+// Real panel/controller: the disclosure owns both saved turns and current ASR,
+// and opening accepted work is navigation only, never another send or hangup.
+it('merges the live draft into the call record and opens accepted work without ending capture', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const openTask = vi.fn();
+  const callChanged = vi.fn();
+  render(<CompanionVoicePanel {...panel().props} onOpenTask={openTask} onCallIdChange={callChanged} />);
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+  act(() => inputEvent({
+    callId: 'call', event: { type: 'call-record', record: {
+      version: 1, callId: 'call', startedAt: 1000,
+      turns: [{ id: 'u1', role: 'user', text: '在后台整理计划', complete: true, createdAt: 1100 }],
+      handoffs: [{ id: 'voice-task:call:u1', inputId: 'u1', text: '在后台整理计划', state: 'accepted' }],
+    } },
+  }));
+  act(() => inputEvent({ callId: 'call', event: { type: 'draft', text: '还有一个想法' } }));
+  expect(screen.queryByText('还有一个想法')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
+  expect(screen.getByText('还有一个想法').closest('[data-voice-call-transcript]')).toBeTruthy();
+  expect(screen.getByText('在后台整理计划').closest('[data-voice-call-transcript]')).toBeTruthy();
+  expect(screen.getAllByText('还有一个想法')).toHaveLength(1);
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.viewTaskProgress' }));
+  expect(openTask).toHaveBeenCalledWith('voice-task:call:u1');
+  expect(callChanged).toHaveBeenLastCalledWith('call');
+  expect(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' })).toBeTruthy();
+  expect(audio.start).toHaveBeenCalledOnce();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
+  expect(close).not.toHaveBeenCalled();
+});
+
+it('hides only the active call card and restores one folded record after End', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const record: VoiceCallRecord = {
+    version: 1, callId: 'call', startedAt: 1000,
+    turns: [{ id: 'u1', role: 'user', text: '你好', complete: true, createdAt: 1100 }],
+    handoffs: [],
+  };
+  // The database record is already saved while the call is live. An earlier
+  // interrupted record must remain accessible; filtering cannot erase history.
+  const saved: ChatMessage[] = ['interrupted', 'call'].map(callId => ({
+    clientId: `voice-call:${callId}`, role: 'assistant', content: '',
+    systemCardType: 'voice-call', systemCardData: { record: { ...record, callId } },
+  }));
+  function WithHistory() {
+    const [active, setActive] = useState<string | null>(null);
+    const [open, setOpen] = useState(true);
+    return <>
+      <div data-testid="history">
+        {visibleVoiceCallMessages(saved, active).map(message =>
+          <VoiceCallCard key={message.clientId} record={message.systemCardData!.record as VoiceCallRecord} />)}
+      </div>
+      <CompanionVoicePanel {...panel().props} open={open} onCallIdChange={setActive} onClose={() => setOpen(false)} />
+    </>;
+  }
+  render(<WithHistory />);
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+  expect(screen.getByTestId('history').querySelectorAll('[data-voice-call-card]')).toHaveLength(1);
+  expect(saved).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.end' }));
+  await waitFor(() => expect(window.electronAPI.voiceConversation.end).toHaveBeenCalledWith('call'));
+  const cards = screen.getByTestId('history').querySelectorAll('[data-voice-call-card]');
+  expect(cards).toHaveLength(2);
+  for (const card of cards) expect(card.querySelector('button')?.getAttribute('aria-expanded')).toBe('false');
+  expect(audio.stop).toHaveBeenCalledOnce();
+});
+
+// Empty calls used to leave both a placeholder card and a standalone timestamp.
+// Filter before the real timeline grouping while retaining the saved source rows.
+it('shows the speaking prompt only in a live call and never renders a direct empty history card', () => {
+  const record: VoiceCallRecord = {
+    version: 1, callId: 'empty', startedAt: 1000, endedAt: 8241, turns: [], handoffs: [],
+  };
+  const view = render(<VoiceCallTranscript record={record} live />);
+  expect(screen.getByText('bots.voiceMode.transcriptEmpty')).toBeTruthy();
+  view.rerender(<VoiceCallTranscript record={record} />);
+  expect(screen.queryByText('bots.voiceMode.transcriptEmpty')).toBeNull();
+  view.rerender(<VoiceCallCard record={record} />);
+  expect(view.container.querySelector('[data-voice-call-card]')).toBeNull();
+});
+
+it('omits empty calls and their time groups without changing saved messages', () => {
+  const record: VoiceCallRecord = {
+    version: 1, callId: 'empty', startedAt: 1000, endedAt: 8000, turns: [], handoffs: [],
+  };
+  const empty: ChatMessage = {
+    clientId: 'voice-call:empty', role: 'assistant', content: '',
+    createdAt: '2026-10-20T12:12:00Z',
+    systemCardType: 'voice-call', systemCardData: { record },
+  };
+  const whitespace: ChatMessage = {
+    ...empty, clientId: 'voice-call:whitespace',
+    systemCardData: { record: {
+      ...record, callId: 'whitespace',
+      turns: [{ id: 'a1', role: 'assistant', text: ' \n\t', complete: false, createdAt: 1100 }],
+    } },
+  };
+  const before: ChatMessage = {
+    clientId: 'before', role: 'assistant', content: '前面的回复', createdAt: '2026-10-20T12:00:00Z',
+  };
+  const after: ChatMessage = {
+    clientId: 'after', role: 'user', content: '接着聊', createdAt: '2026-10-20T12:13:00Z',
+  };
+  const saved = [before, empty, whitespace, after];
+  const original = structuredClone(saved);
+  const visible = visibleVoiceCallMessages(saved, null);
+  expect(visible).toEqual([before, after]);
+  expect([...collectBotMessageTimeGroups(visible).entries()]).toEqual([
+    ['before', Date.parse(before.createdAt!)],
+    ['after', Date.parse(after.createdAt!)],
+  ]);
+  expect(collectBotMessageTimeGroups(visibleVoiceCallMessages([empty], null)).size).toBe(0);
+  expect(saved).toEqual(original);
+});
+
+it.each<{
+  name: string;
+  turns: VoiceCallRecord['turns'];
+  handoffs: VoiceCallRecord['handoffs'];
+}>([
+  {
+    name: 'user text',
+    turns: [{ id: 'u1', role: 'user', text: '你好', complete: true, createdAt: 1100 }],
+    handoffs: [],
+  },
+  {
+    name: 'an interrupted assistant reply',
+    turns: [{ id: 'a1', role: 'assistant', text: '还没说完', complete: false, createdAt: 1100 }],
+    handoffs: [],
+  },
+  {
+    name: 'a failed original',
+    turns: [{ id: 'u1', role: 'user', text: '请保留这句话', failed: true, complete: true, createdAt: 1100 }],
+    handoffs: [],
+  },
+  {
+    name: 'a handoff without transcript turns',
+    turns: [],
+    handoffs: [{ id: 'task', inputId: 'u1', text: '在后台整理计划', state: 'accepted' }],
+  },
+])('retains a saved call containing $name', ({ turns, handoffs }) => {
+  const message: ChatMessage = {
+    clientId: 'voice-call:saved', role: 'assistant', content: '',
+    systemCardType: 'voice-call', systemCardData: { record: {
+      version: 1, callId: 'saved', startedAt: 1000, endedAt: 8000, turns, handoffs,
+    } },
+  };
+  const visible = visibleVoiceCallMessages([message], null);
+  expect(visible).toHaveLength(1);
+  expect(visible[0]).toBe(message);
 });
 
 it('keeps permission cards authoritative and resumes only after another explicit action', async () => {
@@ -577,7 +740,7 @@ it('distinguishes ASR connection from microphone startup, with explicit micropho
   expect(start).toHaveBeenCalledOnce();
 });
 
-it('keeps Send secondary and preserves a visible unsent draft when the microphone is muted', async () => {
+it('keeps Send secondary and preserves the draft inside the disclosure when muted', async () => {
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   render(panel());
   await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
@@ -590,8 +753,7 @@ it('keeps Send secondary and preserves a visible unsent draft when the microphon
       screen.getByRole('button', { name: 'bots.voiceMode.unmute' }).hasAttribute('disabled'),
     ).toBe(false),
   );
-  expect(screen.getByText('bots.voiceMode.unsent')).toBeTruthy();
-  expect(screen.getByText('unfinished thought')).toBeTruthy();
+  expect(screen.queryByText('unfinished thought')).toBeNull();
   expect(screen.getByRole('button', { name: 'bots.voiceMode.send' })).toBeTruthy();
   expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
 
@@ -604,10 +766,14 @@ it('keeps Send secondary and preserves a visible unsent draft when the microphon
   const disclosure = screen.getByRole('button', { name: 'bots.voiceMode.hideDetails' });
   expect(disclosure.getAttribute('aria-expanded')).toBe('true');
   fireEvent.keyDown(disclosure, { key: 'Escape' });
-  expect(screen.getByText('unfinished thought')).toBeTruthy();
+  // The draft has one home. Collapse keeps it only for its exit animation;
+  // reopening restores it without recreating capture or changing mute.
+  await waitFor(() => expect(screen.queryByText('unfinished thought')).toBeNull());
   expect(document.activeElement).toBe(
     screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }),
   );
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.showDetails' }));
+  expect(screen.getAllByText('unfinished thought')).toHaveLength(1);
   expect(audio.start).toHaveBeenCalledOnce();
   expect(start).toHaveBeenCalledOnce();
   expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();

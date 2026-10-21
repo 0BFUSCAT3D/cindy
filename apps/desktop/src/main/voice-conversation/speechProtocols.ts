@@ -1,4 +1,4 @@
-import type { SpeechProtocol } from '../../shared/voiceConversation.js';
+import { isSpeechSpeedSupported, type SpeechProtocol } from '../../shared/voiceConversation.js';
 import { SpeechError } from './speechError.js';
 
 export type SpeechConnection = {
@@ -6,7 +6,7 @@ export type SpeechConnection = {
   headers: Record<string, string>;
   protocol: SpeechProtocol;
 };
-export type SpeechInput = { modelId: string; voice: string; text: string };
+export type SpeechInput = { modelId: string; voice: string; text: string; speed?: number };
 
 /**
  * Follow-up before adding more native protocols: extract these branches and response
@@ -28,6 +28,8 @@ export function speechRequest(
   )
     throw new SpeechError('unavailable');
   const prefix = connection.baseUrl.replace(/\/+$/, '');
+  if (!isSpeechSpeedSupported(input.modelId, connection.protocol, input.speed))
+    throw new SpeechError('unavailable');
   switch (connection.protocol) {
     case 'openai':
       return {
@@ -37,6 +39,7 @@ export function speechRequest(
           voice: input.voice,
           input: input.text,
           response_format: 'pcm',
+          ...(input.speed !== undefined ? { speed: input.speed } : {}),
         }),
       };
     case 'elevenlabs':
@@ -44,7 +47,11 @@ export function speechRequest(
         url: new URL(
           `${prefix}/text-to-speech/${encodeURIComponent(input.voice)}/stream?output_format=pcm_24000`,
         ),
-        body: JSON.stringify({ model_id: input.modelId, text: input.text }),
+        body: JSON.stringify({
+          model_id: input.modelId,
+          text: input.text,
+          ...(input.speed !== undefined ? { voice_settings: { speed: input.speed } } : {}),
+        }),
       };
     case 'minimax':
       return {
@@ -55,7 +62,10 @@ export function speechRequest(
           stream: true,
           stream_options: { exclude_aggregated_audio: true },
           output_format: 'hex',
-          voice_setting: { voice_id: input.voice },
+          voice_setting: {
+            voice_id: input.voice,
+            ...(input.speed !== undefined ? { speed: input.speed } : {}),
+          },
           audio_setting: { format: 'pcm', sample_rate: 24000, channel: 1 },
         }),
       };

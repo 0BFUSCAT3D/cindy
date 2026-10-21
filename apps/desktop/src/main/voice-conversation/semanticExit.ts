@@ -28,7 +28,7 @@ export type VoiceExitClassification = {
   isCurrent(): boolean;
 };
 
-async function readRoute(botId: string, sessionId: string): Promise<Route | null> {
+export async function readVoiceCompanionRoute(botId: string, sessionId: string): Promise<Route | null> {
   // The roster getter also reconciles links and reads chat previews. This path
   // must be read-only and content-free: read just the authoritative binding and
   // selected route, never profile snapshots, messages, memory or a repair tx.
@@ -131,11 +131,11 @@ export async function classifyVoiceExit(
     const result = await requestUtilityTextWithinTimeout(
       async (signal) => {
         const active = () => !signal.aborted && current();
-        const route = await readRoute(input.botId, input.sessionId);
+        const route = await readVoiceCompanionRoute(input.botId, input.sessionId);
         if (!active() || !route) return unavailable();
         const sameRoute = async () => {
           if (!active()) return false;
-          const latest = await readRoute(input.botId, input.sessionId);
+          const latest = await readVoiceCompanionRoute(input.botId, input.sessionId);
           return (
             active() &&
             latest?.providerId === route.providerId &&

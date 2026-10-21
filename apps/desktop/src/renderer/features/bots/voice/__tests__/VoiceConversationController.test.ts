@@ -7,6 +7,7 @@ import type {
 import type { SpeechPlayer } from '../PcmSpeechPlayer';
 import type { ChatMessage } from '@/lib/makerChatStore';
 import { VoiceConversationController } from '../VoiceConversationController';
+import type { VoiceQuestionTarget } from '@/components/new-chat/voiceQuestionSelection';
 
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
 vi.mock('@/lib/logger', () => ({ createLogger: () => log }));
@@ -30,7 +31,7 @@ function fixture() {
     stopPreview: vi.fn(async () => {}),
     preference: vi.fn(async () => ({ selection: null, customized: false })),
     setPreference: vi.fn(async () => ({ selection: null, customized: false })),
-    start: vi.fn(async () => ({ callId: `call-${++calls}` })),
+    start: vi.fn<VoiceConversationApi['start']>(async () => ({ callId: `call-${++calls}` })),
     startPlayback: vi.fn<VoiceConversationApi['startPlayback']>(async (input) => ({
       callId: input.callId,
     })),
@@ -83,6 +84,8 @@ function fixture() {
   >(() => microphone);
   const taskBusy = vi.fn(() => false);
   const onAutoEnd = vi.fn();
+  const questionPending = vi.fn(() => false);
+  const questionTarget = vi.fn<() => VoiceQuestionTarget | null>(() => null);
   const controller = new VoiceConversationController({
     api,
     botId: 'bot',
@@ -91,6 +94,8 @@ function fixture() {
     player: () => player,
     send,
     isTaskBusy: taskBusy,
+    isQuestionPending: questionPending,
+    getQuestionTarget: questionTarget,
     onAutoEnd,
   });
   const emit = (
@@ -110,8 +115,277 @@ function fixture() {
     utterance,
     taskBusy,
     onAutoEnd,
+    questionPending,
+    questionTarget,
   };
 }
+
+describe('independent call transcript and task acceptance', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('plays the first call sentence without sending an ordinary main-task message', async () => {
+    const f = fixture();
+    const submit = vi.fn<NonNullable<VoiceConversationApi['submitTurn']>>(async () => true);
+    Object.assign(f.api, { submitTurn: submit });
+    await f.controller.start(selection);
+    f.utterance('Say hello.');
+    await vi.advanceTimersByTimeAsync(0);
+    const id = submit.mock.calls[0][1];
+    f.emit({ type: 'call-record', record: {
+      version: 1, callId: 'call-1', startedAt: 0, handoffs: [],
+      turns: [
+        { id, role: 'user', text: 'Say hello.', createdAt: 1, complete: true },
+        { id: `${id}:reply`, role: 'assistant', text: 'Hello there.', createdAt: 2, complete: true },
+      ],
+    } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.api.speak).toHaveBeenCalledOnce();
+    expect(f.api.speak.mock.calls[0][0].text).toBe('Hello there.');
+    expect(f.controller.getSnapshot().callRecord?.turns).toHaveLength(2);
+    f.controller.end();
+  });
+
+  it('keeps a failed call input for retry without dispatching it into the main task', async () => {
+    const f = fixture();
+    const submit = vi.fn<NonNullable<VoiceConversationApi['submitTurn']>>(async () => true);
+    Object.assign(f.api, { submitTurn: submit });
+    await f.controller.start(selection);
+    f.utterance('Remember this original sentence.');
+    await vi.advanceTimersByTimeAsync(0);
+    const id = submit.mock.calls[0][1];
+    f.emit({ type: 'call-record', record: {
+      version: 1, callId: 'call-1', startedAt: 0, handoffs: [],
+      turns: [{ id, role: 'user', text: 'Remember this original sentence.', createdAt: 1, complete: true, failed: true }],
+    } });
+    expect(f.controller.getSnapshot().unsent).toBe('Remember this original sentence.');
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.controller.getSnapshot().phase).toBe('error');
+    expect(f.api.end).toHaveBeenCalledWith('call-1'); // Reuse ordinary failure cleanup.
+    f.controller.end();
+  });
+
+  it('does not end a compound call before the main task acknowledges its handoff', async () => {
+    const f = fixture();
+    let accept!: (ok: boolean) => void;
+    const submit = vi.fn<NonNullable<VoiceConversationApi['submitTurn']>>(async () => true);
+    const promote = vi.fn<NonNullable<VoiceConversationApi['promoteTurn']>>(() => new Promise(resolve => { accept = resolve; }));
+    Object.assign(f.api, { submitTurn: submit, promoteTurn: promote });
+    f.api.classifyExit.mockResolvedValue('submit_then_exit');
+    await f.controller.start(selection);
+    f.utterance('帮我用三条列出整理桌面的步骤，然后退出语音模式。');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(promote).toHaveBeenCalledWith('call-1', submit.mock.calls[0][1]);
+    expect(f.controller.getSnapshot().exitCountdown?.waitingForSend).toBe(true);
+    expect(f.api.end).not.toHaveBeenCalled();
+    accept(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.onAutoEnd).toHaveBeenCalledOnce();
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it('cancel exit keeps a successfully handed-off task without closing the call', async () => {
+    const f = fixture();
+    let accept!: (ok: boolean) => void;
+    const submit = vi.fn<NonNullable<VoiceConversationApi['submitTurn']>>(async () => true);
+    const promote = vi.fn<NonNullable<VoiceConversationApi['promoteTurn']>>(() => new Promise(resolve => { accept = resolve; }));
+    Object.assign(f.api, { submitTurn: submit, promoteTurn: promote });
+    f.api.classifyExit.mockResolvedValue('submit_then_exit');
+    await f.controller.start(selection);
+    f.utterance('帮我整理桌面，然后退出语音模式。');
+    await vi.advanceTimersByTimeAsync(0);
+    f.controller.cancelExit();
+    accept(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.end).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
+  it('returns to listening after task acceptance, queues a result behind the current answer and speaks it once', async () => {
+    const f = fixture();
+    const submit = vi.fn<NonNullable<VoiceConversationApi['submitTurn']>>(async () => true);
+    Object.assign(f.api, { submitTurn: submit });
+    await f.controller.start(selection);
+    f.utterance('Research this.');
+    await vi.advanceTimersByTimeAsync(0);
+    const first = submit.mock.calls[0][1];
+    const record: import('@cindy/maker-core').VoiceCallRecord = {
+      version: 1, callId: 'call-1', startedAt: 0,
+      handoffs: [{ id: 'task', inputId: first, text: 'Research this.', state: 'accepted' }],
+      turns: [{ id: first, role: 'user', text: 'Research this.', createdAt: 1, complete: true }],
+    };
+    f.emit({ type: 'call-record', record: structuredClone(record) });
+    expect(f.controller.getSnapshot().phase).toBe('listening');
+    f.utterance('Tell me something.');
+    await vi.advanceTimersByTimeAsync(0);
+    const second = submit.mock.calls[1][1];
+    let finish!: () => void;
+    f.player.play.mockImplementationOnce(async () => new Promise<void>(resolve => { finish = resolve; }));
+    record.turns.push(
+      { id: second, role: 'user', text: 'Tell me something.', createdAt: 2, complete: true },
+      { id: `${second}:reply`, role: 'assistant', text: 'Here is your answer.', createdAt: 3, complete: true },
+    );
+    f.emit({ type: 'call-record', record: structuredClone(record) });
+    await vi.advanceTimersByTimeAsync(0);
+    record.handoffs[0].state = 'completed';
+    record.turns.push({ id: `${first}:reply:result`, role: 'assistant', text: 'The research is ready.', createdAt: 4, complete: true });
+    f.emit({ type: 'call-record', record: structuredClone(record) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.speak).toHaveBeenCalledOnce();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.speak.mock.calls.map(([input]) => input.text)).toEqual(['Here is your answer.', 'The research is ready.']);
+    f.emit({ type: 'call-record', record: structuredClone(record) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.speak).toHaveBeenCalledTimes(2);
+    f.controller.end();
+  });
+});
+
+describe('ordinary question routing in a live voice call', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('keeps capture, holds playback, answers without chat/classification and reads the continued reply', async () => {
+    const f = fixture();
+    await f.controller.start(selection);
+    f.utterance();
+    await vi.advanceTimersByTimeAsync(0);
+    const target = { receive: vi.fn() };
+    f.questionPending.mockReturnValue(true);
+    f.questionTarget.mockReturnValue(target);
+    f.controller.refreshQuestion();
+    f.controller.updateMessages([user(), reply()]);
+    await vi.advanceTimersByTimeAsync(71_000);
+    expect(f.api.speak).not.toHaveBeenCalled();
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    expect(f.microphone.stop).not.toHaveBeenCalled();
+    expect(f.api.end).not.toHaveBeenCalled();
+    f.api.classifyExit.mockClear();
+    f.emit({ type: 'speech-started' });
+    f.emit({ type: 'draft', text: '第一项' });
+    f.utterance('第一项');
+    expect(target.receive).toHaveBeenCalledExactlyOnceWith('第一项');
+    expect(f.send).toHaveBeenCalledTimes(1);
+    expect(f.api.classifyExit).not.toHaveBeenCalled();
+    f.questionPending.mockReturnValue(false);
+    f.questionTarget.mockReturnValue(null);
+    f.controller.refreshQuestion();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.speak).toHaveBeenCalledOnce();
+    expect(f.microphone.start).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
+  it.each(['step', 'dismiss', 'new-question'] as const)('does not retarget speech after %s', async (change) => {
+    const f = fixture();
+    const first = { receive: vi.fn() };
+    const second = { receive: vi.fn() };
+    await f.controller.start(selection);
+    f.questionPending.mockReturnValue(change !== 'new-question');
+    f.questionTarget.mockReturnValue(change === 'new-question' ? null : first);
+    f.emit({ type: 'speech-started' });
+    f.emit({ type: 'draft', text: '第一' });
+    f.questionPending.mockReturnValue(change !== 'dismiss');
+    f.questionTarget.mockReturnValue(change === 'dismiss' ? null : second);
+    f.controller.refreshQuestion();
+    f.utterance('第一项');
+    expect(first.receive).not.toHaveBeenCalled();
+    expect(second.receive).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.api.classifyExit).not.toHaveBeenCalled();
+    f.controller.end();
+  });
+
+  it('keeps permission blocking and local exit commands intact', async () => {
+    const f = fixture();
+    const target = { receive: vi.fn() };
+    await f.controller.start(selection);
+    f.questionPending.mockReturnValue(true);
+    f.questionTarget.mockReturnValue(target);
+    f.controller.refreshQuestion();
+    f.controller.setBlocked(true);
+    f.utterance('第一项');
+    expect(target.receive).not.toHaveBeenCalled();
+    expect(f.microphone.stop).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot().phase).toBe('paused');
+    f.controller.setBlocked(false);
+    await f.controller.start(selection);
+    f.utterance('退出语音模式');
+    expect(f.onAutoEnd).toHaveBeenCalledOnce();
+    expect(target.receive).not.toHaveBeenCalled();
+  });
+
+  it('never sends a retained partial choice as ordinary chat after mute and dismissal', async () => {
+    const f = fixture();
+    await f.controller.start(selection);
+    f.questionPending.mockReturnValue(true);
+    const target = { receive: vi.fn() };
+    f.questionTarget.mockReturnValue(target);
+    f.emit({ type: 'draft', text: '第一项' });
+    await f.controller.toggleMute();
+    expect(f.controller.getSnapshot()).toMatchObject({ unsent: '', questionDraft: '第一项' });
+    f.questionPending.mockReturnValue(false);
+    f.questionTarget.mockReturnValue(null);
+    f.controller.retryUnsent();
+    expect(f.send).not.toHaveBeenCalled();
+    expect(target.receive).not.toHaveBeenCalled();
+    f.controller.end();
+  });
+
+  it('retains an ordinary input if a question arrives during send preflight', async () => {
+    const f = fixture();
+    let dispatch!: () => void;
+    f.send.mockImplementationOnce((_text, _created, current) => new Promise((resolve) => {
+      dispatch = () => resolve(current());
+    }));
+    await f.controller.start(selection);
+    f.utterance('保留这条普通消息');
+    f.questionPending.mockReturnValue(true);
+    f.controller.refreshQuestion();
+    dispatch();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.controller.getSnapshot().unsent).toBe('保留这条普通消息');
+    f.controller.retryUnsent();
+    expect(f.controller.getSnapshot().unsent).toBe('保留这条普通消息');
+    expect(f.send).toHaveBeenCalledTimes(1);
+    expect(f.microphone.stop).not.toHaveBeenCalled();
+    f.questionPending.mockReturnValue(false);
+    f.controller.refreshQuestion();
+    f.controller.retryUnsent();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.send.mock.lastCall?.[0]).toBe('保留这条普通消息');
+    f.controller.end();
+  });
+
+  it('keeps a failed chat input separate from a partial question answer across mute', async () => {
+    const f = fixture();
+    f.send.mockResolvedValueOnce(false);
+    await f.controller.start(selection);
+    f.utterance('保留原消息');
+    await vi.advanceTimersByTimeAsync(0);
+    f.questionPending.mockReturnValue(true);
+    const target = { receive: vi.fn() };
+    f.questionTarget.mockReturnValue(target);
+    await f.controller.start(selection);
+    f.emit({ type: 'draft', text: '第二项' });
+    await f.controller.toggleMute();
+    expect(f.controller.getSnapshot()).toMatchObject({ unsent: '保留原消息', questionDraft: '第二项' });
+    f.controller.retryUnsent();
+    expect(target.receive).toHaveBeenCalledExactlyOnceWith('第二项');
+    expect(f.controller.getSnapshot().unsent).toBe('保留原消息');
+    f.questionPending.mockReturnValue(false);
+    f.questionTarget.mockReturnValue(null);
+    f.controller.refreshQuestion();
+    f.controller.retryUnsent();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.send.mock.calls.map((call) => call[0])).toEqual(['保留原消息', '保留原消息']);
+    f.controller.end();
+  });
+});
 
 // Production entry: controller + ASR events. Contract: companion-voice-mode.md
 // automatic exits; prior coverage checked manual teardown, not idle/intent exits.
@@ -1316,6 +1590,40 @@ describe('companion voice loop', () => {
     expect(f.api.end).toHaveBeenCalledWith('cancelled-call');
     expect(f.microphone.start).toHaveBeenCalledOnce();
     f.controller.end();
+  });
+
+  // Startup regression: Main releases its failed call and emits ended before
+  // start's IPC rejection arrives. Earlier mocks only rejected the promise.
+  // Real controller, unit tier: show the retryable error and release playback;
+  // a later retry must still acquire the microphone exactly once.
+  it('keeps a startup failure visible when ended arrives before the start rejection', async () => {
+    const f = fixture();
+    f.api.start.mockImplementationOnce(async ({ callId }) => {
+      f.emit({ type: 'ended' }, callId);
+      throw new Error('Voice conversation is unavailable');
+    });
+    await f.controller.start(selection);
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'error', error: 'connection' });
+    expect(f.microphone.start).not.toHaveBeenCalled();
+    expect(f.player.close).toHaveBeenCalledOnce();
+    expect(f.onAutoEnd).not.toHaveBeenCalled();
+    await f.controller.start(selection);
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'listening', error: null });
+    expect(f.microphone.start).toHaveBeenCalledOnce();
+    f.controller.end();
+  });
+
+  it('keeps a user-cancelled startup idle when its rejection arrives late', async () => {
+    const f = fixture();
+    let reject!: (error: Error) => void;
+    f.api.start.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const opening = f.controller.start(selection);
+    await vi.waitFor(() => expect(f.api.start).toHaveBeenCalledOnce());
+    f.controller.end();
+    reject(new Error('cancelled'));
+    await opening;
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'idle', error: null });
+    expect(f.microphone.start).not.toHaveBeenCalled();
   });
 
   it('ends capture when the main process revokes call ownership', async () => {

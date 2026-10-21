@@ -11,6 +11,7 @@ import { PcmSpeechPlayer } from './PcmSpeechPlayer';
 import { resolveVoiceConfiguration } from './voiceConfiguration';
 import { CompanionVoiceToolbar } from './CompanionVoiceToolbar';
 import type { VoiceTaskFailure } from './VoiceReplyTracker';
+import type { VoiceQuestionBridge } from '@/components/new-chat/voiceQuestionSelection';
 
 type Props = {
   open: boolean;
@@ -18,10 +19,14 @@ type Props = {
   sessionId: string;
   messages: readonly ChatMessage[];
   blocked: boolean;
+  questionPending?: boolean;
+  questionBridge?: VoiceQuestionBridge;
   taskBusy: boolean;
   taskFailure?: VoiceTaskFailure | null;
   onClose(): void;
   onConfigure(): void;
+  onCallIdChange?(callId: string | null): void;
+  onOpenTask?(clientId: string): void;
   onSend(text: string, onCreated: (id: string) => void, isCurrent: () => boolean): Promise<boolean>;
 };
 
@@ -42,6 +47,11 @@ function CompanionVoiceCall(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const recordRef = useRef<import('@cindy/maker-core').VoiceCallRecord | undefined>(undefined);
+  const ownsQuestion = () => {
+    const input = latest.current.messages.findLast(message => message.role === 'user');
+    return !window.electronAPI.voiceConversation.submitTurn || !!recordRef.current?.handoffs.some(task => task.id === input?.clientId);
+  };
   const [loading, setLoading] = useState(true);
   const [configurationError, setConfigurationError] = useState(false);
   const launchVersion = useRef(0);
@@ -51,8 +61,13 @@ function CompanionVoiceCall(props: Props) {
         api: window.electronAPI.voiceConversation,
         botId: props.bot.id,
         sessionId: props.sessionId,
-        isTaskBusy: () => latest.current.taskBusy,
+        isTaskBusy: () => window.electronAPI.voiceConversation.submitTurn
+          ? !!recordRef.current?.handoffs.some(task => task.state === 'accepted' || task.state === 'sending')
+          : latest.current.taskBusy,
+        isQuestionPending: () => (latest.current.questionPending ?? false) && ownsQuestion(),
+        getQuestionTarget: () => ownsQuestion() ? latest.current.questionBridge?.current ?? null : null,
         onAutoEnd: () => latest.current.onClose(),
+        onCallIdChange: (callId) => latest.current.onCallIdChange?.(callId),
         send: (...args) => latest.current.onSend(...args),
         microphone: (onInterrupted, onStateChange) =>
           new WebMicAudioEngine({
@@ -74,6 +89,7 @@ function CompanionVoiceCall(props: Props) {
     [props.bot.id, props.sessionId],
   );
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  recordRef.current = state.callRecord;
   const start = useCallback(async () => {
     if (!latest.current.open) return;
     const version = ++launchVersion.current;
@@ -124,11 +140,15 @@ function CompanionVoiceCall(props: Props) {
     }
   }, [controller, props.blocked, props.open]);
   useEffect(() => {
-    if (props.open) controller.updateMessages(props.messages, props.taskFailure ?? null);
+    if (props.open) controller.refreshQuestion();
+  }, [controller, props.questionPending, props.messages, state.callRecord, props.open]);
+  useEffect(() => {
+    if (props.open && !window.electronAPI.voiceConversation.submitTurn)
+      controller.updateMessages(props.messages, props.taskFailure ?? null);
   }, [controller, props.messages, props.taskFailure, props.open]);
   useEffect(() => {
     if (props.open) controller.refreshActivity();
-  }, [controller, props.taskBusy, props.open]);
+  }, [controller, props.taskBusy, state.callRecord, props.open]);
   useEffect(() => {
     if (!props.open) return;
     const initialOwner = getDataOwnerGeneration();
@@ -157,8 +177,10 @@ function CompanionVoiceCall(props: Props) {
     presentation.current = { state, loading, blocked: props.blocked, configurationError };
   return (
     <CompanionVoiceToolbar
+      callOpen={props.open}
       bot={props.bot}
       {...presentation.current}
+      questionPending={props.questionPending && ownsQuestion()}
       titleRef={titleRef}
       onResume={() => void start()}
       onMute={() => void controller.toggleMute()}
@@ -170,6 +192,7 @@ function CompanionVoiceCall(props: Props) {
       }}
       onClose={props.onClose}
       onConfigure={props.onConfigure}
+      onOpenTask={props.onOpenTask}
     />
   );
 }

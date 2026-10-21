@@ -1,3 +1,5 @@
+import { setVoiceTaskDispatch, setVoiceCallMemoryReader } from '../voice-conversation/taskBridge.js';
+import { buildBotMemoryScopeKey } from '@cindy/maker-core';
 import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import { configureBotTodoDispatch, settleBotTodoForSession } from './botTodoAccess.js';
@@ -11813,6 +11815,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   setBotInvitationWelcomeDispatch(dispatchBotSessionMessage);
+  setVoiceTaskDispatch(dispatchBotSessionMessage);
+  setVoiceCallMemoryReader(async botId =>
+    (await maker.makerMemory?.getStore(buildBotMemoryScopeKey(botId)))?.getIndex() ?? '');
 
   // 代输入 ended: hidden metadata-only continuation, mirroring the bot
   // authorization resume. A deterministic client id keeps delivery idempotent.

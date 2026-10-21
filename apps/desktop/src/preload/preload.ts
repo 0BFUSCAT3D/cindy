@@ -1611,6 +1611,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('plugin-publisher:resolve-confirm', { requestId, confirmed }),
   },
   voiceConversation: {
+    promoteTurn: (callId, inputId) => ipcRenderer.invoke("voice-conversation:promote-turn", callId, inputId),
+    submitTurn: (callId, inputId, text, forceHandoff) => ipcRenderer.invoke("voice-conversation:submit-turn", callId, inputId, text, forceHandoff),
     models: () => ipcRenderer.invoke('voice-conversation:models'),
     voices: (selection) => ipcRenderer.invoke('voice-conversation:voices', selection),
     preview: (input) => ipcRenderer.invoke('voice-conversation:preview', input),

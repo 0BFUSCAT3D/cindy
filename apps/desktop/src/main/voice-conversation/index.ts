@@ -1,3 +1,4 @@
+import { CompanionCallDialogue } from './dialogue.js';
 import { ipcMain, webContents, type IpcMainInvokeEvent } from 'electron';
 import type { AsrProvider, AudioGate } from '@cindy/voice-input-core';
 import {
@@ -57,6 +58,7 @@ export function registerVoiceConversationIpc(deps: {
     };
   };
   const service = new VoiceConversationService({
+    createDialogue: (selection, emit) => new CompanionCallDialogue({ ...selection, emit }),
     ...deps,
     log,
     owner: () => (isAppSessionBoundaryPending() ? 'changing-account' : activeOwnerScopeKey()),
@@ -148,6 +150,8 @@ export function registerVoiceConversationIpc(deps: {
       if (value !== undefined) {
         const selection = value === null ? null : normalizeVoiceConversationSelection(value);
         if (selection === undefined) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
+        // Validate explicit speed against Main's actual endpoint/model binding.
+        if (selection?.speed !== undefined) resolveSpeechConnection(catalogDeps(), selection);
         patch.conversationSelections = updateCompanionVoicePreference(settings, botId, selection);
       }
       if (sentencePlayback !== undefined) {
@@ -208,6 +212,12 @@ export function registerVoiceConversationIpc(deps: {
     } catch {
       /* Untrusted or late frames are ignored; no payload is logged. */
     }
+  });
+  handle('promote-turn', (event, id, inputId) => service.promoteTurn(event.sender.id, boundedString(id, 'callId', 64), boundedString(inputId, 'inputId', 128)));
+  handle('submit-turn', (event, id, inputId, text, forceHandoff) => {
+    if (typeof forceHandoff !== 'boolean') throw new Error('invalid_handoff');
+    return service.submitTurn(event.sender.id, boundedString(id, 'callId', 64),
+      boundedString(inputId, 'inputId', 128), boundedString(text, 'text', 32000), forceHandoff);
   });
   handle('finish-utterance', (event, id) =>
     service.finishUtterance(event.sender.id, boundedString(id, 'callId', 64)),
