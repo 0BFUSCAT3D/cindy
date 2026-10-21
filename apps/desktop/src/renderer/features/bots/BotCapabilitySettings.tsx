@@ -152,14 +152,12 @@ export function BotCapabilitySettings({
         const [personalResult, skillResult, toolsetResult] = results;
         const next: Partial<Record<Kind, Entry[]>> = {};
         if (skillResult.status === 'fulfilled' && skillResult.value.success) {
-          const seenSkillNames = new Set<string>();
-          // Settings select skills by name. Multiple discovery sources must
-          // share one switch, retaining the first source's metadata and state.
-          next.skill = (skillResult.value.skills ?? []).filter((item) => {
-            if (seenSkillNames.has(item.name)) return false;
-            seenSkillNames.add(item.name);
-            return true;
-          }).map((item) => ({
+          // Match resolveBotSkillReferences: the last entry for a name wins.
+          // Map retains first-seen display order without changing discovery data.
+          const skillsByName = new Map(
+            (skillResult.value.skills ?? []).map((item) => [item.name, item]),
+          );
+          next.skill = [...skillsByName.values()].map((item) => ({
             id: item.name,
             name: item.name,
             description: item.description,

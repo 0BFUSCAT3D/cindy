@@ -66,12 +66,17 @@ describe('controlled capability page lifetime', () => {
   });
 });
 
-it.each([true, false])('shows one skill switch per selection ID and preserves the first enabled=%s state', async (enabled) => {
+it.each([
+  { enabled: true, runtimeStatus: 'discovered', firstEnabled: false, firstStatus: 'discovered' },
+  { enabled: false, runtimeStatus: 'discovered', firstEnabled: true, firstStatus: 'discovered' },
+  { enabled: true, runtimeStatus: 'discovered', firstEnabled: true, firstStatus: 'failed' },
+  { enabled: true, runtimeStatus: 'failed', firstEnabled: true, firstStatus: 'discovered' },
+])('uses the runtime winner for duplicate skill state: $enabled/$runtimeStatus', async ({ enabled, runtimeStatus, firstEnabled, firstStatus }) => {
   const discovered = [
     { name: 'agent-ops', path: '/home/.agents/skills/agent-ops/SKILL.md', scope: 'repo',
-      description: 'First source description', enabled },
+      description: 'First source description', enabled: firstEnabled, runtimeStatus: firstStatus },
     { name: 'agent-ops', path: '/home/.agents/skills/agent-ops/SKILL.md', scope: 'user',
-      description: 'Duplicate source description', enabled: !enabled },
+      description: 'Runtime winner description', enabled, runtimeStatus },
     { name: 'unique-skill', path: '/project/.pi/skills/unique-skill/SKILL.md', enabled: true },
   ];
   const listAgentSkills = vi.fn(async () => ({ success: true, skills: discovered }));
@@ -88,11 +93,12 @@ it.each([true, false])('shows one skill switch per selection ID and preserves th
 
   await waitFor(() => expect(view.getAllByRole('switch', { name: 'agent-ops' })).toHaveLength(1));
   const checkbox = view.getByRole('switch', { name: 'agent-ops' }) as HTMLButtonElement;
-  expect(checkbox.disabled).toBe(!enabled);
-  expect(view.getByText('First source description')).toBeTruthy();
-  expect(view.queryByText('Duplicate source description')).toBeNull();
+  const available = enabled && runtimeStatus !== 'failed';
+  expect(checkbox.disabled).toBe(!available);
+  expect(view.getByText('Runtime winner description')).toBeTruthy();
+  expect(view.queryByText('First source description')).toBeNull();
   expect(view.getByRole('switch', { name: 'unique-skill' })).toBeTruthy();
-  if (enabled) {
+  if (available) {
     fireEvent.click(checkbox);
     expect(onChange).toHaveBeenCalledExactlyOnceWith('skill', ['agent-ops']);
   }
