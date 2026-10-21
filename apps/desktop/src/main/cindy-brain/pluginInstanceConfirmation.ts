@@ -81,19 +81,20 @@ interface UnconfirmedConfirmationHost {
 }
 
 /** Confirm unconfirmed rows only when the caller supplies positive evidence. */
-export async function confirmUnconfirmedInstances(host: UnconfirmedConfirmationHost): Promise<{ unresolvedPending: number }> {
+export async function confirmUnconfirmedInstances(host: UnconfirmedConfirmationHost): Promise<{ unresolvedPending: number; mutationFailures: number }> {
   const readEvidence = host.readEvidence;
-  if (host.isBlocked()) return { unresolvedPending: 0 };
+  if (host.isBlocked()) return { unresolvedPending: 0, mutationFailures: 0 };
   const registry = host.sync();
-  if (host.isBlocked()) return { unresolvedPending: 0 };
+  if (host.isBlocked()) return { unresolvedPending: 0, mutationFailures: 0 };
   const orphans = new Set(Object.values(registry.instances).filter((record) =>
     record.active && record.namespaceState === 'pending' && registry.census !== null &&
     !registry.census.pendingRelIds.includes(record.contentRelId),
   ).map((record) => record.instanceKey));
-  if (!readEvidence) return { unresolvedPending: orphans.size };
+  if (!readEvidence) return { unresolvedPending: orphans.size, mutationFailures: 0 };
+  let mutationFailures = 0;
   const ownerContextKey = host.ownerContextKey();
   for (const record of Object.values(registry.instances)) {
-    if (host.ownerContextKey() !== ownerContextKey) return { unresolvedPending: 0 };
+    if (host.ownerContextKey() !== ownerContextKey) return { unresolvedPending: 0, mutationFailures: 0 };
     const orphan = orphans.has(record.instanceKey);
     if (!record.active || (record.namespaceState !== 'unconfirmed' && !orphan)) continue;
     const initialApproval = host.readApproval(record.contentRelId);
@@ -161,11 +162,12 @@ export async function confirmUnconfirmedInstances(host: UnconfirmedConfirmationH
         orphans.delete(record.instanceKey);
       });
     } catch (error) {
+      mutationFailures += 1;
       host.log?.warn('unconfirmed instance confirmation skipped', {
         instanceKey: record.instanceKey,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
-  return { unresolvedPending: orphans.size };
+  return { unresolvedPending: orphans.size, mutationFailures };
 }

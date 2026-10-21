@@ -1126,8 +1126,16 @@ export class GhostManager {
         this.instanceRegistryService.replaceCache(registry);
       },
     });
+    if (result.mutationFailures > 0) {
+      throw new Error('plugin instance namespace confirmation failed');
+    }
     if (result.unresolvedPending > 0) {
-      throw new Error('pending instance recovery needs positive evidence');
+      // Evidence may stay absent until the owner/market changes. Preserve the
+      // pending install and let independent maintenance retry, rather than
+      // triggering the startup coordinator's full-batch retry loop.
+      this.options.log?.warn('pending plugin instances await namespace evidence', {
+        pendingCount: result.unresolvedPending,
+      });
     }
   }
 

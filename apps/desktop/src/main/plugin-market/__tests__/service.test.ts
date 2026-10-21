@@ -1116,9 +1116,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(h.ledger.read().installations).toEqual({});
   });
 
-  it('reports unresolved namespace maintenance instead of marking the round completed', async () => {
+  it('reports a failed namespace transaction instead of marking the round completed', async () => {
     const h = harness([]);
-    runtime.reconcilePendingRootNamespaces.mockRejectedValueOnce(new Error('pending recovery needs evidence'));
+    runtime.reconcilePendingRootNamespaces.mockRejectedValueOnce(new Error('namespace receipt write failed'));
     const outcome = vi.fn();
     await h.service.snapshot({ onDefaultReconciliationOutcome: outcome });
     expect(outcome).toHaveBeenCalledWith('failed');

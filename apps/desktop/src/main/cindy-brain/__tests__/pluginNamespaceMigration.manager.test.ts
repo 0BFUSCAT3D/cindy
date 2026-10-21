@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ghostInstallApprovalToken, type InstalledGhost } from '../../../shared/ghost.js';
 import { PluginMarketLedger } from '../../plugin-market/ledger.js';
+import { StableOwnerPostCommitCoordinator } from '../../stableOwnerPostCommit.js';
 import { GhostManager, type GhostManagerOptions } from '../GhostManager.js';
 import { resolveGhostFirstPartyPrivilege } from '../ghostFirstPartyPrivilege.js';
 import {
@@ -176,7 +177,7 @@ describe('GhostManager namespace migration census', () => {
   // Unit regression: a persisted pending row outside the census was skipped by
   // both migration and confirmation. Recover only from positive market facts;
   // keep the physical instance, approval, enabled state and skill snapshot.
-  it.each(['market', 'missing', 'forge-stamped'])('handles an orphan pending record without inventing migration eligibility (evidence=%s)', async (evidence) => {
+  it.each(['market', 'missing', 'forge-stamped', 'write-failed'])('handles an orphan pending record without inventing migration eligibility (evidence=%s)', async (evidence) => {
     const positive = evidence === 'market';
     await plantLegacyInstall('hello', true, evidence === 'forge-stamped' ? 'agent-forge' : undefined);
     const approved = receiptStore().read('hello');
@@ -201,14 +202,38 @@ describe('GhostManager namespace migration census', () => {
       mutateSnapshot,
       classifyPendingNamespace: () => ({ kind: 'commit', namespace: 'acme', basis: 'market-organization' }),
       readUnconfirmedConfirmationEvidence: () => ({
-        marketRecords: positive ? [{ namespace: 'acme', organizationId: 'org-acme', scope: 'organization', installed: true, packageSha256: 'a'.repeat(64) }] : undefined,
+        marketRecords: positive || evidence === 'write-failed' ? [{ namespace: 'acme', organizationId: 'org-acme', scope: 'organization', installed: true, packageSha256: 'a'.repeat(64) }] : undefined,
         packageSha256: 'a'.repeat(64),
         forgeSelfTest: evidence === 'forge-stamped',
         currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme' },
       }),
     });
-    if (positive) await manager.reconcilePendingRootNamespaces(true);
-    else await expect(manager.reconcilePendingRootNamespaces(true)).rejects.toThrow('pending instance recovery needs positive evidence');
+    // Waiting for positive evidence must preserve the install without making
+    // the startup coordinator repeatedly scan the entire plugin market.
+    const scheduleRetry = vi.fn();
+    const startup = new StableOwnerPostCommitCoordinator({
+      snapshot: () => ({ scopeKey: 'owner:1', dataOwnerId: 'owner', stable: true }),
+      warn: vi.fn(), scheduleRetry,
+    });
+    const maintenance = vi.fn(async () => {
+      await manager.reconcilePendingRootNamespaces(true);
+      return 'completed' as const;
+    });
+    startup.setTask(maintenance);
+    const failedWrite = evidence === 'write-failed'
+      ? vi.spyOn(GhostInstallReceiptStore.prototype, 'write').mockRejectedValueOnce(new Error('receipt write failed'))
+      : null;
+    try {
+      await expect(startup.ensure('startup')).resolves.toBe(failedWrite ? 'failed' : 'completed');
+      if (failedWrite) expect(scheduleRetry).toHaveBeenCalledOnce();
+      else {
+        await startup.ensure('stable-again');
+        expect(scheduleRetry).not.toHaveBeenCalled();
+      }
+    } finally {
+      failedWrite?.mockRestore();
+    }
+    expect(maintenance).toHaveBeenCalledOnce();
     const installed = manager.list()[0];
     expect(installed).toMatchObject({ enabled: true, namespaceState: positive ? 'confirmed' : 'pending' });
     expect(installedGhostStoragePart(installed)).toBe('hello');
