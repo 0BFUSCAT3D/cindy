@@ -73,6 +73,7 @@ export function TaskTagsSheet({
         // This sheet opens from task details, so the list's back arrow closes it and lets
         // the parent reopen; the editor pages step back within the sheet.
         onBack={page === 'list' ? onClose : tagPage.back}
+        backDisabled={page === 'list' ? false : tagPage.backDisabled}
         backLabel={t('taskTags.back')}
         onClose={onClose}
         onClosed={onClosed}

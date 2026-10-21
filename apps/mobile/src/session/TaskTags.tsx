@@ -351,7 +351,7 @@ export function TaskTagsPanel({
   renderCompact?: (state: TaskTagsCompactState) => ReactNode;
   renderExpanded?: (state: TaskTagsExpandedState) => ReactNode;
   /** Reports the expanded page so a native sheet header can title it and go back. */
-  onPageChange?: (page: TaskTagsPage | null, back: () => void) => void;
+  onPageChange?: (page: TaskTagsPage | null, back: () => void, backDisabled: boolean) => void;
   showDone?: boolean;
 }) {
   const { colors } = useTheme();
@@ -835,12 +835,14 @@ export function TaskTagsPanel({
   backRef.current = back;
   const stableBack = useCallback(() => backRef.current(), []);
   const reportedPage = expanded ? page : null;
+  // Back is a no-op while the form is saving; the header must show that, not just ignore taps.
+  const backDisabled = reportedPage !== null && formOpen && !deletion && busy;
   const pageListener = useRef(onPageChange);
   pageListener.current = onPageChange;
   useEffect(() => {
-    pageListener.current?.(reportedPage, stableBack);
-  }, [reportedPage, stableBack]);
-  useEffect(() => () => pageListener.current?.(null, stableBack), [stableBack]);
+    pageListener.current?.(reportedPage, stableBack, backDisabled);
+  }, [reportedPage, stableBack, backDisabled]);
+  useEffect(() => () => pageListener.current?.(null, stableBack, false), [stableBack]);
   const swatch = (tag: TaskTag): TaskTagSwatchState => ({
     id: tag.id,
     name: tagName(tag, t),

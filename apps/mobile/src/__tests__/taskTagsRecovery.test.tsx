@@ -432,3 +432,42 @@ it("drives native tag pages from the shared expanded state", async () => {
   expect(onExpandedChange).toHaveBeenCalledWith(false);
   expect(pages).toEqual(["list", "edit", "list", "add", "list"]);
 });
+
+it("reports the native back arrow as disabled while a form save is in flight", async () => {
+  let finish!: (value: any) => void;
+  const pages: [string | null, boolean][] = [];
+  let back = () => {};
+  let state: any;
+  await act(async () =>
+    root.render(
+      <TaskTagsPanel
+        session={session}
+        expanded
+        onExpandedChange={onExpandedChange}
+        renderExpanded={(value) => {
+          state = value;
+          return null;
+        }}
+        onPageChange={(page, goBack, backDisabled) => {
+          pages.push([page, backDisabled]);
+          back = goBack;
+        }}
+      />,
+    ),
+  );
+  await act(async () => state.onAdd());
+  await act(async () => state.form.onNameChange("Ideas"));
+  h.invoke.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await act(async () => state.form.onSubmit());
+  // The save is pending: the header must say so, and tapping back must not slip through.
+  expect(pages.at(-1)).toEqual(["add", true]);
+  await act(async () => back());
+  expect(state.page).toBe("add");
+  await act(async () => finish({ tags: [], sessions: [] }));
+  expect(pages.at(-1)![1]).toBe(false);
+});

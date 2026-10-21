@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   sheet: null as any,
-  pageChange: null as null | ((page: string | null, back: () => void) => void),
+  pageChange: null as null | ((page: string | null, back: () => void, backDisabled?: boolean) => void),
 }));
 
 vi.mock('react-native', () => ({
@@ -70,4 +70,23 @@ it('lets the list close the sheet and the editor pages step back inside it', asy
   h.sheet.onBack();
   expect(back).toHaveBeenCalledTimes(1);
   expect(onClose).not.toHaveBeenCalled();
+});
+
+it('passes a saving editor page down so the back arrow is disabled', async () => {
+  await act(async () =>
+    root.render(
+      <TaskTagsSheet
+        session={{ id: 's', canonicalDeviceId: 'host' } as any}
+        visible
+        onClose={() => {}}
+        onClosed={() => {}}
+      />,
+    ),
+  );
+  expect(h.sheet.backDisabled).toBe(false);
+  await act(async () => h.pageChange!('edit', () => {}, true));
+  expect(h.sheet.backDisabled).toBe(true);
+  // The list can always close the sheet, even while a request is in flight.
+  await act(async () => h.pageChange!('list', () => {}, true));
+  expect(h.sheet.backDisabled).toBe(false);
 });

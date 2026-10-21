@@ -154,6 +154,7 @@ function SessionOptionsExpoSheet({
       // The row the user swiped already names the task; only tag pages need a title.
       title={page ? taskTagsPageTitle(page, t) : ''}
       onBack={page ? tagPage.back : undefined}
+      backDisabled={page ? tagPage.backDisabled : false}
       backLabel={t('taskTags.back')}
       onClose={onClose}
       onClosed={onClosed}
