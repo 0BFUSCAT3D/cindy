@@ -12,6 +12,7 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
+import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { BOT_AUTONOMY_IPC, type BotGlance, type GlanceRow } from '../../../shared/botAutonomy';
 
 export interface GlanceState {
@@ -154,11 +155,16 @@ export type AllowOutcome = 'allowed' | 'gone' | 'blocked' | 'failed';
  * 「允许」：只回应这一行对应的那条权限请求，本机走本机宿主，别的电脑走 device-link 隧道到那台。
  * 请求已经不在（被处理、被换掉）或行上没有请求 id 时不替主人批准别的请求，交给调用方改为「去任务里看」。
  */
-export async function allowGlanceRow(row: GlanceRow): Promise<AllowOutcome> {
+export async function allowGlanceRow(row: GlanceRow, botId?: string): Promise<AllowOutcome> {
   // 没有具体请求 id（例如按「需要确认」归成权限类的交互）时不替主人批准任何一条，交给调用方打开任务。
   if (!row.requestId) return 'gone';
   if (row.deviceId && !row.online) return 'blocked';
   const sessionId = bareGlanceSessionId(row);
+  if (!row.deviceId && isSidebarWindow()) {
+    if (!botId) return 'failed';
+    const receipt = await window.electronAPI.maker.allowBotWorkbenchPermission(botId, sessionId, row.requestId);
+    return receipt?.accepted === true ? 'allowed' : 'gone';
+  }
   const api = row.deviceId
     ? (await import('@/lib/makerTransport')).makerApiForDevice(row.deviceId)
     : window.electronAPI.maker;

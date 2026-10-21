@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useInRouterContext, useNavigate, type NavigateFunction } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
@@ -65,6 +65,7 @@ function listFormat(items: string[], language: string): string {
 const join = (...parts: Array<string | null | undefined | false>) => parts.filter(Boolean).join(' · ');
 
 interface RowContext {
+  botId: string;
   t: Translate;
   /** 自上次读到 glance 以来过去了几分钟，行上的时长按它往后推。 */
   elapsedMinutes: number;
@@ -74,17 +75,28 @@ interface RowContext {
   onOpen: (row: GlanceRow) => void;
 }
 
-export function BotWorkbench({
-  botId,
-  hostDeviceId = null,
-}: {
+type BotWorkbenchProps = {
   botId: string;
   sessionId?: string;
-  /** 伙伴所在电脑；null = 这台。 */
   hostDeviceId?: string | null;
-}) {
+};
+
+export function BotWorkbench(props: BotWorkbenchProps) {
+  return useInRouterContext()
+    ? <RoutedBotWorkbench {...props} />
+    : <BotWorkbenchContent {...props} navigate={null} />;
+}
+
+function RoutedBotWorkbench(props: BotWorkbenchProps) {
+  return <BotWorkbenchContent {...props} navigate={useNavigate()} />;
+}
+
+function BotWorkbenchContent({
+  botId,
+  hostDeviceId = null,
+  navigate,
+}: BotWorkbenchProps & { navigate: NavigateFunction | null }) {
   const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf) ?? null;
   const hostDevice = hostDeviceId ? (devices?.find((device) => device.deviceId === hostDeviceId) ?? null) : null;
@@ -104,7 +116,7 @@ export function BotWorkbench({
     [raw, host, hostOnline],
   );
   const now = useNow(30_000);
-  const canNavigate = !isSidebarWindow();
+  const canNavigate = navigate !== null && !isSidebarWindow();
 
   const onOpen = useCallback(
     (row: GlanceRow) => {
@@ -112,7 +124,7 @@ export function BotWorkbench({
       const owner = getDataOwnerGeneration();
       void glanceSessionRoute(row)
         .then((route) => {
-          if (isDataOwnerGenerationCurrent(owner)) navigate(route);
+          if (isDataOwnerGenerationCurrent(owner)) navigate?.(route);
         })
         .catch(() => undefined);
     },
@@ -136,6 +148,7 @@ export function BotWorkbench({
   const rows = [...glance.waiting, ...glance.working];
   const showDevices = rows.some((row) => row.deviceId);
   const ctx: RowContext = {
+    botId,
     t,
     elapsedMinutes: fetchedAt > 0 ? Math.max(0, Math.floor((now - fetchedAt) / 60_000)) : 0,
     deviceLabel: (row) =>
@@ -258,7 +271,7 @@ function WaitingRow({ row, ctx }: { row: GlanceRow; ctx: RowContext }) {
   const allow = () => {
     if (allowing) return;
     setAllowing(true);
-    void allowGlanceRow(row)
+    void allowGlanceRow(row, ctx.botId)
       .then((outcome) => {
         if (outcome === 'gone') ctx.onOpen(row);
         else if (outcome === 'blocked') toast.warning(t('ccAgent.remoteSession.actionsUnavailable'));
