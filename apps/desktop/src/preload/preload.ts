@@ -5747,6 +5747,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:bots:create-canonical-session', body),
       history: (botId: string): Promise<unknown[]> =>
         ipcRenderer.invoke('local-db:bots:history', botId),
+      dmThread: {
+        ensure: (body: { botId: string; rootSessionId: string; rootClientId: string; title?: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:ensure', body),
+        list: (body: { botId: string; rootSessionId: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:list', body),
+      },
       todos: {
         list: (botId: string) => ipcRenderer.invoke('local-db:bots:todos:list', botId),
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),
@@ -5762,8 +5768,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       },
       /** 伙伴自主跟进：工作台「一眼」与「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
       autonomy: {
-        glance: (botId: string): Promise<import('../shared/botAutonomy').BotGlance> =>
-          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId),
+        glance: (botId: string, refreshRemote = true): Promise<import('../shared/botAutonomy').BotGlance> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId, refreshRemote),
         getSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
           ipcRenderer.invoke('local-db:bots:autonomy:settings-get'),
         setSettings: (

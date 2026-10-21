@@ -20,6 +20,8 @@ vi.mock('react-router-dom', () => ({
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../useBotIslandVisibleSession', () => ({ useBotIslandVisibleSession: () => {} }));
 vi.mock('../botStore', () => ({ useBotProfiles: () => [] }));
+// The private-chat topic host belongs to the chat surface these tests isolate.
+vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({ CCAgentSessionView: () => <div>chat</div> }));
 vi.mock('@/features/right-sidebar/lib/detachedSidebarRouting', () => ({ routeSidebarCommand: async () => 'attached' }));
 
@@ -78,6 +80,8 @@ it('does not open on the first visit, opens once when something starts waiting, 
   await waitFor(() => expect(view.getByText('chat')).toBeTruthy());
   await waitFor(() => expect(glance).toHaveBeenCalledOnce());
   expect(getBucket('chat').tabs).toEqual([]);
+  // §6.3: the hidden auto-open check must not start cross-device reads.
+  expect(glance).toHaveBeenLastCalledWith('bot', false);
   expect(visibility).not.toHaveBeenCalled();
 
   await hostChanged(waitingCount(1));

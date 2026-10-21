@@ -228,6 +228,25 @@
     "closeAllDescription": "Guests will lose access. Task history is kept."
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "Models allowed for remote use",
+      "description": "Only limits remote use. Local use is unchanged. Saved changes apply when creating a task, switching models, or sending the next message.",
+      "all": "All models",
+      "selected": "{{count}} models allowed",
+      "choose": "Choose models",
+      "memberTitle": "Allowed models",
+      "memberDescription": "Choose which models {{name}} can use, within the models open for remote use. These limits also apply to use reshared through this person.",
+      "inherit": "Follow remote model access",
+      "allFuture": "Allow all models, including future additions",
+      "search": "Search models",
+      "notOpen": "Not open remotely",
+      "empty": "No matching models",
+      "none": "No models selected. Remote calls will be blocked.",
+      "loading": "Loading model access…",
+      "loadFailed": "Could not load model access. Reopen these settings.",
+      "saveFailed": "Could not save model access. Try again.",
+      "needsUpdate": "Update Cindy on the provider’s computer to manage model access."
+    },
     "entry": {
       "label": "Remote & Sharing",
       "pending_one": "{{count}} share request waiting",
@@ -640,7 +659,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "When subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
+      "quotaFirst": "When subscription usage is available, computers whose quota resets soon with plenty left go first, so each account is used up evenly over time; similar ones follow the group strategy",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
@@ -677,6 +696,10 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
+      "pace": {
+        "used": "{{used}}% used",
+        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
+      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
@@ -727,6 +750,15 @@
           "unknown": "Not checked yet"
         }
       }
+    },
+    "rebalance": {
+      "title": "Continue on {{label}}?",
+      "description": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+      "quota": "{{left}}% left",
+      "quotaReset": "{{left}}% left · {{reset}}",
+      "confirm": "Switch",
+      "cancel": "Cancel",
+      "remember": "Switch automatically from now on (this task only)"
     },
     "deleteConfirm": {
       "title": "Delete the {{provider}} provider group?",
@@ -9248,10 +9280,10 @@
       "composerPlaceholderLatin": "Say something to {{name}}…"
     },
     "globalSettings": {
-      "restoreHint": "Restoring defaults follows the client’s default model settings. Individual teammates’ custom models stay unchanged.",
+      "restoreHint": "Restore the recommended teammate model. Individual teammates’ custom models stay unchanged.",
       "restoreFailed": "Could not restore defaults. Try again.",
       "defaultModel": "Default model",
-      "defaultModelHint": "Teammates use this model by default. Each teammate can pick a different one in their own settings.",
+      "defaultModelHint": "For teammates, independently of new-task model choices. Each teammate can choose another model.",
       "title": "Teammates",
       "description": "Settings shared by all teammates. Anything about one teammate lives on their own page.",
       "rosterNote": "The shipped roster grows with each release."
@@ -10315,6 +10347,13 @@
       "viewTaskProgress": "View progress",
       "liveDraft": "Transcribing",
       "questionDraft": "Awaiting confirmation"
+    },
+    "dmThread": {
+      "newReply": "New reply",
+      "you": "You",
+      "rootNotLoaded": "The original message is not in the loaded history",
+      "rootUnavailable": "The original message is no longer in this chat, so a thread can’t start here",
+      "openFailed": "The thread didn’t open. Try again."
     }
   },
   "common": {
@@ -12012,7 +12051,8 @@
         "relocatedHere": "Agent now runs on this computer",
         "relocatedTo": "Agent now runs on {{device}}",
         "relocatedTaskComputer": "Agent now runs on the task’s computer",
-        "relocatedElsewhere": "Agent now runs on another computer"
+        "relocatedElsewhere": "Agent now runs on another computer",
+        "quotaRebalance": "its quota should be used first"
       },
       "contextRebuild": {
         "labelOverflow": "Context reorganized, continuing",
@@ -12260,7 +12300,7 @@
       "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
       "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
       "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t granted you remote access to this provider or the selected model. Ask its owner to adjust access in Remote & Sharing, or pick another model.",
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",

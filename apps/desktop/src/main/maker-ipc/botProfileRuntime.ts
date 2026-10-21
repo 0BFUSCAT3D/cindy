@@ -503,9 +503,13 @@ export async function hydrateBotProfileRuntime(
     .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
     .where(and(eq(botSessionLinks.sessionId, opts.id), eq(sessions.source, 'bot')))
     .limit(1);
-  // Group lanes and IM channel lanes are long-lived like the canonical Chat and
-  // share its Profile/Home. Channel lanes are full-profile lanes (not chat-only).
-  if (!row || !['canonical', 'delegation', 'group', 'channel'].includes(row.role)) return null;
+  // Group lanes, IM channel lanes and private-chat topics are long-lived like the
+  // canonical Chat and share its Profile/Home. Channel lanes and topics are
+  // full-profile lanes (not chat-only).
+  if (!row || !['canonical', 'delegation', 'group', 'channel', 'thread'].includes(row.role)) return null;
+  // A private-chat topic is the owner's own conversation, so it carries the main
+  // Chat's owner-private abilities (cindy-bots-runtime.md「私聊话题」).
+  const ownerChat = row.role === 'canonical' || row.role === 'thread';
   const [profile] = await db
     .select()
     .from(botProfiles)
@@ -720,9 +724,9 @@ export async function hydrateBotProfileRuntime(
   if (!chatOnly && deps.listOwnSkills && !opts.remoteHostId) {
     try {
       const own = await deps.listOwnSkills({ botId: row.botId });
-      ownSkills = [...(own.baseline && row.role === 'canonical' ? [own.baseline.skill] : []), ...own.skills];
+      ownSkills = [...(own.baseline && ownerChat ? [own.baseline.skill] : []), ...own.skills];
       ownSkillPluginRoots = [
-        ...(own.baseline && row.role === 'canonical' ? [own.baseline.pluginRoot] : []),
+        ...(own.baseline && ownerChat ? [own.baseline.pluginRoot] : []),
         ...(own.skills.length > 0 ? [own.pluginRoot] : []),
       ];
     } catch {
@@ -810,7 +814,7 @@ export async function hydrateBotProfileRuntime(
   // 可在桌面/后台轮次由 feishuTransportRouting.ts 查询 canonical 归属, 经伙伴可用连接
   // 通知已绑定主人; 伙伴连接不可用则拒绝发送, 不回落个人 bot, 也不授予轮次内 API 权限。
   const boundImChannels: readonly BotImChannel[] =
-    row.role === 'canonical' ? (deps.listBotImChannels?.({ botId: row.botId }) ?? []) : [];
+    ownerChat ? (deps.listBotImChannels?.({ botId: row.botId }) ?? []) : [];
   if (boundImChannels.length > 0) {
     opts.vendorOptions = { ...(opts.vendorOptions ?? {}), [BOT_IM_CHANNELS_VENDOR_KEY]: [...boundImChannels] };
   }
@@ -875,15 +879,15 @@ export async function hydrateBotProfileRuntime(
     // the essential helper. It is not the generic Orca/team-worker surface and
     // therefore must not depend on optional toolset inheritance.
     partnerActionsEnabled: row.role === 'canonical' && helperAvailable,
-    routinesEnabled: row.role === 'canonical' && helperAvailable && !opts.remoteHostId,
-    botCreationEnabled: row.role === 'canonical' && helperAvailable,
+    routinesEnabled: ownerChat && helperAvailable && !opts.remoteHostId,
+    botCreationEnabled: ownerChat && helperAvailable,
     // Skill management is available before the first Skill exists. An empty
     // index must not hide the instructions for learning the first reusable method.
     // IM 专线与主任务是同一个伙伴: 群 / 话题里学到的做法同样该沉淀成它自己的技能, 否则主人在
     // 群里让它「记成技能」只能听到「当前任务只读」。写入仍只认主人触发的轮次(botSkillService
     // 按逐轮渠道作用域判定), 其他成员触发时工具会说明原因。
-    ownSkillsEnabled: (row.role === 'canonical' || row.role === 'channel') && helperAvailable && !opts.remoteHostId,
-    botModeEnabled: row.role === 'canonical',
+    ownSkillsEnabled: (ownerChat || row.role === 'channel') && helperAvailable && !opts.remoteHostId,
+    botModeEnabled: ownerChat,
     // Match the ordinary helper surface on this engine and transport.
     sessionControlEnabled: helperAvailable && (!opts.remoteHostId || opts.agentKind === 'pi'),
     // scheduler 是伙伴基线工具(maker-host/plugins/types.ts),与挂载 allowlist 同一份目录判定。
@@ -942,10 +946,10 @@ export async function hydrateBotProfileRuntime(
     ...(teammates.length > 0 ? { teammates } : {}),
     contextSections: [
       buildBotProfileContextPrompt(profile.displayName),
-      // Hermes-style Bot Mode is a property of the permanent Bot Chat only.
-      // Delegation children keep Cindy's normal Session prompt plus their
-      // narrow task context.
-      ...(row.role === 'canonical'
+      // Hermes-style Bot Mode is a property of the owner's Bot Chat (the permanent
+      // Chat and its private topics). Delegation children keep Cindy's normal
+      // Session prompt plus their narrow task context.
+      ...(ownerChat
         ? [buildBotCapabilityContextPrompt({ helperAvailable, cindyAvailable,
           ownSkillsEnabled: promptCapabilities.ownSkillsEnabled,
           // Same local canonical boundary as isBotAuthorizationSession; remote Pi still has plugins.
@@ -1113,9 +1117,9 @@ export async function hydrateBotProfileRuntime(
           : JSON.stringify(previousResolved.runtimeEpoch ?? {}),
       )
     : null;
-  // Canonical Chats, group lanes and IM channel lanes follow Profile updates;
-  // delegation children stay frozen.
-  const followsProfile = row.role === 'canonical' || row.role === 'group' || row.role === 'channel';
+  // Canonical Chats, private-chat topics, group lanes and IM channel lanes follow
+  // Profile updates; delegation children stay frozen.
+  const followsProfile = row.role === 'canonical' || row.role === 'thread' || row.role === 'group' || row.role === 'channel';
   const runtimeEpochChanged = followsProfile && previousSnapshot !== undefined
     ? previousSnapshot.profileVersion !== row.profileVersion
       || previousRuntimeEpoch?.sha256 !== runtimeEpochSha256

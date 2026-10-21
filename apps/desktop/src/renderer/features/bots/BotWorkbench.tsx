@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useInRouterContext, useNavigate, type NavigateFunction } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Spinner } from '@/components/ui/spinner';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
@@ -135,9 +136,7 @@ function BotWorkbenchContent({
     return (
       <div className="flex h-full items-center justify-center bg-[var(--surface)] px-5">
         {failed ? (
-          <p role="status" className="text-center text-13 leading-[1.54] text-[var(--text-secondary)]">
-            {t('bots.workbench.glance.loadFailed')}
-          </p>
+          <ErrorNotice role="status" message={t('bots.workbench.glance.loadFailed')} />
         ) : (
           <Spinner size={16} className="text-[var(--text-tertiary)]" role="status" aria-label={t('ccAgent.common.loading')} />
         )}
@@ -174,7 +173,7 @@ function BotWorkbenchContent({
             {t('bots.autonomy.title')}
           </p>
         ) : null}
-        {quiet ? (
+        {quiet && !failed ? (
           <p className="px-2 pt-8 text-center text-14 leading-[1.57] text-[var(--text-secondary)]">
             {t('bots.workbench.glance.quiet')}
           </p>
@@ -182,15 +181,21 @@ function BotWorkbenchContent({
         {glance.waiting.length > 0 ? <WaitingBlock rows={glance.waiting} ctx={ctx} /> : null}
         {glance.working.length > 0 ? <WorkingBlock rows={glance.working} ctx={ctx} /> : null}
       </div>
-      <footer
-        className={cn(
-          'flex shrink-0 items-center gap-2 border-t border-[var(--border-default)] py-2.5 text-12 leading-[1.5] text-[var(--text-tertiary)]',
-          quiet ? 'justify-center px-5' : 'pl-10 pr-5',
-        )}
-      >
-        <span aria-hidden className="size-1 shrink-0 rounded-full bg-[var(--text-tertiary)]" />
-        <span className="min-w-0 truncate tabular-nums">{join(...footer)}</span>
-      </footer>
+      {failed ? (
+        <div className="shrink-0 px-5 pb-4">
+          <ErrorNotice role="status" message={t('bots.workbench.glance.loadFailed')} />
+        </div>
+      ) : (
+        <footer
+          className={cn(
+            'flex shrink-0 items-center gap-2 border-t border-[var(--border-default)] py-2.5 text-12 leading-[1.5] text-[var(--text-tertiary)]',
+            quiet ? 'justify-center px-5' : 'pl-10 pr-5',
+          )}
+        >
+          <span aria-hidden className="size-1 shrink-0 rounded-full bg-[var(--text-tertiary)]" />
+          <span className="min-w-0 truncate tabular-nums">{join(...footer)}</span>
+        </footer>
+      )}
     </section>
   );
 }

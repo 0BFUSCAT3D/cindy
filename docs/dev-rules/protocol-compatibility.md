@@ -1,5 +1,12 @@
 # 跨端协议兼容
 
+## 限额恢复时间查询
+
+既有 `maker:usage:claude-subscription` 请求可选在 providerId 后追加 `true`，表示等待同一余量
+reader 的刷新完成（仍遵守节流/退避），不改变返回结构、授权门或凭证归属。旧控制端省略参数时
+仍使用缓存优先读取；旧被控端忽略新增参数，返回其已有快照。自动续跑只使用实际受限窗口的可信
+重置时刻，不把请求成功当成已恢复，也不将远程快照替换为本机账号。无需服务端或 Mobile 原生更新。
+
 ## 远程链路流量治理：交互优先名额与 Subagent 变更推送
 
 交互类 invoke（`maker:send`、`maker:abort-session`、`maker:input:enqueue` / `steer` / `stop` /
@@ -1608,6 +1615,8 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
     的模型列表据此把归组的任务显示在组那一项下、在组那一项里选模型时留在此刻运行的那台(provider-groups.md §10)。不读写分配器、
     负载与绑定。旧版本回 `CHANNEL_NOT_ALLOWED`(没有这个通道)或 `[INVALID_PARAMS] unknown provider group action`(有通道没有这个
     动作)，控制端一律按没归组处理，即与改动前相同。
+  - `rebalance-suggestion { sessionId }` / `rebalance-decision { sessionId, memberKey, remember: boolean }`(2026-10-21，任务进行中
+    换号，provider-groups.md §6.2)：同样发给**任务所在的电脑**，见下方「供应商组任务进行中换号」。
   旧 O 回 `CHANNEL_NOT_ALLOWED`：`pick` 按 `none` 处理，任务照旧直接在 O 上运行。
 - **`maker:provider:list` 新增可选字段 `group`**：只对同账号调用方、只加在建了组且「允许被远程调用」的供应商上：
   `{ strategy, autoSwitch, members: [{ key, kind, agentDeviceId, providerId, label?, paused }] }`(并发上限与权重不外发)。
@@ -1670,8 +1679,9 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
   旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
   旧控制端连接新组所在电脑也能使用新策略。组所在电脑降级后按 `least` 分配，旧版再次保存组设置会写回 `least`。
-  2026-10-15 起配额排序（快到期先用、已用百分比低的先用）对所有策略生效，设置界面不再提供 `usage`；枚举值与归一化
-  保持不变，已存的 `usage` 照常读写，挑法与 `least` 相同。这只改组所在电脑本机的选择，不新增字段、不改通道。
+  2026-10-15 起配额排序对所有策略生效（2026-10-21 起按「剩下的额度 ÷ 剩下的时间」，最急的先用），设置界面不再提供
+  `usage`；枚举值与归一化保持不变，已存的 `usage` 照常读写，挑法与 `least` 相同。这只改组所在电脑本机的选择，
+  沿用已有的用量快照字段，不新增字段、不改通道。
 - **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
   订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
   避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
@@ -1681,13 +1691,55 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   不调用兑换重置卡接口，不把重置卡、账号标识或凭证放进内部目录的配额快照。本机和远端读取合并在途，短缓存 15 秒。
 - **可选框架信息**：同账号 `view` 请求增加可选 `agentKind: 'codex' | 'pi' | 'claude-code'`，供 OpenAI 发送前检查
   选择原生模型桶或 web 槽；缺省仍按原生模型桶处理，旧组所在电脑忽略该字段。原有仅带模型的查询和回包形状不变。
-- **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
-  分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
-  的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
-  或凭证访问。
+- **隐私与状态**：完整额度快照只留在组所在电脑的内部目录中，不进供应商目录，不传给受邀者；分享来的成员不调用此通道。
+  同账号不带 `model` 的 `view` 用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model` 的发送前查询只在回显模型一致时
+  临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist 或凭证访问。
+- **成员状态可选 `quota`（2026-10-21 用户确认）**：`ProviderGroupView.members[]` 增加可选
+  `quota: { usedPercent, resetAtMs: number | null, windowMs }`，只是选电脑排序用的那一个窗口（provider-groups.md §5、§10
+  的进度条），不带 5 小时窗口、模型桶名、账号标识或重置卡。组所在电脑本机界面与同账号 `view` 回包都带；读不到配额的成员
+  省略。`parseProviderGroupRemoteView` 只收有限数值（百分比收敛到 0–100，窗口 0–31 天，重置时刻为正数或 `null`），
+  分享来的成员一律丢弃；受邀者的匿名状态是白名单投影，不带此字段。旧组所在电脑不回此字段，查看端不画进度条；
+  旧查看端忽略它。不新增 channel、请求参数或持久数据。
 - 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、`runtime.ts`、
   `router.ts`、`remoteClient.ts`、`remoteHandler.ts`、`service.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
   `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。
+- **成员状态可选 `fiveHourTight: true`（2026-10-21）**：只在带 `quota` 时出现，表示这台的 5 小时配额已用 85% 以上、离重置还有
+  1 小时以上（provider-groups.md §5 第 0 条）。同账号电脑据此不把它当作任务进行中换号的目标。旧组所在电脑不回，查看端按不紧张处理
+  （最坏是提议后组所在电脑按自己的排序选不中它，照常留在原处）；旧查看端忽略。`parseProviderGroupRemoteView` 只认 `true`。
+
+## 供应商组任务进行中换号
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §6.2（2026-10-21 用户裁决：上一轮结束、用户发下一条消息
+前弹窗问要不要换号，可为这个任务选「以后自动换」，手机与电脑一致）。
+
+- **两个新动作，发给任务所在的电脑**：本机走 `providerGroup.command`（IPC，只限本机 renderer），手机与桌面远程控制走已有的
+  同账号 `provider-group:remote`（dispatch 已拒绝受邀者与共享任务访客，allowlist 不变）。
+  - `rebalance-suggestion { sessionId }` → `{ kind: 'ask' | 'auto', memberKey, label, quota } | null`：只读，不记占用、不改绑定。
+    `auto` = 这个任务选过以后自动换，客户端不弹窗、直接回 `rebalance-decision`。`quota` 是要换去那台排序用的窗口，形状同
+    `ProviderGroupView.members[].quota`；`label` 是那台的显示名（同一台电脑上有几个账号时带账号名），不含账号标识。
+    组合名称最多 259 个 UTF-16 单元（电脑名 128 + 分隔符 3 + 账号名 128），电脑与手机按相同上限解析。
+  - `rebalance-decision { sessionId, memberKey, remember, clientId? }` → `{ ok: boolean }`：只允许这个任务中匹配 `clientId` 的消息
+    发送前换到 `memberKey`（2 分钟内有效，定时任务不消费）；复用 `persistUserMessage.clientId`，不增加发送协议字段。
+    缺少消息 ID 或 `memberKey` 不在组里回 `ok: false`，不记决定与偏好；`remember: true` 时另记这个任务以后自动换。
+  - 解析：`sessionId`、`clientId` 与 `memberKey` 按已有远程 id 规则校验，`remember` 必须是布尔值，坏请求回 `[INVALID_PARAMS]`。客户端读回包用
+    `parseProviderGroupRebalanceSuggestion`（手机端 `parseMobileRebalanceSuggestion`，口径相同），格式不对按不提议处理。
+- **时机**：客户端在任务空闲时预先问 `rebalance-suggestion`（变空闲、打开任务时，空闲期间每 5 分钟；单次最多等 5 秒），
+  结果 10 分钟内有效、只用于一条消息；点发送时只用问好的结果，不为它多等一次往返。只有用户确认换号（或任务选过自动换）时，
+  发送前等 `rebalance-decision` 回来再发，确保任务所在电脑先记下决定。
+- **新旧兼容**：旧任务所在电脑不认识这两个动作，回 `[INVALID_PARAMS] unknown provider group action`；客户端失败或超时都按
+  不提议处理、照常发送，与改动前一致。旧客户端不发这两个动作，任务所在电脑不会自己换号（没有用户确认就不换），行为与改动前
+  一致。不新增 channel、relay、服务器或数据库字段。
+- **最终选路约束**：`pick` 可选 `quotaRebalance: <当前成员键>`；组所在电脑在选路与占用登记的同一步，按当前负载、配额和换号
+  收益门槛重新校验。成功结果回显 `quotaRebalance: true`；新调用端未收到回显就不主动迁移。旧组忽略可选字段时仍可普通
+  分配，但不能作为主动换号结果；旧调用端不传该字段，行为不变。
+- **分隔条内容可选 `switchReason: 'quota-rebalance'`**：`agent_switch` 边界行（`AgentSwitchBoundaryContent`）只在供应商组为此换了
+  电脑时带上，桌面与手机在位置后写「· 这个账号的配额更该先用」。旧端忽略，照常只显示位置。
+- **本机持久数据**：「以后自动换」存在按账号隔离的 `provider-group-session-prefs.json`（`{ autoRebalance: { [sessionId]: at } }`，
+  最多 4000 条、超出丢最早的；读不出时保留原文件、按都没选过处理）。不同步、不外发；降级旧版忽略这个文件，相当于每次都不提议。
+- 实现：`provider-group/service.ts`、`usage.ts`(`providerGroupRebalanceTarget`)、`router.ts`(`rebalanceCandidates`)、`runtime.ts`、
+  `ipc.ts`、`remoteHandler.ts`、`remoteRegistration.ts`、`sessionPrefs.ts`、`maker-ipc/sessionAgentSwitchHandler.ts`；客户端
+  `renderer/features/provider-group/sessionRebalancePrompt.ts` 与 `apps/mobile/src/session/sessionRebalancePrompt.ts`。回归见
+  `shared/__tests__/providerGroup.test.ts`、`provider-group/__tests__/service.test.ts`、两端 `sessionRebalancePrompt.test.ts`。
 
 ## 供应商组：受邀者经组所在电脑中转(P2b)
 
@@ -2879,6 +2931,30 @@ card editor/actions; session-scoped lookup and supersession select the current
 view. This is a local desktop trial, not a new plugin or device-link capability.
 Older URL-based reader tabs remain valid. Draft edits, deletion and delayed send
 still use the same host-owned mail workflow as the chat card.
+
+## 远程供应商的模型范围
+
+既有供应商管理通道新增 `get-model-access` / `set-model-access` action，返回 `version: 1`、
+`models`、`providerModels` 与 `availableModels`；仅提供方主人可管理，`memberId` 必须属于该供应商的分享。
+`null` 表示全部／继承，空数组表示不开放。新界面连接不认识此 action 的旧电脑时提示更新，不回退成只改控制端偏好。
+
+同账号 `maker:provider:list` 的 `ProviderView` 可追加 `remoteModelIds`，省略保留原有全部开放语义。
+仅远程 Agent 选择入口按此字段过滤；同账号远控和本机列表仍保留完整 `models`。跨账号分享目录直接按成员权限过滤模型。
+旧控制端忽略新增字段仍由提供方执行调用权限检查；现有错误码 `REMOTE_AGENT_PROVIDER_NOT_ALLOWED` 也覆盖模型未开放。
+权限保存于客户端按账号隔离的配置，不改服务端 schema、数据库或 Mobile 原生指纹。
+
+供应商组中转新增可选 caps / open 字段 `relayModelAccess: true`，只有显式声明此能力的执行电脑才接收需要限制模型的任务。
+组所在电脑覆盖调用方自报的该字段；执行电脑通过既有 reverse request 发送 `{type:'model-access', model?}`，
+由组所在电脑绑定当前运行、供应商和原成员，回复既有 `callback.value`：省略 model 返回获准目录 ID，指定 model 返回布尔授权。
+启动取目录交集，后续每次请求重查原成员权限；不缓存肯定答复。复核最长 10 秒，超时、断连、旧运行、撤权或未知回复均拒绝，
+只影响本次调用，不重置共享连接或自动重放。异步答复返回后执行端再次核对本地授权及绑定代次。
+新组所在电脑给旧执行电脑只转发不限模型的任务；新增限制时结束尚在旧电脑运行的任务。旧组所在电脑不具备此能力，
+需更新后才能提供中转成员模型范围保护。旧控制端无需理解 reverse 请求，它在组所在电脑消费；不新增通道或修改移动端原生配置。
+Pi 的原生供应商适配器只暴露获准模型，在打开流前用既有本机任务隧道的 bearer token 请求 `/cindy/model-access`，
+模型 ID 来自宿主冻结的授权映射。该路径由执行 Host 消费，复用同一绑定与复核，不转给控制端；凭证与消息内容不进入查询。
+同账号 Pi 原生请求也走该本机入口，必须携带实际来源 `providerId`；Host 按该来源把原生模型 ID 解析为目录 ID，
+复核当前任务绑定和远程模型范围。访客仍可省略该字段并使用已绑定的唯一来源，提供其他来源时拒绝。
+适配器启动与热刷新保留来源标记；本机普通任务不生成标记，不增加远程授权检查。此扩展不改变跨电脑 wire 格式。
 
 ## 伙伴导入的消息机器人分类
 

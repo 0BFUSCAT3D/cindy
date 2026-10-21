@@ -228,6 +228,25 @@
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "允许远程调用的模型",
+      "description": "只限制远程调用，本机使用不受影响。保存后，创建任务、切换模型和发送下一轮消息时生效。",
+      "all": "全部模型",
+      "selected": "已开放 {{count}} 个模型",
+      "choose": "选择模型",
+      "memberTitle": "可用模型",
+      "memberDescription": "设置 {{name}} 可以使用的模型，只能选择远程已开放的模型。也适用于经此人转分享的调用。",
+      "inherit": "跟随远程开放范围",
+      "allFuture": "允许全部模型（含之后新增）",
+      "search": "搜索模型",
+      "notOpen": "远程未开放",
+      "empty": "没有匹配的模型",
+      "none": "未选择模型，将无法远程调用。",
+      "loading": "正在读取模型范围…",
+      "loadFailed": "未能读取模型范围，请重新打开此设置。",
+      "saveFailed": "未能保存模型范围，请重试。",
+      "needsUpdate": "请更新供应商所在电脑的 Cindy 后再设置模型范围。"
+    },
     "entry": {
       "label": "远程与分享",
       "pending_other": "{{count}} 个分享申请待处理",
@@ -635,7 +654,7 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "quotaFirst": "能读取订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
+      "quotaFirst": "能读取订阅用量时，先用快重置、还剩得多的电脑，各账号会按时间均匀用掉；差不多时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
@@ -670,6 +689,10 @@
         "share": "别人分享的电脑不显示配额"
       },
       "runningCount_other": "{{count}} 个任务运行中",
+      "pace": {
+        "used": "已用 {{used}}%",
+        "usedExpected": "已用 {{used}}%，该用到 {{expected}}%"
+      },
       "limitAria": "{{name}} 的并发上限",
       "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} 的权重",
@@ -717,6 +740,15 @@
           "unknown": "还没问到"
         }
       }
+    },
+    "rebalance": {
+      "title": "换到 {{label}} 继续？",
+      "description": "为了均匀用完各账号的配额，建议这条消息换到 {{label}} 发送（{{quota}}）。换过去会带上最近几轮对话和摘要，更早的细节可能记不全。",
+      "quota": "还剩 {{left}}%",
+      "quotaReset": "还剩 {{left}}%，{{reset}}",
+      "confirm": "换过去",
+      "cancel": "取消",
+      "remember": "以后自动换，不再询问（仅本任务）"
     },
     "deleteConfirm": {
       "title": "删除 {{provider}} 的供应商组？",
@@ -9209,10 +9241,10 @@
       "composerPlaceholderLatin": "跟 {{name}} 说点什么…"
     },
     "globalSettings": {
-      "restoreHint": "恢复默认后将跟随客户端默认模型设置，单个伙伴的自定义模型保持不变。",
+      "restoreHint": "恢复伙伴推荐模型，单个伙伴的自定义模型保持不变。",
       "restoreFailed": "恢复默认失败，请重试。",
       "defaultModel": "默认模型",
-      "defaultModelHint": "伙伴默认使用的模型，单个伙伴可以在自己的设置里另选。",
+      "defaultModelHint": "仅用于伙伴，与新任务的模型选择独立。单个伙伴可以另选。",
       "title": "伙伴",
       "description": "和伙伴有关的通用设置。单个伙伴的设置在{{pronoun}}自己的页面里。",
       "rosterNote": "预置阵容会随版本更新。"
@@ -10275,6 +10307,13 @@
       "viewTaskProgress": "查看进展",
       "liveDraft": "正在识别",
       "questionDraft": "待确认"
+    },
+    "dmThread": {
+      "newReply": "有新回复",
+      "you": "你",
+      "rootNotLoaded": "原消息不在已加载的记录里",
+      "rootUnavailable": "原消息已不在私聊里，不能开话题",
+      "openFailed": "话题没打开，请重试"
     }
   },
   "common": {
@@ -11968,7 +12007,8 @@
         "relocatedHere": "Agent 已改到这台电脑上运行",
         "relocatedTo": "Agent 已改到 {{device}} 上运行",
         "relocatedTaskComputer": "Agent 已改到任务所在的电脑上运行",
-        "relocatedElsewhere": "Agent 已改到另一台电脑上运行"
+        "relocatedElsewhere": "Agent 已改到另一台电脑上运行",
+        "quotaRebalance": "这个账号的配额更该先用"
       },
       "contextRebuild": {
         "labelOverflow": "已整理上下文并继续",
@@ -12216,7 +12256,7 @@
       "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
       "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
       "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑没有允许远程调用这个供应商。请在那台电脑的「设置 → 模型供应商」里打开「允许被远程调用」，或换一个模型。",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑未向你开放这个供应商或所选模型。请让电脑主人在「远程与分享」中调整开放范围，或换一个模型。",
       "REMOTE_AGENT_SHARE_PAUSED": "对方已暂停对你的分享，恢复前不能使用这些模型。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_REMOVED": "这个分享已不可用（对方删除了分享或你已退出）。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供应商暂时不可用：对方电脑可能不在线，或对方暂时关闭了分享。可以稍后再试，或换成其他模型继续。",
