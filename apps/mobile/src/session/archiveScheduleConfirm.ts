@@ -12,8 +12,21 @@ import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 /**
  * 归档前的自动化提醒:绑定到已归档任务的自动化在下次触发时会被电脑暂停(持续会话除外,
  * 它会换绑新任务继续跑),归档前先让用户知道。已知未绑定的普通任务直接放行,不额外请求;
- * 读取失败按无绑定处理。
+ * 读取失败或超过等待上限按无绑定处理。
  */
+/** 查询自动化列表的等待上限:超时按「无绑定」处理,不让归档卡在远程请求上(通道超时预算可达 40 秒)。 */
+export const SCHEDULE_LOOKUP_WAIT_MS = 1500;
+
+function withLookupDeadline<T>(lookup: Promise<T>, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), SCHEDULE_LOOKUP_WAIT_MS);
+    lookup.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      () => { clearTimeout(timer); resolve(fallback); },
+    );
+  });
+}
+
 function stopsWhenTargetArchived(schedule: RemoteSchedule): boolean {
   return schedule.status === 'active' && !schedule.persistentSession && !!schedule.targetSessionId;
 }
@@ -26,7 +39,7 @@ export async function countSessionsWithActiveBoundSchedules(
   try {
     const ids = new Set(sessionIds);
     const bound = new Set(
-      normalizeScheduleList(await maker.schedule.list())
+      normalizeScheduleList(await withLookupDeadline(maker.schedule.list(), []))
         .filter((schedule) => stopsWhenTargetArchived(schedule) && ids.has(schedule.targetSessionId!))
         .map((schedule) => schedule.targetSessionId),
     );
@@ -50,7 +63,7 @@ export async function loadActiveBoundScheduleNames({
   if (!sessionMayHaveScheduleRuns(deviceId, sessionId, source)) return [];
   try {
     const schedules = normalizeScheduleList(
-      await createMobileMakerTransport({ deviceId, invoke }).schedule.list(),
+      await withLookupDeadline(createMobileMakerTransport({ deviceId, invoke }).schedule.list(), []),
     );
     return schedules
       .filter((schedule) => schedule.targetSessionId === sessionId && stopsWhenTargetArchived(schedule))
