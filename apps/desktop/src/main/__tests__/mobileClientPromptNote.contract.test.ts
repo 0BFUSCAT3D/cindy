@@ -16,8 +16,9 @@ describe('注入接线(源码级守卫)', () => {
       'deps.isMobileClientInvoke?.() === true || so.fromMobileClient === true',
     );
     // 注入链:normalized → withHandoff → withPlanReconcile → withGoalInactiveNote
-    // → 来源说明 → 客户端说明(元信息都在交接段之前)。
-    expect(source).toContain('prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, messageSourceNote)');
+    // → 引用说明 → 来源说明 → 客户端说明(元信息都在交接段之前)。
+    expect(source).toContain('prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, replyQuoteNote)');
+    expect(source).toContain('prependNoteToWireUserMessage(withReplyQuoteNote as HandoffWireMessage, messageSourceNote)');
     // 环境说明经 wireNoteMemory 去重后再前置(内容没变就不重复),链路位置不变。
     expect(source).toContain("prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, plannedNotes['client-environment'])");
     expect(source).toContain('deps.planRepeatableWireNotes?.(sessionId, repeatableNotes, { force: pendingHandoff !== null })');
