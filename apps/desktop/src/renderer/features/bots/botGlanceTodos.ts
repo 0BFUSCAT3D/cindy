@@ -14,6 +14,7 @@ import {
 } from '@cindy/device-link';
 import {
   queryTodoItems,
+  scheduleTodoDeferralRefresh,
   todoDue,
   type TeammateTodo,
   type TodoListQuery,
@@ -23,8 +24,9 @@ import {
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 
-/** 近况一屏最多带回多少条；更多的交给「显示更多」在同一页里展开。 */
+/** 宿主每页最多 25 条；近况按页读完，单类最多读这么多条，免得异常数据让浮层一次拉太多页。 */
 const PAGE = 25;
+const MAX_ITEMS = 200;
 
 export interface GlanceTodoHost {
   botId: string;
@@ -35,17 +37,26 @@ export interface GlanceTodoHost {
 export interface GlanceTodos {
   open: TeammateTodo[];
   openTotal: number;
+  /** 已完成的，最近完成的在前。 */
   done: TeammateTodo[];
   doneTotal: number;
+  /** 最早一条「稍后再说」到期的时刻；到时重读，让它回到列表。 */
+  nextDeferredAt: string | null;
 }
 
-const EMPTY: GlanceTodos = { open: [], openTotal: 0, done: [], doneTotal: 0 };
+const EMPTY: GlanceTodos = { open: [], openTotal: 0, done: [], doneTotal: 0, nextDeferredAt: null };
+
+interface TodoPage {
+  items: TeammateTodo[];
+  total: number;
+  nextDeferredAt?: string | null;
+}
 
 function todosRef(botId: string) {
   return { collectionId: 'teammates', kind: 'bot', id: `todos:${botId}` } as const;
 }
 
-async function readRemotePage(deviceId: string, botId: string, query: TodoListQuery) {
+async function readRemotePage(deviceId: string, botId: string, query: TodoListQuery): Promise<TodoPage> {
   const request: RemoteResourceGetRequest = {
     client: { protocolVersion: 1, primitives: ['teammate-todos'], locale: document.documentElement.lang || undefined },
     ref: todosRef(botId),
@@ -54,29 +65,48 @@ async function readRemotePage(deviceId: string, botId: string, query: TodoListQu
   const resource = await window.electronAPI.deviceLink.invoke(deviceId, REMOTE_RESOURCE_GET_CHANNEL, [request]);
   const blocks = (resource as { blocks?: Array<{ primitive?: string; data?: unknown }> } | null)?.blocks;
   const page = blocks?.find((block) => block.primitive === 'teammate-todos')?.data as
-    | { items?: TeammateTodo[]; total?: number; completedTotal?: number }
+    | { items?: TeammateTodo[]; total?: number; nextDeferredAt?: string | null }
     | undefined;
   if (!page || !Array.isArray(page.items)) throw new Error('invalid todo page');
-  return { items: page.items, total: page.total ?? page.items.length };
+  return { items: page.items, total: page.total ?? page.items.length, nextDeferredAt: page.nextDeferredAt ?? null };
+}
+
+/** 一类待办按页读完（宿主单页上限 25）；页数在开头读到的总数内收敛，总数中途变化时以最新一页为准。 */
+async function readAll(
+  readPage: (query: TodoListQuery) => Promise<TodoPage>,
+  view: 'open' | 'done',
+): Promise<TodoPage> {
+  const order = view === 'open' ? 'due' : 'created';
+  const first = await readPage({ view, order, offset: 0, limit: PAGE });
+  const items = [...first.items];
+  let total = first.total;
+  while (items.length < Math.min(total, MAX_ITEMS)) {
+    const page = await readPage({ view, order, offset: items.length, limit: PAGE });
+    total = page.total;
+    if (page.items.length === 0) break;
+    items.push(...page.items);
+  }
+  return { items: items.slice(0, MAX_ITEMS), total, nextDeferredAt: first.nextDeferredAt ?? null };
 }
 
 async function readTodos(host: GlanceTodoHost): Promise<GlanceTodos> {
-  if (!host.deviceId) {
+  let readPage: (query: TodoListQuery) => Promise<TodoPage>;
+  if (host.deviceId) {
+    const deviceId = host.deviceId;
+    readPage = (query) => readRemotePage(deviceId, host.botId, query);
+  } else {
     const { items } = await window.electronAPI.localDb.bots.todos.list(host.botId);
-    const open = queryTodoItems(items, { view: 'open', order: 'due', limit: PAGE });
-    const done = queryTodoItems(items, { view: 'done', order: 'created', limit: PAGE });
-    return {
-      open: open.items,
-      openTotal: open.total,
-      done: [...done.items].reverse(),
-      doneTotal: done.total,
-    };
+    const now = new Date();
+    readPage = async (query) => queryTodoItems(items, query, now);
   }
-  const [open, done] = await Promise.all([
-    readRemotePage(host.deviceId, host.botId, { view: 'open', order: 'due', limit: PAGE }),
-    readRemotePage(host.deviceId, host.botId, { view: 'done', order: 'created', limit: PAGE }),
-  ]);
-  return { open: open.items, openTotal: open.total, done: [...done.items].reverse(), doneTotal: done.total };
+  const [open, done] = await Promise.all([readAll(readPage, 'open'), readAll(readPage, 'done')]);
+  return {
+    open: open.items,
+    openTotal: open.total,
+    done: [...done.items].reverse(),
+    doneTotal: done.total,
+    nextDeferredAt: open.nextDeferredAt ?? null,
+  };
 }
 
 /** 本机或那台电脑上的一次待办更新；撤销删除走同一条路径的 `restore`。 */
@@ -151,6 +181,16 @@ export function useGlanceTodos(host: GlanceTodoHost, enabled = true) {
       window.removeEventListener('focus', foreground);
     };
   }, [botId, deviceId, enabled, refresh]);
+
+  // 浮层开着时也要跟上时间：「稍后再说」到时回到列表，跨过午夜时重算今天到期的红点。
+  const nextDeferredAt = state.todos.nextDeferredAt;
+  useEffect(() => {
+    if (!enabled || !botId || !state.loaded) return;
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+    const next = nextDeferredAt && Date.parse(nextDeferredAt) < Date.parse(midnight) ? nextDeferredAt : midnight;
+    return scheduleTodoDeferralRefresh(next, () => void refresh());
+  }, [botId, enabled, nextDeferredAt, refresh, state.loaded, state.todos]);
 
   return { ...state, refresh };
 }

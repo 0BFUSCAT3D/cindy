@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { insertTodoReferenceIntoComposer } from '@/lib/composerActionsBus';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
@@ -370,7 +371,7 @@ function Todos({
   const [menu, setMenu] = useState<{ todo: TeammateTodo; x: number; y: number } | null>(null);
   const menuOrigin = useRef<HTMLButtonElement | null>(null);
   const { open, done, doneTotal, openTotal } = todos.todos;
-  if (open.length === 0) return null;
+  if (open.length === 0 && doneTotal === 0) return null;
 
   const quote = (todo: TeammateTodo) => {
     onClose();
@@ -535,14 +536,23 @@ function Outputs({ sessionId, botId, onClose }: { sessionId: string; botId: stri
   const files = useOutputs(sessionId, botId);
   if (files.length === 0) return null;
   const open = async (file: OutputFile) => {
-    if (file.absolutePath) {
+    // 别的电脑上的伙伴：文件路径属于那台电脑，不在这台打开；改为打开那台上的来源任务。
+    const deviceId = remoteProjectsStore.getSessionDeviceId(sessionId);
+    if (file.absolutePath && !deviceId) {
       const result = await window.electronAPI.openPath(file.absolutePath);
       if (shouldShowOpenPathError(result)) toast.error(t('bots.glance.openFailed'));
       return;
     }
-    if (!file.childSessionId) return;
+    const childId = file.childSessionId;
+    if (!childId) return;
+    if (deviceId) {
+      // 子任务可能还没进远程列表（例如已归档）：先登记它属于伙伴那台电脑，路由与读取才不会落到本机。
+      const origin = remoteProjectsStore.getSessionDeviceId(childId);
+      if (origin && origin !== deviceId) return;
+      remoteProjectsStore.pinSessionOrigin(deviceId, childId);
+    }
     onClose();
-    navigate(await resolveSessionRoute(file.childSessionId));
+    navigate(await resolveSessionRoute(childId));
   };
   const visible = showAll ? files : files.slice(0, OUTPUT_PREVIEW);
   return (

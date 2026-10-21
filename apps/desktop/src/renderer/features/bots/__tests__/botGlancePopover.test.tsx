@@ -150,6 +150,19 @@ describe('BotGlanceButton', () => {
     expect(screen.getByTestId('bot-glance-button').getAttribute('aria-label')).not.toContain('bots.glance.dueUnseen');
   });
 
+  it('reaches todos past the first host page, and keeps finished ones after the last open todo is done', async () => {
+    items = Array.from({ length: 30 }, (_, i) => todo(`o${String(i).padStart(2, '0')}`));
+    await openGlance();
+    fireEvent.click(screen.getByText('bots.glance.showMore'));
+    expect(screen.getAllByTestId('bot-glance-todo')).toHaveLength(30);
+
+    cleanup();
+    items = [todo('finished', { status: 'done' })];
+    await openGlance();
+    fireEvent.click(await screen.findByText('bots.glance.doneCount:1'));
+    expect(screen.getByText('Todo finished')).toBeTruthy();
+  });
+
   it('lists Cindy on each computer: this one first, online ones selectable, offline ones folded', async () => {
     const cindy = { id: 'cindy-default', name: 'Cindy', templateId: 'cindy', status: 'active', sessionId: 's1' };
     h.local = [cindy];
