@@ -1,4 +1,4 @@
-import { isPeerResetRetryableInvoke, isBackgroundInvoke, bypassInvokeScheduling } from './invokePolicy.js';
+import { isPeerResetRetryableInvoke, bypassInvokeScheduling, resolveInvokePriority } from './invokePolicy.js';
 import { InvokeScheduler } from './invokeScheduler.js';
 import { SessionMessageReuse } from './sessionMessageReuse.js';
 import {
@@ -1477,7 +1477,7 @@ export class DeviceLinkClient {
         : result;
     };
     return bypassInvokeScheduling(payload) ? send() : this.invokeScheduler.run(
-      dst, options?.background ?? isBackgroundInvoke(payload.channel),
+      dst, resolveInvokePriority(payload.channel, options?.background),
       Math.min(timeoutMs ?? this.timing.requestTimeoutMs, 30_000), send,
     );
   }

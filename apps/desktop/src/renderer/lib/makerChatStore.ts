@@ -7527,17 +7527,29 @@ const backgroundTaskReconcileEpoch = new Map<string, number>();
 // keeps streaming.  Keep a small, per-session repair debounce so any later
 // remote event can heal the missing durable row without turning the live
 // stream into a polling loop.
+//
+// The same pushes also invalidate the history view, which re-reads the page
+// ~500 ms later. The repair therefore records when the first push of its window
+// arrived and only reads when no latest-page read started after that moment: a
+// read issued after the notice already shows whatever the push announced, so a
+// second page read 1 s later, plus its interaction snapshot, buys nothing. A
+// turn that emits a notice every 500 ms previously cost two full page reads
+// and one interaction read per notice on the host.
 const REMOTE_MESSAGE_REPAIR_DELAY_MS = 1_500;
-const remoteMessageRepairTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const remoteMessageRepairTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; noticedAt: number }>();
 
 function scheduleRemoteMessageRepair(sessionId: string): void {
   if (!sessionId || remoteMessageRepairTimers.has(sessionId)) return;
+  const noticedAt = Date.now();
   remoteMessageRepairTimers.set(
     sessionId,
-    setTimeout(() => {
-      remoteMessageRepairTimers.delete(sessionId);
-      void reconcileRemoteMessages(sessionId, { repair: true }).catch(() => undefined);
-    }, REMOTE_MESSAGE_REPAIR_DELAY_MS),
+    {
+      noticedAt,
+      timer: setTimeout(() => {
+        remoteMessageRepairTimers.delete(sessionId);
+        void reconcileRemoteMessages(sessionId, { repair: true, coveredSince: noticedAt }).catch(() => undefined);
+      }, REMOTE_MESSAGE_REPAIR_DELAY_MS),
+    },
   );
 }
 
@@ -9799,7 +9811,7 @@ function __teardownGlobalListeners(): void {
   pendingTextDeltaBatches.clear();
   for (const timer of backgroundTaskReconcileTimers.values()) clearTimeout(timer);
   backgroundTaskReconcileTimers.clear();
-  for (const timer of remoteMessageRepairTimers.values()) clearTimeout(timer);
+  for (const repair of remoteMessageRepairTimers.values()) clearTimeout(repair.timer);
   remoteMessageRepairTimers.clear();
   clearDeferredStateNotificationTimer();
   pendingDeferredStateNotifications.clear();
@@ -12721,7 +12733,12 @@ function reconcileOpenSessionOrigins(): void {
  */
 const _remoteReconcileInFlight = new Map<
   string,
-  { run: Promise<boolean>; rerun: boolean; rerunForce: boolean; rerunRepair: boolean; preserveClientIds: Set<string> }
+  {
+    run: Promise<boolean>; rerun: boolean; rerunForce: boolean; rerunRepair: boolean;
+    /** Earliest push time among the repairs merged into this flight; see reconcileRemoteMessages. */
+    rerunCoveredSince?: number;
+    preserveClientIds: Set<string>;
+  }
 >();
 
 type HistoryViewForceFlight = {
@@ -12749,6 +12766,12 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
    */
   activationRead?: boolean;
   preserveClientIds?: ReadonlySet<string>;
+  /**
+   * Repair only: the time the triggering push arrived. A latest-page read started
+   * strictly after it already covers the push, so the repair joins that read (or skips
+   * when it has finished) instead of forcing another page and interaction read.
+   */
+  coveredSince?: number;
 }): Promise<boolean> {
   const deviceId = remoteProjectsStore.getSessionDeviceId(sessionId);
   if (deviceId && isRemoteDeviceMarkedDisconnected(deviceId)) return Promise.resolve(false);
@@ -12756,6 +12779,10 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
   if (view && (view.getSnapshot().ready || opts?.freshHistory || opts?.repair)) {
     const runHistoryView = (flight?: HistoryViewForceFlight) => {
       const syncToken = noteRemoteSessionSyncStarted(sessionId);
+      // A post-notice read satisfies the "read after the signal" rule below by
+      // construction: the signal is the push, and the read began after it. Same
+      // millisecond is not "after": the read may have been issued first.
+      const covered = opts?.coveredSince !== undefined && view.latestReadStartedAt() > opts.coveredSince;
       const rowsAtStart = new Map((sessions.get(sessionId)?.messages ?? []).map((row) => [row.clientId, row]));
       const epochAtStart = _messagesEpoch.get(sessionId) ?? 0;
       const noteHydration = (before: readonly ChatMessage[], after: readonly ChatMessage[]) => {
@@ -12771,9 +12798,14 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
       };
       // Read receipts also need a post-signal page: joining a pre-existing read
       // cannot certify this sync generation. Preserve the view and expansion.
+      // Interaction requests travel the same ordered reliable stream as the push
+      // that is being repaired, so a covered repair leaves their resync to the
+      // turn-end / focus / reconnect reconciles that still run unconditionally.
       return Promise.all([
-        view.refresh(false, !opts?.activationRead),
-        reconcilePendingInteractions(sessionId),
+        covered
+          ? (view.isReadingLatest() ? view.refresh(false, false) : Promise.resolve())
+          : view.refresh(false, !opts?.activationRead),
+        covered ? Promise.resolve(0) : reconcilePendingInteractions(sessionId),
       ]).then(async () => {
         if (getRemoteHistoryView(sessionId) !== view || !view.isActive()) return false;
         if (isHistoryViewUnavailable(view.getSnapshot().error)) {
@@ -12907,11 +12939,21 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
       // snapshot-less resync can authoritatively seal the previous block.
       inFlight.preserveClientIds = new Set(opts.preserveClientIds);
     }
-    if (opts?.repair) inFlight.rerunRepair = true;
-    void reconcilePendingInteractions(sessionId).catch(() => undefined);
+    if (opts?.repair) {
+      inFlight.rerunRepair = true;
+      // The rerun covers every notice up to the earliest one merged here.
+      inFlight.rerunCoveredSince = opts.coveredSince === undefined ? undefined
+        : Math.min(inFlight.rerunCoveredSince ?? Infinity, opts.coveredSince);
+    }
+    // A push-driven repair is served by the rerun; only explicit resyncs need
+    // the interaction snapshot refreshed ahead of it.
+    if (!opts?.repair) void reconcilePendingInteractions(sessionId).catch(() => undefined);
     return inFlight.run;
   }
-  const entry: { run: Promise<boolean>; rerun: boolean; rerunForce: boolean; rerunRepair: boolean; preserveClientIds: Set<string> } = {
+  const entry: {
+    run: Promise<boolean>; rerun: boolean; rerunForce: boolean; rerunRepair: boolean;
+    rerunCoveredSince?: number; preserveClientIds: Set<string>;
+  } = {
     run: Promise.resolve(false),
     rerun: false,
     rerunForce: false,
@@ -12927,12 +12969,16 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
       const rerun = entry.rerun;
       const rerunForce = entry.rerunForce;
       const rerunRepair = entry.rerunRepair;
+      const rerunCoveredSince = entry.rerunCoveredSince;
       // 先摘掉在飞标记,再补跑 —— 补跑会自己建新的 entry,期间来的触发继续被那一份合并。
       _remoteReconcileInFlight.delete(sessionId);
       if (rerun && sessions.has(sessionId)) {
         applied = await reconcileRemoteMessages(
           sessionId,
-          { force: rerunForce, repair: rerunRepair, preserveClientIds: entry.preserveClientIds },
+          {
+            force: rerunForce, repair: rerunRepair, preserveClientIds: entry.preserveClientIds,
+            ...(rerunCoveredSince !== undefined ? { coveredSince: rerunCoveredSince } : {}),
+          },
         );
       }
     }

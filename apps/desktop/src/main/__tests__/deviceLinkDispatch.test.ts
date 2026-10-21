@@ -1245,6 +1245,40 @@ describe('被控端控制链路生命周期', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  // 控制端把 16 个名额填满历史 / 列表读取后,用户正在等的发送以前会被 BACKPRESSURE 打回、
+  // 再等 ≥2s 重试;交互类写入另有少量名额,读取仍按原上限拒绝。
+  it('交互类 invoke 在 per-controller 名额用满后仍被执行,读取照旧 BACKPRESSURE', async () => {
+    remoteControlEnabled = true;
+    let resolveList: ((value: unknown[]) => void) | undefined;
+    registry.register('local-db:sessions:list', vi.fn(() => new Promise<unknown[]>((resolve) => {
+      resolveList = resolve;
+    })));
+    const enqueue = vi.fn(() => ({ accepted: true }));
+    registry.register('maker:input:enqueue', enqueue);
+    const { client, calls, feed } = makeFakeClient();
+    wireInboundDispatch(client);
+    const limit = dispatchTesting.remoteInvokeInFlightPerControllerLimit;
+    const extra = dispatchTesting.remoteInvokeInteractiveExtraPerController;
+    for (let index = 0; index < limit; index += 1) {
+      feed({ v: 1, kind: 'invoke', id: `list-${index}`, src: 'ctrl-a', payload: {
+        channel: 'local-db:sessions:list', args: [20, 'all', { fresh: true, index }],
+      } });
+    }
+    for (let index = 0; index < extra + 1; index += 1) {
+      feed({ v: 1, kind: 'invoke', id: `send-${index}`, src: 'ctrl-a', payload: {
+        channel: 'maker:input:enqueue', args: ['s1', { text: `hello ${index}` }],
+      } });
+    }
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(extra));
+    const busy = { ok: false, error: { code: 'BACKPRESSURE', message: 'remote invoke execution queue is full' } };
+    await vi.waitFor(() => expect(calls.invokeResult).toContainEqual({ dst: 'ctrl-a', requestId: `send-${extra}`, payload: busy }));
+    feed({ v: 1, kind: 'invoke', id: 'list-late', src: 'ctrl-a', payload: {
+      channel: 'local-db:sessions:list', args: [20, 'all', { fresh: true, index: 'late' }],
+    } });
+    await vi.waitFor(() => expect(calls.invokeResult).toContainEqual({ dst: 'ctrl-a', requestId: 'list-late', payload: busy }));
+    resolveList?.([]);
+  });
+
   it('sessions:list fresh 请求不并入已有 listing 单飞', async () => {
     remoteControlEnabled = true;
     let resolvers: Array<(value: unknown[]) => void> = [];
