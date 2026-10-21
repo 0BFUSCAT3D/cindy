@@ -865,6 +865,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               for (const change of changes) {
                 const value = change as { entityId?: unknown; data?: { botId?: unknown } };
                 if (!queuedForThisDevice(change) || typeof value.entityId !== 'string' || typeof value.data?.botId !== 'string') continue;
+                // Only companions this installation claims for: other notices would never be read.
+                const botActor = actors.find(a => a.id === value.data!.botId);
+                if (!botActor || !claimable(botActor)) continue;
                 const hints = queuedHints.get(value.data.botId) ?? new Map<string, string>();
                 hints.set(value.entityId, roomId);
                 queuedHints.set(value.data.botId, hints);
@@ -1440,7 +1443,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       } finally { run.delivery = undefined; }
       if (running.get(run.execution.id) === run) {
         run.releaseToolAuthority?.();
-        running.delete(run.execution.id);
+        forgetRun(run);
         // Refresh both delivered results and local failures without waiting for an echo.
         changed(run.execution.conversation_id);
       }
@@ -1782,6 +1785,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
   }
   const ownedActiveBot = (actorId: string) => actors.some(a => a.id === actorId && a.kind === 'bot' && localBot(a.id)?.status === 'active');
+  /** A companion this installation runs: active here, homed on this computer, and not shadowed or unconfirmed. */
+  const claimable = (a: Actor) => a.kind === 'bot' && localBot(a.id)?.status === 'active'
+    // Only the registered home runs a companion: skip while the home is elsewhere or not yet
+    // registered (an unset home would let any copy of the owner claim it).
+    && !(companionHome && a.homeDeviceId !== selfDeviceId)
+    // Shadowed here (demoted, or run by another installation on this device), or this
+    // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
+    && !(companionHome && (companion?.isShadowed(a.externalId) || !companion?.installConfirmed(a.externalId)));
   /** A realtime change announcing work this device may claim: newly queued, for one of its companions or unspecified. */
   function queuedForThisDevice(change: unknown) {
     const value = change as { type?: unknown; data?: { status?: unknown; botId?: unknown } } | null;
@@ -1807,6 +1818,18 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       .finally(() => { run.laneLookup = undefined; });
   }
   const runsOf = (botId: string) => [...running.values()].filter(run => run.execution.bot_id === botId);
+  /**
+   * A turn has ended. While its companion is still busy elsewhere, its room is read again on the next
+   * pass: the conversation it held may have a next request waiting.
+   */
+  function forgetRun(run: Running) {
+    running.delete(run.execution.id);
+    const botId = run.execution.bot_id;
+    if (!runsOf(botId).length) return;
+    const hints = queuedHints.get(botId) ?? new Map<string, string>();
+    hints.set(`room:${run.execution.conversation_id}`, run.execution.conversation_id);
+    queuedHints.set(botId, hints);
+  }
   /** Leases one execution: the oldest the server offers, or exactly `executionId`. */
   async function claim(actorId: string, executionId?: string): Promise<Execution | null> {
     const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1, ...(directRoomClaims ? { directRoomVersion: 1 } : {}),
@@ -1857,24 +1880,20 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   /** One claim pass per owned companion, all at once; the first failure in companion order is reported. */
   async function claimOnce() {
-    const owned = actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active'
-      // Only the registered home runs a companion: skip while the home is elsewhere or not yet
-      // registered (an unset home would let any copy of the owner claim it).
-      && !(companionHome && a.homeDeviceId !== selfDeviceId)
-      // Shadowed here (demoted, or run by another installation on this device), or this
-      // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
-      && !(companionHome && (companion?.isShadowed(a.externalId) || !companion?.installConfirmed(a.externalId))));
+    const owned = actors.filter(claimable);
     // A turn whose conversation is not yet known holds back the rest of its companion's work.
     for (const actor of owned) for (const run of runsOf(actor.id)) resolveLane(run);
     const ready = owned.filter(a => runsOf(a.id).every(run => run.lane));
     settledValues(await settleBounded(ready, ready.length, async actor => {
       const runs = runsOf(actor.id);
       if (runs.length) { await claimBesideRuns(actor.id, runs); return; }
-      // An idle companion takes the oldest work wherever it is.
-      queuedHints.delete(actor.id);
+      // An idle companion takes the oldest work wherever it is. Notices of its other queued work stay,
+      // so that work starts beside this turn; with nothing left to take, they are stale.
       laneSweeps.delete(actor.id);
       const execution = await claim(actor.id);
-      if (execution) void runExecution(execution);
+      if (!execution) { queuedHints.delete(actor.id); return; }
+      queuedHints.get(actor.id)?.delete(execution.id);
+      void runExecution(execution);
     }));
   }
   // Claims never overlap: two claims for one companion could each lease work only one can run.
@@ -1926,7 +1945,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (error instanceof ChatResponseError && !retryableResponse(error)) {
             if (running.get(run.execution.id) === run) {
               run.releaseToolAuthority?.();
-              running.delete(run.execution.id);
+              forgetRun(run);
               changed(run.execution.conversation_id);
             }
             return;
@@ -1953,7 +1972,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       // it was awaiting its response; retry the terminal operation for its receipt.
       if (!run.settlement && running.get(run.execution.id) === run) {
         run.releaseToolAuthority?.();
-        running.delete(run.execution.id);
+        forgetRun(run);
         if (run.sessionId) await deps.abortLane(run.sessionId).catch(() => undefined);
         changed(run.execution.conversation_id);
       }
@@ -2361,7 +2380,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       for (const e of executions.filter(e => ['queued', 'running', 'needs_input'].includes(e.status) && !e.plan_id)) {
         await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' });
         const run = running.get(e.id);
-        if (run) { running.delete(e.id); if (run.sessionId) await deps.abortLane(run.sessionId); }
+        if (run) { forgetRun(run); if (run.sessionId) await deps.abortLane(run.sessionId); }
       }
       changed(room); return { ok: true as const };
     }),
