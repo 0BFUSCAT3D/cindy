@@ -784,6 +784,7 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
     /** Retire only inputs attested by the execution host, never the whole queued group. */
     captureReportSettlement(
       proxySessionId: string, reportedInputClientIds: readonly string[] = [],
+      beforeRetire?: () => Promise<void>,
     ): () => Promise<boolean> {
       const state = workers.get(proxySessionId);
       const awaiting = state?.awaiting;
@@ -794,9 +795,18 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
         awaiting.startedNotified = true;
         await awaiting.turnStartPromise;
         const write = state.persistence.catch(() => undefined).then(async () => {
-          const pending = state.awaiting;
+          let pending = state.awaiting;
           if (!current(state) || !pending || !pending.clientIds.some(id => reported.has(id))) return false;
-          const remaining = pending.clientIds.filter(id => !reported.has(id));
+          let remaining = pending.clientIds.filter(id => !reported.has(id));
+          if (remaining.length === 0 && beforeRetire) {
+            // Team lookup/status failures must leave both the durable and in-memory
+            // identity available to polling. Never retire the only retry first.
+            await beforeRetire();
+            pending = state.awaiting;
+            if (!current(state) || !pending || !pending.clientIds.some(id => reported.has(id))) return false;
+            // A new dispatch can be prepared while the Team transition is awaited.
+            remaining = pending.clientIds.filter(id => !reported.has(id));
+          }
           await deps.saveReport(state.ref.workerId, remaining.length
             ? { clientIds: remaining, baselineMessageId: pending.baselineMessageId }
             : null);
@@ -818,7 +828,9 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
           state.awaiting = prune(state.awaiting);
           return state.awaiting === null;
         });
-        state.persistence = write.then(() => undefined);
+        // The caller observes the failure; the serialization tail must not create
+        // a second, unobserved rejection while waiting for the next poll.
+        state.persistence = write.then(() => undefined, () => undefined);
         return write;
       };
     },

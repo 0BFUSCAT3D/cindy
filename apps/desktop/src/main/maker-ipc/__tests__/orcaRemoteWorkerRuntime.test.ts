@@ -321,6 +321,38 @@ describe('orca remote worker runtime', () => {
     expect(deps.onTurnEnded).toHaveBeenCalledTimes(1);
   });
 
+  // The Team commit callback adds an asynchronous boundary to report retirement.
+  // Public dispatch/settlement/poll must preserve B prepared while that callback waits;
+  // the old save-only races did not exercise this boundary. Unit, no real IO/timers.
+  it('preserves B prepared while the Team settlement is waiting', async () => {
+    const { runtime, deps, invoke, state } = setup();
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'A', clientId: 'a' });
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const settle = runtime.captureReportSettlement('proxy-1', ['a'], async () => { entered(); await gate; })();
+    try {
+      await started;
+      invoke.mockClear();
+      const dispatch = runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'B', clientId: 'b' });
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith(ref.deviceId, 'local-db:sessions:get', ['remote-1']));
+      release();
+      await expect(settle).resolves.toBe(false);
+      await dispatch;
+      expect(runtime.hasPendingReport('proxy-1')).toBe(true);
+      expect(deps.saveReport).toHaveBeenLastCalledWith('worker-1', {
+        clientIds: ['b'], baselineMessageId: 'msg-0',
+      }, undefined);
+      state.receipts.b = 'accepted';
+      state.assistant = { id: 'result-b', content: 'B completed' };
+      await runtime.pollNow();
+      expect(deps.onTurnEnded).toHaveBeenCalledExactlyOnceWith('proxy-1', {
+        status: 'done', finalText: 'B completed',
+      });
+    } finally { release(); await settle; }
+  });
+
   it('keeps waiting while the message is still queued behind other input on the device', async () => {
     const { runtime, deps, state } = setup();
     await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: '转写', clientId: 'c-1' });

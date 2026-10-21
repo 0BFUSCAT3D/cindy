@@ -524,6 +524,59 @@ describe('wrapTeamDeps', () => {
     return { service, history, handle, onAccepted, capture: () => capture };
   }
 
+  async function trackedTeam(setupOpts: Parameters<typeof setup>[0] = {}) {
+    let service!: OrcaTeamService;
+    const ctx = await trackedWorker({ ...setupOpts, getTeamService: () => service });
+    let worker = { id: 'w-1', teamId: 'team-1', leadSessionId: 'lead-1', sessionId: 'proxy-1',
+      status: 'idle', session: { ...proxySeed, agentKind: 'claude-code' } } as OrcaWorkerRecordSnapshot;
+    const deps = {
+      ...baseDeps(),
+      getWorkerLinkBySessionId: vi.fn(async () => ({ workerId: 'w-1', teamId: 'team-1',
+        workerSessionId: 'proxy-1', leadSessionId: 'lead-1' })),
+      listWorkersByLead: async () => [worker],
+      getManualInterrupt: () => null,
+      clearManualInterrupt: vi.fn(),
+      updateWorkerStatus: vi.fn(async (_id: string, status: OrcaWorkerRecordSnapshot['status']) => {
+        worker = { ...worker, status };
+      }),
+      broadcastOrcaWorkerChanged: vi.fn(),
+      onLeadWorkerReportsSettled: vi.fn(),
+      sendAutoBridgeToLead: vi.fn(async () => ({ accepted: true })),
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+    service = createOrcaTeamService(ctx.workers.wrapTeamDeps(deps));
+    return { ...ctx, service, deps, getWorker: () => worker };
+  }
+
+  // PR #6659 / discussion_r4334849858: deleting runtime/durable pending before Team
+  // settlement loses the only retry after a DB lookup/write failure. Existing tests
+  // failed only saveReport. Unit: real host settlement + TeamService, one report and
+  // a one-shot storage failure; polling must later release the Lead without new input.
+  it.each(['lookup', 'status'] as const)('keeps a report retryable after Team %s fails', async (failure) => {
+    const report = reportService();
+    const { workers, remoteInvoke, service, deps, getWorker } = await trackedTeam({ handle: report.handle });
+    try {
+      await service.sendToWorker({ callerLeadSessionId: 'lead-1', targetSessionId: 'proxy-1', message: 'A' });
+      const enqueue = remoteInvoke.mock.calls.find(([, channel]) => channel === 'maker:input:enqueue')!;
+      const clientId = (enqueue[2][1] as { clientId: string }).clientId;
+      store.saveWorkerRemoteReport.mockClear();
+      if (failure === 'lookup') deps.getWorkerLinkBySessionId.mockRejectedValueOnce(new Error('storage unavailable'));
+      else deps.updateWorkerStatus.mockRejectedValueOnce(new Error('storage unavailable'));
+
+      await expect(workers.captureReportSettlement('proxy-1', [clientId])()).rejects.toThrow('storage unavailable');
+      expect(workers.runtime.hasPendingReport('proxy-1')).toBe(true);
+      expect(service.hasPendingWorkerReports('lead-1')).toBe(true);
+      expect(store.saveWorkerRemoteReport).not.toHaveBeenCalled();
+
+      report.history.push({ id: 'result-a', role: 'assistant', content: 'A completed' });
+      await workers.runtime.pollNow();
+      expect(workers.runtime.hasPendingReport('proxy-1')).toBe(false);
+      expect(service.hasPendingWorkerReports('lead-1')).toBe(false);
+      expect(getWorker().status).toBe('done');
+      expect(deps.onLeadWorkerReportsSettled).toHaveBeenCalledOnce();
+    } finally { workers.stop(); }
+  });
+
   it('waits for the host accepted lifecycle before reporting an immediate remote reply', async () => {
     const report = reportService();
     const { workers } = await trackedWorker({ handle: report.handle, getTeamService: () => report.service as unknown as OrcaTeamService });
@@ -696,42 +749,26 @@ describe('wrapTeamDeps', () => {
   // A was reported while B's pre-enqueue save was waiting. Real service + remote adapter
   // must leave neither layer pending after B fails. Unit tier, in-memory store/transport.
   it('reconciles Team pending when B fails after A was reported during B preparation', async () => {
-    let service!: OrcaTeamService;
     let rejectEnqueue = false;
-    const { workers, remoteInvoke } = await trackedWorker({
-      getTeamService: () => service,
+    const { workers, remoteInvoke, service, deps, getWorker } = await trackedTeam({
       handle: (_device, channel) => channel === 'maker:input:enqueue' && rejectEnqueue
         ? fail('PERMISSION_DENIED', 'remote enqueue rejected') : undefined,
     });
-    let worker = { id: 'w-1', teamId: 'team-1', leadSessionId: 'lead-1', sessionId: 'proxy-1',
-      status: 'idle', session: { ...proxySeed, agentKind: 'claude-code' } } as OrcaWorkerRecordSnapshot;
-    const settledLead = vi.fn();
-    service = createOrcaTeamService(workers.wrapTeamDeps({
-      ...baseDeps(),
-      getWorkerLinkBySessionId: async () => ({ workerId: 'w-1', teamId: 'team-1',
-        workerSessionId: 'proxy-1', leadSessionId: 'lead-1' }),
-      listWorkersByLead: async () => [worker],
-      getManualInterrupt: () => null,
-      clearManualInterrupt: vi.fn(),
-      updateWorkerStatus: async (_id, status) => { worker = { ...worker, status }; },
-      broadcastOrcaWorkerChanged: vi.fn(),
-      onLeadWorkerReportsSettled: settledLead,
-      log: { info: vi.fn(), warn: vi.fn() },
-    }));
     let release: (() => void) | undefined;
     try {
       const params = { callerLeadSessionId: 'lead-1', targetSessionId: 'proxy-1', message: 'A' };
       await expect(service.sendToWorker(params)).resolves.toMatchObject({ ok: true });
       const firstInput = remoteInvoke.mock.calls.find(([, channel]) => channel === 'maker:input:enqueue')!;
       const clientId = (firstInput[2][1] as { clientId: string }).clientId;
-      const capture = service.captureWorkerTerminalTurn('proxy-1');
       store.saveWorkerRemoteReport.mockImplementationOnce(() => new Promise<undefined>(resolve => {
         release = () => resolve(undefined);
       }));
-      const settle = workers.runtime.captureReportSettlement('proxy-1', [clientId])().then(async (all) => {
-        if (all) await service.settleReportedWorker(capture);
-      });
+      const settle = workers.captureReportSettlement('proxy-1', [clientId])();
       await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      // A's Team transition now commits before its durable retry is retired.
+      // B begins a separate pending lifecycle after this point.
+      expect(service.hasPendingWorkerReports('lead-1')).toBe(false);
+      expect(deps.onLeadWorkerReportsSettled).toHaveBeenCalledOnce();
       remoteInvoke.mockClear();
       rejectEnqueue = true;
       const dispatchB = service.sendToWorker({ ...params, message: 'B' });
@@ -741,8 +778,8 @@ describe('wrapTeamDeps', () => {
       await expect(dispatchB).resolves.toMatchObject({ ok: false });
       expect(workers.runtime.hasPendingReport('proxy-1')).toBe(false);
       expect(service.hasPendingWorkerReports('lead-1')).toBe(false);
-      expect(worker.status).toBe('done');
-      expect(settledLead).toHaveBeenCalledOnce();
+      expect(getWorker().status).toBe('done');
+      expect(deps.onLeadWorkerReportsSettled).toHaveBeenCalledTimes(2);
     } finally { release?.(); workers.stop(); }
   });
 

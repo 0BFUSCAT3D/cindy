@@ -2819,12 +2819,8 @@ export function stopOrcaRemoteWorkersForOwnerBoundary(): void {
 export function captureRemoteWorkerReportSettlement(
   sessionId: string, reportedInputClientIds: readonly string[],
 ): () => Promise<void> {
-  const service = orcaTeamServiceForEvents;
-  const capture = service?.captureWorkerTerminalTurn(sessionId);
-  const settle = orcaRemoteWorkersForHost?.runtime.captureReportSettlement(sessionId, reportedInputClientIds);
-  return async () => {
-    if (service && capture && await settle?.()) await service.settleReportedWorker(capture);
-  };
+  return orcaRemoteWorkersForHost?.captureReportSettlement(sessionId, reportedInputClientIds)
+    ?? (async () => {});
 }
 
 function markWorkerManualInterruptIfKnown(

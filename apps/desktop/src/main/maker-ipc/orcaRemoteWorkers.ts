@@ -314,6 +314,16 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
 
   return {
     runtime,
+    captureReportSettlement(sessionId: string, reportedInputClientIds: readonly string[]): () => Promise<void> {
+      const service = deps.getTeamService();
+      const capture = service?.captureWorkerTerminalTurn(sessionId);
+      const settle = service && capture
+        ? runtime.captureReportSettlement(sessionId, reportedInputClientIds, () => service.settleReportedWorker(capture))
+        : undefined;
+      return async () => {
+        await settle?.();
+      };
+    },
 
     /**
      * 按当前账号恢复待回报与结束通知；同一数据库 owner 重入不清除现有派活。
