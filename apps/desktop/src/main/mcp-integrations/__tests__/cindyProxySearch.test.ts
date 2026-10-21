@@ -215,6 +215,74 @@ describe('cindyProxySearch', () => {
     });
   });
 
+  it('摘要按完整页面标识回填：不同锚点/端口不串用，泛型标题不被当作 HTML 删除', async () => {
+    const service = createCindyProxySearchService({
+      getBaseUrl: () => 'https://gateway.example.test',
+      getApiKey: () => 'test-key',
+      fetchImpl: vi.fn(async () =>
+        response({
+          content: [
+            {
+              type: 'web_search_tool_result',
+              content: [
+                {
+                  type: 'web_search_result',
+                  title: 'Install',
+                  url: 'https://example.test/guide#install',
+                },
+                {
+                  type: 'web_search_result',
+                  title: 'Upgrade',
+                  url: 'https://example.test/guide#upgrade',
+                },
+                {
+                  type: 'web_search_result',
+                  title: 'Dev server',
+                  url: 'https://example.test:8080/guide',
+                },
+                {
+                  type: 'web_search_result',
+                  title: 'Using <T> in TypeScript',
+                  url: 'https://example.test/t',
+                },
+                {
+                  type: 'web_search_result',
+                  title: 'std::vector<T> and Map<K, V>',
+                  url: 'https://example.test/v',
+                },
+                {
+                  type: 'web_search_result',
+                  title: '<b>Bold</b> <p align="center">Centered',
+                  url: 'https://example.test/h',
+                },
+              ],
+            },
+            {
+              type: 'text',
+              text: [
+                'https://example.test/guide#install | Install section.',
+                'https://example.test/guide#upgrade | Upgrade section.',
+                'https://example.test:8080/guide | Dev server on port 8080.',
+              ].join('\n'),
+            },
+          ],
+        }),
+      ) as unknown as typeof fetch,
+    });
+
+    await expect(service.search({ query: 'guide', limit: 6 })).resolves.toMatchObject({
+      ok: true,
+      results: [
+        { title: 'Install', snippet: 'Install section.' },
+        { title: 'Upgrade', snippet: 'Upgrade section.' },
+        { title: 'Dev server', snippet: 'Dev server on port 8080.' },
+        { title: 'Using <T> in TypeScript', snippet: '' },
+        { title: 'std::vector<T> and Map<K, V>', snippet: '' },
+        { title: 'Bold Centered', snippet: '' },
+      ],
+    });
+  });
+
   it('已有结果时，后续搜索的工具级错误不使整次搜索失败', async () => {
     const result = { type: 'web_search_result', title: 'Kept', url: 'https://example.test/kept' };
     for (const errorBlock of [

@@ -265,11 +265,15 @@ function normalizedHttpUrl(value: unknown): string | null {
   }
 }
 
-/** 模型复述链接时可能改写协议或末尾斜杠，回填摘要按忽略这些差异的键匹配。 */
+/**
+ * 模型复述链接时可能改写协议或末尾斜杠，回填摘要只忽略这两项差异；端口、查询串与
+ * 有意义的锚点(`#install` / `#upgrade`)标识不同的页面或章节，必须保留。序号锚点
+ * 已在 normalizedHttpUrl 去掉。
+ */
 function sourceMatchKey(url: string): string {
   try {
     const parsed = new URL(url);
-    return `${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}`;
+    return `${parsed.host}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}${parsed.hash}`;
   } catch {
     return url;
   }
@@ -283,14 +287,21 @@ function fallbackTitle(url: string): string {
   }
 }
 
+// 只剥真实的 HTML 标签：带属性的开标签，或常见标签名的开/闭/自闭标签。
+// `<T>`、`<K, V>` 这类泛型/代码文本不在其中，必须保留。
+const HTML_TAG_PATTERN = new RegExp(
+  '<[a-z][a-z0-9-]*\\s+[^<>]*=[^<>]*>|' +
+    '</?(?:p|div|span|a|b|i|u|em|strong|br|hr|img|center|h[1-6]|ul|ol|li|table|tr|td|th|' +
+    'section|article|header|footer|nav|main|font|small|code|pre|html|head|body|title|meta|link|script|style)' +
+    '(?:\\s[^<>]*)?/?>',
+  'gi',
+);
+
 function cleanTitle(value: unknown, url: string): string {
   // 抓取到的标题偶尔是页面里的 HTML 片段(如 `<p align="center">`)。
   const title =
     typeof value === 'string'
-      ? value
-          .replace(/<[^>]*>/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim()
+      ? value.replace(HTML_TAG_PATTERN, ' ').replace(/\s+/g, ' ').trim()
       : '';
   return title || fallbackTitle(url);
 }
