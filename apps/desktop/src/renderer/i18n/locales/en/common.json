@@ -9571,8 +9571,8 @@
         "talkTurn": "Share a view",
         "stepSpeaking": "Speaking",
         "stepSpoken": "Done",
-        "allTurns_one": "All {{count}} turns",
-        "allTurns_other": "All {{count}} turns",
+        "allTurns_one": "All {{count}} teammate",
+        "allTurns_other": "All {{count}} teammates",
         "foldTurns": "Show fewer"
       },
       "speaking": {
