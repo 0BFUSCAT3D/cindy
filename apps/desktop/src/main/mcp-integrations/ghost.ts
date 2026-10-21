@@ -463,7 +463,7 @@ async function packForgeSource(
 
 export interface GhostGrantLiveSessionState {
   /** Rechecks accepted account input and the existing plugin-managed helper surface. */
-  contributionAccountAllowed?: () => Promise<boolean>;
+  contributionAccountAllowed?: (acceptedOperation?: boolean) => Promise<boolean>;
   permissionMode: PermissionMode | null;
   remoteHostId: string | null;
   /** Includes the captured permission/Plan generations and forbids active or unknown Plan. */
@@ -1772,15 +1772,15 @@ export function getCindyGhostsMcpDeps(
     const owner = contributionOwnerKey();
     const live = context?.sessionId && context.sessionInstanceId
       ? hostDeps.getLiveSessionGrantState?.(context.sessionId, context.sessionInstanceId) : null;
-    const assert = async () => {
+    const assert = async (acceptedOperation = false) => {
       assertContributionOwner(owner);
-      if (!live || await live.contributionAccountAllowed?.() !== true || (write && (live.isCurrent?.() !== true || !live.permissionMode || workdirWriteVerdict(live.permissionMode, false) === 'deny'))) {
+      if (!live || await live.contributionAccountAllowed?.(acceptedOperation) !== true || (write && (live.isCurrent?.() !== true || !live.permissionMode || workdirWriteVerdict(live.permissionMode, false) === 'deny'))) {
         throwIpcError('PERMISSION_DENIED', 'Community contributions require a current account task; shared-task guests cannot borrow the Host account');
       }
       assertContributionOwner(owner);
     };
     await assert();
-    return { context: context!, assert };
+    return { context: context!, assert: () => assert(), assertAccepted: () => assert(true) };
   };
   return {
     ...(marketTools ? {
@@ -1840,7 +1840,7 @@ export function getCindyGhostsMcpDeps(
           }
           await authority.assert();
           if (!allowed) return { ok: false, errorCode: 'MUTATION_CANCELLED' };
-          result = input.action === 'cancel-review' ? await community.cancelPluginReview(input.pluginId, input.release, authority.assert) : input.action === 'submit' ? await community.submitContribution(input.id, authority.assert) : await community.resumeContribution(input.id, authority.assert);
+          result = input.action === 'cancel-review' ? await community.cancelPluginReview(input.pluginId, input.release, authority.assert) : input.action === 'submit' ? await community.submitContribution(input.id, authority.assertAccepted) : await community.resumeContribution(input.id, authority.assertAccepted);
         } else if (input.action === 'status') result = await community.contributionTransferStatus(input.id);
         else if (input.action === 'cancel') result = community.cancelContribution(input.id);
         else if (input.action === 'list') result = await community.listMyPlugins({ query: input.query ?? '', filter: input.filter ?? 'all', cursor: input.cursor });

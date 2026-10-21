@@ -1642,6 +1642,11 @@ export function isGhostInstallApprovalToken(value: unknown): value is string {
   );
 }
 
+/** Public attribution requires a server projection; other installs retain their package attribution. */
+export function ghostFallbackDisplayAuthor(ghost: Pick<InstalledGhost, 'manifest' | 'publishingSource'>): string | null {
+  return ghost.publishingSource?.kind === 'public-market' ? null : ghost.manifest.author ?? null;
+}
+
 /** 已装入主机的插件(批准清单 + 安装位置 + 启用态)。 */
 export interface InstalledGhost {
   /** Read-only Host provenance, not authorship or publication permission. Missing is unknown. */

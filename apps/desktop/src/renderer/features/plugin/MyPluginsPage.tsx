@@ -116,6 +116,10 @@ export function MyPluginsPage({
   const [pickerDraft, setPickerDraft] = useState<{
     key: string; prepared?: PreparedPluginContribution; error?: string;
   } | null>(null);
+  const [updateDraft, setUpdateDraft] = useState<{
+    token: object; prepared?: PreparedPluginContribution; error?: string;
+  } | null>(null);
+  const [updateRefresh, setUpdateRefresh] = useState(0);
   const preparePicker = useRef(onPrepare ?? reader.prepare);
   preparePicker.current = onPrepare ?? reader.prepare;
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
@@ -907,9 +911,45 @@ export function MyPluginsPage({
       ? 'PLUGIN_PENDING_RELEASE_EXISTS'
       : releases.some(release => release.version === installedLocal.version) ? 'VERSION_ALREADY_SUBMITTED' : null
   );
-  const localCanSubmit = installedLocal && localPlugins.some(item => item.id === installedLocal.instanceId);
+  const localCanSubmit = installedLocal && localPlugins.some(item => item.id === installedLocal.instanceId && item.version === installedLocal.version);
   const updateUnavailable = plugin?.publisherKind === 'official' ? t(`${copy}.unavailable.officialGithubRequired`)
     : knownPublishBlocker ? t(`${copy}.errors.${knownPublishBlocker}`) : undefined;
+  const canPrepareUpdate = Boolean(installedLocal && localCanSubmit && plugin?.actions.submitUpdate && writeReady && !updateUnavailable);
+  const updateInstanceId = installedLocal?.instanceId;
+  const updateVersion = installedLocal?.version;
+  const updateKey = JSON.stringify([ownerKey, location.key, selectedId, installedRevision, submissionRevision,
+    installedLocal?.instanceId, installedLocal?.version, canPrepareUpdate, updateRefresh]);
+  const updateContext = useRef({ key: updateKey, token: {} });
+  if (updateContext.current.key !== updateKey) updateContext.current = { key: updateKey, token: {} };
+  const currentUpdateDraft = updateDraft?.token === updateContext.current.token ? updateDraft : null;
+  const updateBlocker = currentUpdateDraft?.prepared?.preflight?.blockers[0];
+  useEffect(() => {
+    if (!canPrepareUpdate || !updateInstanceId || !updateVersion) return;
+    let disposed = false;
+    let held: string | undefined;
+    const token = updateContext.current.token;
+    const instanceId = updateInstanceId, version = updateVersion;
+    void Promise.resolve().then(() => preparePicker.current(instanceId)).then(prepared => {
+      held = prepared.preparedId;
+      if (disposed || updateContext.current.token !== token) {
+        void reader.discard(prepared.preparedId).catch(() => undefined);
+        return;
+      }
+      if (prepared.instanceId !== instanceId || prepared.version !== version) {
+        void reader.discard(prepared.preparedId).catch(() => undefined);
+        held = undefined;
+        setUpdateDraft({ token, error: `${copy}.errors.CONTRIBUTION_PACKAGE_CHANGED` });
+      } else setUpdateDraft({ token, prepared });
+    }).catch(error => {
+      if (!disposed && updateContext.current.token === token)
+        setUpdateDraft({ token, error: contributionErrorKey(error) });
+    });
+    return () => {
+      disposed = true;
+      if (held) void reader.discard(held).catch(() => undefined);
+    };
+  // The key captures the exact installation and permission generation, not the response object.
+  }, [updateKey, canPrepareUpdate, updateInstanceId, updateVersion, reader]);
   const published = publishedContent?.key === publishedKey ? publishedContent : null;
   const listedDetail = plugin?.market.state === 'available' ? published?.value : null;
   const currentNotes = currentSubmission?.content?.manifestView.releaseNotes;
@@ -925,9 +965,19 @@ export function MyPluginsPage({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {installedLocal && localCanSubmit && plugin.actions.submitUpdate && writeReady && !updateUnavailable ? (
+            {installedLocal && canPrepareUpdate && currentUpdateDraft?.prepared?.preflight?.actions.canSubmit && !updateBlocker ? (
               <Button variant="cta" size="sm" loading={submitBusy} disabled={submitBusy}
-                onClick={() => void onSubmitUpdate(installedLocal.instanceId)}>{t(`${copy}.submitVersion`, { version: installedLocal.version })}</Button>
+                onClick={() => {
+                  const token = updateContext.current.token;
+                  void onSubmitUpdate(installedLocal.instanceId, {
+                    prepared: currentUpdateDraft.prepared,
+                    isCurrent: () => mounted.current && updateContext.current.token === token,
+                  }).catch(error => {
+                    if (mounted.current && updateContext.current.token === token) setFailure(contributionErrorKey(error));
+                  }).finally(() => {
+                    if (mounted.current && updateContext.current.token === token) setUpdateRefresh(value => value + 1);
+                  });
+                }}>{t(`${copy}.submitVersion`, { version: installedLocal.version })}</Button>
             ) : null}
             {localInstallation?.state === 'missing' && plugin.market.state === 'available' && onInstallPublished && writeReady ? (
               <Button variant="secondary" size="sm" loading={installBusy} disabled={installBusy}
@@ -946,6 +996,13 @@ export function MyPluginsPage({
           </div>
         </div>
         {updateUnavailable && (installedLocal || plugin.publisherKind === 'official') ? <p role="status" className="text-12 leading-5 text-[var(--text-tertiary)]">{updateUnavailable}</p> : null}
+        {canPrepareUpdate ? currentUpdateDraft?.prepared ? <>
+          <p className="text-13 font-medium leading-5 text-[var(--text-primary)]">{currentUpdateDraft.prepared.name} · {currentUpdateDraft.prepared.version}</p>
+          <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-secondary)]">{currentUpdateDraft.prepared.description}</p>
+          <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
+          <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{currentUpdateDraft.prepared.releaseNotes?.trim() || t(`${copy}.notesMissing`)}</p>
+          {updateBlocker ? <p role="status" className="text-13 leading-5 text-[var(--text-secondary)]">{updateBlocker.message}</p> : null}
+        </> : <p role={currentUpdateDraft?.error ? 'alert' : 'status'} className="text-13 leading-5 text-[var(--text-secondary)]">{t(currentUpdateDraft?.error ?? `${copy}.preparing`)}</p> : null}
       </section>
       <section aria-label={t(`${copy}.listedVersion`)} className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <h2 className="text-16 font-medium leading-6 text-[var(--text-primary)]">

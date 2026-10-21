@@ -25,8 +25,12 @@ describe('workflow-owned author presentation', () => {
     expect(toGhostPluginDetail(organization).author).toBe('Package claim');
     expect(toGhostPluginDetail({ ...organization, manifest: { ...installed.manifest, author: undefined } }).author).toBeNull();
   });
-  it('does not display a local package author when verified market attribution is absent', () => {
-    expect(toGhostPluginDetail(installed).author).toBeNull();
+  it('does not display a public package author when verified market attribution is absent', () => {
+    expect(toGhostPluginDetail({ ...installed, publishingSource: { kind: 'public-market', pluginId: 'public-1' } }).author).toBeNull();
+  });
+  it('preserves package attribution for local and legacy installations', () => {
+    expect(toGhostPluginDetail(installed).author).toBe('Package claim');
+    expect(toGhostPluginDetail({ ...installed, publishingSource: { kind: 'local', source: 'manual' } }).author).toBe('Package claim');
   });
   it('uses the market attribution and does not fall back when it is explicitly missing', () => {
     const presentation = { name: 'Example', description: '', iconDataUrl: undefined, author: 'Verified account' };

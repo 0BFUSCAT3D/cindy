@@ -602,10 +602,16 @@ describe('workflow display author projection', () => {
     if (state === 'missing') runtime.approvedInstallEvidence.mockReturnValue(null);
     if (state === 'mismatch') h.evidence.packageSha256 = 'c'.repeat(64);
     h.item.displayAuthor = 'Current name';
+    const installedRelease = h.item.currentRelease;
     h.item.currentRelease = { ...h.item.currentRelease, id: 'release-2', version: '2.0.0', sha256: 'b'.repeat(64) };
     const item = (await h.service.snapshot({ discoveryOnly: true })).items[0];
     expect(item.installState).toBe('update-available');
-    expect(item.installedAuthor).toBe(state === 'verified' ? 'Current name' : undefined);
+    expect(item.author).toBe('Current name');
+    expect(item.installedAuthor).toBe(state === 'verified' ? null : undefined);
+    if (state === 'verified') {
+      h.item.currentRelease = installedRelease;
+      expect((await h.service.snapshot({ discoveryOnly: true })).items[0].installedAuthor).toBe('Current name');
+    }
   });
   it.each([
     { displayAuthor: '名'.repeat(100), expected: '名'.repeat(100) },

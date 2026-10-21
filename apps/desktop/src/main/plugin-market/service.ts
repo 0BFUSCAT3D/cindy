@@ -2656,7 +2656,8 @@ export class PluginMarketService {
       author,
       ...(plugin.scope === 'public' && plugin.publisherKind !== undefined ? { publisherKind: plugin.publisherKind } : {}),
       ...(evidence?.packageSha256 && evidence.packageSha256 === record?.sha256
-        ? { installedAuthor: author }
+        ? { installedAuthor: record.releaseId === plugin.currentRelease.id
+          && record.sha256 === plugin.currentRelease.sha256 ? author : null }
         : {}),
       scope: plugin.scope,
       organizationId: plugin.organizationId,

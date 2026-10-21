@@ -115,7 +115,7 @@ async function prepare(
 ): Promise<PreparedPluginContribution> {
   await prune();
   assertContributionOwner(owner);
-  if ([...entries.values()].filter((entry) => entry.owner === owner).length >= 8)
+  if ([...entries.values()].filter((entry) => entry.owner === owner && !entry.pinned).length >= 8)
     throwIpcError('PRECONDITION_FAILED', 'Too many prepared contributions');
   const manager = getGhostManager();
   const { ghost, source } = readContributionInstallation(instanceId, expected);

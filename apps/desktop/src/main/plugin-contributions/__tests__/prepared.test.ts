@@ -163,3 +163,19 @@ it('gives concurrent preview callers independent ownership', async () => {
   await prepared.releasePreparedContribution(first.preparedId);
   expect(prepared.getPreparedContribution(second.preparedId).summary).toEqual(second);
 });
+
+it('keeps operation-owned packages without consuming the eight preview slots', async () => {
+  const ids: string[] = [];
+  try {
+    for (let i = 0; i < 8; i++) {
+      const summary = await prepared.prepareInstalledContribution('hello');
+      ids.push(summary.preparedId);
+      prepared.getPreparedContribution(summary.preparedId).pinned = true;
+    }
+    for (let i = 0; i < 8; i++) ids.push((await prepared.prepareInstalledContribution('hello')).preparedId);
+    await expect(prepared.prepareInstalledContribution('hello')).rejects.toThrow('Too many prepared contributions');
+    await expect(fsp.access(prepared.getPreparedContribution(ids[0]).filePath)).resolves.toBeUndefined();
+  } finally {
+    await Promise.all(ids.map(id => prepared.releasePreparedContribution(id)));
+  }
+});

@@ -3463,6 +3463,22 @@ describe('personal contribution account surface', () => {
     expect(permission).not.toHaveBeenCalled();
   });
 
+  it('keeps accepted background submission alive after normal input completion but rechecks its scope', async () => {
+    let active = true, writable = true, allowed = true;
+    liveGrantStateMock.mockReturnValue({ permissionMode: 'bypassPermissions', remoteHostId: null,
+      isCurrent: () => writable, contributionAccountAllowed: async (accepted = false) => allowed && (active || accepted) });
+    const deps = makeDeps('pi', 'author', 'author-instance');
+    await expect(deps.communityContribution!({ action: 'submit', id: 'prepared-1' })).resolves.toMatchObject({ ok: true });
+    const check = communitySubmitMock.mock.calls[0][1] as () => Promise<void>;
+    active = false;
+    await expect(check()).resolves.toBeUndefined();
+    await expect(deps.communityContribution!({ action: 'list' })).resolves.toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+    writable = false;
+    await expect(check()).rejects.toThrow('PERMISSION_DENIED');
+    writable = true; allowed = false;
+    await expect(check()).rejects.toThrow('PERMISSION_DENIED');
+  });
+
   it.each(['allow', 'block'] as const)('honors Auto %s for the exact public bytes', async (verdict) => {
     const permission = vi.fn();
     const reviewAction = vi.fn<(action: { description: string }) => Promise<{ verdict: typeof verdict; reason: string }>>()

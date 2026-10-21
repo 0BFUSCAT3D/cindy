@@ -1102,14 +1102,21 @@ export function getMaker(): Maker {
         const session = _maker?.getSession(sessionId);
         if (!session || session.instanceId !== sessionInstanceId) return null;
         const snapshot = resolveGhostFsSessionSnapshot((id) => _maker?.getSession(id), sessionId, sessionInstanceId);
+        const acceptedInput = getSessionInputProvenance(sessionId);
+        const accountInput = isActiveInputAccountScoped(sessionId);
         return {
-          contributionAccountAllowed: async () => {
-            if (!isActiveInputAccountScoped(sessionId) || isAppSessionBoundaryPending()) return false;
+          contributionAccountAllowed: async (acceptedOperation = false) => {
+            const current = () => !isAppSessionBoundaryPending() && _maker?.getSession(sessionId) === session
+              && (acceptedOperation ? accountInput : isActiveInputAccountScoped(sessionId));
+            if (!current()) return false;
             const db = getCurrentDbClientSnapshot();
             if (!db) return false;
-            const surface = await resolveHelperSurface(db.client, sessionId, getSessionInputProvenance);
+            // An authorized upload outlives the input that started it. Keep that
+            // input's identity; recheck task, owner, helper surface and permissions.
+            const surface = await resolveHelperSurface(db.client, sessionId,
+              acceptedOperation ? () => acceptedInput : getSessionInputProvenance);
             return surface !== 'restricted' && db === getCurrentDbClientSnapshot()
-              && !isAppSessionBoundaryPending() && isActiveInputAccountScoped(sessionId);
+              && current();
           },
           permissionMode: session.stablePermissionModeState?.mode ?? null,
           remoteHostId: session.remoteHostId,

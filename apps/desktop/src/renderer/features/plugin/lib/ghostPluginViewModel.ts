@@ -8,6 +8,7 @@
 
 import {
   ghostContentKeys,
+  ghostFallbackDisplayAuthor,
   ghostPermissionItems,
   type GhostInstallApproval,
   type GhostPermissionItem,
@@ -325,8 +326,7 @@ export function toGhostPluginDetail(
     ...listItem,
     trust: listItem.trust!,
     releaseNotes: manifest.releaseNotes,
-    author: presentation ? presentation.author
-      : typeof ghost.namespace === 'string' ? manifest.author ?? null : null,
+    author: presentation ? presentation.author : ghostFallbackDisplayAuthor(ghost),
     contents: ghostContentKeys(manifest),
     permissions: ghostPermissionItems(manifest),
     tools: manifest.tools ?? [],

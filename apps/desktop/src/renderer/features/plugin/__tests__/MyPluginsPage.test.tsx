@@ -100,7 +100,7 @@ function reader(transfers: ContributionTransferView[] = []): PluginContributions
   return {
     reviewUpdates: vi.fn().mockResolvedValue([]),
     markReviewRead: vi.fn(),
-    prepare: vi.fn(),
+    prepare: vi.fn(async (instanceId: string) => packagePreview(instanceId, '1.2.0')),
     submit: vi.fn(),
     resume: vi.fn(),
     cancel: vi.fn(),
@@ -160,22 +160,49 @@ beforeEach(() => {
   auth.owner = 'A';
   auth.generation = 1;
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('My Plugins facts', () => {
+  it('shows the actual new package notes before submitting the same prepared package', async () => {
+    const api = reader();
+    const preview = { ...packagePreview('exact-instance', '1.2.0'), releaseNotes: 'Not yet submitted: new package changes' };
+    vi.mocked(api.prepare).mockResolvedValue(preview);
+    const submit = vi.fn().mockResolvedValue(false);
+    view(api, true, {}, [{ id: 'exact-instance', name: 'Local Plugin', version: '1.2.0' } as GhostPluginListItem], submit);
+    const local = await screen.findByRole('region', { name: `${prefix}.localVersion` });
+    await within(local).findByText(preview.releaseNotes);
+    expect(within(local).queryByText('New version changes')).toBeNull();
+    expect(api.submit).not.toHaveBeenCalled();
+    fireEvent.click(await within(local).findByRole('button', { name: `${prefix}.submitVersion 1.2.0` }));
+    expect(submit).toHaveBeenCalledExactlyOnceWith('exact-instance', { prepared: preview, isCurrent: expect.any(Function) });
+  });
+
+  it('shows the new package preflight blocker without a submission button', async () => {
+    const api = reader();
+    const preview = packagePreview('exact-instance', '1.2.0');
+    vi.mocked(api.prepare).mockResolvedValue({ ...preview, preflight: { ...preview.preflight!,
+      blockers: [{ code: 'VERSION_ALREADY_SUBMITTED', message: 'This exact new package version is already submitted.' }], actions: { canSubmit: false } } });
+    view(api);
+    const local = await screen.findByRole('region', { name: `${prefix}.localVersion` });
+    await within(local).findByText('This exact new package version is already submitted.');
+    expect(within(local).queryByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeNull();
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
   it('opens an independent management page with immediately visible versions and publishing controls', async () => {
     const api = reader();
     view(api);
     await waitForManagement();
     expect(screen.getByLabelText(`${prefix}.versionFacts`).closest('details')).toBeNull();
-    expect(screen.getByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeTruthy();
     expect(screen.getByText('New version changes')).toBeTruthy();
     expect(screen.queryByText(`${prefix}.versionUpdates`)).toBeNull();
     expect(screen.queryByRole('switch', { name: 'settings.ghosts.enableAria' })).toBeNull();
-    expect(api.prepare).not.toHaveBeenCalled();
+    expect(api.prepare).toHaveBeenCalledWith('exact-instance');
+    expect(api.submit).not.toHaveBeenCalled();
   });
 
-  it('shows the running version in the developer list and opens management without preparing a package', async () => {
+  it('shows the running version in the developer list and opens management with a read-only package preview', async () => {
     const api = reader();
     view(api, false);
     const row = await screen.findByRole('button', { name: /My Plugin/ });
@@ -184,8 +211,8 @@ describe('My Plugins facts', () => {
     fireEvent.click(row);
     await waitForManagement();
     expect(within(screen.getByLabelText(`${prefix}.versionFacts`)).getByText('1.2.0')).toBeTruthy();
-    expect(screen.getByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeTruthy();
-    expect(api.prepare).not.toHaveBeenCalled();
+    expect(await screen.findByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeTruthy();
+    expect(api.prepare).toHaveBeenCalledWith('exact-instance');
     expect(api.submit).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: `${prefix}.myPlugins` }));
     expect(await screen.findByRole('button', { name: /My Plugin/ })).toBeTruthy();
@@ -501,7 +528,7 @@ describe('My Plugins facts', () => {
     expect(screen.getByText('Full reason, line one Full reason, line two')).toBeTruthy();
     expect(screen.queryByRole('button', { name: `${prefix}.viewMarket` })).toBeNull();
     expect(screen.queryByRole('button', { name: `${prefix}.openLocal` })).toBeNull();
-    expect(screen.getByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeTruthy();
     const history = screen.getByText(`${prefix}.history`).closest('details')!;
     expect(history.open).toBe(false);
     await openHistory();
@@ -522,6 +549,7 @@ describe('My Plugins facts', () => {
     let finish!: (value: MyPluginDetailView) => void;
     vi.mocked(api.detail).mockReturnValue(new Promise(resolve => { finish = resolve; }));
     const reads = vi.mocked(api.detail).mock.calls.length;
+    vi.mocked(api.prepare).mockClear();
     rendered.rerender(element('replacement-package'));
     expect(screen.queryByRole('button', { name: `${prefix}.submitVersion 1.2.0` })?.hasAttribute('disabled') ?? true).toBe(true);
     await waitFor(() => expect(vi.mocked(api.detail).mock.calls.length).toBeGreaterThan(reads));
@@ -982,7 +1010,6 @@ describe('review result indicators in My Plugins', () => {
     const count = reviews.markRead.mock.calls.length;
     await act(async () => {});
     expect(reviews.markRead.mock.calls.length).toBe(count);
-    vi.restoreAllMocks();
   });
   it('does not clear an older unread decision when viewing a newer pending version; opens its exact paginated version', async () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
@@ -1007,7 +1034,6 @@ describe('review result indicators in My Plugins', () => {
     expect(within(facts).getByText('1.2.0')).toBeTruthy();
     expect(within(facts).getByText('2.0.0')).toBeTruthy(); // Still the real pending version after opening old approval.
     expect(within(facts).getByText('1.0.0')).toBeTruthy();
-    vi.restoreAllMocks();
   });
 });
 
