@@ -83,7 +83,9 @@ import { isCindyMakeWorktreePath } from '../cindy-make/taskWorkspace.js';
 import { runSourceGit } from '../cindy-make/sourceGit.js';
 import { createMakeToolchainEnvironment } from '../cindy-make/toolchainEnvironment.js';
 import { getMessagesForHistory } from '../localDb/chatHistoryReader.js';
-import { getWorkerLink, updateWorkerStatus } from '../localDb/orcaTeamStore.js';
+import { getWorkerLink, updateWorkerStatus, getRemoteOrcaSession, listWorkersByLead, getActiveTeamByLead } from '../localDb/orcaTeamStore.js';
+import { createOrcaRemoteWorkerBridge } from '../maker-ipc/orcaRemoteWorkerBridge.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
 import { cleanupSessionTempAttachments } from '../maker-ipc/normalizeAttachments.js';
 import { resolveGhostFsSessionSnapshot } from '../maker-ipc/ghostFsSessionSnapshot.js';
 import { HOST_CONFIRM_TIMEOUT_MS } from '../maker-ipc/hostConfirmTiming.js';
@@ -116,6 +118,9 @@ import { prepareBotWorkspaceRuntime } from '../maker-ipc/botWorkspaceRuntime.js'
 import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import {
   dispatchInterAgentMessage,
+  captureRemoteWorkerReportSettlement,
+  getSessionActiveInputClientIds,
+  getSessionInputProvenance,
   isActiveInputOwnerAuthored,
   isSessionInTurn,
   wireSessionToIpc,
@@ -403,6 +408,15 @@ type RemoteCcQuery = Awaited<
 >;
 
 let _maker: Maker | null = null;
+let remoteWorkerBridge: ReturnType<typeof createOrcaRemoteWorkerBridge> | null = null;
+
+export function handleRemoteWorkerBridge(
+  raw: unknown,
+  caller: { controllerDeviceId: string; sharedTask?: unknown } | null,
+) {
+  if (!remoteWorkerBridge) throwIpcError('PRECONDITION_FAILED', 'worker bridge unavailable');
+  return remoteWorkerBridge.handle(raw, caller);
+}
 /** Upper bound for letting the confirming turn finish its reply before an Agent-approved restart. */
 const AGENT_APP_UPDATE_TURN_DRAIN_MS = 2 * 60 * 1000;
 /** Prepared Bot runtime records waiting for the matching Maker startup result. */
@@ -1236,6 +1250,7 @@ export function getMaker(): Maker {
         return { makerMemoryEnabled: createOpts.makerMemoryEnabled === true };
       },
       orcaTeamStore: orcaTeamStoreAdapter,
+      forwardRemoteWorkerTool: (ctx, tool, args) => remoteWorkerBridge?.forwardTool(ctx, tool, args) ?? Promise.resolve(null),
       readLeadHistory: async ({ leadSessionId, fromMs, limit, cursor }) => {
         const page = await getMessagesForHistory({
           sessionIds: [leadSessionId],
@@ -1264,6 +1279,18 @@ export function getMaker(): Maker {
       dispatchInterAgentMessage,
     } satisfies OrcaBridgeMcpDeps;
     const orcaWorkerBridgeProvider = createOrcaWorkerBridgeMcpProvider(orcaBridgeDeps);
+    remoteWorkerBridge = createOrcaRemoteWorkerBridge({
+      getOwnerToken: getCurrentDbClientSnapshot,
+      readSession: getRemoteOrcaSession,
+      listWorkers: listWorkersByLead,
+      activeTeamId: async id => (await getActiveTeamByLead(id))?.id ?? null,
+      remoteInvoke,
+      // Remote runtime settles only the reported inputs; queued assignments keep running.
+      invokeTool: (ctx, tool, args) => orcaWorkerBridgeProvider.invokeTool(ctx, tool, args, { manageWorkerStatus: false }),
+      getActiveInputClientIds: getSessionActiveInputClientIds,
+      getAcceptedInputProvenance: sessionId => getSessionInputProvenance(sessionId).input,
+      captureReportSettlement: captureRemoteWorkerReportSettlement,
+    });
     // Cindy Make 个人版任务专属工具:只有 sessions.source='cindy-make' 的任务在
     // bootstrapSession 时拿到 vendorOptions 标记;Claude 据标记决定注册,Pi 按会话
     // 剔出 server 列表,Codex 按线程下发 enabled=false,工具调用再按标记 fail-closed。
@@ -3248,6 +3275,7 @@ export async function preflightBotRuntimeResources(
  * 重置 Maker 单例（切账号 / 测试用）。
  */
 export function resetMaker(): void {
+  remoteWorkerBridge = null;
   disposeRemoteAgentHost();
   _sessionArchiveSync?.stop();
   _sessionArchiveSync = null;

@@ -2698,6 +2698,29 @@ describe('Chat Server result delivery and refresh', () => {
       expect(writes()).toHaveLength(1);
     });
 
+    // bot-group-chat.md §10「话题未读与提示」: following is the reader's own switch, kept by the server.
+    it('follows a Thread only when the reader switches it on, restating its read position', async () => {
+      let following = false;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [...shares, ...replies, root].sort((a, b) => Number(b.seq) - Number(a.seq)), cursor: '8', reads: [{ thread_key: rootId, read_seq: '3', following }] } };
+        if (route.includes('threadRootId=')) return { body: [...replies].reverse() };
+        if (route === `/conversations/${roomId}/read` && method === 'POST') { following = (body as { following: boolean }).following; return { body: { readSeq: '3', following } }; }
+        return threadResponse(route, method, body);
+      });
+      const writes = () => fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/read` && method === 'POST');
+      expect(await service.chatServer!.thread({ groupId: roomId, rootId })).toMatchObject({ ok: true, following: false });
+      expect(writes()).toHaveLength(0);
+      expect(await service.chatServer!.followThread({ groupId: roomId, rootId, following: true })).toEqual({ ok: true, following: true });
+      expect(writes()).toHaveLength(1);
+      expect(writes()[0]![2]).toMatchObject({ threadRootId: rootId, readSeq: '3', following: true });
+      await vi.advanceTimersByTimeAsync(150);
+      const listed = await service.getGroup(roomId);
+      if (!listed.ok) throw new Error('Expected group');
+      expect(listed.group.threads?.find(thread => thread.rootId === rootId)?.following).toBe(true);
+      // Saving the switch reads no Thread page, so a failing page read cannot turn a saved choice into an error.
+      expect(fixture.handle.mock.calls.filter(([route]) => route.includes('threadRootId=')).length).toBe(1);
+    });
+
     it('projects distinct responders independently of repeated-author summaries', async () => {
       const rows = [botId, botId, botId, aliceId, selfId].map((author, i) =>
         msg(`70000000-0000-4000-8000-00000000000${i + 1}`, 6 - i, author, { threadRootId: rootId }));

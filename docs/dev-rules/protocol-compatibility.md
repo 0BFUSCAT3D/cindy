@@ -1500,6 +1500,25 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
+主动回报可选追加 `maker:orca:remote-worker:bridge`，仅同账号 allowlist；不进入共享任务、
+供应商分享清单。运行设备从本机持久来源标记选定 Lead 电脑，传真实任务 ID、Lead ID、
+四个既有 Worker 工具名之一与其原参数。Lead 从 server 盖章的来源设备 ID 反查 active team
+内的 Worker，核对真实任务和 `worker_id`，再调用与本机 MCP 相同的 handler／schema；
+请求不能自报本机 role 或指定任意目标。根 Agent 回报限制在运行设备转发前执行。
+桥接请求可选增加 `reportedInputClientIds`（最多 64 个安全 ID），由运行宿主在工具调用入口
+同步捕获本轮已消费输入，不接受模型参数指定。Lead 仅结清相交的等待输入；仍在排队的新
+输入保持持久等待记录和运行状态。旧端缺少此字段时不清除等待记录，保留自动回报兜底；
+新字段不改变四个 MCP 工具 schema，也不改变本机 Worker 的回报路径。
+`caps` 可选增加 `workerBridge: true`，协议版本仍为 1，既有 open/release 载荷不变；
+桥接沿既有同账号远控授权，Lead 电脑未开放反向远控时也保留自动回报，不扩大授权。
+旧端忽略可选字段或返回 `CHANNEL_NOT_ALLOWED`，保留原有完成后自动回报，不降级为通用 handoff，
+不自动重试结果不明的写操作。完整主动往返需要 Lead 与运行设备均更新，服务端无需变化。
+`get_current_session_id` 和 `list_sessions` 可选投影既有远端来源标记；普通任务不增加空字段。
+桌面及手机的控制端继续通过任务所属电脑使用协同，不新增 UI、push 或 Mobile 原生输入。
+故障动作只影响当前 Worker 的一次桥接请求，不重启 peer 或共享 relay；另一设备的自动回报
+继续由既有运行时处理。权限隔离、旧端、账号切换与真实 handler 往返见
+`apps/desktop/src/main/maker-ipc/__tests__/orcaRemoteWorkerBridge.test.ts`。
+
 Orca 原地 Agent 切换补充边界：执行设备任务按既有 `orca_remote_lead` 判定，
 与 `orca_role` 一样拒绝用户换 Agent 位置，不新增 wire 字段或版本要求。
 Mobile 对已在另一台电脑运行的 Orca Agent，按所展示的模型目录所在电脑查询
