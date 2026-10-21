@@ -81,6 +81,7 @@ vi.mock("@expo/ui/swift-ui", () => {
     Group: Container,
     HStack: Container,
     ZStack: Container,
+    Rectangle: () => null,
     RNHostView: Container,
     Text: Container,
     Image: () => null,
@@ -297,7 +298,7 @@ it("refreshes only after the target peer recovers and retains cached offline nav
   expect(h.compact.tags).toHaveLength(1);
   const manage = () =>
     node.querySelector<HTMLButtonElement>(
-      'button[aria-label="taskTags.title"]',
+      'button[aria-label="taskTags.more"]',
     )!;
   expect(manage().disabled).toBe(false);
   expect(
@@ -321,7 +322,7 @@ it("refreshes only after the target peer recovers and retains cached offline nav
 it("does not expose native management when offline without a catalog", async () => {
   h.context.status = "offline";
   await render();
-  expect(node.querySelector('button[aria-label="taskTags.title"]')).toBeNull();
+  expect(node.querySelector('button[aria-label="taskTags.more"]')).toBeNull();
 });
 it("discards the request from before peer recovery", async () => {
   let finish!: (value: any) => void;
@@ -380,4 +381,54 @@ it("retries a committed attachment whose response was lost without updating a st
   const actions = h.invoke.mock.calls.map((call) => call[2][0].action);
   expect(actions).toEqual(["get", "create", "attach", "attach"]);
   expect(node.querySelector("input")).toBeNull();
+});
+
+it("drives native tag pages from the shared expanded state", async () => {
+  const second = { ...tag, id: "second", name: "Home", revision: 1 };
+  h.invoke.mockImplementation(async (_device, _channel, [request]) => ({
+    tags: request.action === "reorder" ? [second, tag] : [tag, second],
+    sessions: [],
+  }));
+  let state: any;
+  const pages: (string | null)[] = [];
+  let back = () => {};
+  await act(async () =>
+    root.render(
+      <TaskTagsPanel
+        session={session}
+        expanded
+        onExpandedChange={onExpandedChange}
+        renderExpanded={(value) => {
+          state = value;
+          return null;
+        }}
+        onPageChange={(page, goBack) => {
+          pages.push(page);
+          back = goBack;
+        }}
+      />,
+    ),
+  );
+  expect(state.page).toBe("list");
+  expect(state.tags.map((item: any) => item.id)).toEqual(["tag", "second"]);
+  await act(async () => state.onMove(0, 1));
+  expect(h.invoke.mock.calls.at(-1)![2][0]).toEqual({
+    action: "reorder",
+    tagIds: ["second", "tag"],
+    expectedOrder: ["tag", "second"],
+  });
+  await act(async () => state.onEdit("tag"));
+  expect(state.page).toBe("edit");
+  expect(state.form.canDelete).toBe(true);
+  await act(async () => back());
+  expect(state.page).toBe("list");
+  await act(async () => state.onAdd());
+  expect(state.page).toBe("add");
+  expect(state.form.canSubmit).toBe(false);
+  await act(async () => state.form.onNameChange("Ideas"));
+  expect(state.form.canSubmit).toBe(true);
+  await act(async () => back());
+  await act(async () => back());
+  expect(onExpandedChange).toHaveBeenCalledWith(false);
+  expect(pages).toEqual(["list", "edit", "list", "add", "list"]);
 });

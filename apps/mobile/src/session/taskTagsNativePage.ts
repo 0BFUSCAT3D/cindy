@@ -1,0 +1,29 @@
+import { useCallback, useRef, useState } from 'react';
+import type { TaskTagsPage } from './TaskTags';
+
+/** Swatch diameters: list rows sit beside text; pickers are the tap target themselves. */
+export const TAG_SWATCH = { row: 22, picker: 28 } as const;
+
+/** Header state for a native sheet hosting the expanded tag pages. */
+export function useTaskTagsNativePage() {
+  const [page, setPage] = useState<TaskTagsPage | null>(null);
+  const backRef = useRef<() => void>(() => {});
+  const onPageChange = useCallback((next: TaskTagsPage | null, back: () => void) => {
+    backRef.current = back;
+    setPage(next);
+  }, []);
+  const back = useCallback(() => backRef.current(), []);
+  return { page, back, onPageChange };
+}
+
+export function taskTagsPageTitle(page: TaskTagsPage, t: (key: string) => string) {
+  return t(
+    page === 'add'
+      ? 'taskTags.add'
+      : page === 'edit'
+        ? 'taskTags.editTitle'
+        : page === 'delete'
+          ? 'taskTags.delete'
+          : 'taskTags.title',
+  );
+}
