@@ -67,9 +67,9 @@ function emptyGlance(botId: string): BotGlance {
   return { botId, scope: 'own', waiting: [], working: [], lastSweepAt: 0, doneToday: 0, offlineDevices: [] };
 }
 
-export async function getBotAutonomyGlance(
+export function getBotAutonomyGlance(
   botId: string, options?: GlanceOptions, refreshRemote = true,
-): Promise<BotGlance> {
+): BotGlance {
   if (isAppSessionBoundaryPending()) throwIpcError('PRECONDITION_FAILED', 'App session is switching; retry later.');
   const active = current && scopeIsCurrent(current.scope) ? current.runtime : null;
   if (!active) return emptyGlance(botId);

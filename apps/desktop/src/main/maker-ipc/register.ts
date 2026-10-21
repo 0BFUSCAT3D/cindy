@@ -3541,7 +3541,7 @@ function cancelPendingInteraction(requestId: string, decision: InteractionDecisi
 
 /** Narrow detached-workbench action: the Bot's live glance must still own this exact local permission. */
 export function allowBotWorkbenchPendingPermission(botId: string, sessionId: string, requestId: string): { accepted: boolean } {
-  const row = getBotAutonomyGlance(botId).waiting.find((item) =>
+  const row = getBotAutonomyGlance(botId, undefined, false).waiting.find((item) =>
     item.deviceId === null && item.sessionId === sessionId &&
     item.requestId === requestId && item.waitingFor === 'permission');
   const pending = pendingInteractionResolvers.get(requestId);

@@ -76,7 +76,7 @@ it('only refreshes remote state for an explicit scheduler workbench read and dis
   expect(await getBotAutonomyGlance('sched')).toBe(projection);
   expect(remote).toHaveBeenCalledOnce();
   remote.mockImplementationOnce(async () => { h.scope = 'b'; });
-  await expect(getBotAutonomyGlance('sched')).rejects.toThrow('PRECONDITION_FAILED');
+  expect(() => getBotAutonomyGlance('sched')).toThrow('PRECONDITION_FAILED');
 });
 
 // Unit regression for #6675: a nonresponding peer must not block the first cached
@@ -89,15 +89,12 @@ it('returns the cached glance while a remote peer is still pending or fails', as
     watch: { getSchedulerBotId: () => 'sched', refreshRemote: () => pending },
     glance: () => projection,
   } as unknown as BotAutonomyRuntime });
-  let received: unknown;
-  const read = getBotAutonomyGlance('sched').then(value => { received = value; });
   try {
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(received).toBe(projection);
+    // The detached permission handler also consumes this synchronous projection.
+    expect(getBotAutonomyGlance('sched')).toBe(projection);
   } finally {
     rejectRemote(new Error('remote unavailable'));
-    await read.catch(() => {});
+    await Promise.resolve();
   }
   expect(await getBotAutonomyGlance('sched', undefined, false)).toBe(projection);
 });
