@@ -4733,6 +4733,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       // the transition's own commit/rollback broadcast publish the settled state.
       const recovery = await resolveColdStartTimeoutRecovery({
         ownerTransitionPending: ownerChangeShellGate.isPending(),
+        loginCommitPending: sealedLoginFlowCommitDepths.size > 0,
         authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
         isStartupFallbackEpoch: (epoch) =>
           epoch > initializeStartEpoch &&

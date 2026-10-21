@@ -80,6 +80,7 @@ export async function awaitWithStartupTimeout<T>(
 export async function resolveColdStartTimeoutRecovery<TCurrent, TPending, TRecovered>(input: {
   ownerTransitionPending: boolean;
   authChangedSinceInitialize: boolean;
+  loginCommitPending: boolean;
   isStartupFallbackEpoch: (epoch: number) => boolean;
   timeoutStartEpoch: number;
   currentEpoch: number;
@@ -87,11 +88,10 @@ export async function resolveColdStartTimeoutRecovery<TCurrent, TPending, TRecov
   pendingState: TPending;
   recover: () => Promise<TRecovered>;
 }): Promise<TCurrent | TPending | TRecovered> {
-  // A pending owner transition owns the user-data boundary. Do not wait on its
-  // teardown from the startup timeout callback and do not start a competing
-  // account-free cleanup; return a fail-closed projection while the transition's
-  // own commit/rollback broadcast will publish the settled state.
-  if (input.ownerTransitionPending) return input.pendingState;
+  // A pending owner transition owns the user-data boundary. A login also reserves
+  // the auth epoch before its async vault/owner transaction commits. Neither may
+  // race a timeout recovery; their own commit/rollback publishes the settled state.
+  if (input.ownerTransitionPending || input.loginCommitPending) return input.pendingState;
   // Sibling renderers share one refresh but own independent startup timers. A
   // user may complete login after one timeout exposes the login page and before
   // another timer fires; that later timeout must preserve the authenticated state.

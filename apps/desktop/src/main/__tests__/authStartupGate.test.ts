@@ -193,6 +193,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     const result = await resolveColdStartTimeoutRecovery({
       ownerTransitionPending: true,
       authChangedSinceInitialize: false,
+      loginCommitPending: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
@@ -212,6 +213,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
+      loginCommitPending: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
@@ -222,6 +224,23 @@ describe('ColdStartAuthFallbackRegistry', () => {
     expect(recover).toHaveBeenCalledOnce();
   });
 
+  it('returns a pending boundary while an explicit login transaction is committing', async () => {
+    const pendingState = { mode: 'signed-out', ownerBoundaryPending: true } as const;
+    const recover = vi.fn(async () => ({ mode: 'signed-out' as const }));
+    await expect(resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: false,
+      authChangedSinceInitialize: false,
+      loginCommitPending: true,
+      isStartupFallbackEpoch: () => false,
+      timeoutStartEpoch: 7,
+      currentEpoch: 8,
+      currentState: { mode: 'cloud', userId: 'login-committing' },
+      pendingState,
+      recover,
+    })).resolves.toEqual(pendingState);
+    expect(recover).not.toHaveBeenCalled();
+  });
+
   it('preserves an explicit login completed before a sibling startup timeout', async () => {
     const loggedInState = { mode: 'cloud', userId: 'new-owner' } as const;
     const recover = vi.fn(async () => ({ mode: 'signed-out' as const }));
@@ -229,6 +248,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
+      loginCommitPending: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 8,
@@ -252,6 +272,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
+      loginCommitPending: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: initializeStartEpoch,
       currentEpoch: authStateEpoch,
