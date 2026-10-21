@@ -335,7 +335,11 @@ export class TaskWatch {
   refreshRemote(): Promise<void> {
     if (this.stopped) return Promise.resolve();
     if (!this.remoteRefresh) {
-      this.remoteRefresh = this.pollRemote(this.deps.now()).finally(() => { this.remoteRefresh = null; });
+      this.remoteRefresh = this.pollRemote(this.deps.now()).finally(() => {
+        this.remoteRefresh = null;
+        // View reads already returned cached rows. Runtime deduplicates unchanged projections.
+        if (!this.stopped) this.deps.onChange();
+      });
     }
     return this.remoteRefresh;
   }

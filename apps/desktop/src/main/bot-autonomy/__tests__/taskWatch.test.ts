@@ -457,15 +457,26 @@ it('stops global observation on opt-out and rehydrates current activity on opt-i
   expect(h.listRemoteDevices).not.toHaveBeenCalled();
 });
 
-it('keeps remote IO out of scheduled sweeps and coalesces explicit view reads', async () => {
+// Unit #6675: after returning cached glance, the visible view needs a change signal
+// carrying updated rows. Previously only the awaited read saw the remote result.
+it('keeps remote IO out of scheduled sweeps and notifies coalesced view reads of new rows', async () => {
   const h = harness({ devices: [{ deviceId: 'dev-1', name: 'Studio', online: true, eligible: true }],
-    invokeRemote: async () => [] });
+    invokeRemote: async (_device, channel) => channel === 'maker:list-active'
+      ? [{ sessionId: 'r1', isTurnRunning: true, activityPhase: 'running' }]
+      : [{ id: 'r1', title: 'Remote task', source: 'desktop', status: 'active' }] });
   await h.watch.start();
   await h.watch.sweep();
   expect(h.listRemoteDevices).not.toHaveBeenCalled();
+  h.onChange.mockClear();
+  const displayed: string[][] = [];
+  h.onChange.mockImplementation(() => { displayed.push(h.watch.list().map(row => row.title)); });
   await Promise.all([h.watch.refreshRemote(), h.watch.refreshRemote()]);
-  expect(h.invokeRemote).toHaveBeenCalledTimes(1);
+  expect(h.invokeRemote).toHaveBeenCalledTimes(2);
+  expect(displayed).toEqual([['Remote task']]);
+  // The notification's reread stays inside the existing remote throttle.
+  await h.watch.refreshRemote();
+  expect(h.invokeRemote).toHaveBeenCalledTimes(2);
   h.advance(120_000);
   await h.watch.sweep();
-  expect(h.invokeRemote).toHaveBeenCalledTimes(1);
+  expect(h.invokeRemote).toHaveBeenCalledTimes(2);
 });

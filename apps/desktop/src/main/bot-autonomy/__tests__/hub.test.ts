@@ -78,3 +78,26 @@ it('only refreshes remote state for an explicit scheduler workbench read and dis
   remote.mockImplementationOnce(async () => { h.scope = 'b'; });
   await expect(getBotAutonomyGlance('sched')).rejects.toThrow('PRECONDITION_FAILED');
 });
+
+// Unit regression for #6675: a nonresponding peer must not block the first cached
+// glance. Existing immediate remote mocks cannot expose the unresolved IPC.
+it('returns the cached glance while a remote peer is still pending or fails', async () => {
+  let rejectRemote!: (error: Error) => void;
+  const pending = new Promise<void>((_resolve, reject) => { rejectRemote = reject; });
+  const projection = { botId: 'sched', working: [{ sessionId: 'local' }] };
+  setActiveBotAutonomy({ scope: 'a', engine: {} as RoutineEngine, runtime: {
+    watch: { getSchedulerBotId: () => 'sched', refreshRemote: () => pending },
+    glance: () => projection,
+  } as unknown as BotAutonomyRuntime });
+  let received: unknown;
+  const read = getBotAutonomyGlance('sched').then(value => { received = value; });
+  try {
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(received).toBe(projection);
+  } finally {
+    rejectRemote(new Error('remote unavailable'));
+    await read.catch(() => {});
+  }
+  expect(await getBotAutonomyGlance('sched', undefined, false)).toBe(projection);
+});

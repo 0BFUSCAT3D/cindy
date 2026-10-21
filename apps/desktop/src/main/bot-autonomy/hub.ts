@@ -75,7 +75,10 @@ export async function getBotAutonomyGlance(
   if (!active) return emptyGlance(botId);
   const scope = activeOwnerScopeKey();
   // The hidden auto-open probe and Agent reads use cached projections only.
-  if (refreshRemote && active.watch.getSchedulerBotId() === botId) await active.watch.refreshRemote();
+  // Return cached/local rows immediately; the watch pushes changes when remote IO settles.
+  if (refreshRemote && active.watch.getSchedulerBotId() === botId) {
+    void active.watch.refreshRemote().catch((error) => log.warn('autonomy remote refresh failed', { error: errorCode(error) }));
+  }
   assertOwner(scope);
   if (current?.runtime !== active) throwIpcError('PRECONDITION_FAILED', 'Task observation changed; retry later.');
   return active.glance(botId, options);
