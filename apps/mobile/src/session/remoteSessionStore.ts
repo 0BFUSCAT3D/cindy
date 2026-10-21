@@ -628,6 +628,13 @@ const streamingAssistantClientIds = new Map<string, string>();
 // Identities known to be separate from the current anonymous stream: rows present
 // at its start, plus persisted rows kept separate from it. Retain until it resolves.
 const generatedStreamPriorIdentities = new Map<string, Set<string>>();
+// Existing provider item identity can link a legacy delta without persistId to
+// its final. null means the anonymous batch did not establish one identity.
+const generatedStreamAgentIdentities = new Map<string, {
+  agentMessageId: string;
+  source: string | null;
+  deviceId: string | undefined;
+} | null>();
 // The same persisted streaming identity can be replayed by a stale transport after
 // re-link. Track the transport currently assembling that identity so a device switch
 // replaces the stale live text instead of concatenating two transports into one row.
@@ -671,6 +678,8 @@ const pendingTextDeltaBatches = new Map<string, {
   persistId?: string;
   deviceId?: string;
   agentMeta: Record<string, unknown> | null;
+  agentMessageId: string | null;
+  source: string | null;
 }>();
 let textDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let textDeltaFlushDeadlineAt: number | null = null;
@@ -701,6 +710,7 @@ function forgetStreamingAssistantDeviceId(sessionId: string, clientId: string): 
 
 function clearStreamingAssistantPointer(sessionId: string): boolean {
   generatedStreamPriorIdentities.delete(sessionId);
+  generatedStreamAgentIdentities.delete(sessionId);
   return streamingAssistantClientIds.delete(sessionId);
 }
 
@@ -2500,6 +2510,7 @@ interface StreamingClientIdResolution {
 
 function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId: string, persistId: string): boolean {
   generatedStreamPriorIdentities.delete(sessionId);
+  generatedStreamAgentIdentities.delete(sessionId);
   streamingAssistantClientIds.set(sessionId, persistId);
 
   const hadPendingLiveId = pendingLiveAssistantClientIds.get(sessionId)?.has(generatedClientId) === true;
@@ -2565,6 +2576,7 @@ function streamingClientIdFor(sessionId: string, persistId: string | undefined):
       };
     }
     generatedStreamPriorIdentities.delete(sessionId);
+    generatedStreamAgentIdentities.delete(sessionId);
     streamingAssistantClientIds.set(sessionId, normalizedPersistId);
     return { clientId: normalizedPersistId, changed: false };
   }
@@ -2776,14 +2788,28 @@ function mergeRemoteTextEvent(
     && previousStreamingClientId !== normalizedPersistId
     ? previousStreamingClientId
     : undefined;
-  // A persisted row arriving after an anonymous stream starts may still belong
-  // to an older item. A late final can correct that row, but cannot identify
-  // the anonymous stream; only a subsequent identified delta may migrate it.
+  // A DB/history arrival alone cannot identify an anonymous stream. A final
+  // carrying the same provider item from the same transport can, even when the
+  // text is short or the authoritative final corrects it to a different prefix.
   const hasGeneratedStream = isGeneratedStreamingClientId(previousStreamingClientId);
-  const clientIdResolution = finalReusesExistingItem && normalizedPersistId
+  const agentMessageId = data ? readString(data, 'agentMessageId') : null;
+  const source = readString(event, 'source');
+  const generatedIdentity = generatedStreamAgentIdentities.get(sessionId);
+  const finalIdentifiesGeneratedStream = hasGeneratedStream && isFinal && data?.isFullText === true
+    && agentMessageId && generatedIdentity?.agentMessageId === agentMessageId
+    && generatedIdentity.source === source && generatedIdentity.deviceId === deviceId;
+  const clientIdResolution = finalReusesExistingItem && normalizedPersistId && !finalIdentifiesGeneratedStream
     ? { clientId: normalizedPersistId, changed: false }
     : streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
+  if (!isFinal && isGeneratedStreamingClientId(clientId)) {
+    if (!generatedStreamAgentIdentities.has(sessionId)) {
+      generatedStreamAgentIdentities.set(sessionId, agentMessageId ? { agentMessageId, source, deviceId } : null);
+    } else if (generatedIdentity && (generatedIdentity.agentMessageId !== agentMessageId
+      || generatedIdentity.source !== source || generatedIdentity.deviceId !== deviceId)) {
+      generatedStreamAgentIdentities.set(sessionId, null);
+    }
+  }
   const previousStreamingDeviceId = streamingAssistantDeviceId(sessionId, clientId);
   const currentAfterClientIdResolution = messages.get(sessionId) ?? [];
   const matchedExistingIndex = findMessageIndexByIdentity(currentAfterClientIdResolution, clientId);
@@ -2942,7 +2968,7 @@ function mergeRemoteTextEvent(
     ),
   }, {
     knownIndex: matchedExistingIndex,
-    preserveGeneratedStreamingFallback: Boolean(finalReusesExistingItem && hasGeneratedStream),
+    preserveGeneratedStreamingFallback: Boolean(finalReusesExistingItem && hasGeneratedStream && !finalIdentifiesGeneratedStream),
     preserveOrderOnReplace: !changesCreatedAt,
     preserveStructureOnReplace: !isFinal && existing !== undefined && !changesCreatedAt,
   });
@@ -3016,8 +3042,11 @@ function enqueueRemoteTextDelta(
   }
   const current = pendingTextDeltaBatches.get(sessionId);
   const incomingMeta = isRecord(event.agentMeta) ? event.agentMeta : null;
+  const agentMessageId = data ? readString(data, 'agentMessageId') : null;
+  const source = readString(event, 'source');
   if (current) {
     current.chunks.push(text);
+    if (current.agentMessageId !== agentMessageId || current.source !== source) current.agentMessageId = null;
     if (incomingMeta) current.agentMeta = { ...(current.agentMeta ?? {}), ...incomingMeta };
     if (!current.persistId) current.persistId = persistId;
     if (current.deviceId === undefined) current.deviceId = deviceId;
@@ -3027,6 +3056,8 @@ function enqueueRemoteTextDelta(
       persistId,
       deviceId,
       agentMeta: incomingMeta,
+      agentMessageId,
+      source,
     });
   }
   scheduleTextDeltaFlush(sessionId);
@@ -3042,7 +3073,8 @@ function flushPendingTextDelta(sessionId: string): boolean {
     sessionId,
     {
       type: 'text',
-      data: { text: batch.chunks.join(''), isFinal: false },
+      data: { text: batch.chunks.join(''), isFinal: false, agentMessageId: batch.agentMessageId },
+      ...(batch.source ? { source: batch.source } : {}),
       ...(batch.agentMeta ? { agentMeta: batch.agentMeta } : {}),
     },
     batch.persistId,
@@ -5469,6 +5501,7 @@ export const remoteSessionStore = {
     sessionTaskUpdates.clear();
     streamingAssistantClientIds.clear();
     generatedStreamPriorIdentities.clear();
+    generatedStreamAgentIdentities.clear();
     streamingAssistantDeviceIds.clear();
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();

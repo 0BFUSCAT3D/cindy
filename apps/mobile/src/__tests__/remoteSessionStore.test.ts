@@ -1045,6 +1045,78 @@ describe('remoteSessionStore', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  // PR #6532: a legacy delta may omit persistId while still carrying the Codex
+  // item identity. Its final must merge the temporary bubble without another delta.
+  // Unit: applyRemotePush -> observable row count, authoritative content and tail.
+  it.each(['Sure, checked', 'Corrected'])('migrates a short unpersisted stream on its own identified final (%s)', (finalText) => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+        sessionId: 's1', event: {
+          type: 'text', source: 'codex',
+          data: { text: 'Sure', isFinal: false, agentMessageId: 'provider-item-a' },
+        },
+      });
+      vi.runOnlyPendingTimers();
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', message: { ...message('host-a', 's1'), clientId: 'item-a', content: 'Sure, checking' },
+      });
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
+      remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+        sessionId: 's1', persistId: 'item-a', event: {
+          type: 'text', source: 'codex',
+          data: { text: finalText, isFinal: true, isFullText: true, agentMessageId: 'provider-item-a' },
+        },
+      });
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
+      pushMakerText('s1', undefined, ' tail', false);
+      vi.runOnlyPendingTimers();
+      expect(remoteSessionStore.getMessages('s1')).toEqual([expect.objectContaining({
+        id: 'host-a', clientId: 'item-a', content: `${finalText} tail`,
+      })]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['other-item', 'other-source', 'other-device', 'missing-item', 'mixed-batch', 'later-mixed-batch'] as const)(
+    'does not let a final with unproven provider identity claim a short new stream (%s)', (mismatch) => {
+      vi.useFakeTimers();
+      try {
+        remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+          sessionId: 's1', event: { type: 'text', source: 'codex',
+            data: { text: 'Sure', isFinal: false, agentMessageId: 'provider-item-b' } },
+        });
+        if (mismatch === 'later-mixed-batch') vi.runOnlyPendingTimers();
+        if (mismatch === 'mixed-batch' || mismatch === 'later-mixed-batch') {
+          remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+            sessionId: 's1', event: { type: 'text', source: 'codex',
+              data: { text: ' extra', isFinal: false, agentMessageId: 'provider-item-c' } },
+          });
+        }
+        vi.runOnlyPendingTimers();
+        const generatedId = remoteSessionStore.getMessages('s1')[0].clientId;
+        remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+          sessionId: 's1', message: { ...message('host-a', 's1'), clientId: 'item-a', content: 'Sure, old reply' },
+        });
+        remoteSessionStore.applyRemotePush(mismatch === 'other-device' ? 'dev-2' : 'dev-1', 'maker:event', {
+          sessionId: 's1', persistId: 'item-a', event: {
+            type: 'text', source: mismatch === 'other-source' ? 'pi' : 'codex',
+            data: { text: 'Corrected old reply', isFinal: true, isFullText: true,
+              agentMessageId: mismatch === 'other-item' ? 'provider-item-a'
+                : mismatch === 'missing-item' ? undefined : 'provider-item-b' },
+          },
+        });
+        pushMakerText('s1', undefined, ' tail', false);
+        vi.runOnlyPendingTimers();
+        expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
+        expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === generatedId))
+          .toMatchObject({ content: mismatch.endsWith('mixed-batch') ? 'Sure extra tail' : 'Sure tail',
+            agentMeta: { isStreaming: true } });
+        expect(remoteSessionStore.getMessages('s1').find((row) => row.clientId === 'item-a')?.content)
+          .toBe('Corrected old reply');
+      } finally { vi.useRealTimers(); }
+    },
+  );
+
   it('still accepts a legacy final full-text event after its partial row was persisted', () => {
     remoteSessionStore.setMessages('s1', [{
       ...message('host-id', 's1'), clientId: 'legacy-id', content: 'partial',
