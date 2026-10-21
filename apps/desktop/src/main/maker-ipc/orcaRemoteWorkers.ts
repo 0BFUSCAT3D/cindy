@@ -318,7 +318,7 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
       const service = deps.getTeamService();
       const capture = service?.captureWorkerTerminalTurn(sessionId);
       const settle = service && capture
-        ? runtime.captureReportSettlement(sessionId, reportedInputClientIds, () => service.settleReportedWorker(capture))
+        ? runtime.captureReportSettlement(sessionId, reportedInputClientIds, commit => service.settleReportedWorker(capture, commit))
         : undefined;
       return async () => {
         await settle?.();

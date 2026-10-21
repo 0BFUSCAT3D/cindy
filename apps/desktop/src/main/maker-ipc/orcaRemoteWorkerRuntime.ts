@@ -63,6 +63,7 @@ export interface OrcaRemoteWorkerRuntimeDeps {
     workerId: string,
     pending: OrcaRemotePendingReport | null,
     messageId?: string,
+    markWorkerDone?: boolean,
   ): Promise<void>;
   isOwnerCurrent?(): boolean;
   onTurnStarted(proxySessionId: string): Promise<void>;
@@ -784,7 +785,7 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
     /** Retire only inputs attested by the execution host, never the whole queued group. */
     captureReportSettlement(
       proxySessionId: string, reportedInputClientIds: readonly string[] = [],
-      beforeRetire?: () => Promise<void>,
+      settleTeam?: (commit: (markWorkerDone: boolean) => Promise<boolean>) => Promise<void>,
     ): () => Promise<boolean> {
       const state = workers.get(proxySessionId);
       const awaiting = state?.awaiting;
@@ -795,38 +796,37 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
         awaiting.startedNotified = true;
         await awaiting.turnStartPromise;
         const write = state.persistence.catch(() => undefined).then(async () => {
-          let pending = state.awaiting;
+          const pending = state.awaiting;
           if (!current(state) || !pending || !pending.clientIds.some(id => reported.has(id))) return false;
-          let remaining = pending.clientIds.filter(id => !reported.has(id));
-          if (remaining.length === 0 && beforeRetire) {
-            // Team lookup/status failures must leave both the durable and in-memory
-            // identity available to polling. Never retire the only retry first.
-            await beforeRetire();
-            pending = state.awaiting;
-            if (!current(state) || !pending || !pending.clientIds.some(id => reported.has(id))) return false;
-            // A new dispatch can be prepared while the Team transition is awaited.
-            remaining = pending.clientIds.filter(id => !reported.has(id));
-          }
-          await deps.saveReport(state.ref.workerId, remaining.length
-            ? { clientIds: remaining, baselineMessageId: pending.baselineMessageId }
-            : null);
-          if (!current(state)) return false;
-          // A dispatch may have been prepared during the write. Prune its rollback
-          // chain too, so a failed enqueue cannot resurrect an already reported input.
-          const prune = (node: AwaitingReport | null): AwaitingReport | null => {
-            if (!node) return null;
-            node.previous = prune(node.previous);
-            const ids = node.clientIds.filter(id => !reported.has(id));
-            if (ids.length === 0) return null;
-            if (ids.length !== node.clientIds.length) {
-              node.clientIds = ids;
-              node.historyScan = null;
-              node.missingReplyPolls = 0;
-            }
-            return node;
+          const retire = async (markWorkerDone: boolean): Promise<boolean> => {
+            // Re-read after the Team lookup/transition wait, which can prepare a new B.
+            const latest = state.awaiting;
+            if (!current(state) || !latest || !latest.clientIds.some(id => reported.has(id))) return false;
+            const remaining = latest.clientIds.filter(id => !reported.has(id));
+            const next = remaining.length
+              ? { clientIds: remaining, baselineMessageId: latest.baselineMessageId } : null;
+            if (markWorkerDone) await deps.saveReport(state.ref.workerId, next, undefined, true);
+            else await deps.saveReport(state.ref.workerId, next);
+            if (!current(state)) return false;
+            // Prune rollback chains too, so a failed B cannot resurrect reported A.
+            const prune = (node: AwaitingReport | null): AwaitingReport | null => {
+              if (!node) return null;
+              node.previous = prune(node.previous);
+              const ids = node.clientIds.filter(id => !reported.has(id));
+              if (ids.length === 0) return null;
+              if (ids.length !== node.clientIds.length) {
+                node.clientIds = ids;
+                node.historyScan = null;
+                node.missingReplyPolls = 0;
+              }
+              return node;
+            };
+            state.awaiting = prune(state.awaiting);
+            return true;
           };
-          state.awaiting = prune(state.awaiting);
-          return state.awaiting === null;
+          if (pending.clientIds.every(id => reported.has(id)) && settleTeam) await settleTeam(retire);
+          else await retire(false);
+          return current(state) && state.awaiting === null;
         });
         // The caller observes the failure; the serialization tail must not create
         // a second, unobserved rejection while waiting for the next poll.

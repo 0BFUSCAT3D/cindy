@@ -418,7 +418,10 @@ export interface OrcaTeamService {
   }): Promise<MoveWorkerQueuedMessageResult>;
   captureWorkerText(sessionId: string, text: string, opts?: { isFinal?: boolean }): void;
   clearAutoBridgeState(sessionId: string): void;
-  settleReportedWorker(capture: WorkerTerminalTurnCapture): Promise<void>;
+  settleReportedWorker(
+    capture: WorkerTerminalTurnCapture,
+    commit?: (markWorkerDone: boolean) => Promise<boolean>,
+  ): Promise<void>;
   /** True while an accepted worker task still owes this Lead its report. */
   hasPendingWorkerReports(leadSessionId: string): boolean;
   restoreWorkerPendingReport(sessionId: string, input: { workerId: string; leadSessionId: string }): void;
@@ -1750,12 +1753,20 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     clearAutoBridgeState(sessionId) {
       clearRuntimeState(sessionId);
     },
-    async settleReportedWorker(capture) {
+    async settleReportedWorker(capture, commit) {
       const link = await deps.getWorkerLinkBySessionId(capture.sessionId);
       if (!link) return;
       await withWorkerTransition(link.workerId, async () => {
-        if (!capture.autoBridgeIdentity || autoBridge.get(capture.sessionId) !== capture.autoBridgeIdentity) return;
-        await deps.updateWorkerStatus(link.workerId, 'done');
+        const ownsReport = !!capture.autoBridgeIdentity
+          && autoBridge.get(capture.sessionId) === capture.autoBridgeIdentity;
+        if (commit) {
+          // The remote commit persists pending inputs and status in one SQL update.
+          // All fallible reads happen first; clear memory only after that commit succeeds.
+          if (!await commit(ownsReport) || !ownsReport) return;
+        } else {
+          if (!ownsReport) return;
+          await deps.updateWorkerStatus(link.workerId, 'done');
+        }
         clearRuntimeState(capture.sessionId);
         deps.broadcastOrcaWorkerChanged(link.leadSessionId);
       });

@@ -331,7 +331,9 @@ describe('orca remote worker runtime', () => {
     let entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
-    const settle = runtime.captureReportSettlement('proxy-1', ['a'], async () => { entered(); await gate; })();
+    const settle = runtime.captureReportSettlement('proxy-1', ['a'], async commit => {
+      entered(); await gate; await commit(true);
+    })();
     try {
       await started;
       invoke.mockClear();

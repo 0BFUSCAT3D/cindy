@@ -778,12 +778,15 @@ export async function saveWorkerRemoteReport(
   workerId: string,
   pending: OrcaRemotePendingReport | null,
   lastBridgedMessageId?: string,
+  markWorkerDone = false,
 ): Promise<void> {
   const db = getDbClient();
   await db
     .drizzle.update(orcaWorkers)
     .set({ pendingRemoteReport: pending ? JSON.stringify(pending) : null,
-      ...(lastBridgedMessageId ? { lastBridgedMessageId } : {}) })
+      ...(lastBridgedMessageId ? { lastBridgedMessageId } : {}),
+      // One SQL update commits retirement and status together; neither can succeed alone.
+      ...(markWorkerDone ? { status: 'done' as const, updatedAt: Date.now() } : {}) })
     .where(eq(orcaWorkers.id, workerId));
 }
 
