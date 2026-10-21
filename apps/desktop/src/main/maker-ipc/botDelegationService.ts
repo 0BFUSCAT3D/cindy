@@ -1,3 +1,4 @@
+import { signalBotAutonomyBotsChanged } from '../bot-autonomy/botsChangedSignal.js';
 import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import { readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { openSession } from '../localDb/sessionOpening.js';
@@ -696,6 +697,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   const emitChanged = (payload: BotDelegationChangedPayload): void => {
+    signalBotAutonomyBotsChanged();
     deps.onChanged?.(payload);
   };
 
@@ -1065,17 +1067,14 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     const completionSnapshot = (await getDbClient().drizzle
       .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
       .where(eq(botDelegations.id, params.id)).get())?.snapshot ?? '{}';
-    const requestSource = readForwardedRequestSource(readSessionTaskInput({
-      runSequence: params.runSequence, permissionSnapshotJson: completionSnapshot,
-    })?.requestSource) ?? { userText: null };
-    const completionMessage = formatForwardedRequest(requestSource, buildDelegationCompletionMessage({
+    const completionMessage = buildDelegationCompletionMessage({
       id: params.id,
       objective: params.objective,
       status: params.status,
       resultSummary: params.resultSummary,
       artifacts,
       lastError: params.lastError,
-    }));
+    });
     try {
       if (!(await completionStillPending())) {
         clearCompletionRetryTimer(params.id);
@@ -1213,7 +1212,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       const dispatched = await deps.dispatch({
         targetSessionId,
         message: completionMessage,
-        autoReviewUserText: { kind: 'agent-request', request: requestSource },
+        autoReviewUserText: { kind: 'agent-request' },
         persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${completionMessage}`,
         clientId: BOT_DELEGATION_CLIENT_ID.completionRun(params.id, params.runSequence),
       });
@@ -1671,14 +1670,13 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     if (!stillPending()
       || (row.childSessionId && heldSessionIds.has(row.childSessionId))) return;
     // 同任务回执:模型正文不带隐藏前缀,落库 / 排队可见内容保留它。
-    const requestSource = readForwardedRequestSource(readSessionTaskInput(row)?.requestSource) ?? { userText: null };
-    const message = formatForwardedRequest(requestSource, [
+    const message = [
       `[任务需要你处理] task_id: ${row.id}`,
       `类型: ${pending.request.kind}`,
       pending.summary,
       pending.request.kind === 'permission' ? `请求工具: ${pending.request.toolName}` : '',
       '你是用户的代理。能按用户已表达的意图安全决定，就用 `message_session_task` 直接回答；拿不准才用一句人话问用户。不要让用户去子任务窗口处理，也不要复述内部编号。',
-    ].filter(Boolean).join('\n\n'));
+    ].filter(Boolean).join('\n\n');
     // A group task asks in its group: the owner opens the task from the card to answer.
     // Tool names and arguments stay on this computer; only a question's words are shared.
     const home = groupHomeOf(row.permissionSnapshotJson);
@@ -1720,7 +1718,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         ? await deps.dispatch({
             targetSessionId: requesterSessionId,
             message,
-            autoReviewUserText: { kind: 'agent-request', request: requestSource },
+            autoReviewUserText: { kind: 'agent-request' },
             persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${message}`,
             clientId: `bot-delegation-interaction:${row.id}:${pending.requestId}`,
           })

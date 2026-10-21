@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import type { ToolCallAuthorizer } from '@cindy/mcps';
+import type { Session } from '@cindy/maker-core';
 import {
   botDelegations,
   botProfiles,
@@ -15,8 +16,49 @@ import {
   admitTaskAction,
   createTaskActionAuthorizer,
   DELEGATED_TASK_ACTIONS,
+  taskActionFingerprint,
   type TaskActionScope,
 } from './taskActionAuthorization.js';
+
+type TaskActionSession = Pick<Session,
+  'stablePermissionModeState' | 'stablePlanModeState' |
+  'getCurrentTurnOrigin' | 'reviewHostPermissionAction'>;
+
+/** The live turn identifies a continuation, not consent. Only its existing
+ * permission reviewer may approve the exact action against restored user intent. */
+function captureScheduledRuntime(
+  sessionId: string,
+  getSession: (id: string) => TaskActionSession | undefined,
+) {
+  const session = getSession(sessionId);
+  const origin = session?.getCurrentTurnOrigin();
+  if (!session || origin?.kind !== 'scheduler') return null;
+  const permissionState = session.stablePermissionModeState;
+  const planState = session.stablePlanModeState;
+  if (!permissionState || !planState || planState.enabled || permissionState.mode === 'plan') return null;
+  const permission = { ...permissionState };
+  const plan = { ...planState };
+  const assertCurrent = () => {
+    const currentPermission = session.stablePermissionModeState;
+    const currentPlan = session.stablePlanModeState;
+    if (getSession(sessionId) !== session || !currentPermission || !currentPlan ||
+      currentPermission.generation !== permission.generation ||
+      currentPermission.mode !== permission.mode || currentPlan.enabled ||
+      currentPlan.generation !== plan.generation) {
+      throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    }
+  };
+  return {
+    session,
+    assertCurrent,
+    assertInputCurrent() {
+      assertCurrent();
+      if (session.getCurrentTurnOrigin() !== origin) {
+        throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+      }
+    },
+  };
+}
 
 /** Adapt the shared gate to Host facts. No transcript parsing or Agent-supplied approval fields. */
 export function createDesktopTaskActionAuthorizer(deps: {
@@ -27,11 +69,14 @@ export function createDesktopTaskActionAuthorizer(deps: {
     orcaSenderSessionId?: string;
     boundary: string;
   };
+  getSession(sessionId: string): TaskActionSession | undefined;
   confirm(sessionId: string, tool: string, args: unknown): Promise<boolean>;
 }): ToolCallAuthorizer {
   return async (call) => {
     // Per invocation: a concurrent automatic call must never inherit owner evidence.
-    let ownerScope: TaskActionScope | null = null;
+    let admittedScope: TaskActionScope | null = null;
+    let rejectedDecision: Awaited<ReturnType<ToolCallAuthorizer>> | null = null;
+    const fingerprint = taskActionFingerprint(call);
     const decision = await createTaskActionAuthorizer({
       confirm: deps.confirm,
       capture: async (call) => {
@@ -55,12 +100,14 @@ export function createDesktopTaskActionAuthorizer(deps: {
           .limit(1);
         if (!caller) throw new Error('TASK_UNAVAILABLE');
         const input = deps.input(sessionId);
+        const scheduled = !caller.botId && caller.source !== 'bot' &&
+          deps.getSession(sessionId)?.getCurrentTurnOrigin()?.kind === 'scheduler';
         // User-authored ordinary work retains the existing Agent permission flow.
         if (
           !caller.botId &&
           caller.source !== 'bot' &&
           caller.source !== 'scheduler' &&
-          !input.automatic
+          !input.automatic && !scheduled
         )
           return null;
         if (caller.botId && (caller.botStatus !== 'active' || caller.archivedAt !== null))
@@ -72,6 +119,11 @@ export function createDesktopTaskActionAuthorizer(deps: {
             ? await authorizeGroupTool(sessionId, caller.botId, 'owner-action')
             : null;
         const ownerInput = group !== null || input.ownerInput;
+        // Ordinary owner-delegated schedules retain the normal permission flow.
+        // Neither a persisted scheduler source nor a Bot's automatic wake qualifies.
+        const runtime = !ownerInput && scheduled
+          ? captureScheduledRuntime(sessionId, deps.getSession)
+          : null;
         const args =
           call.args && typeof call.args === 'object' && !Array.isArray(call.args)
             ? (call.args as Record<string, unknown>)
@@ -139,6 +191,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
         };
         const orcaTeam = ownerInput ? null : await readOrcaTeam();
         const assertDeliveryCurrent = async () => {
+          runtime?.assertCurrent();
           await group?.refresh();
           if (
             isAppSessionBoundaryPending() ||
@@ -177,8 +230,10 @@ export function createDesktopTaskActionAuthorizer(deps: {
           group?.assertCurrent();
           if (db !== tryGetDbClient() || isAppSessionBoundaryPending())
             throw new Error('OWNER_SCOPE_CHANGED');
+          runtime?.assertCurrent();
         };
         const assertCurrentSync = () => {
+          runtime?.assertInputCurrent();
           group?.assertCurrent();
           const current = deps.input(sessionId);
           if (
@@ -193,6 +248,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
           assertDeliveryCurrent,
           assertCurrentSync,
           assertCurrent: async () => {
+            if (fingerprint !== taskActionFingerprint(call))
+              throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
             await assertDeliveryCurrent();
             assertCurrentSync();
           },
@@ -200,12 +257,38 @@ export function createDesktopTaskActionAuthorizer(deps: {
         if (ownerInput) {
           // Owner requests use the normal Agent permission flow, without a second card.
           // Retain delivery evidence so workbench, queues and new delegations work too.
-          ownerScope = scope;
+          admittedScope = scope;
           return null;
+        }
+        if (runtime && !scope.delegated) {
+          // Session reuses Full Access / Auto / Ask and the owning task's restored
+          // user intent. Do not turn scheduled text into a fresh owner request.
+          const review = await runtime.session.reviewHostPermissionAction({
+            kind: 'other',
+            description: JSON.stringify({
+              toolName: `mcp__${call.server}__${call.tool}`,
+              input: structuredClone(call.args),
+              // Host timing fact, not a grant: setup may have asked to wait
+              // for a trigger which has now occurred. Owner scope still applies.
+              context: { source: 'scheduler', phase: 'triggered-continuation' },
+            }),
+          });
+          // A stale review must not open a confirmation for a newer task/input.
+          const admission = await admitTaskAction(call, scope, fingerprint);
+          if (!admission.ok) {
+            rejectedDecision = admission;
+            return null;
+          }
+          if (review.verdict === 'allow' || (review.verdict === 'ask' &&
+            await deps.confirm(sessionId, call.tool, structuredClone(call.args)))) {
+            admittedScope = scope;
+            return null;
+          }
         }
         return scope;
       },
     })(call);
-    return decision.ok && ownerScope ? admitTaskAction(call, ownerScope) : decision;
+    return rejectedDecision ?? (decision.ok && admittedScope
+      ? admitTaskAction(call, admittedScope, fingerprint) : decision);
   };
 }

@@ -228,6 +228,25 @@
     "closeAllDescription": "모든 게스트의 접근이 차단됩니다. 작업 기록은 유지됩니다."
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "원격 호출을 허용할 모델",
+      "description": "원격 사용만 제한하며 로컬 사용에는 영향이 없습니다. 저장 후 작업 생성, 모델 변경, 다음 메시지 전송 시 적용됩니다.",
+      "all": "모든 모델",
+      "selected": "모델 {{count}}개 허용",
+      "choose": "모델 선택",
+      "memberTitle": "사용 가능한 모델",
+      "memberDescription": "원격으로 공개된 모델 중 {{name}} 님이 사용할 모델을 선택합니다. 이 사람을 통한 재공유에도 적용됩니다.",
+      "inherit": "원격 공개 범위 따르기",
+      "allFuture": "추가되는 모델을 포함해 모두 허용",
+      "search": "모델 검색",
+      "notOpen": "원격 미공개",
+      "empty": "일치하는 모델 없음",
+      "none": "선택한 모델이 없어 원격 호출이 차단됩니다.",
+      "loading": "모델 허용 범위를 불러오는 중…",
+      "loadFailed": "모델 허용 범위를 불러오지 못했습니다. 설정을 다시 열어 주세요.",
+      "saveFailed": "모델 허용 범위를 저장하지 못했습니다. 다시 시도해 주세요.",
+      "needsUpdate": "제공자의 컴퓨터에서 Cindy를 업데이트해 주세요."
+    },
     "entry": {
       "label": "원격 및 공유",
       "pending_other": "대기 중인 공유 요청 {{count}}개",
@@ -635,7 +654,7 @@
       "round": "순환",
       "order": "순서대로",
       "weight": "가중치",
-      "quotaFirst": "구독 사용량을 확인할 수 있으면 할당량 초기화가 가까운 컴퓨터를 우선하고, 그다음 사용량이 적은 컴퓨터를 선택합니다. 비슷하면 그룹 배정 방식을 따릅니다",
+      "quotaFirst": "구독 사용량을 확인할 수 있으면 초기화가 가깝고 남은 양이 많은 컴퓨터를 먼저 사용해 각 계정을 시간에 맞춰 고르게 소진합니다. 비슷하면 그룹 배정 방식을 따릅니다",
       "description": {
         "least": "가장 여유로운 컴퓨터로",
         "round": "차례대로 배정",
@@ -670,6 +689,10 @@
         "share": "다른 사람이 공유한 컴퓨터의 할당량은 표시되지 않습니다"
       },
       "runningCount_other": "{{count}}개 실행 중",
+      "pace": {
+        "used": "{{used}}% 사용",
+        "usedExpected": "{{used}}% 사용, 기준 {{expected}}%"
+      },
       "limitAria": "{{name}}의 동시 실행 한도",
       "limitOption_other": "한도 {{count}}",
       "weightAria": "{{name}}의 가중치",
@@ -717,6 +740,15 @@
           "unknown": "아직 확인 안 됨"
         }
       }
+    },
+    "rebalance": {
+      "title": "{{label}}(으)로 바꿔서 계속할까요?",
+      "description": "각 계정의 할당량을 고르게 쓰기 위해 이 메시지는 {{label}}에서 보내는 것을 권장합니다({{quota}}). 최근 몇 번의 대화와 요약은 이어지지만, 그 이전의 세부 내용은 빠질 수 있습니다.",
+      "quota": "{{left}}% 남음",
+      "quotaReset": "{{left}}% 남음 · {{reset}}",
+      "confirm": "전환",
+      "cancel": "취소",
+      "remember": "앞으로 묻지 않고 자동 전환(이 작업만)"
     },
     "deleteConfirm": {
       "title": "{{provider}} 제공자 그룹을 삭제할까요?",
@@ -9209,10 +9241,10 @@
       "composerPlaceholderLatin": "{{name}} 에게 말 걸기…"
     },
     "globalSettings": {
-      "restoreHint": "기본값으로 복원하면 클라이언트의 기본 모델 설정을 따릅니다. 개별 파트너의 사용자 지정 모델은 유지됩니다.",
+      "restoreHint": "파트너 추천 모델로 복원합니다. 개별 파트너의 사용자 지정 모델은 유지됩니다.",
       "restoreFailed": "기본값을 복원하지 못했습니다. 다시 시도해 주세요.",
       "defaultModel": "기본 사용 모델",
-      "defaultModelHint": "파트너가 기본으로 사용하는 모델입니다. 개별 파트너는 각자의 설정에서 다른 모델을 선택할 수 있어요.",
+      "defaultModelHint": "새 작업의 모델 선택과 별개인 파트너용 모델입니다. 개별 파트너는 다른 모델을 선택할 수 있어요.",
       "title": "파트너",
       "description": "파트너 전체에 적용되는 설정입니다. 개별 파트너 설정은 각자의 페이지에 있어요.",
       "rosterNote": "기본 제공되는 구성원은 버전마다 늘어납니다."
@@ -9587,7 +9619,23 @@
           "shareNotLoaded": "이 공유는 메인 채팅의 이전 메시지에 있습니다. 이전 메시지를 불러오면 볼 수 있습니다.",
           "retryPost": "메인 채팅에 다시 보내기",
           "alreadyPosted": "이 답글은 이미 메인 채팅에 올렸습니다.",
-          "shareUnavailable": "이 답글은 삭제되었거나 볼 수 없어 메인 채팅에 올릴 수 없습니다."
+          "shareUnavailable": "이 답글은 삭제되었거나 볼 수 없어 메인 채팅에 올릴 수 없습니다.",
+          "newReplies_one": "새 답글 {{count}}개",
+          "newReplies_other": "새 답글 {{count}}개",
+          "mentionedYou": "@나",
+          "hintOne": "스레드에 새 답글이 있습니다",
+          "hintMany_one": "스레드 {{count}}개에 새 답글이 있습니다",
+          "hintMany_other": "스레드 {{count}}개에 새 답글이 있습니다",
+          "hintMentioned": "나를 언급했습니다",
+          "hintDismiss": "나중에 보기",
+          "follow": "팔로우",
+          "following": "팔로우 중",
+          "followTip": "새 답글이 있으면 그룹 채팅에서 알려 드립니다",
+          "unfollowTip": "팔로우를 해제하면 나를 언급할 때만 알려 드립니다",
+          "listLabel": "이 그룹 채팅의 스레드",
+          "listNews": "새 답글 있음",
+          "listOthers": "다른 스레드",
+          "newSeparator": "새 답글"
         },
         "replyPlaceholder": "이 메시지에 답글을 쓰세요. @로 파트너를 멘션할 수 있어요…",
         "sendReply": "답글 보내기",
@@ -11941,7 +11989,8 @@
         "relocatedHere": "이제 Agent가 이 컴퓨터에서 실행됩니다",
         "relocatedTo": "이제 Agent가 {{device}}에서 실행됩니다",
         "relocatedTaskComputer": "이제 Agent가 작업이 있는 컴퓨터에서 실행됩니다",
-        "relocatedElsewhere": "이제 Agent가 다른 컴퓨터에서 실행됩니다"
+        "relocatedElsewhere": "이제 Agent가 다른 컴퓨터에서 실행됩니다",
+        "quotaRebalance": "이 계정의 할당량을 먼저 쓰기 위해"
       },
       "contextRebuild": {
         "labelOverflow": "컨텍스트를 정리하고 계속합니다",
@@ -12189,7 +12238,7 @@
       "REMOTE_AGENT_BUSY": "상대 컴퓨터에서 실행 중인 세션이 너무 많습니다. 일부를 종료한 뒤 다시 시도하세요.",
       "REMOTE_AGENT_UNSUPPORTED": "상대 컴퓨터에서는 이 Agent를 사용할 수 없습니다. 그 컴퓨터에서 설치하거나 로그인한 뒤 다시 시도하거나, 다른 Agent를 선택하세요.",
       "REMOTE_AGENT_INVALID": "Agent를 실행하는 컴퓨터와 통신하는 중 오류가 발생했습니다. 다시 시도하고, 계속되면 두 컴퓨터의 Cindy를 모두 최신 버전으로 업데이트하세요.",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "그 컴퓨터에서 이 제공자의 원격 사용을 허용하지 않았습니다. 그 컴퓨터의 설정 → 모델 제공자에서 원격 사용 허용을 켜거나 다른 모델을 선택하세요.",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "그 컴퓨터에서 이 제공자 또는 선택한 모델의 원격 사용을 허용하지 않았습니다. 제공자에게 원격 및 공유에서 사용 범위를 조정해 달라고 요청하거나 다른 모델을 선택하세요.",
       "REMOTE_AGENT_SHARE_PAUSED": "공유한 사람이 나에 대한 공유를 일시 중지해서 재개될 때까지 이 모델을 사용할 수 없습니다. 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_REMOVED": "이 공유는 더 이상 사용할 수 없습니다(공유한 사람이 삭제했거나 내가 나갔습니다). 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",

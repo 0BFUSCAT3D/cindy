@@ -44,7 +44,7 @@ import { getManagedLlamaCppService } from '../local-model-runtime/llamaCppServic
 import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLlamaCppProvider.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
-import { configureBotAutonomyHost, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
+import { configureBotAutonomyHost, getBotAutonomyGlance, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
@@ -72,8 +72,10 @@ import {
   setProviderGroupClaudeUsageReader,
   setProviderGroupCodexUsageReader,
   setProviderGroupSessionGroupReader,
+  setProviderGroupSessionRebalance,
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
+import { readProviderGroupAutoRebalance, writeProviderGroupAutoRebalance } from '../provider-group/sessionPrefs.js';
 import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
 import { remoteAgentHostRunningProviders, resolveRemoteAgentHostClaudeSessionId } from '../remote-agent/host/service.js';
 import {
@@ -652,6 +654,7 @@ import {
   ensureCodexMcpBridgeStartedForRemote,
   finalizeCodexAfterAuthModeChange,
   getMaker,
+  handleRemoteWorkerBridge,
   listCodexGatewayHostKeys,
   refreshCodexGatewayHost,
   setCodexGatewayKeyRefreshHook,
@@ -1014,6 +1017,7 @@ import { createOrcaRemoteWorkers, invokeDeviceValue, isExecutionDeviceCandidate,
 import { getReceivedShares, providerShareAgentDeviceId } from '../device-link/providerShareGuest.js';
 import {
   ORCA_EXECUTION_DEVICES_CHANNEL,
+  ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
   COMPANION_CLOUD_CAPS_CHANNEL,
   COMPANION_CLOUD_FLUSH_CHANNEL,
   COMPANION_CLOUD_HAND_OVER_CHANNEL,
@@ -1401,6 +1405,7 @@ import {
   isAutoResumeUserMessage,
   isInterruptedTurnError,
   shouldPreserveWaitingContinuationOnlyAutoResume,
+  shouldPreserveRuntimeFallbackAutoResume,
   type InterruptedTurnErrorSignals,
 } from './interruptedTurnAutoResume.js';
 import { readInterruptedTurnAutoResumeSettings } from '../maker-host/interrupted-turn-auto-resume-store.js';
@@ -1777,6 +1782,10 @@ const autoResumeBookkeeping = new AutoResumeBookkeeping({
   // L3：auto-resume 放弃后，用当初压住的 capture 恰好一次收口 Orca status / auto-bridge。
   // L2 flush/discard 不会走到这里，避免「还在重试却已经把异常终止桥给 Lead」。
   finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,
+  finalizeBotGroupSuppressedTerminal: (terminal) => {
+    void botGroupChatServiceHolder?.settleLaneTurn(terminal).catch(() =>
+      log.warn('Bot group recovery failure settlement failed'));
+  },
   markOutcome: (sessionId, clientId, outcome) => {
     void markAutoResumeOutcome(sessionId, clientId, outcome);
   },
@@ -2816,6 +2825,13 @@ export function stopOrcaRemoteWorkersForOwnerBoundary(): void {
   orcaRemoteWorkersForHost?.stop();
 }
 
+export function captureRemoteWorkerReportSettlement(
+  sessionId: string, reportedInputClientIds: readonly string[],
+): () => Promise<void> {
+  return orcaRemoteWorkersForHost?.captureReportSettlement(sessionId, reportedInputClientIds)
+    ?? (async () => {});
+}
+
 function markWorkerManualInterruptIfKnown(
   sessionId: string,
   reason: 'input_stop' | 'abort_session',
@@ -3534,6 +3550,19 @@ function cancelPendingInteraction(requestId: string, decision: InteractionDecisi
   return resolvePendingInteraction(requestId, decision, true);
 }
 
+/** Narrow detached-workbench action: the Bot's live glance must still own this exact local permission. */
+export function allowBotWorkbenchPendingPermission(botId: string, sessionId: string, requestId: string): { accepted: boolean } {
+  const row = getBotAutonomyGlance(botId, undefined, false).waiting.find((item) =>
+    item.deviceId === null && item.sessionId === sessionId &&
+    item.requestId === requestId && item.waitingFor === 'permission');
+  const pending = pendingInteractionResolvers.get(requestId);
+  if (!row || !pending || pending.sessionId !== sessionId || pending.kind !== 'permission' ||
+      pending.request.kind !== 'permission' || pending.request.requestId !== requestId) {
+    return { accepted: false };
+  }
+  return { accepted: resolvePendingInteraction(requestId, { kind: 'permission', behavior: 'allow' }) };
+}
+
 function resolvePendingInteraction(requestId: string, decision: InteractionDecision, fromShared = false): boolean {
   const resolver = pendingInteractionResolvers.get(requestId);
   if (!resolver || (!fromShared && agentInputCoordinatorHolder?.isExecutionPaused(resolver.sessionId))) return false;
@@ -4180,14 +4209,16 @@ function shouldPreserveSessionRuntimeFallbackAutoResume(
   closeReason: ReturnType<typeof getWiredSessionCloseReason>,
 ): boolean {
   const attemptToken = pendingSessionRuntimeFallbackRebuilds.get(session);
-  if (attemptToken === undefined) return false;
-  if (closeReason !== 'requested') return false;
-  if (!interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken)) return false;
-  if (!autoResumeBookkeeping.isCurrentAttempt(session.id, attemptToken)) return false;
   const coordinator = agentInputCoordinatorHolder;
-  if (!coordinator || !coordinator.isAutoResumePending(session.id)) return false;
-  if (coordinator.getAutoResumeAttemptToken(session.id) !== attemptToken) return false;
-  return autoResumeBookkeeping.hasSchedule(session.id);
+  return shouldPreserveRuntimeFallbackAutoResume({
+    closeReason,
+    leasedAttemptToken: attemptToken,
+    guardIsCurrentAttempt: attemptToken !== undefined && interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken),
+    bookIsCurrentAttempt: attemptToken !== undefined && autoResumeBookkeeping.isCurrentAttempt(session.id, attemptToken),
+    coordinatorAttemptToken: coordinator?.getAutoResumeAttemptToken(session.id),
+    isAutoResumePending: coordinator?.isAutoResumePending(session.id) === true,
+    hasLiveSchedule: attemptToken !== undefined && autoResumeBookkeeping.hasLiveSchedule(session.id, attemptToken),
+  });
 }
 
 /**
@@ -4443,6 +4474,11 @@ export function isSessionInTurn(sessionId: string): boolean {
 }
 
 /** Runtime-only attribution; queued or rejected steering cannot take ownership. */
+export function getSessionActiveInputClientIds(sessionId: string): string[] {
+  return agentInputCoordinatorHolder?.getActiveInputClientIds(sessionId) ?? [];
+}
+
+/** Runtime-only attribution; queued or rejected steering cannot take ownership. */
 export function getSessionInputProvenance(sessionId: string) {
   const input = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
   return { input, executing: !!input || !!getMakerIfReady()?.getSession(sessionId)?.isTurnRunning() };
@@ -4452,8 +4488,13 @@ export function getSessionInputProvenance(sessionId: string) {
 export async function captureSessionAgentRequest(sessionId: string, supplement: string): Promise<CapturedAgentRequest> {
   const scope = captureDataOwnerBroadcastScope();
   const active = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
+  // Only a companion's task instructions forward the owner's words. Ordinary
+  // sessions (including scheduled runs and child results) keep their own body.
+  const [companion] = await getDbClient().drizzle.select({ role: botSessionLinks.role })
+    .from(botSessionLinks).where(and(eq(botSessionLinks.sessionId, sessionId),
+      inArray(botSessionLinks.role, ['canonical', 'group', 'channel']), isNull(botSessionLinks.archivedAt))).limit(1);
   const request = await captureRequest(sessionId, supplement, active,
-    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'));
+    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'), !!companion);
   if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
   return request;
 }
@@ -4467,6 +4508,11 @@ export function getTaskActionInputState(sessionId: string) {
     orcaSenderSessionId: input.input?.orcaSenderSessionId,
     boundary: `${getMakerIfReady()?.getSession(sessionId)?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
   };
+}
+
+/** Live permission authority for Host task actions; never reconstructed from DB defaults. */
+export function getTaskActionSession(sessionId: string) {
+  return getMakerIfReady()?.getSession(sessionId);
 }
 
 /** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
@@ -9385,6 +9431,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     now: Date.now,
   }));
 
+  makerSessionRegistry.handle(ORCA_REMOTE_WORKER_BRIDGE_CHANNEL, (_event: unknown, raw: unknown) => {
+    const ctx = getDeviceLinkInvokeContext();
+    return handleRemoteWorkerBridge(raw, ctx ? {
+      controllerDeviceId: ctx.controllerDeviceId, sharedTask: ctx.sharedTask,
+    } : null);
+  });
+
   const readSourceReviewCards = async (sourceSessionId: string) =>
     getDbClient()
       .drizzle.select({
@@ -10486,6 +10539,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           ...(switchOptions?.relocate ? { forceRelocation: true } : {}),
           // 发送前换电脑：随后的 lazy-create 按任务记录在新电脑上启动，不重复 bootstrap。
           ...(switchOptions?.beforeSend ? { skipBootstrap: true } : {}),
+          // 用户确认为了先用那台的配额换号：分隔条写明原因。
+          ...(switchOptions?.reason ? { providerGroupSwitchReason: switchOptions.reason } : {}),
           // 用户在等锁、读交接素材期间接手：在改动之前停下。
           ...(isCurrent ? { assertSelectionCurrent: assertCurrent } : {}),
         });
@@ -10523,6 +10578,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     fallback: (sessionId, signals, token) => usageLimitAutoResume.onTurnError(sessionId, signals, token),
     // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
     readResetAt: (signals) => readTurnUsageResetAt(signals, Date.now(), { localTimeZoneTrusted: false }),
+    // 任务里选过「以后自动换」的换号(provider-groups.md §6.2「任务进行中换号」)。
+    readAutoRebalance: readProviderGroupAutoRebalance,
+    writeAutoRebalance: (sessionId) => writeProviderGroupAutoRebalance(sessionId),
     now: () => Date.now(),
     log,
   });
@@ -10530,6 +10588,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 模型列表把归组的任务显示在组那一项下(provider-groups.md §10)。
   const sessionGroupService = providerGroupService;
   setProviderGroupSessionGroupReader((sessionId) => sessionGroupService.sessionGroup(sessionId));
+  // 电脑与手机发送前问要不要换号、记下用户的决定(provider-groups.md §6.2「任务进行中换号」)。
+  setProviderGroupSessionRebalance({
+    suggest: (sessionId) => sessionGroupService.rebalanceSuggestion(sessionId),
+    decide: (sessionId, memberKey, remember, clientId) => sessionGroupService.rebalanceDecision(sessionId, memberKey, remember, clientId),
+  });
   // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
   setProviderGroupLocalLoad(() => countProviderRunningTurns({
     listTurnRunningSessions: () => maker.listActiveSessions().filter((s) => s.isTurnRunning()).map((s) => s.id),
@@ -12095,7 +12158,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   botDirectMessageServiceHolder = createBotDirectMessageService({
-    captureRequest: captureSessionAgentRequest,
     transport: createBotMessageTransport({ selfDeviceId: getSelfDeviceId,
       listDevices: () => handleListDevices(deviceDirectoryDeps()), invoke: invokeBotPeer }),
     discardQueuedDelivery: async (sessionId, clientId, assertOwner) => {
@@ -12627,6 +12689,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     const chat = botGroupChatServiceHolder?.chatServer;
     return chat ? chat.react(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
+  });
+  ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_FOLLOWTHREAD, async (event, input) => {
+    assertTrustedAppRendererEvent(event);
+    const chat = botGroupChatServiceHolder?.chatServer;
+    return chat ? chat.followThread(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
   });
   ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_REACTORS, async (event, input) => {
     assertTrustedAppRendererEvent(event);
@@ -16371,7 +16438,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
     sendToSession: async (params) => {
-      const request = await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
+      // A script follow-up may name a companion as its dispatcher while no
+      // owner turn is active. Never quote that companion's stale last input.
+      const request: CapturedAgentRequest = params[AUTO_REVIEW_DELEGATED_CONTINUATION]
+        ? { message: params.message, autoReviewUserText: { kind: 'agent-request' } }
+        : await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
       params = { ...params, message: request.message };
       const ownerScope = captureDataOwnerBroadcastScope();
       let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;
@@ -17164,6 +17235,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 等的时候进行中行显示「重新连接中 n/5」。
       await providerGroupService?.beforeSend(sessionId, {
         ...(options?.signal ? { signal: options.signal } : {}),
+        ...(options?.scheduled ? { scheduled: true } : {}),
+        ...(options?.clientId ? { clientId: options.clientId } : {}),
         progress: (state) => agentInputCoordinatorHolder?.setProviderGroupSendReconnect(sessionId, state),
       }).catch((error) => {
         log.warn('provider group: pre-send check failed', {
