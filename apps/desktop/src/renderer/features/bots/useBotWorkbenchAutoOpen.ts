@@ -12,7 +12,7 @@ const LOCAL_HOST: GlanceHost = { deviceId: null };
  */
 export function useBotWorkbenchAutoOpen(sessionId: string | undefined, botId: string | undefined): void {
   const enabled = Boolean(sessionId && botId);
-  const { glance } = useBotGlance(botId ?? '', LOCAL_HOST, enabled);
+  const { glance } = useBotGlance(botId ?? '', LOCAL_HOST, enabled, false);
   // 换了伙伴时上一位的投影可能还在这一帧里，只认这位伙伴自己的。
   const waiting = enabled && glance && glance.botId === botId ? glance.waiting.length : null;
   const previous = useRef<number | null>(null);

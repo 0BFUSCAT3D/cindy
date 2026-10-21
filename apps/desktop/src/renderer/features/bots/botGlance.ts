@@ -74,13 +74,13 @@ export function rebaseGlance(glance: BotGlance, host: GlanceHost): BotGlance {
   };
 }
 
-function readGlance(botId: string, hostDeviceId: string | null): Promise<BotGlance> {
+function readGlance(botId: string, hostDeviceId: string | null, refreshRemote: boolean): Promise<BotGlance> {
   if (hostDeviceId) {
-    return window.electronAPI.deviceLink.invoke(hostDeviceId, BOT_AUTONOMY_IPC.glance, [botId]) as Promise<BotGlance>;
+    return window.electronAPI.deviceLink.invoke(hostDeviceId, BOT_AUTONOMY_IPC.glance, refreshRemote ? [botId] : [botId, false]) as Promise<BotGlance>;
   }
   const api = window.electronAPI?.localDb?.bots?.autonomy;
   if (!api) return Promise.reject(new Error('Bot autonomy is not available'));
-  return api.glance(botId);
+  return api.glance(botId, refreshRemote);
 }
 
 function subscribeGlance(botId: string, hostDeviceId: string | null, onChange: () => void): () => void {
@@ -100,7 +100,7 @@ function subscribeGlance(botId: string, hostDeviceId: string | null, onChange: (
 }
 
 /** 一位伙伴的 glance；`enabled = false` 时不读不订阅（例如还没确认任务归属）。 */
-export function useBotGlance(botId: string, host: GlanceHost, enabled = true): GlanceState {
+export function useBotGlance(botId: string, host: GlanceHost, enabled = true, refreshRemote = true): GlanceState {
   const hostDeviceId = host.deviceId;
   const [state, setState] = useState<GlanceState>({ glance: null, failed: false, fetchedAt: 0 });
   useEffect(() => {
@@ -111,7 +111,7 @@ export function useBotGlance(botId: string, host: GlanceHost, enabled = true): G
     const owner = getDataOwnerGeneration();
     const load = () => {
       const current = ++request;
-      readGlance(botId, hostDeviceId)
+      readGlance(botId, hostDeviceId, refreshRemote)
         .then((glance) => {
           if (!alive || current !== request || !isDataOwnerGenerationCurrent(owner)) return;
           setState({ glance, failed: false, fetchedAt: Date.now() });
@@ -128,7 +128,7 @@ export function useBotGlance(botId: string, host: GlanceHost, enabled = true): G
       alive = false;
       off();
     };
-  }, [botId, enabled, hostDeviceId]);
+  }, [botId, enabled, hostDeviceId, refreshRemote]);
   return state;
 }
 
