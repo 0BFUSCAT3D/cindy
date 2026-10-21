@@ -3272,6 +3272,42 @@ describe('Host Auto review', () => {
     expect(dispatchMock).not.toHaveBeenCalled();
     expect(grantAttachmentsMock).not.toHaveBeenCalled();
   });
+
+  // Regression: Guardian allowed screenshot delivery, then Cindy re-reviewed and blocked it.
+  // Exercise the production handoff/media entries and count actual reviewer invocations.
+  it.each(['native', 'cindy'] as const)('%s owns file handoff and media approval exactly once', async (autoReviewOwner) => {
+    const file = path.join(outsideDir, 'single-review.png');
+    fs.writeFileSync(file, 'png');
+    let permissionMode = 'auto';
+    const reviewAction = vi.fn(async () => ({ verdict: 'block' as const, reason: 'second opinion' }));
+    liveGrantStateMock.mockImplementation(() => ({ permissionMode, remoteHostId: null,
+      autoReviewOwner, isCurrent: () => true, reviewAction }));
+    const deps = makeDeps('codex', 'single-review');
+    const request = { ghostId: 'art', tool: 'run', args: {}, attachments: [file] };
+    expect(await deps.callGhostTool(request)).toMatchObject({ ok: autoReviewOwner === 'native' });
+    const url = `cindy-media://blobs/${'a'.repeat(64)}.png`;
+    callCindyMediaMock.mockResolvedValue({ ok: true, url, local_path: process.execPath, mime_type: 'image/png' });
+    expect(await deps.callMedia?.({ action: 'resolve_local_path', url })).toMatchObject({ ok: autoReviewOwner === 'native' });
+    expect(reviewAction).toHaveBeenCalledTimes(autoReviewOwner === 'native' ? 0 : 2);
+    expect(confirmRequestMock).not.toHaveBeenCalled();
+    if (autoReviewOwner === 'native') {
+      expect(ledgerRefs.map((ref) => [ref.refKind, ref.originKind])).toEqual([['ghost-tool-grant', 'tool']]);
+      permissionMode = 'ask';
+      await deps.callGhostTool(request);
+      expect(confirmRequestMock).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each(['remote', 'expired', 'unknown'] as const)('native ownership cannot bypass %s authority', async (state) => {
+    const reviewAction = vi.fn(async () => ({ verdict: 'block' as const }));
+    liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', autoReviewOwner: 'native',
+      remoteHostId: state === 'remote' ? 'ssh-host' : null,
+      isCurrent: state === 'unknown' ? undefined : () => state !== 'expired', reviewAction });
+    const url = `cindy-media://blobs/${'a'.repeat(64)}.png`;
+    callCindyMediaMock.mockResolvedValue({ ok: true, url, local_path: process.execPath, mime_type: 'image/png' });
+    expect(await makeDeps('codex', 'native-boundary').callMedia?.({ action: 'resolve_local_path', url })).toMatchObject({ ok: false });
+    expect(reviewAction).toHaveBeenCalledTimes(state === 'expired' ? 0 : 1);
+  });
 });
 
 it.each([false, true])('only marks a teammate setup plan as reauthorization with a current suggestion (%s)', async (reauth) => {

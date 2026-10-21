@@ -497,7 +497,9 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   宿主绝对路径或不必要的字节暴露给沙箱**。媒体字节须走
   [`media-storage-and-protocols.md`](media-storage-and-protocols.md) 的统一入库。
   `ghost_call` 的 `attachments`／`dir`／`save_dir` 在目标位于 workdir 外时，普通权限档
-  仍沿用现有确认与授权记忆策略；Auto 档把真实过户动作交给当前会话的 AI 审阅器，
+  仍沿用现有确认与授权记忆策略；Auto 只有一个审批负责人：本地活跃 Harness 已用原生
+  审批接管工具调用时，交接不再调用 Cindy 模型复审；以运行时 `autoReviewOwner` 为准，
+  不从订阅、模型名或数据库快照推断。没有原生接管时才交 Cindy 审阅器，
   allow 逐次放行、block 返回原因、ask 或服务故障才交用户确认。Full Access 旁路则仅当
   Host 能现读到**本地活跃会话**的运行时权限恰为
   `bypassPermissions`（Full Access）时自动批准。该判定不得读取启动期 MCP context 快照，
@@ -517,10 +519,12 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   授权。切回 Ask 后新请求恢复确认。在途插件操作统一沿用当前会话的操作审批：包括工作区
   草稿创建、工作目录写入、媒体路径揭示，Forge 在工作目录外的打包／骨架，以及
   cindy-docs / 电脑工具读写工作目录外路径，
-  Full Access 不额外审批，Auto 进入现有统一审阅器，
+  Full Access 不额外审批，Auto 文件交接和媒体路径揭示沿用实际审批负责人，
+  原生接管免复审仅用于 Harness 调用链，不授权独立 Host 操作或远程任务访问控制端文件；
+  插件内部新发起的工作目录写入仍走既有真实路径和操作检查。
   Ask 沿用原确认流程。越界路径的确认与执行绑定裁决时解析到的规范路径，
   工作目录里的 symlink 不能把真实目标藏成相对路径。MCP 的 `prompt-each-time` 仅限制授权记忆，不得覆盖 Full Access，
-  也不得跳过 Auto 审阅。审批期间实例、权限或调用归属失效时，旧 allow 不可执行。
+  也不得跳过当前负责人的 Auto 审阅。审批期间实例、权限或调用归属失效时，旧 allow 不可执行。
   Plan 与操作审批档位正交：Host 副作用须先检查实时 Plan 状态，未知或切换中拒绝；
   Plan 切换代次也参与审批后和落盘前复核，不能以数据库镜像或切回原状态恢复旧授权。
   一次性 Plan 的 UI 开关在发送后熄灭，不代表当前 Plan 回合结束；授权判定使用 Provider

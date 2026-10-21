@@ -452,7 +452,7 @@ async function packForgeSource(
  * workdir 外过户 / Forge 源码确认:
  *   - 对象在会话 workdir 内 → 自动放行;
  *   - 本地活跃会话当前为 Full Access(bypassPermissions) → Host 自动放行;
- *   - Auto → 当前会话统一审阅器(allow 继续 / block 返回原因 / ask 才弹卡);
+ *   - Auto → 原生已接管则不复审，否则当前会话审阅器(allow / block / ask);
  *   - 其余(Ask、无会话、远程、查询失败)→ 弹确认卡,用户点允许才继续。
  * 禁止在 Host 已按当前档位放行后再因目录边界悄悄硬断。
  * Full Access 只替代本处确认,不扩大插件 manifest slot、网络、
@@ -465,6 +465,8 @@ export interface GhostGrantLiveSessionState {
   /** Includes the captured permission/Plan generations and forbids active or unknown Plan. */
   isCurrent?: () => boolean;
   reviewAction?: (action: ReviewableAction) => Promise<AutoReviewDecision>;
+  /** Supplied by the live harness; absent means Cindy owns review. */
+  autoReviewOwner?: 'native' | 'cindy';
 }
 
 /**
@@ -714,6 +716,13 @@ async function requestGrantConfirm(params: {
         return { ok: true, approvalSource: 'full-access', isCurrent };
       }
       if (live?.permissionMode === 'auto' && live.reviewAction) {
+        // The harness already owns this MCP invocation. Keep live authority and
+        // path/slot checks, but do not ask a second model to reinterpret its intent.
+        // A remote task cannot extend approval to controller-local files.
+        if (live.autoReviewOwner === 'native' && !live.remoteHostId && live.isCurrent?.() === true && isCurrent?.() === true) {
+          log.debug('ghost grant: native reviewer owns handoff', { lane: params.lane });
+          return { ok: true, approvalSource: 'auto-review', isCurrent };
+        }
         const decision = await live.reviewAction(toolAutoReviewAction('plugin_file_handoff', {
           ghostId: params.ghostId,
           lane: params.lane,
@@ -807,6 +816,10 @@ async function requestMediaPathRevealConfirm(params: {
         return { ok: true, isCurrent };
       }
       if (live?.permissionMode === 'auto' && live.reviewAction) {
+        if (live.autoReviewOwner === 'native' && !live.remoteHostId && live.isCurrent?.() === true && isCurrent?.() === true) {
+          log.debug('ghost media: native reviewer owns path reveal');
+          return { ok: true, isCurrent };
+        }
         const decision = await live.reviewAction(toolAutoReviewAction('cindy_media.resolve_local_path', {
           path: params.absPath, mimeType: params.mimeType,
         }, 'Return the controller local path of this managed media to the agent.'));
