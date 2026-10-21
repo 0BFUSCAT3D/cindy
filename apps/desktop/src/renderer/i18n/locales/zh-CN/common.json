@@ -228,6 +228,25 @@
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
   "providerShare": {
+    "modelAccess": {
+      "title": "允许远程调用的模型",
+      "description": "只限制远程调用，本机使用不受影响。保存后，创建任务、切换模型和发送下一轮消息时生效。",
+      "all": "全部模型",
+      "selected": "已开放 {{count}} 个模型",
+      "choose": "选择模型",
+      "memberTitle": "可用模型",
+      "memberDescription": "设置 {{name}} 可以使用的模型，只能选择远程已开放的模型。也适用于经此人转分享的调用。",
+      "inherit": "跟随远程开放范围",
+      "allFuture": "允许全部模型（含之后新增）",
+      "search": "搜索模型",
+      "notOpen": "远程未开放",
+      "empty": "没有匹配的模型",
+      "none": "未选择模型，将无法远程调用。",
+      "loading": "正在读取模型范围…",
+      "loadFailed": "未能读取模型范围，请重新打开此设置。",
+      "saveFailed": "未能保存模型范围，请重试。",
+      "needsUpdate": "请更新供应商所在电脑的 Cindy 后再设置模型范围。"
+    },
     "entry": {
       "label": "远程与分享",
       "pending_other": "{{count}} 个分享申请待处理",
@@ -12205,7 +12224,7 @@
       "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
       "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
       "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
-      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑没有允许远程调用这个供应商。请在那台电脑的「设置 → 模型供应商」里打开「允许被远程调用」，或换一个模型。",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑未向你开放这个供应商或所选模型。请让电脑主人在「远程与分享」中调整开放范围，或换一个模型。",
       "REMOTE_AGENT_SHARE_PAUSED": "对方已暂停对你的分享，恢复前不能使用这些模型。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_REMOVED": "这个分享已不可用（对方删除了分享或你已退出）。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供应商暂时不可用：对方电脑可能不在线，或对方暂时关闭了分享。可以稍后再试，或换成其他模型继续。",
