@@ -23,7 +23,7 @@ import {
 } from '@cindy/maker-shared/subagent-workspace';
 
 import { activeOwnerScopeKey, getActiveDataOwnerPushStamp } from '../../appSessionState.js';
-import { isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
+import { getDeviceLinkInvokeContext, isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
 import {
   isDataOwnerBroadcastScopeCurrent,
   tapWindowBroadcast,
@@ -423,7 +423,9 @@ export function registerSubagentRunsIpc(
       runs: (page?.runs ?? []).map((run) => maskUnavailableResume(run, sessionId)),
       ...(page?.nextCursor ? { nextCursor: page.nextCursor } : {}),
       // This Host forwards local-db:subagent-runs:changed to the task's controllers.
-      changePush: true,
+      // Shared-task guests may read the list but their capture fence does not admit
+      // the push channel, so declaring it would only slow their polling down.
+      ...(getDeviceLinkInvokeContext()?.sharedTask ? {} : { changePush: true }),
     } satisfies SubagentRunsListResponse;
   });
 
