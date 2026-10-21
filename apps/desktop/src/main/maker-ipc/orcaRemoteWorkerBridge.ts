@@ -26,6 +26,8 @@ export interface OrcaRemoteWorkerBridgeDeps {
   ): Promise<OrcaToolResult>;
   remoteInvoke(deviceId: string, channel: string, args: unknown[]): Promise<InvokeResultPayload>;
   getActiveInputClientIds?(sessionId: string): readonly string[];
+  /** Host-owned accepted input; cumulative reply IDs alone survive human steering. */
+  getAcceptedInputProvenance?(sessionId: string): { originKind?: string } | null;
   captureReportSettlement?(proxySessionId: string, reportedInputClientIds: readonly string[]): () => Promise<void>;
 }
 
@@ -51,6 +53,8 @@ export function createOrcaRemoteWorkerBridge(deps: OrcaRemoteWorkerBridgeDeps) {
         return null;
       // Freeze before any await: another input can be queued or start during the round trip.
       // These IDs come from the execution host, never from model-supplied tool arguments.
+      const leadAssignedTurn = tool === 'send_to_lead'
+        && deps.getAcceptedInputProvenance?.(ctx.sessionId)?.originKind === 'orca';
       const reportedInputClientIds = tool === 'send_to_lead'
         ? [...(deps.getActiveInputClientIds?.(ctx.sessionId) ?? [])]
           .filter(isOrcaRemoteWorkerSessionId).slice(-64)
@@ -68,6 +72,12 @@ export function createOrcaRemoteWorkerBridge(deps: OrcaRemoteWorkerBridgeDeps) {
         const auth = authorizeSendToLeadCaller(ctx);
         if (!auth.ok)
           return { content: [{ type: 'text', text: JSON.stringify(auth.error) }], isError: true };
+        if (!leadAssignedTurn || !reportedInputClientIds?.length) {
+          return toolError(
+            'This turn was not assigned by the Lead. Reply in the execution-device task instead.',
+            'NOT_LEAD_ASSIGNED_TURN',
+          );
+        }
       }
       const request = parseOrcaRemoteWorkerBridgeRequest({
         sessionId: ctx.sessionId,

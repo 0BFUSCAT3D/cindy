@@ -120,6 +120,7 @@ import {
   dispatchInterAgentMessage,
   captureRemoteWorkerReportSettlement,
   getSessionActiveInputClientIds,
+  getSessionInputProvenance,
   isActiveInputOwnerAuthored,
   isSessionInTurn,
   wireSessionToIpc,
@@ -1287,6 +1288,7 @@ export function getMaker(): Maker {
       // Remote runtime settles only the reported inputs; queued assignments keep running.
       invokeTool: (ctx, tool, args) => orcaWorkerBridgeProvider.invokeTool(ctx, tool, args, { manageWorkerStatus: false }),
       getActiveInputClientIds: getSessionActiveInputClientIds,
+      getAcceptedInputProvenance: sessionId => getSessionInputProvenance(sessionId).input,
       captureReportSettlement: captureRemoteWorkerReportSettlement,
     });
     // Cindy Make 个人版任务专属工具:只有 sessions.source='cindy-make' 的任务在

@@ -462,7 +462,11 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
 派发说明携带 Lead 分配的 `worker_id`；当前任务查询和历史任务列表投影来源标记，
 `parentSessionId` 继续只表示 Fork。运行设备在转发前核验根 Agent 身份，Lead 核验来源设备、
 真实任务、Worker 与当前 active team 后执行同一套本地桥接 handler，不接受任意工具或目标任务。
-运行宿主在转发前同步捕获本轮已消费的输入 ID，经可选 `reportedInputClientIds` 传给 Lead，
+运行宿主在任何异步查询前同步捕获协调器当前已接受输入的来源与本轮已消费的输入 ID。
+主动回报只允许当前输入来自 Orca 派活且具有已消费输入；用户在运行设备直接发送、已接受的
+人工插话接管或没有活动输入时返回 `NOT_LEAD_ASSIGNED_TURN`，不转发或结清。不能仅凭持久
+Worker 归属或累计回复 ID 判断当前输入仍属 Lead；只读 Lead 工具与本机 Worker 路径保持不变。
+已消费输入 ID 经可选 `reportedInputClientIds` 传给 Lead，
 不向模型工具增加参数。主动回报成功只剔除这些输入的运行期和持久等待记录；即使 B 已经
 排队，A 的回报也不能清掉 B 或提前把 Worker 标为 done。新派活的回滚链同步剔除已回报输入，
 避免失败回滚恢复旧等待记录。全部结清后才更新 Worker 终态；旧端缺少输入标识时保留自动回报。

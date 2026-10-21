@@ -60,6 +60,7 @@ function setup() {
   const captureSettlement = vi.fn((_proxy: string, _inputs: readonly string[]) => settled);
   const activeInputIds = ['input-a'];
   const getActiveInputClientIds = vi.fn(() => activeInputIds);
+  const getAcceptedInputProvenance = vi.fn<() => { originKind?: string } | null>(() => ({ originKind: 'orca' }));
   const provider = createOrcaWorkerBridgeMcpProvider({
     getMaker: () => ({ getSession: () => leadSession }) as unknown as Maker,
     logger: log,
@@ -97,6 +98,7 @@ function setup() {
     readSession,
     remoteInvoke,
     getActiveInputClientIds,
+    getAcceptedInputProvenance,
     listWorkers: vi.fn(),
     activeTeamId: vi.fn(),
     invokeTool: vi.fn(),
@@ -134,6 +136,7 @@ function setup() {
     captureSettlement,
     activeInputIds,
     getActiveInputClientIds,
+    getAcceptedInputProvenance,
     remoteInvoke,
     dispatch,
     readSession,
@@ -148,6 +151,27 @@ function setup() {
 const json = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0].text);
 
 describe('cross-device Worker bridge', () => {
+  // PR #6659 discussion_r4336139384: a persisted remote link does not authorize
+  // execution-device user turns. Existing tests checked root Agent identity only.
+  // Unit: real MCP/bridge handlers must reject before dispatch or settlement, even
+  // when cumulative reply IDs still include the Lead's input after human steering.
+  it.each([
+    { name: 'direct user turn', origin: {}, ids: ['user-1'] },
+    { name: 'accepted human steering', origin: { originKind: 'desktop' }, ids: ['input-a', 'user-1'] },
+    { name: 'no active input', origin: null, ids: [] },
+  ])('rejects a report from $name', async ({ origin, ids }) => {
+    const s = setup();
+    s.getAcceptedInputProvenance.mockReturnValue(origin);
+    s.activeInputIds.splice(0, s.activeInputIds.length, ...ids);
+    const result = await s.executionProvider.invokeTool(s.ctx, 'send_to_lead', s.request.args);
+    expect(result.isError).toBe(true);
+    expect(json(result)).toMatchObject({ code: 'NOT_LEAD_ASSIGNED_TURN' });
+    expect(s.remoteInvoke).not.toHaveBeenCalled();
+    expect(s.dispatch).not.toHaveBeenCalled();
+    expect(s.captureSettlement).not.toHaveBeenCalled();
+    expect(s.worker.status).toBe('running');
+  });
+
   it('delivers a real remote Worker report to a busy Lead and settles it once', async () => {
     const s = setup();
     const result = await s.executionProvider.invokeTool(s.ctx, 'send_to_lead', s.request.args);
@@ -177,6 +201,7 @@ describe('cross-device Worker bridge', () => {
     s.settled.mockImplementationOnce(async () => {});
     s.readSession.mockImplementationOnce(async () => {
       s.activeInputIds.splice(0, 1, 'input-b');
+      s.getAcceptedInputProvenance.mockReturnValue({});
       return { status: 'active', orcaRemoteLead: s.remoteLead };
     });
     const result = await s.executionProvider.invokeTool(s.ctx, 'send_to_lead', s.request.args);
@@ -189,6 +214,7 @@ describe('cross-device Worker bridge', () => {
     'routes %s to the same owning Lead',
     async (tool) => {
       const s = setup();
+      s.getAcceptedInputProvenance.mockReturnValue({});
       const result = await s.executionProvider.invokeTool(s.ctx, tool, { worker_id: 'worker-1' });
       expect(json(result)).toMatchObject({ worker_id: 'worker-1', lead_session_id: 'lead-1' });
       if (tool === 'read_lead_history')
@@ -302,5 +328,6 @@ describe('cross-device Worker bridge', () => {
     expect(s.readSession).not.toHaveBeenCalled();
     expect(s.remoteInvoke).not.toHaveBeenCalled();
     expect(s.getActiveInputClientIds).not.toHaveBeenCalled();
+    expect(s.getAcceptedInputProvenance).not.toHaveBeenCalled();
   });
 });
