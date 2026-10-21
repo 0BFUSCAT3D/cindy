@@ -128,6 +128,9 @@ export function createDesktopTaskActionAuthorizer(deps: {
         // All execution modes use the normal runtime permission flow, including
         // automatic/resumed turns. Do not ask for owner consent a second time.
         // Group identity was checked above; shared guests keep their own boundary.
+        // This is the Host admission snapshot, not an upstream approval receipt.
+        // Its revocation lifetime starts here; the approval-to-Host handoff keeps
+        // ordinary session semantics and is not made atomic by this gate.
         const permission = input.permission;
         const runtimePermissionApplies = caller.source !== 'shared'
           && ['bypassPermissions', 'auto', 'ask', 'default', 'acceptEdits'].includes(permission?.permissionMode ?? '')
