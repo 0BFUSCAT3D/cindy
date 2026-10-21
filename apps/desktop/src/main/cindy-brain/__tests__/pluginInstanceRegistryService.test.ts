@@ -27,6 +27,7 @@ function service(options: {
   registry: PluginInstanceRegistry;
   relIds?: string[];
   log?: { warn(message: string, meta?: Record<string, unknown>): void };
+  receiptRevision?: string;
   marketIdentityForInstance?: (instance: {
     ghostId: string;
     contentRelId: string;
@@ -43,7 +44,7 @@ function service(options: {
       ghostId: relId,
       hasNamespace: false,
       namespace: null,
-      revision: 'rev-1',
+      revision: options.receiptRevision ?? 'rev-1',
       packageSha256: 'ab'.repeat(32),
     }),
     censusCandidates: () => [],
@@ -81,7 +82,7 @@ describe('plugin instance registry service', () => {
           namespaceState: 'pending',
           pluginId: null,
           source: 'legacy',
-          receiptRevision: null,
+          receiptRevision: 'rev-1',
           packageSha256: null,
           active: true,
         },
@@ -93,7 +94,8 @@ describe('plugin instance registry service', () => {
     const warn = vi.fn();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
     try {
-      const { created } = service({ registry, relIds: ['hello'], log: { warn } });
+      const options = { registry, relIds: ['hello'], log: { warn }, receiptRevision: 'rev-1' };
+      const { created } = service(options);
       created.sync();
       created.sync();
       created.sync();
@@ -103,9 +105,18 @@ describe('plugin instance registry service', () => {
       expect(warn).toHaveBeenLastCalledWith(expect.any(String), {
         mismatches: ['hello:pending-but-not-listed'], repeatedChecks: 3,
       });
-      created.clear();
+      created.sync();
+      created.sync();
+      options.receiptRevision = 'rev-2';
       created.sync();
       expect(warn).toHaveBeenCalledTimes(3);
+      // A changed receipt is a new anomaly, not another repeat of the old one.
+      expect(warn).toHaveBeenLastCalledWith(expect.any(String), {
+        mismatches: ['hello:pending-but-not-listed'], repeatedChecks: 1,
+      });
+      created.clear();
+      created.sync();
+      expect(warn).toHaveBeenCalledTimes(4);
     } finally {
       clock.mockRestore();
     }

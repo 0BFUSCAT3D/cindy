@@ -265,8 +265,9 @@ export class PluginInstanceRegistryService {
         const record = Object.values(registry.instances).find((entry) => mismatch.startsWith(entry.contentRelId + ':'));
         return [mismatch, record?.receiptRevision, record?.packageSha256];
       }).sort());
-      this.repeatedMismatchChecks += 1;
-      if (fingerprint !== this.mismatchFingerprint || Date.now() - this.mismatchLoggedAt >= 300_000) {
+      const changed = fingerprint !== this.mismatchFingerprint;
+      this.repeatedMismatchChecks = changed ? 1 : this.repeatedMismatchChecks + 1;
+      if (changed || Date.now() - this.mismatchLoggedAt >= 300_000) {
         this.deps.log?.warn('plugin instance census diverged from namespaceState', {
           mismatches, repeatedChecks: this.repeatedMismatchChecks,
         });
