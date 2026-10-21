@@ -97,12 +97,17 @@ pub fn install_staged(installation: &Installation) -> Staged<()> {
 fn install_registered(installation: &Installation, staged: std::path::PathBuf) -> Staged<()> {
     let manager = manager(SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT).stage(Step::ScmOpen)?;
     let name = wide(&installation.service());
+    // Service display names are also unique in the SCM namespace. Include the
+    // installation id so Cindy and CindyDev (or two side-by-side installs)
+    // cannot reject each other's registration with
+    // ERROR_DUPLICATE_SERVICE_NAME.
+    let display_name = wide(&format!("Cindy Remote Desktop ({})", installation.id));
     let command = wide(&format!("\"{}\" --service", staged.display()));
     let raw = unsafe {
         CreateServiceW(
             manager.0,
             name.as_ptr(),
-            wide("Cindy Remote Desktop").as_ptr(),
+            display_name.as_ptr(),
             SERVICE_START | SERVICE_QUERY_STATUS,
             SERVICE_WIN32_OWN_PROCESS,
             SERVICE_DEMAND_START,
@@ -140,7 +145,7 @@ fn install_registered(installation: &Installation, staged: std::path::PathBuf) -
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),
-                ptr::null(),
+                display_name.as_ptr(),
             )
         } == 0
         {
