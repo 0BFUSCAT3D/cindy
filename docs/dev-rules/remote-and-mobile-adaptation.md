@@ -444,7 +444,7 @@ Mobile 伙伴任务卡的列表外补读由 `companionTaskReads.ts` 按账号、
 
 Debug 日志区分两层耗时：
 
-- `remote invoke slow execution`（至少 1 秒）包含 `stagesMs`：调用前授权、业务 handler、
+- `remote invoke slow execution`（至少 300 毫秒）包含 `stagesMs`：调用前授权、业务 handler、
   调用后授权、设置持久化、返回投影。总耗时还包含调度和序列化，不等于 SQL 执行时间。
 - `db-rpc` 的 `rpc.slow`（至少 250 毫秒）包含 `queueMs`（主线程待发送队列）、
   `workerWaitMs`（投递到 Worker 开始处理）、`workerExecutionMs`（整个 Worker 操作）、
@@ -454,6 +454,20 @@ Debug 日志区分两层耗时：
 诊断只记录本地 RPC 序号、操作类别、数量与耗时，不记录 SQL、参数、消息内容或结果。
 性能复测应同时包含前台发送、另一控制端刷新与补读、本地读取；分别报告请求数量和延迟，
 不能把内存数据库基准当成真机网络端到端改善。
+
+远程发送的端到端耗时按同一 clientId（只记前 8 位）在三端分别记 debug 日志，各端只用本机时钟：
+
+- 被控端 `remote enqueue timing`：enqueue handler 内 `gate`（准入与清除边界）、`restore`、
+  `prepare`（附件物化与引用水合）、`recheck`、`dedupe`、`coordinator`、`snapshot` 各阶段耗时；
+  `remote send pushed`：coordinator 收下到用户行 `messages:created` 推出的耗时（含 Agent 冷启动）。
+- Desktop 控制端 `remote send accepted`（点击到被控端收下、最后一次派发耗时、尝试次数）与
+  `remote send echoed`（点击到回显）。
+- Mobile 控制端（调试记录开启时）`send accepted`：`policy` / `projection` / `prepare` / `enqueue`
+  各阶段、是否跳过发送前 projection、点击到收下；`send history confirmed`：点击到落库确认。
+- Desktop 控制端在 debug 级别每 30 秒输出 `transport bytes`：按 channel 统计 invoke 回包数与字节数
+  （只在 debug 开启时为统计再序列化一次回包）。
+
+这些日志不改变 wire、ACK、重试或授权语义。
 
 `device-link request slow/failed/timeout` 另记录 `firstWriteWaitMs`（请求建立到首次
 WebSocket 写入成功）与 `afterFirstWriteMs`（首次写入到结束）；从未写出时记录

@@ -6481,6 +6481,8 @@ interface ElectronAPI {
     } | null>;
     // effort/mode 透传 string —— 合法值由 maker capabilities 决定, vite-env 不重复枚举
     setEffort: (sessionId: string, effort: string) => Promise<void>;
+    /** 输入框开始打字时提前启动 Agent；尽力而为。 */
+    prewarmSession?: (sessionId: string, createOpts: unknown) => Promise<{ accepted: boolean }>;
     setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
     getPluginWriteAccessRecovery: (sessionId: string) => Promise<{available: boolean}>;
     retryPluginWriteAccess: (sessionId: string) => Promise<{granted: boolean; mode?: 'acceptEdits' | 'auto'}>;

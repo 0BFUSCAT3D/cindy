@@ -189,6 +189,9 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'maker:mcp-apps:v1',
   DL_SESSION_HANDOFF_CHANNEL,
   'maker:steer',
+  // 控制端输入框开始打字时，请被控端提前启动该任务的 Agent。被控端只对普通任务、
+  // 本机运行的 Agent 生效，限量并空闲回收；旧被控端 CHANNEL_NOT_ALLOWED → 控制端静默忽略。
+  'maker:session:prewarm',
   'maker:list-active',
   'maker:any-session-in-turn',
   'maker:session-in-turn',
