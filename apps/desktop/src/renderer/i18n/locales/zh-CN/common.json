@@ -6655,6 +6655,8 @@
         "agentTasksRequest": "确认任务权限",
         "agentTasks": "可创建和管理本插件的 Cindy 任务",
         "agentTasksDetail": "可发送消息、读取结果和停止本插件的执行，任务对你可见。沿用插件的 AI 配置，可能产生模型费用；不授予其他任务的访问权。",
+        "agentTargets": "可向项目、已有任务和伙伴投递消息",
+        "agentTargetsDetail": "可查看本机项目目录、任务和伙伴的名称与标识，在项目中新建任务或向已有任务、伙伴发送文字和图片。可能触发 AI 执行并产生模型费用；不授予其他任务的历史读取、设置修改或停止权限。",
         "agentHiddenTasks": "可创建不显示在任务列表里的后台任务",
         "agentHiddenTasksDetail": "本插件创建的任务可以不出现在任务列表、搜索和通知里。你可以随时在插件详情的「后台任务」中查看、打开，或显示到任务列表；卸载插件时这些任务会恢复显示。",
         "agentErrand": "可以新建任务、执行工作并读取结果",
@@ -8975,11 +8977,11 @@
       }
     },
     "autonomy": {
-      "title": "自动跟进所有任务",
-      "descriptionOn": "{{name}}会定时看一遍所有任务，有等你的就告诉你。",
+      "title": "跟进我的任务",
+      "descriptionOn": "{{name}}会在任务有变化时查看摘要并提醒你。",
       "movedFrom": "已从{{name}}移到这里",
       "heldBy": "现在由{{name}}负责，打开就移到这里。",
-      "heldByNobody": "现在没有伙伴负责。",
+      "heldByNobody": "尚未开启",
       "restoreDefault": "恢复默认（{{name}}）",
       "saveFailed": "没能保存，请重试",
       "turnOff": {
@@ -8991,6 +8993,12 @@
       "allowSchedulerFollow": {
         "title": "它开的任务也交给{{name}}跟进",
         "description": "默认{{scheduler}}只看不跟。打开后，{{name}}开的任务没做完时，{{scheduler}}也会接着跟进。"
+      },
+      "consent": "开启后，我会读取这台电脑上你创建的任务摘要，分析进展并提醒你重要变化。这会使用模型额度，你可以随时关闭。",
+      "invitation": {
+        "title": "要我帮你跟进任务吗？",
+        "start": "开始跟进",
+        "notNow": "暂不开启"
       }
     },
     "remoteSettings": {
