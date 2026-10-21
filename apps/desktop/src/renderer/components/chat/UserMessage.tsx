@@ -1516,7 +1516,8 @@ export function UserMessage({
                 {(inlineQuoteCount > 0 || displayBubbleBody.trim() || ghostChipDisplay || attachmentsInBubble) && (
                   <div
                     // 只剩插件标注行的气泡:分享图会剥掉标注,整泡一起去掉,不留空壳。
-                    {...(inlineQuoteCount === 0 && !displayBubbleBody.trim()
+                    // 伙伴私聊里附件也在气泡内,有附件就不是空壳。
+                    {...(inlineQuoteCount === 0 && !displayBubbleBody.trim() && !attachmentsInBubble
                       ? { [SHARE_SOURCE_ATTR]: '' }
                       : {})}
                     className={cn(
