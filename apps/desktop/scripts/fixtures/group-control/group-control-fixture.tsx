@@ -19,6 +19,8 @@ interface GroupData {
   arrangement?: Queue;
   /** Open the group settings drawer as its owner. */
   settings?: boolean;
+  /** Server read state: unread thread entries and the in-chat 话题 hint. */
+  threadUnread?: boolean;
 }
 
 const T0 = 1700000000000;
@@ -150,8 +152,23 @@ function arrangementPlan(state: Queue) {
     })),
   };
 }
+/** Two Threads name the reader, one is merely unread, one is read (bot-group-chat.md §10「话题未读与提示」). */
+const UNREAD = { a1: { count: 2, mentioned: true }, q3: { count: 1, mentioned: true }, q2: { count: 1, mentioned: false } } as Record<string, { count: number; mentioned: boolean }>;
+function threadSummaries() {
+  const summary = (rootId: string, rootText: string, rootAuthorName: string, rootAuthorBotId: string | null, replyCount: number, last: [string, string, number]) => ({
+    rootId, rootText, rootAuthorName, rootAuthorBotId, replyCount, unread: UNREAD[rootId] ?? { count: 0, mentioned: false },
+    lastReply: { authorName: last[0], text: last[1], createdAt: T0 + last[2] * MINUTE },
+  });
+  return [
+    summary('a1', 'Android 更新卡那个 PR 的 review 已经处理完，现在等人审。', 'Aster', 'a', 5, ['Nova', '@You 周四上午 10 点前能合吗？', 20]),
+    summary('q3', '收到', 'You', null, 3, ['Aster', '@You 发版清单里也补上了', 19]),
+    summary('q2', '@Nova 旧版那两条也记一下，发版说明里提一句', 'You', null, 1, ['Nova', '已经记下了', 10]),
+    summary('q4', '好', 'You', null, 3, ['You', '谢谢', 18]),
+  ];
+}
 
 function groupFrom(data: GroupData) {
+  const bubbles = data.bubbles ? bubbleMessages(data.wrappedReactions) : null;
   return {
     id: 'fixture-group',
     name: data.name,
@@ -180,7 +197,10 @@ function groupFrom(data: GroupData) {
       : data.arrangement === 'running' ? { id: 'p1', status: 'running', currentStep: 1, stepCount: 2, currentBotName: 'Nova', currentStepStatus: 'running', kind: 'talk' } : null,
       singleSpeaker: true } : {}),
     ...(data.bubbles || data.arrangement ? { serverBacked: true } : {}),
-    messages: data.arrangement ? arrangementMessages(data.arrangement) : data.bubbles ? bubbleMessages(data.wrappedReactions) : Array.from({ length: data.messages }, (_, i) => ({
+    ...(data.threadUnread ? { threads: threadSummaries() } : {}),
+    messages: data.arrangement ? arrangementMessages(data.arrangement)
+      : bubbles ? bubbles.map(m => (data.threadUnread && UNREAD[m.id as string] ? { ...m, threadUnread: UNREAD[m.id as string] } : m))
+      : Array.from({ length: data.messages }, (_, i) => ({
       id: `m${i}`,
       sequence: i + 1,
       kind: 'message',
