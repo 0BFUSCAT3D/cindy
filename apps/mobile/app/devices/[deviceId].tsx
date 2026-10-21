@@ -680,7 +680,7 @@ function DeviceDetailScreenContent() {
     setBulkScheduleCount(0);
     setBulkScheduleLoading(action === 'archive');
     if (action === 'archive') {
-      void countSessionsWithActiveBoundSchedules(maker, summary.candidates.map((session) => session.id))
+      void countSessionsWithActiveBoundSchedules(deviceId, invoke, summary.candidates.map((session) => session.id))
         .then((count) => {
           if (bulkScheduleRequestRef.current !== scheduleRequest) return;
           setBulkScheduleCount(count);
@@ -688,7 +688,7 @@ function DeviceDetailScreenContent() {
         });
     }
     setBulkConfirmAction(action);
-  }, [bulkActionSummaries, maker, t]);
+  }, [bulkActionSummaries, deviceId, invoke, t]);
 
   const actionOverlays = (
     <>

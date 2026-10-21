@@ -6,9 +6,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('react-native', () => ({ Alert: { alert: vi.fn() } }));
-vi.mock('@/device-link/mobileMakerTransport', () => ({
-  createMobileMakerTransport: () => ({ schedule: { list: mocks.list } }),
-}));
 vi.mock('@/session/scheduleIndex', () => ({ sessionMayHaveScheduleRuns: mocks.mayHave }));
 
 import {
@@ -17,7 +14,7 @@ import {
   SCHEDULE_LOOKUP_WAIT_MS,
 } from '@/session/archiveScheduleConfirm';
 
-const args = { deviceId: 'pc', invoke: vi.fn(), sessionId: 'task' } as never;
+const args = { deviceId: 'pc', invoke: mocks.list, sessionId: 'task' } as never;
 
 describe('archive schedule lookup deadline', () => {
   beforeEach(() => {
@@ -31,7 +28,7 @@ describe('archive schedule lookup deadline', () => {
     mocks.list.mockReturnValue(new Promise(() => {}));
 
     const single = loadActiveBoundScheduleNames(args);
-    const bulk = countSessionsWithActiveBoundSchedules({ schedule: { list: mocks.list } } as never, ['task']);
+    const bulk = countSessionsWithActiveBoundSchedules('pc', mocks.list as never, ['task']);
     await vi.advanceTimersByTimeAsync(SCHEDULE_LOOKUP_WAIT_MS);
 
     await expect(single).resolves.toEqual([]);
@@ -45,6 +42,17 @@ describe('archive schedule lookup deadline', () => {
     ]);
 
     await expect(loadActiveBoundScheduleNames(args)).resolves.toEqual(['Daily']);
+  });
+
+  it('asks only for the binding projection so a large list cannot overflow the frame', async () => {
+    mocks.list.mockResolvedValue([]);
+
+    await loadActiveBoundScheduleNames(args);
+    await countSessionsWithActiveBoundSchedules('pc', mocks.list as never, ['task']);
+
+    for (const call of mocks.list.mock.calls) {
+      expect(call).toEqual(['pc', 'maker:schedule:list', [null, { sessionBindings: true }]]);
+    }
   });
 
   it('skips the request for tasks known to be unbound', async () => {

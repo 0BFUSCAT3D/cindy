@@ -568,14 +568,9 @@ const actions = {
     const shard = shards.get(deviceId);
     if (!shard) return;
     const next = buildBindingMap(bindings);
-    // 首次快照即使为空也要落下:`undefined` 表示尚未加载,空 Map 才是权威的「没有绑定」。
-    if (shard.scheduleBindings && JSON.stringify([...shard.scheduleBindings]) === JSON.stringify([...next])) return;
+    if (JSON.stringify([...(shard.scheduleBindings ?? [])]) === JSON.stringify([...next])) return;
     shard.scheduleBindings = next;
     subs.forEach((fn) => fn());
-  },
-  /** 该设备的绑定快照是否已加载过(区分「尚未加载」与「确实没有绑定」)。 */
-  hasScheduleBindings(deviceId: string): boolean {
-    return shards.get(deviceId)?.scheduleBindings !== undefined;
   },
   getSessionScheduleBindings(deviceId: string, sessionId: string): readonly ScheduleBinding[] {
     return shards.get(deviceId)?.scheduleBindings?.get(sessionId) ?? EMPTY_SCHEDULE_BINDINGS;

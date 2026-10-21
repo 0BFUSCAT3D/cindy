@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
   pendingRefresh: vi.fn(),
   getSessionScheduleBindings: vi.fn(),
-  hasScheduleBindings: vi.fn(),
   invoke: vi.fn(),
 }));
 
@@ -27,7 +26,6 @@ vi.mock('../schedulesStore', () => ({
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   remoteProjectsStore: {
     getSessionScheduleBindings: mocks.getSessionScheduleBindings,
-    hasScheduleBindings: mocks.hasScheduleBindings,
   },
 }));
 
@@ -49,8 +47,7 @@ describe('loadActiveBoundScheduleNames', () => {
     mocks.getSnapshot.mockReset();
     mocks.pendingRefresh.mockReset().mockReturnValue(null);
     mocks.getSessionScheduleBindings.mockReset().mockReturnValue([]);
-    mocks.hasScheduleBindings.mockReset().mockReturnValue(true);
-    mocks.invoke.mockReset();
+    mocks.invoke.mockReset().mockResolvedValue([]);
     vi.stubGlobal('window', { electronAPI: { deviceLink: { invoke: mocks.invoke } } });
   });
 
@@ -66,8 +63,7 @@ describe('loadActiveBoundScheduleNames', () => {
     expect([...result]).toEqual([['task', ['Daily']]]);
   });
 
-  it('远程绑定快照尚未加载时直取一次,而不是把空当作没有绑定', async () => {
-    mocks.hasScheduleBindings.mockReturnValue(false);
+  it('远程任务总是直取最新绑定,每台设备一次,不信任本地镜像', async () => {
     mocks.invoke.mockResolvedValue([
       { id: 'r', name: 'Remote', status: 'active', targetSessionId: 'a', cronExpr: '* * * * *' },
     ]);
@@ -82,28 +78,26 @@ describe('loadActiveBoundScheduleNames', () => {
       null,
       { sessionBindings: true },
     ]);
+    expect(mocks.getSessionScheduleBindings).not.toHaveBeenCalled();
+    expect(mocks.ensure).not.toHaveBeenCalled(); // 远程任务不读本机同 ID
     expect([...result]).toEqual([['a', ['Remote']]]);
   });
 
-  it('远程快照未加载且直取超时时按无绑定处理', async () => {
+  it('远程直取失败或超时时退回镜像里已有的快照', async () => {
     vi.useFakeTimers();
     try {
-      mocks.hasScheduleBindings.mockReturnValue(false);
       mocks.invoke.mockReturnValue(new Promise(() => {}));
+      mocks.getSessionScheduleBindings.mockReturnValue([
+        { id: 'm', name: 'Mirrored', status: 'active', targetSessionId: 'a' },
+      ]);
 
       const pending = loadActiveBoundScheduleNames([{ id: 'a', deviceLinkDeviceId: 'mac-2' }]);
       await vi.advanceTimersByTimeAsync(COLD_SCHEDULE_LOAD_WAIT_MS);
 
-      expect((await pending).size).toBe(0);
+      expect((await pending).get('a')).toEqual(['Mirrored']);
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('远程快照已就绪时不再发请求', async () => {
-    await loadActiveBoundScheduleNames([{ id: 'a', deviceLinkDeviceId: 'mac-2' }]);
-
-    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('持续会话归档后会换绑新任务继续跑,不提示', async () => {
@@ -121,20 +115,6 @@ describe('loadActiveBoundScheduleNames', () => {
     const result = await loadActiveBoundScheduleNames([{ id: 'task' }]);
 
     expect(result.get('task')).toEqual(['Heartbeat']);
-  });
-
-  it('远程任务读远程分片,不回退到本机同 ID', async () => {
-    mocks.getSessionScheduleBindings.mockReturnValue([
-      { id: 'r', name: 'Remote', status: 'active', targetSessionId: 'task' },
-    ]);
-
-    const result = await loadActiveBoundScheduleNames([
-      { id: 'task', deviceLinkDeviceId: 'mac-2' },
-    ]);
-
-    expect(mocks.getSessionScheduleBindings).toHaveBeenCalledWith('mac-2', 'task');
-    expect(mocks.ensure).not.toHaveBeenCalled();
-    expect(result.get('task')).toEqual(['Remote']);
   });
 
   it('有缓存时直接使用,不等列表请求', async () => {
@@ -182,7 +162,6 @@ describe('loadActiveBoundScheduleNames', () => {
     try {
       mocks.getSnapshot.mockReturnValue(null);
       mocks.ensure.mockReturnValue(new Promise(() => {}));
-      mocks.hasScheduleBindings.mockReturnValue(false);
       mocks.invoke.mockReturnValue(new Promise(() => {}));
 
       const pending = loadActiveBoundScheduleNames([

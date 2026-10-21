@@ -2,11 +2,7 @@ import { Alert } from 'react-native';
 import type { TFunction } from 'i18next';
 import { normalizeScheduleList } from '@/scheduler/scheduleModel';
 import type { RemoteSchedule } from '@/scheduler/types';
-import {
-  createMobileMakerTransport,
-  type MobileMakerTransport,
-  type RemoteInvoke,
-} from '@/device-link/mobileMakerTransport';
+import type { RemoteInvoke } from '@/device-link/mobileMakerTransport';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 
 /**
@@ -27,19 +23,28 @@ function withLookupDeadline<T>(lookup: Promise<T>, fallback: T): Promise<T> {
   });
 }
 
+/**
+ * 只取绑定投影(不含 prompt / 脚本等大字段):完整列表可能超过 device-link 帧限制,
+ * 失败后被当成「无绑定」就会漏掉提醒。旧被控端忽略该参数,返回完整列表,行为不变。
+ */
+function listBindingSchedules(deviceId: string, invoke: RemoteInvoke): Promise<unknown> {
+  return invoke(deviceId, 'maker:schedule:list', [null, { sessionBindings: true }]);
+}
+
 function stopsWhenTargetArchived(schedule: RemoteSchedule): boolean {
   return schedule.status === 'active' && !schedule.persistentSession && !!schedule.targetSessionId;
 }
 
 /** 批量归档:所选任务里归档后会停掉自动化的任务数(一次列表请求;失败按 0)。 */
 export async function countSessionsWithActiveBoundSchedules(
-  maker: Pick<MobileMakerTransport, 'schedule'>,
+  deviceId: string,
+  invoke: RemoteInvoke,
   sessionIds: readonly string[],
 ): Promise<number> {
   try {
     const ids = new Set(sessionIds);
     const bound = new Set(
-      normalizeScheduleList(await withLookupDeadline(maker.schedule.list(), []))
+      normalizeScheduleList(await withLookupDeadline(listBindingSchedules(deviceId, invoke), []))
         .filter((schedule) => stopsWhenTargetArchived(schedule) && ids.has(schedule.targetSessionId!))
         .map((schedule) => schedule.targetSessionId),
     );
@@ -63,7 +68,7 @@ export async function loadActiveBoundScheduleNames({
   if (!sessionMayHaveScheduleRuns(deviceId, sessionId, source)) return [];
   try {
     const schedules = normalizeScheduleList(
-      await withLookupDeadline(createMobileMakerTransport({ deviceId, invoke }).schedule.list(), []),
+      await withLookupDeadline(listBindingSchedules(deviceId, invoke), []),
     );
     return schedules
       .filter((schedule) => schedule.targetSessionId === sessionId && stopsWhenTargetArchived(schedule))

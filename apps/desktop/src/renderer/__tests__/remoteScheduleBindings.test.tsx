@@ -199,13 +199,6 @@ describe('remote schedule binding badges', () => {
     expect(() => parseScheduleBindings([{ ...binding(), recurring: 'false' }])).toThrow();
   });
 
-  it('marks an empty first snapshot as loaded, distinguishing it from not-yet-loaded', () => {
-    remoteProjectsStore.setDeviceSessions('A', 'Device A', []);
-    expect(remoteProjectsStore.hasScheduleBindings('A')).toBe(false);
-    remoteProjectsStore.setDeviceScheduleBindings('A', []);
-    expect(remoteProjectsStore.hasScheduleBindings('A')).toBe(true);
-  });
-
   it('keeps the persistent-session flag only when true, so archive confirmation can skip it', () => {
     expect(parseScheduleBindings([{ ...binding(), persistentSession: true }])).toEqual([
       { ...binding(), persistentSession: true },
