@@ -121,6 +121,30 @@ function harness() {
 }
 
 describe('provider-group quota routing', () => {
+  // Unit regression: an exhausted model plus a paused backup used to lose the quota reason
+  // at pick(), preventing the task from showing/waiting for the actual reset.
+  it('reports model quota exhaustion and the earliest usable reset without counting paused members', async () => {
+    const h = harness();
+    h.config.members[1].paused = true;
+    h.usage.set('local', { ...snapshot(4, 66), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: 80_000 }] });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: 80_000_000 } });
+    expect(await h.pick(SONNET)).toMatchObject({ kind: 'member' });
+    h.config.members[1].paused = false;
+    h.usage.set(h.config.members[1].key, snapshot(100, 20));
+    h.advance(15_001); // refresh the remote quota snapshot
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: 3_000_000 } });
+  });
+
+  it('keeps unknown resets unknown and does not call a paused or unsupported pool quota-limited', async () => {
+    const h = harness();
+    h.config.members[1].paused = true;
+    h.usage.set('local', { ...snapshot(4, 66), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: null }] });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: null } });
+    expect(await h.pick('missing-model')).not.toHaveProperty('usageLimit');
+    h.config.members[0].paused = true;
+    expect(await h.pick()).not.toHaveProperty('usageLimit');
+  });
+
   it('isolates error cooldowns by model while total quota and account failures still block all models', async () => {
     const h = harness();
     h.config.strategy = 'order';

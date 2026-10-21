@@ -10,6 +10,7 @@ import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pl
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
+import { ProviderGroupUsageLimitError } from '../../provider-group/failurePolicy.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { runSchedulerQueuedPreparation } from '../schedulerQueuedPreparation.js';
@@ -14221,6 +14222,38 @@ describe('usage-limit wait (ordinary tasks)', () => {
     maxAttempts: 3,
     sessionTotal: 0,
   };
+
+  // Unit regression: group selection rejects before persistence. Existing tests covered only
+  // running turns; the original queued message must be sent once, or retained after cancellation.
+  it.each([false, true])('waits after a group quota rejection before dispatch (cancel=%s)', async (cancel) => {
+    const h = createHarness();
+    const sid = 'group-quota-before-send';
+    h.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    h.coordinator.enqueue(sid, makeItem('q-original', 'original task'));
+    await flush();
+    expect(h.onUserMessagePersisted).not.toHaveBeenCalled();
+    const candidate = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledWith(sid,
+      expect.objectContaining({ usageLimit: true, providerGroupUsageLimit: { resetAtMs: 5_000_000 } }),
+      expect.objectContaining({ clientId: 'q-original' }), expect.any(Number));
+    expect(h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000)).toBe(true);
+    if (cancel) h.coordinator.cancelUsageLimitWait(sid, candidate);
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO)).toBe(cancel ? 'superseded' : 'resumed');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(cancel ? 1 : 2);
+    if (!cancel) {
+      expect(h.sendToAgent.mock.calls[1][3].persistUserMessage?.clientId).toBe('q-original');
+      expect(h.onUserMessagePersisted).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('does not arm a queue wait from an unverified provider error string', async () => {
+    const h = createHarness();
+    h.sendToAgent.mockRejectedValueOnce(new Error('usage_limit_reached; resets_at: 5000000'));
+    h.coordinator.enqueue('unknown-quota', makeItem('q-original', 'original task'));
+    await flush();
+    expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+  });
 
   async function failWithLimit(sid: string, progress: boolean) {
     const h = createHarness();
