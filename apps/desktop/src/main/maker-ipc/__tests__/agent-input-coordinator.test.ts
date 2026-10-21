@@ -14249,6 +14249,49 @@ describe('usage-limit wait (ordinary tasks)', () => {
     }
   });
 
+  // Unit regression for #6611 / usage-limit-auto-continue.md: the old preparation-failure
+  // case did not cover a crash before durable acceptance. Exercise snapshot writes plus
+  // legacy snapshot reads through the coordinator, then both explicit release entrances.
+  it.each(['resume', 'input'] as const)('drops process-local quota activity across a crash before %s', async release => {
+    const h = createHarness();
+    const sid = 'quota-retry-crash';
+    let snapshot: AgentInputQueuedMessage[] = [];
+    h.persistQueueSnapshot.mockImplementation((_sessionId, items) => {
+      // Capture bytes at the persistence boundary, not mutable mock call arguments.
+      snapshot = JSON.parse(JSON.stringify(items));
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+    await flush();
+    const candidate = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000);
+    const acceptance = deferred<AgentInputSendResult>();
+    h.sendToAgent.mockImplementationOnce(() => acceptance.promise);
+    await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO);
+    await flush();
+    expect(h.sendToAgent.mock.calls[1][3].persistUserMessage?.autoResumeInfo).toMatchObject(INFO);
+    expect(snapshot[0]).toMatchObject({ clientId: 'original' });
+    expect(snapshot[0].autoResumeInfo).toBeUndefined();
+
+    // Also accept a snapshot produced by the previous version, which leaked this marker.
+    snapshot[0].autoResumeInfo = INFO;
+    const restarted = createHarness();
+    restarted.setLoadQueueSnapshot(async () => snapshot);
+    await restarted.coordinator.ensureQueueRestored(sid);
+    await flush();
+    expect(restarted.sendToAgent).not.toHaveBeenCalled();
+    if (release === 'resume') restarted.coordinator.resume(sid);
+    else restarted.coordinator.enqueue(sid, makeItem('next', 'next task'), { resumeRestorePausedQueue: true });
+    await flush();
+    expect(restarted.sendToAgent).toHaveBeenCalledOnce();
+    const persisted = restarted.sendToAgent.mock.calls[0][3].persistUserMessage;
+    expect(persisted).toMatchObject({ clientId: 'original' });
+    expect(persisted?.autoResumeInfo).toBeUndefined();
+    acceptance.resolve(sendSuccess());
+    await flush();
+  });
+
   it('does not keep automatic activity on a manual retry after preparation fails', async () => {
     const h = createHarness();
     const sid = 'quota-retry-preparation-failed';

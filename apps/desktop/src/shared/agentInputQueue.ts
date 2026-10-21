@@ -575,14 +575,16 @@ export function queuedMessageRetryToken(queued: AgentInputQueuedMessage): string
 }
 
 /**
- * 队列崩溃恢复快照不能持久化跨设备引用正文或瞬时 Bot 状态。两者只在当前
- * 进程内存中存活；恢复后正文保留 fail-closed 标记，Bot 状态必须重新查询，
- * 不能把崩溃前的 working/idle 当成当前事实。
+ * 队列崩溃恢复快照不能持久化跨设备引用正文、瞬时 Bot 状态或尚未落库的
+ * 原用户消息自动继续标记。它们只在当前进程内存中存活；恢复后正文保留
+ * fail-closed 标记，Bot 状态必须重新查询，手动恢复不能冒充自动继续。
  */
 export function sanitizeQueuedMessageForPersistence(
   item: AgentInputQueuedMessage,
 ): AgentInputQueuedMessage {
-  let changed = false;
+  const transientUsageResume = !item.autoResume
+    && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON;
+  let changed = transientUsageResume;
   let persistedContent = item.persistedContent;
   let agentReferences = item.agentReferences;
   let chatMessage = item.chatMessage;
@@ -660,6 +662,7 @@ export function sanitizeQueuedMessageForPersistence(
       : {}),
   };
   delete sanitized[HOST_ONLY_AGENT_PREFIX];
+  if (transientUsageResume) delete sanitized.autoResumeInfo;
   if (!item.agentReferences) delete sanitized.agentReferences;
   if (item.trustedSessionReferenceContexts) delete sanitized.trustedSessionReferenceContexts;
   return sanitized;

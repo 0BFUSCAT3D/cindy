@@ -1481,6 +1481,7 @@ export class AgentInputCoordinator {
     let items: AgentInputQueuedMessage[];
     try {
       items = (await this.deps.loadQueueSnapshot!(sessionId))
+        .map(sanitizeQueuedMessageForPersistence)
         .map(normalizeRestoredSyntheticTrigger)
         .map(restoreTrustedDesktopQueuedOrigin);
     } catch (err) {
