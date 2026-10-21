@@ -449,18 +449,18 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
     if (seen.has(item.clientId) || input.hiddenClientIds.has(item.clientId)) continue;
     seen.add(item.clientId);
     const uploadsPending = item.attachmentCount > 0 && item.uploadedCount < item.attachmentCount;
-    // 上传走云端,不依赖电脑:传完了才进入「等连上」。
-    const waitingFor = !item.failed && !uploadsPending ? input.outboxWaitingFor ?? null : null;
+    // 断开时整条投递(含附件上传)都停着:附件没传完也写「等连上」,图片不再转圈。
+    const waitingFor = !item.failed ? input.outboxWaitingFor ?? null : null;
     items.push({
       type: 'pending_send',
       key: pendingSendItemKey(item.clientId),
       clientId: item.clientId,
       text: item.quotesEncoded ? stripChatQuoteMarkerLines(item.text) : item.text,
       sentInlineTokens: buildPendingSentInlineTokens(item),
-      phase: item.failed ? 'failed' : uploadsPending ? 'uploading' : waitingFor ? 'waiting' : 'sending',
+      phase: item.failed ? 'failed' : waitingFor ? 'waiting' : uploadsPending ? 'uploading' : 'sending',
       ...(waitingFor ? { waitingFor } : {}),
       queueIndex: null,
-      thumbs: item.thumbnails,
+      thumbs: waitingFor ? item.thumbnails.map((thumb) => ({ ...thumb, uploading: false })) : item.thumbnails,
       fileCount: item.fileCount,
       fileNames: item.fileNames,
       attachmentCount: item.attachmentCount,

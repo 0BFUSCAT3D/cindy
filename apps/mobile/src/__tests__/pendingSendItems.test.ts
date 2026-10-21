@@ -350,18 +350,20 @@ describe('buildPendingSendItems', () => {
     expect(items[2].actions).toBeNull();
   });
 
-  it('holds a ready local send as waiting while disconnected, but keeps uploads and failures as they are', () => {
+  it('holds local sends as waiting while disconnected, including unfinished uploads, but keeps failures', () => {
     const [ready, uploading, failed] = build({
       outboxWaitingFor: 'computer',
       outbox: [
         outboxItem('ready'),
-        outboxItem('uploading', { attachmentCount: 1, uploadedCount: 0 }),
+        outboxItem('uploading', { attachmentCount: 1, uploadedCount: 0, thumbnails: [{ key: 'uploading-slot-0', uri: 'file:///a.jpg', ossRef: null, uploading: true }] }),
         outboxItem('failed', { failed: true }),
       ],
     });
     expect(ready).toMatchObject({ phase: 'waiting', waitingFor: 'computer' });
     expect(isPendingSendItemSelected(ready, 'ready')).toBe(true);
-    expect(uploading.phase).toBe('uploading');
+    // 断开时附件上传也停着:写等待,图片不转圈。
+    expect(uploading).toMatchObject({ phase: 'waiting', waitingFor: 'computer' });
+    expect(uploading.thumbs.every((thumb) => !thumb.uploading)).toBe(true);
     expect(failed.phase).toBe('failed');
     expect(build({ outbox: [outboxItem('ready')] })[0].phase).toBe('sending');
   });

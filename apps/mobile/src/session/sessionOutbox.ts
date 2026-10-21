@@ -469,6 +469,13 @@ export function outboxDisplayItem(item: MobileOutboxItem): MobileOutboxDisplayIt
   let fileCount = 0;
   const fileNames: string[] = [];
   const failedSlots = new Set(item.failedIds.map((localId) => item.slotByLocalId[localId]));
+  // 发件箱按槽序逐个上传、遇错即停,失败只记在整条上:还没落定的第一个槽就是没传上去的那个,
+  // 其后的槽还没开始传。失败后没有槽在上传。
+  const failed = item.phase === 'failed';
+  if (failed && failedSlots.size === 0) {
+    const firstMissing = item.attachmentSlots.findIndex((slot) => slot === null);
+    if (firstMissing >= 0) failedSlots.add(firstMissing);
+  }
   item.attachmentSlots.forEach((slot, index) => {
     const meta = item.slotMeta[index];
     if (meta?.kind !== 'image') {
@@ -480,7 +487,7 @@ export function outboxDisplayItem(item: MobileOutboxItem): MobileOutboxDisplayIt
       key: `${item.clientId}-slot-${index}`,
       uri: meta.previewUri,
       ossRef: slot ? (slot.url ?? slot.path) : null,
-      uploading: slot === null && !failedSlots.has(index),
+      uploading: slot === null && !failed,
       ...(slot === null && failedSlots.has(index) ? { failed: true } : {}),
     });
   });

@@ -475,18 +475,25 @@ describe('outboxDisplayItem', () => {
     expect(enqueueFailed.errorText).toBe('RPC boom');
   });
 
-  it('只把没传上去的那张图标成失败,其余图与上传中的图不受影响', () => {
-    const item = outboxItemWithUploadFailure(buildOutboxItem({
-      clientId: 'c-1', sessionId: 's-1', text: 'hi', permissionModeAtSend: 'ask', readyAttachments: [],
+  it('发件箱整条上传失败时,只在没传上去的那张图上标失败,其后未开始的图不再转圈', () => {
+    // 与 durableOutboxDisplayItem 的真实输出同形:失败只记在整条 phase / enqueueError 上,failedIds 为空。
+    const item = { ...buildOutboxItem({
+      clientId: 'c-1', sessionId: 's-1', text: 'hi', permissionModeAtSend: 'ask', readyAttachments: [attachmentFor('ok.jpg')],
+      readyPreviews: ['file:///tmp/ok.jpg'],
       claimedUploads: [
         { localId: 'u-a', failed: false, kind: 'image', previewUri: 'file:///tmp/a.jpg' },
         { localId: 'u-b', failed: false, kind: 'image', previewUri: 'file:///tmp/b.jpg' },
       ],
-    }), 'u-b');
-    expect(outboxDisplayItem(item).thumbnails).toEqual([
-      { key: 'c-1-slot-0', uri: 'file:///tmp/a.jpg', ossRef: null, uploading: true },
-      { key: 'c-1-slot-1', uri: 'file:///tmp/b.jpg', ossRef: null, uploading: false, failed: true },
+    }), phase: 'failed' as const, enqueueError: 'upload failed' };
+    expect(item.failedIds).toEqual([]);
+    expect(outboxDisplayItem(item).thumbnails.map(({ key, uploading, failed }) => ({ key, uploading, failed }))).toEqual([
+      { key: 'c-1-slot-0', uploading: false, failed: undefined },
+      { key: 'c-1-slot-1', uploading: false, failed: true },
+      { key: 'c-1-slot-2', uploading: false, failed: undefined },
     ]);
+    // 入队失败(附件都已落定)不标任何图片。
+    const enqueueFailed = { ...itemWith(), phase: 'failed' as const, enqueueError: 'RPC boom' };
+    expect(outboxDisplayItem(enqueueFailed).thumbnails.some((thumb) => thumb.failed)).toBe(false);
   });
 
   it('图片槽出缩略格(本地预览 / 落定 ossRef / 上传中态),文件槽走计数行', () => {
