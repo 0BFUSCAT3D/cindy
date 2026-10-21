@@ -1,6 +1,7 @@
 /** taskViewSlot.test — 任务页开页槽(taskView)的假 deps 单测。 */
 // - 生产入口与可观察结果:GhostTaskViewSlot.handleRequest 的回执与广播载荷。
-// - Bug / 规则依据:插件请求在任务右侧栏打开自己的任务页;落点任务要回给插件绑定。
+// - Bug / 规则依据:插件请求在任务右侧栏打开自己的任务页;落点任务要回给插件绑定;
+//   peek 只回答落点、不开页签(整页管理页没有当前任务时不显示「在当前任务中打开」)。
 // - 现有覆盖缺口:新槽。最小失败输入:未声明 taskView、sessionId 形状非法、无任务可落。
 // - tier:unit。
 import { describe, expect, it, vi } from 'vitest';
@@ -54,6 +55,15 @@ describe('taskViewSlot', () => {
     const { slot, pushes } = makeSlot({ getGhost: () => taskGhost({ instanceKey: '_ns__acme__sim' }) });
     expect(slot.handleRequest('_ns__acme__sim', {}).ok).toBe(true);
     expect(pushes).toEqual([{ instanceId: '_ns__acme__sim', sessionId: 'focused-session' }]);
+  });
+
+  it('peek reports where a task page would open without opening one', () => {
+    const { slot, pushes } = makeSlot();
+    expect(slot.handleRequest('sim', { peek: true })).toEqual({ ok: true, sessionId: 'focused-session' });
+    expect(makeSlot({ focusedSessionId: () => null }).slot.handleRequest('sim', { peek: true })).toMatchObject({ ok: false, errorCode: 'HOST_NOT_READY' });
+    expect(slot.handleRequest('sim', { peek: 'yes' })).toMatchObject({ ok: false, errorCode: 'INVALID_REQUEST' });
+    expect(makeSlot({ getGhost: () => taskGhost({ taskView: false }) }).slot.handleRequest('sim', { peek: true })).toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+    expect(pushes).toEqual([]);
   });
 
   it('refuses plugins without a task page, malformed task ids, and having nowhere to land', () => {

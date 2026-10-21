@@ -32,6 +32,10 @@
   包内页面、不接收网址,所以没有 preview 那样的白名单与限速。错误码:
   `PERMISSION_DENIED`(未声明 taskView 或未启用)/ `INVALID_REQUEST` /
   `HOST_NOT_READY`(当前没有任务,或没有宿主窗口);
+- `cindy.taskView({ peek: true })` 只问"现在打开会落到哪个任务",不开页签:有台前任务
+  回 `{ ok: true, sessionId }`,没有则 `HOST_NOT_READY`。用它决定自己的界面(如 mainView
+  管理页)要不要出现"在当前任务中打开"一类入口——整页主视图里通常没有台前任务;
+  台前任务会变,需要时重新问;
 - 旧版 Cindy 不认识 `taskView`,装入时会忽略该字段,`cindy.taskView` 也不存在。需要
   兼容旧版时先判断 `typeof cindy.taskView === 'function'`,不支持就退回 preview(§4.15);
 - 任务页与 panel / mainView 共用同一 Ghost WebView 沙箱:零 Node、零通用 preload、每插件

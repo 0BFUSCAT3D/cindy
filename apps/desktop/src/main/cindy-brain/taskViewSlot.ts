@@ -8,7 +8,9 @@
  * - 资格审:已装、启用、声明了 taskView;
  * - 落点:显式 sessionId 优先(通常来自 session-context 注入),缺省台前任务,
  *   两者皆无如实拒;sessionId 只做形状校验(右侧栏是本机用户自己的 UI);
- * - 成功回执带回实际落点任务,插件据此绑定自己的业务状态。
+ * - 成功回执带回实际落点任务,插件据此绑定自己的业务状态;
+ * - `peek: true` 只回答"现在打开会落到哪个任务"(没有任务则 HOST_NOT_READY),
+ *   不开页签;供插件决定界面里是否出现"在当前任务中打开"一类入口。
  *
  * 纯逻辑 + 依赖注入:广播在 cindy-brain/index.ts 组装时注入。
  */
@@ -57,9 +59,13 @@ export class GhostTaskViewSlot {
         return fail('INVALID_REQUEST', 'sessionId 形状不合法');
       }
     }
+    if (request.peek !== undefined && request.peek !== true) {
+      return fail('INVALID_REQUEST', 'peek 只接受 true');
+    }
     const sessionId =
       typeof request.sessionId === 'string' ? request.sessionId : this.deps.focusedSessionId();
     if (!sessionId) return fail('HOST_NOT_READY', '当前没有任务可承载任务页');
+    if (request.peek === true) return { ok: true, sessionId };
     const delivered = this.deps.broadcast({ instanceId: installedGhostStoragePart(ghost), sessionId });
     if (!delivered) return fail('HOST_NOT_READY', '当前没有可用的宿主窗口');
     this.deps.log?.info('ghost task view open requested', { ghostId, sessionId });

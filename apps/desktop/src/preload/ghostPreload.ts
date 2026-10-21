@@ -34,7 +34,8 @@ import { contextBridge, ipcRenderer } from 'electron';
  * - preview(req):preview 槽的便捷口——send({type:'preview-request', …req})
  *   的语法糖;URL 白名单守门在主机侧 previewSlot。
  * - taskView(req):taskView 槽的便捷口——send({type:'task-view-request', …req});
- *   在任务右侧栏打开 / 聚焦本插件的任务页,回执 {ok, sessionId} 带回落点任务。
+ *   在任务右侧栏打开 / 聚焦本插件的任务页,回执 {ok, sessionId} 带回落点任务;
+ *   {peek:true} 只回答落点、不开页签。
  * - workspace(req):workspace 槽的便捷口——send({type:'workspace-request',
  *   …req}) 的语法糖;目录授权与会话创建守门全在主机侧 workspaceSlot。
  * - confirm(req):confirm 槽的便捷口——send({type:'confirm-request', …req}) 的
