@@ -10336,6 +10336,13 @@
       "viewTaskProgress": "View progress",
       "liveDraft": "Transcribing",
       "questionDraft": "Awaiting confirmation"
+    },
+    "dmThread": {
+      "newReply": "New reply",
+      "you": "You",
+      "rootNotLoaded": "The original message is not in the loaded history",
+      "rootUnavailable": "The original message is no longer in this chat, so a thread can’t start here",
+      "openFailed": "The thread didn’t open. Try again."
     }
   },
   "common": {

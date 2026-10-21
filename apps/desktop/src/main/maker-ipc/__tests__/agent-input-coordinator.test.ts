@@ -11,6 +11,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { ProviderGroupUsageLimitError } from '../../provider-group/failurePolicy.js';
+import type { Session } from '@cindy/maker-core';
+import { createSessionBindingLifecycle, createSessionCloseTeardown } from '../sessionBindingLifecycle.js';
+import { captureProductTurnFailureOwner, createDeferredProductTurnFailureGate } from '../productTurnFailureOwner.js';
+import { createProviderGroupHeldRecovery, createProviderGroupHeldTurnErrors } from '../../provider-group/heldTurnErrors.js';
+import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
+import { UpstreamMergeController, type UpstreamMergeDependencies } from '../../cindy-make/upstreamMergeController.js';
+import { createProviderGroupService, type ProviderGroupServiceDeps } from '../../provider-group/service.js';
 import { UsageLimitAutoResume, USAGE_LIMIT_MAX_CONSECUTIVE_RESUMES } from '../usageLimitAutoResume.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
@@ -14980,6 +14987,237 @@ describe('provider group computer switch hold', () => {
     maxAttempts: 1,
     sessionTotal: 0,
   };
+
+  // #6671/r4339380528, unit: queue acceptance releases the original hold, so a
+  // runtime close after onPersisted used to erase the product owner before the
+  // real coordinator's onDiscarded outcome. Prior tests manually cleared the
+  // gate and missed the upstream waiter. Import the close adapter used by register
+  // with the real lifecycle/coordinator/controller and a paused send transaction.
+  it.each(['failed', 'closed-failed', 'closed-dispatched'] as const)(
+    'finishes the upstream waiter after a queued group continuation: %s', async outcome => {
+      const sid = 'group-close-upstream';
+      const h = createHarness({ providerGroupSwitchCandidate: () => 'overload' });
+      const gate = createDeferredProductTurnFailureGate();
+      let close!: () => void;
+      const session = {
+        id: sid, instanceId: 'original', getTurnGeneration: () => 0,
+        setInteractionListener: vi.fn(),
+        onStatusChange: (listener: (status: string) => void) => {
+          close = () => listener('closed'); return () => {};
+        },
+      } as unknown as Session;
+      const upstream = new UpstreamMergeController({
+        read: () => ({ state: {
+          id: 'group-close-operation', status: 'conflict', ref: 'main',
+          upstreamCommit: 'a'.repeat(40), hasWorkspace: true, sessionId: sid,
+        }, sessionOwner: 'account' }),
+        write: vi.fn(), publish: vi.fn(), owner: () => 'account', hasWorkspace: () => true,
+        exclusive: async run => run(),
+        latest: async () => ({ ref: 'main', commit: 'a'.repeat(40) }),
+        prepare: async state => state, cancel: async () => {},
+        session: async (_state, _opts, bind) => { bind(sid); return sid; },
+        running: () => false, refresh: async () => {}, cleanup: async () => true,
+        apply: async state => ({ ...state, status: 'merged', commit: 'b'.repeat(40) }),
+      } satisfies UpstreamMergeDependencies);
+      await upstream.resolve(undefined, 'group-close-operation');
+      const abort = new AbortController();
+      let waiter: unknown = 'pending';
+      const completion = upstream.waitForCompletion('group-close-operation', abort.signal)
+        .then(state => { waiter = state.status; }, error => { waiter = error.code; });
+      const settleFailure = () => gate.settle(sid,
+        owner => owner.session === session && owner.generation === session.getTurnGeneration(),
+        () => { void upstream.interrupt(sid); });
+      const errors = createProviderGroupHeldTurnErrors({
+        capture: () => null, persist: vi.fn(), surface: vi.fn(), settleFailure,
+        ownerKey: () => 'account',
+        releaseHold: (id, hold) => h.coordinator.releaseProviderGroupSwitchHold(id, hold),
+      });
+      const delivered = vi.fn();
+      const terminals = createProviderGroupHeldWorkerTerminals({ deliver: delivered, ownerKey: () => 'account' });
+      const recovery = createProviderGroupHeldRecovery({ errors, terminals, settleFailure, ownerKey: () => 'account' });
+      const beforeCloseTeardown = createSessionCloseTeardown<Session>({
+        clearCompactRuntimeRefresh: vi.fn(), cancelDirectAbortReconciliation: vi.fn(),
+        clearPendingFailedTurnPersist: vi.fn(), isRehydrateCloseSuppressed: () => false,
+        getProviderGroupSwitchHoldId: id => h.coordinator.getProviderGroupSwitchHoldId(id),
+        hasPendingProviderGroupContinuation: recovery.hasPendingContinuation,
+        clearDeferredProductTurnFailure: (id, runtime, options) => gate.clearSession(id, runtime, options),
+      });
+      const binding = createSessionBindingLifecycle({
+        log: { warn: vi.fn() }, restoreInteractionListener: vi.fn(), beforeReplace: vi.fn(),
+        onBind: vi.fn(), broadcastStatus: vi.fn(), captureCloseContext: () => null,
+        cleanupClosedSession: () => h.coordinator.onSessionClosed(sid),
+        beforeCloseTeardown, finalizeClosedSession: vi.fn(),
+      });
+      const registration = binding.beginBinding(session)!;
+      binding.attachStatusListener(registration);
+      const entered = deferred<void>(), finishSend = deferred<void>();
+      h.onDiscardedQueuedMessage.mockImplementation(() => recovery.settleContinuation(sid, false));
+      h.onDispatchedUserTurn.mockImplementation(() => {
+        gate.clearSession(sid); recovery.settleContinuation(sid, true);
+      });
+      try {
+        h.coordinator.enqueue(sid, makeItem('original-input', 'resolve upstream'));
+        await flush();
+        h.setRunning(false);
+        const failure = { message: 'model at capacity', reason: 'upstream-overload' };
+        h.coordinator.onTurnEvent(sid, 'error', failure.message, failure);
+        const hold = h.coordinator.getProviderGroupSwitchHoldId(sid)!;
+        expect(hold).toEqual(expect.any(Number));
+        gate.defer(captureProductTurnFailureOwner(session, { type: 'error', source: 'codex', data: failure }));
+        errors.stash(sid, hold, failure);
+        terminals.stash(sid, hold, 'held-terminal');
+        const token = h.onUsageLimitedTurnError.mock.calls.at(-1)![3];
+        const lease = h.coordinator.leaseUsageLimitRecovery(sid, token)!;
+        const rearmed = h.coordinator.rearmUsageLimitWait(sid, lease, 1)!;
+        h.sendToAgent.mockImplementationOnce(async (id, _message, _opts, sendOpts) => {
+          await persistQueuedUserMessage(id, sendOpts);
+          entered.resolve();
+          await finishSend.promise;
+          return outcome === 'closed-dispatched' ? sendSuccess() : sessionDispatchFailure('group-close');
+        });
+        expect(await h.coordinator.continueAfterUsageLimitReset(sid, rearmed, INFO)).toBe('resumed');
+        recovery.discard(sid, hold);
+        recovery.release(sid, hold);
+        await entered.promise;
+        expect(h.coordinator.getProviderGroupSwitchHoldId(sid)).toBeNull();
+        expect(h.coordinator.hasUsageLimitRecovery(sid)).toBe(false);
+        if (outcome.startsWith('closed-')) close();
+        expect(gate.pending(sid)).toBeDefined();
+        finishSend.resolve();
+        await flush();
+        if (outcome === 'closed-dispatched') {
+          await upstream.finish(sid);
+          expect(delivered).not.toHaveBeenCalled();
+          expect(upstream.status()?.status).toBe('merged');
+        } else {
+          expect(delivered).toHaveBeenCalledExactlyOnceWith(sid, 'held-terminal');
+          expect(upstream.status()).toMatchObject({ status: 'failed', error: 'interrupted' });
+        }
+        await completion;
+        expect(waiter).toBe(outcome === 'closed-dispatched' ? 'merged' : 'interrupted');
+        expect(gate.pending(sid)).toBeUndefined();
+      } finally {
+        finishSend.resolve(); abort.abort(); await completion;
+        h.coordinator.onSessionClosed(sid);
+      }
+    },
+  );
+
+  // Unit regression through onTurnEvent: an overload and a switch candidate used
+  // to spend the generic retry budget instead of handing off (including a guest's
+  // short-lived switch offer). Existing hold cases only used non-resumable limits.
+  // Cover both a settled user row and an error arriving before that row persists.
+  it.each([false, true])('prioritizes a group switch over overload retry (pending persist: %s)', async pendingPersist => {
+    const sid = `group-overload-${pendingPersist}`;
+    const candidate = vi.fn<NonNullable<AgentInputCoordinatorDeps['providerGroupSwitchCandidate']>>(
+      () => 'overload',
+    );
+    const h = createHarness({ providerGroupSwitchCandidate: candidate });
+    h.setResumableTurnErrorTakeover({ attempt: 1, maxAttempts: 5, sessionTotal: 1 });
+    h.setResumableTurnErrorCandidate(isInterruptedTurnError);
+    const persisted = deferred<Record<string, never>>();
+    if (pendingPersist) mocks.createMessage.mockImplementationOnce(() => persisted.promise);
+    h.coordinator.enqueue(sid, makeItem('q-capacity', 'finish the task'));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'Selected model is at capacity. Please try a different model.', {
+      reason: 'upstream-overload',
+      codexErrorInfo: 'serverOverloaded',
+    });
+    if (pendingPersist) {
+      expect(h.coordinator.isAutoResumeDeferred(sid)).toBe(true);
+      expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+      persisted.resolve({});
+    }
+    await flush();
+
+    expect(h.coordinator.getProjection(sid)).toMatchObject({
+      error: null,
+      autoResumePending: { groupSwitchPending: { cause: 'overload' } },
+      recovery: { kind: 'active-turn' },
+    });
+    expect(h.coordinator.isAutoResumePending(sid)).toBe(false);
+    expect(h.onResumableTurnError).not.toHaveBeenCalled();
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledExactlyOnceWith(
+      sid,
+      expect.objectContaining({ reason: 'upstream-overload', codexErrorInfo: 'serverOverloaded' }),
+      expect.objectContaining({ clientId: 'q-capacity' }),
+      expect.any(Number),
+    );
+    if (pendingPersist) {
+      expect(h.onResumableTurnErrorDiscarded).toHaveBeenCalledExactlyOnceWith(sid, {
+        surfaceError: true,
+        owner: expect.objectContaining({ clientId: 'q-capacity' }),
+        providerGroupSwitchHoldId: h.coordinator.getProviderGroupSwitchHoldId(sid),
+      });
+    }
+    expect(h.projections.every(projection => projection.error === null)).toBe(true);
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, 'unavailable'] as const)('keeps generic recovery when the switch cause is %s', async cause => {
+    const h = createHarness({ providerGroupSwitchCandidate: () => cause });
+    const takeover = { attempt: 1, maxAttempts: 5, sessionTotal: 1 };
+    h.setResumableTurnErrorTakeover(takeover);
+    h.coordinator.enqueue('group-recovery', makeItem('q-recovery', 'finish the task'));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent('group-recovery', 'error', 'retryable upstream failure', {
+      reason: cause === null ? 'upstream-overload' : 'remote-agent-lost',
+    });
+    expect(h.coordinator.getProjection('group-recovery')).toMatchObject({ error: null, autoResumePending: takeover });
+    expect(h.coordinator.isAutoResumePending('group-recovery')).toBe(true);
+    expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+  });
+
+  // Unit regression for #6671 review: use the real remote-binding candidate and
+  // async configuration check. The old test's constant candidate never covered
+  // autoSwitch=false; usage-limit fallback cannot recover upstream-overload.
+  it.each([false, true])('restores overload retry after the remote group declines (pending persist: %s)', async pendingPersist => {
+    const sid = 'remote-group-disabled';
+    let group!: ReturnType<typeof createProviderGroupService>;
+    const h = createHarness({ providerGroupSwitchCandidate: (id, signals) => group.mayHandleTurnError(id, signals) ? 'overload' : null });
+    const fallback = vi.fn();
+    const remoteRead = vi.fn(async () => ({ strategy: 'least', autoSwitch: false, members: [] }));
+    group = createProviderGroupService({
+      readBinding: () => ({ providerId: 'codex', memberKey: 'local', groupDeviceId: 'other', at: 1 }),
+      remote: { readGroup: remoteRead },
+      leaseRecovery: (id: string, token: number) => h.coordinator.leaseUsageLimitRecovery(id, token),
+      readResetAt: () => null,
+      fallback,
+      log: mocks.logger,
+    } as unknown as ProviderGroupServiceDeps);
+    const takeover = { attempt: 1, maxAttempts: 5, sessionTotal: 1 };
+    h.setResumableTurnErrorTakeover(takeover);
+    h.setResumableTurnErrorCandidate(isInterruptedTurnError);
+    const persisted = deferred<Record<string, never>>();
+    if (pendingPersist) mocks.createMessage.mockImplementationOnce(() => persisted.promise);
+    const adopted = vi.fn();
+    let handling: Promise<void> | undefined;
+    h.onUsageLimitedTurnError.mockImplementation((id, signals, _item, token) => {
+      handling = group.onTurnError(id, signals, token, {
+        notHandled: () => h.coordinator.resumeAfterProviderGroupDeclined(id, token, signals, adopted),
+      });
+    });
+    h.coordinator.enqueue(sid, makeItem('capacity', 'finish the task'));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'model at capacity', { reason: 'upstream-overload' });
+    if (pendingPersist) persisted.resolve({});
+    await flush();
+    await handling;
+    expect(remoteRead).toHaveBeenCalledExactlyOnceWith('other', 'codex');
+    expect(h.onResumableTurnError).toHaveBeenCalledTimes(1);
+    expect(adopted).toHaveBeenCalledExactlyOnceWith(1);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(h.coordinator.getProviderGroupSwitchHoldId(sid)).toBeNull();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: null, autoResumePending: takeover });
+    expect(h.projections.every(projection => projection.error === null)).toBe(true);
+    const token = h.onUsageLimitedTurnError.mock.calls[0]![3];
+    // A duplicate/late callback no longer owns that failed turn.
+    expect(h.coordinator.resumeAfterProviderGroupDeclined(sid, token, { reason: 'upstream-overload' }, adopted)).toBe(false);
+    expect(adopted).toHaveBeenCalledTimes(1);
+  });
 
   async function failWhileSwitching(sid: string, cause: 'usage-limit' | 'unavailable' | null = 'usage-limit') {
     const candidate = vi.fn<NonNullable<AgentInputCoordinatorDeps['providerGroupSwitchCandidate']>>(

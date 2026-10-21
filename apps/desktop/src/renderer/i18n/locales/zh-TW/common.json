@@ -10296,6 +10296,13 @@
       "viewTaskProgress": "查看進度",
       "liveDraft": "正在辨識",
       "questionDraft": "待確認"
+    },
+    "dmThread": {
+      "newReply": "有新回覆",
+      "you": "你",
+      "rootNotLoaded": "原訊息不在已載入的紀錄裡",
+      "rootUnavailable": "原訊息已不在私聊裡，無法開話題",
+      "openFailed": "話題沒有開啟，請重試"
     }
   },
   "common": {

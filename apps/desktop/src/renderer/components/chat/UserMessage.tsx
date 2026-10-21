@@ -1,3 +1,5 @@
+import { BotDmThreadPreview } from '@/features/bots/BotDmThreadPreview';
+import { useBotDmThreadForMessage } from '@/features/bots/botDmThreadsContext';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 import type { ImMessageSource } from '../../../shared/imMessageSource';
 import { isSharedTaskPeer } from '@cindy/device-link';
@@ -1256,6 +1258,11 @@ export function UserMessage({
   // 伙伴私聊：操作栏挂在气泡左侧、悬停浮出（与群聊同一 BubbleHoverToolbar）；没有气泡时仍在下方。
   const bubbleActions = simplifiedBotConversation && !editing && !orcaCommunication && !hookSource
     && Boolean(inlineQuoteCount > 0 || displayBubbleBody.trim() || ghostChipDisplay || attachmentsInBubble);
+  // 私聊话题：只有本机伙伴主对话里、主人自己发的消息能开话题（cindy-bots-runtime.md「私聊话题」）。
+  const dmThread = useBotDmThreadForMessage(
+    simplifiedBotConversation && !sharedGuest && !isBlocked && !automationOrigin && !orcaCommunication && !hookSource ? sessionId : undefined,
+    messageClientId,
+  );
 
   // Attachments belong to the user message independently of its visual shell.
   const messageActions = (
@@ -1267,6 +1274,12 @@ export function UserMessage({
       hovered={hovered}
       simplifiedBotConversation={simplifiedBotConversation}
       compact={bubbleActions}
+      replyAction={dmThread && bubbleActions ? {
+        onClick: dmThread.open,
+        label: dmThread.thread
+          ? t('bots.groupChat.server.openTopic', { count: dmThread.thread.replyCount })
+          : t('bots.groupChat.server.startTopic'),
+      } : undefined}
       onFork={!isBlocked && canFork ? handleFork : undefined}
       onAddToChat={!isBlocked && messageDeepLink ? handleAddToChat : undefined}
       onShareAsImage={handleShareAsImage}
@@ -1760,6 +1773,10 @@ export function UserMessage({
                 right-aligned, order [time][copy][fork][edit][undo][more]。被拦消息只保留
             编辑和链接复制,fork/rewind/delete 对未发消息无意义。 */}
                 {!bubbleActions && messageActions}
+                {dmThread?.thread ? (
+                  <BotDmThreadPreview align="right" thread={dmThread.thread} bot={dmThread.bot}
+                    unread={dmThread.unread} onOpen={dmThread.open} />
+                ) : null}
               </>
             )}
           </>

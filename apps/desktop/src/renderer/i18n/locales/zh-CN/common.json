@@ -10296,6 +10296,13 @@
       "viewTaskProgress": "查看进展",
       "liveDraft": "正在识别",
       "questionDraft": "待确认"
+    },
+    "dmThread": {
+      "newReply": "有新回复",
+      "you": "你",
+      "rootNotLoaded": "原消息不在已加载的记录里",
+      "rootUnavailable": "原消息已不在私聊里，不能开话题",
+      "openFailed": "话题没打开，请重试"
     }
   },
   "common": {

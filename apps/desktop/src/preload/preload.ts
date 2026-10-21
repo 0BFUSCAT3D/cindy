@@ -5747,6 +5747,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:bots:create-canonical-session', body),
       history: (botId: string): Promise<unknown[]> =>
         ipcRenderer.invoke('local-db:bots:history', botId),
+      dmThread: {
+        ensure: (body: { botId: string; rootSessionId: string; rootClientId: string; title?: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:ensure', body),
+        list: (body: { botId: string; rootSessionId: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:list', body),
+      },
       todos: {
         list: (botId: string) => ipcRenderer.invoke('local-db:bots:todos:list', botId),
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),

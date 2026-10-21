@@ -12,7 +12,7 @@ import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending }
 import type { createBotCapabilityService } from '../maker-ipc/botCapabilityService.js';
 import { routineTools } from '../routines/service.js';
 import { join as pathJoin } from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import {
   createLiziMcpProviders,
@@ -1027,7 +1027,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             .where(and(
               eq(botSessionLinks.sessionId, callerSessionId),
               eq(sessions.source, 'bot'),
-              eq(botSessionLinks.role, 'canonical'),
+              // The owner's Bot Chat: the main Chat or one of its private-chat topics.
+              inArray(botSessionLinks.role, ['canonical', 'thread']),
             ))
             .limit(1);
           if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) {
@@ -1070,7 +1071,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
               and(
                 eq(botSessionLinks.sessionId, callerSessionId),
                 eq(sessions.source, 'bot'),
-                eq(botSessionLinks.role, 'canonical'),
+                inArray(botSessionLinks.role, ['canonical', 'thread']),
               ),
             )
             .limit(1);

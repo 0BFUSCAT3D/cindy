@@ -22,6 +22,8 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
   useParams: () => mocks.params,
 }));
+// The private-chat topic host belongs to the chat surface these tests isolate.
+vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
   CCAgentSessionView: ({ botUnreadBoundaryAt, onBotReadThrough, readOnly, botIdentity }: { botUnreadBoundaryAt?: number | null; onBotReadThrough?: (at: number) => void; readOnly?: boolean; botIdentity?: { canonicalChat?: boolean } }) => {
     mocks.read = onBotReadThrough;
