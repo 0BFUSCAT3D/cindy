@@ -150,10 +150,22 @@ it.each([true, false])('invites only after engagement, then persists the choice 
   fireEvent.click(screen.getByRole('button', { name: enable ? 'bots.autonomy.invitation.start' : 'bots.autonomy.invitation.notNow' }));
   await waitFor(() => expect(screen.queryByRole('region')).toBeNull());
   expect(host.setSettings).toHaveBeenCalledWith({ schedulerBotId: enable ? 'cindy-default' : null });
+  // Starting shows scope and usage in the same confirmation as settings before saving; declining needs none.
+  if (enable) expect(m.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: 'bots.autonomy.consent' }));
+  else expect(m.confirm).not.toHaveBeenCalled();
   unmount();
   render(<BotFollowUpInvitation botId="cindy-default" engaged />);
   await waitFor(() => expect(host.getSettings).toHaveBeenCalledTimes(2));
   expect(screen.queryByRole('region')).toBeNull();
+});
+
+it('keeps the invitation and saves nothing when the confirmation is cancelled', async () => {
+  render(<BotFollowUpInvitation botId="cindy-default" engaged />);
+  m.confirm.mockResolvedValueOnce(false);
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' }));
+  await waitFor(() => expect(m.confirm).toHaveBeenCalledOnce());
+  expect(host.setSettings).not.toHaveBeenCalled();
+  expect(screen.getByRole('region')).toBeTruthy();
 });
 
 it('keeps the invitation available when saving fails', async () => {
@@ -187,12 +199,12 @@ it.each([true, false])('remote invitation uses the host-bound choice, enable=%s'
   const invoke = vi.fn(async (_device, channel) => channel.endsWith(':get') ? resource : { effects: [] });
   Object.assign(window.electronAPI, { deviceLink: { invoke } });
   render(<RemoteBotFollowUpInvitation deviceId="host-computer" botId="cindy-default" />);
-  // The host-owned scope (not this computer's copy) describes the Start button.
-  const start = await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' });
-  expect(start.getAttribute('aria-description')).toBe(resource.blocks[0].fallbackMarkdown);
+  await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' });
   expect(invoke).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByText(enable ? 'bots.autonomy.invitation.start' : 'bots.autonomy.invitation.notNow'));
   await waitFor(() => expect(screen.queryByRole('region')).toBeNull());
+  // The host-owned scope (not this computer's copy) is what the confirmation shows.
+  if (enable) expect(m.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: resource.blocks[0].fallbackMarkdown }));
   expect(invoke).toHaveBeenLastCalledWith('host-computer', 'maker:remote-resources:invoke', [expect.objectContaining({
     resourceRef: ref, actionId: enable ? 'opaque-enable' : 'opaque-dismiss', input: enable ? { enabled: true } : {},
   })]);
