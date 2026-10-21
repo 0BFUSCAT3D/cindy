@@ -5997,8 +5997,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   },
   stashProviderGroupHeldError: (sessionId, holdId, data, agentMeta) =>
     providerGroupHeldErrors.stash(sessionId, holdId, data, agentMeta),
-  stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal) =>
-    providerGroupHeldTerminals.stash(sessionId, holdId, { orcaTerminal: terminal, groupTerminal: null }),
+  stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal, groupTerminal) =>
+    providerGroupHeldTerminals.stash(sessionId, holdId, { orcaTerminal: terminal, groupTerminal: groupTerminal ?? null }),
   get pendingFailedTurnAssistantPersistId() {
     return pendingFailedTurnAssistantPersistId;
   },

@@ -2,7 +2,7 @@ import { reviewTeammateLearning } from './botLearningReview.js';
 import { botLearningTracker } from './botLearningTracker.js';
 import { learningTurnIdentity } from './botLearningFeedback.js';
 import type { BotDelegationService } from './botDelegationService.js';
-import type { BotGroupChatService } from './botGroupChatService.js';
+import type { BotGroupChatService, BotGroupLaneTerminal } from './botGroupChatService.js';
 import type { AgentEvent, Session } from '@cindy/maker-core';
 
 // sidebar-card-mode: turn-done 后刷新列表预览,并按需生成置顶卡片摘要
@@ -97,13 +97,14 @@ export interface FinishSessionTerminalEventDeps {
     agentMeta: unknown,
   ) => boolean;
   /**
-   * 同一次换电脑期间，协同 Worker 的这次终态先不回报给 Lead(provider-group/heldWorkerTerminals.ts)：换成了由续跑
+   * 同一次换电脑期间，Worker 与群专线终态一起暂存(provider-group/heldWorkerTerminals.ts)：换成了由续跑
    * 那一轮回报结果，没换成才回报这次异常终止。对不是 Worker 的任务回报时本就什么都不做。
    */
   readonly stashProviderGroupHeldWorkerTerminal?: (
     sessionId: string,
     holdId: number,
     terminal: OrcaSuppressedTerminal,
+    groupTerminal?: BotGroupLaneTerminal | null,
   ) => void;
   readonly productTurnUsageTargetTracker: Pick<
     ProductTurnUsageTargetTracker,
@@ -277,6 +278,14 @@ export function finishSessionTerminalEvent(
           workerTerminalDoneData?.error?.message,
         ].find((value): value is string => typeof value === 'string' && value.trim().length > 0)
       : undefined;
+    const groupTerminal: BotGroupLaneTerminal | null = deps.botGroupChatServiceHolder ? {
+      sessionId: session.id,
+      activeInputClientId: groupLaneInputClientId,
+      outcome: isTerminalTurnErrorEvent(event) ? 'error' : 'done',
+      resultText: workerTerminalFinalText,
+      resultMessageClientId: turnAssistantPersistId,
+      ...(isTerminalTurnErrorEvent(event) ? { failureCode: botGroupRuntimeFailureCode(event.data) } : {}),
+    } : null;
     const autoResumeSuppressesPersist = isSessionErrorSuppressed(
       deps.agentInputCoordinatorHolder,
       session.id,
@@ -427,7 +436,7 @@ export function finishSessionTerminalEvent(
             finalText: workerTerminalFinalText,
             diagnostic: workerTerminalDiagnostic,
             capture: workerTerminalCapture,
-          });
+          }, groupTerminal);
           providerGroupHeldWorkerTerminal = true;
         }
       } else {
@@ -692,17 +701,12 @@ export function finishSessionTerminalEvent(
           });
         }
       })();
-      if (deps.botGroupChatServiceHolder) {
-        const groupDoneData = event.data as { result?: unknown } | null;
+      if (
+        groupTerminal && deps.botGroupChatServiceHolder &&
+        !providerGroupHeldWorkerTerminal &&
+        !(providerGroupDoneHoldId !== null && deps.stashProviderGroupHeldWorkerTerminal)
+      ) {
         const groupService = deps.botGroupChatServiceHolder;
-        const groupTerminal = {
-          sessionId: session.id,
-          activeInputClientId: groupLaneInputClientId,
-          outcome: isTerminalTurnErrorEvent(event) ? 'error' as const : 'done' as const,
-          resultText: typeof groupDoneData?.result === 'string' ? groupDoneData.result : '',
-          resultMessageClientId: turnAssistantPersistId,
-          ...(isTerminalTurnErrorEvent(event) ? { failureCode: botGroupRuntimeFailureCode(event.data) } : {}),
-        };
         void (async () => {
           // The fallback reader in both local and server groups needs the final
           // streamed block on disk. Flush only queued that write; reading now can
@@ -727,7 +731,7 @@ export function finishSessionTerminalEvent(
           finalText: workerTerminalFinalText,
           diagnostic: workerTerminalDiagnostic,
           capture: workerTerminalCapture,
-        });
+        }, groupTerminal);
       } else {
         void (async () => {
           try {

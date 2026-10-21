@@ -12,6 +12,9 @@ import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { ProductTurnWallClockTracker, ProductTurnUsageTargetTracker } from '../turnWallClock.js';
 import { ClaudeOutputLagTimingGuard } from '../../usage/modelUsageDelta.js';
 import { createWorkerTurnStartSequencer } from '../workerTurnStartSequencer.js';
+import type { BotGroupLaneTerminal } from '../botGroupChatService.js';
+import type { OrcaSuppressedTerminal } from '../autoResumeBookkeeping.js';
+import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
 import { isGatewayProxyTokenRecoveryErrorEventForProvider } from '../gatewayProxyTokenRecovery.js';
 import { GATEWAY_PROXY_TOKEN_INVALID_REASON } from '@cindy/maker-shared/error-redaction';
 import { reportCindyGatewayKeyRejectedForCurrentKey } from '../../model-access/gatewayKeyRejection.js';
@@ -922,19 +925,25 @@ describe('production Session event pipeline', () => {
     expect(stashWorker).toHaveBeenCalledWith('task', 3, expect.objectContaining({
       status: 'error',
       diagnostic: "You've hit your session limit",
-    }));
+    }), null);
     expect(h.deps.orcaTeamServiceForEvents.handleWorkerTerminalTurn).not.toHaveBeenCalled();
     await h.dispose();
   });
 
   it('holds a failure that ends with only a done event during the switch instead of dropping it', async () => {
     const h = harness();
+    const settleLaneTurn = vi.fn(async () => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('bot-group:g1:turn:bot-a');
     const stashWorker = vi.fn();
     (h.deps as { stashProviderGroupHeldWorkerTerminal?: unknown }).stashProviderGroupHeldWorkerTerminal = stashWorker;
     h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(5);
     h.emit(event('done', { result: '' }));
     await microtasks();
-    expect(stashWorker).toHaveBeenCalledWith('task', 5, expect.objectContaining({ status: 'done' }));
+    expect(stashWorker).toHaveBeenCalledWith('task', 5, expect.objectContaining({ status: 'done' }), expect.objectContaining({
+      activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'done',
+    }));
+    expect(settleLaneTurn).not.toHaveBeenCalled();
     expect(h.deps.orcaTeamServiceForEvents.handleWorkerTerminalTurn).not.toHaveBeenCalled();
     await h.dispose();
   });
@@ -1961,6 +1970,60 @@ describe('Bot adapters in the shared event pipeline', () => {
     expect(settleLaneTurn).not.toHaveBeenCalled();
     expect(h.deps.autoResumeBookkeeping.stashBotGroupSuppressedTerminal).toHaveBeenCalledWith('task', expect.objectContaining({
       activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'error', failureCode: 'NETWORK_ERROR',
+    }));
+    await h.dispose();
+  });
+
+  // Unit regression for #6671 review / bot-group-chat §4.4: existing tests
+  // covered generic recovery and pre-persist transfer, not the direct group
+  // hold after persistence. Drive the production pipeline and hold store so a
+  // capacity failure cannot finish the group lane before recovery has an outcome.
+  it.each(['continued', 'rejected'] as const)('holds a persisted group capacity terminal through handoff: %s', async outcome => {
+    const h = harness();
+    const settleLaneTurn = vi.fn(async (_terminal: BotGroupLaneTerminal) => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    const held = createProviderGroupHeldWorkerTerminals<{
+      orcaTerminal: OrcaSuppressedTerminal;
+      groupTerminal: BotGroupLaneTerminal | null;
+    }>({
+      ownerKey: () => 'account',
+      deliver: (_sessionId, terminal) => {
+        if (terminal.groupTerminal) void settleLaneTurn(terminal.groupTerminal);
+      },
+    });
+    const adapters = h.deps as unknown as {
+      stashProviderGroupHeldError: NonNullable<SessionEventDependencies['stashProviderGroupHeldError']>;
+      stashProviderGroupHeldWorkerTerminal: NonNullable<SessionEventDependencies['stashProviderGroupHeldWorkerTerminal']>;
+    };
+    adapters.stashProviderGroupHeldError = () => true;
+    adapters.stashProviderGroupHeldWorkerTerminal = (sessionId, holdId, orcaTerminal, groupTerminal) =>
+      held.stash(sessionId, holdId, { orcaTerminal, groupTerminal: groupTerminal ?? null });
+    const inputId = 'bot-group:g1:turn:bot-a';
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue(inputId);
+    h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(3);
+    h.emit(event('error', { message: 'model at capacity', reason: 'upstream-overload' }, { sessionTurnGeneration: 4 }));
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('new-input');
+    h.deps.autoResumeBookkeeping.consumeFailedTurnCompletionTail.mockReturnValueOnce(true);
+    h.emit(event('done', {}, { sessionTurnGeneration: 4 }));
+    await microtasks();
+    expect(settleLaneTurn).not.toHaveBeenCalled();
+    expect(held.has('task', 3)).toBe(true);
+    if (outcome === 'continued') {
+      held.discard('task', 3);
+      h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(null);
+      h.deps.agentInputCoordinatorHolder.getAcceptedInputProvenance.mockReturnValue({
+        clientId: 'new-input', autoResume: true, retrySourceClientId: inputId,
+      });
+      h.emit(event('done', { result: 'Recovered reply' }, { sessionTurnGeneration: 5 }));
+    }
+    held.release('task', 3);
+    held.release('task', 3);
+    await microtasks();
+    expect(settleLaneTurn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      activeInputClientId: inputId,
+      ...(outcome === 'continued'
+        ? { outcome: 'done', resultText: 'Recovered reply' }
+        : { outcome: 'error', failureCode: 'UPSTREAM_OVERLOADED' }),
     }));
     await h.dispose();
   });
