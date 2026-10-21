@@ -314,6 +314,8 @@ interface QueueHarness {
   discard(): void;
   /** 模拟普通自动续跑最终仍失败。 */
   failAutoResume(): void;
+  startQuotaWait(): void;
+  resumeQuotaWait(): boolean;
 }
 
 function createQueueHarness(opts: {
@@ -339,6 +341,7 @@ function createQueueHarness(opts: {
   const removeCalls: QueueHarness['removeCalls'] = [];
   const cancelAutoResumeCalls: QueueHarness['cancelAutoResumeCalls'] = [];
   const autoResumeFailureListeners = new Set<() => void>();
+  let quotaWait: { start(): void; resume(): boolean } | undefined;
   return {
     enqueueCalls,
     removeCalls,
@@ -367,7 +370,8 @@ function createQueueHarness(opts: {
       },
       isPromptTracked: () => (opts.tracked ? opts.tracked() : true),
       isAutoResumePending: () => opts.autoResumePending?.() ?? false,
-      onAutoResumeFailed: (_sessionId, _runId, listener) => {
+      onAutoResumeFailed: (_sessionId, _runId, listener, wait) => {
+        quotaWait = wait;
         autoResumeFailureListeners.add(listener);
         return () => autoResumeFailureListeners.delete(listener);
       },
@@ -387,6 +391,8 @@ function createQueueHarness(opts: {
     failAutoResume() {
       for (const listener of [...autoResumeFailureListeners]) listener();
     },
+    startQuotaWait() { quotaWait?.start(); },
+    resumeQuotaWait() { return quotaWait?.resume() ?? false; },
   };
 }
 
@@ -989,6 +995,53 @@ describe('MakerScheduleRunner queued dispatch (busy bound session)', () => {
       resultText: 'continued result',
     });
     expect(harness.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBeUndefined();
+  });
+
+  // Quota waits may last days: use the engine's existing queue-wait contract,
+  // which releases capacity and excludes the run from the no-progress watchdog.
+  it.each(['resume', 'cancel', 'no-slot'] as const)('settles a scheduled quota wait on %s', async (outcome) => {
+    let pending = true;
+    const harness = createSessionHarness(async () => ({ accepted: true }));
+    const queue = createQueueHarness({ busy: true, autoResumePending: () => pending });
+    const { runner } = createRunnerHarness(harness.session, queue.deps);
+    const ctx = { ...createFireContext(), onQueueWaitStart: vi.fn(), endQueueWait: vi.fn(() => true) };
+    const fire = runner.fire(heartbeatSchedule(), ctx);
+    await vi.waitFor(() => expect(queue.enqueueCalls.length).toBe(1));
+    await queue.accept();
+    ctx.onQueueWaitStart.mockClear();
+    ctx.endQueueWait.mockClear();
+    queue.startQuotaWait();
+    queue.startQuotaWait();
+    harness.emit({ type: 'error', source: 'claude-code', data: { message: 'weekly limit', sdkError: 'rate_limit' } });
+    harness.emit({ type: 'done', source: 'claude-code', data: {} });
+    await Promise.resolve();
+    expect(ctx.onQueueWaitStart).toHaveBeenCalledOnce();
+    expect(ctx.endQueueWait).not.toHaveBeenCalled();
+    if (outcome === 'cancel') {
+      pending = false;
+      queue.failAutoResume();
+      await expect(fire).rejects.toThrow('scheduled task auto-resume failed');
+      expect(ctx.endQueueWait).toHaveBeenCalledExactlyOnceWith(false);
+    } else if (outcome === 'no-slot') {
+      ctx.endQueueWait.mockReturnValue(false);
+      expect(queue.resumeQuotaWait()).toBe(false);
+      expect(ctx.endQueueWait).toHaveBeenCalledExactlyOnceWith(true);
+      // The same run remains queued until capacity is actually available.
+      ctx.endQueueWait.mockReturnValue(true);
+      expect(queue.resumeQuotaWait()).toBe(true);
+      pending = false;
+      harness.emit({ type: 'text', source: 'claude-code', data: { text: 'continued', isFinal: true } });
+      harness.emit({ type: 'done', source: 'claude-code', data: {} });
+      await expect(fire).resolves.toMatchObject({ resultText: 'continued' });
+      expect(ctx.endQueueWait.mock.calls).toEqual([[true], [true]]);
+    } else {
+      expect(queue.resumeQuotaWait()).toBe(true);
+      pending = false;
+      harness.emit({ type: 'text', source: 'claude-code', data: { text: 'continued', isFinal: true } });
+      harness.emit({ type: 'done', source: 'claude-code', data: {} });
+      await expect(fire).resolves.toMatchObject({ resultText: 'continued' });
+      expect(ctx.endQueueWait).toHaveBeenCalledExactlyOnceWith(true);
+    }
   });
 
   it("rebinds the same run to Maker's replacement Session while auto-resume still owns it", async () => {
