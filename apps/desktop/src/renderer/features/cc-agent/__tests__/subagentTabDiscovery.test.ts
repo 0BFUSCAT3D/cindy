@@ -193,17 +193,18 @@ describe('startSubagentTabDiscovery', () => {
         pushFallbackPollMs: 60_000,
       });
       await settle();
-      expect(h.listRemote).toHaveBeenCalledTimes(1);
+      // Initial read, plus the one catch-up read after the listener was installed.
+      expect(h.listRemote).toHaveBeenCalledTimes(2);
       expect(h.subscribeRemoteChanges).toHaveBeenCalledOnce();
       // The 5s discovery cadence no longer applies.
       await vi.advanceTimersByTimeAsync(REMOTE_SUBAGENT_DISCOVERY_POLL_MS * 4);
       await settle();
-      expect(h.listRemote).toHaveBeenCalledTimes(1);
+      expect(h.listRemote).toHaveBeenCalledTimes(2);
       // The Host's push triggers the read that registers the tab.
       h.listRemote.mockResolvedValue({ ...runs(1), changePush: true });
       h.emitRemoteChange();
       await settle();
-      expect(h.listRemote).toHaveBeenCalledTimes(2);
+      expect(h.listRemote).toHaveBeenCalledTimes(3);
       expect(h.registerTab).toHaveBeenCalledOnce();
       // One-shot without a presence consumer: the push subscription is released too.
       expect(h.unsubscribeRemote).toHaveBeenCalled();
@@ -213,7 +214,7 @@ describe('startSubagentTabDiscovery', () => {
     it('keeps the fallback poll for a lost push and coalesces a push that lands mid-read', async () => {
       const h = remoteHarness();
       let finish!: (value: SubagentRunsListResponse) => void;
-      h.listRemote.mockResolvedValueOnce({ ...EMPTY, changePush: true });
+      h.listRemote.mockResolvedValue({ ...EMPTY, changePush: true });
       const presence: boolean[] = [];
       const dispose = startSubagentTabDiscovery({
         sessionId: 's1', deviceId: 'device-a',
@@ -224,23 +225,43 @@ describe('startSubagentTabDiscovery', () => {
         pushFallbackPollMs: 1_000,
       });
       await settle();
-      expect(presence).toEqual([false]);
+      expect(presence).toEqual([false, false]); // initial + post-subscription catch-up
       // Fallback read after the push-backed cadence, not the 5s one.
       h.listRemote.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
       await vi.advanceTimersByTimeAsync(1_000);
       await settle();
-      expect(h.listRemote).toHaveBeenCalledTimes(2);
+      expect(h.listRemote).toHaveBeenCalledTimes(3);
       // A push during that read is answered by exactly one follow-up read.
       h.emitRemoteChange();
       h.emitRemoteChange();
       h.listRemote.mockResolvedValue({ ...runs(1), changePush: true });
       finish({ ...EMPTY, changePush: true });
       await settle();
-      expect(h.listRemote).toHaveBeenCalledTimes(3);
-      expect(presence).toEqual([false, false, true]);
+      expect(h.listRemote).toHaveBeenCalledTimes(4);
+      expect(presence).toEqual([false, false, false, true]);
       expect(h.registerTab).toHaveBeenCalledOnce();
       dispose();
       expect(h.unsubscribeRemote).toHaveBeenCalled();
+    });
+
+    it('catches a change pushed between the Host snapshot and the listener install', async () => {
+      const h = remoteHarness();
+      // The first reply predates a run that appeared right after the Host captured it;
+      // its push was emitted before any listener existed.
+      h.listRemote.mockResolvedValueOnce({ ...EMPTY, changePush: true });
+      h.listRemote.mockResolvedValue({ ...runs(1), changePush: true });
+      const dispose = startSubagentTabDiscovery({
+        sessionId: 's1', deviceId: 'device-a',
+        listLocal: h.listLocal, listRemote: h.listRemote,
+        subscribeLocalChanges: h.subscribeLocalChanges, subscribeRemoteChanges: h.subscribeRemoteChanges,
+        registerTab: h.registerTab, isRequestOwnerCurrent: () => true,
+        pushFallbackPollMs: 60_000,
+      });
+      await settle();
+      // Registered from the catch-up read, not after the 60s fallback.
+      expect(h.listRemote).toHaveBeenCalledTimes(2);
+      expect(h.registerTab).toHaveBeenCalledOnce();
+      dispose();
     });
 
     it('keeps the discovery poll for a Host that does not declare the push', async () => {

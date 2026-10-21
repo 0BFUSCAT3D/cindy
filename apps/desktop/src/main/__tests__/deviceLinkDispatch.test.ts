@@ -1484,6 +1484,34 @@ describe('被控端控制链路生命周期', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  // 准入给交互类请求多放了名额,它们的回包也得有位置:否则已生效的发送因回包入不了 outbox
+  // 而让控制端超时、用户重试。
+  it('交互类 invoke 的结果在 per-controller outbox 用满后仍有预留位置,读取结果照旧被拒', () => {
+    const client = {
+      sendInvokeResult: () => {
+        throw new DeviceLinkError('BACKPRESSURE', 'socket buffer full');
+      },
+    } as never;
+    const limit = dispatchTesting.remoteInvokeResultOutboxPerControllerLimit;
+    const extra = dispatchTesting.remoteInvokeInteractiveExtraPerController;
+    for (let index = 0; index < limit; index++) {
+      expect(dispatchTesting.sendInvokeResultSafe(
+        client, 'ctrl-a', `invoke-reserve-read-${index}`, { ok: true, result: index }, 'maker:list-active',
+      )).toBe(true);
+    }
+    expect(dispatchTesting.sendInvokeResultSafe(
+      client, 'ctrl-a', 'invoke-reserve-read-over', { ok: true, result: 'x' }, 'maker:list-active',
+    )).toBe(false);
+    for (let index = 0; index < extra; index++) {
+      expect(dispatchTesting.sendInvokeResultSafe(
+        client, 'ctrl-a', `invoke-reserve-send-${index}`, { ok: true, result: index }, 'maker:input:enqueue',
+      )).toBe(true);
+    }
+    expect(dispatchTesting.sendInvokeResultSafe(
+      client, 'ctrl-a', 'invoke-reserve-send-over', { ok: true, result: 'x' }, 'maker:input:enqueue',
+    )).toBe(false);
+  });
+
   it('多个控制端的 invoke-result outbox 仍受全局消息上限保护', () => {
     const client = {
       sendInvokeResult: () => {

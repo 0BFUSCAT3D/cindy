@@ -131,6 +131,10 @@ export function startSubagentTabDiscovery(options: SubagentTabDiscoveryOptions):
     if (remote && response.changePush === true && subscribeRemoteChanges && !unsubscribeRemote) {
       remotePushDriven = true;
       unsubscribeRemote = subscribeRemoteChanges(runRemoteChange);
+      // A change pushed after the Host captured this reply but before the listener
+      // existed was missed; read once more instead of trusting the snapshot for the
+      // whole slow fallback interval. The re-read finds the listener installed.
+      remoteChangeDuringRound = true;
     }
     // `unsupported` is the honest answer from a device that has no durable
     // Subagent store; an empty list means this task simply has no children yet.
