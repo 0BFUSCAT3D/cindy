@@ -49,22 +49,19 @@ function helperPrints(stdout: string, exitCode = 0): void {
   });
 }
 
-const platform = process.platform;
 afterEach(() => {
   electronApp.isPackaged = true;
   electronApp.getAppPath.mockReset();
   electronApp.getPath.mockReset();
-  Object.defineProperty(process, 'platform', { value: platform });
   execFile.mockReset();
 });
-Object.defineProperty(process, 'platform', { value: 'win32' });
 // Set by Electron in a packaged app; the helper path is built from it.
 Object.defineProperty(process, 'resourcesPath', {
   value: 'C:\\Program Files\\Cindy\\resources',
   configurable: true,
 });
 
-describe('windows lock-screen setup diagnostics', () => {
+describe.skipIf(process.platform !== 'win32')('windows lock-screen setup diagnostics', () => {
   it('builds source helpers for the running Electron architecture', () => {
     expect(windowsCargoTarget('x64')).toBe('x86_64-pc-windows-msvc');
     expect(windowsCargoTarget('arm64')).toBe('aarch64-pc-windows-msvc');
