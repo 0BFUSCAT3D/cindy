@@ -179,7 +179,7 @@ export function OrcaWorkerFormView({
             ? remoteDirInvalid ? 'session.collab.remoteDirInvalid' : 'session.collab.remoteDirPathHint'
             : 'session.collab.remoteDirChatHint')}
           footerTone={remoteDirInvalid ? 'error' : 'secondary'}
-          label={t('session.collab.remoteDirLabel')}
+          label={title(t('session.collab.remoteDirLabel'))}
         >
           <ContextSheetChoiceRow
             disabled={busy}
