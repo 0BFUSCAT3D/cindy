@@ -236,8 +236,8 @@ export function getDesktopMcpToolApprovalPolicy(
       return 'prompt-each-time';
     }
     const action = progressive ? innerName : toolName;
-    // Runtime approval is not owner consent. The Host action gate remains mandatory
-    // even when Full Access bypasses this per-call risk policy.
+    // Use the normal runtime permission flow once: Full Access bypasses approval,
+    // Auto reviews the call, and Ask requests confirmation. Host guards retain scope checks.
     if (action && TASK_ACTION_TOOLS.has(action)) return 'prompt-each-time';
     if (toolName === 'call_tool' && (!innerName || !args)) return 'prompt-each-time';
     // Installing or saving a host command uses the session's existing approval flow.

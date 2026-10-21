@@ -1,8 +1,8 @@
 /**
  * Value: production tool admission + queued dispatch guards, no real account or network.
- * Regression: host wakes previously inherited scheduler/creator and Full Access write authority.
+ * Regression: task actions added owner consent checks after the normal runtime permission flow.
  * Gap: workbench tests cover visibility; SDK approval tests cannot prove Host consent.
- * Minimum input: automatic wake + send/stop/runtime tool; expect no queue/route change.
+ * Minimum input: non-owner provenance + runtime change; live execution modes do not review twice.
  * Tier: unit. This file isolates the process-local authorization lifetime from SQLite/IPC.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -263,6 +263,11 @@ function desktopFixture(kind: 'private' | 'group' | 'automatic' = 'group') {
   hostFacts.getDb.mockReturnValue(db);
   hostFacts.boundaryPending.mockReturnValue(false);
   const activeInput = {
+    permission: undefined as undefined | {
+      permissionMode: string;
+      planModeEnabled: boolean;
+      isCurrent(): boolean;
+    },
     orcaSenderSessionId: undefined as string | undefined,
     key: 'owner-request',
     ownerInput: kind === 'private',
@@ -413,6 +418,66 @@ describe('Owner-delegated scheduled task actions', () => {
 });
 
 describe('Desktop owner input task actions', () => {
+  // Runtime permission decisions must survive missing owner provenance (including resumed turns).
+  // Exercise admission and the downstream queue receipt, not only a mode predicate.
+  it.each(['bypassPermissions', 'auto', 'ask', 'default', 'acceptEdits'])(
+    'honors the live %s permission flow for helper and Orca without another confirmation', async permissionMode => {
+      const h = desktopFixture('automatic');
+      h.activeInput.permission = {
+        permissionMode, planModeEnabled: false, isCurrent: () => true,
+      };
+      for (const [server, tool] of ownerWrites) {
+        expect(await withToolCallAuthority(h.authorize, { ...call(tool), server }, async () => {
+          expect(hasTaskActionAuthorization('companion')).toBe(true);
+          const queued = input();
+          bindTaskActionInput('target', queued);
+          await taskActionInputGuard('target', queued)!();
+          return 'changed';
+        })).toBe('changed');
+      }
+      expect(h.confirm).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['unknown', 'plan', 'active-plan', 'stale', 'shared'])(
+    'does not admit a runtime permission decision from %s state', async state => {
+      const h = desktopFixture('automatic');
+      h.activeInput.permission = {
+        permissionMode: ['unknown', 'plan'].includes(state) ? state : 'auto',
+        planModeEnabled: state === 'active-plan', isCurrent: () => state !== 'stale',
+      };
+      if (state === 'shared') h.caller.source = 'shared';
+      const effect = vi.fn(async () => 'changed');
+      expect(await withToolCallAuthority(h.authorize, call('set_session_runtime'), effect))
+        .toMatchObject({ isError: true });
+      expect(effect).not.toHaveBeenCalled();
+      expect(h.confirm).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['bypassPermissions', 'auto', 'ask'])(
+    'revokes the %s admission before execution and delayed delivery when live permissions change', async permissionMode => {
+      const h = desktopFixture('automatic');
+      let current = true;
+      h.activeInput.permission = {
+        permissionMode, planModeEnabled: false, isCurrent: () => current,
+      };
+      const queued = input();
+      const decision = await h.authorize(call('set_session_runtime'));
+      const syncGuard = await withToolCallAuthority(h.authorize, call('send_to_session'), async () => {
+        bindTaskActionInput('target', queued);
+        return captureTaskActionSyncGuard()!;
+      });
+      if (!decision.ok || !decision.run || typeof syncGuard !== 'function') throw new Error('Missing admission');
+      current = false;
+      const effect = vi.fn(async () => 'changed');
+      await expect(decision.run(effect)).rejects.toThrow('AUTHORIZATION_EXPIRED');
+      await expect(taskActionInputGuard('target', queued)!()).rejects.toThrow('AUTHORIZATION_EXPIRED');
+      expect(() => syncGuard()).toThrow('AUTHORIZATION_EXPIRED');
+      expect(effect).not.toHaveBeenCalled();
+    },
+  );
+
   // #6399, unit: the action-set loop cannot detect a missing tool. Invoke the
   // registered DirectToolSink handler: an automatic focus request must not reach
   // the Host callback that persists focus/resumes an idle Worker; owner input can.
@@ -510,6 +575,9 @@ describe('Desktop owner input task actions', () => {
     'rejects %s group authority before helper or Orca effects, without prompting',
     async (mode) => {
       const h = desktopFixture();
+      h.activeInput.permission = {
+        permissionMode: 'bypassPermissions', planModeEnabled: false, isCurrent: () => true,
+      };
       if (mode !== 'missing')
         releases.push(
           registerGroupToolAuthority('companion', {

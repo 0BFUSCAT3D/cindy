@@ -67,6 +67,12 @@ export function createDesktopTaskActionAuthorizer(deps: {
     ownerInput: boolean;
     automatic?: boolean;
     orcaSenderSessionId?: string;
+    /** Live runtime facts only; never persisted preferences or tool arguments. */
+    permission?: {
+      permissionMode: string;
+      planModeEnabled?: boolean;
+      isCurrent?: () => boolean;
+    } | null;
     boundary: string;
   };
   getSession(sessionId: string): TaskActionSession | undefined;
@@ -119,9 +125,23 @@ export function createDesktopTaskActionAuthorizer(deps: {
             ? await authorizeGroupTool(sessionId, caller.botId, 'owner-action')
             : null;
         const ownerInput = group !== null || input.ownerInput;
-        // Ordinary owner-delegated schedules retain the normal permission flow.
-        // Neither a persisted scheduler source nor a Bot's automatic wake qualifies.
-        const runtime = !ownerInput && scheduled
+        // All execution modes use the normal runtime permission flow, including
+        // automatic/resumed turns. Do not ask for owner consent a second time.
+        // Group identity was checked above; shared guests keep their own boundary.
+        const permission = input.permission;
+        const runtimePermissionApplies = caller.source !== 'shared'
+          && ['bypassPermissions', 'auto', 'ask', 'default', 'acceptEdits'].includes(permission?.permissionMode ?? '')
+          && permission != null
+          && permission.planModeEnabled === false
+          && permission.isCurrent?.() === true;
+        const assertPermissionCurrent = () => {
+          if (runtimePermissionApplies && permission?.isCurrent?.() !== true)
+            throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+        };
+        const useRuntimePermissions = ownerInput || runtimePermissionApplies;
+        // Retain scheduled-review recovery only when no live runtime decision can
+        // be reused. A current permission flow must never be reviewed twice.
+        const runtime = !useRuntimePermissions && scheduled
           ? captureScheduledRuntime(sessionId, deps.getSession)
           : null;
         const args =
@@ -163,7 +183,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
             return null;
           return grant?.version === 1 && grant.actions?.includes(call.tool) ? row : null;
         };
-        const delegation = ownerInput ? null : await readDelegation();
+        const delegation = useRuntimePermissions ? null : await readDelegation();
         // A real Worker report continues its ordinary Lead's existing team. It
         // cannot authorize helper writes to unrelated tasks or create a new team.
         const readOrcaTeam = async () => {
@@ -189,7 +209,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
             .limit(1);
           return team ?? null;
         };
-        const orcaTeam = ownerInput ? null : await readOrcaTeam();
+        const orcaTeam = useRuntimePermissions ? null : await readOrcaTeam();
         const assertDeliveryCurrent = async () => {
           runtime?.assertCurrent();
           await group?.refresh();
@@ -228,6 +248,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
               throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
           }
           group?.assertCurrent();
+          assertPermissionCurrent();
           if (db !== tryGetDbClient() || isAppSessionBoundaryPending())
             throw new Error('OWNER_SCOPE_CHANGED');
           runtime?.assertCurrent();
@@ -235,6 +256,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
         const assertCurrentSync = () => {
           runtime?.assertInputCurrent();
           group?.assertCurrent();
+          assertPermissionCurrent();
           const current = deps.input(sessionId);
           if (
             isAppSessionBoundaryPending() || db !== tryGetDbClient() ||
@@ -254,8 +276,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
             assertCurrentSync();
           },
         };
-        if (ownerInput) {
-          // Owner requests use the normal Agent permission flow, without a second card.
+        if (useRuntimePermissions) {
+          // Owner requests and live execution modes use the normal Agent permission flow.
           // Retain delivery evidence so workbench, queues and new delegations work too.
           admittedScope = scope;
           return null;
