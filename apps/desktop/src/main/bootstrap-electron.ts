@@ -764,6 +764,7 @@ import {
 } from './right-sidebar-window/settings-store.js';
 import {
   anySessionInTurn,
+  listInTurnSessionIds,
   applyCodexSpawnConfigChangeWithRestart,
   clearDeferredCodexRestartForOwnerBoundary,
   scheduleDeferredCodexRestart,
@@ -1127,6 +1128,7 @@ import { configureMailAttachmentHost } from './cindy-brain/mailAttachmentUpload.
 import { writeTempFile, materializeDirectSendOssAttachments } from './maker-ipc/normalizeAttachments.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
+import { describeRelaunchTurns } from './relaunchTurnFacts.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc, syncDefaultMarketPlugins } from './plugin-market/registerIpc.js';
@@ -6251,7 +6253,9 @@ const registerIpcHandlers = () => {
       //
       // 不进 device-link allowlist:updater 类 channel 按 allowlist 顶部注释属「永不放行」,
       // 且远程控制端不会代替用户点被控端的更新重启。
-      registerRelaunchBusyActivityIpc(readRelaunchActivitySources);
+      registerRelaunchBusyActivityIpc(readRelaunchActivitySources, {
+        describeTurns: () => describeRelaunchTurns(() => listInTurnSessionIds(getMakerIfReady())),
+      });
       // getMakerCore() 首次调用触发 Maker 构造，同时发起自定义 MCP 初始加载。
       // await 确保第一个会话的 mcpProviders 数组已填入已保存的自定义 MCP（P2 冷启动竞态修复）。
       getMakerCore();

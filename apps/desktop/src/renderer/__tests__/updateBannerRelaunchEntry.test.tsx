@@ -371,3 +371,137 @@ describe('UpdateBanner relaunch entry', () => {
     expect(relaunchToUpdate).not.toHaveBeenCalled();
   });
 });
+
+
+/**
+ * 测试价值
+ * - 生产入口与可观察结果：UpdateBanner 的「立即重启」。有活动时确认句写出全部类别并可取消；
+ *   没有活动时直接重启。取消和迟到的探针都不重启。
+ * - Bug／规则依据：issue #5265。确认句以前固定是「重启会中断运行中的任务」，看不出是哪一类。
+ * - 现有覆盖缺口：上面的用例只覆盖布尔探针和通用警告，没有类别摘要，也没有摘要通道上的竞态。
+ * - 最小失败输入：摘要同时给出伙伴和后台命令；或摘要还在飞时点「稍后再说」/补丁被替换。
+ * - tier：unit。jsdom 渲染真实组件，探针是注入的 electronAPI。
+ */
+describe('UpdateBanner relaunch activity summary', () => {
+  function withDescribe(impl: () => Promise<unknown>) {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        anyActivityBlockingRelaunch,
+        describeRelaunchBlockingActivity: impl,
+        relaunchToUpdate,
+        openExternal,
+        clientEndpoints: { websiteUrl: 'https://cindy.ai' },
+      },
+    });
+  }
+
+  function deferredDescribe(): (value: unknown) => void {
+    let settle!: (value: unknown) => void;
+    withDescribe(() => new Promise((resolve) => { settle = resolve; }));
+    return (value) => settle(value);
+  }
+
+  const namedHint = [
+    'update.banner.confirmBusyLead',
+    'update.banner.activity.companionNamedLead',
+    'Cindy',
+    'update.banner.activityNameJoiner',
+    'Mika',
+    'update.banner.activity.companionNamedTail',
+    'update.banner.activityJoinerPair',
+    'update.banner.activity.backgroundCommand',
+  ].join('');
+
+  it('names every interrupting activity and can still be cancelled', async () => {
+    withDescribe(async () => ({
+      busy: true,
+      categories: ['background-command', 'companion'],
+      companionNames: ['Cindy', 'Mika'],
+    }));
+    render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    expect(await screen.findByText(namedHint)).toBeTruthy();
+    expect(screen.queryByText('update.banner.confirmBusyHint')).toBeNull();
+    expect(anyActivityBlockingRelaunch).not.toHaveBeenCalled();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.cancelAria' }));
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'update.banner.ariaExpanded' })).toBeTruthy();
+    expect(screen.queryByText(namedHint)).toBeNull();
+  });
+
+  it('hides an unsafe name and still shows the category', async () => {
+    withDescribe(async () => ({
+      busy: true,
+      categories: ['companion'],
+      companionNames: ['3c4c962a-1111-4111-8111-111111111111'],
+    }));
+    render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    const hint = [
+      'update.banner.confirmBusyLead',
+      'update.banner.activity.companion',
+    ].join('');
+    expect(await screen.findByText(hint)).toBeTruthy();
+    expect(screen.queryByText('3c4c962a-1111-4111-8111-111111111111')).toBeNull();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the generic warning when the summary has no category', async () => {
+    withDescribe(async () => ({ busy: true, categories: [], companionNames: [] }));
+    render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    expect(await screen.findByText('update.banner.confirmBusyHint')).toBeTruthy();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+  });
+
+  it('relaunches immediately when the summary says nothing is running', async () => {
+    withDescribe(async () => ({ busy: false, categories: ['companion'], companionNames: ['Cindy'] }));
+    render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    await waitFor(() => expect(relaunchToUpdate).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: 'update.banner.confirmAria' })).toBeNull();
+  });
+
+  it('fails closed to the generic warning when the summary shape is unusable', async () => {
+    withDescribe(async () => ({ categories: ['companion'] }));
+    render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    expect(await screen.findByText('update.banner.confirmBusyHint')).toBeTruthy();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the summary probe rejects', async () => {
+    withDescribe(() => Promise.reject(new Error('ipc channel closed')));
+    render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    expect(await screen.findByText('update.banner.confirmBusyHint')).toBeTruthy();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+  });
+
+  it('discards a late summary after the user dismisses the banner', async () => {
+    const settle = deferredDescribe();
+    const { rerender } = render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.dismissAria' }));
+    rerender(<UpdateBanner isCollapsed={false} />);
+    settle({ busy: false, categories: [], companionNames: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+  });
+
+  it('discards a late summary when the ready patch is replaced', async () => {
+    const settle = deferredDescribe();
+    const { rerender } = render(<UpdateBanner isCollapsed={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
+    updateStatus.current = { status: 'superseding', version: '1.2.3', errorCode: null };
+    rerender(<UpdateBanner isCollapsed={false} />);
+    settle({ busy: false, categories: [], companionNames: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(relaunchToUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText('update.banner.preparingButton')).toBeTruthy();
+  });
+});

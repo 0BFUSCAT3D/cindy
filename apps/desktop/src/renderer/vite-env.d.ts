@@ -4012,6 +4012,11 @@ interface ElectronAPI {
    * `silent: true` 只抑制 busy 的「manual relaunch」INFO,供横幅延后轮询;判定不变。
    */
   anyActivityBlockingRelaunch: (opts?: { silent?: boolean }) => Promise<boolean>;
+  describeRelaunchBlockingActivity: () => Promise<{
+    busy: boolean;
+    categories: Array<'companion' | 'conversation' | 'background-command' | 'scheduled-task' | 'generation' | 'subtask'>;
+    companionNames: string[];
+  }>;
   /** Tell main process to apply the update and relaunch the app.
    *  `theme` is the renderer's *resolved* light/dark (after collapsing 'system'),
    *  forwarded to cindy-updater so its splash matches the app the user is seeing. */
