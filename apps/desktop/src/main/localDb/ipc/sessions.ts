@@ -1626,20 +1626,29 @@ export function registerSessionIpc(
         );
       }
     }
-    const { row: insertRow } = await openSession({ id, now,
-      body: { ...createBody, workspaceKind, workingDir },
-      ...(provisional ? { deferGitInit: true } : {}),
-    }, async (prepared, assertCurrent) => {
-      const resource = !prepared.remoteHostId && prepared.workingDir
-        ? managedWorktreeRoot(prepared.workingDir) : null;
-      const insert = async () => { assertCurrent(); await db.insert(sessions).values(prepared); };
-      if (resource) await withWorktreeMutation([resource], insert);
-      else await insert();
-    });
-    const [row] = await db.select().from(sessions).where(eq(sessions.id, id));
+    // 未发送任务在写入之前就登记：行一出现，任务列表 / 控制端 / IM / hook 的过滤就已生效。
+    const markedProvisional = provisional && !isProvisionalSession(id);
+    if (markedProvisional) markProvisionalSession(id, now);
+    let insertRow: Awaited<ReturnType<typeof openSession>>['row'];
+    let row: typeof sessions.$inferSelect | undefined;
+    try {
+      ({ row: insertRow } = await openSession({ id, now,
+        body: { ...createBody, workspaceKind, workingDir },
+        ...(provisional ? { deferGitInit: true } : {}),
+      }, async (prepared, assertCurrent) => {
+        const resource = !prepared.remoteHostId && prepared.workingDir
+          ? managedWorktreeRoot(prepared.workingDir) : null;
+        const insert = async () => { assertCurrent(); await db.insert(sessions).values(prepared); };
+        if (resource) await withWorktreeMutation([resource], insert);
+        else await insert();
+      }));
+      [row] = await db.select().from(sessions).where(eq(sessions.id, id));
+    } catch (error) {
+      if (markedProvisional) forgetProvisionalSession(id);
+      throw error;
+    }
     if (!row) throwIpcError('NOT_FOUND', 'Session 创建后查询失败');
     if (provisional) {
-      markProvisionalSession(id, now);
       log.info('provisional session opened', { sessionId: id, workspaceKind: insertRow.workspaceKind });
       return sessionToCamel({ ...row, messageCount: 0 });
     }

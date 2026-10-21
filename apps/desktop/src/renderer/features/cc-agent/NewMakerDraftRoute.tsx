@@ -747,9 +747,16 @@ export function NewMakerDraftRoute() {
    * 否则先删掉它(同一个 id 可直接再建),再按原流程新建。
    */
   const createSession = useCallback(
-    async (args: Parameters<typeof createSessionRow>[0]) =>
-      (await takeProvisionalDraftTask({ ...args } as ProvisionalDraftCreateArgs))
-      ?? createSessionRow(args),
+    async (args: Parameters<typeof createSessionRow>[0]) => {
+      try {
+        return (await takeProvisionalDraftTask({ ...args } as ProvisionalDraftCreateArgs))
+          ?? createSessionRow(args);
+      } catch (error) {
+        // 旧的未发送任务删不掉：与建任务失败同样处理(提示失败、保留草稿，可再发一次)。
+        log.warn('[draft send] unsent task could not be replaced', error);
+        return null;
+      }
+    },
     [createSessionRow],
   );
   const vendorAuthGate = useVendorAuthGate();

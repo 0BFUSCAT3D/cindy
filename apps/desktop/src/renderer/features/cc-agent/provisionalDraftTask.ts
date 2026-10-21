@@ -187,9 +187,17 @@ export function discardProvisionalDraftTask(): Promise<void> {
   });
 }
 
+/** 发送时设置与未发送任务不一致、它又删不掉：这次不能用同一个 id 新建，发送应失败并保留草稿。 */
+export class ProvisionalDraftTaskBusyError extends Error {
+  constructor(sessionId: string) {
+    super(`unsent task ${sessionId} could not be removed before creating the task`);
+    this.name = 'ProvisionalDraftTaskBusyError';
+  }
+}
+
 /**
  * 发送时接管：设置与提前建的一致就转为普通任务并返回它；不一致则先删掉，返回 null，
- * 由调用方按原流程新建（同一个 id 可直接再建）。
+ * 由调用方按原流程新建（同一个 id 可直接再建）。删不掉时抛 {@link ProvisionalDraftTaskBusyError}。
  */
 export function takeProvisionalDraftTask(
   args: ProvisionalDraftCreateArgs,
@@ -198,7 +206,9 @@ export function takeProvisionalDraftTask(
     releaseForeignCurrent();
     if (!current) return null;
     if (current.id !== args.id || current.key !== provisionalDraftArgsKey(args)) {
-      await discardCurrent();
+      const blocked = current.id === args.id ? current.id : null;
+      // A different id can be created regardless; the same id needs the old row gone first.
+      if (!(await discardCurrent()) && blocked) throw new ProvisionalDraftTaskBusyError(blocked);
       return null;
     }
     const taken = current;

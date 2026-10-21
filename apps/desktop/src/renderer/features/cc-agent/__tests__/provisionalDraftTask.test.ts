@@ -29,6 +29,7 @@ import {
   discardProvisionalDraftTask,
   ensureProvisionalDraftTask,
   previewProvisionalDraftTitle,
+  ProvisionalDraftTaskBusyError,
   provisionalDraftTaskId,
   resetProvisionalDraftTaskForTest,
   takeProvisionalDraftTask,
@@ -143,6 +144,15 @@ describe('provisional draft task', () => {
     expect(mocks.create).toHaveBeenCalledTimes(1);
     await ensureProvisionalDraftTask(args({ model: 'model-b' }));
     expect(mocks.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a send that would recreate the same id while the old unsent task still exists', async () => {
+    await ensureProvisionalDraftTask(args());
+    mocks.discard.mockResolvedValueOnce({ discarded: false, remaining: true } as never);
+    await expect(takeProvisionalDraftTask(args({ effort: 'low' }))).rejects.toBeInstanceOf(
+      ProvisionalDraftTaskBusyError,
+    );
+    expect(provisionalDraftTaskId()).toBe('draft-1');
   });
 
   it('never hands another account\'s unsent task to a send after an account switch', async () => {
