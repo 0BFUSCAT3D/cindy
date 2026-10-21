@@ -41,7 +41,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { toast } from '@/lib/toast';
 import { extractIpcError } from '@/utils/ipcError';
 import { useAuth } from '@/contexts/AuthContext';
-import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { readInstalledGhostsSnapshot, useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import {
   cancelPendingPluginSuggestion,
   getPendingPluginSuggestion,
@@ -50,12 +50,15 @@ import {
 } from '@/features/cc-agent/pendingPluginSuggestion';
 import { readPluginRecommendationSnapshot } from '@/features/cc-agent/pluginHomeSuggestions';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
+import { CINDY_PLUGIN_CREATOR_NAME } from '../../../shared/cindyBuiltInSkills';
+import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
+import { isSlashCommandUnavailable, loadAllCommands } from '@/lib/slashCommands';
 import {
   getDraft as getComposerDraft,
   plainTextToTiptapDoc,
   saveDraft as saveComposerDraft,
 } from '@/lib/composerDraftStore';
-import { resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
+import { getDraft as getWorkspaceDraft, resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 import { ghostInstallErrorKey } from '@/cindy-brain/installErrorKey';
 import { installGhostFromFile, pickAndUpdateGhost } from '@/cindy-brain/installFlow';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -67,11 +70,10 @@ import {
   useGhostUnreadSummary,
 } from '@/cindy-brain/ghostUnreadStore';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
-import { findSplitChildByPanelKind } from '../../../shared/layoutTree';
+import { useGlobalTabs } from '@/features/right-sidebar/globalTabs';
 import { resolveSystemLocale } from '../../../shared/locale';
 import {
   ghostInstallApprovalToken,
-  ghostPanelKind,
   isUserInstallReservedGhostId,
   type GhostSetupStatus,
   type InstalledGhost,
@@ -397,6 +399,13 @@ export function shouldOpenInstalledDetailAfterMarketSuccess(isUpdate: boolean): 
   return !isUpdate;
 }
 
+function installedGhostMarketKeyFor(ghosts: readonly InstalledGhost[]): string {
+  return ghosts
+    .map((ghost) => `${ghost.manifest.id}\0${ghost.manifest.version}`)
+    .sort()
+    .join('\0');
+}
+
 /** 读「忽略本轮更新」的持久值(键按数据归属分桶,见 ignoredRoundStorageKey)。 */
 function readIgnoredRound(storageKey: string): string {
   try {
@@ -506,11 +515,7 @@ function LocalGhostPluginPage({
   const ghosts = useInstalledGhosts();
   useMainViewVisibilityRevision();
   const installedGhostMarketKey = useMemo(
-    () =>
-      ghosts
-        .map((ghost) => `${ghost.manifest.id}\0${ghost.manifest.version}`)
-        .sort()
-        .join('\0'),
+    () => installedGhostMarketKeyFor(ghosts),
     [ghosts],
   );
   const installedGhostLocationsKey = ghosts
@@ -573,6 +578,7 @@ function LocalGhostPluginPage({
     useState<LegacyGhostRecoveryStatus | null>(null);
   const [legacyRecoveryRetrying, setLegacyRecoveryRetrying] = useState(false);
   const refreshMarket = useCallback(async (preserveOnError = false) => {
+    installedGhostMarketKeyRef.current = installedGhostMarketKeyFor(readInstalledGhostsSnapshot());
     const requestId = ++marketRefreshRequestRef.current;
     try {
       const snapshot = await window.electronAPI.pluginMarket.snapshot();
@@ -619,11 +625,16 @@ function LocalGhostPluginPage({
     });
   }, [refreshMarket]);
   useEffect(() => {
-    if (installedGhostMarketKeyRef.current === installedGhostMarketKey) return;
-    installedGhostMarketKeyRef.current = installedGhostMarketKey;
+    if (
+      installedGhostMarketKeyRef.current === installedGhostMarketKey ||
+      marketBusyLockRef.current !== null
+    ) {
+      return;
+    }
     // 已装集合或版本变化(装/卸/后台更新)时刷新市场;排序是反应式的。
+    // 安装广播早于市场账本提交；等待事务收尾，由成功刷新消费，失败/取消后补刷。
     void refreshMarket(true).catch(() => undefined);
-  }, [installedGhostMarketKey, refreshMarket]);
+  }, [installedGhostMarketKey, marketBusyId, refreshMarket]);
   const activeSessionWorkingDir = useSyncExternalStore(
     subscribeToLastWorkingDir,
     getLastWorkingDir,
@@ -973,23 +984,19 @@ function LocalGhostPluginPage({
     setOpenPanelId((current) => nextOpenPanelIdForOwner(previous, panelOwnerKey, current));
   }, [panelOwnerKey]);
 
+  // 停靠形态的面板现在以右侧栏全局页签承载:状态只分「在右侧栏中」与「已从右侧栏关闭」。
+  const globalTabs = useGlobalTabs();
   const panelStatus = useMemo(() => {
     if (!selectedDetail || selectedDetail.panelMinWidth === null) return null;
     // 页签形态(面板收束):由插件页承载,没有停靠状态可言。
     if (selectedDetail.tabPanel) return t('settings.ghosts.detail.panelPageHosted');
-    try {
-      const kind = ghostPanelKind(selectedDetail.id);
-      const docked =
-        findSplitChildByPanelKind(window.electronAPI.layout.getStateSync().layout, kind) !== null;
-      return docked
-        ? t('settings.ghosts.detail.panelDocked', {
-            min: selectedDetail.panelMinWidth,
-          })
-        : t('settings.ghosts.detail.panelNotDocked');
-    } catch {
-      return t('settings.ghosts.detail.panelNotDocked');
-    }
-  }, [selectedDetail, t]);
+    const inSidebar = globalTabs.some(
+      (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === selectedDetail.id,
+    );
+    return inSidebar
+      ? t('settings.ghosts.detail.panelInSidebar')
+      : t('settings.ghosts.detail.panelDismissed');
+  }, [globalTabs, selectedDetail, t]);
 
   const handleToggle = useCallback(
     async (id: string, enabled: boolean, displayName: string) => {
@@ -1213,9 +1220,26 @@ function LocalGhostPluginPage({
     }
   }, [refreshMarket]);
 
-  const handleCreateWithCindy = useCallback(() => {
+  const handleCreateWithCindy = useCallback(async () => {
+    const agentKind = dbToMakerAgentKind(normalizeDbAgentKind(getWorkspaceDraft().vendor));
+    // Creation starts locally without a project. Use Main-attested identity: a
+    // same-named user Skill must never own this entry, including Claude aliases.
+    const commands = await loadAllCommands(agentKind, null);
+    const creator = commands.find((command) => (
+      command.kind === 'agent-skill'
+      && command.builtIn === true
+      && command.enabled !== false
+      && !isSlashCommandUnavailable(command)
+      && (command.name === CINDY_PLUGIN_CREATOR_NAME
+        || command.name === `cindy:${CINDY_PLUGIN_CREATOR_NAME}`)
+    ));
+    if (!creator) {
+      toast.error(t('settings.ghosts.page.creatorUnavailable'));
+      return;
+    }
     saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
-      text: plainTextToTiptapDoc(t('settings.ghosts.page.createPrompt')),
+      text: plainTextToTiptapDoc(`/${creator.name} ${t('settings.ghosts.page.createPrompt')}`),
+      builtInSkillIntent: { name: CINDY_PLUGIN_CREATOR_NAME, commandName: creator.name },
       attachments: [],
       focusAtEnd: true,
     });

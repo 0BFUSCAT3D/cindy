@@ -412,7 +412,7 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string; model?: string; includeGuestSupport?: true }
+  | { action: 'view'; providerId: string; model?: string; agentKind?: 'claude-code' | 'codex' | 'pi'; includeGuestSupport?: true }
   /**
    * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
    * 报过的行。seq 只增，乱序到达的旧份丢弃。
@@ -431,11 +431,17 @@ export interface ProviderGroupRemoteSessionGroup {
   group: ProviderGroupSessionGroup;
 }
 
+/** Only verified subscription exhaustion; never inferred from a generic cooldown. */
+export interface ProviderGroupUsageLimit {
+  /** Earliest reset of an otherwise eligible member; null when no reset is known. */
+  resetAtMs: number | null;
+}
+
 export type ProviderGroupRemotePick =
   /** 那个供应商现在没有组(组被删了或旧版本)：照常直接在组所在电脑上运行。 */
   | { kind: 'none' }
   | { kind: 'member'; member: Pick<ProviderGroupMember, 'key' | 'kind' | 'agentDeviceId' | 'providerId'>; label: string }
-  | { kind: 'unavailable' };
+  | { kind: 'unavailable'; usageLimit?: ProviderGroupUsageLimit };
 
 /** 一次最多报告的运行中任务数(每台电脑的任务上限远低于此)。 */
 export const PROVIDER_GROUP_REMOTE_MAX_LEASES = 512;
@@ -546,6 +552,9 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
       };
     }
     case 'view': {
+      if (value.agentKind !== undefined && (typeof value.agentKind !== 'string' || !REMOTE_AGENT_KINDS.has(value.agentKind))) {
+        invalidRemote('invalid agent');
+      }
       if (value.model !== undefined && (typeof value.model !== 'string' || !value.model || value.model.length > 512)) {
         invalidRemote('invalid model');
       }
@@ -553,6 +562,7 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         action: 'view',
         providerId: remoteProviderId(value.providerId),
         ...(value.model !== undefined ? { model: value.model } : {}),
+        ...(value.agentKind !== undefined ? { agentKind: value.agentKind as 'claude-code' | 'codex' | 'pi' } : {}),
         ...(value.includeGuestSupport === true ? { includeGuestSupport: true } : {}),
       };
     }
@@ -581,7 +591,12 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
 export function parseProviderGroupRemotePick(raw: unknown, groupProviderId: string): ProviderGroupRemotePick {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { kind: 'none' };
   const value = raw as Record<string, unknown>;
-  if (value.kind === 'unavailable') return { kind: 'unavailable' };
+  if (value.kind === 'unavailable') {
+    const limit = value.usageLimit as Partial<ProviderGroupUsageLimit> | null | undefined;
+    const reset = limit?.resetAtMs;
+    const valid = limit && (reset === null || (typeof reset === 'number' && Number.isSafeInteger(reset) && reset > 0));
+    return { kind: 'unavailable', ...(valid ? { usageLimit: { resetAtMs: reset } as ProviderGroupUsageLimit } : {}) };
+  }
   if (value.kind !== 'member') return { kind: 'none' };
   const member = normalizeMember(value.member, groupProviderId);
   if (!member) return { kind: 'none' };

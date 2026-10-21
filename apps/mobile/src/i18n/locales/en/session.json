@@ -1,4 +1,27 @@
 {
+  "sideChat": {
+    "collapse": "Collapse side chat",
+    "resume": "Continue side chat",
+    "list": "Side chat list",
+    "summary": "Side chats · {{count}}",
+    "fromMain": "From “{{title}}”",
+    "mainTask": "Main task",
+    "commandDescription": "Open a side chat; add a question after /side",
+    "commandAttachments": "Finish handling the current attachments before using /side.",
+    "unavailable": "Side chats are unavailable for this task.",
+    "title": "Side chats",
+    "ask": "Ask in a side chat",
+    "create": "New side chat",
+    "returnMain": "Return to main task",
+    "item": "Side chat {{index}}",
+    "current": "Current",
+    "description": "Ask independently with the main task’s existing context. Replies are not automatically added to the main task.",
+    "empty": "No side chats yet",
+    "loadFailed": "Could not load side chats. Check the computer connection; older desktop versions need an update.",
+    "createFailed": "Could not create a side chat. The main task is unchanged.",
+    "unsupported": "This computer does not support side chats yet. Update the desktop app.",
+    "waitForReply": "Wait for the main task’s first completed reply before creating a side chat."
+  },
   "leaveWhileUploading": {
     "title": "Discard this message?",
     "body": "Attachments are still uploading. If you leave now, this message won't be sent.",
@@ -555,6 +578,7 @@
     "taskAlreadyCreated": "This task already exists on the computer. Its saved messages will resume there."
   },
   "remoteError": {
+    "REMOTE_AGENT_GROUP_USAGE_LIMIT": "The available accounts for this model have reached their usage limit. Switch models or continue when the quota resets.",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page on the computer.",
     "REMOTE_DAEMON_CLOSED": "The remote connection dropped, possibly during an update. This turn has ended. Send the message again.",
     "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "Local file/image attachments aren't accessible in remote sessions. Paste the content directly instead.",
@@ -585,6 +609,7 @@
     "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
     "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
     "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
+    "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context.",
     "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
     "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",
@@ -684,5 +709,30 @@
       "ORCA_CREATE_UNCONFIRMED": "Creating the Worker timed out and couldn't be confirmed. Check the Worker list first, and retry only if no new Worker appears.",
       "ORCA_ACTION_UNCONFIRMED": "The request timed out, so the result isn't confirmed yet. The list has been refreshed; go by what it shows now."
     }
+  },
+  "resetAutoUse": {
+    "label": "Auto use",
+    "rules": "Auto-use rules",
+    "lowQuota": "Use when weekly quota falls below 1%",
+    "resetDistance": "Time until quota resets",
+    "days": "At least {{count}} days",
+    "unlimited": "Any time",
+    "custom": "Custom…",
+    "customDays": "Custom days",
+    "dayUnit": "days or more",
+    "apply": "Apply",
+    "expiring": "Use before a card expires",
+    "leadTime": "Use how early",
+    "minutes": "{{count}} minutes before expiry",
+    "hours": "{{count}} hours before expiry",
+    "hint": "Either rule uses the earliest-expiring card. Skip when all quotas are full. Runs on this computer while Cindy is running.",
+    "failed": "Could not save. Try again.",
+    "restore": "Restore defaults"
+  },
+  "followUp": {
+    "title": "Would you like me to follow up on your sessions?",
+    "start": "Start Following Up",
+    "notNow": "Not Now",
+    "saveFailed": "Couldn't save. Try again."
   }
 }

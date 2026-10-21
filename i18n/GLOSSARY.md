@@ -183,6 +183,10 @@ Anthropic Messages API / wire protocol 的用户可见名称。四语统一保�
 
 远程桌面操作菜单的安全设置；仅用于可选的本机保存密码自动解锁。
 
+### Discover Teammates
+
+预制伙伴目录与邀请入口，仅 Desktop。入口菜单项与弹窗标题同用 bots.market.heading，不再另设英文品牌名 Bot Market；英文句中小写 teammates（Discover teammates 作动作时），作功能名保持 Discover Teammates。
+
 ### reply (the bot's public post on X)
 
 Cindy 在 X 上发出的那条公开回复。zh-CN 取「回帖」以强调它是**一条公开帖子**而不是私聊消息——这正是 X 与 Slack / Telegram 的性质差异, 也是风险告知的核心。与「消息」区分开: 后者按 task-and-conversation-naming 只用于任务内的单条往来。proposed 同上。
@@ -266,6 +270,10 @@ Cindy Make 生成的本机定制应用成品。可与原版切换并沿用同一
 ### Database cleanup
 
 设置 → 存储空间内主动备份、清理任务消息并压缩本地数据库的功能名称。默认只清理非活跃任务；用户确认开启可选项后，也会清理活跃任务的历史。先登记为 proposed，待实际使用后再固化。
+
+### Detached HEAD
+
+沿用会话顶栏分支徽标现有译法
 
 ### Release
 
@@ -366,6 +374,10 @@ Lark 国际版 IM 服务的官方品牌名，四语统一保留原品牌写法�
 ### Lead
 
 Orca 协同角色名，与 Worker 成对。五语统一保留英文 Lead，不译成 Leader / 主控 / 主导 / 队长。这里只钉大小写形态：首字母大写 Lead。存量文案里仍有小写 lead（如 lead session），先登记为 proposed，待与 Worker 一并固化。
+
+### Left navigation
+
+主窗口左侧放任务与「自动化」「插件」「伙伴」等一级入口的那一栏。插件主视图入口的开关称「导航入口」（Navigation Entry），用来与右侧放插件面板、浏览器、终端的「右侧栏」（right sidebar）区分，所以涉及这个入口的文案写左侧导航，不再写笼统的「侧边栏」。韩语依国立国语院标准外来语表记写 내비게이션，不写 네비게이션。英文句中小写 left navigation，故 checkCase 为 false。先登记为 proposed：其他位置仍有「侧边栏」泛指左栏的存量文案，待统一清理时再裁决。
 
 ### Local model
 
@@ -491,6 +503,10 @@ OS 进程语境(资源用量面板、浏览器 guest 进程、终端)。注意�
 
 模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。
 
+### Read by sentence
+
+伙伴语音设置：默认在最终答复生成过程中按完整句子提前朗读；关闭后等待完整回复。需要回复后处理或无法识别最终答复阶段时延后。
+
 ### Region badge
 
 桌面登录页标题旁的品牌红胶囊（DESIGN.md §16.3），指徽标这个 UI 元素本身。徽标上的标签值另立条目（region-code-cn / region-code-dev）——本条 en 为 Region badge、各语言译文均非英文原词，caseStandardFor 天然返回 null，所以本条约束不到标签值，也无需写 checkCase。作为待产品裁决术语登记：尚未拍板是否改为可译文案（如「中国大陆版 / Mainland China」），先登记以免后续界面自造“国内版／中国版／开发版”等多套说法。
@@ -597,6 +613,10 @@ macOS TCC 的 kTCCServiceListenEvent(系统设置里叫「输入监控」)在 Ci
 
 已确定禁用：`输入监控（仅当英文含 shortcut listener permission）`（zh-CN）、`入力監視（仅当英文含 shortcut listener permission）`（ja）、`입력 모니터링（仅当英文含 shortcut listener permission）`（ko）
 
+### Side chat
+
+在右侧独立提问，继承主任务已完成的上下文；追问不自动写回主任务。
+
 ### Skip Sign-In
 
 登录页免账号入口的动作名（面板内文字按钮 + 登录服务不可用时的 error 步逃生按钮，#697 起取代原游客圆钮）。与 not-signed-in 成对：动作叫「跳过登录」，进入后的状态叫「未登录」。历史说法「本地模式」「游客登录」已废弃——前者暗示另一种服务端连接方式，后者在本产品里没有对应的 guest 账号概念（代码里 GuestRoute 等内部标识不受本条约束）。先登记 proposed：en 的 Title Case 形态（Skip Sign-In）与本仓其它按钮的句首大写风格不一致，待随登录页文案统一时裁决。
@@ -604,6 +624,10 @@ macOS TCC 的 kTCCServiceListenEvent(系统设置里叫「输入监控」)在 Ci
 ### Smart routing
 
 Codex Subagent 的可选扩展调配开关。默认关闭以保留 Codex 原生 Sol/Terra 调配；开启后允许 Codex 从 Cindy 已连接的更多模型中按任务选择。
+
+### Speech speed
+
+伙伴语音设置的合成语速；按伙伴保存，通话朗读、消息朗读和试听共用。区别于播放器倍速和语音输入停顿时间。
 
 ### Tag
 
@@ -620,6 +644,10 @@ Cindy 里的**持久 AI 助手实体**（原名 Bot）：有长期身份、自�
 ### Token Plan
 
 阿里云百炼与小米 MiMo 的外部订阅产品名称，四语统一保留官方英文写法；与 Coding Plan 是不同套餐和凭证类型，先登记为 proposed，避免供应商预设中混用产品名。
+
+### Ultrafast
+
+Codex 模型的第三档速度；与推理深度 Ultra 独立。标准、快速、超快分别对应默认、Fast、Ultrafast。
 
 ### Ungrouped
 
@@ -644,6 +672,10 @@ Cindy 里的**持久 AI 助手实体**（原名 Bot）：有长期身份、自�
 ### Voice dictionary
 
 语音输入的用户自定义术语表(人名、产品名、代号与其常见误识别写法),在同账号的电脑之间自动同步、手机只读查看。当前先采用四语直译并登记为待讨论术语,避免与「自定义词典」「术语表」「用户词库」等说法混用。
+
+### Voice Mode
+
+桌面伙伴一对一的连续语音交互方式；停顿发送、最终回复朗读和插话，沿用伙伴主任务。
 
 ### Voiceprint
 

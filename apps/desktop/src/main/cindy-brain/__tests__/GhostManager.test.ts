@@ -104,6 +104,28 @@ function goodManifest(id = 'hello'): Record<string, unknown> {
 }
 
 describe('GhostManager enable revision boundary', () => {
+  // Regression: one list() used two validated receipt reads per plugin. Unit
+  // coverage also rejects a cross-call cache: the next scan must see revocation.
+  it('reads each receipt once per scan and observes changed approval on the next scan', async () => {
+    await manager.install(await makeCindy('scan.cindy', goodManifest()));
+    const read = vi.spyOn(GhostInstallReceiptStore.prototype, 'readForRecovery');
+    try {
+      expect(manager.list()[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+      expect(read).toHaveBeenCalledTimes(1);
+      read.mockClear();
+      const receiptPath = path.join(workDir, 'ghosts-install-state', '_ns', '_root', 'hello.json');
+      const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+      receipt.enabled = false;
+      fs.writeFileSync(receiptPath, JSON.stringify(receipt));
+      expect(manager.list()[0]).toMatchObject({ enabled: false, approval: { state: 'approved' } });
+      expect(read).toHaveBeenCalledTimes(1);
+      fs.writeFileSync(receiptPath, '{invalid');
+      expect(manager.list()[0]).toMatchObject({ enabled: false, approval: { state: 'invalid' } });
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('rejects a delayed enable change bound to an obsolete approval revision', async () => {
     await manager.install(await makeCindy('original.cindy', goodManifest(), { 'main.js': 'module.exports = {};' }));
     const original = manager.list()[0];
@@ -358,6 +380,30 @@ describe('GhostManager · 存量插件一次性迁移(§5 升级无感)', () => 
     expect(await manager.approveTaskCapability(instanceId, selected.approval.revision, () => true)).toBe(true);
     expect(manager.list().find(ghost => installedGhostStoragePart(ghost) === instanceId)?.taskCapabilityApproved).toBe(true);
     expect(manager.list().find(ghost => installedGhostStoragePart(ghost) !== instanceId)?.taskCapabilityApproved).toBeUndefined();
+  });
+
+  it('binds independent target consent to the approved instance and preserves it only for the same capability', async () => {
+    const manifest = { ...goodManifest(), slots: ['tool', 'agent'], agent: { tasks: true, targets: true } };
+    const pkg = await makeCindy('targets.cindy', manifest, { 'main.js': '// plugin' });
+    await manager.install(pkg, { taskCapabilityApproved: true });
+    await manager.install(pkg, { namespace: 'acme', taskCapabilityApproved: true });
+    const selected = manager.list().find(ghost => ghost.namespace === 'acme')!;
+    if (selected.approval.state !== 'approved') throw new Error('fixture not approved');
+    const instanceId = installedGhostStoragePart(selected);
+    expect(selected.targetCapabilityApproved).toBeUndefined();
+    expect(await manager.approveTaskCapability(instanceId, 'stale', () => true, 'targets')).toBe(false);
+    expect(await manager.approveTaskCapability(instanceId, selected.approval.revision, () => false, 'targets')).toBe(false);
+    expect(await manager.approveTaskCapability(instanceId, selected.approval.revision, () => true, 'targets')).toBe(true);
+    expect(manager.list().find(ghost => ghost.namespace === 'acme')?.targetCapabilityApproved).toBe(true);
+    expect(manager.list().find(ghost => ghost.namespace !== 'acme')?.targetCapabilityApproved).toBeUndefined();
+    const update = await makeCindy('targets-update.cindy', { ...manifest, version: '1.0.1' }, { 'main.js': '// update' });
+    const updated = await manager.update(update, { namespace: 'acme', expectedInstalledApproval: ghostInstallApprovalToken(selected.approval) });
+    expect(updated).toHaveProperty('ghost.targetCapabilityApproved', true);
+    if (!('ghost' in updated) || updated.ghost.approval.state !== 'approved') throw new Error('fixture update failed');
+    const removed = await makeCindy('targets-removed.cindy', { ...manifest, version: '1.0.2', agent: { tasks: true } }, { 'main.js': '// update' });
+    const result = await manager.update(removed, { namespace: 'acme', expectedInstalledApproval: ghostInstallApprovalToken(updated.ghost.approval) });
+    expect(result).toHaveProperty('ghost.taskCapabilityApproved', true);
+    expect(result).not.toHaveProperty('ghost.targetCapabilityApproved');
   });
 
   it.each(['future', { future: true }, ['future'], null, false])('keeps historical unknown tasks %j enabled without task approval', async (tasks) => {
@@ -5236,6 +5282,33 @@ describe('GhostManager · setEnabled(启用/停用)', () => {
 });
 
 describe('GhostManager · inspect(只验不装)', () => {
+  // Unit: first-install inspects twice before install parses the same archive.
+  // Reuse must still isolate returned manifests and reread source bytes; existing
+  // replacement tests did not cover repeated decompression of unchanged input.
+  it('reuses verified package parsing without trusting mutated inspection results or changed bytes', async () => {
+    const cindy = await makeCindy('reused.cindy', goodManifest());
+    const parseZip = vi.spyOn(JSZip, 'loadAsync');
+    try {
+      const inspected = await manager.inspect(cindy);
+      if ('rejection' in inspected) throw new Error(inspected.rejection.reason);
+      inspected.manifest.name = 'Changed by inspection caller';
+      inspected.canonicalManifest.name = 'Changed canonical manifest';
+
+      expect(await manager.inspect(cindy)).toMatchObject({
+        manifest: { name: 'Hello 意识' }, canonicalManifest: { name: 'Hello 意识' },
+      });
+      expect(await manager.install(cindy, { expectedPackageSha256: inspected.packageSha256 }))
+        .toMatchObject({ ghost: { manifest: { name: 'Hello 意识' }, enabled: true } });
+      expect(parseZip).toHaveBeenCalledTimes(1);
+
+      await makeCindy('reused.cindy', { ...goodManifest(), name: 'Replaced package' });
+      expect(await manager.inspect(cindy)).toMatchObject({ manifest: { name: 'Replaced package' } });
+      expect(parseZip).toHaveBeenCalledTimes(2);
+    } finally {
+      parseZip.mockRestore();
+    }
+  });
+
   it('opens a top-level .cindy source in non-blocking mode', async () => {
     const cindy = await makeCindy('nonblocking.cindy', goodManifest());
     const realOpen = fs.promises.open;
@@ -5387,6 +5460,10 @@ describe('GhostManager · inspect(只验不装)', () => {
         name: 'Base name',
         tools: [{ name: 'do_thing', description: '做点事' }],
       },
+    });
+    hostLocale = 'en';
+    expect(await manager.inspect(cindy)).toMatchObject({
+      manifest: { name: 'English name' }, canonicalManifest: { name: 'Base name' },
     });
   });
 

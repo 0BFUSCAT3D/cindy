@@ -263,7 +263,7 @@ export interface MakerSessionAgentSwitchHandlerDeps {
       sdkSessionId?: string | null;
       /** 目标引擎下的 effort / fastMode(意图登记时由 renderer 解析,apply 时一并落库)。 */
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       /** Agent 换电脑:undefined = 不动,null = 改回任务所在电脑。 */
       agentDeviceId?: string | null;
     },
@@ -365,13 +365,15 @@ export interface PendingAgentSwitchIntent {
    * 落地时不给任务打「脱离跟随」标记。用户 picker 选择不带此标(PR #5155)。
    */
   configStaged?: boolean;
+  /** Auto 跟随登记时验证的两端身份；仅内存使用，目录移除来源后仍可撤销/改登记。 */
+  cindyAutoRelocation?: { fromProviderId: string; targetProviderId: string };
   /** SET_MODEL intent: apply the route without a cross-engine handoff. */
   sameAgentSelection?: boolean;
   targetAgentKind: AgentKind;
   model: string;
   providerId: string | null | undefined;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /**
    * Agent 在另一台电脑运行的任务：点选时按那台的目录确认过的目标上下文窗口。本机目录里没有
    * 那台的模型，发送时据此做「换小窗口前先交接」。本机 Orca 也保留选择时核对的窗口，
@@ -407,7 +409,7 @@ export interface PublicAgentSwitchIntent {
   model: string;
   providerId: string | null;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** 只在换 Agent 所在电脑时出现(null = 任务所在电脑)；旧控制端忽略。 */
   agentDeviceId?: string | null;
 }
@@ -437,7 +439,7 @@ export function projectPendingAgentSwitchIntent(
     model: intent.model,
     providerId: intent.providerId ?? null,
     ...(intent.effort ? { effort: intent.effort } : {}),
-    ...(typeof intent.fastMode === 'boolean' ? { fastMode: intent.fastMode } : {}),
+    ...((typeof intent.fastMode === 'boolean' || intent.fastMode === 'ultrafast') ? { fastMode: intent.fastMode } : {}),
     ...(intent.targetAgentDeviceId !== undefined ? { agentDeviceId: intent.targetAgentDeviceId } : {}),
   };
 }
@@ -780,7 +782,7 @@ export async function performSessionAgentSwitch(
         model,
         providerId: normalizedProviderId,
         ...(typeof params.effort === 'string' ? { effort: params.effort } : {}),
-        ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+        ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
         sameAgentSelection: true,
         ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
@@ -847,7 +849,7 @@ export async function performSessionAgentSwitch(
       model,
       providerId: normalizedProviderId,
       ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-      ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+      ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
       ...(agentDeviceChanges ? { targetAgentDeviceId } : {}),
     };
     deps.pendingSwitches.set(sessionId, intent);
@@ -950,7 +952,7 @@ export async function performSessionAgentSwitch(
       providerId: normalizedProviderId,
       sdkSessionId: parked?.sdkSessionId ?? null,
       ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-      ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+      ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
       // 组选回的当前位置在另一台电脑时也带上位置：提交按它判断窗口该查哪台的目录，不能拿本机目录。
       ...(agentDeviceChanges || (orcaGroupReturnRebuild && targetAgentDeviceId)
         ? { agentDeviceId: targetAgentDeviceId }
@@ -1047,7 +1049,7 @@ export async function performSessionAgentSwitch(
                 model,
                 providerId: normalizedProviderId,
                 ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-                ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+                ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
                 resumeFallbackRecovery: {
                   boundaryClientId,
                   boundaryContent: fallbackBoundaryContent,
@@ -1072,7 +1074,7 @@ export async function performSessionAgentSwitch(
               model,
               providerId: normalizedProviderId,
               ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
-              ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
+              ...((typeof params.fastMode === 'boolean' || params.fastMode === 'ultrafast') ? { fastMode: params.fastMode } : {}),
               resumeFallbackRecovery: {
                 boundaryClientId: null,
                 boundaryContent: fallbackBoundaryContent,

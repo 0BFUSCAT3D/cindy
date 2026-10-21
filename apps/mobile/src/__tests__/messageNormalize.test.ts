@@ -27,6 +27,17 @@ function message(patch: Partial<RemoteMessage> & Pick<RemoteMessage, 'id' | 'rol
 }
 
 describe('normalizeRemoteMessages', () => {
+  it('renders a host model-change record as one separator, without an empty reply', () => {
+    const output = normalizeRemoteMessages([message({
+      id: 'model-boundary', role: 'assistant', content: '',
+      agentMeta: { modelChange: { fromModel: 'owner-model', toModel: 'automation-model', modelOnly: true } },
+    })]);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({
+      kind: 'system', systemCardType: 'agent-switch',
+      systemCardData: { fromModel: 'owner-model', toModel: 'automation-model', modelOnly: true },
+    });
+  });
   // #6351: historical failure metadata must survive remote normalization even
   // when usage accounting is later attached to the same failed text row.
   it('keeps failed sampling prose readable without inferring a completed reply from its cost', () => {
@@ -1517,6 +1528,19 @@ describe('normalizeRemoteMessages', () => {
       systemCardData: { error: 'socket hang up', attempt: 2, maxAttempts: 5, sessionTotal: 3, outcome: 'failed' },
       align: 'agent',
     });
+  });
+
+  // Unit / PR #6611: quota recovery before the first dispatch must keep the
+  // original bubble and add the same activity as an active-turn continuation.
+  it('keeps the original input alongside a quota-reset activity after reload', () => {
+    const info = { reason: 'usage-limit-reset', attempt: 1, maxAttempts: 3, sessionTotal: 0 };
+    const items = normalizeRemoteMessages([
+      message({ id: 'original', role: 'user', content: 'original task', agentMeta: { autoResumeInfo: info } }),
+    ]);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ key: 'original', body: 'original task', label: 'user' });
+    expect(items[1]).toMatchObject({ key: 'original:usage-limit-resume', kind: 'system',
+      body: '', systemCardType: 'auto-resume', systemCardData: info });
   });
 });
 

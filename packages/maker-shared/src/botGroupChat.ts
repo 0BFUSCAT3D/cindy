@@ -172,12 +172,40 @@ export interface BotGroupMessageView {
   createdAt: number;
   /** Thread roots only: the newest replies, shown in the main chat without opening the thread. */
   threadPreview?: BotGroupThreadPreview;
+  /**
+   * Thread roots only: replies from others since this reader last opened the Thread, by the
+   * server's read state. Omitted when the server keeps no read state (older servers).
+   */
+  threadUnread?: BotGroupThreadUnread;
   /** A main-chat message that re-posts an existing thread reply by reference. */
   threadShare?: BotGroupThreadShareView;
 }
 
-/** A root message previews at most this many of its newest replies. */
+/** Unread replies of one Thread; `mentioned` when one of them names this reader. */
+export interface BotGroupThreadUnread {
+  count: number;
+  mentioned: boolean;
+  /** Sequence of the newest unread reply; tells a new reply apart from the same ones counted again. */
+  latest?: number;
+}
+
+/**
+ * One Thread of the group for the in-chat 话题 list (bot-group-chat.md §10「话题未读与提示」).
+ * Root text and author come from the server's copy; empty while that copy is still being read.
+ */
+export interface BotGroupThreadSummary {
+  rootId: string;
+  rootAuthorName: string;
+  rootAuthorBotId: string | null;
+  rootText: string;
+  replyCount: number;
+  unread: BotGroupThreadUnread;
+  lastReply: { authorName: string; text: string; createdAt: number } | null;
+}
+
+/** Spoken summaries and distinct responders have independent limits. */
 export const BOT_GROUP_THREAD_PREVIEW_REPLIES = 2;
+export const BOT_GROUP_THREAD_PREVIEW_RESPONDERS = 3;
 
 /**
  * Main-chat share of a thread reply. The card stores only the two IDs; clients resolve the
@@ -239,6 +267,8 @@ export interface BotGroupThreadPreviewReply {
 export interface BotGroupThreadPreview {
   /** Chronological, newest last. */
   replies: BotGroupThreadPreviewReply[];
+  /** Distinct server authors from the fetched window, oldest last-reply first. Older hosts omit this. */
+  responders?: Array<Pick<BotGroupThreadPreviewReply, 'id' | 'authorKind' | 'authorBotId' | 'authorName'>>;
 }
 
 /**
@@ -452,6 +482,11 @@ export interface BotGroupDetail extends BotGroupSummary {
   round: BotGroupRoundView;
   /** Plans referenced by the loaded messages, plus the open plan. */
   plans: BotGroupPlanView[];
+  /**
+   * Threads with replies in the newest window, unread ones first. Omitted by local groups,
+   * older hosts and servers without read state.
+   */
+  threads?: BotGroupThreadSummary[];
 }
 
 export type BotGroupErrorCode =
@@ -656,7 +691,26 @@ export function chatGroupLaneRouteKey(groupId: string, access: ChatLaneAccess): 
   return `group:${groupId}:access:${access.mode}:${access.revision}`;
 }
 export function isChatOnlyGroupLane(routeKey: string | null | undefined): boolean {
-  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+)?$/.test(routeKey ?? '');
+  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+)?$/.test(routeKey ?? '');
+}
+
+/**
+ * A Thread's own lane: one hidden Session per Thread, grant and teammate, so a Thread
+ * keeps its own short context apart from the main group and other Threads (bot-group-chat.md §3).
+ */
+export function chatGroupThreadRouteKey(groupId: string, access: ChatLaneAccess, threadRootId: string): string {
+  return `${chatGroupLaneRouteKey(groupId, access)}:thread:${threadRootId}`;
+}
+
+/** Group and Thread root of a Thread lane route key, or null for other routes. */
+export function parseBotGroupThreadRouteKey(routeKey: string | null | undefined): { groupId: string; threadRootId: string } | null {
+  const match = typeof routeKey === 'string' ? /^group:([^:]+):access:(?:owner|tools|chat):[1-9][0-9]*:thread:([^:]+)$/.exec(routeKey) : null;
+  return match ? { groupId: match[1]!, threadRootId: match[2]! } : null;
+}
+
+/** The group lane a Thread lane belongs to; a Thread works in the same place as its group lane. */
+export function groupLaneOfRouteKey(routeKey: string): string {
+  return routeKey.replace(/:thread:[^:]+$/, '');
 }
 
 export function botGroupLaneRouteKey(groupId: string): string {
@@ -709,10 +763,15 @@ export interface ChatServerApi {
   ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; botId?: string; name: string }> }>>;
   refreshProfile(): Promise<ChatServerResult<Record<never, never>>>;
   status(): Promise<{ enabled: boolean; connected: boolean }>;
-  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[] }): Promise<ChatServerResult<{
+  /**
+   * `markRead` (latest page only): the reader is looking at the Thread, so its server read state
+   * moves to the newest reply read here; `readBefore` is where it stood before this read.
+   */
+  thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[]; markRead?: boolean }): Promise<ChatServerResult<{
     root: BotGroupMessageView; replies: BotGroupMessageView[]; hasMore: boolean;
     /** Same authoritative state as the main timeline; root and replies use one projection. */
     executionFailures?: BotGroupExecutionFailureView[];
+    readBefore?: number;
   }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
   /**

@@ -5,6 +5,7 @@ import type { ClaudeSubscriptionUsageSnapshot } from '../../../shared/claudeSubs
 import { normalizeProviderGroupConfig, PROVIDER_GROUP_STRATEGIES, type ProviderGroupMember } from '../../../shared/providerGroup';
 import { createProviderGroupDirectory } from '../directory';
 import { createProviderGroupRouter } from '../router';
+import { providerGroupCodexUsageSnapshot } from '../usage';
 
 const NOW = 1_000_000;
 const OPUS = 'claude-opus-5-5';
@@ -16,6 +17,84 @@ const view = (id: string): ProviderView => ({
 }) as unknown as ProviderView;
 const snapshot = (fiveHour: number, sevenDay: number): ClaudeSubscriptionUsageSnapshot => ({
   updatedAt: NOW, fiveHour: { utilization: fiveHour, resetsAt: 3_000 }, sevenDay: { utilization: sevenDay, resetsAt: 80_000 },
+});
+
+// Unit: directory → router → scheduler/status must apply OpenAI quotas to every group strategy.
+// The existing matrix only exercises Claude snapshots; an OpenAI member used to ignore exhausted/lower/expiring quotas.
+describe('OpenAI subscription group routing', () => {
+  const GPT = 'gpt-5.3-codex';
+  const SPARK = 'gpt-5.3-codex-spark';
+  const quota = (fiveHour: number, weekly: number, weeklyReset = NOW + 3 * 86_400_000) => ({
+    updatedAt: NOW, primary: { usedPercent: fiveHour, windowMinutes: 300, resetsAt: (NOW + 2 * 3_600_000) / 1000 },
+    secondary: { usedPercent: weekly, windowMinutes: 10_080, resetsAt: weeklyReset / 1000 },
+  });
+  function openaiHarness() {
+    const config = normalizeProviderGroupConfig({ strategy: 'order', members: [
+      { kind: 'local' }, { kind: 'device', agentDeviceId: 'mini', providerId: 'openai-second' },
+    ] }, 'openai')!;
+    const usage = new Map<string, unknown>();
+    const provider = (id: string): ProviderView => ({
+      id, name: 'OpenAI', agents: ['codex', 'pi'], connected: true, auth: { method: 'oauth', native: 'codex' },
+      models: Object.fromEntries(['codex', 'pi'].map((agent) => [agent, [GPT, SPARK].map((id) => ({ id, name: id, efforts: [], defaultEffort: null }))])),
+      routing: { codex: {}, pi: {} },
+    }) as unknown as ProviderView;
+    const readCodexUsage = vi.fn(async (member: ProviderGroupMember) => providerGroupCodexUsageSnapshot(usage.get(member.key)));
+    const directory = createProviderGroupDirectory({
+      listLocalProviders: async () => [provider('openai')], localDeviceName: () => 'local',
+      listDevices: async () => [{ deviceId: 'mini', name: 'mini', online: true, remoteControlEnabled: true, controlEnabled: true,
+        isSelf: false, platform: 'darwin', appVersion: null, lastSeenAt: null, busy: false }],
+      readDeviceProviders: async () => [provider('openai-second')], listReceivedShares: () => [],
+      isMobilePlatform: () => false, readCodexUsage, now: () => NOW,
+    });
+    const writeCooling = vi.fn();
+    const router = createProviderGroupRouter({ directory, readGroup: () => config, listBindings: () => ({}),
+      isTurnRunning: () => false, now: () => NOW, random: () => 0,
+      coolingStore: { read: () => ({}), write: writeCooling } });
+    const pick = (model = GPT, agentKind: 'codex' | 'pi' = 'codex') => router.pick({ providerId: 'openai', agentKind, model });
+    return { config, usage, router, pick, writeCooling, remote: config.members[1].key };
+  }
+
+  it.each(PROVIDER_GROUP_STRATEGIES)('excludes exhausted windows, prefers expiring quota then lower usage (%s)', async (strategy) => {
+    const h = openaiHarness();
+    h.config.strategy = strategy;
+    h.usage.set(h.remote, quota(40, 60));
+    for (const [short, week] of [[100, 10], [10, 100]]) {
+      h.usage.set('local', quota(short, week));
+      expect(await h.pick()).toMatchObject({ member: { key: h.remote } });
+      expect((await h.router.view('openai')).members[0].state).toBe('cooling');
+    }
+    h.usage.set('local', quota(10, 20));
+    h.usage.set(h.remote, quota(40, 70, NOW + 3 * 3_600_000));
+    expect(await h.pick()).toMatchObject({ member: { key: h.remote } });
+    h.usage.set('local', quota(80, 20));
+    h.usage.set(h.remote, quota(20, 30));
+    expect(await h.pick()).toMatchObject({ member: { key: h.remote } });
+    expect(h.writeCooling).not.toHaveBeenCalled();
+  });
+
+  it('isolates model/harness quotas and keeps generic status independent of a dedicated model', async () => {
+    const h = openaiHarness();
+    h.usage.set('local', { appServerBuckets: {
+      codex: quota(10, 20), spark: { ...quota(100, 10), limitName: SPARK },
+    }, webSnapshot: quota(100, 20) });
+    expect(await h.pick()).toMatchObject({ member: { key: 'local' } });
+    expect(await h.pick(SPARK)).toMatchObject({ member: { key: h.remote } });
+    expect(await h.pick(GPT, 'pi')).toMatchObject({ member: { key: h.remote } });
+    expect((await h.router.view('openai')).members[0].state).toBe('available');
+    expect((await h.router.view('openai', SPARK)).members[0].state).toBe('cooling');
+    expect((await h.router.view('openai', { model: GPT, agentKind: 'pi' })).members[0].state).toBe('cooling');
+  });
+
+  it('falls back to group order for unknown/stale quotas and reports unavailable only when both accounts are exhausted', async () => {
+    const h = openaiHarness();
+    h.usage.set('local', { ...quota(100, 100), updatedAt: NOW - 600_001 });
+    expect(await h.pick()).toMatchObject({ member: { key: 'local' } });
+    h.usage.set('local', quota(100, 20));
+    h.usage.set(h.remote, quota(20, 100));
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable' });
+    h.usage.set('local', { ...quota(100, 20), primary: { usedPercent: 100, resetsAt: NOW / 1000 } });
+    expect(await h.pick()).toMatchObject({ member: { key: 'local' } });
+  });
 });
 
 function harness() {
@@ -42,6 +121,45 @@ function harness() {
 }
 
 describe('provider-group quota routing', () => {
+  // Unit regression: an exhausted model plus a paused backup used to lose the quota reason
+  // at pick(), preventing the task from showing/waiting for the actual reset.
+  it('reports model quota exhaustion and the earliest usable reset without counting paused members', async () => {
+    const h = harness();
+    h.config.members[1].paused = true;
+    h.usage.set('local', { ...snapshot(4, 66), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: 80_000 }] });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: 80_000_000 } });
+    expect(await h.pick(SONNET)).toMatchObject({ kind: 'member' });
+    h.config.members[1].paused = false;
+    h.usage.set(h.config.members[1].key, snapshot(100, 20));
+    h.advance(15_001); // refresh the remote quota snapshot
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: 3_000_000 } });
+  });
+
+  it('keeps unknown resets unknown and does not call a paused or unsupported pool quota-limited', async () => {
+    const h = harness();
+    h.config.members[1].paused = true;
+    h.usage.set('local', { ...snapshot(4, 66), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: null }] });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: null } });
+    expect(await h.pick('missing-model')).not.toHaveProperty('usageLimit');
+    h.config.members[0].paused = true;
+    expect(await h.pick()).not.toHaveProperty('usageLimit');
+  });
+
+  // PR #6611: pick() must not wake a task while its earliest quota-reset member is
+  // still cooling. Unit gap: existing quota and cooldown cases never overlapped.
+  it.each([undefined, OPUS])('waits for both quota reset and the existing cooldown (%s)', async (scope) => {
+    const h = harness();
+    const remote = h.config.members[1].key;
+    h.usage.set('local', { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: (NOW + 300_000) / 1000 } });
+    h.usage.set(remote, { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: (NOW + 600_000) / 1000 } });
+    h.router.markCooling('anthropic', 'local', NOW + 1_800_000, scope);
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: NOW + 600_000 } });
+    h.config.members[1].paused = true;
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: NOW + 1_800_000 } });
+    h.usage.set('local', { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: null } });
+    expect(await h.pick()).toMatchObject({ kind: 'unavailable', usageLimit: { resetAtMs: null } });
+  });
+
   it('isolates error cooldowns by model while total quota and account failures still block all models', async () => {
     const h = harness();
     h.config.strategy = 'order';

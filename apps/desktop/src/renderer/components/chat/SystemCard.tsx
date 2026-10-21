@@ -45,6 +45,8 @@ import {
   BotSessionTaskMessageTrace,
 } from '@/features/bots/BotCollaborationCard';
 import { BotDirectMessageCard } from '@/features/bots/BotDirectMessageCard';
+import { VoiceCallCard, VoiceCallTaskEntry } from '@/features/bots/voice/VoiceCallTranscript';
+import { readVoiceCallRecord } from '@/../shared/voiceConversation';
 import {
   ACTIVITY_ROW_CHEVRON_SLOT_CLASS,
   ACTIVITY_ROW_COLOR_TRANSITION_CLASS,
@@ -57,6 +59,8 @@ import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 
 interface SystemCardProps {
   cardType:
+    | 'voice-call'
+    | 'voice-call-task'
     | 'mcp-app'
     | 'input-handoff'
     | 'cindy-make-doctor'
@@ -1150,7 +1154,8 @@ function AgentSwitchCard({ data, sessionId }: { data?: Record<string, unknown>; 
   const toLabel = engineLabel(data?.toAgentKind);
   const toModel = typeof data?.toModel === 'string' ? data.toModel : '';
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
-  const label =
+  const modelOnly = data?.modelOnly === true;
+  const label = modelOnly ? `${data?.fromModel ?? ''} → ${toModel}` :
     agentRelocationLabel(data, sessionId, t) ??
     t('chat.systemCard.agentSwitch.label', { from: fromLabel, to: toLabel });
 
@@ -1172,8 +1177,8 @@ function AgentSwitchCard({ data, sessionId }: { data?: Record<string, unknown>; 
           title={handoff ? t('chat.systemCard.agentSwitch.toggleHint') : undefined}
         >
           <ArrowLeftRight size={12} className="shrink-0" />
-          <span>{label}</span>
-          {toModel && (
+          <span className="min-w-0 truncate" title={label}>{label}</span>
+          {toModel && !modelOnly && (
             <>
               <span className="opacity-50">·</span>
               <span title={toModel} className="min-w-0 truncate font-mono">
@@ -1459,6 +1464,12 @@ export function SystemCard({
       return <LearnStatusCard data={data} contextSessionId={sessionId} />;
     case 'review':
       return <ReviewCard data={data} workingDir={workingDir} />;
+    case 'voice-call': {
+      const record = readVoiceCallRecord(data?.record);
+      return record ? <VoiceCallCard record={record} /> : null;
+    }
+    case 'voice-call-task':
+      return typeof data?.text === 'string' ? <VoiceCallTaskEntry text={data.text} /> : null;
     case 'bot-session-task-message':
       return <BotSessionTaskMessageTrace data={data} />;
     case 'bot-session-task-result':

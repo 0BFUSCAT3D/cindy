@@ -1,7 +1,9 @@
 import { scrollRangeIntoView } from '@/lib/scrollRangeIntoView';
+import { historyAfter } from './historyAfter';
 import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { animateFocusScroll } from './animateFocusScroll';
 import { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
+import { isVisibleVoiceCallMessage } from '@/features/bots/voice/voiceCallPresentation';
 import { MessageViewport, type MessageViewportApi } from './MessageViewport';
 import { PAGE_TEXT_NAVIGATION_EVENT } from '@/lib/pageTextAccess';
 export { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
@@ -366,7 +368,6 @@ import {
 import { ChatImageView } from './ChatImageView';
 import { ImageGalleryContext, type GalleryImage } from './ImageGalleryContext';
 import { GhostFulfillmentContext } from './GhostSummonCard';
-import { AgentOnOtherDeviceContext } from './AgentOnOtherDeviceContext';
 import { ChatSessionFileProvider, useChatSessionFileValue } from './ChatSessionFileContext';
 import { toRemoteMediaOrigin } from '@/lib/sessionFileOrigin';
 import { rewriteToRemoteMediaOrigin, type RemoteMediaOrigin } from '@/../shared/remoteMediaUrl';
@@ -438,6 +439,8 @@ import type { TurnUsageDetails } from '../../../shared/turnUsageDetails';
 import { hasReviewableTurnChanges, type TurnChangeSetSummary } from '../../../shared/turnChangeSet';
 
 interface MessageStreamProps {
+  historyVisibleAfter?: number;
+  onAskInSideChat?: (quote: string) => Promise<boolean>;
   /** Active session id — used to reset scroll state on session switch. */
   sessionId?: string;
   /** Active session title, forwarded to handoff cards for return navigation. */
@@ -449,8 +452,6 @@ interface MessageStreamProps {
    *  so message-level controls can gate features unsupported on remote
    *  (e.g. rewind on cc-remote daemon sessions). */
   remoteHostId?: string | null;
-  /** 任务的 Agent 在另一台电脑运行(消息级分叉暂不可用)。 */
-  agentOnOtherDevice?: boolean;
   /** Task origin. Personal WeChat must not be told to switch to Full access. */
   sessionSource?: string | null;
   /** Session working directory; passed down so MarkdownRenderer / UserMessage
@@ -475,6 +476,8 @@ interface MessageStreamProps {
   botUnreadBoundaryAt?: number | null;
   onBotReadThrough?: (at: number) => void;
   messages: ChatMessage[];
+  /** The ongoing call appears only in its transcript popover, including history replays. */
+  activeVoiceCallId?: string | null;
   /** This task's preparation card is shown in the composer, including after history reload. */
   cindyMakeSessionId?: string;
   cindyMakeCompletionInComposer?: boolean;
@@ -1535,6 +1538,7 @@ export function buildRenderItems(
     historyArtifacts?: readonly import('@cindy/maker-shared/message-window').HistoryFileArtifact[];
     /** Bot-owned Session: show newly created files as deliverables, not an engineering diff card. */
     botSessionId?: string;
+    activeVoiceCallId?: string | null;
     /** Reuse image Markdown extraction for completed assistant messages across stream batches. */
     markdownImageTargetCache?: MarkdownImageTargetCache;
     /** Keep the stored preparation report out of its own task's visible timeline. */
@@ -1551,6 +1555,9 @@ export function buildRenderItems(
   // shared store for the dialog to observe, but never enter the chat timeline.
   allMessages = allMessages.filter(
     (message) =>
+      // History snapshots bypass the task view's raw-list filter. Keep this
+      // rule at the shared render boundary, before time/turn/work grouping.
+      isVisibleVoiceCallMessage(message, opts?.activeVoiceCallId) &&
       message.systemCardData?.modalOnly !== true &&
       !(opts?.cindyMakeCompletionInComposer && isCindyMakeCompletionMessage(message)) &&
       !isCindyMakePreparationMessage(message, opts?.cindyMakeSessionId),
@@ -2451,6 +2458,7 @@ export function buildCachedRenderItems(
     opts?.turnChangeSets,
     opts?.workingDir,
     opts?.botSessionId,
+    opts?.activeVoiceCallId,
     opts?.subagentRunStatuses,
     opts?.historyArtifacts,
     opts?.cindyMakeSessionId,
@@ -2912,6 +2920,7 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
       childItems={childItems}
       compact={compact}
       deferred={item.deferred}
+      fitHeader={Boolean(replyColumnSpacer)}
     />
   );
   return (
@@ -2931,11 +2940,12 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
 });
 
 export function MessageStream({
+  onAskInSideChat,
+  historyVisibleAfter,
   sessionId,
   sessionTitle,
   agentKind,
   remoteHostId,
-  agentOnOtherDevice = false,
   sessionSource,
   workingDir,
   assistantAvatar,
@@ -2943,6 +2953,7 @@ export function MessageStream({
   botUnreadBoundaryAt = null,
   onBotReadThrough,
   messages,
+  activeVoiceCallId = null,
   cindyMakeSessionId,
   cindyMakeCompletionInComposer,
   historyLoaded,
@@ -2954,7 +2965,7 @@ export function MessageStream({
   continuationInFlightProjectionCapability = 'unknown',
   onLoadMore,
   isLoadingMore,
-  hasMoreMessages,
+  hasMoreMessages: fullHasMoreMessages,
   historyWindowHasIsland = false,
   bottomPadding,
   bottomCenterClearanceOffset,
@@ -2970,11 +2981,14 @@ export function MessageStream({
 }: MessageStreamProps) {
   const { i18n, t } = useTranslation();
   const historyView = sessionId ? getRemoteHistoryView(sessionId) : undefined;
-  const historySnapshot = useSyncExternalStore(
+  const fullHistorySnapshot = useSyncExternalStore(
     historyView?.subscribe ?? (() => () => undefined),
     historyView?.getSnapshot ?? (() => null),
     historyView?.getSnapshot ?? (() => null),
   );
+  const historySnapshot = useMemo(() => historyAfter(fullHistorySnapshot, historyVisibleAfter), [fullHistorySnapshot, historyVisibleAfter]);
+  const hasMoreMessages = historyVisibleAfter !== undefined && historySnapshot
+    ? historySnapshot.hasMore : fullHasMoreMessages;
   const displayMessages = useMemo(() => {
     if (!historySnapshot) return messages;
     const historyIds = new Set(
@@ -3219,6 +3233,7 @@ export function MessageStream({
     renderOptions: {
       sessionId, turnChangeSets, workingDir,
       botSessionId: simplifiedBotConversation ? sessionId : undefined,
+      activeVoiceCallId,
       markdownImageTargetCache: markdownImageTargetCacheRef.current,
       cindyMakeSessionId, cindyMakeCompletionInComposer, subagentRunStatuses,
     },
@@ -3235,6 +3250,7 @@ export function MessageStream({
         turnChangeSets,
         workingDir,
         simplifiedBotConversation,
+        activeVoiceCallId,
         sessionId,
         cindyMakeSessionId,
         cindyMakeCompletionInComposer,
@@ -3249,6 +3265,7 @@ export function MessageStream({
           turnChangeSets,
           workingDir,
           botSessionId: simplifiedBotConversation ? sessionId : undefined,
+          activeVoiceCallId,
           markdownImageTargetCache: markdownImageTargetCacheRef.current,
           cindyMakeSessionId,
           cindyMakeCompletionInComposer,
@@ -3258,6 +3275,7 @@ export function MessageStream({
     ),
   }), [
     displayMessages,
+    activeVoiceCallId,
     cindyMakeSessionId,
     cindyMakeCompletionInComposer,
     historyView,
@@ -6035,10 +6053,12 @@ export function MessageStream({
   // 派生 —— 导航条要给整段历史画刻度)。目标可能在渲染窗口外,跳转走下面的
   // layout effect:复用 focus-jump 的"先扩窗到目标、下一轮再滚动"两段式,
   // 以及 chip-jump 的 expandWindow/onLoadMore 抑制协议。
-  // 导航条是个性化可选功能(Settings → 个性化 → 小技巧),默认关闭;关闭时
+  // 导航条是普通任务的个性化可选功能(Settings → 个性化 → 小技巧)。
+  // 伙伴长期对话不显示逐条刻度，也不为导航条派生条目或空闲补页。关闭时
   // 不挂载组件(卸载时组件自会把 navRailCoversNav 报回 false,chip 兜底回归),
   // 也不做下面的空闲补页。
-  const { enabled: navRailEnabled } = useMessageNavRailPreference();
+  const { enabled: navRailPreferenceEnabled } = useMessageNavRailPreference();
+  const navRailEnabled = navRailPreferenceEnabled && !simplifiedBotConversation;
   const navRailEntries = useMemo(
     () => navigationProjection(visibleMessages, navRailEnabled),
     [navigationProjection, visibleMessages, navRailEnabled],
@@ -6056,8 +6076,8 @@ export function MessageStream({
   // shouldBackfillForNavRail 一族常量注释)。与"跳转补齐"同属程序化翻页,
   // prepend 的滚动补偿照走 F-SYNC-2 协议:调用前快照 scrollHeight/scrollTop。
   // 即使当下窗口太窄导航条没出场,补到的历史对搜索/上滚阅读同样有用,
-  // 且有轮数预算封顶,不做 eligible 门控。但**用户显式关闭导航条**(个性化
-  // 开关,默认关)时跳过:为一个不存在的 UI 自动翻页不符合默认克制,开关
+  // 且有轮数预算封顶,不做 eligible 门控。但伙伴对话或用户显式关闭导航条
+  // 时跳过:为一个不存在的 UI 自动翻页不符合默认克制,开关
   // 打开后本 effect 依赖变化会重新评估补页。
   // 调度 effect 的依赖含 sessionId(与 MessageNavRail 的 resetKey 同款惯例):
   // 两个会话的条目数 / hasMore 恰好相同且 onLoadMore 身份未变时,切会话也要
@@ -6363,14 +6383,13 @@ export function MessageStream({
 
   return (
     <ChatSessionFileProvider value={sessionFileValue}>
-      <AgentOnOtherDeviceContext.Provider value={agentOnOtherDevice}>
       <GhostFulfillmentContext.Provider value={ghostCallsByUserTurn}>
         <ImageGalleryContext.Provider value={sessionImageSrcs}>
           <div className="relative h-full w-full">
             {/* chat-text-quote:选中消息文字 → 浮出"添加到对话"按钮(portal 到 body)。
           绑定本流的滚动容器:协同模式多流并存时,选区归属按各自容器判定。 */}
             {sessionId ? (
-              <SelectionQuoteButton sessionId={sessionId} containerRef={scrollRef} />
+              <SelectionQuoteButton sessionId={sessionId} containerRef={scrollRef} onAskInSideChat={onAskInSideChat} />
             ) : null}
             {/*
         原生滚动容器:overflow-y-auto + overflow-x-hidden。
@@ -6546,7 +6565,7 @@ export function MessageStream({
                           item={item}
                           context={workGroupRenderContext}
                           // 伙伴聊天与普通任务同一套工作过程：运行中露最近 5 条活动与计时，
-                          // 完成后收成「已工作 Xs」，不另走 compact 分支。
+                          // 组头按内容宽；做完整块不再出现（simplifyBotRenderItems 丢弃完成组）。
                           compact={false}
                           replyColumnSpacer={botReplyColumnSpacer}
                         />
@@ -6661,6 +6680,7 @@ export function MessageStream({
                         localFileRefs={localFileRefs}
                         assistantAvatar={assistantAvatar}
                         simplifiedBotConversation={simplifiedBotConversation}
+                        starterOptionsLocked={Boolean(lastUserMessageClientId)}
                         sessionSource={sessionSource}
                       />
                     );
@@ -6675,7 +6695,11 @@ export function MessageStream({
                         }
                       : {};
                     if (simplifiedBotConversation) {
-                      const groupTimestamp = botMessageTimeGroups.get(msg.clientId);
+                      // Call cards carry their own date/time in the compact header.
+                      const groupTimestamp =
+                        msg.systemCardType === 'voice-call'
+                          ? undefined
+                          : botMessageTimeGroups.get(msg.clientId);
                       const startsUnread = botUnreadBoundaryClientId === msg.clientId;
                       return (
                         <div
@@ -6762,7 +6786,7 @@ export function MessageStream({
             />
 
             {/* message-nav-rail: 左缘提问导航条(每条提问一根刻度,当前项加深,
-          hover 预览,点击跳转)。个性化开关(默认关)决定挂不挂载;挂载后的
+          hover 预览,点击跳转)。仅普通任务按个性化开关挂载;挂载后的
           显隐仍由组件自判:提问数 ≥4 且内容列左侧留白足够;窄窗口 / 嵌入面板
           自然隐藏,绝不压在气泡上。 */}
             {navRailEnabled && (
@@ -6795,7 +6819,6 @@ export function MessageStream({
           </div>
         </ImageGalleryContext.Provider>
       </GhostFulfillmentContext.Provider>
-      </AgentOnOtherDeviceContext.Provider>
     </ChatSessionFileProvider>
   );
 }
@@ -6848,6 +6871,7 @@ const MessageItem = memo(function MessageItem({
   localFileRefs,
   assistantAvatar,
   simplifiedBotConversation,
+  starterOptionsLocked,
   sessionSource,
 }: {
   message: ChatMessage;
@@ -6900,6 +6924,8 @@ const MessageItem = memo(function MessageItem({
   assistantAvatar?: ReactNode;
   /** 伙伴对话消息操作栏使用轻量常显变体。 */
   simplifiedBotConversation?: boolean;
+  /** True once the user has written anything in this task, which retires the opening's starter buttons. */
+  starterOptionsLocked?: boolean;
   sessionSource?: string | null;
 }) {
   // silent-stop 自动续跑行(isSyntheticTrigger + systemCardType):渲染成
@@ -6932,34 +6958,44 @@ const MessageItem = memo(function MessageItem({
   switch (message.role) {
     case 'user':
       return (
-        <UserMessage
-          sharedAuthorName={message.sharedAuthorName}
-          sharedAuthorMemberId={message.sharedAuthorMemberId}
-          workingDir={workingDir}
-          content={message.content}
-          quotesEncoded={message.quotesEncoded}
-          agentReferences={message.agentReferences}
-          pastedTextRanges={message.pastedTextRanges}
-          slashCommandRanges={message.slashCommandRanges}
-          images={message.images}
-          files={message.files}
-          createdAt={message.createdAt}
-          sessionId={sessionId}
-          agentKind={agentKind}
-          remoteHostId={remoteHostId}
-          messageClientId={message.clientId}
-          sessionRunning={sessionRunning}
-          isFirstUserMessage={isFirstUserMessage}
-          isLastUserMessage={isLastUserMessage}
-          automationOrigin={message.automationOrigin}
-          hookSource={message.hookSource}
-          sourceDevice={message.sourceDevice}
-          sourcePlugin={message.sourcePlugin}
-          delivery={message.delivery}
-          goalBadge={message.goalBadge}
-          blockedByGhost={message.blockedByGhost}
-          simplifiedBotConversation={simplifiedBotConversation}
-        />
+        <>
+          <UserMessage
+            sharedAuthorName={message.sharedAuthorName}
+            sharedAuthorMemberId={message.sharedAuthorMemberId}
+            workingDir={workingDir}
+            content={message.content}
+            quotesEncoded={message.quotesEncoded}
+            agentReferences={message.agentReferences}
+            pastedTextRanges={message.pastedTextRanges}
+            slashCommandRanges={message.slashCommandRanges}
+            images={message.images}
+            files={message.files}
+            createdAt={message.createdAt}
+            sessionId={sessionId}
+            agentKind={agentKind}
+            remoteHostId={remoteHostId}
+            messageClientId={message.clientId}
+            sessionRunning={sessionRunning}
+            isFirstUserMessage={isFirstUserMessage}
+            isLastUserMessage={isLastUserMessage}
+            automationOrigin={message.automationOrigin}
+            hookSource={message.hookSource}
+            sourceDevice={message.sourceDevice}
+            sourcePlugin={message.sourcePlugin}
+            delivery={message.delivery}
+            goalBadge={message.goalBadge}
+            blockedByGhost={message.blockedByGhost}
+            simplifiedBotConversation={simplifiedBotConversation}
+          />
+          {message.usageLimitAutoResumeInfo && (
+            <SystemCard
+              cardType="auto-resume"
+              data={message.usageLimitAutoResumeInfo}
+              sessionId={sessionId}
+              workingDir={workingDir}
+            />
+          )}
+        </>
       );
     case 'assistant':
       if (message.systemCardType === 'mcp-app') {
@@ -7025,6 +7061,8 @@ const MessageItem = memo(function MessageItem({
             ghostReplyPending={message.ghostReplyPending}
             simplifiedBotConversation={simplifiedBotConversation}
             botLearning={message.botLearning}
+            botStarterOptions={message.botStarterOptions}
+            starterOptionsLocked={starterOptionsLocked}
             botTaskResults={message.turnCompleted === true ? message.botTaskResults : undefined}
           />
         </>,
