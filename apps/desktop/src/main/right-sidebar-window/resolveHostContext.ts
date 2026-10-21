@@ -69,33 +69,38 @@ export async function resolveRsbHostContextFromSession(
   sessionId: string,
 ): Promise<RsbWindowContext | null> {
   if (!sessionId) return null;
-  const local = await readLocalSessionContext(sessionId);
+  let local: RsbWindowContext | null;
+  try {
+    local = await readLocalSessionContext(sessionId);
+  } catch (error) {
+    // A disconnected local DB worker is not evidence that a cached Bot link
+    // disappeared. A device-link mirror may still resolve the session.
+    const mirrored = await readDeviceLinkMirrorContext(sessionId);
+    if (mirrored) return mirrored;
+    throw error;
+  }
   if (local) return local;
   return readDeviceLinkMirrorContext(sessionId);
 }
 
 async function readLocalSessionContext(sessionId: string): Promise<RsbWindowContext | null> {
-  try {
-    const rows = await getDbClient()
-      .drizzle.select({
-        id: sessions.id,
-        workingDir: sessions.workingDir,
-        remoteHostId: sessions.remoteHostId,
-        agentKind: sessions.agentKind,
-        status: sessions.status,
-        botId: botSessionLinks.botId,
-        botRole: botSessionLinks.role,
-      })
-      .from(sessions)
-      .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
-      .where(eq(sessions.id, sessionId))
-      .limit(1);
-    const row = rows[0];
-    if (!row || row.status === 'deleted') return null;
-    return contextFromLocalSessionRow(row);
-  } catch {
-    return null;
-  }
+  const rows = await getDbClient()
+    .drizzle.select({
+      id: sessions.id,
+      workingDir: sessions.workingDir,
+      remoteHostId: sessions.remoteHostId,
+      agentKind: sessions.agentKind,
+      status: sessions.status,
+      botId: botSessionLinks.botId,
+      botRole: botSessionLinks.role,
+    })
+    .from(sessions)
+    .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.status === 'deleted') return null;
+  return contextFromLocalSessionRow(row);
 }
 
 async function readDeviceLinkMirrorContext(sessionId: string): Promise<RsbWindowContext | null> {

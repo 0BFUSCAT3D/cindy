@@ -170,6 +170,7 @@ export interface ForkSessionArgs {
   /** 与 targetCreatedAt 同毫秒时按 SQLite 插入顺序截断；null/缺省表示整毫秒前缀。 */
   targetRowid?: number | null;
   newSession: {
+    source?: string;
     id: string;
     title: string;
     workingDir: string | null;
@@ -185,7 +186,7 @@ export interface ForkSessionArgs {
     contextTokens: number;
     contextWindow: number;
     contextWindowRuntime?: number | null;
-    fastMode: boolean | number;
+    fastMode: boolean | 'ultrafast' | number;
     clearedAt: number | null;
     pinnedAt: number | null;
     userSendAt: number | null;
@@ -272,7 +273,7 @@ export interface OrcaRemoteWorkerProxySessionSeed {
   model: string;
   effort: string | null;
   permissionMode: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface OrcaUpsertWorkerArgs {
@@ -388,6 +389,11 @@ export interface SessionsSetTerminalStatusArgs {
   status: 'archived' | 'deleted';
 }
 
+export interface SessionsSetTerminalStatusResult extends Omit<SessionsSetStatusResultItem, 'status'> {
+  status: 'archived' | 'deleted';
+  deletedSideChats: Array<Omit<SessionsSetStatusResultItem, 'status'>>;
+}
+
 /** resume 停泊失败后的原子回落:清失效绑定并把边界改成全量交接。 */
 export interface SessionAgentSwitchFallbackArgs {
   sessionId: string;
@@ -412,7 +418,7 @@ export interface ContextRebuildArgs {
     model: string;
     providerId: string | null;
     effort: string | null;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
   };
 }
 
@@ -547,7 +553,7 @@ export interface SessionImportShareSessionRow {
   totalCostUsd: number;
   contextTokens: number;
   contextWindow: number;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   planModeEnabled: boolean;
   agentKind: string;
   /** Orca 角色标记:协同包导入时 lead='lead'、Worker='worker';普通导入缺省(NULL)。 */
@@ -710,7 +716,7 @@ export interface BotsReplaceCanonicalSessionArgs {
     agentDeviceId?: string | null;
     parentSessionId?: string | null;
     extraDirs: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     source: string;
     createdAt: number;
     updatedAt: number;
@@ -1013,7 +1019,7 @@ export interface ImRotateSessionArgs {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     agentKind: string;
     source: string;
     providerId: string | null;
@@ -1477,7 +1483,7 @@ export type DbTxResultByName = {
   'orca.reconcileInactiveTeamWorkersForLead': string[];
   'sessions.renameTitles': SessionsRenameTitleResult[];
   'sessions.setStatus': SessionsSetStatusResultItem[];
-  'sessions.setTerminalStatus': SessionsSetStatusResultItem;
+  'sessions.setTerminalStatus': SessionsSetTerminalStatusResult;
   'recentWorkdirs.mergeWindowsIdentity': undefined;
   'recentWorkdirs.removeWindowsIdentity': { changes: number };
   'pluginUsage.execute': PluginUsageHandle | null;

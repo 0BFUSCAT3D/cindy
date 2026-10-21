@@ -939,9 +939,9 @@ export class RsbWindowController {
 
   // ── 命令路由辅助 ─────────────────────────────────────────────────
 
-  private adoptHostSession(sessionId: string): void | Promise<void> {
+  private adoptHostSession(sessionId: string, retrying = false): void | Promise<void> {
     if (!sessionId) return;
-    if (this.lastContext?.available && this.lastContext.sessionId === sessionId) {
+    if (!retrying && this.lastContext?.available && this.lastContext.sessionId === sessionId) {
       // 已经在目标宿主上。再钉一次会挡住之后的 setContext。
       // 若 pin 还钉着别人，当前宿主的新请求要先把它拆掉。
       if (this.pinnedSessionId && this.pinnedSessionId !== sessionId) {
@@ -961,14 +961,26 @@ export class RsbWindowController {
       this.applyAdoptedContext(cached);
       return;
     }
-    const pending = this.deps.resolveHostContext?.(sessionId);
+    let pending: ReturnType<NonNullable<RsbWindowControllerDeps['resolveHostContext']>> | undefined;
+    try {
+      pending = this.deps.resolveHostContext?.(sessionId);
+    } catch {
+      this.finishAdoptHostSession(sessionId, null, cached, true);
+      return;
+    }
     if (pending && typeof (pending as Promise<RsbWindowContext | null>).then === 'function') {
-      return Promise.resolve(pending).then((resolved) => {
-        if (this.disposed) return;
-        if (resolved) this.rememberContext(resolved);
-        if (this.pinnedSessionId !== sessionId) return;
-        this.finishAdoptHostSession(sessionId, resolved, cached);
-      });
+      return Promise.resolve(pending).then(
+        (resolved) => {
+          if (this.disposed) return;
+          if (resolved) this.rememberContext(resolved);
+          if (this.pinnedSessionId !== sessionId) return;
+          this.finishAdoptHostSession(sessionId, resolved, cached);
+        },
+        () => {
+          if (this.disposed || this.pinnedSessionId !== sessionId) return;
+          this.finishAdoptHostSession(sessionId, null, cached, true);
+        },
+      );
     }
     this.finishAdoptHostSession(sessionId, (pending as RsbWindowContext | null | undefined) ?? null, cached);
   }
@@ -977,12 +989,15 @@ export class RsbWindowController {
     sessionId: string,
     resolved: RsbWindowContext | null,
     cached?: RsbWindowContext,
+    retryOnFailure = false,
   ): void {
     if (!resolved) {
       if (cached) {
         // Draft sessions may not be in the DB yet. Keep their usable host
         // context, but never publish an unverified cached Bot owner.
         this.applyAdoptedContext({ ...cached, botOwner: undefined });
+        if (retryOnFailure) this.scheduleAdoptRetry(sessionId);
+        else this.resetAdoptRetry();
         return;
       }
       this.scheduleAdoptRetry(sessionId);
@@ -1013,7 +1028,7 @@ export class RsbWindowController {
     this.adoptRetryTimer = setTimeout(() => {
       this.adoptRetryTimer = null;
       if (this.disposed || this.pinnedSessionId !== sessionId) return;
-      void this.adoptHostSession(sessionId);
+      void this.adoptHostSession(sessionId, true);
     }, delay);
   }
 

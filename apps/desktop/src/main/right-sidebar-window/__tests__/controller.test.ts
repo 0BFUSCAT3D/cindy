@@ -1154,8 +1154,9 @@ describe('setContext / routeCommand', () => {
     const h = makeHarness({ detached: true }, { resolveHostContext: lookup });
     h.controller.setContext({ ...ctx, botOwner: { botId: 'bot-1', canonical: true } });
     h.controller.setContext({ ...ctx, sessionId: 's2' });
-    const pending = h.controller.routeCommand(terminalRequest());
+    h.controller.prewarm();
     markReady(h.controller, h.windows[0]);
+    const pending = h.controller.routeCommand(terminalRequest());
     await expect(pending).resolves.toBe('routed');
     expect(lookup).toHaveBeenCalledWith('s1');
     expect(h.controller.getContext()?.botOwner).toEqual({ botId: 'bot-1', canonical: false });
@@ -1181,6 +1182,24 @@ describe('setContext / routeCommand', () => {
     markReady(h.controller, h.windows[0]);
     await expect(pending).resolves.toBe('routed');
     expect(h.controller.getContext()?.botOwner).toBeUndefined();
+  });
+
+  it('retries a transient Bot owner lookup failure without keeping stale ownership', async () => {
+    const fresh = { ...ctx, botOwner: { botId: 'bot-1', canonical: false } };
+    const lookup = vi.fn()
+      .mockRejectedValueOnce(new Error('DB worker restarting'))
+      .mockResolvedValue(fresh);
+    const h = makeHarness({ detached: true }, { resolveHostContext: lookup });
+    h.controller.setContext({ ...ctx, botOwner: { botId: 'bot-1', canonical: true } });
+    h.controller.setContext({ ...ctx, sessionId: 's2' });
+    h.controller.prewarm();
+    markReady(h.controller, h.windows[0]);
+    const pending = h.controller.routeCommand(terminalRequest());
+    await expect(pending).resolves.toBe('routed');
+    expect(h.controller.getContext()?.botOwner).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(h.controller.getContext()?.botOwner).toEqual(fresh.botOwner);
   });
 
   it('does not forge a local host when resolve misses', async () => {

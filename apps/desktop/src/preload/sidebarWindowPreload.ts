@@ -33,7 +33,7 @@ import {
   RSB_WINDOW_TAB_HANDOFF_CHANNEL,
   RSB_WINDOW_VISIBILITY_CHANGED_CHANNEL,
 } from '../shared/rightSidebarWindow';
-import type { RsbWindowTabHandoff } from '../shared/rightSidebarWindow';
+import type { RsbWindowContext, RsbWindowTabHandoff } from '../shared/rightSidebarWindow';
 import {
   SIDEBAR_TAB_WINDOW_ADOPT_TAB_CHANNEL,
   SIDEBAR_TAB_WINDOW_ASSIGNED_CHANNEL,
@@ -361,14 +361,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       handoff?: RsbWindowTabHandoff,
     ): Promise<{ detached: boolean; lastOpen: boolean; open: boolean }> =>
       ipcRenderer.invoke('maker:rsb-window:set-detached', detached, handoff),
-    getContext: (): Promise<{
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    } | null> => ipcRenderer.invoke('maker:rsb-window:get-context'),
+    getContext: (): Promise<RsbWindowContext | null> =>
+      ipcRenderer.invoke('maker:rsb-window:get-context'),
     /** 瀛橀噺灏辩华鎻℃墜 鈫?鏄犲皠鍒?renderer-ready(renderer shell 宸叉寕杞?銆?*/
     ready: (): Promise<void> => ipcRenderer.invoke('maker:rsb-window:ready'),
     /** 鍙岄樁娈靛氨缁?renderer shell 鎸傝浇銆?*/
@@ -380,16 +374,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onStateChanged: (
       cb: (state: { detached: boolean; open: boolean }) => void,
     ): (() => void) => onPayload(RSB_WINDOW_STATE_CHANGED_CHANNEL, cb),
-    onContextChanged: (
-      cb: (ctx: {
-        sessionId: string | null;
-        workdir: string | null;
-        remoteHostId: string | null;
-        deviceLinkDeviceId?: string | null;
-        subagentsAvailable?: boolean;
-        available: boolean;
-      }) => void,
-    ): (() => void) => onPayload(RSB_WINDOW_CONTEXT_CHANGED_CHANNEL, cb),
+    onContextChanged: (cb: (ctx: RsbWindowContext) => void): (() => void) =>
+      onPayload(RSB_WINDOW_CONTEXT_CHANGED_CHANNEL, cb),
     /** main → 子窗口的命令推送；channel 必须与 main 端 MAKER_PUSH.RSB_WINDOW_COMMAND 同源。 */
     onCommand: (
       cb: (cmd: unknown) => void,
@@ -503,6 +489,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // The renderer's durable-tab consumers use the canonical localDb namespace.
   // Keep the legacy top-level alias above for compatibility with older builds.
   localDb: {
+    bots: {
+      autonomy: {
+        glance: (botId: string): Promise<import('../shared/botAutonomy').BotGlance> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId),
+      },
+    },
     // Minimal read-only chat hydration bridge used by BackgroundTasks and the
     // shared makerChatStore. Do not expose the primary window's full DB API.
     sessions: {
@@ -558,6 +550,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onChanged: (cb: (payload: unknown, ownerStamp?: unknown) => void): (() => void) => onPayloadWithMetadata('local-db:subagent-runs:changed', cb),
     },
     orcaWorkflows: {
+      projectLabel: (workerSessionId: string) => ipcRenderer.invoke('maker:worker:project-label', workerSessionId),
       getByLeadSession: (id: string): Promise<unknown> => ipcRenderer.invoke('local-db:orca-workflows:get-by-lead', id),
       getByWorkerSession: (id: string): Promise<unknown> => ipcRenderer.invoke('local-db:orca-workflows:get-by-worker-session', id),
       listWorkersByLead: (id: string): Promise<unknown> => ipcRenderer.invoke('local-db:orca-workflows:list-workers-by-lead', id),
@@ -618,6 +611,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     push: (params: unknown): Promise<unknown> => ipcRenderer.invoke('git-review:push', params),
   },
   maker: {
+    onBotAutonomyChanged: (cb: (payload: { botIds?: string[] }) => void): (() => void) =>
+      onPayload('maker:bot-autonomy:changed', cb),
+    resolveInteraction: (
+      requestId: string,
+      decision: Record<string, unknown>,
+    ): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('maker:resolve-interaction', requestId, decision),
     // Live event subset consumed by makerChatStore in the detached renderer.
     onEvent: (cb: (payload: unknown) => void): (() => void) => onPayload('maker:event', cb),
     onStatusChanged: (cb: (payload: unknown) => void): (() => void) =>
