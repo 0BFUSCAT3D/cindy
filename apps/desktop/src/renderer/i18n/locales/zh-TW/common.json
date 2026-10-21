@@ -9247,7 +9247,9 @@
       "defaultModelHint": "僅用於夥伴，與新任務的模型選擇獨立。個別夥伴可以另選。",
       "title": "伙伴",
       "description": "和伙伴有關的通用設定。單個伙伴的設定在{{pronoun}}自己的頁面裡。",
-      "rosterNote": "預置陣容會隨版本更新。"
+      "rosterNote": "預置陣容會隨版本更新。",
+      "showReplyTarget": "顯示回覆對應的訊息",
+      "showReplyTargetHint": "夥伴回覆上方標出它回的是你哪則訊息。較早的回覆不顯示。"
     },
     "session": {
       "ownedByBot": "{{name}} 的背景任務",

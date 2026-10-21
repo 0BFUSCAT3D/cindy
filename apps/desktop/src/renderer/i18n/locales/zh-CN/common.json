@@ -9247,7 +9247,9 @@
       "defaultModelHint": "仅用于伙伴，与新任务的模型选择独立。单个伙伴可以另选。",
       "title": "伙伴",
       "description": "和伙伴有关的通用设置。单个伙伴的设置在{{pronoun}}自己的页面里。",
-      "rosterNote": "预置阵容会随版本更新。"
+      "rosterNote": "预置阵容会随版本更新。",
+      "showReplyTarget": "显示回复对应的消息",
+      "showReplyTargetHint": "伙伴回复上方标出它回的是你哪条消息。较早的回复不显示。"
     },
     "session": {
       "ownedByBot": "{{name}} 的后台任务",
