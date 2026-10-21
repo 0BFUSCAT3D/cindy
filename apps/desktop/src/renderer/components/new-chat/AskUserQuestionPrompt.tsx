@@ -16,6 +16,8 @@ import { Button } from '@/components/ui/button';
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -39,6 +41,7 @@ import type { AskUserDraft, AskUserViewerState, PendingAskUser } from '@/lib/mak
 import { requestRendererMicrophonePermission } from '@/voice-input/startGuards';
 import { formatVoiceInputShortcut, isVoiceInputShortcutMatch } from '@/voice-input/shortcut';
 import { useAskUserDictation } from './useAskUserDictation';
+import { parseVoiceQuestionSelection, type VoiceQuestionBridge, type VoiceQuestionTarget } from './voiceQuestionSelection';
 
 const ASK_USER_ANSWER_MAX_HEIGHT_PX = 148;
 
@@ -79,6 +82,7 @@ function AutoGrowingAnswerTextarea({
 // ---------------------------------------------------------------------------
 
 interface AskUserQuestionPromptProps {
+  voiceBridge?: VoiceQuestionBridge;
   sessionId?: string;
   workingDir?: string;
   remoteHostId?: string | null;
@@ -148,11 +152,14 @@ function AskUserQuestionForm({
   onViewerStateChange,
   draft,
   onDraftChange,
+  voiceBridge,
 }: AskUserQuestionPromptProps) {
   const { t } = useTranslation();
   const { requestId, questions } = pending;
   const totalQuestions = questions.length;
   const [referencePreviewOpen, setReferencePreviewOpen] = useState(false);
+  const [voiceFeedback, setVoiceFeedback] = useState<'hint' | 'confirm' | 'ambiguous' | 'unknown' | 'cancelled'>('hint');
+  const voiceRevision = useRef(0);
 
   // ── Wizard state ──
   // F-AUQ-DRAFT: lazy-init from the per-session store so a remount caused by
@@ -365,6 +372,10 @@ function AskUserQuestionForm({
   // ── Advance to next question or submit all ──
   const advance = useCallback(
     (answer: string) => {
+      // Invalidate ASR captured before a manual/voice answer immediately, including
+      // the animation interval and the host's asynchronous submission receipt.
+      ++voiceRevision.current;
+      setVoiceFeedback('hint');
       const updated = { ...answers, [currentQ.question]: answer };
       setAnswers(updated);
 
@@ -437,6 +448,8 @@ function AskUserQuestionForm({
   // ── Back ──
   const handleBack = useCallback(() => {
     if (currentIndex === 0) return;
+    ++voiceRevision.current;
+    setVoiceFeedback('hint');
     snapshotButtons();
     setSlideDirection('right');
     setIsAnimating(true);
@@ -466,6 +479,7 @@ function AskUserQuestionForm({
   }, []);
 
   const beginVoiceInput = useCallback(() => {
+    if (voiceBridge) return;
     const session = dictationRef.current;
     if (session.isBusy) {
       void session.stop();
@@ -478,16 +492,24 @@ function AskUserQuestionForm({
     }
     inputRef.current?.focus();
     session.start();
-  }, [options.length, showCustomInput]);
+  }, [options.length, showCustomInput, voiceBridge]);
 
   useEffect(() => {
-    if (!showCustomInput || !pendingVoiceStartRef.current) return;
+    if (voiceBridge || !showCustomInput || !pendingVoiceStartRef.current) return;
     pendingVoiceStartRef.current = false;
     inputRef.current?.focus();
     dictationRef.current.start();
-  }, [showCustomInput]);
+  }, [showCustomInput, voiceBridge]);
+
+  // Companion voice mode owns microphone capture and question ASR while open.
+  useEffect(() => {
+    if (!voiceBridge) return;
+    pendingVoiceStartRef.current = false;
+    if (dictationRef.current.isBusy) void dictationRef.current.stop();
+  }, [voiceBridge]);
 
   useEffect(() => {
+    if (voiceBridge) return;
     const claim = (phase?: 'start' | 'tap' | 'end') => {
       // Minimized hides the microphone, so only let the shortcut stop a run
       // that is already recording.
@@ -537,7 +559,7 @@ function AskUserQuestionForm({
       window.removeEventListener('keydown', onKeyDown, true);
       unsubscribe?.();
     };
-  }, [beginVoiceInput, viewerState]);
+  }, [beginVoiceInput, viewerState, voiceBridge]);
 
   // ── Custom input submit (single-select mode) ──
   const handleCustomSubmit = useCallback(() => {
@@ -560,6 +582,70 @@ function AskUserQuestionForm({
     if (!trimmed) return;
     advance(isMultiSelect ? JSON.stringify([trimmed]) : trimmed);
   }, [customInput, isMultiSelect, advance]);
+
+  const voiceHandler = useRef<(text: string) => void>(() => {});
+  const voiceTarget = useMemo<VoiceQuestionTarget>(() => {
+    const revision = voiceRevision.current;
+    const target: VoiceQuestionTarget = { receive: (text) => {
+      if (voiceBridge?.current === target && revision === voiceRevision.current) voiceHandler.current(text);
+    } };
+    return target;
+  }, [voiceBridge, currentIndex, voiceRevision.current, selectedLabels, customInput, showCustomInput, voiceFeedback]);
+  useLayoutEffect(() => {
+    voiceHandler.current = (text) => {
+      if (isAnimating || referencePreviewOpen || !currentQ || dictationRef.current.isBusy) return;
+      onViewerStateChange('expanded');
+      const result = parseVoiceQuestionSelection(text, options.map((option) => option.label));
+      if (result.kind === 'cancel') {
+        markStarted();
+        setSelectedLabels(new Set());
+        setCustomInput('');
+        setShowCustomInput(false);
+        setVoiceFeedback('cancelled');
+      } else if (result.kind === 'confirm') {
+        if (voiceFeedback !== 'confirm') {
+          setVoiceFeedback('unknown');
+          return;
+        }
+        if (isMultiSelect) handleNext();
+        else if (!options.length) submitDirectAnswer();
+      } else if (result.kind === 'select') {
+        if (!isMultiSelect && result.indices.length === 1) {
+          handleSingleSelect(options[result.indices[0]].label);
+        } else if (isMultiSelect) {
+          markStarted();
+          setSelectedLabels((previous) => new Set([...previous, ...result.indices.map((index) => options[index].label)]));
+          // Consecutive spoken choices add to the visible draft. Explicit cancel
+          // clears it; manual checkboxes still allow removing individual choices.
+          setVoiceFeedback('confirm');
+        } else {
+          setVoiceFeedback('ambiguous');
+        }
+      } else if (!options.length && result.kind === 'unknown') {
+        // Free text is previewed in the same draft and explicitly confirmed.
+        markStarted();
+        setCustomInput(text.trim());
+        setVoiceFeedback('confirm');
+      } else {
+        setVoiceFeedback(result.kind);
+      }
+    };
+  });
+  useLayoutEffect(() => {
+    if (!voiceBridge || isAnimating || referencePreviewOpen || dictation.isBusy) return;
+    voiceBridge.current = voiceTarget;
+    return () => {
+      if (voiceBridge.current === voiceTarget) voiceBridge.current = null;
+    };
+  }, [voiceBridge, voiceTarget, isAnimating, referencePreviewOpen, dictation.isBusy]);
+
+  const voiceNotice = voiceBridge ? (
+    <div className="flex flex-wrap items-center gap-2 text-13 leading-5 text-[var(--text-secondary)]">
+      <p role="status" className="min-w-0 flex-1">
+        {t(`chat.askUserQuestion.voice.${voiceFeedback === 'hint' && !options.length ? 'freeTextHint' : voiceFeedback}`)}
+      </p>
+    </div>
+  ) : null;
 
   // ── Keyboard shortcuts ──
   useEffect(() => {
@@ -788,12 +874,12 @@ function AskUserQuestionForm({
                 grows, both keep the same center line instead of the mic drifting
                 up to the top of the box. */}
             <div className="flex shrink-0 items-center gap-2 self-end">
-              <AskUserVoiceButton
+              {!voiceBridge && (<AskUserVoiceButton
                 size="md"
                 label={voiceButtonLabel}
                 busy={dictation.isBusy}
                 onClick={beginVoiceInput}
-              />
+              />)}
               {!isMultiSelect && (
                 <Tip text={isLastQuestion ? null : t('chat.askUserQuestion.next')}>
                   <button
@@ -844,7 +930,7 @@ function AskUserQuestionForm({
                 {options.length + 1}
               </div>
             </button>
-            <AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} onClick={beginVoiceInput} />
+            {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} onClick={beginVoiceInput} />)}
           </div>
         )}
       </div>
@@ -861,7 +947,7 @@ function AskUserQuestionForm({
       restoreAriaLabel={t('chat.askUserQuestion.restoreAriaLabel')}
       minimizeAriaLabel={t('chat.askUserQuestion.minimizeAriaLabel')}
       minimizeDisabled={isAnimating}
-      pinnedContent={customAnswerEntry}
+      pinnedContent={voiceBridge ? <div className="flex flex-col gap-3">{voiceNotice}{customAnswerEntry}</div> : customAnswerEntry}
       headerLeading={
         currentQ?.header ? (
           <Tip text={currentQ.header}>
@@ -998,12 +1084,12 @@ function AskUserQuestionForm({
               )}
             />
             <div className="flex shrink-0 items-center gap-2">
-              <AskUserVoiceButton
+              {!voiceBridge && (<AskUserVoiceButton
                 size="md"
                 label={voiceButtonLabel}
                 busy={dictation.isBusy}
                 onClick={beginVoiceInput}
-              />
+              />)}
               <Tip text={isLastQuestion ? null : t('chat.askUserQuestion.next')}>
                 <button
                   type="button"
