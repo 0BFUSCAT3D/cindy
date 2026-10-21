@@ -119,6 +119,16 @@ export async function syncDefaultMarketPlugins(
   }
 }
 
+/** Signal foreground removals without requesting another snapshot or disk scan. */
+export async function refreshForegroundMarketPlugins(): Promise<'completed' | 'failed'> {
+  try {
+    return await service().refreshCatalogForForeground();
+  } finally {
+    // A removal can succeed before a later maintenance step fails.
+    signalRemovalNoticeAvailable();
+  }
+}
+
 /**
  * Preserve stable IPC errors and hide internal/network messages from the
  * renderer. Detailed failures stay in main logs; the renderer localizes by
