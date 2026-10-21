@@ -973,6 +973,18 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deps.dispatch).toHaveBeenCalledOnce();
   });
 
+  // bot-group-chat.md §3: a companion may answer in several Threads at once.
+  it('shows a companion running in two Threads as one speaker', async () => {
+    fixture.handle.mockImplementation(route => {
+      if (route.endsWith('/executions')) return { body: [{ ...execution, status: 'running' },
+        { ...execution, id: '50000000-0000-4000-8000-000000000099', status: 'running' }] };
+      return response(route);
+    });
+    const result = await service.getGroup(roomId);
+    expect(result).toMatchObject({ ok: true, group: { round: { status: 'running', speakers: [{ activity: 'reply' }] } } });
+    expect(result.ok && result.group.round.speakers).toHaveLength(1);
+  });
+
   it.each(['IMAGE_INPUT_UNSUPPORTED', 'private token and path'])('projects a failed execution from its visible source with a safe code %s', async code => {
     const source = { id: execution.source_message_id, seq: '7', authorId: selfId, author: { kind: 'human', name: 'Owner' },
       content: [{ type: 'text', text: 'Question' }], origin: 'user', deleted: false, threadRootId: null, createdAt: '2026-10-03T00:00:00Z' };
