@@ -1,4 +1,5 @@
 import { readGeneratedImageEpoch } from '../cindy-media/generatedImageStorage';
+import { resolveHelperSurface } from '../mcp-integrations/helperSurface.js';
 import { readAgentCapabilityCatalog, RUNTIME_MCP_NAMES_KEY, type AgentCapabilityQuery } from './agentCapabilityCatalog.js';
 import { listCindyManagedSkills, prepareCindyCodexSkills } from './managed-skills.js';
 import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
@@ -117,6 +118,8 @@ import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import {
   dispatchInterAgentMessage,
   isActiveInputOwnerAuthored,
+  isActiveInputAccountScoped,
+  getSessionInputProvenance,
   isSessionInTurn,
   wireSessionToIpc,
 } from '../maker-ipc/register.js';
@@ -1100,6 +1103,14 @@ export function getMaker(): Maker {
         if (!session || session.instanceId !== sessionInstanceId) return null;
         const snapshot = resolveGhostFsSessionSnapshot((id) => _maker?.getSession(id), sessionId, sessionInstanceId);
         return {
+          contributionAccountAllowed: async () => {
+            if (!isActiveInputAccountScoped(sessionId) || isAppSessionBoundaryPending()) return false;
+            const db = getCurrentDbClientSnapshot();
+            if (!db) return false;
+            const surface = await resolveHelperSurface(db.client, sessionId, getSessionInputProvenance);
+            return surface !== 'restricted' && db === getCurrentDbClientSnapshot()
+              && !isAppSessionBoundaryPending() && isActiveInputAccountScoped(sessionId);
+          },
           permissionMode: session.stablePermissionModeState?.mode ?? null,
           remoteHostId: session.remoteHostId,
           isCurrent: () => !!snapshot && !snapshot.planModeEnabled && snapshot.permissionMode !== 'plan'

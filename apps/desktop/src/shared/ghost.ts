@@ -1432,6 +1432,8 @@ export interface GhostManifest {
   name: string;
   /** 版本字符串(不强制 semver,仅展示用)。 */
   version: string;
+  /** 包内本版本完整更新说明；旧包可省略。 */
+  releaseNotes?: string;
   /** 安装此 Release 所需的最低 Cindy 客户端 SemVer；缺省表示不限制。 */
   minCindyVersion?: string;
   /** 作者展示名(仅展示用)。 */
@@ -1642,6 +1644,11 @@ export function isGhostInstallApprovalToken(value: unknown): value is string {
 
 /** 已装入主机的插件(批准清单 + 安装位置 + 启用态)。 */
 export interface InstalledGhost {
+  /** Read-only Host provenance, not authorship or publication permission. Missing is unknown. */
+  publishingSource?:
+    | { kind: 'local'; source: 'manual' | 'agent-forge' }
+    | { kind: 'public-market'; pluginId: string }
+    | { kind: 'unavailable' };
   /** Host retirement projection; never supplied by plugin authors. */
   retirement?: import('./featureRetirements').InstalledFeatureRetirement;
   /** Host receipt fact, not a manifest declaration. Missing means tasks need confirmation. */
@@ -2991,6 +2998,7 @@ const GHOST_MANIFEST_KNOWN_TOP_LEVEL_FIELDS = new Set([
   'id',
   'name',
   'version',
+  'releaseNotes',
   'minCindyVersion',
   'author',
   'locales',
@@ -3861,6 +3869,9 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
     raw.version.length > 32
   ) {
     return { ok: false, reason: 'version 必须是 1–32 字符的非空字符串' };
+  }
+  if (raw.releaseNotes !== undefined && typeof raw.releaseNotes !== 'string') {
+    return { ok: false, reason: 'releaseNotes 必须是纯文本字符串' };
   }
   if (raw.minCindyVersion !== undefined && !isValidCindyVersion(raw.minCindyVersion)) {
     return { ok: false, reason: 'minCindyVersion 必须是合法的 SemVer 字符串' };
@@ -6058,6 +6069,7 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       id: raw.id,
       name: raw.name,
       version: raw.version,
+      ...(raw.releaseNotes !== undefined ? { releaseNotes: raw.releaseNotes as string } : {}),
       ...(raw.minCindyVersion !== undefined
         ? { minCindyVersion: raw.minCindyVersion as string }
         : {}),

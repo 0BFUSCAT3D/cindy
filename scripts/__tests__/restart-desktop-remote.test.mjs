@@ -35,6 +35,7 @@ import {
 	productionUserDataDir,
 	readDesktopStartupStatus,
 	parseWorktreePaths,
+	osascriptCloseDarwinTerminalTtyArgs,
 	osascriptLaunchDarwinTerminalArgs,
 	writeDarwinTerminalLaunchScript,
 	darwinTerminalSourceCommand,
@@ -88,6 +89,30 @@ function appleScriptLines(args) {
 // 且 path.resolve 会补盘符)。测试的合成路径也必须走同一套 path API,才能在
 // macOS / Windows 上都与生产实际所见一致——硬编码 POSIX 字面量只在 *nix 成立。
 const stepScript = (root, name) => path.join(root, "scripts", name);
+
+test("macOS Terminal cleanup returns before contacting an app that is not running", () => {
+	const lines = appleScriptLines(osascriptCloseDarwinTerminalTtyArgs("/dev/ttys002"));
+	assert.equal(lines[0], "on closeMatchingTerminalTab(targetTty)");
+	assert.equal(lines[1], 'if application id "com.apple.Terminal" is not running then return');
+	assert.equal(lines[2], 'tell application id "com.apple.Terminal"');
+	assert.ok(!lines.includes("activate"), "cleanup must not activate Terminal");
+});
+
+test("macOS Terminal cleanup only exits the matching tab and passes the tty as data", () => {
+	const tty = '/dev/ttys002" & do shell script "echo unexpected';
+	const args = osascriptCloseDarwinTerminalTtyArgs(tty);
+	const lines = appleScriptLines(args);
+	const matchIndex = lines.indexOf("if (tty of terminalTab) is targetTty then");
+	const exitIndex = lines.indexOf('if busy of terminalTab is false then do script "exit" in terminalTab');
+
+	assert.notEqual(matchIndex, -1);
+	assert.ok(exitIndex > matchIndex, "exit must target an existing tab with the exact tty");
+	assert.deepEqual(lines.filter((line) => line.includes("do script")), [
+		'if busy of terminalTab is false then do script "exit" in terminalTab',
+	]);
+	assert.equal(args.at(-1), tty);
+	assert.ok(lines.every((line) => !line.includes(tty)), "tty must not be interpolated into AppleScript");
+});
 
 test("macOS Terminal launch runs command before activating Terminal", () => {
 	const lines = appleScriptLines(osascriptLaunchDarwinTerminalArgs("echo test"));

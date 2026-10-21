@@ -80,8 +80,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     applyLocale(eff);
   }, []);
 
-  // 首次 mount 时确保 i18next + <html lang> 与 state 一致 (state 来自 localStorage,
-  // 而 i18n.init 默认用的是 DEFAULT_LOCALE，两者可能不同)。
+  // 首次 mount 时确保 i18next、<html lang> 和原生菜单与当前语言偏好一致。
   // 仅 mount 一次：locale 后续变化都走 setLocale 路径。
   useEffect(() => {
     applyLocale(effectiveLocale);

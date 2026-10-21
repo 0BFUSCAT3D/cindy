@@ -262,6 +262,9 @@ function cloneParsedGhostPackage(parsed: ParsedGhostPackage): ParsedGhostPackage
 }
 
 export interface GhostManagerOptions {
+  /** Read-only source projections. Does not affect running, installation, or publishing ACL. */
+  sourcesForInstance?: (record: PluginInstanceRecord, receipt: PluginInstanceReceiptFact | null | undefined) =>
+    Pick<InstalledGhost, 'publishingSource'>;
   /** 意识仓库根目录(生产:userData/cindy-brain;测试:os.tmpdir 下临时目录)。 */
   getRootDir: () => string;
   /** Host 批准状态根；必须位于插件安装根之外。 */
@@ -837,21 +840,23 @@ export class GhostManager {
     return createPluginInstanceRegistryStore(pluginInstanceRegistryPath(this.stateRootDir()));
   }
 
-  private listContentEntries(): Array<{ relId: string; dir: string }> {
+  private listContentEntries(strict = false): Array<{ relId: string; dir: string }> {
     const root = this.contentRootDir();
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return [];
     }
-    const listed = this.listManagedInstallDirs(root);
+    const listed = this.listManagedInstallDirs(root, strict);
     for (const entry of entries) {
       if (entry.name.startsWith('.') || entry.name === PLUGIN_NS_INSTALL_ROOT) continue;
       const dir = path.join(root, entry.name);
       try {
         if (classifyGhostDirEntrySync(dir) !== 'directory') continue;
-      } catch {
+      } catch (error) {
+        if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         continue;
       }
       if (!isValidGhostId(entry.name)) {
@@ -889,9 +894,46 @@ export class GhostManager {
     return this.instanceRegistryService.recordForAddress(id);
   }
 
+  /** Author management must not turn an unreadable installation scan into "not installed". */
+  assertContributionReadAvailable(ghostId?: string): void {
+    this.ensureCurrentOwnerContextSync();
+    const registry = this.instanceRegistryStore().read();
+    if (registry.kind !== 'ok' && registry.kind !== 'missing') {
+      throw new Error('plugin instance registry is ' + registry.kind);
+    }
+    if (registry.kind === 'ok' && Object.values(registry.registry.instances).some((record) =>
+      record.active && (!ghostId || record.ghostId === ghostId) &&
+      this.hasPendingMutationJournal(record.contentRelId))) {
+      throw new Error('plugin installation is changing');
+    }
+    for (const { relId, dir } of this.listContentEntries(true)) {
+      const identity = parsePluginInstallRelId(relId);
+      if (!identity || (ghostId && identity.ghostId !== ghostId)) continue;
+      if (this.hasPendingMutationJournal(relId)) throw new Error('plugin installation is changing');
+      const approval = this.readApproval(relId);
+      if (approval.state === 'invalid') throw new Error('plugin approval evidence is unavailable');
+      if (approval.state === 'approved') continue;
+      // list() may skip an unreadable legacy manifest. Do not interpret that
+      // omitted entry as proof that the user's corresponding plugin is absent.
+      try {
+        const manifestPath = resolveGhostContentPathSync(dir, GHOST_MANIFEST_FILE, {
+          expect: 'file', label: 'installed manifest',
+        });
+        const bytes = readBoundedFileNoFollowSync(manifestPath, MAX_GHOST_MANIFEST_BYTES);
+        const parsed = bytes && parseInstalledGhostManifest(JSON.parse(bytes.toString('utf8')));
+        if (!parsed || !parsed.ok || parsed.manifest.id !== identity.ghostId) {
+          throw new Error('invalid manifest');
+        }
+      } catch {
+        throw new Error('plugin manifest evidence is unavailable');
+      }
+    }
+  }
+
 
   private instanceProjection(relId: string, ghostId: string): {
     instanceKey?: string;
+    publishingSource?: InstalledGhost['publishingSource'];
     namespace?: string | null;
     namespaceState?: PluginInstanceRecord['namespaceState'];
   } {
@@ -901,6 +943,7 @@ export class GhostManager {
     if (!record || record.ghostId !== ghostId) return {};
     return {
       instanceKey: record.instanceKey,
+      ...this.options.sourcesForInstance?.(record, this.receiptFact(relId)),
       namespaceState: record.namespaceState,
       ...(record.namespaceState === 'confirmed' || record.namespaceState === 'unconfirmed'
         ? { namespace: record.namespace } : {}),
@@ -1164,7 +1207,7 @@ export class GhostManager {
     }, ghostId, namespace, basis, expectedReceipt);
   }
 
-  private listManagedInstallDirs(root: string): Array<{ relId: string; dir: string }> {
+  private listManagedInstallDirs(root: string, strict = false): Array<{ relId: string; dir: string }> {
     const listed: Array<{ relId: string; dir: string }> = [];
     const managedRoot = path.join(root, PLUGIN_NS_INSTALL_ROOT);
     let parents: string[];
@@ -1173,7 +1216,8 @@ export class GhostManager {
       parents = fs.readdirSync(managedRoot)
         .filter((namespace) => namespace === PLUGIN_ROOT_INSTALL_DIR || isValidPluginNamespace(namespace))
         .map((namespace) => PLUGIN_NS_INSTALL_ROOT + '/' + namespace);
-    } catch {
+    } catch (error) {
+      if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return listed;
     }
     for (const parent of parents) {
@@ -1182,7 +1226,8 @@ export class GhostManager {
       try {
         if (classifyGhostDirEntrySync(parentDir) !== 'directory') continue;
         entries = fs.readdirSync(parentDir);
-      } catch {
+      } catch (error) {
+        if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         continue;
       }
       for (const entry of entries) {
@@ -1191,7 +1236,8 @@ export class GhostManager {
         const dir = path.join(parentDir, entry);
         try {
           if (classifyGhostDirEntrySync(dir) === 'directory') listed.push({ relId, dir });
-        } catch {
+        } catch (error) {
+          if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
           continue;
         }
       }
