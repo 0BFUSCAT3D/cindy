@@ -21,7 +21,6 @@ const render = (ui: ReactElement, options?: RenderOptions) =>
   testingRender(ui, { wrapper: MemoryRouter, ...options });
 
 const m = vi.hoisted(() => ({
-  open: vi.fn(async () => undefined),
   openSideChat: vi.fn(async () => true),
   canSideChat: false,
   ghosts: [] as unknown[],
@@ -54,7 +53,6 @@ vi.mock('@/features/bots/botStore', () => ({
     bot.sessions.find((session) => session.role === 'canonical')?.id,
 }));
 vi.mock('@/lib/sessionsStore', () => ({ sessionsStore: { subscribe: () => () => {}, findById: (id: string) => m.rows.get(id) ?? null } }));
-vi.mock('../lib/openBotWorkbenchTab', () => ({ openBotWorkbenchTab: m.open }));
 vi.mock('../lib/openSideChatTab', () => ({
   canOpenSideChat: () => m.canSideChat,
   openSideChatTab: m.openSideChat,
@@ -95,7 +93,6 @@ beforeEach(() => {
   _resetTabKindRegistry();
   registerMenu('file-browser', 'rightSidebar.tabs.kinds.fileBrowser', 20);
   registerMenu('review', 'rightSidebar.tabs.kinds.review', 10);
-  registerMenu('bot-workbench', 'bots.workbench.title', 0);
   registerMenu('side-chat', 'chat.sideChat.new', 30);
   registerMenu('subagents', 'rightSidebar.tabs.kinds.subagents', 15);
 });
@@ -161,18 +158,10 @@ it('keeps hidden and retired plugin panels out of both entry surfaces', () => {
   expect(screen.queryByRole('button', { name: 'Legacy plugin' })).toBeNull();
 });
 
-it('offers the workbench in a local teammate main task and reopens it with the teammate id', () => {
-  const onSelect = renderMenu('bot-main');
-  fireEvent.click(screen.getByText('bots.workbench.title'));
-  expect(m.open).toHaveBeenCalledWith('bot-main', 'bot-1');
-  expect(onSelect).not.toHaveBeenCalled();
-});
-
 it('keeps the other entries on the generic add path', () => {
   const onSelect = renderMenu('bot-main');
   fireEvent.click(screen.getByText('rightSidebar.tabs.kinds.fileBrowser'));
   expect(onSelect).toHaveBeenCalledWith('file-browser');
-  expect(m.open).not.toHaveBeenCalled();
 });
 
 // Unit regression: the missing menu entry must create a child task before opening its tab.
@@ -188,23 +177,6 @@ it.each([undefined, { groupId: 'left' as const }, { onOptimisticAdd: vi.fn() }])
   await act(async () => fireEvent.click(screen.getByText('chat.sideChat.new')));
   expect(m.openSideChat).toHaveBeenCalledExactlyOnceWith('task-1', { placement, onOpen: expect.any(Function) });
   expect(onSelect).not.toHaveBeenCalled();
-});
-
-it.each([
-  ['an ordinary task', 'task-1'],
-  ['a teammate history task', 'bot-history'],
-])('does not offer the workbench in %s', (_label, sessionId) => {
-  renderMenu(sessionId);
-  expect(screen.queryByText('bots.workbench.title')).toBeNull();
-});
-
-it.each([
-  ['SSH remote', { remoteHostId: 'ssh-1' }],
-  ['device-link', { deviceLinkDeviceId: 'device-2' }],
-])('does not offer the workbench for a %s mirror', (_label, row) => {
-  m.rows.set('bot-main', row);
-  renderMenu('bot-main');
-  expect(screen.queryByText('bots.workbench.title')).toBeNull();
 });
 
 // 测试价值

@@ -2453,16 +2453,17 @@
       "note": "供应商分享申请的 4 位数字，只在受邀者「等待同意」界面与分享者审批弹窗 / 管理页待处理一栏出现，供双方核对是同一个人；不是密钥，不参与鉴权。与 OAuth 的 Device Code（设备码）是不同概念。"
     },
     {
-      "id": "bot-workbench",
+      "id": "bot-glance",
       "status": "proposed",
-      "en": "Workbench",
+      "en": "At a glance",
       "translations": {
-        "zh-CN": "工作台",
-        "zh-TW": "工作台",
-        "ja": "ワークベンチ",
-        "ko": "작업대"
+        "zh-CN": "近况",
+        "zh-TW": "近況",
+        "ja": "近況",
+        "ko": "근황"
       },
-      "note": "伙伴主任务右侧栏里的标签：一眼看清这位伙伴手上「等你」与「在做」的任务，加一行页脚（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。"
+      "checkCase": false,
+      "note": "伙伴聊天头部网格按钮打开的浮层：电脑、待办、输出内容三块（docs/product-rules/cindy-bots-runtime.md「伙伴近况」）。取代已下线的右侧栏「工作台」标签；只指这个伙伴浮层，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。"
     },
     {
       "id": "follow-up-all-sessions",
