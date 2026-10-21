@@ -25,6 +25,21 @@ fn legacy_service_name() -> Result<String> {
     legacy_service_name_for(&std::env::current_exe()?)
 }
 
+/// Stops both the current installation service and the pre-staging service
+/// name. The latter used a hash of the bundled helper path, so an upgrade
+/// running from the protected bootstrap must derive it from the source path
+/// rather than from the bootstrap's own location. Windows rejects a second
+/// service with the same display name even when its service name differs.
+fn uninstall_before_install(installation: &Installation, bundled: &Path) -> Staged<()> {
+    service::uninstall(&installation.service())?;
+    if let Ok(legacy) = legacy_service_name_for(bundled) {
+        if legacy != installation.service() {
+            service::uninstall(&legacy)?;
+        }
+    }
+    Ok(())
+}
+
 /// This executable's own installation, for the modes that run from inside one.
 fn bundled() -> Staged<Installation> {
     bundled_from(&std::env::current_exe().stage(Step::ProtectedOpen)?)
@@ -60,7 +75,8 @@ fn run() -> Staged<()> {
             };
             // Stop first: setup also runs for an upgrade, and the staged files
             // cannot be replaced while the service it starts still holds them.
-            service::uninstall(&installation.service())?;
+            let bundled = std::env::current_exe().stage(Step::ProtectedOpen)?;
+            uninstall_before_install(&installation, &bundled)?;
             service::install(&installation)?;
             service::authorize(&installation, pid)
         }
@@ -81,7 +97,7 @@ fn run() -> Staged<()> {
             // This process is the protected bootstrap. Stop the old service
             // before replacing its host and input binaries, then stage bytes
             // read from the user installation as data.
-            service::uninstall(&installation.service())?;
+            uninstall_before_install(&installation, &source)?;
             staging::stage_from(&installation, &source)?;
             service::install_staged(&installation)?;
             service::authorize(&installation, pid)
