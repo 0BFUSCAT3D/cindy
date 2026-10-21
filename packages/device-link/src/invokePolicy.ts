@@ -18,6 +18,8 @@ const BACKGROUND_INVOKE_CHANNELS = new Set([
   // 远程任务状态栏的定时复查(每 15 秒两次只读);后台任务面板挂载水合同用,可让位于用户操作。
   'maker:session-background-activity',
   'maker:session-background-tasks:list',
+  // 打字时的 Agent 预热是尽力而为的提示，排在用户正在等待的请求之后。
+  'maker:session:prewarm',
 ]);
 
 export function isBackgroundInvoke(channel: string): boolean {

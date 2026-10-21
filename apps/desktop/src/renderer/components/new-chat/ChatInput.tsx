@@ -526,6 +526,11 @@ interface ChatInputProps {
       annotationBurnFailure?: 'abort';
     },
   ) => boolean | void | Promise<boolean | void>;
+  /**
+   * 用户在已有任务的输入框里输入了内容（不含草稿恢复、语音回填、发送后清空等程序写入）。
+   * 父组件据此提前启动 Agent；每次按键都会调用，节流由接收方负责。
+   */
+  onComposerTyping?: () => void;
   /** Session ID for binding workingDir. When absent, folder picker is hidden. */
   sessionId?: string;
   /**
@@ -1191,6 +1196,7 @@ function deriveSyntheticAtQuery(editor: Editor, anchor: number, rangeEnd: number
 
 export function ChatInput({
   onSend,
+  onComposerTyping,
   sessionId,
   runtimeAgentKind,
   runtimeEffective,
@@ -1348,6 +1354,9 @@ export function ChatInput({
   // handleKeyDown 与硬件动作订阅都是稳定闭包,经 ref 读当前值。
   const promptPreviewInputGuardRef = useRef<() => boolean>(() => false);
   const acceptPromptRecommendationRef = useRef<() => boolean>(() => false);
+  // 编辑器配置只创建一次，按键回调读最新的父组件回调。
+  const onComposerTypingRef = useRef(onComposerTyping);
+  onComposerTypingRef.current = onComposerTyping;
   // session 切换时 ChatInput/Editor 会复用；推荐资格必须等目标草稿完成水合后再判断。
   const [, setComposerHydrationGeneration] = useState(0);
   // 完整输入框空判断:不仅检查 ProseMirror 文档是否为空,还检查附件、浏览器评论和语音稿。
@@ -2302,6 +2311,7 @@ export function ChatInput({
       // dispatch / 语音回填时触发）；IME 组合输入在 onUpdate 里补（见该处注释）。
       handleTextInput: () => {
         markComposerTypingActivity();
+        onComposerTypingRef.current?.();
         return false; // 不拦截默认插入
       },
       attributes: {
@@ -2885,6 +2895,7 @@ export function ChatInput({
         (ed.view.composing || transaction.getMeta('composition') === true)
       ) {
         markComposerTypingActivity();
+        onComposerTypingRef.current?.();
       }
       // composer-draft-mount-race 修复 (issue #40):hydration 还没跑过 → 这次
       // onUpdate 是 Tiptap mount 期间的初始触发(空 editor),不能写 store。
