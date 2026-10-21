@@ -14776,6 +14776,73 @@ describe('provider group computer switch hold', () => {
     sessionTotal: 0,
   };
 
+  // Unit regression through onTurnEvent: an overload and a switch candidate used
+  // to spend the generic retry budget instead of handing off (including a guest's
+  // short-lived switch offer). Existing hold cases only used non-resumable limits.
+  // Cover both a settled user row and an error arriving before that row persists.
+  it.each([false, true])('prioritizes a group switch over overload retry (pending persist: %s)', async pendingPersist => {
+    const sid = `group-overload-${pendingPersist}`;
+    const candidate = vi.fn<NonNullable<AgentInputCoordinatorDeps['providerGroupSwitchCandidate']>>(
+      () => 'overload',
+    );
+    const h = createHarness({ providerGroupSwitchCandidate: candidate });
+    h.setResumableTurnErrorTakeover({ attempt: 1, maxAttempts: 5, sessionTotal: 1 });
+    h.setResumableTurnErrorCandidate(isInterruptedTurnError);
+    const persisted = deferred<Record<string, never>>();
+    if (pendingPersist) mocks.createMessage.mockImplementationOnce(() => persisted.promise);
+    h.coordinator.enqueue(sid, makeItem('q-capacity', 'finish the task'));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'Selected model is at capacity. Please try a different model.', {
+      reason: 'upstream-overload',
+      codexErrorInfo: 'serverOverloaded',
+    });
+    if (pendingPersist) {
+      expect(h.coordinator.isAutoResumeDeferred(sid)).toBe(true);
+      expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+      persisted.resolve({});
+    }
+    await flush();
+
+    expect(h.coordinator.getProjection(sid)).toMatchObject({
+      error: null,
+      autoResumePending: { groupSwitchPending: { cause: 'overload' } },
+      recovery: { kind: 'active-turn' },
+    });
+    expect(h.coordinator.isAutoResumePending(sid)).toBe(false);
+    expect(h.onResumableTurnError).not.toHaveBeenCalled();
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledExactlyOnceWith(
+      sid,
+      expect.objectContaining({ reason: 'upstream-overload', codexErrorInfo: 'serverOverloaded' }),
+      expect.objectContaining({ clientId: 'q-capacity' }),
+      expect.any(Number),
+    );
+    if (pendingPersist) {
+      expect(h.onResumableTurnErrorDiscarded).toHaveBeenCalledExactlyOnceWith(sid, {
+        surfaceError: true,
+        owner: expect.objectContaining({ clientId: 'q-capacity' }),
+        providerGroupSwitchHoldId: h.coordinator.getProviderGroupSwitchHoldId(sid),
+      });
+    }
+    expect(h.projections.every(projection => projection.error === null)).toBe(true);
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, 'unavailable'] as const)('keeps generic recovery when the switch cause is %s', async cause => {
+    const h = createHarness({ providerGroupSwitchCandidate: () => cause });
+    const takeover = { attempt: 1, maxAttempts: 5, sessionTotal: 1 };
+    h.setResumableTurnErrorTakeover(takeover);
+    h.coordinator.enqueue('group-recovery', makeItem('q-recovery', 'finish the task'));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent('group-recovery', 'error', 'retryable upstream failure', {
+      reason: cause === null ? 'upstream-overload' : 'remote-agent-lost',
+    });
+    expect(h.coordinator.getProjection('group-recovery')).toMatchObject({ error: null, autoResumePending: takeover });
+    expect(h.coordinator.isAutoResumePending('group-recovery')).toBe(true);
+    expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+  });
+
   async function failWhileSwitching(sid: string, cause: 'usage-limit' | 'unavailable' | null = 'usage-limit') {
     const candidate = vi.fn<NonNullable<AgentInputCoordinatorDeps['providerGroupSwitchCandidate']>>(
       () => cause,

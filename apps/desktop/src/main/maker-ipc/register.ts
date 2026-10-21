@@ -18576,8 +18576,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     onResumableTurnErrorDiscarded: (
       sessionId: string,
-      options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner },
+      options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner; providerGroupSwitchHoldId?: number },
     ) => {
+      if (options.providerGroupSwitchHoldId !== undefined) {
+        const deferred = autoResumeBookkeeping.takeDeferredError(sessionId, options.owner);
+        if (deferred) {
+          providerGroupHeldErrors.stash(sessionId, options.providerGroupSwitchHoldId, deferred.detail);
+          if (deferred.orcaTerminal) {
+            providerGroupHeldWorkerTerminals.stash(sessionId, options.providerGroupSwitchHoldId, deferred.orcaTerminal);
+          }
+        }
+        return;
+      }
       if (options.surfaceError) {
         autoResumeBookkeeping.surfaceSuppressedError(sessionId, { deferredOwner: options.owner });
       } else {

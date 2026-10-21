@@ -486,6 +486,35 @@ describe('退避排期:必可撤销、必只认自己那次', () => {
     expect(h.persisted).toEqual([{ sessionId: 's1', detail: { message: 'deferred error' } }]);
   });
 
+  // Unit regression: a capacity terminal before the user row persists changes
+  // owner from generic recovery to the group. Existing flush coverage surfaced
+  // the error and finalized the Worker before handoff; transfer must do neither.
+  it('transfers the deferred error and Worker terminal exactly once to group recovery', () => {
+    const h = createHarness();
+    const owner = { generation: 3, clientId: 'capacity-turn' };
+    const detail = { reason: 'upstream-overload', message: 'model at capacity' };
+    const orcaTerminal = createOrcaTerminal();
+    h.book.stashSuppressedError('s1', detail, null, owner);
+    h.book.stashOrcaSuppressedTerminal('s1', orcaTerminal);
+    expect(h.book.takeDeferredError('s1', { ...owner, generation: 4 })).toBeNull();
+    expect(h.book.takeDeferredError('s1', owner)).toEqual({ detail, orcaTerminal });
+    expect(h.book.takeDeferredError('s1', owner)).toBeNull();
+    h.book.teardown('s1');
+    expect(h.persisted).toEqual([]);
+    expect(h.surfaced).toEqual([]);
+    expect(h.orcaFinalized).toEqual([]);
+  });
+
+  it('does not transfer a deferred error that a retry attempt already owns', () => {
+    const h = createHarness();
+    const owner = { generation: 3, clientId: 'capacity-turn' };
+    h.book.stashSuppressedError('s1', { message: 'model at capacity' }, null, owner);
+    h.book.beginAttempt('s1', 9);
+    expect(h.book.takeDeferredError('s1', owner)).toBeNull();
+    expect(h.book.surfaceSuppressedError('s1', { attemptToken: 9 })).toBe(true);
+    expect(h.persisted).toEqual([{ sessionId: 's1', detail: { message: 'model at capacity' } }]);
+  });
+
   it('释放 suppressed error 后回收无其它 owner 的 current attempt', () => {
     const h = createHarness();
     h.book.beginAttempt('s1', 11);
