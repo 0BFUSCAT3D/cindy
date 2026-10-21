@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { AccessibilityInfo } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
@@ -38,7 +40,7 @@ import { ComposerNativeSection as Section } from './ComposerNativeSection';
 import { ComposerNativeRow } from './ComposerNativeRow';
 import type { TaskTagsExpandedState } from './TaskTags';
 import type { NativeTagSwatchProps } from './TaskTagsNative';
-import { TAG_SWATCH } from './taskTagsNativePage';
+import { TAG_SWATCH, taskTagMoveTarget } from './taskTagsNativePage';
 
 /** One drawn swatch for every tag surface; the outline only rescues white tags. */
 export function NativeTagSwatch({ color, checkColor, outlined, selected, size }: NativeTagSwatchProps) {
@@ -245,6 +247,11 @@ function TagForm({ state }: { state: TaskTagsExpandedState }) {
 /** SwiftUI rendering of the expanded tag pages: list, add / edit, delete confirmation. */
 export function NativeTaskTagsExpanded({ state }: { state: TaskTagsExpandedState }) {
   const { t } = useTranslation();
+  // The failure text arrives asynchronously and focus does not move to it, so a footer
+  // alone is silent in VoiceOver; the React Native panel exposed it as an alert.
+  useEffect(() => {
+    if (state.message) AccessibilityInfo.announceForAccessibility(state.message);
+  }, [state.message]);
   if (state.page === 'delete' && state.deletion) {
     return (
       <>
@@ -273,8 +280,7 @@ export function NativeTaskTagsExpanded({ state }: { state: TaskTagsExpandedState
             onMove={(sources, destination) => {
               const from = sources[0];
               if (from === undefined) return;
-              // SwiftUI reports the insertion point before removing the moved row.
-              state.onMove(from, destination > from ? destination - 1 : destination);
+              state.onMove(from, taskTagMoveTarget(from, destination));
             }}
           >
             {state.tags.map((tag) => (

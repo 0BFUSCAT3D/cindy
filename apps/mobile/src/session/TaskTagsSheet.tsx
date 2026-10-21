@@ -70,8 +70,9 @@ export function TaskTagsSheet({
       <ComposerSheet
         visible={visible}
         title={taskTagsPageTitle(page, t)}
-        // The list is the root of this sheet; only the editor pages step back.
-        onBack={page === 'list' ? undefined : tagPage.back}
+        // This sheet opens from task details, so the list's back arrow closes it and lets
+        // the parent reopen; the editor pages step back within the sheet.
+        onBack={page === 'list' ? onClose : tagPage.back}
         backLabel={t('taskTags.back')}
         onClose={onClose}
         onClosed={onClosed}

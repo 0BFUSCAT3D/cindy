@@ -27,3 +27,11 @@ export function taskTagsPageTitle(page: TaskTagsPage, t: (key: string) => string
           : 'taskTags.title',
   );
 }
+
+/**
+ * SwiftUI `onMove` reports the insertion point in the array before the moved row is
+ * removed, so moving down lands one slot earlier than the reported destination.
+ */
+export function taskTagMoveTarget(from: number, destination: number) {
+  return destination > from ? destination - 1 : destination;
+}
