@@ -63,17 +63,27 @@ export function pendingCensusMismatches(
   registry: PluginInstanceRegistry,
   mode: 'privileges' | 'strict' = 'privileges',
 ): string[] {
+  return pendingCensusMismatchFacts(registry, mode).map(([mismatch]) => mismatch);
+}
+
+/** Keep diagnostic identity with each mismatch so logging never rescans instances. */
+function pendingCensusMismatchFacts(
+  registry: PluginInstanceRegistry,
+  mode: 'privileges' | 'strict' = 'privileges',
+): Array<[string, PluginInstanceRecord['receiptRevision'], PluginInstanceRecord['packageSha256']]> {
   if (!registry.census) return [];
   const listed = new Set(registry.census.pendingRelIds);
-  const mismatches: string[] = [];
+  const mismatches: Array<[string, PluginInstanceRecord['receiptRevision'], PluginInstanceRecord['packageSha256']]> = [];
   for (const record of Object.values(registry.instances)) {
     if (!record.active) continue;
     const isListed = listed.has(record.contentRelId);
+    let suffix: string;
     if (record.namespaceState === 'pending' && !isListed) {
-      mismatches.push(record.contentRelId + ':pending-but-not-listed');
+      suffix = ':pending-but-not-listed';
     } else if (mode === 'strict' && isListed && record.namespaceState !== 'pending') {
-      mismatches.push(record.contentRelId + ':listed-but-' + record.namespaceState);
-    }
+      suffix = ':listed-but-' + record.namespaceState;
+    } else continue;
+    mismatches.push([record.contentRelId + suffix, record.receiptRevision, record.packageSha256]);
   }
   return mismatches;
 }
@@ -259,12 +269,10 @@ export class PluginInstanceRegistryService {
         dirty = true;
       }
     }
-    const mismatches = pendingCensusMismatches(registry);
-    if (mismatches.length > 0) {
-      const fingerprint = JSON.stringify(mismatches.map((mismatch) => {
-        const record = Object.values(registry.instances).find((entry) => mismatch.startsWith(entry.contentRelId + ':'));
-        return [mismatch, record?.receiptRevision, record?.packageSha256];
-      }).sort());
+    const mismatchFacts = pendingCensusMismatchFacts(registry);
+    if (mismatchFacts.length > 0) {
+      const mismatches = mismatchFacts.map(([mismatch]) => mismatch);
+      const fingerprint = JSON.stringify(mismatchFacts.sort());
       const changed = fingerprint !== this.mismatchFingerprint;
       this.repeatedMismatchChecks = changed ? 1 : this.repeatedMismatchChecks + 1;
       if (changed || Date.now() - this.mismatchLoggedAt >= 300_000) {

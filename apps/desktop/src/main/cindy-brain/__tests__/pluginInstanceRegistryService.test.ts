@@ -121,6 +121,47 @@ describe('plugin instance registry service', () => {
       clock.mockRestore();
     }
   });
+
+  // Unit regression for PR #6667: even suppressed warnings used to search
+  // every instance again for each mismatch. Count record reads through sync(),
+  // not wall-clock time; the existing single-row test cannot expose this cost.
+  it('bounds mismatch diagnostic work by the number of registered instances', () => {
+    const relIds = Array.from({ length: 8 }, (_, index) => `plugin-${index}`);
+    let relIdReads = 0;
+    const registry: PluginInstanceRegistry = {
+      ...emptyPluginInstanceRegistry(),
+      census: { completedAt: NOW, pendingRelIds: [] },
+      instances: Object.fromEntries(relIds.map((relId) => [relId, {
+        instanceKey: relId,
+        get contentRelId() { relIdReads += 1; return relId; },
+        ghostId: relId,
+        namespace: null,
+        namespaceState: 'pending' as const,
+        pluginId: null,
+        source: 'legacy' as const,
+        receiptRevision: 'rev-1',
+        packageSha256: null,
+        active: true,
+      }])),
+    };
+    const warn = vi.fn();
+    const { created } = service({ registry, log: { warn } });
+    const scan = {
+      listContentEntries: () => [],
+      receiptFact: () => null,
+      isPresenceUnknown: () => true,
+    };
+    for (let round = 0; round < 2; round += 1) {
+      relIdReads = 0;
+      created.sync(scan);
+      expect(relIdReads).toBeLessThanOrEqual(relIds.length * 5);
+    }
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.any(String), {
+      mismatches: relIds.map((relId) => `${relId}:pending-but-not-listed`),
+      repeatedChecks: 1,
+    });
+  });
 });
 
 describe('market identity backfill', () => {
