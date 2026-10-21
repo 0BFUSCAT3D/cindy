@@ -38,14 +38,14 @@ export function BotFollowUpInvitationCard({ pending, onChoose, consent }: {
   pending: boolean; onChoose(enable: boolean): void | Promise<void>; consent?: string;
 }) {
   const { t } = useTranslation();
-  // 一行轻提示：读什么、花额度的说明放在「开始跟进」的悬停提示里，同时作为它的可访问描述。
+  // 一行轻提示（大字号或窄输入框时按钮换到下一行）：读什么、花额度的说明放在「开始跟进」的悬停提示里，同时作为它的可访问描述。
   const scope = consent ?? t('bots.autonomy.consent');
   return (
     <section
-      className="flex w-full items-center gap-2 rounded-xl border border-[var(--border-default)] py-1.5 pl-3 pr-1.5"
+      className="flex w-full flex-wrap items-center justify-end gap-x-2 gap-y-1 rounded-xl border border-[var(--border-default)] py-1.5 pl-3 pr-1.5"
       aria-label={t('bots.autonomy.invitation.title')}
     >
-      <p className="min-w-0 flex-1 text-13 leading-5 text-[var(--text-primary)]">{t('bots.autonomy.invitation.title')}</p>
+      <p className="min-w-[8rem] flex-1 text-13 leading-5 text-[var(--text-primary)]">{t('bots.autonomy.invitation.title')}</p>
       <Tip text={scope}>
         <Button variant="cta" size="sm" aria-description={scope} disabled={pending} onClick={() => void onChoose(true)}>{t('bots.autonomy.invitation.start')}</Button>
       </Tip>
