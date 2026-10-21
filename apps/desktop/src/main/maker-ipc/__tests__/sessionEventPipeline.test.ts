@@ -586,8 +586,13 @@ describe('production Session event pipeline', () => {
   // capacity error with only a group hold must retain its real product owner;
   // success discards failure, abandonment settles once, and async decline hands
   // ownership back to generic recovery. Drive handleSessionEvent + real stores.
-  it.each(['continued', 'rejected', 'generic-continued', 'generic-rejected', 'unheld'] as const)(
-    'retains persisted product callers through a group capacity hold: %s', async outcome => {
+  it.each([
+    ...(['continued', 'rejected', 'generic-continued', 'generic-rejected', 'unheld'] as const)
+      .map(outcome => ({ outcome, terminal: 'error' as const })),
+    ...(['continued', 'rejected', 'generic-continued', 'generic-rejected'] as const)
+      .flatMap(outcome => (['done', 'failed-done'] as const).map(terminal => ({ outcome, terminal }))),
+  ])(
+    'retains persisted product callers through a group capacity hold: $terminal / $outcome', async ({ outcome, terminal }) => {
       const h = harness();
       const gate = createDeferredProductTurnFailureGate();
       const successful = h.deps.onSuccessfulProductTurn;
@@ -634,7 +639,16 @@ describe('production Session event pipeline', () => {
       const execution = { sessionInstanceId: h.session.instanceId, sessionTurnGeneration: generation };
       try {
         h.deps.agentInputCoordinatorHolder.getProviderGroupSwitchHoldId.mockReturnValue(3);
-        h.emit(event('error', failure, execution));
+        if (terminal !== 'error') {
+          // Coordinator can synthesize its error from this same-generation
+          // snapshot while the outer pipeline receives only the paired done.
+          vi.spyOn(h.session, 'getObservedCurrentTurnTerminal').mockReturnValue({
+            kind: 'error', generation, ...failure,
+          });
+          (h.deps as { stashProviderGroupHeldWorkerTerminal?: unknown }).stashProviderGroupHeldWorkerTerminal = vi.fn();
+        }
+        h.emit(terminal === 'error' ? event('error', failure, execution)
+          : event('done', terminal === 'failed-done' ? { status: 'failed' } : {}, execution));
         if (outcome === 'unheld') {
           expect(deferOwner).not.toHaveBeenCalled();
           expect(unsuccessful).toHaveBeenCalledOnce();
@@ -643,15 +657,18 @@ describe('production Session event pipeline', () => {
         }
         expect(h.deps.onPluginTaskTerminal.mock.calls.length).toBe(0);
         expect(unsuccessful).not.toHaveBeenCalled();
+        expect(successful).not.toHaveBeenCalled();
         expect(deferOwner).toHaveBeenCalledOnce();
         expect(gate.pending('task')).toMatchObject({
           session: h.session, instanceId: execution.sessionInstanceId, generation,
         });
         expect(effects.fn('onTurnErrorEvent')).not.toHaveBeenCalled();
-        h.deps.autoResumeBookkeeping.consumeFailedTurnCompletionTail.mockReturnValueOnce(true);
-        h.emit(event('done', {}, execution));
-        expect(deferOwner).toHaveBeenCalledOnce();
-        expect(h.deps.onPluginTaskTerminal).not.toHaveBeenCalled();
+        if (terminal === 'error') {
+          h.deps.autoResumeBookkeeping.consumeFailedTurnCompletionTail.mockReturnValueOnce(true);
+          h.emit(event('done', {}, execution));
+          expect(deferOwner).toHaveBeenCalledOnce();
+          expect(h.deps.onPluginTaskTerminal).not.toHaveBeenCalled();
+        }
 
         if (outcome.startsWith('generic-')) {
           book.stashSuppressedError('task', held.takeForRecovery('task', 3));

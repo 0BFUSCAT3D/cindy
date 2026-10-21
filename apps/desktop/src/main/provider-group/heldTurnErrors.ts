@@ -147,6 +147,11 @@ export function createProviderGroupHeldRecovery(deps: {
 }) {
   const continuationHolds = new Map<string, { holdId: number; owner: string }>();
   return {
+    /** A runtime close must wait for this queued send's actual dispatch outcome. */
+    hasPendingContinuation(sessionId: string): boolean {
+      const continuation = continuationHolds.get(sessionId);
+      return continuation !== undefined && continuation.owner === deps.ownerKey();
+    },
     discard(sessionId: string, holdId: number): void {
       deps.errors.discard(sessionId, holdId);
       // Ordinary product callers also own a receipt, even without a Worker terminal.

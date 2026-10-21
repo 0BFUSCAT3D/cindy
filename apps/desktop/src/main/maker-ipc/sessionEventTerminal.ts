@@ -604,12 +604,43 @@ export function finishSessionTerminalEvent(
         session.id,
         event.sessionTurnGeneration,
       );
+    const skipWorkerTerminal = shouldSkipOrcaWorkerTerminal({
+      isContinuationBoundary,
+      stashedThisErrorEvent: deferredOrcaWorkerTerminal,
+      eventType: event.type,
+      isPairedFailedTurnDone,
+      isFailedTurnCompletionTail,
+      hasSuppressedError: deps.autoResumeBookkeeping.hasSuppressedError(session.id),
+      isAutoResumePending:
+        deps.agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true,
+      isAutoResumeDeferred:
+        deps.agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true,
+    });
+    if (!skipWorkerTerminal && providerGroupDoneHoldId !== null && deps.stashProviderGroupHeldWorkerTerminal) {
+      // A missed error callback can be reconstructed by the coordinator from
+      // Session's terminal snapshot while this outer event is still done. Keep
+      // its failure detail on the same hold, so abandonment and generic handback
+      // retain the product receipt even when no error event reached this pipeline.
+      const observed = session.getObservedCurrentTurnTerminal();
+      const detail = observed.kind === 'error' && observed.generation === terminalOwner?.generation
+        ? observed : {};
+      if (deps.stashProviderGroupHeldError?.(session.id, providerGroupDoneHoldId, detail, eventAgentMeta) !== false) {
+        deps.stashProviderGroupHeldWorkerTerminal(session.id, providerGroupDoneHoldId, {
+          status: 'done', finalText: workerTerminalFinalText,
+          diagnostic: workerTerminalDiagnostic, capture: workerTerminalCapture,
+        }, groupTerminal);
+        providerGroupHeldWorkerTerminal = true;
+        recoveryOwnsUnsuccessfulBoundary = true;
+        deferUnsuccessfulProductTurn();
+      }
+    }
     if (
       event.type === 'done' &&
       !isContinuationBoundary &&
       !isPairedFailedTurnDone &&
       !isFailedTurnCompletionTail &&
       !deferredOrcaWorkerTerminal &&
+      !recoveryOwnsUnsuccessfulBoundary &&
       !isTerminalTurnErrorEvent(event) &&
       isSuccessfulAssistantReplyDoneData(event.data) &&
       !deps.autoResumeBookkeeping.hasSuppressedError(session.id) &&
@@ -628,20 +659,7 @@ export function finishSessionTerminalEvent(
         );
       }
     }
-    if (
-      !shouldSkipOrcaWorkerTerminal({
-        isContinuationBoundary,
-        stashedThisErrorEvent: deferredOrcaWorkerTerminal,
-        eventType: event.type,
-        isPairedFailedTurnDone,
-        isFailedTurnCompletionTail,
-        hasSuppressedError: deps.autoResumeBookkeeping.hasSuppressedError(session.id),
-        isAutoResumePending:
-          deps.agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true,
-        isAutoResumeDeferred:
-          deps.agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true,
-      })
-    ) {
+    if (!skipWorkerTerminal) {
       // Capture before queue-drain microtasks can promote the follow-up turn.
       // Recovery-owned terminals are settled by their owner (deferred auth /
       // gateway persistence, overflow surface, or auto-resume abandonment).
@@ -709,8 +727,7 @@ export function finishSessionTerminalEvent(
       })();
       if (
         groupTerminal && deps.botGroupChatServiceHolder &&
-        !providerGroupHeldWorkerTerminal &&
-        !(providerGroupDoneHoldId !== null && deps.stashProviderGroupHeldWorkerTerminal)
+        !providerGroupHeldWorkerTerminal
       ) {
         const groupService = deps.botGroupChatServiceHolder;
         void settleBotGroupLaneTerminal(groupService, groupTerminal, drainPersistQueue).catch((error) => {
@@ -721,15 +738,7 @@ export function finishSessionTerminalEvent(
         });
       }
       if (providerGroupHeldWorkerTerminal) {
-        // 已与 error 行一起暂存，由那次登记结算。
-      } else if (providerGroupDoneHoldId !== null && deps.stashProviderGroupHeldWorkerTerminal) {
-        // 换电脑期间到达的 done(只以 done 收尾的失败)：同样暂存，没换成时才回报；同一次登记只回报一次。
-        deps.stashProviderGroupHeldWorkerTerminal(session.id, providerGroupDoneHoldId, {
-          status: isTerminalTurnErrorEvent(event) ? 'error' : 'done',
-          finalText: workerTerminalFinalText,
-          diagnostic: workerTerminalDiagnostic,
-          capture: workerTerminalCapture,
-        }, groupTerminal);
+        // 已与产品终态一起暂存，由同一次恢复登记结算。
       } else {
         void (async () => {
           try {

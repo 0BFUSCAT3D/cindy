@@ -105,6 +105,7 @@ describe('provider group held turn errors', () => {
     if (worker) terminals.stash('s1', 1, 'original-terminal');
 
     recovery.discard('s1', 1);
+    expect(recovery.hasPendingContinuation('s1')).toBe(true);
     recovery.release('s1', 1); // The failover hook's finally runs before dispatch.
     expect(productFailed).not.toHaveBeenCalled();
     expect(delivered).not.toHaveBeenCalled();
@@ -112,9 +113,11 @@ describe('provider group held turn errors', () => {
     if (dispatched || takeover === 'stop' || takeover === 'new-turn') gate.clearSession('s1');
     if (takeover === 'new-turn') generation++;
     if (takeover === 'account-change') h.switchOwner('other-account');
+    expect(recovery.hasPendingContinuation('s1')).toBe(takeover !== 'account-change');
 
     recovery.settleContinuation('s1', dispatched);
     recovery.settleContinuation('s1', false);
+    expect(recovery.hasPendingContinuation('s1')).toBe(false);
     recovery.release('s1', 1);
     if (!dispatched && takeover === 'none') {
       expect(productFailed).toHaveBeenCalledExactlyOnceWith(owner);

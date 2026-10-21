@@ -2038,6 +2038,7 @@ const {
   discard: discardProviderGroupHeld,
   release: releaseProviderGroupHeld,
   settleContinuation: settleProviderGroupContinuation,
+  hasPendingContinuation: hasPendingProviderGroupContinuation,
 } = createProviderGroupHeldRecovery({
   errors: providerGroupHeldErrors,
   terminals: providerGroupHeldTerminals,
@@ -5819,8 +5820,9 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     // Keep it through the exact close/bootstrap transaction, including a failed
     // bootstrap. User stop and a new dispatch still clear all deferred receipts.
     deferredProductTurnFailureGate.clearSession(session.id, session, {
-      preserveRecovery: rehydrateCloseSuppression.isSuppressed(session.id) &&
-        agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(session.id) != null,
+      preserveRecovery: (rehydrateCloseSuppression.isSuppressed(session.id) &&
+        agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(session.id) != null) ||
+        hasPendingProviderGroupContinuation(session.id),
     });
   },
   finalizeClosedSession: (session: WiredSession, context) => {
