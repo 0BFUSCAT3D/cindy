@@ -8975,11 +8975,11 @@
       }
     },
     "autonomy": {
-      "title": "自动跟进所有任务",
-      "descriptionOn": "{{name}}会定时看一遍所有任务，有等你的就告诉你。",
+      "title": "跟进我的任务",
+      "descriptionOn": "{{name}}会在任务有变化时查看摘要并提醒你。",
       "movedFrom": "已从{{name}}移到这里",
       "heldBy": "现在由{{name}}负责，打开就移到这里。",
-      "heldByNobody": "现在没有伙伴负责。",
+      "heldByNobody": "尚未开启",
       "restoreDefault": "恢复默认（{{name}}）",
       "saveFailed": "没能保存，请重试",
       "turnOff": {
@@ -8991,6 +8991,12 @@
       "allowSchedulerFollow": {
         "title": "它开的任务也交给{{name}}跟进",
         "description": "默认{{scheduler}}只看不跟。打开后，{{name}}开的任务没做完时，{{scheduler}}也会接着跟进。"
+      },
+      "consent": "开启后，我会读取这台电脑上你创建的任务摘要，分析进展并提醒你重要变化。这会使用模型额度，你可以随时关闭。",
+      "invitation": {
+        "title": "要我帮你跟进任务吗？",
+        "start": "开始跟进",
+        "notNow": "暂不开启"
       }
     },
     "remoteSettings": {

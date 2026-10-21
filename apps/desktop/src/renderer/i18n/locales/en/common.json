@@ -9014,11 +9014,11 @@
       }
     },
     "autonomy": {
-      "title": "Follow Up on All Sessions",
-      "descriptionOn": "{{name}} checks all sessions regularly and tells you when something is waiting on you.",
+      "title": "Follow Up on My Sessions",
+      "descriptionOn": "{{name}} checks summaries when sessions change and keeps you informed.",
       "movedFrom": "Moved here from {{name}}",
       "heldBy": "{{name}} handles this now. Switch it on to move it here.",
-      "heldByNobody": "No teammate handles this right now.",
+      "heldByNobody": "Not enabled",
       "restoreDefault": "Restore Default ({{name}})",
       "saveFailed": "Couldn't save. Try again.",
       "turnOff": {
@@ -9030,6 +9030,12 @@
       "allowSchedulerFollow": {
         "title": "Let {{name}} follow up on sessions it starts",
         "description": "By default, {{scheduler}} only watches. When this is on and a session {{name}} started isn't finished, {{scheduler}} follows up on it too."
+      },
+      "consent": "Once enabled, I’ll read summaries of sessions you create on this computer, assess progress, and let you know about important changes. This uses your model allowance. You can turn it off anytime.",
+      "invitation": {
+        "title": "Would you like me to follow up on your sessions?",
+        "start": "Start Following Up",
+        "notNow": "Not Now"
       }
     },
     "remoteSettings": {

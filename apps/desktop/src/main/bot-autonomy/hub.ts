@@ -5,10 +5,9 @@
  * 灵动岛依赖的 service.ts；运行体由 service.ts 在例行任务引擎启动后挂进来。
  */
 import type { BrowserWindow } from 'electron';
-import type { RoutineEngine } from '@cindy/maker-scheduler';
+import type { RoutineEngine, RoutineRun } from '@cindy/maker-scheduler';
 
 import {
-  DEFAULT_SCHEDULER_BOT_ID,
   type BotAutonomySettingsView,
   type BotGlance,
 } from '../../shared/botAutonomy.js';
@@ -20,7 +19,7 @@ import {
   writeBotAutonomySchedulerBotId,
 } from '../maker-host/bot-autonomy-settings-store.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { resolveSchedulerBotId } from './follower.js';
+import { filterFollowUpEvents, resolveSchedulerBotId } from './follower.js';
 import { readBotDirectory } from './hostData.js';
 import type { BotAutonomyRuntime, GlanceOptions } from './runtime.js';
 import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
@@ -74,11 +73,6 @@ export function getBotAutonomyGlance(botId: string, options?: GlanceOptions): Bo
   return active ? active.glance(botId, options) : emptyGlance(botId);
 }
 
-/** 默认总调度：在用的 Cindy 助理，否则没有。 */
-function defaultSchedulerBotId(bots: ReadonlyMap<string, { status: string }>): string | null {
-  return bots.get(DEFAULT_SCHEDULER_BOT_ID)?.status === 'active' ? DEFAULT_SCHEDULER_BOT_ID : null;
-}
-
 export async function getBotAutonomySettingsView(): Promise<BotAutonomySettingsView> {
   const scope = activeOwnerScopeKey();
   const bots = await readBotDirectory();
@@ -87,7 +81,7 @@ export async function getBotAutonomySettingsView(): Promise<BotAutonomySettingsV
   return {
     schedulerBotId: resolveSchedulerBotId(override, bots),
     isCustomized: override.customized,
-    defaults: { schedulerBotId: defaultSchedulerBotId(bots) },
+    defaults: { schedulerBotId: null },
   };
 }
 
@@ -123,4 +117,15 @@ async function afterSettingsChange(scope: string): Promise<BotAutonomySettingsVi
   if (runtime) await runtime.refreshFollowers().catch((error) => log.warn('autonomy refresh failed', { error: errorCode(error) }));
   log.info('autonomy scheduler setting changed');
   return getBotAutonomySettingsView();
+}
+
+/** null means startup is not ready; an empty batch has lost its authorization. */
+export function currentFollowUpEvents(botId: string, events: RoutineRun['events']): RoutineRun['events'] | null {
+  const active = current;
+  if (!active || !scopeIsCurrent(active.scope) || !active.runtime.watch.isReady()) return null;
+  const watch = active.runtime.watch;
+  const bots = watch.getBots();
+  // Read the persisted choice, not the watch's cached scheduler: disabling must take effect immediately.
+  const scheduler = resolveSchedulerBotId(readBotAutonomySettingsOverride(), bots);
+  return filterFollowUpEvents(botId, events, watch.list(), scheduler, bots, Date.now());
 }
