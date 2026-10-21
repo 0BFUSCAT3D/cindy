@@ -27,6 +27,9 @@ import { isActiveWorkerStatus } from '../../../shared/orca-worker-status';
 import { deviceAvailableModels, deviceWorkerRoutingContext, sshCodexWorkerRoutingContext } from '../orcaProviderRoutingContext';
 import type { ProviderView } from '@cindy/model-providers';
 import { createOrcaLifecycleService, type OrcaLifecycleDeps } from '../orcaLifecycleService';
+import { resolveSessionGitDir, resolveWorkerInheritedDirectory } from '../../git-context/sessionDirResolver';
+
+vi.mock('electron-store', () => ({ default: class {} }));
 
 describe('Host provenance across Orca creation waits', () => {
   const source = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
@@ -356,6 +359,7 @@ describe('Worker running on another device (execution device)', () => {
     expect(result).toMatchObject({
       ok: true,
       workerSessionId: 'proxy-1',
+      workingDir: '/Users/demo/Interviews',
       resolved: { agent: 'claude-code', model: 'only-on-device', label: 'transcribe' },
     });
     expect(deps.openRemoteWorker).toHaveBeenCalledWith(expect.objectContaining({
@@ -805,6 +809,8 @@ function createDeps(overrides: Partial<OrcaWorkerCreationDeps> = {}) {
     getWorkerDefaults: vi.fn(() => ({})),
     getWorkerPermissionMode: vi.fn(() => 'auto' as const),
     resolveWorkerWorkingDir: vi.fn(async (dir) => dir),
+    resolveWorkerWorktreeSource: vi.fn(async (_dir, source) => source ?? 'main'),
+    getWorkerWorktree: vi.fn(() => ({path: '/repo/.cindy-worktrees/worker', branch: 'cindy/worker'})),
     getAvailableModels: vi.fn((agent: AgentKind) => (
       agent === 'codex'
         ? [
@@ -919,11 +925,27 @@ describe('Orca worker working directory', () => {
       .toBeLessThan(vi.mocked(deps.bootstrapSession).mock.invocationCallOrder[0]!);
   });
 
-  it('preserves Lead directory inheritance when the override is omitted', async () => {
+  // Product C / #4332 (unit): UI telemetry may select a sibling checkout, but omitted tool
+  // working_dir must keep the recorded directory. Earlier coverage had no telemetry candidate.
+  it('keeps the recorded Lead directory even when telemetry resolves to another worktree in the same repository', async () => {
+    const recorded = path.resolve('recorded-project');
+    const checkout = path.join(recorded, '.cindy-worktrees', 'agent');
     const { deps, service } = createDeps();
-    await service.createWorker(params);
+    const lead = { ...(await deps.getLeadSessionRow('lead-1'))!, workingDir: recorded };
+    vi.mocked(deps.getLeadSessionRow).mockResolvedValue(lead);
+    const inferred = await resolveWorkerInheritedDirectory(lead, {
+      infer: input => resolveSessionGitDir(input, {
+        recentToolUseContents: async () => [JSON.stringify({ toolName: 'exec', input: { cwd: checkout, command: 'pwd' } })],
+        probeGitDir: async () => ({ kind: 'branch', branch: 'agent', shortSha: null }),
+      }),
+      probe: async directory => ({ directory, realDirectory: directory, checkoutRoot: directory,
+        commonDir: path.join(recorded, '.git'), baseRepo: recorded, branch: 'agent',
+        exists: true, dirty: false, isWorktree: directory === checkout }),
+    });
+    expect(inferred.directory).toBe(checkout);
+    await expect(service.createWorker(params)).resolves.toMatchObject({ ok: true, workingDir: recorded });
     expect(deps.resolveWorkerWorkingDir).not.toHaveBeenCalled();
-    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({ workingDir: 'C:\\repo' }));
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({ workingDir: recorded }));
   });
 
   it.each(['', ' ', 'relative/project', './project', 'a\0b'])('rejects invalid directory %j before creating anything', async (workingDir) => {
@@ -3726,6 +3748,69 @@ it('rejects a plan changed during preparation without reserving or bootstrapping
 describe('local Worker worktree ownership', () => {
   const request = {leadSessionId: 'lead-1', role: 'developer', label: 'worker', agent: 'codex' as const,
     worktree: {sourceBranch: 'feature'}};
+  // PR2 unit: a tool can omit the source revision; return actual cwd and registered ownership.
+  // UI coverage always supplied a source and never asserted the public spawn facts.
+  it('resolves an omitted source and returns the actual subproject cwd separately from the owned checkout', async () => {
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(async () => '/repo/.cindy-worktrees/worker/apps/web'),
+      discardWorkerWorktree: vi.fn(async () => {}),
+      resolveWorkerWorktreeSource: vi.fn(async () => 'detached-commit'),
+    });
+    await expect(service.createWorker({...request, worktree: {}})).resolves.toMatchObject({
+      ok: true, workingDir: '/repo/.cindy-worktrees/worker/apps/web',
+      worktree: {path: '/repo/.cindy-worktrees/worker', branch: 'cindy/worker'},
+    });
+    expect(deps.createWorkerWorktree).toHaveBeenCalledWith(WORKER_SESSION_ID, 'C:\\repo', 'detached-commit');
+    expect(deps.getWorkerWorktree).toHaveBeenCalledWith(WORKER_SESSION_ID);
+  });
+
+  it.each(['SSH', 'execution-device', 'dialogue', 'malformed'])('rejects %s worktree creation without probing or reserving', async kind => {
+    const {deps, service} = createDeps({createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn()});
+    const lead = await deps.getLeadSessionRow('lead-1');
+    vi.mocked(deps.getLeadSessionRow).mockResolvedValue({...lead!,
+      ...(kind === 'SSH' ? {remoteHostId: 'ssh-host'} : {}),
+      ...(kind === 'dialogue' ? {workspaceKind: 'dialogue' as const} : {}),
+    });
+    const result = await service.createWorker({...request,
+      ...(kind === 'execution-device' ? {executionDeviceId: 'other'} : {}),
+      ...(kind === 'malformed' ? {worktree: null as never} : {}),
+    });
+    expect(result).toMatchObject({ok: false, errorCode: 'INVALID_PARAMS'});
+    expect(deps.resolveWorkerWorktreeSource).not.toHaveBeenCalled();
+    expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
+    expect(deps.createWorkerWorktree).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unavailable Git target before reservation, worktree creation or bootstrap', async () => {
+    const {deps, service} = createDeps({createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn(),
+      resolveWorkerWorktreeSource: vi.fn(async () => {throw new Error('Repository has no commits');}),
+    });
+    await expect(service.createWorker({...request, worktree: {}})).resolves.toMatchObject({ok: false, errorCode: 'INVALID_PARAMS', message: 'Repository has no commits'});
+    expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();
+    expect(deps.createWorkerWorktree).not.toHaveBeenCalled();
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
+  });
+
+  it('allows a dialogue Lead to explicitly target another local Git project', async () => {
+    const {deps, service} = createDeps({createWorkerWorktree: vi.fn(async () => '/new/checkout'), discardWorkerWorktree: vi.fn()});
+    const lead = await deps.getLeadSessionRow('lead-1');
+    vi.mocked(deps.getLeadSessionRow).mockResolvedValue({...lead!, workspaceKind: 'dialogue'});
+    const selected = path.resolve('other-project');
+    await expect(service.createWorker({...request, workingDir: selected})).resolves.toMatchObject({ok: true, workingDir: '/new/checkout'});
+    expect(deps.resolveWorkerWorktreeSource).toHaveBeenCalledWith(selected, 'feature');
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({workspaceKind: 'project', workingDir: '/new/checkout'}));
+  });
+
+  it('returns the recorded directory without claiming ownership when no worktree was requested', async () => {
+    const {deps, service} = createDeps();
+    const result = await service.createWorker({...request, worktree: undefined});
+    expect(result).toMatchObject({ok: true, workingDir: 'C:\\repo'});
+    expect(result).not.toHaveProperty('worktree');
+    expect(deps.resolveWorkerWorktreeSource).not.toHaveBeenCalled();
+    expect(deps.getWorkerWorktree).not.toHaveBeenCalled();
+  });
+
   it('binds the newly created checkout to the Worker session and leaves success asynchronous', async () => {
     const {deps, service} = createDeps({
       createWorkerWorktree: vi.fn(async () => '/repo/.cindy-worktrees/worker'),
@@ -3736,7 +3821,7 @@ describe('local Worker worktree ownership', () => {
     expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({id: WORKER_SESSION_ID, workingDir: '/repo/.cindy-worktrees/worker'}));
     expect(deps.discardWorkerWorktree).not.toHaveBeenCalled();
   });
-  it.each(['create', 'bootstrap', 'renewal', 'persist', 'postcheck'])('compensates a %s failure before releasing the reservation', async phase => {
+  it.each(['create', 'ownership', 'bootstrap', 'renewal', 'persist', 'postcheck'])('compensates a %s failure before releasing the reservation', async phase => {
     let finishCheckout!: () => void;
     const checkout = new Promise<void>(resolve => {finishCheckout = resolve;});
     let compensationStarted!: () => void;
@@ -3745,6 +3830,7 @@ describe('local Worker worktree ownership', () => {
     const {deps, service} = createDeps({
       createWorkerWorktree: vi.fn(async () => {if (phase === 'create') throw new Error('Git failed'); return '/repo/.cindy-worktrees/worker';}),
       discardWorkerWorktree: vi.fn(async id => {compensationStarted(); await checkout; removed.push(id);}),
+      ...(phase === 'ownership' ? {getWorkerWorktree: vi.fn(() => undefined)} : {}),
       ...(phase === 'bootstrap' ? {bootstrapSession: vi.fn(async () => {throw new Error('start failed');})} : {}),
       ...(phase === 'renewal' ? {renewWorkerCreationReservation: vi.fn(async () => false)} : {}),
       ...(phase === 'persist' ? {addOrUpdateWorker: vi.fn(async () => {throw new Error('write failed');})} : {}),
@@ -3758,7 +3844,7 @@ describe('local Worker worktree ownership', () => {
     await expect(result).resolves.toMatchObject({ok: false});
     expect(removed).toEqual([WORKER_SESSION_ID]);
     expect(deps.releaseWorkerCreationReservation).toHaveBeenCalledWith('worker-1');
-    if (phase === 'create') expect(deps.bootstrapSession).not.toHaveBeenCalled();
+    if (phase === 'create' || phase === 'ownership') expect(deps.bootstrapSession).not.toHaveBeenCalled();
   });
   it('never claims or discards an inherited checkout, even when bootstrap fails', async () => {
     const {deps, service} = createDeps({

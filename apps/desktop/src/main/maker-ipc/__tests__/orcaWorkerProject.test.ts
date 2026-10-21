@@ -5,12 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { gitExec } from '../../worktree/gitExec';
-import { createWorktree, awaitBackgroundCheckout } from '../../worktree/WorktreeManager';
+import { createWorktree, awaitBackgroundCheckout, getForSession } from '../../worktree/WorktreeManager';
 import { createLogger } from '../../logger';
 import { MAKER_INVOKE } from '../channels';
 import { isDeviceLinkInvoke, runDeviceLinkInvokeContext } from '../../device-link/invoke-context';
 import {
   createWorkerWorktree,
+  resolveWorkerWorktreeSource,
+  getWorkerOwnedWorktree,
   probeWorkerProject,
   readWorkerProjectContext,
 } from '../orcaWorkerProject';
@@ -34,6 +36,7 @@ vi.mock('../../localDb/ipc/recentWorkdirs', () => ({}));
 vi.mock('../../git-context/sessionDirResolver', () => ({}));
 vi.mock('../../worktree/WorktreeManager', () => ({
   createWorktree: vi.fn(),
+  getForSession: vi.fn(),
   awaitBackgroundCheckout: vi.fn(),
 }));
 // Keep the production probe and Git output real; isolate unrelated process/runtime services.
@@ -526,4 +529,34 @@ describe('Worker worktree subproject directory', () => {
         );
     },
   );
+});
+
+// PR2 unit: validate the tool's optional source before any worktree side effect.
+// UI only supplied a revision; injected probe isolates HEAD states without new Git processes.
+describe('Worker worktree source resolution', () => {
+  const target = {directory: '/repo', exists: true, baseRepo: '/repo', branch: 'main',
+    headState: 'branch' as const, dirty: false, isWorktree: false, commonDir: '/repo/.git', checkoutRoot: '/repo', realDirectory: '/repo'};
+  it.each([
+    {headState: 'branch' as const, branch: 'feature', source: undefined, expected: 'feature'},
+    {headState: 'detached' as const, branch: 'a'.repeat(40), source: undefined, expected: 'a'.repeat(40)},
+    {headState: 'branch' as const, branch: 'main', source: 'release', expected: 'release'},
+  ])('resolves $headState with source $source', async ({headState, branch, source, expected}) => {
+    await expect(resolveWorkerWorktreeSource('/repo', source, async () => ({...target, headState, branch}))).resolves.toBe(expected);
+  });
+  it.each([
+    {exists: false}, {baseRepo: null}, {headState: 'unborn' as const, branch: null}, {branch: null},
+  ])('rejects an unavailable target %j', async changes => {
+    await expect(resolveWorkerWorktreeSource('/repo', undefined, async () => ({...target, ...changes}))).rejects.toThrow();
+  });
+  it.each(['', ' ', '-bad', 'bad\nbranch', 'x'.repeat(1025)])('rejects malformed source before probing', async source => {
+    const probe = vi.fn(async () => target);
+    await expect(resolveWorkerWorktreeSource('/repo', source, probe)).rejects.toThrow('source_branch');
+    expect(probe).not.toHaveBeenCalled();
+  });
+  it('projects only metadata registered under the Worker session, not a directory spelling', () => {
+    vi.mocked(getForSession).mockReturnValueOnce({path: '/checkout', branch: 'cindy/new', baseRepo: '/repo'} as never).mockReturnValueOnce(null);
+    expect(getWorkerOwnedWorktree('owned')).toEqual({path: '/checkout', branch: 'cindy/new'});
+    expect(getForSession).toHaveBeenLastCalledWith('owned');
+    expect(getWorkerOwnedWorktree('inherited')).toBeUndefined();
+  });
 });
