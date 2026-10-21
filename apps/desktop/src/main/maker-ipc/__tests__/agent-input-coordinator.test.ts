@@ -12,7 +12,7 @@ import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../t
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { ProviderGroupUsageLimitError } from '../../provider-group/failurePolicy.js';
 import type { Session } from '@cindy/maker-core';
-import { createSessionBindingLifecycle } from '../sessionBindingLifecycle.js';
+import { createSessionBindingLifecycle, createSessionCloseTeardown } from '../sessionBindingLifecycle.js';
 import { captureProductTurnFailureOwner, createDeferredProductTurnFailureGate } from '../productTurnFailureOwner.js';
 import { createProviderGroupHeldRecovery, createProviderGroupHeldTurnErrors } from '../../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
@@ -14991,7 +14991,7 @@ describe('provider group computer switch hold', () => {
   // #6671/r4339380528, unit: queue acceptance releases the original hold, so a
   // runtime close after onPersisted used to erase the product owner before the
   // real coordinator's onDiscarded outcome. Prior tests manually cleared the
-  // gate and missed the upstream waiter. Execute register's actual close adapter
+  // gate and missed the upstream waiter. Import the close adapter used by register
   // with the real lifecycle/coordinator/controller and a paused send transaction.
   it.each(['failed', 'closed-failed', 'closed-dispatched'] as const)(
     'finishes the upstream waiter after a queued group continuation: %s', async outcome => {
@@ -15035,21 +15035,13 @@ describe('provider group computer switch hold', () => {
       const delivered = vi.fn();
       const terminals = createProviderGroupHeldWorkerTerminals({ deliver: delivered, ownerKey: () => 'account' });
       const recovery = createProviderGroupHeldRecovery({ errors, terminals, settleFailure, ownerKey: () => 'account' });
-      // Run the production adapter rather than duplicating its close policy.
-      const source = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
-      const start = source.indexOf('  beforeCloseTeardown: (session: WiredSession) => {');
-      const end = source.indexOf('  finalizeClosedSession:', start);
-      const adapter = transpileModule('return ({' + source.slice(start, end) + '}).beforeCloseTeardown;', {
-        compilerOptions: { target: ScriptTarget.ES2022 },
-      }).outputText;
-      const beforeCloseTeardown = new Function(
-        'botCompactRuntimeRefreshCoordinator', 'cancelDirectAbortReconciliation',
-        'pendingFailedTurnAssistantPersistId', 'deferredProductTurnFailureGate',
-        'rehydrateCloseSuppression', 'agentInputCoordinatorHolder', 'hasPendingProviderGroupContinuation', adapter,
-      )({ clearForClosedSession: vi.fn() }, vi.fn(), new Map(), gate,
-        { isSuppressed: () => false }, h.coordinator,
-        recovery.hasPendingContinuation,
-      ) as (runtime: Session) => void;
+      const beforeCloseTeardown = createSessionCloseTeardown<Session>({
+        clearCompactRuntimeRefresh: vi.fn(), cancelDirectAbortReconciliation: vi.fn(),
+        clearPendingFailedTurnPersist: vi.fn(), isRehydrateCloseSuppressed: () => false,
+        getProviderGroupSwitchHoldId: id => h.coordinator.getProviderGroupSwitchHoldId(id),
+        hasPendingProviderGroupContinuation: recovery.hasPendingContinuation,
+        clearDeferredProductTurnFailure: (id, runtime, options) => gate.clearSession(id, runtime, options),
+      });
       const binding = createSessionBindingLifecycle({
         log: { warn: vi.fn() }, restoreInteractionListener: vi.fn(), beforeReplace: vi.fn(),
         onBind: vi.fn(), broadcastStatus: vi.fn(), captureCloseContext: () => null,

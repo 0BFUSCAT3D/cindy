@@ -347,6 +347,7 @@ import {
 } from './sessionQueueControl.js';
 import {
   createSessionBindingLifecycle,
+  createSessionCloseTeardown,
   finalizeSessionClose,
   runSessionCloseCleanup,
 } from './sessionBindingLifecycle.js';
@@ -5812,19 +5813,16 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       cleanupRuntimeState: () => cleanupClosedSessionRuntime(session),
     });
   },
-  beforeCloseTeardown: (session: WiredSession) => {
-    botCompactRuntimeRefreshCoordinator.clearForClosedSession(session);
-    cancelDirectAbortReconciliation(session.id);
-    pendingFailedTurnAssistantPersistId.delete(session.id);
-    // A group recovery owns the logical failure until fallback or real dispatch.
-    // Keep it through the exact close/bootstrap transaction, including a failed
-    // bootstrap. User stop and a new dispatch still clear all deferred receipts.
-    deferredProductTurnFailureGate.clearSession(session.id, session, {
-      preserveRecovery: (rehydrateCloseSuppression.isSuppressed(session.id) &&
-        agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(session.id) != null) ||
-        hasPendingProviderGroupContinuation(session.id),
-    });
-  },
+  beforeCloseTeardown: createSessionCloseTeardown<WiredSession>({
+    clearCompactRuntimeRefresh: session => botCompactRuntimeRefreshCoordinator.clearForClosedSession(session),
+    cancelDirectAbortReconciliation,
+    clearPendingFailedTurnPersist: sessionId => { pendingFailedTurnAssistantPersistId.delete(sessionId); },
+    isRehydrateCloseSuppressed: sessionId => rehydrateCloseSuppression.isSuppressed(sessionId),
+    getProviderGroupSwitchHoldId: sessionId => agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(sessionId),
+    hasPendingProviderGroupContinuation,
+    clearDeferredProductTurnFailure: (sessionId, session, options) =>
+      deferredProductTurnFailureGate.clearSession(sessionId, session, options),
+  }),
   finalizeClosedSession: (session: WiredSession, context) => {
     // 关闭前固化 live 用量（见 sessionLastLiveUsage.ts）：冷 Pi 切模的窗口核实
     // 预检用它代替可能低报的 DB 快照（Greptile P1）。
