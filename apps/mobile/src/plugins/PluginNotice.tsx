@@ -41,7 +41,7 @@ export function PluginNotice({
   const renderActions = () => (
     <>
       {actions?.length ? (
-        <View style={styles.actions}>
+        <View style={[styles.actions, actions.length === 1 && styles.inlineActions]}>
           {actions.map((action) => (
             <Pressable
               key={action.label}
@@ -101,11 +101,12 @@ const makeStyles = (c: ThemeColors) =>
       color: c.textSecondary,
     },
     actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+    inlineActions: { maxWidth: "48%", flexShrink: 0 },
     button: {
       minHeight: 44,
       justifyContent: "center",
       paddingHorizontal: spacing.sm,
-      maxWidth: "48%",
+      maxWidth: "100%",
     },
     action: {
       fontSize: typeScale.bodySmall,
