@@ -101,7 +101,9 @@ async function runFollowSave(key: string, groupId: string, rootId: string, save:
   if (save.saving) return;
   save.saving = true;
   save.writes += 1;
-  const owner = getDataOwnerGeneration();
+  // Only a change of account stops the queue: a same-account generation repair keeps it.
+  const ownerId = getDataOwnerGeneration().dataOwnerId;
+  const ownerCurrent = () => getDataOwnerGeneration().dataOwnerId === ownerId;
   // A failed write may still have been saved (a timeout or a dropped connection): until a later
   // write succeeds, the server's value is unknown and the newest click is always sent.
   let uncertain = false;
@@ -116,7 +118,7 @@ async function runFollowSave(key: string, groupId: string, rootId: string, save:
         else failure = failureText(result.errorCode);
       } catch { failure = failureText(); }
       if (failure) uncertain = true;
-      if (!isDataOwnerGenerationCurrent(owner)) return;
+      if (!ownerCurrent()) return;
       // A newer click is saved next; only the last outcome is shown.
       if (save.wanted !== null) continue;
       save.panel?.show(save.saved);
@@ -127,7 +129,7 @@ async function runFollowSave(key: string, groupId: string, rootId: string, save:
     save.wanted = null;
     save.writes += 1;
     // Read what the server kept after a failure: the switch then shows the real choice.
-    if (uncertain && isDataOwnerGenerationCurrent(owner)) save.panel?.reread();
+    if (uncertain && ownerCurrent()) save.panel?.reread();
     if (!save.panel && followSaveStore.saves.get(key) === save) followSaveStore.saves.delete(key);
   }
 }
