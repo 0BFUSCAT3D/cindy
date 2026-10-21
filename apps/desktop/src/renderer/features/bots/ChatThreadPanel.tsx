@@ -71,6 +71,67 @@ function useUnposted(key: string): ReadonlySet<string> {
     () => unpostedReplies().get(key) ?? NONE_UNPOSTED);
 }
 
+/**
+ * Follow saves per group and Thread (bot-group-chat.md §10「关注开关」), kept outside the panel:
+ * a save keeps running after its panel closes, and a reopened panel joins it rather than starting a
+ * second one, so the server keeps the reader's last click. One data owner's saves never reach another.
+ */
+interface FollowSave {
+  saving: boolean;
+  /** The newest click not yet sent, and the newest click at all (shown by a panel that reopens mid-save). */
+  wanted: boolean | null;
+  intent?: boolean;
+  /** What the server confirmed; undefined until read. */
+  saved: boolean | undefined;
+  /** Bumped when a save starts and ends: a read begun before it ended may carry the old choice. */
+  writes: number;
+  /** The open panel; a closed one shows nothing. */
+  panel?: { show: (following: boolean | undefined) => void; fail: (message: string) => void; reread: () => void };
+}
+const followSaveStore = { owner: getDataOwnerGeneration().dataOwnerId, saves: new Map<string, FollowSave>() };
+function followSave(key: string): FollowSave {
+  const owner = getDataOwnerGeneration().dataOwnerId;
+  if (followSaveStore.owner !== owner) { followSaveStore.owner = owner; followSaveStore.saves.clear(); }
+  let save = followSaveStore.saves.get(key);
+  if (!save) { save = { saving: false, wanted: null, saved: undefined, writes: 0 }; followSaveStore.saves.set(key, save); }
+  return save;
+}
+/** Sends the newest click, one save at a time; only an account change stops it. */
+async function runFollowSave(key: string, groupId: string, rootId: string, save: FollowSave, failureText: (code?: string) => string) {
+  if (save.saving) return;
+  save.saving = true;
+  save.writes += 1;
+  const owner = getDataOwnerGeneration();
+  // A failed write may still have been saved (a timeout or a dropped connection): until a later
+  // write succeeds, the server's value is unknown and the newest click is always sent.
+  let uncertain = false;
+  try {
+    while (save.wanted !== null && (uncertain || save.wanted !== save.saved)) {
+      const wanted: boolean = save.wanted;
+      save.wanted = null;
+      let failure: string | null = null;
+      try {
+        const result = await api().followThread({ groupId, rootId, following: wanted });
+        if (result.ok) { save.saved = result.following; uncertain = false; }
+        else failure = failureText(result.errorCode);
+      } catch { failure = failureText(); }
+      if (failure) uncertain = true;
+      if (!isDataOwnerGenerationCurrent(owner)) return;
+      // A newer click is saved next; only the last outcome is shown.
+      if (save.wanted !== null) continue;
+      save.panel?.show(save.saved);
+      if (failure) save.panel?.fail(failure);
+    }
+  } finally {
+    save.saving = false;
+    save.wanted = null;
+    save.writes += 1;
+    // Read what the server kept after a failure: the switch then shows the real choice.
+    if (uncertain && isDataOwnerGenerationCurrent(owner)) save.panel?.reread();
+    if (!save.panel && followSaveStore.saves.get(key) === save) followSaveStore.saves.delete(key);
+  }
+}
+
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
   const style = getComputedStyle(panel);
   const token = style.getPropertyValue('--motion-base').trim();
@@ -140,16 +201,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const readBeforeRef = useRef<number | null>(null);
   /** Whether the reader follows this Thread; undefined until known, or when the server keeps no read state. */
   const [following, setFollowing] = useState<boolean | undefined>(undefined);
-  /**
-   * Bumped when a follow change starts and again when it is saved: a read that began before the
-   * save finished may carry the old value and must not undo the switch on screen.
-   */
-  const followWriteRef = useRef(0);
-  /**
-   * Follow changes are saved one at a time and the newest click is saved last, so the server
-   * keeps the reader's final choice however fast they toggle.
-   */
-  const followSaveRef = useRef<{ saving: boolean; wanted: boolean | null; saved: boolean | undefined }>({ saving: false, wanted: null, saved: undefined });
+  const followKey = `${group.id}:${rootId}`;
 
   /**
    * Reads the latest page, or the page before `before`. `rereadOnly` re-reads an opened page for a
@@ -167,13 +219,14 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       // Reading the latest page marks the Thread read only while the reader is at the newest reply:
       // a reply that arrives while they read further up stays unread until they scroll down to it.
       const markRead = !before && stickToBottomRef.current;
-      const followWrite = followWriteRef.current;
+      const save = followSave(followKey);
+      const followWrites = save.writes;
       const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
       // A read that overlaps a follow save may carry the old choice; the save's own answer wins.
-      if (!before && followWrite === followWriteRef.current && !followSaveRef.current.saving) {
-        followSaveRef.current.saved = result.following;
+      if (!before && followWrites === save.writes && !save.saving) {
+        save.saved = result.following;
         setFollowing(result.following);
       }
       if (readBeforeRef.current === null && result.readBefore !== undefined) {
@@ -226,48 +279,26 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   /** Following is the reader's own switch, off by default: replying or being named never turns it on. */
-  const toggleFollowing = useCallback(async () => {
+  const toggleFollowing = useCallback(() => {
     if (following === undefined) return;
-    const save = followSaveRef.current;
+    const save = followSave(followKey);
     save.wanted = !following;
+    save.intent = save.wanted;
     setFollowing(save.wanted);
-    if (save.saving) return;
-    save.saving = true;
-    followWriteRef.current += 1;
-    // The reader's last click is saved even if the panel closes meanwhile; only an account
-    // change stops the queue, and only an open panel shows the outcome.
-    const owner = getDataOwnerGeneration();
-    const ownerCurrent = () => isDataOwnerGenerationCurrent(owner);
-    const shown = () => aliveRef.current && ownerCurrent();
-    // A failed write may still have been saved (a timeout or a dropped connection): until a later
-    // write succeeds, the server's value is unknown and the newest click is always sent.
-    let uncertain = false;
-    try {
-      while (save.wanted !== null && (uncertain || save.wanted !== save.saved)) {
-        const wanted: boolean = save.wanted;
-        save.wanted = null;
-        let failure: string | null = null;
-        try {
-          const result = await api().followThread({ groupId: group.id, rootId, following: wanted });
-          if (result.ok) { save.saved = result.following; uncertain = false; }
-          else failure = t(chatErrorKey(result.errorCode));
-        } catch { failure = t(key('requestFailed')); }
-        if (failure) uncertain = true;
-        if (!ownerCurrent()) return;
-        // A newer click is saved next; only the last outcome is shown.
-        if (save.wanted !== null) continue;
-        if (!shown()) continue;
-        setFollowing(save.saved);
-        if (failure) toast.error(failure);
-      }
-    } finally {
-      save.saving = false;
-      save.wanted = null;
-      followWriteRef.current += 1;
-      // Read what the server kept after a failure: the switch then shows the real choice.
-      if (uncertain && shown()) refreshRef.current();
-    }
-  }, [following, group.id, rootId, t]);
+    void runFollowSave(followKey, group.id, rootId, save, code => t(code ? chatErrorKey(code) : key('requestFailed')));
+  }, [following, followKey, group.id, rootId, t]);
+  useEffect(() => {
+    const save = followSave(followKey);
+    const panel = { show: setFollowing, fail: (message: string) => toast.error(message), reread: () => refreshRef.current() };
+    save.panel = panel;
+    // Reopened while an earlier panel's save still runs: show the reader's last click.
+    if (save.saving && save.intent !== undefined) setFollowing(save.intent);
+    return () => {
+      if (save.panel !== panel) return;
+      save.panel = undefined;
+      if (!save.saving && followSaveStore.saves.get(followKey) === save) followSaveStore.saves.delete(followKey);
+    };
+  }, [followKey]);
   useEffect(() => {
     aliveRef.current = true;
     refreshRef.current();

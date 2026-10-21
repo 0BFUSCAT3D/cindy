@@ -134,6 +134,33 @@ describe('chat interaction controls', () => {
     expect(mocks.followThread.mock.calls.map(([input]) => input.following)).toEqual([true, false]);
   });
 
+  it('joins the running follow save when the same Thread reopens, so the last click is saved last', async () => {
+    mocks.thread.mockResolvedValue({ ok: true, root: message, replies: [], hasMore: false, following: false });
+    let active = 0, most = 0;
+    const pending: Array<() => void> = [];
+    mocks.followThread.mockImplementation((input: { following: boolean }) => {
+      active += 1; most = Math.max(most, active);
+      return new Promise(resolve => pending.push(() => { active -= 1; resolve({ ok: true, following: input.following }); }));
+    });
+    const followSwitch = () => waitFor(() => {
+      const button = document.querySelector('[data-thread-follow]') as HTMLButtonElement | null;
+      if (!button) throw new Error('follow switch not shown');
+      return button;
+    });
+    const first = render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    fireEvent.click(await followSwitch());
+    fireEvent.click(await followSwitch());
+    first.unmount();
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    // The reopened panel shows the reader's last click while the earlier save runs.
+    await waitFor(async () => expect((await followSwitch()).getAttribute('aria-pressed')).toBe('false'));
+    fireEvent.click(await followSwitch());
+    while (pending.length) await act(async () => { pending.shift()!(); });
+    await waitFor(() => expect((document.querySelector('[data-thread-follow]') as HTMLButtonElement).getAttribute('aria-pressed')).toBe('true'));
+    expect(most).toBe(1);
+    expect(mocks.followThread.mock.calls.at(-1)![0].following).toBe(true);
+  });
+
   it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
     const observed: Array<{ target: Element; callback: () => void }> = [];
     vi.stubGlobal('ResizeObserver', class {
