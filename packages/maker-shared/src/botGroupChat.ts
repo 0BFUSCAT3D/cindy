@@ -379,6 +379,8 @@ export interface BotGroupPlanView {
   kind?: 'talk' | 'work';
   /** Server groups: the viewer may continue or stop it (creator, owner or admin). */
   canManage?: boolean;
+  /** Server groups: what the viewer sends without naming anyone goes to the step under way (creator, or a human owner/admin). */
+  canAdd?: boolean;
   createdAt: number;
   updatedAt: number;
 }

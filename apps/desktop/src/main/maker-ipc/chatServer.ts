@@ -1285,7 +1285,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const lastView = last ? messageView(last, s.members) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: singleSpeaker && !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -1316,7 +1316,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       steps: plan.steps.map(s => ({ ...s, botId: localBot(s.botId)?.id ?? s.botId })), currentStep: plan.current_step,
       workDir: workspace?.plans[plan.id]?.workDir ?? null, branch: workspace?.plans[plan.id]?.branch ?? null,
       ...(plan.kind ? { kind: plan.kind,
-        canManage: plan.creator_id === selfId || members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)) } : {}),
+        canManage: plan.creator_id === selfId || members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)),
+        // Same rule as sendMessage's commentPlan: additions are written as the human, so a teammate's role does not count.
+        canAdd: plan.creator_id === selfId || members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role)) } : {}),
       createdAt: Date.parse(plan.created_at), updatedAt: Date.parse(plan.updated_at) };
   }
   async function actPlan(input: unknown, action: string) {

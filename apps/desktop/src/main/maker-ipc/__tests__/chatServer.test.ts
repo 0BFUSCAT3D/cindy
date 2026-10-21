@@ -1533,6 +1533,12 @@ describe('Chat Server result delivery and refresh', () => {
     // Without the capability the server still runs rounds: Stop ends the whole round and replies read the full main group.
     const olderServer = (extra: (route: string) => unknown = () => undefined) =>
       singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : extra(route));
+    it.each([['single-speaker', true], ['older', false]] as const)('offers an owner the stop-scope choice only on a %s server', async (_label, offered) => {
+      if (offered) singleSpeaker(undefined, 'owner'); else singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : undefined, 'owner');
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await service.getGroup(roomId);
+      expect(result.ok && !!result.group.canStopAll).toBe(offered);
+    });
     it('keeps the whole-round stop on an older server', async () => {
       olderServer(route => route === `/conversations/${roomId}/executions` ? { body: [
         { ...execution, id: '40000000-0000-4000-8000-00000000000a', status: 'queued', bot_id: foreignBot, requester_id: selfId },

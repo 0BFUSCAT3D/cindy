@@ -226,7 +226,9 @@ export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGro
   if (plan.status === 'proposed') return { kind: 'proposed' };
   const current = currentBotGroupPlanStep(plan);
   const botName = current?.botName.trim() ?? '';
-  if (plan.status === 'running') return { kind: 'running', botName, ...(plan.kind === 'talk' ? { talk: true } : {}) };
+  // Someone who cannot add to a queue sends a new request: the composer must not promise otherwise.
+  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false ? null : { kind: 'running', botName, talk: true };
+  if (plan.status === 'running') return { kind: 'running', botName };
   // A queue waiting for 继续 takes a new request, not changes to the last answer (bot-group-chat.md §4.0).
   if (plan.status === 'waiting' && plan.kind === 'talk') return null;
   if (plan.status === 'waiting') return { kind: 'waiting', botName, stepDone: current?.status === 'done' };
