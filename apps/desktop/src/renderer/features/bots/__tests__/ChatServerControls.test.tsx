@@ -115,6 +115,25 @@ describe('chat interaction controls', () => {
     expect(follow.getAttribute('aria-pressed')).toBe('false');
   });
 
+  it('saves the last follow click even after the Thread panel closes', async () => {
+    mocks.thread.mockResolvedValue({ ok: true, root: message, replies: [], hasMore: false, following: false });
+    let finishFirst: (value: { ok: true; following: boolean }) => void = () => {};
+    mocks.followThread.mockReturnValueOnce(new Promise(resolve => { finishFirst = resolve; }))
+      .mockResolvedValueOnce({ ok: true, following: false });
+    const view = render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const follow = await waitFor(() => {
+      const button = document.querySelector('[data-thread-follow]') as HTMLButtonElement | null;
+      if (!button) throw new Error('follow switch not shown');
+      return button;
+    });
+    fireEvent.click(follow);
+    fireEvent.click(follow);
+    view.unmount();
+    await act(async () => { finishFirst({ ok: true, following: true }); });
+    await waitFor(() => expect(mocks.followThread).toHaveBeenCalledTimes(2));
+    expect(mocks.followThread.mock.calls.map(([input]) => input.following)).toEqual([true, false]);
+  });
+
   it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
     const observed: Array<{ target: Element; callback: () => void }> = [];
     vi.stubGlobal('ResizeObserver', class {

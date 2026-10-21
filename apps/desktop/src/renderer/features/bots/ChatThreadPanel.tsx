@@ -171,7 +171,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
-      if (!before && followWrite === followWriteRef.current) {
+      // A read that overlaps a follow save may carry the old choice; the save's own answer wins.
+      if (!before && followWrite === followWriteRef.current && !followSaveRef.current.saving) {
         followSaveRef.current.saved = result.following;
         setFollowing(result.following);
       }
@@ -233,8 +234,11 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (save.saving) return;
     save.saving = true;
     followWriteRef.current += 1;
+    // The reader's last click is saved even if the panel closes meanwhile; only an account
+    // change stops the queue, and only an open panel shows the outcome.
     const owner = getDataOwnerGeneration();
-    const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
+    const ownerCurrent = () => isDataOwnerGenerationCurrent(owner);
+    const shown = () => aliveRef.current && ownerCurrent();
     // A failed write may still have been saved (a timeout or a dropped connection): until a later
     // write succeeds, the server's value is unknown and the newest click is always sent.
     let uncertain = false;
@@ -249,9 +253,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           else failure = t(chatErrorKey(result.errorCode));
         } catch { failure = t(key('requestFailed')); }
         if (failure) uncertain = true;
-        if (!current()) return;
+        if (!ownerCurrent()) return;
         // A newer click is saved next; only the last outcome is shown.
         if (save.wanted !== null) continue;
+        if (!shown()) continue;
         setFollowing(save.saved);
         if (failure) toast.error(failure);
       }
@@ -260,7 +265,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       save.wanted = null;
       followWriteRef.current += 1;
       // Read what the server kept after a failure: the switch then shows the real choice.
-      if (uncertain && current()) refreshRef.current();
+      if (uncertain && shown()) refreshRef.current();
     }
   }, [following, group.id, rootId, t]);
   useEffect(() => {
