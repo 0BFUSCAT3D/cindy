@@ -438,3 +438,41 @@ describe('BotAutonomyRuntime with the routine engine', () => {
     }
   });
 });
+
+// Unit §6.3: earlier runtime tests disabled timers and could not detect idle scans.
+// Real runtime + TaskWatch, fake clock: default-off -> delegated running -> completed.
+it('starts the scan timer only for observed work and releases it when that work ends', async () => {
+  vi.useFakeTimers();
+  const options = { schedulerOff: true, creators: {} as Record<string, string> };
+  const t = await setup(options);
+  const runtime = t.create({ registerSource: vi.fn(), publish: vi.fn(async () => ({ accepted: 0, duplicate: false })),
+    ensureBuiltin: vi.fn(async () => ({} as never)) });
+  const sweep = vi.spyOn(runtime.watch, 'sweep');
+  try {
+    await runtime.start();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sweep).not.toHaveBeenCalled();
+    options.creators.child = 'a';
+    runtime.watch.applyActivity('child', running('child'));
+    await runtime.refreshFollowers();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    runtime.watch.applyActivity('child', null);
+    await runtime.watch.settled();
+    sweep.mockClear();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sweep).not.toHaveBeenCalled();
+    options.schedulerOff = false;
+    await runtime.refreshFollowers();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    options.schedulerOff = true;
+    await runtime.refreshFollowers();
+    sweep.mockClear();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sweep).not.toHaveBeenCalled();
+  } finally {
+    runtime.stop();
+    vi.useRealTimers();
+  }
+});

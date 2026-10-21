@@ -51,12 +51,36 @@ vi.mock('@/lib/makerTransport', () => ({ makerApiForDevice: m.makerApiForDevice 
 
 import { BotWorkbench } from '../BotWorkbench';
 import { allowGlanceRow } from '../botGlance';
+import '../../right-sidebar/plugins/bot-workbench';
+import { getTabKind } from '../../right-sidebar/registry';
+import type { TabKindHostContext } from '../../right-sidebar/types';
 
 type Listener = (payload: { botIds?: string[] }) => void;
 let listeners: Listener[] = [];
 const glanceApi = vi.fn<(botId: string) => Promise<BotGlance>>();
 const localMaker = { getPendingInteractions: vi.fn(), resolveInteraction: vi.fn() };
 const remoteInvoke = vi.fn();
+
+// Unit: inactive tabs stay mounted in the sidebar shell. Reading their glance used to
+// trigger remote IO while hidden; exercise the registered body and real data hook.
+it('reads remote state only while the workbench tab is visible', async () => {
+  glanceApi.mockResolvedValue(glance());
+  const Body = getTabKind('bot-workbench')!.TabBody;
+  const ctx: TabKindHostContext = {
+    tabId: 'workbench', sessionId: 'main', workdir: '', remoteHostId: null,
+    deviceLinkDeviceId: null, patchState: vi.fn(), onVisibilityChange: vi.fn(),
+    setCloseInterceptor: () => () => {},
+  };
+  const props = { state: { botId: 'bot-1' }, ctx };
+  const view = render(<Body {...props} active={false} shellVisible />);
+  expect(glanceApi).not.toHaveBeenCalled();
+  view.rerender(<Body {...props} active shellVisible={false} />);
+  expect(glanceApi).not.toHaveBeenCalled();
+  view.rerender(<Body {...props} active shellVisible />);
+  await waitFor(() => expect(glanceApi).toHaveBeenCalledWith('bot-1', true));
+  view.rerender(<Body {...props} active shellVisible={false} />);
+  expect(listeners).toHaveLength(0);
+});
 
 function row(patch: Partial<GlanceRow>): GlanceRow {
   return {
@@ -181,6 +205,7 @@ it('re-reads only on changes for this teammate', async () => {
 
   act(() => listeners.forEach((cb) => cb({ botIds: ['bot-2'] })));
   expect(glanceApi).toHaveBeenCalledTimes(1);
+  expect(glanceApi).toHaveBeenLastCalledWith('bot-1', true);
   act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
   expect(await screen.findByText('新问题')).toBeTruthy();
 });

@@ -84,6 +84,7 @@ export class BotAutonomyRuntime {
   private sweeping = false;
   /** 状态表首次观察完成（归属已读）之前不判定事件。 */
   private started = false;
+  private timersEnabled = false;
   private stopped = false;
 
   constructor(private readonly deps: AutonomyRuntimeDeps) {
@@ -103,7 +104,16 @@ export class BotAutonomyRuntime {
     this.schedulePush();
     // start 期间可能已被停止（换账号 / 引擎重建）：不再起定时器，免得泄漏。
     if (this.stopped) return;
-    if (options.timers !== false) {
+    this.timersEnabled = options.timers !== false;
+    this.syncSweepTimer();
+  }
+
+  private syncSweepTimer(): void {
+    const needed = this.started && !this.stopped && this.timersEnabled && this.watch.needsSweep();
+    if (!needed && this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    } else if (needed && !this.sweepTimer) {
       this.sweepTimer = setInterval(() => { void this.sweep(); }, SWEEP_INTERVAL_MS);
       this.sweepTimer.unref?.();
     }
@@ -128,6 +138,10 @@ export class BotAutonomyRuntime {
   /** 一次程序级扫描；定时器与单测共用。 */
   async sweep(): Promise<void> {
     if (this.stopped || this.sweeping || !this.deps.isCurrent()) return;
+    if (!this.watch.needsSweep()) {
+      this.syncSweepTimer();
+      return;
+    }
     this.sweeping = true;
     try {
       if (!this.unsubscribe) this.unsubscribe = this.deps.subscribeActivity(this.watch);
@@ -139,6 +153,7 @@ export class BotAutonomyRuntime {
       this.deps.log.warn('autonomy sweep failed', { error: errorCode(error) });
     } finally {
       this.sweeping = false;
+      this.syncSweepTimer();
     }
   }
 
@@ -182,6 +197,7 @@ export class BotAutonomyRuntime {
 
   private onWatchChange(): void {
     if (this.stopped) return;
+    this.syncSweepTimer();
     this.schedulePush();
     // 出错 / 用量上限 / 做完是即时事件：同一 tick 的变化合并后判定一次。
     if (this.evaluateTimer) return;

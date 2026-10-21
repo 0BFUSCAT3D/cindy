@@ -1,3 +1,4 @@
+import { signalBotAutonomyBotsChanged } from '../bot-autonomy/botsChangedSignal.js';
 import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import { readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { openSession } from '../localDb/sessionOpening.js';
@@ -696,6 +697,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   const emitChanged = (payload: BotDelegationChangedPayload): void => {
+    signalBotAutonomyBotsChanged();
     deps.onChanged?.(payload);
   };
 

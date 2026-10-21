@@ -26,7 +26,7 @@ vi.mock('../../maker-host/bot-autonomy-settings-store.js', () => ({
 vi.mock('../hostData.js', () => ({
   readLocalSessionMetas: h.readMetas, readTaskOwnership: h.readOwnership, readBotDirectory: vi.fn(),
 }));
-import { currentFollowUpEvents, setActiveBotAutonomy } from '../hub.js';
+import { currentFollowUpEvents, getBotAutonomyGlance, setActiveBotAutonomy } from '../hub.js';
 
 const meta = (id: string, source = 'desktop'): LocalSessionMeta => ({
   id, source, title: 'Completed task', workingDir: null, status: 'active', hiddenAt: null,
@@ -60,4 +60,21 @@ it('dispatches persisted completions after restart without watch rows, but enfor
 it('defers rather than authorizing a durable read that crossed the account boundary', async () => {
   h.readMetas.mockImplementationOnce(async () => { h.scope = 'b'; return [meta('mine')]; });
   expect(await currentFollowUpEvents('sched', events)).toBeNull();
+});
+
+// Unit §6.3: UI probe versus explicit view read, including an owner change while IO waits.
+it('only refreshes remote state for an explicit scheduler workbench read and discards cross-account results', async () => {
+  const remote = vi.fn(async () => {});
+  const projection = { botId: 'sched', waiting: [] };
+  setActiveBotAutonomy({ scope: 'a', engine: {} as RoutineEngine, runtime: {
+    watch: { getSchedulerBotId: () => 'sched', refreshRemote: remote },
+    glance: () => projection,
+  } as unknown as BotAutonomyRuntime });
+  expect(await getBotAutonomyGlance('sched', undefined, false)).toBe(projection);
+  await getBotAutonomyGlance('own');
+  expect(remote).not.toHaveBeenCalled();
+  expect(await getBotAutonomyGlance('sched')).toBe(projection);
+  expect(remote).toHaveBeenCalledOnce();
+  remote.mockImplementationOnce(async () => { h.scope = 'b'; });
+  await expect(getBotAutonomyGlance('sched')).rejects.toThrow('PRECONDITION_FAILED');
 });
