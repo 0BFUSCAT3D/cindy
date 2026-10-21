@@ -1350,16 +1350,17 @@ describe('Chat Server result delivery and refresh', () => {
     const otherHuman = '30000000-0000-4000-8000-000000000002';
     const member = (id: string, kind: 'human' | 'bot', ownerActorId: string, role = 'member') =>
       ({ id, kind, name: id === botId ? 'Bot' : 'Peer', displayName: 'Peer', nickname: null, avatar: null, ownerActorId, ownerName: 'Owner', state: 'joined', role, guestAccess: 'chat', accessRevision: 1 });
-    const members = (role = 'member') => [member(selfId, 'human', selfId, role), member(botId, 'bot', selfId), member(otherBot, 'bot', selfId), member(otherHuman, 'human', otherHuman), member(foreignBot, 'bot', otherHuman)];
+    // botRole: the account's own teammate may hold the owner/admin role instead of its human.
+    const members = (role = 'member', botRole = 'member') => [member(selfId, 'human', selfId, role), member(botId, 'bot', selfId), member(otherBot, 'bot', selfId, botRole), member(otherHuman, 'human', otherHuman), member(foreignBot, 'bot', otherHuman)];
     const message = (id: string, text: string, extra: object = {}) => ({ id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Dash' }, origin: 'user',
       content: [{ type: 'text', text }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null, mentions: [], ...extra });
-    function singleSpeaker(extra: (route: string, method?: string, body?: Record<string, unknown>) => unknown = () => undefined, role = 'member') {
+    function singleSpeaker(extra: (route: string, method?: string, body?: Record<string, unknown>) => unknown = () => undefined, role = 'member', botRole = 'member') {
       fixture.handle.mockImplementation((route, method, body) => {
         const override = extra(route, method, body);
         if (override) return override;
         if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupSingleSpeaker: 1 } } };
-        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: members(role), messages: [], cursor: '1' } };
-        if (route.endsWith('/members')) return { body: members(role) };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: members(role, botRole), messages: [], cursor: '1' } };
+        if (route.endsWith('/members')) return { body: members(role, botRole) };
         return response(route);
       });
     }
@@ -1442,17 +1443,39 @@ describe('Chat Server result delivery and refresh', () => {
       ['a member stops only their own requests and teammates', 'member', undefined, [['own', undefined], ['bot', otherBot]]],
       ['an owner may stop everyone', 'owner', 'all', [['own', undefined], ['bot', undefined], ['foreign', undefined]]],
       ['an owner who did not ask for all stops only their own', 'owner', undefined, [['own', undefined], ['bot', otherBot]]],
-    ] as const)('%s', async (_label, role, scope, expected) => {
+      ['a member whose own teammate is admin stops everyone as that teammate', 'member', 'all', [['own', undefined], ['bot', otherBot], ['foreign', otherBot]], 'admin'],
+    ] as const)('%s', async (_label, role, scope, expected, botRole?: string) => {
       const ids = { own: '40000000-0000-4000-8000-00000000000a', bot: '40000000-0000-4000-8000-00000000000b', foreign: '40000000-0000-4000-8000-00000000000c' };
       singleSpeaker(route => route === `/conversations/${roomId}/executions` ? { body: [
         { ...execution, id: ids.own, status: 'queued', bot_id: foreignBot, requester_id: selfId },
         { ...execution, id: ids.bot, status: 'running', bot_id: otherBot, requester_id: otherHuman },
         { ...execution, id: ids.foreign, status: 'queued', bot_id: foreignBot, requester_id: otherHuman },
-      ] } : undefined, role);
+      ] } : undefined, role, botRole ?? 'member');
       const from = fixture.requests.length;
       expect(await service.stopRound(roomId, scope)).toEqual({ ok: true });
       const stops = fixture.requests.slice(from).filter(r => r.url.endsWith('/control'));
       expect(stops.map(r => [Object.entries(ids).find(([, id]) => r.url.includes(id))![0], r.actor || undefined])).toEqual(expected);
+    });
+
+    // Without the capability the server still runs rounds: Stop ends the whole round and replies read the full main group.
+    const olderServer = (extra: (route: string) => unknown = () => undefined) =>
+      singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : extra(route));
+    it('keeps the whole-round stop on an older server', async () => {
+      olderServer(route => route === `/conversations/${roomId}/executions` ? { body: [
+        { ...execution, id: '40000000-0000-4000-8000-00000000000a', status: 'queued', bot_id: foreignBot, requester_id: selfId },
+        { ...execution, id: '40000000-0000-4000-8000-00000000000c', status: 'queued', bot_id: foreignBot, requester_id: otherHuman },
+      ] } : undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      const from = fixture.requests.length;
+      expect(await service.stopRound(roomId)).toEqual({ ok: true });
+      expect(fixture.requests.slice(from).filter(r => r.url.endsWith('/control'))).toHaveLength(2);
+    });
+    it('keeps the full main-group context on an older server', async () => {
+      const history = Array.from({ length: 15 }, (_, n) => message(`50000000-0000-4000-8000-0000000001${String(n).padStart(2, '0')}`, `earlier message ${n}`));
+      olderServer(route => route.includes('/messages?all=true') ? { body: history } : undefined);
+      await start();
+      expect(prompt()).toContain('earlier message 0');
+      expect(prompt()).not.toContain('earlierMessagesOmitted');
     });
   });
 

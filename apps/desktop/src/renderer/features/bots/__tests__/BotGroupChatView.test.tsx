@@ -2976,6 +2976,22 @@ describe('Telegram / Slack-grade timeline', () => {
     }
   });
 
+  // bot-group-chat.md §7.0: a queue turn is someone speaking, not a numbered step with an empty task.
+  it('labels a running queue turn as speaking in the progress strip', async () => {
+    const turn = plan({
+      status: 'running', currentStep: 0, kind: 'talk', updatedAt: Date.now() - 125_000,
+      steps: [{ ...plan().steps[0]!, task: '', status: 'running' }, { ...plan().steps[1]!, task: '' }],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(turn, [], {
+      speakingBotIds: ['mimi'],
+      round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: 'plan-mimi', activity: 'step' }], canContinue: false },
+    }) });
+    renderView();
+    const strip = await screen.findByTestId('bot-group-progress');
+    expect(strip.textContent).toContain('bots.groupChat.progress.speaking');
+    expect(strip.textContent).not.toContain('bots.groupChat.progress.step');
+  });
+
   it('pins a progress strip above the composer while a plan step runs', async () => {
     const running = plan({
       status: 'running',

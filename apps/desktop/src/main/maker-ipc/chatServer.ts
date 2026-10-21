@@ -1181,7 +1181,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const lastView = last ? messageView(last, s.members) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: s.members.some(m => m.id === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -1212,7 +1212,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       steps: plan.steps.map(s => ({ ...s, botId: localBot(s.botId)?.id ?? s.botId })), currentStep: plan.current_step,
       workDir: workspace?.plans[plan.id]?.workDir ?? null, branch: workspace?.plans[plan.id]?.branch ?? null,
       ...(plan.kind ? { kind: plan.kind,
-        canManage: plan.creator_id === selfId || members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role)) } : {}),
+        canManage: plan.creator_id === selfId || members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)) } : {}),
       createdAt: Date.parse(plan.created_at), updatedAt: Date.parse(plan.updated_at) };
   }
   async function actPlan(input: unknown, action: string) {
@@ -1226,8 +1226,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // The shared UI uses dismiss for both an unstarted proposal and ending a paused plan.
     // Chat Server distinguishes these actions; preserve the local service's waiting semantics.
     const serverAction = action === 'dismiss' && plan.status === 'waiting' ? 'stop' : i.action ?? action;
+    // Someone else's plan is managed as the account's owner/admin member, which may be its own teammate.
+    const manager = plan.creator_id === selfId ? undefined : managementActor(await recentSnapshot(room));
+    const asManager = manager === selfId ? undefined : manager;
     await api(`/conversations/${room}/plans/${plan.id}`, 'POST', { operationId: randomUUID(), expectedRevision: plan.revision,
-      action: serverAction, position: i.position, botId });
+      action: serverAction, position: i.position, botId }, asManager);
     changed(room); return { ok: true as const };
   }
   async function decideArrangement(s: Snapshot, sourceId: string, text: string, forced: boolean, attachments: BotGroupAttachment[], intent: PlanIntent, quote: BotGroupQuoteView | null = null) {
@@ -1634,7 +1637,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const conversation = thread ? {
         thread: { root: thread.root ? focusMessage(thread.root) : { id: threadRootId, unavailable: true },
           replies: chronological(thread.replies).map(focusMessage), earlierRepliesOmitted: thread.earlierRepliesOmitted },
-      } : run.plan?.kind === 'talk' ? {} : mainGroupContext(chronological(history.filter(message => !message.threadRootId)), promptMessage);
+      } : run.plan?.kind === 'talk' ? {}
+        // The shortened main-group context belongs to single-speaker servers; older ones keep the full projection.
+        : singleSpeaker ? mainGroupContext(chronological(history.filter(message => !message.threadRootId)), promptMessage)
+        : { messages: chronological(history.filter(message => !message.threadRootId)).map(promptMessage) };
       const talk = run.plan?.kind === 'talk' ? run.plan : undefined;
       const prompt = [
         run.context.kind === 'member.joined'
@@ -2235,9 +2241,23 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     stopRound: (roomId, scopeInput) => safe(async () => {
       const room = await groupRoom(id.parse(roomId));
       await replacePlanIntent(room);
+      // Older servers keep the whole-round stop; the narrower scope belongs to single-speaker groups (§4.0).
+      if (!singleSpeaker) {
+        const plans = await api<ServerPlan[]>(`/conversations/${room}/plans`);
+        for (const plan of plans.filter(p => ['proposed','running','waiting'].includes(p.status))) await actPlan({ groupId: room, planId: plan.id }, 'stop');
+        const executions = await api<Execution[]>(`/conversations/${room}/executions`);
+        for (const e of executions.filter(e => ['queued', 'running', 'needs_input'].includes(e.status) && !e.plan_id)) {
+          await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' });
+          const run = running.get(e.bot_id);
+          if (run?.execution.id === e.id) { running.delete(e.bot_id); if (run.sessionId) await deps.abortLane(run.sessionId); }
+        }
+        changed(room); return { ok: true as const };
+      }
       const s = await recentSnapshot(room);
-      const manager = s.members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role));
-      const everything = scopeInput === 'all' && manager;
+      // Owners and admins may be the account's own teammate; that member acts for everyone's work.
+      const manager = managementActor(s);
+      const everything = scopeInput === 'all' && !!manager;
+      const asManager = manager === selfId ? undefined : manager;
       const ownBot = (botId: string) => !!localBot(botId) || s.members.some(m => m.id === botId && m.ownerActorId === selfId);
       const refused = (error: unknown) => error instanceof ChatResponseError && [403, 404, 409].includes(error.status);
       const plans = await api<ServerPlan[]>(`/conversations/${room}/plans`);
@@ -2251,7 +2271,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // Your own teammate stops its work for others as itself; a request you made, as you.
         const asBot = !everything && e.requester_id !== selfId && ownBot(e.bot_id);
         if (!everything && !asBot && e.requester_id !== selfId) continue;
-        try { await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' }, asBot ? e.bot_id : undefined); }
+        try { await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' }, asBot ? e.bot_id : everything && e.requester_id !== selfId ? asManager : undefined); }
         catch (error) { if (refused(error)) continue; throw error; }
         const run = running.get(e.bot_id);
         if (run?.execution.id === e.id) { running.delete(e.bot_id); if (run.sessionId) await deps.abortLane(run.sessionId); }

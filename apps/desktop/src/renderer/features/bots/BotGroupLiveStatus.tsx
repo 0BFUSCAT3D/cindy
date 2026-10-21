@@ -130,6 +130,8 @@ export function BotGroupProgressStrip({
   if (!step && (!lead || now - since < BOT_GROUP_PROGRESS_STRIP_DELAY_MS)) return null;
   const member = step ? step.member : lead?.member;
   const name = step ? step.displayName : lead?.displayName ?? '';
+  // A queue turn is someone speaking, not a numbered step of work.
+  const workStep = step && step.plan.kind !== 'talk' ? step : null;
   // The Session's compact detail may still be the previous turn's silence marker (NO_REPLY);
   // that is not an action anyone should read.
   const rawAction = live?.compactDetail?.trim() || '';
@@ -147,13 +149,13 @@ export function BotGroupProgressStrip({
         <div className={cn('flex min-h-9 min-w-0 items-center gap-2 py-1', expanded && canView ? 'px-3' : 'pl-2 pr-1')}>
           {member ? <BotAvatar bot={member} size="xs" /> : null}
           <p role="status" aria-live="polite" className="flex min-w-0 flex-1 items-center gap-1 truncate text-12 leading-5 text-[var(--text-secondary)]">
-            {step ? (
+            {workStep ? (
               <span className="shrink-0 font-medium text-[var(--text-primary)]">
-                {t('bots.groupChat.progress.step', { step: step.index, total: step.total })}
+                {t('bots.groupChat.progress.step', { step: workStep.index, total: workStep.total })}
               </span>
             ) : null}
             <span className="min-w-0 truncate">
-              {step ? ` · ${name} ${step.step.task}` : t('bots.groupChat.progress.speaking', { name })}
+              {workStep ? ` · ${name} ${workStep.step.task}` : t('bots.groupChat.progress.speaking', { name })}
             </span>
             <span className="shrink-0 tabular-nums">
               {' · '}
