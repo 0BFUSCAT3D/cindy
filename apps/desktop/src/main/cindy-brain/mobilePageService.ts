@@ -33,7 +33,7 @@ import {
 interface Page {
   desktopSettings?: true;
   channels?: string[];
-  authorizations?: Map<string, { path: string; body?: string; running: boolean; result?: import('@cindy/device-link').PluginPageFetchResult }>;
+  authorizations?: Map<string, { path: string; body?: string; running: boolean; keepAlive?: () => boolean; result?: import('@cindy/device-link').PluginPageFetchResult }>;
   id: string;
   controller: string;
   plugin: string;
@@ -142,11 +142,15 @@ export class MobilePluginPages {
     }
     return ghost;
   }
+  private idleExpired(page: Page): boolean {
+    return this.now() - page.touchedAt > 120_000 &&
+      ![...(page.authorizations?.values() ?? [])].some(a => a.running && a.keepAlive?.());
+  }
   private page(id: unknown, controller: string): Page {
     if (typeof id !== 'string') return fail();
     const page = this.pages.get(id);
     if (!page || page.controller !== controller) return fail();
-    if (this.now() - page.touchedAt > 120_000) {
+    if (this.idleExpired(page)) {
       this.close(page);
       return fail();
     }
@@ -219,8 +223,12 @@ export class MobilePluginPages {
     const page = [...this.pages.values()].find((p) => p.authorizations?.has(action.requestId))!;
     const authorization = page.authorizations!.get(action.requestId)!;
     if (authorization.running) return false;
-    authorization.running = true;
     const ghost = this.check(page);
+    authorization.running = true;
+    // Only the already-bound transaction can retain this page while the phone is away.
+    // A missing deadline preserves the legacy idle policy. Identity checks still run.
+    authorization.keepAlive = () => remote.expiresAt !== undefined &&
+      this.now() < remote.expiresAt && !remote.cancelled?.aborted;
     void (async () => {
       try {
         // The original endpoint owns OAuth validation, exchange and persistence.
@@ -248,6 +256,7 @@ export class MobilePluginPages {
           };
         remote.finish(false);
       } finally {
+        authorization.keepAlive = undefined;
         authorization.body = undefined;
       }
     })();
@@ -339,7 +348,7 @@ export class MobilePluginPages {
         if (
           url.origin !== 'https://plugin.invalid' ||
           url.hash ||
-          !/^\/(?:kv|app-context|agent-models|media-models|secrets(?:\/[^/]+)?|oauth(?:\/[^/]+\/(?:client|default|insufficient-scopes|accounts\/[^/]+))?|connections(?:\/[^/]+(?:\/[^/]+)?)?|wake)$/.test(
+          !/^\/(?:kv|app-context|agent-models|media-models|secrets(?:\/[^/]+(?:\/check)?)?|oauth(?:\/[^/]+\/(?:client|default|insufficient-scopes|accounts\/[^/]+))?|connections(?:\/[^/]+(?:\/[^/]+)?)?|wake)$/.test(
             url.pathname,
           )
         )
@@ -520,12 +529,12 @@ export class MobilePluginPages {
   }
   private sweep() {
     for (const page of this.pages.values()) {
-      if (
-        !page.currentOwner() ||
-        !page.currentController() ||
-        this.now() - page.touchedAt > 120_000
-      )
-        this.close(page);
+      try {
+        this.check(page);
+        if (this.idleExpired(page)) this.close(page);
+      } catch {
+        if (this.pages.has(page.id)) this.close(page);
+      }
     }
   }
   /** Explicit page context supplied by a plugin handling that page's business request.
@@ -654,6 +663,8 @@ export class MobilePluginPages {
         const permissions = ghostPermissionItems(ghost.manifest)
           .filter((permission) => permission.kind !== 'tool')
           .map((permission) => ({
+            kind: permission.kind,
+            labelKey: permission.labelKey,
             title: permissionText(permission.labelKey, permission.labelArgs),
             description: [
               permission.detailKey
@@ -873,6 +884,7 @@ export class MobilePluginPages {
               pluginId: id,
               manifestId: ghost.manifest.id,
               name: ghost.manifest.name,
+              controllerAuthorization: true,
               entry: ghost.manifest.settingsHtml,
               files: page.files,
             },
