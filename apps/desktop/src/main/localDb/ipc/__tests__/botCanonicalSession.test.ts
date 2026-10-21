@@ -4037,14 +4037,7 @@ describe('Bot Session task end-to-end runtime', () => {
      * dispatchBotSessionMessage → sendToSessionInternal）。判据顺序刻意与真机一致：
      * 任何一条在真机上会挡住会话启动的门，这里也必须挡住。
      */
-    const dispatchDirect = vi.fn(async (params: {
-      targetSessionId: string;
-      dispatcherSessionId?: string;
-      message: string;
-      persistedContent?: string;
-      clientId?: string;
-      onAccepted?: (replayed?: boolean) => void | Promise<void>;
-    }) => {
+    const dispatchDirect = vi.fn(async (params: Parameters<Parameters<typeof createBotDelegationService>[0]['dispatch']>[0]) => {
       if (params.clientId && hasMessage(params.targetSessionId, params.clientId)) {
         await params.onAccepted?.(true);
         return {
