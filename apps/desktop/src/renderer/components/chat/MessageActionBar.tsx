@@ -746,9 +746,9 @@ export function MessageActionBar({
   // align='left'  → [copy][share][fork][edit][more][time][cost]
   // align='right' → [time][copy][share][fork][edit][more]   (user)
   // 伙伴对话:[copy][share][reply][more][time] / [time][copy][share][reply][edit][more]
-  // 群聊（compact，贴在气泡旁）:[引用回复][话题][表情][more]，复制、分享与时间收进 more
+  // 贴在气泡旁（compact，群聊与伙伴私聊）:[引用回复][话题][表情][编辑][more]，复制、分享与时间收进 more
   const items = compact
-    ? align === 'left' ? [quoteBtn, replyBtn, reactionBtn, moreMenu] : [moreMenu, reactionBtn, replyBtn, quoteBtn]
+    ? align === 'left' ? [quoteBtn, replyBtn, reactionBtn, editBtn, moreMenu] : [moreMenu, editBtn, reactionBtn, replyBtn, quoteBtn]
     : align === 'left'
       ? [
           copyBtn,
@@ -784,6 +784,30 @@ export function MessageActionBar({
       )}
     >
       {items}
+    </div>
+  );
+}
+
+/**
+ * The frame that hangs a compact toolbar beside its message bubble (群聊与伙伴私聊): on the bubble's
+ * outer `side`, level with its top, inside the message row so moving the pointer across the gap keeps
+ * the row hovered. It shows while the message (`group/message`) is hovered, while keyboard focus is
+ * inside, while `open` (a picker) is set, and always on touch screens. The bubble must be `relative`.
+ */
+export function BubbleHoverToolbar({ side, open = false, besideReactions = false, marker, children }: {
+  side: 'left' | 'right'; open?: boolean;
+  /** Steps past reactions hung on the bubble's outer top corner. */
+  besideReactions?: boolean;
+  /** A data attribute that names this toolbar for its caller's tests and checks. */
+  marker?: `data-${string}`;
+  children: ReactNode;
+}) {
+  const left = side === 'left';
+  return (
+    <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} {...(marker ? { [marker]: '' } : {})} data-open={open ? '' : undefined}
+      className={cn('pointer-events-none absolute top-0 z-10 w-max rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] focus-within:pointer-events-auto focus-within:opacity-100 group-hover/message:pointer-events-auto group-hover/message:opacity-100 data-[open]:pointer-events-auto data-[open]:opacity-100 motion-reduce:transition-none [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
+        left ? 'right-full' : 'left-full', besideReactions ? (left ? 'mr-6' : 'ml-6') : (left ? 'mr-1.5' : 'ml-1.5'))}>
+      {children}
     </div>
   );
 }

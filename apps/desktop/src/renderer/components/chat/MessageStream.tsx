@@ -2912,6 +2912,7 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
       childItems={childItems}
       compact={compact}
       deferred={item.deferred}
+      fitHeader={Boolean(replyColumnSpacer)}
     />
   );
   return (
@@ -6551,7 +6552,7 @@ export function MessageStream({
                           item={item}
                           context={workGroupRenderContext}
                           // 伙伴聊天与普通任务同一套工作过程：运行中露最近 5 条活动与计时，
-                          // 完成后收成「已工作 Xs」，不另走 compact 分支。
+                          // 组头按内容宽；做完整块不再出现（simplifyBotRenderItems 丢弃完成组）。
                           compact={false}
                           replyColumnSpacer={botReplyColumnSpacer}
                         />
