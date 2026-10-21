@@ -152,7 +152,7 @@ it.each([true, false])('invites only after engagement, then persists the choice 
   await waitFor(() => expect(screen.queryByRole('region')).toBeNull());
   expect(host.setSettings).toHaveBeenCalledWith({ schedulerBotId: enable ? 'cindy-default' : null });
   // Starting shows scope and usage in the same confirmation as settings before saving; declining needs none.
-  if (enable) expect(m.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: 'bots.autonomy.consent' }));
+  if (enable) expect(m.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: 'bots.autonomy.consent' }), expect.any(AbortSignal));
   else expect(m.confirm).not.toHaveBeenCalled();
   unmount();
   render(<BotFollowUpInvitation botId="cindy-default" engaged />);
@@ -181,6 +181,16 @@ it('asks once for a double click and drops a confirmation that returns after the
   await act(async () => answer(true));
   expect(host.setSettings).not.toHaveBeenCalled();
   dataOwnerTesting.reset();
+});
+
+it('closes a pending confirmation when the invitation goes away', async () => {
+  const { unmount } = render(<BotFollowUpInvitation botId="cindy-default" engaged />);
+  m.confirm.mockImplementationOnce(() => new Promise<boolean>(() => {}));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' }));
+  const signal = (m.confirm.mock.calls[0] as unknown as [unknown, AbortSignal])[1];
+  expect(signal.aborted).toBe(false);
+  unmount();
+  expect(signal.aborted).toBe(true);
 });
 
 it('keeps the invitation available when saving fails', async () => {
@@ -219,7 +229,7 @@ it.each([true, false])('remote invitation uses the host-bound choice, enable=%s'
   fireEvent.click(screen.getByText(enable ? 'bots.autonomy.invitation.start' : 'bots.autonomy.invitation.notNow'));
   await waitFor(() => expect(screen.queryByRole('region')).toBeNull());
   // The host-owned scope (not this computer's copy) is what the confirmation shows.
-  if (enable) expect(m.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: resource.blocks[0].fallbackMarkdown }));
+  if (enable) expect(m.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: resource.blocks[0].fallbackMarkdown }), expect.any(AbortSignal));
   expect(invoke).toHaveBeenLastCalledWith('host-computer', 'maker:remote-resources:invoke', [expect.objectContaining({
     resourceRef: ref, actionId: enable ? 'opaque-enable' : 'opaque-dismiss', input: enable ? { enabled: true } : {},
   })]);

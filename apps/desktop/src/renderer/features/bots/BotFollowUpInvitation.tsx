@@ -41,18 +41,24 @@ export function BotFollowUpInvitationCard({ pending, onChoose, consent }: {
   const { confirm } = useConfirmDialog();
   // 卡片只占一行；读什么、会用模型额度在开启前的确认框里完整说明（与设置页同一确认），确认后才保存。
   const scope = consent ?? t('bots.autonomy.consent');
-  // 确认框在账号切换后仍可能开着（它挂在账号层之上），回来的结果只认发起时的账号和仍在的卡片；
+  // 确认框挂在账号层之上，卡片卸载（例如切换账号）时一并关掉；回来的结果只认发起时的账号和仍在的卡片。
   // 连点只排一个确认框。
   const asking = useRef(false);
   const mounted = useRef(true);
+  const dialog = useRef<AbortController | null>(null);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+      dialog.current?.abort();
+    };
   }, []);
   const start = async () => {
     if (asking.current || pending) return;
     asking.current = true;
     const owner = getDataOwnerGeneration();
+    const controller = new AbortController();
+    dialog.current = controller;
     try {
       const accepted = await confirm({
         presentation: 'standard',
@@ -60,10 +66,11 @@ export function BotFollowUpInvitationCard({ pending, onChoose, consent }: {
         description: scope,
         confirmText: t('bots.autonomy.invitation.start'),
         cancelText: t('bots.autonomy.invitation.notNow'),
-      });
+      }, controller.signal);
       if (accepted && mounted.current && isDataOwnerGenerationCurrent(owner)) await onChoose(true);
     } finally {
       asking.current = false;
+      if (dialog.current === controller) dialog.current = null;
     }
   };
   return (
