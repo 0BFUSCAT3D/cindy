@@ -757,7 +757,7 @@ export function ProviderConnectionDialog({
         if (simpleAdding) {
           const source = activeTab;
           for (const agent of AGENTS) {
-            if (agent === source) continue;
+            if (agent === source || !followsDefaultConnection(agent, prev[agent], prev[source])) continue;
             const next = { ...updated[agent] };
             for (const field of ['baseUrl', 'apiKey', 'headers', 'models'] as const) {
               if (JSON.stringify(prev[agent][field]) === JSON.stringify(prev[source][field]) &&

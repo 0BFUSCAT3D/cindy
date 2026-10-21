@@ -2259,6 +2259,22 @@ describe('new-connection identification', () => {
     expect(onDetected.mock.calls[0][0].config.runtimes.codex).toMatchObject(independent);
     expect(onDetected.mock.calls[0][0].preset.runtimes.codex).toBeUndefined();
   });
+  it.each([true, false])('does not sync shared edits to an independent runtime with overlapping fields: %s', async sameAddress => {
+    const own = { baseUrl: sameAddress ? 'https://api.deepseek.com' : 'https://independent.example/v1',
+      models: [{ id: 'one', name: 'One' }], requestPath: '/independent/messages' };
+    render(<ProviderConnectionDialog onDetected={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()}
+      draft={{ preset, agent: 'pi', apiKey: 'fake-key', keys: { pi: 'fake-key', 'claude-code': 'fake-key' },
+        config: { id: 'draft', name: 'Draft', runtimes: {
+          pi: { baseUrl: 'https://api.deepseek.com', models: [{ id: 'one', name: 'One' }] }, 'claude-code': own,
+        } } }} />);
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'new-shared-key' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://new.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    const [config, keys] = customProviderMocks.createCustomProvider.mock.calls[0];
+    expect(keys['claude-code']).toBe('fake-key');
+    expect(config.runtimes['claude-code']).toMatchObject(own);
+  });
   it('opens manual entry and focuses its error when saving without models', async () => {
     await openIdentification();
     fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));

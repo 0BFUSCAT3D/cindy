@@ -1610,7 +1610,7 @@ describe('identified provider handoff', () => {
   it('returns shared URL/key edits without replacing an independent engine draft', async () => {
     const onReturnCustom = vi.fn();
     const shared = detected.config.runtimes.pi;
-    const handoff = { ...detected, keys: { pi: 'fake-key', codex: 'fake-key', 'claude-code': 'independent-key' },
+    const handoff = { ...detected, preset: { ...detected.preset, runtimes: { ...detected.preset.runtimes, codex: { ...detected.preset.runtimes.pi, baseUrl: 'https://relay.example/codex/v1' } } }, keys: { pi: 'fake-key', codex: 'fake-key', 'claude-code': 'independent-key' },
       config: { ...detected.config, runtimes: { pi: shared, codex: { ...shared },
         'claude-code': { baseUrl: 'https://independent.example/anthropic', models: [{ id: 'own-model', name: 'Own' }] },
       } },
@@ -1624,6 +1624,21 @@ describe('identified provider handoff', () => {
     expect(returned.config.runtimes.codex.baseUrl).toBe('https://new-relay.example/v1');
     expect(returned.config.runtimes['claude-code']).toEqual(handoff.config.runtimes['claude-code']);
     expect(returned.catalog).toBeUndefined();
+  });
+  it.each([true, false])('keeps an excluded runtime unchanged even when its key and address overlap: %s', async sameAddress => {
+    const own = { ...detected.config.runtimes.pi,
+      baseUrl: sameAddress ? detected.config.runtimes.pi.baseUrl : 'https://independent.example/v1',
+      requestPath: '/independent/messages',
+    };
+    const handoff = { ...detected, keys: { pi: 'fake-key', 'claude-code': 'fake-key' },
+      config: { ...detected.config, runtimes: { ...detected.config.runtimes, 'claude-code': own } } };
+    const onReturnCustom = vi.fn();
+    render(<AddProviderWizard providers={[]} detected={handoff} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'new-shared-key' } });
+    fireEvent.change(screen.getByDisplayValue(detected.config.runtimes.pi.baseUrl), { target: { value: 'https://new.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    expect(onReturnCustom.mock.calls[0][0].keys['claude-code']).toBe('fake-key');
+    expect(onReturnCustom.mock.calls[0][0].config.runtimes['claude-code']).toEqual(own);
   });
   it('returns the draft instead of navigating to the provider gallery, keeping edited credentials', async () => {
     const onReturnCustom = vi.fn();

@@ -2236,6 +2236,8 @@ export function AddProviderWizard({
                   const original = runtimes[target]!;
                   const followsAddress = original.baseUrl === previous.baseUrl;
                   const bound = sel.preset.runtimes[target];
+                  // Excluded engines are independent drafts, even if a field matches.
+                  if (!bound) continue;
                   const targetInput = bound ? presetRuntimeBaseUrl(sel.preset, target, presetBaseUrls) : undefined;
                   const targetBase = targetInput && targetInput !== bound?.baseUrl ? targetInput
                     : followsAddress ? baseUrl : original.baseUrl;
