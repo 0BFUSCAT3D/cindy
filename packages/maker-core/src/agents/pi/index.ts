@@ -5537,7 +5537,7 @@ export class PiAgent extends BaseAgent {
         ...(proxyEnv ?? {}),
         // BYOM 原生 provider 的 api keys(键名对应 spec.apiKeyEnvVar,models.json 用 $ENV 引用)。
         ...nativeEnv,
-        CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(nativeProviderAdapterAliases(nativeProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined)),
+        CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(nativeProviderAdapterAliases(nativeProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted))),
         // 外部 MCP header 真值只经 env 交给 bridge extension；host 生成独立名字，
         // 且这些键已进入 piSecretEnvNames，LLM 可调用的 bash 子进程拿不到。
         ...mcpEnv,
@@ -6764,8 +6764,8 @@ export class PiAgent extends BaseAgent {
       const envChanged = Object.keys({ ...nativeEnv, ...latestEnv }).some(
         (key) => nativeEnv[key] !== latestEnv[key],
       );
-      const adaptersChanged = JSON.stringify(nativeProviderAdapterAliases(nativeProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined))
-        !== JSON.stringify(nativeProviderAdapterAliases(latestProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined));
+      const adaptersChanged = JSON.stringify(nativeProviderAdapterAliases(nativeProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted)))
+        !== JSON.stringify(nativeProviderAdapterAliases(latestProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted)));
       let gatewayCredentialChanged = false;
       if (remote && gateway) {
         try {
@@ -6837,7 +6837,7 @@ export class PiAgent extends BaseAgent {
       const gatewayAuthEnv = remote && nextGateway
         ? await this.deps.auth.getAuthEnv({ credentialMode: 'gateway-key', providerId: requestedProviderId })
         : authEnv;
-      const nextAliases = nativeProviderAdapterAliases(nextProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined);
+      const nextAliases = nativeProviderAdapterAliases(nextProviders, hostedGuest ? hosted?.guestProvider?.modelIds : undefined, Boolean(hosted));
       const mutableEnv = (value: Record<string, string>) => Object.fromEntries(
         Object.entries(value).filter(([key]) => /^CINDY_PI_KEY_[A-Z0-9_]+$/.test(key)
           || key === PI_API_KEY_ENV || key === PI_SESSION_TOKEN_ENV

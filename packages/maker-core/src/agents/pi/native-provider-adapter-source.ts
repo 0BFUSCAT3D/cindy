@@ -3,9 +3,10 @@ export function nativeProviderAdapterAliases(
   nativeProviders: Array<{ id: string; name: string; adapterProvider?: string; apiKeyEnvVar?: string;
     sourceProviderId?: string; models?: Array<{ id: string; wireId?: string }>; modelIdAliases?: Record<string, string> }>,
   guestModelIds?: readonly string[],
-): Array<{ id: string; name: string; provider: string; keyEnv?: string; models?: Array<{ id: string; grant: string }> }> {
+  hosted = false,
+): Array<{ id: string; name: string; provider: string; keyEnv?: string; remoteProviderId?: string; models?: Array<{ id: string; grant: string }> }> {
   return nativeProviders.flatMap((provider) => {
-    const adapter = provider.adapterProvider ?? (guestModelIds ? provider.id : undefined);
+    const adapter = provider.adapterProvider ?? (hosted || guestModelIds ? provider.id : undefined);
     const source = provider.sourceProviderId ?? provider.id;
     const models = guestModelIds ? (provider.models ?? []).flatMap(model => {
       const grant = guestModelIds.find(id => id === model.id || provider.modelIdAliases?.[id] === model.id
@@ -16,6 +17,7 @@ export function nativeProviderAdapterAliases(
       id: provider.id,
       name: provider.name,
       provider: adapter,
+      ...(hosted && !guestModelIds ? { remoteProviderId: source } : {}),
       ...(provider.apiKeyEnvVar ? { keyEnv: provider.apiKeyEnvVar } : {}),
       ...(models ? { models } : {}),
     }]
@@ -24,7 +26,7 @@ export function nativeProviderAdapterAliases(
 }
 
 export const PI_NATIVE_PROVIDER_ADAPTER_SOURCE = String.raw`
-type CindyAdapterAlias = { id: string; name: string; provider: string; keyEnv?: string; models?: Array<{ id: string; grant: string }> };
+type CindyAdapterAlias = { id: string; name: string; provider: string; keyEnv?: string; remoteProviderId?: string; models?: Array<{ id: string; grant: string }> };
 type CindyProviderRefreshSnapshot = {
   nonce: string;
   env: Record<string, string>;
@@ -62,6 +64,7 @@ function parseCindyProviderRefreshSnapshot(raw: unknown, nonce: string): CindyPr
     if (typeof alias.id !== 'string' || !alias.id || seen.has(alias.id)) return undefined;
     if (typeof alias.name !== 'string') return undefined;
     if (typeof alias.provider !== 'string' || !alias.provider) return undefined;
+    if (alias.remoteProviderId !== undefined && (typeof alias.remoteProviderId !== 'string' || !alias.remoteProviderId)) return undefined;
     if (alias.keyEnv !== undefined && (
       typeof alias.keyEnv !== 'string'
       || !cindyRefreshEnvAllowed(alias.keyEnv)
@@ -71,6 +74,7 @@ function parseCindyProviderRefreshSnapshot(raw: unknown, nonce: string): CindyPr
       !model || typeof model.id !== 'string' || !model.id || typeof model.grant !== 'string' || !model.grant))) return undefined;
     seen.add(alias.id);
     aliases.push({ id: alias.id, name: alias.name, provider: alias.provider,
+      ...(alias.remoteProviderId ? { remoteProviderId: alias.remoteProviderId } : {}),
       ...(alias.keyEnv ? { keyEnv: alias.keyEnv } : {}),
       ...(alias.models ? { models: alias.models.map((model: any) => ({ id: model.id, grant: model.grant })) } : {}) });
   }
@@ -103,15 +107,15 @@ async function registerCindyNativeProviderAdapters(pi: any) {
         && (!alias.models || alias.models.some(allowed => allowed.id === model.id)));
       if (providerModels.length === 0 && !alias.models) continue;
       const stream = (model: any, context: any, options: any, simple: boolean) => lazyStream(model, async () => {
-        if (alias.models) {
-          const grant = alias.models.find(allowed => allowed.id === model.id)?.grant;
-          if (!grant || !CINDY_HOSTED?.guest) throw new Error('The model is not authorized for this shared task');
+        if (alias.models || alias.remoteProviderId) {
+          const grant = alias.models ? alias.models.find(allowed => allowed.id === model.id)?.grant : model.id;
+          if (!grant || !CINDY_HOSTED || (CINDY_HOSTED.guest && !alias.models)) throw new Error('The model is not authorized for this remote task');
           const signal = options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
           const response = await fetch(CINDY_HOSTED.url + '/cindy/model-access', {
             method: 'POST', headers: { Authorization: 'Bearer ' + CINDY_HOSTED.token, 'content-type': 'application/json' },
-            body: JSON.stringify({ model: grant }), signal,
+            body: JSON.stringify({ model: grant, ...(alias.remoteProviderId ? { providerId: alias.remoteProviderId } : {}) }), signal,
           });
-          if (!response.ok || (await response.json()).allowed !== true) throw new Error('The model is not authorized for this shared task');
+          if (!response.ok || (await response.json()).allowed !== true) throw new Error('The model is not authorized for this remote task');
         }
         const api = getApiProvider(model.api);
         if (!api) throw new Error('The selected native provider API is unavailable');

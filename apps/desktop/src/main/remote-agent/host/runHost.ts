@@ -207,6 +207,8 @@ export interface RemoteAgentHostDeps {
   };
   /** 同账号任务在启动前登记来源和逐请求的实时模型授权，子代理同样受此约束。 */
   bindOwnerProviderRoute?(hostSessionId: string, providerId: string, allowsModel?: (providerId: string, model: string) => boolean): OwnerProviderRouteBinding;
+  /** Resolve an owner native request's actual catalog identity before checking its live grant. */
+  ownerModelAllowed?(hostSessionId: string, providerId: string, kind: RemoteAgentKind, model: string): boolean;
   /**
    * 受邀者任务的出站边界(只对 guest 调用；不提供 = 不接受受邀者)。启动前登记任务用的供应商：本机
    * proxy 只让这条任务的请求经这个供应商、用它提供的模型。release 在任务结束时调用。
@@ -1116,13 +1118,19 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           // checks this authenticated, run-local endpoint before opening a stream.
           if (request.path === '/cindy/model-access') {
             let model: unknown;
-            try { model = JSON.parse(request.body?.toString('utf8') ?? '{}').model; } catch { /* deny */ }
+            let providerId: unknown;
+            try { ({ model, providerId } = JSON.parse(request.body?.toString('utf8') ?? '{}')); } catch { /* deny */ }
             const current = () => !run.closing && !signal.aborted && deps.isOwnerCurrent(run.owner)
               && deps.isControllerAuthorized(run.controller);
             let allowed = false;
             try {
-              allowed = run.trust === 'guest' && current() && typeof model === 'string'
-                && !!model && model.length <= 512 && await run.guestRoute?.allowsModel?.(model) === true && current();
+              if (request.method === 'POST' && current() && typeof model === 'string' && model && model.length <= 512) {
+                allowed = run.trust === 'guest'
+                  ? (providerId === undefined || providerId === run.providerId) && await run.guestRoute?.allowsModel?.(model) === true
+                  : typeof providerId === 'string' && !!providerId && providerId.length <= 512 && !!run.ownerRoute
+                    && deps.ownerModelAllowed?.(hostSessionId, providerId, run.kind, model) === true;
+                allowed = allowed && current();
+              }
             } catch { /* Failed authorization must never open a native stream. */ }
             return { status: 200, headers: [['content-type', 'application/json']], body: Buffer.from(JSON.stringify({ allowed })) };
           }

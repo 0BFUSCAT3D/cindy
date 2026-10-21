@@ -30,7 +30,8 @@ import { currentProviderPartyUsageStore, flushProviderPartyUsage } from '../../u
 import { readDeviceLinkSettings } from '../../device-link/settings-store.js';
 import { readTurnUsageResetAt } from '../../goal-host/usageLimit.js';
 import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService.js';
-import { bindHostedSessionProvider } from '../../maker-host/session-provider-store.js';
+import { bindHostedSessionProvider, hasHostedSessionModelAccess } from '../../maker-host/session-provider-store.js';
+import { hostedProviderOffersModel } from '../../maker-host/guest-provider-route-store.js';
 import { isRemoteProviderInvocationAllowed } from '../../maker-host/remote-provider-access-store.js';
 import { createGuestProviderRouteBinder, guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
 import { createRemoteAgentHost, type HostedStartInput, type RemoteAgentHost, type RunUsageRecord } from './runHost';
@@ -141,6 +142,8 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     startHosted: (input) => options.getMaker().startHostedAgentSession(input.kind, hostedStartOptions(input)),
     forkHosted: (kind, opts) => options.getMaker().forkSdkSession(kind, opts),
     bindOwnerProviderRoute: bindHostedSessionProvider,
+    ownerModelAllowed: (hostSessionId, providerId, kind, model) => hasHostedSessionModelAccess(hostSessionId)
+      && hostedProviderOffersModel(hostSessionId, providerId, kind, model),
     isControllerAuthorized,
     controllerTrust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
     providerAccess: {

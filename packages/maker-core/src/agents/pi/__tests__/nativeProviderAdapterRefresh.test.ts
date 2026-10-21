@@ -2,14 +2,14 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { CINDY_BRIDGE_EXTENSION_SOURCE } from '../cindy-bridge-source.js';
-import { PI_NATIVE_PROVIDER_ADAPTER_SOURCE } from '../native-provider-adapter-source.js';
+import { nativeProviderAdapterAliases, PI_NATIVE_PROVIDER_ADAPTER_SOURCE } from '../native-provider-adapter-source.js';
 
 type RegisteredProvider = { id: string; auth: { apiKey?: unknown; oauth?: unknown }; getModels: () => unknown[];
   streamSimple(model: unknown, context: unknown, options: unknown): Promise<unknown> };
 
-type Alias = { id: string; name: string; provider: string; keyEnv?: string; models?: Array<{ id: string; grant: string }> };
+type Alias = { id: string; name: string; provider: string; keyEnv?: string; remoteProviderId?: string; models?: Array<{ id: string; grant: string }> };
 
-function loadAdapter(initialAliases: Alias[] = [], network?: { fetch: unknown; stream: unknown }) {
+function loadAdapter(initialAliases: Alias[] = [], network?: { fetch: unknown; stream: unknown; guest?: boolean }) {
   const env: Record<string, string> = {
     CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(initialAliases),
     CINDY_PI_KEY_OLD: 'old-secret',
@@ -49,7 +49,7 @@ function loadAdapter(initialAliases: Alias[] = [], network?: { fetch: unknown; s
   }).outputText;
   const sandbox: Record<string, unknown> = {
     process: { env },
-    CINDY_HOSTED: { guest: true, url: 'http://127.0.0.1:9', token: 'run-token' },
+    CINDY_HOSTED: { guest: network?.guest ?? true, url: 'http://127.0.0.1:9', token: 'run-token' },
     fetch: network?.fetch, AbortSignal,
     __loadPiAi: async (name: string) => name.endsWith('/compat')
       ? { getApiProvider: () => network ? { stream: network.stream, streamSimple: network.stream } : undefined }
@@ -69,6 +69,34 @@ function loadAdapter(initialAliases: Alias[] = [], network?: { fetch: unknown; s
 }
 
 describe('Cindy native provider refresh bridge', () => {
+  // Review 4333949156 / sharing §12, unit: existing native-stream coverage only
+  // used guest=true. An owner-hosted BYOM provider must also query its real source
+  // before the SDK, including after refresh; revoked/failed checks cannot stream.
+  it.each([undefined, 'native'] as const)('checks owner native streams with adapter=%s at startup and after refresh', async adapterProvider => {
+    const aliases = nativeProviderAdapterAliases([{ id: 'runtime', sourceProviderId: 'catalog-provider',
+      name: 'BYOM', adapterProvider, models: [{ id: 'old' }],
+    }], undefined, true);
+    let allowed = true;
+    const fetchGrant = vi.fn(async () => ({ ok: true, json: async () => ({ allowed }) }));
+    const stream = vi.fn(async function* () {});
+    const h = loadAdapter(aliases, { fetch: fetchGrant, stream, guest: false });
+    const adapter = await h.adapter.registerCindyNativeProviderAdapters(h.pi);
+    h.handlers.get('session_start')!({}, h.ctx);
+    expect(h.providers.has('runtime')).toBe(true);
+    const request = () => h.providers.get('runtime')!.streamSimple({ provider: 'runtime', id: 'old', api: 'openai-responses' }, { messages: [] }, {});
+    await request();
+    expect(fetchGrant).toHaveBeenCalledWith('http://127.0.0.1:9/cindy/model-access', expect.objectContaining({
+      body: JSON.stringify({ model: 'old', providerId: 'catalog-provider' }),
+    }));
+    expect(stream).toHaveBeenCalledTimes(1);
+    const snapshot = h.adapter.parseCindyProviderRefreshSnapshot(JSON.stringify({ nonce: 'abcdefghijklmnop', env: {}, aliases }), 'abcdefghijklmnop')!;
+    await adapter.refresh(snapshot, h.ctx, new Set());
+    allowed = false;
+    await expect(request()).rejects.toThrow('not authorized');
+    fetchGrant.mockRejectedValueOnce(new Error('disconnected'));
+    await expect(request()).rejects.toThrow('disconnected');
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
   // Unit, sharing §12: Pi API-key transports bypass the HTTP proxy. The existing
   // refresh tests never opened a native stream. Execute the generated adapter:
   // only A is listed; revocation/failure must stop before the native SDK opens.

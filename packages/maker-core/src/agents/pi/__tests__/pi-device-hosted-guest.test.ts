@@ -390,7 +390,7 @@ describe('Pi device-hosted guest sessions', () => {
     expect(knobs.spawnedArgs).toHaveLength(0);
   });
 
-  it('keeps same-account provider routes unchanged', async () => {
+  it('keeps same-account provider routes while attaching native remote model checks', async () => {
     const { deps, registered } = providerDeps();
     const { handle, env, configHome } = await start(false, { providerId: 'byom-a', model: 'model-a', deps });
     try {
@@ -403,6 +403,12 @@ describe('Pi device-hosted guest sessions', () => {
       expect(env.CINDY_PI_VISION_BRIDGE_TEST).toBe('vision-secret');
       expect(Object.keys(readSubagentRoutes(env)).sort()).toEqual(['denied-model', 'm', 'model-a', 'model-b']);
       expect(new Set(registered)).toEqual(new Set(['byom-a', 'byom-b', null]));
+      // §12 / review 4333949156: startup must guard every owner-native source,
+      // including a child's source, instead of enabling the adapter only for guests.
+      expect(JSON.parse(env.CINDY_PI_NATIVE_PROVIDER_ADAPTERS!)).toEqual([
+        { id: 'byom-a', name: 'byom-a', provider: 'byom-a', keyEnv: 'CINDY_PI_KEY_BYOM_A', remoteProviderId: 'byom-a' },
+        { id: 'byom-b', name: 'byom-b', provider: 'byom-b', keyEnv: 'CINDY_PI_KEY_BYOM_B', remoteProviderId: 'byom-b' },
+      ]);
     } finally {
       await handle.close();
     }
