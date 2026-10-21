@@ -768,7 +768,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   // 正式用户消息的操作行高 44(触控高度)+ 2 间距 = 46;本行前已有 rowWrap 的 8 间距,补 38。
   statusRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs, height: 38, justifyContent: 'flex-end', maxWidth: '100%' },
-  // 按钮自带 44 宽的留白,彼此不再加间距。
+  // 按钮自带 44 宽的留白,彼此只留 4 的间距。
   statusActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
   // 说明 / 报错是成句的话:13/18,二级色;失败用报错色。
   statusText: { color: colors.textSecondary, flexShrink: 1, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
