@@ -256,3 +256,57 @@ it('never approves a confirmation that carries no request id; it opens the task 
   expect(localMaker.getPendingInteractions).not.toHaveBeenCalled();
   expect(localMaker.resolveInteraction).not.toHaveBeenCalled();
 });
+
+// #6508: exercise the real view + reader, including retained empty snapshots.
+// Existing tests covered successful empty reads and remote offline approval only.
+// Unit regression: a successful empty read followed by a rejected refresh must
+// show read failure, never the quiet sentence or a fresh-looking footer.
+it.each([false, true])('shows refresh failure without claiming an empty workbench (had rows: %s)', async (hasRows) => {
+  glanceApi.mockResolvedValueOnce(glance({ working: hasRows ? [row({ title: 'Still working', kind: 'working' })] : [] }));
+  render(<BotWorkbench botId="bot-1" />);
+  await screen.findByText(hasRows ? 'Still working' : 'bots.workbench.glance.quiet');
+
+  glanceApi.mockRejectedValueOnce(new Error('read unavailable'));
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('bots.workbench.glance.loadFailed')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+  expect(screen.queryByText('bots.workbench.glance.seenJust')).toBeNull();
+  if (hasRows) expect(screen.getByText('Still working')).toBeTruthy();
+
+  glanceApi.mockResolvedValueOnce(glance({ working: [row({ title: 'Recovered work', kind: 'working' })] }));
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('Recovered work')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.loadFailed')).toBeNull();
+});
+
+it('keeps initial loading distinct from failure and restores content on readiness and reopen', async () => {
+  let reject!: (error: Error) => void;
+  glanceApi.mockImplementationOnce(() => new Promise<BotGlance>((_resolve, fail) => { reject = fail; }));
+  const view = render(<BotWorkbench botId="bot-1" />);
+  expect(screen.getByRole('status', { name: 'ccAgent.common.loading' })).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+  await act(async () => reject(new Error('[PRECONDITION_FAILED] Host not ready')));
+  expect(screen.getByText('bots.workbench.glance.loadFailed')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+
+  glanceApi.mockResolvedValue(glance({ working: [row({ title: 'Visible before close', kind: 'working' })] }));
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('Visible before close')).toBeTruthy();
+  view.unmount();
+  expect(listeners).toHaveLength(0);
+  render(<BotWorkbench botId="bot-1" />);
+  expect(await screen.findByText('Visible before close')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+});
+
+it('ignores an older empty response arriving after a newer nonempty refresh', async () => {
+  let resolve!: (value: BotGlance) => void;
+  glanceApi.mockImplementationOnce(() => new Promise<BotGlance>((done) => { resolve = done; }));
+  glanceApi.mockResolvedValueOnce(glance({ working: [row({ title: 'Current work', kind: 'working' })] }));
+  render(<BotWorkbench botId="bot-1" />);
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('Current work')).toBeTruthy();
+  await act(async () => resolve(glance()));
+  expect(screen.getByText('Current work')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+});

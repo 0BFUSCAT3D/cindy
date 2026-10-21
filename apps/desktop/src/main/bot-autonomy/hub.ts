@@ -63,14 +63,13 @@ export function noteBotAutonomyInputProjection(projection: unknown): void {
   runtime.watch.applyInputProjection(projection as BotAutonomyInputProjection);
 }
 
-function emptyGlance(botId: string): BotGlance {
-  return { botId, scope: 'own', waiting: [], working: [], lastSweepAt: 0, doneToday: 0, offlineDevices: [] };
-}
-
 export function getBotAutonomyGlance(botId: string, options?: GlanceOptions): BotGlance {
   if (isAppSessionBoundaryPending()) throwIpcError('PRECONDITION_FAILED', 'App session is switching; retry later.');
   const active = current && scopeIsCurrent(current.scope) ? current.runtime : null;
-  return active ? active.glance(botId, options) : emptyGlance(botId);
+  // 与伙伴工具读取保持一致：运行体或归属未就绪不是「没有任务」。
+  // 沿用已有错误协议，旧查看端也能进入读取失败分支；就绪后的变化推送会触发重读。
+  if (!active?.watch.isReady()) throwIpcError('PRECONDITION_FAILED', 'Bot autonomy is not ready; retry later.');
+  return active.glance(botId, options);
 }
 
 export async function getBotAutonomySettingsView(): Promise<BotAutonomySettingsView> {
