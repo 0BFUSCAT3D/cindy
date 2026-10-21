@@ -654,7 +654,7 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "quotaFirst": "能读取订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
+      "quotaFirst": "能读取订阅用量时，先用快重置、还剩得多的电脑，各账号会按时间均匀用掉；差不多时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
@@ -689,6 +689,10 @@
         "share": "别人分享的电脑不显示配额"
       },
       "runningCount_other": "{{count}} 个任务运行中",
+      "pace": {
+        "used": "已用 {{used}}%",
+        "usedExpected": "已用 {{used}}%，该用到 {{expected}}%"
+      },
       "limitAria": "{{name}} 的并发上限",
       "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} 的权重",
@@ -736,6 +740,15 @@
           "unknown": "还没问到"
         }
       }
+    },
+    "rebalance": {
+      "title": "换到 {{label}} 继续？",
+      "description": "为了均匀用完各账号的配额，建议这条消息换到 {{label}} 发送（{{quota}}）。换过去会带上最近几轮对话和摘要，更早的细节可能记不全。",
+      "quota": "还剩 {{left}}%",
+      "quotaReset": "还剩 {{left}}%，{{reset}}",
+      "confirm": "换过去",
+      "cancel": "取消",
+      "remember": "以后自动换，不再询问（仅本任务）"
     },
     "deleteConfirm": {
       "title": "删除 {{provider}} 的供应商组？",
@@ -11976,7 +11989,8 @@
         "relocatedHere": "Agent 已改到这台电脑上运行",
         "relocatedTo": "Agent 已改到 {{device}} 上运行",
         "relocatedTaskComputer": "Agent 已改到任务所在的电脑上运行",
-        "relocatedElsewhere": "Agent 已改到另一台电脑上运行"
+        "relocatedElsewhere": "Agent 已改到另一台电脑上运行",
+        "quotaRebalance": "这个账号的配额更该先用"
       },
       "contextRebuild": {
         "labelOverflow": "已整理上下文并继续",

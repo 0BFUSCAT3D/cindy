@@ -26,8 +26,8 @@ const plugin: TabKindPlugin<BotWorkbenchTabState> = {
   },
   TabPillTitle: ({ t }) => <>{t('bots.workbench.title')}</>,
   TabPillIcon: () => <LayoutGrid size={13} />,
-  TabBody: ({ state, ctx }: TabKindBodyProps<BotWorkbenchTabState>) =>
-    state.botId && ctx.deviceLinkDeviceId !== undefined && !ctx.remoteHostId ? (
+  TabBody: ({ state, ctx, active = true, shellVisible = true }: TabKindBodyProps<BotWorkbenchTabState>) =>
+    active && shellVisible && state.botId && ctx.deviceLinkDeviceId !== undefined && !ctx.remoteHostId ? (
       <BotWorkbench
         key={`${ctx.deviceLinkDeviceId ?? ''}:${state.botId}`}
         botId={state.botId}

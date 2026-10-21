@@ -654,7 +654,7 @@
       "round": "順番に",
       "order": "並び順",
       "weight": "重み付け",
-      "quotaFirst": "サブスクリプションの使用量を取得できる場合、クォータのリセットが近いパソコンを優先し、次に使用量の少ないものを選びます。同程度ならグループの割り当て方式で選びます",
+      "quotaFirst": "サブスクリプションの使用量を取得できる場合、リセットが近く残りの多いパソコンを優先し、各アカウントを時間に沿って均等に使い切ります。同程度ならグループの割り当て方式で選びます",
       "description": {
         "least": "空いているパソコンへ",
         "round": "順番に割り当て",
@@ -689,6 +689,10 @@
         "share": "ほかの人から共有されたパソコンのクォータは表示されません"
       },
       "runningCount_other": "{{count}} 件実行中",
+      "pace": {
+        "used": "{{used}}% 使用",
+        "usedExpected": "{{used}}% 使用、目安 {{expected}}%"
+      },
       "limitAria": "{{name}} の同時実行数の上限",
       "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} の重み",
@@ -736,6 +740,15 @@
           "unknown": "未確認"
         }
       }
+    },
+    "rebalance": {
+      "title": "{{label}} に切り替えて続けますか？",
+      "description": "各アカウントのクォータを均等に使い切るため、このメッセージは {{label}} から送ることをおすすめします（{{quota}}）。直近数回のやり取りと要約は引き継がれますが、それより前の細部は失われることがあります。",
+      "quota": "残り {{left}}%",
+      "quotaReset": "残り {{left}}%・{{reset}}",
+      "confirm": "切り替える",
+      "cancel": "キャンセル",
+      "remember": "今後は確認せず自動で切り替える（このタスクのみ）"
     },
     "deleteConfirm": {
       "title": "{{provider}} のプロバイダーグループを削除しますか？",
@@ -11976,7 +11989,8 @@
         "relocatedHere": "Agent をこのパソコンで実行するようにしました",
         "relocatedTo": "Agent を {{device}} で実行するようにしました",
         "relocatedTaskComputer": "Agent をタスクのあるパソコンで実行するようにしました",
-        "relocatedElsewhere": "Agent を別のパソコンで実行するようにしました"
+        "relocatedElsewhere": "Agent を別のパソコンで実行するようにしました",
+        "quotaRebalance": "こちらのクォータを先に使うため"
       },
       "contextRebuild": {
         "labelOverflow": "コンテキストを整理して続行しました",

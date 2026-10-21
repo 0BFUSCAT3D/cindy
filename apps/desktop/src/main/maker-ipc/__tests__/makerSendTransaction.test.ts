@@ -421,7 +421,7 @@ describe('maker SEND transaction', () => {
       },
     });
     expect(applyPendingAgentSwitch).toHaveBeenCalledWith('session-1',
-      scheduled ? { scheduled: true } : undefined);
+      { clientId: 'model-input', ...(scheduled ? { scheduled: true } : {}) });
     expect(onModelDispatched).toHaveBeenCalledExactlyOnceWith('session-1', 'model-input');
   });
 

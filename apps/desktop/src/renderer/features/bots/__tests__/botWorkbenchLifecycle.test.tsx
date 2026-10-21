@@ -78,6 +78,8 @@ it('does not open on the first visit, opens once when something starts waiting, 
   await waitFor(() => expect(view.getByText('chat')).toBeTruthy());
   await waitFor(() => expect(glance).toHaveBeenCalledOnce());
   expect(getBucket('chat').tabs).toEqual([]);
+  // §6.3: the hidden auto-open check must not start cross-device reads.
+  expect(glance).toHaveBeenLastCalledWith('bot', false);
   expect(visibility).not.toHaveBeenCalled();
 
   await hostChanged(waitingCount(1));
