@@ -450,7 +450,8 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
     seen.add(item.clientId);
     const uploadsPending = item.attachmentCount > 0 && item.uploadedCount < item.attachmentCount;
     // 断开时整条投递(含附件上传)都停着:附件没传完也写「等连上」,图片不再转圈。
-    const waitingFor = !item.failed ? input.outboxWaitingFor ?? null : null;
+    // 已交给电脑的条目不是在等着发,保持原有的交接 / 对账状态。
+    const waitingFor = !item.failed && !item.dispatching ? input.outboxWaitingFor ?? null : null;
     items.push({
       type: 'pending_send',
       key: pendingSendItemKey(item.clientId),

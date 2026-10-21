@@ -351,12 +351,13 @@ describe('buildPendingSendItems', () => {
   });
 
   it('holds local sends as waiting while disconnected, including unfinished uploads, but keeps failures', () => {
-    const [ready, uploading, failed] = build({
+    const [ready, uploading, failed, handed] = build({
       outboxWaitingFor: 'computer',
       outbox: [
         outboxItem('ready'),
         outboxItem('uploading', { attachmentCount: 1, uploadedCount: 0, thumbnails: [{ key: 'uploading-slot-0', uri: 'file:///a.jpg', ossRef: null, uploading: true }] }),
         outboxItem('failed', { failed: true }),
+        outboxItem('handed', { dispatching: true }),
       ],
     });
     expect(ready).toMatchObject({ phase: 'waiting', waitingFor: 'computer' });
@@ -365,6 +366,8 @@ describe('buildPendingSendItems', () => {
     expect(uploading).toMatchObject({ phase: 'waiting', waitingFor: 'computer' });
     expect(uploading.thumbs.every((thumb) => !thumb.uploading)).toBe(true);
     expect(failed.phase).toBe('failed');
+    // 已交给电脑的条目在等对账,不是在等着发。
+    expect(handed.phase).toBe('sending');
     expect(build({ outbox: [outboxItem('ready')] })[0].phase).toBe('sending');
   });
 

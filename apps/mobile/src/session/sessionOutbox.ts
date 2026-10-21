@@ -204,6 +204,8 @@ export interface MobileOutboxDisplayItem {
   fileCount: number;
   fileNames?: string[];
   failed: boolean;
+  /** 已交给电脑(发送中 / 待确认 / 电脑已接手):断线时不是「等着发」,而是在等对账。 */
+  dispatching?: boolean;
   /** False while a first-message creation record still owns recovery of the draft. */
   canCancel?: boolean;
   /** 失败原因(附件失败给统一文案,enqueue 失败给 RPC 错误)。 */
@@ -503,6 +505,7 @@ export function outboxDisplayItem(item: MobileOutboxItem): MobileOutboxDisplayIt
     fileCount,
     fileNames,
     failed: item.phase === 'failed',
+    ...(item.phase === 'dispatching' ? { dispatching: true } : {}),
     errorText: item.phase !== 'failed'
       ? null
       : (item.enqueueError ?? (item.failedIds.length > 0 ? i18n.t('session.row.attachmentUploadFailed') : null)),

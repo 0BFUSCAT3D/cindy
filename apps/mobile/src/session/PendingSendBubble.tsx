@@ -213,7 +213,8 @@ function ThumbCell({
             accessibilityLabel={t('message.queue.retryImage')}
             accessibilityRole="button"
             disabled={!onRetry}
-            hitSlop={spacing.xs}
+            // 32 + 两侧各 6 = 44。
+            hitSlop={6}
             onPress={(event) => { event.stopPropagation(); onRetry?.(); }}
             style={({ pressed }) => [styles.thumbRetry, pressed && styles.pressed]}
             testID={`pendingSend.imageRetry.${thumb.key}`}
@@ -684,7 +685,7 @@ function StatusAction({
       accessibilityRole="button"
       accessibilityState={{ busy: busy || undefined, disabled }}
       disabled={disabled}
-      hitSlop={{ top: spacing.sm, bottom: spacing.sm, left: spacing.xs, right: spacing.xs }}
+      hitSlop={{ top: spacing.sm, bottom: spacing.sm }}
       onPress={disabled ? undefined : onPress}
       style={({ pressed }) => [styles.statusAction, pressed && styles.pressed]}
       testID={testID}
@@ -766,13 +767,15 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     textAlign: 'right',
   },
   // 正式用户消息的操作行高 44(触控高度)+ 2 间距 = 46;本行前已有 rowWrap 的 8 间距,补 38。
-  statusRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, height: 38, justifyContent: 'flex-end', maxWidth: '100%' },
-  statusActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  statusRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs, height: 38, justifyContent: 'flex-end', maxWidth: '100%' },
+  // 按钮自带 44 宽的留白,彼此不再加间距。
+  statusActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
   // 说明 / 报错是成句的话:13/18,二级色;失败用报错色。
   statusText: { color: colors.textSecondary, flexShrink: 1, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   statusError: { color: colors.errorText, flexShrink: 1, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   statusDivider: { backgroundColor: colors.border, height: spacing.md, width: StyleSheet.hairlineWidth },
-  statusAction: { justifyContent: 'center', minHeight: 28 },
+  // 可见高 28 + 上下 hitSlop 8 = 44;宽度直接给到 44,短标签(编辑 / 取消)也够,且相邻按钮不重叠。
+  statusAction: { alignItems: 'center', justifyContent: 'center', minHeight: 28, minWidth: 44 },
   statusActionText: { color: colors.textSecondary, fontSize: typeScale.footnote, fontWeight: fontWeight.medium, lineHeight: lineHeight.caption },
   statusActionTextPrimary: { color: colors.textPrimary },
   statusActionTextDisabled: { color: colors.textTertiary, fontWeight: fontWeight.regular },
