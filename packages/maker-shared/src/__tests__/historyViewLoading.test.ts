@@ -36,6 +36,17 @@ describe('history read coverage', () => {
     finish(page);
     await older;
   });
+
+  it('stamps a latest read as certified only after it was applied', async () => {
+    const { view, transport } = fixture();
+    expect(view.latestReadOkStartedAt()).toBe(0);
+    transport.page.mockRejectedValueOnce(new Error('link hiccup'));
+    await view.refresh();
+    expect(view.latestReadStartedAt()).toBeGreaterThan(0);
+    expect(view.latestReadOkStartedAt()).toBe(0);
+    await view.refresh();
+    expect(view.latestReadOkStartedAt()).toBe(view.latestReadStartedAt());
+  });
 });
 
 describe('history pagination feedback', () => {

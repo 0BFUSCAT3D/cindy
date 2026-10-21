@@ -7529,28 +7529,33 @@ const backgroundTaskReconcileEpoch = new Map<string, number>();
 // stream into a polling loop.
 //
 // The same pushes also invalidate the history view, which re-reads the page
-// ~500 ms later. The repair therefore records when the first push of its window
-// arrived and only reads when no latest-page read started after that moment: a
-// read issued after the notice already shows whatever the push announced, so a
-// second page read 1 s later, plus its interaction snapshot, buys nothing. A
-// turn that emits a notice every 500 ms previously cost two full page reads
-// and one interaction read per notice on the host.
+// ~500 ms later. The repair therefore records when the LAST push of its window
+// arrived and only reads when no successful latest-page read started after that
+// moment: a read issued after the notice already shows whatever the push
+// announced, so a second page read 1 s later, plus its interaction snapshot, buys
+// nothing. A turn that emits a notice every 500 ms previously cost two full page
+// reads and one interaction read per notice on the host. A read that failed does
+// not certify anything; the repair then reads again.
 const REMOTE_MESSAGE_REPAIR_DELAY_MS = 1_500;
 const remoteMessageRepairTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; noticedAt: number }>();
 
 function scheduleRemoteMessageRepair(sessionId: string): void {
-  if (!sessionId || remoteMessageRepairTimers.has(sessionId)) return;
-  const noticedAt = Date.now();
-  remoteMessageRepairTimers.set(
-    sessionId,
-    {
-      noticedAt,
-      timer: setTimeout(() => {
-        remoteMessageRepairTimers.delete(sessionId);
-        void reconcileRemoteMessages(sessionId, { repair: true, coveredSince: noticedAt }).catch(() => undefined);
-      }, REMOTE_MESSAGE_REPAIR_DELAY_MS),
-    },
-  );
+  if (!sessionId) return;
+  const pending = remoteMessageRepairTimers.get(sessionId);
+  if (pending) {
+    // Debounce stays anchored to the first push, but a later push in the window
+    // must also be covered by the read that lets the repair skip.
+    pending.noticedAt = Date.now();
+    return;
+  }
+  const entry: { timer: ReturnType<typeof setTimeout>; noticedAt: number } = {
+    noticedAt: Date.now(),
+    timer: setTimeout(() => {
+      remoteMessageRepairTimers.delete(sessionId);
+      void reconcileRemoteMessages(sessionId, { repair: true, coveredSince: entry.noticedAt }).catch(() => undefined);
+    }, REMOTE_MESSAGE_REPAIR_DELAY_MS),
+  };
+  remoteMessageRepairTimers.set(sessionId, entry);
 }
 
 function invalidateBackgroundTaskReconcile(sessionId: string): number {
@@ -12735,7 +12740,7 @@ const _remoteReconcileInFlight = new Map<
   string,
   {
     run: Promise<boolean>; rerun: boolean; rerunForce: boolean; rerunRepair: boolean;
-    /** Earliest push time among the repairs merged into this flight; see reconcileRemoteMessages. */
+    /** Latest push time among the repairs merged into this flight (Infinity = uncovered); see reconcileRemoteMessages. */
     rerunCoveredSince?: number;
     preserveClientIds: Set<string>;
   }
@@ -12807,6 +12812,13 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
           : view.refresh(false, !opts?.activationRead),
         covered ? Promise.resolve(0) : reconcilePendingInteractions(sessionId),
       ]).then(async () => {
+        // Covered means a read began after the notice AND applied. A failed read
+        // (error is cleared by the next read's start, so use the success stamp)
+        // leaves the push unrepaired: issue the repair read the skip would have saved.
+        if (covered && opts?.coveredSince !== undefined && view.isActive()
+          && view.latestReadOkStartedAt() <= opts.coveredSince) {
+          await Promise.all([view.refresh(false, !opts?.activationRead), reconcilePendingInteractions(sessionId)]);
+        }
         if (getRemoteHistoryView(sessionId) !== view || !view.isActive()) return false;
         if (isHistoryViewUnavailable(view.getSnapshot().error)) {
           releaseRemoteHistoryView(sessionId, view);
@@ -12941,9 +12953,10 @@ function reconcileRemoteMessages(sessionId: string, opts?: {
     }
     if (opts?.repair) {
       inFlight.rerunRepair = true;
-      // The rerun covers every notice up to the earliest one merged here.
-      inFlight.rerunCoveredSince = opts.coveredSince === undefined ? undefined
-        : Math.min(inFlight.rerunCoveredSince ?? Infinity, opts.coveredSince);
+      // A read certifies only notices that precede it, so the rerun must start
+      // after the LATEST notice merged here; a repair without a notice time can
+      // never be certified.
+      inFlight.rerunCoveredSince = Math.max(inFlight.rerunCoveredSince ?? -Infinity, opts.coveredSince ?? Infinity);
     }
     // A push-driven repair is served by the rerun; only explicit resyncs need
     // the interaction snapshot refreshed ahead of it.

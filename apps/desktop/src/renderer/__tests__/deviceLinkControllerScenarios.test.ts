@@ -337,6 +337,57 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     }
   });
 
+  // A read that began after the push but failed, or that began before a later push
+  // in the same repair window, certifies nothing: the repair must still read.
+  it.each(['read-failed', 'later-push'])('repairs when the covering read cannot certify the push (%s)', async (scenario) => {
+    vi.useFakeTimers();
+    const s = sid();
+    let leave: (() => void) | undefined;
+    try {
+      host.enableHistoryView();
+      host.seedSession(s, {}, [dbMessage(s, 'answer', 'answer', '2026-06-15T00:00:00Z')]);
+      remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+      leave = makerChatStore.enterView(s);
+      makerChatStore.ensureInitialMessages(s);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getRemoteHistoryView(s)!.getSnapshot().ready).toBe(true);
+      const reads = () => host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view').length;
+      await vi.advanceTimersByTimeAsync(10);
+      const readsBefore = reads();
+      const next = dbMessage(s, 'next', 'next answer', '2026-06-15T00:00:01Z');
+      if (scenario === 'read-failed') {
+        const original = host.invoke.getMockImplementation()!;
+        let failNext = true;
+        host.invoke.mockImplementation(async (device, channel, args) => {
+          if (channel === 'local-db:messages:view' && failNext) { failNext = false; throw new Error('link hiccup'); }
+          return original(device, channel, args);
+        });
+        host.hostMessage(s, next);
+        await vi.advanceTimersByTimeAsync(600);
+        expect(reads()).toBe(readsBefore + 1); // the invalidation read, which failed
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(reads()).toBe(readsBefore + 2); // the repair read must still happen
+      } else {
+        // Created push (and its 500 ms read) first; a second durable push whose
+        // created frame was lost arrives afterwards inside the same repair window.
+        host.hostMessage(s, dbMessage(s, 'early', 'early answer', '2026-06-15T00:00:00.500Z'));
+        await vi.advanceTimersByTimeAsync(600);
+        expect(reads()).toBe(readsBefore + 1);
+        host.hostMessage(s, next, { lossy: true });
+        host.push('maker:event', { sessionId: s, persistId: 'client-next',
+          event: { type: 'text', source: 'claude-code', data: { text: 'next answer', isFinal: true } } });
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(reads()).toBe(readsBefore + 2);
+      }
+      expect(getRemoteHistoryView(s)!.getSnapshot().items.flatMap((item) => item.type === 'messages' ? item.messages : [])
+        .map((row) => row.content)).toContain('next answer');
+    } finally {
+      leave?.();
+      makerChatStore.purgeSession(s);
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['success', 'failed', 'hidden', 'collapsed'])(
     'waits for refreshed expanded details before releasing a read receipt: %s', async (scenario) => {
       const s = sid();

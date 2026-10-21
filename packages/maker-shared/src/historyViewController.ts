@@ -74,6 +74,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
   private intentVersion = 0;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private latestReadStartedAtMs = 0;
+  private latestReadOkStartedAtMs = 0;
 
   constructor(
     private readonly transport: HistoryViewTransport<T>,
@@ -104,6 +105,12 @@ export class HistoryViewController<T extends HistoryMessageSource> {
    * instead of forcing one more page read per notice.
    */
   latestReadStartedAt = (): number => this.latestReadStartedAtMs;
+  /**
+   * Start time of the most recent latest-page read that completed and was applied (0 before
+   * the first). A failed or superseded read never advances it, so "covered by a read" can
+   * be certified without trusting an error-cleared snapshot.
+   */
+  latestReadOkStartedAt = (): number => this.latestReadOkStartedAtMs;
   /** True while a latest-page read is in flight; older-page reads do not count. */
   isReadingLatest = (): boolean => this.pagePromise !== null && !this.pageOlder;
   subscribe = (listener: () => void): (() => void) => {
@@ -196,7 +203,8 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     const generation = this.generation;
     const before = older ? this.state.nextCursor ?? undefined : undefined;
     const readReceipt = nextHistoryCacheReceipt();
-    if (!older) this.latestReadStartedAtMs = Date.now();
+    const readStartedAt = Date.now();
+    if (!older) this.latestReadStartedAtMs = readStartedAt;
     this.publish({ loading: true, error: null });
     try {
       const page = await this.transport.page(before);
@@ -220,6 +228,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       this.publish({ items: stableItems, ready: true, loading: false,
         ...(older ? {} : { stale: false, readReceipt }),
         hasMore: retained.hasMore, nextCursor: retained.nextCursor }, older ? 'older' : 'latest');
+      if (!older) this.latestReadOkStartedAtMs = readStartedAt;
       for (const summary of historyWorkSummaries(items)) {
         if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
       }
