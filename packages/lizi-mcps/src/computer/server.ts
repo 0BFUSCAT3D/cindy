@@ -626,7 +626,7 @@ export function createComputerMcpServer(
           ...outcome,
           tool: name,
           ...(snapshotId ? { snapshot_id: snapshotId } : {}),
-          data,
+          data: withoutDuplicateElements(name, data),
           ...(recovery ? { recovery } : {}),
           ...(postcheck ? { postcheck } : {}),
         },
@@ -862,7 +862,8 @@ export function createComputerMcpServer(
             include_screenshot: false,
           }
         // Automatic evidence must not create unmanaged screenshots of user windows.
-        : { include_screenshot: false }),
+        // It is never reused for element actions, so the compact tree is enough.
+        : { include_screenshot: false, tree_format: "markdown" }),
     };
     const read = await readForRecovery(
       deps,
@@ -1578,6 +1579,18 @@ export function createComputerMcpServer(
   return server;
 }
 
+
+/**
+ * Cindy asks drivers for both tree formats to register element tokens and frames.
+ * The model reads the compact Markdown rows; the structured copy stays host-side.
+ */
+function withoutDuplicateElements(name: string, data: unknown): unknown {
+  if (name !== 'get_window_state' || !data || typeof data !== 'object' || Array.isArray(data)) return data;
+  if (typeof (data as { tree_markdown?: unknown }).tree_markdown !== 'string') return data;
+  if (!('elements' in data)) return data;
+  const { elements: _elements, ...rest } = data as Record<string, unknown>;
+  return rest;
+}
 
 function readDriverSnapshotId(data: unknown): string | null {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
