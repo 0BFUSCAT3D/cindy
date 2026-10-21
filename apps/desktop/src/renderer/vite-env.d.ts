@@ -5532,9 +5532,6 @@ interface ElectronAPI {
     editBotGroupPlanStep: (
       input: import('../shared/botGroupChat').BotGroupPlanEditInput,
     ) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
-    setBotGroupPlanAuto: (
-      input: import('../shared/botGroupChat').BotGroupPlanAutoInput,
-    ) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
     onBotGroupChanged: (
       cb: (
         payload: import('../shared/botGroupChat').BotGroupChangedPayload,

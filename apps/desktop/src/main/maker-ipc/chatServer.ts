@@ -76,8 +76,8 @@ interface ServerPlan {
   id: string; revision: number; source_message_id: string; request_text: string; organizer_id: string; creator_id: string;
   note_message_ids?: string[];
   status: BotGroupPlanView['status']; current_step: number | null; steps: Array<BotGroupPlanView['steps'][number] & { resultMessageId?: string | null }>;
-  /** Servers with groupSingleSpeaker: a discussion (`talk`) or a division of work, and whether it advances on its own. */
-  kind?: 'work' | 'talk'; auto_continue?: boolean;
+  /** Servers with groupSingleSpeaker: a queue of teammates answering in turn (`talk`) or a division of work. */
+  kind?: 'work' | 'talk';
   created_at: string; updated_at: string;
 }
 interface Running {
@@ -290,7 +290,6 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
     continuePlan: (...args) => service().continuePlan(...args),
     retryPlan: (...args) => service().retryPlan(...args),
     editPlanStep: (...args) => service().editPlanStep(...args),
-    setPlanAuto: (...args) => service().setPlanAuto(...args),
     settleLaneTurn: (...args) => service().settleLaneTurn(...args),
     postCompanionTaskMessage: (...args) => service().postCompanionTaskMessage(...args),
     hasCompanionTaskChannel: (...args) => service().hasCompanionTaskChannel(...args),
@@ -1196,7 +1195,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
-      } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
+      } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null, ...(open.kind ? { kind: open.kind } : {}) } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
       incomingMessageTimes: incomingMessageTimes(s.messages, s.members),
@@ -1212,7 +1211,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       organizerName: members.find(m => m.id === plan.organizer_id)?.name ?? '',
       steps: plan.steps.map(s => ({ ...s, botId: localBot(s.botId)?.id ?? s.botId })), currentStep: plan.current_step,
       workDir: workspace?.plans[plan.id]?.workDir ?? null, branch: workspace?.plans[plan.id]?.branch ?? null,
-      ...(plan.kind ? { kind: plan.kind, autoContinue: plan.auto_continue === true,
+      ...(plan.kind ? { kind: plan.kind,
         canManage: plan.creator_id === selfId || members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role)) } : {}),
       createdAt: Date.parse(plan.created_at), updatedAt: Date.parse(plan.updated_at) };
   }
@@ -2370,15 +2369,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }),
     startPlan: input => safe(() => actPlan(input, 'start')), dismissPlan: input => safe(() => actPlan(input, 'dismiss')),
     continuePlan: input => safe(() => actPlan(input, 'continue')), retryPlan: input => safe(() => actPlan(input, 'retry')),
-    setPlanAuto: input => safe(async () => {
-      const i = z.object({ groupId: id, planId: id, autoContinue: z.boolean() }).parse(input);
-      if (!singleSpeaker) throw new Error('UNSUPPORTED');
-      const room = await groupRoom(i.groupId);
-      const plan = (await api<ServerPlan[]>(`/conversations/${room}/plans?ids=${i.planId}`)).find(p => p.id === i.planId);
-      if (!plan) throw new Error('PLAN_CLOSED');
-      await api(`/conversations/${room}/plans/${plan.id}`, 'POST', { operationId: randomUUID(), expectedRevision: plan.revision, action: 'auto', autoContinue: i.autoContinue });
-      changed(room); return { ok: true as const };
-    }),
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
       disposed = true; threads.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); clearTimeout(claimTrigger); socket?.close();

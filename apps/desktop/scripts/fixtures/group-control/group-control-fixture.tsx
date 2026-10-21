@@ -16,7 +16,7 @@ interface GroupData {
   bubbles?: boolean;
   wrappedReactions?: boolean;
   /** A single-speaker server group: nobody was named, so everyone answers in turn (bot-group-chat.md §4.0/§7.0). */
-  arrangement?: 'waiting' | 'auto';
+  arrangement?: Queue;
   /** Open the group settings drawer as its owner. */
   settings?: boolean;
 }
@@ -110,26 +110,44 @@ function bubbleMessages(wrappedReactions = false) {
   ];
 }
 
+type Queue = 'running' | 'done' | 'long';
+const QUEUE_ANSWERS = [
+  '我倾向于改：群里会安静很多，也更省。',
+  '同意。测试上要覆盖 @ 多位时按顺序回答，以及老群升级后只留一次说明。',
+  '手机端也要跟上，不然两边看到的不一样。',
+  '队列卡别太长，折起来就行。',
+  '我没什么补充，按这个做。',
+];
+/** Who a queue lines up: the two-teammate group, or seven teammates for a long queue. */
+const QUEUE_CROWD = ['Aster', 'Nova', 'Mira', 'Orin', 'Pax', 'Quill', 'Rhea'].map((name, i) => ({ botId: 'abcdefg'[i]!, name }));
+const queueMembers = (state: Queue) => QUEUE_CROWD.slice(0, state === 'long' ? 7 : 2);
+/** How many turns have answered: Nova still speaking, everyone, or the five that run by themselves. */
+const queueAnswered = (state: Queue) => (state === 'running' ? 1 : state === 'done' ? 2 : 5);
+
 /** Nobody named: the queue card, then each teammate's own answer in turn. */
-function arrangementMessages(state: 'waiting' | 'auto') {
+function arrangementMessages(state: Queue) {
   const ask = '群聊改成每条只有一位回答，大家讨论下？';
   return [
     message({ id: 'q1', sequence: 1, isSelf: true, content: ask, createdAt: T0 }),
     message({ id: 'p1-card', sequence: 2, kind: 'plan', planId: 'p1', isSelf: true, content: '', createdAt: T0 }),
-    message({ id: 'a1', sequence: 3, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', planId: 'p1', createdAt: T0 + MINUTE,
-      content: '我倾向于改：群里会安静很多，也更省。' }),
-    ...(state === 'auto' ? [message({ id: 'b1', sequence: 4, authorKind: 'bot', authorBotId: 'b', authorName: 'Nova', planId: 'p1', createdAt: T0 + 2 * MINUTE,
-      content: '同意。测试上要覆盖 @ 多位时按顺序回答，以及老群升级后只留一次说明。' })] : []),
+    ...queueMembers(state).slice(0, queueAnswered(state)).map((member, i) => message({
+      id: `${member.botId}1`, sequence: 3 + i, authorKind: 'bot', authorBotId: member.botId, authorName: member.name, planId: 'p1',
+      createdAt: T0 + (i + 1) * MINUTE, content: QUEUE_ANSWERS[i] })),
   ];
 }
-function arrangementPlan(state: 'waiting' | 'auto') {
+function arrangementPlan(state: Queue) {
+  const answered = queueAnswered(state);
+  const members = queueMembers(state);
   return {
-    id: 'p1', status: state === 'auto' ? 'done' : 'waiting', organizerBotId: 'a', organizerName: 'Aster', currentStep: state === 'auto' ? 1 : 0,
-    kind: 'talk', autoContinue: state === 'auto', canManage: true, workDir: null, branch: null, createdAt: T0, updatedAt: T0 + 2 * MINUTE,
-    steps: [
-      { position: 0, botId: 'a', botName: 'Aster', task: '', status: 'done', resultMessageId: 'a1' },
-      { position: 1, botId: 'b', botName: 'Nova', task: '', status: state === 'auto' ? 'done' : 'pending', resultMessageId: state === 'auto' ? 'b1' : null },
-    ],
+    id: 'p1', status: state === 'done' ? 'done' : state === 'long' ? 'waiting' : 'running', organizerBotId: 'a', organizerName: 'Aster',
+    currentStep: state === 'long' ? answered - 1 : state === 'done' ? 1 : answered,
+    // A running turn is timed from the plan's last change: keep it recent so the clock reads sensibly.
+    kind: 'talk', canManage: true, workDir: null, branch: null, createdAt: T0, updatedAt: state === 'running' ? Date.now() - 30_000 : T0 + answered * MINUTE,
+    steps: members.map((member, position) => ({
+      position, botId: member.botId, botName: member.name, task: '',
+      status: position < answered ? 'done' : position === answered && state === 'running' ? 'running' : 'pending',
+      resultMessageId: position < answered ? `${member.botId}1` : null,
+    })),
   };
 }
 
@@ -157,8 +175,9 @@ function groupFrom(data: GroupData) {
     createdAt: 1,
     updatedAt: 1,
     plans: data.arrangement ? [arrangementPlan(data.arrangement)] : [],
-    ...(data.arrangement ? { openPlan: data.arrangement === 'waiting'
-      ? { id: 'p1', status: 'waiting', currentStep: 0, stepCount: 2, currentBotName: 'Aster', currentStepStatus: 'done' } : null,
+    ...(data.arrangement ? { openPlan: data.arrangement === 'long'
+      ? { id: 'p1', status: 'waiting', currentStep: 4, stepCount: 7, currentBotName: 'Pax', currentStepStatus: 'done', kind: 'talk' }
+      : data.arrangement === 'running' ? { id: 'p1', status: 'running', currentStep: 1, stepCount: 2, currentBotName: 'Nova', currentStepStatus: 'running', kind: 'talk' } : null,
       singleSpeaker: true } : {}),
     ...(data.bubbles || data.arrangement ? { serverBacked: true } : {}),
     messages: data.arrangement ? arrangementMessages(data.arrangement) : data.bubbles ? bubbleMessages(data.wrappedReactions) : Array.from({ length: data.messages }, (_, i) => ({

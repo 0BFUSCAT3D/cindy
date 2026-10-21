@@ -270,8 +270,6 @@ export interface BotGroupTimelineItemProps {
   /** Finish time of each done step (1-based), read off its hand-off message. */
   planDoneAt?: ReadonlyMap<number, number>;
   onPlanAction?: (action: 'start' | 'dismiss', planId: string) => void;
-  planAutoPending?: boolean;
-  onPlanAuto?: (planId: string, on: boolean) => void;
   readOnly?: boolean;
   onEditStep?: (planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) => void;
 }
@@ -443,8 +441,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
     );
   }
 
-  // A server arrangement stands on its own: the turns it lines up, under the request or the
-  // lead's answer, never folded into someone's reply (bot-group-chat.md §7).
+  // A server queue stands on its own under the request: the turns it lines up, never folded
+  // into someone's reply (bot-group-chat.md §7).
   if (message.kind === 'plan' && props.plan?.kind) {
     return (
       <Row {...rowProps} block="author">
@@ -464,8 +462,6 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                 onStart={() => undefined}
                 onDismiss={() => undefined}
                 onEditStep={(step, action, botId) => { if (message.planId) props.onEditStep?.(message.planId, step, action, botId); }}
-                autoPending={props.planAutoPending}
-                onAutoContinue={props.readOnly || !message.planId ? undefined : on => props.onPlanAuto?.(message.planId!, on)}
               />
             </div>
           </div>

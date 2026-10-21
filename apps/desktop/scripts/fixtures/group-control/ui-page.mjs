@@ -5,6 +5,7 @@ const members = [
   { botId: 'b', name: 'Nova' },
 ];
 const base = { name: 'Design review', members, messages: 0, sidebar: true };
+const QUEUE_CROWD = ['Aster', 'Nova', 'Mira', 'Orin', 'Pax', 'Quill', 'Rhea'].map((name, i) => ({ botId: 'abcdefg'[i], name }));
 const LONG_DEVICE = 'Mac Studio · A very long device name for layout verification';
 
 /** Migrated from check-group-control-layout.mjs (remote-control notice above the composer). */
@@ -34,16 +35,20 @@ export default {
       data: { ...base, bubbles: true },
     },
     arrangement: {
-      about: 'Single-speaker server group, nobody named: the queue card stands on its own, the first teammate answers, then it waits for 继续; its owner can turn on 自动接下一位',
-      data: { ...base, arrangement: 'waiting' },
+      about: 'Single-speaker server group, nobody named: the queue card stands on its own, Aster answered and Nova is speaking next by itself',
+      data: { ...base, arrangement: 'running' },
     },
     'arrangement-done': {
-      about: 'The same discussion once every turn is done: no switch or 继续 row, the turn reply carries 第 2 步',
-      data: { ...base, arrangement: 'auto' },
+      about: 'The same queue once every turn is done: no 继续 row',
+      data: { ...base, arrangement: 'done' },
+    },
+    'arrangement-long': {
+      about: 'Seven teammates: the first five answered by themselves, the card folds to three turns around Quill, who waits for 继续',
+      data: { ...base, members: QUEUE_CROWD, arrangement: 'long' },
     },
     settings: {
       about: 'Single-speaker group settings: no 回复方式, 发言方式, 负责人 or project folder',
-      data: { ...base, arrangement: 'waiting', settings: true },
+      data: { ...base, arrangement: 'running', settings: true },
     },
     'bubbles-wrapped': {
       about: 'PR #6549: wrapped reactions keep both toolbars level with their bubbles; server messages with empty mention ids still open unique member cards',
@@ -93,9 +98,12 @@ export default {
       await card.waitFor();
       // The card is its own row, never part of a teammate's answer.
       assert.equal(await card.locator('xpath=ancestor::article').count(), 0);
-      // The owner sees 自动接下一位 only while the arrangement is open.
-      assert.equal(await page.getByRole('switch').count(), ui.case === 'arrangement' ? 1 : 0);
-      assert.equal(await page.getByTestId('bot-group-plan-follow-up').count(), ui.case === 'arrangement' ? 1 : 0);
+      // Only a queue past its first five waits for 继续; a long queue folds to three turns until expanded.
+      assert.equal(await page.getByTestId('bot-group-plan-follow-up').count(), ui.case === 'arrangement-long' ? 1 : 0);
+      assert.equal(await card.locator('li').count(), ui.case === 'arrangement-long' ? 3 : 2);
+      // A queue waiting for 继续 takes a new request: the composer does not offer to revise the last answer.
+      const placeholder = await input.getAttribute('placeholder');
+      assert.ok(ui.case === 'arrangement' ? placeholder.includes('正在说') : !placeholder.includes('改改'), placeholder);
       return;
     }
     if (ui.case.startsWith('bubbles')) {

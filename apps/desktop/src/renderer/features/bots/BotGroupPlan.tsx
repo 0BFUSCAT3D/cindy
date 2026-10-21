@@ -9,12 +9,11 @@
  *
  * 交接文件相对安排的工作目录；点开交给系统默认方式，路径越出工作目录的一律不打开。
  */
-import type { ReactNode } from 'react';
-import { Check, CircleAlert, CircleCheck, CircleDashed, Sparkles } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleDashed, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -260,10 +259,23 @@ const FINAL_NOTE_KEYS: Partial<Record<BotGroupPlanView['status'], string>> = {
   stopped: 'bots.groupChat.plan.stopped',
 };
 
+/** A long queue shows this many turns around the current one until it is expanded. */
+const QUEUE_VISIBLE_STEPS = 3;
+
+/** The turns a folded queue shows: the one before the current turn, it, and the next. */
+export function botGroupQueueWindow(plan: BotGroupPlanView): { start: number; end: number } {
+  const count = plan.steps.length;
+  // Folding away a single turn saves nothing.
+  if (count <= QUEUE_VISIBLE_STEPS + 1) return { start: 0, end: count };
+  const active = plan.steps.findIndex((step) => step.status !== 'done');
+  const start = Math.min(Math.max((active < 0 ? count - 1 : active) - 1, 0), count - QUEUE_VISIBLE_STEPS);
+  return { start, end: start + QUEUE_VISIBLE_STEPS };
+}
+
 /**
  * Body of the 安排卡. A legacy plan is the organizer's message (the usual Bot header plus the
- * 负责人 tag). A server arrangement (`plan.kind`) stands on its own under the request or the
- * lead's answer: only its steps, and whether the next one starts by itself.
+ * 负责人 tag). A server queue (`plan.kind`) stands on its own under the request: only its turns,
+ * folded to a few around the current one.
  * `actionable` = the group's open plan, still waiting for 开始;
  * `reassignable` = the open plan stopped after a step (steps not done can change hands).
  */
@@ -279,8 +291,6 @@ export function BotGroupPlanCard({
   onStart,
   onDismiss,
   onEditStep,
-  autoPending = false,
-  onAutoContinue,
 }: {
   plan: BotGroupPlanView | undefined;
   members: readonly BotGroupMemberView[];
@@ -295,10 +305,9 @@ export function BotGroupPlanCard({
   onStart: () => void;
   onDismiss: () => void;
   onEditStep: (step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) => void;
-  autoPending?: boolean;
-  onAutoContinue?: (on: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
   if (!plan) {
     return <p className="text-12 text-[var(--text-tertiary)]">{t('bots.groupChat.plan.missing')}</p>;
   }
@@ -309,6 +318,9 @@ export function BotGroupPlanCard({
   const canReassign = reassignable && plan.steps.some((step) => step.status === 'pending' || step.status === 'failed');
   const underWay = plan.status === 'running' || plan.status === 'waiting';
   const arranged = plan.kind !== undefined;
+  const turns = arranged ? botGroupQueueWindow(plan) : { start: 0, end: plan.steps.length };
+  const folded = !expanded && turns.end - turns.start < plan.steps.length;
+  const shown = folded ? plan.steps.slice(turns.start, turns.end) : plan.steps;
   return (
     <div data-testid="bot-group-plan" data-plan-status={plan.status} data-plan-kind={plan.kind} className="flex min-w-0 flex-col">
       {arranged ? null : (
@@ -320,7 +332,8 @@ export function BotGroupPlanCard({
         // A legacy plan sits inside the organizer's bubble; an arrangement is its own card.
         arranged ? 'rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]' : 'mt-2 rounded-lg bg-[var(--surface)]')}>
         <ol className="flex flex-col py-1.5">
-          {plan.steps.map((step, index) => {
+          {shown.map((step, shownIndex) => {
+            const index = folded ? turns.start + shownIndex : shownIndex;
             const identity = stepIdentity(step, members);
             const editable =
               actionable || (reassignable && (step.status === 'pending' || step.status === 'failed'));
@@ -374,14 +387,19 @@ export function BotGroupPlanCard({
             </Button>
           </div>
         ) : null}
-        {arranged && underWay && plan.canManage && onAutoContinue ? (
-          // An arrangement waits for 继续 after each turn unless its owner lets it run on.
-          <label className="flex min-w-0 cursor-pointer select-none items-center gap-2 border-t border-[var(--border-default)] px-3.5 py-1.5 text-12 leading-4 text-[var(--text-secondary)]">
-            <Switch checked={plan.autoContinue === true} disabled={autoPending}
-              aria-label={t('bots.groupChat.plan.autoContinue')} onCheckedChange={onAutoContinue} />
-            <span className="min-w-0">{t('bots.groupChat.plan.autoContinue')}</span>
-            {canReassign ? <span className="ml-auto min-w-0 truncate text-11 text-[var(--text-tertiary)]">{t('bots.groupChat.plan.editHint')}</span> : null}
-          </label>
+        {arranged && turns.end - turns.start < plan.steps.length ? (
+          <button
+            type="button"
+            data-testid="bot-group-plan-fold"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+            className="flex w-full min-w-0 items-center gap-1 border-t border-[var(--border-default)] px-3.5 py-1.5 text-left text-12 leading-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          >
+            <span className="min-w-0">
+              {expanded ? t('bots.groupChat.plan.foldTurns') : t('bots.groupChat.plan.allTurns', { count: plan.steps.length })}
+            </span>
+            {expanded ? <ChevronUp size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}
+          </button>
         ) : !arranged && (actionable || underWay) ? (
           // Card footer: how it runs on the left, what the steps offer on the right.
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-[var(--border-default)] px-3.5 py-1.5 text-11 leading-4 text-[var(--text-tertiary)]">

@@ -229,6 +229,8 @@ export function botGroupHeaderStatus(
   };
   const plan = group.openPlan;
   if (plan?.status === 'running' && plan.currentStep !== null && plan.currentStepStatus === 'running') {
+    // A queue's turn is someone speaking, not a step of work.
+    if (plan.kind === 'talk') return t('bots.groupChat.header.speaking', { name: plan.currentBotName?.trim() || '' });
     return t('bots.groupChat.header.stepRunning', { name: plan.currentBotName?.trim() || '', step: plan.currentStep + 1 });
   }
   if (group.planningBotId) return t('bots.groupChat.header.planning', { name: nameOf(group.planningBotId) });

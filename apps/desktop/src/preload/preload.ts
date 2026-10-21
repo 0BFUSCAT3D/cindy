@@ -6257,10 +6257,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       input: import('../shared/botGroupChat').BotGroupPlanEditInput,
     ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
       ipcRenderer.invoke('maker:bot-group:plan-edit', input),
-    setBotGroupPlanAuto: (
-      input: import('../shared/botGroupChat').BotGroupPlanAutoInput,
-    ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
-      ipcRenderer.invoke('maker:bot-group:plan-auto', input),
     onBotGroupChanged: fanOutBotGroupChanged,
     getCompanionCloudState: (): Promise<import('../shared/companionCloud').CompanionCloudSnapshot> =>
       ipcRenderer.invoke('maker:companion-cloud:state'),

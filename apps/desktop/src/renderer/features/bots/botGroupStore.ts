@@ -21,7 +21,6 @@ import type {
   BotGroupMutationResult,
   BotGroupPlanAction,
   BotGroupPlanActionInput,
-  BotGroupPlanAutoInput,
   BotGroupPlanEditInput,
   BotGroupSummary,
 } from '../../../shared/botGroupChat';
@@ -211,13 +210,6 @@ export async function runBotGroupPlanAction(
           : api?.retryBotGroupPlan;
   if (!api || typeof call !== 'function') return NOT_READY;
   return settlePlanMutation(() => call(input));
-}
-
-/** Switch whether a server arrangement starts its next step by itself. */
-export async function setBotGroupPlanAuto(input: BotGroupPlanAutoInput): Promise<BotGroupMutationResult | null> {
-  const api = botGroupApi();
-  if (!api || typeof api.setBotGroupPlanAuto !== 'function') return NOT_READY;
-  return settlePlanMutation(() => api.setBotGroupPlanAuto(input));
 }
 
 /** Reassign or remove a step of a proposed plan. */

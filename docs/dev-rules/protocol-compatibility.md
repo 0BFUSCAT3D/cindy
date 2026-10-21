@@ -2462,11 +2462,11 @@ Chat Server `/me` 追加 `capabilities.groupSingleSpeaker: 1`，服务端派发�
 `continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」只叫被 @ 的伙伴或第一位伙伴。
 
 新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
-队列停着等继续时新消息按新请求发送（不作为补充）；安排动作 `auto` 切换自动接续（旧服务器会拒绝，故以能力为前提）。
-`chat_plan.kind` / `auto_continue` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。
+队列停着等继续时新消息按新请求发送（不作为补充）。队列前 5 位由服务端自动接续，无需客户端参与。
+`chat_plan.kind` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。
 停止的范围收窄只在执行端实现（成员只停自己的请求与伙伴，管理员可 `all`），沿用既有 control /
-plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`，新增 `bot-group:plan-auto`；
-手机经电脑的远程动作不变（停止为本人范围，暂无自动接续开关）。发布顺序：服务端整集群先上，再发客户端。
+plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`；
+手机经电脑的远程动作不变（停止为本人范围）。发布顺序：服务端整集群先上，再发客户端。
 
 ### 伙伴群聊引用回复（`cindy.quote` v1）
 

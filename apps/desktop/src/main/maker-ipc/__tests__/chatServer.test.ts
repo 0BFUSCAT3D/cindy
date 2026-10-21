@@ -1378,7 +1378,7 @@ describe('Chat Server result delivery and refresh', () => {
       const planId = '80000000-0000-4000-8000-000000000001';
       const answerId = '50000000-0000-4000-8000-000000000011', noteId = '50000000-0000-4000-8000-000000000012';
       const plan = { id: planId, revision: 3, source_message_id: execution.source_message_id, request_text: 'One reply per message?', organizer_id: otherBot, creator_id: selfId,
-        note_message_ids: [noteId], status: 'running', current_step: 1, kind: 'talk', auto_continue: false, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        note_message_ids: [noteId], status: 'running', current_step: 1, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId: otherBot, botName: 'Peer', task: '', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
       singleSpeaker((route, _method, body) => {
         if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: 'owner', plan_id: planId, plan_step: 1 } } }; }
@@ -1413,7 +1413,7 @@ describe('Chat Server result delivery and refresh', () => {
       ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
     ] as const)('with an open queue %s', async (_label, status, route) => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
-        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', auto_continue: false, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
       singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
       expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))

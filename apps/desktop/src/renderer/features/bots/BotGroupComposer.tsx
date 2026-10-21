@@ -507,7 +507,7 @@ export function BotGroupComposer({
       : planState?.kind === 'proposed'
         ? t('bots.groupChat.composer.placeholderPlanProposed')
         : planState?.kind === 'running' && planState.botName
-          ? t('bots.groupChat.composer.placeholderPlanRunning', { name: planState.botName })
+          ? t(planState.talk ? 'bots.groupChat.composer.placeholderQueueRunning' : 'bots.groupChat.composer.placeholderPlanRunning', { name: planState.botName })
           : planState?.kind === 'waiting' && planState.stepDone && planState.botName
             ? t('bots.groupChat.composer.placeholderPlanWaiting', { name: planState.botName })
             : t('bots.groupChat.composer.placeholder');

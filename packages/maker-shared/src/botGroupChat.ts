@@ -348,11 +348,9 @@ export interface BotGroupPlanView {
   /** Absolute work directory once started; git plans run in their own worktree. */
   workDir: string | null;
   branch: string | null;
-  /** Server groups: `talk` lets teammates answer in turn; `work` divides work into steps. */
+  /** Server groups: `talk` queues teammates answering in turn (the first five go on by themselves); `work` divides work into steps. */
   kind?: 'talk' | 'work';
-  /** Server groups: the next step starts by itself instead of waiting for 继续. */
-  autoContinue?: boolean;
-  /** Server groups: the viewer may continue, stop or switch auto-continue (creator, owner or admin). */
+  /** Server groups: the viewer may continue or stop it (creator, owner or admin). */
   canManage?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -366,6 +364,8 @@ export interface BotGroupOpenPlanSummary {
   /** Bot of the current step (running, being redone, or last finished / failed). */
   currentBotName: string | null;
   currentStepStatus: BotGroupPlanStepStatus | null;
+  /** Server groups: a queue of teammates answering in turn (`talk`) or a division of work. */
+  kind?: 'talk' | 'work';
 }
 
 export function isBotGroupPlanOpen(status: BotGroupPlanStatus): boolean {
@@ -560,10 +560,6 @@ export interface BotGroupPlanActionInput {
 }
 
 export type BotGroupPlanAction = 'start' | 'dismiss' | 'continue' | 'retry';
-
-export interface BotGroupPlanAutoInput extends BotGroupPlanActionInput {
-  autoContinue: boolean;
-}
 
 export interface BotGroupPlanEditInput extends BotGroupPlanActionInput {
   position: number;
