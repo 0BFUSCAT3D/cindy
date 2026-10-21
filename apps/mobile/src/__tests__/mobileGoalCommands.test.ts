@@ -97,7 +97,7 @@ function existingHarness(args = 'target') {
     commandNeedsRemoteSession: () => false, extractMobileSessionReferences: () => [], outboxDispatchBlockedNow: () => false,
     runtimeOptions: { planModeSupported: true }, permissionModeOrAsk: (mode: string) => mode,
     dismissPromptRecommendation: noop, hydrateComposerMessageReferenceBodies: async (doc: unknown) => doc,
-    resolvePastedSessionLinkLabel: noop, requestMessageListFollowLatest: noop, hasPastePlaceholders: () => false,
+    resolvePastedSessionLinkLabel: noop, requestMessageListFollowLatest: noop, noteLocalSend: noop, hasPastePlaceholders: () => false,
     beginOutboxAttachmentHandoff: async () => ({ prepare: async () => [], release: noop }),
     attachmentPreviews: {}, incomingShareSlotOrder, buildOutboxItem: (input: unknown) => input, createOutboxClientId: () => 'ordinary-message',
     mobileDurableOutbox: { add: vi.fn(async (_record: unknown) => {}) }, rememberSentAttachmentPreviews: noop,
