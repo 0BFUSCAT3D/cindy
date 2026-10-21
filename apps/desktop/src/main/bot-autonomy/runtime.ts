@@ -33,7 +33,7 @@ import { isFollowerAvailable } from './follower.js';
 import { projectBotGlance } from './glance.js';
 import { errorCode, type TaskWatch, type TaskWatchLogger } from './taskWatch.js';
 
-/** 程序级心跳：刷新归属 / 标题、清理做完的行、判定阈值、按需轮询远程电脑。 */
+/** 按需检查本机状态，或重试尚未成功发布的事件；不轮询远程电脑。 */
 export const SWEEP_INTERVAL_MS = 30_000;
 /** 界面推送节流。 */
 export const PUSH_THROTTLE_MS = 1_000;
@@ -67,6 +67,7 @@ export class BotAutonomyRuntime {
   readonly watch: TaskWatch;
   private readonly ledger = new AutonomyEventLedger();
   private readonly inflight = new Set<string>();
+  private readonly deferredEvents = new Set<string>();
   private readonly reminded = new Map<string, number>();
   private readonly ensured = new Set<string>();
   /** 正在对齐的内置规则：并发的 ensure 与发布共用同一次写入。 */
@@ -109,7 +110,7 @@ export class BotAutonomyRuntime {
   }
 
   private syncSweepTimer(): void {
-    const needed = this.started && !this.stopped && this.timersEnabled && this.watch.needsSweep();
+    const needed = this.started && !this.stopped && this.timersEnabled && this.needsSweep();
     if (!needed && this.sweepTimer) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
@@ -117,6 +118,10 @@ export class BotAutonomyRuntime {
       this.sweepTimer = setInterval(() => { void this.sweep(); }, SWEEP_INTERVAL_MS);
       this.sweepTimer.unref?.();
     }
+  }
+
+  private needsSweep(): boolean {
+    return this.watch.needsSweep() || this.deferredEvents.size > 0;
   }
 
   stop(): void {
@@ -138,7 +143,7 @@ export class BotAutonomyRuntime {
   /** 一次程序级扫描；定时器与单测共用。 */
   async sweep(): Promise<void> {
     if (this.stopped || this.sweeping || !this.deps.isCurrent()) return;
-    if (!this.watch.needsSweep()) {
+    if (!this.needsSweep()) {
       this.syncSweepTimer();
       return;
     }
@@ -266,7 +271,11 @@ export class BotAutonomyRuntime {
   async evaluate(): Promise<void> {
     if (!this.started || this.stopped || !this.deps.isCurrent()) return;
     const now = this.deps.now();
-    const { due, capped } = this.ledger.evaluate(this.watch.list(), now);
+    const rows = this.watch.list();
+    const { due, capped } = this.ledger.evaluate(rows, now);
+    const dueIds = new Set(due.map(candidate => candidate.id));
+    // Removed/out-of-scope tasks must not retain a retry timer or replay stale events.
+    for (const id of this.deferredEvents) if (!dueIds.has(id)) this.deferredEvents.delete(id);
     for (const candidate of capped) {
       this.deps.log.info('autonomy event capped', { type: candidate.type, occurrence: candidate.occurrence });
     }
@@ -277,10 +286,17 @@ export class BotAutonomyRuntime {
         await this.dispatch(candidate, now);
       } finally {
         this.inflight.delete(candidate.id);
+        if (this.ledger.isSettled(candidate.id)) this.deferredEvents.delete(candidate.id);
+        else this.deferredEvents.add(candidate.id);
       }
       if (this.stopped) return;
     }
+    const unsettled = new Set(due.filter(candidate => !this.ledger.isSettled(candidate.id)).map(candidate => candidate.row.sessionId));
+    for (const row of rows) {
+      if (row.phase === 'finished' && !unsettled.has(row.sessionId)) this.watch.retireFinished(row.sessionId, row.phaseSince);
+    }
     this.pruneReminded(now);
+    this.syncSweepTimer();
   }
 
   private async dispatch(candidate: AutonomyEventCandidate, now: number): Promise<void> {

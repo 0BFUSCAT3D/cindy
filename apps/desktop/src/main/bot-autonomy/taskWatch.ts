@@ -21,7 +21,6 @@ import {
 } from '../../shared/botAutonomy.js';
 import {
   deriveFollowerBotId,
-  isFollowerAvailable,
   resolveSchedulerBotId,
   type FollowerBotDirectory,
   type FollowerBotState,
@@ -228,6 +227,20 @@ export class TaskWatch {
     return this.finishedLog;
   }
 
+  /** Completed event was settled (or intentionally has no event); keep only the completion counter. */
+  retireFinished(sessionId: string, phaseSince: number): void {
+    const row = this.rows.get(sessionId);
+    if (!row || row.deviceId !== null || row.phase !== 'finished' || row.phaseSince !== phaseSince) return;
+    this.rows.delete(sessionId);
+    this.meta.delete(sessionId);
+    this.interrupted.delete(sessionId);
+    const facts = this.local.get(sessionId);
+    // New activity may already be queued while the previous completion publish was awaiting IO.
+    if (facts && (!facts.activity || facts.activity.phase === 'completed') && !facts.inputError && !facts.usageLimitWait) {
+      this.local.delete(sessionId);
+    }
+  }
+
   offlineDevices(): string[] {
     return [...this.remote.values()].filter((device) => !device.online).map((device) => device.name);
   }
@@ -302,14 +315,16 @@ export class TaskWatch {
   needsSweep(): boolean {
     if (this.stopped) return false;
     if (!this.ownershipLoaded) return this.ownershipReadFailures <= 3 || this.pending.size > 0;
-    return this.hasScheduler()
+    return this.ownershipReadFailures > 0
+      || this.hasScheduler()
       || (!this.interruptedSeeded && this.ownership.creatorBySession.size > 0)
       || [...this.pending].some(id => this.observesLocal(id))
       || [...this.rows.values()].some(row => row.deviceId === null && row.phase !== 'finished');
   }
 
   private hasScheduler(): boolean {
-    return this.schedulerBotId !== null && isFollowerAvailable(this.ownership.bots.get(this.schedulerBotId));
+    // Observation consent survives pausing the selected teammate; followerFor controls execution.
+    return this.schedulerBotId !== null;
   }
 
   private observesLocal(id: string): boolean {
@@ -574,7 +589,6 @@ export class TaskWatch {
   }
 
   private async refreshOwnership(force = false): Promise<void> {
-    const wasLoaded = this.ownershipLoaded;
     const previousScope = JSON.stringify([this.hasScheduler(), [...this.ownership.creatorBySession.keys()]]);
     if (this.ownershipRefresh) {
       await this.ownershipRefresh;
@@ -599,6 +613,8 @@ export class TaskWatch {
       this.schedulerBotId = resolveSchedulerBotId(this.readOverride(), this.ownership.bots);
       if (previousScope !== JSON.stringify([this.hasScheduler(), [...this.ownership.creatorBySession.keys()]])) {
         this.interruptedSeeded = false;
+        // A recovered ownership read can discover delegations whose activity arrived while idle.
+        for (const id of this.local.keys()) if (this.observesLocal(id)) this.pending.add(id);
       }
       for (const row of this.rows.values()) {
         if (row.deviceId === null && !this.observesLocal(row.sessionId)) {
@@ -622,8 +638,8 @@ export class TaskWatch {
     } finally {
       if (this.ownershipRefresh === run) this.ownershipRefresh = null;
     }
-    // 首次读到归属（含启动时读失败、之后扫描才读到）：把期间累积的变化补算一次。
-    if (!wasLoaded && this.ownershipLoaded && this.pending.size && !this.stopped) this.scheduleFlush();
+    // 初次加载或变化后恢复归属：把期间累积的变化补算一次。
+    if (this.ownershipLoaded && this.pending.size && !this.stopped) this.scheduleFlush();
   }
 
   private readOverride(): { customized: boolean; schedulerBotId: string | null } {
@@ -641,7 +657,7 @@ export class TaskWatch {
   async sweep(): Promise<void> {
     if (this.stopped || !this.needsSweep()) return;
     const now = this.deps.now();
-    if (now - this.ownershipAt >= OWNERSHIP_REFRESH_MS) await this.refreshOwnership();
+    if (this.ownershipReadFailures > 0 || now - this.ownershipAt >= OWNERSHIP_REFRESH_MS) await this.refreshOwnership();
     await this.refreshLocalMeta();
     // 启动兜底读失败（如数据库一时忙）或启动时归属还没读到：按扫描节奏重试，读成功一次后不再读。
     if (!this.interruptedSeeded && this.ownershipLoaded && !this.stopped) await this.seedInterrupted();
