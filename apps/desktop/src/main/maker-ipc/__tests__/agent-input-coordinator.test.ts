@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { ProviderGroupUsageLimitError } from '../../provider-group/failurePolicy.js';
+import { UsageLimitAutoResume, USAGE_LIMIT_MAX_CONSECUTIVE_RESUMES } from '../usageLimitAutoResume.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { runSchedulerQueuedPreparation } from '../schedulerQueuedPreparation.js';
@@ -1411,6 +1412,7 @@ function createHarness(opts?: {
   const persistQueueSnapshot =
     vi.fn<NonNullable<AgentInputCoordinatorDeps['persistQueueSnapshot']>>();
   const onUiRetry = vi.fn<NonNullable<AgentInputCoordinatorDeps['onUiRetry']>>(() => {});
+  const onUserAction = vi.fn<NonNullable<AgentInputCoordinatorDeps['onUserAction']>>(() => {});
   const onAutomaticEnqueue = vi.fn<
     NonNullable<AgentInputCoordinatorDeps['onAutomaticEnqueue']>
   >(() => {});
@@ -1440,6 +1442,7 @@ function createHarness(opts?: {
     steerToAgent,
     abortSession,
     onUiRetry,
+    onUserAction,
     onAutomaticEnqueue,
     onUserEnqueue,
     previewQueuedUserTurn,
@@ -1541,6 +1544,7 @@ function createHarness(opts?: {
     emitProjection,
     projections,
     onUiRetry,
+    onUserAction,
     onAutomaticEnqueue,
     onUserEnqueue,
     previewQueuedUserTurn,
@@ -14222,6 +14226,64 @@ describe('usage-limit wait (ordinary tasks)', () => {
     maxAttempts: 3,
     sessionTotal: 0,
   };
+
+  // Unit regression (#6611): existing cap tests called noteUserAction directly,
+  // missing the real queue-head Retry/Continue/new-input entrances before persistence.
+  // Drive both production owners with injected timers: three failed auto attempts,
+  // then a human action must start a fresh budget without reopening a channel turn.
+  it.each(['retry', 'continue', 'new-input'] as const)('starts a fresh quota episode on queue-head %s before persistence', async action => {
+    const h = createHarness();
+    const sid = 'quota-manual-episode';
+    const timers: Array<() => void> = [];
+    const attempts: number[] = [];
+    const guard = new UsageLimitAutoResume({
+      now: () => 1_000_000,
+      random: () => 0,
+      setTimer: fn => { timers.push(fn); return fn; },
+      clearTimer: () => {},
+      isEligible: async () => true,
+      resolveResetAt: async () => 5_000_000,
+      arm: (id, token, at) => h.coordinator.armUsageLimitWait(id, token, at),
+      isCurrent: (id, token) => h.coordinator.isUsageLimitWaitCurrent(id, token),
+      cancel: (id, token) => { h.coordinator.cancelUsageLimitWait(id, token); },
+      continueSession: (id, token, info) => {
+        attempts.push(info.attempt);
+        return h.coordinator.continueAfterUsageLimitReset(id, token, info);
+      },
+      log: () => {},
+    });
+    h.onUserAction.mockImplementation(id => guard.noteUserAction(id));
+    h.onUsageLimitedTurnError.mockImplementation((id, signals, _item, token) => guard.onTurnError(id, signals, token));
+    h.sendToAgent.mockRejectedValue(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    try {
+      h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+      await flush();
+      for (let i = 0; i < USAGE_LIMIT_MAX_CONSECUTIVE_RESUMES; i++) {
+        expect(timers).toHaveLength(1);
+        timers.shift()!();
+        await flush();
+        await flush();
+      }
+      expect(attempts).toEqual([1, 2, 3]);
+      expect(timers).toHaveLength(0);
+      expect(h.coordinator.getProjection(sid).usageLimitWait).toBeNull();
+      expect(h.onUserMessagePersisted).not.toHaveBeenCalled();
+      if (action === 'retry') await h.coordinator.retryLastError(sid);
+      else h.coordinator.enqueue(sid, makeItem('next', action === 'continue' ? CONTINUE_AFTER_ERROR_PROMPT : 'new task'));
+      await flush();
+      expect(timers).toHaveLength(1);
+      expect(h.coordinator.getProjection(sid).usageLimitWait).not.toBeNull();
+      expect(h.onUiRetry).not.toHaveBeenCalled();
+      timers.shift()!();
+      await flush();
+      await flush();
+      expect(attempts).toEqual([1, 2, 3, 1]);
+      expect(h.sendToAgent.mock.calls.at(-1)?.[3].persistUserMessage?.clientId)
+        .toBe(action === 'new-input' ? 'next' : 'original');
+    } finally {
+      guard.dispose();
+    }
+  });
 
   // Unit regression: group selection rejects before persistence. Existing tests covered only
   // running turns; the original queued message must be sent once, or retained after cancellation.

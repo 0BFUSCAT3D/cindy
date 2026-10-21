@@ -18735,6 +18735,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
     noteSessionClearBoundary,
+    // 复用真人活跃边界：队首 Retry / Continue 和新输入尚未落库时也开始新限额周期。
+    onUserAction: (sessionId) => usageLimitAutoResume.noteUserAction(sessionId),
     // 失败 turn 重试 → hook 侧把这一轮接回渠道那条已收口的消息。source 区分
     // 人工与自动续跑：只有真人接手才作废 scheduler waiter，自动路径不能取消自己。
     onUiRetry: (sessionId, clientId, source, attemptToken) => {
@@ -18751,7 +18753,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // persistence/vendor await, so a failed manual retry still starts a fresh episode.
         silentStopAutoResumeGuard.noteUserSend(sessionId);
         interruptedTurnAutoResumeGuard.noteUserSend(sessionId);
-        usageLimitAutoResume.noteUserAction(sessionId);
         providerGroupService?.noteUserAction(sessionId);
       }
       publishUiContinuation(sessionId, clientId);

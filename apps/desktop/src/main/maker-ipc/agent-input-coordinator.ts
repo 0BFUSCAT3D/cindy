@@ -604,6 +604,8 @@ export interface AgentInputCoordinatorDeps {
     source: 'manual' | 'auto',
     attemptToken?: number,
   ) => void;
+  /** 真人输入/重试更新活跃时间时同步通知；不依赖消息落库，也不认领渠道续跑。 */
+  onUserAction?: (sessionId: string) => void;
   /**
    * 用户/上游用一条**新**消息接管了这个会话(enqueue 或 steer 回落为普通 turn)。
    *
@@ -6371,6 +6373,8 @@ export class AgentInputCoordinator {
   }
 
   private touchUserSend(sessionId: string, atMs?: number): void {
+    // 真人接手在派发/落库失败时也成立；限额预算与渠道 turn 的认领分别通知。
+    this.deps.onUserAction?.(sessionId);
     void touchUserSendInDb(sessionId, atMs).catch((err) => {
       log.warn('touchUserSend failed', { sessionId, error: errorMessage(err) });
     });
