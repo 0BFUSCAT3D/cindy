@@ -5740,10 +5740,14 @@ function CCAgentSessionContent({
               )}
 
             {/* 零可用模型引导条:与首屏引导卡共享判定与 dismiss(useProviderOnboarding),
-              组件自判 visible、不可见渲染 null。device-link 远程会话不出——连接态在被控端。 */}
-            {!remoteDeviceId && (
-              <ConnectProviderBanner style={{ width: inputWidth }} className="py-1" />
-            )}
+              按下一轮 Agent 执行位置判断，本机连接状态不用于远程任务。 */}
+            <ConnectProviderBanner
+              style={{ width: inputWidth }}
+              className="py-1"
+              remote={!!remoteDeviceId || !!session?.remoteHostId || !!(
+                pendingAgentDeviceId !== undefined ? pendingAgentDeviceId : agentDeviceId
+              )}
+            />
 
             <div
               className="mx-auto flex flex-col items-center gap-[10px]"

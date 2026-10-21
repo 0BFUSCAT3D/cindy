@@ -1107,9 +1107,11 @@ export function NewMakerDraftRoute() {
     wtBranchPreferenceErrorRef.current = false;
     setWtBranchPreferenceError(false);
   }, []);
-  // 零可用模型引导卡:device-link 草稿不出(连接态在被控端,本机替它连不上)。
-  const providerOnboarding = useProviderOnboarding();
-  const showProviderOnboardingCard = providerOnboarding.visible && !isDeviceLinkDraft;
+  // 本机供应商连接引导只适用于在本机执行的草稿。
+  const providerOnboarding = useProviderOnboarding({
+    remote: isDeviceLinkDraft || isAgentDeviceDraft || !!effectiveRemoteHostId,
+  });
+  const showProviderOnboardingCard = providerOnboarding.visible;
   const effectiveExtraDirs = draft.extraDirs;
   const effectiveWritableDirs = draft.writableDirs;
   const effectiveCollab = collab;

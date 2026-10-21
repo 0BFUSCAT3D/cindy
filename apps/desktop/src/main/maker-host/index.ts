@@ -204,6 +204,7 @@ import { readModelContextLimit } from './model-context-limit-store.js';
 import { resolveDesktopModelContextProviderId, resolveDesktopModelEfforts } from './model-context-settings.js';
 import {
   prepareCodexCustomContextCatalog,
+  prepareCodexGuestModelCatalog,
 } from './codex-custom-context-catalog.js';
 import { buildPiAgent } from './pi-host.js';
 import {
@@ -1880,8 +1881,9 @@ export function getMaker(): Maker {
         // 供应商分享受邀者的任务：独占的 proxy 只登记分享的那个供应商的路由并过受邀者守门，
         // 不开智能子代理调配。没有独占 proxy 就不能安全地收窄，直接失败。
         const guestProviderId = ctx.deviceHostedGuestProviderId?.trim() || undefined;
-        if (ctx.deviceHostedGuestProviderId !== undefined && (!guestProviderId || !usesScopedProxy)) {
-          const error = new Error('shared-provider Codex host requires its own scoped proxy');
+        const guestSessionId = ctx.deviceHostedGuestSessionId?.trim() || undefined;
+        if (ctx.deviceHostedGuestProviderId !== undefined && (!guestProviderId || !guestSessionId || !usesScopedProxy)) {
+          const error = new Error('shared-provider Codex host requires its own session-bound scoped proxy');
           (error as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
           throw error;
         }
@@ -1970,6 +1972,7 @@ export function getMaker(): Maker {
             authInjection,
             customContextProviderRoutes,
             guestProviderId,
+            guestSessionId,
           );
           // 受邀者不走「proxy 不可用时直连网关」的退路：那条路不经受邀者守门。
           if (guestProviderId && !isCodexCustomContextProxyHandleReady(scopedProxyKey)) {
@@ -2044,6 +2047,7 @@ export function getMaker(): Maker {
           }
         }
         let customContextCatalogArgs: string[] = [];
+        let customContextCatalogPath: string | undefined;
         if (isCustomContext) {
           const modelId = ctx.customContextModel?.trim();
           const contextWindow = ctx.customContextWindow;
@@ -2065,6 +2069,7 @@ export function getMaker(): Maker {
                 ? { baseCatalog: smartSubagentConfig.modelCatalog }
                 : {}),
             });
+            customContextCatalogPath = customCatalog.catalogPath;
             if (smartSubagentConfig) {
               smartSubagentConfig = {
                 ...smartSubagentConfig,
@@ -2073,6 +2078,21 @@ export function getMaker(): Maker {
             } else {
               customContextCatalogArgs = customCatalog.extraArgs;
             }
+          } catch (error) {
+            await releaseCodexCustomContextProxy(scopedProxyKey);
+            const fatal = error instanceof Error ? error : new Error(String(error));
+            (fatal as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
+            throw fatal;
+          }
+        }
+        if (guestProviderId) {
+          try {
+            const guestCatalog = await prepareCodexGuestModelCatalog({
+              binaryPath: codexPath, codexHome: effectiveCodexHome,
+              modelIds: ctx.deviceHostedGuestModelIds ?? [],
+              ...(customContextCatalogPath ? { baseCatalog: JSON.parse(await fs.readFile(customContextCatalogPath, 'utf8')) } : {}),
+            });
+            customContextCatalogArgs = guestCatalog.extraArgs;
           } catch (error) {
             await releaseCodexCustomContextProxy(scopedProxyKey);
             const fatal = error instanceof Error ? error : new Error(String(error));
