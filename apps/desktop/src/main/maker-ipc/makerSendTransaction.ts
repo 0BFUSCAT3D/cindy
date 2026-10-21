@@ -28,6 +28,7 @@ import {
   toDesktopSessionDispatchOutcome,
 } from '../maker-host/send-outcome.js';
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
+import { ProviderGroupUsageLimitError } from '../provider-group/failurePolicy.js';
 import { routinePermissionSnapshot } from '../maker-host/routinePermission.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
@@ -896,6 +897,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       });
       return { kind: 'session', session };
     } catch (err) {
+      // Let the input coordinator own verified group quota waits; generic host
+      // failure results would erase the structured reset time before it sees it.
+      if (err instanceof ProviderGroupUsageLimitError) throw err;
       if (isCredentialModeSwitchBusyError(err)) {
         // 不映射成 SESSION_RUNNING:那会命中输入协调器的静默无限重试(250ms 一次),
         // 用户看到消息永远排队(2026-07-03 实报)。CREDENTIAL_SWITCH_BUSY 由协调器
@@ -977,6 +981,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       });
       return { kind: 'session', session: lazySess };
     } catch (err) {
+      // Same boundary as rehydrate: preserve the branded error and its reset data.
+      if (err instanceof ProviderGroupUsageLimitError) throw err;
       if (isCredentialModeSwitchBusyError(err)) {
         // 不映射成 SESSION_RUNNING:那会命中输入协调器的静默无限重试(250ms 一次),
         // 用户看到消息永远排队(2026-07-03 实报)。CREDENTIAL_SWITCH_BUSY 由协调器
