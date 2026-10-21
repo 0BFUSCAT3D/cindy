@@ -66,13 +66,14 @@ interface Room {
   created_at: string; updated_at: string; revision: number; archived: boolean; dissolved_at?: string | null; organizer_id?: string | null; kind?: string;
 }
 /** `reads`: this reader's read position per Thread (`thread_key` = root ID, `main` for the main timeline); older servers omit it. */
-interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string }> }
+interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string; following?: boolean }> }
 interface Execution {
   id: string; conversation_id: string; source_message_id: string; bot_id: string;
   requester_id?: string;
   failure_code?: unknown; updated_at?: string;
   plan_id?: string | null; plan_step?: number | null;
   trigger?: unknown; trigger_type?: string | null;
+  created_at?: string;
   context_seq: string; attachment_after_seq?: string; epoch: number; status: string; access_mode: 'owner' | 'chat' | 'tools'; access_revision: number;
 }
 interface ServerPlan {
@@ -83,6 +84,9 @@ interface ServerPlan {
 }
 interface Running {
   execution: Execution; sessionId: string; clientId: string; accepted: boolean; started: number;
+  /** The conversation this turn answers in (see executionLane); unknown until its source is read. */
+  lane?: string;
+  laneLookup?: Promise<void>;
   context?: ExecutionContext;
   settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; retryAt: number; keepLease?: boolean };
   delivery?: Promise<void>;
@@ -107,6 +111,8 @@ const THREAD_LIST_LIMIT = 50;
 const CHANGE_COALESCE_MS = 150;
 /** A realtime notice of newly queued work claims it this soon instead of on the next 2s tick. */
 const CLAIM_TRIGGER_MS = 250;
+/** How often a busy companion's rooms are re-read for work queued in its other conversations. */
+const LANE_SWEEP_MS = 10_000;
 /** A room snapshot reused for a send while its realtime subscription reports no change since. */
 const SNAPSHOT_REUSE_MS = 30_000;
 /** A sidebar summary reused while the room's change head is unchanged; names can change elsewhere. */
@@ -400,7 +406,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // Per-companion name / avatar publish failures of the last pass: one broken avatar never blocks the rest.
   let profileFailures = new Map<string, unknown>();
   let profileRefreshedAt = 0;
+  /** Turns in progress by execution ID: one companion may answer in several conversations at once. */
   const running = new Map<string, Running>();
+  /** Work announced as queued for a companion (execution ID → room), read when it is busy elsewhere. */
+  const queuedHints = new Map<string, Map<string, string>>();
+  /** When each busy companion's own rooms are next re-read for work its realtime notices missed. */
+  const laneSweeps = new Map<string, number>();
   const metadata = new Map<string, Promise<void>>();
   /**
    * Followed room scopes, each with the newest cursor this process has read or acked. It only
@@ -850,7 +861,19 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             // not renew one either. Any other or unknown change re-checks the room's running work.
             if (!types.length || types.some(type => typeof type !== 'string' || !CHATTER_CHANGES.has(type)))
               for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
-            if (changes.some(queuedForThisDevice)) triggerClaim();
+            if (changes.some(queuedForThisDevice)) {
+              for (const change of changes) {
+                const value = change as { entityId?: unknown; data?: { botId?: unknown } };
+                if (!queuedForThisDevice(change) || typeof value.entityId !== 'string' || typeof value.data?.botId !== 'string') continue;
+                // Only companions this installation claims for: other notices would never be read.
+                const botActor = actors.find(a => a.id === value.data!.botId);
+                if (!botActor || !claimable(botActor)) continue;
+                const hints = queuedHints.get(value.data.botId) ?? new Map<string, string>();
+                hints.set(value.entityId, roomId);
+                queuedHints.set(value.data.botId, hints);
+              }
+              triggerClaim();
+            }
           }
           else {
             for (const change of event.changes ?? []) {
@@ -1035,6 +1058,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     for (const m of known) if (!m.threadRootId && (m.replyCount ?? 0) > 0) rootIds.add(m.id);
     // A root outside the window is read in the background; its summary fills in on the next refresh.
     const roots = threads.sources(roomId, [...rootIds], known);
+    const followed = new Set(s.reads?.filter(read => read.following).map(read => read.thread_key));
     return [...rootIds].map((rootId): BotGroupThreadSummary => {
       const root = roots.get(rootId) ?? undefined;
       const rootView = root ? messageView(root, s.members) : null;
@@ -1044,7 +1068,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       return { rootId, rootAuthorName: rootView?.authorName ?? '', rootAuthorBotId: rootView?.authorBotId ?? null,
         rootText: root && !root.deleted ? threadPreviewText(root) || mediaNames(root) : '',
         replyCount: root?.replyCount ?? s.messages.filter(m => m.threadRootId === rootId).length,
-        unread: threadUnread(rootId, s.messages, reads),
+        unread: threadUnread(rootId, s.messages, reads), following: followed.has(rootId),
         lastReply: last && lastView ? { authorName: lastView.authorName, text: threadPreviewText(last) || mediaNames(last), createdAt: lastView.createdAt } : null };
     }).sort((a, b) => Number(b.unread.count > 0) - Number(a.unread.count > 0) || (b.lastReply?.createdAt ?? 0) - (a.lastReply?.createdAt ?? 0))
       .slice(0, THREAD_LIST_LIMIT);
@@ -1178,6 +1202,22 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
     return Number(before);
   }
+  /**
+   * Whether the reader follows this Thread, after first setting it when `next` is given; undefined
+   * when the server keeps no read state. Following is only ever the reader's choice: it is what
+   * makes later replies notify them (bot-group-chat.md §10「话题未读与提示」).
+   */
+  async function threadFollowing(roomId: string, rootId: string, next?: boolean): Promise<boolean | undefined> {
+    const s = await recentSnapshot(roomId);
+    if (!s.reads) return undefined;
+    const read = s.reads.find(entry => entry.thread_key === rootId);
+    if (next === undefined) return read?.following === true;
+    // The read position the server keeps never moves back, so restating it changes nothing else.
+    const written = await api<{ following: boolean }>(`/conversations/${roomId}/read`, 'POST', {
+      operationId: randomUUID(), threadRootId: rootId, readSeq: read?.read_seq ?? '0', following: next });
+    changed(roomId);
+    return written.following;
+  }
   async function detail(roomId: string, options?: unknown, summaryOnly = false): Promise<BotGroupDetail> {
     id.parse(roomId);
     const o = z.object({ beforeSequence: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional(),
@@ -1206,9 +1246,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const workspace = workspaces().read(roomId);
     const plans = serverPlans.map(plan => planView(plan, s.members, workspace));
     const open = plans.find(p => ['proposed', 'running', 'waiting'].includes(p.status));
-    const speakers: BotGroupSpeaker[] = executions.filter(e => e.status === 'running').map(e => ({
-      botId: localBot(e.bot_id)?.id ?? e.bot_id, sessionId: running.get(e.bot_id)?.sessionId ?? null, activity: e.plan_id ? 'step' as const : 'reply' as const,
-    }));
+    // A companion answering in several Threads at once is still one speaker per activity; the one
+    // whose turn runs on this computer is shown, so its Session can be opened.
+    const speakers: BotGroupSpeaker[] = [];
+    for (const e of executions.filter(e => e.status === 'running')) {
+      const speaker = { botId: localBot(e.bot_id)?.id ?? e.bot_id, sessionId: running.get(e.id)?.sessionId ?? null, activity: e.plan_id ? 'step' as const : 'reply' as const };
+      const known = speakers.findIndex(other => other.botId === speaker.botId && other.activity === speaker.activity);
+      if (known < 0) speakers.push(speaker);
+      else if (!speakers[known]!.sessionId && speaker.sessionId) speakers[known] = speaker;
+    }
     // The organizer is visibly 「正在看」 while this device decides whether to arrange (§7.2),
     // as the local service showed it. It works on the auxiliary model, not in a lane session.
     const deciding = planning.get(roomId);
@@ -1352,7 +1398,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   /** One execution gets one immutable terminal result, regardless of which boundary ends it. */
   async function settleExecution(run: Running, terminal: BotGroupLaneTerminal, abort = false): Promise<void> {
-    if (!current() || running.get(run.execution.bot_id) !== run) return;
+    if (!current() || running.get(run.execution.id) !== run) return;
     if (!run.settlement) {
       run.settlement = { terminal: { ...terminal }, retryAt: 0 };
       run.releaseToolAuthority?.();
@@ -1364,7 +1410,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   function deliverSettlement(run: Running): Promise<void> {
     if (run.delivery) return run.delivery;
     const pending = run.settlement;
-    if (!pending || !current() || running.get(run.execution.bot_id) !== run || Date.now() < pending.retryAt) return Promise.resolve();
+    if (!pending || !current() || running.get(run.execution.id) !== run || Date.now() < pending.retryAt) return Promise.resolve();
     run.delivery = (async () => {
       try {
         if (!pending.payload) {
@@ -1389,7 +1435,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           pending.payload = terminal.outcome === 'error' ? { detail: botGroupRuntimeFailureDetail(terminal.failureCode ?? 'RUNTIME_ERROR') }
             : { ...(isBotGroupNoReplyText(text) && !files.length ? {} : { content: [{ type: 'text', text: text.slice(0, 16000) || '已完成' }, ...files] }), continueDiscussion: run.context?.kind !== 'member.joined' && !run.plan && !isBotGroupNoReplyText(text) };
         }
-        if (!current() || running.get(run.execution.bot_id) !== run) return;
+        if (!current() || running.get(run.execution.id) !== run) return;
         await updateExecution(run, pending.terminal.outcome === 'error' ? 'fail' : 'complete', pending.payload);
         if (run.plan && deps.onStepSettled) {
           const s = await snapshot(run.execution.conversation_id);
@@ -1413,9 +1459,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           return;
         }
       } finally { run.delivery = undefined; }
-      if (running.get(run.execution.bot_id) === run) {
+      if (running.get(run.execution.id) === run) {
         run.releaseToolAuthority?.();
-        running.delete(run.execution.bot_id);
+        forgetRun(run);
         // Refresh both delivered results and local failures without waiting for an echo.
         changed(run.execution.conversation_id);
       }
@@ -1432,11 +1478,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       throw error;
     }
   }
-  async function runExecution(execution: Execution) {
+  async function runExecution(execution: Execution, lane?: string) {
     const bot = localBot(execution.bot_id);
-    if (!bot || running.has(execution.bot_id)) return;
-    const run: Running = { execution, sessionId: '', clientId: BOT_GROUP_CLIENT_ID.memberTurn(execution.conversation_id, execution.id, bot.id), accepted: false, started: Date.now() };
-    running.set(execution.bot_id, run);
+    if (!bot || running.has(execution.id)) return;
+    const run: Running = { execution, sessionId: '', clientId: BOT_GROUP_CLIENT_ID.memberTurn(execution.conversation_id, execution.id, bot.id), accepted: false, started: Date.now(), lane };
+    running.set(execution.id, run);
+    // Until its conversation is known, this turn holds back the companion's other work.
+    resolveLane(run);
     try {
       z.object({ access_mode: z.enum(['owner', 'chat', 'tools']), access_revision: z.number().int().positive() }).parse(execution);
       run.context = ordinaryExecution(execution) ? { kind: 'message' }
@@ -1485,7 +1533,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           || eventSource.authorId !== trigger.actorId || eventSource.seq !== execution.context_seq || !card)
           throw new Error('INVALID_EXECUTION_TRIGGER');
       }
-      if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+      if (!current() || running.get(execution.id) !== run) throw new Error('STALE_EXECUTOR');
       if (ownDirectRoom) { await runDirectExecution(run, bot.id, s.room.id); return; }
       // Lane setup and context metadata reads run together; attachment bytes wait for setup
       // to succeed so a failed setup cannot leave downloads running after settlement.
@@ -1533,7 +1581,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         run.releaseToolAuthority = registerGroupToolAuthority(lane.sessionId, {
           botId: bot.id, mode: execution.access_mode,
           sourceGroup: { groupId: s.room.id, name: s.room.name },
-          isCurrent: () => current() && running.get(execution.bot_id) === run && !run.settlement,
+          isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
           validate: async () => {
             // Recheck metadata and the execution lease at the actual tool boundary.
             // Group administrators cannot grant access to someone else's companion.
@@ -1703,11 +1751,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         'Keep your reply concise. Your final response will be posted to the group. Do not call another participant just to reply.',
       ].join('\n');
       await updateExecution(run, 'heartbeat');
-      if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+      if (!current() || running.get(execution.id) !== run) throw new Error('STALE_EXECUTOR');
       const dispatched = await deps.dispatch({ targetSessionId: lane.sessionId, clientId: run.clientId, message: prompt,
         persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${prompt}`, attachments, toolsDisabled: execution.access_mode === 'chat',
         onQueued: async clientId => { run.clientId = clientId; }, onAccepted: async () => {
-          if (!current() || running.get(execution.bot_id) !== run) { await deps.abortLane(lane.sessionId); throw new Error('STALE_EXECUTOR'); }
+          if (!current() || running.get(execution.id) !== run) { await deps.abortLane(lane.sessionId); throw new Error('STALE_EXECUTOR'); }
           run.accepted = true;
         } });
       if (!dispatched.ok) throw new Error(botGroupRuntimeFailureCode({ code: dispatched.errorCode, message: dispatched.message }));
@@ -1731,7 +1779,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       humanActorId: selfId, botId, deliver: deps.companionCloud.deliverToCanonical,
       beforeDeliver: async () => {
         await updateExecution(run, 'heartbeat');
-        if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+        if (!current() || running.get(execution.id) !== run) throw new Error('STALE_EXECUTOR');
         // Handed to another computer since the claim (the hand-over demotes this copy): never run it here.
         if (companion?.isShadowed(botId) || !companion?.installConfirmed(botId)) throw new Error('MEMBER_UNAVAILABLE');
       } });
@@ -1755,35 +1803,123 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
   }
   const ownedActiveBot = (actorId: string) => actors.some(a => a.id === actorId && a.kind === 'bot' && localBot(a.id)?.status === 'active');
+  /** A companion this installation runs: active here, homed on this computer, and not shadowed or unconfirmed. */
+  const claimable = (a: Actor) => a.kind === 'bot' && localBot(a.id)?.status === 'active'
+    // Only the registered home runs a companion: skip while the home is elsewhere or not yet
+    // registered (an unset home would let any copy of the owner claim it).
+    && !(companionHome && a.homeDeviceId !== selfDeviceId)
+    // Shadowed here (demoted, or run by another installation on this device), or this
+    // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
+    && !(companionHome && (companion?.isShadowed(a.externalId) || !companion?.installConfirmed(a.externalId)));
   /** A realtime change announcing work this device may claim: newly queued, for one of its companions or unspecified. */
   function queuedForThisDevice(change: unknown) {
     const value = change as { type?: unknown; data?: { status?: unknown; botId?: unknown } } | null;
     return value?.type === 'execution.changed' && value.data?.status === 'queued'
       && (typeof value.data.botId !== 'string' || ownedActiveBot(value.data.botId));
   }
-  /** One claim per idle owned companion, all at once; the first failure in companion order is reported. */
-  async function claimOnce() {
-    const idle = actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active' && !running.has(a.id)
-      // Only the registered home runs a companion: skip while the home is elsewhere or not yet
-      // registered (an unset home would let any copy of the owner claim it).
-      && !(companionHome && a.homeDeviceId !== selfDeviceId)
-      // Shadowed here (demoted, or run by another installation on this device), or this
-      // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
-      && !(companionHome && (companion?.isShadowed(a.externalId) || !companion?.installConfirmed(a.externalId))));
-    settledValues(await settleBounded(idle, idle.length, async actor => {
-      let claim: { execution: Execution | null };
-      const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1, ...(directRoomClaims ? { directRoomVersion: 1 } : {}) };
-      // Parallel claims may see another companion's downgrade; each judges the request it sent.
-      const withEvents = memberJoinedClaims;
+  /**
+   * The conversation an execution answers in: the group's main timeline, one Thread, or one plan
+   * (bot-group-chat.md §3). A companion takes one turn at a time per conversation, while its turns in
+   * different conversations run side by side, each in its own lane.
+   */
+  async function executionLane(execution: Execution): Promise<string> {
+    const room = execution.conversation_id;
+    if (execution.plan_id) return `${room}:plan:${execution.plan_id}`;
+    if (!ordinaryExecution(execution)) return `${room}:main`;
+    const source = await readMessage(room, execution.source_message_id);
+    return source?.threadRootId ? `${room}:thread:${source.threadRootId}` : `${room}:main`;
+  }
+  /** Reads a turn's conversation once at a time; a failed read is tried again on the next claim pass. */
+  function resolveLane(run: Running) {
+    if (run.lane || run.laneLookup) return;
+    run.laneLookup = executionLane(run.execution).then(value => { run.lane = value; }, () => undefined)
+      .finally(() => { run.laneLookup = undefined; });
+  }
+  const runsOf = (botId: string) => [...running.values()].filter(run => run.execution.bot_id === botId);
+  /**
+   * A turn has ended. While its companion is still busy elsewhere, its room is read again on the next
+   * pass: the conversation it held may have a next request waiting.
+   */
+  function forgetRun(run: Running) {
+    running.delete(run.execution.id);
+    const botId = run.execution.bot_id;
+    if (!runsOf(botId).length) return;
+    const hints = queuedHints.get(botId) ?? new Map<string, string>();
+    hints.set(`room:${run.execution.conversation_id}`, run.execution.conversation_id);
+    queuedHints.set(botId, hints);
+  }
+  /** Leases one execution: the oldest the server offers, or exactly `executionId`. */
+  async function claim(actorId: string, executionId?: string): Promise<Execution | null> {
+    const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1, ...(directRoomClaims ? { directRoomVersion: 1 } : {}),
+      ...(executionId ? { executionId } : {}) };
+    // Parallel claims may see another companion's downgrade; each judges the request it sent.
+    const withEvents = memberJoinedClaims;
+    try {
+      return (await api<{ execution: Execution | null }>('/executions/claim', 'POST', { ...payload, ...(withEvents ? { memberJoinedVersion: 1 } : {}) }, actorId)).execution;
+    } catch (error) {
+      if (!withEvents || !(error instanceof ChatResponseError) || error.status !== 400 || error.message !== 'INVALID_INPUT') throw error;
+      memberJoinedClaims = false;
+      return (await api<{ execution: Execution | null }>('/executions/claim', 'POST', payload, actorId)).execution;
+    }
+  }
+  /**
+   * A busy companion takes only work in its other conversations: a turn in a Thread never waits for
+   * one in the main timeline or another Thread, while turns in one conversation stay in order. The
+   * server offers the oldest work first, so this names each execution it may take.
+   */
+  async function claimBesideRuns(actorId: string, runs: Running[]) {
+    const lanes = new Set(runs.map(run => run.lane));
+    const hints = queuedHints.get(actorId) ?? new Map<string, string>();
+    const rooms = new Set(hints.values());
+    if (Date.now() >= (laneSweeps.get(actorId) ?? 0)) {
+      laneSweeps.set(actorId, Date.now() + LANE_SWEEP_MS);
+      for (const run of runs) rooms.add(run.execution.conversation_id);
+    }
+    for (const room of [...rooms].sort()) {
+      let rows: Execution[];
       try {
-        claim = await api('/executions/claim', 'POST', { ...payload, ...(withEvents ? { memberJoinedVersion: 1 } : {}) }, actor.id);
+        rows = await api<Execution[]>(`/conversations/${room}/executions`);
       } catch (error) {
-        if (!withEvents || !(error instanceof ChatResponseError) || error.status !== 400 || error.message !== 'INVALID_INPUT') throw error;
-        memberJoinedClaims = false;
-        claim = await api('/executions/claim', 'POST', payload, actor.id);
+        // Left or removed from the room: its notices can never be taken, and the next rooms still are.
+        if (!(error instanceof ChatResponseError) || ![403, 404, 410].includes(error.status)) throw error;
+        for (const [executionId, hinted] of hints) if (hinted === room) hints.delete(executionId);
+        continue;
       }
-      const { execution } = claim;
-      if (execution) void runExecution(execution);
+      const queued = rows.filter(row => row.bot_id === actorId && row.status === 'queued')
+        .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id));
+      // A notice is dropped once its work is no longer queued, or once it waits behind a turn in
+      // its own conversation (that room is re-read anyway). A failed read or claim keeps it for the next pass.
+      for (const [executionId, hinted] of hints) if (hinted === room && !queued.some(row => row.id === executionId)) hints.delete(executionId);
+      for (const row of queued) {
+        let lane: string;
+        try { lane = await executionLane(row); } catch { continue; }
+        if (lanes.has(lane)) { hints.delete(row.id); continue; }
+        // A claim failure (such as a rate limit) is reported to the poll, and keeps the notice.
+        const execution = await claim(actorId, row.id);
+        if (!execution) continue;
+        hints.delete(row.id);
+        lanes.add(lane);
+        void runExecution(execution, lane);
+      }
+    }
+    if (!hints.size) queuedHints.delete(actorId);
+  }
+  /** One claim pass per owned companion, all at once; the first failure in companion order is reported. */
+  async function claimOnce() {
+    const owned = actors.filter(claimable);
+    // A turn whose conversation is not yet known holds back the rest of its companion's work.
+    for (const actor of owned) for (const run of runsOf(actor.id)) resolveLane(run);
+    const ready = owned.filter(a => runsOf(a.id).every(run => run.lane));
+    settledValues(await settleBounded(ready, ready.length, async actor => {
+      const runs = runsOf(actor.id);
+      if (runs.length) { await claimBesideRuns(actor.id, runs); return; }
+      // An idle companion takes the oldest work wherever it is. Notices of its other queued work stay,
+      // so that work starts beside this turn; with nothing left to take, they are stale.
+      laneSweeps.delete(actor.id);
+      const execution = await claim(actor.id);
+      if (!execution) { queuedHints.delete(actor.id); return; }
+      queuedHints.get(actor.id)?.delete(execution.id);
+      void runExecution(execution);
     }));
   }
   // Claims never overlap: two claims for one companion could each lease work only one can run.
@@ -1833,9 +1969,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         try { await updateExecution(run, 'heartbeat'); }
         catch (error) {
           if (error instanceof ChatResponseError && !retryableResponse(error)) {
-            if (running.get(run.execution.bot_id) === run) {
+            if (running.get(run.execution.id) === run) {
               run.releaseToolAuthority?.();
-              running.delete(run.execution.bot_id);
+              forgetRun(run);
               changed(run.execution.conversation_id);
             }
             return;
@@ -1844,7 +1980,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       await deliverSettlement(run); return;
     }
-    if (running.get(run.execution.bot_id) !== run) return;
+    if (running.get(run.execution.id) !== run) return;
     if (checking.has(run)) { recheck.add(run); return; }
     checking.add(run);
     try {
@@ -1860,9 +1996,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     } catch {
       // An in-flight heartbeat must not discard a result that became ready while
       // it was awaiting its response; retry the terminal operation for its receipt.
-      if (!run.settlement && running.get(run.execution.bot_id) === run) {
+      if (!run.settlement && running.get(run.execution.id) === run) {
         run.releaseToolAuthority?.();
-        running.delete(run.execution.bot_id);
+        forgetRun(run);
         if (run.sessionId) await deps.abortLane(run.sessionId).catch(() => undefined);
         changed(run.execution.conversation_id);
       }
@@ -1870,7 +2006,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       checking.delete(run);
       // A dissolve or change can arrive while an older heartbeat is in flight.
       // Check the new authority once that response settles, without waiting 15s.
-      if (recheck.delete(run) && running.get(run.execution.bot_id) === run) void checkLease(run);
+      if (recheck.delete(run) && running.get(run.execution.id) === run) void checkLease(run);
     }
   }
   const heartbeat = setInterval(() => { for (const run of running.values()) void checkLease(run); }, 15000);
@@ -1993,10 +2129,20 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       // A share in the main chat can itself be a thread root.
       const rootViews = await messageViews(i.groupId, [root], members);
       await decorateThreads(i.groupId, rootViews, [root], page, members, false);
+      // An older page is history being scrolled: it says nothing about the Thread's switches.
+      const following = i.before ? undefined : await threadFollowing(i.groupId, root.id);
       const readBefore = i.markRead && !i.before ? await markThreadRead(i.groupId, root, page) : undefined;
       return { root: rootViews[0], executionFailures,
         replies: await messageViews(i.groupId, page.reverse(), members), hasMore: page.length === 50,
-        ...(readBefore !== undefined ? { readBefore } : {}) };
+        ...(readBefore !== undefined ? { readBefore } : {}), ...(following !== undefined ? { following } : {}) };
+    }),
+    followThread: input => result(async () => {
+      const i = z.object({ groupId: id, rootId: id, following: z.boolean() }).strict().parse(input);
+      const room = await groupRoom(i.groupId);
+      const following = await threadFollowing(room, i.rootId, i.following);
+      // The switch only shows when the server keeps read state.
+      if (following === undefined) throw new Error('CHAT_UNAVAILABLE');
+      return { following };
     }),
     shareToMain: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id }).strict().parse(input);
@@ -2296,8 +2442,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const executions = await api<Execution[]>(`/conversations/${room}/executions`);
       for (const e of executions.filter(e => ['queued', 'running', 'needs_input'].includes(e.status) && !e.plan_id)) {
         await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' });
-        const run = running.get(e.bot_id);
-        if (run?.execution.id === e.id) { running.delete(e.bot_id); if (run.sessionId) await deps.abortLane(run.sessionId); }
+        const run = running.get(e.id);
+        if (run) { forgetRun(run); if (run.sessionId) await deps.abortLane(run.sessionId); }
       }
       changed(room); return { ok: true as const };
     }),

@@ -15,6 +15,7 @@ import { useBotProfiles } from './botStore';
 import type { BotChatIdentity } from './BotSessionContentHeader';
 import type { BotChatBinding } from './botChatPresentation';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
+import { BotDmThreadHost } from './BotDmThreadHost';
 
 type BotSessionGate =
   | { kind: 'loading' }
@@ -260,7 +261,9 @@ function BotSessionGateView() {
   const readOnly = shadowed && gate.isCanonical;
   return (
     <main className="relative flex h-full min-w-0 overflow-hidden bg-[var(--surface)]">
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* 私聊话题只属于本机的伙伴主对话；只读副本没有话题。 */}
+      <BotDmThreadHost enabled={gate.isCanonical && !readOnly} bot={identity ?? gate.identity}
+        rootSessionId={sessionId} mentions={gate.mentions}>
         {readOnly && botId ? <CompanionShadowBanner botId={botId} name={(identity ?? gate.identity).name} /> : null}
         <div className="min-h-0 flex-1">
           <CCAgentSessionView
@@ -272,7 +275,7 @@ function BotSessionGateView() {
             {...(readOnly ? { readOnly: true } : {})}
           />
         </div>
-      </div>
+      </BotDmThreadHost>
     </main>
   );
 }
