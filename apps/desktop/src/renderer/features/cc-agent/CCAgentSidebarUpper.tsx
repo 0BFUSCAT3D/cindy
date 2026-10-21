@@ -1915,14 +1915,9 @@ function ExpandedView({
     if (filter.projectsAsSet === null) return sessions;
     return filter.projectsAsSet.has(DIALOGUE_FILTER_KEY) ? sessions : [];
   }, [groups.dialogues, vendorPredicate, filter.projectsAsSet]);
-  // Group actions include pinned members, while the rendered tree stays deduplicated.
-  const dialogueActionSessions = useMemo(
-    () =>
-      vendorPredicate
-        ? groupsWithPinnedProjects.dialogues.filter(vendorPredicate)
-        : groupsWithPinnedProjects.dialogues,
-    [groupsWithPinnedProjects.dialogues, vendorPredicate],
-  );
+  // Group actions include pinned and content-filtered members;
+  // allProjectGroups still respects device scope and task status.
+  const dialogueActionSessions = allProjectGroups.dialogues;
 
   // 对话段排序状态提升到此处:DialogueSection(展开态)受控消费,rail 对话
   // 面板按同一排序渲染——否则折叠后面板的前 N 条/折叠溢出与展开态刚排好的
