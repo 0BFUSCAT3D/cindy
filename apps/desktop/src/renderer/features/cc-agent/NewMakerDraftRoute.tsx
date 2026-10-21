@@ -2184,8 +2184,14 @@ export function NewMakerDraftRoute() {
     });
     return () => {
       unsubscribe();
-      if (provisionalEmptyTimerRef.current) clearTimeout(provisionalEmptyTimerRef.current);
+      const pendingEmptyCheck = provisionalEmptyTimerRef.current;
+      if (pendingEmptyCheck) clearTimeout(pendingEmptyCheck);
       provisionalEmptyTimerRef.current = null;
+      // Leaving the page while an empty-input delete is still pending: nothing will notify us
+      // again, so finish it now rather than leave an empty task behind.
+      if (pendingEmptyCheck && provisionalDraftTaskId() && !getComposerDraftPresence(NEW_MAKER_DRAFT_KEY)) {
+        void discardProvisionalDraftTask();
+      }
     };
   }, [armProvisionalEmptyCheck, refreshProvisionalTitle]);
   // 草稿里影响任务本身的设置变了:按新设置重建(不再适合提前建任务就删掉)。

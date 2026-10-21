@@ -171,8 +171,8 @@ export function forgetProvisionalSession(sessionId: string): boolean {
  */
 export async function deleteUnsentSessionRow(
   sessionId: string,
+  db = getDbClient().drizzle,
 ): Promise<{ workspaceKind: string | null; workingDir: string | null } | null> {
-  const db = getDbClient().drizzle;
   const [row] = await db
     .select({
       workspaceKind: sessions.workspaceKind,
@@ -217,19 +217,25 @@ export async function sweepLeftoverProvisionalSessions(now = Date.now()): Promis
   if (!owner) return [];
   let run = sweeps.get(owner);
   if (!run) {
-    run = sweepOwner(now);
+    run = sweepOwner(owner, now);
     sweeps.set(owner, run);
   }
   return run;
 }
 
-async function sweepOwner(now: number): Promise<string[]> {
+async function sweepOwner(owner: object, now: number): Promise<string[]> {
   const pending = [...loadLeftovers()];
   if (pending.length === 0) return [];
+  // The whole sweep stays on this account's database; if the account changes mid-way,
+  // the rest is kept for later instead of being checked against another account.
   const db = getDbClient().drizzle;
   const keep: Entry[] = [];
   const removed: string[] = [];
-  for (const entry of pending) {
+  for (const [index, entry] of pending.entries()) {
+    if (getCurrentDbClientSnapshot() !== owner) {
+      keep.push(...pending.slice(index));
+      break;
+    }
     try {
       const [row] = await db
         .select({ id: sessions.id })
@@ -240,7 +246,11 @@ async function sweepOwner(now: number): Promise<string[]> {
         if (now - entry.createdAt < FOREIGN_ENTRY_TTL_MS) keep.push(entry);
         continue;
       }
-      const deleted = await deleteUnsentSessionRow(entry.id);
+      if (getCurrentDbClientSnapshot() !== owner) {
+        keep.push(...pending.slice(index));
+        break;
+      }
+      const deleted = await deleteUnsentSessionRow(entry.id, db);
       if (deleted) {
         removed.push(entry.id);
         onLeftoverSwept?.(entry.id);
