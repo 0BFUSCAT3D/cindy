@@ -1365,21 +1365,13 @@ describe('Chat Server result delivery and refresh', () => {
     }
     const prompt = () => vi.mocked(deps.dispatch).mock.calls[0][0].message;
 
-    it.each([
-      ['the lead of an un-addressed request', [], true],
-      ['a teammate named in the request', [botId], false],
-    ] as const)('%s: the follow-up line is never posted, and only the lead submits who goes next', async (_label, mentions, lead) => {
-      singleSpeaker(route => route.endsWith(`/messages/${execution.source_message_id}`) ? { body: message(execution.source_message_id, 'Let us discuss', { mentions }) } : undefined);
+    it('posts an un-addressed reply as written and never asks the server to continue a round', async () => {
+      singleSpeaker(route => route.endsWith(`/messages/${execution.source_message_id}`) ? { body: message(execution.source_message_id, 'Let us discuss') } : undefined);
       await start();
-      expect(prompt().includes('<cindy-turns')).toBe(lead);
-      expect(prompt().includes(`"id":"${otherBot}"`)).toBe(lead);
-      await service.settleLaneTurn({ ...terminal,
-        resultText: `My view.\n<cindy-turns kind="talk">[{"id":"${otherBot}","task":"UX"},{"id":"not-a-member","task":"x"}]</cindy-turns>` });
+      await service.settleLaneTurn({ ...terminal, resultText: 'My view.' });
       const [delivery] = deliveries();
       expect(delivery[2].content).toEqual([{ type: 'text', text: 'My view.' }]);
       expect(delivery[2]).not.toHaveProperty('continueDiscussion');
-      if (lead) expect(delivery[2].followUp).toEqual({ kind: 'talk', steps: [{ botId: otherBot, task: 'UX' }] });
-      else expect(delivery[2]).not.toHaveProperty('followUp');
     });
 
     it('gives a discussion turn only the request, earlier answers on its card and the requester\'s additions', async () => {
@@ -1387,18 +1379,18 @@ describe('Chat Server result delivery and refresh', () => {
       const answerId = '50000000-0000-4000-8000-000000000011', noteId = '50000000-0000-4000-8000-000000000012';
       const plan = { id: planId, revision: 3, source_message_id: execution.source_message_id, request_text: 'One reply per message?', organizer_id: otherBot, creator_id: selfId,
         note_message_ids: [noteId], status: 'running', current_step: 1, kind: 'talk', auto_continue: false, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
-        steps: [{ position: 0, botId: otherBot, botName: 'Lead', task: '', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
+        steps: [{ position: 0, botId: otherBot, botName: 'Peer', task: '', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
       singleSpeaker((route, _method, body) => {
         if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: 'owner', plan_id: planId, plan_step: 1 } } }; }
         if (route.includes('/plans?ids=')) return { body: [plan] };
         if (route.includes('/messages?all=true')) return { body: [message('50000000-0000-4000-8000-000000000013', 'unrelated main group chatter'),
-          message(answerId, 'The lead answered first', { authorId: otherBot, author: { kind: 'bot', name: 'Lead' }, origin: 'bot' }), message(noteId, 'Mind the old groups')] };
+          message(answerId, 'The first answer', { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot' }), message(noteId, 'Mind the old groups')] };
         if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: message(execution.source_message_id, 'One reply per message?') };
         return body ? undefined : undefined;
       });
       await start();
       expect(prompt()).toContain('You are turn 2 of 2. Your focus: tests.');
-      expect(prompt()).toContain('The lead answered first');
+      expect(prompt()).toContain('The first answer');
       expect(prompt()).toContain('Mind the old groups');
       expect(prompt()).not.toContain('unrelated main group chatter');
       // A discussion only talks: no project folder or worktree, and a plain lane without a work directory.
@@ -1414,6 +1406,20 @@ describe('Chat Server result delivery and refresh', () => {
       const post = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')!;
       expect(post[2].deferExecution).toBe(false);
       expect(deps.decidePlan).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
+      ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
+    ] as const)('with an open queue %s', async (_label, status, route) => {
+      const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
+        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', auto_continue: false, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
+      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
+      expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))
+        .toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.handle.mock.calls.filter(([, method]) => method === 'POST').map(([path]) => path)).toContain(route);
     });
 
     it.each([

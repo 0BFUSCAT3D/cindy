@@ -34,7 +34,7 @@ export default {
       data: { ...base, bubbles: true },
     },
     arrangement: {
-      about: 'Single-speaker server group: the lead answers, the arrangement card stands on its own and waits for 继续; its owner can turn on 自动接下一位',
+      about: 'Single-speaker server group, nobody named: the queue card stands on its own, the first teammate answers, then it waits for 继续; its owner can turn on 自动接下一位',
       data: { ...base, arrangement: 'waiting' },
     },
     'arrangement-done': {
@@ -42,7 +42,7 @@ export default {
       data: { ...base, arrangement: 'auto' },
     },
     settings: {
-      about: 'Single-speaker group settings: no 回复方式 or 发言方式; the 负责人 note says who answers un-addressed messages',
+      about: 'Single-speaker group settings: no 回复方式, 发言方式, 负责人 or project folder',
       data: { ...base, arrangement: 'waiting', settings: true },
     },
     'bubbles-wrapped': {
@@ -82,17 +82,16 @@ export default {
 
     if (ui.case === 'settings') {
       const drawer = page.getByRole('dialog');
-      await drawer.getByText('负责人', { exact: true }).waitFor();
-      // Who answers follows @ and the lead; the old group modes are gone.
-      assert.equal(await drawer.getByText('发言方式').count(), 0);
-      assert.equal(await drawer.getByText('没有 @ 人的时候').count(), 0);
-      await drawer.getByText('没有 @ 人的消息由负责人回答', { exact: false }).waitFor();
+      await drawer.getByText('群名称', { exact: true }).waitFor();
+      // Who answers follows @ (everyone queues when nobody is named); no group modes, no organizer.
+      for (const label of ['发言方式', '没有 @ 人的时候', '负责人', '项目文件夹'])
+        assert.equal(await drawer.getByText(label, { exact: true }).count(), 0, label);
       return;
     }
     if (ui.case.startsWith('arrangement')) {
       const card = page.getByTestId('bot-group-arrangement');
       await card.waitFor();
-      // The card is its own row, never part of the lead's answer.
+      // The card is its own row, never part of a teammate's answer.
       assert.equal(await card.locator('xpath=ancestor::article').count(), 0);
       // The owner sees 自动接下一位 only while the arrangement is open.
       assert.equal(await page.getByRole('switch').count(), ui.case === 'arrangement' ? 1 : 0);

@@ -602,45 +602,6 @@ export function isBotGroupNoReplyPrefix(text: string): boolean {
   return trimmed.length === 0 || BOT_GROUP_NO_REPLY_SENTINEL.startsWith(trimmed);
 }
 
-/**
- * The lead may end its answer to an un-addressed request with one host-only line naming who
- * speaks (`talk`) or works (`work`) after it, in order (bot-group-chat.md §4). The host strips
- * it before posting; previews never show it, not even while it is still streaming.
- */
-const BOT_GROUP_TURNS_TAG = '<cindy-turns';
-const BOT_GROUP_TURNS_LINE = /<cindy-turns kind="(talk|work)">([\s\S]*?)<\/cindy-turns>\s*$/;
-export const BOT_GROUP_TURNS_MAX = 5;
-export interface BotGroupTurns { kind: 'talk' | 'work'; steps: Array<{ botId: string; task: string }> }
-
-/** Streamed text with the follow-up line (complete, or its unfinished start) cut off. */
-export function hideBotGroupTurns(text: string): string {
-  const at = text.indexOf(BOT_GROUP_TURNS_TAG);
-  if (at >= 0) return text.slice(0, at).trimEnd();
-  for (let n = Math.min(BOT_GROUP_TURNS_TAG.length - 1, text.length); n > 0; n--)
-    if (text.endsWith(BOT_GROUP_TURNS_TAG.slice(0, n))) return text.slice(0, -n).trimEnd();
-  return text;
-}
-
-/** The posted text and the named turns; ids outside `members` and malformed lines are dropped. */
-export function readBotGroupTurns(text: string, members: ReadonlySet<string>): { text: string; turns?: BotGroupTurns } {
-  const match = BOT_GROUP_TURNS_LINE.exec(text);
-  if (!match) {
-    // A final answer is cut only at a whole tag: a reply may well end in `<`.
-    const at = text.indexOf(BOT_GROUP_TURNS_TAG);
-    return { text: at >= 0 ? text.slice(0, at).trimEnd() : text };
-  }
-  let steps: BotGroupTurns['steps'] = [];
-  try {
-    const raw: unknown = JSON.parse(match[2]!);
-    if (Array.isArray(raw)) steps = raw.flatMap((item: unknown) => {
-      const entry = item as { id?: unknown; task?: unknown } | null;
-      return entry && typeof entry.id === 'string' && members.has(entry.id)
-        ? [{ botId: entry.id, task: typeof entry.task === 'string' ? entry.task.trim().slice(0, 200) : '' }] : [];
-    }).slice(0, BOT_GROUP_TURNS_MAX);
-  } catch { steps = []; }
-  return { text: text.slice(0, match.index).trimEnd(), ...(steps.length ? { turns: { kind: match[1] as BotGroupTurns['kind'], steps } } : {}) };
-}
-
 // ---- Controllers (phones) — docs/product-rules/bot-group-chat.md §8 -------------
 
 /**

@@ -10,7 +10,6 @@ import {
   botGroupExecutionFailureBatches,
   chatGroupMembership,
 } from '../botGroupPresentation.js';
-import { hideBotGroupTurns, readBotGroupTurns } from '../botGroupChat.js';
 import { BOT_GROUP_RUNTIME_FAILURE_CODES, readBotGroupExecutionFailure, type BotGroupErrorCode, type BotGroupExecutionFailureView, type BotGroupMemberView, type BotGroupMessageView, type BotGroupNoticeCode, type BotGroupPlanView } from '../botGroupChat.js';
 
 describe('server group membership affordances', () => {
@@ -136,21 +135,5 @@ describe('plan follow-up and composer state', () => {
     expect(isBotGroupDivisionBlocked(botGroupComposerPlanState(plan()))).toBe(true);
     expect(isBotGroupDivisionBlocked(botGroupComposerPlanState(plan({ status: 'proposed' })))).toBe(false);
     expect(botGroupComposerPlanState(plan())).toEqual({ kind: 'waiting', botName: 'A', stepDone: true });
-  });
-});
-
-// bot-group-chat.md §4: the lead's follow-up line is host-only. Streaming previews must never
-// show it, even half-written; a malformed line names nobody but is still not posted.
-describe('the lead follow-up line', () => {
-  it.each([
-    ['My view.\n<cindy-turns kind="talk">[{"id":"a"}]</cindy-turns>', 'My view.'],
-    ['My view.\n<cindy-tur', 'My view.'],
-    ['My view.\n<', 'My view.'],
-    ['Price < 5 and more', 'Price < 5 and more'],
-  ])('hides %j while streaming', (text, shown) => {
-    expect(hideBotGroupTurns(text)).toBe(shown);
-  });
-  it('drops a malformed line without naming anyone', () => {
-    expect(readBotGroupTurns('Answer\n<cindy-turns kind="talk">[{"id":</cindy-turns>', new Set(['a']))).toEqual({ text: 'Answer' });
   });
 });

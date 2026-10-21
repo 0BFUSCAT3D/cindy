@@ -611,7 +611,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
 
   const settingsLabel = t('bots.groupChat.settings.open');
   const headerStatus = headerGroup ? botGroupHeaderStatus(headerGroup, displayName, t) : null;
-  const organizerBotId = headerGroup?.organizerBotId ?? null;
+  // A single-speaker group has no organizer: requests queue everyone or the named teammates.
+  const organizerBotId = headerGroup?.singleSpeaker ? null : headerGroup?.organizerBotId ?? null;
   const header = useMemo(() => {
     if (!headerGroup) return null;
     const names = botGroupMemberNames(members.map((member) => ({ name: botGroupMemberDisplayName(member) })), separator);

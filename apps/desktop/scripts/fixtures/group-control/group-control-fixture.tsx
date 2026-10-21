@@ -15,7 +15,7 @@ interface GroupData {
   /** A server group with teammates' bubbles: quote, reactions, thread entry and a task card. */
   bubbles?: boolean;
   wrappedReactions?: boolean;
-  /** A single-speaker server group: the lead answered and lined up a discussion (bot-group-chat.md §4.0/§7.0). */
+  /** A single-speaker server group: nobody was named, so everyone answers in turn (bot-group-chat.md §4.0/§7.0). */
   arrangement?: 'waiting' | 'auto';
   /** Open the group settings drawer as its owner. */
   settings?: boolean;
@@ -110,14 +110,14 @@ function bubbleMessages(wrappedReactions = false) {
   ];
 }
 
-/** The lead's own answer, then the arrangement card on its own, then the next turn. */
+/** Nobody named: the queue card, then each teammate's own answer in turn. */
 function arrangementMessages(state: 'waiting' | 'auto') {
   const ask = '群聊改成每条只有一位回答，大家讨论下？';
   return [
     message({ id: 'q1', sequence: 1, isSelf: true, content: ask, createdAt: T0 }),
-    message({ id: 'a1', sequence: 2, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', createdAt: T0 + MINUTE,
-      content: '我倾向于改：群里会安静很多，也更省。请 Nova 从测试和兼容看一下。' }),
-    message({ id: 'p1-card', sequence: 3, kind: 'plan', planId: 'p1', isSelf: true, content: '', createdAt: T0 + MINUTE }),
+    message({ id: 'p1-card', sequence: 2, kind: 'plan', planId: 'p1', isSelf: true, content: '', createdAt: T0 }),
+    message({ id: 'a1', sequence: 3, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', planId: 'p1', createdAt: T0 + MINUTE,
+      content: '我倾向于改：群里会安静很多，也更省。' }),
     ...(state === 'auto' ? [message({ id: 'b1', sequence: 4, authorKind: 'bot', authorBotId: 'b', authorName: 'Nova', planId: 'p1', createdAt: T0 + 2 * MINUTE,
       content: '同意。测试上要覆盖 @ 多位时按顺序回答，以及老群升级后只留一次说明。' })] : []),
   ];
@@ -125,10 +125,10 @@ function arrangementMessages(state: 'waiting' | 'auto') {
 function arrangementPlan(state: 'waiting' | 'auto') {
   return {
     id: 'p1', status: state === 'auto' ? 'done' : 'waiting', organizerBotId: 'a', organizerName: 'Aster', currentStep: state === 'auto' ? 1 : 0,
-    kind: 'talk', autoContinue: state === 'auto', canManage: true, workDir: null, branch: null, createdAt: T0 + MINUTE, updatedAt: T0 + 2 * MINUTE,
+    kind: 'talk', autoContinue: state === 'auto', canManage: true, workDir: null, branch: null, createdAt: T0, updatedAt: T0 + 2 * MINUTE,
     steps: [
       { position: 0, botId: 'a', botName: 'Aster', task: '', status: 'done', resultMessageId: 'a1' },
-      { position: 1, botId: 'b', botName: 'Nova', task: '从测试和兼容看', status: state === 'auto' ? 'done' : 'pending', resultMessageId: state === 'auto' ? 'b1' : null },
+      { position: 1, botId: 'b', botName: 'Nova', task: '', status: state === 'auto' ? 'done' : 'pending', resultMessageId: state === 'auto' ? 'b1' : null },
     ],
   };
 }

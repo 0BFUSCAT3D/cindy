@@ -9480,8 +9480,7 @@
         "projectDirChange": "更换",
         "projectDirClear": "清除",
         "projectDirNote": "分工做事时，伙伴们在这里干活。不选也行，会用这个群自己的文件夹；选了 git 项目，每次分工会新开一个 worktree 和分支，不动你手上的代码。",
-        "projectDirSaveFailed": "项目文件夹没能保存，确认文件夹还在后再试",
-        "organizerNoteSingle": "没有 @ 人的消息由负责人回答；要几位伙伴一起讨论或分工，也由负责人安排。"
+        "projectDirSaveFailed": "项目文件夹没能保存，确认文件夹还在后再试"
       },
       "errors": {
         "memberLimit": "一个群需要 2–6 位伙伴",

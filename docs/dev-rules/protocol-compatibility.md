@@ -2457,12 +2457,12 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 ### 服务器伙伴群一次一位伙伴（`groupSingleSpeaker`，2026-10-21）
 
 Chat Server `/me` 追加 `capabilities.groupSingleSpeaker: 1`，服务端派发随之改变且对所有客户端生效：
-无 @ 只派负责人、@ 多位在主群直接建 `kind=talk` 的安排、不再自动续圈。旧客户端照常可用——
+主群里 @ 多位或没 @ 人都直接建 `kind=talk` 的队列（没 @ 人时排全部伙伴）、不再自动续圈。旧客户端照常可用——
 它们本就声明 `planVersion: 1` 领取安排步骤、渲染安排卡并能「继续」；仍发送的 `deferExecution` /
-`continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」按新规则只叫负责人或被 @ 的伙伴。
+`continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」只叫被 @ 的伙伴或第一位伙伴。
 
-新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断；负责人完成可带
-`followUp`（服务端严格合同，旧服务器会拒绝，故必须以能力为前提）；安排动作 `auto` 切换自动接续。
+新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
+队列停着等继续时新消息按新请求发送（不作为补充）；安排动作 `auto` 切换自动接续（旧服务器会拒绝，故以能力为前提）。
 `chat_plan.kind` / `auto_continue` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。
 停止的范围收窄只在执行端实现（成员只停自己的请求与伙伴，管理员可 `all`），沿用既有 control /
 plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`，新增 `bot-group:plan-auto`；
