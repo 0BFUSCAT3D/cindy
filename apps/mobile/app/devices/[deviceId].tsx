@@ -107,7 +107,7 @@ import {
   loadSharedSessionScheduleIndex,
 } from '@/session/scheduleIndex';
 import { shouldSuppressRemoteListEmptyState } from '@/session/sessionEmptyState';
-import { countSessionsWithActiveBoundSchedules } from '@/session/archiveScheduleConfirm';
+import { anyMayHaveBoundSchedules, countSessionsWithActiveBoundSchedules } from '@/session/archiveScheduleConfirm';
 import type { RemoteSession } from '@/session/types';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
@@ -678,9 +678,11 @@ function DeviceDetailScreenContent() {
     }
     const scheduleRequest = ++bulkScheduleRequestRef.current;
     setBulkScheduleCount(0);
-    setBulkScheduleLoading(action === 'archive');
-    if (action === 'archive') {
-      void countSessionsWithActiveBoundSchedules(deviceId, invoke, summary.candidates.map((session) => session.id))
+    // 全部已知无绑定时不查询、不禁用确认(与单条路径同一个快路径)。
+    const needsLookup = action === 'archive' && anyMayHaveBoundSchedules(deviceId, summary.candidates);
+    setBulkScheduleLoading(needsLookup);
+    if (needsLookup) {
+      void countSessionsWithActiveBoundSchedules(deviceId, invoke, summary.candidates)
         .then((count) => {
           if (bulkScheduleRequestRef.current !== scheduleRequest) return;
           setBulkScheduleCount(count);

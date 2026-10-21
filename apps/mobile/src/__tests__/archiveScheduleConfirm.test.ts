@@ -28,7 +28,7 @@ describe('archive schedule lookup deadline', () => {
     mocks.list.mockReturnValue(new Promise(() => {}));
 
     const single = loadActiveBoundScheduleNames(args);
-    const bulk = countSessionsWithActiveBoundSchedules('pc', mocks.list as never, ['task']);
+    const bulk = countSessionsWithActiveBoundSchedules('pc', mocks.list as never, [{ id: 'task' }]);
     await vi.advanceTimersByTimeAsync(SCHEDULE_LOOKUP_WAIT_MS);
 
     await expect(single).resolves.toEqual([]);
@@ -48,11 +48,30 @@ describe('archive schedule lookup deadline', () => {
     mocks.list.mockResolvedValue([]);
 
     await loadActiveBoundScheduleNames(args);
-    await countSessionsWithActiveBoundSchedules('pc', mocks.list as never, ['task']);
+    await countSessionsWithActiveBoundSchedules('pc', mocks.list as never, [{ id: 'task' }]);
 
     for (const call of mocks.list.mock.calls) {
       expect(call).toEqual(['pc', 'maker:schedule:list', [null, { sessionBindings: true }]]);
     }
+  });
+
+  it('bulk archive skips the request when every candidate is known unbound', async () => {
+    mocks.mayHave.mockReturnValue(false);
+
+    await expect(
+      countSessionsWithActiveBoundSchedules('pc', mocks.list as never, [{ id: 'a' }, { id: 'b' }]),
+    ).resolves.toBe(0);
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('bulk archive still queries once when any candidate may be bound', async () => {
+    mocks.mayHave.mockImplementation(((_d: string, id: string) => id === 'b') as never);
+    mocks.list.mockResolvedValue([{ id: 's', name: 'Daily', status: 'active', targetSessionId: 'b' }]);
+
+    await expect(
+      countSessionsWithActiveBoundSchedules('pc', mocks.list as never, [{ id: 'a' }, { id: 'b' }]),
+    ).resolves.toBe(1);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
   });
 
   it('skips the request for tasks known to be unbound', async () => {

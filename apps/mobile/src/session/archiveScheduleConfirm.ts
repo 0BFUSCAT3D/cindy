@@ -35,14 +35,28 @@ function stopsWhenTargetArchived(schedule: RemoteSchedule): boolean {
   return schedule.status === 'active' && !schedule.persistentSession && !!schedule.targetSessionId;
 }
 
-/** 批量归档:所选任务里归档后会停掉自动化的任务数(一次列表请求;失败按 0)。 */
+export interface BulkArchiveCandidate {
+  id: string;
+  source?: string | null;
+}
+
+/** 与单条路径同一个快路径:索引已确认无绑定的任务不必查询。 */
+export function anyMayHaveBoundSchedules(
+  deviceId: string,
+  candidates: readonly BulkArchiveCandidate[],
+): boolean {
+  return candidates.some((c) => sessionMayHaveScheduleRuns(deviceId, c.id, c.source));
+}
+
+/** 批量归档:所选任务里归档后会停掉自动化的任务数(最多一次列表请求;全部已知无绑定则不请求;失败按 0)。 */
 export async function countSessionsWithActiveBoundSchedules(
   deviceId: string,
   invoke: RemoteInvoke,
-  sessionIds: readonly string[],
+  candidates: readonly BulkArchiveCandidate[],
 ): Promise<number> {
+  if (!anyMayHaveBoundSchedules(deviceId, candidates)) return 0;
   try {
-    const ids = new Set(sessionIds);
+    const ids = new Set(candidates.map((c) => c.id));
     const bound = new Set(
       normalizeScheduleList(await withLookupDeadline(listBindingSchedules(deviceId, invoke), []))
         .filter((schedule) => stopsWhenTargetArchived(schedule) && ids.has(schedule.targetSessionId!))
