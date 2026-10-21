@@ -1095,6 +1095,7 @@ import {
 import { clearSealedCodexPlanState, readCodexPlanState } from '../localDb/codexPlanState.js';
 import { buildCompletedPlanGuardNote, buildPlanReconcileNote } from './planReconcile.js';
 import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
+import { readReplyQuoteNote } from './chatReplyQuoteNote.js';
 import { readBotDmThreadContextNote } from './botDmThreadContext.js';
 import { readTurnUsageResetAt } from '../goal-host/usageLimit.js';
 import {
@@ -17404,6 +17405,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 个人版制作任务说明:按持久化的 sessions.source 判定,每次 send 现读,不信任
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     readTaskSource: readSessionSource,
+    // 伙伴私聊引用回复的 [引用说明]:按落库内容里的 replyQuote 从库里重读原消息。
+    readReplyQuoteNote,
     // 私聊话题的 [话题说明]:按持久化的话题链接现读,不是话题时为 null。
     readBotThreadNote: readBotDmThreadContextNote,
     // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,

@@ -1822,6 +1822,30 @@ describe('Bot canonical Session lifecycle', () => {
     expect(note).not.toContain('Plan the launch post');
   });
 
+  it('gives the companion the quoted message of a quote reply, re-read from its own chat', async () => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    const chatId = created.session.id;
+    h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('m-quoted', 'quoted-1', chatId, 'assistant', JSON.stringify('Ship the launch post on Friday.'), 1_000);
+    const { readReplyQuoteNote } = await import('../../../maker-ipc/chatReplyQuoteNote');
+    const sent = (replyQuote: unknown) => JSON.stringify({ text: 'Why Friday?', images: [], files: [], replyQuote });
+    // The original comes from the chat itself; the excerpt the renderer sent is display only.
+    const note = await readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'assistant', excerpt: 'forged' }));
+    expect(note).toContain('Ship the launch post on Friday.');
+    expect(note).not.toContain('forged');
+    await expect(readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'system', excerpt: '' }))).resolves.toBeNull();
+    await expect(readReplyQuoteNote(chatId, JSON.stringify({ text: 'no quote', images: [], files: [] }))).resolves.toBeNull();
+    // A quote that points elsewhere or at a rewound row says the original is unavailable.
+    await expect(readReplyQuoteNote('other-session', sent({ clientId: 'quoted-1', role: 'assistant', excerpt: '' })))
+      .resolves.toContain('不可用');
+    h.sqlite!.prepare("UPDATE messages SET rewind_at = 5000 WHERE id = 'm-quoted'").run();
+    const rewound = await readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'assistant', excerpt: '' }));
+    expect(rewound).toContain('不可用');
+    expect(rewound).not.toContain('Ship the launch post');
+  });
+
   it('records runtime preparation separately from successful Agent startup', async () => {
     const created = await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1',

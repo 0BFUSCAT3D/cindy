@@ -9286,7 +9286,9 @@
       "defaultModelHint": "For teammates, independently of new-task model choices. Each teammate can choose another model.",
       "title": "Teammates",
       "description": "Settings shared by all teammates. Anything about one teammate lives on their own page.",
-      "rosterNote": "The shipped roster grows with each release."
+      "rosterNote": "The shipped roster grows with each release.",
+      "showReplyTarget": "Show which message a reply answers",
+      "showReplyTargetHint": "Above a teammate’s reply, show which of your messages it answers. Older replies don’t show this."
     },
     "session": {
       "ownedByBot": "{{name}}'s background task",
