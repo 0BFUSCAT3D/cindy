@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -41,15 +41,30 @@ export function BotFollowUpInvitationCard({ pending, onChoose, consent }: {
   const { confirm } = useConfirmDialog();
   // 卡片只占一行；读什么、会用模型额度在开启前的确认框里完整说明（与设置页同一确认），确认后才保存。
   const scope = consent ?? t('bots.autonomy.consent');
+  // 确认框在账号切换后仍可能开着（它挂在账号层之上），回来的结果只认发起时的账号和仍在的卡片；
+  // 连点只排一个确认框。
+  const asking = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const start = async () => {
-    const accepted = await confirm({
-      presentation: 'standard',
-      title: t('bots.autonomy.invitation.title'),
-      description: scope,
-      confirmText: t('bots.autonomy.invitation.start'),
-      cancelText: t('bots.autonomy.invitation.notNow'),
-    });
-    if (accepted) await onChoose(true);
+    if (asking.current || pending) return;
+    asking.current = true;
+    const owner = getDataOwnerGeneration();
+    try {
+      const accepted = await confirm({
+        presentation: 'standard',
+        title: t('bots.autonomy.invitation.title'),
+        description: scope,
+        confirmText: t('bots.autonomy.invitation.start'),
+        cancelText: t('bots.autonomy.invitation.notNow'),
+      });
+      if (accepted && mounted.current && isDataOwnerGenerationCurrent(owner)) await onChoose(true);
+    } finally {
+      asking.current = false;
+    }
   };
   return (
     <section

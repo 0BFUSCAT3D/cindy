@@ -29,6 +29,7 @@ vi.mock('../botStore', async (importOriginal) => ({
   ],
 }));
 
+import { __testing as dataOwnerTesting, setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { BotAutonomySettings } from '../BotAutonomySettings';
 import { BotFollowUpInvitation } from '../BotFollowUpInvitation';
 import { RemoteBotFollowUpInvitation } from '../RemoteBotFollowUpInvitation';
@@ -166,6 +167,20 @@ it('keeps the invitation and saves nothing when the confirmation is cancelled', 
   await waitFor(() => expect(m.confirm).toHaveBeenCalledOnce());
   expect(host.setSettings).not.toHaveBeenCalled();
   expect(screen.getByRole('region')).toBeTruthy();
+});
+
+it('asks once for a double click and drops a confirmation that returns after the account changed', async () => {
+  render(<BotFollowUpInvitation botId="cindy-default" engaged />);
+  let answer!: (value: boolean) => void;
+  m.confirm.mockImplementationOnce(() => new Promise<boolean>((done) => { answer = done; }));
+  const button = await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(m.confirm).toHaveBeenCalledOnce();
+  setDataOwnerGeneration('account-b');
+  await act(async () => answer(true));
+  expect(host.setSettings).not.toHaveBeenCalled();
+  dataOwnerTesting.reset();
 });
 
 it('keeps the invitation available when saving fails', async () => {
