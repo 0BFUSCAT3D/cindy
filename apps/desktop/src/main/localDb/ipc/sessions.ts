@@ -1095,9 +1095,9 @@ export async function touchUserSendInDb(id: string, atMs?: number): Promise<void
  */
 export async function commitProvisionalSession(sessionId: string): Promise<boolean> {
   if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
-  forgetProvisionalSession(sessionId);
-  const [row] = await getDbClient()
-    .drizzle.select({
+  const db = getDbClient().drizzle;
+  const [row] = await db
+    .select({
       workingDir: sessions.workingDir,
       workspaceKind: sessions.workspaceKind,
       remoteHostId: sessions.remoteHostId,
@@ -1112,6 +1112,10 @@ export async function commitProvisionalSession(sessionId: string): Promise<boole
       error: error instanceof Error ? error.message : String(error),
     });
   });
+  // The account may have changed during the awaits: then it stays an unsent leftover of the
+  // old account (claim parks it) instead of becoming an ordinary task there.
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  forgetProvisionalSession(sessionId);
   emitSessionCreated(sessionId);
   void import('../../cindy-brain/index.js')
     .then((m) =>
