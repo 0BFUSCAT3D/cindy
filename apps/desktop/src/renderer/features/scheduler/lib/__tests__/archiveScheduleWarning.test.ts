@@ -24,6 +24,7 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
 import {
   archiveConfirmDescription,
   archiveScheduleWarningMany,
+  COLD_SCHEDULE_LOAD_WAIT_MS,
   loadActiveBoundScheduleNames,
 } from '../archiveScheduleWarning';
 import { __resetBindingMemoForTest } from '../scheduleBindingIndex';
@@ -82,15 +83,31 @@ describe('loadActiveBoundScheduleNames', () => {
     expect(result.get('task')).toEqual(['Remote']);
   });
 
-  it('本机列表加载失败时退回已有快照', async () => {
-    mocks.ensure.mockRejectedValue(new Error('offline'));
+  it('有缓存时直接使用,不等列表请求', async () => {
     mocks.getSnapshot.mockReturnValue([
       { id: 'a', name: 'Cached', status: 'active', targetSessionId: 'task' },
     ]);
+    mocks.ensure.mockReturnValue(new Promise(() => {}));
 
     const result = await loadActiveBoundScheduleNames([{ id: 'task' }]);
 
     expect(result.get('task')).toEqual(['Cached']);
+    expect(mocks.ensure).not.toHaveBeenCalled();
+  });
+
+  it('冷启动时最多等待一小段时间,超时按无绑定处理', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getSnapshot.mockReturnValue(null);
+      mocks.ensure.mockReturnValue(new Promise(() => {}));
+
+      const pending = loadActiveBoundScheduleNames([{ id: 'task' }]);
+      await vi.advanceTimersByTimeAsync(COLD_SCHEDULE_LOAD_WAIT_MS);
+
+      expect((await pending).size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('批量提示按绑定了自动化的任务数计数', async () => {

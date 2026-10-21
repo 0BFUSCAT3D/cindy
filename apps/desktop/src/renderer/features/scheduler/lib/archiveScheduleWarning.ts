@@ -15,14 +15,25 @@ export interface ArchiveTarget {
   deviceLinkDeviceId?: string | null;
 }
 
+/** 冷启动且缓存未就绪时,最多等这么久;超时按「无绑定」处理,不让普通任务的归档卡在列表请求上。 */
+export const COLD_SCHEDULE_LOAD_WAIT_MS = 1500;
+
+/** 有缓存直接用(侧栏行常驻订阅,通常已就绪);没有缓存才有限等待一次加载。 */
+async function readLocalSchedules() {
+  const cached = schedulesStore.getSnapshot();
+  if (cached) return cached;
+  const timeout = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), COLD_SCHEDULE_LOAD_WAIT_MS),
+  );
+  return Promise.race([schedulesStore.ensure().catch(() => null), timeout]);
+}
+
 /** 每个任务归档后会停掉的自动化名称(active、非持续会话);没有的任务不出现在结果里。 */
 export async function loadActiveBoundScheduleNames(
   targets: readonly ArchiveTarget[],
 ): Promise<Map<string, string[]>> {
   const needsLocal = targets.some((target) => !target.deviceLinkDeviceId);
-  const localSchedules = needsLocal
-    ? await schedulesStore.ensure().catch(() => schedulesStore.getSnapshot())
-    : null;
+  const localSchedules = needsLocal ? await readLocalSchedules() : null;
   const localMap: ReadonlyMap<string, readonly ScheduleBinding[]> = localSchedules
     ? buildBindingMap(localSchedules)
     : new Map();
