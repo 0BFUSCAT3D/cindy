@@ -80,6 +80,7 @@ export interface FinishSessionTerminalEventDeps {
     | 'noteFailedTurnCompletionTail'
     | 'stashSuppressedError'
     | 'stashOrcaSuppressedTerminal'
+    | 'stashBotGroupSuppressedTerminal'
     | 'discardReplacementProvenByProviderEvent'
     | 'consumeFailedTurnCompletionTail'
     | 'hasSuppressedError'
@@ -162,6 +163,7 @@ export function finishSessionTerminalEvent(
     isPlannedUpgradeClose,
     isRemoteAuthRetry,
     isGatewayProxyTokenRecovery,
+    groupLaneInputClientId,
   } = prepared;
   const { persistId, workerTerminalCapture, providerGroupHoldId } = delivery;
   const terminalOwner =
@@ -464,6 +466,12 @@ export function finishSessionTerminalEvent(
             capture: workerTerminalCapture,
           },
         );
+        if (groupLaneInputClientId) {
+          deps.autoResumeBookkeeping.stashBotGroupSuppressedTerminal(session.id, {
+            sessionId: session.id, activeInputClientId: groupLaneInputClientId,
+            outcome: 'error', resultText: '', failureCode: botGroupRuntimeFailureCode(event.data),
+          });
+        }
       }
     } else if (event.type === 'error' && isTerminalTurnErrorEvent(event)) {
       // replacement 可在 sendToAgent 返回前同步失败并让 coordinator 的 activeTurn
@@ -644,8 +652,6 @@ export function finishSessionTerminalEvent(
         notifyUnsuccessfulProductTurn();
       }
       // Group lane turns are attributed by the accepted input, captured before the queue drains.
-      const groupLaneInputClientId =
-        deps.agentInputCoordinatorHolder?.getActiveInputClientId?.(session.id, event.sessionTurnGeneration) ?? null;
       const botDelegationPendingInputClientIds =
         deps.agentInputCoordinatorHolder
           ?.getQueueControlSnapshot(session.id)
