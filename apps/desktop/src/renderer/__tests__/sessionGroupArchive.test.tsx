@@ -26,19 +26,21 @@ vi.mock('@/lib/makerChatStore', () => ({
   makerChatStore: { closeSessionQuery: vi.fn(), purgeSession: vi.fn() },
 }));
 vi.mock('@/lib/composerDraftStore', () => ({ discardDraft: vi.fn() }));
-vi.mock('@/lib/worktreeRemovalWarning', () => ({
-  countDirtyWorktreesForRemoval: vi.fn(async () => 0),
-}));
 vi.mock('@/lib/sessionsBus', () => ({ emitRefresh: vi.fn() }));
 vi.mock('@/lib/toast', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: vi.fn() } }));
+
+const worktreeRemovalPreview = vi.fn();
 
 // Value: invoke the production group lifecycle and inspect persisted writes,
 // confirmation scope and cleanup. The existing candidate-selector unit tests
 // do not exercise this orchestration. Rule: dedicated dialogue menu must not
 // affect project/Bot/Make tasks or a local subset of a remote/mixed group.
+// The old source-count assertion broke when #6575 extracted this hook; exercise
+// real worktree preflight through IPC instead, including warning/cancel timing.
 // Minimal input: one eligible member plus pinned/running/foreign records.
 // Tier: unit; in-memory persistence and immediate confirmations, no real waits.
-// Standalone Vitest: 2.53s (1.51s collection).
+// Standalone: pnpm wall 3.64s / Vitest 2.31s (tests 21ms); first cold load 23.06s
+// spent 14.21s initializing jsdom and 8.44s collecting modules (tests 25ms).
 function session(id: string, patch: Partial<Session> = {}): Session {
   return {
     id,
@@ -72,49 +74,84 @@ function mount(sessions: Session[], status: FilterStatus = 'active') {
   return { ...view, options, writes };
 }
 
-beforeEach(() => vi.clearAllMocks());
-afterEach(cleanup);
+beforeEach(() => {
+  vi.clearAllMocks();
+  worktreeRemovalPreview.mockReset().mockResolvedValue({ hasWorktree: true, dirty: false });
+  vi.stubGlobal('electronAPI', { worktreeRemovalPreview });
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('session group bulk lifecycle', () => {
-  it('archives only eligible group members, with dialogue confirmation and normal cleanup', async () => {
-    const members = [
-      session('eligible'),
-      session('running'),
-      session('pinned', { pinnedAt: '2026-10-21' }),
-      session('archived', { status: 'archived' }),
-    ];
-    const foreign = [
-      session('project', { workspaceKind: 'project' }),
-      session('bot'),
-      session('make'),
-    ];
-    const view = mount([...members, ...foreign]);
-    await act(async () => {
-      await view.result.current({ kind: 'dialogue', sessions: members });
-    });
-    expect(view.writes.get('eligible')?.status).toBe('archived');
-    expect(
-      [...view.writes.values()].filter((s) => s.status === 'archived').map((s) => s.id),
-    ).toEqual(['eligible', 'archived']);
-    const description = view.options.confirmDialog.mock.calls[0][0].description;
-    expect(description).toContain('ccAgent.sidebar.dialogueArchiveAll.descriptionWithSkip');
-    expect(description).toContain('"count":1');
-    expect(description).toContain('skipPinned');
-    expect(description).toContain('skipRunning');
-    expect(makerChatStore.closeSessionQuery).toHaveBeenCalledExactlyOnceWith('eligible');
-    expect(makerChatStore.purgeSession).toHaveBeenCalledExactlyOnceWith('eligible');
-    expect(view.options.navigate).toHaveBeenCalledWith('/cc-agent');
-  });
+  it.each([false, true])(
+    'archives only eligible dialogue members with dirty=%s warning and normal cleanup',
+    async (dirty) => {
+      const members = [
+        session('eligible'),
+        session('running'),
+        session('pinned', { pinnedAt: '2026-10-21' }),
+        session('archived', { status: 'archived' }),
+      ];
+      const foreign = [
+        session('project', { workspaceKind: 'project' }),
+        session('bot'),
+        session('make'),
+      ];
+      const view = mount([...members, ...foreign]);
+      worktreeRemovalPreview.mockResolvedValue({ hasWorktree: true, dirty });
+      await act(async () => {
+        await view.result.current({ kind: 'dialogue', sessions: members });
+      });
+      expect(view.writes.get('eligible')?.status).toBe('archived');
+      expect(
+        [...view.writes.values()].filter((s) => s.status === 'archived').map((s) => s.id),
+      ).toEqual(['eligible', 'archived']);
+      const description = view.options.confirmDialog.mock.calls[0][0].description;
+      expect(description).toContain('ccAgent.sidebar.dialogueArchiveAll.descriptionWithSkip');
+      expect(description).toContain('"count":1');
+      expect(description).toContain('skipPinned');
+      expect(description).toContain('skipRunning');
+      expect(worktreeRemovalPreview).toHaveBeenCalledExactlyOnceWith('eligible');
+      if (dirty) {
+        expect(description).toContain(
+          'ccAgent.sidebar.bulkSelection.confirmArchive.dirtyWorktreeWarning:{"count":1}',
+        );
+      } else {
+        expect(description).not.toContain('dirtyWorktreeWarning');
+      }
+      expect(makerChatStore.closeSessionQuery).toHaveBeenCalledExactlyOnceWith('eligible');
+      expect(makerChatStore.purgeSession).toHaveBeenCalledExactlyOnceWith('eligible');
+      expect(view.options.navigate).toHaveBeenCalledWith('/cc-agent');
+    },
+  );
 
-  it('leaves records and active queries untouched when the confirmation is cancelled', async () => {
+  it('waits for preflight and leaves records and active queries untouched when the dirty warning is cancelled', async () => {
     const members = [session('eligible')];
     const view = mount(members);
     view.options.confirmDialog.mockResolvedValue(false);
+    let resolvePreview!: (preview: { hasWorktree: boolean; dirty: boolean }) => void;
+    worktreeRemovalPreview.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePreview = resolve;
+      }),
+    );
     await act(async () => {
-      await view.result.current({ kind: 'dialogue', sessions: members });
+      const archive = view.result.current({ kind: 'dialogue', sessions: members });
+      expect(view.options.confirmDialog).not.toHaveBeenCalled();
+      expect(sessionService.setStatus).not.toHaveBeenCalled();
+      expect(makerChatStore.closeSessionQuery).not.toHaveBeenCalled();
+      resolvePreview({ hasWorktree: true, dirty: true });
+      await archive;
     });
+    expect(view.options.confirmDialog.mock.calls[0][0].description).toContain(
+      'ccAgent.sidebar.bulkSelection.confirmArchive.dirtyWorktreeWarning:{"count":1}',
+    );
     expect(view.writes.get('eligible')?.status).toBe('active');
+    expect(sessionService.setStatus).not.toHaveBeenCalled();
     expect(makerChatStore.closeSessionQuery).not.toHaveBeenCalled();
+    expect(makerChatStore.purgeSession).not.toHaveBeenCalled();
     expect(view.options.refreshSessions).not.toHaveBeenCalled();
   });
 
@@ -177,6 +214,7 @@ describe('session group bulk lifecycle', () => {
       projectKey: projectIdentityKeyForSession(projectTask),
       sessions: [projectTask],
     } as ProjectNode;
+    worktreeRemovalPreview.mockResolvedValue({ hasWorktree: true, dirty: true });
     await act(async () => {
       await view.result.current({ kind: 'project', project });
     });
@@ -185,5 +223,9 @@ describe('session group bulk lifecycle', () => {
     expect(view.options.confirmDialog.mock.calls[0][0].description).toContain(
       'ccAgent.sidebar.archiveAll.description',
     );
+    expect(view.options.confirmDialog.mock.calls[0][0].description).toContain(
+      'ccAgent.sidebar.bulkSelection.confirmArchive.dirtyWorktreeWarning:{"count":1}',
+    );
+    expect(worktreeRemovalPreview).toHaveBeenCalledExactlyOnceWith('project');
   });
 });
