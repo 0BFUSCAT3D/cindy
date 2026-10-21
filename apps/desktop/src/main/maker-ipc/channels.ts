@@ -761,6 +761,7 @@ export const MAKER_INVOKE = {
   RSB_WINDOW_CLOSE: 'maker:rsb-window:close',
   RSB_WINDOW_SET_DETACHED: 'maker:rsb-window:set-detached',
   RSB_WINDOW_GET_CONTEXT: 'maker:rsb-window:get-context',
+  RSB_WINDOW_ALLOW_BOT_WORKBENCH_PERMISSION: 'maker:rsb-window:allow-bot-workbench-permission',
   RSB_WINDOW_READY: 'maker:rsb-window:ready',
   RSB_WINDOW_SEND_COMMAND: 'maker:rsb-window:send-command',
   /**
@@ -809,6 +810,7 @@ export const MAKER_INVOKE = {
   CHAT_SERVER_REFRESHPROFILE: 'maker:chat-server:refreshProfile',
   CHAT_SERVER_STATUS: 'maker:chat-server:status',
   CHAT_SERVER_THREAD: 'maker:chat-server:thread',
+  CHAT_SERVER_FOLLOWTHREAD: 'maker:chat-server:followThread',
   CHAT_SERVER_REPLY: 'maker:chat-server:reply',
   CHAT_SERVER_SHARETOMAIN: 'maker:chat-server:shareToMain',
   CHAT_SERVER_REACT: 'maker:chat-server:react',

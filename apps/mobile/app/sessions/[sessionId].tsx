@@ -127,6 +127,7 @@ import { hasSessionEntryPreviewMismatch } from '@/session/sessionEntrySyncIndica
 import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
 import { PaperPlaneIcon } from '@/components/PaperPlaneIcon';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
+import { useLocalNetworkStatus } from '@/device-link/localNetworkStatus';
 import { subscribeCredentialSwitchOutcome } from '@/session/credentialSwitchOutcome';
 import { useRevokedDevices } from '@/device-link/revokedDevicesStore';
 import { useSharedTaskAccess } from '@/device-link/useSharedTaskAccess';
@@ -395,6 +396,11 @@ import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
 import { isProviderShareAgentDeviceId } from '@/session/providerShareAgentDevice';
 import { useSessionProviderGroup } from '@/session/useSessionProviderGroup';
 import {
+  askMobileSessionRebalance,
+  offerMobileSessionRebalance,
+  useMobileSessionRebalancePrefetch,
+} from '@/session/sessionRebalancePrompt';
+import {
   drainComposerAnnotationSubmissions,
   drainComposerAttachments,
   queueComposerAnnotationSubmission,
@@ -413,7 +419,9 @@ import {
   buildPendingSendItems,
   pendingSendItemKey,
   type MobilePendingSendActions,
+  type MobilePendingSendWaitingFor,
 } from '@/session/pendingSendItems';
+import { noteLocalSend } from '@/session/localSendMotion';
 import { isSourceDeviceRemoved } from '@/session/messageSourceLabels';
 import {
   appendOptimisticUserMessage,
@@ -2293,6 +2301,15 @@ function SessionScreenContent() {
   const outboxConnectionDispatchBlocked = shouldHoldOutboxDispatchForConnection(
     outboxConnectionState,
   );
+  // 待发气泡写「等…后发送」只看真正断开:只有系统确认手机没网才归因于网络(relay 连接中 /
+  // 服务重连不算);电脑不可达或无响应归因于电脑;同步中、自动恢复中几秒就过去,不提示。
+  const localNetworkStatus = useLocalNetworkStatus();
+  const outboxWaitingFor: MobilePendingSendWaitingFor | null = localNetworkStatus === 'unavailable'
+    ? 'network'
+    : outboxConnectionState.relayOnline
+      && (outboxConnectionState.targetAvailable === false || outboxConnectionState.deviceUnresponsive)
+      ? 'computer'
+      : null;
   // 弱网普通断线也要有可见信号(消息流静默停更没有任何提示),经防闪延迟后显示
   const connectionRecoveryError = companionEntry.error ?? activeOutboxTransportError ?? connectionError;
   const bannerError = connectionRecoveryError ?? historyError;
@@ -2607,6 +2624,13 @@ function SessionScreenContent() {
     () => currentTurnHasStreamingAssistant(latestMessagesRef.current),
     [messageStructureToken],
   );
+  // 任务空闲时预先问好要不要换号，点发送时不多等一次往返(provider-groups.md §6.2「任务进行中换号」)。
+  useMobileSessionRebalancePrefetch({
+    invoke,
+    hostDeviceId: deviceId,
+    sessionId,
+    idle: status === 'online' && !remoteSessionRunning && !currentTurnStreaming,
+  });
   const canStopCurrentRun = (remoteSessionRunning || currentTurnStreaming)
     && !inputProjection.queueAbortPending;
   const canStopComposer = canStopQueue || canStopCurrentRun;
@@ -6050,6 +6074,7 @@ function SessionScreenContent() {
     const record = findDurableOutboxRecord(item.clientId);
     return {
       ...outboxDisplayItem(item),
+      ...(record ? { sentAt: record.createdAt } : {}),
       canCancel: !(record?.creation && !record.prepared && !record.template),
     };
   }), [outboxItems, deviceId, sessionId]);
@@ -6121,6 +6146,7 @@ function SessionScreenContent() {
         steeringClientIds: new Set(inputProjection.steeringQueueClientIds),
         presentationByClientId,
         getImagePreview: getSentImagePreview,
+        outboxWaitingFor,
       });
     },
     [
@@ -6132,6 +6158,7 @@ function SessionScreenContent() {
       livePendingSendClientIds,
       outboxItems,
       outboxDisplayItems,
+      outboxWaitingFor,
       queueBusy,
       queueEditing?.clientId,
       queueHiddenClientIds,
@@ -6545,9 +6572,25 @@ function SessionScreenContent() {
       return;
     }
     const useDurableOutbox = outboxEligible && !earlyLocalCommand && !earlyDesktopCommand && !legacyPlanRequiresLiveDispatch;
+    const outboxClientId = useDurableOutbox ? createOutboxClientId() : undefined;
     const planModeAtSend = runtimeOptions?.planModeSupported === true
       ? (readSessionRowNow() ?? currentSession).planModeEnabled === true
       : undefined;
+    // 上一轮已经结束、用户发下一条消息：供应商组里另一个账号的配额明显更该先用时，问要不要换过去
+    // (provider-groups.md §6.2「任务进行中换号」，与电脑一致)。只把选择记到任务所在电脑，这条消息照常发出；
+    // 前面还有没发出的消息、断线或正在回复时不问。
+    if (
+      useDurableOutbox
+      && !dispatchBlockedAtSend
+      && outboxRef.current.length === 0
+      && !remoteSessionRunning
+      && !currentTurnStreaming
+      && !isRemoteSessionMissing(readSessionRowNow())
+    ) {
+      await offerMobileSessionRebalance({ invoke, hostDeviceId: deviceId, sessionId, clientId: outboxClientId!, ask: askMobileSessionRebalance });
+      // 弹窗期间离开了这个任务：草稿还没清空，留在原处，不发。
+      if (outboxSessionAliveRef.current !== sessionId) return;
+    }
     pendingSkillSelectionRef.current = null;
     dismissPromptRecommendation();
     // 乐观第一拍:点发送立刻清空输入框并跟到底部,不等任何网络往返(enqueue 是
@@ -6669,7 +6712,7 @@ function SessionScreenContent() {
           const readyPreviews = readyAttachments.map((attachment) => attachmentPreviews[attachment.id] ?? null);
           const permissionModeAtSend = permissionModeOrAsk(currentSession.permissionMode);
           const item = buildOutboxItem({
-            clientId: createOutboxClientId(), sessionId, text, quotesEncoded: quotesEncodedAtSend,
+            clientId: outboxClientId!, sessionId, text, quotesEncoded: quotesEncodedAtSend,
             sessionRefs: sessionRefsAtSend, agentReferences: agentReferencesAtSend,
             pastedTextRanges: pastedTextRangesAtSend, slashCommandRanges: slashCommandRangesAtSend ?? [],
             permissionModeAtSend, planModeAtSend, readyAttachments, readyPreviews,
@@ -6697,6 +6740,7 @@ function SessionScreenContent() {
             record.uploads.push(await retainOutboxFile(record, item.slotByLocalId[localId]!, source));
           }
           if (!sendScopeStillAlive() || !isMobileAuthOwnerCurrent(ownerAtSend)) return;
+          noteLocalSend(record.item.clientId);
           await mobileDurableOutbox.add(record);
           committed = true;
           handoff.release(true);
@@ -7037,6 +7081,7 @@ function SessionScreenContent() {
       // previews / mediaAssetAttachments 映射保留到成功后再清:它们不入消息体,失败
       // 恢复 attachments 时缩略图能原样回来。
       const projectionBeforeSend = remoteSessionStore.getInputProjection(sessionId);
+      noteLocalSend(queued.clientId);
       markQueueItemSending(queued);
       remoteSessionStore.setInputProjectionOptimistically(sessionId, {
         ...projectionBeforeSend,

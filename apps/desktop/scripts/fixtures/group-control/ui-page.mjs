@@ -33,6 +33,14 @@ export default {
       about: 'Teammate bubbles: quote, corner reaction, thread entry, task card, long text at the width cap; hover shows the toolbar beside the bubble',
       data: { ...base, bubbles: true },
     },
+    'thread-unread': {
+      about: 'Server read state: unread thread entries (with @you), the in-chat 话题 hint above the composer and its list of this group\'s Threads',
+      data: { ...base, bubbles: true, threadUnread: true },
+    },
+    'thread-follow': {
+      about: 'The Thread panel\'s 关注 switch, off by default; switched on it reads 已关注',
+      data: { ...base, bubbles: true, threadUnread: true, threadPanel: true },
+    },
     'bubbles-wrapped': {
       about: 'PR #6549: wrapped reactions keep both toolbars level with their bubbles; server messages with empty mention ids still open unique member cards',
       viewport: { width: 800, height: 800 },
@@ -67,6 +75,46 @@ export default {
       await collapsedDot.click();
       await chip.waitFor();
     };
+
+    if (ui.case === 'thread-unread') {
+      await page.getByText('Android 更新卡那个 PR', { exact: false }).waitFor();
+      // Unread replies replace the last-reply time on the entry; an @you is named there too.
+      assert.equal(await page.locator('[data-thread-preview="a1"] [data-thread-unread="2"]').count(), 1);
+      assert.equal(await page.locator('[data-thread-preview="q4"] [data-thread-unread]').count(), 0, 'a read Thread keeps its last-reply time');
+      const hint = page.locator('[data-thread-hint]');
+      await hint.waitFor();
+      const geometry = await page.evaluate(() => {
+        const box = document.querySelector('[data-thread-hint]').getBoundingClientRect();
+        const composer = document.querySelector('textarea').closest('form, [data-bot-group-composer], div').getBoundingClientRect();
+        const timeline = document.querySelector('[data-testid="bot-group-timeline"]').getBoundingClientRect();
+        return { aboveComposer: box.bottom <= composer.top + 1, inside: box.right <= timeline.right + 1 && box.left >= timeline.left };
+      });
+      assert.ok(geometry.inside, 'the hint stays inside the chat column');
+      // Threads that name the reader or that they follow ask for attention; others wait at their entry.
+      const label = await hint.textContent();
+      assert.ok(label.includes('3'), `the hint counts the two Threads that mention the reader and the one they follow (${label})`);
+      await ui.capture('hint');
+      await hint.locator('button').first().click();
+      const rows = page.locator('[data-thread-hint-row]');
+      await rows.first().waitFor();
+      assert.deepEqual(await rows.evaluateAll(list => list.map(row => row.getAttribute('data-thread-hint-row'))), ['a1', 'q3', 'q2', 'q4']);
+      await ui.capture('list');
+      return;
+    }
+
+    if (ui.case === 'thread-follow') {
+      await page.locator('[data-thread-preview="q2"]').click();
+      const follow = page.locator('[data-thread-follow]');
+      await follow.waitFor();
+      assert.equal(await follow.getAttribute('aria-pressed'), 'false', 'a Thread is not followed until the reader asks');
+      await ui.capture('off');
+      await follow.click();
+      await page.locator('[data-thread-follow][aria-pressed="true"]').waitFor();
+      // The resting state, not the hover the click leaves behind.
+      await page.mouse.move(0, 0);
+      await ui.capture('on');
+      return;
+    }
 
     if (ui.case.startsWith('bubbles')) {
       const answer = page.getByText('Android 更新卡那个 PR', { exact: false });
