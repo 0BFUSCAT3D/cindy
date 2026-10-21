@@ -1858,7 +1858,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       for (const run of runs) rooms.add(run.execution.conversation_id);
     }
     for (const room of [...rooms].sort()) {
-      const rows = await api<Execution[]>(`/conversations/${room}/executions`);
+      let rows: Execution[];
+      try {
+        rows = await api<Execution[]>(`/conversations/${room}/executions`);
+      } catch (error) {
+        // Left or removed from the room: its notices can never be taken, and the next rooms still are.
+        if (!(error instanceof ChatResponseError) || ![403, 404, 410].includes(error.status)) throw error;
+        for (const [executionId, hinted] of hints) if (hinted === room) hints.delete(executionId);
+        continue;
+      }
       const queued = rows.filter(row => row.bot_id === actorId && row.status === 'queued')
         .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id));
       // A notice is dropped once its work is no longer queued, or once it waits behind a turn in
