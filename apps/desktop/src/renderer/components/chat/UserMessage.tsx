@@ -1,5 +1,5 @@
 import { BotDmThreadPreview } from '@/features/bots/BotDmThreadPreview';
-import { useBotDmThreadForMessage } from '@/features/bots/botDmThreads';
+import { useBotDmThreadForMessage } from '@/features/bots/botDmThreadsContext';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 import type { ImMessageSource } from '../../../shared/imMessageSource';
 import { isSharedTaskPeer } from '@cindy/device-link';

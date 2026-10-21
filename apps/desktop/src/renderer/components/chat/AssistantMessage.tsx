@@ -4,7 +4,7 @@ import { BotStarterOptions } from '@/features/bots/BotStarterOptions';
 import { stripStarterOptionList } from '../../../shared/botStarterOptions';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
 import { BotDmThreadPreview } from '@/features/bots/BotDmThreadPreview';
-import { useBotDmThreadForMessage } from '@/features/bots/botDmThreads';
+import { useBotDmThreadForMessage } from '@/features/bots/botDmThreadsContext';
 import { botTaskResultKey, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
 /**
  * AssistantMessage

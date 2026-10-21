@@ -13,7 +13,8 @@ import { makerChatStore } from '@/lib/makerChatStore';
 import type { ComposerBotMention } from '@/lib/fileTypes';
 import type { BotChatIdentity } from './BotSessionContentHeader';
 import { BotDmThreadPanel, type BotDmThreadPanelState } from './BotDmThreadViews';
-import { BotDmThreadsProvider, isBotDmThreadUnread, useBotDmThreadList, type BotDmThreadsValue } from './botDmThreads';
+import { isBotDmThreadUnread, useBotDmThreadList } from './botDmThreads';
+import { BotDmThreadsProvider, type BotDmThreadsValue } from './botDmThreadsContext';
 import { useBotProfiles } from './botStore';
 import { BOT_DM_THREAD_PARAM } from './botDmThreadRoute';
 
