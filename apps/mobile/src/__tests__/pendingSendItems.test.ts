@@ -357,7 +357,7 @@ describe('buildPendingSendItems', () => {
         outboxItem('ready'),
         outboxItem('uploading', { attachmentCount: 1, uploadedCount: 0, thumbnails: [{ key: 'uploading-slot-0', uri: 'file:///a.jpg', ossRef: null, uploading: true }] }),
         outboxItem('failed', { failed: true }),
-        outboxItem('handed', { dispatching: true }),
+        outboxItem('handed', { dispatching: true, sentAt: 1_700_000_000_000 }),
       ],
     });
     expect(ready).toMatchObject({ phase: 'waiting', waitingFor: 'computer' });
@@ -368,6 +368,8 @@ describe('buildPendingSendItems', () => {
     expect(failed.phase).toBe('failed');
     // 已交给电脑的条目在等对账,不是在等着发。
     expect(handed.phase).toBe('sending');
+    // 发件箱的发送时刻带进气泡,伙伴对话按它分组。
+    expect(handed.sentAt).toBe(1_700_000_000_000);
     expect(build({ outbox: [outboxItem('ready')] })[0].phase).toBe('sending');
   });
 

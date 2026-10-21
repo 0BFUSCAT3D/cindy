@@ -1748,14 +1748,19 @@ export function MessageRenderer({
   }, []);
   const companionPluginWork = useMemo(() => companion ? companionPluginWorkEntries(items, companionPluginInvocations) : undefined, [companion, items, companionPluginInvocations]);
   // Desktop MessageStream groups the visible teammate conversation (not hidden work) into five-minute stamps.
-  // A local send joins at its send time, so its stamp is in place before the echo arrives.
+  // Your own send is grouped by its send time from the moment its bubble appears, and its echo
+  // (same key) keeps that time, so a phone/computer clock skew cannot add or move a stamp on
+  // confirmation. Outbox rows carry the time across restarts.
+  const pendingSentAtRef = useRef(new Map<string, number>());
   const companionTimeGroups = useMemo(() => companion ? collectBotMessageTimeGroups(items.flatMap((item): BotTimelineMessage[] => {
     if (item.type === 'pending_send') {
-      const sentAt = localSendStartedAt(item.key);
-      return sentAt === null ? [] : [{ clientId: item.key, createdAt: sentAt }];
+      const sentAt = item.sentAt ?? localSendStartedAt(item.key);
+      if (sentAt === null) return [];
+      pendingSentAtRef.current.set(item.key, sentAt);
+      return [{ clientId: item.key, createdAt: sentAt }];
     }
     return item.type === 'message' && (item.message.kind === 'user' || item.message.kind === 'assistant' || item.message.companion)
-      ? [{ clientId: item.key, createdAt: item.message.createdAt }] : [];
+      ? [{ clientId: item.key, createdAt: pendingSentAtRef.current.get(item.key) ?? localSendStartedAt(item.key) ?? item.message.createdAt }] : [];
   })) : undefined, [companion, items]);
   const actions: MessageActions & { firstUserMessageClientId?: string } = useMemo(() => ({
     companion,

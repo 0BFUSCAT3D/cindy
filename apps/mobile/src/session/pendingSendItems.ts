@@ -111,6 +111,8 @@ export interface MobilePendingSendItem {
   sourceDevice?: MessageSourceDevice;
   /** phase 为 waiting 时在等什么。 */
   waitingFor?: MobilePendingSendWaitingFor;
+  /** 本机发出的时刻(手机时钟),伙伴对话的时间分隔按它分组,回流后同 key 沿用。 */
+  sentAt?: number;
 }
 
 export interface MobileMessageListExtraData {
@@ -460,6 +462,7 @@ export function buildPendingSendItems(input: BuildPendingSendItemsInput): Mobile
       sentInlineTokens: buildPendingSentInlineTokens(item),
       phase: item.failed ? 'failed' : waitingFor ? 'waiting' : uploadsPending ? 'uploading' : 'sending',
       ...(waitingFor ? { waitingFor } : {}),
+      ...(item.sentAt !== undefined ? { sentAt: item.sentAt } : {}),
       queueIndex: null,
       thumbs: waitingFor ? item.thumbnails.map((thumb) => ({ ...thumb, uploading: false })) : item.thumbnails,
       fileCount: item.fileCount,

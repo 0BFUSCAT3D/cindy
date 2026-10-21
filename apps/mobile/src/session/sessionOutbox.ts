@@ -169,6 +169,8 @@ export interface MobileOutboxItem {
   waitingIds: readonly string[];
   /** 已失败的上传任务(可经 controller.retry 重跑)。 */
   failedIds: readonly string[];
+  /** 持久发件箱:上次尝试中上传抛错的槽(只用于展示单图重传)。 */
+  failedUploadSlot?: number;
   /** enqueue RPC 失败的错误文案(附件失败时为 null,错误看 failedIds)。 */
   enqueueError: string | null;
   phase: MobileOutboxPhase;
@@ -206,6 +208,8 @@ export interface MobileOutboxDisplayItem {
   failed: boolean;
   /** 已交给电脑(发送中 / 待确认 / 电脑已接手):断线时不是「等着发」,而是在等对账。 */
   dispatching?: boolean;
+  /** 本机写入发件箱的时刻(手机时钟),跨重启稳定,用于伙伴对话的时间分隔。 */
+  sentAt?: number;
   /** False while a first-message creation record still owns recovery of the draft. */
   canCancel?: boolean;
   /** 失败原因(附件失败给统一文案,enqueue 失败给 RPC 错误)。 */
@@ -471,13 +475,9 @@ export function outboxDisplayItem(item: MobileOutboxItem): MobileOutboxDisplayIt
   let fileCount = 0;
   const fileNames: string[] = [];
   const failedSlots = new Set(item.failedIds.map((localId) => item.slotByLocalId[localId]));
-  // 发件箱按槽序逐个上传、遇错即停,失败只记在整条上:还没落定的第一个槽就是没传上去的那个,
-  // 其后的槽还没开始传。失败后没有槽在上传。
+  // 失败后没有槽在上传;只有投递记下的那个槽(上传时抛错)才标失败,入队失败等不标任何图片。
   const failed = item.phase === 'failed';
-  if (failed && failedSlots.size === 0) {
-    const firstMissing = item.attachmentSlots.findIndex((slot) => slot === null);
-    if (firstMissing >= 0) failedSlots.add(firstMissing);
-  }
+  if (failed && item.failedUploadSlot !== undefined) failedSlots.add(item.failedUploadSlot);
   item.attachmentSlots.forEach((slot, index) => {
     const meta = item.slotMeta[index];
     if (meta?.kind !== 'image') {

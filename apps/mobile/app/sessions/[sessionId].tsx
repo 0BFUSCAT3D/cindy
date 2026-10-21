@@ -6058,6 +6058,7 @@ function SessionScreenContent() {
     const record = findDurableOutboxRecord(item.clientId);
     return {
       ...outboxDisplayItem(item),
+      ...(record ? { sentAt: record.createdAt } : {}),
       canCancel: !(record?.creation && !record.prepared && !record.template),
     };
   }), [outboxItems, deviceId, sessionId]);
