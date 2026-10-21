@@ -6557,6 +6557,7 @@ function SessionScreenContent() {
       return;
     }
     const useDurableOutbox = outboxEligible && !earlyLocalCommand && !earlyDesktopCommand && !legacyPlanRequiresLiveDispatch;
+    const outboxClientId = useDurableOutbox ? createOutboxClientId() : undefined;
     const planModeAtSend = runtimeOptions?.planModeSupported === true
       ? (readSessionRowNow() ?? currentSession).planModeEnabled === true
       : undefined;
@@ -6571,7 +6572,7 @@ function SessionScreenContent() {
       && !currentTurnStreaming
       && !isRemoteSessionMissing(readSessionRowNow())
     ) {
-      await offerMobileSessionRebalance({ invoke, hostDeviceId: deviceId, sessionId, ask: askMobileSessionRebalance });
+      await offerMobileSessionRebalance({ invoke, hostDeviceId: deviceId, sessionId, clientId: outboxClientId!, ask: askMobileSessionRebalance });
       // 弹窗期间离开了这个任务：草稿还没清空，留在原处，不发。
       if (outboxSessionAliveRef.current !== sessionId) return;
     }
@@ -6696,7 +6697,7 @@ function SessionScreenContent() {
           const readyPreviews = readyAttachments.map((attachment) => attachmentPreviews[attachment.id] ?? null);
           const permissionModeAtSend = permissionModeOrAsk(currentSession.permissionMode);
           const item = buildOutboxItem({
-            clientId: createOutboxClientId(), sessionId, text, quotesEncoded: quotesEncodedAtSend,
+            clientId: outboxClientId!, sessionId, text, quotesEncoded: quotesEncodedAtSend,
             sessionRefs: sessionRefsAtSend, agentReferences: agentReferencesAtSend,
             pastedTextRanges: pastedTextRangesAtSend, slashCommandRanges: slashCommandRangesAtSend ?? [],
             permissionModeAtSend, planModeAtSend, readyAttachments, readyPreviews,

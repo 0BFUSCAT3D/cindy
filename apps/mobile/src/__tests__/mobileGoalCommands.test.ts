@@ -92,6 +92,8 @@ function existingHarness(args = 'target') {
     sendInFlightRef: { current: false }, sending: false, setSending: vi.fn((_sending: boolean) => {}), currentSession: session,
     invalidateHistoryRecoveryNavigation: vi.fn(),
     outboxConnectionBlockedNow: () => false, getPendingUploadCount: () => 0,
+    outboxRef: { current: [] }, remoteSessionRunning: false, currentTurnStreaming: false,
+    offerMobileSessionRebalance: vi.fn(async () => {}), askMobileSessionRebalance: vi.fn(), invoke: vi.fn(),
     parseMobileLocalSystemCommand: () => null, parseMobileDesktopCommand, pendingSkillSelectionRef: { current: null },
     resolveSessionAgentKind: () => 'pi', modelNeedsReselection: () => false, getCachedDeviceProviders: () => undefined,
     commandNeedsRemoteSession: () => false, extractMobileSessionReferences: () => [], outboxDispatchBlockedNow: () => false,

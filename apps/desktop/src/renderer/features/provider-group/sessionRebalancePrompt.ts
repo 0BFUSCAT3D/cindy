@@ -111,9 +111,10 @@ async function recordDecision(
   memberKey: string,
   remember: boolean,
   hostDeviceId: string | undefined,
+  clientId: string,
 ): Promise<boolean> {
   try {
-    const raw = await command(hostDeviceId, { action: 'rebalance-decision', sessionId, memberKey, remember });
+    const raw = await command(hostDeviceId, { action: 'rebalance-decision', sessionId, memberKey, remember, clientId });
     return !!raw && typeof raw === 'object' && (raw as { ok?: unknown }).ok === true;
   } catch {
     return false;
@@ -137,7 +138,7 @@ export function describeSessionRebalance(
 }
 
 /**
- * 发送前调用：有问好的提议就按用户的选择记下(任务所在电脑在这条消息发出前换过去)；没有提议时立即返回，不等网络。
+ * 发送前询问；返回的闭包在消息创建后绑定 clientId 记录确认。没有提议时立即返回，不等网络。
  * 不拦发送——调用方之后照常发出这条消息。
  */
 export async function offerSessionRebalance(options: {
@@ -145,13 +146,12 @@ export async function offerSessionRebalance(options: {
   hostDeviceId?: string;
   confirmWithCheckbox: ConfirmWithCheckbox;
   t: TFunction;
-}): Promise<void> {
+}): Promise<((clientId: string) => Promise<void>) | undefined> {
   const { sessionId, hostDeviceId, confirmWithCheckbox, t } = options;
   const suggestion = takePrefetched(sessionId, hostDeviceId);
   if (!suggestion) return;
   if (suggestion.kind === 'auto') {
-    await recordDecision(sessionId, suggestion.memberKey, false, hostDeviceId);
-    return;
+    return async (clientId) => { await recordDecision(sessionId, suggestion.memberKey, false, hostDeviceId, clientId); };
   }
   const { ok, checked } = await confirmWithCheckbox({
     title: t('providerGroup.rebalance.title', { label: suggestion.label }),
@@ -162,5 +162,5 @@ export async function offerSessionRebalance(options: {
     autoFocusConfirm: true,
   });
   if (!ok) return;
-  await recordDecision(sessionId, suggestion.memberKey, checked, hostDeviceId);
+  return async (clientId) => { await recordDecision(sessionId, suggestion.memberKey, checked, hostDeviceId, clientId); };
 }

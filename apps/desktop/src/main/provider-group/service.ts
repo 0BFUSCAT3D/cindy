@@ -128,6 +128,7 @@ export interface ProviderGroupRemoteGroups {
     agentKind: 'claude-code' | 'codex' | 'pi';
     model: string;
     exclude: readonly string[];
+    quotaRebalance?: string;
   }): Promise<ProviderGroupRemotePick>;
   cool(ownerDeviceId: string, input: {
     providerId: string;
@@ -298,10 +299,12 @@ export interface ProviderGroupService {
    * 用户确认换号：这个任务接下来的一次发送(PROVIDER_GROUP_REBALANCE_ACCEPT_TTL_MS 内)先换到 `memberKey` 再发；
    * `remember` = 以后自动换。`memberKey` 不在组里返回 false。
    */
-  rebalanceDecision(sessionId: string, memberKey: string, remember: boolean): Promise<boolean>;
+  rebalanceDecision(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
 }
 
 export interface ProviderGroupBeforeSendOptions {
+  /** 用户确认换号的具体消息；复用发送协议已有的幂等 ID。 */
+  clientId?: string;
   /** 这次发送被停止或取消：等原电脑恢复时就此停下，不再换电脑。 */
   signal?: AbortSignal;
   /** 定时任务的发送：不使用用户为下一条消息确认的换号。 */
@@ -407,6 +410,7 @@ interface GroupSource {
     agentKind: AgentKind;
     model: string;
     exclude: ReadonlySet<string>;
+    quotaRebalance?: string;
   }): Promise<SourcePick>;
   /** 记进组的状态(只在判定说要记时调用：那台账号的问题)。 */
   cool(providerId: string, memberKey: string, cause: ProviderGroupFailureCause, resetAt: number | null, model: string): void;
@@ -488,7 +492,15 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
    */
   const preSendFailed = new Map<string, { keys: string[]; at: number }>();
   /** 用户为这个任务接下来的一次发送确认的换号(provider-groups.md §6.2「任务进行中换号」)。 */
-  const acceptedRebalance = new Map<string, { memberKey: string; at: number }>();
+  const acceptedRebalance = new Map<string, Map<string, { memberKey: string; at: number }>>();
+  function pruneAcceptedRebalance(): void {
+    for (const [sessionId, messages] of acceptedRebalance) {
+      for (const [clientId, decision] of messages) {
+        if (deps.now() - decision.at > PROVIDER_GROUP_REBALANCE_ACCEPT_TTL_MS) messages.delete(clientId);
+      }
+      if (!messages.size) acceptedRebalance.delete(sessionId);
+    }
+  }
   /** 换号没换成的组内电脑(按组区分) → 到这个时刻之前不再提议。 */
   const rebalanceBackoff = new Map<string, number>();
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -713,7 +725,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     async readGroup(providerId) {
       return deps.readGroup(providerId);
     },
-    async pick({ sessionId, providerId, agentKind, model, exclude }) {
+    async pick({ sessionId, providerId, agentKind, model, exclude, quotaRebalance }) {
       // 带着这一轮试过的来选：试过不行说明状态可能旧了，现读最新状态再选。选中的同一步记上临时占用：本机同时
       // 开的几个任务不会读到同一份负载、全落到同一台(与同账号电脑、分享的人问组所在电脑同一做法)。
       const pick = await router.pick({
@@ -724,6 +736,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         localTask: true,
         exclude,
         reserveFor: sessionId,
+        ...(quotaRebalance ? { quotaRebalance } : {}),
         ...(exclude.size > 0 ? { fresh: true } : {}),
       });
       if (pick.kind !== 'member') return pick;
@@ -793,13 +806,14 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const source: GroupSource = {
       ownerDeviceId,
       readGroup: (providerId) => remote.readGroup(ownerDeviceId, providerId),
-      async pick({ sessionId, providerId, config, agentKind, model, exclude }) {
+      async pick({ sessionId, providerId, config, agentKind, model, exclude, quotaRebalance }) {
         const pick = await remote.pick(ownerDeviceId, {
           sessionId,
           providerId,
           agentKind: agentKind as 'claude-code' | 'codex' | 'pi',
           model,
           exclude: [...exclude],
+          ...(quotaRebalance ? { quotaRebalance } : {}),
         });
         if (pick.kind !== 'member') return pick;
         const labelOf = (key: string) => {
@@ -1032,6 +1046,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         agentKind: row.agentKind,
         model: row.model,
         exclude: new Set(config.members.map((m) => m.key).filter((key) => key !== target)),
+        quotaRebalance: current.key,
       });
       if (!isCurrent()) return false;
       if (pick.kind !== 'member' || pick.member.key !== target) {
@@ -1840,10 +1855,12 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       preSendFailed.delete(sessionId);
       // 用户为这一条消息确认的换号只用这一次；定时任务的发送不用它(留给用户自己那条)。
       let accepted: { memberKey: string; at: number } | undefined;
-      if (!options?.scheduled) {
-        accepted = acceptedRebalance.get(sessionId);
-        acceptedRebalance.delete(sessionId);
-        if (accepted && deps.now() - accepted.at > PROVIDER_GROUP_REBALANCE_ACCEPT_TTL_MS) accepted = undefined;
+      pruneAcceptedRebalance();
+      if (!options?.scheduled && options?.clientId) {
+        const messages = acceptedRebalance.get(sessionId);
+        accepted = messages?.get(options.clientId);
+        messages?.delete(options.clientId);
+        if (!messages?.size) acceptedRebalance.delete(sessionId);
       }
       if (!deps.readBinding(sessionId) || deps.isTurnRunning(sessionId)) return;
       // 读组设置也算进发送前检查的上限：组所在电脑断线或不响应时保留绑定、照常发送，不等默认的请求超时。
@@ -1987,10 +2004,14 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       return { kind: deps.readAutoRebalance?.(sessionId) ? 'auto' : 'ask', ...target };
     },
 
-    async rebalanceDecision(sessionId, memberKey, remember) {
+    async rebalanceDecision(sessionId, memberKey, remember, clientId) {
+      if (!clientId || !/^[A-Za-z0-9_-]{1,128}$/.test(clientId)) return false;
       const loaded = deps.readBinding(sessionId) ? await withTimeout(loadBound(sessionId), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS) : undefined;
       if (!loaded?.config?.members.some((m) => m.key === memberKey)) return false;
-      acceptedRebalance.set(sessionId, { memberKey, at: deps.now() });
+      pruneAcceptedRebalance();
+      const messages = acceptedRebalance.get(sessionId) ?? new Map();
+      messages.set(clientId, { memberKey, at: deps.now() });
+      acceptedRebalance.set(sessionId, messages);
       if (remember) {
         try {
           await deps.writeAutoRebalance?.(sessionId);

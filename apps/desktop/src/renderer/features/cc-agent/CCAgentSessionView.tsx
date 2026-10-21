@@ -4168,8 +4168,9 @@ function CCAgentSessionContent({
 
       // 上一轮已经结束、用户发下一条消息：供应商组里另一个账号的配额明显更该先用时，问用户要不要换过去
       // (provider-groups.md §6.2「任务进行中换号」)。只记下用户的选择，这条消息无论换不换都照常发出。
+      let recordRebalance: ((clientId: string) => Promise<void>) | undefined;
       if (deliveryMode !== 'steer' && sessionId && !isRunningRef.current) {
-        await offerSessionRebalance({
+        recordRebalance = await offerSessionRebalance({
           sessionId,
           ...(remoteDeviceId ? { hostDeviceId: remoteDeviceId } : {}),
           confirmWithCheckbox,
@@ -4178,9 +4179,17 @@ function CCAgentSessionContent({
       }
 
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
+      let rebalanceClientId: string | undefined;
       const sendOptions = {
-        beforeEnqueue: opts?.beforeEnqueue,
-        onInputCreated: opts?.onInputCreated,
+        beforeEnqueue: recordRebalance ? async () => {
+          if (await opts?.beforeEnqueue?.() === false) return false;
+          if (rebalanceClientId) await recordRebalance(rebalanceClientId);
+          return true;
+        } : opts?.beforeEnqueue,
+        onInputCreated: recordRebalance ? (clientId: string) => {
+          rebalanceClientId = clientId;
+          opts?.onInputCreated?.(clientId);
+        } : opts?.onInputCreated,
         ...orcaLeadVendorOptions,
         ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),
         ...(opts?.agentReferences?.length ? { agentReferences: opts.agentReferences } : {}),

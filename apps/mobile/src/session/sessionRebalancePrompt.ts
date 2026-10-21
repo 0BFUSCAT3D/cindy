@@ -29,6 +29,7 @@ const MEMBER_KEY = /^[A-Za-z0-9_.:-]{1,300}$/;
 // eslint-disable-next-line no-control-regex -- 控制字符是显式拒绝目标
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const MAX_WINDOW_MS = 31 * 86_400_000;
+const MAX_REBALANCE_LABEL_LENGTH = 128 * 2 + 3;
 
 export interface MobileRebalanceSuggestion {
   kind: 'ask' | 'auto';
@@ -56,7 +57,7 @@ export function parseMobileRebalanceSuggestion(raw: unknown): MobileRebalanceSug
   if (typeof value.memberKey !== 'string' || !MEMBER_KEY.test(value.memberKey)) return null;
   const label = typeof value.label === 'string' ? value.label.trim() : '';
   const quota = value.quota as Record<string, unknown> | null | undefined;
-  if (!label || label.length > 128 || CONTROL_CHARS.test(label) || !quota || typeof quota !== 'object') return null;
+  if (!label || label.length > MAX_REBALANCE_LABEL_LENGTH || CONTROL_CHARS.test(label) || !quota || typeof quota !== 'object') return null;
   const { usedPercent, resetAtMs, windowMs } = quota;
   if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) return null;
   if (typeof windowMs !== 'number' || !Number.isFinite(windowMs) || windowMs <= 0 || windowMs > MAX_WINDOW_MS) return null;
@@ -82,7 +83,7 @@ export function describeMobileRebalance(suggestion: MobileRebalanceSuggestion, n
   return i18n.t('session.providerGroupRebalance.body', { label: suggestion.label, quota });
 }
 
-/** 系统弹窗问用户；点外面关掉(Android)按取消处理。 */
+/** 系统弹窗问用户；通过明确的取消按钮关闭，禁止点遮罩关闭。 */
 export function askMobileSessionRebalance(suggestion: MobileRebalanceSuggestion): Promise<MobileRebalanceChoice> {
   return new Promise((resolve) => {
     Alert.alert(
@@ -93,7 +94,7 @@ export function askMobileSessionRebalance(suggestion: MobileRebalanceSuggestion)
         { text: i18n.t('session.providerGroupRebalance.remember'), onPress: () => resolve('remember') },
         { text: i18n.t('session.providerGroupRebalance.confirm'), onPress: () => resolve('switch') },
       ],
-      { cancelable: true, onDismiss: () => resolve('cancel') },
+      { cancelable: false },
     );
   });
 }
@@ -167,6 +168,7 @@ export async function offerMobileSessionRebalance(input: {
   invoke: Invoke;
   hostDeviceId: string;
   sessionId: string;
+  clientId: string;
   ask(suggestion: MobileRebalanceSuggestion): Promise<MobileRebalanceChoice>;
 }): Promise<void> {
   const { invoke, hostDeviceId, sessionId } = input;
@@ -178,6 +180,7 @@ export async function offerMobileSessionRebalance(input: {
     await invoke(hostDeviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [{
       action: 'rebalance-decision',
       sessionId,
+      clientId: input.clientId,
       memberKey: suggestion.memberKey,
       remember: choice === 'remember',
     }]);

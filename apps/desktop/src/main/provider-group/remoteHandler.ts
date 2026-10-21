@@ -47,7 +47,7 @@ export interface ProviderGroupRemoteHandlerDeps {
   /** 手机、远程控制发下一条消息前：这台电脑上的任务要不要提议换号(provider-groups.md §6.2「任务进行中换号」)。 */
   rebalanceSuggestion?(sessionId: string): Promise<ProviderGroupRebalanceSuggestion>;
   /** 记下用户确认的换号。 */
-  rebalanceDecision?(sessionId: string, memberKey: string, remember: boolean): Promise<boolean>;
+  rebalanceDecision?(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
 }
 
 /** 每个账号、每台报告来的电脑最近收下的用量报告序号(乱序到达的旧份丢弃)。按账号的负载对象区分账号。 */
@@ -130,7 +130,7 @@ export async function handleProviderGroupRemote(
   if (request.action === 'rebalance-decision') {
     return {
       ok: deps.rebalanceDecision
-        ? await deps.rebalanceDecision(request.sessionId, request.memberKey, request.remember)
+        ? await deps.rebalanceDecision(request.sessionId, request.memberKey, request.remember, request.clientId)
         : false,
     };
   }
@@ -144,6 +144,7 @@ export async function handleProviderGroupRemote(
         agentKind: request.agentKind,
         model: request.model,
         exclude: new Set(request.exclude),
+        ...(request.quotaRebalance ? { quotaRebalance: request.quotaRebalance } : {}),
         // 带着这一轮试过的来问：那台电脑试过不行，本机现读最新状态再选(状态以本机为准，2026-10-11)。
         ...(request.exclude.length > 0 ? { fresh: true } : {}),
         // 选中的同一步记上临时占用：同时来的几个请求不会读到同一份负载、全落到同一台。
@@ -153,7 +154,8 @@ export async function handleProviderGroupRemote(
       if (!scope.isCurrent() || pick.kind === 'none') return { kind: 'none' };
       if (pick.kind === 'unavailable') return { kind: 'unavailable', ...(pick.usageLimit ? { usageLimit: pick.usageLimit } : {}) };
       const { key, kind, agentDeviceId, providerId: memberProviderId } = pick.member;
-      return { kind: 'member', member: { key, kind, agentDeviceId, providerId: memberProviderId }, label: pick.label };
+      return { kind: 'member', member: { key, kind, agentDeviceId, providerId: memberProviderId }, label: pick.label,
+        ...(request.quotaRebalance ? { quotaRebalance: true as const } : {}) };
     }
     case 'cool':
     case 'cool-model': {

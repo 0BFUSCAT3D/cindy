@@ -26,7 +26,7 @@ import type { ProviderGroupBinding } from './bindings.js';
 import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from './directory.js';
 import { pickProviderGroupMember, type SchedulableMember } from './scheduler.js';
 import { createGuestSupportReader } from './sharedStatus.js';
-import { providerGroupMemberUsageState } from './usage.js';
+import { providerGroupMemberUsageState, providerGroupRebalanceTarget } from './usage.js';
 import { coolingScope, currentCooling, PROVIDER_GROUP_COOLING_SCOPE_CAP, type ProviderGroupPersistedCooling } from './cooling.js';
 export { PROVIDER_GROUP_FAILURE_COOLDOWN_MS, type ProviderGroupPersistedCooling } from './cooling.js';
 
@@ -77,6 +77,8 @@ export interface ProviderGroupPickInput {
   exclude?: ReadonlySet<string>;
   /** 现读组内电脑的最新状态，不用短时缓存(试过不行、带着这一轮试过的来选时)。 */
   fresh?: boolean;
+  /** 用户确认的配额均衡，值为当前成员键；同一步重验目标未满载、配额可信、短窗口不紧张及换号收益。 */
+  quotaRebalance?: string;
   /**
    * 选中后在同一步(读负载与选电脑之间没有等待)调用，用来立即记上占用：同时来的几个请求各自读到前一个的
    * 占用，不会全落到同一台。
@@ -251,7 +253,8 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         const quota = providerGroupMemberUsageState(r, input.model, now, input.agentKind);
         return {
           key: r.member.key,
-          usable: usable(r),
+          usable: usable(r) && (!input.quotaRebalance
+            || (memberRunning(input.providerId, r) < r.member.limit && !!quota.quota && !quota.fiveHourTight)),
           paused: paused(r),
           running: memberRunning(input.providerId, r),
           limit: r.member.limit,
@@ -283,6 +286,15 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
           kind: 'unavailable', resolved,
           ...(limited.length > 0 ? { usageLimit: { resetAtMs: resets.length > 0 ? Math.min(...resets) : null } } : {}),
         };
+      }
+      if (input.quotaRebalance) {
+        const current = resolved.find((r) => r.member.key === input.quotaRebalance);
+        const chosen = resolved.find((r) => r.member.key === key)!;
+        const currentQuota = current && providerGroupMemberUsageState(current, input.model, now, input.agentKind).quota;
+        const targetQuota = providerGroupMemberUsageState(chosen, input.model, now, input.agentKind).quota;
+        if (!currentQuota || !targetQuota || providerGroupRebalanceTarget(currentQuota, [{ key, quota: targetQuota }], now) !== key) {
+          return { kind: 'unavailable', resolved };
+        }
       }
       lastPicked.set(input.providerId, key);
       if (input.reserveFor) {

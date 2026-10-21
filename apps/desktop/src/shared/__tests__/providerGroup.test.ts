@@ -94,6 +94,10 @@ describe('switching accounts between messages', () => {
   });
 
   it('only turns a well-formed reply into a suggestion', () => {
+    // 电脑名和账号名分别合法，组合名称不能让整条提议消失（review #6693）。
+    const label = `${'D'.repeat(128)} · ${'A'.repeat(128)}`;
+    expect(parseProviderGroupRebalanceSuggestion({ kind: 'ask', memberKey: 'local', label, quota })?.label).toBe(label);
+    expect(parseProviderGroupRebalanceSuggestion({ kind: 'ask', memberKey: 'local', label: `${label}X`, quota })).toBeNull();
     expect(parseProviderGroupRebalanceSuggestion({ kind: 'auto', memberKey: 'device:mini:anthropic', label: 'Mini', quota }))
       .toEqual({ kind: 'auto', memberKey: 'device:mini:anthropic', label: 'Mini', quota });
     for (const raw of [null, { ok: false }, { kind: 'move', memberKey: 'local', label: 'Mini', quota },

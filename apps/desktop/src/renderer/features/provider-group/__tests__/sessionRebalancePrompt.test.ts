@@ -43,7 +43,10 @@ describe('offerSessionRebalance', () => {
   ] as const)('%s', async (_name, kind, answer, remember) => {
     const h = setup(async () => suggestion(kind), answer);
     await prefetchSessionRebalance('s1');
-    await offerSessionRebalance({ sessionId: 's1', confirmWithCheckbox: h.confirmWithCheckbox, t });
+    const record = await offerSessionRebalance({ sessionId: 's1', confirmWithCheckbox: h.confirmWithCheckbox, t });
+    expect(h.decisions()).toEqual([]);
+    if (remember === null) expect(record).toBeUndefined();
+    else { expect(record).toBeTypeOf('function'); await record!('message-a'); }
 
     expect(h.confirmWithCheckbox).toHaveBeenCalledTimes(kind === 'ask' ? 1 : 0);
     if (kind === 'ask') {
@@ -54,7 +57,7 @@ describe('offerSessionRebalance', () => {
     }
     expect(h.decisions()).toEqual(remember === null
       ? []
-      : [{ action: 'rebalance-decision', sessionId: 's1', memberKey: MINI, remember }]);
+      : [{ action: 'rebalance-decision', sessionId: 's1', memberKey: MINI, remember, clientId: 'message-a' }]);
     // 一次提议只管一条消息：下一条等任务再空闲、重新问过才可能再问。
     await offerSessionRebalance({ sessionId: 's1', confirmWithCheckbox: h.confirmWithCheckbox, t });
     expect(h.confirmWithCheckbox).toHaveBeenCalledTimes(kind === 'ask' ? 1 : 0);

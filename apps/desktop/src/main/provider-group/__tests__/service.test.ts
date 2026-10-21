@@ -1275,12 +1275,12 @@ describe('switching accounts between messages to balance quota', () => {
       memberKey: MINI.key,
       quota: { usedPercent: 20, resetAtMs: 87_400_000 },
     });
-    await h.service.beforeSend('s1');
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
     expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
 
-    expect(await h.service.rebalanceDecision('s1', MINI.key, false)).toBe(true);
+    expect(await h.service.rebalanceDecision('s1', MINI.key, false, 'message-a')).toBe(true);
     const progress = vi.fn();
-    await h.service.beforeSend('s1', { progress });
+    await h.service.beforeSend('s1', { progress, clientId: 'message-a' });
     expect(progress).toHaveBeenCalledWith('switching');
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
@@ -1289,18 +1289,41 @@ describe('switching accounts between messages to balance quota', () => {
     );
     expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
     // 确认只管那一条消息；到了那台也不再提议换回来。
-    await h.service.beforeSend('s1');
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
     expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
     expect(await h.service.rebalanceSuggestion('s1')).toBeNull();
   });
 
   it('keeps a scheduled message on the current account and saves the confirmation for the user’s own message', async () => {
     const h = paced();
-    await h.service.rebalanceDecision('s1', MINI.key, false);
+    await h.service.rebalanceDecision('s1', MINI.key, false, 'message-a');
     await h.service.beforeSend('s1', { scheduled: true });
     expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
-    await h.service.beforeSend('s1');
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
     expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
+  });
+
+  // §6.2：弹窗期间目标已满载或短窗口变紧时，普通分配的兜底不能用于主动换号。
+  // 现有成功/交接失败用例没有覆盖提议之后的状态变化；unit，从服务入口验证仍留原账号。
+  it.each(['full', 'tight', 'unknown', 'less-urgent'] as const)('keeps the current account when the proposed target becomes %s', async (state) => {
+    const h = paced();
+    expect(await h.service.rebalanceSuggestion('s1')).toMatchObject({ memberKey: MINI.key });
+    if (state === 'full') {
+      for (let i = 0; i < MINI.limit; i++) {
+        await h.router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL,
+          exclude: new Set(['local']), reserveFor: `other-${i}` });
+      }
+    } else if (state === 'tight') {
+      h.usage[MINI.key].fiveHour = { utilization: 90, resetsAt: 11_800 };
+    } else if (state === 'less-urgent') {
+      h.usage[MINI.key].sevenDay = { utilization: 20, resetsAt: 600_000 };
+    } else {
+      delete h.usage[MINI.key];
+    }
+    await h.service.rebalanceDecision('s1', MINI.key, false, 'message-a');
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    expect(h.bindings.get('s1')?.memberKey).toBe('local');
   });
 
   it('does not offer while a reply is running and drops a confirmation whose message was never sent', async () => {
@@ -1309,9 +1332,9 @@ describe('switching accounts between messages to balance quota', () => {
     expect(await h.service.rebalanceSuggestion('s1')).toBeNull();
     h.deps.isTurnRunning.mockReturnValue(false);
 
-    await h.service.rebalanceDecision('s1', MINI.key, false);
+    await h.service.rebalanceDecision('s1', MINI.key, false, 'message-a');
     h.advance(PROVIDER_GROUP_REBALANCE_ACCEPT_TTL_MS + 1);
-    await h.service.beforeSend('s1');
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
     expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
     expect(await h.service.rebalanceDecision('s1', 'device:elsewhere:anthropic', false)).toBe(false);
   });
@@ -1319,17 +1342,29 @@ describe('switching accounts between messages to balance quota', () => {
   it('remembers “switch automatically” for that task only', async () => {
     const h = paced();
     h.bindings.set('s2', { providerId: 'anthropic', memberKey: 'local', at: 1_000_000 });
-    await h.service.rebalanceDecision('s1', MINI.key, true);
+    await h.service.rebalanceDecision('s1', MINI.key, true, 'message-a');
     expect(h.deps.writeAutoRebalance).toHaveBeenCalledWith('s1');
     expect(await h.service.rebalanceSuggestion('s1')).toMatchObject({ kind: 'auto', memberKey: MINI.key });
     expect(await h.service.rebalanceSuggestion('s2')).toMatchObject({ kind: 'ask', memberKey: MINI.key });
   });
 
+  // §6.2：A 确认后离开而未发送，B 取消或没有提议时不能继承 A 的换号；此前只按任务 id 暂存。
+  it('consumes a confirmation only for the message whose client id was confirmed', async () => {
+    const h = paced();
+    expect(await h.service.rebalanceDecision('s1', MINI.key, true)).toBe(false);
+    expect(h.deps.writeAutoRebalance).not.toHaveBeenCalled();
+    await h.service.rebalanceDecision('s1', MINI.key, false, 'message-a');
+    await h.service.beforeSend('s1', { clientId: 'message-b' });
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+  });
+
   it('sends on the current account when the move fails and stops offering that account for a while', async () => {
     const h = paced();
     h.deps.switchAgentLocation.mockRejectedValueOnce(new Error('handoff failed'));
-    await h.service.rebalanceDecision('s1', MINI.key, false);
-    await h.service.beforeSend('s1');
+    await h.service.rebalanceDecision('s1', MINI.key, false, 'message-a');
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
     expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
     expect(await h.service.rebalanceSuggestion('s1')).toBeNull();

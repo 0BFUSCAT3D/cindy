@@ -10547,7 +10547,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 电脑与手机发送前问要不要换号、记下用户的决定(provider-groups.md §6.2「任务进行中换号」)。
   setProviderGroupSessionRebalance({
     suggest: (sessionId) => sessionGroupService.rebalanceSuggestion(sessionId),
-    decide: (sessionId, memberKey, remember) => sessionGroupService.rebalanceDecision(sessionId, memberKey, remember),
+    decide: (sessionId, memberKey, remember, clientId) => sessionGroupService.rebalanceDecision(sessionId, memberKey, remember, clientId),
   });
   // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
   setProviderGroupLocalLoad(() => countProviderRunningTurns({
@@ -17184,6 +17184,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await providerGroupService?.beforeSend(sessionId, {
         ...(options?.signal ? { signal: options.signal } : {}),
         ...(options?.scheduled ? { scheduled: true } : {}),
+        ...(options?.clientId ? { clientId: options.clientId } : {}),
         progress: (state) => agentInputCoordinatorHolder?.setProviderGroupSendReconnect(sessionId, state),
       }).catch((error) => {
         log.warn('provider group: pre-send check failed', {

@@ -265,7 +265,7 @@ export async function readProviderGroupOfSession(sessionId: string): Promise<Pro
 /** register 装配供应商组服务后注入：任务进行中换号的提议与用户的决定(provider-groups.md §6.2「任务进行中换号」)。 */
 export interface ProviderGroupSessionRebalance {
   suggest(sessionId: string): Promise<ProviderGroupRebalanceSuggestion>;
-  decide(sessionId: string, memberKey: string, remember: boolean): Promise<boolean>;
+  decide(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
 }
 
 let sessionRebalance: ProviderGroupSessionRebalance | null = null;
@@ -285,10 +285,10 @@ export async function readProviderGroupRebalanceSuggestion(sessionId: string): P
 }
 
 /** 记下用户确认换号；没记上返回 false，这条消息照常发到原来的号。 */
-export async function recordProviderGroupRebalanceDecision(sessionId: string, memberKey: string, remember: boolean): Promise<boolean> {
+export async function recordProviderGroupRebalanceDecision(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean> {
   if (!sessionRebalance) return false;
   try {
-    return await sessionRebalance.decide(sessionId, memberKey, remember);
+    return await sessionRebalance.decide(sessionId, memberKey, remember, clientId);
   } catch {
     return false;
   }

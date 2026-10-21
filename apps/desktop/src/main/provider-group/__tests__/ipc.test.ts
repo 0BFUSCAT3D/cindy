@@ -88,6 +88,16 @@ function deps(candidates: ProviderGroupCandidate[], existing: ProviderGroupConfi
 }
 
 describe('parseProviderGroupCommand', () => {
+  // Unit: the real command boundary must preserve the confirmed message ID instead of a session-wide decision.
+  it('passes a confirmed message id through parsing and execution', async () => {
+    const d = deps([]);
+    d.rebalanceDecision = vi.fn(async () => true);
+    const request = { action: 'rebalance-decision', sessionId: 's1', memberKey: MINI.key, remember: false, clientId: 'message-a' };
+    expect(await executeProviderGroupCommand(d, parseProviderGroupCommand(request))).toEqual({ ok: true });
+    expect(d.rebalanceDecision).toHaveBeenCalledWith('s1', MINI.key, false, 'message-a');
+    expect(() => parseProviderGroupCommand({ ...request, clientId: 'bad id' })).toThrow();
+  });
+
   it('rejects malformed commands', () => {
     expect(() => parseProviderGroupCommand(null)).toThrow();
     expect(() => parseProviderGroupCommand({ action: 'get', providerId: 'bad id' })).toThrow();

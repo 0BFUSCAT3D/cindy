@@ -47,7 +47,7 @@ const decisions = (invoke: ReturnType<typeof invoker>) =>
   invoke.mock.calls.map(([, , args]) => args?.[0] as { action: string }).filter((r) => r.action === 'rebalance-decision');
 
 async function offer(invoke: ReturnType<typeof invoker>, sessionId = 's1') {
-  await offerMobileSessionRebalance({ invoke, hostDeviceId: 'pc', sessionId, ask: askMobileSessionRebalance });
+  await offerMobileSessionRebalance({ invoke, hostDeviceId: 'pc', sessionId, clientId: 'message-a', ask: askMobileSessionRebalance });
 }
 
 beforeEach(() => {
@@ -69,9 +69,10 @@ describe('offerMobileSessionRebalance', () => {
     expect(alert).toHaveBeenCalledTimes(1);
     expect(alert.mock.calls[0][0]).toContain('Mini');
     expect(alert.mock.calls[0][2]).toHaveLength(3);
+    expect(alert.mock.calls[0][3]).toEqual({ cancelable: false });
     expect(decisions(invoke)).toEqual(remember === null
       ? []
-      : [{ action: 'rebalance-decision', sessionId: 's1', memberKey: MINI, remember }]);
+      : [{ action: 'rebalance-decision', sessionId: 's1', clientId: 'message-a', memberKey: MINI, remember }]);
     // 一次提议只管一条消息。
     await offer(invoke);
     expect(alert).toHaveBeenCalledTimes(1);
@@ -82,7 +83,18 @@ describe('offerMobileSessionRebalance', () => {
     await prefetchMobileSessionRebalance(invoke, 'pc', 's1');
     await offer(invoke);
     expect(alert).not.toHaveBeenCalled();
-    expect(decisions(invoke)).toEqual([{ action: 'rebalance-decision', sessionId: 's1', memberKey: MINI, remember: false }]);
+    expect(decisions(invoke)).toEqual([{ action: 'rebalance-decision', sessionId: 's1', clientId: 'message-a', memberKey: MINI, remember: false }]);
+  });
+
+  // Unit/protocol: combining two valid names used to silently discard the complete suggestion.
+  it('offers a combined computer and account name at the protocol limit', async () => {
+    const label = `${'D'.repeat(128)} · ${'A'.repeat(128)}`;
+    const invoke = invoker({ ...reply('ask'), label });
+    press('confirm');
+    await prefetchMobileSessionRebalance(invoke, 'pc', 'long-name');
+    await offer(invoke, 'long-name');
+    expect(alert.mock.calls[0][0]).toContain(label);
+    expect(decisions(invoke)).toHaveLength(1);
   });
 
   it.each([

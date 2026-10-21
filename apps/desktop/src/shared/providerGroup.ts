@@ -160,6 +160,8 @@ export type ProviderGroupRebalanceSuggestion =
   | null;
 
 const REBALANCE_MEMBER_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,300}$/;
+/** 电脑名与账号名各最多 128 个 UTF-16 单元，组合时另加分隔符。 */
+export const PROVIDER_GROUP_REBALANCE_LABEL_MAX_LENGTH = 128 * 2 + 3;
 
 /** 客户端读任务所在电脑回的提议；旧端不认识这个动作、格式不对都按没有提议处理(照常发送)。 */
 export function parseProviderGroupRebalanceSuggestion(raw: unknown): ProviderGroupRebalanceSuggestion {
@@ -167,7 +169,7 @@ export function parseProviderGroupRebalanceSuggestion(raw: unknown): ProviderGro
   const value = raw as Record<string, unknown>;
   if (value.kind !== 'ask' && value.kind !== 'auto') return null;
   if (typeof value.memberKey !== 'string' || !REBALANCE_MEMBER_KEY_PATTERN.test(value.memberKey)) return null;
-  const label = normalizeLabel(value.label);
+  const label = normalizeLabel(value.label, PROVIDER_GROUP_REBALANCE_LABEL_MAX_LENGTH);
   const quota = readProviderGroupMemberQuota(value.quota);
   return label && quota ? { kind: value.kind, memberKey: value.memberKey, label, quota } : null;
 }
@@ -243,7 +245,7 @@ export type ProviderGroupLocalCommand =
   /** 用户发下一条消息前：要不要提议换号(provider-groups.md §6.2「任务进行中换号」)。 */
   | { action: 'rebalance-suggestion'; sessionId: string }
   /** 用户确认换号：这个任务的下一条消息先换到 `memberKey`；`remember` = 这个任务以后自动换。 */
-  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean };
+  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string };
 
 export type ProviderGroupCommand = ProviderGroupLocalCommand
   | { action: 'remote-manage'; deviceId: string; request: ProviderManagementRequest };
@@ -299,11 +301,11 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-function normalizeLabel(value: unknown): string | undefined {
+function normalizeLabel(value: unknown, maxLength = 128): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   // eslint-disable-next-line no-control-regex -- 控制字符是显式拒绝目标
-  if (!trimmed || trimmed.length > 128 || /[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  if (!trimmed || trimmed.length > maxLength || /[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
   return trimmed;
 }
 
@@ -464,7 +466,7 @@ export interface ProviderGroupUsagePartAck {
 
 export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
-  | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[] }
+  | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[]; quotaRebalance?: string }
   /** 那台电脑出了问题(用量上限、登录失效、服务繁忙)：组所在电脑冷却它，不再分新任务。 */
   | { action: 'cool' | 'cool-model'; providerId: string; memberKey: string; cause: ProviderGroupRemoteCoolCause; resetAt?: number; model?: string }
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
@@ -485,7 +487,7 @@ export type ProviderGroupRemoteRequest =
   | { action: 'session-group'; sessionId: string }
   /** 发给任务所在的电脑(手机、远程控制)：同本机命令的 `rebalance-suggestion` / `rebalance-decision`。 */
   | { action: 'rebalance-suggestion'; sessionId: string }
-  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean };
+  | { action: 'rebalance-decision'; sessionId: string; memberKey: string; remember: boolean; clientId?: string };
 
 /** `session-group` 的回包：坐标是任务所在电脑视角(`groupDeviceId` 为 null = 那台自己建的组)。 */
 export interface ProviderGroupRemoteSessionGroup {
@@ -576,6 +578,7 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         agentKind: agentKind as 'claude-code' | 'codex' | 'pi',
         model: value.model,
         exclude: exclude.map(remoteMemberKey),
+        ...(value.quotaRebalance !== undefined ? { quotaRebalance: remoteMemberKey(value.quotaRebalance) } : {}),
       };
     }
     case 'cool':
@@ -652,6 +655,7 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         sessionId: remoteSessionId(value.sessionId),
         memberKey: remoteMemberKey(value.memberKey),
         remember: value.remember as boolean,
+        ...(value.clientId !== undefined ? { clientId: remoteSessionId(value.clientId) } : {}),
       };
     default:
       invalidRemote('unknown provider group action');
