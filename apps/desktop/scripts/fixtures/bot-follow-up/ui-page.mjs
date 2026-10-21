@@ -11,7 +11,7 @@ export default {
   cases: {
     'before-chat': { about: 'Opening alone never invites; an accepted message reveals the invitation' },
     'remote': { about: 'Remote chat uses the same invitation with the host-owned scope and choice' },
-    'default': { about: 'Invite after an accepted user message, with explicit scope and model allowance' },
+    'default': { about: 'One-line invitation after an accepted user message; scope and model allowance sit in the Start tooltip' },
     'settings-off': { about: 'Off by default; explain scope before enabling' },
     'settings-on': { about: 'An explicit choice is preserved; disabling is immediate' },
   },

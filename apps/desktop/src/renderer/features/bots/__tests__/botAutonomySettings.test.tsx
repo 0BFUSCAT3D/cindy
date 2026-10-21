@@ -187,7 +187,9 @@ it.each([true, false])('remote invitation uses the host-bound choice, enable=%s'
   const invoke = vi.fn(async (_device, channel) => channel.endsWith(':get') ? resource : { effects: [] });
   Object.assign(window.electronAPI, { deviceLink: { invoke } });
   render(<RemoteBotFollowUpInvitation deviceId="host-computer" botId="cindy-default" />);
-  await screen.findByText(resource.blocks[0].fallbackMarkdown);
+  // The host-owned scope (not this computer's copy) describes the Start button.
+  const start = await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' });
+  expect(start.getAttribute('aria-description')).toBe(resource.blocks[0].fallbackMarkdown);
   expect(invoke).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByText(enable ? 'bots.autonomy.invitation.start' : 'bots.autonomy.invitation.notNow'));
   await waitFor(() => expect(screen.queryByRole('region')).toBeNull());

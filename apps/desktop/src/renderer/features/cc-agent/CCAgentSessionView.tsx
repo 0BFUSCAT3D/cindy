@@ -5737,9 +5737,11 @@ function CCAgentSessionContent({
                 && !pendingPlanReview && !pendingPermission && !pendingAskUser && !pendingPluginSetup
                 && !pendingIssueConfirm && !pendingRenameSessionsConfirm && !pendingGhostGrantConfirm
                 && !pendingRemoteDesktopConfirmation && !pendingInputHandoff && followUpInvitationSession === sessionId && (
+                // Keys are namespaced: the voice panel below is a sibling keyed by the bare sessionId,
+                // and sharing it made React leave a stale copy of this card each time it reappeared.
                 remoteDeviceId
-                  ? <RemoteBotFollowUpInvitation key={`${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
-                  : <BotFollowUpInvitation key={sessionId} botId={botChatIdentity.id} engaged />
+                  ? <RemoteBotFollowUpInvitation key={`follow-up:${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
+                  : <BotFollowUpInvitation key={`follow-up:${sessionId}`} botId={botChatIdentity.id} engaged />
               )}
               <InteractionPromptHost
                 hasInteraction={

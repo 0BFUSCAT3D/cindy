@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { Tip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { toast } from '@/lib/toast';
 import { setBotSchedulerBotId, useBotAutonomySettings } from './botStore';
@@ -37,14 +38,18 @@ export function BotFollowUpInvitationCard({ pending, onChoose, consent }: {
   pending: boolean; onChoose(enable: boolean): void | Promise<void>; consent?: string;
 }) {
   const { t } = useTranslation();
+  // 一行轻提示：读什么、花额度的说明放在「开始跟进」的悬停提示里，同时作为它的可访问描述。
+  const scope = consent ?? t('bots.autonomy.consent');
   return (
-    <section className="w-full rounded-xl border border-[var(--border-default)] p-4" aria-label={t('bots.autonomy.invitation.title')}>
-      <p className="text-13 font-medium leading-5 text-[var(--text-primary)]">{t('bots.autonomy.invitation.title')}</p>
-      <p className="mt-2 text-12 leading-5 text-[var(--text-secondary)]">{consent ?? t('bots.autonomy.consent')}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button variant="cta" size="md" disabled={pending} onClick={() => void onChoose(true)}>{t('bots.autonomy.invitation.start')}</Button>
-        <Button variant="secondary" tone="quiet" size="md" disabled={pending} onClick={() => void onChoose(false)}>{t('bots.autonomy.invitation.notNow')}</Button>
-      </div>
+    <section
+      className="flex w-full items-center gap-2 rounded-xl border border-[var(--border-default)] py-1.5 pl-3 pr-1.5"
+      aria-label={t('bots.autonomy.invitation.title')}
+    >
+      <p className="min-w-0 flex-1 text-13 leading-5 text-[var(--text-primary)]">{t('bots.autonomy.invitation.title')}</p>
+      <Tip text={scope}>
+        <Button variant="cta" size="sm" aria-description={scope} disabled={pending} onClick={() => void onChoose(true)}>{t('bots.autonomy.invitation.start')}</Button>
+      </Tip>
+      <Button variant="secondary" tone="quiet" size="sm" disabled={pending} onClick={() => void onChoose(false)}>{t('bots.autonomy.invitation.notNow')}</Button>
     </section>
   );
 }
