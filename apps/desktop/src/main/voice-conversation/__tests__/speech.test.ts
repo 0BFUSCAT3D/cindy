@@ -343,6 +343,27 @@ it.each(['qwen-tts', 'dashscope-tts'] as const)(
     expect(fetcher).toHaveBeenCalledOnce();
   },
 );
+// Unit tier via SpeechSynthesisSession: live Qwen/CosyVoice streams use the string
+// "null" while audio is arriving. The JSON-null fixture above missed this case;
+// retain the final stop requirement even after sentence-end events.
+it.each(['qwen-tts', 'dashscope-tts'] as const)(
+  'decodes %s string-null audio and sentence events until stop',
+  async (protocol) => {
+    const { speech, fetcher } = nativeSession(
+      protocol,
+      sse([
+        { output: { type: 'sentence-begin', finish_reason: 'null', audio: { data: '' } } },
+        { output: { type: 'sentence-synthesis', finish_reason: 'null', audio: { data: 'AQI=' } } },
+        { output: { type: 'sentence-end', finish_reason: 'null', audio: { data: '' } } },
+        dashscopeEvents()[1],
+      ]),
+    );
+    await speech.start(input);
+    expect([...new Uint8Array((await speech.read('one')).pcm)]).toEqual([1, 2]);
+    expect((await speech.read('one')).done).toBe(true);
+    expect(fetcher).toHaveBeenCalledOnce();
+  },
+);
 it('joins multi-line data and fragmented UTF-8 before decoding Qwen PCM', async () => {
   const data =
     ': keepalive\r\ndata: {"output": {"original_text": "你好",\r\ndata: "audio":{"data":"AQI="},"finish_reason":null}}\r\n\r\n' +
@@ -372,6 +393,7 @@ it.each([
   [{ output: { finish_reason: 'stop', audio: { url: 'https://audio.test/aggregate' } } }],
   [{ output: { finish_reason: 'length' } }],
   [dashscopeEvents()[0]],
+  [{ output: { finish_reason: 'null', audio: { data: 'AQI=' } } }],
 ])(
   'refuses incomplete, invalid or failed native SSE %# without replaying a URL',
   async (...events) => {

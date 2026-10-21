@@ -63,9 +63,12 @@ function dashscopePcmStream(body: ReadableStream<Uint8Array>): ReadableStream<Ui
         throw new SpeechError('request');
       const output = event.output;
       if (!output || typeof output !== 'object' || finished) throw new SpeechError('format');
+      // Live Qwen/CosyVoice SSE can encode the in-progress sentinel as "null".
+      // Only "stop" completes the stream; sentence boundaries do not.
       if (
         output.finish_reason !== undefined &&
         output.finish_reason !== null &&
+        output.finish_reason !== 'null' &&
         output.finish_reason !== 'stop'
       )
         throw new SpeechError('format');
