@@ -5,7 +5,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Session } from '@cindy/maker-core';
 
-import { createProviderGroupHeldTurnErrors } from '../heldTurnErrors';
+import { createProviderGroupHeldRecovery, createProviderGroupHeldTurnErrors } from '../heldTurnErrors';
+import { createProviderGroupHeldWorkerTerminals } from '../heldWorkerTerminals';
 import { AutoResumeBookkeeping } from '../../maker-ipc/autoResumeBookkeeping';
 import { createSessionBindingLifecycle } from '../../maker-ipc/sessionBindingLifecycle';
 import { captureProductTurnFailureOwner, createDeferredProductTurnFailureGate } from '../../maker-ipc/productTurnFailureOwner';
@@ -69,6 +70,59 @@ describe('provider group held turn errors', () => {
     expect(deps.persist).not.toHaveBeenCalled();
     expect(deps.surface).not.toHaveBeenCalled();
     expect(deps.settleFailure).not.toHaveBeenCalled();
+  });
+
+  // #6671 / r4339380528, unit: queue acceptance discarded the error, but a
+  // pre-vendor failure never settled its product receipt. Existing holder tests
+  // stopped at queue acceptance. Drive the production continuation adapter with
+  // real held stores/gate, including a product-only task with no Worker terminal.
+  it.each([
+    { dispatched: false, worker: false, takeover: 'none' },
+    { dispatched: false, worker: true, takeover: 'none' },
+    { dispatched: true, worker: true, takeover: 'none' },
+    { dispatched: false, worker: false, takeover: 'stop' },
+    { dispatched: false, worker: false, takeover: 'new-turn' },
+    { dispatched: false, worker: false, takeover: 'account-change' },
+  ] as const)('settles queued continuation receipts: %j', ({ dispatched, worker, takeover }) => {
+    let generation = 3;
+    const session = { id: 's1', instanceId: 'original', getTurnGeneration: () => generation } as Session;
+    const owner = captureProductTurnFailureOwner(session, { type: 'error', source: 'codex', data: DATA });
+    const gate = createDeferredProductTurnFailureGate();
+    gate.defer(owner);
+    const other = { ...owner, sessionId: 'unrelated' };
+    gate.defer(other);
+    const productFailed = vi.fn();
+    const settleFailure = (sessionId: string) => gate.settle(
+      sessionId,
+      current => current.session === session && current.generation === generation,
+      productFailed,
+    );
+    const h = harness(true, settleFailure);
+    const delivered = vi.fn();
+    const terminals = createProviderGroupHeldWorkerTerminals({ deliver: delivered, ownerKey: h.deps.ownerKey });
+    const recovery = createProviderGroupHeldRecovery({ errors: h.held, terminals, settleFailure, ownerKey: h.deps.ownerKey });
+    h.held.stash('s1', 1, DATA, META);
+    if (worker) terminals.stash('s1', 1, 'original-terminal');
+
+    recovery.discard('s1', 1);
+    recovery.release('s1', 1); // The failover hook's finally runs before dispatch.
+    expect(productFailed).not.toHaveBeenCalled();
+    expect(delivered).not.toHaveBeenCalled();
+    expect(gate.pending('s1')).toBe(owner);
+    if (dispatched || takeover === 'stop' || takeover === 'new-turn') gate.clearSession('s1');
+    if (takeover === 'new-turn') generation++;
+    if (takeover === 'account-change') h.switchOwner('other-account');
+
+    recovery.settleContinuation('s1', dispatched);
+    recovery.settleContinuation('s1', false);
+    recovery.release('s1', 1);
+    if (!dispatched && takeover === 'none') {
+      expect(productFailed).toHaveBeenCalledExactlyOnceWith(owner);
+    } else expect(productFailed).not.toHaveBeenCalled();
+    expect(gate.pending('s1')).toBe(takeover === 'account-change' ? owner : undefined);
+    expect(gate.pending('unrelated')).toBe(other);
+    expect(delivered.mock.calls).toEqual(worker && !dispatched ? [['s1', 'original-terminal']] : []);
+    expect(h.deps.persist).not.toHaveBeenCalled();
   });
 
   // Unit regression for #6671 review: a capacity terminal before user-row

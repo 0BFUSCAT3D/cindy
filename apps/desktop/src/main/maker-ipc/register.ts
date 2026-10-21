@@ -87,7 +87,7 @@ import {
   type ProviderGroupStartContext,
   type ProviderGroupTurnErrorHooks,
 } from '../provider-group/service.js';
-import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
+import { createProviderGroupHeldRecovery, createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
 import { providerGroupSwitchCause } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
@@ -2033,34 +2033,17 @@ const providerGroupHeldTerminals = createProviderGroupHeldWorkerTerminals<{
   log: (message, meta) => log.info(message, meta),
 });
 
-/**
- * 换成了、续跑已进队但还没派发出去的那次登记(任务 → 登记 id)：协同 Worker 暂存的终态等续跑真正派发出去才丢掉；
- * 续跑没派出去(打开那台又失败、被丢弃)时把这次异常终止回报给 Lead，Worker 不会一直停在运行中。
- */
-const providerGroupContinuationHolds = new Map<string, number>();
-
-/** 换电脑这一趟有了结局：换成了(续跑已进队)错误不再落；Worker 的终态等续跑派发出去再丢(见上)。 */
-function discardProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldErrors.discard(sessionId, holdId);
-  if (providerGroupHeldTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
-}
-
-/** 不再换了(交回原有处理、用户接手、迟迟没有结局)：放出错误，并把 Worker 的异常终止回报给 Lead。 */
-function releaseProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldErrors.release(sessionId, holdId);
-  // 已换成、续跑在路上的那次由续跑的派发结果结算。
-  if (providerGroupContinuationHolds.get(sessionId) === holdId) return;
-  providerGroupHeldTerminals.release(sessionId, holdId);
-}
-
-/** 换电脑后的续跑有了派发结果：派发出去了丢掉 Worker 暂存的终态，没派出去回报给 Lead。 */
-function settleProviderGroupContinuation(sessionId: string, dispatched: boolean): void {
-  const holdId = providerGroupContinuationHolds.get(sessionId);
-  if (holdId === undefined) return;
-  providerGroupContinuationHolds.delete(sessionId);
-  if (dispatched) providerGroupHeldTerminals.discard(sessionId, holdId);
-  else providerGroupHeldTerminals.release(sessionId, holdId);
-}
+/** Queued handoffs keep their original product/Worker receipts until vendor dispatch. */
+const {
+  discard: discardProviderGroupHeld,
+  release: releaseProviderGroupHeld,
+  settleContinuation: settleProviderGroupContinuation,
+} = createProviderGroupHeldRecovery({
+  errors: providerGroupHeldErrors,
+  terminals: providerGroupHeldTerminals,
+  settleFailure: settleDeferredProductTurnFailure,
+  ownerKey: () => activeOwnerScopeKey(),
+});
 
 /** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
 const PROVIDER_GROUP_SWITCH_HOLD_MAX_MS = 3 * 60_000;

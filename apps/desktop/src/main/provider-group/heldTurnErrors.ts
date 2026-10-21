@@ -1,3 +1,5 @@
+import type { ProviderGroupHeldWorkerTerminals } from './heldWorkerTerminals.js';
+
 /**
  * 自动换电脑期间先不呈现的那次失败(docs/product-rules/provider-groups.md §6.1「换电脑期间不报错」)。
  *
@@ -130,6 +132,39 @@ export function createProviderGroupHeldTurnErrors<Row>(
       if (!entry) return;
       if (persist(sessionId, entry) && live) {
         deps.surface(sessionId, entry.detail);
+        deps.settleFailure(sessionId);
+      }
+    },
+  };
+}
+
+/** Keep queued continuations responsible for the terminal they have not dispatched yet. */
+export function createProviderGroupHeldRecovery(deps: {
+  errors: Pick<ProviderGroupHeldTurnErrors, 'discard' | 'release'>;
+  terminals: Pick<ProviderGroupHeldWorkerTerminals<unknown>, 'discard' | 'release'>;
+  settleFailure(sessionId: string): void;
+  ownerKey(): string;
+}) {
+  const continuationHolds = new Map<string, { holdId: number; owner: string }>();
+  return {
+    discard(sessionId: string, holdId: number): void {
+      deps.errors.discard(sessionId, holdId);
+      // Ordinary product callers also own a receipt, even without a Worker terminal.
+      continuationHolds.set(sessionId, { holdId, owner: deps.ownerKey() });
+    },
+    release(sessionId: string, holdId: number): void {
+      deps.errors.release(sessionId, holdId);
+      if (continuationHolds.get(sessionId)?.holdId === holdId) return;
+      deps.terminals.release(sessionId, holdId);
+    },
+    settleContinuation(sessionId: string, dispatched: boolean): void {
+      const continuation = continuationHolds.get(sessionId);
+      if (!continuation) return;
+      continuationHolds.delete(sessionId);
+      const { holdId, owner } = continuation;
+      if (dispatched || owner !== deps.ownerKey()) deps.terminals.discard(sessionId, holdId);
+      else {
+        deps.terminals.release(sessionId, holdId);
         deps.settleFailure(sessionId);
       }
     },
