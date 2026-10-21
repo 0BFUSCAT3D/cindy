@@ -825,6 +825,40 @@ describe('GhostManager namespace migration census', () => {
     expect(resumed.mock.results[0]?.value).toBe('pending');
   });
 
+  // A background list may precede the resume callback by several awaits. A
+  // cached enabled projection must not restart a resident disabled meanwhile.
+  // Unit: one pending legacy resident; existing tests use only fresh sync lists.
+  it('rechecks enabled state before resuming from a prepared background list', async () => {
+    await plantLegacyInstall('hello');
+    const resumed = vi.fn();
+    manager = createManager({
+      canResumePendingResidentOffline: () => true,
+      onResumePendingResidentOffline: resumed,
+    });
+    manager.ensureNamespaceMigrationCensus();
+    const installed = await manager.listAsync();
+    expect(installed[0]).toMatchObject({ enabled: true, namespaceState: 'pending' });
+    await manager.setEnabled('hello', false);
+    manager.resumePendingResidentsOffline(installed);
+    expect(resumed).not.toHaveBeenCalled();
+  });
+
+  // Census publication changes namespace eligibility without a content
+  // transaction. A per-refresh view must observe that new registry (unit).
+  it('invalidates a background refresh when the census changes without an install mutation', async () => {
+    await plantLegacyInstall('hello');
+    const read = vi.spyOn(GhostInstallReceiptStore.prototype, 'readAsync');
+    try {
+      const refresh = manager.createBackgroundRefresh();
+      expect((await refresh.registry()).census).toBeNull();
+      expect(manager.ensureNamespaceMigrationCensus()).not.toBeNull();
+      expect((await refresh.registry()).census).not.toBeNull();
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('does not assign an organization namespace to a plugin planted after the census', async () => {
     await fs.promises.mkdir(rootDir, { recursive: true });
     expect(manager.ensureNamespaceMigrationCensus()?.pendingRelIds).toEqual([]);
