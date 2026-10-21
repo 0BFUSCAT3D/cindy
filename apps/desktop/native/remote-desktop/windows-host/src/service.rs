@@ -1,3 +1,4 @@
+use crate::naming::{InstallRecord, Installation, StagedCopy};
 use crate::{pipe::Pipe, win::*};
 use std::{
     io::{self, BufRead, Write},
@@ -19,6 +20,18 @@ static AUTHORIZED: Mutex<Option<Handle>> = Mutex::new(None);
 static STOP: AtomicBool = AtomicBool::new(false);
 static CLIENTS: AtomicUsize = AtomicUsize::new(0);
 static STATUS: Mutex<usize> = Mutex::new(0);
+/// The installation this running service accepts clients from, taken from the
+/// record in its own protected directory once that directory has been checked.
+static INSTALL: Mutex<Option<InstallRecord>> = Mutex::new(None);
+
+/// The installation the running service serves, or a refusal if it never
+/// finished validating one.
+fn approved_install() -> Result<InstallRecord> {
+    match INSTALL.lock().map_err(|_| error())?.as_ref() {
+        Some(install) => Ok(install.clone()),
+        None => denied(),
+    }
+}
 struct ServiceHandle(SC_HANDLE);
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
@@ -35,17 +48,17 @@ fn manager(access: u32) -> Result<ServiceHandle> {
         Ok(ServiceHandle(value))
     }
 }
-fn service(manager: &ServiceHandle, access: u32) -> Result<ServiceHandle> {
-    let value = unsafe { OpenServiceW(manager.0, wide(&crate::service_name()?).as_ptr(), access) };
+fn service(manager: &ServiceHandle, name: &str, access: u32) -> Result<ServiceHandle> {
+    let value = unsafe { OpenServiceW(manager.0, wide(name).as_ptr(), access) };
     if value.is_null() {
         Err(error())
     } else {
         Ok(ServiceHandle(value))
     }
 }
-pub fn pid() -> Result<u32> {
+pub fn pid(name: &str) -> Result<u32> {
     let manager = manager(SC_MANAGER_CONNECT)?;
-    let service = service(&manager, SERVICE_QUERY_STATUS)?;
+    let service = service(&manager, name, SERVICE_QUERY_STATUS)?;
     let mut status: SERVICE_STATUS_PROCESS = unsafe { mem::zeroed() };
     let mut size = 0;
     if unsafe {
@@ -64,12 +77,13 @@ pub fn pid() -> Result<u32> {
     }
     Ok(status.dwProcessId)
 }
-pub fn install() -> Result<()> {
-    let _guard = crate::security::protected_install()?;
-    let manager = manager(SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT)?;
-    let name = wide(&crate::service_name()?);
-    let executable = std::env::current_exe()?;
-    let command = wide(&format!("\"{}\" --service", executable.display()));
+/// Registers and starts the service for one installation, running the staged
+/// copy rather than the executable inside the installation.
+pub fn install(installation: &Installation) -> Staged<()> {
+    let staged = crate::staging::stage(installation)?;
+    let manager = manager(SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT).stage(Step::ScmOpen)?;
+    let name = wide(&installation.service());
+    let command = wide(&format!("\"{}\" --service", staged.display()));
     let raw = unsafe {
         CreateServiceW(
             manager.0,
@@ -88,61 +102,113 @@ pub fn install() -> Result<()> {
         )
     };
     let installed = if raw.is_null() {
-        if unsafe { GetLastError() } != ERROR_SERVICE_EXISTS {
-            return Err(error());
+        let code = unsafe { GetLastError() };
+        if code != ERROR_SERVICE_EXISTS {
+            return Err(Failure::new(Step::ServiceCreate, code as i32));
         }
-        service(&manager, SERVICE_START | SERVICE_QUERY_STATUS)?
+        // An existing registration may still point at an older staged copy, so
+        // update its command line before starting it.
+        let existing = service(
+            &manager,
+            &installation.service(),
+            SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG,
+        )
+        .stage(Step::ServiceCreate)?;
+        if unsafe {
+            ChangeServiceConfigW(
+                existing.0,
+                SERVICE_NO_CHANGE,
+                SERVICE_NO_CHANGE,
+                SERVICE_NO_CHANGE,
+                command.as_ptr(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+            )
+        } == 0
+        {
+            return Err(Failure::new(Step::ServiceCreate, last_error()));
+        }
+        existing
     } else {
         ServiceHandle(raw)
     };
-    if unsafe { StartServiceW(installed.0, 0, ptr::null()) } == 0
-        && unsafe { GetLastError() } != ERROR_SERVICE_ALREADY_RUNNING
-    {
-        return Err(error());
+    if unsafe { StartServiceW(installed.0, 0, ptr::null()) } == 0 {
+        let code = unsafe { GetLastError() };
+        if code != ERROR_SERVICE_ALREADY_RUNNING {
+            return Err(Failure::new(Step::ServiceStart, code as i32));
+        }
     }
+    // The service validates its own executable before reporting RUNNING, so a
+    // refusal there shows up here as a start that never completes.
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
-        if pid().is_ok() {
+        if pid(&installation.service()).is_ok() {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err(io::Error::from(io::ErrorKind::TimedOut))
+    refuse(Step::ServiceReady)
 }
-pub fn uninstall() -> Result<()> {
-    let manager = manager(SC_MANAGER_CONNECT)?;
-    let service = match service(&manager, SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS) {
+/// Stops and deregisters one service by name. The staged files are removed
+/// separately, after the service that runs them has stopped.
+pub fn uninstall(name: &str) -> Staged<()> {
+    let manager = manager(SC_MANAGER_CONNECT).stage(Step::ScmOpen)?;
+    let service = match service(&manager, name, SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS) {
         Ok(s) => s,
         Err(e) if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) => return Ok(()),
-        Err(e) => return Err(e),
+        Err(e) => {
+            return Err(Failure::new(
+                Step::ServiceStop,
+                e.raw_os_error().unwrap_or(0),
+            ))
+        }
     };
     let mut status: SERVICE_STATUS = unsafe { mem::zeroed() };
-    if unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) } == 0
-        && unsafe { GetLastError() } != ERROR_SERVICE_NOT_ACTIVE
-    {
-        return Err(error());
+    if unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) } == 0 {
+        let code = unsafe { GetLastError() };
+        if code != ERROR_SERVICE_NOT_ACTIVE {
+            return Err(Failure::new(Step::ServiceStop, code as i32));
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if unsafe { QueryServiceStatus(service.0, &mut status) } == 0 {
-            return Err(error());
+            return Err(Failure::new(Step::ServiceStop, last_error()));
         }
         if status.dwCurrentState == SERVICE_STOPPED {
             break;
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
+            return refuse(Step::ServiceStop);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     if unsafe { DeleteService(service.0) } == 0 {
-        return Err(error());
+        return Err(Failure::new(Step::ServiceDelete, last_error()));
     }
     Ok(())
 }
-pub fn elevate(command: &str) -> Result<()> {
-    let _guard = crate::security::protected_install()?;
-    let executable = wide(&std::env::current_exe()?.to_string_lossy());
+/// The OS error number of the call that just failed.
+fn last_error() -> i32 {
+    unsafe { GetLastError() as i32 }
+}
+/// Relaunches this executable elevated, to run one setup command.
+///
+/// There is deliberately no check on where this executable lives: Cindy
+/// installs per user by default, so it normally sits in a directory the
+/// current user can write. What the elevated child does with that is the
+/// subject of `staging` — it copies the helpers somewhere only administrators
+/// can write before registering anything as SYSTEM.
+pub fn elevate(command: &str) -> Staged<()> {
+    let executable = wide(
+        &std::env::current_exe()
+            .stage(Step::ElevateLaunch)?
+            .to_string_lossy(),
+    );
     let verb = wide("runas");
     let parameters = wide(command);
     let mut info: SHELLEXECUTEINFOW = unsafe { mem::zeroed() };
@@ -153,15 +219,24 @@ pub fn elevate(command: &str) -> Result<()> {
     info.lpParameters = parameters.as_ptr();
     info.nShow = SW_HIDE;
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
-        return Err(error());
+        return Err(Failure::new(Step::ElevateLaunch, last_error()));
     }
-    let process = Handle::new(info.hProcess)?;
+    let process = Handle::new(info.hProcess).stage(Step::ElevateLaunch)?;
     if unsafe { WaitForSingleObject(process.0, 120000) } != WAIT_OBJECT_0 {
-        return Err(io::Error::from(io::ErrorKind::TimedOut));
+        return refuse(Step::ElevateTimeout);
     }
     let mut code = 1;
-    if unsafe { GetExitCodeProcess(process.0, &mut code) } == 0 || code != 0 {
-        return denied();
+    if unsafe { GetExitCodeProcess(process.0, &mut code) } == 0 {
+        return Err(Failure::new(Step::ElevateChild, last_error()));
+    }
+    if code != 0 {
+        // The elevated child runs hidden, so its own failed step only reaches
+        // us through its exit code.
+        return Err(Failure {
+            step: Step::ElevateChild,
+            os: code as i32,
+            child: Step::from_exit(code),
+        });
     }
     Ok(())
 }
@@ -204,19 +279,40 @@ unsafe extern "system" fn control(
     0
 }
 unsafe extern "system" fn entry(_argc: u32, _argv: *mut *mut u16) {
-    let Ok(name) = crate::service_name() else {
+    let Ok(copy) = std::env::current_exe()
+        .map_err(drop)
+        .and_then(|exe| StagedCopy::of(&exe).map_err(drop))
+    else {
         return;
     };
-    let handle =
-        RegisterServiceCtrlHandlerExW(wide(&name).as_ptr(), Some(control), ptr::null_mut());
+    let handle = RegisterServiceCtrlHandlerExW(
+        wide(&copy.service()).as_ptr(),
+        Some(control),
+        ptr::null_mut(),
+    );
     if handle.is_null() {
         return;
     }
     *STATUS.lock().unwrap() = handle as usize;
-    let Ok(_installation) = crate::security::protected_install() else {
+    // Prove this copy is still administrator-owned before acting as SYSTEM,
+    // and only then read which installation it was staged for. The handles
+    // stay held for the service's lifetime so the files cannot be swapped
+    // after the check.
+    let Ok(_staged) = crate::security::protected_staging(&copy.dir) else {
         status(SERVICE_STOPPED);
         return;
     };
+    let Ok(install) = copy.install() else {
+        status(SERVICE_STOPPED);
+        return;
+    };
+    match INSTALL.lock() {
+        Ok(mut approved) => *approved = Some(install),
+        Err(_) => {
+            status(SERVICE_STOPPED);
+            return;
+        }
+    }
     status(SERVICE_RUNNING);
     let registration_deadline = Instant::now() + Duration::from_secs(30);
     while !STOP.load(Ordering::SeqCst) {
@@ -237,7 +333,7 @@ unsafe extern "system" fn entry(_argc: u32, _argv: *mut *mut u16) {
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
-        let Ok(mut pipe) = Pipe::server(&crate::pipe_name().unwrap(), false) else {
+        let Ok(mut pipe) = Pipe::server(&copy.pipe(), false) else {
             std::thread::sleep(Duration::from_millis(500));
             continue;
         };
@@ -263,7 +359,8 @@ unsafe extern "system" fn entry(_argc: u32, _argv: *mut *mut u16) {
     status(SERVICE_STOPPED);
 }
 pub fn run() -> Result<()> {
-    let name = wide(&crate::service_name()?);
+    let copy = StagedCopy::of(&std::env::current_exe()?).map_err(|_| error())?;
+    let name = wide(&copy.service());
     let table = [
         SERVICE_TABLE_ENTRYW {
             lpServiceName: name.as_ptr().cast_mut(),
@@ -408,11 +505,14 @@ fn serve(mut client: Pipe) -> Result<()> {
     let init = client.line(1024)?;
     let parsed: serde_json::Value = serde_json::from_slice(&init)?;
     if parsed["mode"] == "authorize" {
-        // Only the fixed UAC-elevated setup executable may register a process.
+        // Only an elevated run of this same helper build may register a
+        // process. The caller runs from the installation while this service
+        // runs from its protected copy, so their paths differ by design and
+        // identical contents is what proves they are the same build.
         let caller_token = token(caller.0)?;
         let mut elevation: TOKEN_ELEVATION = unsafe { mem::zeroed() };
         let mut needed = 0;
-        if !crate::security::same_file(&image(caller.0)?, &std::env::current_exe()?)
+        if !crate::security::same_contents(&image(caller.0)?, &std::env::current_exe()?)?
             || unsafe {
                 GetTokenInformation(
                     caller_token.0,
@@ -430,7 +530,9 @@ fn serve(mut client: Pipe) -> Result<()> {
             .as_u64()
             .filter(|p| *p <= u32::MAX as u64)
             .ok_or_else(error)? as u32;
-        let (main, _) = crate::security::authorize_client(main_pid)?;
+        let install = approved_install()?;
+        let (main, _) =
+            crate::security::authorize_client(main_pid, &install.path, install.development)?;
         *AUTHORIZED.lock().map_err(|_| error())? = Some(main);
         return client.write(b"ready\n");
     }
@@ -443,7 +545,12 @@ fn serve(mut client: Pipe) -> Result<()> {
             return denied();
         }
     }
-    let (owner, session) = crate::security::authorize_client(client.client_pid()?)?;
+    let install = approved_install()?;
+    let (owner, session) = crate::security::authorize_client(
+        client.client_pid()?,
+        &install.path,
+        install.development,
+    )?;
     if parsed["mode"] == "probe" {
         return client.write(b"ready\n");
     }
@@ -456,7 +563,9 @@ fn serve(mut client: Pipe) -> Result<()> {
     }
     let name = format!(
         r"\\.\pipe\{}-{:08x}{:04x}{:04x}{:02x?}",
-        crate::service_name()?,
+        StagedCopy::of(&std::env::current_exe()?)
+            .map_err(|_| error())?
+            .service(),
         guid.data1,
         guid.data2,
         guid.data3,
@@ -593,13 +702,14 @@ impl Drop for InputChild {
     }
 }
 pub fn worker(name: &str) -> Result<()> {
+    let copy = StagedCopy::of(&std::env::current_exe()?).map_err(|_| error())?;
     if !system(token(unsafe { GetCurrentProcess() })?.0)?
-        || !name.starts_with(&format!(r"\\.\pipe\{}-", crate::service_name()?))
+        || !name.starts_with(&format!(r"\\.\pipe\{}-", copy.service()))
     {
         return denied();
     }
     let mut pipe = Pipe::client(name)?;
-    if pipe.server_pid()? != pid()? {
+    if pipe.server_pid()? != pid(&copy.service())? {
         return denied();
     }
     let init: serde_json::Value = serde_json::from_slice(&pipe.line(1024)?)?;
@@ -651,18 +761,25 @@ pub fn worker(name: &str) -> Result<()> {
     }
 }
 
-pub fn authorize(main_pid: u32) -> Result<()> {
-    let mut pipe = Pipe::client(&crate::pipe_name()?)?;
-    let server = process(pipe.server_pid()?)?;
-    if !system(token(server.0)?.0)?
-        || !crate::security::same_file(&image(server.0)?, &std::env::current_exe()?)
-        || pipe.server_pid()? != pid()?
-    {
-        return denied();
+/// Registers the Cindy process this setup run was started for, from the
+/// elevated child. The service must be running as SYSTEM from the staged copy
+/// this installation just wrote.
+pub fn authorize(installation: &Installation, main_pid: u32) -> Staged<()> {
+    let mut pipe = Pipe::client(&installation.pipe()).stage(Step::AuthorizeConnect)?;
+    let identity = (|| -> Result<bool> {
+        let server = process(pipe.server_pid()?)?;
+        Ok(system(token(server.0)?.0)?
+            && crate::security::same_file(&image(server.0)?, &installation.host())
+            && pipe.server_pid()? == pid(&installation.service())?)
+    })()
+    .stage(Step::AuthorizeIdentity)?;
+    if !identity {
+        return refuse(Step::AuthorizeIdentity);
     }
-    pipe.write(format!("{{\"mode\":\"authorize\",\"pid\":{main_pid}}}\n").as_bytes())?;
-    if pipe.line(1024)? != b"ready\n" {
-        return denied();
+    pipe.write(format!("{{\"mode\":\"authorize\",\"pid\":{main_pid}}}\n").as_bytes())
+        .stage(Step::AuthorizeReply)?;
+    if pipe.line(1024).stage(Step::AuthorizeReply)? != b"ready\n" {
+        return refuse(Step::AuthorizeReply);
     }
     Ok(())
 }
