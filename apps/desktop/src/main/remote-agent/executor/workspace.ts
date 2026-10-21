@@ -722,10 +722,15 @@ export class ExecutorWorkspace {
     if (!this.virtualRoot) return { toAgentPath: (text) => text, mapTextForAgent: (text) => text, mapOutputForAgent: (data) => data };
     const aliases = this.aliases;
     const targets = [...new Set(aliases.map((alias) => alias.to))];
-    const canonical = new Map(await Promise.all(targets.map(async (target) =>
-      [target, await realPathOrAncestorAsync(target)] as const)));
+    const canonical = new Map(await Promise.all(targets.map(async (target) => {
+      const paths = [realPathOrAncestorAsync(target)];
+      // Windows native realpath expands 8.3 names, while process output can retain
+      // them. Refresh both spellings when a junction changes its target.
+      if (process.platform === 'win32') paths.push(realPathOrAncestorAsync(target, portableRealpathAsync));
+      return [target, await Promise.all(paths)] as const;
+    })));
     const projectedAliases = this.agentAliases(aliases, canonical);
-    const pathAliases = aliases.flatMap((alias) => [alias, { from: alias.from, to: canonical.get(alias.to)! }]);
+    const pathAliases = aliases.flatMap((alias) => [alias, ...canonical.get(alias.to)!.map((to) => ({ from: alias.from, to }))]);
     const project = (text: string, context: PathTextContext = 'text') =>
       projectPathText(text, projectedAliases, context, (mapped) => fs.existsSync(this.localPathFromAgent(mapped, aliases) ?? mapped),
         { continuesName: this.continuesName });
@@ -737,13 +742,13 @@ export class ExecutorWorkspace {
   }
 
   /** 本机真实路径(含 Git Bash 写法)→ Agent 看到的虚拟路径。 */
-  private agentAliases(aliases: readonly ExecutorPathAlias[] = this.aliases, canonical?: ReadonlyMap<string, string>): ExecutorPathAlias[] {
+  private agentAliases(aliases: readonly ExecutorPathAlias[] = this.aliases, canonical?: ReadonlyMap<string, readonly string[]>): ExecutorPathAlias[] {
     const seen = new Set<string>();
     return aliases.flatMap((alias) => {
       // A junction/symlink can be resolved differently by the Windows runner and by
       // the process that created the alias. Include the current canonical target at
       // projection time so both spellings still map to the same virtual directory.
-      const targets = [alias.to, canonical ? canonical.get(alias.to)! : realPathOrAncestor(alias.to)];
+      const targets = [alias.to, ...(canonical ? canonical.get(alias.to)! : [realPathOrAncestor(alias.to)])];
       return targets.flatMap((target) => {
         const real = target.replace(/\\/g, '/');
         const entries: ExecutorPathAlias[] = [{ from: real, to: alias.from }];
