@@ -149,6 +149,7 @@ import {
   provisionalDraftArgsKey,
   provisionalDraftTaskGeneration,
   provisionalDraftTaskId,
+  provisionalDraftTaskIdForCurrentOwner,
   takeProvisionalDraftTask,
   type ProvisionalDraftCreateArgs,
 } from './provisionalDraftTask';
@@ -724,7 +725,7 @@ export function NewMakerDraftRoute() {
   // Writable picker evidence is Main-owned and bound to the actual local task id.
   // Reserve that id for the lifetime of this draft instead of generating it after selection.
   // 已有未发送任务(用户离开新建页又回来)时沿用它的 id,回来继续输入接着用同一条任务。
-  const localDraftSessionIdRef = useRef(provisionalDraftTaskId() ?? makeDraftSessionId());
+  const localDraftSessionIdRef = useRef(provisionalDraftTaskIdForCurrentOwner() ?? makeDraftSessionId());
   // 首参 914=内容封顶宽(→ inputWidth 封顶 934):大屏留出左右呼吸空间,不再顶满全宽;
   // 与进行中对话页(CCAgentSessionView 同传 914)一致,发送首条消息时输入框宽度不跳变。
   // minWidth=640:小屏兜一个体面下限(与对话页对称);窄于下限时 hook 自动回落成

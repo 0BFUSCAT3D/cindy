@@ -71,21 +71,27 @@ describe('provisional sessions', () => {
 
   it('remembers unsent tasks across a restart and deletes the ones that were never sent', async () => {
     configureProvisionalSessions(userData);
-    markProvisionalSession('unsent', 1_000);
+    const dialogueDir = path.join(userData, 'dialogues', 'unsent');
+    markProvisionalSession('unsent', 1_000, dialogueDir);
     markProvisionalSession('sent-later', 1_000);
+    // Opened with a caller-chosen folder: the row goes, the folder is never Cindy's to remove.
+    markProvisionalSession('explicit', 1_000);
     expect(isProvisionalSession('unsent')).toBe(true);
 
     // Next launch: the in-memory registry is gone, the file is not.
     resetProvisionalSessionsForTest();
     const db = openDb();
-    const dialogueDir = path.join(userData, 'dialogues', 'unsent');
     fs.mkdirSync(dialogueDir, { recursive: true });
     db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run('unsent', 'dialogue', dialogueDir, null);
     db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run('sent-later', 'project', '/repo', 2_000);
+    const explicitDir = path.join(userData, 'elsewhere', 'explicit');
+    fs.mkdirSync(explicitDir, { recursive: true });
+    db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run('explicit', 'dialogue', explicitDir, null);
     configureProvisionalSessions(userData);
     // Until swept, a leftover still counts as unsent (hidden from controllers).
     expect(isProvisionalSession('unsent')).toBe(true);
-    await expect(sweepLeftoverProvisionalSessions(5_000)).resolves.toEqual(['unsent']);
+    await expect(sweepLeftoverProvisionalSessions(5_000)).resolves.toEqual(['unsent', 'explicit']);
+    expect(fs.existsSync(explicitDir)).toBe(true);
     expect(isProvisionalSession('unsent')).toBe(false);
 
     expect(rowExists(db, 'unsent')).toBe(false);

@@ -6,6 +6,7 @@ import {
   forgetProvisionalSession,
   isProvisionalSession,
   markProvisionalSession,
+  provisionalManagedDir,
   removeEmptyDialogueDir,
   sweepLeftoverProvisionalSessions,
 } from '../provisionalSessions.js';
@@ -1130,13 +1131,14 @@ export async function commitProvisionalSession(sessionId: string): Promise<boole
  */
 export async function discardProvisionalSessionRow(sessionId: string): Promise<boolean> {
   if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  const managedDir = provisionalManagedDir(sessionId);
   const deleted = await deleteUnsentSessionRow(sessionId);
   if (!deleted) {
     // Already sent (or gone): it is an ordinary task now.
     forgetProvisionalSession(sessionId);
     return false;
   }
-  if (deleted.workspaceKind === 'dialogue') removeEmptyDialogueDir(sessionId, deleted.workingDir);
+  removeEmptyDialogueDir(sessionId, managedDir);
   forgetProvisionalSession(sessionId);
   // Other local windows re-read their lists; the row is gone, so it drops out. No status
   // patch: the same id may be opened again when the user types again.
@@ -1628,7 +1630,11 @@ export function registerSessionIpc(
     }
     // 未发送任务在写入之前就登记：行一出现，任务列表 / 控制端 / IM / hook 的过滤就已生效。
     const markedProvisional = provisional && !isProvisionalSession(id);
-    if (markedProvisional) markProvisionalSession(id, now);
+    if (markedProvisional) {
+      // Only a dialogue folder allocated here is ours to tidy up if the task is discarded.
+      const managedDir = workspaceKind === 'dialogue' && !explicitWorkingDir ? workingDir : undefined;
+      markProvisionalSession(id, now, managedDir);
+    }
     let insertRow: Awaited<ReturnType<typeof openSession>>['row'];
     let row: typeof sessions.$inferSelect | undefined;
     try {

@@ -107,6 +107,12 @@ export function canOpenProvisionalDraftTask(args: ProvisionalDraftCreateArgs): b
 }
 
 export const provisionalDraftTaskId = getProvisionalDraftTaskId;
+
+/** 当前账号的未发送任务 id：新建页打开时据此沿用；上一个账号留下的不算，先放手。 */
+export function provisionalDraftTaskIdForCurrentOwner(): string | null {
+  releaseForeignCurrent();
+  return current?.id ?? null;
+}
 export const subscribeProvisionalDraftTask = subscribeProvisionalDraftTaskId;
 
 /** 当前未发送任务是第几次建出来的；调用方据此只为新建出来的那一次做初始化。 */

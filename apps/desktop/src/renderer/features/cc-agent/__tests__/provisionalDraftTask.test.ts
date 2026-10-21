@@ -31,6 +31,7 @@ import {
   previewProvisionalDraftTitle,
   ProvisionalDraftTaskBusyError,
   provisionalDraftTaskId,
+  provisionalDraftTaskIdForCurrentOwner,
   resetProvisionalDraftTaskForTest,
   takeProvisionalDraftTask,
   type ProvisionalDraftCreateArgs,
@@ -159,6 +160,8 @@ describe('provisional draft task', () => {
     setDataOwnerGeneration('account-a', 1);
     await ensureProvisionalDraftTask(args());
     setDataOwnerGeneration('account-b', 2);
+    // A new-task page opened in the new account mints its own id instead of reusing this one.
+    expect(provisionalDraftTaskIdForCurrentOwner()).toBeNull();
     await expect(takeProvisionalDraftTask(args())).resolves.toBeNull();
     expect(mocks.commit).not.toHaveBeenCalled();
     // Not deleted from the new account's database either.

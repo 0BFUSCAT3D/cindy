@@ -28,6 +28,8 @@ const FOREIGN_ENTRY_TTL_MS = 7 * 24 * 60 * 60_000;
 interface Entry {
   id: string;
   createdAt: number;
+  /** 建任务时 Cindy 为它分配的对话目录；只清理这种目录，不碰调用方指定的路径。 */
+  managedDir?: string;
 }
 
 let resolveFileDir: (() => string) | null = null;
@@ -69,7 +71,11 @@ function loadLeftovers(): Entry[] {
       for (const item of parsed.entries) {
         const entry = item as Partial<Entry>;
         if (typeof entry.id === 'string' && entry.id && typeof entry.createdAt === 'number') {
-          leftovers.push({ id: entry.id, createdAt: entry.createdAt });
+          leftovers.push({
+            id: entry.id,
+            createdAt: entry.createdAt,
+            ...(typeof entry.managedDir === 'string' ? { managedDir: entry.managedDir } : {}),
+          });
         }
       }
     }
@@ -88,7 +94,11 @@ function persist(): void {
   if (!file) return;
   const entries = [
     ...loadLeftovers(),
-    ...[...live.values()].map(({ id, createdAt }) => ({ id, createdAt })),
+    ...[...live.values()].map(({ id, createdAt, managedDir }) => ({
+      id,
+      createdAt,
+      ...(managedDir ? { managedDir } : {}),
+    })),
   ];
   try {
     if (entries.length === 0) {
@@ -105,10 +115,24 @@ function persist(): void {
   }
 }
 
-export function markProvisionalSession(sessionId: string, now = Date.now()): void {
+export function markProvisionalSession(
+  sessionId: string,
+  now = Date.now(),
+  managedDir?: string,
+): void {
   loadLeftovers();
-  live.set(sessionId, { id: sessionId, createdAt: now, owner: getCurrentDbClientSnapshot() });
+  live.set(sessionId, {
+    id: sessionId,
+    createdAt: now,
+    owner: getCurrentDbClientSnapshot(),
+    ...(managedDir ? { managedDir } : {}),
+  });
   persist();
+}
+
+/** 建这条未发送任务时 Cindy 分配的对话目录(没有则 undefined)。 */
+export function provisionalManagedDir(sessionId: string): string | undefined {
+  return live.get(sessionId)?.managedDir;
 }
 
 /** 未发送任务(含还没清理掉的残留)：只在本机可见，不推给控制端。 */
@@ -125,7 +149,11 @@ export function claimOwnedProvisionalSession(sessionId: string): 'owned' | 'fore
   if (!entry) return 'none';
   if (entry.owner === getCurrentDbClientSnapshot()) return 'owned';
   live.delete(sessionId);
-  loadLeftovers().push({ id: entry.id, createdAt: entry.createdAt });
+  loadLeftovers().push({
+    id: entry.id,
+    createdAt: entry.createdAt,
+    ...(entry.managedDir ? { managedDir: entry.managedDir } : {}),
+  });
   persist();
   return 'foreign';
 }
@@ -164,9 +192,13 @@ export async function deleteUnsentSessionRow(
   return { workspaceKind: row.workspaceKind ?? null, workingDir: row.workingDir ?? null };
 }
 
-/** Remove the managed dialogue folder created for this task when nothing was written into it. */
-export function removeEmptyDialogueDir(sessionId: string, workingDir: string | null): void {
-  if (!workingDir || path.basename(workingDir) !== sessionId) return;
+/**
+ * Remove the dialogue folder Cindy allocated for this task when nothing was written into it.
+ * Only the folder recorded at creation is eligible — never a caller-chosen path.
+ */
+export function removeEmptyDialogueDir(sessionId: string, managedDir: string | undefined): void {
+  if (!managedDir || path.basename(managedDir) !== sessionId) return;
+  const workingDir = managedDir;
   try {
     fs.rmdirSync(workingDir);
   } catch {
@@ -212,8 +244,8 @@ async function sweepOwner(now: number): Promise<string[]> {
       if (deleted) {
         removed.push(entry.id);
         onLeftoverSwept?.(entry.id);
+        removeEmptyDialogueDir(entry.id, entry.managedDir);
       }
-      if (deleted?.workspaceKind === 'dialogue') removeEmptyDialogueDir(entry.id, deleted.workingDir);
       log.info('provisional session leftover swept', { sessionId: entry.id, deleted: !!deleted });
     } catch (error) {
       keep.push(entry);
