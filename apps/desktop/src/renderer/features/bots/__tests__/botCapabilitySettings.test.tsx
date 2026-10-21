@@ -66,6 +66,41 @@ describe('controlled capability page lifetime', () => {
   });
 });
 
+it.each([true, false])('shows one skill switch per selection ID and preserves the first enabled=%s state', async (enabled) => {
+  const discovered = [
+    { name: 'agent-ops', path: '/home/.agents/skills/agent-ops/SKILL.md', scope: 'repo',
+      description: 'First source description', enabled },
+    { name: 'agent-ops', path: '/home/.agents/skills/agent-ops/SKILL.md', scope: 'user',
+      description: 'Duplicate source description', enabled: !enabled },
+    { name: 'unique-skill', path: '/project/.pi/skills/unique-skill/SKILL.md', enabled: true },
+  ];
+  const listAgentSkills = vi.fn(async () => ({ success: true, skills: discovered }));
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
+    localDb: { sessionsPush: { onPatched: () => h.offPush }, bots: { listSkills: async () => [] } },
+    maker: { onMcpChanged: () => h.offMcp, listCustomMcpServers: h.list,
+      listAgentSkills, plugins: { list: async () => [] } },
+  } });
+  const onChange = vi.fn();
+  const view = render(<BotCapabilitySettings expanded
+    bot={{ id: 'bot-1', canonicalSessionId: 's1' } as BotProfile}
+    capabilities={{ modelChain: [], modelChainOverride: null, mcpServers: [], toolsets: [] } as unknown as BotProfile['capabilities']}
+    skills={[]} onChange={onChange} />);
+
+  await waitFor(() => expect(view.getAllByRole('switch', { name: 'agent-ops' })).toHaveLength(1));
+  const checkbox = view.getByRole('switch', { name: 'agent-ops' }) as HTMLButtonElement;
+  expect(checkbox.disabled).toBe(!enabled);
+  expect(view.getByText('First source description')).toBeTruthy();
+  expect(view.queryByText('Duplicate source description')).toBeNull();
+  expect(view.getByRole('switch', { name: 'unique-skill' })).toBeTruthy();
+  if (enabled) {
+    fireEvent.click(checkbox);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('skill', ['agent-ops']);
+  }
+  // Rendering must leave the discovery catalog intact for other consumers.
+  expect(discovered).toHaveLength(3);
+  expect(listAgentSkills).toHaveBeenCalledOnce();
+});
+
 
 it('shows inherited tools as selected and preserves the others when one is explicitly removed', async () => {
   Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
