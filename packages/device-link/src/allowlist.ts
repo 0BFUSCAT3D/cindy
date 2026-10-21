@@ -797,6 +797,9 @@ export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   SESSION_SYNC_CHANNEL,
   'local-db:messages:created',
   'local-db:messages:deleted',
+  // 被控端 Subagent 记录变化(payload 顶层 sessionId → session:<id> topic):控制端的
+  // Subagent 页签发现据此重读一次,不再每 5 秒轮询 local-db:subagent-runs:list。
+  'local-db:subagent-runs:changed',
   // 被控端 terminal error 落库脏信号:控制端据此把已加载历史的远程会话标脏,下次打开重拉。
   'local-db:session:error-persisted',
   // 被控端项目手动顺序变化:控制端 / 手机首页按被控端正本重排。

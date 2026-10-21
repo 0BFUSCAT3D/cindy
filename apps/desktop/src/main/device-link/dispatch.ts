@@ -55,6 +55,7 @@ import { observeRemoteSendPush } from './remoteSendTrace.js';
 import {
   computeAllowlistHash,
   canCoalesceRemoteListing,
+  isInteractiveInvoke,
   isCompletedInvokeRetryableReadChannel,
   INVOKE_TIMEOUT_OVERRIDES_MS,
   ACTION_INVOKE_TIMEOUTS_MS,
@@ -919,6 +920,15 @@ const REMOTE_SCHEDULE_INDEX_MAX_BYTES = 2 * 1024 * 1024;
  * guarantees admission for other linked controllers.
  */
 const REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_LIMIT = 16;
+/**
+ * Interactive writes (send / steer / stop / answer, see isInteractiveInvoke) may exceed the
+ * message limits by this much. A controller that fills its slice with history and list
+ * reads otherwise gets BACKPRESSURE on the one request its user is waiting for, and the
+ * ≥2 s controller retry turns a 0.5 s round trip into several seconds. Byte limits are not
+ * relaxed: an interactive request is small, and bytes are what protect the host.
+ */
+const REMOTE_INVOKE_INTERACTIVE_EXTRA_PER_CONTROLLER = 2;
+const REMOTE_INVOKE_INTERACTIVE_EXTRA_GLOBAL = 4;
 const REMOTE_INVOKE_IN_FLIGHT_BYTES = 16 * 1024 * 1024;
 const REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_BYTES = 4 * 1024 * 1024;
 const REMOTE_INVOKE_RESULT_CACHE_LIMIT = 128;
@@ -3002,12 +3012,15 @@ async function handleInvoke(
   const joiningExisting = !!(existingListing && existingListing.linkEpoch === invokeLinkEpoch);
 
   const controllerAdmission = remoteInvokeAdmissionState(src);
+  const interactive = !!payload?.channel && isInteractiveInvoke(payload.channel);
   const controllerAtLimit = (
     controllerAdmission.messages >= REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_LIMIT
+      + (interactive ? REMOTE_INVOKE_INTERACTIVE_EXTRA_PER_CONTROLLER : 0)
     || controllerAdmission.bytes + invokeBytes > REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_BYTES
   );
   const globalAtLimit = (
     inFlightRemoteInvokeResults.size + remoteInvokeResultOutbox.size >= REMOTE_INVOKE_IN_FLIGHT_LIMIT
+      + (interactive ? REMOTE_INVOKE_INTERACTIVE_EXTRA_GLOBAL : 0)
     || inFlightRemoteInvokeBytes + remoteInvokeResultOutboxBytes + invokeBytes
       > REMOTE_INVOKE_IN_FLIGHT_BYTES
   );
@@ -3592,11 +3605,17 @@ function enqueueRemoteInvokeResult(entry: QueuedRemoteInvokeResult): boolean {
     return true;
   }
   const controllerOutbox = remoteInvokeResultOutboxState(entry.src);
+  // Admission lets an interactive request run beyond the message limits; its reply
+  // must have a slot too, or the controller times out on a write that already took
+  // effect. Reserve exactly the admission headroom (bytes stay unrelaxed).
+  const interactive = !!entry.channel && isInteractiveInvoke(entry.channel);
   if (
     entry.bytes <= 0
-    || controllerOutbox.messages >= REMOTE_INVOKE_RESULT_OUTBOX_PER_CONTROLLER_LIMIT
+    || controllerOutbox.messages
+      >= REMOTE_INVOKE_RESULT_OUTBOX_PER_CONTROLLER_LIMIT + (interactive ? REMOTE_INVOKE_INTERACTIVE_EXTRA_PER_CONTROLLER : 0)
     || controllerOutbox.bytes + entry.bytes > REMOTE_INVOKE_RESULT_OUTBOX_PER_CONTROLLER_BYTES
-    || remoteInvokeResultOutbox.size >= REMOTE_INVOKE_RESULT_OUTBOX_LIMIT
+    || remoteInvokeResultOutbox.size
+      >= REMOTE_INVOKE_RESULT_OUTBOX_LIMIT + (interactive ? REMOTE_INVOKE_INTERACTIVE_EXTRA_GLOBAL : 0)
     || remoteInvokeResultOutboxBytes + entry.bytes > REMOTE_INVOKE_RESULT_OUTBOX_BYTES
   ) {
     log.error(
@@ -4926,6 +4945,7 @@ export const __testing = {
   canCoalesceRemoteListing,
   remoteInvokeInFlightLimit: REMOTE_INVOKE_IN_FLIGHT_LIMIT,
   remoteInvokeInFlightPerControllerLimit: REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_LIMIT,
+  remoteInvokeInteractiveExtraPerController: REMOTE_INVOKE_INTERACTIVE_EXTRA_PER_CONTROLLER,
   remoteInvokeOrphanTimeoutMs: REMOTE_INVOKE_ORPHAN_TIMEOUT_MS,
   remoteInvokeOrphanTimeoutForChannelMs: remoteInvokeOrphanTimeoutMs,
   remoteInvokeResultOutboxLimit: REMOTE_INVOKE_RESULT_OUTBOX_LIMIT,

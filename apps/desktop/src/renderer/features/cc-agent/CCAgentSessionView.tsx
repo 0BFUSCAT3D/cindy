@@ -1174,6 +1174,15 @@ function CCAgentSessionContent({
           if (!isCurrentSubagentRunsChange(payload, ownerStamp, sessionId)) return;
           onChanged();
         }),
+      // The data-owning device forwards its own change push over the link (session
+      // topic); discovery only listens once that Host's list reply declared it.
+      subscribeRemoteChanges: (onChanged) =>
+        window.electronAPI.deviceLink.onRemotePush((push, localOwnerStamp) => {
+          if (push.deviceId !== remoteDeviceId || push.channel !== 'local-db:subagent-runs:changed') return;
+          if ((push.payload as { sessionId?: unknown } | null)?.sessionId !== sessionId) return;
+          if (!isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) return;
+          onChanged();
+        }),
       registerTab: () => openSubagentsTab(sessionId, SUBAGENT_TAB_REGISTER_ONLY),
       isRequestOwnerCurrent: () => isDataOwnerGenerationCurrent(requestOwner),
       onPresenceChange: (present) => setSessionOwningDurablePiRuns(present ? sessionId : null),
