@@ -21,7 +21,11 @@ export function botGroupHintThreads(threads: readonly BotGroupThreadSummary[], o
   return threads.filter(thread => thread.rootId !== openRootId && thread.unread.count > 0 && thread.unread.mentioned);
 }
 
-const signature = (threads: readonly BotGroupThreadSummary[]) => threads.map(thread => `${thread.rootId}:${thread.unread.count}`).join('|');
+/** What the reader had already been told about when they dismissed the hint: each Thread's newest unread reply. */
+const seen = (threads: readonly BotGroupThreadSummary[]) => new Map(threads.map(thread => [thread.rootId, thread.unread.latest ?? 0]));
+/** Only a reply newer than what was dismissed brings the hint back; a deleted or aged-out one does not. */
+const hasNews = (threads: readonly BotGroupThreadSummary[], dismissed: ReadonlyMap<string, number>) =>
+  threads.some(thread => (thread.unread.latest ?? 0) > (dismissed.get(thread.rootId) ?? -1));
 
 function UnreadDot() {
   return <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-[var(--bot-unread-bg)]" />;
@@ -38,16 +42,16 @@ function ThreadRow({ thread, members, onOpen }: {
       className={cn('flex w-full min-w-0 items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-[var(--surface-hover)]', FOCUS)}>
       <BotAvatar size="sm" bot={{ name: thread.rootAuthorName || '?', avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null }} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span title={thread.rootText || undefined} className={cn('truncate text-13 leading-[18px]', unread ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]')}>
+        <span title={thread.rootText || undefined} className={cn('truncate text-13', unread ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]')}>
           {thread.rootText || t(key('emptyReply'))}
         </span>
         {thread.lastReply ? (
-          <span title={thread.lastReply.text || undefined} className="truncate text-12 leading-[17px] text-[var(--text-secondary)]">
+          <span title={thread.lastReply.text || undefined} className="truncate text-12 text-[var(--text-secondary)]">
             <span className="font-medium text-[var(--text-primary)]">{thread.lastReply.authorName}</span>: {thread.lastReply.text || t(key('emptyReply'))}
           </span>
         ) : null}
       </span>
-      <span className="flex shrink-0 flex-col items-end gap-0.5 text-11 leading-[17px] text-[var(--text-tertiary)]">
+      <span className="flex shrink-0 flex-col items-end gap-0.5 text-11 text-[var(--text-tertiary)]">
         {unread ? (
           <span className="flex items-center gap-1 font-medium text-[var(--text-primary)]"><UnreadDot />{t(key('newReplies'), { count: thread.unread.count })}</span>
         ) : <span>{t('bots.groupChat.server.replyCount', { count: thread.replyCount })}</span>}
@@ -66,10 +70,9 @@ export function BotGroupThreadHint({ threads, members, openRootId, onOpen }: {
 }) {
   const { t } = useTranslation();
   const [listOpen, setListOpen] = useState(false);
-  const [dismissed, setDismissed] = useState('');
+  const [dismissed, setDismissed] = useState<ReadonlyMap<string, number>>(new Map());
   const hinted = botGroupHintThreads(threads, openRootId);
-  const current = signature(hinted);
-  if (!hinted.length || (dismissed === current && !listOpen)) return null;
+  if (!hinted.length || (!hasNews(hinted, dismissed) && !listOpen)) return null;
   const mentioned = hinted.some(thread => thread.unread.mentioned);
   const label = hinted.length === 1 ? t(key('hintOne')) : t(key('hintMany'), { count: hinted.length });
   const others = threads.filter(thread => !hinted.includes(thread));
@@ -87,7 +90,7 @@ export function BotGroupThreadHint({ threads, members, openRootId, onOpen }: {
             {mentioned ? <span className="shrink-0 font-medium"><span aria-hidden className="mr-1.5 font-normal text-[var(--text-tertiary)]">·</span>{t(key('hintMentioned'))}</span> : null}
           </button>
           <Tip text={t(key('hintDismiss'))}>
-            <button type="button" aria-label={t(key('hintDismiss'))} onClick={() => { setDismissed(current); setListOpen(false); }}
+            <button type="button" aria-label={t(key('hintDismiss'))} onClick={() => { setDismissed(new Map([...dismissed, ...seen(hinted)])); setListOpen(false); }}
               className={cn('mr-1 flex size-6 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]', FOCUS)}>
               <X size={12} aria-hidden />
             </button>

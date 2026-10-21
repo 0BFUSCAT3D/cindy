@@ -152,8 +152,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     const anchorId = before ? shown[0]?.id : undefined;
     const anchored = (replies: BotGroupMessageView[]) => !anchorId || replies.some(reply => reply.id === anchorId);
     try {
-      // Reading the latest page while the panel is open is what marks the Thread read.
-      const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead: !before });
+      // Reading the latest page marks the Thread read only while the reader is at the newest reply:
+      // a reply that arrives while they read further up stays unread until they scroll down to it.
+      const markRead = !before && stickToBottomRef.current;
+      const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
       if (readBeforeRef.current === null && result.readBefore !== undefined) {
@@ -384,7 +386,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const replyCount = Math.max(root?.replyCount ?? 0, realReplies.filter(reply => reply.kind === 'message').length);
   // The first reply from someone else after where the reader had read; only worth a divider
   // when older replies sit above it.
-  const firstNewIndex = readBefore === null ? -1 : replyRows.findIndex(message => message.sequence > readBefore && !message.isSelf);
+  const firstNewIndex = readBefore === null ? -1 : replyRows.findIndex(message => message.sequence > readBefore && !message.isSelf && !message.deleted && message.authorKind !== 'system');
   const firstNewId = firstNewIndex > 0 ? replyRows[firstNewIndex]!.id : null;
 
   return <aside ref={panelRef} aria-labelledby={titleId}
@@ -400,7 +402,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 pb-4 pt-3"
           onScroll={(event) => {
             const element = event.currentTarget;
+            const wasAtBottom = stickToBottomRef.current;
             stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < STICK_TO_BOTTOM_PX;
+            // Back at the newest reply: what arrived meanwhile has now been seen.
+            if (!wasAtBottom && stickToBottomRef.current) refreshRef.current();
           }}>
           <div ref={contentRef} className="flex min-w-0 flex-col">
             {rootRows.map(message => <Fragment key={message.id}>{renderRow(message, false)}</Fragment>)}

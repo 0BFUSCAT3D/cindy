@@ -182,7 +182,12 @@ export interface BotGroupMessageView {
 }
 
 /** Unread replies of one Thread; `mentioned` when one of them names this reader. */
-export interface BotGroupThreadUnread { count: number; mentioned: boolean }
+export interface BotGroupThreadUnread {
+  count: number;
+  mentioned: boolean;
+  /** Sequence of the newest unread reply; tells a new reply apart from the same ones counted again. */
+  latest?: number;
+}
 
 /**
  * One Thread of the group for the in-chat 话题 list (bot-group-chat.md §10「话题未读与提示」).

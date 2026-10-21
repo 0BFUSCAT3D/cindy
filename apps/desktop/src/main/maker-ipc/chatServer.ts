@@ -1020,12 +1020,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const read = reads.get(rootId) ?? 0n;
     let count = 0;
     let mentioned = false;
+    let latest = 0;
     for (const m of messages) {
       if (m.threadRootId !== rootId || m.deleted || m.origin === 'system' || m.authorId === selfId || BigInt(m.seq) <= read) continue;
       count += 1;
+      latest = Math.max(latest, Number(m.seq));
       if (m.mentions?.includes(selfId)) mentioned = true;
     }
-    return { count, mentioned };
+    return count ? { count, mentioned, latest } : { count, mentioned };
   }
   /** The group's Threads with replies in the newest window, unread ones first, newest reply next. */
   function threadSummaries(roomId: string, s: Snapshot, page: Message[], reads: Map<string, bigint>): BotGroupThreadSummary[] {

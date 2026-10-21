@@ -2432,9 +2432,9 @@ describe('Chat Server result delivery and refresh', () => {
       const read = await service.getGroup(roomId);
       if (!read.ok) throw new Error('Expected group');
       // Only Alice's reply after seq 2 counts; the deleted one never does.
-      expect(read.group.messages.find(m => m.id === rootId)!.threadUnread).toEqual({ count: 1, mentioned: true });
+      expect(read.group.messages.find(m => m.id === rootId)!.threadUnread).toEqual({ count: 1, mentioned: true, latest: Number(mentioning.seq) });
       expect(read.group.threads).toEqual([expect.objectContaining({ rootId, rootText: '周末去哪？ @Bot', rootAuthorName: 'Alice',
-        unread: { count: 1, mentioned: true }, lastReply: expect.objectContaining({ authorName: 'Alice', text: `text of ${aliceReply}` }) })]);
+        unread: { count: 1, mentioned: true, latest: Number(mentioning.seq) }, lastReply: expect.objectContaining({ authorName: 'Alice', text: `text of ${aliceReply}` }) })]);
       // An older server keeps no read state: nothing is shown as unread rather than everything.
       withReads(undefined);
       const older = await service.getGroup(roomId);
