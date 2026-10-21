@@ -111,6 +111,8 @@ export interface RelaunchTurnRow {
   displayName: string | null;
   botStatus: string | null;
   hiddenAt: number | null;
+  /** bot_session_links.role。delegation 是普通任务，不是伙伴对话。 */
+  linkRole?: string | null;
 }
 
 /** 把 turn 会话行收成伙伴 / 对话。缺行、超限或来源读不出时返回 null，不猜类别。 */
@@ -145,7 +147,11 @@ export function classifyRelaunchTurnRows(
     const source = group.find((row) => row.source)?.source ?? null;
     const bot = group.find((row) =>
       row.displayName != null || row.botStatus != null || row.hiddenAt != null);
-    const isCompanion = source === 'bot' || bot != null;
+    const role = group.find((row) => row.linkRole != null)?.linkRole ?? null;
+    // delegation 走普通任务入口，不能因为 join 到伙伴资料就说「伙伴正在回复」。
+    const isCompanion = role !== 'delegation' && (
+      source === 'bot' || role === 'canonical' || role === 'history' || role === 'group' || role === 'channel'
+    );
     if (!source && !isCompanion) return null;
     if (isCompanion) {
       const name = safeCompanionDisplayName(bot?.displayName, {
@@ -177,30 +183,45 @@ const CATEGORY_KEYS: Record<RelaunchActivityCategory, string> = {
   subtask: 'update.banner.activity.subtask',
 };
 
-/** 有具体类别时返回整句；没有时返回 null，调用方继续用原来的通用警告。 */
-export function formatRelaunchActivityHint(
+function joinLocalized(
+  parts: readonly string[],
   translate: (key: string) => string,
+  keys: { joiner: string; pair: string; last: string },
+): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  if (parts.length === 2) return parts[0] + translate(keys.pair) + parts[1];
+  return parts.slice(0, -1).join(translate(keys.joiner)) + translate(keys.last) + parts[parts.length - 1];
+}
+
+/**
+ * 有具体类别时返回各语言的完整警告句；没有时返回 null，调用方继续用通用警告。
+ * translate 必须自己替换 {{activities}} / {{names}}。名字数量决定单复数模板。
+ */
+export function formatRelaunchActivityHint(
+  translate: (key: string, vars?: Record<string, string>) => string,
   summary: RelaunchActivitySummary | null,
 ): string | null {
   if (!summary || summary.categories.length === 0) return null;
   const parts = summary.categories.map((category) => {
-    if (category === 'companion' && summary.companionNames.length > 0) {
-      return translate('update.banner.activity.companionNamedLead')
-        + summary.companionNames.join(translate('update.banner.activityNameJoiner'))
-        + translate('update.banner.activity.companionNamedTail');
+    if (category !== 'companion' || summary.companionNames.length === 0) {
+      return translate(CATEGORY_KEYS[category]);
     }
-    return translate(CATEGORY_KEYS[category]);
+    const names = joinLocalized(summary.companionNames, (key) => translate(key), {
+      joiner: 'update.banner.activityNameJoiner',
+      pair: 'update.banner.activityNameJoinerPair',
+      last: 'update.banner.activityNameJoinerLast',
+    });
+    const key = summary.companionNames.length === 1
+      ? 'update.banner.activity.companionOne'
+      : 'update.banner.activity.companionOther';
+    return translate(key, { names });
   });
-  const body = parts.map((part, index) => {
-    if (index === 0) return part;
-    const key = parts.length === 2
-      ? 'update.banner.activityJoinerPair'
-      : index === parts.length - 1
-        ? 'update.banner.activityJoinerLast'
-        : 'update.banner.activityJoiner';
-    return translate(key) + part;
-  }).join('');
-  return translate('update.banner.confirmBusyLead') + body;
+  const activities = joinLocalized(parts, (key) => translate(key), {
+    joiner: 'update.banner.activityJoiner',
+    pair: 'update.banner.activityJoinerPair',
+    last: 'update.banner.activityJoinerLast',
+  });
+  return translate('update.banner.confirmBusyActivities', { activities });
 }
 
 /** Renderer 不信任 IPC 形状。缺 busy 布尔时返回 null，由调用方 fail closed。 */

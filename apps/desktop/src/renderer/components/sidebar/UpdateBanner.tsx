@@ -457,7 +457,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
     if (confirming && !isPreparing) {
       return withPrerequisiteDialogs(
         <div className="flex flex-col items-center gap-0.5 border-t border-sidebar-border py-1.5">
-          <Tip text={formatRelaunchActivityHint((key) => t(key), activitySummary) ?? t('update.banner.confirmTooltip')} side="right">
+          <Tip text={formatRelaunchActivityHint((key, vars) => t(key, vars), activitySummary) ?? t('update.banner.confirmTooltip')} side="right">
             <button
               onClick={handleRelaunch}
               aria-label={t('update.banner.confirmAria')}
@@ -573,7 +573,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
             {isPreparing
               ? t('update.banner.preparingSubtitle')
               : confirming
-                ? (formatRelaunchActivityHint((key) => t(key), activitySummary) ?? t('update.banner.confirmBusyHint'))
+                ? (formatRelaunchActivityHint((key, vars) => t(key, vars), activitySummary) ?? t('update.banner.confirmBusyHint'))
                 : t('update.banner.subtitle')}
           </p>
           {notesVersion && (

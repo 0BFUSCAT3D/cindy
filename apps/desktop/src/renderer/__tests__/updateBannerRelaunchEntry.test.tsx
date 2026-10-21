@@ -38,7 +38,29 @@ const {
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string, vars?: Record<string, unknown>) => {
+      const templates: Record<string, string> = {
+        'update.banner.confirmBusyActivities': 'Restarting will interrupt {{activities}}.',
+        'update.banner.activityJoiner': ', ',
+        'update.banner.activityJoinerPair': ' and ',
+        'update.banner.activityJoinerLast': ', and ',
+        'update.banner.activityNameJoiner': ', ',
+        'update.banner.activityNameJoinerPair': ' and ',
+        'update.banner.activityNameJoinerLast': ', and ',
+        'update.banner.activity.companion': "a teammate's reply",
+        'update.banner.activity.companionOne': "{{names}}'s reply",
+        'update.banner.activity.companionOther': "{{names}}'s replies",
+        'update.banner.activity.conversation': 'a chat in progress',
+        'update.banner.activity.backgroundCommand': 'a background command',
+        'update.banner.activity.scheduledTask': 'a scheduled task',
+        'update.banner.activity.generation': 'a generation',
+        'update.banner.activity.subtask': 'a subtask',
+      };
+      const template = templates[key];
+      if (!template) return key;
+      if (!vars) return template;
+      return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(vars[name] ?? ''));
+    },
   }),
 }));
 
@@ -75,6 +97,7 @@ vi.mock('@/components/ui/tooltip', () => ({
 }));
 
 import { UpdateBanner } from '@/components/sidebar/UpdateBanner';
+import { formatRelaunchActivityHint } from '../../shared/relaunchActivitySummary';
 
 /** 返回一个手动 settle 的探针,用于把「点击后、resolve 前」这段窗口撑开。 */
 function deferredProbe(): (busy: boolean) => void {
@@ -402,16 +425,7 @@ describe('UpdateBanner relaunch activity summary', () => {
     return (value) => settle(value);
   }
 
-  const namedHint = [
-    'update.banner.confirmBusyLead',
-    'update.banner.activity.companionNamedLead',
-    'Cindy',
-    'update.banner.activityNameJoiner',
-    'Mika',
-    'update.banner.activity.companionNamedTail',
-    'update.banner.activityJoinerPair',
-    'update.banner.activity.backgroundCommand',
-  ].join('');
+  const namedHint = "Restarting will interrupt Cindy and Mika's replies and a background command.";
 
   it('names every interrupting activity and can still be cancelled', async () => {
     withDescribe(async () => ({
@@ -439,10 +453,7 @@ describe('UpdateBanner relaunch activity summary', () => {
     }));
     render(<UpdateBanner isCollapsed={false} />);
     fireEvent.click(screen.getByRole('button', { name: 'update.banner.ariaExpanded' }));
-    const hint = [
-      'update.banner.confirmBusyLead',
-      'update.banner.activity.companion',
-    ].join('');
+    const hint = "Restarting will interrupt a teammate's reply.";
     expect(await screen.findByText(hint)).toBeTruthy();
     expect(screen.queryByText('3c4c962a-1111-4111-8111-111111111111')).toBeNull();
     expect(relaunchToUpdate).not.toHaveBeenCalled();
@@ -503,5 +514,106 @@ describe('UpdateBanner relaunch activity summary', () => {
     await Promise.resolve();
     expect(relaunchToUpdate).not.toHaveBeenCalled();
     expect(screen.getByText('update.banner.preparingButton')).toBeTruthy();
+  });
+});
+
+/**
+ * 测试价值
+ * - 生产入口与可观察结果：formatRelaunchActivityHint。用户看到的是完整警告句，不是残句。
+ * - Bug／规则依据：#5265 的评审。日语任意类别和英语具名伙伴原先拼不成句子。
+ * - 现有覆盖缺口：组件测试以前只断言翻译键顺序，发现不了残句。
+ * - 最小失败输入：只有后台命令的日语句，以及一个或两个英语伙伴名。
+ * - tier：unit。直接调用生产函数，翻译模板与 locale 文案相同。
+ */
+describe('formatRelaunchActivityHint builds a complete sentence', () => {
+  function translate(dict: Record<string, string>) {
+    return (key: string, vars?: Record<string, string>) => {
+      const template = dict[key] ?? key;
+      if (!vars) return template;
+      return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => vars[name] ?? '');
+    };
+  }
+
+  const shared = {
+    'update.banner.activityJoiner': ', ',
+    'update.banner.activityJoinerPair': ' and ',
+    'update.banner.activityJoinerLast': ', and ',
+    'update.banner.activityNameJoiner': ', ',
+    'update.banner.activityNameJoinerPair': ' and ',
+    'update.banner.activityNameJoinerLast': ', and ',
+  };
+
+  it('uses a full English sentence and pluralizes teammate names', () => {
+    const t = translate({
+      ...shared,
+      'update.banner.confirmBusyActivities': 'Restarting will interrupt {{activities}}.',
+      'update.banner.activity.companion': "a teammate's reply",
+      'update.banner.activity.companionOne': "{{names}}'s reply",
+      'update.banner.activity.companionOther': "{{names}}'s replies",
+      'update.banner.activity.backgroundCommand': 'a background command',
+      'update.banner.activity.conversation': 'a chat in progress',
+    });
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['background-command'],
+      companionNames: [],
+    })).toBe('Restarting will interrupt a background command.');
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion'],
+      companionNames: ['Cindy'],
+    })).toBe("Restarting will interrupt Cindy's reply.");
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion', 'background-command'],
+      companionNames: ['Cindy', 'Mika'],
+    })).toBe("Restarting will interrupt Cindy and Mika's replies and a background command.");
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion', 'conversation', 'background-command'],
+      companionNames: [],
+    })).toBe("Restarting will interrupt a teammate's reply, a chat in progress, and a background command.");
+  });
+
+  it('says in Japanese that the restart will interrupt the activity', () => {
+    const t = translate({
+      'update.banner.confirmBusyActivities': '再起動すると、{{activities}}が中断されます。',
+      'update.banner.activityJoiner': '、',
+      'update.banner.activityJoinerPair': '、',
+      'update.banner.activityJoinerLast': '、',
+      'update.banner.activityNameJoiner': '、',
+      'update.banner.activityNameJoinerPair': 'と',
+      'update.banner.activityNameJoinerLast': '、',
+      'update.banner.activity.companionOne': '仲間 {{names}}の返信',
+      'update.banner.activity.companionOther': '仲間 {{names}}の返信',
+      'update.banner.activity.backgroundCommand': 'バックグラウンドコマンド',
+    });
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['background-command'],
+      companionNames: [],
+    })).toBe('再起動すると、バックグラウンドコマンドが中断されます。');
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion'],
+      companionNames: ['Cindy'],
+    })).toBe('再起動すると、仲間 Cindyの返信が中断されます。');
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion'],
+      companionNames: ['Cindy', 'Mika'],
+    })).toBe('再起動すると、仲間 CindyとMikaの返信が中断されます。');
+  });
+
+  it('keeps the Chinese warning readable for one or more teammates', () => {
+    const t = translate({
+      'update.banner.confirmBusyActivities': '重启会中断{{activities}}。',
+      'update.banner.activityJoiner': '、',
+      'update.banner.activityJoinerPair': '、',
+      'update.banner.activityJoinerLast': '、',
+      'update.banner.activityNameJoiner': '、',
+      'update.banner.activityNameJoinerPair': '、',
+      'update.banner.activityNameJoinerLast': '、',
+      'update.banner.activity.companionOne': '伙伴 {{names}} 正在回复',
+      'update.banner.activity.companionOther': '伙伴 {{names}} 正在回复',
+      'update.banner.activity.backgroundCommand': '后台命令',
+    });
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion', 'background-command'],
+      companionNames: ['Cindy', 'Mika'],
+    })).toBe('重启会中断伙伴 Cindy、Mika 正在回复、后台命令。');
   });
 });

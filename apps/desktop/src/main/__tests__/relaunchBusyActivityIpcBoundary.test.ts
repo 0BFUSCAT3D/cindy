@@ -330,6 +330,54 @@ describe('readRelaunchTurnFacts', () => {
     expect(h.selects).toBe(1);
   });
 
+  it('does not call a delegated background task a teammate reply', async () => {
+    h.dbRows = [
+      {
+        id: 'delegated',
+        source: 'desktop',
+        displayName: 'Cindy',
+        botStatus: 'active',
+        hiddenAt: null,
+        linkRole: 'delegation',
+      },
+    ];
+    await expect(readRelaunchTurnFacts(['delegated'])).resolves.toEqual({
+      companions: [],
+      conversation: true,
+    });
+    h.dbRows = [
+      {
+        id: 'delegated-bot',
+        source: 'bot',
+        displayName: 'Cindy',
+        botStatus: 'active',
+        hiddenAt: null,
+        linkRole: 'delegation',
+      },
+    ];
+    await expect(readRelaunchTurnFacts(['delegated-bot'])).resolves.toEqual({
+      companions: [],
+      conversation: true,
+    });
+  });
+
+  it('keeps a canonical welcome as a visible teammate reply', async () => {
+    h.dbRows = [
+      {
+        id: 'welcome',
+        source: 'bot',
+        displayName: 'Cindy',
+        botStatus: 'active',
+        hiddenAt: null,
+        linkRole: 'canonical',
+      },
+    ];
+    await expect(readRelaunchTurnFacts(['welcome'])).resolves.toEqual({
+      companions: [{ name: 'Cindy' }],
+      conversation: false,
+    });
+  });
+
   it('does not expose a hidden teammate name', async () => {
     h.dbRows = [
       { id: 'bot-session', source: 'bot', displayName: 'Cindy', botStatus: 'active', hiddenAt: 1 },

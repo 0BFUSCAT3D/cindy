@@ -2,7 +2,7 @@
  * relaunchTurnFacts.ts — 把正在跑的 turn 收成「伙伴 / 对话」，只为更新重启确认的摘要。
  *
  * 不改变 busy 判定。查不到、超限或数据库失败都返回 null，确认句退回通用警告。
- * 查询列只有来源和伙伴显示名，不读标题、路径、欢迎语或会话正文。
+ * 查询列只有来源、链接角色和伙伴显示名，不读标题、路径、欢迎语或会话正文。
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
@@ -36,6 +36,7 @@ export async function readRelaunchTurnFacts(
         displayName: botProfiles.displayName,
         botStatus: botProfiles.status,
         hiddenAt: botProfiles.hiddenAt,
+        linkRole: botSessionLinks.role,
       })
       .from(sessions)
       .leftJoin(
@@ -50,6 +51,7 @@ export async function readRelaunchTurnFacts(
       displayName: row.displayName ?? null,
       botStatus: row.botStatus ?? null,
       hiddenAt: row.hiddenAt ?? null,
+      linkRole: row.linkRole ?? null,
     }));
     return classifyRelaunchTurnRows(ids, facts);
   } catch {
