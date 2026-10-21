@@ -4486,8 +4486,13 @@ export function getSessionInputProvenance(sessionId: string) {
 export async function captureSessionAgentRequest(sessionId: string, supplement: string): Promise<CapturedAgentRequest> {
   const scope = captureDataOwnerBroadcastScope();
   const active = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
+  // Only a companion's task instructions forward the owner's words. Ordinary
+  // sessions (including scheduled runs and child results) keep their own body.
+  const [companion] = await getDbClient().drizzle.select({ role: botSessionLinks.role })
+    .from(botSessionLinks).where(and(eq(botSessionLinks.sessionId, sessionId),
+      inArray(botSessionLinks.role, ['canonical', 'group', 'channel']), isNull(botSessionLinks.archivedAt))).limit(1);
   const request = await captureRequest(sessionId, supplement, active,
-    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'));
+    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'), !!companion);
   if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
   return request;
 }
@@ -12136,7 +12141,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   botDirectMessageServiceHolder = createBotDirectMessageService({
-    captureRequest: captureSessionAgentRequest,
     transport: createBotMessageTransport({ selfDeviceId: getSelfDeviceId,
       listDevices: () => handleListDevices(deviceDirectoryDeps()), invoke: invokeBotPeer }),
     discardQueuedDelivery: async (sessionId, clientId, assertOwner) => {
@@ -16417,7 +16421,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
     sendToSession: async (params) => {
-      const request = await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
+      // A script follow-up may name a companion as its dispatcher while no
+      // owner turn is active. Never quote that companion's stale last input.
+      const request: CapturedAgentRequest = params[AUTO_REVIEW_DELEGATED_CONTINUATION]
+        ? { message: params.message, autoReviewUserText: { kind: 'agent-request' } }
+        : await captureSessionAgentRequest(params.dispatcherSessionId ?? '', params.message);
       params = { ...params, message: request.message };
       const ownerScope = captureDataOwnerBroadcastScope();
       let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;

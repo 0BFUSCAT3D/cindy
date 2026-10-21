@@ -1,8 +1,6 @@
 import { captureAgentRequest } from '../../../maker-ipc/forwardedRequest';
 import { admitTaskAction, TaskActionAuthorizationError } from '../../../maker-ipc/taskActionAuthorization';
 import { formatForwardedRequest } from '../../../../shared/forwardedRequest';
-const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
-const supplement = (text: string): string => JSON.parse(text.split('\n').find(line => line.startsWith('Agent supplement:'))!.slice('Agent supplement:'.length));
 import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../../../maker-ipc/acceptedCallbackRunner';
 import { setSessionOpeningModelAdmission } from '../../sessionOpening';
 import { ScriptTarget, transpileModule } from 'typescript';
@@ -4041,14 +4039,7 @@ describe('Bot Session task end-to-end runtime', () => {
      * dispatchBotSessionMessage → sendToSessionInternal）。判据顺序刻意与真机一致：
      * 任何一条在真机上会挡住会话启动的门，这里也必须挡住。
      */
-    const dispatchDirect = vi.fn(async (params: {
-      targetSessionId: string;
-      dispatcherSessionId?: string;
-      message: string;
-      persistedContent?: string;
-      clientId?: string;
-      onAccepted?: (replayed?: boolean) => void | Promise<void>;
-    }) => {
+    const dispatchDirect = vi.fn(async (params: Parameters<Parameters<typeof createBotDelegationService>[0]['dispatch']>[0]) => {
       if (params.clientId && hasMessage(params.targetSessionId, params.clientId)) {
         await params.onAccepted?.(true);
         return {
@@ -5480,7 +5471,7 @@ describe('Bot Session task end-to-end runtime', () => {
       if (boundary === 'valid') {
         expect(result).toMatchObject({ ok: true });
         expect(operation === 'edit' ? replace : remove).toHaveBeenCalledOnce();
-        if (operation === 'edit') expect(queue[0].persistedContent).toBe(forwarded('Updated input'));
+        if (operation === 'edit') expect(queue[0].persistedContent).toBe('Updated input');
         else expect(queue).toEqual([]);
         expect(runtime.flushInput).toHaveBeenCalledOnce();
       } else {
@@ -6330,6 +6321,8 @@ describe('Bot Session task end-to-end runtime', () => {
     await seedPair();
     const runtime = createDelegationRuntime({
       replyFor: () => '结论：三个版本都兼容。',
+      captureRequest: (id, text) => captureAgentRequest(id, text,
+        { clientId: 'owner-input', authoredText: '查一下兼容矩阵，不要发布。' }, async () => [], true),
     });
     try {
       const delegated = await runtime.delegation.startSessionTask({
@@ -6373,7 +6366,9 @@ describe('Bot Session task end-to-end runtime', () => {
       const completionDispatch = runtime.dispatch.mock.calls
         .map(([params]) => params)
         .find((params) => params.clientId === completionClientId);
-      expect(supplement(completionDispatch!.message).startsWith('[任务回执]')).toBe(true);
+      expect(completionDispatch!.message.startsWith('[任务回执]')).toBe(true);
+      expect(completionDispatch!.message).not.toContain('User’s original words:');
+      expect(completionDispatch!.autoReviewUserText).toEqual({ kind: 'agent-request' });
       expect(completionDispatch?.persistedContent).toBe(`${UI_ACTION_TRIGGER_PREFIX}${completionDispatch?.message}`);
       // 发起方那一侧也真的被唤醒了（否则「结果回到 A 的对话」只是写了一行数据库）。
       expect(runtime.started.some((turn) => turn.sessionId === 'session-1')).toBe(true);
@@ -7340,7 +7335,7 @@ describe('Bot Session task end-to-end runtime', () => {
     let original = '  只检查\n不要发布  ';
     let unavailable = true;
     const captureRequest = (id: string, text: string) => captureAgentRequest(id, text,
-      { clientId: 'human', authoredText: original }, async () => []);
+      { clientId: 'human', authoredText: original }, async () => [], true);
     const runtime = createDelegationRuntime({ captureRequest, transientUnavailable: () => unavailable });
     let restored: ReturnType<typeof createDelegationRuntime> | undefined;
     try {
@@ -7374,9 +7369,9 @@ describe('Bot Session task end-to-end runtime', () => {
         const result = await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text });
         expect(result).toMatchObject({ ok: true, childSessionId: task.childSessionId });
         const sent = runtime.dispatch.mock.calls.filter(([input]) => input.targetSessionId === task.childSessionId).at(-1)![0];
-        expect(sent.persistedContent).toBe(forwarded(text));
-        expect(supplement(sent.message).split(objective)).toHaveLength(2);
-        expect(supplement(sent.message).split(text)).toHaveLength(2);
+        expect(sent.persistedContent).toBe(text);
+        expect(sent.message.split(objective)).toHaveLength(2);
+        expect(sent.message.split(text)).toHaveLength(2);
         expect(sent.message).not.toContain('Previous objective:');
         expect(sent.message).not.toContain('R'.repeat(100));
         if (index > 1) expect(sent.message).not.toContain(`Follow-up ${index - 1}: `);
@@ -7384,8 +7379,8 @@ describe('Bot Session task end-to-end runtime', () => {
       }
       const inputs = h.sqlite!.prepare("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid").all(task.childSessionId) as Array<{ content: string }>;
       expect(inputs).toHaveLength(71);
-      expect(inputs[0].content).toBe(forwarded(objective));
-      for (let index = 1; index <= 70; index += 1) expect(supplement(inputs[index].content).startsWith(`Follow-up ${index}: `)).toBe(true);
+      expect(inputs[0].content).toBe(objective);
+      for (let index = 1; index <= 70; index += 1) expect(inputs[index].content.startsWith(`Follow-up ${index}: `)).toBe(true);
     } finally { runtime.dispose(); }
   });
 
@@ -7400,7 +7395,7 @@ describe('Bot Session task end-to-end runtime', () => {
           { kind: 'message', text: `Queued requirement ${index}.`, idempotencyKey: `input-${index}` })).toMatchObject({ ok: true });
       }
       const inputs = h.sqlite!.prepare("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid").all(task.childSessionId);
-      expect(inputs).toEqual(['Stable objective.', 'Queued requirement 1.', 'Queued requirement 2.'].map(text => ({ content: forwarded(text) })));
+      expect(inputs).toEqual(['Stable objective.', 'Queued requirement 1.', 'Queued requirement 2.'].map(text => ({ content: text })));
       expect(h.sqlite!.prepare('SELECT objective FROM bot_delegations WHERE id = ?').pluck().get(task.delegationId)).toBe('Stable objective.');
       expect(runtime.started.filter(turn => turn.sessionId === task.childSessionId)).toHaveLength(3);
     } finally { runtime.dispose(); }
@@ -7456,9 +7451,9 @@ describe('Bot Session task end-to-end runtime', () => {
       const oldRows = h.sqlite!.prepare('SELECT id, content FROM messages WHERE session_id = ? ORDER BY rowid').all(task.childSessionId);
       expect(await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text: 'Only this new request.' })).toMatchObject({ ok: true });
       const sent = runtime.dispatch.mock.calls.filter(([input]) => input.targetSessionId === task.childSessionId).at(-1)![0];
-      expect(sent.persistedContent).toBe(forwarded('Only this new request.'));
+      expect(sent.persistedContent).toBe('Only this new request.');
       expect(sent.message).not.toContain(legacy);
-      if (history === 'available') expect(supplement(sent.message)).toContain(objective);
+      if (history === 'available') expect(sent.message).toContain(objective);
       else {
         expect(sent.message).toContain('could not be recovered');
         expect(sent.message).not.toContain(objective);
@@ -7489,7 +7484,7 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(sent).toHaveLength(1);
       expect(sent[0][0].message).toContain(objective);
       expect(sent[0][0].message).toContain(text);
-      if (boundary === 'queued') expect(sent[0][0].persistedContent).toBe(forwarded(text));
+      if (boundary === 'queued') expect(sent[0][0].persistedContent).toBe(text);
       else {
         expect(sent[0][0].message).toContain('Do not repeat completed tool actions');
         expect(sent[0][0].persistedContent).not.toBe(text);
@@ -7497,7 +7492,7 @@ describe('Bot Session task end-to-end runtime', () => {
       }
       await after.delegation.restore();
       expect(after.started.filter(turn => turn.sessionId === task.childSessionId)).toHaveLength(1);
-      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND content = ?").pluck().get(task.childSessionId, forwarded(text))).toBe(1);
+      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND content = ?").pluck().get(task.childSessionId, text)).toBe(1);
     } finally { after.dispose(); }
   });
 
@@ -7861,11 +7856,11 @@ describe('Bot Session task end-to-end runtime', () => {
       const edit = (id: string) => runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'edit', queuedMessageId: id, text: 'revised' });
       expect(await edit('foreign')).toMatchObject({ ok: false, errorCode: 'NOT_AUTHORIZED' });
       expect(await edit('mine')).toMatchObject({ ok: true, delivery: 'queued' });
-      expect(queue[0].persistedContent).toBe(forwarded('revised'));
+      expect(queue[0].persistedContent).toBe('revised');
       consumingClientIds.push('mine');
       expect(await edit('mine')).toMatchObject({ ok: false, errorCode: 'MESSAGE_CONSUMING' });
       expect(await runtime.delegation.getSessionTask('session-1', task.delegationId, 'mine'))
-        .toMatchObject({ task: { queue: [{ queuedMessageId: 'mine', message: forwarded('revised'), consuming: true }], message_receipt: { state: 'consuming' } } });
+        .toMatchObject({ task: { queue: [{ queuedMessageId: 'mine', message: 'revised', consuming: true }], message_receipt: { state: 'consuming' } } });
       consumingClientIds.length = 0;
       expect(await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'withdraw', queuedMessageId: 'mine' }))
         .toMatchObject({ ok: true, delivery: 'withdrawn' });
@@ -8688,13 +8683,13 @@ describe('Bot Session task end-to-end runtime', () => {
         targetSessionId: started.childSessionId,
         clientId: childClientId,
         // 来源由 origin 统一表达(派发时主机前置 `[消息来源]`),正文不再手写前缀。
-        message: forwarded(instruction),
-        persistedContent: forwarded(instruction),
+        message: instruction,
+        persistedContent: instruction,
       }));
       const readMessage = (sessionId: string, clientId: string) => h.sqlite!.prepare(
         'SELECT role, content, agent_meta AS agentMeta FROM messages WHERE session_id = ? AND client_id = ?',
       ).get(sessionId, clientId) as { role: string; content: string; agentMeta: string };
-      expect(supplement(readMessage(started.childSessionId, childClientId).content)).toBe(instruction);
+      expect(readMessage(started.childSessionId, childClientId).content).toBe(instruction);
       const trace = readMessage('session-1', `bot-delegation-interject-mirror:${started.delegationId}:follow-up-1`);
       expect(trace).toMatchObject({ role: 'assistant', content: '' });
       expect(JSON.parse(trace.agentMeta).botCollaboration.role).toBe('interjection');
