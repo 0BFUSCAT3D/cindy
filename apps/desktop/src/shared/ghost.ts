@@ -160,6 +160,7 @@ const LEGACY_GHOST_SLOTS = [
   'confirm',
   'fs',
   'library',
+  'device-sync',
   'session-context',
   'pick',
   'preview',
@@ -204,6 +205,8 @@ export interface GhostAgentNeeds {
   background?: boolean;
   errand?: boolean;
   tasks?: boolean;
+  /** 查询项目、任务、伙伴并投递消息;必须同时声明 tasks,需独立批准。 */
+  targets?: boolean;
   /**
    * hiddenTasks = 「可创建不显示在任务列表里的后台任务」(2026-10)。
    *
@@ -1567,6 +1570,8 @@ export interface GhostManifest {
   fs?: true;
   /** 持久作品库；卸载不删数据，位置和删除由 Host 设置页管理。 */
   library?: true;
+  /** Encrypted opaque exchange with this plugin on same-account desktops. */
+  deviceSync?: true;
   sessionContext?: true;
   pick?: true;
   workspace?: true;
@@ -1641,6 +1646,8 @@ export interface InstalledGhost {
   retirement?: import('./featureRetirements').InstalledFeatureRetirement;
   /** Host receipt fact, not a manifest declaration. Missing means tasks need confirmation. */
   taskCapabilityApproved?: true;
+  /** Independent Host consent for cross-task/companion target access. */
+  targetCapabilityApproved?: true;
   manifest: GhostManifest;
   /** 安装目录绝对路径(userData/brain/<id> 或 userData/brain/_ns/<org>/<id>)。 */
   dir: string;
@@ -1856,6 +1863,7 @@ export interface GhostPermissionItem {
     | 'confirm'
     | 'fs'
     | 'library'
+    | 'deviceSync'
     | 'session-context'
     | 'pick'
     | 'preview'
@@ -2046,6 +2054,9 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
     if (manifest.agent?.tasks === true) {
       items.unshift({ key: 'agent:tasks', kind: 'agent', labelKey: 'agentTasks', detailKey: 'agentTasksDetail' });
     }
+    if (manifest.agent?.tasks === true && manifest.agent.targets === true) {
+      items.unshift({ key: 'agent:targets', kind: 'agent', labelKey: 'agentTargets', detailKey: 'agentTargetsDetail' });
+    }
     // 后台隐藏任务:独立 key 单列(理由同 schedule —— 并进 agent:tasks 会让更新里
     // 新增 hiddenTasks 时 added 为空,扩权复核拦不住)。排在 agent:tasks 之后。
     if (ghostDeclaresHiddenTasks(manifest)) {
@@ -2202,6 +2213,9 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
   // library 能力:持久作品库(用户数据语义,不是临时缓存)。详情页必须讲清
   // 卸载不删、删除走独立确认、会打开系统文件夹/另存为对话框,以及可把 PNG
   // 位图写入系统剪贴板(无确认框,会覆盖当前剪贴板)。
+  if (manifest.deviceSync === true) {
+    items.push({ key: 'deviceSync', kind: 'deviceSync', labelKey: 'deviceSync', detailKey: 'deviceSyncDetail' });
+  }
   if (manifest.library === true) {
     items.push({
       key: 'library',
@@ -3013,6 +3027,7 @@ const GHOST_MANIFEST_KNOWN_TOP_LEVEL_FIELDS = new Set([
   'confirm',
   'fs',
   'library',
+  'deviceSync',
   'sessionContext',
   'pick',
   'workspace',
@@ -3025,6 +3040,7 @@ const V3_BOOLEAN_CAPABILITY_FIELDS = [
   'confirm',
   'fs',
   'library',
+  'deviceSync',
   'sessionContext',
   'pick',
   'workspace',
@@ -3051,6 +3067,7 @@ const V3_BOOLEAN_TO_LEGACY_SLOT: Record<(typeof V3_BOOLEAN_CAPABILITY_FIELDS)[nu
   confirm: 'confirm',
   fs: 'fs',
   library: 'library',
+  deviceSync: 'device-sync',
   sessionContext: 'session-context',
   pick: 'pick',
   workspace: 'workspace',
@@ -4415,10 +4432,16 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
         return { ok: false, reason: 'agent.hiddenTasks: true 需要同时声明 agent.tasks: true' };
       }
     }
+    if (!preserveHistoricalTasks && agentRaw.targets !== undefined) {
+      if (typeof agentRaw.targets !== 'boolean') return { ok: false, reason: 'agent.targets must be boolean' };
+      if (agentRaw.targets === true && agentRaw.tasks !== true) {
+        return { ok: false, reason: 'agent.targets: true 需要同时声明 agent.tasks: true' };
+      }
+    }
     if (agentRaw.schedule !== undefined && typeof agentRaw.schedule !== 'boolean') {
       return { ok: false, reason: 'agent.schedule 必须是布尔值' };
     }
-    if (agentRaw.background !== true && agentRaw.errand !== true && agentRaw.schedule !== true && agentRaw.tasks !== true && Object.keys(unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks'])).length === 0) {
+    if (agentRaw.background !== true && agentRaw.errand !== true && agentRaw.schedule !== true && agentRaw.tasks !== true && Object.keys(unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks', 'targets'])).length === 0) {
       return {
         ok: false,
         reason:
@@ -4426,10 +4449,11 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       };
     }
     agent = {
-      ...unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks']),
+      ...unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks', 'targets']),
       ...(agentRaw.background === true ? { background: true } : {}),
       ...(agentRaw.errand === true ? { errand: true } : {}),
       ...(agentRaw.tasks === true ? { tasks: true } : {}),
+      ...(agentRaw.tasks === true && agentRaw.targets === true ? { targets: true } : {}),
       ...(agentRaw.tasks === true && agentRaw.hiddenTasks === true ? { hiddenTasks: true } : {}),
       ...(agentRaw.schedule === true ? { schedule: true } : {}),
     };
@@ -6072,6 +6096,7 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       ...(slots.includes('badge') ? { badge: true as const } : {}),
       ...(slots.includes('confirm') ? { confirm: true as const } : {}),
       ...(slots.includes('fs') ? { fs: true as const } : {}),
+      ...(slots.includes('device-sync') ? { deviceSync: true as const } : {}),
       ...(slots.includes('library') ? { library: true as const } : {}),
       ...(slots.includes('session-context') ? { sessionContext: true as const } : {}),
       ...(slots.includes('pick') ? { pick: true as const } : {}),
@@ -8418,6 +8443,12 @@ export function classifyGhostLibraryOperationSupport(
   }
   return listed.has(operation) ? 'supported' : 'unsupported';
 }
+
+/** Opaque encrypted RPC; plugin identity is always inferred from the sender. */
+export type GhostPipeDeviceSyncRequest =
+  | { type: 'device-sync-request'; op: 'status' }
+  | { type: 'device-sync-request'; op: 'request'; peer: string; data: unknown }
+  | { type: 'device-sync-request'; op: 'reply'; requestId: string; data: unknown };
 
 /** 上行:library 请求(cindy.library(req) ≡ send({type:'library-request', …req}))。 */
 export interface GhostPipeLibraryRequest {

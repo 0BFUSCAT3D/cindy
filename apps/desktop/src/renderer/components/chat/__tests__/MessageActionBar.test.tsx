@@ -43,32 +43,36 @@ describe('companion message read-aloud', () => {
     sessionId: identity.sessionId, available: true, disabled: false,
     messageId: null, phase: 'idle', canRead: () => true, toggle: vi.fn(), ...patch,
   });
-  const bar = (value: MessageReadAloud | null, companion = true, eligible = true) => (
+  const bar = (value: MessageReadAloud | null, companion = true, eligible = true, compact = false) => (
     <MessageReadAloudContext.Provider value={value}>
       <MessageActionBar copyText="Saved reply" align="left" hovered={false}
         simplifiedBotConversation={companion}
+        compact={compact}
         readAloudMessage={eligible ? identity : undefined} />
     </MessageReadAloudContext.Provider>
   );
 
-  it('shows an accessible persistent action only for eligible configured companion replies', () => {
+  it.each([false, true])('shows an accessible action only for eligible configured companion replies (compact=%s)', (compact) => {
     const value = capability();
-    const { rerender } = render(bar(value));
+    const { rerender } = render(bar(value, true, true, compact));
     fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }));
     expect(value.toggle).toHaveBeenCalledWith('reply', 'Saved reply');
     for (const unavailable of [null, capability({ available: false }), capability({ sessionId: 'other' }), capability({ canRead: () => false })]) {
-      rerender(bar(unavailable));
+      rerender(bar(unavailable, true, true, compact));
       expect(screen.queryByRole('button', { name: 'Read aloud' })).toBeNull();
     }
-    rerender(bar(value, false));
+    rerender(bar(value, false, true, compact));
     expect(screen.queryByRole('button', { name: 'Read aloud' })).toBeNull();
-    rerender(bar(value, true, false));
+    rerender(bar(value, true, false, compact));
     expect(screen.queryByRole('button', { name: 'Read aloud' })).toBeNull();
   });
 
-  it.each(['preparing', 'playing'] as const)('keeps the %s action cancellable', (phase) => {
+  it.each([
+    { phase: 'preparing', compact: false }, { phase: 'playing', compact: false },
+    { phase: 'preparing', compact: true }, { phase: 'playing', compact: true },
+  ] as const)('keeps the $phase action cancellable (compact=$compact)', ({ phase, compact }) => {
     const value = capability({ messageId: 'reply', phase });
-    render(bar(value));
+    render(bar(value, true, true, compact));
     const stop = screen.getByRole('button', { name: 'Stop reading' });
     expect(stop.getAttribute('aria-pressed')).toBe('true');
     expect(stop.getAttribute('aria-busy')).toBe(String(phase === 'preparing'));
@@ -76,9 +80,9 @@ describe('companion message read-aloud', () => {
     expect(value.toggle).toHaveBeenCalledOnce();
   });
 
-  it('disables concurrent message playback during continuous voice mode', () => {
+  it.each([false, true])('disables concurrent message playback during continuous voice mode (compact=%s)', (compact) => {
     const value = capability({ disabled: true });
-    render(bar(value));
+    render(bar(value, true, true, compact));
     const button = screen.getByRole('button', { name: 'Read aloud' });
     expect(button.hasAttribute('disabled')).toBe(true);
     fireEvent.click(button);

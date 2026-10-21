@@ -271,6 +271,10 @@ Cindy Make 生成的本机定制应用成品。可与原版切换并沿用同一
 
 设置 → 存储空间内主动备份、清理任务消息并压缩本地数据库的功能名称。默认只清理非活跃任务；用户确认开启可选项后，也会清理活跃任务的历史。先登记为 proposed，待实际使用后再固化。
 
+### Detached HEAD
+
+沿用会话顶栏分支徽标现有译法
+
 ### Release
 
 CindyDev 内部设置中的正式业务服务器环境标签，五语固定保留英文 Release。它表示 App 当前连接哪套服务，不代表安装包发行版本、OTA 通道或 cn / global 区域；因 release 也是普通英文单词，关闭全局大小写扫描，具体 UI key 由 Mobile 定向测试约束。
@@ -609,6 +613,10 @@ macOS TCC 的 kTCCServiceListenEvent(系统设置里叫「输入监控」)在 Ci
 
 已确定禁用：`输入监控（仅当英文含 shortcut listener permission）`（zh-CN）、`入力監視（仅当英文含 shortcut listener permission）`（ja）、`입력 모니터링（仅当英文含 shortcut listener permission）`（ko）
 
+### Side chat
+
+在右侧独立提问，继承主任务已完成的上下文；追问不自动写回主任务。
+
 ### Skip Sign-In
 
 登录页免账号入口的动作名（面板内文字按钮 + 登录服务不可用时的 error 步逃生按钮，#697 起取代原游客圆钮）。与 not-signed-in 成对：动作叫「跳过登录」，进入后的状态叫「未登录」。历史说法「本地模式」「游客登录」已废弃——前者暗示另一种服务端连接方式，后者在本产品里没有对应的 guest 账号概念（代码里 GuestRoute 等内部标识不受本条约束）。先登记 proposed：en 的 Title Case 形态（Skip Sign-In）与本仓其它按钮的句首大写风格不一致，待随登录页文案统一时裁决。
@@ -636,6 +644,10 @@ Cindy 里的**持久 AI 助手实体**（原名 Bot）：有长期身份、自�
 ### Token Plan
 
 阿里云百炼与小米 MiMo 的外部订阅产品名称，四语统一保留官方英文写法；与 Coding Plan 是不同套餐和凭证类型，先登记为 proposed，避免供应商预设中混用产品名。
+
+### Ultrafast
+
+Codex 模型的第三档速度；与推理深度 Ultra 独立。标准、快速、超快分别对应默认、Fast、Ultrafast。
 
 ### Ungrouped
 

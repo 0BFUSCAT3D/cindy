@@ -145,6 +145,10 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   只在首次任务能力调用通过既有宿主权限界面确认，原插件的启用态、其它能力、凭证和
   设置保持不变。拒绝、窗口不可用、账号或安装版本变化均不授予任务权限；同能力更新
   保留既有明确批准，移除该能力后不保留。清单或旧未知字段本身不能补写批准。
+- `agent.targets` 必须与 `agent.tasks: true` 同时声明，独立列出 `agent:targets` 权限并要求 Host receipt 的 `targetCapabilityApproved` 显式批准。
+  可查询本机项目、任务和伙伴的目标元数据，并投递文字/图片；不授予其他任务的历史读取、设置修改或停止权限。
+  安装/更新复用既有权限确认；历史 tasks 批准和未知 targets 字段不能自动扩权，缺新批准时只阻止新目标接口，首次调用复用既有宿主确认。
+  实现与作者契约见 [通用投递目标](plugin-task-api-implementation.md#通用投递目标增量接口尚未发布)。
 - `agent.hiddenTasks`（后台任务）只在与 `agent.tasks: true` 同时声明时有效：新包缺 tasks 或非布尔
   直接拒装；已安装快照里不成对的历史值原样保留但不授予。它单列为 `agent:hidden-tasks` 权限，
   更新新增即「权限变多」；运行期由 taskSlot 与任务服务按身份卡双重守门。透明性兜底与多端口径见
@@ -309,6 +313,10 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   网络失败与安装包异常；服务端负责包体大小发布准入，客户端保留防御校验而不另设体积提示。
   实现与回归见 `apps/desktop/src/main/plugin-market/download.ts` 及同目录的
   `__tests__/download.test.ts`。
+- 同一安装流程的同步预检可以复用一次已装清单扫描；跨下载、用户确认或异步等待后，
+  目标安装、批准状态与锁内提交仍须重新核对，不能缓存批准结果。`inspect` 与安装可在
+  60 秒内复用一份不超过 8 MiB 的包解析结果，但每次必须稳定重读完整源文件并核对
+  SHA-256、宿主语言与信任表；返回的清单与缓存隔离，不能只凭路径或修改时间复用。
 - Host receipt 是安装事务和运行完整性的状态记录，不是一次交互式“能力授权”。合法的安装／更新
   事务（已按上文求得确认）写入 receipt，钉住 canonical manifest、trust、启停态与随机 `revision`；
   `ghostInstallApprovalToken()` 只是 Renderer 与 Main 之间防止并发漂移的前置条件，不是权限凭证。
@@ -833,3 +841,13 @@ visible 复用当前账号模型选择器的用户开关与目录默认值；隐
 不暴露 ProviderView、auth、账号 identity 或 endpoint；响应 no-store、仅 GET、无参数，
 检查插件在装启用与 owner 归属，异步返回前复核。旧 Host 404 时插件应明确提示升级。
 此端点不覆盖远程 SSH 模型，执行前仍需核验真实路由。
+
+
+### 同账号插件资料同步
+
+`deviceSync: true` 是独立自主能力；旧版插件的权限不变。Host 只允许 namespace 已确认、
+已装启用且批准有效的同一插件在同账号未撤权电脑之间交换有界密文，业务合并与持久化
+留在插件。每次请求和回执重新核验 owner、安装 revision、namespace 与 peer。
+不向插件提供设备私钥、账号 token 或其他插件数据，不为通道增加远程 Renderer IPC。
+接口和失败语义见 `FORGE_GUIDE` §4.10.2，协议与兼容边界见
+[协议兼容](protocol-compatibility.md#插件资料设备同步)。

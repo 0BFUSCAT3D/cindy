@@ -691,6 +691,22 @@ describe('Chat Server result delivery and refresh', () => {
       expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: roomId, change: 'messages' }), undefined);
     });
 
+    it('puts every part of a task message started in a Thread into that Thread', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      const rootId = '90000000-0000-4000-8000-0000000000aa';
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot'), joined(selfId, 'human')], messages: [], cursor: '1' } };
+        if (route.endsWith('/messages') && method === 'POST') return { body: { id: '70000000-0000-4000-8000-000000000002' } };
+        return response(route);
+      });
+      // A long result continues in a follow-up message: it must stay in the Thread too.
+      expect(await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result',
+        text: 'x'.repeat(8_001), card: taskCard, threadRootId: rootId })).toMatchObject({ ok: true });
+      const posts = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST');
+      expect(posts).toHaveLength(2);
+      expect(posts.every(([, , body]) => (body as { threadRootId?: string }).threadRootId === rootId)).toBe(true);
+    });
+
     it('leaves out one file this computer cannot send and still posts the result with the others', async () => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
       const files = await deliveryFiles(3);
@@ -1295,7 +1311,8 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'active' }];
     await vi.advanceTimersByTimeAsync(2000);
     expect(deps.dispatch).not.toHaveBeenCalled();
-    expect(deps.abortLane).toHaveBeenCalledWith('lane');
+    // The source decides the lane, so a rejected source never creates one.
+    expect(deps.ensureLane).not.toHaveBeenCalled();
   });
 
   it('does not let a cancelled source read remove the next execution for the same bot', async () => {
@@ -2420,6 +2437,21 @@ describe('Chat Server result delivery and refresh', () => {
       expect(Object.values(result.group.threadShareUpdates!).every(share => share.status === 'available')).toBe(true);
     });
 
+    // r4325201240: the public group projection must carry earlier distinct authors
+    // separately from the newest two spoken summaries, which may share one author.
+    it('projects distinct responders independently of repeated-author summaries', async () => {
+      const rows = [botId, botId, botId, aliceId, selfId].map((author, i) =>
+        msg(`70000000-0000-4000-8000-00000000000${i + 1}`, 6 - i, author, { threadRootId: rootId }));
+      fixture.handle.mockImplementation((route, method, body) => route.endsWith('/snapshot')
+        ? { body: { room: room(roomId), members, messages: [...rows, { ...root, replyCount: 5 }], cursor: '6' } }
+        : threadResponse(route, method, body));
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      const preview = result.group.messages.find(message => message.id === rootId)!.threadPreview!;
+      expect(preview.replies.map(reply => reply.id)).toEqual([rows[1]!.id, rows[0]!.id]);
+      expect(preview.responders?.map(author => author.authorName)).toEqual(['Me', 'Alice', 'Bot (Me)']);
+    });
+
     it('previews the newest replies and resolves each share from the server copy, not the card', async () => {
       const result = await service.getGroup(roomId);
       if (!result.ok) throw new Error('Expected group');
@@ -2701,23 +2733,6 @@ describe('Chat Server result delivery and refresh', () => {
       expect(context.recent.filter(m => m.sharedReplyId).every(m => m.text === '')).toBe(true);
       expect(JSON.stringify(context)).not.toContain('forged words');
       expect(context.recent).toContainEqual(expect.objectContaining({ text: '@Alice 去爬山\n[附件: map.png]' }));
-    });
-
-    it('marks a share in the main-group background of a Thread request as a reference too', async () => {
-      claimed = false;
-      const rootId = '90000000-0000-4000-8000-0000000000bb';
-      const source = { ...msg(execution.source_message_id, 2, selfId), threadRootId: rootId, content: [{ type: 'text', text: 'Bot, summarize' }] };
-      fixture.handle.mockImplementation((route, method, body) => route.includes('all=true') || route.includes('threadRootId=') ? { body: [source] }
-        : route.startsWith(`/conversations/${roomId}/messages?limit=`) ? { body: [shares[0]] }
-        : route === `/conversations/${roomId}/messages/${rootId}` ? { body: msg(rootId, 1, selfId) }
-        : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(deps.dispatch).toHaveBeenCalledOnce();
-      const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
-      expect(prompt).toContain('A message with sharedReplyId re-posts an existing thread reply');
-      const background = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.mainGroupBackground)!.mainGroupBackground;
-      expect(background).toEqual([expect.objectContaining({ id: shares[0].id, sharedReplyId: botReply, text: '' })]);
-      expect(prompt).not.toContain('forged words');
     });
   });
 

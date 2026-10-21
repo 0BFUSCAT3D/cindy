@@ -15,12 +15,12 @@ import { findCatalogModel, isModelSelectableForNewRoute } from '@cindy/model-pro
 import type { AgentKind } from '@cindy/maker-core';
 import type { RemoteAgentCaps } from '@cindy/device-link';
 
-import type { ProviderGroupConfig, ProviderGroupMember, ProviderGroupView } from '../../shared/providerGroup.js';
+import type { ProviderGroupConfig, ProviderGroupMember, ProviderGroupView, ProviderGroupUsageLimit } from '../../shared/providerGroup.js';
 import type { ProviderGroupBinding } from './bindings.js';
 import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from './directory.js';
 import { pickProviderGroupMember, type SchedulableMember } from './scheduler.js';
 import { createGuestSupportReader } from './sharedStatus.js';
-import { providerGroupUsageState } from './usage.js';
+import { providerGroupMemberUsageState } from './usage.js';
 import { coolingScope, currentCooling, PROVIDER_GROUP_COOLING_SCOPE_CAP, type ProviderGroupPersistedCooling } from './cooling.js';
 export { PROVIDER_GROUP_FAILURE_COOLDOWN_MS, type ProviderGroupPersistedCooling } from './cooling.js';
 
@@ -89,11 +89,11 @@ export const PROVIDER_GROUP_LOCAL_PROVISIONAL_MS = 30_000;
 export type ProviderGroupPickResult =
   | { kind: 'none' }
   | { kind: 'member'; member: ProviderGroupMember; label: string; resolved: ResolvedProviderGroupMember[] }
-  | { kind: 'unavailable'; resolved: ResolvedProviderGroupMember[] };
+  | { kind: 'unavailable'; resolved: ResolvedProviderGroupMember[]; usageLimit?: ProviderGroupUsageLimit };
 
 export interface ProviderGroupRouter {
   pick(input: ProviderGroupPickInput): Promise<ProviderGroupPickResult>;
-  view(providerId: string, options?: string | { model?: string; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
+  view(providerId: string, options?: string | { model?: string; agentKind?: AgentKind; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
   /** 经本组分到这台、正在运行的任务数。 */
   running(providerId: string, memberKey: string): number;
   markCooling(providerId: string, memberKey: string, until: number, model?: string): void;
@@ -212,7 +212,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       if (!config) return { kind: 'none' };
       const usable = (r: ResolvedProviderGroupMember) =>
         offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key, input.model) === null
-        && !providerGroupUsageState(r.claudeUsage, input.model, deps.now()).limited;
+        && !providerGroupMemberUsageState(r, input.model, deps.now(), input.agentKind).limited;
       // 「暂停对外分配」只拦本机以外的新任务；除此之外本机任务与其他使用方同一套组策略，不另设本机优先。
       const paused = (r: ResolvedProviderGroupMember) =>
         r.member.paused && !(input.localTask === true && r.member.kind === 'local');
@@ -226,7 +226,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       });
       const now = deps.now();
       const schedulable: SchedulableMember[] = resolved.map((r) => {
-        const quota = providerGroupUsageState(r.claudeUsage, input.model, now);
+        const quota = providerGroupMemberUsageState(r, input.model, now, input.agentKind);
         return {
           key: r.member.key,
           usable: usable(r),
@@ -245,7 +245,25 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         random: deps.random,
         now,
       });
-      if (!key) return { kind: 'unavailable', resolved };
+      if (!key) {
+        // Only members that could take this model after a quota reset count. A paused,
+        // offline or model-mismatched member must not supply a misleading reset time.
+        const limited = resolved.filter((r) => !paused(r) && !input.exclude?.has(r.member.key)
+          && offersModel(r, input.agentKind, input.model))
+          .map((r) => {
+            const quota = providerGroupMemberUsageState(r, input.model, now, input.agentKind);
+            // A reset is useful only once this member's existing cooldown also ends.
+            // A cooldown alone is not evidence of when an unknown quota resets.
+            return { ...quota, resetAtMs: quota.resetAtMs === null ? null
+              : Math.max(quota.resetAtMs, coolingUntil(input.providerId, r.member.key, input.model) ?? 0) };
+          })
+          .filter((quota) => quota.limited);
+        const resets = limited.flatMap((quota) => quota.resetAtMs === null ? [] : [quota.resetAtMs]);
+        return {
+          kind: 'unavailable', resolved,
+          ...(limited.length > 0 ? { usageLimit: { resetAtMs: resets.length > 0 ? Math.min(...resets) : null } } : {}),
+        };
+      }
       lastPicked.set(input.providerId, key);
       if (input.reserveFor) {
         provisional.set(input.reserveFor, {
@@ -273,7 +291,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
           const guestSupport = readSupport
             ? (r.member.kind === 'local' || r.state === 'ok' ? await readSupport(r.member) : 'unknown' as const)
             : undefined;
-          const quota = providerGroupUsageState(r.claudeUsage, model, deps.now());
+          const quota = providerGroupMemberUsageState(r, model, deps.now(), viewOptions?.agentKind);
           const remembered = coolingUntil(providerId, r.member.key, model);
           const until = quota.limited && quota.resetAtMs === null ? null
             : remembered === null ? quota.resetAtMs

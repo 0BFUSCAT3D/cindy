@@ -1154,7 +1154,8 @@ function AgentSwitchCard({ data, sessionId }: { data?: Record<string, unknown>; 
   const toLabel = engineLabel(data?.toAgentKind);
   const toModel = typeof data?.toModel === 'string' ? data.toModel : '';
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
-  const label =
+  const modelOnly = data?.modelOnly === true;
+  const label = modelOnly ? `${data?.fromModel ?? ''} → ${toModel}` :
     agentRelocationLabel(data, sessionId, t) ??
     t('chat.systemCard.agentSwitch.label', { from: fromLabel, to: toLabel });
 
@@ -1176,8 +1177,8 @@ function AgentSwitchCard({ data, sessionId }: { data?: Record<string, unknown>; 
           title={handoff ? t('chat.systemCard.agentSwitch.toggleHint') : undefined}
         >
           <ArrowLeftRight size={12} className="shrink-0" />
-          <span>{label}</span>
-          {toModel && (
+          <span className="min-w-0 truncate" title={label}>{label}</span>
+          {toModel && !modelOnly && (
             <>
               <span className="opacity-50">·</span>
               <span title={toModel} className="min-w-0 truncate font-mono">

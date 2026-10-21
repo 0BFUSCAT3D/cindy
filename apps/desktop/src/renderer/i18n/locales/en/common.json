@@ -21,6 +21,11 @@
     "messageCount": "{{count}} emails",
     "showMessages": "Show {{count}} emails"
   },
+  "taskActionConfirmation": {
+    "title": "Confirm session action",
+    "once": "Review the target, action and full content below. Allow applies to this action once.",
+    "delegation": "Review this independent session’s objective and settings. Allow starts it and permits messages and stopping within this delegation until it ends. Answering questions, resuming a pause or changing models still requires a separate confirmation."
+  },
   "logSupport": {
     "title": "Logs and Feedback",
     "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
@@ -635,7 +640,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "When Claude subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
+      "quotaFirst": "When subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
@@ -6681,6 +6686,8 @@
         "agentTasksRequest": "Review task permission",
         "agentTasks": "Can create and manage its own Cindy tasks",
         "agentTasksDetail": "Can send messages, read results and stop its own executions. Tasks remain visible to you. Uses this plugin’s AI settings and may incur model charges; does not grant access to other tasks.",
+        "agentTargets": "Can send messages to projects, existing tasks and companions",
+        "agentTargetsDetail": "Can view local project directories and task and companion names and IDs, create tasks in projects, and send text and images to existing tasks and companions. May trigger AI execution and model charges; does not grant access to other tasks’ history, settings or stop controls.",
         "agentHiddenTasks": "Can create background tasks hidden from the task list",
         "agentHiddenTasksDetail": "Tasks this plugin creates can stay out of the task list, search and notifications. You can always view, open or show them in the task list from Background Tasks on this plugin’s page; uninstalling the plugin shows them again.",
         "agentErrand": "Create tasks, perform work, and read results",
@@ -6722,6 +6729,8 @@
         "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
         "fsWrite": "Can write files (create / modify)",
         "fsWriteDetail": "Its own private data folder is always writable. Writes into the current session's working directory follow the session's permission mode (auto-approve modes write directly; per-action modes ask you first). Any other folder always requires your confirmation. Files are always written by the host — the plugin itself never touches your file system.",
+        "deviceSync": "Sync plugin data between your computers",
+        "deviceSyncDetail": "Exchanges this plugin’s data with the same plugin on your other online computers signed in to the same Cindy account. Transfers are encrypted. The plugin controls merging and deletions; no credentials or other plugins’ data are shared.",
         "libraryPersist": "Can use a durable library (large files and databases)",
         "libraryPersistDetail": "It gets a Cindy-managed storage area for your work (canvases, images, databases) with no normal plugin data quota. All file and database operations are executed by the host; the plugin only uses relative paths inside its own library and cannot touch your other files. It can also ask Cindy to show a library file in Finder or Explorer, or open the system Save As dialog so you choose where a copy goes; cancelling Save As copies nothing. It can also write a PNG bitmap to the system clipboard with no confirmation dialog; this overwrites the current clipboard. Uninstalling the plugin does not delete this data; deletion requires separate confirmation in Cindy settings.",
         "networkHost": "Accesses the network domain {{host}}",
@@ -8169,6 +8178,16 @@
         "alreadyOpen": "Open",
         "pluginsLabel": "Plugins"
       },
+      "descriptions": {
+        "fileBrowser": "Browse files in the working folder",
+        "review": "Inspect code changes and review results",
+        "subagents": "Check subtask progress and results",
+        "backgroundTasks": "Track background progress and output",
+        "sideChat": "Ask separately with context from the main task",
+        "browser": "Browse web pages in the panel",
+        "terminal": "Run commands and view output",
+        "workbench": "See what your teammate is working on"
+      },
       "kinds": {
         "fileBrowser": "File browser",
         "browser": "Browser",
@@ -8200,21 +8219,9 @@
       "empty": {
         "eyebrow": "Right Sidebar",
         "title": "Add a panel",
-        "desc": "Open files, review, Activity Monitor, a built-in browser, or a terminal here to work alongside the chat on the left.",
-        "openFile": "Open files",
-        "fileSub": "Files",
-        "openReview": "Open review",
-        "reviewSub": "Review",
-        "openSubagents": "Open Subagent",
-        "subagentsSub": "Durable child work",
-        "openBackgroundTasks": "Open background tasks",
-        "backgroundTasksSub": "Background tasks",
+        "desc": "Ask follow-up questions, view files, or use tools alongside the main task.",
         "openResourceUsage": "Open Activity Monitor",
-        "openBrowser": "Open browser",
-        "browserSub": "Browser",
-        "openTerminal": "Open terminal",
-        "terminalSub": "Terminal",
-        "addMoreHint": "Use the + button at the top to choose more panel types"
+        "addMoreHint": "You can also choose a panel using the + button above"
       },
       "placeholderHint": "{{kind}} — content coming in a later phase"
     },
@@ -9009,11 +9016,11 @@
       }
     },
     "autonomy": {
-      "title": "Follow Up on All Sessions",
-      "descriptionOn": "{{name}} checks all sessions regularly and tells you when something is waiting on you.",
+      "title": "Follow Up on My Sessions",
+      "descriptionOn": "{{name}} checks summaries when sessions change and keeps you informed.",
       "movedFrom": "Moved here from {{name}}",
       "heldBy": "{{name}} handles this now. Switch it on to move it here.",
-      "heldByNobody": "No teammate handles this right now.",
+      "heldByNobody": "Not enabled",
       "restoreDefault": "Restore Default ({{name}})",
       "saveFailed": "Couldn't save. Try again.",
       "turnOff": {
@@ -9025,6 +9032,12 @@
       "allowSchedulerFollow": {
         "title": "Let {{name}} follow up on sessions it starts",
         "description": "By default, {{scheduler}} only watches. When this is on and a session {{name}} started isn't finished, {{scheduler}} follows up on it too."
+      },
+      "consent": "Once enabled, I’ll read summaries of sessions you create on this computer, assess progress, and let you know about important changes. This uses your model allowance. You can disable it anytime.",
+      "invitation": {
+        "title": "Would you like me to follow up on your sessions?",
+        "start": "Start Following Up",
+        "notNow": "Not Now"
       }
     },
     "remoteSettings": {
@@ -10773,6 +10786,12 @@
         "providerGroupRunningOn": "Running on {{device}}",
         "providerGroupRunningHere": "Running on this computer",
         "providerGroupUnassigned": "The Provider Group picks a computer when the task starts; usage then shows for that computer"
+      },
+      "speed": {
+        "label": "Speed",
+        "standard": "Standard",
+        "fast": "Fast",
+        "ultrafast": "Ultrafast"
       }
     },
     "permissionSelector": {
@@ -10869,6 +10888,7 @@
       "recent": "Recent",
       "browseFolder": "Choose a different folder",
       "browseProjectFolder": "Choose another project folder",
+      "browseFailed": "Could not open the folder picker. Please try again.",
       "dialogue": "Chat",
       "dialogueOrSelectProject": "Chat or select project",
       "searchProjects": "Search projects",
@@ -11393,6 +11413,7 @@
     },
     "messageActionBar": {
       "copy": "Copy message",
+      "copied": "Copied",
       "reply": "Reply",
       "linkCopied": "Link copied",
       "moreActions": "More message actions",
@@ -11713,6 +11734,12 @@
       "staleBadge": "Cached copy",
       "downloadToLocal": "Download to this computer",
       "downloadPacking": "Remote computer is packing… {{size}} packed",
+      "folderPreparing": "Preparing folder…",
+      "cancelFolderPreparation": "Cancel folder preparation",
+      "folderPacking": "Packing… {{size}}",
+      "folderFailed": "Folder preparation failed. Check the connection and disk space, then drag it in again",
+      "folderUnsupported": "This connection cannot transfer folders yet. Update Cindy on the remote computer and try again",
+      "folderConnectionUnsupported": "This connection cannot transfer folders yet. Copy the folder to the target computer first, then reference its directory",
       "downloadProgress": "Downloading… {{percent}}% · {{speed}}",
       "downloadProgressUnknown": "Downloading… {{received}} · {{speed}}",
       "uploadProgress": "Remote computer is uploading… {{percent}}% · {{speed}}",
@@ -12200,7 +12227,7 @@
       "REMOTE_WORKDIR_UNAVAILABLE": "The remote working directory is unavailable. Check that the folder still exists on that computer, then try again.",
       "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "The computer cannot yet confirm whether this message was sent. Wait a moment and try again. Do not send the same message twice.",
       "REMOTE_AGENT_UNAVAILABLE": "Can't reach the computer running the Agent. Make sure it's online and allows remote control, then try again.",
-      "REMOTE_AGENT_PEER_TOO_OLD": "Cindy on the other computer is too old to run the Agent for this one. Update Cindy there first.",
+      "REMOTE_AGENT_PEER_TOO_OLD": "Cindy on the other computer is too old for this action. Update Cindy there first.",
       "REMOTE_AGENT_EXPIRED": "This session already ended on the computer running the Agent. Send your message again.",
       "REMOTE_AGENT_NOT_FOUND": "This session already ended on the computer running the Agent. Send your message again.",
       "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
@@ -12210,6 +12237,7 @@
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
+      "REMOTE_AGENT_GROUP_USAGE_LIMIT": "The available accounts for this model have reached their usage limit. Switch models or continue when the quota resets.",
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
       "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
       "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
@@ -12352,6 +12380,26 @@
     },
     "ghostPreview": {
       "opened": "Opened a preview page"
+    },
+    "sideChat": {
+      "openPage": "Open full task page",
+      "returnMain": "Back to main task",
+      "new": "New side chat",
+      "mainWindowDescription": "Side chats currently run in the main window. Your conversation is saved.",
+      "returnToMain": "Continue in main window",
+      "commandDescription": "Open a side chat with this task's context. Optional text becomes a draft question.",
+      "title": "Side chat",
+      "context": "Uses completed context from when you opened it. The main task keeps running. History stays until you close this tab.",
+      "opening": "Opening…",
+      "notReady": "Wait for the main task to complete its first reply.",
+      "unsupported": "This task's agent runs in another execution environment. Side chat is not available here yet.",
+      "updateHost": "Update the computer running this task to open a side chat.",
+      "failed": "Could not open the side chat. Please try again.",
+      "mainTaskOnly": "Open a side chat from the main task.",
+      "closeTitle": "Close side chat?",
+      "closeDescription": "This follow-up will stop and its history will be deleted. The main task keeps running.",
+      "closeConfirm": "Close and delete",
+      "closeFailed": "Could not close the side chat. Please try again."
     }
   },
   "ccAgent": {
@@ -15068,7 +15116,7 @@
       "codexBinaryMissingTitle": "Codex component not ready",
       "codexBinaryMissingDescription": "The Codex component is not ready yet, so this feature cannot be used. Try again later or check the Codex connection in Settings → Providers.",
       "piBinaryMissingTitle": "Pi component not ready",
-      "piBinaryMissingDescription": "The Pi component is not ready yet, so this feature cannot be used. Try again later or check the Pi connection in Settings → Providers.",
+      "piBinaryMissingDescription": "The Pi component is not ready yet, so this feature cannot be used. Try again later, or open Settings → About to manage or restore Pi.",
       "goToSettings": "Open Settings",
       "remoteCodexBinaryMissingTitle": "Codex component not ready on the remote device",
       "remotePiBinaryMissingTitle": "Pi component not ready on the remote device",
@@ -15184,6 +15232,25 @@
       "remoteWorkerLoading": "Loading the task on {{device}}…",
       "remoteWorkerUnreachable": "{{device}} can't be reached right now. This Worker's task will appear again once it reconnects.",
       "closeAria": "Close"
+    },
+    "workerProject": {
+      "missingDirectory": "This directory no longer exists. Please choose another directory.",
+      "label": "Project",
+      "current": "Current project",
+      "shared": "Shared with Lead: {{project}} · {{branch}}",
+      "direct": "Changes will be made directly in {{project}} on {{branch}}",
+      "inferred": "Identified from Lead’s recent actions",
+      "dirty": "This directory has uncommitted changes. The Worker will continue working with them.",
+      "newWorktree": "Create a worktree for this Worker",
+      "from": "Branch from",
+      "fromSuffix": "(changeable)",
+      "splitWarning": "A new branch will start at the latest commit on {{branch}}. Lead’s uncommitted changes will not carry over. Later changes stay separate until merged.",
+      "dialogue": "The current session has no project, so a worktree cannot be created. The Worker will work in {{directory}}.",
+      "notGit": "This directory is not a Git repository, so a worktree cannot be created. The Worker will work in {{directory}}.",
+      "emptyRepo": "This repository has no commits yet, so a worktree cannot be created. The Worker will work in {{directory}}.",
+      "detachedHead": "Detached HEAD · {{sha}}",
+      "directDetached": "Changes will be made directly in {{project}} at {{branch}}",
+      "loadFailed": "Could not read the project directory."
     }
   },
   "splitGroup": {
@@ -15793,6 +15860,7 @@
     }
   },
   "modelDescriptions": {
+    "automaticRouting": "Model selection is handled by the provider.",
     "longContext": "Optional long-context version; longer inputs may cost more.",
     "security": "For security analysis and code review.",
     "research": "For research, complex questions, coding and document creation.",

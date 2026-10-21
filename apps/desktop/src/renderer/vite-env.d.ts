@@ -639,7 +639,7 @@ interface OrcaWorkerRecord {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     sdkSessionId?: string;
     /** Worker 的 Agent 在另一台电脑或分享上运行(远程供应商)；null = 任务所在电脑。旧端缺省。 */
     agentDeviceId?: string | null;
@@ -2489,7 +2489,7 @@ interface ElectronAPI {
     model: string;
     effort: string;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
     providerId: string | null;
   }) => void;
 
@@ -2505,13 +2505,13 @@ interface ElectronAPI {
     >;
     /** 每个 vendor 是否由用户在 New Maker 中明确选过模型；device-link 默认校准据此保护显式选择。 */
     modelChosenByVendor: Partial<Record<'cc' | 'codex' | 'pi', boolean>>;
-    fastModeByModel: Record<string, boolean>;
+    fastModeByModel: Record<string, boolean | 'ultrafast'>;
     effortByModel: Record<string, string>;
     providerModelMemory?: Record<
       string,
       {
         effortByModel: Record<string, string>;
-        fastByModel: Record<string, boolean>;
+        fastByModel: Record<string, boolean | 'ultrafast'>;
       }
     >;
     /** 「新建会话默认启用 worktree」勾选记忆(vendor 无关根字段,远程草稿播种用)。 */
@@ -2527,7 +2527,7 @@ interface ElectronAPI {
   syncProviderModelMemory: (
     snapshot: Record<
       string,
-      { effortByModel: Record<string, string>; fastByModel: Record<string, boolean> }
+      { effortByModel: Record<string, string>; fastByModel: Record<string, boolean | 'ultrafast'> }
     >,
   ) => void;
 
@@ -2538,7 +2538,7 @@ interface ElectronAPI {
     providerId: string;
     model: string;
     effort?: string;
-    fast?: boolean;
+    fast?: boolean | 'ultrafast';
   }) => void;
 
   /** 被控端本地 main → 自身 renderer:控制端写穿的草稿「模型 effort/fast」pref(调本地 setter)。 */
@@ -2550,8 +2550,10 @@ interface ElectronAPI {
       modelId: string;
       active: boolean;
       markModelChoice?: boolean;
+      /** 已有任务里只换模型时,任务沿用的来源(见 patchVendorPrefsFromTaskModelSwitch)。 */
+      taskProviderId?: string;
       effort?: string;
-      fast?: boolean;
+      fast?: boolean | 'ultrafast';
       thinking?: boolean;
     }) => void,
   ) => () => void;
@@ -2588,7 +2590,7 @@ interface ElectronAPI {
       providerId: string;
       model: string;
       effort?: string;
-      fast?: boolean;
+      fast?: boolean | 'ultrafast';
     }) => void,
   ) => () => void;
 
@@ -2830,6 +2832,14 @@ interface ElectronAPI {
     >;
     /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
     chatCancel: (requestId: string) => Promise<void>;
+    uploadChatFolder: (params: {
+      deviceId: string;
+      file: File;
+      requestId: string;
+    }) => Promise<
+      | { ok: true; path: string; size: number }
+      | { ok: false; code: 'REMOTE_UNSUPPORTED' | 'TRANSFER_FAILED' }
+    >;
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
@@ -4828,7 +4838,7 @@ interface ElectronAPI {
         model?: string;
         effort?: string;
         permissionMode?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         planModeEnabled?: boolean;
         agentKind?: 'cc' | 'codex' | 'pi';
         orcaRole?: import('@/lib/ccAgent.types').OrcaRole | null;
@@ -4864,7 +4874,7 @@ interface ElectronAPI {
           model?: string;
           effort?: string;
           permissionMode?: string;
-          fastMode?: boolean;
+          fastMode?: boolean | 'ultrafast';
           planModeEnabled?: boolean;
           sdkSessionId?: string | null;
           totalTokenUsage?: number;
@@ -5166,7 +5176,7 @@ interface ElectronAPI {
           effort?: string;
           permissionMode?: string;
           planMode?: boolean;
-          fastMode?: boolean;
+          fastMode?: boolean | 'ultrafast';
           providerId?: string | null;
         };
         /** 冲突弹窗确认后覆盖导入:软删同 resume id 的旧会话,替换而非叠加。 */
@@ -5186,6 +5196,11 @@ interface ElectronAPI {
       }) => Promise<{ kind: 'share' | 'directory' | 'other' }>;
     };
     orcaWorkflows: {
+      projectContext: {
+        (leadSessionId: string): Promise<import('../shared/orca-worker-project').WorkerProjectContext>;
+        (leadSessionId: string, directory: string): Promise<import('../shared/orca-worker-project').WorkerProjectInfo>;
+      };
+      projectLabel: (workerSessionId: string) => Promise<{name: string; path: string} | null>;
       getByLeadSession: (leadSessionId: string) => Promise<OrcaTeamRecord | null>;
       getByWorkerSession: (workerSessionId: string) => Promise<OrcaTeamRecord | null>;
       listWorkersByLead: (leadSessionId: string) => Promise<OrcaWorkerRecord[]>;
@@ -6082,7 +6097,7 @@ interface ElectronAPI {
       parentSessionId?: string;
       orcaRole?: import('@/lib/ccAgent.types').OrcaRole | null;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
       permissionMode?: string;
       /** 计划模式一级开关(与 permissionMode 正交)。 */
       planMode?: boolean;
@@ -6126,7 +6141,7 @@ interface ElectronAPI {
         label?: string;
         model?: string;
         effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-        fast?: boolean;
+        fast?: boolean | 'ultrafast';
         /** 显式选定的模型来源(标准面板 per-worker 选择);缺省 = 跟随默认路由解析。 */
         providerId?: string | null;
         /** Worker 创建默认权限；缺省沿用当前偏好，显式值会更新偏好。 */
@@ -6137,6 +6152,8 @@ interface ElectronAPI {
         executionDeviceId?: string;
         /** 运行设备上的工作目录；缺省由那台分配。 */
         workingDir?: string;
+        worktree?: import('../shared/orca-worker-project').WorkerWorktreeRequest;
+        projectPath?: string;
         /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 任务所在电脑，缺省 = 跟 Lead。 */
         agentDeviceId?: string | null;
       },
@@ -6179,7 +6196,7 @@ interface ElectronAPI {
         model: string;
         orcaRole?: import('@/lib/ccAgent.types').OrcaRole | null;
         effort?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         permissionMode?: string;
         /** 计划模式一级开关(与 permissionMode 正交)。 */
         planMode?: boolean;
@@ -6226,7 +6243,7 @@ interface ElectronAPI {
         model: string;
         orcaRole?: import('@/lib/ccAgent.types').OrcaRole | null;
         effort?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         permissionMode?: string;
         /** 计划模式一级开关(与 permissionMode 正交)。 */
         planMode?: boolean;
@@ -6425,7 +6442,7 @@ interface ElectronAPI {
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
     ) => Promise<{ deferred: boolean; superseded?: boolean } | undefined>;
     /**
      * session-agent-switch:同一会话切换 agent 引擎(claude-code ↔ codex)。
@@ -6440,7 +6457,7 @@ interface ElectronAPI {
       model: string,
       providerId?: string | null,
       effort?: string,
-      fastMode?: boolean,
+      fastMode?: boolean | 'ultrafast',
       /** 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。 */
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
     ) => Promise<{
@@ -6461,14 +6478,16 @@ interface ElectronAPI {
       model: string;
       providerId: string | null;
       effort?: string;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
     } | null>;
     // effort/mode 透传 string —— 合法值由 maker capabilities 决定, vite-env 不重复枚举
     setEffort: (sessionId: string, effort: string) => Promise<void>;
+    /** 输入框开始打字时提前启动 Agent；尽力而为。 */
+    prewarmSession?: (sessionId: string, createOpts: unknown) => Promise<{ accepted: boolean }>;
     setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
     getPluginWriteAccessRecovery: (sessionId: string) => Promise<{available: boolean}>;
     retryPluginWriteAccess: (sessionId: string) => Promise<{granted: boolean; mode?: 'acceptEdits' | 'auto'}>;
-    setFastMode: (sessionId: string, enabled: boolean) => Promise<void>;
+    setFastMode: (sessionId: string, enabled: boolean | 'ultrafast') => Promise<void>;
     setThinkingEnabled: (sessionId: string, enabled: boolean) => Promise<void>;
     /** 计划模式一级开关(与 permissionMode 正交); DB 持久化由调用方另调 sessionService.update({ planModeEnabled }) */
     setPlanMode: (sessionId: string, enabled: boolean) => Promise<void>;
@@ -6924,6 +6943,8 @@ interface ElectronAPI {
      * SQLite 镜像 + agentMeta uuid remap。错误码:
      *   NOT_FOUND / INVALID_PARAMS / SOURCE_NEVER_RAN / NO_PRIOR_ASSISTANT
      */
+    createSideChat: (sourceSessionId: string) => Promise<import('./lib/ccAgent.types').Session>;
+    listSideChats: (sourceSessionId: string) => Promise<Array<{ id: string }>>;
     fork: (
       sourceSessionId: string,
       messageClientId: string,

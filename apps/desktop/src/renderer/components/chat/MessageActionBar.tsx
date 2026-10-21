@@ -57,6 +57,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -87,6 +88,12 @@ interface MessageActionBarProps {
   simplifiedBotConversation?: boolean;
   /** Only completed companion replies opt in; ordinary task/user messages do not. */
   readAloudMessage?: { sessionId: string; messageId: string };
+  /**
+   * 贴在气泡旁的紧凑栏（群聊）：外露引用回复、话题、表情和更多；复制、分享为图片与准确
+   * 时间收进更多菜单，让整栏窄到能放在气泡外侧。话题保持外露：关闭话题面板后焦点要回到
+   * 打开它的按钮上，菜单项做不到。
+   */
+  compact?: boolean;
   /** When provided, render a Fork button (user messages fork *before* the
    *  question; assistant messages fork *through* the reply's turn — the
    *  parent decides whether to wire it). Returning a promise keeps the
@@ -156,6 +163,7 @@ export function MessageActionBar({
   hovered,
   simplifiedBotConversation = false,
   readAloudMessage,
+  compact = false,
   onFork,
   onAddToChat,
   onShareAsImage,
@@ -279,6 +287,15 @@ export function MessageActionBar({
     },
     [copyLinkText, t],
   );
+
+  const handleCopyFromMenu = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      toast.success(t('chat.messageActionBar.copied'));
+    } catch {
+      // Same silent fallback as the visible copy button.
+    }
+  }, [copyText, t]);
 
   const handleDelete = useCallback(async () => {
     if (!onDelete || deleting) return;
@@ -580,7 +597,7 @@ export function MessageActionBar({
   // 面板/行几何遵守 12px container + 8px inner-control 两档圆角。
   const canRewind = Boolean(onRewind);
   const addToChatInMenu = simplifiedBotConversation ? undefined : onAddToChat;
-  const moreMenu = (addToChatInMenu || menuActions?.length || copyLinkText || canRewind || onDelete) && (
+  const moreMenu = (compact || addToChatInMenu || menuActions?.length || copyLinkText || canRewind || onDelete) && (
     <DropdownMenu key="more" open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
         <Tip text={t('chat.messageActionBar.moreActions')}>
@@ -626,6 +643,30 @@ export function MessageActionBar({
         }}
         className="min-w-[184px]"
       >
+        {compact && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.stopPropagation();
+              void handleCopyFromMenu();
+            }}
+            className={MENU_ITEM_CLASS}
+          >
+            <Copy size={14} strokeWidth={2} className="shrink-0" />
+            {t('chat.messageActionBar.copy')}
+          </DropdownMenuItem>
+        )}
+        {compact && onShareAsImage && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.stopPropagation();
+              onShareAsImage();
+            }}
+            className={MENU_ITEM_CLASS}
+          >
+            <Share size={14} strokeWidth={2} className="shrink-0" />
+            {t('chat.shareImage.entry')}
+          </DropdownMenuItem>
+        )}
         {addToChatInMenu && (
           <DropdownMenuItem
             onSelect={(event) => {
@@ -696,6 +737,14 @@ export function MessageActionBar({
             </DropdownMenuItem>
           </>
         )}
+        {compact && absText && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="whitespace-pre-line text-12 font-normal text-[var(--settings-section-desc)]">
+              {absText}
+            </DropdownMenuLabel>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -738,9 +787,10 @@ export function MessageActionBar({
   // align='left'  → [copy][share][fork][edit][more][time][cost]
   // align='right' → [time][copy][share][fork][edit][more]   (user)
   // 伙伴对话:[copy][share][reply][more][time] / [time][copy][share][reply][edit][more]
-  // 群聊:[copy][share][引用回复][话题][表情][time]
-  const items =
-    align === 'left'
+  // 贴在气泡旁（compact，群聊与伙伴私聊）:[引用回复][话题][朗读][表情][编辑][more]，复制、分享与时间收进 more
+  const items = compact
+    ? align === 'left' ? [quoteBtn, replyBtn, readAloudBtn, reactionBtn, editBtn, moreMenu] : [moreMenu, editBtn, reactionBtn, readAloudBtn, replyBtn, quoteBtn]
+    : align === 'left'
       ? [
           copyBtn,
           shareBtn,
@@ -776,6 +826,30 @@ export function MessageActionBar({
       )}
     >
       {items}
+    </div>
+  );
+}
+
+/**
+ * The frame that hangs a compact toolbar beside its message bubble (群聊与伙伴私聊): on the bubble's
+ * outer `side`, level with its top, inside the message row so moving the pointer across the gap keeps
+ * the row hovered. It shows while the message (`group/message`) is hovered, while keyboard focus is
+ * inside, while `open` (a picker) is set, and always on touch screens. The bubble must be `relative`.
+ */
+export function BubbleHoverToolbar({ side, open = false, besideReactions = false, marker, children }: {
+  side: 'left' | 'right'; open?: boolean;
+  /** Steps past reactions hung on the bubble's outer top corner. */
+  besideReactions?: boolean;
+  /** A data attribute that names this toolbar for its caller's tests and checks. */
+  marker?: `data-${string}`;
+  children: ReactNode;
+}) {
+  const left = side === 'left';
+  return (
+    <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} {...(marker ? { [marker]: '' } : {})} data-open={open ? '' : undefined}
+      className={cn('pointer-events-none absolute top-0 z-10 w-max rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] focus-within:pointer-events-auto focus-within:opacity-100 group-hover/message:pointer-events-auto group-hover/message:opacity-100 data-[open]:pointer-events-auto data-[open]:opacity-100 motion-reduce:transition-none [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
+        left ? 'right-full' : 'left-full', besideReactions ? (left ? 'mr-6' : 'ml-6') : (left ? 'mr-1.5' : 'ml-1.5'))}>
+      {children}
     </div>
   );
 }

@@ -91,6 +91,15 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
 const PICK = { action: 'pick', sessionId: 's1', providerId: 'anthropic', agentKind: 'claude-code', model: 'opus', exclude: ['local'] };
 
 describe('provider-group:remote', () => {
+  // Unit protocol regression: the real host/client used to discard the reset at both boundaries.
+  it.each([null, 5_000_000])('preserves verified quota exhaustion across computers (reset=%s)', async (resetAtMs) => {
+    const d = deps();
+    d.router.pick.mockResolvedValueOnce({ kind: 'unavailable', resolved: [], usageLimit: { resetAtMs } } as never);
+    const client = createProviderGroupRemoteClient(async (_device, _channel, args) => ({
+      ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]),
+    }));
+    expect(await client.pick('mini', { ...PICK, agentKind: 'claude-code' })).toEqual({ kind: 'unavailable', usageLimit: { resetAtMs } });
+  });
   it('carries the optional detail request across the same-account client and host without probing on ordinary reads', async () => {
     const d = deps();
     const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args) => ({
@@ -101,6 +110,19 @@ describe('provider-group:remote', () => {
     expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: true });
     await client.view('mini', 'anthropic');
     expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: false });
+  });
+
+  // Unit/protocol: a bridge/Pi pre-send read must reach the owner with its harness to select WHAM.
+  // Legacy model-only reads remain valid; invalid harness values cannot become quota selectors.
+  it('carries the optional quota harness through the real client/parser/host path', async () => {
+    const d = deps();
+    const client = createProviderGroupRemoteClient(async (_device, _channel, args) => ({
+      ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]),
+    }));
+    await client.view('mini', 'anthropic', { model: 'gpt-5.3-codex', agentKind: 'pi' });
+    expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { model: 'gpt-5.3-codex', agentKind: 'pi', includeGuestSupport: false });
+    expect(() => parseProviderGroupRemoteRequest({ action: 'view', providerId: 'openai', agentKind: 'unknown' }))
+      .toThrow();
   });
 
   it('only requests compatibility diagnostics when asked and discards a late reply after switching accounts', async () => {

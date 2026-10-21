@@ -3,6 +3,8 @@ import { visibleVoiceCallMessages } from '../bots/voice/VoiceCallTranscript';
 import { voiceTaskFailure } from '../bots/voice/VoiceReplyTracker';
 import { useMessageReadAloud } from '../bots/voice/useMessageReadAloud';
 import { MessageReadAloudContext } from '@/components/chat/MessageReadAloudContext';
+import { RemoteBotFollowUpInvitation } from '@/features/bots/RemoteBotFollowUpInvitation';
+import { BotFollowUpInvitation } from '@/features/bots/BotFollowUpInvitation';
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { shouldShowFailedScheduleNotice } from '@cindy/maker-shared/schedule-model';
@@ -35,6 +37,8 @@ import type { CSSProperties, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
+import { SessionRouteOriginGate } from './SessionRouteOriginGate';
+import { sideChatTaskRoute } from '@/features/right-sidebar/plugins/side-chat/state';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import { buildSessionDeepLink } from '@/lib/deepLink';
@@ -89,6 +93,7 @@ import { CindyMakeEditingActions } from '@/components/cindy-make/CindyMakeEditin
 import { useCindyMakeEditing } from '@/components/cindy-make/useCindyMakeEditing';
 import { useCindyMakeState } from '@/lib/cindyMakeState';
 import { resolveLearnDesktopCommandFeedback } from '@/features/learn/desktopCommandFeedback';
+import { openSideChatTab, watchSideChatTabs } from '@/features/right-sidebar/lib/openSideChatTab';
 import { GoalIndicator } from '@/components/new-chat/GoalIndicator';
 import { PinnedPlanPanel } from '@/components/new-chat/PinnedPlanPanel';
 import { sessionsStore } from '@/lib/sessionsStore';
@@ -491,6 +496,8 @@ function parseOrcaWorkersRevealState(state: unknown): OrcaWorkersRevealState | n
 
 interface CCAgentSessionViewProps {
   sessionIdProp?: string;
+  /** Host-read metadata for an embedded remote task intentionally absent from task lists. */
+  sessionSnapshotProp?: Session | null;
   /**
    * 显式声明内嵌实例是否接管当前窗口路由的 header / 右栏主权。默认不传时沿用
    * 历史判据：只有无 sessionIdProp 的全屏路由实例拥有主权。SplitGroup 用它在
@@ -788,14 +795,18 @@ export function createWritableDirRemovalQueue() {
 export function CCAgentSessionView(props: CCAgentSessionViewProps) {
   const { sessionId } = useParams<{ sessionId: string }>();
   return (
-    <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
-      <CCAgentSessionContent {...props} />
-    </CindyMakeSessionGate>
+    <SessionRouteOriginGate sessionId={props.sessionIdProp ?? sessionId}
+      ownsWindowRoute={!props.navigationMode || props.navigationMode === 'route-owner'}>
+      <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
+        <CCAgentSessionContent {...props} />
+      </CindyMakeSessionGate>
+    </SessionRouteOriginGate>
   );
 }
 
 function CCAgentSessionContent({
   sessionIdProp,
+  sessionSnapshotProp,
   routeOwner,
   compact,
   orcaMode,
@@ -1013,12 +1024,18 @@ function CCAgentSessionContent({
   // Prefer server-fetched data; fall back to cached list for instant first paint。初始 GET
   // 尚未到达时，暂存 patch 也覆盖到 list snapshot 上，但不把不完整 list 提升为 serverSession。
   // 远程会话 currentServerSession 恒为 null(下方 effect 跳过本地 get),故走 sessionFromList。
-  const sessionBase = currentServerSession ?? sessionFromList ?? null;
+  const sessionBase = currentServerSession ?? sessionFromList
+    ?? (sessionSnapshotProp?.id === sessionId ? sessionSnapshotProp : null);
   const session =
     sessionId && sessionBase
       ? sessionSnapshotPatchBufferRef.current.merge(sessionId, sessionBase)
       : null;
   const isOrcaLeadSessionView = session?.orcaRole === 'lead';
+  useEffect(() => {
+    if (!sessionId || !session || !canNavigateSession || readOnly
+      || ['side-chat', 'bot', 'review'].includes(session.source ?? '')) return;
+    return watchSideChatTabs(sessionId);
+  }, [sessionId, session?.id, session?.source, session?.deviceLinkDeviceId, session?.deviceLinkConnectionStatus, canNavigateSession, readOnly]);
 
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
@@ -1035,6 +1052,8 @@ function CCAgentSessionContent({
     search.set('settingsPage', 'voice');
     navigate(`${location.pathname}?${search.toString()}`);
   }, [location.pathname, location.search, navigate]);
+  const [followUpInvitationSession, setFollowUpInvitationSession] = useState<string | null>(null);
+  useEffect(() => setFollowUpInvitationSession(null), [sessionId]);
   const showCenteredControlledBanner = hasControlledBanner && !controlledBannerCollapsed;
   // assistant 气泡左侧的伙伴头像。节点在整场对话里是同一个,memo 住让 MessageItem
   // 的 memo 比较仍然成立(否则每帧新节点 = 全流重渲染)。
@@ -1175,6 +1194,15 @@ function CCAgentSessionContent({
       subscribeLocalChanges: (onChanged) =>
         window.electronAPI.localDb.subagentRuns.onChanged((payload, ownerStamp) => {
           if (!isCurrentSubagentRunsChange(payload, ownerStamp, sessionId)) return;
+          onChanged();
+        }),
+      // The data-owning device forwards its own change push over the link (session
+      // topic); discovery only listens once that Host's list reply declared it.
+      subscribeRemoteChanges: (onChanged) =>
+        window.electronAPI.deviceLink.onRemotePush((push, localOwnerStamp) => {
+          if (push.deviceId !== remoteDeviceId || push.channel !== 'local-db:subagent-runs:changed') return;
+          if ((push.payload as { sessionId?: unknown } | null)?.sessionId !== sessionId) return;
+          if (!isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) return;
           onChanged();
         }),
       registerTab: () => openSubagentsTab(sessionId, SUBAGENT_TAB_REGISTER_ONLY),
@@ -2813,6 +2841,14 @@ function CCAgentSessionContent({
         clearSession();
         return;
       }
+      if (payload.command === 'side') {
+        if (!sessionId || !canNavigateSession || session?.source === 'side-chat' || session?.source === 'bot') {
+          toast.info(t('chat.sideChat.mainTaskOnly'));
+          return;
+        }
+        void openSideChatTab(sessionId, { prompt: payload.args, onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)) });
+        return;
+      }
       if (payload.command === 'cmd') {
         // /cmd 的执行结果由 main 端在 payload.result 里送来; renderer 透传给 CmdCard
         // 渲染。result 缺失只可能是 main 端代码出 bug, 这里防御性 fallback。
@@ -2861,7 +2897,7 @@ function CCAgentSessionContent({
       // 'issue' 命令由下方独立 effect 处理(需要 handleSend,其声明在本 effect 之后)。
     });
     return unsub;
-  }, [clearSession, insertHelpCard, insertSystemCard, readOnly, sessionId, t]);
+  }, [clearSession, insertHelpCard, insertSystemCard, readOnly, sessionId, session?.source, canNavigateSession, navigate, t]);
 
   // F-COLLAB: 协同模式真实状态。enabled 来自 session.orcaRole === 'lead';
   // worker(显示用)从 active workflow 的 Worker session 列表查到 agentKind。
@@ -3164,9 +3200,11 @@ function CCAgentSessionContent({
           ...(form.executionDeviceId
             ? {
                 executionDeviceId: form.executionDeviceId,
-                ...(form.workingDir ? { workingDir: form.workingDir } : {}),
               }
             : {}),
+          ...(form.workingDir !== undefined ? {workingDir: form.workingDir} : {}),
+          ...(form.worktree ? {worktree: form.worktree} : {}),
+          ...(form.projectPath ? {projectPath: form.projectPath} : {}),
           // 首个 Worker 的 Agent 所在电脑(远程供应商)；面板只在任务所在电脑支持时才带。
           ...(form.agentDeviceId !== undefined ? { agentDeviceId: form.agentDeviceId } : {}),
         };
@@ -3490,6 +3528,20 @@ function CCAgentSessionContent({
       // Desktop commands stay `^/` only. A whitespace-prefixed `/help` is not a dispatch.
       if (!slashMatch) return { handled: false, accepted: false, message };
       if (!allowDesktopDispatch) return { handled: false, accepted: false, message };
+      // Await child creation in the composer's send transaction. The UI push
+      // cannot acknowledge success or carry this invocation's attachments.
+      if (hit.name === 'side') {
+        if (!sessionId || !canNavigateSession || ['side-chat', 'bot', 'review'].includes(session?.source ?? '')) {
+          toast.info(t('chat.sideChat.mainTaskOnly'));
+          return { handled: true, accepted: false, message };
+        }
+        const accepted = await openSideChatTab(sessionId, {
+          prompt: args,
+          attachments: files,
+          onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)),
+        });
+        return { handled: true, accepted, message };
+      }
       // Review is handed to Main immediately with this invocation's serialized
       // attachments. It must not depend on this React view remaining mounted,
       // nor share a mutable attachment ref with a later command.
@@ -3557,6 +3609,9 @@ function CCAgentSessionContent({
       sessionId,
       remoteDeviceId,
       rightSidebarDeviceLinkDeviceId,
+      canNavigateSession,
+      session?.source,
+      navigate,
       t,
     ],
   );
@@ -3840,6 +3895,18 @@ function CCAgentSessionContent({
     [fastMode, insertSystemCard, remoteDeviceId, session, sessionId, t, updateSystemCardData],
   );
 
+  // 开始打字时提前启动 Agent，把冷启动藏进打字时间（本机与远程任务相同）。
+  const handleComposerTyping = useCallback(() => {
+    if (readOnly || cindyMakeInputLocked || !sessionId || !session?.workingDir) return;
+    makerChatStore.prewarmSession(
+      sessionId,
+      session.model,
+      session.effort,
+      session.permissionMode,
+      session.workingDir,
+    );
+  }, [cindyMakeInputLocked, readOnly, session, sessionId]);
+
   const handleSend = useCallback(
     async (
       message: string,
@@ -3867,6 +3934,7 @@ function CCAgentSessionContent({
       if (cindyMakeInputLocked) return false;
       invalidateHistoryRecoveryNavigation();
       const deliveryMode = opts?.deliveryMode ?? 'queue';
+      const sendOwner = getDataOwnerGeneration();
       const originalMessage = message;
       const navigationRequestVersion =
         !opts?.literalText && deliveryMode !== 'steer' && matchNavigationCommandName(message)
@@ -4128,6 +4196,9 @@ function CCAgentSessionContent({
           sendOptions,
         );
         if (accepted && sessionId) {
+          if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
+            setFollowUpInvitationSession(sessionId);
+          }
           void dispatchDeferredUiAssignment(sessionId, undefined).catch((err) => {
             log.error('recover deferred Worker assignment after user message failed', err);
             toast.error(t('newChat.collaboration.assignmentFailed'));
@@ -4148,6 +4219,9 @@ function CCAgentSessionContent({
         sendOptions,
       );
       if (accepted && sessionId) {
+        if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
+          setFollowUpInvitationSession(sessionId);
+        }
         void dispatchDeferredUiAssignment(sessionId, undefined).catch((err) => {
           log.error('recover deferred Worker assignment after user message failed', err);
           toast.error(t('newChat.collaboration.assignmentFailed'));
@@ -4440,7 +4514,7 @@ function CCAgentSessionContent({
                 effort: retryEffort,
                 fastMode,
                 confirmedContextWindow,
-              } as { effort: string; fastMode: boolean })
+              } as { effort: string; fastMode: boolean | 'ultrafast' })
             : undefined,
         ),
       confirm: ({ contextWindow, contextTokens }) =>
@@ -5031,9 +5105,12 @@ function CCAgentSessionContent({
 
   // MessageStream 提成变量:perf/session-switch 的 <Profiler> 是纯诊断,只在 DEV
   // 包裹(见下方渲染处),生产直接渲染此 el,不引入多余 Profiler fiber。
+  const sideChatMessages = useMemo(() => session?.source === 'side-chat'
+    ? messages.filter(message => new Date(message.createdAt ?? session.createdAt).getTime() >= new Date(session.createdAt).getTime())
+    : messages, [messages, session?.source, session?.createdAt]);
   const timelineMessages = useMemo(
-    () => visibleVoiceCallMessages(messages, activeVoiceCallId),
-    [messages, activeVoiceCallId],
+    () => visibleVoiceCallMessages(sideChatMessages, activeVoiceCallId),
+    [sideChatMessages, activeVoiceCallId],
   );
   const openVoiceTask = useCallback((clientId: string) => {
     // Accepted queued work may not have a timeline row yet. Reveal its existing
@@ -5054,7 +5131,6 @@ function CCAgentSessionContent({
       // 消息下方 Fork / Rewind icon 的显示 (Codex rewind=false → 隐藏)。
       agentKind={session?.agentKind}
       remoteHostId={session?.remoteHostId ?? null}
-      agentOnOtherDevice={Boolean(agentDeviceId)}
       sessionSource={session?.source}
       // text-lightbox-trigger-extension F1/F2: cwd flows from session
       // owner down through MessageStream → AssistantMessage / UserMessage.
@@ -5068,6 +5144,9 @@ function CCAgentSessionContent({
       onBotReadThrough={viewVisible ? onBotReadThrough : undefined}
       messages={timelineMessages}
       activeVoiceCallId={activeVoiceCallId}
+      historyVisibleAfter={session?.source === 'side-chat' ? new Date(session.createdAt).getTime() : undefined}
+      onAskInSideChat={!readOnly && canNavigateSession && sessionId && session?.source !== 'side-chat' && session?.source !== 'bot'
+        ? (quote) => openSideChatTab(sessionId, { quote, onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)) }) : undefined}
       cindyMakeSessionId={session?.source === 'cindy-make' ? sessionId : undefined}
       cindyMakeCompletionInComposer={session?.source === 'cindy-make' && (remoteMakeCards.supported || (!remoteDeviceId && !readOnly && typeof window.electronAPI.cindyMakeTest === 'function'))}
       historyLoaded={historyLoaded}
@@ -5087,7 +5166,7 @@ function CCAgentSessionContent({
       getContentWidth={getMessageWidth}
       focusMessageClientId={focusedMessageTarget?.clientId ?? null}
       focusMessageRequestId={focusedMessageTarget?.requestId ?? 0}
-      forkOrigin={forkOrigin}
+      forkOrigin={session?.source === 'side-chat' ? undefined : forkOrigin}
       onOpenForkOrigin={handleOpenForkOrigin}
       isLocalUserSend={isLocalUserSend}
       ownsHardwareScrollActions={ownsHardwareTaskActions}
@@ -5243,7 +5322,7 @@ function CCAgentSessionContent({
               } catch {
                 /* ignore */
               }
-              if (folderPath) attachmentState.addFolderPath(folderPath);
+              if (folderPath) attachmentState.addFolderPath(folderPath, directory);
             }
             if (items.files.length > 0) attachmentState.addFiles(items.files);
           };
@@ -5423,7 +5502,7 @@ function CCAgentSessionContent({
               >
                 <PinnedPlanPanel
                   sessionId={sessionId ?? null}
-                  messages={messages}
+                  messages={sideChatMessages}
                   animated={isStreaming}
                   streaming={isStreaming}
                   width={inputWidth}
@@ -5654,6 +5733,14 @@ function CCAgentSessionContent({
                  InteractionPromptHost: 普通模式下行为不变(直接 inline 渲染)。
                  当外部 (workdir-browse 等窄 rail 场景) 挂了 InteractionPromptSlot
                  时,卡片会被 portal 出去,这里就显占位。 */}
+              {!readOnly && botChatIdentity?.canonicalChat && botChatIdentity.id === 'cindy-default' && !isStreaming && !agentStatus.isRunning && !shareSelectionBlocked
+                && !pendingPlanReview && !pendingPermission && !pendingAskUser && !pendingPluginSetup
+                && !pendingIssueConfirm && !pendingRenameSessionsConfirm && !pendingGhostGrantConfirm
+                && !pendingRemoteDesktopConfirmation && !pendingInputHandoff && followUpInvitationSession === sessionId && (
+                remoteDeviceId
+                  ? <RemoteBotFollowUpInvitation key={`${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
+                  : <BotFollowUpInvitation key={sessionId} botId={botChatIdentity.id} engaged />
+              )}
               <InteractionPromptHost
                 hasInteraction={
                   !!(
@@ -5834,6 +5921,7 @@ function CCAgentSessionContent({
                     />
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
+                  onComposerTyping={handleComposerTyping}
                   onBeforeVoiceInputStart={handleBeforeVoiceInputStart}
                   onStartVoiceConversation={voiceModeAvailable ? startVoiceMode : undefined}
                   voiceConversationDisabled={voiceModeBlocked}
@@ -5887,7 +5975,7 @@ function CCAgentSessionContent({
                   onQueueInteractionLock={setQueueInteractionLock}
                   onQueueEditLock={setQueueEditLock}
                   steeringQueueClientIds={steeringQueueClientIds}
-                  messages={messages}
+                  messages={sideChatMessages}
                   placeholder={
                     voiceModeOpen && voiceModeAvailable
                       ? t('bots.voiceMode.composerPaused')
@@ -6194,6 +6282,7 @@ function CCAgentSessionContent({
         </ChatDisplaySnapshotProvider>
       </SessionNavigationModeProvider>
       <CreateWorkerPopover
+        leadSessionId={collabSessionId ?? undefined}
         open={createWorkerOpen}
         onClose={() => setCreateWorkerOpen(false)}
         onCreate={requestEnableCollab}
