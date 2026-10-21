@@ -250,7 +250,13 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         // offline or model-mismatched member must not supply a misleading reset time.
         const limited = resolved.filter((r) => !paused(r) && !input.exclude?.has(r.member.key)
           && offersModel(r, input.agentKind, input.model))
-          .map((r) => providerGroupMemberUsageState(r, input.model, now, input.agentKind))
+          .map((r) => {
+            const quota = providerGroupMemberUsageState(r, input.model, now, input.agentKind);
+            // A reset is useful only once this member's existing cooldown also ends.
+            // A cooldown alone is not evidence of when an unknown quota resets.
+            return { ...quota, resetAtMs: quota.resetAtMs === null ? null
+              : Math.max(quota.resetAtMs, coolingUntil(input.providerId, r.member.key, input.model) ?? 0) };
+          })
           .filter((quota) => quota.limited);
         const resets = limited.flatMap((quota) => quota.resetAtMs === null ? [] : [quota.resetAtMs]);
         return {

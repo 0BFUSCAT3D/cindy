@@ -442,6 +442,7 @@ export interface AgentInputQueuedMessage {
   /**
    * 本次自动续跑的展示信息（中断原因 + 本轮第几次 + 会话累计）。随 `autoResume`
    * 一起透传到落库 agentMeta，供「已重新连接」活动行的展开详情用。
+   * 首次派发前的组限额恢复只带 info、不设 autoResume：保留原用户气泡与用户轮记账，另显示恢复活动。
    */
   autoResumeInfo?: AutoResumeInfo;
   /** Bounded, durable handoff state shared by manual and automatic recovery. */

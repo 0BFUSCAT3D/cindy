@@ -3330,6 +3330,11 @@ export class AgentInputCoordinator {
     if (!opts?.auto) state.autoResumeAttemptToken = null;
     state.usageLimitWait = null;
     state.recovery = null;
+    if (waitingQueueHead && automaticResumeInfo) {
+      // Keep the original user input/receipt and user-turn accounting. Only the
+      // recovery activity metadata travels with its first durable user row.
+      state.pendingQueue[0].autoResumeInfo = automaticResumeInfo;
+    }
     if (recovery.kind === 'active-turn') {
       let item = continueItem;
       if (!item) {
@@ -5268,6 +5273,10 @@ export class AgentInputCoordinator {
       // (persisted path). If no other work is pending, any deferred completion must
       // be replayed now; otherwise Agent Island stays in "running" indefinitely.
       this.deps.onQueueEmptied?.(sessionId);
+    } finally {
+      // A failed preparation must not label a later manual retry as automatic.
+      // Hidden continuation items retain their existing recovery metadata.
+      if (!active.persisted && !head.autoResume) delete head.autoResumeInfo;
     }
   }
 

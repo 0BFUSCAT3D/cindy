@@ -14242,9 +14242,29 @@ describe('usage-limit wait (ordinary tasks)', () => {
     await flush();
     expect(h.sendToAgent).toHaveBeenCalledTimes(cancel ? 1 : 2);
     if (!cancel) {
-      expect(h.sendToAgent.mock.calls[1][3].persistUserMessage?.clientId).toBe('q-original');
+      const persisted = h.sendToAgent.mock.calls[1][3].persistUserMessage;
+      expect(persisted).toMatchObject({ clientId: 'q-original', autoResumeInfo: INFO });
+      expect(persisted?.autoResume, 'the first user input must remain visible and count as a user turn').toBeUndefined();
       expect(h.onUserMessagePersisted).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it('does not keep automatic activity on a manual retry after preparation fails', async () => {
+    const h = createHarness();
+    const sid = 'quota-retry-preparation-failed';
+    h.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    h.coordinator.enqueue(sid, makeItem('original', 'original task'));
+    await flush();
+    const candidate = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000);
+    h.sendToAgent.mockRejectedValueOnce(new Error('preparation failed'));
+    await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO);
+    await flush();
+    expect(h.sendToAgent.mock.calls[1][3].persistUserMessage?.autoResumeInfo).toMatchObject(INFO);
+    await h.coordinator.retryLastError(sid);
+    await flush();
+    expect(h.sendToAgent.mock.calls[2][3].persistUserMessage).toMatchObject({ clientId: 'original' });
+    expect(h.sendToAgent.mock.calls[2][3].persistUserMessage?.autoResumeInfo).toBeUndefined();
   });
 
   it('does not arm a queue wait from an unverified provider error string', async () => {
