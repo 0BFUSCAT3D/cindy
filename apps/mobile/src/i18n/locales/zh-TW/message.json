@@ -240,7 +240,14 @@
     "sendingMessage": "傳送中的訊息：{{text}}",
     "uploadingAttachments": "附件上傳中 {{uploaded}}/{{total}}",
     "delete": "刪除",
-    "retry": "重試"
+    "retry": "重試",
+    "notSent": "未傳送",
+    "imagesNotUploaded": "{{count}} 張圖片沒傳上去",
+    "waitingForComputer": "等電腦連上後傳送",
+    "waitingForNetwork": "等網路恢復後傳送",
+    "queued": "排隊中",
+    "retryImage": "重新上傳這張圖片",
+    "waitingMessage": "等待傳送的訊息：{{text}}"
   },
   "systemCard": {
     "contextRebuild": {

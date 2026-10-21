@@ -350,6 +350,22 @@ describe('buildPendingSendItems', () => {
     expect(items[2].actions).toBeNull();
   });
 
+  it('holds a ready local send as waiting while disconnected, but keeps uploads and failures as they are', () => {
+    const [ready, uploading, failed] = build({
+      outboxWaitingFor: 'computer',
+      outbox: [
+        outboxItem('ready'),
+        outboxItem('uploading', { attachmentCount: 1, uploadedCount: 0 }),
+        outboxItem('failed', { failed: true }),
+      ],
+    });
+    expect(ready).toMatchObject({ phase: 'waiting', waitingFor: 'computer' });
+    expect(isPendingSendItemSelected(ready, 'ready')).toBe(true);
+    expect(uploading.phase).toBe('uploading');
+    expect(failed.phase).toBe('failed');
+    expect(build({ outbox: [outboxItem('ready')] })[0].phase).toBe('sending');
+  });
+
   it('keeps a first-message creation row non-interactive until creation recovery is available', () => {
     const [item] = build({ outbox: [outboxItem('first', { canCancel: false })] });
     expect(item.canCancel).toBe(false);

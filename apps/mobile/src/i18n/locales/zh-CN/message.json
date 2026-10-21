@@ -240,7 +240,14 @@
     "sendingMessage": "发送中的消息：{{text}}",
     "uploadingAttachments": "附件上传中 {{uploaded}}/{{total}}",
     "delete": "删除",
-    "retry": "重试"
+    "retry": "重试",
+    "notSent": "未发送",
+    "imagesNotUploaded": "{{count}} 张图片没传上去",
+    "waitingForComputer": "等电脑连上后发送",
+    "waitingForNetwork": "等网络恢复后发送",
+    "queued": "排队中",
+    "retryImage": "重新上传这张图片",
+    "waitingMessage": "等待发送的消息：{{text}}"
   },
   "systemCard": {
     "contextRebuild": {

@@ -25,9 +25,10 @@ import { downloadRemoteMediaShareTemp } from './remoteMediaDiskCacheExpo';
 import { usePluginResultCard } from './usePluginResultCard';
 import { extractPayloadToolResultMedia, managedToolMediaKind } from '@cindy/maker-shared/payload-summary';
 import { AuthorizationMessageCard } from './AuthorizationMessageCard';
-import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from '@cindy/maker-shared/botTimeline';
+import { collectBotMessageTimeGroups, formatBotMessageGroupTime, type BotTimelineMessage } from '@cindy/maker-shared/botTimeline';
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
 import { CompanionEntering } from '@/session/CompanionEntering';
+import { LOCAL_SEND_FRESH_MS, localSendStartedAt } from '@/session/localSendMotion';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
 import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
@@ -1747,9 +1748,15 @@ export function MessageRenderer({
   }, []);
   const companionPluginWork = useMemo(() => companion ? companionPluginWorkEntries(items, companionPluginInvocations) : undefined, [companion, items, companionPluginInvocations]);
   // Desktop MessageStream groups the visible teammate conversation (not hidden work) into five-minute stamps.
-  const companionTimeGroups = useMemo(() => companion ? collectBotMessageTimeGroups(items.flatMap((item) =>
-    item.type === 'message' && (item.message.kind === 'user' || item.message.kind === 'assistant' || item.message.companion)
-      ? [{ clientId: item.key, createdAt: item.message.createdAt }] : [])) : undefined, [companion, items]);
+  // A local send joins at its send time, so its stamp is in place before the echo arrives.
+  const companionTimeGroups = useMemo(() => companion ? collectBotMessageTimeGroups(items.flatMap((item): BotTimelineMessage[] => {
+    if (item.type === 'pending_send') {
+      const sentAt = localSendStartedAt(item.key);
+      return sentAt === null ? [] : [{ clientId: item.key, createdAt: sentAt }];
+    }
+    return item.type === 'message' && (item.message.kind === 'user' || item.message.kind === 'assistant' || item.message.companion)
+      ? [{ clientId: item.key, createdAt: item.message.createdAt }] : [];
+  })) : undefined, [companion, items]);
   const actions: MessageActions & { firstUserMessageClientId?: string } = useMemo(() => ({
     companion,
     companionWorkingLabel,
@@ -1929,6 +1936,25 @@ export function MessageRenderer({
     setHasNewMessages(false);
     scrollToEndProgrammatically(true, 'explicit');
   }, [cancelHistoryPrependTransaction, scrollToEndProgrammatically]);
+
+  // The send-time follow runs before the local bubble exists, so the bubble would then land through
+  // the instant tail correction. Follow once more, animated, the moment it is in the list: the list
+  // carries the bubble up while it eases in.
+  const followedLocalSendKeysRef = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    if (!historyActive) return;
+    const now = Date.now();
+    for (let index = listData.length - 1; index >= Math.max(0, listData.length - 3); index--) {
+      const item = listData[index];
+      if (item.type !== 'pending_send' && item.type !== 'message') continue;
+      const sentAt = localSendStartedAt(item.key);
+      if (sentAt === null || now - sentAt >= LOCAL_SEND_FRESH_MS) continue;
+      if (followedLocalSendKeysRef.current.has(item.key)) return;
+      followedLocalSendKeysRef.current.add(item.key);
+      scrollToBottom();
+      return;
+    }
+  }, [historyActive, listData, scrollToBottom]);
 
   // A retained list must not replay requests issued while another task was active.
   const followRequestWasActiveRef = useRef(historyActive);
@@ -3032,14 +3058,20 @@ const RenderItemView = memo(function RenderItemView({
       logUnhandledRenderItem(item);
       break;
   }
-  const groupTimestamp = actions.companion && item.type === 'message'
+  const groupTimestamp = actions.companion && (item.type === 'message' || item.type === 'pending_send')
     ? actions.companionTimeGroups?.get(item.key) : undefined;
   // Cards and work groups share the reply text column, leaving the avatar slot empty.
   const alignWithReplies = !!actions.companionAvatar && actions.companion
     && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
-  // Companion chats: a new message or finished reply eases in once (M4 / M5); everything else stays still.
-  const entering = actions.companion && item.type === 'message' && !item.message.systemCardType
+  // Your own send eases in once, as its local bubble (both chats). Its echo keeps the same key and
+  // wrapper, so it neither remounts nor replays. Companion chats also ease in a new message or
+  // finished reply (M4 / M5).
+  const localSendAt = item.type === 'pending_send' || item.type === 'message'
+    ? localSendStartedAt(item.key) : null;
+  const entering = localSendAt !== null
+    ? <CompanionEntering key={item.key} id={item.key} createdAt={localSendAt} kind="send">{aligned}</CompanionEntering>
+    : actions.companion && item.type === 'message' && !item.message.systemCardType
     && (item.message.kind === 'user' || item.message.kind === 'assistant')
     ? <CompanionEntering key={item.key} id={item.key} createdAt={item.message.createdAt} kind={item.message.kind === 'user' ? 'send' : 'reply'}>{aligned}</CompanionEntering>
     : aligned;

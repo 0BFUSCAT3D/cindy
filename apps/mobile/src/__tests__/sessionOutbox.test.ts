@@ -475,6 +475,20 @@ describe('outboxDisplayItem', () => {
     expect(enqueueFailed.errorText).toBe('RPC boom');
   });
 
+  it('只把没传上去的那张图标成失败,其余图与上传中的图不受影响', () => {
+    const item = outboxItemWithUploadFailure(buildOutboxItem({
+      clientId: 'c-1', sessionId: 's-1', text: 'hi', permissionModeAtSend: 'ask', readyAttachments: [],
+      claimedUploads: [
+        { localId: 'u-a', failed: false, kind: 'image', previewUri: 'file:///tmp/a.jpg' },
+        { localId: 'u-b', failed: false, kind: 'image', previewUri: 'file:///tmp/b.jpg' },
+      ],
+    }), 'u-b');
+    expect(outboxDisplayItem(item).thumbnails).toEqual([
+      { key: 'c-1-slot-0', uri: 'file:///tmp/a.jpg', ossRef: null, uploading: true },
+      { key: 'c-1-slot-1', uri: 'file:///tmp/b.jpg', ossRef: null, uploading: false, failed: true },
+    ]);
+  });
+
   it('图片槽出缩略格(本地预览 / 落定 ossRef / 上传中态),文件槽走计数行', () => {
     let item = buildOutboxItem({
       clientId: 'c-1',

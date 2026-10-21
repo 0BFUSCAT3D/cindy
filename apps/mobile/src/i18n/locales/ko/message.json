@@ -240,7 +240,14 @@
     "sendingMessage": "전송 중인 메시지:{{text}}",
     "uploadingAttachments": "첨부파일 업로드 중 {{uploaded}}/{{total}}",
     "delete": "삭제",
-    "retry": "재시도"
+    "retry": "재시도",
+    "notSent": "전송 안 됨",
+    "imagesNotUploaded": "이미지 {{count}}장을 올리지 못했어요",
+    "waitingForComputer": "컴퓨터가 연결되면 전송",
+    "waitingForNetwork": "네트워크가 돌아오면 전송",
+    "queued": "대기 중",
+    "retryImage": "이 이미지 다시 올리기",
+    "waitingMessage": "전송 대기 중인 메시지:{{text}}"
   },
   "systemCard": {
     "contextRebuild": {

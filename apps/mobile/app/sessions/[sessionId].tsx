@@ -413,7 +413,9 @@ import {
   buildPendingSendItems,
   pendingSendItemKey,
   type MobilePendingSendActions,
+  type MobilePendingSendWaitingFor,
 } from '@/session/pendingSendItems';
+import { noteLocalSend } from '@/session/localSendMotion';
 import { isSourceDeviceRemoved } from '@/session/messageSourceLabels';
 import {
   appendOptimisticUserMessage,
@@ -2293,6 +2295,12 @@ function SessionScreenContent() {
   const outboxConnectionDispatchBlocked = shouldHoldOutboxDispatchForConnection(
     outboxConnectionState,
   );
+  // 待发气泡写「等…后发送」只看真正断开:同步中、自动恢复中几秒就过去,不提示。
+  const outboxWaitingFor: MobilePendingSendWaitingFor | null = !outboxConnectionState.relayOnline
+    ? 'network'
+    : outboxConnectionState.targetAvailable === false || outboxConnectionState.deviceUnresponsive
+      ? 'computer'
+      : null;
   // 弱网普通断线也要有可见信号(消息流静默停更没有任何提示),经防闪延迟后显示
   const connectionRecoveryError = companionEntry.error ?? activeOutboxTransportError ?? connectionError;
   const bannerError = connectionRecoveryError ?? historyError;
@@ -6121,6 +6129,7 @@ function SessionScreenContent() {
         steeringClientIds: new Set(inputProjection.steeringQueueClientIds),
         presentationByClientId,
         getImagePreview: getSentImagePreview,
+        outboxWaitingFor,
       });
     },
     [
@@ -6132,6 +6141,7 @@ function SessionScreenContent() {
       livePendingSendClientIds,
       outboxItems,
       outboxDisplayItems,
+      outboxWaitingFor,
       queueBusy,
       queueEditing?.clientId,
       queueHiddenClientIds,
@@ -6697,6 +6707,7 @@ function SessionScreenContent() {
             record.uploads.push(await retainOutboxFile(record, item.slotByLocalId[localId]!, source));
           }
           if (!sendScopeStillAlive() || !isMobileAuthOwnerCurrent(ownerAtSend)) return;
+          noteLocalSend(record.item.clientId);
           await mobileDurableOutbox.add(record);
           committed = true;
           handoff.release(true);
@@ -7037,6 +7048,7 @@ function SessionScreenContent() {
       // previews / mediaAssetAttachments 映射保留到成功后再清:它们不入消息体,失败
       // 恢复 attachments 时缩略图能原样回来。
       const projectionBeforeSend = remoteSessionStore.getInputProjection(sessionId);
+      noteLocalSend(queued.clientId);
       markQueueItemSending(queued);
       remoteSessionStore.setInputProjectionOptimistically(sessionId, {
         ...projectionBeforeSend,

@@ -185,6 +185,8 @@ export interface MobileOutboxThumb {
   previewRef?: string;
   /** 对应上传任务尚未落定(渲染转圈遮罩)。 */
   uploading: boolean;
+  /** 这张图上传失败:只在它上面放重传按钮,其余图与正文保持原样。 */
+  failed?: boolean;
 }
 
 /** InlineQueueSection 渲染 outbox 行所需的最小视图数据。 */
@@ -466,6 +468,7 @@ export function outboxDisplayItem(item: MobileOutboxItem): MobileOutboxDisplayIt
   const thumbnails: MobileOutboxThumb[] = [];
   let fileCount = 0;
   const fileNames: string[] = [];
+  const failedSlots = new Set(item.failedIds.map((localId) => item.slotByLocalId[localId]));
   item.attachmentSlots.forEach((slot, index) => {
     const meta = item.slotMeta[index];
     if (meta?.kind !== 'image') {
@@ -477,7 +480,8 @@ export function outboxDisplayItem(item: MobileOutboxItem): MobileOutboxDisplayIt
       key: `${item.clientId}-slot-${index}`,
       uri: meta.previewUri,
       ossRef: slot ? (slot.url ?? slot.path) : null,
-      uploading: slot === null,
+      uploading: slot === null && !failedSlots.has(index),
+      ...(slot === null && failedSlots.has(index) ? { failed: true } : {}),
     });
   });
   return {
