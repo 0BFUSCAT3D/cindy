@@ -294,6 +294,7 @@ async function authorizeForgeOutsideWorkdir(params: {
     sessionId: live.sessionId,
     sessionInstanceId: live.sessionInstanceId,
     lane: 'forge_source',
+    requiresResolvedPathReview: path.relative(path.resolve(params.dir), authorizedDir) !== '',
     items: [{
       name: path.basename(authorizedDir) || authorizedDir,
       absPath: authorizedDir,
@@ -362,6 +363,9 @@ export async function authorizeDesktopSessionPath(
     sessionId: live.sessionId,
     sessionInstanceId: live.sessionInstanceId,
     lane: 'outside_workdir',
+    // This Host callback receives only a canonical path, without the original
+    // harness arguments. Native ownership cannot prove it reviewed this target.
+    requiresResolvedPathReview: true,
     items: [{
       name: path.basename(request.path) || request.path,
       absPath: request.path,
@@ -684,6 +688,8 @@ async function requestGrantConfirm(params: {
   sessionInstanceId: string | null;
   lane: GhostGrantLane;
   items: GhostGrantFileItem[];
+  /** Native approval of an alias does not authorize a newly resolved target. */
+  requiresResolvedPathReview?: boolean;
   toolName?: string;
   operation?: 'read' | 'write';
   getLiveSessionGrantState?: CindyGhostsHostDeps['getLiveSessionGrantState'];
@@ -719,7 +725,7 @@ async function requestGrantConfirm(params: {
         // The harness already owns this MCP invocation. Keep live authority and
         // path/slot checks, but do not ask a second model to reinterpret its intent.
         // A remote task cannot extend approval to controller-local files.
-        if (live.autoReviewOwner === 'native' && !live.remoteHostId && live.isCurrent?.() === true && isCurrent?.() === true) {
+        if (!params.requiresResolvedPathReview && live.autoReviewOwner === 'native' && !live.remoteHostId && live.isCurrent?.() === true && isCurrent?.() === true) {
           log.debug('ghost grant: native reviewer owns handoff', { lane: params.lane });
           return { ok: true, approvalSource: 'auto-review', isCurrent };
         }
@@ -1027,6 +1033,7 @@ async function prepareLocalPathAttachments(params: {
         sessionInstanceId: params.sessionInstanceId,
         lane: 'attachments',
         items,
+        requiresResolvedPathReview: needConfirm.some((item) => path.relative(path.resolve(item.url), item.absPath) !== ''),
         getLiveSessionGrantState: params.getLiveSessionGrantState,
       });
       if (!confirm.ok) return confirm;
@@ -1140,6 +1147,7 @@ async function confirmDepositOutsideWorkdir(params: {
     sessionInstanceId: params.sessionInstanceId,
     lane: params.lane,
     items: [item],
+    requiresResolvedPathReview: path.relative(path.resolve(params.dirAbs), real) !== '',
     getLiveSessionGrantState: params.getLiveSessionGrantState,
   });
   if (!confirm.ok) return confirm;

@@ -499,7 +499,9 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   `ghost_call` 的 `attachments`／`dir`／`save_dir` 在目标位于 workdir 外时，普通权限档
   仍沿用现有确认与授权记忆策略；Auto 只有一个审批负责人：本地活跃 Harness 已用原生
   审批接管工具调用时，交接不再调用 Cindy 模型复审；以运行时 `autoReviewOwner` 为准，
-  不从订阅、模型名或数据库快照推断。没有原生接管时才交 Cindy 审阅器，
+  不从订阅、模型名或数据库快照推断。免复审要求原始路径与 canonical 目标一致；
+  symlink/junction 解析改变目标时，由 Cindy 审核真实路径。仅接收 canonical 路径、
+  无法核对原始工具参数的 Host 文件系统回调同样保留审核。没有原生接管时交 Cindy 审阅器，
   allow 逐次放行、block 返回原因、ask 或服务故障才交用户确认。Full Access 旁路则仅当
   Host 能现读到**本地活跃会话**的运行时权限恰为
   `bypassPermissions`（Full Access）时自动批准。该判定不得读取启动期 MCP context 快照，

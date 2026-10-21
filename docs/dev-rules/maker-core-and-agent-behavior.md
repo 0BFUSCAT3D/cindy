@@ -490,6 +490,8 @@ Auto 优先效率，定位是防止严重后果，不是第二次任务规划或
 
 原生审批已接管的本地工具调用不叠加 Cindy 模型复审，以 Handle 的实时
 `getAutoReviewOwner()` 为准；Codex Guardian 故障切换后恢复 Cindy 负责。
+路径解析暴露不同目标时，由 Cindy 审核 canonical 路径；只有 canonical 路径、
+无法核对原始参数的 Host 回调不享受免复审。
 Claude MCP/额外目录等现有回退路径仍由 Cindy 审批，不因有订阅而免审。
 原生明确拒绝不触发第二次模型判断。独立 Host 操作继续使用自身审批入口。
 
