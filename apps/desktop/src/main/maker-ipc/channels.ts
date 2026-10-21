@@ -831,6 +831,7 @@ export const MAKER_INVOKE = {
   BOT_GROUP_PLAN_CONTINUE: 'maker:bot-group:plan-continue',
   BOT_GROUP_PLAN_RETRY: 'maker:bot-group:plan-retry',
   BOT_GROUP_PLAN_EDIT: 'maker:bot-group:plan-edit',
+  BOT_GROUP_PLAN_AUTO: 'maker:bot-group:plan-auto',
   BOT_LIFECYCLE_ACTION: 'maker:bot-lifecycle:action',
   /** Where each companion runs (cloud-companions.md §3); read-only snapshot. */
   COMPANION_CLOUD_STATE: 'maker:companion-cloud:state',

@@ -107,7 +107,7 @@ import {
   mergeBotGroupPlans,
   openBotGroupPlan,
 } from './botGroupPresentation';
-import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction, useBotGroupSummary } from './botGroupStore';
+import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction, setBotGroupPlanAuto, useBotGroupSummary } from './botGroupStore';
 import { botGroupReadKey, markBotRead } from './botReadState';
 import {
   beginBotGroupTimelineRead, discardBotGroupOutbox, getBotGroupOutboxClaims,
@@ -129,7 +129,7 @@ const PLAN_ACTION_FAILED: Record<BotGroupPlanAction, string> = {
   retry: 'bots.groupChat.timeline.retryFailed',
 };
 
-type PlanPending = { planId: string; action: BotGroupPlanAction | 'edit' };
+type PlanPending = { planId: string; action: BotGroupPlanAction | 'edit' | 'auto' };
 
 /** A read that lands within this needs no progress indicator, so a fast switch does not flash. */
 const TIMELINE_LOADING_REVEAL_MS = 200;
@@ -842,12 +842,13 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
   };
 
-  const stopRound = async () => {
+  /** Stops your own work; owners and admins may choose `all` (bot-group-chat.md §4.4). */
+  const stopRound = async (scope?: 'all') => {
     const api = botGroupApi();
     if (!api || stopping) return;
     setStopping(true);
     try {
-      const result = await api.stopBotGroupRound(groupId);
+      const result = await (scope ? api.stopBotGroupRound(groupId, scope) : api.stopBotGroupRound(groupId));
       if (!result.ok) toast.error(t('bots.groupChat.composer.stopFailed'));
     } catch {
       toast.error(t('bots.groupChat.composer.stopFailed'));
@@ -903,14 +904,32 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
   };
 
+  const setPlanAuto = async (planId: string, autoContinue: boolean) => {
+    if (planPendingRef.current) return;
+    planPendingRef.current = true;
+    setPlanPending({ planId, action: 'auto' });
+    try {
+      const result = await setBotGroupPlanAuto({ groupId, planId, autoContinue });
+      if (!result) return;
+      if (!result.ok) toast.error(t(botGroupErrorKey(result.errorCode, 'bots.groupChat.plan.autoFailed')));
+      loadRef.current();
+    } catch {
+      toast.error(t('bots.groupChat.plan.autoFailed'));
+    } finally {
+      planPendingRef.current = false;
+      setPlanPending(null);
+    }
+  };
+
   // Stable handlers for the memoized rows; each reads the latest page state through refs.
-  const actionsRef = useRef({ locateQuoted, continueRound, runPlanAction, editPlanStep });
-  actionsRef.current = { locateQuoted, continueRound, runPlanAction, editPlanStep };
+  const actionsRef = useRef({ locateQuoted, continueRound, runPlanAction, editPlanStep, setPlanAuto });
+  actionsRef.current = { locateQuoted, continueRound, runPlanAction, editPlanStep, setPlanAuto };
   const onLocateQuote = useCallback((quote: BotGroupQuoteView) => void actionsRef.current.locateQuoted(quote), []);
   const onContinue = useCallback(() => void actionsRef.current.continueRound(), []);
   const onPlanAction = useCallback((action: 'start' | 'dismiss', planId: string) => void actionsRef.current.runPlanAction(action, planId), []);
   const onEditStep = useCallback((planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) =>
     void actionsRef.current.editPlanStep(planId, step, action, botId), []);
+  const onPlanAuto = useCallback((planId: string, on: boolean) => void actionsRef.current.setPlanAuto(planId, on), []);
   const onChanged = useCallback((messageId: string) => loadRef.current([], [messageId]), []);
   const onQuote = useCallback((messageId: string) => {
     const message = messageByIdRef.current.get(messageId);
@@ -1165,13 +1184,17 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   planDoneAt={message.planId ? planDoneAt.get(message.planId)?.value : undefined}
                   onPlanAction={onPlanAction}
                   onEditStep={onEditStep}
+                  planAutoPending={pendingFor(message.planId) === 'auto'}
+                  onPlanAuto={onPlanAuto}
                 />
               </Fragment>
             );
           })}
-          {openPlan && followUp ? (
+          {openPlan && followUp && !(openPlan.autoContinue && followUp.kind === 'continue') && (openPlan.canManage ?? true) ? (
             <div className="mt-3">
               <BotGroupPlanFollowUpRow
+                talk={openPlan.kind === 'talk'}
+                plan={openPlan}
                 followUp={followUp}
                 members={members}
                 pending={followUpPending(pendingFor(openPlan.id))}
@@ -1207,7 +1230,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             })(),
           } : null}
           speakers={speakers}
-          onStop={() => void stopRound()}
+          onStop={scope => void stopRound(scope)}
+          canStopAll={!!group.canStopAll && !!group.round.othersActive}
           stopping={stopping}
         />
       ) : null}
@@ -1218,6 +1242,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         members={group.members}
         running={running}
         planState={botGroupComposerPlanState(openPlan)}
+        divisionAvailable={!group.singleSpeaker}
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}

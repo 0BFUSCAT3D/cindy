@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   continueBotGroupPlan: vi.fn(),
   retryBotGroupPlan: vi.fn(),
   editBotGroupPlanStep: vi.fn(),
+  setBotGroupPlanAuto: vi.fn(),
   openPath: vi.fn(),
   pushes: [] as Array<(payload: BotGroupChangedPayload, stamp?: unknown) => void>,
   toastError: vi.fn(),
@@ -294,6 +295,7 @@ beforeEach(() => {
   mocks.continueBotGroupPlan.mockReset().mockResolvedValue({ ok: true });
   mocks.retryBotGroupPlan.mockReset().mockResolvedValue({ ok: true });
   mocks.editBotGroupPlanStep.mockReset().mockResolvedValue({ ok: true });
+  mocks.setBotGroupPlanAuto.mockReset().mockResolvedValue({ ok: true });
   mocks.openPath.mockReset().mockResolvedValue({ success: true });
   mocks.thread.mockReset().mockImplementation(async ({ rootId }: { rootId: string }) => ({
     ok: true,
@@ -333,6 +335,7 @@ beforeEach(() => {
         continueBotGroupPlan: (...args: unknown[]) => mocks.continueBotGroupPlan(...args),
         retryBotGroupPlan: (...args: unknown[]) => mocks.retryBotGroupPlan(...args),
         editBotGroupPlanStep: (...args: unknown[]) => mocks.editBotGroupPlanStep(...args),
+        setBotGroupPlanAuto: (...args: unknown[]) => mocks.setBotGroupPlanAuto(...args),
         onBotGroupChanged: (cb: (payload: BotGroupChangedPayload, stamp?: unknown) => void) => {
           mocks.pushes.push(cb);
           return () => {
@@ -2203,6 +2206,25 @@ describe('BotGroupChatView', () => {
       const remove = await screen.findByRole('menuitem', { name: /bots\.groupChat\.plan\.removeStep/ });
       expect(remove.getAttribute('aria-disabled')).toBe('true');
       expect(remove.textContent).toContain('bots.groupChat.plan.keepOneStep');
+    });
+
+    // bot-group-chat.md §7: a server arrangement stands on its own (no organizer authorship),
+    // waits for 继续 unless its owner turns on auto-continue, and then offers no 继续 row.
+    it.each([false, true])('shows a server arrangement on its own and lets its owner auto-continue (auto=%s)', async auto => {
+      const arranged = plan({
+        status: 'waiting', currentStep: 0, kind: 'talk', autoContinue: auto, canManage: true,
+        steps: [{ ...plan().steps[0]!, task: '', status: 'done' }, { ...plan().steps[1]!, status: 'pending' }],
+      });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(arranged) });
+      renderView();
+      const card = await screen.findByTestId('bot-group-arrangement');
+      expect(card.closest('article')).toBeNull();
+      expect(card.textContent).not.toContain('bots.groupChat.plan.intro');
+      expect(card.textContent).toContain('bots.groupChat.plan.talkTurn');
+      expect(card.textContent).toContain('bots.groupChat.plan.stepSpoken');
+      expect(!!screen.queryByTestId('bot-group-plan-follow-up')).toBe(!auto);
+      fireEvent.click(screen.getByRole('switch', { name: 'bots.groupChat.plan.autoContinue' }));
+      await waitFor(() => expect(mocks.setBotGroupPlanAuto).toHaveBeenCalledWith({ groupId: 'g1', planId: 'p1', autoContinue: !auto }));
     });
 
     it('offers the next step after a hand-off and opens its files inside the work directory', async () => {

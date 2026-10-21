@@ -9306,7 +9306,10 @@
         "elapsed": "{{time}} 경과",
         "viewProcess": "과정 보기",
         "hideProcess": "과정 접기",
-        "stop": "중지"
+        "stop": "중지",
+        "stopMine": "내 요청 중지",
+        "stopAll": "모두 중지",
+        "stopAllHint": "다른 사람의 요청도 포함"
       },
       "header": {
         "stepRunning": "{{name}} 님이 {{step}}단계 작업 중",
@@ -9415,7 +9418,8 @@
         "endPlan": "역할 분담 끝내기",
         "planDone_one": "{{count}}단계를 모두 마쳤습니다",
         "planDone_other": "{{count}}단계를 모두 마쳤습니다",
-        "planDoneGeneric": "역할 분담을 마쳤습니다"
+        "planDoneGeneric": "역할 분담을 마쳤습니다",
+        "endTalk": "끝내기"
       },
       "notice": {
         "memberJoined": "{{name}} 님이 그룹에 참여했습니다",
@@ -9476,7 +9480,8 @@
         "projectDirChange": "폴더 변경",
         "projectDirClear": "지우기",
         "projectDirNote": "역할 분담으로 일할 때 동료들이 여기서 작업합니다. 선택하지 않아도 되며, 그러면 이 그룹 채팅 전용 폴더를 사용합니다. git 프로젝트를 선택하면 역할 분담마다 새 worktree와 브랜치를 만들어, 지금 작업 중인 코드는 건드리지 않습니다.",
-        "projectDirSaveFailed": "프로젝트 폴더를 저장하지 못했습니다. 폴더가 아직 있는지 확인한 뒤 다시 시도하세요"
+        "projectDirSaveFailed": "프로젝트 폴더를 저장하지 못했습니다. 폴더가 아직 있는지 확인한 뒤 다시 시도하세요",
+        "organizerNoteSingle": "아무도 @하지 않은 메시지는 담당자가 답합니다. 여러 동료와 의논하거나 역할을 나눌 때도 담당자가 순서를 정합니다."
       },
       "errors": {
         "memberLimit": "그룹 채팅에는 동료가 2~6명 필요합니다",
@@ -9523,7 +9528,12 @@
         "keepOneStep": "최소 한 단계는 남겨야 합니다",
         "startFailed": "역할 분담을 시작하지 못했습니다. 다시 시도하세요",
         "dismissFailed": "이 계획을 끝내지 못했습니다. 다시 시도하세요",
-        "editFailed": "이 단계를 바꾸지 못했습니다. 다시 시도하세요"
+        "editFailed": "이 단계를 바꾸지 못했습니다. 다시 시도하세요",
+        "talkTurn": "의견 말하기",
+        "stepSpeaking": "말하는 중",
+        "stepSpoken": "완료",
+        "autoContinue": "자동으로 다음 진행",
+        "autoFailed": "자동 진행을 바꾸지 못했습니다. 다시 시도하세요"
       },
       "speaking": {
         "planning": "역할을 나누는 중…"

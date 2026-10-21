@@ -8,12 +8,12 @@ import { useCallback, useSyncExternalStore } from 'react';
 
 import { makerChatStore } from '@/lib/makerChatStore';
 import { cn } from '@/lib/utils';
-import { isBotGroupNoReplyPrefix } from '../../../shared/botGroupChat';
+import { hideBotGroupTurns, isBotGroupNoReplyPrefix } from '../../../shared/botGroupChat';
 
 /** The last `lines` non-empty lines of the streaming reply, or ''. */
 export function botGroupLiveTail(text: string, lines: number): string {
   if (isBotGroupNoReplyPrefix(text)) return '';
-  return text.split('\n').map((line) => line.trim()).filter(Boolean).slice(-lines).join('\n');
+  return hideBotGroupTurns(text).split('\n').map((line) => line.trim()).filter(Boolean).slice(-lines).join('\n');
 }
 
 export function BotGroupLivePreview({ sessionId, lines = 2, className }: { sessionId: string; lines?: number; className?: string }) {

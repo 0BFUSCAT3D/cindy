@@ -9306,7 +9306,10 @@
         "elapsed": "経過 {{time}}",
         "viewProcess": "経過を見る",
         "hideProcess": "経過を閉じる",
-        "stop": "停止"
+        "stop": "停止",
+        "stopMine": "自分の依頼を停止",
+        "stopAll": "すべて停止",
+        "stopAllHint": "他の人の依頼も含みます"
       },
       "header": {
         "stepRunning": "{{name}} がステップ {{step}} を作業中",
@@ -9415,7 +9418,8 @@
         "endPlan": "役割分担を終える",
         "planDone_one": "{{count}} ステップすべて完了しました",
         "planDone_other": "{{count}} ステップすべて完了しました",
-        "planDoneGeneric": "役割分担が完了しました"
+        "planDoneGeneric": "役割分担が完了しました",
+        "endTalk": "終了"
       },
       "notice": {
         "memberJoined": "{{name}}さんがグループに参加しました",
@@ -9476,7 +9480,8 @@
         "projectDirChange": "フォルダを変更",
         "projectDirClear": "クリア",
         "projectDirNote": "役割分担で作業するとき、仲間はここで作業します。選ばなくてもかまいません。その場合はこのグループチャット専用のフォルダを使います。git プロジェクトを選ぶと、役割分担のたびに新しい worktree とブランチを作るので、手元のコードには触れません。",
-        "projectDirSaveFailed": "プロジェクトフォルダを保存できませんでした。フォルダがまだあるか確認してから、もう一度お試しください"
+        "projectDirSaveFailed": "プロジェクトフォルダを保存できませんでした。フォルダがまだあるか確認してから、もう一度お試しください",
+        "organizerNoteSingle": "誰にも @ していないメッセージにはまとめ役が答えます。複数の仲間で話し合ったり分担したりするときも、まとめ役が順番を決めます。"
       },
       "errors": {
         "memberLimit": "グループチャットには仲間が 2〜6 人必要です",
@@ -9523,7 +9528,12 @@
         "keepOneStep": "1 つは残す必要があります",
         "startFailed": "役割分担を開始できませんでした。もう一度お試しください",
         "dismissFailed": "この計画を終了できませんでした。もう一度お試しください",
-        "editFailed": "このステップを変更できませんでした。もう一度お試しください"
+        "editFailed": "このステップを変更できませんでした。もう一度お試しください",
+        "talkTurn": "意見を述べる",
+        "stepSpeaking": "発言中",
+        "stepSpoken": "発言済み",
+        "autoContinue": "自動で次へ",
+        "autoFailed": "自動で次へを切り替えられませんでした。もう一度お試しください"
       },
       "speaking": {
         "planning": "役割分担を考えています…"

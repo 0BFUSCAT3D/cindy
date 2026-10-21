@@ -2132,7 +2132,8 @@ export function createBotGroupChatService(deps: BotGroupChatServiceDeps) {
     });
   };
 
-  const stopRound = async (groupIdInput: unknown): Promise<BotGroupMutationResult> => {
+  // Local groups have one owner; the stop scope only matters in multi-account server groups.
+  const stopRound = async (groupIdInput: unknown, _scope?: unknown): Promise<BotGroupMutationResult> => {
     const groupId = readId(groupIdInput);
     if (!groupId) return failure('INVALID_PARAMS', 'groupId 无效');
     return serialize(groupId, async () => {
@@ -2179,6 +2180,8 @@ export function createBotGroupChatService(deps: BotGroupChatServiceDeps) {
     continuePlan: (input: unknown) => planAction('continue', input),
     retryPlan: (input: unknown) => planAction('retry', input),
     editPlanStep,
+    /** Auto-continue belongs to server arrangements; local plans always wait for 继续. */
+    setPlanAuto: async (_input: unknown): Promise<BotGroupMutationResult> => ({ ok: false, errorCode: 'PLAN_CLOSED', message: 'local plans wait for continue' }),
     settleLaneTurn,
     /** Only a server room has a message channel a teammate can post into outside a turn. */
     postCompanionTaskMessage: async (_input: BotGroupTaskPostInput): Promise<BotGroupTaskPostResult> =>

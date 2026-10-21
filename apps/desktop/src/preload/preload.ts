@@ -6234,8 +6234,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:bot-group:send', input),
     continueBotGroupRound: (groupId: string): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
       ipcRenderer.invoke('maker:bot-group:continue', groupId),
-    stopBotGroupRound: (groupId: string): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
-      ipcRenderer.invoke('maker:bot-group:stop', groupId),
+    /** Stops your own work; `all` (owners/admins of server groups) stops everyone's. */
+    stopBotGroupRound: (groupId: string, scope?: 'all'): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
+      ipcRenderer.invoke('maker:bot-group:stop', groupId, scope),
     startBotGroupPlan: (
       input: import('../shared/botGroupChat').BotGroupPlanActionInput,
     ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
@@ -6256,6 +6257,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       input: import('../shared/botGroupChat').BotGroupPlanEditInput,
     ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
       ipcRenderer.invoke('maker:bot-group:plan-edit', input),
+    setBotGroupPlanAuto: (
+      input: import('../shared/botGroupChat').BotGroupPlanAutoInput,
+    ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
+      ipcRenderer.invoke('maker:bot-group:plan-auto', input),
     onBotGroupChanged: fanOutBotGroupChanged,
     getCompanionCloudState: (): Promise<import('../shared/companionCloud').CompanionCloudSnapshot> =>
       ipcRenderer.invoke('maker:companion-cloud:state'),

@@ -33,6 +33,14 @@ export default {
       about: 'Teammate bubbles: quote, corner reaction, thread entry, task card, long text at the width cap; hover shows the toolbar beside the bubble',
       data: { ...base, bubbles: true },
     },
+    arrangement: {
+      about: 'Single-speaker server group: the lead answers, the arrangement card stands on its own and waits for 继续; its owner can turn on 自动接下一位',
+      data: { ...base, arrangement: 'waiting' },
+    },
+    'arrangement-done': {
+      about: 'The same discussion once every turn is done: no switch or 继续 row, the turn reply carries 第 2 步',
+      data: { ...base, arrangement: 'auto' },
+    },
     'bubbles-wrapped': {
       about: 'PR #6549: wrapped reactions keep both toolbars level with their bubbles; server messages with empty mention ids still open unique member cards',
       viewport: { width: 800, height: 800 },
@@ -68,6 +76,16 @@ export default {
       await chip.waitFor();
     };
 
+    if (ui.case.startsWith('arrangement')) {
+      const card = page.getByTestId('bot-group-arrangement');
+      await card.waitFor();
+      // The card is its own row, never part of the lead's answer.
+      assert.equal(await card.locator('xpath=ancestor::article').count(), 0);
+      // The owner sees 自动接下一位 only while the arrangement is open.
+      assert.equal(await page.getByRole('switch').count(), ui.case === 'arrangement' ? 1 : 0);
+      assert.equal(await page.getByTestId('bot-group-plan-follow-up').count(), ui.case === 'arrangement' ? 1 : 0);
+      return;
+    }
     if (ui.case.startsWith('bubbles')) {
       const answer = page.getByText('Android 更新卡那个 PR', { exact: false });
       await answer.waitFor();

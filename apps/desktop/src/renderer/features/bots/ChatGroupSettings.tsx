@@ -127,16 +127,19 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           onChange={event => { editGroup(); setTopic(event); }} />}</FormField>
         <FormField label={t(key('description'))}>{props => <Input {...props} value={description} maxLength={2000} disabled={!manager || busy}
           onChange={event => { editGroup(); setDescription(event); }} />}</FormField>
+        {/* One teammate per request: who answers follows @ and the organizer, not a group mode. */}
+        {group.singleSpeaker ? null : <>
         <FormField label={t(shared('replyMode'))}>{props => <Select {...props} label={t(shared('replyMode'))} value={replyMode}
           disabled={!manager || busy} options={(['all', 'mentioned'] as const).map(value => ({ value, label: t(REPLY_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setReplyMode(value as typeof replyMode); }} />}</FormField>
         <FormField label={t(shared('speakingMode'))}>{props => <Select {...props} label={t(shared('speakingMode'))} value={speakingMode}
           disabled={!manager || busy} options={(['auto', 'sequential'] as const).map(value => ({ value, label: t(SPEAKING_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setSpeakingMode(value as typeof speakingMode); }} />}</FormField>
+        </>}
         {manager && <Button type="submit" size="sm" variant="secondary" disabled={busy || !name.trim()}>{t(key('save'))}</Button>}
       </form>
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
-        <FormField label={t('bots.groupChat.organizer')} hint={t('bots.groupChat.settings.organizerNote')}>{props =>
+        <FormField label={t('bots.groupChat.organizer')} hint={t(group.singleSpeaker ? 'bots.groupChat.settings.organizerNoteSingle' : 'bots.groupChat.settings.organizerNote')}>{props =>
           <Select {...props} label={t('bots.groupChat.organizer')} value={group.organizerBotId ?? ''}
             disabled={!manager || busy} options={companions.filter(m => m.status === 'active').map(m => ({ value: m.botId, label: m.name }))}
             onValueChange={organizerBotId => void updateWorkSettings({ organizerBotId })} />}</FormField>

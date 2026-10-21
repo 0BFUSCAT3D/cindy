@@ -9306,7 +9306,10 @@
         "elapsed": "已做 {{time}}",
         "viewProcess": "看过程",
         "hideProcess": "收起过程",
-        "stop": "停止"
+        "stop": "停止",
+        "stopMine": "停止我发起的",
+        "stopAll": "全部停止",
+        "stopAllHint": "包括其他人发起的"
       },
       "header": {
         "stepRunning": "{{name}} 正在做第 {{step}} 步",
@@ -9415,7 +9418,8 @@
         "endPlan": "结束分工",
         "planDone_one": "{{count}} 步都做完了",
         "planDone_other": "{{count}} 步都做完了",
-        "planDoneGeneric": "分工做完了"
+        "planDoneGeneric": "分工做完了",
+        "endTalk": "结束"
       },
       "notice": {
         "memberJoined": "{{name}}加入了群聊",
@@ -9476,7 +9480,8 @@
         "projectDirChange": "更换",
         "projectDirClear": "清除",
         "projectDirNote": "分工做事时，伙伴们在这里干活。不选也行，会用这个群自己的文件夹；选了 git 项目，每次分工会新开一个 worktree 和分支，不动你手上的代码。",
-        "projectDirSaveFailed": "项目文件夹没能保存，确认文件夹还在后再试"
+        "projectDirSaveFailed": "项目文件夹没能保存，确认文件夹还在后再试",
+        "organizerNoteSingle": "没有 @ 人的消息由负责人回答；要几位伙伴一起讨论或分工，也由负责人安排。"
       },
       "errors": {
         "memberLimit": "一个群需要 2–6 位伙伴",
@@ -9523,7 +9528,12 @@
         "keepOneStep": "至少留一步",
         "startFailed": "没能开始分工，请再试一次",
         "dismissFailed": "没能结束这个安排，请再试一次",
-        "editFailed": "这一步没改成，请再试一次"
+        "editFailed": "这一步没改成，请再试一次",
+        "talkTurn": "说说看法",
+        "stepSpeaking": "正在说",
+        "stepSpoken": "说完了",
+        "autoContinue": "自动接下一位",
+        "autoFailed": "没能切换自动接下一位，请再试一次"
       },
       "speaking": {
         "planning": "正在安排…"

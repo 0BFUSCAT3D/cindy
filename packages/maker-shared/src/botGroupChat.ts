@@ -348,6 +348,12 @@ export interface BotGroupPlanView {
   /** Absolute work directory once started; git plans run in their own worktree. */
   workDir: string | null;
   branch: string | null;
+  /** Server groups: `talk` lets teammates answer in turn; `work` divides work into steps. */
+  kind?: 'talk' | 'work';
+  /** Server groups: the next step starts by itself instead of waiting for 继续. */
+  autoContinue?: boolean;
+  /** Server groups: the viewer may continue, stop or switch auto-continue (creator, owner or admin). */
+  canManage?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -394,6 +400,8 @@ export interface BotGroupRoundView {
   speakers: BotGroupSpeaker[];
   /** True when the latest round ended naturally and may be continued. */
   canContinue: boolean;
+  /** Server groups: someone else's request or teammate is also working, so stopping only yours leaves it running. */
+  othersActive?: boolean;
 }
 
 export interface BotGroupSummary {
@@ -407,6 +415,13 @@ export interface BotGroupSummary {
   archived?: boolean;
   migrationPending?: boolean;
   canInvite?: boolean;
+  /** Server groups: an owner or admin may also stop everyone's work, not only their own. */
+  canStopAll?: boolean;
+  /**
+   * Server groups whose server gives each request one teammate (the lead when nobody is named)
+   * and arranges turns itself; no reply/speaking modes and no 安排分工 entry (bot-group-chat.md §4).
+   */
+  singleSpeaker?: boolean;
   selfActorId?: string;
   topic?: string;
   description?: string;
@@ -546,6 +561,10 @@ export interface BotGroupPlanActionInput {
 
 export type BotGroupPlanAction = 'start' | 'dismiss' | 'continue' | 'retry';
 
+export interface BotGroupPlanAutoInput extends BotGroupPlanActionInput {
+  autoContinue: boolean;
+}
+
 export interface BotGroupPlanEditInput extends BotGroupPlanActionInput {
   position: number;
   /** `reassign` needs `botId`; `remove` keeps at least one step. Proposed plans only. */
@@ -581,6 +600,45 @@ export function isBotGroupNoReplyText(text: string): boolean {
 export function isBotGroupNoReplyPrefix(text: string): boolean {
   const trimmed = text.trim();
   return trimmed.length === 0 || BOT_GROUP_NO_REPLY_SENTINEL.startsWith(trimmed);
+}
+
+/**
+ * The lead may end its answer to an un-addressed request with one host-only line naming who
+ * speaks (`talk`) or works (`work`) after it, in order (bot-group-chat.md §4). The host strips
+ * it before posting; previews never show it, not even while it is still streaming.
+ */
+const BOT_GROUP_TURNS_TAG = '<cindy-turns';
+const BOT_GROUP_TURNS_LINE = /<cindy-turns kind="(talk|work)">([\s\S]*?)<\/cindy-turns>\s*$/;
+export const BOT_GROUP_TURNS_MAX = 5;
+export interface BotGroupTurns { kind: 'talk' | 'work'; steps: Array<{ botId: string; task: string }> }
+
+/** Streamed text with the follow-up line (complete, or its unfinished start) cut off. */
+export function hideBotGroupTurns(text: string): string {
+  const at = text.indexOf(BOT_GROUP_TURNS_TAG);
+  if (at >= 0) return text.slice(0, at).trimEnd();
+  for (let n = Math.min(BOT_GROUP_TURNS_TAG.length - 1, text.length); n > 0; n--)
+    if (text.endsWith(BOT_GROUP_TURNS_TAG.slice(0, n))) return text.slice(0, -n).trimEnd();
+  return text;
+}
+
+/** The posted text and the named turns; ids outside `members` and malformed lines are dropped. */
+export function readBotGroupTurns(text: string, members: ReadonlySet<string>): { text: string; turns?: BotGroupTurns } {
+  const match = BOT_GROUP_TURNS_LINE.exec(text);
+  if (!match) {
+    // A final answer is cut only at a whole tag: a reply may well end in `<`.
+    const at = text.indexOf(BOT_GROUP_TURNS_TAG);
+    return { text: at >= 0 ? text.slice(0, at).trimEnd() : text };
+  }
+  let steps: BotGroupTurns['steps'] = [];
+  try {
+    const raw: unknown = JSON.parse(match[2]!);
+    if (Array.isArray(raw)) steps = raw.flatMap((item: unknown) => {
+      const entry = item as { id?: unknown; task?: unknown } | null;
+      return entry && typeof entry.id === 'string' && members.has(entry.id)
+        ? [{ botId: entry.id, task: typeof entry.task === 'string' ? entry.task.trim().slice(0, 200) : '' }] : [];
+    }).slice(0, BOT_GROUP_TURNS_MAX);
+  } catch { steps = []; }
+  return { text: text.slice(0, match.index).trimEnd(), ...(steps.length ? { turns: { kind: match[1] as BotGroupTurns['kind'], steps } } : {}) };
 }
 
 // ---- Controllers (phones) — docs/product-rules/bot-group-chat.md §8 -------------

@@ -270,6 +270,8 @@ export interface BotGroupTimelineItemProps {
   /** Finish time of each done step (1-based), read off its hand-off message. */
   planDoneAt?: ReadonlyMap<number, number>;
   onPlanAction?: (action: 'start' | 'dismiss', planId: string) => void;
+  planAutoPending?: boolean;
+  onPlanAuto?: (planId: string, on: boolean) => void;
   readOnly?: boolean;
   onEditStep?: (planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) => void;
 }
@@ -441,7 +443,37 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
     );
   }
 
-  // A server plan is signed by its human creator; present the organizer without changing authorship.
+  // A server arrangement stands on its own: the turns it lines up, under the request or the
+  // lead's answer, never folded into someone's reply (bot-group-chat.md §7).
+  if (message.kind === 'plan' && props.plan?.kind) {
+    return (
+      <Row {...rowProps} block="author">
+        <div className="flex min-w-0 gap-2.5">
+          <span aria-hidden className="w-7 shrink-0" />
+          <div data-testid="bot-group-arrangement" className={cn('min-w-0', BUBBLE_COLUMN_CLASS)}>
+            <div className="w-fit min-w-0 max-w-full">
+              <BotGroupPlanCard
+                plan={props.plan}
+                members={members}
+                actionable={false}
+                reassignable={props.planReassignable ?? false}
+                pending={props.planPending ?? null}
+                runningSince={props.planRunningSince ?? null}
+                doneAt={props.planDoneAt}
+                locale={locale}
+                onStart={() => undefined}
+                onDismiss={() => undefined}
+                onEditStep={(step, action, botId) => { if (message.planId) props.onEditStep?.(message.planId, step, action, botId); }}
+                autoPending={props.planAutoPending}
+                onAutoContinue={props.readOnly || !message.planId ? undefined : on => props.onPlanAuto?.(message.planId!, on)}
+              />
+            </div>
+          </div>
+        </div>
+      </Row>
+    );
+  }
+  // A legacy plan is signed by its human creator; present the organizer without changing authorship.
   const isPlanCard = message.kind === 'plan';
   const timed = Number.isFinite(message.createdAt) && message.createdAt > 0;
   const clock = timed ? formatBotTimelineClock(message.createdAt, locale) : '';

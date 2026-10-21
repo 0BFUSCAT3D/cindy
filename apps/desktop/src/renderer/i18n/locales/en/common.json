@@ -9345,7 +9345,10 @@
         "elapsed": "{{time}} so far",
         "viewProcess": "Show work",
         "hideProcess": "Hide work",
-        "stop": "Stop"
+        "stop": "Stop",
+        "stopMine": "Stop Mine",
+        "stopAll": "Stop All",
+        "stopAllHint": "Includes other people’s requests"
       },
       "header": {
         "stepRunning": "{{name}} is on step {{step}}",
@@ -9454,7 +9457,8 @@
         "endPlan": "End Work Split",
         "planDone_one": "The step is done",
         "planDone_other": "All {{count}} steps are done",
-        "planDoneGeneric": "Work split finished"
+        "planDoneGeneric": "Work split finished",
+        "endTalk": "End"
       },
       "notice": {
         "memberJoined": "{{name}} joined the group",
@@ -9515,7 +9519,8 @@
         "projectDirChange": "Change Folder",
         "projectDirClear": "Clear Folder",
         "projectDirNote": "Teammates work here when they split the work. You can leave it empty and they’ll use this group chat’s own folder. If you choose a git project, each work split gets a new worktree and branch, so your own code stays untouched.",
-        "projectDirSaveFailed": "Couldn’t save the project folder. Make sure the folder still exists, then try again."
+        "projectDirSaveFailed": "Couldn’t save the project folder. Make sure the folder still exists, then try again.",
+        "organizerNoteSingle": "The organizer answers messages that mention no one, and lines up teammates when you want a discussion or a work split."
       },
       "errors": {
         "memberLimit": "A group chat needs 2–6 teammates",
@@ -9562,7 +9567,12 @@
         "keepOneStep": "Keep at least one",
         "startFailed": "Couldn’t start the plan. Try again.",
         "dismissFailed": "Couldn’t end this plan. Try again.",
-        "editFailed": "Couldn’t change this step. Try again."
+        "editFailed": "Couldn’t change this step. Try again.",
+        "talkTurn": "Share a view",
+        "stepSpeaking": "Speaking",
+        "stepSpoken": "Done",
+        "autoContinue": "Continue automatically",
+        "autoFailed": "Couldn’t change automatic continue. Try again."
       },
       "speaking": {
         "planning": "Splitting the work…"

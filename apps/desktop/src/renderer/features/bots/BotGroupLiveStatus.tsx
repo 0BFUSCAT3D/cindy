@@ -13,6 +13,8 @@ import { Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import { cn } from '@/lib/utils';
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
 import { isBotGroupNoReplyText, type BotGroupMemberView, type BotGroupSpeakerActivity, type BotGroupSummary } from '../../../shared/botGroupChat';
@@ -100,11 +102,15 @@ export function BotGroupProgressStrip({
   step,
   speakers,
   onStop,
+  canStopAll = false,
   stopping,
 }: {
   step: (BotGroupRunningStep & { member: BotGroupMemberView | undefined; displayName: string }) | null;
   speakers: readonly BotGroupLiveSpeaker[];
-  onStop: () => void;
+  /** Stops your own work; `all` also stops other people's (owners and admins only). */
+  onStop: (scope?: 'all') => void;
+  /** Someone else's work is also running and you may stop it: Stop asks which. */
+  canStopAll?: boolean;
   stopping: boolean;
 }) {
   const { t } = useTranslation();
@@ -163,18 +169,39 @@ export function BotGroupProgressStrip({
                 {t(expanded ? 'bots.groupChat.progress.hideProcess' : 'bots.groupChat.progress.viewProcess')}
               </Button>
             ) : null}
-            <Button
-              type="button"
-              variant="secondary"
-              tone="quiet"
-              size="sm"
-              compact
-              loading={stopping}
-              onClick={onStop}
-              className="text-[var(--text-danger)]"
-            >
-              {t('bots.groupChat.progress.stop')}
-            </Button>
+            {canStopAll ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="secondary" tone="quiet" size="sm" compact loading={stopping} className="text-[var(--text-danger)]">
+                    {t('bots.groupChat.progress.stop')}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" side="top" className="min-w-[220px]">
+                  <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => onStop()}>
+                    {t('bots.groupChat.progress.stopMine')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className={cn(MENU_ITEM_CLASS, 'h-auto items-start py-2')} onSelect={() => onStop('all')}>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-[var(--text-danger)]">{t('bots.groupChat.progress.stopAll')}</span>
+                      <span className="text-12 leading-[1.33] text-[var(--cmd-palette-item-meta)]">{t('bots.groupChat.progress.stopAllHint')}</span>
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                tone="quiet"
+                size="sm"
+                compact
+                loading={stopping}
+                onClick={() => onStop()}
+                className="text-[var(--text-danger)]"
+              >
+                {t('bots.groupChat.progress.stop')}
+              </Button>
+            )}
           </span>
         </div>
         {expanded && canView && sessionId ? (
