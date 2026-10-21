@@ -3726,6 +3726,10 @@
         "modelCount": "已配置 {{count}} 个模型",
         "modelsAutomatic": "模型资料自动获取。单个模型的设置在模型列表中调整。",
         "manualModel": "模型 ID（无法自动获取时填写）",
+        "manualAdd": "手动添加模型",
+        "manualId": "模型 ID",
+        "saveProvider": "保存供应商",
+        "removeModel": "移除模型",
         "modelTypeAutomatic": "自动识别",
         "manualModelTypeHint": "同一 ID 可更新类型；自动识别会恢复目录中的类型。",
         "mediaOnlyTestHint": "此连接仅含非对话模型。可获取模型列表检查目录访问，此处不验证模型调用。"

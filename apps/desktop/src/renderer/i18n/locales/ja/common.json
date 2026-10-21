@@ -3726,6 +3726,10 @@
         "modelCount": "{{count}} 個のモデルを設定済み",
         "modelsAutomatic": "モデル情報は自動取得されます。個別の設定はモデル一覧から変更できます。",
         "manualModel": "モデル ID（自動取得できない場合）",
+        "manualAdd": "モデルを手動で追加",
+        "manualId": "モデル ID",
+        "saveProvider": "プロバイダーを保存",
+        "removeModel": "モデルを削除",
         "modelTypeAutomatic": "自動判別",
         "manualModelTypeHint": "同じ ID で種類を更新できます。自動判別を選ぶと、カタログの種類に戻ります。",
         "mediaOnlyTestHint": "この接続にはチャット以外のモデルのみが含まれています。モデル一覧の取得でカタログへのアクセスを確認できます。ここではモデルの実行はテストしません。"

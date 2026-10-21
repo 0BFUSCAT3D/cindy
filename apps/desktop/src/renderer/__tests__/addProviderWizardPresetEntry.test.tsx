@@ -1556,6 +1556,75 @@ describe('identified provider handoff', () => {
     await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
     expect(vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.pi!.models.find(m => m.id === model.id)).toMatchObject({ id: model.id, contextWindow: 4096 });
   });
+  it('preserves hand-entered models for every inherited engine and never fetches an independent draft', async () => {
+    const runtime = detected.preset.runtimes.pi;
+    const own = { baseUrl: 'https://independent.example/anthropic', models: [{ id: 'own-only', name: 'Own' }] };
+    const handoff = { ...detected,
+      preset: { ...detected.preset, runtimes: { pi: runtime, codex: { ...runtime } } },
+      keys: { pi: 'fake-key', codex: 'fake-key', 'claude-code': 'own-key' },
+      config: { ...detected.config, runtimes: { pi: detected.config.runtimes.pi, codex: { ...detected.config.runtimes.pi }, 'claude-code': own } },
+    };
+    vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models: [{ id: 'directory-only', name: 'Directory' }] });
+    render(<AddProviderWizard providers={[]} detected={handoff} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    const finish = await screen.findByRole('button', { name: 'settings.providers.wizard.finish' });
+    await waitFor(() => expect(finish.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(finish);
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
+    const [config, keys] = vi.mocked(createCustomProvider).mock.calls[0];
+    expect(config.runtimes.codex!.models.some(m => m.id === 'private-alias')).toBe(true);
+    expect(config.runtimes['claude-code']).toEqual(own);
+    expect(keys['claude-code']).toBe('own-key');
+    expect(vi.mocked(window.electronAPI.maker.fetchProviderModels).mock.calls.every(([request]) => request.baseUrl !== own.baseUrl)).toBe(true);
+  });
+  it('returns selected models only to their own engine with its discovery metadata', async () => {
+    const onReturnCustom = vi.fn();
+    const runtime = detected.preset.runtimes.pi;
+    const handoff = { ...detected, preset: { ...detected.preset, runtimes: { pi: runtime, codex: { ...runtime } } },
+      config: { ...detected.config, runtimes: { pi: detected.config.runtimes.pi, codex: { ...detected.config.runtimes.pi } } },
+    };
+    vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models: [
+      { id: 'codex-exclusive', name: 'Only Codex', discoveredMetadata: { contextWindow: 50000 } },
+    ] });
+    render(<AddProviderWizard providers={[]} detected={handoff} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    fireEvent.click(await screen.findByText('Only Codex'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    const runtimes = onReturnCustom.mock.calls[0][0].config.runtimes;
+    expect(runtimes.pi.models.some((m: { id: string }) => m.id === 'codex-exclusive')).toBe(false);
+    expect(runtimes.codex.models.find((m: { id: string }) => m.id === 'codex-exclusive')).toMatchObject({ discoveredMetadata: { contextWindow: 50000 } });
+  });
+  it('retains a non-active engine URL edited inside the identified wizard when returning', async () => {
+    const onReturnCustom = vi.fn();
+    const codexUrl = 'https://relay.example/codex/v1';
+    const handoff = { ...detected, preset: { ...detected.preset, runtimes: { ...detected.preset.runtimes,
+      codex: { ...detected.preset.runtimes.pi, baseUrl: codexUrl },
+    } }, config: { ...detected.config, runtimes: { ...detected.config.runtimes, codex: { ...detected.config.runtimes.pi } } } };
+    render(<AddProviderWizard providers={[]} detected={handoff} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.change(await screen.findByDisplayValue(codexUrl), { target: { value: 'https://edited.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    expect(onReturnCustom.mock.calls[0][0].config.runtimes.codex.baseUrl).toBe('https://edited.example/v1');
+    expect(onReturnCustom.mock.calls[0][0].config.runtimes.pi.baseUrl).toBe(detected.config.runtimes.pi.baseUrl);
+  });
+  it('returns shared URL/key edits without replacing an independent engine draft', async () => {
+    const onReturnCustom = vi.fn();
+    const shared = detected.config.runtimes.pi;
+    const handoff = { ...detected, keys: { pi: 'fake-key', codex: 'fake-key', 'claude-code': 'independent-key' },
+      config: { ...detected.config, runtimes: { pi: shared, codex: { ...shared },
+        'claude-code': { baseUrl: 'https://independent.example/anthropic', models: [{ id: 'own-model', name: 'Own' }] },
+      } },
+    };
+    render(<AddProviderWizard providers={[]} detected={handoff} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'edited-fake-key' } });
+    fireEvent.change(screen.getByDisplayValue(shared.baseUrl), { target: { value: 'https://new-relay.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    const returned = onReturnCustom.mock.calls[0][0];
+    expect(returned.keys).toEqual({ pi: 'edited-fake-key', codex: 'edited-fake-key', 'claude-code': 'independent-key' });
+    expect(returned.config.runtimes.codex.baseUrl).toBe('https://new-relay.example/v1');
+    expect(returned.config.runtimes['claude-code']).toEqual(handoff.config.runtimes['claude-code']);
+    expect(returned.catalog).toBeUndefined();
+  });
   it('returns the draft instead of navigating to the provider gallery, keeping edited credentials', async () => {
     const onReturnCustom = vi.fn();
     render(<AddProviderWizard providers={[]} detected={detected} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);

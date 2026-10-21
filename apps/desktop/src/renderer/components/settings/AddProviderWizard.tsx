@@ -1025,12 +1025,16 @@ export function AddProviderWizard({
       }
     }
     if (detected) {
-      const selected = detected.config.runtimes[detected.agent]?.models ?? [];
-      for (const [id, value] of initial) initial.set(id, { ...value, checked: selected.some(m => m.id === id), recommended: false });
-      for (const m of selected) initial.set(m.id, { name: m.name, checked: true, recommended: false,
-        agents: [detected.agent], discoveredMetadata: { [detected.agent]: m.discoveredMetadata },
-        ...(m.route ? { routes: { [detected.agent]: m.route } } : {}),
-      });
+      const selectedIds = new Set(agents.flatMap(agent => detected.config.runtimes[agent]?.models.map(m => m.id) ?? []));
+      for (const [id, value] of initial) initial.set(id, { ...value, checked: selectedIds.has(id), recommended: false });
+      for (const agent of agents) for (const m of detected.config.runtimes[agent]?.models ?? []) {
+        const existing = initial.get(m.id);
+        initial.set(m.id, { ...existing, name: m.name, checked: true, recommended: false,
+          agents: [...new Set([...(existing?.agents ?? []), agent])],
+          discoveredMetadata: { ...existing?.discoveredMetadata, [agent]: m.discoveredMetadata },
+          ...(m.route ? { routes: { ...existing?.routes, [agent]: m.route } } : {}),
+        });
+      }
     }
     setPicks(previous => detected && previous.size ? previous : initial);
     setStep(3);
@@ -1506,7 +1510,7 @@ export function AddProviderWizard({
         {/* 头部:标题居左 + 步骤指示居右,同一行(2026-07 定稿原型形态)。 */}
         <div className="flex items-center justify-between gap-4 px-4 pb-3 pt-4">
           <Dialog.Title asChild><h3
-            className="min-w-0 truncate text-16 font-medium"
+            className="min-w-0 break-words text-16 font-medium"
             style={{ color: 'var(--settings-section-title)' }}
           >
             {sel
@@ -2226,14 +2230,32 @@ export function AddProviderWizard({
                 const editedBase = presetRuntimeBaseUrl(sel.preset, agent, presetBaseUrls);
                 const previous = detected.config.runtimes[agent]!;
                 const baseUrl = editedBase === detected.preset.runtimes[agent]?.baseUrl ? previous.baseUrl : editedBase;
-                const models = picks.size ? [...picks].filter(([, m]) => m.checked).map(([id, m]) => ({
-                  ...previous.models.find(row => row.id === id), id, name: m.name,
-                  discoveredMetadata: m.discoveredMetadata?.[agent],
-                })) : previous.models;
+                const runtimes = { ...detected.config.runtimes };
+                const keys = { ...detected.keys };
+                for (const target of Object.keys(runtimes) as AgentKind[]) {
+                  const original = runtimes[target]!;
+                  const followsAddress = original.baseUrl === previous.baseUrl;
+                  const bound = sel.preset.runtimes[target];
+                  const targetInput = bound ? presetRuntimeBaseUrl(sel.preset, target, presetBaseUrls) : undefined;
+                  const targetBase = targetInput && targetInput !== bound?.baseUrl ? targetInput
+                    : followsAddress ? baseUrl : original.baseUrl;
+                  const models = bound && picks.size ? [...picks]
+                    .filter(([, model]) => model.checked && model.agents.includes(target))
+                    .map(([id, model]) => {
+                      const saved = original.models.find(row => row.id === id);
+                      return { ...saved, id, name: model.name,
+                        discoveredMetadata: model.discoveredMetadata?.[target] ?? saved?.discoveredMetadata,
+                        ...(saved?.route ?? model.routes?.[target] ? { route: saved?.route ?? model.routes?.[target] } : {}),
+                      };
+                    }) : original.models;
+                  runtimes[target] = { ...original, baseUrl: targetBase,
+                    models: modelsAfterProviderEndpointEdit(models, original.baseUrl, targetBase),
+                  };
+                  if (target === agent || keys[target] === detected.apiKey) keys[target] = apiKey;
+                }
                 onReturnCustom({ ...detected, apiKey,
                   catalog: apiKey === detected.apiKey && editedBase === detected.preset.runtimes[agent]?.baseUrl ? detected.catalog : undefined,
-                  keys: { ...detected.keys, [agent]: apiKey },
-                  config: { ...detected.config, name, runtimes: { ...detected.config.runtimes, [agent]: { ...previous, baseUrl, models: modelsAfterProviderEndpointEdit(models, previous.baseUrl, baseUrl) } } } });
+                  keys, config: { ...detected.config, name, runtimes } });
                 return;
               }
               if (step === 3) {

@@ -3,7 +3,7 @@ import { useRef, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildUserProvider, type CustomProviderConfig, type ModelRegistry } from '@cindy/model-providers';
+import { buildUserProvider, type CustomProviderConfig, type ProviderPreset, type ModelRegistry } from '@cindy/model-providers';
 import { customProviderModelConfigFromCatalogModel } from '@/lib/customProviders';
 
 import { ProviderConnectionDialog } from '../ProviderConnectionDialog';
@@ -2087,11 +2087,11 @@ it('main provider form contains Tab and blocks dismissal only during the actual 
 describe('new-connection identification', () => {
   afterEach(() => { cleanup(); vi.useRealTimers(); });
   const preset = { id: 'deepseek', name: 'DeepSeek', runtimes: { pi: { baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-chat' as const, models: [] } } };
-  async function openIdentification() {
+  async function openIdentification(available: ProviderPreset = preset) {
     vi.useFakeTimers();
     const fetchProviderModels = vi.fn(async () => ({ ok: true, models: [{ id: 'private-model', name: 'Model' }] }));
     Object.assign(window.electronAPI.maker, {
-      listProviderPresets: vi.fn(async () => ({ presets: [preset] })), fetchProviderModels,
+      listProviderPresets: vi.fn(async () => ({ presets: [available] })), fetchProviderModels,
       detectProvider: vi.fn(async () => ({ candidates: [], reason: 'insufficient_evidence', catalog: { ok: true, models: [{ id: 'custom-model', name: 'Custom' }] } })),
     });
     const onDetected = vi.fn();
@@ -2113,6 +2113,163 @@ describe('new-connection identification', () => {
     expect(fetchProviderModels).toHaveBeenCalledOnce();
     expect(customProviderMocks.createCustomProvider).not.toHaveBeenCalled();
   });
+  it('uses the HTML add layout and saves the shared connection with each engine default', async () => {
+    await openIdentification();
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryByText('settings.providers.custom.authMode.label')).toBeNull();
+    expect(screen.queryByText('settings.providers.custom.presets.label')).toBeNull();
+    expect(screen.queryByLabelText('settings.providers.connection.manualId')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.removeModel' }));
+    expect(screen.queryByText('private-model')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.manualAdd' }));
+    fireEvent.change(screen.getByLabelText('settings.providers.connection.manualId'), { target: { value: 'my-model' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.fields.addModel' }));
+    expect(screen.getByText('my-model')).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'My custom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    expect(customProviderMocks.createCustomProvider).toHaveBeenCalledOnce();
+    const [config, keys] = customProviderMocks.createCustomProvider.mock.calls[0];
+    for (const [agent, protocol] of [['claude-code', 'anthropic-messages'], ['codex', 'openai-responses'], ['pi', 'openai-chat']]) {
+      expect(config.runtimes[agent]).toMatchObject({ baseUrl: 'https://api.deepseek.com', models: [{ id: 'my-model' }] });
+      expect(config.runtimes[agent].wireProtocol).toBe(agent === 'pi' ? protocol : undefined);
+      expect(keys[agent]).toBe('fake-key');
+    }
+  });
+  it('binds each supported engine to the identified provider instead of copying the active protocol', async () => {
+    const available: ProviderPreset = { ...preset, runtimes: {
+      ...preset.runtimes,
+      'claude-code': { baseUrl: 'https://api.deepseek.com/anthropic', wireProtocol: 'anthropic-messages', models: [] },
+      codex: { baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-chat', models: [] },
+    } };
+    const { onDetected } = await openIdentification(available);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    const value = onDetected.mock.calls[0][0];
+    expect(value.preset.runtimes['claude-code']).toMatchObject({ baseUrl: 'https://api.deepseek.com/anthropic', wireProtocol: 'anthropic-messages' });
+    expect(value.preset.runtimes.codex.wireProtocol).toBe('openai-chat');
+    expect(value.preset.runtimes.pi.wireProtocol).toBe('openai-chat');
+  });
+  it('identifies a provider supported only by another engine without asking the user to choose an engine', async () => {
+    vi.useFakeTimers();
+    const onlyClaude: ProviderPreset = { ...preset, runtimes: {
+      'claude-code': { baseUrl: 'https://api.deepseek.com', wireProtocol: 'anthropic-messages', models: [] },
+    } };
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [onlyClaude] })),
+      fetchProviderModels: vi.fn(async () => ({ ok: true, models: [{ id: 'one', name: 'One' }] })),
+    });
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await act(async () => {});
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://api.deepseek.com' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-key' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).toHaveBeenCalledOnce();
+    const draft = onDetected.mock.calls[0][0];
+    expect(draft.agent).toBe('claude-code');
+    expect(Object.keys(draft.config.runtimes)).toEqual(['claude-code']);
+    expect(window.electronAPI.maker.fetchProviderModels).toHaveBeenCalledWith(expect.objectContaining({ agent: 'claude-code', wireProtocol: 'anthropic-messages' }));
+  });
+  it('keeps independent endpoint credentials out of the shared-key wizard', async () => {
+    vi.useFakeTimers();
+    const available: ProviderPreset = { ...preset, runtimes: { ...preset.runtimes,
+      'claude-code': { baseUrl: 'https://api.deepseek.com/anthropic', wireProtocol: 'anthropic-messages', models: [] },
+    } };
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [available] })),
+      fetchProviderModels: vi.fn(async () => ({ ok: true, models: [{ id: 'source-model', name: 'Source' }] })),
+    });
+    const independent = { baseUrl: 'https://independent.example/anthropic', models: [{ id: 'own-model', name: 'Own' }] };
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()}
+      draft={{ preset: available, agent: 'pi', apiKey: 'source-key', keys: { pi: 'source-key', 'claude-code': 'independent-key' },
+        config: { id: 'draft', name: 'Shared', runtimes: { pi: { baseUrl: 'https://api.deepseek.com', models: [] }, 'claude-code': independent } } }} />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
+    const value = onDetected.mock.calls[0][0];
+    expect(value.preset.runtimes['claude-code']).toBeUndefined();
+    expect(value.config.runtimes['claude-code']).toMatchObject(independent);
+    expect(value.keys['claude-code']).toBe('independent-key');
+    expect(window.electronAPI.maker.fetchProviderModels).toHaveBeenCalledOnce();
+    expect(window.electronAPI.maker.fetchProviderModels).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://api.deepseek.com', apiKey: 'source-key' }));
+  });
+  it('does not hand off to an independently configured fallback engine', async () => {
+    vi.useFakeTimers();
+    const available: ProviderPreset = { ...preset, runtimes: {
+      'claude-code': { baseUrl: 'https://api.deepseek.com', wireProtocol: 'anthropic-messages', models: [] },
+    } };
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [available] })),
+      fetchProviderModels: vi.fn(async () => ({ ok: true, models: [] })),
+    });
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()}
+      draft={{ preset: available, agent: 'pi', apiKey: 'source-key', keys: { pi: 'source-key', 'claude-code': 'independent-key' },
+        config: { id: 'draft', name: 'Shared', runtimes: {
+          pi: { baseUrl: 'https://api.deepseek.com', models: [] },
+          'claude-code': { baseUrl: 'https://private.example', models: [] },
+        } } }} />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(onDetected).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'settings.providers.detection.configure' })).toBeNull();
+  });
+  it('fetches the catalog with the same inheriting engine used for handoff', async () => {
+    vi.useFakeTimers();
+    const available: ProviderPreset = { ...preset, runtimes: {
+      'claude-code': { baseUrl: 'https://api.deepseek.com', wireProtocol: 'anthropic-messages', models: [] },
+      codex: { baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-responses', models: [] },
+    } };
+    const fetchProviderModels = vi.fn(async ({ agent }) => ({ ok: true, models: [{ id: agent + '-model', name: agent }] }));
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [available] })), fetchProviderModels,
+    });
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()}
+      draft={{ preset: available, agent: 'pi', apiKey: 'source-key', keys: { pi: 'source-key', 'claude-code': 'independent-key' },
+        config: { id: 'draft', name: 'Shared', runtimes: {
+          pi: { baseUrl: 'https://api.deepseek.com', models: [] },
+          'claude-code': { baseUrl: 'https://private.example', models: [] },
+        } } }} />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
+    expect(fetchProviderModels).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex' }));
+    expect(onDetected.mock.calls[0][0]).toMatchObject({ agent: 'codex', catalog: { models: [{ id: 'codex-model' }] } });
+  });
+  it('preserves unsupported engines with explicit request settings', async () => {
+    vi.useFakeTimers();
+    Object.assign(window.electronAPI.maker, {
+      listProviderPresets: vi.fn(async () => ({ presets: [preset] })),
+      fetchProviderModels: vi.fn(async () => ({ ok: true, models: [] })),
+    });
+    const independent = { baseUrl: 'https://api.deepseek.com', models: [], wireProtocol: 'openai-chat' as const, requestPath: '/special/chat' };
+    const onDetected = vi.fn();
+    render(<ProviderConnectionDialog onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()}
+      draft={{ preset, agent: 'pi', apiKey: 'source-key', keys: { pi: 'source-key', codex: 'source-key' },
+        config: { id: 'draft', name: 'Shared', runtimes: { pi: { baseUrl: 'https://api.deepseek.com', models: [] }, codex: independent } } }} />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
+    expect(onDetected.mock.calls[0][0].config.runtimes.codex).toMatchObject(independent);
+    expect(onDetected.mock.calls[0][0].preset.runtimes.codex).toBeUndefined();
+  });
+  it('opens manual entry and focuses its error when saving without models', async () => {
+    await openIdentification();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.removeModel' }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'My custom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    expect(screen.getByLabelText('settings.providers.connection.manualId')).toBe(document.activeElement);
+    expect(screen.getByText('settings.providers.custom.errors.modelRequired')).toBeTruthy();
+    expect(customProviderMocks.createCustomProvider).not.toHaveBeenCalled();
+  });
   it('keeps the user in custom settings after cancellation, including later input edits', async () => {
     const { onDetected } = await openIdentification();
     fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));
@@ -2128,13 +2285,17 @@ describe('new-connection identification', () => {
       fetchProviderModels: vi.fn(async () => ({ ok: true, models: [{ id: 'responses-model', name: 'Responses model' }] })),
     });
     const onDetected = vi.fn();
-    render(<ProviderConnectionDialog focusAgent="codex" onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()} />);
+    render(<ProviderConnectionDialog focusAgent="codex" onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()}
+      draft={{ agent: 'codex', preset: codexPreset, apiKey: '', config: { id: 'draft', name: '', runtimes: {
+        codex: { baseUrl: '', wireProtocol: 'openai-responses', models: [], supportsImageGeneration: true },
+      } } }} />);
     await act(async () => {});
-    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.fields.runtimeAdvanced' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'settings.providers.custom.fields.runtimeSupportsImageGeneration' }));
+    expect(screen.queryByRole('button', { name: 'settings.providers.custom.fields.runtimeAdvanced' })).toBeNull();
     fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://api.deepseek.com' } });
     fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-key' } });
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     expect(onDetected).toHaveBeenCalledOnce();
     expect(onDetected.mock.calls[0][0].preset.runtimes.codex).toMatchObject({ supportsImageGeneration: true, wireProtocol: 'openai-responses' });
     expect(onDetected.mock.calls[0][0].config.runtimes.codex.supportsImageGeneration).toBe(true);

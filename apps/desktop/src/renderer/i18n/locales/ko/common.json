@@ -3726,6 +3726,10 @@
         "modelCount": "모델 {{count}}개 설정됨",
         "modelsAutomatic": "모델 정보는 자동으로 가져옵니다. 개별 설정은 모델 목록에서 변경하세요.",
         "manualModel": "모델 ID (자동으로 가져올 수 없는 경우)",
+        "manualAdd": "모델 직접 추가",
+        "manualId": "모델 ID",
+        "saveProvider": "제공자 저장",
+        "removeModel": "모델 제거",
         "modelTypeAutomatic": "자동 감지",
         "manualModelTypeHint": "같은 ID로 유형을 변경할 수 있습니다. 자동 감지를 선택하면 카탈로그의 유형으로 돌아갑니다.",
         "mediaOnlyTestHint": "이 연결에는 채팅 이외의 모델만 있습니다. 모델 목록을 가져와 카탈로그 접근을 확인할 수 있습니다. 여기서는 모델 실행을 테스트하지 않습니다."

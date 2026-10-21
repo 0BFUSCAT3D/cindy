@@ -3757,6 +3757,10 @@
         "modelCount": "{{count}} models configured",
         "modelsAutomatic": "Model details are imported automatically. Adjust individual models in the model list.",
         "manualModel": "Model IDs (if discovery is unavailable)",
+        "manualAdd": "Add a model manually",
+        "manualId": "Model ID",
+        "saveProvider": "Save provider",
+        "removeModel": "Remove model",
         "modelTypeAutomatic": "Detect Automatically",
         "manualModelTypeHint": "Use the same ID to update its type. Automatic detection restores the catalog type.",
         "mediaOnlyTestHint": "This connection has only non-chat models. Fetch the model list to check catalog access; model execution is not tested here."
