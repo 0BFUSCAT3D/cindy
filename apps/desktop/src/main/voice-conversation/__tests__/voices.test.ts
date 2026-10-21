@@ -181,3 +181,35 @@ describe('provider voice catalogs', () => {
     }
   });
 });
+
+// Unit tier: native references must not accidentally fall through to ElevenLabs
+// account discovery or invent a default for clone-only/unknown model variants.
+it.each([
+  ['qwen-tts', 'qwen3-tts-flash', 'Cherry'],
+  ['qwen-tts', 'qwen3-tts-flash-realtime', undefined],
+  ['dashscope-tts', 'cosyvoice-v3-flash', 'longanyang'],
+  ['dashscope-tts', 'qwen-audio-3.1-tts-flash', 'longanhuan_v3.1'],
+  ['dashscope-tts', 'cosyvoice-v3.5-plus', undefined],
+  ['dashscope-tts', 'private-model', undefined],
+] as const)(
+  'loads %s %s reference/manual voices without network discovery',
+  async (protocol, modelId, voice) => {
+    const fetcher = vi.fn();
+    expect(await loadSpeechVoices(connection(protocol), modelId, fetcher, () => {})).toEqual({
+      source: voice ? 'reference' : 'manual',
+      voices: voice ? [{ id: voice, name: voice }] : [],
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    const choice = {
+      providerId: 'ali',
+      agent: 'codex',
+      modelId,
+      protocol,
+      voice: voice ?? 'account-clone',
+    };
+    expect(normalizeVoiceConversationSelection(choice)).toEqual(choice);
+    expect(
+      normalizeVoiceConversationSelection({ ...choice, providerId: 'xd', agent: undefined }),
+    ).toBeUndefined();
+  },
+);

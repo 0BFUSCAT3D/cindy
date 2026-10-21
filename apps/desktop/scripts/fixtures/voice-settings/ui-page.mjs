@@ -26,6 +26,26 @@ export default {
       about: 'OpenAI native speed range',
       data: { protocol: 'openai', modelId: 'gpt-4o-mini-tts', speed: 1.25 },
     },
+    qwen: {
+      about: 'Official Qwen3 HTTP reference voice, no unsupported speed control',
+      data: { protocol: 'qwen-tts', modelId: 'qwen3-tts-flash', voiceId: 'Cherry' },
+    },
+    'qwen-proxy': {
+      about: 'Explicit Qwen HTTP proxy protocol in a narrow settings drawer',
+      viewport: { width: 320, height: 900 },
+      data: { protocol: 'qwen-tts', modelId: 'qwen3-tts-flash', voiceId: 'Cherry', custom: true },
+    },
+    cosyvoice: {
+      about: 'CosyVoice HTTP proxy, reference voice and native speed range',
+      viewport: { width: 320, height: 900 },
+      data: {
+        protocol: 'dashscope-tts',
+        modelId: 'cosyvoice-v3-flash',
+        voiceId: 'longanyang',
+        speed: 1.5,
+        custom: true,
+      },
+    },
     unsupported: {
       about: 'Eleven v3 keeps voice and preview but does not offer a speed slider',
       data: { modelId: 'eleven_v3' },
@@ -59,7 +79,12 @@ export default {
     else if (await page.evaluate(() => window.__uiPage.ctx.data.manual)) {
       const label = await page.evaluate(() => window.__uiPage.t('bots.voiceMode.voiceId'));
       await page.getByRole('textbox', { name: label, exact: true }).waitFor();
-    } else await page.getByText('River — Relaxed, Neutral, Informative').waitFor();
+    } else {
+      const voice = await page.evaluate(() => window.__uiPage.ctx.data.voiceId);
+      await page
+        .getByText(voice ?? 'River — Relaxed, Neutral, Informative', { exact: true })
+        .waitFor();
+    }
     if (await page.evaluate(() => window.__uiPage.ctx.data.menu)) {
       const label = await page.evaluate(() => window.__uiPage.t('bots.voiceMode.voice'));
       await page.getByRole('button', { name: label, exact: true }).click();
@@ -160,9 +185,9 @@ export default {
       return;
     }
     const slider = page.getByRole('slider', { name: await ui.t('bots.voiceMode.speed') });
-    if (ui.data.empty || ui.case === 'unsupported') {
+    if (ui.data.empty || ui.case === 'unsupported' || ui.data.protocol === 'qwen-tts') {
       assert.equal(await slider.count(), 0);
-      if (ui.case === 'unsupported')
+      if (ui.case === 'unsupported' || ui.data.protocol === 'qwen-tts')
         await page.getByText(await ui.t('bots.voiceMode.speedUnavailable')).waitFor();
       return;
     }
@@ -175,6 +200,10 @@ export default {
     await page
       .getByRole('button', { name: await ui.t('bots.voiceMode.resetPreference'), exact: true })
       .click();
-    assert.equal(Number(await slider.getAttribute('aria-valuenow')), 1);
+    if (ui.data.custom) {
+      // Reset removes the proxy override. With no detected protocol, settings
+      // correctly waits for an explicit interface choice before exposing speed.
+      assert.equal(await slider.count(), 0);
+    } else assert.equal(Number(await slider.getAttribute('aria-valuenow')), 1);
   },
 };

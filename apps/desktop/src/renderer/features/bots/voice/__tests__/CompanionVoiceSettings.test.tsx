@@ -747,7 +747,7 @@ it('keeps a proxy API override and shows its selector only while a custom endpoi
     Array.from(field.options)
       .map((option) => option.value)
       .filter(Boolean),
-  ).toEqual(['openai', 'elevenlabs', 'minimax']);
+  ).toEqual(['openai', 'elevenlabs', 'minimax', 'qwen-tts', 'dashscope-tts']);
   await act(async () => {
     fireEvent.change(field, { target: { value: 'minimax' } });
   });
@@ -1190,3 +1190,64 @@ it('blocks preview while the companion is waiting for confirmation', async () =>
   ).toBe(true);
   expect(start).not.toHaveBeenCalled();
 });
+
+// Unit tier, actual settings/preview entry with the host boundary mocked: switching
+// to Qwen must discard an unsupported speed without losing the selected connection.
+it.each([
+  ['qwen-tts', 'qwen3-tts-flash', 'Cherry', undefined],
+  ['dashscope-tts', 'cosyvoice-v3-flash', 'longanyang', 1.5],
+] as const)(
+  'saves and previews the %s proxy override with native parameter limits',
+  async (protocol, modelId, voice, speed) => {
+    models = [{ id: modelId, name: modelId, providerId: 'proxy', agent: 'codex' }];
+    vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+      selection: {
+        providerId: 'proxy',
+        agent: 'codex',
+        modelId,
+        protocol: 'openai',
+        voice: 'old-voice',
+        speed: 1.5,
+      },
+      customized: true,
+    });
+    renderSettings();
+    const field = await screen.findByLabelText('bots.voiceMode.protocol');
+    await waitFor(() => expect((field as HTMLSelectElement).disabled).toBe(false));
+    await act(async () => {
+      fireEvent.change(field, { target: { value: protocol } });
+    });
+    await waitFor(() =>
+      expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith('bot', {
+        providerId: 'proxy',
+        agent: 'codex',
+        modelId,
+        protocol,
+        voice,
+        ...(speed === undefined ? {} : { speed }),
+      }),
+    );
+    const slider = screen.queryByRole('slider', { name: 'bots.voiceMode.speed' });
+    if (speed === undefined) expect(slider).toBeNull();
+    else {
+      expect(slider?.getAttribute('aria-valuemin')).toBe('0.5');
+      expect(slider?.getAttribute('aria-valuemax')).toBe('2');
+    }
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.preview' }));
+    await waitFor(() =>
+      expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 'proxy',
+          agent: 'codex',
+          modelId,
+          protocol,
+          voice,
+        }),
+      ),
+    );
+    expect(vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0].speed).toBe(
+      speed,
+    );
+    expect(audio.start).not.toHaveBeenCalled();
+  },
+);

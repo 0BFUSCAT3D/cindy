@@ -51,7 +51,7 @@ export async function loadSpeechVoices(
   assertCurrent: () => void,
 ): Promise<SpeechVoiceCatalog> {
   assertCurrent();
-  if (connection.protocol === 'openai') {
+  if (['openai', 'qwen-tts', 'dashscope-tts'].includes(connection.protocol)) {
     const voices = referenceSpeechVoices(modelId, connection.protocol).map((id) => ({
       id,
       name: id,

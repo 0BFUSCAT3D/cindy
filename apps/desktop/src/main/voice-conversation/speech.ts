@@ -1,4 +1,9 @@
-import { miniMaxPcmStream, speechRequest, type SpeechConnection } from './speechProtocols.js';
+import {
+  speechAdapter,
+  speechRequest,
+  speechTextSegments,
+  type SpeechConnection,
+} from './speechProtocols.js';
 import { SpeechError } from './speechError.js';
 export type { SpeechConnection } from './speechProtocols.js';
 export type SpeechDiagnostic = {
@@ -43,7 +48,9 @@ export class SpeechSynthesisSession {
     const epoch = this.epoch;
     this.deps.assertCurrent();
     const connection = this.deps.connection();
-    const { url, body } = speechRequest(connection, input);
+    const texts = speechTextSegments(input.text, connection.protocol);
+    const requests = texts.map((text) => speechRequest(connection, { ...input, text }));
+    const adapter = speechAdapter(connection.protocol);
     const controller = new AbortController();
     this.controller = controller;
     this.requestId = input.requestId;
@@ -58,63 +65,64 @@ export class SpeechSynthesisSession {
         ...details,
       });
     this.diagnostic('request');
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, 30_000);
-    let response: Response | undefined;
-    try {
-      response = await this.deps.fetch(url, {
-        method: 'POST',
-        redirect: 'error',
-        signal: controller.signal,
-        headers: { ...connection.headers, 'Content-Type': 'application/json' },
-        body,
-      });
+    const open = async (index: number): Promise<ReadableStream<Uint8Array>> => {
       this.deps.assertCurrent();
+      if (epoch !== this.epoch || controller.signal.aborted) throw new SpeechError('cancelled');
+      const { url, body, headers } = requests[index];
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 30_000);
+      let response: Response | undefined;
+      try {
+        response = await this.deps.fetch(url, {
+          method: 'POST',
+          redirect: 'error',
+          signal: controller.signal,
+          headers: { ...connection.headers, 'Content-Type': 'application/json', ...headers },
+          body,
+        });
+        this.deps.assertCurrent();
+        if (epoch !== this.epoch || controller.signal.aborted) throw new SpeechError('cancelled');
+        this.diagnostic?.('headers', { httpStatus: response.status });
+        if (!response.ok || !response.body) throw new SpeechError('request');
+        const contentType = response.headers
+          .get('content-type')
+          ?.split(';')[0]
+          ?.trim()
+          .toLowerCase();
+        if (!contentType || !adapter.contentTypes.includes(contentType))
+          throw new SpeechError('format');
+        return adapter.pcm(response.body);
+      } catch (error) {
+        if (response?.body && !response.body.locked)
+          void response.body.cancel().catch(() => undefined);
+        if (timedOut && epoch === this.epoch) {
+          this.diagnostic?.('error', { code: 'headers_timeout' });
+          this.cancel('failed');
+        }
+        throw error instanceof SpeechError ? error : new SpeechError('request');
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    try {
+      const first = await open(0);
+      // open() validates before returning; cancel/start can still happen at this
+      // await boundary. Never install a stale reader over a replacement request.
       if (epoch !== this.epoch || controller.signal.aborted) {
-        await response.body?.cancel();
+        void first.cancel().catch(() => undefined);
         throw new SpeechError('cancelled');
       }
-      this.diagnostic('headers', { httpStatus: response.status });
-      if (!response.ok || !response.body) {
-        await response.body?.cancel();
-        throw new SpeechError('request');
-      }
-      const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
-      if (
-        !contentType ||
-        !(
-          connection.protocol === 'minimax'
-            ? ['text/event-stream', 'application/json']
-            : ['audio/pcm', 'audio/x-pcm', 'application/octet-stream']
-        ).includes(contentType)
-      ) {
-        await response.body.cancel();
-        throw new SpeechError('format');
-      }
-      this.reader = (
-        connection.protocol === 'minimax' ? miniMaxPcmStream(response.body) : response.body
-      ).getReader();
-      // All three adapters request 24 kHz mono PCM; this is not inferred from model mode.
+      this.reader = sequentialPcm(first, requests.length, open).getReader();
       return { sampleRate: 24_000 };
     } catch (error) {
-      if (response?.body && !response.body.locked)
-        void response.body.cancel().catch(() => undefined);
       if (epoch === this.epoch) {
-        this.diagnostic?.('error', {
-          code: timedOut
-            ? 'headers_timeout'
-            : error instanceof SpeechError
-              ? error.code
-              : 'request',
-        });
+        this.diagnostic?.('error', { code: error instanceof SpeechError ? error.code : 'request' });
         this.cancel('failed');
       }
       throw error instanceof SpeechError ? error : new SpeechError('request');
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -180,4 +188,55 @@ export class SpeechSynthesisSession {
     this.reading = false;
     this.totalBytes = 0;
   }
+}
+
+/** Open the next segment only after the current PCM is consumed. Cancelling a
+ * preview/call aborts its fetch and prevents any remaining billable requests. */
+function sequentialPcm(
+  first: ReadableStream<Uint8Array>,
+  count: number,
+  open: (index: number) => Promise<ReadableStream<Uint8Array>>,
+): ReadableStream<Uint8Array> {
+  let reader = first.getReader();
+  let index = 0;
+  let bytes = 0;
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          while (!cancelled) {
+            const result = await reader.read();
+            if (cancelled) return;
+            if (!result.done) {
+              bytes += result.value.byteLength;
+              controller.enqueue(result.value);
+              return;
+            }
+            if (bytes === 0 || bytes % 2 !== 0) throw new SpeechError('format');
+            reader.releaseLock();
+            if (++index === count) {
+              controller.close();
+              return;
+            }
+            const next = await open(index);
+            if (cancelled) {
+              await next.cancel();
+              return;
+            }
+            reader = next.getReader();
+            bytes = 0;
+          }
+        } catch (error) {
+          void reader.cancel().catch(() => undefined);
+          controller.error(error);
+        }
+      },
+      cancel() {
+        cancelled = true;
+        return reader.cancel().catch(() => undefined);
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }

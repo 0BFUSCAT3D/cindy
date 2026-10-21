@@ -383,6 +383,8 @@ export function CompanionVoiceSettings(props: Props) {
                   { value: 'openai', label: t('bots.voiceMode.protocolOpenai') },
                   { value: 'elevenlabs', label: 'ElevenLabs' },
                   { value: 'minimax', label: 'MiniMax' },
+                  { value: 'qwen-tts', label: 'Qwen3-TTS (HTTP)' },
+                  { value: 'dashscope-tts', label: 'Qwen-Audio / CosyVoice (HTTP)' },
                 ]}
                 disabled={!ready || saving}
                 onValueChange={(value) => {

@@ -8,9 +8,9 @@
 - ASR 能力声明区分片段定稿（`segment-final`）、声学停顿（`acoustic`）、手动提交（`manual`）与语义结束（`semantic`）。`final` 只锁定片段文字，实际 `turnEnd` 需要独立证据；能力声明本身也不是一次轮次结束事件。本阶段不启用语义提前发送、不增加语义断句模型调用，所有模式仍保留 1.25 秒回退。SAUC 传递有效 `end_time`，其 `definite` 不推断语义结束；Qwen 关联同一 item 的 `speech_stopped.audio_end_ms`，只标声学结束；OpenAI 手动模式标明 commit，不能当作用户说完；ElevenLabs Scribe 声明 VAD 能力，但没有时间／结束原因的 committed 文本仍按回退处理。fallback 只继承实际胜出的供应商能力与事件，旧连接回调和恢复后的失配时间戳不能缩短等待。
 - 普通交流进入本次通话；只有实际执行请求或明确要求后台／主任务处理的工作才交接。已有上下文足以回答的总结、解释、建议、草稿和计划留在通话里；不能仅因“总结／计划／报告”等词就交接，信息不足或行动意图不明确时先询问。通话专用提示与上下文由 maker-core 管理，不改变主任务的系统提示。交接沿用主机生成的“用户原话 + agent 补充”契约，模型不能改写用户原话，也不能扩展权限。不执行桌面斜杠命令。
 - 默认开启“按句朗读”：可靠标记为 `final_answer` 的回复在输出完整句子后即可开始朗读，未完成的尾句留到后续输出或完成时再处理。关闭后，等整条最终回复经过持久化完成标记确认再朗读。按本次语音发送的 clientId 关联，不朗读历史、过程文字、工具、子代理、内部协调或群来源私信。文本消息始终是对话记录的正本。
-- 在“伙伴设置 → 语音”中独立选择朗读模型和音色，按当前账号下的伙伴保存，不改变聊天模型。来源包括有权限的 Cindy AI，以及已连接的本地 BYOK 供应商；候选必须是 `audio_speech`、未停用且具备可用的 API key 或明确的本机免鉴权连接。同名模型按连接 ID、runtime 和上游模型 ID 区分，不能借另一连接的密钥。无候选时显示空状态，不采集麦克风。语音设置页在目录读取成功且候选为空时仅显示介绍（支持 MiniMax、ElevenLabs 与 OpenAI 兼容语音合成接口）和“前往模型供应商”入口，隐藏配置说明、模型选择与刷新、按句朗读、保存说明和恢复默认，不清除已有偏好。跳转复用既有离页保存检查；返回页面时重新读取目录，有可用候选后显示完整配置并隐藏接入提示。首次加载不闪现配置控件；目录读取失败时显示错误和重试入口，不误报为空列表。
+- 在“伙伴设置 → 语音”中独立选择朗读模型和音色，按当前账号下的伙伴保存，不改变聊天模型。来源包括有权限的 Cindy AI，以及已连接的本地 BYOK 供应商；候选必须是 `audio_speech`、未停用且具备可用的 API key 或明确的本机免鉴权连接。同名模型按连接 ID、runtime 和上游模型 ID 区分，不能借另一连接的密钥。无候选时显示空状态，不采集麦克风。语音设置页在目录读取成功且候选为空时仅显示介绍（支持 MiniMax、ElevenLabs、Qwen / CosyVoice HTTP 与 OpenAI 兼容语音合成接口）和“前往模型供应商”入口，隐藏配置说明、模型选择与刷新、按句朗读、保存说明和恢复默认，不清除已有偏好。跳转复用既有离页保存检查；返回页面时重新读取目录，有可用候选后显示完整配置并隐藏接入提示。首次加载不闪现配置控件；目录读取失败时显示错误和重试入口，不误报为空列表。
 - “按句朗读”同样按伙伴保存，未设置时继承开启默认值。显式开关保存在已有语音设置的 `conversationSentencePlayback` 映射中，不另建配置文件；恢复默认删除当前伙伴的覆盖，不影响其他伙伴。切换模型或音色不重置此开关；仅修改开关不丢弃尚未补齐的音色草稿。设置在下一次开始语音对话时生效。
-- BYOK 支持 OpenAI 兼容、ElevenLabs、MiniMax 三种语音接口。已知官方 HTTPS 地址自动匹配并固定接口，设置页隐藏接口选择及自动匹配说明，用户只需选择模型和音色；Main 同样采用该官方接口，不接受旧偏好或调用参数切换到其他厂商协议。自定义／中转地址保留手动选择；已声明的 OpenAI speech 协议可作为默认，其余候选（包括显式未验证协议）须用户明确选择。不能只凭模型名、`mode` 或聊天协议推断，切换接口不会更换连接地址或凭证。这个覆盖仅作用于当前伙伴的朗读，不重写公共 Registry 或供应商的聊天协议。音色支持列表选择、手动输入和试听；本次不提供创建或删除克隆音色的能力。
+- BYOK 支持 OpenAI 兼容、ElevenLabs、MiniMax、Qwen3-TTS HTTP 和 Qwen-Audio / CosyVoice HTTP 语音接口。已知官方 HTTPS 地址自动匹配并固定接口；Alibaba 平台还需匹配已验证的具体型号及地域，设置页隐藏接口选择及自动匹配说明，用户只需选择模型和音色；Main 同样采用该官方接口，不接受旧偏好或调用参数切换到其他厂商协议。自定义／中转地址保留手动选择；已声明的 OpenAI speech 协议可作为默认，其余候选（包括显式未验证协议）须用户明确选择。不能只凭模型名、`mode` 或聊天协议推断，切换接口不会更换连接地址或凭证。这个覆盖仅作用于当前伙伴的朗读，不重写公共 Registry 或供应商的聊天协议。音色支持列表选择、手动输入和试听；本次不提供创建或删除克隆音色的能力。
 - 模型、语音接口和音色为伙伴级显式偏好，重开设置、重启后保留。设置页只负责配置与试听，不创建通话。离开设置前等待试听停止和有效音色保存；保存失败保留当前页面。未补齐的型号／接口／音色选择仅作本地草稿，不覆盖此前可用偏好。尚无 canonical 任务时可配置，试听需等待伙伴对话建立。恢复默认删除该伙伴的选择，继续跟随可用目录；已有旧版全局偏好仍可继承，单独重置一个伙伴时以 `null` 清除该伙伴的旧偏好继承，不复制默认模型、不影响其他伙伴。保存失败明确提示。保存的连接消失或停用时保留选择并禁止开始，不静默改用同名模型。
 - 更换连接、runtime、型号或接口时，不沿用旧音色；目标型号有明确参考默认值才填入，否则等待用户选择或输入。同一连接下的不同型号也不视为音色兼容。已有保存音色不因刷新失败、列表未收录而被覆盖；刷新失败保留已知名称，成功获取后仍未收录的 ID 显示在手动输入中。
 - 旧偏好中的接口与官方地址冲突时，面板采用官方接口，接口选择仍隐藏，在音色区域上方提示重新选择音色，重新选择前不试听或开始；正确接口下的已有音色继续保留。读取偏好时不写回推导默认值，用户选择音色后通过既有保存流程移除不适用的接口覆盖。自定义／中转地址的显式接口与音色偏好不受影响。
@@ -52,7 +52,7 @@
 
 - 提前朗读只接受明确标记为 `final_answer` 的顶层回复；没有可靠阶段标记的引擎仍等待最终完成，不靠标点猜测过程文字是否已成为答案。Main 在每次提前合成前检查是否启用回复处理插件；存在时不发起该次合成，等待最终处理及 `ghostReplyPending` 清除后再朗读。若播放开始后才出现需要等待处理的情况，停止本条剩余朗读，不重复读出已播放内容。
 - 文本缓冲按中文句末标点或英文句末边界释放；英文小数、常见缩写和未完成尾句不会被提前当成完整句子。解析未完成的 Markdown 时跳过代码块、图片、链接地址，暂存未闭合的链接和行内结构。最终快照只补尚未朗读的尾部；若此前已排队的前缀被整体改写，取消剩余音频，不把新全文再读一遍。
-- 默认模式每段最多 500 个字符，长句优先沿词或从句边界拆分；完整回复模式沿用最多 3500 个字符分段。复用三类既有 HTTP 音频流接口，只有一个播放器，最多存在当前段和一个预取段。空队列但模型尚未完成时显示思考状态，完成且全部音频播放完才回到监听状态。可能插话时暂停播放与追加预取，识别为空后从原位置恢复；明确插话、结束、账号切换和权限暂停统一取消当前音频与预取；静音仅停止输入，当前音频和预取继续。
+- 默认模式每段最多 500 个字符，长句优先沿词或从句边界拆分；完整回复模式沿用最多 3500 个字符分段。复用各供应商的 HTTP 音频流适配器，只有一个播放器，最多存在当前段和一个预取段。空队列但模型尚未完成时显示思考状态，完成且全部音频播放完才回到监听状态。可能插话时暂停播放与追加预取，识别为空后从原位置恢复；明确插话、结束、账号切换和权限暂停统一取消当前音频与预取；静音仅停止输入，当前音频和预取继续。
 - 按句请求能缩短首句等待，但会增加请求次数，句间音色和语调的连续性取决于供应商；不保证无缝播报。厂商原生文本增量 WebSocket、跨句上下文参数及自适应分句仍属后续适配，不作为本轮已实现能力。
 
 ## BYOK 音频合同
@@ -62,10 +62,25 @@
 | OpenAI 兼容 | `<base>/audio/speech`，Bearer，`model / voice / input / response_format: pcm` | 原始 24kHz、单声道、16bit little-endian PCM |
 | ElevenLabs | `<base>/text-to-speech/<voiceId>/stream?output_format=pcm_24000`，`xi-api-key`，`model_id / text` | 原始 PCM |
 | MiniMax | `<base>/t2a_v2`，Bearer，`stream: true`、`exclude_aggregated_audio: true`、`output_format: hex`、`voice_setting.voice_id`、24kHz 单声道 PCM | SSE JSON 的 hex 音频；检查业务错误及格式，结束包的聚合音频不重复播放 |
+| Qwen3-TTS HTTP | `<base>/services/aigc/multimodal-generation/generation`，Bearer，`x-dashscope-sse: enable`，`model / input.text / input.voice` | SSE Base64 的 24kHz、单声道、16bit little-endian PCM；必须收到 `output.finish_reason: stop` |
+| Qwen-Audio / CosyVoice HTTP | `<base>/services/audio/tts/SpeechSynthesizer`，Bearer，同一 SSE header；`input` 中明确 `format: pcm / sample_rate: 24000`，显式语速映射到 `input.rate` | 同上；句子边界帧允许无音频，最终完整文件 URL 不下载、不重复播放 |
 
-已知官方 HTTPS origin（默认端口）固定使用该服务的接口；具体列表由 `main/voice-conversation/models.ts` 维护，不按型号品牌锁定。此规则确定执行适配器，不修改 Registry 的 `nativeApi` 声明，也不证明目录里的型号可执行。ElevenLabs / MiniMax 使用文档规定的 `/v1` 语音端点，MiniMax 的 `/anthropic` 聊天路径不会被沿用。用户指定的兼容代理保留配置的 API base 路径前缀；如果代理提供不同的语音根路径，应在设置中新增独立连接。接口选择不证明供应商的型号、付费方案或音色可用，执行失败仍回到文字。
+已知官方 HTTPS origin（默认端口）固定使用该服务的接口；具体列表由 `main/voice-conversation/models.ts` 维护；Alibaba 多接口平台同时核对精确型号和地域，不按品牌前缀推断。此规则确定执行适配器，不修改 Registry 的 `nativeApi` 声明，也不证明目录里的型号可执行。ElevenLabs / MiniMax 使用文档规定的 `/v1` 语音端点，MiniMax 的 `/anthropic` 聊天路径不会被沿用。用户指定的兼容代理保留配置的 API base 路径前缀；如果代理提供不同的语音根路径，应在设置中新增独立连接。接口选择不证明供应商的型号、付费方案或音色可用，执行失败仍回到文字。
 
 原生接口依据：[ElevenLabs stream](https://elevenlabs.io/docs/api-reference/text-to-speech/stream)、[MiniMax HTTP TTS](https://platform.minimax.io/docs/api-reference/speech-t2a-http)。响应有类型、大小、超时和完整性检查，重定向被拒绝，上游原始错误不穿过 IPC。流式传输与插话取消共用原有代次检查和播放背压，不增加音频落盘。
+
+### Qwen / CosyVoice HTTP 接入范围
+
+- Qwen3：`qwen3-tts-flash` 在 `dashscope.aliyuncs.com` 或 `dashscope-intl.aliyuncs.com` 自动使用 `/api/v1` 下的多模态合成接口；同 origin 的 `/compatible-mode/v1` 聊天连接可以复用凭证。其他型号（包括 Realtime）不因名称前缀自动匹配。
+- Qwen-Audio：`qwen-audio-3.1-tts-flash`、`qwen-audio-3.0-tts-plus`、`qwen-audio-3.0-tts-flash` 使用 `<workspace>.cn-beijing.maas.aliyuncs.com` 或 `<workspace>.ap-southeast-1.maas.aliyuncs.com` 下的 `/api/v1`。CosyVoice 的 `v2`、`v3-plus`、`v3-flash`、`v3.5-plus`、`v3.5-flash` 仅对文档支持的北京 workspace origin 自动匹配；原公共 DashScope 聊天地址不会自动变成 workspace 地址。
+- 配置沿用“模型供应商”中的连接、密钥和模型列表：已发现或手动添加并标记为“语音合成”的模型，才进入伙伴设置候选。型号资料不增加账户授权。自定义代理保留 API base 前缀，并可显式选择 `Qwen3-TTS (HTTP)` 或 `Qwen-Audio / CosyVoice (HTTP)`；代理必须实现选中的实际接口。无匹配协议时继续要求用户选择，不换 origin、地域或密钥。
+- Qwen3 每个 HTTP 请求最多 600 字符：传输层按 UTF-16 长度保守切分，优先句子/空白边界且不切断代理对，不截断文本。播放拉取到上一段完成后才请求下一段；每段重新核查当前连接，取消、插话、账号变更或读取失败后不再请求剩余段。每段单独检查非空且 PCM 字节对齐。既有整次朗读大小、超时和播放背压上限继续生效。
+- Qwen3 HTTP 没有已验证的语速参数，因此隐藏语速滑块，切换到它时不携带旧语速；Qwen-Audio / CosyVoice 支持 `0.5–2`，由 UI 与 Main 共用限制。输出统一为 PCM 24kHz 单声道，不改变播放器。
+- 当前只提供文档确认的参考音色：Qwen3 的 `Cherry`、Qwen-Audio 3.1 的 `longanhuan_v3.1`、CosyVoice v3 的 `longanyang`；未提供参考值的型号保留手动输入。CosyVoice v3.5 需填写绑定该型号的音色 ID。不查询私有克隆目录，不创建/删除音色，参考值不保证当前账户可执行。
+- SSE 共享有界分帧器，Base64 与 MiniMax hex 分别解码；业务错误、无结束标记、无效编码或空音频都按既有合成失败处理。音频只在内存中；最终 URL 不请求，不向它传递凭证。适配器仍是代码，不接受服务器下发请求模板。
+- 这是客户端执行器与本地伙伴偏好的扩展：不修改公共 Registry、服务端 schema、Gateway 鉴权或模型下发；没有服务端合并顺序要求。不包含 Realtime/WebSocket 增量文本、音色克隆、语言/情绪/SSML 设置。真实供应商联调独立记录，单元测试与 UI 截图不代表账户授权或端到端语音验收。
+
+契约来源（2026-10-21 核对）：[Qwen3-TTS HTTP](https://www.alibabacloud.com/help/en/model-studio/qwen-tts-api)、[Qwen-Audio HTTP](https://www.alibabacloud.com/help/en/model-studio/qwen-audio-tts-http-api)、[CosyVoice HTTP](https://www.alibabacloud.com/help/en/model-studio/cosyvoice-tts-http-api)、[型号和地域](https://www.alibabacloud.com/help/en/model-studio/non-realtime-tts-user-guide)。
 
 ## 音色目录与试听
 
@@ -126,10 +141,10 @@ SAUC 使用 `result_type=full`，只有 `definite=true` 的分句才不可变；
 
 ## 后续扩展计划
 
-以下为后续演进方向，本 PR 尚未实现适配器拆分、统一参数描述或公共 Registry schema 扩展，也不包含 Qwen / CosyVoice 原生执行器或厂商文本增量 WebSocket。
+HTTP 执行器已拆成独立适配器，语速与文本长度规则由本地共享模块统一；Qwen / CosyVoice HTTP 范围见上节。公共 Registry schema、更多可配置参数及厂商文本增量 WebSocket 仍属于后续演进方向。
 
-- **独立协议适配器**：接入更多原生协议时，先将现有 OpenAI 兼容、ElevenLabs、MiniMax 分支及响应解码整理为独立的 TypeScript 适配器。适配器负责各协议的请求序列化、传输及响应解析；公共层统一音频格式、完成、错误与取消合同，继续复用账号/任务绑定、读取背压、资源上限和迟到音频丢弃，不增加第二套伙伴任务或播放状态机。Qwen / CosyVoice 按所接具体 API 的 HTTP、SSE 或 WebSocket 合同实现，不能只替换 URL。
-- **统一参数定义与校验**：用共享的类型化参数描述约定必填项、默认值、枚举、范围和错误语义，让 Renderer 表单与 Main 校验复用同一规则；Main 在执行前再次校验。音色及后续语速、语言等参数按实际协议和型号能力开放，各厂商字段映射仍由适配器负责。当前固定输出格式和参数限制需在迁移时保留，新增能力以适配器实际实现及验证为准。
+- **独立协议适配器**：新增接口沿用 `main/voice-conversation/adapters/`；适配器负责请求与解码，共享层维护 PCM 格式、完成、错误、取消及资源上限。WebSocket 若要接入，需实现实际增量文本/任务会话合同，不能只替换 URL，不增加第二套伙伴任务或播放状态机。
+- **统一参数定义与校验**：已有语速与请求文本限制由 `shared/speechProtocols.ts` 定义，Main 执行前复核，厂商字段映射留在适配器。后续语言、情绪等枚举/默认值继续按实际型号能力扩展，不将远端资料当作通用序列化程序。
 - **公共 Registry 扩展**：后续可补充已验证的原生协议标识、型号支持的参数与限制、资料来源。声明须对应实际供应商/型号路由：同一型号通过原厂端点与兼容 Gateway 接入时，协议可以不同；不能从品牌、型号名称或 `audio_speech` 推断。Registry 负责描述能力，协议执行继续保留在代码中，不引入远端 JSON 请求模板或脚本执行机制。
 - **正本与兼容性**：新增公共字段或协议枚举时，协调更新 cindy-server 正本、客户端 Bean/解析与校验、客户端离线副本及相应契约测试；按既有 schema/能力协商兼容旧客户端。保留未声明与显式 `null` 的区别及用户显式覆盖语义，未知协议不能因此成为已支持协议。分别记录客户端支持、服务端实现与生产部署状态；目录资料不新增用户可访问的模型、授权或执行路由。
 - **配置存储延续**：API base 和密钥继续复用已有供应商连接与凭证存储，伙伴模型、音色等偏好继续使用现有账号隔离的本地设置，不额外创建通用协议配置文件。若后续把接口覆盖从伙伴偏好调整为连接/型号路由配置，须兼容并保留已有显式选择，不能静默覆盖或丢失设置。

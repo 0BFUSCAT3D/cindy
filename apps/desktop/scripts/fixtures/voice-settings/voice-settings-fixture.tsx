@@ -17,7 +17,8 @@ mountPage({
   host: (ctx) => {
     const protocol = (ctx.data.protocol ?? 'elevenlabs') as SpeechProtocol;
     const modelId = String(ctx.data.modelId ?? 'eleven_flash_v2_5');
-    const initialVoice = ctx.data.manual ? 'custom-voice' : 'river';
+    const referenceVoice = String(ctx.data.voiceId ?? 'river');
+    const initialVoice = ctx.data.manual ? 'custom-voice' : referenceVoice;
     const pending = new Map<string, () => void>();
     const previews: Array<{ voice: string; speed?: number; previewId: string }> = [];
     const stops: string[] = [];
@@ -30,6 +31,7 @@ mountPage({
         agent: 'codex',
         modelId,
         voice: initialVoice,
+        ...(ctx.data.custom ? { protocol } : {}),
         ...(typeof ctx.data.speed === 'number' ? { speed: ctx.data.speed } : {}),
       },
       customized: ctx.data.speed !== undefined || !!ctx.data.manual,
@@ -53,17 +55,22 @@ mountPage({
                       ? 'ElevenLabs'
                       : protocol === 'minimax'
                         ? 'MiniMax'
-                        : 'OpenAI',
+                        : protocol === 'qwen-tts' || protocol === 'dashscope-tts'
+                          ? 'Alibaba Cloud'
+                          : 'OpenAI',
                   agent: 'codex',
-                  protocol,
-                  protocolLocked: true,
-                  defaultVoice: 'river',
+                  protocol: ctx.data.custom ? undefined : protocol,
+                  protocolLocked: !ctx.data.custom,
+                  defaultVoice: referenceVoice,
                 },
               ],
         voices: async () => ({
-          source: 'provider',
+          source: ctx.data.voiceId ? 'reference' : 'provider',
           voices: [
-            { id: 'river', name: 'River — Relaxed, Neutral, Informative' },
+            {
+              id: referenceVoice,
+              name: ctx.data.voiceId ? referenceVoice : 'River — Relaxed, Neutral, Informative',
+            },
             ...(ctx.data.menu
               ? [
                   { id: 'bella', name: 'Bella — Professional, Bright, Warm' },

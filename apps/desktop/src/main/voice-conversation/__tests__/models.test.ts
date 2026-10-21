@@ -309,3 +309,111 @@ it.each(['openai', 'elevenlabs', 'minimax'] as const)(
     });
   },
 );
+
+// Unit tier, real catalog -> connection projection. HTTP protocol selection must
+// bind both documented model and official origin; a matching brand is insufficient.
+it.each([
+  ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3-tts-flash', 'qwen-tts', 'Cherry'],
+  [
+    'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    'qwen3-tts-flash',
+    'qwen-tts',
+    'Cherry',
+  ],
+  [
+    'https://work.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+    'cosyvoice-v3-flash',
+    'dashscope-tts',
+    'longanyang',
+  ],
+  ['https://work.cn-beijing.maas.aliyuncs.com/api/v1', 'cosyvoice-v3.5-plus', 'dashscope-tts', ''],
+  [
+    'https://work.ap-southeast-1.maas.aliyuncs.com/api/v1',
+    'qwen-audio-3.1-tts-flash',
+    'dashscope-tts',
+    'longanhuan_v3.1',
+  ],
+  [
+    'https://work.ap-southeast-1.maas.aliyuncs.com/api/v1',
+    'qwen-audio-3.0-tts-plus',
+    'dashscope-tts',
+    '',
+  ],
+] as const)(
+  'binds %s %s to its verified HTTP adapter',
+  (baseUrl, modelId, protocol, defaultVoice) => {
+    const d = deps([
+      custom('ali', baseUrl, [
+        { id: modelId, name: modelId, mode: 'audio_speech', nativeApi: null },
+      ]),
+    ]);
+    expect(speechModels(d)[0]).toMatchObject({ protocol, protocolLocked: true, defaultVoice });
+    expect(
+      resolveSpeechConnection(d, {
+        providerId: 'ali',
+        agent: 'codex',
+        modelId,
+        protocol: 'elevenlabs',
+      }),
+    ).toEqual({
+      protocol,
+      baseUrl: `${new URL(baseUrl).origin}/api/v1`,
+      headers: { authorization: 'Bearer ali-codex-key' },
+    });
+    if (protocol === 'qwen-tts')
+      expect(() =>
+        resolveSpeechConnection(d, {
+          providerId: 'ali',
+          agent: 'codex',
+          modelId,
+          voice: 'Cherry',
+          speed: 1,
+        }),
+      ).toThrow('invalid_speech_speed');
+  },
+);
+it.each([
+  ['https://dashscope.aliyuncs.com/api/v1', 'qwen3-tts-flash-realtime'],
+  ['https://dashscope.aliyuncs.com/api/v1', 'qwen-future-tts'],
+  ['https://dashscope.aliyuncs.com/api/v1', 'cosyvoice-v3-flash'],
+  ['https://work.ap-southeast-1.maas.aliyuncs.com/api/v1', 'cosyvoice-v3-flash'],
+  ['https://dashscope.aliyuncs.com.untrusted.test/api/v1', 'qwen3-tts-flash'],
+  ['http://dashscope.aliyuncs.com/api/v1', 'qwen3-tts-flash'],
+  ['https://dashscope.aliyuncs.com:8443/api/v1', 'qwen3-tts-flash'],
+])(
+  'does not infer native HTTP from an unsupported model/region/origin: %s %s',
+  (baseUrl, modelId) => {
+    const d = deps([
+      custom('ali', baseUrl, [
+        { id: modelId, name: modelId, mode: 'audio_speech', nativeApi: null },
+      ]),
+    ]);
+    expect(speechModels(d)[0]?.protocol).toBeUndefined();
+    expect(() =>
+      resolveSpeechConnection(d, { providerId: 'ali', agent: 'codex', modelId }),
+    ).toThrow('model_unavailable');
+  },
+);
+it.each(['qwen-tts', 'dashscope-tts'] as const)(
+  'keeps explicit %s proxy choices on the same origin, prefix and key',
+  (protocol) => {
+    const d = deps([
+      custom('proxy', 'https://proxy.test/tenant/api/v1', [
+        { id: 'speech', name: 'Speech', mode: 'audio_speech', nativeApi: null },
+      ]),
+    ]);
+    expect(speechModels(d)[0].protocolLocked).toBe(false);
+    expect(
+      resolveSpeechConnection(d, {
+        providerId: 'proxy',
+        agent: 'codex',
+        modelId: 'speech',
+        protocol,
+      }),
+    ).toEqual({
+      protocol,
+      baseUrl: 'https://proxy.test/tenant/api/v1',
+      headers: { authorization: 'Bearer proxy-codex-key' },
+    });
+  },
+);
