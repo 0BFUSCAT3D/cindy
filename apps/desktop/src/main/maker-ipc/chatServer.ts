@@ -1617,7 +1617,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         const threadRootId = run.plan ? undefined : source?.threadRootId ?? undefined;
         const lane = await deps.ensureLane({ botId: bot.id, groupId: s.room.id, title: s.room.name,
           chatAccess: { mode: execution.access_mode, revision: execution.access_revision },
-          ...(run.plan ? { plan: { planId: run.plan.id, workDir: run.workspace?.workDir ?? '', sessionId: run.workspace?.ownerSessionId ?? undefined } } : {}),
+          // A queue turn talks in its own lane (no project folder); a division of work runs in its work directory.
+          ...(run.plan?.kind === 'talk' ? { talkPlanId: run.plan.id }
+            : run.plan ? { plan: { planId: run.plan.id, workDir: run.workspace?.workDir ?? '', sessionId: run.workspace?.ownerSessionId ?? undefined } } : {}),
           ...(threadRootId ? { threadRootId } : {}) });
         if (!lane.ok) throw new Error(lane.errorCode);
         run.sessionId = lane.sessionId;

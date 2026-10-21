@@ -1478,8 +1478,10 @@ describe('Chat Server result delivery and refresh', () => {
         expect(prompt()).toContain('You are turn 2 of 2. Your focus: tests.');
         expect(prompt()).not.toContain('unrelated main group chatter');
         expect(downloaded).toEqual([answerFile]);
-        // A discussion only talks: no project folder or worktree, and a plain lane without a work directory.
-        expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ plan: { planId, workDir: '', sessionId: undefined } }));
+        // A queue turn only talks: no project folder or worktree, its own queue lane rather than a 分工 lane
+        // (an owner-access 分工 lane without a work directory cannot start).
+        expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ talkPlanId: planId }));
+        expect(vi.mocked(deps.ensureLane).mock.calls[0][0]).not.toHaveProperty('plan');
       } else {
         expect(prompt()).not.toContain('You are turn');
         expect(prompt()).toContain('unrelated main group chatter');

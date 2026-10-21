@@ -710,7 +710,15 @@ export function chatGroupLaneRouteKey(groupId: string, access: ChatLaneAccess): 
   return `group:${groupId}:access:${access.mode}:${access.revision}`;
 }
 export function isChatOnlyGroupLane(routeKey: string | null | undefined): boolean {
-  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+)?$/.test(routeKey ?? '');
+  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+|:talk:[^:]+)?$/.test(routeKey ?? '');
+}
+
+/**
+ * A queue's own lane (bot-group-chat.md §7.0): one hidden Session per queue, grant and teammate,
+ * so each turn reads only its card. It talks in the group lane's place, never a project folder.
+ */
+export function chatGroupTalkRouteKey(groupId: string, access: ChatLaneAccess, planId: string): string {
+  return `${chatGroupLaneRouteKey(groupId, access)}:talk:${planId}`;
 }
 
 /**
@@ -727,9 +735,9 @@ export function parseBotGroupThreadRouteKey(routeKey: string | null | undefined)
   return match ? { groupId: match[1]!, threadRootId: match[2]! } : null;
 }
 
-/** The group lane a Thread lane belongs to; a Thread works in the same place as its group lane. */
+/** The group lane a Thread or queue lane belongs to; both work in the same place as their group lane. */
 export function groupLaneOfRouteKey(routeKey: string): string {
-  return routeKey.replace(/:thread:[^:]+$/, '');
+  return routeKey.replace(/:(?:thread|talk):[^:]+$/, '');
 }
 
 export function botGroupLaneRouteKey(groupId: string): string {

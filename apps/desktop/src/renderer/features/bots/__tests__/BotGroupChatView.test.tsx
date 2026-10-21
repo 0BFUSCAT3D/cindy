@@ -2236,6 +2236,21 @@ describe('BotGroupChatView', () => {
       }
     });
 
+    // Only the creator, an owner or an admin may change who speaks next in a waiting queue.
+    it.each([[true, 1], [false, 0]] as const)('offers reassigning a waiting queue turn only to a manager (canManage=%s)', async (canManage, menus) => {
+      const base = plan().steps;
+      const queue = plan({
+        status: 'waiting', currentStep: 0, kind: 'talk', canManage,
+        steps: [{ ...base[0]!, task: '', status: 'done' }, { ...base[1]!, task: '', status: 'pending' }],
+      });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(queue) });
+      renderView();
+      const card = await screen.findByTestId('bot-group-arrangement');
+      const pending = within(card).getAllByTestId('bot-group-plan-step')[1]!;
+      fireEvent.pointerDown(pending, { button: 0, ctrlKey: false });
+      expect(screen.queryAllByRole('menu')).toHaveLength(menus);
+    });
+
     it('offers the next step after a hand-off and opens its files inside the work directory', async () => {
       const waiting = plan({
         status: 'waiting',

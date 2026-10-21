@@ -113,7 +113,8 @@ export interface BotGroupLaneTerminal {
 export interface BotGroupChatServiceDeps {
   /**
    * With `plan`, the Bot's 分工 Session for that plan (bot-group-chat.md §7.4); with
-   * `threadRootId`, the Bot's own lane for that Thread (§3).
+   * `threadRootId`, the Bot's own lane for that Thread (§3); with `talkPlanId`, its own
+   * lane for that queue (§7.0).
    */
   ensureLane: (input: {
     botId: string;
@@ -122,6 +123,7 @@ export interface BotGroupChatServiceDeps {
     chatAccess?: import('../../shared/botGroupChat.js').ChatLaneAccess;
     plan?: { planId: string; workDir: string; sessionId?: string };
     threadRootId?: string;
+    talkPlanId?: string;
   }) => Promise<LaneResult>;
   /** Same hidden, durable input path as Bot DMs; attachments go with the turn like a task message's. */
   dispatch: (params: {

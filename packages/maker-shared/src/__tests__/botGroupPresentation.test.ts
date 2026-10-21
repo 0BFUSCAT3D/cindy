@@ -10,7 +10,7 @@ import {
   botGroupExecutionFailureBatches,
   chatGroupMembership,
 } from '../botGroupPresentation.js';
-import { BOT_GROUP_RUNTIME_FAILURE_CODES, readBotGroupExecutionFailure, type BotGroupErrorCode, type BotGroupExecutionFailureView, type BotGroupMemberView, type BotGroupMessageView, type BotGroupNoticeCode, type BotGroupPlanView } from '../botGroupChat.js';
+import { chatGroupTalkRouteKey, groupLaneOfRouteKey, isChatOnlyGroupLane, BOT_GROUP_RUNTIME_FAILURE_CODES, readBotGroupExecutionFailure, type BotGroupErrorCode, type BotGroupExecutionFailureView, type BotGroupMemberView, type BotGroupMessageView, type BotGroupNoticeCode, type BotGroupPlanView } from '../botGroupChat.js';
 
 describe('server group membership affordances', () => {
   const self = { actorId: 'self', isSelf: true, isOwned: true, role: 'member' } as BotGroupMemberView;
@@ -144,5 +144,15 @@ describe('plan follow-up and composer state', () => {
     ['waiting for 继续', 'waiting', true, null],
   ] as const)('gives a queue %s the matching composer state', (_label, status, canAdd, expected) => {
     expect(botGroupComposerPlanState(plan({ kind: 'talk', status, canAdd }))).toEqual(expected);
+  });
+});
+
+// A queue lane keeps the grant's boundary: a chat-only queue turn is chat-only (no tools, no owner
+// files) and works in its group lane's place (bot-group-chat.md §7.0).
+describe('queue lanes', () => {
+  it.each([['chat', true], ['owner', false], ['tools', false]] as const)('a %s queue lane is chat-only: %s', (mode, chatOnly) => {
+    const key = chatGroupTalkRouteKey('g1', { mode, revision: 2 }, 'q1');
+    expect(isChatOnlyGroupLane(key)).toBe(chatOnly);
+    expect(groupLaneOfRouteKey(key)).toBe(`group:g1:access:${mode}:2`);
   });
 });

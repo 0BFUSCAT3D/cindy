@@ -454,7 +454,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                 plan={props.plan}
                 members={members}
                 actionable={false}
-                reassignable={props.planReassignable ?? false}
+                // Only the creator, an owner or an admin may change who speaks next.
+                reassignable={(props.planReassignable ?? false) && props.plan.canManage !== false}
                 pending={props.planPending ?? null}
                 runningSince={props.planRunningSince ?? null}
                 doneAt={props.planDoneAt}
