@@ -521,9 +521,10 @@ beforeEach(async () => {
   h.nextSession = 0;
   h.providers = [{
     id: 'xd', connected: true, source: 'builtin', agents: ['pi'], access: { kind: 'managed' },
+    auth: { method: 'managed' },
     routing: { pi: { upstream: 'https://example.invalid', authStrategy: 'gateway-key' } },
-    models: { pi: [{ id: 'z-ai/glm-5.3-flash', efforts: ['high'], defaultEffort: 'high',
-      newSessionDefault: ['pi'], supportsImageInput: true }] },
+    models: { pi: ['z-ai/glm-5.3-flash', 'auto'].map(id => ({ id, efforts: ['high'], defaultEffort: 'high',
+      newSessionDefault: ['pi'], supportsImageInput: true })) },
   }] as ProviderView[];
   h.worktrees = [];
   h.isSessionAlive.mockReturnValue(false);
@@ -686,6 +687,7 @@ describe('Bot canonical Session lifecycle', () => {
   it('creates the first canonical task on Codex when only its subscription is connected', async () => {
     h.providers = [{
       id: 'openai', source: 'builtin', connected: true, agents: ['codex'],
+      auth: { method: 'oauth' },
       access: { kind: 'subscription', product: 'ChatGPT' },
       routing: { codex: { upstream: 'https://example.invalid', authStrategy: 'oauth-passthrough' } },
       models: { codex: [{ id: 'gpt-5.6-sol', mode: 'chat', status: 'active', efforts: ['medium'], defaultEffort: 'medium' }] },
@@ -719,7 +721,7 @@ describe('Bot canonical Session lifecycle', () => {
 
     expect(capabilities.modelChain?.[0]).toMatchObject({
       harness: 'pi',
-      model: 'z-ai/glm-5.3-flash',
+      model: 'auto',
       providerId: 'xd',
       effort: 'high',
     });
@@ -9634,12 +9636,15 @@ describe('Teammate model selection shares profile persistence and route reconcil
       id: JSON.stringify(['pi', 'xd', model.id]), model };
   }
 
-  it('saves only its own explicit model chain, applies it through the send resolver, and resets to the live default', async () => {
+  // DB regression: a per-teammate reset follows the teammate default even if
+  // the new-task composer changes later; previously the two were coupled.
+  it('saves its own model chain, applies it through the send resolver, and resets independently of new tasks', async () => {
     const { service, sessionId, id } = await setupModelControl();
     await invoke('local-db:bots:create', { id: 'bot-2', name: 'Other teammate', avatar: '🐈' });
     const before = await invoke('local-db:bots:get', 'bot-1');
     const other = await invoke('local-db:bots:get', 'bot-2');
     const appDefault = getSelectedNewMakerRoute(h.ownerScopeKey);
+    const botDefault = await modelSettings.readEffectiveBotModelChain({ modelChainOverride: null });
     expect(await service.updateProfile({ callerSessionId: sessionId, expectedVersion: 1,
       modelChain: [{ id, effort: 'low', fastMode: false }] })).toMatchObject({ ok: true, effective: 'next-turn' });
     const after = await invoke('local-db:bots:get', 'bot-1');
@@ -9661,10 +9666,10 @@ describe('Teammate model selection shares profile persistence and route reconcil
     expect(await service.updateProfile({ callerSessionId: sessionId, expectedVersion: 2, modelChain: null })).toMatchObject({ ok: true });
     const restored = await invoke('local-db:bots:get', 'bot-1');
     expect(restored.capabilities.modelChainOverride).toBeNull();
-    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual([appDefault]);
+    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual(botDefault);
     const nextDefault = { ...appDefault!, effort: 'low' };
     setNewMakerDraftCache({ selectedRoute: nextDefault, lastByVendor: {}, effortByModel: {}, fastModeByModel: {} }, h.ownerScopeKey);
-    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual([nextDefault]);
+    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual(botDefault);
   });
 
   it.each(['disabled', 'disconnected', 'effort', 'fast', 'duplicate', 'unknown', 'owner', 'foreign'] as const)(
