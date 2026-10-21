@@ -916,7 +916,7 @@ describe('botGroupChatService 分工', () => {
       .toEqual(['加上英文版了']);
   });
 
-  it('checks 「@所有人」 and mention-only groups too; only naming a Bot skips the check', async () => {
+  it('checks 「@所有人」 but leaves unaddressed messages idle in mention-only groups', async () => {
     const decidePlan = vi.fn(async (_input: PlanDecisionInput) => ({ needsPlan: false }) as PlanDecision);
     const harness = createHarness(() => 'NO_REPLY', { decidePlan });
     const groupId = await createGroup(harness);
@@ -927,8 +927,11 @@ describe('botGroupChatService 分工', () => {
     await harness.service.updateGroup({ groupId, replyMode: 'mentioned' });
     await harness.service.sendMessage({ groupId, text: '帮我做个海报', mentions: NONE, clientId: 'quiet' });
     await waitForIdle(harness, groupId);
-    expect(decidePlan).toHaveBeenCalledTimes(2);
+    expect(decidePlan).toHaveBeenCalledTimes(1);
     expect(harness.dispatches).toHaveLength(3);
+    await harness.service.sendMessage({ groupId, text: '帮我做个海报', mentions: NONE, clientId: 'explicit', division: true });
+    await waitForIdle(harness, groupId);
+    expect(decidePlan).toHaveBeenCalledTimes(2);
   });
 
   it('an explicit request whose chosen members all became unavailable says so', async () => {
