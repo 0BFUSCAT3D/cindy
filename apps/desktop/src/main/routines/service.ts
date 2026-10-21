@@ -152,13 +152,13 @@ async function execute(scope: string, routine: Routine, run: RoutineRun, signal:
   // task summaries under an obsolete follow-up choice. Manual runs remain explicit actions.
   let events = run.events;
   if (routine.builtin === 'follow-up' && events.length > 0) {
-    const allowed = currentFollowUpEvents(routine.botId, events);
+    const allowed = await currentFollowUpEvents(routine.botId, events);
+    assertScope(scope);
     if (allowed === null) return { deferred: true };
-    if (allowed.length === 0) return { skipped: true };
-    events = allowed;
+    if (allowed.events.length === 0) return { skipped: true };
+    events = allowed.events;
     const engineCanDispatch = canDispatch;
-    canDispatch = () => engineCanDispatch()
-      && currentFollowUpEvents(routine.botId, events)?.length === events.length;
+    canDispatch = () => engineCanDispatch() && allowed.canDispatch();
   }
   const root = ownerScopedUserDataPath();
   const imported = await getRoutineHost().prepareImportedAutomation?.(root, routine, run.id, signal, () => assertScope(scope));

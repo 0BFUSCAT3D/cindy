@@ -11,7 +11,7 @@ import {
   type BotAutonomySettingsView,
   type BotGlance,
 } from '../../shared/botAutonomy.js';
-import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
 import {
   readBotAutonomySettingsOverride,
@@ -19,8 +19,8 @@ import {
   writeBotAutonomySchedulerBotId,
 } from '../maker-host/bot-autonomy-settings-store.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { filterFollowUpEvents, resolveSchedulerBotId } from './follower.js';
-import { readBotDirectory } from './hostData.js';
+import { filterFollowUpEvents, resolveSchedulerBotId, type FollowUpSubject } from './follower.js';
+import { readBotDirectory, readLocalSessionMetas, readTaskOwnership } from './hostData.js';
 import type { BotAutonomyRuntime, GlanceOptions } from './runtime.js';
 import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 
@@ -120,12 +120,32 @@ async function afterSettingsChange(scope: string): Promise<BotAutonomySettingsVi
 }
 
 /** null means startup is not ready; an empty batch has lost its authorization. */
-export function currentFollowUpEvents(botId: string, events: RoutineRun['events']): RoutineRun['events'] | null {
+export async function currentFollowUpEvents(botId: string, events: RoutineRun['events']): Promise<{
+  events: RoutineRun['events']; canDispatch(): boolean;
+} | null> {
   const active = current;
   if (!active || !scopeIsCurrent(active.scope) || !active.runtime.watch.isReady()) return null;
   const watch = active.runtime.watch;
-  const bots = watch.getBots();
-  // Read the persisted choice, not the watch's cached scheduler: disabling must take effect immediately.
-  const scheduler = resolveSchedulerBotId(readBotAutonomySettingsOverride(), bots);
-  return filterFollowUpEvents(botId, events, watch.list(), scheduler, bots, Date.now());
+  const botsAtRead = watch.getBots();
+  // The queue outlives watched rows (including across restarts). Read current durable
+  // ownership for event subjects; only sweep needs the transient pending-state table.
+  const [metas, ownership] = await Promise.all([
+    readLocalSessionMetas(events.flatMap(({ event }) => event.type !== 'sweep' && typeof event.subject === 'string' ? [event.subject] : [])),
+    readTaskOwnership(ownerScopedUserDataPath()),
+  ]);
+  if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead) return null;
+  const subjects: FollowUpSubject[] = metas.filter(meta => meta.status === 'active' && meta.hiddenAt === null
+    && meta.orcaRole !== 'worker' && meta.source !== 'review'
+    && !['history', 'group', 'channel'].includes(meta.laneRole ?? '')).map(meta => {
+      const canonical = [...ownership.bots].find(([, bot]) => bot.canonicalSessionId === meta.id)?.[0]
+        ?? (meta.laneRole === 'canonical' ? meta.laneBotId : null);
+      const creator = ownership.creatorBySession.get(meta.id) ?? null;
+      return { sessionId: meta.id, deviceId: null, shared: meta.source === 'shared',
+        canonicalOfBotId: canonical, creatorBotId: creator === canonical ? null : creator };
+    });
+  const allowedNow = () => filterFollowUpEvents(botId, events, watch.list(),
+    resolveSchedulerBotId(readBotAutonomySettingsOverride(), ownership.bots), ownership.bots, Date.now(), subjects);
+  const allowed = allowedNow();
+  return { events: allowed, canDispatch: () => current === active && scopeIsCurrent(active.scope) && watch.isReady()
+    && watch.getBots() === botsAtRead && allowedNow().length === allowed.length };
 }

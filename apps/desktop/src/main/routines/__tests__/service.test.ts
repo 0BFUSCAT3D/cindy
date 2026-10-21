@@ -26,7 +26,10 @@ const mock = vi.hoisted(() => ({
     delete: vi.fn(async () => {}),
   },
 }));
-vi.mock('../../bot-autonomy/hub.js', () => ({ currentFollowUpEvents: mock.followUpEvents }));
+vi.mock('../../bot-autonomy/hub.js', () => ({ currentFollowUpEvents: async (botId: string, input: RoutineRun['events']) => {
+  const events = mock.followUpEvents(botId, input);
+  return events === null ? null : { events, canDispatch: () => mock.followUpEvents(botId, input)?.length === events.length };
+} }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => mock.scope,
   getActiveAppSession: () => ({ dataOwnerId: mock.scope }),

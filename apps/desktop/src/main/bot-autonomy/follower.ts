@@ -74,6 +74,8 @@ export function readAllowSchedulerFollow(capabilitiesJson: string | null | undef
 }
 
 /** Recheck queued events against current ownership/consent before sending any data to a model. */
+export type FollowUpSubject = Pick<WatchedSession, 'sessionId' | 'deviceId' | 'shared' | 'canonicalOfBotId' | 'creatorBotId'>;
+
 export function filterFollowUpEvents(
   botId: string,
   events: RoutineRun['events'],
@@ -81,14 +83,15 @@ export function filterFollowUpEvents(
   schedulerBotId: string | null,
   bots: FollowerBotDirectory,
   now: number,
+  subjects: readonly FollowUpSubject[] = rows,
 ): RoutineRun['events'] {
-  const allowed = rows.filter((row) => row.deviceId === null && !row.shared
+  const isAllowed = (row: FollowUpSubject) => row.deviceId === null && !row.shared
     && row.canonicalOfBotId !== botId
-    && deriveFollowerBotId({ creatorBotId: row.creatorBotId, schedulerBotId, bots }) === botId);
-  const ids = new Set(allowed.map((row) => row.sessionId));
+    && deriveFollowerBotId({ creatorBotId: row.creatorBotId, schedulerBotId, bots }) === botId;
+  const ids = new Set(subjects.filter(isAllowed).map((row) => row.sessionId));
   return events.filter(({ sourceId, event }) => sourceId === HOST_SESSIONS_SOURCE_ID && (
     event.type === 'sweep'
-      ? allowed.some((row) => isPendingForFallback(row, now))
+      ? rows.some((row) => isAllowed(row) && isPendingForFallback(row, now))
       : typeof event.subject === 'string' && ids.has(event.subject)
   ));
 }
