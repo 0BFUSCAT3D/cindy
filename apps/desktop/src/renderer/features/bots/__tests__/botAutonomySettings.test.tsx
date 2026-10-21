@@ -183,6 +183,17 @@ it('asks once for a double click and drops a confirmation that returns after the
   dataOwnerTesting.reset();
 });
 
+it('still saves a confirmation across a same-account generation repair', async () => {
+  render(<BotFollowUpInvitation botId="cindy-default" engaged />);
+  let answer!: (value: boolean) => void;
+  m.confirm.mockImplementationOnce(() => new Promise<boolean>((done) => { answer = done; }));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.autonomy.invitation.start' }));
+  setDataOwnerGeneration(null);
+  await act(async () => answer(true));
+  expect(host.setSettings).toHaveBeenCalledWith({ schedulerBotId: 'cindy-default' });
+  dataOwnerTesting.reset();
+});
+
 it('closes a pending confirmation when the invitation goes away', async () => {
   const { unmount } = render(<BotFollowUpInvitation botId="cindy-default" engaged />);
   m.confirm.mockImplementationOnce(() => new Promise<boolean>(() => {}));
@@ -233,5 +244,7 @@ it.each([true, false])('remote invitation uses the host-bound choice, enable=%s'
   expect(invoke).toHaveBeenLastCalledWith('host-computer', 'maker:remote-resources:invoke', [expect.objectContaining({
     resourceRef: ref, actionId: enable ? 'opaque-enable' : 'opaque-dismiss', input: enable ? { enabled: true } : {},
   })]);
+  // Starting re-reads the Host after confirmation so an expired ticket is renewed; declining uses the shown one.
+  expect(invoke.mock.calls.filter(([, channel]) => String(channel).endsWith(':get'))).toHaveLength(enable ? 2 : 1);
   expect(host.setSettings).not.toHaveBeenCalled();
 });

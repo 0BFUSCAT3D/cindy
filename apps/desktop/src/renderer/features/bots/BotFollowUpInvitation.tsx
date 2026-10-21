@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
-import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerIdCurrent } from '@/contexts/dataOwnerGeneration';
 import { toast } from '@/lib/toast';
 import { setBotSchedulerBotId, useBotAutonomySettings } from './botStore';
 
@@ -67,7 +67,8 @@ export function BotFollowUpInvitationCard({ pending, onChoose, consent }: {
         confirmText: t('bots.autonomy.invitation.start'),
         cancelText: t('bots.autonomy.invitation.notNow'),
       }, controller.signal);
-      if (accepted && mounted.current && isDataOwnerGenerationCurrent(owner)) await onChoose(true);
+      // 同一账号内的代次修复不卸载卡片，确认仍有效；换了账号才丢弃。
+      if (accepted && mounted.current && isDataOwnerIdCurrent(owner)) await onChoose(true);
     } finally {
       asking.current = false;
       if (dialog.current === controller) dialog.current = null;

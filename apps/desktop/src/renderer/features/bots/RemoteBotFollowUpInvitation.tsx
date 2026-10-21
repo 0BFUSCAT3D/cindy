@@ -25,13 +25,26 @@ export function RemoteBotFollowUpInvitation({ deviceId, botId }: { deviceId: str
   const panel = data?.panels.find(item => item.id === 'follow-up');
   if (!data || !panel?.invitationAvailable || !panel.action || !panel.dismissAction) return null;
   const choose = async (enable: boolean) => {
-    const actionId = (enable ? panel.action : panel.dismissAction)?.id;
-    if (saving.current || !actionId) return;
+    if (saving.current || !(enable ? panel.action : panel.dismissAction)) return;
     saving.current = true; setPending(true);
     const owner = getDataOwnerGeneration();
     try {
+      let target = { data, panel };
+      if (enable) {
+        // 确认框可能开了很久，Host 的动作票会过期：确认后按未变的 revision 换一张新票再提交。
+        const fresh = await readRemoteBotSettings(deviceId, `settings:${botId}/follow-up`, i18n.language);
+        if (!alive.current || !isDataOwnerGenerationCurrent(owner)) return;
+        const freshPanel = fresh.panels.find(item => item.id === 'follow-up');
+        if (fresh.resource.revision !== data.resource.revision || !freshPanel?.invitationAvailable || !freshPanel.action) {
+          setData(fresh);
+          return;
+        }
+        target = { data: fresh, panel: freshPanel };
+      }
+      const actionId = (enable ? target.panel.action : target.panel.dismissAction)?.id;
+      if (!actionId) return;
       await window.electronAPI.deviceLink.invoke(deviceId, REMOTE_RESOURCE_INVOKE_CHANNEL, [{
-        client: settingsClient(i18n.language), collectionId: 'teammates', resourceRef: data.resource.ref,
+        client: settingsClient(i18n.language), collectionId: 'teammates', resourceRef: target.data.resource.ref,
         actionId, input: enable ? { enabled: true } : {},
       }]);
       if (alive.current && isDataOwnerGenerationCurrent(owner)) setData(null);
