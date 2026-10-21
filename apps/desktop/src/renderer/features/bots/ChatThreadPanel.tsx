@@ -235,16 +235,20 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     followWriteRef.current += 1;
     const owner = getDataOwnerGeneration();
     const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
+    // A failed write may still have been saved (a timeout or a dropped connection): until a later
+    // write succeeds, the server's value is unknown and the newest click is always sent.
+    let uncertain = false;
     try {
-      while (save.wanted !== null && save.wanted !== save.saved) {
+      while (save.wanted !== null && (uncertain || save.wanted !== save.saved)) {
         const wanted: boolean = save.wanted;
         save.wanted = null;
         let failure: string | null = null;
         try {
           const result = await api().followThread({ groupId: group.id, rootId, following: wanted });
-          if (result.ok) save.saved = result.following;
+          if (result.ok) { save.saved = result.following; uncertain = false; }
           else failure = t(chatErrorKey(result.errorCode));
         } catch { failure = t(key('requestFailed')); }
+        if (failure) uncertain = true;
         if (!current()) return;
         // A newer click is saved next; only the last outcome is shown.
         if (save.wanted !== null) continue;
@@ -255,6 +259,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       save.saving = false;
       save.wanted = null;
       followWriteRef.current += 1;
+      // Read what the server kept after a failure: the switch then shows the real choice.
+      if (uncertain && current()) refreshRef.current();
     }
   }, [following, group.id, rootId, t]);
   useEffect(() => {
