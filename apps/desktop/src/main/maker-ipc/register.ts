@@ -11098,6 +11098,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     inheritSourcePermissionMode?: boolean;
     /** Host-owned durable inputs use the coordinator even when idle. */
     forceQueue?: boolean;
+    /** Explicit target delivery preserves the recipient's current plan mode. */
+    inheritTargetPlanMode?: boolean;
     /** 插件任务派发的来源(只用于标签与 `[消息来源]`,不是权限判据,也不是 origin)。 */
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
     /**
@@ -11537,6 +11539,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           botTaskCoordination: params.botTaskCoordination,
           authorizationGuard: params.authorizationGuard,
           files: params.files,
+          inheritTargetPlanMode: params.inheritTargetPlanMode,
           taskActionDeliveryGuard: params.taskActionDeliveryGuard,
         });
         return {
@@ -13078,16 +13081,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const currentRoute = await resolveRoute(pluginId, requestedRoute, callId);
         if ((Object.keys(currentRoute) as Array<keyof PluginTaskRoute>).some(key => currentRoute[key] !== route[key]))
           throw new PluginTaskError('ROUTE_UNAVAILABLE', 'Plugin task route changed');
-        const workingDir = targetContext?.workingDir ?? (!isolatedWorkspace && cfg.workingDir
+        const requestedWorkingDir = targetContext?.workingDir ?? (!isolatedWorkspace ? cfg.workingDir : undefined);
+        const workingDir = requestedWorkingDir
           ? await resolvePluginWorkerDirectory({
-              requested: cfg.workingDir, configuredDirectory: cfg.workingDir,
+              requested: requestedWorkingDir, configuredDirectory: requestedWorkingDir,
               isPickedDirectory: () => false,
               assertCurrent: () => {
                 assertPlugin(pluginId);
                 if (!configurationIsCurrent()) throw new PluginTaskError('PERMISSION_DENIED', 'Plugin task configuration changed');
               },
             })
-          : undefined);
+          : undefined;
         assertPlugin(pluginId);
         if (!configurationIsCurrent()) throw new PluginTaskError('PERMISSION_DENIED', 'Plugin task configuration changed');
         await createPluginTaskSession({
@@ -13545,6 +13549,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             if (!meta) throw new Error('TARGET_UNAVAILABLE');
             const item = await buildSessionControlInputItem({ targetSessionId: taskId, clientId,
               message: text, persistedContent: text, meta, sourcePlugin, files,
+              inheritTargetPlanMode: true,
               autoReviewUserText: { kind: 'delegated-continuation' },
             });
             await validate();
@@ -13566,6 +13571,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const result = await sendToSessionInternal({ targetSessionId: taskId, clientId, message: text, files,
           autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true,
           resumeWithStoredPermissionMode: true,
+          inheritTargetPlanMode: true,
           sourcePlugin,
           authorizationGuard: { validate, assertCurrent },
           onAccepted: validate,

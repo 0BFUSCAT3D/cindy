@@ -76,9 +76,9 @@ describe('plugin target queries and delivery', () => {
     await expect(f.call(f.request)).rejects.toMatchObject({ code: 'TARGET_UNAVAILABLE' });
     expect(f.send).not.toHaveBeenCalled();
   });
-  it('creates in the specified project and passes its selected route', async () => {
+  it.each([false, true, 'ultrafast'] as const)('creates in the specified project with fastMode %s', async (fastMode) => {
     const f = fixture();
-    const route = { agentKind: 'codex', providerId: 'provider', model: 'model', effort: '', fastMode: false };
+    const route = { agentKind: 'codex', providerId: 'provider', model: 'model', effort: '', fastMode };
     const result = await f.call({ ...f.request, target: { kind: 'project', id: 'chosen' }, route, title: 'New task' });
     expect(result).toMatchObject({ accepted: true, delivery: 'queue' });
     expect(f.create).toHaveBeenCalledWith('plugin', 'chosen', expect.any(String), 'New task', route, expect.any(Function));

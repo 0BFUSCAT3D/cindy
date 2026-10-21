@@ -142,7 +142,7 @@ export class PluginTargetSlot {
         target.kind !== 'project' || !route || !['cc', 'codex', 'pi'].includes(route.agentKind) ||
         !keyString(route.providerId) || typeof route.model !== 'string' || !route.model.trim() ||
         route.model.length > 256 || typeof route.effort !== 'string' || route.effort.length > 32 ||
-        typeof route.fastMode !== 'boolean'
+        (typeof route.fastMode !== 'boolean' && route.fastMode !== 'ultrafast')
       ) return fail('INVALID_PARAMS');
     }
     const route = request.route && {
