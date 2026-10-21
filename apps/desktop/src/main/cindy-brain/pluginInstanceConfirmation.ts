@@ -19,6 +19,7 @@ import {
 } from './pluginInstanceRegistry.js';
 
 interface ConfirmationMarketRow {
+  pluginId?: string | null;
   installed?: boolean;
   namespace?: string | null;
   scope?: 'public' | 'personal' | 'organization';
@@ -129,7 +130,7 @@ export async function confirmUnconfirmedInstances(host: UnconfirmedConfirmationH
         )) return;
         if (approval.state !== 'approved' || approval.receipt.id !== record.ghostId) return;
         const currentRecord = host.sync().instances[record.instanceKey];
-        if (!currentRecord?.active || currentRecord.namespaceState !== record.namespaceState ||
+        if (!currentRecord?.active || currentRecord.pluginId !== record.pluginId || currentRecord.namespaceState !== record.namespaceState ||
             currentRecord.namespace !== record.namespace || currentRecord.receiptRevision !== record.receiptRevision ||
             currentRecord.packageSha256 !== record.packageSha256) return;
         const freshEvidence = readEvidence(candidate);
@@ -152,7 +153,7 @@ export async function confirmUnconfirmedInstances(host: UnconfirmedConfirmationH
         const current = host.sync();
         if (host.isBlocked()) return;
         const live = current.instances[record.instanceKey];
-        if (!live?.active || live.namespaceState !== record.namespaceState || live.namespace !== record.namespace ||
+        if (!live?.active || live.pluginId !== record.pluginId || live.namespaceState !== record.namespaceState || live.namespace !== record.namespace ||
             live.receiptRevision !== revision || live.packageSha256 !== packageSha256) return;
         const confirmed = confirmInstanceNamespace(current, record.instanceKey, decision.namespace, {
           revision, packageSha256,

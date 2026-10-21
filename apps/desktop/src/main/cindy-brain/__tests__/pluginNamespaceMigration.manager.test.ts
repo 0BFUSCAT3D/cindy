@@ -177,8 +177,9 @@ describe('GhostManager namespace migration census', () => {
   // Unit regression: a persisted pending row outside the census was skipped by
   // both migration and confirmation. Recover only from positive market facts;
   // keep the physical instance, approval, enabled state and skill snapshot.
-  it.each(['market', 'missing', 'forge-stamped', 'write-failed'])('handles an orphan pending record without inventing migration eligibility (evidence=%s)', async (evidence) => {
+  it.each(['market', 'missing', 'forge-stamped', 'write-failed', 'binding-before-lock', 'binding-before-commit'])('handles an orphan pending record without inventing migration eligibility (evidence=%s)', async (evidence) => {
     const positive = evidence === 'market';
+    const bindingChanged = evidence.startsWith('binding-');
     await plantLegacyInstall('hello', true, evidence === 'forge-stamped' ? 'agent-forge' : undefined);
     const approved = receiptStore().read('hello');
     if (approved.state !== 'approved') throw new Error('expected approved install');
@@ -190,6 +191,7 @@ describe('GhostManager namespace migration census', () => {
     const registryPath = path.join(workDir, 'ghosts-install-state', 'plugin-instances.v2.json');
     const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
     registry.census.pendingRelIds = [];
+    if (bindingChanged) registry.instances.hello.pluginId = 'plugin-a';
     fs.writeFileSync(registryPath, JSON.stringify(registry));
     if (evidence === 'forge-stamped') {
       const current = receiptStore().read('hello');
@@ -198,15 +200,26 @@ describe('GhostManager namespace migration census', () => {
         skillSourceDir: path.join(rootDir, 'hello'),
       });
     }
+    let evidenceReads = 0;
     manager = createManager({
       mutateSnapshot,
       classifyPendingNamespace: () => ({ kind: 'commit', namespace: 'acme', basis: 'market-organization' }),
-      readUnconfirmedConfirmationEvidence: () => ({
-        marketRecords: positive || evidence === 'write-failed' ? [{ namespace: 'acme', organizationId: 'org-acme', scope: 'organization', installed: true, packageSha256: 'a'.repeat(64) }] : undefined,
-        packageSha256: 'a'.repeat(64),
-        forgeSelfTest: evidence === 'forge-stamped',
-        currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme' },
-      }),
+      readUnconfirmedConfirmationEvidence: () => {
+        evidenceReads += 1;
+        // Simulate a binding replacement at either async commit boundary.
+        // A matching old package must not confirm the replacement plugin.
+        if (bindingChanged && evidenceReads === (evidence === 'binding-before-lock' ? 1 : 2)) {
+          const changed = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+          changed.instances.hello.pluginId = 'plugin-b';
+          fs.writeFileSync(registryPath, JSON.stringify(changed));
+        }
+        return {
+          marketRecords: positive || evidence === 'write-failed' || bindingChanged ? [{ namespace: 'acme', organizationId: 'org-acme', scope: 'organization' as const, installed: true, packageSha256: 'a'.repeat(64) }] : undefined,
+          packageSha256: 'a'.repeat(64),
+          forgeSelfTest: evidence === 'forge-stamped',
+          currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme' },
+        };
+      },
     });
     // Waiting for positive evidence must preserve the install without making
     // the startup coordinator repeatedly scan the entire plugin market.

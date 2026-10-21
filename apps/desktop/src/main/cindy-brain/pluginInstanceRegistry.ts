@@ -289,6 +289,7 @@ function marketEvidenceConfirms(
 
 export function marketRowMatchesUnconfirmedInstance(
   row: {
+    pluginId?: string | null;
     installed?: boolean;
     namespace?: string | null;
     scope?: 'public' | 'personal' | 'organization';
@@ -297,6 +298,9 @@ export function marketRowMatchesUnconfirmedInstance(
   record: PluginInstanceRecord,
   currentOrganization: { organizationId: string; orgSlug: string | null } | null,
 ): boolean {
+  // Unlabeled legacy installs still use independent package/manifest evidence;
+  // an existing market binding must never be confirmed by a different plugin.
+  if (record.pluginId !== null && row.pluginId !== record.pluginId) return false;
   const hasNamespace = hasDeliveryNamespace(row);
   if (hasNamespace) return (row.namespace ?? null) === record.namespace;
   if (record.namespace === null) return row.scope !== 'organization';
