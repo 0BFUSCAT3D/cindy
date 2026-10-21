@@ -528,8 +528,8 @@ interface ChatInputProps {
     },
   ) => boolean | void | Promise<boolean | void>;
   /**
-   * 用户在已有任务的输入框里输入了内容（不含草稿恢复、语音回填、发送后清空等程序写入）。
-   * 父组件据此提前启动 Agent；每次按键都会调用，节流由接收方负责。
+   * 用户开始往输入框里放内容：键盘 / 输入法输入、粘贴、开始语音输入（不含草稿恢复、
+   * 语音回填、发送后清空等程序写入）。父组件据此提前启动 Agent；每次都会调用，节流由接收方负责。
    */
   onComposerTyping?: () => void;
   /** Session ID for binding workingDir. When absent, folder picker is hidden. */
@@ -2386,6 +2386,7 @@ export function ChatInput({
       },
       handlePaste(view, event) {
         if (composerMutationLockedRef.current) return true;
+        onComposerTypingRef.current?.();
         // Intercept clipboard file/folder/image. Three sources to handle,
         // matching the onDrop logic below:
         //   1. Folder copied from OS file manager  → addFolderPath (@dir chip)
@@ -3376,6 +3377,7 @@ export function ChatInput({
   const handleVoiceInputStart = useCallback((): boolean => {
     // 同步 claim 录音后立刻返回是否占用；授权确认（beforeStart）与启动提示音
     // 由 useVoiceInput 的后台启动流程继续处理。
+    onComposerTypingRef.current?.();
     return voiceInput.start({
       startedAt: performance.now(),
       beforeStart: onBeforeVoiceInputStart,

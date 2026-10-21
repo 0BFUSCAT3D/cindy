@@ -49,6 +49,7 @@ import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 import { cn } from '@/lib/utils';
+import { provisionalDraftTaskId, subscribeProvisionalDraftTask } from './provisionalDraftTask';
 import { toast } from '@/lib/toast';
 import { isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import { useCCSessions } from '@/hooks/useCCSessions';
@@ -535,7 +536,11 @@ export function CCAgentSidebarUpper() {
   const match = useMatch('/cc-agent/:sessionId');
   const orcaMatch = useMatch('/cc-agent/orca/:sessionId');
   const filesMatch = useMatch('/cc-agent/files/:sessionId');
-  const activeSessionId = orcaMatch?.params.sessionId ?? match?.params.sessionId;
+  // 新建页上：它的未发送任务在列表里显示为当前项。
+  const provisionalDraftId = useSyncExternalStore(subscribeProvisionalDraftTask, provisionalDraftTaskId);
+  const routeSessionId = orcaMatch?.params.sessionId ?? match?.params.sessionId;
+  const activeSessionId =
+    routeSessionId === 'new' && provisionalDraftId ? provisionalDraftId : routeSessionId;
   const filesSessionId = filesMatch?.params.sessionId;
   // /bots/* 与任务列表共用本侧栏:正在看的伙伴会话同样算「注视中」,不记未读、不发通知。
   const viewedBotSessionId = useViewedBotSessionId();
