@@ -488,6 +488,8 @@ import {
   getSessionRowSnapshot,
   getSessionFsSnapshot,
   getSessionRowSnapshotStrict,
+  commitProvisionalSession,
+  discardProvisionalSessionRow,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
   restoreArchivedSessionForSend,
@@ -924,6 +926,7 @@ import {
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
 import { createAgentPrewarmer, isAgentPrewarmEligible } from './agentPrewarm.js';
+import { isProvisionalSession } from '../localDb/provisionalSessions.js';
 import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
@@ -17175,7 +17178,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
 
-  // 输入框开始打字时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
+  // 输入框开始输入（打字、粘贴、开始语音输入）时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
   // 任务、且 Agent 在本机运行；Bot / IM / 定时 / 审查 / 共享 / 协同 / 远程主机等任务的
   // 启动另有专门的路由与权限检查，仍由真实发送处理。启动走发送路径的同一个懒创建，
   // 并在同一把会话发送锁里执行，真实发送不会与预热并发重复启动。
@@ -17193,7 +17196,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           remoteHostId: sessions.remoteHostId,
           agentDeviceId: sessions.agentDeviceId,
           orcaRole: sessions.orcaRole,
-          sdkSessionId: sessions.sdkSessionId,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
@@ -17204,6 +17206,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (co.remoteHostId || co.agentDeviceId) return false;
       return prewarmSessionRuntime(sessionId, co);
     }),
+    isLive: (sessionId) => maker.getSession(sessionId) !== undefined,
     // Runs under the send lock: a send that got there first has marked the runtime used
     // (and its turn is running), one that arrives later waits for the close to finish and
     // then cold-starts, instead of meeting a runtime that is half closed.
@@ -17234,6 +17237,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const [sessionId] = args;
     if (typeof sessionId !== 'string') return await sendToAgentAcceptedUnlocked(...args);
     agentPrewarmer.markUsed(sessionId);
+    // 新建页的未发送任务第一次发送：renderer 通常已先转正，这里兜底。
+    if (isProvisionalSession(sessionId)) await commitProvisionalSession(sessionId);
     if (cindyMakeManager.isTaskPreparing(sessionId) && (args[3] as Record<PropertyKey, unknown> | undefined)?.[CINDY_MAKE_TASK_DISPATCH] !== true) {
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
@@ -18053,6 +18058,39 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       void agentPrewarmer.request(sid, createOpts);
       return { accepted: true };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_DISCARD_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ discarded: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      if (!isProvisionalSession(sid)) return { discarded: false };
+      // Under the send lock: a prewarm that is still starting finishes first, and one queued
+      // behind us finds no row and does nothing.
+      const discarded = await withSendToSessionLock(sid, async () => {
+        if (!isProvisionalSession(sid)) return false;
+        agentPrewarmer.markUsed(sid);
+        const live = maker.getSession(sid);
+        if (live?.isTurnRunning()) return false;
+        // Same close as idle prewarm reclaim; the row goes away right after.
+        if (live) await live.closeIfIdle();
+        if (maker.getSession(sid)) return false;
+        return discardProvisionalSessionRow(sid);
+      });
+      return { discarded };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_COMMIT_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ committed: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      return { committed: await commitProvisionalSession(sid) };
     },
   );
 

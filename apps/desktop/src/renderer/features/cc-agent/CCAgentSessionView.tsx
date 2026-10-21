@@ -3877,7 +3877,7 @@ function CCAgentSessionContent({
     [fastMode, insertSystemCard, remoteDeviceId, session, sessionId, t, updateSystemCardData],
   );
 
-  // 开始打字时提前启动 Agent，把冷启动藏进打字时间（本机与远程任务相同）。
+  // 开始输入（打字、粘贴、开始语音输入）时提前启动 Agent，把冷启动藏进输入时间（本机与远程任务相同）。
   const handleComposerTyping = useCallback(() => {
     if (readOnly || cindyMakeInputLocked || !sessionId || !session?.workingDir) return;
     makerChatStore.prewarmSession(

@@ -3658,6 +3658,8 @@ function _purgeSession(sessionId: string): void {
   invalidateBackgroundTaskReconcile(sessionId);
   cancelBackgroundTaskReconcile(sessionId);
   backgroundTaskStaleRetrySessions.delete(sessionId);
+  // 同一 id 之后可能重新建出来(新建页的未发送任务)，预热提醒要重新开始计时。
+  lastPrewarmRequest.delete(sessionId);
   // 代际递增(bump 而非 delete,原因见 _messagesEpoch 注释):作废 in-flight 翻页,
   // 避免其提交把旧窗口 merge 进 purge 后重建的空 slice。
   releaseRemoteHistoryView(sessionId);
@@ -14240,12 +14242,28 @@ export function buildCreateOptsForCurrentSession(
   };
 }
 
-/** 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。 */
+/**
+ * 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。
+ * 换了模型、深度、权限、引擎或目录时任务所在电脑可能已关掉旧进程，下一次输入立即重新提醒。
+ */
 const PREWARM_REQUEST_INTERVAL_MS = 30_000;
-const lastPrewarmRequestAt = new Map<string, number>();
+const lastPrewarmRequest = new Map<string, { at: number; settings: string }>();
+
+function prewarmSettingsKey(createOpts: AgentInputCreateOpts): string {
+  return JSON.stringify([
+    createOpts.agentKind,
+    createOpts.workingDir,
+    createOpts.model,
+    createOpts.providerId ?? null,
+    createOpts.effort,
+    createOpts.permissionMode,
+    createOpts.fastMode ?? null,
+    createOpts.planMode ?? null,
+  ]);
+}
 
 /**
- * 输入框开始打字：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
+ * 输入框开始输入（打字、粘贴、开始语音输入）：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
  * 没有排队或在途发送时请求；createOpts 与下一次发送构造的相同，执行字段由任务所在
  * 电脑按数据库校正。尽力而为，结果不影响发送。
  */
@@ -14267,10 +14285,6 @@ function prewarmSession(
   ) {
     return;
   }
-  const now = Date.now();
-  const last = lastPrewarmRequestAt.get(sessionId);
-  if (last !== undefined && now - last < PREWARM_REQUEST_INTERVAL_MS) return;
-  lastPrewarmRequestAt.set(sessionId, now);
   const createOpts = buildCreateOptsForCurrentSession(
     sessionId,
     model,
@@ -14278,6 +14292,11 @@ function prewarmSession(
     permissionMode,
     workingDir,
   );
+  const settings = prewarmSettingsKey(createOpts);
+  const now = Date.now();
+  const last = lastPrewarmRequest.get(sessionId);
+  if (last && last.settings === settings && now - last.at < PREWARM_REQUEST_INTERVAL_MS) return;
+  lastPrewarmRequest.set(sessionId, { at: now, settings });
   void prewarmSessionFor(sessionId, createOpts).catch(() => undefined);
 }
 

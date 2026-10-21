@@ -1,4 +1,14 @@
-import { openSession } from '../sessionOpening.js';
+import { ensureOpenedProjectGit, openSession } from '../sessionOpening.js';
+import {
+  configureProvisionalSessions,
+  deleteUnsentSessionRow,
+  forgetProvisionalSession,
+  isProvisionalSession,
+  markProvisionalSession,
+  removeEmptyDialogueDir,
+  sweepLeftoverProvisionalSessions,
+} from '../provisionalSessions.js';
+import { emitSessionCreated, emitSessionListChangedLocally } from './sessionCreatedBroadcast.js';
 /**
  * chat-data-localization F5：Sessions IPC handlers（C6）。
  *
@@ -420,7 +430,10 @@ export function broadcastSessionPatched(
   const hasCapturedScope = ownerScope !== undefined && ownerScope !== null;
   const ownerStamp = hasCapturedScope ? ownerScope.ownerStamp : getSafeOwnerPushStamp();
   try {
-    if (hasCapturedScope) {
+    // 未发送任务只在本机可见，转正前不推给控制端。
+    if (isProvisionalSession(sessionId)) {
+      // local windows only
+    } else if (hasCapturedScope) {
       broadcastTap.tapWindowBroadcast(
         'local-db:sessions:patched',
         { sessionId, patch },
@@ -1074,6 +1087,62 @@ export async function touchUserSendInDb(id: string, atMs?: number): Promise<void
   }
 }
 
+/**
+ * 未发送任务转为普通任务（第一次发送）：补做建任务时延后的副作用，并让控制端看到它。
+ * 不是未发送任务时什么都不做。最近项目由随后的 touchUserSend 照常记录。
+ */
+export async function commitProvisionalSession(sessionId: string): Promise<boolean> {
+  if (!forgetProvisionalSession(sessionId)) return false;
+  const [row] = await getDbClient()
+    .drizzle.select({
+      workingDir: sessions.workingDir,
+      workspaceKind: sessions.workspaceKind,
+      remoteHostId: sessions.remoteHostId,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  if (!row) return false;
+  await ensureOpenedProjectGit({ id: sessionId, ...row }).catch((error) => {
+    log.warn('provisional session git bootstrap failed', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  emitSessionCreated(sessionId);
+  void import('../../cindy-brain/index.js')
+    .then((m) =>
+      m.notifyGhostSessionEvent('created', {
+        sessionId,
+        ...(row.workingDir ? { workdir: row.workingDir } : {}),
+      }),
+    )
+    .catch(() => {});
+  log.info('provisional session committed', { sessionId });
+  return true;
+}
+
+/**
+ * 删掉一个未发送任务（用户清空了新建页的输入）：仍未发送、没有消息时才真正删除行，
+ * 顺带删掉为它新建、仍为空的对话目录，并通知本机窗口移除。调用方负责先关掉它的 Agent。
+ */
+export async function discardProvisionalSessionRow(sessionId: string): Promise<boolean> {
+  if (!isProvisionalSession(sessionId)) return false;
+  const deleted = await deleteUnsentSessionRow(sessionId);
+  if (!deleted) {
+    // Already sent (or gone): it is an ordinary task now.
+    forgetProvisionalSession(sessionId);
+    return false;
+  }
+  if (deleted.workspaceKind === 'dialogue') removeEmptyDialogueDir(sessionId, deleted.workingDir);
+  forgetProvisionalSession(sessionId);
+  // Other local windows re-read their lists; the row is gone, so it drops out. No status
+  // patch: the same id may be opened again when the user types again.
+  emitSessionListChangedLocally(sessionId);
+  log.info('provisional session discarded', { sessionId });
+  return true;
+}
+
 /** fork 出来的会话的占位标题前缀("[Fork] …" / "[Fork·已剥离] …")。 */
 const FORK_PLACEHOLDER_TITLE_PREFIX = '[Fork';
 
@@ -1287,6 +1356,7 @@ export function registerSessionIpc(
   opts: RegisterSessionIpcOpts = {},
 ): void {
   registeredSessionIpcOpts = opts;
+  configureProvisionalSessions(() => app.getPath('userData'));
   // interrupted-turn-resume 假阳性修复:每次 last_turn_ended_at 真正落库(正常收尾 /
   // barrier 版收尾 / ack)都广播 lastTurnEndedAt patch —— renderer 的 session 快照可能
   // 是在 turn 飞行中或「done → ended 落库」空窗里取的(startedAt > endedAt),此前
@@ -1321,6 +1391,8 @@ export function registerSessionIpc(
       void import('../../sessionTaskSummary.js').then((m) => m.backfillPinnedSessionSummaries());
       // 首次 list 即账号库就绪:预热插件后台任务索引,灵动岛/通知的同步判定从此可用。
       void ensureHiddenSessionRegistryLoaded();
+      // 同一时机清掉上次运行没来得及删的未发送任务。
+      void sweepLeftoverProvisionalSessions().catch(() => {});
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);
@@ -1404,7 +1476,7 @@ export function registerSessionIpc(
       };
       // key 用同一快照上的 userId + clientEpoch + 归一化参数。
       // forceRefresh / status 重拉带 fresh，不并入写前那次查询。
-      const result = usageHistory
+      const loaded = usageHistory
         ? await loadUsageHistoryRows()
         : userId && !fresh && !before && !ids
           ? await runSessionListSingleFlight(
@@ -1418,6 +1490,11 @@ export function registerSessionIpc(
               loadRows,
             )
           : await loadRows();
+      // 未发送任务只出现在本机任务列表里，手机 / 其它电脑在它第一次发送后才看到。
+      // 在 single-flight 之外过滤：同一次查询可能同时供本机与控制端使用。
+      const result = isDeviceLinkInvoke()
+        ? ((loaded as Array<{ id: string }>).filter((row) => !isProvisionalSession(row.id)) as typeof loaded)
+        : loaded;
       const finishedAt = performance.now();
       const filter = statusFilter ?? 'all';
       const elapsedMs = Math.round(finishedAt - startedAt);
@@ -1450,7 +1527,17 @@ export function registerSessionIpc(
     const now = Date.now();
     const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const id = resolveBusinessSessionId(bodyObj.id);
-    const createBody = bodyObj as Parameters<typeof sessionCreateToRow>[1];
+    // 未发送任务（新建页开始输入时先建出来，见 provisionalSessions.ts）：只给本机普通任务，
+    // 延后的创建副作用在第一次发送转正时补做。
+    const { provisional: provisionalFlag, ...bodyWithoutProvisional } = bodyObj;
+    const provisional = provisionalFlag === true;
+    if (provisional && (
+      bodyObj.remoteHostId || bodyObj.agentDeviceId || bodyObj.orcaRole || bodyObj.source !== undefined
+      || (Array.isArray(bodyObj.writableDirs) && bodyObj.writableDirs.length > 0)
+    )) {
+      throwIpcError('INVALID_PARAMS', 'only ordinary local tasks can be opened before the first send');
+    }
+    const createBody = bodyWithoutProvisional as Parameters<typeof sessionCreateToRow>[1];
     // M16: agentKind 白名单校验（防止 renderer 传非法值）
     const ALLOWED_AGENT_KINDS = new Set<string>(['cc', 'codex', 'pi']);
     if (bodyObj.agentKind !== undefined && !ALLOWED_AGENT_KINDS.has(bodyObj.agentKind as string)) {
@@ -1535,6 +1622,7 @@ export function registerSessionIpc(
     }
     const { row: insertRow } = await openSession({ id, now,
       body: { ...createBody, workspaceKind, workingDir },
+      ...(provisional ? { deferGitInit: true } : {}),
     }, async (prepared, assertCurrent) => {
       const resource = !prepared.remoteHostId && prepared.workingDir
         ? managedWorktreeRoot(prepared.workingDir) : null;
@@ -1544,6 +1632,11 @@ export function registerSessionIpc(
     });
     const [row] = await db.select().from(sessions).where(eq(sessions.id, id));
     if (!row) throwIpcError('NOT_FOUND', 'Session 创建后查询失败');
+    if (provisional) {
+      markProvisionalSession(id, now);
+      log.info('provisional session opened', { sessionId: id, workspaceKind: insertRow.workspaceKind });
+      return sessionToCamel({ ...row, messageCount: 0 });
+    }
     // recent-workdirs: 项目目录走 sidebar 分组,要进"最近"列表;dialogue 目录是
     // app-managed 临时 cwd,跟用户选过的项目目录语义不同,不污染最近列表。
     // 失败仅日志,不阻断创建流程。

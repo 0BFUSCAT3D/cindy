@@ -874,7 +874,10 @@ const ENQUEUE_RECONNECT_BACKOFF_MS = 300;
  * 闪一下、计时还被重置回 0s。真停了推迟这点时间熄灭无感,交接空隙则被吃掉。
  */
 const COMPOSER_ACTIVITY_SETTLE_MS = 600;
-/** 打字预热提醒的最短间隔；被控端每次提醒都会顺延预热进程的空闲回收。 */
+/**
+ * 打字预热提醒的最短间隔；被控端每次提醒都会顺延预热进程的空闲回收。换了模型、深度、
+ * 权限、引擎或目录时被控端可能已关掉旧进程，下一次输入立即重新提醒。
+ */
 const MOBILE_AGENT_PREWARM_INTERVAL_MS = 30_000;
 /** 另一台电脑的目录还没读到时的空供应商列表(稳定引用,不触发下游 memo 重算)。 */
 const EMPTY_PROVIDER_VIEWS: readonly ProviderView[] = [];
@@ -3244,17 +3247,27 @@ function SessionScreenContent() {
     enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
   });
 
-  // 开始打字时请被控端提前启动 Agent，把冷启动藏进打字时间。同一任务 30 秒最多提醒一次；
+  // 开始打字（含粘贴）或开始语音输入时请被控端提前启动 Agent，把冷启动藏进输入时间。同一任务 30 秒最多提醒一次；
   // 任务在跑、在排队编辑或旧被控端不支持时什么都不做。
-  const lastAgentPrewarmAtRef = useRef(0);
+  const lastAgentPrewarmRef = useRef<{ at: number; settings: string } | null>(null);
   const prewarmAgentOnTyping = useCallback(() => {
     if (queueEditingRef.current) return;
-    const now = Date.now();
-    if (now - lastAgentPrewarmAtRef.current < MOBILE_AGENT_PREWARM_INTERVAL_MS) return;
     const session = remoteSessionStore.getSessions().find((item) => item.id === sessionId) ?? currentSession;
     if (!session?.workingDir || remoteSessionStore.isSessionRunning(sessionId)) return;
-    lastAgentPrewarmAtRef.current = now;
+    const now = Date.now();
     const { createOpts } = buildQueuedTextMessage(session, '', new Date(now));
+    const settings = JSON.stringify([
+      createOpts.agentKind,
+      createOpts.workingDir,
+      createOpts.model,
+      createOpts.providerId ?? null,
+      createOpts.effort,
+      createOpts.permissionMode,
+      createOpts.fastMode ?? null,
+    ]);
+    const last = lastAgentPrewarmRef.current;
+    if (last && last.settings === settings && now - last.at < MOBILE_AGENT_PREWARM_INTERVAL_MS) return;
+    lastAgentPrewarmRef.current = { at: now, settings };
     void maker.prewarmSession(sessionId, createOpts).catch(() => undefined);
   }, [currentSession, maker, sessionId]);
   const applyTypedComposerChange = useCallback((value: ComposerDocument) => {
@@ -5463,6 +5476,8 @@ function SessionScreenContent() {
       || voiceState === 'listening'
       || voiceIsProcessing
     ) return;
+    // 开始语音输入和打字一样，是要发消息的信号。
+    prewarmAgentOnTyping();
     voiceStopAfterStartRef.current = false;
     setVoiceError(null);
     setVoiceReleaseToSendActive(false);
@@ -5692,7 +5707,7 @@ function SessionScreenContent() {
       setVoiceState('error');
       setVoiceError(formatRemoteError(err));
     }
-  }, [deviceId, openLink, renderItems, t, voiceIsProcessing, voiceState, writeVoiceDraft]);
+  }, [deviceId, openLink, prewarmAgentOnTyping, renderItems, t, voiceIsProcessing, voiceState, writeVoiceDraft]);
 
   const cancelVoiceForAppBackground = useCallback(() => {
     const controller = voiceControllerSessionRef.current;
@@ -10831,7 +10846,10 @@ function SessionScreenContent() {
                 composerSendUnavailableReason={canUseComposer ? null : composerDisabledReason}
                 attachmentCount={attachments.length}
                 pendingUploadCount={pendingUploads.length}
-                onPasteImages={(uris) => void addPastedImageAttachments(uris)}
+                onPasteImages={(uris) => {
+                  prewarmAgentOnTyping();
+                  void addPastedImageAttachments(uris);
+                }}
                 onDragActiveChange={handleComposerDragActiveChange}
                 onInputTopLayout={handleComposerInputTopLayout}
                 composerPullThrough={composerPullThrough}
