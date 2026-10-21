@@ -36,6 +36,8 @@ export function createAgentPrewarmer(
   /** Insertion order is age order: the first key is the oldest unused runtime. */
   const warm = new Map<string, unknown>();
   const starting = new Map<string, Promise<AgentPrewarmOutcome>>();
+  /** A real send took over while this task's prewarm was still starting. */
+  const usedWhileStarting = new Set<string>();
 
   const untrack = (sessionId: string): boolean => {
     const timer = warm.get(sessionId);
@@ -86,6 +88,11 @@ export function createAgentPrewarmer(
           });
           return 'skipped';
         }
+        if (usedWhileStarting.delete(sessionId)) {
+          // The send already owns this runtime; never hand it to idle reclaim.
+          deps.log.info('agent prewarm taken over by send', { sessionId });
+          return 'started';
+        }
         arm(sessionId);
         deps.log.info('agent prewarm started', { sessionId, warm: warm.size });
         while (warm.size > maxWarm) {
@@ -95,6 +102,7 @@ export function createAgentPrewarmer(
         }
         return 'started';
       })().finally(() => {
+        usedWhileStarting.delete(sessionId);
         if (starting.get(sessionId) === run) starting.delete(sessionId);
       });
       starting.set(sessionId, run);
@@ -103,6 +111,7 @@ export function createAgentPrewarmer(
     /** A real send now owns this runtime; prewarm bookkeeping must not close it. */
     markUsed(sessionId: string): void {
       untrack(sessionId);
+      if (starting.has(sessionId)) usedWhileStarting.add(sessionId);
     },
     /** Account switch: the old owner's runtimes are torn down elsewhere. */
     reset(): void {

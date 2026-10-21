@@ -137,10 +137,14 @@ export function MobileOutboxBridge() {
     const sessionReads = new Map<string, { at: number; read: Promise<RemoteSession> }>();
     const readSessionOnce = (r: DurableOutboxRecord): Promise<RemoteSession> => {
       const key = JSON.stringify([r.deviceId, r.item.sessionId, r.item.clientId]);
+      const now = Date.now();
+      // Only reads inside the reuse window are useful; drop the rest so the map stays tiny.
+      for (const [other, entry] of sessionReads)
+        if (now - entry.at >= SESSION_READ_REUSE_MS) sessionReads.delete(other);
       const cached = sessionReads.get(key);
-      if (cached && Date.now() - cached.at < SESSION_READ_REUSE_MS) return cached.read;
+      if (cached) return cached.read;
       const read = maker(r).getSession(r.item.sessionId);
-      sessionReads.set(key, { at: Date.now(), read });
+      sessionReads.set(key, { at: now, read });
       read.catch(() => {
         if (sessionReads.get(key)?.read === read) sessionReads.delete(key);
       });

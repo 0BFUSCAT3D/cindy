@@ -466,15 +466,19 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
     } finally {
       scanning = false;
     }
-    try {
-      await Promise.all(work.map(deliver));
-    } finally {
-      for (const record of work) inFlight.delete(id(record));
-    }
-    if (rescan && !stopped) {
-      rescan = false;
-      void run().catch(() => undefined);
-    }
+    // Each delivery frees its own slot as soon as it settles, so a message added
+    // while a slow peer is still replying can use that slot immediately.
+    await Promise.all(
+      work.map((record) =>
+        deliver(record).finally(() => {
+          inFlight.delete(id(record));
+          if (rescan && !stopped) {
+            rescan = false;
+            void run().catch(() => undefined);
+          }
+        }),
+      ),
+    );
   }
   return {
     stop() {

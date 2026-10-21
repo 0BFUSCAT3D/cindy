@@ -60,4 +60,21 @@ describe('Agent prewarm lifecycle', () => {
     expect(prewarmer.warmSessionIds()).toEqual([]);
     expect(timers.size).toBe(0);
   });
+  it('does not hand a runtime to idle reclaim when a send took it over while it was starting', async () => {
+    const { prewarmer, closeIfUnused, fireAll, start, timers } = harness();
+    let finishStart!: (started: boolean) => void;
+    start.mockImplementationOnce(() => new Promise<boolean>((resolve) => (finishStart = resolve)));
+    const pending = prewarmer.request('racing', {});
+    prewarmer.markUsed('racing');
+    finishStart(true);
+    await pending;
+    expect(prewarmer.warmSessionIds()).toEqual([]);
+    expect(timers.size).toBe(0);
+    fireAll();
+    await Promise.resolve();
+    expect(closeIfUnused).not.toHaveBeenCalled();
+    // A later prewarm of the same task starts tracking normally again.
+    await prewarmer.request('racing', {});
+    expect(prewarmer.warmSessionIds()).toEqual(['racing']);
+  });
 });

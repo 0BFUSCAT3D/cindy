@@ -1281,3 +1281,20 @@ it('starts a newly added message while another task is still being delivered', a
   slow.resolve(projection('slow'));
   await first;
 });
+
+it('frees each delivery slot as soon as that delivery settles, not when its whole batch does', async () => {
+  const { store, deps, runner } = await setup();
+  await store.add(message('slow', 'session-a'));
+  await store.add(message('fast', 'session-b'));
+  const slow = deferred<DeliveryProjection>();
+  deps.enqueue.mockImplementation((r: DurableOutboxRecord) =>
+    r.item.clientId === 'slow' ? slow.promise : Promise.resolve(projection(r.item.clientId)));
+  const batch = runner.run();
+  await vi.waitFor(() => expect(store.getSnapshot().find((r) => r.item.clientId === 'fast')?.state).toBe('host-owned'));
+  await store.add(message('third', 'session-c'));
+  await runner.run();
+  await vi.waitFor(() =>
+    expect(deps.enqueue.mock.calls.map(([r]) => r.item.clientId)).toContain('third'));
+  slow.resolve(projection('slow'));
+  await batch;
+});
