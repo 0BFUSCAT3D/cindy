@@ -47,6 +47,7 @@ import {
 // 生产构建由 metro resolveRequest 把整模块替换为空 stub(metro.config.js),
 // 运行时另有 __DEV__ guard 双保险。
 import { resolveLoginScenarioFetch } from '@cindy/auth-client/fixtures';
+import { mobileDebugLog } from '@/debug/mobileDebugLog';
 
 import { AskCardAuthContext, type AskCardAuth } from '@/session/askCardAuth';
 import {
@@ -3452,6 +3453,9 @@ function authClientFor(
     clientType: 'mobile',
     locale: getAuthLocale(),
     fetch: scenarioFetch ?? (async (input, init) => fetch(input, init)),
+    onRequestError: (path, status, error) => {
+      mobileDebugLog('warn', 'auth', 'request failed', { path, region, status }, error);
+    },
   });
 }
 

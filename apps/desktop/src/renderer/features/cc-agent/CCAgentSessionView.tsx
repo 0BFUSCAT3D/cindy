@@ -1,3 +1,5 @@
+import { RemoteBotFollowUpInvitation } from '@/features/bots/RemoteBotFollowUpInvitation';
+import { BotFollowUpInvitation } from '@/features/bots/BotFollowUpInvitation';
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { shouldShowFailedScheduleNotice } from '@cindy/maker-shared/schedule-model';
@@ -1032,6 +1034,8 @@ function CCAgentSessionContent({
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
   const botChatIdentity = resolveBotChatIdentity(botIdentity, sessionId);
+  const [followUpInvitationSession, setFollowUpInvitationSession] = useState<string | null>(null);
+  useEffect(() => setFollowUpInvitationSession(null), [sessionId]);
   const showCenteredControlledBanner = hasControlledBanner && !controlledBannerCollapsed;
   // assistant 气泡左侧的伙伴头像。节点在整场对话里是同一个,memo 住让 MessageItem
   // 的 memo 比较仍然成立(否则每帧新节点 = 全流重渲染)。
@@ -3909,6 +3913,7 @@ function CCAgentSessionContent({
       if (cindyMakeInputLocked) return false;
       invalidateHistoryRecoveryNavigation();
       const deliveryMode = opts?.deliveryMode ?? 'queue';
+      const sendOwner = getDataOwnerGeneration();
       const originalMessage = message;
       const navigationRequestVersion =
         deliveryMode !== 'steer' && matchNavigationCommandName(message)
@@ -4167,6 +4172,9 @@ function CCAgentSessionContent({
           sendOptions,
         );
         if (accepted && sessionId) {
+          if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
+            setFollowUpInvitationSession(sessionId);
+          }
           void dispatchDeferredUiAssignment(sessionId, undefined).catch((err) => {
             log.error('recover deferred Worker assignment after user message failed', err);
             toast.error(t('newChat.collaboration.assignmentFailed'));
@@ -4187,6 +4195,9 @@ function CCAgentSessionContent({
         sendOptions,
       );
       if (accepted && sessionId) {
+        if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
+          setFollowUpInvitationSession(sessionId);
+        }
         void dispatchDeferredUiAssignment(sessionId, undefined).catch((err) => {
           log.error('recover deferred Worker assignment after user message failed', err);
           toast.error(t('newChat.collaboration.assignmentFailed'));
@@ -5641,6 +5652,14 @@ function CCAgentSessionContent({
                  InteractionPromptHost: 普通模式下行为不变(直接 inline 渲染)。
                  当外部 (workdir-browse 等窄 rail 场景) 挂了 InteractionPromptSlot
                  时,卡片会被 portal 出去,这里就显占位。 */}
+              {!readOnly && botChatIdentity?.canonicalChat && botChatIdentity.id === 'cindy-default' && !isStreaming && !agentStatus.isRunning && !shareSelectionBlocked
+                && !pendingPlanReview && !pendingPermission && !pendingAskUser && !pendingPluginSetup
+                && !pendingIssueConfirm && !pendingRenameSessionsConfirm && !pendingGhostGrantConfirm
+                && !pendingRemoteDesktopConfirmation && !pendingInputHandoff && followUpInvitationSession === sessionId && (
+                remoteDeviceId
+                  ? <RemoteBotFollowUpInvitation key={`${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
+                  : <BotFollowUpInvitation key={sessionId} botId={botChatIdentity.id} engaged />
+              )}
               <InteractionPromptHost
                 hasInteraction={
                   !!(

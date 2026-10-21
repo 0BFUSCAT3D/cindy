@@ -75,6 +75,8 @@ import {
   normalizeManualProjectOrder,
   mergeVisibleReorder,
   snapshotManualProjectOrder,
+  loadDeviceGroupCollapsedKeys,
+  persistDeviceGroupCollapsedKeys,
   loadDialogueGroupCollapsedKeys,
   persistDialogueGroupCollapsedKeys,
   DIALOGUE_GROUP_ALL_KEY,
@@ -726,8 +728,12 @@ export function ProjectsSection({
     filter.manualProjectOrder,
     priorityContext,
   ]);
-  // 设备段折叠(E 期):本机段 key 'local'。
-  const [collapsedDevices, setCollapsedDevices] = useState<ReadonlySet<string>>(new Set());
+  // 设备段折叠按本地显示偏好恢复，设置页往返导致重挂时也保留。
+  const [collapsedDevices, setCollapsedDevices] = useState(loadDeviceGroupCollapsedKeys);
+  useEffect(() => {
+    // 单设备切换、批量收起和全部展开共用保存路径。
+    persistDeviceGroupCollapsedKeys(collapsedDevices);
+  }, [collapsedDevices]);
   // 「对话」组折叠:与项目行折叠同级的分组状态(用户裁决:对话组的折叠交互与
   // 项目分组一致,含「收起所有分组」批量操作)。按分组 key 记忆——单一列表只有
   // 一个组(DIALOGUE_GROUP_ALL_KEY);按设备分组时每个设备段各有一个对话组,
