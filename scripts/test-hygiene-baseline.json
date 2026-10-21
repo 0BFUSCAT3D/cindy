@@ -834,9 +834,6 @@
     "apps/desktop/src/renderer/features/bots/__tests__/botGroupListRemoval.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/renderer/features/bots/__tests__/botModelChainDefaults.test.tsx": {
-      "resetModules": 1
-    },
     "apps/desktop/src/renderer/features/bots/__tests__/botNavigation.test.ts": {
       "sourceReads": 5
     },

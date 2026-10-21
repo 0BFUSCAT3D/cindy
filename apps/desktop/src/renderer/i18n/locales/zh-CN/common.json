@@ -9228,10 +9228,10 @@
       "composerPlaceholderLatin": "跟 {{name}} 说点什么…"
     },
     "globalSettings": {
-      "restoreHint": "恢复默认后将跟随客户端默认模型设置，单个伙伴的自定义模型保持不变。",
+      "restoreHint": "恢复伙伴推荐模型，单个伙伴的自定义模型保持不变。",
       "restoreFailed": "恢复默认失败，请重试。",
       "defaultModel": "默认模型",
-      "defaultModelHint": "伙伴默认使用的模型，单个伙伴可以在自己的设置里另选。",
+      "defaultModelHint": "仅用于伙伴，与新任务的模型选择独立。单个伙伴可以另选。",
       "title": "伙伴",
       "description": "和伙伴有关的通用设置。单个伙伴的设置在{{pronoun}}自己的页面里。",
       "rosterNote": "预置阵容会随版本更新。"
