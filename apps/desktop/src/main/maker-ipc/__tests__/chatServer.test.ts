@@ -1034,6 +1034,18 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deps.dispatch).toHaveBeenCalledOnce();
   });
 
+  // bot-group-chat.md §3: a companion may answer in several Threads at once.
+  it('shows a companion running in two Threads as one speaker', async () => {
+    fixture.handle.mockImplementation(route => {
+      if (route.endsWith('/executions')) return { body: [{ ...execution, status: 'running' },
+        { ...execution, id: '50000000-0000-4000-8000-000000000099', status: 'running' }] };
+      return response(route);
+    });
+    const result = await service.getGroup(roomId);
+    expect(result).toMatchObject({ ok: true, group: { round: { status: 'running', speakers: [{ activity: 'reply' }] } } });
+    expect(result.ok && result.group.round.speakers).toHaveLength(1);
+  });
+
   it.each(['IMAGE_INPUT_UNSUPPORTED', 'private token and path'])('projects a failed execution from its visible source with a safe code %s', async code => {
     const source = { id: execution.source_message_id, seq: '7', authorId: selfId, author: { kind: 'human', name: 'Owner' },
       content: [{ type: 'text', text: 'Question' }], origin: 'user', deleted: false, threadRootId: null, createdAt: '2026-10-03T00:00:00Z' };
@@ -2540,6 +2552,29 @@ describe('Chat Server result delivery and refresh', () => {
       // An older page is history being scrolled, not the reader catching up.
       await service.chatServer!.thread({ groupId: roomId, rootId, before: 3, markRead: true });
       expect(writes()).toHaveLength(1);
+    });
+
+    // bot-group-chat.md §10「话题未读与提示」: following is the reader's own switch, kept by the server.
+    it('follows a Thread only when the reader switches it on, restating its read position', async () => {
+      let following = false;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [...shares, ...replies, root].sort((a, b) => Number(b.seq) - Number(a.seq)), cursor: '8', reads: [{ thread_key: rootId, read_seq: '3', following }] } };
+        if (route.includes('threadRootId=')) return { body: [...replies].reverse() };
+        if (route === `/conversations/${roomId}/read` && method === 'POST') { following = (body as { following: boolean }).following; return { body: { readSeq: '3', following } }; }
+        return threadResponse(route, method, body);
+      });
+      const writes = () => fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/read` && method === 'POST');
+      expect(await service.chatServer!.thread({ groupId: roomId, rootId })).toMatchObject({ ok: true, following: false });
+      expect(writes()).toHaveLength(0);
+      expect(await service.chatServer!.followThread({ groupId: roomId, rootId, following: true })).toEqual({ ok: true, following: true });
+      expect(writes()).toHaveLength(1);
+      expect(writes()[0]![2]).toMatchObject({ threadRootId: rootId, readSeq: '3', following: true });
+      await vi.advanceTimersByTimeAsync(150);
+      const listed = await service.getGroup(roomId);
+      if (!listed.ok) throw new Error('Expected group');
+      expect(listed.group.threads?.find(thread => thread.rootId === rootId)?.following).toBe(true);
+      // Saving the switch reads no Thread page, so a failing page read cannot turn a saved choice into an error.
+      expect(fixture.handle.mock.calls.filter(([route]) => route.includes('threadRootId=')).length).toBe(1);
     });
 
     it('projects distinct responders independently of repeated-author summaries', async () => {

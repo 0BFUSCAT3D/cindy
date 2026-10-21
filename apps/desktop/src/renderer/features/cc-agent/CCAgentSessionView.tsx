@@ -190,6 +190,7 @@ import {
 } from '@/lib/controlledTaskAgentLocation';
 import { resolveUsageAccountLocation } from '@/lib/usageAccountLocation';
 import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
+import { offerSessionRebalance, useSessionRebalancePrefetch } from '@/features/provider-group/sessionRebalancePrompt';
 import {
   canExposeWritableDirsChange,
   resolveManualCompactChannel,
@@ -1400,6 +1401,7 @@ function CCAgentSessionContent({
     }
   }, [session?.status, sessionId, navigate, ownsWindowRoute]);
   const vendorAuthGate = useVendorAuthGate();
+  const { confirmWithCheckbox } = useConfirmDialog();
 
   useEffect(() => {
     if (!sessionId || !searchJump) return;
@@ -2131,6 +2133,8 @@ function CCAgentSessionContent({
   // 仍调 compact-session → pi 拒绝 → confirm 后吃 rejection toast」(codex P2)。
   const isRunningRef = useRef(agentStatus.isRunning);
   isRunningRef.current = agentStatus.isRunning;
+  // 任务空闲时预先问好要不要换号，发送时不再多等一次往返(provider-groups.md §6.2「任务进行中换号」)。
+  useSessionRebalancePrefetch(sessionId, remoteDeviceId, !agentStatus.isRunning && !readOnly);
   // live 供应商目录(含内置 + 自定义,按 agent 挂模型)—— vendor↔model 一致性校验的真源,
   // 与模型选择器同源(见下方 M35 vendor fallback effect)。本地 IPC 极快返回,有模块级缓存。
   // device-link 远程会话用被控端经隧道带来的 providers(per-provider,fast 判定与本地同口径)。
@@ -4162,10 +4166,30 @@ function CCAgentSessionContent({
         message = finalDispatch.message;
       }
 
+      // 上一轮已经结束、用户发下一条消息：供应商组里另一个账号的配额明显更该先用时，问用户要不要换过去
+      // (provider-groups.md §6.2「任务进行中换号」)。只记下用户的选择，这条消息无论换不换都照常发出。
+      let recordRebalance: ((clientId: string) => Promise<void>) | undefined;
+      if (deliveryMode !== 'steer' && sessionId && !isRunningRef.current) {
+        recordRebalance = await offerSessionRebalance({
+          sessionId,
+          ...(remoteDeviceId ? { hostDeviceId: remoteDeviceId } : {}),
+          confirmWithCheckbox,
+          t,
+        });
+      }
+
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
+      let rebalanceClientId: string | undefined;
       const sendOptions = {
-        beforeEnqueue: opts?.beforeEnqueue,
-        onInputCreated: opts?.onInputCreated,
+        beforeEnqueue: recordRebalance ? async () => {
+          if (await opts?.beforeEnqueue?.() === false) return false;
+          if (rebalanceClientId) await recordRebalance(rebalanceClientId);
+          return true;
+        } : opts?.beforeEnqueue,
+        onInputCreated: recordRebalance ? (clientId: string) => {
+          rebalanceClientId = clientId;
+          opts?.onInputCreated?.(clientId);
+        } : opts?.onInputCreated,
         ...orcaLeadVendorOptions,
         ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),
         ...(opts?.agentReferences?.length ? { agentReferences: opts.agentReferences } : {}),
@@ -4248,6 +4272,7 @@ function CCAgentSessionContent({
       readOnly,
       t,
       vendorAuthGate,
+      confirmWithCheckbox,
       remoteDeviceId,
       sessionHandoffPreparing,
       cindyMakeInputLocked,
@@ -5715,10 +5740,14 @@ function CCAgentSessionContent({
               )}
 
             {/* 零可用模型引导条:与首屏引导卡共享判定与 dismiss(useProviderOnboarding),
-              组件自判 visible、不可见渲染 null。device-link 远程会话不出——连接态在被控端。 */}
-            {!remoteDeviceId && (
-              <ConnectProviderBanner style={{ width: inputWidth }} className="py-1" />
-            )}
+              按下一轮 Agent 执行位置判断，本机连接状态不用于远程任务。 */}
+            <ConnectProviderBanner
+              style={{ width: inputWidth }}
+              className="py-1"
+              remote={!!remoteDeviceId || !!session?.remoteHostId || !!(
+                pendingAgentDeviceId !== undefined ? pendingAgentDeviceId : agentDeviceId
+              )}
+            />
 
             <div
               className="mx-auto flex flex-col items-center gap-[10px]"
@@ -5737,11 +5766,9 @@ function CCAgentSessionContent({
                 && !pendingPlanReview && !pendingPermission && !pendingAskUser && !pendingPluginSetup
                 && !pendingIssueConfirm && !pendingRenameSessionsConfirm && !pendingGhostGrantConfirm
                 && !pendingRemoteDesktopConfirmation && !pendingInputHandoff && followUpInvitationSession === sessionId && (
-                // Keys are namespaced: the voice panel below is a sibling keyed by the bare sessionId,
-                // and sharing it made React leave a stale copy of this card each time it reappeared.
                 remoteDeviceId
-                  ? <RemoteBotFollowUpInvitation key={`follow-up:${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
-                  : <BotFollowUpInvitation key={`follow-up:${sessionId}`} botId={botChatIdentity.id} engaged />
+                  ? <RemoteBotFollowUpInvitation key={`${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
+                  : <BotFollowUpInvitation key={`follow-up-invitation:${sessionId}`} botId={botChatIdentity.id} engaged />
               )}
               <InteractionPromptHost
                 hasInteraction={

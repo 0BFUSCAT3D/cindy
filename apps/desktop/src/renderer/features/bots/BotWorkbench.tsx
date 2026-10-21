@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useInRouterContext, useNavigate, type NavigateFunction } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Spinner } from '@/components/ui/spinner';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
@@ -65,6 +66,7 @@ function listFormat(items: string[], language: string): string {
 const join = (...parts: Array<string | null | undefined | false>) => parts.filter(Boolean).join(' · ');
 
 interface RowContext {
+  botId: string;
   t: Translate;
   /** 自上次读到 glance 以来过去了几分钟，行上的时长按它往后推。 */
   elapsedMinutes: number;
@@ -74,17 +76,28 @@ interface RowContext {
   onOpen: (row: GlanceRow) => void;
 }
 
-export function BotWorkbench({
-  botId,
-  hostDeviceId = null,
-}: {
+type BotWorkbenchProps = {
   botId: string;
   sessionId?: string;
-  /** 伙伴所在电脑；null = 这台。 */
   hostDeviceId?: string | null;
-}) {
+};
+
+export function BotWorkbench(props: BotWorkbenchProps) {
+  return useInRouterContext()
+    ? <RoutedBotWorkbench {...props} />
+    : <BotWorkbenchContent {...props} navigate={null} />;
+}
+
+function RoutedBotWorkbench(props: BotWorkbenchProps) {
+  return <BotWorkbenchContent {...props} navigate={useNavigate()} />;
+}
+
+function BotWorkbenchContent({
+  botId,
+  hostDeviceId = null,
+  navigate,
+}: BotWorkbenchProps & { navigate: NavigateFunction | null }) {
   const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf) ?? null;
   const hostDevice = hostDeviceId ? (devices?.find((device) => device.deviceId === hostDeviceId) ?? null) : null;
@@ -104,7 +117,7 @@ export function BotWorkbench({
     [raw, host, hostOnline],
   );
   const now = useNow(30_000);
-  const canNavigate = !isSidebarWindow();
+  const canNavigate = navigate !== null && !isSidebarWindow();
 
   const onOpen = useCallback(
     (row: GlanceRow) => {
@@ -112,7 +125,7 @@ export function BotWorkbench({
       const owner = getDataOwnerGeneration();
       void glanceSessionRoute(row)
         .then((route) => {
-          if (isDataOwnerGenerationCurrent(owner)) navigate(route);
+          if (isDataOwnerGenerationCurrent(owner)) navigate?.(route);
         })
         .catch(() => undefined);
     },
@@ -123,9 +136,7 @@ export function BotWorkbench({
     return (
       <div className="flex h-full items-center justify-center bg-[var(--surface)] px-5">
         {failed ? (
-          <p role="status" className="text-center text-13 leading-[1.54] text-[var(--text-secondary)]">
-            {t('bots.workbench.glance.loadFailed')}
-          </p>
+          <ErrorNotice role="status" message={t('bots.workbench.glance.loadFailed')} />
         ) : (
           <Spinner size={16} className="text-[var(--text-tertiary)]" role="status" aria-label={t('ccAgent.common.loading')} />
         )}
@@ -136,6 +147,7 @@ export function BotWorkbench({
   const rows = [...glance.waiting, ...glance.working];
   const showDevices = rows.some((row) => row.deviceId);
   const ctx: RowContext = {
+    botId,
     t,
     elapsedMinutes: fetchedAt > 0 ? Math.max(0, Math.floor((now - fetchedAt) / 60_000)) : 0,
     deviceLabel: (row) =>
@@ -161,7 +173,7 @@ export function BotWorkbench({
             {t('bots.autonomy.title')}
           </p>
         ) : null}
-        {quiet ? (
+        {quiet && !failed ? (
           <p className="px-2 pt-8 text-center text-14 leading-[1.57] text-[var(--text-secondary)]">
             {t('bots.workbench.glance.quiet')}
           </p>
@@ -169,15 +181,21 @@ export function BotWorkbench({
         {glance.waiting.length > 0 ? <WaitingBlock rows={glance.waiting} ctx={ctx} /> : null}
         {glance.working.length > 0 ? <WorkingBlock rows={glance.working} ctx={ctx} /> : null}
       </div>
-      <footer
-        className={cn(
-          'flex shrink-0 items-center gap-2 border-t border-[var(--border-default)] py-2.5 text-12 leading-[1.5] text-[var(--text-tertiary)]',
-          quiet ? 'justify-center px-5' : 'pl-10 pr-5',
-        )}
-      >
-        <span aria-hidden className="size-1 shrink-0 rounded-full bg-[var(--text-tertiary)]" />
-        <span className="min-w-0 truncate tabular-nums">{join(...footer)}</span>
-      </footer>
+      {failed ? (
+        <div className="shrink-0 px-5 pb-4">
+          <ErrorNotice role="status" message={t('bots.workbench.glance.loadFailed')} />
+        </div>
+      ) : (
+        <footer
+          className={cn(
+            'flex shrink-0 items-center gap-2 border-t border-[var(--border-default)] py-2.5 text-12 leading-[1.5] text-[var(--text-tertiary)]',
+            quiet ? 'justify-center px-5' : 'pl-10 pr-5',
+          )}
+        >
+          <span aria-hidden className="size-1 shrink-0 rounded-full bg-[var(--text-tertiary)]" />
+          <span className="min-w-0 truncate tabular-nums">{join(...footer)}</span>
+        </footer>
+      )}
     </section>
   );
 }
@@ -258,7 +276,7 @@ function WaitingRow({ row, ctx }: { row: GlanceRow; ctx: RowContext }) {
   const allow = () => {
     if (allowing) return;
     setAllowing(true);
-    void allowGlanceRow(row)
+    void allowGlanceRow(row, ctx.botId)
       .then((outcome) => {
         if (outcome === 'gone') ctx.onOpen(row);
         else if (outcome === 'blocked') toast.warning(t('ccAgent.remoteSession.actionsUnavailable'));

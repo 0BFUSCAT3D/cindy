@@ -6,6 +6,7 @@ import { createRef, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render as testingRender, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AddTabDropdown } from '../AddTabDropdown';
+import { DetachedBotMenuOwnerContext } from '../botMenuOwnerContext';
 import { EmptyState } from '../EmptyState';
 import { FolderTree } from 'lucide-react';
 import { useTabCreationMenu } from '../lib/useTabCreationMenu';
@@ -25,6 +26,7 @@ const m = vi.hoisted(() => ({
   openSideChat: vi.fn(async () => true),
   canSideChat: false,
   ghosts: [] as unknown[],
+  profiles: [] as Array<{ id: string; sessions: Array<{ id: string; role: string }> }>,
   rows: new Map<string, { remoteHostId?: string | null; deviceLinkDeviceId?: string | null; deviceLinkConnectionStatus?: string }>(),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -41,15 +43,7 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   ),
 }));
 vi.mock('@/features/bots/botStore', () => ({
-  useBotProfiles: () => [
-    {
-      id: 'bot-1',
-      sessions: [
-        { id: 'bot-main', role: 'canonical' },
-        { id: 'bot-history', role: 'history' },
-      ],
-    },
-  ],
+  useBotProfiles: () => m.profiles,
   canonicalBotSessionId: (bot: { sessions: Array<{ id: string; role: string }> }) =>
     bot.sessions.find((session) => session.role === 'canonical')?.id,
 }));
@@ -78,8 +72,14 @@ function Entries({ sessionId, onSelect, both = false, subagentsAvailable = false
   </>;
 }
 
-function renderMenu(sessionId: string, onSelect = vi.fn()) {
-  render(<Entries sessionId={sessionId} onSelect={onSelect} />);
+function renderMenu(
+  sessionId: string,
+  onSelect = vi.fn(),
+  detachedOwner: { sessionId: string; botId: string; canonical: boolean } | null = null,
+) {
+  render(<DetachedBotMenuOwnerContext.Provider value={detachedOwner}>
+    <Entries sessionId={sessionId} onSelect={onSelect} />
+  </DetachedBotMenuOwnerContext.Provider>);
   return onSelect;
 }
 
@@ -88,6 +88,9 @@ beforeEach(() => {
   m.rows = new Map();
   m.canSideChat = false;
   m.ghosts = [];
+  m.profiles = [{ id: 'bot-1', sessions: [
+    { id: 'bot-main', role: 'canonical' }, { id: 'bot-history', role: 'history' },
+  ] }];
   window.localStorage.clear();
   __resetGlobalTabsForTest();
   __resetTabGroupsForTest();
@@ -166,6 +169,32 @@ it('offers the workbench in a local teammate main task and reopens it with the t
   fireEvent.click(screen.getByText('bots.workbench.title'));
   expect(m.open).toHaveBeenCalledWith('bot-main', 'bot-1');
   expect(onSelect).not.toHaveBeenCalled();
+});
+
+it('uses the linked identity in a detached window without Bot profiles', () => {
+  m.profiles = [];
+  renderMenu('bot-main', vi.fn(), { sessionId: 'bot-main', botId: 'bot-1', canonical: true });
+  expect(screen.getByText('bots.workbench.title')).toBeTruthy();
+  for (const kind of ['review', 'subagents', 'terminal']) {
+    expect(screen.queryByText(`rightSidebar.tabs.kinds.${kind}`)).toBeNull();
+  }
+  fireEvent.click(screen.getByText('bots.workbench.title'));
+  expect(m.open).toHaveBeenCalledWith('bot-main', 'bot-1');
+});
+
+it('does not reuse a detached owner after switching to another session', () => {
+  m.profiles = [];
+  renderMenu('task-1', vi.fn(), { sessionId: 'bot-main', botId: 'bot-1', canonical: true });
+  expect(screen.queryByText('bots.workbench.title')).toBeNull();
+  expect(screen.getByText('rightSidebar.tabs.kinds.review')).toBeTruthy();
+});
+
+it('filters a detached Bot history task without offering the canonical workbench', () => {
+  m.profiles = [];
+  renderMenu('bot-history', vi.fn(), { sessionId: 'bot-history', botId: 'bot-1', canonical: false });
+  expect(screen.queryByText('bots.workbench.title')).toBeNull();
+  expect(screen.queryByText('rightSidebar.tabs.kinds.review')).toBeNull();
+  expect(screen.getByText('rightSidebar.tabs.kinds.fileBrowser')).toBeTruthy();
 });
 
 it('keeps the other entries on the generic add path', () => {

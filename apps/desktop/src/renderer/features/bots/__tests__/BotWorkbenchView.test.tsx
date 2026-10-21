@@ -12,6 +12,8 @@ import type { BotGlance, GlanceRow } from '../../../../shared/botAutonomy';
 
 const m = vi.hoisted(() => ({
   navigate: vi.fn(),
+  hasRouter: true,
+  sidebar: false,
   toastWarning: vi.fn(),
   toastError: vi.fn(),
   remoteApi: { getPendingInteractions: vi.fn(), resolveInteraction: vi.fn() },
@@ -29,7 +31,7 @@ function deviceList(studio: Record<string, unknown> = {}) {
     { deviceId: 'dev-2', name: 'Studio', isSelf: false, ...controllable, ...studio },
   ];
 }
-vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
+vi.mock('react-router-dom', () => ({ useInRouterContext: () => m.hasRouter, useNavigate: () => m.navigate }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) =>
@@ -41,7 +43,7 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
   useDeviceLinkDeviceList: () => m.devices,
 }));
 vi.mock('@/lib/remoteDataOwnerPushFence', () => ({ isDeviceLinkRemotePushCurrent: () => true }));
-vi.mock('@/lib/sidebarWindow', () => ({ isSidebarWindow: () => false }));
+vi.mock('@/lib/sidebarWindow', () => ({ isSidebarWindow: () => m.sidebar }));
 vi.mock('@/lib/orcaSessionIdentity', () => ({ resolveSessionRoute: m.resolveRoute }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   remoteProjectsStore: { pinSessionOrigin: m.pinSessionOrigin, getMergedRemoteSessions: () => m.mirrored },
@@ -51,12 +53,36 @@ vi.mock('@/lib/makerTransport', () => ({ makerApiForDevice: m.makerApiForDevice 
 
 import { BotWorkbench } from '../BotWorkbench';
 import { allowGlanceRow } from '../botGlance';
+import '../../right-sidebar/plugins/bot-workbench';
+import { getTabKind } from '../../right-sidebar/registry';
+import type { TabKindHostContext } from '../../right-sidebar/types';
 
 type Listener = (payload: { botIds?: string[] }) => void;
 let listeners: Listener[] = [];
 const glanceApi = vi.fn<(botId: string) => Promise<BotGlance>>();
-const localMaker = { getPendingInteractions: vi.fn(), resolveInteraction: vi.fn() };
+const localMaker = { getPendingInteractions: vi.fn(), resolveInteraction: vi.fn(), allowBotWorkbenchPermission: vi.fn() };
 const remoteInvoke = vi.fn();
+
+// Unit: inactive tabs stay mounted in the sidebar shell. Reading their glance used to
+// trigger remote IO while hidden; exercise the registered body and real data hook.
+it('reads remote state only while the workbench tab is visible', async () => {
+  glanceApi.mockResolvedValue(glance());
+  const Body = getTabKind('bot-workbench')!.TabBody;
+  const ctx: TabKindHostContext = {
+    tabId: 'workbench', sessionId: 'main', workdir: '', remoteHostId: null,
+    deviceLinkDeviceId: null, patchState: vi.fn(), onVisibilityChange: vi.fn(),
+    setCloseInterceptor: () => () => {},
+  };
+  const props = { state: { botId: 'bot-1' }, ctx };
+  const view = render(<Body {...props} active={false} shellVisible />);
+  expect(glanceApi).not.toHaveBeenCalled();
+  view.rerender(<Body {...props} active shellVisible={false} />);
+  expect(glanceApi).not.toHaveBeenCalled();
+  view.rerender(<Body {...props} active shellVisible />);
+  await waitFor(() => expect(glanceApi).toHaveBeenCalledWith('bot-1', true));
+  view.rerender(<Body {...props} active shellVisible={false} />);
+  expect(listeners).toHaveLength(0);
+});
 
 function row(patch: Partial<GlanceRow>): GlanceRow {
   return {
@@ -84,6 +110,8 @@ function permission(requestId: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.hasRouter = true;
+  m.sidebar = false;
   listeners = [];
   m.makerApiForDevice.mockReturnValue(m.remoteApi);
   m.mirrored = [];
@@ -148,6 +176,21 @@ it('allows only the permission request the row points at, and opens the task whe
   expect(localMaker.resolveInteraction).toHaveBeenCalledTimes(1);
 });
 
+it('renders without a Router in the detached sidebar and uses only its narrow permission bridge', async () => {
+  m.hasRouter = false;
+  m.sidebar = true;
+  glanceApi.mockResolvedValue(glance({ waiting: [row({ waitingFor: 'permission', requestId: 'r-2' })] }));
+  localMaker.allowBotWorkbenchPermission.mockResolvedValue({ accepted: true });
+  render(<BotWorkbench botId="bot-1" />);
+
+  const waiting = (await screen.findByText('修登录超时')).closest('li')!;
+  fireEvent.click(within(waiting).getByRole('button', { name: 'bots.workbench.glance.allow' }));
+  await waitFor(() => expect(localMaker.allowBotWorkbenchPermission).toHaveBeenCalledWith('bot-1', 's1', 'r-2'));
+  expect(localMaker.getPendingInteractions).not.toHaveBeenCalled();
+  expect(localMaker.resolveInteraction).not.toHaveBeenCalled();
+  expect(m.navigate).not.toHaveBeenCalled();
+});
+
 it('opens a task on another computer through the device-aware route, not a same-id local lookup', async () => {
   glanceApi.mockResolvedValue(glance({
     waiting: [
@@ -181,6 +224,7 @@ it('re-reads only on changes for this teammate', async () => {
 
   act(() => listeners.forEach((cb) => cb({ botIds: ['bot-2'] })));
   expect(glanceApi).toHaveBeenCalledTimes(1);
+  expect(glanceApi).toHaveBeenLastCalledWith('bot-1', true);
   act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
   expect(await screen.findByText('新问题')).toBeTruthy();
 });
@@ -255,4 +299,58 @@ it('never approves a confirmation that carries no request id; it opens the task 
   await expect(allowGlanceRow(confirmRow)).resolves.toBe('gone');
   expect(localMaker.getPendingInteractions).not.toHaveBeenCalled();
   expect(localMaker.resolveInteraction).not.toHaveBeenCalled();
+});
+
+// #6508: exercise the real view + reader, including retained empty snapshots.
+// Existing tests covered successful empty reads and remote offline approval only.
+// Unit regression: a successful empty read followed by a rejected refresh must
+// show read failure, never the quiet sentence or a fresh-looking footer.
+it.each([false, true])('shows refresh failure without claiming an empty workbench (had rows: %s)', async (hasRows) => {
+  glanceApi.mockResolvedValueOnce(glance({ working: hasRows ? [row({ title: 'Still working', kind: 'working' })] : [] }));
+  render(<BotWorkbench botId="bot-1" />);
+  await screen.findByText(hasRows ? 'Still working' : 'bots.workbench.glance.quiet');
+
+  glanceApi.mockRejectedValueOnce(new Error('read unavailable'));
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('bots.workbench.glance.loadFailed')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+  expect(screen.queryByText('bots.workbench.glance.seenJust')).toBeNull();
+  if (hasRows) expect(screen.getByText('Still working')).toBeTruthy();
+
+  glanceApi.mockResolvedValueOnce(glance({ working: [row({ title: 'Recovered work', kind: 'working' })] }));
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('Recovered work')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.loadFailed')).toBeNull();
+});
+
+it('keeps initial loading distinct from failure and restores content on readiness and reopen', async () => {
+  let reject!: (error: Error) => void;
+  glanceApi.mockImplementationOnce(() => new Promise<BotGlance>((_resolve, fail) => { reject = fail; }));
+  const view = render(<BotWorkbench botId="bot-1" />);
+  expect(screen.getByRole('status', { name: 'ccAgent.common.loading' })).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+  await act(async () => reject(new Error('[PRECONDITION_FAILED] Host not ready')));
+  expect(screen.getByText('bots.workbench.glance.loadFailed')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+
+  glanceApi.mockResolvedValue(glance({ working: [row({ title: 'Visible before close', kind: 'working' })] }));
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('Visible before close')).toBeTruthy();
+  view.unmount();
+  expect(listeners).toHaveLength(0);
+  render(<BotWorkbench botId="bot-1" />);
+  expect(await screen.findByText('Visible before close')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
+});
+
+it('ignores an older empty response arriving after a newer nonempty refresh', async () => {
+  let resolve!: (value: BotGlance) => void;
+  glanceApi.mockImplementationOnce(() => new Promise<BotGlance>((done) => { resolve = done; }));
+  glanceApi.mockResolvedValueOnce(glance({ working: [row({ title: 'Current work', kind: 'working' })] }));
+  render(<BotWorkbench botId="bot-1" />);
+  act(() => listeners.forEach((cb) => cb({ botIds: ['bot-1'] })));
+  expect(await screen.findByText('Current work')).toBeTruthy();
+  await act(async () => resolve(glance()));
+  expect(screen.getByText('Current work')).toBeTruthy();
+  expect(screen.queryByText('bots.workbench.glance.quiet')).toBeNull();
 });

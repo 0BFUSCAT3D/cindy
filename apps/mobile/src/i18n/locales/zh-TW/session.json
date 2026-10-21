@@ -734,5 +734,14 @@
     "start": "開始跟進",
     "notNow": "暫不開啟",
     "saveFailed": "沒能儲存，請重試"
+  },
+  "providerGroupRebalance": {
+    "title": "換到 {{label}} 繼續？",
+    "body": "為了平均用完各帳號的配額，建議這則訊息換到 {{label}} 傳送（{{quota}}）。換過去會帶上最近幾輪對話和摘要，更早的細節可能記不全。",
+    "quota": "還剩 {{left}}%",
+    "quotaReset": "還剩 {{left}}%，{{reset}}後重置",
+    "confirm": "換過去",
+    "remember": "換過去，以後自動換（僅此任務）",
+    "cancel": "取消"
   }
 }

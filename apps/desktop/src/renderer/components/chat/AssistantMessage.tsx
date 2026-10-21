@@ -3,6 +3,8 @@ import { BotLearningFooter } from '@/features/bots/BotLearningFooter';
 import { BotStarterOptions } from '@/features/bots/BotStarterOptions';
 import { stripStarterOptionList } from '../../../shared/botStarterOptions';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
+import { BotDmThreadPreview } from '@/features/bots/BotDmThreadPreview';
+import { useBotDmThreadForMessage } from '@/features/bots/botDmThreadsContext';
 import { botTaskResultKey, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
 /**
  * AssistantMessage
@@ -332,6 +334,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   // Empty streaming starts stay chrome-free until there is something to read.
   const botBubble = simplifiedBotConversation
     && Boolean(content.trim() || failedSamplingAttempt || ghostRenderCard);
+  // 私聊话题：只有本机伙伴主对话里的消息能开话题（cindy-bots-runtime.md「私聊话题」）。
+  const dmThread = useBotDmThreadForMessage(simplifiedBotConversation && !sharedGuest ? currentSessionId : undefined, messageClientId);
 
   const actionBar = !isStreaming && showActionBar ? (
     <MessageActionBar
@@ -345,6 +349,12 @@ export const AssistantMessage = memo(function AssistantMessage({
         ? { sessionId: currentSessionId, messageId: messageClientId }
         : undefined}
       compact={botBubble}
+      replyAction={dmThread && botBubble ? {
+        onClick: dmThread.open,
+        label: dmThread.thread
+          ? t('bots.groupChat.server.openTopic', { count: dmThread.thread.replyCount })
+          : t('bots.groupChat.server.startTopic'),
+      } : undefined}
       onFork={!sharedGuest && canFork ? handleFork : undefined}
       onAddToChat={messageDeepLink ? handleAddToChat : undefined}
       onShareAsImage={handleShareAsImage}
@@ -464,6 +474,9 @@ export const AssistantMessage = memo(function AssistantMessage({
         )}
         {botBubble && actionBar && <BubbleHoverToolbar side="right">{actionBar}</BubbleHoverToolbar>}
       </div>
+      {dmThread?.thread && !isStreaming ? (
+        <BotDmThreadPreview thread={dmThread.thread} bot={dmThread.bot} unread={dmThread.unread} onOpen={dmThread.open} />
+      ) : null}
       {simplifiedBotConversation && !isStreaming && content.trim() && botStarterOptions?.length
         ? <BotStarterOptions options={botStarterOptions} locked={starterOptionsLocked === true} /> : null}
       {simplifiedBotConversation && !isStreaming && content.trim() && <BotLearningFooter receipts={botLearning} />}

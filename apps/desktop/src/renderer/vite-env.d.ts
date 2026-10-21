@@ -1997,6 +1997,7 @@ interface ElectronAPI {
       remoteHostId: string | null;
       deviceLinkDeviceId?: string | null;
       subagentsAvailable?: boolean;
+      botOwner?: { botId: string; canonical: boolean } | null;
       available: boolean;
     } | null>;
     /** 子窗口根组件挂载握手。 */
@@ -2017,6 +2018,7 @@ interface ElectronAPI {
       remoteHostId: string | null;
       deviceLinkDeviceId?: string | null;
       subagentsAvailable?: boolean;
+      botOwner?: { botId: string; canonical: boolean } | null;
       available: boolean;
     }) => void;
     onStateChanged: (
@@ -2034,6 +2036,7 @@ interface ElectronAPI {
         remoteHostId: string | null;
         deviceLinkDeviceId?: string | null;
         subagentsAvailable?: boolean;
+        botOwner?: { botId: string; canonical: boolean } | null;
         available: boolean;
       }) => void,
     ) => () => void;
@@ -4957,6 +4960,13 @@ interface ElectronAPI {
         session: import('@/lib/ccAgent.types').Session;
       }>;
       history: (botId: string) => Promise<unknown[]>;
+      dmThread: {
+        ensure: (body: { botId: string; rootSessionId: string; rootClientId: string; title?: string }) => Promise<
+          | { ok: true; sessionId: string; created: boolean }
+          | { ok: false; errorCode: 'BOT_UNAVAILABLE' | 'NO_MODEL' | 'ROOT_UNAVAILABLE'; message: string }
+        >;
+        list: (body: { botId: string; rootSessionId: string }) => Promise<import('../shared/botDmThread').BotDmThreadSummary[]>;
+      };
       todos: {
         list: (botId:string) => Promise<{items:import('@cindy/maker-shared/teammate-todo').TeammateTodo[];version:1}>;
         update: (botId:string, patch:import('@cindy/maker-shared/teammate-todo').TodoPatch) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo>;
@@ -4976,7 +4986,7 @@ interface ElectronAPI {
       };
       /** 伙伴自主跟进：工作台「一眼」投影与账号级「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
       autonomy: {
-        glance: (botId: string) => Promise<import('../shared/botAutonomy').BotGlance>;
+        glance: (botId: string, refreshRemote?: boolean) => Promise<import('../shared/botAutonomy').BotGlance>;
         getSettings: () => Promise<import('../shared/botAutonomy').BotAutonomySettingsView>;
         setSettings: (
           patch: import('../shared/botAutonomy').BotAutonomySettings,
@@ -6433,6 +6443,8 @@ interface ElectronAPI {
         persistId?: string;
       }>
     >;
+    /** Detached Bot workbench only: approve its current local permission row. */
+    allowBotWorkbenchPermission: (botId: string, sessionId: string, requestId: string) => Promise<{ accepted: boolean }>;
 
     // ── 运行时切换 (Stage 2 B) ─────────────────────────────────────────────
     // session 不存在(没 send 过/已 close)时 main 侧 no-op,renderer 可乐观调用。
