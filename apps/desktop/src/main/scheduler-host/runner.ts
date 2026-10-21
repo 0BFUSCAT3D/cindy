@@ -275,6 +275,8 @@ export interface MakerScheduleRunnerDeps {
   readAutoReviewHistory?: (sessionId: string) => Promise<AutoReviewHistoryMessage[]>;
   beforeDispatchUserTurn?: (sessionId: string) => void | Promise<void>;
   onUndispatchedUserTurn?: (sessionId: string) => void;
+  /** Saved quota waits deduplicate by schedule even when each fire creates a new task. */
+  findUsageLimitWait?: (scheduleId: string) => Promise<string | null>;
   /**
    * 锁住 heartbeat session、落实 deferred switch 并 bootstrap 新 live session。
    * runner 在 Session.send 返回后 release。
@@ -577,6 +579,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       | 'session-running'
       | 'already-queued'
       | 'queue-restore-pending'
+      | 'usage-limit-wait'
       | 'routine-permission-unavailable'
       | 'routine-dispatch-invalidated'
       | 'queue-wait-timeout',
@@ -787,6 +790,14 @@ export class MakerScheduleRunner implements ScheduleRunner {
     ctx: FireContext,
     holder: EphemeralSessionHolder,
   ): Promise<FireResult> {
+    const waitingSessionId = await this.deps.findUsageLimitWait?.(schedule.id);
+    throwIfFireAborted(ctx.signal, 'quota wait check');
+    if (waitingSessionId) {
+      if (this.canDefer(schedule, ctx)) return this.deferFire(schedule, waitingSessionId, 'usage-limit-wait');
+      const message = 'SCHEDULE_USAGE_LIMIT_WAIT: this schedule already has a task waiting for quota recovery';
+      await this.notifyFailureSilent(schedule, ctx, message);
+      throw new Error(message);
+    }
     // 1. effort 白名单
     if (schedule.effort && !ALLOWED_EFFORT.has(schedule.effort)) {
       const errMsg = `invalid effort: ${schedule.effort}`;
@@ -3796,6 +3807,7 @@ function extractErr(data: unknown): string {
  */
 type FireAbortStage =
   | 'runner entry'
+  | 'quota wait check'
   | 'queue snapshot restore'
   | 'workspace allocation'
   | 'session creation'

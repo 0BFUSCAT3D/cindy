@@ -14274,6 +14274,38 @@ describe('usage-limit wait (ordinary tasks)', () => {
     expect(h.coordinator.restoreUsageLimitRecovery(sid, snapshot, h.coordinator.getGeneration(sid))).not.toBeNull();
   });
 
+  // Standard regression: register restores the quota recovery inside loadQueueSnapshot.
+  // The saved continuation must run once while ordinary restored inputs stay paused in FIFO order.
+  it.each(['active-turn', 'queue-head'] as const)('resumes restored %s quota input without releasing its paused tail', async (kind) => {
+    const h = createHarness(); const sid = `restored-quota-tail-${kind}`;
+    const snapshot = { kind, item: makeItem('quota-input', 'original work'), error: 'weekly limit' };
+    let token!: number;
+    h.setHasAssistantProgressAfter(async () => false);
+    h.setLoadQueueSnapshot(async () => {
+      token = h.coordinator.restoreUsageLimitRecovery(sid, snapshot, h.coordinator.getGeneration(sid))!;
+      return [makeItem('tail-1', 'next work'), makeItem('tail-2', 'last work')];
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    expect(h.coordinator.getProjection(sid).queuePaused).toBe(true);
+    expect(h.coordinator.armUsageLimitWait(sid, token, 9_000_000)).toBe(true);
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('resumed');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledOnce();
+    expect(h.sendToAgent.mock.calls[0][1]).toMatchObject({ content: 'original work' });
+    // A second quota failure must use the same permission to retry without opening the tail.
+    h.setRunning(false); h.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    const nextToken = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    expect(h.coordinator.armUsageLimitWait(sid, nextToken, 10_000_000)).toBe(true);
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, nextToken, INFO)).toBe('resumed');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    h.setRunning(false); h.coordinator.onTurnEvent(sid, 'done'); await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    const projection = h.coordinator.getProjection(sid);
+    expect(projection.queuePaused).toBe(true);
+    expect(projection.pendingQueue.map(item => item.clientId)).toEqual(['tail-1', 'tail-2']);
+  });
+
   const LIMIT_SIGNALS = { sdkError: 'rate_limit', usageResetAt: 5_000_000 };
   // Regression: scheduled quota failures used to discard recovery before the
   // reset-time resolver could run. A real run keeps Retry and the same origin.
@@ -14780,6 +14812,8 @@ describe('usage-limit wait (ordinary tasks)', () => {
     const lease = h.coordinator.leaseUsageLimitRecovery(sid, candidate);
     h.coordinator.onSessionClosed(sid);
     const token = h.coordinator.rearmUsageLimitWait(sid, lease!, null);
+    expect(h.coordinator.hasUsageLimitRecovery(sid, token!)).toBe(true);
+    h.coordinator.onSessionClosed(sid, { preserveAutoResumeIntent: true });
     // 只登记候选：还不显示等待，直到求出重置时刻再挂上。
     expect(latestProjection(h.projections).usageLimitWait).toBeNull();
     expect(h.coordinator.armUsageLimitWait(sid, token!, 9_000_000)).toBe(true);

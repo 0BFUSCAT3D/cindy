@@ -777,7 +777,6 @@ interface SessionInputState {
     resumeAt: number | null;
     token: number;
     recovery: NonNullable<AgentInputRecovery>;
-    accountLimit?: boolean;
   } | null;
   /**
    * 供应商组正在为这次错误换电脑(docs/product-rules/provider-groups.md §6.1)：错误仍是当前状态，
@@ -1255,6 +1254,10 @@ export class AgentInputCoordinator {
    */
   private readonly restoredQueueSessions = new Set<string>();
   private readonly restoredUsageLimitRecoveries = new WeakSet<object>();
+  /** The quota classification belongs to the recovery, and survives runtime/token replacement. */
+  private readonly accountLimitRecoveries = new WeakSet<object>();
+  /** Only this saved continuation can cross a restore pause; the ordinary queue stays paused. */
+  private readonly restoredUsageLimitRetryItems = new WeakSet<AgentInputQueuedMessage>();
   private readonly restoredQueueItems = new WeakSet<AgentInputQueuedMessage>();
   private readonly restoreAttempted = new Set<string>();
   private readonly queueRestorePromises = new Map<string, Promise<void>>();
@@ -1639,13 +1642,18 @@ export class AgentInputCoordinator {
     // (composer 发送 / 中断横幅「继续任务」,见 enqueue 的 resumeRestorePausedQueue)
     // 自动放行。会话已在忙(恢复窗口期间新输入已开跑)时不强行暂停,恢复项按
     // 正常 FIFO 跟在当前工作后面。
+    const quotaRecovery = state.recovery;
+    const quotaHead = quotaRecovery?.kind === 'queue-head' && this.restoredUsageLimitRecoveries.has(quotaRecovery)
+      ? state.pendingQueue.find(item => item.clientId === quotaRecovery.clientId) : undefined;
     const wasQuiet =
-      state.pendingQueue.length === 0 &&
+      state.pendingQueue.every(item => item === quotaHead) &&
       state.activeTurn === null &&
       state.steeringQueueClientIds.length === 0 &&
       !this.deps.isTurnRunning(sessionId);
     for (const item of restored) this.restoredQueueItems.add(item);
-    state.pendingQueue = [...restored, ...state.pendingQueue];
+    state.pendingQueue = quotaHead
+      ? [quotaHead, ...restored, ...state.pendingQueue.filter(item => item !== quotaHead)]
+      : [...restored, ...state.pendingQueue];
     if (wasQuiet) {
       state.queuePaused = true;
       state.queuePausedByRestore = true;
@@ -3358,6 +3366,7 @@ export class AgentInputCoordinator {
       // Keep the original user input/receipt and user-turn accounting. Only the
       // recovery activity metadata travels with its first durable user row.
       state.pendingQueue[0].autoResumeInfo = automaticResumeInfo;
+      if (state.queuePausedByRestore) this.restoredUsageLimitRetryItems.add(state.pendingQueue[0]);
     }
     if (recovery.kind === 'active-turn') {
       let item = continueItem;
@@ -3395,6 +3404,7 @@ export class AgentInputCoordinator {
       // Manual retry is a user takeover. The old scheduler waiter settles as
       // failed; its FireContext must not be inherited by the user's new turn.
       if ((!automatic || this.restoredUsageLimitRecoveries.has(recovery)) && isSchedulerOriginItem(item)) item.origin = undefined;
+      if (usageWait && state.queuePausedByRestore) this.restoredUsageLimitRetryItems.add(item);
       state.pendingQueue.unshift(item);
       this.prependPendingCompactWaitClientId(state, item.clientId);
       // 「用户显式重试」信号 —— **只在 active-turn recovery 上发**。这一支重试的是
@@ -4827,7 +4837,7 @@ export class AgentInputCoordinator {
     if (this.restoreAttempted.has(sessionId) && !this.restoredQueueSessions.has(sessionId))
       return 'queue-restore-failed';
     if (state.pendingQueue.length === 0) return 'queue-empty';
-    if (state.queuePaused)
+    if (state.queuePaused && !(state.queuePausedByRestore && this.restoredUsageLimitRetryItems.has(state.pendingQueue[0])))
       return state.queuePausedByRestore ? 'queue-paused-by-restore' : 'queue-paused';
     if (state.queueAbortPending) return 'abort-pending';
     if (state.queueInteractionLocks.length > 0) return 'interaction-lock';
@@ -6716,8 +6726,8 @@ export class AgentInputCoordinator {
     const token = ++this.usageLimitWaitSeq;
     state.usageLimitWait = {
       resumeAt: null, token, recovery: state.recovery!,
-      accountLimit: isAccountUsageLimitError({ ...signals, message }),
     };
+    if (isAccountUsageLimitError({ ...signals, message })) this.accountLimitRecoveries.add(state.recovery!);
     try {
       this.deps.onUsageLimitedTurnError!(sessionId, { ...(signals ?? {}), message }, item, token);
     } catch (err) {
@@ -6884,7 +6894,7 @@ export class AgentInputCoordinator {
   /** Includes reset-time resolution: a provider self-close must not cancel the logical wait. */
   hasUsageLimitRecovery(sessionId: string, token?: number): boolean {
     const state = this.states.get(sessionId);
-    return Boolean(state?.usageLimitWait?.accountLimit && isUsageLimitCandidateCurrent(state, token));
+    return Boolean(state?.recovery && this.accountLimitRecoveries.has(state.recovery) && isUsageLimitCandidateCurrent(state, token));
   }
 
   snapshotUsageLimitRecovery(sessionId: string, token: number): UsageLimitRecoverySnapshot | null {
@@ -6909,7 +6919,8 @@ export class AgentInputCoordinator {
     } else state.recovery = { kind: 'active-turn', item };
     state.error = snapshot.error;
     const token = ++this.usageLimitWaitSeq;
-    state.usageLimitWait = { token, resumeAt: null, recovery: state.recovery, accountLimit: true };
+    state.usageLimitWait = { token, resumeAt: null, recovery: state.recovery };
+    this.accountLimitRecoveries.add(state.recovery);
     this.restoredUsageLimitRecoveries.add(state.recovery);
     this.emit(sessionId);
     return token;

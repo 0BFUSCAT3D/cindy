@@ -65,6 +65,20 @@ describe('createClaudeSubscriptionUsageReader', () => {
     expect(state.cached).toMatchObject({ source: 'oauth-endpoint', accountFingerprint: 'acct-a' });
   });
 
+  // Standard regression: fresh recovery reads must await the new account even if an old refresh is in flight.
+  it.each([false, true])('waits for the current account after discarding its old cache; inFlight=%s', async (inFlight) => {
+    const { deps, reader, state } = setup({ cached: { ...SNAPSHOT, accountFingerprint: 'acct-a' } });
+    let release!: (value: ClaudeSubscriptionUsageSnapshot) => void;
+    if (inFlight) {
+      deps.fetchSnapshot.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      reader.triggerRefresh();
+    }
+    state.account = 'acct-b';
+    const result = reader.read({ fresh: true });
+    if (inFlight) { await flush(); release(SNAPSHOT); }
+    expect(await result).toMatchObject({ accountFingerprint: 'acct-b', sevenDay: SNAPSHOT.sevenDay });
+  });
+
   it('节流窗口内不重复拉起 CLI,过了窗口再拉', async () => {
     const { deps, reader, state } = setup();
     await reader.read();

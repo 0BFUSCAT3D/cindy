@@ -1680,6 +1680,19 @@ export async function reconcileScheduledUsageLimitWaits(scheduleId: string): Pro
   }
 }
 
+/** Reuse the saved wait owner; a fresh-session schedule must not bypass it after restart. */
+export async function findSchedulerUsageLimitWait(scheduleId: string): Promise<string | null> {
+  const scope = activeOwnerScopeKey();
+  for (const [sessionId, pending] of savedUsageLimitWaits) {
+    if (pending.record.item.origin?.kind !== 'scheduler' || pending.record.item.origin.scheduleId !== scheduleId) continue;
+    const valid = await isSavedUsageLimitWaitValid(pending.record);
+    if (usageLimitRecoverySuspended || scope !== activeOwnerScopeKey()) return null;
+    if (valid && savedUsageLimitWaits.get(sessionId) === pending &&
+      agentInputCoordinatorHolder?.leaseUsageLimitRecovery(sessionId, pending.token)) return sessionId;
+  }
+  return null;
+}
+
 async function restoreSavedUsageLimitWait(sessionId: string): Promise<void> {
   const coordinator = agentInputCoordinatorHolder;
   if (!coordinator || usageLimitRecoverySuspended || savedUsageLimitWaits.has(sessionId) ||
