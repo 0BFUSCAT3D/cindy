@@ -295,8 +295,8 @@ export function finishSessionTerminalEvent(
     // hanging on the suppressed-error owner. stashOrca 失败必须立刻收口，
     // 否则 worker 会永远停在 running。
     let deferredOrcaWorkerTerminal = false;
-    // 供应商组正在为这次失败换电脑：Worker 这一轮还没有结局，先不把它回报给 Lead(只压这一步，插件任务、
-    // 委派等其他收口照旧)，按那次登记暂存。error 事件随 error 行一起暂存；只以 done 收尾的失败在下面暂存。
+    // 供应商组正在为这次失败换电脑：Worker 这一轮还没有结局，先不把它回报给 Lead，按那次登记暂存。
+    // error 事件随 error 行一起暂存；只以 done 收尾的失败在下面暂存。
     let providerGroupHeldWorkerTerminal = false;
     const providerGroupDoneHoldId =
       event.type === 'done'
@@ -331,7 +331,7 @@ export function finishSessionTerminalEvent(
     // renderer's deferred persist IPC is the final auth/gateway failure exit;
     // overflow uses the async surface below. Planned upgrade closes are kept
     // under the same owner so a paired success can clear them.
-    const recoveryOwnsUnsuccessfulBoundary =
+    let recoveryOwnsUnsuccessfulBoundary =
       isTerminalTurnErrorEvent(event) &&
       (isRemoteAuthRetry ||
         isGatewayProxyTokenRecovery ||
@@ -429,6 +429,12 @@ export function finishSessionTerminalEvent(
         deps.stashProviderGroupHeldError?.(session.id, providerGroupHoldId, attributedEvent.data, eventAgentMeta) === true
       ) {
         if (persistId) releaseReservedTurnErrorPersistId(session.id, persistId);
+        // The same persisted failure now belongs to group recovery rather than
+        // generic auto-resume. Keep plugin/upstream callers pending until that
+        // owner succeeds, hands back recovery, or releases the final error.
+        // Only an accepted stash owns it; a different, unheld error settles normally.
+        recoveryOwnsUnsuccessfulBoundary = true;
+        deferUnsuccessfulProductTurn();
         // 同一次失败：协同 Worker 的回报与 error 行按同一次登记结算。
         if (deps.stashProviderGroupHeldWorkerTerminal && isTerminalTurnErrorEvent(event)) {
           deps.stashProviderGroupHeldWorkerTerminal(session.id, providerGroupHoldId, {
