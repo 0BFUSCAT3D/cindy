@@ -3403,7 +3403,7 @@ export class AgentInputCoordinator {
       }
       // Manual retry is a user takeover. The old scheduler waiter settles as
       // failed; its FireContext must not be inherited by the user's new turn.
-      if ((!automatic || this.restoredUsageLimitRecoveries.has(recovery)) && isSchedulerOriginItem(item)) item.origin = undefined;
+      if (!automatic && isSchedulerOriginItem(item)) item.origin = undefined;
       if (usageWait && state.queuePausedByRestore) this.restoredUsageLimitRetryItems.add(item);
       state.pendingQueue.unshift(item);
       this.prependPendingCompactWaitClientId(state, item.clientId);
@@ -6912,9 +6912,15 @@ export class AgentInputCoordinator {
     const state = this.getState(sessionId);
     if (state.generation !== generation || state.activeTurn || state.recovery || state.error || this.isExecutionPaused(sessionId) ||
       state.pendingQueue.some(item => item.clientId !== snapshot.item.clientId)) return null;
-    const item = sanitizeQueuedMessageForPersistence(snapshot.item);
+    const queued = snapshot.kind === 'queue-head'
+      ? state.pendingQueue.find(item => item.clientId === snapshot.item.clientId) : undefined;
+    const item = { ...sanitizeQueuedMessageForPersistence(queued ?? snapshot.item) };
+    // Restore task input, never the expired scheduler run. Do this once for both
+    // recovery shapes, including a matching queue item already restored in memory.
+    if (isSchedulerOriginItem(item)) item.origin = undefined;
     if (snapshot.kind === 'queue-head') {
-      if (!state.pendingQueue.some(queued => queued.clientId === item.clientId)) state.pendingQueue.unshift(item);
+      if (queued) state.pendingQueue[state.pendingQueue.indexOf(queued)] = item;
+      else state.pendingQueue.unshift(item);
       state.recovery = { kind: 'queue-head', clientId: item.clientId };
     } else state.recovery = { kind: 'active-turn', item };
     state.error = snapshot.error;
@@ -6943,9 +6949,6 @@ export class AgentInputCoordinator {
     const state = this.getState(sessionId);
     if (state.usageLimitWait && (token === undefined || state.usageLimitWait.token === token)) {
       state.usageLimitWait = null;
-      if (state.recovery?.kind === 'active-turn' && this.restoredUsageLimitRecoveries.has(state.recovery)) {
-        state.recovery = { ...state.recovery, item: { ...state.recovery.item, origin: undefined } };
-      }
       this.emit(sessionId);
     }
     return this.getProjection(sessionId);

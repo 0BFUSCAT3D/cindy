@@ -14241,25 +14241,55 @@ describe('AgentInputCoordinator 中断自动续跑', () => {
 });
 
 describe('usage-limit wait (ordinary tasks)', () => {
-  it('restores a scheduled quota failure after restart without replaying the dead run context', async () => {
+  // Standard regression: both recovery shapes must shed the dead FireContext before
+  // auto/manual/cancelled-wait dispatch, or a later ordinary error loses manual Retry.
+  it.each(
+    (['active-turn', 'queue-head'] as const).flatMap(kind =>
+      (['auto', 'manual', 'cancel'] as const).map(action => ({ kind, action }))),
+  )('restores scheduled $kind quota recovery via $action without replaying the dead run context', async ({ kind, action }) => {
     const original = createHarness(); const sid = 'restarted-quota';
+    if (kind === 'queue-head') {
+      original.sendToAgent.mockRejectedValueOnce(new ProviderGroupUsageLimitError({ resetAtMs: 5_000_000 }));
+    }
     original.coordinator.enqueue(sid, makeItem('input', 'work', {
       origin: { kind: 'scheduler', scheduleId: 'sch', scheduleName: 'Check', runId: 'old-run' },
     }));
     await flush(); original.setRunning(false);
-    original.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    if (kind === 'active-turn') original.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
     const token = original.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
     const snapshot = original.coordinator.snapshotUsageLimitRecovery(sid, token)!;
+    expect(snapshot.kind).toBe(kind);
     const restarted = createHarness();
     restarted.setHasAssistantProgressAfter(async () => true);
+    // Also cover restoration when the same queued input is already in memory.
+    if (kind === 'queue-head' && action === 'cancel') {
+      restarted.coordinator.setInteractionLock(sid, 'restore-test', true);
+      restarted.coordinator.enqueue(sid, snapshot.item);
+      await flush();
+    }
     const restored = restarted.coordinator.restoreUsageLimitRecovery(sid, snapshot, restarted.coordinator.getGeneration(sid))!;
-    expect(restarted.coordinator.getProjection(sid).error).toBe('weekly limit');
+    restarted.coordinator.setInteractionLock(sid, 'restore-test', false);
+    // The saved record still owns schedule deduplication until it is consumed.
+    expect(snapshot.item.origin).toMatchObject({ runId: 'old-run' });
+    expect(restarted.coordinator.getProjection(sid).error).toBe(snapshot.error);
     expect(restarted.coordinator.armUsageLimitWait(sid, restored, 9_000_000)).toBe(true);
-    await restarted.coordinator.continueAfterUsageLimitReset(sid, restored, INFO); await flush();
+    if (action === 'auto') await restarted.coordinator.continueAfterUsageLimitReset(sid, restored, INFO);
+    else {
+      if (action === 'cancel') restarted.coordinator.cancelUsageLimitWait(sid, restored);
+      await restarted.coordinator.retryLastError(sid);
+    }
+    await flush();
     expect(restarted.sendToAgent).toHaveBeenCalledOnce();
-    expect(restarted.sendToAgent.mock.calls[0][1]).toMatchObject({ content: CONTINUE_AFTER_ERROR_PROMPT });
-    expect(restarted.sendToAgent.mock.calls[0][3].origin).toBeUndefined();
+    expect(restarted.sendToAgent.mock.calls[0][1]).toMatchObject({ content: kind === 'active-turn' ? CONTINUE_AFTER_ERROR_PROMPT : 'work' });
     expect(await restarted.coordinator.continueAfterUsageLimitReset(sid, restored, INFO)).toBe('superseded');
+    restarted.setRunning(false);
+    restarted.coordinator.onTurnEvent(sid, 'error', 'ordinary failure', { sdkError: 'authentication_failed' });
+    restarted.coordinator.onTurnEvent(sid, 'done');
+    await flush();
+    expect(restarted.coordinator.getProjection(sid).recovery?.kind).toBe('active-turn');
+    await restarted.coordinator.retryLastError(sid); await flush();
+    expect(restarted.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(restarted.sendToAgent.mock.calls[0][3].origin).toBeUndefined();
   });
 
   it('does not restore across clear, and unloads runtime waiting for a later owner activation', async () => {
