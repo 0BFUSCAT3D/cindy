@@ -123,6 +123,35 @@ export interface SessionCloseCleanupActions {
   cleanupRuntimeState(): void;
 }
 
+/** Shared close adapter; dependencies stay live until the actual close boundary. */
+export function createSessionCloseTeardown<S extends Pick<Session, 'id'>>(deps: {
+  clearCompactRuntimeRefresh(session: S): void;
+  cancelDirectAbortReconciliation(sessionId: string): void;
+  clearPendingFailedTurnPersist(sessionId: string): void;
+  isRehydrateCloseSuppressed(sessionId: string): boolean;
+  getProviderGroupSwitchHoldId(sessionId: string): number | null | undefined;
+  hasPendingProviderGroupContinuation(sessionId: string): boolean;
+  clearDeferredProductTurnFailure(
+    sessionId: string,
+    session: S,
+    options: { preserveRecovery: boolean },
+  ): void;
+}): (session: S) => void {
+  return session => {
+    deps.clearCompactRuntimeRefresh(session);
+    deps.cancelDirectAbortReconciliation(session.id);
+    deps.clearPendingFailedTurnPersist(session.id);
+    // A group recovery owns the logical failure until fallback or real dispatch.
+    // Keep it through the exact close/bootstrap transaction, including a failed
+    // bootstrap. User stop and a new dispatch still clear all deferred receipts.
+    deps.clearDeferredProductTurnFailure(session.id, session, {
+      preserveRecovery: (deps.isRehydrateCloseSuppressed(session.id) &&
+        deps.getProviderGroupSwitchHoldId(session.id) != null) ||
+        deps.hasPendingProviderGroupContinuation(session.id),
+    });
+  };
+}
+
 /** A runtime rebuild may preserve input/recovery, but never skips runtime cleanup. */
 export function runSessionCloseCleanup(
   preserveAutoResumeIntent: boolean,
