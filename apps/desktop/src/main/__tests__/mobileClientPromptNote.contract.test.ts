@@ -122,7 +122,9 @@ describe('排队 / 插入两条路径的接线(源码级守卫)', () => {
   it('steer 投递也注入说明,且只进 wire payload', () => {
     expect(register).toContain("isMobileControllerInvoke() || so.fromMobileClient === true");
     expect(register).toContain('shouldPrependMobileClientPromptNote(normalized, sess.agentKind)');
-    expect(register).toContain('prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerSourceNote)');
+    // 插话同样先接引用说明,再接来源说明(与 send 事务同序)。
+    expect(register).toContain('prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerReplyQuoteNote)');
+    expect(register).toContain('prependNoteToWireUserMessage(withSteerReplyQuoteNote as HandoffWireMessage, steerSourceNote)');
     // steer 与 send 事务共用同一份环境说明去重记忆,投递成功后才记为已发送。
     expect(register).toContain("prependNoteToWireUserMessage(withSteerSourceNote as HandoffWireMessage, steerPlannedNotes['client-environment'])");
     expect(register).toContain('steerNotePlan?.commit()');

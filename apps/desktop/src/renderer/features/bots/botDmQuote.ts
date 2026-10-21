@@ -3,6 +3,7 @@
  * 引用（按任务保存在本次运行中，切换任务再回来仍在），以及把引用落成与群聊同一个引用块的显示数据。
  */
 import { useSyncExternalStore } from 'react';
+import { richAnswerText } from '@cindy/maker-shared/rich-answer';
 
 import type { ChatMessage } from '@/lib/makerChatStore';
 import type { BotGroupQuoteDisplay } from '../../../shared/botGroupChat';
@@ -38,6 +39,11 @@ export function usePendingBotReplyQuote(sessionId: string | null | undefined): C
 
 type QuotableMessage = Pick<ChatMessage, 'clientId' | 'role' | 'content' | 'images' | 'files'>;
 
+/** The text the user reads: a companion reply's components as their visible text, not their source. */
+function readableText(message: QuotableMessage): string {
+  return message.role === 'assistant' ? richAnswerText(message.content) : message.content;
+}
+
 function attachmentSummary(message: QuotableMessage | undefined): { count: number; name: string | null } {
   const names = [
     ...(message?.images ?? []).map((image) => ('originalName' in image ? image.originalName : undefined)),
@@ -49,7 +55,7 @@ function attachmentSummary(message: QuotableMessage | undefined): { count: numbe
 /** The quote a reply on `message` carries; only user and companion messages can be quoted. */
 export function botReplyQuoteFor(message: QuotableMessage): ChatReplyQuote | null {
   if (message.role !== 'user' && message.role !== 'assistant') return null;
-  const excerpt = chatReplyQuoteExcerpt(message.content);
+  const excerpt = chatReplyQuoteExcerpt(readableText(message));
   const attachments = attachmentSummary(message);
   return { clientId: message.clientId, role: message.role, excerpt: excerpt || attachments.name || '' };
 }
@@ -71,7 +77,7 @@ export function botReplyQuoteDisplay(
   return {
     state: 'live',
     authorName,
-    excerpt: chatReplyQuoteExcerpt(original.content),
+    excerpt: chatReplyQuoteExcerpt(readableText(original)),
     attachmentCount: attachments.count,
     attachmentName: attachments.name,
   };

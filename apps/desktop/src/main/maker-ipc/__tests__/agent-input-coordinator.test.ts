@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ScriptTarget, transpileModule } from 'typescript';
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, appendAutoReviewUserIntent } from '@cindy/maker-core';
+import { REPLY_QUOTE_SOURCE_CONTENT } from '../chatReplyQuoteNote';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7381,6 +7382,8 @@ describe('AgentInputCoordinator steer transaction', () => {
     const opts=h.steerToAgent.mock.calls[0][2];
     expect(opts[AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(true);
     expect(opts[AUTO_REVIEW_USER_INTENT]).toBeUndefined();
+    // The steer path reads a reply quote from the queued message's persisted content.
+    expect(opts[REPLY_QUOTE_SOURCE_CONTENT]).toBe(JSON.stringify({orcaSource:'lead',content:'Deploy now'}));
   });
 
   it('screens same-turn steers through ghost hooks: rewrite injects and persists the rewritten text', async () => {

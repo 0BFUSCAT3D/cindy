@@ -14748,6 +14748,8 @@ async function updateQueueItemContent(
       slashCommandRanges: textUnchanged
         ? queued.chatMessage.slashCommandRanges
         : content.slashCommandRanges,
+      // The quote is part of the message, not of the edited text.
+      ...(queued.chatMessage.replyQuote ? { replyQuote: queued.chatMessage.replyQuote } : {}),
     },
     {
       clientId: queued.clientId,

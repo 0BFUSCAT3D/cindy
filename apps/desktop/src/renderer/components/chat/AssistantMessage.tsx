@@ -326,7 +326,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   const botQuote = useBotChatQuote(simplifiedBotConversation ? currentSessionId : undefined);
   const handleAddToChat = useCallback(() => {
     if (botQuote && messageClientId) {
-      const quote = botReplyQuoteFor({ clientId: messageClientId, role: 'assistant', content: richAnswerText(content) });
+      const quote = botReplyQuoteFor({ clientId: messageClientId, role: 'assistant', content });
       if (quote) botQuote.quote(quote);
       return;
     }

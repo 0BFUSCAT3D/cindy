@@ -1844,6 +1844,12 @@ describe('Bot canonical Session lifecycle', () => {
     const rewound = await readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'assistant', excerpt: '' }));
     expect(rewound).toContain('不可用');
     expect(rewound).not.toContain('Ship the launch post');
+    // An owner message with only an attachment is still there, not "unavailable".
+    h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('m-image', 'image-1', chatId, 'user', JSON.stringify({ text: '', images: [{ url: 'x', originalName: 'chart.png' }], files: [] }), 2_000);
+    const imageOnly = await readReplyQuoteNote(chatId, sent({ clientId: 'image-1', role: 'user', excerpt: 'chart.png' }));
+    expect(imageOnly).toContain('chart.png');
+    expect(imageOnly).not.toContain('不可用');
   });
 
   it('records runtime preparation separately from successful Agent startup', async () => {
