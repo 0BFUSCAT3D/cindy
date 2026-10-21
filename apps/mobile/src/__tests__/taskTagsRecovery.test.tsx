@@ -471,3 +471,40 @@ it("reports the native back arrow as disabled while a form save is in flight", a
   await act(async () => finish({ tags: [], sessions: [] }));
   expect(pages.at(-1)![1]).toBe(false);
 });
+
+it("offers retry only for failed reads, not for failed writes", async () => {
+  let state: any;
+  const mount = async () =>
+    act(async () =>
+      root.render(
+        <TaskTagsPanel
+          session={session}
+          expanded
+          onExpandedChange={onExpandedChange}
+          renderExpanded={(value) => {
+            state = value;
+            return null;
+          }}
+        />,
+      ),
+    );
+  // A catalog that never loaded can only be repaired by reading it again.
+  h.invoke.mockRejectedValueOnce(new Error("boom"));
+  await mount();
+  expect(state.message).toBe("taskTags.loadFailed");
+  expect(state.canRetry).toBe(true);
+  await act(async () => root.unmount());
+
+  // With a loaded catalog, a failed write is not something "refresh" can retry.
+  root = createRoot(node);
+  resetTaskTagCatalogCache();
+  h.invoke.mockReset().mockResolvedValue({ tags: [tag], sessions: [] });
+  await mount();
+  expect(state.canRetry).toBe(false);
+  await act(async () => state.onAdd());
+  await act(async () => state.form.onNameChange("Ideas"));
+  h.invoke.mockRejectedValueOnce(new Error("boom"));
+  await act(async () => state.form.onSubmit());
+  expect(state.message).toBe("taskTags.failed");
+  expect(state.canRetry).toBe(false);
+});

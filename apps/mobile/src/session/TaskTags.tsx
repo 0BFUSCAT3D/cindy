@@ -881,7 +881,13 @@ export function TaskTagsPanel({
       disabled: busy || blocked,
       loading: !hasCatalog && busy,
       message: reason ? t(`taskTags.${reason}`) : undefined,
-      canRetry: !blocked && !busy && Boolean(error) && error !== 'unavailable',
+      // Retry re-reads the catalog, so only offer it for a failed read. A failed write
+      // (create / save / delete) must not look retried by a button that only refreshes.
+      canRetry:
+        !blocked &&
+        !busy &&
+        error !== 'unavailable' &&
+        (error === 'loadFailed' || error === 'remoteBusy' || (!hasCatalog && Boolean(error))),
       canAdd: hasCatalog && error !== 'unavailable',
       onRetry: () => {
         void run({ action: 'get', sessionIds: [session.id] }, hasCatalog);
