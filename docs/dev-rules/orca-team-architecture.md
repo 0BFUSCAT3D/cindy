@@ -558,9 +558,14 @@ Codex thread start / resume 成功后必须注册 `threadId -> session context`�
 
 `switch_focus` 是纯 UI focus 操作，走单独的纯函数 `findFocusTargetWorker`（`orcaTeamService.ts`）：**worker_id / session_id 优先精确匹配，label 兜底**——比 mutation 工具多接受人类友好的 label（人/agent 常按 label 切画面），故意不复用 `resolveWorkerRef`（mutation 工具不该认 label）。register.ts 的 IPC handler 与 MCP holder 两条 switch_focus 路径共用这一个 helper，不要再各自 inline find。
 
-#### 4. `orca_worker_bridge` 对 Codex 全局可见（状态：follow-up）
+#### 4. `orca_worker_bridge` 对 Codex/Pi 共享桥接全局可见（状态：follow-up）
 
-`orca_worker_bridge` 对 Codex session 的可见性必须由 handler 做角色校验兜底。可见性短期收不掉时，handler 必须用 `resolveLiziMcpSessionContext` 检查真实 `orcaRole === 'worker'`，普通 session / Lead 调用应返回明确错误，而不是 fallback 到空 ctx。
+Claude 的 per-session MCP 仅在 `orcaRole === 'worker'` 或 `orcaRemoteWorker === true`
+时挂载 Worker 桥接；普通任务与 Lead 也有 `getSessionContext`，不能把访问器存在当作 Worker
+身份证据。Codex/Pi 共享 HTTP bridge 在工厂阶段没有真实任务身份，仍需注册全局 server；
+工具调用时必须从 `getSessionContext` 读取宿主绑定的真实身份，按本地 Worker link 或远端
+Worker 来源校验，普通任务 / Lead 调用返回明确错误，不猜测缺失的 ctx。实现与挂载矩阵
+回归见 `packages/orca-workflow/src/orca-bridge-mcp.ts` 及其 `orca-bridge-mcp.test.ts`。
 
 #### 5. Lead prompt 的诊断工具名（状态：已解决）
 
