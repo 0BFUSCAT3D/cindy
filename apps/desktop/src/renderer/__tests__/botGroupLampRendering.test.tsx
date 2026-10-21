@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import Sortable, { type SortableEvent } from 'sortablejs';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getStartingSessionIds, markSessionStarting, resetSessionStartingStoreForTests, useStartingSessionIds } from '@/lib/sessionStartingStore';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -12,12 +12,15 @@ import {
   clearRemoteSessionActivity,
 } from '@/features/device-link/remoteSessionActivityStore';
 import { ProjectsSection, type ProjectsSectionProps } from '../features/cc-agent/sidebar/sections/ProjectsSection';
+import { useConversationSearch } from '../features/cc-agent/sidebar/ConversationSearchBox';
+import { SidebarInlineSearch } from '../features/cc-agent/sidebar/SidebarInlineSearch';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: { children: ReactNode }) => children }));
 vi.mock('@/features/device-link/useMachineSwitcher', () => ({ useEffectiveSelectedMachineId: () => 'all' }));
 vi.mock('@/hooks/useReducedMotion', () => ({ useReducedMotion: () => true }));
 vi.mock('@/hooks/useSidebarCardMode', () => ({ useSidebarMainViewMode: () => ({ mode: 'text' }) }));
+vi.mock('@cindy/maker-shared/cindy-make-feature', () => ({ CINDY_MAKE_ENABLED: true }));
 vi.mock('../features/cc-agent/hooks/useRemoteHostProjectOrders', () => ({
   projectOrderWriteScopeForSelection: () => ({ kind: 'viewer' }),
   useLocalHostProjectOrder: () => ({ snapshot: { manualProjectOrder: [] } }),
@@ -64,6 +67,7 @@ function props(groupDevice: boolean): ProjectsSectionProps {
     onCollapseAll: vi.fn(), onExpandAll: vi.fn(), onCreateInProject: vi.fn(), onOpenConversationSearch: vi.fn(),
     onOpenInExplorer: vi.fn(), onLinkCodexProject: vi.fn(), linkingCodexProject: null, onBrowseFiles: vi.fn(),
     onArchiveAll: vi.fn(), onCreateDialogue: vi.fn(),
+    onSearchDialogues: vi.fn(), onArchiveAllDialogues: vi.fn(),
   };
 }
 
@@ -83,6 +87,164 @@ const phases = ['running', 'needs-interaction', 'error', 'completed'] as const;
 function activity(phase: typeof phases[number]) {
   applyRemoteSessionActivity('remote', { sessionId: 'lit', phase, attention: true, compactDetail: '' });
 }
+
+// Issue #6575: render real ProjectsSection headers and observe the contextmenu
+// boundary that opens the ancestor's organize menu. Existing lamp/drag tests do
+// not right-click headers. Minimal regression input: one grouped dialogue and a
+// bubbling, cancelable contextmenu event. Reuse this unit fixture to cover both
+// device layouts, shared Bot/Make headers and the real ProjectNode menu.
+// Standalone: 6.16s including pnpm (Vitest 4.25s, 2.36s collection); reuses
+// the existing component fixture without another jsdom file or module resets.
+describe('Sidebar group context menus', () => {
+  // Issue #6575 P1 / DESIGN §14.2: the actual header is distinct from Radix's
+  // positioning anchor. Existing key tests dispatched to an unfocused header,
+  // hiding the lost focus. Unit: real menu opened by either keyboard shortcut.
+  it.each(['ContextMenu', 'F10'])('returns focus to the dialogue header after %s then Escape', async (key) => {
+    const p = props(false);
+    p.bots = [];
+    p.dialogues = [{ id: 'dialogue', title: 'Dialogue task', status: 'active', workspaceKind: 'dialogue' } as Session];
+    render(<ProjectsSection {...p} />);
+    const header = screen.getByText('ccAgent.sidebar.dialogues').closest<HTMLElement>('[role="button"]')!;
+    header.focus();
+    fireEvent.keyDown(header, { key, shiftKey: key === 'F10' });
+    const menu = await screen.findByRole('menu');
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    // Radix schedules close-auto-focus after its focus scope unmounts.
+    await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(header);
+    fireEvent.keyDown(document.activeElement!, { key: 'Enter' });
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(document.activeElement!, { key: ' ' });
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps focus in the search field opened by a dialogue menu action', async () => {
+    const p = props(false);
+    p.bots = [];
+    p.dialogues = [{ id: 'dialogue', title: 'Dialogue task', status: 'active', workspaceKind: 'dialogue' } as Session];
+    function SidebarWithSearch() {
+      const [openSignal, setOpenSignal] = useState(0);
+      const search = useConversationSearch({ enabled: true, navigate: vi.fn(), allKnownProjects: [] });
+      return <>
+        <ProjectsSection {...p} onSearchDialogues={() => setOpenSignal((value) => value + 1)} />
+        <SidebarInlineSearch search={search} allKnownProjects={[]} openSignal={openSignal} />
+      </>;
+    }
+    render(<SidebarWithSearch />);
+    const header = screen.getByText('ccAgent.sidebar.dialogues').closest<HTMLElement>('[role="button"]')!;
+    header.focus();
+    fireEvent.keyDown(header, { key: 'ContextMenu' });
+    const menu = await screen.findByRole('menu');
+    fireEvent.click(within(menu).getByText('ccAgent.sidebar.dialogueAction.search'));
+    await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'ccAgent.search.placeholder' }));
+  });
+
+  // The dedicated menu must act on the full group, including folded rows, and
+  // never expose project actions or silently archive a local subset of a mixed group.
+  it.each(['active', 'archived'] as const)('offers scoped search and bulk %s actions for local dialogues', async (status) => {
+    const p = props(false);
+    p.bots = [];
+    p.filter.status = status;
+    p.dialogues = ['first', 'folded'].map((id) => ({
+      id, title: id, status, workspaceKind: 'dialogue', pinnedAt: null,
+      createdAt: '2026-09-03', updatedAt: '2026-09-03',
+    } as Session));
+    render(<ProjectsSection {...p} />);
+    const header = screen.getByText('ccAgent.sidebar.dialogues').closest('[role="button"]')!;
+    expect(screen.queryByTestId('row-folded')).toBeNull();
+    fireEvent.contextMenu(header);
+    let menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(2);
+    fireEvent.click(within(menu).getByText('ccAgent.sidebar.dialogueAction.search'));
+    expect(p.onSearchDialogues).toHaveBeenCalledWith(p.dialogues);
+    fireEvent.contextMenu(header);
+    menu = await screen.findByRole('menu');
+    fireEvent.click(within(menu).getByText(status === 'archived'
+      ? 'ccAgent.sidebar.dialogueAction.restoreAll'
+      : 'ccAgent.sidebar.projectAction.archivedAll'));
+    expect(p.onArchiveAllDialogues).toHaveBeenCalledWith(p.dialogues);
+  });
+
+  it.each([false, true])('disables bulk actions when a dialogue group contains remote tasks, mixed %s', async (mixed) => {
+    const p = props(false);
+    p.dialogues = [{ ...p.bots![0].sessions[0], id: 'remote-dialogue' }];
+    p.bots = [];
+    if (mixed) p.dialogues.push({ ...p.dialogues[0], id: 'local-dialogue', deviceLinkDeviceId: undefined });
+    render(<ProjectsSection {...p} />);
+    fireEvent.contextMenu(screen.getByText('ccAgent.sidebar.dialogues').closest('[role="button"]')!);
+    const menu = await screen.findByRole('menu');
+    const archive = within(menu).getByRole('menuitem', { name: /ccAgent.sidebar.projectAction.archivedAll/ });
+    expect(archive.getAttribute('aria-disabled')).toBe('true');
+    expect(within(menu).getByText('ccAgent.sidebar.dialogueAction.remoteBulkUnavailable')).toBeTruthy();
+    fireEvent.click(archive);
+    expect(p.onArchiveAllDialogues).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByText('ccAgent.sidebar.dialogueAction.search'));
+    expect(p.onSearchDialogues).toHaveBeenCalledWith(p.dialogues);
+  });
+
+  it.each([false, true])('contains dialogue right-clicks and preserves its controls, device grouping %s', async (groupDevice) => {
+    const p = props(groupDevice);
+    p.dialogues = [{ ...p.bots![0].sessions[0], id: 'dialogue', title: 'Dialogue task' }];
+    const onSidebarContextMenu = vi.fn();
+    render(<div onContextMenu={onSidebarContextMenu}><ProjectsSection {...p} /></div>);
+    const header = screen.getByText('ccAgent.sidebar.dialogues').closest<HTMLElement>('[role="button"]')!;
+    const event = createEvent.contextMenu(header);
+    fireEvent(header, event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(onSidebarContextMenu).not.toHaveBeenCalled();
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(await screen.findByRole('menu'), { key: 'Escape' });
+
+    fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(header, { key: 'Enter' });
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(header, { key: ' ' });
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+
+    const create = within(header).getByRole('button', { name: 'ccAgent.sidebar.newDialogue' });
+    fireEvent.contextMenu(create);
+    expect(onSidebarContextMenu).not.toHaveBeenCalled();
+    fireEvent.click(create);
+    expect(p.onCreateDialogue).toHaveBeenCalledWith(
+      groupDevice ? { deviceId: 'remote', deviceName: 'Remote device' } : undefined,
+    );
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('preserves shared Bot/Make headers, blank-area events and the project menu', async () => {
+    const p = props(false);
+    p.dialogues = [{ ...p.bots![0].sessions[0], id: 'make', source: 'cindy-make' }];
+    p.projects = [{
+      projectKey: 'local:/Project', workingDir: '/Project', displayName: 'Project',
+      scope: 'local', sessions: [], segments: 1, latestActivityAt: '2026-09-03T00:00:00Z',
+      remoteHostId: null, deviceLinkDeviceId: null,
+      deviceLinkDeviceName: null, deviceLinkConnectionStatus: null,
+    }];
+    p.allKnownProjects = p.projects;
+    p.allProjectKeysForOrder = p.projects.map((project) => project.projectKey);
+    const onSidebarContextMenu = vi.fn();
+    render(<div onContextMenu={onSidebarContextMenu}>
+      <ProjectsSection {...p} />
+      <span>Sidebar blank area</span>
+    </div>);
+    for (const title of ['Demo Bot', 'settings.cindyMake.title']) {
+      const header = screen.getByText(title).closest<HTMLElement>('[role="button"]')!;
+      const event = createEvent.contextMenu(header);
+      fireEvent(header, event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    fireEvent.contextMenu(screen.getByText('Sidebar blank area'));
+    expect(onSidebarContextMenu).toHaveBeenCalledTimes(3);
+
+    fireEvent.contextMenu(screen.getByText('Project').closest('[data-project-header]')!);
+    expect(await screen.findByRole('menu')).toBeTruthy();
+    expect(onSidebarContextMenu).toHaveBeenCalledTimes(3);
+  });
+});
 
 // PR #6196 / manualProjectSortDrag: the historical handle/filter overlap made
 // every project header reject drag start. Existing lamp tests use activity order,

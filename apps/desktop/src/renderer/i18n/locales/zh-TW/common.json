@@ -12601,6 +12601,23 @@
         "confirm": "確認",
         "cancel": "取消"
       },
+      "dialogueAction": {
+        "search": "在對話中搜尋",
+        "restoreAll": "全部恢復",
+        "remoteBulkUnavailable": "暫不支援含遠端任務的批次操作"
+      },
+      "dialogueArchiveAll": {
+        "description": "將歸檔此對話群組內全部 {{count}} 個任務。歸檔後將從列表中移除。",
+        "descriptionWithSkip": "將歸檔此對話群組內 {{count}} 個任務，{{skip}}的任務會被跳過。歸檔後將從列表中移除。",
+        "allPinnedOrRunning": "此對話群組內任務全部已置頂或在執行中，無可歸檔項",
+        "allPinned": "此對話群組內任務全部已置頂，不會歸檔",
+        "allRunning": "此對話群組內所有任務都在執行中，請先停止後再歸檔",
+        "empty": "此對話群組內沒有可歸檔的任務"
+      },
+      "dialogueRestoreAll": {
+        "description": "將恢復此對話群組內 {{count}} 個已歸檔任務。恢復後將從「已歸檔」列表移除，並回到「活躍」列表。",
+        "empty": "此對話群組內沒有可恢復的任務"
+      },
       "archiveAll": {
         "title": "歸檔全部任務",
         "confirm": "歸檔全部",

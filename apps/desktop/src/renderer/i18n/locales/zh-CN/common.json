@@ -12601,6 +12601,23 @@
         "confirm": "确认",
         "cancel": "取消"
       },
+      "dialogueAction": {
+        "search": "在对话中搜索",
+        "restoreAll": "全部恢复",
+        "remoteBulkUnavailable": "暂不支持含远程任务的批量操作"
+      },
+      "dialogueArchiveAll": {
+        "description": "将归档此对话组内全部 {{count}} 个任务。归档后将从列表中移除。",
+        "descriptionWithSkip": "将归档此对话组内 {{count}} 个任务，{{skip}}的任务会被跳过。归档后将从列表中移除。",
+        "allPinnedOrRunning": "此对话组内任务全部已置顶或在运行中，无可归档项",
+        "allPinned": "此对话组内任务全部已置顶，不会归档",
+        "allRunning": "此对话组内所有任务都在运行中，请先停止后再归档",
+        "empty": "此对话组内没有可归档的任务"
+      },
+      "dialogueRestoreAll": {
+        "description": "将恢复此对话组内 {{count}} 个已归档任务。恢复后将从“已归档”列表移除，并回到“活跃”列表。",
+        "empty": "此对话组内没有可恢复的任务"
+      },
       "archiveAll": {
         "title": "归档全部任务",
         "confirm": "归档全部",
