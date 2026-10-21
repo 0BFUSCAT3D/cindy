@@ -81,13 +81,16 @@ const styleOf = (text: string): Record<string, unknown> => {
   return JSON.parse(span!.getAttribute('data-style')!);
 };
 
-it('群聊不打开链接:强调里的链接只保留强调样式,不加下划线', async () => {
+it('群聊不打开链接:段落和表格链接不加下划线,强调样式仍保留', async () => {
   await act(async () => root.render(createElement(BotGroupMarkdownText, {
-    content: '**https://a.example/x** ~~https://b.example/y~~ **`a.ts`**',
+    content: '**https://a.example/x** ~~https://b.example/y~~ **`a.ts`** [段落链接](https://c.example)\n\n| 链接 | 地址 |\n| --- | --- |\n| [表格链接](https://d.example) | https://e.example |',
   })));
   expect(styleOf('https://a.example/x')).toMatchObject({ fontWeight: '600' });
   expect(styleOf('https://a.example/x').textDecorationLine).toBeUndefined();
   expect(styleOf('https://b.example/y').textDecorationLine).toBe('line-through');
   // 强调里的行内代码照常套代码样式。
   expect(styleOf('a.ts')).toMatchObject({ fontFamily: 'Menlo' });
+  for (const label of ['段落链接', '表格链接', 'https://e.example']) {
+    expect(styleOf(label).textDecorationLine).toBeUndefined();
+  }
 });

@@ -32,7 +32,7 @@ function renderInlines(inlines: readonly MobileMarkdownInline[], styles: Styles)
       case 'emphasis': return <Text key={index} style={styles.emphasis}>{inline.text}</Text>;
       case 'strikethrough': return <Text key={index} style={styles.strike}>{inline.text}</Text>;
       case 'code': return <Text key={index} style={styles.inlineCode}>{inline.text}</Text>;
-      case 'link': return <Text key={index} style={styles.link}>{inline.text}</Text>;
+      case 'link': return <Text key={index}>{inline.text}</Text>;
       case 'image': return <Text key={index}>{inline.alt ? `[${inline.alt}]` : ''}</Text>;
       default: return <Text key={index}>{inline.text}</Text>;
     }
@@ -122,7 +122,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   strong: { fontWeight: fontWeight.semibold },
   emphasis: { fontStyle: 'italic' },
   strike: { textDecorationLine: 'line-through' },
-  link: { textDecorationLine: 'underline' },
   inlineCode: { fontFamily: monoFont, fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodyLarge, backgroundColor: colors.surfaceChip },
   quote: { borderLeftWidth: 2, borderLeftColor: colors.border, paddingLeft: spacing.md },
   quoteText: { color: colors.textSecondary },
