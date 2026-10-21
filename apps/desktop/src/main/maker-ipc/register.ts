@@ -5831,9 +5831,13 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     botCompactRuntimeRefreshCoordinator.clearForClosedSession(session);
     cancelDirectAbortReconciliation(session.id);
     pendingFailedTurnAssistantPersistId.delete(session.id);
-    // An explicit close has no replacement turn to inherit the deferred
-    // receipt. Retire it before late renderer callbacks can arrive.
-    deferredProductTurnFailureGate.clearSession(session.id, session);
+    // A group recovery owns the logical failure until fallback or real dispatch.
+    // Keep it through the exact close/bootstrap transaction, including a failed
+    // bootstrap. User stop and a new dispatch still clear all deferred receipts.
+    deferredProductTurnFailureGate.clearSession(session.id, session, {
+      preserveRecovery: rehydrateCloseSuppression.isSuppressed(session.id) &&
+        agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(session.id) != null,
+    });
   },
   finalizeClosedSession: (session: WiredSession, context) => {
     // 关闭前固化 live 用量（见 sessionLastLiveUsage.ts）：冷 Pi 切模的窗口核实
@@ -5895,7 +5899,7 @@ async function interruptProductTurn(
     deferredProductTurnFailureGate.clear(owner);
     if (!isCurrentProductTurnFailureOwner(owner)) return;
   }
-  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner, 'failed'));
+  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner.originalExecution ?? owner, 'failed'));
   await interruptUpstreamMergeTurn(sessionId);
 }
 
@@ -18831,7 +18835,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }, PROVIDER_GROUP_SWITCH_HOLD_MAX_MS);
         };
         // 协同 Worker 的终态与 error 行按同一次登记结算：换成了不回报这次异常终止，没换成才回报给 Lead。
+        const recoveryOwner = activeOwnerScopeKey();
         hooks = {
+          notHandled: () => recoveryOwner === activeOwnerScopeKey() && inputCoordinator.resumeAfterProviderGroupDeclined(
+            sessionId, candidateToken, signals, (attemptToken) => {
+              const detail = providerGroupHeldErrors.takeForRecovery(sessionId, holdId);
+              if (detail) autoResumeBookkeeping.stashSuppressedError(sessionId, detail, attemptToken);
+              const terminal = providerGroupHeldTerminals.takeForRecovery(sessionId, holdId);
+              if (terminal?.orcaTerminal) autoResumeBookkeeping.stashOrcaSuppressedTerminal(sessionId, terminal.orcaTerminal);
+              if (terminal?.groupTerminal) autoResumeBookkeeping.stashBotGroupSuppressedTerminal(sessionId, terminal.groupTerminal);
+            },
+          ),
           beforeFallback: () => releaseProviderGroupHeld(sessionId, holdId),
           resumed: () => discardProviderGroupHeld(sessionId, holdId),
           // 先等原电脑恢复时进行中行显示「重新连接中 n/5」，开始换电脑时改回「正在换一台电脑继续」。

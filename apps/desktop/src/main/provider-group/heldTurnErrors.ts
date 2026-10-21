@@ -49,6 +49,8 @@ export interface ProviderGroupHeldTurnErrors {
    * 重复终态 error 返回 true(只留一行)。
    */
   stash(sessionId: string, holdId: number, data: unknown, agentMeta?: unknown): boolean;
+  /** Transfer this failure back to interrupted-turn recovery, without surfacing it. */
+  takeForRecovery(sessionId: string, holdId: number): HeldTurnErrorDetail | null;
   /** 换成了：这次失败不再落库、不再呈现。 */
   discard(sessionId: string, holdId: number): void;
   /** 不再换了：撤掉登记并补落；错误仍是当前状态时一并呈现。重复调用无副作用。 */
@@ -110,6 +112,11 @@ export function createProviderGroupHeldTurnErrors<Row>(
       entries.set(holdId, { detail, row: deps.capture(sessionId, data, agentMeta ?? null), owner: deps.ownerKey() });
       held.set(sessionId, entries);
       return true;
+    },
+
+    takeForRecovery(sessionId, holdId) {
+      const entry = take(sessionId, holdId);
+      return entry?.owner === deps.ownerKey() ? entry.detail : null;
     },
 
     discard(sessionId, holdId) {

@@ -6531,11 +6531,12 @@ export class AgentInputCoordinator {
     item: AgentInputQueuedMessage,
     message?: string,
     signals?: Omit<InterruptedTurnErrorSignals, 'message'>,
+    preferProviderGroup = true,
   ): AutoResumeInfo | null {
     if (!this.deps.onResumableTurnError) return null;
     // 容量错误已经走到终态：组能接管时直接交接，不再叠加主进程的同机重试。
     // 其他中断仍先走自愈(如断线后在原电脑恢复)；不能交给组的输入也保持原有处理。
-    if (this.getProviderGroupSwitchCandidate(sessionId, item, message, signals) === 'overload') return null;
+    if (preferProviderGroup && this.getProviderGroupSwitchCandidate(sessionId, item, message, signals) === 'overload') return null;
     try {
       return (
         this.deps.onResumableTurnError(sessionId, { ...(signals ?? {}), message }, item) ?? null
@@ -6839,6 +6840,33 @@ export class AgentInputCoordinator {
   getProviderGroupSwitchHoldId(sessionId: string): number | null {
     const state = this.states.get(sessionId);
     return state && isProviderGroupSwitchHoldLive(state) ? state.providerGroupSwitchHold!.id : null;
+  }
+
+  /** A synchronous group candidate was declined by its async configuration/eligibility check. */
+  resumeAfterProviderGroupDeclined(
+    sessionId: string,
+    token: number,
+    signals: InterruptedTurnErrorSignals,
+    adoptError: (attemptToken: number) => void,
+  ): boolean {
+    const state = this.states.get(sessionId);
+    if (!state || state.activeTurn || !isUsageLimitCandidateCurrent(state, token) || this.isExecutionPaused(sessionId)) return false;
+    const recovery = state.recovery;
+    const item = recovery?.kind === 'active-turn' ? recovery.item
+      : recovery?.kind === 'queue-head' ? state.pendingQueue.find(queued => queued.clientId === recovery.clientId) : null;
+    if (!item) return false;
+    const takeover = this.notifyResumableTurnError(sessionId, item, signals.message, signals, false);
+    if (!takeover) return false;
+    state.autoResumePending = takeover;
+    state.autoResumeAttemptToken = takeover.sessionTotal;
+    state.usageLimitWait = null;
+    state.providerGroupSwitchHold = null;
+    state.error = null;
+    clearErrorProjectionSignals(state);
+    // Transfer suppressed details/terminals before observers see the new owner.
+    adoptError(takeover.sessionTotal);
+    this.emit(sessionId);
+    return true;
   }
 
   /**

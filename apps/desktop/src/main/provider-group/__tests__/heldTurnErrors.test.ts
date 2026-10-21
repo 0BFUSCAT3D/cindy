@@ -7,6 +7,7 @@ import type { Session } from '@cindy/maker-core';
 
 import { createProviderGroupHeldTurnErrors } from '../heldTurnErrors';
 import { AutoResumeBookkeeping } from '../../maker-ipc/autoResumeBookkeeping';
+import { createSessionBindingLifecycle } from '../../maker-ipc/sessionBindingLifecycle';
 import { captureProductTurnFailureOwner, createDeferredProductTurnFailureGate } from '../../maker-ipc/productTurnFailureOwner';
 
 interface Row {
@@ -45,6 +46,18 @@ const META = { uuid: 'failed-turn' };
 const ROW: Row = { message: DATA.message, agentMeta: META, capturedAt: 1_000 };
 
 describe('provider group held turn errors', () => {
+  it.each([false, true])('transfers the suppressed detail to recovery only within its account (account changed: %s)', changed => {
+    const { held, deps, switchOwner } = harness();
+    held.stash('s1', 1, DATA, META);
+    if (changed) switchOwner('other-account');
+    expect(held.takeForRecovery('s1', 1)).toEqual(changed ? null : DETAIL);
+    expect(held.takeForRecovery('s1', 1)).toBeNull();
+    held.release('s1', 1);
+    expect(deps.persist).not.toHaveBeenCalled();
+    expect(deps.surface).not.toHaveBeenCalled();
+    expect(deps.settleFailure).not.toHaveBeenCalled();
+  });
+
   it('drops the error row when the task continued on another computer', () => {
     const { deps, held } = harness();
     expect(held.stash('s1', 1, DATA, META)).toBe(true);
@@ -62,16 +75,36 @@ describe('provider group held turn errors', () => {
   // persistence leaves a deferred product receipt. Existing release tests only
   // checked the error row/Island, so the upstream/plugin caller could hang after
   // all alternate computers failed. Exercise real error transfer and release.
-  it('settles a transferred deferred product failure once when switching gives up', () => {
-    const session = { id: 's1', instanceId: 'instance', getTurnGeneration: () => 3 } as unknown as Session;
+  it.each(['closed', 'replaced', 'new-dispatch'] as const)('settles the captured product receipt after handoff close, except a new dispatch: %s', outcome => {
+    let closed!: () => void;
+    const session = {
+      id: 's1', instanceId: 'instance', getTurnGeneration: () => 3,
+      setInteractionListener: vi.fn(),
+      onStatusChange: (listener: (status: string) => void) => { closed = () => listener('closed'); return () => {}; },
+    } as unknown as Session;
     const detail = { message: 'model at capacity', reason: 'upstream-overload' };
     const owner = captureProductTurnFailureOwner(session, {
       type: 'error', source: 'codex', data: detail,
     });
     const gate = createDeferredProductTurnFailureGate();
     const failed = vi.fn();
+    // Real binding close -> gate teardown -> replacement bind, matching register.
+    // The previous regression skipped close and could not expose lost ownership.
+    const bindings = createSessionBindingLifecycle({
+      log: { warn: vi.fn() }, restoreInteractionListener: vi.fn(), beforeReplace: vi.fn(),
+      onBind: (runtime: Session) => gate.rebindSession(runtime.id, runtime),
+      broadcastStatus: vi.fn(), captureCloseContext: () => null,
+      cleanupClosedSession: vi.fn(), finalizeClosedSession: vi.fn(),
+      beforeCloseTeardown: (runtime: Session) => gate.clearSession(runtime.id, runtime, { preserveRecovery: true }),
+    });
+    const registration = bindings.beginBinding(session)!;
+    bindings.attachStatusListener(registration);
     const settleFailure = (sessionId: string) => {
-      gate.settle(sessionId, current => current === owner, failed);
+      gate.settle(sessionId, current => {
+        const bound = bindings.getSession(sessionId);
+        return (!bound || bound === current.session) && current.instanceId === current.session.instanceId &&
+          current.generation === current.session.getTurnGeneration();
+      }, current => failed(current.originalExecution ?? current));
     };
     gate.defer(owner);
     const book = new AutoResumeBookkeeping({
@@ -88,10 +121,21 @@ describe('provider group held turn errors', () => {
     h.held.stash('s1', 1, deferred.detail);
     expect(failed).not.toHaveBeenCalled();
 
+    closed();
+    if (outcome !== 'closed') {
+      const replacement = { ...session, instanceId: 'replacement', getTurnGeneration: () => 0 } as Session;
+      bindings.beginBinding(replacement);
+    }
+    if (outcome === 'new-dispatch') gate.clearSession('s1');
+
     h.held.release('s1', 1);
     h.held.release('s1', 1);
     book.teardown('s1');
-    expect(failed).toHaveBeenCalledExactlyOnceWith(owner);
+    if (outcome === 'new-dispatch') expect(failed).not.toHaveBeenCalled();
+    else {
+      expect(failed).toHaveBeenCalledTimes(1);
+      expect(failed).toHaveBeenCalledWith(expect.objectContaining({ instanceId: 'instance', generation: 3 }));
+    }
     expect(gate.pending('s1')).toBeUndefined();
     expect(h.deps.persist).toHaveBeenCalledTimes(1);
   });

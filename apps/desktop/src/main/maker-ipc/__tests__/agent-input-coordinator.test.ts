@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { admitTaskAction, bindTaskActionInput, taskActionInputGuard } from '../taskActionAuthorization.js';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
 import { ProviderGroupUsageLimitError } from '../../provider-group/failurePolicy.js';
+import { createProviderGroupService, type ProviderGroupServiceDeps } from '../../provider-group/service.js';
 import { UsageLimitAutoResume, USAGE_LIMIT_MAX_CONSECUTIVE_RESUMES } from '../usageLimitAutoResume.js';
 import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
@@ -15046,6 +15047,55 @@ describe('provider group computer switch hold', () => {
     expect(h.coordinator.getProjection('group-recovery')).toMatchObject({ error: null, autoResumePending: takeover });
     expect(h.coordinator.isAutoResumePending('group-recovery')).toBe(true);
     expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
+  });
+
+  // Unit regression for #6671 review: use the real remote-binding candidate and
+  // async configuration check. The old test's constant candidate never covered
+  // autoSwitch=false; usage-limit fallback cannot recover upstream-overload.
+  it.each([false, true])('restores overload retry after the remote group declines (pending persist: %s)', async pendingPersist => {
+    const sid = 'remote-group-disabled';
+    let group!: ReturnType<typeof createProviderGroupService>;
+    const h = createHarness({ providerGroupSwitchCandidate: (id, signals) => group.mayHandleTurnError(id, signals) ? 'overload' : null });
+    const fallback = vi.fn();
+    const remoteRead = vi.fn(async () => ({ strategy: 'least', autoSwitch: false, members: [] }));
+    group = createProviderGroupService({
+      readBinding: () => ({ providerId: 'codex', memberKey: 'local', groupDeviceId: 'other', at: 1 }),
+      remote: { readGroup: remoteRead },
+      leaseRecovery: (id: string, token: number) => h.coordinator.leaseUsageLimitRecovery(id, token),
+      readResetAt: () => null,
+      fallback,
+      log: mocks.logger,
+    } as unknown as ProviderGroupServiceDeps);
+    const takeover = { attempt: 1, maxAttempts: 5, sessionTotal: 1 };
+    h.setResumableTurnErrorTakeover(takeover);
+    h.setResumableTurnErrorCandidate(isInterruptedTurnError);
+    const persisted = deferred<Record<string, never>>();
+    if (pendingPersist) mocks.createMessage.mockImplementationOnce(() => persisted.promise);
+    const adopted = vi.fn();
+    let handling: Promise<void> | undefined;
+    h.onUsageLimitedTurnError.mockImplementation((id, signals, _item, token) => {
+      handling = group.onTurnError(id, signals, token, {
+        notHandled: () => h.coordinator.resumeAfterProviderGroupDeclined(id, token, signals, adopted),
+      });
+    });
+    h.coordinator.enqueue(sid, makeItem('capacity', 'finish the task'));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'model at capacity', { reason: 'upstream-overload' });
+    if (pendingPersist) persisted.resolve({});
+    await flush();
+    await handling;
+    expect(remoteRead).toHaveBeenCalledExactlyOnceWith('other', 'codex');
+    expect(h.onResumableTurnError).toHaveBeenCalledTimes(1);
+    expect(adopted).toHaveBeenCalledExactlyOnceWith(1);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(h.coordinator.getProviderGroupSwitchHoldId(sid)).toBeNull();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: null, autoResumePending: takeover });
+    expect(h.projections.every(projection => projection.error === null)).toBe(true);
+    const token = h.onUsageLimitedTurnError.mock.calls[0]![3];
+    // A duplicate/late callback no longer owns that failed turn.
+    expect(h.coordinator.resumeAfterProviderGroupDeclined(sid, token, { reason: 'upstream-overload' }, adopted)).toBe(false);
+    expect(adopted).toHaveBeenCalledTimes(1);
   });
 
   async function failWhileSwitching(sid: string, cause: 'usage-limit' | 'unavailable' | null = 'usage-limit') {

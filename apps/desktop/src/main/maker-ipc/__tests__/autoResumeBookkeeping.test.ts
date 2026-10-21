@@ -512,7 +512,7 @@ describe('退避排期:必可撤销、必只认自己那次', () => {
   // with its error/Worker capture or a rejected handoff leaves the lane running
   // forever (PR #6671 review; bot-group-chat.md §4.4). Unit: use real bookkeeping
   // and hold release; earlier coverage only transferred the Worker terminal.
-  it.each(['continued', 'rejected'] as const)('transfers all deferred terminals and settles only a rejected handoff: %s', outcome => {
+  it.each(['continued', 'rejected', 'declined'] as const)('transfers all deferred terminals and settles only final failure: %s', outcome => {
     const h = createHarness();
     const owner = { generation: 3, clientId: 'capacity-turn' };
     const detail = { reason: 'upstream-overload', message: 'model at capacity' };
@@ -543,10 +543,23 @@ describe('退避排期:必可撤销、必只认自己那次', () => {
     });
     held.stash('s1', 1, deferred);
     if (outcome === 'continued') held.discard('s1', 1);
+    if (outcome === 'declined') {
+      const returned = held.takeForRecovery('s1', 1)!;
+      h.book.beginAttempt('s1', 2);
+      h.book.stashSuppressedError('s1', returned.detail, 2);
+      h.book.stashOrcaSuppressedTerminal('s1', returned.orcaTerminal!);
+      h.book.stashBotGroupSuppressedTerminal('s1', returned.groupTerminal!);
+    }
     held.release('s1', 1);
     held.release('s1', 1);
     expect(h.orcaFinalized).toEqual(outcome === 'rejected' ? [{ sessionId: 's1', payload: orcaTerminal }] : []);
     expect(h.groupFinalized).toEqual(outcome === 'rejected' ? [groupTerminal] : []);
+    if (outcome === 'declined') {
+      h.book.surfaceSuppressedError('s1', { attemptToken: 2 });
+      h.book.surfaceSuppressedError('s1', { attemptToken: 2 });
+      expect(h.orcaFinalized).toEqual([{ sessionId: 's1', payload: orcaTerminal }]);
+      expect(h.groupFinalized).toEqual([groupTerminal]);
+    }
   });
 
   it('does not transfer a deferred error that a retry attempt already owns', () => {
