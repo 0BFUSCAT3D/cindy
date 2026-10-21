@@ -5987,15 +5987,15 @@ function CCAgentSessionContent({
                   aria-hidden={voiceModeOpen && voiceModeAvailable ? true : undefined}
                 >
                 <ChatInput
-                  topSlot={pendingReplyQuote && sessionId ? (
-                    <BotChatQuoteComposerPreview sessionId={sessionId} quote={pendingReplyQuote}
-                      getMessage={getQuoteMessage} names={botQuoteNames} />
-                  ) : cindyMakeRecoveryId && session ? (
+                  topSlot={cindyMakeRecoveryId && session ? (
                     <CindyMakeEditingActions
                       key={`${session.id}:${cindyMakeRecoveryId}`}
                       sessionId={session.id}
                       messageId={cindyMakeRecoveryId}
                     />
+                  ) : pendingReplyQuote && sessionId ? (
+                    <BotChatQuoteComposerPreview sessionId={sessionId} quote={pendingReplyQuote}
+                      getMessage={getQuoteMessage} names={botQuoteNames} />
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
                   onComposerTyping={handleComposerTyping}
