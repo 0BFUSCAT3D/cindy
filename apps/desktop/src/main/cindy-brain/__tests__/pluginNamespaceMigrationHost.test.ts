@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNamespaceMigrationHost, type NamespaceMigrationHostDeps } from '../pluginNamespaceMigrationHost.js';
+import { parseInstalledGhostManifest } from '../../installedGhostManifest.js';
+import { confirmUnconfirmedInstance, type PluginInstanceRecord } from '../pluginInstanceRegistry.js';
 
 function deps(overrides: Partial<NamespaceMigrationHostDeps> = {}): NamespaceMigrationHostDeps {
   return {
@@ -159,4 +161,50 @@ describe('legacy bare instance reclaim', () => {
     }));
     expect(host.canReclaimLegacyBareInstance({ ghostId: 'hello', namespace: 'acme', pluginId: 'plugin-a' })).toBe(false);
   });
+});
+
+// Unit regression: old receipts have no package hash. Recovery must compare the
+// approved manifest and the stored market identity, rather than trusting a new namespace stamp.
+describe('legacy namespace confirmation evidence', () => {
+  it.each(['matching', 'no-digest', 'changed-content', 'changed-approval', 'not-migrated', 'duplicate', 'other-org'])(
+    'confirms only independently matched legacy installation facts (%s)', (condition) => {
+      const parsed = parseInstalledGhostManifest({
+        schemaVersion: 2, id: 'hello', name: 'Hello', version: '1.0.0',
+        kind: 'chip', entry: 'main.js', slots: ['tool'], tools: [{ name: 'hello', description: 'Hello' }],
+      });
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const manifest = parsed.manifest;
+      const record: PluginInstanceRecord = {
+        instanceKey: 'hello', contentRelId: 'hello', ghostId: 'hello', namespace: 'acme',
+        namespaceState: 'unconfirmed', pluginId: 'plugin-a', source: 'market',
+        receiptRevision: 'rev-1', packageSha256: null, active: true,
+      };
+      const market = {
+        pluginId: 'plugin-a', ghostId: 'hello', namespace: 'acme', releaseId: 'release-a', version: '1.0.0',
+        sha256: 'a'.repeat(64), scope: 'organization' as const, organizationId: 'org-acme',
+        source: 'market' as const, installed: true, updatedAt: '2026-10-01T00:00:00.000Z',
+        ...(condition !== 'no-digest' ? { rawManifestSha256: 'b'.repeat(64) } : {}),
+      };
+      const defaults = deps();
+      const host = createNamespaceMigrationHost(deps({
+        getAuthState: () => ({ isAuthenticated: true, user: {
+          membershipKind: 'org', orgId: condition === 'other-org' ? 'org-other' : 'org-acme', orgSlug: 'acme',
+        } }),
+        getGhostManager: () => ({ ...defaults.getGhostManager(), approvedInstallEvidence: () => ({
+          packageSha256: null, legacyMigrated: condition !== 'not-migrated',
+          approvedManifest: condition === 'changed-approval' ? { ...manifest, version: '0.9.0' } : manifest,
+        }) }),
+        getPluginMarketLedger: () => ({ lookupInstallationsForNamespaceMigration: () => ({
+          kind: 'found', records: condition === 'duplicate' ? [market, market] : [market],
+        }) }),
+        readInstalledGhostManifestSnapshot: () => ({ ok: true, snapshot: {
+          manifest, legacyManualIgnored: false,
+          rawManifestSha256: (condition === 'changed-content' ? 'c' : 'b').repeat(64),
+          releasedLegacyDigestFormat: manifest, legacyDigestFormats: [manifest],
+        } }),
+      }));
+      const decision = confirmUnconfirmedInstance(record, host.readUnconfirmedConfirmationEvidence(record)!);
+      expect(decision).toEqual(condition === 'matching' ? { namespace: 'acme' } : null);
+    },
+  );
 });

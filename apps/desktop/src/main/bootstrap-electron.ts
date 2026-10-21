@@ -2555,7 +2555,7 @@ authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId 
   let deferred = false;
   const marketOutcome = await marketPostCommitStep.run(scopeKey, async () => {
     if (!isCurrent()) return 'deferred';
-    return syncDefaultMarketPlugins();
+    return syncDefaultMarketPlugins('owner-ready');
   });
   if (!isCurrent()) return 'deferred';
   if (marketOutcome === 'failed') needsRetry = true;
@@ -3573,7 +3573,7 @@ app.on('browser-window-focus', (_event, win) => {
   const focusedAppContent = isAppContentWindow(win);
   syncAppFocusState();
   if (focusedAppContent) {
-    syncPluginMarketForActiveOwner(30_000);
+    syncPluginMarketForActiveOwner(30_000, 'foreground');
     // OAuth and system settings may complete outside Cindy. Focus is a
     // metadata-only fallback wake-up: each pending plugin is re-assessed, but
     // no stored value crosses the change bus.
@@ -4340,7 +4340,7 @@ function checkDatabaseSizeWarningAtStartup(): void {
 }
 
 /** Run market discovery and automatic updates for the current stable owner. */
-function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
+function syncPluginMarketForActiveOwner(minIntervalMs = 0, trigger: 'foreground' | 'resume' | 'periodic' = 'periodic'): void {
   const session = getActiveAppSession();
   if (!session.dataOwnerId || isAppSessionBoundaryPending()) return;
   const scope = activeOwnerScopeKey();
@@ -4354,7 +4354,10 @@ function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
   lastPluginMarketSyncAt = now;
   void marketPostCommitStep.run(scope, async () => {
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
-    return syncDefaultMarketPlugins();
+    if (trigger === 'foreground') {
+      return getPluginMarketService().refreshCatalogForForeground();
+    }
+    return syncDefaultMarketPlugins(trigger);
   }).finally(() => {
     if (pluginMarketSyncInFlightScope === scope) pluginMarketSyncInFlightScope = null;
   });
@@ -9833,7 +9836,7 @@ app.on('ready', async () => {
     authCredentialRecovery.request();
     authManager.handleResume();
     handleProviderModelSystemResume();
-    syncPluginMarketForActiveOwner(30_000);
+    syncPluginMarketForActiveOwner(30_000, 'resume');
     // device-link:睡醒立即重连 relay,不干等退避计时器 + 心跳判死(最坏合计 ~75s)。
     handleDeviceLinkSystemResume();
   });

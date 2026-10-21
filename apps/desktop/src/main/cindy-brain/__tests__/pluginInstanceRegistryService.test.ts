@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   emptyPluginInstanceRegistry,
@@ -26,6 +26,7 @@ function memoryStore(initial: PluginInstanceRegistry): PluginInstanceRegistrySto
 function service(options: {
   registry: PluginInstanceRegistry;
   relIds?: string[];
+  log?: { warn(message: string, meta?: Record<string, unknown>): void };
   marketIdentityForInstance?: (instance: {
     ghostId: string;
     contentRelId: string;
@@ -49,6 +50,7 @@ function service(options: {
     readApproval: () => ({ state: 'missing' }),
     recordLegacyEligibility: () => {},
     marketIdentityForInstance: options.marketIdentityForInstance,
+    log: options.log,
   });
   return { created, store };
 }
@@ -86,6 +88,27 @@ describe('plugin instance registry service', () => {
       },
     };
     expect(pendingCensusMismatches(registry)).toEqual(['hello:pending-but-not-listed']);
+    // Repeated scans of one defect should not flood logs; periodic summaries
+    // and a new owner/cache lifecycle still report the outstanding problem.
+    const warn = vi.fn();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const { created } = service({ registry, relIds: ['hello'], log: { warn } });
+      created.sync();
+      created.sync();
+      created.sync();
+      expect(warn).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(301_000);
+      created.sync();
+      expect(warn).toHaveBeenLastCalledWith(expect.any(String), {
+        mismatches: ['hello:pending-but-not-listed'], repeatedChecks: 3,
+      });
+      created.clear();
+      created.sync();
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

@@ -173,6 +173,50 @@ async function stampLegacyOrganizationInstall(id = 'hello', withSkill = false): 
 }
 
 describe('GhostManager namespace migration census', () => {
+  // Unit regression: a persisted pending row outside the census was skipped by
+  // both migration and confirmation. Recover only from positive market facts;
+  // keep the physical instance, approval, enabled state and skill snapshot.
+  it.each(['market', 'missing', 'forge-stamped'])('handles an orphan pending record without inventing migration eligibility (evidence=%s)', async (evidence) => {
+    const positive = evidence === 'market';
+    await plantLegacyInstall('hello', true, evidence === 'forge-stamped' ? 'agent-forge' : undefined);
+    const approved = receiptStore().read('hello');
+    if (approved.state !== 'approved') throw new Error('expected approved install');
+    await receiptStore(mutateSnapshot).write({ ...approved.receipt, packageSha256: 'a'.repeat(64) }, {
+      skillSourceDir: path.join(rootDir, 'hello'),
+    });
+    manager.ensureNamespaceMigrationCensus();
+    manager.list();
+    const registryPath = path.join(workDir, 'ghosts-install-state', 'plugin-instances.v2.json');
+    const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    registry.census.pendingRelIds = [];
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    if (evidence === 'forge-stamped') {
+      const current = receiptStore().read('hello');
+      if (current.state !== 'approved') throw new Error('expected approved install');
+      await receiptStore(mutateSnapshot).write({ ...current.receipt, namespace: 'acme' }, {
+        skillSourceDir: path.join(rootDir, 'hello'),
+      });
+    }
+    manager = createManager({
+      mutateSnapshot,
+      classifyPendingNamespace: () => ({ kind: 'commit', namespace: 'acme', basis: 'market-organization' }),
+      readUnconfirmedConfirmationEvidence: () => ({
+        marketRecords: positive ? [{ namespace: 'acme', organizationId: 'org-acme', scope: 'organization', installed: true, packageSha256: 'a'.repeat(64) }] : undefined,
+        packageSha256: 'a'.repeat(64),
+        forgeSelfTest: evidence === 'forge-stamped',
+        currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme' },
+      }),
+    });
+    if (positive) await manager.reconcilePendingRootNamespaces(true);
+    else await expect(manager.reconcilePendingRootNamespaces(true)).rejects.toThrow('pending instance recovery needs positive evidence');
+    const installed = manager.list()[0];
+    expect(installed).toMatchObject({ enabled: true, namespaceState: positive ? 'confirmed' : 'pending' });
+    expect(installedGhostStoragePart(installed)).toBe('hello');
+    expect(manager.ensureNamespaceMigrationCensus()?.pendingRelIds).toEqual([]);
+    expect(await manager.verifyApprovedSkillSnapshot(installed)).toBe(true);
+    if (positive) expect(installed.namespace).toBe('acme');
+  });
+
   it.each([false, true])('repairs the same release in a migrated bare directory without changing storage identity (enabled=%s)', async (enabled) => {
     const archive = vi.fn();
     manager = createManager({ mutateSnapshot, onArchiveSourceState: archive });

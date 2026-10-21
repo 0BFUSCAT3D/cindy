@@ -38,6 +38,7 @@ interface PluginInstanceRegistryServiceDeps {
   ensureOwner(): void;
   registryStore(): PluginInstanceRegistryStore;
   listContentEntries(): Array<{ relId: string; dir: string }>;
+  isPresenceUnknown?(relId: string): boolean;
   receiptFact(relId: string): PluginInstanceReceiptFact | null | undefined;
   censusCandidates(): NamespaceCensusCandidate[];
   readApproval(relId: string): CensusApproval;
@@ -50,6 +51,7 @@ interface PluginInstanceRegistryServiceDeps {
     namespace: string | null;
     packageSha256: string | null;
   }): { pluginId: string } | null;
+  marketIdentityForScan?(): NonNullable<PluginInstanceRegistryServiceDeps['marketIdentityForInstance']>;
   log?: PluginInstanceRegistryLogger;
 }
 
@@ -134,12 +136,18 @@ type OpenedRegistry =
 export class PluginInstanceRegistryService {
   private registry: PluginInstanceRegistry | null = null;
   private blocked = false;
+  private mismatchFingerprint = '';
+  private mismatchLoggedAt = 0;
+  private repeatedMismatchChecks = 0;
 
   constructor(private readonly deps: PluginInstanceRegistryServiceDeps) {}
 
   clear(): void {
     this.registry = null;
     this.blocked = false;
+    this.mismatchFingerprint = '';
+    this.mismatchLoggedAt = 0;
+    this.repeatedMismatchChecks = 0;
   }
 
   isBlocked(): boolean {
@@ -195,7 +203,7 @@ export class PluginInstanceRegistryService {
     return parsePluginInstallRelId(relId)?.ghostId === relId;
   }
 
-  sync(scan: Pick<PluginInstanceRegistryServiceDeps, 'listContentEntries' | 'receiptFact'> = this.deps): PluginInstanceRegistry {
+  sync(scan: Pick<PluginInstanceRegistryServiceDeps, 'listContentEntries' | 'receiptFact' | 'isPresenceUnknown'> = this.deps): PluginInstanceRegistry {
     this.deps.ensureOwner();
     const store = this.deps.registryStore();
     const opened = this.open(store);
@@ -204,6 +212,7 @@ export class PluginInstanceRegistryService {
     let registry = opened.registry;
     let dirty = false;
     const present = new Set<string>();
+    const marketIdentity = this.deps.marketIdentityForScan?.() ?? this.deps.marketIdentityForInstance;
     for (const listed of scan.listContentEntries()) {
       present.add(listed.relId);
       const fact = scan.receiptFact(listed.relId);
@@ -217,7 +226,7 @@ export class PluginInstanceRegistryService {
           ghostId,
           receipt: fact,
           pendingMigration: this.isPendingMigrationRel(listed.relId, registry),
-          marketPluginId: this.deps.marketIdentityForInstance?.({
+          marketPluginId: marketIdentity?.({
             ghostId,
             contentRelId: listed.relId,
             namespace: parsePluginInstallRelId(listed.relId)?.namespace ?? null,
@@ -230,7 +239,7 @@ export class PluginInstanceRegistryService {
         continue;
       }
       let next = reconcileInstanceReceipt(existing, { directoryPresent: true, receipt: fact });
-      const market = this.deps.marketIdentityForInstance?.({
+      const market = marketIdentity?.({
         ghostId: next.ghostId,
         contentRelId: next.contentRelId,
         namespace: next.namespace,
@@ -245,14 +254,29 @@ export class PluginInstanceRegistryService {
       }
     }
     for (const record of Object.values(registry.instances)) {
-      if (record.active && !present.has(record.contentRelId)) {
+      if (record.active && !present.has(record.contentRelId) && !scan.isPresenceUnknown?.(record.contentRelId)) {
         registry = upsertInstance(registry, { ...record, active: false });
         dirty = true;
       }
     }
     const mismatches = pendingCensusMismatches(registry);
     if (mismatches.length > 0) {
-      this.deps.log?.warn('plugin instance census diverged from namespaceState', { mismatches });
+      const fingerprint = JSON.stringify(mismatches.map((mismatch) => {
+        const record = Object.values(registry.instances).find((entry) => mismatch.startsWith(entry.contentRelId + ':'));
+        return [mismatch, record?.receiptRevision, record?.packageSha256];
+      }).sort());
+      this.repeatedMismatchChecks += 1;
+      if (fingerprint !== this.mismatchFingerprint || Date.now() - this.mismatchLoggedAt >= 300_000) {
+        this.deps.log?.warn('plugin instance census diverged from namespaceState', {
+          mismatches, repeatedChecks: this.repeatedMismatchChecks,
+        });
+        this.mismatchFingerprint = fingerprint;
+        this.mismatchLoggedAt = Date.now();
+        this.repeatedMismatchChecks = 0;
+      }
+    } else {
+      this.mismatchFingerprint = '';
+      this.repeatedMismatchChecks = 0;
     }
     if (dirty) {
       try {

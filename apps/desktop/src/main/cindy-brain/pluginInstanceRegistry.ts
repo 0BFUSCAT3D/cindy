@@ -83,6 +83,8 @@ export interface InstanceConfirmationEvidence {
     orgSlug: string | null;
   } | null;
   packageSha256?: string | null;
+  /** Main verified a migrated receipt against the installed and market manifest identities. */
+  legacyManifestVerified?: boolean;
   /** Approved receipt is an agent-forge self-test for this install. */
   forgeSelfTest?: boolean;
 }
@@ -261,7 +263,9 @@ function marketEvidenceConfirms(
   const market = installed[0]!;
   if (market.namespace === undefined || market.namespace !== record.namespace) return false;
   const observed = evidence.packageSha256 ?? record.packageSha256 ?? null;
-  if (!market.packageSha256 || !observed || market.packageSha256 !== observed) return false;
+  if (!market.packageSha256 || (observed === null
+    ? evidence.legacyManifestVerified !== true
+    : market.packageSha256 !== observed)) return false;
   if (!shaDoesNotConflict(evidence.packageSha256, record.packageSha256)) return false;
   if (!shaDoesNotConflict(evidence.packageSha256, market.packageSha256)) return false;
   if (!shaDoesNotConflict(record.packageSha256, market.packageSha256)) return false;
