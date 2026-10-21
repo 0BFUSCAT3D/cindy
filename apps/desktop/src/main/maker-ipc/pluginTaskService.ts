@@ -3,7 +3,7 @@ import type { Session } from '@cindy/maker-core';
 import type { PluginTaskRoute, PluginTaskRun, PluginTaskView, PluginTeamPlan } from '../../shared/pluginTasks.js';
 import { isPluginTeamPlanWithinBudget, PLUGIN_TASK_RECEIPT_MAX_JSON_CHARS } from '../../shared/pluginTasks.js';
 import type { PluginMessageAttachment } from '../../shared/pluginAttachments.js';
-import { parsePluginMessageAttachments, type PluginMessageImage } from '../cindy-media/pluginMessageAttachments.js';
+import { withParsedPluginMessageAttachments, type PluginMessageImage } from '../cindy-media/pluginMessageAttachments.js';
 import {
   isSameSessionExecution,
   queuedInputBelongsTo,
@@ -455,10 +455,7 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
     send: async (
       pluginId: string,
       request: { taskId: string; requestKey: string; expectedRevision: number; text: string; attachments?: PluginMessageAttachment[] },
-    ): Promise<PluginTaskRun> => completeOperation(async () => {
-      let images: PluginMessageImage[];
-      try { images = parsePluginMessageAttachments(request.attachments); }
-      catch { throw new PluginTaskError('INVALID_ATTACHMENTS', 'Invalid message images'); }
+    ): Promise<PluginTaskRun> => completeOperation(() => withParsedPluginMessageAttachments(request.attachments, async images => {
       const prepared = await exclusive(async () => {
         const view = await ownTask(pluginId, request.taskId);
         const fingerprint = hash(images.length
@@ -530,7 +527,7 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
         }
         return run;
       });
-    }),
+    })),
     getRun: async (pluginId: string, runId: string) =>
       reconcile(await exclusive(() => ownRun(pluginId, runId))),
     listRuns: async (pluginId: string, taskId: string, after = '', limit = 50) => {

@@ -217,6 +217,7 @@ const r = await cindy.agent.requestSchedule({
 - 同一次 send 重试沿用相同 requestKey、target、内容和 delivery（缺省与 queue 等价）；同键参数变化返回 REQUEST_KEY_CONFLICT。Host 在执行前持久保留投递回执，重启后已接受的请求返回原结果，未确定结果的请求返回 DELIVERY_UNCERTAIN，不再次创建或投递。回执不保存正文或附件字节。不要通过更换 requestKey 绕过未知结果，应先让用户在 Cindy 检查。
 - `cancel({requestKey})`：使本次请求及迟到的发送失效，仅撤回本插件该请求尚未执行的输入；不会停止接收方其他输入，也不保证撤销已经开始的工作。新操作使用新的 requestKey。
 - `tasks.send` 和 `targets.send` 均支持可选 `attachments:[{base64,name?}]`：只接收插件提供的图片字节，不接受本机路径、URL、媒体 URI 或自报 MIME。Host 检测 PNG/JPEG/WebP，最多 4 张、合计 20 MiB。先检查 `tasks.capabilities().messageAttachments.kinds` 包含 image；旧客户端不支持时停止，不静默丢图或改投临时路径。截图进既有 cindy-media，作为消息附件展示并进入模型输入；不需要额外声明 media.deposit。附件内容及名称参与幂等签名，更换附件不能复用同键。
+- 所有插件的两种发送入口共用 40 MiB 在途附件额度；超额在解码和写回执前返回可重试的 `TASK_BUSY`。等待已有请求结束后沿用原 requestKey 重试，不自动改投或丢图。
 - 目标只包含本机可见、可用的项目、普通任务或有唯一 canonical 对话的活跃伙伴；不提供 Mobile/device-link 透传。投递仍受当前插件启用、批准、账号和目标权限约束；插件内容不构成新真人授权。
 
 原有 `cindy.tasks` 的归属限制不变。先调用 `capabilities()` 获取实际支持操作。当前仅支持本插件创建的本机普通任务：

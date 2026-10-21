@@ -371,6 +371,7 @@ Pi 子代理未成功投递的自动 allow 再次投递前重走现有核验，�
 插件先核对 `tasks.capabilities().messageAttachments`，无此能力时停止发送截图，不能静默丢图或回退文件路径。
 只接受插件自己提供的字节；不接受 Host 路径、URL、其他会话的媒体 URI 或自报 MIME。
 Host 校验规范 base64，嗅探 PNG/JPEG/WebP，最多 4 张、合计 20 MiB；附件字节指纹和名称参与幂等签名，回执不保存 base64。
+两种发送入口在解码前共用 40 MiB 在途字节额度，持有至请求完成；超额返回可重试的 `TASK_BUSY`，成功、失败及取消均在 `finally` 释放额度，不在 Host 内排队保留超额附件。
 
 `pluginMessageAttachments.ts` 复用 `ingestMedia` 和草稿/排队消息提交链路。入库前同步登记内容地址到现有回收器的活引用集合，
 覆盖去重旧 blob 的入库、取消和派发在途窗口。调用方等待既有持久队列写入或插话落库后释放在途保护；

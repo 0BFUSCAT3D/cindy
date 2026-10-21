@@ -9,7 +9,7 @@ import type {
 } from '../../shared/pluginTargets.js';
 import type { PluginTaskRoute } from '../../shared/pluginTasks.js';
 import { getActiveDataOwnerPushStamp, activeOwnerScopeKey } from '../appSessionState.js';
-import { parsePluginMessageAttachments, type PluginMessageImage } from '../cindy-media/pluginMessageAttachments.js';
+import { withParsedPluginMessageAttachments, type PluginMessageImage } from '../cindy-media/pluginMessageAttachments.js';
 
 export interface PluginTargetReceipt {
   id: string;
@@ -149,73 +149,74 @@ export class PluginTargetSlot {
       agentKind: request.route.agentKind, providerId: request.route.providerId,
       model: request.route.model, effort: request.route.effort, fastMode: request.route.fastMode,
     };
-    const images = parsePluginMessageAttachments(request.attachments);
-    const hash = createHash('sha256')
-      .update(JSON.stringify([target.kind, target.id, request.text, request.title, route, delivery,
-        images.map(({ hash, name }) => [hash, name])]))
-      .digest('hex');
-    const pending = this.inFlight.get(runtimeKey);
-    if (pending) {
-      if (pending.cancelled) return fail('SUPERSEDED');
-      if (pending.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
-      return pending.result!;
-    }
-    const operation = { hash, cancelled: false, result: undefined as Promise<unknown> | undefined };
-    const guard = () => {
-      authorized();
-      if (operation.cancelled) fail('SUPERSEDED');
-    };
-    const replay = (previous: PluginTargetReceipt) => {
-      if (previous.status === 'cancelled') return fail('SUPERSEDED');
-      if (previous.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
-      if (previous.status === 'accepted')
-        return { taskId: previous.taskId, accepted: true, delivery: previous.delivery };
-      return fail('DELIVERY_UNCERTAIN');
-    };
-    const deliver = async () => {
-      const existing = await store.get(pluginId, request.requestKey);
-      guard();
-      if (existing) return replay(existing);
-      const candidate = await resolve(target);
-      guard();
-      const approvalRevision = adapter.approvalRevision(pluginId);
-      if (!approvalRevision) return fail('PERMISSION_DENIED');
-      const receipt: PluginTargetReceipt = {
-        id: `plugin-target:${randomUUID()}`, pluginId, requestKey: request.requestKey,
-        hash, target, approvalRevision, status: 'pending',
-        taskId: target.kind === 'project' ? randomUUID() : await adapter.session(target.kind, target.id),
-      };
-      guard();
-      // A per-key reservation uses the existing receipt DB, never a whole-history rewrite.
-      const reserved = await store.reserve(receipt);
-      guard();
-      if (!reserved) return replay((await store.get(pluginId, request.requestKey))!);
-      const taskId = receipt.taskId!;
-      const validateTarget = async () => {
-        guard();
-        await this.assertQueuedDelivery(taskId, receipt.id);
-        guard();
-      };
-      await validateTarget();
-      if (target.kind === 'project')
-        await adapter.create(pluginId, target.id, taskId, request.title || candidate.label, route, guard);
-      guard();
-      const actualDelivery = await adapter.send(
-        pluginId, taskId, receipt.id, request.text, guard, validateTarget, delivery, images,
-      );
-      authorized();
-      await store.accept(receipt.id, actualDelivery);
-      authorized();
-      const current = await store.getById(receipt.id);
-      authorized();
-      if (operation.cancelled || current?.status === 'cancelled') {
-        await adapter.withdraw(taskId, receipt.id, authorized);
-        return fail('SUPERSEDED');
+    return withParsedPluginMessageAttachments(request.attachments, async images => {
+      const hash = createHash('sha256')
+        .update(JSON.stringify([target.kind, target.id, request.text, request.title, route, delivery,
+          images.map(({ hash, name }) => [hash, name])]))
+        .digest('hex');
+      const pending = this.inFlight.get(runtimeKey);
+      if (pending) {
+        if (pending.cancelled) return fail('SUPERSEDED');
+        if (pending.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
+        return pending.result!;
       }
-      return { taskId, accepted: true, delivery: actualDelivery };
-    };
-    operation.result = deliver().finally(() => this.inFlight.delete(runtimeKey));
-    this.inFlight.set(runtimeKey, operation);
-    return operation.result;
+      const operation = { hash, cancelled: false, result: undefined as Promise<unknown> | undefined };
+      const guard = () => {
+        authorized();
+        if (operation.cancelled) fail('SUPERSEDED');
+      };
+      const replay = (previous: PluginTargetReceipt) => {
+        if (previous.status === 'cancelled') return fail('SUPERSEDED');
+        if (previous.hash !== hash) return fail('REQUEST_KEY_CONFLICT');
+        if (previous.status === 'accepted')
+          return { taskId: previous.taskId, accepted: true, delivery: previous.delivery };
+        return fail('DELIVERY_UNCERTAIN');
+      };
+      const deliver = async () => {
+        const existing = await store.get(pluginId, request.requestKey);
+        guard();
+        if (existing) return replay(existing);
+        const candidate = await resolve(target);
+        guard();
+        const approvalRevision = adapter.approvalRevision(pluginId);
+        if (!approvalRevision) return fail('PERMISSION_DENIED');
+        const receipt: PluginTargetReceipt = {
+          id: `plugin-target:${randomUUID()}`, pluginId, requestKey: request.requestKey,
+          hash, target, approvalRevision, status: 'pending',
+          taskId: target.kind === 'project' ? randomUUID() : await adapter.session(target.kind, target.id),
+        };
+        guard();
+        // A per-key reservation uses the existing receipt DB, never a whole-history rewrite.
+        const reserved = await store.reserve(receipt);
+        guard();
+        if (!reserved) return replay((await store.get(pluginId, request.requestKey))!);
+        const taskId = receipt.taskId!;
+        const validateTarget = async () => {
+          guard();
+          await this.assertQueuedDelivery(taskId, receipt.id);
+          guard();
+        };
+        await validateTarget();
+        if (target.kind === 'project')
+          await adapter.create(pluginId, target.id, taskId, request.title || candidate.label, route, guard);
+        guard();
+        const actualDelivery = await adapter.send(
+          pluginId, taskId, receipt.id, request.text, guard, validateTarget, delivery, images,
+        );
+        authorized();
+        await store.accept(receipt.id, actualDelivery);
+        authorized();
+        const current = await store.getById(receipt.id);
+        authorized();
+        if (operation.cancelled || current?.status === 'cancelled') {
+          await adapter.withdraw(taskId, receipt.id, authorized);
+          return fail('SUPERSEDED');
+        }
+        return { taskId, accepted: true, delivery: actualDelivery };
+      };
+      operation.result = deliver().finally(() => this.inFlight.delete(runtimeKey));
+      this.inFlight.set(runtimeKey, operation);
+      return operation.result;
+    });
   }
 }
