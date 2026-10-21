@@ -3210,6 +3210,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
         this.deps.getDb(),
         live.id,
         {
+          // Model routing never owns a bound task's permission choice.
+          permissionMode: null,
           model: modelChanged && modelApplied ? targetModel : undefined,
           effort: effortChanged && effortApplied ? reconciledEffort : undefined,
           fastMode: resolvedSelection?.fastMode,

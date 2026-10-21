@@ -4510,6 +4510,11 @@ export function getTaskActionInputState(sessionId: string) {
   };
 }
 
+/** Live permission authority for Host task actions; never reconstructed from DB defaults. */
+export function getTaskActionSession(sessionId: string) {
+  return getMakerIfReady()?.getSession(sessionId);
+}
+
 /** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
 export function isActiveInputOwnerAuthored(sessionId: string): boolean {
   return agentInputCoordinatorHolder?.isActiveInputOwnerAuthored(sessionId) ?? false;
