@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BotGroupLaneTerminal } from '../botGroupChatService.js';
+import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
 
 import {
   AutoResumeBookkeeping,
@@ -507,22 +508,45 @@ describe('退避排期:必可撤销、必只认自己那次', () => {
   });
 
   // Unit regression: a capacity terminal before the user row persists changes
-  // owner from generic recovery to the group. Existing flush coverage surfaced
-  // the error and finalized the Worker before handoff; transfer must do neither.
-  it('transfers the deferred error and Worker terminal exactly once to group recovery', () => {
+  // owner from generic recovery to the group. The group lane terminal must travel
+  // with its error/Worker capture or a rejected handoff leaves the lane running
+  // forever (PR #6671 review; bot-group-chat.md §4.4). Unit: use real bookkeeping
+  // and hold release; earlier coverage only transferred the Worker terminal.
+  it.each(['continued', 'rejected'] as const)('transfers all deferred terminals and settles only a rejected handoff: %s', outcome => {
     const h = createHarness();
     const owner = { generation: 3, clientId: 'capacity-turn' };
     const detail = { reason: 'upstream-overload', message: 'model at capacity' };
     const orcaTerminal = createOrcaTerminal();
+    const groupTerminal: BotGroupLaneTerminal = {
+      sessionId: 's1', activeInputClientId: owner.clientId,
+      outcome: 'error', resultText: '', failureCode: 'UPSTREAM_OVERLOADED',
+    };
     h.book.stashSuppressedError('s1', detail, null, owner);
     h.book.stashOrcaSuppressedTerminal('s1', orcaTerminal);
+    h.book.stashBotGroupSuppressedTerminal('s1', groupTerminal);
     expect(h.book.takeDeferredError('s1', { ...owner, generation: 4 })).toBeNull();
-    expect(h.book.takeDeferredError('s1', owner)).toEqual({ detail, orcaTerminal });
+    const deferred = h.book.takeDeferredError('s1', owner)!;
+    expect(deferred).toEqual({ detail, orcaTerminal, groupTerminal });
     expect(h.book.takeDeferredError('s1', owner)).toBeNull();
     h.book.teardown('s1');
     expect(h.persisted).toEqual([]);
     expect(h.surfaced).toEqual([]);
     expect(h.orcaFinalized).toEqual([]);
+    expect(h.groupFinalized).toEqual([]);
+
+    const held = createProviderGroupHeldWorkerTerminals<typeof deferred>({
+      ownerKey: () => 'account',
+      deliver: (sessionId, terminal) => {
+        if (terminal.orcaTerminal) h.orcaFinalized.push({ sessionId, payload: terminal.orcaTerminal });
+        if (terminal.groupTerminal) h.groupFinalized.push(terminal.groupTerminal);
+      },
+    });
+    held.stash('s1', 1, deferred);
+    if (outcome === 'continued') held.discard('s1', 1);
+    held.release('s1', 1);
+    held.release('s1', 1);
+    expect(h.orcaFinalized).toEqual(outcome === 'rejected' ? [{ sessionId: 's1', payload: orcaTerminal }] : []);
+    expect(h.groupFinalized).toEqual(outcome === 'rejected' ? [groupTerminal] : []);
   });
 
   it('does not transfer a deferred error that a retry attempt already owns', () => {

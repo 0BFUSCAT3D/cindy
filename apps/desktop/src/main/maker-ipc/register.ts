@@ -600,7 +600,7 @@ import {
   createBotDirectMessageService,
   type BotDirectMessageService,
 } from './botDirectMessageService.js';
-import { createBotGroupChatService, type BotGroupChatService, type BotGroupChatServiceDeps } from './botGroupChatService.js';
+import { createBotGroupChatService, type BotGroupChatService, type BotGroupChatServiceDeps, type BotGroupLaneTerminal } from './botGroupChatService.js';
 import { settleUndispatchedBotGroupTurn } from './botGroupRuntimeFailure.js';
 import { withChatServer } from './chatServer.js';
 import { companionHomes, isCompanionShadowed } from '../companion-cloud/homes.js';
@@ -1950,6 +1950,11 @@ function settleDeferredProductTurnFailure(sessionId: string): void {
   );
 }
 
+function settleDeferredBotGroupTerminal(terminal: BotGroupLaneTerminal): void {
+  void botGroupChatServiceHolder?.settleLaneTurn(terminal).catch(() =>
+    log.warn('Bot group recovery failure settlement failed'));
+}
+
 /**
  * 中断自愈的每会话簿记(压住的错误详情 / 待确认的重连记录 / 退避排期)。
  *
@@ -1968,10 +1973,7 @@ const autoResumeBookkeeping = new AutoResumeBookkeeping({
   // L3：auto-resume 放弃后，用当初压住的 capture 恰好一次收口 Orca status / auto-bridge。
   // L2 flush/discard 不会走到这里，避免「还在重试却已经把异常终止桥给 Lead」。
   finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,
-  finalizeBotGroupSuppressedTerminal: (terminal) => {
-    void botGroupChatServiceHolder?.settleLaneTurn(terminal).catch(() =>
-      log.warn('Bot group recovery failure settlement failed'));
-  },
+  finalizeBotGroupSuppressedTerminal: settleDeferredBotGroupTerminal,
   markOutcome: (sessionId, clientId, outcome) => {
     void markAutoResumeOutcome(sessionId, clientId, outcome);
   },
@@ -2015,10 +2017,17 @@ const providerGroupHeldErrors = createProviderGroupHeldTurnErrors<DeferredTurnEr
 
 /**
  * 协同 Worker 在换电脑期间先不回报给 Lead 的那次终态(provider-group/heldWorkerTerminals.ts)：换成了丢掉，由续跑那一轮
- * 照常回报结果；没换成才把这次异常终止回报给 Lead。与 providerGroupHeldErrors 按同一次登记结算。
+ * 照常回报结果；没换成才把这次异常终止回报给 Lead。群专线的终态也沿用同一次登记结算，
+ * 避免异步资格检查拒绝接管后群轮次一直等待。与 providerGroupHeldErrors 按同一次登记结算。
  */
-const providerGroupHeldWorkerTerminals = createProviderGroupHeldWorkerTerminals<OrcaSuppressedTerminal>({
-  deliver: settleDeferredOrcaWorkerTerminal,
+const providerGroupHeldTerminals = createProviderGroupHeldWorkerTerminals<{
+  orcaTerminal: OrcaSuppressedTerminal | null;
+  groupTerminal: BotGroupLaneTerminal | null;
+}>({
+  deliver: (sessionId, terminal) => {
+    if (terminal.orcaTerminal) settleDeferredOrcaWorkerTerminal(sessionId, terminal.orcaTerminal);
+    if (terminal.groupTerminal) settleDeferredBotGroupTerminal(terminal.groupTerminal);
+  },
   ownerKey: () => activeOwnerScopeKey(),
   log: (message, meta) => log.info(message, meta),
 });
@@ -2032,7 +2041,7 @@ const providerGroupContinuationHolds = new Map<string, number>();
 /** 换电脑这一趟有了结局：换成了(续跑已进队)错误不再落；Worker 的终态等续跑派发出去再丢(见上)。 */
 function discardProviderGroupHeld(sessionId: string, holdId: number): void {
   providerGroupHeldErrors.discard(sessionId, holdId);
-  if (providerGroupHeldWorkerTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
+  if (providerGroupHeldTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
 }
 
 /** 不再换了(交回原有处理、用户接手、迟迟没有结局)：放出错误，并把 Worker 的异常终止回报给 Lead。 */
@@ -2040,7 +2049,7 @@ function releaseProviderGroupHeld(sessionId: string, holdId: number): void {
   providerGroupHeldErrors.release(sessionId, holdId);
   // 已换成、续跑在路上的那次由续跑的派发结果结算。
   if (providerGroupContinuationHolds.get(sessionId) === holdId) return;
-  providerGroupHeldWorkerTerminals.release(sessionId, holdId);
+  providerGroupHeldTerminals.release(sessionId, holdId);
 }
 
 /** 换电脑后的续跑有了派发结果：派发出去了丢掉 Worker 暂存的终态，没派出去回报给 Lead。 */
@@ -2048,8 +2057,8 @@ function settleProviderGroupContinuation(sessionId: string, dispatched: boolean)
   const holdId = providerGroupContinuationHolds.get(sessionId);
   if (holdId === undefined) return;
   providerGroupContinuationHolds.delete(sessionId);
-  if (dispatched) providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
-  else providerGroupHeldWorkerTerminals.release(sessionId, holdId);
+  if (dispatched) providerGroupHeldTerminals.discard(sessionId, holdId);
+  else providerGroupHeldTerminals.release(sessionId, holdId);
 }
 
 /** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
@@ -5985,7 +5994,7 @@ const sessionEventDependencies: SessionEventDependencies = {
   stashProviderGroupHeldError: (sessionId, holdId, data, agentMeta) =>
     providerGroupHeldErrors.stash(sessionId, holdId, data, agentMeta),
   stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal) =>
-    providerGroupHeldWorkerTerminals.stash(sessionId, holdId, terminal),
+    providerGroupHeldTerminals.stash(sessionId, holdId, { orcaTerminal: terminal, groupTerminal: null }),
   get pendingFailedTurnAssistantPersistId() {
     return pendingFailedTurnAssistantPersistId;
   },
@@ -18816,7 +18825,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           holdTimer = setTimeout(() => {
             // 协同 Worker：到点把这次异常终止回报给 Lead 之后，这一趟换电脑就此停下——Lead 已据此重新安排，
             // 再换过去续跑会让它收到两份互相矛盾的结果。普通任务照旧：错误先放出来，换成了照常续跑。
-            const worker = providerGroupHeldWorkerTerminals.has(sessionId, holdId);
+            const worker = providerGroupHeldTerminals.has(sessionId, holdId);
             releaseProviderGroupHeld(sessionId, holdId);
             if (worker) providerGroupService?.noteUserAction(sessionId);
           }, PROVIDER_GROUP_SWITCH_HOLD_MAX_MS);
@@ -18862,8 +18871,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const deferred = autoResumeBookkeeping.takeDeferredError(sessionId, options.owner);
         if (deferred) {
           providerGroupHeldErrors.stash(sessionId, options.providerGroupSwitchHoldId, deferred.detail);
-          if (deferred.orcaTerminal) {
-            providerGroupHeldWorkerTerminals.stash(sessionId, options.providerGroupSwitchHoldId, deferred.orcaTerminal);
+          if (deferred.orcaTerminal || deferred.groupTerminal) {
+            providerGroupHeldTerminals.stash(sessionId, options.providerGroupSwitchHoldId, deferred);
           }
         }
         return;
