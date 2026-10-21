@@ -88,7 +88,11 @@
     await withCheckedContinuation { continuation in
       provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, _ in
         // URL lifetime belongs to this callback, including loadItem fallbacks.
-        if let url = value as? URL {
+        // Only an explicitly advertised file-URL representation grants a data
+        // value URL semantics; ordinary file/image bytes are never paths.
+        let encodedURL = identifier == UTType.fileURL.identifier
+          ? (value as? Data).flatMap { String(data: $0, encoding: .utf8) }.flatMap(URL.init(string:)) : nil
+        if let url = (value as? URL) ?? encodedURL {
           continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind ?? self.fileShareType(url)))
           return
         }
@@ -97,7 +101,13 @@
           return
         }
         let isRenderedImage = value is UIImage
-        let type = isRenderedImage ? UTType.png : UTType(identifier)
+        var type = isRenderedImage ? UTType.png : UTType(identifier)
+        if !isRenderedImage, identifier == UTType.image.identifier,
+           let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+           let identifier = CGImageSourceGetType(source),
+           let imageType = UTType(identifier as String), imageType.conforms(to: .image) {
+          type = imageType
+        }
         let ext = type?.preferredFilenameExtension ?? "bin"
         let suggested = provider.suggestedName.map { URL(fileURLWithPath: $0).lastPathComponent } ?? UUID().uuidString
         let name = suggested.isEmpty || suggested == "." || suggested == ".." ? UUID().uuidString : suggested

@@ -43,7 +43,9 @@ new sending privileges: normal conversation hydration and authorization still ap
   formats need no extension allowlist.
   File-URL classification uses the original file's UTI or image header, never a
   provider-wide thumbnail. Unknown extensionless documents remain original files;
-  actual extensionless raster images retain image processing.
+  actual extensionless raster images retain image processing. File URLs exported
+  as UTF-8 data are decoded and copied within the provider callback. Unnamed
+  abstract image data uses its actual image header for extension and MIME.
 - `plugins/with-incoming-share-formats.js`: generated Expo controller integration.
   Checked patch anchors fail prebuild if the upstream template changes.
 - `fingerprint.config.cjs`: explicitly hashes the share extension's Swift, strings

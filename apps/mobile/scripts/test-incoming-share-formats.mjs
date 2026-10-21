@@ -20,9 +20,11 @@ let NSExtensionJavaScriptPreprocessingResultsKey = "NSExtensionJavaScriptPreproc
 class UIImage: NSObject { func pngData() -> Data? { nil } }
 final class EphemeralProvider: NSItemProvider {
   var url: URL!
+  var encodedURL = false
   override func loadItem(forTypeIdentifier identifier: String, options: [AnyHashable: Any]? = nil, completionHandler: NSItemProvider.CompletionHandler? = nil) {
     Thread.current.threadDictionary["owning-provider-callback"] = true
-    completionHandler?(url as NSURL, nil)
+    let value: NSSecureCoding = encodedURL ? NSData(data: Data(url.absoluteString.utf8)) : url as NSURL
+    completionHandler?(value, nil)
     Thread.current.threadDictionary.removeObject(forKey: "owning-provider-callback")
     try? FileManager.default.removeItem(at: url)
   }
@@ -52,9 +54,47 @@ final class Adapter {
     try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let adapter = Adapter()
+    let selected = CommandLine.arguments[2]
     // The file URL owns the bytes; a separate image representation may be only
     // its thumbnail. Extensionless originals must not inherit that preview type.
     let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")!
+    if selected != "raw-image" {
+      let url = root.appendingPathComponent("data encoded document.pdf")
+      let bytes = Data("original file URL document".utf8)
+      try! bytes.write(to: url)
+      let provider = NSItemProvider()
+      provider.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) { done in
+        done(Data(url.absoluteString.utf8), nil); return nil
+      }
+      guard let payload = await adapter.parse(provider), payload.type == .file,
+            let result = URL(string: payload.value) else { fatalError("Missing Data-encoded file URL") }
+      precondition(result.lastPathComponent == url.lastPathComponent && (try! Data(contentsOf: result)) == bytes)
+      let ephemeral = EphemeralProvider()
+      ephemeral.url = url; ephemeral.encodedURL = true
+      ephemeral.registerItem(forTypeIdentifier: UTType.fileURL.identifier, loadHandler: { _, _, _ in })
+      adapter.requireProviderCallback = true
+      guard let copied = await adapter.parse(ephemeral), let copy = URL(string: copied.value) else { fatalError("Missing temporary Data-encoded file URL") }
+      precondition(try! Data(contentsOf: copy) == bytes)
+      precondition(!FileManager.default.fileExists(atPath: url.path))
+      adapter.requireProviderCallback = false
+      print("PASS: Data-encoded file URLs preserve originals within provider callbacks")
+    }
+    if selected != "data-file-url" {
+      let gif = Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")!
+      for (bytes, type) in [(png, UTType.png), (gif, UTType.gif)] {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.image.identifier, visibility: .all) { done in
+          done(bytes, nil); return nil
+        }
+        precondition(provider.suggestedName == nil)
+        guard let payload = await adapter.parse(provider), payload.type == .image,
+              let result = URL(string: payload.value) else { fatalError("Missing abstract image data") }
+        precondition(result.pathExtension == type.preferredFilenameExtension && payload.mimeType == type.preferredMIMEType,
+                     "Abstract image bytes lost their concrete format")
+        precondition(try! Data(contentsOf: result) == bytes)
+      }
+      print("PASS: unnamed abstract image bytes preserve concrete extensions and MIME")
+    }
     for (name, bytes, kind) in [("extensionless-document", Data("original document bytes".utf8), ShareType.file),
                                 ("extensionless-image", png, ShareType.image)] {
       let url = root.appendingPathComponent(name)
@@ -142,7 +182,6 @@ final class Adapter {
       precondition(try! Data(contentsOf: result) == bytes)
     }
     print("PASS: concrete images beat source URLs; abstract thumbnails remain previews")
-    let selected = CommandLine.arguments[2]
     let link = NSItemProvider()
     let sharedURL = URL(string: "https://example.com/shared-page?source=provider")!
     link.registerDataRepresentation(forTypeIdentifier: UTType.image.identifier, visibility: .all) { done in

@@ -159,6 +159,8 @@ it("preserves original exports ahead of previews and copies temporary URLs withi
   expect(result.stdout).toContain("PASS: concrete images beat source URLs; abstract thumbnails remain previews");
   expect(result.stdout).toContain("PASS: unreadable account-boundary fence survives process restart and recovery");
   expect(result.stdout).toContain("PASS: failed rejection removal retains retry state until durable recovery");
+  expect(result.stdout).toContain("PASS: Data-encoded file URLs preserve originals within provider callbacks");
+  expect(result.stdout).toContain("PASS: unnamed abstract image bytes preserve concrete extensions and MIME");
   expect(result.stdout).toContain("PASS: temporary file URL copied inside provider callback");
   expect(result.stdout).toContain("PASS: durable exact-snapshot rejection, retry and replacement");
 }, 180_000);
