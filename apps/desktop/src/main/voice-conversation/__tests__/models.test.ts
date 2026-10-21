@@ -337,7 +337,7 @@ it.each([
     'https://work.ap-southeast-1.maas.aliyuncs.com/api/v1',
     'qwen-audio-3.0-tts-plus',
     'dashscope-tts',
-    '',
+    'longanlingxin',
   ],
 ] as const)(
   'binds %s %s to its verified HTTP adapter',

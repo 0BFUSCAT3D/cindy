@@ -69,8 +69,10 @@ export type SpeechVoice = { id: string; name: string };
 export type SpeechVoiceCatalog = {
   voices: SpeechVoice[];
   /** References are model-specific suggestions, not proof a compatible proxy supports them. */
-  source: 'provider' | 'reference' | 'manual';
+  source: 'provider' | 'reference' | 'mixed' | 'manual';
   truncated?: boolean;
+  /** Public references and verified entries remain usable after a partial private lookup. */
+  customVoicesUnavailable?: boolean;
 };
 export type SpeechPreviewStart = VoiceConversationSelection & {
   previewId: string;

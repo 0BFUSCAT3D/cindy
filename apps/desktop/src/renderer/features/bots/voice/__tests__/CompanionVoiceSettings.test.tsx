@@ -927,6 +927,98 @@ it('shows the last selected label on re-entry, refreshes renamed voices, and ret
   expect(audio.start).not.toHaveBeenCalled();
 });
 
+// Unit tier: a partial private catalog is still a usable public catalog, but may
+// omit the saved custom ID. Refresh must not silently select the first system voice.
+it('keeps the saved custom ID and usable system choices after private discovery fails', async () => {
+  models = [
+    {
+      id: 'cosyvoice-v3-flash',
+      name: 'CosyVoice',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'dashscope-tts',
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: {
+      providerId: 'mine',
+      agent: 'codex',
+      modelId: 'cosyvoice-v3-flash',
+      voice: 'my-clone',
+    },
+    customized: true,
+  });
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'reference',
+    customVoicesUnavailable: true,
+    voices: [
+      { id: 'longanyang', name: '龙安洋' },
+      { id: 'longanhuan', name: '龙安欢' },
+    ],
+  });
+  renderSettings();
+  await screen.findByText('bots.voiceMode.voicesCustomError');
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+    'my-clone',
+  );
+  const menu = await openVoices();
+  expect(menu.getByRole('button', { name: '龙安欢' })).toBeTruthy();
+  closeVoices();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(2));
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+});
+
+it('retains the selected custom name and public options when a refresh returns a partial catalog', async () => {
+  models = [
+    {
+      id: 'cosyvoice-v3-flash',
+      name: 'CosyVoice',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'dashscope-tts',
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: {
+      providerId: 'mine',
+      agent: 'codex',
+      modelId: 'cosyvoice-v3-flash',
+      voice: 'my-clone',
+    },
+    customized: true,
+  });
+  vi.mocked(window.electronAPI.voiceConversation.voices)
+    .mockResolvedValueOnce({
+      source: 'mixed',
+      voices: [
+        { id: 'my-clone', name: 'My Voice' },
+        { id: 'longanyang', name: '龙安洋' },
+      ],
+    })
+    .mockResolvedValue({
+      source: 'reference',
+      customVoicesUnavailable: true,
+      voices: [{ id: 'longanyang', name: '龙安洋' }],
+    });
+  const first = renderSettings();
+  await screen.findByText('My Voice');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await screen.findByText('bots.voiceMode.voicesCustomError');
+  expect(voicePicker().textContent).toBe('My Voice');
+  expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
+  const menu = await openVoices();
+  expect(menu.getByRole('button', { name: '龙安洋' })).toBeTruthy();
+  expect(menu.getByRole('button', { name: 'My Voice' })).toBeTruthy();
+  first.unmount();
+  renderSettings();
+  await screen.findByText('bots.voiceMode.voicesCustomError');
+  expect(voicePicker().textContent).toBe('My Voice');
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+});
+
 it('does not display or cache a late catalog from the previous account', async () => {
   models = [
     { id: 'speech', name: 'Speech', providerId: 'mine', agent: 'codex', protocol: 'elevenlabs' },

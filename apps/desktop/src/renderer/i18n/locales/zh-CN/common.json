@@ -10153,6 +10153,7 @@
       "refreshVoices": "刷新音色列表",
       "voicesLoading": "正在获取音色…",
       "voicesError": "未能获取音色列表。可重试，或手动输入音色 ID。",
+      "voicesCustomError": "未能完整获取自定义音色。可重试，或手动输入音色 ID。",
       "voicesReference": "这是该型号的参考音色；兼容服务的实际支持可能不同。",
       "voicesTruncated": "仅显示部分音色；未列出的音色可手动输入 ID。",
       "voicesManual": "此接口没有可用的音色列表，请手动输入音色 ID。",

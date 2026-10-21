@@ -10193,6 +10193,7 @@
       "refreshVoices": "Refresh voices",
       "voicesLoading": "Loading voices…",
       "voicesError": "Couldn't load voices. Retry or enter a voice ID.",
+      "voicesCustomError": "Couldn’t load all custom voices. Retry or enter a voice ID.",
       "voicesReference": "These are reference voices for this model. Compatible services may support different voices.",
       "voicesTruncated": "Showing part of the voice list. Enter an ID to use an unlisted voice.",
       "voicesManual": "No voice list is available for this interface. Enter a voice ID.",

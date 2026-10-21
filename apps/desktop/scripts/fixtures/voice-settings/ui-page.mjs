@@ -50,6 +50,39 @@ export default {
       about: 'Eleven v3 keeps voice and preview but does not offer a speed slider',
       data: { modelId: 'eleven_v3' },
     },
+    'qwen-catalog': {
+      about: 'Complete Qwen3 system catalog with official display names and keyboard navigation',
+      data: {
+        protocol: 'qwen-tts',
+        modelId: 'qwen3-tts-flash',
+        voiceId: 'Cherry',
+        systemCatalog: true,
+        menu: true,
+      },
+    },
+    'cosy-catalog': {
+      about: 'Complete CosyVoice system catalog plus a matching account voice in a narrow drawer',
+      viewport: { width: 320, height: 900 },
+      data: {
+        protocol: 'dashscope-tts',
+        modelId: 'cosyvoice-v3-flash',
+        voiceId: 'longanyang',
+        systemCatalog: true,
+        customCatalog: true,
+        menu: true,
+      },
+    },
+    'cosy-custom-failure': {
+      about: 'Account catalog failure preserves system choices, selected voice, and refresh',
+      viewport: { width: 320, height: 900 },
+      data: {
+        protocol: 'dashscope-tts',
+        modelId: 'cosyvoice-v3-flash',
+        voiceId: 'longanyang',
+        systemCatalog: true,
+        customCatalogFailure: true,
+      },
+    },
     empty: {
       about: 'No models keeps only the existing setup introduction and provider link',
       data: { empty: true },
@@ -80,7 +113,9 @@ export default {
       const label = await page.evaluate(() => window.__uiPage.t('bots.voiceMode.voiceId'));
       await page.getByRole('textbox', { name: label, exact: true }).waitFor();
     } else {
-      const voice = await page.evaluate(() => window.__uiPage.ctx.data.voiceId);
+      const voice = await page.evaluate(
+        () => window.__uiPage.ctx.data.voiceLabel ?? window.__uiPage.ctx.data.voiceId,
+      );
       await page
         .getByText(voice ?? 'River — Relaxed, Neutral, Informative', { exact: true })
         .waitFor();
@@ -135,6 +170,40 @@ export default {
       return;
     }
     assert.equal(await standalonePreview.count(), 0);
+    if (ui.data.systemCatalog) {
+      const label = await ui.t('bots.voiceMode.voice');
+      const trigger = page.getByRole('button', { name: label, exact: true });
+      const menu = page.getByRole('dialog', { name: label });
+      if (ui.data.customCatalogFailure) {
+        await page.getByText(await ui.t('bots.voiceMode.voicesCustomError')).waitFor();
+        await page
+          .getByRole('button', { name: await ui.t('bots.voiceMode.refreshVoices'), exact: true })
+          .click();
+        await trigger.click();
+      }
+      await menu.waitFor();
+      const firstName = ui.data.protocol === 'qwen-tts' ? '芊悦' : '龙安洋';
+      const lastName = ui.data.customCatalog
+        ? 'My Custom Voice'
+        : ui.data.protocol === 'qwen-tts'
+          ? '粤语-阿清'
+          : 'Bella3.0';
+      await menu.getByRole('button', { name: firstName, exact: true }).focus();
+      await page.keyboard.press('End');
+      // Manual entry is the final action after all provider/system voices.
+      await page.keyboard.press('ArrowUp');
+      const last = menu.getByRole('button', { name: lastName, exact: true });
+      assert.equal(await last.evaluate((el) => el === document.activeElement), true);
+      await ui.capture('catalog-end');
+      await page.keyboard.press('Home');
+      await ui.capture('catalog-start');
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.savedVoice), ui.data.voiceId);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.previewRequests.length), 0);
+      await page.keyboard.press('Escape');
+      await menu.waitFor({ state: 'hidden' });
+      assert.equal(await trigger.evaluate((el) => el === document.activeElement), true);
+      return;
+    }
     if (ui.data.menu) {
       const label = await ui.t('bots.voiceMode.voice');
       const trigger = page.getByRole('button', { name: label, exact: true });

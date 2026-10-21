@@ -76,11 +76,15 @@
 - 配置沿用“模型供应商”中的连接、密钥和模型列表：已发现或手动添加并标记为“语音合成”的模型，才进入伙伴设置候选。型号资料不增加账户授权。自定义代理保留 API base 前缀，并可显式选择 `Qwen3-TTS (HTTP)` 或 `Qwen-Audio / CosyVoice (HTTP)`；代理必须实现选中的实际接口。无匹配协议时继续要求用户选择，不换 origin、地域或密钥。
 - Qwen3 每个 HTTP 请求最多 600 字符：传输层按 UTF-16 长度保守切分，优先句子/空白边界且不切断代理对，不截断文本。播放拉取到上一段完成后才请求下一段；每段重新核查当前连接，取消、插话、账号变更或读取失败后不再请求剩余段。每段单独检查非空且 PCM 字节对齐。既有整次朗读大小、超时和播放背压上限继续生效。
 - Qwen3 HTTP 没有已验证的语速参数，因此隐藏语速滑块，切换到它时不携带旧语速；Qwen-Audio / CosyVoice 支持 `0.5–2`，由 UI 与 Main 共用限制。输出统一为 PCM 24kHz 单声道，不改变播放器。
-- 当前只提供文档确认的参考音色：Qwen3 的 `Cherry`、Qwen-Audio 3.1 的 `longanhuan_v3.1`、CosyVoice v3 的 `longanyang`；未提供参考值的型号保留手动输入。CosyVoice v3.5 需填写绑定该型号的音色 ID。不查询私有克隆目录，不创建/删除音色，参考值不保证当前账户可执行。
+- 系统音色按官方目录、精确型号和已知地域收录，展示官方名称，选择与请求保留完整且区分大小写的 ID。Qwen3-TTS Flash 为 48 个；北京 CosyVoice v3-flash / v3-plus / v2 分别为 88 / 2 / 106 个；Qwen-Audio 3.1 Flash / 3.0 Plus / 3.0 Flash 分别为 68 / 2 / 12 个（2026-10-21 核对）。新加坡按文档排除仅北京的音色；自定义代理地域未知时保留该型号参考集并提示兼容服务支持可能不同。CosyVoice v3.5 没有系统音色。系统目录不包含另行下载的基础音色包，也不保证当前账户可执行。
+- Qwen-Audio / CosyVoice 使用当前连接 `<base>/services/audio/tts/customization` 的 `voice-enrollment` 查询自定义音色：`list_voice` 分页获取，缺少型号或状态时以 `query_voice` 补齐，只合并 `target_model` 精确匹配且状态为 `OK` 的音色，不按音色 ID 前缀猜测绑定。请求不换 origin、路径前缀、地域或密钥；最多 10 页、每页 100 条，额外详情查询最多 100 次，共用 15 秒总时限。达到上限提示手动输入，查询失败保留系统音色及本轮已核实的结果并提示重试。账号或连接变化仍丢弃所有结果，不将它当作可恢复的供应商故障。
+- Qwen3 标准 Flash 仅使用系统目录；不向它调用另一系列的自定义音色 API。所有查询均不创建、更新、删除或克隆音色，不下载返回的音频 URL，不传递音色设计提示词等私有元数据到 Renderer。所选 ID 与已有偏好不因刷新自动更改。
 - SSE 共享有界分帧器，Base64 与 MiniMax hex 分别解码；业务错误、无结束标记、无效编码或空音频都按既有合成失败处理。音频只在内存中；最终 URL 不请求，不向它传递凭证。适配器仍是代码，不接受服务器下发请求模板。
 - 这是客户端执行器与本地伙伴偏好的扩展：不修改公共 Registry、服务端 schema、Gateway 鉴权或模型下发；没有服务端合并顺序要求。不包含 Realtime/WebSocket 增量文本、音色克隆、语言/情绪/SSML 设置。真实供应商联调独立记录，单元测试与 UI 截图不代表账户授权或端到端语音验收。
 
 契约来源（2026-10-21 核对）：[Qwen3-TTS HTTP](https://www.alibabacloud.com/help/en/model-studio/qwen-tts-api)、[Qwen-Audio HTTP](https://www.alibabacloud.com/help/en/model-studio/qwen-audio-tts-http-api)、[CosyVoice HTTP](https://www.alibabacloud.com/help/en/model-studio/cosyvoice-tts-http-api)、[型号和地域](https://www.alibabacloud.com/help/en/model-studio/non-realtime-tts-user-guide)。
+
+音色目录来源：[Qwen3](https://help.aliyun.com/zh/model-studio/qwen-tts-voice-list)、[CosyVoice](https://help.aliyun.com/zh/model-studio/cosyvoice-voice-list)、[Qwen-Audio](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)、[账号音色查询契约](https://help.aliyun.com/zh/model-studio/voice-clone-design-http-api)。
 
 ## 音色目录与试听
 

@@ -1,5 +1,6 @@
 import { mountPage, forbid } from '../../ui-page/harness';
 import { CompanionVoiceSettings } from '../../../src/renderer/features/bots/voice/CompanionVoiceSettings';
+import { alibabaSystemVoices } from '../../../src/shared/alibabaSpeechVoices';
 import type {
   SpeechProtocol,
   VoiceConversationPreference,
@@ -19,6 +20,10 @@ mountPage({
     const modelId = String(ctx.data.modelId ?? 'eleven_flash_v2_5');
     const referenceVoice = String(ctx.data.voiceId ?? 'river');
     const initialVoice = ctx.data.manual ? 'custom-voice' : referenceVoice;
+    const systemVoices = alibabaSystemVoices(modelId, protocol);
+    ctx.data.voiceLabel = ctx.data.systemCatalog
+      ? systemVoices.find((voice) => voice.id === referenceVoice)?.name
+      : undefined;
     const pending = new Map<string, () => void>();
     const previews: Array<{ voice: string; speed?: number; previewId: string }> = [];
     const stops: string[] = [];
@@ -64,26 +69,40 @@ mountPage({
                   defaultVoice: referenceVoice,
                 },
               ],
-        voices: async () => ({
-          source: ctx.data.voiceId ? 'reference' : 'provider',
-          voices: [
-            {
-              id: referenceVoice,
-              name: ctx.data.voiceId ? referenceVoice : 'River — Relaxed, Neutral, Informative',
-            },
-            ...(ctx.data.menu
-              ? [
-                  { id: 'bella', name: 'Bella — Professional, Bright, Warm' },
-                  { id: 'sarah', name: 'Sarah — Mature, Reassuring, Confident' },
-                  { id: 'roger', name: 'Roger — Laid-Back, Casual, Resonant' },
-                  { id: 'laura', name: 'Laura — Enthusiast, Quirky Attitude' },
-                  { id: 'charlie', name: 'Charlie — Deep, Confident, Energetic' },
-                  { id: 'george', name: 'George — Warm, Captivating Storyteller' },
-                  { id: 'callum', name: 'Callum — Husky, Trickster' },
-                ]
-              : []),
-          ],
-        }),
+        voices: async () =>
+          ctx.data.systemCatalog
+            ? {
+                source: ctx.data.customCatalog ? 'mixed' : 'reference',
+                ...(ctx.data.customCatalogFailure ? { customVoicesUnavailable: true } : {}),
+                voices: [
+                  ...systemVoices,
+                  ...(ctx.data.customCatalog
+                    ? [{ id: 'account-clone', name: 'My Custom Voice' }]
+                    : []),
+                ],
+              }
+            : {
+                source: ctx.data.voiceId ? 'reference' : 'provider',
+                voices: [
+                  {
+                    id: referenceVoice,
+                    name: ctx.data.voiceId
+                      ? referenceVoice
+                      : 'River — Relaxed, Neutral, Informative',
+                  },
+                  ...(ctx.data.menu
+                    ? [
+                        { id: 'bella', name: 'Bella — Professional, Bright, Warm' },
+                        { id: 'sarah', name: 'Sarah — Mature, Reassuring, Confident' },
+                        { id: 'roger', name: 'Roger — Laid-Back, Casual, Resonant' },
+                        { id: 'laura', name: 'Laura — Enthusiast, Quirky Attitude' },
+                        { id: 'charlie', name: 'Charlie — Deep, Confident, Energetic' },
+                        { id: 'george', name: 'George — Warm, Captivating Storyteller' },
+                        { id: 'callum', name: 'Callum — Husky, Trickster' },
+                      ]
+                    : []),
+                ],
+              },
         preference: async () => preference,
         setPreference: async (
           _botId: string,

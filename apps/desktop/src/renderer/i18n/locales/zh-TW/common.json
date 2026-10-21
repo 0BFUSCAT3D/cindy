@@ -10153,6 +10153,7 @@
       "refreshVoices": "重新整理音色清單",
       "voicesLoading": "正在取得音色…",
       "voicesError": "無法取得音色清單。請重試，或手動輸入音色 ID。",
+      "voicesCustomError": "無法完整取得自訂音色。請重試，或手動輸入音色 ID。",
       "voicesReference": "這是此型號的參考音色；相容服務的實際支援可能不同。",
       "voicesTruncated": "僅顯示部分音色；未列出的音色可手動輸入 ID。",
       "voicesManual": "此介面沒有可用的音色清單，請手動輸入音色 ID。",
