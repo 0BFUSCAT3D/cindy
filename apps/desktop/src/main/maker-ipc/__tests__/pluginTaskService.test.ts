@@ -5,6 +5,10 @@ import ts from 'typescript';
 import { createSessionExecutionResolver } from '../sessionExecutionSelection.js';
 import { Session } from '@cindy/maker-core';
 import { fastModeToStorage } from '@cindy/maker-shared';
+import { handlePluginTaskRequest } from '../../cindy-brain/taskSlot.js';
+import { withParsedPluginMessageAttachments } from '../../cindy-media/pluginMessageAttachments.js';
+import { PLUGIN_ATTACHMENT_MAX_BYTES } from '../../../shared/pluginAttachments.js';
+import type { InstalledGhost } from '../../../shared/ghost.js';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -205,6 +209,43 @@ it('includes message images in owned-task replay identity without persisting scr
   expect(JSON.stringify([...f.rows.values()])).not.toContain(base64);
   await expect(f.service.send('p', { ...request, attachments: [{ base64, name: 'other.png' }] }))
     .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+// Exercise the public pipe with the real service, including its error sanitization.
+it.each(['INVALID_ATTACHMENTS', 'TASK_BUSY'] as const)('preserves %s across the public task boundary', async code => {
+  const f = fixture(), task = await f.create();
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const pending: Promise<unknown>[] = [];
+  try {
+    if (code === 'TASK_BUSY') {
+      const large = Buffer.alloc(PLUGIN_ATTACHMENT_MAX_BYTES);
+      png.copy(large);
+      const attachments = [{ base64: large.toString('base64') }];
+      pending.push(withParsedPluginMessageAttachments(attachments, () => held));
+      pending.push(withParsedPluginMessageAttachments(attachments, () => held));
+    }
+    const ghost = { enabled: true, taskCapabilityApproved: true, approval: { state: 'approved' },
+      manifest: { agent: { tasks: true } } } as InstalledGhost;
+    const result = await handlePluginTaskRequest('p', {
+      type: 'tasks-request', kind: 'send', taskId: task.taskId, requestKey: 'attachment-error',
+      expectedRevision: task.revision, text: 'context',
+      attachments: [{ base64: (code === 'TASK_BUSY' ? png : Buffer.from('not an image')).toString('base64') }],
+    }, {
+      getGhost: () => ghost, isCurrent: () => true,
+      handler: (pluginId, request) => {
+        if (request.kind !== 'send') throw new Error('Unexpected operation');
+        return f.service.send(pluginId, request);
+      },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code, retryable: code === 'TASK_BUSY' } });
+    expect(f.deps.dispatch).not.toHaveBeenCalled();
+    expect([...f.rows.values()].some(row => row.operation === 'send')).toBe(false);
+  } finally {
+    release();
+    await Promise.all(pending);
+  }
 });
 
 describe('plugin dispatch uses live Plan execution authority', () => {

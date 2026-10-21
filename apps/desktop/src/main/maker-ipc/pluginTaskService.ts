@@ -527,6 +527,11 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
         }
         return run;
       });
+    }).catch(error => {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (!(error instanceof PluginTaskError) && (code === 'INVALID_ATTACHMENTS' || code === 'TASK_BUSY'))
+        throw new PluginTaskError(code, code, code === 'TASK_BUSY');
+      throw error;
     })),
     getRun: async (pluginId: string, runId: string) =>
       reconcile(await exclusive(() => ownRun(pluginId, runId))),
