@@ -245,6 +245,7 @@ import type {
 import type {
   RsbWindowCommandRouteRequest,
   RsbWindowCommandRouteResult,
+  RsbWindowContext,
   RsbWindowTabHandoff,
 } from '../shared/rightSidebarWindow';
 import {
@@ -2010,28 +2011,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<{ detached: boolean; lastOpen: boolean; open: boolean }> =>
       ipcRenderer.invoke('maker:rsb-window:set-detached', detached, handoff),
     /** 子窗口 mount 时拉主窗上报的渲染上下文(main 缓存的最后一份)。 */
-    getContext: (): Promise<{
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    } | null> => ipcRenderer.invoke('maker:rsb-window:get-context'),
+    getContext: (): Promise<RsbWindowContext | null> =>
+      ipcRenderer.invoke('maker:rsb-window:get-context'),
     /** 子窗口根组件挂载握手(main 侧 ensureOpen 等它)。 */
     ready: (): Promise<void> => ipcRenderer.invoke('maker:rsb-window:ready'),
     /** 主窗请求 main 原子裁决命令宿主；必要时 main 开窗、排队或取消 stale intent。 */
     sendCommand: (request: RsbWindowCommandRouteRequest): Promise<RsbWindowCommandRouteResult> =>
       ipcRenderer.invoke('maker:rsb-window:send-command', request),
     /** 主窗上报侧边栏渲染上下文。fire-and-forget,main 只信主窗 sender。 */
-    setContext: (ctx: {
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    }): void => ipcRenderer.send('maker:rsb-window:set-context', ctx),
+    setContext: (ctx: RsbWindowContext): void =>
+      ipcRenderer.send('maker:rsb-window:set-context', ctx),
     onStateChanged: fanOutRsbWindowStateChanged,
     onContextChanged: fanOutRsbWindowContextChanged,
     onCommand: fanOutRsbWindowCommand,

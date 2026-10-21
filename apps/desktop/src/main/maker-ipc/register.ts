@@ -44,7 +44,7 @@ import { getManagedLlamaCppService } from '../local-model-runtime/llamaCppServic
 import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLlamaCppProvider.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
-import { configureBotAutonomyHost, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
+import { configureBotAutonomyHost, getBotAutonomyGlance, noteBotAutonomyInputProjection } from '../bot-autonomy/hub.js';
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
@@ -1401,6 +1401,7 @@ import {
   isAutoResumeUserMessage,
   isInterruptedTurnError,
   shouldPreserveWaitingContinuationOnlyAutoResume,
+  shouldPreserveRuntimeFallbackAutoResume,
   type InterruptedTurnErrorSignals,
 } from './interruptedTurnAutoResume.js';
 import { readInterruptedTurnAutoResumeSettings } from '../maker-host/interrupted-turn-auto-resume-store.js';
@@ -1777,6 +1778,10 @@ const autoResumeBookkeeping = new AutoResumeBookkeeping({
   // L3：auto-resume 放弃后，用当初压住的 capture 恰好一次收口 Orca status / auto-bridge。
   // L2 flush/discard 不会走到这里，避免「还在重试却已经把异常终止桥给 Lead」。
   finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,
+  finalizeBotGroupSuppressedTerminal: (terminal) => {
+    void botGroupChatServiceHolder?.settleLaneTurn(terminal).catch(() =>
+      log.warn('Bot group recovery failure settlement failed'));
+  },
   markOutcome: (sessionId, clientId, outcome) => {
     void markAutoResumeOutcome(sessionId, clientId, outcome);
   },
@@ -3534,6 +3539,19 @@ function cancelPendingInteraction(requestId: string, decision: InteractionDecisi
   return resolvePendingInteraction(requestId, decision, true);
 }
 
+/** Narrow detached-workbench action: the Bot's live glance must still own this exact local permission. */
+export function allowBotWorkbenchPendingPermission(botId: string, sessionId: string, requestId: string): { accepted: boolean } {
+  const row = getBotAutonomyGlance(botId).waiting.find((item) =>
+    item.deviceId === null && item.sessionId === sessionId &&
+    item.requestId === requestId && item.waitingFor === 'permission');
+  const pending = pendingInteractionResolvers.get(requestId);
+  if (!row || !pending || pending.sessionId !== sessionId || pending.kind !== 'permission' ||
+      pending.request.kind !== 'permission' || pending.request.requestId !== requestId) {
+    return { accepted: false };
+  }
+  return { accepted: resolvePendingInteraction(requestId, { kind: 'permission', behavior: 'allow' }) };
+}
+
 function resolvePendingInteraction(requestId: string, decision: InteractionDecision, fromShared = false): boolean {
   const resolver = pendingInteractionResolvers.get(requestId);
   if (!resolver || (!fromShared && agentInputCoordinatorHolder?.isExecutionPaused(resolver.sessionId))) return false;
@@ -4180,14 +4198,16 @@ function shouldPreserveSessionRuntimeFallbackAutoResume(
   closeReason: ReturnType<typeof getWiredSessionCloseReason>,
 ): boolean {
   const attemptToken = pendingSessionRuntimeFallbackRebuilds.get(session);
-  if (attemptToken === undefined) return false;
-  if (closeReason !== 'requested') return false;
-  if (!interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken)) return false;
-  if (!autoResumeBookkeeping.isCurrentAttempt(session.id, attemptToken)) return false;
   const coordinator = agentInputCoordinatorHolder;
-  if (!coordinator || !coordinator.isAutoResumePending(session.id)) return false;
-  if (coordinator.getAutoResumeAttemptToken(session.id) !== attemptToken) return false;
-  return autoResumeBookkeeping.hasSchedule(session.id);
+  return shouldPreserveRuntimeFallbackAutoResume({
+    closeReason,
+    leasedAttemptToken: attemptToken,
+    guardIsCurrentAttempt: attemptToken !== undefined && interruptedTurnAutoResumeGuard.isCurrentAttempt(session.id, attemptToken),
+    bookIsCurrentAttempt: attemptToken !== undefined && autoResumeBookkeeping.isCurrentAttempt(session.id, attemptToken),
+    coordinatorAttemptToken: coordinator?.getAutoResumeAttemptToken(session.id),
+    isAutoResumePending: coordinator?.isAutoResumePending(session.id) === true,
+    hasLiveSchedule: attemptToken !== undefined && autoResumeBookkeeping.hasLiveSchedule(session.id, attemptToken),
+  });
 }
 
 /**

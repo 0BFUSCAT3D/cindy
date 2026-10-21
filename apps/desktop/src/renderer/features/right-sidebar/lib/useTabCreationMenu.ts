@@ -7,6 +7,7 @@ import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { installedGhostStoragePart } from '../../../../shared/pluginIdentity';
 import { canonicalBotSessionId, useBotProfiles } from '@/features/bots/botStore';
 import { findBotProfileForSession } from '@/features/bots/botSessionOwners';
+import { DetachedBotMenuOwnerContext } from '../botMenuOwnerContext';
 import { useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
 import { isRemoteSessionWriteBlocked } from '@/features/cc-agent/lib/remoteSessionWriteGuard';
 import { sessionsStore } from '@/lib/sessionsStore';
@@ -67,14 +68,19 @@ export function useTabCreationMenu({
   }).sort((a, b) => a.title.localeCompare(b.title) || a.instanceId.localeCompare(b.instanceId));
   const bots = useBotProfiles();
   const bot = sessionId ? findBotProfileForSession(bots, sessionId) : undefined;
+  const detachedOwner = useContext(DetachedBotMenuOwnerContext);
+  const linkedOwner = detachedOwner?.sessionId === sessionId ? detachedOwner : null;
+  const isBotSession = Boolean(bot || linkedOwner);
   const localSession = useSyncExternalStore(
     sessionsStore.subscribe,
     () => sessionId ? sessionsStore.findById(sessionId) : null,
   );
   const remoteSessions = useRemoteProjectSessions();
   const session = remoteSessions.find(row => row.id === sessionId) ?? localSession;
-  const workbenchBotId = bot && sessionId && canonicalBotSessionId(bot) === sessionId
-    && !session?.remoteHostId && !session?.deviceLinkDeviceId ? bot.id : null;
+  const workbenchBotId = sessionId
+    && (bot ? canonicalBotSessionId(bot) === sessionId : linkedOwner?.canonical)
+    && !session?.remoteHostId && !session?.deviceLinkDeviceId
+    ? bot?.id ?? linkedOwner?.botId ?? null : null;
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
   const pending = useRef<string | null>(null);
   // Detached sidebar hosts have no Router and must hand content back to the main window.
@@ -83,8 +89,8 @@ export function useTabCreationMenu({
     if (item.kind.startsWith('ghost:')) return false;
     if (item.kind === 'bot-workbench' && !workbenchBotId) return false;
     if (item.kind === 'subagents' && !subagentsAvailable) return false;
-    if (item.kind === 'side-chat' && (bot || !canOpenSideChat(session))) return false;
-    return !bot || !BOT_SECONDARY_KINDS.has(item.kind);
+    if (item.kind === 'side-chat' && (isBotSession || !canOpenSideChat(session))) return false;
+    return !isBotSession || !BOT_SECONDARY_KINDS.has(item.kind);
   }).map(item => {
     const busy = item.kind === 'side-chat' && !!sessionId && openingSessionId === sessionId;
     return {

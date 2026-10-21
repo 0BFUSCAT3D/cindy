@@ -8,6 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BotGroupLaneTerminal } from '../botGroupChatService.js';
 
 import {
   AutoResumeBookkeeping,
@@ -36,11 +37,13 @@ function createHarness() {
   const surfaced: Array<{ sessionId: string; detail: SuppressedTurnError }> = [];
   const orcaFinalized: Array<{ sessionId: string; payload: OrcaSuppressedTerminal }> = [];
   const autoResumeFailed: Array<{ sessionId: string; attemptToken?: number }> = [];
+  const groupFinalized: BotGroupLaneTerminal[] = [];
   const deps: AutoResumeBookkeepingDeps = {
     persistSuppressedError: (sessionId, detail) => persisted.push({ sessionId, detail }),
     surfaceSuppressedError: (sessionId, detail) => surfaced.push({ sessionId, detail }),
     finalizeOrcaSuppressedTerminal: (sessionId, payload) =>
       orcaFinalized.push({ sessionId, payload }),
+    finalizeBotGroupSuppressedTerminal: terminal => groupFinalized.push(terminal),
     markOutcome: (sessionId, clientId, outcome) => outcomes.push({ sessionId, clientId, outcome }),
     rollbackGuardPendingResume: (sessionId) => guardRollbacks.push(sessionId),
     abandonTakeover: (sessionId, message) =>
@@ -52,6 +55,7 @@ function createHarness() {
     persisted,
     surfaced,
     orcaFinalized,
+    groupFinalized,
     outcomes,
     guardRollbacks,
     abandons,
@@ -68,6 +72,22 @@ afterEach(() => {
 });
 
 describe('被压住的错误详情:必有人补落', () => {
+  it.each(['surface', 'exhausted', 'rejected', 'success', 'stop'] as const)('settles the captured group execution only on final recovery failure: %s', outcome => {
+    const h = createHarness();
+    const terminal: BotGroupLaneTerminal = { sessionId: 's1', activeInputClientId: 'bot-group:g1:turn:b1',
+      outcome: 'error', resultText: '', failureCode: 'NETWORK_ERROR' };
+    h.book.beginAttempt('s1', 1);
+    h.book.stashSuppressedError('s1', { message: 'disconnected' }, 1);
+    h.book.stashBotGroupSuppressedTerminal('s1', terminal);
+    h.book.bindSuppressedErrorToClient('s1', 1, 'retry-1');
+    if (outcome === 'surface') h.book.surfaceSuppressedErrorForRetry('s1', 'retry-1');
+    else if (outcome === 'exhausted') h.book.finalizeSuppressedError('s1', 1, { surfaceBanner: true });
+    else if (outcome === 'rejected') h.book.abandonUnconfirmedPersistedResume('s1', 1, 'retry-1');
+    else if (outcome === 'success') h.book.discardSuppressedErrorForRetry('s1', 'retry-1');
+    else h.book.teardown('s1');
+    h.book.finalizeSuppressedError('s1', 1, { surfaceBanner: true });
+    expect(h.groupFinalized).toEqual(['success', 'stop'].includes(outcome) ? [] : [terminal]);
+  });
   it('flush 把详情落库并清空(重复 flush 是 no-op)', () => {
     const h = createHarness();
     h.book.stashSuppressedError('s1', {
