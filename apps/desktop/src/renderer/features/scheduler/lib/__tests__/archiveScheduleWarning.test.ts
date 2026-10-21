@@ -12,13 +12,18 @@ const mocks = vi.hoisted(() => ({
   ensure: vi.fn(),
   getSnapshot: vi.fn(),
   getSessionScheduleBindings: vi.fn(),
+  hasScheduleBindings: vi.fn(),
+  invoke: vi.fn(),
 }));
 
 vi.mock('../schedulesStore', () => ({
   schedulesStore: { ensure: mocks.ensure, getSnapshot: mocks.getSnapshot },
 }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
-  remoteProjectsStore: { getSessionScheduleBindings: mocks.getSessionScheduleBindings },
+  remoteProjectsStore: {
+    getSessionScheduleBindings: mocks.getSessionScheduleBindings,
+    hasScheduleBindings: mocks.hasScheduleBindings,
+  },
 }));
 
 import {
@@ -38,6 +43,9 @@ describe('loadActiveBoundScheduleNames', () => {
     mocks.ensure.mockReset();
     mocks.getSnapshot.mockReset();
     mocks.getSessionScheduleBindings.mockReset().mockReturnValue([]);
+    mocks.hasScheduleBindings.mockReset().mockReturnValue(true);
+    mocks.invoke.mockReset();
+    vi.stubGlobal('window', { electronAPI: { deviceLink: { invoke: mocks.invoke } } });
   });
 
   it('只返回本机任务绑定的 active 自动化', async () => {
@@ -50,6 +58,46 @@ describe('loadActiveBoundScheduleNames', () => {
     const result = await loadActiveBoundScheduleNames([{ id: 'task' }, { id: 'plain' }]);
 
     expect([...result]).toEqual([['task', ['Daily']]]);
+  });
+
+  it('远程绑定快照尚未加载时直取一次,而不是把空当作没有绑定', async () => {
+    mocks.hasScheduleBindings.mockReturnValue(false);
+    mocks.invoke.mockResolvedValue([
+      { id: 'r', name: 'Remote', status: 'active', targetSessionId: 'a', cronExpr: '* * * * *' },
+    ]);
+
+    const result = await loadActiveBoundScheduleNames([
+      { id: 'a', deviceLinkDeviceId: 'mac-2' },
+      { id: 'b', deviceLinkDeviceId: 'mac-2' },
+    ]);
+
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke).toHaveBeenCalledWith('mac-2', 'maker:schedule:list', [
+      null,
+      { sessionBindings: true },
+    ]);
+    expect([...result]).toEqual([['a', ['Remote']]]);
+  });
+
+  it('远程快照未加载且直取超时时按无绑定处理', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.hasScheduleBindings.mockReturnValue(false);
+      mocks.invoke.mockReturnValue(new Promise(() => {}));
+
+      const pending = loadActiveBoundScheduleNames([{ id: 'a', deviceLinkDeviceId: 'mac-2' }]);
+      await vi.advanceTimersByTimeAsync(COLD_SCHEDULE_LOAD_WAIT_MS);
+
+      expect((await pending).size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('远程快照已就绪时不再发请求', async () => {
+    await loadActiveBoundScheduleNames([{ id: 'a', deviceLinkDeviceId: 'mac-2' }]);
+
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('持续会话归档后会换绑新任务继续跑,不提示', async () => {

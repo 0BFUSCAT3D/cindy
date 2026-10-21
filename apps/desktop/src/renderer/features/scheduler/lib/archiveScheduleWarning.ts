@@ -7,7 +7,11 @@ import type { TFunction } from 'i18next';
 
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 
-import { buildBindingMap, type ScheduleBinding } from './scheduleBindingIndex';
+import {
+  buildBindingMap,
+  parseScheduleBindings,
+  type ScheduleBinding,
+} from './scheduleBindingIndex';
 import { schedulesStore } from './schedulesStore';
 
 export interface ArchiveTarget {
@@ -28,6 +32,23 @@ async function readLocalSchedules() {
   return Promise.race([schedulesStore.ensure().catch(() => null), timeout]);
 }
 
+/**
+ * 远程设备的绑定快照尚未加载(刚连上或重连后首拉还在途)时,空结果不是权威的:
+ * 直接取一次绑定列表,最多等 COLD_SCHEDULE_LOAD_WAIT_MS,失败或超时按「无绑定」处理。
+ */
+async function readRemoteBindingsOnce(
+  deviceId: string,
+): Promise<readonly ScheduleBinding[] | null> {
+  const timeout = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), COLD_SCHEDULE_LOAD_WAIT_MS),
+  );
+  const load = window.electronAPI.deviceLink
+    .invoke(deviceId, 'maker:schedule:list', [null, { sessionBindings: true }])
+    .then(parseScheduleBindings)
+    .catch(() => null);
+  return Promise.race([load, timeout]);
+}
+
 /** 每个任务归档后会停掉的自动化名称(active、非持续会话);没有的任务不出现在结果里。 */
 export async function loadActiveBoundScheduleNames(
   targets: readonly ArchiveTarget[],
@@ -37,11 +58,29 @@ export async function loadActiveBoundScheduleNames(
   const localMap: ReadonlyMap<string, readonly ScheduleBinding[]> = localSchedules
     ? buildBindingMap(localSchedules)
     : new Map();
+  // 快照未就绪的远程设备,每台只直接取一次。
+  const coldRemote = new Map<string, Promise<ReadonlyMap<string, ScheduleBinding[]> | null>>();
+  for (const target of targets) {
+    const deviceId = target.deviceLinkDeviceId;
+    if (
+      deviceId &&
+      !remoteProjectsStore.hasScheduleBindings(deviceId) &&
+      !coldRemote.has(deviceId)
+    ) {
+      coldRemote.set(
+        deviceId,
+        readRemoteBindingsOnce(deviceId).then((list) => (list ? buildBindingMap(list) : null)),
+      );
+    }
+  }
   const result = new Map<string, string[]>();
   for (const target of targets) {
-    const bindings = target.deviceLinkDeviceId
-      ? remoteProjectsStore.getSessionScheduleBindings(target.deviceLinkDeviceId, target.id)
-      : (localMap.get(target.id) ?? []);
+    const deviceId = target.deviceLinkDeviceId;
+    let bindings: readonly ScheduleBinding[];
+    if (!deviceId) bindings = localMap.get(target.id) ?? [];
+    else if (remoteProjectsStore.hasScheduleBindings(deviceId))
+      bindings = remoteProjectsStore.getSessionScheduleBindings(deviceId, target.id);
+    else bindings = (await coldRemote.get(deviceId))?.get(target.id) ?? [];
     const names = bindings
       .filter((schedule) => schedule.status === 'active' && !schedule.persistentSession)
       .map((schedule) => schedule.name);
