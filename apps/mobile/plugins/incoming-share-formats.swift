@@ -89,9 +89,7 @@
       provider.loadItem(forTypeIdentifier: identifier, options: nil) { value, _ in
         // URL lifetime belongs to this callback, including loadItem fallbacks.
         if let url = value as? URL {
-          let image = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image)
-            ?? provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
-          continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind ?? (image ? .image : .file)))
+          continuation.resume(returning: self.copyAndProcessFile(url: url, type: kind ?? self.fileShareType(url)))
           return
         }
         guard let kind, let data = (value as? Data) ?? (value as? UIImage)?.pngData() else {
@@ -108,4 +106,20 @@
         continuation.resume(returning: self.saveDataToAppGroup(data: data, fileName: filename, type: kind, mimeType: type?.preferredMIMEType))
       }
     }
+  }
+
+  private func fileShareType(_ url: URL) -> ShareType {
+    guard url.isFileURL else { return .file }
+    let access = url.startAccessingSecurityScopedResource()
+    defer { if access { url.stopAccessingSecurityScopedResource() } }
+    let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+      ?? UTType(filenameExtension: url.pathExtension)
+    if type?.conforms(to: .image) == true { return .image }
+    // Inspect only the original's image header, without decoding its pixels.
+    // Other representations on the provider may be unrelated thumbnails.
+    if url.pathExtension.isEmpty,
+       let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+       let identifier = CGImageSourceGetType(source),
+       UTType(identifier as String)?.conforms(to: .image) == true { return .image }
+    return .file
   }

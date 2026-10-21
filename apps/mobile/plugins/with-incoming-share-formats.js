@@ -7,6 +7,7 @@ function patchIncomingShareFormats(source) {
     if (source.split(from).length !== 2) throw new Error('expo-sharing input contract changed');
     return source.replace(from, to);
   };
+  source = replace('import UniformTypeIdentifiers', 'import UniformTypeIdentifiers\nimport ImageIO');
   const start = source.indexOf('  private func parseProvider(');
   const end = source.indexOf('  // MARK: - File Management', start);
   if (start < 0 || end < 0) throw new Error('expo-sharing provider contract changed');

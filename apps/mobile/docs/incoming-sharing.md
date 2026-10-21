@@ -41,6 +41,9 @@ new sending privileges: normal conversation hydration and authorization still ap
   media and exported documents take precedence over their text/link previews. Add a
   semantic adapter only when a new representation requires decoding; generic data
   formats need no extension allowlist.
+  File-URL classification uses the original file's UTI or image header, never a
+  provider-wide thumbnail. Unknown extensionless documents remain original files;
+  actual extensionless raster images retain image processing.
 - `plugins/with-incoming-share-formats.js`: generated Expo controller integration.
   Checked patch anchors fail prebuild if the upstream template changes.
 - `fingerprint.config.cjs`: explicitly hashes the share extension's Swift, strings

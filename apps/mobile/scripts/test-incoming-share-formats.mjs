@@ -14,6 +14,7 @@ const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../pl
 const harness = `
 import Foundation
 import UniformTypeIdentifiers
+import ImageIO
 let testRoot = URL(fileURLWithPath: CommandLine.arguments[1])
 let NSExtensionJavaScriptPreprocessingResultsKey = "NSExtensionJavaScriptPreprocessingResultsKey"
 class UIImage: NSObject { func pngData() -> Data? { nil } }
@@ -51,6 +52,27 @@ final class Adapter {
     try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let adapter = Adapter()
+    // The file URL owns the bytes; a separate image representation may be only
+    // its thumbnail. Extensionless originals must not inherit that preview type.
+    let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")!
+    for (name, bytes, kind) in [("extensionless-document", Data("original document bytes".utf8), ShareType.file),
+                                ("extensionless-image", png, ShareType.image)] {
+      let url = root.appendingPathComponent(name)
+      try! bytes.write(to: url)
+      let provider = EphemeralProvider()
+      provider.url = url
+      provider.registerItem(forTypeIdentifier: UTType.fileURL.identifier, loadHandler: { _, _, _ in })
+      provider.registerDataRepresentation(forTypeIdentifier: UTType.image.identifier, visibility: .all) { done in
+        done(png, nil); return nil
+      }
+      adapter.requireProviderCallback = true
+      guard let payload = await adapter.parse(provider), payload.type == kind,
+            let result = URL(string: payload.value) else { fatalError("Thumbnail retyped extensionless original: " + name) }
+      precondition(result.lastPathComponent == name && (try! Data(contentsOf: result)) == bytes)
+      precondition(!FileManager.default.fileExists(atPath: url.path))
+      adapter.requireProviderCallback = false
+    }
+    print("PASS: extensionless file URLs use their original content, not thumbnails")
     for ext in ["md", "swift"] {
       let type = UTType(filenameExtension: ext)!
       precondition(type.conforms(to: .plainText))
