@@ -55,10 +55,10 @@ const REMOTE_READ_BATCH = 50;
 
 const USER_SOURCES = new Set(['desktop', 'feishu', 'slack', 'telegram', 'x', 'discord', 'wechat', 'dingtalk', 'wecom', 'shared']);
 /**
- * 伙伴的历史 / 群 / IM 渠道专线不是「任务」，不进表。主任务（canonical）进表：总调度是另一个伙伴时要能
+ * 伙伴的历史 / 私聊话题 / 群 / IM 渠道专线不是「任务」，不进表。主任务（canonical）进表：总调度是另一个伙伴时要能
  * 发现它坏了；但它永远不是主任务所属伙伴自己的事件对象（见 followerFor），也不进它自己的工作台。
  */
-const BOT_LANE_ROLES = new Set(['history', 'group', 'channel']);
+const BOT_LANE_ROLES = new Set(['history', 'thread', 'group', 'channel']);
 
 export interface LocalSessionMeta {
   id: string;

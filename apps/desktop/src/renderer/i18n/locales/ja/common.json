@@ -10296,6 +10296,13 @@
       "viewTaskProgress": "進捗を確認",
       "liveDraft": "文字起こし中",
       "questionDraft": "確認待ち"
+    },
+    "dmThread": {
+      "newReply": "新しい返信",
+      "you": "あなた",
+      "rootNotLoaded": "元のメッセージは読み込み済みの履歴にありません",
+      "rootUnavailable": "元のメッセージがこのチャットにないため、スレッドを開始できません",
+      "openFailed": "スレッドを開けませんでした。もう一度お試しください。"
     }
   },
   "common": {

@@ -145,7 +145,7 @@ export async function currentFollowUpEvents(botId: string, events: RoutineRun['e
   if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead) return null;
   const subjects: FollowUpSubject[] = metas.filter(meta => meta.status === 'active' && meta.hiddenAt === null
     && meta.orcaRole !== 'worker' && meta.source !== 'review'
-    && !['history', 'group', 'channel'].includes(meta.laneRole ?? '')).map(meta => {
+    && !['history', 'group', 'channel', 'thread'].includes(meta.laneRole ?? '')).map(meta => {
       const canonical = [...ownership.bots].find(([, bot]) => bot.canonicalSessionId === meta.id)?.[0]
         ?? (meta.laneRole === 'canonical' ? meta.laneBotId : null);
       const creator = ownership.creatorBySession.get(meta.id) ?? null;
