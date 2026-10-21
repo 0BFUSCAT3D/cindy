@@ -226,6 +226,9 @@ export function prepareSessionEvent(
           ...event.agentMeta,
           botPrivateReply: isBotPrivateInput(activeInputId) || (taskCoordination && !event.runtimeRecovery),
           botTaskCoordination: taskCoordination && !event.runtimeRecovery,
+          // The user input this turn answers; companion chats can show it above the reply
+          // (cindy-bots-runtime.md「回复对应的消息」). Hidden trigger inputs are skipped on display.
+          replyToClientId: activeInputId,
           // A group-lane turn is delivered into the group chat; its hidden Session never
           // raises completion/error attention of its own (docs/product-rules/bot-group-chat.md §3).
           ...(groupLaneInputClientId && isBotGroupClientId(groupLaneInputClientId) ? { botGroupLane: true } : {}),

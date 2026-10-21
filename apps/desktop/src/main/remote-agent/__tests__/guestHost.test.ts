@@ -158,6 +158,15 @@ function shadowDir(controller: string, sessionId: string): string {
   return path.join(sessionRoot(controller, sessionId), 'fs', 'workspace', ...Array.from({ length: 24 }, () => 'p'));
 }
 
+async function waitForStarted(host: ReturnType<typeof makeHost>, controller: string, runId: string) {
+  // open only acknowledges receipt. Observe the completed protocol handshake,
+  // using the existing startup budget rather than asserting Windows disk speed.
+  await vi.waitFor(async () => {
+    const poll = await host.handle(controller, { op: 'poll', runs: [{ runId, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
+    expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"t":"started"');
+  }, { timeout: 10_000 });
+}
+
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-ra-guest-')));
   runsRoot = path.join(root, 'host');
@@ -241,7 +250,8 @@ describe('imported instruction files', () => {
       agentKind: 'claude-code',
       payload: { json: openPayload('task-1', { importFiles: imports }) },
     });
-    await vi.waitFor(() => expect(started).toHaveLength(1));
+    await waitForStarted(host, OWNER, RUN_1);
+    expect(started).toHaveLength(1);
     const shadow = shadowDir(OWNER, 'task-1');
     const session = sessionRoot(OWNER, 'task-1');
     expect(fs.readFileSync(path.join(shadow, 'docs', 'rules.md'), 'utf8')).toBe('rules, see @~/.ssh/config');
@@ -267,7 +277,8 @@ describe('imported instruction files', () => {
         }),
       },
     });
-    await vi.waitFor(() => expect(started).toHaveLength(1));
+    await waitForStarted(host, GUEST, RUN_1);
+    expect(started).toHaveLength(1);
     const shadow = shadowDir(GUEST, 'task-1');
     expect(fs.readFileSync(path.join(shadow, 'docs', 'rules.md'), 'utf8')).toBe('rules, see `@~/.ssh/config`');
     expect(fs.existsSync(path.join(shadow, 'docs', 'run.sh'))).toBe(false);
@@ -294,7 +305,8 @@ describe('guest agents', () => {
     const host = makeHost(started);
     await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: kind, payload: { json: openPayload('task-1') } });
     await host.handle(OWNER, { op: 'open', runId: RUN_2, agentKind: kind, payload: { json: openPayload('task-1') } });
-    await vi.waitFor(() => expect(started).toHaveLength(2));
+    await Promise.all([waitForStarted(host, GUEST, RUN_1), waitForStarted(host, OWNER, RUN_2)]);
+    expect(started).toHaveLength(2);
     const guest = started.find((record) => record.input.guest)!;
     const owner = started.find((record) => !record.input.guest)!;
     expect(guest.input.guestHome).toBe(guestHome(GUEST));
@@ -323,12 +335,7 @@ describe('guest mid-task calls', () => {
     const host = makeHost(started);
     try {
       await host.handle(controller, { op: 'open', runId: RUN_1, agentKind: 'codex', payload: { json: openPayload(sessionId) } });
-      // open 先确认接收，再异步准备目录与启动 Agent。等协议的 started 事件后才发调用，
-      // 沿用本文件的启动等待预算，不用 waitFor 默认的 1 秒充当 Windows 磁盘性能断言。
-      await vi.waitFor(async () => {
-        const poll = await host.handle(controller, { op: 'poll', runs: [{ runId: RUN_1, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
-        expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"t":"started"');
-      }, { timeout: 10_000 });
+      await waitForStarted(host, controller, RUN_1);
       expect(started).toHaveLength(1);
       await host.handle(controller, { op: 'call', runId: RUN_1, callId: CALL_1, method, payload: { json: args } });
       await vi.waitFor(() => expect(started[0].calls).toHaveLength(1));

@@ -258,6 +258,10 @@ import {
 import { isCurrentSubagentRunsChange } from '@/features/right-sidebar/plugins/subagents/subagentChangeFence';
 import { startSubagentTabDiscovery } from './subagentTabDiscovery';
 import { requestChatTaskFocus, subscribeChatTaskFocus } from '@/features/right-sidebar/plugins/background-tasks/chatTaskFocusIntent';
+import { BotChatQuoteProvider, type BotChatQuoteValue } from '@/features/bots/botChatQuoteContext';
+import { BotChatQuoteComposerPreview } from '@/features/bots/BotChatQuoteViews';
+import { clearSentBotReplyQuote, getPendingBotReplyQuote, setPendingBotReplyQuote, usePendingBotReplyQuote } from '@/features/bots/botDmQuote';
+import { useBotReplyTargetPreference } from '@/features/bots/useBotReplyTargetPreference';
 import { canFocusWithoutJumpLoad } from '@/lib/searchJumpTargeting';
 import { getMakerMemoryEnabled } from '@/lib/memorySettingsStore';
 import { useWorktreeCreation, worktreeCreationStore } from '@/lib/worktreeCreationStore';
@@ -4180,7 +4184,10 @@ function CCAgentSessionContent({
 
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
       let rebalanceClientId: string | undefined;
+      // 伙伴私聊引用回复:点发送时的待发引用随这条消息一起落库,送出后从输入框上方撤下。
+      const replyQuote = botChatIdentity ? getPendingBotReplyQuote(sessionId) : null;
       const sendOptions = {
+        ...(replyQuote ? { replyQuote } : {}),
         beforeEnqueue: recordRebalance ? async () => {
           if (await opts?.beforeEnqueue?.() === false) return false;
           if (rebalanceClientId) await recordRebalance(rebalanceClientId);
@@ -4219,6 +4226,7 @@ function CCAgentSessionContent({
           mentions,
           sendOptions,
         );
+        if (accepted && sessionId && replyQuote) clearSentBotReplyQuote(sessionId, replyQuote);
         if (accepted && sessionId) {
           if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
             setFollowUpInvitationSession(sessionId);
@@ -4242,6 +4250,7 @@ function CCAgentSessionContent({
         mentions,
         sendOptions,
       );
+      if (accepted && sessionId && replyQuote) clearSentBotReplyQuote(sessionId, replyQuote);
       if (accepted && sessionId) {
         if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
           setFollowUpInvitationSession(sessionId);
@@ -4276,6 +4285,7 @@ function CCAgentSessionContent({
       remoteDeviceId,
       sessionHandoffPreparing,
       cindyMakeInputLocked,
+      botChatIdentity,
     ],
   );
 
@@ -5137,6 +5147,39 @@ function CCAgentSessionContent({
     () => visibleVoiceCallMessages(sideChatMessages, activeVoiceCallId),
     [sideChatMessages, activeVoiceCallId],
   );
+  // 伙伴私聊的引用回复与「回复对应的消息」(cindy-bots-runtime.md):气泡经稳定读取函数找原消息，
+  // 流式输出不会让每个气泡跟着重渲染。
+  const { enabled: showBotReplyTargets } = useBotReplyTargetPreference();
+  const quoteMessagesRef = useRef(timelineMessages);
+  quoteMessagesRef.current = timelineMessages;
+  const getQuoteMessage = useCallback(
+    (clientId: string) => quoteMessagesRef.current.find((message) => message.clientId === clientId),
+    [],
+  );
+  const botQuoteOwnerName = t('bots.dmThread.you');
+  const botQuoteCompanionName = botChatIdentity?.name ?? '';
+  const botQuoteNames = useMemo(
+    () => ({ owner: botQuoteOwnerName, companion: botQuoteCompanionName }),
+    [botQuoteOwnerName, botQuoteCompanionName],
+  );
+  const pendingReplyQuote = usePendingBotReplyQuote(botChatIdentity && !readOnly ? sessionId : null);
+  const botChatQuote = useMemo<BotChatQuoteValue | null>(() => botChatIdentity && sessionId ? {
+    sessionId,
+    names: botQuoteNames,
+    getMessage: getQuoteMessage,
+    // The turn's last loaded reply carries the marker, so it shows once per turn.
+    isFirstReplyFor: (assistantClientId, replyToClientId) => {
+      const rows = quoteMessagesRef.current;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index]!;
+        if (row.role === 'assistant' && row.replyToClientId === replyToClientId) return row.clientId === assistantClientId;
+      }
+      return false;
+    },
+    showReplyTargets: showBotReplyTargets,
+    quote: (quote) => { if (!readOnly) setPendingBotReplyQuote(sessionId, quote); },
+    locate: (clientId) => requestChatTaskFocus(sessionId, clientId),
+  } : null, [botChatIdentity, botQuoteNames, getQuoteMessage, readOnly, sessionId, showBotReplyTargets]);
   const openVoiceTask = useCallback((clientId: string) => {
     // Accepted queued work may not have a timeline row yet. Reveal its existing
     // queue instead of inventing another task or claiming it has begun running.
@@ -5147,6 +5190,7 @@ function CCAgentSessionContent({
     }
   }, [pendingQueue, sessionId, setQueueExpanded]);
   const messageStreamEl = (
+    <BotChatQuoteProvider value={botChatQuote}>
     <MessageReadAloudContext.Provider value={messageReadAloud.value}>
     <MessageStream
       key={sessionId}
@@ -5198,6 +5242,7 @@ function CCAgentSessionContent({
       onInlinePlanVisibilityChange={handleInlinePlanVisibilityChange}
     />
     </MessageReadAloudContext.Provider>
+    </BotChatQuoteProvider>
   );
 
   // Message-level controls (e.g. a Market teammate's starter buttons) send through this session's own path.
@@ -5768,7 +5813,7 @@ function CCAgentSessionContent({
                 && !pendingRemoteDesktopConfirmation && !pendingInputHandoff && followUpInvitationSession === sessionId && (
                 remoteDeviceId
                   ? <RemoteBotFollowUpInvitation key={`${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
-                  : <BotFollowUpInvitation key={sessionId} botId={botChatIdentity.id} engaged />
+                  : <BotFollowUpInvitation key={`follow-up-invitation:${sessionId}`} botId={botChatIdentity.id} engaged />
               )}
               <InteractionPromptHost
                 hasInteraction={
@@ -5948,6 +5993,9 @@ function CCAgentSessionContent({
                       sessionId={session.id}
                       messageId={cindyMakeRecoveryId}
                     />
+                  ) : pendingReplyQuote && sessionId ? (
+                    <BotChatQuoteComposerPreview sessionId={sessionId} quote={pendingReplyQuote}
+                      getMessage={getQuoteMessage} names={botQuoteNames} />
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
                   onComposerTyping={handleComposerTyping}

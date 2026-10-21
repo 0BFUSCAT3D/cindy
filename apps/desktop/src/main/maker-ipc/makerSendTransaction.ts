@@ -567,6 +567,11 @@ export interface MakerSendTransactionDeps {
    */
   readTaskSource?(sessionId: string): Promise<string | null>;
   /**
+   * 伙伴私聊引用回复的 `[引用说明]`:按落库内容里的 `replyQuote` 从库里重读原消息;没有引用时为 null。
+   * 逐条都要带(陈述的是「本条」引用了什么),不进 wireNoteMemory 去重。
+   */
+  readReplyQuoteNote?(sessionId: string, persistedContent: string | undefined): Promise<string | null>;
+  /**
    * 私聊话题的 `[话题说明]`(话题开在主对话的哪条消息上);不是私聊话题时为 null。
    * 与 `[客户端说明]` 同层,只进 wire 消息。
    */
@@ -1395,9 +1400,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             },
           )
         : null;
-      const withSourceNote = messageSourceNote
-        ? prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, messageSourceNote)
+      const replyQuoteNote = isOrdinaryUserTurn
+        ? ((await deps.readReplyQuoteNote?.(sessionId, typeof reconcilePersistContent === 'string' ? reconcilePersistContent : undefined).catch(() => null)) ?? null)
+        : null;
+      const withReplyQuoteNote = replyQuoteNote
+        ? prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, replyQuoteNote)
         : withGoalInactiveNote;
+      const withSourceNote = messageSourceNote
+        ? prependNoteToWireUserMessage(withReplyQuoteNote as HandoffWireMessage, messageSourceNote)
+        : withReplyQuoteNote;
       // 客户端说明(远程设备):同样只进 wire payload,落库/显示内容(persistUserMessage.content)
       // 不含它。位置在交接段**之前** —— 交接正文自带「以下是用户的新消息」结束标记,
       // 排在它后面会让说明插到那句话之后(顺序推导同 agentHandoff.composeForkOriginHandoff:

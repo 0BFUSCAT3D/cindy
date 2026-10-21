@@ -7036,6 +7036,7 @@ const MessageItem = memo(function MessageItem({
             goalBadge={message.goalBadge}
             blockedByGhost={message.blockedByGhost}
             simplifiedBotConversation={simplifiedBotConversation}
+            replyQuote={message.replyQuote}
           />
           {message.usageLimitAutoResumeInfo && (
             <SystemCard
@@ -7091,6 +7092,7 @@ const MessageItem = memo(function MessageItem({
             isStreaming={message.isStreaming}
             createdAt={message.createdAt}
             messageClientId={message.clientId}
+            replyToClientId={message.replyToClientId}
             agentKind={agentKind}
             remoteHostId={remoteHostId}
             forkBlocked={assistantForkBlocked}

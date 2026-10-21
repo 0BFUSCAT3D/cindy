@@ -110,6 +110,18 @@ export interface BotGroupLaneTerminal {
   undispatched?: boolean;
 }
 
+/** Ordinary and recovery-held replies must read their fallback text after queued writes. */
+export async function settleBotGroupLaneTerminal(
+  service: Pick<BotGroupChatService, 'settleLaneTurn'>,
+  terminal: BotGroupLaneTerminal,
+  drainPersistQueue: () => Promise<void>,
+): Promise<boolean> {
+  if (terminal.outcome === 'done' && !terminal.resultText.trim() && terminal.resultMessageClientId) {
+    await drainPersistQueue();
+  }
+  return service.settleLaneTurn(terminal);
+}
+
 export interface BotGroupChatServiceDeps {
   /**
    * With `plan`, the Bot's 分工 Session for that plan (bot-group-chat.md §7.4); with
