@@ -3032,5 +3032,6 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 对持续会话多弹一次归档提醒，提醒不丢、不误归档，属安全降级。
 
 不新增 channel、能力、服务端 schema、数据库或 Mobile 原生指纹，`maker:schedule:list` 沿用既有白名单。
-控制端在远程绑定快照尚未加载时，会对该设备直接发一次同一 channel 的有界读取（最多等 1.5 秒，失败或
-超时按无绑定处理）；手机归档确认同样最多一次 `maker:schedule:list` 读取，同样有界。
+桌面远程任务归档时，每台设备总是直取一次带 `sessionBindings: true` 的 `maker:schedule:list`（最多等
+1.5 秒；失败或超时回退本地镜像里已有的快照，没有则按无绑定处理，离线设备因此每次最多多等 1.5 秒）；
+手机归档确认同样只发一次带该投影参数的 `maker:schedule:list`，同样有界。两端都只请求绑定投影，不拉完整列表。
