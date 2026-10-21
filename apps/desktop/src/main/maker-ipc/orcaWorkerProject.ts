@@ -258,10 +258,22 @@ export async function resolveWorkerWorktreeSource(
   const info = await probe(directory);
   if (!info.exists) throw new Error('Worker worktree directory does not exist');
   if (!info.baseRepo) throw new Error('Worker worktree requires a Git repository');
+  if (sourceBranch !== undefined) {
+    try {
+      await gitExec(
+        ['rev-parse', '--verify', '--quiet', '--end-of-options', `${sourceBranch}^{commit}`],
+        directory,
+        { timeoutMs: 5000 },
+      );
+    } catch {
+      throw new Error('Worktree source_branch must reference an existing commit');
+    }
+    return sourceBranch;
+  }
   if (info.headState === 'unborn' || !info.branch) {
     throw new Error('Worker worktree requires a repository with a commit');
   }
-  return sourceBranch ?? info.branch;
+  return info.branch;
 }
 
 export function getWorkerOwnedWorktree(sessionId: string): WorkerOwnedWorktree | undefined {

@@ -1567,6 +1567,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       if (params.worktree) {
         createdWorktreeSessionId = workerSessionId;
         workingDir = await deps.createWorkerWorktree!(workerSessionId, workingDir, worktreeSource!);
+        // Checkout may fall back from a missing subproject to its root. Authorize
+        // the final directory before any runtime starts, for both UI and tool calls.
+        try {
+          workingDir = await deps.resolveWorkerWorkingDir(workingDir, lead);
+        } catch {
+          return { ok: false, errorCode: 'INVALID_PARAMS', message: 'working_dir is unavailable or collaboration is disabled for that directory; no Worker was started' };
+        }
         ownedWorktree = deps.getWorkerWorktree!(workerSessionId);
         if (!ownedWorktree) throw new Error('Worker worktree ownership metadata is unavailable');
         await assertCurrent?.();

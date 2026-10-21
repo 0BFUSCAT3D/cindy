@@ -3782,14 +3782,43 @@ describe('local Worker worktree ownership', () => {
     expect(deps.createWorkerWorktree).not.toHaveBeenCalled();
   });
 
-  it('rejects an unavailable Git target before reservation, worktree creation or bootstrap', async () => {
+  it.each(['Repository has no commits', 'Worktree source_branch must reference an existing commit'])('rejects an unavailable Git target before reservation: %s', async message => {
     const {deps, service} = createDeps({createWorkerWorktree: vi.fn(), discardWorkerWorktree: vi.fn(),
-      resolveWorkerWorktreeSource: vi.fn(async () => {throw new Error('Repository has no commits');}),
+      resolveWorkerWorktreeSource: vi.fn(async () => {throw new Error(message);}),
     });
-    await expect(service.createWorker({...request, worktree: {}})).resolves.toMatchObject({ok: false, errorCode: 'INVALID_PARAMS', message: 'Repository has no commits'});
+    await expect(service.createWorker({...request, worktree: {}})).resolves.toMatchObject({ok: false, errorCode: 'INVALID_PARAMS', message});
     expect(deps.reserveWorkerCreation).not.toHaveBeenCalled();
     expect(deps.createWorkerWorktree).not.toHaveBeenCalled();
     expect(deps.bootstrapSession).not.toHaveBeenCalled();
+  });
+
+  // #6623 P1 (unit): source policy does not authorize a fallback checkout root.
+  // Earlier coverage accepted every resolved directory and missed this bootstrap boundary.
+  it.each([false, true])('revalidates a missing-subproject fallback before bootstrap (root allowed=%s)', async allowed => {
+    const selected = path.resolve('repo/apps/web');
+    const checkoutRoot = path.resolve('repo/.cindy-worktrees/worker');
+    const {deps, service} = createDeps({
+      createWorkerWorktree: vi.fn(async () => checkoutRoot),
+      discardWorkerWorktree: vi.fn(async () => {}),
+      resolveWorkerWorkingDir: vi.fn(async directory => {
+        if (directory === checkoutRoot && !allowed) throw new Error('Collaboration disabled');
+        return directory;
+      }),
+    });
+    const result = await service.createWorker({...request, workingDir: selected});
+    expect(deps.resolveWorkerWorkingDir).toHaveBeenNthCalledWith(2, checkoutRoot, expect.objectContaining({id: 'lead-1'}));
+    if (allowed) {
+      expect(result).toMatchObject({ok: true, workingDir: checkoutRoot});
+      expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({workingDir: checkoutRoot}));
+      expect(deps.discardWorkerWorktree).not.toHaveBeenCalled();
+    } else {
+      expect(result).toMatchObject({ok: false, errorCode: 'INVALID_PARAMS',
+        message: 'working_dir is unavailable or collaboration is disabled for that directory; no Worker was started'});
+      expect(deps.bootstrapSession).not.toHaveBeenCalled();
+      expect(deps.addOrUpdateWorker).not.toHaveBeenCalled();
+      expect(deps.discardWorkerWorktree).toHaveBeenCalledWith(WORKER_SESSION_ID);
+    }
+    expect(deps.releaseWorkerCreationReservation).toHaveBeenCalledWith('worker-1');
   });
 
   it('allows a dialogue Lead to explicitly target another local Git project', async () => {

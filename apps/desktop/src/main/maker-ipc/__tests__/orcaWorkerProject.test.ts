@@ -540,13 +540,25 @@ describe('Worker worktree source resolution', () => {
     {headState: 'branch' as const, branch: 'feature', source: undefined, expected: 'feature'},
     {headState: 'detached' as const, branch: 'a'.repeat(40), source: undefined, expected: 'a'.repeat(40)},
     {headState: 'branch' as const, branch: 'main', source: 'release', expected: 'release'},
+    {headState: 'unborn' as const, branch: null, source: 'main', expected: 'main'},
   ])('resolves $headState with source $source', async ({headState, branch, source, expected}) => {
+    if (source !== undefined) vi.mocked(gitExec).mockResolvedValueOnce({stdout: 'a'.repeat(40) + '\n', stderr: ''});
     await expect(resolveWorkerWorktreeSource('/repo', source, async () => ({...target, headState, branch}))).resolves.toBe(expected);
+    if (source !== undefined) expect(gitExec).toHaveBeenLastCalledWith(
+      ['rev-parse', '--verify', '--quiet', '--end-of-options', `${source}^{commit}`], '/repo', {timeoutMs: 5000});
   });
   it.each([
     {exists: false}, {baseRepo: null}, {headState: 'unborn' as const, branch: null}, {branch: null},
   ])('rejects an unavailable target %j', async changes => {
     await expect(resolveWorkerWorktreeSource('/repo', undefined, async () => ({...target, ...changes}))).rejects.toThrow();
+  });
+  // #6623 P2 (unit): explicit refs need commit verification, not a born current HEAD.
+  // The probe-only cases did not reject an absent ref before creating a worktree.
+  it('rejects an explicit reference with no commit, including an empty repository', async () => {
+    vi.mocked(gitExec).mockRejectedValueOnce(new Error('revision not found'));
+    await expect(resolveWorkerWorktreeSource('/repo', 'missing', async () => ({
+      ...target, headState: 'unborn', branch: null,
+    }))).rejects.toThrow('source_branch must reference an existing commit');
   });
   it.each(['', ' ', '-bad', 'bad\nbranch', 'x'.repeat(1025)])('rejects malformed source before probing', async source => {
     const probe = vi.fn(async () => target);
