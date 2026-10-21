@@ -652,6 +652,7 @@ import {
   ensureCodexMcpBridgeStartedForRemote,
   finalizeCodexAfterAuthModeChange,
   getMaker,
+  handleRemoteWorkerBridge,
   listCodexGatewayHostKeys,
   refreshCodexGatewayHost,
   setCodexGatewayKeyRefreshHook,
@@ -1014,6 +1015,7 @@ import { createOrcaRemoteWorkers, invokeDeviceValue, isExecutionDeviceCandidate,
 import { getReceivedShares, providerShareAgentDeviceId } from '../device-link/providerShareGuest.js';
 import {
   ORCA_EXECUTION_DEVICES_CHANNEL,
+  ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
   COMPANION_CLOUD_CAPS_CHANNEL,
   COMPANION_CLOUD_FLUSH_CHANNEL,
   COMPANION_CLOUD_HAND_OVER_CHANNEL,
@@ -2821,6 +2823,13 @@ export function stopOrcaRemoteWorkersForOwnerBoundary(): void {
   orcaRemoteWorkersForHost?.stop();
 }
 
+export function captureRemoteWorkerReportSettlement(
+  sessionId: string, reportedInputClientIds: readonly string[],
+): () => Promise<void> {
+  return orcaRemoteWorkersForHost?.captureReportSettlement(sessionId, reportedInputClientIds)
+    ?? (async () => {});
+}
+
 function markWorkerManualInterruptIfKnown(
   sessionId: string,
   reason: 'input_stop' | 'abort_session',
@@ -4460,6 +4469,11 @@ export async function ensureGoalInputReady(sessionId: string): Promise<boolean> 
 
 export function isSessionInTurn(sessionId: string): boolean {
   return sessionTurnActivityTracker.isSessionInTurn(sessionId);
+}
+
+/** Runtime-only attribution; queued or rejected steering cannot take ownership. */
+export function getSessionActiveInputClientIds(sessionId: string): string[] {
+  return agentInputCoordinatorHolder?.getActiveInputClientIds(sessionId) ?? [];
 }
 
 /** Runtime-only attribution; queued or rejected steering cannot take ownership. */
@@ -9404,6 +9418,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     withSessionLock: withSendToSessionLock,
     now: Date.now,
   }));
+
+  makerSessionRegistry.handle(ORCA_REMOTE_WORKER_BRIDGE_CHANNEL, (_event: unknown, raw: unknown) => {
+    const ctx = getDeviceLinkInvokeContext();
+    return handleRemoteWorkerBridge(raw, ctx ? {
+      controllerDeviceId: ctx.controllerDeviceId, sharedTask: ctx.sharedTask,
+    } : null);
+  });
 
   const readSourceReviewCards = async (sourceSessionId: string) =>
     getDbClient()
