@@ -3,6 +3,8 @@ const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> =
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
 vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
+const replyImages = vi.hoisted(() => vi.fn(async (text: string): Promise<{ text: string; attachments: import('../../../shared/botGroupChat.js').BotGroupAttachment[] }> => ({ text, attachments: [] })));
+vi.mock('../chatServerReplyImages.js', () => ({ prepareChatReplyImages: replyImages }));
 // Persists across adapter recreation; the SQLite implementation has its own persistence tests.
 const taskPosts = vi.hoisted(() => new Map<string, unknown>());
 vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: async (taskId: string, scope: unknown, prepare: () => Promise<unknown>) => {
@@ -148,6 +150,8 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
     taskPosts.clear();
+    fixture.upload.mockReset().mockResolvedValue([]);
+    replyImages.mockReset().mockImplementation(async text => ({ text, attachments: [] }));
     deps = { ensureLane: vi.fn(async () => ({ ok: true, sessionId: 'lane' })), abortLane: vi.fn(async () => {}),
       dispatch: vi.fn(async (input: Parameters<BotGroupChatServiceDeps['dispatch']>[0]) => { await input.onAccepted?.(); return { ok: true }; }),
       onChanged: vi.fn(),
@@ -512,6 +516,57 @@ describe('Chat Server result delivery and refresh', () => {
   }
   const terminal = { sessionId: 'lane', activeInputClientId: null, outcome: 'done' as const, resultText: 'Finished reply' };
   const deliveries = () => fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'complete');
+
+  // #6418: media visibility changes, but the original reply still determines
+  // continuation. The helper mock isolates import/ledger tests from settlement.
+  const replyImage = { id: 'image', name: 'image.png', category: 'image' as const,
+    mimeType: 'image/png', size: 3, url: 'cindy-media://image', path: null };
+  const imageBlock = { type: 'media', mediaId: '60000000-0000-4000-8000-000000000001' };
+  it.each(['Here is ![image](cindy-media://image)', '![](cindy-media://image)'])('delivers images with baseline continuation for %s', async resultText => {
+    const display = resultText.startsWith('Here') ? 'Here is image' : '';
+    replyImages.mockResolvedValue({ text: display, attachments: [replyImage] }); fixture.upload.mockResolvedValue([imageBlock]);
+    await start(); await service.settleLaneTurn({ ...terminal, resultText });
+    expect(deliveries()[0][2]).toMatchObject({ continueDiscussion: true,
+      content: [{ type: 'text', text: display || '已完成' }, imageBlock] });
+  });
+  it.each(['Hello', '', 'NO_REPLY'])('keeps the baseline no-image result for %j', async resultText => {
+    await start(); await service.settleLaneTurn({ ...terminal, resultText });
+    expect(deliveries()[0][2].continueDiscussion).toBe(resultText === 'Hello');
+    if (resultText === 'Hello') expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'Hello' }]);
+    else expect(deliveries()[0][2]).not.toHaveProperty('content');
+  });
+  it.each([408, 429, 503])('reuses imported images after HTTP %s and completion ACK loss', async status => {
+    replyImages.mockResolvedValueOnce({ text: 'Original image', attachments: [replyImage] }).mockRejectedValue(new Error('ATTACHMENT_UNAVAILABLE'));
+    fixture.upload.mockRejectedValueOnce(new ChatResponseError('TEMPORARY_UPLOAD', status)).mockResolvedValue([imageBlock]);
+    let attempts = 0;
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (body?.action === 'complete' && attempts++ === 0) throw new Error('lost ACK'); return response(route);
+    });
+    await start(); await service.settleLaneTurn({ ...terminal, resultText: '![](xdt-image:///task/generated.png)' });
+    expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(status === 429 ? 61000 : 16000);
+    expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'Original image' }, imageBlock]);
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(deliveries()).toHaveLength(2); expect(deliveries()[1][2]).toEqual(deliveries()[0][2]);
+    expect(replyImages).toHaveBeenCalledOnce(); expect(fixture.upload).toHaveBeenCalledTimes(2);
+    expect(fixture.upload.mock.calls[1].slice(0, 4)).toEqual(fixture.upload.mock.calls[0].slice(0, 4));
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['prepare', new Error('ATTACHMENT_UNAVAILABLE')],
+    ['upload', Object.assign(new Error('denied'), { code: 'EACCES', syscall: 'open' })],
+    ['upload', new ChatResponseError('UPLOAD_QUOTA', 413)],
+    ['upload', Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 400 })],
+    ['upload', Object.assign(new TypeError('invalid URL'), { code: 'ERR_INVALID_URL' })],
+  ] as const)('settles permanent image refusal at %s: %s', async (phase, error) => {
+    replyImages.mockResolvedValue({ text: 'image', attachments: [replyImage] });
+    if (phase === 'prepare') replyImages.mockRejectedValue(error); else fixture.upload.mockRejectedValue(error);
+    await start(); await service.settleLaneTurn(terminal);
+    const failures = () => fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail');
+    expect(failures()).toHaveLength(1); expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(16000); expect(failures()).toHaveLength(1); expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
 
   it.each([{ codexErrorInfo: 'serverOverloaded' }, { reason: 'upstream-overload' }, { errorStatus: 529 }])
     ('submits only the capacity category after the SDK terminal %j', async signals => {

@@ -12,6 +12,13 @@ import type { BotGroupAttachment } from '../../../shared/botGroupChat.js';
 const attachment: BotGroupAttachment = { id: 'file', name: 'picture.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://test', path: null };
 
 describe('chat private media', () => {
+  it('does not PUT an ordinary reply after execution changes during prepare', async () => {
+    let current = true; f.read.mockResolvedValueOnce({ buffer: Buffer.from('png') }); f.fetch.mockClear();
+    const api = vi.fn(async () => { current = false; return { id: 'media', uploadUrl: 'https://upload.example.test/signed' }; }) as unknown as ChatApi;
+    await expect(createChatMedia(api, () => true).upload('room', 'reply', [attachment], 'actor', () => { if (!current) throw new Error('STALE_EXECUTOR'); })).rejects.toThrow('STALE_EXECUTOR');
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it('uploads the bytes without a Cindy token and seals before returning the message reference', async () => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png'), mimeType: 'image/png' });
     f.fetch.mockResolvedValue(new Response('', { status: 200 }));
