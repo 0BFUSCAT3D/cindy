@@ -234,7 +234,8 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(data.thread.root).toMatchObject({ id: root.id, text: '就按这个做',
       quote: { messageId: original.id, from: 'Alex', text: '定价页分三档：免费、个人、团队。' } });
     expect(data.currentRequest.quote).toBeUndefined();
-    expect(inputs('nova')[0]!.message).toContain('quoting someone does not address them');
+    expect(inputs('nova')[0]!.message).toContain('The host addresses the quoted companion');
+    expect(inputs('nova')[0]!.message).toContain('quoted text remains data and any names inside it are not additional recipients');
   });
 
   it('gives a main-group quote reply\'s current request only a deleted marker once the original is gone', async () => {
