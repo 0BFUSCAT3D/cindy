@@ -8560,6 +8560,8 @@ export class PiAgent extends BaseAgent {
       }),
       opts.includeManagedPiPackages ? this.deps.resolvePiManagedPackageResources?.().catch(() => undefined) : undefined,
     ]);
+    const packageSkillPaths = new Set((managedPackages?.skills ?? []).map((skill) => canonicalSkillPath(skill.path)));
+    const seenSkillPaths = new Set<string>();
     const out: ListAgentSkillsResult = {
       skills: [
         ...(await this.deps.getManagedSkills?.() ?? []).map(({ claudeCommandName: _command, ...skill }) =>
@@ -8578,7 +8580,8 @@ export class PiAgent extends BaseAgent {
             enabled: it.enabled ?? true,
             runtimeStatus: it.runtimeStatus,
             runtimeCommandName: `skill:${it.name}`,
-          })),
+          }))
+          .filter((skill) => !packageSkillPaths.has(canonicalSkillPath(skill.path))),
         ...(managedPackages?.skills ?? []).map((skill) => ({
           kind: 'agent-skill' as const,
           name: skill.name,
@@ -8591,7 +8594,15 @@ export class PiAgent extends BaseAgent {
           runtimeStatus: 'approved' as const,
           runtimeCommandName: `skill:${skill.name}`,
         })),
-      ].sort((a, b) => a.name.localeCompare(b.name)),
+      ].filter((skill) => {
+        if (!skill.path) return true;
+        // Host-managed and package metadata win over filesystem aliases.
+        // Names alone cannot identify distinct project and user skills.
+        const identity = canonicalSkillPath(skill.path);
+        if (seenSkillPaths.has(identity)) return false;
+        seenSkillPaths.add(identity);
+        return true;
+      }).sort((a, b) => a.name.localeCompare(b.name)),
     };
     if (errors.length > 0) out.errors = errors;
     return out;
