@@ -10,6 +10,47 @@
  */
 
 export const AGENT_PREWARM_MAX_WARM = 2;
+/** Ordinary user-owned tasks only; other sources keep their own start-up routing and checks. */
+export const AGENT_PREWARM_SESSION_SOURCES: ReadonlySet<string> = new Set([
+  'user',
+  'desktop',
+  'plugin',
+  'side-chat',
+]);
+
+export interface AgentPrewarmSessionRow {
+  status: string | null;
+  source: string | null;
+  workingDir: string | null;
+  remoteHostId: string | null;
+  agentDeviceId: string | null;
+  orcaRole: string | null;
+  sdkSessionId: string | null;
+}
+
+/**
+ * Whether a task's runtime may be started before the user sends.
+ *
+ * Starting a runtime loads the project's own settings (hooks, MCP servers), which is
+ * what a send does too — but a send is the user's explicit act. Typing alone is not
+ * consent to run a directory's code, so only tasks the user has already sent in
+ * (they have a native session id from a real turn) are prewarmed; a task that was
+ * never sent, e.g. one pointing at a freshly cloned or imported directory, waits
+ * for its first real send.
+ */
+export function isAgentPrewarmEligible(row: AgentPrewarmSessionRow | undefined): boolean {
+  return (
+    !!row &&
+    row.status === 'active' &&
+    !!row.workingDir &&
+    !row.remoteHostId &&
+    !row.agentDeviceId &&
+    !row.orcaRole &&
+    AGENT_PREWARM_SESSION_SOURCES.has(row.source ?? 'user') &&
+    !!row.sdkSessionId
+  );
+}
+
 export const AGENT_PREWARM_IDLE_MS = 10 * 60_000;
 
 export type AgentPrewarmOutcome = 'started' | 'warm' | 'skipped';

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createAgentPrewarmer, type AgentPrewarmDeps } from '../agentPrewarm.js';
+import {
+  createAgentPrewarmer,
+  isAgentPrewarmEligible,
+  type AgentPrewarmDeps,
+  type AgentPrewarmSessionRow,
+} from '../agentPrewarm.js';
 
 function harness(maxWarm = 2) {
   const timers = new Map<number, () => void>();
@@ -89,5 +94,37 @@ describe('Agent prewarm lifecycle', () => {
     finish.forEach((resolve) => resolve(true));
     await Promise.all(outcomes);
     expect(prewarmer.warmSessionIds()).toEqual(['a', 'b']);
+  });
+  describe('eligibility', () => {
+    const row = (patch: Partial<AgentPrewarmSessionRow> = {}): AgentPrewarmSessionRow => ({
+      status: 'active',
+      source: 'desktop',
+      workingDir: '/repo',
+      remoteHostId: null,
+      agentDeviceId: null,
+      orcaRole: null,
+      sdkSessionId: 'native-1',
+      ...patch,
+    });
+
+    it('prewarms only a task the user has already sent in, so typing alone never runs a directory\'s hooks', () => {
+      expect(isAgentPrewarmEligible(row())).toBe(true);
+      expect(isAgentPrewarmEligible(row({ sdkSessionId: null }))).toBe(false);
+    });
+
+    it.each([
+      { status: 'archived' },
+      { source: 'scheduler' },
+      { workingDir: null },
+      { remoteHostId: 'ssh-1' },
+      { agentDeviceId: 'other-computer' },
+      { orcaRole: 'worker' },
+    ])('skips %o', (patch) => {
+      expect(isAgentPrewarmEligible(row(patch))).toBe(false);
+    });
+
+    it('skips a missing task', () => {
+      expect(isAgentPrewarmEligible(undefined)).toBe(false);
+    });
   });
 });

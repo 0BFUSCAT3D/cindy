@@ -7,7 +7,7 @@
 控制端在已有任务的输入框里开始打字时调用（同一任务 30 秒最多一次），`createOpts` 与下一次发送
 构造的相同；被控端立即回 `{ accepted }`，在同一把会话发送锁里复用发送路径的懒创建启动 Agent，
 执行字段（agentKind、model、resume、provider、权限、Agent 所在电脑）照常按数据库校正。只对来源为
-user / desktop / plugin / side-chat、状态 active、非协同、Agent 在本机且非 SSH 工作区的任务生效；
+user / desktop / plugin / side-chat、状态 active、非协同、Agent 在本机且非 SSH 工作区、且用户已在该任务里真实发送过（有原生会话 ID）的任务生效——启动会加载目录自带的设置与钩子，只打字不构成同意，从未发送过的任务等第一次真实发送；
 已有运行时、待切换引擎、已有排队输入时不做任何事。预热出来、尚未发送使用的运行时最多 2 个，
 10 分钟未发送即关闭；任何真实发送会接管它。旧被控端返回 CHANNEL_NOT_ALLOWED，控制端静默忽略，
 下一次发送照常冷启动；旧控制端不调用，行为不变。

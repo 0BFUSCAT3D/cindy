@@ -920,7 +920,7 @@ import {
   stampTrustedDesktopQueuedOrigin,
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
-import { createAgentPrewarmer } from './agentPrewarm.js';
+import { createAgentPrewarmer, isAgentPrewarmEligible } from './agentPrewarm.js';
 import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
@@ -1452,8 +1452,6 @@ import { installSessionTurnObserver } from './sessionTurnObserver.js';
 
 const log = createLogger('maker-ipc');
 const workdirLog = createLogger('workdir-diagnostics');
-/** Agent 预热只覆盖用户自己的普通任务；其它来源的启动有各自的路由与检查。 */
-const AGENT_PREWARM_SESSION_SOURCES: ReadonlySet<string> = new Set(['user', 'desktop', 'plugin', 'side-chat']);
 const workingDirectoryRecovery = createWorkingDirectoryRecovery({ stat: statWorkingDirectory, mkdir: mkdirWorkingDirectory, realpath: realpathWorkingDirectory, requiredRoot: requiredDialogueRecoveryRoot, findFallback: findDialogueRecoveryWorkspace }, allocateDialogueRecoveryWorkspace, workdirLog);
 
 function localModelWindowSwitchErrorCode(code: IpcErrorCode): IpcErrorCode {
@@ -17082,16 +17080,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           remoteHostId: sessions.remoteHostId,
           agentDeviceId: sessions.agentDeviceId,
           orcaRole: sessions.orcaRole,
+          sdkSessionId: sessions.sdkSessionId,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
         .limit(1);
-      if (
-        !row || row.status !== 'active' || !row.workingDir || row.remoteHostId ||
-        row.agentDeviceId || row.orcaRole || !AGENT_PREWARM_SESSION_SOURCES.has(row.source ?? 'user')
-      ) {
-        return false;
-      }
+      if (!isAgentPrewarmEligible(row)) return false;
       const co = buildCreateOptsWithStderr({ ...(createOpts as CreateOpts), id: sessionId });
       await reconcileCreateOptsAgainstDb(sessionId, co);
       if (co.remoteHostId || co.agentDeviceId) return false;
