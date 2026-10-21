@@ -3,6 +3,7 @@
  * 除外,它会换绑新任务继续跑),归档入口据此升级到确认弹窗,让用户先知道。本机读
  * schedulesStore,远程任务读 remoteProjectsStore 的绑定分片;读取失败按「无绑定」处理。
  */
+import type { Schedule } from '@cindy/maker-scheduler';
 import type { TFunction } from 'i18next';
 
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -22,14 +23,18 @@ export interface ArchiveTarget {
 /** 冷启动且缓存未就绪时,最多等这么久;超时按「无绑定」处理,不让普通任务的归档卡在列表请求上。 */
 export const COLD_SCHEDULE_LOAD_WAIT_MS = 1500;
 
-/** 有缓存直接用(侧栏行常驻订阅,通常已就绪);没有缓存才有限等待一次加载。 */
+/**
+ * 本机列表:缓存存在且没有刷新在途时直接用(侧栏行常驻订阅,通常已就绪);缓存缺失,或有刷新在途
+ * (缓存可能刚被创建 / 恢复 / 改绑作废)时,有限等待那次请求,超时退回已有缓存(没有则当无绑定)。
+ */
 async function readLocalSchedules() {
   const cached = schedulesStore.getSnapshot();
-  if (cached) return cached;
-  const timeout = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), COLD_SCHEDULE_LOAD_WAIT_MS),
+  const pending = schedulesStore.pendingRefresh() ?? (cached ? null : schedulesStore.ensure());
+  if (!pending) return cached;
+  const timeout = new Promise<Schedule[] | null>((resolve) =>
+    setTimeout(() => resolve(cached), COLD_SCHEDULE_LOAD_WAIT_MS),
   );
-  return Promise.race([schedulesStore.ensure().catch(() => null), timeout]);
+  return Promise.race([pending.catch(() => cached), timeout]);
 }
 
 /**
@@ -53,11 +58,9 @@ async function readRemoteBindingsOnce(
 export async function loadActiveBoundScheduleNames(
   targets: readonly ArchiveTarget[],
 ): Promise<Map<string, string[]>> {
+  // 本机与各台冷远程设备的读取同时发起,共用一个等待窗口(混合设备批量归档不会叠加到 2 倍)。
   const needsLocal = targets.some((target) => !target.deviceLinkDeviceId);
-  const localSchedules = needsLocal ? await readLocalSchedules() : null;
-  const localMap: ReadonlyMap<string, readonly ScheduleBinding[]> = localSchedules
-    ? buildBindingMap(localSchedules)
-    : new Map();
+  const localRead = needsLocal ? readLocalSchedules() : null;
   // 快照未就绪的远程设备,每台只直接取一次。
   const coldRemote = new Map<string, Promise<ReadonlyMap<string, ScheduleBinding[]> | null>>();
   for (const target of targets) {
@@ -73,6 +76,10 @@ export async function loadActiveBoundScheduleNames(
       );
     }
   }
+  const localSchedules = localRead ? await localRead : null;
+  const localMap: ReadonlyMap<string, readonly ScheduleBinding[]> = localSchedules
+    ? buildBindingMap(localSchedules)
+    : new Map();
   const result = new Map<string, string[]>();
   for (const target of targets) {
     const deviceId = target.deviceLinkDeviceId;

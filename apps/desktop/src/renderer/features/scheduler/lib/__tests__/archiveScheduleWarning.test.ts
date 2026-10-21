@@ -11,13 +11,18 @@ import type { TFunction } from 'i18next';
 const mocks = vi.hoisted(() => ({
   ensure: vi.fn(),
   getSnapshot: vi.fn(),
+  pendingRefresh: vi.fn(),
   getSessionScheduleBindings: vi.fn(),
   hasScheduleBindings: vi.fn(),
   invoke: vi.fn(),
 }));
 
 vi.mock('../schedulesStore', () => ({
-  schedulesStore: { ensure: mocks.ensure, getSnapshot: mocks.getSnapshot },
+  schedulesStore: {
+    ensure: mocks.ensure,
+    getSnapshot: mocks.getSnapshot,
+    pendingRefresh: mocks.pendingRefresh,
+  },
 }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   remoteProjectsStore: {
@@ -42,6 +47,7 @@ describe('loadActiveBoundScheduleNames', () => {
     __resetBindingMemoForTest();
     mocks.ensure.mockReset();
     mocks.getSnapshot.mockReset();
+    mocks.pendingRefresh.mockReset().mockReturnValue(null);
     mocks.getSessionScheduleBindings.mockReset().mockReturnValue([]);
     mocks.hasScheduleBindings.mockReset().mockReturnValue(true);
     mocks.invoke.mockReset();
@@ -141,6 +147,55 @@ describe('loadActiveBoundScheduleNames', () => {
 
     expect(result.get('task')).toEqual(['Cached']);
     expect(mocks.ensure).not.toHaveBeenCalled();
+  });
+
+  it('刷新在途时缓存可能过期,等那次请求而不是直接用旧缓存', async () => {
+    mocks.getSnapshot.mockReturnValue([]);
+    mocks.pendingRefresh.mockReturnValue(
+      Promise.resolve([{ id: 'n', name: 'Fresh', status: 'active', targetSessionId: 'task' }]),
+    );
+
+    const result = await loadActiveBoundScheduleNames([{ id: 'task' }]);
+
+    expect(result.get('task')).toEqual(['Fresh']);
+  });
+
+  it('刷新迟迟不返回时超时退回已有缓存', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getSnapshot.mockReturnValue([
+        { id: 'a', name: 'Cached', status: 'active', targetSessionId: 'task' },
+      ]);
+      mocks.pendingRefresh.mockReturnValue(new Promise(() => {}));
+
+      const pending = loadActiveBoundScheduleNames([{ id: 'task' }]);
+      await vi.advanceTimersByTimeAsync(COLD_SCHEDULE_LOAD_WAIT_MS);
+
+      expect((await pending).get('task')).toEqual(['Cached']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('本机与冷远程设备同时读取,共用一个等待窗口', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getSnapshot.mockReturnValue(null);
+      mocks.ensure.mockReturnValue(new Promise(() => {}));
+      mocks.hasScheduleBindings.mockReturnValue(false);
+      mocks.invoke.mockReturnValue(new Promise(() => {}));
+
+      const pending = loadActiveBoundScheduleNames([
+        { id: 'local-task' },
+        { id: 'remote-task', deviceLinkDeviceId: 'mac-2' },
+      ]);
+      await vi.advanceTimersByTimeAsync(COLD_SCHEDULE_LOAD_WAIT_MS);
+
+      expect((await pending).size).toBe(0);
+      expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('冷启动时最多等待一小段时间,超时按无绑定处理', async () => {
