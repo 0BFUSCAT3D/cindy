@@ -41,7 +41,7 @@ const DEFAULT_BACKOFF_MAX_MS = 30 * 60_000;
 
 export interface ClaudeSubscriptionUsageReader {
   /** cached-first 读(IPC handler 用):立即返回缓存快照,后台按节流刷新。 */
-  read(): Promise<ClaudeSubscriptionUsageSnapshot | null>;
+  read(options?: { fresh?: boolean }): Promise<ClaudeSubscriptionUsageSnapshot | null>;
   /** 显式触发一次后台刷新(turn-done 钩子用),同样吃节流 / 退避。 */
   triggerRefresh(): void;
   /**
@@ -148,7 +148,7 @@ export function createClaudeSubscriptionUsageReader(
   }
 
   return {
-    async read(): Promise<ClaudeSubscriptionUsageSnapshot | null> {
+    async read(options): Promise<ClaudeSubscriptionUsageSnapshot | null> {
       const account = readAccountSafe();
       if (account === null) return null;
       const cached = await deps.readCachedSnapshot();
@@ -159,6 +159,10 @@ export function createClaudeSubscriptionUsageReader(
         await clearSnapshotSafe();
         void refreshFor(account);
         return null;
+      }
+      if (options?.fresh) {
+        await refreshFor(account);
+        return readAccountSafe() === account ? deps.readCachedSnapshot() : null;
       }
       void refreshFor(account);
       return cached;

@@ -496,7 +496,7 @@ export function setRemoteTurnChangeAction(handler: RemoteTurnChangeAction): void
  * 模块图保持纯净(usage 面会拖进 runtime-configs 等 app 依赖,纯 dispatch 单测只
  * mock 极小 Electron 面)。
  */
-type RemoteSubscriptionUsageReader = (providerId?: string) => Promise<unknown | null>;
+type RemoteSubscriptionUsageReader = (providerId?: string, options?: { fresh?: boolean }) => Promise<unknown | null>;
 let remoteXaiSubscriptionUsageReader: RemoteSubscriptionUsageReader | null = null;
 let remoteClaudeSubscriptionUsageReader: RemoteSubscriptionUsageReader | null = null;
 export function setRemoteClaudeSubscriptionUsageReader(reader: RemoteSubscriptionUsageReader | null): void {
@@ -4661,7 +4661,9 @@ async function executeRemoteInvoke(src: string, payload: InvokePayload | undefin
       return { ok: false, error: { code: 'IPC_ERROR', message: 'subscription usage reader not ready' } };
     }
     try {
-      const snapshot = await reader(providerId as string | undefined);
+      const snapshot = (payload.args ?? [])[1] === true
+        ? await reader(providerId as string | undefined, { fresh: true })
+        : await reader(providerId as string | undefined);
       const result = snapshot && providerId ? { ...snapshot as object, providerId } : snapshot;
       return { ok: true, result };
     } catch (err) {

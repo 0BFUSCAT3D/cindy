@@ -44,6 +44,19 @@ function setup(options: { account?: string | null; cached?: ClaudeSubscriptionUs
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('createClaudeSubscriptionUsageReader', () => {
+  it('awaits a fresh exact reset snapshot for recovery while sharing the existing refresh', async () => {
+    const { deps, reader, state } = setup();
+    let finish!: (value: ClaudeSubscriptionUsageSnapshot) => void;
+    deps.fetchSnapshot.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const waiting = reader.read({ fresh: true });
+    await flush();
+    expect(state.cached).toBeNull();
+    finish({ ...SNAPSHOT, sevenDay: { utilization: 100, resetsAt: 9_000_000 } });
+    expect(await waiting).toMatchObject({ sevenDay: { utilization: 100, resetsAt: 9_000_000 } });
+    await reader.read({ fresh: true });
+    expect(deps.fetchSnapshot).toHaveBeenCalledOnce();
+  });
+
   it('cached-first:读立即返回缓存,后台拉取并附上账号指纹', async () => {
     const { deps, reader, state } = setup({ cached: { ...SNAPSHOT, source: 'unified-headers' } });
     await expect(reader.read()).resolves.toMatchObject({ source: 'unified-headers' });

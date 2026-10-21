@@ -14241,13 +14241,154 @@ describe('AgentInputCoordinator 中断自动续跑', () => {
 });
 
 describe('usage-limit wait (ordinary tasks)', () => {
+  it('restores a scheduled quota failure after restart without replaying the dead run context', async () => {
+    const original = createHarness(); const sid = 'restarted-quota';
+    original.coordinator.enqueue(sid, makeItem('input', 'work', {
+      origin: { kind: 'scheduler', scheduleId: 'sch', scheduleName: 'Check', runId: 'old-run' },
+    }));
+    await flush(); original.setRunning(false);
+    original.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    const token = original.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    const snapshot = original.coordinator.snapshotUsageLimitRecovery(sid, token)!;
+    const restarted = createHarness();
+    restarted.setHasAssistantProgressAfter(async () => true);
+    const restored = restarted.coordinator.restoreUsageLimitRecovery(sid, snapshot, restarted.coordinator.getGeneration(sid))!;
+    expect(restarted.coordinator.getProjection(sid).error).toBe('weekly limit');
+    expect(restarted.coordinator.armUsageLimitWait(sid, restored, 9_000_000)).toBe(true);
+    await restarted.coordinator.continueAfterUsageLimitReset(sid, restored, INFO); await flush();
+    expect(restarted.sendToAgent).toHaveBeenCalledOnce();
+    expect(restarted.sendToAgent.mock.calls[0][1]).toMatchObject({ content: CONTINUE_AFTER_ERROR_PROMPT });
+    expect(restarted.sendToAgent.mock.calls[0][3].origin).toBeUndefined();
+    expect(await restarted.coordinator.continueAfterUsageLimitReset(sid, restored, INFO)).toBe('superseded');
+  });
+
+  it('does not restore across clear, and unloads runtime waiting for a later owner activation', async () => {
+    const h = createHarness(); const sid = 'unloaded-quota';
+    const snapshot = { kind: 'active-turn' as const, item: makeItem('input', 'work'), error: 'weekly limit' };
+    const generation = h.coordinator.getGeneration(sid);
+    h.coordinator.clearSession(sid);
+    expect(h.coordinator.restoreUsageLimitRecovery(sid, snapshot, generation)).toBeNull();
+    const token = h.coordinator.restoreUsageLimitRecovery(sid, snapshot, h.coordinator.getGeneration(sid))!;
+    h.coordinator.unloadUsageLimitRecovery(sid, token);
+    expect(h.coordinator.getProjection(sid).recovery).toBeNull();
+    expect(h.coordinator.restoreUsageLimitRecovery(sid, snapshot, h.coordinator.getGeneration(sid))).not.toBeNull();
+  });
+
   const LIMIT_SIGNALS = { sdkError: 'rate_limit', usageResetAt: 5_000_000 };
+  // Regression: scheduled quota failures used to discard recovery before the
+  // reset-time resolver could run. A real run keeps Retry and the same origin.
+  it.each([true, false])('keeps scheduled quota recovery and resumes once; progress=%s', async (progress) => {
+    const h = createHarness();
+    const sid = 'scheduled-quota';
+    const origin = { kind: 'scheduler', scheduleId: 'sch-1', scheduleName: 'Check', runId: 'run-1' } as const;
+    h.setHasAssistantProgressAfter(async () => progress);
+    h.coordinator.enqueue(sid, makeItem('quota-original', 'original work', { origin }));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    const token = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    expect(h.coordinator.getProjection(sid).recovery?.kind).toBe('active-turn');
+    expect(h.coordinator.armUsageLimitWait(sid, token, 9_000_000)).toBe(true);
+    h.coordinator.onTurnEvent(sid, 'done');
+    expect(h.coordinator.getProjection(sid).usageLimitWait).toEqual({ resumeAt: 9_000_000 });
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('resumed');
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('superseded');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1][1]).toMatchObject({ content: progress ? CONTINUE_AFTER_ERROR_PROMPT : 'original work' });
+    expect(h.sendToAgent.mock.calls[1][3].origin).toEqual(origin);
+  });
   const INFO = {
     reason: USAGE_LIMIT_RESET_AUTO_RESUME_REASON,
     attempt: 1,
     maxAttempts: 3,
     sessionTotal: 0,
   };
+
+  it('keeps scheduled quota recovery when the terminal arrives before persistence completes', async () => {
+    const h = createHarness();
+    const sid = 'scheduled-quota-persisting';
+    const origin = { kind: 'scheduler', scheduleId: 'sch', scheduleName: 'Check', runId: 'run' } as const;
+    const persisted = deferred<Record<string, never>>();
+    mocks.createMessage.mockImplementationOnce(() => persisted.promise);
+    h.sendToAgent.mockImplementationOnce(async (sessionId, _message, _createOpts, sendOpts) => {
+      await persistQueuedUserMessage(sessionId, sendOpts);
+      return sendSuccess();
+    });
+    h.coordinator.enqueue(sid, makeItem('original', 'work', { origin }));
+    await flush();
+    h.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    persisted.resolve({});
+    await flush();
+    expect(h.coordinator.getProjection(sid).recovery?.kind).toBe('active-turn');
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledOnce();
+  });
+
+  it.each(['manual', 'cancel'] as const)('hands scheduled quota recovery to the user on %s', async (action) => {
+    const h = createHarness();
+    const sid = 'scheduled-quota-takeover';
+    h.setHasAssistantProgressAfter(async () => false);
+    h.coordinator.enqueue(sid, makeItem('original', 'work', {
+      origin: { kind: 'scheduler', scheduleId: 'sch', scheduleName: 'Check', runId: 'run' },
+    }));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    const token = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    h.coordinator.armUsageLimitWait(sid, token, 9_000_000);
+    if (action === 'cancel') {
+      h.coordinator.releaseScheduledUsageLimitRecovery(sid, 'run');
+      expect(h.coordinator.getProjection(sid).error).toBe('weekly limit');
+      expect(h.coordinator.getProjection(sid).recovery?.kind).toBe('active-turn');
+      expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('superseded');
+    }
+    await h.coordinator.retryLastError(sid);
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1][3].origin).toBeUndefined();
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO)).toBe('superseded');
+  });
+
+  it('preserves a quota wait across provider cleanup but cancels it on explicit task close', async () => {
+    const sid = 'quota-runtime-close';
+    const { h, candidate } = await failWithLimit(sid, false);
+    expect(h.coordinator.hasUsageLimitRecovery(sid, candidate)).toBe(true);
+    h.coordinator.onSessionClosed(sid, { preserveAutoResumeIntent: true });
+    expect(h.coordinator.armUsageLimitWait(sid, candidate, 9_000_000)).toBe(true);
+    h.coordinator.onSessionClosed(sid);
+    expect(h.coordinator.hasUsageLimitRecovery(sid)).toBe(false);
+    expect(await h.coordinator.continueAfterUsageLimitReset(sid, candidate, INFO)).toBe('superseded');
+    expect(h.coordinator.getProjection(sid).recovery?.kind).toBe('active-turn');
+  });
+
+  it('cancels a scheduled quota continuation during preparation and retains manual retry', async () => {
+    const h = createHarness();
+    const sid = 'quota-cancel-preparing';
+    h.setHasAssistantProgressAfter(async () => false);
+    h.coordinator.enqueue(sid, makeItem('original', 'work', {
+      origin: { kind: 'scheduler', scheduleId: 'sch', scheduleName: 'Check', runId: 'run' },
+    }));
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', 'weekly limit', LIMIT_SIGNALS);
+    const token = h.onUsageLimitedTurnError.mock.calls.at(-1)?.[3] as number;
+    h.coordinator.armUsageLimitWait(sid, token, 9_000_000);
+    const preparation = deferred<{ action: 'allow' }>();
+    h.setScreenUserMessage(() => preparation.promise);
+    await h.coordinator.continueAfterUsageLimitReset(sid, token, INFO);
+    await flush();
+    const clientId = h.onUiRetry.mock.calls.at(-1)?.[1] as string;
+    h.coordinator.releaseScheduledUsageLimitRecovery(sid, 'other-run', clientId);
+    h.coordinator.releaseScheduledUsageLimitRecovery(sid, 'run', clientId);
+    preparation.resolve({ action: 'allow' });
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledOnce();
+    expect(h.coordinator.getProjection(sid).error).toBe('weekly limit');
+    expect(h.coordinator.getProjection(sid).recovery?.kind).toBe('active-turn');
+    await h.coordinator.retryLastError(sid);
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+  });
 
   // Unit regression (#6611): direct send rejections missed the transaction's bootstrap
   // wrappers. Drive the real transaction + coordinator for lazy creation and rehydrate;
