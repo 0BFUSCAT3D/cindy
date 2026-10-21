@@ -72,8 +72,10 @@ import {
   setProviderGroupClaudeUsageReader,
   setProviderGroupCodexUsageReader,
   setProviderGroupSessionGroupReader,
+  setProviderGroupSessionRebalance,
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
+import { readProviderGroupAutoRebalance, writeProviderGroupAutoRebalance } from '../provider-group/sessionPrefs.js';
 import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
 import { remoteAgentHostRunningProviders, resolveRemoteAgentHostClaudeSessionId } from '../remote-agent/host/service.js';
 import {
@@ -10532,6 +10534,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           ...(switchOptions?.relocate ? { forceRelocation: true } : {}),
           // 发送前换电脑：随后的 lazy-create 按任务记录在新电脑上启动，不重复 bootstrap。
           ...(switchOptions?.beforeSend ? { skipBootstrap: true } : {}),
+          // 用户确认为了先用那台的配额换号：分隔条写明原因。
+          ...(switchOptions?.reason ? { providerGroupSwitchReason: switchOptions.reason } : {}),
           // 用户在等锁、读交接素材期间接手：在改动之前停下。
           ...(isCurrent ? { assertSelectionCurrent: assertCurrent } : {}),
         });
@@ -10569,6 +10573,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     fallback: (sessionId, signals, token) => usageLimitAutoResume.onTurnError(sessionId, signals, token),
     // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
     readResetAt: (signals) => readTurnUsageResetAt(signals, Date.now(), { localTimeZoneTrusted: false }),
+    // 任务里选过「以后自动换」的换号(provider-groups.md §6.2「任务进行中换号」)。
+    readAutoRebalance: readProviderGroupAutoRebalance,
+    writeAutoRebalance: (sessionId) => writeProviderGroupAutoRebalance(sessionId),
     now: () => Date.now(),
     log,
   });
@@ -10576,6 +10583,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 模型列表把归组的任务显示在组那一项下(provider-groups.md §10)。
   const sessionGroupService = providerGroupService;
   setProviderGroupSessionGroupReader((sessionId) => sessionGroupService.sessionGroup(sessionId));
+  // 电脑与手机发送前问要不要换号、记下用户的决定(provider-groups.md §6.2「任务进行中换号」)。
+  setProviderGroupSessionRebalance({
+    suggest: (sessionId) => sessionGroupService.rebalanceSuggestion(sessionId),
+    decide: (sessionId, memberKey, remember, clientId) => sessionGroupService.rebalanceDecision(sessionId, memberKey, remember, clientId),
+  });
   // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
   setProviderGroupLocalLoad(() => countProviderRunningTurns({
     listTurnRunningSessions: () => maker.listActiveSessions().filter((s) => s.isTurnRunning()).map((s) => s.id),
@@ -17218,6 +17230,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 等的时候进行中行显示「重新连接中 n/5」。
       await providerGroupService?.beforeSend(sessionId, {
         ...(options?.signal ? { signal: options.signal } : {}),
+        ...(options?.scheduled ? { scheduled: true } : {}),
+        ...(options?.clientId ? { clientId: options.clientId } : {}),
         progress: (state) => agentInputCoordinatorHolder?.setProviderGroupSendReconnect(sessionId, state),
       }).catch((error) => {
         log.warn('provider group: pre-send check failed', {

@@ -734,5 +734,14 @@
     "start": "Start Following Up",
     "notNow": "Not Now",
     "saveFailed": "Couldn't save. Try again."
+  },
+  "providerGroupRebalance": {
+    "title": "Continue on {{label}}?",
+    "body": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+    "quota": "{{left}}% left",
+    "quotaReset": "{{left}}% left · resets in {{reset}}",
+    "confirm": "Switch",
+    "remember": "Switch, and do it automatically from now on (this task only)",
+    "cancel": "Cancel"
   }
 }

@@ -302,6 +302,7 @@
     "agentSwitchLocation": "Agent 改到 {{device}} 執行",
     "agentSwitchLocationThisComputer": "Agent 改回這台電腦執行",
     "agentSwitchLocationOtherComputer": "Agent 改到另一台電腦執行",
+    "agentSwitchLocationQuotaRebalance": "這個帳號的配額更該先用",
     "learnStarted": "技能學習已啟動",
     "learnStartedBody": "蒸餾在電腦端後臺進行，完成後請到電腦端檢視並評審技能草案。",
     "learnFailed": "技能學習未能啟動",
