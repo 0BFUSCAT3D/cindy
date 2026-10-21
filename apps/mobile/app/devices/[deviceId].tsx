@@ -278,6 +278,8 @@ function DeviceDetailScreenContent() {
   const [bulkConfirmAction, setBulkConfirmAction] = useState<MobileSessionBulkAction | null>(null);
   // 批量归档确认里「绑定了自动化的任务数」;按请求序号丢弃过期结果。
   const [bulkScheduleCount, setBulkScheduleCount] = useState(0);
+  // 查询返回(成功或失败)前不允许确认归档,否则提醒还没出现任务就已归档。
+  const [bulkScheduleLoading, setBulkScheduleLoading] = useState(false);
   const bulkScheduleRequestRef = useRef(0);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const [scheduleIndex, setScheduleIndex] = useState<Map<string, RemoteSessionScheduleInfo>>(
@@ -668,10 +670,13 @@ function DeviceDetailScreenContent() {
     }
     const scheduleRequest = ++bulkScheduleRequestRef.current;
     setBulkScheduleCount(0);
+    setBulkScheduleLoading(action === 'archive');
     if (action === 'archive') {
       void countSessionsWithActiveBoundSchedules(maker, summary.candidates.map((session) => session.id))
         .then((count) => {
-          if (bulkScheduleRequestRef.current === scheduleRequest) setBulkScheduleCount(count);
+          if (bulkScheduleRequestRef.current !== scheduleRequest) return;
+          setBulkScheduleCount(count);
+          setBulkScheduleLoading(false);
         });
     }
     setBulkConfirmAction(action);
@@ -1185,7 +1190,8 @@ function DeviceDetailScreenContent() {
                   primaryActions={[
                     {
                       accessibilityLabel: bulkActionAccessibilityLabel(bulkConfirmSummary.action, t),
-                      disabled: bulkActionPending !== null || bulkConfirmSummary.candidates.length === 0,
+                      disabled: bulkActionPending !== null || bulkConfirmSummary.candidates.length === 0
+                        || (bulkConfirmSummary.action === 'archive' && bulkScheduleLoading),
                       label: bulkActionPending === bulkConfirmSummary.action
                         ? bulkActionPendingLabel(bulkConfirmSummary.action, t)
                         : bulkConfirmSummary.confirmText,
