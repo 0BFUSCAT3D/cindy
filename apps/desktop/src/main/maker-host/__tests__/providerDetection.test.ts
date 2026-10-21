@@ -30,6 +30,22 @@ describe('bounded deployment detection', () => {
     expect(fetcher.mock.calls.length).toBeLessThanOrEqual(9);
     expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/health'))).toBe(false);
   });
+  it.each(['lmstudio', 'llamacpp'])('does not let an early %s match hide a later Sub2API conflict', async early => {
+    const bodies: Record<string, unknown> = {
+      '/v1/models': { data: [{ id: 'one' }] },
+      '/api/v1/settings/public': { code: 0, data: { version: '0.2.17', hide_ccs_import_button: false, backend_mode_enabled: true, subscription_enabled: false } },
+      '/v1/sub2api/billing': { object: 'sub2api.key_billing', schema_version: 1 },
+      ...(early === 'lmstudio' ? { '/lmstudio-greeting': { lmstudio: true }, '/api/v1/models': { models: [] } }
+        : { '/props': { default_generation_settings: {}, total_slots: 1, build_info: 'b11723' } }),
+    };
+    const result = await detectProviderDeployment(spec, new AbortController().signal, async url => {
+      const body = bodies[new URL(String(url)).pathname.replace(/^\/team/, '')];
+      return body ? json(body) : json({ error: 'not found' }, 404);
+    });
+    expect(result.reason).toBe('conflict');
+    expect(result.candidates).toEqual(expect.arrayContaining([early, 'sub2api']));
+    expect(result.catalog).toMatchObject({ ok: true, models: [{ id: 'one' }] });
+  });
   it.each([401, 403, 404, 429, 200])('keeps usable models when diagnostics fail with %s', async status => {
     const result = await detectProviderDeployment(spec, new AbortController().signal, async url =>
       String(url).endsWith('/v1/models') ? json({ data: [{ id: 'company-chat' }] }) : json({ error: 'unavailable' }, status));

@@ -59,7 +59,6 @@ export async function detectProviderDeployment(
   const worker = async () => {
     while (index < PROBES.length && !identitySignal.aborted) {
       const probe = PROBES[index++];
-      if (candidates.length && !candidates.includes(probe.system)) continue;
       if (probe.auth === 'required' && !spec.apiKey?.trim()) continue;
       const headers: Record<string, string> = {};
       if (probe.auth) {
