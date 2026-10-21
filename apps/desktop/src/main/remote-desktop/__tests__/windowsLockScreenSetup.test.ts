@@ -98,7 +98,11 @@ describe('windows lock-screen setup diagnostics', () => {
 
   it('does not compile source helpers during a status-only read', async () => {
     electronApp.isPackaged = false;
-    electronApp.getAppPath.mockReturnValue(path.join(process.cwd(), 'apps', 'desktop'));
+    electronApp.getAppPath.mockReturnValue(
+      path.basename(process.cwd()).toLowerCase() === 'desktop'
+        ? process.cwd()
+        : path.join(process.cwd(), 'apps', 'desktop'),
+    );
     electronApp.getPath.mockReturnValue(
       path.join(os.tmpdir(), `cindy-lock-screen-status-${process.pid}`),
     );

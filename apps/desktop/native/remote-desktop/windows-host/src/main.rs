@@ -144,8 +144,13 @@ fn run() -> Staged<()> {
             } else {
                 bundled()?
             };
-            let (_main, _) = security::authorize_client(pid, &installation.install, development)
+            let (main, _) = security::authorize_client(pid, &installation.install, development)
                 .stage(Step::ClientIdentity)?;
+            let trusted_main = if development {
+                None
+            } else {
+                Some(image(main.0).stage(Step::ClientIdentity)?)
+            };
             service::elevate(
                 &installation,
                 &[
@@ -157,11 +162,12 @@ fn run() -> Staged<()> {
                         String::new()
                     },
                 ][..if development { 3 } else { 2 }],
+                trusted_main.as_deref(),
             )
         }
         Some("--elevate-uninstall") => {
             let installation = bundled()?;
-            service::elevate(&installation, &["--uninstall-from".to_owned()])
+            service::elevate(&installation, &["--uninstall-from".to_owned()], None)
         }
         Some("--status") => {
             let status = match bundled() {

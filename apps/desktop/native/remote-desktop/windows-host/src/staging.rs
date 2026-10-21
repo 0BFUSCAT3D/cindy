@@ -15,13 +15,12 @@
 //! * It removes the standing risk. After setup, no ordinary process can reach
 //!   the executable the service starts, so there is no unprompted path to
 //!   SYSTEM.
-//! * It does not make the one-time elevation itself trustworthy. The copy is
-//!   made by this executable, which was launched from the installation
-//!   directory and elevated by the user's confirmation. Anything that could
-//!   already replace files there could have replaced this one too, and
-//!   verifying our own signature from inside the same executable would prove
-//!   nothing. That exposure is the same one the Cindy updater already accepts
-//!   when it elevates to write into a protected directory.
+//! * Packaged setup additionally checks that the host and input helpers carry
+//!   the same valid Authenticode signer as the running Cindy executable before
+//!   the elevated copy is made. Source-mode setup deliberately uses a separate
+//!   development trust boundary: an unsigned Electron runtime and its locally
+//!   built helpers are accepted only when the explicit development flag is
+//!   present.
 use crate::naming::*;
 use crate::security;
 use crate::win::*;

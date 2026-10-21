@@ -1049,8 +1049,13 @@ user-writable, so the Cindy.exe check against it is a consistency check; what
 actually gates the service is the approved process handle and the active console
 session.
 
-The broker validates file/directory ownership, writable ACLs, reparse points,
-SCM identity, peer PIDs and active console session over the staged directory and
+Packaged setup checks that the host and input helpers have a valid Authenticode
+signature from the same signer as the running Cindy executable. Source-mode
+development setup uses an explicit unsigned development trust boundary; it is
+intended for a developer-controlled checkout and does not claim publisher
+provenance. In both modes the broker validates file/directory ownership, writable
+ACLs, reparse points, SCM identity, peer PIDs and active console session over the
+staged directory and
 its parents up to Program Files, and retains those handles for its lifetime.
 Workers are fixed-purpose children in kill-on-close jobs
 with local-only, bounded, timed pipes. Uninstall/upgrade waits for the service to

@@ -257,6 +257,7 @@ fn powershell_script(
     bootstrap: &std::path::Path,
     source_hash: &str,
     input_hash: &str,
+    trusted_main: Option<&std::path::Path>,
     child_args: &[String],
     remove_staging: bool,
 ) -> String {
@@ -285,6 +286,11 @@ fn powershell_script(
     script.push_str(
         "; $inputPath=Join-Path (Split-Path -Parent $source) 'cindy-windows-desktop-input.exe';",
     );
+    if let Some(main) = trusted_main {
+        script.push_str(" $main=");
+        script.push_str(&powershell_literal(&main.to_string_lossy()));
+        script.push_str("; function Get-Signer([string]$Path) { $sig=Get-AuthenticodeSignature -LiteralPath $Path; if ($sig.Status -ne 'Valid' -or $null -eq $sig.SignerCertificate) { return $null }; return $sig.SignerCertificate.Thumbprint.ToUpperInvariant() }; $mainSigner=Get-Signer $main; if ($null -eq $mainSigner) { exit 1 }; if ((Get-Signer $source) -ne $mainSigner -or (Get-Signer $inputPath) -ne $mainSigner) { exit 1 };");
+    }
     script.push_str("; $bootstrapDir=Split-Path -Parent $bootstrap; $stagingRoot=Split-Path -Parent $bootstrapDir; $programFiles=Split-Path -Parent $stagingRoot;");
     script.push_str(" $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');");
     script.push_str(" $writeMask=[System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership;");
@@ -313,7 +319,11 @@ fn encode_powershell(script: &str) -> String {
 /// user-writable helper is copied as data, then only the copy under Program
 /// Files is started elevated, so an adjacent VCRUNTIME140.dll cannot be
 /// loaded from Cindy's install directory.
-pub fn elevate(installation: &Installation, child_args: &[String]) -> Staged<()> {
+pub fn elevate(
+    installation: &Installation,
+    child_args: &[String],
+    trusted_main: Option<&std::path::Path>,
+) -> Staged<()> {
     let source = std::env::current_exe().stage(Step::ElevateLaunch)?;
     let _source_lock = read_lock(&source).stage(Step::ElevateLaunch)?;
     let _input_lock =
@@ -342,6 +352,7 @@ pub fn elevate(installation: &Installation, child_args: &[String]) -> Staged<()>
         &installation.bootstrap(),
         &source_hash,
         &input_hash,
+        trusted_main,
         &child_args,
         remove_staging,
     );
@@ -998,6 +1009,7 @@ mod tests {
             ),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+            Some(Path::new(r"C:\Program Files\Cindy\Cindy.exe")),
             &args,
             false,
         );
