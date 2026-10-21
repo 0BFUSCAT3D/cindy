@@ -972,7 +972,8 @@ transport, a session-scoped SYSTEM GDI capture worker and the SendInput helper.
 The settings page installs/removes the service through Windows administrator
 consent. Any packaged installation is eligible, including Cindy's default
 per-user one. Source-mode development runs build the same two host helpers in
-the per-user userData cache, then use the same protected staging path; their
+the per-user userData cache for the running Electron architecture, then use the
+same protected staging path; their
 Electron process is accepted only for the exact PID approved by that setup's
 administrator prompt.
 

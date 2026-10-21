@@ -104,6 +104,6 @@ fn main() {
         // One line for the Desktop log, and an exit code the unelevated parent
         // can decode when this process is the hidden elevated child.
         println!("{}", failure.line());
-        std::process::exit(failure.step.exit() as i32);
+        std::process::exit(failure.exit_code() as i32);
     }
 }

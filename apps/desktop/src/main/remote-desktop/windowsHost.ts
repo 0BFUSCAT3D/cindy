@@ -20,6 +20,19 @@ const packagedInput = () =>
   path.join(process.resourcesPath, 'tools', 'remote-desktop', 'cindy-windows-desktop-input.exe');
 type WindowsDesktopArtifacts = { binary: string; addon: string; input: string };
 let build: Promise<WindowsDesktopArtifacts> | null = null;
+class WindowsDesktopArtifactsMissing extends Error {
+  constructor() {
+    super('WINDOWS_DESKTOP_ARTIFACTS_NOT_BUILT');
+    this.name = 'WindowsDesktopArtifactsMissing';
+  }
+}
+
+/** Match Cargo's Windows target to the architecture of the running Electron. */
+export function windowsCargoTarget(arch: NodeJS.Architecture = process.arch): string {
+  if (arch === 'arm64') return 'aarch64-pc-windows-msvc';
+  if (arch === 'x64') return 'x86_64-pc-windows-msvc';
+  throw new Error('Unsupported Windows desktop architecture: ' + arch);
+}
 
 /**
  * The packaged helper is already present in resources. In source mode, build
@@ -28,10 +41,16 @@ let build: Promise<WindowsDesktopArtifacts> | null = null;
  * Main-only addon derive the same installation identity. The cache directory is
  * stable across source edits; its source digest decides when it needs rebuilding.
  */
-async function resolveArtifacts(): Promise<WindowsDesktopArtifacts> {
+async function resolveArtifacts(
+  options: { allowBuild?: boolean } = {},
+): Promise<WindowsDesktopArtifacts> {
+  const allowBuild = options.allowBuild !== false;
   if (app.isPackaged)
     return { binary: packagedBinary(), addon: packagedAddon(), input: packagedInput() };
-  if (build) return build;
+  if (build) {
+    if (!allowBuild) throw new WindowsDesktopArtifactsMissing();
+    return build;
+  }
   const resolve = async (): Promise<WindowsDesktopArtifacts> => {
     const nativeRoot = path.join(app.getAppPath(), 'native', 'remote-desktop');
     const hostRoot = path.join(nativeRoot, 'windows-host');
@@ -109,8 +128,10 @@ async function resolveArtifacts(): Promise<WindowsDesktopArtifacts> {
       // Build below. A partial cache is disposable and never becomes visible
       // until both final files and the stamp have been written.
     }
+    if (!allowBuild) throw new WindowsDesktopArtifactsMissing();
     await fs.mkdir(helperDir, { recursive: true });
     const buildDir = path.join(installRoot, 'build');
+    const cargoTarget = windowsCargoTarget();
     const buildCargo = (
       root: string,
       targetDir: string,
@@ -123,6 +144,8 @@ async function resolveArtifacts(): Promise<WindowsDesktopArtifacts> {
           'build',
           '--release',
           '--locked',
+          '--target',
+          cargoTarget,
           '--manifest-path',
           path.join(root, 'Cargo.toml'),
           '--target-dir',
@@ -143,9 +166,9 @@ async function resolveArtifacts(): Promise<WindowsDesktopArtifacts> {
     );
     await buildCargo(hostRoot, path.join(buildDir, 'host-addon'), '--lib');
     await buildCargo(inputRoot, path.join(buildDir, 'input'));
-    const hostBinaryOutput = path.join(buildDir, 'host-bin', 'release');
-    const hostAddonOutput = path.join(buildDir, 'host-addon', 'release');
-    const inputOutput = path.join(buildDir, 'input', 'release');
+    const hostBinaryOutput = path.join(buildDir, 'host-bin', cargoTarget, 'release');
+    const hostAddonOutput = path.join(buildDir, 'host-addon', cargoTarget, 'release');
+    const inputOutput = path.join(buildDir, 'input', cargoTarget, 'release');
     const temporaryBinary = binary + '.' + process.pid + '.tmp';
     const temporaryAddon = versionedAddon + '.' + process.pid + '.tmp';
     const temporaryInput = input + '.' + process.pid + '.tmp';
@@ -210,13 +233,17 @@ export async function readWindowsDesktopSupport(): Promise<WindowsDesktopSupport
   if (process.platform !== 'win32') return undefined;
   let stdout: string;
   try {
-    const { binary } = await resolveArtifacts();
+    // Status is queried by ordinary remote-desktop capability reads. Do not
+    // make those reads compile three Rust targets; an explicit setup action
+    // below is the point where a missing or stale source cache is built.
+    const { binary } = await resolveArtifacts({ allowBuild: false });
     ({ stdout } = await exec(binary, ['--status'], {
       timeout: REMOTE_DESKTOP_OFFER_BUDGET.platformStatusMs,
       maxBuffer: 1024,
       windowsHide: true,
     }));
   } catch (error) {
+    if (error instanceof WindowsDesktopArtifactsMissing) return 'missing';
     log.warn(
       'status failed',
       readWindowsDesktopDetail((error as { stdout?: unknown })?.stdout) ?? error,

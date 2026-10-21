@@ -167,6 +167,31 @@ pub fn uninstall(name: &str) -> Staged<()> {
             ))
         }
     };
+    // SERVICE_STOPPED is reported by the service entry point immediately
+    // before it returns. Keep a wait handle for the service process so the
+    // staged executable is no longer loaded before its files are replaced.
+    let process_handle = {
+        let mut process_status: SERVICE_STATUS_PROCESS = unsafe { mem::zeroed() };
+        let mut needed = 0;
+        let queried = unsafe {
+            QueryServiceStatusEx(
+                service.0,
+                SC_STATUS_PROCESS_INFO,
+                (&mut process_status as *mut SERVICE_STATUS_PROCESS).cast(),
+                mem::size_of_val(&process_status) as u32,
+                &mut needed,
+            )
+        };
+        if queried != 0
+            && process_status.dwCurrentState != SERVICE_STOPPED
+            && process_status.dwProcessId != 0
+        {
+            let raw = unsafe { OpenProcess(SYNCHRONIZE, 0, process_status.dwProcessId) };
+            Some(Handle::new(raw).stage(Step::ServiceStop)?)
+        } else {
+            None
+        }
+    };
     let mut status: SERVICE_STATUS = unsafe { mem::zeroed() };
     if unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) } == 0 {
         let code = unsafe { GetLastError() };
@@ -186,6 +211,13 @@ pub fn uninstall(name: &str) -> Staged<()> {
             return refuse(Step::ServiceStop);
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+    if let Some(process) = process_handle {
+        match unsafe { WaitForSingleObject(process.0, 5000) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_FAILED => return Err(Failure::new(Step::ServiceStop, last_error())),
+            _ => return Err(Failure::new(Step::ServiceStop, ERROR_TIMEOUT as i32)),
+        }
     }
     if unsafe { DeleteService(service.0) } == 0 {
         return Err(Failure::new(Step::ServiceDelete, last_error()));
@@ -232,10 +264,14 @@ pub fn elevate(command: &str) -> Staged<()> {
     if code != 0 {
         // The elevated child runs hidden, so its own failed step only reaches
         // us through its exit code.
+        let (child, os) = match Failure::from_exit_code(code) {
+            Some((child, os)) => (Some(child), os),
+            None => (None, code as i32),
+        };
         return Err(Failure {
             step: Step::ElevateChild,
-            os: code as i32,
-            child: Step::from_exit(code),
+            os,
+            child,
         });
     }
     Ok(())

@@ -27,6 +27,7 @@ import {
   configureWindowsDesktopSupport,
   readWindowsDesktopDetail,
   readWindowsDesktopSupport,
+  windowsCargoTarget,
   WindowsDesktopSetupError,
 } from '../windowsHost';
 
@@ -54,6 +55,12 @@ Object.defineProperty(process, 'resourcesPath', {
 });
 
 describe('windows lock-screen setup diagnostics', () => {
+  it('builds source helpers for the running Electron architecture', () => {
+    expect(windowsCargoTarget('x64')).toBe('x86_64-pc-windows-msvc');
+    expect(windowsCargoTarget('arm64')).toBe('aarch64-pc-windows-msvc');
+    expect(() => windowsCargoTarget('ia32')).toThrow('Unsupported Windows desktop architecture');
+  });
+
   it('reads the failed step from a status line and from an error line', () => {
     expect(readWindowsDesktopDetail('installRequired protected-root 0')).toBe('protected-root 0');
     expect(readWindowsDesktopDetail('error service-create 5')).toBe('service-create 5');

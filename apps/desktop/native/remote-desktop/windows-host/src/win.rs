@@ -15,9 +15,11 @@ pub fn denied<T>() -> Result<T> {
     Err(io::Error::from(io::ErrorKind::PermissionDenied))
 }
 
-/// Setup exit codes start above the generic failure exit, so an ordinary crash
-/// is never decoded as one of the steps below.
-const EXIT_BASE: u32 = 16;
+/// The elevated child is hidden, so its step and raw Win32 error have to cross
+/// the UAC process boundary in the one value Windows gives us: the exit code.
+/// The low byte is the step (plus one); the remaining 24 bits carry the usual
+/// Win32 error range. A zero exit code remains success.
+const EXIT_STEP_MASK: u32 = 0xff;
 
 /// Declares every step that can fail during lock-screen setup, keeping the
 /// textual code and the numeric form in one list so the two cannot drift apart.
@@ -28,20 +30,18 @@ macro_rules! steps {
         /// "failed". The numeric form travels back from the elevated child as
         /// its process exit code, because the child's console output is hidden
         /// from the parent. Codes carry no path, account or machine content.
-        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Step { $($variant,)* }
         impl Step {
             pub fn code(self) -> &'static str {
                 match self { $(Step::$variant => $code,)* }
             }
-            pub fn exit(self) -> u32 {
-                self as u32 + EXIT_BASE
-            }
-            /// Maps an elevated child's exit code back to the step it failed at.
+            /// Maps the low byte of an elevated child's exit code back to its
+            /// failed step.
             pub fn from_exit(value: u32) -> Option<Step> {
                 const ALL: &[Step] = &[$(Step::$variant,)*];
-                value
-                    .checked_sub(EXIT_BASE)
+                (value & EXIT_STEP_MASK)
+                    .checked_sub(1)
                     .and_then(|index| ALL.get(index as usize))
                     .copied()
             }
@@ -108,6 +108,19 @@ impl Failure {
     pub fn line(&self) -> String {
         format!("error {}", self.detail())
     }
+
+    /// Encodes the failed step and raw OS error for a hidden elevated child.
+    /// Win32 errors used by setup fit in the upper 24 bits; keeping the step in
+    /// the low byte makes the value independently decodable by the unelevated
+    /// parent without exposing paths or account names.
+    pub fn exit_code(&self) -> u32 {
+        (((self.os.max(0) as u32) & 0x00ff_ffff) << 8) | (self.step as u32 + 1)
+    }
+
+    pub fn from_exit_code(value: u32) -> Option<(Step, i32)> {
+        let step = Step::from_exit(value)?;
+        Some((step, (value >> 8) as i32))
+    }
 }
 
 impl std::fmt::Debug for Failure {
@@ -132,6 +145,29 @@ pub fn refuse<T>(step: Step) -> Staged<T> {
 
 pub fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elevated_exit_code_round_trips_step_and_os_error() {
+        let failure = Failure::new(Step::StageWrite, 5);
+        assert_eq!(
+            Failure::from_exit_code(failure.exit_code()),
+            Some((Step::StageWrite, 5))
+        );
+    }
+
+    #[test]
+    fn elevated_exit_code_keeps_validation_failures_decodable() {
+        let failure = Failure::new(Step::ProtectedRoot, 0);
+        assert_eq!(
+            Failure::from_exit_code(failure.exit_code()),
+            Some((Step::ProtectedRoot, 0))
+        );
+    }
 }
 pub struct Handle(pub HANDLE);
 unsafe impl Send for Handle {}
