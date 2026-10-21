@@ -1,4 +1,4 @@
-import { FORWARDED_REQUEST_RECEIPT, formatForwardedRequest } from '../../../shared/forwardedRequest.js';
+import { FORWARDED_REQUEST_RECEIPT } from '../../../shared/forwardedRequest.js';
 import { BOT_GROUP_CLIENT_ID } from '../../../shared/botGroupChat.js';
 import { authorizeGroupTool, registerGroupToolAuthority } from '../botGroupToolAuthorization.js';
 import { readFileSync } from 'node:fs';
@@ -12362,7 +12362,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
 
       expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({
         type: 'user',
-        content: formatForwardedRequest({ userText: null }, replacement),
+        content: replacement,
       });
       expect(
         mocks.createMessage.mock.calls.find(
@@ -12371,7 +12371,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
       ).toMatchObject({
         clientId: queued.clientId,
         role: 'user',
-        content: formatForwardedRequest({ userText: null }, replacement),
+        content: replacement,
       });
     },
   );

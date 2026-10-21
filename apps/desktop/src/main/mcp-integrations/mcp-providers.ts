@@ -63,6 +63,7 @@ import {
   isSessionInTurn,
   getSessionInputProvenance,
   getTaskActionInputState,
+  getTaskActionSession,
   confirmTaskAction,
 } from '../maker-ipc/register.js';
 import { createBotProfile } from '../localDb/ipc/bots.js';
@@ -303,7 +304,9 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
   const authorizeTaskToolCall = createTaskToolCallAuthorizer({
     getDb: () => (isAppSessionBoundaryPending() ? null : tryGetDbClient()),
     isScopeCurrent: (db) => !isAppSessionBoundaryPending() && db === tryGetDbClient(),
-    authorizeAction: createDesktopTaskActionAuthorizer({ input: getTaskActionInputState, confirm: confirmTaskAction }),
+    authorizeAction: createDesktopTaskActionAuthorizer({
+      input: getTaskActionInputState, getSession: getTaskActionSession, confirm: confirmTaskAction,
+    }),
   });
   // Companion history uses the same account scope as ordinary task history.
   const botReadsAccountHistory = async (sessionId: string | undefined): Promise<boolean> => {

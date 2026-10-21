@@ -58,6 +58,10 @@ const mocks = vi.hoisted(() => ({
   executePreRunHook: vi.fn(),
 }));
 
+const sharedProduction = vi.hoisted(() => ({
+  backfill: undefined as typeof import('../runners/_shared').backfillSessionMeta | undefined,
+}));
+
 // 只有声明了 preRunHook 的用例会走到这里；其它用例不调用。
 vi.mock('../pre-run-hook', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../pre-run-hook')>()),
@@ -100,9 +104,11 @@ vi.mock('../workdir-resolver', () => ({
   resolveWorkingDir: mocks.resolveWorkingDir,
 }));
 
-vi.mock('../runners/_shared', () => ({
-  backfillSessionMeta: mocks.backfillSessionMeta,
-}));
+vi.mock('../runners/_shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../runners/_shared')>();
+  sharedProduction.backfill = actual.backfillSessionMeta;
+  return { backfillSessionMeta: mocks.backfillSessionMeta };
+});
 
 import {
   MakerScheduleRunner,
@@ -472,6 +478,7 @@ function latestNotifiedRun(notifier: Notifier & { notify: ReturnType<typeof vi.f
 beforeEach(() => {
   setCodexAppliedCustomProviderRoutes([]);
   vi.clearAllMocks();
+  mocks.backfillSessionMeta.mockReset();
   mocks.getSessionRowSnapshot.mockResolvedValue({
     status: 'active',
     userSendAt: null,
@@ -2745,6 +2752,35 @@ describe('queued heartbeat for a Bot Session task (persisted Auto)', () => {
 
   beforeEach(() => {
     mocks.getSessionFsSnapshot.mockResolvedValue(persisted);
+  });
+
+  // Local QA 2026-10-21: an explicit model on an ordinary bound schedule caused
+  // routing backfill to overwrite Auto with Full Access, then cancel dispatch.
+  // Existing queue tests stubbed the backfill and missed its persisted result.
+  // Unit tier: real runner.fire + production backfill, minimal in-memory DB sink.
+  it('preserves saved Auto when applying a queued scheduled model', async () => {
+    const harness = createSessionHarness(async () => ({ accepted: true }));
+    const runtime = withRuntimePermission(harness, 'auto');
+    const saved = { permissionMode: 'auto', planModeEnabled: false };
+    mocks.getSessionFsSnapshot.mockImplementation(async () => ({ ...saved }));
+    const db = {
+      update: () => ({ set: (patch: Record<string, unknown>) => ({
+        where: async () => { Object.assign(saved, patch); },
+      }) }),
+    };
+    mocks.backfillSessionMeta.mockImplementation(async (_db, id, patch, logger) => {
+      await sharedProduction.backfill!(db as never, id, patch, logger);
+    });
+    const queue = createQueueHarness({ busy: false });
+    const { runner, notifier } = createRunnerHarness(harness.session, queue.deps);
+    const fire = runner.fire(heartbeatSchedule({ model: 'claude-opus-4-8' }), createFireContext());
+    await vi.waitFor(() => expect(queue.enqueueCalls).toHaveLength(1));
+    await queue.accept(queuedFromRow);
+    harness.emit({ type: 'done', data: {}, source: 'claude-code' });
+    await expect(fire).resolves.toMatchObject({ sessionId: SESSION_ID });
+    expect(saved.permissionMode).toBe('auto');
+    expect(latestNotifiedRun(notifier).status).toBe('success');
+    await runtime.close();
   });
 
   /** 触发一次排队心跳并按落库值受理；返回 fire 的结局（resolve 值或 reject 原因）。 */

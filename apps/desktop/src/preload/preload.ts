@@ -5768,8 +5768,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       },
       /** 伙伴自主跟进：工作台「一眼」与「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
       autonomy: {
-        glance: (botId: string): Promise<import('../shared/botAutonomy').BotGlance> =>
-          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId),
+        glance: (botId: string, refreshRemote = true): Promise<import('../shared/botAutonomy').BotGlance> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId, refreshRemote),
         getSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
           ipcRenderer.invoke('local-db:bots:autonomy:settings-get'),
         setSettings: (
