@@ -8977,11 +8977,11 @@
       }
     },
     "autonomy": {
-      "title": "모든 세션 자동 후속 관리",
-      "descriptionOn": "{{name}}이(가) 모든 세션을 주기적으로 확인하고, 응답을 기다리는 일이 있으면 알려 줍니다.",
+      "title": "내 세션 후속 확인",
+      "descriptionOn": "{{name}} 님이 세션에 변화가 생기면 요약을 확인하고 알려드립니다.",
       "movedFrom": "{{name}}에서 여기로 옮겼습니다",
       "heldBy": "지금은 {{name}}이(가) 맡고 있습니다. 켜면 여기로 옮겨집니다.",
-      "heldByNobody": "지금 맡은 동료가 없습니다.",
+      "heldByNobody": "꺼짐",
       "restoreDefault": "기본값으로 복원({{name}})",
       "saveFailed": "저장하지 못했습니다. 다시 시도하세요",
       "turnOff": {
@@ -8993,6 +8993,12 @@
       "allowSchedulerFollow": {
         "title": "시작한 세션도 {{name}}에게 맡기기",
         "description": "기본적으로 {{scheduler}}은(는) 보기만 하고 후속 관리는 하지 않습니다. 켜면 {{name}}이(가) 시작한 세션이 끝나지 않았을 때 {{scheduler}}도 이어서 챙깁니다."
+      },
+      "consent": "켜면 이 컴퓨터에서 직접 만든 세션의 요약을 읽고 진행 상황을 분석하여 중요한 변화를 알려드립니다. 모델 사용량이 소모되며 언제든 끌 수 있습니다.",
+      "invitation": {
+        "title": "세션 후속 확인을 시작할까요?",
+        "start": "후속 확인 시작",
+        "notNow": "나중에"
       }
     },
     "remoteSettings": {

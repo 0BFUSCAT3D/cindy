@@ -2915,3 +2915,14 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 旧端没有该确认或未收到释放回执时保留原过期清理，不把旧端的普通验证成功当作释放成功。断线、撤销、账号切换或重启后
 无法复核时不投递，不自动重放；已送达历史保留。未知投递结果仍要求先读取目标核实。
 没有新 relay channel、服务端变更、数据库 migration 或 Mobile 原生指纹变化。
+
+
+## 伙伴跟进邀请（2026-10-21）
+
+总调度未设置 override 时默认关闭，已有明确选择保留。跨端沿用 `teammates` 远程资源：
+`settings:<botId>/follow-up` 返回既有 form/toggle/confirmation、可选邀请标记和不透明动作票。
+读资源不启用跟进；点击开启或暂不开启才保存。票据绑定账号、控制端、伙伴及当前设置 revision；
+旧票、隐藏伙伴与账号切换沿用既有拒绝规则，不新增 invoke channel 或共享访客权限。
+新 Host 对旧查看端仍执行默认关闭；旧端忽略新增入口/字段，已有聊天不变。新查看端连接旧 Host
+时不显示邀请，不能声称旧 Host 已执行新默认。Desktop 本机、远程 Desktop 和 Mobile 均显示范围及用量，
+Mobile iOS/Android 复用现有设置表单与按钮；没有原生配置、依赖、指纹或数据库迁移变化。
