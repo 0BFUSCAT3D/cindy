@@ -1586,7 +1586,9 @@ export function createComputerMcpServer(
  */
 function withoutDuplicateElements(name: string, data: unknown): unknown {
   if (name !== 'get_window_state' || !data || typeof data !== 'object' || Array.isArray(data)) return data;
-  if (typeof (data as { tree_markdown?: unknown }).tree_markdown !== 'string') return data;
+  // A degraded read can carry elements with an empty tree; they are then the only targets.
+  const markdown = (data as { tree_markdown?: unknown }).tree_markdown;
+  if (typeof markdown !== 'string' || markdown.trim().length === 0) return data;
   if (!('elements' in data)) return data;
   const { elements: _elements, ...rest } = data as Record<string, unknown>;
   return rest;
