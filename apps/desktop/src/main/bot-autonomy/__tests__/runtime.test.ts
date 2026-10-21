@@ -538,6 +538,50 @@ it('keeps opted-in tasks visible and reminds the owner when the scheduler teamma
   }
 });
 
+// Unit / #6675: activity can run through completion before the debounced ownership
+// refresh. Previous recovery coverage kept the task active until ownership loaded.
+// Only a witnessed completion may publish/count; stopped, unrelated and stale
+// completed tasks must remain silent. Fake time also covers an ownership retry.
+it.each([false, true])('keeps a fast delegation completion across delayed ownership (read failure: %s)', async (failFirstRead) => {
+  vi.useFakeTimers();
+  let failRead = false;
+  const options = { schedulerOff: true, creators: {} as Record<string, string>,
+    beforeOwnershipRead: () => { if (failRead) throw new Error('busy'); } };
+  const t = await setup(options);
+  const publish = vi.fn<AutonomyEngine['publish']>(async () => ({ accepted: 1, duplicate: false }));
+  const runtime = t.create({ registerSource: vi.fn(), publish, ensureBuiltin: vi.fn(async () => ({} as never)) });
+  const completed = (id: string) => ({ ...running(id), phase: 'completed', lastActivityAtMs: t.now() } as SessionActivitySnapshot);
+  try {
+    await runtime.start();
+    options.creators.child = options.creators.stopped = options.creators.stale = 'a';
+    for (const id of ['child', 'unrelated', 'stopped']) runtime.watch.applyActivity(id, running(id));
+    for (const id of ['child', 'unrelated', 'stale']) runtime.watch.applyActivity(id, completed(id));
+    runtime.watch.applyActivity('stopped', null);
+    await runtime.watch.settled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(runtime.watch.needsSweep()).toBe(false);
+    failRead = failFirstRead;
+    await runtime.refreshFollowers();
+    if (failFirstRead) {
+      expect(publish).not.toHaveBeenCalled();
+      failRead = false;
+      t.advance(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    expect(publish).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenCalledWith(HOST_SESSIONS_SOURCE_ID,
+      expect.objectContaining({ type: 'finished', subject: 'child' }), expect.any(Function));
+    expect(runtime.glance('a').doneToday).toBe(1);
+    expect(runtime.watch.needsSweep()).toBe(false);
+    await runtime.refreshFollowers();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(publish).toHaveBeenCalledOnce();
+  } finally {
+    runtime.stop();
+    vi.useRealTimers();
+  }
+});
+
 // Unit / PR #6675: a finished last delegation no longer needs state scans, but a
 // failed ensure/publish must retain event delivery and stop retrying after success.
 it.each(['ensure', 'publish'] as const)('retries the last completion after %s fails and then releases the timer', async (failure) => {

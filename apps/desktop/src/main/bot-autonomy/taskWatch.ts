@@ -136,6 +136,8 @@ function inputProjectionErrorReason(projection: BotAutonomyInputProjection): str
 
 interface LocalFacts {
   activity: SessionActivitySnapshot | null;
+  /** Live activity reached completion before ownership/metadata could create a row. */
+  observedCompletion: boolean;
   inputError: string | null;
   /** 出错横幅背后的稳定原因(输入协调器投影的 errorReason / 工具循环),没有就是 null。 */
   inputErrorReason: string | null;
@@ -270,7 +272,11 @@ export class TaskWatch {
 
   applyActivity(sessionId: string, current: SessionActivitySnapshot | null): void {
     if (this.stopped) return;
-    const facts = { ...this.factsFor(sessionId), activity: current };
+    const previous = this.factsFor(sessionId);
+    const observedCompletion = current?.phase === 'completed' && previous.activity !== null
+      && previous.activity.turnGeneration === current.turnGeneration
+      && (previous.activity.phase !== 'completed' || previous.observedCompletion);
+    const facts = { ...previous, activity: current, observedCompletion };
     if (!current && !facts.inputError && !facts.usageLimitWait) this.local.delete(sessionId);
     else this.local.set(sessionId, facts);
     if (this.observesLocal(sessionId) || !this.ownershipLoaded) this.queue(sessionId);
@@ -345,7 +351,7 @@ export class TaskWatch {
   }
 
   private factsFor(sessionId: string): LocalFacts {
-    return this.local.get(sessionId) ?? { activity: null, inputError: null, inputErrorReason: null, usageLimitWait: false };
+    return this.local.get(sessionId) ?? { activity: null, observedCompletion: false, inputError: null, inputErrorReason: null, usageLimitWait: false };
   }
 
   private queue(sessionId: string): void {
@@ -436,8 +442,8 @@ export class TaskWatch {
       usageLimitWait: facts.usageLimitWait,
     });
     if (activity) this.interrupted.delete(sessionId);
-    // 第一次看到就已经做完（例如启动时灵动岛里还挂着的未读完成）：没有可观察的跃迁，不发「做完」。
-    if (phase === 'finished' && !previous) return { changed: false, unowned: false };
+    // 启动时残留的完成不发事件；归属/元数据读取前已见过同一轮的完成跃迁则保留。
+    if (phase === 'finished' && !previous && !facts.observedCompletion) return { changed: false, unowned: false };
     if (phase === 'idle') {
       if (previous && this.interrupted.has(sessionId)) return { changed: false, unowned: false };
       if (previous?.phase === 'finished') return { changed: false, unowned: false };
