@@ -520,6 +520,11 @@ export interface MobileMakerTransport {
     modelVisibilityOverrides?: Record<string, boolean>;
   }>;
   getSession(sessionId: string): Promise<RemoteSession>;
+  /**
+   * 输入框开始打字时请被控端提前启动该任务的 Agent。尽力而为：旧被控端返回
+   * CHANNEL_NOT_ALLOWED，调用方忽略即可。
+   */
+  prewarmSession(sessionId: string, createOpts: unknown): Promise<unknown>;
   createSideChat(sessionId: string): Promise<RemoteSession>;
   listSideChats(sessionId: string): Promise<Array<{ id: string }>>;
   searchConversations(
@@ -1231,6 +1236,8 @@ export function createMobileMakerTransport({
         },
       ]),
     getSession: (sessionId) => call("local-db:sessions:get", [sessionId]),
+    prewarmSession: (sessionId, createOpts) =>
+      call("maker:session:prewarm", [sessionId, createOpts]),
     createSideChat: (sessionId) => call("maker:side-chat:v1", [sessionId]),
     listSideChats: (sessionId) => call("maker:side-chat:list:v1", [sessionId]),
     searchConversations: (request) =>

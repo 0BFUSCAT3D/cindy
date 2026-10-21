@@ -28,6 +28,7 @@ import {
   toDesktopSessionDispatchOutcome,
 } from '../maker-host/send-outcome.js';
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
+import { ProviderGroupUsageLimitError } from '../provider-group/failurePolicy.js';
 import { routinePermissionSnapshot } from '../maker-host/routinePermission.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
@@ -502,7 +503,7 @@ export interface MakerSendTransactionDeps {
    * 保留意图本次不动。undefined = 不启用(测试最小 harness)。`signal` 是这次发送的取消信号：
    * 供应商组在这里等原电脑恢复时，发送被停止就不再等、不再换电脑。
    */
-  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean }): Promise<void>;
+  applyPendingAgentSwitch?(sessionId: string, options?: { signal?: AbortSignal; scheduled?: boolean; clientId?: string }): Promise<void>;
   onModelDispatched?(sessionId: string, clientId: string): void;
   /**
    * 发送前换窗:必须在 getSession 之前。prepare 会关掉不健康的 live handle,
@@ -586,6 +587,13 @@ export interface MakerSendTransaction {
     createOpts?: unknown,
     sendOpts?: unknown,
   ): Promise<DesktopMakerSendResult>;
+  /**
+   * Start the Agent runtime the next send would otherwise start lazily, using
+   * the same bootstrap path. `createOpts` must already be reconciled with the
+   * task row. Returns false when a runtime already exists or startup failed;
+   * the next send then follows its normal path.
+   */
+  prewarmSession(sessionId: string, createOpts: CreateOpts): Promise<boolean>;
 }
 
 type ResolveSessionResult =
@@ -889,6 +897,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       });
       return { kind: 'session', session };
     } catch (err) {
+      // Let the input coordinator own verified group quota waits; generic host
+      // failure results would erase the structured reset time before it sees it.
+      if (err instanceof ProviderGroupUsageLimitError) throw err;
       if (isCredentialModeSwitchBusyError(err)) {
         // 不映射成 SESSION_RUNNING:那会命中输入协调器的静默无限重试(250ms 一次),
         // 用户看到消息永远排队(2026-07-03 实报)。CREDENTIAL_SWITCH_BUSY 由协调器
@@ -970,6 +981,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       });
       return { kind: 'session', session: lazySess };
     } catch (err) {
+      // Same boundary as rehydrate: preserve the branded error and its reset data.
+      if (err instanceof ProviderGroupUsageLimitError) throw err;
       if (isCredentialModeSwitchBusyError(err)) {
         // 不映射成 SESSION_RUNNING:那会命中输入协调器的静默无限重试(250ms 一次),
         // 用户看到消息永远排队(2026-07-03 实报)。CREDENTIAL_SWITCH_BUSY 由协调器
@@ -1009,6 +1022,11 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
   }
 
   return {
+    async prewarmSession(sessionId, createOpts) {
+      if (deps.getSession(sessionId)) return false;
+      const lazy = await lazyCreateSession(sessionId, createOpts);
+      return lazy.kind === 'session';
+    },
     async sendToAgentAccepted(
       sessionId,
       message,
@@ -1027,11 +1045,14 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       const sendOrigin = requestedSendOpts.persistUserMessage?.origin ?? requestedSendOpts.origin;
       const scheduled = !!sendOrigin && typeof sendOrigin === 'object' &&
         (sendOrigin as { kind?: unknown }).kind === 'scheduler';
+      const rawClientId = requestedSendOpts.persistUserMessage?.clientId;
+      const clientId = typeof rawClientId === 'string' ? rawClientId : undefined;
       await deps.applyPendingAgentSwitch?.(
         sessionId,
-        requestedSendOpts.signal || scheduled ? {
+        requestedSendOpts.signal || scheduled || clientId ? {
           ...(requestedSendOpts.signal ? { signal: requestedSendOpts.signal } : {}),
           ...(scheduled ? { scheduled: true } : {}),
+          ...(clientId ? { clientId } : {}),
         } : undefined,
       );
       // 发送前的准备期间就被停止(如供应商组正在等原电脑恢复)：不再打开会话、不再派发，与 Session 在派发前

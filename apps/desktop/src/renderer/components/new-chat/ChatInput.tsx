@@ -15,7 +15,7 @@ import {
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { useNavigate } from 'react-router-dom';
 import { buildLocalSkillPathRoute } from '@/features/skillhub/lib/localRoutes';
-import { Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
+import { AudioLines, Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
 import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
@@ -526,6 +526,11 @@ interface ChatInputProps {
       annotationBurnFailure?: 'abort';
     },
   ) => boolean | void | Promise<boolean | void>;
+  /**
+   * 用户在已有任务的输入框里输入了内容（不含草稿恢复、语音回填、发送后清空等程序写入）。
+   * 父组件据此提前启动 Agent；每次按键都会调用，节流由接收方负责。
+   */
+  onComposerTyping?: () => void;
   /** Session ID for binding workingDir. When absent, folder picker is hidden. */
   sessionId?: string;
   /**
@@ -623,6 +628,10 @@ interface ChatInputProps {
   onStop?: () => void;
   /** Gate before starting voice input; return false to keep the recorder closed. */
   onBeforeVoiceInputStart?: () => boolean | Promise<boolean>;
+  /** Optional local companion call action, separate from one-shot dictation. */
+  onStartVoiceConversation?: () => void;
+  voiceConversationDisabled?: boolean;
+  voiceConversationActive?: boolean;
   /**
    * F-QUEUE-DEFER: un-dispatched messages (rendered above the input by
    * `PendingQueuePanel`). Empty array hides the panel entirely.
@@ -1191,6 +1200,7 @@ function deriveSyntheticAtQuery(editor: Editor, anchor: number, rangeEnd: number
 
 export function ChatInput({
   onSend,
+  onComposerTyping,
   sessionId,
   runtimeAgentKind,
   runtimeEffective,
@@ -1214,12 +1224,15 @@ export function ChatInput({
   fastMode = false,
   onFastModeChange,
   onWorkingDirChange,
-  disabled,
+  disabled: disabledProp,
   settingsLocked: settingsLockedProp = false,
   isStreaming = false,
   isAgentBusy,
   onStop,
   onBeforeVoiceInputStart,
+  onStartVoiceConversation,
+  voiceConversationDisabled = false,
+  voiceConversationActive = false,
   pendingQueue,
   queueExpanded = false,
   onQueueExpandedChange,
@@ -1278,6 +1291,9 @@ export function ChatInput({
   onUnifiedDraftSelect,
   selectedFavoriteUid = null,
 }: ChatInputProps) {
+  // Keep the existing draft/editor mounted during a companion call, but reuse
+  // every disabled guard (typing, drop, button and hotkey sends) until it ends.
+  const disabled = disabledProp || voiceConversationActive;
   // device-link 远程会话:null = 已确认本地会话,undefined = 所有权尚未解析,string = 远程会话。
   // 预测守卫用原始值区分 null vs undefined,下游通路继续用 ?? undefined 归一化。
   const deviceLinkDeviceId = _deviceLinkDeviceId;
@@ -1348,6 +1364,9 @@ export function ChatInput({
   // handleKeyDown 与硬件动作订阅都是稳定闭包,经 ref 读当前值。
   const promptPreviewInputGuardRef = useRef<() => boolean>(() => false);
   const acceptPromptRecommendationRef = useRef<() => boolean>(() => false);
+  // 编辑器配置只创建一次，按键回调读最新的父组件回调。
+  const onComposerTypingRef = useRef(onComposerTyping);
+  onComposerTypingRef.current = onComposerTyping;
   // session 切换时 ChatInput/Editor 会复用；推荐资格必须等目标草稿完成水合后再判断。
   const [, setComposerHydrationGeneration] = useState(0);
   // 完整输入框空判断:不仅检查 ProseMirror 文档是否为空,还检查附件、浏览器评论和语音稿。
@@ -2302,6 +2321,7 @@ export function ChatInput({
       // dispatch / 语音回填时触发）；IME 组合输入在 onUpdate 里补（见该处注释）。
       handleTextInput: () => {
         markComposerTypingActivity();
+        onComposerTypingRef.current?.();
         return false; // 不拦截默认插入
       },
       attributes: {
@@ -2885,6 +2905,7 @@ export function ChatInput({
         (ed.view.composing || transaction.getMeta('composition') === true)
       ) {
         markComposerTypingActivity();
+        onComposerTypingRef.current?.();
       }
       // composer-draft-mount-race 修复 (issue #40):hydration 还没跑过 → 这次
       // onUpdate 是 Tiptap mount 期间的初始触发(空 editor),不能写 store。
@@ -3332,6 +3353,13 @@ export function ChatInput({
       prepareVoiceInputCues();
     }
   }, [voiceInputSettings.playInteractionSound]);
+  const voiceConversationButtonRef = useRef<HTMLButtonElement>(null);
+  const wasVoiceConversationActive = useRef(voiceConversationActive);
+  useEffect(() => {
+    if (wasVoiceConversationActive.current && !voiceConversationActive && onStartVoiceConversation)
+      voiceConversationButtonRef.current?.focus();
+    wasVoiceConversationActive.current = voiceConversationActive;
+  }, [voiceConversationActive, onStartVoiceConversation]);
   const handleVoiceInputStart = useCallback((): boolean => {
     // 同步 claim 录音后立刻返回是否占用；授权确认（beforeStart）与启动提示音
     // 由 useVoiceInput 的后台启动流程继续处理。
@@ -9716,6 +9744,20 @@ export function ChatInput({
                       }
                     />
                   )}
+                  {!queueEditActive && onStartVoiceConversation ? (
+                    <Tip text={t('bots.voiceMode.startConversation')} side="top">
+                      <button
+                        ref={voiceConversationButtonRef}
+                        type="button"
+                        aria-label={t('bots.voiceMode.startConversation')}
+                        disabled={voiceConversationDisabled || composerEditorLocked || !editor || voiceInput.isBusy}
+                        onClick={onStartVoiceConversation}
+                        className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--composer-pill-bg)] text-[var(--composer-pill-icon)] transition-colors hover:bg-[var(--model-trigger-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <AudioLines size={15} aria-hidden="true" />
+                      </button>
+                    </Tip>
+                  ) : null}
                   {/* mousedown 吃掉默认行为:否则点发送会把焦点从 contenteditable
                       挪到 button 上,发完光标就没了(接着打字要先点回输入框),
                       推荐提示词的 Tab 也会因为编辑器失焦而落到原生焦点导航上。

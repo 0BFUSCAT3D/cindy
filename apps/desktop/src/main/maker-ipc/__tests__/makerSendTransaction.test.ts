@@ -421,7 +421,7 @@ describe('maker SEND transaction', () => {
       },
     });
     expect(applyPendingAgentSwitch).toHaveBeenCalledWith('session-1',
-      scheduled ? { scheduled: true } : undefined);
+      { clientId: 'model-input', ...(scheduled ? { scheduled: true } : {}) });
     expect(onModelDispatched).toHaveBeenCalledExactlyOnceWith('session-1', 'model-input');
   });
 
@@ -4191,5 +4191,30 @@ describe('repeatable environment notes are sent only when they change', () => {
     await transaction.sendToAgentAccepted('session-1', 'a');
     await transaction.sendToAgentAccepted('session-1', 'b');
     expect(sentAt(session, 1)).toBe(withUiLanguageNote('b'));
+  });
+});
+
+describe('Agent prewarm', () => {
+  it('starts the runtime a first send would start, and the send then reuses it', async () => {
+    let live: ReturnType<typeof createSession> | undefined;
+    const { deps } = createDeps({
+      getSession: vi.fn(() => live),
+      bootstrapSession: vi.fn(async (opts: MakerSessionCreateOpts) => {
+        live = createSession({ id: opts.id, agentKind: opts.agentKind as AgentKind, workDir: opts.workingDir });
+        return { session: live, didInjectOrcaInstructions: false, didInjectProjectContext: false };
+      }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    const createOpts = { id: 'session-1', agentKind: 'claude-code', workingDir: '/repo', userPrompt: 'mine' } as MakerSessionCreateOpts;
+
+    await expect(transaction.prewarmSession('session-1', createOpts)).resolves.toBe(true);
+    // Already warm: nothing new to start.
+    await expect(transaction.prewarmSession('session-1', createOpts)).resolves.toBe(false);
+    await expect(transaction.sendToAgentAccepted('session-1', 'hello', createOpts))
+      .resolves.toMatchObject({ accepted: true });
+
+    expect(deps.bootstrapSession).toHaveBeenCalledOnce();
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({ userPrompt: 'mine', workingDir: '/repo' }));
+    expect(live?.send).toHaveBeenCalledOnce();
   });
 });

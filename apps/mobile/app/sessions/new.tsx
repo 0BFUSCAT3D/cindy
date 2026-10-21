@@ -1,3 +1,4 @@
+import { useIncomingShareComposer } from '@/session/useIncomingShareComposer';
 import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
 import { ErrorNotice } from '@/components/ErrorNotice';
@@ -122,9 +123,6 @@ import { goBackGuarded } from '@/utils/backGuard';
 import { buildMobileImageAttachmentCandidate } from '@/session/mobileImageAttachment';
 import { useMobileLocalAttachments } from '@/session/useMobileLocalAttachments';
 import {
-  consumeIncomingShareBatch,
-  deleteIncomingSharedFiles,
-  selectIncomingShareUploadCandidates,
   useIncomingShareBatch,
 } from '@/session/incomingShare';
 import {
@@ -927,6 +925,7 @@ export default function NewRemoteSessionScreen() {
     getPendingUploadCount,
     hasAttachmentInput,
     getUploadedSource,
+    insertUploadedAttachment,
     getUploadedAttachmentId,
     releaseUploadedSources,
   } = useMobileLocalAttachments({
@@ -938,7 +937,7 @@ export default function NewRemoteSessionScreen() {
         ?.decorateUploadedAttachment(rawAttachment, candidate) ?? rawAttachment;
       // create() 在 waitForPendingUploads 落定后同步读 ref,而 setState 到 commit 有
       // 微任务延迟——这里派发时同步镜像,保证「上传完成→立即创建」不丢刚落定的附件。
-      attachmentsRef.current = [...attachmentsRef.current, attachment];
+      attachmentsRef.current = insertUploadedAttachment(attachmentsRef.current, attachment);
       if (candidate.kind === 'image') {
         setAttachmentPreviews((current) => ({ ...current, [attachment.id]: candidate.uri }));
       }
@@ -947,7 +946,7 @@ export default function NewRemoteSessionScreen() {
         const sourceId = candidate.sourceId;
         setMediaAssetAttachments((current) => ({ ...current, [sourceId]: attachment.id }));
       }
-      setAttachments((current) => [...current, attachment]);
+      setAttachments((current) => insertUploadedAttachment(current, attachment));
     },
     onError: setAttachmentError,
     onPicked: () => setContextSheetOpen(false),
@@ -965,7 +964,7 @@ export default function NewRemoteSessionScreen() {
   }), [auth.getAccessToken, discardAllPendingUploads]);
   const incomingShareBatch = useIncomingShareBatch();
   const incomingShareReceivedRef = useRef(false);
-  if (incomingShareBatch) incomingShareReceivedRef.current = true;
+  if (incomingShareBatch?.destination === 'new') incomingShareReceivedRef.current = true;
   const isShareTargetFocused = useIsFocused();
   useAutoResumeNewSessionDraft({
     enabled: !(params.recoverySessionId || params.editSessionId || params.draft || params.suggestion
@@ -974,53 +973,6 @@ export default function NewRemoteSessionScreen() {
     hasInput: hasRecoveryInput,
     onResume: next => router.setParams(next),
   });
-  useEffect(() => {
-    if (!isShareTargetFocused || !auth.isAuthenticated || !incomingShareBatch
-      || getMobileAuthOwner().accountId !== auth.user?.id) return;
-    try {
-      if (!consumeIncomingShareBatch(incomingShareBatch.id)) return;
-    } catch {
-      setAttachmentError(i18n.t('composer.upload.shareReceiveFailed'));
-      return;
-    }
-    const selection = selectIncomingShareUploadCandidates(incomingShareBatch.payloads);
-    const remainingSlots = Math.max(
-      0,
-      MOBILE_MAX_ATTACHMENTS
-        - attachmentsRef.current.length
-        - getPendingUploadCount(),
-    );
-    const accepted = selection.candidates.slice(0, remainingSlots);
-    const dropped = selection.candidates.slice(remainingSlots);
-    const cleanupUris = [
-      ...selection.rejectedUris,
-      ...dropped.map((candidate) => candidate.uri),
-    ];
-    if (cleanupUris.length > 0) {
-      void deleteIncomingSharedFiles(cleanupUris).catch(() => undefined);
-    }
-    if (accepted.length > 0) {
-      enqueueUploads(accepted.map((candidate) => ({
-        ...candidate,
-        cleanupLocalUris: deleteIncomingSharedFiles,
-      })), { token: auth.getAccessToken() });
-    }
-    if (dropped.length > 0) {
-      setAttachmentError(i18n.t('composer.upload.maxAttachments', {
-        count: MOBILE_MAX_ATTACHMENTS,
-      }));
-    } else if (selection.rejectedUris.length > 0) {
-      setAttachmentError(i18n.t('composer.upload.noFileRead'));
-    } else {
-      setAttachmentError(null);
-    }
-  }, [
-    auth,
-    enqueueUploads,
-    getPendingUploadCount,
-    incomingShareBatch,
-    isShareTargetFocused,
-  ]);
   const pendingGoalSkillRef = useRef<string | null>(null);
   useEffect(() => {
     pendingGoalSkillRef.current = null;
@@ -1966,6 +1918,13 @@ export default function NewRemoteSessionScreen() {
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(value);
   }, [editRecoveredDraft]);
 
+  useIncomingShareComposer({
+    destination: 'new', ready: isShareTargetFocused && newSessionPreferencesLoaded && !creating,
+    appendText: text => setFirstMessageDraft(current => [current, text].filter(Boolean).join('\n\n')),
+    attachmentCount: attachments.length,
+    enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
+  });
+
   const handleFirstMessageInputContentSizeChange = useCallback((event: TextInputContentSizeChangeEvent) => {
     const nextHeight = Math.max(
       MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT,
@@ -2046,6 +2005,9 @@ export default function NewRemoteSessionScreen() {
       autoDefaultDeviceRef.current = null;
       setRuntimeSettledDeviceId(null);
     }
+    // A share can arrive before the first computer is selected. Its uploads
+    // are not tied to a previous host; only a real host switch invalidates them.
+    const changesExistingDevice = !!selectedDeviceIdRef.current && option.deviceId !== selectedDeviceIdRef.current;
     selectedDeviceIdRef.current = option.deviceId;
     setSelectedDeviceId(option.deviceId);
     setSelectedDeviceName(option.name || option.deviceId);
@@ -2067,19 +2029,21 @@ export default function NewRemoteSessionScreen() {
     setBrowseLoading(false);
     setBrowseError(null);
     setContextSheetOpen(false);
-    // 切换电脑丢弃草稿附件前 best-effort 回收已上传的中转对象(codex review #504)。
-    for (const attachment of attachments) {
-      discardMobileUploadedAttachment(attachment, { getToken: () => auth.getAccessToken() });
+    if (changesExistingDevice) {
+      // 切换电脑丢弃草稿附件前 best-effort 回收已上传的中转对象(codex review #504)。
+      for (const attachment of attachments) {
+        discardMobileUploadedAttachment(attachment, { getToken: () => auth.getAccessToken() });
+      }
+      // 在途上传同样作废(codex review R10):不取消的话它们完成后会经 onUploaded 把
+      // 上一台电脑期间选的附件塞进新电脑的草稿;丢弃后由控制器在完成时回收 OSS 对象。
+      discardAllPendingUploads();
+      releaseUploadedSources(attachments.map((attachment) => attachment.id));
+      setAttachments([]);
+      setMediaAssetAttachments({});
+      setAttachmentPreviews({});
+      composerAnnotationsRef.current?.forgetAllAttachments();
+      setAttachmentError(null);
     }
-    // 在途上传同样作废(codex review R10):不取消的话它们完成后会经 onUploaded 把
-    // 上一台电脑期间选的附件塞进新电脑的草稿;丢弃后由控制器在完成时回收 OSS 对象。
-    discardAllPendingUploads();
-    releaseUploadedSources(attachments.map((attachment) => attachment.id));
-    setAttachments([]);
-    setMediaAssetAttachments({});
-    setAttachmentPreviews({});
-    composerAnnotationsRef.current?.forgetAllAttachments();
-    setAttachmentError(null);
     initialWorkspaceKeyRef.current = null;
     setDraft((current) => ({
       ...current,
