@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AutoReviewDecision, PermissionMode, SendOrigin } from '@cindy/maker-core';
+import { getDesktopMcpToolApprovalPolicy } from '../../maker-host/mcp-tool-approval-policy.js';
 import { withToolCallAuthority } from '../../../../../../packages/lizi-mcps/src/tool-call-authority.js';
 import { createOrcaMcpServer } from '../../../../../../packages/lizi-mcps/src/orca/server.js';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
@@ -317,6 +318,16 @@ describe('Owner-delegated scheduled task actions', () => {
     args: { target_session_id: 'target', message: 'Dispatch the new PR feedback' },
   });
 
+  it('reuses a live scheduled permission flow without invoking the recovery reviewer', async () => {
+    const h = scheduledFixture();
+    h.activeInput.permission = {
+      permissionMode: 'auto', planModeEnabled: false, isCurrent: () => true,
+    };
+    expect(await withToolCallAuthority(h.authorize, scheduledSend(), async () => 'sent')).toBe('sent');
+    expect(h.runtime.reviewHostPermissionAction).not.toHaveBeenCalled();
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
   it.each(['direct', 'queued', 'bound'] as const)('delivers an approved %s scheduled dispatch without another confirmation', async route => {
     const h = scheduledFixture();
     if (route === 'bound') h.caller.source = 'desktop';
@@ -427,6 +438,10 @@ describe('Desktop owner input task actions', () => {
         permissionMode, planModeEnabled: false, isCurrent: () => true,
       };
       for (const [server, tool] of ownerWrites) {
+        // Host admission can reuse approval only if the production tool policy
+        // actually routes this mutation through the runtime permission flow.
+        expect(getDesktopMcpToolApprovalPolicy({ serverName: server, toolName: tool }))
+          .toBe('prompt-each-time');
         expect(await withToolCallAuthority(h.authorize, { ...call(tool), server }, async () => {
           expect(hasTaskActionAuthorization('companion')).toBe(true);
           const queued = input();
