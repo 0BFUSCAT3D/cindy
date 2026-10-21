@@ -484,12 +484,12 @@ export function PendingSendBubble({
             <AlertCircle color={colors.statusError} size={iconSize.sm} strokeWidth={iconStroke.regular} />
           ) : editing ? (
             <Pencil color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
-          ) : waiting ? (
-            <Clock color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
           ) : !statusShown ? null : (
             <CompanionFadeIn distance={0} duration={motionDuration.fast} play={statusShown === 'revealed'}>
               {spinning ? (
                 <ActivityIndicator color={colors.textTertiary} size="small" />
+              ) : waiting ? (
+                <Clock color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
               ) : (
                 // 暂停态不换 ⏸:组顶横幅已表达暂停,逐条再换会重复;行内恒用排队 icon。
                 <ListEnd color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
@@ -611,8 +611,9 @@ export function PendingSendBubble({
                 onPress={() => actions.onRemoveOutbox(item.clientId)} testID={`pendingSend.outboxRemove.${item.clientId}`} />
             ) : null}
           </>
-        ) : waiting ? (
-          <>
+        ) : waiting && statusShown ? (
+          <CompanionFadeIn distance={0} duration={motionDuration.fast} play={statusShown === 'revealed'}>
+          <View style={styles.statusActions}>
             <Text numberOfLines={1} style={styles.statusText}>
               {t(item.waitingFor === 'network' ? 'message.queue.waitingForNetwork' : 'message.queue.waitingForComputer')}
             </Text>
@@ -623,8 +624,10 @@ export function PendingSendBubble({
                   onPress={() => actions.onRemoveOutbox(item.clientId)} testID={`pendingSend.outboxRemove.${item.clientId}`} />
               </>
             ) : null}
-          </>
+          </View>
+          </CompanionFadeIn>
         ) : item.actions && item.phase === 'queued' && statusShown ? (
+          <CompanionFadeIn distance={0} duration={motionDuration.fast} play={statusShown === 'revealed'}>
           <View style={styles.statusActions} testID={`pendingSend.actions.${item.clientId}`}>
             <Text numberOfLines={1} style={styles.statusText}>{t('message.queue.queued')}</Text>
             <View style={styles.statusDivider} />
@@ -638,6 +641,7 @@ export function PendingSendBubble({
               disabledReason={item.actions.remove.disabledReason} label={t('message.queue.cancel')}
               onPress={() => actions.onRemove(item.clientId)} testID={`pendingSend.remove.${item.clientId}`} />
           </View>
+          </CompanionFadeIn>
         ) : selected && outbox && item.canCancel !== false ? (
           // 还在上传 / 发出途中:轻点气泡才露出「取消」,平时这一行留空,只有左侧图标。
           <View style={styles.statusActions} testID={`pendingSend.outboxActions.${item.clientId}`}>
@@ -649,7 +653,7 @@ export function PendingSendBubble({
       {/* 有具体原因的失败(比如模型不支持图片)直接写出来,用户才知道该怎么处理;图片没传上去的
           通用提示由那张图上的重传按钮表达,轻点气泡才看。 */}
       {item.errorText && (failedImages === 0 || selected) ? (
-        <Text style={styles.rowHint} testID={`pendingSend.error.${item.clientId}`}>{item.errorText}</Text>
+        <Text style={styles.errorReason} testID={`pendingSend.error.${item.clientId}`}>{item.errorText}</Text>
       ) : null}
       {/* 轻点气泡看排队操作为什么不可用。 */}
       {selected && item.hint ? (
@@ -685,7 +689,6 @@ function StatusAction({
       accessibilityRole="button"
       accessibilityState={{ busy: busy || undefined, disabled }}
       disabled={disabled}
-      hitSlop={{ top: spacing.sm, bottom: spacing.sm }}
       onPress={disabled ? undefined : onPress}
       style={({ pressed }) => [styles.statusAction, pressed && styles.pressed]}
       testID={testID}
@@ -760,22 +763,25 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     width: 32,
   },
   editingHint: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
+  // 具体失败原因:报错用黑白系 errorText(13/18),不降成三级色。
+  errorReason: { color: colors.errorText, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, textAlign: 'right' },
   rowHint: {
     color: colors.textTertiary,
     fontSize: typeScale.footnote,
     lineHeight: lineHeight.caption,
     textAlign: 'right',
   },
-  // 正式用户消息的操作行高 44(触控高度)+ 2 间距 = 46;本行前已有 rowWrap 的 8 间距,补 38。
-  statusRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs, height: 38, justifyContent: 'flex-end', maxWidth: '100%' },
+  // 正式用户消息的操作行高 44(触控高度)+ 2 间距 = 46。本行吃掉 rowWrap 的 8 间距、自身高 46,
+  // 总高不变;按钮在行内实打实 44 高(hitSlop 越不过父级边界,不能靠它补)。
+  statusRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs, height: 46, justifyContent: 'flex-end', marginTop: -spacing.sm, maxWidth: '100%' },
   // 按钮自带 44 宽的留白,彼此只留 4 的间距。
-  statusActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
+  statusActions: { alignItems: 'center', alignSelf: 'stretch', flexDirection: 'row', gap: spacing.xs },
   // 说明 / 报错是成句的话:13/18,二级色;失败用报错色。
   statusText: { color: colors.textSecondary, flexShrink: 1, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   statusError: { color: colors.errorText, flexShrink: 1, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   statusDivider: { backgroundColor: colors.border, height: spacing.md, width: StyleSheet.hairlineWidth },
-  // 可见高 28 + 上下 hitSlop 8 = 44;宽度直接给到 44,短标签(编辑 / 取消)也够,且相邻按钮不重叠。
-  statusAction: { alignItems: 'center', justifyContent: 'center', minHeight: 28, minWidth: 44 },
+  // 命中区 44×44 是按钮自身大小;短标签(编辑 / 取消)也够,相邻按钮不重叠。
+  statusAction: { alignItems: 'center', justifyContent: 'center', minHeight: 44, minWidth: 44 },
   statusActionText: { color: colors.textSecondary, fontSize: typeScale.footnote, fontWeight: fontWeight.medium, lineHeight: lineHeight.caption },
   statusActionTextPrimary: { color: colors.textPrimary },
   statusActionTextDisabled: { color: colors.textTertiary, fontWeight: fontWeight.regular },
