@@ -256,6 +256,7 @@ fn powershell_script(
     source: &std::path::Path,
     bootstrap: &std::path::Path,
     source_hash: &str,
+    input_hash: &str,
     child_args: &[String],
     remove_staging: bool,
 ) -> String {
@@ -279,13 +280,18 @@ fn powershell_script(
     script.push_str(&powershell_literal(&bootstrap.to_string_lossy()));
     script.push_str("; $expectedHash=");
     script.push_str(&powershell_literal(source_hash));
+    script.push_str("; $expectedInputHash=");
+    script.push_str(&powershell_literal(input_hash));
+    script.push_str(
+        "; $inputPath=Join-Path (Split-Path -Parent $source) 'cindy-windows-desktop-input.exe';",
+    );
     script.push_str("; $bootstrapDir=Split-Path -Parent $bootstrap; $stagingRoot=Split-Path -Parent $bootstrapDir; $programFiles=Split-Path -Parent $stagingRoot;");
     script.push_str(" $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');");
     script.push_str(" $writeMask=[System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership;");
-    script.push_str(" function Test-Protected([string]$Path) { $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop; if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }; $acl=$item.GetAccessControl(); if ($trusted -notcontains $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value) { return $false }; foreach ($rule in $acl.Access) { if ($rule.AccessControlType -ne 'Allow') { continue }; $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (($trusted -notcontains $sid) -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false } }; return $true };");
+    script.push_str(" function Test-Protected([string]$Path) { $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop; if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }; $acl=$item.GetAccessControl(); if ($trusted -notcontains $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value) { return $false }; foreach ($rule in $acl.Access) { if ($rule.AccessControlType -ne 'Allow' -or (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)) { continue }; $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (($trusted -notcontains $sid) -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false } }; return $true };");
     script.push_str(" if (-not (Test-Path -LiteralPath $programFiles) -or -not (Test-Protected $programFiles)) { exit 1 };");
     script.push_str(" foreach ($dir in @($stagingRoot,$bootstrapDir)) { if (Test-Path -LiteralPath $dir) { if (-not (Test-Protected $dir)) { exit 1 } } else { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; $security=New-Object System.Security.AccessControl.DirectorySecurity; $security.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'); Set-Acl -LiteralPath $dir -AclObject $security; if (-not (Test-Protected $dir)) { exit 1 } };");
-    script.push_str(" if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; Copy-Item -LiteralPath $source -Destination $bootstrap -Force; if (-not (Test-Protected $bootstrap)) { exit 1 }; if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; $child=Start-Process -FilePath $bootstrap -ArgumentList @(");
+    script.push_str(" if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; if ((Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedInputHash) { exit 1 }; if (Test-Path -LiteralPath $bootstrap) { if (-not (Test-Protected $bootstrap)) { exit 1 } }; Copy-Item -LiteralPath $source -Destination $bootstrap -Force; if (-not (Test-Protected $bootstrap)) { exit 1 }; if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; $child=Start-Process -FilePath $bootstrap -ArgumentList @(");
     script.push_str(&args);
     script.push_str(") -Wait -PassThru -WindowStyle Hidden;");
     if remove_staging {
@@ -314,8 +320,20 @@ pub fn elevate(installation: &Installation, child_args: &[String]) -> Staged<()>
         read_lock(&source.with_file_name(crate::naming::INPUT_EXE)).stage(Step::ElevateLaunch)?;
     let source_hash = Sha256::digest(std::fs::read(&source).stage(Step::ElevateLaunch)?);
     let source_hash = format!("{source_hash:x}");
+    let input_hash = Sha256::digest(
+        std::fs::read(source.with_file_name(crate::naming::INPUT_EXE))
+            .stage(Step::ElevateLaunch)?,
+    );
+    let input_hash = format!("{input_hash:x}");
     let mut child_args = child_args.to_vec();
     child_args.insert(1, source.to_string_lossy().into_owned());
+    if child_args
+        .first()
+        .is_some_and(|arg| arg == "--install-from")
+    {
+        child_args.insert(2, source_hash.clone());
+        child_args.insert(3, input_hash.clone());
+    }
     let remove_staging = child_args
         .first()
         .is_some_and(|arg| arg == "--uninstall-from");
@@ -323,6 +341,7 @@ pub fn elevate(installation: &Installation, child_args: &[String]) -> Staged<()>
         &source,
         &installation.bootstrap(),
         &source_hash,
+        &input_hash,
         &child_args,
         remove_staging,
     );
@@ -965,6 +984,8 @@ mod tests {
             "--install-from".to_owned(),
             r"C:\Users\dev user\resources\tools\remote-desktop\cindy-windows-desktop-host.exe"
                 .to_owned(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_owned(),
             "1234".to_owned(),
             "--development".to_owned(),
         ];
@@ -975,7 +996,8 @@ mod tests {
             Path::new(
                 r"C:\Program Files\Cindy Remote Desktop\abc\cindy-windows-desktop-bootstrap.exe",
             ),
-            "0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
             &args,
             false,
         );

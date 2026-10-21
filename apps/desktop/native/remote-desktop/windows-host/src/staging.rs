@@ -25,6 +25,7 @@
 use crate::naming::*;
 use crate::security;
 use crate::win::*;
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
@@ -127,11 +128,18 @@ fn read_exclusively(path: &Path) -> Staged<Vec<u8>> {
             FILE_SHARE_READ,
             ptr::null(),
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             ptr::null_mut(),
         )
     })
     .stage(Step::StageRead)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle.0, &mut info) } == 0 {
+        return Err(Failure::new(Step::StageRead, last_error()));
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return refuse(Step::StageRead);
+    }
     let mut file = unsafe { std::fs::File::from_raw_handle(handle.0.cast()) };
     mem::forget(handle);
     let length = file.metadata().stage(Step::StageRead)?.len();
@@ -191,8 +199,27 @@ pub fn stage(installation: &Installation) -> Staged<PathBuf> {
 /// The bootstrap itself is already in Program Files, so the helper from the
 /// user-writable installation is treated strictly as input bytes.
 pub fn stage_from(installation: &Installation, bundled: &Path) -> Staged<PathBuf> {
+    stage_from_verified(installation, bundled, None, None)
+}
+
+/// Stages helpers after the unelevated launcher has measured both source
+/// files. The elevated child re-reads them through non-reparse handles and
+/// compares those bytes before anything reaches the SYSTEM service.
+pub fn stage_from_verified(
+    installation: &Installation,
+    bundled: &Path,
+    expected_host_hash: Option<&str>,
+    expected_input_hash: Option<&str>,
+) -> Staged<PathBuf> {
     let host = read_exclusively(bundled)?;
     let input = read_exclusively(&bundled.with_file_name(INPUT_EXE))?;
+    if expected_host_hash.is_some_and(|expected| {
+        !format!("{:x}", Sha256::digest(&host)).eq_ignore_ascii_case(expected)
+    }) || expected_input_hash.is_some_and(|expected| {
+        !format!("{:x}", Sha256::digest(&input)).eq_ignore_ascii_case(expected)
+    }) {
+        return refuse(Step::StageRead);
+    }
 
     let directory_rights = Descriptor::parse(DIRECTORY_RIGHTS)?;
     let attributes = directory_rights.attributes();

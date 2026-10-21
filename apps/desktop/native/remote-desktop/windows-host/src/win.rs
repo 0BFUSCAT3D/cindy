@@ -35,17 +35,27 @@ pub fn system_file(name: &str) -> Result<PathBuf> {
 /// the protected PowerShell bootstrap copies them. The handle is held by the
 /// unelevated helper until the elevated child has finished.
 pub fn read_lock(path: &Path) -> Result<Handle> {
-    Handle::new(unsafe {
+    let handle = Handle::new(unsafe {
         CreateFileW(
             wide(&path.to_string_lossy()).as_ptr(),
             GENERIC_READ,
             FILE_SHARE_READ,
             ptr::null(),
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             ptr::null_mut(),
         )
-    })
+    })?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle.0, &mut info) } == 0 {
+        return Err(error());
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::from_raw_os_error(
+            ERROR_REPARSE_TAG_INVALID as i32,
+        ));
+    }
+    Ok(handle)
 }
 
 /// The elevated child is hidden, so its step and raw Win32 error have to cross

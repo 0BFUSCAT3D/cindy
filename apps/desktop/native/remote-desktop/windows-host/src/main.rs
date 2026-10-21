@@ -80,13 +80,20 @@ fn run() -> Staged<()> {
             service::install(&installation)?;
             service::authorize(&installation, pid)
         }
-        Some("--install-from") if args.len() == 3 || args.len() == 4 => {
+        Some("--install-from") if args.len() == 5 || args.len() == 6 => {
             let source = std::path::PathBuf::from(&args[1]);
-            let pid = args[2]
+            let expected_host_hash = &args[2];
+            let expected_input_hash = &args[3];
+            let pid = args[4]
                 .parse::<u32>()
                 .map_err(|_| Failure::new(Step::Args, 0))?;
-            let development = args.get(3).is_some_and(|arg| arg == "--development");
-            if args.len() == 4 && !development {
+            let development = args.get(5).is_some_and(|arg| arg == "--development");
+            if args.len() == 6 && !development
+                || expected_host_hash.len() != 64
+                || expected_input_hash.len() != 64
+                || !expected_host_hash.bytes().all(|b| b.is_ascii_hexdigit())
+                || !expected_input_hash.bytes().all(|b| b.is_ascii_hexdigit())
+            {
                 return refuse(Step::Args);
             }
             let installation = if development {
@@ -98,7 +105,12 @@ fn run() -> Staged<()> {
             // before replacing its host and input binaries, then stage bytes
             // read from the user installation as data.
             uninstall_before_install(&installation, &source)?;
-            staging::stage_from(&installation, &source)?;
+            staging::stage_from_verified(
+                &installation,
+                &source,
+                Some(expected_host_hash),
+                Some(expected_input_hash),
+            )?;
             service::install_staged(&installation)?;
             service::authorize(&installation, pid)
         }
