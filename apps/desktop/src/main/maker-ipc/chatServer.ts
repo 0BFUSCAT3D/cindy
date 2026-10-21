@@ -86,6 +86,7 @@ interface Running {
   execution: Execution; sessionId: string; clientId: string; accepted: boolean; started: number;
   /** The conversation this turn answers in (see executionLane); unknown until its source is read. */
   lane?: string;
+  laneLookup?: Promise<void>;
   context?: ExecutionContext;
   settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; retryAt: number; keepLease?: boolean };
   delivery?: Promise<void>;
@@ -1462,7 +1463,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const run: Running = { execution, sessionId: '', clientId: BOT_GROUP_CLIENT_ID.memberTurn(execution.conversation_id, execution.id, bot.id), accepted: false, started: Date.now(), lane };
     running.set(execution.id, run);
     // Until its conversation is known, this turn holds back the companion's other work.
-    if (!lane) void executionLane(execution).then(value => { run.lane = value; }, () => undefined);
+    resolveLane(run);
     try {
       z.object({ access_mode: z.enum(['owner', 'chat', 'tools']), access_revision: z.number().int().positive() }).parse(execution);
       run.context = ordinaryExecution(execution) ? { kind: 'message' }
@@ -1799,6 +1800,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const source = await readMessage(room, execution.source_message_id);
     return source?.threadRootId ? `${room}:thread:${source.threadRootId}` : `${room}:main`;
   }
+  /** Reads a turn's conversation once at a time; a failed read is tried again on the next claim pass. */
+  function resolveLane(run: Running) {
+    if (run.lane || run.laneLookup) return;
+    run.laneLookup = executionLane(run.execution).then(value => { run.lane = value; }, () => undefined)
+      .finally(() => { run.laneLookup = undefined; });
+  }
   const runsOf = (botId: string) => [...running.values()].filter(run => run.execution.bot_id === botId);
   /** Leases one execution: the oldest the server offers, or exactly `executionId`. */
   async function claim(actorId: string, executionId?: string): Promise<Execution | null> {
@@ -1829,14 +1836,19 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
     for (const room of [...rooms].sort()) {
       const rows = await api<Execution[]>(`/conversations/${room}/executions`);
-      for (const [executionId, hinted] of hints) if (hinted === room) hints.delete(executionId);
       const queued = rows.filter(row => row.bot_id === actorId && row.status === 'queued')
         .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id));
+      // A notice is dropped once its work is no longer queued, or once it waits behind a turn in
+      // its own conversation (that room is re-read anyway). A failed read or claim keeps it for the next pass.
+      for (const [executionId, hinted] of hints) if (hinted === room && !queued.some(row => row.id === executionId)) hints.delete(executionId);
       for (const row of queued) {
-        const lane = await executionLane(row);
-        if (lanes.has(lane)) continue;
+        let lane: string;
+        try { lane = await executionLane(row); } catch { continue; }
+        if (lanes.has(lane)) { hints.delete(row.id); continue; }
+        // A claim failure (such as a rate limit) is reported to the poll, and keeps the notice.
         const execution = await claim(actorId, row.id);
         if (!execution) continue;
+        hints.delete(row.id);
         lanes.add(lane);
         void runExecution(execution, lane);
       }
@@ -1853,6 +1865,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
       && !(companionHome && (companion?.isShadowed(a.externalId) || !companion?.installConfirmed(a.externalId))));
     // A turn whose conversation is not yet known holds back the rest of its companion's work.
+    for (const actor of owned) for (const run of runsOf(actor.id)) resolveLane(run);
     const ready = owned.filter(a => runsOf(a.id).every(run => run.lane));
     settledValues(await settleBounded(ready, ready.length, async actor => {
       const runs = runsOf(actor.id);
