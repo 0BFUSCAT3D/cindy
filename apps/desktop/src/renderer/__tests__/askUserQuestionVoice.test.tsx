@@ -74,6 +74,24 @@ describe('AskUserQuestion voice entry', () => {
     expect(view.getByPlaceholderText('请输入回答…')).toBeTruthy();
   });
 
+  it('puts the voice button before the free-text number badge so the badges stay in one column', () => {
+    const { view } = renderAsk([
+      { question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] },
+    ]);
+
+    const voice = view.getByTestId('ask-user-voice');
+    const badge = view.getByTestId('ask-user-custom-badge');
+    // Same row, badge last: it ends at the row's right padding like the option badges.
+    expect(badge.parentElement).toBe(voice.parentElement);
+    expect(badge.parentElement!.lastElementChild).toBe(badge);
+    expect(voice.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(view.getByRole('button', { name: '输入其他回答…' })).toBeTruthy();
+
+    fireEvent.click(badge);
+    expect(view.getByPlaceholderText('请输入回答…')).toBeTruthy();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it('keeps the voice button in the same bottom-pinned cluster as the send button', () => {
     const { view } = renderAsk([
       { question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] },
@@ -238,6 +256,142 @@ describe('AskUserQuestion voice entry', () => {
       }
     }
     expect((view.getByText('跳过').closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('voice shortcut ownership across cards', () => {
+  type ShortcutPayload = { id?: string; phase?: 'start' | 'tap' | 'end' };
+  let previousApi: typeof window.electronAPI;
+  let listeners: Set<(payload?: ShortcutPayload) => void>;
+  let claimed: string[];
+
+  beforeEach(() => {
+    previousApi = window.electronAPI;
+    listeners = new Set();
+    claimed = [];
+    window.electronAPI = {
+      voiceInput: {
+        onGlobalShortcutTrigger: (callback: (payload?: ShortcutPayload) => void) => {
+          listeners.add(callback);
+          return () => { listeners.delete(callback); };
+        },
+        claimGlobalShortcutTrigger: (id: string) => { claimed.push(id); },
+        getDataSnapshot: () => ({ settings: { shortcut: null } }),
+      },
+    } as unknown as typeof window.electronAPI;
+  });
+
+  afterEach(() => {
+    window.electronAPI = previousApi;
+  });
+
+  // The preload fans one trigger out to every subscriber in the window.
+  const press = (payload: ShortcutPayload) => act(async () => {
+    for (const listener of [...listeners]) listener(payload);
+  });
+
+  function cardProps(index: number, viewerState: 'expanded' | 'minimized' = 'expanded', preferred = false) {
+    return {
+      voiceShortcutPreferred: preferred,
+      sessionId: `pane-${index}`,
+      pending: { requestId: `req-${index}`, questions: [{ question: `第 ${index} 题？`, options: [{ label: '甲' }, { label: '乙' }] }] },
+      onAnswer: vi.fn(),
+      viewerState,
+      onViewerStateChange: () => {},
+      draft: null,
+      onDraftChange: () => {},
+    };
+  }
+
+  function renderPanes(states: Array<'expanded' | 'minimized'> = ['expanded', 'expanded'], preferredIndex?: number) {
+    const tree = (current: typeof states) => createElement('div', null,
+      createElement('input', { 'data-testid': 'sidebar-search' }),
+      ...current.map((state, index) => createElement('section', { key: index, 'data-testid': `pane-${index}` },
+        createElement(AskUserQuestionPrompt, cardProps(index, state, index === preferredIndex)))),
+    );
+    const view = render(tree(states));
+    const voiceIn = (index: number) => within(view.getByTestId(`pane-${index}`)).getByTestId('ask-user-voice');
+    return { view, voiceIn, rerender: (next: typeof states) => view.rerender(tree(next)) };
+  }
+
+  it('gives the press to the most recently shown card when focus is in neither', async () => {
+    const { voiceIn } = renderPanes();
+    await press({ id: 'p1', phase: 'start' });
+
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    expect(voiceIn(1).getAttribute('aria-pressed')).toBe('true');
+    expect(voiceIn(0).getAttribute('aria-pressed')).toBe('false');
+    expect(claimed).toEqual(['p1']);
+  });
+
+  it('gives an unfocused press to the Orca lead card over a newer worker card', async () => {
+    const { voiceIn } = renderPanes(['expanded', 'expanded'], 0);
+    await press({ id: 'p1', phase: 'start' });
+
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    expect(voiceIn(0).getAttribute('aria-pressed')).toBe('true');
+    expect(voiceIn(1).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('still gives the press to a focused worker card over the Orca lead card', async () => {
+    const { view, voiceIn } = renderPanes(['expanded', 'expanded'], 0);
+    within(view.getByTestId('pane-1')).getByRole('button', { name: '输入其他回答…' }).focus();
+    await press({ id: 'p1', phase: 'start' });
+
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    expect(voiceIn(1).getAttribute('aria-pressed')).toBe('true');
+    expect(voiceIn(0).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('follows keyboard focus to an older card', async () => {
+    const { view, voiceIn } = renderPanes();
+    within(view.getByTestId('pane-0')).getByRole('button', { name: '输入其他回答…' }).focus();
+    await press({ id: 'p1', phase: 'start' });
+
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    expect(voiceIn(0).getAttribute('aria-pressed')).toBe('true');
+    expect(voiceIn(1).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('leaves the press unclaimed when another text field has focus', async () => {
+    const { view } = renderPanes();
+    view.getByTestId('sidebar-search').focus();
+    await press({ id: 'p1', phase: 'start' });
+
+    expect(start).not.toHaveBeenCalled();
+    // Unclaimed, the main process falls back to the global voice overlay.
+    expect(claimed).toEqual([]);
+  });
+
+  it('lets the card that is recording take the next press, wherever focus is', async () => {
+    const { view, voiceIn } = renderPanes();
+    fireEvent.click(voiceIn(0));
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    view.getByTestId('sidebar-search').focus();
+
+    await press({ id: 'p2', phase: 'start' });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(voiceIn(1).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('stops a minimized card that is recording, and never starts one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const { voiceIn, rerender } = renderPanes(['expanded']);
+    // Fake performance starts at zero; pass the initial 250ms shortcut guard.
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    fireEvent.click(voiceIn(0));
+    expect(start).toHaveBeenCalledOnce();
+
+    rerender(['minimized']);
+    await press({ id: 'p1', phase: 'start' });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(claimed).toEqual(['p1']);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    await press({ id: 'p2', phase: 'start' });
+    expect(start).toHaveBeenCalledOnce();
+    expect(claimed).toEqual(['p1']);
   });
 });
 

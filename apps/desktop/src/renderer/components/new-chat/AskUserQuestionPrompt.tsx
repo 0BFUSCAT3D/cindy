@@ -40,6 +40,7 @@ import { cn } from '@/lib/utils';
 import type { AskUserDraft, AskUserViewerState, PendingAskUser } from '@/lib/makerChatStore';
 import { requestRendererMicrophonePermission } from '@/voice-input/startGuards';
 import { formatVoiceInputShortcut, isVoiceInputShortcutMatch } from '@/voice-input/shortcut';
+import { nextAskUserVoiceShortcutOrder, registerAskUserVoiceShortcutCard } from './askUserVoiceShortcutOwner';
 import { useAskUserDictation } from './useAskUserDictation';
 import { parseVoiceQuestionSelection, type VoiceQuestionBridge, type VoiceQuestionTarget } from './voiceQuestionSelection';
 
@@ -83,6 +84,11 @@ function AutoGrowingAnswerTextarea({
 
 interface AskUserQuestionPromptProps {
   voiceBridge?: VoiceQuestionBridge;
+  /**
+   * The card belongs to an Orca lead. When no card holds focus, the voice
+   * shortcut goes to a lead card before a worker card that appeared later.
+   */
+  voiceShortcutPreferred?: boolean;
   sessionId?: string;
   workingDir?: string;
   remoteHostId?: string | null;
@@ -153,6 +159,7 @@ function AskUserQuestionForm({
   draft,
   onDraftChange,
   voiceBridge,
+  voiceShortcutPreferred = false,
 }: AskUserQuestionPromptProps) {
   const { t } = useTranslation();
   const { requestId, questions } = pending;
@@ -248,6 +255,9 @@ function AskUserQuestionForm({
   // listener — an effect-local flag would be lost and the tap would stop the
   // recording the same press just started.
   const voiceShortcutStartedPressRef = useRef(false);
+  // This form remounts for every new session, request or question set, so the
+  // mount order is the order in which cards appeared.
+  const [voiceShortcutOrder] = useState(nextAskUserVoiceShortcutOrder);
   const answerValue = dictation.liveText ?? customInput;
   const voiceShortcutLabel = formatVoiceInputShortcut(getVoiceInputSettings().shortcut);
   const voiceButtonLabel = dictation.isBusy
@@ -510,10 +520,15 @@ function AskUserQuestionForm({
 
   useEffect(() => {
     if (voiceBridge) return;
+    // Every card hears each press; the owner check lets exactly one act. A
+    // minimized card hides its microphone, so it may only stop a running take.
+    const shortcutCard = registerAskUserVoiceShortcutCard(voiceShortcutOrder, {
+      preferred: voiceShortcutPreferred,
+      getElement: () => cardRef.current,
+      isBusy: () => dictationRef.current.isBusy || pendingVoiceStartRef.current,
+      canStart: () => viewerState !== 'minimized',
+    });
     const claim = (phase?: 'start' | 'tap' | 'end') => {
-      // Minimized hides the microphone, so only let the shortcut stop a run
-      // that is already recording.
-      if (viewerState === 'minimized' && !dictationRef.current.isBusy) return;
       const now = performance.now();
       if (now - voiceShortcutAtRef.current < 250) return;
       voiceShortcutAtRef.current = now;
@@ -539,27 +554,27 @@ function AskUserQuestionForm({
       beginVoiceInput();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || event.isComposing) return;
+      if (event.repeat || event.isComposing || event.defaultPrevented) return;
       const shortcut = getVoiceInputSettings().shortcut;
       if (!isVoiceInputShortcutMatch(event, shortcut)) return;
-      // The answer field is the dictation target. Yield only when some other
-      // editor (sidebar search, a dialog) owns the key.
-      if (event.target !== inputRef.current && shouldCardShortcutYield(event, 'character', cardRef.current)) return;
+      if (!shortcutCard.owns(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
       claim();
     };
     window.addEventListener('keydown', onKeyDown, true);
     const unsubscribe = window.electronAPI?.voiceInput?.onGlobalShortcutTrigger?.((payload) => {
-      if (viewerState === 'minimized') return;
+      // Leaving a press unclaimed lets the composer or the global overlay take it.
+      if (!shortcutCard.owns(document.activeElement)) return;
       if (payload?.id) window.electronAPI.voiceInput.claimGlobalShortcutTrigger(payload.id);
       claim(payload?.phase);
     });
     return () => {
+      shortcutCard.dispose();
       window.removeEventListener('keydown', onKeyDown, true);
       unsubscribe?.();
     };
-  }, [beginVoiceInput, viewerState, voiceBridge]);
+  }, [beginVoiceInput, viewerState, voiceBridge, voiceShortcutOrder, voiceShortcutPreferred]);
 
   // ── Custom input submit (single-select mode) ──
   const handleCustomSubmit = useCallback(() => {
@@ -909,28 +924,36 @@ function AskUserQuestionForm({
             </div>
           </div>
         ) : (
+          // The number badge stays last so it lines up with the option badges
+          // above; the microphone sits just before it, the same order as the
+          // expanded answer row (mic, then send).
           <div className="flex items-center gap-2 px-[16px] py-[8px]">
             <button
               type="button"
               className={cn(
-                'flex min-w-0 flex-1 items-center justify-between py-[6px] text-left',
+                'flex min-w-0 flex-1 items-center gap-3 py-[6px] text-left',
                 'transition-colors hover:bg-[var(--ask-option-hover)]',
               )}
               onClick={handleCustomOptionClick}
             >
-              <div className="flex items-center gap-3">
-                {isMultiSelect && (
-                  <div className="h-[18px] w-[18px] shrink-0 rounded-[4px] border-[1.5px] border-[var(--ask-checkbox-border)]" />
-                )}
-                <span className="text-14 italic text-[var(--ask-option-custom)]">
-                  {t('chat.askUserQuestion.customAnswer')}
-                </span>
-              </div>
-              <div className="ml-3 flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[8px] bg-[var(--ask-badge-bg)] text-13 font-medium text-[var(--ask-badge-text)]">
-                {options.length + 1}
-              </div>
+              {isMultiSelect && (
+                <div className="h-[18px] w-[18px] shrink-0 rounded-[4px] border-[1.5px] border-[var(--ask-checkbox-border)]" />
+              )}
+              <span className="text-14 italic text-[var(--ask-option-custom)]">
+                {t('chat.askUserQuestion.customAnswer')}
+              </span>
             </button>
             {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} onClick={beginVoiceInput} />)}
+            {/* Pointer shortcut only: the row button above and the number key
+                already give keyboard and screen-reader users this action. */}
+            <div
+              aria-hidden="true"
+              data-testid="ask-user-custom-badge"
+              onClick={handleCustomOptionClick}
+              className="flex h-[28px] w-[28px] shrink-0 cursor-pointer items-center justify-center rounded-[8px] bg-[var(--ask-badge-bg)] text-13 font-medium text-[var(--ask-badge-text)]"
+            >
+              {options.length + 1}
+            </div>
           </div>
         )}
       </div>
