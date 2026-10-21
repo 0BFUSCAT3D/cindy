@@ -11,7 +11,6 @@ const h = vi.hoisted(() => ({
   profileListeners: new Set<() => void>(),
 }));
 // 工作台在右侧栏里有自己的数据订阅，这里只验证伙伴对话的挂载与读位。
-vi.mock('@/features/right-sidebar/lib/openBotWorkbenchTab', () => ({ ensureBotWorkbenchTab: vi.fn(async () => {}) }));
 vi.mock('../botStore', async () => {
   const { useSyncExternalStore } = await import('react');
   return {
