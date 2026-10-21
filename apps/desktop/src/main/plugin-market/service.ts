@@ -3780,7 +3780,7 @@ export class PluginMarketService {
       // their locks. Only this refresh's read-only installation view is shared.
       return this.projectLocalInstallSnapshot(ghosts, installations ?? ledger.read().installations, refresh.identities.values);
     }
-    throw new Error('Plugin installations changed repeatedly while reading market identities');
+    throwIpcError('PRECONDITION_FAILED', 'Plugin installations changed repeatedly while reading market identities');
   }
 
   private projectLocalInstallSnapshot(

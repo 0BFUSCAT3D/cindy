@@ -1077,6 +1077,30 @@ describe('PluginMarketService migration and defaultInstall', () => {
     }
   });
 
+  // IPC error contract / CI regression: exhausting async identity retries must
+  // remain a retryable PRECONDITION_FAILED, not become an unstructured INTERNAL.
+  // Unit: one plugin toggles during each of three manifest reads; ordinary
+  // snapshot tests cannot reach this bounded-retry failure branch.
+  it('returns a structured precondition error when installations keep changing during identity reads', async () => {
+    const item = summary();
+    const h = harness([item]);
+    runtime.ghosts = [ghostEntry(item.ghostId)];
+    const open = fs.promises.open;
+    const read = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (path.basename(String(args[0])) === 'ghost.json') {
+        runtime.ghosts[0] = { ...runtime.ghosts[0]!, enabled: !runtime.ghosts[0]!.enabled };
+      }
+      return handle;
+    });
+    try {
+      await expect(h.service.snapshot({ discoveryOnly: true })).rejects.toThrow('[PRECONDITION_FAILED]');
+      expect(runtime.install).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   // Even a reused installation view must let the native message pump run
   // between reconciliation phases; one unchanged refresh scans only once.
   it('lets a queued event run while sharing one market reconciliation scan', async () => {
