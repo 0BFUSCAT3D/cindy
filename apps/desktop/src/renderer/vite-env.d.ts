@@ -6485,7 +6485,7 @@ interface ElectronAPI {
     /** 输入框开始打字时提前启动 Agent；尽力而为。 */
     prewarmSession?: (sessionId: string, createOpts: unknown) => Promise<{ accepted: boolean }>;
     /** 新建页的未发送任务：清空输入时删除 / 第一次发送前转为普通任务（仅本机）。 */
-    discardProvisionalSession?: (sessionId: string) => Promise<{ discarded: boolean }>;
+    discardProvisionalSession?: (sessionId: string) => Promise<{ discarded: boolean; remaining?: boolean }>;
     commitProvisionalSession?: (sessionId: string) => Promise<{ committed: boolean }>;
     setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
     getPluginWriteAccessRecovery: (sessionId: string) => Promise<{available: boolean}>;

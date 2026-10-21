@@ -27,9 +27,14 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import {
+  getProvisionalDraftTaskId,
+  subscribeProvisionalDraftTaskId,
+} from './lib/provisionalDraftTaskId';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { SessionRouteOriginGate } from './SessionRouteOriginGate';
@@ -788,6 +793,12 @@ export function createWritableDirRemovalQueue() {
 
 export function CCAgentSessionView(props: CCAgentSessionViewProps) {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const provisionalDraftId = useSyncExternalStore(subscribeProvisionalDraftTaskId, getProvisionalDraftTaskId);
+  // 新建页里还没发送的任务从任何入口(侧栏、搜索、深链)打开都回到新建页继续编辑:
+  // 工作区、协同等草稿选项只在新建页上有。
+  if (!props.sessionIdProp && sessionId && sessionId === provisionalDraftId) {
+    return <Navigate to="/cc-agent/new" replace />;
+  }
   return (
     <SessionRouteOriginGate sessionId={props.sessionIdProp ?? sessionId}
       ownsWindowRoute={!props.navigationMode || props.navigationMode === 'route-owner'}>

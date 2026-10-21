@@ -1,5 +1,6 @@
 import { ensureOpenedProjectGit, openSession } from '../sessionOpening.js';
 import {
+  claimOwnedProvisionalSession,
   configureProvisionalSessions,
   deleteUnsentSessionRow,
   forgetProvisionalSession,
@@ -1092,7 +1093,8 @@ export async function touchUserSendInDb(id: string, atMs?: number): Promise<void
  * 不是未发送任务时什么都不做。最近项目由随后的 touchUserSend 照常记录。
  */
 export async function commitProvisionalSession(sessionId: string): Promise<boolean> {
-  if (!forgetProvisionalSession(sessionId)) return false;
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  forgetProvisionalSession(sessionId);
   const [row] = await getDbClient()
     .drizzle.select({
       workingDir: sessions.workingDir,
@@ -1127,7 +1129,7 @@ export async function commitProvisionalSession(sessionId: string): Promise<boole
  * 顺带删掉为它新建、仍为空的对话目录，并通知本机窗口移除。调用方负责先关掉它的 Agent。
  */
 export async function discardProvisionalSessionRow(sessionId: string): Promise<boolean> {
-  if (!isProvisionalSession(sessionId)) return false;
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
   const deleted = await deleteUnsentSessionRow(sessionId);
   if (!deleted) {
     // Already sent (or gone): it is an ordinary task now.
@@ -1356,7 +1358,10 @@ export function registerSessionIpc(
   opts: RegisterSessionIpcOpts = {},
 ): void {
   registeredSessionIpcOpts = opts;
-  configureProvisionalSessions(() => app.getPath('userData'));
+  configureProvisionalSessions(() => app.getPath('userData'), {
+    // Windows that listed before the sweep finished drop the deleted leftover.
+    onSwept: (sessionId) => emitSessionListChangedLocally(sessionId),
+  });
   // interrupted-turn-resume 假阳性修复:每次 last_turn_ended_at 真正落库(正常收尾 /
   // barrier 版收尾 / ack)都广播 lastTurnEndedAt patch —— renderer 的 session 快照可能
   // 是在 turn 飞行中或「done → ended 落库」空窗里取的(startedAt > endedAt),此前
@@ -1391,8 +1396,9 @@ export function registerSessionIpc(
       void import('../../sessionTaskSummary.js').then((m) => m.backfillPinnedSessionSummaries());
       // 首次 list 即账号库就绪:预热插件后台任务索引,灵动岛/通知的同步判定从此可用。
       void ensureHiddenSessionRegistryLoaded();
-      // 同一时机清掉上次运行没来得及删的未发送任务。
-      void sweepLeftoverProvisionalSessions().catch(() => {});
+      // 同一时机清掉上次运行没来得及删的未发送任务；先等它清完再读列表，残留不会被列出来。
+      // 每个账号库只真正清理一次，之后直接返回同一个结果。
+      await sweepLeftoverProvisionalSessions().catch(() => undefined);
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);

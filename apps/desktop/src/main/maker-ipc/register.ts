@@ -18063,11 +18063,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   ipcMain.handle(
     MAKER_INVOKE.SESSION_DISCARD_PROVISIONAL,
-    async (event, sessionId: unknown): Promise<{ discarded: boolean }> => {
+    async (event, sessionId: unknown): Promise<{ discarded: boolean; remaining: boolean }> => {
       const sid = requireSessionId(sessionId);
       // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
       assertTrustedAppRendererEvent(event);
-      if (!isProvisionalSession(sid)) return { discarded: false };
+      if (!isProvisionalSession(sid)) return { discarded: false, remaining: false };
       // Under the send lock: a prewarm that is still starting finishes first, and one queued
       // behind us finds no row and does nothing.
       const discarded = await withSendToSessionLock(sid, async () => {
@@ -18080,7 +18080,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (maker.getSession(sid)) return false;
         return discardProvisionalSessionRow(sid);
       });
-      return { discarded };
+      // remaining: the unsent task still exists (its runtime could not be closed), so the
+      // renderer keeps tracking it and retries instead of reopening the same id.
+      return { discarded, remaining: !discarded && isProvisionalSession(sid) };
     },
   );
 

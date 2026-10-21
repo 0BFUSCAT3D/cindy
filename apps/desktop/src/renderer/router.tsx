@@ -14,7 +14,7 @@ import { LocalDbGate } from '@/components/auth/LocalDbGate';
 import { CCAgentFeatureLayout } from '@/features/cc-agent/CCAgentFeatureLayout';
 import { CCAgentIndexRedirect } from '@/features/cc-agent/CCAgentIndexRedirect';
 import { SecondaryWindowBootGate } from '@/features/cc-agent/SecondaryWindowBootGate';
-import { CCAgentSessionRoute } from '@/features/cc-agent/CCAgentSessionRoute';
+import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import { NewMakerDraftRoute } from '@/features/cc-agent/NewMakerDraftRoute';
 import { OrcaWorkflowRoute } from '@/features/cc-agent/OrcaWorkflowRoute';
 import { WorkdirBrowseRoute } from '@/features/cc-agent/workdir-browse/WorkdirBrowseRoute';
@@ -114,7 +114,7 @@ export const router = createHashRouter([
                       { path: 'files/:sessionId', element: <WorkdirBrowseRoute /> },
                       { path: 'orca/new', element: <Navigate to="/cc-agent/new" replace /> },
                       { path: 'orca/:sessionId', element: <OrcaWorkflowRoute /> },
-                      { path: ':sessionId', element: <CCAgentSessionRoute /> },
+                      { path: ':sessionId', element: <CCAgentSessionView /> },
                     ],
                   },
                   {

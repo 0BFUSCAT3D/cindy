@@ -13,6 +13,11 @@
 
 import type { JSONContent } from '@tiptap/core';
 
+import {
+  getDataOwnerGeneration,
+  isDataOwnerIdCurrent,
+  type DataOwnerGeneration,
+} from '@/contexts/dataOwnerGeneration';
 import type { Session } from '@/lib/ccAgent.types';
 import { createLogger } from '@/lib/logger';
 import { makerChatStore } from '@/lib/makerChatStore';
@@ -51,6 +56,8 @@ interface Current {
   key: string;
   session: Session;
   title: string | null;
+  /** 建它时的账号：切换账号后它属于另一个账号的库，不能再接着用。 */
+  owner: DataOwnerGeneration;
 }
 
 let current: Current | null = null;
@@ -107,20 +114,38 @@ export function provisionalDraftTaskGeneration(): number {
   return generation;
 }
 
-async function discardCurrent(): Promise<void> {
-  const target = current;
-  if (!target) return;
+/**
+ * 切换账号后旧账号的未发送任务不再归这里管：只放手，不去当前账号的库里删
+ * (任务所在电脑会把它留作残留，等那个账号下次就绪时清理)。
+ */
+function releaseForeignCurrent(): void {
+  if (!current || isDataOwnerIdCurrent(current.owner)) return;
   current = null;
   notify();
-  if (target.title) emitAutoTitlePreviewCleared(target.id);
+}
+
+/** 删掉当前未发送任务。删不掉(Agent 关不掉等)时保留它，之后再试，不复用同一个 id 重建。 */
+async function discardCurrent(): Promise<boolean> {
+  releaseForeignCurrent();
+  const target = current;
+  if (!target) return true;
+  let removed = false;
   try {
-    await window.electronAPI.maker.discardProvisionalSession?.(target.id);
+    const result = await window.electronAPI.maker.discardProvisionalSession?.(target.id);
+    removed = !result?.remaining;
   } catch (error) {
     log.warn('discard provisional task failed', error);
   }
+  if (!removed) return false;
+  if (current === target) {
+    current = null;
+    notify();
+  }
+  if (target.title) emitAutoTitlePreviewCleared(target.id);
   // Removed outright (not marked deleted): the same id may be opened again if the user types again.
   sessionsStore.removeLocal(target.id);
-  makerChatStore.purgeSession?.(target.id);
+  makerChatStore.purgeSession(target.id);
+  return true;
 }
 
 /**
@@ -131,10 +156,12 @@ export function ensureProvisionalDraftTask(
   args: ProvisionalDraftCreateArgs,
 ): Promise<Session | null> {
   return serial(async () => {
+    releaseForeignCurrent();
     const key = provisionalDraftArgsKey(args);
     if (current && current.id === args.id && current.key === key) return current.session;
-    await discardCurrent();
+    if (!(await discardCurrent())) return null;
     if (!canOpenProvisionalDraftTask(args)) return null;
+    const owner = getDataOwnerGeneration();
     let session: Session;
     try {
       session = await sessionService.create({ ...args, provisional: true });
@@ -142,7 +169,9 @@ export function ensureProvisionalDraftTask(
       log.info('provisional task not opened', error);
       return null;
     }
-    current = { id: session.id, key, session, title: null };
+    // The account changed while the task was being created: it belongs to the old account.
+    if (!isDataOwnerIdCurrent(owner)) return null;
+    current = { id: session.id, key, session, title: null, owner };
     generation += 1;
     // Register the id before the row enters the list, so grouping already sees it as unsent.
     notify();
@@ -153,7 +182,9 @@ export function ensureProvisionalDraftTask(
 
 /** 输入清空 / 草稿不再适合提前建任务：删掉未发送任务。 */
 export function discardProvisionalDraftTask(): Promise<void> {
-  return serial(discardCurrent);
+  return serial(async () => {
+    await discardCurrent();
+  });
 }
 
 /**
@@ -164,6 +195,7 @@ export function takeProvisionalDraftTask(
   args: ProvisionalDraftCreateArgs,
 ): Promise<Session | null> {
   return serial(async () => {
+    releaseForeignCurrent();
     if (!current) return null;
     if (current.id !== args.id || current.key !== provisionalDraftArgsKey(args)) {
       await discardCurrent();

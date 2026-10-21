@@ -31,14 +31,23 @@ interface Entry {
 }
 
 let resolveFileDir: (() => string) | null = null;
-const live = new Map<string, Entry>();
-/** 上次运行留下、尚未清理的登记（按账号库逐个清理）。 */
+let onLeftoverSwept: ((sessionId: string) => void) | null = null;
+/** 本次运行建出的未发送任务，记下所属账号库(切换账号后不拿它去碰另一个账号的库)。 */
+const live = new Map<string, Entry & { owner: object | null }>();
+/** 上次运行(或其它账号)留下、尚未清理的登记（按账号库逐个清理）。 */
 let leftovers: Entry[] | null = null;
-const sweptOwners = new WeakSet<object>();
+const sweeps = new WeakMap<object, Promise<string[]>>();
 
-/** Host 启动时注入 userData 目录(用到时才解析)；未注入时只用内存登记。 */
-export function configureProvisionalSessions(userDataDir: string | (() => string)): void {
+/**
+ * Host 启动时注入 userData 目录(用到时才解析)；未注入时只用内存登记。
+ * `onSwept`：残留被删掉后通知一次(让本机窗口刷新任务列表)。
+ */
+export function configureProvisionalSessions(
+  userDataDir: string | (() => string),
+  opts: { onSwept?: (sessionId: string) => void } = {},
+): void {
   resolveFileDir = typeof userDataDir === 'string' ? () => userDataDir : userDataDir;
+  onLeftoverSwept = opts.onSwept ?? null;
 }
 
 function filePath(): string | null {
@@ -77,7 +86,10 @@ function loadLeftovers(): Entry[] {
 function persist(): void {
   const file = filePath();
   if (!file) return;
-  const entries = [...loadLeftovers(), ...live.values()];
+  const entries = [
+    ...loadLeftovers(),
+    ...[...live.values()].map(({ id, createdAt }) => ({ id, createdAt })),
+  ];
   try {
     if (entries.length === 0) {
       fs.rmSync(file, { force: true });
@@ -95,12 +107,27 @@ function persist(): void {
 
 export function markProvisionalSession(sessionId: string, now = Date.now()): void {
   loadLeftovers();
-  live.set(sessionId, { id: sessionId, createdAt: now });
+  live.set(sessionId, { id: sessionId, createdAt: now, owner: getCurrentDbClientSnapshot() });
   persist();
 }
 
+/** 未发送任务(含还没清理掉的残留)：只在本机可见，不推给控制端。 */
 export function isProvisionalSession(sessionId: string): boolean {
-  return live.has(sessionId);
+  return live.has(sessionId) || loadLeftovers().some((entry) => entry.id === sessionId);
+}
+
+/**
+ * 转正 / 删除前确认这条未发送任务属于当前账号库。属于其它账号(中途切换了账号)时
+ * 不碰当前库，把它留作残留，等那个账号下次就绪时清理。
+ */
+export function claimOwnedProvisionalSession(sessionId: string): 'owned' | 'foreign' | 'none' {
+  const entry = live.get(sessionId);
+  if (!entry) return 'none';
+  if (entry.owner === getCurrentDbClientSnapshot()) return 'owned';
+  live.delete(sessionId);
+  loadLeftovers().push({ id: entry.id, createdAt: entry.createdAt });
+  persist();
+  return 'foreign';
 }
 
 /** Forget the provisional mark (the task was sent, or was deleted). True when it was provisional. */
@@ -149,16 +176,27 @@ export function removeEmptyDialogueDir(sessionId: string, workingDir: string | n
 
 /**
  * Account database is ready: delete the unsent tasks a previous run left behind in it.
- * Runs once per database owner; entries from other accounts wait for that account.
+ * Runs once per database owner (callers share the same run and can await it before
+ * listing tasks); entries from other accounts wait for that account. Resolves to the
+ * ids that were deleted.
  */
-export async function sweepLeftoverProvisionalSessions(now = Date.now()): Promise<void> {
+export async function sweepLeftoverProvisionalSessions(now = Date.now()): Promise<string[]> {
   const owner = getCurrentDbClientSnapshot();
-  if (!owner || sweptOwners.has(owner)) return;
-  sweptOwners.add(owner);
-  const pending = loadLeftovers();
-  if (pending.length === 0) return;
+  if (!owner) return [];
+  let run = sweeps.get(owner);
+  if (!run) {
+    run = sweepOwner(now);
+    sweeps.set(owner, run);
+  }
+  return run;
+}
+
+async function sweepOwner(now: number): Promise<string[]> {
+  const pending = [...loadLeftovers()];
+  if (pending.length === 0) return [];
   const db = getDbClient().drizzle;
   const keep: Entry[] = [];
+  const removed: string[] = [];
   for (const entry of pending) {
     try {
       const [row] = await db
@@ -171,6 +209,10 @@ export async function sweepLeftoverProvisionalSessions(now = Date.now()): Promis
         continue;
       }
       const deleted = await deleteUnsentSessionRow(entry.id);
+      if (deleted) {
+        removed.push(entry.id);
+        onLeftoverSwept?.(entry.id);
+      }
       if (deleted?.workspaceKind === 'dialogue') removeEmptyDialogueDir(entry.id, deleted.workingDir);
       log.info('provisional session leftover swept', { sessionId: entry.id, deleted: !!deleted });
     } catch (error) {
@@ -181,13 +223,17 @@ export async function sweepLeftoverProvisionalSessions(now = Date.now()): Promis
       });
     }
   }
-  leftovers = keep;
+  // Entries parked while this sweep ran (account switched mid-way) stay as leftovers too.
+  const parked = loadLeftovers().filter((entry) => !pending.includes(entry));
+  leftovers = [...keep, ...parked];
   persist();
+  return removed;
 }
 
 /** Test-only reset. */
 export function resetProvisionalSessionsForTest(): void {
   resolveFileDir = null;
+  onLeftoverSwept = null;
   live.clear();
   leftovers = null;
 }

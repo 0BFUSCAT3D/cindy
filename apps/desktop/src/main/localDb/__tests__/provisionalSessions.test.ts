@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../client/current.js';
 import {
+  claimOwnedProvisionalSession,
   configureProvisionalSessions,
   deleteUnsentSessionRow,
   isProvisionalSession,
@@ -82,8 +83,10 @@ describe('provisional sessions', () => {
     db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run('unsent', 'dialogue', dialogueDir, null);
     db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run('sent-later', 'project', '/repo', 2_000);
     configureProvisionalSessions(userData);
+    // Until swept, a leftover still counts as unsent (hidden from controllers).
+    expect(isProvisionalSession('unsent')).toBe(true);
+    await expect(sweepLeftoverProvisionalSessions(5_000)).resolves.toEqual(['unsent']);
     expect(isProvisionalSession('unsent')).toBe(false);
-    await sweepLeftoverProvisionalSessions(5_000);
 
     expect(rowExists(db, 'unsent')).toBe(false);
     expect(fs.existsSync(dialogueDir)).toBe(false);
@@ -101,6 +104,19 @@ describe('provisional sessions', () => {
     await sweepLeftoverProvisionalSessions(2_000);
     const saved = JSON.parse(fs.readFileSync(path.join(userData, 'provisional-sessions.json'), 'utf8'));
     expect(saved.entries.map((entry: { id: string }) => entry.id)).toEqual(['other-account']);
+  });
+
+  it('after an account switch, leaves the old account\'s unsent task for that account to clean up', async () => {
+    configureProvisionalSessions(userData);
+    openDb();
+    markProvisionalSession('from-a', 1_000);
+    detach?.();
+    openDb(); // account B
+    expect(claimOwnedProvisionalSession('from-a')).toBe('foreign');
+    // Still hidden from controllers, and kept on disk for account A's next sweep.
+    expect(isProvisionalSession('from-a')).toBe(true);
+    const saved = JSON.parse(fs.readFileSync(path.join(userData, 'provisional-sessions.json'), 'utf8'));
+    expect(saved.entries.map((entry: { id: string }) => entry.id)).toEqual(['from-a']);
   });
 
   it('only hard-deletes a task that is still unsent and has no messages', async () => {

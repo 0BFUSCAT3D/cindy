@@ -21,6 +21,8 @@ vi.mock('@/lib/sessionsBus', () => ({
   emitAutoTitlePreviewCleared: mocks.previewCleared,
 }));
 
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+
 import {
   canOpenProvisionalDraftTask,
   composerDocPlainText,
@@ -126,6 +128,33 @@ describe('provisional draft task', () => {
     await opening;
     await expect(taking).resolves.toMatchObject({ id: 'draft-1' });
     expect(mocks.commit).toHaveBeenCalledWith('draft-1');
+  });
+
+  it('keeps tracking the task when it could not be deleted, instead of reopening the same id', async () => {
+    await ensureProvisionalDraftTask(args());
+    mocks.discard
+      .mockResolvedValueOnce({ discarded: false, remaining: true } as never)
+      .mockResolvedValueOnce({ discarded: false, remaining: true } as never);
+    await discardProvisionalDraftTask();
+    expect(provisionalDraftTaskId()).toBe('draft-1');
+    expect(mocks.removeLocal).not.toHaveBeenCalled();
+    // A settings change cannot reopen over the still-existing row; the next attempt retries the delete.
+    await expect(ensureProvisionalDraftTask(args({ model: 'model-b' }))).resolves.toBeNull();
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+    await ensureProvisionalDraftTask(args({ model: 'model-b' }));
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('never hands another account\'s unsent task to a send after an account switch', async () => {
+    setDataOwnerGeneration('account-a', 1);
+    await ensureProvisionalDraftTask(args());
+    setDataOwnerGeneration('account-b', 2);
+    await expect(takeProvisionalDraftTask(args())).resolves.toBeNull();
+    expect(mocks.commit).not.toHaveBeenCalled();
+    // Not deleted from the new account's database either.
+    expect(mocks.discard).not.toHaveBeenCalled();
+    expect(provisionalDraftTaskId()).toBeNull();
+    setDataOwnerGeneration(null, 0);
   });
 
   it('does not open tasks for drafts that run elsewhere or need writable folders', () => {
