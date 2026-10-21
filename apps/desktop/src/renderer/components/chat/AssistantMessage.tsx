@@ -1,3 +1,6 @@
+import { BotChatReplyTarget } from '@/features/bots/BotChatQuoteViews';
+import { useBotChatQuote } from '@/features/bots/botChatQuoteContext';
+import { botReplyQuoteFor } from '@/features/bots/botDmQuote';
 import { hasRichAnswer, richAnswerText } from '@cindy/maker-shared/rich-answer';
 import { BotLearningFooter } from '@/features/bots/BotLearningFooter';
 import { BotStarterOptions } from '@/features/bots/BotStarterOptions';
@@ -186,6 +189,8 @@ interface AssistantMessageProps {
    *  IPC takes (sessionId, clientId) to locate the fork point. When omitted,
    *  the Fork button is not rendered. */
   messageClientId?: string;
+  /** The owner message this reply answers; shown above the bubble when the setting is on. */
+  replyToClientId?: string;
   /** Owning agent kind — gates Fork icon visibility via capabilities,
    *  same scheme as UserMessage. */
   agentKind?: RendererAgentKind;
@@ -239,6 +244,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   isStreaming,
   createdAt,
   messageClientId,
+  replyToClientId,
   agentKind,
   remoteHostId,
   forkBlocked,
@@ -316,13 +322,20 @@ export const AssistantMessage = memo(function AssistantMessage({
         : undefined,
     [currentSessionId, messageClientId],
   );
+  // 伙伴私聊里「回复」是引用回复:引用块等在输入框上方(cindy-bots-runtime.md「私聊引用回复」)。
+  const botQuote = useBotChatQuote(simplifiedBotConversation ? currentSessionId : undefined);
   const handleAddToChat = useCallback(() => {
+    if (botQuote && messageClientId) {
+      const quote = botReplyQuoteFor({ clientId: messageClientId, role: 'assistant', content });
+      if (quote) botQuote.quote(quote);
+      return;
+    }
     if (!currentSessionId || !messageDeepLink) return;
     insertSessionLinkIntoComposer({
       targetSessionId: currentSessionId,
       href: messageDeepLink,
     });
-  }, [currentSessionId, messageDeepLink]);
+  }, [botQuote, content, currentSessionId, messageClientId, messageDeepLink]);
 
   // /goal:隐藏助手输出末尾由 goal 协议要求模型吐出的裁决 JSON 块(仅显示层剥离,
   // 原文仍保留在 DB / transcript)。pattern:末尾的 ```json {...goal_status...} ``` 围栏块。
@@ -393,6 +406,9 @@ export const AssistantMessage = memo(function AssistantMessage({
           'text-[var(--msg-assistant-text)]',
         )}
       >
+        {botBubble && botQuote && messageClientId ? (
+          <BotChatReplyTarget message={{ clientId: messageClientId, replyToClientId }} context={botQuote} />
+        ) : null}
         {failedSamplingAttempt && (
           <div className="mb-1 text-13 font-normal leading-[1.384615]" style={{ color: 'var(--text-secondary)' }}>
             {t('chat.failedSamplingAttempt')}

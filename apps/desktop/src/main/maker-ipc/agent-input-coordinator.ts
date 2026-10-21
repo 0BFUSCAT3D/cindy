@@ -41,6 +41,7 @@ import type { UsageLimitRecoverySnapshot } from './usageLimitRecoveryStore.js';
 import { createLogger } from '../logger.js';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, readAutoReviewUserText } from './autoReviewUserIntent.js';
 import { createMessage as createDbMessage } from '../localDb/ipc/messages.js';
+import { REPLY_QUOTE_SOURCE_CONTENT } from './chatReplyQuoteNote.js';
 import { touchUserSendInDb } from '../localDb/ipc/sessions.js';
 import {
   isAcceptedTurnContinuationOnlyReason,
@@ -221,6 +222,8 @@ export interface AgentInputSendOpts {
   toolsDisabled?: boolean;
   readonly [AUTO_REVIEW_SOURCE_CONTENT]?: string;
   readonly [AUTO_REVIEW_USER_INTENT]?: string;
+  /** Persisted content of the queued message; the steer path reads its reply quote. */
+  readonly [REPLY_QUOTE_SOURCE_CONTENT]?: string;
   messageUuid?: string;
   userName?: string;
   throwOnStartFailure?: boolean;
@@ -2616,6 +2619,7 @@ export class AgentInputCoordinator {
           ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const } : {}),
         ...(typeof item.autoReviewUserText !== 'object' && readAutoReviewUserText(item.persistedContent) === null
           ? { [AUTO_REVIEW_USER_INTENT]: queuedAutoReviewText(item) } : {}),
+        ...(typeof item.persistedContent === 'string' ? { [REPLY_QUOTE_SOURCE_CONTENT]: item.persistedContent } : {}),
         messageUuid,
         userName: item.userName,
         signal: AbortSignal.any([inputBoundarySignal, steerAbort.signal]),

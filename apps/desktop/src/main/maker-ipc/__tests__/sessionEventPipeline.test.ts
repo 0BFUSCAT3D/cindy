@@ -2041,8 +2041,10 @@ describe('Bot adapters in the shared event pipeline', () => {
       h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue(null);
     });
     h.emit(event('text', { text: 'private reply' }));
+    // The reply also records which input it answers (companion chats can show it above the reply).
     expect(h.deps.broadcastToAllWindows).toHaveBeenLastCalledWith('maker:event', expect.objectContaining({
-      event: expect.objectContaining({ agentMeta: expect.objectContaining({ botPrivateReply: true }) }),
+      event: expect.objectContaining({ agentMeta: expect.objectContaining({
+        botPrivateReply: true, replyToClientId: 'bot-dm:thread:delivery' }) }),
     }));
     h.emit(event('done'));
     expect(h.deps.broadcastToAllWindows).toHaveBeenCalledWith('maker:event', expect.objectContaining({

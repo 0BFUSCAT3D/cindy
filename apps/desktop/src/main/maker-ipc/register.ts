@@ -1096,6 +1096,7 @@ import {
 import { clearSealedCodexPlanState, readCodexPlanState } from '../localDb/codexPlanState.js';
 import { buildCompletedPlanGuardNote, buildPlanReconcileNote } from './planReconcile.js';
 import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
+import { readReplyQuoteNote, REPLY_QUOTE_SOURCE_CONTENT } from './chatReplyQuoteNote.js';
 import { readBotDmThreadContextNote } from './botDmThreadContext.js';
 import { readTurnUsageResetAt } from '../goal-host/usageLimit.js';
 import {
@@ -17404,6 +17405,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 个人版制作任务说明:按持久化的 sessions.source 判定,每次 send 现读,不信任
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     readTaskSource: readSessionSource,
+    // 伙伴私聊引用回复的 [引用说明]:按落库内容里的 replyQuote 从库里重读原消息。
+    readReplyQuoteNote,
     // 私聊话题的 [话题说明]:按持久化的话题链接现读,不是话题时为 null。
     readBotThreadNote: readBotDmThreadContextNote,
     // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
@@ -17898,6 +17901,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
       readonly [AUTO_REVIEW_USER_INTENT]?: string;
       readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
+      readonly [REPLY_QUOTE_SOURCE_CONTENT]?: string;
     };
     const readCurrentSteerSession = () => {
       const current = maker.getSession(sessionId);
@@ -17955,6 +17959,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (!sess.isTurnRunning()) {
       throwIpcError('NO_ACTIVE_TURN', `Session ${sessionId} has no active turn`);
     }
+    // Same `[引用说明]` as an ordinary send (steer does not go through the send transaction).
+    const steerReplyQuoteNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      ? ((await readReplyQuoteNote(sessionId, so[REPLY_QUOTE_SOURCE_CONTENT]).catch(() => null)) ?? null)
+      : null;
     const meta = await maker.getSessionMeta(sessionId).catch(() => null);
     sess = readCurrentSteerSession();
     const authorizationSession = sess;
@@ -17977,9 +17985,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           sharedTaskAuthor: so.sharedTaskAuthor,
         })
       : null;
-    const withSteerSourceNote = steerSourceNote
-      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerSourceNote)
+    const withSteerReplyQuoteNote = steerReplyQuoteNote
+      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerReplyQuoteNote)
       : normalized;
+    const withSteerSourceNote = steerSourceNote
+      ? prependNoteToWireUserMessage(withSteerReplyQuoteNote as HandoffWireMessage, steerSourceNote)
+      : withSteerReplyQuoteNote;
     // 设备来源只认盖章值(coordinator 透传 / 直连 IPC 边界按 async context 盖);没有设备
     // 信息时沿用旧手机判据:IPC 直连 steer 时 async context 在;coordinator 投递时靠透传。
     const steerDevice = readWireSourceDevice(so.sourceDevice);
