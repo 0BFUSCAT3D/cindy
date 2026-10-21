@@ -33,6 +33,8 @@ export interface ProviderGroupHeldTurnErrorsDeps<Row> {
   persist(sessionId: string, row: Row): void;
   /** 错误确定要呈现：同步到聊天之外的错误表面(Agent Island)。 */
   surface(sessionId: string, detail: HeldTurnErrorDetail): void;
+  /** 当前失败已放出：结算此前由恢复流程按住的产品调用；不得结算续跑成功或已被接手的旧失败。 */
+  settleFailure(sessionId: string): void;
   /** 撤掉协调器那次「先不呈现」的登记；错误仍是当前状态时投影随即带出横幅，返回 true。 */
   releaseHold(sessionId: string, holdId: number): boolean;
   /** 当前登录账号的作用域键。 */
@@ -119,7 +121,10 @@ export function createProviderGroupHeldTurnErrors<Row>(
       const live = deps.releaseHold(sessionId, holdId);
       const entry = take(sessionId, holdId);
       if (!entry) return;
-      if (persist(sessionId, entry) && live) deps.surface(sessionId, entry.detail);
+      if (persist(sessionId, entry) && live) {
+        deps.surface(sessionId, entry.detail);
+        deps.settleFailure(sessionId);
+      }
     },
   };
 }

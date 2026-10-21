@@ -3,8 +3,11 @@
  * 结算只认自己那次登记；补落的行在暂存那一刻就取好，换了账号不再写。
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { Session } from '@cindy/maker-core';
 
 import { createProviderGroupHeldTurnErrors } from '../heldTurnErrors';
+import { AutoResumeBookkeeping } from '../../maker-ipc/autoResumeBookkeeping';
+import { captureProductTurnFailureOwner, createDeferredProductTurnFailureGate } from '../../maker-ipc/productTurnFailureOwner';
 
 interface Row {
   message: string;
@@ -12,7 +15,7 @@ interface Row {
   capturedAt: number;
 }
 
-function harness(live = true) {
+function harness(live = true, settleFailure?: (sessionId: string) => void) {
   let clock = 1_000;
   let owner = 'owner-a';
   const deps = {
@@ -23,6 +26,7 @@ function harness(live = true) {
     }),
     persist: vi.fn(),
     surface: vi.fn(),
+    settleFailure: vi.fn(settleFailure),
     releaseHold: vi.fn(() => live),
     ownerKey: () => owner,
     log: vi.fn(),
@@ -51,6 +55,45 @@ describe('provider group held turn errors', () => {
     held.release('s1', 1);
     expect(deps.persist).not.toHaveBeenCalled();
     expect(deps.surface).not.toHaveBeenCalled();
+    expect(deps.settleFailure).not.toHaveBeenCalled();
+  });
+
+  // Unit regression for #6671 review: a capacity terminal before user-row
+  // persistence leaves a deferred product receipt. Existing release tests only
+  // checked the error row/Island, so the upstream/plugin caller could hang after
+  // all alternate computers failed. Exercise real error transfer and release.
+  it('settles a transferred deferred product failure once when switching gives up', () => {
+    const session = { id: 's1', instanceId: 'instance', getTurnGeneration: () => 3 } as unknown as Session;
+    const detail = { message: 'model at capacity', reason: 'upstream-overload' };
+    const owner = captureProductTurnFailureOwner(session, {
+      type: 'error', source: 'codex', data: detail,
+    });
+    const gate = createDeferredProductTurnFailureGate();
+    const failed = vi.fn();
+    const settleFailure = (sessionId: string) => {
+      gate.settle(sessionId, current => current === owner, failed);
+    };
+    gate.defer(owner);
+    const book = new AutoResumeBookkeeping({
+      persistSuppressedError: vi.fn(),
+      surfaceSuppressedError: settleFailure,
+      markOutcome: vi.fn(),
+      rollbackGuardPendingResume: vi.fn(),
+      abandonTakeover: vi.fn(),
+    });
+    const deferredOwner = { generation: 3, clientId: 'capacity-turn' };
+    book.stashSuppressedError('s1', detail, null, deferredOwner);
+    const deferred = book.takeDeferredError('s1', deferredOwner)!;
+    const h = harness(true, settleFailure);
+    h.held.stash('s1', 1, deferred.detail);
+    expect(failed).not.toHaveBeenCalled();
+
+    h.held.release('s1', 1);
+    h.held.release('s1', 1);
+    book.teardown('s1');
+    expect(failed).toHaveBeenCalledExactlyOnceWith(owner);
+    expect(gate.pending('s1')).toBeUndefined();
+    expect(h.deps.persist).toHaveBeenCalledTimes(1);
   });
 
   it('writes the row captured when the error happened and surfaces it when the switch gives up', () => {
@@ -73,6 +116,7 @@ describe('provider group held turn errors', () => {
     held.release('s1', 1);
     expect(deps.persist).toHaveBeenCalledWith('s1', ROW);
     expect(deps.surface).not.toHaveBeenCalled();
+    expect(deps.settleFailure).not.toHaveBeenCalled();
   });
 
   it('does not write into another account after the user switched accounts', () => {
@@ -82,6 +126,7 @@ describe('provider group held turn errors', () => {
     held.release('s1', 1);
     expect(deps.persist).not.toHaveBeenCalled();
     expect(deps.surface).not.toHaveBeenCalled();
+    expect(deps.settleFailure).not.toHaveBeenCalled();
   });
 
   it('keeps one row for a repeated terminal error and lets a different error through with its alert', () => {
