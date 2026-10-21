@@ -600,7 +600,7 @@ import {
   createBotDirectMessageService,
   type BotDirectMessageService,
 } from './botDirectMessageService.js';
-import { createBotGroupChatService, type BotGroupChatService, type BotGroupChatServiceDeps, type BotGroupLaneTerminal } from './botGroupChatService.js';
+import { createBotGroupChatService, settleBotGroupLaneTerminal, type BotGroupChatService, type BotGroupChatServiceDeps, type BotGroupLaneTerminal } from './botGroupChatService.js';
 import { settleUndispatchedBotGroupTurn } from './botGroupRuntimeFailure.js';
 import { withChatServer } from './chatServer.js';
 import { companionHomes, isCompanionShadowed } from '../companion-cloud/homes.js';
@@ -1951,7 +1951,8 @@ function settleDeferredProductTurnFailure(sessionId: string): void {
 }
 
 function settleDeferredBotGroupTerminal(terminal: BotGroupLaneTerminal): void {
-  void botGroupChatServiceHolder?.settleLaneTurn(terminal).catch(() =>
+  if (!botGroupChatServiceHolder) return;
+  void settleBotGroupLaneTerminal(botGroupChatServiceHolder, terminal, drainPersistQueue).catch(() =>
     log.warn('Bot group recovery failure settlement failed'));
 }
 

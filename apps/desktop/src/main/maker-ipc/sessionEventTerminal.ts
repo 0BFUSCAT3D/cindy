@@ -2,7 +2,7 @@ import { reviewTeammateLearning } from './botLearningReview.js';
 import { botLearningTracker } from './botLearningTracker.js';
 import { learningTurnIdentity } from './botLearningFeedback.js';
 import type { BotDelegationService } from './botDelegationService.js';
-import type { BotGroupChatService, BotGroupLaneTerminal } from './botGroupChatService.js';
+import { settleBotGroupLaneTerminal, type BotGroupChatService, type BotGroupLaneTerminal } from './botGroupChatService.js';
 import type { AgentEvent, Session } from '@cindy/maker-core';
 
 // sidebar-card-mode: turn-done 后刷新列表预览,并按需生成置顶卡片摘要
@@ -713,15 +713,7 @@ export function finishSessionTerminalEvent(
         !(providerGroupDoneHoldId !== null && deps.stashProviderGroupHeldWorkerTerminal)
       ) {
         const groupService = deps.botGroupChatServiceHolder;
-        void (async () => {
-          // The fallback reader in both local and server groups needs the final
-          // streamed block on disk. Flush only queued that write; reading now can
-          // turn a real reply into NO_REPLY. Keep the captured input across the wait.
-          if (groupTerminal.outcome === 'done' && !groupTerminal.resultText.trim() && groupTerminal.resultMessageClientId) {
-            await drainPersistQueue();
-          }
-          await groupService.settleLaneTurn(groupTerminal);
-        })().catch((error) => {
+        void settleBotGroupLaneTerminal(groupService, groupTerminal, drainPersistQueue).catch((error) => {
           deps.log.warn('Bot group lane terminal settlement failed', {
             sessionId: session.id,
             error: error instanceof Error ? error.message : String(error),
