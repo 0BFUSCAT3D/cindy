@@ -315,8 +315,9 @@ it.each(['Corrected without a link', 'https://github.com/o/r/pull/3'])(
   },
 );
 
-it.each([{ shared: false, clear: false }, { shared: true, clear: false }, { shared: false, clear: true }])(
-  'settles pending media publication before reconciling withdrawn references (%j)', async ({ shared, clear }) => {
+it.each([{ shared: false, clear: false }, { shared: true, clear: false }, { shared: false, clear: true }]
+  .flatMap(options => ['retraction', 'correction'].map(mode => ({ ...options, mode }))))(
+  'settles media cleanup without blocking another task (%j)', async ({ shared, clear, mode }) => {
   const hash = 'a'.repeat(64);
   const url = `cindy-media://blobs/${hash}.png`;
   h.sqlite!.prepare("INSERT INTO media_blobs VALUES (?, '.png', 'image/png', 8, 0, 1, 1)").run(hash);
@@ -335,27 +336,33 @@ it.each([{ shared: false, clear: false }, { shared: true, clear: false }, { shar
   const originalTx = h.client!.tx;
   h.client!.tx = async (name, args) => {
     const result = await originalTx(name, args);
-    if ((args as { publication?: string }).publication === 'rollback') deleted();
+    if ((args as { publication?: string }).publication === 'rollback' || name === 'message.updateContent') deleted();
     return result;
   };
   try {
     onAssistantTextEvent('s1', { text: url, agentMessageId: 'withdraw-media' }, null);
     flushAssistantBlock('s1');
     await drainPersistQueue();
-    onAssistantTextEvent('s1', { text: '', agentMessageId: 'withdraw-media', isFinal: true, isFullText: true }, null);
+    onAssistantTextEvent('s1', { text: mode === 'retraction' ? '' : 'Corrected without media', agentMessageId: 'withdraw-media', isFinal: true, isFullText: true }, null);
     await rollback;
     if (clear) {
       const boundary = Date.now() + 1000;
       h.sqlite!.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(boundary, 's1');
       noteSessionClearBoundary('s1', boundary);
     }
+    onAssistantTextEvent('s2', { text: 'Unrelated task', agentMessageId: 'other-b', isFinal: true, isFullText: true }, null);
+    await vi.waitFor(() => {
+      expect(h.sqlite!.prepare("SELECT count(*) AS n FROM messages WHERE session_id='s2'").get()).toEqual({ n: 1 });
+    });
     release();
     await drainPersistQueue();
     await vi.mocked(commitMessageMediaRefs).mock.results[0].value;
-    expect(h.sqlite!.prepare("SELECT count(*) AS n FROM media_refs WHERE ref_kind = 'session-attachment'").get())
-      .toEqual({ n: shared ? 1 : 0 });
+    await vi.waitFor(() => {
+      expect(h.sqlite!.prepare("SELECT count(*) AS n FROM media_refs WHERE ref_kind = 'session-attachment'").get())
+        .toEqual({ n: shared ? 1 : 0 });
+    });
     expect(h.sqlite!.prepare('SELECT count(*) AS n FROM media_blobs').get()).toEqual({ n: 1 });
-  } finally { release(); }
+  } finally { release(); await drainPersistQueue(); clearSessionPersistState('s2'); }
 });
 
 
@@ -425,7 +432,9 @@ it.each(['after-update', 'during-preview', 'row-deleted'] as const)(
       onAssistantTextEvent('s1', { text: 'Corrected without media', agentMessageId: 'correct-clear-media', isFinal: true, isFullText: true }, null);
       await drainPersistQueue();
       await vi.mocked(commitMessageMediaRefs).mock.results[0].value;
-      expect(h.sqlite!.prepare("SELECT count(*) AS n FROM media_refs WHERE ref_kind = 'session-attachment'").get()).toEqual({ n: 0 });
+      await vi.waitFor(() => {
+        expect(h.sqlite!.prepare("SELECT count(*) AS n FROM media_refs WHERE ref_kind = 'session-attachment'").get()).toEqual({ n: 0 });
+      });
       expect(h.sqlite!.prepare('SELECT count(*) AS n FROM media_blobs').get()).toEqual({ n: 1 });
       expect(h.broadcast.mock.calls.filter(([channel]) => channel === 'local-db:sessions:patched')).toHaveLength(0);
     } finally { release(); preview.mockRestore(); }

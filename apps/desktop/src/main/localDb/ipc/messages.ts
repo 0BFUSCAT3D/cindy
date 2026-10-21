@@ -1488,26 +1488,9 @@ export async function supersedeRetriedUserTurn(
   return clientIds;
 }
 
-/** Reconcile only the corrected row's derived state against current live history. */
-async function reconcileAssistantDerivedState(
-  row: MessageRow,
-  dbClient: DbClient,
-  isCurrent: () => boolean,
-  ownerScope: DataOwnerBroadcastScope | null,
-  refreshPreview: boolean,
-): Promise<void> {
-  await Promise.all([
-    pendingPrRefWrites.get(dbClient)?.get(row.id),
-    ...(pendingMediaWrites.get(dbClient)?.get(row.id) ?? []),
-  ]);
-  try {
-    if (isCurrent()) await recomputePrRefsForSession(row.sessionId, { dbClient, isCurrent });
-  } catch (error) {
-    log.warn('assistant correction PR reference reconciliation failed', {
-      sessionId: row.sessionId, clientId: row.clientId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+/** Settle media publication off the global message queue, using its captured DB. */
+async function reconcileAssistantMediaRefs(row: MessageRow, dbClient: DbClient): Promise<void> {
+  await Promise.all([...(pendingMediaWrites.get(dbClient)?.get(row.id) ?? [])]);
   // Cleanup belongs to the committed mutation even if clear/owner changes while
   // publication settles. Use its captured DB and atomic live-message predicate;
   // never republish derived state into the replacement scope.
@@ -1523,6 +1506,33 @@ async function reconcileAssistantDerivedState(
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+}
+
+/** Reconcile only the corrected row's derived state against current live history. */
+async function reconcileAssistantDerivedState(
+  row: MessageRow,
+  dbClient: DbClient,
+  isCurrent: () => boolean,
+  ownerScope: DataOwnerBroadcastScope | null,
+  refreshPreview: boolean,
+): Promise<void> {
+  // Slow media publication must not hold every task's message write queue.
+  // Cleanup still waits for this row's hooks and retains the live-reference check.
+  void reconcileAssistantMediaRefs(row, dbClient).catch((error) => {
+    log.warn('assistant correction media reconciliation failed', {
+      sessionId: row.sessionId, clientId: row.clientId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  await pendingPrRefWrites.get(dbClient)?.get(row.id);
+  try {
+    if (isCurrent()) await recomputePrRefsForSession(row.sessionId, { dbClient, isCurrent });
+  } catch (error) {
+    log.warn('assistant correction PR reference reconciliation failed', {
+      sessionId: row.sessionId, clientId: row.clientId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
   if (!refreshPreview || !isCurrent()) return;
   try {
