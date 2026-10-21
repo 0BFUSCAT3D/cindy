@@ -184,7 +184,14 @@ fn write_protected(path: &Path, bytes: &[u8], rights: &Descriptor) -> Staged<()>
 /// service already stopped so the files it uses can be replaced.
 pub fn stage(installation: &Installation) -> Staged<PathBuf> {
     let bundled = std::env::current_exe().stage(Step::StageRead)?;
-    let host = read_exclusively(&bundled)?;
+    stage_from(installation, &bundled)
+}
+
+/// Stages an installation while running from the protected setup bootstrap.
+/// The bootstrap itself is already in Program Files, so the helper from the
+/// user-writable installation is treated strictly as input bytes.
+pub fn stage_from(installation: &Installation, bundled: &Path) -> Staged<PathBuf> {
+    let host = read_exclusively(bundled)?;
     let input = read_exclusively(&bundled.with_file_name(INPUT_EXE))?;
 
     let directory_rights = Descriptor::parse(DIRECTORY_RIGHTS)?;

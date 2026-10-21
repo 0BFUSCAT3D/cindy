@@ -3,9 +3,14 @@
 //! subset — the setup steps below belong to the executable — so items unused by
 //! one of them are expected here rather than dead.
 #![allow(dead_code)]
-use std::{io, ptr};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    ptr,
+};
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::{
-    Foundation::*, Security::*, Storage::FileSystem::SYNCHRONIZE, System::Threading::*,
+    Foundation::*, Security::*, Storage::FileSystem::*, System::Threading::*,
 };
 pub type Result<T> = io::Result<T>;
 pub fn error() -> io::Error {
@@ -13,6 +18,34 @@ pub fn error() -> io::Error {
 }
 pub fn denied<T>() -> Result<T> {
     Err(io::Error::from(io::ErrorKind::PermissionDenied))
+}
+
+/// Resolves a Windows system binary without consulting the user's PATH.
+/// Elevation must never launch a name that an ordinary process can shadow.
+pub fn system_file(name: &str) -> Result<PathBuf> {
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 || length as usize >= buffer.len() {
+        return Err(error());
+    }
+    Ok(PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize])).join(name))
+}
+
+/// Keeps a bundled helper and its input companion from being replaced while
+/// the protected PowerShell bootstrap copies them. The handle is held by the
+/// unelevated helper until the elevated child has finished.
+pub fn read_lock(path: &Path) -> Result<Handle> {
+    Handle::new(unsafe {
+        CreateFileW(
+            wide(&path.to_string_lossy()).as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    })
 }
 
 /// The elevated child is hidden, so its step and raw Win32 error have to cross

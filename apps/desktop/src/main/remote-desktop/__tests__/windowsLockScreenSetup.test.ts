@@ -5,13 +5,20 @@
 // carry the helper's step code through, and that a helper which cannot work out
 // where it would install is not offered to the user as a setup they can finish.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
 
 const execFile = vi.hoisted(() => vi.fn());
+const electronApp = vi.hoisted(() => ({
+  isPackaged: true,
+  getAppPath: vi.fn(),
+  getPath: vi.fn(),
+}));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   execFile,
 }));
-vi.mock('electron', () => ({ app: { isPackaged: true } }));
+vi.mock('electron', () => ({ app: electronApp }));
 vi.mock('../../logger', () => ({
   createLogger: () => ({
     trace: vi.fn(),
@@ -44,6 +51,9 @@ function helperPrints(stdout: string, exitCode = 0): void {
 
 const platform = process.platform;
 afterEach(() => {
+  electronApp.isPackaged = true;
+  electronApp.getAppPath.mockReset();
+  electronApp.getPath.mockReset();
   Object.defineProperty(process, 'platform', { value: platform });
   execFile.mockReset();
 });
@@ -84,6 +94,17 @@ describe('windows lock-screen setup diagnostics', () => {
   it('offers setup when the service is simply not installed yet', async () => {
     helperPrints('missing');
     expect(await readWindowsDesktopSupport()).toBe('missing');
+  });
+
+  it('does not compile source helpers during a status-only read', async () => {
+    electronApp.isPackaged = false;
+    electronApp.getAppPath.mockReturnValue(path.join(process.cwd(), 'apps', 'desktop'));
+    electronApp.getPath.mockReturnValue(
+      path.join(os.tmpdir(), `cindy-lock-screen-status-${process.pid}`),
+    );
+
+    expect(await readWindowsDesktopSupport()).toBe('missing');
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   it('does not offer setup when the helper cannot locate an installation', async () => {

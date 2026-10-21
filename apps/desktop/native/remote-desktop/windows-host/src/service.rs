@@ -1,5 +1,7 @@
 use crate::naming::{InstallRecord, Installation, StagedCopy};
 use crate::{pipe::Pipe, win::*};
+use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufRead, Write},
     mem, ptr,
@@ -81,6 +83,18 @@ pub fn pid(name: &str) -> Result<u32> {
 /// copy rather than the executable inside the installation.
 pub fn install(installation: &Installation) -> Staged<()> {
     let staged = crate::staging::stage(installation)?;
+    install_registered(installation, staged)
+}
+
+/// Registers files that were staged by the protected setup bootstrap. The
+/// bootstrap is a separate file, so this path never tries to overwrite the
+/// executable that is currently running.
+pub fn install_staged(installation: &Installation) -> Staged<()> {
+    let _handles = crate::security::protected_staging(&installation.staged)?;
+    install_registered(installation, installation.host())
+}
+
+fn install_registered(installation: &Installation, staged: std::path::PathBuf) -> Staged<()> {
     let manager = manager(SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT).stage(Step::ScmOpen)?;
     let name = wide(&installation.service());
     let command = wide(&format!("\"{}\" --service", staged.display()));
@@ -186,8 +200,7 @@ pub fn uninstall(name: &str) -> Staged<()> {
             && process_status.dwCurrentState != SERVICE_STOPPED
             && process_status.dwProcessId != 0
         {
-            let raw = unsafe { OpenProcess(SYNCHRONIZE, 0, process_status.dwProcessId) };
-            Some(Handle::new(raw).stage(Step::ServiceStop)?)
+            Some(process(process_status.dwProcessId).stage(Step::ServiceStop)?)
         } else {
             None
         }
@@ -228,21 +241,94 @@ pub fn uninstall(name: &str) -> Staged<()> {
 fn last_error() -> i32 {
     unsafe { GetLastError() as i32 }
 }
-/// Relaunches this executable elevated, to run one setup command.
-///
-/// There is deliberately no check on where this executable lives: Cindy
-/// installs per user by default, so it normally sits in a directory the
-/// current user can write. What the elevated child does with that is the
-/// subject of `staging` — it copies the helpers somewhere only administrators
-/// can write before registering anything as SYSTEM.
-pub fn elevate(command: &str) -> Staged<()> {
-    let executable = wide(
-        &std::env::current_exe()
-            .stage(Step::ElevateLaunch)?
-            .to_string_lossy(),
+/// Quotes a value for a single-quoted PowerShell literal. The complete script
+/// is passed as UTF-16LE base64, so installation paths never become shell code.
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn powershell_script(
+    source: &std::path::Path,
+    bootstrap: &std::path::Path,
+    source_hash: &str,
+    child_args: &[String],
+    remove_staging: bool,
+) -> String {
+    let args = child_args.to_vec();
+    let source_expr = "('\"' + $source + '\"')";
+    let args = args
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if index == 1 {
+                source_expr.to_owned()
+            } else {
+                powershell_literal(value)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut script = String::from("$ErrorActionPreference='Stop'; $source=");
+    script.push_str(&powershell_literal(&source.to_string_lossy()));
+    script.push_str("; $bootstrap=");
+    script.push_str(&powershell_literal(&bootstrap.to_string_lossy()));
+    script.push_str("; $expectedHash=");
+    script.push_str(&powershell_literal(source_hash));
+    script.push_str("; $bootstrapDir=Split-Path -Parent $bootstrap; $stagingRoot=Split-Path -Parent $bootstrapDir; $programFiles=Split-Path -Parent $stagingRoot;");
+    script.push_str(" $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');");
+    script.push_str(" $writeMask=[System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership;");
+    script.push_str(" function Test-Protected([string]$Path) { $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop; if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }; $acl=$item.GetAccessControl(); if ($trusted -notcontains $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value) { return $false }; foreach ($rule in $acl.Access) { if ($rule.AccessControlType -ne 'Allow') { continue }; $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (($trusted -notcontains $sid) -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false } }; return $true };");
+    script.push_str(" if (-not (Test-Path -LiteralPath $programFiles) -or -not (Test-Protected $programFiles)) { exit 1 };");
+    script.push_str(" foreach ($dir in @($stagingRoot,$bootstrapDir)) { if (Test-Path -LiteralPath $dir) { if (-not (Test-Protected $dir)) { exit 1 } } else { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; $security=New-Object System.Security.AccessControl.DirectorySecurity; $security.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'); Set-Acl -LiteralPath $dir -AclObject $security; if (-not (Test-Protected $dir)) { exit 1 } };");
+    script.push_str(" if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; Copy-Item -LiteralPath $source -Destination $bootstrap -Force; if (-not (Test-Protected $bootstrap)) { exit 1 }; if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; $child=Start-Process -FilePath $bootstrap -ArgumentList @(");
+    script.push_str(&args);
+    script.push_str(") -Wait -PassThru -WindowStyle Hidden;");
+    if remove_staging {
+        script.push_str(" if ($child.ExitCode -eq 0) { Remove-Item -LiteralPath $bootstrapDir -Recurse -Force -ErrorAction Stop };");
+    }
+    script.push_str(" exit $child.ExitCode");
+    script
+}
+
+fn encode_powershell(script: &str) -> String {
+    let bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Uses the protected Windows PowerShell binary as the UAC bootstrap. The
+/// user-writable helper is copied as data, then only the copy under Program
+/// Files is started elevated, so an adjacent VCRUNTIME140.dll cannot be
+/// loaded from Cindy's install directory.
+pub fn elevate(installation: &Installation, child_args: &[String]) -> Staged<()> {
+    let source = std::env::current_exe().stage(Step::ElevateLaunch)?;
+    let _source_lock = read_lock(&source).stage(Step::ElevateLaunch)?;
+    let _input_lock =
+        read_lock(&source.with_file_name(crate::naming::INPUT_EXE)).stage(Step::ElevateLaunch)?;
+    let source_hash = Sha256::digest(std::fs::read(&source).stage(Step::ElevateLaunch)?);
+    let source_hash = format!("{source_hash:x}");
+    let mut child_args = child_args.to_vec();
+    child_args.insert(1, source.to_string_lossy().into_owned());
+    let remove_staging = child_args
+        .first()
+        .is_some_and(|arg| arg == "--uninstall-from");
+    let script = powershell_script(
+        &source,
+        &installation.bootstrap(),
+        &source_hash,
+        &child_args,
+        remove_staging,
     );
+    let powershell_path =
+        system_file("WindowsPowerShell\\v1.0\\powershell.exe").stage(Step::ElevateLaunch)?;
+    let executable = wide(&powershell_path.to_string_lossy());
+    let parameters = wide(&format!(
+        "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
+        encode_powershell(&script)
+    ));
     let verb = wide("runas");
-    let parameters = wide(command);
     let mut info: SHELLEXECUTEINFOW = unsafe { mem::zeroed() };
     info.cbSize = mem::size_of_val(&info) as u32;
     info.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -858,4 +944,51 @@ fn send_sas(owner: &Handle) -> Result<()> {
         windows_sys::Win32::Security::Authentication::Identity::SendSAS(0);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{path::Path, process::Command};
+
+    /// The UAC bootstrap is security-sensitive generated PowerShell. Parse the
+    /// exact production script through the system PowerShell parser so quoting
+    /// or a syntax regression cannot turn setup into an opaque retry.
+    #[test]
+    fn elevated_bootstrap_script_parses() {
+        let args = vec![
+            "--install-from".to_owned(),
+            r"C:\Users\dev user\resources\tools\remote-desktop\cindy-windows-desktop-host.exe"
+                .to_owned(),
+            "1234".to_owned(),
+            "--development".to_owned(),
+        ];
+        let script = powershell_script(
+            Path::new(
+                r"C:\Users\dev user\resources\tools\remote-desktop\cindy-windows-desktop-host.exe",
+            ),
+            Path::new(
+                r"C:\Program Files\Cindy Remote Desktop\abc\cindy-windows-desktop-bootstrap.exe",
+            ),
+            "0123456789abcdef",
+            &args,
+            false,
+        );
+        let encoded = encode_powershell(&script);
+        let command = format!(
+            "[void][ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{}'))); exit 0",
+            encoded
+        );
+        let powershell = system_file("WindowsPowerShell\\v1.0\\powershell.exe")
+            .expect("System32 PowerShell is required on Windows");
+        let output = Command::new(powershell)
+            .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+            .output()
+            .expect("PowerShell parser should start");
+        assert!(
+            output.status.success(),
+            "generated bootstrap script did not parse: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

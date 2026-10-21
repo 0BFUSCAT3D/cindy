@@ -9,23 +9,35 @@ mod staging;
 mod win;
 use naming::Installation;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 use win::*;
 
 /// The service name used before the executable moved into a protected
 /// directory: a hash of this bundled helper's own path. Removal still looks
 /// for it, so a machine that enabled the feature under an older build is not
 /// left with a stale registration no one deletes.
-fn legacy_service_name() -> Result<String> {
-    let path = std::env::current_exe()?
-        .canonicalize()?
-        .to_string_lossy()
-        .to_lowercase();
+fn legacy_service_name_for(path: &Path) -> Result<String> {
+    let path = path.canonicalize()?.to_string_lossy().to_lowercase();
     Ok(format!("CindyRemoteDesktop-{:x}", Sha256::digest(path.as_bytes()))[..35].to_string())
+}
+
+fn legacy_service_name() -> Result<String> {
+    legacy_service_name_for(&std::env::current_exe()?)
 }
 
 /// This executable's own installation, for the modes that run from inside one.
 fn bundled() -> Staged<Installation> {
-    Installation::of_bundled(&std::env::current_exe().stage(Step::ProtectedOpen)?)
+    bundled_from(&std::env::current_exe().stage(Step::ProtectedOpen)?)
+}
+
+fn bundled_from(path: &Path) -> Staged<Installation> {
+    if !path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(naming::HOST_EXE))
+    {
+        return refuse(Step::ProtectedOpen);
+    }
+    Installation::of_bundled(path)
 }
 
 fn run() -> Staged<()> {
@@ -52,6 +64,37 @@ fn run() -> Staged<()> {
             service::install(&installation)?;
             service::authorize(&installation, pid)
         }
+        Some("--install-from") if args.len() == 3 || args.len() == 4 => {
+            let source = std::path::PathBuf::from(&args[1]);
+            let pid = args[2]
+                .parse::<u32>()
+                .map_err(|_| Failure::new(Step::Args, 0))?;
+            let development = args.get(3).is_some_and(|arg| arg == "--development");
+            if args.len() == 4 && !development {
+                return refuse(Step::Args);
+            }
+            let installation = if development {
+                bundled_from(&source)?.for_development()
+            } else {
+                bundled_from(&source)?
+            };
+            // This process is the protected bootstrap. Stop the old service
+            // before replacing its host and input binaries, then stage bytes
+            // read from the user installation as data.
+            service::uninstall(&installation.service())?;
+            staging::stage_from(&installation, &source)?;
+            service::install_staged(&installation)?;
+            service::authorize(&installation, pid)
+        }
+        Some("--uninstall-from") if args.len() == 2 => {
+            let source = std::path::PathBuf::from(&args[1]);
+            let installation = bundled_from(&source)?;
+            service::uninstall(&installation.service())?;
+            if let Ok(legacy) = legacy_service_name_for(&source) {
+                service::uninstall(&legacy)?;
+            }
+            Ok(())
+        }
         Some("--uninstall") => {
             let installation = bundled()?;
             service::uninstall(&installation.service())?;
@@ -75,14 +118,23 @@ fn run() -> Staged<()> {
             };
             let (_main, _) = security::authorize_client(pid, &installation.install, development)
                 .stage(Step::ClientIdentity)?;
-            let command = if development {
-                format!("--install {pid} --development")
-            } else {
-                format!("--install {pid}")
-            };
-            service::elevate(&command)
+            service::elevate(
+                &installation,
+                &[
+                    "--install-from".to_owned(),
+                    pid.to_string(),
+                    if development {
+                        "--development".to_owned()
+                    } else {
+                        String::new()
+                    },
+                ][..if development { 3 } else { 2 }],
+            )
         }
-        Some("--elevate-uninstall") => service::elevate("--uninstall"),
+        Some("--elevate-uninstall") => {
+            let installation = bundled()?;
+            service::elevate(&installation, &["--uninstall-from".to_owned()])
+        }
         Some("--status") => {
             let status = match bundled() {
                 Ok(installation) if service::pid(&installation.service()).is_ok() => {

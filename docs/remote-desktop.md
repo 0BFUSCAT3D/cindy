@@ -1004,13 +1004,17 @@ Setup always stops the service, restages and restarts, so an upgraded Cindy does
 not keep running the previous version's copy. Removal deletes the service, the
 staged directory, and a service registered under the pre-staging name.
 
-What this does not cover: the elevated setup child itself is launched from the
-installation directory, which the installing account can write. Anything able to
-replace files there before the user confirms the prompt could have replaced that
-child too, and a program checking its own signature proves nothing about itself.
-This is the same exposure the Cindy updater already accepts when it elevates to
-write into a protected directory. What staging removes is the standing risk: the
-executable the service starts afterwards is out of reach.
+The UAC transition does not launch the helper from that user-writable
+directory. It starts the absolute-path Windows PowerShell binary from
+`System32` with `-NoProfile -NonInteractive -EncodedCommand`; the script checks
+the Program Files parent and staging directory for administrator/SYSTEM-only
+ACLs and reparse points, copies the helper there, and starts only that protected
+copy. The unelevated helper holds read-only handles on both bundled helpers
+until the elevated copy and setup finish, so a same-user writer cannot swap the
+bytes during the transition or inject an adjacent `VCRUNTIME140.dll`.
+
+What staging removes is the standing risk: the executable the service starts
+afterwards is out of reach of ordinary processes.
 
 Because Cindy's own uninstaller runs per user without administrator rights, it
 cannot delete the staged directory or the service registration. Removing them is
@@ -1033,9 +1037,10 @@ Restarting Cindy or the service requires fresh administrator approval. This is a
 post-reboot support. No authorization secrets or screenshots are persisted.
 
 Registration is accepted only from an elevated process whose image has the same
-contents as the running service's own image: the setup child runs from the
-installation and the service from its protected copy, so their paths differ by
-design and identical contents is what shows they are one build. Which
+contents as the running service's own image: the setup bootstrap runs from the
+protected staging directory and the service from its protected host copy, so
+their paths differ by design and identical contents is what shows they are one
+build. Which
 installation may then drive the service comes from `install.txt` in the
 protected directory — an administrator-written value rather than a path handed
 over the pipe — and it is accepted only if it hashes back to the directory's own

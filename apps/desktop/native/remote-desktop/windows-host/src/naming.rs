@@ -16,6 +16,9 @@ use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::*};
 
 pub const HOST_EXE: &str = "cindy-windows-desktop-host.exe";
 pub const INPUT_EXE: &str = "cindy-windows-desktop-input.exe";
+/// A copy used only as the elevated setup bootstrap. It is never registered
+/// as the service image and is removed with the staging directory.
+pub const BOOTSTRAP_EXE: &str = "cindy-windows-desktop-bootstrap.exe";
 /// Records which installation this staged copy serves. It lives in the
 /// protected directory, so the service reads an administrator-written value
 /// rather than trusting a path handed to it over the pipe.
@@ -115,6 +118,9 @@ impl Installation {
     }
     pub fn host(&self) -> PathBuf {
         self.staged.join(HOST_EXE)
+    }
+    pub fn bootstrap(&self) -> PathBuf {
+        self.staged.join(BOOTSTRAP_EXE)
     }
 }
 
