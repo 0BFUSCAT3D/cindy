@@ -226,6 +226,9 @@ export function takeProvisionalDraftTask(
       // The first send commits it on the host as well.
       log.warn('commit provisional task failed', error);
     }
+    // The account changed while committing: the task lives in the old account's database,
+    // so this send cannot use it (fails like a failed create; the draft is kept).
+    if (!isDataOwnerIdCurrent(taken.owner)) throw new ProvisionalDraftTaskBusyError(taken.id);
     return taken.session;
   });
 }

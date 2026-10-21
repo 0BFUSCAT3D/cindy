@@ -156,6 +156,17 @@ describe('provisional draft task', () => {
     expect(provisionalDraftTaskId()).toBe('draft-1');
   });
 
+  it('fails the send instead of handing over a task whose account changed while committing', async () => {
+    setDataOwnerGeneration('account-a', 1);
+    await ensureProvisionalDraftTask(args());
+    mocks.commit.mockImplementationOnce(async () => {
+      setDataOwnerGeneration('account-b', 2);
+      return { committed: false };
+    });
+    await expect(takeProvisionalDraftTask(args())).rejects.toBeInstanceOf(ProvisionalDraftTaskBusyError);
+    setDataOwnerGeneration(null, 0);
+  });
+
   it('never hands another account\'s unsent task to a send after an account switch', async () => {
     setDataOwnerGeneration('account-a', 1);
     await ensureProvisionalDraftTask(args());
