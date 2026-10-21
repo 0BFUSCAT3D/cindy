@@ -17,6 +17,7 @@ import type { OpenDialogOptions } from 'electron';
 import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
 import { getDbClient, tryGetDbClient } from '../client/current';
+import { notifyAgentIslandCompanionChanged } from '../agentIslandSessionPatch.js';
 import type {
   BotsReparentDelegationsResult,
   BotsReplaceCanonicalSessionResult,
@@ -102,7 +103,8 @@ import { BOT_DELEGATION_CLIENT_ID } from '../../../shared/botCollaboration.js';
 
 import { generateBotCreationDraft, readBotCreationDraft, generateBotCreationAvatar } from '../../maker-ipc/botCreationDraft.js';
 import { botInvitationProgress, type BotInvitationProgress } from '../../../shared/botInvitation.js';
-import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
+import type { BotPackageOpening } from '../../../shared/botMarket.js';
+import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, chatGroupThreadRouteKey, groupLaneOfRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
 import { queueBotInvitation as enqueueBotInvitation } from '../../maker-ipc/botInvitation.js';
 import { getMakerIfReady, validateBotCapabilityAdditions } from '../../maker-host/index.js';
 import type { BotCapabilityUpdate } from '../../maker-ipc/botCapabilityService.js';
@@ -307,6 +309,9 @@ export type EnsureBotGroupLaneResult =
  * With `plan`, the Bot's 分工 Session for that plan instead (§7.4): same Profile and
  * model chain, but it works in the plan's recorded work directory. A worktree plan
  * passes the Session id the worktree was registered for.
+ *
+ * With `threadRootId` (server groups only), the Bot's own lane for that Thread: same
+ * Profile, model chain and working place as the group lane, but its own context.
  */
 export async function ensureBotGroupLaneSession(input: {
   botId: string;
@@ -314,12 +319,14 @@ export async function ensureBotGroupLaneSession(input: {
   title: string;
   chatAccess?: ChatLaneAccess;
   plan?: { planId: string; workDir: string; sessionId?: string };
+  threadRootId?: string;
 }): Promise<EnsureBotGroupLaneResult> {
   const owner = captureBotOperationOwner();
   const client = getDbClient();
   const db = client.drizzle;
   const routeKey = input.plan
     ? input.chatAccess ? `${chatGroupLaneRouteKey(input.groupId, input.chatAccess)}:plan:${input.plan.planId}` : botGroupPlanRouteKey(input.groupId, input.plan.planId)
+    : input.chatAccess && input.threadRootId ? chatGroupThreadRouteKey(input.groupId, input.chatAccess, input.threadRootId)
     : input.chatAccess ? chatGroupLaneRouteKey(input.groupId, input.chatAccess) : botGroupLaneRouteKey(input.groupId);
   const [existing] = await db
     .select({ sessionId: botSessionLinks.sessionId })
@@ -353,7 +360,7 @@ export async function ensureBotGroupLaneSession(input: {
   if (!primaryRoute) return { ok: false, errorCode: 'NO_MODEL', message: '伙伴还没有可用模型' };
   const workspaceKind = input.plan && input.chatAccess?.mode !== 'chat' ? ('project' as const) : ('dialogue' as const);
   const workingDir = input.chatAccess?.mode === 'chat'
-    ? await ensureBotChatOnlyWorkspaceDir(owner.userDataDir, input.botId, routeKey)
+    ? await ensureBotChatOnlyWorkspaceDir(owner.userDataDir, input.botId, groupLaneOfRouteKey(routeKey))
     : input.plan ? input.plan.workDir : await ensureBotWorkspaceDir(owner.userDataDir, input.botId, app.getPath('userData'));
   const now = Date.now();
   const sessionId = resolveBusinessSessionId(input.plan?.sessionId);
@@ -398,6 +405,7 @@ export async function ensureBotGroupLaneSession(input: {
       agentKind: row.agentKind,
       remoteHostId: null,
       providerId: row.providerId ?? null,
+      agentDeviceId: row.agentDeviceId ?? null,
       extraDirs: row.extraDirs,
       source: row.source,
       createdAt: row.createdAt,
@@ -509,6 +517,7 @@ export async function ensureBotChannelLaneSession(input: {
         agentKind: row.agentKind,
         remoteHostId: null,
         providerId: row.providerId ?? null,
+        agentDeviceId: row.agentDeviceId ?? null,
         extraDirs: row.extraDirs,
         source: row.source,
         createdAt: row.createdAt,
@@ -676,6 +685,7 @@ function botSessionRouteFields(config: Record<string, unknown>, primaryRoute: Bo
           ? NEW_BOT_DEFAULT_PI_EFFORT
           : undefined),
     fastMode: primaryRoute?.fastMode ?? config.fastMode === true,
+    agentDeviceId: primaryRoute?.agentDeviceId ?? null,
     agentKind: botSessionAgentKind(primaryRoute ?? config),
     permissionMode: botSessionPermissionMode(config),
   };
@@ -1123,10 +1133,25 @@ async function readRemoteBotProfile(client: ReturnType<typeof getDbClient>, botI
   if (!isBotVisibleRemotely(profile)) return null;
   const canonicalResolution = await reconcileCanonicalLink(botId, client);
   owner.assertCurrent();
+  // Personal transcript links let search entries open the exact historical task.
+  // No group/channel lanes, prompts, credentials or runtime configuration.
+  const personalSessions = await db.select({
+    id: sessions.id,
+    role: botSessionLinks.role,
+    status: sessions.status,
+  }).from(botSessionLinks)
+    .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
+    .where(and(
+      eq(botSessionLinks.botId, botId),
+      inArray(botSessionLinks.role, ['canonical', 'history']),
+      ne(sessions.status, 'deleted'),
+    ));
+  owner.assertCurrent();
   const { hiddenAt: _hiddenAt, ...visibleProfile } = profile;
   return {
     ...visibleProfile,
     canonicalSessionId: canonicalResolution.canonicalSessionId ?? undefined,
+    sessions: personalSessions,
   };
 }
 
@@ -1355,6 +1380,7 @@ export function broadcastBotProfileChanged(payload: {
   broadcastBotRemoteResourceChanged(payload.botId);
   // 伙伴自主跟进：新建伙伴、改「它开的任务也交给总调度跟」立即生效。
   signalBotAutonomyBotsChanged();
+  if (payload.change === 'updated') notifyAgentIslandCompanionChanged(payload.botId);
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {
@@ -1578,6 +1604,35 @@ export async function createBotProfile(raw: unknown) {
   assertCreationOwnerStillCurrent();
   broadcastBotProfileChanged({ botId: id, change: 'created' });
   return profile;
+}
+
+/** Caller holds the original lifecycle lock; only fully saved native imports reach here. */
+export async function prepareImportedBotInvitation(botId: string, requestId: string, locale?: string,
+  opening?: BotPackageOpening): Promise<void> {
+  const owner = captureBotOperationOwner();
+  const client = getDbClient();
+  const [profile] = await client.drizzle.select().from(botProfiles).where(eq(botProfiles.id, botId)).limit(1);
+  owner.assertCurrent();
+  if (!profile || profile.status === 'deleting' || profile.status === 'archived') throwIpcError('NOT_FOUND', 'Bot 不存在');
+  const [version] = await client.drizzle.select().from(botProfileVersions).where(and(
+    eq(botProfileVersions.botId, botId), eq(botProfileVersions.version, profile.currentVersion),
+  )).limit(1);
+  owner.assertCurrent();
+  if (!version) throwIpcError('NOT_FOUND', 'Bot 不存在');
+  const config = parseJson(version.capabilitiesJson);
+  // The original invitation is the only welcome receipt, including failures and ready.
+  if (config.invitation) return;
+  await client.tx('bots.updateProfile', { id: botId, expectedCurrentVersion: profile.currentVersion,
+    identitySource: version.identitySource,
+    capabilitiesJson: JSON.stringify({ ...config, invitation: { id: `import-welcome:${requestId}`,
+      stage: 'welcome', locale: readBotInvitationLocale(locale), avatarRequested: false,
+      // The package opening shapes the greeting and its one onboarding turn.
+      ...(opening ? { opening } : {}) } }),
+    profileContentChanged: true, now: Date.now(),
+  });
+  owner.assertCurrent();
+  broadcastBotProfileChanged({ botId, change: 'updated' });
+  queueBotInvitation(botId);
 }
 
 /** Shared profile mutation for trusted settings and owner-bound capability selection. */
@@ -2135,6 +2190,7 @@ export function registerBotIpc(): void {
           agentKind: insertRow.agentKind,
           remoteHostId: insertRow.remoteHostId ?? null,
           providerId: insertRow.providerId ?? null,
+          agentDeviceId: insertRow.agentDeviceId ?? null,
           extraDirs: insertRow.extraDirs,
           source: insertRow.source,
           createdAt: insertRow.createdAt,
