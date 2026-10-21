@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { REMOTE_RESOURCE_INVOKE_CHANNEL } from '@cindy/device-link';
-import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerIdCurrent } from '@/contexts/dataOwnerGeneration';
 import { toast } from '@/lib/toast';
 import { BotFollowUpInvitationCard } from './BotFollowUpInvitation';
 import { readRemoteBotSettings, settingsClient, type RemoteBotSettingsData } from './remoteBotSettingsData';
@@ -31,11 +31,13 @@ export function RemoteBotFollowUpInvitation({ deviceId, botId }: { deviceId: str
     try {
       let target = { data, panel };
       if (enable) {
-        // 确认框可能开了很久，Host 的动作票会过期：确认后按未变的 revision 换一张新票再提交。
+        // 确认框可能开了很久，Host 的动作票会过期：确认后重读换新票。只要跟进选择仍未做（邀请仍在），
+        // 同伙伴其它设置改动带来的 revision 变化不影响这次开启；已在别处选过则只刷新卡片。
+        // 同账号的代次修复不卸载卡片，按账号判断。
         const fresh = await readRemoteBotSettings(deviceId, `settings:${botId}/follow-up`, i18n.language);
-        if (!alive.current || !isDataOwnerGenerationCurrent(owner)) return;
+        if (!alive.current || !isDataOwnerIdCurrent(owner)) return;
         const freshPanel = fresh.panels.find(item => item.id === 'follow-up');
-        if (fresh.resource.revision !== data.resource.revision || !freshPanel?.invitationAvailable || !freshPanel.action) {
+        if (!freshPanel?.invitationAvailable || !freshPanel.action) {
           setData(fresh);
           return;
         }
