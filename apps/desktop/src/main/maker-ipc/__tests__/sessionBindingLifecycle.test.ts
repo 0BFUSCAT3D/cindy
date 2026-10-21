@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSessionBindingLifecycle,
+  createSessionCloseTeardown,
   finalizeSessionClose,
   runSessionCloseCleanup,
   type SessionBindingLifecycleDeps,
@@ -115,10 +116,18 @@ function harness<S extends Pick<Session, 'id' | 'onStatusChange' | 'setInteracti
     cleanupClosedSession: vi.fn((_session: S, captured: typeof context) => {
       runSessionCloseCleanup(captured.preserveAutoResumeIntent, actions);
     }),
-    beforeCloseTeardown: vi.fn<(session: S) => void>(() => {
-      order.push('unregister');
-      context.settlesDirectAbort = false;
-    }),
+    beforeCloseTeardown: vi.fn(createSessionCloseTeardown<S>({
+      clearCompactRuntimeRefresh: vi.fn(),
+      cancelDirectAbortReconciliation: () => {
+        order.push('cancel-abort');
+        context.settlesDirectAbort = false;
+      },
+      clearPendingFailedTurnPersist: () => { order.push('clear-failed-persist'); },
+      isRehydrateCloseSuppressed: () => false,
+      getProviderGroupSwitchHoldId: () => null,
+      hasPendingProviderGroupContinuation: () => false,
+      clearDeferredProductTurnFailure: () => { order.push('unregister'); },
+    })),
     finalizeClosedSession: vi.fn((_session: S, captured: typeof context) => {
       finalizeSessionClose(captured.settlesDirectAbort, finalActions);
     }),
@@ -213,6 +222,8 @@ describe('Desktop Session binding lifecycle', () => {
         'reset-retry',
         'coordinator',
         'runtime',
+        'cancel-abort',
+        'clear-failed-persist',
         'unregister',
         'dispose',
         'idle',
