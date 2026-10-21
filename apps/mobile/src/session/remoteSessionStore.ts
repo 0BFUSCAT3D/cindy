@@ -2764,13 +2764,11 @@ function mergeRemoteTextEvent(
     && previousStreamingClientId !== normalizedPersistId
     ? previousStreamingClientId
     : undefined;
-  const generatedStream = finalReusesExistingItem && isGeneratedStreamingClientId(previousStreamingClientId)
-    ? currentMessages.find((row) => row.id === previousStreamingClientId || row.clientId === previousStreamingClientId)
-    : undefined;
-  const finalCanClaimGeneratedStream = Boolean(normalizedPersistId && generatedStream
-    && priorIdentities && !priorIdentities.has(normalizedPersistId));
+  // A persisted row arriving after an anonymous stream starts may still belong
+  // to an older item. A late final can correct that row, but cannot identify
+  // the anonymous stream; only a subsequent identified delta may migrate it.
+  const hasGeneratedStream = isGeneratedStreamingClientId(previousStreamingClientId);
   const clientIdResolution = finalReusesExistingItem && normalizedPersistId
-    && !finalCanClaimGeneratedStream
     ? { clientId: normalizedPersistId, changed: false }
     : streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
@@ -2932,7 +2930,7 @@ function mergeRemoteTextEvent(
     ),
   }, {
     knownIndex: matchedExistingIndex,
-    preserveGeneratedStreamingFallback: Boolean(finalReusesExistingItem && generatedStream && !finalCanClaimGeneratedStream),
+    preserveGeneratedStreamingFallback: Boolean(finalReusesExistingItem && hasGeneratedStream),
     preserveOrderOnReplace: !changesCreatedAt,
     preserveStructureOnReplace: !isFinal && existing !== undefined && !changesCreatedAt,
   });
