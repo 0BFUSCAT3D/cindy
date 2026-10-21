@@ -1851,6 +1851,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     return parsed.data;
   }
   const operationId = z.string().min(8).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
+  // Keep the recipients once a Thread POST may have committed, including when the
+  // controller loses our successful answer. The server still authorizes every replay.
+  const postedThreadRecipients = new Map<string, string[]>();
   const chatServer: ChatServerApi = {
     ownedBots: () => result(async () => { await register(); return { bots: actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; }) }; }),
     refreshProfile: () => result(async () => {
@@ -1946,9 +1949,20 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const i = z.object({ groupId: id, rootId: id, text: z.string().trim().min(1).max(8000), clientId: operationId,
         mentions: z.object({ all: z.boolean(), botIds: z.array(z.string()).max(100) }) }).parse(input);
       i.groupId = await groupRoom(i.groupId);
-      const posted = await api<{ id: string }>(`/conversations/${i.groupId}/messages`, 'POST', {
-        operationId: i.clientId, threadRootId: i.rootId, content: [{ type: 'text', text: i.text }], mentions: await mentionIds(i.groupId, i.mentions, i.rootId),
-      });
+      // Include the caller's intent: editing a failed send must not reuse old recipients.
+      const key = JSON.stringify(i);
+      const recipients = postedThreadRecipients.get(key) ?? await mentionIds(i.groupId, i.mentions, i.rootId);
+      postedThreadRecipients.set(key, recipients);
+      if (postedThreadRecipients.size > 128) postedThreadRecipients.delete(postedThreadRecipients.keys().next().value!);
+      let posted: { id: string };
+      try {
+        posted = await api<{ id: string }>(`/conversations/${i.groupId}/messages`, 'POST', {
+          operationId: i.clientId, threadRootId: i.rootId, content: [{ type: 'text', text: i.text }], mentions: recipients,
+        });
+      } catch (error) {
+        if (error instanceof ChatResponseError && error.status >= 400 && error.status < 500 && error.status !== 408) postedThreadRecipients.delete(key);
+        throw error;
+      }
       changed(i.groupId); return { messageId: posted.id };
     }),
     react: input => result(async () => {
@@ -2014,10 +2028,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
    * Quote snapshots of sends that have not finished: from just before the POST (attachments
    * already uploaded) until the send
    * returns ok (post-send bookkeeping included) or the server definitely refuses the POST.
-   * Invariant: every retry of one clientId posts the same content, even if the original has been
-   * deleted since, so the server returns the message it already stored instead of a second one.
+   * Invariant: retries keep the quote and recipients even if the original is deleted or its
+   * author leaves, so the server returns the stored message instead of an operation conflict.
    */
-  const postedQuotes = new Map<string, BotGroupQuoteView & { recipientActorId?: string }>();
+  const postedQuotes = new Map<string, { quote: BotGroupQuoteView & { recipientActorId?: string };
+    mentions: { all: boolean; botIds: string[] }; recipients: string[] }>();
   /**
    * A sidebar summary. The room list carries each room's change head, which every message,
    * execution, plan and membership change advances; a room whose head, revision and local state
@@ -2049,7 +2064,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const snapshotRead = recentSnapshot(i.groupId, true);
     // An unopened room must be confirmed as a group before reading its other resources.
     if (!rooms.has(i.groupId)) await snapshotRead;
-    const quoteKey = i.quote ? `${i.groupId}:${i.clientId}:${i.quote.messageId}` : '';
+    const quoteKey = i.quote ? JSON.stringify([i.groupId, i.clientId, i.quote.messageId, i.text, i.mentions, i.division]) : '';
     const knownQuote = i.quote ? postedQuotes.get(quoteKey) : undefined;
     const snapshotMembers = snapshotRead.then(value => value.members);
     const quoteRead = i.quote && !knownQuote ? quoteSnapshot(i.groupId, i.quote.messageId, snapshotMembers) : undefined;
@@ -2058,9 +2073,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     for (const read of [snapshotMembers, quoteRead, plansRead, membersRead]) read?.catch(() => undefined);
     const s = await snapshotRead;
     // Read before preparing attachments: an unavailable quote must not stage files.
-    const quote = i.quote ? knownQuote ?? await quoteRead! : null;
+    const quote = i.quote ? knownQuote?.quote ?? await quoteRead! : null;
     const members = membersRead ? await membersRead : [];
-    i.mentions = withReplyRecipient(members, i.mentions, quote?.recipientActorId);
+    i.mentions = knownQuote?.mentions ?? withReplyRecipient(members, i.mentions, quote?.recipientActorId);
     const plans = await plansRead;
     const openPlan = plans.find(p => ['proposed','running','waiting'].includes(p.status));
     const proposed = openPlan?.status === 'proposed' && openPlan.creator_id === selfId;
@@ -2078,11 +2093,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     let result: { id: string };
     let posting = false;
     try {
-      const mentions = membersRead ? resolveMentions(members, i.mentions) : [];
+      const mentions = knownQuote?.recipients ?? (membersRead ? resolveMentions(members, i.mentions) : []);
       const uploaded = await media.upload(i.groupId, i.clientId, prepared?.ok ? prepared.attachments : [], selfId);
       // Cached only once the message may reach the server; a failure before this stored nothing.
       if (quote) {
-        postedQuotes.set(quoteKey, quote);
+        postedQuotes.set(quoteKey, { quote, mentions: i.mentions, recipients: mentions });
         if (postedQuotes.size > 128) postedQuotes.delete(postedQuotes.keys().next().value!);
       }
       posting = true;

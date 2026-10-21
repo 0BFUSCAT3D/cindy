@@ -394,6 +394,47 @@ describe('Chat Server result delivery and refresh', () => {
       expect(posts()).toHaveLength(0);
     });
 
+    // Server operationId replay compares the whole submitted payload before returning its receipt.
+    // A lost ACK followed by a membership change must not turn a committed reply into a conflict.
+    it.each(['quote', 'thread'] as const)('replays the committed %s recipients after the companion leaves', async entry => {
+      let committed: unknown;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/members') && committed) return { body: [{ ...botMember, state: 'left' }] };
+        if (route.endsWith('/messages') && method === 'POST') {
+          if (!committed) {
+            committed = structuredClone(body);
+            throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+          }
+          if (JSON.stringify(body) !== JSON.stringify(committed)) return { status: 409, body: { error: { code: 'OPERATION_CONFLICT' } } };
+        }
+        return quoteResponse(quoted())(route, method);
+      });
+      const input = { groupId: roomId, text: 'Continue', clientId: `lost-ack-${entry}`, mentions: { all: false, botIds: [] } };
+      const send = () => entry === 'thread'
+        ? service.chatServer!.reply({ ...input, rootId: quotedId })
+        : service.sendMessage({ ...input, quote: { messageId: quotedId } });
+      expect(await send()).toMatchObject({ ok: false });
+      expect(await send()).toEqual({ ok: true, messageId: 'saved-quote' });
+      expect(posts()).toHaveLength(2);
+      expect(posts()[1]![2].mentions).toEqual([botId]);
+    });
+
+    it('resolves Thread recipients again after a definite refusal stored no message', async () => {
+      let refused = false;
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/members') && refused) return { body: [{ ...botMember, state: 'left' }] };
+        if (route.endsWith('/messages') && method === 'POST' && !refused) {
+          refused = true;
+          return { status: 400, body: { error: { code: 'MENTION_NOT_MEMBER' } } };
+        }
+        return quoteResponse(quoted())(route, method);
+      });
+      const input = { groupId: roomId, rootId: quotedId, text: 'Continue', clientId: 'thread-refused', mentions: { all: false, botIds: [] } };
+      expect(await service.chatServer!.reply(input)).toMatchObject({ ok: false, errorCode: 'MENTION_NOT_MEMBER' });
+      expect(await service.chatServer!.reply(input)).toEqual({ ok: true, messageId: 'saved-quote' });
+      expect(posts()[1]![2].mentions).toEqual([]);
+    });
+
     it('keeps a lost post\'s quote when a retry then fails before posting with a 4xx', async () => {
       let original: unknown = quoted();
       let stage: 'lost' | 'refuse-upload' | 'ok' = 'lost';
