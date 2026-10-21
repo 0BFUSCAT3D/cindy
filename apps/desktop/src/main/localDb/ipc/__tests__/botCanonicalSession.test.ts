@@ -1782,8 +1782,9 @@ describe('Bot canonical Session lifecycle', () => {
     });
     const chatId = created.session.id;
     const insert = h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)');
-    insert.run('m-root', 'root-1', chatId, 'user', JSON.stringify({ text: 'Plan the launch post' }), 1_000);
-    const root = { botId: 'bot-1', rootSessionId: chatId, rootClientId: 'root-1' };
+    // Host-written messages such as the opening hello carry colons in their clientId.
+    insert.run('m-root', 'bot-opening:inv-1', chatId, 'user', JSON.stringify({ text: 'Plan the launch post' }), 1_000);
+    const root = { botId: 'bot-1', rootSessionId: chatId, rootClientId: 'bot-opening:inv-1' };
 
     // A root outside the companion's main Chat cannot carry a topic.
     await expect(invoke('local-db:bots:dm-thread:ensure', { ...root, rootClientId: 'missing' }))
@@ -1796,10 +1797,10 @@ describe('Bot canonical Session lifecycle', () => {
       .get(chatId);
     expect(h.sqlite!.prepare(`SELECT s.source, s.working_dir AS workingDir, s.permission_mode AS permissionMode,
         l.role, l.route_key AS routeKey FROM sessions s JOIN bot_session_links l ON l.session_id = s.id WHERE s.id = ?`)
-      .get(first.sessionId)).toEqual({ source: 'bot', role: 'thread', routeKey: `dm-thread:${chatId}:root-1`, ...canonical as object });
+      .get(first.sessionId)).toEqual({ source: 'bot', role: 'thread', routeKey: `dm-thread:${chatId}:bot-opening:inv-1`, ...canonical as object });
     const [profile] = await invoke('local-db:bots:list', undefined);
     expect(profile.sessions).toEqual(expect.arrayContaining([expect.objectContaining({
-      id: first.sessionId, kind: 'thread', threadRoot: { rootSessionId: chatId, rootClientId: 'root-1' },
+      id: first.sessionId, kind: 'thread', threadRoot: { rootSessionId: chatId, rootClientId: 'bot-opening:inv-1' },
     })]));
 
     // Opened and left empty: no entry under the root yet.
@@ -1807,7 +1808,7 @@ describe('Bot canonical Session lifecycle', () => {
     insert.run('t-1', 'topic-1', first.sessionId, 'user', JSON.stringify({ text: 'Shorter, please' }), 2_000);
     insert.run('t-2', 'topic-2', first.sessionId, 'assistant', JSON.stringify('Here is a shorter draft.'), 3_000);
     await expect(invoke('local-db:bots:dm-thread:list', { botId: 'bot-1', rootSessionId: chatId })).resolves.toEqual([{
-      sessionId: first.sessionId, rootSessionId: chatId, rootClientId: 'root-1',
+      sessionId: first.sessionId, rootSessionId: chatId, rootClientId: 'bot-opening:inv-1',
       replyCount: 2, lastReplyAt: 3_000, lastAssistantAt: 3_000, createdAt: expect.any(Number),
     }]);
 

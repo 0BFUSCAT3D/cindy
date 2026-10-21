@@ -2654,7 +2654,7 @@ export function registerBotIpc(): void {
     const body = requireObject(raw, 'body');
     const botId = readText(body.botId, 'botId', 128, true);
     const rootSessionId = readText(body.rootSessionId, 'rootSessionId', 128, true);
-    const rootClientId = readText(body.rootClientId, 'rootClientId', 128, true);
+    const rootClientId = readText(body.rootClientId, 'rootClientId', 256, true);
     if (!parseBotDmThreadRouteKey(`dm-thread:${rootSessionId}:${rootClientId}`)) {
       throwIpcError('INVALID_PARAMS', '话题的原消息无效');
     }

@@ -84,17 +84,20 @@ export function BotDmThreadHost({ enabled, bot, rootSessionId, mentions, childre
     reload();
   }, [reload, setSearchParams]);
 
-  // A link or notification names the topic's Session; open it once its root is known. Each link
-  // opens at most once, so closing the panel (which drops the parameter a render later) sticks.
+  // A link or notification names the topic's Session: open it, or switch to it from another open
+  // topic, once its root is known. Each link value is followed once, so closing the panel (which
+  // drops the parameter a render later) sticks; once the parameter is gone the same link works again.
   const linked = searchParams.get(BOT_DM_THREAD_PARAM);
   const handledLink = useRef<string | null>(null);
+  const openSessionId = open?.state.kind === 'ready' ? open.state.sessionId : null;
   useEffect(() => {
-    if (!enabled || !linked || open || handledLink.current === linked) return;
+    if (!linked) { handledLink.current = null; return; }
+    if (!enabled || handledLink.current === linked) return;
     const projection = topicProjections.find((session) => session.id === linked);
     if (!projection?.threadRoot) return;
     handledLink.current = linked;
-    ensure(projection.threadRoot.rootClientId);
-  }, [enabled, ensure, linked, open, topicProjections]);
+    if (openSessionId !== linked) ensure(projection.threadRoot.rootClientId);
+  }, [enabled, ensure, linked, openSessionId, topicProjections]);
 
   const value = useMemo<BotDmThreadsValue | null>(() => enabled ? {
     botId: bot.id,

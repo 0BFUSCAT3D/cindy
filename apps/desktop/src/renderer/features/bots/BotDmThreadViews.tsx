@@ -56,9 +56,20 @@ export function BotDmThreadPanel({ bot, rootSessionId, rootClientId, state, ment
   const panelRef = useRef<HTMLElement>(null);
   const threadSessionId = state.kind === 'ready' ? state.sessionId : null;
 
+  // Seen only while the window shows it: a reply that arrived while hidden is read on return.
   useEffect(() => {
-    if (!threadSessionId || document.visibilityState !== 'visible') return;
-    markBotRead(botDmThreadReadKey(threadSessionId), Math.max(Date.now(), lastAssistantAt ?? 0));
+    if (!threadSessionId) return;
+    const markRead = () => {
+      if (document.visibilityState !== 'visible') return;
+      markBotRead(botDmThreadReadKey(threadSessionId), Math.max(Date.now(), lastAssistantAt ?? 0));
+    };
+    markRead();
+    document.addEventListener('visibilitychange', markRead);
+    window.addEventListener('focus', markRead);
+    return () => {
+      document.removeEventListener('visibilitychange', markRead);
+      window.removeEventListener('focus', markRead);
+    };
   }, [lastAssistantAt, threadSessionId]);
 
   useEffect(() => {

@@ -8,11 +8,15 @@
 
 export const BOT_DM_THREAD_ROUTE_PREFIX = 'dm-thread:';
 
-/** clientId 与 Session id 都不含冒号；含冒号的输入不构成合法话题。 */
-const ROUTE_PART = /^[^:\s]{1,128}$/;
+/**
+ * Session id 不含冒号，所以第一个冒号之后都是 clientId；clientId 本身可以带冒号
+ * （例如伙伴开场白 `bot-opening:<id>`、定时任务结果 `schedule-result:<id>`）。
+ */
+const SESSION_PART = /^[^:\s]{1,128}$/;
+const CLIENT_PART = /^\S{1,256}$/;
 
 export function botDmThreadRouteKey(rootSessionId: string, rootClientId: string): string {
-  if (!ROUTE_PART.test(rootSessionId) || !ROUTE_PART.test(rootClientId)) {
+  if (!SESSION_PART.test(rootSessionId) || !CLIENT_PART.test(rootClientId)) {
     throw new Error('Invalid private-chat topic root');
   }
   return `${BOT_DM_THREAD_ROUTE_PREFIX}${rootSessionId}:${rootClientId}`;
@@ -22,9 +26,12 @@ export function parseBotDmThreadRouteKey(
   routeKey: string | null | undefined,
 ): { rootSessionId: string; rootClientId: string } | null {
   if (!routeKey?.startsWith(BOT_DM_THREAD_ROUTE_PREFIX)) return null;
-  const [rootSessionId, rootClientId, ...rest] = routeKey.slice(BOT_DM_THREAD_ROUTE_PREFIX.length).split(':');
-  if (rest.length > 0 || !rootSessionId || !rootClientId) return null;
-  if (!ROUTE_PART.test(rootSessionId) || !ROUTE_PART.test(rootClientId)) return null;
+  const rest = routeKey.slice(BOT_DM_THREAD_ROUTE_PREFIX.length);
+  const split = rest.indexOf(':');
+  if (split <= 0) return null;
+  const rootSessionId = rest.slice(0, split);
+  const rootClientId = rest.slice(split + 1);
+  if (!SESSION_PART.test(rootSessionId) || !CLIENT_PART.test(rootClientId)) return null;
   return { rootSessionId, rootClientId };
 }
 
