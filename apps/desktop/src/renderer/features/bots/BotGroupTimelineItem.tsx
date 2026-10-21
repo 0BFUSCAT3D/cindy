@@ -443,7 +443,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
 
   // A server queue stands on its own under the request: the turns it lines up, never folded
   // into someone's reply (bot-group-chat.md §7).
-  if (message.kind === 'plan' && props.plan?.kind) {
+  if (message.kind === 'plan' && props.plan?.kind === 'talk') {
     return (
       <Row {...rowProps} block="author">
         <div className="flex min-w-0 gap-2.5">

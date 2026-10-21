@@ -1557,10 +1557,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // Text stays bounded, but unseen attachments may precede the latest text page.
         // The server watermark is scoped to this bot/grant/plan step and advances only on success.
         // A Thread lane offers only its own Thread's files.
-        const attachmentHistory = thread ? [...focusMessages]
-          : [...history, ...focusMessages.filter(message => !history.some(known => known.id === message.id))];
+        // A queue turn sees only its request, the earlier answers and the requester's additions;
+        // it takes only their files, never the rest of the group's (bot-group-chat.md §7.0).
+        const talkPlan = run.plan?.kind === 'talk' ? run.plan : undefined;
+        const talkIds = talkPlan ? new Set([talkPlan.source_message_id, ...(talkPlan.note_message_ids ?? []),
+          ...talkPlan.steps.filter(step => step.position < execution.plan_step!).flatMap(step => step.resultMessageId ? [step.resultMessageId] : [])]) : null;
+        const known = [...history, ...focusMessages.filter(message => !history.some(other => other.id === message.id))];
+        const attachmentHistory = thread ? [...focusMessages] : talkIds ? known.filter(message => talkIds.has(message.id)) : known;
         const after = BigInt(execution.attachment_after_seq ?? '0');
-        while (!thread && execution.attachment_after_seq !== undefined && page.length === 100) {
+        while (!thread && !talkIds && execution.attachment_after_seq !== undefined && page.length === 100) {
           const before = page.reduce((min, m) => BigInt(m.seq) < min ? BigInt(m.seq) : min, contextBefore);
           if (before <= after + 1n) break;
           page = await api<Message[]>(`/conversations/${s.room.id}/messages?all=true&limit=100&before=${before}`);
@@ -1629,7 +1634,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const conversation = thread ? {
         thread: { root: thread.root ? focusMessage(thread.root) : { id: threadRootId, unavailable: true },
           replies: chronological(thread.replies).map(focusMessage), earlierRepliesOmitted: thread.earlierRepliesOmitted },
-      } : run.plan ? {} : mainGroupContext(chronological(history.filter(message => !message.threadRootId)), promptMessage);
+      } : run.plan?.kind === 'talk' ? {} : mainGroupContext(chronological(history.filter(message => !message.threadRootId)), promptMessage);
       const talk = run.plan?.kind === 'talk' ? run.plan : undefined;
       const prompt = [
         run.context.kind === 'member.joined'

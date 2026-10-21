@@ -274,7 +274,7 @@ export function botGroupQueueWindow(plan: BotGroupPlanView): { start: number; en
 
 /**
  * Body of the 安排卡. A legacy plan is the organizer's message (the usual Bot header plus the
- * 负责人 tag). A server queue (`plan.kind`) stands on its own under the request: only its turns,
+ * 负责人 tag). A server queue (`kind: 'talk'`) stands on its own under the request: only its turns,
  * folded to a few around the current one.
  * `actionable` = the group's open plan, still waiting for 开始;
  * `reassignable` = the open plan stopped after a step (steps not done can change hands).
@@ -317,7 +317,8 @@ export function BotGroupPlanCard({
   const timing: StepTiming = { runningSince, doneAt, locale };
   const canReassign = reassignable && plan.steps.some((step) => step.status === 'pending' || step.status === 'failed');
   const underWay = plan.status === 'running' || plan.status === 'waiting';
-  const arranged = plan.kind !== undefined;
+  // Only a server queue stands on its own; a division of work keeps its organizer card and actions.
+  const arranged = plan.kind === 'talk';
   const turns = arranged ? botGroupQueueWindow(plan) : { start: 0, end: plan.steps.length };
   const folded = !expanded && turns.end - turns.start < plan.steps.length;
   const shown = folded ? plan.steps.slice(turns.start, turns.end) : plan.steps;

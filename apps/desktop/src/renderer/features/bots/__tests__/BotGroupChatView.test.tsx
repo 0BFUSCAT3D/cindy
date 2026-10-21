@@ -2099,8 +2099,9 @@ describe('BotGroupChatView', () => {
   });
 
   describe('分工', () => {
-    it('shows the organizer’s plan card and starts or skips the open plan', async () => {
-      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(plan()) });
+    // A server's queue migration marks every older plan kind=work: it stays a division of work.
+    it.each([undefined, 'work'] as const)('shows the organizer’s plan card and starts or skips the open plan (kind=%s)', async (kind) => {
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(plan(kind ? { kind } : {})) });
       renderView();
       const card = await screen.findByTestId('bot-group-plan');
       expect(card.textContent).toContain('bots.groupChat.plan.intro');

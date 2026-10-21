@@ -1374,27 +1374,43 @@ describe('Chat Server result delivery and refresh', () => {
       expect(delivery[2]).not.toHaveProperty('continueDiscussion');
     });
 
-    it('gives a discussion turn only the request, earlier answers on its card and the requester\'s additions', async () => {
+    // A queue turn reads only its own card; a division of work (every older plan is kind=work after
+    // the server migration) keeps the main-group context it had, including chat-only steps without a workspace.
+    it.each(['talk', 'work'] as const)('gives a %s step the context of its kind', async (kind) => {
       const planId = '80000000-0000-4000-8000-000000000001';
       const answerId = '50000000-0000-4000-8000-000000000011', noteId = '50000000-0000-4000-8000-000000000012';
+      const unrelatedFile = '60000000-0000-4000-8000-000000000021', answerFile = '60000000-0000-4000-8000-000000000022';
       const plan = { id: planId, revision: 3, source_message_id: execution.source_message_id, request_text: 'One reply per message?', organizer_id: otherBot, creator_id: selfId,
-        note_message_ids: [noteId], status: 'running', current_step: 1, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
-        steps: [{ position: 0, botId: otherBot, botName: 'Peer', task: '', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
+        note_message_ids: [noteId], status: 'running', current_step: 1, kind, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [{ position: 0, botId: otherBot, botName: 'Peer', task: 'draft', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
+      const file = (mediaId: string, caption: string) => ({ type: 'media', mediaId, caption });
       singleSpeaker((route, _method, body) => {
-        if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: 'owner', plan_id: planId, plan_step: 1 } } }; }
+        if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: kind === 'talk' ? 'owner' : 'chat', plan_id: planId, plan_step: 1 } } }; }
         if (route.includes('/plans?ids=')) return { body: [plan] };
-        if (route.includes('/messages?all=true')) return { body: [message('50000000-0000-4000-8000-000000000013', 'unrelated main group chatter'),
-          message(answerId, 'The first answer', { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot' }), message(noteId, 'Mind the old groups')] };
+        if (route.includes('/messages?all=true')) return { body: [
+          message('50000000-0000-4000-8000-000000000013', 'unrelated main group chatter', { content: [{ type: 'text', text: 'unrelated main group chatter' }, file(unrelatedFile, 'old.png')] }),
+          message(answerId, 'The first answer', { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', content: [{ type: 'text', text: 'The first answer' }, file(answerFile, 'draft.png')] }),
+          message(noteId, 'Mind the old groups')] };
         if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: message(execution.source_message_id, 'One reply per message?') };
         return body ? undefined : undefined;
       });
+      fixture.download.mockImplementation(async (_room: string, mediaId: string) => ({ id: mediaId, name: `${mediaId}.png`, category: 'image',
+        mimeType: 'image/png', size: 1, path: `/test/${mediaId}.png`, url: null }));
       await start();
-      expect(prompt()).toContain('You are turn 2 of 2. Your focus: tests.');
       expect(prompt()).toContain('The first answer');
       expect(prompt()).toContain('Mind the old groups');
-      expect(prompt()).not.toContain('unrelated main group chatter');
-      // A discussion only talks: no project folder or worktree, and a plain lane without a work directory.
-      expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ plan: { planId, workDir: '', sessionId: undefined } }));
+      const downloaded = fixture.download.mock.calls.map(([, mediaId]) => mediaId);
+      if (kind === 'talk') {
+        expect(prompt()).toContain('You are turn 2 of 2. Your focus: tests.');
+        expect(prompt()).not.toContain('unrelated main group chatter');
+        expect(downloaded).toEqual([answerFile]);
+        // A discussion only talks: no project folder or worktree, and a plain lane without a work directory.
+        expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ plan: { planId, workDir: '', sessionId: undefined } }));
+      } else {
+        expect(prompt()).not.toContain('You are turn');
+        expect(prompt()).toContain('unrelated main group chatter');
+        expect(downloaded).toEqual(expect.arrayContaining([answerFile, unrelatedFile]));
+      }
     });
 
     it('sends without holding the request for a helper-model arrangement decision', async () => {
