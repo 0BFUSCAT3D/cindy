@@ -7673,6 +7673,18 @@ function bindIpc(
   }
 }
 
+/** Optional window capabilities have nothing to subscribe or tear down when absent. */
+function bindOptionalIpc(
+  subscribe: unknown,
+  receiver: unknown,
+  handler: (data: unknown, ownerStamp?: unknown) => void,
+  label: string,
+): void {
+  if (typeof subscribe !== 'function') return;
+  // Keep the bridge method's receiver and let bindIpc diagnose broken returns.
+  bindIpc((cb: typeof handler) => subscribe.call(receiver, cb), handler, label);
+}
+
 function isTextDeltaEvent(event: NonNullable<MakerEventPayload>['event']): boolean {
   return isRemoteTextDelta(event);
 }
@@ -9540,9 +9552,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // (会话未打开 / 已被 rewind) → no-op,后开窗口走历史加载读 agent_meta 同源补齐。
   // 可选调用兜底:renderer HMR 先于 main 重启时老 preload 没有这个 fanOut,
   // 直接取值会让 initGlobalListeners 整体崩掉(费用推送丢了无妨,历史加载兜底)。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.onUsageMessageTurnCost?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.onUsageMessageTurnCost,
+    window.electronAPI,
     (raw, ownerStamp) =>
       handleUsageMessageTurnCostRaw(raw, {
         ownerStamp,
@@ -9550,9 +9562,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       }),
     'usage-message-turn-cost',
   );
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.onUsageMessageModelMismatch?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.onUsageMessageModelMismatch,
+    window.electronAPI,
     (raw, ownerStamp) =>
       handleUsageMessageModelMismatchRaw(raw, {
         ownerStamp,
@@ -9566,9 +9578,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // 灰字存在,drain 到头才被拦)→ 用广播带回的原文补渲一条被拦气泡——
   // 两条路都保证用户看得见"这条被谁拦了",绝不无声蒸发。被拦消息本就没
   // 入库,离开会话即消失(UI 瞬态,预期语义)。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onUserMessageBlocked?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onUserMessageBlocked,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       const p = raw as {
@@ -9615,9 +9627,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // (无标记,所见即送给 AI 的),保持气泡与 AI 实收一致。乐观气泡(空闲发)
   // 必在;会话忙时排队消息无乐观气泡,找不到就忽略——落库后 messages:created
   // 会用改写版 content 显示。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onUserMessageRewritten?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onUserMessageRewritten,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       const p = raw as { sessionId?: string; clientId?: string; text?: string } | null;
@@ -9636,9 +9648,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // main 已把改写版落库(updateMessageContent);这里把已显示的 assistant 气泡
   // content 静默换成改写版(与落库一致)。找不到该 clientId(极少:消息还没
   // hydrate)则忽略——messages:created/更新会带最终内容。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onAssistantMessageRewritten?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onAssistantMessageRewritten,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       const p = raw as { sessionId?: string; clientId?: string; text?: string } | null;
@@ -9657,9 +9669,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // 回复已显示、意识还在跑那段(最长 5 分钟)挂"意识处理中";完成(pending=false)
   // 或超时清掉。render(自绘卡)的呈现切换由 ghostCardStore 驱动(byCallId 命中
   // 本条 clientId),此处只管指示位。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onAssistantMessagePending?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onAssistantMessagePending,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       const p = raw as { sessionId?: string; clientId?: string; pending?: boolean } | null;
@@ -9675,9 +9687,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   );
 
   // ── 意识钩子熔断(订阅槽①):连续失败降级只旁听,提示用户 ──
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onHookFused?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onHookFused,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       const p = raw as { name?: string } | null;
@@ -9692,9 +9704,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // 原样作纯文本渲染);主机代言的带 textKey/textArgs(凭证入库、授权成功等
   // 主机权威事件)——文案跟用户语言走,按 GHOST_HOST_NOTICE_KEYS 白名单翻译,
   // 白名单外静默丢(防版本错配把生肉 key 摆上界面)。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onNotify?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onNotify,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       const p = raw as {
@@ -9734,9 +9746,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // 广播到达全部窗口,但只有主窗口处理:openUrlInSidebarBrowser 内部的
   // routeSidebarCommand 会按"贴附/抽离"把命令送到正确归宿;抽离的侧栏子窗口
   // 若也处理,同一条广播会开出两个标签。
-  bindIpc(
-    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
-      window.electronAPI.ghosts?.onPreviewOpen?.(cb),
+  bindOptionalIpc(
+    window.electronAPI.ghosts?.onPreviewOpen,
+    window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       if (isSidebarWindow()) return;
@@ -9770,9 +9782,9 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   // 清空注册表,非粘滞判定在该窗口把远程会话误判成本机 → 到点拿本机空快照把
   // 镜像里真实在跑的任务错误收口;触发沿(timer 到点)还会再复查一次。
   // 可选调用兜底:老 preload 没有该 fanOut 时不得让 initGlobalListeners 整体崩掉。
-  bindIpc(
-    (cb: (data: unknown) => void) =>
-      window.electronAPI?.maker?.onSessionBackgroundActivityChanged?.(cb),
+  bindOptionalIpc(
+    window.electronAPI?.maker?.onSessionBackgroundActivityChanged,
+    window.electronAPI?.maker,
     (raw: unknown) => {
       const p = raw as { sessionId?: string; active?: boolean } | null;
       if (!p || typeof p.sessionId !== 'string' || !p.sessionId) return;
