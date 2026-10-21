@@ -12657,19 +12657,19 @@
       "dialogueAction": {
         "search": "Search This Chat Group",
         "restoreAll": "Restore All",
-        "remoteBulkUnavailable": "Bulk actions are not yet supported for groups containing remote tasks"
+        "remoteBulkUnavailable": "Bulk actions are not yet supported for groups containing remote sessions"
       },
       "dialogueArchiveAll": {
-        "description": "Archive all {{count}} tasks in this chat group? Archived tasks will be removed from the list.",
-        "descriptionWithSkip": "Archive {{count}} tasks in this chat group? {{skip}} tasks will be skipped. Archived tasks will be removed from the list.",
-        "allPinnedOrRunning": "All tasks in this chat group are pinned or running. No tasks can be archived.",
-        "allPinned": "All tasks in this chat group are pinned and will be kept.",
-        "allRunning": "All tasks in this chat group are running. Stop them before archiving.",
-        "empty": "No tasks in this chat group can be archived"
+        "description": "Archive all {{count}} sessions in this chat group? Archived sessions will be removed from the list.",
+        "descriptionWithSkip": "Archive {{count}} sessions in this chat group? {{skip}} will be skipped. Archived sessions will be removed from the list.",
+        "allPinnedOrRunning": "All sessions in this chat group are pinned or running. No sessions can be archived.",
+        "allPinned": "All sessions in this chat group are pinned and will be kept.",
+        "allRunning": "All sessions in this chat group are running. Stop them before archiving.",
+        "empty": "No sessions in this chat group can be archived"
       },
       "dialogueRestoreAll": {
-        "description": "Restore {{count}} archived tasks in this chat group? They will move from Archived to Active.",
-        "empty": "No archived tasks in this chat group can be restored"
+        "description": "Restore {{count}} archived sessions in this chat group? They will move from Archived to Active.",
+        "empty": "No archived sessions in this chat group can be restored"
       },
       "archiveAll": {
         "title": "Archive all sessions",

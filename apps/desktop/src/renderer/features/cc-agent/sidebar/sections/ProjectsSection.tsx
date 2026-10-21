@@ -195,6 +195,8 @@ export interface ProjectsSectionProps {
    * 与项目行按同一口径混排;「对话归为一组」开启时收进对话组行。
    */
   dialogues: Session[];
+  /** Full dialogue membership, including pinned rows, for group menu actions. */
+  dialogueActionSessions?: readonly Session[];
   /**
    * 按伙伴分的组(与项目行并列混排)。
    *
@@ -294,6 +296,7 @@ export function ProjectsSection({
   unclassified,
   projects,
   dialogues,
+  dialogueActionSessions = dialogues,
   bots = [],
   onOpenBot,
   allKnownProjects,
@@ -1059,6 +1062,14 @@ export function ProjectsSection({
         targetDeviceOffline;
       // The settings dialog creates on this computer; never expose it on a remote-only group.
       const canCreateMake = entry.sessions.some((session) => !session.deviceLinkDeviceId);
+      const actionSessions = isMake
+        ? entry.sessions
+        : dialogueActionSessions.filter(
+            (session) =>
+              !isCindyMakeFamilySource(session.source) &&
+              (dialogueDeviceTarget === undefined ||
+                (session.deviceLinkDeviceId ?? null) === (dialogueDeviceTarget?.deviceId ?? null)),
+          );
       return (
         <SessionGroupNode
           key={`${entry.kind}:${dialogueGroupKey}`}
@@ -1069,10 +1080,10 @@ export function ProjectsSection({
           headerMenu={
             isMake ? undefined : (
               <DialogueGroupMenu
-                sessions={entry.sessions}
+                sessions={actionSessions}
                 statusFilter={filter.status}
-                onSearch={() => onSearchDialogues(entry.sessions)}
-                onArchiveAll={() => onArchiveAllDialogues(entry.sessions)}
+                onSearch={() => onSearchDialogues(actionSessions)}
+                onArchiveAll={() => onArchiveAllDialogues(actionSessions)}
               />
             )
           }
@@ -1624,10 +1635,12 @@ export function SessionGroupNode({
             onEscapeKeyDown={() => { restoreHeaderFocusOnClose.current = true; }}
             onCloseAutoFocus={(event) => {
               // The Radix trigger only anchors the right-click coordinates.
-              // Escape returns to the visible header; menu actions keep their
-              // search/dialog focus, and outside clicks keep the clicked target.
+              // Return to the header if an action only showed a toast. Preserve
+              // focus already claimed by search, a dialog or an outside target.
               event.preventDefault();
-              if (restoreHeaderFocusOnClose.current) headerRef.current?.focus();
+              if (restoreHeaderFocusOnClose.current || document.activeElement === document.body) {
+                headerRef.current?.focus();
+              }
               restoreHeaderFocusOnClose.current = false;
             }}
             onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
