@@ -77,4 +77,17 @@ describe('Agent prewarm lifecycle', () => {
     await prewarmer.request('racing', {});
     expect(prewarmer.warmSessionIds()).toEqual(['racing']);
   });
+  it('counts runtimes that are still starting against the cap', async () => {
+    const { prewarmer, start } = harness(2);
+    const finish: Array<(started: boolean) => void> = [];
+    start.mockImplementation(() => new Promise<boolean>((resolve) => finish.push(resolve)));
+    const outcomes = ['a', 'b', 'c', 'd'].map((id) => prewarmer.request(id, {}));
+    // Only two may be launched at once; the rest are skipped, not queued behind them.
+    expect(start).toHaveBeenCalledTimes(2);
+    await expect(outcomes[2]).resolves.toBe('skipped');
+    await expect(outcomes[3]).resolves.toBe('skipped');
+    finish.forEach((resolve) => resolve(true));
+    await Promise.all(outcomes);
+    expect(prewarmer.warmSessionIds()).toEqual(['a', 'b']);
+  });
 });

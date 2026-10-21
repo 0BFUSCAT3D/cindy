@@ -154,7 +154,18 @@ export function MobileOutboxBridge() {
     // a task whose boundary is known needs no projection round trip.
     const durableHosts = new Set<string>();
     const knownClearBoundaries = new Map<string, number | null>();
+    // What a host answered belongs to the connection it answered on: a host that
+    // restarted or was replaced by an older build must be asked again.
+    let learnedEpoch = latest.current.link.connectionEpoch;
+    const forgetStaleLearning = () => {
+      const epoch = latest.current.link.connectionEpoch;
+      if (epoch === learnedEpoch) return;
+      learnedEpoch = epoch;
+      durableHosts.clear();
+      knownClearBoundaries.clear();
+    };
     const learnProjection = (r: DurableOutboxRecord, projection: unknown) => {
+      forgetStaleLearning();
       if (!projection || typeof projection !== 'object') return;
       const value = projection as { inputDeliveryVersion?: unknown; clearBoundaryMs?: unknown };
       if (value.inputDeliveryVersion === 1) durableHosts.add(r.deviceId);
@@ -263,6 +274,7 @@ export function MobileOutboxBridge() {
         );
       },
       knownProjection: (r) => {
+        forgetStaleLearning();
         const clearBoundaryMs = knownClearBoundaries.get(leaseKey(r));
         if (!durableHosts.has(r.deviceId) || clearBoundaryMs === undefined) return undefined;
         // The enqueue reply is applied with the epoch captured here, exactly as

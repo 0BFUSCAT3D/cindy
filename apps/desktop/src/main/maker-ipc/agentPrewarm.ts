@@ -78,6 +78,14 @@ export function createAgentPrewarmer(
         arm(sessionId);
         return Promise.resolve('warm');
       }
+      // Tasks that are still starting count against the cap too, so a burst of
+      // requests can never launch more than `maxWarm` runtimes at once: make room
+      // by releasing the oldest unused one, or skip when only starts are in flight.
+      while (warm.size + starting.size >= maxWarm) {
+        const oldest = warm.keys().next().value;
+        if (oldest === undefined) return Promise.resolve('skipped');
+        release(oldest, 'evicted');
+      }
       const run = (async (): Promise<AgentPrewarmOutcome> => {
         try {
           if (!(await deps.start(sessionId, createOpts))) return 'skipped';
