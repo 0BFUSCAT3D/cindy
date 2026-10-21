@@ -12797,6 +12797,12 @@
         "title": "归档任务",
         "description": "确定要归档这个任务吗？归档后将从列表中移除。",
         "dirtyWorktreeWarning": "该任务的 worktree 有未提交的更改；归档前会自动保存为 git 快照，之后可在任务内一键恢复。",
+        "scheduleWarning_one": "该任务绑定了自动化{{names}}，归档后将暂停。",
+        "scheduleWarning_other": "该任务绑定了自动化{{names}}，归档后将暂停。",
+        "scheduleWarningMany_one": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleWarningMany_other": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleName": "「{{name}}」",
+        "scheduleNameSeparator": "、",
         "confirm": "确认",
         "cancel": "取消"
       },

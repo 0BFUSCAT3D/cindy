@@ -12797,6 +12797,12 @@
         "title": "歸檔任務",
         "description": "確定要歸檔這個任務嗎？歸檔後將從列表中移除。",
         "dirtyWorktreeWarning": "該任務的 worktree 有未提交的更改；歸檔前會自動儲存為 git 快照，之後可在任務內一鍵恢復。",
+        "scheduleWarning_one": "該任務綁定了自動化{{names}}，歸檔後將暫停。",
+        "scheduleWarning_other": "該任務綁定了自動化{{names}}，歸檔後將暫停。",
+        "scheduleWarningMany_one": "其中 {{count}} 個任務綁定了自動化，歸檔後這些自動化將暫停。",
+        "scheduleWarningMany_other": "其中 {{count}} 個任務綁定了自動化，歸檔後這些自動化將暫停。",
+        "scheduleName": "「{{name}}」",
+        "scheduleNameSeparator": "、",
         "confirm": "確認",
         "cancel": "取消"
       },

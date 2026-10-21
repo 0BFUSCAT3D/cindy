@@ -610,6 +610,7 @@ import {
 } from '@/session/sessionEmptyState';
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
+import { confirmArchiveWithSchedules, loadActiveBoundScheduleNames } from '@/session/archiveScheduleConfirm';
 import { markSessionScheduleRunsRead, unreadRunIdFromProjection } from '@/session/scheduleRunRead';
 import { useRemoteScheduleEventSnapshot } from '@/scheduler/remoteScheduleEvents';
 import { buildSessionNativeShellLayout } from '@/session/mobileNativeShellLayout';
@@ -9850,6 +9851,9 @@ function SessionScreenContent() {
             initialView={menuInitialView}
             keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
             onArchive={() => patchSessionMeta({ status: 'archived' })}
+            confirmArchive={async () => confirmArchiveWithSchedules(t, deviceId
+              ? await loadActiveBoundScheduleNames({ deviceId, invoke, sessionId, source: sessionSourceForSchedule })
+              : [])}
             onClose={() => setSettingsOpen(false)}
             onClosed={handleSessionMenuClosed}
             onDelete={() => patchSessionMeta({ status: 'deleted' })}

@@ -107,6 +107,7 @@ import {
   loadSharedSessionScheduleIndex,
 } from '@/session/scheduleIndex';
 import { shouldSuppressRemoteListEmptyState } from '@/session/sessionEmptyState';
+import { countSessionsWithActiveBoundSchedules } from '@/session/archiveScheduleConfirm';
 import type { RemoteSession } from '@/session/types';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
@@ -275,6 +276,9 @@ function DeviceDetailScreenContent() {
   const [expandedAutomationGroups, setExpandedAutomationGroups] = useState<string[]>([]);
   const [bulkActionPending, setBulkActionPending] = useState<MobileSessionBulkAction | null>(null);
   const [bulkConfirmAction, setBulkConfirmAction] = useState<MobileSessionBulkAction | null>(null);
+  // 批量归档确认里「绑定了自动化的任务数」;按请求序号丢弃过期结果。
+  const [bulkScheduleCount, setBulkScheduleCount] = useState(0);
+  const bulkScheduleRequestRef = useRef(0);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const [scheduleIndex, setScheduleIndex] = useState<Map<string, RemoteSessionScheduleInfo>>(
     () => new Map(),
@@ -662,8 +666,16 @@ function DeviceDetailScreenContent() {
       );
       return;
     }
+    const scheduleRequest = ++bulkScheduleRequestRef.current;
+    setBulkScheduleCount(0);
+    if (action === 'archive') {
+      void countSessionsWithActiveBoundSchedules(maker, summary.candidates.map((session) => session.id))
+        .then((count) => {
+          if (bulkScheduleRequestRef.current === scheduleRequest) setBulkScheduleCount(count);
+        });
+    }
     setBulkConfirmAction(action);
-  }, [bulkActionSummaries, t]);
+  }, [bulkActionSummaries, maker, t]);
 
   const actionOverlays = (
     <>
@@ -1164,6 +1176,11 @@ function DeviceDetailScreenContent() {
               <View style={styles.bulkConfirmCard} testID="deviceDetail.bulkConfirmCard">
                 <Text style={styles.bulkConfirmTitle}>{bulkConfirmSummary.title}</Text>
                 <Text style={styles.bulkConfirmText}>{bulkConfirmSummary.description}</Text>
+                {bulkConfirmSummary.action === 'archive' && bulkScheduleCount > 0 ? (
+                  <Text style={styles.bulkConfirmText}>
+                    {t('session.menu.archiveScheduleBulkNotice', { count: bulkScheduleCount })}
+                  </Text>
+                ) : null}
                 <MainWindowActionGroup
                   primaryActions={[
                     {
