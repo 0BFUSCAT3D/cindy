@@ -10,6 +10,8 @@ import {
   TASK_MIGRATION_CHANNEL,
   encodeSessionTagCatalog,
   decodeSessionTagCatalog,
+  decodeModelSpeedPayload,
+  encodeModelSpeedPayload,
   scrubSharedProvider,
   PROVIDER_SHARE_GROUP_SIZE_FIELD,
   PROVIDER_SHARE_GROUP_STATUS_FIELD,
@@ -49,6 +51,7 @@ import { compactToolCardResult } from '../../shared/toolResultPersistCap.js';
  */
 
 import { RemoteInvokeTiming } from './remoteInvokeTiming.js';
+import { observeRemoteSendPush } from './remoteSendTrace.js';
 import {
   computeAllowlistHash,
   canCoalesceRemoteListing,
@@ -738,6 +741,7 @@ function projectInvokeResultForTunnel(
   supportsFullLogoKinds = false,
   args: readonly unknown[] = [],
 ): unknown {
+  result = encodeModelSpeedPayload(channel, result);
   // Opt-in only: legacy/desktop controllers still receive complete runtime capabilities.
   // Home only needs run state; repeating the model catalog per runtime blocks slow links.
   const options = args[0];
@@ -750,7 +754,7 @@ function projectInvokeResultForTunnel(
       && 'sessions' in result && Array.isArray(result.sessions)
     ))) {
     const complete = !Array.isArray(result);
-    const rows = complete ? (result as { sessions: unknown[] }).sessions : result;
+    const rows = Array.isArray(result) ? result : (result as { sessions: unknown[] }).sessions;
     const projected = rows.map((item: unknown) => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
       const row = item as Record<string, unknown>;
@@ -2302,6 +2306,8 @@ function sendPushBestEffortAuthorized(
   try {
     if (ownerStamp === undefined) activeClient.sendPush(dst, channel, payload);
     else activeClient.sendPush(dst, channel, payload, ownerStamp);
+    // Telemetry reads "pushed" only where a frame was actually handed to the link.
+    observeRemoteSendPush(channel, payload);
     return;
   } catch (err) {
     if (!isPayloadTooLargeError(err)) {
@@ -2320,6 +2326,7 @@ function sendPushBestEffortAuthorized(
     try {
       if (ownerStamp === undefined) activeClient.sendPush(dst, channel, compactPayload);
       else activeClient.sendPush(dst, channel, compactPayload, ownerStamp);
+      observeRemoteSendPush(channel, compactPayload);
       log.warn(`forwardPush to ${shortId(dst)} sent compact payload after oversized ${channel} frame`);
     } catch (retryErr) {
       markForRecovery();
@@ -3125,7 +3132,8 @@ async function handleInvoke(
   try {
     result = normalizeInvokeResultForWire(await resultPromise);
     const executionWaitMs = Math.round(performance.now() - handlerStartedAt);
-    if (executionWaitMs >= 1_000) {
+    // debug only: 300ms already shows up as a visible send delay over the relay.
+    if (executionWaitMs >= 300) {
       log.debug(`remote invoke slow execution request=${shortId(requestId)} from=${shortId(src)}`
         + ` channel=${payload && REMOTE_INVOKE_ALLOWLIST.has(payload.channel) ? payload.channel : 'unknown'}`
         + ` executionWaitMs=${executionWaitMs} ok=${result.ok} stagesMs=${JSON.stringify(timing.stages)}`);
@@ -3387,7 +3395,7 @@ async function authorizeRemoteBotResult(
         ok: true,
         result: await projectRemoteSessionResult(
           channel ?? '',
-          decodeSessionTagCatalog(channel, result.result),
+          decodeModelSpeedPayload(channel, decodeSessionTagCatalog(channel, result.result)),
         ),
       };
     } catch (err) {
@@ -3439,16 +3447,19 @@ function sendInvokeResultSafe(
     channel,
     isSharedTaskPeer(src),
   );
-  const normalized = sanitized.ok && channel === 'local-db:sessions:list'
+  const speedResult = sanitized.ok ? encodeModelSpeedPayload(channel, sanitized.result) : undefined;
+  const speedCompatible = sanitized.ok && speedResult !== sanitized.result
+    ? { ...sanitized, result: speedResult } : sanitized;
+  const normalized = speedCompatible.ok && channel === 'local-db:sessions:list'
     ? {
-        ...sanitized,
+        ...speedCompatible,
         result: encodeSessionTagCatalog(
           channel,
           args,
-          decodeSessionTagCatalog(channel, sanitized.result),
+          decodeSessionTagCatalog(channel, speedCompatible.result),
         ),
       }
-    : sanitized;
+    : speedCompatible;
   const proactive =
     subscriptions.controllerSupports(src, DEVICE_LINK_CAPABILITY_COMPACT_MESSAGE_HISTORY_V1) &&
     channel === 'local-db:messages:list' && normalized.ok && Array.isArray(normalized.result)

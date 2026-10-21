@@ -58,7 +58,7 @@ export function isAccountUsageLimitError(signals: InterruptedTurnErrorSignals): 
 }
 
 export class UsageLimitAutoResume {
-  private readonly timers = new Map<string, { token: number; handle: unknown }>();
+  private readonly timers = new Map<string, { token: number; handle: unknown; groupQuota: boolean }>();
   private readonly consecutive = new Map<string, number>();
   /** 每次新错误 / 用户接手 / 任务关闭都递增；迟到的异步解析结果据此丢弃。 */
   private readonly generations = new Map<string, number>();
@@ -119,7 +119,7 @@ export class UsageLimitAutoResume {
     const handle = this.deps.setTimer(() => {
       void this.fire(sessionId, token);
     }, resumeAt - now);
-    this.timers.set(sessionId, { token, handle });
+    this.timers.set(sessionId, { token, handle, groupQuota: signals.providerGroupUsageLimit !== undefined });
     this.deps.log('usage-limit auto-resume scheduled', { sessionId, resumeAt });
   }
 
@@ -156,6 +156,18 @@ export class UsageLimitAutoResume {
     // 没真正续上(如判断不了有无产出):撤掉已过点的提示,保留原错误与手动重试,不再自动等待。
     if (outcome !== 'resumed') this.deps.cancel(sessionId, token);
     this.deps.log('usage-limit auto-resume fired', { sessionId, outcome, attempt });
+  }
+
+  /** A verified quota refresh may satisfy existing waits before their natural reset time. */
+  async resumeRestored(matches: (sessionId: string) => Promise<boolean>): Promise<void> {
+    for (const [sessionId, pending] of this.timers) {
+      // A pending group switch still has the previous route saved. A local reset event
+      // says nothing about the group's quota; only its own reset timer may resume it.
+      if (pending.groupQuota) continue;
+      if (!await matches(sessionId) || this.timers.get(sessionId) !== pending) continue;
+      this.deps.clearTimer(pending.handle);
+      await this.fire(sessionId, pending.token);
+    }
   }
 
   /** 任务有了实质产出：重新计算连续自动继续次数。 */

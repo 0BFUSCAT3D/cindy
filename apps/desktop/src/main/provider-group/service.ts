@@ -32,6 +32,7 @@ import type {
   ProviderGroupRemotePick,
   ProviderGroupSessionGroup,
   ProviderGroupView,
+  ProviderGroupUsageLimit,
 } from '../../shared/providerGroup.js';
 import { providerGroupMemberKey } from '../../shared/providerGroup.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
@@ -42,7 +43,7 @@ import {
 import type { ProviderGroupBinding, ProviderGroupRef } from './bindings.js';
 import type { ProviderGroupDirectory } from './directory.js';
 import type { ProviderGroupGuestSwitch } from './guestSwitch.js';
-import { providerGroupUsageState } from './usage.js';
+import { providerGroupMemberUsageState } from './usage.js';
 import {
   PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
   PROVIDER_GROUP_FAILURE_COOLDOWN_MS,
@@ -52,7 +53,7 @@ import {
 import {
   decideProviderGroupFailure,
   describeProviderGroupFailure,
-  PROVIDER_GROUP_UNAVAILABLE_ERROR,
+  providerGroupUnavailableError,
   providerGroupFailureSignals,
   type ProviderGroupFailureCause,
   type ProviderGroupFailureDecision,
@@ -131,7 +132,7 @@ export interface ProviderGroupRemoteGroups {
     resetAt: number | null;
     model?: string;
   }): Promise<void>;
-  view(ownerDeviceId: string, providerId: string, model?: string): Promise<ProviderGroupView>;
+  view(ownerDeviceId: string, providerId: string, model?: string, agentKind?: AgentKind): Promise<ProviderGroupView>;
   /** 忘掉组所在电脑目录的缓存(组员失败后下次现读)。 */
   invalidate(ownerDeviceId: string): void;
 }
@@ -346,7 +347,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
 
 type SourcePick =
   | { kind: 'none' }
-  | { kind: 'unavailable' }
+  | { kind: 'unavailable'; usageLimit?: ProviderGroupUsageLimit }
   | { kind: 'member'; member: ProviderGroupMember; label: string; labelOf(memberKey: string): string | undefined };
 
 /** 组来源：本机的组，或同账号另一台电脑上的组。 */
@@ -366,9 +367,9 @@ interface GroupSource {
   /** 记进组的状态(只在判定说要记时调用：那台账号的问题)。 */
   cool(providerId: string, memberKey: string, cause: ProviderGroupFailureCause, resetAt: number | null, model: string): void;
   /** 组的状态里这台现在冷却中(组所在电脑记着它账号的问题)。 */
-  isKnownDown(providerId: string, memberKey: string, model?: string): Promise<boolean>;
+  isKnownDown(providerId: string, memberKey: string, model?: string, agentKind?: AgentKind): Promise<boolean>;
   /** 发送前：这台现在该不该换掉；null = 读不到，照常发送。 */
-  shouldMoveAway(providerId: string, config: ProviderGroupConfig, memberKey: string, model: string): Promise<{ reason: string } | false | null>;
+  shouldMoveAway(providerId: string, config: ProviderGroupConfig, memberKey: string, model: string, agentKind: AgentKind): Promise<{ reason: string } | false | null>;
   invalidate(member: ProviderGroupMember): void;
   /** 任务记录里 Agent 的位置对应组里哪一项(组所在电脑视角的键)；不对应任何组员返回 null。 */
   memberKeyOf(groupProviderId: string, row: ProviderGroupSessionRow): Promise<string | null>;
@@ -579,8 +580,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     memberKey: string,
     route: ProviderGroupRoute,
     model?: string,
+    agentKind?: AgentKind,
   ): Promise<boolean> {
-    if (source && (await withTimeout(source.isKnownDown(providerId, memberKey, model), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS))) {
+    if (source && (await withTimeout(source.isKnownDown(providerId, memberKey, model, agentKind), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS))) {
       return true;
     }
     if (!route.agentDeviceId || !deps.directory.offlineForMs) return false;
@@ -664,7 +666,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         reserveFor: sessionId,
         ...(exclude.size > 0 ? { fresh: true } : {}),
       });
-      if (pick.kind !== 'member') return { kind: pick.kind };
+      if (pick.kind !== 'member') return pick;
       return {
         kind: 'member',
         member: pick.member,
@@ -682,12 +684,12 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     async isKnownDown(providerId, memberKey, model) {
       return router.coolingUntil(providerId, memberKey, model) !== null;
     },
-    async shouldMoveAway(providerId, config, memberKey, model) {
+    async shouldMoveAway(providerId, config, memberKey, model, agentKind) {
       const resolved = await withTimeout(deps.directory.resolveMembers(providerId, config), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
       const state = resolved?.find((r) => r.member.key === memberKey);
       if (!state) return null;
       const cooling = router.coolingUntil(providerId, memberKey, model) !== null
-        || providerGroupUsageState(state.claudeUsage, model, deps.now()).limited;
+        || providerGroupMemberUsageState(state, model, deps.now(), agentKind).limited;
       if (state.state === 'ok' && !cooling) return false;
       return { reason: cooling ? 'cooling' : state.state };
     },
@@ -727,7 +729,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           model,
           exclude: [...exclude],
         });
-        if (pick.kind !== 'member') return { kind: pick.kind };
+        if (pick.kind !== 'member') return pick;
         const labelOf = (key: string) => {
           const found = config.members.find((m) => m.key === key);
           return found ? deps.directory.memberLabel(found) || undefined : undefined;
@@ -744,12 +746,12 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           deps.log.warn('provider group: reporting a computer to cool down failed', { error: errorText(error) });
         });
       },
-      async isKnownDown(providerId, memberKey, model) {
-        const view = await remote.view(ownerDeviceId, providerId, model);
+      async isKnownDown(providerId, memberKey, model, agentKind) {
+        const view = await remote.view(ownerDeviceId, providerId, model, agentKind);
         return view.members.find((m) => m.key === memberKey)?.state === 'cooling';
       },
-      async shouldMoveAway(providerId, _config, memberKey, model) {
-        const view = await withTimeout(remote.view(ownerDeviceId, providerId, model), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
+      async shouldMoveAway(providerId, _config, memberKey, model, agentKind) {
+        const view = await withTimeout(remote.view(ownerDeviceId, providerId, model, agentKind), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
         const state = view?.members.find((m) => m.key === memberKey)?.state;
         if (!state) return null;
         if (view?.model !== model && state !== 'offline' && state !== 'unavailable' && state !== 'cooling') return null;
@@ -1056,7 +1058,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           hooks?.reconnecting?.(attempt, PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
         }, {
           connectionLost: decision.connection === 'lost',
-          knownDown: () => knownDown(source, binding.providerId, current.key, route, row.model ?? undefined),
+          knownDown: () => knownDown(source, binding.providerId, current.key, route, row.model ?? undefined, row.agentKind),
         });
         if (outcome === 'stopped') return;
         if (outcome === 'back') {
@@ -1419,7 +1421,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (pick.kind === 'none') return null;
     if (pick.kind === 'unavailable') {
       deps.log.warn('provider group: no computer available for a new task', { sessionId, groupProviderId, remote: true });
-      throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+      throw providerGroupUnavailableError(pick);
     }
     const route = source.routeOf(pick.member, null);
     await deps.writeBinding(sessionId, bindingFor(source, groupProviderId, pick.member.key));
@@ -1521,7 +1523,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (pick.kind === 'none') return null;
       if (pick.kind === 'unavailable') {
         deps.log.warn('provider group: no computer available for a new task', { sessionId, groupProviderId });
-        throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+        throw providerGroupUnavailableError(pick);
       }
       const route = localSource.routeOf(pick.member, row.providerId);
       await deps.writeBinding(sessionId, { providerId: groupProviderId, memberKey: pick.member.key });
@@ -1603,7 +1605,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (pick.kind === 'none') return null;
       if (pick.kind === 'unavailable') {
         deps.log.warn('provider group: no computer available for a task moved into the group', { sessionId, providerId });
-        throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+        throw providerGroupUnavailableError(pick);
       }
       const route = source.routeOf(pick.member, source.ownerDeviceId ? null : providerId);
       if (route.agentDeviceId === target.current.agentDeviceId && route.providerId !== target.current.providerId) return null;
@@ -1670,7 +1672,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       // 本机的暂停只限制接外部新任务，本机自用仍照常检查故障并恢复。
       // 其他组员的暂停继续保持既有任务位置。
       if (!current || (current.paused && !(source.ownerDeviceId === null && current.kind === 'local'))) return;
-      const cached = await source.shouldMoveAway(binding.providerId, config, current.key, row.model);
+      const cached = await source.shouldMoveAway(binding.providerId, config, current.key, row.model, row.agentKind);
       if (cached === null) return;
       let reason = cached ? cached.reason : null;
       const currentRoute = source.routeOf(current, row.providerId);
@@ -1692,7 +1694,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (reason === 'offline') {
         const outcome = await waitBeforeSend(
           sessionId, currentRoute, current.key, checkFresh, options,
-          () => knownDown(source, binding.providerId, current.key, currentRoute, row.model ?? undefined),
+          () => knownDown(source, binding.providerId, current.key, currentRoute, row.model ?? undefined, row.agentKind),
         );
         if (outcome !== 'gone') return;
         options?.progress?.('switching');

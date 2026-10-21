@@ -152,6 +152,7 @@ import {
   dismissErrorMessageFor,
   isRemoteSession,
   isRemoteSessionSticky,
+  prewarmSessionFor,
   type RoutableMaker,
 } from '@/lib/makerTransport';
 import {
@@ -177,6 +178,13 @@ import type { Effort } from '@/lib/userPreferences.types';
 import { emitAutoTitlePreview, emitAutoTitlePreviewCleared, emitPatch } from '@/lib/sessionsBus';
 import { clearSessionStarting, markSessionStarting } from '@/lib/sessionStartingStore';
 import { createLogger } from '@/lib/logger';
+import {
+  traceRemoteSendAccepted,
+  traceRemoteSendDispatching,
+  traceRemoteSendDropped,
+  traceRemoteSendEcho,
+  traceRemoteSendRegistered,
+} from '@/lib/remoteSendTrace';
 import {
   markSessionAutomaticHistoryLoadCompleted,
   readSessionScroll,
@@ -611,6 +619,8 @@ export interface ChatMessage {
     | 'mcp-app';
   mcpAppClientId?: string;
   systemCardData?: Record<string, unknown>;
+  /** First input resumed after group quota recovery; its user bubble stays visible. */
+  usageLimitAutoResumeInfo?: Record<string, unknown>;
   /** FP-3: plan_review message fields */
   planReviewStatus?: 'pending' | 'approved' | 'revised' | 'expired' | 'cancelled';
   planReviewRequestId?: string;
@@ -1676,6 +1686,7 @@ function registerRemoteOptimisticSend(
     composerResolvedOptimistically: false,
   };
   remoteOptimisticSendRecords(sessionId, true)!.set(queued.clientId, record);
+  traceRemoteSendRegistered(queued.clientId);
   const composerTransition = findRemoteOptimisticComposerTransition(
     sessionId,
     opts?.onRemoteOptimisticFailure,
@@ -1843,6 +1854,7 @@ function markRemoteOptimisticSendAccepted(
 ): void {
   const record = remoteOptimisticSendRecords(sessionId)?.get(clientId);
   if (!record) return;
+  traceRemoteSendAccepted(clientId);
   record.accepted = true;
   record.currentlyQueued = true;
   record.phase = 'accepted';
@@ -2512,7 +2524,7 @@ export interface AgentSwitchIntentRecord {
   model: string;
   providerId: string | null;
   effort?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /**
    * 远程 Agent:这次选择同时换 Agent 所在电脑(null = 任务所在电脑)。缺省 = 位置不变。
    * 意图期内模型目录、选中态与 trigger 都按这台电脑显示。
@@ -2815,7 +2827,7 @@ export interface SessionChatState {
    */
   queueExpanded: boolean;
   /** Fast Mode toggle state — session-level, OFF by default, only meaningful for supported models. */
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   /**
    * 计划模式一级开关(与 permissionMode 正交)。开关入口在 composer「+」菜单;
    * 计划批准后 agent 自动退出, 经 plan_mode_changed → sessions:patched →
@@ -5196,6 +5208,16 @@ function hydratePersistedMessage(
     ...(existing.retryFiles ? { retryFiles: existing.retryFiles } : {}),
     ...(existing.retryMentions ? { retryMentions: existing.retryMentions } : {}),
   };
+  // Sender metadata is an authoritative snapshot, not an additive patch.
+  // Absence means ordinary user input (or no source on an assistant row).
+  // Keeping a cached field here can falsely label a user message as a teammate,
+  // even after the host has delivered a source-free row.
+  for (const field of [
+    'automationOrigin', 'sourceDevice', 'sourcePlugin', 'sourceGroup',
+    'hookSource', 'sharedAuthorName', 'sharedAuthorMemberId',
+  ] as const) {
+    if (persisted[field] === undefined) delete hydrated[field];
+  }
   if (
     options.preserveExistingCodexPlanContent === true &&
     existing.role === 'tool_use' &&
@@ -8841,6 +8863,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     if (isBeforeOrAtRendererClearBoundary(sessionId, message.createdAt)) return;
     const [mapped] = mapServerMessages([message]);
     if (!mapped) return;
+    traceRemoteSendEcho(mapped.clientId, mapped.role);
     clearRemoteOptimisticSend(sessionId, mapped.clientId);
     const current = getOrCreateState(sessionId);
     const existing = current.messages.find((candidate) => candidate.clientId === mapped.clientId);
@@ -9343,7 +9366,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
             providerId?: string;
             model?: string;
             effort?: string;
-            fast?: boolean;
+            fast?: boolean | 'ultrafast';
           } | null;
           if (p?.sessionId && p.agent && p.providerId && p.model) {
             const scopeKey = `session:${p.sessionId}`;
@@ -11174,6 +11197,7 @@ async function dispatchRemoteOptimisticSend(
   record.dispatching = true;
   record.phase = 'dispatching';
   record.attempt += 1;
+  traceRemoteSendDispatching(record.queued.clientId);
   clearRemoteOptimisticRetryTimer(sessionId);
 
   const operation = beginInputProjectionOperation(sessionId, record.deviceId);
@@ -11300,6 +11324,7 @@ async function dispatchRemoteOptimisticSend(
 }
 
 function settleRemoteOptimisticFailure(sessionId: string, clientId: string, error?: unknown): void {
+  traceRemoteSendDropped(clientId);
   const record = remoteOptimisticSendRecords(sessionId)?.get(clientId);
   if (record?.composerResolvedOptimistically && isDataOwnerGenerationCurrent(record.dataOwner)) {
     try {
@@ -14142,6 +14167,47 @@ export function buildCreateOptsForCurrentSession(
         ? { providerId: current.sessionProviderId }
         : {}),
   };
+}
+
+/** 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。 */
+const PREWARM_REQUEST_INTERVAL_MS = 30_000;
+const lastPrewarmRequestAt = new Map<string, number>();
+
+/**
+ * 输入框开始打字：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
+ * 没有排队或在途发送时请求；createOpts 与下一次发送构造的相同，执行字段由任务所在
+ * 电脑按数据库校正。尽力而为，结果不影响发送。
+ */
+function prewarmSession(
+  sessionId: string,
+  model: string,
+  effort: string,
+  permissionMode: string,
+  workingDir: string,
+): void {
+  if (!sessionId || !workingDir) return;
+  const current = getOrCreateState(sessionId);
+  if (
+    current.agentStatus.isRunning ||
+    current.isStreaming ||
+    current.pendingQueue.length > 0 ||
+    current.agentSwitchIntent ||
+    remoteOptimisticSendRecords(sessionId)?.size
+  ) {
+    return;
+  }
+  const now = Date.now();
+  const last = lastPrewarmRequestAt.get(sessionId);
+  if (last !== undefined && now - last < PREWARM_REQUEST_INTERVAL_MS) return;
+  lastPrewarmRequestAt.set(sessionId, now);
+  const createOpts = buildCreateOptsForCurrentSession(
+    sessionId,
+    model,
+    effort,
+    permissionMode,
+    workingDir,
+  );
+  void prewarmSessionFor(sessionId, createOpts).catch(() => undefined);
 }
 
 function touchSessionUserSend(sessionId: string, workingDir: string, wasFirst: boolean): void {
@@ -17428,7 +17494,7 @@ function updatePendingPlanReviewContent(
  */
 async function setFastMode(
   sessionId: string,
-  enabled: boolean,
+  enabled: boolean | 'ultrafast',
   sourceRemoteDeviceId?: string,
 ): Promise<void> {
   if (!sessionId) return;
@@ -17837,7 +17903,7 @@ function noteAgentSwitchIntent(
     model: string;
     providerId: string | null;
     effort?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     agentDeviceId?: string | null;
   },
 ): void {
@@ -17898,7 +17964,7 @@ function normalizeAgentSwitchIntent(value: unknown): AgentSwitchIntentRecord | n
   // 只有出现非 string / 非空值的脏值才判非法,避免协议演进时静默丢掉合法意图。
   if (item.providerId != null && typeof item.providerId !== 'string') return null;
   if (item.effort !== undefined && typeof item.effort !== 'string') return null;
-  if (item.fastMode !== undefined && typeof item.fastMode !== 'boolean') return null;
+  if (item.fastMode !== undefined && (typeof item.fastMode !== 'boolean' && item.fastMode !== 'ultrafast')) return null;
   // 位置字段只在换 Agent 所在电脑时出现;脏值按「位置不变」处理,不丢掉整份意图。
   const agentDeviceId =
     item.agentDeviceId === null || (typeof item.agentDeviceId === 'string' && item.agentDeviceId.length > 0)
@@ -17909,7 +17975,7 @@ function normalizeAgentSwitchIntent(value: unknown): AgentSwitchIntentRecord | n
     model: item.model,
     providerId: typeof item.providerId === 'string' ? item.providerId : null,
     ...(typeof item.effort === 'string' && item.effort.length > 0 ? { effort: item.effort } : {}),
-    ...(typeof item.fastMode === 'boolean' ? { fastMode: item.fastMode } : {}),
+    ...((typeof item.fastMode === 'boolean' || item.fastMode === 'ultrafast') ? { fastMode: item.fastMode } : {}),
     ...(agentDeviceId !== undefined ? { agentDeviceId } : {}),
   };
 }
@@ -17957,7 +18023,7 @@ function setSessionRuntime(
   sessionId: string,
   opts: {
     agentKind?: 'claude-code' | 'codex' | 'pi';
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     planModeEnabled?: boolean;
     /** Seed before SessionView hydrates the DB row; sendMessage reads this for SSH routing. */
     remoteHostId?: string | null;
@@ -18099,7 +18165,7 @@ function mirrorSessionFields(
       );
     }
   }
-  if (typeof patch.fastMode === 'boolean') {
+  if ((typeof patch.fastMode === 'boolean' || patch.fastMode === 'ultrafast')) {
     const next = patch.fastMode;
     setState(sessionId, (s) => (s.fastMode === next ? s : { ...s, fastMode: next }));
   }
@@ -18171,6 +18237,7 @@ export const makerChatStore = {
   loadAroundMessage,
   loadAroundMessageClientId,
   sendMessage,
+  prewarmSession,
   /** #2194: MessageStream 强 pin 门控——区分本端发送与外部注入的 user 消息。 */
   isLocalSentUserMessage,
   beginRemoteOptimisticComposerTransition,
@@ -19171,6 +19238,12 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
         ...(c.dismissed === true ? { errorDismissed: true } : {}),
       };
     }
+    if (m.role === 'assistant' && m.agentMeta?.modelChange) {
+      return {
+        clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
+        systemCardType: 'agent-switch' as const, systemCardData: { ...m.agentMeta.modelChange },
+      };
+    }
     // 同一引擎换干净原生会话：可见交接记录，展开看发给新窗口的摘要。
     const contextRebuild =
       m.role === 'assistant' && m.agentMeta && typeof m.agentMeta === 'object'
@@ -19343,6 +19416,9 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
         role: m.role,
         content: parsed.text,
         isStreaming: false,
+        ...(m.agentMeta?.autoResumeInfo?.reason === 'usage-limit-reset'
+          ? { usageLimitAutoResumeInfo: { ...m.agentMeta.autoResumeInfo } }
+          : {}),
         ...(parsed.images.length > 0 && { images: parsed.images }),
         ...(parsed.files.length > 0 && { files: parsed.files }),
         ...(parsed.quotesEncoded === true && { quotesEncoded: true }),
