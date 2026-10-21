@@ -59,6 +59,7 @@ function makeHost(
     ownerCurrent?: () => boolean;
     providerAccess?: boolean;
     providerAllowed?: () => boolean;
+    modelAllowed?: (model: string | undefined) => boolean;
     /** false = 不接受受邀者出站登记(旧接线)；缺省给一个记录调用的实现。 */
     bindGuestProviderRoute?: false | Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
     /** 会话是否正在运行一轮(缺省不提供，同旧 Agent)。 */
@@ -115,7 +116,8 @@ function makeHost(
     ...(options.providerAccess === false ? {} : {
       providerAccess: {
         resolve: async (_kind, _model, providerId) => providerId ?? 'shared-provider',
-        isAllowed: () => options.providerAllowed?.() ?? true,
+        isAllowed: (_providerId, _controller, model) => (options.providerAllowed?.() ?? true)
+          && (options.modelAllowed?.(model) ?? true),
       },
     }),
     ...(options.purge ? { purgeHostedTranscripts: options.purge } : {}),
@@ -420,11 +422,15 @@ describe('guest resume', () => {
 // Unit regression: shared-model forks previously had no host operation. Exercise the public
 // handler, persistent ownership, chained forks, and account revocation without model calls.
 describe('shared-model native fork', () => {
+  // Review 4335650318 / sharing §12, unit: earlier fork fixtures allowed missing
+  // model IDs. A real model gate denies undefined even for an unrestricted grant;
+  // authorized forks must succeed, while another model and mid-fork revocation fail.
   it.each([['claude-code', GUEST], ['codex', GUEST], ['pi', GUEST], ['claude-code', OWNER]] as const)('keeps %s children for %s across restart and rejects foreign history', async (agentKind, controller) => {
     const started: Started[] = [];
     let children = 0;
     const forkHosted = vi.fn(async () => ({ newSdkSessionId: `native-child-${++children}`, uuidMap: new Map([['a', 'b']]) }));
-    const host = makeHost(started, { nativeId: 'native-source', forkHosted });
+    const modelAllowed = (model: string | undefined) => model === 'claude-opus';
+    const host = makeHost(started, { nativeId: 'native-source', forkHosted, modelAllowed });
     const request = { op: 'fork', sourceSessionId: 'task-1', newSessionId: 'task-2',
       agentKind, sourceSdkSessionId: 'native-source', model: 'claude-opus', upToMessageId: 'a' };
     if (controller === GUEST) await expect(host.handle(controller, request)).rejects.toThrow('REMOTE_AGENT_INVALID');
@@ -439,6 +445,8 @@ describe('shared-model native fork', () => {
         expect(JSON.stringify(index)).toContain('native-source');
       }
     });
+    await expect(host.handle(controller, { ...request, model: 'claude-sonnet' })).rejects.toThrow('REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+    expect(forkHosted).not.toHaveBeenCalled();
     await expect(host.handle(controller, request)).resolves.toEqual({ newSdkSessionId: 'native-child-1', uuidMap: [['a', 'b']] });
     expect(forkHosted).toHaveBeenCalledWith(agentKind, expect.objectContaining({
       providerId: 'shared-provider', sourceSdkSessionId: 'native-source',
@@ -446,7 +454,7 @@ describe('shared-model native fork', () => {
     }));
     await host.handle(controller, { op: 'close', runId: RUN_1, mode: 'close', reason: 'navigation' });
     host.dispose();
-    const restarted = makeHost([], { forkHosted });
+    const restarted = makeHost([], { forkHosted, modelAllowed });
     try {
       await expect(restarted.handle(controller, { ...request, sourceSessionId: 'task-2', sourceSdkSessionId: 'native-child-1', newSessionId: 'task-3' }))
         .resolves.toMatchObject({ newSdkSessionId: 'native-child-2' });
@@ -464,11 +472,12 @@ describe('shared-model native fork', () => {
     } finally { restarted.dispose(); }
   });
 
-  it.each(['account', 'provider'])('does not disclose a completed fork after %s access changes', async (revoked) => {
+  it.each(['account', 'provider', 'model'])('does not disclose a completed fork after %s access changes', async (revoked) => {
     let current = true;
     const host = makeHost([], {
       ownerCurrent: () => revoked !== 'account' || current,
       providerAllowed: () => revoked !== 'provider' || current,
+      modelAllowed: (model) => model === 'claude-opus' && (revoked !== 'model' || current),
       forkHosted: async () => {
         current = false;
         return { newSdkSessionId: 'private-child', uuidMap: new Map() };
@@ -477,6 +486,7 @@ describe('shared-model native fork', () => {
     try {
       await expect(host.handle(OWNER, { op: 'fork', sourceSessionId: 'task-1', newSessionId: 'task-2',
         agentKind: 'claude-code', sourceSdkSessionId: 'source', model: 'claude-opus' })).rejects.toThrow(revoked === 'account' ? 'REMOTE_AGENT_UNAVAILABLE' : 'REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
+      expect(current).toBe(false); // The native fork completed before its result was denied.
     } finally { host.dispose(); }
   });
 });

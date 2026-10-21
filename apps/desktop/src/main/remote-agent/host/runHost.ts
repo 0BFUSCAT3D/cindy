@@ -2211,7 +2211,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         if (deps.providerAccess && !providerId) failProviderNotAllowed();
         const assertProvider = () => {
           assertAccess();
-          if (providerId && !deps.providerAccess?.isAllowed(providerId, controller)) failProviderNotAllowed();
+          if (providerId && !deps.providerAccess?.isAllowed(providerId, controller, request.model)) failProviderNotAllowed();
         };
         assertProvider();
         const member = guest && !request.relay ? await relayMemberOf(controller, request.sourceSdkSessionId) : null;
