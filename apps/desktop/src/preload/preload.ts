@@ -6179,6 +6179,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:chat-server:status'),
       thread: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['thread']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['thread']> =>
         ipcRenderer.invoke('maker:chat-server:thread', input),
+      followThread: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['followThread']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['followThread']> =>
+        ipcRenderer.invoke('maker:chat-server:followThread', input),
       reply: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['reply']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['reply']> =>
         ipcRenderer.invoke('maker:chat-server:reply', input),
       shareToMain: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['shareToMain']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['shareToMain']> =>
