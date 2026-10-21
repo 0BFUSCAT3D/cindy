@@ -305,7 +305,8 @@ function sourceText(todo: TeammateTodo, t: (key: string) => string): string {
   if (!source || source.kind === 'conversation') return t('bots.glance.source.conversation');
   const kind = t(`bots.glance.source.${source.kind}`);
   const label = source.label?.trim();
-  return label && label !== kind ? `${kind} · ${label}` : kind;
+  // 来源名已含标签（「来自 GitHub」+「GitHub」）时不再重复。
+  return label && !kind.toLowerCase().includes(label.toLowerCase()) ? `${kind} · ${label}` : kind;
 }
 
 function TodoRow({
