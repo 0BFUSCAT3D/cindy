@@ -294,6 +294,7 @@
     "agentSwitchLocation": "Agent の実行先を {{device}} に変更しました",
     "agentSwitchLocationThisComputer": "Agent の実行先をこのパソコンに戻しました",
     "agentSwitchLocationOtherComputer": "Agent の実行先を別のパソコンに変更しました",
+    "agentSwitchLocationQuotaRebalance": "こちらのクォータを先に使うため",
     "learnStarted": "スキル学習を開始しました",
     "learnStartedBody": "蒸留はデスクトップのバックグラウンドで進行します。完了後、デスクトップでスキルの草案を確認・レビューしてください。",
     "learnFailed": "スキル学習を開始できませんでした",

@@ -18,6 +18,7 @@ import {
   providerGroupDeviceCount,
   providerGroupSummaryForWire,
   type ProviderGroupConfig,
+  type ProviderGroupRebalanceSuggestion,
   type ProviderGroupRemotePick,
   type ProviderGroupRemoteSessionGroup,
   type ProviderGroupRemoteUsageRow,
@@ -43,6 +44,10 @@ export interface ProviderGroupRemoteHandlerDeps {
   replaceReportedUsage(controller: string, sinceDay: string | null, rows: ProviderGroupRemoteUsageRow[]): void;
   /** 这台电脑上的任务此刻归哪个组(只读本机记录，读不到为 null)。 */
   sessionGroup(sessionId: string): Promise<ProviderGroupSessionGroup>;
+  /** 手机、远程控制发下一条消息前：这台电脑上的任务要不要提议换号(provider-groups.md §6.2「任务进行中换号」)。 */
+  rebalanceSuggestion?(sessionId: string): Promise<ProviderGroupRebalanceSuggestion>;
+  /** 记下用户确认的换号。 */
+  rebalanceDecision?(sessionId: string, memberKey: string, remember: boolean): Promise<boolean>;
 }
 
 /** 每个账号、每台报告来的电脑最近收下的用量报告序号(乱序到达的旧份丢弃)。按账号的负载对象区分账号。 */
@@ -109,10 +114,26 @@ export async function handleProviderGroupRemote(
   controller: string,
   raw: unknown,
 ): Promise<
-  ProviderGroupRemotePick | ProviderGroupView | ProviderGroupUsagePartAck | ProviderGroupRemoteSessionGroup | Record<string, never>
+  | ProviderGroupRemotePick
+  | ProviderGroupView
+  | ProviderGroupUsagePartAck
+  | ProviderGroupRemoteSessionGroup
+  | ProviderGroupRebalanceSuggestion
+  | { ok: boolean }
+  | Record<string, never>
 > {
   const request = parseProviderGroupRemoteRequest(raw);
   if (request.action === 'session-group') return { group: await deps.sessionGroup(request.sessionId) };
+  if (request.action === 'rebalance-suggestion') {
+    return deps.rebalanceSuggestion ? await deps.rebalanceSuggestion(request.sessionId) : null;
+  }
+  if (request.action === 'rebalance-decision') {
+    return {
+      ok: deps.rebalanceDecision
+        ? await deps.rebalanceDecision(request.sessionId, request.memberKey, request.remember)
+        : false,
+    };
+  }
   const scope = deps.scope();
   switch (request.action) {
     case 'pick': {

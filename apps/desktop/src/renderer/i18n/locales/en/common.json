@@ -640,7 +640,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "When subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
+      "quotaFirst": "When subscription usage is available, computers whose quota resets soon with plenty left go first, so each account is used up evenly over time; similar ones follow the group strategy",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
@@ -677,6 +677,10 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
+      "pace": {
+        "used": "{{used}}% used",
+        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
+      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
@@ -727,6 +731,15 @@
           "unknown": "Not checked yet"
         }
       }
+    },
+    "rebalance": {
+      "title": "Continue on {{label}}?",
+      "description": "To use every account’s quota evenly, send this message from {{label}} ({{quota}}). The last few messages and a summary carry over; older details may be lost.",
+      "quota": "{{left}}% left",
+      "quotaReset": "{{left}}% left · {{reset}}",
+      "confirm": "Switch",
+      "cancel": "Cancel",
+      "remember": "Switch automatically from now on (this task only)"
     },
     "deleteConfirm": {
       "title": "Delete the {{provider}} provider group?",
@@ -11997,7 +12010,8 @@
         "relocatedHere": "Agent now runs on this computer",
         "relocatedTo": "Agent now runs on {{device}}",
         "relocatedTaskComputer": "Agent now runs on the task’s computer",
-        "relocatedElsewhere": "Agent now runs on another computer"
+        "relocatedElsewhere": "Agent now runs on another computer",
+        "quotaRebalance": "its quota should be used first"
       },
       "contextRebuild": {
         "labelOverflow": "Context reorganized, continuing",

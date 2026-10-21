@@ -190,6 +190,7 @@ import {
 } from '@/lib/controlledTaskAgentLocation';
 import { resolveUsageAccountLocation } from '@/lib/usageAccountLocation';
 import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
+import { offerSessionRebalance, useSessionRebalancePrefetch } from '@/features/provider-group/sessionRebalancePrompt';
 import {
   canExposeWritableDirsChange,
   resolveManualCompactChannel,
@@ -1400,6 +1401,7 @@ function CCAgentSessionContent({
     }
   }, [session?.status, sessionId, navigate, ownsWindowRoute]);
   const vendorAuthGate = useVendorAuthGate();
+  const { confirmWithCheckbox } = useConfirmDialog();
 
   useEffect(() => {
     if (!sessionId || !searchJump) return;
@@ -2131,6 +2133,8 @@ function CCAgentSessionContent({
   // 仍调 compact-session → pi 拒绝 → confirm 后吃 rejection toast」(codex P2)。
   const isRunningRef = useRef(agentStatus.isRunning);
   isRunningRef.current = agentStatus.isRunning;
+  // 任务空闲时预先问好要不要换号，发送时不再多等一次往返(provider-groups.md §6.2「任务进行中换号」)。
+  useSessionRebalancePrefetch(sessionId, remoteDeviceId, !agentStatus.isRunning && !readOnly);
   // live 供应商目录(含内置 + 自定义,按 agent 挂模型)—— vendor↔model 一致性校验的真源,
   // 与模型选择器同源(见下方 M35 vendor fallback effect)。本地 IPC 极快返回,有模块级缓存。
   // device-link 远程会话用被控端经隧道带来的 providers(per-provider,fast 判定与本地同口径)。
@@ -4162,6 +4166,17 @@ function CCAgentSessionContent({
         message = finalDispatch.message;
       }
 
+      // 上一轮已经结束、用户发下一条消息：供应商组里另一个账号的配额明显更该先用时，问用户要不要换过去
+      // (provider-groups.md §6.2「任务进行中换号」)。只记下用户的选择，这条消息无论换不换都照常发出。
+      if (deliveryMode !== 'steer' && sessionId && !isRunningRef.current) {
+        await offerSessionRebalance({
+          sessionId,
+          ...(remoteDeviceId ? { hostDeviceId: remoteDeviceId } : {}),
+          confirmWithCheckbox,
+          t,
+        });
+      }
+
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
       const sendOptions = {
         beforeEnqueue: opts?.beforeEnqueue,
@@ -4248,6 +4263,7 @@ function CCAgentSessionContent({
       readOnly,
       t,
       vendorAuthGate,
+      confirmWithCheckbox,
       remoteDeviceId,
       sessionHandoffPreparing,
       cindyMakeInputLocked,

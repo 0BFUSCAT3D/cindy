@@ -10,6 +10,8 @@ vi.mock('../runtime.js', () => ({
   getProviderGroupRouter: vi.fn(),
   getProviderGroupRemoteClient: vi.fn(),
   readProviderGroupOfSession: vi.fn(),
+  readProviderGroupRebalanceSuggestion: vi.fn(),
+  recordProviderGroupRebalanceDecision: vi.fn(),
 }));
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn(), listProviderGroups: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));

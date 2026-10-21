@@ -69,6 +69,7 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
     markTried: vi.fn(() => new Set<string>()),
     triedThisTurn: vi.fn(() => new Set<string>()),
     resetTurn: vi.fn(),
+    rebalanceCandidates: vi.fn(() => []),
   } satisfies ProviderGroupRouter;
   const value = {
     scope: () => ({ router, externalLoad, isCurrent: () => ownerCurrent }),
