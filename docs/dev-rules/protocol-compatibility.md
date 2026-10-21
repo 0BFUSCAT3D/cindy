@@ -2945,3 +2945,13 @@ manifest 可选字符串 `releaseNotes`；旧包缺字段仍可安装。首次�
 审核状态增加 cancelled；Main/preload 新增精确 cancelReview，AI 对应 ghost_cancel_plugin_review。
 旧 journal 字段可选只为读取/原操作恢复，不允许新客户端静默绕过新版预检。
 个人投稿复用原审核请求及上架流程，不增加启用开关、审核令牌或历史比较包门槛。取消仅针对本人仍有提交授权的精确待审修订，已通过或驳回时按真实状态返回。
+
+## 伙伴跟进邀请（2026-10-21）
+
+总调度未设置 override 时默认关闭，已有明确选择保留。跨端沿用 `teammates` 远程资源：
+`settings:<botId>/follow-up` 返回既有 form/toggle/confirmation、可选邀请标记和不透明动作票。
+读资源不启用跟进；点击开启或暂不开启才保存。票据绑定账号、控制端、伙伴及当前设置 revision；
+旧票、隐藏伙伴与账号切换沿用既有拒绝规则，不新增 invoke channel 或共享访客权限。
+新 Host 对旧查看端仍执行默认关闭；旧端忽略新增入口/字段，已有聊天不变。新查看端连接旧 Host
+时不显示邀请，不能声称旧 Host 已执行新默认。Desktop 本机、远程 Desktop 和 Mobile 均显示范围及用量，
+Mobile iOS/Android 复用现有设置表单与按钮；没有原生配置、依赖、指纹或数据库迁移变化。

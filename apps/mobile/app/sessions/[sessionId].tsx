@@ -1,6 +1,7 @@
 import { incomingShareSlotOrder } from '@/session/mobileLocalAttachmentUpload';
 import { useIncomingShareComposer } from '@/session/useIncomingShareComposer';
 import { incomingShareDestination } from '@/session/incomingShare';
+import { CompanionFollowUpInvitation } from '@/session/CompanionFollowUpInvitation';
 import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useSessionHistorySearch } from '@/session/useSessionHistorySearch';
 import { useContentRecoveryDiagnostics } from '@/debug/useContentRecoveryDiagnostics';
@@ -6159,6 +6160,9 @@ function SessionScreenContent() {
   const companionDisplay = useCompanionDisplayResource(deviceId, sessionId, companionResource, companionChat);
   const [companionSettingsRequest, setCompanionSettingsRequest] = useState<{ sessionId: string; page: 'memory' | 'capabilities'; sequence: number }>();
   const openCompanionSettings = useCallback((page: 'memory' | 'capabilities') => setCompanionSettingsRequest(previous => ({ sessionId, page, sequence: (previous?.sequence ?? 0) + 1 })), [sessionId]);
+  const followUpScope = JSON.stringify([auth.accountGeneration, deviceId, sessionId]);
+  const [followUpEngaged, setFollowUpEngaged] = useState<string | null>(null);
+  useEffect(() => setFollowUpEngaged(null), [followUpScope]);
   const companionWorkingLabel = useCompanionWorkingLabel({ sessionId, deviceId, botId: companionDisplay?.ref.id ?? '',
     active: companionChat && showComposerActivity, messages, reconnectAttempt: remoteSessionRunStatus.reconnectAttempt });
   const companionAvatarData = companionDisplay?.display.avatar;
@@ -7122,6 +7126,7 @@ function SessionScreenContent() {
       // 消息已由 A 路径落定；若等待期间切到 B，只停止旧 continuation，不能再用
       // A 的附件 id / plan 状态去清理 B 的 composer UI。
       if (!sendScopeStillAlive()) return;
+      if (enqueueAccepted) setFollowUpEngaged(followUpScope);
       if (sessionAtSend.permissionMode === 'plan') {
         // 一次性语义(对齐桌面 PR#494 / 产品决策):计划模式只对本条消息生效,发送后
         // 自动恢复进入前的权限档;本条消息通常已按 plan 派发,切换只影响后续消息。
@@ -10665,6 +10670,12 @@ function SessionScreenContent() {
                     />
                   ) : null}
                 </View>
+              ) : null}
+              {companionChat && companionResource?.ref.id === 'cindy-default'
+                && companionResource.links.some(link => link.rel === 'conversation' && link.target.kind === 'session' && link.target.sessionId === sessionId)
+                && followUpEngaged === followUpScope && !remoteSessionRunning && !isSessionStreaming
+                && pending.length === 0 && !shareSelectionActive && !remoteUnavailableReason ? (
+                <CompanionFollowUpInvitation key={followUpScope} deviceId={deviceId} deviceName={deviceName} botId="cindy-default" />
               ) : null}
               {/* Desktop BotWorkingStatus: a teammate's paced public status stays above the composer,
                   also while the user reads older messages. Interactions carry their own panel. */}

@@ -1294,7 +1294,7 @@ export async function setBotSchedulerBotId(schedulerBotId: string | null): Promi
   applyAutonomyView(await api.setSettings({ schedulerBotId }), owner);
 }
 
-/** 恢复默认 = 删除 override，跟随当前版本默认（出厂 Cindy 助理）。 */
+/** 恢复默认 = 删除 override，跟随当前版本默认（关闭）。 */
 export async function resetBotAutonomySettings(): Promise<void> {
   const api = autonomyApi();
   if (!api) throw new Error('Bot autonomy settings are not ready');

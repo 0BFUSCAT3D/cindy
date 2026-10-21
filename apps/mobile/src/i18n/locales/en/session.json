@@ -728,5 +728,11 @@
     "hint": "Either rule uses the earliest-expiring card. Skip when all quotas are full. Runs on this computer while Cindy is running.",
     "failed": "Could not save. Try again.",
     "restore": "Restore defaults"
+  },
+  "followUp": {
+    "title": "Would you like me to follow up on your sessions?",
+    "start": "Start Following Up",
+    "notNow": "Not Now",
+    "saveFailed": "Couldn't save. Try again."
   }
 }
