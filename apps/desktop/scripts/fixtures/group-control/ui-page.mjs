@@ -41,6 +41,10 @@ export default {
       about: 'The same discussion once every turn is done: no switch or 继续 row, the turn reply carries 第 2 步',
       data: { ...base, arrangement: 'auto' },
     },
+    settings: {
+      about: 'Single-speaker group settings: no 回复方式 or 发言方式; the 负责人 note says who answers un-addressed messages',
+      data: { ...base, arrangement: 'waiting', settings: true },
+    },
     'bubbles-wrapped': {
       about: 'PR #6549: wrapped reactions keep both toolbars level with their bubbles; server messages with empty mention ids still open unique member cards',
       viewport: { width: 800, height: 800 },
@@ -76,6 +80,15 @@ export default {
       await chip.waitFor();
     };
 
+    if (ui.case === 'settings') {
+      const drawer = page.getByRole('dialog');
+      await drawer.getByText('负责人', { exact: true }).waitFor();
+      // Who answers follows @ and the lead; the old group modes are gone.
+      assert.equal(await drawer.getByText('发言方式').count(), 0);
+      assert.equal(await drawer.getByText('没有 @ 人的时候').count(), 0);
+      await drawer.getByText('没有 @ 人的消息由负责人回答', { exact: false }).waitFor();
+      return;
+    }
     if (ui.case.startsWith('arrangement')) {
       const card = page.getByTestId('bot-group-arrangement');
       await card.waitFor();

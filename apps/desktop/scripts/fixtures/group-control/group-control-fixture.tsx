@@ -1,6 +1,10 @@
-import { Route, Routes } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Route, Routes, useSearchParams } from 'react-router-dom';
 import { AppFrame, forbid, mountPage, subscription } from '../../ui-page/harness';
 import { BotGroupChatView } from '../../../src/renderer/features/bots/BotGroupChatView';
+import { BotGroupSettingsDrawer } from '../../../src/renderer/features/bots/BotGroupSettingsDrawer';
+import { BOT_GROUP_SETTINGS_PARAM } from '../../../src/renderer/features/bots/botGroupPresentation';
+import { refreshBotGroups } from '../../../src/renderer/features/bots/botGroupStore';
 import { ControlledBanner } from '../../../src/renderer/features/remote-device/ControlledBanner';
 
 interface GroupData {
@@ -13,6 +17,8 @@ interface GroupData {
   wrappedReactions?: boolean;
   /** A single-speaker server group: the lead answered and lined up a discussion (bot-group-chat.md §4.0/§7.0). */
   arrangement?: 'waiting' | 'auto';
+  /** Open the group settings drawer as its owner. */
+  settings?: boolean;
 }
 
 const T0 = 1700000000000;
@@ -133,12 +139,15 @@ function groupFrom(data: GroupData) {
     name: data.name,
     replyMode: 'all',
     speakingMode: 'auto',
-    members: data.members.map((member) => ({
+    members: [...(data.settings ? [{ botId: '', actorId: 'me', actorKind: 'user', name: 'You', isSelf: true, isOwned: true, role: 'owner', avatar: '', avatarColor: 'gray', status: 'active' }] : []),
+      ...data.members.map((member) => ({
       ...member,
+      ...(data.settings ? { actorId: `bot-${member.botId}`, actorKind: 'bot', isOwned: true, role: 'member' } : {}),
       avatar: '',
       avatarColor: 'gray',
       status: 'active',
-    })),
+    }))],
+    ...(data.settings ? { revision: 1 } : {}),
     organizerBotId: data.members[0]?.botId ?? null,
     projectDir: null,
     lastMessage: null,
@@ -177,7 +186,7 @@ void mountPage({
     const group = groupFrom(ctx.data as unknown as GroupData);
     return {
       maker: {
-        listBotGroups: async () => ({ ok: true, groups: [] }),
+        listBotGroups: async () => ({ ok: true, groups: (ctx.data as unknown as GroupData).settings ? [group] : [] }),
         getBotGroup: async () => ({ ok: true, group }),
         onBotGroupChanged: subscription('botGroupChanged'),
         sendBotGroupMessage: forbid('maker.sendBotGroupMessage'),
@@ -185,7 +194,10 @@ void mountPage({
         chatServer: {
           reactors: async () => ({ ok: true, reactors: [{ actorId: 'me', isSelf: true, name: 'You', formerMember: false }] }),
           react: forbid('maker.chatServer.react'),
+          ownedBots: async () => ({ ok: true, bots: [] }),
+          manage: forbid('maker.chatServer.manage'),
         },
+        updateBotGroup: forbid('maker.updateBotGroup'),
       },
       deviceLink: {
         getState: async () => ({ controlledBy: [] }),
@@ -207,7 +219,16 @@ void mountPage({
           </div>
         </AppFrame>
         <ControlledBanner />
+        {data.settings ? <OpenSettings /> : null}
       </>
     );
   },
 });
+
+/** The drawer is route-owned: open it the way the header button does. */
+function OpenSettings() {
+  const [, setSearchParams] = useSearchParams();
+  // The drawer reads the shared group list, which the sidebar normally loads.
+  useEffect(() => { refreshBotGroups(); setSearchParams({ [BOT_GROUP_SETTINGS_PARAM]: '1' }, { replace: true }); }, [setSearchParams]);
+  return <BotGroupSettingsDrawer />;
+}
