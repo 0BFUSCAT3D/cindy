@@ -274,6 +274,23 @@ function parseToolJson(result: unknown): Record<string, unknown> {
 }
 
 describe('orca_worker_bridge MCP helpers', () => {
+  // Live cross-device probe: an authenticated Worker with no local role could see
+  // send_to_lead but was rejected. Forward before local-link resolution, preserving
+  // local handler behavior and the four existing MCP definitions (unit tier).
+  it('forwards a remote session report before resolving a local Worker link', async () => {
+    const { maker } = makeProvider({});
+    const forward = vi.fn(async () => ({ content: [{ type: 'text' as const,
+      text: JSON.stringify({ ok: true, queued: true, lead_session_id: 'lead-on-pc' }) }], isError: false }));
+    const provider = createOrcaWorkerBridgeMcpProvider({ getMaker: () => maker as unknown as Maker,
+      logger: makeLogger(), persistUserMessage: vi.fn(), wireSession: vi.fn(), forwardRemoteWorkerTool: forward });
+    const server = getServer(provider, { agentKind: 'codex', workingDir: '/worker',
+      sessionId: 'remote-worker', mcpCallerAttested: true, mcpCallerKind: 'root' });
+    const result = await server._registeredTools.send_to_lead.handler({ worker_id: 'worker-on-pc', message: 'result' });
+    expect(parseToolJson(result)).toMatchObject({ ok: true, queued: true, lead_session_id: 'lead-on-pc' });
+    expect(forward).toHaveBeenCalledTimes(1);
+    expect(Object.keys(server._registeredTools)).toEqual(['send_to_lead', 'read_lead_history', 'read_lead', 'lead_status']);
+  });
+
   it('keeps the caller policy and model-only report contract concise', () => {
     expect(authorizeSendToLeadCaller({
       agentKind: 'codex',

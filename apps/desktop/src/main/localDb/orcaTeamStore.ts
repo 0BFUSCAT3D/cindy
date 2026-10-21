@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
 import type { OrcaRemotePendingReport } from '../../shared/orcaRemoteWorker.js';
+import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 
 import { getDbClient } from './client/current.js';
 import type { OrcaRemoteWorkerProxySessionSeed } from './client/tx/types.js';
@@ -527,6 +528,14 @@ export async function getSessionOrcaRole(sessionId: string): Promise<OrcaRole | 
     .where(eq(sessions.id, sessionId))
     .limit(1);
   return row?.orcaRole === 'lead' || row?.orcaRole === 'worker' ? row.orcaRole : null;
+}
+
+/** Persisted execution-device identity; never inferred from model-supplied vendor options. */
+export async function getRemoteOrcaSession(sessionId: string) {
+  const [row] = await getDbClient().drizzle
+    .select({ status: sessions.status, orcaRemoteLead: sessions.orcaRemoteLead })
+    .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+  return row ? { status: row.status, orcaRemoteLead: parseOrcaRemoteLead(row.orcaRemoteLead) } : null;
 }
 
 /**

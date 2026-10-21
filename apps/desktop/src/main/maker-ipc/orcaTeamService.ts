@@ -418,6 +418,7 @@ export interface OrcaTeamService {
   }): Promise<MoveWorkerQueuedMessageResult>;
   captureWorkerText(sessionId: string, text: string, opts?: { isFinal?: boolean }): void;
   clearAutoBridgeState(sessionId: string): void;
+  settleReportedWorker(capture: WorkerTerminalTurnCapture): Promise<void>;
   /** True while an accepted worker task still owes this Lead its report. */
   hasPendingWorkerReports(leadSessionId: string): boolean;
   restoreWorkerPendingReport(sessionId: string, input: { workerId: string; leadSessionId: string }): void;
@@ -644,7 +645,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     const header =
       turn.status === 'error'
         ? '[Auto-bridged: worker 异常终止]'
-        : '[Auto-bridged: worker 完成但未调 send_to_lead]';
+        : '[Auto-bridged: worker 已完成，系统自动回传结果]';
     const bridgeText = `${header}\n\n${finalText}`;
     try {
       const result = await deps.sendAutoBridgeToLead(
@@ -1748,6 +1749,16 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     },
     clearAutoBridgeState(sessionId) {
       clearRuntimeState(sessionId);
+    },
+    async settleReportedWorker(capture) {
+      const link = await deps.getWorkerLinkBySessionId(capture.sessionId);
+      if (!link) return;
+      await withWorkerTransition(link.workerId, async () => {
+        if (!capture.autoBridgeIdentity || autoBridge.get(capture.sessionId) !== capture.autoBridgeIdentity) return;
+        await deps.updateWorkerStatus(link.workerId, 'done');
+        clearRuntimeState(capture.sessionId);
+        deps.broadcastOrcaWorkerChanged(link.leadSessionId);
+      });
     },
     hasPendingWorkerReports,
     restoreWorkerPendingReport(sessionId, input) {

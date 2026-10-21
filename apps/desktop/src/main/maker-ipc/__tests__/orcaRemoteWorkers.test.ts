@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeviceLinkError, type InvokeResultPayload } from '@cindy/device-link';
 
 import type { DeviceLinkDeviceView } from '../../../shared/deviceLinkIpc.js';
-import type { OrcaTeamService, OrcaTeamServiceDeps, WorkerTerminalTurnCapture } from '../orcaTeamService.js';
+import { createOrcaTeamService, type OrcaTeamService, type OrcaTeamServiceDeps, type OrcaWorkerRecordSnapshot, type WorkerTerminalTurnCapture } from '../orcaTeamService.js';
 import { withSendToSessionLock } from '../sendToSessionLock.js';
 import { createOrcaRemoteWorkerHost, type OrcaRemoteWorkerExistingSession } from '../orcaRemoteWorkerHost.js';
 
@@ -495,6 +495,10 @@ describe('wrapTeamDeps', () => {
       captureWorkerText: vi.fn(),
       handleWorkerTerminalTurn: vi.fn(async () => { capture = { ...capture, autoBridgeIdentity: null }; }),
       handleWorkerTurnStarted: vi.fn(async () => undefined),
+      settleReportedWorker: vi.fn(async (reported: WorkerTerminalTurnCapture) => {
+        if (capture.autoBridgeIdentity === reported.autoBridgeIdentity)
+          capture = { ...capture, autoBridgeIdentity: null };
+      }),
     };
     const history: Array<{ id: string; clientId?: string; role: string; content: string }> = [];
     const handle = (_deviceId: string, channel: string, args: unknown[]) => {
@@ -686,6 +690,60 @@ describe('wrapTeamDeps', () => {
       expect(onAcceptedCommit).not.toHaveBeenCalled();
       expect(workers.runtime.hasPendingReport('proxy-1')).toBe(false);
     } finally { workers.stop(); }
+  });
+
+  // Review regression: runtime-only rollback tests missed TeamService restoring A after
+  // A was reported while B's pre-enqueue save was waiting. Real service + remote adapter
+  // must leave neither layer pending after B fails. Unit tier, in-memory store/transport.
+  it('reconciles Team pending when B fails after A was reported during B preparation', async () => {
+    let service!: OrcaTeamService;
+    let rejectEnqueue = false;
+    const { workers, remoteInvoke } = await trackedWorker({
+      getTeamService: () => service,
+      handle: (_device, channel) => channel === 'maker:input:enqueue' && rejectEnqueue
+        ? fail('PERMISSION_DENIED', 'remote enqueue rejected') : undefined,
+    });
+    let worker = { id: 'w-1', teamId: 'team-1', leadSessionId: 'lead-1', sessionId: 'proxy-1',
+      status: 'idle', session: { ...proxySeed, agentKind: 'claude-code' } } as OrcaWorkerRecordSnapshot;
+    const settledLead = vi.fn();
+    service = createOrcaTeamService(workers.wrapTeamDeps({
+      ...baseDeps(),
+      getWorkerLinkBySessionId: async () => ({ workerId: 'w-1', teamId: 'team-1',
+        workerSessionId: 'proxy-1', leadSessionId: 'lead-1' }),
+      listWorkersByLead: async () => [worker],
+      getManualInterrupt: () => null,
+      clearManualInterrupt: vi.fn(),
+      updateWorkerStatus: async (_id, status) => { worker = { ...worker, status }; },
+      broadcastOrcaWorkerChanged: vi.fn(),
+      onLeadWorkerReportsSettled: settledLead,
+      log: { info: vi.fn(), warn: vi.fn() },
+    }));
+    let release: (() => void) | undefined;
+    try {
+      const params = { callerLeadSessionId: 'lead-1', targetSessionId: 'proxy-1', message: 'A' };
+      await expect(service.sendToWorker(params)).resolves.toMatchObject({ ok: true });
+      const firstInput = remoteInvoke.mock.calls.find(([, channel]) => channel === 'maker:input:enqueue')!;
+      const clientId = (firstInput[2][1] as { clientId: string }).clientId;
+      const capture = service.captureWorkerTerminalTurn('proxy-1');
+      store.saveWorkerRemoteReport.mockImplementationOnce(() => new Promise<undefined>(resolve => {
+        release = () => resolve(undefined);
+      }));
+      const settle = workers.runtime.captureReportSettlement('proxy-1', [clientId])().then(async (all) => {
+        if (all) await service.settleReportedWorker(capture);
+      });
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      remoteInvoke.mockClear();
+      rejectEnqueue = true;
+      const dispatchB = service.sendToWorker({ ...params, message: 'B' });
+      await vi.waitFor(() => expect(remoteInvoke).toHaveBeenCalledWith('mac-mini', 'local-db:sessions:get', ['remote-1']));
+      release!();
+      await settle;
+      await expect(dispatchB).resolves.toMatchObject({ ok: false });
+      expect(workers.runtime.hasPendingReport('proxy-1')).toBe(false);
+      expect(service.hasPendingWorkerReports('lead-1')).toBe(false);
+      expect(worker.status).toBe('done');
+      expect(settledLead).toHaveBeenCalledOnce();
+    } finally { release?.(); workers.stop(); }
   });
 
   it('preserves accepted rejection when its rollback also fails', async () => {

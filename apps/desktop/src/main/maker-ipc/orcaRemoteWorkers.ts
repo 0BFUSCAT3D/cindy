@@ -666,14 +666,29 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
         if (!(await isRemoteWorker(params.targetSessionId))) return base.dispatchWorkerMessage(params);
         // 与本机派发复用同一会话锁，保持 enqueue 与 accepted/commit 身份的顺序一致。
         return base.withSessionSendLock(params.targetSessionId, async () => {
+          const dispatchOwner = ownerToken();
           const clientId = createId();
           const meta = { source: params.dispatchMeta.source, context: params.dispatchMeta.context };
           let acceptedDidRun = false;
           let rollbackDidRun = false;
           const rollbackAccepted = async () => {
-            if (!acceptedDidRun || rollbackDidRun) return;
-            rollbackDidRun = true;
-            await runAcceptedRollback(params.onAcceptedRollback, params.targetSessionId, clientId, deps.log);
+            if (acceptedDidRun && !rollbackDidRun) {
+              rollbackDidRun = true;
+              await runAcceptedRollback(params.onAcceptedRollback, params.targetSessionId, clientId, deps.log);
+            }
+            // A may have reported while B was prepared. Runtime pruned A from B's
+            // rollback chain; after Team rollback, reconcile its restored A as well.
+            // The send lock excludes a newer dispatch, and the capture protects the
+            // Team identity across its async status write. Local Workers never enter here.
+            if (dispatchOwner !== ownerToken() || !ownerCurrent()
+              || !runtime.isRemote(params.targetSessionId)
+              || runtime.hasPendingReport(params.targetSessionId)) return;
+            const service = deps.getTeamService();
+            if (service) await service.settleReportedWorker(service.captureWorkerTerminalTurn(params.targetSessionId))
+              .catch((error) => deps.log.warn('orca remote worker: report reconciliation failed', {
+                workerId: params.workerId,
+                err: error instanceof Error ? error.message : String(error),
+              }));
           };
           try {
             const result = await runtime.dispatch({
