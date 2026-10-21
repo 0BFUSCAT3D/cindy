@@ -599,37 +599,6 @@ export async function handleRestore(
 }
 
 /**
- * 被控端「可信任务引用」能力按设备缓存，带引用的发送不必每次多一次往返。
- * 支持结果保留 10 分钟；不支持只保留 1 分钟，被控端升级后很快恢复引用快照。
- * 只缓存明确结论，启动中 / 传输失败不缓存。
- */
-const SESSION_REFERENCE_SUPPORTED_TTL_MS = 10 * 60_000;
-const SESSION_REFERENCE_UNSUPPORTED_TTL_MS = 60_000;
-const sessionReferenceCapabilityCache = new Map<string, { supported: boolean; expiresAt: number }>();
-
-function readSessionReferenceCapability(deviceId: string): boolean | undefined {
-  const cached = sessionReferenceCapabilityCache.get(deviceId);
-  if (!cached) return undefined;
-  if (cached.expiresAt <= Date.now()) {
-    sessionReferenceCapabilityCache.delete(deviceId);
-    return undefined;
-  }
-  return cached.supported;
-}
-
-function rememberSessionReferenceCapability(deviceId: string, supported: boolean): void {
-  sessionReferenceCapabilityCache.set(deviceId, {
-    supported,
-    expiresAt: Date.now() + (supported ? SESSION_REFERENCE_SUPPORTED_TTL_MS : SESSION_REFERENCE_UNSUPPORTED_TTL_MS),
-  });
-}
-
-/** 测试用：清空引用能力缓存。 */
-export function resetSessionReferenceCapabilityCache(): void {
-  sessionReferenceCapabilityCache.clear();
-}
-
-/**
  * 远程 invoke:把 InvokeResultPayload 展开成「resolve 值」或「throwIpcError」,
  * 让控制端 renderer 调用方拿到的语义跟调本地 IPC 完全一致
  * (成功直接拿 result;失败 catch 到带 code 的 Error)。
@@ -675,12 +644,7 @@ export async function handleInvoke(
     assertControlTargetEnabled(deps, normalizedDeviceId);
   }
 
-  const cachedReferenceSupport = outboundSessionReferencesRequested(channel, callArgs)
-    ? readSessionReferenceCapability(normalizedDeviceId)
-    : undefined;
-  if (cachedReferenceSupport === false) {
-    callArgs = stripOutboundSessionReferenceSideChannels(channel, callArgs);
-  } else if (cachedReferenceSupport === undefined && outboundSessionReferencesRequested(channel, callArgs)) {
+  if (outboundSessionReferencesRequested(channel, callArgs)) {
     let capability: InvokeResultPayload;
     try {
       capability = await deps.invoke(
@@ -696,7 +660,6 @@ export async function handleInvoke(
         log.warn('target does not support session references; sending raw link text', {
           channel,
         });
-        rememberSessionReferenceCapability(normalizedDeviceId, false);
         callArgs = stripOutboundSessionReferenceSideChannels(channel, callArgs);
       } else if (capability.error.code === 'IPC_ERROR') {
         throwIpcError(
@@ -728,10 +691,7 @@ export async function handleInvoke(
         log.warn('target does not support session references; sending raw link text', {
           channel,
         });
-        rememberSessionReferenceCapability(normalizedDeviceId, false);
         callArgs = stripOutboundSessionReferenceSideChannels(channel, callArgs);
-      } else {
-        rememberSessionReferenceCapability(normalizedDeviceId, true);
       }
     }
   }

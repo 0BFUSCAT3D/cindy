@@ -17091,14 +17091,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (co.remoteHostId || co.agentDeviceId) return false;
       return prewarmSessionRuntime(sessionId, co);
     }),
-    closeIfUnused: async (sessionId) => {
-      // A send in progress or queued input now owns the runtime.
-      if (hasSendToSessionLock(sessionId)) return;
+    // Runs under the send lock: a send that got there first has marked the runtime used
+    // (and its turn is running), one that arrives later waits for the close to finish and
+    // then cold-starts, instead of meeting a runtime that is half closed.
+    closeIfUnused: (sessionId, stillUnused) => withSendToSessionLock(sessionId, async () => {
+      if (!stillUnused()) return;
       if (agentInputCoordinatorHolder?.hasPendingQueuedWork(sessionId)) return;
       const live = maker.getSession(sessionId);
       if (!live || live.isTurnRunning()) return;
       await live.closeIfIdle();
-    },
+    }),
     setTimer: (fn, ms) => {
       const timer = setTimeout(fn, ms);
       timer.unref?.();

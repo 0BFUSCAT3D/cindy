@@ -127,4 +127,18 @@ describe('Agent prewarm lifecycle', () => {
       expect(isAgentPrewarmEligible(undefined)).toBe(false);
     });
   });
+  it('lets a send that arrives while the close is queued keep the runtime', async () => {
+    const { prewarmer, closeIfUnused, fireAll } = harness();
+    let stillUnused!: () => boolean;
+    closeIfUnused.mockImplementationOnce(async (_id, check) => {
+      stillUnused = check;
+    });
+    await prewarmer.request('racing', {});
+    fireAll();
+    await Promise.resolve();
+    // The idle close is queued behind the send lock; the send marks the runtime used first.
+    expect(stillUnused()).toBe(true);
+    prewarmer.markUsed('racing');
+    expect(stillUnused()).toBe(false);
+  });
 });

@@ -59,7 +59,7 @@ export interface AgentPrewarmDeps {
   /** Start the runtime if this task has none; true only when a new one was started. */
   start(sessionId: string, createOpts: unknown): Promise<boolean>;
   /** Close an unused prewarmed runtime; must leave a runtime that is doing work alone. */
-  closeIfUnused(sessionId: string): Promise<void>;
+  closeIfUnused(sessionId: string, stillUnused: () => boolean): Promise<void>;
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
   log: {
@@ -79,6 +79,8 @@ export function createAgentPrewarmer(
   const starting = new Map<string, Promise<AgentPrewarmOutcome>>();
   /** A real send took over while this task's prewarm was still starting. */
   const usedWhileStarting = new Set<string>();
+  /** Released but not yet closed: the close may still lose to a send that arrives first. */
+  const releasing = new Set<string>();
 
   const untrack = (sessionId: string): boolean => {
     const timer = warm.get(sessionId);
@@ -89,15 +91,21 @@ export function createAgentPrewarmer(
 
   const release = (sessionId: string, reason: 'idle' | 'evicted') => {
     if (!untrack(sessionId)) return;
-    void deps.closeIfUnused(sessionId).then(
-      () => deps.log.info('agent prewarm released', { sessionId, reason }),
-      (error: unknown) =>
-        deps.log.warn('agent prewarm release failed', {
-          sessionId,
-          reason,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-    );
+    releasing.add(sessionId);
+    // The caller closes under the task's send lock and rechecks `stillUnused` there,
+    // so a send either wins (the runtime is kept) or the close finishes first.
+    void deps
+      .closeIfUnused(sessionId, () => releasing.has(sessionId))
+      .then(
+        () => deps.log.info('agent prewarm released', { sessionId, reason }),
+        (error: unknown) =>
+          deps.log.warn('agent prewarm release failed', {
+            sessionId,
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+      )
+      .finally(() => releasing.delete(sessionId));
   };
 
   const arm = (sessionId: string) => {
@@ -160,6 +168,7 @@ export function createAgentPrewarmer(
     /** A real send now owns this runtime; prewarm bookkeeping must not close it. */
     markUsed(sessionId: string): void {
       untrack(sessionId);
+      releasing.delete(sessionId);
       if (starting.has(sessionId)) usedWhileStarting.add(sessionId);
     },
     /** Account switch: the old owner's runtimes are torn down elsewhere. */

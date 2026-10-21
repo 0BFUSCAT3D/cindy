@@ -2123,9 +2123,6 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
   // silent no-op, so route queueable pushes through the offline backlog instead.
   const relayOnline = activeClient.getStatus() === 'online';
   const liveTargets = relayOnline ? dsts : [];
-  // Telemetry only for pushes that go out live now; an offline backlog replay is
-  // not a send latency, and the trace simply expires.
-  if (liveTargets.length > 0) observeRemoteSendPush(channel, payload, liveTargets.length);
   // 微批只对声明了能力的控制端启用;只在 maker:event 这一条 channel 上查询,
   // 不给其它 channel 增加每帧 capability 查询开销。
   const batchTargets = channel === MAKER_PUSH.EVENT && liveTargets.length > 0
@@ -2309,6 +2306,8 @@ function sendPushBestEffortAuthorized(
   try {
     if (ownerStamp === undefined) activeClient.sendPush(dst, channel, payload);
     else activeClient.sendPush(dst, channel, payload, ownerStamp);
+    // Telemetry reads "pushed" only where a frame was actually handed to the link.
+    observeRemoteSendPush(channel, payload);
     return;
   } catch (err) {
     if (!isPayloadTooLargeError(err)) {
@@ -2327,6 +2326,7 @@ function sendPushBestEffortAuthorized(
     try {
       if (ownerStamp === undefined) activeClient.sendPush(dst, channel, compactPayload);
       else activeClient.sendPush(dst, channel, compactPayload, ownerStamp);
+      observeRemoteSendPush(channel, compactPayload);
       log.warn(`forwardPush to ${shortId(dst)} sent compact payload after oversized ${channel} frame`);
     } catch (retryErr) {
       markForRecovery();

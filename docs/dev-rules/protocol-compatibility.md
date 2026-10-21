@@ -17,8 +17,8 @@ projection 见过 `inputDeliveryVersion: 1`、并从 projection / enqueue 回包
 `clearBoundaryMs` 时，首次发送跳过发送前的 projection，直接带该边界 enqueue；被控端仍按原规则
 校验，若以 `REMOTE_OPTIMISTIC_INPUT_CLEARED` 拒绝，Mobile 撤回本地准备并按原流程查询一次
 projection 后重发（被控端拒绝时尚未收下，不产生重复）。旧被控端不回 `inputDeliveryVersion`，
-Mobile 始终走原流程。Desktop 控制端对被控端「可信任务引用」能力探测的明确结论按设备缓存
-（支持 10 分钟、不支持 1 分钟），不改变 wire。没有新的 push、数据库迁移或 Mobile 原生指纹变化。
+Mobile 始终走原流程。Mobile 学到的这些结论绑定 device-link 连接代次，重连后清空并重新确认。
+没有新的 push、数据库迁移或 Mobile 原生指纹变化。
 
 ## 伙伴个人聊天全文搜索
 

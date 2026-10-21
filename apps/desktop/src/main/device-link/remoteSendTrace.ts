@@ -75,7 +75,7 @@ export function beginRemoteSendTrace(
 }
 
 /** 推送转发处调用：远程发送的用户行第一次推出去时输出整条链路的耗时。 */
-export function observeRemoteSendPush(channel: string, payload: unknown, targets: number): void {
+export function observeRemoteSendPush(channel: string, payload: unknown): void {
   if (channel !== 'local-db:messages:created' || traces.size === 0) return;
   if (!payload || typeof payload !== 'object') return;
   const message = (payload as { message?: unknown }).message;
@@ -90,7 +90,7 @@ export function observeRemoteSendPush(channel: string, payload: unknown, targets
     `remote send pushed client=${shortId(clientId)}` +
       ` enqueueMs=${(trace.acceptedAt ?? trace.receivedAt) - trace.receivedAt}` +
       ` acceptedToPushMs=${now - (trace.acceptedAt ?? trace.receivedAt)}` +
-      ` totalMs=${now - trace.receivedAt} targets=${targets}` +
+      ` totalMs=${now - trace.receivedAt}` +
       ` stagesMs=${JSON.stringify(trace.stages)}`,
   );
 }

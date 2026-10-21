@@ -1,11 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DL_SESSION_REFERENCE_CAPABILITY_CHANNEL } from '@cindy/device-link';
 
-import { handleInvoke, resetSessionReferenceCapabilityCache, type DeviceLinkIpcDeps } from '../ipc.js';
-
-beforeEach(() => {
-  resetSessionReferenceCapabilityCache();
-});
+import { handleInvoke, type DeviceLinkIpcDeps } from '../ipc.js';
 
 function depsForInvoke(
   invoke: DeviceLinkIpcDeps['invoke'],
@@ -28,29 +24,6 @@ function queuedWithReference() {
 }
 
 describe('device-link target session-reference capability gate', () => {
-  it('reuses a definitive capability answer for later sends to the same target', async () => {
-    const invoke = vi
-      .fn<DeviceLinkIpcDeps['invoke']>()
-      .mockResolvedValueOnce({ ok: true, result: { supported: true, version: 1 } })
-      .mockResolvedValue({ ok: true, result: { accepted: true } });
-    const send = () =>
-      handleInvoke(depsForInvoke(invoke), 'target-device', 'maker:input:enqueue', [
-        'target-session',
-        queuedWithReference(),
-      ]);
-
-    await expect(send()).resolves.toEqual({ accepted: true });
-    await expect(send()).resolves.toEqual({ accepted: true });
-
-    // One probe, then two enqueues that both keep the trusted reference fields.
-    expect(invoke.mock.calls.map((call) => call[1])).toEqual([
-      DL_SESSION_REFERENCE_CAPABILITY_CHANNEL,
-      'maker:input:enqueue',
-      'maker:input:enqueue',
-    ]);
-    expect(invoke.mock.calls[2]?.[2]).toEqual(['target-session', queuedWithReference()]);
-  });
-
   it('sends raw link text when an old target cannot consume trusted reference fields', async () => {
     const invoke = vi
       .fn<DeviceLinkIpcDeps['invoke']>()
