@@ -1348,7 +1348,7 @@ export function UserMessage({
               // 附件 chips 行保持右对齐不动。
               editing
               ? 'w-full max-w-[720px] items-end'
-              : // 伙伴私聊与群聊同一气泡上限（bot-group-chat.md §10）。
+              : // 伙伴私聊与群聊同一气泡上限（bot-group-chat.md §5）。
                 // 左侧留出贴边操作栏的位置。
                 simplifiedBotConversation
                 ? 'max-w-[min(720px,calc(100%-96px))] items-end'
