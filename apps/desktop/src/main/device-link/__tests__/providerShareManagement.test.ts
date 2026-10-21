@@ -53,7 +53,7 @@ vi.mock('../providerShareApi.js', () => ({
 }));
 vi.mock('../dispatch.js', () => ({
   getControllerDisplayName: vi.fn(), providerShareActiveControllers: vi.fn(),
-  revokeProviderShareControllers: vi.fn(), setProviderShareAccess: vi.fn(),
+  revalidateRemoteModelAccess: vi.fn(async () => undefined), revokeProviderShareControllers: vi.fn(), setProviderShareAccess: vi.fn(),
 }));
 vi.mock('../providerShareHost.js', () => ({
   startProviderShareHost: vi.fn(), stopProviderShareHost: vi.fn(),

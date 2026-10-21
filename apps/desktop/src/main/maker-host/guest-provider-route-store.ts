@@ -30,7 +30,7 @@ export interface GuestProviderRoute {
 
 interface Binding extends GuestProviderRoute {
   token: string;
-  allowsModel?: (model: string) => boolean;
+  allowsModel?: (model: string) => boolean | Promise<boolean>;
   modelAccessRestricted?: () => boolean;
 }
 
@@ -43,7 +43,7 @@ const bySession = new Map<string, Binding>();
 export function registerGuestProviderRoute(
   sessionId: string,
   providerId: string,
-  allowsModel?: (model: string) => boolean,
+  allowsModel?: (model: string) => boolean | Promise<boolean>,
   modelAccessRestricted?: () => boolean,
 ): { token: string; release(): void } {
   const token = randomBytes(32).toString('base64url');
@@ -91,8 +91,13 @@ function bareModelId(model: string): string {
 }
 
 /** 核对目录与授权时优先匹配请求的窗口档位；单条目的旧 SDK 后缀别名仍兼容。 */
-export function guestProviderOffersModel(providerId: string, agent: AgentKind, wireModel: string, sessionId?: string): boolean {
-  return providerOffersModel(providerId, agent, wireModel, sessionId ? bySession.get(sessionId)?.allowsModel : undefined);
+export async function guestProviderOffersModel(providerId: string, agent: AgentKind, wireModel: string, sessionId?: string): Promise<boolean> {
+  const models: string[] = [];
+  providerOffersModel(providerId, agent, wireModel, model => { models.push(model); return false; });
+  for (const model of models) {
+    if (!sessionId || await guestProviderModelAllowed(providerId, model, sessionId)) return true;
+  }
+  return false;
 }
 
 /** Same-account remote tasks authorize each root/child request without pinning children to the parent provider. */
@@ -122,10 +127,14 @@ function providerOffersModel(providerId: string, agent: AgentKind, wireModel: st
 }
 
 /** A shared proxy without a task identity cannot bypass an active member's model restrictions. */
-export function guestProviderModelAllowed(providerId: string, model: string, sessionId: string | null | undefined): boolean {
+export async function guestProviderModelAllowed(providerId: string, model: string, sessionId: string | null | undefined): Promise<boolean> {
   if (sessionId) {
     const binding = bySession.get(sessionId);
-    return binding?.providerId === providerId && (!binding.allowsModel || binding.allowsModel(model));
+    if (binding?.providerId !== providerId) return false;
+    try {
+      const allowed = !binding.allowsModel || await binding.allowsModel(model);
+      return allowed && bySession.get(sessionId) === binding && getSessionProvider(sessionId) === providerId;
+    } catch { return false; }
   }
   return ![...bySession.values()].some((binding) => binding.providerId === providerId && binding.modelAccessRestricted?.());
 }

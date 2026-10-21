@@ -155,6 +155,7 @@ export interface HostedStartInput {
 export interface GuestProviderRouteBinding {
   routeToken: string;
   modelIds: string[];
+  allowsModel?(model: string): Promise<boolean>;
   release(): void;
 }
 
@@ -201,6 +202,8 @@ export interface RemoteAgentHostDeps {
   providerAccess?: {
     resolve(kind: RemoteAgentKind, model: string, providerId: string | null | undefined, controller: string): Promise<string | null>;
     isAllowed(providerId: string, controller: string, model?: string): boolean;
+    models?(kind: RemoteAgentKind, providerId: string, controller: string): Promise<string[]>;
+    restricted?(providerId: string, controller: string): boolean;
   };
   /** 同账号任务在启动前登记来源和逐请求的实时模型授权，子代理同样受此约束。 */
   bindOwnerProviderRoute?(hostSessionId: string, providerId: string, allowsModel?: (providerId: string, model: string) => boolean): OwnerProviderRouteBinding;
@@ -216,6 +219,7 @@ export interface RemoteAgentHostDeps {
     providerId: string;
     controller: string;
     isCurrent(): boolean;
+    relayModelAccess?: { models: string[]; allows(model: string): Promise<boolean> };
   }): Promise<GuestProviderRouteBinding | null>;
   /**
    * 供应商组(本机是组所在电脑，docs/product-rules/provider-groups.md §4)：受邀者的新任务按组策略交给
@@ -317,6 +321,7 @@ export interface RemoteAgentGroupRelayDeps {
 
 /** 本机作为组所在电脑把受邀者的任务转给组内电脑时的后端(代替本机的 Agent 会话)。 */
 interface RelayBackend {
+  modelAccess?: boolean;
   client: RemoteAgentRunClient;
   member: GroupRelayMember;
   /** 第几次启动尝试(WebSocket 连接编号的前缀)。 */
@@ -1106,7 +1111,23 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       run.workspaceDir = sessionRoot;
       run.virtualRoot = payload.virtualWorkspace ? mirrorRoot : undefined;
       const tunnel = await createRunTunnel({
-        http: (request, signal) => reverseHttp(run, request, signal),
+        http: async (request, signal) => {
+          // Pi API-key providers keep their native transports. Their adapter
+          // checks this authenticated, run-local endpoint before opening a stream.
+          if (request.path === '/cindy/model-access') {
+            let model: unknown;
+            try { model = JSON.parse(request.body?.toString('utf8') ?? '{}').model; } catch { /* deny */ }
+            const current = () => !run.closing && !signal.aborted && deps.isOwnerCurrent(run.owner)
+              && deps.isControllerAuthorized(run.controller);
+            let allowed = false;
+            try {
+              allowed = run.trust === 'guest' && current() && typeof model === 'string'
+                && !!model && model.length <= 512 && await run.guestRoute?.allowsModel?.(model) === true && current();
+            } catch { /* Failed authorization must never open a native stream. */ }
+            return { status: 200, headers: [['content-type', 'application/json']], body: Buffer.from(JSON.stringify({ allowed })) };
+          }
+          return reverseHttp(run, request, signal);
+        },
         wsOpen: (connId, wsPath) => {
           (run.localWs ??= new Set()).add(connId);
           append(run, { t: 'ws', connId, kind: 'open', path: wsPath });
@@ -1127,12 +1148,23 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       let guestProvider: HostedStartInput['guestProvider'];
       if (run.trust === 'guest') {
         if (!deps.bindGuestProviderRoute || !run.providerId) failProviderNotAllowed();
+        const checkRelayModel = async (model?: string): Promise<unknown> => {
+          const reply = await reverse(run, { type: 'model-access', ...(model ? { model } : {}) }, AbortSignal.timeout(10_000));
+          return reply.type === 'callback' ? reply.value : undefined;
+        };
+        let relayModelAccess: { models: string[]; allows(model: string): Promise<boolean> } | undefined;
+        if (run.relayKey && payload.relayModelAccess) {
+          const models = await checkRelayModel();
+          if (!Array.isArray(models) || !models.every(model => typeof model === 'string')) failProviderNotAllowed();
+          relayModelAccess = { models, allows: async model => await checkRelayModel(model) === true };
+        }
         const binding = await deps.bindGuestProviderRoute({
           kind: run.kind,
           hostSessionId,
           providerId: run.providerId,
           controller: run.controller,
           isCurrent: () => !run.closing,
+          ...(relayModelAccess ? { relayModelAccess } : {}),
         });
         if (!binding) {
           if (!run.closing) failProviderNotAllowed();
@@ -1344,7 +1376,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   /** 转给组内电脑的打开载荷：已按受邀者复核过；来源换成那台上的供应商，带防转圈标记与受邀者的 relay 键。 */
   function relayedOpenPayload(run: Run, payload: RemoteAgentOpenPayload, member: GroupRelayMember): RemoteAgentOpenPayload {
     // 「需要换一台」只在受邀者与本机之间：组内电脑不认识也不需要。受邀者自己填的转分享键不转发。
-    const { acceptsGroupSwitch: _accepts, groupSwitchToken: _token, reshareKey: _reshare, ...rest } = payload;
+    const { acceptsGroupSwitch: _accepts, groupSwitchToken: _token, reshareKey: _reshare, relayModelAccess: _modelAccess, ...rest } = payload;
     // 分享来的组内电脑按这个人的转分享键核对它的主人是否同意过(provider-sharing.md §4.3)。
     const reshareKey = member.sameAccount ? undefined : reshareKeyForGuest(run.controller);
     return {
@@ -1352,6 +1384,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       sessionId: relaySessionIdFor(run.controller, payload.sessionId),
       groupAssigned: true,
       relay: relayKeyFor(run.controller),
+      ...(run.relay?.modelAccess ? { relayModelAccess: true } : {}),
       ...(reshareKey ? { reshareKey } : {}),
       options: { ...payload.options, providerId: member.providerId },
     };
@@ -1581,7 +1614,16 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             if (!run.closing) append(run, { t: 'state', state: forwarded });
           });
         },
-        onRequest: (request, signal) => reverse(run, request, signal),
+        onRequest: async (request, signal) => {
+          if (request.type !== 'model-access') return reverse(run, request, signal);
+          const current = () => !run.closing && run.relay === backend && !signal.aborted
+            && deps.isOwnerCurrent(run.owner) && deps.isControllerAuthorized(run.controller);
+          const providerId = run.providerId;
+          if (!current() || !providerId || !deps.providerAccess) return { type: 'callback', value: false };
+          if (request.model) return { type: 'callback', value: deps.providerAccess.isAllowed(providerId, run.controller, request.model) };
+          const models = await deps.providerAccess.models?.(run.kind, providerId, run.controller);
+          return { type: 'callback', value: current() && models ? models.filter(model => deps.providerAccess!.isAllowed(providerId, run.controller, model)) : [] };
+        },
         onWs: (item) => {
           if (run.closing || run.relay !== backend) return;
           const connId = relayConnId(attempt, item.connId);
@@ -1602,7 +1644,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       run.relay = backend;
       try {
         const caps = await RemoteAgentRunClient.caps(connection.invoke);
+        backend.modelAccess = caps.relayModelAccess === true && !!deps.providerAccess?.models;
         if (caps.virtualWorkspace !== true
+          || (!backend.modelAccess && deps.providerAccess?.restricted?.(groupProviderId, run.controller))
           || (current.sameAccount ? caps.guestRelay !== true : caps.reshareConsent !== true)) {
           throw new Error('[REMOTE_AGENT_PEER_TOO_OLD] the computer in the provider group cannot take shared tasks yet');
         }
@@ -2243,6 +2287,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           ...(deps.imageArtifacts ? { imageRecovery: true, imageRecoveryRelay: true } : {}),
           // 能按受邀者隔离运行(供应商级授权与出站边界都已接上)，才接受组所在电脑中转过来的受邀者任务。
           ...(deps.providerAccess && deps.bindGuestProviderRoute ? { guestRelay: true } : {}),
+          ...(deps.providerAccess && deps.bindGuestProviderRoute ? { relayModelAccess: true } : {}),
           // 转分享的同意只对受邀者(把这里分享的供应商放进自己组的人)有意义。
           ...(guest && deps.reshare ? { reshareConsent: true } : {}),
           ...(guest && deps.reshare ? { reshareBatch: true } : {}),
@@ -2547,6 +2592,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     /** 远程控制关闭 / 退出时结束全部任务。 */
     async abortAll(reason: RemoteAgentTeardownReason = 'navigation'): Promise<void> {
       await Promise.all([...runs.values()].map((run) => finishRun(run, 'aborted', reason)));
+    },
+    /** Old execution hosts cannot retain a newly introduced member restriction. */
+    async revalidateModelAccess(): Promise<void> {
+      await Promise.all([...runs.values()]
+        .filter(run => run.relay && !run.relay.modelAccess && run.providerId
+          && deps.providerAccess?.restricted?.(run.providerId, run.controller))
+        .map(run => finishRun(run, 'access-revoked', 'navigation')));
     },
     /** 立即结束某个控制端的全部任务(例如分享被关闭)，不等巡检周期。 */
     async abortControllers(match: (controller: string) => boolean): Promise<void> {

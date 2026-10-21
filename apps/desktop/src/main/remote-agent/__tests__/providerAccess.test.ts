@@ -93,7 +93,26 @@ afterEach(() => {
 // have no direct-share member. Minimum: an authorized same-account controller
 // binding a guest-isolated task. Verify the real proxy grant, including revocation.
 describe('guest proxy binding for direct shares and same-account group relays', () => {
-  it.each(['relay', 'share'])('binds a %s with its live model permissions and a stable CLI catalog', async (kind) => {
+  // Unit: an async authorization response must not resurrect a replaced binding.
+  it('rejects a failed grant query or one arriving after the task binding was released', async () => {
+    let finish!: (allowed: boolean) => void;
+    let unavailable = true;
+    const binder = createGuestProviderRouteBinder({
+      readProviders: async () => [view('spark', ['opus', 'sonnet'])],
+      guestAccess: () => null, ownerAllowed: () => true, providerAllowed: () => true,
+      modelAccess: { allows: () => true, read: () => ({ models: null, providerModels: null }) },
+    });
+    const binding = await binder({ kind: 'claude-code', hostSessionId: 'late', providerId: 'spark', controller: 'owner', isCurrent: () => true,
+      relayModelAccess: { models: ['opus'], allows: () => unavailable ? Promise.reject(new Error('link unavailable')) : new Promise(resolve => { finish = resolve; }) } });
+    expect(binding!.modelIds).toEqual(['opus']);
+    expect(await guestProviderModelAllowed('spark', 'opus', 'late')).toBe(false);
+    unavailable = false;
+    const request = guestProviderModelAllowed('spark', 'opus', 'late');
+    binding!.release();
+    finish(true);
+    expect(await request).toBe(false);
+  });
+  it.each(['relay', 'share'])('binds a %s with its live model permissions and an authorized CLI catalog', async (kind) => {
     const controller = kind === 'relay' ? 'owner-device' : providerShareGuestPeer('share-1', 'member-1', 'guest-device');
     let active = true;
     let providerEnabled = true;
@@ -112,20 +131,20 @@ describe('guest proxy binding for direct shares and same-account group relays', 
     const input = { kind: 'claude-code' as const, hostSessionId: 'bound-guest', providerId: 'spark', controller, isCurrent: () => true };
     const binding = await binder(input);
     expect(binding).not.toBeNull();
-    expect(binding!.modelIds).toEqual(['opus', 'sonnet']);
+    expect(binding!.modelIds).toEqual(['opus']);
     expect(guestProviderRouteForToken(binding!.routeToken)).toEqual({ sessionId: input.hostSessionId, providerId: 'spark' });
     const allows = (model: string) => guestProviderModelAllowed('spark', model, input.hostSessionId);
-    expect(allows('opus')).toBe(true);
-    expect(allows('sonnet')).toBe(false);
+    expect(await allows('opus')).toBe(true);
+    expect(await allows('sonnet')).toBe(false);
     providerModels.add('sonnet');
-    expect(allows('sonnet')).toBe(kind === 'relay');
+    expect(await allows('sonnet')).toBe(kind === 'relay');
     memberModels.add('sonnet');
-    expect(allows('sonnet')).toBe(true);
+    expect(await allows('sonnet')).toBe(true);
     providerEnabled = false;
-    expect(allows('opus')).toBe(false);
+    expect(await allows('opus')).toBe(false);
     providerEnabled = true;
     active = false;
-    expect(allows('opus')).toBe(false);
+    expect(await allows('opus')).toBe(false);
     expect(await binder(input)).toBeNull();
     binding!.release();
     expect(guestProviderRouteForToken(binding!.routeToken)).toBeNull();

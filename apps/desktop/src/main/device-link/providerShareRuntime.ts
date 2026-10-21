@@ -1,6 +1,6 @@
 import { isRemoteAgentLimitsPatch } from '../../shared/remoteAgentLimits.js';
 import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
-import { remoteAgentLimitUsage } from './dispatch.js';
+import { remoteAgentLimitUsage, revalidateRemoteModelAccess } from './dispatch.js';
 import { isRemoteAgentIdleRelease } from '../../shared/remoteAgentIdleRelease.js';
 import { readRemoteAgentIdleReleaseState, saveRemoteAgentIdleRelease } from '../remote-agent/controller/idleReleaseStore.js';
 /**
@@ -751,6 +751,9 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       if (!provider) throwIpcError('NOT_FOUND', 'This provider is no longer available');
       if (command.action === 'set-model-access') {
         await remoteModelAccess.set(command.providerId, command.models, command.memberId, assertScope);
+        assertScope();
+        await revalidateRemoteModelAccess();
+        assertScope();
         emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
         emit(MAKER_PUSH.PROVIDER_CHANGED, {});
         tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});

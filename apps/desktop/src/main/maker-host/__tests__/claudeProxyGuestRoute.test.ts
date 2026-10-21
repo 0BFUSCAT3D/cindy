@@ -276,7 +276,7 @@ describe('Claude proxy routing for shared-provider guests', () => {
     const wireId = (id: string) => providerId === 'openai' ? id.replace(/^chatgpt\//, '')
       : providerId === 'xai' ? id.replace(/^xai\//, '') : id;
     let allowedModel = first.id;
-    if (trust === 'guest') registerGuestProviderRoute('pi-model-guest', providerId, model => model === allowedModel);
+    if (trust === 'guest') registerGuestProviderRoute('pi-model-guest', providerId, async model => model === allowedModel);
     else bindHostedSessionProvider('pi-model-guest', providerId, (id, model) => id === providerId && model === allowedModel);
     registerGuestProviderRoute('other-person', providerId, () => false);
     const disposers = [
@@ -401,13 +401,13 @@ describe('guest provider route store', () => {
     expect(guestProviderRouteForToken(token)).toBeNull();
   });
 
-  it('matches models of the shared provider only, ignoring the 1M suffix', () => {
+  it('matches models of the shared provider only, ignoring the 1M suffix', async () => {
     installProviders();
-    expect(guestProviderOffersModel('shared-a', 'claude-code', 'shared-model')).toBe(true);
-    expect(guestProviderOffersModel('shared-a', 'claude-code', 'shared-model[1m]')).toBe(true);
-    expect(guestProviderOffersModel('shared-a', 'claude-code', 'other-model')).toBe(false);
-    expect(guestProviderOffersModel('shared-a', 'codex', 'shared-model')).toBe(false);
-    expect(guestProviderOffersModel('shared-a', 'claude-code', '')).toBe(false);
+    expect(await guestProviderOffersModel('shared-a', 'claude-code', 'shared-model')).toBe(true);
+    expect(await guestProviderOffersModel('shared-a', 'claude-code', 'shared-model[1m]')).toBe(true);
+    expect(await guestProviderOffersModel('shared-a', 'claude-code', 'other-model')).toBe(false);
+    expect(await guestProviderOffersModel('shared-a', 'codex', 'shared-model')).toBe(false);
+    expect(await guestProviderOffersModel('shared-a', 'claude-code', '')).toBe(false);
   });
 
   it('keeps only the shared provider\'s Codex routes for a guest host', () => {

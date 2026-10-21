@@ -199,6 +199,7 @@ import { readModelContextLimit } from './model-context-limit-store.js';
 import { resolveDesktopModelContextProviderId, resolveDesktopModelEfforts } from './model-context-settings.js';
 import {
   prepareCodexCustomContextCatalog,
+  prepareCodexGuestModelCatalog,
 } from './codex-custom-context-catalog.js';
 import { buildPiAgent } from './pi-host.js';
 import {
@@ -2019,6 +2020,7 @@ export function getMaker(): Maker {
           }
         }
         let customContextCatalogArgs: string[] = [];
+        let customContextCatalogPath: string | undefined;
         if (isCustomContext) {
           const modelId = ctx.customContextModel?.trim();
           const contextWindow = ctx.customContextWindow;
@@ -2040,6 +2042,7 @@ export function getMaker(): Maker {
                 ? { baseCatalog: smartSubagentConfig.modelCatalog }
                 : {}),
             });
+            customContextCatalogPath = customCatalog.catalogPath;
             if (smartSubagentConfig) {
               smartSubagentConfig = {
                 ...smartSubagentConfig,
@@ -2048,6 +2051,21 @@ export function getMaker(): Maker {
             } else {
               customContextCatalogArgs = customCatalog.extraArgs;
             }
+          } catch (error) {
+            await releaseCodexCustomContextProxy(scopedProxyKey);
+            const fatal = error instanceof Error ? error : new Error(String(error));
+            (fatal as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
+            throw fatal;
+          }
+        }
+        if (guestProviderId) {
+          try {
+            const guestCatalog = await prepareCodexGuestModelCatalog({
+              binaryPath: codexPath, codexHome: effectiveCodexHome,
+              modelIds: ctx.deviceHostedGuestModelIds ?? [],
+              ...(customContextCatalogPath ? { baseCatalog: JSON.parse(await fs.readFile(customContextCatalogPath, 'utf8')) } : {}),
+            });
+            customContextCatalogArgs = guestCatalog.extraArgs;
           } catch (error) {
             await releaseCodexCustomContextProxy(scopedProxyKey);
             const fatal = error instanceof Error ? error : new Error(String(error));

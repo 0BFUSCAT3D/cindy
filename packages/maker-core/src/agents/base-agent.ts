@@ -1076,6 +1076,7 @@ export interface AgentDeps {
       deviceHostedGuestProviderId?: string;
       /** Owning guest session for model authorization on requests without thread headers. */
       deviceHostedGuestSessionId?: string;
+      deviceHostedGuestModelIds?: readonly string[];
     },
   ) => Promise<CodexExtraSpawnConfig>;
 

@@ -9,7 +9,7 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 import { isProviderSharePeer } from '@cindy/device-link';
-import { registerGuestProviderRoute } from '../../maker-host/guest-provider-route-store.js';
+import { registerGuestProviderRoute, guestProviderModelAllowed } from '../../maker-host/guest-provider-route-store.js';
 import type { RemoteAgentHostDeps } from './runHost.js';
 
 /** Shared users and same-account group relays both need a guest-isolated proxy binding. */
@@ -23,12 +23,13 @@ export function createGuestProviderRouteBinder(deps: {
     read(providerId: string, memberId?: string): { models: readonly string[] | null; providerModels: readonly string[] | null };
   };
 }): NonNullable<RemoteAgentHostDeps['bindGuestProviderRoute']> {
-  return async ({ kind, hostSessionId, providerId, controller, isCurrent }) => {
+  return async ({ kind, hostSessionId, providerId, controller, isCurrent, relayModelAccess }) => {
     const views = await deps.readProviders();
     // An obsolete asynchronous launch must never replace the current binding.
     if (!isCurrent()) return null;
     // A same-account group relay is isolated as a guest, but the group owner is
-    // not a direct-share member of this computer. Its grants are provider-wide.
+    // not a direct-share member of this computer. Intersect this computer's
+    // provider grants with the original member's live grant at the coordinator.
     const sharedPeer = isProviderSharePeer(controller);
     const memberId = sharedPeer ? deps.guestAccess(controller)?.memberId : undefined;
     const providerAllowed = (): boolean => {
@@ -38,8 +39,14 @@ export function createGuestProviderRouteBinder(deps: {
         : deps.ownerAllowed(controller)) && deps.providerAllowed(providerId);
     };
     if (!providerAllowed()) return null;
-    const allowsModel = (model: string) => providerAllowed() && deps.modelAccess.allows(providerId, model, memberId);
+    const localAllows = (model: string) => isCurrent() && providerAllowed() && deps.modelAccess.allows(providerId, model, memberId);
+    const allowsModel = async (model: string) => localAllows(model)
+      && (!relayModelAccess || await relayModelAccess.allows(model)) && localAllows(model);
+    const modelIds = guestProviderModelIds(views, providerId, kind)
+      .filter(model => localAllows(model) && (!relayModelAccess || relayModelAccess.models.includes(model)));
+    if (!isCurrent()) return null;
     const binding = registerGuestProviderRoute(hostSessionId, providerId, allowsModel, () => {
+      if (relayModelAccess) return true;
       try {
         const rule = deps.modelAccess.read(providerId, memberId);
         return rule.models !== null || rule.providerModels !== null;
@@ -47,8 +54,8 @@ export function createGuestProviderRouteBinder(deps: {
     });
     return {
       routeToken: binding.token,
-      // Keep the CLI catalog stable; the proxy checks live grants per request.
-      modelIds: guestProviderModelIds(views, providerId, kind),
+      modelIds,
+      allowsModel: model => guestProviderModelAllowed(providerId, model, hostSessionId),
       release: binding.release,
     };
   };

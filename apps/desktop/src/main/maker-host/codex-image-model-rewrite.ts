@@ -4,13 +4,13 @@ import type { RoutingDescriptor } from '@cindy/model-providers';
 /** Check image grants and bind JSON/multipart requests to the selected deployment. */
 export function createCodexImageModelRewrite(
   binding: RoutingDescriptor['imageModel'],
-  allowsModel?: (model: string) => boolean,
+  allowsModel?: (model: string) => boolean | Promise<boolean>,
 ): NonNullable<RoutingDecision['transformRequestBody']> {
-  const checkModel = (model: unknown): void => {
+  const checkModel = async (model: unknown): Promise<void> => {
     if (typeof model !== 'string' || !model || (binding && model !== binding.wireModel)) {
       throw new Error('Image request does not match the Provider binding');
     }
-    if (allowsModel && !allowsModel(binding?.litellmModel ?? model)) {
+    if (allowsModel && !await allowsModel(binding?.litellmModel ?? model)) {
       throw new Error('Image model is not available for this remote task');
     }
   };
@@ -39,7 +39,7 @@ export function createCodexImageModelRewrite(
       ) {
         throw new Error('Image request does not match the Provider binding');
       }
-      checkModel(parsed.model);
+      await checkModel(parsed.model);
       return binding ? { body: Buffer.from(JSON.stringify({ ...parsed, model: binding.litellmModel })) } : { body };
     }
     if (mediaType === 'multipart/form-data') {
@@ -54,7 +54,7 @@ export function createCodexImageModelRewrite(
       if (form.getAll('model').length !== 1) {
         throw new Error('Image request does not match the Provider binding');
       }
-      checkModel(form.get('model'));
+      await checkModel(form.get('model'));
       if (!binding) return { body };
       form.set('model', binding.litellmModel);
       const encoded = new Response(form);

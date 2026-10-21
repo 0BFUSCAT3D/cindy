@@ -40,7 +40,8 @@ function ctx(url: string, headers: Record<string, string> = {}, method = 'POST')
   return { reqId: 1, method, url, headers } as never;
 }
 
-async function statusOf(decision: RoutingDecision | null | undefined): Promise<number | undefined> {
+async function statusOf(input: RoutingDecision | null | undefined | Promise<RoutingDecision | null | undefined>): Promise<number | undefined> {
+  const decision = await input;
   if (!decision?.localHandler) return undefined;
   let status: number | undefined;
   const res = { headersSent: false, writeHead: (code: number) => { status = code; return res; }, end: () => res };
@@ -86,9 +87,9 @@ describe('Codex proxy guard for shared-provider guests', () => {
     expect(await statusOf(await request())).toBe(403);
   });
 
-  it('lets a guest request for a shared model continue to the session route', () => {
+  it('lets a guest request for a shared model continue to the session route', async () => {
     const guard = createCodexGuestRoutingGuard('shared-a', 'env-key');
-    expect(guard({ model: 'shared-model' }, ctx('/responses', { 'thread-id': 'guest-thread' }))).toBeUndefined();
+    expect(await guard({ model: 'shared-model' }, ctx('/responses', { 'thread-id': 'guest-thread' }))).toBeUndefined();
   });
 
   it('refuses a model the shared provider does not offer, even from the guest session', async () => {
@@ -104,7 +105,7 @@ describe('Codex proxy guard for shared-provider guests', () => {
     const guard = createCodexGuestRoutingGuard('shared-a', 'env-key');
     const path = `${CODEX_CUSTOM_PROVIDER_ROUTE_ROOT}/0123456789abcdef0123/responses`;
     const request = () => guard({ model: 'shared-model' }, ctx(path, { 'thread-id': 'guest-thread' }));
-    expect(request()).toBeUndefined();
+    expect(await request()).toBeUndefined();
     expect(await statusOf(guard({ model: 'shared-model' }, ctx(path)))).toBe(403);
     allowed = false;
     expect(await statusOf(request())).toBe(403);
@@ -162,7 +163,7 @@ describe('Codex proxy guard for shared-provider guests', () => {
       'x-openai-subagent': 'guardian',
       'x-codex-parent-thread-id': 'guest-thread',
     }));
-    expect(request()).toBeUndefined();
+    expect(await request()).toBeUndefined();
     expect(await statusOf(guard(body, ctx(path, { 'thread-id': 'guest-thread' })))).toBe(403);
     allowed = false;
     expect(await statusOf(request())).toBe(403);
@@ -178,18 +179,18 @@ describe('Codex proxy guard for shared-provider guests', () => {
     expect(await statusOf(guard({ model: 'shared-model' }, ctx('/responses', { 'thread-id': 'owner-thread' })))).toBe(403);
   });
 
-  it('routes an unresolved request straight to the default upstream only when that is the shared provider', () => {
+  it('routes an unresolved request straight to the default upstream only when that is the shared provider', async () => {
     const gateway = createCodexGuestRoutingGuard('xd', 'env-key');
     // 模型核对按 xd 的目录：这里的 fixture 没有 xd 模型，所以推理请求被拒；非推理路径只看默认路由。
-    expect(gateway({ model: 'gpt-image-1' }, ctx('/images/generations'))).toBeNull();
+    expect(await gateway({ model: 'gpt-image-1' }, ctx('/images/generations'))).toBeNull();
     const mismatched = createCodexGuestRoutingGuard('xd', 'oauth-bearer');
     return statusOf(mismatched({ model: 'gpt-image-1' }, ctx('/images/generations')))
       .then((status) => expect(status).toBe(403));
   });
 
-  it('leaves custom-provider paths and control-plane requests to the frozen routing', () => {
+  it('leaves custom-provider paths and control-plane requests to the frozen routing', async () => {
     const guard = createCodexGuestRoutingGuard('shared-a', 'env-key');
-    expect(guard({ model: 'other-model' }, ctx(`${CODEX_CUSTOM_PROVIDER_ROUTE_ROOT}/0123456789abcdef0123/responses`))).toBeUndefined();
-    expect(guard(undefined, ctx('/models', {}, 'GET'))).toBeUndefined();
+    expect(await guard({ model: 'other-model' }, ctx(`${CODEX_CUSTOM_PROVIDER_ROUTE_ROOT}/0123456789abcdef0123/responses`))).toBeUndefined();
+    expect(await guard(undefined, ctx('/models', {}, 'GET'))).toBeUndefined();
   });
 });

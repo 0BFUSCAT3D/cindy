@@ -32,7 +32,7 @@ import { readTurnUsageResetAt } from '../../goal-host/usageLimit.js';
 import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService.js';
 import { bindHostedSessionProvider } from '../../maker-host/session-provider-store.js';
 import { isRemoteProviderInvocationAllowed } from '../../maker-host/remote-provider-access-store.js';
-import { createGuestProviderRouteBinder, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
+import { createGuestProviderRouteBinder, guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
 import { createRemoteAgentHost, type HostedStartInput, type RemoteAgentHost, type RunUsageRecord } from './runHost';
 import { purgeClaudeHostedSessionArtifacts, purgeClaudeHostedTranscripts, purgePiHostedSubagentRuns } from './transcripts';
 import { captureGeneratedImageStorage, generatedImageErrorCode, handleGeneratedImageArtifacts, prepareGeneratedImageTransport } from '../../cindy-media/generatedImageStorage';
@@ -144,6 +144,21 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     isControllerAuthorized,
     controllerTrust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
     providerAccess: {
+      models: async (kind, providerId, controller) => {
+        const views = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+        const access = isProviderSharePeer(controller) ? providerShareGuestAccess(controller) : null;
+        if (isProviderSharePeer(controller) && access?.providerId !== providerId) return [];
+        return guestProviderModelIds(views, providerId, kind)
+          .filter(model => isControllerAuthorized(controller) && isRemoteProviderInvocationAllowed(providerId)
+            && remoteModelAccess.allows(providerId, model, access?.memberId));
+      },
+      restricted: (providerId, controller) => {
+        try {
+          const access = isProviderSharePeer(controller) ? providerShareGuestAccess(controller) : null;
+          const rule = remoteModelAccess.read(providerId, access?.memberId);
+          return rule.models !== null || rule.providerModels !== null;
+        } catch { return true; }
+      },
       resolve: async (kind, model, providerId, controller) => {
         const views = await getDesktopProviderService().listProviders({ allowSideEffects: false });
         const memberId = isProviderSharePeer(controller) ? providerShareGuestAccess(controller)?.memberId : undefined;
@@ -208,6 +223,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       void current.abortAll();
     },
     abortControllers: (match) => current.abortControllers(match),
+    revalidateModelAccess: () => current.revalidateModelAccess(),
     abortReshare: (match, reshareKey) => current.abortReshare(match, reshareKey),
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),

@@ -2808,6 +2808,16 @@ still use the same host-owned mail workflow as the chat card.
 旧控制端忽略新增字段仍由提供方执行调用权限检查；现有错误码 `REMOTE_AGENT_PROVIDER_NOT_ALLOWED` 也覆盖模型未开放。
 权限保存于客户端按账号隔离的配置，不改服务端 schema、数据库或 Mobile 原生指纹。
 
+供应商组中转新增可选 caps / open 字段 `relayModelAccess: true`，只有显式声明此能力的执行电脑才接收需要限制模型的任务。
+组所在电脑覆盖调用方自报的该字段；执行电脑通过既有 reverse request 发送 `{type:'model-access', model?}`，
+由组所在电脑绑定当前运行、供应商和原成员，回复既有 `callback.value`：省略 model 返回获准目录 ID，指定 model 返回布尔授权。
+启动取目录交集，后续每次请求重查原成员权限；不缓存肯定答复。复核最长 10 秒，超时、断连、旧运行、撤权或未知回复均拒绝，
+只影响本次调用，不重置共享连接或自动重放。异步答复返回后执行端再次核对本地授权及绑定代次。
+新组所在电脑给旧执行电脑只转发不限模型的任务；新增限制时结束尚在旧电脑运行的任务。旧组所在电脑不具备此能力，
+需更新后才能提供中转成员模型范围保护。旧控制端无需理解 reverse 请求，它在组所在电脑消费；不新增通道或修改移动端原生配置。
+Pi 的原生供应商适配器只暴露获准模型，在打开流前用既有本机任务隧道的 bearer token 请求 `/cindy/model-access`，
+模型 ID 来自宿主冻结的授权映射。该路径由执行 Host 消费，复用同一绑定与复核，不转给控制端；凭证与消息内容不进入查询。
+
 ## 伙伴导入的消息机器人分类
 
 `companion-import` Remote Resource 的 client primitives 可追加 `companion-import-bots-v1`。只有声明它的控制端

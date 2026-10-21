@@ -1,14 +1,15 @@
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CINDY_BRIDGE_EXTENSION_SOURCE } from '../cindy-bridge-source.js';
 import { PI_NATIVE_PROVIDER_ADAPTER_SOURCE } from '../native-provider-adapter-source.js';
 
-type RegisteredProvider = { id: string; auth: { apiKey?: unknown; oauth?: unknown }; getModels: () => unknown[] };
+type RegisteredProvider = { id: string; auth: { apiKey?: unknown; oauth?: unknown }; getModels: () => unknown[];
+  streamSimple(model: unknown, context: unknown, options: unknown): Promise<unknown> };
 
-type Alias = { id: string; name: string; provider: string; keyEnv?: string };
+type Alias = { id: string; name: string; provider: string; keyEnv?: string; models?: Array<{ id: string; grant: string }> };
 
-function loadAdapter(initialAliases: Alias[] = []) {
+function loadAdapter(initialAliases: Alias[] = [], network?: { fetch: unknown; stream: unknown }) {
   const env: Record<string, string> = {
     CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(initialAliases),
     CINDY_PI_KEY_OLD: 'old-secret',
@@ -28,7 +29,8 @@ function loadAdapter(initialAliases: Alias[] = []) {
     },
     unregisterProvider(id: string) { actions.push(`unregister:${id}`); providers.delete(id); },
   };
-  let models: Array<{ provider: string; id: string }> = initialAliases.map((alias) => ({ provider: alias.id, id: 'old' }));
+  let models: Array<{ provider: string; id: string }> = initialAliases.flatMap((alias) => alias.models
+    ? ['allowed', 'denied'].map(id => ({ provider: alias.id, id })) : [{ provider: alias.id, id: 'old' }]);
   let nextModels = models;
   const ctx = {
     modelRegistry: {
@@ -47,9 +49,12 @@ function loadAdapter(initialAliases: Alias[] = []) {
   }).outputText;
   const sandbox: Record<string, unknown> = {
     process: { env },
+    CINDY_HOSTED: { guest: true, url: 'http://127.0.0.1:9', token: 'run-token' },
+    fetch: network?.fetch, AbortSignal,
     __loadPiAi: async (name: string) => name.endsWith('/compat')
-      ? { getApiProvider: () => undefined }
-      : { lazyStream: () => undefined, envApiKeyAuth: (label: string, envVars: string[]) => ({ label, envVars }) },
+      ? { getApiProvider: () => network ? { stream: network.stream, streamSimple: network.stream } : undefined }
+      : { lazyStream: network ? (_model: unknown, factory: () => unknown) => factory() : () => undefined,
+        envApiKeyAuth: (label: string, envVars: string[]) => ({ label, envVars }) },
   };
   runInNewContext(compiled, sandbox);
   const adapter = sandbox.adapter as {
@@ -64,6 +69,35 @@ function loadAdapter(initialAliases: Alias[] = []) {
 }
 
 describe('Cindy native provider refresh bridge', () => {
+  // Unit, sharing §12: Pi API-key transports bypass the HTTP proxy. The existing
+  // refresh tests never opened a native stream. Execute the generated adapter:
+  // only A is listed; revocation/failure must stop before the native SDK opens.
+  it('filters inherited models and authorizes each guest native stream before calling the SDK', async () => {
+    let allowed = true;
+    const fetchGrant = vi.fn(async () => ({ ok: true, json: async () => ({ allowed }) }));
+    const stream = vi.fn(async function* () {});
+    const h = loadAdapter([{ id: 'byok', name: 'BYOK', provider: 'native', models: [{ id: 'allowed', grant: 'catalog-a' }] }],
+      { fetch: fetchGrant, stream });
+    const adapter = await h.adapter.registerCindyNativeProviderAdapters(h.pi);
+    h.handlers.get('session_start')!({}, h.ctx);
+    const provider = h.providers.get('byok')!;
+    expect(provider.getModels()).toEqual([{ provider: 'byok', id: 'allowed' }]);
+    const request = (id = 'allowed') => provider.streamSimple({ provider: 'byok', id, api: 'openai-responses' }, { messages: [] }, {});
+    await request();
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(fetchGrant).toHaveBeenCalledWith('http://127.0.0.1:9/cindy/model-access', expect.objectContaining({
+      headers: { Authorization: 'Bearer run-token', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'catalog-a' }),
+    }));
+    allowed = false;
+    await expect(request()).rejects.toThrow('not authorized');
+    await expect(request('denied')).rejects.toThrow('not authorized');
+    fetchGrant.mockRejectedValueOnce(new Error('disconnected'));
+    await expect(request()).rejects.toThrow('disconnected');
+    await adapter.refresh({ nonce: 'abcdefghijklmnop', env: {}, aliases: [{ id: 'byok', name: 'BYOK', provider: 'native', models: [] }] }, h.ctx, new Set());
+    expect(h.providers.get('byok')!.getModels()).toEqual([]);
+    await expect(h.providers.get('byok')!.streamSimple({ id: 'allowed' }, { messages: [] }, {})).rejects.toThrow('not authorized');
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
   it('validates the entire nonce-bound snapshot before any env or provider mutation', () => {
     const { adapter } = loadAdapter();
     const nonce = 'abcdefghijklmnop';
@@ -87,7 +121,7 @@ describe('Cindy native provider refresh bridge', () => {
     const h = loadAdapter([old]);
     const controller = await h.adapter.registerCindyNativeProviderAdapters(h.pi);
     h.handlers.get('session_start')?.({}, h.ctx);
-    h.providers.set('package-owned', { id: 'package-owned', auth: {}, getModels: () => [] });
+    h.providers.set('package-owned', { id: 'package-owned', auth: {}, getModels: () => [], streamSimple: async () => undefined });
     h.setModels([{ provider: 'next', id: 'new-model' }]);
     const secrets = new Set(['CINDY_PI_KEY_OLD']);
     await controller.refresh({ nonce: 'abcdefghijklmnop', env: { CINDY_PI_KEY_NEXT: 'next-secret' }, aliases: [next] }, h.ctx, secrets);

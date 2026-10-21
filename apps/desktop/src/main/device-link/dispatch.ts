@@ -425,6 +425,7 @@ function logProviderShareDenial(src: string, where: string, reason?: string): vo
 }
 
 export interface RemoteAgentHandler {
+  revalidateModelAccess?(): Promise<void>;
   handle(controller: string, raw: unknown): Promise<unknown>;
   abortAll(): void;
   /** 结束匹配控制端的任务(供应商分享被关闭)。 */
@@ -445,6 +446,10 @@ export interface RemoteAgentHandler {
   sharedGroupStatus?(providerId: string, guestController?: string): Promise<ProviderShareGroupState[] | null>;
 }
 let remoteAgentHandler: RemoteAgentHandler | null = null;
+
+export async function revalidateRemoteModelAccess(): Promise<void> {
+  await remoteAgentHandler?.revalidateModelAccess?.();
+}
 
 export function setRemoteAgentHandler(handler: RemoteAgentHandler | null): void {
   remoteAgentHandler = handler;

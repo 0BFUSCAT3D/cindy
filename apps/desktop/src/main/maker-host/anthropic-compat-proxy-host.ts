@@ -601,11 +601,11 @@ function unavailablePiProviderRoute(providerId: string): RoutingDecision {
 export function createModelRoutingTransform(): RoutingTransform {
   // guest：供应商分享受邀者的 Claude Code 请求(带路由令牌，已核对模型)，按其会话显式来源路由，
   // 不走隐式推断与默认网关(分享的就是网关时除外)。缺省 = 本机用户自己的请求，路由不变。
-  const route = (
+  const route = async (
     body: unknown,
     ctx: RequestTransformCtx,
     guest?: GuestProviderRoute,
-  ): RoutingDecision | null | Promise<RoutingDecision | null> => {
+  ): Promise<RoutingDecision | null> => {
     const claimedPiSessionId = headerValue(ctx.headers, 'x-cindy-pi-session-id');
     const claimedPiSessionToken = headerValue(ctx.headers, 'x-cindy-pi-session-token');
     if (
@@ -704,9 +704,13 @@ export function createModelRoutingTransform(): RoutingTransform {
           if (pathModel) requestModels.push(decodeURIComponent(pathModel[1]));
         }
       }
-      const deniedModel = requestModels.find(model => piGuest
-        ? !guestProviderOffersModel(piGuest.providerId, 'pi', model, piGuest.sessionId)
-        : !hostedProviderOffersModel(piSessionId, providerId, 'pi', model));
+      let deniedModel: string | undefined;
+      for (const model of requestModels) {
+        const allowed = piGuest
+          ? await guestProviderOffersModel(piGuest.providerId, 'pi', model, piGuest.sessionId)
+          : hostedProviderOffersModel(piSessionId, providerId, 'pi', model);
+        if (!allowed) { deniedModel = model; break; }
+      }
       if (requestModels.length === 0 || deniedModel !== undefined) {
         return piGuest ? refuseGuestForeignRoute(deniedModel ?? '')
           : refuseGuestProviderRoute(403, 'remote_model_not_allowed', 'This model is not available for this remote task.');
@@ -1099,7 +1103,7 @@ export function createModelRoutingTransform(): RoutingTransform {
         headerDelete: [...new Set([...(resolved?.headerDelete ?? []), GUEST_ROUTE_HEADER])],
       };
     };
-    const routeGuest = (token: string): ReturnType<typeof route> => {
+    const routeGuest = async (token: string): ReturnType<typeof route> => {
       const guest = guestProviderRouteForToken(token);
       if (!guest) {
         return refuseGuestProviderRoute(401, 'invalid_guest_route', 'Invalid or expired shared-provider session.');
@@ -1113,7 +1117,7 @@ export function createModelRoutingTransform(): RoutingTransform {
           : refuseGuestProviderRoute(403, 'shared_provider_only', 'This request is outside the provider shared with you.');
       }
       const wireModel = typeof body.model === 'string' ? body.model : '';
-      if (!guestProviderOffersModel(guest.providerId, 'claude-code', wireModel, guest.sessionId)) return refuseGuestForeignRoute(wireModel);
+      if (!await guestProviderOffersModel(guest.providerId, 'claude-code', wireModel, guest.sessionId)) return refuseGuestForeignRoute(wireModel);
       return route(body, ctx, guest);
     };
     try {
