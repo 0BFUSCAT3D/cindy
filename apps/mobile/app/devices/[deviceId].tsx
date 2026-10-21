@@ -652,6 +652,14 @@ function DeviceDetailScreenContent() {
     }
   }, [bulkActionPending, deviceId, loadSessions, maker, t]);
 
+  // 确认卡打开后所选任务变了:提醒是按打开时的候选算的,关掉卡片让用户重新发起,
+  // 避免确认时归档了从未被查询过的任务。
+  useEffect(() => {
+    bulkScheduleRequestRef.current += 1;
+    setBulkScheduleLoading(false);
+    setBulkConfirmAction(null);
+  }, [selectedSessionIds]);
+
   const requestBulkAction = useCallback((action: MobileSessionBulkAction) => {
     const summary = bulkActionSummaries[action];
     if (summary.candidates.length === 0) {
