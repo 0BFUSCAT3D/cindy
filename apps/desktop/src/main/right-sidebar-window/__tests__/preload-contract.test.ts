@@ -225,10 +225,11 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
     expect(botsKeys).toEqual(['autonomy']);
     expect(botAutonomyKeys).toEqual(['glance']);
     expect(makerKeys).toEqual(expect.arrayContaining([
-      'onBotAutonomyChanged', 'getPendingInteractions', 'resolveInteraction',
+      'onBotAutonomyChanged', 'getPendingInteractions', 'allowBotWorkbenchPermission',
     ]));
+    expect(makerKeys).not.toContain('resolveInteraction');
     expect(source).toContain("ipcRenderer.invoke('local-db:bots:autonomy:glance', botId)");
-    expect(source).toContain("ipcRenderer.invoke('maker:resolve-interaction', requestId, decision)");
+    expect(source).toContain("ipcRenderer.invoke('maker:rsb-window:allow-bot-workbench-permission', { botId, sessionId, requestId })");
   });
 
   it('涓嶆毚闇?maker / agent / voice / login 鑷不鑳藉姏', () => {

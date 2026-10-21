@@ -613,11 +613,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maker: {
     onBotAutonomyChanged: (cb: (payload: { botIds?: string[] }) => void): (() => void) =>
       onPayload('maker:bot-autonomy:changed', cb),
-    resolveInteraction: (
+    allowBotWorkbenchPermission: (
+      botId: string,
+      sessionId: string,
       requestId: string,
-      decision: Record<string, unknown>,
     ): Promise<{ accepted: boolean }> =>
-      ipcRenderer.invoke('maker:resolve-interaction', requestId, decision),
+      ipcRenderer.invoke('maker:rsb-window:allow-bot-workbench-permission', { botId, sessionId, requestId }),
     // Live event subset consumed by makerChatStore in the detached renderer.
     onEvent: (cb: (payload: unknown) => void): (() => void) => onPayload('maker:event', cb),
     onStatusChanged: (cb: (payload: unknown) => void): (() => void) =>
