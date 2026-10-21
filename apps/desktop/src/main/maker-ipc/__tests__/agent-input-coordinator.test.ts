@@ -389,6 +389,7 @@ describe('INPUT_ENQUEUE crash-restored remote Worker pause', () => {
       getResolvedMainLocale: () => 'zh-CN',
       getInputSessionRow: async () => ({ clearedAt: null }),
       getMakerIfReady: () => null,
+      beginRemoteSendTrace: noop,
       remoteInputClientIdWasPersisted: () => false,
       hasInputDeliveryCancellation: () => false,
       materializeQueuedOssAttachmentsDeferred: (_sid: string, item: AgentInputQueuedMessage) => ({ item }),

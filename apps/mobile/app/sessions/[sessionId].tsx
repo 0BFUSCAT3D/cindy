@@ -870,6 +870,8 @@ const ENQUEUE_RECONNECT_BACKOFF_MS = 300;
  * 闪一下、计时还被重置回 0s。真停了推迟这点时间熄灭无感,交接空隙则被吃掉。
  */
 const COMPOSER_ACTIVITY_SETTLE_MS = 600;
+/** 打字预热提醒的最短间隔；被控端每次提醒都会顺延预热进程的空闲回收。 */
+const MOBILE_AGENT_PREWARM_INTERVAL_MS = 30_000;
 /** 另一台电脑的目录还没读到时的空供应商列表(稳定引用,不触发下游 memo 重算)。 */
 const EMPTY_PROVIDER_VIEWS: readonly ProviderView[] = [];
 
@@ -3225,6 +3227,28 @@ function SessionScreenContent() {
     // 那一拍恢复正常持久化,草稿库与内存重新对齐。
     applyComposerDraft(value, queueEditingRef.current ? { persist: false } : undefined);
   }, [applyComposerDraft]);
+
+  // 开始打字时请被控端提前启动 Agent，把冷启动藏进打字时间。同一任务 30 秒最多提醒一次；
+  // 任务在跑、在排队编辑或旧被控端不支持时什么都不做。
+  const lastAgentPrewarmAtRef = useRef(0);
+  const prewarmAgentOnTyping = useCallback(() => {
+    if (queueEditingRef.current) return;
+    const now = Date.now();
+    if (now - lastAgentPrewarmAtRef.current < MOBILE_AGENT_PREWARM_INTERVAL_MS) return;
+    const session = remoteSessionStore.getSessions().find((item) => item.id === sessionId) ?? currentSession;
+    if (!session?.workingDir || remoteSessionStore.isSessionRunning(sessionId)) return;
+    lastAgentPrewarmAtRef.current = now;
+    const { createOpts } = buildQueuedTextMessage(session, '', new Date(now));
+    void maker.prewarmSession(sessionId, createOpts).catch(() => undefined);
+  }, [currentSession, maker, sessionId]);
+  const applyTypedComposerChange = useCallback((value: ComposerDocument) => {
+    applyRichComposerChange(value);
+    prewarmAgentOnTyping();
+  }, [applyRichComposerChange, prewarmAgentOnTyping]);
+  const setTypedComposerDraft = useCallback((next: SetStateAction<string>) => {
+    setComposerDraft(next);
+    prewarmAgentOnTyping();
+  }, [prewarmAgentOnTyping, setComposerDraft]);
 
   const writeVoiceDraft = useComposerVoiceDraftWriter(sessionId, (update: ComposerVoiceDraftUpdate) => {
     applyRichComposerChange(reconcileComposerVoiceDraft(composerDocumentRef.current, update));
@@ -10767,8 +10791,8 @@ function SessionScreenContent() {
                 keyboardState={keyboardState}
                 attachmentError={attachmentError}
                 visualFocusComposer={visualFocusComposer}
-                applyRichComposerChange={applyRichComposerChange}
-                setComposerDraft={setComposerDraft}
+                applyRichComposerChange={applyTypedComposerChange}
+                setComposerDraft={setTypedComposerDraft}
                 handleComposerInputPressIn={handleComposerInputPressIn}
                 beginPastePlaceholders={beginPastePlaceholders}
                 failPastePlaceholders={failPastePlaceholders}
