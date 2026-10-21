@@ -8963,8 +8963,17 @@ export function isGhostPluginErrorCode(value: unknown): value is string {
 }
 
 /** 工具调用结果(主机侧;ghost 总机 MCP 原样透传给 agent)。 */
+/**
+ * An image a plugin shows the model with its tool result (top-level `images` of
+ * the `tool-result` message). `mimeType` is sniffed from the bytes by the host.
+ */
+export interface GhostModelImage {
+  data: string;
+  mimeType: string;
+}
+
 export type GhostToolCallResult =
-  | { ok: true; result: unknown }
+  | { ok: true; result: unknown; images?: GhostModelImage[] }
   | { ok: false; errorCode: GhostToolCallErrorCode | (string & {}); message: string };
 
 /**
