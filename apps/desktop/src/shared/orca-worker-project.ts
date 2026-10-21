@@ -2,6 +2,11 @@
 export interface WorkerWorktreeRequest {
   sourceBranch: string;
 }
+/** Metadata registered under the Worker session, never inferred from its cwd. */
+export interface WorkerOwnedWorktree {
+  path: string;
+  branch: string;
+}
 export interface WorkerProjectInfo {
   directory: string;
   baseRepo: string | null;

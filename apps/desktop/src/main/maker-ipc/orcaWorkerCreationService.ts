@@ -1,4 +1,4 @@
-import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
+import type { WorkerWorktreeRequest, WorkerOwnedWorktree } from '../../shared/orca-worker-project';
 import type { AgentKind } from '@cindy/maker-core';
 import { isCodexGatewayWireModel, type AuthStrategy } from '@cindy/model-providers';
 import path from 'node:path';
@@ -188,6 +188,8 @@ export type OrcaWorkerCreationResult =
       teamId: string;
       workerId: string;
       workerSessionId: string;
+      workingDir: string;
+      worktree?: WorkerOwnedWorktree;
       softLimitExceeded?: boolean;
       dispatched?: boolean;
       dispatchOutcome?: DispatchWorkerTaskResult['dispatchOutcome'];
@@ -237,8 +239,8 @@ export interface OrcaWorkerCreateParams {
    * 指定运行设备时是那台电脑上的目录，缺省由那台按自身设置分配任务目录。
    */
   workingDir?: string;
-  /** Local UI only. Omission preserves existing MCP and remote behavior. */
-  worktree?: WorkerWorktreeRequest;
+  /** Local creation only; tools may omit the source revision to use the target HEAD. */
+  worktree?: Partial<WorkerWorktreeRequest>;
   /** 显式值用于本次创建；缺省读取全局 Worker 创建偏好。 */
   workerPermissionMode?: OrcaWorkerPermissionMode;
   /**
@@ -300,6 +302,8 @@ export interface OrcaWorkerCreationDeps {
   getWorkerPermissionMode(): OrcaWorkerPermissionMode;
   /** Validate existence and target project policy before reserving or bootstrapping. */
   resolveWorkerWorkingDir(dir: string, lead: OrcaLeadSessionSnapshot): Promise<string>;
+  resolveWorkerWorktreeSource?(directory: string, sourceBranch?: string): Promise<string>;
+  getWorkerWorktree?(sessionId: string): WorkerOwnedWorktree | undefined;
   createWorkerWorktree?(sessionId: string, directory: string, sourceBranch: string): Promise<string>;
   discardWorkerWorktree?(sessionId: string): Promise<void>;
   getAvailableModels(agent: AgentKind): OrcaWorkerModelCapabilities[];
@@ -998,6 +1002,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         teamId: params.teamId,
         workerId,
         workerSessionId: opened.proxySessionId,
+        workingDir: opened.workingDir,
         executionDeviceId: deviceId,
         softLimitExceeded,
         limit: limitSnapshot(settings.workerHardLimit, reservation.occupiedSlotsBefore + 1),
@@ -1070,8 +1075,10 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     if (!lead) {
       return { ok: false, errorCode: 'NOT_FOUND', message: `lead session ${params.leadSessionId} not found` };
     }
-    if (params.worktree && (lead.remoteHostId || params.executionDeviceId !== undefined
+    if (params.worktree !== undefined && (!params.worktree || typeof params.worktree !== 'object'
+      || Array.isArray(params.worktree) || lead.remoteHostId || params.executionDeviceId !== undefined
       || (lead.workspaceKind === 'dialogue' && params.workingDir === undefined)
+      || !deps.resolveWorkerWorktreeSource || !deps.getWorkerWorktree
       || !deps.createWorkerWorktree || !deps.discardWorkerWorktree)) {
       return {ok: false, errorCode: 'INVALID_PARAMS', message: 'Worker worktree requires a local project'};
     }
@@ -1188,6 +1195,15 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         workingDir = await deps.resolveWorkerWorkingDir(requested, lead);
       } catch {
         return { ok: false, errorCode: 'INVALID_PARAMS', message: 'working_dir is unavailable or collaboration is disabled for that directory; no Worker was started' };
+      }
+    }
+
+    let worktreeSource: string | undefined;
+    if (params.worktree) {
+      try {
+        worktreeSource = await deps.resolveWorkerWorktreeSource!(workingDir, params.worktree.sourceBranch);
+      } catch (error) {
+        return { ok: false, errorCode: 'INVALID_PARAMS', message: error instanceof Error ? error.message : 'Worker worktree target is unavailable' };
       }
     }
 
@@ -1538,6 +1554,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     renewalTimer.unref?.();
 
     let createdWorktreeSessionId: string | undefined;
+    let ownedWorktree: WorkerOwnedWorktree | undefined;
     let creationSucceeded = false;
     try {
       // Registration may race the preflight. Once a reservation exists, a new
@@ -1549,7 +1566,16 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       const workerSessionId = deps.createSessionId();
       if (params.worktree) {
         createdWorktreeSessionId = workerSessionId;
-        workingDir = await deps.createWorkerWorktree!(workerSessionId, workingDir, params.worktree.sourceBranch);
+        workingDir = await deps.createWorkerWorktree!(workerSessionId, workingDir, worktreeSource!);
+        // Checkout may fall back from a missing subproject to its root. Authorize
+        // the final directory before any runtime starts, for both UI and tool calls.
+        try {
+          workingDir = await deps.resolveWorkerWorkingDir(workingDir, lead);
+        } catch {
+          return { ok: false, errorCode: 'INVALID_PARAMS', message: 'working_dir is unavailable or collaboration is disabled for that directory; no Worker was started' };
+        }
+        ownedWorktree = deps.getWorkerWorktree!(workerSessionId);
+        if (!ownedWorktree) throw new Error('Worker worktree ownership metadata is unavailable');
         await assertCurrent?.();
       }
       const workerVendorOptions = {
@@ -1649,6 +1675,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         teamId: params.teamId,
         workerId,
         workerSessionId: workerSession.id,
+        workingDir,
+        ...(ownedWorktree ? { worktree: ownedWorktree } : {}),
         softLimitExceeded,
         limit: limitSnapshot(settings.workerHardLimit, reservation.occupiedSlotsBefore + 1),
         resolved: {

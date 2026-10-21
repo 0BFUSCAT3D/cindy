@@ -1,6 +1,6 @@
 import { createOrcaWorkerProjectHandlers } from './orcaWorkerProjectHandlers';
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore';
-import { readWorkerProjectContext, createWorkerWorktree, rememberWorkerProject, probeWorkerProject } from './orcaWorkerProject';
+import { readWorkerProjectContext, createWorkerWorktree, rememberWorkerProject, probeWorkerProject, resolveWorkerWorktreeSource, getWorkerOwnedWorktree } from './orcaWorkerProject';
 import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
 import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
@@ -2487,6 +2487,7 @@ interface OrcaCollabService {
     workerPermissionMode?: OrcaWorkerPermissionMode;
     label: string;
     workingDir?: string;
+    worktree?: { sourceBranch?: string };
     initialTask?: string;
     executionDeviceId?: string;
     /** Worker 的 Agent 所在位置；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
@@ -2496,6 +2497,8 @@ interface OrcaCollabService {
         ok: true;
         workerId: string;
         workerSessionId: string;
+        workingDir?: string;
+        worktree?: { path: string; branch: string };
         softLimitExceeded?: boolean;
         dispatched?: boolean;
         dispatchOutcome?: CollabDispatchOutcome;
@@ -2560,6 +2563,8 @@ interface OrcaCollabService {
           effort: string | null;
           focused: boolean;
           working_dir: string;
+          owns_worktree: boolean;
+          worktree?: { path: string; branch: string };
           execution_device?: {
             device_id: string;
             device_name: string | null;
@@ -7889,6 +7894,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   function createOrcaDiagnosticsDeps() {
     const remoteRuntime = orcaRemoteWorkersForHost?.runtime;
     return {
+      getWorkerWorktree: getWorkerOwnedWorktree,
       readActiveTeam: readActiveOrcaTeamByLeadReadOnly,
       listWorkersByLead,
       // 远端 Worker 的本机代理行从不运行；状态取运行设备的轮询投影。
@@ -14922,6 +14928,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       );
       return resolved;
     },
+    resolveWorkerWorktreeSource,
+    getWorkerWorktree: getWorkerOwnedWorktree,
     createWorkerWorktree,
     discardWorkerWorktree,
     getAvailableModels: (agent) => maker.getCapabilities(agent).availableModels,

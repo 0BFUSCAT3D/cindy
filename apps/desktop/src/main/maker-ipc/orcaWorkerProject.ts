@@ -12,7 +12,7 @@ import {
 } from '../git-context/sessionDirResolver';
 import { gitExec } from '../worktree/gitExec';
 import * as WorktreeManager from '../worktree/WorktreeManager';
-import type { WorkerProjectContext } from '../../shared/orca-worker-project';
+import type { WorkerProjectContext, WorkerOwnedWorktree } from '../../shared/orca-worker-project';
 
 const log = createLogger('orca-worker-project');
 const stripEol = (value: string) => value.replace(/[\r\n]+$/, '');
@@ -242,6 +242,43 @@ export async function readWorkerProjectContext(
     dialogue: lead.workspaceKind === 'dialogue',
     projects,
   };
+}
+
+/** Resolve the optional tool revision before reserving a slot or creating a checkout. */
+export async function resolveWorkerWorktreeSource(
+  directory: string,
+  sourceBranch?: string,
+  probe: (directory: string) => Promise<WorkerProjectProbe> = probeWorkerProject,
+): Promise<string> {
+  if (sourceBranch !== undefined && (typeof sourceBranch !== 'string' || !sourceBranch.trim()
+    || sourceBranch.length > 1024 || sourceBranch.startsWith('-')
+    || Array.from(sourceBranch).some((character) => character.charCodeAt(0) < 32))) {
+    throw new Error('Worktree source_branch must be a valid branch or commit');
+  }
+  const info = await probe(directory);
+  if (!info.exists) throw new Error('Worker worktree directory does not exist');
+  if (!info.baseRepo) throw new Error('Worker worktree requires a Git repository');
+  if (sourceBranch !== undefined) {
+    try {
+      await gitExec(
+        ['rev-parse', '--verify', '--quiet', '--end-of-options', `${sourceBranch}^{commit}`],
+        directory,
+        { timeoutMs: 5000 },
+      );
+    } catch {
+      throw new Error('Worktree source_branch must reference an existing commit');
+    }
+    return sourceBranch;
+  }
+  if (info.headState === 'unborn' || !info.branch) {
+    throw new Error('Worker worktree requires a repository with a commit');
+  }
+  return info.branch;
+}
+
+export function getWorkerOwnedWorktree(sessionId: string): WorkerOwnedWorktree | undefined {
+  const meta = WorktreeManager.getForSession(sessionId);
+  return meta ? {path: meta.path, branch: meta.branch} : undefined;
 }
 
 export async function createWorkerWorktree(
