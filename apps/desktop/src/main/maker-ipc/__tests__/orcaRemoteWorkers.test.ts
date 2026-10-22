@@ -6,6 +6,7 @@ import type { OrcaRemotePendingReport } from '../../../shared/orcaRemoteWorker.j
 import { createOrcaTeamService, type OrcaTeamService, type OrcaTeamServiceDeps, type OrcaWorkerRecordSnapshot, type WorkerTerminalTurnCapture } from '../orcaTeamService.js';
 import { withSendToSessionLock } from '../sendToSessionLock.js';
 import { createOrcaRemoteWorkerHost, type OrcaRemoteWorkerExistingSession } from '../orcaRemoteWorkerHost.js';
+import { orcaModelDiscoveryFailure } from '../orcaServiceFailure.js';
 
 const store = vi.hoisted(() => ({
   archiveSingleWorkerSession: vi.fn(async () => undefined),
@@ -157,6 +158,21 @@ describe('invokeDeviceValue', () => {
 });
 
 describe('execution devices', () => {
+  // PR #6787, unit: the roster still says online, then the real model invoke
+  // disconnects. Verify readModels plus the host mapper's public failure result;
+  // existing offline-open coverage never exercised discovery after the roster.
+  it('reports an execution computer that disconnects during model discovery', async () => {
+    const { workers, remoteInvoke } = setup({ handle: (_device, channel) =>
+      channel === 'maker:orca:remote-worker:models' ? fail('DEVICE_OFFLINE', 'work computer disconnected') : undefined });
+    try {
+      const result = await workers.readModels('mac-mini', { agent: 'codex' })
+        .catch(error => orcaModelDiscoveryFailure(error, true));
+      expect(result).toEqual({ ok: false, errorCode: 'REMOTE_AGENT_DEVICE_UNREACHABLE',
+        message: '[DEVICE_OFFLINE] work computer disconnected' });
+      expect(remoteInvoke.mock.calls.map(([, channel]) => channel)).toEqual(['maker:orca:remote-worker:models']);
+    } finally { workers.stop(); }
+  });
+
   it('only offers other online desktops that allow remote control', () => {
     expect(isExecutionDeviceCandidate(device({}))).toBe(true);
     expect(isExecutionDeviceCandidate(device({ online: false }))).toBe(false);

@@ -965,7 +965,7 @@ import {
   createOrcaUiAssignmentDispatchClaims,
   createOrcaUiAssignmentHistoryGate,
 } from './orcaUiAssignmentHistoryGate.js';
-import { throwOrcaServiceFailure } from './orcaServiceFailure.js';
+import { orcaModelDiscoveryFailure, throwOrcaServiceFailure } from './orcaServiceFailure.js';
 import {
   createOrcaTeamService,
   findFocusTargetWorker,
@@ -17017,14 +17017,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
         return { ok: true, agentDeviceId: null, ...(locations ? { locations } : {}), ...result };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const code = /^\[([A-Z_]+)\]/.exec(message)?.[1];
-        return {
-          ok: false,
-          errorCode: executionDeviceId && code && (code === 'UNSUPPORTED_CAPABILITY' || code.startsWith('REMOTE_AGENT_'))
-            ? code : 'INTERNAL',
-          message,
-        };
+        return orcaModelDiscoveryFailure(err, Boolean(executionDeviceId));
       }
     },
   };
