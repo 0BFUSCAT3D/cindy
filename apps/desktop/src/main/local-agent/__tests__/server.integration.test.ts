@@ -268,6 +268,37 @@ describe('local application authorization and lifecycle', () => {
     await f.server().close();
     expect(f.close).toHaveBeenCalledTimes(2);
   });
+  it('keeps revoke pending until an engine still starting is closed, and reports a failed late close', async () => {
+    let release!: () => void, began!: () => void;
+    const started = new Promise<void>((resolve) => {
+      began = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = vi.fn(async () => {});
+    close.mockRejectedValueOnce(new Error('native process exit unconfirmed'));
+    const f = await fixture({
+      open: async () => {
+        began();
+        await held;
+        return { id: 'late', resumed: false, call: async () => ({}), close };
+      },
+    });
+    const secret = await f.connect();
+    const opening = f.start(secret);
+    await started;
+    let settled = false;
+    const revoking = f.server().revoke(f.server().connections()[0].id);
+    void revoking.catch(() => {}).finally(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    release();
+    await expect(revoking).rejects.toMatchObject({ code: 'RUNTIME_CLOSE_UNCONFIRMED' });
+    expect((await opening).error).toBeDefined();
+    await f.server().close();
+    expect(close).toHaveBeenCalledTimes(2);
+  });
   it('keeps concurrent opens within the persisted resume limit so the service can restart', async () => {
     const releases: Array<() => void> = [];
     const f = await fixture({

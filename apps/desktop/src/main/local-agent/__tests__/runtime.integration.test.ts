@@ -51,6 +51,7 @@ async function fixture() {
   cleanups.push(() => fs.rm(directory, { recursive: true, force: true }));
   const first = handle('first');
   const maker = { startLocalAgentSession: vi.fn(async () => first) };
+  const events: unknown[] = [];
   const runtime = await openLocalAgentRuntime(
     maker as any,
     directory,
@@ -72,10 +73,14 @@ async function fixture() {
       access: 'none',
       tools: [],
     },
-    { url: 'http://127.0.0.1:1/mcp/fixture', token: 'invalid-fixture-token', emit: () => {} },
+    {
+      url: 'http://127.0.0.1:1/mcp/fixture',
+      token: 'invalid-fixture-token',
+      emit: (event) => events.push(event),
+    },
   );
   cleanups.push(() => runtime.close());
-  return { runtime, maker, first, directory };
+  return { runtime, maker, first, directory, events };
 }
 const image = { type: 'image', mimeType: 'image/png', data: Buffer.from('png').toString('base64') };
 async function inputFiles(directory: string) {
@@ -218,6 +223,28 @@ describe('local client runtime lifecycle', () => {
     await f.runtime.call('send', message);
     await vi.waitFor(() => expect(f.runtime.call('send', message)).resolves.toEqual({}));
     expect(f.first.send).toHaveBeenCalledTimes(2);
+  });
+  it('ends a send that an interrupt cancels before the supplier accepts it', async () => {
+    const f = await fixture(),
+      reserved = deferred();
+    let cancel!: (value: { accepted: boolean }) => void;
+    f.first.send.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          cancel = resolve;
+          reserved.resolve();
+        }),
+    );
+    f.first.abort.mockImplementationOnce(async () => cancel({ accepted: false }));
+    await f.runtime.call('send', { parts: message.parts });
+    await reserved.promise;
+    await f.runtime.call('interrupt', {});
+    await vi.waitFor(() =>
+      expect(f.events).toContainEqual({
+        type: 'turn_end',
+        data: { status: 'interrupted', message: '' },
+      }),
+    );
   });
   it('removes images written for a send that is rejected before the engine takes it', async () => {
     const f = await fixture();

@@ -157,10 +157,10 @@ export function createEventProjection(
         });
       }
     },
-    fail(message: string) {
+    fail(message: string, status: 'failed' | 'interrupted' = 'failed') {
       if (!ended) {
         ended = true;
-        emit({ type: 'turn_end', data: { status: 'failed', message } });
+        emit({ type: 'turn_end', data: { status, message } });
       }
     },
   };
@@ -183,7 +183,8 @@ export async function openLocalAgentRuntime(
   // Instructions are read when a Session starts; only that applied version is clean.
   let instructionsVersion = 0,
     appliedInstructions = 0;
-  let epoch = 0;
+  let epoch = 0,
+    turn = 0;
   const assertCurrent = (expected: number) => {
     if (closed) throw new LocalAgentError('SESSION_UNAVAILABLE', 'Cindy 会话已关闭。');
     if (epoch !== expected)
@@ -412,6 +413,7 @@ export async function openLocalAgentRuntime(
           await handle.setEffort(params.effort as Parameters<Session['setEffort']>[0]);
         assertCurrent(current);
         preparing = false;
+        const generation = ++turn;
         projection.begin();
         // Some harnesses await the entire turn; acceptance must not block tool delivery/control RPCs.
         const sending = content;
@@ -420,9 +422,13 @@ export async function openLocalAgentRuntime(
           if (!result.accepted) await discard(sending);
           assertSendDispatched(result, 'local-agent/send');
         })().catch(() => {
-          if (!closed && epoch === current) {
+          if (closed || turn !== generation) return;
+          if (epoch === current) {
             busy = false;
             projection.fail(localize('EXECUTION_FAILED', 'Cindy 未能完成本次发送。'));
+          } else {
+            // An interrupt cancelled the turn before the supplier saw it: no native terminal follows.
+            projection.fail('', 'interrupted');
           }
         });
         return {};

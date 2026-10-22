@@ -88,6 +88,8 @@ interface Run {
   pending: Map<string, { resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }>;
   resumeKey?: string;
   closing?: Promise<void>;
+  /** A revoke during startup must wait for the late runtime and confirm its close. */
+  opening?: Promise<LocalAgentRuntime>;
 }
 export interface LocalAgentServerDeps {
   directory: string;
@@ -252,6 +254,12 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
   const clients = new Map<string, number>();
   let base = '';
   let closing = false;
+  /** Closes of engines that were still starting when their run was closed, by grant. */
+  const lateCloses = new Map<Promise<void>, string>();
+  const lateClosed = (owner?: string) =>
+    Promise.all(
+      [...lateCloses].filter(([, o]) => owner === undefined || o === owner).map(([p]) => p),
+    );
   const closeRun = async (id: string, expected?: Run) => {
     const run = runs.get(id);
     if (!run || (expected && expected !== run)) return;
@@ -266,6 +274,28 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
     }
     run.pending.clear();
     for (const wake of run.waiters) wake();
+    if (!run.runtime && run.opening) {
+      // Free the session ID now; revocation still waits until the late engine is closed.
+      runs.delete(id);
+      const settled = run.opening.then(
+        async (runtime) => {
+          try {
+            await runtime.close();
+          } catch {
+            deps.warn('RUNTIME_CLOSE_UNCONFIRMED');
+            runs.set(`late:${token()}`, run); // closed run kept for a later close retry
+            throw new LocalAgentError(
+              'RUNTIME_CLOSE_UNCONFIRMED',
+              '连接已失效，但尚未确认执行进程停止。',
+            );
+          }
+        },
+        () => {},
+      );
+      lateCloses.set(settled, run.owner);
+      void settled.catch(() => {}).finally(() => lateCloses.delete(settled));
+      return;
+    }
     run.closing = (async () => {
       try {
         await run.runtime?.close();
@@ -348,7 +378,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
     for (const key of clients.keys()) if (key.startsWith(`${id}:`)) clients.delete(key);
     const stopped = Promise.all(
       [...runs].filter(([, run]) => run.owner === id).map(([key]) => closeRun(key)),
-    );
+    ).then(() => lateClosed(id));
     try {
       await Promise.all([persist(), stopped]);
     } finally {
@@ -448,7 +478,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       };
       runs.set(id, run);
       try {
-        run.runtime = await deps.open(
+        run.opening = deps.open(
           {
             isolationKey: hash(grant.id),
             mcpName: grant.legacyRuntime ? 'hhh' : 'client',
@@ -469,10 +499,10 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
             },
           },
         );
-        if (run.closed || !grants.includes(grant) || grant.scope !== deps.scope()) {
-          await run.runtime.close();
+        run.runtime = await run.opening;
+        // The catch below joins any revoke already closing this run instead of closing twice.
+        if (run.closed || !grants.includes(grant) || grant.scope !== deps.scope())
           throw new LocalAgentError('UNAUTHORIZED', '连接已失效。');
-        }
         // Another open may have used the last slot while this engine started.
         if (!binding && Object.keys(bindings).length >= 4096)
           throw new LocalAgentError(
@@ -869,7 +899,10 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       pairs.clear();
       dedup.clear();
       clients.clear();
-      await Promise.all([persist(), ...[...runs.keys()].map((id) => closeRun(id))]);
+      await Promise.all([
+        persist(),
+        Promise.all([...runs.keys()].map((id) => closeRun(id))).then(() => lateClosed()),
+      ]);
       deps.changed?.();
     },
     async close() {
