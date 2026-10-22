@@ -461,13 +461,13 @@ export function getBrowserMcpDeps(): {
   getRuntime(): BrowserControlRuntime;
   resolveScreenshot: NonNullable<BrowserMcpDeps['resolveScreenshot']>;
   compressInlineImage: NonNullable<BrowserMcpDeps['compressInlineImage']>;
-  recipeSecrets: { read(key: string): string | null; write(key: string, value: string): boolean };
   setBackend(kind: BackendKind): Promise<BackendKind>;
   supportsResourceDownloads(): boolean;
   supportsSemanticQueries(): boolean;
   logger: typeof logger;
   getUserRecipes(): Promise<UserRecipesResult>;
   saveUserRecipe(input: Parameters<typeof writeUserRecipe>[0]): Promise<WriteUserRecipeResult>;
+  recipeSecrets: { read(key: string): string | null; write(key: string, value: string): boolean };
   pageReadsRestricted(target: { profile?: string; targetId?: string }): Promise<boolean>;
 } {
   return {

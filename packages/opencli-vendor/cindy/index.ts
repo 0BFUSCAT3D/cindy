@@ -95,11 +95,13 @@ export async function executeAdapter(
   inputs: Record<string, unknown>,
   page: IPage,
   secrets?: RecipeSecrets,
+  onExecutionStart?: () => void,
 ): Promise<unknown> {
   return withRecipeHost(secrets, async () => {
     const command = await loadAdapter(id);
     const args = prepareInputs(command.args, inputs);
     command.validateArgs?.(args);
+    onExecutionStart?.();
     if (
       command.browser !== false &&
       typeof command.navigateBefore === "string"

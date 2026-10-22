@@ -4,7 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { BrowserControlRequest } from "@cindy/browser-control-runtime";
 import { createBrowserMcpServer } from "./server.js";
 import { OpenCliPage } from "./opencli-page.js";
-import { loadRecipes } from "./recipe-loader.js";
+import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
 
 afterEach(() => {
@@ -75,7 +75,61 @@ describe("bundled OpenCLI recipes", () => {
       { call },
     );
     expect(result.ok).toBe(false);
+    expect(result.failureKind).toBe('input');
     expect(call).not.toHaveBeenCalled();
+  });
+
+  // #6822 compatibility: existing native-step tests do not cover adapter preflight
+  // or persistence of an adapter with empty steps. Real MCP entry, unit tier;
+  // minimum input is an invalid limit, followed by one failed browser attempt.
+  it('keeps adapters usable after bad inputs and persists real failures across sessions', async () => {
+    const saved = new Map<string, Recipe>();
+    let version = 0;
+    const call = vi.fn(async (request: BrowserControlRequest) => ({
+      ok: false, action: request.action, message: 'page unavailable',
+    }));
+    const connect = async () => {
+      const server = createBrowserMcpServer({
+        getRuntime: () => ({ call }),
+        getUserRecipes: async () => ({ version: `adapter-maintenance-${version}`, recipes: saved, siteGuides: new Map() }),
+        saveUserRecipe: async ({ recipe }) => {
+          const parsed = RecipeSchema.parse(recipe);
+          saved.set(parsed.id, parsed);
+          version++;
+          return { ok: true };
+        },
+      });
+      const client = new Client({ name: 'adapter-maintenance', version: '1' });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(a), client.connect(b)]);
+      return { server, client };
+    };
+    const run = async (client: Client, inputs: Record<string, unknown>) => {
+      const response = await client.callTool({ name: 'call_tool', arguments: {
+        name: 'browser', args: { action: 'recipe', recipeId: 'opencli:bilibili/hot', inputs },
+      } });
+      return JSON.parse((response.content as Array<{ text: string }>)[0].text);
+    };
+    const first = await connect();
+    try {
+      expect(await run(first.client, { limit: 'bad' })).toMatchObject({ ok: false, failureKind: 'input' });
+      expect(saved.size).toBe(0);
+      expect(call).not.toHaveBeenCalled();
+      expect(await run(first.client, { limit: 1 })).toMatchObject({ ok: false, failureKind: 'action' });
+      expect(saved.get('opencli:bilibili/hot')).toMatchObject({ adapter: 'bilibili/hot', validation: { state: 'suspended' } });
+    } finally {
+      await first.client.close();
+      await first.server.close();
+    }
+    const attempts = call.mock.calls.length;
+    const next = await connect();
+    try {
+      expect((await run(next.client, { limit: 1 })).message).toContain('暂停');
+      expect(call).toHaveBeenCalledTimes(attempts);
+    } finally {
+      await next.client.close();
+      await next.server.close();
+    }
   });
 
   it("does not replay a write after the browser reports an unknown outcome", async () => {

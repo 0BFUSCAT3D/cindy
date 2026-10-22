@@ -309,16 +309,22 @@ export async function runRecipe(
   deps: RecipeRunDeps,
 ): Promise<RecipeRunResult> {
   if (recipe.adapter) {
+    let started = false;
     try {
       const { runOpenCliAdapter } = await import('./opencli-page.js');
       const args = { ...(inputs ?? {}) };
       for (const [from, to] of Object.entries(recipe.adapterInputMap ?? {})) {
         if (Object.hasOwn(args, from)) { args[to] = args[from]; if (from !== to) delete args[from]; }
       }
-      const output = await runOpenCliAdapter(recipe.adapter, args, deps);
+      const output = await runOpenCliAdapter(recipe.adapter, args, {
+        ...deps,
+        onExecutionStart: () => { started = true; },
+      });
       return { ok: true, recipe: recipe.id, steps: [{ action: 'adapter', ok: true }], output };
     } catch (error) {
-      return { ok: false, recipe: recipe.id, steps: [{ action: 'adapter', ok: false }], failedStep: 0, failedAction: 'adapter', message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, recipe: recipe.id, steps: started ? [{ action: 'adapter', ok: false }] : [],
+        ...(started ? { failedStep: 0, failedAction: 'adapter' } : {}),
+        failureKind: started ? 'action' : 'input', message: error instanceof Error ? error.message : String(error) };
     }
   }
   const vars: Record<string, unknown> = { ...(inputs ?? {}) };

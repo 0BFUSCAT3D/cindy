@@ -19,6 +19,7 @@ interface PageDeps {
   call(request: BrowserControlRequest): Promise<BrowserControlResult>;
   targetId?: string;
   recipeSecrets?: RecipeSecrets;
+  onExecutionStart?: () => void;
 }
 
 /** All browser operations go through the caller's guarded, session-scoped runtime. */
@@ -269,7 +270,7 @@ export async function runOpenCliAdapter(
     command.domain ? `https://${command.domain}` : undefined,
   );
   try {
-    return await executeAdapter(id, inputs, page, deps.recipeSecrets);
+    return await executeAdapter(id, inputs, page, deps.recipeSecrets, deps.onExecutionStart);
   } finally {
     await page.dispose();
   }

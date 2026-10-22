@@ -851,7 +851,10 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
             (ids ?? []).map((id) => {
               const r = recipeReg.get(id);
               const spec = r?.recipe.inputs ?? {};
-              if (compact && id.startsWith('opencli:')) return { id, access: r?.recipe.access };
+              if (compact && id.startsWith('opencli:')) return {
+                id, access: r?.recipe.access,
+                ...(r?.recipe.validation ? { state: r.recipe.validation.state } : {}),
+              };
               return {
                 id,
                 // Surface the author's description at discovery time — it carries
