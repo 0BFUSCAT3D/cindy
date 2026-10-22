@@ -762,7 +762,7 @@
     "avatarFailed": "无法打开此图片，请换一张。",
     "nameTaken": "已有同名伙伴，请换一个名字。",
     "home": "主力电脑",
-    "chat": "聊天",
+    "chat": "对话",
     "showReplyTarget": "显示回复对应的消息",
     "showReplyTargetHint": "伙伴回复上方标出它回的是你哪条消息。对所有伙伴生效，较早的回复不显示。"
   },
