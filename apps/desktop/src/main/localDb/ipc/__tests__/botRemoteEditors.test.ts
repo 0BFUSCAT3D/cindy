@@ -270,3 +270,25 @@ it('links multiple projects through settings while keeping paths private and rej
   await f.send(await f.resource(id), { linked: false });
   expect(projects.map(p => p.linked)).toEqual([true, false, true]);
 });
+
+// PR #6813: equal carried paths on different devices previously had identical phone labels.
+// Unit: real resource/action projection, two device-specific links; existing path privacy retained.
+it('distinguishes equal project paths on different devices in the list and toggle detail', async () => {
+  const f = fixture();
+  const projects = ['desk-a', 'desk-b'].map((deviceId, index) => ({
+    id: String(index).repeat(64), name: 'app', path: '/PRIVATE/app', deviceId, linked: true, available: false,
+  }));
+  f.deps.projects = {
+    list: async () => projects.map(project => ({ ...project })),
+    set: async (_bot, id, linked) => { projects.find(project => project.id === id)!.linked = linked; },
+  };
+  const list = await f.resource('settings:bot-a/projects');
+  expect(f.entries(list)).toMatchObject([
+    { title: expect.stringContaining('desk-a') }, { title: expect.stringContaining('desk-b') },
+  ]);
+  const detail = await f.resource(f.entries(list)[0].resourceId);
+  expect(detail.display.title).toContain('desk-a');
+  expect(JSON.stringify([list, detail])).not.toContain('/PRIVATE');
+  await f.send(detail, { linked: false });
+  expect(projects.map(project => project.linked)).toEqual([false, true]);
+});

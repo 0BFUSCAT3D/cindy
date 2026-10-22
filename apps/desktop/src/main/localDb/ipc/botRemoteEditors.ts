@@ -83,15 +83,16 @@ export function createBotRemoteEditors(deps: BotRemoteEditorDeps, bind: ReturnTy
       const [, botId, projectId] = projectMatch;
       const settings = await deps.read(botId); deps.assertOwner(owner);
       const projects = await deps.projects.list(botId); deps.assertOwner(owner);
+      const title = (project: BotProjectOption) => `${project.name}${project.deviceId ? ` · ${resolveRemoteText(editorCopy.projectRemote, locale)} (${project.deviceId})` : ''}`;
       const resource: RemoteResource = { ref: ref(id), revision: hash(projects), display: { title: editorCopy.projects }, links: [], blocks: [] };
       if (!projectId) {
         resource.blocks = [{ id: 'projects', primitive: 'list', fallbackMarkdown: projects.length ? resolveRemoteText(editorCopy.projectHelp, locale) : resolveRemoteText(editorCopy.projectEmpty, locale),
-          data: { entries: projects.map(project => ({ id: project.id, title: `${project.linked ? '✓ ' : ''}${project.name}${project.deviceId ? ` · ${resolveRemoteText(editorCopy.projectRemote, locale)}` : ''}`, resourceId: `${id}/${project.id}` })) } }];
+          data: { entries: projects.map(project => ({ id: project.id, title: `${project.linked ? '✓ ' : ''}${title(project)}`, resourceId: `${id}/${project.id}` })) } }];
         return resource;
       }
       const project = projects.find(project => project.id === projectId);
       if (!project) throwIpcError('NOT_FOUND', 'Project unavailable');
-      resource.display.title = project.name;
+      resource.display.title = title(project);
       const panel = form('project', editorCopy.projects, [{ id: 'linked', label: editorCopy.projectLinked, kind: 'toggle' }], { linked: project.linked });
       resource.blocks = [{ ...panel.block, fallbackMarkdown: [resolveRemoteText(editorCopy.projectHelp, locale), project.deviceId ? resolveRemoteText(editorCopy.projectRemote, locale) : !project.available ? resolveRemoteText(editorCopy.projectUnavailable, locale) : ''].filter(Boolean).join('\n\n') }];
       resource.actions = [{ ...panel.action, disabled: settings.source.status !== 'active' }];

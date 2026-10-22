@@ -3,6 +3,7 @@ import { FolderOpen, Plus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
+import { Tip } from '@/components/ui/tooltip';
 import { useBotTranslation } from './botPronounContext';
 import type { BotProjectOption } from '../../../shared/botWorkbench';
 
@@ -58,8 +59,12 @@ export function BotProjectsSettings({ botId }: { botId: string }) {
             {project.deviceId ? t('bots.projects.otherComputer', { device: project.deviceId }) : t('bots.projects.unavailable')}
           </p>}
         </div>
-        <Button variant="secondary" tone="quiet" compact disabled={busy} aria-label={t('bots.projects.remove', { name: project.name })}
-          onClick={() => void set(project.id, false)}><X size={16} /></Button>
+        <Tip text={busy ? t('bots.autosave.saving') : t('bots.projects.remove', { name: project.name })}>
+          <span className="inline-flex shrink-0">
+            <Button variant="secondary" tone="quiet" compact disabled={busy} aria-label={t('bots.projects.remove', { name: project.name })}
+              onClick={() => void set(project.id, false)}><X size={16} /></Button>
+          </span>
+        </Tip>
       </li>)}
     </ul> : projects ? <p className="py-3 text-13 text-[var(--text-tertiary)]">{t('bots.projects.empty')}</p> : null}
     {projects && <div className="flex flex-wrap items-center gap-2">

@@ -13,10 +13,15 @@ mountPage({
       ] : []),
     ];
     let fail = ctx.case === 'error';
+    let holdSave = ctx.case === 'saving';
     return {
       localDb: { bots: { projects: {
         list: async () => { if (fail) { fail = false; throw new Error('offline'); } return projects; },
         set: async (_botId: string, id: string, linked: boolean) => {
+          if (holdSave) {
+            holdSave = false;
+            await new Promise<void>(resolve => window.addEventListener('bot-project-save-complete', () => resolve(), { once: true }));
+          }
           projects = projects.map(project => project.id === id ? { ...project, linked } : project);
           return projects;
         },
