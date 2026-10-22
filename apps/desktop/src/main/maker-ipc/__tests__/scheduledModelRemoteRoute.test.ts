@@ -32,7 +32,7 @@ function catalog(id: string): ProviderView[] {
     id: 'test-model', efforts: ['low', 'high'], defaultEffort: 'low', supportsFastMode: false,
   }] } }] as ProviderView[];
 }
-function fixture(device: string | null = 'share:test') {
+function fixture(device: string | null = 'share:test', status = 'active') {
   let current = { ...choice, agentDeviceId: device };
   let baseline: string | null = JSON.stringify({ ...choice, scopeId: 'old-run' });
   const local = catalog('openai');
@@ -52,7 +52,7 @@ function fixture(device: string | null = 'share:test') {
   });
   const apply = compile('scheduled', {
     applyScheduledModelSelection, resolveScheduledModelSelection,
-    agentSwitchDeps: { getSessionRow: async () => ({ ...current, status: 'active' }) },
+    agentSwitchDeps: { getSessionRow: async () => status === 'missing' ? null : ({ ...current, status }) },
     dbToMakerAgentKind: (kind: string) => kind,
     isSessionInTurn: () => false, maker: { getSession: () => undefined },
     assertModelRouteUsable: guard, shouldApplyExclusiveProviderRerouteLive: () => false,
@@ -105,6 +105,38 @@ describe('automation restore uses the execution computer', () => {
     expect(h.applyModel).not.toHaveBeenCalled();
     expect(h.guard).not.toHaveBeenCalled();
     expect(h.state().baseline).not.toBeNull();
+  });
+  it.each(['provider', 'model'] as const)('preserves the baseline when the remote %s is disabled after restart', async disabled => {
+    const h = fixture();
+    const before = h.state();
+    const views = catalog('openai-shared');
+    if (disabled === 'provider') views[0].suspended = true;
+    else views[0].models.codex![0].disabled = true;
+    h.remote.mockResolvedValueOnce(views);
+    await expect(h.scope.restore('task')).rejects.toThrow('unavailable');
+    expect(h.state()).toEqual(before);
+    expect(h.applyModel).not.toHaveBeenCalled();
+    expect(h.switchHarness).not.toHaveBeenCalled();
+    expect(h.guard).not.toHaveBeenCalled();
+  });
+  it.each(['archived', 'deleted', 'missing'])('resolves the replacement locally for a %s target', async status => {
+    const h = fixture('share:test', status);
+    const before = h.state();
+    h.remote.mockRejectedValue(new Error('REMOTE_AGENT_SHARE_PAUSED'));
+    const localChoice = { ...choice, providerId: 'openai' };
+    await expect(h.deps.apply('task', localChoice)).resolves.toEqual(localChoice);
+    expect(h.remote).not.toHaveBeenCalled();
+    expect(h.guard).toHaveBeenCalledWith('codex', 'test-model', 'openai');
+    expect(h.applyModel).not.toHaveBeenCalled();
+    expect(h.switchHarness).not.toHaveBeenCalled();
+    expect(h.state()).toEqual(before);
+  });
+  it.each(['archived', 'deleted'])('rejects a remote-only source for the local replacement of a %s target', async status => {
+    const h = fixture('share:test', status);
+    await expect(h.deps.apply('task', choice)).rejects.toThrow('provider unavailable');
+    expect(h.remote).not.toHaveBeenCalled();
+    expect(h.applyModel).not.toHaveBeenCalled();
+    expect(h.switchHarness).not.toHaveBeenCalled();
   });
   it('retains the scope and task when the sharing host rejects access', async () => {
     const h = fixture();

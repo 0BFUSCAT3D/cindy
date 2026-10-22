@@ -92,7 +92,7 @@ export function resolveScheduledModelSelection(
     effectiveSourceIdForModel(providers, null, selection.model, selection.agentKind);
   const provider = providers.find((candidate) => candidate.id === providerId);
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
-  if (!provider?.connected || !model) {
+  if (!provider?.connected || provider.suspended === true || !model || model.disabled === true) {
     throw new Error(`Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }
   return {
@@ -115,9 +115,10 @@ export async function applyScheduledModelSelection(
   },
 ): Promise<ScheduledModelSelection> {
   const target = await deps.getTarget();
-  // The runner owns missing/archived target recovery, including persistent-task rebinding.
+  // The runner replaces missing/archived targets with a new local task. Do not
+  // carry the retired task's execution computer into that replacement's route.
   if (!target || target.status === 'archived' || target.status === 'deleted') {
-    return deps.resolveSelection(selection, target);
+    return deps.resolveSelection(selection);
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);
