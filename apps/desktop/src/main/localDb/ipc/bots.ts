@@ -2563,6 +2563,18 @@ export function registerBotIpc(): void {
     const workbench: BotWorkbench = { responsibleSessionIds };
     return workbench;
   });
+  for (const operation of ['list', 'set'] as const) {
+    ipcMain.handle(`local-db:bots:projects:${operation}`, async (event, rawBotId: unknown, rawId?: unknown, rawLinked?: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      const botId = readText(rawBotId, 'botId', 128, true);
+      const { botLinkedProjectAccess } = await import('../../maker-ipc/botLinkedProjects.js');
+      const access = await botLinkedProjectAccess(botId);
+      if (operation === 'list') return access.read();
+      const id = readText(rawId, 'projectId', 64, true);
+      if (typeof rawLinked !== 'boolean') throwIpcError('INVALID_PARAMS', 'linked must be a boolean');
+      return access.set(id, rawLinked);
+    });
+  }
   for (const operation of ['list', 'update', 'act'] as const) {
     ipcMain.handle(`local-db:bots:todos:${operation}`, async (event, rawBotId: unknown, input: unknown) => {
       assertTrustedAppRendererEvent(event);

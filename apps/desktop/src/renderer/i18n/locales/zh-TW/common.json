@@ -10317,6 +10317,18 @@
       "rootNotLoaded": "原訊息不在已載入的紀錄裡",
       "rootUnavailable": "原訊息已不在私聊裡，無法開話題",
       "openFailed": "話題沒有開啟，請重試"
+    },
+    "projects": {
+      "title": "關聯專案",
+      "description": "需要時讀取專案資料。關聯不會接手專案內的任務，也不會啟動背景工作。",
+      "empty": "尚未關聯專案",
+      "choose": "選擇專案",
+      "add": "新增",
+      "remove": "移除 {{name}}",
+      "otherComputer": "位於另一台電腦",
+      "unavailable": "目錄暫不可用",
+      "failed": "專案未能更新，請重新載入核對儲存結果。",
+      "noAvailable": "更多專案可先在專案列表中新增。"
     }
   },
   "common": {

@@ -10317,6 +10317,18 @@
       "rootNotLoaded": "原消息不在已加载的记录里",
       "rootUnavailable": "原消息已不在私聊里，不能开话题",
       "openFailed": "话题没打开，请重试"
+    },
+    "projects": {
+      "title": "关联项目",
+      "description": "需要时读取项目资料。关联不会接手项目内的任务，也不会启动后台工作。",
+      "empty": "尚未关联项目",
+      "choose": "选择项目",
+      "add": "添加",
+      "remove": "移除 {{name}}",
+      "otherComputer": "位于另一台电脑",
+      "unavailable": "目录暂不可用",
+      "failed": "项目未能更新，请重新加载核对保存结果。",
+      "noAvailable": "更多项目可先在项目列表中添加。"
     }
   },
   "common": {
