@@ -5,7 +5,10 @@
  * 把凭证填在这里, 这个机器人就是这位伙伴: 主人私聊进伙伴主任务, 群 / 话题 / 外部用户私聊各一条隐藏专线,
  * 同一伙伴的所有渠道共享记忆(规则见 docs/product-rules/cindy-bots-runtime.md)。
  * 与 设置 → IM 机器人 里那份个人 bot 各用各的凭证; 添加时也可以把那份个人 bot 一次性移过来
- * (个人 bot 随之清空)。远端伙伴没有这一页。
+ * (个人 bot 随之清空)。
+ *
+ * 伙伴在另一台电脑上时，同一页读写那台电脑的连接（经伙伴设置目标）：凭证只在保存它的电脑上输入和存放，
+ * 远程页不新建连接（只能把那台电脑设置里已配好的个人 bot 移过来），微信扫码授权与 X 登录授权也在那台电脑上完成。
  */
 
 import { HookConnectionsSection } from '@/components/settings/HookConnectionsSection';

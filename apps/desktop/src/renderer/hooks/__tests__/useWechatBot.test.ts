@@ -210,6 +210,22 @@ describe('useWechatBot', () => {
   });
 });
 
+describe('useWechatBot for another computer', () => {
+  it("serves that computer's WeChat through the given API and leaves this window's own cache alone", async () => {
+    setDataOwnerGeneration('owner-a');
+    __testing.resetCache();
+    const own = installWechatApi();
+    const other = installWechatApi({ phase: 'connected', bound: true, queuedTasks: 0 });
+    const { result } = renderHook(() => useWechatBot(other.api as never));
+    await waitFor(() => expect(result.current.state.phase).toBe('connected'));
+    await act(async () => { expect(await result.current.setCompanion('bot-1')).toBe(true); });
+    expect(other.api.setCompanion).toHaveBeenCalledWith('bot-1');
+    expect(own.api.getState).not.toHaveBeenCalled();
+    expect(own.api.setCompanion).not.toHaveBeenCalled();
+    expect(__testing.getCache()).toEqual({ state: null, channelSettings: null });
+  });
+});
+
 function disconnectedState(): WechatBotState {
   return {
     phase: 'disconnected',

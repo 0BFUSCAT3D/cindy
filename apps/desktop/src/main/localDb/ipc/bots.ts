@@ -1261,6 +1261,10 @@ async function readProfile(
         : [],
       memory: config.memory !== false,
       permissions: config.permissions === 'trusted' || config.permissions === 'auto' ? config.permissions : 'ask',
+      // Stored and enforced elsewhere (input handoff policy, scheduler follow); the settings page reads them
+      // back from here, so an explicit choice must survive a reload. Absent keeps the defaults.
+      ...(config.inputHandoff === false ? { inputHandoff: false } : {}),
+      ...(config.allowSchedulerFollow === true ? { allowSchedulerFollow: true } : {}),
     },
     sessions: links.flatMap((link) => {
       const row = byId.get(link.sessionId);

@@ -423,5 +423,26 @@ describe('BotChannelsPage for a teammate on another computer', () => {
     await waitFor(() => expect(api.adopt).toHaveBeenCalledWith({ botId: 'bot-1', channel: 'telegram' }));
     expect(api.add).not.toHaveBeenCalled();
   });
+
+  it('shows the official X assignment of the other computer and changes it there, with sign-in left to that computer', async () => {
+    const x = {
+      get: vi.fn(async () => ({ available: true, enabled: true, connected: true, companionBotId: null as string | null })),
+      setCompanion: vi.fn(async () => ({ companionBotId: 'bot-1' })),
+    };
+    renderRemote(remoteApi(), { x });
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.officialX.bind' }));
+    await waitFor(() => expect(x.setCompanion).toHaveBeenCalledWith(true, null));
+    expect(await screen.findByRole('button', { name: 'bots.channels.officialX.remove' })).toBeTruthy();
+  });
+
+  it('asks to connect X on the other computer when its account is not signed in there', async () => {
+    const x = {
+      get: vi.fn(async () => ({ available: true, enabled: false, connected: false, companionBotId: null })),
+      setCompanion: vi.fn(),
+    };
+    renderRemote(remoteApi(), { x });
+    expect(await screen.findByText(/bots\.remoteSettings\.finishOnHost:.*Studio/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'bots.channels.officialX.bind' })).toBeNull();
+  });
 });
 
