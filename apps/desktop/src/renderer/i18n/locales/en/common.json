@@ -12845,6 +12845,12 @@
         "title": "Archive session",
         "description": "Archive this session? It will be removed from the list.",
         "dirtyWorktreeWarning": "This session's worktree has uncommitted changes; they will be saved as a git snapshot before archiving and can be restored from the session later.",
+        "scheduleWarning_one": "The automation {{names}} linked to this session will be paused after archiving.",
+        "scheduleWarning_other": "The automations {{names}} linked to this session will be paused after archiving.",
+        "scheduleWarningMany_one": "{{count}} of them has linked automations, which will be paused after archiving.",
+        "scheduleWarningMany_other": "{{count}} of them have linked automations, which will be paused after archiving.",
+        "scheduleName": "“{{name}}”",
+        "scheduleNameSeparator": ", ",
         "confirm": "Confirm",
         "cancel": "Cancel"
       },

@@ -3032,3 +3032,15 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 点「开始跟进」先弹与设置页同一确认框，完整显示范围及用量（远程时取 Host 下发的文字），确认后才保存；
 「暂不开启」直接保存。Mobile iOS/Android 复用现有设置表单与按钮并显示范围及用量；
 没有原生配置、依赖、指纹或数据库迁移变化。
+
+## 自动化绑定投影的持续会话标记（归档确认）
+
+`maker:schedule:list` 在 `sessionBindings: true` 的投影里新增可选 `persistentSession`（仅为 `true` 时携带，
+`false` 或缺省都不下发）。新控制端读到它才把该自动化视为「归档后会换绑新任务继续跑」，归档前不提示；
+旧控制端的 `parseScheduleBindings` 只取已知字段，忽略新增字段。旧被控端不下发该字段时，新控制端只可能
+对持续会话多弹一次归档提醒，提醒不丢、不误归档，属安全降级。
+
+不新增 channel、能力、服务端 schema、数据库或 Mobile 原生指纹，`maker:schedule:list` 沿用既有白名单。
+桌面远程任务归档时，每台设备总是直取一次带 `sessionBindings: true` 的 `maker:schedule:list`（最多等
+1.5 秒；失败或超时回退本地镜像里已有的快照，没有则按无绑定处理，离线设备因此每次最多多等 1.5 秒）；
+手机归档确认同样只发一次带该投影参数的 `maker:schedule:list`，同样有界。两端都只请求绑定投影，不拉完整列表。

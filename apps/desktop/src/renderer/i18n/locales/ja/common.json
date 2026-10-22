@@ -12797,6 +12797,12 @@
         "title": "セッションをアーカイブ",
         "description": "このセッションをアーカイブしますか？アーカイブ後はリストから消えます。",
         "dirtyWorktreeWarning": "このセッションのワークツリーには未コミットの変更があります。アーカイブ前に git スナップショットとして自動保存され、後でセッションから復元できます。",
+        "scheduleWarning_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+        "scheduleWarning_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+        "scheduleWarningMany_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleWarningMany_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleName": "「{{name}}」",
+        "scheduleNameSeparator": "、",
         "confirm": "確認",
         "cancel": "キャンセル"
       },
