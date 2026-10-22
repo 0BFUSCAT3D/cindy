@@ -9733,7 +9733,8 @@
           "archived": "本群已封存，可繼續查看歷史記錄。",
           "noneHint": "本群只有夥伴的主人可以讓夥伴回應。",
           "companionPermissions": "夥伴權限",
-          "configureCapabilities": "工具與授權設定"
+          "configureCapabilities": "工具與授權設定",
+          "capabilityScope": "這是 {{name}} 自己的工具與授權，不是僅限本群的設定。"
         }
       },
       "lifecycle": {

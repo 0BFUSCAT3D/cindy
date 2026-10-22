@@ -9733,7 +9733,8 @@
           "archived": "本群已归档，可继续查看历史记录。",
           "noneHint": "本群只有伙伴的主人可以让伙伴回应。",
           "companionPermissions": "伙伴权限",
-          "configureCapabilities": "工具与授权设置"
+          "configureCapabilities": "工具与授权设置",
+          "capabilityScope": "这是 {{name}} 自己的工具与授权，不是仅限本群的设置。"
         }
       },
       "lifecycle": {
