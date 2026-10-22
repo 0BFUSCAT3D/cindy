@@ -750,7 +750,8 @@ export function BotSettings({
         {page === 'voice' ? (
           <CompanionVoiceSettings botId={bot.id} sessionId={canonicalBotSessionId(bot) ?? undefined}
             beforeLeaveRef={voiceLeaveRef}
-            onOpenProviders={() => {
+            // Providers are connected in the settings of the computer the teammate runs on.
+            onOpenProviders={isRemote ? undefined : () => {
               void canLeave().then((allowed) => {
                 if (allowed) navigate('/settings?tab=providers');
               });

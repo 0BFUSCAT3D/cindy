@@ -24,6 +24,8 @@ vi.mock('@/components/ui/confirm-dialog-provider', () => ({
 }));
 
 import { BotChannelsPage } from '../BotChannelsPage';
+import { BotSettingsTargetContext, type BotSettingsTarget } from '../botSettingsTarget';
+import { localBotSettingsTarget } from '../localBotSettingsTarget';
 
 function profile(id: string, name: string): BotProfile {
   return {
@@ -357,3 +359,69 @@ describe('BotChannelsPage', () => {
     );
   });
 });
+
+describe('BotChannelsPage for a teammate on another computer', () => {
+  /** The page talks to the other computer's API only; this window's own API must stay untouched. */
+  function renderRemote(api: Record<string, unknown>, channels: Partial<BotSettingsTarget['channels']> = {}) {
+    const own = installApi({ connections: [] });
+    const target = {
+      ...localBotSettingsTarget,
+      kind: 'remote',
+      deviceId: 'mac',
+      deviceName: 'Studio',
+      channels: { im: api, canEnterCredentials: false, wechat: null, x: null, ...channels },
+    } as unknown as BotSettingsTarget;
+    render(
+      <BotSettingsTargetContext.Provider value={target}>
+        <BotChannelsPage bot={mia} />
+      </BotSettingsTargetContext.Provider>,
+    );
+    return own;
+  }
+  const remoteApi = (extra: Record<string, unknown> = {}) => ({
+    list: vi.fn(async () => ({ connections: [connection()] })),
+    add: vi.fn(async () => { throw new Error('credentials never travel'); }),
+    remove: vi.fn(async () => ({ connections: [], archivedSessionIds: [] })),
+    listAdoptable: vi.fn(async () => ({ bots: [] })),
+    adopt: vi.fn(),
+    onChanged: vi.fn(() => () => undefined),
+    ...extra,
+  });
+
+  it('lists and removes connections through the other computer, never this window', async () => {
+    const api = remoteApi();
+    const own = renderRemote(api);
+    expect(await screen.findByText('bots.channels.platform.telegram')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /bots\.channels\.removeAria/ }));
+    await waitFor(() => expect(api.remove).toHaveBeenCalledWith({ id: 'a1b2c3d4e5f6' }));
+    expect(own.list).not.toHaveBeenCalled();
+    expect(own.remove).not.toHaveBeenCalled();
+  });
+
+  it('asks for credentials only on the other computer', async () => {
+    const api = remoteApi();
+    renderRemote(api);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.add.button' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByLabelText('bots.channels.add.telegram.tokenLabel')).toBeNull();
+    expect(within(dialog).getByText(/bots\.remoteSettings\.finishOnHost:.*Studio/)).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'bots.channels.add.confirm' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.add).not.toHaveBeenCalled();
+  });
+
+  it('still moves the personal bot that is already set up there, without any credential', async () => {
+    const api = remoteApi({
+      listAdoptable: vi.fn(async () => ({ bots: [{ channel: 'telegram', identity: '@mia_bot' }] })),
+      adopt: vi.fn(async () => ({ connections: [connection()], connection: connection() })),
+    });
+    renderRemote(api);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.add.button' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByRole('radio', { name: /bots\.channels\.add\.source\.existing/ });
+    expect(within(dialog).queryByRole('radio', { name: 'bots.channels.add.source.manual' })).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'bots.channels.add.confirm' }));
+    await waitFor(() => expect(api.adopt).toHaveBeenCalledWith({ botId: 'bot-1', channel: 'telegram' }));
+    expect(api.add).not.toHaveBeenCalled();
+  });
+});
+

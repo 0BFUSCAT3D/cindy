@@ -48,8 +48,25 @@ function setup(overrides: { allowed?: boolean; visible?: boolean; ownerCurrent?:
     personalSkills: vi.fn(async () => []),
     autonomy: { get: vi.fn(), set: vi.fn(), reset: vi.fn() },
     searchHistory: vi.fn(async () => ({ results: [] })),
+    channels: {
+      im: {
+        list: vi.fn(async () => ({ connections: [{ id: 'mine', botId: 'bot-1' }, { id: 'theirs', botId: 'bot-2' }] })),
+        remove: vi.fn(async () => ({ connections: [{ id: 'theirs', botId: 'bot-2' }], archivedSessionIds: [] })),
+        listGroups: vi.fn(async () => ({ groups: [] })), setGroupActivation: vi.fn(), listLanes: vi.fn(async () => ({ lanes: [] })),
+        resetLane: vi.fn(), listAdoptable: vi.fn(async () => ({ bots: [] })), adopt: vi.fn(),
+      },
+      wechat: vi.fn(async () => ({
+        getState: () => ({ phase: 'connected', bound: true }),
+        getChannelSettings: vi.fn(() => ({ version: 1, workingDir: '/Users/owner/wechat', workingDirAvailable: true, companionBotId: 'bot-2' })),
+        setCompanion: vi.fn(async () => ({ version: 1, workingDir: '/Users/owner/wechat', workingDirAvailable: true, companionBotId: 'bot-1' })),
+        unbind: vi.fn(), cancelAuthorization: vi.fn(),
+      })),
+      x: { summary: vi.fn(() => ({ available: true, enabled: true, connected: true, companionBotId: 'bot-2' })), setCompanion: vi.fn() },
+    },
+    voice: { models: vi.fn(() => []), voices: vi.fn(async () => ({ voices: [] })), preference: vi.fn(async () => ({ selection: null, customized: false })), setPreference: vi.fn(async () => ({ selection: null, customized: false })) },
+    routines: { list: vi.fn(async () => []), sources: vi.fn(async () => []), history: vi.fn(async () => []), save: vi.fn(async () => ({ id: 'r1' })), runNow: vi.fn(), remove: vi.fn() },
     ...overrides.deps,
-  } as unknown as BotSettingsOpsDeps & { updateProfile: ReturnType<typeof vi.fn>; lifecycle: ReturnType<typeof vi.fn>; memory: Record<string, ReturnType<typeof vi.fn>> };
+  } as unknown as BotSettingsOpsDeps & { updateProfile: ReturnType<typeof vi.fn>; lifecycle: ReturnType<typeof vi.fn>; memory: Record<string, ReturnType<typeof vi.fn>>; routines: Record<string, ReturnType<typeof vi.fn>>; voice: Record<string, ReturnType<typeof vi.fn>>; channels: any };
   const host = createBotRemoteSettingsHost({
     owner: () => 'owner-1',
     isOwnerCurrent: overrides.ownerCurrent ? overrides.ownerCurrent : () => true,
@@ -133,4 +150,48 @@ it('restricts lifecycle operations to the ones the settings page offers', async 
     { botId: 'bot-1', action: 'delete', confirmName: 'Sora', worktreeDisposition: 'retain', keepTaskHistory: true },
     expect.any(Function),
   );
+});
+
+it('validates a routine before it reaches the shared routine service and reports one generic failure', async () => {
+  const { deps, call } = setup();
+  const invalid = await call('routines.save', { input: { name: '', prompt: '' } });
+  expect(invalid).toMatchObject({ ok: false, code: 'INVALID_PARAMS' });
+  expect(deps.routines.save).not.toHaveBeenCalled();
+  const saved = await call('routines.save', { id: 'r1', input: { name: 'Digest', prompt: 'Summarise', enabled: true, triggers: [{ id: 't1', kind: 'interval', intervalMs: 3_600_000 }] } });
+  expect(saved).toMatchObject({ ok: true, value: { id: 'r1' } });
+  expect(deps.routines.save).toHaveBeenCalledWith('bot-1', expect.objectContaining({ name: 'Digest' }), 'r1');
+  // Event sources are host-wide: no teammate is required.
+  expect(await call('routines.sources', undefined, null)).toMatchObject({ ok: true });
+});
+
+it('keeps "not provided" and "reset to default" apart when a voice preference is written', async () => {
+  const { deps, call } = setup();
+  await call('voice.setPreference', { sentencePlayback: false });
+  expect(deps.voice.setPreference).toHaveBeenLastCalledWith('bot-1', undefined, false);
+  await call('voice.setPreference', { selection: null, sentencePlayback: null });
+  expect(deps.voice.setPreference).toHaveBeenLastCalledWith('bot-1', null, null);
+  // The catalog is host-wide; a failing voice service never leaks its message.
+  (deps.voice.models as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error('key sk-secret rejected'); });
+  expect(await call('voice.models', undefined, null)).toEqual({ ok: false, code: 'PRECONDITION_FAILED', message: 'Voice conversation is unavailable.' });
+});
+
+it('limits messaging-platform operations to this teammate and keeps the WeChat folder path home', async () => {
+  const { deps, call } = setup();
+  // Another teammate's connection can be neither removed nor inspected from this teammate's page.
+  expect(await call('channels.im.remove', { id: 'theirs' })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+  expect(await call('channels.im.listGroups', { id: 'theirs' })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+  expect(deps.channels.im.remove).not.toHaveBeenCalled();
+  // Results list only this teammate's connections.
+  expect(await call('channels.im.remove', { id: 'mine' })).toMatchObject({ ok: true, value: { connections: [] } });
+  expect(await call('channels.im.list')).toMatchObject({ ok: true, value: { connections: [{ id: 'mine' }] } });
+  // WeChat is assigned to someone else: this page can neither release nor unbind it, and never sees the folder path.
+  expect(await call('channels.wechat.setCompanion', { assign: false })).toMatchObject({ ok: false, code: 'PRECONDITION_FAILED' });
+  expect(await call('channels.wechat.unbind')).toMatchObject({ ok: false, code: 'PRECONDITION_FAILED' });
+  const wechat = await call('channels.wechat.get');
+  expect(wechat).toMatchObject({ ok: true, value: { channelSettings: { companionBotId: 'bot-2', workingDir: null } } });
+  // The official X account behaves the same way.
+  expect(await call('channels.x.setCompanion', { assign: false, expectedBotId: 'bot-2' })).toMatchObject({ ok: false, code: 'PRECONDITION_FAILED' });
+  expect(deps.channels.x.setCompanion).not.toHaveBeenCalled();
+  // There is no operation that takes credentials.
+  expect(await call('channels.im.add', { token: 'x' })).toMatchObject({ ok: false, code: 'INVALID_PARAMS' });
 });

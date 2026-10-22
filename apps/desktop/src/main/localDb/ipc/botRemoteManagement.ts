@@ -136,6 +136,19 @@ async function getInvitation(context: RemoteResourceHostContext, botId: string) 
     return { effects: [{ kind: 'refresh-collection', collectionId: 'teammates' }] };
   });
 }
+/** The routine service is shared with the local routines IPC; load it when a routines page asks. */
+const routineTools = async () => (await import('../../routines/service.js')).routineTools;
+
+/** The messaging stack is only needed by a remote Desktop's channels page. */
+const imRuntime = () => import('../../im/shared/botImConnectionRuntime.js');
+
+/** Loaded on use: the voice stack is large and only a voice page of a remote Desktop needs it. */
+async function settingsVoice() {
+  const api = (await import('../../voice-conversation/index.js')).getVoiceSettingsHostApi();
+  if (!api) throwIpcError('PRECONDITION_FAILED', 'Voice conversation is unavailable.');
+  return api!;
+}
+
 /**
  * The teammate settings pages of a remote Desktop (`management:settings`): the same pages, with every read and
  * write executed here by the services the local IPC handlers call.
@@ -171,6 +184,37 @@ const settingsHost = createBotRemoteSettingsHost({
     personalSkills: listBotSkillsForBot,
     autonomy: { get: getBotAutonomySettingsView, set: setBotAutonomySchedulerBotId, reset: resetBotAutonomySchedulerSettings },
     searchHistory: searchBotHistory,
+    routines: {
+      list: async (botId) => (await routineTools()).list(botId),
+      sources: async () => (await routineTools()).sources(),
+      history: async (botId, id) => (await routineTools()).history(botId, id),
+      save: async (botId, input, id) => (await routineTools()).save(botId, input, id),
+      runNow: async (botId, id) => (await routineTools()).runNow(botId, id),
+      remove: async (botId, id) => (await routineTools()).remove(botId, id),
+    },
+    channels: {
+      im: {
+        list: async () => (await imRuntime()).buildBotImConnectionListPayload(),
+        remove: async (id) => (await imRuntime()).removeBotImConnection(id),
+        listGroups: async (id) => (await imRuntime()).listBotImConnectionGroups(id),
+        setGroupActivation: async (id, chatId, mode) => (await imRuntime()).setBotImConnectionGroupMode(id, chatId, mode),
+        listLanes: async (id) => (await imRuntime()).listBotImConnectionLanesForSettings(id),
+        resetLane: async (id, sessionId) => (await imRuntime()).resetBotImConnectionLaneForSettings(id, sessionId),
+        listAdoptable: async () => (await import('../../im/shared/botImPersonalAdoption.js')).listAdoptablePersonalBots(),
+        adopt: async (input) => (await import('../../im/shared/botImPersonalAdoption.js')).adoptPersonalBot(input),
+      },
+      wechat: async () => (await import('../../im/index.js')).getWechatSettingsApi(),
+      x: {
+        summary: async () => (await import('../../hook-control/ipc.js')).readXCompanionSummary(),
+        setCompanion: async (botId, expected) => (await import('../../hook-control/ipc.js')).changeXCompanionBinding(botId, expected),
+      },
+    },
+    voice: {
+      models: async () => (await settingsVoice()).models(),
+      voices: async selection => (await settingsVoice()).voices(selection),
+      preference: async botId => (await settingsVoice()).preference(botId),
+      setPreference: async (botId, selection, playback) => (await settingsVoice()).setPreference(botId, selection, playback),
+    },
   }),
 });
 export const botRemoteManagement = { ...settings, getEditor, getInvitation, settingsHost };

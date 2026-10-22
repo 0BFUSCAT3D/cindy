@@ -9041,7 +9041,8 @@
       "conflict": "設定已在另一台裝置上變更，請重新讀取後再儲存。",
       "unsupported": "請更新另一台裝置上的 Cindy 以編輯這些設定。",
       "discardDescription": "重新讀取將放棄尚未儲存的設定。",
-      "leaveDescription": "離開後會放棄尚未儲存的設定。"
+      "leaveDescription": "離開後會放棄尚未儲存的設定。",
+      "finishOnHost": "請在「{{device}}」上完成。"
     },
     "devicePicker": {
       "local": "本機",

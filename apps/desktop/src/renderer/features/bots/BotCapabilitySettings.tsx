@@ -75,7 +75,7 @@ export function BotCapabilitySettings({
     setError(false);
     const load = async () => {
       try {
-        const next = await target.capabilities.load(bot, JSON.parse(modelChainKey));
+        const next = await target.capabilities.load(bot, JSON.parse(modelChainKey), isCurrent);
         if (!isCurrent()) return;
         setCatalog({ key: catalogKey, entries: next });
         setError(kinds.some((kind) => !next[kind]));

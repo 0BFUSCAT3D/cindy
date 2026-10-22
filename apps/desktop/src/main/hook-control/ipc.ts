@@ -773,6 +773,34 @@ function registerTrustedHookControlHandler(channel: string, handler: HookControl
   });
 }
 
+/** Compare-and-set of the official X account's teammate (IPC and the teammate settings host share it). */
+export async function changeXCompanionBinding(botId: string | null, expectedBotId: string | null) {
+  requireHookControl();
+  const assertAccount = captureChannelAccount();
+  const { store: s, manager: m } = ensureInstances();
+  if (botId !== null) await requireXCompanion(botId);
+  assertAccount();
+  if ((s.get().xCompanionBotId ?? null) !== expectedBotId) {
+    throwIpcError('PRECONDITION_FAILED', 'X companion assignment changed');
+  }
+  translateValidation(() => s.setXCompanionBotId(botId));
+  const hook = m.snapshot();
+  broadcastStatus(hook);
+  return hook;
+}
+
+/** What a teammate's settings page may show of the official X account: no URLs, accounts or tokens. */
+export function readXCompanionSummary(): { available: boolean; enabled: boolean; connected: boolean; companionBotId: string | null } {
+  if (!hookControlAvailable()) return { available: false, enabled: false, connected: false, companionBotId: null };
+  const x = ensureInstances().manager.snapshot().x;
+  return {
+    available: x.available,
+    enabled: x.enabled,
+    connected: x.binding?.state === 'confirmed',
+    companionBotId: x.companionBotId ?? null,
+  };
+}
+
 /** 注册 IPC 并按配置 + 登录态拉起连接。bootstrap 里调用一次。 */
 export function registerHookControlIpc(): void {
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.GET, () => ({
@@ -935,21 +963,13 @@ export function registerHookControlIpc(): void {
   );
 
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.SET_X_COMPANION, async (_e, payload) => {
-    requireHookControl();
-    const assertAccount = captureChannelAccount();
-    const { store: s, manager: m } = ensureInstances();
     const p = requireObject(payload);
-    const botId = requireNullableString(p.botId, 'botId');
-    const expectedBotId = requireNullableString(p.expectedBotId, 'expectedBotId');
-    if (botId !== null) await requireXCompanion(botId);
-    assertAccount();
-    if ((s.get().xCompanionBotId ?? null) !== expectedBotId) {
-      throwIpcError('PRECONDITION_FAILED', 'X companion assignment changed');
-    }
-    translateValidation(() => s.setXCompanionBotId(botId));
-    const hook = m.snapshot();
-    broadcastStatus(hook);
-    return { hook };
+    return {
+      hook: await changeXCompanionBinding(
+        requireNullableString(p.botId, 'botId'),
+        requireNullableString(p.expectedBotId, 'expectedBotId'),
+      ),
+    };
   });
 
   // 发起 Slack 账号绑定(SIWS OIDC): 经已连接的 WS 发 bind.start(无参); server

@@ -113,6 +113,32 @@ async function toRemoteAvatar(base64: string): Promise<string> {
 
 const BASELINE_TOOLSETS = ['memory', 'xdt_helper', 'scheduler', 'lsp'];
 
+/** Connection and account states have no push to a controller; read them while a page is open and visible. */
+const CHANNEL_POLL_MS = 5_000;
+function pollWhileVisible<T>(read: () => Promise<T>, listener: (value: T) => void): () => void {
+  let stopped = false;
+  let last: string | undefined;
+  const tick = async () => {
+    if (stopped || document.hidden) return;
+    try {
+      const value = await read();
+      const key = JSON.stringify(value);
+      if (stopped || key === last) return;
+      last = key;
+      listener(value);
+    } catch {
+      /* A failed read keeps what the page shows; the next tick tries again. */
+    }
+  };
+  void tick();
+  const timer = setInterval(() => void tick(), CHANNEL_POLL_MS);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+const hostOnly = () => Promise.reject(createIpcError('PRECONDITION_FAILED', 'This is done on the teammate’s computer'));
+
 /** Pages the host can serve, from the operations it implements. */
 export function remoteBotSettingsPages(ops: ReadonlySet<BotSettingsOp>): Set<string> {
   const has = (...needed: BotSettingsOp[]) => needed.every((op) => ops.has(op));
@@ -125,6 +151,9 @@ export function remoteBotSettingsPages(ops: ReadonlySet<BotSettingsOp>): Set<str
   if (has('models.default', 'profile.update')) pages.add('model');
   if (has('capabilities.catalog')) pages.add('capabilities');
   if (has('history.search')) pages.add('history');
+  if (has('voice.models', 'voice.voices', 'voice.preference', 'voice.setPreference')) pages.add('voice');
+  if (has('channels.im.list', 'channels.im.remove')) pages.add('channels');
+  if (has('routines.list', 'routines.sources', 'routines.history', 'routines.save', 'routines.runNow', 'routines.remove')) pages.add('routines');
   return pages;
 }
 
@@ -162,7 +191,50 @@ export function createRemoteBotSettingsTarget(input: RemoteBotSettingsInput) {
     autonomyListeners.forEach((listener) => listener());
   };
 
+  const call2 = <T>(op: BotSettingsOp, args?: Record<string, unknown>) => invokeBotSettings<T>(deviceId, op, botId, args);
+  const im: BotSettingsTarget['channels']['im'] = {
+    list: () => call2('channels.im.list'),
+    // Tokens and secrets are typed where they are stored; a remote page never takes or sends them.
+    add: hostOnly,
+    remove: (payload) => call2('channels.im.remove', { id: payload.id }),
+    listGroups: (payload) => call2('channels.im.listGroups', { id: payload.id }),
+    setGroupActivation: (payload) => call2('channels.im.setGroupActivation', { ...payload }),
+    listLanes: (payload) => call2('channels.im.listLanes', { id: payload.id }),
+    resetLane: (payload) => call2('channels.im.resetLane', { ...payload }),
+    listAdoptable: () => invokeBotSettings(deviceId, 'channels.im.listAdoptable', null),
+    adopt: (payload) => call2('channels.im.adopt', { channel: payload.channel }),
+    onChanged: (listener) => pollWhileVisible(() => call2<{ connections: unknown[] }>('channels.im.list'), listener as never),
+  };
+  let wechatRead: { at: number; value: Promise<{ state: WechatBotState; channelSettings: WechatChannelSettingsState }> } | null = null;
+  const readWechat = () => {
+    if (!wechatRead || Date.now() - wechatRead.at > 1_000)
+      wechatRead = { at: Date.now(), value: call2('channels.wechat.get') };
+    return wechatRead.value;
+  };
+  const wechat: BotSettingsTarget['channels']['wechat'] = {
+    getState: async () => (await readWechat()).state,
+    getChannelSettings: async () => (await readWechat()).channelSettings,
+    // Authorizing opens a browser on the computer that runs WeChat, and the folder chooser is its own.
+    authorize: hostOnly,
+    chooseWorkingDirectory: hostOnly,
+    resetWorkingDirectory: hostOnly,
+    async cancelAuthorization() {
+      await call2('channels.wechat.cancelAuthorization');
+      return { ok: true as const };
+    },
+    async unbind() {
+      await call2('channels.wechat.unbind');
+      return { ok: true as const };
+    },
+    async setCompanion(id) {
+      wechatRead = null;
+      return (await call2<{ channelSettings: WechatChannelSettingsState }>('channels.wechat.setCompanion', { assign: id !== null })).channelSettings;
+    },
+    onStateChange: (listener) => pollWhileVisible(async () => (await readWechat()).state, listener),
+    onChannelSettingsChange: (listener) => pollWhileVisible(async () => (await readWechat()).channelSettings, listener),
+  };
   const catalogWatchers = new Set<() => void>();
+  const routineWatchers = new Set<() => void>();
 
   const target: BotSettingsTarget = {
     kind: 'remote',
@@ -251,6 +323,41 @@ export function createRemoteBotSettingsTarget(input: RemoteBotSettingsInput) {
         return () => void catalogWatchers.delete(refresh);
       },
     },
+    channels: {
+      im: input.ops.has('channels.im.list') ? im : null,
+      canEnterCredentials: false,
+      wechat: input.ops.has('channels.wechat.get') ? wechat : null,
+      x: input.ops.has('channels.x.get')
+        ? {
+            get: () => call2('channels.x.get'),
+            setCompanion: (assign, expectedBotId) => call2('channels.x.setCompanion', { assign, expectedBotId }),
+          }
+        : null,
+    },
+    voice: {
+      models: () => invokeBotSettings(deviceId, 'voice.models', null),
+      voices: (selection) => invokeBotSettings(deviceId, 'voice.voices', null, { selection }),
+      preference: (id) => invokeBotSettings(deviceId, 'voice.preference', id),
+      setPreference: (id, selection, sentencePlayback) =>
+        invokeBotSettings(deviceId, 'voice.setPreference', id, {
+          ...(selection !== undefined ? { selection } : {}),
+          ...(sentencePlayback !== undefined ? { sentencePlayback } : {}),
+        }),
+    },
+    routines: {
+      list: (id) => invokeBotSettings(deviceId, 'routines.list', id),
+      save: (id, routine, routineId) => invokeBotSettings(deviceId, 'routines.save', id, { input: routine, ...(routineId ? { id: routineId } : {}) }),
+      async remove(id, routineId) {
+        await invokeBotSettings(deviceId, 'routines.remove', id, { id: routineId });
+      },
+      runNow: (id, routineId) => invokeBotSettings(deviceId, 'routines.runNow', id, { id: routineId }),
+      history: (id, routineId) => invokeBotSettings(deviceId, 'routines.history', id, { id: routineId }),
+      sources: () => invokeBotSettings(deviceId, 'routines.sources', null),
+      onChanged(listener) {
+        routineWatchers.add(listener);
+        return () => void routineWatchers.delete(listener);
+      },
+    },
     autonomy: {
       useSettings() {
         useEffect(() => {
@@ -274,7 +381,12 @@ export function createRemoteBotSettingsTarget(input: RemoteBotSettingsInput) {
     target,
     profiles,
     /** The teammate's computer reported a change: re-read what the open pages show. */
-    changed() {
+    changed(collectionId = 'teammates') {
+      // Routines have their own collection on the teammate's computer.
+      if (collectionId === 'routines') {
+        routineWatchers.forEach((listener) => listener());
+        return;
+      }
       void profiles.refresh().catch(() => undefined);
       if (autonomyListeners.size) void loadAutonomy().catch(() => undefined);
       if (chainListeners.size) void loadDefaultChain().catch(() => undefined);

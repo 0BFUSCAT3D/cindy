@@ -30,7 +30,10 @@ const refused = (code: string, message: string) => ({ result: { ok: false, code,
 /** The request a page produced, as the host receives it. */
 const sent = (call = 0) => host.invoke.mock.calls[call][2][0] as { input: { op: BotSettingsOp; args?: Record<string, unknown> }; resourceRef?: { id: string } };
 const ALL_OPS = ['caps', 'profile.get', 'profile.update', 'profile.chooseAvatar', 'profile.retryInvitation', 'lifecycle.run', 'models.default',
-  'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'autonomy.get', 'autonomy.set', 'autonomy.reset', 'history.search'] as BotSettingsOp[];
+  'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'autonomy.get', 'autonomy.set', 'autonomy.reset', 'history.search',
+  'routines.list', 'routines.sources', 'routines.history', 'routines.save', 'routines.runNow', 'routines.remove',
+  'voice.models', 'voice.voices', 'voice.preference', 'voice.setPreference',
+  'channels.im.list', 'channels.im.remove', 'channels.wechat.get', 'channels.x.get'] as BotSettingsOp[];
 
 function create(ops: BotSettingsOp[] = ALL_OPS) {
   return createRemoteBotSettingsTarget({ deviceId: 'mac', deviceName: 'Studio', botId: 'bot-1', ops: new Set(ops), online: () => true });
@@ -108,7 +111,7 @@ it('builds the capability lists from the host catalog without the fixed baseline
       toolset: [{ id: 'memory', name: 'Memory', description: '', available: true, joined: true }, { id: 'browser', name: 'Browser', description: '', available: true, joined: false }],
     },
   }));
-  const catalog = await target.capabilities.load({ id: 'bot-1' } as never, []);
+  const catalog = await target.capabilities.load({ id: 'bot-1' } as never, [], () => true);
   expect(catalog.skill).toEqual([
     { id: 'personal:brief', name: 'Brief', available: false, personal: true },
     { id: 'review', name: 'review', description: 'Review', available: true },
@@ -124,8 +127,38 @@ it('does not re-read a deleted teammate after the lifecycle action', async () =>
   expect(host.invoke).toHaveBeenCalledTimes(1);
 });
 
+it('runs routines on the teammate computer and tells the page when they change there', async () => {
+  const { target, changed } = create();
+  host.invoke.mockResolvedValue(ok([]));
+  await target.routines.save('bot-1', { name: 'Digest' } as never, 'r1');
+  expect(sent()).toMatchObject({ resourceRef: { id: 'bot-1' }, input: { op: 'routines.save', args: { id: 'r1', input: { name: 'Digest' } } } });
+  await target.routines.sources();
+  expect(sent(1)).toMatchObject({ input: { op: 'routines.sources' } });
+  expect(sent(1).resourceRef).toBeUndefined();
+  const listener = vi.fn();
+  const off = target.routines.onChanged(listener);
+  changed('routines');
+  expect(listener).toHaveBeenCalledTimes(1);
+  off();
+  changed('routines');
+  expect(listener).toHaveBeenCalledTimes(1);
+});
+
+it('never takes credentials and leaves browser sign-in and folder choosing to the teammate computer', async () => {
+  const { target } = create();
+  const im = target.channels.im!;
+  expect(target.channels.canEnterCredentials).toBe(false);
+  await expect(im.add({ botId: 'bot-1', channel: 'telegram', token: 'secret', ownerUserId: '1' })).rejects.toSatisfy((error) => extractIpcError(error)?.code === 'PRECONDITION_FAILED');
+  await expect(target.channels.wechat!.authorize()).rejects.toBeTruthy();
+  await expect(target.channels.wechat!.chooseWorkingDirectory()).rejects.toBeTruthy();
+  expect(host.invoke).not.toHaveBeenCalled();
+  host.invoke.mockResolvedValueOnce(ok({ channelSettings: { version: 1, workingDir: null, workingDirAvailable: true, companionBotId: 'bot-1' } }));
+  await expect(target.channels.wechat!.setCompanion('bot-1')).resolves.toMatchObject({ companionBotId: 'bot-1' });
+  expect(sent()).toMatchObject({ resourceRef: { id: 'bot-1' }, input: { op: 'channels.wechat.setCompanion', args: { assign: true } } });
+});
+
 it('offers only the pages whose operations the host implements', () => {
-  expect([...remoteBotSettingsPages(new Set(ALL_OPS))].sort()).toEqual(['capabilities', 'history', 'memory', 'model', 'personality', 'profile']);
+  expect([...remoteBotSettingsPages(new Set(ALL_OPS))].sort()).toEqual(['capabilities', 'channels', 'history', 'memory', 'model', 'personality', 'profile', 'routines', 'voice']);
   expect([...remoteBotSettingsPages(new Set<BotSettingsOp>(['caps', 'profile.get', 'profile.update']))].sort()).toEqual(['personality', 'profile']);
   // The Home folder is a path on the teammate's computer: no remote host ever offers it.
   expect(remoteBotSettingsPages(new Set(ALL_OPS)).has('advanced')).toBe(false);

@@ -18,6 +18,10 @@ export type BotCapabilityEntry = {
 };
 
 type Bots = NonNullable<Window['electronAPI']['localDb']>['bots'];
+export type BotRoutinesApi = Window['electronAPI']['routines'];
+type VoiceApi = Window['electronAPI']['voiceConversation'];
+type ImConnectionApi = Window['electronAPI']['botImConnection'];
+type WechatApi = Window['electronAPI']['wechatBot'];
 
 /**
  * The computer a teammate's settings pages read from and write to. The pages are the same components for
@@ -49,10 +53,32 @@ export interface BotSettingsTarget {
   memory: Bots['memory'];
   history: { search(body: { botId: string; query: string; limit: number }): Promise<ConversationSearchResponse> };
   capabilities: {
-    load(bot: BotProfile, modelChain: BotModelRoute[]): Promise<Partial<Record<BotCapabilityKind, BotCapabilityEntry[]>>>;
+    /** `isCurrent` turns false once a newer load superseded this one, so it can stop before its next request. */
+    load(bot: BotProfile, modelChain: BotModelRoute[], isCurrent: () => boolean): Promise<Partial<Record<BotCapabilityKind, BotCapabilityEntry[]>>>;
     /** Calls `refresh` when the catalog may have changed (runtime, MCP or profile changes). */
     watch(bot: BotProfile, refresh: () => void): () => void;
   };
+  /** Messaging platforms: the connections live on the computer that stores their credentials. */
+  channels: {
+    im: ImConnectionApi | null;
+    /** False for another computer: credentials are never typed into a remote page. */
+    canEnterCredentials: boolean;
+    /** Personal WeChat of the teammate's computer; null = this window's own API (local only). */
+    wechat: WechatApi | null;
+    /** The official X account of the teammate's computer (remote only). */
+    x: {
+      get(): Promise<{ available: boolean; enabled: boolean; connected: boolean; companionBotId: string | null }>;
+      setCompanion(assign: boolean, expectedBotId: string | null): Promise<{ companionBotId: string | null }>;
+    } | null;
+  };
+  voice: Pick<VoiceApi, 'models' | 'voices' | 'preference' | 'setPreference'> & {
+    /** Refreshes the gateway model list before reading the catalog (a computer refreshes its own on use). */
+    refreshCatalog?(): Promise<void>;
+    /** Sample playback uses this window's speakers and its own voice service; absent for another computer. */
+    previewApi?: VoiceApi;
+  };
+  /** Routines of the teammate's computer (`onChanged` fires when they change there). */
+  routines: BotRoutinesApi;
   autonomy: {
     useSettings(): BotAutonomySettingsView | null;
     setSchedulerBotId(botId: string | null): Promise<void>;

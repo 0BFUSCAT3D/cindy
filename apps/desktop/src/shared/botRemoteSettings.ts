@@ -34,6 +34,30 @@ export const BOT_SETTINGS_OPS = [
   'autonomy.set',
   'autonomy.reset',
   'history.search',
+  'routines.list',
+  'routines.sources',
+  'routines.history',
+  'routines.save',
+  'routines.runNow',
+  'routines.remove',
+  'voice.models',
+  'voice.voices',
+  'voice.preference',
+  'voice.setPreference',
+  'channels.im.list',
+  'channels.im.remove',
+  'channels.im.listGroups',
+  'channels.im.setGroupActivation',
+  'channels.im.listLanes',
+  'channels.im.resetLane',
+  'channels.im.listAdoptable',
+  'channels.im.adopt',
+  'channels.wechat.get',
+  'channels.wechat.setCompanion',
+  'channels.wechat.unbind',
+  'channels.wechat.cancelAuthorization',
+  'channels.x.get',
+  'channels.x.setCompanion',
 ] as const;
 export type BotSettingsOp = (typeof BOT_SETTINGS_OPS)[number];
 
@@ -44,6 +68,10 @@ export const BOT_SETTINGS_HOST_OPS: readonly BotSettingsOp[] = [
   'autonomy.get',
   'autonomy.set',
   'autonomy.reset',
+  'routines.sources',
+  'voice.models',
+  'voice.voices',
+  'channels.im.listAdoptable',
 ];
 
 export interface BotSettingsCaps {

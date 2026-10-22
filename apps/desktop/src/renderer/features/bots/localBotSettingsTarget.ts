@@ -21,6 +21,7 @@ import {
   useBotAutonomySettings,
   useBotProfiles,
 } from './botStore';
+import { botImConnectionApi } from './botImConnectionClient';
 import type { BotCapabilityEntry, BotCapabilityKind, BotSettingsTarget } from './botSettingsTarget';
 
 const api = () => window.electronAPI.localDb.bots;
@@ -36,9 +37,11 @@ const CATALOG_PATCH_KEYS = [
 async function loadCatalog(
   bot: { id: string; canonicalSessionId?: string },
   modelChain: unknown,
+  isCurrent: () => boolean,
 ): Promise<Partial<Record<BotCapabilityKind, BotCapabilityEntry[]>>> {
   if (!bot.canonicalSessionId) throw new Error('Missing canonical task');
   const session = await sessionService.get(bot.canonicalSessionId);
+  if (!isCurrent()) return {};
   const maker = window.electronAPI.maker;
   const mcpResult = await maker.listCustomMcpServers({
     agentKind:
@@ -48,6 +51,7 @@ async function loadCatalog(
     botSessionId: bot.canonicalSessionId,
     modelChain: modelChain as never,
   });
+  if (!isCurrent()) return {};
   const agentKind = mcpResult.agentKind;
   if (!agentKind) throw new Error('Missing next-turn route');
   const results = await Promise.allSettled([
@@ -128,7 +132,7 @@ export const localBotSettingsTarget: BotSettingsTarget = {
   },
   history: { search: (body) => api().searchHistory(body) as Promise<ConversationSearchResponse> },
   capabilities: {
-    load: (bot, modelChain) => loadCatalog(bot, modelChain),
+    load: (bot, modelChain, isCurrent) => loadCatalog(bot, modelChain, isCurrent),
     watch(bot, refresh) {
       const changed = (sessionId: string, patch: Partial<Session>) => {
         if (sessionId === bot.canonicalSessionId && CATALOG_PATCH_KEYS.some((key) => key in patch)) refresh();
@@ -144,6 +148,35 @@ export const localBotSettingsTarget: BotSettingsTarget = {
         offMcp();
       };
     },
+  },
+  channels: {
+    get im() {
+      return botImConnectionApi();
+    },
+    canEnterCredentials: true,
+    wechat: null,
+    x: null,
+  },
+  voice: {
+    models: () => window.electronAPI.voiceConversation.models(),
+    voices: (...args) => window.electronAPI.voiceConversation.voices(...args),
+    preference: (...args) => window.electronAPI.voiceConversation.preference(...args),
+    setPreference: (...args) => window.electronAPI.voiceConversation.setPreference(...args),
+    refreshCatalog: async () => {
+      await window.electronAPI.maker.refreshBuiltinProviderModels('xd');
+    },
+    get previewApi() {
+      return window.electronAPI.voiceConversation;
+    },
+  },
+  routines: {
+    list: (...args) => window.electronAPI.routines.list(...args),
+    save: (...args) => window.electronAPI.routines.save(...args),
+    remove: (...args) => window.electronAPI.routines.remove(...args),
+    runNow: (...args) => window.electronAPI.routines.runNow(...args),
+    history: (...args) => window.electronAPI.routines.history(...args),
+    sources: () => window.electronAPI.routines.sources(),
+    onChanged: (listener) => window.electronAPI.routines.onChanged(listener),
   },
   autonomy: {
     useSettings: () => useBotAutonomySettings(),
