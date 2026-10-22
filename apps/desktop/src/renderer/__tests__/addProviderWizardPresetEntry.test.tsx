@@ -37,6 +37,7 @@ vi.mock('@/lib/toast', () => ({
 vi.mock('@/lib/customProviders', () => ({
   createCustomProvider: vi.fn(),
   updateCustomProvider: vi.fn(),
+  readCustomProviderKey: vi.fn(async () => "fake-stored-key"),
   deleteCustomProvider: vi.fn(async () => undefined),
   providerViewToCustomProviderConfig: (p: ProviderView) => ({ id: p.id, name: p.name, auth: p.auth, runtimes: Object.fromEntries(p.agents.map(a => [a, { baseUrl: p.routing[a]!.upstream, wireProtocol: p.routing[a]!.wireProtocol, models: p.models[a] }])) }),
 }));
@@ -55,7 +56,8 @@ vi.mock('@/components/icons/ProviderLogoMark', () => ({
 }));
 
 import { AddProviderWizard, OFFICIAL_API_PRESETS } from '@/components/settings/AddProviderWizard';
-import { createCustomProvider, updateCustomProvider, deleteCustomProvider } from '@/lib/customProviders';
+import { AddSpeechModelsDialog } from '@/components/settings/AddSpeechModelsDialog';
+import { createCustomProvider, updateCustomProvider, deleteCustomProvider, readCustomProviderKey } from '@/lib/customProviders';
 
 const anthropicProvider = {
   id: 'anthropic',
@@ -285,7 +287,7 @@ it.each(['openrouter', 'minimax-cn', 'minimax-global', 'moonshot-kimi-code', 'gi
     const row = hint.closest('button')!;
     expect(row).not.toBeNull();
     expect(within(row).queryByText('settings.providers.wizard.metaApiKey')).toBeNull();
-    expect(screen.getByText('settings.providers.wizard.metaApiKey')).toBeTruthy();
+    expect(within(screen.getByText('DeepSeek').closest('button')!).getByText('settings.providers.wizard.metaApiKey')).toBeTruthy();
     fireEvent.click(row);
     expect(await screen.findByRole('button', { name: id === 'openrouter' ? 'settings.providers.button.authorize' : 'settings.providers.wizard.authorizeWithDeviceCode' })).toBeTruthy();
     expect(screen.getByText('settings.providers.wizard.useApiKey')).toBeTruthy();
@@ -1492,4 +1494,106 @@ it('sets up Sub2API from one site address and retains discovered capabilities in
     expect(rt.models[0].discoveredMetadata).toMatchObject({ efforts: ['low', 'high'],
       contextWindow: 272000, contextWindowMax: 1050000, supportsFastMode: true, supportsImageInput: true });
   }
+});
+
+describe('speech models in the existing provider wizard', () => {
+  it('reuses server API presets instead of duplicating the same speech service entry', async () => {
+    window.electronAPI.maker.listProviderPresets = vi.fn(async () => ({ presets: [{
+      id: 'aliyun-model-studio-global', name: 'Server Model Studio', runtimes: {
+        codex: { baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', models: [] },
+      },
+    }] }));
+    render(<AddProviderWizard providers={[]} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    const serverPreset = await screen.findByRole('button', { name: /Server Model Studio/ });
+    expect(screen.queryByText('阿里云百炼 API')).toBeNull();
+    expect(screen.getByText('阿里云百炼 API（中国大陆）')).toBeTruthy();
+    fireEvent.click(serverPreset);
+    fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'fake-test-key' } });
+    fireEvent.click(screen.getByText('settings.providers.wizard.next'));
+    expect((await screen.findByRole('checkbox', { name: /cosyvoice-v3-flash/ })).getAttribute('aria-checked')).toBe('true');
+  });
+  async function enter(presetId: string, speechOnly = false) {
+    render(<AddProviderWizard providers={[]} entry={{ kind: 'preset', presetId, speechOnly }} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'fake-test-key' } });
+    fireEvent.click(screen.getByText('settings.providers.wizard.next'));
+    await waitFor(() => expect(screen.queryByText('settings.providers.wizard.fetching')).toBeNull());
+  }
+  it('defaults to one recommended speech model, allows speech-only and does not save unchecked references', async () => {
+    await enter('openai-api', true);
+    const recommended = await screen.findByRole('checkbox', { name: /gpt-4o-mini-tts/i });
+    expect(recommended.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('checkbox', { name: /tts-1(?!-hd)/i }).getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalled());
+    const config = vi.mocked(createCustomProvider).mock.calls[0][0];
+    const enabled = Object.values(config.runtimes).flatMap(rt => rt?.models.filter(model => model.defaultEnabled !== false) ?? []);
+    expect(enabled.map(model => model.id)).toEqual(['gpt-4o-mini-tts']);
+    expect(config.runtimes.codex?.models.some(model => model.id === 'tts-1')).toBe(false);
+    expect(updateCustomProvider).not.toHaveBeenCalled();
+  });
+  it('supports ElevenLabs discovery and explicit false revokes a recommended offline TTS model', async () => {
+    vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models: parseModelsListResponse([
+      { model_id: 'eleven_flash_v2_5', can_do_text_to_speech: false },
+      { model_id: 'new-voice-model', name: 'New speech model', can_do_text_to_speech: true },
+    ])! });
+    await enter('elevenlabs-api');
+    expect(screen.queryByRole('checkbox', { name: /eleven_flash_v2_5/ })).toBeNull();
+    fireEvent.click(screen.getByText('settings.providers.speechSetup.more'));
+    const discovered = screen.getByRole('checkbox', { name: /New speech model/ });
+    fireEvent.click(discovered);
+    fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalled());
+    const models = vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex!.models;
+    expect(models.find(model => model.id === 'new-voice-model')?.discoveredMetadata?.mode).toBe('audio_speech');
+    expect(models.find(model => model.id === 'eleven_flash_v2_5')?.defaultEnabled).toBe(false);
+  });
+  it('retains a user deselection and manual speech ID in the saved connection', async () => {
+    await enter('elevenlabs-api');
+    fireEvent.click(screen.getByRole('checkbox', { name: /eleven_flash_v2_5/i }));
+    fireEvent.click(screen.getByText('settings.providers.speechSetup.manual'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'settings.providers.speechSetup.modelId' }), { target: { value: 'my-private-speech-model' } });
+    fireEvent.click(screen.getByText('settings.providers.wizard.addManualModel'));
+    fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalled());
+    expect(vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex?.models).toEqual([
+      expect.objectContaining({ id: 'my-private-speech-model', mode: 'audio_speech' }),
+    ]);
+  });
+});
+
+describe('existing connection speech additions', () => {
+  const provider = { ...buildUserProvider({ id: 'my-minimax', name: 'My connection', runtimes: {
+    codex: { baseUrl: 'https://api.minimax.io/v1', wireProtocol: 'openai-chat', models: [
+      { id: 'MiniMax-M3', name: 'My chat', defaultEnabled: false },
+      { id: 'speech-2.8-hd', name: 'My saved voice', mode: 'audio_speech', defaultEnabled: false },
+    ] },
+  } }), connected: true } as ProviderView;
+  it('uses the saved key and submits only selected additions, leaving existing model switches alone', async () => {
+    vi.mocked(updateCustomProvider).mockResolvedValue({ ok: true });
+    const saved = vi.fn();
+    render(<AddSpeechModelsDialog provider={provider} onClose={vi.fn()} onSaved={saved} />);
+    const recommended = await screen.findByRole('checkbox', { name: /speech-2.8-turbo/ });
+    expect(recommended.getAttribute('aria-checked')).toBe('true');
+    expect((screen.getByRole('checkbox', { name: /speech-2.8-hd/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(readCustomProviderKey).toHaveBeenCalledWith('my-minimax', 'codex');
+    expect(window.electronAPI.maker.fetchProviderModels).toHaveBeenCalledWith(expect.objectContaining({ savedProviderId: 'my-minimax', apiKey: 'fake-stored-key' }));
+    fireEvent.click(screen.getByText('settings.providers.wizard.addManualModel'));
+    await waitFor(() => expect(saved).toHaveBeenCalled());
+    expect(updateCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'my-minimax', runtimes: { codex: expect.objectContaining({ models: [expect.objectContaining({ id: 'speech-2.8-turbo', defaultEnabled: true })] }) },
+    }), {}, { appendSpeechModelsOnly: true });
+    expect(createCustomProvider).not.toHaveBeenCalled();
+  });
+  it('does not write on cancel and ignores discovery after the dialog unmounts', async () => {
+    let resolve!: (value: { ok: true; models: [] }) => void;
+    vi.mocked(window.electronAPI.maker.fetchProviderModels).mockReturnValue(new Promise(done => { resolve = done; }));
+    const closed = vi.fn();
+    const result = render(<AddSpeechModelsDialog provider={provider} onClose={closed} onSaved={vi.fn()} />);
+    await waitFor(() => expect(window.electronAPI.maker.fetchProviderModels).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('settings.providers.wizard.cancel'));
+    result.unmount();
+    resolve({ ok: true, models: [] });
+    expect(updateCustomProvider).not.toHaveBeenCalled();
+    expect(createCustomProvider).not.toHaveBeenCalled();
+  });
 });

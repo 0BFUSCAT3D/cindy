@@ -443,6 +443,7 @@ export function managementKindOfRow(row: UnionModelRow, userProvider: boolean): 
 export function UnifiedModelList({
   provider,
   onRefresh,
+  onAddSpeechModels,
   refreshing,
   refreshDisabled,
   refreshIdleLabel,
@@ -455,6 +456,7 @@ export function UnifiedModelList({
   provider: ProviderView;
   /** 「刷新模型」；内置供应商走各自真源，自定义供应商走 additions-only 发现。 */
   onRefresh?: () => void;
+  onAddSpeechModels?: () => void;
   refreshing?: boolean;
   /** 其它供应商正在刷新时禁用，避免并发刷新造成反馈归属不清。 */
   refreshDisabled?: boolean;
@@ -1093,6 +1095,9 @@ export function UnifiedModelList({
                 )}
               </p>
             </div>
+            {onAddSpeechModels && <Button variant="secondary" onClick={onAddSpeechModels}>
+              {t('settings.providers.speechSetup.add')}
+            </Button>}
             {onRefresh && (
               <button
                 type="button"
