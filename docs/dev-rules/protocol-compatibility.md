@@ -599,6 +599,12 @@ SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integratio
 `null` 同样表示回到本机。`cindy_scheduler` 跨电脑修改定时任务时拒绝设置 `agentDeviceId`，因为位置 id
 只对定时任务所在电脑有意义。
 
+项目自动化的 `.cindy/automations/schedules.json`（version 1）与既有 upsert 参数也保留可选
+`agentDeviceId`：提升用户自动化、表单编辑和文件同步均与模型／供应商一起保存，字段删除时
+清除已保存的位置。新 host 校验设备 ID 格式且要求显式模型；实际运行仍按当前账号的既有
+远程／分享授权校验，不因配置文件带了设备 ID 而获得授权。旧配置省略时继续使用本机；旧客户端
+不支持该字段，提升或编辑时可能丢失运行位置，远端项目自动化需使用支持此字段的客户端维护。
+
 ## Agent 跨电脑管理定时任务与发消息
 
 产品规则见 [`../product-rules/agent-user-parity.md`](../product-rules/agent-user-parity.md)。
