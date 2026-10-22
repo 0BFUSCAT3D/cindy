@@ -10167,12 +10167,12 @@
         "preparing": "미리 듣기 음성 생성 중…",
         "playing": "미리 듣는 중…",
         "complete": "미리 듣기를 완료했습니다.",
-        "error": "미리 듣기에 실패했습니다. 인터페이스, 모델 접근 권한, 음성 ID를 확인한 후 다시 시도하세요."
+        "error": "미리 듣기에 실패했습니다"
       },
       "readAloud": "읽어주기",
       "stopReadAloud": "읽어주기 중지",
       "finishBeforeReadAloud": "메시지를 읽으려면 먼저 음성 모드를 종료하세요.",
-      "readAloudFailed": "읽어주기에 실패했습니다. 팀메이트 설정에서 모델과 음성을 확인한 후 다시 시도하세요.",
+      "readAloudFailed": "읽어주기에 실패했습니다",
       "finishBeforeDictation": "음성 모드를 종료한 후 받아쓰기를 시작하세요.",
       "title": "음성 모드",
       "model": "읽어주기 모델",

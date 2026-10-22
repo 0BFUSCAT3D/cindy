@@ -299,7 +299,11 @@ export function SpeechVoicePicker({
             )}
           </FormField>
           <p role="status" className="text-12 text-[var(--text-secondary)]">
-            {t(`bots.voiceMode.previewStatus.${phase}`)}
+            {t(
+              phase === 'timeout'
+                ? 'bots.voiceMode.errors.speechTimeout'
+                : `bots.voiceMode.previewStatus.${phase}`,
+            )}
           </p>
         </div>
       ) : null}

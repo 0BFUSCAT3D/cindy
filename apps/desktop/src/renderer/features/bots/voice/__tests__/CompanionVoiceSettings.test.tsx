@@ -7,6 +7,7 @@ import {
 } from '@/../shared/voiceConversation';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import type { SpeechPlayer } from '../PcmSpeechPlayer';
 
 vi.mock('@/components/ui/select', () => ({
   Select: ({
@@ -57,7 +58,7 @@ const audio = vi.hoisted(() => ({
   stop: vi.fn(async () => {}),
   onPcm16k: vi.fn(),
   close: vi.fn(),
-  play: vi.fn(async () => {}),
+  play: vi.fn<SpeechPlayer['play']>(async () => {}),
 }));
 vi.mock('@/voice-input/WebMicAudioEngine', () => ({
   WebMicAudioEngine: class {
@@ -242,6 +243,45 @@ it('keeps the menu and saved voice on preview failure, retries and stops playbac
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
   expect(voicePicker().value).toBe('voice:river');
 });
+
+// PR #6660 P2: real settings -> preview -> status must distinguish header/read
+// timeouts in both voice inputs. Existing failure coverage only used a generic
+// rejection in the menu. Unit tier; one rejected IPC is the minimal reproducer.
+it.each([
+  { input: 'list', stage: 'preview' },
+  { input: 'list', stage: 'readPreview' },
+  { input: 'manual', stage: 'preview' },
+  { input: 'manual', stage: 'readPreview' },
+] as const)(
+  'shows a timeout for $input voice $stage without changing preferences',
+  async ({ input, stage }) => {
+    listedVoices();
+    const api = window.electronAPI.voiceConversation;
+    vi.mocked(api[stage]).mockRejectedValueOnce(
+      new Error(
+        `Error invoking remote method 'voice-conversation:${stage}': Error: [VOICE_SPEECH_TIMEOUT] Speech timed out`,
+      ),
+    );
+    audio.play.mockImplementationOnce(async (read) => {
+      await read();
+    });
+    renderSettings();
+    const menu = await openVoices();
+    if (input === 'manual') {
+      fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.manualVoice' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'bots.voiceMode.preview' }));
+    } else {
+      fireEvent.click(menu.getByRole('button', { name: 'bots.voiceMode.previewVoice: Bella' }));
+    }
+    await screen.findByText('bots.voiceMode.errors.speechTimeout');
+    expect(screen.queryByText('bots.voiceMode.previewStatus.error')).toBeNull();
+    expect(api.preview).toHaveBeenCalledOnce();
+    expect(api.stopPreview).toHaveBeenCalledOnce();
+    expect(audio.close).toHaveBeenCalled();
+    expect(api.setPreference).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  },
+);
 
 it.each(['no-session', 'permission'] as const)(
   'keeps inline preview disabled with %s',

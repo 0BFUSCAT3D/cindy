@@ -135,6 +135,20 @@ export default {
       about: 'Failed preview stays in the menu without replacing the saved voice',
       data: { menu: true, previewFailure: true, speed: 0.95 },
     },
+    'menu-timeout': {
+      about: 'Preview timeout keeps the selected voice and reports only the known cause',
+      data: { menu: true, previewTimeout: true, speed: 0.95 },
+    },
+    'manual-timeout': {
+      about: 'Manual audition timeout stays beside the input without saving the draft',
+      viewport: { width: 320, height: 900 },
+      data: { manual: true, previewTimeout: true, speed: 0.95 },
+    },
+    'manual-error': {
+      about: 'Unknown manual audition failure does not blame model or voice configuration',
+      viewport: { width: 320, height: 900 },
+      data: { manual: true, previewFailure: true, speed: 0.95 },
+    },
   },
   async ready(page) {
     const empty = await page.evaluate(() => window.__uiPage.ctx.data.empty);
@@ -196,6 +210,22 @@ export default {
       const preparing = page.getByText(await ui.t('bots.voiceMode.previewStatus.preparing'));
       await input.fill('custom-click');
       await standalonePreview.click();
+      if (ui.data.previewTimeout || ui.data.previewFailure) {
+        await page
+          .getByText(
+            await ui.t(
+              ui.data.previewTimeout
+                ? 'bots.voiceMode.errors.speechTimeout'
+                : 'bots.voiceMode.previewStatus.error',
+            ),
+            { exact: true },
+          )
+          .waitFor();
+        assert.equal(await saved(), 'custom-voice');
+        assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.previewRequests.length), 1);
+        await ui.capture('manual-preview-error');
+        return;
+      }
       await preparing.waitFor();
       assert.equal(await saved(), 'custom-voice');
       await ui.capture('manual-preview');
@@ -316,7 +346,9 @@ export default {
       await menu
         .getByText(
           await ui.t(
-            `bots.voiceMode.previewStatus.${ui.data.previewFailure ? 'error' : 'preparing'}`,
+            ui.data.previewTimeout
+              ? 'bots.voiceMode.errors.speechTimeout'
+              : `bots.voiceMode.previewStatus.${ui.data.previewFailure ? 'error' : 'preparing'}`,
           ),
           { exact: true },
         )
@@ -325,7 +357,9 @@ export default {
       const requests = await page.evaluate(() => window.__uiPage.ctx.data.previewRequests);
       assert.equal(requests[0].voice, 'bella');
       assert.equal(requests[0].speed, 0.95);
-      await ui.capture(ui.data.previewFailure ? 'preview-error' : 'preparing-preview');
+      await ui.capture(
+        ui.data.previewFailure || ui.data.previewTimeout ? 'preview-error' : 'preparing-preview',
+      );
       await page.keyboard.press('Escape');
       await menu.waitFor({ state: 'hidden' });
       assert.equal(await saved(), 'river');

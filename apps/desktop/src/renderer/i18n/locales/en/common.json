@@ -10207,12 +10207,12 @@
         "preparing": "Generating preview…",
         "playing": "Playing preview…",
         "complete": "Preview complete.",
-        "error": "Preview failed. Check the interface, model access and voice ID, then retry."
+        "error": "Could not preview this voice"
       },
       "readAloud": "Read aloud",
       "stopReadAloud": "Stop reading",
       "finishBeforeReadAloud": "End voice mode before reading a message aloud.",
-      "readAloudFailed": "Could not read this reply aloud. Check the model and voice in teammate settings, then try again.",
+      "readAloudFailed": "Could not read this reply aloud",
       "finishBeforeDictation": "End voice mode before starting dictation.",
       "title": "Voice Mode",
       "model": "Speech model",

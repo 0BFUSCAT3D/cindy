@@ -10167,12 +10167,12 @@
         "preparing": "正在產生試聽語音…",
         "playing": "正在試聽…",
         "complete": "試聽完成。",
-        "error": "試聽失敗。請檢查介面、模型權限與音色 ID 後重試。"
+        "error": "試聽失敗"
       },
       "readAloud": "朗讀",
       "stopReadAloud": "停止朗讀",
       "finishBeforeReadAloud": "請先結束語音模式，再朗讀訊息。",
-      "readAloudFailed": "朗讀失敗，請在夥伴設定中檢查模型和音色後重試。",
+      "readAloudFailed": "朗讀失敗",
       "finishBeforeDictation": "請先結束語音模式，再開始聽寫。",
       "title": "語音模式",
       "model": "朗讀模型",

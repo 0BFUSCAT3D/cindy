@@ -139,6 +139,7 @@ mountPage({
         },
         preview: async (input: { voice: string; speed?: number; previewId: string }) => {
           previews.push(input);
+          if (ctx.data.previewTimeout) throw new Error('[VOICE_SPEECH_TIMEOUT] Speech timed out');
           if (ctx.data.previewFailure) throw new Error('fixture preview unavailable');
           await new Promise<void>((resolve) => pending.set(input.previewId, resolve));
           return { sampleRate: 24000 };
