@@ -121,7 +121,12 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         )
           continue;
         const connection = deps.gatewayConnection();
-        if (!connection.apiKey || !apiBase(connection.baseUrl)) continue;
+        const base = apiBase(connection.baseUrl);
+        if (!connection.apiKey || !base) continue;
+        // Server credentials carry the deployment base shared by chat/media.
+        // Version only Gateway TTS; BYOK keeps its explicitly configured API prefix.
+        if (!base.pathname.endsWith('/v1'))
+          base.pathname = `${base.pathname.replace(/\/+$/, '')}/v1`;
         result.push({
           model: {
             id: media.id,
@@ -132,7 +137,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
             defaultVoice: referenceSpeechVoices(media.id, 'openai')[0] ?? '',
           },
           connection: {
-            baseUrl: connection.baseUrl,
+            baseUrl: base.toString().replace(/\/+$/, ''),
             protocol: 'openai',
             headers: { authorization: `Bearer ${connection.apiKey}` },
           },

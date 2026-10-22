@@ -7,6 +7,7 @@ import {
   type ProviderRuntimeModelConfig,
 } from '@cindy/model-providers';
 import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from '../models.js';
+import { speechRequest } from '../speechProtocols.js';
 import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { voiceModelKey } from '../../../shared/voiceConversation.js';
 
@@ -85,6 +86,46 @@ it('keeps Gateway entitlement and supported-protocol gates', () => {
   d.disabled = (provider, id) => provider === 'xd' && id === 'override';
   expect(speechModels(d).map((m) => m.id)).toEqual(['new-speech']);
   expect(speechModels({ ...d, gatewayAllowed: false })).toEqual([]);
+});
+
+// Unit regression: resolveSpeechConnection -> speechRequest must send Gateway TTS
+// to /v1/audio/speech. Live root endpoints returned 404; previous fixtures already
+// included /v1. Cover the root, existing API base and deployment prefix without I/O.
+it.each([
+  ['https://gateway.test', 'https://gateway.test/v1/audio/speech'],
+  ['https://gateway.test/', 'https://gateway.test/v1/audio/speech'],
+  ['https://gateway.test/v1', 'https://gateway.test/v1/audio/speech'],
+  ['https://gateway.test/v1/', 'https://gateway.test/v1/audio/speech'],
+  ['https://gateway.test/prefix/', 'https://gateway.test/prefix/v1/audio/speech'],
+  ['https://gateway.test/prefix/v1/', 'https://gateway.test/prefix/v1/audio/speech'],
+])('uses the Gateway speech API path for %s', (baseUrl, expectedUrl) => {
+  const credentials = { baseUrl, apiKey: 'gateway-key' };
+  const d = deps([
+    { id: 'xd', audioModels: [model('gateway-speech', { nativeApi: 'openai-audio-speech' })] },
+  ] as Catalog['providers']);
+  d.gatewayConnection = () => credentials;
+  const input = { modelId: 'gateway-speech', voice: 'voice-id', text: 'hello' };
+  const connection = resolveSpeechConnection(d, input);
+  const request = speechRequest(connection, input);
+  expect(request.url.href).toBe(expectedUrl);
+  expect(JSON.parse(request.body)).toEqual({
+    model: input.modelId,
+    voice: input.voice,
+    input: input.text,
+    response_format: 'pcm',
+  });
+  expect(connection.headers).toEqual({ authorization: 'Bearer gateway-key' });
+  // The shared server credential endpoint must remain unchanged for chat/media callers.
+  expect(credentials).toEqual({ baseUrl, apiKey: 'gateway-key' });
+});
+
+it('keeps a BYOK speech API prefix without adding the Gateway version path', () => {
+  const d = deps([custom('proxy', 'https://speech-proxy.test/tts-api')]);
+  const input = { modelId: 'tts', voice: 'voice-id', text: 'hello' };
+  const connection = resolveSpeechConnection(d, { ...input, providerId: 'proxy', agent: 'codex' });
+  expect(speechRequest(connection, input).url.href).toBe(
+    'https://speech-proxy.test/tts-api/audio/speech',
+  );
 });
 
 it('distinguishes two user connections with the same upstream ID and uses only the selected runtime key', () => {

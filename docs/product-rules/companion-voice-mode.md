@@ -36,7 +36,7 @@
 - 当前仅支持 Desktop、本机伙伴一对一。群聊、Mobile、远程控制的麦克风、原生 Realtime speech-to-speech 不在此实现内。
 - 新 IPC 只接受可信应用顶层 Renderer，按窗口、账号代次、callId 和 canonical 任务绑定。callId 在发起请求前生成，使结束按钮也能取消连接过程；它不是授权凭证。接口不加入 device-link 或插件白名单。输入静音控制仍绑定当前窗口与 callId，输入每次重开分配新代次；旧代次 PCM 和识别回调不能进入新输入，结束中的迟到麦克风或 ASR 分配仍须释放。模型权限在开始和每次 TTS 请求、读取时复核。
 - ASR 适配器额外提供按上游 utterance/item ID 标识的分段事件，现有累积 `AsrEvent` 合同保持不变。连接在 150 秒轮换，沿用 voice-server 的 dictation 协议；切换期间最多缓存 5 秒输入，不能无声丢弃或重复发送前文。
-- Gateway 执行合同为 OpenAI 兼容 `POST <下发的 baseUrl>/audio/speech`，body 包含 `model`、`voice`、`input`、`response_format: pcm`。PCM 固定为该协议规定的 24kHz、单声道、16bit little-endian。显式声明其他 native API 或 `null` 未验证 API 的 Cindy AI 模型不进入选择器；未声明协议的 Gateway 新模型沿用此端点合同。下发 `mode` 只代表能力分类，不证明具体音色、音频格式或端点可用。
+- Gateway 执行合同为 OpenAI 兼容 `POST <语音 API base>/audio/speech`。服务端下发的是与密钥配对的推理部署地址：仅在本地 Cindy AI TTS 连接中补齐末尾 `/v1`，已有 `/v1` 不重复添加，保留部署路径前缀；不回写聊天、图像等共用的 endpoint，也不改 BYOK 配置的 API base。body 包含 `model`、`voice`、`input`、`response_format: pcm`。PCM 固定为该协议规定的 24kHz、单声道、16bit little-endian。显式声明其他 native API 或 `null` 未验证 API 的 Cindy AI 模型不进入选择器；未声明协议的 Gateway 新模型沿用此端点合同。下发 `mode` 只代表能力分类，不证明具体音色、音频格式或端点可用。
 - 凭证只在 Main：Gateway 使用当前账号配对的 baseUrl / 密钥，BYOK 复用对应连接、对应 runtime 的 safeStorage 密钥和固定请求头。排除原生订阅 OAuth、远程或共享供应商；per-model 地址不得跨越凭证所属连接的 origin。开始时固定连接，每次合成与音频读取复核资格及路由/密钥是否变化；变化则停止该语音请求。禁止自动切换到其他供应商、系统朗读或另一条凭证。响应按 Renderer 播放速度读取，播放只预排约 300ms；中断丢弃旧请求和迟到音频。原始音频只在内存，不新增录音文件或对话音频归档。
 - 初始实现的声音活动判断是带迟滞的音量检测，配合浏览器回声消除与降噪。它不是语义 VAD，不能保证所有扬声器、蓝牙或噪声环境都能准确分辨插话。
 
