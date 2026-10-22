@@ -852,6 +852,7 @@
     "undo": "Undo",
     "undoFailed": "Couldn't undo. Try again.",
     "deleteFailed": "Couldn't delete. Try again.",
+    "loadFailed": "Couldn't load todos",
     "outputs": "Outputs",
     "outputMeta": "{{time}} · {{task}}",
     "source": {

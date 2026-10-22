@@ -39,14 +39,18 @@ export function todosResourceRef(botId: string) {
   return { collectionId: 'teammates', kind: 'bot', id: `todos:${botId}` } as const;
 }
 
-/** Reads every page of one view; the total read up front bounds the loop. */
+/**
+ * Reads every page of one view. Open todos keep the first 200 by due order; completed ones are
+ * listed oldest first by the host, so past the cap the read starts from the tail to keep the newest.
+ */
 async function readAll(readPage: (query: TodoListQuery) => Promise<Page>, view: 'open' | 'done'): Promise<Page> {
   const order = view === 'open' ? 'due' : 'created';
   const first = await readPage({ view, order, offset: 0, limit: PAGE });
-  const items = [...first.items];
   let total = first.total;
-  while (items.length < Math.min(total, MAX_ITEMS)) {
-    const page = await readPage({ view, order, offset: items.length, limit: PAGE });
+  const start = view === 'done' ? Math.max(0, total - MAX_ITEMS) : 0;
+  const items = start === 0 ? [...first.items] : [];
+  while (start + items.length < total && items.length < MAX_ITEMS) {
+    const page = await readPage({ view, order, offset: start + items.length, limit: PAGE });
     total = page.total;
     if (page.items.length === 0) break;
     items.push(...page.items);

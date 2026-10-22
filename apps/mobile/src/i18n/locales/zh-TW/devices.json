@@ -852,6 +852,7 @@
     "undo": "復原",
     "undoFailed": "無法復原，請重試",
     "deleteFailed": "無法刪除，請重試",
+    "loadFailed": "無法讀取待辦",
     "outputs": "輸出內容",
     "outputMeta": "{{time}} · {{task}}",
     "source": {

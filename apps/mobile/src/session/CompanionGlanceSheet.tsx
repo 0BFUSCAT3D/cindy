@@ -145,7 +145,8 @@ function Computers({ botId, deviceId, deviceName, online, cloudHome, onOpenCindy
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { user, accountGeneration } = useAuth();
-  const { status, getPresenceAvailability } = useDeviceLink();
+  // getPresenceAvailability is stable and reads live presence; presenceVersion is what changes.
+  const { status, getPresenceAvailability, presenceVersion } = useDeviceLink();
   const [showOffline, setShowOffline] = useState(false);
   // Cindy runs a copy on each computer: the other copies come from the teammate list already read
   // on this phone (no extra discovery); other teammates only show the computer they run on.
@@ -154,7 +155,7 @@ function Computers({ botId, deviceId, deviceName, online, cloudHome, onOpenCindy
     return readRemoteCollectionCache(`${user?.id ?? ''}:${accountGeneration}`, 'teammates')
       .filter(row => row.item.ref.kind === 'bot' && row.item.ref.id === CINDY_BOT_ID && row.host.deviceId !== deviceId)
       .map(row => ({ row, online: remoteResourceConnectionState(status, getPresenceAvailability(row.host.deviceId)) === true }));
-  }, [accountGeneration, botId, cloudHome, deviceId, getPresenceAvailability, status, user?.id]);
+  }, [accountGeneration, botId, cloudHome, deviceId, getPresenceAvailability, presenceVersion, status, user?.id]);
   const onlineCopies = copies.filter(copy => copy.online);
   const offlineCopies = copies.filter(copy => !copy.online);
   const monitor = (state: 'here' | 'online' | 'offline') => <View>
@@ -195,6 +196,14 @@ function Todos({ todos, online, onQuote }: { todos: GlanceTodoState; online: boo
   const [deleted, setDeleted] = useState<TeammateTodo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { open, done, doneTotal, openTotal } = todos.todos;
+  // A failed first read is not "no todos": keep the section with a retry instead of hiding it.
+  if (todos.failed && open.length === 0 && doneTotal === 0) return <Section label={t('devices.glance.todos')}>
+    <Pressable accessibilityRole="button" onPress={() => void todos.refresh()} disabled={!online}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} testID="companion.glance.todo.retry">
+      <Text numberOfLines={1} style={styles.undoNote}>{t('devices.glance.loadFailed')}</Text>
+      <Text style={styles.undoAction}>{t('devices.resources.retry')}</Text>
+    </Pressable>
+  </Section>;
   if (open.length === 0 && doneTotal === 0 && !deleted) return null;
 
   const remove = async (todo: TeammateTodo) => {
@@ -232,7 +241,7 @@ function Todos({ todos, online, onQuote }: { todos: GlanceTodoState; online: boo
     // 长按：系统上下文菜单（行浮起、背景模糊），只有「删除」。
     return <NativePullDownMenu key={todo.id} longPress disabled={!online} accessibilityLabel={todo.title}
       actions={[{ id: 'delete', title: t('devices.glance.delete'), destructive: true, image: 'trash' }]}
-      onAction={() => void remove(todo)}>{content}</NativePullDownMenu>;
+      onAction={() => void remove(todo)} onPress={() => onQuote(todo)}>{content}</NativePullDownMenu>;
   };
   const rows: ReactNode[] = [];
   if (deleted) rows.push(<Pressable key="undo" accessibilityRole="button" onPress={() => void undo()}

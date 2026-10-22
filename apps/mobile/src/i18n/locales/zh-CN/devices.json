@@ -852,6 +852,7 @@
     "undo": "撤销",
     "undoFailed": "没能撤销，请重试",
     "deleteFailed": "没能删除，请重试",
+    "loadFailed": "没能读取待办",
     "outputs": "输出内容",
     "outputMeta": "{{time}} · {{task}}",
     "source": {

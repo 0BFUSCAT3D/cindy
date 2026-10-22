@@ -55,6 +55,19 @@ it('reads every page of open todos, not just the host first page of 25', async (
   expect(h.reads.filter(read => read.view === 'open').map(read => read.offset)).toEqual([0, 25]);
 });
 
+it('keeps the newest completed todos past the 200 cap', async () => {
+  h.items = Array.from({ length: 230 }, (_, index) => todo(`d${String(index).padStart(3, '0')}`, 'done'));
+  let latest: ReturnType<typeof useCompanionGlanceTodos> | null = null;
+  function Probe() { latest = useCompanionGlanceTodos({ deviceId: 'pc', deviceName: 'PC', botId: 'bot', enabled: true }); return null; }
+  await act(async () => root.render(createElement(Probe)));
+  await act(async () => { await Promise.resolve(); });
+  const done = latest!.todos.done;
+  expect(done).toHaveLength(200);
+  expect(done[0].id).toBe('d229');
+  expect(done.some(item => item.id === 'd029')).toBe(false);
+  expect(latest!.todos.doneTotal).toBe(230);
+});
+
 it("lists only this teammate's finished deliverables, newest first, each opening its source task", () => {
   const outputs = companionGlanceOutputs({
     ok: true,

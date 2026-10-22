@@ -852,6 +852,7 @@
     "undo": "元に戻す",
     "undoFailed": "元に戻せませんでした。もう一度お試しください",
     "deleteFailed": "削除できませんでした。もう一度お試しください",
+    "loadFailed": "Todo を読み込めませんでした",
     "outputs": "成果物",
     "outputMeta": "{{time}} · {{task}}",
     "source": {
