@@ -3139,8 +3139,9 @@ async function terminalResultProcessIdentities(
  * omit command lines for protected processes in other accounts. Use the OS
  * user filter first (tasklist /FI USERNAME, like POSIX ps -u), then require a
  * readable command line or independent exit confirmation for every selected
- * PID. An inaccessible live process keeps recovery closed; PID discovery never
- * authorizes a kill.
+ * PID, except OS-confirmed antimalware PPL processes (which cannot be our
+ * ordinary Node/Electron/Pi runtimes). Other inaccessible live processes keep
+ * recovery closed; PID discovery never authorizes a kill.
  */
 async function readRecoveryProcessInventory(deadline: number): Promise<string[] | null> {
   try {
@@ -3184,14 +3185,42 @@ async function readRecoveryProcessInventory(deadline: number): Promise<string[] 
         '  $commands.Add($item.CommandLine)',
         '  $processIds.Remove($number)',
         '}',
+        // DefenderSessionHelper can belong to this user but hide its command
+        // line. Never exempt an image name: query the OS protection level with
+        // minimum read-only rights. Only ANTIMALWARE_LIGHT is excluded; NONE,
+        // third-party PPL_APP, unknown levels and query failures remain unknown.
+        // https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation
+        'if ($processIds.Count -gt 0) {',
+        "Add-Type -TypeDefinition @'",
+        'using System;',
+        'using System.Runtime.InteropServices;',
+        'public static class CindyRecoveryProcessProtection {',
+        '  [DllImport("kernel32.dll", SetLastError = true)]',
+        '  private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);',
+        '  [DllImport("kernel32.dll", SetLastError = true)]',
+        '  private static extern bool GetProcessInformation(IntPtr handle, int kind, out uint level, uint size);',
+        '  [DllImport("kernel32.dll")]',
+        '  private static extern bool CloseHandle(IntPtr handle);',
+        '  public static bool IsAntimalware(uint pid) {',
+        '    IntPtr handle = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION',
+        '    if (handle == IntPtr.Zero) return false;',
+        '    try {',
+        '      uint level;',
+        '      return GetProcessInformation(handle, 7, out level, 4) && level == 3; // ProcessProtectionLevelInfo / ANTIMALWARE_LIGHT',
+        '    } finally { CloseHandle(handle); }',
+        '  }',
+        '}',
+        "'@",
+        '}',
         // Other short-lived processes can exit between tasklist and CIM too.
         // Missing command lines alone are not exit evidence; independently
-        // check each remaining PID. Only an exited process can leave the count.
+        // check each remaining PID. Retire only confirmed exits or the OS
+        // antimalware role above, never an arbitrary unreadable live process.
         'foreach ($number in @($processIds.Keys)) {',
         '  $unreadable = $null',
         '  try {',
         '    $unreadable = [System.Diagnostics.Process]::GetProcessById($number)',
-        '    if ($unreadable.HasExited) { $count-- } else { $complete = $false }',
+        '    if ($unreadable.HasExited -or [CindyRecoveryProcessProtection]::IsAntimalware($number)) { $count-- } else { $complete = $false }',
         '  } catch [System.ArgumentException] {',
         '    $count--',
         '  } finally {',
