@@ -1504,11 +1504,11 @@ describe('speech models in the existing provider wizard', () => {
       Array.from({ length: 100 }, (_, index) => ({ id: `chat-${index}`, name: `Chat ${index}`, mode: 'chat' })),
     });
     await enter('aliyun-bailian-api-cn');
-    const speech = await screen.findByRole('checkbox', { name: /cosyvoice-v3-flash/ });
+    const speech = await screen.findByRole('checkbox', { name: /qwen3-tts-flash/ });
     const firstChat = screen.getByText('Chat 0');
     expect(speech.compareDocumentPosition(firstChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(speech.getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByRole('checkbox', { name: /qwen3-tts-flash/ }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryByRole('checkbox', { name: /cosyvoice/ })).toBeNull();
   });
   it('reuses server API presets instead of duplicating the same speech service entry', async () => {
     window.electronAPI.maker.listProviderPresets = vi.fn(async () => ({ presets: [{
@@ -1523,7 +1523,7 @@ describe('speech models in the existing provider wizard', () => {
     fireEvent.click(serverPreset);
     fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'fake-test-key' } });
     fireEvent.click(screen.getByText('settings.providers.wizard.next'));
-    expect((await screen.findByRole('checkbox', { name: /cosyvoice-v3-flash/ })).getAttribute('aria-checked')).toBe('true');
+    expect((await screen.findByRole('checkbox', { name: /qwen3-tts-flash/ })).getAttribute('aria-checked')).toBe('true');
   });
   async function enter(presetId: string, speechOnly = false) {
     render(<AddProviderWizard providers={[]} entry={{ kind: 'preset', presetId, speechOnly }} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
@@ -1570,6 +1570,114 @@ describe('speech models in the existing provider wizard', () => {
     await waitFor(() => expect(createCustomProvider).toHaveBeenCalled());
     expect(vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex?.models).toEqual([
       expect.objectContaining({ id: 'my-private-speech-model', mode: 'audio_speech' }),
+    ]);
+  });
+});
+
+// PR #6768 / #6660 integration regression (Renderer unit): the real wizard and
+// additions dialog must save defaults supported at the configured endpoint.
+// Previous tests asserted one brand-wide CosyVoice default; a public DashScope
+// URL is the smallest failing input. No live credentials or synthesis required.
+describe('Alibaba speech recommendations follow the actual endpoint', () => {
+  const endpoints = [
+    ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3-tts-flash'],
+    ['https://dashscope-intl.aliyuncs.com/api/v1/', 'qwen3-tts-flash'],
+    ['https://ws-test.cn-beijing.maas.aliyuncs.com/api/v1', 'cosyvoice-v3-flash'],
+    ['https://work-unit.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'cosyvoice-v3-flash'],
+    ['https://ws-test.ap-southeast-1.maas.aliyuncs.com/api/v1', 'qwen-audio-3.0-tts-flash'],
+    ['https://dashscope-us.aliyuncs.com/compatible-mode/v1', null],
+  ] as const;
+  const publicUrl = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+  async function openWizard(baseUrl: string) {
+    renderWizard('aliyun-bailian-api-global');
+    fireEvent.change(await screen.findByDisplayValue(publicUrl), { target: { value: baseUrl } });
+    fireEvent.change(screen.getByPlaceholderText('sk-…'), { target: { value: 'fake-test-key' } });
+    fireEvent.click(screen.getByText('settings.providers.wizard.next'));
+    await waitFor(() => expect(screen.queryByText('settings.providers.wizard.fetching')).toBeNull());
+  }
+  function expectRecommendation(id: string | null) {
+    const section = screen.getByRole('region', { name: 'settings.providers.speechSetup.title' });
+    const checked = within(section).queryAllByRole('checkbox').filter(row => row.getAttribute('aria-checked') === 'true');
+    expect(checked).toHaveLength(id ? 1 : 0);
+    if (id) {
+      expect(checked[0].textContent).toContain(id);
+      expect(within(checked[0]).getByText('settings.providers.wizard.recommended')).toBeTruthy();
+    } else {
+      expect(within(section).queryByText('settings.providers.wizard.recommended')).toBeNull();
+    }
+  }
+  it.each(endpoints)('new provider uses %s instead of the preset region', async (baseUrl, expected) => {
+    await openWizard(baseUrl);
+    expectRecommendation(expected);
+    if (!expected) return;
+    fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledTimes(1));
+    const runtime = vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex!;
+    expect(runtime.baseUrl).toBe(baseUrl);
+    const speech = runtime.models.filter(model => /tts|cosyvoice/.test(model.id));
+    expect(speech.map(model => model.id)).toEqual([expected]);
+    expect(speech[0].defaultEnabled).not.toBe(false);
+  });
+  it.each(endpoints)('existing provider uses the same recommendation for %s', async (baseUrl, expected) => {
+    const provider = { ...buildUserProvider({ id: 'my-ali', name: 'Alibaba connection', runtimes: {
+      codex: { baseUrl, wireProtocol: 'openai-chat', models: [{ id: 'qwen-plus', name: 'My chat', defaultEnabled: false }] },
+    } }), connected: true } as ProviderView;
+    vi.mocked(updateCustomProvider).mockResolvedValue({ ok: true });
+    render(<AddSpeechModelsDialog provider={provider} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByText('settings.providers.wizard.fetching')).toBeNull());
+    expectRecommendation(expected);
+    if (!expected) return;
+    fireEvent.click(screen.getByText('settings.providers.wizard.addManualModel'));
+    await waitFor(() => expect(updateCustomProvider).toHaveBeenCalledTimes(1));
+    expect(updateCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+      runtimes: { codex: expect.objectContaining({ baseUrl, models: [expect.objectContaining({ id: expected, defaultEnabled: true })] }) },
+    }), {}, { appendSpeechModelsOnly: true });
+  });
+  it('recomputes recommendations after going back and editing the endpoint', async () => {
+    await openWizard(publicUrl);
+    expectRecommendation('qwen3-tts-flash');
+    fireEvent.click(screen.getByText('settings.providers.wizard.back'));
+    const workspace = 'https://ws-test.cn-beijing.maas.aliyuncs.com/api/v1';
+    fireEvent.change(await screen.findByDisplayValue(publicUrl), { target: { value: workspace } });
+    fireEvent.click(screen.getByText('settings.providers.wizard.next'));
+    await waitFor(() => expect(screen.queryByText('settings.providers.wizard.fetching')).toBeNull());
+    expectRecommendation('cosyvoice-v3-flash');
+    expect(screen.queryByRole('checkbox', { name: /qwen3-tts-flash/ })).toBeNull();
+  });
+  it('keeps US catalog models unselected and lets the user explicitly add one', async () => {
+    vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models: [
+      { id: 'cosyvoice-v3-flash', name: 'CosyVoice', discoveredMetadata: { mode: 'audio_speech' } },
+      { id: 'qwen3-tts-flash', name: 'Qwen3', discoveredMetadata: { mode: 'audio_speech' } },
+    ] });
+    await openWizard('https://dashscope-us.aliyuncs.com/compatible-mode/v1');
+    expectRecommendation(null);
+    fireEvent.click(screen.getByRole('checkbox', { name: /cosyvoice-v3-flash/ }));
+    fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledTimes(1));
+    const models = vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex!.models;
+    expect(models.find(model => model.id === 'cosyvoice-v3-flash')).toBeDefined();
+    expect(models.find(model => model.id === 'cosyvoice-v3-flash')?.defaultEnabled).not.toBe(false);
+    expect(models.find(model => model.id === 'qwen3-tts-flash')?.defaultEnabled).toBe(false);
+  });
+  it('keeps a previously saved CosyVoice choice when recommending Qwen3 for an existing public connection', async () => {
+    const provider = { ...buildUserProvider({ id: 'my-ali', name: 'Alibaba connection', runtimes: {
+      codex: { baseUrl: publicUrl, wireProtocol: 'openai-chat', models: [
+        { id: 'cosyvoice-v3-flash', name: 'My saved voice', mode: 'audio_speech', defaultEnabled: false },
+      ] },
+    } }), connected: true } as ProviderView;
+    vi.mocked(updateCustomProvider).mockResolvedValue({ ok: true });
+    render(<AddSpeechModelsDialog provider={provider} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const saved = await screen.findByRole('checkbox', { name: /My saved voice/ });
+    expect((saved as HTMLButtonElement).disabled).toBe(true);
+    expect(within(saved).getByText('settings.providers.speechSetup.saved')).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: /qwen3-tts-flash/ }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByText('settings.providers.wizard.addManualModel'));
+    await waitFor(() => expect(updateCustomProvider).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateCustomProvider).mock.calls[0][0].runtimes.codex?.models).toEqual([
+      expect.objectContaining({ id: 'qwen3-tts-flash', defaultEnabled: true }),
+    ]);
+    expect(provider.models.codex).toEqual([
+      expect.objectContaining({ id: 'cosyvoice-v3-flash', name: 'My saved voice', defaultEnabled: false }),
     ]);
   });
 });

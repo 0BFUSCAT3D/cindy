@@ -13,14 +13,20 @@ export default {
         'Single add-provider flow: MiniMax API key, grouped chat/speech, recommended speech default',
     },
     elevenlabs: { about: 'ElevenLabs catalog discovery, TTS-only connection' },
-    bailian: { about: 'Alibaba Cloud speech recommendations visible above 100 discovered chat models' },
+    bailian: {
+      about: 'Alibaba Cloud speech recommendations visible above 100 discovered chat models',
+    },
+    'bailian-existing': {
+      about: 'Existing Beijing workspace recommends CosyVoice and preserves its chat model',
+    },
     subscription: { about: 'Existing OpenAI subscription creates a separate API-key connection' },
   },
   async ready(page) {
     await page.getByTestId('provider-model-toolbar').waitFor();
   },
   async check(page, ui) {
-    if (['default', 'subscription'].includes(ui.case)) {
+    const existing = ['default', 'bailian-existing'].includes(ui.case);
+    if (existing || ui.case === 'subscription') {
       await page
         .getByRole('button', {
           name: await ui.t('settings.providers.speechSetup.add'),
@@ -39,7 +45,7 @@ export default {
           .getByRole('button', { name: await ui.t('settings.providers.wizard.useApiKey') })
           .click();
     }
-    if (ui.case !== 'default') {
+    if (!existing) {
       if (ui.case === 'subscription')
         await page.getByText(await ui.t('settings.providers.speechSetup.separateKey')).waitFor();
       await page.getByPlaceholder('sk-…').fill('fixture-key');
@@ -52,30 +58,33 @@ export default {
       ui.case === 'elevenlabs'
         ? 'eleven_flash_v2_5'
         : ui.case === 'bailian'
-          ? 'cosyvoice-v3-flash'
-          : ui.case === 'subscription'
-            ? 'gpt-4o-mini-tts'
-            : 'speech-2.8-turbo';
+          ? 'qwen3-tts-flash'
+          : ui.case === 'bailian-existing'
+            ? 'cosyvoice-v3-flash'
+            : ui.case === 'subscription'
+              ? 'gpt-4o-mini-tts'
+              : 'speech-2.8-turbo';
     const recommended = page.getByRole('checkbox', { name: new RegExp(recommendedId) });
     await recommended.waitFor();
     assert.equal(await recommended.getAttribute('aria-checked'), 'true');
     if (ui.case === 'bailian') {
       // PR #6768: first-screen discoverability, before any test-induced scrolling.
       const box = await recommended.boundingBox();
-      const height = await page.evaluate(() => window.innerHeight);
+      const height = await page.evaluate(() => globalThis.innerHeight);
       assert.ok(box && box.y >= 0 && box.y + box.height < height);
     }
     await recommended.scrollIntoViewIfNeeded();
     await ui.capture('models');
-    const finish =
-      ui.case === 'default'
-        ? 'settings.providers.wizard.addManualModel'
-        : 'settings.providers.wizard.finish';
+    const finish = existing
+      ? 'settings.providers.wizard.addManualModel'
+      : 'settings.providers.wizard.finish';
     await page.getByRole('button', { name: await ui.t(finish), exact: true }).click();
     await page.getByTestId('saved').waitFor();
     assert.ok((await page.getByTestId('saved').textContent()).includes(recommendedId));
     if (ui.case === 'default')
       assert.ok((await page.getByTestId('saved').textContent()).includes('MiniMax-M3'));
+    if (ui.case === 'bailian-existing')
+      assert.ok((await page.getByTestId('saved').textContent()).includes('qwen-plus'));
     await ui.capture('saved');
   },
 };

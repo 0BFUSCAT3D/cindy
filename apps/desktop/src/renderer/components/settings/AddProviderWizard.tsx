@@ -1032,7 +1032,7 @@ export function AddProviderWizard({
       if (entry?.kind === 'preset' && entry.speechOnly) {
         for (const value of initial.values()) value.checked = false;
       }
-      for (const model of speechReferenceModels(speechTarget.service)) {
+      for (const model of speechReferenceModels(presetRuntimeBaseUrl(preset, speechTarget.agent, presetBaseUrls))) {
         if (initial.has(model.id)) continue;
         initial.set(model.id, { name: model.name, checked: model.defaultEnabled !== false,
           recommended: model.defaultEnabled !== false, agents: [speechTarget.agent], speechReference: true });

@@ -42,15 +42,17 @@ export function AddSpeechModelsDialog({
         (runtime) => runtime?.models.map((model) => [model.id, model] as const) ?? [],
       ),
     );
-    const references = speechReferenceModels(target.service).map((model) => ({
-      id: model.id,
-      name: saved.get(model.id)?.name ?? model.name,
-      checked: !saved.has(model.id) && model.defaultEnabled !== false,
-      recommended: model.defaultEnabled !== false,
-      reference: true,
-      saved: saved.has(model.id),
-      model,
-    }));
+    const references = speechReferenceModels(config.runtimes[target.agent]?.baseUrl ?? '').map(
+      (model) => ({
+        id: model.id,
+        name: saved.get(model.id)?.name ?? model.name,
+        checked: !saved.has(model.id) && model.defaultEnabled !== false,
+        recommended: model.defaultEnabled !== false,
+        reference: true,
+        saved: saved.has(model.id),
+        model,
+      }),
+    );
     const ids = new Set(references.map((model) => model.id));
     return [
       ...references,

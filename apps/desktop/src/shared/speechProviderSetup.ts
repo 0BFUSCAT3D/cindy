@@ -13,12 +13,27 @@ import {
 export type SpeechService = 'minimax' | 'elevenlabs' | 'openai' | 'bailian';
 
 /** Onboarding references only: no account entitlement or synthesis probe is implied. */
-const references: Record<SpeechService, string[]> = {
+const references: Record<Exclude<SpeechService, 'bailian'>, string[]> = {
   minimax: ['speech-2.8-turbo', 'speech-2.8-hd', 'speech-02-turbo'],
   elevenlabs: ['eleven_flash_v2_5', 'eleven_multilingual_v2', 'eleven_v3'],
   openai: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
-  bailian: ['cosyvoice-v3-flash', 'qwen3-tts-flash', 'cosyvoice-v3-plus'],
 };
+
+const bailianWorkspaceHost = /^[a-z0-9-]+\.(cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/;
+
+function bailianReferences(hostname: string): string[] {
+  // Match the native HTTP endpoint/model scope in #6660. Public DashScope uses
+  // Qwen3's multimodal API; CosyVoice's HTTP API requires a Beijing workspace.
+  // These suggestions neither rewrite the connection nor prove account access.
+  if (['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'].includes(hostname))
+    return ['qwen3-tts-flash'];
+  const region = bailianWorkspaceHost.exec(hostname)?.[1];
+  if (region === 'cn-beijing') return ['cosyvoice-v3-flash', 'cosyvoice-v3-plus'];
+  if (region === 'ap-southeast-1') return ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'];
+  // The US endpoint has no verified native TTS binding; discovery/manual entry
+  // stays available without a guessed default or recommended reference model.
+  return [];
+}
 
 export function speechServiceForUrl(value: string): SpeechService | undefined {
   try {
@@ -52,7 +67,7 @@ export function speechServiceForUrl(value: string): SpeechService | undefined {
         'dashscope-intl.aliyuncs.com',
         'dashscope-us.aliyuncs.com',
       ].includes(url.hostname) ||
-        /^ws-[a-z0-9]+\.cn-beijing\.maas\.aliyuncs\.com$/.test(url.hostname)) &&
+        bailianWorkspaceHost.test(url.hostname)) &&
       ['/api/v1', '/compatible-mode/v1'].includes(path)
     )
       return 'bailian';
@@ -73,10 +88,14 @@ export function isSpeechModel(model: {
   );
 }
 
-export function speechReferenceModels(service: SpeechService): ProviderRuntimeModelConfig[] {
+export function speechReferenceModels(baseUrl: string): ProviderRuntimeModelConfig[] {
+  const service = speechServiceForUrl(baseUrl);
+  if (!service) return [];
+  const ids =
+    service === 'bailian' ? bailianReferences(new URL(baseUrl).hostname) : references[service];
   // Names/capabilities remain owned by the shared Registry. This list only orders
   // a few setup suggestions; adding one is an explicit user membership decision.
-  return references[service].flatMap((id, index) => {
+  return ids.flatMap((id, index) => {
     const base = findBaseModel(BUNDLED_CATALOG.modelRegistry, id);
     return base?.defaults.mode === 'audio_speech'
       ? [{ id, name: base.defaults.name ?? id, defaultEnabled: index === 0 }]
@@ -164,9 +183,10 @@ export function providerSpeechSetup(
             ? 'minimax-global'
             : 'minimax-cn'
           : service === 'bailian'
-            ? upstream!.includes('dashscope-intl')
-              ? 'aliyun-bailian-api-global'
-              : 'aliyun-bailian-api-cn'
+            ? new URL(upstream!).hostname === 'dashscope.aliyuncs.com' ||
+              new URL(upstream!).hostname.endsWith('.cn-beijing.maas.aliyuncs.com')
+              ? 'aliyun-bailian-api-cn'
+              : 'aliyun-bailian-api-global'
             : `${service}-api`,
     };
   }

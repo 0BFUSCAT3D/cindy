@@ -114,60 +114,76 @@ function Fixture({ scenario }: { scenario: string }) {
   );
 }
 void mountPage({
-  host: (ctx) => ({
-    safeStorageRead: async () => 'fixture-key',
-    maker: {
-      listProviderPresets: async () => ({
-        presets: BUNDLED_CATALOG.presets!.filter((p) => p.id === 'minimax-global'),
-      }),
-      localModelList: async () => ({
-        status: { runtime: 'ollama', kind: 'absent', appInstalled: false },
-        models: [],
-      }),
-      scanLocalCli: async () => ({ detections: [] }),
-      llamaCppStatus: async () => ({
-        installed: false,
-        supported: true,
-        running: false,
-        models: [],
-      }),
-      onProviderOAuthProgress: subscription('oauthProgress'),
-      onProvidersChanged: subscription('providersChanged'),
-      fetchProviderModels: async () =>
-        ctx.case === 'elevenlabs'
-          ? {
-              ok: true,
-              models: [
-                {
-                  id: 'eleven_flash_v2_5',
-                  name: 'Eleven Flash v2.5',
-                  discoveredMetadata: { mode: 'audio_speech' },
-                },
-              ],
-            }
-          : ctx.case === 'bailian'
+  host: (ctx) => {
+    if (ctx.case === 'bailian-existing')
+      stored = {
+        id: 'bailian-workspace',
+        name: 'Alibaba Cloud · Workspace',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://ws-test.cn-beijing.maas.aliyuncs.com/api/v1',
+            wireProtocol: 'openai-chat',
+            models: [{ id: 'qwen-plus', name: 'Qwen Plus' }],
+          },
+        },
+      };
+    return {
+      safeStorageRead: async () => 'fixture-key',
+      maker: {
+        listProviderPresets: async () => ({
+          presets: BUNDLED_CATALOG.presets!.filter((p) => p.id === 'minimax-global'),
+        }),
+        localModelList: async () => ({
+          status: { runtime: 'ollama', kind: 'absent', appInstalled: false },
+          models: [],
+        }),
+        scanLocalCli: async () => ({ detections: [] }),
+        llamaCppStatus: async () => ({
+          installed: false,
+          supported: true,
+          running: false,
+          models: [],
+        }),
+        onProviderOAuthProgress: subscription('oauthProgress'),
+        onProvidersChanged: subscription('providersChanged'),
+        fetchProviderModels: async () =>
+          ctx.case === 'elevenlabs'
             ? {
                 ok: true,
-                models: Array.from({ length: 100 }, (_, index) => ({
-                  id: `chat-${index}`, name: `Chat ${index}`, mode: 'chat',
-                })),
+                models: [
+                  {
+                    id: 'eleven_flash_v2_5',
+                    name: 'Eleven Flash v2.5',
+                    discoveredMetadata: { mode: 'audio_speech' },
+                  },
+                ],
               }
-            : { ok: false, code: 'NETWORK' },
-      createCustomProvider: async (config: CustomProviderConfig) => {
-        stored = config;
-        return { ok: true };
+            : ctx.case === 'bailian'
+              ? {
+                  ok: true,
+                  models: Array.from({ length: 100 }, (_, index) => ({
+                    id: `chat-${index}`,
+                    name: `Chat ${index}`,
+                    mode: 'chat',
+                  })),
+                }
+              : { ok: false, code: 'NETWORK' },
+        createCustomProvider: async (config: CustomProviderConfig) => {
+          stored = config;
+          return { ok: true };
+        },
+        updateCustomProvider: async (
+          config: CustomProviderConfig,
+          _keys: unknown,
+          options: { appendSpeechModelsOnly?: true },
+        ) => {
+          if (!options.appendSpeechModelsOnly) throw new Error('Expected additions only');
+          stored = appendSpeechModels(stored, config);
+          return { ok: true };
+        },
+        setModelDisable: forbid('setModelDisable'),
       },
-      updateCustomProvider: async (
-        config: CustomProviderConfig,
-        _keys: unknown,
-        options: { appendSpeechModelsOnly?: true },
-      ) => {
-        if (!options.appendSpeechModelsOnly) throw new Error('Expected additions only');
-        stored = appendSpeechModels(stored, config);
-        return { ok: true };
-      },
-      setModelDisable: forbid('setModelDisable'),
-    },
-  }),
+    };
+  },
   render: (ctx) => <Fixture scenario={ctx.case} />,
 });
