@@ -410,6 +410,42 @@ describe('MakerScheduleRunner model selection', () => {
       expect(harness.createSession.mock.calls[0][0].agentDeviceId).toBe(agentDeviceId);
     });
 
+    // PR #6832: the old rebinding fixture returned a successful catalog snapshot.
+    // Exercise the real selection entry with an unavailable old catalog; fire must
+    // still create at the saved location with its route (unit, in-memory host).
+    it.each([undefined, 'studio'])('rebinds at %s when the archived target catalog is unavailable', async (agentDeviceId) => {
+      const h = createSessionHarness();
+      Object.assign(h.session, { agentKind: 'codex', model: 'gpt-5.5' });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'archived', agentDeviceId: 'relocated' });
+      const oldCatalog = vi.fn(async () => { throw new Error('old target offline or share revoked'); });
+      const resolveModelSelection = vi.fn(async (choice) => ({ ...choice, effort: 'high' as const }));
+      const harness = createRunnerHarness(h, null, {
+        acquirePendingAgentSwitch: async (_id, _signal, selection) => ({
+          release: vi.fn(),
+          selection: await applyScheduledModelSelection(selection!, {
+            getTarget: async () => ({ agentKind: 'codex', status: 'archived' }),
+            isBusy: () => false,
+            resolveSelection: oldCatalog,
+            switchHarness: async () => ({ engineReady: true }),
+            applyModel: async () => {},
+          }),
+        }),
+        resolveModelSelection,
+      });
+      harness.runner.attachScheduler({ update: vi.fn(), isRunSilenced: () => false } as unknown as Scheduler);
+      const opts = await fireToCompletion(harness, h, baseSchedule({
+        targetSessionId: h.session.id, persistentSession: true, agentDeviceId,
+        agentKind: 'codex', modelAgentKind: 'codex', model: 'gpt-5.5', providerId: 'saved-provider',
+      }));
+      expect(opts).toMatchObject({ providerId: 'saved-provider', effort: 'high' });
+      expect(harness.createSession.mock.calls[0][0].agentDeviceId).toBe(agentDeviceId);
+      expect(oldCatalog).not.toHaveBeenCalled();
+      expect(resolveModelSelection.mock.calls[0]).toEqual([
+        expect.objectContaining({ providerId: 'saved-provider' }),
+        ...(agentDeviceId ? [{ agentDeviceId }] : []),
+      ]);
+    });
+
     // PR #6832: existing remote coverage only created new tasks. Cold resume and
     // model-triggered rebuild must dispatch at the bound row's current location,
     // even when the automation still saves its original location. Tier: unit.
