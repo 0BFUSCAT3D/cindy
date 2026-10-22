@@ -36,7 +36,7 @@ const meta = (id: string, source = 'desktop'): LocalSessionMeta => ({
   activeTurnStartedAt: 1, lastTurnEndedAt: 2,
 });
 const events = ['mine', 'delegated', 'shared', 'deleted'].map(subject => ({
-  sourceId: 'host:sessions', event: { id: subject, type: 'finished', subject, occurredAt: 2, data: {} },
+  sourceId: 'host:sessions', event: { id: subject, type: 'finished', subject, occurredAt: 2, data: { executionInstanceId: 'event-instance', executionGeneration: 1 } },
 }));
 beforeEach(() => {
   h.scope = 'a'; h.scheduler = 'sched'; h.ready = true;
@@ -136,7 +136,7 @@ it('filters only receipt-owned completion from built-in follow-up without mutati
   expect(result?.events).toEqual([events[0], failed]);
   expect(result?.canDispatch()).toBe(true);
   expect(batch).toEqual([...events, failed]);
-  expect(h.handled).toHaveBeenCalledWith('delegated', 'sched');
+  expect(h.handled).toHaveBeenCalledWith('delegated', 'sched', { instanceId: 'event-instance', generation: 1 });
 });
 
 it.each(['unready', 'failed', 'account-changed'] as const)('defers a %s receipt read and retries the original completion batch', async state => {
@@ -146,4 +146,12 @@ it.each(['unready', 'failed', 'account-changed'] as const)('defers a %s receipt 
   expect(await currentFollowUpEvents('sched', events)).toBeNull();
   h.scope = 'a';
   expect((await currentFollowUpEvents('sched', events))?.events).toEqual([events[0], events[1]]);
+});
+
+// A pre-upgrade event has no execution identity; never infer it from a live turn.
+it('keeps unattributed legacy completion events', async () => {
+  h.handled.mockResolvedValue(true);
+  const legacy = [{ ...events[1], event: { ...events[1].event, data: {} } }];
+  expect((await currentFollowUpEvents('sched', legacy))?.events).toEqual(legacy);
+  expect(h.handled).not.toHaveBeenCalled();
 });

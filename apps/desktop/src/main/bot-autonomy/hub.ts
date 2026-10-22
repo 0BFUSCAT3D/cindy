@@ -10,6 +10,7 @@ import type { RoutineEngine, RoutineRun } from '@cindy/maker-scheduler';
 import {
   type BotAutonomySettingsView,
   type BotGlance,
+  type BotAutonomyExecution,
 } from '../../shared/botAutonomy.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
@@ -27,8 +28,9 @@ import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 const log = createLogger('bot-autonomy');
 
 export interface BotAutonomyHostDeps {
-  /** Same native execution has a dedicated receipt for this follower, including pending delivery. */
-  isCompletionHandledByTeammate(sessionId: string, botId: string): Promise<boolean | null>;
+  readSessionExecution(sessionId: string): BotAutonomyExecution | null;
+  /** A durable terminal receipt owns this event's execution, including pending delivery. */
+  isCompletionHandledByTeammate(sessionId: string, botId: string, execution: BotAutonomyExecution): Promise<boolean | null>;
   /** 某个本机任务当前挂起的交互请求（只读）。 */
   getPendingInteractions(sessionId: string): readonly unknown[];
   getMainWindow(): BrowserWindow | null;
@@ -161,10 +163,16 @@ export async function currentFollowUpEvents(botId: string, events: RoutineRun['e
   // for user-authored routines, and recheck persisted batches before model work.
   let handled: (boolean | null)[];
   try {
-    handled = await Promise.all(eligible.map(({ event }) => event.type === 'finished'
-      && typeof event.subject === 'string'
-      ? hostDeps.isCompletionHandledByTeammate?.(event.subject, botId) ?? Promise.resolve(null)
-      : Promise.resolve(false)));
+    handled = await Promise.all(eligible.map(({ event }) => {
+      const { executionInstanceId, executionGeneration } = event.data;
+      // Legacy batches have no execution proof. Preserve their follow-up rather
+      // than attributing them to whichever native turn happens to be live now.
+      if (event.type !== 'finished' || typeof event.subject !== 'string'
+        || typeof executionInstanceId !== 'string' || !executionInstanceId
+        || typeof executionGeneration !== 'number' || !Number.isSafeInteger(executionGeneration)) return false;
+      return hostDeps.isCompletionHandledByTeammate?.(event.subject, botId,
+        { instanceId: executionInstanceId, generation: executionGeneration }) ?? null;
+    }));
   } catch (error) {
     log.warn('autonomy completion ownership deferred', { error: errorCode(error) });
     return null;

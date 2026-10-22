@@ -1067,6 +1067,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     const completionSnapshot = (await getDbClient().drizzle
       .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
       .where(eq(botDelegations.id, params.id)).get())?.snapshot ?? '{}';
+    const completionTerminal = parseRecord(completionSnapshot).taskTerminal as {
+      runSequence: number; execution: DelegationExecutionReceipt;
+    } | undefined;
     const completionMessage = buildDelegationCompletionMessage({
       id: params.id,
       objective: params.objective,
@@ -1114,6 +1117,10 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
               ...(child?.title?.trim() ? { title: child.title.trim() } : {}),
               workingDir: child?.workingDir ?? '',
               runSequence: params.runSequence,
+              // Keep the native identity with the immutable per-run result:
+              // the delegation row is reused when the owner continues the task.
+              ...(completionTerminal?.runSequence === params.runSequence
+                ? { execution: completionTerminal.execution } : {}),
               status: sessionTaskViewStatus({ status: params.status, lastError: params.lastError ?? null }),
               // A receipt is the in-app result, not a lock-screen preview. Keep
               // image and link targets so a result with no prose remains usable.
@@ -4338,36 +4345,65 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
 
   // Register synchronously: completion notices can arrive while settlement is
   // still reading the DB. Await only this terminal attempt, never retry timers.
+  const terminalSettlementRetries = new Map<string, Parameters<typeof settleSessionUnserialized>[0]>();
   const settleSession = (params: Parameters<typeof settleSessionUnserialized>[0]): Promise<void> => {
     const settlement = settleSessionSerialized(params);
     terminalSettlements.set(params.childSessionId, settlement);
-    void settlement.finally(() => {
+    terminalSettlementRetries.delete(params.childSessionId);
+    void settlement.then(() => {
       if (terminalSettlements.get(params.childSessionId) === settlement) terminalSettlements.delete(params.childSessionId);
-    }).catch(() => undefined);
+    }, () => {
+      if (terminalSettlements.get(params.childSessionId) !== settlement) return;
+      terminalSettlements.delete(params.childSessionId);
+      terminalSettlementRetries.set(params.childSessionId, params);
+    });
     return settlement;
   };
 
   const isCompletionHandledByTeammate = async (
     childSessionId: string,
-    options?: { pendingForBotId: string },
+    options?: { pendingForBotId: string; execution: DelegationExecutionReceipt },
   ): Promise<boolean> => {
-    const execution = deps.readSessionExecution?.(childSessionId);
+    const execution = options?.execution ?? deps.readSessionExecution?.(childSessionId);
     if (!execution) return false;
-    // Follow-up must yield to the dedicated receipt even before settlement or
-    // during delivery retries. System notifications still require accepted delivery.
-    if (!options) await terminalSettlements.get(childSessionId);
+    // A failed settlement must leave the event pending, not consume it merely
+    // because task input was accepted. The hub defers on this rejection.
+    const retry = options && terminalSettlementRetries.get(childSessionId);
+    if (retry?.execution && isSameSessionExecution(retry.execution, execution)) await settleSession(retry);
+    else await terminalSettlements.get(childSessionId);
     const [row] = await getDbClient().drizzle.select().from(botDelegations)
       .where(eq(botDelegations.childSessionId, childSessionId)).limit(1);
-    if (!row || row.acceptedAt == null) return false;
+    if (!row) return false;
     const snapshot = parseRecord(row.permissionSnapshotJson);
     const accepted = snapshot.taskExecution as (DelegationExecutionReceipt & { runSequence: number }) | undefined;
-    if (accepted?.runSequence !== row.runSequence || !isSameSessionExecution(accepted, execution)
-      || !sameExecution(childSessionId, execution)) return false;
-    if (options) return row.requestingBotId === options.pendingForBotId;
-    if (row.status !== 'completed' || row.completionDeliveredAt == null) return false;
     const terminal = snapshot.taskTerminal as {
       runSequence: number; execution: DelegationExecutionReceipt; outcome: string;
     } | undefined;
+    if (options) {
+      if (row.requestingBotId !== options.pendingForBotId) return false;
+      if (row.status === 'completed' && terminal?.runSequence === row.runSequence
+        && terminal.outcome === 'done' && isSameSessionExecution(terminal.execution, execution)) return true;
+      // A later run may already have replaced taskTerminal. Reuse the frozen
+      // result in the original/current parent, not a new execution's live state.
+      const [bot] = await getDbClient().drizzle.select({ canonicalSessionId: botProfiles.canonicalSessionId })
+        .from(botProfiles).where(eq(botProfiles.id, options.pendingForBotId)).limit(1);
+      const parents = [...new Set([row.parentSessionId, bot?.canonicalSessionId].filter((id): id is string => !!id))];
+      if (!parents.length) return false;
+      const receipt = await getDbClient().drizzle.select({ id: messages.id }).from(messages).where(and(
+        inArray(messages.sessionId, parents),
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.role') = 'delegation-result'`,
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.delegationId') = ${row.id}`,
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.fromBotId') = ${options.pendingForBotId}`,
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.childSessionId') = ${childSessionId}`,
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.result.status') = 'completed'`,
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.result.execution.instanceId') = ${execution.instanceId}`,
+        sql`json_extract(${messages.agentMeta}, '$.botCollaboration.result.execution.generation') = ${execution.generation}`,
+      )).get();
+      return !!receipt;
+    }
+    if (row.acceptedAt == null || accepted?.runSequence !== row.runSequence || !isSameSessionExecution(accepted, execution)
+      || !sameExecution(childSessionId, execution)) return false;
+    if (row.status !== 'completed' || row.completionDeliveredAt == null) return false;
     if (terminal?.runSequence !== row.runSequence
       || terminal.outcome !== 'done'
       || !isSameSessionExecution(terminal.execution, execution) || !sameExecution(childSessionId, execution)) return false;
@@ -4577,6 +4613,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   );
 
   const dispose = (): void => {
+    terminalSettlementRetries.clear();
     unregisterParentCancellation();
     pendingExecutionInputs.clear();
     pendingBoundaryValidations.clear();
