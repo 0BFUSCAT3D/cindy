@@ -1,12 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readFileSync, mkdtempSync, rmSync, openSync, closeSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, openSync, closeSync } from "node:fs";
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, basename } from 'node:path';
 
 /** Lazy allocation: importing the catalog never touches the filesystem. */
 export function recipeTemporaryDirectory(): string {
   const host = activeHost();
-  return host.temporaryDirectory ??= mkdtempSync(join(tmpdir(), 'cindy-recipe-'));
+  if (host.temporaryDirectory) return host.temporaryDirectory;
+  const parent = host.files?.temporaryRoot ?? tmpdir();
+  mkdirSync(parent, { recursive: true });
+  return host.temporaryDirectory = mkdtempSync(join(parent, 'cindy-recipe-'));
 }
 
 export function recipeDiagnosticPath(name: string): string {
@@ -22,6 +25,7 @@ export interface RecipeFiles {
   read(file: string): Buffer;
   open(file: string): number;
   directory?: string;
+  temporaryRoot?: string;
   output?(file: string): string;
 }
 

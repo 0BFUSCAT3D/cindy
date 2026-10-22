@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { withRecipeHost, recipeDiagnosticPath } from '../../../../../../../packages/opencli-vendor/cindy/host.js';
 
 import { resolveUploadFiles, resolveRecipeOutputPath } from '../rsb-webview-upload-policy.js';
 
@@ -23,6 +24,20 @@ afterEach(async () => {
 });
 
 describe('resolveUploadFiles', () => {
+  // #6826: sanitized temporary upload copies must stay within the invoking
+  // browser task's existing artifact root. Minimum input: one temporary PNG;
+  // the earlier output tests had no subsequent native-upload policy check.
+  it('accepts own temporary upload copies without granting another task access', async () => {
+    let file = '';
+    await withRecipeHost(undefined, async () => {
+      file = recipeDiagnosticPath('upload-copy.png');
+      await fs.writeFile(file, 'test-only-image');
+      await expect(resolveUploadFiles([file], [allowedRoot])).resolves.toEqual([await fs.realpath(file)]);
+      await expect(resolveUploadFiles([file], [outsideRoot])).rejects.toThrow('inside the current session directory');
+    }, { read: () => Buffer.alloc(0), open: () => -1, temporaryRoot: allowedRoot });
+    await expect(fs.access(path.dirname(file))).rejects.toThrow();
+  });
+
   // #6826: output paths need not exist yet. Existing upload-only cases cannot
   // detect writes via missing children, symlink parents or absent SSH roots.
   // Real host resolver, unit tier; smallest failure is one outside output path.

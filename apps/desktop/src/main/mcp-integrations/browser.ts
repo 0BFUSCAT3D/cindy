@@ -485,6 +485,9 @@ export function getBrowserMcpDeps(): {
         read: (file) => fs.readFileSync(resolve(file)),
         open: (file) => fs.openSync(resolve(file), 'r'),
         directory: sessionRoots[0],
+        // Temporary upload copies belong to this task's existing browser artifact
+        // root so the ordinary upload policy accepts them without extra grants.
+        temporaryRoot: sessionId ? roots[0] : undefined,
         output: (file: string) => resolveRecipeOutputPath(file, sessionRoots),
       };
     },
