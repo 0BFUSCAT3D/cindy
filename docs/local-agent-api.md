@@ -61,7 +61,7 @@ node scripts/examples/local-agent-client.mjs --connection-code "cindy-local:v1:<
 
 `capabilities` 无需授权，返回 `protocol`、Cindy `version`、`instance`、可用 `methods` 和 `features`。当前通用扩展声明 `clientIdentity`、`isolatedSessions`、`individualRevocation`、`toolPolicy` 为 true，`nativeReadOnly` 为 false。未声明的能力不得假定支持。`instance` 保持可选以兼容早期 v1 客户端，新客户端应始终携带；实例改变后重新发现，不自动重放旧操作。
 
-有副作用的请求编号必须是 `<process-nonce>:<counter>`，nonce 为 8–64 位 `[A-Za-z0-9_-]`，counter 从 1 单调递增、最多 15 位。去重按**授权 + 完整请求编号**计算，同编号不同 payload 拒绝；每个进程保留最近 256 个编号的窗口，已过期请求拒绝执行，不重新提交。重启后用新 nonce，不依赖旧实例的去重记录。网络超时表示结果可能未知；任何消息、工具副作用或控制请求都不能用新编号自动重试。
+有副作用的请求编号必须是 `<process-nonce>:<counter>`，nonce 为 8–64 位 `[A-Za-z0-9_-]`，counter 从 1 单调递增、最多 15 位。去重按**授权 + 完整请求编号**计算，同编号不同 payload 拒绝；每个进程保留最近 256 个编号的窗口，已过期请求拒绝执行，不重新提交。重启后用新 nonce，不依赖旧实例的去重记录。每个授权最多同时保留 32 个进程 nonce（全部授权合计 128 个）；名额用满时，空闲超过 10 分钟的 nonce 会被回收，之后再用该 nonce 的请求返回 `REQUEST_EXPIRED` 且不执行，仍无可回收名额时返回 `CLIENT_LIMIT`。网络超时表示结果可能未知；任何消息、工具副作用或控制请求都不能用新编号自动重试。
 
 ## 应用授权
 
@@ -136,7 +136,7 @@ Claude client-only 关闭原生 tools/settings/skills；Pi 仅开启客户端网
 
 会话上限 16，授权上限 32，申请上限 8；这些是当前实例的资源预算，不是按品牌分配。请求最大 16 MiB，单会话事件队列最大 8 MiB，事件每批通常不超过 1 MiB（单个大事件可独占一批），空闲会话三分钟回收，单会话最多 64 个待回传工具。超限会返回明确错误或收尾该会话，不转发到另一个供应商。协议不自动重试模型和工具操作。
 
-常见可判断错误：`UNAUTHORIZED`（重新授权）、`INSTANCE_CHANGED`（重新发现）、`MODEL_UNAVAILABLE`（重新选择有效来源）、`RESUME_UNAVAILABLE`（新会话并交接上下文）、`SESSION_UNAVAILABLE`（原会话已关闭或不属于此授权）、`UNSUPPORTED_ACCESS`（策略不支持/矛盾）、`ID_REUSED` / `REQUEST_EXPIRED`（未重复执行）、`GRANT_STORE_INVALID`（保留原文件并检查版本/存储）。
+常见可判断错误：`UNAUTHORIZED`（重新授权）、`INSTANCE_CHANGED`（重新发现）、`MODEL_UNAVAILABLE`（重新选择有效来源）、`RESUME_UNAVAILABLE`（新会话并交接上下文）、`SESSION_UNAVAILABLE`（原会话已关闭或不属于此授权）、`UNSUPPORTED_ACCESS`（策略不支持/矛盾）、`ID_REUSED` / `REQUEST_EXPIRED`（未重复执行）、`CLIENT_LIMIT`（同时运行的客户端进程过多，稍后重试）、`GRANT_STORE_INVALID`（保留原文件并检查版本/存储）。
 
 错误 code 保持稳定，展示文案、Cindy 确认及兼容结果页通过 Cindy 当前语言的五语资源提供。设置 IPC 复用受信顶层窗口校验与统一 IPC 错误协议；等待 Cindy 确认后再次校验发起窗口及 owner generation，不向 Renderer 返回原始存储异常。
 

@@ -16,6 +16,10 @@ const MAX_EVENTS = 8 * 1024 * 1024;
 const MAX_RUNS = 16;
 const PAIR_TTL = 120_000;
 const RUN_IDLE = 3 * 60_000;
+const MAX_CLIENTS = 128;
+const MAX_GRANT_CLIENTS = 32;
+const MAX_RETIRED_CLIENTS = 4096;
+const CLIENT_IDLE_MS = 10 * 60_000;
 const token = () => randomBytes(32).toString('base64url');
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const equal = (a: string, b: string) =>
@@ -251,7 +255,27 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
   const pairs = new Map<string, Pair>();
   const runs = new Map<string, Run>();
   const dedup = new Map<string, { fingerprint: string; result: Promise<unknown> }>();
-  const clients = new Map<string, number>();
+  const clients = new Map<string, { high: number; seen: number }>();
+  // Reclaimed process nonces are refused rather than forgotten: a late retry under one
+  // of them must not re-run a side effect whose dedup record was dropped.
+  const retired = new Set<string>();
+  const retire = (client: string) => {
+    clients.delete(client);
+    for (const key of dedup.keys()) if (key.startsWith(`${client}:`)) dedup.delete(key);
+    retired.add(client);
+    if (retired.size > MAX_RETIRED_CLIENTS) retired.delete(retired.values().next().value!);
+  };
+  const admitClient = (client: string, owner: string) => {
+    if (retired.has(client))
+      throw new LocalAgentError('REQUEST_EXPIRED', '该进程的请求记录已回收，请使用新的进程编号。');
+    const owned = () => [...clients.keys()].filter((key) => key.startsWith(`${owner}:`)).length;
+    if (clients.size < MAX_CLIENTS && owned() < MAX_GRANT_CLIENTS) return;
+    // Restarted processes use new nonces; reclaim the ones that have gone quiet.
+    const idle = Date.now() - CLIENT_IDLE_MS;
+    for (const [key, state] of clients) if (state.seen <= idle) retire(key);
+    if (clients.size >= MAX_CLIENTS || owned() >= MAX_GRANT_CLIENTS)
+      throw new LocalAgentError('CLIENT_LIMIT', '本机连接数量已满，请稍后重试或在 Cindy 中重新授权。');
+  };
   let base = '';
   let closing = false;
   /** Closes of engines that were still starting when their run was closed, by grant. */
@@ -376,6 +400,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       }
     for (const key of dedup.keys()) if (key.startsWith(`${id}:`)) dedup.delete(key);
     for (const key of clients.keys()) if (key.startsWith(`${id}:`)) clients.delete(key);
+    for (const key of retired) if (key.startsWith(`${id}:`)) retired.delete(key);
     const stopped = Promise.all(
       [...runs].filter(([, run]) => run.owner === id).map(([key]) => closeRun(key)),
     ).then(() => lateClosed(id));
@@ -809,9 +834,10 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       if (!identity) throw new LocalAgentError('INVALID_REQUEST_ID', '请求编号格式无效。');
       const client = `${grant.id}:${identity[1]}`,
         counter = Number(identity[2]);
-      if (!clients.has(client) && clients.size >= 128)
-        throw new LocalAgentError('CLIENT_LIMIT', '本机连接数量已满，请在 Cindy 中重新授权。');
-      const high = clients.get(client) ?? 0;
+      if (!clients.has(client)) admitClient(client, grant.id);
+      const state = clients.get(client) ?? { high: 0, seen: 0 };
+      state.seen = Date.now();
+      const high = state.high;
       if (counter <= high - 256)
         throw new LocalAgentError('REQUEST_EXPIRED', '请求记录已过期，未再次执行。');
       const fingerprint = hash(JSON.stringify([method, params]));
@@ -819,7 +845,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       if (previous && previous.fingerprint !== fingerprint)
         throw new LocalAgentError('ID_REUSED', '请求编号已用于不同操作，未再次执行。');
       if (!previous) {
-        clients.set(client, Math.max(high, counter));
+        clients.set(client, { high: Math.max(high, counter), seen: state.seen });
         for (const old of dedup.keys())
           if (old.startsWith(`${client}:`) && Number(old.slice(client.length + 1)) <= counter - 256)
             dedup.delete(old);
@@ -899,6 +925,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       pairs.clear();
       dedup.clear();
       clients.clear();
+      retired.clear();
       await Promise.all([
         persist(),
         Promise.all([...runs.keys()].map((id) => closeRun(id))).then(() => lateClosed()),

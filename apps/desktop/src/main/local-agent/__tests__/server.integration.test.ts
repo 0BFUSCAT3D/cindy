@@ -783,6 +783,25 @@ describe('local application authorization and lifecycle', () => {
     );
     expect(f.call).toHaveBeenCalledTimes(2);
   });
+  it('reclaims quiet process nonces per grant and refuses their late requests instead of replaying', async () => {
+    const f = await fixture(),
+      secret = await f.connect();
+    await f.start(secret);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const interrupt = (nonce: string) =>
+        f.rpc('interrupt', { sessionId: 'run' }, secret, `${nonce}:1`);
+      // session/open above already holds one of the grant's 32 process slots.
+      for (let i = 0; i < 31; i++) await interrupt(`process${String(i).padStart(3, '0')}`);
+      expect((await interrupt('restarted')).error.code).toBe('CLIENT_LIMIT');
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      expect((await interrupt('restarted')).error).toBeUndefined();
+      expect((await interrupt('process000')).error.code).toBe('REQUEST_EXPIRED');
+      expect(f.call).toHaveBeenCalledTimes(32);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('round trips actual MCP calls through ordered events and resolves exactly one host answer', async () => {
     const f = await fixture(),
       secret = await f.connect();
