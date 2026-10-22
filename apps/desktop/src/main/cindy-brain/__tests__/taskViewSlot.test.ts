@@ -7,7 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { InstalledGhost } from '../../../shared/ghost';
-import { GhostTaskViewSlot, type TaskViewSlotDeps } from '../taskViewSlot';
+import { broadcastTaskViewOpen, GhostTaskViewSlot, type TaskViewSlotDeps } from '../taskViewSlot';
 
 function taskGhost(options: { taskView?: boolean; enabled?: boolean; instanceKey?: string } = {}): InstalledGhost {
   return {
@@ -41,6 +41,45 @@ function makeSlot(overrides: Partial<TaskViewSlotDeps> = {}) {
 }
 
 describe('taskViewSlot', () => {
+  // PR #6861 discussion_r4353708280：原有 broadcast=false 用例绕过了真实选窗适配器。
+  // 最小失败输入：只有隐藏沙箱，或主窗正在重载；unit，验证回执及实际投递目标。
+  it.each(['absent', 'loading', 'destroyed-contents', 'crashed', 'closed', 'send-failed', 'ready'] as const)(
+    'only reports delivery when a main renderer can consume it: %s',
+    (state) => {
+      const window = (url: string, main = false) => ({
+        isDestroyed: () => main && state === 'closed',
+        webContents: {
+          getURL: () => url,
+          isDestroyed: () => main && state === 'destroyed-contents',
+          isLoadingMainFrame: () => main && state === 'loading',
+          isCrashed: () => main && state === 'crashed',
+        },
+      });
+      const auxiliary = [
+        window('cindy-ghost://sim/__boot__'),
+        window('file:///app/index.html?secondaryWindow=1#/cc-agent'),
+        window('file:///app/index.html?sidebarWindow=1#/sidebar-window'),
+        window('file:///app/index.html?view=voice-input-overlay'),
+        window('about:blank'),
+      ];
+      const main = window('file:///app/index.html#/cc-agent', true);
+      const windows = state === 'absent' ? auxiliary : [...auxiliary, main];
+      const sent = vi.fn(() => {
+        if (state === 'send-failed') throw new Error('window closed during delivery');
+      });
+      const { slot } = makeSlot({
+        broadcast: (payload) => broadcastTaskViewOpen(
+          windows as Parameters<typeof broadcastTaskViewOpen>[0], payload, sent,
+        ),
+      });
+      expect(slot.handleRequest('sim', {})).toMatchObject(
+        state === 'ready' ? { ok: true, sessionId: 'focused-session' } : { ok: false, errorCode: 'HOST_NOT_READY' },
+      );
+      expect(sent.mock.calls).toEqual(state === 'ready' || state === 'send-failed'
+        ? [[main, { instanceId: 'sim', sessionId: 'focused-session' }]] : []);
+    },
+  );
+
   it('opens in the requested task, or the focused task, and reports where it landed', () => {
     const { slot, pushes } = makeSlot();
     expect(slot.handleRequest('sim', { type: 'task-view-request', sessionId: 'task-1' })).toEqual({ ok: true, sessionId: 'task-1' });

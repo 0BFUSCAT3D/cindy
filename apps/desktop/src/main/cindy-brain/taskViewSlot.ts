@@ -15,8 +15,11 @@
  * 纯逻辑 + 依赖注入:广播在 cindy-brain/index.ts 组装时注入。
  */
 
+import type { BrowserWindow } from 'electron';
+
 import type { GhostPipeTaskViewResult, InstalledGhost } from '../../shared/ghost.js';
 import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
+import { isMainShellWindowUrl } from './scheduleSlot.js';
 
 /** 推给 renderer 的开页载荷(实例 id 由主机按已装清单填,不信自报)。 */
 export interface GhostTaskViewOpenPush {
@@ -24,9 +27,32 @@ export interface GhostTaskViewOpenPush {
   sessionId: string;
 }
 
+/** Electron 投递适配器；保留在槽旁边以便免启动 Electron 验证窗口生命周期。 */
+export function broadcastTaskViewOpen<T extends Pick<BrowserWindow, 'isDestroyed' | 'webContents'>>(
+  windows: T[],
+  payload: GhostTaskViewOpenPush,
+  send: (window: T, payload: GhostTaskViewOpenPush) => void,
+): boolean {
+  let delivered = false;
+  for (const window of windows) {
+    if (window.isDestroyed()) continue;
+    const contents = window.webContents;
+    if (contents.isDestroyed() || contents.isCrashed() ||
+      contents.isLoadingMainFrame() || !isMainShellWindowUrl(contents.getURL())) continue;
+    // 沙箱、副任务窗、侧栏窗不消费此推送；重载期间也不能报告成功。
+    try {
+      send(window, payload);
+      delivered = true;
+    } catch {
+      // 窗口可能在检查后关闭；继续尝试其它主窗口，无投递则回 HOST_NOT_READY。
+    }
+  }
+  return delivered;
+}
+
 export interface TaskViewSlotDeps {
   getGhost(id: string): InstalledGhost | null;
-  /** 把开页请求推给宿主窗口;false = 一个窗口都不在(HOST_NOT_READY)。 */
+  /** 把开页请求推给主窗口;false = 没有可接收的主 Renderer(HOST_NOT_READY)。 */
   broadcast(payload: GhostTaskViewOpenPush): boolean;
   /** 台前任务快照(请求缺省 sessionId 时的落点;非任务页为 null)。 */
   focusedSessionId(): string | null;

@@ -405,7 +405,7 @@ import {
 import { GhostPickSlot } from './pickSlot.js';
 import { recordGhostPickedDir, relocateGhostPickedDirs } from './pickGrantsStore.js';
 import { GhostPreviewSlot } from './previewSlot.js';
-import { GhostTaskViewSlot } from './taskViewSlot.js';
+import { broadcastTaskViewOpen, GhostTaskViewSlot } from './taskViewSlot.js';
 import { GhostScheduleSlot, isMainShellWindowUrl } from './scheduleSlot.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
@@ -3926,7 +3926,7 @@ export function getGhostPreviewSlot(): GhostPreviewSlot {
 
 let taskViewSlotSingleton: GhostTaskViewSlot | null = null;
 
-/** 插件任务页开页通道(main → 全窗口 renderer;在指定任务的右侧栏开 / 聚焦任务页页签)。 */
+/** 插件任务页开页通道(main → 主窗口 renderer;在指定任务的右侧栏开 / 聚焦任务页页签)。 */
 export const GHOST_TASK_VIEW_OPEN_CHANNEL = 'ghosts:task-view-open';
 
 /** 任务页开页槽单例(taskView):资格审与落点解析在 GhostTaskViewSlot,这里只组装广播。 */
@@ -3935,13 +3935,10 @@ export function getGhostTaskViewSlot(): GhostTaskViewSlot {
     taskViewSlotSingleton = new GhostTaskViewSlot({
       getGhost: findGhostForInstanceId,
       focusedSessionId: () => ghostSessionFocusTracker.current(),
-      broadcast: (payload) => {
-        const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
-        windows.forEach((window) => {
-          sendGhostWindowPush(window, GHOST_TASK_VIEW_OPEN_CHANNEL, payload);
-        });
-        return windows.length > 0;
-      },
+      broadcast: (payload) => broadcastTaskViewOpen(
+        BrowserWindow.getAllWindows(), payload,
+        (window, push) => sendGhostWindowPush(window, GHOST_TASK_VIEW_OPEN_CHANNEL, push),
+      ),
       log,
     });
   }
