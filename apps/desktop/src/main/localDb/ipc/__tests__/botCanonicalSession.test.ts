@@ -1,5 +1,5 @@
 import { captureAgentRequest } from '../../../maker-ipc/forwardedRequest';
-import { admitTaskAction, TaskActionAuthorizationError } from '../../../maker-ipc/taskActionAuthorization';
+import { admitTaskAction, assertTaskActionCurrent, TaskActionAuthorizationError } from '../../../maker-ipc/taskActionAuthorization';
 import { formatForwardedRequest } from '../../../../shared/forwardedRequest';
 import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../../../maker-ipc/acceptedCallbackRunner';
 import { setSessionOpeningModelAdmission } from '../../sessionOpening';
@@ -8828,6 +8828,40 @@ describe('Bot Session task end-to-end runtime', () => {
     }
   });
 
+  // #6440 / db: real start -> terminal -> retry with the original tool's expired
+  // async scope. Earlier dispatch fakes never checked the production action guard.
+  it('delivers and retries a durable completion after its starting tool scope expires', async () => {
+    await seedPair();
+    vi.useFakeTimers();
+    let current = true;
+    let rejectCompletion = true;
+    const execution = { instanceId: 'completion-scope', generation: 1 };
+    const runtime = createDelegationRuntime({ readSessionExecution: () => execution,
+      decorateDispatch: dispatch => async params => {
+        await assertTaskActionCurrent();
+        if (params.clientId?.startsWith('bot-delegation-completion:') && rejectCompletion) {
+          rejectCompletion = false;
+          return { ok: false, errorCode: 'NOT_FOUND', message: 'temporary fixture rejection' };
+        }
+        return dispatch(params);
+      },
+    });
+    try {
+      await runOwnerAction('start_session_task', () => current, async () => {
+        const task = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1', objective: 'Completion scope fixture.' });
+        if (!task.ok) throw new Error(task.message);
+        current = false;
+        await expect(assertTaskActionCurrent()).rejects.toThrow('TASK_ACTION_AUTHORIZATION_EXPIRED');
+        await runtime.delegation.settleSession({ childSessionId: task.childSessionId, execution, outcome: 'done', resultText: 'Scoped result' });
+        expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).toBeNull();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).not.toBeNull();
+        expect(h.sqlite!.prepare("SELECT count(*) FROM messages WHERE session_id='session-1' AND client_id LIKE 'bot-delegation-completion:%'").pluck().get()).toBe(1);
+        await expect(assertTaskActionCurrent()).rejects.toThrow('TASK_ACTION_AUTHORIZATION_EXPIRED');
+      });
+    } finally { runtime.dispose(); vi.useRealTimers(); }
+  });
+
   it.each(['accepted', 'rejected', 'paused', 'archived'] as const)('delegated completion notification ownership follows the durable handoff (%s)', async boundary => {
     await seedPair();
     let execution = { instanceId: 'notification-child', generation: 1 };
@@ -8852,9 +8886,15 @@ describe('Bot Session task end-to-end runtime', () => {
       // receipt, not source=bot, an avatar, title, or a Bot Session link.
       expect(h.sqlite!.prepare('SELECT source FROM sessions WHERE id=?').pluck().get(task.childSessionId)).toBe('desktop');
       expect(h.sqlite!.prepare('SELECT count(*) FROM bot_session_links WHERE session_id=?').pluck().get(task.childSessionId)).toBe(0);
+      // #6440 / db: follow-up yields before settlement and during delivery
+      // failure, but only for the requester and this accepted execution.
+      const followUp = () => runtime.delegation.isCompletionHandledByTeammate(task.childSessionId, { pendingForBotId: 'bot-a' });
+      expect(await followUp()).toBe(true);
+      expect(await runtime.delegation.isCompletionHandledByTeammate(task.childSessionId, { pendingForBotId: 'other' })).toBe(false);
       const settlement = runtime.delegation.settleSession({ childSessionId: task.childSessionId, execution, outcome: 'done', resultText: 'Final fixture result' });
       const ownership = runtime.delegation.isCompletionHandledByTeammate(task.childSessionId);
       await waiting;
+      expect(await followUp()).toBe(true);
       let resolved = false;
       void ownership.then(() => { resolved = true; });
       await Promise.resolve();
@@ -8866,7 +8906,9 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(h.sqlite!.prepare("SELECT content FROM messages WHERE session_id='session-1' AND client_id LIKE 'bot-delegation-result:%'").pluck().get()).toBe('Final fixture result');
       expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id=?').pluck().get(task.childSessionId)).toBe('active');
       expect(await runtime.delegation.isCompletionHandledByTeammate(task.childSessionId)).toBe(boundary === 'accepted');
+      expect(await followUp()).toBe(true);
       execution = { ...execution, generation: 2 };
+      expect(await followUp()).toBe(false);
       expect(await runtime.delegation.isCompletionHandledByTeammate(task.childSessionId)).toBe(false);
     } finally { release(); runtime.dispose(); }
   });

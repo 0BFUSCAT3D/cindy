@@ -14,7 +14,7 @@ import type { BotGlance } from '../../../shared/botAutonomy.js';
 const h = vi.hoisted(() => ({
   scope: 'a', scheduler: 'sched' as string | null, ready: true,
   glance: vi.fn(), refreshRemote: vi.fn(),
-  readMetas: vi.fn(), readOwnership: vi.fn(),
+  readMetas: vi.fn(), readOwnership: vi.fn(), handled: vi.fn(),
 }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => h.scope, isAppSessionBoundaryPending: () => false,
@@ -28,7 +28,7 @@ vi.mock('../../maker-host/bot-autonomy-settings-store.js', () => ({
 vi.mock('../hostData.js', () => ({
   readLocalSessionMetas: h.readMetas, readTaskOwnership: h.readOwnership, readBotDirectory: vi.fn(),
 }));
-import { currentFollowUpEvents, getBotAutonomyGlance, setActiveBotAutonomy } from '../hub.js';
+import { configureBotAutonomyHost, currentFollowUpEvents, getBotAutonomyGlance, setActiveBotAutonomy } from '../hub.js';
 
 const meta = (id: string, source = 'desktop'): LocalSessionMeta => ({
   id, source, title: 'Completed task', workingDir: null, status: 'active', hiddenAt: null,
@@ -40,6 +40,8 @@ const events = ['mine', 'delegated', 'shared', 'deleted'].map(subject => ({
 }));
 beforeEach(() => {
   h.scope = 'a'; h.scheduler = 'sched'; h.ready = true;
+  h.handled.mockReset().mockResolvedValue(false);
+  configureBotAutonomyHost({ isCompletionHandledByTeammate: h.handled });
   h.refreshRemote.mockReset().mockResolvedValue(undefined);
   h.glance.mockReset().mockReturnValue({
     botId: 'sched', scope: 'all', waiting: [], working: [], lastSweepAt: 0, doneToday: 0, offlineDevices: [],
@@ -121,4 +123,27 @@ it('returns the cached glance while a remote peer is still pending or fails', as
     await Promise.resolve();
   }
   expect(await getBotAutonomyGlance('sched', undefined, false)).toBe(projection);
+});
+
+// #6440 / unit: a queued finished event and a dedicated receipt previously both
+// woke the parent. Exercise the production built-in dispatch gate, preserving
+// the published event for custom routines and unrelated events in the same batch.
+it('filters only receipt-owned completion from built-in follow-up without mutating published events', async () => {
+  h.handled.mockImplementation(async id => id === 'delegated');
+  const failed = { ...events[1], event: { ...events[1].event, type: 'errored' } };
+  const batch = [...events, failed];
+  const result = await currentFollowUpEvents('sched', batch);
+  expect(result?.events).toEqual([events[0], failed]);
+  expect(result?.canDispatch()).toBe(true);
+  expect(batch).toEqual([...events, failed]);
+  expect(h.handled).toHaveBeenCalledWith('delegated', 'sched');
+});
+
+it.each(['unready', 'failed', 'account-changed'] as const)('defers a %s receipt read and retries the original completion batch', async state => {
+  if (state === 'unready') h.handled.mockResolvedValueOnce(null);
+  else if (state === 'failed') h.handled.mockRejectedValueOnce(new Error('database unavailable'));
+  else h.handled.mockImplementationOnce(async () => { h.scope = 'b'; return false; });
+  expect(await currentFollowUpEvents('sched', events)).toBeNull();
+  h.scope = 'a';
+  expect((await currentFollowUpEvents('sched', events))?.events).toEqual([events[0], events[1]]);
 });

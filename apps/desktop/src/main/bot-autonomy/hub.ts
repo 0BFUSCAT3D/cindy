@@ -27,6 +27,8 @@ import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 const log = createLogger('bot-autonomy');
 
 export interface BotAutonomyHostDeps {
+  /** Same native execution has a dedicated receipt for this follower, including pending delivery. */
+  isCompletionHandledByTeammate(sessionId: string, botId: string): Promise<boolean | null>;
   /** 某个本机任务当前挂起的交互请求（只读）。 */
   getPendingInteractions(sessionId: string): readonly unknown[];
   getMainWindow(): BrowserWindow | null;
@@ -154,7 +156,22 @@ export async function currentFollowUpEvents(botId: string, events: RoutineRun['e
     });
   const allowedNow = () => filterFollowUpEvents(botId, events, watch.list(),
     resolveSchedulerBotId(readBotAutonomySettingsOverride(), ownership.bots), ownership.bots, Date.now(), subjects);
-  const allowed = allowedNow();
+  const eligible = allowedNow();
+  // Only the built-in follow-up consumes this gate. Keep publishing host events
+  // for user-authored routines, and recheck persisted batches before model work.
+  let handled: (boolean | null)[];
+  try {
+    handled = await Promise.all(eligible.map(({ event }) => event.type === 'finished'
+      && typeof event.subject === 'string'
+      ? hostDeps.isCompletionHandledByTeammate?.(event.subject, botId) ?? Promise.resolve(null)
+      : Promise.resolve(false)));
+  } catch (error) {
+    log.warn('autonomy completion ownership deferred', { error: errorCode(error) });
+    return null;
+  }
+  if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead
+    || handled.includes(null)) return null;
+  const allowed = eligible.filter((_event, index) => !handled[index]);
   return { events: allowed, canDispatch: () => current === active && scopeIsCurrent(active.scope) && watch.isReady()
-    && watch.getBots() === botsAtRead && allowedNow().length === allowed.length };
+    && watch.getBots() === botsAtRead && allowedNow().length === eligible.length };
 }

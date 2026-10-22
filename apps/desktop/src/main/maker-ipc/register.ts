@@ -3585,6 +3585,8 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
 
 // 伙伴自主跟进：状态表读「等你的那句话」只取请求本身（不含 persistId 等宿主内部字段）。
 configureBotAutonomyHost({
+  isCompletionHandledByTeammate: (sessionId, botId) => botDelegationServiceHolder
+    ?.isCompletionHandledByTeammate(sessionId, { pendingForBotId: botId }) ?? Promise.resolve(null),
   getPendingInteractions: (sessionId) => getPendingInteractionsForSession(sessionId).map((entry) => entry.request),
 });
 

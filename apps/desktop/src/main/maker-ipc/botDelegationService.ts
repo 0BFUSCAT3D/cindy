@@ -2,7 +2,7 @@ import { signalBotAutonomyBotsChanged } from '../bot-autonomy/botsChangedSignal.
 import { formatForwardedRequest, captureAgentRequest, type CapturedAgentRequest } from './forwardedRequest.js';
 import { readForwardedRequestSource, type AgentRequestReceipt, type ForwardedRequestSource } from '../../shared/forwardedRequest.js';
 import { openSession } from '../localDb/sessionOpening.js';
-import { approvedTaskDelegation, captureTaskActionGuard, captureTaskActionSyncGuard, TaskActionAuthorizationError } from './taskActionAuthorization.js';
+import { approvedTaskDelegation, captureTaskActionGuard, captureTaskActionSyncGuard, runHostCompletionDelivery, TaskActionAuthorizationError } from './taskActionAuthorization.js';
 import { authorizeGroupTool, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
 import { existsSync, statSync } from 'node:fs';
@@ -1028,7 +1028,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     resultSummary?: string | null;
     artifacts?: BotDelegationArtifact[];
     lastError?: string | null;
-  }, attempt = 0): Promise<boolean> => {
+  }, attempt = 0): Promise<boolean> => runHostCompletionDelivery(async () => {
     const previousDelivery = completionInFlight.get(params.id);
     if (previousDelivery) await previousDelivery.catch(() => undefined);
     let releaseDelivery!: () => void;
@@ -1271,7 +1271,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         completionInFlight.delete(params.id);
       }
     }
-  };
+  });
 
   function scheduleCompletionRetry(
     params: Parameters<typeof deliverCompletion>[0],
@@ -4347,20 +4347,29 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     return settlement;
   };
 
-  const isCompletionHandledByTeammate = async (childSessionId: string): Promise<boolean> => {
+  const isCompletionHandledByTeammate = async (
+    childSessionId: string,
+    options?: { pendingForBotId: string },
+  ): Promise<boolean> => {
     const execution = deps.readSessionExecution?.(childSessionId);
     if (!execution) return false;
-    await terminalSettlements.get(childSessionId);
+    // Follow-up must yield to the dedicated receipt even before settlement or
+    // during delivery retries. System notifications still require accepted delivery.
+    if (!options) await terminalSettlements.get(childSessionId);
     const [row] = await getDbClient().drizzle.select().from(botDelegations)
       .where(eq(botDelegations.childSessionId, childSessionId)).limit(1);
-    if (!row || row.status !== 'completed' || row.completionDeliveredAt == null || row.acceptedAt == null) return false;
+    if (!row || row.acceptedAt == null) return false;
     const snapshot = parseRecord(row.permissionSnapshotJson);
     const accepted = snapshot.taskExecution as (DelegationExecutionReceipt & { runSequence: number }) | undefined;
+    if (accepted?.runSequence !== row.runSequence || !isSameSessionExecution(accepted, execution)
+      || !sameExecution(childSessionId, execution)) return false;
+    if (options) return row.requestingBotId === options.pendingForBotId;
+    if (row.status !== 'completed' || row.completionDeliveredAt == null) return false;
     const terminal = snapshot.taskTerminal as {
       runSequence: number; execution: DelegationExecutionReceipt; outcome: string;
     } | undefined;
-    if (accepted?.runSequence !== row.runSequence || terminal?.runSequence !== row.runSequence
-      || terminal.outcome !== 'done' || !isSameSessionExecution(accepted, execution)
+    if (terminal?.runSequence !== row.runSequence
+      || terminal.outcome !== 'done'
       || !isSameSessionExecution(terminal.execution, execution) || !sameExecution(childSessionId, execution)) return false;
     // An archived/paused requester cannot produce a new public reply. Preserve
     // the task notice in that case, including delivery failures held for resume.
