@@ -13873,7 +13873,8 @@
         "modelListAria": "Model list",
         "modelSelectorAria": "Model selector",
         "categoryListAria": "{{category}} models",
-        "effortListAria": "Reasoning effort"
+        "effortListAria": "Reasoning effort",
+        "boundLocationLocked": "Bound tasks keep running where they are. Choose a model from that computer."
       }
     },
     "toast": {

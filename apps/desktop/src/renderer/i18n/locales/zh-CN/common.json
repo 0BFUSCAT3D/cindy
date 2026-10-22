@@ -13825,7 +13825,8 @@
         "modelListAria": "模型列表",
         "modelSelectorAria": "模型选择器",
         "categoryListAria": "{{category}} 模型",
-        "effortListAria": "Effort 级别"
+        "effortListAria": "Effort 级别",
+        "boundLocationLocked": "绑定的任务在原来的电脑上运行，请选择那台电脑上的模型。"
       }
     },
     "toast": {

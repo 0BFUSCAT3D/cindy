@@ -13825,7 +13825,8 @@
         "modelListAria": "モデル一覧",
         "modelSelectorAria": "モデルセレクター",
         "categoryListAria": "{{category}} モデル",
-        "effortListAria": "推論強度"
+        "effortListAria": "推論強度",
+        "boundLocationLocked": "紐づけたタスクは元のコンピューターで実行されます。そのコンピューターのモデルを選んでください。"
       }
     },
     "toast": {
