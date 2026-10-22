@@ -85,11 +85,21 @@ describe('AskUserQuestion voice entry', () => {
     expect(badge.parentElement).toBe(voice.parentElement);
     expect(badge.parentElement!.lastElementChild).toBe(badge);
     expect(voice.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(view.getByRole('button', { name: '输入其他回答…' })).toBeTruthy();
+    expect(view.getByRole('button', { name: /输入其他回答…/ })).toBeTruthy();
 
     fireEvent.click(badge);
     expect(view.getByPlaceholderText('请输入回答…')).toBeTruthy();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it('keeps the free-text number in the row button for screen readers', () => {
+    const { view } = renderAsk([
+      { question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] },
+    ]);
+    const row = view.getByRole('button', { name: /输入其他回答…/ });
+    expect(row.textContent).toContain('3');
+    expect(row.querySelector('.sr-only')?.textContent).toBe('3');
+    expect(view.getByTestId('ask-user-custom-badge').getAttribute('aria-hidden')).toBe('true');
   });
 
   it('keeps the voice button in the same bottom-pinned cluster as the send button', () => {
@@ -335,7 +345,7 @@ describe('voice shortcut ownership across cards', () => {
 
   it('still gives the press to a focused worker card over the Orca lead card', async () => {
     const { view, voiceIn } = renderPanes(['expanded', 'expanded'], 0);
-    within(view.getByTestId('pane-1')).getByRole('button', { name: '输入其他回答…' }).focus();
+    within(view.getByTestId('pane-1')).getByRole('button', { name: /输入其他回答…/ }).focus();
     await press({ id: 'p1', phase: 'start' });
 
     await waitFor(() => expect(start).toHaveBeenCalledOnce());
@@ -345,12 +355,36 @@ describe('voice shortcut ownership across cards', () => {
 
   it('follows keyboard focus to an older card', async () => {
     const { view, voiceIn } = renderPanes();
-    within(view.getByTestId('pane-0')).getByRole('button', { name: '输入其他回答…' }).focus();
+    within(view.getByTestId('pane-0')).getByRole('button', { name: /输入其他回答…/ }).focus();
     await press({ id: 'p1', phase: 'start' });
 
     await waitFor(() => expect(start).toHaveBeenCalledOnce());
     expect(voiceIn(0).getAttribute('aria-pressed')).toBe('true');
     expect(voiceIn(1).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('still acts on a local key press that a sibling composer already prevented', async () => {
+    const previous = window.electronAPI;
+    window.electronAPI = {
+      ...previous,
+      voiceInput: { ...previous.voiceInput, getDataSnapshot: () => ({ settings: { shortcut: { code: 'F9', key: 'F9', modifiers: { meta: false, ctrl: false, alt: false, shift: false, fn: false } } } }) },
+    } as unknown as typeof window.electronAPI;
+    // Registered before the cards mount, like a composer in an earlier pane:
+    // it runs first and prevents the default for every matching press.
+    const siblingComposer = (event: Event) => event.preventDefault();
+    window.addEventListener('keydown', siblingComposer, true);
+    try {
+      const { view, voiceIn } = renderPanes();
+      const focused = within(view.getByTestId('pane-0')).getByRole('button', { name: /输入其他回答…/ });
+      focused.focus();
+      await act(async () => {
+        focused.dispatchEvent(new KeyboardEvent('keydown', { key: 'F9', code: 'F9', bubbles: true, cancelable: true }));
+      });
+      expect(voiceIn(0).getAttribute('aria-pressed')).toBe('true');
+    } finally {
+      window.removeEventListener('keydown', siblingComposer, true);
+      window.electronAPI = previous;
+    }
   });
 
   it('leaves the press unclaimed when another text field has focus', async () => {

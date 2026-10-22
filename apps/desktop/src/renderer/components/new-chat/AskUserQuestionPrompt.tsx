@@ -554,9 +554,12 @@ function AskUserQuestionForm({
       beginVoiceInput();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || event.isComposing || event.defaultPrevented) return;
+      if (event.repeat || event.isComposing) return;
       const shortcut = getVoiceInputSettings().shortcut;
       if (!isVoiceInputShortcutMatch(event, shortcut)) return;
+      // No defaultPrevented check: an unfocused sibling composer swallows every
+      // matching press to keep it out of other inputs, so that flag says nothing
+      // about who should act. Ownership alone decides.
       if (!shortcutCard.owns(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
@@ -942,10 +945,13 @@ function AskUserQuestionForm({
               <span className="text-14 italic text-[var(--ask-option-custom)]">
                 {t('chat.askUserQuestion.customAnswer')}
               </span>
+              {/* The visible badge moved out of the button; keep its number in the
+                  button for screen readers, as the option rows do. */}
+              <span className="sr-only">{options.length + 1}</span>
             </button>
             {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} onClick={beginVoiceInput} />)}
-            {/* Pointer shortcut only: the row button above and the number key
-                already give keyboard and screen-reader users this action. */}
+            {/* Pointer shortcut only: the row button above already carries the
+                action and its number for keyboard and screen-reader users. */}
             <div
               aria-hidden="true"
               data-testid="ask-user-custom-badge"
