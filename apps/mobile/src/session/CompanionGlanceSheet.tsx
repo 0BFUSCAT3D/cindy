@@ -68,8 +68,8 @@ export function CompanionGlanceSheet({
   cloudHome: boolean;
   todos: GlanceTodoState;
   onQuoteTodo(todo: TeammateTodo): void;
-  /** 「帮我查查」: ask the teammate, as the owner, to look for new todos now. */
-  onCheckTodos(): void;
+  /** 「帮我查查」: ask the teammate, as the owner, to look for new todos now; absent while this chat cannot send. */
+  onCheckTodos?(): void;
   onOpenTask(sessionId: string): void;
   onOpenCindy(hosted: HostedRemoteCollectionItem): void;
   onSwitchHome(): void;
@@ -87,7 +87,7 @@ export function CompanionGlanceSheet({
       </View>
       <Computers botId={botId} deviceId={deviceId} deviceName={deviceName} online={online} cloudHome={cloudHome}
         onOpenCindy={hosted => afterClose(() => onOpenCindy(hosted))} onSwitchHome={() => afterClose(onSwitchHome)} />
-      <Todos todos={todos} online={online} onQuote={todo => afterClose(() => onQuoteTodo(todo))} onCheck={() => afterClose(onCheckTodos)} />
+      <Todos todos={todos} online={online} onQuote={todo => afterClose(() => onQuoteTodo(todo))} onCheck={onCheckTodos ? () => afterClose(onCheckTodos) : undefined} />
       <Outputs botId={botId} deviceId={deviceId} sessionId={sessionId} online={online}
         onOpenTask={taskId => afterClose(() => onOpenTask(taskId))} />
     </ScrollView>
@@ -192,7 +192,7 @@ function sourceText(todo: TeammateTodo, t: (key: string) => string): string {
 }
 
 function Todos({ todos, online, onQuote, onCheck }: {
-  todos: GlanceTodoState; online: boolean; onQuote(todo: TeammateTodo): void; onCheck(): void;
+  todos: GlanceTodoState; online: boolean; onQuote(todo: TeammateTodo): void; onCheck?(): void;
 }) {
   const { t, i18n } = useTranslation();
   const { colors } = useTheme();
@@ -206,7 +206,7 @@ function Todos({ todos, online, onQuote, onCheck }: {
   // Not offered by this desktop, or not read yet while offline: no section at all.
   if (!todos.loaded) return null;
   const checkRow = <Row key="check" icon={<ScanSearch size={ICON_GLYPH} strokeWidth={iconStroke.regular} color={colors.textSecondary} />}
-    title={t('devices.glance.check')} meta={t('devices.glance.checkMeta')} onPress={online ? onCheck : undefined} testID="companion.glance.todo.check" />;
+    title={t('devices.glance.check')} meta={t('devices.glance.checkMeta')} muted={!online || !onCheck} onPress={online ? onCheck : undefined} testID="companion.glance.todo.check" />;
   const changeDaily = async (next: boolean) => {
     setError(null);
     setDailyBusy(true);

@@ -272,7 +272,12 @@ export function BotRoutines({
               routine={routine}
               disabled={busy}
               onEnabledChange={(enabled) =>
-                void act(() => window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id))
+                void act(() =>
+                  // 每天查待办与近况开关同一个入口：恢复时按当前模板重建，并通知近况。
+                  routine.builtin === 'todo-check'
+                    ? window.electronAPI.localDb.bots.todos.dailyCheck(botId, enabled)
+                    : window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id),
+                )
               }
             />
           ) : (

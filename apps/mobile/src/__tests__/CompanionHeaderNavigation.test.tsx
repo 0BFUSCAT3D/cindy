@@ -127,7 +127,7 @@ const moduleConstant = (name: string) => source.statements.find(n => ts.isVariab
   && n.declarationList.declarations.some(d => d.name.getText(source) === name))!.getText(source);
 const compiled = ts.transpileModule(`${moduleConstant('COMPANION_NATIVE_HEADER_OPTIONS')}
 function PageHost({ bindings }) {
-  const { auth, deviceId, sessionId, companionResource, companionEntry, shareSelectionActive, setSearchOpen, goBackToHome, companionWorkingLabel, quoteTodoInComposer, askCompanionInComposer } = bindings;
+  const { auth, deviceId, sessionId, companionResource, companionEntry, shareSelectionActive, setSearchOpen, goBackToHome, companionWorkingLabel, quoteTodoInComposer, askCompanionInComposer, canUseComposer, composerDraftHydrated } = bindings;
   const currentSession = null;
   const isSideChatSheet = false;
   const companionSettingsRequest = bindings.companionSettingsRequest;
@@ -143,7 +143,7 @@ const PageHost = new Function('React', 'useState', 'useHostManagedSession', 'Com
 const pageBindings = () => ({ auth: h.auth, deviceId: 'pc', sessionId: 'session-a', shareSelectionActive: false,
   companionEntry: { ready: true },
   companionResource: { ref: { kind: 'bot', collectionId: 'bots', id: 'bot-a' }, display: { title: 'Cindy' } } as RemoteResource | null,
-  setSearchOpen: vi.fn(), goBackToHome: vi.fn(), companionWorkingLabel: null as string | null, quoteTodoInComposer: vi.fn(), askCompanionInComposer: vi.fn() });
+  setSearchOpen: vi.fn(), goBackToHome: vi.fn(), companionWorkingLabel: null as string | null, quoteTodoInComposer: vi.fn(), askCompanionInComposer: vi.fn(), canUseComposer: true, composerDraftHydrated: true });
 const showPage = (bindings: ReturnType<typeof pageBindings>) => act(async () => { root.render(<PageHost bindings={bindings} />); });
 
 it('wires the page: title while entry validation runs, Back to the roster, and the working breath', async () => {
@@ -202,6 +202,9 @@ it('reads todos only for an advertised, online host, and clears the due dot by o
   // 「帮我查查」 is the owner's own words, sent through this chat's composer.
   await act(async () => h.glance.onCheckTodos());
   expect(props.onAskCompanion).toHaveBeenCalledWith('devices.glance.checkPrompt');
+  // While the chat cannot take it (read-only, locked, draft not restored) 「帮我查查」 is not offered.
+  await act(async () => root.render(<CompanionHeader {...props} resource={withTodos} askCompanionReady={false} />));
+  expect(h.glance.onCheckTodos).toBeUndefined();
   await act(async () => h.glance.onOpenTask('child-1'));
   expect(h.push).toHaveBeenCalledWith({ pathname: '/sessions/[sessionId]', params: { sessionId: 'child-1', deviceId: 'pc' } });
 });
