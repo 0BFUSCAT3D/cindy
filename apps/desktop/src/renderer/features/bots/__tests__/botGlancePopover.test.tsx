@@ -91,6 +91,7 @@ const dailyCheck = vi.fn(async (_botId: string, enabled?: boolean) => (dailyOn =
 beforeEach(() => {
   items = [];
   dailyOn = false;
+  dailyCheck.mockImplementation(async (_botId: string, enabled?: boolean) => (dailyOn = enabled ?? dailyOn));
   h.local = [];
   h.remote = [];
   h.delegations = [];
@@ -159,6 +160,28 @@ describe('BotGlanceButton', () => {
     dailyOn = false;
     await act(async () => routinesChanged?.());
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+  });
+
+  it('keeps the switch when the host refuses it, and hides it for a teammate on an older desktop', async () => {
+    dailyCheck.mockImplementation(async (_botId: string, enabled?: boolean) => {
+      if (enabled !== undefined) throw new Error('The teammate is paused');
+      return false;
+    });
+    await openGlance();
+    const toggle = (await screen.findByTestId('bot-glance-daily-check')).querySelector('[role="switch"]')!;
+    fireEvent.click(toggle);
+    await waitFor(() => expect(h.toastError).toHaveBeenCalledWith('bots.glance.dailyCheckFailed'));
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    cleanup();
+
+    // Another computer whose host predates the switch: its todo page has no dailyCheck field.
+    const invoke = window.electronAPI.deviceLink.invoke as ReturnType<typeof vi.fn>;
+    invoke.mockResolvedValue({ blocks: [{ primitive: 'teammate-todos', data: { items: [], total: 0 } }] });
+    render(<BotGlanceButton bot={{ ...bot, deviceId: 'mini', deviceName: 'Mac-mini' }} cloudHome={false} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('bot-glance-button'));
+    expect(await screen.findByTestId('bot-glance-check')).toBeTruthy();
+    expect(screen.queryByTestId('bot-glance-daily-check')).toBeNull();
   });
 
   it('lights the entry dot for a due todo until 近况 is opened, and marks the row itself', async () => {
