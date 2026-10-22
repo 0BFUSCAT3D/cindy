@@ -36,8 +36,10 @@
   回 `{ ok: true, sessionId }`,没有则 `HOST_NOT_READY`。用它决定自己的界面(如 mainView
   管理页)要不要出现"在当前任务中打开"一类入口——整页主视图里通常没有台前任务;
   台前任务会变,需要时重新问;
-- 旧版 Cindy 不认识 `taskView`,装入时会忽略该字段,`cindy.taskView` 也不存在。需要
-  兼容旧版时先判断 `typeof cindy.taskView === 'function'`,不支持就退回 preview(§4.15);
+- 使用 `taskView` 的插件须将 `minCindyVersion` 设为实际支持并完成整包验收的宿主版本。
+  旧宿主可能保留未知的顶层字段,但会拒绝 `locale.taskView` 或 v2 的 `task-view` 槽;
+  仅判断 `typeof cindy.taskView === 'function'` 不能保证旧版可安装。确需兼容旧版时,
+  必须验证整个包的声明与本地化均可安装,再以 preview(§4.15)作为运行时回退;
 - 任务页与 panel / mainView 共用同一 Ghost WebView 沙箱:零 Node、零通用 preload、每插件
   专属 partition、CSP 与导航守门不变,本身不附赠联网、文件或凭证能力;通信、唤醒与
   主题规则同 §5;

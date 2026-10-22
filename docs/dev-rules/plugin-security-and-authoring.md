@@ -757,7 +757,8 @@ panel / mainView 同一 Ghost WebView 沙箱（零桥、专属分区），只经
 聚焦它：只承载包内页面、不收网址，因此不设 preview 式白名单与限速；Host 只做资格审
 （已装、启用、声明 taskView）与落点解析（显式任务优先，缺省台前任务），回执带回落点
 任务。远程任务不投影本机插件的任务页；插件停用、卸载或不再声明 taskView 时页签隐藏。
-旧版 Host 把 `taskView` 当未知字段保留并忽略，插件需判断 `cindy.taskView` 是否存在后再用。
+使用该能力的插件须声明实际支持且完成整包验收的最低宿主版本。旧 Host 可能保留未知顶层
+字段，但会拒绝 `locale.taskView` 或 v2 的 `task-view` 槽；运行时检测 API 不能替代安装兼容验证。
 `mainView.icon` 只接受 Cindy 系统线性图标
 `puzzle`、`globe`、`code`、`folder`、`database`、`chart-column`、`image`、
 `message-circle`、`calendar-days`，缺省回退 `puzzle`。枚举值直接等于图标名，不设别名；
