@@ -7050,14 +7050,19 @@ export class PiAgent extends BaseAgent {
      * Pi 拒绕（开启失败）或与当前能力对不上。
      */
     const applyThinkingEnabled = async (enabled: boolean): Promise<void> => {
+      // 目标模型不支持思考（快照为空）时没有什么可开：下发 off 并**保留**用户原来的
+      // 档位记忆。否则同路由重选这类模型会发 xhigh、成功后还把 mutableEffort 改成
+      // xhigh，用户之后切回支持 xhigh 的模型就被静默改了档。
+      const thinkingUnsupported = activeEffortSnapshot !== undefined && activeEffortSnapshot.length === 0;
+      const wanted = enabled && !thinkingUnsupported;
       const remembered = pickSupportedEffort(activeEffortSnapshot, mutableEffort, startupEffort);
       // 打开时回到会话当前的期望档位，而不是固定 xhigh：显式开关不该把用户选好的
       // max/medium 抹平——否则紧随其后的切模按 mutableEffort 归一化时又会把它降档。
       // 没有可用期望档位时才回到历史默认 xhigh。
-      const targetEffort = enabled ? remembered : null;
+      const targetEffort = wanted ? remembered : null;
       const level = targetEffort
         ? effortToPiThinkingLevel(targetEffort)
-        : enabled
+        : wanted
           ? 'xhigh'
           : 'off';
       const resp = await proc.request({
@@ -7067,10 +7072,10 @@ export class PiAgent extends BaseAgent {
       if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
       // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
       // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
-      thinkingExplicitlyOff = !enabled;
-      // 只在打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
+      thinkingExplicitlyOff = !wanted;
+      // 只在真的打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
       // 再打开应回到原档位，而不是回落到启动时的档位。
-      if (enabled) mutableEffort = targetEffort ?? 'xhigh';
+      if (wanted) mutableEffort = targetEffort ?? 'xhigh';
     };
     const switchModel = async (
       model: string,

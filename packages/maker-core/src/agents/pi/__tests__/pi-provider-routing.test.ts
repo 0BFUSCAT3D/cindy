@@ -4789,6 +4789,61 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("keeps thinking off and the remembered tier on a same-route select of a non-thinking model", async () => {
+    // 同路由重选不支持思考的模型：下发 xhigh 会让请求"成功"但改动档位记忆，
+    // 用户之后切回支持 xhigh 的模型就被静默改成 xhigh。
+    const denseMap = {
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    } as const;
+    const agent = new PiAgent(
+      byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-a",
+              name: "Native A",
+              baseUrl: "http://a.test",
+              api: "openai-responses",
+              models: [
+                { id: "model-a", reasoning: true, thinkingLevelMap: { ...denseMap } },
+                { id: "model-plain", reasoning: false },
+              ],
+            },
+          ],
+          env: {},
+        }),
+        [
+          { id: "model-a", displayName: "A", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+          { id: "model-plain", displayName: "Plain", contextWindow: 200_000, efforts: [], defaultEffort: null },
+        ],
+      ),
+    );
+    const handle = await agent.startSession({
+      sessionId: "same-route-non-thinking-model",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "native-a",
+      effort: "high",
+    });
+    await handle.setModel!("model-plain", { providerId: "native-a" });
+    const beforeSwitch = captured.requests.length;
+
+    await handle.setModel!("model-plain", { providerId: "native-a", thinkingEnabled: true });
+
+    const levels = captured.requests
+      .slice(beforeSwitch)
+      .filter((request) => request.type === "set_thinking_level")
+      .map((request) => String(request.level));
+    expect(levels).toEqual(["off"]);
+    expect(handle.getEffort!()).toBe("high");
+    await handle.close();
+  });
+
   it("picks a tier the current model supports when re-enabling thinking", () => {
     // 用户先在 high 关闭思考、再不带到档位切到不支持 high 的模型：记忆档位仍是 high，
     // 重新开启时直接下发会被拒（开启失败）或与当前能力对不上。
