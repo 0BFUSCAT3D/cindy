@@ -18,6 +18,7 @@ import { sessions } from '../localDb/schema';
 import { buildSkipResultText, executePreRunHook, formatPreRunHookFailure } from './pre-run-hook';
 import { capAppend, killProcessTree } from './proc-util';
 import type { SchedulerDrizzleDb } from './storage';
+import { restoreScheduledTarget } from './restore-target';
 
 const PROTOCOL = 'cindy-script/1' as const;
 const LEGACY_PROTOCOL = 'xdt-maker-script/1' as const;
@@ -163,7 +164,7 @@ export class ScriptScheduleRunner {
     }
   }
 
-  private async retireUnavailableOwner(schedule: Schedule, ctx: FireContext): Promise<FireResult | null> {
+  private async retireUnavailableOwner(schedule: Schedule, ctx: FireContext, restore = false): Promise<FireResult | null> {
     // The owner is a lifecycle binding, not an agent execution mode. Check before
     // hooks so idle scripts stop too, even when they have no event to dispatch.
     if (schedule.targetSessionId) {
@@ -171,13 +172,14 @@ export class ScriptScheduleRunner {
         throw new Error('bound script execution requires session storage and scheduler');
       }
       const [owner] = await this.deps.getDb()
-        .select({ status: sessions.status }).from(sessions)
+        .select({ status: sessions.status, workingDir: sessions.workingDir, remoteHostId: sessions.remoteHostId }).from(sessions)
         .where(eq(sessions.id, schedule.targetSessionId)).limit(1);
-      if (!owner || owner.status === 'archived' || owner.status === 'deleted') {
+      if (!owner || owner.status === 'deleted') {
         await this.deps.scheduler.pause(schedule.id, { exemptRunId: ctx.runId });
         return { sessionId: '', skipped: true,
           resultText: `Script stopped: target session ${owner?.status ?? 'missing'}` };
       }
+      if (restore) await restoreScheduledTarget(schedule.targetSessionId, owner, ctx.signal);
     }
 
     return null;
@@ -196,7 +198,7 @@ export class ScriptScheduleRunner {
     }
 
     if (schedule.targetSessionId) {
-      const retired = await this.retireUnavailableOwner(schedule, ctx);
+      const retired = await this.retireUnavailableOwner(schedule, ctx, true);
       if (retired) return retired;
     }
 
@@ -388,9 +390,9 @@ export class ScriptScheduleRunner {
             : result;
         writeFrame({ type: 'call_result', id: frame.id, ok: true, result: responseResult });
       } catch (error) {
-        // The owner may be archived after the pre-run check. Only a typed
-        // dispatch rejection for this bound owner retires the schedule; transient
-        // failures and unbound multi-target scripts keep their normal lifecycle.
+        // Recheck typed owner rejections after preparation. Only deleted/missing
+        // owners retire the schedule; archiving and transient dispatch failures
+        // leave the automation active for its next occurrence.
         const failure = safeError(error);
         if (schedule.targetSessionId && frame.method === 'sessions.dispatch'
           && (!frame.params?.target_session_id || frame.params.target_session_id === schedule.targetSessionId)
