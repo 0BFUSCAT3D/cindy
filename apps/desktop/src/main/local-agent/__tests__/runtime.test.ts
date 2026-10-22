@@ -155,6 +155,22 @@ describe('native event projection', () => {
       expect(emit.mock.calls[2][0].data).toEqual({ input: 15, cached: 5, output: 2 });
     },
   );
+  it('fails a dismissed interaction only at the native boundary, after its usage', () => {
+    const emit = vi.fn(),
+      p = createEventProjection(emit);
+    p.begin();
+    p.failAtEnd('interaction unavailable');
+    p.accept({ type: 'text', data: { text: 'wrapping up', isFinal: false } } as any);
+    p.accept({
+      type: 'done',
+      data: { status: 'completed', usage: { inputTokens: 3, outputTokens: 1 } },
+    } as any);
+    expect(emit.mock.calls.map(([e]) => e)).toEqual([
+      { type: 'text', data: 'wrapping up' },
+      { type: 'usage', data: { input: 3, cached: 0, output: 1 } },
+      { type: 'turn_end', data: { status: 'failed', message: 'interaction unavailable' } },
+    ]);
+  });
   it('appends a final-only tail per message and never repeats a diverged snapshot', () => {
     const emit = vi.fn(),
       p = createEventProjection(emit);

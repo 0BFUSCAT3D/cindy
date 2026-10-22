@@ -13,6 +13,17 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createServer, request } from 'node:http';
 import { once } from 'node:events';
+const grantWrites = vi.hoisted(() => ({ fail: false }));
+vi.mock('../../utils/atomicWriteFile.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/atomicWriteFile.js')>();
+  return {
+    ...actual,
+    atomicWriteFileSync: (file: string, contents: string) => {
+      if (grantWrites.fail && file.endsWith('grants.json')) throw new Error('disk rejected write');
+      actual.atomicWriteFileSync(file, contents);
+    },
+  };
+});
 import { createLocalAgentServer, type LocalAgentServerDeps } from '../server.js';
 import type { LocalAgentModel } from '../catalog.js';
 import { formatLocalAgentConnectionCode } from '../../../shared/localAgent.js';
@@ -32,6 +43,7 @@ const model: LocalAgentModel = {
 };
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
+  grantWrites.fail = false;
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -267,6 +279,17 @@ describe('local application authorization and lifecycle', () => {
     expect((await f.rpc('models', {}, secret)).error.code).toBe('UNAUTHORIZED');
     await f.server().close();
     expect(f.close).toHaveBeenCalledTimes(2);
+  });
+  it('fails close instead of silently keeping a revoked grant on disk', async () => {
+    const f = await fixture(),
+      secret = await f.connect(),
+      file = path.join(f.directory, 'grants.json');
+    grantWrites.fail = true;
+    await expect(f.server().revoke(f.server().connections()[0].id)).rejects.toBeDefined();
+    expect((await f.rpc('models', {}, secret)).error.code).toBe('UNAUTHORIZED');
+    await expect(f.server().close()).rejects.toMatchObject({ code: 'GRANT_PERSIST_FAILED' });
+    grantWrites.fail = false;
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).grants).toHaveLength(1);
   });
   it('keeps revoke pending until an engine still starting is closed, and reports a failed late close', async () => {
     let release!: () => void, began!: () => void;

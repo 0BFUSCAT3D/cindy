@@ -58,9 +58,11 @@ export function createEventProjection(
   };
   const ignoredTools = new Set<string>();
   const streamed = new Map<string, string>();
+  let failure: string | undefined;
   return {
     begin() {
       textSeen = false;
+      failure = undefined;
       streamed.clear();
       ended = false;
       usageReported = false;
@@ -144,18 +146,26 @@ export function createEventProjection(
         }
         reportUsage();
         ended = true;
+        const interrupted = ['cancelled', 'aborted', 'interrupted'].includes(string(d.status));
         emit({
           type: 'turn_end',
           data: {
-            status: ['cancelled', 'aborted', 'interrupted'].includes(string(d.status))
+            status: interrupted
               ? 'interrupted'
-              : d.is_error === true || d.status === 'error' || d.status === 'failed'
+              : failure !== undefined ||
+                  d.is_error === true ||
+                  d.status === 'error' ||
+                  d.status === 'failed'
                 ? 'failed'
                 : 'completed',
-            message: string(d.error),
+            message: (!interrupted && failure) || string(d.error),
           },
         });
       }
+    },
+    /** Fail this turn at its real native boundary, after the engine has settled. */
+    failAtEnd(message: string) {
+      if (!ended) failure ??= message;
     },
     fail(message: string, status: 'failed' | 'interrupted' = 'failed') {
       if (!ended) {
@@ -249,8 +259,9 @@ export async function openLocalAgentRuntime(
           reason: 'The authorized client controls this session tool surface.',
         };
       }
-      // Native interactive prompts cannot be answered on behalf of the user.
-      projection.fail(
+      // Native interactive prompts cannot be answered on behalf of the user. The dismissal
+      // goes back to the engine first; the turn fails once it actually settles.
+      projection.failAtEnd(
         localize('INTERACTION_UNAVAILABLE', 'Cindy 引擎需要交互确认，当前应用无法接收。'),
       );
       if (request.kind === 'ask_user_question')

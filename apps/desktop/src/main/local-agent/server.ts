@@ -914,12 +914,20 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await persistence;
-      if (unsaved) await persist().catch(() => {});
+      // The last retry decides whether a revocation survives restart; never report it as closed.
+      const saved = unsaved ? await persist().then(() => true, () => false) : true;
       try {
         if (JSON.parse(await fs.readFile(discoveryFile, 'utf8')).instance === instanceId)
           await fs.rm(discoveryFile, { force: true });
       } catch {
         /* profile already closed */
+      }
+      if (!saved) {
+        deps.warn('GRANT_PERSIST_FAILED');
+        throw new LocalAgentError(
+          'GRANT_PERSIST_FAILED',
+          '本机应用授权变更未能写入磁盘，重启后已撤销的连接可能恢复。',
+        );
       }
       const failed = stopped.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
