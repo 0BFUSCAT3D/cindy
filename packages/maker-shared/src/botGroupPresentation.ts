@@ -3,7 +3,7 @@
  * 排序、成员名单、轮次标记与分工（安排、下一步、交接文件）的判定，以及提示 / 报错
  * 该用哪一句文案（各端按自己的 i18n 命名空间拼 key）。只依赖群聊契约，不碰 React 与 IPC。
  */
-import { RichAnswerStream, splitRichAnswer, richMarkdown, richString, richLabel, richResolvedValues, richChart, richOptions } from './richAnswer.js';
+import { RichAnswerStream, splitRichAnswer, richMarkdown, richString, richLabel, richResolvedValues, richChart, richOptions, richCalculationUnavailable } from './richAnswer.js';
 import {
   isBotGroupPlanOpen,
   type BotGroupDetail,
@@ -359,6 +359,7 @@ export function botGroupBodyParts(content: string, authorKind?: BotGroupMessageV
     // Preserve malformed or empty answers rather than silently dropping source content.
     if (doc.issues) return [{ kind: 'markdown' as const, content: source }];
     const values = richResolvedValues(doc);
+    let unavailableChart = false;
     const result: Array<{ kind: 'text' | 'markdown'; content: string }> = [];
     const add = (text: string, kind: 'text' | 'markdown' = 'text') => {
       if (text.trim()) result.push({ kind, content: text });
@@ -372,10 +373,16 @@ export function botGroupBodyParts(content: string, authorKind?: BotGroupMessageV
         add([label, richString(node, 'alt'), richString(node, 'caption'), richString(node, 'src')].filter(Boolean).join('\n'));
       } else {
         const markdown = richMarkdown(node);
-        if (markdown !== null) add(markdown, 'markdown');
+        if (markdown !== null) {
+          add(markdown, 'markdown');
+          add(richString(node, 'caption'));
+        }
         else if (['text', 'heading'].includes(node.kind)) add(richLabel(node, values));
         else if (node.kind === 'stat') add([label, richLabel(node, values)].filter(Boolean).join(': '));
-        else if (node.kind === 'chart') add([label, ...richChart(node, values).map(item => `${item.label}: ${item.value}`)].filter(Boolean).join('\n'));
+        else if (node.kind === 'chart') {
+          unavailableChart ||= richCalculationUnavailable(node, values);
+          add([label, ...richChart(node, values).map(item => `${item.label}: ${item.value}`)].filter(Boolean).join('\n'));
+        }
         else if (node.kind === 'icon') add([label, richString(node, 'text')].filter(Boolean).join('\n'));
         else if (node.kind === 'divider') add('---', 'markdown');
         else {
@@ -389,6 +396,7 @@ export function botGroupBodyParts(content: string, authorKind?: BotGroupMessageV
       node.children.forEach(visit);
     };
     doc.roots.forEach(visit);
-    return result.length ? result : [{ kind: 'markdown' as const, content: source }];
+    // Do not present a partial chart as complete data; preserve its source block.
+    return result.length && !unavailableChart ? result : [{ kind: 'markdown' as const, content: source }];
   });
 }
