@@ -509,10 +509,13 @@
     },
     "runLimits": {
       "title": "遠端任務數量",
-      "description": "適用於這台電腦提供的所有供應商，包括自己的其他電腦和分享給他人的裝置。已回答完但尚未釋放的任務也佔名額，本機直接執行的任務不計入。",
+      "description": "適用於這台電腦提供的所有供應商，包括自己的其他電腦和分享給他人的裝置。已回答完的任務在被收回前也佔名額，本機直接執行的任務不計入。",
       "perDevice": "每台使用裝置最多保留的任務數",
       "total": "所有使用裝置合計最多保留的任務數",
       "invalid": "請填寫 1～{{max}} 的整數，單台裝置的上限不能超過合計上限。",
+      "idleMinutes": "閒置收回（分鐘）",
+      "idleHint": "任務閒置滿這個時長後，這台電腦會結束它的 Agent，名額隨即釋放；對方再傳訊息時會自動接回原來的對話。正在執行的任務不會被收回。填 0 表示從不收回。",
+      "idleInvalid": "請填寫 0～{{max}} 的整數。",
       "usage": "目前佔用 {{used}} / {{total}}，來自 {{devices}} 台裝置；單台裝置最多佔用 {{largest}} 個。",
       "applyHint": "儲存後立即生效。調低上限不會中斷現有任務，只會限制新增。供應商組轉送按直接連線的裝置計數。",
       "save": "儲存",
@@ -554,18 +557,6 @@
       "updated": "更新於 {{time}}",
       "usageTitle": "用量明細",
       "allowUsageDescription": "開啟後，此分享的所有使用者都能查看分享者及其他所有使用者的暱稱和歷史用量明細。"
-    },
-    "idleRelease": {
-      "title": "這台電腦使用其他電腦的模型",
-      "description": "這台電腦上的任務使用其他電腦上的模型時，那台電腦能同時執行的任務數量有上限。快到上限時，可以讓閒置超過下面時長的任務先暫時斷開，把位置讓給新任務；再給它傳訊息時會自動接上，之前的對話都還在。正在執行的任務不會斷開；斷開期間，這台電腦上的背景命令會繼續執行。",
-      "minutes": "閒置釋放（分鐘）",
-      "hint": "預設為 0，即從不斷開，滿了就直接提示已達上限；設為 1～120 時，閒置超過該時長的任務才可能斷開。",
-      "invalid": "請填寫 0～{{max}} 的整數。",
-      "save": "儲存",
-      "reset": "恢復預設",
-      "saved": "閒置釋放設定已儲存",
-      "retry": "重新載入",
-      "loading": "正在載入…"
     }
   },
   "providerGroup": {
@@ -1073,6 +1064,9 @@
   },
   "agentIsland": {
     "native": {
+      "markRead": "標為已讀",
+      "archive": "歸檔",
+      "actionFailed": "操作未完成，提醒已保留，請重試。",
       "newConversationTitle": "新建任務",
       "newConversationHint": "開始一個新的任務",
       "muteSound": "關閉靈動島聲音",
@@ -4034,7 +4028,7 @@
         "assigned": "由繫結的夥伴回覆",
         "description": "在微信中與 {{name}} 對話，共用記憶和主要任務。此電腦上的微信連線一次只能交給一位夥伴。",
         "other": "微信已交給另一位夥伴。請先在該夥伴的連線設定或個人微信設定中移除繫結。",
-        "permissionNote": "微信繼續使用逐次權限確認。請為夥伴選擇 Claude Code 或 Codex，並使用自動審查或詢問模式。",
+        "permissionNote": "你在微信中傳給夥伴的訊息沿用夥伴的權限設定，包括完全存取。可在 Cindy 的夥伴對話輸入框下方切換權限；其他人的訊息仍受權限限制。",
         "remove": "移除夥伴繫結",
         "useExisting": "使用已連線的微信與 {{name}} 對話",
         "updateFailed": "無法更新繫結。請等微信中的工作結束後重試，並確認夥伴仍可用。"
@@ -10215,7 +10209,8 @@
       "refreshVoices": "重新整理音色清單",
       "voicesLoading": "正在取得音色…",
       "voicesError": "無法取得音色清單。請重試，或手動輸入音色 ID。",
-      "voicesReference": "這是此型號的 OpenAI 參考音色；相容服務的實際支援可能不同。",
+      "voicesCustomError": "無法完整取得自訂音色。請重試，或手動輸入音色 ID。",
+      "voicesReference": "這是此型號的參考音色；相容服務的實際支援可能不同。",
       "voicesTruncated": "僅顯示部分音色；未列出的音色可手動輸入 ID。",
       "voicesManual": "此介面沒有可用的音色清單，請手動輸入音色 ID。",
       "preview": "試聽",
@@ -10228,12 +10223,12 @@
         "preparing": "正在產生試聽語音…",
         "playing": "正在試聽…",
         "complete": "試聽完成。",
-        "error": "試聽失敗。請檢查介面、模型權限與音色 ID 後重試。"
+        "error": "試聽失敗"
       },
       "readAloud": "朗讀",
       "stopReadAloud": "停止朗讀",
       "finishBeforeReadAloud": "請先結束語音模式，再朗讀訊息。",
-      "readAloudFailed": "朗讀失敗，請在夥伴設定中檢查模型和音色後重試。",
+      "readAloudFailed": "朗讀失敗",
       "finishBeforeDictation": "請先結束語音模式，再開始聽寫。",
       "title": "語音模式",
       "model": "朗讀模型",
@@ -10242,7 +10237,7 @@
       "voiceHint": "填入所選模型支援的音色名稱，例如 alloy。",
       "modelUnavailable": "先前選擇的朗讀模型已無法使用，請重新選擇。",
       "noModels": "目前沒有可用的語音合成模型。",
-      "noModelsSupportedProtocols": "支援 MiniMax、ElevenLabs，以及提供 OpenAI 相容語音合成介面的供應商。",
+      "noModelsSupportedProtocols": "支援 MiniMax、ElevenLabs、Qwen / CosyVoice HTTP，以及 OpenAI 相容語音合成介面。",
       "noModelsSetupHint": "連接供應商並啟用語音模型後，即可設定夥伴的朗讀聲音。",
       "openProviders": "前往模型供應商",
       "catalogError": "語音設定讀取或儲存失敗，請重試。",
@@ -10274,7 +10269,8 @@
         "connection": "語音連線中斷，未傳送的文字已保留。",
         "microphone": "麥克風已停止，請檢查權限和裝置連線後繼續。",
         "send": "這則訊息未被接收，文字已保留。",
-        "speech": "回覆朗讀失敗，文字回覆仍保留在對話中。請檢查朗讀模型和音色。"
+        "speech": "回覆朗讀失敗，文字回覆仍保留在對話中。",
+        "speechTimeout": "語音回應逾時"
       },
       "voiceIdHint": "填寫該供應商帳號可用的音色 ID。",
       "speed": "語速",
@@ -10317,6 +10313,18 @@
       "rootNotLoaded": "原訊息不在已載入的紀錄裡",
       "rootUnavailable": "原訊息已不在私聊裡，無法開話題",
       "openFailed": "話題沒有開啟，請重試"
+    },
+    "projects": {
+      "title": "關聯專案",
+      "description": "需要時讀取專案資料。關聯不會接手專案內的任務，也不會啟動背景工作。",
+      "empty": "尚未關聯專案",
+      "choose": "選擇專案",
+      "add": "新增",
+      "remove": "移除 {{name}}",
+      "otherComputer": "位於另一台電腦",
+      "unavailable": "目錄暫不可用",
+      "failed": "專案未能更新，請重新載入核對儲存結果。",
+      "noAvailable": "更多專案可先在專案列表中新增。"
     }
   },
   "common": {
