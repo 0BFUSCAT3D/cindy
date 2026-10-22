@@ -330,15 +330,16 @@ export function createHistoryViewReader<T extends HistoryMessageSource>(deps: Hi
           if (!first.id.startsWith('history-live:')) {
             append([first]);
             let cursor = first.id;
+            const limit = outlined ? 1000 : 100;
             while (cursor !== (ref.lastStoredMessageId ?? last.id)) {
-              const batch = (await read(sessionId, { limit: 1000, after: cursor }, true)).slice().reverse();
+              const batch = (await read(sessionId, { limit, after: cursor }, true)).slice().reverse();
               if (!batch.length) break;
               const bounded = batch.filter((row) => compareRows(row, last) <= 0);
               append(bounded);
               const next = batch.at(-1)!.id;
               if (next === cursor) throwIpcError('INTERNAL', 'History detail cursor did not advance');
               cursor = next;
-              if (bounded.length < batch.length || batch.length < 1000) break;
+              if (bounded.length < batch.length || batch.length < limit) break;
             }
           }
           for (const id of ref.liveMessageIds ?? []) {

@@ -365,7 +365,7 @@ describe('outline history reads', () => {
     const source = [row(n++, 'user'),
       { ...row(n++, 'tool_use'), toolUseId: 'a', content: { toolName: 'Agent', input: { description: 'Full agent description' } } }];
     if (resultOnly) source.push({ ...row(n++, 'tool_use'), toolUseId: 'child-call', content: { toolName: 'Bash', input: {} }, agentMeta: { parentUuid: 'a' } });
-    for (let i = 0; i < (large ? 6 : 30); i++) {
+    for (let i = 0; i < (large ? 6 : 75); i++) {
       source.push(resultOnly || liveTail ? row(n++) : { ...row(n++), agentMeta: { parentUuid: 'a' } });
       source.push({ ...row(n++, 'assistant'), content: '# Result\n' + 'x'.repeat(large ? 200000 : 10), agentMeta: { turnCompleted: true } });
     }
@@ -375,7 +375,8 @@ describe('outline history reads', () => {
     if (!liveTail) source.push(tail);
     if (newerTail) source.push(row(n++, 'user'));
     const base = reader(source);
-    const api = createHistoryViewReader({ list: base.list,
+    // readMessagesList clamps raw reads to 100 even when more rows are requested.
+    const api = createHistoryViewReader({ list: (sid, opts) => base.list(sid, { ...opts, limit: Math.min(opts.limit, 100) }),
       ...(outlined ? {
         outline: async (sid: string, opts: { before?: string; after?: string; limit: number }) =>
           (await base.list(sid, opts)).map((message) => message.role === 'tool_use'
