@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
+import { linkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -130,6 +131,44 @@ describe('group reply file delivery', () => {
       const result = await prepareChatReplyFiles('[file](./escape/private.pdf)', 'lane', () => {});
       await expect(result.attachments[0]!.readBytes!()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
     } finally { await fs.unlink(link); }
+  });
+
+  it('refuses an in-task hard link to an outside file before returning bytes', async () => {
+    const link = path.join(work, 'hard-link.pdf');
+    await fs.link(path.join(root, 'private.pdf'), link);
+    try {
+      const result = await prepareChatReplyFiles('[file](./hard-link.pdf)', 'lane', () => {});
+      await expect(result.attachments[0]!.readBytes!()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+    } finally { await fs.unlink(link); }
+  });
+
+  it('refuses a new hard link created after the descriptor checks', async () => {
+    const alias = path.join(root, 'during-read.pdf');
+    let checks = 0;
+    try {
+      await expect(readReplyFile(pdf, work, () => {
+        if (++checks === 2) linkSync(pdf, alias);
+      })).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+    } finally { await fs.rm(alias, { force: true }); }
+  });
+
+  it.each([':42', ':42:3', ':42-50', '#L42', '#L42-L50'])('delivers line-located file links %s once alongside a PDF', async suffix => {
+    const source = path.join(work, 'source.ts');
+    await fs.writeFile(source, 'export const answer = 42;');
+    const result = await prepareChatReplyFiles(`[source](source.ts${suffix}) [again](./source.ts) [PDF](<${pdf}>)`, 'lane', () => {});
+    expect(result.text).toBe('source again PDF');
+    expect(result.attachments).toHaveLength(2);
+    expect(result.attachments[0]!.name).toBe('source.ts');
+    expect((await result.attachments[0]!.readBytes!()).toString()).toBe('export const answer = 42;');
+    expect((await result.attachments[1]!.readBytes!()).toString()).toContain('%PDF');
+  });
+
+  it('preserves literal line-like filenames in encoded file URLs and explicit query paths', async () => {
+    const source = path.join(work, 'report#L42');
+    await fs.writeFile(source, 'literal filename');
+    const result = await prepareChatReplyFiles(`[file](${pathToFileURL(source).href}) [query](xdt-file://local/?path=${encodeURIComponent(source)})`, 'lane', () => {});
+    expect(result.attachments).toHaveLength(1);
+    expect((await result.attachments[0]!.readBytes!()).toString()).toBe('literal filename');
   });
 
   it.each([{ remoteHostId: 'ssh-host' }, { status: 'deleted' }, { workingDir: null }])('refuses a task without local authority %j', async change => {

@@ -20,9 +20,16 @@ const parser = unified().use(remarkParse).use(remarkGfm);
 const MAX_BYTES = 100 * 1024 * 1024;
 const unavailable = () => new Error('ATTACHMENT_UNAVAILABLE');
 
+// Local Markdown line locators follow sharedTaskFileReferences/markdownTarget.
+// Query-based URLs carry an explicit path; do not rewrite its literal filename.
+function withoutLineLocator(value: string): string {
+  return value.includes('?') ? value : value.replace(/(?::\d+(?::\d+|-\d+)?|#L\d+(?:-L\d+)?)$/, '');
+}
+
 // Match local references, not arbitrary URI schemes or in-message anchors.
 function isFileTarget(value: string): boolean {
   if (!value || /^[#?]/.test(value)) return false;
+  value = withoutLineLocator(value);
   if (/^(?:file|xdt-file|sandbox):/i.test(value) || /^[A-Za-z]:[\\/]/.test(value)) return true;
   return !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
 }
@@ -76,6 +83,7 @@ export function replyFileLinks(text: string) {
 }
 
 function localPath(url: string, workDir: string): string {
+  url = withoutLineLocator(url);
   let value = url;
   try {
     if (/^sandbox:/i.test(url)) {
@@ -106,11 +114,14 @@ export async function readReplyFile(source: string, root: string, assertCurrent:
   const real = await fs.realpath(source);
   if (!isPathWithin(root, real)) throw unavailable();
   const expected = await fs.stat(real, { bigint: true });
+  // A hard link can point to an inode also named outside this task directory.
+  // realpath cannot prove that all of its other names are in scope.
+  if (expected.nlink !== 1n) throw unavailable();
   const handle = await fs.open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const before = await handle.stat({ bigint: true });
     const checked = await fs.realpath(source);
-    if (!before.isFile() || before.size <= 0n || before.size > BigInt(MAX_BYTES)) throw unavailable();
+    if (!before.isFile() || before.nlink !== 1n || before.size <= 0n || before.size > BigInt(MAX_BYTES)) throw unavailable();
     if (before.ino === 0n || expected.ino !== before.ino || expected.dev !== before.dev || checked !== real) throw unavailable();
     assertCurrent();
     const buffer = Buffer.alloc(Number(before.size));
@@ -121,7 +132,7 @@ export async function readReplyFile(source: string, root: string, assertCurrent:
       offset += bytesRead;
     }
     const after = await handle.stat({ bigint: true });
-    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw unavailable();
+    if (after.nlink !== 1n || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw unavailable();
     assertCurrent();
     return buffer;
   } finally { await handle.close(); }

@@ -642,6 +642,13 @@ describe('Cindy durable PI Subagent runner', () => {
       return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
     });
     try {
+      // PID publication precedes prompt handling. Closing the runner sooner can
+      // make the child's initial stdout writes fail with EPIPE, so it exits
+      // before the inventory even though the injected kill attempts fail.
+      await waitFor(async () => {
+        const transcript = await readFile(path.join(fixture.runDir, 'transcript.jsonl'), 'utf8').catch(() => '');
+        return transcript.includes('"type":"tool_execution_start"') ? true : null;
+      }, undefined, 'the initial child events to reach the runner before signalling');
       fixture.child.kill('SIGTERM');
       await waitForClose(fixture.child, fixture.stderr);
       const receipt = JSON.parse(await readFile(path.join(fixture.runDir, 'result.json'), 'utf8'));
