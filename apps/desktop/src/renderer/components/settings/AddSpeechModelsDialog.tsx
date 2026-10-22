@@ -191,7 +191,7 @@ export function AddSpeechModelsDialog({
           }}
           onPointerDownOutside={(event) => event.preventDefault()}
           onCloseAutoFocus={dialog.onCloseAutoFocus}
-          className="modal-panel fixed left-1/2 top-1/2 z-[10001] flex max-h-[85vh] w-[min(600px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--settings-theme-card-bg)] text-[var(--text-primary)] shadow-xl"
+          className="modal-panel fixed left-1/2 top-1/2 z-[10001] flex max-h-[85vh] w-[min(600px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col text-[var(--text-primary)]"
         >
           <div className="p-5">
             <Dialog.Title className="text-16 font-medium">
