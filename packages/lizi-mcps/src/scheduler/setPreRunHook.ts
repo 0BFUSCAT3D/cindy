@@ -110,7 +110,10 @@ export function registerScheduleSetPreRunHookTool(
           currentCommand = schedule.preRunHook?.command;
           currentTimeoutMs = schedule.preRunHook?.timeoutMs;
           // 脚本在本机生成;Agent 在另一台电脑运行时它的来源与模型只在那台可用,改走本机辅助模型兜底。
-          if (!schedule.agentDeviceId) {
+          const remoteAgent = schedule.targetSessionId && hookScript.isSessionAgentOnOtherDevice
+            ? await hookScript.isSessionAgentOnOtherDevice(schedule.targetSessionId)
+            : !!schedule.agentDeviceId;
+          if (!remoteAgent) {
             providerId = schedule.providerId;
             agentKind = schedule.agentKind;
             model = schedule.model;

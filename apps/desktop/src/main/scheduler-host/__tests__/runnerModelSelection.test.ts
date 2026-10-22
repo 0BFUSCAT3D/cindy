@@ -379,6 +379,54 @@ describe('MakerScheduleRunner model selection', () => {
   });
 
   describe('resolved automation selection survives the full fire', () => {
+    // PR #6832: fire must resolve a replacement at the saved location from the saved
+    // preferences, not the relocated target's clamped copy. Existing archived cases
+    // used identical catalogs. Minimal input: archived persistent target on another
+    // device, with different effort/Fast support. Tier: unit (in-memory host).
+    // Windows standalone: 14.30s (collection 10.08s, 72 tests 3.85s). Reuses the
+    // existing file-level imports/fixture; no module resets or new real I/O.
+    it.each([undefined, 'studio'])('re-resolves an archived relocated target at %s', async (agentDeviceId) => {
+      const h = createSessionHarness();
+      Object.assign(h.session, { agentKind: 'codex', model: 'gpt-5.5' });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'archived', agentDeviceId: 'relocated' });
+      const resolveModelSelection = vi.fn(async (choice) => ({ ...choice, effort: 'high' as const }));
+      const harness = createRunnerHarness(h, null, {
+        acquirePendingAgentSwitch: async () => ({ release: vi.fn(), selection: {
+          agentKind: 'codex', model: 'gpt-5.5', providerId: 'relocated-provider',
+          effort: 'low', fastMode: false,
+        } }),
+        resolveModelSelection,
+      });
+      harness.runner.attachScheduler({ update: vi.fn(), isRunSilenced: () => false } as unknown as Scheduler);
+      const schedule = baseSchedule({ targetSessionId: h.session.id, persistentSession: true,
+        agentDeviceId, agentKind: 'codex', modelAgentKind: 'codex', model: 'gpt-5.5',
+        providerId: 'saved-provider', effort: 'ultra', fastMode: true });
+      const opts = await fireToCompletion(harness, h, schedule);
+      expect(resolveModelSelection.mock.calls[0]).toEqual([
+        expect.objectContaining({ providerId: 'saved-provider', effort: 'ultra', fastMode: true }),
+        ...(agentDeviceId ? [{ agentDeviceId }] : []),
+      ]);
+      expect(opts).toMatchObject({ providerId: 'saved-provider', effort: 'high' });
+      expect(harness.createSession.mock.calls[0][0].agentDeviceId).toBe(agentDeviceId);
+    });
+
+    // PR #6832: existing remote coverage only created new tasks. Cold resume and
+    // model-triggered rebuild must dispatch at the bound row's current location,
+    // even when the automation still saves its original location. Tier: unit.
+    it.each(['cold', 'rebuild'] as const)('keeps the bound task location during %s resume', async (mode) => {
+      const h = createSessionHarness();
+      if (mode === 'rebuild') Object.assign(h.session, { requiresModelSwitchRebuild: async () => true });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active', agentDeviceId: 'relocated' });
+      const harness = createRunnerHarness(h, { model: h.session.model, workDir: '/work', sdkSessionId: 'native-history' }, {
+        sessionAlive: mode === 'rebuild',
+      });
+      const opts = await fireToCompletion(harness, h, baseSchedule({
+        targetSessionId: h.session.id, persistentSession: true, agentDeviceId: 'original',
+      }));
+      expect(opts).toMatchObject({ agentDeviceId: 'relocated', resumeSessionId: 'native-history' });
+      expect(harness.closeSession).toHaveBeenCalledTimes(mode === 'rebuild' ? 1 : 0);
+    });
+
     it.each(['active', 'archived', 'missing'] as const)('uses the explicit Pi route for a %s Codex target', async (status) => {
       const h = createSessionHarness();
       Object.assign(h.session, { agentKind: 'pi', model: 'shared-model' });
@@ -391,6 +439,7 @@ describe('MakerScheduleRunner model selection', () => {
       mocks.getSessionRowSnapshot.mockResolvedValue(status === 'missing' ? null : { status });
       const harness = createRunnerHarness(h, { agentKind: 'pi', model: 'shared-model', effort: 'high', fastMode: false, workDir: '/work' }, {
         sessionAlive: status === 'active',
+        resolveModelSelection: async (choice) => resolveScheduledModelSelection(choice, providers),
         // The merged copy deliberately conflicts with the selected provider copy.
         availableModels: [{ id: 'shared-model', efforts: ['low'], defaultEffort: 'low' }],
         acquirePendingAgentSwitch: async (_id, _signal, selection) => ({
@@ -415,6 +464,7 @@ describe('MakerScheduleRunner model selection', () => {
       expect(mocks.setSessionEffort).toHaveBeenLastCalledWith(h.session.id, 'high');
       expect(mocks.backfillSessionMeta).toHaveBeenCalledWith(expect.anything(), h.session.id,
         expect.objectContaining({ effort: 'high', fastMode: false, providerId: 'selected' }), expect.anything());
+      expect(mocks.setSessionProvider).toHaveBeenCalledWith(h.session.id, 'selected');
       expect(h.setEffort.mock.calls.flat()).not.toContain('low');
       expect(schedule).toEqual(saved);
       expect(release).toHaveBeenCalledTimes(1);
