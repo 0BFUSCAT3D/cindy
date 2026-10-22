@@ -122,7 +122,7 @@ export function canonicalizeProductUrl(rawUrl, productId) {
     if (raw) {
         try {
             const url = new URL(raw.startsWith('http') ? raw : `https://www.coupang.com${raw}`);
-            if (!url.hostname.includes('coupang.com'))
+            if (url.hostname !== 'coupang.com' && !url.hostname.endsWith('.coupang.com'))
                 return '';
             const id = normalizeProductId(url.pathname) || normalizeProductId(productId);
             if (!id)

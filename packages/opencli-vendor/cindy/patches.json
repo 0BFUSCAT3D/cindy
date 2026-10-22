@@ -4046,5 +4046,90 @@
     "file": "clis/web/read.js",
     "before": "    const raw = await page.readNetworkCapture().catch(() => []);",
     "after": "    const raw = await page.readNetworkCapture();"
+  },
+  {
+    "file": "clis/coupang/utils.js",
+    "before": "    if (raw) {\n        try {\n            const url = new URL(raw.startsWith('http') ? raw : `https://www.coupang.com${raw}`);\n            if (!url.hostname.includes('coupang.com'))\n                return '';\n            const id = normalizeProductId(url.pathname) || normalizeProductId(productId);\n            if (!id)\n",
+    "after": "    if (raw) {\n        try {\n            const url = new URL(raw.startsWith('http') ? raw : `https://www.coupang.com${raw}`);\n            if (url.hostname !== 'coupang.com' && !url.hostname.endsWith('.coupang.com'))\n                return '';\n            const id = normalizeProductId(url.pathname) || normalizeProductId(productId);\n            if (!id)\n"
+  },
+  {
+    "file": "clis/douban/utils.js",
+    "before": "    const normalized = normalizeText(fullTitle);\n    if (!normalized)\n        return { title: '', originalTitle: '' };\n    const match = normalized.match(/^([\\u4e00-\\u9fff\\u3000-\\u303f\\uff00-\\uffef]+(?:\\s*[\\u4e00-\\u9fff\\u3000-\\u303f\\uff00-\\uffef·：:！？]+)*)\\s+(.+)$/);\n    if (!match) {\n        return { title: normalized, originalTitle: '' };\n    }\n    return {\n        title: normalizeText(match[1]),\n        originalTitle: normalizeText(match[2]),\n    };\n}\nasync function ensureDoubanReady(page) {\n",
+    "after": "    const normalized = normalizeText(fullTitle);\n    if (!normalized)\n        return { title: '', originalTitle: '' };\n    const words = normalized.split(' ');\n    const chinese = /^[\\u4e00-\\u9fff\\u3000-\\u303f\\uff00-\\uffef]/;\n    const titleWord = /^[\\u4e00-\\u9fff\\u3000-\\u303f\\uff00-\\uffef·：:！？]+$/;\n    if (words.length < 2 || !chinese.test(words[0]) || !titleWord.test(words[0])) {\n        return { title: normalized, originalTitle: '' };\n    }\n    let split = 1;\n    while (split < words.length - 1 && titleWord.test(words[split])) split += 1;\n    return {\n        title: words.slice(0, split).join(' '),\n        originalTitle: words.slice(split).join(' '),\n    };\n}\nasync function ensureDoubanReady(page) {\n"
+  },
+  {
+    "file": "clis/jd/item.js",
+    "before": "        url = `https:${url}`;\n    if (!/^https?:\\/\\//.test(url))\n        return '';\n    return url;\n}\nfunction normalizeJdImageSize(url) {\n    return normalizeJdImageUrl(url)\n",
+    "after": "        url = `https:${url}`;\n    if (!/^https?:\\/\\//.test(url))\n        return '';\n    try {\n        const host = new URL(url).hostname;\n        return host === '360buyimg.com' || host.endsWith('.360buyimg.com') ? url : '';\n    } catch { return ''; }\n}\nfunction normalizeJdImageSize(url) {\n    return normalizeJdImageUrl(url)\n"
+  },
+  {
+    "file": "clis/jd/item.js",
+    "before": "    };\n    const push = (value) => {\n        const url = normalizeJdImageUrl(value);\n        if (url && url.includes('360buyimg.com'))\n            urls.push(url);\n    };\n    for (const img of root.querySelectorAll?.('img') || []) {\n",
+    "after": "    };\n    const push = (value) => {\n        const url = normalizeJdImageUrl(value);\n        if (url)\n            urls.push(url);\n    };\n    for (const img of root.querySelectorAll?.('img') || []) {\n"
+  },
+  {
+    "file": "clis/jd/item.js",
+    "before": "    const urls = [];\n    const push = (value) => {\n        const url = normalizeJdImageUrl(value);\n        if (url && url.includes('360buyimg.com'))\n            urls.push(url);\n    };\n    for (const match of String(text || '').matchAll(/(?:https?:)?\\/\\/[^\"'`\\s<>)\\\\]+360buyimg\\.com[^\"'`\\s<>)\\\\]*/g)) {\n",
+    "after": "    const urls = [];\n    const push = (value) => {\n        const url = normalizeJdImageUrl(value);\n        if (url)\n            urls.push(url);\n    };\n    for (const match of String(text || '').matchAll(/(?:https?:)?\\/\\/[^\"'`\\s<>)\\\\]+360buyimg\\.com[^\"'`\\s<>)\\\\]*/g)) {\n"
+  },
+  {
+    "file": "clis/jd/item.js",
+    "before": "    const urls = [];\n    const push = (value) => {\n        const url = normalizeJdImageUrl(value);\n        if (url && url.includes('360buyimg.com'))\n            urls.push(url);\n    };\n    if (typeof payload === 'string') {\n",
+    "after": "    const urls = [];\n    const push = (value) => {\n        const url = normalizeJdImageUrl(value);\n        if (url)\n            urls.push(url);\n    };\n    if (typeof payload === 'string') {\n"
+  },
+  {
+    "file": "clis/jd/item.js",
+    "before": "    const hasSecurityChallenge = /risk_handler|安全验证|安全校验|完成安全验证|滑块|captcha|访问过于频繁|验证中心|京东验证/.test(`${href}\\n${text}`);\n    const loginOnlyWithoutProduct = /请登录|登录/.test(text) && !hasProductMarker;\n    const looksBlocked = isLoginPage || hasSecurityChallenge || loginOnlyWithoutProduct;\n    const onExpectedItemUrl = new RegExp(`item\\.jd\\.com/${expectedSku}\\.html`).test(href);\n    return {\n        href,\n        title,\n",
+    "after": "    const hasSecurityChallenge = /risk_handler|安全验证|安全校验|完成安全验证|滑块|captcha|访问过于频繁|验证中心|京东验证/.test(`${href}\\n${text}`);\n    const loginOnlyWithoutProduct = /请登录|登录/.test(text) && !hasProductMarker;\n    const looksBlocked = isLoginPage || hasSecurityChallenge || loginOnlyWithoutProduct;\n    let onExpectedItemUrl = false;\n    try {\n        const parsed = new URL(href);\n        onExpectedItemUrl = parsed.hostname === 'item.jd.com' && parsed.pathname === `/${expectedSku}.html`;\n    } catch { /* An invalid URL cannot identify the expected product. */ }\n    return {\n        href,\n        title,\n"
+  },
+  {
+    "file": "clis/jianyu/search.js",
+    "before": "    try {\n        const parsed = new URL(normalized);\n        const host = parsed.hostname.toLowerCase();\n        if (!host.endsWith('duckduckgo.com'))\n            return normalized;\n        const uddg = parsed.searchParams.get('uddg');\n        if (!uddg)\n",
+    "after": "    try {\n        const parsed = new URL(normalized);\n        const host = parsed.hostname.toLowerCase();\n        if (host !== 'duckduckgo.com' && !host.endsWith('.duckduckgo.com'))\n            return normalized;\n        const uddg = parsed.searchParams.get('uddg');\n        if (!uddg)\n"
+  },
+  {
+    "file": "clis/linkedin/shared.js",
+    "before": "  if (!url) return '';\n  try {\n    const parsed = new URL(url);\n    if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {\n      return normalizeHttpUrl(parsed.searchParams.get('url') || '');\n    }\n  } catch {}\n",
+    "after": "  if (!url) return '';\n  try {\n    const parsed = new URL(url);\n    if ((parsed.hostname === 'linkedin.com' || parsed.hostname.endsWith('.linkedin.com')) && parsed.pathname === '/safety/go/') {\n      return normalizeHttpUrl(parsed.searchParams.get('url') || '');\n    }\n  } catch {}\n"
+  },
+  {
+    "file": "clis/maimai/search-talents.js",
+    "before": " */\nimport { cli, Strategy } from '@jackwener/opencli/registry';\nimport { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';\n\ncli({\n  site: 'maimai',\n",
+    "after": " */\nimport { cli, Strategy } from '@jackwener/opencli/registry';\nimport { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';\nimport { randomBytes } from 'node:crypto';\n\ncli({\n  site: 'maimai',\n"
+  },
+  {
+    "file": "clis/maimai/search-talents.js",
+    "before": "    await page.sleep(5);\n\n    // Generate random session IDs\n    const sessionid = 'b92d0fb5-f3fd-1f4b-fcdc-' + Math.random().toString(16).slice(2, 14);\n    const deletesessionid = 'ae907d75-315c-8db7-2cc7-' + Math.random().toString(16).slice(2, 14);\n\n    const requestBody = {\n      search: {\n",
+    "after": "    await page.sleep(5);\n\n    // Generate random session IDs\n    const sessionid = 'b92d0fb5-f3fd-1f4b-fcdc-' + randomBytes(6).toString('hex');\n    const deletesessionid = 'ae907d75-315c-8db7-2cc7-' + randomBytes(6).toString('hex');\n\n    const requestBody = {\n      search: {\n"
+  },
+  {
+    "file": "clis/packagist/utils.js",
+    "before": "const UA = 'opencli-packagist-adapter (+https://github.com/jackwener/opencli)';\n\n// Each segment of a Composer package name (`vendor` and `package`).\nconst SEGMENT = /^[a-z0-9]([_.-]?[a-z0-9]+)*$/;\n\nexport function requireString(value, label) {\n    const s = String(value ?? '').trim();\n",
+    "after": "const UA = 'opencli-packagist-adapter (+https://github.com/jackwener/opencli)';\n\n// Each segment of a Composer package name (`vendor` and `package`).\nconst SEGMENT = /^[a-z0-9]+(?:[_.-][a-z0-9]+)*$/;\n\nexport function requireString(value, label) {\n    const s = String(value ?? '').trim();\n"
+  },
+  {
+    "file": "clis/qwen/utils.js",
+    "before": "\nexport async function isOnQianwen(page) {\n    const url = await page.evaluate('window.location.href').catch(() => '');\n    return typeof url === 'string' && url.includes('qianwen.com');\n}\n\nexport async function ensureOnQianwen(page) {\n",
+    "after": "\nexport async function isOnQianwen(page) {\n    const url = await page.evaluate('window.location.href').catch(() => '');\n    try {\n        const parsed = new URL(url);\n        return ['http:', 'https:'].includes(parsed.protocol)\n            && (parsed.hostname === 'qianwen.com' || parsed.hostname.endsWith('.qianwen.com'));\n    } catch { return false; }\n}\n\nexport async function ensureOnQianwen(page) {\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        await page.wait({ time: 3 });\n        // Verify we landed on the creator site (not redirected to login)\n        const pageUrl = await page.evaluate('() => location.href');\n        if (!pageUrl.includes('creator.xiaohongshu.com')) {\n            throw new Error('Redirected away from creator center — session may have expired. ' +\n                'Re-capture browser login via: opencli xiaohongshu creator-profile');\n        }\n",
+    "after": "        await page.wait({ time: 3 });\n        // Verify we landed on the creator site (not redirected to login)\n        const pageUrl = await page.evaluate('() => location.href');\n        let onCreatorSite = false;\n        try {\n            const parsed = new URL(pageUrl);\n            onCreatorSite = parsed.protocol === 'https:' && parsed.hostname === 'creator.xiaohongshu.com';\n        } catch { /* Treat invalid URLs as a failed navigation. */ }\n        if (!onCreatorSite) {\n            throw new Error('Redirected away from creator center — session may have expired. ' +\n                'Re-capture browser login via: opencli xiaohongshu creator-profile');\n        }\n"
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": " */\nexport async function ensureOnYollomi(page) {\n    const currentUrl = await page.evaluate(`(() => location.href)()`);\n    if (!currentUrl || !currentUrl.includes('yollomi.com')) {\n        await page.goto('https://yollomi.com');\n        await page.wait(3);\n    }\n",
+    "after": " */\nexport async function ensureOnYollomi(page) {\n    const currentUrl = await page.evaluate(`(() => location.href)()`);\n    let onSite = false;\n    try {\n        const parsed = new URL(currentUrl);\n        onSite = ['http:', 'https:'].includes(parsed.protocol)\n            && (parsed.hostname === 'yollomi.com' || parsed.hostname.endsWith('.yollomi.com'));\n    } catch { /* Invalid locations must navigate to the real site. */ }\n    if (!onSite) {\n        await page.goto('https://yollomi.com');\n        await page.wait(3);\n    }\n"
+  },
+  {
+    "file": "src/browser/utils.ts",
+    "before": "  const code = js.trim();\n  if (!code) return 'undefined';\n\n  // Already an IIFE: `(async () => { ... })()` or `(function() {...})()`\n  if (/^\\([\\s\\S]*\\)\\s*\\(.*\\)\\s*$/.test(code)) return code;\n\n  // Arrow function: `() => ...` or `async () => ...`\n  if (/^(async\\s+)?(\\([^)]*\\)|[A-Za-z_]\\w*)\\s*=>/.test(code)) return `(${code})()`;\n\n  // Function declaration: `function ...` or `async function ...`\n  if (/^(async\\s+)?function[\\s(]/.test(code)) return `(${code})()`;\n",
+    "after": "  const code = js.trim();\n  if (!code) return 'undefined';\n\n  // Arrow function: `() => ...` or `async () => ...`\n  // Exclude nested opening parentheses so an IIFE stays a bare expression.\n  if (/^(async\\s+)?(\\([^()]*\\)|[A-Za-z_]\\w*)\\s*=>/.test(code)) return `(${code})()`;\n\n  // Function declaration: `function ...` or `async function ...`\n  if (/^(async\\s+)?function[\\s(]/.test(code)) return `(${code})()`;\n"
+  },
+  {
+    "file": "src/pipeline/template.ts",
+    "before": "export function render(template: unknown, ctx: RenderContext): unknown {\n  if (typeof template !== 'string') return template;\n  const trimmed = template.trim();\n  // Full expression: entire string is a single ${{ ... }}\n  // Use [^}] to prevent matching across }} boundaries (e.g. \"${{ a }}-${{ b }}\")\n  const fullMatch = trimmed.match(/^\\$\\{\\{\\s*([^}]*(?:\\}[^}][^}]*)*)\\s*\\}\\}$/);\n  if (fullMatch && !trimmed.includes('}}-') && !trimmed.includes('}}${{')) return evalExpr(fullMatch[1].trim(), ctx);\n  // Check if the entire string is a single expression (no other text around it)\n  const singleExpr = trimmed.match(/^\\$\\{\\{\\s*([\\s\\S]*?)\\s*\\}\\}$/);\n  if (singleExpr) {\n    // Verify it's truly a single expression (no other ${{ inside)\n    const inner = singleExpr[1];\n    if (!inner.includes('${{')) return evalExpr(inner.trim(), ctx);\n  }\n  return template.replace(/\\$\\{\\{\\s*(.*?)\\s*\\}\\}/g, (_m, expr) => String(evalExpr(expr.trim(), ctx)));\n}\n\nexport function evalExpr(expr: string, ctx: RenderContext): unknown {\n",
+    "after": "export function render(template: unknown, ctx: RenderContext): unknown {\n  if (typeof template !== 'string') return template;\n  const trimmed = template.trim();\n  if (trimmed.startsWith('${{') && trimmed.endsWith('}}')) {\n    const inner = trimmed.slice(3, -2);\n    const singleClosingBraces = !inner.includes('}}') && !inner.endsWith('}');\n    if (singleClosingBraces || !inner.includes('${{')) return evalExpr(inner.trim(), ctx);\n  }\n  // Scan delimiters once rather than retrying a backtracking regexp at each\n  // opener. Keep malformed/unclosed templates as text, as before.\n  const parts: string[] = [];\n  let cursor = 0;\n  while (cursor < template.length) {\n    const start = template.indexOf('${{', cursor);\n    if (start < 0) break;\n    const end = template.indexOf('}}', start + 3);\n    if (end < 0) break;\n    const expr = template.slice(start + 3, end);\n    parts.push(template.slice(cursor, start));\n    parts.push(/[\\r\\n\\u2028\\u2029]/.test(expr)\n      ? template.slice(start, end + 2) : String(evalExpr(expr.trim(), ctx)));\n    cursor = end + 2;\n  }\n  parts.push(template.slice(cursor));\n  return parts.join('');\n}\n\nexport function evalExpr(expr: string, ctx: RenderContext): unknown {\n"
   }
 ]

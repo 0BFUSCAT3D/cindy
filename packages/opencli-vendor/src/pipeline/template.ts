@@ -18,18 +18,28 @@ import { log } from '../logger.js';
 export function render(template: unknown, ctx: RenderContext): unknown {
   if (typeof template !== 'string') return template;
   const trimmed = template.trim();
-  // Full expression: entire string is a single ${{ ... }}
-  // Use [^}] to prevent matching across }} boundaries (e.g. "${{ a }}-${{ b }}")
-  const fullMatch = trimmed.match(/^\$\{\{\s*([^}]*(?:\}[^}][^}]*)*)\s*\}\}$/);
-  if (fullMatch && !trimmed.includes('}}-') && !trimmed.includes('}}${{')) return evalExpr(fullMatch[1].trim(), ctx);
-  // Check if the entire string is a single expression (no other text around it)
-  const singleExpr = trimmed.match(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/);
-  if (singleExpr) {
-    // Verify it's truly a single expression (no other ${{ inside)
-    const inner = singleExpr[1];
-    if (!inner.includes('${{')) return evalExpr(inner.trim(), ctx);
+  if (trimmed.startsWith('${{') && trimmed.endsWith('}}')) {
+    const inner = trimmed.slice(3, -2);
+    const singleClosingBraces = !inner.includes('}}') && !inner.endsWith('}');
+    if (singleClosingBraces || !inner.includes('${{')) return evalExpr(inner.trim(), ctx);
   }
-  return template.replace(/\$\{\{\s*(.*?)\s*\}\}/g, (_m, expr) => String(evalExpr(expr.trim(), ctx)));
+  // Scan delimiters once rather than retrying a backtracking regexp at each
+  // opener. Keep malformed/unclosed templates as text, as before.
+  const parts: string[] = [];
+  let cursor = 0;
+  while (cursor < template.length) {
+    const start = template.indexOf('${{', cursor);
+    if (start < 0) break;
+    const end = template.indexOf('}}', start + 3);
+    if (end < 0) break;
+    const expr = template.slice(start + 3, end);
+    parts.push(template.slice(cursor, start));
+    parts.push(/[\r\n\u2028\u2029]/.test(expr)
+      ? template.slice(start, end + 2) : String(evalExpr(expr.trim(), ctx)));
+    cursor = end + 2;
+  }
+  parts.push(template.slice(cursor));
+  return parts.join('');
 }
 
 export function evalExpr(expr: string, ctx: RenderContext): unknown {

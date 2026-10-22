@@ -1217,7 +1217,12 @@ cli({
         await page.wait({ time: 3 });
         // Verify we landed on the creator site (not redirected to login)
         const pageUrl = await page.evaluate('() => location.href');
-        if (!pageUrl.includes('creator.xiaohongshu.com')) {
+        let onCreatorSite = false;
+        try {
+            const parsed = new URL(pageUrl);
+            onCreatorSite = parsed.protocol === 'https:' && parsed.hostname === 'creator.xiaohongshu.com';
+        } catch { /* Treat invalid URLs as a failed navigation. */ }
+        if (!onCreatorSite) {
             throw new Error('Redirected away from creator center — session may have expired. ' +
                 'Re-capture browser login via: opencli xiaohongshu creator-profile');
         }

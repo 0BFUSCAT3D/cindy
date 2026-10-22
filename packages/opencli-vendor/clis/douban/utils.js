@@ -72,13 +72,17 @@ export function splitDoubanTitle(fullTitle) {
     const normalized = normalizeText(fullTitle);
     if (!normalized)
         return { title: '', originalTitle: '' };
-    const match = normalized.match(/^([\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+(?:\s*[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef·：:！？]+)*)\s+(.+)$/);
-    if (!match) {
+    const words = normalized.split(' ');
+    const chinese = /^[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/;
+    const titleWord = /^[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef·：:！？]+$/;
+    if (words.length < 2 || !chinese.test(words[0]) || !titleWord.test(words[0])) {
         return { title: normalized, originalTitle: '' };
     }
+    let split = 1;
+    while (split < words.length - 1 && titleWord.test(words[split])) split += 1;
     return {
-        title: normalizeText(match[1]),
-        originalTitle: normalizeText(match[2]),
+        title: words.slice(0, split).join(' '),
+        originalTitle: words.slice(split).join(' '),
     };
 }
 async function ensureDoubanReady(page) {

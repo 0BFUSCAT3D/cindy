@@ -4,6 +4,7 @@
  */
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
+import { randomBytes } from 'node:crypto';
 
 cli({
   site: 'maimai',
@@ -55,8 +56,8 @@ cli({
     await page.sleep(5);
 
     // Generate random session IDs
-    const sessionid = 'b92d0fb5-f3fd-1f4b-fcdc-' + Math.random().toString(16).slice(2, 14);
-    const deletesessionid = 'ae907d75-315c-8db7-2cc7-' + Math.random().toString(16).slice(2, 14);
+    const sessionid = 'b92d0fb5-f3fd-1f4b-fcdc-' + randomBytes(6).toString('hex');
+    const deletesessionid = 'ae907d75-315c-8db7-2cc7-' + randomBytes(6).toString('hex');
 
     const requestBody = {
       search: {

@@ -47,6 +47,20 @@ import { buildEutilsUrl } from '../../../opencli-vendor/clis/pubmed/utils.js';
 import { log as recipeLog } from '@jackwener/opencli/logger';
 import { createProgressBar, DownloadProgressTracker } from '@jackwener/opencli/download/progress';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { decodeLinkedInSafetyUrl } from '../../../opencli-vendor/clis/linkedin/shared.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { canonicalizeProductUrl } from '../../../opencli-vendor/clis/coupang/utils.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { __test__ as jd } from '../../../opencli-vendor/clis/jd/item.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { ensureOnYollomi } from '../../../opencli-vendor/clis/yollomi/utils.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { splitDoubanTitle } from '../../../opencli-vendor/clis/douban/utils.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { requirePackageName } from '../../../opencli-vendor/clis/packagist/utils.js';
+import { render } from '../../../opencli-vendor/src/pipeline/template.js';
+import { wrapForEval } from '../../../opencli-vendor/src/browser/utils.js';
 
 // Wrap the native namespace so tests can replace only the subprocess boundary.
 vi.mock('node:child_process', async importOriginal => ({
@@ -61,6 +75,51 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 CodeQL URL family, unit: real adapter helpers must distinguish
+  // a site's host from attacker-controlled prefixes, suffixes and query text.
+  // Existing navigation tests used only legitimate origins.
+  it.each(['https://evilqianwen.com', 'https://qianwen.com.evil.test', 'https://evil.test/?qianwen.com'])
+    ('does not reuse an unrelated Qianwen page: %s', async url => {
+      expect(await qwen.isOnQianwen({ evaluate: async () => url })).toBe(false);
+    });
+
+  it('checks real site hosts before navigation reuse and redirect decoding', async () => {
+    const goto = vi.fn();
+    await ensureOnYollomi({ evaluate: async () => 'https://evil.test/?yollomi.com', goto, wait: async () => {} });
+    expect(goto).toHaveBeenCalledWith('https://yollomi.com');
+    const fake = 'https://evillinkedin.com/safety/go/?url=https%3A%2F%2Fexample.test';
+    expect(decodeLinkedInSafetyUrl(fake)).toBe(fake);
+    expect(decodeLinkedInSafetyUrl('https://www.linkedin.com/safety/go/?url=https%3A%2F%2Fexample.test'))
+      .toBe('https://example.test/');
+    expect(canonicalizeProductUrl('https://coupang.com.evil.test/vp/products/123456', '')).toBe('');
+    expect(canonicalizeProductUrl('https://www.coupang.com/vp/products/123456', ''))
+      .toBe('https://www.coupang.com/vp/products/123456');
+    expect(jd.normalizeJdImageUrl('https://evil.test/?360buyimg.com')).toBe('');
+    expect(jd.normalizeJdImageUrl('https://img10.360buyimg.com/n1/jfs/image.jpg'))
+      .toBe('https://img10.360buyimg.com/n1/jfs/image.jpg');
+    vi.stubGlobal('location', { href: 'https://itemXjdYcom/123Xhtml' });
+    vi.stubGlobal('document', { title: '商品', body: { innerText: '商品详情' }, querySelector: () => ({}) });
+    const state = jd.detectJdPageState('123');
+    expect(state.onExpectedItemUrl).toBe(false);
+    vi.stubGlobal('location', { href: 'https://item.jd.com/123.html' });
+    expect(jd.detectJdPageState('123').isProductPage).toBe(true);
+  });
+
+  // CodeQL backtracking family, unit: actual parser/evaluate helpers. Cover
+  // valid object/mixed templates, IIFEs and title/name results; strict timing
+  // and adversarial large-input checks are run separately from default unit.
+  it('preserves template, title and evaluate results with unambiguous parsing', () => {
+    expect(render('${{ { value: args.n } }}', { args: { n: 3 } })).toEqual({ value: 3 });
+    expect(render('${{ args.n }}-${{ args.n + 1 }}', { args: { n: 3 } })).toBe('3-4');
+    expect(render('unfinished ${{ args.n', {})).toBe('unfinished ${{ args.n');
+    expect(render("${{ '${{ literal' }}", {})).toBe('${{ literal');
+    expect(wrapForEval('(() => 3)()')).toBe('(() => 3)()');
+    expect(wrapForEval('() => 3')).toBe('(() => 3)()');
+    expect(splitDoubanTitle('中文 第二 English title')).toEqual({ title: '中文 第二', originalTitle: 'English title' });
+    expect(splitDoubanTitle('中文 标题')).toEqual({ title: '中文', originalTitle: '标题' });
+    expect(requirePackageName('vendor/foo-bar.123').full).toBe('vendor/foo-bar.123');
+    expect(() => requirePackageName('vendor/foo..bar')).toThrow('not a valid Composer name');
+  });
   // #6826 / 4353868420, unit: metadata discovery and execution must reject the
   // retired code-extraction mode before any browser operation. No previous OTP case.
   it.each([true, false, 'true'])('rejects Proton code mode %s before page effects', async value => {

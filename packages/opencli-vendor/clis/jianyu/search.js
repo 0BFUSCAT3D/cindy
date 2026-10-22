@@ -326,7 +326,7 @@ function unwrapDuckDuckGoUrl(rawUrl) {
     try {
         const parsed = new URL(normalized);
         const host = parsed.hostname.toLowerCase();
-        if (!host.endsWith('duckduckgo.com'))
+        if (host !== 'duckduckgo.com' && !host.endsWith('.duckduckgo.com'))
             return normalized;
         const uddg = parsed.searchParams.get('uddg');
         if (!uddg)

@@ -46,11 +46,9 @@ export function wrapForEval(js: string): string {
   const code = js.trim();
   if (!code) return 'undefined';
 
-  // Already an IIFE: `(async () => { ... })()` or `(function() {...})()`
-  if (/^\([\s\S]*\)\s*\(.*\)\s*$/.test(code)) return code;
-
   // Arrow function: `() => ...` or `async () => ...`
-  if (/^(async\s+)?(\([^)]*\)|[A-Za-z_]\w*)\s*=>/.test(code)) return `(${code})()`;
+  // Exclude nested opening parentheses so an IIFE stays a bare expression.
+  if (/^(async\s+)?(\([^()]*\)|[A-Za-z_]\w*)\s*=>/.test(code)) return `(${code})()`;
 
   // Function declaration: `function ...` or `async function ...`
   if (/^(async\s+)?function[\s(]/.test(code)) return `(${code})()`;

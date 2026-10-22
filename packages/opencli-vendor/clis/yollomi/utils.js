@@ -19,7 +19,13 @@ export const YOLLOMI_DOMAIN = 'yollomi.com';
  */
 export async function ensureOnYollomi(page) {
     const currentUrl = await page.evaluate(`(() => location.href)()`);
-    if (!currentUrl || !currentUrl.includes('yollomi.com')) {
+    let onSite = false;
+    try {
+        const parsed = new URL(currentUrl);
+        onSite = ['http:', 'https:'].includes(parsed.protocol)
+            && (parsed.hostname === 'yollomi.com' || parsed.hostname.endsWith('.yollomi.com'));
+    } catch { /* Invalid locations must navigate to the real site. */ }
+    if (!onSite) {
         await page.goto('https://yollomi.com');
         await page.wait(3);
     }

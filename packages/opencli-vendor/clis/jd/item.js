@@ -32,7 +32,10 @@ function normalizeJdImageUrl(rawUrl) {
         url = `https:${url}`;
     if (!/^https?:\/\//.test(url))
         return '';
-    return url;
+    try {
+        const host = new URL(url).hostname;
+        return host === '360buyimg.com' || host.endsWith('.360buyimg.com') ? url : '';
+    } catch { return ''; }
 }
 function normalizeJdImageSize(url) {
     return normalizeJdImageUrl(url)
@@ -69,7 +72,7 @@ function collectImageUrlsFrom(root, options = {}) {
     };
     const push = (value) => {
         const url = normalizeJdImageUrl(value);
-        if (url && url.includes('360buyimg.com'))
+        if (url)
             urls.push(url);
     };
     for (const img of root.querySelectorAll?.('img') || []) {
@@ -116,7 +119,7 @@ function collectImageUrlsFromText(text) {
     const urls = [];
     const push = (value) => {
         const url = normalizeJdImageUrl(value);
-        if (url && url.includes('360buyimg.com'))
+        if (url)
             urls.push(url);
     };
     for (const match of String(text || '').matchAll(/(?:https?:)?\/\/[^"'`\s<>)\\]+360buyimg\.com[^"'`\s<>)\\]*/g)) {
@@ -160,7 +163,7 @@ function collectImageUrlsFromPayload(payload, seen = new Set(), depth = 0) {
     const urls = [];
     const push = (value) => {
         const url = normalizeJdImageUrl(value);
-        if (url && url.includes('360buyimg.com'))
+        if (url)
             urls.push(url);
     };
     if (typeof payload === 'string') {
@@ -528,7 +531,11 @@ function detectJdPageState(expectedSku) {
     const hasSecurityChallenge = /risk_handler|安全验证|安全校验|完成安全验证|滑块|captcha|访问过于频繁|验证中心|京东验证/.test(`${href}\n${text}`);
     const loginOnlyWithoutProduct = /请登录|登录/.test(text) && !hasProductMarker;
     const looksBlocked = isLoginPage || hasSecurityChallenge || loginOnlyWithoutProduct;
-    const onExpectedItemUrl = new RegExp(`item\.jd\.com/${expectedSku}\.html`).test(href);
+    let onExpectedItemUrl = false;
+    try {
+        const parsed = new URL(href);
+        onExpectedItemUrl = parsed.hostname === 'item.jd.com' && parsed.pathname === `/${expectedSku}.html`;
+    } catch { /* An invalid URL cannot identify the expected product. */ }
     return {
         href,
         title,

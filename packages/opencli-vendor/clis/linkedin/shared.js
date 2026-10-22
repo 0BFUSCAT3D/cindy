@@ -52,7 +52,7 @@ export function decodeLinkedInSafetyUrl(value) {
   if (!url) return '';
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {
+    if ((parsed.hostname === 'linkedin.com' || parsed.hostname.endsWith('.linkedin.com')) && parsed.pathname === '/safety/go/') {
       return normalizeHttpUrl(parsed.searchParams.get('url') || '');
     }
   } catch {}

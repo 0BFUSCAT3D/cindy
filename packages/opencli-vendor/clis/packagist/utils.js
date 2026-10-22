@@ -9,7 +9,7 @@ export const PACKAGIST_BASE = 'https://packagist.org';
 const UA = 'opencli-packagist-adapter (+https://github.com/jackwener/opencli)';
 
 // Each segment of a Composer package name (`vendor` and `package`).
-const SEGMENT = /^[a-z0-9]([_.-]?[a-z0-9]+)*$/;
+const SEGMENT = /^[a-z0-9]+(?:[_.-][a-z0-9]+)*$/;
 
 export function requireString(value, label) {
     const s = String(value ?? '').trim();

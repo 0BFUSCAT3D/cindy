@@ -32,7 +32,11 @@ export function normalizeBooleanFlag(value, fallback = false) {
 
 export async function isOnQianwen(page) {
     const url = await page.evaluate('window.location.href').catch(() => '');
-    return typeof url === 'string' && url.includes('qianwen.com');
+    try {
+        const parsed = new URL(url);
+        return ['http:', 'https:'].includes(parsed.protocol)
+            && (parsed.hostname === 'qianwen.com' || parsed.hostname.endsWith('.qianwen.com'));
+    } catch { return false; }
 }
 
 export async function ensureOnQianwen(page) {
