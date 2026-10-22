@@ -20,6 +20,7 @@ import {
 } from '../appSessionState.js';
 import type { WorkbenchDelegationStatus, WorkbenchTranscriptItem } from '../../shared/botWorkbench.js';
 import { broadcastBotWorkbenchChanged } from './botWorkbenchService.js';
+import { botLinkedProjectAccess } from './botLinkedProjects.js';
 import { boundTranscript, readSessionTranscript } from './botWorkbenchTranscripts.js';
 import { readTaskResponsibilities, responsibleSessionIds, setTaskResponsibility } from './botTaskResponsibility.js';
 import { readBotGlance, readSchedulerBotId, readWatchedSession } from './botWorkbenchAutonomyBridge.js';
@@ -70,7 +71,6 @@ export async function runBotProjectsTool(params: {
     if (isAppSessionBoundaryPending()) throw new Error('OWNER_SCOPE_CHANGED');
     const caller = await resolveWorkbenchCaller(params.callerSessionId);
     if (!caller.ok) return caller;
-    const { botLinkedProjectAccess } = await import('./botLinkedProjects.js');
     if (owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending()) throw new Error('OWNER_SCOPE_CHANGED');
     const access = await botLinkedProjectAccess(caller.botId);
     let projects;

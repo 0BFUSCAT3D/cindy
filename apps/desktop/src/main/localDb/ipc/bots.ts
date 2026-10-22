@@ -1,4 +1,5 @@
 import { todoAccess } from '../../maker-ipc/botTodoAccess.js';
+import { botLinkedProjectAccess } from '../../maker-ipc/botLinkedProjects.js';
 import type { TodoPatch } from '@cindy/maker-shared/teammate-todo';
 /** Cindy Bots 的 main-side 权威数据边界。
  *
@@ -2567,7 +2568,6 @@ export function registerBotIpc(): void {
     ipcMain.handle(`local-db:bots:projects:${operation}`, async (event, rawBotId: unknown, rawId?: unknown, rawLinked?: unknown) => {
       assertTrustedAppRendererEvent(event);
       const botId = readText(rawBotId, 'botId', 128, true);
-      const { botLinkedProjectAccess } = await import('../../maker-ipc/botLinkedProjects.js');
       const access = await botLinkedProjectAccess(botId);
       if (operation === 'list') return access.read();
       const id = readText(rawId, 'projectId', 64, true);
