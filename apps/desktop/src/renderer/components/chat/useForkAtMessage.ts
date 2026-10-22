@@ -23,9 +23,13 @@ import type { JSONContent } from '@tiptap/core';
 import { emitRefresh as emitSessionsRefresh } from '@/lib/sessionsBus';
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 import { refreshRemoteDeviceSessions } from '@/features/device-link/refreshRemoteSessions';
-import { useSessionNavigationMode } from '@/features/cc-agent/embeddedSessionNavigation';
+import {
+  useSessionNavigationIntent,
+  useSessionNavigationMode,
+} from '@/features/cc-agent/embeddedSessionNavigation';
 import { createLogger } from '@/lib/logger';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
+import { remoteAgentErrorCode } from '@cindy/device-link';
 
 const log = createLogger('useForkAtMessage');
 
@@ -72,6 +76,7 @@ export function useForkAtMessage({
   const { confirm } = useConfirmDialog();
   const navigate = useNavigate();
   const navigationMode = useSessionNavigationMode();
+  const reportSessionNavigation = useSessionNavigationIntent();
 
   return useCallback(async () => {
     if (!sessionId || !messageClientId) return;
@@ -115,12 +120,16 @@ export function useForkAtMessage({
       // remoteProjectsStore 注册新 sessionId,否则 navigate 会把它当本地会话 404(等轮询太慢)。
       const deviceId = getSessionDeviceId(sessionId);
       if (deviceId) await refreshRemoteDeviceSessions(deviceId);
+      reportSessionNavigation?.(newSession.id, newSession.id);
       navigate(`/cc-agent/${newSession.id}`);
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'UNKNOWN';
       const detail = err instanceof Error ? err.message : String(err);
+      const remoteCode = remoteAgentErrorCode(detail);
       const msg =
-        code === 'FORK_UNSUPPORTED_HISTORY'
+        remoteCode
+          ? t(`chat.remoteError.${remoteCode}`, { defaultValue: t('chat.userMessage.forkErrors.generic') })
+          : code === 'FORK_UNSUPPORTED_HISTORY'
           ? t('chat.userMessage.forkErrors.unsupportedHistory')
           : code === 'NO_PRIOR_ASSISTANT'
             ? t('chat.userMessage.forkErrors.noPriorAssistant')
@@ -140,6 +149,7 @@ export function useForkAtMessage({
     sessionId,
     messageClientId,
     navigationMode,
+    reportSessionNavigation,
     forkBlocked,
     draftText,
     draftDocument,

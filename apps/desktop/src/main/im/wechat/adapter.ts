@@ -21,6 +21,9 @@ export function buildWechatAdapter(
     },
     config,
     ui,
+    companionLane: (userId) => wechatIm.isOwner(userId)
+      ? { kind: 'owner-dm' }
+      : { kind: 'guest-dm', userId },
     sessions: {
       source: 'wechat',
       sessionIdFor,
@@ -35,8 +38,10 @@ export function buildWechatAdapter(
     },
     processingEmoji: '',
     buildVendorOptions: (userId) => ({ source: 'wechat', wechatPeerId: userId }),
-    handleTextInteraction: (userId, request) =>
-      wechatIm.handleTextInteraction(userId, request),
+    handleTextInteraction: (userId, request, options) =>
+      wechatIm.handleTextInteraction(userId, request, options),
+    cancelTextInteraction: (userId, requestId, decision) =>
+      wechatIm.cancelTextInteraction(userId, requestId, decision),
     onUserMessagePersisted: (args) => wechatIm.onUserMessagePersisted(args),
   };
 }

@@ -15,29 +15,21 @@ vi.mock('react-i18next', () => ({
 }));
 
 // 预览卡内容不在本文件的覆盖范围(Content 直接丢掉,与原先 Tip stub 只透传
-// children 等价)。Provider 记**挂载中的实例数**而不是渲染次数:组件会因
-// 测量 setState 反复重渲,计渲染次数是脆的;挂载数对重渲染免疫。
-const tooltipMocks = vi.hoisted(() => ({ mountedProviders: { value: 0 } }));
-
-vi.mock('@/components/ui/tooltip', async () => {
-  const { useEffect } = await import('react');
-  return {
-    Tooltip: {
-      Provider: ({ children }: { children: ReactNode }) => {
-        useEffect(() => {
-          tooltipMocks.mountedProviders.value += 1;
-          return () => {
-            tooltipMocks.mountedProviders.value -= 1;
-          };
-        }, []);
-        return <>{children}</>;
-      },
-      Root: ({ children }: { children: ReactNode }) => <>{children}</>,
-      Trigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-      Content: () => null,
-    },
-  };
-});
+// children 等价)。Provider 放一个隐藏结构标记,直接断言当前 DOM 中的实例数,
+// 避免 Windows 全量 shard 高负载时 useEffect 挂载计数尚未刷新造成误报。
+vi.mock('@/components/ui/tooltip', () => ({
+  Tooltip: {
+    Provider: ({ children }: { children: ReactNode }) => (
+      <>
+        <span data-testid="message-nav-tooltip-provider" hidden />
+        {children}
+      </>
+    ),
+    Root: ({ children }: { children: ReactNode }) => <>{children}</>,
+    Trigger: ({ children }: { children: ReactNode }) => <>{children}</>,
+    Content: () => null,
+  },
+}));
 
 import { MessageNavRail } from '../MessageNavRail';
 import { NAV_RAIL_ACTIVE_FUDGE_PX, type NavRailEntry } from '../messageNavRailModel';
@@ -89,10 +81,17 @@ const ENTRIES: NavRailEntry[] = [
   { id: 'u5', preview: '第五问' },
 ];
 
+const MIXED_ENTRIES: NavRailEntry[] = [
+  { id: 'u1', preview: '第一问' },
+  { id: 'u2', preview: '自动任务提问', isAutomation: true },
+  { id: 'u3', preview: '第三问' },
+  { id: 'u4', preview: '第四问' },
+  { id: 'u5', preview: '第五问' },
+];
+
 describe('MessageNavRail', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
-    tooltipMocks.mountedProviders.value = 0;
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     // jsdom 没有 CSS.escape(真实渲染器 Chromium 提供);测试 id 都是安全字符。
     vi.stubGlobal('CSS', { escape: (s: string) => s });
@@ -152,7 +151,7 @@ describe('MessageNavRail', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('button')).toHaveLength(5);
     });
-    expect(tooltipMocks.mountedProviders.value).toBe(1);
+    expect(screen.getAllByTestId('message-nav-tooltip-provider')).toHaveLength(1);
   });
 
   it('点击刻度回调 onJump(clientId),且点击项乐观标记为当前项', async () => {
@@ -179,6 +178,33 @@ describe('MessageNavRail', () => {
     fireEvent.click(screen.getAllByRole('button')[4]);
     expect(onJump).toHaveBeenCalledWith('u5');
     expect(screen.getAllByRole('button')[4].getAttribute('aria-current')).toBe('true');
+  });
+
+  it('自动化提问使用更短的刻度,但保留相同点击定位入口', async () => {
+    const root = buildScrollContainer(1000, [
+      { id: 'u1', top: -400 },
+      { id: 'u2', top: 50 },
+      { id: 'u3', top: 400 },
+      { id: 'u4', top: 600 },
+      { id: 'u5', top: 900 },
+    ]);
+    render(
+      <MessageNavRail
+        entries={MIXED_ENTRIES}
+        scrollRef={{ current: root }}
+        contentMaxWidth={880}
+        bottomOffset={200}
+        onJump={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole('button')).toHaveLength(5);
+    });
+    const buttons = screen.getAllByRole('button');
+    expect(buttons[1].getAttribute('data-message-nav-automation')).toBe('true');
+    expect(buttons[0].getAttribute('data-message-nav-automation')).toBeNull();
+    expect(buttons[1].querySelector('span')?.className).toContain('w-[26px]');
+    expect(buttons[0].querySelector('span')?.className).toContain('w-[26px]');
   });
 
   it('渲染窗口外的锚点(DOM 缺失)视作已越过阈值', async () => {
@@ -243,5 +269,90 @@ describe('MessageNavRail', () => {
     await waitFor(() => {
       expect(container.querySelector('nav')).toBeNull();
     });
+  });
+
+  it('hover 目标周围的刻度按距离渐进伸缩', async () => {
+    const root = buildScrollContainer(1000, [
+      { id: 'u1', top: -400 },
+      { id: 'u2', top: 50 },
+      { id: 'u3', top: 400 },
+      { id: 'u4', top: 600 },
+      { id: 'u5', top: 900 },
+    ]);
+    render(
+      <MessageNavRail
+        entries={ENTRIES}
+        scrollRef={{ current: root }}
+        contentMaxWidth={880}
+        bottomOffset={200}
+        onJump={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(5));
+    const buttons = screen.getAllByRole('button');
+    fireEvent.mouseEnter(buttons[2]);
+    expect(buttons[2].querySelector('span')?.className).toContain('w-[26px]');
+    expect(buttons[1].querySelector('span')?.className).toContain('w-[26px]');
+    expect(buttons[0].querySelector('span')?.className).toContain('w-[26px]');
+    expect(buttons[4].querySelector('span')?.className).toContain('w-[26px]');
+  });
+
+  it('按住刻度纵向拖动时连续跳转，并抑制结束后的重复 click', async () => {
+    const onJump = vi.fn();
+    const root = buildScrollContainer(1000, [
+      { id: 'u1', top: -400 },
+      { id: 'u2', top: 50 },
+      { id: 'u3', top: 400 },
+      { id: 'u4', top: 600 },
+      { id: 'u5', top: 900 },
+    ]);
+    render(
+      <MessageNavRail
+        entries={ENTRIES}
+        scrollRef={{ current: root }}
+        contentMaxWidth={880}
+        bottomOffset={200}
+        onJump={onJump}
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(5));
+    const buttons = screen.getAllByRole('button');
+    buttons.forEach((button, index) => mockRect(button, { top: index * 20, height: 10 }));
+    fireEvent.pointerDown(buttons[1], { pointerId: 7, button: 0, clientY: 25 });
+    fireEvent.pointerMove(buttons[1], { pointerId: 7, clientY: 87 });
+    expect(onJump).toHaveBeenCalledWith('u5');
+    fireEvent.pointerUp(buttons[1], { pointerId: 7, clientY: 87 });
+    fireEvent.click(buttons[1]);
+    expect(onJump).toHaveBeenCalledTimes(1);
+  });
+
+  it('拖动被取消后不抑制下一次正常 click', async () => {
+    const onJump = vi.fn();
+    const root = buildScrollContainer(1000, [
+      { id: 'u1', top: -400 },
+      { id: 'u2', top: 50 },
+      { id: 'u3', top: 400 },
+      { id: 'u4', top: 600 },
+      { id: 'u5', top: 900 },
+    ]);
+    render(
+      <MessageNavRail
+        entries={ENTRIES}
+        scrollRef={{ current: root }}
+        contentMaxWidth={880}
+        bottomOffset={200}
+        onJump={onJump}
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(5));
+    const buttons = screen.getAllByRole('button');
+    buttons.forEach((button, index) => mockRect(button, { top: index * 20, height: 10 }));
+    fireEvent.pointerDown(buttons[1], { pointerId: 7, button: 0, clientY: 25 });
+    fireEvent.pointerMove(buttons[1], { pointerId: 7, clientY: 87 });
+    expect(onJump).toHaveBeenCalledWith('u5');
+    fireEvent.pointerCancel(buttons[1], { pointerId: 7, clientY: 87 });
+    fireEvent.click(buttons[2]);
+    expect(onJump).toHaveBeenLastCalledWith('u3');
+    expect(onJump).toHaveBeenCalledTimes(2);
   });
 });

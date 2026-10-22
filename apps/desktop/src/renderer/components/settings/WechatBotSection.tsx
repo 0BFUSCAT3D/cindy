@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 import { Check, FolderOpen, Loader2, RotateCw, Trash2, Unplug } from 'lucide-react';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -43,9 +44,11 @@ function statusTextColor(phase: WechatBotPhase): string {
 export function WechatBotSection({
   expanded,
   onToggle,
+  companion,
 }: {
   expanded: boolean;
   onToggle: () => void;
+  companion?: { id: string; name: string };
 }) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
@@ -60,11 +63,16 @@ export function WechatBotSection({
     unbind,
     chooseWorkingDirectory,
     resetWorkingDirectory,
+    setCompanion,
+    isUpdatingCompanion,
   } = useWechatBot();
   const [routeSummary, setRouteSummary] = useImChannelSettingsSummary('wechat');
+  const assigned = channelSettings?.companionBotId;
+  const otherCompanion = !!companion && !!assigned && assigned !== companion.id;
+  const needsAssignment = !!companion && assigned !== companion.id;
 
   const authorizationSteps = (
-    <ol className="mt-1 grid gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-[12px] leading-[1.55] text-[var(--text-secondary)]">
+    <ol className="mt-1 grid gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 leading-[1.55] text-[var(--text-secondary)]">
       {[1, 2, 3, 4].map((step) => (
         <li key={step} className="flex gap-2">
           <span className="shrink-0 text-[var(--text-tertiary)]">{step}.</span>
@@ -93,8 +101,11 @@ export function WechatBotSection({
       maxWidth: 440,
       autoFocusConfirm: true,
     });
-    if (accepted) await authorize();
-  }, [authorizationSteps, authorize, confirm, state.bound, t]);
+    if (accepted) {
+      if (companion && !(await setCompanion(companion.id))) return;
+      await authorize();
+    }
+  }, [authorizationSteps, authorize, companion, confirm, setCompanion, state.bound, t]);
 
   const handleUnbind = useCallback(async () => {
     const accepted = await confirm({
@@ -112,13 +123,13 @@ export function WechatBotSection({
 
   return (
     <ImChannelSettingsCard
-      id="personal-im-wechat"
+      id={companion ? 'companion-im-wechat' : 'personal-im-wechat'}
       title={t('settings.wechatBot.title')}
       description={t('settings.wechatBot.description')}
       routeSummary={
-        routeSummary
-          ? `${t(`settings.imBot.defaults.agents.${routeSummary.agentKind}`)} · ${routeSummary.model}`
-          : null
+        companion ? (assigned === companion.id ? companion.name : null)
+          : assigned ? t('settings.wechatBot.companion.assigned')
+            : routeSummary ? `${t(`settings.imBot.defaults.agents.${routeSummary.agentKind}`)} · ${routeSummary.model}` : null
       }
       expanded={expanded}
       onToggle={onToggle}
@@ -145,6 +156,29 @@ export function WechatBotSection({
         </span>
       }
     >
+      {companion || assigned ? (
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-13 leading-[1.5] text-[var(--text-secondary)]">
+            {t(otherCompanion ? 'settings.wechatBot.companion.other'
+              : companion ? 'settings.wechatBot.companion.description' : 'settings.wechatBot.companion.assigned',
+            { name: companion?.name })}
+          </p>
+          <p className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+            {t('settings.wechatBot.companion.permissionNote')}
+          </p>
+          {!otherCompanion && assigned ? (
+            <Button variant="secondary" size="sm" loading={isUpdatingCompanion}
+              onClick={() => void setCompanion(null)}>
+              {t('settings.wechatBot.companion.remove')}
+            </Button>
+          ) : !otherCompanion && state.bound && companion ? (
+            <Button variant="secondary" size="sm" loading={isUpdatingCompanion}
+              disabled={!channelSettings} onClick={() => void setCompanion(companion.id)}>
+              {t('settings.wechatBot.companion.useExisting', { name: companion.name })}
+            </Button>
+          ) : null}
+        </div>
+      ) : <>
       <ImDefaultSettingsSection channel="wechat" embedded onSummaryChange={setRouteSummary} />
 
       <div className="h-px w-full bg-[var(--border-default)]" />
@@ -155,10 +189,11 @@ export function WechatBotSection({
         onChoose={() => void chooseWorkingDirectory()}
         onReset={() => void resetWorkingDirectory()}
       />
+      </>}
 
       <div className="h-px w-full bg-[var(--border-default)]" />
 
-      {authorizationPending ? (
+      {otherCompanion || (needsAssignment && state.bound) ? null : authorizationPending ? (
         <div className="flex flex-col items-center gap-3 rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)] px-5 py-6 text-center">
           <span className="inline-flex animate-spin text-[var(--text-secondary)] motion-reduce:animate-none">
             <Loader2 size={22} />
@@ -171,13 +206,14 @@ export function WechatBotSection({
               {t('settings.wechatBot.waiting.note')}
             </p>
           </div>
-          <button
+          <Button
+            variant="secondary"
+            size="lg"
             type="button"
             onClick={() => void cancelAuthorization()}
-            className="h-9 rounded-full border border-[var(--settings-btn-secondary-border)] bg-[var(--settings-btn-secondary-bg)] px-5 text-12 font-medium text-[var(--settings-btn-secondary-text)]"
           >
             {t('settings.wechatBot.waiting.cancel')}
-          </button>
+          </Button>
         </div>
       ) : state.bound ? (
         <div className="flex flex-col gap-4 rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)] p-5">
@@ -199,42 +235,30 @@ export function WechatBotSection({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
+            <Button
+              variant="secondary"
+              size="lg"
+              loading={isAuthorizing}
               type="button"
               onClick={() => void handleAuthorize()}
-              disabled={isAuthorizing || disabledByPolicy}
-              className={cn(
-                'flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full',
-                'border border-[var(--settings-btn-secondary-border)] bg-[var(--settings-btn-secondary-bg)]',
-                'px-4 text-12 font-medium text-[var(--settings-btn-secondary-text)]',
-                (isAuthorizing || disabledByPolicy) && 'cursor-not-allowed opacity-40',
-              )}
+              disabled={isAuthorizing || isUpdatingCompanion || !channelSettings || disabledByPolicy}
+              className="flex-1"
             >
-              {isAuthorizing ? (
-                <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
-              ) : (
-                <RotateCw size={13} />
-              )}
+              <RotateCw size={13} />
               {t('settings.wechatBot.actions.rebind')}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
+              size="lg"
+              loading={isUnbinding}
               type="button"
               onClick={() => void handleUnbind()}
               disabled={isUnbinding}
-              className={cn(
-                'flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full',
-                'border border-[var(--settings-btn-secondary-border)] bg-[var(--settings-btn-secondary-bg)]',
-                'px-4 text-12 font-medium text-[var(--settings-btn-secondary-text)]',
-                isUnbinding && 'cursor-not-allowed opacity-40',
-              )}
+              className="flex-1"
             >
-              {isUnbinding ? (
-                <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
-              ) : (
-                <Trash2 size={13} />
-              )}
+              <Trash2 size={13} />
               {t('settings.wechatBot.actions.unbind')}
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
@@ -250,23 +274,17 @@ export function WechatBotSection({
               )}
             </p>
           </div>
-          <button
+          <Button
+            variant="cta"
+            size="lg"
+            loading={isAuthorizing}
             type="button"
             onClick={() => void handleAuthorize()}
-            disabled={isAuthorizing || disabledByPolicy}
-            className={cn(
-              'flex h-[42px] w-full items-center justify-center gap-1.5 rounded-full',
-              'border border-[var(--settings-btn-primary-border)] bg-[var(--settings-btn-primary-bg)]',
-              'text-13 font-medium text-[var(--settings-btn-primary-text)]',
-              'transition-colors hover:bg-[var(--settings-btn-primary-hover-bg)]',
-              (isAuthorizing || disabledByPolicy) && 'cursor-not-allowed opacity-40',
-            )}
+            disabled={isAuthorizing || isUpdatingCompanion || !channelSettings || disabledByPolicy}
+            className="w-full"
           >
-            {isAuthorizing && (
-              <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
-            )}
             {t('settings.wechatBot.actions.connect')}
-          </button>
+          </Button>
         </div>
       )}
     </ImChannelSettingsCard>
@@ -298,31 +316,30 @@ function WechatWorkingDirectory({
         </p>
       </div>
       <div className="flex min-w-0 items-center gap-2">
-        <button
+        <Button
+          variant="secondary"
+          size="lg"
           type="button"
           onClick={onChoose}
           disabled={pending}
-          className={cn(
-            'flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full px-3 text-left',
-            'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
-            'text-12 text-[var(--settings-input-text)]',
-            pending && 'cursor-not-allowed opacity-50',
-          )}
+          className="min-w-0 flex-1"
         >
           <FolderOpen size={15} className="shrink-0 text-[var(--text-tertiary)]" />
           <span className="truncate" title={configured ?? undefined} dir="auto">
             {configured ?? t('settings.wechatBot.workingDir.managed')}
           </span>
-        </button>
+        </Button>
         {configured && (
-          <button
+          <Button
+            variant="secondary"
+            size="lg"
             type="button"
             onClick={onReset}
             disabled={pending}
-            className="h-10 shrink-0 rounded-full border border-[var(--settings-btn-secondary-border)] bg-[var(--settings-btn-secondary-bg)] px-4 text-12 font-medium text-[var(--settings-btn-secondary-text)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0"
           >
             {t('settings.wechatBot.workingDir.reset')}
-          </button>
+          </Button>
         )}
       </div>
       {settings && !settings.workingDirAvailable && (

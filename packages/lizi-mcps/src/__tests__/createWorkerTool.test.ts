@@ -50,6 +50,53 @@ function setupWorkerSession() {
 }
 
 describe('create_worker tool', () => {
+  // PR2: the public tool must preserve a new worktree request and return actual spawn facts.
+  // Existing directory tests only cover an explicit existing path. Unit, real registry schema.
+  it.each([{}, { source_branch: 'release' }])('passes new_worktree %j and returns the actual directory and owned checkout', async (request) => {
+    const registry = new XdtHelperToolRegistry();
+    const createWorker = vi.fn(async () => ({ ok: true as const, workerId: 'worker', workerSessionId: 'session',
+      workingDir: '/repo/.cindy-worktrees/new/apps/web', worktree: { path: '/repo/.cindy-worktrees/new', branch: 'cindy/new' } }));
+    registerCreateWorkerTool(registry, { sessionId: 'lead', createWorker });
+    const result = parse(await registry.call('create_worker', { role: 'developer', agent: 'codex', label: 'worker', new_worktree: request }));
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({worktree: request.source_branch === undefined ? {} : { sourceBranch: request.source_branch }}));
+    expect(result).toMatchObject({working_dir: '/repo/.cindy-worktrees/new/apps/web', worktree: {path: '/repo/.cindy-worktrees/new', branch: 'cindy/new'}});
+  });
+
+  it.each([null, true, {source_branch: ''}, {source_branch: '-unsafe'}, {source_branch: 'bad\nbranch'}, {unknown: true}])('rejects malformed new_worktree %j before host creation', async new_worktree => {
+    const {registry, createWorker} = setup();
+    const result = await registry.call('create_worker', {role: 'developer', agent: 'codex', label: 'worker', new_worktree});
+    expect(result.isError).toBe(true);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it('forwards the explicit working_dir to the host', async () => {
+    const { registry, createWorker } = setup();
+    const result = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'worker', working_dir: '/tmp/candidate with spaces ',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({ workingDir: '/tmp/candidate with spaces ' }));
+  });
+
+  it('forwards the Worker Agent location ("local" = the task computer, omitted = same as the Lead)', async () => {
+    const { registry, createWorker } = setup();
+    await registry.call('create_worker', { role: 'developer', agent: 'codex', label: 'remote', agent_device_id: 'share:s1' });
+    expect(createWorker).toHaveBeenLastCalledWith(expect.objectContaining({ agentDeviceId: 'share:s1' }));
+    await registry.call('create_worker', { role: 'developer', agent: 'codex', label: 'local', agent_device_id: 'local' });
+    expect(createWorker).toHaveBeenLastCalledWith(expect.objectContaining({ agentDeviceId: null }));
+    await registry.call('create_worker', { role: 'developer', agent: 'codex', label: 'lead' });
+    expect((createWorker.mock.calls.at(-1) as unknown[])[0]).not.toHaveProperty('agentDeviceId');
+  });
+
+  it('rejects an empty explicit directory instead of silently inheriting', async () => {
+    const { registry, createWorker } = setup();
+    const result = await registry.call('create_worker', {
+      role: 'developer', agent: 'codex', label: 'worker', working_dir: '  ',
+    });
+    expect(result.isError).toBe(true);
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
   it('describes the subagent distinction before creating a worker', () => {
     const { registry } = setup();
 
@@ -142,10 +189,29 @@ describe('create_worker tool', () => {
       agent: 'codex',
       label: 'reviewer_1',
       model: undefined,
+      providerId: undefined,
       effort: undefined,
       fast: undefined,
       initialTask: undefined,
     });
+  });
+
+  it('trims and forwards provider_id to the host creation boundary', async () => {
+    const { registry, createWorker } = setup();
+
+    const res = await registry.call('create_worker', {
+      role: 'reviewer',
+      agent: 'codex',
+      model: 'deepseek/deepseek-v4-pro',
+      provider_id: ' xd ',
+      label: 'reviewer_1',
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'deepseek/deepseek-v4-pro',
+      providerId: 'xd',
+    }));
   });
 
   it('accepts pi as a first-class worker agent and passes it through to host', async () => {

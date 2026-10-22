@@ -7,13 +7,7 @@ export type ConversationSearchWorkspaceKind = 'project' | 'dialogue';
 export type ConversationSearchSessionStatus = 'active' | 'archived' | 'deleted';
 export type ConversationSearchOrcaRole = 'lead' | 'worker';
 export type ConversationSearchMessageRole =
-  | 'user'
-  | 'assistant'
-  | 'tool_use'
-  | 'tool_result'
-  | 'ask_user'
-  | 'plan_review'
-  | 'thinking';
+  'user' | 'assistant' | 'tool_use' | 'tool_result' | 'ask_user' | 'plan_review' | 'thinking';
 
 export interface ConversationSearchRequest {
   query: string;
@@ -49,6 +43,11 @@ export interface ConversationSearchFilters {
    * filtering so search follows the exact same project grouping as the sidebar.
    */
   sessionIds?: string[] | null;
+  /**
+   * Optional project workingDir set (grouping-normalized). Remote project
+   * search uses this instead of the controller's mirrored session-id window.
+   */
+  workingDirs?: string[] | null;
 }
 
 export type ConversationSearchMatchKind = 'title' | 'content' | 'both';
@@ -63,10 +62,20 @@ export interface ConversationSearchSessionSummary {
   source?: SessionSource;
   orcaRole?: ConversationSearchOrcaRole | null;
   parentSessionId?: string | null;
+  /** Host-verified personal companion chat; absent for ordinary/background tasks. */
+  companion?: {
+    id: string;
+    name: string;
+    role: 'canonical' | 'history';
+    readOnly: boolean;
+  };
   userSendAt: string | null;
   updatedAt: string;
   createdAt: string;
   _count: { messages: number };
+  /** device-link origin stamped by the controller after a remote search. */
+  deviceLinkDeviceId?: string | null;
+  deviceLinkDeviceName?: string | null;
 }
 
 export interface ConversationSearchContentHit {
@@ -113,4 +122,6 @@ export interface ConversationSearchResponse {
   vectorUsed: boolean;
   vectorSkipReason: string | null;
   poolCapped: boolean;
+  /** Controller fan-out only: remote hits before the merged page is truncated. */
+  remoteResults?: ConversationSearchResultItem[];
 }

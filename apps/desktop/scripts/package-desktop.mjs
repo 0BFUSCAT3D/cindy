@@ -116,6 +116,39 @@ function collectBuildMeta() {
   return { schemaVersionMax, migrationFiles, commitSha, electronVersion };
 }
 
+function verifyPackagedSourceMetadata({ appName, platform, arch, expectedCommit }) {
+  const packagedDir = path.join(DESKTOP_ROOT, 'out', `${appName}-${platform}-${arch}`);
+  const metadataPath =
+    platform === 'darwin'
+      ? path.join(packagedDir, `${appName}.app`, 'Contents', 'Resources', 'cindy-source.json')
+      : path.join(packagedDir, 'resources', 'cindy-source.json');
+  if (!fs.existsSync(metadataPath)) {
+    throw new Error(`packaged Cindy source metadata missing at ${metadataPath}`);
+  }
+  let metadata;
+  try {
+    metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`packaged Cindy source metadata is invalid JSON: ${err.message}`);
+  }
+  if (
+    !metadata ||
+    typeof metadata.sourceCommit !== 'string' ||
+    !metadata.sourceCommit ||
+    typeof metadata.builtAt !== 'string' ||
+    !metadata.builtAt ||
+    Number.isNaN(Date.parse(metadata.builtAt))
+  ) {
+    throw new Error(`packaged Cindy source metadata has invalid sourceCommit/builtAt: ${metadataPath}`);
+  }
+  if (expectedCommit && metadata.sourceCommit !== expectedCommit) {
+    throw new Error(
+      `packaged Cindy source metadata commit mismatch: expected ${expectedCommit}, got ${metadata.sourceCommit}`,
+    );
+  }
+  console.log(`    verified packaged source metadata: ${metadata.sourceCommit}`);
+}
+
 // ── CDN 基线(仅 --version major/minor/patch 时调用,只读)─────────────────────
 
 async function fetchCdnBaselineVersion(platformKey, region) {
@@ -183,7 +216,9 @@ function runForgeMake({ platform, arch, region, version, versionless, noSign, we
   // --no-sign:摘掉 CINDY_WIN_SIGN_CMD,让 forge postPackage 的内部 exe 签名一并
   // 跳过(forge.config.ts 只认这个 env;不摘的话外部签名命令失败会挂整个 make)。
   if (noSign) delete forgeEnv.CINDY_WIN_SIGN_CMD;
-  execSync(`npx electron-forge make --platform ${platform} --arch ${arch}`, {
+  execFileSync(process.execPath, [
+    path.join(__dirname, 'forge-cli.mjs'), 'make', '--platform', platform, '--arch', arch,
+  ], {
     cwd: DESKTOP_ROOT,
     stdio: 'inherit',
     env: forgeEnv,
@@ -393,12 +428,11 @@ async function finishDarwin({
       });
     }
     console.log('==> Signing (Developer ID)...');
-    signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEntitlementsPath, identity, {
-      keychainAccessGroup,
-    });
+    signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEntitlementsPath, identity, { keychainAccessGroup, arch });
     console.log('==> Notarizing...');
     notarizeMacApp(appPath, identity);
     signingMode = 'developer-id+notarized';
+    verifyMacBinaryArch(appName, arch);
 
     const dmgPath = path.join(artifactDir, `${baseName}-${arch}.dmg`);
     console.log('==> Creating DMG...');
@@ -417,7 +451,8 @@ async function finishDarwin({
     // 版本无关(或显式放行)→ ad-hoc 签名,产出 .app 的 zip 供本机/内部试用。
     writeMacEntitlements(helperEntitlementsPath);
     writeMacEntitlements(mainEntitlementsPath, { appleEvents: true });
-    adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlementsPath);
+    adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlementsPath, arch);
+    verifyMacBinaryArch(appName, arch);
     const appZipPath = path.join(artifactDir, `${baseName}-${arch}.zip`);
     console.log('==> Creating app ZIP (ad-hoc signed)...');
     if (fs.existsSync(appZipPath)) fs.unlinkSync(appZipPath);
@@ -439,7 +474,8 @@ async function finishLinux({ artifactDir, baseName, arch }) {
   // 包一致:归集时写死 amd64 会让 arm64 产物顶着 amd64 的名字发出去。
   const installerPath = path.join(artifactDir, `${baseName}-${debianArch(arch)}.deb`);
   fs.copyFileSync(debPath, installerPath);
-  // Linux 首发无热更链路(见 ci/lib.mjs createLinuxFirstReleaseManifest),只出安装包。
+  // One verified payload: Debian uses pkexec; managed user installs on Arch /
+  // Omarchy extract it without elevation and atomically switch releases.
   return { files: [fileEntry('installer', installerPath)], signing: { mode: 'none' } };
 }
 
@@ -560,6 +596,13 @@ async function main() {
       versionless,
       noSign,
       webAuthnAppleTeamId: webAuthnProvisioningProfile ? macSigningIdentity?.teamId : undefined,
+    });
+
+    verifyPackagedSourceMetadata({
+      appName,
+      platform,
+      arch,
+      expectedCommit: meta.commitSha,
     });
 
     // drizzle 资源校验(平台差异只在 packaged 内路径)。

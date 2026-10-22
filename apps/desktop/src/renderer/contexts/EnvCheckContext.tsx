@@ -11,7 +11,6 @@ import {
 
 import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
-import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
 
 /**
  * 由主窗派生的附属窗口(会话多开副窗 / 右侧栏子窗口 / 插件面板子窗口):
@@ -19,7 +18,7 @@ import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
  * (初始 'passed' + 不跑 auto-check)。
  */
 function isDerivedWindow(): boolean {
-  return isSecondaryWindow() || isSidebarWindow() || isGhostPanelWindow();
+  return isSecondaryWindow() || isSidebarWindow();
 }
 
 /* ── Types ── */
@@ -344,7 +343,11 @@ export function EnvCheckProvider({ children }: { children: ReactNode }) {
         try {
           const res = await window.electronAPI.checkEnvironment();
           setResult(res);
-          setStatus('passed');
+          // claude/codex 缺失在 dev 维持既有放行(注释见上:dev 跑检查只为让
+          // 路径就绪);但 bundled ripgrep 缺失不能放行 —— #1956 的启动期
+          // fail-fast 在 dev 同样要成立,否则 dev 缺 rg 会被这里的无条件
+          // passed 吞掉,直到首次 codex spawn / 文件搜索才炸。
+          setStatus(res.ripgrep?.status === 'failed' ? 'failed' : 'passed');
         } catch {
           setStatus('passed');
         }

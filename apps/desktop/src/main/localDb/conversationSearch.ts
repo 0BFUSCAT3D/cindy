@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, count, desc, eq, getTableColumns, gte, inArray, isNull, ne, or } from 'drizzle-orm';
 
 import type {
   ConversationSearchAgentFilter,
@@ -13,16 +13,20 @@ import type {
   ConversationSearchStatusFilter,
 } from '../../shared/conversationSearch.js';
 import { conversationSearchTitle } from '../../shared/conversationSearch.js';
-import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../shared/sessionSource.js';
+import { DESKTOP_TASK_LIST_SESSION_SOURCES } from '../../shared/sessionSource.js';
+import type { SessionSource } from '../../shared/sessionSource.js';
+import { normalizeWorkingDirForGrouping } from '../../shared/workingDir.js';
 import { getDbClient } from './client/current.js';
-import { messages, sessions } from './schema.js';
+import { botProfiles, botSessionLinks, messages, sessions } from './schema.js';
 import { searchChatHistoryHybrid } from './chatHistorySearch.js';
 import { normalizeDbAgentKind } from '../../shared/agentKindConversion.js';
+import { visibleTextMatchesMessagesFtsQuery } from './chatHistorySearch.pure.js';
 import {
   collectContentHitsUntilUniqueSessions,
   fuzzyTitleMatch,
   mergeConversationSearchResults,
   normalizeConversationContentPreview,
+  visibleMessageTextForConversationSearch,
 } from './conversationSearch.pure.js';
 
 const DEFAULT_LIMIT = 20;
@@ -44,10 +48,26 @@ const LAST_ACTIVITY_DAY_COUNTS: Record<
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-type SessionRow = typeof sessions.$inferSelect;
+type SessionRow = typeof sessions.$inferSelect & {
+  companionId: string | null;
+  companionName: string | null;
+  companionStatus: string | null;
+  companionRole: typeof botSessionLinks.$inferSelect.role | null;
+};
+
+export interface ConversationSearchHostScope {
+  /**
+   * Main-owned source scope. Undefined includes normal tasks and linked personal
+   * companion chats; null permits every source only when another authoritative
+   * filter (for example Bot-owned Session ids) already constrains the query.
+   */
+  sessionSources?: readonly SessionSource[] | null;
+  remoteVisibleOnly?: boolean;
+}
 
 export async function searchConversations(
   request: ConversationSearchRequest,
+  hostScope: ConversationSearchHostScope = {},
 ): Promise<ConversationSearchResponse> {
   const query = request.query.trim();
   if (!query) {
@@ -62,6 +82,9 @@ export async function searchConversations(
 
   const limit = clampLimit(request.limit);
   const filters = normalizeFilters(request);
+  // Linked personal history may retain an imported IM source. Candidate selection
+  // below owns the boundary; content retrieval uses those exact ids.
+  const sessionSources = hostScope.sessionSources ?? null;
   const sortBy = normalizeSortBy(request.sortBy);
   const skipVector = request.semanticMode === 'keyword';
   if (filters.sessionIds && filters.sessionIds.length === 0) {
@@ -73,7 +96,10 @@ export async function searchConversations(
       poolCapped: false,
     };
   }
-  const sessionRows = await listSearchableSessions(filters);
+  const sessionRows = applyWorkingDirFilter(
+    await listSearchableSessions(filters, hostScope.sessionSources, hostScope.remoteVisibleOnly),
+    filters.workingDirs,
+  );
   if (sessionRows.length === 0) {
     return {
       query,
@@ -111,10 +137,11 @@ export async function searchConversations(
     filters,
     activityCutoff,
     skipVector,
+    sessionSources,
   });
 
   const contentMessageIds = content.hits.map((hit) => hit.messageId);
-  const clientIdByMessageId = await fetchClientIds(contentMessageIds);
+  const messageById = await fetchHitMessages(contentMessageIds);
   const contentHits: Array<{
     session: ConversationSearchSessionSummary;
     hit: ConversationSearchContentHit;
@@ -123,11 +150,24 @@ export async function searchConversations(
   for (const hit of content.hits) {
     const session = sessionSummaries.get(hit.sessionId);
     if (!session) continue;
-    const messageClientId = clientIdByMessageId.get(hit.messageId);
+    const message = messageById.get(hit.messageId);
+    const messageClientId = message?.clientId;
     if (!messageClientId) continue;
     const hitContext = hit.context.find((item) => item.isHit) ?? hit.context[0] ?? null;
-    const preview = normalizeConversationContentPreview(hit.role, hitContext?.content ?? '', query);
-    const ftsRank = preview.keywordMatchedVisibleText ? hit.ftsRank : null;
+    const preview = normalizeConversationContentPreview(hit.role, hitContext?.content ?? '', query, 180, message?.agentMeta);
+    // 可见文本对 query 字面不匹配时，仍可能是 FTS 命中（「边，界」按字相邻）。
+    // 不要只靠 keywordRanges 清掉 ftsRank，否则这类命中会被整条丢弃。
+    // 但附件文件名、内部 citation 等隐藏字段命中不能当可见结果：
+    // preview 非空只说明消息有正文，不能证明 MATCH 落在可见字上。
+    const visibleText = visibleMessageTextForConversationSearch(
+      hit.role,
+      hitContext?.content ?? '',
+      message?.agentMeta,
+    );
+    const ftsRank =
+      preview.keywordMatchedVisibleText || visibleTextMatchesMessagesFtsQuery(visibleText, query)
+        ? hit.ftsRank
+        : null;
     if (ftsRank === null && hit.vectorRank === null) continue;
     contentHits.push({
       session,
@@ -163,6 +203,7 @@ async function searchContentUntilUniqueSessions({
   filters,
   activityCutoff,
   skipVector,
+  sessionSources,
 }: {
   query: string;
   limit: number;
@@ -170,6 +211,7 @@ async function searchContentUntilUniqueSessions({
   filters: NormalizedConversationSearchFilters;
   activityCutoff: number | null;
   skipVector: boolean;
+  sessionSources: readonly SessionSource[] | null;
 }) {
   const targetUniqueSessions = Math.min(limit * 2, allowedSessionIds.length);
   const queryEmbeddingCache = new Map<string, number[]>();
@@ -180,7 +222,7 @@ async function searchContentUntilUniqueSessions({
     targetUniqueSessions,
     fetchPage: ({ limit: pageLimit, offset }) => searchChatHistoryHybrid({
       query,
-      sessionIds: filters.sessionIds !== null ? allowedSessionIds : null,
+      sessionIds: allowedSessionIds,
       workdir: null,
       fromMs: null,
       toMs: null,
@@ -189,7 +231,7 @@ async function searchContentUntilUniqueSessions({
       contextRadius: 0,
       limit: pageLimit,
       offset,
-      sessionSources: DESKTOP_VISIBLE_SESSION_SOURCES,
+      sessionSources,
       sessionStatuses: sessionStatusesForFilter(filters.status),
       excludeCleared: true,
       sessionActivityFromMs: activityCutoff,
@@ -207,6 +249,7 @@ interface NormalizedConversationSearchFilters {
   agentKind: ConversationSearchAgentFilter;
   lastActivity: ConversationSearchLastActivityFilter;
   sessionIds: string[] | null;
+  workingDirs: string[] | null;
 }
 
 function normalizeFilters(request: ConversationSearchRequest): NormalizedConversationSearchFilters {
@@ -215,7 +258,8 @@ function normalizeFilters(request: ConversationSearchRequest): NormalizedConvers
   const agentKind = normalizeAgentFilter(input.agentKind);
   const lastActivity = normalizeLastActivity(input.lastActivity);
   const sessionIds = normalizeSessionIds(input.sessionIds);
-  return { status, agentKind, lastActivity, sessionIds };
+  const workingDirs = normalizeWorkingDirs(input.workingDirs);
+  return { status, agentKind, lastActivity, sessionIds, workingDirs };
 }
 
 function normalizeStatusFilter(
@@ -255,29 +299,89 @@ function normalizeSessionIds(value: ConversationSearchFilters['sessionIds']): st
   return out;
 }
 
+function normalizeWorkingDirs(value: ConversationSearchFilters['workingDirs']): string[] | null {
+  if (value == null || !Array.isArray(value)) return null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const normalized = normalizeWorkingDirForGrouping(item);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out.length > 0 ? out : null;
+}
+
+function applyWorkingDirFilter(
+  rows: SessionRow[],
+  workingDirs: string[] | null,
+): SessionRow[] {
+  if (workingDirs == null) return rows;
+  const allowed = new Set(workingDirs);
+  return rows.filter((row) => {
+    const key = normalizeWorkingDirForGrouping(row.workingDir);
+    return key != null && allowed.has(key);
+  });
+}
+
 function normalizeSortBy(value: ConversationSearchSortBy | undefined): ConversationSearchSortBy {
   return value === 'activityDesc' || value === 'activityAsc' ? value : 'relevance';
 }
 
-async function listSearchableSessions(filters: NormalizedConversationSearchFilters): Promise<SessionRow[]> {
+async function listSearchableSessions(
+  filters: NormalizedConversationSearchFilters,
+  sessionSources: readonly SessionSource[] | null | undefined,
+  remoteVisibleOnly = false,
+): Promise<SessionRow[]> {
+  if (sessionSources != null && sessionSources.length === 0) return [];
   const db = getDbClient().drizzle;
   const statusCond = statusCondition(filters.status);
   const agentCond = filters.agentKind === 'all' ? undefined : eq(sessions.agentKind, filters.agentKind);
   const sessionIdsCond = filters.sessionIds ? inArray(sessions.id, filters.sessionIds) : undefined;
+  const workerCond = or(isNull(sessions.orcaRole), ne(sessions.orcaRole, 'worker'));
+  // 插件后台隐藏任务不进入任何会话搜索；用户从插件详情页「后台任务」查看与接手。
+  const visibleCond = isNull(sessions.hiddenAt);
   const activityCutoff = cutoffForLastActivity(filters.lastActivity);
   // 兼容存量 DB 行：旧版 touchUserSendInDb 只写 user_send_at 不 bump updated_at，
   // 侧栏排序用 max(userSendAt, updatedAt)，这里也同步用 OR 避免漏掉这些行。
   const activityCond = activityCutoff === null
     ? undefined
     : or(gte(sessions.updatedAt, activityCutoff), gte(sessions.userSendAt, activityCutoff));
+  const personalChat = and(
+    inArray(botSessionLinks.role, ['canonical', 'history']),
+    ne(botProfiles.status, 'deleting'),
+  );
   return db
-    .select()
+    .select({
+      ...getTableColumns(sessions),
+      companionId: botProfiles.id,
+      companionName: botProfiles.displayName,
+      companionStatus: botProfiles.status,
+      companionRole: botSessionLinks.role,
+    })
     .from(sessions)
+    .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
+    .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
     .where(and(
-      inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+      sessionSources === undefined
+        ? or(inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES), personalChat)
+        : sessionSources === null ? undefined : inArray(sessions.source, sessionSources),
+      // Migrated channel/group lanes may have an ordinary task source.
+      or(isNull(botSessionLinks.role), and(
+        ne(botSessionLinks.role, 'group'),
+        ne(botSessionLinks.role, 'channel'),
+      )),
+      remoteVisibleOnly ? or(isNull(botProfiles.id), eq(botSessionLinks.role, 'delegation'), and(
+        or(isNull(botProfiles.hiddenAt), eq(botProfiles.hiddenAt, 0)),
+        ne(botProfiles.status, 'archived'),
+        ne(botProfiles.status, 'deleting'),
+      )) : undefined,
       statusCond,
       agentCond,
       sessionIdsCond,
+      workerCond,
+      visibleCond,
       activityCond,
     ))
     .orderBy(desc(sessions.updatedAt));
@@ -315,13 +419,13 @@ async function fetchMessageCounts(sessionIds: string[]): Promise<Map<string, num
   return new Map(rows.map((row) => [row.sessionId, Number(row.cnt)]));
 }
 
-async function fetchClientIds(messageIds: string[]): Promise<Map<string, string>> {
+async function fetchHitMessages(messageIds: string[]): Promise<Map<string, { clientId: string; agentMeta: string | null }>> {
   if (messageIds.length === 0) return new Map();
   const rows = await getDbClient().drizzle
-    .select({ id: messages.id, clientId: messages.clientId })
+    .select({ id: messages.id, clientId: messages.clientId, agentMeta: messages.agentMeta })
     .from(messages)
     .where(inArray(messages.id, messageIds));
-  return new Map(rows.map((row) => [row.id, row.clientId]));
+  return new Map(rows.map((row) => [row.id, row]));
 }
 
 function sessionSummaryFromRow(
@@ -338,6 +442,15 @@ function sessionSummaryFromRow(
     source: row.source,
     orcaRole: row.orcaRole,
     parentSessionId: row.parentSessionId,
+    ...(row.companionId && row.companionName != null
+      && (row.companionRole === 'canonical' || row.companionRole === 'history')
+      ? { companion: {
+          id: row.companionId,
+          name: row.companionName,
+          role: row.companionRole,
+          readOnly: row.companionRole === 'history' || row.status !== 'active' || row.companionStatus !== 'active',
+        } }
+      : {}),
     userSendAt: row.userSendAt === null ? null : new Date(row.userSendAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
     createdAt: new Date(row.createdAt).toISOString(),

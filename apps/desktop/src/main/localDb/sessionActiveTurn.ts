@@ -49,12 +49,18 @@
  * turn 主流程。
  */
 
-import { and, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
 
 import { getDbClient } from './client/current';
+import { listCindyMakePendingFailureSessionIds } from './cindyMakeAttention';
+import {
+  getSessionInterruptionBootAt,
+  setSessionInterruptionBootAtForTests,
+} from './sessionInterruptionBoot';
 import { messages, sessions } from './schema';
 import { createLogger } from '../logger';
-import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../shared/sessionSource.js';
+import { DESKTOP_TASK_LIST_SESSION_SOURCES } from '../../shared/sessionSource.js';
+import { boundedSummary } from '../maker-ipc/recoveryCoordinator.js';
 
 const log = createLogger('session-active-turn');
 
@@ -69,6 +75,36 @@ let _quitFrozen = false;
 /** app 退出编排 sync 阶段调用(bootstrap-electron onQuit),此后时间戳只读。 */
 export function freezeSessionActiveTurnMarkers(): void {
   _quitFrozen = true;
+}
+
+/**
+ * 数据 owner 边界(切账号 / 登出)的**有作用域** ended 写抑制 —— 与 _quitFrozen
+ * 同一语义:边界 teardown 的 maker.shutdown 会批量 close 所有本地会话,close
+ * teardown 触发的 ended 写会把"边界时还在飞的 turn"伪装成正常收尾,被切换打断
+ * 的任务既无中断横幅也无红点,呈现为"卡住且无报错"(2026-08-11 实报:凭证跨区
+ * 误判触发账号切换,busy Codex 会话被静默孤儿化)。与 quit freeze 的差别只有一个:
+ * 边界后进程继续服务新 owner,必须可释放。计数器支持重入;返回的释放函数幂等。
+ *
+ * 残余竞态说明:close 触发的 ended 写来自 session status listener 的 async handler,
+ * 不被 maker.shutdown 的 await 覆盖,理论上可能晚于释放时刻。调用方靠「持有到
+ * teardown 尾部(DB dispose 之后)」把窗口压到极小;真漏网的迟到写会撞上已
+ * dispose 的 DbClient,由写链吞错落日志,不会污染时间戳。
+ */
+let _endedWriteSuppressions = 0;
+
+export function beginSessionTurnEndedSuppression(): () => void {
+  _endedWriteSuppressions += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    _endedWriteSuppressions -= 1;
+  };
+}
+
+/** ended 写抑制判定:quit freeze 或任一在持有的 owner 边界抑制。 */
+function isEndedWriteSuppressed(): boolean {
+  return _quitFrozen || _endedWriteSuppressions > 0;
 }
 
 /**
@@ -116,6 +152,28 @@ function notifyTurnEndedPersisted(sessionId: string, endedAt: number, context: u
 
 /** started / ended 的 per-session 写链:只做 UPDATE 排队保序,无读改写。 */
 const _writeChains = new Map<string, Promise<void>>();
+// Captured synchronously at the running edge, before either durable queue can
+// stall. Notification delivery uses this turn boundary when its DB preview is
+// unavailable; a later turn must never inherit the previous turn's dedupe key.
+const _notificationTurns = new Map<string, { startedAt: number; sequence: number; endedAt?: number }>();
+let _notificationTurnSequence = 0;
+
+export function getSessionNotificationTurnSignal(sessionId: string): { id: string; fallbackEventId: string; ended: boolean } | undefined {
+  const turn = _notificationTurns.get(sessionId);
+  if (!turn) return undefined;
+  return {
+    id: `signal:${turn.sequence}`,
+    ended: turn.endedAt !== undefined,
+    // The mobile deduper can reconcile an anonymous scheduler completion by
+    // terminal time even while SQLite is unavailable.
+    fallbackEventId: `turn:${turn.startedAt}:${turn.endedAt ?? turn.startedAt}:signal-${turn.sequence}`,
+  };
+}
+
+/** Wait for the turn-marker writes already queued for this session. */
+export function drainSessionActiveTurnWrites(sessionId: string): Promise<void> {
+  return _writeChains.get(sessionId) ?? Promise.resolve();
+}
 
 /** 返回链上本次写完成(含失败吞错)的 promise,供需要落库确认的调用方 await。 */
 function chainWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
@@ -129,6 +187,7 @@ function chainWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
 export function markSessionTurnStarted(sessionId: string): void {
   if (_quitFrozen) return;
   const startedAt = Date.now();
+  _notificationTurns.set(sessionId, { startedAt, sequence: ++_notificationTurnSequence });
   chainWrite(sessionId, async () => {
     try {
       await getDbClient()
@@ -158,11 +217,14 @@ export function markSessionTurnStarted(sessionId: string): void {
  * 在重启后误判为中断。只允许时间戳前进。
  */
 export function markSessionTurnEnded(sessionId: string, endedAtOverride?: number): void {
-  if (_quitFrozen) return;
+  if (isEndedWriteSuppressed()) return;
   const notifyContext = captureTurnEndedPersistedContext();
+  const endedAt = Math.min(endedAtOverride ?? Date.now(), Date.now());
+  const notificationTurn = _notificationTurns.get(sessionId);
+  if (notificationTurn && notificationTurn.endedAt === undefined) notificationTurn.endedAt = endedAt;
   enqueueEndedWrite(
     sessionId,
-    Math.min(endedAtOverride ?? Date.now(), Date.now()),
+    endedAt,
     notifyContext,
   );
 }
@@ -177,9 +239,11 @@ export function markSessionTurnEnded(sessionId: string, endedAtOverride?: number
  * 入队时刻判定」的语义一致(barrier 版的"入队时刻"= 本函数调用时刻)。
  */
 export function markSessionTurnEndedAfterBarrier(sessionId: string, barrier: Promise<unknown>): void {
-  if (_quitFrozen) return;
+  if (isEndedWriteSuppressed()) return;
   const endedAt = Date.now();
   const notifyContext = captureTurnEndedPersistedContext();
+  const notificationTurn = _notificationTurns.get(sessionId);
+  if (notificationTurn && notificationTurn.endedAt === undefined) notificationTurn.endedAt = endedAt;
   void barrier.then(
     () => enqueueEndedWrite(sessionId, endedAt, notifyContext),
     () => enqueueEndedWrite(sessionId, endedAt, notifyContext),
@@ -298,11 +362,9 @@ function enqueueEndedWrite(sessionId: string, endedAt: number, notifyContext: un
  * 检测不到(PR #879 review P1,两个 reviewer 独立指出)。现在把边界下沉进查询本身,
  * 调用时机不再影响正确性。
  */
-let _bootAtMs = Date.now();
-
 /** 测试专用:定格「本进程启动时刻」,让中断判定不依赖真实时钟。 */
 export function _setBootAtMsForTests(ms: number): void {
-  _bootAtMs = ms;
+  setSessionInterruptionBootAtForTests(ms);
 }
 
 /**
@@ -325,15 +387,19 @@ export async function listInterruptedPendingRows(): Promise<
         eq(sessions.status, 'active'),
         // 只统计桌面 sidebar 可见来源(含 feishu/slack 等 IM 渠道)——
         // 不可见来源的红点无处展示也无法清除。
-        inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+        inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
+        // 插件后台隐藏任务不在侧栏展示，红点无处展示也无法清除。
+        isNull(sessions.hiddenAt),
         gt(sessions.activeTurnStartedAt, sql`COALESCE(${sessions.lastTurnEndedAt}, 0)`),
         gt(sessions.activeTurnStartedAt, sql`COALESCE(${sessions.clearedAt}, 0)`),
         // 只认「开始于本进程启动之前」的 turn —— 排除正在跑的(见 _bootAtMs 注释)。
-        lt(sessions.activeTurnStartedAt, _bootAtMs),
+        lt(sessions.activeTurnStartedAt, getSessionInterruptionBootAt()),
       ),
     );
   // startedAt 必非 null(上面的 gt/lt 比较已排除),类型收窄用于批量处置的 CAS。
-  return rows.flatMap((r) => (r.startedAt == null ? [] : [{ sessionId: r.id, startedAt: r.startedAt }]));
+  return rows.flatMap((r) =>
+    r.startedAt == null ? [] : [{ sessionId: r.id, startedAt: r.startedAt }],
+  );
 }
 
 /** 同上,只要会话 id —— 红点首拉用。 */
@@ -360,8 +426,8 @@ export async function listInterruptedPendingSessionIds(): Promise<string[]> {
  *  1. content 是 TEXT 列而非 JSON 列,可能存非法 JSON(见 mergeDismissedIntoErrorContent
  *     的 fallback 分支)。json_extract 遇非法 JSON 直接抛 malformed JSON,故先用
  *     json_valid 守卫,非法内容按「未 dismissed」处理 —— 宁可多提示一次,不吞掉报错。
- *  2. 「最后一条」用 (created_at, rowid) 双键严格大于,同毫秒靠插入序区分,并且两侧
- *     都要 rewind_at IS NULL —— 漏掉会把已被 rewind 截断的历史行当成尾行。口径与
+ *  2. 「最后一条」按 (created_at DESC, rowid DESC) 取一行,同毫秒靠插入序区分,
+ *     必须过滤 rewind_at IS NULL —— 漏掉会把已被 rewind 截断的历史行当成尾行。口径与
  *     hasAssistantProgressAfterMessage 完全一致。
  *  3. **必须带 /clear 可见性边界**(created_at > cleared_at):`/clear` 不删消息行,
  *     只推进 sessions.cleared_at,消息读取路径靠它把旧历史挡在视图外。漏掉这条会
@@ -377,38 +443,40 @@ export async function listErrorTailPendingRows(): Promise<
   const db = getDbClient().drizzle;
   const rows = await db
     .select({ sessionId: messages.sessionId, clientId: messages.clientId })
-    .from(messages)
-    .innerJoin(sessions, eq(sessions.id, messages.sessionId))
+    .from(sessions)
+    // 从每个可见会话按既有 (session_id, created_at) 索引取尾行,再用 rowid 定点读取。
+    // 不能从全局 error 候选出发:SQLite 可能选 rewind_at 索引扫描全部未 rewind 消息 (#6513)。
+    .innerJoin(messages, sql`${sql.raw('"messages"."rowid"')} = (
+      SELECT tail.rowid FROM messages tail
+      WHERE tail.session_id = ${sessions.id}
+        AND tail.rewind_at IS NULL
+        AND tail.created_at > COALESCE(${sessions.clearedAt}, 0)
+      ORDER BY tail.created_at DESC, tail.rowid DESC
+      LIMIT 1
+    )`)
     .where(
       and(
         eq(sessions.status, 'active'),
-        inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES),
+        inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
+        isNull(sessions.hiddenAt),
+        // 先取可见尾行,再判 role/dismissed;不能回退到更早的未处理 error。
         eq(messages.role, 'error'),
-        isNull(messages.rewindAt),
-        // /clear 可见性边界(见上方 ⚠️ 3):clear 之前的行在视图里已不可见,不能算告警。
-        gt(messages.createdAt, sql`COALESCE(${sessions.clearedAt}, 0)`),
         // 顶层 dismissed:true = 用户点过「忽略」(mergeDismissedIntoErrorContent 写入)。
         sql`(json_valid(${messages.content}) = 0
           OR json_extract(${messages.content}, '$.dismissed') IS NOT 1)`,
-        // 该 error 行必须是会话尾行(见上方 ⚠️ 2)。
-        sql`NOT EXISTS (
-          SELECT 1 FROM messages m2
-          WHERE m2.session_id = ${messages.sessionId}
-            AND m2.rewind_at IS NULL
-            AND (m2.created_at > ${messages.createdAt}
-              OR (m2.created_at = ${messages.createdAt}
-                AND m2.rowid > ${sql.raw('"messages"."rowid"')}))
-        )`,
       ),
     );
   // 尾行判定保证每会话最多一行(同毫秒同 rowid 不可能并存)。
   return rows;
 }
 
-/** 同上,只要会话 id —— 红点派生用。 */
+/** Native Make failures use the same unresolved-alert projection, not synthetic error rows. */
 export async function listErrorTailPendingSessionIds(): Promise<string[]> {
-  const rows = await listErrorTailPendingRows();
-  return [...new Set(rows.map((r) => r.sessionId))];
+  const [rows, makeFailures] = await Promise.all([
+    listErrorTailPendingRows(),
+    listCindyMakePendingFailureSessionIds(),
+  ]);
+  return [...new Set([...rows.map((r) => r.sessionId), ...makeFailures])];
 }
 
 /**
@@ -463,9 +531,123 @@ export async function hasAssistantProgressAfterMessage(
   return Boolean(row?.found);
 }
 
+/**
+ * Read the small durable handoff used by retry recovery. This intentionally
+ * does not copy tool results or the transcript: the model can still inspect
+ * the real history, while this marker prevents a repeated retry from looking
+ * like a brand-new task after a context compaction.
+ */
+export async function getRecoveryContextSnapshot(
+  sessionId: string,
+  userClientId: string,
+): Promise<{
+  contextTokens: number;
+  contextWindow: number;
+  progressCount: number;
+  recentProgress: Array<{
+    role: 'assistant' | 'tool_use' | 'thinking' | 'ask_user' | 'plan_review';
+    summary: string;
+  }>;
+}> {
+  const db = getDbClient().drizzle;
+  const progressRoles = ['assistant', 'tool_use', 'thinking', 'ask_user', 'plan_review'] as const;
+  const afterUser = sql`EXISTS (
+    SELECT 1 FROM messages u
+    WHERE u.session_id = ${sessionId}
+      AND u.client_id = ${userClientId}
+      AND u.rewind_at IS NULL
+      AND (${messages.createdAt} > u.created_at
+        OR (${messages.createdAt} = u.created_at AND ${sql.raw('"messages"."rowid"')} > u.rowid))
+  )`;
+  const visibleProgress = and(
+    eq(messages.sessionId, sessionId),
+    inArray(messages.role, progressRoles),
+    isNull(messages.rewindAt),
+    afterUser,
+  );
+  const [session, countRow, recentRows] = await Promise.all([
+    db
+      .select({ contextTokens: sessions.contextTokens, contextWindow: sessions.contextWindow })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1),
+    db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(messages)
+      .where(visibleProgress),
+    db
+      .select({ role: messages.role, content: messages.content })
+      .from(messages)
+      .where(visibleProgress)
+      .orderBy(desc(messages.createdAt), desc(sql.raw('"messages"."rowid"')))
+      .limit(6),
+  ]);
+
+  return {
+    contextTokens: session[0]?.contextTokens ?? 0,
+    contextWindow: session[0]?.contextWindow ?? 0,
+    progressCount: Number(countRow[0]?.count ?? 0),
+    recentProgress: recentRows.reverse().map((row) => ({
+      role: normalizeRecoveryRole(row.role),
+      summary: summarizeRecoveryContent(row.content),
+    })),
+  };
+}
+
+function normalizeRecoveryRole(
+  role: string,
+): 'assistant' | 'tool_use' | 'thinking' | 'ask_user' | 'plan_review' {
+  if (
+    role === 'tool_use' ||
+    role === 'thinking' ||
+    role === 'ask_user' ||
+    role === 'plan_review'
+  ) return role;
+  return 'assistant';
+}
+
+function summarizeRecoveryContent(raw: string): string {
+  let value: unknown = raw;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    // Keep legacy/plain content as-is.
+  }
+  let summary = '';
+  if (typeof value === 'string') {
+    summary = value;
+  } else if (Array.isArray(value)) {
+    summary = value
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (!part || typeof part !== 'object') return '';
+        const record = part as Record<string, unknown>;
+        if (typeof record.text === 'string') return record.text;
+        if (typeof record.toolName === 'string') return `tool ${record.toolName}`;
+        if (typeof record.name === 'string') return `tool ${record.name}`;
+        return '';
+      })
+      .filter(Boolean)
+      .join(' ');
+  } else if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.toolName === 'string') summary = `tool ${record.toolName}`;
+    else if (typeof record.name === 'string') summary = `tool ${record.name}`;
+    else if (typeof record.text === 'string') summary = record.text;
+    else if (typeof record.summary === 'string') summary = record.summary;
+    else if (typeof record.command === 'string') summary = `command ${record.command}`;
+  }
+  return boundedSummary(summary);
+}
+
 /** 测试专用:重置模块内存态。 */
 export function _resetSessionActiveTurnStateForTests(): void {
   _writeChains.clear();
   _quitFrozen = false;
+  _endedWriteSuppressions = 0;
   _onTurnEndedPersisted = null;
+  // bootAt 一并重置:它在模块 import 时定格,而用例常以「相对 now 的 startedAt」
+  // 造数据 —— 文件内前置用例的累计耗时一旦超过该相对差,后续用例的中断判定就会
+  // 因 startedAt >= bootAt 静默翻转(时钟脆弱)。每个用例重新定基消除顺序耦合。
+  setSessionInterruptionBootAtForTests(Date.now());
 }

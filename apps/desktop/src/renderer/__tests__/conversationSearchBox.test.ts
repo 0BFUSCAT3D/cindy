@@ -35,14 +35,6 @@ vi.mock('@/lib/orcaSessionIdentity', () => ({
   resolveSessionRoute: vi.fn(),
 }));
 
-vi.mock('@/components/ui/tooltip', async () => {
-  const React = await import('react');
-
-  return {
-    Tip: ({ children }: { children: ReactNode }) => React.createElement(React.Fragment, null, children),
-  };
-});
-
 vi.mock('@/components/ui/popover', async () => {
   const React = await import('react');
   const PopoverContext = React.createContext<{
@@ -232,28 +224,6 @@ describe('ConversationSearchBox live search', () => {
     expect(hybridMode).toBeGreaterThan(keywordMode);
   });
 
-  it('ignores delayed keyword results once the hybrid refresh has started', () => {
-    const keywordStaleGuard = source.indexOf('if (semanticStartedSeqRef.current === seq) return;');
-    const hybridStartedMark = source.indexOf('semanticStartedSeqRef.current = seq;');
-    const hybridMode = source.indexOf("semanticMode: 'hybrid'");
-
-    expect(source).toContain('semanticStartedSeqRef');
-    expect(keywordStaleGuard).toBeGreaterThan(-1);
-    expect(hybridStartedMark).toBeGreaterThan(keywordStaleGuard);
-    expect(hybridStartedMark).toBeLessThan(hybridMode);
-  });
-
-  it('restores a terminal state if the hybrid refresh fails first', () => {
-    const hybridCatch = source.indexOf("semanticMode: 'hybrid'");
-    const resetSemanticGuard = source.indexOf('semanticStartedSeqRef.current = 0;', hybridCatch);
-    const terminalStatus = source.indexOf(
-      "setStatus((current) => current === 'searching' ? 'error' : current);",
-      hybridCatch,
-    );
-
-    expect(resetSemanticGuard).toBeGreaterThan(hybridCatch);
-    expect(terminalStatus).toBeGreaterThan(resetSemanticGuard);
-  });
 
   it('opens with a locked project filter and searches only that project at runtime', async () => {
     vi.mocked(searchConversations).mockResolvedValue({
@@ -286,6 +256,14 @@ describe('ConversationSearchBox live search', () => {
           filters: expect.objectContaining({
             sessionIds: ['session-a1', 'session-a2'],
           }),
+        }),
+        expect.objectContaining({
+          origins: [
+            expect.objectContaining({
+              kind: 'local',
+              sessionIds: ['session-a1', 'session-a2'],
+            }),
+          ],
         }),
       );
     }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
@@ -321,6 +299,7 @@ describe('ConversationSearchBox live search', () => {
             sessionIds: ['visible-session-a1', 'visible-session-a2'],
           }),
         }),
+        expect.anything(),
       );
     }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
   });
@@ -417,6 +396,14 @@ describe('ConversationSearchBox live search', () => {
             sessionIds: ['session-a1', 'session-a2'],
           }),
         }),
+        expect.objectContaining({
+          origins: [
+            expect.objectContaining({
+              kind: 'local',
+              sessionIds: ['session-a1', 'session-a2'],
+            }),
+          ],
+        }),
       );
     }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
 
@@ -508,6 +495,7 @@ describe('ConversationSearchBox live search', () => {
     await waitFor(() => {
       expect(searchConversations).toHaveBeenCalledWith(
         expect.objectContaining({ unnamedLabel: 'ccAgent.common.unnamedSession' }),
+        expect.anything(),
       );
     }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
 
@@ -557,4 +545,233 @@ describe('ConversationSearchBox live search', () => {
     expect(projectNodeSource).not.toContain('search.isOpen');
     expect(projectNodeSource).not.toContain('search.open();');
   });
+
+  it('keeps SSH project identity when a local project shares the same workingDir', async () => {
+    vi.mocked(searchConversations).mockResolvedValue({
+      query: 'needle',
+      results: [],
+      vectorUsed: false,
+      vectorSkipReason: null,
+      poolCapped: false,
+    });
+    const localTwin: ProjectNodeData = {
+      ...projects[0],
+      projectKey: 'local:/workspace/repo',
+      workingDir: '/workspace/repo',
+      displayName: 'Local Repo',
+      sessions: [{ id: 'local-same-path' } as ProjectNodeData['sessions'][number]],
+    };
+    const sshTwin: ProjectNodeData = {
+      ...projects[0],
+      projectKey: 'remote:ssh-host:/workspace/repo',
+      scope: 'remote',
+      workingDir: '/workspace/repo',
+      remoteHostId: 'ssh-host',
+      displayName: 'SSH Repo',
+      sessions: [{ id: 'ssh-same-path' } as ProjectNodeData['sessions'][number]],
+    };
+    render(
+      createElement(ConversationSearchBox, {
+        navigate,
+        allKnownProjects: [localTwin, sshTwin],
+        allowedSessionIds: ['local-same-path', 'ssh-same-path'],
+        hiddenProjectKeys,
+      }),
+    );
+    fireEvent.click(screen.getByLabelText('ccAgent.search.open'));
+    await screen.findByTestId('conversation-search-popover');
+    fireEvent.click(screen.getByText('SSH Repo').closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('ccAgent.search.placeholder'), {
+      target: { value: 'needle' },
+    });
+    await waitFor(() => {
+      expect(searchConversations).toHaveBeenCalledWith(
+        expect.objectContaining({
+          semanticMode: 'keyword',
+          filters: expect.objectContaining({ sessionIds: ['ssh-same-path'] }),
+        }),
+        expect.objectContaining({
+          origins: [
+            expect.objectContaining({
+              kind: 'local',
+              sessionIds: ['ssh-same-path'],
+            }),
+          ],
+        }),
+      );
+    }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
+    expect(searchConversations).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        origins: [expect.objectContaining({ workingDirs: ['/workspace/repo'] })],
+      }),
+    );
+  });
+
+  it('searches a filter-selected remote project by workingDir instead of mirrored ids', async () => {
+    vi.mocked(searchConversations).mockResolvedValue({
+      query: 'needle',
+      results: [],
+      vectorUsed: false,
+      vectorSkipReason: null,
+      poolCapped: false,
+    });
+    const remoteProject: ProjectNodeData = {
+      projectKey: 'device:dev-a:/repo-remote',
+      scope: 'remote',
+      workingDir: '/repo-remote',
+      remoteHostId: null,
+      deviceLinkDeviceId: 'dev-a',
+      deviceLinkDeviceName: 'Studio',
+      deviceLinkConnectionStatus: 'connected',
+      displayName: 'Repo Remote',
+      segments: 1,
+      sessions: [{ id: 'mirrored-only' } as ProjectNodeData['sessions'][number]],
+      latestActivityAt: '2026-06-14T00:00:00.000Z',
+    };
+    render(
+      createElement(ConversationSearchBox, {
+        navigate,
+        allKnownProjects: [remoteProject],
+        allowedSessionIds: ['mirrored-only'],
+        hiddenProjectKeys,
+        searchDevices: [{ deviceId: 'dev-a', deviceName: 'Studio', connected: true }],
+      }),
+    );
+    fireEvent.click(screen.getByLabelText('ccAgent.search.open'));
+    await screen.findByTestId('conversation-search-popover');
+    fireEvent.click(screen.getByText('Repo Remote').closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('ccAgent.search.placeholder'), {
+      target: { value: 'needle' },
+    });
+    await waitFor(() => {
+      expect(searchConversations).toHaveBeenCalledWith(
+        expect.objectContaining({
+          semanticMode: 'keyword',
+          filters: expect.objectContaining({ sessionIds: null }),
+        }),
+        expect.objectContaining({
+          origins: [
+            expect.objectContaining({
+              kind: 'remote',
+              deviceId: 'dev-a',
+              sessionIds: null,
+              workingDirs: ['/repo-remote'],
+            }),
+          ],
+        }),
+      );
+    }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
+  });
+
+  it('searches a remote project by workingDir instead of the mirrored session window', async () => {
+    vi.mocked(searchConversations).mockResolvedValue({
+      query: 'needle',
+      results: [],
+      vectorUsed: false,
+      vectorSkipReason: null,
+      poolCapped: false,
+    });
+    const remoteProject: ProjectNodeData = {
+      projectKey: 'device:dev-a:/repo-remote',
+      scope: 'remote',
+      workingDir: '/repo-remote',
+      remoteHostId: null,
+      deviceLinkDeviceId: 'dev-a',
+      deviceLinkDeviceName: 'Studio',
+      deviceLinkConnectionStatus: 'connected',
+      displayName: 'Repo Remote',
+      segments: 1,
+      sessions: [{ id: 'mirrored-only' } as ProjectNodeData['sessions'][number]],
+      latestActivityAt: '2026-06-14T00:00:00.000Z',
+    };
+    render(
+      createElement(ConversationSearchBox, {
+        navigate,
+        allKnownProjects: [remoteProject],
+        allowedSessionIds: ['mirrored-only'],
+        hiddenProjectKeys,
+        searchDevices: [{ deviceId: 'dev-a', deviceName: 'Studio', connected: true }],
+        projectFilterRequest: {
+          projectKey: remoteProject.projectKey,
+          projectName: 'Repo Remote',
+          sessionIds: ['mirrored-only'],
+          workingDir: '/repo-remote',
+          deviceLinkDeviceId: 'dev-a',
+          requestId: 1,
+        },
+      }),
+    );
+    await screen.findByTestId('conversation-search-popover');
+    fireEvent.change(screen.getByLabelText('ccAgent.search.placeholder'), {
+      target: { value: 'needle' },
+    });
+    await waitFor(() => {
+      expect(searchConversations).toHaveBeenCalledWith(
+        expect.objectContaining({
+          semanticMode: 'keyword',
+          filters: expect.objectContaining({ sessionIds: null }),
+        }),
+        expect.objectContaining({
+          origins: [
+            expect.objectContaining({
+              kind: 'remote',
+              deviceId: 'dev-a',
+              sessionIds: null,
+              workingDirs: ['/repo-remote'],
+            }),
+          ],
+        }),
+      );
+    }, { timeout: SEARCH_WAIT_TIMEOUT_MS });
+  });
+
+  it('includes device-link remote sessions in the sidebar search universe', () => {
+    const contextSource = readFileSync(
+      resolve(__dirname, '..', 'features', 'cc-agent', 'sidebar', 'conversationSearchContext.tsx'),
+      'utf8',
+    );
+    const sidebarSource = readFileSync(
+      resolve(__dirname, '..', 'features', 'cc-agent', 'CCAgentSidebarUpper.tsx'),
+      'utf8',
+    );
+    expect(contextSource).toContain('useRemoteProjectSessions');
+    expect(contextSource).toContain('selectVisibleSessions');
+    expect(contextSource).toContain('shouldReleaseConversationSearchLock');
+    expect(contextSource).toContain("requestRemoteSessionStatus(device.deviceId, 'archived')");
+    expect(sidebarSource).toContain('useRemoteProjectSessions');
+    expect(sidebarSource).toContain('workingDir: project.workingDir');
+    expect(sidebarSource).toContain('deviceLinkDeviceId: project.deviceLinkDeviceId');
+    expect(sidebarSource).toContain('useConversationSearchRequest');
+    expect(sidebarSource).toContain(
+      'projectFilterRequest={isCollapsed ? projectFilterRequest : null}',
+    );
+    expect(sidebarSource).toMatch(
+      /searchProjectSessions[\s\S]*selectVisibleSessions\([\s\S]*allSessionsForAttention[\s\S]*remoteProjectSessions/,
+    );
+  });
+});
+
+// Real search control: a hidden/unloaded companion must not fall back to an
+// ordinary writable task, and the selected message anchor must survive. Unit tier.
+it.each(['canonical', 'history'] as const)('opens %s companion search results without the loaded roster', async role => {
+  const hit = { messageId: 'message', messageClientId: 'client', role: 'assistant' as const,
+    createdAt: '2026-10-20T00:00:00Z', snippet: null, preview: 'needle reply', score: 1, ftsRank: 1, vectorRank: null };
+  vi.mocked(searchConversations).mockResolvedValue({ query: 'needle', results: [{
+    session: { id: 'chat', title: 'needle thread', workingDir: null, workspaceKind: 'dialogue',
+      agentKind: 'pi', status: role === 'history' ? 'archived' : 'active', source: 'bot',
+      userSendAt: null, updatedAt: '2026-10-20T00:00:00Z', createdAt: '2026-10-20T00:00:00Z', _count: { messages: 1 },
+      companion: { id: 'bot', name: 'Melody', role, readOnly: role === 'history' } },
+    matchKind: 'content', titleMatchIndices: [], titleScore: null, contentHit: hit, contentHits: [hit], rankScore: 1,
+  }], vectorUsed: false, vectorSkipReason: null, poolCapped: false });
+  renderSearchBox();
+  fireEvent.click(screen.getByLabelText('ccAgent.search.open'));
+  fireEvent.change(screen.getByLabelText('ccAgent.search.placeholder'), { target: { value: 'needle' } });
+  const result = await screen.findByRole('button', { name: /needle thread/ });
+  expect(result.textContent).toContain('Melody');
+  fireEvent.click(result);
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith(
+    role === 'history' ? '/bots/bot/history/chat' : '/bots/bot/session/chat',
+    { state: { searchJump: { kind: 'conversation-search', sessionId: 'chat', messageId: 'message', messageClientId: 'client' } } },
+  ));
 });

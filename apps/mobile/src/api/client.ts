@@ -1,10 +1,13 @@
 import { i18n } from '@/i18n';
+import { mobileDebugLog } from '@/debug/mobileDebugLog';
 
 export class ApiError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
     message: string,
+    /** The server's structured `error.details`, when it sent an object. */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -18,6 +21,11 @@ export interface ApiFetchOptions {
   token?: string | null;
   body?: unknown;
   timeoutMs?: number;
+  cache?: 'no-store';
+  /** Reject stale account-scoped work before transport or auth side effects. */
+  assertCurrent?: () => void;
+  /** Extra request headers (e.g. Chat Server's X-Chat-Actor); never overrides auth or content type. */
+  headers?: Record<string, string>;
 }
 
 const DEFAULT_API_TIMEOUT_MS = 20_000;
@@ -42,8 +50,14 @@ export async function apiFetchRaw<T>(
   path: string,
   opts: ApiFetchOptions,
 ): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  opts.assertCurrent?.();
+  const headers: Record<string, string> = { ...opts.headers, 'Content-Type': 'application/json' };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+  if (opts.cache === 'no-store') {
+    // Also tell native HTTP caches not to reuse or store short-lived responses.
+    headers['Cache-Control'] = 'no-cache, no-store';
+    headers.Pragma = 'no-cache';
+  }
 
   let response: Response;
   let data: unknown = null;
@@ -57,11 +71,21 @@ export async function apiFetchRaw<T>(
         headers,
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
         signal: controller?.signal,
+        ...(opts.cache ? { cache: opts.cache } : {}),
       });
       let nextData: unknown = null;
       try {
         nextData = await nextResponse.json();
-      } catch {
+      } catch (error) {
+        if (nextResponse.status === 204 || nextResponse.status === 205) {
+          return { response: nextResponse, data: null };
+        }
+        // JSON SyntaxError messages/stacks can include response contents.
+        mobileDebugLog('warn', 'network', 'response read failed', { status: nextResponse.status },
+          error instanceof SyntaxError ? 'SyntaxError' : error);
+        if (nextResponse.ok) {
+          throw new ApiError('INVALID_RESPONSE', nextResponse.status, i18n.t('apiErrors.requestFailed'));
+        }
         nextData = null;
       }
       return { response: nextResponse, data: nextData };
@@ -81,6 +105,9 @@ export async function apiFetchRaw<T>(
     response = result.response;
     data = result.data;
   } catch (err) {
+    if (!(err instanceof ApiError) || err.code === 'REQUEST_TIMEOUT') {
+      mobileDebugLog('warn', 'network', 'request failed', err);
+    }
     if (err instanceof ApiError) throw err;
     if (isAbortError(err)) {
       throw new ApiError('REQUEST_TIMEOUT', 0, i18n.t('apiErrors.requestTimeout'));
@@ -99,6 +126,8 @@ export async function apiFetchRaw<T>(
     if (timeoutId) clearTimeout(timeoutId);
   }
 
+  // A late old-account response must not terminate the newly active account.
+  opts.assertCurrent?.();
   if (!response.ok) {
     const error = readError(data);
     const code = error.code ?? `HTTP_${response.status}`;
@@ -109,7 +138,7 @@ export async function apiFetchRaw<T>(
         // Preserve the original typed API error even if local cleanup fails.
       }
     }
-    throw new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'));
+    throw new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'), error.details);
   }
 
   return data as T;
@@ -119,7 +148,7 @@ function isAbortError(err: unknown): boolean {
   return !!err && typeof err === 'object' && 'name' in err && err.name === 'AbortError';
 }
 
-function readError(data: unknown): { code?: string; message?: string } {
+function readError(data: unknown): { code?: string; message?: string; details?: Record<string, unknown> } {
   if (!data || typeof data !== 'object') return {};
   const payload = data as Record<string, unknown>;
   const nested = payload.error;
@@ -129,5 +158,7 @@ function readError(data: unknown): { code?: string; message?: string } {
   return {
     code: typeof record.code === 'string' ? record.code : undefined,
     message: typeof record.message === 'string' ? record.message : undefined,
+    details: record.details && typeof record.details === 'object' && !Array.isArray(record.details)
+      ? record.details as Record<string, unknown> : undefined,
   };
 }

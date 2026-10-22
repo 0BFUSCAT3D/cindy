@@ -18,6 +18,8 @@ import { and, asc, desc, eq, gt, gte, lt, inArray, isNotNull, isNull, ne, or, sq
 import { getDbClient } from './client/current';
 import { sessions, messages } from './schema';
 import { messageToCamel } from './mapper';
+import { parseOrcaRemoteLead, type OrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
+import { remoteVisibleSessionSql } from './ipc/botRemoteVisibility.js';
 import {
   managedDialogueRootLikePatterns,
   normalizeHistoryWorkingDir,
@@ -25,6 +27,11 @@ import {
 } from './workingDirHistoryFilter';
 
 const messageRowid = sql<number>`"messages"."rowid"`;
+
+function remoteOrcaHistoryIdentity(raw: unknown): { orcaRemoteLead?: OrcaRemoteLead } {
+  const lead = parseOrcaRemoteLead(raw);
+  return lead ? { orcaRemoteLead: lead } : {};
+}
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,6 +54,7 @@ export interface HistoryPage<T> {
 // ── list_workdirs ───────────────────────────────────────────────────────────
 
 export interface ListWorkdirsParams {
+  sessionIds?: string[] | null;
   limit: number;
   cursor: HistoryCursor | null; // cursor.createdAt = lastSessionAt 的 ms; cursor.id = workingDir 字符串
   order: HistoryOrder;
@@ -72,6 +80,10 @@ export interface WorkdirAggregate {
 export async function listWorkdirsForHistory(
   params: ListWorkdirsParams,
 ): Promise<HistoryPage<WorkdirAggregate>> {
+  const scopedSessionIds = params.sessionIds ?? null;
+  if (scopedSessionIds !== null && scopedSessionIds.length === 0) {
+    return { items: [], nextCursor: null, hasMore: false };
+  }
   const db = getDbClient().drizzle;
   const orderFn = params.order === 'asc' ? asc : desc;
   // SQLite GROUP_CONCAT 没有内置 DISTINCT 区分; 用 sql 表达式更直观, 后端再 split
@@ -82,6 +94,7 @@ export async function listWorkdirsForHistory(
 
   // 基础过滤: 不要 deleted, 不要无 workingDir
   const baseConds = [ne(sessions.status, 'deleted'), isNotNull(sessions.workingDir)];
+  if (scopedSessionIds !== null) baseConds.push(inArray(sessions.id, scopedSessionIds));
   // 排除 app-managed dialogue 子树(<userData>/dialogues/<day>/<sessionId>):
   // 每个 standalone dialogue 会话一个目录, 是无界增长源——不排除的话大聊天历史
   // 用户一次 list_workdirs 会物化上千个单会话组(Codex review)。它们是内部
@@ -157,6 +170,9 @@ export async function listWorkdirsForHistory(
 // ── list_sessions ───────────────────────────────────────────────────────────
 
 export interface ListSessionsParams {
+  /** Set only by the authorized remote history handler, never by tool input. */
+  remoteVisibleOnly?: boolean;
+  sessionIds?: string[] | null;
   workdir: string | null;
   fromMs: number | null;
   toMs: number | null;
@@ -177,6 +193,7 @@ export interface SessionSummary {
   status: string;
   source: string;
   orcaRole: string | null;
+  orcaRemoteLead?: OrcaRemoteLead;
   parentSessionId: string | null;
   createdAt: number; // unix ms
   updatedAt: number;
@@ -187,10 +204,16 @@ export interface SessionSummary {
 export async function listSessionsForHistory(
   params: ListSessionsParams,
 ): Promise<HistoryPage<SessionSummary>> {
+  const scopedSessionIds = params.sessionIds ?? null;
+  if (scopedSessionIds !== null && scopedSessionIds.length === 0) {
+    return { items: [], nextCursor: null, hasMore: false };
+  }
   const db = getDbClient().drizzle;
   const orderFn = params.order === 'asc' ? asc : desc;
 
   const conds = [];
+  if (params.remoteVisibleOnly) conds.push(sql.raw(remoteVisibleSessionSql('sessions')));
+  if (scopedSessionIds !== null) conds.push(inArray(sessions.id, scopedSessionIds));
   if (!params.includeDeleted) conds.push(ne(sessions.status, 'deleted'));
   if (params.workdir !== null) {
     const candidates = await resolveStoredWorkingDirCandidates(params.workdir);
@@ -235,6 +258,7 @@ export async function listSessionsForHistory(
       status: sessions.status,
       source: sessions.source,
       orcaRole: sessions.orcaRole,
+      orcaRemoteLead: sessions.orcaRemoteLead,
       parentSessionId: sessions.parentSessionId,
       createdAt: sessions.createdAt,
       updatedAt: sessions.updatedAt,
@@ -273,6 +297,7 @@ export async function listSessionsForHistory(
     status: r.status,
     source: r.source,
     orcaRole: r.orcaRole,
+    ...remoteOrcaHistoryIdentity(r.orcaRemoteLead),
     parentSessionId: r.parentSessionId,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -312,6 +337,8 @@ export interface GetMessagesParams {
 
 export interface HistoryMessage {
   id: string;
+  /** Stable send/terminal identity, distinct from the storage row ID. */
+  clientId?: string;
   sessionId: string;
   sessionWorkingDir: string | null;
   sessionAgentKind: string;
@@ -341,6 +368,9 @@ const MAX_WORKDIR_SESSION_RESOLUTION = 5000;
 export async function getMessagesForHistory(
   params: GetMessagesParams,
 ): Promise<HistoryPage<HistoryMessage>> {
+  if (params.sessionIds !== null && params.sessionIds.length === 0) {
+    return { items: [], nextCursor: null, hasMore: false };
+  }
   const db = getDbClient().drizzle;
   const orderFn = params.order === 'asc' ? asc : desc;
 
@@ -447,6 +477,7 @@ export async function getMessagesForHistory(
     const camel = messageToCamel(r.m);
     return {
       id: camel.id,
+      clientId: camel.clientId,
       sessionId: camel.sessionId,
       sessionWorkingDir: r.sWorkingDir,
       sessionAgentKind: r.sAgentKind,

@@ -1,8 +1,17 @@
+// @vitest-environment jsdom
+
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createElement } from 'react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { selectionIntersectsFloatingQuoteDisabledArea } from '../components/chat/SelectionQuoteButton';
+import { SelectionQuoteButton, selectionIntersectsFloatingQuoteDisabledArea } from '../components/chat/SelectionQuoteButton';
+
+vi.mock('react-i18next', () => {
+  const t = (key: string) => key;
+  return { useTranslation: () => ({ t }) };
+});
 
 // Windows checkout(core.autocrlf)下源码是 CRLF;统一归一成 LF,含 \n 的多行片段断言才跨平台成立。
 const readTextLf = (path: string): string => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
@@ -27,15 +36,16 @@ describe('SelectionQuoteButton — user message floating action exclusion', () =
   it('keeps long-message collapse enabled for mixed quote and prose messages', () => {
     const collapseGuard = userMessageSource.slice(
       userMessageSource.indexOf('const collapseMeasureEnabled ='),
-      userMessageSource.indexOf('const { mirrorRef:', userMessageSource.indexOf('const collapseMeasureEnabled =')),
+      userMessageSource.indexOf(
+        'const { mirrorRef:',
+        userMessageSource.indexOf('const collapseMeasureEnabled ='),
+      ),
     );
     expect(collapseGuard).not.toContain('inlineQuoteCount === 0');
-    expect(userMessageSource).toContain(
-      "longMessageCollapsed && (automationOrigin ? 'line-clamp-3' : 'line-clamp-10')",
-    );
     expect(userMessageSource).toMatch(
-      /\{renderContent\(\n\s+segment\.text,/,
+      /longMessageCollapsed\s*&&\s*\(isScheduledAutomation \? 'line-clamp-3' : 'line-clamp-10'\)/,
     );
+    expect(userMessageSource).toMatch(/\{renderContent\(\n\s+segment\.text,/);
     expect(userMessageSource).toContain('!longMessageCollapsed,');
   });
 
@@ -45,18 +55,60 @@ describe('SelectionQuoteButton — user message floating action exclusion', () =
     );
     expect(buttonSource).toContain("container.dataset.selectionQuoteContext = '';");
     expect(buttonSource).toContain('readSelectionInStream(true)');
-    expect(buttonSource).toContain('!allowQuoteDisabled && selectionIntersectsFloatingQuoteDisabledArea');
+    expect(buttonSource).toContain(
+      '!allowQuoteDisabled && selectionIntersectsFloatingQuoteDisabledArea',
+    );
   });
 
-  it('keeps the floating action at its intrinsic width near either viewport edge', () => {
-    const buttonSource = readTextLf(
-      resolve(__dirname, '..', 'components', 'chat', 'SelectionQuoteButton.tsx'),
-    );
-
-    expect(buttonSource).toContain('w-max');
-    expect(buttonSource).toContain('whitespace-nowrap');
-    expect(buttonSource).toContain('const BUTTON_MIN_X_PX = 100;');
-    expect(buttonSource).toContain('const BUTTON_RIGHT_MARGIN_PX = 100;');
+  // The second action changes menu width. Exercise the real selection/portal
+  // path: fixed 100px margins could let the wider menu cross the viewport edge.
+  it.each([240, 320])('keeps a %ipx selection menu inside both viewport edges', async (menuWidth) => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
+    vi.stubGlobal('electronAPI', { onSelectionContextMenuAddToChat: () => () => {} });
+    vi.stubGlobal('innerWidth', 1024);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(new DOMRect(0, 0, menuWidth, 32));
+    const stream = document.createElement('div');
+    stream.textContent = 'selected context';
+    document.body.appendChild(stream);
+    const range = document.createRange();
+    range.selectNodeContents(stream);
+    let selectionX = 1;
+    Object.defineProperty(range, 'getClientRects', {
+      value: () => [new DOMRect(selectionX - 1, 100, 1, 20)],
+    });
+    const selection = window.getSelection()!;
+    selection.addRange(range);
+    const onAskInSideChat = vi.fn(async () => true);
+    try {
+      render(createElement(SelectionQuoteButton, {
+        sessionId: 'selection-menu-edges',
+        containerRef: { current: stream },
+        onAskInSideChat,
+      }));
+      for (const edgeX of [1, 1023]) {
+        selectionX = edgeX;
+        fireEvent.mouseUp(stream);
+        act(() => { vi.advanceTimersByTime(16); });
+        const menu = screen.getByRole('button', { name: 'chat.quote.addToChat' }).parentElement!;
+        const centerX = Number.parseFloat(menu.style.left);
+        expect(centerX - menuWidth / 2).toBeGreaterThanOrEqual(8);
+        expect(centerX + menuWidth / 2).toBeLessThanOrEqual(1016);
+      }
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'chat.sideChat.title' }));
+      });
+      expect(onAskInSideChat).toHaveBeenCalledWith('selected context');
+      expect(selection.isCollapsed).toBe(true);
+      expect(screen.queryByRole('button', { name: 'chat.sideChat.title' })).toBeNull();
+    } finally {
+      cleanup();
+      stream.remove();
+      selection.removeAllRanges();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it('rejects a selection intersecting any copy-only region', () => {
@@ -69,10 +121,12 @@ describe('SelectionQuoteButton — user message floating action exclusion', () =
       querySelectorAll: vi.fn(() => [allowed, disabled]),
     };
 
-    expect(selectionIntersectsFloatingQuoteDisabledArea(
-      range as Pick<Range, 'intersectsNode'>,
-      container as unknown as Pick<HTMLElement, 'querySelectorAll'>,
-    )).toBe(true);
+    expect(
+      selectionIntersectsFloatingQuoteDisabledArea(
+        range as Pick<Range, 'intersectsNode'>,
+        container as unknown as Pick<HTMLElement, 'querySelectorAll'>,
+      ),
+    ).toBe(true);
     expect(range.intersectsNode).toHaveBeenCalledTimes(2);
   });
 
@@ -80,9 +134,11 @@ describe('SelectionQuoteButton — user message floating action exclusion', () =
     const range = { intersectsNode: vi.fn(() => false) };
     const container = { querySelectorAll: vi.fn(() => [{} as Element]) };
 
-    expect(selectionIntersectsFloatingQuoteDisabledArea(
-      range as Pick<Range, 'intersectsNode'>,
-      container as unknown as Pick<HTMLElement, 'querySelectorAll'>,
-    )).toBe(false);
+    expect(
+      selectionIntersectsFloatingQuoteDisabledArea(
+        range as Pick<Range, 'intersectsNode'>,
+        container as unknown as Pick<HTMLElement, 'querySelectorAll'>,
+      ),
+    ).toBe(false);
   });
 });
