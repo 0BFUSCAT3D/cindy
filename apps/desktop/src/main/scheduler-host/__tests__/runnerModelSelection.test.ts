@@ -430,11 +430,11 @@ describe('MakerScheduleRunner model selection', () => {
       Object.assign(h.session, { agentKind: 'pi', model: 'shared-model' });
       const selectedEfforts = effort === 'none' ? [] : ['medium', 'high'];
       const providers = [{
-        id: 'selected', name: 'Selected', connected: true, agents: ['pi'],
+        id: 'selected', name: 'Selected', connected: true, agents: ['pi'], routing: { pi: {} },
         models: { pi: [{ id: 'shared-model', name: 'Shared', efforts: selectedEfforts,
           defaultEffort: effort === 'none' ? null : 'high', supportsFastMode: false }] },
       }, {
-        id: 'other', name: 'Other', connected: true, agents: ['pi'],
+        id: 'other', name: 'Other', connected: true, agents: ['pi'], routing: { pi: {} },
         models: { pi: [{ id: 'shared-model', name: 'Shared', efforts: ['ultra'], defaultEffort: 'ultra', supportsFastMode: true }] },
       }] as unknown as ProviderView[];
       const resolveModelSelection = vi.fn(async (choice) => resolveScheduledModelSelection(choice, providers));
