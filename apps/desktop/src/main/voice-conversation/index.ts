@@ -7,6 +7,7 @@ import {
   type VoiceConversationPreference,
 } from '../../shared/voiceConversation.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
+import { getModelVisibilityOverride, waitForModelVisibilityMirror } from '../maker-host/model-visibility-mirror.js';
 import { getProviderSecretStore, readCustomProviderKey } from '../secrets/providerSecretStore.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
@@ -50,6 +51,7 @@ export function registerVoiceConversationIpc(deps: {
       catalog: getActiveCatalog(),
       gatewayAllowed: getAppCapabilities().canUseCindyGateway,
       disabled: isProviderModelRouteDisabled,
+      visibilityOverride: getModelVisibilityOverride,
       readKey: readCustomProviderKey,
       gatewayConnection: () => ({
         baseUrl: effectiveXdGatewayBaseUrl(),
@@ -102,7 +104,10 @@ export function registerVoiceConversationIpc(deps: {
       }
     });
   };
-  handle('models', () => service.models());
+  handle('models', async () => {
+    await waitForModelVisibilityMirror();
+    return service.models();
+  });
   handle('voices', (_event, raw) => {
     const selection = normalizeSpeechModelSelection(raw);
     if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech model');

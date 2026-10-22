@@ -1497,6 +1497,19 @@ it('sets up Sub2API from one site address and retains discovered capabilities in
 });
 
 describe('speech models in the existing provider wizard', () => {
+  // PR #6768 unit regression: speech choices must be reached before a long chat
+  // catalog. Existing setup tests checked membership/defaults, never reading order.
+  it('puts Aliyun speech choices before the discovered general catalog and keeps the recommendation selected', async () => {
+    vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models:
+      Array.from({ length: 100 }, (_, index) => ({ id: `chat-${index}`, name: `Chat ${index}`, mode: 'chat' })),
+    });
+    await enter('aliyun-bailian-api-cn');
+    const speech = await screen.findByRole('checkbox', { name: /cosyvoice-v3-flash/ });
+    const firstChat = screen.getByText('Chat 0');
+    expect(speech.compareDocumentPosition(firstChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(speech.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('checkbox', { name: /qwen3-tts-flash/ }).getAttribute('aria-checked')).toBe('false');
+  });
   it('reuses server API presets instead of duplicating the same speech service entry', async () => {
     window.electronAPI.maker.listProviderPresets = vi.fn(async () => ({ presets: [{
       id: 'aliyun-model-studio-global', name: 'Server Model Studio', runtimes: {

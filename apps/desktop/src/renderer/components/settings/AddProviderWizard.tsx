@@ -2089,6 +2089,20 @@ export function AddProviderWizard({
                   {fetchState.status === 'done' && fetchState.failed && (
                     <InfoLine text={t('settings.providers.wizard.fetchFailed')} />
                   )}
+                  {(speechTarget || speechPicks.length > 0) && <SpeechModelChoices
+                    choices={speechPicks.map(([id, value]) => ({ id, ...value, reference: value.speechReference, manual: value.manualSpeech }))}
+                    onToggle={togglePick}
+                    onAdd={id => {
+                      const agent = speechTarget?.agent ?? speechPicks[0]?.[1].agents[0];
+                      if (!agent) return;
+                      setPicks(previous => {
+                        const next = new Map(previous); const existing = next.get(id);
+                        next.set(id, { ...existing, name: existing?.name ?? id, checked: true,
+                          recommended: existing?.recommended ?? false, agents: existing?.agents ?? [agent],
+                          speechReference: false, manualSpeech: true });
+                        return next;
+                      });
+                    }} />}
                   {speechPicks.length > 0 && generalPicks.length > 0 && <p className="text-13 font-medium text-[var(--text-primary)]">{t('settings.providers.speechSetup.otherModels')}</p>}
                   {generalPicks.length > 0 && (
                     <div
@@ -2162,20 +2176,6 @@ export function AddProviderWizard({
                       ))}
                     </div>
                   )}
-                  {(speechTarget || speechPicks.length > 0) && <SpeechModelChoices
-                    choices={speechPicks.map(([id, value]) => ({ id, ...value, reference: value.speechReference, manual: value.manualSpeech }))}
-                    onToggle={togglePick}
-                    onAdd={id => {
-                      const agent = speechTarget?.agent ?? speechPicks[0]?.[1].agents[0];
-                      if (!agent) return;
-                      setPicks(previous => {
-                        const next = new Map(previous); const existing = next.get(id);
-                        next.set(id, { ...existing, name: existing?.name ?? id, checked: true,
-                          recommended: existing?.recommended ?? false, agents: existing?.agents ?? [agent],
-                          speechReference: false, manualSpeech: true });
-                        return next;
-                      });
-                    }} />}
                   {showManualModelFallback && (
                     <div
                       className="flex flex-col gap-3 rounded-xl border p-3.5"

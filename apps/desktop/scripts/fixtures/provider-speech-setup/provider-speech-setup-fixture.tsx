@@ -145,7 +145,14 @@ void mountPage({
                 },
               ],
             }
-          : { ok: false, code: 'NETWORK' },
+          : ctx.case === 'bailian'
+            ? {
+                ok: true,
+                models: Array.from({ length: 100 }, (_, index) => ({
+                  id: `chat-${index}`, name: `Chat ${index}`, mode: 'chat',
+                })),
+              }
+            : { ok: false, code: 'NETWORK' },
       createCustomProvider: async (config: CustomProviderConfig) => {
         stored = config;
         return { ok: true };

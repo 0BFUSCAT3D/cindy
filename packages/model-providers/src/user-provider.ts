@@ -733,6 +733,7 @@ export function buildUserProvider(
           id: model.id,
           name: model.name,
           mode: model.mode,
+          defaultEnabled: model.defaultEnabled,
           discoveredMetadata: model.discoveredMetadata,
           sourceAgent: agent as AgentKind,
           ...(model.modalities ? { modalities: model.modalities } : {}),

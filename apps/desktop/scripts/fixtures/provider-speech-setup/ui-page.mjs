@@ -13,7 +13,7 @@ export default {
         'Single add-provider flow: MiniMax API key, grouped chat/speech, recommended speech default',
     },
     elevenlabs: { about: 'ElevenLabs catalog discovery, TTS-only connection' },
-    bailian: { about: 'Alibaba Cloud API-key connection with Qwen/CosyVoice references' },
+    bailian: { about: 'Alibaba Cloud speech recommendations visible above 100 discovered chat models' },
     subscription: { about: 'Existing OpenAI subscription creates a separate API-key connection' },
   },
   async ready(page) {
@@ -59,6 +59,12 @@ export default {
     const recommended = page.getByRole('checkbox', { name: new RegExp(recommendedId) });
     await recommended.waitFor();
     assert.equal(await recommended.getAttribute('aria-checked'), 'true');
+    if (ui.case === 'bailian') {
+      // PR #6768: first-screen discoverability, before any test-induced scrolling.
+      const box = await recommended.boundingBox();
+      const height = await page.evaluate(() => window.innerHeight);
+      assert.ok(box && box.y >= 0 && box.y + box.height < height);
+    }
     await recommended.scrollIntoViewIfNeeded();
     await ui.capture('models');
     const finish =
