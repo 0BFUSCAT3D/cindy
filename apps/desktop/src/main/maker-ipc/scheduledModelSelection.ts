@@ -1,5 +1,5 @@
 import type { AgentKind, Effort } from '@cindy/maker-core';
-import { effectiveSourceIdForModel, findCatalogModel, isModelSelectableForNewRoute, type ProviderView } from '@cindy/model-providers';
+import { connectedProvidersForAgent, effectiveSourceIdForModel, findCatalogModel, isModelSelectableForNewRoute, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
 import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 
@@ -90,9 +90,10 @@ export function resolveScheduledModelSelection(
 ): ScheduledModelSelection {
   const providerId = selection.providerId ??
     effectiveSourceIdForModel(providers, null, selection.model, selection.agentKind);
-  const provider = providers.find((candidate) => candidate.id === providerId);
+  const provider = connectedProvidersForAgent(providers, selection.agentKind)
+    .find((candidate) => candidate.id === providerId);
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
-  if (!provider?.connected || provider.suspended === true || !model ||
+  if (!provider || !model ||
     !isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
     throw new Error(`Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }

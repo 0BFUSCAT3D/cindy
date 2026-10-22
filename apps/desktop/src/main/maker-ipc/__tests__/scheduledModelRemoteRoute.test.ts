@@ -8,7 +8,7 @@ const choice: ScheduledModelSelection = {
   agentKind: 'codex', model: 'test-model', providerId: 'openai-shared', effort: 'high', fastMode: false,
 };
 function catalog(id: string): ProviderView[] {
-  return [{ id, connected: true, agents: ['codex'], source: 'user', models: { codex: [{
+  return [{ id, connected: true, agents: ['codex'], routing: { codex: {} }, source: 'user', models: { codex: [{
     id: 'test-model', efforts: ['low', 'high'], defaultEffort: 'low', supportsFastMode: false,
   }] } }] as ProviderView[];
 }
@@ -120,6 +120,24 @@ describe('automation restore uses the execution computer', () => {
     expect(h.switchHarness).not.toHaveBeenCalled();
     expect(h.guard).not.toHaveBeenCalled();
   });
+  // #6759: the model can remain in the catalog after its Harness route is
+  // removed or disabled. Exercise the production resolver and persisted restore.
+  it.each(['agent-removed', 'route-missing', 'route-disabled'] as const)(
+    'preserves the baseline when the remote Harness is unavailable: %s', async reason => {
+      const h = fixture();
+      const before = h.state();
+      const views = catalog('openai-shared');
+      if (reason === 'agent-removed') views[0].agents = [];
+      else if (reason === 'route-missing') views[0].routing = {};
+      else views[0].routing.codex!.disabled = true;
+      h.remote.mockResolvedValueOnce(views);
+      await expect(createScheduledModelScope(h.deps).restore('task')).rejects.toThrow('unavailable');
+      expect(h.state()).toEqual(before);
+      expect(h.applyModel).not.toHaveBeenCalled();
+      expect(h.switchHarness).not.toHaveBeenCalled();
+      expect(h.guard).not.toHaveBeenCalled();
+    },
+  );
   it.each(['archived', 'deleted', 'missing'])('resolves the replacement locally for a %s target', async status => {
     const h = fixture('share:test', status);
     const before = h.state();
