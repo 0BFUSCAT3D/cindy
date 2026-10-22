@@ -161,18 +161,24 @@ it("opening at rename goes straight to the editor and cancel closes the sheet", 
 it.each([true, false])("archive closes the menu before a delayed decision (%s)", async (confirmed) => {
   let decide!: (ok: boolean) => void;
   const decision = new Promise<boolean>((resolve) => { decide = resolve; });
-  const props = baseProps({ initialView: "menu", onArchive: vi.fn(), confirmArchive: vi.fn(() => decision),
+  const commit = vi.fn();
+  const onArchive = vi.fn(async (prepare: (isCurrent: () => boolean) => Promise<boolean>) => {
+    if (await prepare(() => true)) commit();
+  });
+  const props = baseProps({ initialView: "menu", onArchive, confirmArchive: vi.fn(() => decision),
     session: { id: "a", title: "Task", status: "active" } as SessionMenuSheetProps['session'] });
   const { root, click } = await renderSheet(props);
   try {
     await click("session.archiveButton");
     expect(props.onClose).toHaveBeenCalledOnce();
+    expect(onArchive).not.toHaveBeenCalled();
     expect(props.confirmArchive).not.toHaveBeenCalled();
     await act(async () => sheetLifecycle.closed?.());
     expect(props.confirmArchive).toHaveBeenCalledOnce();
-    expect(props.onArchive).not.toHaveBeenCalled();
+    expect(onArchive).toHaveBeenCalledExactlyOnceWith(props.confirmArchive);
+    expect(commit).not.toHaveBeenCalled();
     await act(async () => { decide(confirmed); });
-    expect(props.onArchive).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+    expect(commit).toHaveBeenCalledTimes(confirmed ? 1 : 0);
   } finally {
     await act(async () => root.unmount());
   }

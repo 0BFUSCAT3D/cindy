@@ -51,6 +51,9 @@ Cindy 的产品形态不止本地桌面单机。同一个功能可能运行在�
 在途写入，确认后才取代这些写入并真正移除行。取消时解除隐藏，不拿旧快照覆盖期间
 已经保存的元数据。详情页在确认通过后再退出。手机详情菜单先收起，关闭动画结束后
 再查询并弹确认，避免远程等待卡住菜单或原生弹窗被关闭动画吞掉。
+手机详情将确认回调交给 `useSessionListActions.patchSession`，与列表共用同一个预览、
+写序和失败回滚入口；确认仍有效并开始提交时才退出详情。离页或后续状态操作使旧确认
+失效，结算时只解除该次预览，不写回旧状态。
 
 实现与回归：Desktop `useSessionLifecycleActions`、`sharedTaskArchiveGuard.test.ts`；
 Mobile `useSessionListActions`、`SessionMenuSheet`、`orphanSessionActions.test.ts` 与

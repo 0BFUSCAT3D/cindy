@@ -37,8 +37,12 @@ import { confirmArchiveWithSchedules, loadActiveBoundScheduleNames } from '@/ses
  * 这类会让行移走或移位的乐观写入与失败回滚经它落地,行的移动与列表让位带动画;
  * 不传时直接写入。
  */
-export function useSessionListActions(options?: { animateListChange?: (apply: () => void) => void }) {
+export function useSessionListActions(options?: {
+  animateListChange?: (apply: () => void) => void;
+  preferredRpcDeviceId?: string;
+}) {
   const animateListChange = options?.animateListChange;
+  const preferredRpcDeviceId = options?.preferredRpcDeviceId;
   const { t } = useTranslation();
   const { invoke } = useDeviceLink();
   const swipeRegistry = useMemo(() => createSwipeRowRegistry(), []);
@@ -51,8 +55,9 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     session: RemoteSession,
     patch: SessionMetaPatch,
     prepare?: (isLatest: () => boolean) => Promise<boolean>,
+    onApplied?: () => void,
   ) => {
-    const devices = resolveSessionWriteDevices(session.id, session);
+    const devices = resolveSessionWriteDevices(session.id, session, preferredRpcDeviceId);
     if (!devices) throw new Error(t('devices.list.error.sessionDeviceNotFound'));
     const { rpcDeviceId, shardId } = devices;
     const fields = Object.keys(patch);
@@ -73,6 +78,7 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     const applyOptimistic = () => {
       if (!write.isLatest()) return;
       rollbackSession = remoteSessionStore.getSessions().find((s) => s.id === session.id) ?? session;
+      onApplied?.();
       remoteSessionStore.applySessionPatch(shardId, session.id, patch);
       applied = true;
     };
@@ -167,11 +173,11 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
       releasePending();
       if (finishPreview) await updateList(finishPreview);
     }
-  }, [animateListChange, invoke, t]);
+  }, [animateListChange, invoke, preferredRpcDeviceId, t]);
 
   const runSwipeAction = useCallback((session: RemoteSession, action: Exclude<SessionSwipeAction, 'rename'>) => {
     void patchSession(session, swipeActionPatch(action), action === 'archive' ? async (isLatest) => {
-      const devices = resolveSessionWriteDevices(session.id, session);
+      const devices = resolveSessionWriteDevices(session.id, session, preferredRpcDeviceId);
       const names = devices ? await loadActiveBoundScheduleNames({
         deviceId: devices.rpcDeviceId, invoke, sessionId: session.id, source: session.source,
       }) : [];
@@ -180,7 +186,7 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
       swipeRegistry.closeOpenRow();
       Alert.alert(t('devices.list.alert.actionFailed'), humanizeRemoteError(err));
     });
-  }, [invoke, patchSession, swipeRegistry, t]);
+  }, [invoke, patchSession, preferredRpcDeviceId, swipeRegistry, t]);
 
   const applySessionSheetAction = useCallback((session: RemoteSession, action: SessionSwipeAction) => {
     if (action === 'delete') {
@@ -256,6 +262,7 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
   }), [archiveSession, showSessionOptions, swipeRegistry, toggleSessionPinned]);
 
   return {
+    patchSession,
     actionSheetSession,
     archiveSession,
     closeRenameSession,

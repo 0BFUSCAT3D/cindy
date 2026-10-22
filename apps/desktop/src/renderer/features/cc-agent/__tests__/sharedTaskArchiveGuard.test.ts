@@ -156,15 +156,17 @@ describe('archive preserves the current task until preflight and confirmation fi
     const confirmDialog = vi.fn(() => decision.promise);
     const archiveConfirmDescription = vi.fn(() => 'description');
     const resolvePreflight = vi.fn(() => preflight.promise);
+    const attachment = vi.fn(async () => ({ attached: false }));
+    const schedules = vi.fn(async () =>
+      new Map(scheduleNames.length > 0 ? [['task', scheduleNames]] : []));
     const bindings = {
-      window: { electronAPI: { binding: { resolveSession: async () => ({ attached: false }) } } },
+      window: { electronAPI: { binding: { resolveSession: attachment } } },
       toast: { error: vi.fn(), warning: vi.fn() }, t: (key: string) => key,
       sessionsById: new Map([['task', session]]), sessionsByIdRef: { current: new Map([['task', session]]) },
       runningSessionIds: new Set(), attachedSessionIdsRef: { current: new Set() },
       isRemoteSessionWriteBlocked: () => false, remoteWritesBlocked: false,
       resolveWorktreeRemovalPreflight: resolvePreflight,
-      loadActiveBoundScheduleNames: async () =>
-        new Map(scheduleNames.length > 0 ? [['task', scheduleNames]] : []),
+      loadActiveBoundScheduleNames: schedules,
       archiveConfirmDescription,
       viewedSessionIdRef: { current: 'task' }, viewedSessionId: 'task',
       resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
@@ -186,11 +188,35 @@ describe('archive preserves the current task until preflight and confirmation fi
     };
     return {
       preflight, resolvePreflight, decision, runSessionAction, beginRemoteArchive, confirmDialog, archiveConfirmDescription,
+      attachment, schedules,
       selected: () => selectedTask, visible: () => rowVisible,
       archive: () => callback(entry.handler, bindings, entrySource)('task', 'archive'),
       finish: async (confirmed: boolean) => { decision.resolve(confirmed); },
     };
   }
+
+  // Unit: replaces the stale sidebar source-order assertions (CI #6863).
+  // Holding both earlier checks makes a prematurely sampled clean worktree
+  // observable; existing confirmation cases start after those checks settled.
+  it('sidebar samples the worktree after attachment and schedule lookup settle', async () => {
+    const h = archiveHarness(entrypoints[0]!);
+    const attachment = deferred<{ attached: boolean }>();
+    const schedules = deferred<Map<string, string[]>>();
+    h.attachment.mockReturnValueOnce(attachment.promise);
+    h.schedules.mockReturnValueOnce(schedules.promise);
+    const pending = h.archive();
+    expect(h.attachment).toHaveBeenCalled();
+    expect(h.resolvePreflight).not.toHaveBeenCalled();
+    attachment.resolve({ attached: false });
+    await vi.waitFor(() => expect(h.schedules).toHaveBeenCalled());
+    expect(h.resolvePreflight).not.toHaveBeenCalled();
+    schedules.resolve(new Map());
+    await vi.waitFor(() => expect(h.resolvePreflight).toHaveBeenCalled());
+    h.preflight.resolve('clean');
+    await pending;
+    expect(h.confirmDialog).not.toHaveBeenCalled();
+    expect(h.runSessionAction).toHaveBeenCalledWith('task', 'archive', { activeSessionId: 'task' });
+  });
 
   for (const entry of entrypoints) {
     it.each(['clean', 'dirty', 'unknown'] as const)(entry.name + ' keeps selection during %s preflight and cancellation', async (preflight) => {
@@ -209,6 +235,8 @@ describe('archive preserves the current task until preflight and confirmation fi
         await vi.waitFor(() => {
           expect(h.confirmDialog).toHaveBeenCalled();
         });
+        expect(h.archiveConfirmDescription).toHaveBeenCalledWith(expect.anything(),
+          expect.objectContaining({ dirtyWorktree: preflight === 'dirty' }));
         expect(h.selected()).toBe('task');
         expect(h.visible()).toBe(false);
         expect(h.runSessionAction).not.toHaveBeenCalled();

@@ -168,9 +168,10 @@ export interface SessionMenuSheetProps {
   worker?: SessionMenuWorkerActions;
   leavingSharing?: boolean;
   onTogglePinned(): void;
-  onArchive(): void;
+  /** 由调用方在列表预览事务内等待确认，再提交归档。 */
+  onArchive(prepare: (isCurrent: () => boolean) => Promise<boolean>): void;
   /** 菜单收起后执行归档确认(如绑定了自动化);返回 false 时留在当前任务、不归档。 */
-  confirmArchive?: () => Promise<boolean>;
+  confirmArchive?: (isCurrent: () => boolean) => Promise<boolean>;
   onRestore(): void;
   onDelete(): void;
   onClose(): void;
@@ -507,11 +508,7 @@ export function SessionMenuSheet({
           return;
         }
         // 先响应点击收起菜单，关闭动画结束后再查询/弹确认，避免原生 Modal 吞掉 Alert。
-        pendingArchiveRef.current = () => {
-          void (confirmArchive?.() ?? Promise.resolve(true)).then((ok) => {
-            if (ok) onArchive();
-          });
-        };
+        pendingArchiveRef.current = () => onArchive(confirmArchive ?? (async () => true));
         onClose();
         return;
       case 'delete':

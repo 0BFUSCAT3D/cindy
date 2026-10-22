@@ -29,7 +29,8 @@ function callback(file: string, name: string, bindings: Record<string, unknown>)
 const session = { id: 's1', status: 'active', deviceLinkDeviceId: 'shard', deviceLinkDeviceName: 'PC' };
 function fixture() {
   let reject!: (error: Error) => void;
-  const pending = new Promise((_resolve, fail) => { reject = fail; });
+  let resolve!: (value: unknown) => void;
+  const pending = new Promise((done, fail) => { resolve = done; reject = fail; });
   const store = {
     applySessionPatch: vi.fn(), upsertDeviceSession: vi.fn(), requestReseed: vi.fn(),
     beginSessionListRemovalPreview: vi.fn(() => vi.fn()),
@@ -38,22 +39,71 @@ function fixture() {
   const release = vi.fn();
   const isLatest = vi.fn(() => true);
   const bindings = {
-    currentSession: session, deviceId: 'rpc', sessionId: session.id,
+    currentSession: session, deviceId: 'rpc', sessionId: session.id, preferredRpcDeviceId: 'rpc',
     resolveSessionWriteDevices: () => ({ rpcDeviceId: 'rpc', shardId: 'shard' }),
     sessionMetaWriteGuard: { begin: () => ({ isLatest }) },
     sessionMetaWriteQueue: { enqueue: vi.fn(() => pending) },
-    sessionPendingWrites: { track: () => release },
+    sessionPendingWrites: { track: () => release, consumeMaskedPush: () => false },
     remoteSessionStore: store, isExplicitRemoteNotFoundError, pickWriteFields, writeGuardFields,
     goBackToHome: vi.fn(), Alert: { alert: vi.fn() }, humanizeRemoteError: String,
     animateListChange: undefined, t: (key: string) => key,
     withNewSessionCreationRemoval: (_sid: string, _device: string, _status: string, remove: () => Promise<unknown>) => remove(),
   };
-  return { bindings, reject, store, release, isLatest };
+  Object.assign(bindings, {
+    patchSessionFromList: callback('src/session/useSessionListActions.ts', 'patchSession', bindings),
+    sessionSubscriptionIdentity: 'page', sessionSubscriptionIdentityRef: { current: 'page' },
+  });
+  return { bindings, resolve, reject, store, release, isLatest };
 }
 const gone = () => new Error('[NOT_FOUND] Session does not exist');
 const tick = () => new Promise((done) => setTimeout(done, 0));
 
 describe('orphan task status actions', () => {
+  // Unit, PR #6863 r4353910575: the detail menu used to perform confirmation
+  // outside the list transaction. Existing list tests missed that entrypoint.
+  // Holding its decision must hide the list, retain detail, and navigate only
+  // after confirmation; cancellation, a newer status, or leaving the page must
+  // release the preview without writing or restoring an old metadata snapshot.
+  it.each(['confirm', 'cancel', 'superseded', 'left-page', 'fail'] as const)(
+    'detail archive shares the list transaction during %s', async (outcome) => {
+      const f = fixture();
+      const identityRef = { current: 'page' as string | null };
+      const patchSessionFromList = callback('src/session/useSessionListActions.ts', 'patchSession', f.bindings);
+      const patchDetail = callback('app/sessions/[sessionId].tsx', 'patchSessionMeta', {
+        ...f.bindings, patchSessionFromList,
+        sessionSubscriptionIdentity: 'page', sessionSubscriptionIdentityRef: identityRef,
+      });
+      let decide!: (ok: boolean) => void;
+      const decision = new Promise<boolean>(resolve => { decide = resolve; });
+      const request = patchDetail({ status: 'archived' }, () => decision);
+      expect(f.store.beginSessionListRemovalPreview).toHaveBeenCalledWith('s1');
+      expect(f.store.applySessionPatch).not.toHaveBeenCalled();
+      expect(f.bindings.goBackToHome).not.toHaveBeenCalled();
+      if (outcome === 'superseded') f.isLatest.mockReturnValue(false);
+      if (outcome === 'left-page') identityRef.current = null;
+      decide(outcome !== 'cancel');
+      if (outcome === 'confirm' || outcome === 'fail') {
+        await vi.waitFor(() => expect(f.bindings.sessionMetaWriteQueue.enqueue).toHaveBeenCalledOnce());
+        expect(f.bindings.goBackToHome).toHaveBeenCalledOnce();
+        if (outcome === 'fail') f.reject(new Error('offline'));
+        else f.resolve({ ...session, status: 'archived' });
+      }
+      await request;
+      expect(f.store.beginSessionListRemovalPreview.mock.results[0].value).toHaveBeenCalledOnce();
+      if (outcome === 'fail') {
+        expect(f.store.upsertDeviceSession).toHaveBeenCalledWith('shard', 'PC', session);
+        expect(f.bindings.Alert.alert).toHaveBeenCalled();
+      } else {
+        expect(f.store.upsertDeviceSession).not.toHaveBeenCalled();
+        expect(f.bindings.Alert.alert).not.toHaveBeenCalled();
+      }
+      if (!['confirm', 'fail'].includes(outcome)) {
+        expect(f.bindings.sessionMetaWriteQueue.enqueue).not.toHaveBeenCalled();
+        expect(f.bindings.goBackToHome).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   // Unit regression: archive must leave the list while its remote schedule
   // lookup is pending, without committing before confirmation. Existing cases
   // exercised only the RPC result, not the pre-write wait/cancel boundary.
@@ -191,6 +241,7 @@ describe('orphan task status actions', () => {
     const f = fixture();
     const patch = callback('app/sessions/[sessionId].tsx', 'patchSessionMeta', f.bindings);
     patch({ status });
+    await tick();
     expect(f.bindings.goBackToHome).toHaveBeenCalledTimes(1);
     // The user may already have opened a different task by the time the RPC fails.
     f.reject(gone());
