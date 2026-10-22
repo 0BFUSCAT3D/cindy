@@ -156,6 +156,11 @@ describe('shared runtime stable owner recommit', () => {
     expect(serverReads()).toBe(4);
     // The reconnect sync must not reuse a list cached before the reconnect.
     expect(state.forgetList).toHaveBeenCalledOnce();
+    // Fault radius: a reconnect, even with a failed sync, is answered by an HTTP
+    // read only; no relay restart and no peer/share revocation.
+    expect(relay.start).not.toHaveBeenCalled();
+    expect(relay.stop).not.toHaveBeenCalled();
+    expect(relay.revoke).not.toHaveBeenCalled();
     // A failed sync retries after the server interval, not on every local tick.
     await vi.advanceTimersByTimeAsync(25_000);
     expect(serverReads()).toBe(4);

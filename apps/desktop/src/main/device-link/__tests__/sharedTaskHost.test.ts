@@ -211,6 +211,20 @@ describe('task host sharedTask lifecycle', () => {
     await host.restore();
     expect(host.needsAuthorityRefresh()).toBe(false);
   });
+  // Fault radius of the reconnect sync: with two guests, an unchanged or failed
+  // server read revokes nobody; existing captures stay valid.
+  it('keeps every guest of an open share unaffected by reconnect syncs', async () => {
+    await host.open('session');
+    const capture = host.capturePeer(sharedTaskGuestPeer('sharedTask', 'member-a', 'phone-a'))!;
+    vi.mocked(options.revoke).mockClear();
+    await host.restore();
+    api.list.mockRejectedValueOnce(new Error('offline'));
+    await expect(host.restore()).rejects.toThrow('offline');
+    expect(options.revoke).not.toHaveBeenCalled();
+    expect(canRead('a')).toBe(true);
+    expect(canRead('b')).toBe(true);
+    expect(capture.isCurrent()).toBe(true);
+  });
   it('allows first sharing after an unshared task is archived and restored', async () => {
     await host.closeLocallyForBoundary('session');
     options.readSession = vi.fn(async (id) => ({ id, title: 'Task', status: 'archived' }));
