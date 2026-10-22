@@ -182,6 +182,109 @@ describe('duplicate op payloads', () => {
   });
 });
 
+/*
+ * 测试价值
+ * - 生产入口与可观察结果：createRemoteAgentHost 的 handle(open / call / poll / caps)与巡检；控制端读到的事件流收尾行与
+ *   caps 声明的闲置收回时长。
+ * - Bug／规则依据：provider-sharing.md §3「闲置收回由提供方决定」；闲着的任务一直被拉取，原来的「控制端离开」回收永远不触发。
+ * - 现有覆盖缺口：上面只覆盖收尾清理；没有用例证明忙的任务不被收回、闲置满时长才收回、收尾行让旧控制端静默收起。
+ * - 最小失败输入：设置 1 分钟；回合在跑 / 后台任务 / 待唤醒续跑 / 控制端报 hold / 回退后下一轮没跑完时各推进 2 分钟。
+ * - tier：unit，假时钟 + 假 setInterval，Agent 是内存假句柄。
+ */
+describe('idle reclaim by the provider', () => {
+  interface Busy { turn: boolean; background: number; wake: number }
+
+  function busyHandle(input: HostedStartInput, busy: Busy) {
+    const queued: AgentEvent[] = [];
+    let wake: (() => void) | null = null;
+    const handle: AgentSessionHandle & { emit(event: AgentEvent): void } = {
+      ...idleHandle(input),
+      isTurnRunning: () => busy.turn,
+      listBackgroundTasks: () => Array.from({ length: busy.background }, (_, index) => ({ taskId: `bg-${index}` }) as never),
+      countPendingWakeContinuations: () => busy.wake,
+      commitRewindFiles: async () => ({ ok: true }) as never,
+      events: () => ({
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            if (queued.length) { yield queued.shift()!; continue; }
+            await new Promise<void>((resolve) => { wake = resolve; });
+          }
+        },
+      }),
+      emit(event) { queued.push(event); wake?.(); wake = null; },
+    };
+    return handle;
+  }
+
+  async function openBusy(minutes: number, busy: Busy) {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let handle!: ReturnType<typeof busyHandle>;
+    const started = whenStarted();
+    const host = createRemoteAgentHost({
+      readLimits: () => ({ perDevice: 16, total: 64, idleMinutes: minutes }),
+      isAgentAvailable: () => true,
+      startHosted: async (input) => { handle = busyHandle(input, busy); started.resolve(); return handle; },
+      isControllerAuthorized: () => true, captureOwner: () => 'owner', isOwnerCurrent: () => true, runsRoot,
+      now: () => clock,
+    });
+    await host.handle('controller-1', { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
+    await started.promise;
+    await settle();
+    let cursor = 0;
+    const rows: Array<Record<string, unknown>> = [];
+    /** 控制端照常拉取(闲着的任务也一直在拉)，推进时钟并跑一轮巡检。 */
+    const pass = async (ms: number, hold = false) => {
+      clock += ms;
+      const result = await host.handle('controller-1', {
+        op: 'poll', runs: [{ runId: RUN_1, cursor, ...(hold ? { hold: true } : {}) }], waitMs: 0,
+      }) as { runs: Array<{ cursor: number; data?: string }> };
+      const entry = result.runs[0];
+      if (entry) {
+        cursor = entry.cursor;
+        if (entry.data) rows.push(...Buffer.from(entry.data, 'base64').toString().trim().split('\n').map((line) => JSON.parse(line)));
+      }
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+    };
+    return { host, handle: () => handle, pass, rows };
+  }
+
+  it.each(['turn', 'background', 'wake', 'hold', 'rewind'] as const)('keeps a run while it is busy (%s) and reclaims it after a full idle period', async (reason) => {
+    const busy: Busy = { turn: reason === 'turn', background: reason === 'background' ? 1 : 0, wake: reason === 'wake' ? 1 : 0 };
+    const { host, handle, pass, rows } = await openBusy(1, busy);
+    try {
+      if (reason === 'rewind') {
+        await host.handle('controller-1', { op: 'call', runId: RUN_1, callId: RUN_2, method: 'commitRewindFiles', payload: { json: ['user-1', 'assistant-1'] } });
+        await settle();
+      }
+      for (let i = 0; i < 3; i += 1) await pass(50_000, reason === 'hold');
+      expect(host.runCount()).toBe(1);
+      // 忙完之后从这一刻重新计时：再闲置不满 1 分钟不收回。
+      busy.turn = false; busy.background = 0; busy.wake = 0;
+      if (reason === 'rewind') {
+        handle().emit({ type: 'done', data: {}, source: 'claude-code' } as AgentEvent);
+        await settle();
+      }
+      await pass(50_000);
+      expect(host.runCount()).toBe(1);
+      await pass(20_000);
+      await pass(0);
+      expect(host.runCount()).toBe(0);
+      // 旧控制端按 `ended` 静默收起；新控制端看 idleReclaimed。
+      expect(rows.at(-1)).toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
+    } finally { host.dispose(); }
+  });
+
+  it('never reclaims with 0 minutes and declares the setting in caps', async () => {
+    const { host, pass } = await openBusy(0, { turn: false, background: 0, wake: 0 });
+    try {
+      for (let i = 0; i < 4; i += 1) await pass(50_000);
+      expect(host.runCount()).toBe(1);
+      expect(await host.handle('controller-1', { op: 'caps' })).toMatchObject({ idleReclaimMinutes: 0 });
+    } finally { host.dispose(); }
+  });
+});
+
 // #6412: asynchronous source reads used to lose the final image when the native stream ended.
 it.each([false, true])('drains image preparation and forwards the controller receipt capability (%s)', async (receipts) => {
   let release!: () => void;

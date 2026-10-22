@@ -689,6 +689,33 @@ describe('remote connection pool with a real host', () => {
     expect(scenario.started).toHaveLength(3);
   });
 
+  // provider-sharing.md §3「闲置收回由提供方决定」：对方按闲置收回结束了 Agent 进程(closed 带 idleReclaimed)。新控制端不报错、
+  // 不关句柄，本机后台命令留着；下一次发送带原来的会话 id 连回。改动前会当作任务结束关掉句柄，下一次发送直接失败。
+  it('keeps this computer\'s part when the provider reclaims an idle task, then reconnects to the same conversation', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      limits = { perDevice: 16, total: 64, idleMinutes: TINY_MINUTES };
+      const a = await start(undefined);
+      const events = watch(a);
+      const started = await ask(a, events, 'bg');
+      const id = /with ID: (\S+?)\./.exec(started)?.[1];
+      expect(id).toBeTruthy();
+      const nativeA = a.id;
+      await sleep(5);
+      // 对方巡检：不忙且闲置满设置的时长，收回。
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(host.runCount()).toBe(0));
+      expect(events.seen.filter((event) => event.type === 'error')).toEqual([]);
+      expect(await ask(a, events, `read ${id}`)).toContain('<status>running</status>');
+      expect(scenario.started).toHaveLength(2);
+      expect(scenario.started[1].options.resumeSessionId).toBe(nativeA);
+      fs.writeFileSync(path.join(project, 'bg.go'), '');
+      await vi.waitFor(async () => expect(await ask(a, events, `read ${id}`)).toContain('bg-finished'), { timeout: 5_000, interval: 20 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('records setting changes while released and opens with them, without reconnecting just for them', async () => {
     const pool = newPool();
     const extra = path.join(root, 'extra');
