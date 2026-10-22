@@ -222,6 +222,8 @@ async function visualMockInvoke<T = unknown>(
     const content = [
       '窄屏表格：短表铺满正文，宽表横向滑动。',
       '', '| A | B |', '| --- | --- |', '| 1 | 2 |', '| 3 | [链接](https://example.com) |',
+      '', '| ![x](https://example.com/a.png) | ![](https://example.com/b.png) |', '| --- | --- |',
+      '| ![](https://example.com/b.png) | ![y](https://example.com/a.png) |',
       '', '| 项目 | 说明 | 状态 | 最后一列 |', '| --- | --- | --- | --- |',
       '| A | **长说明在单元格内换行，行高应随内容增加，下一行仍按相同列宽对齐。** | 完成 | 末列可见 |',
       '| B | | 进行中 | 末列第二行 |',

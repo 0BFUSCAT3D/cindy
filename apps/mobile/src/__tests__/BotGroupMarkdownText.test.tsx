@@ -106,3 +106,21 @@ it('keeps component literal punctuation and Markdown formatting distinct', async
   expect(styleOf('authored bold')).toMatchObject({ fontWeight: '600' });
   expect(node.textContent).not.toContain('"op":"create"');
 });
+
+// #6716 review: group images render as alt text, not 150px native previews.
+it.each([['x', ''], ['a long image description that wraps inside its column', 'y']])(
+  'measures image cells like their visible fallback text (%s / %s)', async (alt, otherAlt) => {
+    const renderTable = async (first: string, second: string) => {
+      await act(async () => root.render(createElement(BotGroupMarkdownText, {
+        content: `| ${first} | ${second} |\n| --- | --- |\n| ${second} | ${first} |`, authorKind: 'bot',
+      })));
+      const row = node.querySelector('section')!.firstElementChild!.firstElementChild!;
+      return [...row.children].map(cell => JSON.parse(cell.getAttribute('data-style')!).width);
+    };
+    const imageWidths = await renderTable(`![${alt}](https://example.com/a.png)`, `![${otherAlt}](https://example.com/b.png)`);
+    expect(node.textContent).toBe([alt, otherAlt, otherAlt, alt].map(text => text ? `[${text}]` : '').join(''));
+    const textWidths = await renderTable(alt ? `[${alt}]` : '', otherAlt ? `[${otherAlt}]` : '');
+    expect(imageWidths).toEqual(textWidths);
+    if (!otherAlt) expect(imageWidths.reduce((a, b) => a + b, 0)).toBe(280);
+  },
+);

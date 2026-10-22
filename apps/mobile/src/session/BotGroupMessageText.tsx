@@ -50,8 +50,14 @@ function BotGroupMarkdownTable({ block, styles }: {
   const onLayout = useCallback((event: LayoutChangeEvent) => {
     setAvailableWidth(event.nativeEvent.layout.width);
   }, []);
+  // This read-only renderer shows image alt text, so measure that same text, not a preview.
+  const measureCells = (cells: readonly MobileMarkdownInline[][]) => cells.map(cell => cell.map(
+    (inline): MobileMarkdownInline => inline.type === 'image'
+      ? { type: 'text', text: inline.alt ? `[${inline.alt}]` : '' }
+      : inline,
+  ));
   const widths = buildMobileMarkdownTableColumnWidths({
-    header: block.header, rows: block.rows, availableWidth,
+    header: measureCells(block.header), rows: block.rows.map(row => ({ ...row, cells: measureCells(row.cells) })), availableWidth,
     minWidth: buildMessageContentLayout({ screenWidth }).markdownTableCellMinWidth,
   });
   const renderRow = (cells: readonly MobileMarkdownInline[][], key: string, header = false) => (
