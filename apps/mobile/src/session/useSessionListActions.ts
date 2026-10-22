@@ -47,20 +47,48 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
   const [renameSessionDraft, setRenameSessionDraft] = useState('');
   const pendingSheetActionRef = useRef<(() => void) | null>(null);
 
-  const patchSession = useCallback(async (session: RemoteSession, patch: SessionMetaPatch) => {
+  const patchSession = useCallback(async (
+    session: RemoteSession,
+    patch: SessionMetaPatch,
+    prepare?: (isLatest: () => boolean) => Promise<boolean>,
+  ) => {
     const devices = resolveSessionWriteDevices(session.id, session);
     if (!devices) throw new Error(t('devices.list.error.sessionDeviceNotFound'));
     const { rpcDeviceId, shardId } = devices;
     const fields = Object.keys(patch);
     const write = sessionMetaWriteGuard.begin(session.id, writeGuardFields(patch));
-    const applyOptimistic = () => remoteSessionStore.applySessionPatch(shardId, session.id, patch);
+    // 查询/确认期间只移走行，取消不应清掉已有消息与历史缓存。
+    const applyOptimistic = () => remoteSessionStore.applySessionPatch(
+      shardId, session.id, patch, prepare ? { deferRemovalCleanup: true } : undefined,
+    );
     if ((patch.status !== undefined || patch.pinnedAt !== undefined) && animateListChange) {
       animateListChange(applyOptimistic);
     } else {
       applyOptimistic();
     }
     const releasePending = sessionPendingWrites.track(session.id, fields);
+    const restoreSession = () => {
+      const shardName = remoteSessionStore.getSessions()
+        .find((s) => s.deviceLinkDeviceId === shardId)?.deviceLinkDeviceName
+        ?? session.deviceLinkDeviceName
+        ?? shardId;
+      releasePending();
+      const rollback = () => {
+        remoteSessionStore.upsertDeviceSession(shardId, shardName, session);
+        remoteSessionStore.requestReseed(shardId);
+      };
+      if (animateListChange) animateListChange(rollback);
+      else rollback();
+    };
     try {
+      if (prepare) {
+        const confirmed = await prepare(write.isLatest);
+        if (!write.isLatest()) return;
+        if (!confirmed) {
+          restoreSession();
+          return;
+        }
+      }
       const updated = await withNewSessionCreationRemoval(session.id, rpcDeviceId, patch.status,
         () => sessionMetaWriteQueue.enqueue(session.id, fields, () => retryPatchWhileLatest(
         write.isLatest,
@@ -91,18 +119,8 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
             remoteSessionStore.requestReseed(shardId);
             return;
           }
-          const shardName = remoteSessionStore.getSessions()
-            .find((s) => s.deviceLinkDeviceId === shardId)?.deviceLinkDeviceName
-            ?? session.deviceLinkDeviceName
-            ?? shardId;
           // 先释放本笔在途登记:upsertDeviceSession 会挡掉 status 在途、已被乐观移出的行。
-          releasePending();
-          const rollback = () => {
-            remoteSessionStore.upsertDeviceSession(shardId, shardName, session);
-            remoteSessionStore.requestReseed(shardId);
-          };
-          if (animateListChange) animateListChange(rollback);
-          else rollback();
+          restoreSession();
         } else {
           const rollback = () => {
             const currentUpdatedAt = remoteSessionStore.getSessions()
@@ -128,29 +146,17 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
   }, [animateListChange, invoke, t]);
 
   const runSwipeAction = useCallback((session: RemoteSession, action: Exclude<SessionSwipeAction, 'rename'>) => {
-    void patchSession(session, swipeActionPatch(action)).catch((err: unknown) => {
+    void patchSession(session, swipeActionPatch(action), action === 'archive' ? async (isLatest) => {
+      const devices = resolveSessionWriteDevices(session.id, session);
+      const names = devices ? await loadActiveBoundScheduleNames({
+        deviceId: devices.rpcDeviceId, invoke, sessionId: session.id, source: session.source,
+      }) : [];
+      return isLatest() && confirmArchiveWithSchedules(t, names);
+    } : undefined).catch((err: unknown) => {
       swipeRegistry.closeOpenRow();
       Alert.alert(t('devices.list.alert.actionFailed'), humanizeRemoteError(err));
     });
-  }, [patchSession, swipeRegistry, t]);
-
-  // 绑定了 active 自动化的任务归档前先确认(归档后电脑会暂停它们);普通任务直接归档。
-  const archiveWithScheduleConfirm = useCallback(async (session: RemoteSession) => {
-    const devices = resolveSessionWriteDevices(session.id, session);
-    const names = devices
-      ? await loadActiveBoundScheduleNames({
-        deviceId: devices.rpcDeviceId,
-        invoke,
-        sessionId: session.id,
-        source: session.source,
-      })
-      : [];
-    if (!(await confirmArchiveWithSchedules(t, names))) {
-      swipeRegistry.closeOpenRow();
-      return;
-    }
-    runSwipeAction(session, 'archive');
-  }, [invoke, runSwipeAction, swipeRegistry, t]);
+  }, [invoke, patchSession, swipeRegistry, t]);
 
   const applySessionSheetAction = useCallback((session: RemoteSession, action: SessionSwipeAction) => {
     if (action === 'delete') {
@@ -167,12 +173,8 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
       setRenameSessionTarget(session);
       return;
     }
-    if (action === 'archive') {
-      void archiveWithScheduleConfirm(session);
-      return;
-    }
     runSwipeAction(session, action);
-  }, [archiveWithScheduleConfirm, runSwipeAction, t]);
+  }, [runSwipeAction, t]);
 
   const handleSessionSheetAction = useCallback((action: SessionSwipeAction) => {
     const session = actionSheetSession;
@@ -215,9 +217,8 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
 
   const archiveSession = useCallback((session: RemoteSession) => {
     const { action } = statusToggleAction(session.status);
-    if (action === 'archive') void archiveWithScheduleConfirm(session);
-    else runSwipeAction(session, action);
-  }, [archiveWithScheduleConfirm, runSwipeAction]);
+    runSwipeAction(session, action);
+  }, [runSwipeAction]);
 
   const showSessionOptions = useCallback((session: RemoteSession) => {
     setActionSheetSession(session);

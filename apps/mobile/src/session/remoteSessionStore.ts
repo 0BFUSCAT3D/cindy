@@ -3316,6 +3316,21 @@ function sweepDevicesOffline(deviceIds: readonly string[]): boolean {
   return changed;
 }
 
+function cleanupRemovedSession(deviceId: string, sessionId: string, deleted: boolean): void {
+  protectedQuestions.delete(sessionId);
+  visibleInteractionCache.delete(sessionId);
+  void clearHistoryDisk(deviceId, sessionId);
+  clearRemoteHistoryViews(deviceId, sessionId);
+  deleteSessionLiveActivity(sessionId);
+  dropPendingTitlePreview(sessionId);
+  let messageStateChanged = invalidateSessionMessageWindowState(sessionId, false);
+  messageStateChanged = releaseSessionDetailProjections(sessionId) || messageStateChanged;
+  sessionMessageLifecycle.forget(sessionId);
+  sessionsOpenedInDetail.delete(sessionId);
+  if (deleted) clearSessionMessageCache(sessionId, deviceId);
+  if (messageStateChanged) bumpMessageVersion(sessionId);
+}
+
 export const remoteSessionStore = {
   /** Coalesce notifications for one logically atomic remote snapshot. */
   batch<T>(work: () => T): T {
@@ -3654,7 +3669,12 @@ export const remoteSessionStore = {
     recomputeSessions();
   },
 
-  applySessionPatch(deviceId: string, sessionId: string, patch: Partial<RemoteSession>): void {
+  applySessionPatch(
+    deviceId: string,
+    sessionId: string,
+    patch: Partial<RemoteSession>,
+    options?: { deferRemovalCleanup?: boolean },
+  ): void {
     // Local optimistic removals must fence a late startup cache just like remote pushes,
     // even when the removed row has not reached this shard yet.
     if (patch.status === 'deleted' || patch.status === 'archived') bumpDeviceSessionListMutationEpoch(deviceId);
@@ -3662,7 +3682,10 @@ export const remoteSessionStore = {
     const idx = shard?.sessions.findIndex((s) => s.id === sessionId) ?? -1;
     if (!shard || idx === -1) {
       if (patch.status === 'deleted' || patch.status === 'archived') {
-        sessionRemovalListeners.forEach(listener => listener(deviceId, sessionId));
+        if (!options?.deferRemovalCleanup) {
+          cleanupRemovedSession(deviceId, sessionId, patch.status === 'deleted');
+          sessionRemovalListeners.forEach(listener => listener(deviceId, sessionId));
+        }
       }
       // Separate host-owned lists can include children never opened in this mirror.
       // Terminal changes invalidate those lists just as unseen creations do.
@@ -3674,19 +3697,10 @@ export const remoteSessionStore = {
     let shouldReseedAfterPatch = false;
     const turnEnded = historyTurnEnded(shard.sessions[idx], patch);
     if (patch.status === 'deleted' || patch.status === 'archived') {
-      protectedQuestions.delete(sessionId);
-      visibleInteractionCache.delete(sessionId);
-      void clearHistoryDisk(deviceId, sessionId);
-      clearRemoteHistoryViews(deviceId, sessionId);
       shard.sessions = shard.sessions.filter((s) => s.id !== sessionId);
-      deleteSessionLiveActivity(sessionId);
-      dropPendingTitlePreview(sessionId);
-      let messageStateChanged = invalidateSessionMessageWindowState(sessionId, false);
-      messageStateChanged = releaseSessionDetailProjections(sessionId) || messageStateChanged;
-      sessionMessageLifecycle.forget(sessionId);
-      sessionsOpenedInDetail.delete(sessionId);
-      if (patch.status === 'deleted') clearSessionMessageCache(sessionId, deviceId);
-      if (messageStateChanged) bumpMessageVersion(sessionId);
+      if (!options?.deferRemovalCleanup) {
+        cleanupRemovedSession(deviceId, sessionId, patch.status === 'deleted');
+      }
     } else {
       const wasPinned = shard.sessions[idx].pinnedAt != null;
       const unpinned = Object.prototype.hasOwnProperty.call(patch, 'pinnedAt') && patch.pinnedAt == null;
@@ -3714,7 +3728,7 @@ export const remoteSessionStore = {
       shouldReseedAfterPatch = wasPinned && unpinned;
     }
     recomputeSessions();
-    if (patch.status === 'deleted' || patch.status === 'archived') {
+    if ((patch.status === 'deleted' || patch.status === 'archived') && !options?.deferRemovalCleanup) {
       sessionRemovalListeners.forEach(listener => listener(deviceId, sessionId));
     }
     if (turnEnded && patch.status !== 'deleted' && patch.status !== 'archived') {

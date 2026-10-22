@@ -39,7 +39,7 @@ function fixture() {
     currentSession: session, deviceId: 'rpc', sessionId: session.id,
     resolveSessionWriteDevices: () => ({ rpcDeviceId: 'rpc', shardId: 'shard' }),
     sessionMetaWriteGuard: { begin: () => ({ isLatest }) },
-    sessionMetaWriteQueue: { enqueue: () => pending },
+    sessionMetaWriteQueue: { enqueue: vi.fn(() => pending) },
     sessionPendingWrites: { track: () => release },
     remoteSessionStore: store, isExplicitRemoteNotFoundError, pickWriteFields, writeGuardFields,
     goBackToHome: vi.fn(), Alert: { alert: vi.fn() }, humanizeRemoteError: String,
@@ -52,6 +52,30 @@ const gone = () => new Error('[NOT_FOUND] Session does not exist');
 const tick = () => new Promise((done) => setTimeout(done, 0));
 
 describe('orphan task status actions', () => {
+  // Unit regression: archive must leave the list while its remote schedule
+  // lookup is pending, without committing before confirmation. Existing cases
+  // exercised only the RPC result, not the pre-write wait/cancel boundary.
+  it.each(['cancel', 'superseded', 'fail'] as const)('optimistic archive handles preflight %s', async (outcome) => {
+    const f = fixture();
+    let finish!: (confirmed: boolean) => void;
+    let fail!: (error: Error) => void;
+    const preparation = new Promise<boolean>((resolve, reject) => { finish = resolve; fail = reject; });
+    const patch = callback('src/session/useSessionListActions.ts', 'patchSession', f.bindings);
+    const request = patch(session, { status: 'archived' }, () => preparation);
+    expect(f.store.applySessionPatch).toHaveBeenCalledWith('shard', 's1', { status: 'archived' }, { deferRemovalCleanup: true });
+    expect(f.bindings.sessionMetaWriteQueue.enqueue).not.toHaveBeenCalled();
+    if (outcome === 'superseded') f.isLatest.mockReturnValue(false);
+    if (outcome === 'fail') {
+      fail(new Error('preflight failed'));
+      await expect(request).rejects.toThrow('preflight failed');
+    } else {
+      finish(outcome !== 'cancel');
+      await request;
+    }
+    expect(f.bindings.sessionMetaWriteQueue.enqueue).not.toHaveBeenCalled();
+    expect(f.store.upsertDeviceSession).toHaveBeenCalledTimes(outcome === 'superseded' ? 0 : 1);
+    expect(f.release).toHaveBeenCalled();
+  });
   it.each(['archived', 'deleted', 'active'])('list status %s retires the mirror without rollback', async (status) => {
     const f = fixture();
     const patch = callback('src/session/useSessionListActions.ts', 'patchSession', f.bindings);

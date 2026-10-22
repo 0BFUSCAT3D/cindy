@@ -40,7 +40,11 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
     archiveBlockedByRunning,
     viewedSessionIdRef: { current: 'other' }, viewedSessionId: 'other',
     resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
-    runSessionAction, setConfirm, CONFIRM_INITIAL: { open: false },
+    runSessionAction: async (id: string, action: string, options: { prepareArchive?: (isCurrent: () => boolean) => Promise<boolean> }) => {
+      if (options.prepareArchive && !(await options.prepareArchive(() => true))) return;
+      const { prepareArchive: _, ...confirmedOptions } = options;
+      runSessionAction(id, action, confirmedOptions);
+    }, setConfirm, CONFIRM_INITIAL: { open: false },
   };
   const closeOwnedSharedTask = callback('closeOwnedSharedTask', bindings);
   return {
@@ -137,7 +141,7 @@ describe('archive preserves the current task until preflight and confirmation fi
     // Both the previous optimistic entry and the actual archive change selection.
     const leaveTask = () => { selectedTask = null; rowVisible = false; };
     const beginRemoteArchive = vi.fn(leaveTask);
-    const runSessionAction = vi.fn(leaveTask);
+    const runSessionAction = vi.fn((..._args: unknown[]) => leaveTask());
     const setConfirm = vi.fn();
     const confirmDialog = vi.fn(() => decision.promise);
     const resolvePreflight = vi.fn(() => preflight.promise);
@@ -153,7 +157,15 @@ describe('archive preserves the current task until preflight and confirmation fi
       archiveConfirmDescription: () => 'description',
       viewedSessionIdRef: { current: 'task' }, viewedSessionId: 'task',
       resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
-      runSessionAction, setConfirm, CONFIRM_INITIAL: { open: false },
+      runSessionAction: async (id: string, action: string, options: { prepareArchive?: (isCurrent: () => boolean) => Promise<boolean> }) => {
+        rowVisible = false;
+        if (options.prepareArchive && !(await options.prepareArchive(() => true))) {
+          rowVisible = true;
+          return;
+        }
+        const { prepareArchive: _, ...confirmedOptions } = options;
+        runSessionAction(id, action, confirmedOptions);
+      }, setConfirm, CONFIRM_INITIAL: { open: false },
       beginRemoteArchive, cancelRemoteArchive: vi.fn(),
       closeOwnedSharedTask: async () => true,
       archiveBlockedByRunning: () => false,
@@ -186,7 +198,7 @@ describe('archive preserves the current task until preflight and confirmation fi
       await vi.waitFor(() => {
         expect(h.resolvePreflight).toHaveBeenCalledWith('task', 'device-1');
         expect(h.selected()).toBe('task');
-        expect(h.visible()).toBe(true);
+        expect(h.visible()).toBe(false);
         expect(h.beginRemoteArchive).not.toHaveBeenCalled();
         expect(h.runSessionAction).not.toHaveBeenCalled();
       });
@@ -196,7 +208,6 @@ describe('archive preserves the current task until preflight and confirmation fi
           expect(entry.name === 'sidebar' ? h.setConfirm : h.confirmDialog).toHaveBeenCalled();
         });
         expect(h.selected()).toBe('task');
-        expect(h.visible()).toBe(true);
         expect(h.runSessionAction).not.toHaveBeenCalled();
         await h.finish(false);
       }

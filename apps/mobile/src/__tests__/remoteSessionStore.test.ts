@@ -41,6 +41,29 @@ function message(id: string, sessionId: string): RemoteMessage {
   };
 }
 
+// Unit regression: preflight now runs after optimistic removal. Cancellation
+// must retain conversation content; successful removal must still release it.
+it('keeps messages through archive preflight cancellation and cleans up after success', () => {
+  remoteSessionStore.clear();
+  const row = session('s1');
+  remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [row]);
+  remoteSessionStore.setMessages('s1', [message('m1', 's1')]);
+  const removed = vi.fn();
+  const off = remoteSessionStore.onSessionRemoved(removed);
+  try {
+    remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' }, { deferRemovalCleanup: true });
+    expect(remoteSessionStore.getSessions()).toEqual([]);
+    expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
+    expect(removed).not.toHaveBeenCalled();
+    remoteSessionStore.upsertDeviceSession('dev-1', 'Computer', row);
+    expect(remoteSessionStore.getMessages('s1')[0].content).toBe('hello');
+    remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' }, { deferRemovalCleanup: true });
+    remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' });
+    expect(remoteSessionStore.getMessages('s1')).toEqual([]);
+    expect(removed).toHaveBeenCalledExactlyOnceWith('dev-1', 's1');
+  } finally { off(); remoteSessionStore.clear(); }
+});
+
 // Unit: side-chat details are omitted by the Host list. A list refresh must
 // retain opened details without leaking them into Home, and deletion must still
 // remove them. Existing tests only cover ordinary listed task reconciliation.

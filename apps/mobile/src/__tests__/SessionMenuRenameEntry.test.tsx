@@ -95,8 +95,12 @@ vi.mock("@/components/MobilePrimitives", async () => {
         createElement("button", { key: action.testID, "data-testid": action.testID, onClick: action.onPress }))),
   };
 });
+const sheetLifecycle = vi.hoisted(() => ({ closed: undefined as (() => void) | undefined }));
 vi.mock("@/session/SheetModal", () => ({
-  SheetModal: ({ children }: { children: ReactNode }) => children,
+  SheetModal: ({ children, onClosed }: { children: ReactNode; onClosed?: () => void }) => {
+    sheetLifecycle.closed = onClosed;
+    return children;
+  },
 }));
 vi.mock("@/session/SheetSurface", () => ({
   SheetSurface: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => <>{children}{footer}</>,
@@ -147,6 +151,28 @@ it("opening at rename goes straight to the editor and cancel closes the sheet", 
     await click("session.renameCancelButton");
     expect(props.onClose).toHaveBeenCalledOnce();
     expect(props.onRename).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+// Unit: a slow archive preflight used to hold the menu open. The actual menu
+// must close immediately, but wait for native dismissal before opening an Alert.
+it.each([true, false])("archive closes the menu before a delayed decision (%s)", async (confirmed) => {
+  let decide!: (ok: boolean) => void;
+  const decision = new Promise<boolean>((resolve) => { decide = resolve; });
+  const props = baseProps({ initialView: "menu", onArchive: vi.fn(), confirmArchive: vi.fn(() => decision),
+    session: { id: "a", title: "Task", status: "active" } as SessionMenuSheetProps['session'] });
+  const { root, click } = await renderSheet(props);
+  try {
+    await click("session.archiveButton");
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(props.confirmArchive).not.toHaveBeenCalled();
+    await act(async () => sheetLifecycle.closed?.());
+    expect(props.confirmArchive).toHaveBeenCalledOnce();
+    expect(props.onArchive).not.toHaveBeenCalled();
+    await act(async () => { decide(confirmed); });
+    expect(props.onArchive).toHaveBeenCalledTimes(confirmed ? 1 : 0);
   } finally {
     await act(async () => root.unmount());
   }
