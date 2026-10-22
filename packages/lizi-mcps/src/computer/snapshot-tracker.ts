@@ -42,6 +42,13 @@ interface SnapshotMeta {
   elements?: Map<string, number>;
   /** Screen frames by element_index, to ask the OS what an action would land on. */
   frames?: Map<number, ElementFrame>;
+  scope?: WindowObservationScope;
+}
+
+export interface WindowObservationScope {
+  query?: string;
+  max_elements?: number;
+  max_depth?: number;
 }
 
 /** 保留的窗口数与历史快照数上限(FIFO 淘汰)。 */
@@ -66,7 +73,7 @@ export class WindowSnapshotTracker {
   }
 
   /** get_window_state 成功后调用:登记新一代快照并返回其 id。 */
-  record(sessionId: string | undefined, pid: number, windowId: number): string {
+  record(sessionId: string | undefined, pid: number, windowId: number, scope?: WindowObservationScope): string {
     const sessionKey = sessionId ?? '';
     const windowKey = this.windowKey(sessionKey, pid, windowId);
     if (!this.latestByWindow.has(windowKey) && this.latestByWindow.size >= MAX_TRACKED_WINDOWS) {
@@ -84,8 +91,14 @@ export class WindowSnapshotTracker {
     this.seq += 1;
     const id = `ws-${this.seq.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.latestByWindow.set(windowKey, id);
-    this.metaById.set(id, { windowKey, sessionKey, pid, windowId });
+    this.metaById.set(id, { windowKey, sessionKey, pid, windowId, scope });
     return id;
+  }
+
+  /** Only the latest successful explicit read supplies a follow-up's traversal scope. */
+  observationScope(sessionId: string | undefined, pid: number, windowId: number): WindowObservationScope | undefined {
+    const id = this.latestByWindow.get(this.windowKey(sessionId ?? '', pid, windowId));
+    return id ? this.metaById.get(id)?.scope : undefined;
   }
 
   /** A failed observation invalidates earlier IDs and aliases without issuing a usable ID. */
