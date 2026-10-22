@@ -219,7 +219,7 @@ vi.mock("../rpc-client.js", () => {
   };
 });
 
-import { PiAgent } from "../index.js";
+import { PiAgent, pickSupportedEffort } from "../index.js";
 import { PiRpcRequestTimeoutError } from "../rpc-client.js";
 import {
   PiNativeProviderProxyNotReadyError,
@@ -4786,6 +4786,66 @@ describe("Pi provider-aware model routing", () => {
         .slice(beforeSwitch)
         .some((request) => request.type === "set_thinking_level"),
     ).toBe(false);
+    await handle.close();
+  });
+
+  it("picks a tier the current model supports when re-enabling thinking", () => {
+    // 用户先在 high 关闭思考、再不带到档位切到不支持 high 的模型：记忆档位仍是 high，
+    // 重新开启时直接下发会被拒（开启失败）或与当前能力对不上。
+    expect(pickSupportedEffort(["low", "medium"], "high", "low")).toBe("low");
+    // 记忆档位本身受支持时优先用它（不要把用户选的档位降掉）。
+    expect(pickSupportedEffort(["low", "high"], "high", "low")).toBe("high");
+    // 快照未声明档位（undefined）时保持旧行为：用记忆档位。
+    expect(pickSupportedEffort(undefined, "high", "low")).toBe("high");
+    // 全都不支持时不猜档位，由调用方回落到历史默认。
+    expect(pickSupportedEffort(["low"], "high", null)).toBeNull();
+  });
+
+  it("applies an explicit thinking intent on a same-route setModel", async () => {
+    // 同路由早返回原来直接 return：会话当前关思考、调用方重选同一模型并传
+    // thinkingEnabled:true 时，请求"成功"但 Pi 仍关闭，发送结算还会清掉这份选择。
+    const denseMap = {
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    } as const;
+    const agent = new PiAgent(
+      byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-a",
+              name: "Native A",
+              baseUrl: "http://a.test",
+              api: "openai-responses",
+              models: [{ id: "model-a", reasoning: true, thinkingLevelMap: { ...denseMap } }],
+            },
+          ],
+          env: {},
+        }),
+        [{ id: "model-a", displayName: "A", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" }],
+      ),
+    );
+    const handle = await agent.startSession({
+      sessionId: "same-route-thinking-intent",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "native-a",
+      effort: "high",
+    });
+    await handle.setThinkingEnabled!(false);
+    const beforeSwitch = captured.requests.length;
+
+    await handle.setModel!("model-a", { providerId: "native-a", thinkingEnabled: true });
+
+    const levels = captured.requests
+      .slice(beforeSwitch)
+      .filter((request) => request.type === "set_thinking_level")
+      .map((request) => String(request.level));
+    expect(levels).toContain("high");
     await handle.close();
   });
 

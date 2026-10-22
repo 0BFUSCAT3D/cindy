@@ -891,6 +891,23 @@ function piMaxTokensFallback(contextWindow: number | undefined): number {
   return contextWindow && contextWindow > 0 ? Math.min(contextWindow, 65_536) : 65_536;
 }
 
+/**
+ * 从候选档位里挑第一个**当前模型支持**的；快照未声明（undefined）时按旧行为接受。
+ *
+ * 重新开启思考时不能直接用记忆档位：用户先在 `high` 关闭、再不带到档位切到不支持
+ * `high` 的模型后，记忆值仍会下发成不被支持的档，开启失败或继续对不上。
+ */
+export function pickSupportedEffort(
+  snapshot: readonly Effort[] | undefined,
+  ...candidates: readonly (Effort | null | undefined)[]
+): Effort | null {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (snapshot === undefined || snapshot.includes(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** 从本次启动写入 models.json 的 native model 快照提取可用 effort。 */
 function startupEffortsOfNativeModel(model: PiNativeModelSpec | undefined): readonly Effort[] | undefined {
   if (!model) return undefined;
@@ -7025,6 +7042,36 @@ export class PiAgent extends BaseAgent {
       pendingCurrentDescriptorRefresh = true;
       if (nextGateway) retainedLiveGatewayModel = nextDescriptor ?? previousGatewayModel;
     };
+    /**
+     * 应用思考开关（调用方必须已在 `runExclusivePiRpc` 队列内）。
+     *
+     * 打开时回到会话期望档位，但只限**当前模型支持的档**：用户先在 `high` 关闭思考、
+     * 再不带档位切到不支持 `high` 的模型时 `mutableEffort` 仍是 `high`，直接下发会被
+     * Pi 拒绕（开启失败）或与当前能力对不上。
+     */
+    const applyThinkingEnabled = async (enabled: boolean): Promise<void> => {
+      const remembered = pickSupportedEffort(activeEffortSnapshot, mutableEffort, startupEffort);
+      // 打开时回到会话当前的期望档位，而不是固定 xhigh：显式开关不该把用户选好的
+      // max/medium 抹平——否则紧随其后的切模按 mutableEffort 归一化时又会把它降档。
+      // 没有可用期望档位时才回到历史默认 xhigh。
+      const targetEffort = enabled ? remembered : null;
+      const level = targetEffort
+        ? effortToPiThinkingLevel(targetEffort)
+        : enabled
+          ? 'xhigh'
+          : 'off';
+      const resp = await proc.request({
+        type: 'set_thinking_level',
+        level,
+      });
+      if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
+      // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
+      // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
+      thinkingExplicitlyOff = !enabled;
+      // 只在打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
+      // 再打开应回到原档位，而不是回落到启动时的档位。
+      if (enabled) mutableEffort = targetEffort ?? 'xhigh';
+    };
     const switchModel = async (
       model: string,
       setOpts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean },
@@ -7097,6 +7144,12 @@ export class PiAgent extends BaseAgent {
       if (routeUnchanged && preview.action === 'hot' && !pendingCurrentDescriptorRefresh) {
         if (!(await writeSubagentRuntimeFile({ model: wireModel, provider }))) {
           deps.logger.warn('pi: same-route setModel could not refresh subagent snapshot', { model, provider });
+        }
+        // 同路由也可能带显式的思考开关（会话当前关思考、调用方重选同一模型并传
+        // thinkingEnabled:true）：这里直接返回会让调用方以为开启成功，Pi 实际仍关闭，
+        // 发送结算随后还会把这份选择清掉。
+        if (typeof setOpts?.thinkingEnabled === 'boolean') {
+          await applyThinkingEnabled(setOpts.thinkingEnabled);
         }
         return;
       }
@@ -8162,28 +8215,7 @@ export class PiAgent extends BaseAgent {
         // 切模进行中用户关闭思考时，若这里不排队直接发，切模收尾仍会按更早的
         // thinkingEnabled:true 载体重新下发开启并清掉关闭标记——用户看到关闭成功、
         // 实际被覆盖（2026-10-17 Greptile P1）。串行后意图按时间序线性化，后发者胜。
-        await runExclusivePiRpc(async () => {
-          // 打开时回到会话当前的期望档位，而不是固定 xhigh：显式开关不该把用户选好的
-          // max/medium 抹平——否则紧随其后的切模按 mutableEffort 归一化时又会把它降档。
-          // 没有期望档位时才回到历史默认 xhigh。
-          const targetEffort = enabled ? mutableEffort ?? startupEffort ?? null : null;
-          const level = targetEffort
-            ? effortToPiThinkingLevel(targetEffort)
-            : enabled
-              ? 'xhigh'
-              : 'off';
-          const resp = await proc.request({
-            type: 'set_thinking_level',
-            level,
-          });
-          if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
-          // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
-          // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
-          thinkingExplicitlyOff = !enabled;
-          // 只在打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
-          // 再打开应回到原档位，而不是回落到启动时的档位。
-          if (enabled) mutableEffort = targetEffort ?? 'xhigh';
-        });
+        await runExclusivePiRpc(() => applyThinkingEnabled(enabled));
       },
 
       async setPermissionMode(mode): Promise<void> {
