@@ -1085,6 +1085,9 @@
   },
   "agentIsland": {
     "native": {
+      "markRead": "Mark as read",
+      "archive": "Archive",
+      "actionFailed": "Could not complete the action. The notification has been kept. Try again.",
       "newConversationTitle": "New Session",
       "newConversationHint": "Start a new session",
       "muteSound": "Mute Agent Island",
