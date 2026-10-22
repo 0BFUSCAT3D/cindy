@@ -112,3 +112,16 @@ it('re-reads the profile once after the host reports a change for this teammate,
   await waitFor(() => expect(screen.getByTestId('pages').textContent).toBe('Renamed on the other computer'));
   expect(reads()).toBe(2);
 });
+
+it('keeps the open pages (and what is typed in them) across a disconnect and reconnect', async () => {
+  const view = renderSettings(<RemoteTeammateSettings bot={bot} {...props} />);
+  const before = await screen.findByTestId('pages');
+  view.rerender(<MemoryRouter><RemoteTeammateSettings bot={{ ...bot, online: false }} {...props} /></MemoryRouter>);
+  expect(screen.getByRole('status').textContent).toBe('bots.remote.offlineDescription');
+  expect(screen.getByTestId('pages')).toBe(before);
+  h.caps.mockClear();
+  view.rerender(<MemoryRouter><RemoteTeammateSettings bot={bot} {...props} /></MemoryRouter>);
+  await waitFor(() => expect(h.caps).toHaveBeenCalledTimes(1));
+  // The host answered the same operation set again: the pages are the same mounted pages.
+  expect(screen.getByTestId('pages')).toBe(before);
+});

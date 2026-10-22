@@ -59,10 +59,20 @@ function RemoteTeammateSettingsContent(props: Props) {
       try {
         if (!(await hostDeclaresBotSettings(bot.deviceId))) return !cancelled && setSupport({ state: 'unsupported' });
         const caps = await readBotSettingsCaps(bot.deviceId);
-        if (!cancelled) setSupport({ state: 'ready', ops: new Set(caps.ops) });
+        // Reconnecting re-probes; an unchanged answer keeps the open pages (and their drafts) as they are.
+        if (!cancelled)
+          setSupport((previous) =>
+            previous.state === 'ready' && previous.ops.size === caps.ops.length && caps.ops.every((op) => previous.ops.has(op))
+              ? previous
+              : { state: 'ready', ops: new Set(caps.ops) });
       } catch (error) {
         // An older host rejects the unknown action; anything else is a failed read the person can retry.
-        if (!cancelled) setSupport(extractIpcError(error)?.code === 'UNSUPPORTED_CAPABILITY' ? { state: 'unsupported' } : { state: 'failed' });
+        // Pages that are already open are never taken away by a failed re-probe.
+        if (!cancelled)
+          setSupport((previous) =>
+            previous.state === 'ready'
+              ? previous
+              : extractIpcError(error)?.code === 'UNSUPPORTED_CAPABILITY' ? { state: 'unsupported' } : { state: 'failed' });
       }
     })();
     return () => {
@@ -96,7 +106,9 @@ function RemoteSettingsPages({ bot, ops, initialPage: requestedPage = 'home', be
   online.current = bot.online;
   const handle = useMemo<RemoteBotSettingsHandle>(
     () => createRemoteBotSettingsTarget({ deviceId: bot.deviceId, deviceName: bot.deviceName, botId: bot.id, ops, online: () => online.current }),
-    [bot.deviceId, bot.deviceName, bot.id, ops],
+    // The computer's display name is not identity: renaming it must not reload the open pages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bot.deviceId, bot.id, ops],
   );
   const profile = useSyncExternalStore(handle.profiles.subscribe, handle.profiles.get);
   // A page this computer cannot serve falls back to the settings home.
@@ -104,7 +116,8 @@ function RemoteSettingsPages({ bot, ops, initialPage: requestedPage = 'home', be
   const [status, setStatus] = useState<'loading' | 'ready' | 'failed' | 'gone'>('loading');
   const load = useCallback(() => {
     setStatus('loading');
-    void handle.profiles.load().then(
+    // A profile already on screen is re-read (and yields to a write in flight), never replaced blindly.
+    void (handle.profiles.get() ? handle.profiles.refresh() : handle.profiles.load()).then(
       () => setStatus('ready'),
       (error) => setStatus(extractIpcError(error)?.code === 'NOT_FOUND' ? 'gone' : 'failed'),
     );
