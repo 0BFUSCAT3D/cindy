@@ -100,10 +100,10 @@ export const REMOTE_AGENT_HOST_UNREAD_BYTES = 64 * 1024 * 1024;
 /** 运行中的任务超过这么久没有被读取，视为控制端已离开。 */
 export const REMOTE_AGENT_HOST_IDLE_MS = 3 * 60_000;
 /**
- * 控制端在 poll 里报「这边还有工作在进行」(hold)后，本机多久内仍按有活动算。只给中转用：组所在电脑据此
- * 在拉取组内电脑时接着报 hold；控制端每次 poll 最长挂起 10 秒，任务很多时按批轮转，留足余量。
+ * 控制端在 poll 里报「这边还有工作在进行」(hold)后，在控制端存活窗口内按忙处理；后续 poll 不带 hold 就解除。
+ * 组所在电脑据此在拉取组内电脑时接着报 hold。大量任务按批轮转可能超过最短的 1 分钟闲置设置。
  */
-const REMOTE_HOLD_FRESH_MS = 60_000;
+const REMOTE_HOLD_FRESH_MS = REMOTE_AGENT_HOST_IDLE_MS;
 /** 结束后保留一段时间供控制端读完收尾事件。 */
 export const REMOTE_AGENT_HOST_RETAIN_MS = 60_000;
 /** 「需要换一台」凭证多久内有效(受邀者那边交接通常几秒内完成，重开时带回)。 */
@@ -829,6 +829,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
    * 还没启动好，或 Agent 那边还有放不下的事(中转任务按组内电脑报来的状态)。
    */
   function busyForReclaim(run: Run): boolean {
+    if (run.heldAt !== undefined && now() - run.heldAt < REMOTE_HOLD_FRESH_MS) return true;
     if (run.pending.size > 0 || run.rewindPending) return true;
     for (const status of run.calls.values()) if (status === 'running') return true;
     if (run.relay) return !run.relay.started || activityBusy(run.relay.activity);
@@ -2086,6 +2087,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         run.lastReadAt = t;
         // 控制端那边还有这个任务的工作在进行：按有活动算，不按闲置收回。
         if (hold) run.activeAt = run.heldAt = t;
+        else run.heldAt = undefined;
       }
     };
     const live = () => wanted.flatMap(({ runId, cursor }) => {

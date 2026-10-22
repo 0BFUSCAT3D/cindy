@@ -275,6 +275,26 @@ describe('idle reclaim by the provider', () => {
     } finally { host.dispose(); }
   });
 
+  // 1000 个任务按批轮询时，同一任务可能超过 1 分钟才再次被拉取。hold 必须在控制端存活窗口内持续保护，
+  // 后续 poll 明确不带 hold 时解除，不能把仍在本机执行的进程误当闲置收回。
+  it('keeps a held run between poll batches and starts its idle period after the hold is cleared', async () => {
+    const { host, pass, rows } = await openBusy(1, { turn: false, background: 0, wake: 0 });
+    try {
+      await pass(0, true);
+      clock += 70_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      expect(host.runCount()).toBe(1);
+      await pass(0);
+      await pass(50_000);
+      expect(host.runCount()).toBe(1);
+      await pass(20_000);
+      await pass(0);
+      expect(host.runCount()).toBe(0);
+      expect(rows.at(-1)).toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
+    } finally { host.dispose(); }
+  });
+
   it('never reclaims with 0 minutes and declares the setting in caps', async () => {
     const { host, pass } = await openBusy(0, { turn: false, background: 0, wake: 0 });
     try {
