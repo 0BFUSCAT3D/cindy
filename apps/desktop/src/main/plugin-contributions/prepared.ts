@@ -20,6 +20,7 @@ import { getAuthState, getActiveAuthRealm } from '../authManager.js';
 import { getGhostManager } from '../cindy-brain/index.js';
 import { snapshotInstalledGhostPackage } from '../cindy-brain/exportGhostPackage.js';
 import { PluginMarketLedger } from '../plugin-market/ledger.js';
+import { onQuit } from '../lifecycle.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 
 export function contributionAccountKey(): string {
@@ -242,3 +243,7 @@ export async function releasePreparedContribution(preparedId: string): Promise<v
   entries.delete(preparedId);
   await fs.rm(entry.directory, { recursive: true, force: true }).catch(() => undefined);
 }
+
+onQuit('plugin-contribution-previews', async () => {
+  await Promise.all([...entries.keys()].map(releasePreparedContribution));
+}, 'async');

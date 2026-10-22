@@ -11,10 +11,14 @@ const harness = vi.hoisted(() => ({
   generation: 1,
   ghosts: [] as InstalledGhost[],
   ledger: null as { scope: string; organizationId: string | null; source?: string; installed?: boolean } | null,
+  quit: null as (() => void | Promise<void>) | null,
   snapshot: vi.fn(),
   inspect: vi.fn(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => harness.root } }));
+vi.mock('../../lifecycle', () => ({
+  onQuit: (_name: string, callback: () => void | Promise<void>) => { harness.quit = callback; },
+}));
 vi.mock('../../appSessionState', () => ({
   activeOwnerScopeKey: () => `owner:${harness.generation}`,
   getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: 'owner' }),
@@ -162,6 +166,20 @@ it('gives concurrent preview callers independent ownership', async () => {
   expect(first.preparedId).not.toBe(second.preparedId);
   await prepared.releasePreparedContribution(first.preparedId);
   expect(prepared.getPreparedContribution(second.preparedId).summary).toEqual(second);
+});
+
+// unit：真实 prepare 生成文件后执行宿主退出回调；原 TTL 用例漏掉正常退出前不触发定时器的场景。
+// 最小输入：一个预览和一个已接管快照；退出后两份包与内存条目均应释放。
+it('releases both preview and operation-owned package bytes on normal quit', async () => {
+  const first = await prepared.prepareInstalledContribution('hello');
+  const second = await prepared.prepareInstalledContribution('hello');
+  const entry = prepared.getPreparedContribution(second.preparedId);
+  entry.pinned = true;
+  expect(harness.quit).toBeTypeOf('function');
+  await harness.quit!();
+  expect(() => prepared.getPreparedContribution(first.preparedId)).toThrow('PRECONDITION_FAILED');
+  expect(() => prepared.getPreparedContribution(second.preparedId)).toThrow('PRECONDITION_FAILED');
+  expect(await fsp.readdir(harness.root)).toEqual([]);
 });
 
 it('keeps operation-owned packages without consuming the eight preview slots', async () => {

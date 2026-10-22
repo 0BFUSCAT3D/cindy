@@ -16,21 +16,20 @@ const installed: InstalledGhost = {
 };
 
 describe('local publishing availability shared by details and selection', () => {
-  it('explains the GitHub requirement for verified official public plugins even with submission permission', () => {
+  it('explains the GitHub requirement for verified official public plugins', () => {
     const market = { scope: 'public' as const, organizationId: null, sourceType: 'server' as const, publisherKind: 'official' as const };
-    expect(localPublishingUnavailableKey(installed, market, true)).toBe('officialGithubRequired');
+    expect(localPublishingUnavailableKey(installed, market)).toBe('officialGithubRequired');
     const trusted: InstalledGhost = { ...installed, publishingSource: { kind: 'public-market', pluginId: 'official-id' },
       trust: { level: 'cindy-official', publisherSigned: true, publisherVerified: true, reviewed: true } };
-    expect(localPublishingUnavailableKey(trusted, null, true)).toBe('officialGithubRequired');
-    expect(localPublishingUnavailableKey(installed, { ...market, sourceType: 'local-market' }, true)).toBeNull();
-    expect(localPublishingUnavailableKey({ ...installed, manifest: { ...installed.manifest, author: 'Cindy' } }, { ...market, publisherKind: 'personal' }, true)).toBeNull();
+    expect(localPublishingUnavailableKey(trusted, null)).toBe('officialGithubRequired');
+    expect(localPublishingUnavailableKey(installed, { ...market, sourceType: 'local-market' })).toBeNull();
+    expect(localPublishingUnavailableKey({ ...installed, manifest: { ...installed.manifest, author: 'Cindy' } }, { ...market, publisherKind: 'personal' })).toBeNull();
   });
-  it('separates approved use from current exact publishing permission', () => {
+  it('keeps UI publishing unavailable for downloaded or unverified sources', () => {
     expect(localPublishingUnavailableKey({ ...installed, publishingSource: undefined })).toBe('sourceUnverified');
     const downloaded: InstalledGhost = { ...installed, publishingSource: { kind: 'public-market', pluginId: 'public-id' } };
     expect(localPublishingUnavailableKey(downloaded)).toBe('publishingPermissionRequired');
-    expect(localPublishingUnavailableKey(downloaded, null, true)).toBeNull();
-    expect(localPublishingUnavailableKey({ ...downloaded, publishingSource: { kind: 'unavailable' } }, null, true)).toBe('sourceUnverified');
+    expect(localPublishingUnavailableKey({ ...downloaded, publishingSource: { kind: 'unavailable' } })).toBe('sourceUnverified');
   });
   it.each([
     { ghost: null, reason: 'installationUnavailable' },

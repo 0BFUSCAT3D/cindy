@@ -1001,6 +1001,8 @@ describe('plugin use details and independent author management', () => {
       expect(screen.queryByRole('button', { name: `${prefix}.publish` })).toBeNull();
       expect(api.prepare).not.toHaveBeenCalled();
       expect(api.submit).not.toHaveBeenCalled();
+      // 普通下载详情无需扫描本人投稿权限，公开安装也不能开启 UI 提审。
+      expect(api.list).not.toHaveBeenCalled();
     });
   it.each(['author-list', 'installed', 'installed-market', 'market'] as const)('keeps use and version management separate when entering from %s', async entry => {
     auth.mode = 'cloud';

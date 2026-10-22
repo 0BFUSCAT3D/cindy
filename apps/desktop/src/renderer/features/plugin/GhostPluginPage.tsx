@@ -6,7 +6,6 @@ import { useSignInToCindy } from '@/hooks/useSignInToCindy';
 import { rememberContributionIntent, consumeContributionIntent, matchesContributionIntent } from './lib/contributionIntent';
 import { MyPluginsPage, contributionErrorKey, type MyPluginsPageCache, type PluginSubmitOptions } from './MyPluginsPage';
 import { localPublishingUnavailableKey } from './lib/ghostPluginDetailModel';
-import { usePublishingInstallations } from './lib/usePublishingInstallations';
 import type { MyPluginView } from '../../../shared/pluginContributions';
 import { featureRetirementById } from '../../../shared/featureRetirements';
 import { RetiredFeatureDetail } from './RetiredFeatureDetail';
@@ -541,9 +540,6 @@ function LocalGhostPluginPage({
   const showEnterprise = user?.membershipKind === 'org';
   const personalContributor = mode === 'cloud' && user?.membershipKind === 'personal';
   const ghosts = useInstalledGhosts();
-  const publishingInstallations = usePublishingInstallations(contributionOwner, personalContributor, ghosts);
-  const canSubmitMarketInstallation = (ghost: InstalledGhost) => publishingInstallations.some(plugin =>
-    plugin.localInstanceId === installedGhostStoragePart(ghost) && plugin.actions.submitUpdate);
   useMainViewVisibilityRevision();
   const installedGhostMarketKey = useMemo(
     () => installedGhostMarketKeyFor(ghosts),
@@ -821,10 +817,10 @@ function LocalGhostPluginPage({
   const publishableInstalledItems = useMemo(() => {
     const eligible = new Set(ghosts.filter((ghost) =>
       ghost.publishingSource?.kind === 'local' &&
-      !localPublishingUnavailableKey(ghost, marketItemForInstalledGhost(marketItems, ghost), canSubmitMarketInstallation(ghost)),
+      !localPublishingUnavailableKey(ghost, marketItemForInstalledGhost(marketItems, ghost)),
     ).map(installedGhostStoragePart));
     return allInstalledItems.filter((item) => eligible.has(item.id));
-  }, [ghosts, marketItems, allInstalledItems, publishingInstallations]);
+  }, [ghosts, marketItems, allInstalledItems]);
   const searchedInstalledItems = useMemo(
     () => filterGhostPluginItems(installedItems, query),
     [installedItems, query],
@@ -1694,8 +1690,7 @@ function LocalGhostPluginPage({
   }, [searchParams, setSearchParams]);
   const localContributionKey = JSON.stringify([contributionOwner, selectedDetail?.id, selectedGhost?.dir, selectedGhost?.manifest.version, ghostInstallApprovalToken(selectedGhost?.approval), selectedGhost?.publishingSource, publicationRefresh]);
   const localContributionResult = localContribution?.key === localContributionKey ? localContribution : null;
-  const contributionUnavailableKey = localPublishingUnavailableKey(selectedGhost, selectedMarketInstall,
-    Boolean(selectedGhost && canSubmitMarketInstallation(selectedGhost)));
+  const contributionUnavailableKey = localPublishingUnavailableKey(selectedGhost, selectedMarketInstall);
   // Ordinary downloads have use/configuration details only. Unknown provenance
   // also cannot become a first publication merely because no market card exists.
   const showLocalPublishing = selectedGhost?.publishingSource?.kind === 'local';

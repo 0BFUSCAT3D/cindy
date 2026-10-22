@@ -7,11 +7,10 @@
 import { isUserInstallReservedGhostId, type InstalledGhost } from '../../../../shared/ghost';
 import type { PluginMarketItem } from '../../../../shared/pluginMarket';
 
-/** Host provenance is not authorship. Market updates additionally need current exact submit ACL. */
+/** UI submissions use local installations; Host and server verify actual publishing permission. */
 export function localPublishingUnavailableKey(
   ghost: InstalledGhost | null | undefined,
   market?: (Pick<PluginMarketItem, 'scope' | 'organizationId'> & Partial<Pick<PluginMarketItem, 'sourceType' | 'publisherKind'>>) | null,
-  canSubmitMarket = false,
 ) {
   if (!ghost) return 'installationUnavailable';
   if (ghost.namespace === null && (
@@ -23,7 +22,7 @@ export function localPublishingUnavailableKey(
   if (ghost.namespace !== null || (market && (market.scope !== 'public' || market.organizationId !== null))) return 'privatePlugin';
   if (ghost.approval.state !== 'approved') return 'approvalRequired';
   if (!ghost.publishingSource || ghost.publishingSource.kind === 'unavailable') return 'sourceUnverified';
-  if (ghost.publishingSource.kind === 'public-market' && !canSubmitMarket) return 'publishingPermissionRequired';
+  if (ghost.publishingSource.kind === 'public-market') return 'publishingPermissionRequired';
   return null;
 }
 
