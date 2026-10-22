@@ -25,7 +25,7 @@ export default {
       data: { failed: true },
     },
     'speech-timeout': {
-      about: 'Audio timeout explains stopped read-aloud and retained text at 320 px',
+      about: 'Concise audio timeout feedback at 320 px',
       viewport: { width: 320, height: 900 },
       data: { mode: 'speechTimeout' },
     },
