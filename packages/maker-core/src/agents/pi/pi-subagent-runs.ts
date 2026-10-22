@@ -3330,8 +3330,8 @@ async function readRecoveryProcessInventory(deadline: number): Promise<string[] 
         || commands.some((command: unknown) => typeof command !== 'string' || !command.trim())) return null;
       return commands;
     }
-    const uid = process.geteuid?.();
-    if (!Number.isSafeInteger(uid)) return null;
+    if (process.geteuid === undefined) return null;
+    const uid = process.geteuid();
     // COLUMNS does not always yield to -ww when stdout is a pipe. A clipped
     // line can drop --session-id and look like the child already exited.
     const { stdout } = await execFileAsync('ps', ['-ww', '-u', String(uid), '-o', 'pid=,args='], {
