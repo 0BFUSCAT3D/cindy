@@ -98,7 +98,7 @@ export interface ModelFavoritePatch {
   agent?: ModelEngine;
   /** `null` = 清除该条深度(回落推荐档);`undefined`(不传该键)= 不改。 */
   effort?: Effort | null;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
 }
 
 interface FavoritesState {
@@ -135,6 +135,7 @@ function seqOfUid(uid: string): number | null {
   const n = Number(rest);
   return Number.isSafeInteger(n) ? n : null;
 }
+
 
 /**
  * 严格校验 + 锚点补齐。老版本 / 手改 localStorage 损坏时静默回退空表,不抛。
@@ -315,7 +316,7 @@ function configOf(item: ModelFavoriteItem): ModelFavoriteConfig {
     // 缺省字段保持缺省(effort 缺省 = 跟随推荐档,fast 缺省 = 关):补一个 undefined 键会让
     // `'effort' in config` 之类的存在性判断错位,也会把 undefined 写进 JSON 之外的比较里。
     ...(item.effort ? { effort: item.effort } : {}),
-    ...(item.fast ? { fast: true as const } : {}),
+    ...(item.fast ? { fast: item.fast } : {}),
   };
 }
 
@@ -341,7 +342,7 @@ function patchConfig(
     else delete next.effort;
   }
   if (patch.fast !== undefined) {
-    if (patch.fast === true) next.fast = true;
+    if (patch.fast === true || patch.fast === 'ultrafast') next.fast = patch.fast;
     else delete next.fast;
   }
   return next;
@@ -694,7 +695,7 @@ export function accessHostModelFavorites(ownerId: string | null, mutation?: Mode
       if (base.items.length >= 4096 && !base.items.some(item => modelConfigCopyIdentity(item) === modelConfigCopyIdentity(config))) throw new Error('Favorites limit reached');
       commitOp({kind:'add',config,preferredUid:uidOfSeq(base.uidSeq)},base);
     } else if (op.kind === 'remove') commitOp({kind:'remove',uid:op.expected.uid},base);
-    else commitOp({kind:'update',uid:op.expected.uid,patch:{agent:op.item.agent, effort:(op.item.effort as Effort | undefined) ?? null, fast:!!op.item.fast}},base);
+    else commitOp({kind:'update',uid:op.expected.uid,patch:{agent:op.item.agent, effort:(op.item.effort as Effort | undefined) ?? null, fast:op.item.fast ?? false}},base);
     return readDurable().items;
   } finally { requireDurableWrite = false; }
 }
