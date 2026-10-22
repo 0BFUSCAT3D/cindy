@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { app } from 'electron';
 import { z } from 'zod';
 import * as wire from '../../shared/pluginContributionContract.js';
@@ -23,7 +24,6 @@ import {
   type InstalledGhost,
 } from '../../shared/ghost.js';
 import {
-  findInstalledGhostByInstanceId,
   installedGhostStoragePart,
 } from '../../shared/pluginIdentity.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
@@ -38,126 +38,89 @@ import { isIpcError, isIpcErrorCode } from '../../shared/ipc-errors.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { ContributionApi } from './api.js';
 import {
+  type PreparedEntry,
   assertContributionOwner,
   assertPreparedInstallation,
   assertPreparedContent,
   contributionAccountKey,
-  contributionOwnerKey,
   getPreparedContribution,
   prepareInstalledContribution,
   releasePreparedContribution,
   readContributionInstallation,
 } from './prepared.js';
 
-const preparedSchema = z.object({
-  preparedId: z.string(),
-  instanceId: z.string(),
-  pluginId: z.string().nullable(),
-  ghostId: z.string(),
-  name: z.string(),
-  description: z.string(),
-  releaseNotes: z.string().optional(),
-  preflight: wire.contributionPreflight.optional(),
-  version: z.string(),
-  sha256: z.string(),
-  sizeBytes: z.number(),
-  expiresAt: z.string(),
-});
-const recordSchema = z.object({
-  localId: z.string(),
-  owner: z.string(),
-  accountKey: z.string(),
-  prepared: preparedSchema,
-  key: z.string(),
+// Only a commit that may have reached the server needs to survive this process.
+// Preparing a ticket and uploading bytes do not create a review submission.
+const pendingCommitSchema = z.object({
+  operationId: z.string(),
   request: wire.contributionRequest,
-  directory: z.string(),
-  approvalToken: z.string(),
-  contentSha256: z.string().optional(),
+  instanceId: z.string(),
   installationDir: z.string(),
-  phase: z.enum(['prepared', 'uploaded', 'committing', 'processing', 'terminal']),
-  stage: z.enum(['prepared', 'uploading', 'processing', 'paused', 'complete']),
-  operationId: z.string().nullable(),
-  operation: wire.contributionOperation.nullable(),
-  errorCode: z.string().nullable(),
+  approvalToken: z.string(),
+  contentSha256: z.string(),
 });
-type RecordEntry = z.infer<typeof recordSchema>;
-interface Journal {
-  owner: string;
-  file: string;
-  records: RecordEntry[];
+type PendingCommit = z.infer<typeof pendingCommitSchema>;
+interface Submission {
+  entry: PreparedEntry;
+  request: wire.ContributionRequest;
+  prepared: PreparedEntry['summary'];
+  stage: ContributionTransferView['stage'];
+  operation: wire.ContributionOperation | null;
+  errorCode: string | null;
+  controller: AbortController;
 }
-const journals = new Map<string, Journal>();
-const pending = new Map<
-  string,
-  { owner: string; controller: AbortController; task: Promise<void> }
->();
-const preparedTargets = new Map<string, { owner: string; request: wire.ContributionRequest }>();
+const submissions = new Map<string, Submission>();
 let hooked = false;
 
-function journal(owner = contributionOwnerKey()): Journal {
+function pendingCommitFile(owner: string): string {
   assertContributionOwner(owner);
-  const existing = journals.get(owner);
-  if (existing) return existing;
-  const accountKey = contributionAccountKey();
-  const file = ownerScopedUserDataPath(
-    'plugin-contributions',
-    `${crypto.createHash('sha256').update(accountKey).digest('hex').slice(0, 20)}.v1.json`,
-  );
-  let records: RecordEntry[] = [];
+  const account = crypto.createHash('sha256').update(contributionAccountKey()).digest('hex');
+  return ownerScopedUserDataPath('plugin-contributions', `pending-${account}.v1.json`);
+}
+function pendingCommits(owner: string): PendingCommit[] {
   try {
-    records = z
-      .array(recordSchema)
-      .parse(JSON.parse(fs.readFileSync(file, 'utf8')))
-      .filter((entry) => entry.accountKey === accountKey)
-      .map((entry) => ({ ...entry, owner }));
+    return z.array(pendingCommitSchema).parse(JSON.parse(fs.readFileSync(pendingCommitFile(owner), 'utf8')));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-      throwIpcError('PRECONDITION_FAILED', 'Contribution recovery journal cannot be read');
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throwIpcError('PRECONDITION_FAILED', 'Unable to read the unconfirmed submission');
   }
-  const value = { owner, file, records };
-  journals.set(owner, value);
-  if (!hooked) {
-    hooked = true;
-    const abort = () => {
-      for (const run of pending.values()) run.controller.abort();
-    };
-    onAuthStateChange(() => {
-      for (const run of pending.values()) {
-        try {
-          assertContributionOwner(run.owner);
-        } catch {
-          run.controller.abort();
-        }
-      }
-    });
-    onQuit('plugin-contributions', abort, 'sync');
-  }
+}
+function writePendingCommits(owner: string, values: PendingCommit[]): void {
+  assertWritableInstance();
+  const file = pendingCommitFile(owner);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(values), { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+function clearPendingCommit(owner: string, operationId: string): void {
+  const values = pendingCommits(owner);
+  if (values.some(item => item.operationId === operationId))
+    writePendingCommits(owner, values.filter(item => item.operationId !== operationId));
+}
+function view(value: Submission): ContributionTransferView {
+  return { localId: value.entry.summary.preparedId, prepared: value.prepared,
+    stage: value.stage, operation: value.operation, errorCode: value.errorCode };
+}
+function currentSubmission(id: string): Submission {
+  const value = submissions.get(id);
+  if (!value) throwIpcError('NOT_FOUND', 'Current submission not found');
+  assertContributionOwner(value.entry.owner);
   return value;
 }
+function terminal(operation: wire.ContributionOperation): boolean {
+  return ['succeeded', 'failed', 'expired'].includes(operation.status);
+}
+function verifyOperation(operation: wire.ContributionOperation, request: wire.ContributionRequest, operationId?: string): void {
+  const receipt = operation.receipt;
+  if ((operationId && operation.operationId !== operationId) || (receipt && (
+    receipt.uploadedPackage.sha256 !== request.sha256 || receipt.uploadedPackage.sizeBytes !== request.sizeBytes ||
+    receipt.ghostId !== request.target.ghostId || receipt.version !== request.target.version ||
+    (request.target.pluginId !== null && receipt.pluginId !== request.target.pluginId)
+  ))) throwIpcError('PRECONDITION_FAILED', 'Submission receipt does not match the package');
+}
 
-function persist(book: Journal): void {
-  assertContributionOwner(book.owner);
-  assertWritableInstance();
-  fs.mkdirSync(path.dirname(book.file), { recursive: true });
-  const temporary = `${book.file}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(book.records), { mode: 0o600 });
-  fs.renameSync(temporary, book.file);
-}
-function view(record: RecordEntry): ContributionTransferView {
-  return {
-    localId: record.localId,
-    prepared: record.prepared,
-    stage: record.stage,
-    operation: record.operation,
-    errorCode: record.errorCode,
-  };
-}
-function locate(id: string): { book: Journal; record: RecordEntry } {
-  const book = journal();
-  const record = book.records.find((entry) => entry.localId === id);
-  if (!record) throwIpcError('NOT_FOUND', 'Contribution operation not found for this account');
-  return { book, record };
-}
+
 function safeCode(error: unknown): string {
   if (isIpcError(error)) return error.code;
   if (
@@ -175,11 +138,7 @@ export function mapContributionError(error: unknown): never {
 
 function assertWritableInstance(): void {
   if (isPassiveSharedUserDataInstance())
-    throwIpcError('PRECONDITION_FAILED', 'Use the active Cindy instance for contribution recovery');
-}
-
-function running(record: RecordEntry): boolean {
-  return pending.get(record.localId)?.owner === record.owner;
+    throwIpcError('PRECONDITION_FAILED', 'Use the active Cindy instance for publishing');
 }
 
 function assertClientPublishingTarget(plugin: Pick<wire.MyPluginSummary, 'publisherKind'>): void {
@@ -235,7 +194,7 @@ export async function prepareContribution(
       source,
       target: preflight.target,
     };
-    preparedTargets.set(prepared.preparedId, { owner: api.owner, request });
+    entry.request = request;
     return prepared;
   } catch (error) {
     await releasePreparedContribution(prepared.preparedId);
@@ -245,9 +204,8 @@ export async function prepareContribution(
 
 export async function discardContribution(preparedId: string): Promise<void> {
   const entry = getPreparedContribution(preparedId);
-  // Once submitted, the durable transfer owns these bytes until its terminal cleanup.
+  // A running submission owns its bytes until the current action finishes.
   if (entry.pinned) return;
-  preparedTargets.delete(preparedId);
   await releasePreparedContribution(preparedId);
 }
 
@@ -260,339 +218,169 @@ export async function submitContribution(
   assertPreparedInstallation(entry);
   if (!entry.summary.preflight?.actions.canSubmit) {
     const blocker = entry.summary.preflight?.blockers[0];
-    const code = blocker?.code;
-    throwIpcError(
-      code && isIpcErrorCode(code) ? code : 'PRECONDITION_FAILED',
-      blocker?.message ?? 'Refresh the publishing summary before submitting',
-    );
+    throwIpcError(blocker?.code && isIpcErrorCode(blocker.code) ? blocker.code : 'PRECONDITION_FAILED',
+      blocker?.message ?? 'Refresh the publishing summary before submitting');
   }
   await assertPreparedContent(entry);
   await assertCaller?.();
   assertPreparedInstallation(entry);
-  const target = preparedTargets.get(preparedId);
-  if (!target || target.owner !== entry.owner)
-    throwIpcError('PRECONDITION_FAILED', 'Prepare this contribution again explicitly');
-  const book = journal(entry.owner);
-  const existing = book.records.find((item) => item.localId === preparedId || (
-    item.phase !== 'terminal' &&
-    item.prepared.instanceId === entry.summary.instanceId &&
-    item.installationDir === entry.installationDir && item.approvalToken === entry.approvalToken &&
-    JSON.stringify(item.request.target) === JSON.stringify(target.request.target) &&
-    item.request.source === target.request.source &&
-    (item.request.sha256 === target.request.sha256 ||
-      (Boolean(entry.contentSha256) && item.contentSha256 === entry.contentSha256))
-  ));
-  if (existing) {
-    // A normal submit of the same package reuses its pending request internally.
-    // ZIP timestamps may differ, so compare the verified content fingerprint too.
-    if (existing.localId !== preparedId) await discardContribution(preparedId);
-    assertContributionOwner(entry.owner);
-    start(book, existing, assertCaller);
-    return view(existing);
+  const request = entry.request;
+  if (!request)
+    throwIpcError('PRECONDITION_FAILED', 'Prepare this submission before submitting');
+  const active = [...submissions.values()].find(item => item.entry.owner === entry.owner &&
+    item.request.target.ghostId === request.target.ghostId && item.stage !== 'complete');
+  if (active) {
+    if (active.entry.contentSha256 !== entry.contentSha256 || active.request.target.version !== entry.summary.version ||
+      active.entry.installationDir !== entry.installationDir || active.entry.approvalToken !== entry.approvalToken ||
+      active.entry.publishingSourceKey !== entry.publishingSourceKey)
+      throwIpcError('PRECONDITION_FAILED', 'A submission for this plugin is already running');
+    if (active.entry !== entry) await discardContribution(preparedId);
+    return view(active);
   }
-  if (book.records.filter((item) => item.phase !== 'terminal').length >= 16)
-    throwIpcError('PRECONDITION_FAILED', 'Too many unfinished contributions');
-  const record: RecordEntry = {
-    localId: preparedId,
-    owner: entry.owner,
-    accountKey: contributionAccountKey(),
-    prepared: entry.summary,
-    key: entry.idempotencyKey,
-    request: target.request,
-    directory: entry.directory,
-    approvalToken: entry.approvalToken,
-    contentSha256: entry.contentSha256,
-    installationDir: entry.installationDir,
-    phase: 'prepared',
-    stage: 'prepared',
-    operationId: null,
-    operation: null,
-    errorCode: null,
-  };
-  // Persist the key and immutable request BEFORE the first remote write.
-  book.records.push(record);
-  persist(book);
+  const value: Submission = { entry, prepared: entry.summary, request,
+    stage: 'prepared', operation: null, errorCode: null, controller: new AbortController() };
   entry.pinned = true;
-  start(book, record, assertCaller);
-  return view(record);
-}
-
-function start(book: Journal, record: RecordEntry, assertCaller?: () => Promise<void>): void {
-  assertContributionOwner(record.owner);
-  assertWritableInstance();
-  if (running(record) || record.phase === 'terminal') return;
-  pending.get(record.localId)?.controller.abort();
-  record.stage = record.phase === 'prepared' ? 'prepared' : 'processing';
-  record.errorCode = null;
-  persist(book);
-  const controller = new AbortController();
-  const task = run(book, record, controller, assertCaller)
-    .catch((error) => {
-      try {
-        assertContributionOwner(record.owner);
-      } catch {
-        return;
+  submissions.set(preparedId, value);
+  if (!hooked) {
+    hooked = true;
+    onAuthStateChange(() => {
+      for (const item of submissions.values()) {
+        try { assertContributionOwner(item.entry.owner); }
+        catch { item.controller.abort(); }
       }
-      record.stage = 'paused';
-      record.errorCode = safeCode(error);
-      // A disk error remains visible in memory; never let a detached task reject.
-      try {
-        persist(book);
-      } catch {
-        record.errorCode = 'INTERNAL';
-      }
-    })
-    .finally(() => {
-      if (pending.get(record.localId)?.task === task) pending.delete(record.localId);
     });
-  pending.set(record.localId, { owner: record.owner, controller, task });
-}
-
-function isTerminal(record: RecordEntry): boolean {
-  return record.phase === 'terminal';
-}
-
-async function accept(book: Journal, record: RecordEntry, operation: wire.ContributionOperation): Promise<void> {
-  assertContributionOwner(record.owner);
-  if (record.operationId && operation.operationId !== record.operationId)
-    throwIpcError('PRECONDITION_FAILED', 'Operation identity changed');
-  if (
-    operation.receipt &&
-    (operation.receipt.uploadedPackage.sha256 !== record.request.sha256 ||
-      operation.receipt.uploadedPackage.sizeBytes !== record.request.sizeBytes ||
-      operation.receipt.ghostId !== record.request.target.ghostId ||
-      operation.receipt.version !== record.request.target.version ||
-      (record.request.target.pluginId !== null &&
-        operation.receipt.pluginId !== record.request.target.pluginId))
-  ) {
-    throwIpcError('PRECONDITION_FAILED', 'Contribution receipt does not match uploaded snapshot');
+    onQuit('plugin-contributions', () => {
+      for (const item of submissions.values()) item.controller.abort();
+    }, 'sync');
   }
-  record.operationId = operation.operationId;
-  record.operation = operation;
-  if (['succeeded', 'failed', 'expired'].includes(operation.status)) {
-    const cleanupDirectory = record.directory ? managedSnapshotDirectory(record.directory) : null;
-    record.phase = 'terminal';
-    record.stage = 'complete';
-    record.errorCode = operation.failure?.code ?? null;
-    void releasePreparedContribution(record.localId);
-    if (cleanupDirectory)
-      void fsp.rm(cleanupDirectory, { recursive: true, force: true }).catch(() => undefined);
-    record.directory = '';
-    preparedTargets.delete(record.localId);
-  } else if (operation.status !== 'awaiting_upload') {
-    record.phase = 'processing';
-    record.stage = 'processing';
-  }
-  persist(book);
-}
-
-function managedSnapshotDirectory(directory: string): string {
-  const absolute = path.resolve(directory);
-  const temp = path.resolve(app.getPath('temp'));
-  if (path.dirname(absolute) !== temp || !path.basename(absolute).startsWith('cindy-contribution-'))
-    throwIpcError('PRECONDITION_FAILED', 'Invalid contribution snapshot location');
-  try {
-    if (
-      !fs.lstatSync(absolute).isDirectory() ||
-      fs.lstatSync(absolute).isSymbolicLink() ||
-      path.dirname(fs.realpathSync(absolute)) !== fs.realpathSync(temp)
-    )
-      throwIpcError('PRECONDITION_FAILED', 'Invalid contribution snapshot directory');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  return absolute;
-}
-
-async function run(book: Journal, record: RecordEntry, controller: AbortController, assertCaller?: () => Promise<void>): Promise<void> {
-  const signal = controller.signal;
-  const api = new ContributionApi(assertCaller);
-  if (api.owner !== record.owner) throwIpcError('OWNER_CHANGED', 'Contribution account changed');
-  const assert = () => {
-    assertContributionOwner(record.owner);
-    if (signal.aborted)
-      throwIpcError('MUTATION_CANCELLED', 'Upload stopped; existing operation retained');
-  };
-  assert();
-  record.errorCode = null;
-  // Unknown commit outcomes are always queried before any further action.
-  if (record.operationId) await accept(book, record, await api.operation(record.operationId));
-  if (isTerminal(record)) return;
-  const assertInstallation = () => readContributionInstallation(record.prepared.instanceId, {
-    directory: record.installationDir, approvalToken: record.approvalToken,
+  void submit(value, assertCaller).catch(error => {
+    value.errorCode = value.controller.signal.aborted ? 'MUTATION_CANCELLED' : safeCode(error);
+  }).finally(() => {
+    value.stage = 'complete';
+    void releasePreparedContribution(preparedId);
+    // A short-lived result lets the current UI/tool finish reading its progress.
+    // Published versions and history are read from the server, never this map.
+    const timer = setTimeout(() => {
+      if (submissions.get(preparedId) === value) submissions.delete(preparedId);
+    }, 30 * 60_000);
+    timer.unref();
   });
-  let authorizedSource: string | null = null;
-  // The API invokes this after token/discovery/refresh awaits, immediately before
-  // dispatch. A stale package or a newly restricted AI task cannot pass that gap.
-  const writer = new ContributionApi(async () => {
-    await assertCaller?.();
+  return view(value);
+}
+
+async function submit(value: Submission, assertCaller?: () => Promise<void>): Promise<void> {
+  const { entry, controller } = value;
+  const api = new ContributionApi();
+  const assertCurrent = () => {
+    assertContributionOwner(entry.owner);
+    if (controller.signal.aborted) throwIpcError('MUTATION_CANCELLED', 'Submission stopped');
     assertWritableInstance();
-    assert();
-    if (!authorizedSource || JSON.stringify(assertInstallation().source) !== authorizedSource)
-      throwIpcError('PRECONDITION_FAILED', 'Publishing source changed');
-  });
+    assertPreparedInstallation(entry);
+  };
   const assertWrite = async () => {
-    assert();
-    const { source } = assertInstallation();
-    // Reading a detail/old receipt is not a current publishing grant. Check the
-    // exact target again, including recovery that already passed the PUT stage.
-    const id = source.kind === 'public-market' ? source.pluginId : record.request.target.pluginId;
-    if (id) {
-      const target = await api.detail(id);
+    assertCurrent();
+    if (value.request.target.pluginId) {
+      const target = await api.detail(value.request.target.pluginId);
       assertClientPublishingTarget(target.plugin);
-      if (!target.plugin.actions.canSubmit || target.plugin.pluginId !== record.request.target.pluginId)
+      if (!target.plugin.actions.canSubmit || target.plugin.pluginId !== value.request.target.pluginId)
         throwIpcError('PERMISSION_DENIED', 'Publishing permission or target changed');
     }
     await assertCaller?.();
-    assert();
-    if (JSON.stringify(assertInstallation().source) !== JSON.stringify(source))
-      throwIpcError('PRECONDITION_FAILED', 'Publishing source changed');
-    authorizedSource = JSON.stringify(source);
+    assertCurrent();
   };
-  if (record.phase === 'prepared') {
-    await assertWrite();
-    const response = await writer.prepare(record.request, record.key);
-    assert();
+  const writer = new ContributionApi(assertWrite);
+  const accept = (operation: wire.ContributionOperation, operationId?: string) => {
+    assertContributionOwner(entry.owner);
+    verifyOperation(operation, value.request, operationId);
+    value.operation = operation;
+    value.errorCode = operation.failure?.code ?? null;
+    if (terminal(operation)) clearPendingCommit(entry.owner, operation.operationId);
+  };
+  assertCurrent();
+  const previous = pendingCommits(entry.owner).find(item => item.request.target.ghostId === value.request.target.ghostId);
+  if (previous) {
+    const operation = await api.operation(previous.operationId);
+    assertCurrent();
+    verifyOperation(operation, previous.request, previous.operationId);
+    const samePackage = previous.instanceId === entry.summary.instanceId &&
+      previous.installationDir === entry.installationDir && previous.approvalToken === entry.approvalToken &&
+      previous.contentSha256 === entry.contentSha256 &&
+      (previous.request.target.pluginId === value.request.target.pluginId ||
+        previous.request.target.pluginId === null && operation.receipt?.pluginId === value.request.target.pluginId) &&
+      previous.request.target.version === entry.summary.version;
+    if (terminal(operation)) {
+      clearPendingCommit(entry.owner, previous.operationId);
+      if (operation.status === 'succeeded' && samePackage) {
+        value.request = previous.request;
+        value.prepared = { ...entry.summary, sha256: previous.request.sha256, sizeBytes: previous.request.sizeBytes };
+        accept(operation, previous.operationId);
+        return;
+      }
+    } else {
+      if (!samePackage) throwIpcError('INTERNAL', 'Previous submission result is not confirmed');
+      value.request = previous.request;
+      value.prepared = { ...entry.summary, sha256: previous.request.sha256, sizeBytes: previous.request.sizeBytes };
+      accept(operation, previous.operationId);
+    }
+  }
+  if (!value.operation) {
+    const response = await writer.prepare(value.request, entry.idempotencyKey);
+    assertCurrent();
     const { upload, ...operation } = response;
-    await accept(book, record, wire.contributionOperation.parse(operation));
-    if (isTerminal(record)) return;
+    accept(wire.contributionOperation.parse(operation));
+    if (terminal(operation)) return;
     if (response.status === 'awaiting_upload') {
       if (!upload || new Date(upload.expiresAt).getTime() <= Date.now())
-        throwIpcError(
-          'PRECONDITION_FAILED',
-          'Original upload ticket expired; query the original operation',
-        );
-      // URLs remain Main-only. Redirects and credential-bearing headers are refused.
+        throwIpcError('PRECONDITION_FAILED', 'Upload ticket expired');
       const url = new URL(upload.putUrl);
-      let localUpload = false;
-      if (app.isPackaged === false && url.protocol === 'http:') {
-        const endpoint = new URL(getClientEndpoint('pluginApiBaseUrl'));
-        // The existing dev-local storage adapter is the only HTTP exception:
-        // an explicitly configured loopback server, the same origin and path.
-        localUpload =
-          endpoint.protocol === 'http:' &&
-          ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) &&
-          !endpoint.username &&
-          !endpoint.password &&
-          url.origin === endpoint.origin &&
-          url.pathname === '/dev-local/member-upload' &&
-          !url.hash;
-      }
-      if (
-        (url.protocol !== 'https:' && !localUpload) ||
-        url.username ||
-        url.password ||
-        Object.keys(upload.headers).some((key) =>
-          /^(authorization|proxy-authorization|cookie)$/i.test(key),
-        )
-      )
+      const endpoint = new URL(getClientEndpoint('pluginApiBaseUrl'));
+      const localUpload = app.isPackaged === false && endpoint.protocol === 'http:' &&
+        ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) && !endpoint.username && !endpoint.password &&
+        url.protocol === 'http:' && url.origin === endpoint.origin && url.pathname === '/dev-local/member-upload' && !url.hash;
+      if ((url.protocol !== 'https:' && !localUpload) || url.username || url.password ||
+        Object.keys(upload.headers).some(key => /^(authorization|proxy-authorization|cookie)$/i.test(key)))
         throwIpcError('PRECONDITION_FAILED', 'Unsafe upload ticket');
-      const directory = managedSnapshotDirectory(record.directory);
-      const current = findInstalledGhostByInstanceId(
-        getGhostManager().list(),
-        record.prepared.instanceId,
-      );
-      if (
-        !current ||
-        current.dir !== record.installationDir ||
-        current.namespace !== null ||
-        current.namespaceState !== 'confirmed' ||
-        ghostInstallApprovalToken(current.approval) !== record.approvalToken
-      )
-        throwIpcError(
-          'PRECONDITION_FAILED',
-          'Installed plugin changed; existing operation retained',
-        );
-      const handle = await fsp.open(
-        path.join(directory, 'plugin.cindy'),
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
-      );
+      const handle = await fsp.open(entry.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
       try {
         const stat = await handle.stat();
-        if (!stat.isFile() || stat.size !== record.request.sizeBytes)
-          throwIpcError('PRECONDITION_FAILED', 'Original package snapshot unavailable');
-        const bytes = await handle.readFile();
-        if (crypto.createHash('sha256').update(bytes).digest('hex') !== record.request.sha256)
-          throwIpcError('PRECONDITION_FAILED', 'Original package snapshot changed');
+        if (!stat.isFile() || stat.size !== value.request.sizeBytes ||
+          crypto.createHash('sha256').update(await handle.readFile()).digest('hex') !== value.request.sha256)
+          throwIpcError('PRECONDITION_FAILED', 'Prepared package changed');
         await assertWrite();
-        record.stage = 'uploading';
-        persist(book);
-        await putLocalFile(handle, {
-          putUrl: upload.putUrl,
-          headers: upload.headers,
-          sizeBytes: stat.size,
-          signal,
-          onBytes: () => {
-            // A stream callback must abort the request rather than throw out of
-            // Transform._transform and take down the Main process.
-            try { assert(); assertInstallation(); } catch { controller.abort(); }
-          },
+        value.stage = 'uploading';
+        await putLocalFile(handle, { putUrl: upload.putUrl, headers: upload.headers, sizeBytes: stat.size,
+          signal: controller.signal,
+          onBytes: () => { try { assertCurrent(); } catch { controller.abort(); } },
         });
-        assert();
-        record.phase = 'uploaded';
-        persist(book);
       } finally {
         await handle.close();
       }
     }
   }
-  await assertWrite();
-  if (!record.operationId) throwIpcError('PRECONDITION_FAILED', 'Original operation not known');
-  // An explicit resume first queries above, then replays commit on the SAME
-  // operation. GET alone cannot reclaim a released validation/publishing lease.
-  record.phase = 'committing';
-  record.stage = 'processing';
-  persist(book);
-  await writer.commit(record.operationId);
-  assert();
-  record.phase = 'processing';
-  persist(book);
-  // Only the active upload action is followed. Human review is NEVER polled.
+  assertCurrent();
+  const operationId = value.operation!.operationId;
+  // No local package history is needed: after PUT, any ambiguous commit can be
+  // reconciled using this server operation alone. Never re-upload on that path.
+  const values = pendingCommits(entry.owner).filter(item => item.operationId !== operationId);
+  values.push({ operationId, request: value.request, instanceId: entry.summary.instanceId,
+    installationDir: entry.installationDir, approvalToken: entry.approvalToken, contentSha256: entry.contentSha256 });
+  writePendingCommits(entry.owner, values);
+  value.stage = 'processing';
+  await writer.commit(operationId);
   for (let attempt = 0; attempt < 8; attempt++) {
-    assert();
-    await accept(book, record, await api.operation(record.operationId));
-    if (isTerminal(record)) return;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, Math.min(1000 * (attempt + 1), 5000));
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
-    });
+    assertCurrent();
+    accept(await api.operation(operationId), operationId);
+    if (terminal(value.operation!)) return;
+    await delay(Math.min(1000 * (attempt + 1), 5000), undefined, { signal: controller.signal });
   }
-  record.stage = 'paused';
-  persist(book);
+  throwIpcError('INTERNAL', 'Submission result is not confirmed');
 }
 
-export function resumeContribution(id: string, assertCaller?: () => Promise<void>) {
-  const { book, record } = locate(id);
-  start(book, record, assertCaller);
-  return view(record);
-}
-export function listContributionTransfers() {
-  return journal().records.map((record) => ({
-    ...view(record),
-    stage: record.phase !== 'terminal' && !running(record) ? ('paused' as const) : record.stage,
-  }));
-}
-export async function contributionTransferStatus(id: string) {
-  const { book, record } = locate(id);
-  if (record.operationId && !running(record)) {
-    assertWritableInstance();
-    await accept(book, record, await new ContributionApi().operation(record.operationId));
-  }
-  return {
-    ...view(record),
-    stage: record.phase !== 'terminal' && !running(record) ? ('paused' as const) : record.stage,
-  };
+export function contributionTransferStatus(id: string): ContributionTransferView {
+  return view(currentSubmission(id));
 }
 export function cancelContribution(id: string): void {
-  const { record } = locate(id);
-  if (running(record)) pending.get(id)?.controller.abort();
+  currentSubmission(id).controller.abort();
 }
 
 function releaseView(

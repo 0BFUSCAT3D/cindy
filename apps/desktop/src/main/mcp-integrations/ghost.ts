@@ -1789,13 +1789,13 @@ export function getCindyGhostsMcpDeps(
     } : {}),
     async communityContribution(input) {
       try {
-        const authority = await contributionAuthority(['prepare', 'submit', 'resume', 'cancel', 'cancel-review'].includes(input.action));
+        const authority = await contributionAuthority(['prepare', 'submit', 'cancel', 'cancel-review'].includes(input.action));
         let result: unknown;
         if (input.action === 'prepare') {
           const resolved = resolveInstalledGhost(getGhostManager().list(), input.ghostId, input.namespace);
           if (resolved.status !== 'unique') return { ok: false, errorCode: resolved.status === 'ambiguous' ? 'GHOST_AMBIGUOUS' : 'GHOST_NOT_FOUND' };
           result = await community.prepareContribution(installedGhostStoragePart(resolved.ghost), 'ai');
-        } else if (input.action === 'submit' || input.action === 'resume' || input.action === 'cancel-review') {
+        } else if (input.action === 'submit' || input.action === 'cancel-review') {
           const cancelTarget = input.action === 'cancel-review' ? await community.myPluginReviewTarget(input.pluginId, input.release.releaseId) : null;
           if (input.action === 'cancel-review' && (!cancelTarget || cancelTarget.release.sha256 !== input.release.sha256 || cancelTarget.release.revision !== input.release.revision)) throwIpcError('CONTRIBUTION_REVISION_STALE', 'Refresh this version before cancelling its review');
           if (input.action === 'cancel-review' && cancelTarget && ['approved', 'rejected', 'cancelled'].includes(cancelTarget.release.reviewStatus ?? '')) {
@@ -1803,7 +1803,7 @@ export function getCindyGhostsMcpDeps(
             return { ok: true, result: cancelTarget.release };
           }
           const toolName = input.action === 'cancel-review' ? 'ghost_cancel_plugin_review' : 'ghost_contribution_submit';
-          const prepared = input.action === 'cancel-review' && cancelTarget ? { preparedId: cancelTarget.release.releaseId, ghostId: input.pluginId, version: cancelTarget.release.version, sha256: cancelTarget.release.sha256, name: cancelTarget.name, description: t('settings.ghosts.contribution.cancelReviewDescription').replaceAll('{{version}}', cancelTarget.release.version) } : input.action === 'submit' ? getPreparedContribution(input.id).summary : input.action === 'resume' ? (await community.listContributionTransfers()).find((item) => item.localId === input.id)?.prepared : undefined;
+          const prepared = input.action === 'cancel-review' && cancelTarget ? { preparedId: cancelTarget.release.releaseId, ghostId: input.pluginId, version: cancelTarget.release.version, sha256: cancelTarget.release.sha256, name: cancelTarget.name, description: t('settings.ghosts.contribution.cancelReviewDescription').replaceAll('{{version}}', cancelTarget.release.version) } : input.action === 'submit' ? getPreparedContribution(input.id).summary : undefined;
           if (!prepared) throwIpcError('PRECONDITION_FAILED', 'Contribution preparation is unavailable');
           const context = authority.context;
           const live = hostDeps.getLiveSessionGrantState!(context.sessionId!, context.sessionInstanceId!);
@@ -1840,13 +1840,12 @@ export function getCindyGhostsMcpDeps(
           }
           await authority.assert();
           if (!allowed) return { ok: false, errorCode: 'MUTATION_CANCELLED' };
-          result = input.action === 'cancel-review' ? await community.cancelPluginReview(input.pluginId, input.release, authority.assert) : input.action === 'submit' ? await community.submitContribution(input.id, authority.assertAccepted) : await community.resumeContribution(input.id, authority.assertAccepted);
+          result = input.action === 'cancel-review' ? await community.cancelPluginReview(input.pluginId, input.release, authority.assert) : await community.submitContribution(input.id, authority.assertAccepted);
         } else if (input.action === 'status') result = await community.contributionTransferStatus(input.id);
         else if (input.action === 'cancel') result = community.cancelContribution(input.id);
         else if (input.action === 'list') result = await community.listMyPlugins({ query: input.query ?? '', filter: input.filter ?? 'all', cursor: input.cursor });
         else if (input.action === 'submission') result = await community.myPluginSubmission(input.pluginId, input.submissionId);
         else if (input.action === 'detail') result = await community.myPluginDetail(input.pluginId, input.cursor);
-        else result = community.listContributionTransfers();
         await authority.assert();
         return { ok: true, result };
       } catch (error) {

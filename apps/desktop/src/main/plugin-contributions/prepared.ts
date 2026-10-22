@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import type { ContributionRequest } from '../../shared/pluginContributionContract.js';
 import type {
   PreparedPluginContribution,
   ContributionInstallationBinding,
@@ -45,6 +46,7 @@ export function assertContributionOwner(owner: string): void {
 }
 
 export interface PreparedEntry {
+  request?: ContributionRequest;
   owner: string;
   approvalToken: string;
   contentSha256: string;
@@ -54,7 +56,7 @@ export interface PreparedEntry {
   directory: string;
   filePath: string;
   summary: PreparedPluginContribution;
-  /** One operation key for every UI/AI retry of this immutable package. */
+  /** An idempotency key for this fixed package submission. */
   idempotencyKey: string;
   expiresAt: number;
 }

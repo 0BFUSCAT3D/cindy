@@ -54,9 +54,7 @@ function desktopEnvSpec() {
 }
 const closeDarwinTerminalTtyScript = Object.freeze([
   'on closeMatchingTerminalTab(targetTty)',
-  // 查询运行状态不会启动应用；直接 tell 会在清理 iTerm 的 TTY 时误开 Terminal。
-  'if application id "com.apple.Terminal" is not running then return',
-  'tell application id "com.apple.Terminal"',
+  'tell application "Terminal"',
   'repeat with terminalWindow in windows',
   'repeat with terminalTab in tabs of terminalWindow',
   'if (tty of terminalTab) is targetTty then',
@@ -546,7 +544,7 @@ export function readDesktopDevLogTail(logPath, maxLines = 40) {
   return lines.slice(-maxLines);
 }
 
-export function osascriptCloseDarwinTerminalTtyArgs(ttyPath) {
+function osascriptCloseDarwinTerminalTtyArgs(ttyPath) {
   return closeDarwinTerminalTtyScript
     .flatMap((line) => ['-e', line])
     .concat(ttyPath);

@@ -829,7 +829,7 @@ describe('plugin use details and independent author management', () => {
     };
     return { list: vi.fn().mockResolvedValue({ plugins: [own.plugin], nextCursor: null, queriedAt: own.queriedAt }),
       detail: vi.fn().mockResolvedValue(own), releases: vi.fn<() => Promise<MyPluginReleasePageView>>().mockResolvedValue({ releases: [], nextCursor: null, queriedAt: own.queriedAt }),
-      transfers: vi.fn().mockResolvedValue([]), prepare: vi.fn(), submit: vi.fn(), setAnonymity: vi.fn() };
+      prepare: vi.fn(), submit: vi.fn(), setAnonymity: vi.fn() };
   }
 
   function localAuthorInstallation(version: string): InstalledGhost {
@@ -846,7 +846,7 @@ describe('plugin use details and independent author management', () => {
     ['failed', 'Expected SHA256 aabb, received ccdd.'],
     ['failed', 'Package is 120 MB; maximum size is 100 MB.'],
     ['failed', 'Release storage could not retain the validated package.'],
-    ['paused', null],
+    ['unconfirmed', null],
     ['processing', null],
     ['succeeded', null],
   ] as const)('keeps a %s submission in the original detail without an upload-management page', async (stage, message) => {
@@ -863,8 +863,8 @@ describe('plugin use details and independent author management', () => {
         target: { pluginId: detail.pluginId, ghostId: detail.ghostId, version: '1.3.0', expectedRelease: null }, pendingRelease: null, blockers: [], actions: { canSubmit: true } } };
     api.prepare.mockResolvedValue(prepared);
     const transfer: ContributionTransferView = {
-      localId: prepared.preparedId, prepared, stage: stage === 'failed' || stage === 'succeeded' ? 'complete' : stage,
-      errorCode: stage === 'paused' ? 'INTERNAL' : null,
+      localId: prepared.preparedId, prepared, stage: stage === 'processing' ? 'processing' : 'complete',
+      errorCode: stage === 'unconfirmed' ? 'INTERNAL' : null,
       operation: { subject: { authority: 'https://issuer.test', membershipId: 'member-A' }, operationId: 'operation',
         status: stage === 'failed' ? 'failed' : stage === 'succeeded' ? 'succeeded' : 'validating', createdAt: '2026-10-21T00:00:00Z', updatedAt: '2026-10-21T00:00:00Z',
         expiresAt: '2099-01-01T00:00:00Z', receipt: stage === 'succeeded' ? { operationId: 'operation', submissionId: 'new-submission', pluginId: detail.pluginId, releaseId: 'new-release', ghostId: detail.ghostId, version: '1.3.0', source: 'manual', submittedAt: '2026-10-21T00:00:00Z', uploadedPackage: { sha256: prepared.sha256, sizeBytes: prepared.sizeBytes }, releaseRevision: { releaseId: 'new-release', sha256: prepared.sha256, displayUpdatedAt: '2026-10-21T00:00:00Z' }, outcome: 'submitted_for_review' } : null, submission: null,
@@ -885,7 +885,7 @@ describe('plugin use details and independent author management', () => {
     if (stage === 'processing') {
       expect(submit).toHaveProperty('disabled', true);
       await waitFor(() => expect(status).toHaveBeenCalledWith(transfer.localId), { timeout: 2500 });
-      await act(async () => { finish({ ...transfer, stage: 'paused', errorCode: 'INTERNAL' }); });
+      await act(async () => { finish({ ...transfer, stage: 'complete', errorCode: 'INTERNAL' }); });
     }
     if (stage === 'succeeded') {
       await screen.findByRole('heading', { name: 'Published snapshot name' });
@@ -901,7 +901,6 @@ describe('plugin use details and independent author management', () => {
     expect(screen.queryByText(`${prefix}.resume`)).toBeNull();
     expect(screen.queryByText(`${prefix}.retryPublish`)).toBeNull();
     expect(screen.queryByRole('region', { name: `${prefix}.publicationProgress` })).toBeNull();
-    expect(api.transfers).not.toHaveBeenCalled();
   });
 
   // Unit: a cancelled 1.0.0 still offered submission and only failed after clicking.
@@ -982,31 +981,6 @@ describe('plugin use details and independent author management', () => {
     expect(api.prepare).not.toHaveBeenCalled();
     expect(api.submit).not.toHaveBeenCalled();
   });
-  it('keeps author management mounted when its active anonymity switch saves', async () => {
-    auth.mode = 'cloud';
-    const api = authorApi(null);
-    const own = await api.detail();
-    const anonymous = { ...own, plugin: { ...own.plugin, authorSettings: { anonymous: true, canEdit: true } } };
-    const named = { ...anonymous, plugin: { ...anonymous.plugin, displayAuthor: 'Saved author',
-      authorSettings: { anonymous: false, canEdit: true } } };
-    api.detail.mockResolvedValue(anonymous);
-    api.setAnonymity.mockResolvedValue(named);
-    Object.assign(window.electronAPI, { pluginContributions: api });
-    render(page(`/plugins?myPlugins=1&contribution=${detail.pluginId}`));
-    const toggle = await screen.findByRole('switch', { name: `${prefix}.anonymous` }) as HTMLButtonElement;
-    await waitFor(() => expect(toggle.disabled).toBe(false));
-    const heading = screen.getByRole('heading', { level: 1, name: 'Published snapshot name' });
-    const history = screen.getByText(`${prefix}.history`).closest('details')!;
-    fireEvent.click(within(history).getByText(`${prefix}.history`));
-    history.open = true;
-    fireEvent.click(toggle);
-    await screen.findByText('Saved author');
-    expect(screen.getByRole('heading', { level: 1, name: 'Published snapshot name' })).toBe(heading);
-    expect(screen.getByRole('switch', { name: `${prefix}.anonymous` })).toBe(toggle);
-    expect(history.isConnected).toBe(true);
-    expect(history.open).toBe(true);
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-  });
   it.each([undefined, { kind: 'unavailable' }, { kind: 'public-market', pluginId: detail.pluginId }] satisfies InstalledGhost['publishingSource'][])(
     'does not expose publishing or prepare ordinary/unknown downloads (%j)', async publishingSource => {
       auth.mode = 'cloud';
@@ -1049,7 +1023,7 @@ describe('plugin use details and independent author management', () => {
       expect(screen.queryByRole('button', { name: `${prefix}.openPlugin` })).toBeNull();
       expect(screen.getByRole('button', { name: `${prefix}.cancelReview` })).toBeTruthy();
       expect(screen.queryByRole('switch', { name: 'settings.ghosts.enableAria' })).toBeNull();
-      expect(screen.getAllByRole('switch', { name: `${prefix}.anonymous` })).toHaveLength(1);
+      expect(screen.queryByRole('switch', { name: `${prefix}.anonymous` })).toBeNull();
     } else {
       await screen.findByRole('heading', { level: 1, name: entry === 'market' ? detail.name : 'Actual installed name' });
       expect(screen.queryByLabelText(`${prefix}.versionFacts`)).toBeNull();

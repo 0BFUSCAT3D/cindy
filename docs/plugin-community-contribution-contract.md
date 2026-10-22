@@ -28,11 +28,10 @@ AI 不接触 Bearer、PUT URL 或原包路径。
 - 官方来源继续通过 GitHub Actions OIDC、精确官方仓库名与不变 repository_id 校验，固定署名 Cindy，不能通过个人匿名设置隐藏或变更官方身份。
 - 个人首发在同一事务绑定已验证的 authority + membershipId；作者归属不随后续提交授权变更。预检或仅上传不占用归属。
 - 原作者提审时，Plugin 使用该请求的用户 Token 调用原 Auth `GET /api/me`，核对返回的个人 Membership 与提交身份一致，将昵称保存至已有 `PluginRelease.displayAuthor` 和该次回执的 `manifestView.author`。只读本人资料，Token 不持久化，不新增 Auth 作者 API、公开作者映射或机器凭证。
-- 改名不会自动同步旧版本；原作者下次提审保存新的昵称。其他维护者提审沿用已保存的原作者署名，不能改成维护者本人名字。历史版本按各自提审快照展示，不用当前版本的名字覆盖。
-- 作者搜索匹配当前客户端最终交付版本的提审昵称，并应用当前插件匿名设置；兼容回退到旧版本时，不借用新版昵称命中。本人的列表和详情标题区按本次可见版本内容展示名称、说明和署名；同一作者改名后提审新版时，不能由已上架旧版昵称覆盖新版内容的署名。
-- 个人插件的 `PluginAuthorship.anonymous` 默认 true，由固定原作者随时修改；与昵称快照分别控制。匿名时公开列表、详情、旧协议 author 和嵌套展示 manifest 不返回名字，作者搜索也不能通过隐藏昵称命中。关闭匿名后显示相应版本保存的昵称。切换不消耗版本、无需重审、不改变包 SHA、当前上架版或审核修订。
-- `PATCH /api/plugin-contributions/plugins/:pluginId/author-settings` 只接受 `{anonymous:boolean}`，使用原个人鉴权、写限流与固定作者归属校验；提交 ACL 不授予此权限；原作者被撤销提交权后仍可修改匿名设置，但不会因此恢复发布权。返回最新的作者详情。详情中的可选 `authorSettings:{anonymous,canEdit}|null` 只服务于原作者设置界面，不接受客户端指定作者、Auth 来源或昵称。
-- 市场读取仅访问 Plugin 自有数据库，不依赖 Auth 在线或个人会话。原始下载包保持不变；匿名控制服务端分发的展示署名，不清除开发者自行写入代码、文档或包内容的个人信息。
+- 改名不会自动同步旧版本；原作者下次提审保存新的昵称。其他维护者提审沿用已保存的原作者署名，不能改成维护者本人名字。绑定、昵称快照与审计信息继续完整记录。
+- 当前仅在生成响应时短路个人署名：公开列表、搜索、详情、本人管理详情及历史内容的展示署名统一返回 null，展示 manifest 不含作者；不受已保存的 anonymous 偏好影响，也不通过个人昵称搜索命中。读取投影不改写数据库中的作者绑定、版本昵称或回执内容。
+- `PATCH /api/plugin-contributions/plugins/:pluginId/author-settings` 保留原个人鉴权、写限流和固定作者归属校验，只接受 `{anonymous:boolean}`。保存偏好不改变当前个人署名统一隐藏的返回规则，客户端界面不提供开关。提交 ACL 不授予该设置权限，原作者失去提交权也不会因此失去固定归属。可选 `authorSettings:{anonymous,canEdit}|null` 仍表示服务端保存的事实，不接受客户端指定作者、Auth 来源或昵称。
+- 市场读取仅访问 Plugin 自有数据库，不依赖 Auth 在线或个人会话。原始下载包保持不变；隐藏平台展示署名不清除开发者自行写入代码、文档或包内容的个人信息。
 
 昵称最多100字符。可选 `displayAuthor:string|null` 的显式 null 不回退包内作者；旧协议 `author` 与嵌套展示 manifest.author 在64字符以内保持相同，长昵称分别 null / 缺失，不截断。Host 的 installedAuthor 继续要求来源、已批准 SHA 和账本一致，只更新署名投影。
 

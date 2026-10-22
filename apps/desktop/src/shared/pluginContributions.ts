@@ -95,7 +95,7 @@ export interface MyPluginReleasePageView {
 export interface ContributionTransferView {
   localId: string;
   prepared: PreparedPluginContribution;
-  stage: 'prepared' | 'uploading' | 'processing' | 'paused' | 'complete';
+  stage: 'prepared' | 'uploading' | 'processing' | 'complete';
   operation: ContributionOperation | null;
   errorCode: string | null;
 }
@@ -119,8 +119,6 @@ export interface PluginContributionsApi {
     expected?: ContributionInstallationBinding,
   ): Promise<PreparedPluginContribution>;
   submit(preparedId: string): Promise<ContributionTransferView>;
-  resume(localId: string): Promise<ContributionTransferView>;
-  transfers(): Promise<ContributionTransferView[]>;
   status(localId: string): Promise<ContributionTransferView>;
   cancel(localId: string): Promise<void>;
   cancelReview(

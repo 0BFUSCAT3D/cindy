@@ -1,13 +1,13 @@
+import { useContributionPreview } from './lib/useContributionPreview';
 import { CatalogDeviceScope, type CatalogDeviceControl } from './useCatalogDevice';
 import { RemotePluginPage } from './RemotePluginPage';
 import { PluginVersionFacts } from './PluginVersionFacts';
-import type { PreparedPluginContribution } from '../../../shared/pluginContributions';
 import { useSignInToCindy } from '@/hooks/useSignInToCindy';
 import { rememberContributionIntent, consumeContributionIntent, matchesContributionIntent } from './lib/contributionIntent';
 import { MyPluginsPage, contributionErrorKey, type MyPluginsPageCache, type PluginSubmitOptions } from './MyPluginsPage';
 import { localPublishingUnavailableKey } from './lib/ghostPluginDetailModel';
 import { usePublishingInstallations } from './lib/usePublishingInstallations';
-import type { MyPluginDetailView, MyPluginView } from '../../../shared/pluginContributions';
+import type { MyPluginView } from '../../../shared/pluginContributions';
 import { featureRetirementById } from '../../../shared/featureRetirements';
 import { RetiredFeatureDetail } from './RetiredFeatureDetail';
 import { Button } from '@/components/ui/button';
@@ -477,7 +477,6 @@ function LocalGhostPluginPage({
   const [contributionBusy, setContributionBusy] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState(0);
   const contributing = useRef<string | null>(null);
-  const [publicationDraft, setPublicationDraft] = useState<{ key: string; prepared?: PreparedPluginContribution; error?: string } | null>(null);
   const [publicationRefresh, setPublicationRefresh] = useState(0);
   const [localContribution, setLocalContribution] = useState<{ key: string; plugin: MyPluginView | null; versionUsed: boolean; error: string | null } | null>(null);
   const [recommendationNonce] = useState(() => searchParams.get('recommendation'));
@@ -1706,42 +1705,6 @@ function LocalGhostPluginPage({
         : localContributionResult.versionUsed ? 'VERSION_ALREADY_SUBMITTED'
           : null
     : null;
-  const [authorRevision, setAuthorRevision] = useState(0);
-  const acceptAuthorSettings = (result: MyPluginDetailView, appliesToCurrentControl: boolean) => {
-    if (!contributionMounted.current || contributionOwnerRef.current !== contributionOwner) return;
-    // Refetch instead of applying an old completion to a remounted same-plugin
-    // detail (A → B → A). The server remains the only anonymity source of truth.
-    // The active control applies its confirmed result in place. Only a completion
-    // from an abandoned control requires rebuilding the current author view.
-    if (!appliesToCurrentControl) setAuthorRevision(value => value + 1);
-    // MyPlugins remounts on return. Its old author/content snapshots must be rebuilt.
-    contributionCache.current.page = null;
-    contributionCache.current.detail = null;
-    const affectedIds = new Set([result.plugin.pluginId]);
-    // Do not cancel navigation already loading a different plugin.
-    if (!marketBusyLockRef.current || affectedIds.has(marketBusyLockRef.current.pluginId))
-      marketDetailRequestRef.current++;
-    const hideOldAuthor = (detail: PluginMarketDetail) => ({
-      ...detail, author: null, installedAuthor: null, manifest: { ...detail.manifest, author: undefined },
-    });
-    setMarketSnapshot(current => current ? { ...current, items: current.items.map(item =>
-      affectedIds.has(item.pluginId) ? { ...item, author: null, installedAuthor: null } : item) } : current);
-    setMarketDetail(current => current && affectedIds.has(current.pluginId) ? hideOldAuthor(current) : current);
-    const owner = contributionOwner;
-    const request = marketDetailRequestRef.current;
-    void refreshMarket(true).catch(() => {
-      if (contributionMounted.current && contributionOwnerRef.current === owner) toast.error(t('settings.ghosts.contribution.loadFailed'));
-    });
-    if (!result.plugin.actions.viewMarket) return;
-    // Each version's public nickname is projected by Main/server, never guessed from
-    // the current account or copied from a different release's author snapshot.
-    void window.electronAPI.pluginMarket.detail(result.plugin.pluginId).then(detail => {
-      if (!contributionMounted.current || contributionOwnerRef.current !== owner || marketDetailRequestRef.current !== request) return;
-      setMarketDetail(current => current && affectedIds.has(current.pluginId) ? detail : current);
-    }).catch(() => {
-      if (contributionMounted.current && contributionOwnerRef.current === owner && marketDetailRequestRef.current === request) toast.error(t('settings.ghosts.contribution.loadFailed'));
-    });
-  };
   useEffect(() => {
     let disposed = false;
     setLocalContribution(null);
@@ -1788,30 +1751,16 @@ function LocalGhostPluginPage({
     });
     return () => { disposed = true; };
   }, [personalContributor, localContributionKey, showMyPlugins]);
-  const currentPublicationDraft = publicationDraft?.key === localContributionKey ? publicationDraft : null;
-  useEffect(() => {
-    let disposed = false;
-    let held: string | undefined;
-    setPublicationDraft(null);
-    if (!personalContributor || !selectedGhost || selectedGhost.publishingSource?.kind !== 'local' || contributionUnavailableKey || showMyPlugins || !localContributionResult || localContributionResult.error || localContributionResult.plugin) return;
-    const owner = contributionOwner;
-    void window.electronAPI.pluginContributions.prepare(installedGhostStoragePart(selectedGhost), {
+  const canPreparePublication = personalContributor && selectedGhost?.publishingSource?.kind === 'local' &&
+    !contributionUnavailableKey && !showMyPlugins && localContributionResult &&
+    !localContributionResult.error && !localContributionResult.plugin;
+  const currentPublicationDraft = useContributionPreview(localContributionKey,
+    canPreparePublication && selectedGhost ? installedGhostStoragePart(selectedGhost) : undefined,
+    selectedGhost?.manifest.version,
+    instanceId => window.electronAPI.pluginContributions.prepare(instanceId, selectedGhost ? {
       directory: selectedGhost.dir, approvalToken: ghostInstallApprovalToken(selectedGhost.approval),
-    }).then(prepared => {
-      held = prepared.preparedId;
-      if (disposed || contributionOwnerRef.current !== owner) {
-        void window.electronAPI.pluginContributions.discard(prepared.preparedId).catch(() => undefined);
-        return;
-      }
-      setPublicationDraft({ key: localContributionKey, prepared });
-    }).catch(error => {
-      if (!disposed && contributionOwnerRef.current === owner) setPublicationDraft({ key: localContributionKey, error: contributionErrorKey(error) });
-    });
-    return () => {
-      disposed = true;
-      if (held) void window.electronAPI.pluginContributions.discard(held).catch(() => undefined);
-    };
-  }, [personalContributor, localContributionKey, showMyPlugins, contributionUnavailableKey, publicationRefresh, localContributionResult]);
+    } : undefined),
+    preparedId => window.electronAPI.pluginContributions.discard(preparedId));
   useEffect(() => {
     if (showMyPlugins) { setSelectedId(null); setMarketDetail(null); }
   }, [showMyPlugins]);
@@ -1868,7 +1817,7 @@ function LocalGhostPluginPage({
       preparedId = undefined;
       // Keep upload bookkeeping inside this submit action. Only a confirmed
       // server submission belongs in My Plugins; HTTP 202 is still submitting.
-      while (result.stage !== 'complete' && result.stage !== 'paused') {
+      while (result.stage !== 'complete') {
         if (!contributionMounted.current || contributionOwnerRef.current !== owner) return false;
         await new Promise(resolve => window.setTimeout(resolve, 1000));
         if (!contributionMounted.current || contributionOwnerRef.current !== owner) return false;
@@ -1985,9 +1934,8 @@ function LocalGhostPluginPage({
   ) : null;
 
   if (showMyPlugins) return <MyPluginsPage
-    key={`${contributionOwner}:${authorRevision}`}
+    key={contributionOwner}
     cache={contributionCache.current}
-    onAuthorSettingsUpdated={acceptAuthorSettings}
     reader={window.electronAPI.pluginContributions}
     localPlugins={publishableInstalledItems}
     installedPluginCount={allInstalledItems.length}

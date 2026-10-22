@@ -21,11 +21,9 @@ vi.mock('../../../../main/plugin-contributions/host', () => ({
   setPluginAnonymity: vi.fn(),
   prepareContribution: vi.fn(),
   submitContribution: vi.fn(),
-  resumeContribution: vi.fn(),
   contributionTransferStatus: vi.fn(),
   cancelContribution: vi.fn(),
   discardContribution: vi.fn(),
-  listContributionTransfers: vi.fn(),
   listMyPlugins: vi.fn(),
   myPluginSubmission: vi.fn(),
   myPluginReleases: vi.fn(),
@@ -62,8 +60,7 @@ function view() {
   });
   const api: PluginContributionsApi = {
     reviewUpdates: async () => [], markReviewRead: vi.fn(),
-    prepare: vi.fn(), submit: vi.fn(), resume: vi.fn(), cancel: vi.fn(), discard: vi.fn(), status: vi.fn(),
-    transfers: async () => [],
+    prepare: vi.fn(), submit: vi.fn(), cancel: vi.fn(), discard: vi.fn(), status: vi.fn(),
     list: async () => ({ plugins: [plugin()], nextCursor: null, queriedAt: at }),
     setAnonymity: vi.fn(),
     detail: async () => ({ plugin: plugin(), history: [], nextCursor: null, queriedAt: at }),

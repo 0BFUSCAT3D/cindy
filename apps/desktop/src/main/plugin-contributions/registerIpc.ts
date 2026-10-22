@@ -40,7 +40,6 @@ export function registerPluginContributionsIpc(): void {
     ({ instanceId, expected }) => host.prepareContribution(instanceId, 'manual', expected),
   );
   handle('submit', id, host.submitContribution);
-  handle('resume', id, host.resumeContribution);
   handle('status', id, host.contributionTransferStatus);
   handle('cancel', id, host.cancelContribution);
   handle(
@@ -62,7 +61,6 @@ export function registerPluginContributionsIpc(): void {
   handle('set-anonymity', z.object({ pluginId: id, anonymous: z.boolean() }).strict(),
     ({ pluginId, anonymous }) => host.setPluginAnonymity(pluginId, anonymous));
   handle('discard', id, host.discardContribution);
-  handle('transfers', z.undefined(), host.listContributionTransfers);
   handle('review-updates', z.undefined(), reviewUpdates);
   handle('mark-review-read', z.object({ pluginId: id, key: z.string().min(1).max(1024) }).strict(),
     ({ pluginId, key }) => markReviewRead(pluginId, key));

@@ -9,7 +9,6 @@ import type {
   MyPluginDetailView,
   ContributionReleaseView,
   PluginContributionsApi,
-  ContributionTransferView,
 } from '../../../../shared/pluginContributions';
 import type { PluginMarketDetail } from '../../../../shared/pluginMarket';
 import type { GhostPluginListItem } from '../lib/ghostPluginViewModel';
@@ -96,20 +95,18 @@ function packagePreview(instanceId: string, version = '1.0.0'): PreparedPluginCo
       queriedAt: at, policyVersion: 2, target: { pluginId: null, ghostId: 'demo', version, expectedRelease: null },
       pendingRelease: null, blockers: [], actions: { canSubmit: true } } };
 }
-function reader(transfers: ContributionTransferView[] = []): PluginContributionsApi {
+function reader(): PluginContributionsApi {
   return {
     reviewUpdates: vi.fn().mockResolvedValue([]),
     markReviewRead: vi.fn(),
     prepare: vi.fn(async (instanceId: string) => packagePreview(instanceId, '1.2.0')),
     submit: vi.fn(),
-    resume: vi.fn(),
     cancel: vi.fn(),
     cancelReview: vi.fn(),
     discard: vi.fn().mockResolvedValue(undefined),
     status: vi.fn(),
     submission: vi.fn(),
     releases: vi.fn().mockResolvedValue({ releases: [], nextCursor: null, queriedAt: at }),
-    transfers: vi.fn().mockResolvedValue(transfers),
     setAnonymity: vi.fn(),
     detail: vi.fn().mockResolvedValue(detail),
     list: vi.fn().mockResolvedValue({ plugins: [detail.plugin], nextCursor: null, queriedAt: at }),
@@ -218,14 +215,13 @@ describe('My Plugins facts', () => {
     expect(await screen.findByRole('button', { name: /My Plugin/ })).toBeTruthy();
   });
 
-  it('preserves a confirmed original author anonymity setting after publishing grant revocation', async () => {
+  it('keeps management readable without a submission action after publishing grant revocation', async () => {
     const api = reader();
     vi.mocked(api.detail).mockResolvedValue({ ...detail, plugin: { ...detail.plugin,
       actions: { submitUpdate: false, viewMarket: true }, authorSettings: { anonymous: true, canEdit: true } } });
     view(api);
     await waitForManagement();
-    const control = await screen.findByRole('switch', { name: `${prefix}.anonymous` });
-    await waitFor(() => expect(control).toHaveProperty('disabled', false));
+    expect(screen.getByText('New version changes')).toBeTruthy();
     expect(screen.queryByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeNull();
     expect(api.setAnonymity).not.toHaveBeenCalled();
   });
@@ -263,27 +259,17 @@ describe('My Plugins facts', () => {
     expect(api.submit).not.toHaveBeenCalled();
     expect(api.setAnonymity).not.toHaveBeenCalled();
   });
-  it.each(['failed', 'expired', 'validating', 'awaiting_upload'] as const)(
-    'shows server submissions rather than an internal %s upload record', async operationStatus => {
-      const transfer: ContributionTransferView = {
-        localId: 'attempt', stage: operationStatus === 'failed' || operationStatus === 'expired' ? 'complete' : 'paused', errorCode: null,
-        prepared: { preparedId: 'attempt', instanceId: 'exact-instance', pluginId: null, ghostId: 'hello', name: 'Unsubmitted upload', description: '', version: '1.0.0', sha256: 'a'.repeat(64), sizeBytes: 100, expiresAt: at },
-        operation: { subject: { authority: 'https://issuer.test', membershipId: 'member-A' }, operationId: 'operation', status: operationStatus, createdAt: at, updatedAt: at, expiresAt: at, receipt: null, submission: null, failure: null },
-      };
-      const api = reader([transfer]);
-      view(api, false);
-      fireEvent.click(await screen.findByRole('button', { name: /My Plugin/ }));
-      await waitForManagement();
-      expect(screen.queryByText('Unsubmitted upload')).toBeNull();
-      expect(screen.queryByText(`${prefix}.resume`)).toBeNull();
-      expect(screen.queryByText(`${prefix}.retryPublish`)).toBeNull();
-      expect(screen.getByText('Full reason, line one Full reason, line two')).toBeTruthy();
-      expect(api.transfers).not.toHaveBeenCalled();
-      expect(api.status).not.toHaveBeenCalled();
-      expect(api.resume).not.toHaveBeenCalled();
-      expect(api.submit).not.toHaveBeenCalled();
-    },
-  );
+  it('shows server submissions without querying or reconstructing an upload history', async () => {
+    const api = reader();
+    view(api, false);
+    fireEvent.click(await screen.findByRole('button', { name: /My Plugin/ }));
+    await waitForManagement();
+    expect(screen.getByText('Full reason, line one Full reason, line two')).toBeTruthy();
+    expect(screen.queryByText(`${prefix}.resume`)).toBeNull();
+    expect(screen.queryByText(`${prefix}.retryPublish`)).toBeNull();
+    expect(api.status).not.toHaveBeenCalled();
+    expect(api.submit).not.toHaveBeenCalled();
+  });
 
   it('keeps the exact publishing selection and package preview in the dialog until submission', async () => {
     const api = reader();
@@ -817,60 +803,7 @@ describe('My Plugins facts', () => {
   it.each(['approved', 'rejected'] as const)(
     'shows the actual %s decision instead of a historical submitted outcome',
     async (reviewStatus) => {
-      const revision = { releaseId: 'new-release', sha256: 'a'.repeat(64), displayUpdatedAt: at };
-      const transfer: ContributionTransferView = {
-        localId: 'finished',
-        stage: 'complete',
-        errorCode: null,
-        prepared: {
-          preparedId: 'finished',
-          instanceId: 'exact-instance',
-          pluginId: 'plugin-1',
-          ghostId: 'hello',
-          name: 'Finished upload',
-          description: '',
-          version: '2.0.0',
-          sha256: revision.sha256,
-          sizeBytes: 100,
-          expiresAt: at,
-        },
-        operation: {
-          subject: { authority: 'https://issuer.test', membershipId: 'member-A' },
-          operationId: 'operation-1',
-          status: 'succeeded',
-          createdAt: at,
-          updatedAt: at,
-          expiresAt: at,
-          failure: null,
-          receipt: {
-            submissionId: 'submission-1',
-            operationId: 'operation-1',
-            pluginId: 'plugin-1',
-            releaseId: revision.releaseId,
-            ghostId: 'hello',
-            version: '2.0.0',
-            source: 'manual',
-            submittedAt: at,
-            uploadedPackage: { sha256: revision.sha256, sizeBytes: 100 },
-            releaseRevision: revision,
-            outcome: 'submitted_for_review',
-          },
-          submission: {
-            submissionId: 'submission-1',
-            releaseId: revision.releaseId,
-            version: '2.0.0',
-            submittedAt: at,
-            publishSource: 'community_upload',
-            source: 'manual',
-            revision,
-            revisionState: 'current',
-            reviewStatus,
-            decidedAt: at,
-            reason: null,
-          },
-        },
-      };
-      const api = reader([transfer]);
+      const api = reader();
       vi.mocked(api.list).mockResolvedValue({
         plugins: [
           {
@@ -1037,85 +970,6 @@ describe('review result indicators in My Plugins', () => {
   });
 });
 
-
-describe('plugin-level anonymous attribution', () => {
-  it('keeps original-author anonymity editable after the submission grant is revoked', async () => {
-    const api = reader();
-    vi.mocked(api.detail).mockResolvedValue({ ...detail, plugin: { ...detail.plugin,
-      actions: { ...detail.plugin.actions, submitUpdate: false },
-      authorSettings: { anonymous: true, canEdit: true } } });
-    view(api);
-    await waitForManagement();
-    const toggle = await screen.findByRole('switch', { name: `${prefix}.anonymous` }) as HTMLButtonElement;
-    await waitFor(() => expect(toggle.disabled).toBe(false));
-    expect(screen.queryByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeNull();
-    expect(api.setAnonymity).not.toHaveBeenCalled();
-  });
-  it('reflects the default anonymous setting and applies the server result after an author change', async () => {
-    const api = reader();
-    const anonymousDetail = { ...detail, plugin: { ...detail.plugin, displayAuthor: null,
-      authorSettings: { anonymous: true, canEdit: true } } };
-    const namedDetail = { ...anonymousDetail, plugin: { ...anonymousDetail.plugin, displayAuthor: 'Saved submission name',
-      authorSettings: { anonymous: false, canEdit: true } } };
-    vi.mocked(api.detail).mockResolvedValue(anonymousDetail);
-    vi.mocked(api.setAnonymity).mockResolvedValue(namedDetail);
-    view(api);
-    await waitForManagement();
-    const toggle = await screen.findByRole('switch', { name: `${prefix}.anonymous` });
-    expect(toggle.getAttribute('data-state')).toBe('checked');
-    expect(screen.getByRole('heading', { name: 'My Plugin', level: 1 }).parentElement?.contains(toggle)).toBe(true);
-    fireEvent.click(toggle);
-    await waitFor(() => expect(api.setAnonymity).toHaveBeenCalledExactlyOnceWith('plugin-1', false));
-    await screen.findByText('Saved submission name');
-    expect(screen.getByRole('switch', { name: `${prefix}.anonymous` }).getAttribute('data-state')).toBe('unchecked');
-  });
-  it('preserves historical content and disclosure while refreshing anonymity', async () => {
-    const api = reader();
-    const named = { ...detail, plugin: { ...detail.plugin, displayAuthor: 'Saved author',
-      authorSettings: { anonymous: false, canEdit: true } } };
-    const hidden = { ...named, plugin: { ...named.plugin, displayAuthor: null,
-      authorSettings: { anonymous: true, canEdit: true } } };
-    const historic: ContributionReleaseView = { ...detail.plugin.latestSubmission!,
-      releaseId: 'old-release', submissionId: 'old-submission', version: '1.0.0',
-      content: { ...detail.plugin.latestSubmission!.content!, manifestView: { author: 'Historical author', releaseNotes: 'Historical notes' } } };
-    vi.mocked(api.detail).mockResolvedValue(named);
-    vi.mocked(api.releases).mockResolvedValue({ releases: [historic], nextCursor: null, queriedAt: at });
-    vi.mocked(api.setAnonymity).mockResolvedValue(hidden);
-    view(api);
-    await waitForManagement();
-    await openHistory();
-    const selector = await screen.findByRole('combobox', { name: `${prefix}.chooseVersion` });
-    fireEvent.keyDown(selector, { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('option', { name: /1.0.0/ }));
-    const notes = await screen.findByText('Historical notes');
-    const content = screen.getByText(`${prefix}.versionContent`, { selector: 'summary' }).closest('details')!;
-    content.open = true;
-    // Keep the refresh pending: already displayed content must not become a spinner.
-    vi.mocked(api.releases).mockImplementation(() => new Promise(() => {}));
-    vi.mocked(api.submission).mockImplementation(() => new Promise(() => {}));
-    fireEvent.click(screen.getByRole('switch', { name: `${prefix}.anonymous` }));
-    await waitFor(() => expect(screen.getByRole('switch', { name: `${prefix}.anonymous` }).getAttribute('aria-checked')).toBe('true'));
-    expect(screen.getByText('Historical notes')).toBe(notes);
-    expect(selector.textContent).toBe('1.0.0');
-    expect(content.isConnected).toBe(true);
-    expect(content.open).toBe(true);
-    expect(content.textContent).not.toContain('Historical author');
-  });
-  it('shows the author preference read-only to a submit-only maintainer', async () => {
-    const api = reader();
-    vi.mocked(api.detail).mockResolvedValue({ ...detail, plugin: { ...detail.plugin,
-      authorSettings: { anonymous: true, canEdit: false } } });
-    view(api);
-    await waitForManagement();
-    await screen.findByText('My Plugin', { selector: 'h1' });
-    const toggle = screen.getByRole('switch', { name: `${prefix}.anonymous` }) as HTMLButtonElement;
-    expect(toggle.disabled).toBe(true);
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-    fireEvent.click(toggle);
-    expect(api.setAnonymity).not.toHaveBeenCalled();
-    expect(screen.getByText(`${prefix}.anonymousAuthorOnly`)).toBeTruthy();
-  });
-});
 
 // Value: Main's installation projection distinguishes missing from unreadable,
 // while published content must match the actual market release. Minimal inputs

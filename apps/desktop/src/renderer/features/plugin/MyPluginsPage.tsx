@@ -14,12 +14,12 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { PluginAnonymityControl } from './PluginAnonymityControl';
 import { PluginVersionFacts } from './PluginVersionFacts';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePluginReviewUpdates } from '@/contexts/PluginReviewUpdatesContext';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
-import { extractIpcError } from '@/utils/ipcError';
+import { contributionErrorKey, useContributionPreview } from './lib/useContributionPreview';
+export { contributionErrorKey } from './lib/useContributionPreview';
 import type {
   PluginContributionsApi,
   ContributionReleaseView,
@@ -57,17 +57,6 @@ export interface PluginSubmitOptions {
   isCurrent?: () => boolean;
 }
 
-export function contributionErrorKey(error: unknown): string {
-  const code = extractIpcError(error)?.code;
-  if (code === 'OFFICIAL_PLUGIN_GITHUB_REQUIRED') return `${copy}.unavailable.officialGithubRequired`;
-  if (!navigator.onLine && (!code || code === 'INTERNAL')) return `${copy}.offline`;
-  if (code === 'PERMISSION_DENIED') return `${copy}.permissionDenied`;
-  if (code === 'NOT_FOUND') return `${copy}.notFound`;
-  if (code === 'OWNER_CHANGED') return `${copy}.accountChanged`;
-  if (code) return `${copy}.errors.${code}`;
-  return navigator.onLine ? `${copy}.loadFailed` : `${copy}.offline`;
-}
-
 /** Kept independent of transport DTOs; the Host supplies an owner-fenced read projection. */
 export function MyPluginsPage({
   reader,
@@ -77,7 +66,6 @@ export function MyPluginsPage({
   onPrepare,
   onViewLocal,
   cache,
-  onAuthorSettingsUpdated,
   renderVersionFacts,
   onInstallPublished,
   onReadPublished,
@@ -86,7 +74,6 @@ export function MyPluginsPage({
   installedRevision,
 }: {
   reader: PluginContributionsApi;
-  onAuthorSettingsUpdated?: (detail: MyPluginDetailView, appliesToCurrentControl: boolean) => void;
   localPlugins: readonly GhostPluginListItem[];
   installedPluginCount: number;
   cache: MyPluginsPageCache;
@@ -113,15 +100,8 @@ export function MyPluginsPage({
   const [pickerPlugins, setPickerPlugins] = useState<{
     key: string; plugins: MyPluginView[]; failure?: string;
   } | null>(null);
-  const [pickerDraft, setPickerDraft] = useState<{
-    key: string; prepared?: PreparedPluginContribution; error?: string;
-  } | null>(null);
-  const [updateDraft, setUpdateDraft] = useState<{
-    token: object; prepared?: PreparedPluginContribution; error?: string;
-  } | null>(null);
   const [updateRefresh, setUpdateRefresh] = useState(0);
-  const preparePicker = useRef(onPrepare ?? reader.prepare);
-  preparePicker.current = onPrepare ?? reader.prepare;
+  const preparePreview = onPrepare ?? reader.prepare;
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
   const accountTrigger = useRef<HTMLButtonElement>(null);
   const { confirm } = useConfirmDialog();
@@ -204,7 +184,9 @@ export function MyPluginsPage({
     pickerVersion, installedRevision, pickerRefresh]);
   const pickerContext = useRef({ key: pickerKey, token: {} });
   if (pickerContext.current.key !== pickerKey) pickerContext.current = { key: pickerKey, token: {} };
-  const currentPickerDraft = pickerDraft?.key === pickerKey ? pickerDraft : null;
+  const currentPickerDraft = useContributionPreview(pickerKey,
+    pickerOpen && pickerVersion !== undefined ? pickerSelection ?? undefined : undefined,
+    pickerVersion, preparePreview, reader.discard);
   const pickerBlocker = currentPickerDraft?.prepared?.preflight?.blockers[0];
   const pickerUnavailable = (local: GhostPluginListItem) => {
     const plugin = pickerRead?.plugins.find(item => item.localInstanceId === local.id);
@@ -243,35 +225,6 @@ export function MyPluginsPage({
     });
     return () => { disposed = true; };
   }, [pickerOpen, pickerReadKey, reader, localPlugins.length]);
-
-  useEffect(() => {
-    let disposed = false;
-    let held: string | undefined;
-    setPickerDraft(null);
-    if (!pickerOpen || !pickerSelection || pickerVersion === undefined) return;
-    const token = pickerContext.current.token;
-    void Promise.resolve().then(() => preparePicker.current(pickerSelection)).then(prepared => {
-      held = prepared.preparedId;
-      if (disposed || pickerContext.current.token !== token) {
-        void reader.discard(prepared.preparedId).catch(() => undefined);
-        return;
-      }
-      if (prepared.instanceId !== pickerSelection || prepared.version !== pickerVersion) {
-        void reader.discard(prepared.preparedId).catch(() => undefined);
-        held = undefined;
-        setPickerDraft({ key: pickerKey, error: `${copy}.errors.CONTRIBUTION_PACKAGE_CHANGED` });
-        return;
-      }
-      setPickerDraft({ key: pickerKey, prepared });
-    }).catch(error => {
-      if (!disposed && pickerContext.current.token === token)
-        setPickerDraft({ key: pickerKey, error: contributionErrorKey(error) });
-    });
-    return () => {
-      disposed = true;
-      if (held) void reader.discard(held).catch(() => undefined);
-    };
-  }, [pickerKey, pickerOpen, pickerSelection, pickerVersion, reader]);
 
   useEffect(() => { setPickerOwner(null); }, [selectedId]);
 
@@ -475,36 +428,6 @@ export function MyPluginsPage({
   }, [refresh, loadVersions]);
   const refreshAllRef = useRef(refreshAll);
   refreshAllRef.current = refreshAll;
-  const acceptAuthorSettings = (result: MyPluginDetailView) => {
-    request.current++;
-    versionRequest.current++;
-    snapshotRequest.current++;
-    setLoading(false);
-    setSnapshotLoading(null);
-    // Keep the selected version and its content mounted during attribution refresh.
-    // Hide cached author fields immediately when enabling anonymity; never invent
-    // a historical nickname when disabling it. The selected snapshot is reread below.
-    const projectAuthor = (release: ContributionReleaseView): ContributionReleaseView => {
-      if (result.plugin.latestSubmission && releaseKey(release) === releaseKey(result.plugin.latestSubmission))
-        return result.plugin.latestSubmission;
-      return result.plugin.authorSettings?.anonymous && release.content
-        ? { ...release, content: { ...release.content,
-          manifestView: { ...release.content.manifestView, author: null } } }
-        : release;
-    };
-    setSnapshots(previous => snapshotId && previous[snapshotId]
-      ? { [snapshotId]: projectAuthor(previous[snapshotId]) } : {});
-    setVersionPage(previous => previous ? { ...previous, releases: previous.releases.map(projectAuthor) } : previous);
-    setDetail(result);
-    setWriteRead(writeKey);
-    setPage(previous => previous ? { ...previous, plugins: previous.plugins.map(item =>
-      item.pluginId === result.plugin.pluginId ? result.plugin : item) } : previous);
-    setFailure(null);
-    // Anonymity does not change version summaries or pagination. Keep them rather
-    // than replacing a selected older page with the first page of releases.
-    if (!versionPage) void loadVersions();
-    if (snapshotId && snapshotId !== result.plugin.latestSubmission?.submissionId) void loadSnapshot(snapshotId);
-  };
   const reviewSignature = reviewUpdates.updates.map(item => item.key).sort().join('|');
   const lastReviewRefresh = useRef('');
   useEffect(() => {
@@ -895,15 +818,6 @@ export function MyPluginsPage({
   );
   const notes = shownRelease?.content?.manifestView.releaseNotes;
 
-  const anonymity = personal && isDetail && plugin && plugin.publisherKind !== 'official' ? (
-    <PluginAnonymityControl key={JSON.stringify([ownerKey, plugin.pluginId])}
-      ownerKey={ownerKey} pluginId={plugin.pluginId} settings={plugin.authorSettings}
-      reader={reader} unavailable={!plugin.authorSettings} disabled={!writeReady}
-      onBeforeChange={() => {
-        request.current++; versionRequest.current++; snapshotRequest.current++;
-        setLoading(false); setVersionsLoading(false); setSnapshotLoading(null);
-      }} onCommitted={onAuthorSettingsUpdated} onUpdated={acceptAuthorSettings} />
-  ) : null;
   const factsPlugin = plugin ? { ...plugin, localInstallation: localInstallation ?? { state: 'unavailable' as const } } : null;
   const versions = factsPlugin ? renderVersionFacts?.(factsPlugin) ?? <PluginVersionFacts plugin={factsPlugin} /> : null;
   const knownPublishBlocker = installedLocal && (
@@ -921,35 +835,9 @@ export function MyPluginsPage({
     installedLocal?.instanceId, installedLocal?.version, canPrepareUpdate, updateRefresh]);
   const updateContext = useRef({ key: updateKey, token: {} });
   if (updateContext.current.key !== updateKey) updateContext.current = { key: updateKey, token: {} };
-  const currentUpdateDraft = updateDraft?.token === updateContext.current.token ? updateDraft : null;
+  const currentUpdateDraft = useContributionPreview(updateKey,
+    canPrepareUpdate ? updateInstanceId : undefined, updateVersion, preparePreview, reader.discard);
   const updateBlocker = currentUpdateDraft?.prepared?.preflight?.blockers[0];
-  useEffect(() => {
-    if (!canPrepareUpdate || !updateInstanceId || !updateVersion) return;
-    let disposed = false;
-    let held: string | undefined;
-    const token = updateContext.current.token;
-    const instanceId = updateInstanceId, version = updateVersion;
-    void Promise.resolve().then(() => preparePicker.current(instanceId)).then(prepared => {
-      held = prepared.preparedId;
-      if (disposed || updateContext.current.token !== token) {
-        void reader.discard(prepared.preparedId).catch(() => undefined);
-        return;
-      }
-      if (prepared.instanceId !== instanceId || prepared.version !== version) {
-        void reader.discard(prepared.preparedId).catch(() => undefined);
-        held = undefined;
-        setUpdateDraft({ token, error: `${copy}.errors.CONTRIBUTION_PACKAGE_CHANGED` });
-      } else setUpdateDraft({ token, prepared });
-    }).catch(error => {
-      if (!disposed && updateContext.current.token === token)
-        setUpdateDraft({ token, error: contributionErrorKey(error) });
-    });
-    return () => {
-      disposed = true;
-      if (held) void reader.discard(held).catch(() => undefined);
-    };
-  // The key captures the exact installation and permission generation, not the response object.
-  }, [updateKey, canPrepareUpdate, updateInstanceId, updateVersion, reader]);
   const published = publishedContent?.key === publishedKey ? publishedContent : null;
   const listedDetail = plugin?.market.state === 'available' ? published?.value : null;
   const currentNotes = currentSubmission?.content?.manifestView.releaseNotes;
@@ -1265,7 +1153,6 @@ export function MyPluginsPage({
                       ? (plugin?.name ?? t(`${copy}.myPlugins`))
                       : t(`${copy}.myPlugins`)}
                   </h1>
-                  {anonymity}
                 </div>
                 {isDetail && plugin?.publisherKind === 'official' ? <div className="mt-1"><PluginPublisherBadge kind={plugin.publisherKind} /></div> : null}
                 {isDetail && (plugin?.displayAuthor || listedDetail) ? (

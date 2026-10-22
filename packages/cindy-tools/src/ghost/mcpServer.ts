@@ -128,7 +128,7 @@ const D_GHOST_FORGE_GUIDE = [
   "创建、修改、调试、打包或发布 Cindy 插件时使用该 Skill；本工具保留按章读取同一份资料的兼容入口。",
   '不传参数返回目录，传 section（章号如 "4.7" 或标题关键词如 "network"）返回单章正文。',
   "本工具只读文档，不安装或发布插件。",
-  "发布前另读 §2 的 releaseNotes、§7.3 个人发布和 §7.4 署名与匿名。",
+  "发布前另读 §2 的 releaseNotes、§7.3 个人发布和 §7.4 平台署名。",
 ].join("\n");
 
 const D_GHOST_FORGE_SCAFFOLD = [
@@ -1506,22 +1506,22 @@ export function createCindyGhostsMcpServer(
     inputSchema: z.object({ ghost_id: contributionId, namespace: ghostNamespaceInput }).strict() },
     async ({ ghost_id, namespace }) => contribute({ action: 'prepare', ghostId: ghost_id, namespace }));
   server.registerTool('ghost_contribution_submit', {
-    description: '把 ghost_contribution_prepare 刚准备的确切插件公开提交或恢复同一操作。用户已明确委托公开发布时沿当前任务的 Full Access / Auto / Ask 权限执行，不额外要求用户重新授权或最后手动点击；只有安装委托不等于发布委托。不接受文件路径、独立文案、账号或票据。立即返回原操作句柄，接 ghost_contribution_status 查询到终态；202/处理中不等于已提交审核。结果未知先查原操作，再按原句柄 resume，不能换键另建发布操作。权限拒绝时说明原因并停止，不改权限模式重试。官方 public 插件须通过 GitHub 仓库提交修改，以保证源码完整、便于维护；客户端与 Agent 工具均不得提审。',
-    inputSchema: z.object({ prepared_id: contributionId, resume: z.boolean().optional() }).strict() },
-    async ({ prepared_id, resume }) => contribute({ action: resume ? 'resume' : 'submit', id: prepared_id }));
+    description: '把 ghost_contribution_prepare 刚准备的确切插件提交审核。用户已明确委托公开发布时沿当前任务的 Full Access / Auto / Ask 权限执行，不额外要求用户重新授权或最后手动点击；只有安装委托不等于发布委托。不接受文件路径、独立文案、账号或票据。返回本次提交的进度标识，接 ghost_contribution_status 查询到结束；202/处理中不等于已提交审核。不要自行重复发起提交；Host 内部核对尚未确认的同包请求。权限拒绝时说明原因并停止，不改权限模式重试。官方 public 插件须通过 GitHub 仓库提交修改，以保证源码完整、便于维护；客户端与 Agent 工具均不得提审。',
+    inputSchema: z.object({ prepared_id: contributionId }).strict() },
+    async ({ prepared_id }) => contribute({ action: 'submit', id: prepared_id }));
   server.registerTool('ghost_contribution_status', {
-    description: '查询当前个人账号的原发布操作或本机恢复列表。只在当前上传动作处理中有限查询；操作终结后停止轮询人工审核。成功回执 outcome、修订审核状态与市场可用事实分别解释，上传 SHA 不一定是实际 Release SHA。',
-    inputSchema: z.object({ local_id: contributionId.optional() }).strict() },
-    async ({ local_id }) => contribute(local_id ? { action: 'status', id: local_id } : { action: 'transfers' }));
+    description: '查询本次提交的进度。只跟随当前提交，结束后通过 ghost_my_plugins 查看审核结果，不轮询人工审核。成功回执 outcome、修订审核状态与市场可用事实分别解释，上传 SHA 不一定是实际 Release SHA。',
+    inputSchema: z.object({ local_id: contributionId }).strict() },
+    async ({ local_id }) => contribute({ action: 'status', id: local_id }));
   server.registerTool('ghost_contribution_stop', {
-    description: '停止当前上传并保留原操作。停止不代表撤回已提交内容，也不改变审核结果；后续查询原操作再恢复。',
+    description: '停止本次上传。停止不代表取消已提交的审核，也不改变审核结果；已提交内容通过 ghost_my_plugins 查看。',
     inputSchema: z.object({ local_id: contributionId }).strict() }, async ({ local_id }) => contribute({ action: 'cancel', id: local_id }));
   server.registerTool('ghost_cancel_plugin_review', {
     description: '取消本人仍有发布授权的精确待审版本。先从 ghost_my_plugins 读取当前版本、SHA 和 revision；取消不影响当前上架包，且该版本号以后不能再次提审。与停止上传不同；同一次取消可安全重试，批准/驳回已先完成时返回真实审核结果。依任务 Ask/Auto/Full Access 权限执行。',
     inputSchema: z.object({ plugin_id: contributionId, release_id: contributionId, sha256: z.string().regex(/^[a-f0-9]{64}$/), revision: z.string().datetime() }).strict() },
     async ({ plugin_id, release_id, sha256, revision }) => contribute({ action: 'cancel-review', pluginId: plugin_id, release: { releaseId: release_id, sha256, revision } }));
   server.registerTool('ghost_my_plugins', {
-    description: '读取当前个人账号的我的插件列表或精确详情。搜索/筛选/分页由服务端执行；详情分当前市场、最近提交、已留存内容和独立处理历史，退回原因完整返回。只查询本人，不审核、不代修、不发通知。修改作者源码后重新安装并使用，再从当前实例准备发布更新，不直接修改 Host 管理的安装目录。历史内容和 releaseNotes 取对应版本提审快照。个人插件默认匿名，关闭后显示该版提审时保存的原作者昵称；账号改名不自动改变旧版。匿名由固定原作者在“我的插件”管理页名称右侧的 UI 设置，不能靠 ghost.json.author/anonymous 或本工具修改；官方 Cindy 与组织规则不变。',
+    description: '读取当前个人账号的我的插件列表或精确详情。搜索/筛选/分页由服务端执行；详情分当前市场、最近提交、已留存内容和独立处理历史，退回原因完整返回。只查询本人，不审核、不代修、不发通知。修改作者源码后重新安装并使用，再从当前实例准备发布更新，不直接修改 Host 管理的安装目录。历史内容和 releaseNotes 取对应版本提审快照。个人投稿的展示署名暂由服务端返回为空，作者绑定和提审昵称仍完整记录。不从 ghost.json.author 或当前账号昵称补齐。客户端界面与本工具不提供匿名设置；官方 Cindy 与组织规则不变。',
     inputSchema: z.object({ plugin_id: contributionId.optional(), submission_id: contributionId.optional(), query: z.string().max(200).optional(), filter: z.enum(['all', 'pending', 'needs_action', 'published']).optional(), cursor: z.string().max(4096).optional() }).strict() },
     async ({ plugin_id, submission_id, ...input }) => {
       if (submission_id && !plugin_id) return textResult({ ok: false, errorCode: 'INVALID_ARGUMENT' }, true);

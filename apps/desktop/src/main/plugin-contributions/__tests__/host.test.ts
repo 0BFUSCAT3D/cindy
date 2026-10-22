@@ -11,7 +11,7 @@ import type {
   ContributionOperation,
   SubmissionView,
 } from '../../../shared/pluginContributionContract';
-import type { PreparedEntry } from '../prepared';
+import { releasePreparedContribution, type PreparedEntry } from '../prepared';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { PluginMarketLedger } from '../../plugin-market/ledger';
 
@@ -71,7 +71,13 @@ vi.mock('../prepared', () => ({
   assertContributionOwner: (owner: string) => {
     if (owner !== harness.owner) throw new Error('[OWNER_CHANGED] changed');
   },
-  assertPreparedInstallation: vi.fn(),
+  assertPreparedInstallation: (entry: PreparedEntry) => {
+    const { source } = harness.readInstallation(entry.summary.instanceId, {
+      directory: entry.installationDir, approvalToken: entry.approvalToken,
+    });
+    if (JSON.stringify(source) !== entry.publishingSourceKey)
+      throw createIpcError('PRECONDITION_FAILED', 'Publishing source changed');
+  },
   assertPreparedContent: harness.verifyContent,
   readContributionInstallation: harness.readInstallation,
   prepareInstalledContribution: harness.snapshot,
@@ -80,11 +86,12 @@ vi.mock('../prepared', () => ({
 }));
 vi.mock('../api', () => ({
   ContributionApi: class {
+    constructor(private readonly guard?: () => Promise<void>) {}
     readonly owner = harness.owner;
     preflight = harness.preflight;
-    prepare = harness.prepare;
+    prepare = async (...args: unknown[]) => { await this.guard?.(); return harness.prepare(...args); };
     operation = harness.operation;
-    commit = harness.commit;
+    commit = async (...args: unknown[]) => { await this.guard?.(); return harness.commit(...args); };
     list = harness.list;
     detail = harness.detail;
     releases = harness.releases;
@@ -248,7 +255,7 @@ afterEach(async () => {
   await fsp.rm(harness.root, { recursive: true, force: true });
 });
 
-describe('community contribution recovery', () => {
+describe('community submission', () => {
   it('rejects an official market target despite a current submission grant, before reading bytes', async () => {
     harness.ghosts[0].publishingSource = { kind: 'public-market', pluginId: 'canonical-plugin' };
     harness.detail.mockResolvedValue({ ...ownDetail(), plugin: { ...ownPlugin(), publisherKind: 'official' } });
@@ -265,84 +272,15 @@ describe('community contribution recovery', () => {
     expect(harness.prepare).not.toHaveBeenCalled();
     expect(harness.put).not.toHaveBeenCalled();
   });
-  it('refuses further writes when an existing target is now official, while still reading its result', async () => {
-    harness.preflight.mockResolvedValueOnce({ ...(await harness.preflight()), target: {
-      pluginId: 'canonical-plugin', ghostId: 'hello', version: '1.0.0', expectedRelease: null } });
-    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    harness.operation.mockResolvedValueOnce(operation('publishing'));
-    harness.detail.mockResolvedValue({ ...ownDetail(), plugin: { ...ownPlugin(), publisherKind: 'official' } });
-    host.resumeContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].errorCode).toBe('OFFICIAL_PLUGIN_GITHUB_REQUIRED'));
-    expect(harness.operation).toHaveBeenCalledWith('operation-1');
-    expect(harness.prepare).toHaveBeenCalledTimes(1);
-    expect(harness.put).toHaveBeenCalledTimes(1);
-    expect(harness.commit).toHaveBeenCalledTimes(1);
-  });
   it('keeps third-party public targets with a current grant available for preparation', async () => {
     harness.ghosts[0].publishingSource = { kind: 'public-market', pluginId: 'canonical-plugin' };
+    harness.entry!.publishingSourceKey = JSON.stringify(harness.ghosts[0].publishingSource);
     harness.preflight.mockResolvedValueOnce({ ...(await harness.preflight()), target: {
       pluginId: 'canonical-plugin', ghostId: 'hello', version: '1.0.0', expectedRelease: null } });
     harness.detail.mockResolvedValue({ ...ownDetail(), plugin: { ...ownPlugin(), publisherKind: 'personal' } });
     expect(await host.prepareContribution('hello', 'manual')).toMatchObject({ preflight: { actions: { canSubmit: true } } });
     expect(harness.snapshot).toHaveBeenCalled();
     expect(harness.prepare).not.toHaveBeenCalled();
-  });
-  it('queries the old operation but refuses a new commit after publishing ACL is revoked', async () => {
-    harness.preflight.mockResolvedValueOnce({ ...(await harness.preflight()), target: {
-      pluginId: 'canonical-plugin', ghostId: 'hello', version: '1.0.0', expectedRelease: null } });
-    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    harness.operation.mockResolvedValueOnce(operation('publishing'));
-    harness.detail.mockResolvedValue({ plugin: { pluginId: 'canonical-plugin', actions: { canSubmit: false } } });
-    host.resumeContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].errorCode).toBe('PERMISSION_DENIED'));
-    expect(harness.commit).toHaveBeenCalledTimes(1);
-    expect(harness.prepare).toHaveBeenCalledTimes(1);
-    expect(harness.put).toHaveBeenCalledTimes(1);
-  });
-  // Regression: a mid-stream source change previously threw through Transform.
-  // Tier: unit; exercise public submit and its real callback contract, without
-  // duplicating uploader internals or sending any network request.
-  it('aborts a changed installation from the byte callback without throwing or committing', async () => {
-    let callbackReturned = false;
-    let uploadAborted = false;
-    harness.put.mockImplementation(async (_handle, options) => {
-      harness.readInstallation.mockImplementation(() => {
-        throw createIpcError('PRECONDITION_FAILED', 'source replaced during upload');
-      });
-      options.onBytes(1);
-      callbackReturned = true;
-      uploadAborted = options.signal.aborted;
-      throw createIpcError('MUTATION_CANCELLED', 'upload aborted');
-    });
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    expect(callbackReturned).toBe(true);
-    expect(uploadAborted).toBe(true);
-    expect(harness.commit).not.toHaveBeenCalled();
-  });
-  it('rechecks the AI caller and installation before resuming past the upload phase', async () => {
-    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
-    await host.prepareContribution('hello', 'ai');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    harness.operation.mockResolvedValueOnce(operation('validating'));
-    const caller = vi.fn(async () => { throw createIpcError('PERMISSION_DENIED', 'restricted task'); });
-    host.resumeContribution('prepared-1', caller);
-    await vi.waitFor(() => expect(caller).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    expect(harness.commit).toHaveBeenCalledTimes(1);
-    harness.readInstallation.mockImplementation(() => { throw createIpcError('PRECONDITION_FAILED', 'source replaced'); });
-    harness.operation.mockResolvedValueOnce(operation('validating'));
-    host.resumeContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].errorCode).toBe('PRECONDITION_FAILED'));
-    expect(harness.commit).toHaveBeenCalledTimes(1);
   });
   it('does not read downloaded package bytes when detail visibility lacks publishing ACL', async () => {
     harness.ghosts[0].publishingSource = { kind: 'public-market', pluginId: 'canonical-plugin' };
@@ -358,7 +296,7 @@ describe('community contribution recovery', () => {
     harness.prepare.mockResolvedValueOnce(response);
     await host.prepareContribution('hello', 'manual');
     await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
+    await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1').stage).toBe('complete'));
     expect(harness.put).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({ putUrl: response.upload.putUrl }));
   });
 
@@ -378,7 +316,7 @@ describe('community contribution recovery', () => {
     harness.prepare.mockResolvedValueOnce(response);
     await host.prepareContribution('hello', 'manual');
     await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0]).toMatchObject({ stage: 'paused', errorCode: 'PRECONDITION_FAILED' }));
+    await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1')).toMatchObject({ stage: 'complete', errorCode: 'PRECONDITION_FAILED' }));
     expect(harness.put).not.toHaveBeenCalled();
     expect(harness.commit).not.toHaveBeenCalled();
   });
@@ -391,90 +329,8 @@ describe('community contribution recovery', () => {
     harness.prepare.mockResolvedValueOnce(response);
     await host.prepareContribution('hello', 'manual');
     await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0]).toMatchObject({ stage: 'paused', errorCode: 'PRECONDITION_FAILED' }));
+    await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1')).toMatchObject({ stage: 'complete', errorCode: 'PRECONDITION_FAILED' }));
     expect(harness.put).not.toHaveBeenCalled();
-  });
-
-  it('replays the same prepare body and key after a lost response, uploading the pinned bytes', async () => {
-    harness.prepare.mockRejectedValueOnce(new Error('response lost after server acceptance'));
-    const prepared = await host.prepareContribution('hello', 'manual');
-    await host.submitContribution(prepared.preparedId);
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    const first = structuredClone(harness.prepare.mock.calls[0]);
-    host.resumeContribution(prepared.preparedId);
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
-    expect(harness.prepare.mock.calls[1]).toEqual(first);
-    expect(harness.put).toHaveBeenCalledTimes(1);
-    const result = host.listContributionTransfers()[0];
-    // A metadata update keeps the existing Release package; upload SHA is separate.
-    expect(result.operation?.receipt?.releaseRevision.sha256).toBe('b'.repeat(64));
-    expect(result.operation?.receipt?.uploadedPackage.sha256).toBe(sha);
-  });
-
-  it('queries an unknown commit result before retrying and never starts a second upload', async () => {
-    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    host.resumeContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
-    expect(harness.operation).toHaveBeenCalledWith('operation-1');
-    expect(harness.commit).toHaveBeenCalledTimes(1);
-    expect(harness.prepare).toHaveBeenCalledTimes(1);
-    expect(harness.put).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(['validating', 'publishing'] as const)(
-    'reclaims a released %s operation by replaying commit after the initial GET',
-    async (status) => {
-      harness.commit.mockRejectedValueOnce(
-        new Error('server lease released after a temporary failure'),
-      );
-      await host.prepareContribution('hello', 'manual');
-      await host.submitContribution('prepared-1');
-      await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-      const calls: string[] = [];
-      harness.operation.mockImplementationOnce(async () => {
-        calls.push('get');
-        return operation(status);
-      });
-      harness.commit.mockImplementationOnce(async (id) => {
-        calls.push(`commit:${id}`);
-        return { subject, operationId: id, status };
-      });
-      host.resumeContribution('prepared-1');
-      await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
-      expect(calls).toEqual(['get', 'commit:operation-1']);
-      expect(harness.commit).toHaveBeenCalledTimes(2);
-      expect(harness.prepare).toHaveBeenCalledTimes(1);
-      expect(harness.put).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it('does not write an old generation catch over the restored account journal', async () => {
-    const old = deferred<ReturnType<typeof uploadResponse>>();
-    harness.prepare.mockImplementationOnce(() => old.promise);
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(harness.prepare).toHaveBeenCalledTimes(1));
-    harness.owner = `B:${testGeneration}:2`;
-    expect(host.listContributionTransfers()).toEqual([]);
-    harness.owner = `A:${testGeneration}:3`;
-    expect(host.listContributionTransfers()[0].stage).toBe('paused');
-    host.resumeContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
-    const file = path.join(
-      harness.root,
-      'plugin-contributions',
-      `${crypto.createHash('sha256').update('A').digest('hex').slice(0, 20)}.v1.json`,
-    );
-    const completed = fs.readFileSync(file, 'utf8');
-    old.reject(new Error('late timeout from A:1'));
-    await old.promise.catch(() => undefined);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(fs.readFileSync(file, 'utf8')).toBe(completed);
-    expect(host.listContributionTransfers()[0].stage).toBe('complete');
   });
 
   it('keeps 202 as processing without inventing a pending submission', async () => {
@@ -483,66 +339,169 @@ describe('community contribution recovery', () => {
     await host.prepareContribution('hello', 'manual');
     await host.submitContribution('prepared-1');
     await vi.waitFor(() => expect(harness.operation).toHaveBeenCalledTimes(1));
-    const result = host.listContributionTransfers()[0];
+    const result = host.contributionTransferStatus('prepared-1');
     expect(result.stage).toBe('processing');
     expect(result.operation?.receipt).toBeNull();
     expect(result.operation?.submission).toBeNull();
     expect(harness.ghosts[0].publishingSource).toEqual({ kind: 'local', source: 'manual' });
     query.resolve(operation('succeeded'));
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
-    expect(host.listContributionTransfers()[0].stage).toBe('complete');
+    await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1').stage).toBe('complete'));
+    expect(host.contributionTransferStatus('prepared-1').stage).toBe('complete');
   });
 
-  it('refuses out-of-bounds cleanup paths loaded from a recovery journal', async () => {
-    harness.prepare.mockRejectedValueOnce(new Error('offline'));
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    const file = path.join(
-      harness.root,
-      'plugin-contributions',
-      `${crypto.createHash('sha256').update('A').digest('hex').slice(0, 20)}.v1.json`,
-    );
-    const outside = path.join(harness.root, 'keep-user-data');
-    await fsp.mkdir(outside);
-    await fsp.writeFile(path.join(outside, 'keep.txt'), 'keep');
-    const records = JSON.parse(fs.readFileSync(file, 'utf8'));
-    records[0].directory = outside;
-    records[0].operationId = 'operation-1';
-    fs.writeFileSync(file, JSON.stringify(records));
-    harness.owner = `A:${testGeneration}:2`; // Reload from disk under a fresh owner generation.
-    await expect(host.contributionTransferStatus('prepared-1')).rejects.toThrow(
-      'Invalid contribution snapshot location',
-    );
-    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('keep');
-    expect(host.listContributionTransfers()[0].stage).toBe('paused');
-  });
-});
-
-
-describe('admission summary and transfer ownership', () => {
-  it('reuses the unfinished submission from a new preview of the same package content', async () => {
-    const gate = deferred<ReturnType<typeof uploadResponse>>();
-    harness.prepare.mockRejectedValueOnce(new Error('network interrupted'));
-    await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('paused'));
-    harness.prepare.mockReturnValueOnce(gate.promise);
-    harness.entry = { ...harness.entry!, pinned: false,
-      summary: { ...harness.entry!.summary, preparedId: 'prepared-2', sha256: 'c'.repeat(64) },
+  // Unit regressions through prepare/submit/status: removing upload recovery must
+  // preserve owner/ACL guards and prevent a lost commit from submitting twice.
+  function pendingRows(): unknown[] {
+    const dir = path.join(harness.root, 'plugin-contributions');
+    const file = fs.existsSync(dir) && fs.readdirSync(dir).find(name => name.startsWith('pending-'));
+    return file ? JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) : [];
+  }
+  async function prepareAgain(id = 'prepared-2') {
+    harness.entry = { ...harness.entry!, owner: harness.owner, pinned: false,
+      summary: { ...harness.entry!.summary, preparedId: id },
       idempotencyKey: '00000000-0000-4000-8000-000000000003' };
+    return host.prepareContribution('hello', 'manual');
+  }
+  async function finished(id = 'prepared-1') {
+    await vi.waitFor(() => expect(host.contributionTransferStatus(id).stage).toBe('complete'));
+    return host.contributionTransferStatus(id);
+  }
+  it('releases a failed pre-commit snapshot without creating persistent upload history', async () => {
+    harness.prepare.mockRejectedValueOnce(new Error('prepare response lost'));
     await host.prepareContribution('hello', 'manual');
-    const result = await host.submitContribution('prepared-2');
-    expect(result.localId).toBe('prepared-1');
-    expect(result.stage).toBe('prepared');
-    expect(result.errorCode).toBeNull();
-    expect(host.listContributionTransfers()).toHaveLength(1);
-    await vi.waitFor(() => expect(harness.prepare).toHaveBeenCalledTimes(2));
+    await host.submitContribution('prepared-1');
+    expect((await finished()).errorCode).toBe('INTERNAL');
+    expect(pendingRows()).toEqual([]);
+    expect(harness.put).not.toHaveBeenCalled();
+    expect(harness.commit).not.toHaveBeenCalled();
+    expect(releasePreparedContribution).toHaveBeenCalledWith('prepared-1');
+  });
+  it('resolves a lost commit through the normal submit action without re-uploading or saving terminal history', async () => {
+    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    await finished();
+    expect(pendingRows()).toEqual([expect.objectContaining({ operationId: 'operation-1', contentSha256: sha })]);
+    expect(JSON.stringify(pendingRows())).not.toContain('plugin.cindy');
+    expect(JSON.stringify(pendingRows())).not.toContain('receipt');
+    await prepareAgain();
+    await host.submitContribution('prepared-2');
+    const result = await finished('prepared-2');
+    expect(result.operation?.receipt?.uploadedPackage.sha256).toBe(sha);
+    expect(result.operation?.receipt?.releaseRevision.sha256).toBe(revision.sha256);
+    expect(harness.prepare).toHaveBeenCalledTimes(1);
+    expect(harness.put).toHaveBeenCalledTimes(1);
+    expect(harness.commit).toHaveBeenCalledTimes(1);
+    expect(pendingRows()).toEqual([]);
+  });
+  it.each(['validating', 'publishing'] as const)('confirms the same %s commit without a separate resume capability', async status => {
+    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    await finished();
+    const calls: string[] = [];
+    harness.operation.mockImplementationOnce(async () => { calls.push('get'); return operation(status); });
+    harness.commit.mockImplementationOnce(async () => { calls.push('commit'); });
+    await prepareAgain();
+    await host.submitContribution('prepared-2');
+    expect((await finished('prepared-2')).operation?.status).toBe('succeeded');
+    expect(calls).toEqual(['get', 'commit']);
+    expect(harness.prepare).toHaveBeenCalledTimes(1);
+    expect(harness.put).toHaveBeenCalledTimes(1);
+    expect(harness.commit).toHaveBeenCalledTimes(2);
+  });
+  it.each(['revoked', 'official'] as const)('refuses another write when the pending target becomes %s', async condition => {
+    harness.preflight.mockResolvedValue({ ...(await harness.preflight()), target: {
+      pluginId: 'canonical-plugin', ghostId: 'hello', version: '1.0.0', expectedRelease: null } });
+    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    await finished();
+    await prepareAgain();
+    harness.operation.mockResolvedValueOnce(operation('publishing'));
+    harness.detail.mockResolvedValue({ ...ownDetail(), plugin: { ...ownPlugin(),
+      publisherKind: condition === 'official' ? 'official' : 'personal',
+      actions: { canSubmit: condition !== 'revoked', canViewMarket: true } } });
+    await host.submitContribution('prepared-2');
+    expect((await finished('prepared-2')).errorCode).toBe(condition === 'official' ? 'OFFICIAL_PLUGIN_GITHUB_REQUIRED' : 'PERMISSION_DENIED');
+    expect(harness.operation).toHaveBeenCalledWith('operation-1');
+    expect(harness.commit).toHaveBeenCalledTimes(1);
+    expect(harness.put).toHaveBeenCalledTimes(1);
+  });
+  it('does not start another version while an earlier commit remains unconfirmed', async () => {
+    harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    await finished();
+    await prepareAgain();
+    harness.entry!.contentSha256 = 'c'.repeat(64);
+    harness.operation.mockResolvedValueOnce(operation('publishing'));
+    await host.submitContribution('prepared-2');
+    expect((await finished('prepared-2')).errorCode).toBe('INTERNAL');
+    expect(harness.commit).toHaveBeenCalledTimes(1);
+    expect(harness.prepare).toHaveBeenCalledTimes(1);
+    expect(pendingRows()).toHaveLength(1);
+  });
+  it('keeps duplicate clicks on the same active submission instead of starting another upload', async () => {
+    const gate = deferred<ReturnType<typeof uploadResponse>>();
+    harness.prepare.mockReturnValueOnce(gate.promise);
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    await prepareAgain();
+    const duplicate = await host.submitContribution('prepared-2');
+    expect(duplicate.localId).toBe('prepared-1');
     gate.resolve(uploadResponse());
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
+    await finished();
+    expect(harness.prepare).toHaveBeenCalledTimes(1);
     expect(harness.put).toHaveBeenCalledTimes(1);
     expect(harness.commit).toHaveBeenCalledTimes(1);
   });
+  it('aborts a changed installation from the byte callback without throwing or committing', async () => {
+    let callbackReturned = false;
+    let uploadAborted = false;
+    harness.put.mockImplementation(async (_handle, options) => {
+      harness.readInstallation.mockImplementation(() => { throw createIpcError('PRECONDITION_FAILED', 'installation changed'); });
+      options.onBytes(1);
+      callbackReturned = true;
+      uploadAborted = options.signal.aborted;
+      throw createIpcError('MUTATION_CANCELLED', 'upload aborted');
+    });
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    expect((await finished()).errorCode).toBe('MUTATION_CANCELLED');
+    expect(callbackReturned && uploadAborted).toBe(true);
+    expect(harness.commit).not.toHaveBeenCalled();
+  });
+  it('rechecks the accepted AI permission before commit after an asynchronous upload', async () => {
+    const caller = vi.fn(async () => undefined);
+    harness.put.mockImplementationOnce(async () => {
+      caller.mockRejectedValue(createIpcError('PERMISSION_DENIED', 'task permissions changed'));
+    });
+    await host.prepareContribution('hello', 'ai');
+    await host.submitContribution('prepared-1', caller);
+    expect((await finished()).errorCode).toBe('PERMISSION_DENIED');
+    expect(harness.put).toHaveBeenCalledTimes(1);
+    expect(harness.commit).not.toHaveBeenCalled();
+  });
+  it('does not let an old account generation overwrite a newly confirmed result', async () => {
+    const gate = deferred<void>();
+    harness.commit.mockReturnValueOnce(gate.promise);
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    await vi.waitFor(() => expect(harness.commit).toHaveBeenCalledTimes(1));
+    harness.owner = `A:${testGeneration}:2`;
+    await prepareAgain();
+    await host.submitContribution('prepared-2');
+    await finished('prepared-2');
+    expect(pendingRows()).toEqual([]);
+    gate.reject(new Error('late failure from the old owner'));
+    await vi.waitFor(() => expect(releasePreparedContribution).toHaveBeenCalledWith('prepared-1'));
+    expect(pendingRows()).toEqual([]);
+    expect(host.contributionTransferStatus('prepared-2').operation?.status).toBe('succeeded');
+  });
+});
+
+describe('submission preview ownership', () => {
   it('never starts an operation when the displayed package has changed', async () => {
     await host.prepareContribution('hello', 'manual');
     harness.verifyContent.mockRejectedValueOnce(new Error('[CONTRIBUTION_PACKAGE_CHANGED] changed'));
@@ -558,7 +517,7 @@ describe('admission summary and transfer ownership', () => {
     await host.discardContribution('prepared-1');
     expect(await fsp.readFile(harness.entry!.filePath)).toEqual(bytes);
     gate.resolve(uploadResponse());
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
+    await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1').stage).toBe('complete'));
   });
   it('keeps a first submission without release notes eligible when the server allows it', async () => {
     delete harness.entry!.summary.releaseNotes;
@@ -660,7 +619,7 @@ describe('author installation projection', () => {
     } });
     expect(harness.snapshot).not.toHaveBeenCalled();
     expect(harness.prepare).not.toHaveBeenCalled();
-    expect(host.listContributionTransfers()).toEqual([]);
+    expect(harness.commit).not.toHaveBeenCalled();
   });
   it('does not match another ID or organization namespace, even with the same display name', async () => {
     const original = harness.ghosts[0];
@@ -678,8 +637,8 @@ describe('author installation projection', () => {
   it('does not change the local source after a submission succeeds', async () => {
     await host.prepareContribution('hello', 'manual');
     await host.submitContribution('prepared-1');
-    await vi.waitFor(() => expect(host.listContributionTransfers()[0].stage).toBe('complete'));
-    expect(host.listContributionTransfers()[0].operation?.status).toBe('succeeded');
+    await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1').stage).toBe('complete'));
+    expect(host.contributionTransferStatus('prepared-1').operation?.status).toBe('succeeded');
     expect((await localView()).localInstallation).toMatchObject({ state: 'installed', origin: 'local' });
     expect(harness.ghosts).toHaveLength(1);
   });

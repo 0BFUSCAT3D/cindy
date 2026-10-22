@@ -2210,9 +2210,7 @@ describe('personal community author MCP transport', () => {
       for (const [name, args] of [
         ['ghost_contribution_prepare', { ghost_id: 'hello', namespace: null }],
         ['ghost_contribution_submit', { prepared_id: 'original-operation' }],
-        ['ghost_contribution_submit', { prepared_id: 'original-operation', resume: true }],
         ['ghost_contribution_status', { local_id: 'original-operation' }],
-        ['ghost_contribution_status', {}],
         ['ghost_contribution_stop', { local_id: 'original-operation' }],
         ['ghost_cancel_plugin_review', { plugin_id: 'plugin-1', release_id: 'release-1', sha256: 'a'.repeat(64), revision: '2026-10-16T00:00:00.000Z' }],
         ['ghost_my_plugins', { query: 'hello', filter: 'needs_action', cursor: 'list-cursor' }],
@@ -2224,9 +2222,7 @@ describe('personal community author MCP transport', () => {
       expect(communityContribution.mock.calls.map(([input]) => input)).toEqual([
         { action: 'prepare', ghostId: 'hello', namespace: null },
         { action: 'submit', id: 'original-operation' },
-        { action: 'resume', id: 'original-operation' },
         { action: 'status', id: 'original-operation' },
-        { action: 'transfers' },
         { action: 'cancel', id: 'original-operation' },
         { action: 'cancel-review', pluginId: 'plugin-1', release: { releaseId: 'release-1', sha256: 'a'.repeat(64), revision: '2026-10-16T00:00:00.000Z' } },
         { action: 'list', query: 'hello', filter: 'needs_action', cursor: 'list-cursor' },
@@ -2243,6 +2239,8 @@ describe('personal community author MCP transport', () => {
     try {
       for (const [name, args] of [
         ['ghost_contribution_prepare', { ghost_id: 'hello', file: '/private/package.cindy' }],
+        ['ghost_contribution_submit', { prepared_id: 'original-operation', resume: true }],
+        ['ghost_contribution_status', {}],
         ['ghost_contribution_submit', { prepared_id: 'original-operation', authority: 'other-issuer' }],
         ['ghost_contribution_status', { local_id: 'original-operation', token: 'not-a-host-token' }],
         ['ghost_contribution_stop', { local_id: 'original-operation', membershipId: 'other' }],
