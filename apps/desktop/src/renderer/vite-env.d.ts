@@ -4854,6 +4854,7 @@ interface ElectronAPI {
         providerId?: string | null;
         /** Only the Cindy Make purpose may be requested; Main validates the checkout. */
         source?: 'cindy-make';
+        provisional?: boolean;
       }) => Promise<import('@/lib/ccAgent.types').Session>;
       get: (id: string) => Promise<import('@/lib/ccAgent.types').Session>;
       getMany: (ids: string[]) => Promise<import('@/lib/ccAgent.types').Session[]>;
@@ -4960,6 +4961,13 @@ interface ElectronAPI {
         session: import('@/lib/ccAgent.types').Session;
       }>;
       history: (botId: string) => Promise<unknown[]>;
+      dmThread: {
+        ensure: (body: { botId: string; rootSessionId: string; rootClientId: string; title?: string }) => Promise<
+          | { ok: true; sessionId: string; created: boolean }
+          | { ok: false; errorCode: 'BOT_UNAVAILABLE' | 'NO_MODEL' | 'ROOT_UNAVAILABLE'; message: string }
+        >;
+        list: (body: { botId: string; rootSessionId: string }) => Promise<import('../shared/botDmThread').BotDmThreadSummary[]>;
+      };
       todos: {
         list: (botId:string) => Promise<{items:import('@cindy/maker-shared/teammate-todo').TeammateTodo[];version:1}>;
         update: (botId:string, patch:import('@cindy/maker-shared/teammate-todo').TodoPatch) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo>;
@@ -5519,7 +5527,7 @@ interface ElectronAPI {
       input: import('../shared/botGroupChat').BotGroupSendInput,
     ) => Promise<import('../shared/botGroupChat').BotGroupSendResult>;
     continueBotGroupRound: (groupId: string) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
-    stopBotGroupRound: (groupId: string) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
+    stopBotGroupRound: (groupId: string, scope?: 'all') => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
     startBotGroupPlan: (
       input: import('../shared/botGroupChat').BotGroupPlanActionInput,
     ) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
@@ -6489,6 +6497,9 @@ interface ElectronAPI {
     setEffort: (sessionId: string, effort: string) => Promise<void>;
     /** 输入框开始打字时提前启动 Agent；尽力而为。 */
     prewarmSession?: (sessionId: string, createOpts: unknown) => Promise<{ accepted: boolean }>;
+    /** 新建页的未发送任务：清空输入时删除 / 第一次发送前转为普通任务（仅本机）。 */
+    discardProvisionalSession?: (sessionId: string) => Promise<{ discarded: boolean; remaining?: boolean }>;
+    commitProvisionalSession?: (sessionId: string) => Promise<{ committed: boolean }>;
     setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
     getPluginWriteAccessRecovery: (sessionId: string) => Promise<{available: boolean}>;
     retryPluginWriteAccess: (sessionId: string) => Promise<{granted: boolean; mode?: 'acceptEdits' | 'auto'}>;

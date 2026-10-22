@@ -357,6 +357,7 @@ import {
   replaceComposerTextRange,
   serializeComposerDocument,
   sessionLinkComposerNode,
+  todoReferenceComposerNode,
   slashCommandTextNode,
   textComposerDocument,
   type ComposerDocument,
@@ -610,6 +611,7 @@ import {
 } from '@/session/sessionEmptyState';
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
+import { confirmArchiveWithSchedules, loadActiveBoundScheduleNames } from '@/session/archiveScheduleConfirm';
 import { markSessionScheduleRunsRead, unreadRunIdFromProjection } from '@/session/scheduleRunRead';
 import { useRemoteScheduleEventSnapshot } from '@/scheduler/remoteScheduleEvents';
 import { buildSessionNativeShellLayout } from '@/session/mobileNativeShellLayout';
@@ -882,7 +884,10 @@ const ENQUEUE_RECONNECT_BACKOFF_MS = 300;
  * 闪一下、计时还被重置回 0s。真停了推迟这点时间熄灭无感,交接空隙则被吃掉。
  */
 const COMPOSER_ACTIVITY_SETTLE_MS = 600;
-/** 打字预热提醒的最短间隔；被控端每次提醒都会顺延预热进程的空闲回收。 */
+/**
+ * 打字预热提醒的最短间隔；被控端每次提醒都会顺延预热进程的空闲回收。换了模型、深度、
+ * 权限、引擎或目录时被控端可能已关掉旧进程，下一次输入立即重新提醒。
+ */
 const MOBILE_AGENT_PREWARM_INTERVAL_MS = 30_000;
 /** 另一台电脑的目录还没读到时的空供应商列表(稳定引用,不触发下游 memo 重算)。 */
 const EMPTY_PROVIDER_VIEWS: readonly ProviderView[] = [];
@@ -3268,17 +3273,27 @@ function SessionScreenContent() {
     enqueueUploads, getPendingUploadCount, onError: setAttachmentError,
   });
 
-  // 开始打字时请被控端提前启动 Agent，把冷启动藏进打字时间。同一任务 30 秒最多提醒一次；
+  // 开始打字（含粘贴）或开始语音输入时请被控端提前启动 Agent，把冷启动藏进输入时间。同一任务 30 秒最多提醒一次；
   // 任务在跑、在排队编辑或旧被控端不支持时什么都不做。
-  const lastAgentPrewarmAtRef = useRef(0);
+  const lastAgentPrewarmRef = useRef<{ at: number; settings: string } | null>(null);
   const prewarmAgentOnTyping = useCallback(() => {
     if (queueEditingRef.current) return;
-    const now = Date.now();
-    if (now - lastAgentPrewarmAtRef.current < MOBILE_AGENT_PREWARM_INTERVAL_MS) return;
     const session = remoteSessionStore.getSessions().find((item) => item.id === sessionId) ?? currentSession;
     if (!session?.workingDir || remoteSessionStore.isSessionRunning(sessionId)) return;
-    lastAgentPrewarmAtRef.current = now;
+    const now = Date.now();
     const { createOpts } = buildQueuedTextMessage(session, '', new Date(now));
+    const settings = JSON.stringify([
+      createOpts.agentKind,
+      createOpts.workingDir,
+      createOpts.model,
+      createOpts.providerId ?? null,
+      createOpts.effort,
+      createOpts.permissionMode,
+      createOpts.fastMode ?? null,
+    ]);
+    const last = lastAgentPrewarmRef.current;
+    if (last && last.settings === settings && now - last.at < MOBILE_AGENT_PREWARM_INTERVAL_MS) return;
+    lastAgentPrewarmRef.current = { at: now, settings };
     void maker.prewarmSession(sessionId, createOpts).catch(() => undefined);
   }, [currentSession, maker, sessionId]);
   const applyTypedComposerChange = useCallback((value: ComposerDocument) => {
@@ -5487,6 +5502,8 @@ function SessionScreenContent() {
       || voiceState === 'listening'
       || voiceIsProcessing
     ) return;
+    // 开始语音输入和打字一样，是要发消息的信号。
+    prewarmAgentOnTyping();
     voiceStopAfterStartRef.current = false;
     setVoiceError(null);
     setVoiceReleaseToSendActive(false);
@@ -5716,7 +5733,7 @@ function SessionScreenContent() {
       setVoiceState('error');
       setVoiceError(formatRemoteError(err));
     }
-  }, [deviceId, openLink, renderItems, t, voiceIsProcessing, voiceState, writeVoiceDraft]);
+  }, [deviceId, openLink, prewarmAgentOnTyping, renderItems, t, voiceIsProcessing, voiceState, writeVoiceDraft]);
 
   const cancelVoiceForAppBackground = useCallback(() => {
     const controller = voiceControllerSessionRef.current;
@@ -9584,6 +9601,16 @@ function SessionScreenContent() {
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }, [applyComposerDocument, canUseComposer, currentSession, deviceId, messages, sessionId]);
 
+  // 伙伴近况里点一条待办：作为待办引用放进输入框，主人写一句话交代，伙伴按话更新它。
+  const quoteTodoInComposer = useCallback((todo: { id: string; title: string }) => {
+    if (!canUseComposer || !companionResource) return;
+    const node = todoReferenceComposerNode({ botId: companionResource.ref.id, todoId: todo.id, title: todo.title });
+    const editor = composerInputRef.current;
+    if (editor) editor.insertNode(node);
+    else applyComposerDocument(appendComposerNode(composerDocumentRef.current, node));
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [applyComposerDocument, canUseComposer, companionResource]);
+
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;
     // 运行中能否删由被控端判定:点停止后本地运行态可能晚于被控端收敛,
@@ -9685,6 +9712,8 @@ function SessionScreenContent() {
         resource={companionResource} deviceId={deviceId} deviceName={deviceName} online={!remoteUnavailableReason} controlsReady={companionEntry.ready}
         settingsRequest={companionSettingsRequest?.sessionId === sessionId ? companionSettingsRequest : undefined}
         working={!!companionWorkingLabel}
+        sessionId={sessionId ?? ''}
+        onQuoteTodo={quoteTodoInComposer}
         onSearch={() => setSearchOpen(true)}
         onBack={goBackToHome} />
     </> : <SessionHeaderBar
@@ -9850,6 +9879,9 @@ function SessionScreenContent() {
             initialView={menuInitialView}
             keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
             onArchive={() => patchSessionMeta({ status: 'archived' })}
+            confirmArchive={async () => confirmArchiveWithSchedules(t, deviceId
+              ? await loadActiveBoundScheduleNames({ deviceId, invoke, sessionId, source: sessionSourceForSchedule })
+              : [])}
             onClose={() => setSettingsOpen(false)}
             onClosed={handleSessionMenuClosed}
             onDelete={() => patchSessionMeta({ status: 'deleted' })}
@@ -10876,7 +10908,10 @@ function SessionScreenContent() {
                 composerSendUnavailableReason={canUseComposer ? null : composerDisabledReason}
                 attachmentCount={attachments.length}
                 pendingUploadCount={pendingUploads.length}
-                onPasteImages={(uris) => void addPastedImageAttachments(uris)}
+                onPasteImages={(uris) => {
+                  prewarmAgentOnTyping();
+                  void addPastedImageAttachments(uris);
+                }}
                 onDragActiveChange={handleComposerDragActiveChange}
                 onInputTopLayout={handleComposerInputTopLayout}
                 composerPullThrough={composerPullThrough}

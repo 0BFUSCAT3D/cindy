@@ -94,3 +94,15 @@ it('群聊不打开链接:段落和表格链接不加下划线,强调样式仍�
     expect(styleOf(label).textDecorationLine).toBeUndefined();
   }
 });
+
+// #6550: real group-body renderer must not reinterpret literal component text as markup.
+it('keeps component literal punctuation and Markdown formatting distinct', async () => {
+  const content = '```cindy-ui\n' + [
+    { seq: 1, version: 1, op: 'create', id: 'literal', kind: 'text', props: { text: '<name> *literal* & \n    indented' } },
+    { seq: 2, op: 'create', id: 'md', kind: 'markdown', props: { text: '**authored bold**' } },
+  ].map(item => JSON.stringify(item)).join('\n') + '\n```';
+  await act(async () => root.render(createElement(BotGroupMarkdownText, { content, authorKind: 'bot' })));
+  expect(node.textContent).toContain('<name> *literal* & \n    indented');
+  expect(styleOf('authored bold')).toMatchObject({ fontWeight: '600' });
+  expect(node.textContent).not.toContain('"op":"create"');
+});

@@ -41,6 +41,7 @@ import type { UsageLimitRecoverySnapshot } from './usageLimitRecoveryStore.js';
 import { createLogger } from '../logger.js';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, readAutoReviewUserText } from './autoReviewUserIntent.js';
 import { createMessage as createDbMessage } from '../localDb/ipc/messages.js';
+import { REPLY_QUOTE_SOURCE_CONTENT } from './chatReplyQuoteNote.js';
 import { touchUserSendInDb } from '../localDb/ipc/sessions.js';
 import {
   isAcceptedTurnContinuationOnlyReason,
@@ -221,6 +222,8 @@ export interface AgentInputSendOpts {
   toolsDisabled?: boolean;
   readonly [AUTO_REVIEW_SOURCE_CONTENT]?: string;
   readonly [AUTO_REVIEW_USER_INTENT]?: string;
+  /** Persisted content of the queued message; the steer path reads its reply quote. */
+  readonly [REPLY_QUOTE_SOURCE_CONTENT]?: string;
   messageUuid?: string;
   userName?: string;
   throwOnStartFailure?: boolean;
@@ -445,6 +448,7 @@ export interface AgentInputCoordinatorDeps {
    * (docs/product-rules/provider-groups.md §6.1)。返回换电脑的原因时，这次错误照常成为当前状态
    * (重试入口、限额等待候选都绑定它)，只是先不呈现：投影里不带 error，改带「正在换一台电脑继续」，
    * 直到 host 调 `releaseProviderGroupSwitchHold`，或续跑 / 用户接手换掉了这次错误。
+   * 过载时先问这个判定：能换电脑就跳过通用同机自动续跑，及时消费受邀者的切换凭证。
    */
   providerGroupSwitchCandidate?: (
     sessionId: string,
@@ -470,7 +474,12 @@ export interface AgentInputCoordinatorDeps {
    */
   onResumableTurnErrorDiscarded?: (
     sessionId: string,
-    options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner },
+    options: {
+      surfaceError: boolean;
+      owner: SuppressedTurnErrorOwner;
+      /** 自愈候选改由供应商组接管：把暂存的失败交给这次登记，继续先不呈现。 */
+      providerGroupSwitchHoldId?: number;
+    },
   ) => void;
   /** 在 vendor dispatch 前读取用户选中的本地/在线会话引用。 */
   resolveSessionReferences?: (
@@ -2610,6 +2619,7 @@ export class AgentInputCoordinator {
           ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const } : {}),
         ...(typeof item.autoReviewUserText !== 'object' && readAutoReviewUserText(item.persistedContent) === null
           ? { [AUTO_REVIEW_USER_INTENT]: queuedAutoReviewText(item) } : {}),
+        ...(typeof item.persistedContent === 'string' ? { [REPLY_QUOTE_SOURCE_CONTENT]: item.persistedContent } : {}),
         messageUuid,
         userName: item.userName,
         signal: AbortSignal.any([inputBoundarySignal, steerAbort.signal]),
@@ -6525,8 +6535,12 @@ export class AgentInputCoordinator {
     item: AgentInputQueuedMessage,
     message?: string,
     signals?: Omit<InterruptedTurnErrorSignals, 'message'>,
+    preferProviderGroup = true,
   ): AutoResumeInfo | null {
     if (!this.deps.onResumableTurnError) return null;
+    // 容量错误已经走到终态：组能接管时直接交接，不再叠加主进程的同机重试。
+    // 其他中断仍先走自愈(如断线后在原电脑恢复)；不能交给组的输入也保持原有处理。
+    if (preferProviderGroup && this.getProviderGroupSwitchCandidate(sessionId, item, message, signals) === 'overload') return null;
     try {
       return (
         this.deps.onResumableTurnError(sessionId, { ...(signals ?? {}), message }, item) ?? null
@@ -6688,7 +6702,11 @@ export class AgentInputCoordinator {
   /** 被按住的 error 没能走到决策 → 通知 host 补落 error 行（不变量 I2）。 */
   private notifyResumableTurnErrorDiscarded(
     sessionId: string,
-    options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner },
+    options: {
+      surfaceError: boolean;
+      owner: SuppressedTurnErrorOwner;
+      providerGroupSwitchHoldId?: number;
+    },
   ): void {
     try {
       this.deps.onResumableTurnErrorDiscarded?.(sessionId, options);
@@ -6752,14 +6770,8 @@ export class AgentInputCoordinator {
     // Scheduled quota waits belong to the runner; do not hide their error behind
     // a provider-group takeover that this scheduled path does not start.
     if (isSchedulerOriginItem(item)) return;
-    const candidate = this.deps.providerGroupSwitchCandidate;
-    if (!candidate || !this.willNotifyUsageLimitedTurnError(state, item)) return;
-    let cause: AutoResumeAgentSwitchCause | null = null;
-    try {
-      cause = candidate(sessionId, { ...(signals ?? {}), message }, item);
-    } catch (err) {
-      log.warn('providerGroupSwitchCandidate failed', { sessionId, error: errorMessage(err) });
-    }
+    if (!this.willNotifyUsageLimitedTurnError(state, item)) return;
+    const cause = this.getProviderGroupSwitchCandidate(sessionId, item, message, signals);
     if (!cause) return;
     state.providerGroupSwitchHold = {
       id: ++this.providerGroupSwitchHoldSeq,
@@ -6767,6 +6779,22 @@ export class AgentInputCoordinator {
       cause,
       info: providerGroupSwitchHoldInfo(cause, message, null),
     };
+  }
+
+  /** 只查询可由组接管的输入；判定不可用时保留通用重试与错误呈现。 */
+  private getProviderGroupSwitchCandidate(
+    sessionId: string,
+    item: AgentInputQueuedMessage,
+    message?: string,
+    signals?: Omit<InterruptedTurnErrorSignals, 'message'>,
+  ): AutoResumeAgentSwitchCause | null {
+    if (!this.deps.onUsageLimitedTurnError || isSchedulerOriginItem(item) || item.sharedTaskAuthor) return null;
+    try {
+      return this.deps.providerGroupSwitchCandidate?.(sessionId, { ...(signals ?? {}), message }, item) ?? null;
+    } catch (err) {
+      log.warn('providerGroupSwitchCandidate failed', { sessionId, error: errorMessage(err) });
+      return null;
+    }
   }
 
   /**
@@ -6816,6 +6844,33 @@ export class AgentInputCoordinator {
   getProviderGroupSwitchHoldId(sessionId: string): number | null {
     const state = this.states.get(sessionId);
     return state && isProviderGroupSwitchHoldLive(state) ? state.providerGroupSwitchHold!.id : null;
+  }
+
+  /** A synchronous group candidate was declined by its async configuration/eligibility check. */
+  resumeAfterProviderGroupDeclined(
+    sessionId: string,
+    token: number,
+    signals: InterruptedTurnErrorSignals,
+    adoptError: (attemptToken: number) => void,
+  ): boolean {
+    const state = this.states.get(sessionId);
+    if (!state || state.activeTurn || !isUsageLimitCandidateCurrent(state, token) || this.isExecutionPaused(sessionId)) return false;
+    const recovery = state.recovery;
+    const item = recovery?.kind === 'active-turn' ? recovery.item
+      : recovery?.kind === 'queue-head' ? state.pendingQueue.find(queued => queued.clientId === recovery.clientId) : null;
+    if (!item) return false;
+    const takeover = this.notifyResumableTurnError(sessionId, item, signals.message, signals, false);
+    if (!takeover) return false;
+    state.autoResumePending = takeover;
+    state.autoResumeAttemptToken = takeover.sessionTotal;
+    state.usageLimitWait = null;
+    state.providerGroupSwitchHold = null;
+    state.error = null;
+    clearErrorProjectionSignals(state);
+    // Transfer suppressed details/terminals before observers see the new owner.
+    adoptError(takeover.sessionTotal);
+    this.emit(sessionId);
+    return true;
   }
 
   /**
@@ -7352,10 +7407,18 @@ export class AgentInputCoordinator {
       } else {
         state.error = terminalEvent.message ?? state.error;
         setErrorProjectionSignals(state, terminalEvent.signals);
+        // 先登记换电脑，再移交候选期暂存的错误；否则 host 会先放出错误卡与 Worker 失败回报。
+        if (outcome === 'kept' && active.item && terminalEvent.supersededByUser !== true) {
+          this.holdForProviderGroupSwitch(
+            sessionId, state, active.item, terminalEvent.message, terminalEvent.signals,
+          );
+        }
         if (deferredPersistSuppressed) {
+          const holdId = this.getProviderGroupSwitchHoldId(sessionId);
           this.notifyResumableTurnErrorDiscarded(sessionId, {
             surfaceError: terminalEvent.supersededByUser !== true,
             owner: { generation: active.generation, clientId: active.item!.clientId },
+            ...(holdId !== null ? { providerGroupSwitchHoldId: holdId } : {}),
           });
         }
         if (schedulerItem && !scheduledQuota) {
@@ -7371,17 +7434,6 @@ export class AgentInputCoordinator {
         outcome === 'kept' &&
         active.item &&
         terminalEvent.supersededByUser !== true;
-      // 与 onTurnEvent 的 persisted 分支对称。这条时序下横幅在持久化期间已经出现过、error 行也已落库，
-      // 这里至少让换电脑期间不再挂着横幅。
-      if (notifyUsageLimited) {
-        this.holdForProviderGroupSwitch(
-          sessionId,
-          state,
-          active.item!,
-          terminalEvent.message,
-          terminalEvent.signals,
-        );
-      }
       this.emit(sessionId);
       if (notifyUsageLimited) {
         this.notifyUsageLimitedTurnError(

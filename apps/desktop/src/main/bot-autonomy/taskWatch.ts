@@ -15,6 +15,7 @@
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 import {
   AUTONOMY_THRESHOLDS,
+  type BotAutonomyExecution,
   type WatchedPhase,
   type WatchedSession,
   type WatchedSource,
@@ -55,10 +56,10 @@ const REMOTE_READ_BATCH = 50;
 
 const USER_SOURCES = new Set(['desktop', 'feishu', 'slack', 'telegram', 'x', 'discord', 'wechat', 'dingtalk', 'wecom', 'shared']);
 /**
- * 伙伴的历史 / 群 / IM 渠道专线不是「任务」，不进表。主任务（canonical）进表：总调度是另一个伙伴时要能
+ * 伙伴的历史 / 私聊话题 / 群 / IM 渠道专线不是「任务」，不进表。主任务（canonical）进表：总调度是另一个伙伴时要能
  * 发现它坏了；但它永远不是主任务所属伙伴自己的事件对象（见 followerFor），也不进它自己的工作台。
  */
-const BOT_LANE_ROLES = new Set(['history', 'group', 'channel']);
+const BOT_LANE_ROLES = new Set(['history', 'thread', 'group', 'channel']);
 
 export interface LocalSessionMeta {
   id: string;
@@ -105,6 +106,7 @@ export interface TaskWatchDeps {
   now(): number;
   log: TaskWatchLogger;
   getActivitySnapshots(): readonly SessionActivitySnapshot[];
+  readSessionExecution?(sessionId: string): BotAutonomyExecution | null;
   /** 本机任务是否有前台工具调用在途（tool_use 已发、tool_result 未回）；只是布尔事实。 */
   isToolCallInFlight(sessionId: string): boolean;
   getPendingInteractions(sessionId: string): readonly unknown[];
@@ -136,6 +138,7 @@ function inputProjectionErrorReason(projection: BotAutonomyInputProjection): str
 
 interface LocalFacts {
   activity: SessionActivitySnapshot | null;
+  execution?: BotAutonomyExecution;
   /** Live activity reached completion before ownership/metadata could create a row. */
   observedCompletion: boolean;
   inputError: string | null;
@@ -256,7 +259,7 @@ export class TaskWatch {
   async start(): Promise<void> {
     await this.refreshOwnership();
     for (const snapshot of this.deps.getActivitySnapshots()) {
-      this.local.set(snapshot.sessionId, { ...this.factsFor(snapshot.sessionId), activity: snapshot });
+      this.local.set(snapshot.sessionId, { ...this.factsFor(snapshot.sessionId), ...this.activityFacts(snapshot) });
       if (this.observesLocal(snapshot.sessionId) || !this.ownershipLoaded) this.pending.add(snapshot.sessionId);
     }
     // 归属没读到时不补「上一轮被打断」的任务：空归属会把它判成没人开、先落到总调度；留给读到归属后的扫描。
@@ -276,7 +279,7 @@ export class TaskWatch {
     const observedCompletion = current?.phase === 'completed' && previous.activity !== null
       && previous.activity.turnGeneration === current.turnGeneration
       && (previous.activity.phase !== 'completed' || previous.observedCompletion);
-    const facts = { ...previous, activity: current, observedCompletion };
+    const facts = { ...previous, ...this.activityFacts(current), observedCompletion };
     if (!current && !facts.inputError && !facts.usageLimitWait) this.local.delete(sessionId);
     else this.local.set(sessionId, facts);
     if (this.observesLocal(sessionId) || !this.ownershipLoaded) this.queue(sessionId);
@@ -309,7 +312,7 @@ export class TaskWatch {
     await this.refreshOwnership(true);
     if (this.stopped) return;
     for (const snapshot of this.deps.getActivitySnapshots()) {
-      this.local.set(snapshot.sessionId, { ...this.factsFor(snapshot.sessionId), activity: snapshot });
+      this.local.set(snapshot.sessionId, { ...this.factsFor(snapshot.sessionId), ...this.activityFacts(snapshot) });
     }
     for (const id of this.local.keys()) if (this.observesLocal(id)) this.pending.add(id);
     if (!this.interruptedSeeded && this.ownershipLoaded) await this.seedInterrupted();
@@ -352,6 +355,17 @@ export class TaskWatch {
 
   private factsFor(sessionId: string): LocalFacts {
     return this.local.get(sessionId) ?? { activity: null, observedCompletion: false, inputError: null, inputErrorReason: null, usageLimitWait: false };
+  }
+
+  private activityFacts(activity: SessionActivitySnapshot | null): Pick<LocalFacts, 'activity' | 'execution'> {
+    const live = activity ? this.deps.readSessionExecution?.(activity.sessionId) : null;
+    const previous = activity ? this.local.get(activity.sessionId) : undefined;
+    // Island snapshots can omit native generation. Capture the live identity
+    // synchronously here, before metadata IO or the next queued turn can run.
+    const execution = live && (activity?.turnGeneration == null || live.generation === activity.turnGeneration) ? { ...live } :
+      activity && previous?.activity?.turnGeneration === activity.turnGeneration
+        && previous.activity.startedAtMs === activity.startedAtMs ? previous.execution : undefined;
+    return { activity, execution };
   }
 
   private queue(sessionId: string): void {
@@ -494,6 +508,7 @@ export class TaskWatch {
       phaseSince,
       lastActivityAt: activity?.lastActivityAtMs ?? previous?.lastActivityAt ?? phaseSince,
       startedAt: activity?.startedAtMs ?? previous?.startedAt ?? null,
+      ...(facts.execution ? { execution: facts.execution } : {}),
       pendingQuestion,
       pendingRequestId,
       pendingInteractionId,

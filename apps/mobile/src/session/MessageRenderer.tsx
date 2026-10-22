@@ -3449,9 +3449,11 @@ function MessageBubble({
   const displayBubbleBody = hasSentInlineAtoms
     ? sentInlineTokensDisplayText(sentInlineTokens)
     : bubbleBody;
+  const draftBody = item.message.draftBody ?? item.message.body;
+  const draftText = item.message.draftBody ?? bubbleBody;
   const composerDraftDocument = useMemo(
     () => (item.message.kind === 'user'
-      ? composerDocumentFromSerializedMessage(item.message.body, {
+      ? composerDocumentFromSerializedMessage(draftBody, {
           quotesEncoded: item.message.quotesEncoded,
           agentReferences: item.message.agentReferences,
           pastedTextRanges: item.message.pastedTextRanges,
@@ -3459,7 +3461,7 @@ function MessageBubble({
         })
       : null),
     [
-      item.message.body,
+      draftBody,
       item.message.agentReferences,
       item.message.kind,
       item.message.pastedTextRanges,
@@ -3643,10 +3645,10 @@ function MessageBubble({
     }
     if (id === 'rewind' && clientId) {
       actions.onPreviewRewind?.(clientId, {
-        document: composerDraftDocument ?? composerDocumentFromSerializedMessage(item.message.body),
-        text: bubbleBody,
+        document: composerDraftDocument ?? composerDocumentFromSerializedMessage(draftBody),
+        text: draftText,
         quotes: messageQuotes,
-        ...(item.message.quotesEncoded === true ? { orderedBody: item.message.body } : {}),
+        ...(item.message.quotesEncoded === true ? { orderedBody: draftBody } : {}),
       });
       return;
     }
@@ -3655,10 +3657,10 @@ function MessageBubble({
         clientId,
         item.message.kind === 'user'
           ? {
-              document: composerDraftDocument ?? composerDocumentFromSerializedMessage(item.message.body),
-              text: bubbleBody,
+              document: composerDraftDocument ?? composerDocumentFromSerializedMessage(draftBody),
+              text: draftText,
               quotes: messageQuotes,
-              ...(item.message.quotesEncoded === true ? { orderedBody: item.message.body } : {}),
+              ...(item.message.quotesEncoded === true ? { orderedBody: draftBody } : {}),
             }
           : undefined,
       );
@@ -3669,11 +3671,11 @@ function MessageBubble({
     }
   }, [
     actions,
-    bubbleBody,
+    draftText,
     clientId,
     composerDraftDocument,
     copyMessage,
-    item.message.body,
+    draftBody,
     item.message.kind,
     item.message.quotesEncoded,
     messageQuotes,

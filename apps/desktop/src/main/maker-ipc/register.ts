@@ -87,7 +87,7 @@ import {
   type ProviderGroupStartContext,
   type ProviderGroupTurnErrorHooks,
 } from '../provider-group/service.js';
-import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
+import { createProviderGroupHeldRecovery, createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
 import { providerGroupSwitchCause } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
@@ -347,6 +347,7 @@ import {
 } from './sessionQueueControl.js';
 import {
   createSessionBindingLifecycle,
+  createSessionCloseTeardown,
   finalizeSessionClose,
   runSessionCloseCleanup,
 } from './sessionBindingLifecycle.js';
@@ -492,6 +493,8 @@ import {
   getSessionRowSnapshot,
   getSessionFsSnapshot,
   getSessionRowSnapshotStrict,
+  commitProvisionalSession,
+  discardProvisionalSessionRow,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
   restoreArchivedSessionForSend,
@@ -600,7 +603,7 @@ import {
   createBotDirectMessageService,
   type BotDirectMessageService,
 } from './botDirectMessageService.js';
-import { createBotGroupChatService, type BotGroupChatService, type BotGroupChatServiceDeps } from './botGroupChatService.js';
+import { createBotGroupChatService, settleBotGroupLaneTerminal, type BotGroupChatService, type BotGroupChatServiceDeps, type BotGroupLaneTerminal } from './botGroupChatService.js';
 import { settleUndispatchedBotGroupTurn } from './botGroupRuntimeFailure.js';
 import { withChatServer } from './chatServer.js';
 import { companionHomes, isCompanionShadowed } from '../companion-cloud/homes.js';
@@ -930,6 +933,7 @@ import {
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
 import { createAgentPrewarmer, isAgentPrewarmEligible } from './agentPrewarm.js';
+import { isProvisionalSession } from '../localDb/provisionalSessions.js';
 import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
@@ -1095,6 +1099,8 @@ import {
 import { clearSealedCodexPlanState, readCodexPlanState } from '../localDb/codexPlanState.js';
 import { buildCompletedPlanGuardNote, buildPlanReconcileNote } from './planReconcile.js';
 import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
+import { readReplyQuoteNote, REPLY_QUOTE_SOURCE_CONTENT } from './chatReplyQuoteNote.js';
+import { readBotDmThreadContextNote } from './botDmThreadContext.js';
 import { readTurnUsageResetAt } from '../goal-host/usageLimit.js';
 import {
   readAccountUsageLimit,
@@ -1938,6 +1944,24 @@ function settleDeferredOrcaWorkerTerminal(sessionId: string, payload: OrcaSuppre
   })();
 }
 
+/** 恢复最终放出失败时，按原终态的 Session/代次结算产品调用，不得中断替换后的新一轮。 */
+function settleDeferredProductTurnFailure(sessionId: string): void {
+  deferredProductTurnFailureGate.settle(
+    sessionId,
+    isCurrentProductTurnFailureOwner,
+    (owner) => {
+      void interruptProductTurn(sessionId, owner).catch(() =>
+        log.warn('Could not interrupt product turn follow-up'));
+    },
+  );
+}
+
+function settleDeferredBotGroupTerminal(terminal: BotGroupLaneTerminal): void {
+  if (!botGroupChatServiceHolder) return;
+  void settleBotGroupLaneTerminal(botGroupChatServiceHolder, terminal, drainPersistQueue).catch(() =>
+    log.warn('Bot group recovery failure settlement failed'));
+}
+
 /**
  * 中断自愈的每会话簿记(压住的错误详情 / 待确认的重连记录 / 退避排期)。
  *
@@ -1951,25 +1975,12 @@ const autoResumeBookkeeping = new AutoResumeBookkeeping({
   persistSuppressedError: (sessionId, detail) => onTurnErrorEvent(sessionId, detail, null),
   surfaceSuppressedError: (sessionId, detail) => {
     surfaceSuppressedAutoResumeErrorInAgentIsland(sessionId, detail);
-    // L3 may run after a provider replacement or a newer user turn. Resolve
-    // the exact deferred owner before interrupting the product task; a bare
-    // session id can otherwise stop the replacement turn.
-    deferredProductTurnFailureGate.settle(
-      sessionId,
-      isCurrentProductTurnFailureOwner,
-      (owner) => {
-        void interruptProductTurn(sessionId, owner).catch(() =>
-          log.warn('Could not interrupt product turn follow-up'));
-      },
-    );
+    settleDeferredProductTurnFailure(sessionId);
   },
   // L3：auto-resume 放弃后，用当初压住的 capture 恰好一次收口 Orca status / auto-bridge。
   // L2 flush/discard 不会走到这里，避免「还在重试却已经把异常终止桥给 Lead」。
   finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,
-  finalizeBotGroupSuppressedTerminal: (terminal) => {
-    void botGroupChatServiceHolder?.settleLaneTurn(terminal).catch(() =>
-      log.warn('Bot group recovery failure settlement failed'));
-  },
+  finalizeBotGroupSuppressedTerminal: settleDeferredBotGroupTerminal,
   markOutcome: (sessionId, clientId, outcome) => {
     void markAutoResumeOutcome(sessionId, clientId, outcome);
   },
@@ -2003,6 +2014,7 @@ const providerGroupHeldErrors = createProviderGroupHeldTurnErrors<DeferredTurnEr
     persistDeferredTurnError(sessionId, row);
   },
   surface: (sessionId, detail) => surfaceSuppressedAutoResumeErrorInAgentIsland(sessionId, detail),
+  settleFailure: settleDeferredProductTurnFailure,
   // holder 是可变绑定,必须懒读。
   releaseHold: (sessionId, holdId) =>
     agentInputCoordinatorHolder?.releaseProviderGroupSwitchHold(sessionId, holdId) ?? false,
@@ -2012,42 +2024,33 @@ const providerGroupHeldErrors = createProviderGroupHeldTurnErrors<DeferredTurnEr
 
 /**
  * 协同 Worker 在换电脑期间先不回报给 Lead 的那次终态(provider-group/heldWorkerTerminals.ts)：换成了丢掉，由续跑那一轮
- * 照常回报结果；没换成才把这次异常终止回报给 Lead。与 providerGroupHeldErrors 按同一次登记结算。
+ * 照常回报结果；没换成才把这次异常终止回报给 Lead。群专线的终态也沿用同一次登记结算，
+ * 避免异步资格检查拒绝接管后群轮次一直等待。与 providerGroupHeldErrors 按同一次登记结算。
  */
-const providerGroupHeldWorkerTerminals = createProviderGroupHeldWorkerTerminals<OrcaSuppressedTerminal>({
-  deliver: settleDeferredOrcaWorkerTerminal,
+const providerGroupHeldTerminals = createProviderGroupHeldWorkerTerminals<{
+  orcaTerminal: OrcaSuppressedTerminal | null;
+  groupTerminal: BotGroupLaneTerminal | null;
+}>({
+  deliver: (sessionId, terminal) => {
+    if (terminal.orcaTerminal) settleDeferredOrcaWorkerTerminal(sessionId, terminal.orcaTerminal);
+    if (terminal.groupTerminal) settleDeferredBotGroupTerminal(terminal.groupTerminal);
+  },
   ownerKey: () => activeOwnerScopeKey(),
   log: (message, meta) => log.info(message, meta),
 });
 
-/**
- * 换成了、续跑已进队但还没派发出去的那次登记(任务 → 登记 id)：协同 Worker 暂存的终态等续跑真正派发出去才丢掉；
- * 续跑没派出去(打开那台又失败、被丢弃)时把这次异常终止回报给 Lead，Worker 不会一直停在运行中。
- */
-const providerGroupContinuationHolds = new Map<string, number>();
-
-/** 换电脑这一趟有了结局：换成了(续跑已进队)错误不再落；Worker 的终态等续跑派发出去再丢(见上)。 */
-function discardProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldErrors.discard(sessionId, holdId);
-  if (providerGroupHeldWorkerTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
-}
-
-/** 不再换了(交回原有处理、用户接手、迟迟没有结局)：放出错误，并把 Worker 的异常终止回报给 Lead。 */
-function releaseProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldErrors.release(sessionId, holdId);
-  // 已换成、续跑在路上的那次由续跑的派发结果结算。
-  if (providerGroupContinuationHolds.get(sessionId) === holdId) return;
-  providerGroupHeldWorkerTerminals.release(sessionId, holdId);
-}
-
-/** 换电脑后的续跑有了派发结果：派发出去了丢掉 Worker 暂存的终态，没派出去回报给 Lead。 */
-function settleProviderGroupContinuation(sessionId: string, dispatched: boolean): void {
-  const holdId = providerGroupContinuationHolds.get(sessionId);
-  if (holdId === undefined) return;
-  providerGroupContinuationHolds.delete(sessionId);
-  if (dispatched) providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
-  else providerGroupHeldWorkerTerminals.release(sessionId, holdId);
-}
+/** Queued handoffs keep their original product/Worker receipts until vendor dispatch. */
+const {
+  discard: discardProviderGroupHeld,
+  release: releaseProviderGroupHeld,
+  settleContinuation: settleProviderGroupContinuation,
+  hasPendingContinuation: hasPendingProviderGroupContinuation,
+} = createProviderGroupHeldRecovery({
+  errors: providerGroupHeldErrors,
+  terminals: providerGroupHeldTerminals,
+  settleFailure: settleDeferredProductTurnFailure,
+  ownerKey: () => activeOwnerScopeKey(),
+});
 
 /** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
 const PROVIDER_GROUP_SWITCH_HOLD_MAX_MS = 3 * 60_000;
@@ -3582,6 +3585,12 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
 
 // 伙伴自主跟进：状态表读「等你的那句话」只取请求本身（不含 persistId 等宿主内部字段）。
 configureBotAutonomyHost({
+  readSessionExecution: (id) => {
+    const session = getMakerIfReady()?.getSession(id);
+    return session ? { instanceId: session.instanceId, generation: session.getTurnGeneration() } : null;
+  },
+  isCompletionHandledByTeammate: (sessionId, botId, execution) => botDelegationServiceHolder
+    ?.isCompletionHandledByTeammate(sessionId, { pendingForBotId: botId, execution }) ?? Promise.resolve(null),
   getPendingInteractions: (sessionId) => getPendingInteractionsForSession(sessionId).map((entry) => entry.request),
 });
 
@@ -4390,7 +4399,7 @@ function shouldPreserveContinuationOnlyAutoResume(
  * Runtime fallback runs inside the already-fired retry callback. A route change
  * may synchronously close the old process before autoRetryLastError can reuse
  * its recovery record, so preserve only that exact callback token across the
- * requested close/rebuild handoff.
+ * requested close/rebuild or cross-harness agent-switch handoff.
  */
 function shouldPreserveSessionRuntimeFallbackAutoResume(
   session: WiredSession,
@@ -4689,12 +4698,17 @@ export async function captureSessionAgentRequest(sessionId: string, supplement: 
 
 export function getTaskActionInputState(sessionId: string) {
   const input = getSessionInputProvenance(sessionId);
+  const session = getMakerIfReady()?.getSession(sessionId);
   return {
     key: JSON.stringify(input),
+    // Reuse the live permission/Plan generation guard; the DB can lag a mode change.
+    permission: resolveGhostFsSessionSnapshot(
+      (id) => getMakerIfReady()?.getSession(id), sessionId, session?.instanceId,
+    ),
     ownerInput: isActiveInputOwnerAuthored(sessionId),
     automatic: !!input.input && !isActiveInputOwnerAuthored(sessionId),
     orcaSenderSessionId: input.input?.orcaSenderSessionId,
-    boundary: `${getMakerIfReady()?.getSession(sessionId)?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
+    boundary: `${session?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
   };
 }
 
@@ -5815,14 +5829,16 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       cleanupRuntimeState: () => cleanupClosedSessionRuntime(session),
     });
   },
-  beforeCloseTeardown: (session: WiredSession) => {
-    botCompactRuntimeRefreshCoordinator.clearForClosedSession(session);
-    cancelDirectAbortReconciliation(session.id);
-    pendingFailedTurnAssistantPersistId.delete(session.id);
-    // An explicit close has no replacement turn to inherit the deferred
-    // receipt. Retire it before late renderer callbacks can arrive.
-    deferredProductTurnFailureGate.clearSession(session.id, session);
-  },
+  beforeCloseTeardown: createSessionCloseTeardown<WiredSession>({
+    clearCompactRuntimeRefresh: session => botCompactRuntimeRefreshCoordinator.clearForClosedSession(session),
+    cancelDirectAbortReconciliation,
+    clearPendingFailedTurnPersist: sessionId => { pendingFailedTurnAssistantPersistId.delete(sessionId); },
+    isRehydrateCloseSuppressed: sessionId => rehydrateCloseSuppression.isSuppressed(sessionId),
+    getProviderGroupSwitchHoldId: sessionId => agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(sessionId),
+    hasPendingProviderGroupContinuation,
+    clearDeferredProductTurnFailure: (sessionId, session, options) =>
+      deferredProductTurnFailureGate.clearSession(sessionId, session, options),
+  }),
   finalizeClosedSession: (session: WiredSession, context) => {
     // 关闭前固化 live 用量（见 sessionLastLiveUsage.ts）：冷 Pi 切模的窗口核实
     // 预检用它代替可能低报的 DB 快照（Greptile P1）。
@@ -5838,6 +5854,11 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     });
   },
 });
+
+/** Called only when the outgoing Maker is actually discarded, not on any error status. */
+export function releaseSessionBindingsForOwnerBoundary(): void {
+  sessionBindings.releaseForOwnerBoundary();
+}
 
 let pluginTaskServiceForCurrentOwner: (() => PluginTaskService) | null = null;
 let drainPluginTaskReceipts: (() => Promise<void>) | null = null;
@@ -5883,7 +5904,7 @@ async function interruptProductTurn(
     deferredProductTurnFailureGate.clear(owner);
     if (!isCurrentProductTurnFailureOwner(owner)) return;
   }
-  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner, 'failed'));
+  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner.originalExecution ?? owner, 'failed'));
   await interruptUpstreamMergeTurn(sessionId);
 }
 
@@ -5981,8 +6002,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   },
   stashProviderGroupHeldError: (sessionId, holdId, data, agentMeta) =>
     providerGroupHeldErrors.stash(sessionId, holdId, data, agentMeta),
-  stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal) =>
-    providerGroupHeldWorkerTerminals.stash(sessionId, holdId, terminal),
+  stashProviderGroupHeldWorkerTerminal: (sessionId, holdId, terminal, groupTerminal) =>
+    providerGroupHeldTerminals.stash(sessionId, holdId, { orcaTerminal: terminal, groupTerminal: groupTerminal ?? null }),
   get pendingFailedTurnAssistantPersistId() {
     return pendingFailedTurnAssistantPersistId;
   },
@@ -8856,7 +8877,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         row.source !== 'bot' ||
         row.status !== 'active' ||
         (row.role !== 'canonical' && row.role !== 'delegation' && row.role !== 'group'
-          && row.role !== 'channel')
+          && row.role !== 'channel' && row.role !== 'thread')
       ) {
         return 'not-bot';
       }
@@ -12957,9 +12978,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     return botGroupChatServiceHolder ? botGroupChatServiceHolder.continueRound(groupId) : botGroupNotReady;
   });
-  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown, scope?: unknown) => {
     assertTrustedAppRendererEvent(event);
-    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId) : botGroupNotReady;
+    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId, scope === 'all' ? 'all' : undefined) : botGroupNotReady;
   });
   ipcMain.handle(MAKER_INVOKE.BOT_GROUP_PLAN_START, async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
@@ -15883,8 +15904,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
         .where(and(
           eq(botSessionLinks.sessionId, sessionId),
-          // Group / IM channel lanes follow the Bot's current model chain exactly like its canonical Chat.
-          inArray(botSessionLinks.role, ['canonical', 'group', 'channel']),
+          // Group / IM channel lanes and private-chat topics follow the Bot's current model chain exactly like its canonical Chat.
+          inArray(botSessionLinks.role, ['canonical', 'group', 'channel', 'thread']),
           isNull(botSessionLinks.archivedAt),
           // Paused settings may preview grants; sending still requires an active Bot.
           purpose === 'preview'
@@ -16033,7 +16054,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         and(
           eq(botSessionLinks.sessionId, sessionId),
           isNull(botSessionLinks.archivedAt),
-          inArray(botSessionLinks.role, ['canonical', 'delegation', 'group', 'channel']),
+          inArray(botSessionLinks.role, ['canonical', 'delegation', 'group', 'channel', 'thread']),
         ),
       )
       .limit(1);
@@ -17398,6 +17419,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 个人版制作任务说明:按持久化的 sessions.source 判定,每次 send 现读,不信任
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     readTaskSource: readSessionSource,
+    // 伙伴私聊引用回复的 [引用说明]:按落库内容里的 replyQuote 从库里重读原消息。
+    readReplyQuoteNote,
+    // 私聊话题的 [话题说明]:按持久化的话题链接现读,不是话题时为 null。
+    readBotThreadNote: readBotDmThreadContextNote,
     // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
     // 标记仍由事务在 accepted 后按代次消费。
     peekWorkingMemoryRefresh: async (sessionId) => {
@@ -17443,7 +17468,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
 
-  // 输入框开始打字时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
+  // 输入框开始输入（打字、粘贴、开始语音输入）时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
   // 任务、且 Agent 在本机运行；Bot / IM / 定时 / 审查 / 共享 / 协同 / 远程主机等任务的
   // 启动另有专门的路由与权限检查，仍由真实发送处理。启动走发送路径的同一个懒创建，
   // 并在同一把会话发送锁里执行，真实发送不会与预热并发重复启动。
@@ -17461,7 +17486,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           remoteHostId: sessions.remoteHostId,
           agentDeviceId: sessions.agentDeviceId,
           orcaRole: sessions.orcaRole,
-          sdkSessionId: sessions.sdkSessionId,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
@@ -17472,6 +17496,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (co.remoteHostId || co.agentDeviceId) return false;
       return prewarmSessionRuntime(sessionId, co);
     }),
+    isLive: (sessionId) => maker.getSession(sessionId) !== undefined,
     // Runs under the send lock: a send that got there first has marked the runtime used
     // (and its turn is running), one that arrives later waits for the close to finish and
     // then cold-starts, instead of meeting a runtime that is half closed.
@@ -17502,6 +17527,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const [sessionId] = args;
     if (typeof sessionId !== 'string') return await sendToAgentAcceptedUnlocked(...args);
     agentPrewarmer.markUsed(sessionId);
+    // 新建页的未发送任务第一次发送：renderer 通常已先转正，这里兜底。
+    if (isProvisionalSession(sessionId)) await commitProvisionalSession(sessionId);
     if (cindyMakeManager.isTaskPreparing(sessionId) && (args[3] as Record<PropertyKey, unknown> | undefined)?.[CINDY_MAKE_TASK_DISPATCH] !== true) {
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
@@ -17533,7 +17560,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         throwIpcError('PRECONDITION_FAILED', SHADOWED_COMPANION_INPUT_MESSAGE);
       }
       if (args[2] && typeof args[2] === 'object') {
-        if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group', 'channel'].includes(botInput.role ?? '')) {
+        if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group', 'channel', 'thread'].includes(botInput.role ?? '')) {
           botFallbackInputs.add(args[2]);
         } else {
           botFallbackInputs.delete(args[2]);
@@ -17890,6 +17917,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
       readonly [AUTO_REVIEW_USER_INTENT]?: string;
       readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
+      readonly [REPLY_QUOTE_SOURCE_CONTENT]?: string;
     };
     const readCurrentSteerSession = () => {
       const current = maker.getSession(sessionId);
@@ -17947,6 +17975,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (!sess.isTurnRunning()) {
       throwIpcError('NO_ACTIVE_TURN', `Session ${sessionId} has no active turn`);
     }
+    // Same `[引用说明]` as an ordinary send (steer does not go through the send transaction).
+    const steerReplyQuoteNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      ? ((await readReplyQuoteNote(sessionId, so[REPLY_QUOTE_SOURCE_CONTENT]).catch(() => null)) ?? null)
+      : null;
     const meta = await maker.getSessionMeta(sessionId).catch(() => null);
     sess = readCurrentSteerSession();
     const authorizationSession = sess;
@@ -17969,9 +18001,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           sharedTaskAuthor: so.sharedTaskAuthor,
         })
       : null;
-    const withSteerSourceNote = steerSourceNote
-      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerSourceNote)
+    const withSteerReplyQuoteNote = steerReplyQuoteNote
+      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerReplyQuoteNote)
       : normalized;
+    const withSteerSourceNote = steerSourceNote
+      ? prependNoteToWireUserMessage(withSteerReplyQuoteNote as HandoffWireMessage, steerSourceNote)
+      : withSteerReplyQuoteNote;
     // 设备来源只认盖章值(coordinator 透传 / 直连 IPC 边界按 async context 盖);没有设备
     // 信息时沿用旧手机判据:IPC 直连 steer 时 async context 在;coordinator 投递时靠透传。
     const steerDevice = readWireSourceDevice(so.sourceDevice);
@@ -18321,6 +18356,41 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       void agentPrewarmer.request(sid, createOpts);
       return { accepted: true };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_DISCARD_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ discarded: boolean; remaining: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      if (!isProvisionalSession(sid)) return { discarded: false, remaining: false };
+      // Under the send lock: a prewarm that is still starting finishes first, and one queued
+      // behind us finds no row and does nothing.
+      const discarded = await withSendToSessionLock(sid, async () => {
+        if (!isProvisionalSession(sid)) return false;
+        agentPrewarmer.markUsed(sid);
+        const live = maker.getSession(sid);
+        if (live?.isTurnRunning()) return false;
+        // Same close as idle prewarm reclaim; the row goes away right after.
+        if (live) await live.closeIfIdle();
+        if (maker.getSession(sid)) return false;
+        return discardProvisionalSessionRow(sid);
+      });
+      // remaining: the unsent task still exists (its runtime could not be closed), so the
+      // renderer keeps tracking it and retries instead of reopening the same id.
+      return { discarded, remaining: !discarded && isProvisionalSession(sid) };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_COMMIT_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ committed: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      return { committed: await commitProvisionalSession(sid) };
     },
   );
 
@@ -18813,13 +18883,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           holdTimer = setTimeout(() => {
             // 协同 Worker：到点把这次异常终止回报给 Lead 之后，这一趟换电脑就此停下——Lead 已据此重新安排，
             // 再换过去续跑会让它收到两份互相矛盾的结果。普通任务照旧：错误先放出来，换成了照常续跑。
-            const worker = providerGroupHeldWorkerTerminals.has(sessionId, holdId);
+            const worker = providerGroupHeldTerminals.has(sessionId, holdId);
             releaseProviderGroupHeld(sessionId, holdId);
             if (worker) providerGroupService?.noteUserAction(sessionId);
           }, PROVIDER_GROUP_SWITCH_HOLD_MAX_MS);
         };
         // 协同 Worker 的终态与 error 行按同一次登记结算：换成了不回报这次异常终止，没换成才回报给 Lead。
+        const recoveryOwner = activeOwnerScopeKey();
         hooks = {
+          notHandled: () => recoveryOwner === activeOwnerScopeKey() && inputCoordinator.resumeAfterProviderGroupDeclined(
+            sessionId, candidateToken, signals, (attemptToken) => {
+              const detail = providerGroupHeldErrors.takeForRecovery(sessionId, holdId);
+              if (detail) autoResumeBookkeeping.stashSuppressedError(sessionId, detail, attemptToken);
+              const terminal = providerGroupHeldTerminals.takeForRecovery(sessionId, holdId);
+              if (terminal?.orcaTerminal) autoResumeBookkeeping.stashOrcaSuppressedTerminal(sessionId, terminal.orcaTerminal);
+              if (terminal?.groupTerminal) autoResumeBookkeeping.stashBotGroupSuppressedTerminal(sessionId, terminal.groupTerminal);
+            },
+          ),
           beforeFallback: () => releaseProviderGroupHeld(sessionId, holdId),
           resumed: () => discardProviderGroupHeld(sessionId, holdId),
           // 先等原电脑恢复时进行中行显示「重新连接中 n/5」，开始换电脑时改回「正在换一台电脑继续」。
@@ -18853,8 +18933,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     onResumableTurnErrorDiscarded: (
       sessionId: string,
-      options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner },
+      options: { surfaceError: boolean; owner: SuppressedTurnErrorOwner; providerGroupSwitchHoldId?: number },
     ) => {
+      if (options.providerGroupSwitchHoldId !== undefined) {
+        const deferred = autoResumeBookkeeping.takeDeferredError(sessionId, options.owner);
+        if (deferred) {
+          providerGroupHeldErrors.stash(sessionId, options.providerGroupSwitchHoldId, deferred.detail);
+          if (deferred.orcaTerminal || deferred.groupTerminal) {
+            providerGroupHeldTerminals.stash(sessionId, options.providerGroupSwitchHoldId, deferred);
+          }
+        }
+        return;
+      }
       if (options.surfaceError) {
         autoResumeBookkeeping.surfaceSuppressedError(sessionId, { deferredOwner: options.owner });
       } else {

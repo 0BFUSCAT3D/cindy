@@ -1,3 +1,4 @@
+import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 /**
  * 待发送消息 → 消息流渲染项。
  * ---------------------------------------------------------------------------
@@ -206,7 +207,8 @@ function pendingSendAgentText(item: PendingSendTextSource): string {
     const persisted = parseOrcaPersistedMessage(item.persistedContent);
     if (persisted) return persisted.body;
   }
-  return queueItemVisibleText(item);
+  const visible = queueItemVisibleText(item);
+  return origin?.kind === 'session' ? forwardedRequestDisplayText(visible) : visible;
 }
 
 /**
