@@ -535,6 +535,8 @@ import {
 } from '@cindy/maker-core/pi-subagent-runs';
 
 import { onQuit, installQuitHandler } from './lifecycle';
+import { registerAgentAdapterHost } from './agent-adapters/host.js';
+import { getAgentAdapterRuntime } from './maker-host/index.js';
 import { initStartupDiagnostics } from './startup-diagnostics';
 import {
   installPowerEventDiagnostics,
@@ -6222,6 +6224,7 @@ const registerIpcHandlers = () => {
       // getMakerCore() 首次调用触发 Maker 构造，同时发起自定义 MCP 初始加载。
       // await 确保第一个会话的 mcpProviders 数组已填入已保存的自定义 MCP（P2 冷启动竞态修复）。
       getMakerCore();
+      registerAgentAdapterHost(getAgentAdapterRuntime);
       await waitForInitialCustomMcpRefresh();
       // IPC handlers live for the whole process, while the concrete Maker is
       // replaced at every data-owner boundary. The facade resolves it lazily.

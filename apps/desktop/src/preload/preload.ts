@@ -3,6 +3,7 @@ import { createWallpaperAssetsBridge } from './wallpaperAssets';
 import type { CompanionImportApi, CompanionImportSelection } from '@cindy/maker-shared/companion-import';
 import { TASK_MIGRATION_LOCAL_CHANNEL } from '@cindy/device-link';
 import type { WorktreeRecycleAction, WorktreeRecycleStatus } from '../shared/worktreeRecycle';
+import { AGENT_ADAPTER_IPC, type AgentAdaptersBridge } from '../shared/agentAdapters.js';
 import {
   FAVORITE_HOST_READY,
   FAVORITE_HOST_REQUEST,
@@ -4675,6 +4676,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke(PROVIDER_GROUP_IPC.COMMAND, command),
     onChanged: fanOutProviderGroupChanged,
   },
+  agentAdapters: {
+    get: request => ipcRenderer.invoke(AGENT_ADAPTER_IPC.get, request),
+    invoke: request => ipcRenderer.invoke(AGENT_ADAPTER_IPC.invoke, request),
+    settings: () => ipcRenderer.invoke(AGENT_ADAPTER_IPC.settings),
+    configure: enabled => ipcRenderer.invoke(AGENT_ADAPTER_IPC.configure, enabled),
+    pickDirectory: () => ipcRenderer.invoke(AGENT_ADAPTER_IPC.pickDirectory),
+  } satisfies AgentAdaptersBridge,
   deviceLink: {
     confirmSkillMutation: (deviceId: string, operationId: string): Promise<import('../shared/remoteSkills').RemoteSkillReceipt> => ipcRenderer.invoke('device-link:confirm-skill-mutation', { deviceId, operationId }),
     pickPluginPackage: (deviceId: string): Promise<{ attachment: string } | null> => ipcRenderer.invoke('device-link:pick-plugin-package', deviceId),

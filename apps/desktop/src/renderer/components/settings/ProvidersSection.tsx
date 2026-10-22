@@ -23,6 +23,8 @@ import { providerWeeklyQuotaSource } from '../new-chat/useProviderWeeklyQuota';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { agentAdapterCopy } from '@cindy/maker-shared/agent-adapters';
+import { resolveRemoteText } from '@cindy/device-link';
 import { useTranslation } from 'react-i18next';
 import {
   Check,
@@ -2427,7 +2429,8 @@ function SuggestionRow({
 // ---------------------------------------------------------------------------
 
 export function ProvidersSection() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const navigate = useNavigate();
   const reducedMotion = useReducedMotion();
   const signInToCindy = useSignInToCindy();
   const { dataOwnerId } = useAuth();
@@ -3121,7 +3124,10 @@ export function ProvidersSection() {
           </p>
         </div>
         {/* 收到别人的供应商分享链接时从这里输入(加入网页唤起 Cindy 失败时也指引到这里)。 */}
-        <ProviderSharePasteButton />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={() => navigate('/agent-adapters')}>{resolveRemoteText(agentAdapterCopy.title, i18n.language)}</Button>
+          <ProviderSharePasteButton />
+        </div>
       </div>
 
       {/* 先取数据再渲染卡片(规则 7:首帧即终态高度,不出现连接态翻转的跳变帧)。

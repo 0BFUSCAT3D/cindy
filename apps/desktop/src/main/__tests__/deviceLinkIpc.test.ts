@@ -152,6 +152,7 @@ function makeDeps(overrides?: Partial<DeviceLinkIpcDeps>): DeviceLinkIpcDeps {
     revoke: vi.fn(),
     restore: vi.fn(),
     setDeviceControlEnabled: vi.fn(async () => []),
+    notifyRuntimeNodePeersChanged: vi.fn(),
     clearDeviceResponsiveness: vi.fn(),
     broadcast: vi.fn(),
     readLastKnownDeviceNames: vi.fn(() => ({})),
@@ -280,6 +281,7 @@ describe('device-link IPC handlers', () => {
       disabledControlDeviceIds: ['dev-1'],
     });
     expect(deps.setDeviceControlEnabled).toHaveBeenCalledWith('dev-1', false);
+    expect(deps.notifyRuntimeNodePeersChanged).toHaveBeenCalledTimes(1);
     expect(deps.clearDeviceResponsiveness).toHaveBeenCalledWith('dev-1');
     expect(deps.closeLink).toHaveBeenCalledWith('dev-1');
     expect(deps.broadcast).toHaveBeenCalledWith('device-link:control-target-changed', {

@@ -1,4 +1,6 @@
 import { randomUUID } from 'expo-crypto';
+import { AGENT_ADAPTER_COLLECTION } from '@cindy/maker-shared/agent-adapters';
+import { AgentResourceScreen } from '@/agent-adapters/AgentResourceScreen';
 import { useAuth } from '@/auth/AuthContext';
 import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,6 +32,7 @@ function firstParam(value: string | string[] | undefined): string {
 export default function RemoteResourceResolverScreen() {
   const params = useLocalSearchParams<{ collectionId?: string | string[] }>();
   if (!isMobileRemoteCollectionSupported(firstParam(params.collectionId))) return <Redirect href="/devices" />;
+  if (firstParam(params.collectionId) === AGENT_ADAPTER_COLLECTION) return <AgentResourceScreen />;
   return <RemoteResourceResolverScreenContent />;
 }
 

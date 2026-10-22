@@ -10,6 +10,7 @@ import {
 function createHarness() {
   const freshness = createControllerPresenceFreshnessTracker();
   const onlineByDevice = new Map<string, boolean>();
+  const availableByDevice = new Map<string, boolean>();
   const platformByDevice = new Map<string, string>();
   const nameByDevice = new Map<string, string>();
   const exchanged = vi.fn();
@@ -17,6 +18,7 @@ function createHarness() {
   return {
     freshness,
     onlineByDevice,
+    availableByDevice,
     platformByDevice,
     nameByDevice,
     exchanged,
@@ -37,6 +39,7 @@ function createHarness() {
         getOnline: (deviceId) => onlineByDevice.get(deviceId),
         setOnline: (deviceId, online) => onlineByDevice.set(deviceId, online),
         forgetOnline: (deviceId) => onlineByDevice.delete(deviceId),
+        setAvailable: (deviceId, available) => availableByDevice.set(deviceId, available),
         setPlatform: (deviceId, platform) => {
           if (platform) platformByDevice.set(deviceId, platform);
           else platformByDevice.delete(deviceId);
@@ -71,6 +74,32 @@ describe('controller presence directory snapshot', () => {
     expect(h.platformByDevice.get('peer-desktop')).toBe('darwin');
     expect(h.nameByDevice.get('peer-desktop')).toBe('MacBook Pro');
     expect(h.exchanged).toHaveBeenCalledWith('peer-desktop', 'darwin');
+  });
+
+  it('从目录投影远程控制开关到运行能力状态', () => {
+    const h = createHarness();
+
+    h.apply([
+      {
+        deviceId: 'peer-desktop',
+        online: true,
+        platform: 'darwin',
+        remoteControlEnabled: false,
+        isSelf: false,
+      },
+    ]);
+    expect(h.availableByDevice.get('peer-desktop')).toBe(false);
+
+    h.apply([
+      {
+        deviceId: 'peer-desktop',
+        online: true,
+        platform: 'darwin',
+        remoteControlEnabled: true,
+        isSelf: false,
+      },
+    ]);
+    expect(h.availableByDevice.get('peer-desktop')).toBe(true);
   });
 
   it('排除本机和离线设备，桌面与手机重复目录都不重复制造上线边沿', () => {

@@ -10,6 +10,7 @@ export interface ControllerPresenceDirectoryDevice {
   name?: unknown;
   selfName?: unknown;
   online?: unknown;
+  remoteControlEnabled?: unknown;
   platform?: unknown;
   isSelf?: unknown;
 }
@@ -80,6 +81,7 @@ export function applyControllerPresenceDirectorySnapshot(options: {
   getOnline: (deviceId: string) => boolean | undefined;
   setOnline: (deviceId: string, online: boolean) => void;
   forgetOnline: (deviceId: string) => void;
+  setAvailable?: (deviceId: string, available: boolean) => void;
   setPlatform: (deviceId: string, platform: string | null) => void;
   setName: (deviceId: string, name: string) => void;
   shouldNotifyPeerOnline: (device: {
@@ -115,6 +117,10 @@ export function applyControllerPresenceDirectorySnapshot(options: {
 
     options.setPlatform(deviceId, platform);
     options.setOnline(deviceId, device.online);
+    options.setAvailable?.(
+      deviceId,
+      device.online && device.remoteControlEnabled !== false,
+    );
     if (
       wasOnline !== true &&
       options.shouldNotifyPeerOnline({ deviceId, online: device.online, platform })

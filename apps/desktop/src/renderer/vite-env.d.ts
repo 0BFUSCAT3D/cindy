@@ -4042,6 +4042,7 @@ interface ElectronAPI {
     ): Promise<import('../shared/providerGroup').ProviderGroupCommandResult<C>>;
     onChanged(cb: (event: { providerId: string }) => void): () => void;
   };
+  agentAdapters: import('../shared/agentAdapters').AgentAdaptersBridge;
   deviceLink: {
     confirmSkillMutation: (deviceId: string, operationId: string) => Promise<import('../shared/remoteSkills').RemoteSkillReceipt>;
     pickPluginPackage: (deviceId: string) => Promise<{ attachment: string } | null>;

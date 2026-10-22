@@ -10,6 +10,10 @@ import { readDisabledSkillPaths } from '../skillhub/activationPreferences';
 import { cindyMakeManager } from '../cindy-make/manager.js';
 import { makeSourceRoot } from '../cindy-make/sourcePaths.js';
 import { clearCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
+import { createAgentAdapterRuntime, type AgentAdapterRuntime } from '../agent-adapters/runtime.js';
+import { createNativeAgentAdapter } from '../agent-adapters/native.js';
+import { NATIVE_AGENT_DEFINITIONS } from '../agent-adapters/definitions.js';
+import { agentAdaptersEnabled } from '../agent-adapters/settings.js';
 /**
  * apps/desktop/src/main/maker-host
  *
@@ -51,6 +55,7 @@ import {
   type InteractionRequest,
   type AutoReviewDelegate,
   type McpProvider,
+  type RuntimeNodeRef,
 } from '@cindy/maker-core';
 import type { ProviderView } from '@cindy/model-providers';
 import {
@@ -124,7 +129,13 @@ import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { readProviderGroupBinding } from '../provider-group/bindings.js';
 import { getProviderGroupGuestSwitch } from '../provider-group/guestSwitch.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
-import { remoteBackgroundInvoke, remoteInvoke } from '../device-link/index.js';
+import {
+  getRuntimeNodePeers,
+  remoteBackgroundInvoke,
+  remoteInvoke,
+  subscribeRuntimeNodePeersChanged,
+} from '../device-link/index.js';
+import { deviceName } from '../device-link/deviceName.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { parseProviderShareAgentDeviceId } from '../device-link/providerShareGuest.js';
 import { isProviderShareCredentialConsentSkipped } from '../device-link/providerShareGuestPrefs.js';
@@ -166,6 +177,7 @@ import { registerUsagePricing, clearUsagePricing } from './model-usage-pricing.j
 import { getSessionFastMode } from './session-effort-store.js';
 import { createSshDaemonTransport } from './codex-remote-transport.js';
 import { getRemoteSshPool, broadcastSilentInstallStatus, ensureRemoteAgentInstalledOrInstall } from '../remote-ssh/index.js';
+import { createDesktopRuntimeNodeSource } from '../agent-adapters/runtime-node-sources.js';
 import {
   getRemoteAgentProxyEnv,
   reconcileCodexAgentProxyEnv,
@@ -402,6 +414,53 @@ type RemoteCcQuery = Awaited<
 >;
 
 let _maker: Maker | null = null;
+/** P1 registry is intentionally inert until a real Agent adapter is enabled. */
+let _agentAdapterRuntime: AgentAdapterRuntime | null = null;
+
+/**
+ * Read-only local execution-node health. This describes the Desktop host,
+ * not Device Link relay reachability: local Agent processes do not require a
+ * relay connection. A session-boundary transition is degraded while the
+ * Maker owner runtime is being replaced; before Electron is ready the host
+ * is offline. No credential or task data is consulted.
+ */
+function getLocalRuntimeNodeSnapshot(): RuntimeNodeRef {
+  const status = !app.isReady()
+    ? 'offline'
+    : isAppSessionBoundaryPending()
+      ? 'degraded'
+      : _maker
+        ? 'online'
+        : 'degraded';
+  return {
+    id: 'local',
+    kind: 'local',
+    status,
+    label: deviceName(),
+  };
+}
+
+export function getAgentAdapterRuntime(): AgentAdapterRuntime {
+  const enabled = agentAdaptersEnabled();
+  if (_agentAdapterRuntime && (_agentAdapterRuntime.enabled !== enabled || _agentAdapterRuntime.signal.aborted)) {
+    _agentAdapterRuntime.dispose();
+    _agentAdapterRuntime = null;
+  }
+  return (_agentAdapterRuntime ??= createAgentAdapterRuntime({
+    enabled,
+    agentAdapters: enabled ? Object.values(NATIVE_AGENT_DEFINITIONS).map(definition => createNativeAgentAdapter(definition)) : [],
+    runtimeNodeSource: createDesktopRuntimeNodeSource({
+      getLocalNode: getLocalRuntimeNodeSnapshot,
+      getDeviceLinks: getRuntimeNodePeers,
+      getSshHosts: () => getRemoteSshPool().list().map((host) => ({
+        hostId: host.config.id,
+        ...(host.config.displayName ? { label: host.config.displayName } : {}),
+        status: host.status,
+      })),
+    }),
+    runtimeNodeSourceSubscribe: subscribeRuntimeNodePeersChanged,
+  }));
+}
 /** Upper bound for letting the confirming turn finish its reply before an Agent-approved restart. */
 const AGENT_APP_UPDATE_TURN_DRAIN_MS = 2 * 60 * 1000;
 /** Prepared Bot runtime records waiting for the matching Maker startup result. */
@@ -963,6 +1022,9 @@ function broadcastVisionBridgeEvent(
 
 export function getMaker(): Maker {
   if (!_maker) {
+    // The adapter lifecycle follows the Maker owner boundary, defaults to off,
+    // and does not participate in legacy provider routing.
+    getAgentAdapterRuntime();
     // splash 已经 prepare 过, 这里只是同步读 cache 路径; 任一缺失说明 bootstrap
     // 顺序错了, 早抛比 session.start 时再炸更清晰。
     // splash 已经 prepare 过, 这里只是同步读 cache 路径; 任一缺失说明 bootstrap
@@ -3252,6 +3314,8 @@ export function resetMaker(): void {
   cancelCodexAuthModeChange();
   setCodexAppliedCustomProviderRoutes([]);
   _maker = null;
+  _agentAdapterRuntime?.dispose();
+  _agentAdapterRuntime = null;
   botRuntimeResourcePreflight = null;
   _registerPiAgent = null;
   _codexAgent = null;

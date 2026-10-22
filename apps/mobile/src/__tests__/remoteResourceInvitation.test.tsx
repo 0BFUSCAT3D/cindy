@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
 vi.mock('react-native', async () => {
   const { createElement: el } = await import('react');
   const view = ({ children, testID }: any) => el('div', { 'data-testid': testID }, children);
-  return { View: view, ActivityIndicator: () => null, StyleSheet: { create: (s: any) => s }, AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) } };
+  return { View: view, ScrollView: view, ActivityIndicator: () => null, StyleSheet: { create: (s: any) => s }, AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) } };
 });
 vi.mock('expo-router', async () => {
   const { useEffect } = await import('react');
@@ -22,7 +22,14 @@ vi.mock('expo-router', async () => {
 vi.mock('@/i18n', () => ({ i18n: { t: (key: string) => key } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => h.translation }));
 vi.mock('react-native-safe-area-context', async () => { const { createElement: el } = await import('react'); return { SafeAreaView: ({ children }: any) => el('div', {}, children) }; });
-vi.mock('@/components/AppText', () => ({ Text: 'span' }));
+vi.mock('@/components/AppText', async () => {
+  const { createElement: el } = await import('react');
+  return { Text: 'span', TextInput: ({ value, onChangeText, editable }: { value: string; onChangeText(value: string): void; editable: boolean }) => el('textarea', { value, disabled: !editable, onInput: (event: { currentTarget: { value: string } }) => onChangeText(event.currentTarget.value) }) };
+});
+vi.mock('@/session/ContextSheet', async () => {
+  const { createElement: el } = await import('react');
+  return { ContextSheetSelectRow: ({ value, onChange, options }: { value: string; onChange(value: string): void; options: { id: string; label: string }[] }) => el('select', { value, onChange: (event: { currentTarget: { value: string } }) => onChange(event.currentTarget.value) }, el('option', { value: '' }, 'Choose'), ...options.map(option => el('option', { key: option.id, value: option.id }, option.label))) };
+});
 vi.mock('@/components/RemoteCompanionAvatar', () => ({ RemoteCompanionAvatar: () => null }));
 vi.mock('@/session/CompanionProfileSheet', async () => {
   const { createElement: el } = await import('react');
@@ -32,7 +39,7 @@ vi.mock('@/session/CompanionProfileSheet', async () => {
 });
 vi.mock('@/components/MobilePrimitives', async () => {
   const { createElement: el } = await import('react');
-  return { MainWindowEmptyState: ({ copy }: any) => el('span', {}, copy), MainWindowActionButton: ({ action }: any) => el('button', { onClick: action.onPress, 'data-testid': action.testID }, action.label) };
+  return { MainWindowEmptyState: ({ copy }: any) => el('span', {}, copy), MainWindowActionButton: ({ action }: any) => el('button', { onClick: action.onPress, disabled: action.disabled, 'data-testid': action.testID }, action.label) };
 });
 vi.mock('@/platform/chrome', () => ({ SimpleStackHeader: () => null, simpleScreenSafeAreaEdges: () => [] }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ accountGeneration: h.generation }) }));
@@ -50,6 +57,7 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   vi.clearAllMocks(); h.link.openLink.mockResolvedValue(undefined); h.generation = 1; h.params.collectionId = 'teammates';
+  h.params.resourceId = 'bot-1'; h.params.resourceKind = 'bot';
   h.link.onRemoteResourceChanged.mockImplementation(callback => { h.push = callback; return () => { h.push = null; }; });
   h.link.invoke.mockResolvedValue({ id: 'chat-1', source: 'bot' });
   container = document.createElement('div'); root = createRoot(container);
@@ -143,4 +151,52 @@ it('opens existing history after the failed teammate settings close', async () =
   expect(h.router.push).not.toHaveBeenCalled();
   await act(async () => (container.querySelector('[data-testid="profile-history"]') as HTMLButtonElement).click());
   expect(h.router.push).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/sessions/[sessionId]', params: expect.objectContaining({ sessionId: 'chat-1', deviceId: 'mac', openSearch: '1', openSearchRequest: 'history-request' }) }));
+});
+
+/** 测试价值：同一生产资源路由新增原生 Agent 分支；不应进入旧 Session 查询或自动发送。
+ * 旧伙伴回归未覆盖原生任务。最小输入为 opaque start/send action、丢失回执和账号切换。
+ * tier: unit；替换原生控件，不替换路由、Agent 屏幕或表单行为。 */
+function nativeResource(id = 'catalog') {
+  h.params.collectionId = 'agent-adapters'; h.params.resourceKind = 'native-agent-run'; h.params.resourceId = id;
+  return { ref: { collectionId: h.params.collectionId, kind: h.params.resourceKind, id }, display: { title: 'Cursor' }, revision: '1', links: [], blocks: [{ id: 'output', primitive: 'text', fallbackMarkdown: 'Native output' }], actions: id === 'catalog'
+    ? [{ id: 'start', label: 'New task', fields: [{ id: 'instanceId', label: 'Agent', kind: 'select', required: true, options: [{ value: 'cursor:local', label: 'Cursor' }] }, { id: 'workspaceId', label: 'Working directory', kind: 'select', required: true, options: [{ value: 'project', label: 'Project' }] }] }]
+    : [{ id: 'send', label: 'Send', fields: [{ id: 'text', label: 'Message', kind: 'multiline', required: true }] }] };
+}
+const nativeButton = (label: string) => [...container.querySelectorAll('button')].find(button => button.textContent === label)!;
+it('opens a native resource without querying the old Session or sending until explicit selections', async () => {
+  h.read.mockResolvedValue(nativeResource()); h.action.mockResolvedValue({ effects: [] });
+  await act(async () => root.render(createElement(Screen)));
+  expect(container.textContent).toContain('Native output'); expect(h.link.invoke).not.toHaveBeenCalled();
+  expect(nativeButton('New task').disabled).toBe(true); expect(h.action).not.toHaveBeenCalled();
+  const selects = container.querySelectorAll('select');
+  await act(async () => { selects[0]!.value = 'cursor:local'; selects[0]!.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(nativeButton('New task').disabled).toBe(true);
+  await act(async () => { selects[1]!.value = 'project'; selects[1]!.dispatchEvent(new Event('change', { bubbles: true })); });
+  await act(async () => nativeButton('New task').click());
+  expect(h.action).toHaveBeenCalledTimes(1);
+  expect(h.action.mock.calls[0]?.[2]).toMatchObject({ collectionId: 'agent-adapters', actionId: 'start', input: { instanceId: 'cursor:local', workspaceId: 'project', requestId: expect.any(String) } });
+});
+it('keeps a native draft and receipt after an uncertain send; refresh never resends', async () => {
+  h.read.mockResolvedValue(nativeResource('run-1')); h.action.mockRejectedValue(new Error('lost acknowledgement'));
+  await act(async () => root.render(createElement(Screen)));
+  await act(async () => { const input = container.querySelector('textarea')!; input.value = 'Work'; input.dispatchEvent(new Event('input', { bubbles: true })); });
+  await act(async () => nativeButton('Send').click());
+  expect(h.action).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('textarea')!.value).toBe('Work'); expect(nativeButton('Send').disabled).toBe(true);
+  const request = h.action.mock.calls[0]?.[2];
+  await act(async () => nativeButton('Refresh').click());
+  expect(h.action).toHaveBeenCalledTimes(1);
+  h.action.mockResolvedValue({ effects: [] });
+  await act(async () => nativeButton('Send').click());
+  expect(h.action.mock.calls[1]?.[2]).toEqual(request);
+});
+it('drops a native read completing after the controller account changes', async () => {
+  const stale = nativeResource('run-1');
+  let finish!: (value: unknown) => void;
+  h.read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue({ ...stale, blocks: [] });
+  await act(async () => root.render(createElement(Screen)));
+  h.generation = 2;
+  await act(async () => root.render(createElement(Screen)));
+  await act(async () => finish(stale));
+  expect(container.textContent).not.toContain('Native output'); expect(h.action).not.toHaveBeenCalled();
 });

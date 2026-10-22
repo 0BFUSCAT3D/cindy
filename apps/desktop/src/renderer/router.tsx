@@ -1,4 +1,5 @@
 import { RemoteBotSessionView } from '@/features/bots/RemoteBotSessionView';
+import { AgentAdaptersPage } from '@/features/agent-adapters/AgentAdaptersPage';
 import { createHashRouter, Navigate } from 'react-router-dom';
 
 import { MainLayout } from '@/components/layout/MainLayout';
@@ -192,6 +193,7 @@ export const router = createHashRouter([
                     ],
                   },
                   { path: 'settings', element: <SettingsView /> },
+                  { path: 'agent-adapters', element: <AgentAdaptersPage /> },
                   { path: 'plugins', element: <GhostPluginPage /> },
                   { path: 'apps/:ghostId', element: <GhostMainViewFeatureLayout /> },
                   {

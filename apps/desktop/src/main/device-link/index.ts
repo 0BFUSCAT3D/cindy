@@ -107,6 +107,7 @@ import {
 import {
   clearControllerPlatforms,
   getControllerPlatform,
+  isDesktopPlatform,
   isMobilePlatform,
   setControllerPlatform,
 } from './controllerPlatform';
@@ -286,6 +287,7 @@ export function applyControllerPresenceListSnapshot(
     getOnline: (deviceId) => presenceOnlineByDevice.get(deviceId),
     setOnline: (deviceId, online) => presenceOnlineByDevice.set(deviceId, online),
     forgetOnline: (deviceId) => presenceOnlineByDevice.delete(deviceId),
+    setAvailable: (deviceId, available) => presenceAvailableByDevice.set(deviceId, available),
     setPlatform: setControllerPlatform,
     setName: (deviceId, name) => presenceNameByDevice.set(deviceId, name),
     shouldNotifyPeerOnline: ({ deviceId, online, platform }) =>
@@ -303,6 +305,7 @@ export function applyControllerPresenceListSnapshot(
       replayActiveSubscriptions('directory-online', deviceId);
     },
   });
+  notifyRuntimeNodePeersChanged();
 }
 
 function seedControllerDisplayNamesFromLastKnown(): void {
@@ -514,6 +517,27 @@ const openLinkInFlight = new Map<string, Promise<LinkAcceptPayload>>();
 /** 对端已对本机撤权：自动 recover/probe 不得再 openLink；用户显式重试可清掉。 */
 const revokedByRemote = new Set<string>();
 const presenceAvailableByDevice = new Map<string, boolean>();
+const runtimeNodePeersChangedListeners = new Set<() => void>();
+
+/**
+ * Local-only observer for the Agent runtime node projection. This never adds a
+ * relay frame or IPC channel; consumers receive only a signal and re-read the
+ * existing redacted snapshot through getRuntimeNodePeers().
+ */
+export function subscribeRuntimeNodePeersChanged(listener: () => void): () => void {
+  runtimeNodePeersChangedListeners.add(listener);
+  return () => runtimeNodePeersChangedListeners.delete(listener);
+}
+
+export function notifyRuntimeNodePeersChanged(): void {
+  for (const listener of runtimeNodePeersChangedListeners) {
+    try {
+      listener();
+    } catch {
+      // A future optional consumer must never interfere with Device Link state handling.
+    }
+  }
+}
 /**
  * 「目标设备无响应」熔断(弱网 / 对端卡死时收敛请求风暴,见 responsivenessTracker)。
  * 随 initDeviceLinkService 创建;null(极早期)时门禁直通,不影响行为。
@@ -778,6 +802,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     },
     onUnresponsiveChanged: (deviceId, unresponsive, recovered) => {
       broadcast(DEVICE_LINK_PUSH.RESPONSIVENESS_CHANGED, { deviceId, unresponsive, recovered });
+      notifyRuntimeNodePeersChanged();
       // 恢复时主动重放该设备的订阅:熔断 open 期间 subscribe 都被快速失败挡掉了,
       // 不重放的话 push 驱动的列表 / 会话镜像会一直缺流,直到用户手动重试。
       // linkTornDown 闸:teardown 的 resetAll 也会触发本回调,那时不能再发订阅。
@@ -868,6 +893,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       resetControllerPresenceFreshness(controllerPresenceFreshness);
       clearControllerPlatforms();
       presenceNameByDevice.clear();
+      notifyRuntimeNodePeersChanged();
     }
     broadcast(DEVICE_LINK_PUSH.STATUS_CHANGED, { status });
     handleContactsDeviceLinkStatusChanged(status === 'online');
@@ -946,6 +972,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       },
     });
     presenceNameByDevice.set(snap.deviceId, snap.selfName || snap.deviceName);
+    notifyRuntimeNodePeersChanged();
     broadcast(DEVICE_LINK_PUSH.PRESENCE_CHANGED, snap);
     // 被控端兜底:对等控制端下线 → 清掉它在本机的订阅 registry(防僵尸订阅持续 sendPush)。
     if (!snap.online) handleControllerOffline(snap.deviceId);
@@ -1035,6 +1062,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
         // 作废在途结果(翻代),避免 unresponsive 状态与撤权状态并存(对齐 mobile 语义)。
         revokedByRemote.add(env.src);
         responsivenessTracker?.clearDevice(env.src);
+        notifyRuntimeNodePeersChanged();
         broadcast(DEVICE_LINK_PUSH.ACCESS_REVOKED, { deviceId: env.src });
       }
       return;
@@ -1389,6 +1417,7 @@ function teardownActiveLink(): void {
   clearControllerPlatforms();
   clearControllerDisplayNames();
   presenceNameByDevice.clear();
+  notifyRuntimeNodePeersChanged();
   resetSubscriptionRefs();
   resetBusyDedupe(); // 重置 busy dedupe,避免重连后首个真实 busy 状态被旧值压掉
   client.stop();
@@ -1745,6 +1774,7 @@ export async function openRemoteLink(
       ),
     });
     revokedByRemote.delete(deviceId);
+    notifyRuntimeNodePeersChanged();
     return accepted;
   };
   // 结算所有权由 tracker.guardInvoke 统一声明(第一个 settle 的 guard 打标,
@@ -1804,6 +1834,47 @@ function assertRemoteControlTargetEnabledAfterReopen(deviceId: string): void {
  */
 export function getSelfDeviceId(): string | null {
   return client?.getSelfDeviceId() ?? null;
+}
+
+/**
+ * Read-only execution-node view of the currently observed Device Link peers.
+ *
+ * This intentionally exposes only identity, platform, display label, and
+ * presence. It does not expose link handles, relay credentials, or any
+ * task/session data. Mobile peers and unknown platforms are excluded because
+ * they are control surfaces, not Agent execution nodes.
+ */
+export interface DeviceLinkRuntimeNodeSnapshot {
+  deviceId: string;
+  label?: string;
+  platform: string;
+  online: boolean;
+  /** Existing Device Link control path is currently usable for this peer. */
+  available: boolean;
+  /** Local responsiveness circuit breaker is open for this peer. */
+  unresponsive?: boolean;
+}
+
+export function getRuntimeNodePeers(): readonly DeviceLinkRuntimeNodeSnapshot[] {
+  const selfDeviceId = client?.getSelfDeviceId() ?? null;
+  const locallyDisabled = new Set(readDeviceLinkSettings().disabledControlDeviceIds);
+  return [...presenceOnlineByDevice.entries()]
+    .filter(([deviceId]) => deviceId !== selfDeviceId)
+    .map(([deviceId, online]) => {
+      const platform = getControllerPlatform(deviceId);
+      if (!isDesktopPlatform(platform)) return null;
+      return {
+        deviceId,
+        ...(presenceNameByDevice.get(deviceId) ? { label: presenceNameByDevice.get(deviceId) } : {}),
+        platform,
+        online,
+        available: presenceAvailableByDevice.get(deviceId) !== false
+          && !locallyDisabled.has(deviceId)
+          && !revokedByRemote.has(deviceId),
+        ...(responsivenessTracker?.isUnresponsive(deviceId) === true ? { unresponsive: true } : {}),
+      };
+    })
+    .filter((peer): peer is DeviceLinkRuntimeNodeSnapshot => peer !== null);
 }
 
 /**

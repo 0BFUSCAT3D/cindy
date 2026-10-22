@@ -66,6 +66,7 @@ import {
   revokeController,
   restoreController,
   broadcast,
+  notifyRuntimeNodePeersChanged,
   deviceLinkApiBase,
   applyControllerDisplayNameListSnapshot,
   applyControllerPresenceListSnapshot,
@@ -156,6 +157,8 @@ export interface DeviceLinkIpcDeps {
   revoke(deviceId: string): Promise<void>;
   restore(deviceId: string): Promise<void>;
   setDeviceControlEnabled(deviceId: string, enabled: boolean): Promise<string[]>;
+  /** Notify optional local runtime-node projections after control preference changes. */
+  notifyRuntimeNodePeersChanged?: () => void;
   /** 清理本机禁用目标的响应性熔断状态。 */
   clearDeviceResponsiveness?(deviceId: string): void;
   broadcast(channel: string, payload: unknown): void;
@@ -220,6 +223,7 @@ export function defaultDeps(): DeviceLinkIpcDeps {
     revoke: revokeController,
     restore: restoreController,
     setDeviceControlEnabled,
+    notifyRuntimeNodePeersChanged,
     clearDeviceResponsiveness,
     broadcast,
     readLastKnownDeviceNames,
@@ -360,6 +364,7 @@ export async function handleSetDeviceControlEnabled(
   }
   const normalizedDeviceId = deviceId.trim();
   const disabledControlDeviceIds = await deps.setDeviceControlEnabled(normalizedDeviceId, enabled);
+  deps.notifyRuntimeNodePeersChanged?.();
   if (!enabled) {
     resetSubscriptionRefcountForDevice(normalizedDeviceId);
     deps.clearDeviceResponsiveness?.(normalizedDeviceId);

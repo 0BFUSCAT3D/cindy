@@ -16,6 +16,7 @@ import { resolve } from "node:path";
 import { authErrorMessages, loginMessages } from "@/auth/loginMessages";
 import { newSessionMessages } from "@/session/newSessionMessages";
 import { FULL_ACCESS_CONFIRMATION_COPY } from "@/session/fullAccessConfirmationCopy";
+import { agentAdapterCopy } from "@cindy/maker-shared/agent-adapters";
 import {
   ELLIPSIS_LOCALES,
   HALFWIDTH_PUNCT_LOCALES,
@@ -88,6 +89,16 @@ function collectEntries(): { locale: string; key: string; value: string }[] {
         key: `mobile/fullAccessConfirmation:${key}`,
         value,
       });
+    }
+  }
+
+  // 工程规则 §5.1：根 JSON 门禁不扫描共享 Agent 资源的运行时五语文案。
+  // 复用现有 unit 断言补该输入；任一译文把 Agent 写成禁用译法即可触发，
+  // 不复制文案或扫描源码，Desktop 与 Mobile 消费同一生产对象。
+  for (const [key, value] of Object.entries(agentAdapterCopy)) {
+    out.push({ locale: "en", key: `shared/agentAdapters:${key}`, value: value.fallback });
+    for (const [locale, translation] of Object.entries(value.translations)) {
+      out.push({ locale, key: `shared/agentAdapters:${key}`, value: translation });
     }
   }
 
