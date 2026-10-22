@@ -4,7 +4,7 @@
 
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DbClient } from '../../localDb/client/DbClient.js';
 import { createDbClient } from '../../localDb/client/DbClient.js';
@@ -16,6 +16,7 @@ import {
   deleteCustomProvider,
   getCustomProvider,
   listCustomProviders,
+  revokeCodexAccountUltrafast,
   updateCustomProvider,
   updateCustomProviderIfUnchanged,
   validateCustomProviderConfig,
@@ -102,6 +103,8 @@ describe('custom provider updates through the runtime database proxy', () => {
     expect(await updateCustomProviderIfUnchanged(native.id, before, next)).toBe(true);
     const restored = (await getCustomProvider(native.id))!;
     expect(restored.runtimes.codex!.models[0].supportsUltrafastMode).toBe(true);
+    // Saving a pre-discovery settings snapshot must not revoke a freshly learned grant.
+    expect((await updateCustomProvider(native.id, before))!.runtimes.codex!.models[0].supportsUltrafastMode).toBe(true);
     expect(buildUserProvider(restored).models.codex![0].supportsUltrafastMode).toBe(true);
     expect(buildUserProvider((await getCustomProvider('openai-two'))!).models.codex![0].supportsUltrafastMode).toBe(false);
     for (const agent of ['codex', 'claude-code', 'pi'] as const) {
@@ -112,7 +115,7 @@ describe('custom provider updates through the runtime database proxy', () => {
     // A real refresh without the entitlement must replace the saved true. The
     // descriptive name/effort metadata may still use the existing sparse merge.
     for (const fields of [{ service_tiers: [{ id: 'priority' }] }, {}]) {
-      await updateCustomProvider(native.id, restored);
+      await updateCustomProviderIfUnchanged(native.id, (await getCustomProvider(native.id))!, restored);
       const current = (await getCustomProvider(native.id))!;
       const refreshed = mergeDiscoveredRuntimeModels(current.runtimes.codex!.models,
         parseModelsListResponse({ models: [{ slug: 'gpt-6.1-sol', ...fields }] })!);
@@ -122,7 +125,7 @@ describe('custom provider updates through the runtime database proxy', () => {
     }
     // Accepted replacement login clears before best-effort discovery. A failed
     // refresh writes nothing, so a reload must still expose no old entitlement.
-    await updateCustomProvider(native.id, restored);
+    await updateCustomProviderIfUnchanged(native.id, (await getCustomProvider(native.id))!, restored);
     expect(await updateCustomProviderIfUnchanged(native.id, restored,
       clearCodexAccountUltrafast(restored))).toBe(true);
     const replaced = (await getCustomProvider(native.id))!;
@@ -131,6 +134,46 @@ describe('custom provider updates through the runtime database proxy', () => {
     expect(validateCustomProviderConfig({ ...next, runtimes: { codex: {
       ...next.runtimes.codex, models: [{ ...models[0], supportsUltrafastMode: 'true' }],
     } } }).ok).toBe(false);
+  });
+
+  it('merges a concurrent revocation before saving native account settings', async () => {
+    mountDb();
+    const config: CustomProviderConfig = { ...valid,
+      auth: { method: 'oauth', native: 'codex' },
+      runtimes: { codex: { ...valid.runtimes.codex!,
+        models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', supportsUltrafastMode: true }],
+      } },
+    };
+    await createCustomProvider(config);
+    let resume!: () => void;
+    let ready!: () => void;
+    const paused = new Promise<void>(resolve => { ready = resolve; });
+    const release = new Promise<void>(resolve => { resume = resolve; });
+    const update = client!.drizzle.update.bind(client!.drizzle);
+    const spy = vi.spyOn(client!.drizzle, 'update').mockImplementationOnce((...args: any[]) => {
+      const builder = (update as any)(...args);
+      const set = builder.set.bind(builder);
+      builder.set = (...values: any[]) => {
+        const query = set(...values);
+        const run = query.run.bind(query);
+        query.run = async () => { ready(); await release; return run(); };
+        return query;
+      };
+      return builder;
+    });
+    try {
+      const saving = updateCustomProvider(config.id, { ...config, name: 'Rename kept' });
+      await paused;
+      expect(await revokeCodexAccountUltrafast(config.id, () => true)).toBe(true);
+      resume();
+      const saved = await saving;
+      expect(saved?.name).toBe('Rename kept');
+      expect(saved?.runtimes.codex!.models[0].supportsUltrafastMode).toBe(false);
+      expect(buildUserProvider((await getCustomProvider(config.id))!).models.codex![0].supportsUltrafastMode).toBe(false);
+    } finally {
+      resume();
+      spy.mockRestore();
+    }
   });
 
   it('reports an applied model update and rejects a stale snapshot', async () => {

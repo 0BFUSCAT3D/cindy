@@ -980,22 +980,38 @@ export async function updateCustomProvider(
   now: number = Date.now(),
 ): Promise<CustomProviderConfig | null> {
   const db = getDbClient().drizzle;
-  const existing = await db.select().from(customProviders).where(eq(customProviders.id, id)).get();
-  if (!existing) return null;
-  const c = invalidateEditedProviderMetadata(
-    rowToConfig(existing),
-    normalizeConfig({ ...config, id }),
-  );
-  await db
-    .update(customProviders)
-    .set({
-      name: c.name,
-      runtimes: JSON.stringify(c.runtimes),
-      auth: c.auth ? JSON.stringify(c.auth) : null,
-      updatedAt: nextUpdatedAt(now, existing.updatedAt),
-    })
-    .where(eq(customProviders.id, id));
-  return c;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await db.select().from(customProviders).where(eq(customProviders.id, id)).get();
+    if (!existing) return null;
+    const previous = rowToConfig(existing);
+    const c = invalidateEditedProviderMetadata(previous, normalizeConfig({ ...config, id }));
+    const nativeAccount = previous.auth?.native === 'codex' || c.auth?.native === 'codex';
+    if (nativeAccount && c.runtimes.codex) {
+      // Settings snapshots cannot grant or revoke account-discovered capabilities.
+      // Only the main-owned discovery/revocation CAS path may change this field.
+      const models = new Map(previous.runtimes.codex?.models.map(model => [model.id, model]));
+      c.runtimes.codex.models = c.runtimes.codex.models.map(model => ({
+        ...model,
+        supportsUltrafastMode: previous.auth?.native === 'codex' && c.auth?.native === 'codex'
+          && models.get(model.id)?.supportsUltrafastMode === true,
+      }));
+    }
+    const result = await db
+      .update(customProviders)
+      .set({
+        name: c.name,
+        runtimes: JSON.stringify(c.runtimes),
+        auth: c.auth ? JSON.stringify(c.auth) : null,
+        updatedAt: nextUpdatedAt(now, existing.updatedAt),
+      })
+      .where(nativeAccount
+        ? and(eq(customProviders.id, id), eq(customProviders.updatedAt, existing.updatedAt))
+        : eq(customProviders.id, id))
+      .run();
+    if (!nativeAccount || result.changes === 1) return c;
+    // A discovery/revocation raced this write. Merge against the latest grant.
+  }
+  throw new Error('Provider changed while saving settings; retry the update');
 }
 
 /**

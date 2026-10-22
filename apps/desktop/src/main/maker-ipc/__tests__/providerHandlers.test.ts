@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 
 import type { AgentKind, CustomProviderConfig, ProviderView } from '@cindy/model-providers';
+import { buildUserProvider } from '@cindy/model-providers';
 
 import type { ProviderImportPreview } from '../../../shared/providerImport.js';
 import { BUILTIN_REFRESHABLE_PROVIDER_IDS } from '../../../shared/providerModelRefresh.js';
@@ -4300,6 +4301,77 @@ describe('provider:oauth mutation ordering', () => {
     const saved = (await getCustomProvider(config.id))!;
     expect(saved.runtimes.codex!.models[0].supportsUltrafastMode).toBe(true);
     expect(saved.name).toBe(interleaving === 'settings-edit' ? 'Edited while logging in' : config.name);
+  });
+
+  it('does not restore an old account grant when a stale settings dialog saves after login acceptance', async () => {
+    mountDb();
+    const initial: CustomProviderConfig = { ...validConfig,
+      auth: { method: 'oauth', native: 'codex' },
+      runtimes: { codex: { ...validConfig.runtimes.codex!,
+        baseUrl: 'https://chatgpt.com/backend-api/codex', wireProtocol: 'openai-responses',
+        models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', supportsUltrafastMode: true }],
+      } },
+    };
+    await createCustomProvider(initial);
+    const harness = new IpcHarness();
+    registerProviderHandlers(harness, makeDeps({
+      oauthLogin: async () => ({ ok: true,
+        commitAccountCapabilities: () => revokeCodexAccountUltrafast(initial.id, () => true),
+      }),
+    }));
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, initial.id)).resolves.toEqual({ ok: true });
+    // Same payload as the native connection dialog's captured { ...initial, name }.
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, { ...initial, name: 'Renamed after login' });
+    const saved = (await getCustomProvider(initial.id))!;
+    expect(saved.name).toBe('Renamed after login');
+    expect(saved.runtimes.codex!.models[0].supportsUltrafastMode).toBe(false);
+    expect(buildUserProvider(saved).models.codex![0].supportsUltrafastMode).toBe(false);
+  });
+
+  it.each(['cancel', 'release', 'destroy'] as const)('finishes account acceptance when %s arrives during capability commit', async (action) => {
+    mountDb();
+    const config: CustomProviderConfig = { ...validConfig,
+      auth: { method: 'oauth', native: 'codex' },
+      runtimes: { codex: { ...validConfig.runtimes.codex!,
+        baseUrl: 'https://chatgpt.com/backend-api/codex', wireProtocol: 'openai-responses',
+        models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', supportsUltrafastMode: true }],
+      } },
+    };
+    await createCustomProvider(config);
+    let release!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>(resolve => { started = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const rollbackCredentials = vi.fn(() => true);
+    const afterCommit = vi.fn(async () => {});
+    const oauthCancel = vi.fn();
+    let isCurrent!: () => boolean;
+    const harness = new IpcHarness();
+    registerProviderHandlers(harness, makeDeps({ oauthCancel,
+      oauthLogin: async (_id, current) => {
+        isCurrent = current;
+        return { ok: true, rollbackCredentials,
+          afterCommit: async () => { if (current()) await afterCommit(); },
+          commitAccountCapabilities: async () => {
+            started();
+            await resume;
+            return revokeCodexAccountUltrafast(config.id, () => true);
+          },
+        };
+      },
+    }));
+    const login = harness.invokeFrom(101, MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, config.id, { ownerId: 'accepting-login' });
+    await paused;
+    if (action === 'destroy') harness.destroySender(101);
+    else await harness.invokeFrom(101, MAKER_INVOKE.PROVIDER_OAUTH_CANCEL, config.id,
+      action === 'release' ? { releaseOwner: true, ownerId: 'accepting-login' } : undefined);
+    expect(isCurrent()).toBe(true);
+    expect(oauthCancel).not.toHaveBeenCalled();
+    release();
+    await expect(login).resolves.toEqual({ ok: true });
+    expect(rollbackCredentials).not.toHaveBeenCalled();
+    expect(afterCommit).toHaveBeenCalledOnce();
+    expect((await getCustomProvider(config.id))!.runtimes.codex!.models[0].supportsUltrafastMode).toBe(false);
   });
 
   it.each([false, true])('publishes login identity only after acceptance (cancelled=%s)', async (cancelled) => {
