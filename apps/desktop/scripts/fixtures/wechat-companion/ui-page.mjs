@@ -14,7 +14,9 @@ export default {
   },
   async check(page, ui) {
     if (ui.data.hiddenIm) {
-      await page.locator('button').filter({ hasText: '8c9b5c' }).focus();
+      await page.locator('[title="拉拉, 徐紫旎, 姚刘浏"]').waitFor({ state: 'visible' });
+      const row = page.locator('button').filter({ hasText: '8c9b5c' });
+      if (await row.count()) await row.focus();
     } else {
       await page.locator('#companion-im-wechat-trigger').click();
     }

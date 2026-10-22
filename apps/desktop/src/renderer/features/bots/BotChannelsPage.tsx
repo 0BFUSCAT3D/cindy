@@ -11,7 +11,7 @@
 import { HookConnectionsSection } from '@/components/settings/HookConnectionsSection';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Briefcase, ChevronRight, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
+import { Briefcase, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
@@ -473,9 +473,8 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
             <button
               type="button"
               onClick={() => navigate(`/bots/${encodeURIComponent(botId)}/history/${encodeURIComponent(lane.sessionId)}`)}
-              className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left outline-none hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+              className="min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
             >
-              <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 truncate text-12 text-[var(--text-primary)]" title={name}>
                     {name}
@@ -487,8 +486,6 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
                   ) : null}
                 </span>
                 <span className="block text-11 leading-[1.5] text-[var(--text-tertiary)]">{meta.join(' · ')}</span>
-              </span>
-              <ChevronRight size={14} aria-hidden className="shrink-0 text-[var(--text-tertiary)]" />
             </button>
             <Button
               type="button"
