@@ -1120,6 +1120,7 @@ export function getMaker(): Maker {
           isCurrent: () => !!snapshot && !snapshot.planModeEnabled && snapshot.permissionMode !== 'plan'
             && snapshot.isCurrent?.() === true,
           reviewAction: snapshot?.reviewAction,
+          autoReviewOwner: session.autoReviewOwner,
         };
       },
       // 宿主主动发起的权限确认(如 Agent 安装插件):走与 Agent 权限请求相同的路由，
