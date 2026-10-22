@@ -508,7 +508,9 @@ it('cancels late segment headers and keeps the replacement speech reader', async
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
-it('keeps the safe headers-timeout diagnostic and aborts native synthesis', async () => {
+// Oct 21 read-aloud failure: timeout diagnostics previously became generic IPC
+// failures. Unit: native synthesis with fake time; assert the safe public cause.
+it('keeps the safe headers-timeout cause and aborts native synthesis', async () => {
   vi.useFakeTimers();
   try {
     const diagnostic = vi.fn();
@@ -532,7 +534,7 @@ it('keeps the safe headers-timeout diagnostic and aborts native synthesis', asyn
       fetch: fetcher,
       diagnostic,
     });
-    const result = expect(speech.start(input)).rejects.toThrow('request');
+    const result = expect(speech.start(input)).rejects.toMatchObject({ code: 'timeout' });
     await vi.advanceTimersByTimeAsync(30_000);
     await result;
     expect(
@@ -540,6 +542,52 @@ it('keeps the safe headers-timeout diagnostic and aborts native synthesis', asyn
     ).toEqual([expect.objectContaining({ code: 'headers_timeout' })]);
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private network detail');
     expect(fetcher).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('preserves a stalled native audio read as timeout after cancelling its stream', async () => {
+  vi.useFakeTimers();
+  try {
+    const cancelled = vi.fn();
+    const diagnostic = vi.fn();
+    const speech = new SpeechSynthesisSession({
+      connection: () => ({
+        baseUrl: 'https://provider.test/api/v1',
+        protocol: 'dashscope-tts',
+        headers: {},
+      }),
+      assertCurrent: () => {},
+      diagnostic,
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode('data: {"output":{"audio":{"data":"AQI="}}}\n\n'),
+                );
+              },
+              cancel: cancelled,
+            }),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+      ),
+    });
+    await speech.start(input);
+    expect(new Uint8Array((await speech.read('one')).pcm)).toEqual(new Uint8Array([1, 2]));
+    const result = expect(speech.read('one')).rejects.toMatchObject({ code: 'timeout' });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(diagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: 'error',
+        code: 'read_timeout',
+        bytes: 2,
+      }),
+    );
   } finally {
     vi.useRealTimers();
   }

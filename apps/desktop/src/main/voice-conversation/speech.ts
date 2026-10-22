@@ -71,6 +71,7 @@ export class SpeechSynthesisSession {
       const { url, body, headers } = requests[index];
       let timedOut = false;
       const timer = setTimeout(() => {
+        if (epoch !== this.epoch) return;
         timedOut = true;
         controller.abort();
       }, 30_000);
@@ -101,6 +102,7 @@ export class SpeechSynthesisSession {
         if (timedOut && epoch === this.epoch) {
           this.diagnostic?.('error', { code: 'headers_timeout' });
           this.cancel('failed');
+          throw new SpeechError('timeout');
         }
         throw error instanceof SpeechError ? error : new SpeechError('request');
       } finally {
@@ -138,8 +140,10 @@ export class SpeechSynthesisSession {
     const reader = this.reader;
     const epoch = this.epoch;
     this.reading = true;
+    let timedOut = false;
     const timer = setTimeout(() => {
       if (epoch === this.epoch) {
+        timedOut = true;
         this.diagnostic?.('error', { code: 'read_timeout' });
         this.cancel('failed');
       }
@@ -165,6 +169,9 @@ export class SpeechSynthesisSession {
       }
       return { pcm: Uint8Array.from(value).buffer, done: result.done };
     } catch (error) {
+      // Timeout cleanup invalidates the reader just like interruption. Preserve
+      // its cause before the epoch check can collapse it into cancellation.
+      if (timedOut) throw new SpeechError('timeout');
       if (epoch === this.epoch) {
         this.diagnostic?.('error', { code: error instanceof SpeechError ? error.code : 'request' });
         this.cancel('failed');

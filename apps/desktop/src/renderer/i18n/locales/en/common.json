@@ -10253,7 +10253,8 @@
         "connection": "Voice connection interrupted. Your unsent text is kept below.",
         "microphone": "Microphone stopped. Check its permission and connection, then resume.",
         "send": "This message was not accepted. Your text is kept below.",
-        "speech": "Could not read the reply aloud. The text reply remains in the conversation. Check the speech model and voice."
+        "speech": "Could not read the reply aloud. The text reply remains in the conversation.",
+        "speechTimeout": "The speech response timed out and read-aloud stopped. The text reply remains in the conversation."
       },
       "voiceIdHint": "Enter a voice ID available to this provider account.",
       "speed": "Speech speed",
