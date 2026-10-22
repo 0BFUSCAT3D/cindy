@@ -4,7 +4,7 @@
  * 同一份 `botImConnection.list()` 投影 + `botImConnection:changed` 广播: 添加、移除与
  * 传输层状态变化都走广播刷新。线上类型与语义见 shared/botImConnection.ts。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type {
   BotImAdoptablePersonalBotsPayload,
@@ -27,7 +27,11 @@ export function botImConnectionApi(): BotImConnectionApi | null {
   return api && typeof api.list === 'function' ? api : null;
 }
 
-export function useBotImConnections(api: BotImConnectionApi | null = botImConnectionApi()): {
+/**
+ * `scope` says which computer's connections these are (the settings target); the API object itself is read
+ * when the subscription starts, because a window API is not a render-stable identity.
+ */
+export function useBotImConnections(api: BotImConnectionApi | null = botImConnectionApi(), scope: unknown = null): {
   payload: BotImConnectionListPayload | null;
   /** 首次读取还在途; 读取失败或没有 IPC 时为 false, payload 保持 null。 */
   loading: boolean;
@@ -35,8 +39,11 @@ export function useBotImConnections(api: BotImConnectionApi | null = botImConnec
 } {
   const [payload, setPayload] = useState<BotImConnectionListPayload | null>(null);
   const [loading, setLoading] = useState(() => api !== null);
+  const apiRef = useRef(api);
+  apiRef.current = api;
 
   useEffect(() => {
+    const api = apiRef.current;
     if (!api) return;
     setPayload(null);
     let cancelled = false;
@@ -59,7 +66,7 @@ export function useBotImConnections(api: BotImConnectionApi | null = botImConnec
       cancelled = true;
       unsubscribe();
     };
-  }, [api]);
+  }, [scope]);
 
   return { payload, loading, apply: setPayload };
 }

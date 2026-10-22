@@ -360,6 +360,20 @@ describe('BotChannelsPage', () => {
   });
 });
 
+describe('BotChannelsPage with a window API that is not identity-stable', () => {
+  it('reads the connection list once, however often it renders', async () => {
+    const list = vi.fn(async () => ({ connections: [connection()] }));
+    Object.assign(window, { electronAPI: {
+      // A harness or proxying bridge hands out a fresh object per access.
+      get botImConnection() { return { list, onChanged: () => () => undefined }; },
+    } });
+    render(<BotChannelsPage bot={mia} />);
+    expect(await screen.findByText('bots.channels.platform.telegram')).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 20)); // real-wait: let a would-be render loop show itself
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('BotChannelsPage for a teammate on another computer', () => {
   /** The page talks to the other computer's API only; this window's own API must stay untouched. */
   function renderRemote(api: Record<string, unknown>, channels: Partial<BotSettingsTarget['channels']> = {}) {

@@ -113,7 +113,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
   // This computer's messaging stack, or the teammate's computer's through the settings target.
   const target = useBotSettingsTarget();
   const { im, wechat, x: remoteX } = target.channels;
-  const { payload, loading, apply } = useBotImConnections(im);
+  const { payload, loading, apply } = useBotImConnections(im, target);
   const { confirm } = useConfirmDialog();
   const [adding, setAdding] = useState(false);
   const [wechatExpanded, setWechatExpanded] = useState(false);
@@ -272,11 +272,13 @@ function ConnectionGroups({ api, connectionId, botName }: { api: BotImConnection
   const [error, setError] = useState<'load' | 'save' | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const latest = useRef(0);
+  const apiRef = useRef(api);
+  apiRef.current = api;
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    void listBotImConnectionGroups(api, connectionId)
+    void listBotImConnectionGroups(apiRef.current, connectionId)
       .then((payload) => {
         if (!cancelled) setGroups(payload.groups);
       })
@@ -286,7 +288,7 @@ function ConnectionGroups({ api, connectionId, botName }: { api: BotImConnection
     return () => {
       cancelled = true;
     };
-  }, [api, connectionId, reloadToken]);
+  }, [connectionId, reloadToken]);
 
   const setMode = useCallback(
     (chatId: string, mode: BotImGroupActivationMode) => {
@@ -295,21 +297,21 @@ function ConnectionGroups({ api, connectionId, botName }: { api: BotImConnection
         current ? current.map((g) => (g.chatId === chatId ? { ...g, activation: mode } : g)) : current,
       );
       setError(null);
-      void setBotImConnectionGroupActivation(api, connectionId, chatId, mode)
+      void setBotImConnectionGroupActivation(apiRef.current, connectionId, chatId, mode)
         .then((payload) => {
           if (revision === latest.current) setGroups(payload.groups);
         })
         .catch(() => {
           if (revision !== latest.current) return;
           setError('save');
-          void listBotImConnectionGroups(api, connectionId)
+          void listBotImConnectionGroups(apiRef.current, connectionId)
             .then((payload) => {
               if (revision === latest.current) setGroups(payload.groups);
             })
             .catch(() => undefined);
         });
     },
-    [api, connectionId],
+    [connectionId],
   );
 
   if (groups === null && error !== 'load') return null;
@@ -381,11 +383,13 @@ function ConnectionLanes({ api, connectionId, botName }: { api: BotImConnectionA
   const [reloadToken, setReloadToken] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const resettingRef = useRef(false);
+  const apiRef = useRef(api);
+  apiRef.current = api;
 
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      void listBotImConnectionLanes(api, connectionId)
+      void listBotImConnectionLanes(apiRef.current, connectionId)
         .then((payload) => {
           if (cancelled) return;
           setLanes(payload.lanes);
@@ -404,7 +408,7 @@ function ConnectionLanes({ api, connectionId, botName }: { api: BotImConnectionA
       cancelled = true;
       clearInterval(timer);
     };
-  }, [api, connectionId, reloadToken]);
+  }, [connectionId, reloadToken]);
 
   const laneName = (lane: BotImConnectionLane) =>
     lane.kind === 'owner-dm' ? t('bots.channels.lanes.ownerName') : lane.name || lane.chatId || '';
@@ -428,7 +432,7 @@ function ConnectionLanes({ api, connectionId, botName }: { api: BotImConnectionA
     setResettingId(lane.sessionId);
     setNotice(null);
     try {
-      const payload = await resetBotImConnectionLane(api, connectionId, lane.sessionId);
+      const payload = await resetBotImConnectionLane(apiRef.current, connectionId, lane.sessionId);
       setLanes(payload.lanes);
       setNow(Date.now());
       setNotice({ tone: 'done', text: t('bots.channels.lanes.resetDone', { lane: name }) });
@@ -618,11 +622,13 @@ function BotChannelAddDialog({
   const credentialsHere = remoteName === undefined;
   const useExisting = existing !== null && (source === 'existing' || !credentialsHere);
 
+  const apiRef = useRef(api);
+  apiRef.current = api;
   const refreshAdoptable = useCallback(() => {
-    void listAdoptablePersonalBots(api)
+    void listAdoptablePersonalBots(apiRef.current)
       .then((next) => setAdoptable(next.bots))
       .catch(() => setAdoptable([]));
-  }, [api]);
+  }, []);
   useEffect(refreshAdoptable, [refreshAdoptable]);
 
   useEffect(() => {
@@ -694,7 +700,7 @@ function BotChannelAddDialog({
     setBusy(true);
     setError(null);
     try {
-      const next = input ? await addBotImConnection(api, input) : await adoptPersonalBot(api, { botId: bot.id, channel });
+      const next = input ? await addBotImConnection(apiRef.current, input) : await adoptPersonalBot(apiRef.current, { botId: bot.id, channel });
       onApplied(next);
       onOpenChange(false);
     } catch (failure) {

@@ -40,7 +40,8 @@ type WechatBotApi = Window['electronAPI']['wechatBot'];
  */
 export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
   const { t } = useTranslation();
-  const api = override ?? window.electronAPI.wechatBot;
+  // Resolved at use, as before: a window API object is not a render-stable identity.
+  const api = () => override ?? window.electronAPI.wechatBot;
   const [owner] = useState(getDataOwnerGeneration);
   // ProtectedRoute remounts on owner changes; module caches survive that remount.
   if (cacheOwnerId !== getDataOwnerGeneration().dataOwnerId) {
@@ -62,13 +63,13 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
 
   useEffect(() => {
     let cancelled = false;
-    const unsubscribe = api.onStateChange((next) => {
+    const unsubscribe = api().onStateChange((next) => {
       if (cancelled || !isDataOwnerIdCurrent(owner)) return;
       pushVersionRef.current += 1;
       if (!override) cachedState = next;
       setState(next);
     });
-    const unsubscribeSettings = api.onChannelSettingsChange?.((settings) => {
+    const unsubscribeSettings = api().onChannelSettingsChange?.((settings) => {
       if (cancelled || !isDataOwnerIdCurrent(owner)) return;
       settingsVersionRef.current += 1;
       if (!override) cachedChannelSettings = settings;
@@ -78,8 +79,8 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
     const initialSettingsVersion = settingsVersionRef.current;
     const requestOwner = getDataOwnerGeneration();
     void Promise.all([
-      api.getState(),
-      api.getChannelSettings(),
+      api().getState(),
+      api().getChannelSettings(),
     ])
       .then(([nextState, nextChannelSettings]) => {
         // Same-owner repair keeps this page mounted and these read-only settings valid.
@@ -102,13 +103,13 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
       unsubscribe();
       unsubscribeSettings?.();
     };
-  }, [owner, api, override]);
+  }, [owner, override]);
 
   const authorize = useCallback(async (): Promise<boolean> => {
     if (isAuthorizing) return false;
     setIsAuthorizing(true);
     try {
-      await api.authorize();
+      await api().authorize();
       return true;
     } catch {
       log.error('failed to start personal WeChat authorization');
@@ -117,22 +118,22 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
     } finally {
       setIsAuthorizing(false);
     }
-  }, [api, isAuthorizing, t]);
+  }, [isAuthorizing, t]);
 
   const cancelAuthorization = useCallback(async (): Promise<void> => {
     try {
-      await api.cancelAuthorization();
+      await api().cancelAuthorization();
     } catch {
       log.error('failed to cancel personal WeChat authorization');
       toast.error(t('settings.wechatBot.toasts.cancelFailed'));
     }
-  }, [api, t]);
+  }, [t]);
 
   const unbind = useCallback(async (): Promise<boolean> => {
     if (isUnbinding) return false;
     setIsUnbinding(true);
     try {
-      await api.unbind();
+      await api().unbind();
       toast.success(t('settings.wechatBot.toasts.unbound'));
       return true;
     } catch {
@@ -142,14 +143,14 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
     } finally {
       setIsUnbinding(false);
     }
-  }, [api, isUnbinding, t]);
+  }, [isUnbinding, t]);
 
   const chooseWorkingDirectory = useCallback(async (): Promise<void> => {
     if (isUpdatingWorkingDir || !isDataOwnerIdCurrent(owner)) return;
     const requestOwner = getDataOwnerGeneration();
     setIsUpdatingWorkingDir(true);
     try {
-      const result = await api.chooseWorkingDirectory();
+      const result = await api().chooseWorkingDirectory();
       if (!isDataOwnerGenerationCurrent(requestOwner)) return;
       if (!override) cachedChannelSettings = result.state;
       setChannelSettings(result.state);
@@ -160,14 +161,14 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
     } finally {
       setIsUpdatingWorkingDir(false);
     }
-  }, [api, override, isUpdatingWorkingDir, owner, t]);
+  }, [override, isUpdatingWorkingDir, owner, t]);
 
   const resetWorkingDirectory = useCallback(async (): Promise<void> => {
     if (isUpdatingWorkingDir || !isDataOwnerIdCurrent(owner)) return;
     const requestOwner = getDataOwnerGeneration();
     setIsUpdatingWorkingDir(true);
     try {
-      const next = await api.resetWorkingDirectory();
+      const next = await api().resetWorkingDirectory();
       if (!isDataOwnerGenerationCurrent(requestOwner)) return;
       if (!override) cachedChannelSettings = next;
       setChannelSettings(next);
@@ -178,7 +179,7 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
     } finally {
       setIsUpdatingWorkingDir(false);
     }
-  }, [api, override, isUpdatingWorkingDir, owner, t]);
+  }, [override, isUpdatingWorkingDir, owner, t]);
 
   const setCompanion = useCallback(async (botId: string | null): Promise<boolean> => {
     if (companionBusyRef.current || !channelSettings || !isDataOwnerIdCurrent(owner)) return false;
@@ -186,7 +187,7 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
     companionBusyRef.current = true;
     setIsUpdatingCompanion(true);
     try {
-      const next = await api.setCompanion(botId);
+      const next = await api().setCompanion(botId);
       if (!isDataOwnerGenerationCurrent(requestOwner)) return false;
       settingsVersionRef.current += 1;
       if (!override) cachedChannelSettings = next;
@@ -199,7 +200,7 @@ export function useWechatBot(override?: WechatBotApi): UseWechatBotReturn {
       companionBusyRef.current = false;
       setIsUpdatingCompanion(false);
     }
-  }, [api, override, channelSettings, owner, t]);
+  }, [override, channelSettings, owner, t]);
 
   return {
     state,
