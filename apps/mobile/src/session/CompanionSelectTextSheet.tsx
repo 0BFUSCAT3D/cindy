@@ -10,17 +10,7 @@ import { Text } from '@/components/AppText';
 import { useThemedStyles, type ThemeColors } from '@/theme';
 import { lineHeight, spacing, typeScale } from '@/theme/tokens';
 import { CompanionSheet } from './CompanionSheet';
-
-/** What the reader sees, without Markdown syntax: emphasis marks, link targets and heading hashes go. */
-export function selectableMessageText(markdown: string): string {
-  return markdown
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^(\s*)[-*+]\s+/gm, '$1• ')
-    .replace(/(\*\*|__)(.+?)\1/g, '$2')
-    .replace(/`([^`\n]+)`/g, '$1');
-}
+import { selectableMessageText } from './selectableMessageText';
 
 export function CompanionSelectTextSheet({ text, onClose }: { text: string; onClose: () => void }) {
   const { t } = useTranslation();

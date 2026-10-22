@@ -521,7 +521,7 @@ export function PendingSendBubble({
               ) : null}
             </View>
           ) : null}
-          {hasBody ? (
+          {hasBody || (item.replyQuote && renderReplyQuote) ? (
             <MessageBodyTapBoundary value={cancelBubbleTouch}>
             <View
               key={`body:${item.clientId}`}

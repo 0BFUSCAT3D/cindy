@@ -3094,7 +3094,8 @@ const RenderItemView = memo(function RenderItemView({
             renderReplyQuote={actions.companionQuoteActions ? (quote) => (
               <View style={styles.companionQuote}>
                 <BotGroupQuote display={companionReplyQuoteDisplay(quote,
-                  actions.companionQuoteActions!.getMessage(quote.clientId), actions.companionQuoteActions!.names)} />
+                  actions.companionQuoteActions!.getMessage(quote.clientId), actions.companionQuoteActions!.names)}
+                  onPress={() => actions.companionQuoteActions!.onLocate(quote.clientId)} />
               </View>
             ) : undefined}
             onOpenImage={actions.onOpenPayload}
@@ -3882,7 +3883,13 @@ function MessageBubble({
     && Boolean(item.message.pluginInvocations?.length);
   const hasBubbleContent = !!(
     item.message.systemCardType || displayBubbleBody || item.message.secondaryBody || hasPluginInvocations
+    // A quote or reply target alone still needs the bubble, e.g. an attachment-only reply.
+    || (companionQuote && (replyQuote || replyTarget))
   );
+  // The long-press menu lives on the bubble; without one (attachment-only, error) the action row stays.
+  const bubbleShown = item.message.role !== 'error'
+    && (hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0));
+  const companionMenuMounted = companionMenuEnabled && bubbleShown;
   // 气泡是纯 View,不承接任何手势:文本选择走正文原生 Text selectable(长按文字就地选择复制),
   // 气泡上不能挂 Pressable——它会参与触摸协商,干扰正文里表格/代码块横向 ScrollView 的拖动。
   const bubble = (
@@ -4130,7 +4137,7 @@ function MessageBubble({
         <ErrorNotice message={displayBubbleBody}>
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
         </ErrorNotice>
-      ) : hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0) ? (
+      ) : bubbleShown ? (
         companionMenuEnabled ? (Platform.OS === 'ios' ? (
           <GestureDetector gesture={companionMenuGesture}>
             <View style={isUser ? styles.companionMenuUser : styles.companionMenuAgent} testID="companion.messageMenu">
@@ -4168,7 +4175,7 @@ function MessageBubble({
           </Text>
         </View>
       ) : null}
-      {companionMenuEnabled ? null : hasActions && actions.companion ? <CompanionMessageActions user={isUser} copied={copyState === 'copied'} copying={copyState === 'copying'} disabled={disabled}
+      {companionMenuMounted ? null : hasActions && actions.companion ? <CompanionMessageActions user={isUser} copied={copyState === 'copied'} copying={copyState === 'copying'} disabled={disabled}
         onCopy={canCopy ? copyMessage : undefined}
         actions={[
           ...(canCopy ? [{ id: 'copy', title: copyActionLabel(copyState), image: 'doc.on.doc', disabled: copyState === 'copying' }] : []),
