@@ -427,6 +427,17 @@ describe('findUnsafeEvaluateInterpolations', () => {
 
 
 describe('recipe guards and output checks', () => {
+  // #6822: resolving equals after a browser call misclassified missing input as
+  // stale data. Unit production runner; both guarded read implementations must
+  // reject before any page execution, rather than suspending a saved recipe.
+  it.each(['extract', 'evaluate'] as const)('preflights equals variables before a guarded %s', async (action) => {
+    const m = mockCall([{ data: { result: { matched: true, value: { title: 'found' } } } }]);
+    const result = await runRecipe({ id: 'missing-equals', steps: [{ action,
+      fn: '() => ({ title: "found" })', extract: { fields: { title: 'h1' } },
+      guard: { url: 'https://example.com/' }, expect: { equals: { title: '{{missing}}' } } }] }, {}, m);
+    expect(result).toMatchObject({ ok: false, failureKind: 'input', steps: [] });
+    expect(m.calls).toHaveLength(0);
+  });
   it.each([
     { visible: 1, hidden: 1, url: 'https://x.com/', text: 'account', ok: true },
     { visible: 2, hidden: 0, url: 'https://x.com/', text: 'account', ok: false },

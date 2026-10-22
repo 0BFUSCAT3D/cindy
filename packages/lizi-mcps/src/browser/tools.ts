@@ -121,14 +121,14 @@ function readsPageState(request: BrowserControlRequest): boolean {
   return request.action === 'act' && (act?.kind === 'evaluate' || (act?.kind === 'wait' && act.fn !== undefined));
 }
 
-function getRuntime(deps: BrowserMcpDeps): BrowserControlRuntime {
+function getRuntime(deps: BrowserMcpDeps, onDispatch?: () => void): BrowserControlRuntime {
   const runtime = deps.getRuntime();
   const restricted = deps.pageReadsRestricted;
-  if (!restricted) return runtime;
+  if (!restricted && !onDispatch) return runtime;
   // Every path (tool actions, extract, recipes, hints) goes through this check.
   return {
     call: async (request) => {
-      if (readsPageState(request)
+      if (restricted && readsPageState(request)
         && await restricted({
           ...(request.profile ? { profile: request.profile } : {}),
           ...(request.targetId ? { targetId: request.targetId } : {}),
@@ -141,6 +141,9 @@ function getRuntime(deps: BrowserMcpDeps): BrowserControlRuntime {
           data: { reason: 'secret_entered' },
         };
       }
+      // This is the sole boundary after host preflight and before execution;
+      // callers must count attempts here, including throws/timeouts afterwards.
+      onDispatch?.();
       return runtime.call(request);
     },
   };
@@ -676,7 +679,8 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
             );
           }
         }
-        const runtime = getRuntime(deps);
+        let onRecipeDispatch: (() => void) | undefined;
+        const runtime = getRuntime(deps, () => onRecipeDispatch?.());
         // Block non-web schemes at the boundary: navigate/open to file:// /
         // chrome:// / data: would let the agent reach local files or browser
         // internals. Only the scheme is constrained — localhost/private HTTP
@@ -766,12 +770,15 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           // which is ambiguous with multiple tabs open). Once a navigate hands back
           // a target, the whole recipe stays pinned to it.
           let activeTargetId = args.targetId;
+          let lastCallDispatched = false;
+          onRecipeDispatch = () => {
+            lastCallDispatched = true;
+            if (candidate && suspended) repairUsed.add(id);
+          };
           runningRecipes.add(id);
           const runResult = await runRecipe(entry.recipe, args.inputs as Record<string, unknown> | undefined, {
             call: async (req) => {
-              // Input/request preflight can fail before touching the page. Only
-              // an actual browser attempt consumes the single repair trial.
-              if (candidate && suspended) repairUsed.add(id);
+              lastCallDispatched = false;
               const res = await runtime.call({
                 ...req,
                 ...(args.profile ? { profile: args.profile } : {}),
@@ -786,7 +793,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           let maintenanceMessage: string | undefined;
           if (runResult.ok && candidate) {
             verifiedDrafts.set(id, { site: args.site!, content: JSON.stringify(entry.recipe) });
-          } else if (!runResult.ok && runResult.failureKind !== 'input' && runResult.failedStep !== undefined) {
+          } else if (!runResult.ok && lastCallDispatched && runResult.failureKind !== 'input' && runResult.failedStep !== undefined) {
             // A failed draft is not evidence that the saved active version is
             // stale. Keep its state, while limiting new/previously failed drafts.
             if (!candidate || !persisted || suspended) failedRecipes.add(id);

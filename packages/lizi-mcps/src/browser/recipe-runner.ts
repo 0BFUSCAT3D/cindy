@@ -280,11 +280,11 @@ function guardRequest(step: RecipeStep, vars: Record<string, unknown>): BrowserC
 
 /** Validate actual records, not a producer's claimed count. Empty results cannot
  * satisfy required fields/equals through Array.every's vacuous truth. */
-function expectationError(step: RecipeStep, value: unknown, vars: Record<string, unknown>): string | undefined {
-  if (!step.expect) return undefined;
+function expectationError(expectation: RecipeStep['expect'], value: unknown): string | undefined {
+  if (!expectation) return undefined;
   const record = value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
   const rows = Array.isArray(value) ? value : Array.isArray(record?.records) ? record.records : record ? [record] : [];
-  const { minCount, requiredFields, equals } = step.expect;
+  const { minCount, requiredFields, equals } = expectation;
   if (minCount !== undefined && rows.length < minCount) return `expect: 至少 ${minCount} 条，实际 ${rows.length} 条`;
   if ((requiredFields?.length || Object.keys(equals ?? {}).length) && !rows.length) return 'expect: 结果为空';
   for (const row of rows) {
@@ -294,8 +294,7 @@ function expectationError(step: RecipeStep, value: unknown, vars: Record<string,
       if (v == null || (typeof v === 'string' && !v.trim())) return `expect: 必需字段 ${field} 为空`;
     }
     for (const [field, expected] of Object.entries(equals ?? {})) {
-      const target = typeof expected === 'string' ? interpolate(expected, vars) : expected;
-      if ((row as Record<string, unknown>)[field] !== target) return `expect: 字段 ${field} 不匹配`;
+      if ((row as Record<string, unknown>)[field] !== expected) return `expect: 字段 ${field} 不匹配`;
     }
   }
   return undefined;
@@ -356,10 +355,15 @@ export async function runRecipe(
   for (let i = 0; i < recipe.steps.length; i++) {
     const step = recipe.steps[i];
     let req: BrowserControlRequest;
+    let expectation: RecipeStep['expect'];
     let combinedGuard = false;
     try {
       req = stepToRequest(step, vars);
       // Construct all input-dependent checks before touching the page.
+      expectation = step.expect && { ...step.expect,
+        equals: step.expect.equals && Object.fromEntries(Object.entries(step.expect.equals)
+          .map(([field, expected]) => [field, typeof expected === 'string' ? interpolate(expected, vars) : expected])),
+      };
       const guard = guardRequest(step, vars);
       if (guard && step.action === 'extract') {
         // Read-only extraction can verify identity and read fields in one page
@@ -409,7 +413,7 @@ export async function runRecipe(
     const innerError = innerEvaluateError(step, res);
     let expectError: string | undefined;
     try {
-      if (res.ok && !innerError) expectError = expectationError(step, stepResultValue(step, res), vars);
+      if (res.ok && !innerError) expectError = expectationError(expectation, stepResultValue(step, res));
     } catch (err) {
       expectError = err instanceof Error ? err.message : String(err);
     }

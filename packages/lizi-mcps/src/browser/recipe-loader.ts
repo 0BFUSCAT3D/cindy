@@ -27,7 +27,7 @@ const RecipeGuardSchema = z.object({
   text: z.string().optional(),
 });
 const RecipeExpectationSchema = z.object({
-  minCount: z.number().int().nonnegative().optional(),
+  minCount: z.number().int().positive().optional(),
   requiredFields: z.array(z.string().min(1)).optional(),
   equals: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 }).refine((v) => v.minCount !== undefined || Boolean(v.requiredFields?.length) || Boolean(Object.keys(v.equals ?? {}).length), 'expect must contain a result check');

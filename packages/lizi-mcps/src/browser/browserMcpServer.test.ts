@@ -1204,8 +1204,9 @@ describe('recipe on-use maintenance', () => {
   });
   // Review #6822: saved-use coverage above did not exercise repair preflight.
   // MCP entry/unit: all three preflight paths must leave the page and budget untouched.
-  it.each(['missing', 'non-scalar', 'interpolation'] as const)('preserves the repair trial after %s input preflight failure', async (failure) => {
+  it.each(['missing', 'non-scalar', 'interpolation', 'equals'] as const)('preserves the repair trial after %s input preflight failure', async (failure) => {
     const candidate = { ...draft, inputs: { query: { required: true } }, steps: [{ ...draft.steps[0],
+      ...(failure === 'equals' ? { expect: { equals: { title: '{{missing}}' } } } : {}),
       guard: { url: 'https://example.com/', ...(failure === 'interpolation' ? { selector: '#{{missing}}' } : {}) } }] };
     const stored = { ...candidate, validation: { site: 'example.com', state: 'suspended' as const } };
     const saved: unknown[] = [];
@@ -1219,9 +1220,9 @@ describe('recipe on-use maintenance', () => {
       expect((await invoke(h, { ...run, inputs })).ok).toBe(false);
       expect(h.calls).toHaveLength(0);
       expect(saved).toHaveLength(0);
-      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'account' } })).verified).toBe(true);
+      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'found' } })).verified).toBe(true);
       const calls = h.calls.length;
-      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'account' } })).message).toContain('次数已用完');
+      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'found' } })).message).toContain('次数已用完');
       expect(h.calls).toHaveLength(calls);
     } finally { await h.cleanup(); }
   });
@@ -1256,11 +1257,38 @@ describe('recipe on-use maintenance', () => {
       expect(h.calls).toHaveLength(0);
     } finally { await h.cleanup(); }
   });
-  it('does not bypass password-handoff restrictions through candidate guards', async () => {
-    const h = await makeHarness({ pageReadsRestricted: async () => true });
+  // #6822 dispatch checkpoint: permission denial is neither recipe aging nor a
+  // repair attempt. Exercise denial -> permission restored -> real execution,
+  // through separate evaluate guards and combined extract reads at the MCP entry.
+  it.each([
+    { candidate: true, extract: false }, { candidate: true, extract: true },
+    { candidate: false, extract: false }, { candidate: false, extract: true },
+  ])('preserves recipe state and repair budget across read restriction: %j', async ({ candidate, extract }) => {
+    const definition = extract ? { ...draft, steps: [{ action: 'extract' as const,
+      guard: draft.steps[0].guard, expect: draft.steps[0].expect,
+      extract: { fields: { title: 'h1' } }, as: 'items' }] } : draft;
+    const stored = { ...definition, validation: { site: 'example.com', state: candidate ? 'suspended' as const : 'active' as const } };
+    const saved: unknown[] = [];
+    let restricted = true;
+    const h = await makeHarness({
+      pageReadsRestricted: async () => restricted,
+      getUserRecipes: async () => ({ version: `restricted-${candidate}-${extract}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (_req, i) => ({ result: extract ? { matched: true, value: { records: [{ title: 'found' }] } } : i === 0 ? true : { title: 'found' } }));
+    const run = candidate ? { action: 'recipe', site: 'example.com', recipeDraft: definition } : { action: 'recipe', recipeId: stored.id };
     try {
-      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).ok).toBe(false);
+      expect((await invoke(h, run)).ok).toBe(false);
       expect(h.calls).toHaveLength(0);
+      expect(saved).toHaveLength(0);
+      restricted = false;
+      expect((await invoke(h, run)).ok).toBe(true);
+      expect(h.calls.length).toBeGreaterThan(0);
+      expect(saved).toHaveLength(0);
+      if (candidate) {
+        const calls = h.calls.length;
+        expect((await invoke(h, run)).message).toContain('次数已用完');
+        expect(h.calls).toHaveLength(calls);
+      }
     } finally { await h.cleanup(); }
   });
   it('persists failure of a legacy recipe using its guide, without replacing it with a failed draft', async () => {
