@@ -27,7 +27,7 @@ vi.mock("../../modules/cindy-html-preview/src/CindyHtmlPreviewModule", () => ({
     get resolveRequest() { return mocks.demand ? mocks.resolveRequest : undefined; },
     addListener: (event: string, listener: (event: { token: string; id: string; path?: string }) => void) => {
       mocks.listeners.set(event, listener);
-      return { remove: () => mocks.listeners.delete(event) };
+      return { remove: () => { if (mocks.listeners.get(event) === listener) mocks.listeners.delete(event); } };
     },
   },
 }));
@@ -171,6 +171,26 @@ function previewCache() {
 }
 
 describe('persistent HTML preview cache', () => {
+  // Unit regression: explicit reload previously restored stale bytes again. Both
+  // native APIs must display fresh bytes on this attempt and preserve them for offline reopening.
+  it.each([false, true])('bypasses cached bytes on explicit reload (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps, listDir, caps } = setup();
+    listDir.mockResolvedValue([entry('index.html')]);
+    const { saved } = previewCache();
+    const stale = new TextEncoder().encode('<p>old</p>');
+    saved.set('index.html', stale);
+    const preview = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal, undefined, false);
+    expect(new TextDecoder().decode(mocks.contents.get('file:///cache/html-previews/' + '01'.repeat(24) + '/0'))).toContain(html);
+    expect(saved.get('index.html')).toEqual(bytes);
+    await preview.close();
+    mocks.remote.mockRejectedValue(new Error('offline'));
+    caps.mockRejectedValue(new Error('offline'));
+    const reopened = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
+    expect(new TextDecoder().decode(mocks.contents.get('file:///cache/html-previews/' + '02'.repeat(24) + '/0'))).toContain(html);
+    await reopened.close();
+  });
+
   // Unit regression: old transfer-cache HTML can be invalid UTF-8 even after the
   // remote document is repaired. Exercise both native preparation entry points.
   it.each([false, true])('replaces undecodable cached entries and reopens offline (onDemand=%s)', async (demand) => {
@@ -245,22 +265,62 @@ describe('persistent HTML preview cache', () => {
     await second.close();
   });
 
-  it('keeps the open page stable and uses a background update on the next open', async () => {
-    mocks.demand = true;
-    const { deps } = setup();
+  it.each([false, true])('reports changed entry bytes after background refresh without mutating the visible copy (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps, listDir } = setup();
     const { cache, saved } = previewCache();
     saved.set('index.html', bytes);
     const updated = new TextEncoder().encode('<p>Updated page</p>');
+    listDir.mockResolvedValue([{ ...entry('index.html'), size: updated.length }]);
     mocks.remote.mockResolvedValue({ url: '', inlineBase64: btoa('<p>Updated page</p>'), size: updated.length });
     const preview = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
-    await vi.waitFor(() => expect(cache.store).toHaveBeenCalledOnce());
+    const replacement = await preview.updated;
+    expect(replacement).toBeTruthy();
+    expect(replacement?.updated).toBeUndefined();
+    expect(mocks.remote).toHaveBeenCalledOnce();
+    expect(cache.store).toHaveBeenCalledOnce();
     expect(saved.get('index.html')).toEqual(updated);
     expect(new TextDecoder().decode(mocks.contents.get('file:///cache/html-previews/' + '01'.repeat(24) + '/0'))).toContain(html);
-    await preview.close();
+    expect(new TextDecoder().decode(mocks.contents.get('file:///cache/html-previews/' + '02'.repeat(24) + '/0'))).toContain('Updated page');
+    // The visible replacement owns the whole visit, including its old server.
+    await replacement!.close();
+    expect(mocks.contents.size).toBe(0);
+    expect(mocks.stop).toHaveBeenCalledTimes(2);
+    expect(mocks.listeners.size).toBe(0);
     mocks.remote.mockRejectedValue(new Error('offline'));
     const reopened = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
-    expect(new TextDecoder().decode(mocks.contents.get('file:///cache/html-previews/' + '02'.repeat(24) + '/0'))).toContain('Updated page');
+    expect(new TextDecoder().decode(mocks.contents.get('file:///cache/html-previews/' + '03'.repeat(24) + '/0'))).toContain('Updated page');
     await reopened.close();
+  });
+
+  it.each([false, true])('does not request a reload for identical HTML (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps, listDir } = setup();
+    listDir.mockResolvedValue([entry('index.html')]);
+    previewCache().saved.set('index.html', bytes);
+    const preview = await prepareMobileHtmlPreview('/site/index.html', deps, new AbortController().signal);
+    expect(await preview.updated).toBeNull();
+    await preview.close();
+  });
+
+  it.each([false, true])('discards a changed HTML refresh that finishes after leaving (onDemand=%s)', async (demand) => {
+    mocks.demand = demand;
+    const { deps, listDir } = setup();
+    previewCache().saved.set('index.html', bytes);
+    const fresh = '<p>late</p>';
+    listDir.mockResolvedValue([{ ...entry('index.html'), size: fresh.length }]);
+    let finish!: () => void;
+    mocks.remote.mockReturnValue(new Promise(resolve => {
+      finish = () => resolve({ url: '', inlineBase64: btoa(fresh), size: fresh.length });
+    }));
+    const controller = new AbortController();
+    const preview = await prepareMobileHtmlPreview('/site/index.html', deps, controller.signal);
+    controller.abort();
+    finish();
+    expect(await preview.updated).toBeNull();
+    await preview.close();
+    expect(mocks.contents.size).toBe(0);
+    expect(mocks.listeners.size).toBe(0);
   });
 
   it.each([false, true])('closes cached previews on account switch without waiting for a refresh (onDemand=%s)', async (demand) => {

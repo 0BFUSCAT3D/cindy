@@ -490,10 +490,10 @@ function RemoteFilePreviewContent() {
   }, [session?.remoteHostId, sessionId, workdir]);
 
   const prepareHtmlPreview = useCallback<PrepareMobileHtmlPreview>(
-    (absPath, signal, onProgress) => prepareMobileHtmlPreview(absPath, {
+    (absPath, signal, onProgress, preferCache) => prepareMobileHtmlPreview(absPath, {
       maker, deviceId, openLink, presignGet, ssh: sshMediaContext,
       deleteOssObject: deleteResourceOssObject,
-    }, signal, onProgress),
+    }, signal, onProgress, preferCache),
     [deleteResourceOssObject, deviceId, maker, openLink, presignGet, sshMediaContext],
   );
 
@@ -1338,16 +1338,17 @@ function TextPreviewPage({
               <Text style={styles.hintText}>{htmlErrorMessage}</Text>
               <MainWindowActionButton action={{ label: t('files.preview.htmlReload'), onPress: htmlSnapshot.retry }} />
             </View>
-          ) : !htmlSnapshot.preview || !htmlSnapshot.foreground ? (
-            // 取件期间不先渲染破图再热替换 —— 那会让 WebView 重载、页面闪一下。
-            <HtmlPreviewLoading progress={htmlSnapshot.progress} />
           ) : (
-            // 只有完整下载并加固过的目录快照才能进入 WebView。
+            // Measure the viewport while preparing; the reader mounts WebKit only once
+            // the guarded snapshot is ready and keeps one loading overlay throughout.
             <HtmlSnapshotReader preview={htmlSnapshot.preview} onError={() => setHtmlLoadError(true)}
               loading={<HtmlPreviewLoading progress={htmlSnapshot.progress} />}
               webViewRef={browserRef}
               viewportInsets={{ ...browserContentInset, left: insets.left, right: insets.right }}
-              onNavigationStateChange={(preview, state) => setBrowserNavigation({ preview, state })}
+              onNavigationStateChange={(preview, state) => {
+                htmlSnapshot.onNavigationStateChange(preview, state);
+                setBrowserNavigation({ preview, state });
+              }}
             />
           )
         ) : (
