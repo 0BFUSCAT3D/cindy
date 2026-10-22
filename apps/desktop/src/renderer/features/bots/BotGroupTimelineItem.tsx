@@ -441,7 +441,36 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
     );
   }
 
-  // A server plan is signed by its human creator; present the organizer without changing authorship.
+  // A server queue stands on its own under the request: the turns it lines up, never folded
+  // into someone's reply (bot-group-chat.md §7).
+  if (message.kind === 'plan' && props.plan?.kind === 'talk') {
+    return (
+      <Row {...rowProps} block="author">
+        <div className="flex min-w-0 gap-2.5">
+          <span aria-hidden className="w-7 shrink-0" />
+          <div data-testid="bot-group-arrangement" className={cn('min-w-0', BUBBLE_COLUMN_CLASS)}>
+            <div className="w-fit min-w-0 max-w-full">
+              <BotGroupPlanCard
+                plan={props.plan}
+                members={members}
+                actionable={false}
+                // Only the creator, an owner or an admin may change who speaks next.
+                reassignable={(props.planReassignable ?? false) && props.plan.canManage !== false}
+                pending={props.planPending ?? null}
+                runningSince={props.planRunningSince ?? null}
+                doneAt={props.planDoneAt}
+                locale={locale}
+                onStart={() => undefined}
+                onDismiss={() => undefined}
+                onEditStep={(step, action, botId) => { if (message.planId) props.onEditStep?.(message.planId, step, action, botId); }}
+              />
+            </div>
+          </div>
+        </div>
+      </Row>
+    );
+  }
+  // A legacy plan is signed by its human creator; present the organizer without changing authorship.
   const isPlanCard = message.kind === 'plan';
   const timed = Number.isFinite(message.createdAt) && message.createdAt > 0;
   const clock = timed ? formatBotTimelineClock(message.createdAt, locale) : '';

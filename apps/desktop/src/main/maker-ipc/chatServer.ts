@@ -80,6 +80,8 @@ interface ServerPlan {
   id: string; revision: number; source_message_id: string; request_text: string; organizer_id: string; creator_id: string;
   note_message_ids?: string[];
   status: BotGroupPlanView['status']; current_step: number | null; steps: Array<BotGroupPlanView['steps'][number] & { resultMessageId?: string | null }>;
+  /** Servers with groupSingleSpeaker: a queue of teammates answering in turn (`talk`) or a division of work. */
+  kind?: 'work' | 'talk';
   created_at: string; updated_at: string;
 }
 interface Running {
@@ -218,6 +220,32 @@ const quotedText = (m: Message) => botGroupMessageSummaryText({
 const quotedAttachments = (m: Message) => m.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []);
 /** A quote's attachment summary as model input: how many, and which file it names. */
 const quoteAttachments = (count: number, name: string | null) => count ? { attachments: count, ...(name ? { attachmentName: name } : {}) } : {};
+/** A main-group reply reads only the latest messages, each shortened; its lane keeps earlier turns. */
+const MAIN_GROUP_CONTEXT_MESSAGES = 12;
+const MAIN_GROUP_CONTEXT_CHARS = 600;
+function mainGroupContext<V extends { text: string }>(messages: Message[], view: (m: Message) => V) {
+  const recent = messages.slice(-MAIN_GROUP_CONTEXT_MESSAGES).map(m => {
+    const v = view(m);
+    return v.text.length > MAIN_GROUP_CONTEXT_CHARS ? { ...v, text: `${v.text.slice(0, MAIN_GROUP_CONTEXT_CHARS)}…`, shortened: true } : v;
+  });
+  return { messages: recent, ...(messages.length > recent.length ? { earlierMessagesOmitted: true } : {}) };
+}
+/**
+ * One turn of a discussion arrangement: the request, the earlier answers on this card and what
+ * the requester added meanwhile — never the rest of the group (bot-group-chat.md §7).
+ */
+function discussionTurnBrief(plan: ServerPlan, position: number, history: readonly Message[]) {
+  const step = plan.steps[position];
+  const earlierAnswers = plan.steps.filter(s => s.position < position).flatMap(s => {
+    const result = history.find(m => m.id === s.resultMessageId);
+    return result ? [{ from: s.botName, text: bodyText(result) }] : [];
+  });
+  const notes = history.filter(m => plan.note_message_ids?.includes(m.id)).map(bodyText);
+  return [
+    `Teammates answer this request one at a time. You are turn ${position + 1} of ${plan.steps.length}.${step?.task ? ` Your focus: ${step.task}.` : ''} Give your own view and build on the earlier answers instead of repeating them.`,
+    untrustedJsonBlock({ request: plan.request_text, earlierAnswers, ...(notes.length ? { addedByRequester: notes } : {}) }),
+  ];
+}
 /** A quote as model context: the original when it is in the same history, else the snapshot. */
 function quoteContext(m: Message, history: readonly Message[]) {
   const quote = m.deleted ? null : readBotGroupQuote(m.content);
@@ -336,6 +364,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   type PlanIntent = { sourceId?: string };
   const planIntents = new Map<string, PlanIntent>();
   let groupDiscussionParity = false;
+  /** One teammate per request; several take turns on an arrangement (server capability groupSingleSpeaker). */
+  let singleSpeaker = false;
   const pendingPlanCancels = new Map<string, Map<string, boolean>>();
   async function cancelPlanning(roomId: string, sourceId: string, failed = false) {
     if (!groupDiscussionParity) return;
@@ -707,10 +737,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     refreshActors = (async () => {
       actorsStale = false;
       profiles = await getDbClient().drizzle.select().from(botProfiles).where(undefined);
-      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean; directRoomClaim?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me'); selfId = me.actor.id;
+      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; groupSingleSpeaker?: number; companionHome?: boolean; directRoomClaim?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me'); selfId = me.actor.id;
       supportsDissolve = me.capabilities?.groupLifecycleVersion === 1;
       supportsListRemoval = me.capabilities?.conversationListStateVersion === 1;
       groupDiscussionParity = me.capabilities?.groupDiscussionParity === 1;
+      singleSpeaker = me.capabilities?.groupSingleSpeaker === 1;
       selfDeviceId = typeof me.deviceId === 'string' && me.deviceId ? me.deviceId : null;
       companionHome = !!deps.companionCloud && me.capabilities?.companionHome === true && !!selfDeviceId;
       // Work in a 1:1 room is only claimed by a copy that hands it to the companion's main task;
@@ -1271,7 +1302,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const lastView = last ? messageView(last, s.members) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: singleSpeaker && !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -1285,20 +1316,26 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
-      } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
+      } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null, ...(open.kind ? { kind: open.kind } : {}) } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
       incomingMessageTimes: incomingMessageTimes(s.messages, s.members),
       createdAt: Date.parse(s.room.created_at), updatedAt: Date.parse(s.room.updated_at ?? s.room.created_at),
       messages, executionFailures, ...(threadShareUpdates && Object.keys(threadShareUpdates).length ? { threadShareUpdates } : {}),
       ...(shares ? { threadShareVersion: shares.version } : {}), ...(threadList ? { threads: threadList } : {}), hasMoreBefore: page.length === (o.limit ?? 100), plans,
-      round: { status: deciding || executions.some(e => ['queued', 'running'].includes(e.status)) ? 'running' : 'idle', speakers, canContinue: !open && !planning.has(roomId) && (executions.some(e => !e.plan_id && ordinaryExecution(e)) || s.messages.some(discussionSource)) && !executions.some(e => ['queued','running','stopping'].includes(e.status)) } };
+      round: { status: deciding || executions.some(e => ['queued', 'running'].includes(e.status)) ? 'running' : 'idle', speakers,
+        othersActive: executions.some(e => ['queued', 'running', 'needs_input'].includes(e.status) && e.requester_id !== selfId
+          && !localBot(e.bot_id) && !s.members.some(m => m.id === e.bot_id && m.ownerActorId === selfId)), canContinue: !open && !planning.has(roomId) && (executions.some(e => !e.plan_id && ordinaryExecution(e)) || s.messages.some(discussionSource)) && !executions.some(e => ['queued','running','stopping'].includes(e.status)) } };
   }
   function planView(plan: ServerPlan, members: Member[], workspace: ReturnType<ReturnType<typeof chatServerWorkspaces>['read']>): BotGroupPlanView {
     return { id: plan.id, status: plan.status, organizerBotId: localBot(plan.organizer_id)?.id ?? plan.organizer_id,
       organizerName: members.find(m => m.id === plan.organizer_id)?.name ?? '',
       steps: plan.steps.map(s => ({ ...s, botId: localBot(s.botId)?.id ?? s.botId })), currentStep: plan.current_step,
       workDir: workspace?.plans[plan.id]?.workDir ?? null, branch: workspace?.plans[plan.id]?.branch ?? null,
+      ...(plan.kind ? { kind: plan.kind,
+        canManage: plan.creator_id === selfId || members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)),
+        // Same rule as sendMessage's commentPlan: additions are written as the human, so a teammate's role does not count.
+        canAdd: plan.creator_id === selfId || members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role)) } : {}),
       createdAt: Date.parse(plan.created_at), updatedAt: Date.parse(plan.updated_at) };
   }
   async function actPlan(input: unknown, action: string) {
@@ -1312,8 +1349,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // The shared UI uses dismiss for both an unstarted proposal and ending a paused plan.
     // Chat Server distinguishes these actions; preserve the local service's waiting semantics.
     const serverAction = action === 'dismiss' && plan.status === 'waiting' ? 'stop' : i.action ?? action;
+    // Someone else's plan is managed as the account's owner/admin member, which may be its own teammate.
+    const manager = plan.creator_id === selfId ? undefined : managementActor(await recentSnapshot(room));
+    const asManager = manager === selfId ? undefined : manager;
     await api(`/conversations/${room}/plans/${plan.id}`, 'POST', { operationId: randomUUID(), expectedRevision: plan.revision,
-      action: serverAction, position: i.position, botId });
+      action: serverAction, position: i.position, botId }, asManager);
     changed(room); return { ok: true as const };
   }
   async function decideArrangement(s: Snapshot, sourceId: string, text: string, forced: boolean, attachments: BotGroupAttachment[], intent: PlanIntent, quote: BotGroupQuoteView | null = null) {
@@ -1433,7 +1473,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             if (failureCodes.size > 1000) failureCodes.delete(failureCodes.keys().next().value!);
           }
           pending.payload = terminal.outcome === 'error' ? { detail: botGroupRuntimeFailureDetail(terminal.failureCode ?? 'RUNTIME_ERROR') }
-            : { ...(isBotGroupNoReplyText(text) && !files.length ? {} : { content: [{ type: 'text', text: text.slice(0, 16000) || '已完成' }, ...files] }), continueDiscussion: run.context?.kind !== 'member.joined' && !run.plan && !isBotGroupNoReplyText(text) };
+            : { ...(isBotGroupNoReplyText(text) && !files.length ? {} : { content: [{ type: 'text', text: text.slice(0, 16000) || '已完成' }, ...files] }),
+              // A single-speaker server never chains rounds, so there is nothing to continue.
+              ...(singleSpeaker ? {} : { continueDiscussion: run.context?.kind !== 'member.joined' && !run.plan && !isBotGroupNoReplyText(text) }) };
         }
         if (!current() || running.get(run.execution.id) !== run) return;
         await updateExecution(run, pending.terminal.outcome === 'error' ? 'fail' : 'complete', pending.payload);
@@ -1552,7 +1594,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (execution.plan_id && planRead) {
           run.plan = (await planRead).find(p => p.id === execution.plan_id);
           if (!run.plan) throw new Error('PLAN_CLOSED');
-          if (execution.access_mode !== 'chat') {
+          // A discussion only talks: no project folder, worktree or produced files.
+          if (execution.access_mode !== 'chat' && run.plan.kind !== 'talk') {
             const settings = workspaces().read(s.room.id) ?? { projectDir: null, plans: {} };
             // Each grant has its own workspace. Revoked grants cannot reuse private context.
             const key = `${run.plan.id}:${execution.access_mode}:${execution.access_revision}`;
@@ -1574,7 +1617,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         const threadRootId = run.plan ? undefined : source?.threadRootId ?? undefined;
         const lane = await deps.ensureLane({ botId: bot.id, groupId: s.room.id, title: s.room.name,
           chatAccess: { mode: execution.access_mode, revision: execution.access_revision },
-          ...(run.plan ? { plan: { planId: run.plan.id, workDir: run.workspace?.workDir ?? '', sessionId: run.workspace?.ownerSessionId ?? undefined } } : {}),
+          // A queue turn talks in its own lane (no project folder); a division of work runs in its work directory.
+          ...(run.plan?.kind === 'talk' ? { talkPlanId: run.plan.id }
+            : run.plan ? { plan: { planId: run.plan.id, workDir: run.workspace?.workDir ?? '', sessionId: run.workspace?.ownerSessionId ?? undefined } } : {}),
           ...(threadRootId ? { threadRootId } : {}) });
         if (!lane.ok) throw new Error(lane.errorCode);
         run.sessionId = lane.sessionId;
@@ -1642,10 +1687,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // Text stays bounded, but unseen attachments may precede the latest text page.
         // The server watermark is scoped to this bot/grant/plan step and advances only on success.
         // A Thread lane offers only its own Thread's files.
-        const attachmentHistory = thread ? [...focusMessages]
-          : [...history, ...focusMessages.filter(message => !history.some(known => known.id === message.id))];
+        // A queue turn sees only its request, the earlier answers and the requester's additions;
+        // it takes only their files, never the rest of the group's (bot-group-chat.md §7.0).
+        const talkPlan = run.plan?.kind === 'talk' ? run.plan : undefined;
+        const talkIds = talkPlan ? new Set([talkPlan.source_message_id, ...(talkPlan.note_message_ids ?? []),
+          ...talkPlan.steps.filter(step => step.position < execution.plan_step!).flatMap(step => step.resultMessageId ? [step.resultMessageId] : [])]) : null;
+        const known = [...history, ...focusMessages.filter(message => !history.some(other => other.id === message.id))];
+        const attachmentHistory = thread ? [...focusMessages] : talkIds ? known.filter(message => talkIds.has(message.id)) : known;
         const after = BigInt(execution.attachment_after_seq ?? '0');
-        while (!thread && execution.attachment_after_seq !== undefined && page.length === 100) {
+        while (!thread && !talkIds && execution.attachment_after_seq !== undefined && page.length === 100) {
           const before = page.reduce((min, m) => BigInt(m.seq) < min ? BigInt(m.seq) : min, contextBefore);
           if (before <= after + 1n) break;
           page = await api<Message[]>(`/conversations/${s.room.id}/messages?all=true&limit=100&before=${before}`);
@@ -1714,7 +1764,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const conversation = thread ? {
         thread: { root: thread.root ? focusMessage(thread.root) : { id: threadRootId, unavailable: true },
           replies: chronological(thread.replies).map(focusMessage), earlierRepliesOmitted: thread.earlierRepliesOmitted },
-      } : { messages: chronological(history.filter(message => !message.threadRootId)).map(promptMessage) };
+      } : run.plan?.kind === 'talk' ? {}
+        // The shortened main-group context belongs to single-speaker servers; older ones keep the full projection.
+        : singleSpeaker ? mainGroupContext(chronological(history.filter(message => !message.threadRootId)), promptMessage)
+        : { messages: chronological(history.filter(message => !message.threadRootId)).map(promptMessage) };
+      const talk = run.plan?.kind === 'talk' ? run.plan : undefined;
       const prompt = [
         run.context.kind === 'member.joined'
           ? 'You are participating as yourself in a Cindy group chat. The host has validated a server-issued event confirming that a real human joined this group. Follow your existing welcome instructions if any. If there is no applicable welcome instruction in your available context, output exactly NO_REPLY. Do not invent a welcome requirement, scan private history to enable one, call other participants, or start another discussion round.'
@@ -1726,7 +1780,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         ...(thread ? [
           'This conversation belongs to one Thread of the group; earlier turns here are from the same Thread. currentRequest was posted in it. thread.root is the post the Thread discusses and thread.replies are its replies in order; words such as "this" or "what I said" refer to that Thread. The main group and other Threads are not included.',
           ...(thread.root ? [] : ['The Thread root is unavailable. Say so if the request depends on it instead of guessing its content.']),
-        ] : run.context.kind === 'message' ? [
+        ] : talk ? [] : run.context.kind === 'message' ? [
           'Earlier turns in this conversation come from the main group (older ones may come from Threads, which now have their own conversations). Use the data below to identify what the current request refers to.',
           source
             ? 'currentRequest was posted in the main group. Thread replies are not included.'
@@ -1741,13 +1795,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         untrustedJsonBlock({ group: s.room.name, participants: s.members.map(m => ({ name: m.name, kind: m.kind })),
           ...request, ...conversation, sourceMessageId: execution.source_message_id, unavailableAttachments: missingAttachments }),
         execution.access_mode === 'chat' ? 'This group has chat-only access: use only public identity and group messages. Private memory, owner files and tools are unavailable. Explain this boundary when asked to use them.' : 'Your owner has authorized this group to use your existing capabilities. Outputs are visible to every group member.',
-        ...(run.plan ? [run.workspace ? buildPlanStepBrief({ groupName: s.room.name, botName: bot.displayName, request: run.plan.request_text,
+        ...(talk ? discussionTurnBrief(talk, execution.plan_step!, history) : run.plan ? [run.workspace ? buildPlanStepBrief({ groupName: s.room.name, botName: bot.displayName, request: run.plan.request_text,
           attachments: attachments.map(a => a.name), attachmentsIncluded: true, steps: run.plan.steps, position: execution.plan_step!, workDir: run.workspace.workDir, branch: run.workspace.branch,
-          recent: [], userNotes: run.plan.note_message_ids?.length ? { kind: 'more', texts: history.filter(m => run.plan!.note_message_ids!.includes(m.id)).map(bodyText) } : undefined, handoffs: run.plan.steps.flatMap(step => { const result = history.find(m => m.id === step.resultMessageId);
+          recent: [], userNotes: run.plan.note_message_ids?.length ? { kind: 'more', texts: history.filter(m => run.plan!.note_message_ids!.includes(m.id)).map(bodyText) } : undefined, handoffs: run.plan.steps.filter(step => step.position < execution.plan_step!).flatMap(step => { const result = history.find(m => m.id === step.resultMessageId);
             return result ? [{ position: step.position, botName: step.botName, note: bodyText(result), files: [] }] : []; }) })
           : untrustedJsonBlock({ request: run.plan.request_text, steps: run.plan.steps, yourStep: execution.plan_step })] : []),
-        ...(run.plan ? ['Earlier step artifacts, including those produced on another computer, come as attachments. Copy needed files into your working directory before editing.'] : []),
-        ...(!run.plan ? ['If you have nothing useful to add, reply with exactly NO_REPLY.'] : []),
+        ...(run.plan && !talk ? ['Earlier step artifacts, including those produced on another computer, come as attachments. Copy needed files into your working directory before editing.'] : []),
+        ...(!run.plan || talk ? ['If you have nothing useful to add, reply with exactly NO_REPLY.'] : []),
         'Keep your reply concise. Your final response will be posted to the group. Do not call another participant just to reply.',
       ].join('\n');
       await updateExecution(run, 'heartbeat');
@@ -2302,10 +2356,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const plans = await plansRead;
     const openPlan = plans.find(p => ['proposed','running','waiting'].includes(p.status));
     const proposed = openPlan?.status === 'proposed' && openPlan.creator_id === selfId;
-    if (i.division && openPlan && !proposed) throw new Error('PLAN_OPEN');
-    const canTrigger = i.division || s.room.response_mode !== 'mentioned' || !namesNobody(i.mentions);
-    const commentPlan = canTrigger && openPlan && openPlan.status !== 'proposed' && !i.mentions.botIds.length && !i.mentions.all && (openPlan.creator_id === selfId || s.members.some(m => m.id === selfId && ['owner','admin'].includes(m.role))) ? openPlan : undefined;
-    const shouldPlan = canTrigger && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))
+    // A single-speaker server arranges turns itself (several named teammates, or everyone when
+    // nobody is named); the send no longer asks a helper model whether to divide the work first.
+    if (i.division && openPlan && !proposed && !singleSpeaker) throw new Error('PLAN_OPEN');
+    // A single-speaker server has no reply modes: every request is answered, named or not (§4.0).
+    const canTrigger = singleSpeaker || i.division || s.room.response_mode !== 'mentioned' || !namesNobody(i.mentions);
+    // A queue waiting for 继续 gives way to a new request; only a turn under way takes additions (§4.0).
+    const commentPlan = canTrigger && openPlan && openPlan.status !== 'proposed' && !(singleSpeaker && openPlan.kind === 'talk' && openPlan.status === 'waiting') && !i.mentions.botIds.length && !i.mentions.all && (openPlan.creator_id === selfId || s.members.some(m => m.id === selfId && ['owner','admin'].includes(m.role))) ? openPlan : undefined;
+    const shouldPlan = canTrigger && !singleSpeaker && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))
       && (!openPlan || proposed);
     const prepared = i.attachments?.length ? await deps.prepareAttachments?.({ groupId: i.groupId, attachments: i.attachments, controllerDeviceId: origin?.controllerDeviceId }) : undefined;
     if (i.attachments?.length && (!prepared || !prepared.ok)) {
@@ -2434,14 +2492,43 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (projectDir !== undefined) workspaces().save(i.groupId, { ...workspaces().read(i.groupId) ?? { plans: {} }, projectDir });
       changed(i.groupId); return { ok: true as const };
     }),
-    stopRound: roomId => safe(async () => {
+    // Stop stops what is yours: your requests and arrangements, and your teammates' work for
+    // others. An owner or admin may stop everything (`all`). Work you may not stop is left running.
+    stopRound: (roomId, scopeInput) => safe(async () => {
       const room = await groupRoom(id.parse(roomId));
       await replacePlanIntent(room);
+      // Older servers keep the whole-round stop; the narrower scope belongs to single-speaker groups (§4.0).
+      if (!singleSpeaker) {
+        const plans = await api<ServerPlan[]>(`/conversations/${room}/plans`);
+        for (const plan of plans.filter(p => ['proposed','running','waiting'].includes(p.status))) await actPlan({ groupId: room, planId: plan.id }, 'stop');
+        const executions = await api<Execution[]>(`/conversations/${room}/executions`);
+        for (const e of executions.filter(e => ['queued', 'running', 'needs_input'].includes(e.status) && !e.plan_id)) {
+          await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' });
+          const run = running.get(e.id);
+          if (run) { forgetRun(run); if (run.sessionId) await deps.abortLane(run.sessionId); }
+        }
+        changed(room); return { ok: true as const };
+      }
+      const s = await recentSnapshot(room);
+      // Owners and admins may be the account's own teammate; that member acts for everyone's work.
+      const manager = managementActor(s);
+      const everything = scopeInput === 'all' && !!manager;
+      const asManager = manager === selfId ? undefined : manager;
+      const ownBot = (botId: string) => !!localBot(botId) || s.members.some(m => m.id === botId && m.ownerActorId === selfId);
+      const refused = (error: unknown) => error instanceof ChatResponseError && [403, 404, 409].includes(error.status);
       const plans = await api<ServerPlan[]>(`/conversations/${room}/plans`);
-      for (const plan of plans.filter(p => ['proposed','running','waiting'].includes(p.status))) await actPlan({ groupId: room, planId: plan.id }, 'stop');
+      const stoppedPlans = new Set<string>();
+      for (const plan of plans.filter(p => ['proposed','running','waiting'].includes(p.status) && (everything || p.creator_id === selfId))) {
+        try { await actPlan({ groupId: room, planId: plan.id }, 'stop'); stoppedPlans.add(plan.id); }
+        catch (error) { if (!refused(error)) throw error; }
+      }
       const executions = await api<Execution[]>(`/conversations/${room}/executions`);
-      for (const e of executions.filter(e => ['queued', 'running', 'needs_input'].includes(e.status) && !e.plan_id)) {
-        await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' });
+      for (const e of executions.filter(e => ['queued', 'running', 'needs_input'].includes(e.status) && !(e.plan_id && stoppedPlans.has(e.plan_id)))) {
+        // Your own teammate stops its work for others as itself; a request you made, as you.
+        const asBot = !everything && e.requester_id !== selfId && ownBot(e.bot_id);
+        if (!everything && !asBot && e.requester_id !== selfId) continue;
+        try { await api(`/conversations/${room}/executions/${e.id}/control`, 'POST', { operationId: randomUUID(), action: 'stop' }, asBot ? e.bot_id : everything && e.requester_id !== selfId ? asManager : undefined); }
+        catch (error) { if (refused(error)) continue; throw error; }
         const run = running.get(e.id);
         if (run) { forgetRun(run); if (run.sessionId) await deps.abortLane(run.sessionId); }
       }

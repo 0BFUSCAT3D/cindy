@@ -619,7 +619,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
 
   const settingsLabel = t('bots.groupChat.settings.open');
   const headerStatus = headerGroup ? botGroupHeaderStatus(headerGroup, displayName, t) : null;
-  const organizerBotId = headerGroup?.organizerBotId ?? null;
+  // A single-speaker group has no organizer: requests queue everyone or the named teammates.
+  const organizerBotId = headerGroup?.singleSpeaker ? null : headerGroup?.organizerBotId ?? null;
   const header = useMemo(() => {
     if (!headerGroup) return null;
     const names = botGroupMemberNames(members.map((member) => ({ name: botGroupMemberDisplayName(member) })), separator);
@@ -850,12 +851,13 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
   };
 
-  const stopRound = async () => {
+  /** Stops your own work; owners and admins may choose `all` (bot-group-chat.md §4.4). */
+  const stopRound = async (scope?: 'all') => {
     const api = botGroupApi();
     if (!api || stopping) return;
     setStopping(true);
     try {
-      const result = await api.stopBotGroupRound(groupId);
+      const result = await (scope ? api.stopBotGroupRound(groupId, scope) : api.stopBotGroupRound(groupId));
       if (!result.ok) toast.error(t('bots.groupChat.composer.stopFailed'));
     } catch {
       toast.error(t('bots.groupChat.composer.stopFailed'));
@@ -1177,9 +1179,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               </Fragment>
             );
           })}
-          {openPlan && followUp ? (
+          {openPlan && followUp && (openPlan.canManage ?? true) ? (
             <div className="mt-3">
               <BotGroupPlanFollowUpRow
+                talk={openPlan.kind === 'talk'}
+                plan={openPlan}
                 followUp={followUp}
                 members={members}
                 pending={followUpPending(pendingFor(openPlan.id))}
@@ -1223,7 +1227,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             })(),
           } : null}
           speakers={speakers}
-          onStop={() => void stopRound()}
+          onStop={scope => void stopRound(scope)}
+          canStopAll={!!group.canStopAll && !!group.round.othersActive}
           stopping={stopping}
         />
       ) : null}
@@ -1234,6 +1239,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         members={group.members}
         running={running}
         planState={botGroupComposerPlanState(openPlan)}
+        divisionAvailable={!group.singleSpeaker}
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}

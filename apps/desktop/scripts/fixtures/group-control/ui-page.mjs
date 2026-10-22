@@ -5,6 +5,7 @@ const members = [
   { botId: 'b', name: 'Nova' },
 ];
 const base = { name: 'Design review', members, messages: 0, sidebar: true };
+const QUEUE_CROWD = ['Aster', 'Nova', 'Mira', 'Orin', 'Pax', 'Quill', 'Rhea'].map((name, i) => ({ botId: 'abcdefg'[i], name }));
 const LONG_DEVICE = 'Mac Studio · A very long device name for layout verification';
 
 /** Migrated from check-group-control-layout.mjs (remote-control notice above the composer). */
@@ -32,6 +33,22 @@ export default {
     bubbles: {
       about: 'Teammate bubbles: quote, corner reaction, thread entry, task card, long text at the width cap; hover shows the toolbar beside the bubble',
       data: { ...base, bubbles: true },
+    },
+    arrangement: {
+      about: 'Single-speaker server group, nobody named: the queue card stands on its own, Aster answered and Nova is speaking next by itself',
+      data: { ...base, arrangement: 'running' },
+    },
+    'arrangement-done': {
+      about: 'The same queue once every turn is done: no 继续 row',
+      data: { ...base, arrangement: 'done' },
+    },
+    'arrangement-long': {
+      about: 'Seven teammates: the first five answered by themselves, the card folds to three turns around Quill, who waits for 继续',
+      data: { ...base, members: QUEUE_CROWD, arrangement: 'long' },
+    },
+    settings: {
+      about: 'Single-speaker group settings: no 回复方式, 发言方式, 负责人 or project folder',
+      data: { ...base, arrangement: 'running', settings: true },
     },
     'thread-unread': {
       about: 'Server read state: unread thread entries (with @you), the in-chat 话题 hint above the composer and its list of this group\'s Threads',
@@ -76,6 +93,27 @@ export default {
       await chip.waitFor();
     };
 
+    if (ui.case === 'settings') {
+      const drawer = page.getByRole('dialog');
+      await drawer.getByText('群名称', { exact: true }).waitFor();
+      // Who answers follows @ (everyone queues when nobody is named); no group modes, no organizer.
+      for (const label of ['发言方式', '没有 @ 人的时候', '负责人', '项目文件夹'])
+        assert.equal(await drawer.getByText(label, { exact: true }).count(), 0, label);
+      return;
+    }
+    if (ui.case.startsWith('arrangement')) {
+      const card = page.getByTestId('bot-group-arrangement');
+      await card.waitFor();
+      // The card is its own row, never part of a teammate's answer.
+      assert.equal(await card.locator('xpath=ancestor::article').count(), 0);
+      // Only a queue past its first five waits for 继续; a long queue folds to three turns until expanded.
+      assert.equal(await page.getByTestId('bot-group-plan-follow-up').count(), ui.case === 'arrangement-long' ? 1 : 0);
+      assert.equal(await card.locator('li').count(), ui.case === 'arrangement-long' ? 3 : 2);
+      // A queue waiting for 继续 takes a new request: the composer does not offer to revise the last answer.
+      const placeholder = await input.getAttribute('placeholder');
+      assert.ok(ui.case === 'arrangement' ? placeholder.includes('正在说') : !placeholder.includes('改改'), placeholder);
+      return;
+    }
     if (ui.case === 'thread-unread') {
       await page.getByText('Android 更新卡那个 PR', { exact: false }).waitFor();
       // Unread replies replace the last-reply time on the entry; an @you is named there too.

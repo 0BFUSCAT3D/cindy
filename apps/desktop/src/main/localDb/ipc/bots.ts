@@ -105,7 +105,7 @@ import { generateBotCreationDraft, readBotCreationDraft, generateBotCreationAvat
 import { botInvitationProgress, type BotInvitationProgress } from '../../../shared/botInvitation.js';
 import type { BotPackageOpening } from '../../../shared/botMarket.js';
 import { botDmThreadRouteKey, parseBotDmThreadRouteKey, type BotDmThreadSummary } from '../../../shared/botDmThread.js';
-import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, chatGroupThreadRouteKey, groupLaneOfRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
+import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, chatGroupTalkRouteKey, chatGroupThreadRouteKey, groupLaneOfRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
 import { queueBotInvitation as enqueueBotInvitation } from '../../maker-ipc/botInvitation.js';
 import { getMakerIfReady, validateBotCapabilityAdditions } from '../../maker-host/index.js';
 import type { BotCapabilityUpdate } from '../../maker-ipc/botCapabilityService.js';
@@ -313,6 +313,9 @@ export type EnsureBotGroupLaneResult =
  *
  * With `threadRootId` (server groups only), the Bot's own lane for that Thread: same
  * Profile, model chain and working place as the group lane, but its own context.
+ *
+ * With `talkPlanId` (server groups only), the Bot's own lane for that queue: like a Thread
+ * lane, it talks in the group lane's place with its own context; no project folder.
  */
 export async function ensureBotGroupLaneSession(input: {
   botId: string;
@@ -321,12 +324,14 @@ export async function ensureBotGroupLaneSession(input: {
   chatAccess?: ChatLaneAccess;
   plan?: { planId: string; workDir: string; sessionId?: string };
   threadRootId?: string;
+  talkPlanId?: string;
 }): Promise<EnsureBotGroupLaneResult> {
   const owner = captureBotOperationOwner();
   const client = getDbClient();
   const db = client.drizzle;
   const routeKey = input.plan
     ? input.chatAccess ? `${chatGroupLaneRouteKey(input.groupId, input.chatAccess)}:plan:${input.plan.planId}` : botGroupPlanRouteKey(input.groupId, input.plan.planId)
+    : input.chatAccess && input.talkPlanId ? chatGroupTalkRouteKey(input.groupId, input.chatAccess, input.talkPlanId)
     : input.chatAccess && input.threadRootId ? chatGroupThreadRouteKey(input.groupId, input.chatAccess, input.threadRootId)
     : input.chatAccess ? chatGroupLaneRouteKey(input.groupId, input.chatAccess) : botGroupLaneRouteKey(input.groupId);
   const [existing] = await db
