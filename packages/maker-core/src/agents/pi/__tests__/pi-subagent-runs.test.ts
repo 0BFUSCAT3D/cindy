@@ -1424,6 +1424,9 @@ describe('PI durable subagent run store', () => {
       // terminal artifact before status. Existing unreadable-status cases have
       // no receipt and must keep refusing the account handover.
       async function terminalReceiptHome(write: (dir: string) => Promise<void>) {
+        // An independently successful OS inventory, with unrelated processes.
+        // Empty stdout is deliberately not evidence that the run has exited.
+        childProcess.spawnSync.mockImplementation(() => ({ status: 0, stdout: inventory(['node unrelated.js']) }));
         const agentHome = await homeWithUnreadableRun(write);
         const root = piSubagentRunRoot(agentHome, 'session-1');
         const dir = path.join(root, runId);
@@ -1442,6 +1445,47 @@ describe('PI durable subagent run store', () => {
         return { agentHome, root, dir, config, result };
       }
 
+      function inventory(commands: string[]): string {
+        return process.platform === 'win32'
+          ? JSON.stringify({ complete: true, count: commands.length, commands })
+          : commands.map((command, i) => `${100 + i} ${command}`).join('\n');
+      }
+
+      it.each(['runner', 'orphan child'])('keeps a terminal receipt in scope while its %s is alive', async kind => {
+        const { agentHome, dir, config } = await terminalReceiptHome(async () => {});
+        const command = kind === 'runner'
+          ? `node ${path.join(dir, 'runner.cjs')} ${path.join(dir, 'config.json')}`
+          : `pi --mode rpc --session-id ${config.tasks[0]!.sessionId}`;
+        childProcess.spawnSync.mockImplementation(() => ({ status: 0, stdout: inventory([command]) }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0, { killUnresponsiveRunners: true })).resolves.toBe(false);
+        // Process discovery never grants permission to signal an unverified PID.
+        expect(childProcess.spawnSync.mock.calls.some(call => call[0] === 'taskkill')).toBe(false);
+        childProcess.spawnSync.mockImplementation(() => ({ status: 0, stdout: inventory(['node unrelated.js']) }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(true);
+      });
+
+      it.each([
+        ['empty output', { status: 0, stdout: '' }],
+        ['malformed output', { status: 0, stdout: 'unreadable process list' }],
+        ['failed probe', { status: 1, stdout: '' }],
+        ['timeout or overflow', { error: new Error('process inventory unavailable') }],
+      ] as const)('does not treat %s as process exit', async (_label, probe) => {
+        const { agentHome } = await terminalReceiptHome(async () => {});
+        childProcess.spawnSync.mockImplementation(() => probe);
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
+      });
+
+      it.each([false, true])('requires every Windows process command line even when complete is %s', async complete => {
+        usePlatform('win32');
+        const { agentHome } = await terminalReceiptHome(async () => {});
+        childProcess.spawnSync.mockImplementation(() => ({
+          status: 0, stdout: JSON.stringify({ complete, count: 2, commands: ['node unrelated.js'] }),
+        }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
+        childProcess.spawnSync.mockImplementation(() => ({ status: 0, stdout: inventory(['node unrelated.js']) }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(true);
+      });
+
       it.each([
         ...cases,
         ['contains zero bytes', async (dir: string) => writeFile(path.join(dir, 'status.json'), Buffer.alloc(72_506))],
@@ -1453,8 +1497,15 @@ describe('PI durable subagent run store', () => {
           .resolves.toBe(true);
         await expect(stopPiSubagentRunsForAccountBoundary(root, { timeoutMs: 0 }))
           .resolves.toBe(true);
-        expect(await Promise.all(files.map(file => readFile(path.join(dir, file)).catch(() => null))))
-          .toEqual(before);
+        // Native byte comparison keeps the 3 MiB oversize fixture cheap on CI;
+        // deep equality enumerates millions of Buffer indices and times out.
+        const after = await Promise.all(files.map(file => readFile(path.join(dir, file)).catch(() => null)));
+        for (let index = 0; index < files.length; index += 1) {
+          const original = before[index]!;
+          const current = after[index]!;
+          expect(current === null ? original === null : original !== null && current.equals(original), files[index])
+            .toBe(true);
+        }
         expect(existsSync(path.join(dir, 'controls'))).toBe(false);
       });
 

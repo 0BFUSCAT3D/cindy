@@ -3023,6 +3023,7 @@ const DEFAULT_KILL_BUDGET_MS = 8_000;
 async function sweepableRunsUnderRoot(
   root: string,
   scope: PiSubagentSweepScope,
+  recoveryDeadline: number,
   startTimeMemo?: ProcessStartTimeMemo,
 ): Promise<Array<{ runId: string; status: PiSubagentRunStatus | undefined }>> {
   const runIds = await listRunDirectoryIds(root);
@@ -3035,10 +3036,14 @@ async function sweepableRunsUnderRoot(
     diagnostics.filter((diagnostic) => diagnostic.kind === 'stale').map((diagnostic) => diagnostic.runId),
   );
   const sweepable: Array<{ runId: string; status: PiSubagentRunStatus | undefined }> = [];
+  const recoveryCandidates = new Map<string, string[]>();
   for (const runId of runIds) {
     const status = statuses.get(runId);
     if ((status && isPiSubagentTerminal(status.state)) || staleRunIds.has(runId)) continue;
-    if (!status && await hasTerminalResultReceipt(root, runId)) continue;
+    if (!status) {
+      const identities = await terminalResultProcessIdentities(root, runId);
+      if (identities) recoveryCandidates.set(runId, identities);
+    }
     if (
       scope.runtimeOwnerId !== undefined
       && status?.runtimeOwnerId !== undefined
@@ -3049,18 +3054,30 @@ async function sweepableRunsUnderRoot(
     if (scope.hostPid !== undefined && !isSweepableByHost(status, scope.hostPid, startTimeMemo)) continue;
     sweepable.push({ runId, status });
   }
-  return sweepable;
+  if (recoveryCandidates.size === 0) return sweepable;
+  // Read all candidate receipts BEFORE the inventory. Caching an earlier
+  // inventory while reading later receipts could miss a late runner launch.
+  // This one bounded, read-only probe is shared only within the current pass.
+  const processes = await readRecoveryProcessInventory(recoveryDeadline);
+  if (!processes) return sweepable;
+  return sweepable.filter(({ runId }) => {
+    const identities = recoveryCandidates.get(runId);
+    return !identities || processes.some(command => identities.some(id => command.includes(id)));
+  });
 }
 
 /**
- * The runner publishes result.json after killing/disarming its children, just
- * before the terminal status. That independent receipt survives a damaged
- * status file (#6694). Resume always creates a new UUID, never reuses this run.
- * Only a complete receipt for this exact config can retire an unreadable run;
- * age, a dead host, and an unanswered stop request are not completion evidence.
+ * A result survives a damaged status (#6694), but is NOT exit evidence: signal
+ * and partial-failure paths can publish it after an unsuccessful kill attempt.
+ * Require both a matching receipt and an independent OS inventory with no
+ * runner/child identities left. Resume creates a fresh run UUID; a resumed child
+ * with the same native session ID is conservatively considered still active.
  * Keep both files untouched, including the corrupt status, for diagnosis.
  */
-async function hasTerminalResultReceipt(root: string, runId: string): Promise<boolean> {
+async function terminalResultProcessIdentities(
+  root: string,
+  runId: string,
+): Promise<string[] | null> {
   try {
     const runDir = path.join(root, runId);
     const [config, value] = await Promise.all([
@@ -3071,14 +3088,14 @@ async function hasTerminalResultReceipt(root: string, runId: string): Promise<bo
       || config.parentSessionId !== path.basename(root)
       || typeof config.runDir !== 'string'
       || path.resolve(config.runDir) !== path.resolve(runDir)
-      || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+      || !value || typeof value !== 'object' || Array.isArray(value)) return null;
     const result = value as Record<string, unknown>;
     if (result.version !== 1 || result.runId !== runId || result.taskId !== config.taskId
       || !isState(result.state) || !isPiSubagentTerminal(result.state)
       || !finiteNonNegative(result.completedAt)
-      || !Array.isArray(result.tasks) || result.tasks.length !== config.tasks.length) return false;
+      || !Array.isArray(result.tasks) || result.tasks.length !== config.tasks.length) return null;
     const seen = new Set<string>();
-    return result.tasks.every((value: unknown) => {
+    const matchingTasks = result.tasks.every((value: unknown) => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
       const task = value as Record<string, unknown>;
       if (typeof task.childId !== 'string' || !task.childId || seen.has(task.childId)) return false;
@@ -3090,9 +3107,93 @@ async function hasTerminalResultReceipt(root: string, runId: string): Promise<bo
         && task.sessionId === expected.sessionId && task.agent === expected.agent
         && isState(task.status) && isPiSubagentTerminal(task.status);
     });
+    if (!matchingTasks) return null;
+    // The runner argv carries the UUID in its config/script path; every Pi
+    // child carries --session-id, including children surviving a runner exit.
+    // Matching only runner PIDs would miss precisely that orphan-child case.
+    return [runId, ...config.tasks.map(task => task.sessionId)];
   } catch {
     // Bounded reads reject missing, corrupt, oversized and linked artifacts.
-    return false;
+    return null;
+  }
+}
+
+/**
+ * Inventory only for receipt recovery; never a source of PIDs to signal.
+ * Empty/failed/truncated probes are unknown, not proof of absence. Windows can
+ * omit command lines for protected processes in other accounts. Use the OS
+ * user filter first (tasklist /FI USERNAME, like POSIX ps -u), then require a
+ * readable command line for every selected PID. A missing/inaccessible own
+ * process keeps recovery closed; PID discovery never authorizes a kill.
+ */
+async function readRecoveryProcessInventory(deadline: number): Promise<string[] | null> {
+  try {
+    const remaining = Math.floor(deadline - Date.now());
+    if (remaining <= 0) return null;
+    if (process.platform === 'win32') {
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        '$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name',
+        // tasklist reports itself, then exits before CIM runs. Track only our
+        // own probe PID so that its expected exit cannot block every recovery.
+        '$probe = [System.Diagnostics.Process]::new()',
+        '$probe.StartInfo.FileName = "$env:SystemRoot\\System32\\tasklist.exe"',
+        '$probe.StartInfo.Arguments = \'/V /FO CSV /NH /FI "USERNAME eq \' + $user + \'"\'',
+        '$probe.StartInfo.UseShellExecute = $false',
+        '$probe.StartInfo.CreateNoWindow = $true',
+        '$probe.StartInfo.RedirectStandardOutput = $true',
+        'if (-not $probe.Start()) { throw "tasklist did not start" }',
+        '$probeId = $probe.Id',
+        '$csv = $probe.StandardOutput.ReadToEnd()',
+        '$probe.WaitForExit()',
+        '$probeExitCode = $probe.ExitCode',
+        '$probe.Dispose()',
+        'if ($probeExitCode -ne 0) { throw "tasklist failed" }',
+        '$owned = @($csv | ConvertFrom-Csv -Header Name,ProcessId,SessionName,SessionNumber,Memory,Status,UserName,CPUTime,WindowTitle)',
+        '$processIds = @{}',
+        'foreach ($row in $owned) {',
+        '  $number = 0',
+        '  if (-not [int]::TryParse($row.ProcessId, [ref]$number) -or $number -le 0) { throw "invalid process inventory" }',
+        '  if ($number -eq $probeId) { continue }',
+        '  $processIds[$number] = $true',
+        '}',
+        '$count = $processIds.Count',
+        '$commands = [System.Collections.Generic.List[string]]::new()',
+        '$complete = $true',
+        '$items = @(Get-CimInstance Win32_Process -ErrorAction Stop)',
+        'foreach ($item in $items) {',
+        '  $number = [int]$item.ProcessId',
+        '  if (-not $processIds.ContainsKey($number)) { continue }',
+        '  if ([string]::IsNullOrWhiteSpace($item.CommandLine)) { $complete = $false; break }',
+        '  $commands.Add($item.CommandLine)',
+        '  $processIds.Remove($number)',
+        '}',
+        '@{ complete = ($complete -and $processIds.Count -eq 0); commands = @($commands.ToArray()); count = $count } | ConvertTo-Json -Compress',
+      ].join('\n');
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8', timeout: Math.min(DEFAULT_KILL_BUDGET_MS, remaining), maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+      });
+      const value = JSON.parse(stdout);
+      if (value?.complete !== true || !Number.isSafeInteger(value.count) || value.count <= 0
+        || !Array.isArray(value.commands) || value.commands.length !== value.count
+        || value.commands.some((command: unknown) => typeof command !== 'string' || !command.trim())) return null;
+      return value.commands;
+    }
+    const uid = process.geteuid?.();
+    if (!Number.isSafeInteger(uid)) return null;
+    const { stdout } = await execFileAsync('ps', ['-ww', '-u', String(uid), '-o', 'pid=,args='], {
+      encoding: 'utf8', timeout: Math.min(KILL_PROBE_TIMEOUT_MS, remaining), maxBuffer: 4 * 1024 * 1024,
+    });
+    const lines = stdout.trim().split('\n');
+    const commands: string[] = [];
+    for (const line of lines) {
+      const match = /^\s*([1-9]\d*)\s+(.+)$/.exec(line);
+      if (!match || !match[2]!.trim()) return null;
+      commands.push(match[2]!);
+    }
+    return commands.length > 0 ? commands : null;
+  } catch {
+    return null;
   }
 }
 
@@ -3120,6 +3221,7 @@ async function stopPiSubagentRunsUnderRoots(
   scope: PiSubagentSweepScope = {},
 ): Promise<boolean> {
   const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
+  const recoveryDeadline = deadline + (scope.killBudgetMs ?? DEFAULT_KILL_BUDGET_MS);
   const requested = new Set<string>();
   for (;;) {
     // One memo per pass, discarded with it: within a single pass a pid cannot
@@ -3127,7 +3229,7 @@ async function stopPiSubagentRunsUnderRoots(
     const startTimeMemo: ProcessStartTimeMemo = new Map();
     let activeCount = 0;
     for (const root of roots) {
-      for (const { runId } of await sweepableRunsUnderRoot(root, scope, startTimeMemo)) {
+      for (const { runId } of await sweepableRunsUnderRoot(root, scope, recoveryDeadline, startTimeMemo)) {
         activeCount += 1;
         const key = `${root}:${runId}`;
         if (requested.has(key)) continue;
@@ -3145,12 +3247,12 @@ async function stopPiSubagentRunsUnderRoots(
       // spending the outgoing account and editing the workspace. Escalate to a
       // verified kill; anything we cannot positively identify is left alone.
       if (!scope.killUnresponsiveRunners) return false;
-      const killDeadline = Date.now() + (scope.killBudgetMs ?? DEFAULT_KILL_BUDGET_MS);
+      const killDeadline = Math.min(recoveryDeadline, Date.now() + (scope.killBudgetMs ?? DEFAULT_KILL_BUDGET_MS));
       let killedAll = true;
       for (const root of roots) {
         // Re-derived, so a run whose directory vanished in the meantime is gone
         // from the set and counts as reclaimed.
-        const work = await sweepableRunsUnderRoot(root, scope, startTimeMemo);
+        const work = await sweepableRunsUnderRoot(root, scope, killDeadline, startTimeMemo);
         // In parallel: each reclaim is mostly waiting on its own process probe,
         // and serialising them multiplied the worst case by the number of
         // runners — enough to overrun a quit budget with only a few of them.

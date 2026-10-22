@@ -436,7 +436,8 @@ function main() {
 
   // result.json is a best-effort attachment; status.json remains the primary
   // record. Account-boundary recovery can validate this independent terminal
-  // receipt if status is unreadable. Its write must never decide the outcome:
+  // receipt if status is unreadable AND the OS confirms no runner/child remains.
+  // A signal attempt alone is not exit evidence. Its write must never decide the outcome:
   // letting it throw once
   // turned a completed run into a published failure (the throw from the success
   // path landed in the failure handler, which rewrote state and republished),
