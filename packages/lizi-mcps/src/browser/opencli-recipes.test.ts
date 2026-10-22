@@ -9,7 +9,7 @@ import { runRecipe } from "./recipe-runner.js";
 import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
 import { saveBase64ToFile } from '@jackwener/opencli/utils';
 import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
-import { mkdtemp, writeFile, rm, readFile, realpath, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile, realpath, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 // @ts-expect-error Pinned upstream adapter helpers ship JavaScript without declarations.
@@ -17,6 +17,13 @@ import * as gemini from '../../../opencli-vendor/clis/gemini/utils.js';
 // @ts-expect-error Pinned upstream adapter helpers ship JavaScript without declarations.
 import * as qwen from '../../../opencli-vendor/clis/qwen/utils.js';
 import * as network from '../../../opencli-vendor/src/node-network.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { readUtf8File } from '../../../opencli-vendor/clis/_atlassian/shared.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { resolvePayload } from '../../../opencli-vendor/clis/zhihu/write-shared.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { prepareChatGPTFilePaths } from '../../../opencli-vendor/clis/chatgpt/utils.js';
+import { readFileSync, openSync } from 'node:fs';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -25,6 +32,46 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 file-check regression, unit tier. Actual text readers and host IO;
+  // older write tests did not inspect relative files before reading them.
+  // Two interleaved tasks with the same filename must retain separate content.
+  it.each([readUtf8File, (file: string) => resolvePayload({ file }), async (file: string) => {
+    const result = await prepareChatGPTFilePaths([file]);
+    if (!result.ok) throw new Error(result.reason);
+    return readRecipeFileSync(result.paths[0], 'utf8');
+  }])('keeps text inspection and reading in each invoking task', async (readText) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-text-test-'));
+    const dirs = [path.join(root, 'a'), path.join(root, 'b')];
+    try {
+      for (const [i, dir] of dirs.entries()) {
+        await mkdir(dir);
+        await writeFile(path.join(dir, 'page.md'), `task-${i}`);
+      }
+      const values = await Promise.all(dirs.map((directory) => withRecipeHost(undefined, async () => {
+        await Promise.resolve();
+        return readText('page.md');
+      }, { directory, read: file => readFileSync(file), open: file => openSync(file, 'r') })));
+      expect(values).toEqual(['task-0', 'task-1']);
+      const read = vi.fn();
+      await expect(withRecipeHost(undefined, () => readText('page.md'), {
+        directory: dirs[0], read, open: () => { throw new Error('denied by host'); },
+      })).rejects.toThrow();
+      expect(read).not.toHaveBeenCalled();
+      await expect(withRecipeHost(undefined, () => readText('page.md'))).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  // Unsupported export modes must be input failures before any navigation or
+  // click; they used to perform page actions and then fail on waitForDownload.
+  it.each(['video-social', 'gif'])('rejects unsupported export %s before browser execution', async (kind) => {
+    const call = vi.fn();
+    const result = await runRecipe(loadRecipes().get('opencli:midjourney/download')!, {
+      job: '11111111-1111-1111-1111-111111111111', kind,
+    }, { call });
+    expect(result).toMatchObject({ ok: false, failureKind: 'input' });
+    expect(call).not.toHaveBeenCalled();
+  });
+
   // #6826: argument defaults bypassed the task-relative resolver. Unit tier,
   // real adapter -> shared writer with fake generation/network; previous novel
   // coverage did not pass image/download argument defaults through prepareInputs.
@@ -438,13 +485,16 @@ describe("bundled OpenCLI recipes", () => {
       const all = await query();
       expect(all.ok).toBe(true);
       expect(all.recipeCount).toBe(loadRecipes().size);
-      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'books-list', 'hockey-search']) {
+      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'opencli:ones/login', 'opencli:ones/token-info', 'books-list', 'hockey-search']) {
         expect(JSON.stringify(all)).not.toContain(id);
         const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: id } } });
         expect(JSON.parse((response.content as Array<{ text: string }>)[0].text).ok).toBe(false);
       }
       expect(JSON.stringify(all)).toContain('open-library-search');
       expect(JSON.stringify(all)).toContain('steam-reviews');
+      const midjourney = await query('midjourney');
+      expect(midjourney.recipes.find((recipe: { id: string }) => recipe.id === 'opencli:midjourney/download').parameters.kind.choices)
+        .toEqual(['auto', 'image', 'video-raw']);
       // The public guide must describe the same task-relative defaults used by
       // execution; otherwise callers can reintroduce an out-of-task path.
       for (const [site, command, arg, expected] of [

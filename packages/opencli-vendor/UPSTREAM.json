@@ -219,7 +219,7 @@
     }
   },
   "files": {
-    "clis/_atlassian/shared.js": "d5edb3a2d1d5ca5b578953a87554df76ff8ba1f710638b380dcc970051ca1938",
+    "clis/_atlassian/shared.js": "5e456bf1db1b0c86982e424682d929c7b97ab0b678b914ea2ed7f131031f8e40",
     "clis/_shared/common.js": "0d70b3b99d9e03aae3bf476d8f5ca21435018b62fb4936d6d40fa6febe5155f5",
     "clis/_shared/google-account.js": "0a17bd23206b65378560d0514c0f5c3c27d3bad9ba58d23190d6fa7f1e59400c",
     "clis/_shared/search-adapter.js": "e3d77ac024970330244d753cc526cfc24f9edb5c0947acab0b6749355fb6f381",
@@ -392,7 +392,7 @@
     "clis/chatgpt/read.js": "44ed9824abd6568227ac2164b3175ec14251e3ef09c161cdaea8da89cd355d0c",
     "clis/chatgpt/send.js": "535cfb3fba02ca3d00e0d5804c617ac9c67cdc2f1581abc92c27ae57bbb4d76b",
     "clis/chatgpt/status.js": "c61a2407c5b4d375f2c09c51de83c7800d5a501993329c308eac209328e50e6b",
-    "clis/chatgpt/utils.js": "64e667c5e7a42cc4b945ea743a09a056f9cc79db0c0b1ea0167ce0c2544c26d8",
+    "clis/chatgpt/utils.js": "dacffa8304591fcd3f3f2b6a25d300ba417dddadc84b4c9b7096f64e3b20a630",
     "clis/chess/analyze.js": "6310c246f7d03e73736d5b885706a6bfe7cd057761c3a3a5d13109a9afd67ae2",
     "clis/chess/game.js": "cdf30c1fef8813af0acff84c028c31225f47044db144fb71af32c47342639dab",
     "clis/chess/games.js": "0d8df9fcbe4f49982bc7f1b82581b5e581ae72808de1c41a5dd85568881b6bad",
@@ -458,7 +458,7 @@
     "clis/deepseek/send.js": "64fc9bd159a6e39f4e5a2b7a734ee0498b979dc652587b326d756833d7467a45",
     "clis/deepseek/status.js": "d26c1b40774618d53abc85a88467a81690798af42286d806791c7902a9c892b4",
     "clis/deepseek/usage.js": "da5908b8dae865fd4c7f6e6c01afeea2460c10333b126a9734f399ae19f002ba",
-    "clis/deepseek/utils.js": "070b84ce87ab5ceae4b794d43b07581ca3b450354b008750987a069a0c1cb525",
+    "clis/deepseek/utils.js": "2bd17df4fe416e16563582f4d676b668f802f0453b8677f12ccd71ef3176dd32",
     "clis/defillama/protocol.js": "509e04905e836cab678d51ed46e7658095fa58502cd1f80d288ad93a71729f4e",
     "clis/defillama/protocols.js": "bd73c95fcf37760ec4a78d7c98bdc4ac2568e9e1e10953871d07d3626de1386f",
     "clis/defillama/utils.js": "a205c83f8a76451386605908933d0e7aba7fb98818adfadc48de116dd906ff80",
@@ -883,7 +883,7 @@
     "clis/midjourney/auth-utils.js": "af4fb68018bac5fd94b0108ae69aaa12b2c3a6d370b0e96636f74e961578ed8f",
     "clis/midjourney/capabilities.js": "fd7413726b757b07db627be9b81ef3b29b17b2ebb822ad6475f47788901e6b8f",
     "clis/midjourney/describe.js": "7c6dbd76161bc16905147f976468147b90b15cd55c6667d02d3de3bc4e6e1e56",
-    "clis/midjourney/download.js": "5ddafa3585c22b6e3c39ff329a41c2963d6390900677207a8e95aea95aea680c",
+    "clis/midjourney/download.js": "3980137ccc10d0b1984288a4e6a18a25124d9a67d106e8e12f8ebc4b360d3c63",
     "clis/midjourney/generate.js": "370bf20986bb40e8c80f57b7b5fda61930e1b09c38433f732b25412c826ee9fb",
     "clis/midjourney/history.js": "2ed49c8ceef4f9731014246329db5c5143e362d9d8f4c87e3ea38c67f613c36b",
     "clis/midjourney/login.js": "f235209ecae8eea22efe41a50fff08441a1cbe8cd2b51021d961d251f0da65eb",
@@ -1523,7 +1523,7 @@
     "clis/zhihu/user-arg.js": "d701ebe20a5c7ca4c997a024e929a559415cbee269921df132aed838b0b59ad1",
     "clis/zhihu/user-articles.js": "33c33df443439994d8e7ff2c10156559e6fc663323a7ef768d9fb7ae88197d73",
     "clis/zhihu/user.js": "ee49fbab83d6429e24299bcfb759f56e16f952bca140d4748f7833236d5f9650",
-    "clis/zhihu/write-shared.js": "a72eeef1fba24ca6cae162858da2c1a47c209441b3ad5cd9183ea355e582d906",
+    "clis/zhihu/write-shared.js": "9d075c3aff1f8c0f0921da74b025962816a694118887b9b2c50e2a3e663eba6e",
     "clis/zlibrary/info.js": "b8e7af76fb4cb0e19cfd30319df74c9a147fd767ea218c4e095700339c1c7883",
     "clis/zlibrary/search.js": "56627632933eb3de4c05d8766e15ad8c9e78297c6fc66bfe54c149276f39f0e9",
     "clis/zlibrary/utils.js": "63dfa74f171ccd0e918b609d4d85ff9ae000dcc45d23fce8c8729e52d5d3931a",
@@ -1648,6 +1648,6 @@
     "src/verify.ts": "9ad21f961c94b750dca8db63a6ffc78689dda5186f1d443ab8f912eef30b2fc9",
     "src/version.ts": "7bb1ede5cfc1f796e434cacd08cb9f903022f8c9375b17237aa16ad7d825aa2b",
     "LICENSE": "0210b8b66cf00358242cb921ba2be3a46dfe0190159b1b952388a3880ce1ff54",
-    "cli-manifest.json": "a1824f6c01d76c231682ee1de6626d588d6b274706546743eec6bd20e73f5b87"
+    "cli-manifest.json": "29ae519d76909a34d71010afddca96892f27fe0980bfcfd112d62d567b27b5d7"
   }
 }

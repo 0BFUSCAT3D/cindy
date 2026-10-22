@@ -1,6 +1,5 @@
-import * as __cindy_node_fs from "node:fs";
 import * as __cindy_node_path from "node:path";
-import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { readRecipeFileSync, statRecipeFileSync, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 /**
  * ChatGPT web browser automation helpers.
  * Cross-platform: works on Linux/macOS/Windows via OpenCLI's CDP browser automation.
@@ -2464,16 +2463,14 @@ function imageMimeFromPath(filePath) {
 }
 
 export async function prepareChatGPTImagePaths(imagePaths) {
-    const fs = __cindy_node_fs;
     const path = __cindy_node_path;
-    const absPaths = imagePaths.map(filePath => path.default.resolve(filePath));
+    const absPaths = imagePaths.map(filePath => resolveRecipePath(filePath));
     const allowedExts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic', '.heif']);
 
     for (const absPath of absPaths) {
-        if (!fs.default.existsSync(absPath)) {
-            return { ok: false, reason: `Image not found: ${absPath}` };
-        }
-        const stat = fs.default.statSync(absPath);
+        let stat;
+        try { stat = statRecipeFileSync(absPath); }
+        catch { return { ok: false, reason: `Image not found: ${absPath}` }; }
         if (!stat.isFile()) {
             return { ok: false, reason: `Not a file: ${absPath}` };
         }
@@ -2539,12 +2536,11 @@ async function waitForChatGPTUploadPreview(page, fileNames) {
 }
 
 async function uploadChatGPTChunkedFiles(page, paths, selector, mimeForPath) {
-    const fs = __cindy_node_fs;
     const path = __cindy_node_path;
     if (typeof page.evaluateOnce !== 'function') {
         throw new CommandExecutionError('File upload fallback requires a browser backend with evaluateOnce support.');
     }
-    if (paths.some(file => fs.default.statSync(file).size > 25 * 1024 * 1024)) {
+    if (paths.some(file => statRecipeFileSync(file).size > 25 * 1024 * 1024)) {
         return { ok: false, reason: 'Uploads over 25 MB require a current Browser Bridge extension with native file-input support' };
     }
     // Base64 can exceed the daemon's 1 MB request limit. Stage bounded,
@@ -3380,7 +3376,6 @@ export async function openProjectKnowledgeDialog(page) {
  */
 export async function uploadChatGPTProjectFiles(page, projectId, filePaths) {
     const id = parseChatGPTProjectId(projectId);
-    const fs = __cindy_node_fs;
     const path = __cindy_node_path;
 
     const prepared = await prepareChatGPTFilePaths(filePaths);
@@ -3530,15 +3525,13 @@ async function waitForChatGPTProjectUploadConfirmation(page, fileNames) {
  * Accepts all file types with a 512 MB per-file limit (matching ChatGPT's project limit).
  */
 export async function prepareChatGPTFilePaths(filePaths) {
-    const fs = __cindy_node_fs;
     const path = __cindy_node_path;
-    const absPaths = filePaths.map(filePath => path.default.resolve(filePath));
+    const absPaths = filePaths.map(filePath => resolveRecipePath(filePath));
 
     for (const absPath of absPaths) {
-        if (!fs.default.existsSync(absPath)) {
-            return { ok: false, reason: `File not found: ${absPath}` };
-        }
-        const stat = fs.default.statSync(absPath);
+        let stat;
+        try { stat = statRecipeFileSync(absPath); }
+        catch { return { ok: false, reason: `File not found: ${absPath}` }; }
         if (!stat.isFile()) {
             return { ok: false, reason: `Not a file: ${absPath}` };
         }

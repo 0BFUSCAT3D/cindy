@@ -1,5 +1,4 @@
-import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
-import { stat } from 'node:fs/promises';
+import { readRecipeFileSync, statRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import { htmlToMarkdown as coreHtmlToMarkdown } from '@jackwener/opencli/utils';
 import {
     ArgumentError,
@@ -294,7 +293,7 @@ export async function readUtf8File(filePath) {
     const path = requireString(filePath, '--file');
     let fileStat;
     try {
-        fileStat = await stat(path);
+        fileStat = statRecipeFileSync(path);
     } catch {
         throw new ArgumentError(`File not found: ${path}`);
     }

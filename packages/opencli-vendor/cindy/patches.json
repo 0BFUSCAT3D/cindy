@@ -2541,5 +2541,167 @@
     "before": "default: ~/Music/suno",
     "after": "default: ./suno-audio",
     "count": 2
+  },
+  {
+    "file": "clis/_atlassian/shared.js",
+    "before": "import { readRecipeFileSync }",
+    "after": "import { readRecipeFileSync, statRecipeFileSync }",
+    "count": 1
+  },
+  {
+    "file": "clis/_atlassian/shared.js",
+    "before": "import { stat } from 'node:fs/promises';\n",
+    "after": "",
+    "count": 1
+  },
+  {
+    "file": "clis/_atlassian/shared.js",
+    "before": "await stat(path)",
+    "after": "statRecipeFileSync(path)",
+    "count": 1
+  },
+  {
+    "file": "clis/zhihu/write-shared.js",
+    "before": "import { readRecipeFileSync }",
+    "after": "import { readRecipeFileSync, statRecipeFileSync }",
+    "count": 1
+  },
+  {
+    "file": "clis/zhihu/write-shared.js",
+    "before": "import { stat } from 'node:fs/promises';\n",
+    "after": "",
+    "count": 1
+  },
+  {
+    "file": "clis/zhihu/write-shared.js",
+    "before": "stat: (path) => stat(path)",
+    "after": "stat: statRecipeFileSync",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "  downloadRenderedVideo,\n",
+    "after": "",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "const KINDS = ['auto', 'image', 'video-raw', 'video-social', 'gif'];",
+    "after": "const KINDS = ['auto', 'image', 'video-raw'];",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "Download original images, raw video, social MP4, or GIF with MIME and atomic-write checks",
+    "after": "Download original images or raw video with MIME and atomic-write checks",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "{ name: 'kind', default: 'auto', help: 'auto, image, video-raw, video-social, or gif' }",
+    "after": "{ name: 'kind', default: 'auto', choices: KINDS, help: 'auto, image, or video-raw' }",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "Video jobs support video-raw, video-social, or gif downloads",
+    "after": "Video jobs support video-raw downloads",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "    } else {\n      files = [];\n      for (const index of indices) files.push(await downloadRenderedVideo(page, jobId, index, kind, outputDir, force));\n",
+    "after": "",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "Download original images, raw video, social MP4, or GIF with MIME and atomic-write checks",
+    "after": "Download original images or raw video with MIME and atomic-write checks",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "\"help\": \"auto, image, video-raw, video-social, or gif\"",
+    "after": "\"choices\": [\"auto\", \"image\", \"video-raw\"],\n        \"help\": \"auto, image, or video-raw\"",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "import { readRecipeFileSync }",
+    "after": "import { readRecipeFileSync, statRecipeFileSync, resolveRecipePath }",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "path.default.resolve(",
+    "after": "resolveRecipePath(",
+    "count": 2
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "fs.default.statSync(",
+    "after": "statRecipeFileSync(",
+    "count": 3
+  },
+  {
+    "file": "clis/deepseek/utils.js",
+    "before": "import { readRecipeFileSync }",
+    "after": "import { readRecipeFileSync, statRecipeFileSync, resolveRecipePath }",
+    "count": 1
+  },
+  {
+    "file": "clis/deepseek/utils.js",
+    "before": "path.default.resolve(",
+    "after": "resolveRecipePath(",
+    "count": 1
+  },
+  {
+    "file": "clis/deepseek/utils.js",
+    "before": "fs.default.statSync(",
+    "after": "statRecipeFileSync(",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "        if (!fs.default.existsSync(absPath)) {\n            return { ok: false, reason: `Image not found: ${absPath}` };\n        }\n        const stat = statRecipeFileSync(absPath);",
+    "after": "        let stat;\n        try { stat = statRecipeFileSync(absPath); }\n        catch { return { ok: false, reason: `Image not found: ${absPath}` }; }",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "        if (!fs.default.existsSync(absPath)) {\n            return { ok: false, reason: `File not found: ${absPath}` };\n        }\n        const stat = statRecipeFileSync(absPath);",
+    "after": "        let stat;\n        try { stat = statRecipeFileSync(absPath); }\n        catch { return { ok: false, reason: `File not found: ${absPath}` }; }",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "import * as __cindy_node_fs from \"node:fs\";\n",
+    "after": "",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "    const fs = __cindy_node_fs;\n",
+    "after": "",
+    "count": 4
+  },
+  {
+    "file": "clis/deepseek/utils.js",
+    "before": "    if (!fs.default.existsSync(absPath)) {\n        return { ok: false, reason: `File not found: ${absPath}` };\n    }\n\n    const stats = statRecipeFileSync(absPath);",
+    "after": "    let stats;\n    try { stats = statRecipeFileSync(absPath); }\n    catch { return { ok: false, reason: `File not found: ${absPath}` }; }",
+    "count": 1
+  },
+  {
+    "file": "clis/deepseek/utils.js",
+    "before": "import * as __cindy_node_fs from \"node:fs\";\n",
+    "after": "",
+    "count": 1
+  },
+  {
+    "file": "clis/deepseek/utils.js",
+    "before": "    const fs = __cindy_node_fs;\n",
+    "after": "",
+    "count": 1
   }
 ]

@@ -3,6 +3,7 @@
     "zlibrary": "Not in Cindy's default catalog: copyright enforcement history and unverified mirror ownership (reviewed 2026-10-23).",
     "slock": "Deferred: app.slock.ai redirects to app.raft.build; the adapter still assumes the old origin and token storage. Revalidate before inclusion.",
     "claude": "Excluded: Claude subscription login and use belong to the unmodified built-in Claude Code CLI, not a Claude.ai browser adapter (credentials-and-local-storage.md).",
-    "spotify": "Deferred: client credentials still depend on a plaintext spotify.env file. Do not bundle until credential configuration uses the host encrypted store."
+    "spotify": "Deferred: client credentials still depend on a plaintext spotify.env file. Do not bundle until credential configuration uses the host encrypted store.",
+    "ones": "Deferred: the login adapter accepts account passwords as model inputs and prints reusable bearer tokens. Login must use the existing trusted input handoff instead."
   }
 }

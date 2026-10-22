@@ -4,7 +4,6 @@ import {
   displayPath,
   downloadOriginals,
   downloadRawVideo,
-  downloadRenderedVideo,
   fetchJobStatus,
   isVideoJob,
   normalizeBoolean,
@@ -13,13 +12,13 @@ import {
   resolveOutputDir,
 } from './utils.js';
 
-const KINDS = ['auto', 'image', 'video-raw', 'video-social', 'gif'];
+const KINDS = ['auto', 'image', 'video-raw'];
 
 cli({
   site: 'midjourney',
   name: 'download',
   access: 'write',
-  description: 'Download original images, raw video, social MP4, or GIF with MIME and atomic-write checks',
+  description: 'Download original images or raw video with MIME and atomic-write checks',
   example: 'opencli midjourney download <job> --kind auto --index all',
   domain: 'www.midjourney.com',
   strategy: Strategy.COOKIE,
@@ -30,7 +29,7 @@ cli({
   args: [
     { name: 'job', positional: true, required: true, help: 'Job UUID or Midjourney /jobs/<uuid> URL' },
     { name: 'index', default: 'all', help: 'Candidate 1..4 or all' },
-    { name: 'kind', default: 'auto', help: 'auto, image, video-raw, video-social, or gif' },
+    { name: 'kind', default: 'auto', choices: KINDS, help: 'auto, image, or video-raw' },
     { name: 'output', default: './midjourney-downloads', help: 'Output directory' },
     { name: 'force', type: 'boolean', default: false, help: 'Overwrite existing non-empty files' },
   ],
@@ -46,7 +45,7 @@ cli({
     let kind = String(kwargs.kind || 'auto').trim().toLowerCase();
     if (!KINDS.includes(kind)) throw new ArgumentError(`--kind must be one of: ${KINDS.join(', ')}`);
     if (kind === 'auto') kind = video ? 'video-raw' : 'image';
-    if (video && kind === 'image') throw new ArgumentError('Video jobs support video-raw, video-social, or gif downloads');
+    if (video && kind === 'image') throw new ArgumentError('Video jobs support video-raw downloads');
     if (!video && kind !== 'image') throw new ArgumentError('Image jobs only support --kind image');
 
     const indices = parseImageIndices(kwargs.index, Number(job.batch_size || (video ? 1 : 4)));
@@ -61,9 +60,6 @@ cli({
     } else if (kind === 'video-raw') {
       files = [];
       for (const index of indices) files.push(await downloadRawVideo(page, jobId, index, outputDir, force));
-    } else {
-      files = [];
-      for (const index of indices) files.push(await downloadRenderedVideo(page, jobId, index, kind, outputDir, force));
     }
     return files.map((item) => ({
       job_id: jobId,

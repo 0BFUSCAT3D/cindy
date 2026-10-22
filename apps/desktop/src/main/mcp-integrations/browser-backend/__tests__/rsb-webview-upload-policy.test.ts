@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -32,7 +33,7 @@ describe('resolveUploadFiles', () => {
     await withRecipeHost(undefined, async () => {
       file = recipeDiagnosticPath('upload-copy.png');
       await fs.writeFile(file, 'test-only-image');
-      await expect(resolveUploadFiles([file], [allowedRoot])).resolves.toEqual([await fs.realpath(file)]);
+      await expect(resolveUploadFiles([file], [allowedRoot])).resolves.toEqual([realpathSync(file)]);
       await expect(resolveUploadFiles([file], [outsideRoot])).rejects.toThrow('inside the current session directory');
     }, { read: () => Buffer.alloc(0), open: () => -1, temporaryRoot: allowedRoot });
     await expect(fs.access(path.dirname(file))).rejects.toThrow();
@@ -43,7 +44,7 @@ describe('resolveUploadFiles', () => {
   // Real host resolver, unit tier; smallest failure is one outside output path.
   it('resolves missing task outputs and rejects outside, sensitive and remote-only paths', async () => {
     expect(resolveRecipeOutputPath(path.join('new', 'report.txt'), [allowedRoot]))
-      .toBe(path.join(await fs.realpath(allowedRoot), 'new', 'report.txt'));
+      .toBe(path.join(realpathSync(allowedRoot), 'new', 'report.txt'));
     for (const candidate of [path.join(outsideRoot, 'new', 'report.txt'), path.join(allowedRoot, '.git', 'config'), path.join(allowedRoot, '.env')]) {
       expect(() => resolveRecipeOutputPath(candidate, [allowedRoot])).toThrow();
     }
@@ -62,7 +63,7 @@ describe('resolveUploadFiles', () => {
     await fs.writeFile(file, 'hello');
 
     await expect(resolveUploadFiles([file], [allowedRoot])).resolves.toEqual([
-      await fs.realpath(file),
+      realpathSync(file),
     ]);
   });
 

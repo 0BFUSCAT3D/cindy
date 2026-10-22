@@ -1,6 +1,5 @@
-import * as __cindy_node_fs from "node:fs";
 import * as __cindy_node_path from "node:path";
-import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { readRecipeFileSync, statRecipeFileSync, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { ArgumentError } from '@jackwener/opencli/errors';
 
 export const DEEPSEEK_DOMAIN = 'chat.deepseek.com';
@@ -379,15 +378,12 @@ async function waitForFilePreview(page, fileName) {
 }
 
 export async function sendWithFile(page, filePath, prompt) {
-    const fs = __cindy_node_fs;
     const path = __cindy_node_path;
-    const absPath = path.default.resolve(filePath);
+    const absPath = resolveRecipePath(filePath);
 
-    if (!fs.default.existsSync(absPath)) {
-        return { ok: false, reason: `File not found: ${absPath}` };
-    }
-
-    const stats = fs.default.statSync(absPath);
+    let stats;
+    try { stats = statRecipeFileSync(absPath); }
+    catch { return { ok: false, reason: `File not found: ${absPath}` }; }
     if (stats.size > 100 * 1024 * 1024) {
         return { ok: false, reason: `File too large (${(stats.size / 1024 / 1024).toFixed(1)} MB). Max: 100 MB` };
     }

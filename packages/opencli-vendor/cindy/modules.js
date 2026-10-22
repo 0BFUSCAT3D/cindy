@@ -613,14 +613,6 @@ import "../clis/nuget/search.js";
 import "../clis/nvd/cve.js";
 import "../clis/oeis/search.js";
 import "../clis/oeis/sequence.js";
-import "../clis/ones/login.js";
-import "../clis/ones/logout.js";
-import "../clis/ones/me.js";
-import "../clis/ones/my-tasks.js";
-import "../clis/ones/task.js";
-import "../clis/ones/tasks.js";
-import "../clis/ones/token-info.js";
-import "../clis/ones/worklog.js";
 import "../clis/openalex/search.js";
 import "../clis/openalex/work.js";
 import "../clis/openfda/drug-label.js";
@@ -1672,14 +1664,6 @@ export const modules = {
   "nvd/cve.js": true,
   "oeis/search.js": true,
   "oeis/sequence.js": true,
-  "ones/login.js": true,
-  "ones/logout.js": true,
-  "ones/me.js": true,
-  "ones/my-tasks.js": true,
-  "ones/task.js": true,
-  "ones/tasks.js": true,
-  "ones/token-info.js": true,
-  "ones/worklog.js": true,
   "openalex/search.js": true,
   "openalex/work.js": true,
   "openfda/drug-label.js": true,

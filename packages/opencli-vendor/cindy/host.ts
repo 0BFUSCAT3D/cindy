@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, openSync, closeSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, openSync, closeSync, fstatSync } from "node:fs";
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, basename } from 'node:path';
 
@@ -129,6 +129,13 @@ export function openRecipeFileSync(file: string): number {
   const descriptor = isTemporaryFile(host, file) ? openSync(file, 'r') : files!.open(resolveRecipePath(file));
   host.descriptors.add(descriptor);
   return descriptor;
+}
+
+/** Inspection uses the same approved file descriptor boundary as reading. */
+export function statRecipeFileSync(file: string): ReturnType<typeof fstatSync> {
+  const descriptor = openRecipeFileSync(file);
+  try { return fstatSync(descriptor); }
+  finally { closeRecipeFileSync(descriptor); }
 }
 
 /** Legacy OpenCLI files are read only on explicit execution, never on import.

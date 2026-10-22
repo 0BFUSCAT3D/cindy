@@ -7,7 +7,7 @@
 //  - advanced unsupported actions yield a structured error (no throw)
 
 import fs from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -1451,7 +1451,7 @@ describe('RsbWebviewBackend — uploads and page dialogs', () => {
       expect(res.ok).toBe(true);
       expect(res.data).toMatchObject({ tabId: 't1', uploadedFiles: 1 });
       expect(env.sendCommand).toHaveBeenCalledWith('DOM.setFileInputFiles', {
-        files: [await fs.realpath(file)],
+        files: [realpathSync(file)],
         objectId: 'file-input',
       });
       await env.backend.dispose();

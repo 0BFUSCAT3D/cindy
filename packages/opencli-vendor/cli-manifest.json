@@ -23588,7 +23588,7 @@
   {
     "site": "midjourney",
     "name": "download",
-    "description": "Download original images, raw video, social MP4, or GIF with MIME and atomic-write checks",
+    "description": "Download original images or raw video with MIME and atomic-write checks",
     "access": "write",
     "example": "opencli midjourney download <job> --kind auto --index all",
     "domain": "www.midjourney.com",
@@ -23614,7 +23614,8 @@
         "type": "str",
         "default": "auto",
         "required": false,
-        "help": "auto, image, video-raw, video-social, or gif"
+        "choices": ["auto", "image", "video-raw"],
+        "help": "auto, image, or video-raw"
       },
       {
         "name": "output",
