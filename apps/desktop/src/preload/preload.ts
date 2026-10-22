@@ -1,3 +1,4 @@
+import type { VoiceConversationApi } from '../shared/voiceConversation';
 import { createAccessibilitySupportBridge } from './accessibilitySupport';
 import { createWallpaperAssetsBridge } from './wallpaperAssets';
 import type { CompanionImportApi, CompanionImportSelection } from '@cindy/maker-shared/companion-import';
@@ -244,6 +245,7 @@ import type {
 import type {
   RsbWindowCommandRouteRequest,
   RsbWindowCommandRouteResult,
+  RsbWindowContext,
   RsbWindowTabHandoff,
 } from '../shared/rightSidebarWindow';
 import {
@@ -1615,6 +1617,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolveConfirm: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('plugin-publisher:resolve-confirm', { requestId, confirmed }),
   },
+  voiceConversation: {
+    promoteTurn: (callId, inputId) => ipcRenderer.invoke("voice-conversation:promote-turn", callId, inputId),
+    submitTurn: (callId, inputId, text, forceHandoff) => ipcRenderer.invoke("voice-conversation:submit-turn", callId, inputId, text, forceHandoff),
+    models: () => ipcRenderer.invoke('voice-conversation:models'),
+    voices: (selection) => ipcRenderer.invoke('voice-conversation:voices', selection),
+    preview: (input) => ipcRenderer.invoke('voice-conversation:preview', input),
+    readPreview: (previewId) => ipcRenderer.invoke('voice-conversation:read-preview', previewId),
+    stopPreview: (previewId) => ipcRenderer.invoke('voice-conversation:stop-preview', previewId),
+    preference: (botId) => ipcRenderer.invoke('voice-conversation:preference', botId),
+    setPreference: (botId, selection, sentencePlayback) => ipcRenderer.invoke('voice-conversation:set-preference', botId, selection, sentencePlayback),
+    start: (input) => ipcRenderer.invoke('voice-conversation:start', input),
+    startPlayback: (input) => ipcRenderer.invoke('voice-conversation:start-playback', input),
+    classifyExit: (callId, utteranceId, inputGeneration) => ipcRenderer.invoke('voice-conversation:classify-exit', callId, utteranceId, inputGeneration),
+    audio: (input) => ipcRenderer.send('voice-conversation:audio', input),
+    finishUtterance: (callId) => ipcRenderer.invoke('voice-conversation:finish-utterance', callId),
+    setInputMuted: (callId, muted) => ipcRenderer.invoke('voice-conversation:set-input-muted', callId, muted),
+    end: (callId) => ipcRenderer.invoke('voice-conversation:end', callId),
+    speak: (input) => ipcRenderer.invoke('voice-conversation:speak', input),
+    readSpeech: (callId, requestId) => ipcRenderer.invoke('voice-conversation:read-speech', callId, requestId),
+    interrupt: (callId) => ipcRenderer.invoke('voice-conversation:interrupt', callId),
+    onEvent: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof callback>[0]) => callback(payload);
+      ipcRenderer.on('voice-conversation:event', listener);
+      return () => ipcRenderer.removeListener('voice-conversation:event', listener);
+    },
+  } satisfies VoiceConversationApi,
   voiceInput: {
     prewarm: (payload?: {
       sourceLanguage?: string;
@@ -1983,28 +2011,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<{ detached: boolean; lastOpen: boolean; open: boolean }> =>
       ipcRenderer.invoke('maker:rsb-window:set-detached', detached, handoff),
     /** 子窗口 mount 时拉主窗上报的渲染上下文(main 缓存的最后一份)。 */
-    getContext: (): Promise<{
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    } | null> => ipcRenderer.invoke('maker:rsb-window:get-context'),
+    getContext: (): Promise<RsbWindowContext | null> =>
+      ipcRenderer.invoke('maker:rsb-window:get-context'),
     /** 子窗口根组件挂载握手(main 侧 ensureOpen 等它)。 */
     ready: (): Promise<void> => ipcRenderer.invoke('maker:rsb-window:ready'),
     /** 主窗请求 main 原子裁决命令宿主；必要时 main 开窗、排队或取消 stale intent。 */
     sendCommand: (request: RsbWindowCommandRouteRequest): Promise<RsbWindowCommandRouteResult> =>
       ipcRenderer.invoke('maker:rsb-window:send-command', request),
     /** 主窗上报侧边栏渲染上下文。fire-and-forget,main 只信主窗 sender。 */
-    setContext: (ctx: {
-      sessionId: string | null;
-      workdir: string | null;
-      remoteHostId: string | null;
-      deviceLinkDeviceId?: string | null;
-      subagentsAvailable?: boolean;
-      available: boolean;
-    }): void => ipcRenderer.send('maker:rsb-window:set-context', ctx),
+    setContext: (ctx: RsbWindowContext): void =>
+      ipcRenderer.send('maker:rsb-window:set-context', ctx),
     onStateChanged: fanOutRsbWindowStateChanged,
     onContextChanged: fanOutRsbWindowContextChanged,
     onCommand: fanOutRsbWindowCommand,
@@ -5741,6 +5757,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:bots:create-canonical-session', body),
       history: (botId: string): Promise<unknown[]> =>
         ipcRenderer.invoke('local-db:bots:history', botId),
+      dmThread: {
+        ensure: (body: { botId: string; rootSessionId: string; rootClientId: string; title?: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:ensure', body),
+        list: (body: { botId: string; rootSessionId: string }): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:dm-thread:list', body),
+      },
       todos: {
         list: (botId: string) => ipcRenderer.invoke('local-db:bots:todos:list', botId),
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),
@@ -5756,8 +5778,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       },
       /** 伙伴自主跟进：工作台「一眼」与「自动跟进所有任务」设置（shared/botAutonomy.ts）。 */
       autonomy: {
-        glance: (botId: string): Promise<import('../shared/botAutonomy').BotGlance> =>
-          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId),
+        glance: (botId: string, refreshRemote = true): Promise<import('../shared/botAutonomy').BotGlance> =>
+          ipcRenderer.invoke('local-db:bots:autonomy:glance', botId, refreshRemote),
         getSettings: (): Promise<import('../shared/botAutonomy').BotAutonomySettingsView> =>
           ipcRenderer.invoke('local-db:bots:autonomy:settings-get'),
         setSettings: (
@@ -6173,6 +6195,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:chat-server:status'),
       thread: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['thread']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['thread']> =>
         ipcRenderer.invoke('maker:chat-server:thread', input),
+      followThread: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['followThread']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['followThread']> =>
+        ipcRenderer.invoke('maker:chat-server:followThread', input),
       reply: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['reply']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['reply']> =>
         ipcRenderer.invoke('maker:chat-server:reply', input),
       shareToMain: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['shareToMain']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['shareToMain']> =>
@@ -6217,8 +6241,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:bot-group:send', input),
     continueBotGroupRound: (groupId: string): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
       ipcRenderer.invoke('maker:bot-group:continue', groupId),
-    stopBotGroupRound: (groupId: string): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
-      ipcRenderer.invoke('maker:bot-group:stop', groupId),
+    /** Stops your own work; `all` (owners/admins of server groups) stops everyone's. */
+    stopBotGroupRound: (groupId: string, scope?: 'all'): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
+      ipcRenderer.invoke('maker:bot-group:stop', groupId, scope),
     startBotGroupPlan: (
       input: import('../shared/botGroupChat').BotGroupPlanActionInput,
     ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
@@ -7255,6 +7280,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 输入框开始打字时提前启动 Agent；尽力而为,main 决定是否真的启动。
     prewarmSession: (sessionId: string, createOpts: unknown): Promise<{ accepted: boolean }> =>
       ipcRenderer.invoke('maker:session:prewarm', sessionId, createOpts),
+    // 新建页的未发送任务：清空输入时删除 / 第一次发送前转为普通任务（仅本机）。
+    discardProvisionalSession: (sessionId: string): Promise<{ discarded: boolean; remaining?: boolean }> =>
+      ipcRenderer.invoke('maker:session:discard-provisional', sessionId),
+    commitProvisionalSession: (sessionId: string): Promise<{ committed: boolean }> =>
+      ipcRenderer.invoke('maker:session:commit-provisional', sessionId),
     setPermissionMode: (sessionId: string, mode: string): Promise<void> =>
       ipcRenderer.invoke('maker:set-permission-mode', sessionId, mode),
     getPluginWriteAccessRecovery: (sessionId: string): Promise<{available: boolean}> =>

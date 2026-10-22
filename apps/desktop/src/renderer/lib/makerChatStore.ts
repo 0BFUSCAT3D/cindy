@@ -1,4 +1,5 @@
 import { pendingGhostCardFormDelivery } from '@cindy/maker-shared/ghost-card-form';
+import { isVoiceCallTaskMessage } from '../../shared/voiceConversation';
 import { remoteAgentLimitErrorKey } from '../../shared/remoteAgentLimits';
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
@@ -446,6 +447,10 @@ export interface ChatMessage {
   cacheReceipt?: HistoryCacheReceipt;
   /** Private Bot reply provenance, projected from persisted/live agent metadata. */
   botPrivateReply?: boolean;
+  /** The user input (clientId) this assistant reply answers, from the turn's accepted input. */
+  replyToClientId?: string;
+  /** Companion-chat quote reply carried by this user message. */
+  replyQuote?: import('../../shared/chatReplyQuote').ChatReplyQuote;
   botLearning?: import('@cindy/maker-shared/bot-learning').BotLearningReceipt[];
   botTaskResults?: import('@cindy/maker-shared/botCollaboration').BotCollaborationMeta[];
   clientId: string;
@@ -579,6 +584,8 @@ export interface ChatMessage {
    * agentMeta.goalCompletion 派生(仿 fork divider 从 session 元数据派生),重开会话仍在。
    */
   systemCardType?:
+    | 'voice-call'
+    | 'voice-call-task'
     | 'cindy-make-doctor'
     | 'cindy-make'
     | 'help'
@@ -3658,6 +3665,8 @@ function _purgeSession(sessionId: string): void {
   invalidateBackgroundTaskReconcile(sessionId);
   cancelBackgroundTaskReconcile(sessionId);
   backgroundTaskStaleRetrySessions.delete(sessionId);
+  // 同一 id 之后可能重新建出来(新建页的未发送任务)，预热提醒要重新开始计时。
+  lastPrewarmRequest.delete(sessionId);
   // 代际递增(bump 而非 delete,原因见 _messagesEpoch 注释):作废 in-flight 翻页,
   // 避免其提交把旧窗口 merge 进 purge 后重建的空 slice。
   releaseRemoteHistoryView(sessionId);
@@ -5758,6 +5767,7 @@ export function handleStreamEvent(
     : typeof phaseData?.phase === 'string' ? phaseData.phase : incomingMeta?.assistantPhase;
   const assistantMetaFields: {
     botPrivateReply?: boolean;
+    replyToClientId?: string;
     assistantPhase?: string;
     model?: string;
     parentToolUseId?: string;
@@ -5772,6 +5782,8 @@ export function handleStreamEvent(
       : {}),
     ...(incomingMeta?.turnCompleted === true ? { turnCompleted: true } : {}),
     ...(typeof incomingMeta?.botPrivateReply === 'boolean' ? { botPrivateReply: incomingMeta.botPrivateReply } : {}),
+    ...(typeof incomingMeta?.replyToClientId === 'string' && incomingMeta.replyToClientId
+      ? { replyToClientId: incomingMeta.replyToClientId } : {}),
   };
   switch (event.type) {
     case 'text': {
@@ -5922,7 +5934,8 @@ export function handleStreamEvent(
           assistantMetaFields.model !== undefined ||
           assistantMetaFields.parentToolUseId !== undefined ||
           assistantMetaFields.turnCompleted === true ||
-          assistantMetaFields.botPrivateReply !== undefined;
+          assistantMetaFields.botPrivateReply !== undefined ||
+          assistantMetaFields.replyToClientId !== undefined;
         const shouldCalibrateText = Boolean(
           isFullText === true &&
           text &&
@@ -14069,6 +14082,7 @@ function buildQueuedMessage(
     };
     /** 订阅槽①:透传一次性跳过意识拦截钩标记(预留;v1 无强制发送 UI,无调用点置位)。 */
     bypassGhostHooks?: boolean;
+    replyQuote?: import('../../shared/chatReplyQuote').ChatReplyQuote;
   },
   identity?: { clientId: string; createdAt: string },
 ): QueuedMessage {
@@ -14098,6 +14112,7 @@ function buildQueuedMessage(
     ...(opts?.slashCommandRanges !== undefined && {
       slashCommandRanges: opts.slashCommandRanges,
     }),
+    ...(opts?.replyQuote && { replyQuote: opts.replyQuote }),
     ...(imageAttachments && imageAttachments.length > 0 && { images: imageAttachments }),
     ...(fileAttachments && fileAttachments.length > 0 && { files: fileAttachments }),
     ...(files && files.length > 0 && { retryFiles: files }),
@@ -14118,6 +14133,7 @@ function buildQueuedMessage(
     opts?.slashCommandRanges,
     [],
     opts?.agentReferences,
+    opts?.replyQuote,
   );
 
   return {
@@ -14240,12 +14256,28 @@ export function buildCreateOptsForCurrentSession(
   };
 }
 
-/** 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。 */
+/**
+ * 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。
+ * 换了模型、深度、权限、引擎或目录时任务所在电脑可能已关掉旧进程，下一次输入立即重新提醒。
+ */
 const PREWARM_REQUEST_INTERVAL_MS = 30_000;
-const lastPrewarmRequestAt = new Map<string, number>();
+const lastPrewarmRequest = new Map<string, { at: number; settings: string }>();
+
+function prewarmSettingsKey(createOpts: AgentInputCreateOpts): string {
+  return JSON.stringify([
+    createOpts.agentKind,
+    createOpts.workingDir,
+    createOpts.model,
+    createOpts.providerId ?? null,
+    createOpts.effort,
+    createOpts.permissionMode,
+    createOpts.fastMode ?? null,
+    createOpts.planMode ?? null,
+  ]);
+}
 
 /**
- * 输入框开始打字：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
+ * 输入框开始输入（打字、粘贴、开始语音输入）：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
  * 没有排队或在途发送时请求；createOpts 与下一次发送构造的相同，执行字段由任务所在
  * 电脑按数据库校正。尽力而为，结果不影响发送。
  */
@@ -14267,10 +14299,6 @@ function prewarmSession(
   ) {
     return;
   }
-  const now = Date.now();
-  const last = lastPrewarmRequestAt.get(sessionId);
-  if (last !== undefined && now - last < PREWARM_REQUEST_INTERVAL_MS) return;
-  lastPrewarmRequestAt.set(sessionId, now);
   const createOpts = buildCreateOptsForCurrentSession(
     sessionId,
     model,
@@ -14278,6 +14306,11 @@ function prewarmSession(
     permissionMode,
     workingDir,
   );
+  const settings = prewarmSettingsKey(createOpts);
+  const now = Date.now();
+  const last = lastPrewarmRequest.get(sessionId);
+  if (last && last.settings === settings && now - last.at < PREWARM_REQUEST_INTERVAL_MS) return;
+  lastPrewarmRequest.set(sessionId, { at: now, settings });
   void prewarmSessionFor(sessionId, createOpts).catch(() => undefined);
 }
 
@@ -14734,6 +14767,8 @@ async function updateQueueItemContent(
       slashCommandRanges: textUnchanged
         ? queued.chatMessage.slashCommandRanges
         : content.slashCommandRanges,
+      // The quote is part of the message, not of the edited text.
+      ...(queued.chatMessage.replyQuote ? { replyQuote: queued.chatMessage.replyQuote } : {}),
     },
     {
       clientId: queued.clientId,
@@ -14996,8 +15031,12 @@ type SendMessageOpts = {
   };
   /** 一次性跳过意识拦截钩(订阅槽①,预留;v1 无强制发送 UI):透传到排队项。 */
   bypassGhostHooks?: boolean;
+  /** 伙伴私聊引用回复:随消息落库,气泡显示引用块,宿主把原消息作背景附给伙伴。 */
+  replyQuote?: import('../../shared/chatReplyQuote').ChatReplyQuote;
   /** 远程预检在乐观投影建立后执行；false 时按 clientId 精确回滚。 */
   beforeEnqueue?: () => Promise<boolean>;
+  /** Renderer-local correlation, never serialized into a message or wire payload. */
+  onInputCreated?: (clientId: string) => void;
   /** 远程乐观发送在稍后确认永久失败时恢复 composer。 */
   onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
   /**
@@ -15278,6 +15317,7 @@ async function sendMessageCore(
     opts,
     identity,
   );
+  opts?.onInputCreated?.(queued.clientId);
   // #2194: 登记本端发送——MessageStream 的强 pin 只认这个集合，外部入口
   // （IM / 手机端 / 定时任务）注入的 user 消息不抢视口。后续路径 return false
   // （如 beforeEnqueue 回滚）会留下一个永不渲染的 id，无害。
@@ -15520,6 +15560,8 @@ function steerMessage(
     pastedTextRanges?: PastedTextRange[];
     slashCommandRanges?: SlashCommandRange[];
     beforeEnqueue?: () => Promise<boolean>;
+    /** Renderer-local correlation, never serialized into a message or wire payload. */
+    onInputCreated?: (clientId: string) => void;
     onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     /** 见 SendMessageOpts.annotationBurnFailure。 */
     annotationBurnFailure?: 'abort';
@@ -15677,6 +15719,8 @@ async function steerMessageCore(
     pastedTextRanges?: PastedTextRange[];
     slashCommandRanges?: SlashCommandRange[];
     beforeEnqueue?: () => Promise<boolean>;
+    /** Renderer-local correlation, never serialized into a message or wire payload. */
+    onInputCreated?: (clientId: string) => void;
     onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
   },
   clearGenerationAtStart = 0,
@@ -15705,6 +15749,7 @@ async function steerMessageCore(
     opts,
     identity,
   );
+  opts?.onInputCreated?.(queued.clientId);
   // #2194: 与 sendMessageCore 相同——本端 steer 也是明确的本地发送意图。
   markLocalSentUserMessage(sessionId, queued.clientId);
   const deviceLinkRemote = remoteScopeAtStart !== null;
@@ -19095,6 +19140,11 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
   const ordered = filtered.sort(compareMessageTimeline);
   const legacyUserTurnCosts = projectLegacyUserTurnCosts(ordered);
   const mapped = ordered.map((m) => {
+    if (m.role === 'assistant' && m.agentMeta?.voiceCall?.version === 1) return {
+      clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
+      systemCardType: 'voice-call' as const, systemCardData: { record: m.agentMeta.voiceCall },
+      createdAt: new Date(m.createdAt).toISOString(),
+    };
     const mcpApp = m.role === 'assistant' && m.agentMeta?.mcpApp === true ? parseMcpAppHistory(m.content) : undefined;
     if (mcpApp) return {
       clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
@@ -19487,12 +19537,16 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
         role: m.role,
         content: parsed.text,
         isStreaming: false,
+        ...(isVoiceCallTaskMessage(m.clientId, m.sessionId, parsed.text, m.agentMeta?.autoReviewUserText)
+          ? { systemCardType: 'voice-call-task' as const, systemCardData: { text: parsed.text } }
+          : {}),
         ...(m.agentMeta?.autoResumeInfo?.reason === 'usage-limit-reset'
           ? { usageLimitAutoResumeInfo: { ...m.agentMeta.autoResumeInfo } }
           : {}),
         ...(parsed.images.length > 0 && { images: parsed.images }),
         ...(parsed.files.length > 0 && { files: parsed.files }),
         ...(parsed.quotesEncoded === true && { quotesEncoded: true }),
+        ...(parsed.replyQuote && { replyQuote: parsed.replyQuote }),
         ...(parsed.agentReferences?.length && {
           agentReferences: parsed.agentReferences,
         }),
@@ -19636,6 +19690,8 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
       ...(botStarterOptions.length ? { botStarterOptions } : {}),
       ...(m.role === 'assistant' ? { botLearning: m.agentMeta?.botLearning } : {}),
       ...(m.agentMeta?.botPrivateReply === true ? { botPrivateReply: true } : {}),
+      ...(m.role === 'assistant' && typeof m.agentMeta?.replyToClientId === 'string' && m.agentMeta.replyToClientId
+        ? { replyToClientId: m.agentMeta.replyToClientId } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.turnCompleted === true
         ? { botTaskResults: readBotTaskResults(m.agentMeta.botTaskResults) } : {}),
       // tool_result 消息也带 toolUseId(DB 列),让 MessageStream 能按 id 配对

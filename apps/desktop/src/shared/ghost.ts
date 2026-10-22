@@ -1,3 +1,4 @@
+import { parseGhostSecretCheck, type GhostSecretCheckDecl } from '@cindy/plugin-protocol';
 import { parseGhostRoutineEvents, type GhostRoutineEvents } from '@cindy/plugin-protocol';
 import { parseMailReader } from '@cindy/maker-shared/mail-message';
 import { parsePluginAuthorizationRequest, type PluginAuthorizationRequest, type PluginAuthorizationResult } from '@cindy/device-link';
@@ -205,6 +206,8 @@ export interface GhostAgentNeeds {
   background?: boolean;
   errand?: boolean;
   tasks?: boolean;
+  /** 查询项目、任务、伙伴并投递消息;必须同时声明 tasks,需独立批准。 */
+  targets?: boolean;
   /**
    * hiddenTasks = 「可创建不显示在任务列表里的后台任务」(2026-10)。
    *
@@ -969,6 +972,8 @@ export interface GhostSecretDecl {
   inject: GhostSecretInjectDecl;
   /** 可选:key 换令牌二段式声明(见 GhostSecretExchangeDecl;与 oauth 互斥)。 */
   exchange?: GhostSecretExchangeDecl;
+  /** Optional settings-only credential check; never returns the credential. */
+  check?: GhostSecretCheckDecl;
   /** source: 'oauth' 时必填的授权详单(见 GhostSecretOauthDecl);其它来源禁止声明。 */
   oauth?: GhostSecretOauthDecl;
   /**
@@ -1644,6 +1649,8 @@ export interface InstalledGhost {
   retirement?: import('./featureRetirements').InstalledFeatureRetirement;
   /** Host receipt fact, not a manifest declaration. Missing means tasks need confirmation. */
   taskCapabilityApproved?: true;
+  /** Independent Host consent for cross-task/companion target access. */
+  targetCapabilityApproved?: true;
   manifest: GhostManifest;
   /** 安装目录绝对路径(userData/brain/<id> 或 userData/brain/_ns/<org>/<id>)。 */
   dir: string;
@@ -2049,6 +2056,9 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
     }
     if (manifest.agent?.tasks === true) {
       items.unshift({ key: 'agent:tasks', kind: 'agent', labelKey: 'agentTasks', detailKey: 'agentTasksDetail' });
+    }
+    if (manifest.agent?.tasks === true && manifest.agent.targets === true) {
+      items.unshift({ key: 'agent:targets', kind: 'agent', labelKey: 'agentTargets', detailKey: 'agentTargetsDetail' });
     }
     // 后台隐藏任务:独立 key 单列(理由同 schedule —— 并进 agent:tasks 会让更新里
     // 新增 hiddenTasks 时 added 为空,扩权复核拦不住)。排在 agent:tasks 之后。
@@ -2774,6 +2784,7 @@ export function ghostNetworkAuthorizationWithinCap(
     ) {
       return false;
     }
+    if (secret.check !== undefined && JSON.stringify(secret.check) !== JSON.stringify(cap.check)) return false;
     if (secret.oauth !== undefined) {
       if (!cap.oauth || !ghostOauthAuthorizationWithinCap(cap.oauth, secret.oauth)) return false;
     }
@@ -4425,10 +4436,16 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
         return { ok: false, reason: 'agent.hiddenTasks: true 需要同时声明 agent.tasks: true' };
       }
     }
+    if (!preserveHistoricalTasks && agentRaw.targets !== undefined) {
+      if (typeof agentRaw.targets !== 'boolean') return { ok: false, reason: 'agent.targets must be boolean' };
+      if (agentRaw.targets === true && agentRaw.tasks !== true) {
+        return { ok: false, reason: 'agent.targets: true 需要同时声明 agent.tasks: true' };
+      }
+    }
     if (agentRaw.schedule !== undefined && typeof agentRaw.schedule !== 'boolean') {
       return { ok: false, reason: 'agent.schedule 必须是布尔值' };
     }
-    if (agentRaw.background !== true && agentRaw.errand !== true && agentRaw.schedule !== true && agentRaw.tasks !== true && Object.keys(unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks'])).length === 0) {
+    if (agentRaw.background !== true && agentRaw.errand !== true && agentRaw.schedule !== true && agentRaw.tasks !== true && Object.keys(unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks', 'targets'])).length === 0) {
       return {
         ok: false,
         reason:
@@ -4436,10 +4453,11 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       };
     }
     agent = {
-      ...unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks']),
+      ...unknownDeclarationFields(agentRaw, preserveHistoricalTasks ? ['background', 'errand', 'schedule'] : ['background', 'errand', 'schedule', 'tasks', 'hiddenTasks', 'targets']),
       ...(agentRaw.background === true ? { background: true } : {}),
       ...(agentRaw.errand === true ? { errand: true } : {}),
       ...(agentRaw.tasks === true ? { tasks: true } : {}),
+      ...(agentRaw.tasks === true && agentRaw.targets === true ? { targets: true } : {}),
       ...(agentRaw.tasks === true && agentRaw.hiddenTasks === true ? { hiddenTasks: true } : {}),
       ...(agentRaw.schedule === true ? { schedule: true } : {}),
     };
@@ -5699,6 +5717,12 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
             ...(exTtl !== undefined ? { ttlSeconds: exTtl } : {}),
           };
         }
+        const check = s.check === undefined ? undefined : parseGhostSecretCheck(s.check,
+          (host) => hosts.some((pattern) => ghostNetworkHostMatches(pattern, host))
+            && (injectHosts ?? hosts).some((pattern) => ghostNetworkHostMatches(pattern, host)));
+        if (s.check !== undefined && (!check || (source !== undefined && source !== 'user'))) {
+          return { ok: false, reason: 'network.secrets[].check requires a user secret, a declared injection host, and a bounded response mapping' };
+        }
         secrets.push({
           key: s.key,
           label: s.label,
@@ -5711,6 +5735,7 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
             ...(injectHosts !== undefined ? { hosts: injectHosts } : {}),
           },
           ...(exchange !== undefined ? { exchange } : {}),
+          ...(check ? { check } : {}),
           ...(oauth !== undefined ? { oauth } : {}),
         });
       }
