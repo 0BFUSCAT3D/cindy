@@ -31,7 +31,8 @@ function dayLabel(at: number, language: string): string {
   const date = new Date(at);
   const startOf = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
   const days = Math.round((startOf(now) - startOf(date)) / 86_400_000);
-  if (days >= 0 && days <= 1) return new Intl.RelativeTimeFormat(language, { numeric: 'auto' }).format(-days, 'day');
+  // Hermes has no Intl.RelativeTimeFormat; there recent days show as dates too.
+  if (days >= 0 && days <= 1 && typeof Intl.RelativeTimeFormat === 'function') return new Intl.RelativeTimeFormat(language, { numeric: 'auto' }).format(-days, 'day');
   return new Intl.DateTimeFormat(language, { month: 'numeric', day: 'numeric' }).format(date);
 }
 

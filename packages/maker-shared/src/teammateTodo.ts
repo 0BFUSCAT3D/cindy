@@ -232,8 +232,9 @@ export function todoDateLabel(t: TeammateTodo, locale: string, now = new Date())
     month: 'numeric',
     day: 'numeric',
   }).format(new Date(dateString + 'T12:00:00Z'));
+  // Hermes (Mobile) has no Intl.RelativeTimeFormat; there "today" falls back to the date itself.
   const day =
-    d && d.date === todoLocalDate(now, d.timeZone)
+    d && d.date === todoLocalDate(now, d.timeZone) && typeof Intl.RelativeTimeFormat === 'function'
       ? new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(0, 'day')
       : date;
   return d?.kind === 'instant'

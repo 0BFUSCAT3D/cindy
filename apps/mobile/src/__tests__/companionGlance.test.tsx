@@ -4,7 +4,8 @@
  * - 生产入口与可观察结果：手机伙伴近况的两份数据——「输出内容」列哪些文件（companionGlanceOutputs），
  *   「待办」能否读到宿主第一页（25 条）之后的条目（useCompanionGlanceTodos）。
  * - Bug／规则依据：docs/product-rules/cindy-bots-runtime.md「伙伴近况」；桌面同一入口在 #6681 review 中
- *   被指出只读一页时第 26 条之后看不到、引用不了、删不掉。
+ *   被指出只读一页时第 26 条之后看不到、引用不了、删不掉；模拟器目检发现 Hermes 没有 Intl.RelativeTimeFormat，
+ *   今天到期的待办让近况整块渲染报错。
  * - 现有覆盖缺口：新入口；顶栏测试只验证打开近况，不覆盖数据。
  * - 最小失败输入：30 条未完成待办；一份含成品、源码、已删文件的完成委派与一份失败委派。
  * - tier：unit（jsdom 驱动真实 hook，device-link 用内存 fake）。
@@ -12,7 +13,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { TeammateTodo } from '@cindy/maker-shared/teammate-todo';
+import { todoDateLabel, todoLocalDate, type TeammateTodo } from '@cindy/maker-shared/teammate-todo';
 
 const h = vi.hoisted(() => ({ items: [] as unknown[], reads: [] as Array<Record<string, unknown>> }));
 vi.mock('react-native', () => ({ AppState: { addEventListener: () => ({ remove: () => undefined }) } }));
@@ -69,4 +70,17 @@ it("lists only this teammate's finished deliverables, newest first, each opening
     ],
   } as never, 'bot');
   expect(outputs.map(file => [file.name, file.childSessionId])).toEqual([['deck.pptx', 'c2'], ['report.docx', 'c1']]);
+});
+
+it('labels a todo due today with its date where the engine has no relative-time formatting (Hermes)', () => {
+  const original = Intl.RelativeTimeFormat;
+  const today = todoLocalDate(new Date(), 'UTC');
+  const due = { ...todo('t'), sourceDeadline: { kind: 'date', date: today, timeZone: 'UTC' }, deadlineOverride: null } as unknown as TeammateTodo;
+  try {
+    (Intl as { RelativeTimeFormat?: unknown }).RelativeTimeFormat = undefined;
+    expect(todoDateLabel(due, 'zh-CN')).toBe(new Intl.DateTimeFormat('zh-CN', { timeZone: 'UTC', month: 'numeric', day: 'numeric' })
+      .format(new Date(`${today}T12:00:00Z`)));
+  } finally {
+    (Intl as { RelativeTimeFormat?: unknown }).RelativeTimeFormat = original;
+  }
 });
