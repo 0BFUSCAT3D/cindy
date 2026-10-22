@@ -28,6 +28,8 @@ const RETRY_MAX_MS = 5_000;
 const MAX_INFLIGHT_POLLS = 2;
 /** 有任务没有被在途 poll 覆盖时，多留一个补位名额，直到普通 poll 接手。 */
 const FRESH_RUN_EXTRA_POLLS = 1;
+/** 补位不要变成长等待，否则第四个新任务仍会被三个旧 poll 挡住。 */
+const FRESH_RUN_WAIT_MS = 1_000;
 /** 对方连续几次立刻返回、却没有任何新数据时，放慢重拉(防止对方行为异常时空转)。 */
 const EMPTY_FAST_STREAK = 3;
 const EMPTY_FAST_MS = 50;
@@ -135,12 +137,13 @@ export class RemoteAgentPoller {
     const wanted = this.snapshot();
     const startedAt = this.now();
     const coverage: ReadonlySet<string> = new Set(wanted.map((item) => item.runId));
+    const waitMs = this.inflight >= MAX_INFLIGHT_POLLS ? FRESH_RUN_WAIT_MS : REMOTE_AGENT_READ_WAIT_MS;
     this.inflight += 1;
     this.inflightCoverage.add(coverage);
     let raw: unknown;
     let failure: unknown = null;
     try {
-      raw = await this.invoke([{ op: 'poll', runs: wanted, waitMs: REMOTE_AGENT_READ_WAIT_MS }]);
+      raw = await this.invoke([{ op: 'poll', runs: wanted, waitMs }]);
     } catch (error) {
       failure = error;
     } finally {

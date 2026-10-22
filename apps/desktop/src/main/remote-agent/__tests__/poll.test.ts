@@ -191,9 +191,16 @@ describe('multiplexed poll', () => {
       await vi.waitFor(() => expect(sinks[2].text()).toContain(data));
       expect(Date.now() - appendedAt).toBeLessThan(1_000);
     }
+    // 补位 poll 也在等待时，再登记第四个任务：不能再次被三个旧长等待挡住 10 秒。
+    const fourth = collector(randomUUID());
+    host.add(fourth.run.runId).append({ step: 'fourth-started' });
+    poller.register(fourth.run);
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(fourth.text()).toContain('fourth-started');
     for (const run of host.runs.values()) run.log.end();
     await vi.advanceTimersByTimeAsync(REMOTE_AGENT_READ_WAIT_MS);
     expect(sinks.every((sink) => sink.done)).toBe(true);
+    expect(fourth.done).toBe(true);
   });
 
   it.each([12, 130])('delivers %i runs exactly once with at most three polls in flight', async count => {
