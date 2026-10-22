@@ -6931,7 +6931,7 @@
           "title": "原內建模擬器已下線",
           "description": "Cindy 已移除原內建模擬器。",
           "replacementName": "iOS 模擬器",
-          "replacementDescription": "在 Cindy 側邊欄查看即時畫面、操作裝置、執行 App 和擷取畫面。",
+          "replacementDescription": "在 Cindy 側邊欄查看即時畫面、操作裝置、執行 App 和擷取畫面。基於開源專案 Baguette。",
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更新版本及完整 Xcode。",
           "dataNotice": "原模擬器的裝置和應用程式資料不會被刪除。安裝新的 iOS 模擬器不會自動遷移裝置、App 或登入狀態。"
         }

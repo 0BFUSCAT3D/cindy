@@ -6931,7 +6931,7 @@
           "title": "旧内蔵シミュレーターは提供を終了しました",
           "description": "Cindy は旧内蔵シミュレーターを削除しました。",
           "replacementName": "iOS シミュレータ",
-          "replacementDescription": "Cindy のサイドバーでリアルタイム画面を表示し、デバイスの操作、App の実行、スクリーンショットの撮影ができます。",
+          "replacementDescription": "Cindy のサイドバーでリアルタイム画面を表示し、デバイスの操作、App の実行、スクリーンショットの撮影ができます。オープンソースプロジェクト Baguette をベースにしています。",
           "requirements": "Apple Silicon Mac、macOS 15 以降、フルバージョンの Xcode が必要です。",
           "dataNotice": "元のシミュレーターのデバイスや App データは削除されません。新しい iOS シミュレータをインストールしても、デバイス、App、ログイン状態は自動移行されません。"
         }
