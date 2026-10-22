@@ -508,6 +508,7 @@ function draftEnableOrcaOptions(
       ...(deferDelegateTask ? { deferDelegateTask: true } : {}),
       workerPermissionMode: cfg.workerPermissionMode,
       executionDeviceId: cfg.executionDeviceId,
+      ...(cfg.agentDeviceId !== undefined ? { agentDeviceId: cfg.agentDeviceId } : {}),
       ...(cfg.executionWorkingDir ? { workingDir: cfg.executionWorkingDir } : {}),
     };
   }
