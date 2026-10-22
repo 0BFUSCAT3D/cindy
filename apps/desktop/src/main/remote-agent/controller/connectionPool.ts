@@ -56,6 +56,8 @@ export interface RemoteConnectionPoolOptions {
    * 闲置收回时长(noteIdleReclaimMinutes)。
    */
   idleMinutes?(): number;
+  /** 主动让出前读取提供方的当前设置；读取失败时不沿用缓存关闭进程。 */
+  readCaps?(): Promise<{ maxRuns: number; idleReclaimMinutes?: number }>;
   now?: () => number;
   checkMs?: number;
   closeRetryMs?: number;
@@ -191,6 +193,19 @@ export class RemoteConnectionPool {
     return next;
   }
 
+  private async refreshPolicy(): Promise<boolean> {
+    if (!this.options.readCaps) return true;
+    try {
+      const caps = await this.options.readCaps();
+      this.noteMaxRuns(caps.maxRuns);
+      this.noteIdleReclaimMinutes(caps.idleReclaimMinutes);
+      return true;
+    } catch (error) {
+      this.options.log?.warn('remote agent pool: current reclaim policy unavailable; skipping release', { error: String(error) });
+      return false;
+    }
+  }
+
   /** 按顺序试着让一个(候选在等待期间可能变忙，release 会放弃)。 */
   private async releaseNext(except?: PooledRemoteConnection): Promise<boolean> {
     for (const member of this.eligible(except)) {
@@ -211,6 +226,9 @@ export class RemoteConnectionPool {
       for (;;) {
         const watermark = this.watermark();
         if (watermark === null || this.occupied() < watermark) return;
+        if (!await this.refreshPolicy()) return;
+        const currentWatermark = this.watermark();
+        if (currentWatermark === null || this.occupied() < currentWatermark) return;
         if (!await this.releaseNext()) return;
         this.options.log?.info('remote agent pool: released an idle connection', { occupied: this.occupied(), maxRuns: this.maxRuns });
       }
@@ -226,6 +244,7 @@ export class RemoteConnectionPool {
       // 自己让出时没关掉的旧 run：先关掉它再看名额。
       await this.closeHeld(self);
       if (this.maxRuns === null || this.occupied(self) < this.maxRuns) return;
+      if (!await this.refreshPolicy() || this.maxRuns === null || this.occupied(self) < this.maxRuns) return;
       if (await this.releaseNext(self)) {
         this.options.log?.info('remote agent pool: made room before opening', { maxRuns: this.maxRuns });
       }
@@ -236,7 +255,7 @@ export class RemoteConnectionPool {
   /** 对方以名额已满拒绝了打开：先试着关掉自己没关掉的旧 run，否则让一个；腾出了就由调用方重试一次。 */
   releaseForRetry(self: PooledRemoteConnection): Promise<boolean> {
     return this.serial(async () => {
-      const released = await this.closeHeld(self) || await this.releaseNext(self);
+      const released = await this.closeHeld(self) || (await this.refreshPolicy() && await this.releaseNext(self));
       this.options.log?.info('remote agent pool: open rejected for capacity', { released, maxRuns: this.maxRuns });
       return released;
     });

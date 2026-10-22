@@ -37,7 +37,7 @@ import {
   collectProjectInstructionFiles,
 } from './projectFiles';
 import type { LocalMcpTarget } from './router';
-import { RemoteAgentPoller, remoteAgentInvoker } from './runClient';
+import { RemoteAgentPoller, RemoteAgentRunClient, remoteAgentInvoker } from './runClient';
 import { startRemoteAgentSession, type PreparedRemoteMcp } from './startRemote';
 
 export interface DeviceAgentServiceDeps {
@@ -155,12 +155,13 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
   const log = deps.logger.child('remote-agent');
   const pollerFor = (deviceId: string): RemoteAgentPoller => remoteAgentPollerFor(deviceId, deps.remoteInvoke, log);
   // 每台运行 Agent 的电脑一个连接池：对方按这台设备计名额，池里算的是本机在那台上开着的连接；
-  // 闲置多久可以让出按那台主人设置的闲置收回时长(每次打开前从 caps 读)。
+  // 闲置多久可以让出按那台主人设置的闲置收回时长(打开前与主动让出前从 caps 读)。
   const pools = new Map<string, RemoteConnectionPool>();
   const poolFor = (deviceId: string): RemoteConnectionPool => {
     let pool = pools.get(deviceId);
     if (!pool) {
-      pool = new RemoteConnectionPool({ log });
+      const invoke = remoteAgentInvoker(deviceId, deps.remoteInvoke);
+      pool = new RemoteConnectionPool({ log, readCaps: () => RemoteAgentRunClient.caps(invoke) });
       pools.set(deviceId, pool);
     }
     return pool;

@@ -1866,7 +1866,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       const value = await relay.client.callWithId(callId, method, callArgs);
       if (method === 'setModel' && typeof args[0] === 'string') run.authorizedModel = args[0];
-      if (method === 'commitRewindFiles') run.rewindPending = true;
+      if (method === 'commitRewindFiles' && run.kind === 'claude-code') run.rewindPending = true;
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: relayErrorInfoFrom(error) });
@@ -2054,7 +2054,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       if (nextProviderId && !run.closing) run.providerId = nextProviderId;
       if (method === 'setModel' && typeof args[0] === 'string' && !run.closing) run.authorizedModel = args[0];
-      if (method === 'commitRewindFiles') run.rewindPending = true;
+      if (method === 'commitRewindFiles' && run.kind === 'claude-code') run.rewindPending = true;
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: remoteAgentErrorInfo(error) });

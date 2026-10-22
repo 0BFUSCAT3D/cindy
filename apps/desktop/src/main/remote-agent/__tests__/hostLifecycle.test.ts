@@ -216,7 +216,7 @@ describe('idle reclaim by the provider', () => {
     return handle;
   }
 
-  async function openBusy(minutes: number, busy: Busy) {
+  async function openBusy(minutes: number, busy: Busy, kind: 'claude-code' | 'codex' | 'pi' = 'claude-code') {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     let handle!: ReturnType<typeof busyHandle>;
     const started = whenStarted();
@@ -227,7 +227,7 @@ describe('idle reclaim by the provider', () => {
       isControllerAuthorized: () => true, captureOwner: () => 'owner', isOwnerCurrent: () => true, runsRoot,
       now: () => clock,
     });
-    await host.handle('controller-1', { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
+    await host.handle('controller-1', { op: 'open', runId: RUN_1, agentKind: kind, payload: { json: openPayload('task-1') } });
     await started.promise;
     await settle();
     let cursor = 0;
@@ -292,6 +292,21 @@ describe('idle reclaim by the provider', () => {
       await pass(0);
       expect(host.runCount()).toBe(0);
       expect(rows.at(-1)).toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
+    } finally { host.dispose(); }
+  });
+
+  // Codex / Pi 在 commitRewindFiles 返回前已经完成原生回退，不需要等待下一次发送保存。
+  // 只有 Claude Code 的 pendingRewindTo 要保留进程；否则这两个引擎回退后再也不会被闲置收回。
+  it.each(['codex', 'pi'] as const)('reclaims an idle %s run after its rewind has already completed', async kind => {
+    const { host, pass } = await openBusy(1, { turn: false, background: 0, wake: 0 }, kind);
+    try {
+      await host.handle('controller-1', { op: 'call', runId: RUN_1, callId: RUN_2, method: 'commitRewindFiles', payload: { json: ['user-1', 'assistant-1'] } });
+      await settle();
+      await pass(50_000);
+      expect(host.runCount()).toBe(1);
+      await pass(20_000);
+      await pass(0);
+      expect(host.runCount()).toBe(0);
     } finally { host.dispose(); }
   });
 

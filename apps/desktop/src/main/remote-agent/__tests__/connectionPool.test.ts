@@ -157,6 +157,32 @@ describe('remote connection pool', () => {
     expect(a.released).toBe(1);
   });
 
+  // provider-sharing.md §3：提供方关闭或延长闲置收回后，不能按打开时缓存的旧时长继续让出；
+  // 读不到当前设置也不能用旧值关进程。原来的用例只在打开前手动更新 caps，未覆盖定时 trim。
+  it.each([0, 120, undefined, 'offline'] as const)('refreshes the provider policy before releasing when it becomes %s', async policy => {
+    let offline = policy === 'offline';
+    let minutes: number | undefined = typeof policy === 'number' ? policy : undefined;
+    const pool = new RemoteConnectionPool({
+      now: () => now, checkMs: 3_600_000,
+      readCaps: async () => {
+        if (offline) throw new Error('DEVICE_OFFLINE');
+        return { maxRuns: 5, idleReclaimMinutes: minutes };
+      },
+    });
+    pool.noteMaxRuns(5);
+    pool.noteIdleReclaimMinutes(1);
+    const members = Array.from({ length: 4 }, (_, index) => member(`m${index}`, now - 10 * MINUTE));
+    const remove = members.map(item => pool.add(item));
+    try {
+      await pool.trim();
+      expect(members.every(item => item.released === 0)).toBe(true);
+      offline = false;
+      minutes = 1;
+      await pool.trim();
+      expect(members.reduce((sum, item) => sum + item.released, 0)).toBe(1);
+    } finally { remove.forEach(unregister => unregister()); }
+  });
+
   it('after a capacity rejection releases one eligible connection, none when nothing qualifies', async () => {
     const { pool } = poolWith(10, now);
     pool.noteMaxRuns(16);

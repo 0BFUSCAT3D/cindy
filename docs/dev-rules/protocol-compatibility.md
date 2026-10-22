@@ -1453,7 +1453,7 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   「闲置收回(分钟)」(`RemoteAgentLimits.idleMinutes`，0～1440，默认 30，0 = 不收回)，对全部控制端统一生效。仍用
   `maker:remote-agent:v1`，不改 relay、服务器、数据库或协议版本；新增的都是可选字段：
   - **B 收回**：巡检(每 5 秒)看到任务不忙且闲置满这个时长，就结束它的 Agent 进程。「忙」= 有等 A 回包的反向请求、
-    执行中的调用、待生效的回退(`commitRewindFiles` 成功后到下一个 `done`)、还没启动好，或 Agent 状态里有在跑 / 在准备的
+    执行中的调用、Claude Code 待生效的回退(`commitRewindFiles` 成功后到下一个 `done`；Codex / Pi 返回时已完成回退)、还没启动好，或 Agent 状态里有在跑 / 在准备的
     回合、后台任务、待唤醒续跑(中转任务看组内电脑报来的同一组字段)；巡检时忙就把闲置起点移到此刻。活动 = 打开、
     `call` / `reply` / `push`、写进事件流的非 `state` 行；只被 `poll` 不算(闲着的任务 A 也一直在拉)。
   - **收尾**：`closed` 行写 `reason: 'ended'` 并带可选 `idleReclaimed: true`。旧 A 不认识这个字段，按 `ended` 静默收起，
@@ -1478,7 +1478,8 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   A 上开着的任务即使闲着也占名额。A 对每台 B 一个连接池(`controller/connectionPool.ts`，计数口径与 B 的 `limitDeviceOf`
   一致：这台设备)，**只在名额紧张时**让出「不忙且闲置满 N 分钟」的连接；N 是 B 在 `caps.idleReclaimMinutes` 里声明的闲置
   收回时长(A 原来的本机设置已删除；B 没声明或为 0 时从不让出，满了直接报错)。闲置满 N 分钟的任务 B 本来也会自己收回，
-  连接池只是名额紧张时不必等它那一轮巡检。三条路径都只让有资格的：
+  连接池只是名额紧张时不必等它那一轮巡检。主动让出前重新读取 B 的 caps，读取失败不按缓存值关进程，
+  主人改为 0 或延长时长不必等 A 再打开连接才生效。三条路径都只让有资格的：
   A 在这台 B 上开着的连接数到了水位线 `ceil(maxRuns×80%)`(只在水位线低于上限、即 maxRuns ≥ 5 时；每次 open 前与每分钟查一次)
   按最久没活动的顺序让，直到降到水位线以下；open 前已满先同步让一个；open 被拒且是名额类 `REMOTE_AGENT_BUSY`
   (`[DEVICE_LIMIT]` / `[TOTAL_LIMIT]`，旧 B 是 `too many tasks are running from this computer`；`too much staged data` 不算)
