@@ -275,7 +275,11 @@ fn powershell_script(
         })
         .collect::<Vec<_>>()
         .join(",");
-    let mut script = String::from("$ErrorActionPreference='Stop'; $source=");
+    // A failure raised by this bootstrap itself is its own step. The default
+    // exit code 1 would decode as the child's argument check, hiding whether
+    // setup or the arguments were wrong.
+    let failed = format!("exit {}", Step::ElevateBootstrap as u32 + 1);
+    let mut script = String::from("$ErrorActionPreference='Stop'; trap { exit 1 }; $source=");
     script.push_str(&powershell_literal(&source.to_string_lossy()));
     script.push_str("; $bootstrap=");
     script.push_str(&powershell_literal(&bootstrap.to_string_lossy()));
@@ -294,17 +298,17 @@ fn powershell_script(
     script.push_str("; $bootstrapDir=Split-Path -Parent $bootstrap; $stagingRoot=Split-Path -Parent $bootstrapDir; $programFiles=Split-Path -Parent $stagingRoot;");
     script.push_str(" $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');");
     script.push_str(" $writeMask=[System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership;");
-    script.push_str(" function Test-Protected([string]$Path) { $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop; if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }; $acl=$item.GetAccessControl(); if ($trusted -notcontains $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value) { return $false }; foreach ($rule in $acl.Access) { if ($rule.AccessControlType -ne 'Allow' -or (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)) { continue }; $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if (($trusted -notcontains $sid) -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false } }; return $true };");
+    script.push_str(" function Test-Protected([string]$Path) { $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop; if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }; $acl=$item.GetAccessControl(); if ($trusted -notcontains $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value) { return $false }; foreach ($rule in $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)) { continue }; $sid=$rule.IdentityReference.Value; if (($trusted -notcontains $sid) -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { return $false } }; return $true };");
     script.push_str(" if (-not (Test-Path -LiteralPath $programFiles) -or -not (Test-Protected $programFiles)) { exit 1 };");
     script.push_str(" foreach ($dir in @($stagingRoot,$bootstrapDir)) { if (Test-Path -LiteralPath $dir) { if (-not (Test-Protected $dir)) { exit 1 } } else { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; $security=New-Object System.Security.AccessControl.DirectorySecurity; $security.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'); Set-Acl -LiteralPath $dir -AclObject $security; if (-not (Test-Protected $dir)) { exit 1 } };");
-    script.push_str(" if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; if ((Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedInputHash) { exit 1 }; $existingBootstrap=Get-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue; if ($null -ne $existingBootstrap) { if (-not (Test-Protected $bootstrap)) { exit 1 } }; Copy-Item -LiteralPath $source -Destination $bootstrap -Force; if (-not (Test-Protected $bootstrap)) { exit 1 }; if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; $child=Start-Process -FilePath $bootstrap -ArgumentList @(");
+    script.push_str(" if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; if ((Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedInputHash) { exit 1 }; $existingBootstrap=Get-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue; if ($null -ne $existingBootstrap) { if (($existingBootstrap.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }; Remove-Item -LiteralPath $bootstrap -Force }; Copy-Item -LiteralPath $source -Destination $bootstrap -Force; $fileSecurity=New-Object System.Security.AccessControl.FileSecurity; $fileSecurity.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)'); Set-Acl -LiteralPath $bootstrap -AclObject $fileSecurity; if (-not (Test-Protected $bootstrap)) { exit 1 }; if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) { exit 1 }; $child=Start-Process -FilePath $bootstrap -ArgumentList @(");
     script.push_str(&args);
     script.push_str(") -Wait -PassThru -WindowStyle Hidden;");
     if remove_staging {
         script.push_str(" if ($child.ExitCode -eq 0) { Remove-Item -LiteralPath $bootstrapDir -Recurse -Force -ErrorAction Stop };");
     }
     script.push_str(" exit $child.ExitCode");
-    script
+    script.replace("exit 1", &failed)
 }
 
 fn encode_powershell(script: &str) -> String {
@@ -1029,5 +1033,16 @@ mod tests {
             "generated bootstrap script did not parse: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        // The copy the elevated step starts has to carry an administrator owner,
+        // not the installing account: an owner can rewrite its own entries.
+        assert!(script.contains("Set-Acl -LiteralPath $bootstrap -AclObject $fileSecurity"));
+        // Comparing the ACL entries must not depend on resolving principal
+        // names: on a localised Windows the ALL APPLICATION PACKAGES entries of
+        // Program Files do not name-translate back, and setup died on that
+        // lookup instead of checking the entries as SIDs.
+        assert!(!script.contains(".Translate("));
+        assert!(script.contains(
+            "$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])"
+        ));
     }
 }
