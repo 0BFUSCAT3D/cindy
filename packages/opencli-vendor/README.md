@@ -10,15 +10,15 @@
 
 - 170 个站点/应用，1,223 条命令（916 read、307 write）。
 - 1,112 个命令模块，所有生产共享代码、JSON 和其他资源一并引入；不引入上游测试。
-- 上游快照完整保留，但默认目录独立选择：排除 Z-Library 2 条、Slock 44 条、Claude.ai 9 条、Spotify 11 条和 ONES 8 条，
-  剩余 1,149 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
+- 上游快照完整保留，但默认目录独立选择：排除 Z-Library、Slock、Claude.ai、Spotify、ONES、
+  小宇宙适配器、PaperReview 和 Quark 共 92 条，剩余 1,131 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
   同步会沿用此选择，排除条目不进入模块导入表和可执行目录。
 - Cindy 原有 56 个 ID：47 个转到新版适配器，7 个保留原流程，两个爬虫练习站移至
   `packages/lizi-mcps/src/browser/recipe-examples`，不再出现在默认列表。
   逐项记录见 [legacy-coverage.json](cindy/legacy-coverage.json)。
 - Cindy 独立增加 App Store 搜索、Google Play 搜索、TapTap 中国站游戏详情、Steam 玩家评价、
   Open Library 书目查询和 Crossref 文献/DOI 查询，共 6 个配方，位于
-  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,234 个可发现 ID、171 份指南；这个数包含别名和兼容入口。
+  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,216 个可发现 ID、169 份指南；这个数包含别名和兼容入口。
 - 兼容入口保持输入名，输出改为新版结构化结果；用户本地覆盖层仍优先于内置层。
 
 通过 `browser(action="siteguide")` 查询精简完整目录；传 `site`（域名或上游站点名）
@@ -36,9 +36,11 @@
   释放监听和连接。导航、上传仍走 Cindy 原有校验路径；代输入后的页面读取限制仍生效。
 - 通用执行器不自动重放操作。Instagram reel 移除独立 daemon 和整次发布重试。
 - Claude.ai 站点不进入默认目录，Claude 订阅沿用内置 Claude Code CLI 登录与使用。
-- Spotify 暂不进入默认目录：客户端密钥的明文文件配置尚未接入宿主加密凭据库；
-  保留完整来源，不增加新的凭据配置流程。小宇宙的新令牌只写宿主加密凭据库，
-  既有配置只在显式执行时读取，不删除旧配置或新增明文令牌文件。
+- Spotify 暂不进入默认目录：客户端密钥的明文文件配置尚未接入宿主加密凭据库。
+- 小宇宙适配器暂不进入默认目录：缺少安全配置入口；原有免登录公开播客配方保留。
+  共享凭据读取仅查宿主加密凭据库，缺失时返回空值，不回退读取或迁移旧明文文件。
+- PaperReview 与 Quark 暂不进入默认目录：现有提交/查询/反馈、分享目录/转存入口
+  会把可复用能力令牌放入模型结果或参数。完整来源保留，不增加配置或句柄存储机制。
 - ONES 暂不进入默认目录：密码参数和令牌打印不符合宿主代输入及凭据边界。
   登录继续使用已有的通用代输入流程，不新增站点专用配置。
 - 文章 stdout 输出改为 MCP 返回值；

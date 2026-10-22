@@ -76,7 +76,7 @@ for (const site of (await readdir(directory)).sort()) {
     await writeFile(recipePath, JSON.stringify(recipe, null, 2) + "\n");
     // These flows have no equivalent upstream contract (e.g. public podcast
     // HTML vs upstream's credential-requiring mobile API). Keep them runnable.
-    guide.notes = `${(guide.notes ?? "").split("\n完整目录更新时保留此 Cindy 独立配方：")[0]}\n完整目录更新时保留此 Cindy 独立配方：上游没有相同的接口或免登录/参数合同。本站其他能力可通过 opencli:<站点>/<命令> 查询。`;
+    guide.notes = `${(guide.notes ?? "").split("\n完整目录更新时保留此 Cindy 独立配方：")[0]}\n完整目录更新时保留此 Cindy 独立配方：上游没有相同的接口或免登录/参数合同。本站可用能力以 siteguide 当前目录为准。`;
     reviewed.push({
       recipe: recipe.id,
       status: "native-preserved",

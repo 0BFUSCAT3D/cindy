@@ -14,7 +14,7 @@ import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
 import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
 import { saveBase64ToFile } from '@jackwener/opencli/utils';
-import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileSync, readSecretJSON, writeSecretJSON } from '@jackwener/opencli/cindy/host';
 import { mkdtemp, mkdir, writeFile, rm, readFile, realpath, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -30,6 +30,7 @@ import { resolvePayload } from '../../../opencli-vendor/clis/zhihu/write-shared.
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
 import { prepareChatGPTFilePaths } from '../../../opencli-vendor/clis/chatgpt/utils.js';
 import { readFileSync, openSync } from 'node:fs';
+import { AsyncResource } from 'node:async_hooks';
 // @ts-expect-error Upstream JavaScript helpers have no declarations.
 import { validateLocalReferences } from '../../../opencli-vendor/clis/midjourney/utils.js';
 
@@ -40,6 +41,40 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 credentials-and-local-storage: production broker, unit tier. Prior
+  // file tests did not cover a missing encrypted entry with a legacy file present.
+  // Only invalid fixture credentials are written under an isolated temp root.
+  it('keeps secret reads and writes in the invoking host store, including missing entries and late calls', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-secret-test-'));
+    const legacy = path.join(dir, 'legacy.json');
+    await writeFile(legacy, JSON.stringify({ access_token: 'invalid-legacy-fixture' }));
+    const stores = [new Map<string, string>(), new Map([['fixture', JSON.stringify({ access_token: 'invalid-host-fixture' })]])];
+    let lateRead = () => readSecretJSON('fixture', legacy);
+    let lateWrite = () => writeSecretJSON('fixture', {});
+    try {
+      expect(() => readSecretJSON('fixture', legacy)).toThrow('host credential store');
+      await Promise.all(stores.map((values, i) => withRecipeHost({
+        read: key => values.get(key) ?? null,
+        write: (key, value) => { values.set(key, value); return true; },
+      }, async () => {
+        await Promise.resolve();
+        expect(readSecretJSON('fixture', legacy)).toEqual(i ? { access_token: 'invalid-host-fixture' } : null);
+        writeSecretJSON('fixture', { host: i });
+        await Promise.resolve();
+        expect(readSecretJSON('fixture', legacy)).toEqual({ host: i });
+        lateRead = AsyncResource.bind(() => readSecretJSON('fixture', legacy));
+        lateWrite = AsyncResource.bind(() => writeSecretJSON('fixture', {}));
+      })));
+      expect(lateRead).toThrow('host credential store');
+      expect(lateWrite).toThrow('host encrypted store');
+      await withRecipeHost({ read: () => '{invalid', write: () => false }, async () => {
+        expect(() => readSecretJSON('fixture', legacy)).toThrow();
+        expect(() => writeSecretJSON('fixture', {})).toThrow('host encrypted store');
+      });
+      expect(JSON.parse(await readFile(legacy, 'utf8'))).toEqual({ access_token: 'invalid-legacy-fixture' });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 file boundary recurrence; unit tier. Real adapter input checks must
   // reject an existing absolute path without the host before browser effects.
   it.each(['mercury', 'wechat-channels', 'midjourney'])('brokers %s input metadata before browser effects', async site => {
@@ -692,13 +727,15 @@ describe("bundled OpenCLI recipes", () => {
       const all = await query();
       expect(all.ok).toBe(true);
       expect(all.recipeCount).toBe(loadRecipes().size);
-      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'opencli:ones/login', 'opencli:ones/token-info', 'books-list', 'hockey-search']) {
+      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'opencli:ones/login', 'opencli:ones/token-info', 'opencli:xiaoyuzhou/history', 'opencli:paperreview/submit', 'opencli:paperreview/review', 'opencli:paperreview/feedback', 'opencli:quark/share-tree', 'opencli:quark/save', 'books-list', 'hockey-search']) {
         expect(JSON.stringify(all)).not.toContain(id);
         const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: id } } });
         expect(JSON.parse((response.content as Array<{ text: string }>)[0].text).ok).toBe(false);
+        if (id.startsWith('opencli:')) await expect(executeAdapter(id.slice(8), {}, {} as IPage)).rejects.toThrow('Unknown bundled adapter');
       }
       expect(JSON.stringify(all)).toContain('open-library-search');
       expect(JSON.stringify(all)).toContain('steam-reviews');
+      expect(JSON.stringify(all)).toContain('xiaoyuzhou-podcast');
       const midjourney = await query('midjourney');
       expect(midjourney.recipes.find((recipe: { id: string }) => recipe.id === 'opencli:midjourney/download').parameters.kind.choices)
         .toEqual(['auto', 'image', 'video-raw']);

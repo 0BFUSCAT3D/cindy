@@ -626,9 +626,6 @@ import "../clis/osv/query.js";
 import "../clis/osv/vulnerability.js";
 import "../clis/packagist/package.js";
 import "../clis/packagist/search.js";
-import "../clis/paperreview/feedback.js";
-import "../clis/paperreview/review.js";
-import "../clis/paperreview/submit.js";
 import "../clis/pinterest/board-create.js";
 import "../clis/pinterest/board-delete.js";
 import "../clis/pinterest/board-pins.js";
@@ -681,14 +678,6 @@ import "../clis/pubmed/review.js";
 import "../clis/pubmed/search.js";
 import "../clis/pypi/downloads.js";
 import "../clis/pypi/package.js";
-import "../clis/quark/auth.js";
-import "../clis/quark/ls.js";
-import "../clis/quark/mkdir.js";
-import "../clis/quark/mv.js";
-import "../clis/quark/rename.js";
-import "../clis/quark/rm.js";
-import "../clis/quark/save.js";
-import "../clis/quark/share-tree.js";
 import "../clis/qwen/ask.js";
 import "../clis/qwen/auth.js";
 import "../clis/qwen/detail.js";
@@ -964,12 +953,6 @@ import "../clis/xiaohongshu/saved.js";
 import "../clis/xiaohongshu/search.js";
 import "../clis/xiaohongshu/unfollow.js";
 import "../clis/xiaohongshu/user.js";
-import "../clis/xiaoyuzhou/download.js";
-import "../clis/xiaoyuzhou/episode.js";
-import "../clis/xiaoyuzhou/history.js";
-import "../clis/xiaoyuzhou/podcast-episodes.js";
-import "../clis/xiaoyuzhou/podcast.js";
-import "../clis/xiaoyuzhou/transcript.js";
 import "../clis/xueqiu/auth.js";
 import "../clis/xueqiu/comments.js";
 import "../clis/xueqiu/earnings-date.js";
@@ -1677,9 +1660,6 @@ export const modules = {
   "osv/vulnerability.js": true,
   "packagist/package.js": true,
   "packagist/search.js": true,
-  "paperreview/feedback.js": true,
-  "paperreview/review.js": true,
-  "paperreview/submit.js": true,
   "pinterest/board-create.js": true,
   "pinterest/board-delete.js": true,
   "pinterest/board-pins.js": true,
@@ -1732,14 +1712,6 @@ export const modules = {
   "pubmed/search.js": true,
   "pypi/downloads.js": true,
   "pypi/package.js": true,
-  "quark/auth.js": true,
-  "quark/ls.js": true,
-  "quark/mkdir.js": true,
-  "quark/mv.js": true,
-  "quark/rename.js": true,
-  "quark/rm.js": true,
-  "quark/save.js": true,
-  "quark/share-tree.js": true,
   "qwen/ask.js": true,
   "qwen/auth.js": true,
   "qwen/detail.js": true,
@@ -2015,12 +1987,6 @@ export const modules = {
   "xiaohongshu/search.js": true,
   "xiaohongshu/unfollow.js": true,
   "xiaohongshu/user.js": true,
-  "xiaoyuzhou/download.js": true,
-  "xiaoyuzhou/episode.js": true,
-  "xiaoyuzhou/history.js": true,
-  "xiaoyuzhou/podcast-episodes.js": true,
-  "xiaoyuzhou/podcast.js": true,
-  "xiaoyuzhou/transcript.js": true,
   "xueqiu/auth.js": true,
   "xueqiu/comments.js": true,
   "xueqiu/earnings-date.js": true,

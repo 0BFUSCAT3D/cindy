@@ -154,21 +154,15 @@ export function statRecipeFileSync(file: string): ReturnType<typeof fstatSync> {
   finally { closeRecipeFileSync(descriptor); }
 }
 
-/** Legacy OpenCLI files are read only on explicit execution, never on import.
- * Refreshed tokens are written exclusively through the host's encrypted store. */
-export function readSecretJSON(key: string, legacyPath: string): unknown {
+/** Secrets only come from the host encrypted store. The legacy path argument
+ * is accepted for pinned adapter compatibility, but is never read or migrated. */
+export function readSecretJSON(key: string, _legacyPath?: string): unknown {
   const host = context.getStore();
   const secrets = host?.closed ? undefined : host?.secrets;
   if (!secrets)
     throw new Error("This recipe requires the host credential store");
   const stored = secrets.read(key);
-  if (stored !== null) return JSON.parse(stored);
-  try {
-    return JSON.parse(readFileSync(legacyPath, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new Error("Existing recipe credentials could not be read");
-  }
+  return stored === null ? null : JSON.parse(stored);
 }
 
 export function writeSecretJSON(key: string, value: unknown): void {

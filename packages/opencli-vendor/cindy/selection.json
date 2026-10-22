@@ -4,6 +4,9 @@
     "slock": "Deferred: app.slock.ai redirects to app.raft.build; the adapter still assumes the old origin and token storage. Revalidate before inclusion.",
     "claude": "Excluded: Claude subscription login and use belong to the unmodified built-in Claude Code CLI, not a Claude.ai browser adapter (credentials-and-local-storage.md).",
     "spotify": "Deferred: client credentials still depend on a plaintext spotify.env file. Do not bundle until credential configuration uses the host encrypted store.",
-    "ones": "Deferred: the login adapter accepts account passwords as model inputs and prints reusable bearer tokens. Login must use the existing trusted input handoff instead."
+    "ones": "Deferred: the login adapter accepts account passwords as model inputs and prints reusable bearer tokens. Login must use the existing trusted input handoff instead.",
+    "xiaoyuzhou": "Deferred: authenticated adapters require manually configured access/refresh tokens without a host secure configuration entry. Plaintext credential fallback is removed; the independent public Cindy recipe remains available.",
+    "paperreview": "Deferred: submit returns a reusable review capability token and review/feedback accept it as a model input. Keep capability credentials inside the host before inclusion.",
+    "quark": "Deferred: share-tree returns a reusable share capability stoken and save accepts it as a model input. Keep capability credentials inside the host before inclusion."
   }
 }
