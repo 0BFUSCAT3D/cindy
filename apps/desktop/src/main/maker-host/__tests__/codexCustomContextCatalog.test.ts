@@ -80,7 +80,7 @@ describe('Codex custom context model catalog', () => {
     ).resolves.toEqual(catalog);
   });
 
-  it('keeps context_window at 272K and only raises the selected model maximum', async () => {
+  it('sets the selected model budget in its descriptor without changing its sibling', async () => {
     const otherModel = {
       slug: 'gpt-5.4-mini',
       context_window: 128_000,
@@ -112,8 +112,9 @@ describe('Codex custom context model catalog', () => {
 
     expect(written.models[0]).toMatchObject({
       slug: 'gpt-5.6-sol',
-      context_window: 272_000,
+      context_window: 700_000,
       max_context_window: 700_000,
+      auto_compact_token_limit: 630_000,
       base_instructions: 'preserve the full descriptor',
     });
     expect(written.models[1]).toEqual(otherModel);
@@ -159,7 +160,9 @@ describe('Codex custom context model catalog', () => {
     expect(written.models).toContainEqual(smartModel);
     expect(written.models).toContainEqual({
       ...bundledRoot,
+      context_window: 1_050_000,
       max_context_window: 1_050_000,
+      auto_compact_token_limit: 945_000,
     });
   });
 
@@ -185,7 +188,8 @@ describe('Codex custom context model catalog', () => {
     const result = await prepareCodexCustomContextCatalog({ binaryPath, codexHome: root,
       modelId: 'codex/gpt-6-astra', contextWindow: 1_000_000, scanChunkBytes: 64 });
     const catalog = JSON.parse(await fs.readFile(result.catalogPath, 'utf8'));
-    expect(catalog.models).toContainEqual({ ...native, slug: 'codex/gpt-6-astra', max_context_window: 1_000_000 });
+    expect(catalog.models).toContainEqual({ ...native, slug: 'codex/gpt-6-astra', context_window: 1_000_000,
+      max_context_window: 1_000_000, auto_compact_token_limit: 900_000 });
     expect(catalog.models).toContainEqual(native);
   });
 
@@ -196,7 +200,8 @@ describe('Codex custom context model catalog', () => {
     const result = await prepareCodexCustomContextCatalog({ binaryPath, codexHome: root,
       modelId: 'glm-5.3', contextWindow: 500_000, scanChunkBytes: 64 });
     const catalog = JSON.parse(await fs.readFile(result.catalogPath, 'utf8'));
-    expect(catalog.models[1]).toEqual({ ...nativeCodexFallbackModel('glm-5.3', instructions), max_context_window: 500_000 });
+    expect(catalog.models[1]).toEqual({ ...nativeCodexFallbackModel('glm-5.3', instructions),
+      context_window: 500_000, max_context_window: 500_000, auto_compact_token_limit: 450_000 });
   });
 
   it('keeps user-owned catalog instructions untouched', async () => {
@@ -207,7 +212,8 @@ describe('Codex custom context model catalog', () => {
     const result = await prepareCodexCustomContextCatalog({ binaryPath, codexHome: root,
       modelId: 'glm', contextWindow: 500_000, scanChunkBytes: 64 });
     const catalog = JSON.parse(await fs.readFile(result.catalogPath, 'utf8'));
-    expect(catalog.models[0]).toEqual({ ...native, max_context_window: 500_000 });
+    expect(catalog.models[0]).toEqual({ ...native, context_window: 500_000,
+      max_context_window: 500_000, auto_compact_token_limit: 450_000 });
   });
 
   it('keeps wire aliases independent and preserves native instructions and tools', () => {

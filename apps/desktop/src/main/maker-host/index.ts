@@ -2088,6 +2088,12 @@ export function getMaker(): Maker {
               codexHome: effectiveCodexHome,
               modelId,
               contextWindow,
+              resolveContextWindow: (nativeModelId) => {
+                const catalog = getDesktopSelectableCatalog();
+                const source = resolveDesktopModelContextProviderId(catalog, 'codex', ctx.customContextProviderId, nativeModelId);
+                return (source ? readModelContextLimit('codex', source, nativeModelId) : null)
+                  ?? resolveModelDefaultContextWindow(catalog, 'codex', source, nativeModelId);
+              },
               ...(smartSubagentConfig
                 ? { baseCatalog: smartSubagentConfig.modelCatalog }
                 : {}),
