@@ -159,10 +159,15 @@ Claude Code／Pi 的强制换窗线
 `danger`／`overflow` 的本机会话先走同一套 `context_rebuild` bounded handoff，再落目标
 route，不能 resume 旧原生窗口。
 Codex 同引擎切模（包括自动任务、Orca、设备互联与 SSH）保留原生历史，由 Codex 自己判断并执行
-压缩；本地冷恢复时可先用旧的大窗口模型压缩，再执行目标模型。不得仅因目标窗口较小、占用到
+压缩；本地同供应商冷恢复时可先用旧的大窗口模型压缩，再执行目标模型。跨供应商不假定目标凭证
+能调用旧模型；旧模型预算不可用时，原生仍按目标预算在采样前压缩。SSH 的逐 thread 预算也保留
+这条目标模型原生压缩路径，不能因无法使用旧模型而提前拒绝切模。不得仅因目标窗口较小、占用到
 90%／100% 或伙伴账本新鲜而抢先生成 Cindy 交接。窗口预算与用户 override 保持不变；重载模型
 目录或凭证执行句柄不等于重建历史。Cindy 只在明确的上下文超限、原生压缩失败或历史字节超限后
 沿用既有兜底及副作用保护。跨引擎交接、显式重启和伙伴空闲间隔刷新仍按各自生命周期规则处理。
+真实 CLI 的同供应商、跨供应商与逐 thread 预算回归见
+`apps/desktop/src/main/maker-host/__tests__/codexContextSwitch.native.test.ts`；逐 thread 回归在本机
+模拟服务运行，不代表完成了真实 SSH 端到端验收。
 Codex 跨凭证优先保留同一个原生线程；仅当目标需要另一个 host、旧 host 仍持有原生 writer
 时，关闭该任务的业务 handle 后使用不剥离历史的原生 fork，并等待一次性 fork host 退出，
 再以任务 owner 与旧 SDK／路由版本为条件原子保存新 SDK thread 和目标路由。任务 ID 与
