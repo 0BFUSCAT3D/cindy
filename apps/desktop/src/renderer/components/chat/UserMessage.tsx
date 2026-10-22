@@ -1091,13 +1091,13 @@ export function UserMessage({
   const botQuote = useBotChatQuote(simplifiedBotConversation ? sessionId : undefined);
   const handleAddToChat = useCallback(() => {
     if (botQuote && messageClientId) {
-      const quote = botReplyQuoteFor({ clientId: messageClientId, role: 'user', content, images, files });
+      const quote = botReplyQuoteFor({ clientId: messageClientId, role: 'user', content, images, files, automationOrigin, hookSource });
       if (quote) botQuote.quote(quote);
       return;
     }
     if (!sessionId || !messageDeepLink) return;
     insertSessionLinkIntoComposer({ targetSessionId: sessionId, href: messageDeepLink });
-  }, [botQuote, content, files, images, messageClientId, messageDeepLink, sessionId]);
+  }, [botQuote, content, files, images, automationOrigin, hookSource, messageClientId, messageDeepLink, sessionId]);
 
   // 分享为图片:进入选择模式并预选本条(入口那条天然该已勾选,省一次点击)。
   const handleShareAsImage = useMemo(

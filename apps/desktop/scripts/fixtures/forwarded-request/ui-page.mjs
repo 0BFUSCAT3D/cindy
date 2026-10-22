@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 export default {
   name: 'forwarded-request', entry: './forwarded-request-fixture.tsx', viewport: { width: 760, height: 860 },
-  real: 'BotDirectMessageView, BotDirectMessageCard, UserMessage and production forwarded-request formatter/display projection',
+  real: 'BotDirectMessageView/Card, UserMessage, BotChatQuote previews, SearchResultsBody and production display/search projections',
   notCovered: 'IPC transport, persistence, history reload and native mobile; historical API bodies are supplied by the fixture',
   stubs: {
     'src/renderer/lib/makerChatStore': { partial: "import { makerChatStore as real } from './src/renderer/lib/makerChatStore'; export const makerChatStore = { ...real, reloadMessages: () => {} };" },
@@ -14,10 +14,19 @@ export default {
     task: { about: 'Attributed task input uses the same readable projection' },
     fork: { about: 'Fork restores the original forwarded envelope in the new draft' },
     rewind: { about: 'Rewind restores the original forwarded envelope in the current draft' },
+    quote: { about: 'Reply snapshots and live quote previews use readable text' },
+    search: { about: 'Real search results render projected previews and hit snippets' },
     card: { about: 'Expand a historical private-thread card' },
   },
   async check(page, ui) {
-    if (['task', 'fork', 'rewind'].includes(ui.case)) {
+    if (ui.case === 'search') {
+      await page.getByText('最后一段', { exact: true }).first().waitFor();
+      const text = await page.locator('body').innerText();
+      assert.ok(text.includes('只检查，不发布。'));
+      assert.ok(!text.includes('\\n\\n'));
+      return;
+    }
+    if (['task', 'fork', 'rewind', 'quote'].includes(ui.case)) {
       const expand = page.getByRole('button', { name: await ui.t('chat.userMessage.expandLongMessage'), exact: true });
       if (await expand.count()) await expand.click();
     }
@@ -27,6 +36,16 @@ export default {
     assert.ok(text.includes('第一段：消息现在正常换行。'));
     assert.ok(text.includes('const newline = "\\n";'));
     assert.ok(!text.includes('第一段：消息现在正常换行。\\n\\n'));
+    if (ui.case === 'quote') {
+      await page.getByRole('button', { name: await ui.t('chat.messageActionBar.reply'), exact: true }).click();
+      const snapshot = await page.locator('[data-ui-quote-snapshot]').textContent();
+      assert.ok(snapshot.includes('第一段：消息现在正常换行。'));
+      assert.ok(!snapshot.includes('\\n\\n'));
+      const preview = await page.locator('[data-ui-quote-preview]').innerText();
+      assert.ok(preview.includes(snapshot));
+      await page.locator('[data-ui-unload]').click();
+      assert.equal(await page.locator('[data-ui-quote-preview]').innerText(), preview);
+    }
     if (ui.case === 'fork' || ui.case === 'rewind') {
       const original = await page.locator('[data-ui-original]').textContent();
       const actionKey = ui.case === 'fork' ? 'chat.messageActionBar.fork' : 'chat.messageActionBar.rewind';

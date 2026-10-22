@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { getDraft, subscribeDraft } from '../../../src/renderer/lib/composerDraftStore';
 import { Route, Routes } from 'react-router-dom';
 import { AppFrame, mountPage, subscription } from '../../ui-page/harness';
@@ -6,6 +6,12 @@ import { BotDirectMessageView } from '../../../src/renderer/features/bots/BotDir
 import { BotDirectMessageCard } from '../../../src/renderer/features/bots/BotDirectMessageCard';
 import { UserMessage } from '../../../src/renderer/components/chat/UserMessage';
 import { formatForwardedRequest } from '../../../src/shared/forwardedRequest';
+import { BotChatQuoteProvider } from '../../../src/renderer/features/bots/botChatQuoteContext';
+import { BotChatQuoteComposerPreview, BotChatQuoteInBubble } from '../../../src/renderer/features/bots/BotChatQuoteViews';
+import { SearchResultsBody } from '../../../src/renderer/features/cc-agent/sidebar/ConversationSearchBox';
+import { mergeConversationSearchResults, normalizeConversationContentPreview } from '../../../src/main/localDb/conversationSearch.pure';
+import type { ChatMessage } from '../../../src/renderer/lib/makerChatStore';
+import type { ChatReplyQuote } from '../../../src/shared/chatReplyQuote';
 import type { SupportedLocale } from '../../../src/shared/locale';
 
 const original = '请检查消息中的换行，保留代码和路径。';
@@ -14,6 +20,39 @@ const supplement = '第一段：消息现在正常换行。\n\n1. 保留段落�
 function DraftProbe({ sessionId, content }: { sessionId: string; content: string }) {
   const draft = useSyncExternalStore(callback => subscribeDraft(sessionId, callback), () => getDraft(sessionId));
   return <><pre hidden data-ui-draft>{JSON.stringify(draft?.text)}</pre><pre hidden data-ui-original>{content}</pre></>;
+}
+
+function QuoteScenario({ content }: { content: string }) {
+  const [quote, setQuote] = useState<ChatReplyQuote | null>(null);
+  const [loaded, setLoaded] = useState(true);
+  const message = { clientId: 'quoted-user', role: 'user', content,
+    automationOrigin: { kind: 'session', senderSessionId: 'sender' } } as ChatMessage;
+  const context = { sessionId: 'quote-task', names: { owner: 'Chris', companion: 'Cindy' },
+    getMessage: () => loaded ? message : undefined, isFirstReplyFor: () => false,
+    showReplyTargets: false, quote: setQuote, locate: () => {} };
+  return <div className="p-4 space-y-4" data-ui-page-subject><BotChatQuoteProvider value={context}>
+    <UserMessage workingDir="" sessionId="quote-task" messageClientId={message.clientId}
+      content={content} automationOrigin={message.automationOrigin} simplifiedBotConversation />
+    {quote && <div data-ui-quote-preview>
+      <BotChatQuoteComposerPreview sessionId="quote-task" quote={quote} getMessage={context.getMessage} names={context.names} />
+      <BotChatQuoteInBubble quote={quote} context={context} />
+      <pre hidden data-ui-quote-snapshot>{quote.excerpt}</pre>
+    </div>}
+    <button data-ui-unload onClick={() => setLoaded(false)}>Unload original (fixture)</button>
+  </BotChatQuoteProvider></div>;
+}
+
+function SearchScenario({ content }: { content: string }) {
+  const query = '最后一段';
+  const preview = normalizeConversationContentPreview('user', content, query, 180, JSON.stringify({ origin: { kind: 'session' } }));
+  const date = new Date(1792629000000).toISOString();
+  const results = mergeConversationSearchResults({ titleMatches: [], limit: 10, contentHits: [{
+    session: { id: 'search-task', title: '消息格式检查', workingDir: null, workspaceKind: 'dialogue',
+      agentKind: 'cc', status: 'active', createdAt: date, updatedAt: date, userSendAt: date, _count: { messages: 3 } },
+    hit: { messageId: 'search-message', messageClientId: 'search-user', role: 'user', createdAt: date,
+      preview: preview.preview, snippet: preview.snippet, score: 1, ftsRank: 1, vectorRank: null },
+  }] });
+  return <div className="p-4" data-ui-page-subject><SearchResultsBody trimmed={query} status="done" results={results} onSelect={() => {}} /></div>;
 }
 
 void mountPage({
@@ -36,6 +75,8 @@ void mountPage({
   },
   render: (ctx) => {
     const content = formatForwardedRequest({ userText: original }, supplement, ctx.locale as SupportedLocale);
+    if (ctx.case === 'quote') return <QuoteScenario content={content} />;
+    if (ctx.case === 'search') return <SearchScenario content={content} />;
     if (['task', 'fork', 'rewind'].includes(ctx.case)) return <div className="p-4" data-ui-page-subject>
       <DraftProbe sessionId={ctx.case === 'fork' ? 'forwarded-fork' : 'forwarded-task'} content={content} />
       <UserMessage workingDir="" sessionId="forwarded-task" messageClientId="forwarded-user-2" agentKind="cc" content={content} automationOrigin={{ kind: 'session', senderSessionId: 'sender', senderBotName: 'Cindy', senderBotId: 'bot-a' }} />
