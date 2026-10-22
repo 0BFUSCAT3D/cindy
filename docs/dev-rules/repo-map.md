@@ -62,7 +62,7 @@
 
 ## 本机应用 Agent 接入
 
-Desktop 的 `main/local-agent/` 提供经原生授权的通用本机 Agent API，复用 maker-core 的引擎与内存 Session；应用自己的界面、记录、上下文和业务工具留在调用方。协议、存储和兼容边界见 [本机应用接入](../local-agent-api.md)，独立客户端示例在 `scripts/examples/`。
+Desktop 的 `main/local-agent/` 提供经 Cindy 主题确认授权的通用本机 Agent API，复用 maker-core 的引擎与内存 Session；应用自己的界面、记录、上下文和业务工具留在调用方。协议、存储和兼容边界见 [本机应用接入](../local-agent-api.md)，独立客户端示例在 `scripts/examples/`。
 
 ## 校验下载与工具安装
 

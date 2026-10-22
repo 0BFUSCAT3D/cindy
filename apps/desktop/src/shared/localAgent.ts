@@ -10,6 +10,19 @@ export interface LocalAgentSettingsApi {
   connections(): Promise<LocalAgentConnection[]>;
   revoke(connectionId?: string): Promise<boolean>;
   onConnectionsChanged(listener: () => void): () => void;
+  onConfirmation(listener: (request: LocalAgentConfirmation) => void): () => void;
+  onConfirmationDismissed(listener: (requestId: string) => void): () => void;
+  answerConfirmation(requestId: string, confirmed: boolean): Promise<boolean>;
+}
+
+/** Main-owned display copy. No grant, token or permission decision is sent here. */
+export interface LocalAgentConfirmation {
+  requestId: string;
+  title: string;
+  message: string;
+  detail: string;
+  confirmText: string;
+  cancelText: string;
 }
 
 /** Unauthenticated build self-description; never proof of a publisher or an app grant. */

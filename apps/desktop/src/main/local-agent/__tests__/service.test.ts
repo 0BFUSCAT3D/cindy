@@ -1,9 +1,10 @@
 /**
- * 测试价值：Main 原生授权和撤销必须显示申请方、只作用于选中的服务端授权。
+ * 测试价值：Main 主进程授权和撤销必须显示申请方、只作用于选中的服务端授权。
  * 依据：通用应用授权边界；socket 测试不经过 Electron 弹窗或设置 adapter。
  * 最小失败输入：名称含替换元字符、两个授权只撤销其一、取消、非法或过期编号。
  * tier: unit（注入 Electron 与服务，不读取 profile、不使用模型或网络）。
  */
+import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mock = vi.hoisted(() => ({
@@ -11,7 +12,9 @@ const mock = vi.hoisted(() => ({
   owner: 'owner-a',
   generation: 1,
   startupError: undefined as Error | undefined,
-  dialog: vi.fn(async (..._args: any[]) => ({ response: 1 })),
+  confirm: vi.fn(async (..._args: any[]) => true),
+  window: undefined as any,
+  handlers: new Map<string, (...args: any[]) => any>(),
   revoke: vi.fn(async (_id: string) => true),
   revokeAll: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
@@ -34,11 +37,10 @@ vi.mock('electron', () => ({
     getPreferredSystemLanguages: () => ['zh-CN'],
   },
   BrowserWindow: {
-    getAllWindows: () => [
-      { isDestroyed: () => false, isVisible: () => true, webContents: { send: mock.send } },
-    ],
+    getAllWindows: () => [mock.window],
+    fromWebContents: (contents: any) => contents === mock.window.webContents ? mock.window : null,
   },
-  dialog: { showMessageBox: mock.dialog },
+  ipcMain: { handle: (channel: string, handler: (...args: any[]) => any) => mock.handlers.set(channel, handler) },
 }));
 vi.mock('../../../shared/brandRegion.js', () => ({
   get CURRENT_CINDY_REGION() {
@@ -62,8 +64,8 @@ vi.mock('../../appSessionState.js', () => ({
   isAppSessionBoundaryPending: () => false,
   ownerScopedUserDataPath: () => 'unused',
 }));
-vi.mock('../../security/trustedAppRenderer.js', () => ({
-  isTrustedAppRendererWindow: () => mock.trusted,
+vi.mock('../../windowFocusClassifier.js', () => ({
+  isAppContentWindow: (window: any) => window === mock.window && mock.trusted,
 }));
 vi.mock('../../maker-host/createDesktopProviderService.js', () => ({
   getDesktopProviderService: vi.fn(),
@@ -95,6 +97,13 @@ vi.mock('../server.js', () => ({
     };
   },
 }));
+import { registerLocalAgentConfirmationIpc, cancelLocalAgentConfirmations } from '../confirmation.js';
+
+function answer(requestId: string, value: unknown, event?: any) {
+  const contents = mock.window.webContents;
+  return mock.handlers.get('local-agent:confirmation:answer')!(event ?? { sender: contents, senderFrame: contents.mainFrame }, requestId, value);
+}
+
 import {
   disposeLocalAgentHost,
   installLocalAgentHost,
@@ -105,6 +114,15 @@ import {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  vi.stubGlobal('MAIN_WINDOW_VITE_DEV_SERVER_URL', 'http://localhost:5173');
+  vi.stubGlobal('MAIN_WINDOW_VITE_NAME', 'main_window');
+  const contents = Object.assign(new EventEmitter(), { id: 1, send: mock.send, isDestroyed: () => false,
+    mainFrame: { url: 'http://localhost:5173', parent: null } });
+  mock.window = Object.assign(new EventEmitter(), { webContents: contents, isVisible: () => true, isDestroyed: () => false });
+  registerLocalAgentConfirmationIpc(() => mock.window);
+  mock.send.mockImplementation((channel: string, payload: any) => {
+    if (channel === 'local-agent:confirmation') void mock.confirm(payload).then(value => answer(payload.requestId, value));
+  });
   mock.owner = 'owner-a';
   mock.generation = 1;
   mock.trusted = true;
@@ -115,16 +133,70 @@ beforeEach(async () => {
   mock.nonce = 0;
   mock.startupGate = undefined;
   mock.startupError = undefined;
-  mock.dialog.mockResolvedValue({ response: 1 });
+  mock.confirm.mockResolvedValue(true);
   installLocalAgentHost({} as any);
   await localAgentConnections();
   mock.send.mockClear();
 });
 afterEach(async () => {
   await disposeLocalAgentHost();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
-describe('generic local app native authorization', () => {
+describe('generic local app Cindy authorization', () => {
+  // Regression: the old OS dialog owned cancellation. The shared Renderer round trip
+  // must now retire the exact request, including queued prompts and late replies.
+  it.each(['abort', 'close', 'destroyed', 'render-process-gone', 'navigation', 'in-page', 'timeout', 'owner'] as const)(
+    'retires a pending confirmation on %s and rejects its late approval', async reason => {
+      vi.useFakeTimers();
+      mock.confirm.mockImplementationOnce(() => new Promise<boolean>(() => {}));
+      const controller = new AbortController();
+      const pending = mock.deps.approve(controller.signal, { id: 'notes', name: 'Notes' });
+      const id = mock.confirm.mock.calls[0][0].requestId;
+      const contents = mock.window.webContents;
+      if (reason === 'abort') controller.abort();
+      else if (reason === 'close') mock.window.emit('close');
+      else if (reason === 'navigation' || reason === 'in-page')
+        contents.emit('did-start-navigation', {}, 'http://localhost:5173/#/elsewhere', reason === 'in-page', true);
+      else if (reason === 'timeout') await vi.runOnlyPendingTimersAsync();
+      else if (reason === 'owner') { mock.generation++; cancelLocalAgentConfirmations(); }
+      else contents.emit(reason);
+      expect(await pending).toBe(false);
+      expect(answer(id, true)).toBe(false);
+      expect(mock.send).toHaveBeenCalledWith('local-agent:confirmation:dismissed', id);
+    },
+  );
+
+  it('rejects subframe, foreign window and malformed replies without approving the pending request', async () => {
+    mock.confirm.mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    const pending = mock.deps.approve(new AbortController().signal, { id: 'notes', name: 'Notes' });
+    const id = mock.confirm.mock.calls[0][0].requestId;
+    const contents = mock.window.webContents;
+    expect(() => answer(id, true, { sender: contents, senderFrame: { ...contents.mainFrame, parent: contents.mainFrame } })).toThrow('PERMISSION_DENIED');
+    const foreign = { ...contents, id: 999, mainFrame: contents.mainFrame };
+    expect(() => answer(id, true, { sender: foreign, senderFrame: foreign.mainFrame })).toThrow('PERMISSION_DENIED');
+    expect(answer(id, 'true')).toBe(false);
+    expect(answer('unknown-request', true)).toBe(false);
+    expect(answer(id, false)).toBe(true);
+    expect(await pending).toBe(false);
+  });
+
+  it('keeps concurrent allow and revoke decisions separate and cancels all on host disposal', async () => {
+    mock.confirm.mockImplementation(() => new Promise<boolean>(() => {}));
+    const allow = mock.deps.approve(new AbortController().signal, { id: 'notes', name: 'Notes' });
+    const revoke = revokeLocalAgentConnections('grant-b');
+    await Promise.resolve();
+    const [a, b] = mock.confirm.mock.calls.map(call => call[0].requestId);
+    expect(a).not.toBe(b);
+    expect(answer(b, true)).toBe(true);
+    expect(await revoke).toBe(true);
+    expect(mock.revoke).toHaveBeenCalledExactlyOnceWith('grant-b');
+    await disposeLocalAgentHost();
+    expect(await allow).toBe(false);
+    expect(answer(a, true)).toBe(false);
+  });
+
   it('shows the unverified client identity literally without expanding replacement metacharacters', async () => {
     expect(
       await mock.deps.approve(new AbortController().signal, {
@@ -133,7 +205,7 @@ describe('generic local app native authorization', () => {
         version: '1.2',
       }),
     ).toBe(true);
-    const options = mock.dialog.mock.calls[0][1];
+    const options = mock.confirm.mock.calls[0][0];
     expect(options.message).toContain('Notes $&');
     expect(options.message).not.toContain('{{app}}');
     expect(options.detail).toContain('org.example.notes');
@@ -141,24 +213,24 @@ describe('generic local app native authorization', () => {
     expect(options.detail).toContain('1.2');
     expect(options.detail).not.toMatch(/\{\{(?:id|version)\}\}/);
   });
-  it('revokes only the selected connection through the native confirmation', async () => {
+  it('revokes only the selected connection through the Cindy confirmation', async () => {
     expect(await revokeLocalAgentConnections('grant-b')).toBe(true);
     expect(mock.revoke).toHaveBeenCalledWith('grant-b');
     expect(mock.revokeAll).not.toHaveBeenCalled();
-    expect(mock.dialog.mock.calls[0][0].message).toContain('Board');
+    expect(mock.confirm.mock.calls[0][0].message).toContain('Board');
   });
   it('keeps connections on cancellation and does not turn invalid IDs into revoke-all', async () => {
-    mock.dialog.mockResolvedValue({ response: 0 });
+    mock.confirm.mockResolvedValue(false);
     expect(await revokeLocalAgentConnections('grant-a')).toBe(false);
     expect(await revokeLocalAgentConnections('gone')).toBe(false);
     await expect(revokeLocalAgentConnections({})).rejects.toThrow('INVALID_PARAMS');
     expect(mock.revoke).not.toHaveBeenCalled();
     expect(mock.revokeAll).not.toHaveBeenCalled();
   });
-  it('rejects native consent if the account changed while the prompt was open', async () => {
-    mock.dialog.mockImplementationOnce(async () => {
+  it('rejects Cindy consent if the account changed while the prompt was open', async () => {
+    mock.confirm.mockImplementationOnce(async () => {
       mock.owner = 'owner-b';
-      return { response: 1 };
+      return true;
     });
     expect(
       await mock.deps.approve(new AbortController().signal, { id: 'notes', name: 'Notes' }),
@@ -173,21 +245,21 @@ describe('generic local app native authorization', () => {
   });
   // appSessionState.activeOwnerScopeKey includes generation: A→B→A cannot revive an old approval.
   it('rejects stale consent after the same owner is recommitted', async () => {
-    mock.dialog.mockImplementationOnce(async () => {
+    mock.confirm.mockImplementationOnce(async () => {
       mock.generation++;
-      return { response: 1 };
+      return true;
     });
     expect(
       await mock.deps.approve(new AbortController().signal, { id: 'notes', name: 'Notes' }),
     ).toBe(false);
   });
-  it('rechecks the IPC caller after native confirmation and keeps raw storage errors out of IPC', async () => {
+  it('rechecks the IPC caller after Cindy confirmation and keeps raw storage errors out of IPC', async () => {
     const assertCaller = vi.fn();
-    mock.dialog.mockImplementationOnce(async () => {
+    mock.confirm.mockImplementationOnce(async () => {
       assertCaller.mockImplementation(() => {
         throw new Error('caller navigated');
       });
-      return { response: 1 };
+      return true;
     });
     await expect(revokeLocalAgentConnections('grant-a', assertCaller)).rejects.toThrow(
       '[INTERNAL]',
@@ -196,13 +268,13 @@ describe('generic local app native authorization', () => {
     mock.revoke.mockRejectedValueOnce(new Error('PRIVATE storage path or credential'));
     await expect(revokeLocalAgentConnections('grant-a')).rejects.toThrow('[INTERNAL]');
   });
-  it('uses trusted app windows for native consent and local notifications', async () => {
+  it('uses trusted app windows for Cindy consent and local notifications', async () => {
     mock.trusted = false;
     expect(
       await mock.deps.approve(new AbortController().signal, { id: 'notes', name: 'Notes' }),
     ).toBe(false);
     mock.deps.changed();
-    expect(mock.dialog).not.toHaveBeenCalled();
+    expect(mock.confirm).not.toHaveBeenCalled();
     expect(mock.send).not.toHaveBeenCalled();
   });
   it('does not load another grant snapshot when a shared-profile instance already owns discovery', async () => {

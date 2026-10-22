@@ -15,7 +15,7 @@ node scripts/examples/local-agent-client.mjs --discovery "<profile>/local-agent/
 node scripts/examples/local-agent-client.mjs --discovery "<profile>/local-agent/discovery.json" --provider "<provider-id>" --engine pi --model "<opaque-model-id>" --cwd "<absolute-folder>"
 ```
 
-每次在 Cindy 的原生弹窗允许该应用。第二条命令运行一个只做文本回显的 `client_echo` 工具，再接收模型回答。可用 `--client-id org.example.notes --client-name Notes` 和另一组身份同时启动两份示例；两者可使用相同会话编号。`--prompt` 自定输入，`--native-tools` 显式启用原生执行。模型调用会消费所选供应商额度。
+每次在 Cindy 的主题确认弹窗允许该应用。第二条命令运行一个只做文本回显的 `client_echo` 工具，再接收模型回答。可用 `--client-id org.example.notes --client-name Notes` 和另一组身份同时启动两份示例；两者可使用相同会话编号。`--prompt` 自定输入，`--native-tools` 显式启用原生执行。模型调用会消费所选供应商额度。
 
 示例令牌只在进程内存中，退出时关闭自己的会话并撤销自己的授权，不打印、保存或复用令牌。需要长期连接的产品自行通过 OS 凭据库保存此应用令牌；不得复制供应商登录。命令行参数不接收秘密。`--list-models` 不调用模型生成。
 
@@ -31,7 +31,7 @@ node scripts/examples/local-agent-client.mjs --discovery "<profile>/local-agent/
 node scripts/examples/local-agent-client.mjs --connection-code "cindy-local:v1:<port>:<instance>" --list-models
 ```
 
-独立Node示例保留 `--discovery` 旧入口，两个入口必须二选一。接码后只向 `http://127.0.0.1:<port>/rpc` 发无Bearer的 `capabilities`，携带码中nonce，拒绝重定向；握手超时750ms、响应上限32KiB。先核对protocol和instance，再核对 `features.instanceMetadata:true` 和 `instanceInfo:{kind,region}`；开发入口必须为 `kind:"development"`，region只能是global/cn/dev。缺元数据报 `INSTANCE_METADATA_UNSUPPORTED`，类型不符报 `INSTANCE_METADATA_MISMATCH`，端点代次不符报 `INSTANCE_CHANGED`，网络/超时/非法JSON不能验证时为 `CONNECTION_UNAVAILABLE`。只有握手通过后才按原 `connect/start` / 原生确认 / `connect/poll` 申请授权；拒绝、取消和超时保持原协议，不自动批准。
+独立Node示例保留 `--discovery` 旧入口，两个入口必须二选一。接码后只向 `http://127.0.0.1:<port>/rpc` 发无Bearer的 `capabilities`，携带码中nonce，拒绝重定向；握手超时750ms、响应上限32KiB。先核对protocol和instance，再核对 `features.instanceMetadata:true` 和 `instanceInfo:{kind,region}`；开发入口必须为 `kind:"development"`，region只能是global/cn/dev。缺元数据报 `INSTANCE_METADATA_UNSUPPORTED`，类型不符报 `INSTANCE_METADATA_MISMATCH`，端点代次不符报 `INSTANCE_CHANGED`，网络/超时/非法JSON不能验证时为 `CONNECTION_UNAVAILABLE`。只有握手通过后才按原 `connect/start` / Cindy 确认 / `connect/poll` 申请授权；拒绝、取消和超时保持原协议，不自动批准。
 
 `instanceInfo` 是可选的两字段构建自述，版本继续使用capabilities顶层 `version`。只有实际packaged、非已验证个人构建且region非dev才是installed；unpackaged、CindyDev或个人构建均为development，不能按版本号或profile路径猜。region来自既有构建区域，默认global规则不变。元数据用于避免错连，不是对同OS用户恶意程序的发行认证。
 
@@ -66,8 +66,10 @@ node scripts/examples/local-agent-client.mjs --connection-code "cindy-local:v1:<
 ## 应用授权
 
 1. `connect/start`：`{"client":{"id":"org.example.notes","name":"Notes","version":"1.0"}}`，返回 `{id,claim,url}`。id 最多 128 字符，只含字母、数字、点、下划线、连字符且以字母或数字开头；名称最多 80 字符，version 可省略、最多 64 字符。名称/版本不接受控制或双向覆盖字符。
-2. Cindy 在**本机**显示应用自报名称、编号及能力说明，由用户允许或取消。客户端无需打开返回的兼容网页才能触发弹窗。
+2. Cindy 在**本机**显示应用自报名称、编号及能力说明，由用户允许或取消。客户端无需打开返回的兼容网页才能触发弹窗。允许连接和撤销连接复用 Cindy 的主题确认组件及确认队列，默认焦点在取消，支持 Esc、Tab 焦点约束；不会弹出操作系统消息框。
 3. `connect/poll`：`{id,claim}`，返回 `{state:"waiting"|"denied"|"approved",token?}`；通过后才有 token。申请两分钟过期。`connect/cancel` 用同一组 id/claim 取消并撤销该申请已经签发的授权。
+确认请求由 Main 生成不可复用的编号，只投递到当前可信主窗口；回包必须来自同一窗口的顶层 Cindy 页面。窗口关闭、崩溃、导航（含页内导航）、账号换代、宿主关闭、请求取消或超时都会取消待确认项，迟到回包不能批准。Renderer 只提供用户选择，Main 在执行前再次核对 owner generation 与请求归属；HTTP 客户端不能提交确认回包。并发请求沿用 Cindy 的确认队列，各自独立结算。
+
 4. 后续请求带 `Authorization: Bearer <token>`。`connect/revoke` 无参数，只撤销**当前令牌自己的授权**。
 
 应用名称、id、version 都是申请方自报的展示资料，不能证明安装包或发布者身份。相同 app id / 名称不会得到已有授权或会话；每次经用户允许产生独立、不可猜测的 bearer 凭据。名字不是认证依据，不按品牌自动批准。
@@ -136,13 +138,16 @@ Claude client-only 关闭原生 tools/settings/skills；Pi 仅开启客户端网
 
 常见可判断错误：`UNAUTHORIZED`（重新授权）、`INSTANCE_CHANGED`（重新发现）、`MODEL_UNAVAILABLE`（重新选择有效来源）、`RESUME_UNAVAILABLE`（新会话并交接上下文）、`SESSION_UNAVAILABLE`（原会话已关闭或不属于此授权）、`UNSUPPORTED_ACCESS`（策略不支持/矛盾）、`ID_REUSED` / `REQUEST_EXPIRED`（未重复执行）、`GRANT_STORE_INVALID`（保留原文件并检查版本/存储）。
 
-错误 code 保持稳定，展示文案、原生确认及兼容结果页通过 Cindy 当前语言的五语资源提供。设置 IPC 复用受信顶层窗口校验与统一 IPC 错误协议；等待原生确认后再次校验发起窗口及 owner generation，不向 Renderer 返回原始存储异常。
+错误 code 保持稳定，展示文案、Cindy 确认及兼容结果页通过 Cindy 当前语言的五语资源提供。设置 IPC 复用受信顶层窗口校验与统一 IPC 错误协议；等待 Cindy 确认后再次校验发起窗口及 owner generation，不向 Renderer 返回原始存储异常。
 
-此入口只管理当前电脑的本机应用，不执行 SSH 工作区任务，不加入 device-link 的通用 invoke/push 白名单，也未新增 Mobile 入口。远程管理此类授权需要另行定义目标电脑的原生确认和授权范围，不能把本机 handler 隐式开放给远端。
+此入口只管理当前电脑的本机应用，不执行 SSH 工作区任务，不加入 device-link 的通用 invoke/push 白名单，也未新增 Mobile 入口。远程管理此类授权需要另行定义目标电脑的 Cindy 确认和授权范围，不能把本机 handler 隐式开放给远端。
 
 ## 验证入口
 
 - `apps/desktop/src/main/local-agent/__tests__/server.integration.test.ts`：真实 loopback、独立示例进程、同编号并行、越权拒绝、单项撤销、重启恢复及旧存储迁移；模型执行可注入，不能把它说成真实供应商验收。
 - `runtime.test.ts`：目录和事件不重复投影，通用及历史 namespace。
 - `maker-core` 对应适配器：Claude SDK 隔离选项；Pi 真二进制 + 本机模型响应夹具；Codex 真 app-server（需 `CINDY_CODEX_TEST_BINARY`）。
-- `apps/desktop/scripts/fixtures/local-agent/`：真实设置组件，多应用单项撤销、取消、失败、手机宽度、五种语言与深浅主题；宿主接口由场景提供，不替代原生授权与真实 IPC 验收。
+- `apps/desktop/scripts/fixtures/local-agent/`：真实设置组件，多应用单项撤销、取消、失败、手机宽度、五种语言与深浅主题；宿主接口由场景提供，不替代真实授权与 IPC 验收。
+
+- `service.test.ts`：真实 service/确认桥接/可信 IPC handler 联动，批准、取消、abort、超时、导航/关闭、账号换代、伪造回包和并发撤销隔离。
+- `apps/desktop/scripts/fixtures/local-agent-confirmation/`：生产确认 Host 与共用 ConfirmDialog，五语言、双主题、320px、默认取消焦点、Tab/Esc、队列取消；主进程与实际授权另由隔离 Desktop 验证。

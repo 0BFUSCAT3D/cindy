@@ -417,6 +417,7 @@ import {
   isCindyPersonalRuntime,
 } from './cindy-make/versionRuntimeIdentity.js';
 import { createStorageIpcHandlers } from './cindy-media/storageIpc';
+import { registerLocalAgentConfirmationIpc, cancelLocalAgentConfirmations } from './local-agent/confirmation.js';
 import { disposeLocalAgentHost, localAgentConnections, localAgentDeveloperConnection, revokeLocalAgentConnections } from './local-agent/service.js';
 import { clearLocalEntries } from './device-link/remoteMediaCacheStore';
 import {
@@ -2536,6 +2537,7 @@ registerGhostIpc();
 registerPluginMarketIpc();
 registerPluginPublisherIpc();
 setAppSessionCommitBoundaryHook(() => {
+  cancelLocalAgentConfirmations();
   // 进行中的 Claude Code 登录属于旧 owner:结束 CLI 子进程,不让它在新 owner 下完成。
   cancelClaudeCliLogin();
   clearAllSessionAttention();
@@ -8554,6 +8556,7 @@ const registerIpcHandlers = () => {
           ? Promise.resolve({ bytes: 0, fileCount: 0 })
           : withActiveChatAttachmentRoot((rootDir) => getFixedDirectoryStats(rootDir)),
     });
+    registerLocalAgentConfirmationIpc(() => mainWindowRef);
     ipcMain.handle('local-agent:connections', (event) => {
       assertTrustedAppRendererEvent(event);
       return localAgentConnections(() => assertTrustedAppRendererEvent(event));

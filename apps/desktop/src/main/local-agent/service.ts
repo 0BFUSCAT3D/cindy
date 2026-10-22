@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -28,6 +28,8 @@ import { createLocalAgentServer, LocalAgentError, type LocalAgentServerDeps } fr
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import { openLocalAgentRuntime } from './runtime.js';
 import { localAgentMessage } from './messages.js';
+
+import { confirmLocalAgent, cancelLocalAgentConfirmations } from './confirmation.js';
 
 const log = createLogger('local-agent');
 let current: Promise<Awaited<ReturnType<typeof createLocalAgentServer>>> | undefined;
@@ -135,29 +137,16 @@ export function installLocalAgentHost(maker: Maker): void {
         return localAgentModels(providers, maker.listAvailableAgents());
       },
       async approve(signal, client) {
-        const parent = BrowserWindow.getAllWindows().find(
-          (window) => isTrustedAppRendererWindow(window) && window.isVisible(),
-        );
-        if (!parent || signal.aborted) return false;
-        const result = await dialog.showMessageBox(parent, {
-          signal,
-          type: 'question',
+        const approved = await confirmLocalAgent({
           title: t('localAgent.connectTitle'),
           message: t('localAgent.connectMessage').replaceAll('{{app}}', () => client.name),
           detail: `${t('localAgent.connectDetail')}\n\n${t('localAgent.clientIdentity')
             .replaceAll('{{id}}', () => client.id)
             .replaceAll('{{version}}', () => client.version ?? '—')}`,
-          buttons: [t('localAgent.cancel'), t('localAgent.allow')],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-        });
-        return (
-          result.response === 1 &&
-          !signal.aborted &&
-          scopeNow() === scope &&
-          isTrustedAppRendererWindow(parent)
-        );
+          confirmText: t('localAgent.allow'),
+          cancelText: t('localAgent.cancel'),
+        }, signal);
+        return approved && !signal.aborted && scopeNow() === scope;
       },
       open: (input, bridge) =>
         openLocalAgentRuntime(maker, directory, input, bridge, localAgentMessage),
@@ -266,21 +255,18 @@ export async function revokeLocalAgentConnections(
         ? undefined
         : server.connections().find((connection) => connection.id === connectionId);
     if (connectionId !== undefined && !selected) return false;
-    const result = await dialog.showMessageBox({
-      type: 'warning',
+    const approved = await confirmLocalAgent({
       title: t('localAgent.title'),
       message: selected
         ? t('localAgent.revokeOneMessage').replaceAll('{{app}}', () => selected.name)
         : t('localAgent.revokeMessage'),
       detail: selected ? t('localAgent.revokeOneDetail') : t('localAgent.revokeDetail'),
-      buttons: [t('localAgent.cancel'), t('localAgent.revoke')],
-      cancelId: 0,
-      defaultId: 0,
-      noLink: true,
+      cancelText: t('localAgent.cancel'),
+      confirmText: t('localAgent.revoke'),
     });
     assertCaller();
     if (
-      result.response !== 1 ||
+      !approved ||
       owner !== activeOwnerScopeKey() ||
       isAppSessionBoundaryPending() ||
       current !== pendingServer
@@ -293,6 +279,7 @@ export async function revokeLocalAgentConnections(
 }
 
 export async function disposeLocalAgentHost(): Promise<void> {
+  cancelLocalAgentConfirmations();
   const previous = current;
   current = undefined;
   readyServer = undefined;
