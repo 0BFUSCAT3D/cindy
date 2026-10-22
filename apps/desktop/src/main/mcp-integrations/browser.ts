@@ -19,6 +19,7 @@ import {
 import type { BrowserMcpDeps } from '@cindy/mcps';
 
 import { createLogger } from '../logger.js';
+import { genericOAuthSecretIo } from '../secrets/providerSecretStore.js';
 import { extractBrowserAvailability, type BrowserAvailability } from './browser-availability.js';
 import { loadUserBrowserRecipes, type UserRecipesResult } from '../browser-recipes/loader.js';
 import { writeUserRecipe, type WriteUserRecipeResult } from '../browser-recipes/writer.js';
@@ -451,10 +452,16 @@ export function setBrowserUseRealProfile(enabled: boolean): Promise<boolean> {
  * BrowserControlRuntime contract so the desktop host does not depend on an
  * upstream product API or product-facing name.
  */
+function browserRecipeSecretId(key: string): string {
+  if (!['spotify', 'xiaoyuzhou'].includes(key)) throw new Error('Unknown browser recipe credential');
+  return `browser-recipe-${key}`;
+}
+
 export function getBrowserMcpDeps(): {
   getRuntime(): BrowserControlRuntime;
   resolveScreenshot: NonNullable<BrowserMcpDeps['resolveScreenshot']>;
   compressInlineImage: NonNullable<BrowserMcpDeps['compressInlineImage']>;
+  recipeSecrets: { read(key: string): string | null; write(key: string, value: string): boolean };
   setBackend(kind: BackendKind): Promise<BackendKind>;
   supportsResourceDownloads(): boolean;
   supportsSemanticQueries(): boolean;
@@ -464,6 +471,10 @@ export function getBrowserMcpDeps(): {
   pageReadsRestricted(target: { profile?: string; targetId?: string }): Promise<boolean>;
 } {
   return {
+    recipeSecrets: {
+      read: (key) => genericOAuthSecretIo.readStrict(browserRecipeSecretId(key)),
+      write: (key, value) => genericOAuthSecretIo.write(browserRecipeSecretId(key), value),
+    },
     setBackend: async (kind) => {
       await setActiveBrowserBackendKind(kind);
       return backendController.getCurrentBackendKind();

@@ -652,6 +652,8 @@ export interface BrowserMcpDeps {
   ): Promise<ResolvedBrowserScreenshot>;
   /** Shrink the LLM-facing copy to the shared stream-safe byte budget. */
   compressInlineImage?: CompressInlineImageFn;
+  /** Trusted host-only credential IO; never exposed as a tool or page input. */
+  recipeSecrets?: { read(key: string): string | null; write(key: string, value: string): boolean };
   /** Switch the host-wide, persisted automation target; returns the actual mode. */
   setBackend?(backend: 'external' | 'rsb-webview'): Promise<'external' | 'rsb-webview'>;
   /** Whether the active backend accepts managed resource downloads. */

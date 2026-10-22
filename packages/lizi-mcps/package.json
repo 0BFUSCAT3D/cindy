@@ -30,6 +30,7 @@
     "@googleapis/drive": "^20.2.0",
     "@googleapis/gmail": "^17.0.0",
     "@googleapis/sheets": "^13.0.1",
+    "@jackwener/opencli": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "docx": "^9.7.1",
     "entities": "^6.0.1",

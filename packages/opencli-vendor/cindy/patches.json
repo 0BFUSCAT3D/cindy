@@ -1,0 +1,100 @@
+[
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';",
+    "after": "import { readFileSync, existsSync } from 'fs';\nimport { readSecretJSON, writeSecretJSON } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "const env = loadEnv();\nconst credentials = resolveSpotifyCredentials(env);\nconst CLIENT_ID = credentials.clientId;\nconst CLIENT_SECRET = credentials.clientSecret;",
+    "after": "function clientCredentials() { return resolveSpotifyCredentials(loadEnv()); }"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "function loadTokens() {\n    try {\n        return JSON.parse(readFileSync(TOKEN_FILE, 'utf-8'));\n    }\n    catch {\n        return null;\n    }\n}\nfunction saveTokens(tokens) {\n    mkdirSync(join(homedir(), '.opencli'), { recursive: true });\n    writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));\n}\n",
+    "after": "function loadTokens() { return readSecretJSON('spotify', TOKEN_FILE); }\nfunction saveTokens(tokens) { writeSecretJSON('spotify', tokens); }\n"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "${CLIENT_ID}:${CLIENT_SECRET}",
+    "after": "${clientCredentials().clientId}:${clientCredentials().clientSecret}",
+    "count": 2
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "assertSpotifyCredentialsConfigured(credentials, ENV_FILE)",
+    "after": "assertSpotifyCredentialsConfigured(clientCredentials(), ENV_FILE)",
+    "count": 1
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "client_id: CLIENT_ID",
+    "after": "client_id: clientCredentials().clientId",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/auth.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { readSecretJSON, writeSecretJSON } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/xiaoyuzhou/auth.js",
+    "before": "export function loadXiaoyuzhouCredentials() {\n    const filePath = getXiaoyuzhouCredentialFile();\n    if (fs.existsSync(filePath)) {\n        try {\n            const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));\n            const credentials = normalizeXiaoyuzhouCredentials(parsed);\n            if (!credentials.access_token || !credentials.refresh_token) {\n                throw new ConfigError(`Xiaoyuzhou credential file is missing access_token or refresh_token: ${filePath}`, 'Recreate the file with valid credentials.');\n            }\n            return credentials;\n        }\n        catch (error) {\n            if (error instanceof ConfigError) {\n                throw error;\n            }\n            throw new ConfigError(`Failed to parse Xiaoyuzhou credential file: ${filePath}`, `Ensure ${filePath} contains valid JSON. (${getErrorMessage(error)})`);\n        }\n    }\n    throw new ConfigError(`Missing Xiaoyuzhou credentials. Expected ${filePath}`, `Create ${filePath} with access_token and refresh_token.`);\n}\n\nexport function saveXiaoyuzhouCredentials(credentials) {\n    const filePath = getXiaoyuzhouCredentialFile();\n    fs.mkdirSync(path.dirname(filePath), { recursive: true });\n    fs.writeFileSync(filePath, `${JSON.stringify({\n        access_token: credentials.access_token,\n        refresh_token: credentials.refresh_token,\n        expires_at: credentials.expires_at,\n        device_id: credentials.device_id,\n        device_properties: credentials.device_properties,\n    }, null, 2)}\\n`, 'utf-8');\n}\n\n",
+    "after": "export function loadXiaoyuzhouCredentials() {\n    const raw = readSecretJSON('xiaoyuzhou', getXiaoyuzhouCredentialFile());\n    if (!raw) throw new ConfigError('Missing Xiaoyuzhou credentials', 'Configure Xiaoyuzhou access_token and refresh_token before running this recipe.');\n    const credentials = normalizeXiaoyuzhouCredentials(raw);\n    if (!credentials.access_token || !credentials.refresh_token) throw new ConfigError('Xiaoyuzhou credentials are incomplete');\n    return credentials;\n}\nexport function saveXiaoyuzhouCredentials(credentials) { writeSecretJSON('xiaoyuzhou', credentials); }\n\n"
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "import { Page as BrowserPage } from '@jackwener/opencli/browser/page';\n",
+    "after": ""
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "            if (!process.env.VITEST) {\n                const runIsolated = async () => {\n                    const isolatedPage = new BrowserPage(`site:instagram-reel-${Date.now()}`);\n                    try {\n                        return await run(isolatedPage, new Set());\n                    }\n                    finally {\n                        await isolatedPage.closeWindow?.();\n                    }\n                };\n                try {\n                    return await runIsolated();\n                }\n                catch (error) {\n                    if (!isRecoverableReelSessionError(error))\n                        throw error;\n                    return await runIsolated();\n                }\n            }\n",
+    "after": "            // Cindy supplies the session-owned page; never launch OpenCLI's daemon or replay a publish.\n"
+  },
+  {
+    "file": "src/browser/article-extract.ts",
+    "before": "import * as fs from 'node:fs';\nimport { createRequire } from 'node:module';\n\nconst requireFromHere = createRequire(import.meta.url);\n\nlet cachedSources: { readability: string; readerable: string } | null = null;\n\nfunction readabilitySources(): { readability: string; readerable: string } {\n  if (cachedSources) return cachedSources;\n  const readabilityPath = requireFromHere.resolve('@mozilla/readability/Readability.js');\n  const readerablePath = requireFromHere.resolve('@mozilla/readability/Readability-readerable.js');\n  cachedSources = {\n    readability: fs.readFileSync(readabilityPath, 'utf8'),\n    readerable: fs.readFileSync(readerablePath, 'utf8'),\n  };\n  return cachedSources;\n}\n\n",
+    "after": "/// <reference path=\"../../cindy/raw.d.ts\" />\nimport readability from '@mozilla/readability/Readability.js?raw';\nimport readerable from '@mozilla/readability/Readability-readerable.js?raw';\nfunction readabilitySources(): { readability: string; readerable: string } {\n  return { readability, readerable };\n}\n\n"
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "  saved: string;\n",
+    "after": "  saved: string;\n  markdown?: string;\n"
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "  if (stdout) {\n    process.stdout.write(fullContent.endsWith('\\n') ? fullContent : fullContent + '\\n');\n    return [{\n      title: data.title,\n      author: data.author || '-',\n      publish_time: data.publishTime || '-',\n      status: 'success',\n      size: formatBytes(size),\n      saved: '-',\n    }];\n  }\n",
+    "after": "  if (stdout) {\n    return [{\n      title: data.title,\n      author: data.author || '-',\n      publish_time: data.publishTime || '-',\n      status: 'success',\n      size: formatBytes(size),\n      saved: '-',\n      markdown: fullContent,\n    }];\n  }\n"
+  },
+  {
+    "file": "clis/web/read.js",
+    "before": "        return kwargs.stdout ? null : result;",
+    "after": "        return result; // Cindy returns markdown in the tool result instead of process stdout."
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "import { createServer } from 'http';",
+    "after": "import { createServer } from 'http';\nimport { randomUUID } from 'node:crypto';"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "        return new Promise((resolve, reject) => {\n            const server",
+    "after": "        const state = randomUUID();\n        return new Promise((resolve, reject) => {\n            const server"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "                    const code = url.searchParams.get('code');",
+    "after": "                    if (url.searchParams.get('state') !== state) { res.writeHead(400); res.end('Invalid OAuth state'); return; }\n                    const code = url.searchParams.get('code');"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "server.listen(8888, () => {",
+    "after": "server.listen(8888, '127.0.0.1', () => {"
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "response_type: 'code', redirect_uri: REDIRECT_URI",
+    "after": "response_type: 'code', state, redirect_uri: REDIRECT_URI"
+  }
+]

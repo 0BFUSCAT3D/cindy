@@ -1,0 +1,276 @@
+import { readFile, writeFile } from "node:fs/promises";
+import {
+  CDPBasePage,
+  buildEvaluateExpression,
+  executeAdapter,
+  loadAdapter,
+  type BrowserCookie,
+  type BrowserEvaluateFunction,
+  type ScreenshotOptions,
+  type RecipeSecrets,
+} from "@jackwener/opencli/cindy";
+import type {
+  BrowserControlRequest,
+  BrowserControlResult,
+} from "@cindy/browser-control-runtime";
+import { isHttpUrl } from "./url-guard.js";
+
+interface PageDeps {
+  call(request: BrowserControlRequest): Promise<BrowserControlResult>;
+  targetId?: string;
+  recipeSecrets?: RecipeSecrets;
+}
+
+/** All browser operations go through the caller's guarded, session-scoped runtime. */
+export class OpenCliPage extends CDPBasePage {
+  private targetId?: string;
+  private readonly sessions = new Map<string, string>();
+  constructor(
+    private readonly deps: PageDeps,
+    private readonly home?: string,
+  ) {
+    super();
+    this.targetId = deps.targetId;
+  }
+
+  private async request(
+    request: BrowserControlRequest,
+  ): Promise<Record<string, unknown>> {
+    const result = await this.deps.call({
+      ...request,
+      ...(this.targetId ? { targetId: this.targetId } : {}),
+    });
+    if (!result.ok)
+      throw new Error(result.message ?? `Browser ${request.action} failed`);
+    const data = (result.data ?? {}) as Record<string, unknown>;
+    if (data.barrier)
+      throw new Error(
+        `Browser interaction requires attention: ${JSON.stringify(data.barrier)}`,
+      );
+    const target = data.targetId ?? data.tabId;
+    if (typeof target === "string") this.targetId = target;
+    return data;
+  }
+
+  private async ensureTarget(): Promise<void> {
+    if (this.targetId) return;
+    if (!this.home || !isHttpUrl(this.home))
+      throw new Error("This adapter requires a browser targetId");
+    await this.request({ action: "open", url: this.home });
+    if (!this.targetId) throw new Error("Browser did not return a targetId");
+  }
+
+  async goto(url: string): Promise<void> {
+    if (!isHttpUrl(url))
+      throw new Error("Recipe navigation requires an http(s) URL");
+    if (!this.targetId) await this.request({ action: "open", url });
+    else await this.request({ action: "navigate", url });
+    this._lastUrl = url;
+  }
+
+  async evaluate<T = unknown>(js: string): Promise<T>;
+  async evaluate<Args extends unknown[], T>(
+    fn: BrowserEvaluateFunction<Args, T>,
+    ...args: Args
+  ): Promise<Awaited<T>>;
+  async evaluate(
+    input: string | BrowserEvaluateFunction<unknown[], unknown>,
+    ...args: unknown[]
+  ): Promise<unknown> {
+    await this.ensureTarget();
+    const expression = buildEvaluateExpression(input, args);
+    const data = await this.request({
+      action: "act",
+      request: {
+        kind: "evaluate",
+        fn: `() => { return (0, eval)(${JSON.stringify(expression)}); }`,
+      },
+    });
+    return data.result;
+  }
+
+  async evaluateOnce<T = unknown>(js: string): Promise<T> {
+    return this.evaluate<T>(js);
+  }
+
+  async cdp(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.ensureTarget();
+    let sessionId = this.sessions.get(this.targetId!);
+    if (!sessionId) {
+      const opened = await this.request({
+        action: "recipeCommand",
+        recipeCommand: { method: "Cindy.begin" },
+      });
+      if (typeof opened.sessionId !== "string")
+        throw new Error("Browser did not return a recipe session");
+      sessionId = opened.sessionId;
+      this.sessions.set(this.targetId!, sessionId);
+    }
+    return this.request({
+      action: "recipeCommand",
+      recipeCommand: { method, params, sessionId },
+    });
+  }
+
+  async dispose(): Promise<void> {
+    for (const [targetId, sessionId] of this.sessions) {
+      await this.deps
+        .call({
+          action: "recipeCommand",
+          targetId,
+          recipeCommand: { method: "Cindy.end", sessionId },
+        })
+        .catch(() => {});
+    }
+    this.sessions.clear();
+  }
+
+  async getCookies(
+    options: { domain?: string; url?: string } = {},
+  ): Promise<BrowserCookie[]> {
+    const response = await this.cdp(
+      options.url ? "Network.getCookies" : "Storage.getCookies",
+      options.url ? { urls: [options.url] } : {},
+    );
+    const cookies = (response as { cookies?: BrowserCookie[] }).cookies;
+    if (!Array.isArray(cookies))
+      throw new Error("Browser returned malformed cookies");
+    const domain = options.domain?.replace(/^\./, "");
+    return domain
+      ? cookies.filter((cookie) => {
+          const host = cookie.domain.replace(/^\./, "");
+          return (
+            host === domain ||
+            host.endsWith(`.${domain}`) ||
+            domain.endsWith(`.${host}`)
+          );
+        })
+      : cookies;
+  }
+
+  async screenshot(options: ScreenshotOptions = {}): Promise<string> {
+    await this.ensureTarget();
+    const data = await this.request({
+      action: "screenshot",
+      type: options.format,
+      fullPage: options.fullPage,
+    });
+    const file = data.path;
+    const encoded =
+      typeof data.data === "string"
+        ? data.data
+        : typeof data.base64 === "string"
+          ? data.base64
+          : typeof file === "string"
+            ? (await readFile(file)).toString("base64")
+            : undefined;
+    if (!encoded) throw new Error("Browser screenshot did not return an image");
+    if (options.path)
+      await writeFile(options.path, Buffer.from(encoded, "base64"));
+    return encoded;
+  }
+
+  async tabs(): Promise<
+    Array<{ page: string; url?: string; active: boolean }>
+  > {
+    const data = await this.request({ action: "tabs" });
+    return ((data.tabs ?? []) as Array<{ targetId: string; url?: string }>).map(
+      (tab) => ({
+        page: tab.targetId,
+        url: tab.url,
+        active: tab.targetId === this.targetId,
+      }),
+    );
+  }
+
+  async selectTab(target: number | string): Promise<void> {
+    const tabs = await this.tabs();
+    const tab =
+      typeof target === "number"
+        ? tabs[target]
+        : tabs.find((item) => item.page === target);
+    if (!tab) throw new Error(`Browser tab not found: ${target}`);
+    this.targetId = tab.page;
+    this._lastUrl = tab.url ?? null;
+  }
+
+  getActivePage(): string | undefined {
+    return this.targetId;
+  }
+  setActivePage(target?: string): void {
+    this.targetId = target;
+    this._lastUrl = null;
+  }
+  async getCurrentUrl(): Promise<string | null> {
+    return this.evaluate<string>("location.href");
+  }
+  async newTab(url = this.home): Promise<string | undefined> {
+    if (!url || !isHttpUrl(url))
+      throw new Error("newTab requires an http(s) URL");
+    await this.request({ action: "open", url });
+    return this.targetId;
+  }
+  async closeTab(target?: number | string): Promise<void> {
+    if (target !== undefined) await this.selectTab(target);
+    if (this.targetId) {
+      const sessionId = this.sessions.get(this.targetId);
+      if (sessionId) {
+        await this.request({
+          action: "recipeCommand",
+          recipeCommand: { method: "Cindy.end", sessionId },
+        });
+        this.sessions.delete(this.targetId);
+      }
+      await this.request({ action: "close" });
+    }
+    this.targetId = undefined;
+  }
+  // OpenCLI's closeWindow releases a lease. Cindy owns browser/tab lifetime.
+  async closeWindow(): Promise<void> {}
+
+  async setFileInput(
+    files: string[],
+    selector = "input[type=file]",
+  ): Promise<void> {
+    await this.ensureTarget();
+    await this.request({ action: "upload", paths: files, element: selector });
+  }
+
+  async startNetworkCapture(pattern = ""): Promise<boolean> {
+    await this.cdp("Cindy.captureStart", { pattern });
+    return true;
+  }
+  async readNetworkCapture(
+    options: { retainIncomplete?: boolean } = {},
+  ): Promise<unknown[]> {
+    const result = (await this.cdp("Cindy.captureRead", options)) as {
+      entries: unknown[];
+    };
+    return result.entries;
+  }
+  async consoleMessages(level = "info"): Promise<unknown[]> {
+    await this.ensureTarget();
+    const data = await this.request({ action: "console", level });
+    return (data.messages ?? []) as unknown[];
+  }
+}
+
+export async function runOpenCliAdapter(
+  id: string,
+  inputs: Record<string, unknown>,
+  deps: PageDeps,
+): Promise<unknown> {
+  const command = await loadAdapter(id);
+  const page = new OpenCliPage(
+    deps,
+    command.domain ? `https://${command.domain}` : undefined,
+  );
+  try {
+    return await executeAdapter(id, inputs, page, deps.recipeSecrets);
+  } finally {
+    await page.dispose();
+  }
+}

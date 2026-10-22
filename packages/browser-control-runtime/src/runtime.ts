@@ -20,6 +20,8 @@ import type {
   BrowserControlRuntime,
 } from './types.js';
 import { parseBrowserProxyServer, redactBrowserProxyText } from './proxy.js';
+import { RecipeBrowserSessions } from './recipe-sessions.js';
+import { openRecipeSocket } from './recipe-socket.js';
 
 type Method = 'GET' | 'POST' | 'DELETE';
 interface DispatchPlan {
@@ -66,6 +68,8 @@ export function planDispatch(req: BrowserControlRequest): DispatchPlan {
   };
   const a: BrowserControlAction = req.action;
   switch (a) {
+    case 'recipeCommand':
+      throw new Error('recipeCommand uses the internal adapter transport');
     case 'doctor':
       return { method: 'GET', path: '/doctor', query: withProfile() };
     case 'status':
@@ -244,9 +248,30 @@ export function createBrowserControlRuntime(
 ): BrowserControlRuntime {
   if (options.config) setBrowserRuntimeConfig(options.config);
   if (options.logSink) setBrowserRuntimeLogSink(options.logSink);
+  const recipeSessions = new RecipeBrowserSessions();
 
   return {
     async call(request: BrowserControlRequest): Promise<BrowserControlResult> {
+      if (request.action === 'recipeCommand') {
+        try {
+          const command = request.recipeCommand;
+          if (!command || !request.targetId) throw new Error('recipeCommand requires an explicit targetId and command');
+          const scope = JSON.stringify([request.profile ?? '', request.targetId]);
+          if (command.method !== 'Cindy.begin') {
+            const data = await recipeSessions.call(scope, command.sessionId ?? '', command.method, command.params);
+            return { ok: true, action: request.action, data };
+          }
+          const listed = await dispatchBrowserControlRequest({ method: 'GET', path: '/tabs', query: request.profile ? { profile: request.profile } : undefined });
+          if (listed.status >= 400) throw new Error('Cannot resolve browser recipe target');
+          const tabs = (listed.body as { tabs?: Array<{ targetId: string; wsUrl?: string }> }).tabs ?? [];
+          const tab = tabs.find(item => item.targetId === request.targetId);
+          if (!tab?.wsUrl) throw new Error('Selected browser recipe target is unavailable');
+          const data = { sessionId: recipeSessions.begin(scope, await openRecipeSocket(tab.wsUrl)) };
+          return { ok: true, action: request.action, data };
+        } catch (error) {
+          return { ok: false, action: request.action, message: error instanceof Error ? error.message : String(error) };
+        }
+      }
       let plan: DispatchPlan;
       try {
         plan = planDispatch(request);

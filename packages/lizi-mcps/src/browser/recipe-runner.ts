@@ -16,6 +16,8 @@ import { isHttpUrl } from './url-guard.js';
 
 export interface RecipeRunDeps {
   call: (req: BrowserControlRequest) => Promise<BrowserControlResult>;
+  targetId?: string;
+  recipeSecrets?: { read(key: string): string | null; write(key: string, value: string): boolean };
   logger?: { warn?: (message: string, meta?: unknown) => void };
 }
 
@@ -306,6 +308,19 @@ export async function runRecipe(
   inputs: Record<string, unknown> | undefined,
   deps: RecipeRunDeps,
 ): Promise<RecipeRunResult> {
+  if (recipe.adapter) {
+    try {
+      const { runOpenCliAdapter } = await import('./opencli-page.js');
+      const args = { ...(inputs ?? {}) };
+      for (const [from, to] of Object.entries(recipe.adapterInputMap ?? {})) {
+        if (Object.hasOwn(args, from)) { args[to] = args[from]; if (from !== to) delete args[from]; }
+      }
+      const output = await runOpenCliAdapter(recipe.adapter, args, deps);
+      return { ok: true, recipe: recipe.id, steps: [{ action: 'adapter', ok: true }], output };
+    } catch (error) {
+      return { ok: false, recipe: recipe.id, steps: [{ action: 'adapter', ok: false }], failedStep: 0, failedAction: 'adapter', message: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const vars: Record<string, unknown> = { ...(inputs ?? {}) };
   for (const [name, spec] of Object.entries(recipe.inputs ?? {})) {
     if (spec.required && (vars[name] === undefined || vars[name] === null)) {

@@ -1,0 +1,183 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { BrowserControlRequest } from "@cindy/browser-control-runtime";
+import { createBrowserMcpServer } from "./server.js";
+import { OpenCliPage } from "./opencli-page.js";
+import { loadRecipes } from "./recipe-loader.js";
+import { runRecipe } from "./recipe-runner.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("bundled OpenCLI recipes", () => {
+  it("executes a legacy alias through the real adapter with its original parameter name", async () => {
+    const fetch = vi.fn(
+      async (_url: string) =>
+        new Response(
+          JSON.stringify({
+            info: { name: "example-test", version: "1.2.3" },
+            releases: {},
+          }),
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const call = vi.fn();
+    const result = await runRecipe(
+      loadRecipes().get("pypi-package")!,
+      { package: "example-test" },
+      { call },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.output).toMatchObject([
+      { name: "example-test", latestVersion: "1.2.3" },
+    ]);
+    expect(fetch.mock.calls[0][0]).toBe(
+      "https://pypi.org/pypi/example-test/json",
+    );
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("runs a browser pipeline with numeric defaults and the newly returned target", async () => {
+    const calls: BrowserControlRequest[] = [];
+    const result = await runRecipe(
+      loadRecipes().get("bilibili-hot")!,
+      {},
+      {
+        call: async (request) => {
+          calls.push(request);
+          return {
+            ok: true,
+            action: request.action,
+            data:
+              request.action === "open"
+                ? { tabId: "new-target" }
+                : { result: [{ title: "Example", bvid: "BV-test" }] },
+          };
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.output).toMatchObject([{ rank: 1, title: "Example" }]);
+    expect(calls[1].targetId).toBe("new-target");
+    expect(
+      (calls.find((call) => call.action === "act")!.request as { fn: string })
+        .fn,
+    ).toContain("ps=20");
+  });
+
+  it("rejects invalid numeric inputs before any browser operation", async () => {
+    const call = vi.fn();
+    const result = await runRecipe(
+      loadRecipes().get("opencli:bilibili/hot")!,
+      { limit: "1;alert(1)" },
+      { call },
+    );
+    expect(result.ok).toBe(false);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a write after the browser reports an unknown outcome", async () => {
+    let writes = 0;
+    const result = await runRecipe(
+      loadRecipes().get("opencli:twitter/like")!,
+      { url: "https://x.com/example/status/12345" },
+      {
+        targetId: "t",
+        call: async (request) => {
+          const fn = (request.request as { fn?: string } | undefined)?.fn ?? "";
+          if (fn.includes("writeStarted")) {
+            writes++;
+            return {
+              ok: false,
+              action: request.action,
+              message: "connection lost after dispatch",
+            };
+          }
+          return { ok: true, action: request.action, data: { result: true } };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(writes).toBe(1);
+  });
+
+  it("preserves the CDP session and screenshot bytes, then releases resources", async () => {
+    const calls: BrowserControlRequest[] = [];
+    const page = new OpenCliPage({
+      targetId: "t",
+      call: async (request) => {
+        calls.push(request);
+        return {
+          ok: true,
+          action: request.action,
+          data:
+            request.action === "screenshot"
+              ? { data: "aW1hZ2U=" }
+              : { sessionId: "s", cookies: [] },
+        };
+      },
+    });
+    await page.getCookies();
+    await page.cdp("DOM.getDocument");
+    expect(await page.screenshot()).toBe("aW1hZ2U=");
+    await page.dispose();
+    expect(
+      calls.filter((call) => call.recipeCommand?.method === "Cindy.begin"),
+    ).toHaveLength(1);
+    expect(
+      calls
+        .filter(
+          (call) =>
+            call.recipeCommand && call.recipeCommand.method !== "Cindy.begin",
+        )
+        .every((call) => call.recipeCommand?.sessionId === "s"),
+    ).toBe(true);
+    expect(calls.at(-1)?.recipeCommand?.method).toBe("Cindy.end");
+  });
+
+  // Product decision 2026-10-23: exclusions must disappear from discovery and
+  // execution, while independent Cindy recipes remain discoverable. Unit tier;
+  // the previous all-catalog assertion did not cover this selected-catalog contract.
+  it("exposes the selected catalog and rejects excluded recipes through the public MCP entry", async () => {
+    const server = createBrowserMcpServer({
+      getRuntime: () => ({ call: vi.fn() }),
+    });
+    const client = new Client({ name: "recipe-test", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const query = async (site?: string) => {
+      const response = await client.callTool({
+        name: "call_tool",
+        arguments: {
+          name: "browser",
+          args: { action: "siteguide", ...(site ? { site } : {}) },
+        },
+      });
+      return JSON.parse((response.content as Array<{ text: string }>)[0].text);
+    };
+    try {
+      const all = await query();
+      expect(all.ok).toBe(true);
+      expect(all.recipeCount).toBe(loadRecipes().size);
+      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'books-list', 'hockey-search']) {
+        expect(JSON.stringify(all)).not.toContain(id);
+        const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: id } } });
+        expect(JSON.parse((response.content as Array<{ text: string }>)[0].text).ok).toBe(false);
+      }
+      expect(JSON.stringify(all)).toContain('open-library-search');
+      expect(JSON.stringify(all)).toContain('steam-reviews');
+      const site = await query("bilibili");
+      expect(site.ok).toBe(true);
+      expect(
+        site.recipes.find(
+          (recipe: { id: string }) => recipe.id === "opencli:bilibili/hot",
+        ).parameters.limit.default,
+      ).toBe(20);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
