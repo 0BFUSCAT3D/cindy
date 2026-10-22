@@ -19,7 +19,7 @@ it.skipIf(!binary)('cold-resumes the same history, compacts with the larger mode
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-context-switch-native-'));
   const home = path.join(root, 'home');
   const work = path.join(root, 'work');
-  const windows: Record<string, number> = { 'fixture-wide': 500_000, 'fixture-small': 272_000 };
+  const windows: Record<string, number> = { 'codex/fixture-wide': 500_000, 'fixture-small': 272_000 };
   const requests: Array<{ model: string; input: unknown[] }> = [];
   const server = createServer(async (req, res) => {
     if (req.method !== 'POST') { res.end('{"models":[]}'); return; }
@@ -44,7 +44,7 @@ it.skipIf(!binary)('cold-resumes the same history, compacts with the larger mode
     await fs.mkdir(home); await fs.mkdir(work);
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     await fs.writeFile(path.join(home, 'models_cache.json'), JSON.stringify({ models: Object.keys(windows)
-      .map(slug => nativeCodexFallbackModel(slug, 'You are a test assistant.')) }));
+      .map(slug => nativeCodexFallbackModel(slug.replace(/^codex\//, ''), 'You are a test assistant.')) }));
     await fs.writeFile(path.join(home, 'config.toml'), [
       'model_provider="fixture"', 'cli_auth_credentials_store="ephemeral"',
       'check_for_update_on_startup=false', '[analytics]', 'enabled=false',
@@ -60,6 +60,7 @@ it.skipIf(!binary)('cold-resumes the same history, compacts with the larger mode
         expect(ctx.customContextProviderId).toBe('cprov-fixture');
         const catalog = await prepareCodexCustomContextCatalog({ binaryPath: binary!, codexHome: home,
           modelId: ctx.customContextModel!, contextWindow: ctx.customContextWindow!,
+          modelIds: Object.keys(windows),
           resolveContextWindow: model => windows[model] ?? null });
         return { extraArgs: catalog.extraArgs, extraEnv: {}, codexProxyActive: true };
       },
@@ -74,7 +75,7 @@ it.skipIf(!binary)('cold-resumes the same history, compacts with the larger mode
     });
     agent = makeAgent();
     const options = { sessionId: 'context-switch', providerId: 'cprov-fixture', workingDir: work, makerMemoryEnabled: false };
-    let handle = await agent.startSession({ ...options, model: 'fixture-wide' });
+    let handle = await agent.startSession({ ...options, model: 'codex/fixture-wide' });
     const send = async (text: string) => {
       const finished = (async () => {
         for await (const event of handle.events()) {
@@ -95,7 +96,7 @@ it.skipIf(!binary)('cold-resumes the same history, compacts with the larger mode
     handle = await agent.startSession({ ...options, model: 'fixture-small', resumeSessionId: threadId });
     expect(handle.id).toBe(threadId);
     await send('CONTINUE_MARKER');
-    expect(requests.map(request => request.model)).toEqual(['fixture-wide', 'fixture-wide', 'fixture-small']);
+    expect(requests.map(request => request.model)).toEqual(['codex/fixture-wide', 'codex/fixture-wide', 'fixture-small']);
     expect(JSON.stringify(requests[1]!.input)).toContain('ORIGINAL_HISTORY_MARKER');
     expect(JSON.stringify(requests[1]!.input)).toContain('FIRST_REPLY');
     expect(JSON.stringify(requests[2]!.input)).toContain('NATIVE_SUMMARY');

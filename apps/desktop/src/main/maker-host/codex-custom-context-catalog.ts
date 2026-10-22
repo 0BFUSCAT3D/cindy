@@ -352,6 +352,8 @@ export async function prepareCodexCustomContextCatalog(params: {
   modelId: string;
   contextWindow: number;
   scanChunkBytes?: number;
+  /** Same-provider model IDs, including aliases absent from native discovery. */
+  modelIds?: readonly string[];
   /** Same-provider budgets for native previous-model compaction after cold resume. */
   resolveContextWindow?: (modelId: string) => number | null;
   /** In-memory smart Subagent catalog to preserve in the one-session custom-context Host. */
@@ -361,7 +363,7 @@ export async function prepareCodexCustomContextCatalog(params: {
   let base = params.baseCatalog === undefined
     ? bundled
     : normalizeNativeCatalog(parseCodexModelCatalog(JSON.stringify(params.baseCatalog)));
-  base = await catalogWithModels(base, bundled, [params.modelId], params.binaryPath);
+  base = await catalogWithModels(base, bundled, [params.modelId, ...(params.modelIds ?? [])], params.binaryPath);
   const patched = patchCodexModelMaxContextWindow(
     base,
     params.modelId,

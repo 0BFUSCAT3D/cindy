@@ -193,6 +193,28 @@ describe('Codex custom context model catalog', () => {
     expect(catalog.models).toContainEqual(native);
   });
 
+  // Unit: cold resume previously omitted an old wire alias absent from native
+  // discovery, hiding its larger saved budget. Exercise the persisted spawn catalog,
+  // including the smart Subagent base, while leaving the native sibling untouched.
+  it.each([false, true])('keeps the previous alias budget absent from native discovery (smart=%s)', async smart => {
+    const native = { slug: 'gpt-6-astra', context_window: 272_000, max_context_window: 872_000,
+      base_instructions: 'native prompt', comp_hash: 'opaque' };
+    const { root, binaryPath } = await createFixtureBinary({ models: [native] });
+    const result = await prepareCodexCustomContextCatalog({ binaryPath, codexHome: root,
+      modelId: 'gpt-6-astra-small', contextWindow: 500_000,
+      modelIds: ['codex/gpt-6-astra', 'gpt-6-astra-small'],
+      resolveContextWindow: model => model === 'codex/gpt-6-astra' ? 1_000_000 : null,
+      ...(smart ? { baseCatalog: { models: [{ slug: 'smart-route' }] } } : {}),
+    });
+    const catalog = JSON.parse(await fs.readFile(result.catalogPath, 'utf8'));
+    expect(catalog.models).toContainEqual({ ...native, slug: 'codex/gpt-6-astra',
+      context_window: 1_000_000, max_context_window: 1_000_000, auto_compact_token_limit: 900_000 });
+    expect(catalog.models).toContainEqual({ ...native, slug: 'gpt-6-astra-small',
+      context_window: 500_000, max_context_window: 872_000, auto_compact_token_limit: 450_000 });
+    if (smart) expect(catalog.models).toContainEqual({ slug: 'smart-route' });
+    else expect(catalog.models).toContainEqual(native);
+  });
+
   it.each(['\n', '\r\n'] as const)('preserves verified native unknown-model behavior with %j line endings', async (lineEnding) => {
     const { root, binaryPath } = await createFixtureBinary({ models: [{ slug: 'gpt-5.4' }] }, lineEnding);
     const instructions = nativeFallbackPrompt.replace(/\r?\n/g, lineEnding);
