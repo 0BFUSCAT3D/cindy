@@ -1180,6 +1180,7 @@ describe('file-browser device-op', () => {
       completeDirectoryListing: true,
       fileRead: true,
       dirExport: true,
+      folderAttachment: true,
     });
     // 控制端把 unknown op 当"老端不支持压缩/开关"的确定性负信号,形状不能漂。
     expect(await handleRemoteOp({ op: 'nope', workdir })).toEqual({
