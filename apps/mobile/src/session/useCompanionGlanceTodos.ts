@@ -29,11 +29,13 @@ export interface GlanceTodos {
   done: TeammateTodo[];
   doneTotal: number;
   nextDeferredAt: string | null;
+  /** Whether 「每天帮我查一次」 is on; null when the desktop does not support it yet (the switch stays hidden). */
+  dailyCheck: boolean | null;
 }
 
-const EMPTY: GlanceTodos = { open: [], openTotal: 0, done: [], doneTotal: 0, nextDeferredAt: null };
+const EMPTY: GlanceTodos = { open: [], openTotal: 0, done: [], doneTotal: 0, nextDeferredAt: null, dailyCheck: null };
 
-interface Page { items: TeammateTodo[]; total: number; nextDeferredAt?: string | null }
+interface Page { items: TeammateTodo[]; total: number; nextDeferredAt?: string | null; dailyCheck?: unknown }
 
 export function todosResourceRef(botId: string) {
   return { collectionId: 'teammates', kind: 'bot', id: `todos:${botId}` } as const;
@@ -55,7 +57,7 @@ async function readAll(readPage: (query: TodoListQuery) => Promise<Page>, view: 
     if (page.items.length === 0) break;
     items.push(...page.items);
   }
-  return { items: items.slice(0, MAX_ITEMS), total, nextDeferredAt: first.nextDeferredAt ?? null };
+  return { items: items.slice(0, MAX_ITEMS), total, nextDeferredAt: first.nextDeferredAt ?? null, dailyCheck: first.dailyCheck };
 }
 
 /**
@@ -85,7 +87,8 @@ export function useCompanionGlanceTodos({ deviceId, deviceName, botId, enabled }
       const [open, done] = await Promise.all([readAll(readPage, 'open'), readAll(readPage, 'done')]);
       if (mine !== epoch.current) return;
       setState({
-        todos: { open: open.items, openTotal: open.total, done: [...done.items].reverse(), doneTotal: done.total, nextDeferredAt: open.nextDeferredAt ?? null },
+        todos: { open: open.items, openTotal: open.total, done: [...done.items].reverse(), doneTotal: done.total, nextDeferredAt: open.nextDeferredAt ?? null,
+          dailyCheck: typeof open.dailyCheck === 'boolean' ? open.dailyCheck : null },
         loaded: true,
         failed: false,
       });
@@ -127,7 +130,19 @@ export function useCompanionGlanceTodos({ deviceId, deviceName, botId, enabled }
     return result?.todo ?? null;
   }, [botId, deviceId, deviceName, i18n.language, invoke, openLink]);
 
-  return { ...state, refresh, patch };
+  /** Turns the teammate's weekday-morning todo check on or off on its computer; resolves to the confirmed state. */
+  const setDailyCheck = useCallback(async (enabled: boolean): Promise<boolean> => {
+    await openLink(deviceId);
+    const result = await invokeRemoteResourceAction(invoke, { deviceId, deviceName }, {
+      collectionId: 'teammates', resourceRef: todosResourceRef(botId), actionId: 'todo-daily-check', input: { enabled },
+    }, i18n.language) as { dailyCheck?: unknown } | null;
+    if (typeof result?.dailyCheck !== 'boolean') throw new Error('INVALID_RESPONSE');
+    const dailyCheck = result.dailyCheck;
+    setState(previous => ({ ...previous, todos: { ...previous.todos, dailyCheck } }));
+    return dailyCheck;
+  }, [botId, deviceId, deviceName, i18n.language, invoke, openLink]);
+
+  return { ...state, refresh, patch, setDailyCheck };
 }
 
 /** Due todos; the entry dot only counts the ones the owner has not seen in 近况 yet. */
