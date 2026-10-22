@@ -4393,7 +4393,7 @@ function shouldPreserveContinuationOnlyAutoResume(
  * Runtime fallback runs inside the already-fired retry callback. A route change
  * may synchronously close the old process before autoRetryLastError can reuse
  * its recovery record, so preserve only that exact callback token across the
- * requested close/rebuild handoff.
+ * requested close/rebuild or cross-harness agent-switch handoff.
  */
 function shouldPreserveSessionRuntimeFallbackAutoResume(
   session: WiredSession,
