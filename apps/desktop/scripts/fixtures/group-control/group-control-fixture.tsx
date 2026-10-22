@@ -11,6 +11,10 @@ interface GroupData {
   /** A server group with teammates' bubbles: quote, reactions, thread entry and a task card. */
   bubbles?: boolean;
   wrappedReactions?: boolean;
+  /** Server read state: unread thread entries and the in-chat 话题 hint. */
+  threadUnread?: boolean;
+  /** The Thread panel answers reads and keeps the reader's follow switch. */
+  threadPanel?: boolean;
 }
 
 const T0 = 1700000000000;
@@ -102,7 +106,27 @@ function bubbleMessages(wrappedReactions = false) {
   ];
 }
 
+/**
+ * Two Threads name the reader, one they follow is unread without naming them, one is read
+ * (bot-group-chat.md §10「话题未读与提示」).
+ */
+const UNREAD = { a1: { count: 2, mentioned: true }, q3: { count: 1, mentioned: true }, q2: { count: 1, mentioned: false } } as Record<string, { count: number; mentioned: boolean }>;
+const FOLLOWED = new Set(['q2']);
+function threadSummaries() {
+  const summary = (rootId: string, rootText: string, rootAuthorName: string, rootAuthorBotId: string | null, replyCount: number, last: [string, string, number]) => ({
+    rootId, rootText, rootAuthorName, rootAuthorBotId, replyCount, unread: UNREAD[rootId] ?? { count: 0, mentioned: false }, following: FOLLOWED.has(rootId),
+    lastReply: { authorName: last[0], text: last[1], createdAt: T0 + last[2] * MINUTE },
+  });
+  return [
+    summary('a1', 'Android 更新卡那个 PR 的 review 已经处理完，现在等人审。', 'Aster', 'a', 5, ['Nova', '@You 周四上午 10 点前能合吗？', 20]),
+    summary('q3', '收到', 'You', null, 3, ['Aster', '@You 发版清单里也补上了', 19]),
+    summary('q2', '@Nova 旧版那两条也记一下，发版说明里提一句', 'You', null, 1, ['Nova', '已经记下了', 10]),
+    summary('q4', '好', 'You', null, 3, ['You', '谢谢', 18]),
+  ];
+}
+
 function groupFrom(data: GroupData) {
+  const bubbles = data.bubbles ? bubbleMessages(data.wrappedReactions) : null;
   return {
     id: 'fixture-group',
     name: data.name,
@@ -124,7 +148,9 @@ function groupFrom(data: GroupData) {
     updatedAt: 1,
     plans: [],
     ...(data.bubbles ? { serverBacked: true } : {}),
-    messages: data.bubbles ? bubbleMessages(data.wrappedReactions) : Array.from({ length: data.messages }, (_, i) => ({
+    ...(data.threadUnread ? { threads: threadSummaries() } : {}),
+    messages: bubbles ? bubbles.map(m => (data.threadUnread && UNREAD[m.id as string] ? { ...m, threadUnread: UNREAD[m.id as string] } : m))
+      : Array.from({ length: data.messages }, (_, i) => ({
       id: `m${i}`,
       sequence: i + 1,
       kind: 'message',
@@ -146,7 +172,21 @@ function groupFrom(data: GroupData) {
 void mountPage({
   route: '/bots/groups/fixture-group',
   host: (ctx) => {
-    const group = groupFrom(ctx.data as unknown as GroupData);
+    const data = ctx.data as unknown as GroupData;
+    const group = groupFrom(data);
+    let following = false;
+    const followThread = async (input: { following: boolean }) => {
+      following = input.following;
+      return { ok: true, following };
+    };
+    const thread = async (input: { rootId: string }) => {
+      const root = group.messages.find(m => m.id === input.rootId);
+      const replies = ((root?.threadPreview as { replies?: Array<Record<string, unknown>> } | undefined)?.replies ?? []).map((reply, index) => message({
+        id: reply.id, sequence: 100 + index, threadRootId: input.rootId, authorKind: reply.authorKind, authorBotId: reply.authorBotId,
+        authorName: reply.authorName, isSelf: reply.isSelf, content: reply.text, createdAt: reply.createdAt,
+      }));
+      return { ok: true, root, replies, hasMore: false, following };
+    };
     return {
       maker: {
         listBotGroups: async () => ({ ok: true, groups: [] }),
@@ -157,6 +197,7 @@ void mountPage({
         chatServer: {
           reactors: async () => ({ ok: true, reactors: [{ actorId: 'me', isSelf: true, name: 'You', formerMember: false }] }),
           react: forbid('maker.chatServer.react'),
+          ...(data.threadPanel ? { thread, followThread } : {}),
         },
       },
       deviceLink: {

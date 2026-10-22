@@ -116,7 +116,7 @@ export interface PrepareSessionEventDeps {
   readonly silentStopTurnLeaseGate: Pick<SilentStopTurnLeaseGate, 'turnLeaseIdForEvent'>;
   readonly agentInputCoordinatorHolder: Pick<
     AgentInputCoordinator,
-    'onTurnEvent' | 'noteSuppressedTerminalError' | 'getActiveInputClientId' | 'getActiveInputClientIds' | 'isActiveTaskCoordination'
+    'onTurnEvent' | 'noteSuppressedTerminalError' | 'getActiveInputClientId' | 'getActiveInputClientIds' | 'getAcceptedInputProvenance' | 'isActiveTaskCoordination'
   > | null;
   readonly handleSilentStopTurnEnd: (
     session: Session,
@@ -212,6 +212,11 @@ export function prepareSessionEvent(
       .filter(id => taskResultClientIdForInput(id) !== null) : [];
   const activeInputId = event.turnScope === 'background' ? null
     : deps.agentInputCoordinatorHolder?.getActiveInputClientId(session.id, event.sessionTurnGeneration);
+  const provenance = deps.agentInputCoordinatorHolder?.getAcceptedInputProvenance(session.id);
+  // Capture ownership before onTurnEvent releases the accepted receipt. Automatic
+  // retries keep the original group execution; human steering owns its own input.
+  const groupLaneInputClientId = activeInputId && provenance?.clientId === activeInputId && provenance.autoResume
+    ? provenance.retrySourceClientId ?? activeInputId : activeInputId ?? null;
   // The host's accepted input owns provenance across all three SDKs. Explicit
   // false restores normal replies when the user steers a private message turn.
   let attributedEvent = activeInputId
@@ -221,9 +226,12 @@ export function prepareSessionEvent(
           ...event.agentMeta,
           botPrivateReply: isBotPrivateInput(activeInputId) || (taskCoordination && !event.runtimeRecovery),
           botTaskCoordination: taskCoordination && !event.runtimeRecovery,
+          // The user input this turn answers; companion chats can show it above the reply
+          // (cindy-bots-runtime.md「回复对应的消息」). Hidden trigger inputs are skipped on display.
+          replyToClientId: activeInputId,
           // A group-lane turn is delivered into the group chat; its hidden Session never
           // raises completion/error attention of its own (docs/product-rules/bot-group-chat.md §3).
-          ...(isBotGroupClientId(activeInputId) ? { botGroupLane: true } : {}),
+          ...(groupLaneInputClientId && isBotGroupClientId(groupLaneInputClientId) ? { botGroupLane: true } : {}),
         },
       }
     : event;
@@ -584,6 +592,7 @@ export function prepareSessionEvent(
     event,
     attributedEvent,
     botTaskResultInputIds,
+    groupLaneInputClientId,
     taskCoordination,
     broadcastEvent,
     eventAgentMeta,

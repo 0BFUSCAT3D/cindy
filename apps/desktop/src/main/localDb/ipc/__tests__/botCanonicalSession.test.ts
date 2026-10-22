@@ -1,8 +1,6 @@
 import { captureAgentRequest } from '../../../maker-ipc/forwardedRequest';
 import { admitTaskAction, TaskActionAuthorizationError } from '../../../maker-ipc/taskActionAuthorization';
 import { formatForwardedRequest } from '../../../../shared/forwardedRequest';
-const forwarded = (text: string) => formatForwardedRequest({ userText: null }, text);
-const supplement = (text: string): string => JSON.parse(text.split('\n').find(line => line.startsWith('Agent supplement:'))!.slice('Agent supplement:'.length));
 import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../../../maker-ipc/acceptedCallbackRunner';
 import { setSessionOpeningModelAdmission } from '../../sessionOpening';
 import { ScriptTarget, transpileModule } from 'typescript';
@@ -521,9 +519,10 @@ beforeEach(async () => {
   h.nextSession = 0;
   h.providers = [{
     id: 'xd', connected: true, source: 'builtin', agents: ['pi'], access: { kind: 'managed' },
+    auth: { method: 'managed' },
     routing: { pi: { upstream: 'https://example.invalid', authStrategy: 'gateway-key' } },
-    models: { pi: [{ id: 'z-ai/glm-5.3-flash', efforts: ['high'], defaultEffort: 'high',
-      newSessionDefault: ['pi'], supportsImageInput: true }] },
+    models: { pi: ['z-ai/glm-5.3-flash', 'auto'].map(id => ({ id, efforts: ['high'], defaultEffort: 'high',
+      newSessionDefault: ['pi'], supportsImageInput: true })) },
   }] as ProviderView[];
   h.worktrees = [];
   h.isSessionAlive.mockReturnValue(false);
@@ -686,6 +685,7 @@ describe('Bot canonical Session lifecycle', () => {
   it('creates the first canonical task on Codex when only its subscription is connected', async () => {
     h.providers = [{
       id: 'openai', source: 'builtin', connected: true, agents: ['codex'],
+      auth: { method: 'oauth' },
       access: { kind: 'subscription', product: 'ChatGPT' },
       routing: { codex: { upstream: 'https://example.invalid', authStrategy: 'oauth-passthrough' } },
       models: { codex: [{ id: 'gpt-5.6-sol', mode: 'chat', status: 'active', efforts: ['medium'], defaultEffort: 'medium' }] },
@@ -719,7 +719,7 @@ describe('Bot canonical Session lifecycle', () => {
 
     expect(capabilities.modelChain?.[0]).toMatchObject({
       harness: 'pi',
-      model: 'z-ai/glm-5.3-flash',
+      model: 'auto',
       providerId: 'xd',
       effort: 'high',
     });
@@ -1774,6 +1774,82 @@ describe('Bot canonical Session lifecycle', () => {
     const fresh = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey, title: '[TG·群] 100123' });
     expect(fresh).toMatchObject({ ok: true, created: true });
     expect(fresh.ok && fresh.sessionId).not.toBe(first.sessionId);
+  });
+
+  it('opens one private-chat topic per main-chat message, with its own context note and timeline entry', async () => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    const chatId = created.session.id;
+    const insert = h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+    // Host-written messages such as the opening hello carry colons in their clientId.
+    insert.run('m-root', 'bot-opening:inv-1', chatId, 'user', JSON.stringify({ text: 'Plan the launch post' }), 1_000);
+    const root = { botId: 'bot-1', rootSessionId: chatId, rootClientId: 'bot-opening:inv-1' };
+
+    // A root outside the companion's main Chat cannot carry a topic.
+    await expect(invoke('local-db:bots:dm-thread:ensure', { ...root, rootClientId: 'missing' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'ROOT_UNAVAILABLE' });
+    const first = await invoke('local-db:bots:dm-thread:ensure', { ...root, title: 'Plan the launch post' });
+    expect(first).toMatchObject({ ok: true, created: true });
+    await expect(invoke('local-db:bots:dm-thread:ensure', root))
+      .resolves.toEqual({ ok: true, sessionId: first.sessionId, created: false });
+    const canonical = h.sqlite!.prepare('SELECT working_dir AS workingDir, permission_mode AS permissionMode FROM sessions WHERE id = ?')
+      .get(chatId);
+    expect(h.sqlite!.prepare(`SELECT s.source, s.working_dir AS workingDir, s.permission_mode AS permissionMode,
+        l.role, l.route_key AS routeKey FROM sessions s JOIN bot_session_links l ON l.session_id = s.id WHERE s.id = ?`)
+      .get(first.sessionId)).toEqual({ source: 'bot', role: 'thread', routeKey: `dm-thread:${chatId}:bot-opening:inv-1`, ...canonical as object });
+    const [profile] = await invoke('local-db:bots:list', undefined);
+    expect(profile.sessions).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: first.sessionId, kind: 'thread', threadRoot: { rootSessionId: chatId, rootClientId: 'bot-opening:inv-1' },
+    })]));
+
+    // Opened and left empty: no entry under the root yet.
+    await expect(invoke('local-db:bots:dm-thread:list', { botId: 'bot-1', rootSessionId: chatId })).resolves.toEqual([]);
+    insert.run('t-1', 'topic-1', first.sessionId, 'user', JSON.stringify({ text: 'Shorter, please' }), 2_000);
+    insert.run('t-2', 'topic-2', first.sessionId, 'assistant', JSON.stringify('Here is a shorter draft.'), 3_000);
+    await expect(invoke('local-db:bots:dm-thread:list', { botId: 'bot-1', rootSessionId: chatId })).resolves.toEqual([{
+      sessionId: first.sessionId, rootSessionId: chatId, rootClientId: 'bot-opening:inv-1',
+      replyCount: 2, lastReplyAt: 3_000, lastAssistantAt: 3_000, createdAt: expect.any(Number),
+    }]);
+
+    // The topic's model context names its root; a rewound root is reported as unavailable, not guessed.
+    const { readBotDmThreadContextNote } = await import('../../../maker-ipc/botDmThreadContext');
+    await expect(readBotDmThreadContextNote(first.sessionId)).resolves.toContain('Plan the launch post');
+    await expect(readBotDmThreadContextNote(chatId)).resolves.toBeNull();
+    h.sqlite!.prepare("UPDATE messages SET rewind_at = 5000 WHERE id = 'm-root'").run();
+    const note = await readBotDmThreadContextNote(first.sessionId);
+    expect(note).toContain('不可用');
+    expect(note).not.toContain('Plan the launch post');
+  });
+
+  it('gives the companion the quoted message of a quote reply, re-read from its own chat', async () => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    const chatId = created.session.id;
+    h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('m-quoted', 'quoted-1', chatId, 'assistant', JSON.stringify('Ship the launch post on Friday.'), 1_000);
+    const { readReplyQuoteNote } = await import('../../../maker-ipc/chatReplyQuoteNote');
+    const sent = (replyQuote: unknown) => JSON.stringify({ text: 'Why Friday?', images: [], files: [], replyQuote });
+    // The original comes from the chat itself; the excerpt the renderer sent is display only.
+    const note = await readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'assistant', excerpt: 'forged' }));
+    expect(note).toContain('Ship the launch post on Friday.');
+    expect(note).not.toContain('forged');
+    await expect(readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'system', excerpt: '' }))).resolves.toBeNull();
+    await expect(readReplyQuoteNote(chatId, JSON.stringify({ text: 'no quote', images: [], files: [] }))).resolves.toBeNull();
+    // A quote that points elsewhere or at a rewound row says the original is unavailable.
+    await expect(readReplyQuoteNote('other-session', sent({ clientId: 'quoted-1', role: 'assistant', excerpt: '' })))
+      .resolves.toContain('不可用');
+    h.sqlite!.prepare("UPDATE messages SET rewind_at = 5000 WHERE id = 'm-quoted'").run();
+    const rewound = await readReplyQuoteNote(chatId, sent({ clientId: 'quoted-1', role: 'assistant', excerpt: '' }));
+    expect(rewound).toContain('不可用');
+    expect(rewound).not.toContain('Ship the launch post');
+    // An owner message with only an attachment is still there, not "unavailable".
+    h.sqlite!.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('m-image', 'image-1', chatId, 'user', JSON.stringify({ text: '', images: [{ url: 'x', originalName: 'chart.png' }], files: [] }), 2_000);
+    const imageOnly = await readReplyQuoteNote(chatId, sent({ clientId: 'image-1', role: 'user', excerpt: 'chart.png' }));
+    expect(imageOnly).toContain('chart.png');
+    expect(imageOnly).not.toContain('不可用');
   });
 
   it('records runtime preparation separately from successful Agent startup', async () => {
@@ -4039,14 +4115,7 @@ describe('Bot Session task end-to-end runtime', () => {
      * dispatchBotSessionMessage → sendToSessionInternal）。判据顺序刻意与真机一致：
      * 任何一条在真机上会挡住会话启动的门，这里也必须挡住。
      */
-    const dispatchDirect = vi.fn(async (params: {
-      targetSessionId: string;
-      dispatcherSessionId?: string;
-      message: string;
-      persistedContent?: string;
-      clientId?: string;
-      onAccepted?: (replayed?: boolean) => void | Promise<void>;
-    }) => {
+    const dispatchDirect = vi.fn(async (params: Parameters<Parameters<typeof createBotDelegationService>[0]['dispatch']>[0]) => {
       if (params.clientId && hasMessage(params.targetSessionId, params.clientId)) {
         await params.onAccepted?.(true);
         return {
@@ -4421,6 +4490,36 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({
         groupId: 'fixture', clientId: `bot-delegation-task:${result.delegationId}:1:result`, threadRootId: 'root-1' }));
     } finally { release(); runtime.dispose(); }
+  });
+
+  it('reports work started in a private-chat topic back into that topic, which alone sees it beside the main chat', async () => {
+    await seedPair();
+    const seedTopic = (id: string, root: string) => {
+      h.sqlite!.prepare(`INSERT INTO sessions (id, source, status, working_dir, model, agent_kind, provider_id, permission_mode, created_at, updated_at)
+        SELECT ?, source, status, working_dir, model, agent_kind, provider_id, permission_mode, created_at, updated_at FROM sessions WHERE id='session-1'`).run(id);
+      h.sqlite!.prepare(`INSERT INTO bot_session_links (id, bot_id, session_id, profile_version, role, route_key, created_at)
+        VALUES (?, 'bot-a', ?, 1, 'thread', ?, 1)`).run(`${id}-link`, id, `dm-thread:session-1:${root}`);
+    };
+    seedTopic('dm-topic', 'root-1');
+    seedTopic('other-topic', 'root-2');
+    const runtime = createDelegationRuntime({ readCallerPermission: vi.fn(() => ({ mode: 'auto' as const, generation: 2 })) });
+    try {
+      const result = await runtime.delegation.startSessionTask({ callerSessionId: 'dm-topic', objective: 'Fixture-only topic task' });
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result).not.toHaveProperty('completionDestination');
+      expect(h.sqlite!.prepare('SELECT parent_session_id FROM bot_delegations WHERE id=?').pluck().get(result.delegationId)).toBe('dm-topic');
+      await runtime.runPendingTurns();
+      // The result lands in the topic and wakes the topic, never the main private chat.
+      expect(h.sqlite!.prepare('SELECT session_id FROM messages WHERE client_id=?').pluck()
+        .all(`bot-delegation-result:${result.delegationId}:1`)).toEqual(['dm-topic']);
+      expect(runtime.dispatch.mock.calls.some(([params]) => params.targetSessionId === 'dm-topic')).toBe(true);
+      expect(runtime.dispatch.mock.calls.some(([params]) => params.targetSessionId === 'session-1')).toBe(false);
+      expect(await runtime.delegation.getSessionTask('dm-topic', result.delegationId)).toMatchObject({ ok: true });
+      expect(await runtime.delegation.getSessionTask('other-topic', result.delegationId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      // The owner still manages everything from the main private chat.
+      expect(await runtime.delegation.getSessionTask('session-1', result.delegationId)).toMatchObject({ ok: true });
+    } finally { runtime.dispose(); }
   });
 
   it('never lets the result card overtake a start card still on its way to the group', async () => {
@@ -5478,7 +5577,7 @@ describe('Bot Session task end-to-end runtime', () => {
       if (boundary === 'valid') {
         expect(result).toMatchObject({ ok: true });
         expect(operation === 'edit' ? replace : remove).toHaveBeenCalledOnce();
-        if (operation === 'edit') expect(queue[0].persistedContent).toBe(forwarded('Updated input'));
+        if (operation === 'edit') expect(queue[0].persistedContent).toBe('Updated input');
         else expect(queue).toEqual([]);
         expect(runtime.flushInput).toHaveBeenCalledOnce();
       } else {
@@ -6328,6 +6427,8 @@ describe('Bot Session task end-to-end runtime', () => {
     await seedPair();
     const runtime = createDelegationRuntime({
       replyFor: () => '结论：三个版本都兼容。',
+      captureRequest: (id, text) => captureAgentRequest(id, text,
+        { clientId: 'owner-input', authoredText: '查一下兼容矩阵，不要发布。' }, async () => [], true),
     });
     try {
       const delegated = await runtime.delegation.startSessionTask({
@@ -6371,7 +6472,9 @@ describe('Bot Session task end-to-end runtime', () => {
       const completionDispatch = runtime.dispatch.mock.calls
         .map(([params]) => params)
         .find((params) => params.clientId === completionClientId);
-      expect(supplement(completionDispatch!.message).startsWith('[任务回执]')).toBe(true);
+      expect(completionDispatch!.message.startsWith('[任务回执]')).toBe(true);
+      expect(completionDispatch!.message).not.toContain('User’s original words:');
+      expect(completionDispatch!.autoReviewUserText).toEqual({ kind: 'agent-request' });
       expect(completionDispatch?.persistedContent).toBe(`${UI_ACTION_TRIGGER_PREFIX}${completionDispatch?.message}`);
       // 发起方那一侧也真的被唤醒了（否则「结果回到 A 的对话」只是写了一行数据库）。
       expect(runtime.started.some((turn) => turn.sessionId === 'session-1')).toBe(true);
@@ -7338,7 +7441,7 @@ describe('Bot Session task end-to-end runtime', () => {
     let original = '  只检查\n不要发布  ';
     let unavailable = true;
     const captureRequest = (id: string, text: string) => captureAgentRequest(id, text,
-      { clientId: 'human', authoredText: original }, async () => []);
+      { clientId: 'human', authoredText: original }, async () => [], true);
     const runtime = createDelegationRuntime({ captureRequest, transientUnavailable: () => unavailable });
     let restored: ReturnType<typeof createDelegationRuntime> | undefined;
     try {
@@ -7372,9 +7475,9 @@ describe('Bot Session task end-to-end runtime', () => {
         const result = await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text });
         expect(result).toMatchObject({ ok: true, childSessionId: task.childSessionId });
         const sent = runtime.dispatch.mock.calls.filter(([input]) => input.targetSessionId === task.childSessionId).at(-1)![0];
-        expect(sent.persistedContent).toBe(forwarded(text));
-        expect(supplement(sent.message).split(objective)).toHaveLength(2);
-        expect(supplement(sent.message).split(text)).toHaveLength(2);
+        expect(sent.persistedContent).toBe(text);
+        expect(sent.message.split(objective)).toHaveLength(2);
+        expect(sent.message.split(text)).toHaveLength(2);
         expect(sent.message).not.toContain('Previous objective:');
         expect(sent.message).not.toContain('R'.repeat(100));
         if (index > 1) expect(sent.message).not.toContain(`Follow-up ${index - 1}: `);
@@ -7382,8 +7485,8 @@ describe('Bot Session task end-to-end runtime', () => {
       }
       const inputs = h.sqlite!.prepare("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid").all(task.childSessionId) as Array<{ content: string }>;
       expect(inputs).toHaveLength(71);
-      expect(inputs[0].content).toBe(forwarded(objective));
-      for (let index = 1; index <= 70; index += 1) expect(supplement(inputs[index].content).startsWith(`Follow-up ${index}: `)).toBe(true);
+      expect(inputs[0].content).toBe(objective);
+      for (let index = 1; index <= 70; index += 1) expect(inputs[index].content.startsWith(`Follow-up ${index}: `)).toBe(true);
     } finally { runtime.dispose(); }
   });
 
@@ -7398,7 +7501,7 @@ describe('Bot Session task end-to-end runtime', () => {
           { kind: 'message', text: `Queued requirement ${index}.`, idempotencyKey: `input-${index}` })).toMatchObject({ ok: true });
       }
       const inputs = h.sqlite!.prepare("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid").all(task.childSessionId);
-      expect(inputs).toEqual(['Stable objective.', 'Queued requirement 1.', 'Queued requirement 2.'].map(text => ({ content: forwarded(text) })));
+      expect(inputs).toEqual(['Stable objective.', 'Queued requirement 1.', 'Queued requirement 2.'].map(text => ({ content: text })));
       expect(h.sqlite!.prepare('SELECT objective FROM bot_delegations WHERE id = ?').pluck().get(task.delegationId)).toBe('Stable objective.');
       expect(runtime.started.filter(turn => turn.sessionId === task.childSessionId)).toHaveLength(3);
     } finally { runtime.dispose(); }
@@ -7454,9 +7557,9 @@ describe('Bot Session task end-to-end runtime', () => {
       const oldRows = h.sqlite!.prepare('SELECT id, content FROM messages WHERE session_id = ? ORDER BY rowid').all(task.childSessionId);
       expect(await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'message', text: 'Only this new request.' })).toMatchObject({ ok: true });
       const sent = runtime.dispatch.mock.calls.filter(([input]) => input.targetSessionId === task.childSessionId).at(-1)![0];
-      expect(sent.persistedContent).toBe(forwarded('Only this new request.'));
+      expect(sent.persistedContent).toBe('Only this new request.');
       expect(sent.message).not.toContain(legacy);
-      if (history === 'available') expect(supplement(sent.message)).toContain(objective);
+      if (history === 'available') expect(sent.message).toContain(objective);
       else {
         expect(sent.message).toContain('could not be recovered');
         expect(sent.message).not.toContain(objective);
@@ -7487,7 +7590,7 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(sent).toHaveLength(1);
       expect(sent[0][0].message).toContain(objective);
       expect(sent[0][0].message).toContain(text);
-      if (boundary === 'queued') expect(sent[0][0].persistedContent).toBe(forwarded(text));
+      if (boundary === 'queued') expect(sent[0][0].persistedContent).toBe(text);
       else {
         expect(sent[0][0].message).toContain('Do not repeat completed tool actions');
         expect(sent[0][0].persistedContent).not.toBe(text);
@@ -7495,7 +7598,7 @@ describe('Bot Session task end-to-end runtime', () => {
       }
       await after.delegation.restore();
       expect(after.started.filter(turn => turn.sessionId === task.childSessionId)).toHaveLength(1);
-      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND content = ?").pluck().get(task.childSessionId, forwarded(text))).toBe(1);
+      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND content = ?").pluck().get(task.childSessionId, text)).toBe(1);
     } finally { after.dispose(); }
   });
 
@@ -7859,11 +7962,11 @@ describe('Bot Session task end-to-end runtime', () => {
       const edit = (id: string) => runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'edit', queuedMessageId: id, text: 'revised' });
       expect(await edit('foreign')).toMatchObject({ ok: false, errorCode: 'NOT_AUTHORIZED' });
       expect(await edit('mine')).toMatchObject({ ok: true, delivery: 'queued' });
-      expect(queue[0].persistedContent).toBe(forwarded('revised'));
+      expect(queue[0].persistedContent).toBe('revised');
       consumingClientIds.push('mine');
       expect(await edit('mine')).toMatchObject({ ok: false, errorCode: 'MESSAGE_CONSUMING' });
       expect(await runtime.delegation.getSessionTask('session-1', task.delegationId, 'mine'))
-        .toMatchObject({ task: { queue: [{ queuedMessageId: 'mine', message: forwarded('revised'), consuming: true }], message_receipt: { state: 'consuming' } } });
+        .toMatchObject({ task: { queue: [{ queuedMessageId: 'mine', message: 'revised', consuming: true }], message_receipt: { state: 'consuming' } } });
       consumingClientIds.length = 0;
       expect(await runtime.delegation.messageSessionTask('session-1', task.delegationId, { kind: 'withdraw', queuedMessageId: 'mine' }))
         .toMatchObject({ ok: true, delivery: 'withdrawn' });
@@ -8686,13 +8789,13 @@ describe('Bot Session task end-to-end runtime', () => {
         targetSessionId: started.childSessionId,
         clientId: childClientId,
         // 来源由 origin 统一表达(派发时主机前置 `[消息来源]`),正文不再手写前缀。
-        message: forwarded(instruction),
-        persistedContent: forwarded(instruction),
+        message: instruction,
+        persistedContent: instruction,
       }));
       const readMessage = (sessionId: string, clientId: string) => h.sqlite!.prepare(
         'SELECT role, content, agent_meta AS agentMeta FROM messages WHERE session_id = ? AND client_id = ?',
       ).get(sessionId, clientId) as { role: string; content: string; agentMeta: string };
-      expect(supplement(readMessage(started.childSessionId, childClientId).content)).toBe(instruction);
+      expect(readMessage(started.childSessionId, childClientId).content).toBe(instruction);
       const trace = readMessage('session-1', `bot-delegation-interject-mirror:${started.delegationId}:follow-up-1`);
       expect(trace).toMatchObject({ role: 'assistant', content: '' });
       expect(JSON.parse(trace.agentMeta).botCollaboration.role).toBe('interjection');
@@ -9634,12 +9737,15 @@ describe('Teammate model selection shares profile persistence and route reconcil
       id: JSON.stringify(['pi', 'xd', model.id]), model };
   }
 
-  it('saves only its own explicit model chain, applies it through the send resolver, and resets to the live default', async () => {
+  // DB regression: a per-teammate reset follows the teammate default even if
+  // the new-task composer changes later; previously the two were coupled.
+  it('saves its own model chain, applies it through the send resolver, and resets independently of new tasks', async () => {
     const { service, sessionId, id } = await setupModelControl();
     await invoke('local-db:bots:create', { id: 'bot-2', name: 'Other teammate', avatar: '🐈' });
     const before = await invoke('local-db:bots:get', 'bot-1');
     const other = await invoke('local-db:bots:get', 'bot-2');
     const appDefault = getSelectedNewMakerRoute(h.ownerScopeKey);
+    const botDefault = await modelSettings.readEffectiveBotModelChain({ modelChainOverride: null });
     expect(await service.updateProfile({ callerSessionId: sessionId, expectedVersion: 1,
       modelChain: [{ id, effort: 'low', fastMode: false }] })).toMatchObject({ ok: true, effective: 'next-turn' });
     const after = await invoke('local-db:bots:get', 'bot-1');
@@ -9661,10 +9767,10 @@ describe('Teammate model selection shares profile persistence and route reconcil
     expect(await service.updateProfile({ callerSessionId: sessionId, expectedVersion: 2, modelChain: null })).toMatchObject({ ok: true });
     const restored = await invoke('local-db:bots:get', 'bot-1');
     expect(restored.capabilities.modelChainOverride).toBeNull();
-    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual([appDefault]);
+    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual(botDefault);
     const nextDefault = { ...appDefault!, effort: 'low' };
     setNewMakerDraftCache({ selectedRoute: nextDefault, lastByVendor: {}, effortByModel: {}, fastModeByModel: {} }, h.ownerScopeKey);
-    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual([nextDefault]);
+    expect(await modelSettings.readEffectiveBotModelChain(restored.capabilities)).toEqual(botDefault);
   });
 
   it.each(['disabled', 'disconnected', 'effort', 'fast', 'duplicate', 'unknown', 'owner', 'foreign'] as const)(

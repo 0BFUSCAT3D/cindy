@@ -1,3 +1,9 @@
+import { BotChatQuoteInBubble } from '@/features/bots/BotChatQuoteViews';
+import { useBotChatQuote } from '@/features/bots/botChatQuoteContext';
+import { botReplyQuoteFor } from '@/features/bots/botDmQuote';
+import type { ChatReplyQuote } from '../../../shared/chatReplyQuote';
+import { BotDmThreadPreview } from '@/features/bots/BotDmThreadPreview';
+import { useBotDmThreadForMessage } from '@/features/bots/botDmThreadsContext';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 import type { ImMessageSource } from '../../../shared/imMessageSource';
 import { isSharedTaskPeer } from '@cindy/device-link';
@@ -201,6 +207,8 @@ interface UserMessageProps {
   isLastUserMessage?: boolean;
   /** 伙伴对话使用常显、无 Fork 的轻量消息操作栏。 */
   simplifiedBotConversation?: boolean;
+  /** 伙伴私聊引用回复:本条回复的那条消息,气泡正文上方显示引用块。 */
+  replyQuote?: ChatReplyQuote;
   /** scheduler 注入的消息来源标记;存在时在气泡上方渲染"由自动化任务发送"标签。 */
   automationOrigin?: MessageAutomationOrigin;
   /** Hook 来源元数据;存在时渲染左对齐 Cindy 署名任务卡片(替代右对齐气泡)。 */
@@ -840,6 +848,7 @@ export function UserMessage({
   isFirstUserMessage,
   isLastUserMessage,
   simplifiedBotConversation = false,
+  replyQuote,
   automationOrigin,
   hookSource,
   sourceDevice,
@@ -1069,10 +1078,17 @@ export function UserMessage({
           deviceId: getStickySessionDeviceId(sessionId),
         })
       : undefined;
+  // 伙伴私聊里「回复」是引用回复:引用块等在输入框上方(cindy-bots-runtime.md「私聊引用回复」)。
+  const botQuote = useBotChatQuote(simplifiedBotConversation ? sessionId : undefined);
   const handleAddToChat = useCallback(() => {
+    if (botQuote && messageClientId) {
+      const quote = botReplyQuoteFor({ clientId: messageClientId, role: 'user', content, images, files });
+      if (quote) botQuote.quote(quote);
+      return;
+    }
     if (!sessionId || !messageDeepLink) return;
     insertSessionLinkIntoComposer({ targetSessionId: sessionId, href: messageDeepLink });
-  }, [messageDeepLink, sessionId]);
+  }, [botQuote, content, files, images, messageClientId, messageDeepLink, sessionId]);
 
   // 分享为图片:进入选择模式并预选本条(入口那条天然该已勾选,省一次点击)。
   const handleShareAsImage = useMemo(
@@ -1256,6 +1272,11 @@ export function UserMessage({
   // 伙伴私聊：操作栏挂在气泡左侧、悬停浮出（与群聊同一 BubbleHoverToolbar）；没有气泡时仍在下方。
   const bubbleActions = simplifiedBotConversation && !editing && !orcaCommunication && !hookSource
     && Boolean(inlineQuoteCount > 0 || displayBubbleBody.trim() || ghostChipDisplay || attachmentsInBubble);
+  // 私聊话题：只有本机伙伴主对话里、主人自己发的消息能开话题（cindy-bots-runtime.md「私聊话题」）。
+  const dmThread = useBotDmThreadForMessage(
+    simplifiedBotConversation && !sharedGuest && !isBlocked && !automationOrigin && !orcaCommunication && !hookSource ? sessionId : undefined,
+    messageClientId,
+  );
 
   // Attachments belong to the user message independently of its visual shell.
   const messageActions = (
@@ -1267,6 +1288,12 @@ export function UserMessage({
       hovered={hovered}
       simplifiedBotConversation={simplifiedBotConversation}
       compact={bubbleActions}
+      replyAction={dmThread && bubbleActions ? {
+        onClick: dmThread.open,
+        label: dmThread.thread
+          ? t('bots.groupChat.server.openTopic', { count: dmThread.thread.replyCount })
+          : t('bots.groupChat.server.startTopic'),
+      } : undefined}
       onFork={!isBlocked && canFork ? handleFork : undefined}
       onAddToChat={!isBlocked && messageDeepLink ? handleAddToChat : undefined}
       onShareAsImage={handleShareAsImage}
@@ -1551,6 +1578,11 @@ export function UserMessage({
                         }
                       />
                     )}
+                    {replyQuote && botQuote ? (
+                      <div className="mb-1.5 flex min-w-0">
+                        <BotChatQuoteInBubble quote={replyQuote} context={botQuote} align="left" />
+                      </div>
+                    ) : null}
                     {collapseMeasureEnabled && (
                       /* 收起判定的测量镜像:与正文同宽(inset-x-4 对应 px-4)、同字号
                  同换行规则的纯文本。max-h-0 + overflow-hidden 让它不占布局、
@@ -1760,6 +1792,10 @@ export function UserMessage({
                 right-aligned, order [time][copy][fork][edit][undo][more]。被拦消息只保留
             编辑和链接复制,fork/rewind/delete 对未发消息无意义。 */}
                 {!bubbleActions && messageActions}
+                {dmThread?.thread ? (
+                  <BotDmThreadPreview align="right" thread={dmThread.thread} bot={dmThread.bot}
+                    unread={dmThread.unread} onOpen={dmThread.open} />
+                ) : null}
               </>
             )}
           </>
