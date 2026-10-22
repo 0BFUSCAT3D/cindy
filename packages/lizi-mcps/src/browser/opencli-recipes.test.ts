@@ -8,10 +8,62 @@ import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // Review #6826: goto must await the requested DOM settle interval on both
+  // initial open and existing-tab navigation. Unit tier, real page JS with
+  // fake timers/DOM; no prior adapter test exercised navigation options.
+  it.each([undefined, 'existing-target'])('honors navigation settlement from target %s', async (targetId) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', { body: {} });
+    vi.stubGlobal('MutationObserver', class { observe() {} disconnect() {} });
+    const call = vi.fn(async (request: BrowserControlRequest) => ({
+      ok: true, action: request.action,
+      data: request.action === 'act'
+        ? { result: await Function(`return (${request.request!.fn})`)()() }
+        : { targetId: 'live-target' },
+    }));
+    const page = new OpenCliPage({ targetId, call });
+    let completed = false;
+    const navigation = page.goto('https://example.test', { settleMs: 80 }).then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(79);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await navigation;
+    expect(completed).toBe(true);
+    expect(call.mock.calls[0][0].action).toBe(targetId ? 'navigate' : 'open');
+    call.mockClear();
+    await page.goto('https://example.test/next', { waitUntil: 'none', settleMs: 80 });
+    expect(call.mock.calls.map(([request]) => request.action)).toEqual(['navigate']);
+  });
+
+  // Review #6826: a fresh tab must remain selected when recovery closes the old
+  // tab by ID or index; closing the current tab clears it. Unit/public page API.
+  it.each(['old-target', 0])('preserves the fresh target when closing old tab %s', async (target) => {
+    const calls: BrowserControlRequest[] = [];
+    const page = new OpenCliPage({ targetId: 'old-target', call: async (request) => {
+      calls.push(request);
+      return { ok: true, action: request.action, data: request.action === 'tabs'
+        ? { tabs: [{ targetId: 'old-target' }, { targetId: 'fresh-target' }] }
+        : request.action === 'close' ? { tabId: request.targetId }
+        : { sessionId: 's', cookies: [], result: 'fresh content' } };
+    } });
+    await page.getCookies();
+    page.setActivePage('fresh-target');
+    await page.closeTab(target);
+    expect(page.getActivePage()).toBe('fresh-target');
+    expect(await page.evaluate('document.title')).toBe('fresh content');
+    expect(calls.find(call => call.action === 'close')?.targetId).toBe('old-target');
+    expect(calls.find(call => call.recipeCommand?.method === 'Cindy.end')?.targetId).toBe('old-target');
+    expect(calls.at(-1)?.targetId).toBe('fresh-target');
+    await page.closeTab();
+    expect(page.getActivePage()).toBeUndefined();
+    await page.dispose();
+  });
+
   it("executes a legacy alias through the real adapter with its original parameter name", async () => {
     const fetch = vi.fn(
       async (_url: string) =>
@@ -61,10 +113,8 @@ describe("bundled OpenCLI recipes", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toMatchObject([{ rank: 1, title: "Example" }]);
     expect(calls[1].targetId).toBe("new-target");
-    expect(
-      (calls.find((call) => call.action === "act")!.request as { fn: string })
-        .fn,
-    ).toContain("ps=20");
+    expect(calls.filter(call => call.action === 'act').map(call => call.request?.fn))
+      .toEqual(expect.arrayContaining([expect.stringContaining('ps=20')]));
   });
 
   it("rejects invalid numeric inputs before any browser operation", async () => {

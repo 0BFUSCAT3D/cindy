@@ -2,6 +2,35 @@ import { describe, expect, it, vi } from "vitest";
 import { RecipeBrowserSessions } from "./recipe-sessions.js";
 
 describe("recipe browser sessions", () => {
+  // Review #6826: a valid large response must be distinguishable from malformed
+  // JSON. Public session capture/read entry; unit tier. Existing small-body
+  // coverage did not cross the one-million-character boundary or cover base64.
+  it.each([[999_999, false], [1_000_000, false], [1_000_001, false], [1_000_001, true]] as const)(
+    'reports truncation for body length %s (base64=%s)', async (length, base64Encoded) => {
+      const sessions = new RecipeBrowserSessions();
+      let event = (_method: string, _params: Record<string, unknown>) => {};
+      const body = 'x'.repeat(length);
+      const id = sessions.begin('target', {
+        send: async () => ({ body, base64Encoded }),
+        subscribe: listener => { event = listener; return () => {}; },
+        dispose: () => {},
+      });
+      try {
+        await sessions.call('target', id, 'Cindy.captureStart');
+        event('Network.requestWillBeSent', { requestId: 'r', request: { url: 'https://example.test/api' } });
+        event('Network.loadingFinished', { requestId: 'r' });
+        await Promise.resolve();
+        const result = await sessions.call('target', id, 'Cindy.captureRead') as { entries: Array<Record<string, unknown>> };
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]).toMatchObject({
+          captureComplete: true, responseBodyFullSize: length,
+          responseBodyTruncated: length > 1_000_000,
+          responsePreview: `${base64Encoded ? 'base64:' : ''}${body.slice(0, 1_000_000)}`,
+        });
+      } finally { sessions.dispose(); }
+    },
+  );
+
   it("captures and drains responses across navigation without losing unfinished requests", async () => {
     const sessions = new RecipeBrowserSessions();
     let event: (

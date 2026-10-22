@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import {
   CDPBasePage,
   buildEvaluateExpression,
+  waitForDomStableJs,
   executeAdapter,
   loadAdapter,
   type BrowserCookie,
@@ -36,10 +37,11 @@ export class OpenCliPage extends CDPBasePage {
 
   private async request(
     request: BrowserControlRequest,
+    adoptTarget = true,
   ): Promise<Record<string, unknown>> {
     const result = await this.deps.call({
       ...request,
-      ...(this.targetId ? { targetId: this.targetId } : {}),
+      ...((request.targetId ?? this.targetId) ? { targetId: request.targetId ?? this.targetId } : {}),
     });
     if (!result.ok)
       throw new Error(result.message ?? `Browser ${request.action} failed`);
@@ -49,7 +51,7 @@ export class OpenCliPage extends CDPBasePage {
         `Browser interaction requires attention: ${JSON.stringify(data.barrier)}`,
       );
     const target = data.targetId ?? data.tabId;
-    if (typeof target === "string") this.targetId = target;
+    if (adoptTarget && typeof target === "string") this.targetId = target;
     return data;
   }
 
@@ -61,12 +63,16 @@ export class OpenCliPage extends CDPBasePage {
     if (!this.targetId) throw new Error("Browser did not return a targetId");
   }
 
-  async goto(url: string): Promise<void> {
+  async goto(url: string, options?: { waitUntil?: 'load' | 'none'; settleMs?: number }): Promise<void> {
     if (!isHttpUrl(url))
       throw new Error("Recipe navigation requires an http(s) URL");
     if (!this.targetId) await this.request({ action: "open", url });
     else await this.request({ action: "navigate", url });
     this._lastUrl = url;
+    if (options?.waitUntil !== 'none') {
+      const maxMs = options?.settleMs ?? 1000;
+      if (maxMs > 0) await this.evaluate(waitForDomStableJs(maxMs, Math.min(500, maxMs)));
+    }
   }
 
   async evaluate<T = unknown>(js: string): Promise<T>;
@@ -215,19 +221,28 @@ export class OpenCliPage extends CDPBasePage {
     return this.targetId;
   }
   async closeTab(target?: number | string): Promise<void> {
-    if (target !== undefined) await this.selectTab(target);
-    if (this.targetId) {
-      const sessionId = this.sessions.get(this.targetId);
+    let closing = this.targetId;
+    if (target !== undefined) {
+      const tabs = await this.tabs();
+      closing = typeof target === 'number' ? tabs[target]?.page : tabs.find(tab => tab.page === target)?.page;
+      if (!closing) throw new Error(`Browser tab not found: ${target}`);
+    }
+    if (closing) {
+      const sessionId = this.sessions.get(closing);
       if (sessionId) {
         await this.request({
           action: "recipeCommand",
+          targetId: closing,
           recipeCommand: { method: "Cindy.end", sessionId },
-        });
-        this.sessions.delete(this.targetId);
+        }, false);
+        this.sessions.delete(closing);
       }
-      await this.request({ action: "close" });
+      await this.request({ action: "close", targetId: closing }, false);
     }
-    this.targetId = undefined;
+    if (closing === this.targetId) {
+      this.targetId = undefined;
+      this._lastUrl = null;
+    }
   }
   // OpenCLI's closeWindow releases a lease. Cindy owns browser/tab lifetime.
   async closeWindow(): Promise<void> {}

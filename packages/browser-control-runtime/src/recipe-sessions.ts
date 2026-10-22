@@ -21,6 +21,8 @@ interface CaptureEntry {
   responseStatus?: number;
   responseHeaders?: Record<string, unknown>;
   responsePreview?: string;
+  responseBodyFullSize?: number;
+  responseBodyTruncated?: boolean;
   captureComplete?: boolean;
   error?: string;
 }
@@ -152,7 +154,10 @@ export class RecipeBrowserSessions {
         const body = (await session.transport.send("Network.getResponseBody", {
           requestId,
         })) as { body?: string; base64Encoded?: boolean };
-        entry.responsePreview = `${body.base64Encoded ? "base64:" : ""}${(body.body ?? "").slice(0, 1_000_000)}`;
+        const text = body.body ?? '';
+        entry.responseBodyFullSize = text.length;
+        entry.responseBodyTruncated = text.length > 1_000_000;
+        entry.responsePreview = `${body.base64Encoded ? "base64:" : ""}${text.slice(0, 1_000_000)}`;
         // Keep the total retained payload bounded as well as the entry count.
         let retained = [...capture.entries.values()].reduce(
           (sum, item) => sum + (item.responsePreview?.length ?? 0),

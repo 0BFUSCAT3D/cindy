@@ -9,6 +9,7 @@ export type { RecipeSecrets } from "./host.js";
 
 export { CDPBasePage } from "../src/browser/base-page.js";
 export { buildEvaluateExpression } from "../src/browser/utils.js";
+export { waitForDomStableJs } from "../src/browser/dom-helpers.js";
 export type {
   IPage,
   BrowserCookie,
