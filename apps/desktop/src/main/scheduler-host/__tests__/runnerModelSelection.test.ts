@@ -407,10 +407,17 @@ describe('MakerScheduleRunner model selection', () => {
     // device, with different effort/Fast support. Tier: unit (in-memory host).
     // Windows standalone: 14.30s (collection 10.08s, 72 tests 3.85s). Reuses the
     // existing file-level imports/fixture; no module resets or new real I/O.
-    it.each([undefined, 'studio'])('re-resolves a deleted relocated target at %s', async (agentDeviceId) => {
+    it.each([
+      { agentDeviceId: undefined, target: { status: 'deleted' } },
+      { agentDeviceId: 'studio', target: { status: 'deleted' } },
+      { agentDeviceId: undefined, target: { status: 'archived', source: 'bot' } },
+      { agentDeviceId: undefined, target: { status: 'archived', orcaRole: 'worker' as const } },
+      { agentDeviceId: undefined, target: { status: 'archived', orcaRemoteLead: '{"leadSessionId":"lead"}' } },
+      { agentDeviceId: undefined, target: { status: 'archived', source: 'review' } },
+    ])('preserves persistent replacement routing for an unavailable managed/deleted target: %j', async ({ agentDeviceId, target }) => {
       const h = createSessionHarness();
       Object.assign(h.session, { agentKind: 'codex', model: 'gpt-5.5' });
-      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'deleted', agentDeviceId: 'relocated' });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ ...target, agentDeviceId: 'relocated' });
       const resolveModelSelection = vi.fn(async (choice) => ({ ...choice, effort: 'high' as const }));
       const harness = createRunnerHarness(h, null, {
         acquirePendingAgentSwitch: async () => ({ release: vi.fn(), selection: {

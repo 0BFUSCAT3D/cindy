@@ -119,6 +119,29 @@ describe('ScriptScheduleRunner', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  // Same lifecycle boundary as the Agent runner: archived managed owners retain
+  // their previous pause behavior, including remote workers without orcaRole.
+  it.each([
+    { source: 'bot' },
+    { orcaRole: 'worker' },
+    { orcaRemoteLead: '{"leadSessionId":"lead"}' },
+    { source: 'review' },
+  ])('pauses an archived managed script owner before hooks: %j', async (managed) => {
+    const owner = { status: 'archived', ...managed };
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [owner] }) }) }) };
+    const pause = vi.fn();
+    const runner = new ScriptScheduleRunner({ broker: { call: vi.fn() }, logger: {},
+      getDb: () => db as never, scheduler: { pause } as never });
+    await expect(runner.fire({ ...schedule(), targetSessionId: 'owner', preRunHook: { command: 'check' } }, {
+      runId: 'run-owner', firedAt: 1, signal: new AbortController().signal,
+    })).resolves.toMatchObject({ skipped: true });
+    expect(pause).toHaveBeenCalledWith('script-schedule', { exemptRunId: 'run-owner' });
+    expect(owner.status).toBe('archived');
+    expect(restoreArchivedSessionForSend).not.toHaveBeenCalled();
+    expect(executePreRunHookMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('does not retire a live owner or treat a database outage as a missing owner', async () => {
     const pause = vi.fn();
     const limit = vi.fn().mockResolvedValue([{ status: 'active' }]);

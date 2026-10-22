@@ -18,7 +18,7 @@ import { sessions } from '../localDb/schema';
 import { buildSkipResultText, executePreRunHook, formatPreRunHookFailure } from './pre-run-hook';
 import { capAppend, killProcessTree } from './proc-util';
 import type { SchedulerDrizzleDb } from './storage';
-import { restoreScheduledTarget } from './restore-target';
+import { isManagedScheduledTarget, restoreScheduledTarget } from './restore-target';
 
 const PROTOCOL = 'cindy-script/1' as const;
 const LEGACY_PROTOCOL = 'xdt-maker-script/1' as const;
@@ -172,9 +172,10 @@ export class ScriptScheduleRunner {
         throw new Error('bound script execution requires session storage and scheduler');
       }
       const [owner] = await this.deps.getDb()
-        .select({ status: sessions.status, workingDir: sessions.workingDir, remoteHostId: sessions.remoteHostId }).from(sessions)
+        .select({ status: sessions.status, workingDir: sessions.workingDir, remoteHostId: sessions.remoteHostId,
+          source: sessions.source, orcaRole: sessions.orcaRole, orcaRemoteLead: sessions.orcaRemoteLead }).from(sessions)
         .where(eq(sessions.id, schedule.targetSessionId)).limit(1);
-      if (!owner || owner.status === 'deleted') {
+      if (!owner || owner.status === 'deleted' || (owner.status === 'archived' && isManagedScheduledTarget(owner))) {
         await this.deps.scheduler.pause(schedule.id, { exemptRunId: ctx.runId });
         return { sessionId: '', skipped: true,
           resultText: `Script stopped: target session ${owner?.status ?? 'missing'}` };
@@ -390,9 +391,9 @@ export class ScriptScheduleRunner {
             : result;
         writeFrame({ type: 'call_result', id: frame.id, ok: true, result: responseResult });
       } catch (error) {
-        // Recheck typed owner rejections after preparation. Only deleted/missing
-        // owners retire the schedule; archiving and transient dispatch failures
-        // leave the automation active for its next occurrence.
+        // Recheck typed owner rejections after preparation. Deleted/missing or
+        // archived managed owners retire the schedule; ordinary archives and
+        // transient dispatch failures keep it active for its next occurrence.
         const failure = safeError(error);
         if (schedule.targetSessionId && frame.method === 'sessions.dispatch'
           && (!frame.params?.target_session_id || frame.params.target_session_id === schedule.targetSessionId)

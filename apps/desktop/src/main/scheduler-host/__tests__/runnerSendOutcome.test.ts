@@ -423,7 +423,12 @@ describe('MakerScheduleRunner send outcome policy', () => {
     expect(h.send).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('retires a deleted target and releases an acquired lock (racing=%s)', async (racing) => {
+  it.each([
+    { racing: false, target: { status: 'deleted' } },
+    { racing: true, target: { status: 'deleted' } },
+    { racing: false, target: { status: 'archived', orcaRole: 'worker' } },
+    { racing: true, target: { status: 'archived', orcaRole: 'worker' } },
+  ])('retires an unavailable managed/deleted target and releases its lock: %j', async ({ racing, target }) => {
     const order: string[] = [];
     const h = createSessionHarness(async () => ({ accepted: true }));
     const releaseAgentSwitchLock = vi.fn(() => {
@@ -435,7 +440,7 @@ describe('MakerScheduleRunner send outcome policy', () => {
       order.push('notify');
     });
     mocks.getSessionRowSnapshot.mockResolvedValue({
-      status: 'deleted',
+      ...target,
       userSendAt: null,
       providerId: null,
     });

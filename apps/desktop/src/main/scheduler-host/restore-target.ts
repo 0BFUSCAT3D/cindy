@@ -8,14 +8,23 @@ import {
 } from '../localDb/ipc/sessions';
 import { withSessionRouteLock } from '../localDb/sessionRouteLock';
 
+type ScheduledTargetLifecycle = Pick<SessionRowSnapshot, 'source' | 'orcaRole' | 'orcaRemoteLead'>;
+
+/** Service-owned tasks keep their existing archive/retirement lifecycle. */
+export function isManagedScheduledTarget(target: ScheduledTargetLifecycle): boolean {
+  return target.source === 'bot' || target.source === 'review'
+    || target.orcaRole === 'worker' || !!target.orcaRemoteLead;
+}
+
 /** Scheduled input uses the ordinary restore boundary, including its managed-task
  * exclusions and multi-device status broadcast. Never archive again after a run. */
 export async function restoreScheduledTarget(
   sessionId: string,
-  target: Pick<SessionRowSnapshot, 'status' | 'workingDir' | 'remoteHostId'>,
+  target: Pick<SessionRowSnapshot, 'status' | 'workingDir' | 'remoteHostId'> & ScheduledTargetLifecycle,
   signal?: AbortSignal,
 ): Promise<void> {
   signal?.throwIfAborted();
+  if (isManagedScheduledTarget(target)) return;
   const dir = target.workingDir;
   const managed = !target.remoteHostId && dir && getManagedWorktreeBasePath(path.resolve(dir).replace(/\\/g, '/'));
   if (target.status !== 'archived' && !managed) return;

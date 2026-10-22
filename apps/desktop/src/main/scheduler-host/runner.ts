@@ -118,7 +118,7 @@ import { backfillSessionMeta } from './runners/_shared';
 import { buildSkipResultText, executePreRunHook, formatPreRunHookFailure } from './pre-run-hook';
 import { beginHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
 import { terminalErrorText } from '../im/shared/turnRetryNotice.js';
-import { restoreScheduledTarget } from './restore-target';
+import { isManagedScheduledTarget, restoreScheduledTarget } from './restore-target';
 
 const ALLOWED_EFFORT = new Set<string>([
   'minimal',
@@ -809,7 +809,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // and service-owned Bot lifecycle separate.
     if (schedule.source !== 'bot' && schedule.targetSessionId) {
       const target = await getSessionRowSnapshot(schedule.targetSessionId);
-      if (target?.status === 'deleted' && !schedule.persistentSession) {
+      if (target && !schedule.persistentSession && (target.status === 'deleted'
+        || (target.status === 'archived' && isManagedScheduledTarget(target)))) {
         return this.retireHeartbeat(schedule, ctx, target.status);
       }
       if (target && target.status !== 'deleted') {
@@ -996,7 +997,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
         holder.releaseAgentSwitchLock = undefined;
         // The user archived again during preparation. Consume this occurrence;
         // do not undo that newer action or pause the recurring automation.
-        if (row?.status === 'archived' && schedule.source !== 'bot') {
+        if (row?.status === 'archived' && schedule.source !== 'bot' && !isManagedScheduledTarget(row)) {
           return { sessionId, skipped: true, resultText: 'Scheduled target archived during preparation' };
         }
         // 持续任务的目标已删除/丢失时重新绑定；Bot 保留原有服务侧生命周期。

@@ -172,6 +172,28 @@ describe('MakerScheduleRunner pre-run hook cwd 解析', () => {
     expect(maker.createSession).not.toHaveBeenCalled();
   });
 
+  // PR #6864: source=user schedules can target managed sessions too. The target's
+  // lifecycle, not just the schedule source, must keep archive retirement intact.
+  it.each([
+    { source: 'bot' },
+    { orcaRole: 'worker' },
+    { orcaRemoteLead: '{"leadSessionId":"lead"}' },
+    { source: 'review' },
+  ])('retires an archived managed target before hooks: %j', async (managed) => {
+    const target = { status: 'archived', ...managed };
+    mocks.getSessionRowSnapshot.mockResolvedValue(target);
+    const { runner, maker } = createRunner(vi.fn() as never);
+    const pause = vi.fn();
+    runner.attachScheduler({ pause } as never);
+    await expect(runner.fire(baseSchedule({ targetSessionId: 'owner' }), createFireContext()))
+      .resolves.toMatchObject({ skipped: true });
+    expect(pause).toHaveBeenCalledWith('schedule-1', { exemptRunId: 'run-1' });
+    expect(target.status).toBe('archived');
+    expect(mocks.restoreArchivedSessionForSend).not.toHaveBeenCalled();
+    expect(mocks.executePreRunHook).not.toHaveBeenCalled();
+    expect(maker.createSession).not.toHaveBeenCalled();
+  });
+
   it('does not run the hook with an unrestored worktree snapshot', async () => {
     const target = { status: 'archived', workingDir: '/repo/.cindy-worktrees/task' };
     mocks.getSessionRowSnapshot.mockImplementation(async () => ({ ...target }));

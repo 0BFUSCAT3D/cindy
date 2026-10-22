@@ -13,7 +13,9 @@ import {
 } from '../cindy-brain/index.js';
 import { validateFsRelPath } from '../cindy-brain/fsSlot.js';
 import { tryGetOrcaCollabService } from '../maker-ipc/register.js';
-import { restoreArchivedSessionForSend } from '../localDb/ipc/sessions';
+import { getSessionRowSnapshotStrict, restoreArchivedSessionForSend } from '../localDb/ipc/sessions';
+import { assertReviewSessionExternalInputAllowed } from '../reviewer/reviewSessionInputPolicy';
+import { isManagedScheduledTarget } from './restore-target';
 import type { ScriptCapabilityBroker, ScriptCapabilityCall } from './script-runner';
 // model 兜底与 runner 同源(2026-06 曾因多份拷贝不同步导致 UI 显示与实跑模型不一致)
 
@@ -401,7 +403,12 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
         // Bound owners are restored once at fire admission. A later archive must
         // not be undone by the same run. Unbound scripts first choose their target here.
         if (targetSessionId && !schedule.targetSessionId) {
-          await restoreArchivedSessionForSend(targetSessionId);
+          const target = await getSessionRowSnapshotStrict(targetSessionId);
+          // Use the dispatcher's Review policy before any lifecycle mutation.
+          await assertReviewSessionExternalInputAllowed(targetSessionId, () => target?.source ?? null);
+          if (target && !isManagedScheduledTarget(target)) {
+            await restoreArchivedSessionForSend(targetSessionId);
+          }
         }
         const result = await service.sendToSession({
           targetSessionId,
