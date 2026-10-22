@@ -119,7 +119,8 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
       {error && <p role="alert" className="text-13 text-[var(--error-fg)]">{error}</p>}
       <form className="space-y-3" onSubmit={event => {
         event.preventDefault();
-        void mutate({ type: 'update', name, topic, description, responseMode: replyMode, speakingMode, expectedRevision: draftRevision.current }).then(ok => { if (ok) dirty.current = false; });
+        void mutate({ type: 'update', name, topic, description, responseMode: replyMode, speakingMode,
+          expectedRevision: dirty.current ? draftRevision.current : group.revision! }).then(ok => { if (ok) dirty.current = false; });
       }}>
         <FormField label={t(key('name'))}>{props => <Input {...props} value={name} maxLength={40} required disabled={!manager || busy}
           onChange={event => { editGroup(); setName(event); }} />}</FormField>
