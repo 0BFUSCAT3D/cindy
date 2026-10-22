@@ -1486,13 +1486,23 @@ describe('PI durable subagent run store', () => {
         await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
       });
 
-      it.skipIf(process.platform === 'win32')('does not follow a linked terminal result', async () => {
+      it('does not follow a linked terminal result', async context => {
         const { agentHome, dir } = await terminalReceiptHome(async () => {});
         const resultFile = path.join(dir, 'result.json');
         const outside = path.join(agentHome, 'outside-result.json');
         await writeFile(outside, await readFile(resultFile));
         await rm(resultFile);
-        await symlink(outside, resultFile);
+        try {
+          await symlink(outside, resultFile, 'file');
+        } catch (error) {
+          // Probe the actual capability: Windows hosts with symlink privileges
+          // must exercise the same terminal-receipt boundary as POSIX hosts.
+          if (['EPERM', 'EACCES', 'ENOTSUP', 'ENOSYS'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+            context.skip();
+            return;
+          }
+          throw error;
+        }
         await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
       });
 
