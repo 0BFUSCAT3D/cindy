@@ -12972,9 +12972,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     return botGroupChatServiceHolder ? botGroupChatServiceHolder.continueRound(groupId) : botGroupNotReady;
   });
-  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown, scope?: unknown) => {
     assertTrustedAppRendererEvent(event);
-    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId) : botGroupNotReady;
+    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId, scope === 'all' ? 'all' : undefined) : botGroupNotReady;
   });
   ipcMain.handle(MAKER_INVOKE.BOT_GROUP_PLAN_START, async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);

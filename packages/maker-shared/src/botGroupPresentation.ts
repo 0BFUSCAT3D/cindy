@@ -218,7 +218,7 @@ export function botGroupPlanFollowUp(plan: BotGroupPlanView | null): BotGroupPla
 /** Composer copy that follows the open plan (placeholder and the 「安排分工」 gate). */
 export type BotGroupComposerPlanState =
   | { kind: 'proposed' }
-  | { kind: 'running'; botName: string }
+  | { kind: 'running'; botName: string; talk?: boolean }
   | { kind: 'waiting'; botName: string; stepDone: boolean };
 
 export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGroupComposerPlanState | null {
@@ -226,7 +226,11 @@ export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGro
   if (plan.status === 'proposed') return { kind: 'proposed' };
   const current = currentBotGroupPlanStep(plan);
   const botName = current?.botName.trim() ?? '';
+  // Someone who cannot add to a queue sends a new request: the composer must not promise otherwise.
+  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false ? null : { kind: 'running', botName, talk: true };
   if (plan.status === 'running') return { kind: 'running', botName };
+  // A queue waiting for 继续 takes a new request, not changes to the last answer (bot-group-chat.md §4.0).
+  if (plan.status === 'waiting' && plan.kind === 'talk') return null;
   if (plan.status === 'waiting') return { kind: 'waiting', botName, stepDone: current?.status === 'done' };
   return null;
 }
