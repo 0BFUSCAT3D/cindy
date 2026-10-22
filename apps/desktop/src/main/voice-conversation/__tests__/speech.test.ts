@@ -420,6 +420,7 @@ it.each([
 });
 function segmentedSession(fetcher = vi.fn<typeof fetch>(async () => sse(dashscopeEvents()))) {
   const assertCurrent = vi.fn();
+  const diagnostic = vi.fn();
   const speech = new SpeechSynthesisSession({
     connection: () => ({
       baseUrl: 'https://dashscope-intl.aliyuncs.com/api/v1',
@@ -428,8 +429,9 @@ function segmentedSession(fetcher = vi.fn<typeof fetch>(async () => sse(dashscop
     }),
     assertCurrent,
     fetch: fetcher,
+    diagnostic,
   });
-  return { speech, fetcher, assertCurrent };
+  return { speech, fetcher, assertCurrent, diagnostic };
 }
 it('pulls long Qwen text sequentially without lost text, broken Unicode or replayed audio', async () => {
   const { speech, fetcher } = segmentedSession();
@@ -455,6 +457,109 @@ it('pulls long Qwen text sequentially without lost text, broken Unicode or repla
   ).toBe(true);
   expect(pcm).toEqual(texts.flatMap(() => [1, 2]));
 });
+// PR #6660 / discussion_r4345622743: real SpeechSynthesisSession, unit tier with
+// fake time and fetch only. Existing tests separate immediate multi-segment
+// success from first-request timeouts, missing a later request with slow headers.
+// A 1201-character reply must give segment two 30s for headers, then a fresh 15s
+// for PCM; failure must abort the request and never fetch segment three.
+it.each(['completed', 'headers_timeout', 'read_timeout'] as const)(
+  'keeps later Qwen headers and PCM deadlines separate (%s)',
+  async (outcome) => {
+    vi.useFakeTimers();
+    let resolveHeaders!: (response: Response) => void;
+    let headersStarted!: () => void;
+    let signal: AbortSignal | null | undefined;
+    const headersPending = new Promise<void>((resolve) => {
+      headersStarted = resolve;
+    });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(sse(dashscopeEvents()))
+      .mockImplementationOnce(
+        (_url, init) =>
+          new Promise((resolve, reject) => {
+            resolveHeaders = resolve;
+            signal = init?.signal;
+            signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+            headersStarted();
+          }),
+      )
+      .mockImplementation(async () => sse(dashscopeEvents([5, 6])));
+    const { speech, diagnostic } = segmentedSession(fetcher);
+    const cancelled = vi.fn();
+    try {
+      await speech.start({ ...input, text: 'a'.repeat(1201) });
+      expect([...new Uint8Array((await speech.read('one')).pcm)]).toEqual([1, 2]);
+      let settled = false;
+      const reading = speech.read('one').then(
+        (chunk) => {
+          settled = true;
+          return { chunk, error: null };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { chunk: null, error };
+        },
+      );
+      await headersPending;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(settled).toBe(false);
+      expect(signal?.aborted).toBe(false);
+      if (outcome === 'headers_timeout') {
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+      } else {
+        let body!: ReadableStreamDefaultController<Uint8Array>;
+        resolveHeaders(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                body = controller;
+              },
+              cancel: cancelled,
+            }),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+        );
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(settled).toBe(false);
+        if (outcome === 'read_timeout') await vi.advanceTimersByTimeAsync(1);
+        else {
+          body.enqueue(
+            new TextEncoder().encode(
+              dashscopeEvents([3, 4])
+                .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+                .join(''),
+            ),
+          );
+          body.close();
+        }
+      }
+      const result = await reading;
+      if (outcome === 'completed') {
+        expect(result.error).toBeNull();
+        expect([...new Uint8Array(result.chunk!.pcm)]).toEqual([3, 4]);
+        expect([...new Uint8Array((await speech.read('one')).pcm)]).toEqual([5, 6]);
+        expect((await speech.read('one')).done).toBe(true);
+        expect(fetcher).toHaveBeenCalledTimes(3);
+        expect(diagnostic.mock.calls.filter(([event]) => event.stage === 'error')).toEqual([]);
+      } else {
+        expect(result.error).toMatchObject({ code: 'timeout' });
+        expect(signal?.aborted).toBe(true);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        expect(
+          diagnostic.mock.calls.map(([event]) => event).filter((event) => event.stage === 'error'),
+        ).toEqual([expect.objectContaining({ code: outcome })]);
+        if (outcome === 'read_timeout') expect(cancelled).toHaveBeenCalledOnce();
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      speech.cancel();
+      vi.useRealTimers();
+    }
+  },
+);
 it.each(['cancel', 'owner-change'] as const)(
   'prevents the next paid Qwen segment after %s',
   async (action) => {

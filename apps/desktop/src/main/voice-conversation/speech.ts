@@ -101,7 +101,8 @@ export class SpeechSynthesisSession {
           void response.body.cancel().catch(() => undefined);
         if (timedOut && epoch === this.epoch) {
           this.diagnostic?.('error', { code: 'headers_timeout' });
-          this.cancel('failed');
+          // Let start/read own cancellation so a pending read receives the
+          // timeout error before cancellation can resolve it as stream EOF.
           throw new SpeechError('timeout');
         }
         throw error instanceof SpeechError ? error : new SpeechError('request');
@@ -117,11 +118,17 @@ export class SpeechSynthesisSession {
         void first.cancel().catch(() => undefined);
         throw new SpeechError('cancelled');
       }
-      this.reader = sequentialPcm(first, requests.length, open).getReader();
+      this.reader = sequentialPcm(first, requests.length, open, () => {
+        if (epoch === this.epoch) this.diagnostic?.('error', { code: 'read_timeout' });
+      }).getReader();
       return { sampleRate: 24_000 };
     } catch (error) {
       if (epoch === this.epoch) {
-        this.diagnostic?.('error', { code: error instanceof SpeechError ? error.code : 'request' });
+        // Timeouts already identify their phase in diagnostics.
+        if (!(error instanceof SpeechError && error.code === 'timeout'))
+          this.diagnostic?.('error', {
+            code: error instanceof SpeechError ? error.code : 'request',
+          });
         this.cancel('failed');
       }
       throw error instanceof SpeechError ? error : new SpeechError('request');
@@ -140,14 +147,6 @@ export class SpeechSynthesisSession {
     const reader = this.reader;
     const epoch = this.epoch;
     this.reading = true;
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      if (epoch === this.epoch) {
-        timedOut = true;
-        this.diagnostic?.('error', { code: 'read_timeout' });
-        this.cancel('failed');
-      }
-    }, 15_000);
     try {
       const result = await reader.read();
       this.deps.assertCurrent();
@@ -169,16 +168,15 @@ export class SpeechSynthesisSession {
       }
       return { pcm: Uint8Array.from(value).buffer, done: result.done };
     } catch (error) {
-      // Timeout cleanup invalidates the reader just like interruption. Preserve
-      // its cause before the epoch check can collapse it into cancellation.
-      if (timedOut) throw new SpeechError('timeout');
       if (epoch === this.epoch) {
-        this.diagnostic?.('error', { code: error instanceof SpeechError ? error.code : 'request' });
+        if (!(error instanceof SpeechError && error.code === 'timeout'))
+          this.diagnostic?.('error', {
+            code: error instanceof SpeechError ? error.code : 'request',
+          });
         this.cancel('failed');
       }
       throw error instanceof SpeechError ? error : new SpeechError('request');
     } finally {
-      clearTimeout(timer);
       if (epoch === this.epoch) this.reading = false;
     }
   }
@@ -203,17 +201,36 @@ function sequentialPcm(
   first: ReadableStream<Uint8Array>,
   count: number,
   open: (index: number) => Promise<ReadableStream<Uint8Array>>,
+  onReadTimeout: () => void,
 ): ReadableStream<Uint8Array> {
   let reader = first.getReader();
   let index = 0;
   let bytes = 0;
   let cancelled = false;
+  // Only PCM reads consume this deadline. Opening a later segment has its own
+  // headers deadline, and its first PCM read starts a fresh 15-second budget.
+  const read = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            onReadTimeout();
+            reject(new SpeechError('timeout'));
+          }, 15_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   return new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
         try {
           while (!cancelled) {
-            const result = await reader.read();
+            const result = await read();
             if (cancelled) return;
             if (!result.done) {
               bytes += result.value.byteLength;
