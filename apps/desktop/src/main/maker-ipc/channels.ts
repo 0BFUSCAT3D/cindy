@@ -38,6 +38,12 @@ export const MAKER_INVOKE = {
    * 本机 renderer 与 device-link 控制端共用；旧被控端没有该 channel 时控制端静默忽略。
    */
   SESSION_PREWARM: 'maker:session:prewarm',
+  /**
+   * 新建页的未发送任务（本机 renderer 专用，不进 device-link）：清空输入时删除，
+   * 第一次发送前转为普通任务。见 localDb/provisionalSessions.ts。
+   */
+  SESSION_DISCARD_PROVISIONAL: 'maker:session:discard-provisional',
+  SESSION_COMMIT_PROVISIONAL: 'maker:session:commit-provisional',
   CLOSE_SESSION: 'maker:close-session',
   /**
    * 单条 user / assistant 消息本地内容删除。保留后续可见消息，但清当前原生

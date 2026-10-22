@@ -50,6 +50,45 @@ export function createSessionBindingLifecycle<S extends BindingSession, CloseCon
     return registration;
   }
 
+  function releaseRegistration(registration: SessionBindingRegistration<S>): void {
+    const { session } = registration;
+    if (bindings.get(session.id) !== registration) return;
+    // Capture abort/recovery ownership before any cleanup removes it.
+    const context = deps.captureCloseContext(session);
+    try {
+      deps.cleanupClosedSession(session, context);
+    } catch (err) {
+      deps.log.warn('session close cleanup failed; forcing idle reconciliation', {
+        sessionId: session.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      // Product cleanup is best-effort. Unregister before calling disposers
+      // so a late status callback cannot enter the close boundary again.
+      deps.beforeCloseTeardown(session);
+      bindings.delete(session.id);
+      for (const dispose of registration.disposers) {
+        try {
+          dispose();
+        } catch (err) {
+          deps.log.warn('session disposer failed during close teardown', {
+            sessionId: session.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      try {
+        session.setInteractionListener(null);
+      } catch (err) {
+        deps.log.warn('session interaction listener teardown failed', {
+          sessionId: session.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      deps.finalizeClosedSession(session, context);
+    }
+  }
+
   function attachStatusListener(registration: SessionBindingRegistration<S>): void {
     const { session } = registration;
     registration.disposers.push(
@@ -66,40 +105,7 @@ export function createSessionBindingLifecycle<S extends BindingSession, CloseCon
         }
         if (status !== 'closed') return;
 
-        // Capture abort/recovery ownership before any cleanup removes it.
-        const context = deps.captureCloseContext(session);
-        try {
-          deps.cleanupClosedSession(session, context);
-        } catch (err) {
-          deps.log.warn('session close cleanup failed; forcing idle reconciliation', {
-            sessionId: session.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        } finally {
-          // Product cleanup is best-effort. Unregister before calling disposers
-          // so a late status callback cannot enter the close boundary again.
-          deps.beforeCloseTeardown(session);
-          bindings.delete(session.id);
-          for (const dispose of registration.disposers) {
-            try {
-              dispose();
-            } catch (err) {
-              deps.log.warn('session disposer failed during close teardown', {
-                sessionId: session.id,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-          try {
-            session.setInteractionListener(null);
-          } catch (err) {
-            deps.log.warn('session interaction listener teardown failed', {
-              sessionId: session.id,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-          deps.finalizeClosedSession(session, context);
-        }
+        releaseRegistration(registration);
       }),
     );
   }
@@ -107,6 +113,12 @@ export function createSessionBindingLifecycle<S extends BindingSession, CloseCon
   return {
     beginBinding,
     attachStatusListener,
+    // Discard only Desktop observers/bookkeeping. This is not confirmation that
+    // the underlying process exited: Maker retains failed handles until its
+    // account-boundary policy explicitly permits replacing that Maker.
+    releaseForOwnerBoundary(): void {
+      for (const registration of [...bindings.values()]) releaseRegistration(registration);
+    },
     getSession: (sessionId: string): S | undefined => bindings.get(sessionId)?.session,
   };
 }

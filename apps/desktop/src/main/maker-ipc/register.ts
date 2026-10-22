@@ -493,6 +493,8 @@ import {
   getSessionRowSnapshot,
   getSessionFsSnapshot,
   getSessionRowSnapshotStrict,
+  commitProvisionalSession,
+  discardProvisionalSessionRow,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
   restoreArchivedSessionForSend,
@@ -931,6 +933,7 @@ import {
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
 import { createAgentPrewarmer, isAgentPrewarmEligible } from './agentPrewarm.js';
+import { isProvisionalSession } from '../localDb/provisionalSessions.js';
 import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
@@ -1096,6 +1099,7 @@ import {
 import { clearSealedCodexPlanState, readCodexPlanState } from '../localDb/codexPlanState.js';
 import { buildCompletedPlanGuardNote, buildPlanReconcileNote } from './planReconcile.js';
 import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
+import { readReplyQuoteNote, REPLY_QUOTE_SOURCE_CONTENT } from './chatReplyQuoteNote.js';
 import { readBotDmThreadContextNote } from './botDmThreadContext.js';
 import { readTurnUsageResetAt } from '../goal-host/usageLimit.js';
 import {
@@ -5844,6 +5848,11 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     });
   },
 });
+
+/** Called only when the outgoing Maker is actually discarded, not on any error status. */
+export function releaseSessionBindingsForOwnerBoundary(): void {
+  sessionBindings.releaseForOwnerBoundary();
+}
 
 let pluginTaskServiceForCurrentOwner: (() => PluginTaskService) | null = null;
 let drainPluginTaskReceipts: (() => Promise<void>) | null = null;
@@ -17404,6 +17413,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 个人版制作任务说明:按持久化的 sessions.source 判定,每次 send 现读,不信任
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     readTaskSource: readSessionSource,
+    // 伙伴私聊引用回复的 [引用说明]:按落库内容里的 replyQuote 从库里重读原消息。
+    readReplyQuoteNote,
     // 私聊话题的 [话题说明]:按持久化的话题链接现读,不是话题时为 null。
     readBotThreadNote: readBotDmThreadContextNote,
     // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
@@ -17451,7 +17462,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
 
-  // 输入框开始打字时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
+  // 输入框开始输入（打字、粘贴、开始语音输入）时预热 Agent（本机与 device-link 控制端共用）。只覆盖用户自己的普通
   // 任务、且 Agent 在本机运行；Bot / IM / 定时 / 审查 / 共享 / 协同 / 远程主机等任务的
   // 启动另有专门的路由与权限检查，仍由真实发送处理。启动走发送路径的同一个懒创建，
   // 并在同一把会话发送锁里执行，真实发送不会与预热并发重复启动。
@@ -17469,7 +17480,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           remoteHostId: sessions.remoteHostId,
           agentDeviceId: sessions.agentDeviceId,
           orcaRole: sessions.orcaRole,
-          sdkSessionId: sessions.sdkSessionId,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
@@ -17480,6 +17490,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (co.remoteHostId || co.agentDeviceId) return false;
       return prewarmSessionRuntime(sessionId, co);
     }),
+    isLive: (sessionId) => maker.getSession(sessionId) !== undefined,
     // Runs under the send lock: a send that got there first has marked the runtime used
     // (and its turn is running), one that arrives later waits for the close to finish and
     // then cold-starts, instead of meeting a runtime that is half closed.
@@ -17510,6 +17521,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const [sessionId] = args;
     if (typeof sessionId !== 'string') return await sendToAgentAcceptedUnlocked(...args);
     agentPrewarmer.markUsed(sessionId);
+    // 新建页的未发送任务第一次发送：renderer 通常已先转正，这里兜底。
+    if (isProvisionalSession(sessionId)) await commitProvisionalSession(sessionId);
     if (cindyMakeManager.isTaskPreparing(sessionId) && (args[3] as Record<PropertyKey, unknown> | undefined)?.[CINDY_MAKE_TASK_DISPATCH] !== true) {
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
@@ -17898,6 +17911,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
       readonly [AUTO_REVIEW_USER_INTENT]?: string;
       readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
+      readonly [REPLY_QUOTE_SOURCE_CONTENT]?: string;
     };
     const readCurrentSteerSession = () => {
       const current = maker.getSession(sessionId);
@@ -17955,6 +17969,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (!sess.isTurnRunning()) {
       throwIpcError('NO_ACTIVE_TURN', `Session ${sessionId} has no active turn`);
     }
+    // Same `[引用说明]` as an ordinary send (steer does not go through the send transaction).
+    const steerReplyQuoteNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      ? ((await readReplyQuoteNote(sessionId, so[REPLY_QUOTE_SOURCE_CONTENT]).catch(() => null)) ?? null)
+      : null;
     const meta = await maker.getSessionMeta(sessionId).catch(() => null);
     sess = readCurrentSteerSession();
     const authorizationSession = sess;
@@ -17977,9 +17995,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           sharedTaskAuthor: so.sharedTaskAuthor,
         })
       : null;
-    const withSteerSourceNote = steerSourceNote
-      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerSourceNote)
+    const withSteerReplyQuoteNote = steerReplyQuoteNote
+      ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerReplyQuoteNote)
       : normalized;
+    const withSteerSourceNote = steerSourceNote
+      ? prependNoteToWireUserMessage(withSteerReplyQuoteNote as HandoffWireMessage, steerSourceNote)
+      : withSteerReplyQuoteNote;
     // 设备来源只认盖章值(coordinator 透传 / 直连 IPC 边界按 async context 盖);没有设备
     // 信息时沿用旧手机判据:IPC 直连 steer 时 async context 在;coordinator 投递时靠透传。
     const steerDevice = readWireSourceDevice(so.sourceDevice);
@@ -18329,6 +18350,41 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       void agentPrewarmer.request(sid, createOpts);
       return { accepted: true };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_DISCARD_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ discarded: boolean; remaining: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      if (!isProvisionalSession(sid)) return { discarded: false, remaining: false };
+      // Under the send lock: a prewarm that is still starting finishes first, and one queued
+      // behind us finds no row and does nothing.
+      const discarded = await withSendToSessionLock(sid, async () => {
+        if (!isProvisionalSession(sid)) return false;
+        agentPrewarmer.markUsed(sid);
+        const live = maker.getSession(sid);
+        if (live?.isTurnRunning()) return false;
+        // Same close as idle prewarm reclaim; the row goes away right after.
+        if (live) await live.closeIfIdle();
+        if (maker.getSession(sid)) return false;
+        return discardProvisionalSessionRow(sid);
+      });
+      // remaining: the unsent task still exists (its runtime could not be closed), so the
+      // renderer keeps tracking it and retries instead of reopening the same id.
+      return { discarded, remaining: !discarded && isProvisionalSession(sid) };
+    },
+  );
+
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_COMMIT_PROVISIONAL,
+    async (event, sessionId: unknown): Promise<{ committed: boolean }> => {
+      const sid = requireSessionId(sessionId);
+      // Local renderer only: not on the device-link allowlist, and the sender must be the app window.
+      assertTrustedAppRendererEvent(event);
+      return { committed: await commitProvisionalSession(sid) };
     },
   );
 

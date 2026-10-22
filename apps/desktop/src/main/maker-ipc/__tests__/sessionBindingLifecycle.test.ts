@@ -18,6 +18,7 @@ import {
   AgentInputCoordinator,
   type AgentInputCoordinatorDeps,
 } from '../agent-input-coordinator.js';
+import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { createRehydrateCloseSuppression } from '../../maker-host/rehydrateCloseSuppression.js';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
 
@@ -34,6 +35,33 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+const item = (id: string): AgentInputQueuedMessage => ({
+  clientId: id,
+  text: id,
+  persistedContent: id,
+  model: 'test-model',
+  effort: 'medium',
+  permissionMode: 'default',
+  workingDir: '/unused',
+  chatMessage: {
+    clientId: id,
+    role: 'user',
+    content: id,
+    isStreaming: false,
+    createdAt: '2026-09-05T00:00:00.000Z',
+  },
+  createOpts: {
+    agentKind: 'codex',
+    workingDir: '/unused',
+    model: 'test-model',
+    effort: 'medium',
+    permissionMode: 'default',
+    userPrompt: '',
+    makerMemoryEnabled: false,
+    displayReasoning: 'summarized',
+  },
+});
 
 /** Retains captured callbacks so tests can deliver a stale transport notification explicitly. */
 class TestSession {
@@ -448,32 +476,6 @@ describe('binding with the real maker-core Session', () => {
         coordinator.onSessionClosed('task', options),
       );
       h.bind(old.session);
-      const item = (id: string): AgentInputQueuedMessage => ({
-        clientId: id,
-        text: id,
-        persistedContent: id,
-        model: 'test-model',
-        effort: 'medium',
-        permissionMode: 'default',
-        workingDir: '/unused',
-        chatMessage: {
-          clientId: id,
-          role: 'user',
-          content: id,
-          isStreaming: false,
-          createdAt: '2026-09-05T00:00:00.000Z',
-        },
-        createOpts: {
-          agentKind: 'codex',
-          workingDir: '/unused',
-          model: 'test-model',
-          effort: 'medium',
-          permissionMode: 'default',
-          userPrompt: '',
-          makerMemoryEnabled: false,
-          displayReasoning: 'summarized',
-        },
-      });
       const queued = coordinator.enqueue('task', item('first'));
       await entered.promise;
       old.closeFinished.resolve();
@@ -521,6 +523,62 @@ describe('binding with the real maker-core Session', () => {
     expect(r.handle.close).toHaveBeenCalledOnce();
     expect(h.lifecycle.getSession(r.session.id)).toBeUndefined();
     expect(h.finalActions.clearTurnState).toHaveBeenCalledOnce();
+  });
+
+  // #6718: a failed detach is not process-exit proof, but abandoning the old
+  // Maker must release Desktop's dispatch gate. Existing close tests only cover
+  // successful retry. Unit tier: real Session/tracker with an injected transport failure.
+  it('releases failed-detach dispatch state only when its owner is discarded', async () => {
+    const h = harness<Session>();
+    const old = realSession(), next = realSession();
+    const tracker = new SessionTurnActivityTracker();
+    h.finalActions.clearTurnState.mockImplementation(() => tracker.deleteSession('task'));
+    const abort = deferred();
+    const sendToAgent = vi.fn<AgentInputCoordinatorDeps['sendToAgent']>(async (_id, message) => {
+      const text = typeof message === 'string' ? message : message.content;
+      if (typeof text !== 'string') throw new Error('This fixture sends text only');
+      await h.lifecycle.getSession('task')!.send(text);
+      return { kind: 'session-dispatch', source: 'owner-boundary-test', dispatched: true };
+    });
+    const coordinator = new AgentInputCoordinator({
+      sendToAgent, steerToAgent: vi.fn(), abortSession: () => abort.promise,
+      isTurnRunning: () => tracker.isSessionTurnDispatchBoundaryBusy('task'),
+      hasPendingInteraction: () => false, getAgentKind: () => 'codex',
+      getSdkSessionId: async () => undefined, emitProjection: vi.fn(),
+    });
+    h.actions.closeInputCoordinator.mockImplementation(options => coordinator.onSessionClosed('task', options));
+    vi.mocked(old.handle.close).mockRejectedValueOnce(new Error('DEVICE_LINK_NOT_CONNECTED'));
+    h.bind(old.session);
+    await old.session.send('work before expiration');
+    tracker.setSessionInTurn('task', true);
+    await expect(old.session.detach({ reason: 'account-boundary' }))
+      .rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
+    expect(old.session.getStatus()).toBe('error');
+    expect(h.lifecycle.getSession('task')).toBe(old.session);
+    expect(tracker.isSessionTurnDispatchBoundaryBusy('task')).toBe(true);
+
+    await coordinator.enqueue('task', item('queued-after-expiration'));
+    expect(sendToAgent).not.toHaveBeenCalled();
+    coordinator.stop('task', { keepQueue: true, pauseQueue: true });
+    expect(coordinator.getProjection('task').queueAbortPending).toBe(true);
+    h.lifecycle.releaseForOwnerBoundary();
+    expect(coordinator.getProjection('task').queueAbortPending).toBe(false);
+    expect(tracker.isSessionTurnDispatchBoundaryBusy('task')).toBe(false);
+    expect(h.lifecycle.getSession('task')).toBeUndefined();
+    expect(old.session.getStatus()).toBe('error'); // No fabricated process exit.
+    expect(h.actions.closeInputCoordinator).toHaveBeenCalledOnce();
+    h.lifecycle.releaseForOwnerBoundary();
+    expect(h.finalActions.clearTurnState).toHaveBeenCalledOnce();
+    h.bind(next.session);
+    abort.resolve();
+    coordinator.resume('task');
+    await vi.waitFor(() => expect(next.handle.send).toHaveBeenCalledOnce());
+    expect(sendToAgent).toHaveBeenCalledOnce();
+    old.closeFinished.resolve();
+    await old.session.detach(); // A late old-owner success cannot erase its replacement.
+    expect(h.lifecycle.getSession('task')).toBe(next.session);
+    next.closeFinished.resolve();
+    await next.session.close();
   });
 
   it('retains the binding on provider close failure and tears down after a successful retry', async () => {

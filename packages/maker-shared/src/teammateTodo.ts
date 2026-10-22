@@ -208,6 +208,16 @@ export function todoOverdue(t: TeammateTodo, now = new Date()): boolean {
       : d.date < todoLocalDate(now, d.timeZone))
   );
 }
+/** An open, visible item whose own deadline is today or already passed (the 近况 red dot). */
+export function todoDue(t: TeammateTodo, now = new Date()): boolean {
+  if (t.status !== 'open' || !todoVisible(t, now)) return false;
+  const d = effectiveTodoDeadline(t);
+  if (!d) return false;
+  if (todoOverdue(t, now)) return true;
+  return d.kind === 'instant'
+    ? todoLocalDate(new Date(d.at!), d.timeZone) === todoLocalDate(now, d.timeZone)
+    : d.date === todoLocalDate(now, d.timeZone);
+}
 export function todoDateLabel(t: TeammateTodo, locale: string, now = new Date()): string {
   const d = effectiveTodoDeadline(t);
   const dateString = d?.date ?? t.deadlineCandidate?.value.date ?? t.suggestedDate;
