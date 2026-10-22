@@ -13800,7 +13800,7 @@
         "modelSelectorAria": "模型選擇器",
         "categoryListAria": "{{category}} 模型",
         "effortListAria": "Effort 級別",
-        "boundLocationLocked": "綁定的任務在原來的電腦上執行，請選擇那台電腦上的模型。"
+        "boundLocationLocked": "繫結的任務在原來的電腦上執行，請選擇那台電腦上的模型。"
       }
     },
     "toast": {
