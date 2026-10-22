@@ -51,6 +51,7 @@ function normalizeNetworkEntry(entry) {
         contentType: typeof entry?.responseContentType === 'string' ? entry.responseContentType : '',
         size: typeof entry?.responseBodyFullSize === 'number' ? entry.responseBodyFullSize : preview.length,
         bodyTruncated: entry?.responseBodyTruncated === true,
+        captureComplete: entry?.captureComplete,
     };
 }
 
@@ -77,7 +78,7 @@ async function drainNetworkCapture(page, sink) {
     if (!page.readNetworkCapture) return [];
     const raw = await page.readNetworkCapture().catch(() => []);
     const entries = Array.isArray(raw) ? raw.map(normalizeNetworkEntry).filter(entry => entry.url) : [];
-    sink.push(...entries);
+    sink.push(...entries.filter(entry => entry.captureComplete !== false));
     return entries;
 }
 

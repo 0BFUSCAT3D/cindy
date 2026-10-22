@@ -2703,5 +2703,29 @@
     "before": "    const fs = __cindy_node_fs;\n",
     "after": "",
     "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "import { fetchWithNodeNetwork } from '../node-network.js';",
+    "after": "import { fetchWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "  const controller = new AbortController();\n  const timer = setTimeout(() => controller.abort(), timeout);\n  try {\n    const response = await fetchWithNodeNetwork(url, {\n      headers: requestHeaders,\n      signal: controller.signal,\n      redirect: 'manual',\n    });\n    clearTimeout(timer);\n\n    // Handle redirects before creating any file handles.\n    if (response.status >= 300 && response.status < 400) {\n      const location = response.headers.get('location');\n      if (location) {\n        if (redirectCount >= maxRedirects) {\n          return { success: false, size: 0, error: `Too many redirects (> ${maxRedirects})` };\n        }\n        const redirectUrl = resolveRedirectUrl(url, location);\n        const originalHost = new URL(url).hostname;\n        const redirectHost = new URL(redirectUrl).hostname;\n        const redirectOptions = originalHost === redirectHost\n          ? options\n          : { ...options, cookies: undefined, headers: stripCookieHeaders(options.headers) };\n        return httpDownload(\n          redirectUrl,\n          destPath,\n          redirectOptions,\n          redirectCount + 1,\n        );\n      }\n    }\n\n    if (response.status !== 200) {\n      return { success: false, size: 0, error: `HTTP ${response.status}` };\n    }\n\n    if (!response.body) {\n      return { success: false, size: 0, error: 'Empty response body' };\n    }\n\n    const totalSize = parseInt(response.headers.get('content-length') || '0', 10);\n    let received = 0;\n    const progressStream = new Transform({\n      transform(chunk, _encoding, callback) {\n        received += chunk.length;\n        if (onProgress) onProgress(received, totalSize);\n        callback(null, chunk);\n      },\n    });\n\n    try {\n      await fs.promises.mkdir(recipeOutputPath(path.dirname(destPath)), { recursive: true });\n      await pipeline(\n        Readable.fromWeb(response.body as unknown as WebReadableStream),\n        progressStream,\n        fs.createWriteStream(recipeOutputPath(tempPath)),\n      );\n      await fs.promises.rename(recipeOutputPath(tempPath), recipeOutputPath(destPath));\n      const contentType = includeContentType\n        ? response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()\n        : undefined;\n      return {\n        success: true,\n        size: received,\n        ...(includeContentType && { finalUrl: url }),\n        ...(contentType && { contentType }),\n      };\n    } catch (err) {\n      await cleanupTempFile();\n      return { success: false, size: 0, error: getErrorMessage(err) };\n    }\n  } catch (err) {\n    clearTimeout(timer);\n    await cleanupTempFile();\n    return { success: false, size: 0, error: err instanceof Error ? err.message : String(err) };\n  }\n}\n",
+    "after": "  const controller = new AbortController();\n  const timer = setTimeout(() => controller.abort(), timeout);\n  let response: Response | undefined;\n  let release: (() => Promise<void>) | undefined;\n  try {\n    // The shared guard owns DNS/IP checks, address pinning and every redirect.\n    const guarded = await fetchWithSsrFGuard({\n      url, init: { headers: requestHeaders }, signal: controller.signal,\n      maxRedirects: Math.max(0, maxRedirects - redirectCount),\n    });\n    response = guarded.response;\n    release = guarded.release;\n\n    if (response.status !== 200) {\n      return { success: false, size: 0, error: `HTTP ${response.status}` };\n    }\n\n    if (!response.body) {\n      return { success: false, size: 0, error: 'Empty response body' };\n    }\n\n    const totalSize = parseInt(response.headers.get('content-length') || '0', 10);\n    let received = 0;\n    const progressStream = new Transform({\n      transform(chunk, _encoding, callback) {\n        received += chunk.length;\n        if (onProgress) onProgress(received, totalSize);\n        callback(null, chunk);\n      },\n    });\n\n    try {\n      await fs.promises.mkdir(recipeOutputPath(path.dirname(destPath)), { recursive: true });\n      await pipeline(\n        Readable.fromWeb(response.body as unknown as WebReadableStream),\n        progressStream,\n        fs.createWriteStream(recipeOutputPath(tempPath)),\n      );\n      await fs.promises.rename(recipeOutputPath(tempPath), recipeOutputPath(destPath));\n      const contentType = includeContentType\n        ? response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()\n        : undefined;\n      return {\n        success: true,\n        size: received,\n        ...(includeContentType && { finalUrl: guarded.finalUrl }),\n        ...(contentType && { contentType }),\n      };\n    } catch (err) {\n      await cleanupTempFile();\n      return { success: false, size: 0, error: getErrorMessage(err) };\n    }\n  } catch (err) {\n    await cleanupTempFile();\n    return { success: false, size: 0, error: err instanceof Error ? err.message : String(err) };\n  } finally {\n    clearTimeout(timer);\n    await response?.body?.cancel().catch(() => undefined);\n    await release?.();\n  }\n}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/web/read.js",
+    "before": "    sink.push(...entries);",
+    "after": "    sink.push(...entries.filter(entry => entry.captureComplete !== false));",
+    "count": 1
+  },
+  {
+    "file": "clis/web/read.js",
+    "before": "        bodyTruncated: entry?.responseBodyTruncated === true,",
+    "after": "        bodyTruncated: entry?.responseBodyTruncated === true,\n        captureComplete: entry?.captureComplete,",
+    "count": 1
   }
 ]

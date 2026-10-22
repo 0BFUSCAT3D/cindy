@@ -106,7 +106,10 @@ const pkg = {
   type: "module",
   license: originalPackage.license,
   exports,
-  dependencies: originalPackage.dependencies,
+  dependencies: {
+    ...originalPackage.dependencies,
+    "@cindy/browser-control-runtime": "workspace:*",
+  },
   devDependencies: {
     "@types/turndown": originalPackage.devDependencies["@types/turndown"],
     "@types/js-yaml": originalPackage.devDependencies["@types/js-yaml"],

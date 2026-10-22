@@ -31,7 +31,8 @@
     "turndown": "^7.2.2",
     "turndown-plugin-gfm": "^1.0.2",
     "undici": "7.29.1",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "@cindy/browser-control-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/turndown": "^5.0.6",

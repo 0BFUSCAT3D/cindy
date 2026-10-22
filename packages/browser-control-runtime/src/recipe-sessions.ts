@@ -94,7 +94,7 @@ export class RecipeBrowserSessions {
         ...entry,
       }));
       for (const entry of result)
-        if (!params.retainIncomplete || entry.captureComplete)
+        if (params.retainIncomplete === false || entry.captureComplete)
           entries?.delete(entry.requestId);
       return { entries: result };
     }
@@ -134,6 +134,7 @@ export class RecipeBrowserSessions {
         url: request.url,
         method: request.method ?? "GET",
         timestamp: Date.now(),
+        captureComplete: false,
         requestHeaders: request.headers ?? {},
         requestBody: request.postData?.slice(0, 256_000),
       });

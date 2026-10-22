@@ -72,18 +72,14 @@ describe("recipe browser sessions", () => {
     });
     event("Network.loadingFinished", { requestId: "r" });
     expect(
-      await sessions.call("tab-one", id, "Cindy.captureRead", {
-        retainIncomplete: true,
-      }),
+      await sessions.call("tab-one", id, "Cindy.captureRead"),
     ).toMatchObject({
       entries: [{ requestId: "r", responseStatus: 200, requestBody: "test" }],
     });
     complete({ body: '{"items":[1]}' });
     await vi.waitFor(async () => {
       expect(
-        await sessions.call("tab-one", id, "Cindy.captureRead", {
-          retainIncomplete: true,
-        }),
+        await sessions.call("tab-one", id, "Cindy.captureRead"),
       ).toMatchObject({
         entries: [{ captureComplete: true, responsePreview: '{"items":[1]}' }],
       });

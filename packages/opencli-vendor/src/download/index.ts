@@ -13,7 +13,7 @@ import { pipeline } from 'node:stream/promises';
 import { URL } from 'node:url';
 import type { BrowserCookie } from '../types.js';
 import { getErrorMessage } from '../errors.js';
-import { fetchWithNodeNetwork } from '../node-network.js';
+import { fetchWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { log } from '../logger.js';
 
 export type { BrowserCookie } from '../types.js';
@@ -144,35 +144,16 @@ export async function httpDownload(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  let response: Response | undefined;
+  let release: (() => Promise<void>) | undefined;
   try {
-    const response = await fetchWithNodeNetwork(url, {
-      headers: requestHeaders,
-      signal: controller.signal,
-      redirect: 'manual',
+    // The shared guard owns DNS/IP checks, address pinning and every redirect.
+    const guarded = await fetchWithSsrFGuard({
+      url, init: { headers: requestHeaders }, signal: controller.signal,
+      maxRedirects: Math.max(0, maxRedirects - redirectCount),
     });
-    clearTimeout(timer);
-
-    // Handle redirects before creating any file handles.
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      if (location) {
-        if (redirectCount >= maxRedirects) {
-          return { success: false, size: 0, error: `Too many redirects (> ${maxRedirects})` };
-        }
-        const redirectUrl = resolveRedirectUrl(url, location);
-        const originalHost = new URL(url).hostname;
-        const redirectHost = new URL(redirectUrl).hostname;
-        const redirectOptions = originalHost === redirectHost
-          ? options
-          : { ...options, cookies: undefined, headers: stripCookieHeaders(options.headers) };
-        return httpDownload(
-          redirectUrl,
-          destPath,
-          redirectOptions,
-          redirectCount + 1,
-        );
-      }
-    }
+    response = guarded.response;
+    release = guarded.release;
 
     if (response.status !== 200) {
       return { success: false, size: 0, error: `HTTP ${response.status}` };
@@ -206,7 +187,7 @@ export async function httpDownload(
       return {
         success: true,
         size: received,
-        ...(includeContentType && { finalUrl: url }),
+        ...(includeContentType && { finalUrl: guarded.finalUrl }),
         ...(contentType && { contentType }),
       };
     } catch (err) {
@@ -214,9 +195,12 @@ export async function httpDownload(
       return { success: false, size: 0, error: getErrorMessage(err) };
     }
   } catch (err) {
-    clearTimeout(timer);
     await cleanupTempFile();
     return { success: false, size: 0, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+    await response?.body?.cancel().catch(() => undefined);
+    await release?.();
   }
 }
 

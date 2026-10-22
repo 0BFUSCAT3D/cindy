@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { BrowserControlRequest } from "@cindy/browser-control-runtime";
+import { RecipeBrowserSessions, type BrowserControlRequest } from "@cindy/browser-control-runtime";
+import * as guardedNetwork from '@cindy/browser-control-runtime/ssrf-runtime';
+import { MockAgent } from 'undici';
+import { httpDownload } from '@jackwener/opencli/download';
 import { createBrowserMcpServer } from "./server.js";
 import { OpenCliPage } from "./opencli-page.js";
 import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
@@ -9,7 +12,7 @@ import { runRecipe } from "./recipe-runner.js";
 import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
 import { saveBase64ToFile } from '@jackwener/opencli/utils';
 import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
-import { mkdtemp, mkdir, writeFile, rm, readFile, realpath, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile, realpath, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 // @ts-expect-error Pinned upstream adapter helpers ship JavaScript without declarations.
@@ -32,6 +35,95 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 security regression; unit tier. Real download -> real SSRF shell,
+  // fake DNS and in-memory HTTP dispatcher. Previously image downloads could
+  // reach private literals, private DNS answers and private redirect targets.
+  it.each(['http://127.0.0.1/private', 'https://private.example/image', 'https://public.example/redirect'])(
+    'does not save bytes from a private download target (%s)', async (url) => {
+      const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'cindy-recipe-network-test-')));
+      const agent = new MockAgent();
+      agent.disableNetConnect();
+      agent.get('https://public.example').intercept({ path: '/redirect' })
+        .reply(302, '', { headers: { location: 'http://169.254.169.254/private' } });
+      const original = guardedNetwork.fetchWithSsrFGuard;
+      vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockImplementation(params => original({
+        ...params,
+        lookupFn: (async (host: string) => [{ address: host === 'private.example' ? '10.0.0.1' : '8.8.8.8', family: 4 }]) as unknown as guardedNetwork.LookupFn,
+        dispatcherFactory: () => agent,
+      }));
+      // The old unguarded implementation would save these fake private bytes.
+      vi.spyOn(network, 'fetchWithNodeNetwork').mockResolvedValue(new Response('private bytes'));
+      try {
+        const result = await withRecipeHost(undefined, () => httpDownload(url, path.join(dir, 'image.png')), {
+          directory: dir, read: readFileSync, open: file => openSync(file, 'r'), output: file => file,
+        });
+        expect(result).toMatchObject({ success: false, size: 0, error: expect.stringMatching(/blocked/i) });
+        expect(await readdir(dir)).toEqual([]);
+      } finally { await agent.close().catch(() => undefined); await rm(dir, { recursive: true, force: true }); }
+    },
+  );
+
+  // Same production path, public success verifies bytes/MIME/final URL and the
+  // shared redirect credential policy; no real network or account is involved.
+  it('saves a public redirected download and strips credentials across origins', async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'cindy-recipe-network-test-')));
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent.get('https://public.example').intercept({ path: '/image' })
+      .reply(302, '', { headers: { location: 'https://cdn.example/image' } });
+    agent.get('https://cdn.example').intercept({ path: '/image', headers: headers => {
+      expect(headers.authorization).toBeUndefined();
+      expect(headers.cookie).toBeUndefined();
+      return true;
+    } }).reply(200, 'public image', { headers: { 'content-type': 'image/png' } });
+    const original = guardedNetwork.fetchWithSsrFGuard;
+    vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockImplementation(params => original({
+      ...params, lookupFn: (async () => [{ address: '8.8.8.8', family: 4 }]) as unknown as guardedNetwork.LookupFn,
+      dispatcherFactory: () => agent,
+    }));
+    try {
+      const file = path.join(dir, 'image.png');
+      const result = await withRecipeHost(undefined, () => httpDownload('https://public.example/image', file, {
+        cookies: 'fake-cookie=fixture', headers: { authorization: 'Bearer fake-fixture' }, includeContentType: true,
+      }), { directory: dir, read: readFileSync, open: file => openSync(file, 'r'), output: file => file });
+      expect(result).toMatchObject({ success: true, size: 12, contentType: 'image/png', finalUrl: 'https://cdn.example/image' });
+      expect(await readFile(file, 'utf8')).toBe('public image');
+      expect(await readdir(dir)).toEqual(['image.png']);
+    } finally { await agent.close().catch(() => undefined); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  // #6826 networkidle regression; unit tier. Real web/read and capture owner,
+  // with multiple polls before loadingFinished; older tests explicitly opted
+  // into retention and did not exercise the reader's default polling path.
+  it('waits for an unfinished request and its following quiet period before extracting web content', async () => {
+    vi.useFakeTimers();
+    const sessions = new RecipeBrowserSessions();
+    let event = (_method: string, _params: Record<string, unknown>) => {};
+    const id = sessions.begin('web', {
+      send: async () => ({ body: '{"items":[1]}' }),
+      subscribe: listener => { event = listener; return () => {}; }, dispose: () => {},
+    });
+    const evaluate = vi.fn(async () => ({ title: 'Fixture', contentHtml: '<p>Ready content</p>' }));
+    const page = {
+      startNetworkCapture: async () => { await sessions.call('web', id, 'Cindy.captureStart'); return true; },
+      readNetworkCapture: async (options?: Record<string, unknown>) =>
+        (await sessions.call('web', id, 'Cindy.captureRead', options) as { entries: unknown[] }).entries,
+      goto: async () => { event('Network.requestWillBeSent', { requestId: 'r', request: { url: 'https://example.test/api' } }); },
+      evaluate,
+    } as unknown as IPage;
+    try {
+      const running = executeAdapter('web/read', { url: 'https://example.test', 'wait-until': 'networkidle', wait: 5, stdout: true }, page);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(evaluate).not.toHaveBeenCalled();
+      event('Network.loadingFinished', { requestId: 'r' });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(evaluate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await running).toMatchObject([{ markdown: expect.stringContaining('Ready content') }]);
+      expect(evaluate).toHaveBeenCalledOnce();
+    } finally { sessions.dispose(); }
+  });
+
   // #6826 file-check regression, unit tier. Actual text readers and host IO;
   // older write tests did not inspect relative files before reading them.
   // Two interleaved tasks with the same filename must retain separate content.
@@ -89,7 +181,9 @@ describe("bundled OpenCLI recipes", () => {
     vi.spyOn(qwen, 'sendMessage').mockResolvedValue({ ok: true });
     vi.spyOn(qwen, 'hasLoginGate').mockResolvedValue(false);
     vi.spyOn(qwen, 'getMessageBubbles').mockResolvedValue([{ role: 'Assistant', id: 'answer' }]);
-    vi.spyOn(network, 'fetchWithNodeNetwork').mockImplementation(async () => new Response('image'));
+    vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockImplementation(async () => ({
+      response: new Response('image'), finalUrl: url, release: async () => {},
+    }));
     const outputs: string[] = [];
     const page = {
       goto: async () => {}, wait: async () => {},
