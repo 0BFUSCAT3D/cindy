@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   visible: true,
   role: 'canonical',
   inputMeta: null as string | null,
+  topicProgress: {} as Record<string, Record<string, unknown>>,
   meta: { turnCompleted: true } as Record<string, unknown>,
   model: vi.fn(),
   write: vi.fn(),
@@ -33,8 +34,10 @@ vi.mock('../../appSessionState.js', () => ({
 }));
 vi.mock('../../localDb/client/current.js', () => {
   const db = {
-    queryOne: vi.fn(async (sql: string) =>
-      sql.includes('prev-completed')
+    queryOne: vi.fn(async (sql: string, params: unknown[]) =>
+      sql.includes('topic-learning-progress')
+        ? h.topicProgress[String(params[0])] ? { meta: JSON.stringify({ botLearningProgress: h.topicProgress[String(params[0])] }) } : undefined
+        : sql.includes('prev-completed')
         ? h.prevCompleted ? { id: 'prev', rowid: h.prevCompleted } : undefined
         : sql.includes('ledger-floor')
           ? h.floorRowid === null ? undefined : { rowid: h.floorRowid }
@@ -73,6 +76,7 @@ vi.mock('../../messagePersistBroadcaster.js', () => ({
 vi.mock('../../localDb/ipc/messages.js', () => ({
   patchMessageAgentMetaWithResult: async (_s: string, _r: string, patch: any) => {
     Object.assign(h.meta, patch);
+    if (patch.botLearningProgress) h.topicProgress[_s] = patch.botLearningProgress;
     return {};
   },
 }));
@@ -116,6 +120,7 @@ beforeEach(() => {
   h.visible = true;
   h.role = 'canonical';
   h.inputMeta = null;
+  h.topicProgress = {};
   h.prevCompleted = 3;
   h.turnRows = null;
   h.gapRows = [];
@@ -141,7 +146,7 @@ it.each(['channel', 'thread'])('learns from an owner %s reply without changing t
   h.turnRows = [
     { id: 'user', role: 'user', content: 'Please always summarize the conclusion first.', order: 4, meta: h.inputMeta },
     // Real agent replies persist as plain text; parsing them as JSON aborts learning.
-    { id: 'reply', role: 'assistant', content: 'Understood.', order: 5 },
+    { id: 'reply', role: 'assistant', content: 'Understood.', order: 5, inputMeta: h.inputMeta },
     { id: 'guest', role: 'user', content: JSON.stringify('The owner prefers a totally different format.'), order: 3,
       meta: JSON.stringify({ imSource: { origin: { sender: { isOwner: false } } } }) },
   ];
@@ -160,6 +165,52 @@ it.each(['channel', 'thread'])('learns from an owner %s reply without changing t
   if (role === 'channel') {
     expect(JSON.parse(h.model.mock.calls[0][1]).messages.map((m: { id: string }) => m.id)).toEqual(['user', 'reply']);
   }
+});
+
+// Regression: a stable preference after character 6000 used to disappear forever
+// in topics. Exercise successive reviews using only their persisted message cursor.
+it.each(['channel', 'thread'])('backfills a long %s message tail with a separate durable cursor', async role => {
+  h.role = role;
+  h.inputMeta = JSON.stringify({ imSource: { origin: { sender: { isOwner: true } } } });
+  h.prevCompleted = null;
+  const long = { id: 'long', role: 'user', content: 'x'.repeat(9000) + 'Please always summarize the conclusion first.', order: 1, meta: h.inputMeta };
+  h.turnRows = [long];
+  h.model.mockResolvedValue({ ok: true, text: JSON.stringify({ memories: [], skills: [] }) });
+  await reviewTeammateLearning('topic', 'reply1');
+  expect(h.topicProgress.topic).toEqual({});
+
+  h.meta = { turnCompleted: true };
+  h.prevCompleted = 2;
+  h.gapRows = [long];
+  h.turnRows = [{ id: 'next', role: 'user', content: 'Continue please.', order: 3, meta: h.inputMeta }];
+  await reviewTeammateLearning('topic', 'reply2');
+  expect(h.topicProgress.topic).toEqual({ coveredThroughMessageId: 'long', coveredThroughOffset: 5800 });
+  expect(h.write).not.toHaveBeenCalled();
+
+  h.meta = { turnCompleted: true };
+  h.prevCompleted = 4;
+  h.floorRowid = 1;
+  h.gapRows = [long, { id: 'guest-tool', role: 'tool_result', content: 'Guest workflow evidence', order: 2,
+    inputMeta: JSON.stringify({ imSource: { origin: { sender: { isOwner: false } } } }) }];
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({
+    memories: [{ ...proposal, evidence: { ...proposal.evidence, messageId: 'long' } }], skills: [],
+  }) });
+  await reviewTeammateLearning('topic', 'reply3');
+  const snapshot = JSON.parse(h.model.mock.calls.at(-1)![1]).messages;
+  expect(snapshot.find((m: { id: string }) => m.id === 'long').text).toContain(proposal.evidence.quote);
+  if (role === 'channel') expect(snapshot.some((m: { id: string }) => m.id === 'guest-tool')).toBe(false);
+  expect(h.write).toHaveBeenCalledOnce();
+  expect(h.topicProgress.topic).toEqual({ coveredThroughMessageId: 'reply3' });
+  expect(h.writeWorking).not.toHaveBeenCalled();
+
+  // Another topic starts at its own prior reply; it never consumes this cursor.
+  h.meta = { turnCompleted: true };
+  h.floorRowid = 4;
+  h.gapRows = [];
+  h.model.mockResolvedValueOnce({ ok: false });
+  await reviewTeammateLearning('other-topic', 'other-reply');
+  expect(h.topicProgress['other-topic']).toEqual({ coveredThroughMessageId: 'prev' });
+  expect(h.topicProgress.topic).toEqual({ coveredThroughMessageId: 'reply3' });
 });
 
 it.each([false, undefined])('does not learn from a channel reply without verified owner identity (%s)', async isOwner => {

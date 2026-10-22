@@ -138,7 +138,7 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // learning shares durable memory, never overwrites that timeline's cursor.
       const maintainsWorkingMemory = row.role === 'canonical';
       const workingBefore = maintainsWorkingMemory ? await readBotWorkingMemory(root, row.botId) : null;
-      type Record_ = { id: string; role: string; content: string; order: number; meta?: string };
+      type Record_ = { id: string; role: string; content: string; order: number; meta?: string; inputMeta?: string };
       // 单条正文按 MESSAGE_CHUNK_CHARS 分块。用户 / 伙伴的消息被截尾即 partial——它们是账本新条目
       // 的证据来源,纠正 / 承诺可能就在长消息的尾部,没看完不能算覆盖;工具结果不是新条目的来源,
       // 截尾只影响 resolved 证据(条目多留一阵),按已覆盖处理,不为它逐块回补。
@@ -146,14 +146,14 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
         // Message storage accepts both plain text and serialized structured content.
         let parsed: unknown = m.content;
         try { parsed = JSON.parse(m.content); } catch { /* Plain text is already the snapshot. */ }
-        const source = JSON.parse(m.meta || '{}').imSource;
+        const source = JSON.parse((m.role === 'user' ? m.meta : m.inputMeta) || '{}').imSource;
         // 交互答复行的正文是用户的决定,归一成文本后按用户消息对待(证据规则同用户消息)。
         const interaction = INTERACTION_ROLES.has(m.role);
         let full: string = interaction ? interactionText(parsed) : typeof parsed === 'string' ? parsed : m.content;
         if (row.role === 'channel') {
           // Interaction rows have no durable sender attribution. Quoted/group
           // context is not the owner's own statement, even in an owner turn.
-          if (interaction || (m.role === 'user' && source?.origin?.sender?.isOwner !== true)) full = '';
+          if (interaction || source?.origin?.sender?.isOwner !== true) full = '';
           else if (m.role === 'user') {
             const text = typeof parsed === 'string' ? parsed : (parsed as { text?: unknown } | null)?.text;
             full = typeof source.userText === 'string' ? source.userText : typeof text === 'string' ? text : '';
@@ -180,10 +180,41 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
         [sessionId, row.rowid],
       );
       const prevCompleted = prev?.rowid ?? 0;
+      type Progress = { coveredThroughMessageId?: string; coveredThroughOffset?: number };
+      // Topic cursors live on their own replies, so deletion/rewind/clear and
+      // account isolation follow message storage without touching the bot ledger.
+      const topicProgressRow = maintainsWorkingMemory ? null : await db.queryOne<{ meta: string }>(
+        `SELECT agent_meta AS meta FROM messages WHERE session_id=? AND role='assistant'
+         AND rewind_at IS NULL AND rowid <= ? ${clearedAtFilter}
+         AND json_valid(agent_meta) AND json_type(agent_meta, '$.botLearningProgress')='object'
+         ORDER BY rowid DESC LIMIT 1 /* topic-learning-progress */`,
+        [sessionId, row.rowid, sessionId],
+      );
+      const topicProgress: Progress | null = topicProgressRow
+        ? JSON.parse(topicProgressRow.meta).botLearningProgress : null;
+      const progressBefore = maintainsWorkingMemory ? workingBefore : topicProgress
+        ?? (prev ? { coveredThroughMessageId: prev.id } : {});
+      const saveTopicProgress = async (progress: Progress) => enqueueDurableWrite(
+        `learning-progress:${sessionId}:${replyId}`, async () => {
+          if (current() && await readOwner()) {
+            await patchMessageAgentMetaWithResult(sessionId, replyId, { botLearningProgress: progress });
+          }
+        },
+      );
+      // Establish the first boundary before the model call: failure must leave
+      // this turn pending, but enabling topic learning must not scan old history.
+      if (!maintainsWorkingMemory && !topicProgress) await saveTopicProgress(progressBefore ?? {});
+      // Backfilled tool/assistant rows must belong to a verified owner input too;
+      // filtering only user rows would let a guest's old tool output teach Skills.
+      const inputMetaColumn = row.role === 'channel'
+        ? `(SELECT u.agent_meta FROM messages u WHERE u.session_id=m.session_id
+             AND u.client_id=json_extract(m.agent_meta, '$.replyToClientId') AND u.role='user'
+             AND u.rewind_at IS NULL AND u.created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=m.session_id), 0))`
+        : 'NULL';
       // 本轮取材:上一条完成回复之后到当前回复。
       const records = await db.query<Record_>(
         `
-      SELECT client_id AS id, role, content, agent_meta AS meta, rowid AS 'order' FROM messages
+      SELECT client_id AS id, role, content, agent_meta AS meta, rowid AS 'order', ${inputMetaColumn} AS inputMeta FROM messages m
       WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > ? ${clearedAtFilter}
       AND ${REVIEW_ROLES} ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT ${TURN_REVIEW_ROWS}
     `,
@@ -211,29 +242,29 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       type Watermark = { rowid: number; id: string | undefined; offset?: number };
       // 只认仍在可见时间线上的行:被 rewind 软删、被删成墓碑、/clear 之前的水位消息都按
       // 解析不到——否则一条已撤回的回复会把下界撑在上一条完成回复之上,跳过幸存历史的回补。
-      const resolvedFloor = workingBefore?.coveredThroughMessageId
+      const resolvedFloor = progressBefore?.coveredThroughMessageId
         ? (
             await db.queryOne<{ rowid: number }>(
               `SELECT rowid FROM messages WHERE session_id=? AND client_id=? AND rewind_at IS NULL
                AND role != 'message_tombstone' ${clearedAtFilter} /* ledger-floor */`,
-              [sessionId, workingBefore.coveredThroughMessageId, sessionId],
+              [sessionId, progressBefore.coveredThroughMessageId, sessionId],
             )
           )?.rowid
         : undefined;
       const floor: Watermark =
         resolvedFloor !== undefined
-          ? { rowid: resolvedFloor, id: workingBefore!.coveredThroughMessageId, offset: workingBefore!.coveredThroughOffset }
+          ? { rowid: resolvedFloor, id: progressBefore!.coveredThroughMessageId, offset: progressBefore!.coveredThroughOffset }
           : { rowid: 0, id: undefined };
       let covered: Watermark = turnTruncated ? { rowid: prevCompleted, id: prev?.id } : { rowid: row.rowid, id: replyId };
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
       // 水位停在半条消息里时,哪怕那条消息就是上一条完成回复(后面的轮次被 rewind 掉了),
       // 剩下的部分也得接着补,所以带偏移时取等号。
-      if (maintainsWorkingMemory && (floor.rowid < prevCompleted || (floor.offset !== undefined && floor.rowid === prevCompleted))) {
+      if (floor.rowid < prevCompleted || (floor.offset !== undefined && floor.rowid === prevCompleted)) {
         // 水位停在半条消息里时把那条消息本身也取回来(rowid > x-1 即 rowid >= x)。
         const gapAfter = floor.offset !== undefined ? floor.rowid - 1 : floor.rowid;
         const gapRows = await db.query<Record_>(
           `
-      SELECT client_id AS id, role, content, agent_meta AS meta, rowid AS 'order' FROM messages
+      SELECT client_id AS id, role, content, agent_meta AS meta, rowid AS 'order', ${inputMetaColumn} AS inputMeta FROM messages m
       WHERE session_id=? AND rewind_at IS NULL AND rowid > ? AND rowid <= ? ${clearedAtFilter}
       AND ${REVIEW_ROLES} ORDER BY rowid ASC LIMIT ?
     `,
@@ -252,7 +283,8 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
           // 下一块从块尾往回留一段重叠:跨块的句子、很短的尾段都能在某一块里完整出现并被引用。
           covered = { rowid: cut.order, id: cut.id, offset: cut.offset + MESSAGE_CHUNK_CHARS - MESSAGE_CHUNK_OVERLAP };
         } else if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapCandidates.length) {
-          const last = gapMessages[gapMessages.length - 1];
+          const last = gapMessages[gapMessages.length - 1]
+            ?? (gapCandidates.length === 0 ? gapRows.slice(0, GAP_BACKFILL_ROWS).at(-1) : undefined);
           covered = last ? { rowid: last.order, id: last.id } : floor;
         }
       }
@@ -430,6 +462,10 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
             },
           ]);
       }
+      if (!maintainsWorkingMemory) await saveTopicProgress({
+        ...(covered.id ? { coveredThroughMessageId: covered.id } : {}),
+        ...(covered.offset !== undefined ? { coveredThroughOffset: covered.offset } : {}),
+      });
       if (memorySaved && current()) {
         for (const id of new Set([sessionId, row.canonicalSessionId].filter((id): id is string => !!id))) {
           if (!current()) return;
