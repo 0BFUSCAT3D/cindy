@@ -106,7 +106,7 @@ cli({
             throw new EmptyResultError('youtube playlist');
         }
         const statsStr = (data.stats || []).join(' | ');
-        process.stderr.write(`${data.title}  [${data.channelName}]  ${statsStr}\n`);
+        void 0;
         return data.videos;
     },
 });

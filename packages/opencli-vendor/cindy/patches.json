@@ -3706,5 +3706,340 @@
     "file": "clis/maimai/search-talents.js",
     "before": "await page.waitForTimeout(5000);",
     "after": "await page.sleep(5);"
+  },
+  {
+    "file": "clis/boss/utils.js",
+    "before": "console.error(`[opencli:boss] ${msg}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/utils.js",
+    "before": "console.error(`[chatgpt/model] ${message}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write(`\\r  上传进度: ${pct}%`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write('\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write('  提交上传...\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write(`  上传已提交: ${videoId}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write('  内容安全预检接口无响应，继续轮询检测结果。\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write('  内容安全预检持续无响应，跳过本地预检，交由 create_v2 后的平台审核。\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "process.stderr.write('  创建定时发布...\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/download.js",
+    "before": "console.error(`📁 saved: ${displayPath(savedDir)}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/linkedin/search.js",
+    "before": "console.error(`[opencli:linkedin] Fetching details ${i + 1}/${jobs.length}: ${job.title}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/linkedin/search.js",
+    "before": "console.error(`[opencli:linkedin] Skipping detail for \"${job.title}\": ${reason}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/linkedin/search.js",
+    "before": "console.error(`[opencli:linkedin] Detail fetch failed for ${job.url}: ${reason}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/notebooklm/open.js",
+    "before": "console.warn(`[notebooklm open] expected notebook \"${notebookId}\" but page reports \"${state.notebookId}\"; continuing`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/ones/login.js",
+    "before": "console.error([\n            '',\n            '后续请求会优先使用当前 Chrome 会话 Cookie；若接口仍要求 Header，可 export：',\n            `  export ONES_BASE_URL=${JSON.stringify(base)}`,\n            `  export ONES_USER_ID=${JSON.stringify(uuid)}`,\n            `  export ONES_AUTH_TOKEN=${JSON.stringify(token)}`,\n            '',\n        ].join('\\n'))",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "console.error('Opening browser for Spotify login...')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/spotify/spotify.js",
+    "before": "console.error('If it does not open, visit:', authUrl)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "console.warn(`[warn] Image base64 payload is ${(base64.length / 1024 / 1024).toFixed(1)}MB. ` +\n                'This may fail with the browser bridge. Update the extension to v1.6+ for CDP-based upload, ' +\n                'or compress the image before attaching.')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/daily.js",
+    "before": "console.error('[opencli:v2ex] Navigating to /mission/daily')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/daily.js",
+    "before": "console.error('[opencli:v2ex] Waiting for Cloudflare...')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/daily.js",
+    "before": "console.error(`[opencli:v2ex:debug] Page Title: ${checkResult.debug_title}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/daily.js",
+    "before": "console.error(`[opencli:v2ex:debug] Page Body: ${checkResult.debug_body}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/daily.js",
+    "before": "console.error(`[opencli:v2ex] Found check-in token: once=${checkResult.once}. Checking in...`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/me.js",
+    "before": "console.error('[opencli:v2ex] Navigating to /')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/me.js",
+    "before": "console.error('[opencli:v2ex] Waiting for Cloudflare...')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/me.js",
+    "before": "console.error(`[opencli:v2ex:debug] Page Title: ${data.debug_title}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/me.js",
+    "before": "console.error(`[opencli:v2ex:debug] Page Body: ${data.debug_body}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/v2ex/notifications.js",
+    "before": "console.error('[opencli:v2ex] Navigating to /notifications')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/web/read.js",
+    "before": "process.stderr.write(formatDiagnostics(data, networkEntries, captureSupported))",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "process.stderr.write(`  [retry] bridge reconnecting after page re-render (${i + 1}/${maxAttempts})...\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "process.stderr.write(`  定时设置完成: ${result.value || expected}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "process.stderr.write(\n          '\\n⚠️  未登录视频号。已跳转到登录页，请在 Chrome 中扫码登录...\\n' +\n          '   登录完成后将自动继续发布。\\n\\n'\n        )",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "process.stderr.write('   等待扫码中...\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "process.stderr.write('✅ 登录成功，继续发布...\\n\\n')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "process.stderr.write(\n        '\\n  ℹ️  手动模式：表单已填好，请在浏览器中检查并点击「发表」。\\n' +\n        '     若未加 --site-session persistent，此标签页约 30 秒后会被重置为空白页。\\n\\n'\n      )",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/comment.js",
+    "before": "process.stderr.write(`${UNVERIFIED_MARKER}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/comment.js",
+    "before": "process.stderr.write(`${COMMAND_LABEL}: the comment was accepted but no comment id came back; check ${noteUrl} before posting again.\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "console.warn(`[warn] Total image payload is ${(totalBytes / 1024 / 1024).toFixed(1)}MB (base64). ` +\n            'This may fail with the browser bridge. Update the extension to v1.6+ for CDP-based upload, ' +\n            'or compress images before publishing.')",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/youtube/comment.js",
+    "before": "process.stderr.write(`${UNVERIFIED_MARKER}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/youtube/comment.js",
+    "before": "process.stderr.write(`YouTube accepted the comment and ${why}; check ${videoUrl} before posting again.\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/youtube/playlist.js",
+    "before": "process.stderr.write(`${data.title}  [${data.channelName}]  ${statsStr}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/youtube/transcript.js",
+    "before": "console.error(`Warning: --lang \"${captionData.requestedLang}\" not found. Using \"${captionData.language}\" instead. Available: ${captionData.available.join(', ')}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/youtube/watch-later.js",
+    "before": "process.stderr.write(`${data.title}  ${statsStr}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`ℹ  ${msg}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`${msg}\\n`)",
+    "after": "void 0",
+    "count": 2
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`⚠  ${msg}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`✖  ${msg}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`[verbose] ${msg}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`  [${stepNum}/${total}] ${op}${preview}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/logger.ts",
+    "before": "process.stderr.write(`       → ${summary}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/download/progress.ts",
+    "before": "process.stderr.write(`\\r${prefix} ${truncatedName} ${bar} ${percent}% ${size}${extra}`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/download/progress.ts",
+    "before": "process.stderr.write(`\\r${prefix} ${icon} ${truncatedName}${msg}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/download/progress.ts",
+    "before": "process.stderr.write(`\\r${prefix} ✗ ${truncatedName} ${error}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/download/progress.ts",
+    "before": "process.stderr.write(`\\nDownload complete: ${this.getSummary()}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "src/browser/base-page.ts",
+    "before": "process.stderr.write(`[snapshot] DOM snapshot failed, falling back to accessibility tree: ${(err as Error)?.message?.slice(0, 200)}\\n`)",
+    "after": "void 0",
+    "count": 1
+  },
+  {
+    "file": "clis/linkedin/search.js",
+    "before": "// \"missing description\"), and log every failure to stderr with the offending\n// URL so debugging is possible. Successful rows have `detail_error: null`.",
+    "after": "// \"missing description\"). Cindy returns these details only to the caller,\n// without duplicating browsing activity in host logs. Successful rows have `detail_error: null`."
   }
 ]

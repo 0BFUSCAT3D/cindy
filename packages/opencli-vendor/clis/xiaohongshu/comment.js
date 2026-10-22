@@ -198,8 +198,8 @@ cli({
                 // xhs accepted the write; only the id is missing. Never
                 // downgrade that to a failure — a retry of a non-idempotent
                 // write is worse than an unverified success.
-                process.stderr.write(`${UNVERIFIED_MARKER}\n`);
-                process.stderr.write(`${COMMAND_LABEL}: the comment was accepted but no comment id came back; check ${noteUrl} before posting again.\n`);
+                void 0;
+                void 0;
                 return [{ status: 'posted-unverified', comment_id: null, url: noteUrl, message: content, verified: false }];
             }
             return [{

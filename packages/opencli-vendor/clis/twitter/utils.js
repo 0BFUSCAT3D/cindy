@@ -146,9 +146,7 @@ export async function attachComposerImage(page, absImagePath, fileInputSelector 
                     : 'image/jpeg';
         const base64 = readRecipeFileSync(absImagePath).toString('base64');
         if (base64.length > 500_000) {
-            console.warn(`[warn] Image base64 payload is ${(base64.length / 1024 / 1024).toFixed(1)}MB. ` +
-                'This may fail with the browser bridge. Update the extension to v1.6+ for CDP-based upload, ' +
-                'or compress the image before attaching.');
+            void 0;
         }
         const upload = await page.evaluate(`
       (() => {

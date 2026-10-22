@@ -152,14 +152,14 @@ cli({
             credentials,
             onProgress: (uploaded, total) => {
                 const pct = Math.round((uploaded / total) * 100);
-                process.stderr.write(`\r  上传进度: ${pct}%`);
+                void 0;
             },
         });
-        process.stderr.write('\n');
-        process.stderr.write('  提交上传...\n');
+        void 0;
+        void 0;
         const committedVideo = await commitVideoUploadInner(tosUploadInfo, credentials);
         const videoId = committedVideo.video_id;
-        process.stderr.write(`  上传已提交: ${videoId}\n`);
+        void 0;
         coverWidth = committedVideo.width || coverWidth;
         coverHeight = committedVideo.height || coverHeight;
         if (!coverUri && committedVideo.poster_uri) {
@@ -211,7 +211,7 @@ cli({
             };
             const preCheck = await tryFastDetectFetch(page, 'POST', safetyUrl, { body: safetyBody });
             if (!preCheck.ok) {
-                process.stderr.write('  内容安全预检接口无响应，继续轮询检测结果。\n');
+                void 0;
             }
             const pollUrl = 'https://creator.douyin.com/aweme/v1/post_assistant/fast_detect/poll';
             const deadline = Date.now() + 30_000;
@@ -240,7 +240,7 @@ cli({
             }
             if (!safetyPassed) {
                 if (!preCheck.ok && pollUnavailableCount >= 3) {
-                    process.stderr.write('  内容安全预检持续无响应，跳过本地预检，交由 create_v2 后的平台审核。\n');
+                    void 0;
                 }
                 else {
                     throw new CommandExecutionError('内容安全检测超时（30s），请稍后重试', '如确认要跳过本地预检，可使用 --no_safety_check；提交后仍会走抖音平台审核');
@@ -319,7 +319,7 @@ cli({
             },
         };
         const publishUrl = `https://creator.douyin.com/web/api/media/aweme/create_v2/?read_aid=2906&${DEVICE_PARAMS}`;
-        process.stderr.write('  创建定时发布...\n');
+        void 0;
         const publishRes = (await browserFetch(page, 'POST', publishUrl, {
             body: publishBody,
         }));

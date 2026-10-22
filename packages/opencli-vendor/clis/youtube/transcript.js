@@ -457,7 +457,7 @@ cli({
         }
         // Warn if --lang was specified but not matched
         if (captionData?.requestedLang && !captionData.langMatched && !captionData.langPrefixMatched) {
-            console.error(`Warning: --lang "${captionData.requestedLang}" not found. Using "${captionData.language}" instead. Available: ${captionData.available.join(', ')}`);
+            void 0;
         }
         // Step 2: Fetch caption XML and parse segments
         // Ensure caption URL requests srv3 XML format — YouTube may return empty

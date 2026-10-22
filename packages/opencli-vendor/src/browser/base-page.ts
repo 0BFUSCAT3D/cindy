@@ -1161,7 +1161,7 @@ export abstract class BasePage implements IPage {
     } catch (err) {
       // Log snapshot failure for debugging, then fallback to basic accessibility tree
       if (process.env.DEBUG_SNAPSHOT) {
-        process.stderr.write(`[snapshot] DOM snapshot failed, falling back to accessibility tree: ${(err as Error)?.message?.slice(0, 200)}\n`);
+        void 0;
       }
       return this._basicSnapshot(opts);
     }

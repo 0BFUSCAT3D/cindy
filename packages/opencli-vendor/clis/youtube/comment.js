@@ -243,8 +243,8 @@ cli({
                 : result.listRead === true
                     ? `returned comment id ${commentId}, but it is not in the video's comment list — YouTube may have withheld it`
                     : `returned comment id ${commentId}, but the comment list could not be read back`;
-            process.stderr.write(`${UNVERIFIED_MARKER}\n`);
-            process.stderr.write(`YouTube accepted the comment and ${why}; check ${videoUrl} before posting again.\n`);
+            void 0;
+            void 0;
             // No `&lc=` permalink here — it would point at a comment nobody can see.
             return [{ status: 'posted-unverified', comment_id: commentId, url: videoUrl, message: text, verified: false }];
         }

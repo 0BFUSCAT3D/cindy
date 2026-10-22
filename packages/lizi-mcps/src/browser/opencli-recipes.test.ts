@@ -44,6 +44,8 @@ import { downloadRemoteImage, MAX_IMAGE_SIZE_BYTES } from '../../../opencli-vend
 import { s2Fetch } from '../../../opencli-vendor/clis/semanticscholar/utils.js';
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
 import { buildEutilsUrl } from '../../../opencli-vendor/clis/pubmed/utils.js';
+import { log as recipeLog } from '@jackwener/opencli/logger';
+import { createProgressBar, DownloadProgressTracker } from '@jackwener/opencli/download/progress';
 
 // Wrap the native namespace so tests can replace only the subprocess boundary.
 vi.mock('node:child_process', async importOriginal => ({
@@ -58,6 +60,59 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 log privacy, unit tier: the real search adapter must retain full,
+  // partial and no-URL results without copying account activity to host stderr.
+  // Existing registration/file tests never executed detail enrichment.
+  it('returns LinkedIn detail results and errors without terminal diagnostics', async () => {
+    const terminal = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = { goto: async (url: string) => {
+      if (url.endsWith('/3')) throw new Error('private-detail-error');
+    }, wait: async () => {}, getCookies: async () => [{ name: 'JSESSIONID', value: 'invalid-fixture' }],
+    evaluate: async (js: string) => js.includes('csrf-token')
+      ? { elements: [1, 2, 3].map(id => ({ jobCardUnion: { jobPostingCard: {
+        jobPostingTitle: `private-title-${id}`, ...(id === 2 ? {} : { jobPostingUrn: `urn:li:jobPosting:${id}` }),
+      } } })) }
+      : js.includes('const description =') ? { description: 'private-description', applyUrl: 'https://example.test/apply' } : false,
+    } as unknown as IPage;
+    const result = await executeAdapter('linkedin/search', { query: 'private-query', details: true }, page);
+    expect(result).toMatchObject([
+      { title: 'private-title-1', description: 'private-description', detail_error: null },
+      { title: 'private-title-2', description: null, detail_error: 'no url' },
+      { title: 'private-title-3', description: null, detail_error: 'fetch failed: private-detail-error' },
+    ]);
+    expect(error).not.toHaveBeenCalled();
+    expect(terminal).not.toHaveBeenCalled();
+  });
+
+  it('does not print V2EX page diagnostics even with verbose enabled', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('OPENCLI_VERBOSE', '1');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = { goto: async () => {}, evaluate: async (js: string) => js.includes('debug_body')
+      ? { error: 'fixture auth required', debug_title: 'private-title', debug_body: 'private-page-body' } : 'Fixture page',
+    } as unknown as IPage;
+    const checked = expect(executeAdapter('v2ex/me', {}, page)).rejects.toThrow('fixture auth required');
+    await vi.advanceTimersByTimeAsync(1500);
+    await checked;
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  // Shared logger/progress must not bypass the adapter boundary when verbose
+  // flags are inherited; counters/results still work. No host logger is added.
+  it('keeps framework logs and progress out of host stderr', () => {
+    vi.stubEnv('OPENCLI_VERBOSE', '1');
+    const terminal = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    recipeLog.info('private-info'); recipeLog.error('private-error'); recipeLog.debug('private-debug');
+    recipeLog.step(1, 1, 'private-step'); recipeLog.stepResult('private-result');
+    const progress = createProgressBar('private-name', 0, 1);
+    progress.update(1, 2, 'private-label'); progress.complete(true); progress.fail('private-error');
+    const tracker = new DownloadProgressTracker(1);
+    tracker.onFileComplete(true); tracker.finish();
+    expect(tracker.getSummary()).toContain('1 downloaded');
+    expect(terminal).not.toHaveBeenCalled();
+  });
+
   // #6826 foreground regression, unit tier. Use the real login adapter/page
   // with an in-memory transport: previous navigation tests omitted metadata.
   it.each([undefined, 'existing-target'])('focuses interactive login before probing from %s', async targetId => {

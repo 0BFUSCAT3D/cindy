@@ -456,7 +456,7 @@ const command = cli({
         // Extract article content using browser-side heuristics
         const data = await page.evaluate(buildRenderAwareExtractorJs({ frames: frameMode }));
         if (captureSupported) await drainNetworkCapture(page, networkEntries);
-        if (shouldDiagnose) process.stderr.write(formatDiagnostics(data, networkEntries, captureSupported));
+        if (shouldDiagnose) void 0;
         // Determine Referer from URL for image downloads
         let referer = '';
         try {

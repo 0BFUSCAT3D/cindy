@@ -17,7 +17,7 @@ cli({
         if (!page)
             throw new CommandExecutionError('Browser page required');
         if (process.env.OPENCLI_VERBOSE) {
-            console.error('[opencli:v2ex] Navigating to /mission/daily');
+            void 0;
         }
         await page.goto('https://www.v2ex.com/mission/daily');
         // Cloudflare challenge bypass wait
@@ -27,7 +27,7 @@ cli({
             if (!title?.includes('Just a moment'))
                 break;
             if (process.env.OPENCLI_VERBOSE)
-                console.error('[opencli:v2ex] Waiting for Cloudflare...');
+                void 0;
         }
         // Evaluate DOM to find if we need to check in
         const checkResult = await page.evaluate(`
@@ -55,8 +55,8 @@ cli({
     `);
         if (checkResult.error) {
             if (process.env.OPENCLI_VERBOSE) {
-                console.error(`[opencli:v2ex:debug] Page Title: ${checkResult.debug_title}`);
-                console.error(`[opencli:v2ex:debug] Page Body: ${checkResult.debug_body}`);
+                void 0;
+                void 0;
             }
             throw new CommandExecutionError(checkResult.error);
         }
@@ -65,7 +65,7 @@ cli({
         }
         // Perform check in
         if (process.env.OPENCLI_VERBOSE) {
-            console.error(`[opencli:v2ex] Found check-in token: once=${checkResult.once}. Checking in...`);
+            void 0;
         }
         await page.goto(`https://www.v2ex.com/mission/daily/redeem?once=${checkResult.once}`);
         await new Promise(resolve => setTimeout(resolve, 3000)); // wait longer for redirect

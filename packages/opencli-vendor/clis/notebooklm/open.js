@@ -31,7 +31,7 @@ cli({
             throw new CliError('NOTEBOOKLM_OPEN_FAILED', `NotebookLM notebook "${notebookId}" did not open in the adapter session`, 'Run `opencli notebooklm list -f json` first and pass a valid notebook id.');
         }
         if (state.notebookId !== notebookId) {
-            console.warn(`[notebooklm open] expected notebook "${notebookId}" but page reports "${state.notebookId}"; continuing`);
+            void 0;
         }
         const current = await readCurrentNotebooklm(page);
         if (!current) {

@@ -189,9 +189,7 @@ async function uploadImages(page, absPaths) {
     // Warn if total payload is large — this may fail with older extensions
     const totalBytes = images.reduce((sum, img) => sum + img.base64.length, 0);
     if (totalBytes > 500_000) {
-        console.warn(`[warn] Total image payload is ${(totalBytes / 1024 / 1024).toFixed(1)}MB (base64). ` +
-            'This may fail with the browser bridge. Update the extension to v1.6+ for CDP-based upload, ' +
-            'or compress images before publishing.');
+        void 0;
     }
     const payload = JSON.stringify(images);
     return page.evaluate(`

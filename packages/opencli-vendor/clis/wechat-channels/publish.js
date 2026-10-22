@@ -298,7 +298,7 @@ async function waitForUploadDone(page, fileName, maxMs = 180_000) {
       // Wait and retry rather than aborting.
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('ECONNRESET') || msg.includes('fetch failed')) {
-        process.stderr.write(`  [retry] bridge reconnecting after page re-render (${i + 1}/${maxAttempts})...\n`);
+        void 0;
         await page.wait({ time: pollMs / 1000 });
         continue;
       }
@@ -514,7 +514,7 @@ async function setScheduleTime(page, dt) {
   if (!String(result.value || '').includes(expected)) {
     throw new CommandExecutionError(`定时设置未验证成功: expected=${expected} actual=${result.value || ''}`);
   }
-  process.stderr.write(`  定时设置完成: ${result.value || expected}\n`);
+  void 0;
 }
 
 // ── Helper: click publish or draft button ────────────────────────────────────
@@ -597,10 +597,7 @@ cli({
     {
       const urlAfterNav = await evalPage(page, '() => location.href');
       if (urlAfterNav.includes(LOGIN_PATH_FRAGMENT)) {
-        process.stderr.write(
-          '\n⚠️  未登录视频号。已跳转到登录页，请在 Chrome 中扫码登录...\n' +
-          '   登录完成后将自动继续发布。\n\n'
-        );
+        void 0;
 
         const loginDeadline = Math.min(deadline, Date.now() + 120_000);
         let loggedIn = false;
@@ -611,14 +608,14 @@ cli({
             loggedIn = true;
             break;
           }
-          process.stderr.write('   等待扫码中...\n');
+          void 0;
         }
 
         if (!loggedIn) {
           throw new AuthRequiredError('channels.weixin.qq.com', '登录超时（2分钟），请手动登录后重试');
         }
 
-        process.stderr.write('✅ 登录成功，继续发布...\n\n');
+        void 0;
         await page.wait({ time: 3 }); // let bridge stabilize after login redirect
         await page.goto(PUBLISH_URL);
         await page.wait({ time: 5 });
@@ -660,10 +657,7 @@ cli({
       // review always exceeds 30s, so warn unless the form will actually
       // survive. We can't read the resolved siteSession from here, so the
       // guidance is unconditional.
-      process.stderr.write(
-        '\n  ℹ️  手动模式：表单已填好，请在浏览器中检查并点击「发表」。\n' +
-        '     若未加 --site-session persistent，此标签页约 30 秒后会被重置为空白页。\n\n'
-      );
+      void 0;
       return [{
         status: '⏸️ 已填写完毕，请在浏览器中手动点击发表',
         title: title || '',

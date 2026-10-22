@@ -50,15 +50,15 @@ export function createProgressBar(filename: string, index: number, total: number
       const bar = createBar(percent);
       const size = totalBytes > 0 ? formatBytes(totalBytes) : '';
       const extra = label ? ` ${label}` : '';
-      process.stderr.write(`\r${prefix} ${truncatedName} ${bar} ${percent}% ${size}${extra}`);
+      void 0;
     },
     complete(success: boolean, message?: string) {
       const icon = success ? '✓' : '✗';
       const msg = message ? ` ${message}` : '';
-      process.stderr.write(`\r${prefix} ${icon} ${truncatedName}${msg}\n`);
+      void 0;
     },
     fail(error: string) {
-      process.stderr.write(`\r${prefix} ✗ ${truncatedName} ${error}\n`);
+      void 0;
     },
   };
 }
@@ -128,7 +128,7 @@ export class DownloadProgressTracker {
 
   finish(): void {
     if (this.verbose) {
-      process.stderr.write(`\nDownload complete: ${this.getSummary()}\n`);
+      void 0;
     }
   }
 }

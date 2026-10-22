@@ -364,7 +364,7 @@ cli({
         }
         const savedDir = path.join(outputRoot, shortcode);
         await downloadInstagramMedia(mediaItems, savedDir);
-        console.error(`📁 saved: ${displayPath(savedDir)}`);
+        void 0;
         return null;
     },
 });

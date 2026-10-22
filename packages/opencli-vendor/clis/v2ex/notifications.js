@@ -19,7 +19,7 @@ cli({
         if (!page)
             throw new CommandExecutionError('Browser page required');
         if (process.env.OPENCLI_VERBOSE) {
-            console.error('[opencli:v2ex] Navigating to /notifications');
+            void 0;
         }
         await page.goto('https://www.v2ex.com/notifications');
         await new Promise(r => setTimeout(r, 1500)); // waitForLoadState doesn't always work robustly

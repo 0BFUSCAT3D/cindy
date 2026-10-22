@@ -61,14 +61,7 @@ cli({
         const name = String(user.name ?? '');
         const em = String(user.email ?? '');
         const base = getOnesBaseUrl();
-        console.error([
-            '',
-            '后续请求会优先使用当前 Chrome 会话 Cookie；若接口仍要求 Header，可 export：',
-            `  export ONES_BASE_URL=${JSON.stringify(base)}`,
-            `  export ONES_USER_ID=${JSON.stringify(uuid)}`,
-            `  export ONES_AUTH_TOKEN=${JSON.stringify(token)}`,
-            '',
-        ].join('\n'));
+        void 0;
         return [
             {
                 uuid,

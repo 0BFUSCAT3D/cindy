@@ -45,6 +45,10 @@ try {
               if (!node || typeof node !== 'object') return;
               if (node.type === 'CallExpression') {
                 const parts = chain(node.callee);
+                if (parts[0] === 'console' || (parts[0] === 'process'
+                  && ['stdout', 'stderr'].includes(parts[1]) && parts[2] === 'write')) {
+                  throw new Error(`Recipe retained host terminal output: ${path.relative(root, id)} (${parts.join('.')})`);
+                }
                 if (fsBindings.has(parts[0])) {
                   const method = (fsBindings.get(parts[0]) || parts.at(-1)).replace(/Sync$/, '');
                   if (['stat', 'lstat', 'exists', 'access', 'readdir'].includes(method) && !guarded(node.arguments[0])) {

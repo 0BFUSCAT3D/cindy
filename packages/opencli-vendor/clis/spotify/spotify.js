@@ -158,8 +158,8 @@ cli({
             const timeout = setTimeout(() => { server.close(); reject(new CliError('AUTH_TIMEOUT', 'Authentication timed out after 5 minutes')); }, 5 * 60 * 1000);
             server.listen(8888, '127.0.0.1', () => {
                 const authUrl = `https://accounts.spotify.com/authorize?${new URLSearchParams({ client_id: clientCredentials().clientId, response_type: 'code', state, redirect_uri: REDIRECT_URI, scope: SCOPES })}`;
-                console.error('Opening browser for Spotify login...');
-                console.error('If it does not open, visit:', authUrl);
+                void 0;
+                void 0;
                 openBrowser(authUrl);
             });
             server.on('close', () => clearTimeout(timeout));

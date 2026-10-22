@@ -71,7 +71,7 @@ cli({
             throw new EmptyResultError('youtube watch-later');
         }
         const statsStr = (data.stats || []).join(' | ');
-        process.stderr.write(`${data.title}  ${statsStr}\n`);
+        void 0;
         return data.videos;
     },
 });

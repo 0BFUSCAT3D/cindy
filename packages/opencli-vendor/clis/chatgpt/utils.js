@@ -71,7 +71,7 @@ export const CHATGPT_MODEL_CHOICES = Object.keys(CHATGPT_MODEL_ALIASES);
 
 function debugChatGPTModel(message) {
     if (process?.env?.OPENCLI_CHATGPT_MODEL_DEBUG) {
-        console.error(`[chatgpt/model] ${message}`);
+        void 0;
     }
 }
 

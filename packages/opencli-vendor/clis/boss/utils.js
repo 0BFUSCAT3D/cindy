@@ -291,7 +291,7 @@ export async function typeAndSendMessage(page, text) {
  */
 export function verbose(msg) {
     if (process.env.OPENCLI_VERBOSE) {
-        console.error(`[opencli:boss] ${msg}`);
+        void 0;
     }
 }
 // ── Geek-side helpers ────────────────────────────────────────────────────────

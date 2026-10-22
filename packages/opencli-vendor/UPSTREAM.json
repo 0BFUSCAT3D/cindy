@@ -231,6 +231,48 @@
     },
     "clis/maimai/search-talents.js": {
       "upstreamSha256": "f4ebfd01ea433cec410a14a1cccea6928d51b7d5ea43af2ca8ab450fa58c4e19"
+    },
+    "clis/boss/utils.js": {
+      "upstreamSha256": "4c1b3d6d7af73f697b9189b487472e7798341fce0153e1d52549b2e34449cda2"
+    },
+    "clis/linkedin/search.js": {
+      "upstreamSha256": "670f6cf32770cac68ce7ffedd39ca40d2a8885a425803820bd9cb06a57ac383b"
+    },
+    "clis/notebooklm/open.js": {
+      "upstreamSha256": "1688207c82af9ecd372fd6d5e851f0b2a18df146846f742ecaaa738f579633bc"
+    },
+    "clis/ones/login.js": {
+      "upstreamSha256": "d2e104cb11dbb311398d5eeb0be5aba3b48801684c744fe79a6ed4c89ad5a883"
+    },
+    "clis/v2ex/daily.js": {
+      "upstreamSha256": "a337278f4d936501b4a7e2ecae59955049e4b3740f39f54e99d6fc8c198dc5dd"
+    },
+    "clis/v2ex/me.js": {
+      "upstreamSha256": "adbc6701587b8b39877378940739bb5659c4a0c272558dbb35ccb46a57a656f9"
+    },
+    "clis/v2ex/notifications.js": {
+      "upstreamSha256": "82a01debe45d16dfacb851266b2fc9bde5b01111e0843a7fd353ed23e944875a"
+    },
+    "clis/xiaohongshu/comment.js": {
+      "upstreamSha256": "90f67a696d6022f66c77cd2ab470a6c4f77396908c01d208942cffd21d647d1e"
+    },
+    "clis/youtube/comment.js": {
+      "upstreamSha256": "ac7c609bbad30981650e2f4b5107269b937eed1d8771531c66c33ebf114f17e6"
+    },
+    "clis/youtube/playlist.js": {
+      "upstreamSha256": "9c457cb31aa07e7d62b086bb2526c183005cb681ce36fd8535c85208e8d66067"
+    },
+    "clis/youtube/transcript.js": {
+      "upstreamSha256": "6d39cb7bbef0726693409661b109e49759d7348f4759837383977ce008690e23"
+    },
+    "clis/youtube/watch-later.js": {
+      "upstreamSha256": "9d7a18044af9b764d5200e6efb6eefffb04c6a605a680377d874041bb8e2cc6c"
+    },
+    "src/logger.ts": {
+      "upstreamSha256": "bb04b7f7073b5f35cb3609204fa366494dca070019d50e9ecdc6a636a0386f9a"
+    },
+    "src/download/progress.ts": {
+      "upstreamSha256": "98f9ff046388d58f9347ed31fd26a9dc86d29e53d5ec9040ec47e34cae09608f"
     }
   },
   "files": {
@@ -387,7 +429,7 @@
     "clis/boss/search.js": "5ea2ecc914145ecab24004828ebc336804c112a6f9ad9f8fd1119cd0d0badcf5",
     "clis/boss/send.js": "c2b2e864d3231d042356e5f105516729ab2283cf05e6ac540af7d2b8fcf90f48",
     "clis/boss/stats.js": "418b224237e462f753c42bdf65845cc2eeca7b8cf956cd1830fd5c46dc8e9ab2",
-    "clis/boss/utils.js": "4c1b3d6d7af73f697b9189b487472e7798341fce0153e1d52549b2e34449cda2",
+    "clis/boss/utils.js": "d0cc7cd8079c5b34dd5329fec5cd8a7ee2261da5c5784e178111479e2ca568ab",
     "clis/brave/search.js": "097ce1e5027c0d7056851cb78cebbfdbf7edb73774ce12d72697bd49b72231fc",
     "clis/chaoxing/assignments.js": "eeb6e4e78f8c93ac1f3bab57c08abd95f79bf9d25c1310988731ba2565de21d3",
     "clis/chaoxing/auth.js": "61d12c84b34003b0fe135066980e91b37b3dc4aa91367bb1bf64cd9c43f5b8ba",
@@ -407,7 +449,7 @@
     "clis/chatgpt/read.js": "44ed9824abd6568227ac2164b3175ec14251e3ef09c161cdaea8da89cd355d0c",
     "clis/chatgpt/send.js": "535cfb3fba02ca3d00e0d5804c617ac9c67cdc2f1581abc92c27ae57bbb4d76b",
     "clis/chatgpt/status.js": "c61a2407c5b4d375f2c09c51de83c7800d5a501993329c308eac209328e50e6b",
-    "clis/chatgpt/utils.js": "dacffa8304591fcd3f3f2b6a25d300ba417dddadc84b4c9b7096f64e3b20a630",
+    "clis/chatgpt/utils.js": "c84722bcfe70f53b2893f38b44d3020c05979ebb428edce5e92a67a1b0766050",
     "clis/chess/analyze.js": "6310c246f7d03e73736d5b885706a6bfe7cd057761c3a3a5d13109a9afd67ae2",
     "clis/chess/game.js": "cdf30c1fef8813af0acff84c028c31225f47044db144fb71af32c47342639dab",
     "clis/chess/games.js": "0d8df9fcbe4f49982bc7f1b82581b5e581ae72808de1c41a5dd85568881b6bad",
@@ -545,7 +587,7 @@
     "clis/douyin/hashtag.js": "7952fb0240669b86d1b5b254fddc0758797677df0830047ca5e7a6ed565f86ad",
     "clis/douyin/location.js": "f8637006996174d8830bb299d5ccb18c0fe589964ebf77bf0865cea3d39b8712",
     "clis/douyin/profile.js": "4d4c7a090dd84479961f31a17a6761db363f9a313a90569ac647347242cb9f53",
-    "clis/douyin/publish.js": "fdf0ff1f56472d193b14103c4b69031819e7a7510d24753b9a81f8b0b7c7098b",
+    "clis/douyin/publish.js": "a81a4c8d02e4772f6ffe7951179289c58907141caf38ee081a777b953fe697a0",
     "clis/douyin/search.js": "28c508c4bb80282858e036ba2c3b57c91de8651293d2c12234c3486fe535fbe1",
     "clis/douyin/stats.js": "baac5cff947d7848bca84303de8c1cfcd75a24b488e64f1c644fa04eec388aba",
     "clis/douyin/update.js": "407f58aea77dfb29a78480fc6dad255fcae9b16af9ba98c041ec5b9eced6c1ec",
@@ -733,7 +775,7 @@
     "clis/instagram/collection-create.js": "6200ac062b163c16112dbf9f4d80ed95f9c032f376feaada3e3b9b15202ca2db",
     "clis/instagram/collection-delete.js": "bf9de03f7f896ca545a13bc8d7add12230c3fb2b10d373f383c66b178a8b007a",
     "clis/instagram/comment.js": "9f72b16f8ac33095fcf8b64cdfec43216550932c3cfdefc7fc778b8063f55573",
-    "clis/instagram/download.js": "37fdb3175a4768e1317e7ee7b3840666f1cc569368ef5cb90eace5c48ca0e5c0",
+    "clis/instagram/download.js": "0c105a384f35e3f1fb8751cd3d2b58218576dfcdc5385aaa3328ca001bd7988f",
     "clis/instagram/explore.js": "0b5f5bd7a042e692a22f1f90f6a4e3c999afba4f9f9c48436c8797aee747c8b8",
     "clis/instagram/follow.js": "d552c22579e21d730eaf159dea92c94653d5815c58e262c813b046bdb009989a",
     "clis/instagram/followers.js": "776e0dd994a814796ac38f6f14e8a34adc00474c6d8f6c66c40b17f97454d379",
@@ -843,7 +885,7 @@
     "clis/linkedin/salesnav-message.js": "5d675de535f31fb876337cec79f87502dd988c850139a184724186322d10b5c3",
     "clis/linkedin/salesnav-search.js": "5f5a04f240fa399480e5e92af1b9bf7e6ae95e5edd2d8ca07657f3d5f3ea60e8",
     "clis/linkedin/salesnav-thread.js": "37926537ce0ba4eb92b95a57e36cf47ceffa21e5a5e137981e70c97a8719bd59",
-    "clis/linkedin/search.js": "670f6cf32770cac68ce7ffedd39ca40d2a8885a425803820bd9cb06a57ac383b",
+    "clis/linkedin/search.js": "dd0cf530b1004eb7d392a0a6b0d2b33cf55c011aeb4e9cd306b61d1e4c7911fc",
     "clis/linkedin/sent-invitations.js": "62c11dde159b19671a270eaabf3278344eb78ff25d3e4513bce1870aac9a4360",
     "clis/linkedin/services-read.js": "79c31222b3f5f4e3dbae465973aa6d3cc691b1b2fccc610138fc08afad7456a9",
     "clis/linkedin/shared.js": "a1646085abc5035e76115f1153ac8ac43c16f96e19d31e28e0dd7b51a6cd8957",
@@ -926,7 +968,7 @@
     "clis/notebooklm/list.js": "ca977c27cb895c6a96ddc04c564b8054d1ef237c4d3e4f5c2abbc6340462e91b",
     "clis/notebooklm/note-list.js": "85238d925fefc242665f30f663492b69d19c94d89780e0542ea492004ed89055",
     "clis/notebooklm/notes-get.js": "8aa990d9b592838211db934c361dde19d47b583e7a4c7405ccb8795b1e758891",
-    "clis/notebooklm/open.js": "1688207c82af9ecd372fd6d5e851f0b2a18df146846f742ecaaa738f579633bc",
+    "clis/notebooklm/open.js": "d431ebfd39ae2142d8b4a72fd00f11d1d35b072d3ef51b35b3af78952d462a8c",
     "clis/notebooklm/rpc.js": "97e46d6f9b840632e905d04e0dcbdd7ea77d16b14d44421727493b20ed349f1d",
     "clis/notebooklm/shared.js": "20a663f2e9994d56dbdd120c6955b4d51c31f9e5ae3c68bcf568d9eb94fe30f4",
     "clis/notebooklm/source-fulltext.js": "40895a7725c4447708a8c4be354e838a7f0d28485f5b2de58b102e8b68ed30b3",
@@ -968,7 +1010,7 @@
     "clis/oeis/utils.js": "c0c0775ab7c625ed73c22c350e0c2a0c1cafa5c36d1134549ee1ab3ba532a22b",
     "clis/ones/common.js": "8d2b3537e3e9b347a3be14a3acadf1cdde22afd08068e73542f7a6402b4e494c",
     "clis/ones/enrich-tasks.js": "65f6497cd38bd71734eaf1322e116f8594a20a48929543815da2798344a3ce2f",
-    "clis/ones/login.js": "d2e104cb11dbb311398d5eeb0be5aba3b48801684c744fe79a6ed4c89ad5a883",
+    "clis/ones/login.js": "f243da856e252ae206a4f86ea0fb4c66b97b26de053ad8c94978ca14979bd469",
     "clis/ones/logout.js": "52c61d4d16273124523c6cd378cda1aa311cd57bfc233c2c495a68df786d28f1",
     "clis/ones/me.js": "d6fe7f8c596babdafe6a513271413976d34d4de9a227d4bda4e81ed48cbe2385",
     "clis/ones/my-tasks.js": "e9d057bb9f3b103c6173f93d6de55f6748729565ecb9769d9ae6333178c53eda",
@@ -1188,7 +1230,7 @@
     "clis/slock/unread-summary.js": "8e48b7f666055d3ba6e14932231132e1a7da6f4e55531156bdf3e3be66b0df10",
     "clis/slock/whoami.js": "f2e708e91f38ee67e1d93676f3437effec13c7400a9b41e4839a0d70499375ff",
     "clis/smzdm/search.js": "f55f24667fec3683cb21f516e5b3ad176c262db93ce3e4a1bf0be32b4519f092",
-    "clis/spotify/spotify.js": "62841c91ac7f1daf68c2e30fd187d468efa66bf9030ecde0805a69ad056b2939",
+    "clis/spotify/spotify.js": "8514efc41bb556bc6e4e99cdbb6c075bc7253a9ca6abf920be3fb29e55f09f5a",
     "clis/spotify/utils.js": "5cbd243c30077be8f2eccea6097b0e072eba5c0c9ce99238cd8429055793a24c",
     "clis/stackoverflow/bounties.js": "ee26831299d8fa763da3974f67a4f367edbf07224d9cf5c92e72bd85a119fb0e",
     "clis/stackoverflow/hot.js": "0e8ce6916a4dab7dd5df662cfd7d96eea331b537dae2a746a7929b3e4d33bd92",
@@ -1318,7 +1360,7 @@
     "clis/twitter/unlike.js": "183aaf8d883fe57d504e28f41ad46aaaa6e639d7d7c562b87a06f3852fc525c9",
     "clis/twitter/unretweet.js": "207a14240eb519b1be6c5e35ded2a9c3002f3cc42d8ad96d9315df88f706bdaf",
     "clis/twitter/user-timeline.js": "d80d311ca4090a7c63a7ff8c6b33d612f51d7132a6f289665957bcebda321b00",
-    "clis/twitter/utils.js": "6c73bbe45114c6f4a84e1fd30365f2bc295c6bf24e1f80a0ec0cffba6b0cc0c9",
+    "clis/twitter/utils.js": "40446b7421a2c1de95e1da868f957c37f674005f5a91cb6ace19b4fff9bb8f80",
     "clis/uisdc/news.js": "7450fa65ec39331fbb4e0e911bf6ebb4bf4cd9e43e5f72b59fbba740b723ae32",
     "clis/uiverse/_shared.js": "6318c65c3e3630e843278fc77b87e8da00a387909c78bbee69bfe56803fc0638",
     "clis/uiverse/code.js": "3efffa78519d4c545b4c8fb2bb9c7ff607322b6a9dad8443cc7a3af4df217cd3",
@@ -1329,21 +1371,21 @@
     "clis/upwork/search.js": "9f93ebd5d13d372410025eebee28cf74d100f354a92beacaddad36dd43d95fd1",
     "clis/upwork/utils.js": "788cd992175b00465e9d75748f7aed1eb92fdc88a10b261aba1264d56ceefa89",
     "clis/v2ex/auth.js": "cb6015e1b9e557cdca16fce7c66691aeab1c22c4c61fbcd5449a548bdc981765",
-    "clis/v2ex/daily.js": "a337278f4d936501b4a7e2ecae59955049e4b3740f39f54e99d6fc8c198dc5dd",
+    "clis/v2ex/daily.js": "d1d8de1b4a2e9c999ca5b5fb09ed13eff7f340bc24ba1c51c921c86b5032ea06",
     "clis/v2ex/hot.js": "071d047a5bde358a6790c59164dcb8d0ee127930e9aa438d265f0bef9de1af0b",
     "clis/v2ex/latest.js": "f96605ce32834d893efe92712730eeea1a71d0cb44c6bc65cf2c00863f671be6",
-    "clis/v2ex/me.js": "adbc6701587b8b39877378940739bb5659c4a0c272558dbb35ccb46a57a656f9",
+    "clis/v2ex/me.js": "802ecb9582d584db9e344d1aa5324ee93bdce7949ce763007e1913600a08f678",
     "clis/v2ex/member.js": "13400afe41a37f9c68de5f0188a664f004030adfbb348d6becfae7f161777189",
     "clis/v2ex/node.js": "37baf23cf9ea2d79c05b552d5e775d957292c58182d0f32282bf808d65ab462d",
     "clis/v2ex/nodes.js": "df5d2d5267382ec73d23d2d9c4485a4e162d4e10e8392684c6c632f2b08ecb69",
-    "clis/v2ex/notifications.js": "82a01debe45d16dfacb851266b2fc9bde5b01111e0843a7fd353ed23e944875a",
+    "clis/v2ex/notifications.js": "90e99130ee8fdea09b461370a66051a2a203f37b3c067defe3e82fac6d6dadad",
     "clis/v2ex/replies.js": "f3ae8d4fb2a497c25557ebc222e4d012ec9eeb6ca7f2c9397aa2a077662bfecc",
     "clis/v2ex/topic.js": "ba0e01735fc4dc122ed4f3b4130586fe6c065aded1612e50c3d9eb8ba19dfe0e",
     "clis/v2ex/user.js": "e6a254fc2e61f640942b1570fd720417e2ad96f0d9a32d61128e65ea040ce561",
     "clis/wanfang/search.js": "1713664acba438a57e797d2ffba61387f97070909d3cd95a43180d2b1a6df7d5",
-    "clis/web/read.js": "163da31622a991a8448948ed1efc08c1539fdb8936c37e82a3421fe31dd34873",
+    "clis/web/read.js": "e4f1fc889910d18a5739ee56b3ff3a083cce6f6b25a8905ae49c8f711371d015",
     "clis/wechat-channels/auth.js": "87273b45899f69ad523ccb3474b328cc2f915d0c2891900a78dbaceaa9ed2958",
-    "clis/wechat-channels/publish.js": "adcdd5360ed2833e0692c1dcbcca5e1068735d4c7d7842dd8c16b87fba56bb88",
+    "clis/wechat-channels/publish.js": "dec92e03bf8c41f7709b1c2c9cf9d0e276ed1f99a019d3aea8a90eda3cedd909",
     "clis/weibo/auth.js": "a67993a6302b445465ab09a1e2eaf0048b41f373b235801c07198ce9de263c07",
     "clis/weibo/comments.js": "f2b9bb520ace7e3f530e0af09fb45ad251795ff1d61be93e96ecc4a8330f709c",
     "clis/weibo/delete.js": "866a54ed27988df25d0d0499a58820246915f05af3d2c613ac9df7f022ca0113",
@@ -1414,7 +1456,7 @@
     "clis/xiaohongshu/collection-helpers.js": "306319a890bb3910d9fe1fd8d79d01701b465d0349f5d15b74aaf56add6fac73",
     "clis/xiaohongshu/comment-delete.js": "a67b3b87321373e5c5369b24fadff30f3be0fc3468a472404581fdd1d2005a97",
     "clis/xiaohongshu/comment-helpers.js": "fa04a6831c771017702ceb5ffd71c2d113eebb400abc692f88801331e454dee1",
-    "clis/xiaohongshu/comment.js": "90f67a696d6022f66c77cd2ab470a6c4f77396908c01d208942cffd21d647d1e",
+    "clis/xiaohongshu/comment.js": "7af7e61574821eb88d3100684c6bc33941c2742d78eb618c124854a5b385fb06",
     "clis/xiaohongshu/comments.js": "9418636fe50424cb5cd91128ed0537fd690240d0edae065a418b851379c48872",
     "clis/xiaohongshu/creator-note-detail.js": "fdcd3bf17aa6b7dbf3f51962b64576786fbe3762ed630cd3419420cd77657a3b",
     "clis/xiaohongshu/creator-notes-summary.js": "9df7c88562b71531d2c3276c5804a29df072b2222eaf9c85432bf7317588ccd1",
@@ -1435,7 +1477,7 @@
     "clis/xiaohongshu/note.js": "09c08e2b8c69ee3a16daafc6fdcebf63fb016b99640adb8a157b80b3287f0833",
     "clis/xiaohongshu/notifications.js": "1262c0172fabc45aa21ae65643d19e242856062e73caf0377a95cf94914000a3",
     "clis/xiaohongshu/pinia-helpers.js": "c2b7639c4ddc2cd078a01eb62c66c0c37548b7b3fd5aac3c631ac53a36c68686",
-    "clis/xiaohongshu/publish.js": "04818c92743c675a0e82f038c32b5129da75028fc1fad13c26097b8194246977",
+    "clis/xiaohongshu/publish.js": "5e6a4cfd3bcb2f397f11c4bb006b344032593155b85d1f2d0d038db05c49f0c1",
     "clis/xiaohongshu/risk-control.js": "6e7c15a8a27de78a45fbe01d206bbbd43fab23bd9aa4cf39c900bf6c838c7242",
     "clis/xiaohongshu/saved.js": "c69f484e82b016a07ac699d3622236b8e0d2440826ff497f1ddbabb97137a2c7",
     "clis/xiaohongshu/search.js": "333f5db3d62dfb3227bb59f47b5ce8e509901d6438b42e3038ec61624ea0d329",
@@ -1484,22 +1526,22 @@
     "clis/youdao/note.js": "dd511f473dd50d84b4baade69da710f19f02d2f84d69719f016b022d8efb826d",
     "clis/youtube/auth.js": "976f10a7fa03f2d46c5f0b27c113ee6e18faf1bbdaca8592528bae041e252039",
     "clis/youtube/channel.js": "9b835108988266ae1bb5ead2ceb20daefc016f8c206596822fba56512b0eb7a2",
-    "clis/youtube/comment.js": "ac7c609bbad30981650e2f4b5107269b937eed1d8771531c66c33ebf114f17e6",
+    "clis/youtube/comment.js": "429ac5e1f24d937625f6cf730588d83131bc8d1484db7c2427e365a4951a312d",
     "clis/youtube/comments.js": "6667833cda665c12818f257f849d6e124d340c3d6b2ca8564b49e756bc16fbec",
     "clis/youtube/feed.js": "779092bc71e4d5c359bac0e72783af3fd384965d5480a462addcd13cc91bb3ea",
     "clis/youtube/history.js": "972b5b0726fafc4f99b75d8bce1e97078c9e7855600802dcbeaffd4617620e24",
     "clis/youtube/like.js": "c3a405ece76de6c357c65b7113bb4eb6d3bf83e81a8d12929888aa6da372ffbf",
-    "clis/youtube/playlist.js": "9c457cb31aa07e7d62b086bb2526c183005cb681ce36fd8535c85208e8d66067",
+    "clis/youtube/playlist.js": "ddf50ae43a6243a733b7e56bf508292d77d30ba7bd2a2fd7e1e327fff4197962",
     "clis/youtube/search.js": "cd73e99c4a197b8750fe006917182d403ee90ace020422859d2328f72797bd53",
     "clis/youtube/subscribe.js": "bba4d5f102013f746dd841664eda2eec515d727cbf8b1e9fe78b48dac23f1628",
     "clis/youtube/subscriptions.js": "3612910686ef41563856ea8297b9c10cff224206ee72d6e25a5577191a6665ee",
     "clis/youtube/transcript-group.js": "0b2e7056cfa877278059b09572ac3859d1574a07548241ee1ffe756b4d489ad2",
-    "clis/youtube/transcript.js": "6d39cb7bbef0726693409661b109e49759d7348f4759837383977ce008690e23",
+    "clis/youtube/transcript.js": "c340f9ce2270d21e8ab483ab2d233d7b91e2b758e901eee0f9151f14091aeb97",
     "clis/youtube/unlike.js": "6ca7f5d58068c8e16700d5f88ad1d3d23b8e15eee2c2f84c2343cd978fa7a284",
     "clis/youtube/unsubscribe.js": "c7a46c2ba043c3d64687eee9de1fba8c855bf40d39c3688e4224556e4843a17a",
     "clis/youtube/utils.js": "f5e77dae7f3fadaf49299908e5b54d232b5e8f0f60170dbf39d592a8238a940a",
     "clis/youtube/video.js": "5db1fc465dd282a30d77dfdd4742b11d3c6373139f22b004fe7e52acdb662cb3",
-    "clis/youtube/watch-later.js": "9d7a18044af9b764d5200e6efb6eefffb04c6a605a680377d874041bb8e2cc6c",
+    "clis/youtube/watch-later.js": "d770df0a5cc89e033bc2456411e8726fb809e22c4ef30cb0570095f6b7688b06",
     "clis/yuanbao/ask.js": "4ccae5fead0bad852d722d9f9eb926dbd58a129b0d463a06328c90eb48fcf5f6",
     "clis/yuanbao/auth.js": "868786590ca928d24d0f2e8b3a5e758946483d20d50c721a482f16a8ec94ddcf",
     "clis/yuanbao/detail.js": "4ade0d019a53d401be8a81650b7bf8e31b7c9419822fb5d9b768f623fef1d6ad",
@@ -1553,7 +1595,7 @@
     "src/adapter-source.ts": "efb86669cab97a8a79bda82c72a73eab09539fb91dc35ee415cbeed1d865e5f8",
     "src/browser/article-extract.ts": "af5345c6384e6aaa9cadb42a27011947dc4caa5beefcd8d6836cc7373b048342",
     "src/browser/ax-snapshot.ts": "1524cb389045b361fc89c57820c3a608ef85c4768c249b1e5ac21ccfb3b3a8b3",
-    "src/browser/base-page.ts": "0c1b2d0cbd82426c41b429acc84a6a367d64628c02df98a28ae84ba33738426c",
+    "src/browser/base-page.ts": "2a91558c697654ba503b901abdabd10c101644d3a73c9832b053fd687955ac49",
     "src/browser/bridge-readiness.ts": "14692b5292fd1c1e9ad06eeba8ec7efb64062716c7a40098253ca003d3ec2176",
     "src/browser/bridge.ts": "faa6c51f9f165f56807c714cc821e157345ed1d2685067869c6e905280d5d25c",
     "src/browser/cdp.ts": "66ba2c7176846eddc0aa3d5c37e5ee4ba330f0e5f5b6af7b98decb99d710299d",
@@ -1610,13 +1652,13 @@
     "src/download/article-download.ts": "45b48e3072990fac88e0aa5d60490d27a3b8504f577b42dd3ceda68c5408a509",
     "src/download/index.ts": "6e3d8045b8f37098828724f04a33d5a7de960131b5fdb115240738548af37224",
     "src/download/media-download.ts": "21c36a221d042c08a637259075275f3b62a7d027f40bf5720d15343b1f702e9b",
-    "src/download/progress.ts": "98f9ff046388d58f9347ed31fd26a9dc86d29e53d5ec9040ec47e34cae09608f",
+    "src/download/progress.ts": "2907cd1a09b3a65a6490ce36aa9c4e88c383e339f5454c3293c60aa9ba17cf7a",
     "src/errors.ts": "21b26a6bdd9e1e5f44b09212709bdcfc8db5b8c6e8a84e02a3ada733a835afaf",
     "src/execution.ts": "20bef8ef3984d326e7e2b207d18525ba70ed41113add904f73d2e6826d1feaaa",
     "src/help.ts": "5e0e29ed0436da68751e06b477bbac9500f371604802f6f1a98a933794216bc9",
     "src/hooks.ts": "168a826d029e37418a7ea628b3f26b0d4fab28eee399d3e40e9ef05452d5964b",
     "src/interceptor.ts": "466e3054d2261594254a0eebef82bb69080f3461c8f10709d6ab669296dbb093",
-    "src/logger.ts": "bb04b7f7073b5f35cb3609204fa366494dca070019d50e9ecdc6a636a0386f9a",
+    "src/logger.ts": "ef44414d2a6c66a56ca6d6852aaf3344485edfe52ac1db8d5c9efcb2d739f353",
     "src/main.ts": "a78f5a46c4cb95bb94d04d4c2eb2eb8961345d1180ae2cea11e84c7ce5fbc944",
     "src/manifest-types.ts": "9bf1fc06013c262593e0a6d8d61f796ffbe9ab44978001a270d0685e56e2d48a",
     "src/node-network.ts": "f22a0f7a6f63e7b96ee512d2086d8e0b1541d09af11af21b7ab194723e41ad2a",

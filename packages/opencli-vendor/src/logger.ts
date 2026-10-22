@@ -12,33 +12,33 @@ function isVerbose(): boolean {
 export const log = {
   /** Informational message (always shown) */
   info(msg: string): void {
-    process.stderr.write(`ℹ  ${msg}\n`);
+    void 0;
   },
 
   /** Lightweight status line for adapter progress updates */
   status(msg: string): void {
-    process.stderr.write(`${msg}\n`);
+    void 0;
   },
 
   /** Positive completion/status line without the heavier info prefix */
   success(msg: string): void {
-    process.stderr.write(`${msg}\n`);
+    void 0;
   },
 
   /** Warning (always shown) */
   warn(msg: string): void {
-    process.stderr.write(`⚠  ${msg}\n`);
+    void 0;
   },
 
   /** Error (always shown) */
   error(msg: string): void {
-    process.stderr.write(`✖  ${msg}\n`);
+    void 0;
   },
 
   /** Verbose output (shown when -v flag or OPENCLI_VERBOSE is set) */
   verbose(msg: string): void {
     if (isVerbose()) {
-      process.stderr.write(`[verbose] ${msg}\n`);
+      void 0;
     }
   },
 
@@ -49,11 +49,11 @@ export const log = {
 
   /** Step-style debug (for pipeline steps, etc.) */
   step(stepNum: number, total: number, op: string, preview: string = ''): void {
-    process.stderr.write(`  [${stepNum}/${total}] ${op}${preview}\n`);
+    void 0;
   },
 
   /** Step result summary */
   stepResult(summary: string): void {
-    process.stderr.write(`       → ${summary}\n`);
+    void 0;
   },
 };
