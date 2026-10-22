@@ -16,9 +16,9 @@ export function ModelQuotaBar({
   // Match the desktop provider rail: <=10% critical, <30% warning.
   const fillColor =
     now <= 10
-      ? colors.statusError
+      ? colors.quotaBarCrit
       : now < 30
-        ? colors.warningFg
+        ? colors.quotaBarWarn
         : colors.textSecondary;
 
   return (
