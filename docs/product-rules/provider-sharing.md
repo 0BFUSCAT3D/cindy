@@ -334,12 +334,14 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
 - 当前供应商的「远程与分享」详情提供「允许查看剩余额度」「允许查看用量明细」两个独立开关，默认关闭。
   设置按账号、电脑与供应商保存，对当前和未来所有受邀者统一生效；同账号其他电脑经既有管理通道写入供应商所在电脑。
   关闭查看权限不关闭模型调用、不终止任务，不承诺追回已读取的数据。
-- 受邀者只在对应分享详情查看获准的数据；不扩展模型菜单、任务额度条、手机管理或组调度。
-  额度是账号共用额度，复用已有订阅窗口、个人 Cindy AI 余额池或组织/网关周期额度及对应只读展示；已知总额用进度条，未知值不推算成零或百分比。
+- 受邀者在对应分享详情查看获准的数据。2026-10-22 用户裁决：Desktop 模型选择器左栏在分享者开放额度、且返回单账号每周窗口时，
+  沿用本机供应商的每周剩余额度细条与悬停提示；供应商组、多账号、余额或不可用时不显示。只在列表打开、格位挂载且页面可见时查询，
+  每五秒复核权限，只取额度，不读用量历史；关闭、隐藏、换账号或分享关系变化清除旧值，丢弃迟到结果。模型行第二行、任务额度条、手机端与组调度仍不扩展。
+  分享详情中的额度是账号共用额度，复用已有订阅窗口、个人 Cindy AI 余额池或组织/网关周期额度及对应只读展示；已知总额用进度条，未知值不推算成零或百分比。
   不显示充值、重置次数等管理操作信息。
   组内自有账号匿名逐项显示，不相加百分比、不声称同账号多设备可合并；从他人借来的账号不继续公开额度。
   页面说明可能只显示部分账号、同一账号多设备可能分列；不可读取、不支持、离线、旧端、未开放分别显示。
-- 用量明细默认收起；未打开对应分享详情不发本功能查询。打开但未展开时只取权限和获准的额度，不读取、汇总、投影或传输用量历史（包括缓存）。
+- 用量明细默认收起；未打开对应分享详情或模型列表时不发本功能查询。打开但未展开时只取权限和获准的额度，不读取、汇总、投影或传输用量历史（包括缓存）。
   主动展开才立即读取明细，并在页面可见期间刷新，显示筛选、概览、图表和明细，避免遮挡模型列表。
   再次收起停止后续明细请求，保留有效额度；离页或隐藏停止全部本功能查询。已发出的调用不做跨端取消，但迟到结果不得回填。
   轮询不自动展开，换分享或账号、重新进入详情均默认收起，不保存偏好。
@@ -355,7 +357,8 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
   额度本身超过回包预算时也只标额度不可用，不影响能够返回的用量。
 
 实现：`device-link/providerShareInsights.ts`、`providerShareQuota.ts`、`providerShareVisibility.ts` 与 renderer 同名功能组件；
-回归：`device-link/__tests__/providerShareInsights.test.ts`、`providerShareDispatch.test.ts`、`providerShareQuota.test.ts`、`providerShareVisibility.test.ts`。
+模型左栏实现：`renderer/components/new-chat/{UnifiedModelRail,ModelSelector}.tsx`、`renderer/features/provider-share/useProviderShareWeeklyQuota.ts`；
+回归：`renderer/__tests__/providerRailWeeklyQuota.test.tsx`、`device-link/__tests__/providerShareInsights.test.ts`、`providerShareDispatch.test.ts`、`providerShareQuota.test.ts`、`providerShareVisibility.test.ts`。
 
 ## 8. 跨区域分享
 

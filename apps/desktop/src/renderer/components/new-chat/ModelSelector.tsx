@@ -1,3 +1,4 @@
+import { ProviderShareQuotaViewingContext } from '@/features/provider-share/useProviderShareWeeklyQuota';
 import { SpeedIcon } from './SpeedIcon';
 import { ErrorNotice } from '@/components/ui/error-notice';
 import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
@@ -4869,7 +4870,9 @@ export function ModelSelector({
         {...(restoreFocusTarget ? { restoreFocusTarget } : {})}
         trigger={trigger}
       >
-        {content}
+        <ProviderShareQuotaViewingContext.Provider value={open || keepOpenForAgentConfirmation}>
+          {content}
+        </ProviderShareQuotaViewingContext.Provider>
       </MorphPopover>
     );
   }
@@ -4892,7 +4895,9 @@ export function ModelSelector({
           'border border-[var(--model-dropdown-border)]',
         )}
       >
-        {content}
+        <ProviderShareQuotaViewingContext.Provider value={open || keepOpenForAgentConfirmation}>
+          {content}
+        </ProviderShareQuotaViewingContext.Provider>
       </PopoverContent>
     </Popover>
   );
