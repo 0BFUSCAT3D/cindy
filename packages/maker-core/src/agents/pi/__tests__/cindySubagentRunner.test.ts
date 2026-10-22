@@ -8,6 +8,43 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CINDY_SUBAGENT_RUNNER_SOURCE } from '../cindy-subagent-runner-source.js';
 
+// Keep the Windows integration query real. A false boundary result alone hid
+// the reason for #6733's Windows failure; retain only counts, image names and
+// PowerShell error identifiers, never process command lines or tasklist rows.
+const inventoryEvidence = vi.hoisted(() => ({ runId: '', probes: [] as unknown[] }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const { promisify } = await import('node:util');
+  const execute = promisify(actual.execFile);
+  const execFile = Object.assign(actual.execFile.bind(actual), {
+    [promisify.custom]: async (file: string, args: readonly string[], options: import('node:child_process').ExecFileOptionsWithStringEncoding) => {
+      const script = args.at(-1) ?? '';
+      if (file !== 'powershell.exe' || !script.includes('$processIds = @{}')) return execute(file, args, options);
+      const diagnosticScript = 'trap { [Console]::Error.WriteLine("InventoryProbeError:" + $_.FullyQualifiedErrorId + ":line=" + $_.InvocationInfo.ScriptLineNumber); exit 1 }\n'
+        + script.replace('@{ complete = $complete;', '@{ unreadableNames = @($items | Where-Object { $processIds.ContainsKey([int]$_.ProcessId) } | ForEach-Object { $_.Name }); complete = $complete;');
+      try {
+        const result = await execute(file, [...args.slice(0, -1), diagnosticScript], options);
+        try {
+          const value = JSON.parse(result.stdout);
+          inventoryEvidence.probes.push({
+            complete: value.complete, count: value.count,
+            commandCount: value.commands?.length,
+            matchingCommands: value.commands?.filter((command: string) => command.includes(inventoryEvidence.runId)).length,
+            unreadableNames: value.unreadableNames,
+          });
+        } catch { inventoryEvidence.probes.push({ invalidJson: true, bytes: result.stdout.length }); }
+        return result;
+      } catch (error) {
+        const failure = error as { code?: string | number; killed?: boolean; stderr?: string };
+        inventoryEvidence.probes.push({ code: failure.code, killed: failure.killed,
+          reason: failure.stderr?.match(/InventoryProbeError:[^\r\n]*/)?.[0] });
+        throw error;
+      }
+    },
+  });
+  return { ...actual, execFile };
+});
+
 /**
  * Every case here spawns a real runner process (and that runner spawns a fake
  * pi per child). Vitest's 5s default is a Linux-shaped budget: on the Windows
@@ -623,11 +660,14 @@ describe('Cindy durable PI Subagent runner', () => {
   // that the independent artifact has the identity required by recovery.
   it('recovers account teardown from a real terminal receipt after status corruption', async () => {
     const fixture = await makeFixture();
+    inventoryEvidence.runId = path.basename(fixture.runDir);
+    inventoryEvidence.probes.length = 0;
     await waitForClose(fixture.child, fixture.stderr);
     const files = ['result.json', 'transcript.jsonl', 'config.json'];
     const before = await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file))));
     await writeFile(path.join(fixture.runDir, 'status.json'), Buffer.alloc(72_506));
-    await expect(stopForAccountBoundary(fixture.root, { timeoutMs: 0 })).resolves.toBe(true);
+    const recovered = await stopForAccountBoundary(fixture.root, { timeoutMs: 0 });
+    expect(recovered, JSON.stringify(inventoryEvidence.probes)).toBe(true);
     expect(await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file)))))
       .toEqual(before);
   });
