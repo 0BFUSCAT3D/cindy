@@ -273,7 +273,7 @@ export type OrcaRemoteWorkerOpenResult =
   | {
       ok: false;
       errorCode: Extract<OrcaWorkerCreationErrorCode,
-        'REMOTE_AGENT_DEVICE_UNREACHABLE' | 'UNSUPPORTED_CAPABILITY' | 'INVALID_PARAMS' | 'INTERNAL' |
+        `REMOTE_AGENT_${string}` | 'UNSUPPORTED_CAPABILITY' | 'INVALID_PARAMS' | 'INTERNAL' |
         'REMOTE_WORKDIR_NOT_FOUND' | 'REMOTE_WORKDIR_NOT_DIRECTORY' | 'REMOTE_WORKDIR_INVALID' | 'REMOTE_WORKDIR_UNAVAILABLE'>;
       message: string;
     };
@@ -801,7 +801,11 @@ function leadProviderGroupFollowCandidate(
 const SHARE_ROUTE_REJECTION = /\[(REMOTE_AGENT_SHARE_(?:PAUSED|REMOVED|UNAVAILABLE))\]/;
 
 /** 读不到 Worker 的 Agent 所在电脑的目录：分享保留具体原因，其余按那台连不上。 */
-export function agentDeviceCatalogFailure(err: unknown): Extract<OrcaWorkerCreationResult, { ok: false }> {
+export function agentDeviceCatalogFailure(err: unknown): {
+  ok: false;
+  errorCode: Extract<OrcaWorkerCreationErrorCode, `REMOTE_AGENT_${string}`>;
+  message: string;
+} {
   const message = err instanceof Error ? err.message : String(err);
   const share = SHARE_ROUTE_REJECTION.exec(message)?.[1] as
     | 'REMOTE_AGENT_SHARE_PAUSED'

@@ -209,6 +209,30 @@ describe('execution devices', () => {
 });
 
 describe('openRemoteWorker', () => {
+  // PR #6787 review: unit coverage through the public open boundary. Existing
+  // transport/directory failures miss an online execution host rejecting its
+  // nested Agent route; callers must retain the share reason or connectivity code.
+  it.each([
+    ['REMOTE_AGENT_SHARE_PAUSED', 'REMOTE_AGENT_SHARE_PAUSED'],
+    ['REMOTE_AGENT_SHARE_REMOVED', 'REMOTE_AGENT_SHARE_REMOVED'],
+    ['REMOTE_AGENT_SHARE_UNAVAILABLE', 'REMOTE_AGENT_SHARE_UNAVAILABLE'],
+    ['DEVICE_LINK_DEVICE_OFFLINE', 'REMOTE_AGENT_DEVICE_UNREACHABLE'],
+    ['REMOTE_AGENT_DEVICE_UNREACHABLE', 'REMOTE_AGENT_DEVICE_UNREACHABLE'],
+  ])('preserves nested Agent admission failure %s as %s', async (code, expected) => {
+    const { workers, remoteInvoke } = setup({ handle: (_device, channel) => {
+      if (channel === 'maker:orca:remote-worker:caps') return ok({ version: 1, agentDevice: true });
+      if (channel === 'maker:orca:remote-worker:open') return fail('IPC_ERROR', `[${code}] Agent route unavailable`);
+      return undefined;
+    } });
+    try {
+      await expect(workers.openRemoteWorker({ ...openInput, agentDeviceId: 'provider-pc' }))
+        .resolves.toMatchObject({ ok: false, errorCode: expected, message: expect.stringContaining(code) });
+      expect(remoteInvoke.mock.calls.filter(([, channel]) => channel === 'maker:orca:remote-worker:open')).toHaveLength(1);
+      expect(store.addRemoteWorker).not.toHaveBeenCalled();
+      expect(store.removeRemoteWorkerOpen).not.toHaveBeenCalled();
+    } finally { workers.stop(); }
+  });
+
   // Unit: old execution hosts silently discard unknown model-location fields.
   // Reject before open; a capable host must receive and return the exact route.
   it.each([false, true])('negotiates the independent model computer (supported=%s)', async supported => {
@@ -1390,12 +1414,12 @@ describe('remote open recovery', () => {
     workers.stop();
   });
 
-  it('retains a timed out open even if the reconciliation receives a definitive error', async () => {
+  it.each(['ALREADY_EXISTS', 'REMOTE_AGENT_SHARE_PAUSED'])('retains an uncertain open when reconciliation receives %s', async code => {
     let opens = 0;
     const { workers } = setup({ handle: (_device, channel) =>
       channel === 'maker:orca:remote-worker:open'
-        ? fail(++opens === 1 ? 'INVOKE_TIMEOUT' : 'ALREADY_EXISTS', 'reply lost or released') : undefined });
-    await expect(workers.openRemoteWorker(openInput)).resolves.toMatchObject({ ok: false });
+        ? fail(++opens === 1 ? 'INVOKE_TIMEOUT' : 'IPC_ERROR', `[${code}] reply lost or rejected`) : undefined });
+    await expect(workers.openRemoteWorker(openInput)).resolves.toMatchObject({ ok: false, errorCode: 'INTERNAL' });
     expect(store.removeRemoteWorkerOpen).not.toHaveBeenCalled();
     workers.stop();
   });

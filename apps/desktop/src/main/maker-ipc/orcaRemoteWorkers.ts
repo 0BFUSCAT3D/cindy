@@ -41,10 +41,11 @@ import {
   removeWorker,
 } from '../localDb/orcaTeamStore.js';
 import { createHostSendFailure } from '../maker-host/send-outcome.js';
-import type {
-  OrcaRemoteWorkerOpenResult,
-  OrcaWorkerCreationDeps,
-  OrcaWorkerCreationErrorCode,
+import {
+  agentDeviceCatalogFailure,
+  type OrcaRemoteWorkerOpenResult,
+  type OrcaWorkerCreationDeps,
+  type OrcaWorkerCreationErrorCode,
 } from './orcaWorkerCreationService.js';
 import {
   createOrcaRemoteWorkerRuntime,
@@ -501,6 +502,12 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
             errorCode: 'UNSUPPORTED_CAPABILITY',
             message: `${name} 的 Cindy 版本过旧，需要更新后才能运行协同 Worker。`,
           };
+        }
+        const agentFailure = agentDeviceCatalogFailure(err);
+        if (!uncertainOpen && (code?.startsWith('DEVICE_LINK_') || code === agentFailure.errorCode)) {
+          // The execution host answered; its nested Agent route owns this failure.
+          // A lost open ACK still takes the uncertain-result path below.
+          return agentFailure;
         }
         deps.log.warn('orca remote worker: open failed', { deviceId: input.deviceId, code });
         return {
