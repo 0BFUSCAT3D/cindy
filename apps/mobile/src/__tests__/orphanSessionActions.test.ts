@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { isExplicitRemoteNotFoundError } from '@/session/newSessionWorktree';
-import { pickWriteFields, writeGuardFields } from '@/session/swipeRowRegistry';
+import { createLatestWriteGuard, pickWriteFields, retryPatchWhileLatest, writeGuardFields } from '@/session/swipeRowRegistry';
+import { createDisclosureController, commitRegisteredLevel, detachDisclosureScope, runDisclosure } from '@/session/listDisclosureController';
 
 // Execute the production callbacks without mounting the entire native screen.
 function callback(file: string, name: string, bindings: Record<string, unknown>) {
@@ -31,6 +32,7 @@ function fixture() {
   const pending = new Promise((_resolve, fail) => { reject = fail; });
   const store = {
     applySessionPatch: vi.fn(), upsertDeviceSession: vi.fn(), requestReseed: vi.fn(),
+    beginSessionListRemovalPreview: vi.fn(() => vi.fn()),
     getSessions: () => [session],
   };
   const release = vi.fn();
@@ -62,7 +64,8 @@ describe('orphan task status actions', () => {
     const preparation = new Promise<boolean>((resolve, reject) => { finish = resolve; fail = reject; });
     const patch = callback('src/session/useSessionListActions.ts', 'patchSession', f.bindings);
     const request = patch(session, { status: 'archived' }, () => preparation);
-    expect(f.store.applySessionPatch).toHaveBeenCalledWith('shard', 's1', { status: 'archived' }, { deferRemovalCleanup: true });
+    expect(f.store.beginSessionListRemovalPreview).toHaveBeenCalledWith('s1');
+    expect(f.store.applySessionPatch).not.toHaveBeenCalled();
     expect(f.bindings.sessionMetaWriteQueue.enqueue).not.toHaveBeenCalled();
     if (outcome === 'superseded') f.isLatest.mockReturnValue(false);
     if (outcome === 'fail') {
@@ -73,8 +76,85 @@ describe('orphan task status actions', () => {
       await request;
     }
     expect(f.bindings.sessionMetaWriteQueue.enqueue).not.toHaveBeenCalled();
-    expect(f.store.upsertDeviceSession).toHaveBeenCalledTimes(outcome === 'superseded' ? 0 : 1);
+    expect(f.store.upsertDeviceSession).not.toHaveBeenCalled();
     expect(f.release).toHaveBeenCalled();
+    expect(f.store.beginSessionListRemovalPreview.mock.results[0].value).toHaveBeenCalledOnce();
+  });
+
+  // PR #6863 review r4353650369: the real field guard used to invalidate a
+  // pending title/pin write before archive confirmation. Existing fixtures only
+  // mocked isLatest, so they could not observe the lost retry eligibility.
+  it.each(['title', 'pinnedAt', 'status'] as const)('cancelled archive preserves a pending %s write', async (field) => {
+    const f = fixture();
+    const guard = createLatestWriteGuard();
+    const prior = guard.begin(session.id, [field]);
+    let finish!: (confirmed: boolean) => void;
+    const preparation = new Promise<boolean>(resolve => { finish = resolve; });
+    const patch = callback('src/session/useSessionListActions.ts', 'patchSession', {
+      ...f.bindings, sessionMetaWriteGuard: guard,
+    });
+    const request = patch(session, { status: 'archived' }, () => preparation);
+    expect(prior.isLatest()).toBe(true);
+    finish(false);
+    await request;
+    const send = vi.fn(async () => ({ [field]: 'saved' }));
+    expect(await retryPatchWhileLatest(prior.isLatest, send)).toEqual({ [field]: 'saved' });
+    expect(send).toHaveBeenCalledOnce();
+    expect(f.store.upsertDeviceSession).not.toHaveBeenCalled();
+  });
+
+  it('a later status write prevents delayed archive confirmation from committing', async () => {
+    const f = fixture();
+    const guard = createLatestWriteGuard();
+    let finish!: (confirmed: boolean) => void;
+    const preparation = new Promise<boolean>(resolve => { finish = resolve; });
+    const patch = callback('src/session/useSessionListActions.ts', 'patchSession', {
+      ...f.bindings, sessionMetaWriteGuard: guard,
+    });
+    const request = patch(session, { status: 'archived' }, () => preparation);
+    guard.begin(session.id, ['status']);
+    finish(true);
+    await request;
+    expect(f.bindings.sessionMetaWriteQueue.enqueue).not.toHaveBeenCalled();
+    expect(f.store.applySessionPatch).not.toHaveBeenCalled();
+    expect(f.store.beginSessionListRemovalPreview.mock.results[0].value).toHaveBeenCalledOnce();
+  });
+
+  it('confirmed archive supersedes old writes and rolls back to metadata saved during preflight', async () => {
+    const f = fixture();
+    const guard = createLatestWriteGuard();
+    const prior = guard.begin(session.id, ['title']);
+    const updatedRow = { ...session, title: 'Saved during preflight' };
+    f.store.getSessions = () => [updatedRow];
+    const patch = callback('src/session/useSessionListActions.ts', 'patchSession', {
+      ...f.bindings, sessionMetaWriteGuard: guard,
+    });
+    const request = patch(session, { status: 'archived' }, async () => true);
+    await tick();
+    expect(prior.isLatest()).toBe(false);
+    expect(f.store.applySessionPatch).toHaveBeenCalledWith('shard', 's1', { status: 'archived' });
+    f.reject(new Error('network unavailable'));
+    await expect(request).rejects.toThrow('network unavailable');
+    expect(f.store.upsertDeviceSession).toHaveBeenCalledWith('shard', 'PC', updatedRow);
+  });
+
+  // Production list transitions may defer their callback until a layout effect.
+  // A fast confirmation must not leave an unpaired hidden-row preview behind.
+  it('pairs a cancelled preview with its release when list animation defers the mutation', async () => {
+    const f = fixture();
+    const controller = createDisclosureController();
+    controller.setLevel = vi.fn();
+    const prepare = vi.fn(async () => false);
+    const patch = callback('src/session/useSessionListActions.ts', 'patchSession', {
+      ...f.bindings, animateListChange: (apply: () => void) => runDisclosure(controller, apply, 1, true),
+    });
+    const request = patch(session, { status: 'archived' }, prepare);
+    expect(prepare).not.toHaveBeenCalled();
+    commitRegisteredLevel(controller, 1);
+    await request;
+    expect(f.store.beginSessionListRemovalPreview.mock.results[0].value).toHaveBeenCalledOnce();
+    expect(f.store.applySessionPatch).not.toHaveBeenCalled();
+    detachDisclosureScope(controller);
   });
   it.each(['archived', 'deleted', 'active'])('list status %s retires the mirror without rollback', async (status) => {
     const f = fixture();

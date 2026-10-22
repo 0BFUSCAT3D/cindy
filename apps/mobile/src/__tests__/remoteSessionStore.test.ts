@@ -41,9 +41,10 @@ function message(id: string, sessionId: string): RemoteMessage {
   };
 }
 
-// Unit regression: preflight now runs after optimistic removal. Cancellation
-// must retain conversation content; successful removal must still release it.
-it('keeps messages through archive preflight cancellation and cleans up after success', () => {
+// Unit, PR #6863 r4353650385: existing removal coverage retained messages but
+// lost the raw metadata read by useRemoteSessionDetail. A preview must hide only
+// the visible/Home projections, retaining title, status and messages for details.
+it('keeps detail metadata and messages while an archive preview hides only the list row', () => {
   remoteSessionStore.clear();
   const row = session('s1');
   remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [row]);
@@ -51,17 +52,41 @@ it('keeps messages through archive preflight cancellation and cleans up after su
   const removed = vi.fn();
   const off = remoteSessionStore.onSessionRemoved(removed);
   try {
-    remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' }, { deferRemovalCleanup: true });
-    expect(remoteSessionStore.getSessions()).toEqual([]);
+    const finishPreview = remoteSessionStore.beginSessionListRemovalPreview('s1');
+    expect(remoteSessionStore.getVisibleSessions()).toEqual([]);
+    expect(remoteSessionStore.getHomeSessions()).toEqual([]);
+    expect(remoteSessionStore.getSessions()[0]).toMatchObject({ id: 's1', title: 's1', status: 'active' });
     expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
     expect(removed).not.toHaveBeenCalled();
-    remoteSessionStore.upsertDeviceSession('dev-1', 'Computer', row);
+    remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [row]);
+    expect(remoteSessionStore.getVisibleSessions()).toEqual([]);
+    remoteSessionStore.applySessionPatch('dev-1', 's1', { title: 'Saved rename' });
+    finishPreview();
+    expect(remoteSessionStore.getHomeSessions()[0].title).toBe('Saved rename');
     expect(remoteSessionStore.getMessages('s1')[0].content).toBe('hello');
-    remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' }, { deferRemovalCleanup: true });
+    const finishConfirmedPreview = remoteSessionStore.beginSessionListRemovalPreview('s1');
     remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' });
+    finishConfirmedPreview();
+    expect(remoteSessionStore.getSessions()).toEqual([]);
     expect(remoteSessionStore.getMessages('s1')).toEqual([]);
     expect(removed).toHaveBeenCalledExactlyOnceWith('dev-1', 's1');
   } finally { off(); remoteSessionStore.clear(); }
+});
+
+it('finishing an older archive preview keeps a newer preview hidden and cannot revive a removed row', () => {
+  remoteSessionStore.clear();
+  remoteSessionStore.setDeviceSessions('dev-1', 'Computer', [session('s1')]);
+  const older = remoteSessionStore.beginSessionListRemovalPreview('s1');
+  const newer = remoteSessionStore.beginSessionListRemovalPreview('s1');
+  older();
+  older();
+  expect(remoteSessionStore.getHomeSessions()).toEqual([]);
+  expect(remoteSessionStore.getSessions()).toHaveLength(1);
+  remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'deleted' });
+  newer();
+  expect(remoteSessionStore.getSessions()).toEqual([]);
+  expect(remoteSessionStore.getHomeSessions()).toEqual([]);
+  remoteSessionStore.clear();
 });
 
 // Unit: side-chat details are omitted by the Host list. A list refresh must

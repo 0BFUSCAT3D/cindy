@@ -56,16 +56,26 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     if (!devices) throw new Error(t('devices.list.error.sessionDeviceNotFound'));
     const { rpcDeviceId, shardId } = devices;
     const fields = Object.keys(patch);
-    const write = sessionMetaWriteGuard.begin(session.id, writeGuardFields(patch));
-    // 查询/确认期间只移走行，取消不应清掉已有消息与历史缓存。
-    const applyOptimistic = () => remoteSessionStore.applySessionPatch(
-      shardId, session.id, patch, prepare ? { deferRemovalCleanup: true } : undefined,
-    );
-    if ((patch.status !== undefined || patch.pinnedAt !== undefined) && animateListChange) {
-      animateListChange(applyOptimistic);
-    } else {
-      applyOptimistic();
-    }
+    // 预检只取代旧预检、观察 status；取消时不能作废此前仍在重试的元数据写。
+    let write = prepare
+      ? sessionMetaWriteGuard.begin(session.id, ['archive-preflight'], ['status'])
+      : sessionMetaWriteGuard.begin(session.id, writeGuardFields(patch));
+    let rollbackSession = session;
+    let applied = false;
+    let finishPreview: (() => void) | undefined;
+    const updateList = (apply: () => void): Promise<void> => new Promise((resolve, reject) => {
+      const commit = () => {
+        try { apply(); resolve(); } catch (err) { reject(err); }
+      };
+      if (animateListChange) animateListChange(commit);
+      else commit();
+    });
+    const applyOptimistic = () => {
+      if (!write.isLatest()) return;
+      rollbackSession = remoteSessionStore.getSessions().find((s) => s.id === session.id) ?? session;
+      remoteSessionStore.applySessionPatch(shardId, session.id, patch);
+      applied = true;
+    };
     const releasePending = sessionPendingWrites.track(session.id, fields);
     const restoreSession = () => {
       const shardName = remoteSessionStore.getSessions()
@@ -74,7 +84,7 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
         ?? shardId;
       releasePending();
       const rollback = () => {
-        remoteSessionStore.upsertDeviceSession(shardId, shardName, session);
+        remoteSessionStore.upsertDeviceSession(shardId, shardName, rollbackSession);
         remoteSessionStore.requestReseed(shardId);
       };
       if (animateListChange) animateListChange(rollback);
@@ -82,13 +92,23 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     };
     try {
       if (prepare) {
+        await updateList(() => {
+          if (write.isLatest()) finishPreview = remoteSessionStore.beginSessionListRemovalPreview(session.id);
+        });
+        if (!write.isLatest()) return;
         const confirmed = await prepare(write.isLatest);
         if (!write.isLatest()) return;
         if (!confirmed) {
-          restoreSession();
+          releasePending();
+          remoteSessionStore.requestReseed(shardId);
           return;
         }
+        // 只有确认后才取代全部元数据写，并真正移除详情/清理消息。
+        write = sessionMetaWriteGuard.begin(session.id, writeGuardFields(patch));
       }
+      if (patch.status !== undefined || patch.pinnedAt !== undefined) await updateList(applyOptimistic);
+      else applyOptimistic();
+      if (!applied) return;
       const updated = await withNewSessionCreationRemoval(session.id, rpcDeviceId, patch.status,
         () => sessionMetaWriteQueue.enqueue(session.id, fields, () => retryPatchWhileLatest(
         write.isLatest,
@@ -112,7 +132,10 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
         }
       }
     } catch (err) {
-      if (write.isLatest()) {
+      if (!applied) {
+        releasePending();
+        remoteSessionStore.requestReseed(shardId);
+      } else if (write.isLatest()) {
         if (fields.includes('status')) {
           if (isExplicitRemoteNotFoundError(err)) {
             remoteSessionStore.applySessionPatch(shardId, session.id, { status: 'deleted' });
@@ -142,6 +165,7 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
       throw err;
     } finally {
       releasePending();
+      if (finishPreview) await updateList(finishPreview);
     }
   }, [animateListChange, invoke, t]);
 
