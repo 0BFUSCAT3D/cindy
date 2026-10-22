@@ -333,7 +333,9 @@ async function runVectorArm(
   const { clause, params } = buildFilterClause(args, workdirCandidates);
   // The availability probe and KNN must see the same eligible rows. Probing the
   // full vector table would expose hidden data through vector_used/skip_reason.
-  const eligibleRowids = args.remoteVisibleOnly
+  // Local teammate/source filters also need preselection so other conversations
+  // cannot fill the KNN candidate pool before the requested scope is applied.
+  const eligibleRowids = args.remoteVisibleOnly || args.teammateId || args.source
     ? `rowid IN (
         SELECT j.rowid FROM embedding_jobs j
         JOIN messages m ON m.id = j.source_id
@@ -346,7 +348,7 @@ async function runVectorArm(
   try {
     const probe = await getDbClient().queryOne<{ rowid: number }>(
       `SELECT rowid FROM "${CHAT_VEC_TABLE}" ${eligibleRowids ? `WHERE ${eligibleRowids}` : ''} LIMIT 1`,
-      args.remoteVisibleOnly ? params : [],
+      eligibleRowids ? params : [],
     );
     if (!probe) {
       return {
@@ -391,9 +393,9 @@ async function runVectorArm(
   // float32 必须以 Buffer(little-endian)绑定为 BLOB(better-sqlite3 不接受裸 Float32Array)。
   const f32 = Buffer.from(Float32Array.from(queryVec).buffer);
   const vectorPoolLimit = clampInternalPoolLimit(args.vectorPoolLimit, ARM_POOL);
-  // vec0 supports rowid IN within its KNN cursor. Apply the remote scope before
-  // its candidate limit: filtering only outside the CTE lets hidden rows starve
-  // visible semantic hits. Reuse the arm predicate; local search stays unchanged.
+  // vec0 supports rowid IN within its KNN cursor. Apply the requested scope before
+  // its candidate limit: filtering only outside the CTE lets unrelated rows starve
+  // eligible semantic hits. Reuse the arm predicate for both probe and retrieval.
   const sql = `
     WITH knn AS (
       SELECT rowid, distance
@@ -424,7 +426,7 @@ async function runVectorArm(
       distance: number;
     }>(sql, [
       f32,
-      ...(args.remoteVisibleOnly ? params : []),
+      ...(eligibleRowids ? params : []),
       vectorPoolLimit * VEC_OVERFETCH,
       ...params,
       vectorPoolLimit,

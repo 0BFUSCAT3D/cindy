@@ -183,6 +183,22 @@ describe.each(modes)('%s remote history visibility', (mode) => {
     expect((legacy as any).hits.map((hit: any) => hit.sessionId)).toEqual(['ordinary']);
   });
 
+  // #6779: local semantic-only hits were starved by 300 closer vectors from other
+  // teammates before the 250-candidate KNN limit. Exercise the production engine
+  // with both real SQLite joins and native vec0; no FTS hit can mask the failure.
+  it.each([{ teammateId: 'visible' }, { source: 'telegram' }])(
+    'filters local vector candidates before limiting: %j', async (filter) => {
+      db.prepare("UPDATE sessions SET source='telegram' WHERE id='visible'").run();
+      const result = await searchChatHistoryHybrid({
+        ...searchArgs, remoteVisibleOnly: false, query: 'semantic-only', ...filter,
+      });
+      expect(result.vectorUsed).toBe(true);
+      expect(result.hits.map(hit => hit.sessionId)).toEqual(['visible']);
+      expect(result.hits[0]).toMatchObject({ vectorRank: 1, context: [{ content: 'needle' }] });
+      expect(result.hits[0].ftsRank).toBeNull();
+    },
+  );
+
   // Activity cursor must use the same clock as ordering, including userSendAt and ties.
   it('paginates activity ties and preserves the existing scope intersection', async () => {
     db.exec(`
