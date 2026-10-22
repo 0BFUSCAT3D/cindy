@@ -9041,6 +9041,13 @@
       "undo": "Undo",
       "undoFailed": "Couldn't undo. Try again.",
       "deleteFailed": "Couldn't delete. Try again.",
+      "check": "Check for me",
+      "checkMeta": "Look for new todos in connected mail and chats",
+      "checkPrompt": "Check my connected sources, like mail and messages, for anything new I need to handle, and add it to my todos.",
+      "checkFailed": "Couldn't send. Try again.",
+      "dailyCheck": "Check every day",
+      "dailyCheckMeta": "Weekdays at 9:00, quiet when nothing is new",
+      "dailyCheckFailed": "Couldn't save. Try again.",
       "outputs": "Outputs",
       "outputMeta": "{{time}} · {{task}}",
       "openFailed": "Couldn't open the file",
@@ -16071,6 +16078,10 @@
     "builtinFollowUp": {
       "name": "Follow-up (built-in)",
       "hint": "Wakes it when a session is stuck, waiting for you, errors out, hits the usage limit, or finishes. Built in, so it can only be paused or resumed."
+    },
+    "builtinTodoCheck": {
+      "name": "Daily todo check (built-in)",
+      "hint": "Looks for new todos in connected sources on weekdays at 9:00 and stays quiet when there is nothing new. Turned on or off from the glance; it can only be paused or resumed."
     }
   },
   "cindyMakeDoctor": {
