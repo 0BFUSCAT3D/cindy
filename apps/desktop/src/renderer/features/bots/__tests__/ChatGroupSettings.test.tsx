@@ -187,6 +187,7 @@ it('keeps the original group mounted when opening and closing another owned comp
   const room = group(true);
   room.members = [...room.members, {
     actorId: 'other', botId: 'other', actorKind: 'bot', name: 'Other', role: 'member', isOwned: true, guestAccess: 'chat', accessRevision: 1,
+    avatar: 'bot', avatarColor: 'blue', status: 'active',
   }];
   renderGroupEntry(room);
   const buttons = screen.getAllByRole('button', { name: key('configureCapabilities') });
