@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -108,7 +109,7 @@ export function parseBookmarks(data, seen) {
     return { tweets, nextCursor, hasTimelineItems };
 }
 function readResumeFile(filePath, expected = null) {
-    if (!filePath || !fs.existsSync(filePath))
+    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))
         return null;
     let parsed;
     try {
@@ -119,7 +120,7 @@ function readResumeFile(filePath, expected = null) {
     }
     const count = parsed?.count;
     const cursor = parsed?.cursor == null ? null : String(parsed.cursor);
-    const outputFile = parsed?.outputFile ? path.resolve(String(parsed.outputFile)) : null;
+    const outputFile = parsed?.outputFile ? resolveRecipePath(String(parsed.outputFile)) : null;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
         || !Number.isInteger(count) || count < 0
         || (parsed.cursor != null && typeof parsed.cursor !== 'string')
@@ -157,12 +158,12 @@ function writeResumeFile(filePath, payload) {
     ensureParentDir(filePath);
     const temporaryPath = `${filePath}.tmp-${process.pid}`;
     try {
-        fs.writeFileSync(temporaryPath, JSON.stringify(payload, null, 2) + '\n');
-        fs.renameSync(temporaryPath, filePath);
+        fs.writeFileSync(recipeOutputPath(temporaryPath), JSON.stringify(payload, null, 2) + '\n');
+        fs.renameSync(recipeOutputPath(temporaryPath), recipeOutputPath(filePath));
     }
     catch (error) {
         try {
-            fs.rmSync(temporaryPath, { force: true });
+            fs.rmSync(recipeOutputPath(temporaryPath), { force: true });
         }
         catch {
         }
@@ -221,10 +222,10 @@ cli({
             source: 'bookmarks',
             outputFile: useOutputFile ? outputFile : null,
         }) : null;
-        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(outputFile)) {
+        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(resolveRecipePath(outputFile))) {
             throw new CommandExecutionError(`Twitter bookmarks output file is missing for resume state: ${outputFile}`);
         }
-        if (useOutputFile && !resumed && fs.existsSync(outputFile)) {
+        if (useOutputFile && !resumed && fs.existsSync(resolveRecipePath(outputFile))) {
             throw new ArgumentError(`Refusing to overwrite existing Twitter bookmarks output file: ${outputFile}`);
         }
         const allTweets = useOutputFile ? [] : (resumed?.tweets ? [...resumed.tweets] : []);

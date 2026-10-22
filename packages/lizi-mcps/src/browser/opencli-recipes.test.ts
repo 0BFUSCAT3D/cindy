@@ -7,7 +7,9 @@ import { OpenCliPage } from "./opencli-page.js";
 import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
 import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { saveBase64ToFile } from '@jackwener/opencli/utils';
+import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { mkdtemp, writeFile, rm, readFile, realpath, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -17,6 +19,77 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 output/diagnostic review. Unit tier; the real adapter and screenshot
+  // entries previously covered reads only. Minimal inputs are one local novel
+  // output and two overlapping screenshots with the same diagnostic name.
+  it('brokers adapter writes and resolves defaults against the invoking task', async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'cindy-recipe-output-test-')));
+    const page = { goto: async () => {}, evaluate: async () => ({
+      error: false, body: { id: '1', title: 'Fixture', userName: 'Fixture', userId: '2', content: 'local test text', tags: { tags: [] } },
+    }) } as unknown as IPage;
+    const inputs = { 'novel-id': '1', execute: true };
+    try {
+      const rejected = path.join(dir, 'rejected');
+      const output = vi.fn(() => { throw new Error('output denied by host'); });
+      await expect(executeAdapter('pixiv/novel-download', { ...inputs, output: rejected }, page, undefined, undefined,
+        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output },
+      )).rejects.toThrow('output denied by host');
+      expect(output).toHaveBeenCalledWith(rejected);
+      await expect(access(rejected)).rejects.toThrow();
+      const deniedImage = path.join(dir, 'image.png');
+      await expect(withRecipeHost(undefined, () => saveBase64ToFile('aW1hZ2U=', deniedImage),
+        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output },
+      )).rejects.toThrow('output denied by host');
+      await expect(access(deniedImage)).rejects.toThrow();
+      const result = await executeAdapter('pixiv/novel-download', inputs, page, undefined, undefined,
+        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output: file => file },
+      ) as Array<{ path: string }>;
+      expect(result[0].path).toBe(path.join(dir, 'pixiv-downloads', 'novels', '1.txt'));
+      expect(await readFile(result[0].path, 'utf8')).toContain('local test text');
+      const screenshot = new OpenCliPage({ targetId: 'fixture', call: async request => ({
+        ok: true, action: request.action, data: { data: 'aW1hZ2U=' },
+      }) });
+      await withRecipeHost(undefined, () => screenshot.screenshot({ path: deniedImage }),
+        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output: file => file });
+      expect(await readFile(deniedImage, 'utf8')).toBe('image');
+      await expect(executeAdapter('pixiv/novel-download', { ...inputs, output: path.join(dir, 'no-host') }, page))
+        .rejects.toThrow('host output file broker');
+      await expect(access(path.join(dir, 'no-host'))).rejects.toThrow();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('isolates overlapping diagnostics and cleans both fulfilled and rejected calls', async () => {
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const paths: string[] = [];
+    const ready = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const late = Promise.withResolvers<void>();
+    let lateAttempt!: Promise<string>;
+    const run = (index: number) => withRecipeHost(undefined, async () => {
+      const file = recipeDiagnosticPath('same-name.png');
+      paths[index] = file;
+      const page = new OpenCliPage({ targetId: 'fixture', call: async request => ({
+        ok: true, action: request.action, data: { data: Buffer.from(`image-${index}`).toString('base64') },
+      }) });
+      await page.screenshot({ path: file });
+      expect(readRecipeFileSync(file, 'utf8')).toBe(`image-${index}`);
+      if (index === 0) lateAttempt = late.promise.then(() => recipeOutputPath(file));
+      ready[index].resolve();
+      await hold;
+      if (index === 1) throw new Error('cancelled fixture');
+    });
+    const running = [run(0), run(1)];
+    try {
+      await Promise.all(ready.map(entry => entry.promise));
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(await Promise.all(paths.map(file => readFile(file, 'utf8')))).toEqual(['image-0', 'image-1']);
+    } finally { release(); }
+    expect((await Promise.allSettled(running)).map(result => result.status)).toEqual(['fulfilled', 'rejected']);
+    late.resolve();
+    await expect(lateAttempt).rejects.toThrow('active host file broker');
+    for (const file of paths) await expect(access(path.dirname(file))).rejects.toThrow();
+  });
+
   // #6826 security review: real adapter entries, unit tier with fake browser
   // and network. Existing tests did not cover cross-site cookies or direct
   // file reads. Minimal inputs: foreign cookie and an unbrokered local PNG.

@@ -1,11 +1,16 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, openSync, closeSync } from "node:fs";
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, relative, isAbsolute, basename } from 'node:path';
 
-/** No filesystem effects at import time; tmpdir exists on every host platform. */
+/** Lazy allocation: importing the catalog never touches the filesystem. */
+export function recipeTemporaryDirectory(): string {
+  const host = activeHost();
+  return host.temporaryDirectory ??= mkdtempSync(join(tmpdir(), 'cindy-recipe-'));
+}
+
 export function recipeDiagnosticPath(name: string): string {
-  return join(tmpdir(), name);
+  return join(recipeTemporaryDirectory(), basename(name));
 }
 
 export interface RecipeSecrets {
@@ -16,37 +21,117 @@ export interface RecipeSecrets {
 export interface RecipeFiles {
   read(file: string): Buffer;
   open(file: string): number;
+  directory?: string;
+  output?(file: string): string;
 }
 
-const context = new AsyncLocalStorage<{ secrets?: RecipeSecrets; files?: RecipeFiles }>();
+interface RecipeHost {
+  secrets?: RecipeSecrets;
+  files?: RecipeFiles;
+  temporaryDirectory?: string;
+  closed: boolean;
+  descriptors: Set<number>;
+}
+const context = new AsyncLocalStorage<RecipeHost>();
+function activeHost(): RecipeHost {
+  const host = context.getStore();
+  if (!host || host.closed) throw new Error('This recipe requires an active host file broker');
+  return host;
+}
+
+function isTemporaryFile(host: RecipeHost, file: string): boolean {
+  if (!host.temporaryDirectory || !isAbsolute(file)) return false;
+  const part = relative(host.temporaryDirectory, resolve(file));
+  return !!part && !part.startsWith('..') && !isAbsolute(part);
+}
+
+/** Relative adapter paths refer to the invoking task, never Desktop's cwd. */
+export function resolveRecipePath(...parts: string[]): string {
+  if (parts.some(isAbsolute)) return resolve(...parts);
+  const directory = activeHost().files?.directory;
+  if (!directory) throw new Error('Recipe files require a local session directory');
+  return resolve(directory, ...parts);
+}
+
+export function recipeOutputPath(file: string): string;
+export function recipeOutputPath(file: number): number;
+export function recipeOutputPath(file: string | number): string | number {
+  const host = activeHost();
+  if (typeof file === 'number') {
+    if (!host.descriptors.has(file)) throw new Error('Unbrokered recipe file descriptor');
+    return file;
+  }
+  if (typeof file !== 'string') throw new Error('Recipe output must be a local path');
+  if (isTemporaryFile(host, file)) return file;
+  if (!host.files?.output) throw new Error('This recipe requires the host output file broker');
+  return host.files.output(file);
+}
+
+export function openRecipeOutputFileSync(file: string, flags: string | number, mode?: number): number {
+  const host = activeHost();
+  const descriptor = openSync(recipeOutputPath(file), flags, mode);
+  host.descriptors.add(descriptor);
+  return descriptor;
+}
+
+export function closeRecipeFileSync(descriptor: number): void {
+  const host = activeHost();
+  if (!host.descriptors.delete(descriptor)) throw new Error('Unbrokered recipe file descriptor');
+  closeSync(descriptor);
+}
+
+/** Copies must validate the source as well as the destination. */
+export function recipeCopySource(file: string): string {
+  const host = activeHost();
+  if (isTemporaryFile(host, file)) return file;
+  const resolved = resolveRecipePath(file);
+  readRecipeFileSync(resolved);
+  return resolved;
+}
+
 export function withRecipeHost<T>(
   secrets: RecipeSecrets | undefined,
   run: () => Promise<T>,
   files?: RecipeFiles,
 ): Promise<T> {
-  return context.run({ secrets, files }, run);
+  const host: RecipeHost = { secrets, files, closed: false, descriptors: new Set() };
+  return context.run(host, async () => {
+    try { return await run(); }
+    finally {
+      host.closed = true;
+      // Adapters normally close their own descriptors; also cover failed writes.
+      for (const descriptor of host.descriptors) {
+        try { closeSync(descriptor); } catch { /* Already closed by the adapter. */ }
+      }
+      if (host.temporaryDirectory) rmSync(host.temporaryDirectory, { recursive: true, force: true });
+    }
+  });
 }
 
 /** Adapter bytes are available only through the host's session upload policy. */
 export function readRecipeFileSync(file: string): Buffer;
 export function readRecipeFileSync(file: string, encoding: BufferEncoding): string;
 export function readRecipeFileSync(file: string, encoding?: BufferEncoding): Buffer | string {
-  const files = context.getStore()?.files;
-  if (!files) throw new Error('This recipe requires the host file broker');
-  const bytes = files.read(file);
+  const host = activeHost();
+  if (!isTemporaryFile(host, file) && !host.files) throw new Error('This recipe requires the host file broker');
+  const bytes = isTemporaryFile(host, file) ? readFileSync(file) : host.files!.read(resolveRecipePath(file));
   return encoding ? bytes.toString(encoding) : bytes;
 }
 
 export function openRecipeFileSync(file: string): number {
-  const files = context.getStore()?.files;
-  if (!files) throw new Error('This recipe requires the host file broker');
-  return files.open(file);
+  const host = activeHost();
+  const files = host.files;
+  if (!isTemporaryFile(host, file) && !files) throw new Error('This recipe requires the host file broker');
+  const descriptor = isTemporaryFile(host, file) ? openSync(file, 'r') : files!.open(resolveRecipePath(file));
+  host.descriptors.add(descriptor);
+  return descriptor;
 }
 
 /** Legacy OpenCLI files are read only on explicit execution, never on import.
  * Refreshed tokens are written exclusively through the host's encrypted store. */
 export function readSecretJSON(key: string, legacyPath: string): unknown {
-  const secrets = context.getStore()?.secrets;
+  const host = context.getStore();
+  const secrets = host?.closed ? undefined : host?.secrets;
   if (!secrets)
     throw new Error("This recipe requires the host credential store");
   const stored = secrets.read(key);
@@ -60,7 +145,8 @@ export function readSecretJSON(key: string, legacyPath: string): unknown {
 }
 
 export function writeSecretJSON(key: string, value: unknown): void {
-  const secrets = context.getStore()?.secrets;
+  const host = context.getStore();
+  const secrets = host?.closed ? undefined : host?.secrets;
   if (!secrets || !secrets.write(key, JSON.stringify(value))) {
     throw new Error(
       "Could not save recipe credentials in the host encrypted store",

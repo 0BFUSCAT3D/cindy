@@ -4,6 +4,7 @@
  * Pixiv's CDN (i.pximg.net) requires Referer: https://www.pixiv.net/ header.
  * Uses the /ajax/illust/{id}/pages API to get original-quality image URLs.
  */
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -53,7 +54,7 @@ cli({
         const cookies = formatCookieHeader(await page.getCookies({ domain: 'pixiv.net' }));
         // Create output directory
         const outputDir = path.join(output, illustId);
-        fs.mkdirSync(outputDir, { recursive: true });
+        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
         const results = [];
         for (let i = 0; i < pages.length; i++) {
             const p = pages[i];

@@ -13,6 +13,7 @@
 // We keep auth strictly in the page step (where the Slock session cookie is)
 // and use no auth on the Node fetch because the URL is pre-signed (Bugen).
 
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -40,7 +41,7 @@ cli({
   func: async (page, kwargs) => {
     const id = String(kwargs.attachmentId ?? '').trim();
     if (!UUID_RE.test(id)) throw new ArgumentError(`attachmentId "${id}" is not a UUID`);
-    const out = path.resolve(String(kwargs.out ?? `./${id}.bin`));
+    const out = resolveRecipePath(String(kwargs.out ?? `./${id}.bin`));
 
     // Step 1 — in-page, resolve the signed URL with the user's Slock session.
     await page.goto(SLOCK_HOME_URL);
@@ -66,7 +67,7 @@ cli({
       throw new CommandExecutionError(`HTTP ${res.status} from signed CDN URL while downloading ${id}`);
     }
     const ab = await res.arrayBuffer();
-    fs.writeFileSync(out, Buffer.from(ab));
+    fs.writeFileSync(recipeOutputPath(out), Buffer.from(ab));
     return [{ attachmentId: id, out, sizeBytes: ab.byteLength }];
   },
 });

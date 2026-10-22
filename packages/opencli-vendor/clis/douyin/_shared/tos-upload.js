@@ -1,3 +1,4 @@
+import { closeRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { openRecipeFileSync, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * TOS (ByteDance Object Storage) multipart uploader with resume support.
@@ -32,12 +33,12 @@ function loadResumeState(resumePath, fileSize) {
     return null;
 }
 function saveResumeState(resumePath, state) {
-    fs.mkdirSync(path.dirname(resumePath), { recursive: true });
-    fs.writeFileSync(resumePath, JSON.stringify(state, null, 2), 'utf8');
+    fs.mkdirSync(recipeOutputPath(path.dirname(resumePath)), { recursive: true });
+    fs.writeFileSync(recipeOutputPath(resumePath), JSON.stringify(state, null, 2), 'utf8');
 }
 function deleteResumeState(resumePath) {
     try {
-        fs.unlinkSync(resumePath);
+        fs.unlinkSync(recipeOutputPath(resumePath));
     }
     catch {
         // ignore if not found
@@ -266,10 +267,10 @@ export function setReadSyncOverride(fn) {
 export async function tosUpload(options) {
     const { filePath, uploadInfo, credentials, onProgress } = options;
     // Validate file exists
-    if (!fs.existsSync(filePath)) {
+    if (!fs.existsSync(resolveRecipePath(filePath))) {
         throw new CommandExecutionError(`Video file not found: ${filePath}`, 'Ensure the file path is correct and accessible.');
     }
-    const { size: fileSize } = fs.statSync(filePath);
+    const { size: fileSize } = fs.statSync(resolveRecipePath(filePath));
     if (fileSize === 0) {
         throw new CommandExecutionError(`Video file is empty: ${filePath}`);
     }
@@ -322,7 +323,7 @@ export async function tosUpload(options) {
         }
     }
     finally {
-        fs.closeSync(fd);
+        closeRecipeFileSync(fd);
     }
     const completedKey = await completeMultipartUpload(tosUrl, uploadId, completedParts, auth, uploadHeader, userId);
     deleteResumeState(resumePath);

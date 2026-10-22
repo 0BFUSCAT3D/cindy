@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -10,7 +11,7 @@ import { INSTAGRAM_HOME_URL, gotoInstagramHome } from './_shared/navigation.js';
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const SUPPORTED_VIDEO_EXTENSIONS = new Set(['.mp4']);
 const MAX_MEDIA_ITEMS = 10;
-const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = `${recipeDiagnosticPath("instagram_post_protocol_trace.json")}`;
+const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = () => `${recipeDiagnosticPath("instagram_post_protocol_trace.json")}`;
 export function buildEnsureComposerOpenJs() {
     return `
     (() => {
@@ -93,11 +94,11 @@ function validateMixedMediaItems(inputs) {
         throw new ArgumentError(`Too many media items: ${inputs.length}`, `Instagram carousel posts support at most ${MAX_MEDIA_ITEMS} items`);
     }
     const items = inputs.map((input) => {
-        const resolved = path.resolve(String(input || '').trim());
+        const resolved = resolveRecipePath(String(input || '').trim());
         if (!resolved) {
             throw new ArgumentError('Media path cannot be empty');
         }
-        if (!fs.existsSync(resolved)) {
+        if (!fs.existsSync(resolveRecipePath(resolved))) {
             throw new ArgumentError(`Media file not found: ${resolved}`);
         }
         const ext = path.extname(resolved).toLowerCase();
@@ -1477,7 +1478,7 @@ cli({
                 catch {
                     // Best-effort: capture export should not hide the main command result.
                 }
-                fs.writeFileSync(INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH, JSON.stringify({
+                fs.writeFileSync(recipeOutputPath(INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH()), JSON.stringify({
                     data: protocolCaptureData,
                     errors: protocolCaptureErrors,
                 }, null, 2));

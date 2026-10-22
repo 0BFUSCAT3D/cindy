@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -38,10 +39,10 @@ export function inferMimeType(filename, override) {
 }
 
 export function readFileForUpload(filePath) {
-    const abs = path.resolve(filePath);
+    const abs = resolveRecipePath(filePath);
     let stat;
     try {
-        stat = fs.statSync(abs);
+        stat = fs.statSync(resolveRecipePath(abs));
     } catch {
         throw new ArgumentError(`--file path does not exist: ${filePath}`);
     }

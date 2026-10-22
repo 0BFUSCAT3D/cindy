@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CommandExecutionError, TimeoutError } from '@jackwener/opencli/errors';
@@ -303,7 +304,7 @@ cli({
                 }];
         } finally {
             if (cleanupDir) {
-                fs.rmSync(cleanupDir, { recursive: true, force: true });
+                fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });
             }
         }
     }

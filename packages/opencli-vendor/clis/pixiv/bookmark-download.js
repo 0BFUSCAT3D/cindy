@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -72,7 +73,7 @@ async function prepareIllustPlan(page, row, outputRoot) {
     throw new CommandExecutionError(`Refusing to overwrite existing Pixiv download: ${finalPath}`);
   }
   const createdDirs = [];
-  for (let cursor = path.dirname(finalPath); !fs.existsSync(cursor); cursor = path.dirname(cursor)) {
+  for (let cursor = path.dirname(finalPath); !fs.existsSync(resolveRecipePath(cursor)); cursor = path.dirname(cursor)) {
     createdDirs.push(cursor);
     if (path.dirname(cursor) === cursor) break;
   }
@@ -93,8 +94,8 @@ async function commitIllustPlan(plan, cookies) {
   const parent = path.dirname(plan.finalPath);
   let staging;
   try {
-    fs.mkdirSync(parent, { recursive: true });
-    staging = fs.mkdtempSync(path.join(parent, `.opencli-${plan.illustId}-`));
+    fs.mkdirSync(recipeOutputPath(parent), { recursive: true });
+    staging = fs.mkdtempSync(recipeOutputPath(path.join(parent, `.opencli-${plan.illustId}-`)));
     for (const file of plan.files) {
       const destination = path.join(staging, file.filename);
       const result = await httpDownload(file.url, destination, {
@@ -104,7 +105,7 @@ async function commitIllustPlan(plan, cookies) {
         includeContentType: true,
       });
       validateImageDownload(result, file);
-      const stat = fs.lstatSync(destination);
+      const stat = fs.lstatSync(resolveRecipePath(destination));
       if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0) {
         throw new CommandExecutionError(`Pixiv image download did not create a valid file: ${file.filename}`);
       }
@@ -112,14 +113,14 @@ async function commitIllustPlan(plan, cookies) {
     if (pixivPathEntryExists(plan.finalPath)) {
       throw new CommandExecutionError(`Refusing to overwrite existing Pixiv download: ${plan.finalPath}`);
     }
-    fs.renameSync(staging, plan.finalPath);
+    fs.renameSync(recipeOutputPath(staging), recipeOutputPath(plan.finalPath));
     return plan.finalPath;
   } catch (error) {
     if (staging) {
-      try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(recipeOutputPath(staging), { recursive: true, force: true }); } catch {}
     }
     for (const directory of plan.createdDirs) {
-      try { fs.rmdirSync(directory); } catch {}
+      try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}
     }
     if (error instanceof CommandExecutionError) throw error;
     throw new CommandExecutionError(`Pixiv illustration ${plan.illustId} download failed: ${error?.message || error}`);
@@ -131,9 +132,9 @@ function cleanupPlan(plan) {
     cleanupNovelFile(plan);
     return;
   }
-  try { fs.rmSync(plan.finalPath, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(recipeOutputPath(plan.finalPath), { recursive: true, force: true }); } catch {}
   for (const directory of plan.createdDirs) {
-    try { fs.rmdirSync(directory); } catch {}
+    try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}
   }
 }
 

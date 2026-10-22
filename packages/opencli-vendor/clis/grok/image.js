@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -201,7 +202,7 @@ async function fetchImageAsBase64(page, url) {
 }
 
 async function saveImages(page, images, outDir) {
-  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(recipeOutputPath(outDir), { recursive: true });
   const results = [];
   for (const img of images) {
     const fetched = await fetchImageAsBase64(page, img.src);
@@ -217,7 +218,7 @@ async function saveImages(page, images, outDir) {
       );
     }
     const filepath = path.join(outDir, buildFilename(img.src, fetched.contentType));
-    fs.writeFileSync(filepath, Buffer.from(fetched.base64 || '', 'base64'));
+    fs.writeFileSync(recipeOutputPath(filepath), Buffer.from(fetched.base64 || '', 'base64'));
     results.push({ ...img, path: filepath });
   }
   return results;

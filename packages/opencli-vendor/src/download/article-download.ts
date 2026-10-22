@@ -6,6 +6,7 @@
  * Flow: ArticleData → TurndownService → image download → frontmatter → .md file
  */
 
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import TurndownService from 'turndown';
@@ -325,7 +326,7 @@ async function downloadImages(
           if (result.success) {
             const responseExt = IMAGE_EXT_BY_CONTENT_TYPE[result.contentType || ''];
             if (requireContentType && !responseExt) {
-              await fs.promises.rm(guessedPath, { force: true });
+              await fs.promises.rm(recipeOutputPath(guessedPath), { force: true });
               return null;
             }
             const finalUrlExt = requireContentType ? reliableImageExt(result.finalUrl || imgUrl) : '';
@@ -333,13 +334,13 @@ async function downloadImages(
             const filename = `${baseName}.${actualExt}`;
             if (actualExt !== guessedExt) {
               const actualPath = path.join(imgDir, filename);
-              await fs.promises.rm(actualPath, { force: true });
-              await fs.promises.rename(guessedPath, actualPath);
+              await fs.promises.rm(recipeOutputPath(actualPath), { force: true });
+              await fs.promises.rename(recipeOutputPath(guessedPath), recipeOutputPath(actualPath));
             }
             return { remoteUrl: rawUrl, localPath: `images/${filename}` };
           }
         } catch {
-          await fs.promises.rm(guessedPath, { force: true }).catch(() => undefined);
+          await fs.promises.rm(recipeOutputPath(guessedPath), { force: true }).catch(() => undefined);
           // Skip failed downloads
         }
         return null;
@@ -423,9 +424,9 @@ export async function downloadArticle(
   // stay intact so the piped output is self-contained.
   if (!stdout && shouldDownloadImages && data.imageUrls && data.imageUrls.length > 0) {
     const articleDir = path.join(output, safeTitle);
-    fs.mkdirSync(articleDir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(articleDir), { recursive: true });
     const imagesDir = path.join(articleDir, 'images');
-    fs.mkdirSync(imagesDir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(imagesDir), { recursive: true });
 
     const urlMap = await downloadImages(
       data.imageUrls,
@@ -461,10 +462,10 @@ export async function downloadArticle(
   }
 
   const articleDir = path.join(output, safeTitle);
-  fs.mkdirSync(articleDir, { recursive: true });
+  fs.mkdirSync(recipeOutputPath(articleDir), { recursive: true });
   const filename = `${safeTitle}.md`;
   const filePath = path.join(articleDir, filename);
-  fs.writeFileSync(filePath, fullContent, 'utf-8');
+  fs.writeFileSync(recipeOutputPath(filePath), fullContent, 'utf-8');
 
   return [{
     title: data.title,

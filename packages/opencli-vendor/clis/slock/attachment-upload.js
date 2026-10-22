@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 // attachment-upload.js
 // POST /api/attachments/upload — multipart, field name `files` (max 5 per call,
@@ -51,9 +52,9 @@ cli({
     if (!filePath) throw new ArgumentError('file path required');
     const channel = String(kwargs.channel ?? '').trim();
     if (!channel) throw new ArgumentError('channel required (UUID or #name); server rejects uploads without channelId');
-    const abs = path.resolve(filePath);
+    const abs = resolveRecipePath(filePath);
     let stat;
-    try { stat = fs.statSync(abs); }
+    try { stat = fs.statSync(resolveRecipePath(abs)); }
     catch (e) { throw new ArgumentError(`file not readable: ${abs} (${e.message})`); }
     if (!stat.isFile()) throw new ArgumentError(`not a regular file: ${abs}`);
     if (stat.size === 0) throw new ArgumentError(`file is empty: ${abs}`);

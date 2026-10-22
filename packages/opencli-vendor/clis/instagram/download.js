@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,10 +22,10 @@ function unwrapEvaluateResult(result) {
 }
 export function resolveOutputDir(value) {
     const raw = String(value || '').trim();
-    if (!raw) return path.join(os.homedir(), 'Downloads', 'Instagram');
+    if (!raw) return resolveRecipePath('instagram-downloads');
     if (raw === '~') return os.homedir();
     if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-    return path.resolve(raw);
+    return resolveRecipePath(raw);
 }
 /** A shortcode is the media id written in Instagram's base64 alphabet. */
 export function shortcodeToMediaId(shortcode) {
@@ -322,7 +323,7 @@ function handleFetchFailure(result) {
     throw new CommandExecutionError(message);
 }
 async function downloadInstagramMedia(items, outputDir) {
-    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
     for (const item of items) {
         const destPath = path.join(outputDir, item.filename);
         const result = await httpDownload(item.url, destPath, {

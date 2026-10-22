@@ -8,6 +8,7 @@
  * - Filename templating and deduplication
  */
 
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { IPage } from '../../types.js';
@@ -141,7 +142,7 @@ export async function stepDownload(
 
   // Resolve output directory
   const dir = String(render(dirTemplate, { args, data }));
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
 
   // Normalize data to array. Items are row records (string-keyed) produced by
   // upstream steps; we treat them as Record<string, unknown> and narrow per-use.
@@ -182,7 +183,7 @@ export async function stepDownload(
 
         if (cookiesArray.length > 0) {
           const tempDir = getTempDir();
-          fs.mkdirSync(tempDir, { recursive: true });
+          fs.mkdirSync(recipeOutputPath(tempDir), { recursive: true });
           cookiesFile = path.join(tempDir, `cookies_${Date.now()}.txt`);
           exportCookiesToNetscape(cookiesArray, cookiesFile);
         }
@@ -219,14 +220,14 @@ export async function stepDownload(
     const destPath = path.join(dir, filename);
 
     // Check if file exists and skip_existing is true
-    if (skipExisting && fs.existsSync(destPath)) {
+    if (skipExisting && fs.existsSync(resolveRecipePath(destPath))) {
       tracker.onFileComplete(true, true);
       return {
         ...item,
         _download: {
           status: 'skipped',
           path: destPath,
-          size: fs.statSync(destPath).size,
+          size: fs.statSync(resolveRecipePath(destPath)).size,
         } as DownloadResult,
       };
     }
@@ -328,9 +329,9 @@ export async function stepDownload(
   });
 
   // Cleanup temp cookie file
-  if (cookiesFile && fs.existsSync(cookiesFile)) {
+  if (cookiesFile && fs.existsSync(resolveRecipePath(cookiesFile))) {
     try {
-      fs.unlinkSync(cookiesFile);
+      fs.unlinkSync(recipeOutputPath(cookiesFile));
     } catch {
       // Ignore cleanup errors
     }

@@ -7,6 +7,7 @@
  * Flow: MediaItem[] → DownloadProgressTracker → httpDownload/ytdlpDownload → results
  */
 
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getErrorMessage } from '../errors.js';
@@ -92,7 +93,7 @@ export async function downloadMedia(
 
   // Create output directory
   const outputDir = subdir ? path.join(output, subdir) : output;
-  fs.mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
 
   // Pre-check yt-dlp availability (once, not per-item)
   const hasYtdlp = checkYtdlp();
@@ -102,7 +103,7 @@ export async function downloadMedia(
   const needsYtdlp = items.some(m => m.type === 'video-tweet' || m.type === 'video-ytdlp');
   if (needsYtdlp && browserCookies && browserCookies.length > 0) {
     const tempDir = getTempDir();
-    fs.mkdirSync(tempDir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(tempDir), { recursive: true });
     cookiesFile = path.join(tempDir, `media_cookies_${Date.now()}.txt`);
     exportCookiesToNetscape(browserCookies, cookiesFile);
   }
@@ -172,8 +173,8 @@ export async function downloadMedia(
     tracker.finish();
 
     // Auto-cleanup exported cookies file
-    if (cookiesFile && fs.existsSync(cookiesFile)) {
-      fs.unlinkSync(cookiesFile);
+    if (cookiesFile && fs.existsSync(resolveRecipePath(cookiesFile))) {
+      fs.unlinkSync(recipeOutputPath(cookiesFile));
     }
   }
 

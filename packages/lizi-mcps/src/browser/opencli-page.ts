@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import {
   CDPBasePage,
   buildEvaluateExpression,
@@ -178,7 +179,7 @@ export class OpenCliPage extends CDPBasePage {
             : undefined;
     if (!encoded) throw new Error("Browser screenshot did not return an image");
     if (options.path)
-      await writeFile(options.path, Buffer.from(encoded, "base64"));
+      await writeFile(recipeOutputPath(options.path), Buffer.from(encoded, "base64"));
     return encoded;
   }
 

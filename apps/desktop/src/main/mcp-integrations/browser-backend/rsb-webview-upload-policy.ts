@@ -34,6 +34,46 @@ function isBlockedFile(filePath: string): boolean {
     || sensitiveDirectory;
 }
 
+/** Output files may not exist yet: validate their nearest existing ancestor.
+ * Reuse the upload roots and sensitive-file policy, including symlink identity. */
+export function resolveRecipeOutputPath(candidate: string, allowedRoots: string[]): string {
+  const roots = allowedRoots.flatMap((root) => {
+    if (!path.isAbsolute(root)) return [];
+    try {
+      const real = fs.realpathSync(root);
+      return fs.statSync(real).isDirectory() ? [real] : [];
+    } catch { return []; }
+  });
+  if (!roots.length) throw new Error('recipe output requires a local session directory');
+  if (typeof candidate !== 'string' || !candidate || candidate.includes('\0')) {
+    throw new Error('recipe output must be a local file path');
+  }
+  const target = path.resolve(roots[0], candidate);
+  if (isBlockedFile(target)) throw new Error('recipe output blocked for sensitive path');
+  let ancestor = target;
+  const tail: string[] = [];
+  while (true) {
+    try {
+      // lstat distinguishes missing paths from broken links, which grant nothing.
+      fs.lstatSync(ancestor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      tail.unshift(path.basename(ancestor));
+      ancestor = parent;
+      continue;
+    }
+    const real = fs.realpathSync(ancestor);
+    const resolved = path.join(real, ...tail);
+    if (!roots.some((root) => isInside(root, resolved))) {
+      throw new Error('recipe output must stay inside the current session directory');
+    }
+    if (isBlockedFile(resolved)) throw new Error('recipe output blocked for sensitive path');
+    return resolved;
+  }
+}
+
 /**
  * Resolves upload candidates to their filesystem identity and confines every
  * file to a host-provided root. Realpath checks prevent a workdir symlink or

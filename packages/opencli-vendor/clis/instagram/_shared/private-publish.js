@@ -1,3 +1,4 @@
+import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -328,7 +329,7 @@ export function getInstagramStoryNormalizedDimensions(width, height) {
 }
 function buildPrivateNormalizedImagePath(filePath) {
     const parsed = path.parse(filePath);
-    return path.join(os.tmpdir(), `opencli-instagram-private-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.png'}`);
+    return path.join(recipeTemporaryDirectory(), `opencli-instagram-private-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.png'}`);
 }
 export function prepareImageAssetForPrivateUpload(filePath) {
     const asset = readImageAsset(filePath);
@@ -352,7 +353,7 @@ export function prepareImageAssetForPrivateUpload(filePath) {
     ], {
         encoding: 'utf8',
     });
-    if (result.error || result.status !== 0 || !fs.existsSync(outputPath)) {
+    if (result.error || result.status !== 0 || !fs.existsSync(resolveRecipePath(outputPath))) {
         const detail = [result.error?.message, result.stderr, result.stdout]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
@@ -386,7 +387,7 @@ export function prepareImageAssetForPrivateStoryUpload(filePath) {
     ], {
         encoding: 'utf8',
     });
-    if (result.error || result.status !== 0 || !fs.existsSync(outputPath)) {
+    if (result.error || result.status !== 0 || !fs.existsSync(resolveRecipePath(outputPath))) {
         const detail = [result.error?.message, result.stderr, result.stdout]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
@@ -399,8 +400,8 @@ export function prepareImageAssetForPrivateStoryUpload(filePath) {
     };
 }
 function runSwiftJsonScript(script, args, stage) {
-    const scriptPath = path.join(os.tmpdir(), `opencli-instagram-${crypto.randomUUID()}.swift`);
-    fs.writeFileSync(scriptPath, script);
+    const scriptPath = path.join(recipeTemporaryDirectory(), `opencli-instagram-${crypto.randomUUID()}.swift`);
+    fs.writeFileSync(recipeOutputPath(scriptPath), script);
     try {
         const result = spawnSync('swift', [scriptPath, ...args], {
             encoding: 'utf8',
@@ -420,7 +421,7 @@ function runSwiftJsonScript(script, args, stage) {
         throw new CommandExecutionError(`Instagram private publish failed to ${stage}`, error instanceof Error ? error.message : String(error));
     }
     finally {
-        fs.rmSync(scriptPath, { force: true });
+        fs.rmSync(recipeOutputPath(scriptPath), { force: true });
     }
 }
 function readVideoMetadata(filePath) {
@@ -461,11 +462,11 @@ FileHandle.standardOutput.write(data)
 }
 function buildPrivateVideoCoverPath(filePath) {
     const parsed = path.parse(filePath);
-    return path.join(os.tmpdir(), `opencli-instagram-private-video-cover-${parsed.name}-${crypto.randomUUID()}.jpg`);
+    return path.join(recipeTemporaryDirectory(), `opencli-instagram-private-video-cover-${parsed.name}-${crypto.randomUUID()}.jpg`);
 }
 function buildPrivateStoryVideoPath(filePath) {
     const parsed = path.parse(filePath);
-    return path.join(os.tmpdir(), `opencli-instagram-story-video-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.mp4'}`);
+    return path.join(recipeTemporaryDirectory(), `opencli-instagram-story-video-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.mp4'}`);
 }
 function generateVideoCoverImage(filePath) {
     if (process.platform !== 'darwin') {
@@ -788,15 +789,15 @@ function cleanupPreparedMediaAssets(assets) {
     for (const prepared of assets) {
         if (prepared.type === 'image') {
             if (prepared.asset.cleanupPath) {
-                fs.rmSync(prepared.asset.cleanupPath, { force: true });
+                fs.rmSync(recipeOutputPath(prepared.asset.cleanupPath), { force: true });
             }
             continue;
         }
         for (const cleanupPath of prepared.asset.cleanupPaths || []) {
-            fs.rmSync(cleanupPath, { force: true });
+            fs.rmSync(recipeOutputPath(cleanupPath), { force: true });
         }
         if (prepared.asset.coverImage.cleanupPath) {
-            fs.rmSync(prepared.asset.coverImage.cleanupPath, { force: true });
+            fs.rmSync(recipeOutputPath(prepared.asset.coverImage.cleanupPath), { force: true });
         }
     }
 }

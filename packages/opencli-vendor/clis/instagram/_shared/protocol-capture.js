@@ -1,9 +1,10 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import { resolveInstagramRuntimeInfo } from './runtime-info.js';
 const DEFAULT_CAPTURE_VAR = '__opencli_ig_protocol_capture';
 const DEFAULT_CAPTURE_ERRORS_VAR = '__opencli_ig_protocol_capture_errors';
-const TRACE_OUTPUT_PATH = `${recipeDiagnosticPath("instagram_post_protocol_trace.json")}`;
+const TRACE_OUTPUT_PATH = () => `${recipeDiagnosticPath("instagram_post_protocol_trace.json")}`;
 const INSTAGRAM_PROTOCOL_CAPTURE_PATTERN = [
     '/rupload_igphoto/',
     '/rupload_igvideo/',
@@ -239,7 +240,7 @@ export async function dumpInstagramProtocolCaptureIfEnabled(page) {
     if (process.env.OPENCLI_INSTAGRAM_CAPTURE !== '1')
         return;
     const payload = await readInstagramProtocolCapture(page);
-    fs.writeFileSync(TRACE_OUTPUT_PATH, JSON.stringify(payload, null, 2));
+    fs.writeFileSync(recipeOutputPath(TRACE_OUTPUT_PATH()), JSON.stringify(payload, null, 2));
 }
 function buildCookieHeader(cookies) {
     return cookies

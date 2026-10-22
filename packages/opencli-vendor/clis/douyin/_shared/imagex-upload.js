@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * ImageX cover image uploader.
@@ -33,7 +34,7 @@ function detectContentType(filePath) {
  * @returns The store_uri (= image_uri for use in create_v2)
  */
 export async function imagexUpload(imagePath, uploadInfo) {
-    if (!fs.existsSync(imagePath)) {
+    if (!fs.existsSync(resolveRecipePath(imagePath))) {
         throw new CommandExecutionError(`Cover image file not found: ${imagePath}`, 'Ensure the file path is correct and accessible.');
     }
     const imageBuffer = readRecipeFileSync(imagePath);

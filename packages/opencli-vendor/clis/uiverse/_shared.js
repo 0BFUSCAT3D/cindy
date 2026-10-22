@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -416,12 +417,12 @@ export async function locatePreviewElement(page, html) {
 export function getDefaultOutputPath({ username, slug, suffix, extension }) {
   const safeUsername = trimPathSegment(username).replace(/[^a-zA-Z0-9-_]/g, '-');
   const safeSlug = trimPathSegment(slug).replace(/[^a-zA-Z0-9-_]/g, '-');
-  return path.join(os.tmpdir(), `opencli-uiverse-${safeUsername}-${safeSlug}-${suffix}.${extension}`);
+  return resolveRecipePath(`uiverse-${safeUsername}-${safeSlug}-${suffix}.${extension}`);
 }
 
 export async function saveBase64File(base64, outputPath) {
-  const resolved = path.resolve(outputPath);
-  await fs.mkdir(path.dirname(resolved), { recursive: true });
-  await fs.writeFile(resolved, Buffer.from(base64, 'base64'));
+  const resolved = resolveRecipePath(outputPath);
+  await fs.mkdir(recipeOutputPath(path.dirname(resolved)), { recursive: true });
+  await fs.writeFile(recipeOutputPath(resolved), Buffer.from(base64, 'base64'));
   return resolved;
 }

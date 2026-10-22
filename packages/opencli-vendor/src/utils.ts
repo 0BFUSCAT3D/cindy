@@ -2,6 +2,7 @@
  * Shared utility functions used across the codebase.
  */
 
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import TurndownService from 'turndown';
@@ -45,8 +46,8 @@ export function sleep(ms: number): Promise<void> {
 /** Save a base64-encoded string to a file, creating parent directories as needed. */
 export async function saveBase64ToFile(base64: string, filePath: string): Promise<void> {
   const dir = path.dirname(filePath);
-  await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(filePath, Buffer.from(base64, 'base64'));
+  await fs.promises.mkdir(recipeOutputPath(dir), { recursive: true });
+  await fs.promises.writeFile(recipeOutputPath(filePath), Buffer.from(base64, 'base64'));
 }
 
 export function createMarkdownConverter(configure?: (td: TurndownService) => void): TurndownService {

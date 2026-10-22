@@ -92,7 +92,7 @@ cli({
     { name: 'repeat', type: 'int', help: 'Repeat/permutation job count; defaults to 1 (plan limit applies)' },
     { name: 'wait', type: 'boolean', default: true, help: 'Wait for completion; false returns after unique job association' },
     { name: 'index', default: 'all', help: 'Download candidate 1..4 or all' },
-    { name: 'output', default: '~/Pictures/Midjourney', help: 'Output directory' },
+    { name: 'output', default: './midjourney-downloads', help: 'Output directory' },
     { name: 'skip-download', type: 'boolean', default: false, help: 'Do not write completed images' },
     { name: 'timeout', type: 'int', default: 300, help: 'Maximum submission/generation seconds (1..900)' },
     { name: 'dry-run', type: 'boolean', default: false, help: 'Validate and estimate without uploading or submitting' },

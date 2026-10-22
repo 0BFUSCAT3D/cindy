@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * linux.do unified feed — route latest/hot/top topics by site, tag, or category.
@@ -56,12 +57,12 @@ async function readMetadataCache(name) {
 async function writeMetadataCache(name, data) {
     try {
         const cacheDir = getLinuxDoCacheDir();
-        await fs.promises.mkdir(cacheDir, { recursive: true });
+        await fs.promises.mkdir(recipeOutputPath(cacheDir), { recursive: true });
         const payload = {
             fetchedAt: new Date().toISOString(),
             data,
         };
-        await fs.promises.writeFile(getMetadataCachePath(name), JSON.stringify(payload, null, 2) + '\n');
+        await fs.promises.writeFile(recipeOutputPath(getMetadataCachePath(name)), JSON.stringify(payload, null, 2) + '\n');
     }
     catch {
         // Cache write failures should never block command execution.

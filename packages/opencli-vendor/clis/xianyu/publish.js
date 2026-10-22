@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
@@ -62,12 +63,12 @@ function validateImagePaths(raw) {
         throw new ArgumentError(`xianyu publish images supports at most ${MAX_IMAGES} files`);
     }
     return paths.map((item) => {
-        const absPath = path.resolve(item);
+        const absPath = resolveRecipePath(item);
         const ext = path.extname(absPath).toLowerCase();
         if (!SUPPORTED_IMAGE_EXTENSIONS.has(ext)) {
             throw new ArgumentError(`Unsupported image format "${ext}". Supported: jpg, jpeg, png, webp`);
         }
-        const stat = fs.statSync(absPath, { throwIfNoEntry: false });
+        const stat = fs.statSync(resolveRecipePath(absPath), { throwIfNoEntry: false });
         if (!stat || !stat.isFile()) {
             throw new ArgumentError(`Not a valid image file: ${absPath}`);
         }

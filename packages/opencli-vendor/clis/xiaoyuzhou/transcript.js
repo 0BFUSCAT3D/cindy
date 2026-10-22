@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -56,14 +57,14 @@ cli({
             throw new CliError('PARSE_ERROR', 'Failed to extract transcript text', 'Transcript payload format is unsupported. Re-run with --json true to inspect the raw payload.');
         }
         const outputDir = path.join(String(kwargs.output || './xiaoyuzhou-transcripts'), String(kwargs.id));
-        fs.mkdirSync(outputDir, { recursive: true });
+        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
         const jsonPath = path.join(outputDir, 'transcript.json');
         const textPath = path.join(outputDir, 'transcript.txt');
         if (kwargs.json !== false) {
-            fs.writeFileSync(jsonPath, transcriptBody, 'utf-8');
+            fs.writeFileSync(recipeOutputPath(jsonPath), transcriptBody, 'utf-8');
         }
         if (kwargs.text !== false) {
-            fs.writeFileSync(textPath, text, 'utf-8');
+            fs.writeFileSync(recipeOutputPath(textPath), text, 'utf-8');
         }
         return [{
                 title: episode.title || 'episode',

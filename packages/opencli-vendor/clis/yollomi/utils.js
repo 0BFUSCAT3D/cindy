@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * Yollomi API utilities — browser cookie strategy.
@@ -77,8 +78,8 @@ export function resolveImageInput(input) {
     if (input.startsWith('http://') || input.startsWith('https://') || input.startsWith('data:')) {
         return input;
     }
-    const resolved = path.resolve(input);
-    if (!fs.existsSync(resolved)) {
+    const resolved = resolveRecipePath(input);
+    if (!fs.existsSync(resolveRecipePath(resolved))) {
         throw new CliError('FILE_NOT_FOUND', `File not found: ${resolved}`, 'Provide a valid file path or URL');
     }
     const ext = path.extname(resolved).toLowerCase();
@@ -92,13 +93,13 @@ export function resolveImageInput(input) {
     return `data:${mime};base64,${data.toString('base64')}`;
 }
 export async function downloadOutput(url, outputDir, filename) {
-    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
     const destPath = path.join(outputDir, filename);
     const resp = await fetch(url);
     if (!resp.ok)
         throw new CliError('DOWNLOAD_ERROR', `Download failed: HTTP ${resp.status}`, 'URL may have expired');
     const buffer = Buffer.from(await resp.arrayBuffer());
-    fs.writeFileSync(destPath, buffer);
+    fs.writeFileSync(recipeOutputPath(destPath), buffer);
     return { path: destPath, size: buffer.length };
 }
 export function fmtBytes(bytes) {

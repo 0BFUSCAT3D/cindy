@@ -2,6 +2,7 @@
  * Download utilities: HTTP downloads, yt-dlp wrapper, format conversion.
  */
 
+import { closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -135,7 +136,7 @@ export async function httpDownload(
 
   const cleanupTempFile = async () => {
     try {
-      await fs.promises.rm(tempPath, { force: true });
+      await fs.promises.rm(recipeOutputPath(tempPath), { force: true });
     } catch {
       // Ignore cleanup errors so the original failure is preserved.
     }
@@ -192,13 +193,13 @@ export async function httpDownload(
     });
 
     try {
-      await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+      await fs.promises.mkdir(recipeOutputPath(path.dirname(destPath)), { recursive: true });
       await pipeline(
         Readable.fromWeb(response.body as unknown as WebReadableStream),
         progressStream,
-        fs.createWriteStream(tempPath),
+        fs.createWriteStream(recipeOutputPath(tempPath)),
       );
-      await fs.promises.rename(tempPath, destPath);
+      await fs.promises.rename(recipeOutputPath(tempPath), recipeOutputPath(destPath));
       const contentType = includeContentType
         ? response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
         : undefined;
@@ -257,17 +258,17 @@ export function exportCookiesToNetscape(
     lines.push(`${domain}\t${includeSubdomains}\t${cookiePath}\t${secure}\t${expiry}\t${safeName}\t${safeValue}`);
   }
 
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.mkdirSync(recipeOutputPath(path.dirname(filePath)), { recursive: true });
   // 0o600: file holds live session cookies, must be owner-only. fchmod before
   // writing also tightens a pre-existing broad file before new secrets land.
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
-    fs.fchmodSync(fd, 0o600);
-    fs.writeFileSync(fd, lines.join('\n'), 'utf8');
+    fd = openRecipeOutputFileSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
+    fs.fchmodSync(recipeOutputPath(fd), 0o600);
+    fs.writeFileSync(recipeOutputPath(fd), lines.join('\n'), 'utf8');
   } finally {
     if (fd !== undefined) {
-      fs.closeSync(fd);
+      closeRecipeFileSync(fd);
     }
   }
 }
@@ -284,7 +285,9 @@ export async function ytdlpDownload(
   destPath: string,
   options: YtdlpOptions = {},
 ): Promise<{ success: boolean; size: number; error?: string }> {
-  const { cookiesFile, format = 'best', extraArgs = [], onProgress } = options;
+  destPath = recipeOutputPath(destPath);
+  const { cookiesFile: rawCookiesFile, format = 'best', extraArgs = [], onProgress } = options;
+  const cookiesFile = rawCookiesFile ? recipeCopySource(rawCookiesFile) : undefined;
 
   if (!checkYtdlp()) {
     return { success: false, size: 0, error: 'yt-dlp not installed. Install with: pip install yt-dlp' };
@@ -292,10 +295,11 @@ export async function ytdlpDownload(
 
   return new Promise((resolve) => {
     const dir = path.dirname(destPath);
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
 
     // Build yt-dlp arguments
     const args = [
+      '--ignore-config',
       url,
       '-o', destPath,
       '-f', format,
@@ -303,17 +307,8 @@ export async function ytdlpDownload(
       '--progress',
     ];
 
-    if (cookiesFile) {
-      if (fs.existsSync(cookiesFile)) {
-        args.push('--cookies', cookiesFile);
-      } else {
-        log.warn(`[download] Cookies file not found: ${cookiesFile}, falling back to browser cookies`);
-        args.push('--cookies-from-browser', 'chrome');
-      }
-    } else {
-      // Try to use browser cookies
-      args.push('--cookies-from-browser', 'chrome');
-    }
+    // Only the invoking browser's scoped cookie file; never the system Chrome profile.
+    if (cookiesFile) args.push('--cookies', cookiesFile);
 
     args.push(...extraArgs);
 
@@ -352,15 +347,15 @@ export async function ytdlpDownload(
     });
 
     proc.on('close', (code) => {
-      if (code === 0 && fs.existsSync(destPath)) {
-        const stats = fs.statSync(destPath);
+      if (code === 0 && fs.existsSync(resolveRecipePath(destPath))) {
+        const stats = fs.statSync(resolveRecipePath(destPath));
         resolve({ success: true, size: stats.size });
       } else {
         // Check for common yt-dlp output patterns
-        const patterns = fs.readdirSync(dir).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));
+        const patterns = fs.readdirSync(resolveRecipePath(dir)).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));
         if (patterns.length > 0) {
           const actualFile = path.join(dir, patterns[0]);
-          const stats = fs.statSync(actualFile);
+          const stats = fs.statSync(resolveRecipePath(actualFile));
           resolve({ success: true, size: stats.size });
         } else {
           resolve({ success: false, size: 0, error: errorOutput.slice(0, 200) || `Exit code ${code}` });
@@ -385,7 +380,7 @@ export async function saveDocument(
 ): Promise<{ success: boolean; size: number; error?: string }> {
   try {
     const dir = path.dirname(destPath);
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
 
     let output: string;
 
@@ -399,7 +394,7 @@ export async function saveDocument(
       output = content;
     }
 
-    fs.writeFileSync(destPath, output, 'utf-8');
+    fs.writeFileSync(recipeOutputPath(destPath), output, 'utf-8');
     return { success: true, size: Buffer.byteLength(output, 'utf-8') };
   } catch (err) {
     return { success: false, size: 0, error: getErrorMessage(err) };
@@ -458,5 +453,5 @@ function detectExtension(url: string): string {
  * Get temp directory for cookie files.
  */
 export function getTempDir(): string {
-  return path.join(os.tmpdir(), 'opencli-download');
+  return path.join(recipeTemporaryDirectory(), 'opencli-download');
 }

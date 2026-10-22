@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,10 +35,10 @@ function isRecoverableFileInputError(error) {
 function resolveCoverImage(rawPath) {
     const value = String(rawPath ?? '').trim();
     if (!value) throw new ArgumentError('weixin create-draft cover-image cannot be empty');
-    const absPath = path.resolve(value);
+    const absPath = resolveRecipePath(value);
     let stat;
     try {
-        stat = fs.statSync(absPath);
+        stat = fs.statSync(resolveRecipePath(absPath));
     } catch {
         throw new ArgumentError(`weixin create-draft cover-image does not exist: ${absPath}`);
     }

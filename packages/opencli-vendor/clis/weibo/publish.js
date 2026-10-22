@@ -15,6 +15,7 @@
  *   opencli weibo publish "Hello from OpenCLI! #opencli"  # publishes immediately
  *   opencli weibo publish "Check this out" --images /path/a.jpg,/path/b.jpg
  */
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -55,12 +56,12 @@ function validateImagePaths(raw) {
         throw new ArgumentError(`Too many images: ${paths.length} (max ${MAX_IMAGES})`);
     }
     return paths.map(p => {
-        const absPath = path.resolve(p);
+        const absPath = resolveRecipePath(p);
         const ext = path.extname(absPath).toLowerCase();
         if (!SUPPORTED_EXTENSIONS.has(ext)) {
             throw new ArgumentError(`Unsupported image format "${ext}". Supported: jpg, png, gif, webp`);
         }
-        const stat = fs.statSync(absPath, { throwIfNoEntry: false });
+        const stat = fs.statSync(resolveRecipePath(absPath), { throwIfNoEntry: false });
         if (!stat || !stat.isFile()) {
             throw new ArgumentError(`Not a valid file: ${absPath}`);
         }

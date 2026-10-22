@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -52,14 +53,14 @@ export async function readPdfFile(inputPath) {
     if (!rawPath) {
         throw new CliError('ARGUMENT', 'A PDF path is required.', 'Provide a local PDF file path');
     }
-    const resolvedPath = path.resolve(rawPath);
+    const resolvedPath = resolveRecipePath(rawPath);
     const fileName = path.basename(resolvedPath);
     if (!fileName.toLowerCase().endsWith('.pdf')) {
         throw new CliError('ARGUMENT', 'The input file must end with .pdf.', 'Provide a PDF file path');
     }
     let fileStat;
     try {
-        fileStat = await fs.stat(resolvedPath);
+        fileStat = await fs.stat(resolveRecipePath(resolvedPath));
     }
     catch (error) {
         if (error?.code === 'ENOENT') {

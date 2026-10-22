@@ -1,3 +1,4 @@
+import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -169,11 +170,11 @@ function isMp3(bytes) {
 
 export function resolveOutputDir(value) {
     const raw = String(value ?? '').trim();
-    if (!raw) return path.join(os.homedir(), 'Music', 'minimax');
+    if (!raw) return resolveRecipePath('minimax-audio');
     if (raw === '~') return os.homedir();
     if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
     if (raw.startsWith('~')) throw new ArgumentError(`Unsupported home-directory path: ${raw}`);
-    return path.resolve(raw);
+    return resolveRecipePath(raw);
 }
 
 export function reserveAudioFile(dir, model, format, now = new Date()) {
@@ -182,13 +183,13 @@ export function reserveAudioFile(dir, model, format, now = new Date()) {
     const lock = `${target}.lock`;
     const staging = `${target}.${process.pid}.${randomUUID()}.tmp`;
     try {
-        fs.mkdirSync(dir, { recursive: true });
-        if (!fs.statSync(dir).isDirectory()) throw new Error('not a directory');
-        fs.accessSync(dir, fs.constants.W_OK);
-        if (fs.existsSync(target)) throw new Error('target already exists');
-        fs.writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 });
-        if (fs.existsSync(target)) {
-            fs.rmSync(lock, { force: true });
+        fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
+        if (!fs.statSync(resolveRecipePath(dir)).isDirectory()) throw new Error('not a directory');
+        fs.accessSync(resolveRecipePath(dir), fs.constants.W_OK);
+        if (fs.existsSync(resolveRecipePath(target))) throw new Error('target already exists');
+        fs.writeFileSync(recipeOutputPath(lock), String(process.pid), { flag: 'wx', mode: 0o600 });
+        if (fs.existsSync(resolveRecipePath(target))) {
+            fs.rmSync(recipeOutputPath(lock), { force: true });
             throw new Error('target appeared during reservation');
         }
         return { target, lock, staging };
@@ -199,10 +200,10 @@ export function reserveAudioFile(dir, model, format, now = new Date()) {
 
 export function commitAudioFile(reservation, bytes) {
     try {
-        fs.writeFileSync(reservation.staging, bytes, { flag: 'wx', mode: 0o600 });
+        fs.writeFileSync(recipeOutputPath(reservation.staging), bytes, { flag: 'wx', mode: 0o600 });
         // A same-filesystem hard link publishes the complete staging inode and
         // fails if target already exists on POSIX and Windows alike.
-        fs.linkSync(reservation.staging, reservation.target);
+        fs.linkSync(recipeCopySource(reservation.staging), recipeOutputPath(reservation.target));
         cleanupAudioFile(reservation);
         return reservation.target;
     } catch (error) {
@@ -213,6 +214,6 @@ export function commitAudioFile(reservation, bytes) {
 
 export function cleanupAudioFile(reservation) {
     if (!reservation) return;
-    fs.rmSync(reservation.staging, { force: true });
-    fs.rmSync(reservation.lock, { force: true });
+    fs.rmSync(recipeOutputPath(reservation.staging), { force: true });
+    fs.rmSync(recipeOutputPath(reservation.lock), { force: true });
 }

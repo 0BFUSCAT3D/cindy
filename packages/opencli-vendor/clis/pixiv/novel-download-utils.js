@@ -1,3 +1,4 @@
+import { closeRecipeFileSync, openRecipeOutputFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ArgumentError, CommandExecutionError } from '@jackwener/opencli/errors';
@@ -63,13 +64,13 @@ export function normalizePixivOutputRoot(value, fallback) {
   if (!raw || raw.includes('\0')) {
     throw new ArgumentError('output must be a non-empty directory path');
   }
-  const resolved = path.resolve(raw);
+  const resolved = resolveRecipePath(raw);
   let ancestor = resolved;
   const missingParts = [];
   let ancestorStat;
   while (!ancestorStat) {
     try {
-      ancestorStat = fs.lstatSync(ancestor);
+      ancestorStat = fs.lstatSync(resolveRecipePath(ancestor));
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         throw new ArgumentError(`output path is not a safe directory: ${ancestor}`);
@@ -87,11 +88,11 @@ export function normalizePixivOutputRoot(value, fallback) {
   }
   let canonicalAncestor;
   try {
-    canonicalAncestor = fs.realpathSync.native(ancestor);
+    canonicalAncestor = fs.realpathSync.native(resolveRecipePath(ancestor));
   } catch {
     throw new ArgumentError(`output path is not a safe directory: ${ancestor}`);
   }
-  if (!fs.statSync(canonicalAncestor).isDirectory()) {
+  if (!fs.statSync(resolveRecipePath(canonicalAncestor)).isDirectory()) {
     throw new ArgumentError(`output path is not a safe directory: ${ancestor}`);
   }
   return path.join(canonicalAncestor, ...missingParts);
@@ -99,7 +100,7 @@ export function normalizePixivOutputRoot(value, fallback) {
 
 export function pixivPathEntryExists(target) {
   try {
-    fs.lstatSync(target);
+    fs.lstatSync(resolveRecipePath(target));
     return true;
   } catch (error) {
     if (error?.code === 'ENOENT') return false;
@@ -160,7 +161,7 @@ export function prepareNovelFile(body, output, format) {
     throw new CommandExecutionError(`Refusing to overwrite existing Pixiv download: ${destPath}`);
   }
   const createdDirs = [];
-  for (let cursor = outputDir; !fs.existsSync(cursor); cursor = path.dirname(cursor)) {
+  for (let cursor = outputDir; !fs.existsSync(resolveRecipePath(cursor)); cursor = path.dirname(cursor)) {
     createdDirs.push(cursor);
     if (path.dirname(cursor) === cursor) break;
   }
@@ -180,19 +181,19 @@ export function writeNovelFile(body, output, format) {
 export function commitNovelFile(plan) {
   let descriptor;
   try {
-    fs.mkdirSync(plan.outputDir, { recursive: true });
-    descriptor = fs.openSync(plan.destPath, 'wx');
-    fs.writeFileSync(descriptor, plan.content, 'utf8');
-    fs.closeSync(descriptor);
+    fs.mkdirSync(recipeOutputPath(plan.outputDir), { recursive: true });
+    descriptor = openRecipeOutputFileSync(plan.destPath, 'wx');
+    fs.writeFileSync(recipeOutputPath(descriptor), plan.content, 'utf8');
+    closeRecipeFileSync(descriptor);
     descriptor = undefined;
     return plan.destPath;
   } catch (error) {
     if (descriptor !== undefined) {
-      try { fs.closeSync(descriptor); } catch {}
-      try { fs.rmSync(plan.destPath, { force: true }); } catch {}
+      try { closeRecipeFileSync(descriptor); } catch {}
+      try { fs.rmSync(recipeOutputPath(plan.destPath), { force: true }); } catch {}
     }
     for (const directory of plan.createdDirs) {
-      try { fs.rmdirSync(directory); } catch {}
+      try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}
     }
     if (error instanceof CommandExecutionError) throw error;
     throw new CommandExecutionError(`Failed to write Pixiv novel ${path.basename(plan.destPath)}: ${error?.message || error}`);
@@ -200,8 +201,8 @@ export function commitNovelFile(plan) {
 }
 
 export function cleanupNovelFile(plan) {
-  try { fs.rmSync(plan.destPath, { force: true }); } catch {}
+  try { fs.rmSync(recipeOutputPath(plan.destPath), { force: true }); } catch {}
   for (const directory of plan.createdDirs) {
-    try { fs.rmdirSync(directory); } catch {}
+    try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}
   }
 }

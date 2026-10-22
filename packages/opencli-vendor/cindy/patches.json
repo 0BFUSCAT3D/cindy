@@ -795,5 +795,1655 @@
     "file": "src/browser/base-page.ts",
     "before": "    const { generateReadInterceptedJs } = await import('../interceptor.js');\n",
     "after": ""
+  },
+  {
+    "file": "clis/chatgpt/image.js",
+    "before": "    return path.resolve(raw);\n",
+    "after": "    return resolveRecipePath(raw);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/image.js",
+    "before": "import * as os from 'node:os';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as os from 'node:os';",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/image.js",
+    "before": "if (!raw) return path.join(os.homedir(), 'Pictures', 'chatgpt');",
+    "after": "if (!raw) return resolveRecipePath('chatgpt-images');",
+    "count": 1
+  },
+  {
+    "file": "clis/douban/download.js",
+    "before": "        fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douban/download.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/imagex-upload.js",
+    "before": "    if (!fs.existsSync(imagePath)) {\n",
+    "after": "    if (!fs.existsSync(resolveRecipePath(imagePath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/imagex-upload.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "    fs.mkdirSync(path.dirname(resumePath), { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(path.dirname(resumePath)), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "    fs.writeFileSync(resumePath, JSON.stringify(state, null, 2), 'utf8');\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(resumePath), JSON.stringify(state, null, 2), 'utf8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "        fs.unlinkSync(resumePath);\n",
+    "after": "        fs.unlinkSync(recipeOutputPath(resumePath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "    if (!fs.existsSync(filePath)) {\n",
+    "after": "    if (!fs.existsSync(resolveRecipePath(filePath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "    const { size: fileSize } = fs.statSync(filePath);\n",
+    "after": "    const { size: fileSize } = fs.statSync(resolveRecipePath(filePath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "        fs.closeSync(fd);\n",
+    "after": "        closeRecipeFileSync(fd);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/tos-upload.js",
+    "before": "import { openRecipeFileSync, readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { closeRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { openRecipeFileSync, readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "        const videoPath = path.resolve(kwargs.video);\n",
+    "after": "        const videoPath = resolveRecipePath(kwargs.video);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "        if (!fs.existsSync(videoPath)) {\n",
+    "after": "        if (!fs.existsSync(resolveRecipePath(videoPath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "            if (!fs.existsSync(path.resolve(coverPath))) {\n",
+    "after": "            if (!fs.existsSync(resolveRecipePath(resolveRecipePath(coverPath)))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "                throw new ArgumentError(`封面文件不存在: ${path.resolve(coverPath)}`);\n",
+    "after": "                throw new ArgumentError(`封面文件不存在: ${resolveRecipePath(coverPath)}`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "            await page.setFileInput([path.resolve(coverPath)], coverSelector);\n",
+    "after": "            await page.setFileInput([resolveRecipePath(coverPath)], coverSelector);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "        const videoPath = path.resolve(kwargs.video);\n",
+    "after": "        const videoPath = resolveRecipePath(kwargs.video);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "        if (!fs.existsSync(videoPath)) {\n",
+    "after": "        if (!fs.existsSync(resolveRecipePath(videoPath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "        const fileSize = fs.statSync(videoPath).size;\n",
+    "after": "        const fileSize = fs.statSync(resolveRecipePath(videoPath)).size;\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "            if (!fs.existsSync(path.resolve(coverPath))) {\n",
+    "after": "            if (!fs.existsSync(resolveRecipePath(resolveRecipePath(coverPath)))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "                throw new ArgumentError(`封面文件不存在: ${path.resolve(coverPath)}`);\n",
+    "after": "                throw new ArgumentError(`封面文件不存在: ${resolveRecipePath(coverPath)}`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "            const resolvedCoverPath = path.resolve(kwargs.cover);\n",
+    "after": "            const resolvedCoverPath = resolveRecipePath(kwargs.cover);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/gemini/image.js",
+    "before": "    return path.resolve(raw);\n",
+    "after": "    return resolveRecipePath(raw);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/gemini/image.js",
+    "before": "import * as os from 'node:os';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as os from 'node:os';",
+    "count": 1
+  },
+  {
+    "file": "clis/gemini/image.js",
+    "before": "return path.join(os.homedir(), 'tmp', 'gemini-images');",
+    "after": "return resolveRecipePath('gemini-images');",
+    "count": 1
+  },
+  {
+    "file": "clis/geogebra/hexagon.js",
+    "before": "    const screenshotPath = path.join(os.tmpdir(), 'opencli-geogebra-hexagon.png');\n",
+    "after": "    const screenshotPath = resolveRecipePath('geogebra-hexagon.png');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/geogebra/hexagon.js",
+    "before": "import { cli, Strategy } from '@jackwener/opencli/registry';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { cli, Strategy } from '@jackwener/opencli/registry';",
+    "count": 1
+  },
+  {
+    "file": "clis/geogebra/triangle.js",
+    "before": "    const screenshotPath = path.join(os.tmpdir(), 'opencli-geogebra-triangle.png');\n",
+    "after": "    const screenshotPath = resolveRecipePath('geogebra-triangle.png');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/geogebra/triangle.js",
+    "before": "import { cli, Strategy } from '@jackwener/opencli/registry';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { cli, Strategy } from '@jackwener/opencli/registry';",
+    "count": 1
+  },
+  {
+    "file": "clis/grok/image.js",
+    "before": "  fs.mkdirSync(outDir, { recursive: true });\n",
+    "after": "  fs.mkdirSync(recipeOutputPath(outDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/grok/image.js",
+    "before": "    fs.writeFileSync(filepath, Buffer.from(fetched.base64 || '', 'base64'));\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(filepath), Buffer.from(fetched.base64 || '', 'base64'));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/grok/image.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    return path.join(os.tmpdir(), `opencli-instagram-private-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.png'}`);\n",
+    "after": "    return path.join(recipeTemporaryDirectory(), `opencli-instagram-private-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.png'}`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    if (result.error || result.status !== 0 || !fs.existsSync(outputPath)) {\n",
+    "after": "    if (result.error || result.status !== 0 || !fs.existsSync(resolveRecipePath(outputPath))) {\n",
+    "count": 2
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    const scriptPath = path.join(os.tmpdir(), `opencli-instagram-${crypto.randomUUID()}.swift`);\n",
+    "after": "    const scriptPath = path.join(recipeTemporaryDirectory(), `opencli-instagram-${crypto.randomUUID()}.swift`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    fs.writeFileSync(scriptPath, script);\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(scriptPath), script);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "        fs.rmSync(scriptPath, { force: true });\n",
+    "after": "        fs.rmSync(recipeOutputPath(scriptPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    return path.join(os.tmpdir(), `opencli-instagram-private-video-cover-${parsed.name}-${crypto.randomUUID()}.jpg`);\n",
+    "after": "    return path.join(recipeTemporaryDirectory(), `opencli-instagram-private-video-cover-${parsed.name}-${crypto.randomUUID()}.jpg`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    return path.join(os.tmpdir(), `opencli-instagram-story-video-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.mp4'}`);\n",
+    "after": "    return path.join(recipeTemporaryDirectory(), `opencli-instagram-story-video-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.mp4'}`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "                fs.rmSync(prepared.asset.cleanupPath, { force: true });\n",
+    "after": "                fs.rmSync(recipeOutputPath(prepared.asset.cleanupPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "            fs.rmSync(cleanupPath, { force: true });\n",
+    "after": "            fs.rmSync(recipeOutputPath(cleanupPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "            fs.rmSync(prepared.asset.coverImage.cleanupPath, { force: true });\n",
+    "after": "            fs.rmSync(recipeOutputPath(prepared.asset.coverImage.cleanupPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/protocol-capture.js",
+    "before": "const TRACE_OUTPUT_PATH = `${recipeDiagnosticPath(\"instagram_post_protocol_trace.json\")}`;\n",
+    "after": "const TRACE_OUTPUT_PATH = () => `${recipeDiagnosticPath(\"instagram_post_protocol_trace.json\")}`;\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/protocol-capture.js",
+    "before": "    fs.writeFileSync(TRACE_OUTPUT_PATH, JSON.stringify(payload, null, 2));\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(TRACE_OUTPUT_PATH()), JSON.stringify(payload, null, 2));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/_shared/protocol-capture.js",
+    "before": "import { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/download.js",
+    "before": "    return path.resolve(raw);\n",
+    "after": "    return resolveRecipePath(raw);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/download.js",
+    "before": "    fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/download.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/download.js",
+    "before": "if (!raw) return path.join(os.homedir(), 'Downloads', 'Instagram');",
+    "after": "if (!raw) return resolveRecipePath('instagram-downloads');",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = `${recipeDiagnosticPath(\"instagram_post_protocol_trace.json\")}`;\n",
+    "after": "const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = () => `${recipeDiagnosticPath(\"instagram_post_protocol_trace.json\")}`;\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "        const resolved = path.resolve(String(input || '').trim());\n",
+    "after": "        const resolved = resolveRecipePath(String(input || '').trim());\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "        if (!fs.existsSync(resolved)) {\n",
+    "after": "        if (!fs.existsSync(resolveRecipePath(resolved))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "                fs.writeFileSync(INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH, JSON.stringify({\n",
+    "after": "                fs.writeFileSync(recipeOutputPath(INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH()), JSON.stringify({\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "    const resolved = path.resolve(String(input || '').trim());\n",
+    "after": "    const resolved = resolveRecipePath(String(input || '').trim());\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "    if (!fs.existsSync(resolved)) {\n",
+    "after": "    if (!fs.existsSync(resolveRecipePath(resolved))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "    return path.join(os.tmpdir(), `opencli-instagram-video-real${ext}`);\n",
+    "after": "    return path.join(recipeTemporaryDirectory(), `opencli-instagram-video-real${ext}`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "    fs.copyFileSync(filePath, uploadPath);\n",
+    "after": "    fs.copyFileSync(recipeCopySource(filePath), recipeOutputPath(uploadPath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "                fs.rmSync(preparedUpload.cleanupPath, { force: true });\n",
+    "after": "                fs.rmSync(recipeOutputPath(preparedUpload.cleanupPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "import { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/story.js",
+    "before": "    const resolved = path.resolve(parts[0]);\n",
+    "after": "    const resolved = resolveRecipePath(parts[0]);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/story.js",
+    "before": "    if (!fs.existsSync(resolved)) {\n",
+    "after": "    if (!fs.existsSync(resolveRecipePath(resolved))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/story.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/linux-do/feed.js",
+    "before": "        await fs.promises.mkdir(cacheDir, { recursive: true });\n",
+    "after": "        await fs.promises.mkdir(recipeOutputPath(cacheDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/linux-do/feed.js",
+    "before": "        await fs.promises.writeFile(getMetadataCachePath(name), JSON.stringify(payload, null, 2) + '\\n');\n",
+    "after": "        await fs.promises.writeFile(recipeOutputPath(getMetadataCachePath(name)), JSON.stringify(payload, null, 2) + '\\n');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/linux-do/feed.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/mercury/utils.js",
+    "before": "    const receipt = path.resolve(requireString(kwargs, 'receipt'));\n",
+    "after": "    const receipt = resolveRecipePath(requireString(kwargs, 'receipt'));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/mercury/utils.js",
+    "before": "        stat = fs.statSync(receipt, { throwIfNoEntry: false });\n",
+    "after": "        stat = fs.statSync(resolveRecipePath(receipt), { throwIfNoEntry: false });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/mercury/utils.js",
+    "before": "import fs from 'node:fs';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/download.js",
+    "before": "default: '~/Pictures/Midjourney'",
+    "after": "default: './midjourney-downloads'",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/generate.js",
+    "before": "default: '~/Pictures/Midjourney'",
+    "after": "default: './midjourney-downloads'",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "  return path.resolve(expanded);\n",
+    "after": "  return resolveRecipePath(expanded);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    const stat = await fs.stat(filePath);\n",
+    "after": "    const stat = await fs.stat(resolveRecipePath(filePath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    const handle = await fs.open(filePath, 'r');\n",
+    "after": "    const handle = await fs.open(recipeCopySource(filePath), 'r');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.writeFile(tempPath, media.buffer);\n",
+    "after": "    await fs.writeFile(recipeOutputPath(tempPath), media.buffer);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.rename(tempPath, filePath);\n",
+    "after": "    await fs.rename(recipeOutputPath(tempPath), recipeOutputPath(filePath));\n",
+    "count": 3
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.unlink(tempPath).catch(() => {});\n",
+    "after": "    await fs.unlink(recipeOutputPath(tempPath)).catch(() => {});\n",
+    "count": 3
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "  await fs.mkdir(outputDir, { recursive: true });\n",
+    "after": "  await fs.mkdir(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 3
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.writeFile(tempPath, buffer);\n",
+    "after": "    await fs.writeFile(recipeOutputPath(tempPath), buffer);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "  const sourcePath = path.resolve(String(downloaded.filename));\n",
+    "after": "  const sourcePath = resolveRecipePath(String(downloaded.filename));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "  const sourceStat = await fs.stat(sourcePath).catch(() => null);\n",
+    "after": "  const sourceStat = await fs.stat(resolveRecipePath(sourcePath)).catch(() => null);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "  const handle = await fs.open(sourcePath, 'r');\n",
+    "after": "  const handle = await fs.open(recipeCopySource(sourcePath), 'r');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.copyFile(sourcePath, tempPath);\n",
+    "after": "    await fs.copyFile(recipeCopySource(sourcePath), recipeOutputPath(tempPath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    if (sourcePath !== filePath) await fs.unlink(sourcePath).catch(() => {});\n",
+    "after": "    if (sourcePath !== filePath) await fs.unlink(recipeOutputPath(sourcePath)).catch(() => {});\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.mkdir(MIDJOURNEY_SITE_DIR, { recursive: true });\n",
+    "after": "    await fs.mkdir(recipeOutputPath(MIDJOURNEY_SITE_DIR), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    await fs.appendFile(USAGE_SNAPSHOT_PATH, `${JSON.stringify(row)}\\n`, 'utf8');\n",
+    "after": "    await fs.appendFile(recipeOutputPath(USAGE_SNAPSHOT_PATH), `${JSON.stringify(row)}\\n`, 'utf8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "    return { kind: 'local', value: path.resolve(expanded) };\n",
+    "after": "    return { kind: 'local', value: resolveRecipePath(expanded) };\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "      stat = await fs.stat(ref.value);\n",
+    "after": "      stat = await fs.stat(resolveRecipePath(ref.value));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "const raw = String(value || '~/Pictures/Midjourney').trim();",
+    "after": "const raw = String(value || './midjourney-downloads').trim();",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "    return path.resolve(raw);\n",
+    "after": "    return resolveRecipePath(raw);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        fs.mkdirSync(dir, { recursive: true });\n",
+    "after": "        fs.mkdirSync(recipeOutputPath(dir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        if (!fs.statSync(dir).isDirectory()) throw new Error('not a directory');\n",
+    "after": "        if (!fs.statSync(resolveRecipePath(dir)).isDirectory()) throw new Error('not a directory');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        fs.accessSync(dir, fs.constants.W_OK);\n",
+    "after": "        fs.accessSync(resolveRecipePath(dir), fs.constants.W_OK);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        if (fs.existsSync(target)) throw new Error('target already exists');\n",
+    "after": "        if (fs.existsSync(resolveRecipePath(target))) throw new Error('target already exists');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        fs.writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 });\n",
+    "after": "        fs.writeFileSync(recipeOutputPath(lock), String(process.pid), { flag: 'wx', mode: 0o600 });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        if (fs.existsSync(target)) {\n",
+    "after": "        if (fs.existsSync(resolveRecipePath(target))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "            fs.rmSync(lock, { force: true });\n",
+    "after": "            fs.rmSync(recipeOutputPath(lock), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        fs.writeFileSync(reservation.staging, bytes, { flag: 'wx', mode: 0o600 });\n",
+    "after": "        fs.writeFileSync(recipeOutputPath(reservation.staging), bytes, { flag: 'wx', mode: 0o600 });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "        fs.linkSync(reservation.staging, reservation.target);\n",
+    "after": "        fs.linkSync(recipeCopySource(reservation.staging), recipeOutputPath(reservation.target));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "    fs.rmSync(reservation.staging, { force: true });\n",
+    "after": "    fs.rmSync(recipeOutputPath(reservation.staging), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "    fs.rmSync(reservation.lock, { force: true });\n",
+    "after": "    fs.rmSync(recipeOutputPath(reservation.lock), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "if (!raw) return path.join(os.homedir(), 'Music', 'minimax');",
+    "after": "if (!raw) return resolveRecipePath('minimax-audio');",
+    "count": 1
+  },
+  {
+    "file": "clis/notebooklm/add-source.js",
+    "before": "    const abs = path.resolve(filePath);\n",
+    "after": "    const abs = resolveRecipePath(filePath);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/notebooklm/add-source.js",
+    "before": "        stat = fs.statSync(abs);\n",
+    "after": "        stat = fs.statSync(resolveRecipePath(abs));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/notebooklm/add-source.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/paperreview/utils.js",
+    "before": "    const resolvedPath = path.resolve(rawPath);\n",
+    "after": "    const resolvedPath = resolveRecipePath(rawPath);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/paperreview/utils.js",
+    "before": "        fileStat = await fs.stat(resolvedPath);\n",
+    "after": "        fileStat = await fs.stat(resolveRecipePath(resolvedPath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/paperreview/utils.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/pinterest/download.js",
+    "before": "    fs.mkdirSync(output, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(output), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pinterest/download.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "  for (let cursor = path.dirname(finalPath); !fs.existsSync(cursor); cursor = path.dirname(cursor)) {\n",
+    "after": "  for (let cursor = path.dirname(finalPath); !fs.existsSync(resolveRecipePath(cursor)); cursor = path.dirname(cursor)) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "    fs.mkdirSync(parent, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(parent), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "    staging = fs.mkdtempSync(path.join(parent, `.opencli-${plan.illustId}-`));\n",
+    "after": "    staging = fs.mkdtempSync(recipeOutputPath(path.join(parent, `.opencli-${plan.illustId}-`)));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "      const stat = fs.lstatSync(destination);\n",
+    "after": "      const stat = fs.lstatSync(resolveRecipePath(destination));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "    fs.renameSync(staging, plan.finalPath);\n",
+    "after": "    fs.renameSync(recipeOutputPath(staging), recipeOutputPath(plan.finalPath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "      try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}\n",
+    "after": "      try { fs.rmSync(recipeOutputPath(staging), { recursive: true, force: true }); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "      try { fs.rmdirSync(directory); } catch {}\n",
+    "after": "      try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "  try { fs.rmSync(plan.finalPath, { recursive: true, force: true }); } catch {}\n",
+    "after": "  try { fs.rmSync(recipeOutputPath(plan.finalPath), { recursive: true, force: true }); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "    try { fs.rmdirSync(directory); } catch {}\n",
+    "after": "    try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/download.js",
+    "before": "        fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/download.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "  const resolved = path.resolve(raw);\n",
+    "after": "  const resolved = resolveRecipePath(raw);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "      ancestorStat = fs.lstatSync(ancestor);\n",
+    "after": "      ancestorStat = fs.lstatSync(resolveRecipePath(ancestor));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    canonicalAncestor = fs.realpathSync.native(ancestor);\n",
+    "after": "    canonicalAncestor = fs.realpathSync.native(resolveRecipePath(ancestor));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "  if (!fs.statSync(canonicalAncestor).isDirectory()) {\n",
+    "after": "  if (!fs.statSync(resolveRecipePath(canonicalAncestor)).isDirectory()) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    fs.lstatSync(target);\n",
+    "after": "    fs.lstatSync(resolveRecipePath(target));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "  for (let cursor = outputDir; !fs.existsSync(cursor); cursor = path.dirname(cursor)) {\n",
+    "after": "  for (let cursor = outputDir; !fs.existsSync(resolveRecipePath(cursor)); cursor = path.dirname(cursor)) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    fs.mkdirSync(plan.outputDir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(plan.outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    descriptor = fs.openSync(plan.destPath, 'wx');\n",
+    "after": "    descriptor = openRecipeOutputFileSync(plan.destPath, 'wx');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    fs.writeFileSync(descriptor, plan.content, 'utf8');\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(descriptor), plan.content, 'utf8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    fs.closeSync(descriptor);\n",
+    "after": "    closeRecipeFileSync(descriptor);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "      try { fs.closeSync(descriptor); } catch {}\n",
+    "after": "      try { closeRecipeFileSync(descriptor); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "      try { fs.rmSync(plan.destPath, { force: true }); } catch {}\n",
+    "after": "      try { fs.rmSync(recipeOutputPath(plan.destPath), { force: true }); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "      try { fs.rmdirSync(directory); } catch {}\n",
+    "after": "      try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "  try { fs.rmSync(plan.destPath, { force: true }); } catch {}\n",
+    "after": "  try { fs.rmSync(recipeOutputPath(plan.destPath), { force: true }); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "    try { fs.rmdirSync(directory); } catch {}\n",
+    "after": "    try { fs.rmdirSync(recipeOutputPath(directory)); } catch {}\n",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { closeRecipeFileSync, openRecipeOutputFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/slock/attachment-download.js",
+    "before": "    const out = path.resolve(String(kwargs.out ?? `./${id}.bin`));\n",
+    "after": "    const out = resolveRecipePath(String(kwargs.out ?? `./${id}.bin`));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/slock/attachment-download.js",
+    "before": "    fs.writeFileSync(out, Buffer.from(ab));\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(out), Buffer.from(ab));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/slock/attachment-download.js",
+    "before": "import fs from 'node:fs';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/slock/attachment-upload.js",
+    "before": "    const abs = path.resolve(filePath);\n",
+    "after": "    const abs = resolveRecipePath(filePath);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/slock/attachment-upload.js",
+    "before": "    try { stat = fs.statSync(abs); }\n",
+    "after": "    try { stat = fs.statSync(resolveRecipePath(abs)); }\n",
+    "count": 1
+  },
+  {
+    "file": "clis/slock/attachment-upload.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "    return path.resolve(raw);\n",
+    "after": "    return resolveRecipePath(raw);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "    fs.mkdirSync(dir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(dir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "    fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(filePath), Buffer.from(base64, 'base64'));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "    if (!fs.statSync(filePath).size) {\n",
+    "after": "    if (!fs.statSync(resolveRecipePath(filePath)).size) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "        fs.writeFileSync(metaPath, JSON.stringify(clip, null, 2), 'utf8');\n",
+    "after": "        fs.writeFileSync(recipeOutputPath(metaPath), JSON.stringify(clip, null, 2), 'utf8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "if (!raw) return path.join(process.env.HOME || '~', 'Music', 'suno');",
+    "after": "if (!raw) return resolveRecipePath('suno-audio');",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "    return path.resolve(value);\n",
+    "after": "    return resolveRecipePath(value);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "    fs.mkdirSync(path.dirname(filePath), { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(path.dirname(filePath)), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "        fs.rmSync(filePath, { force: true });\n",
+    "after": "        fs.rmSync(recipeOutputPath(filePath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "    if (!filePath || !fs.existsSync(filePath))\n",
+    "after": "    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "    fs.appendFileSync(filePath, text, 'utf8');\n",
+    "after": "    fs.appendFileSync(recipeOutputPath(filePath), text, 'utf8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "    if (!filePath || !fs.existsSync(filePath))\n",
+    "after": "    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "    const outputFile = parsed?.outputFile ? path.resolve(String(parsed.outputFile)) : null;\n",
+    "after": "    const outputFile = parsed?.outputFile ? resolveRecipePath(String(parsed.outputFile)) : null;\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "        fs.writeFileSync(temporaryPath, JSON.stringify(payload, null, 2) + '\\n');\n",
+    "after": "        fs.writeFileSync(recipeOutputPath(temporaryPath), JSON.stringify(payload, null, 2) + '\\n');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "        fs.renameSync(temporaryPath, filePath);\n",
+    "after": "        fs.renameSync(recipeOutputPath(temporaryPath), recipeOutputPath(filePath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "            fs.rmSync(temporaryPath, { force: true });\n",
+    "after": "            fs.rmSync(recipeOutputPath(temporaryPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(outputFile)) {\n",
+    "after": "        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(resolveRecipePath(outputFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "        if (useOutputFile && !resumed && fs.existsSync(outputFile)) {\n",
+    "after": "        if (useOutputFile && !resumed && fs.existsSync(resolveRecipePath(outputFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "    if (!filePath || !fs.existsSync(filePath))\n",
+    "after": "    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "    const outputFile = parsed?.outputFile ? path.resolve(String(parsed.outputFile)) : null;\n",
+    "after": "    const outputFile = parsed?.outputFile ? resolveRecipePath(String(parsed.outputFile)) : null;\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "        fs.writeFileSync(temporaryPath, JSON.stringify(payload, null, 2) + '\\n');\n",
+    "after": "        fs.writeFileSync(recipeOutputPath(temporaryPath), JSON.stringify(payload, null, 2) + '\\n');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "        fs.renameSync(temporaryPath, filePath);\n",
+    "after": "        fs.renameSync(recipeOutputPath(temporaryPath), recipeOutputPath(filePath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "            fs.rmSync(temporaryPath, { force: true });\n",
+    "after": "            fs.rmSync(recipeOutputPath(temporaryPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(outputFile)) {\n",
+    "after": "        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(resolveRecipePath(outputFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "        if (useOutputFile && !resumed && fs.existsSync(outputFile)) {\n",
+    "after": "        if (useOutputFile && !resumed && fs.existsSync(resolveRecipePath(outputFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/post.js",
+    "before": "        const absPath = path.resolve(p);\n",
+    "after": "        const absPath = resolveRecipePath(p);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/post.js",
+    "before": "        const stat = fs.statSync(absPath, { throwIfNoEntry: false });\n",
+    "after": "        const stat = fs.statSync(resolveRecipePath(absPath), { throwIfNoEntry: false });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/post.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/quote.js",
+    "before": "                fs.rmSync(cleanupDir, { recursive: true, force: true });\n",
+    "after": "                fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/quote.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/reply.js",
+    "before": "                fs.rmSync(cleanupDir, { recursive: true, force: true });\n",
+    "after": "                fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/reply.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "    const absPath = path.resolve(imagePath);\n",
+    "after": "    const absPath = resolveRecipePath(imagePath);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "    if (!fs.existsSync(absPath)) {\n",
+    "after": "    if (!fs.existsSync(resolveRecipePath(absPath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "    const stat = fs.statSync(absPath);\n",
+    "after": "    const stat = fs.statSync(resolveRecipePath(absPath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "    const cleanupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-twitter-'));\n",
+    "after": "    const cleanupDir = fs.mkdtempSync(recipeOutputPath(path.join(recipeTemporaryDirectory(), 'opencli-twitter-')));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "        fs.rmSync(cleanupDir, { recursive: true, force: true });\n",
+    "after": "        fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "    fs.writeFileSync(absPath, buffer);\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(absPath), buffer);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/uiverse/_shared.js",
+    "before": "  return path.join(os.tmpdir(), `opencli-uiverse-${safeUsername}-${safeSlug}-${suffix}.${extension}`);\n",
+    "after": "  return resolveRecipePath(`uiverse-${safeUsername}-${safeSlug}-${suffix}.${extension}`);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/uiverse/_shared.js",
+    "before": "  const resolved = path.resolve(outputPath);\n",
+    "after": "  const resolved = resolveRecipePath(outputPath);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/uiverse/_shared.js",
+    "before": "  await fs.mkdir(path.dirname(resolved), { recursive: true });\n",
+    "after": "  await fs.mkdir(recipeOutputPath(path.dirname(resolved)), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/uiverse/_shared.js",
+    "before": "  await fs.writeFile(resolved, Buffer.from(base64, 'base64'));\n",
+    "after": "  await fs.writeFile(recipeOutputPath(resolved), Buffer.from(base64, 'base64'));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/uiverse/_shared.js",
+    "before": "import * as fs from 'node:fs/promises';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs/promises';",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "  const resolved = path.resolve(String(filePath));\n",
+    "after": "  const resolved = resolveRecipePath(String(filePath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "    stat = fs.statSync(resolved);\n",
+    "after": "    stat = fs.statSync(resolveRecipePath(resolved));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/weibo/publish.js",
+    "before": "        const absPath = path.resolve(p);\n",
+    "after": "        const absPath = resolveRecipePath(p);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/weibo/publish.js",
+    "before": "        const stat = fs.statSync(absPath, { throwIfNoEntry: false });\n",
+    "after": "        const stat = fs.statSync(resolveRecipePath(absPath), { throwIfNoEntry: false });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/weibo/publish.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/weixin/create-draft.js",
+    "before": "    const absPath = path.resolve(value);\n",
+    "after": "    const absPath = resolveRecipePath(value);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/weixin/create-draft.js",
+    "before": "        stat = fs.statSync(absPath);\n",
+    "after": "        stat = fs.statSync(resolveRecipePath(absPath));\n",
+    "count": 1
+  },
+  {
+    "file": "clis/weixin/create-draft.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/xianyu/publish.js",
+    "before": "        const absPath = path.resolve(item);\n",
+    "after": "        const absPath = resolveRecipePath(item);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xianyu/publish.js",
+    "before": "        const stat = fs.statSync(absPath, { throwIfNoEntry: false });\n",
+    "after": "        const stat = fs.statSync(resolveRecipePath(absPath), { throwIfNoEntry: false });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xianyu/publish.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        const absPath = path.resolve(filePath);\n",
+    "after": "        const absPath = resolveRecipePath(filePath);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        if (!fs.existsSync(absPath))\n",
+    "after": "        if (!fs.existsSync(resolveRecipePath(absPath)))\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/download.js",
+    "before": "        fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/download.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/transcript.js",
+    "before": "        fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/transcript.js",
+    "before": "            fs.writeFileSync(jsonPath, transcriptBody, 'utf-8');\n",
+    "after": "            fs.writeFileSync(recipeOutputPath(jsonPath), transcriptBody, 'utf-8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/transcript.js",
+    "before": "            fs.writeFileSync(textPath, text, 'utf-8');\n",
+    "after": "            fs.writeFileSync(recipeOutputPath(textPath), text, 'utf-8');\n",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaoyuzhou/transcript.js",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/upload.js",
+    "before": "        const filePath = path.resolve(kwargs.file);\n",
+    "after": "        const filePath = resolveRecipePath(kwargs.file);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/upload.js",
+    "before": "        if (!fs.existsSync(filePath))\n",
+    "after": "        if (!fs.existsSync(resolveRecipePath(filePath)))\n",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/upload.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "    const resolved = path.resolve(input);\n",
+    "after": "    const resolved = resolveRecipePath(input);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "    if (!fs.existsSync(resolved)) {\n",
+    "after": "    if (!fs.existsSync(resolveRecipePath(resolved))) {\n",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "    fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "    fs.writeFileSync(destPath, buffer);\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(destPath), buffer);\n",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "              await fs.promises.rm(guessedPath, { force: true });\n",
+    "after": "              await fs.promises.rm(recipeOutputPath(guessedPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "              await fs.promises.rm(actualPath, { force: true });\n",
+    "after": "              await fs.promises.rm(recipeOutputPath(actualPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "              await fs.promises.rename(guessedPath, actualPath);\n",
+    "after": "              await fs.promises.rename(recipeOutputPath(guessedPath), recipeOutputPath(actualPath));\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "          await fs.promises.rm(guessedPath, { force: true }).catch(() => undefined);\n",
+    "after": "          await fs.promises.rm(recipeOutputPath(guessedPath), { force: true }).catch(() => undefined);\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "    fs.mkdirSync(articleDir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(articleDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "    fs.mkdirSync(imagesDir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(imagesDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "  fs.mkdirSync(articleDir, { recursive: true });\n",
+    "after": "  fs.mkdirSync(recipeOutputPath(articleDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "  fs.writeFileSync(filePath, fullContent, 'utf-8');\n",
+    "after": "  fs.writeFileSync(recipeOutputPath(filePath), fullContent, 'utf-8');\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/article-download.ts",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      await fs.promises.rm(tempPath, { force: true });\n",
+    "after": "      await fs.promises.rm(recipeOutputPath(tempPath), { force: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      await fs.promises.mkdir(path.dirname(destPath), { recursive: true });\n",
+    "after": "      await fs.promises.mkdir(recipeOutputPath(path.dirname(destPath)), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "        fs.createWriteStream(tempPath),\n",
+    "after": "        fs.createWriteStream(recipeOutputPath(tempPath)),\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      await fs.promises.rename(tempPath, destPath);\n",
+    "after": "      await fs.promises.rename(recipeOutputPath(tempPath), recipeOutputPath(destPath));\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "  fs.mkdirSync(path.dirname(filePath), { recursive: true });\n",
+    "after": "  fs.mkdirSync(recipeOutputPath(path.dirname(filePath)), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "    fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);\n",
+    "after": "    fd = openRecipeOutputFileSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "    fs.fchmodSync(fd, 0o600);\n",
+    "after": "    fs.fchmodSync(recipeOutputPath(fd), 0o600);\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "    fs.writeFileSync(fd, lines.join('\\n'), 'utf8');\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(fd), lines.join('\\n'), 'utf8');\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      fs.closeSync(fd);\n",
+    "after": "      closeRecipeFileSync(fd);\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "  const { cookiesFile, format = 'best', extraArgs = [], onProgress } = options;\n",
+    "after": "  destPath = recipeOutputPath(destPath); const { cookiesFile: rawCookiesFile, format = 'best', extraArgs = [], onProgress } = options; const cookiesFile = rawCookiesFile ? recipeCopySource(rawCookiesFile) : undefined;\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "    fs.mkdirSync(dir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(dir), { recursive: true });\n",
+    "count": 2
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      if (fs.existsSync(cookiesFile)) {\n",
+    "after": "      if (fs.existsSync(resolveRecipePath(cookiesFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      if (code === 0 && fs.existsSync(destPath)) {\n",
+    "after": "      if (code === 0 && fs.existsSync(resolveRecipePath(destPath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "        const stats = fs.statSync(destPath);\n",
+    "after": "        const stats = fs.statSync(resolveRecipePath(destPath));\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "        const patterns = fs.readdirSync(dir).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));\n",
+    "after": "        const patterns = fs.readdirSync(resolveRecipePath(dir)).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "          const stats = fs.statSync(actualFile);\n",
+    "after": "          const stats = fs.statSync(resolveRecipePath(actualFile));\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "    fs.writeFileSync(destPath, output, 'utf-8');\n",
+    "after": "    fs.writeFileSync(recipeOutputPath(destPath), output, 'utf-8');\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "  return path.join(os.tmpdir(), 'opencli-download');\n",
+    "after": "  return path.join(recipeTemporaryDirectory(), 'opencli-download');\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "import { execFileSync, spawn } from 'node:child_process';",
+    "after": "import { closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { execFileSync, spawn } from 'node:child_process';",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "  destPath = recipeOutputPath(destPath); const { cookiesFile: rawCookiesFile, format = 'best', extraArgs = [], onProgress } = options; const cookiesFile = rawCookiesFile ? recipeCopySource(rawCookiesFile) : undefined;",
+    "after": "  destPath = recipeOutputPath(destPath);\n  const { cookiesFile: rawCookiesFile, format = 'best', extraArgs = [], onProgress } = options;\n  const cookiesFile = rawCookiesFile ? recipeCopySource(rawCookiesFile) : undefined;",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "      url,\n      '-o', destPath,",
+    "after": "      '--ignore-config',\n      url,\n      '-o', destPath,",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "    if (cookiesFile) {\n      if (fs.existsSync(resolveRecipePath(cookiesFile))) {\n        args.push('--cookies', cookiesFile);\n      } else {\n        log.warn(`[download] Cookies file not found: ${cookiesFile}, falling back to browser cookies`);\n        args.push('--cookies-from-browser', 'chrome');\n      }\n    } else {\n      // Try to use browser cookies\n      args.push('--cookies-from-browser', 'chrome');\n    }",
+    "after": "    // Only the invoking browser's scoped cookie file; never the system Chrome profile.\n    if (cookiesFile) args.push('--cookies', cookiesFile);",
+    "count": 1
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "  fs.mkdirSync(outputDir, { recursive: true });\n",
+    "after": "  fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "    fs.mkdirSync(tempDir, { recursive: true });\n",
+    "after": "    fs.mkdirSync(recipeOutputPath(tempDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "    if (cookiesFile && fs.existsSync(cookiesFile)) {\n",
+    "after": "    if (cookiesFile && fs.existsSync(resolveRecipePath(cookiesFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "      fs.unlinkSync(cookiesFile);\n",
+    "after": "      fs.unlinkSync(recipeOutputPath(cookiesFile));\n",
+    "count": 1
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "  fs.mkdirSync(dir, { recursive: true });\n",
+    "after": "  fs.mkdirSync(recipeOutputPath(dir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "          fs.mkdirSync(tempDir, { recursive: true });\n",
+    "after": "          fs.mkdirSync(recipeOutputPath(tempDir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "    if (skipExisting && fs.existsSync(destPath)) {\n",
+    "after": "    if (skipExisting && fs.existsSync(resolveRecipePath(destPath))) {\n",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "          size: fs.statSync(destPath).size,\n",
+    "after": "          size: fs.statSync(resolveRecipePath(destPath)).size,\n",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "  if (cookiesFile && fs.existsSync(cookiesFile)) {\n",
+    "after": "  if (cookiesFile && fs.existsSync(resolveRecipePath(cookiesFile))) {\n",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "      fs.unlinkSync(cookiesFile);\n",
+    "after": "      fs.unlinkSync(recipeOutputPath(cookiesFile));\n",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
+  },
+  {
+    "file": "src/utils.ts",
+    "before": "  await fs.promises.mkdir(dir, { recursive: true });\n",
+    "after": "  await fs.promises.mkdir(recipeOutputPath(dir), { recursive: true });\n",
+    "count": 1
+  },
+  {
+    "file": "src/utils.ts",
+    "before": "  await fs.promises.writeFile(filePath, Buffer.from(base64, 'base64'));\n",
+    "after": "  await fs.promises.writeFile(recipeOutputPath(filePath), Buffer.from(base64, 'base64'));\n",
+    "count": 1
+  },
+  {
+    "file": "src/utils.ts",
+    "before": "import * as fs from 'node:fs';",
+    "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
+    "count": 1
   }
 ]

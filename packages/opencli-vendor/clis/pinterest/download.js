@@ -1,4 +1,5 @@
 // Pinterest download — save a pin's original image to disk (PinResource + httpDownload).
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -40,7 +41,7 @@ cli({
       throw new CommandExecutionError(`Pin ${id} has no downloadable image (it may be a video or story pin)`);
     }
 
-    fs.mkdirSync(output, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(output), { recursive: true });
     const ext = path.extname(new URL(imageUrl).pathname) || '.jpg';
     const destPath = path.join(output, `${id}${ext}`);
 

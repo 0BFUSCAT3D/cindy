@@ -5,6 +5,7 @@
  * matches creator center's live upload flow. This command now drives the
  * official upload page directly so it stays aligned with the site.
  */
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -304,8 +305,8 @@ cli({
     ],
     columns: ['status', 'draft_id'],
     func: async (page, kwargs) => {
-        const videoPath = path.resolve(kwargs.video);
-        if (!fs.existsSync(videoPath)) {
+        const videoPath = resolveRecipePath(kwargs.video);
+        if (!fs.existsSync(resolveRecipePath(videoPath))) {
             throw new ArgumentError(`视频文件不存在: ${videoPath}`);
         }
         const ext = path.extname(videoPath).toLowerCase();
@@ -322,8 +323,8 @@ cli({
         }
         const coverPath = kwargs.cover;
         if (coverPath) {
-            if (!fs.existsSync(path.resolve(coverPath))) {
-                throw new ArgumentError(`封面文件不存在: ${path.resolve(coverPath)}`);
+            if (!fs.existsSync(resolveRecipePath(resolveRecipePath(coverPath)))) {
+                throw new ArgumentError(`封面文件不存在: ${resolveRecipePath(coverPath)}`);
             }
         }
         if (!page.setFileInput) {
@@ -338,7 +339,7 @@ cli({
         await dismissKnownModals(page);
         if (coverPath) {
             const coverSelector = await prepareCustomCoverInput(page);
-            await page.setFileInput([path.resolve(coverPath)], coverSelector);
+            await page.setFileInput([resolveRecipePath(coverPath)], coverSelector);
             await waitForCoverReady(page);
         }
         await fillDraftComposer(page, { title, caption, visibilityLabel });

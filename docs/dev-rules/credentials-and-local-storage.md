@@ -246,6 +246,13 @@ refresh 与 relay 自救节流。在途 refresh 尚未返回时收到的恢复�
   或用户动作中发生，便于控制路径、失败语义和清理。
 - 临时文件使用唯一目录或文件名，完成、失败和取消路径都应尽力清理；需要跨重启保留的
   内容不属于临时文件，应进入明确的 userData 存储与生命周期设计。
+- 浏览器适配器的读取和输出都交给实际调用任务的宿主文件代理；输出只能在任务的本地
+  工作目录内，校验尚未存在文件的最近已存在父目录及软链接，不得使用 Desktop 的 cwd
+  作为相对路径基准。SSH 任务没有本地输出根，不能落到控制端。诊断截图、跟踪、Cookie
+  交接与媒体转换复用每次调用的唯一临时目录，调用结束时清理，不作为持久成果。
+  实现见 `packages/opencli-vendor/cindy/host.ts` 与
+  `apps/desktop/src/main/mcp-integrations/browser-backend/rsb-webview-upload-policy.ts`；
+  回归见对应上传策略测试和 `packages/lizi-mcps/src/browser/opencli-recipes.test.ts`。
 
 ## Review 清单
 

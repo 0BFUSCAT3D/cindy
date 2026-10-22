@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { formatBytes } from '@jackwener/opencli/download/progress';
@@ -44,7 +45,7 @@ cli({
             throw new EmptyResultError('douban download', `Photo ID ${requestedPhotoId} was not found under subject ${subjectId}. Try "douban photos ${subjectId} -f json" first.`);
         }
         const outputDir = path.join(output, subjectId);
-        fs.mkdirSync(outputDir, { recursive: true });
+        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
         const results = [];
         for (const photo of photos) {
             const filename = buildDoubanPhotoFilename(subjectId, photo);

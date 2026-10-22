@@ -11,6 +11,7 @@
  *   7. Content safety check
  *   8. create_v2 publish
  */
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -110,15 +111,15 @@ cli({
     columns: ['status', 'aweme_id', 'url', 'publish_time'],
     func: async (page, kwargs) => {
         // ── Fail-fast validation ────────────────────────────────────────────
-        const videoPath = path.resolve(kwargs.video);
-        if (!fs.existsSync(videoPath)) {
+        const videoPath = resolveRecipePath(kwargs.video);
+        if (!fs.existsSync(resolveRecipePath(videoPath))) {
             throw new ArgumentError(`视频文件不存在: ${videoPath}`);
         }
         const ext = path.extname(videoPath).toLowerCase();
         if (!['.mp4', '.mov', '.avi', '.webm'].includes(ext)) {
             throw new ArgumentError(`不支持的视频格式: ${ext}（支持 mp4/mov/avi/webm）`);
         }
-        const fileSize = fs.statSync(videoPath).size;
+        const fileSize = fs.statSync(resolveRecipePath(videoPath)).size;
         const title = kwargs.title;
         if (title.length > 30) {
             throw new ArgumentError('标题不能超过 30 字');
@@ -132,8 +133,8 @@ cli({
         const visibilityType = VISIBILITY_MAP[kwargs.visibility] ?? 0;
         const coverPath = kwargs.cover;
         if (coverPath) {
-            if (!fs.existsSync(path.resolve(coverPath))) {
-                throw new ArgumentError(`封面文件不存在: ${path.resolve(coverPath)}`);
+            if (!fs.existsSync(resolveRecipePath(resolveRecipePath(coverPath)))) {
+                throw new ArgumentError(`封面文件不存在: ${resolveRecipePath(coverPath)}`);
             }
         }
         // ── Phase 1: upload credentials ────────────────────────────────────
@@ -165,7 +166,7 @@ cli({
         }
         // ── Phase 4: Cover upload (optional) ────────────────────────────────
         if (kwargs.cover) {
-            const resolvedCoverPath = path.resolve(kwargs.cover);
+            const resolvedCoverPath = resolveRecipePath(kwargs.cover);
             // 4A: Apply ImageX upload
             const applyUrl = `${IMAGEX_BASE}/?Action=ApplyImageUpload&ServiceId=${IMAGEX_SERVICE_ID}&Version=2018-08-01&UploadNum=1`;
             const applyJs = `fetch(${JSON.stringify(applyUrl)}, { credentials: 'include' }).then(r => r.json())`;

@@ -1,3 +1,4 @@
+import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -39,15 +40,15 @@ const CONTENT_TYPE_TO_EXTENSION = {
  * @returns {string} Absolute resolved path.
  */
 export function resolveImagePath(imagePath) {
-    const absPath = path.resolve(imagePath);
-    if (!fs.existsSync(absPath)) {
+    const absPath = resolveRecipePath(imagePath);
+    if (!fs.existsSync(resolveRecipePath(absPath))) {
         throw new ArgumentError(`Image file not found: ${absPath}`);
     }
     const ext = path.extname(absPath).toLowerCase();
     if (!SUPPORTED_IMAGE_EXTENSIONS.has(ext)) {
         throw new ArgumentError(`Unsupported image format "${ext}". Supported: jpg, jpeg, png, gif, webp`);
     }
-    const stat = fs.statSync(absPath);
+    const stat = fs.statSync(resolveRecipePath(absPath));
     if (stat.size > MAX_IMAGE_SIZE_BYTES) {
         throw new ArgumentError(`Image too large: ${(stat.size / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);
     }
@@ -102,14 +103,14 @@ export async function downloadRemoteImage(imageUrl) {
         throw new ArgumentError(`Image too large: ${(contentLength / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);
     }
     const ext = resolveImageExtension(imageUrl, response.headers.get('content-type'));
-    const cleanupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-twitter-'));
+    const cleanupDir = fs.mkdtempSync(recipeOutputPath(path.join(recipeTemporaryDirectory(), 'opencli-twitter-')));
     const absPath = path.join(cleanupDir, `image${ext}`);
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.byteLength > MAX_IMAGE_SIZE_BYTES) {
-        fs.rmSync(cleanupDir, { recursive: true, force: true });
+        fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });
         throw new ArgumentError(`Image too large: ${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);
     }
-    fs.writeFileSync(absPath, buffer);
+    fs.writeFileSync(recipeOutputPath(absPath), buffer);
     return { absPath, cleanupDir };
 }
 

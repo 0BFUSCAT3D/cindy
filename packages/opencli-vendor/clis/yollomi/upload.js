@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * Yollomi image upload — POST /api/upload (FormData)
@@ -29,8 +30,8 @@ cli({
     ],
     columns: ['status', 'file', 'size', 'url'],
     func: async (page, kwargs) => {
-        const filePath = path.resolve(kwargs.file);
-        if (!fs.existsSync(filePath))
+        const filePath = resolveRecipePath(kwargs.file);
+        if (!fs.existsSync(resolveRecipePath(filePath)))
             throw new CliError('FILE_NOT_FOUND', `File not found: ${filePath}`, 'Provide a valid file path');
         const ext = path.extname(filePath).toLowerCase();
         const mime = MIME_MAP[ext];

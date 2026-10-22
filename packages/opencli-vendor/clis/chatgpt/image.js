@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -22,10 +23,10 @@ function displayPath(filePath) {
 
 export function resolveOutputDir(value) {
     const raw = String(value || '').trim();
-    if (!raw) return path.join(os.homedir(), 'Pictures', 'chatgpt');
+    if (!raw) return resolveRecipePath('chatgpt-images');
     if (raw === '~') return os.homedir();
     if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-    return path.resolve(raw);
+    return resolveRecipePath(raw);
 }
 
 export function nextAvailablePath(dir, baseName, ext, existsSync = fs.existsSync) {

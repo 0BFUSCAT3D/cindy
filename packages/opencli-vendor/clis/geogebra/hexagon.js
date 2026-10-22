@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
 import os from 'node:os';
@@ -45,7 +46,7 @@ cli({
 
     const objectCount = await ggbWaitForObjectCount(page, 7);
     const objects = await ggbListObjects(page);
-    const screenshotPath = path.join(os.tmpdir(), 'opencli-geogebra-hexagon.png');
+    const screenshotPath = resolveRecipePath('geogebra-hexagon.png');
     try {
       await page.screenshot({ path: screenshotPath });
     } catch (err) {

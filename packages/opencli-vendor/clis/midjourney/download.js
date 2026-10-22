@@ -31,7 +31,7 @@ cli({
     { name: 'job', positional: true, required: true, help: 'Job UUID or Midjourney /jobs/<uuid> URL' },
     { name: 'index', default: 'all', help: 'Candidate 1..4 or all' },
     { name: 'kind', default: 'auto', help: 'auto, image, video-raw, video-social, or gif' },
-    { name: 'output', default: '~/Pictures/Midjourney', help: 'Output directory' },
+    { name: 'output', default: './midjourney-downloads', help: 'Output directory' },
     { name: 'force', type: 'boolean', default: false, help: 'Overwrite existing non-empty files' },
   ],
   columns: ['job_id', 'status', 'kind', 'index', 'file', 'bytes', 'mime', 'url'],

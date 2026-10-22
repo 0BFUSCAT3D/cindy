@@ -1,3 +1,4 @@
+import { recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -15,11 +16,11 @@ function requirePage(page) {
     return page;
 }
 function validateVideoPath(input) {
-    const resolved = path.resolve(String(input || '').trim());
+    const resolved = resolveRecipePath(String(input || '').trim());
     if (!resolved) {
         throw new ArgumentError('Video path cannot be empty');
     }
-    if (!fs.existsSync(resolved)) {
+    if (!fs.existsSync(resolveRecipePath(resolved))) {
         throw new ArgumentError(`Video file not found: ${resolved}`);
     }
     const ext = path.extname(resolved).toLowerCase();
@@ -49,7 +50,7 @@ function isRecoverableReelSessionError(error) {
 }
 function buildSafeTempVideoPath(filePath) {
     const ext = path.extname(filePath).toLowerCase() || '.mp4';
-    return path.join(os.tmpdir(), `opencli-instagram-video-real${ext}`);
+    return path.join(recipeTemporaryDirectory(), `opencli-instagram-video-real${ext}`);
 }
 function prepareVideoUpload(filePath) {
     const baseName = path.basename(filePath);
@@ -57,7 +58,7 @@ function prepareVideoUpload(filePath) {
         return { originalPath: filePath, uploadPath: filePath };
     }
     const uploadPath = buildSafeTempVideoPath(filePath);
-    fs.copyFileSync(filePath, uploadPath);
+    fs.copyFileSync(recipeCopySource(filePath), recipeOutputPath(uploadPath));
     return {
         originalPath: filePath,
         uploadPath,
@@ -791,7 +792,7 @@ cli({
         }
         finally {
             if (preparedUpload.cleanupPath) {
-                fs.rmSync(preparedUpload.cleanupPath, { force: true });
+                fs.rmSync(recipeOutputPath(preparedUpload.cleanupPath), { force: true });
             }
         }
     },

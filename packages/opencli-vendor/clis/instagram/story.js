@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ArgumentError, CommandExecutionError } from '@jackwener/opencli/errors';
@@ -26,8 +27,8 @@ function normalizeStoryMediaItem(kwargs) {
     if (parts.length > 1) {
         throw new ArgumentError('Instagram story currently supports a single media item.', 'Provide one image or one video path with --media');
     }
-    const resolved = path.resolve(parts[0]);
-    if (!fs.existsSync(resolved)) {
+    const resolved = resolveRecipePath(parts[0]);
+    if (!fs.existsSync(resolveRecipePath(resolved))) {
         throw new ArgumentError(`Story media file not found: ${resolved}`);
     }
     const ext = path.extname(resolved).toLowerCase();

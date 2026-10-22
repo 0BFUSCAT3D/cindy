@@ -1,3 +1,4 @@
+import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import {
   ArgumentError,
@@ -261,10 +262,10 @@ export function originalImageUrl(jobId, index) {
 }
 
 export function resolveOutputDir(value) {
-  const raw = String(value || '~/Pictures/Midjourney').trim();
+  const raw = String(value || './midjourney-downloads').trim();
   if (!raw) throw new ArgumentError('--output cannot be empty');
   const expanded = raw === '~' ? os.homedir() : raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
-  return path.resolve(expanded);
+  return resolveRecipePath(expanded);
 }
 
 function errorMessage(error) {
@@ -649,9 +650,9 @@ function sniffMediaMime(buffer) {
 async function existingMedia(filePath, force, expectedMime) {
   if (force) return null;
   try {
-    const stat = await fs.stat(filePath);
+    const stat = await fs.stat(resolveRecipePath(filePath));
     if (!stat.isFile() || stat.size <= 0) return null;
-    const handle = await fs.open(filePath, 'r');
+    const handle = await fs.open(recipeCopySource(filePath), 'r');
     try {
       const header = Buffer.alloc(16);
       const { bytesRead } = await handle.read(header, 0, header.length, 0);
@@ -725,17 +726,17 @@ async function downloadOne(page, jobId, index, outputDir, force) {
 
   const tempPath = `${filePath}.part-${process.pid}-${Date.now()}`;
   try {
-    await fs.writeFile(tempPath, media.buffer);
-    await fs.rename(tempPath, filePath);
+    await fs.writeFile(recipeOutputPath(tempPath), media.buffer);
+    await fs.rename(recipeOutputPath(tempPath), recipeOutputPath(filePath));
   } catch (error) {
-    await fs.unlink(tempPath).catch(() => {});
+    await fs.unlink(recipeOutputPath(tempPath)).catch(() => {});
     throw new CommandExecutionError(`Could not write Midjourney image ${filePath}: ${errorMessage(error)}`);
   }
   return { index, filePath, bytes: media.buffer.length, url: resolved.url, mime: actualMime, cached: false };
 }
 
 export async function downloadOriginals(page, jobId, indices, outputDir, force = false) {
-  await fs.mkdir(outputDir, { recursive: true });
+  await fs.mkdir(recipeOutputPath(outputDir), { recursive: true });
   const files = [];
   for (const index of indices) files.push(await downloadOne(page, jobId, index, outputDir, force));
   return files;
@@ -748,16 +749,16 @@ export function rawVideoUrl(jobId, index) {
 async function writeMediaBuffer(filePath, buffer) {
   const tempPath = `${filePath}.part-${process.pid}-${Date.now()}`;
   try {
-    await fs.writeFile(tempPath, buffer);
-    await fs.rename(tempPath, filePath);
+    await fs.writeFile(recipeOutputPath(tempPath), buffer);
+    await fs.rename(recipeOutputPath(tempPath), recipeOutputPath(filePath));
   } catch (error) {
-    await fs.unlink(tempPath).catch(() => {});
+    await fs.unlink(recipeOutputPath(tempPath)).catch(() => {});
     throw new CommandExecutionError(`Could not write Midjourney media ${filePath}: ${errorMessage(error)}`);
   }
 }
 
 export async function downloadRawVideo(page, jobId, index, outputDir, force = false) {
-  await fs.mkdir(outputDir, { recursive: true });
+  await fs.mkdir(recipeOutputPath(outputDir), { recursive: true });
   const url = rawVideoUrl(jobId, index);
   const filePath = path.join(outputDir, `${jobId}_${index + 1}_raw.mp4`);
   const existing = await existingMedia(filePath, force, 'video/mp4');
@@ -781,7 +782,7 @@ export async function downloadRenderedVideo(page, jobId, index, kind, outputDir,
       ? { label: 'Download as GIF', extension: '.gif', mime: 'image/gif' }
       : null;
   if (!config) throw new ArgumentError('Rendered video kind must be video-social or gif');
-  await fs.mkdir(outputDir, { recursive: true });
+  await fs.mkdir(recipeOutputPath(outputDir), { recursive: true });
   const filePath = path.join(outputDir, `${jobId}_${index + 1}_${kind.replace('video-', '')}${config.extension}`);
   const existing = await existingMedia(filePath, force, config.mime);
   if (existing) return { index, kind, filePath, bytes: existing.size, url: null, mime: config.mime, cached: true };
@@ -807,12 +808,12 @@ export async function downloadRenderedVideo(page, jobId, index, kind, outputDir,
   if (!downloaded?.downloaded || downloaded.state !== 'complete' || !downloaded.filename) {
     throw new CommandExecutionError(`Midjourney ${kind} download did not complete: ${downloaded?.error || downloaded?.state || 'unknown'}`);
   }
-  const sourcePath = path.resolve(String(downloaded.filename));
-  const sourceStat = await fs.stat(sourcePath).catch(() => null);
+  const sourcePath = resolveRecipePath(String(downloaded.filename));
+  const sourceStat = await fs.stat(resolveRecipePath(sourcePath)).catch(() => null);
   if (!sourceStat?.isFile() || sourceStat.size <= 0) {
     throw new CommandExecutionError(`Browser reported a completed download but the file is missing: ${sourcePath}`);
   }
-  const handle = await fs.open(sourcePath, 'r');
+  const handle = await fs.open(recipeCopySource(sourcePath), 'r');
   let actualMime;
   try {
     const header = Buffer.alloc(16);
@@ -831,11 +832,11 @@ export async function downloadRenderedVideo(page, jobId, index, kind, outputDir,
   }
   const tempPath = `${filePath}.part-${process.pid}-${Date.now()}`;
   try {
-    await fs.copyFile(sourcePath, tempPath);
-    await fs.rename(tempPath, filePath);
-    if (sourcePath !== filePath) await fs.unlink(sourcePath).catch(() => {});
+    await fs.copyFile(recipeCopySource(sourcePath), recipeOutputPath(tempPath));
+    await fs.rename(recipeOutputPath(tempPath), recipeOutputPath(filePath));
+    if (sourcePath !== filePath) await fs.unlink(recipeOutputPath(sourcePath)).catch(() => {});
   } catch (error) {
-    await fs.unlink(tempPath).catch(() => {});
+    await fs.unlink(recipeOutputPath(tempPath)).catch(() => {});
     throw new CommandExecutionError(`Could not store Midjourney ${kind} at ${filePath}: ${errorMessage(error)}`);
   }
   return {
@@ -867,8 +868,8 @@ export async function recordQuotaSnapshot(account, source = 'unknown') {
     remainingCredits: numberOrNull(account?.total_credits ?? account?.credits_total),
   };
   try {
-    await fs.mkdir(MIDJOURNEY_SITE_DIR, { recursive: true });
-    await fs.appendFile(USAGE_SNAPSHOT_PATH, `${JSON.stringify(row)}\n`, 'utf8');
+    await fs.mkdir(recipeOutputPath(MIDJOURNEY_SITE_DIR), { recursive: true });
+    await fs.appendFile(recipeOutputPath(USAGE_SNAPSHOT_PATH), `${JSON.stringify(row)}\n`, 'utf8');
   } catch (error) {
     // A local monitoring write must never turn a completed paid job into a
     // reported command failure: that would invite an accidental paid retry.
@@ -945,7 +946,7 @@ export function parseReferenceArgument(value, label, { multiple = true, allowSty
       return { kind: 'url', value: item };
     }
     const expanded = item === '~' ? os.homedir() : item.startsWith('~/') ? path.join(os.homedir(), item.slice(2)) : item;
-    return { kind: 'local', value: path.resolve(expanded) };
+    return { kind: 'local', value: resolveRecipePath(expanded) };
   });
 }
 
@@ -953,7 +954,7 @@ export async function validateLocalReferences(refs, label) {
   for (const ref of refs.filter((item) => item.kind === 'local')) {
     let stat;
     try {
-      stat = await fs.stat(ref.value);
+      stat = await fs.stat(resolveRecipePath(ref.value));
     } catch {
       throw new ArgumentError(`${label} file does not exist: ${ref.value}`);
     }

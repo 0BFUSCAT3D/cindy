@@ -26,6 +26,47 @@ try {
           if (output.type === 'chunk' && output.dynamicImports.length) {
             throw new Error(`Recipe bundle retained runtime imports: ${output.fileName}`);
           }
+          if (output.type !== 'chunk') continue;
+          for (const id of Object.keys(output.modules)) {
+            if (!id.includes('/packages/opencli-vendor/') || id.endsWith('/cindy/host.ts')) continue;
+            const ast = this.getModuleInfo(id)?.ast;
+            if (!ast) continue;
+            const fsBindings = new Map();
+            for (const node of ast.body) {
+              if (node.type !== 'ImportDeclaration' || !/^node:fs(?:\/promises)?$|^fs(?:\/promises)?$/.test(node.source.value)) continue;
+              for (const spec of node.specifiers) fsBindings.set(spec.local.name,
+                spec.type === 'ImportSpecifier' ? spec.imported.name : '');
+            }
+            const chain = node => node?.type === 'Identifier' ? [node.name]
+              : node?.type === 'MemberExpression' && !node.computed ? [...chain(node.object), node.property.name] : [];
+            const guarded = (node, name = 'recipeOutputPath') => node?.type === 'CallExpression'
+              && node.callee.name === name;
+            const visit = node => {
+              if (!node || typeof node !== 'object') return;
+              if (node.type === 'CallExpression') {
+                const parts = chain(node.callee);
+                if (fsBindings.has(parts[0])) {
+                  const method = (fsBindings.get(parts[0]) || parts.at(-1)).replace(/Sync$/, '');
+                  if (method === 'open' && node.arguments[1]?.value !== 'r' && !guarded(node.arguments[0])) {
+                    throw new Error(`Unbrokered output descriptor in bundled recipe: ${path.relative(root, id)}`);
+                  }
+                  if (['writeFile', 'appendFile', 'mkdir', 'mkdtemp', 'rm', 'rmdir', 'unlink', 'rename', 'copyFile', 'link', 'createWriteStream', 'fchmod', 'truncate'].includes(method)) {
+                    const args = node.arguments;
+                    const firstGuard = ['copyFile', 'link'].includes(method) ? 'recipeCopySource' : 'recipeOutputPath';
+                    if (!guarded(args[0], firstGuard) || (['rename', 'copyFile', 'link'].includes(method) && !guarded(args[1]))) {
+                      throw new Error(`Unbrokered filesystem write in bundled recipe: ${path.relative(root, id)} (${method})`);
+                    }
+                  }
+                }
+              }
+              for (const [key, value] of Object.entries(node)) {
+                if (key === 'parent') continue;
+                if (Array.isArray(value)) value.forEach(visit);
+                else if (value && typeof value === 'object') visit(value);
+              }
+            };
+            visit(ast);
+          }
         }
       },
     }],

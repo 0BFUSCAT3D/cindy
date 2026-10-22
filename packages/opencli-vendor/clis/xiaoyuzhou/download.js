@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -38,7 +39,7 @@ cli({
         const title = String(ep.title || 'episode');
         const filename = `${args.id}_${sanitizeFilename(title, 80) || 'episode'}${ext}`;
         const outputDir = path.join(output, String(args.id));
-        fs.mkdirSync(outputDir, { recursive: true });
+        fs.mkdirSync(recipeOutputPath(outputDir), { recursive: true });
         const destPath = path.join(outputDir, filename);
         const result = await httpDownload(audioUrl, destPath, {
             timeout: 60000,

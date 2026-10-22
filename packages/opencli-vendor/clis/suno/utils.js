@@ -15,6 +15,7 @@
  *   - browser-token: {"token":"<base64 of {timestamp: ms}>"} (anti-replay)
  *   - device-id: <uuid> (persistent per browser, found in `suno_device_id` cookie)
  */
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError, TimeoutError } from '@jackwener/opencli/errors';
@@ -49,10 +50,10 @@ export function parseFormats(value) {
 
 export function resolveSunoOutputDir(value) {
     const raw = String(value || '').trim();
-    if (!raw) return path.join(process.env.HOME || '~', 'Music', 'suno');
+    if (!raw) return resolveRecipePath('suno-audio');
     if (raw === '~') return process.env.HOME || '~';
     if (raw.startsWith('~/')) return path.join(process.env.HOME || '~', raw.slice(2));
-    return path.resolve(raw);
+    return resolveRecipePath(raw);
 }
 
 export function sanitizeTitleForFilename(title, fallback = 'untitled') {
@@ -65,7 +66,7 @@ export function sanitizeTitleForFilename(title, fallback = 'untitled') {
 }
 
 export function ensureDir(dir) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
 }
 
 export function normalizeBooleanFlag(value, fallback = false) {
@@ -493,8 +494,8 @@ async function writeFromDataUrl(page, url, filePath) {
     if (!base64) {
         return { ok: false, reason: 'empty response body' };
     }
-    fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
-    if (!fs.statSync(filePath).size) {
+    fs.writeFileSync(recipeOutputPath(filePath), Buffer.from(base64, 'base64'));
+    if (!fs.statSync(resolveRecipePath(filePath)).size) {
         return { ok: false, reason: 'empty file written' };
     }
     return { ok: true };
@@ -507,7 +508,7 @@ export async function downloadSunoClip(page, clip, outputDir, formats, deviceId)
 
     if (formats.includes('metadata')) {
         const metaPath = path.join(outputDir, `${slug}.json`);
-        fs.writeFileSync(metaPath, JSON.stringify(clip, null, 2), 'utf8');
+        fs.writeFileSync(recipeOutputPath(metaPath), JSON.stringify(clip, null, 2), 'utf8');
         written.push({ format: 'metadata', file: metaPath, ok: true });
     }
 

@@ -1,3 +1,4 @@
+import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,20 +14,20 @@ export function resolveOptionalFilePath(raw, label) {
     const value = String(raw).trim();
     if (!value)
         throw new ArgumentError(`${label} cannot be empty`);
-    return path.resolve(value);
+    return resolveRecipePath(value);
 }
 
 export function ensureParentDir(filePath) {
     if (!filePath)
         return;
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.mkdirSync(recipeOutputPath(path.dirname(filePath)), { recursive: true });
 }
 
 function removeFile(filePath) {
     if (!filePath)
         return;
     try {
-        fs.rmSync(filePath, { force: true });
+        fs.rmSync(recipeOutputPath(filePath), { force: true });
     }
     catch {
     }
@@ -35,7 +36,7 @@ function removeFile(filePath) {
 export function loadJsonlArchiveState(filePath) {
     const seen = new Set();
     let count = 0;
-    if (!filePath || !fs.existsSync(filePath))
+    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))
         return { seen, count };
     const text = readRecipeFileSync(filePath, 'utf8');
     for (const [index, line] of text.split('\n').entries()) {
@@ -67,7 +68,7 @@ export function appendJsonlRows(filePath, rows) {
     const text = rows
         .map((row) => JSON.stringify(row).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'))
         .join('\n') + '\n';
-    fs.appendFileSync(filePath, text, 'utf8');
+    fs.appendFileSync(recipeOutputPath(filePath), text, 'utf8');
 }
 
 export function removeResumeFile(filePath) {
