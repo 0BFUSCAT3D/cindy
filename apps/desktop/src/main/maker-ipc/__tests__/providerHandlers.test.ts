@@ -9,7 +9,7 @@ import { BUILTIN_REFRESHABLE_PROVIDER_IDS } from '../../../shared/providerModelR
 import type { DbClient } from '../../localDb/client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
 import * as schema from '../../localDb/schema.js';
-import { createCustomProvider, getCustomProvider, listCustomProviders } from '../../maker-host/custom-provider-store.js';
+import { createCustomProvider, getCustomProvider, listCustomProviders, revokeCodexAccountUltrafast } from '../../maker-host/custom-provider-store.js';
 import { codexCustomProviderConfigSignature } from '../../maker-host/codex-custom-provider-route.js';
 import {
   beginProviderRouteMutation,
@@ -4242,6 +4242,64 @@ describe('provider:oauth mutation ordering', () => {
     finishLogin({ ok: true, rollbackCredentials });
     await expect(login).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
     expect(rollbackCredentials).toHaveBeenCalledOnce();
+  });
+
+  // Regression: a replacement login must not survive an interleaved settings
+  // write or owner switch before revocation. Use the real handler and SQLite CAS.
+  it.each(['settings-edit', 'owner-switch'] as const)('rolls replacement login back after %s during capability commit', async (interleaving) => {
+    mountDb();
+    const config: CustomProviderConfig = { ...validConfig,
+      auth: { method: 'oauth', native: 'codex' },
+      runtimes: { codex: { ...validConfig.runtimes.codex!,
+        baseUrl: 'https://chatgpt.com/backend-api/codex', wireProtocol: 'openai-responses',
+        models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', supportsUltrafastMode: true }],
+      } },
+    };
+    await createCustomProvider(config);
+    const harness = new IpcHarness();
+    let owner = { dataOwnerId: 'owner-a', generation: 1 };
+    let identity = 'new-account';
+    let release!: () => void;
+    let read!: () => void;
+    const paused = new Promise<void>(resolve => { read = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const rollbackCredentials = vi.fn(() => { identity = 'old-account'; return true; });
+    const afterCommit = vi.fn(async () => {});
+    registerProviderHandlers(harness, makeDeps({
+      currentOwnerSession: () => owner,
+      oauthLogin: async () => ({ ok: true, rollbackCredentials, afterCommit,
+        commitAccountCapabilities: async () => {
+          // Delay only the first real row read; the concurrent settings IPC uses
+          // the same database normally and makes the original snapshot stale.
+          const select = client!.drizzle.select.bind(client!.drizzle);
+          vi.spyOn(client!.drizzle, 'select').mockImplementationOnce((...args: any[]) => {
+            const builder = (select as any)(...args);
+            const from = builder.from.bind(builder);
+            builder.from = (...fromArgs: any[]) => {
+              const query = from(...fromArgs);
+              const get = query.get.bind(query);
+              query.get = async () => { const row = get(); read(); await resume; return row; };
+              return query;
+            };
+            return builder;
+          });
+          return revokeCodexAccountUltrafast(config.id, () => owner.generation === 1);
+        },
+      }),
+    }));
+    const login = harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, config.id);
+    await paused;
+    if (interleaving === 'settings-edit') {
+      await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, { ...config, name: 'Edited while logging in' });
+    } else owner = { dataOwnerId: 'owner-b', generation: 2 };
+    release();
+    await expect(login).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
+    expect(identity).toBe('old-account');
+    expect(rollbackCredentials).toHaveBeenCalledOnce();
+    expect(afterCommit).not.toHaveBeenCalled();
+    const saved = (await getCustomProvider(config.id))!;
+    expect(saved.runtimes.codex!.models[0].supportsUltrafastMode).toBe(true);
+    expect(saved.name).toBe(interleaving === 'settings-edit' ? 'Edited while logging in' : config.name);
   });
 
   it.each([false, true])('publishes login identity only after acceptance (cancelled=%s)', async (cancelled) => {

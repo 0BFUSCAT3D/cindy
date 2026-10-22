@@ -779,6 +779,17 @@ export function clearCodexAccountUltrafast(config: CustomProviderConfig): Custom
   } } };
 }
 
+/** A CAS miss/owner switch rejects the replacement login instead of keeping an old grant. */
+export async function revokeCodexAccountUltrafast(
+  providerId: string,
+  sameOwner: () => boolean,
+): Promise<boolean> {
+  if (!sameOwner()) return false;
+  const previous = await getCustomProvider(providerId);
+  if (!sameOwner() || !previous || previous.auth?.native !== 'codex') return false;
+  return updateCustomProviderIfUnchanged(providerId, previous, clearCodexAccountUltrafast(previous));
+}
+
 /** 安全解析 auth 列 JSON（坏数据 / 结构不完整兜底为 undefined = API key 历史形态）。 */
 function parseAuth(raw: string | null): CustomProviderConfig['auth'] {
   if (!raw) return undefined;

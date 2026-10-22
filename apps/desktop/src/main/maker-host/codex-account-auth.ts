@@ -287,6 +287,9 @@ export async function loginCodexAccount(
         return false;
       }
     };
+    // Invalidation can fail (e.g. Windows delete sharing). Do it before changing
+    // credentials so failure leaves the original identity and grant intact.
+    if (identityChanged) fs.rmSync(path.join(home, 'models_cache.json'), { force: true });
     // Synchronous commit after the final ownership check; no other request can interleave.
     fs.writeFileSync(path.join(home, 'account.json'), JSON.stringify(identity), { mode: 0o600 });
     fs.writeFileSync(path.join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\n', {
@@ -295,8 +298,6 @@ export async function loginCodexAccount(
     fs.renameSync(path.join(staging, 'auth.json'), path.join(home, 'auth.json'));
     fs.rmSync(path.join(home, 'disconnected'), { force: true });
     fs.rmSync(path.join(home, 'invalidated'), { force: true });
-    // An old identity's model cache must not regrant its account-only tiers.
-    if (identityChanged) fs.rmSync(path.join(home, 'models_cache.json'), { force: true });
     broadcastCodexAccountAuthReady(providerId);
     accountAuthReadySent = true;
     return { ok: true, firstLogin: previous === null, previousIdentity: previous?.label, identityChanged, rollbackCredentials };

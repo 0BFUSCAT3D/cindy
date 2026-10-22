@@ -357,6 +357,8 @@ export interface ProviderHandlerDeps {
     ok: boolean;
     reason?: string;
     rollbackCredentials?: () => boolean;
+    /** Required account-state commit. False or failure must roll credentials back. */
+    commitAccountCapabilities?: () => Promise<boolean>;
     /** Publish identity/model changes only after the login is accepted, outside rollback. */
     afterCommit?: () => Promise<void>;
   }>;
@@ -2482,6 +2484,17 @@ export function registerProviderHandlers(
         });
         if (isOAuthMutationCurrent(id, generation)) {
           if (result.ok) {
+            if (result.commitAccountCapabilities) {
+              let committed = false;
+              try { committed = await result.commitAccountCapabilities(); } catch { /* Roll back below. */ }
+              if (!committed) {
+                if (!result.rollbackCredentials?.()) {
+                  finishRouteMutation.commit?.();
+                  throwIpcError('INTERNAL', 'failed to restore credentials after account capability update');
+                }
+                return { ok: false, reason: 'login_cancelled' };
+              }
+            }
             finishRouteMutation.commit?.();
             try {
               await result.afterCommit?.();

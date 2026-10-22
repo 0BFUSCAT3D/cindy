@@ -98,10 +98,29 @@ beforeEach(() => {
   setCodexAccountRetirement(async () => {});
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(state.root, { recursive: true, force: true });
 });
 
 describe('native Codex account credentials', () => {
+  it('keeps the original identity when its model cache cannot be removed', async () => {
+    await loginCodexAccount('account-a', () => true);
+    const home = codexAccountHome('account-a');
+    const files = ['auth.json', 'account.json', 'config.toml'];
+    const before = files.map(file => fs.readFileSync(path.join(home, file), 'utf8'));
+    const cache = path.join(home, 'models_cache.json');
+    fs.writeFileSync(cache, '{"models":[]}');
+    state.raw = credential('person-b');
+    const rm = fs.rmSync.bind(fs);
+    vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (target === cache) throw Object.assign(new Error('cache busy'), { code: 'EPERM' });
+      rm(target, options);
+    });
+    await expect(loginCodexAccount('account-a', () => true)).rejects.toThrow('cache busy');
+    expect(files.map(file => fs.readFileSync(path.join(home, file), 'utf8'))).toEqual(before);
+    expect(codexAccountState('account-a').identity).toBe('person-a@example.test');
+    expect(fs.readFileSync(cache, 'utf8')).toBe('{"models":[]}');
+  });
   it('signals explicit auth replacement before retirement and readiness immediately after commit', async () => {
     const result = await loginCodexAccount('account-a', () => true);
     expect(result.ok).toBe(true);
