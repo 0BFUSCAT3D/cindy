@@ -559,7 +559,7 @@ function botsApi(): NonNullable<typeof window.electronAPI.localDb>['bots'] | nul
   return window.electronAPI?.localDb?.bots ?? null;
 }
 
-function normalizeDbProfile(value: unknown): BotProfile | null {
+export function normalizeDbProfile(value: unknown): BotProfile | null {
   if (!value || typeof value !== 'object') return null;
   const item = value as Partial<BotProfile>;
   if (typeof item.id !== 'string' || typeof item.name !== 'string') return null;

@@ -1313,6 +1313,11 @@ async function readProfile(
   };
 }
 
+/** Full profile read for the teammate settings pages (the remote Desktop projects it before sending). */
+export async function readBotSettingsProfile(botId: string) {
+  return readProfile(getDbClient(), botId);
+}
+
 /**
  * Device-link only needs enough Bot metadata to render the Mobile directory and
  * open the canonical task. Keep this projection main-side so profile prompts,
@@ -2077,6 +2082,42 @@ async function findExistingCindy(client: ReturnType<typeof getDbClient>) {
   return existing ? readProfile(client, existing.id) : null;
 }
 
+/** Teammate history search; the local settings IPC and the remote settings host share it. */
+export async function searchBotHistory(botId: string, query: string, limit: number) {
+  const db = getDbClient().drizzle;
+  const [profile] = await db
+    .select({ id: botProfiles.id })
+    .from(botProfiles)
+    .where(eq(botProfiles.id, botId))
+    .limit(1);
+  if (!profile) throwIpcError('NOT_FOUND', 'Bot 不存在');
+  // Group / IM channel lanes only hold hidden channel turns; the group chat or
+  // the IM conversation itself is the user's record.
+  const links = await db
+    .select({ sessionId: botSessionLinks.sessionId })
+    .from(botSessionLinks)
+    .where(and(
+      eq(botSessionLinks.botId, botId),
+      ne(botSessionLinks.role, 'group'),
+      ne(botSessionLinks.role, 'channel'),
+    ));
+  return searchConversations(
+    {
+      query,
+      limit,
+      semanticMode: 'hybrid',
+      filters: {
+        status: 'all',
+        sessionIds: links.map((row) => row.sessionId),
+      },
+    },
+    // The Bot-owned Session id set above is authoritative. Passing null here
+    // allows migrated IM history to retain its original source while keeping
+    // the renderer unable to widen the search scope.
+    { sessionSources: null },
+  );
+}
+
 export function registerBotIpc(): void {
   ipcMain.handle('local-db:bots:generate-avatar', async (event, token: unknown) => {
     assertTrustedAppRendererEvent(event);
@@ -2222,38 +2263,7 @@ export function registerBotIpc(): void {
       typeof body.limit === 'number' && Number.isFinite(body.limit)
         ? Math.max(1, Math.min(50, Math.floor(body.limit)))
         : 20;
-    const db = getDbClient().drizzle;
-    const [profile] = await db
-      .select({ id: botProfiles.id })
-      .from(botProfiles)
-      .where(eq(botProfiles.id, botId))
-      .limit(1);
-    if (!profile) throwIpcError('NOT_FOUND', 'Bot 不存在');
-    // Group / IM channel lanes only hold hidden channel turns; the group chat or
-    // the IM conversation itself is the user's record.
-    const links = await db
-      .select({ sessionId: botSessionLinks.sessionId })
-      .from(botSessionLinks)
-      .where(and(
-        eq(botSessionLinks.botId, botId),
-        ne(botSessionLinks.role, 'group'),
-        ne(botSessionLinks.role, 'channel'),
-      ));
-    return searchConversations(
-      {
-        query,
-        limit,
-        semanticMode: 'hybrid',
-        filters: {
-          status: 'all',
-          sessionIds: links.map((row) => row.sessionId),
-        },
-      },
-      // The Bot-owned Session id set above is authoritative. Passing null here
-      // allows migrated IM history to retain its original source while keeping
-      // the renderer unable to widen the search scope.
-      { sessionSources: null },
-    );
+    return searchBotHistory(botId, query, limit);
   });
 
   ipcMain.handle('local-db:bots:create', async (event, raw: unknown) => {
