@@ -29,12 +29,20 @@ import { readUtf8File } from '../../../opencli-vendor/clis/_atlassian/shared.js'
 import { resolvePayload } from '../../../opencli-vendor/clis/zhihu/write-shared.js';
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
 import { prepareChatGPTFilePaths } from '../../../opencli-vendor/clis/chatgpt/utils.js';
-import { readFileSync, openSync, fstatSync } from 'node:fs';
+import { readFileSync, writeFileSync, openSync, fstatSync } from 'node:fs';
+import * as childProcess from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 // @ts-expect-error Upstream JavaScript helpers have no declarations.
 import { validateLocalReferences } from '../../../opencli-vendor/clis/midjourney/utils.js';
 // @ts-expect-error Pinned upstream JavaScript uploader has no declarations.
 import { tosUpload } from '../../../opencli-vendor/clis/douyin/_shared/tos-upload.js';
+// @ts-expect-error Pinned upstream JavaScript media helpers have no declarations.
+import * as instagramMedia from '../../../opencli-vendor/clis/instagram/_shared/private-publish.js';
+
+// Wrap the native namespace so tests can replace only the subprocess boundary.
+vi.mock('node:child_process', async importOriginal => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+}));
 
 afterEach(() => {
   vi.useRealTimers();
@@ -43,6 +51,63 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 file boundary: actual media preparation / story entry, unit tier.
+  // Prior upload tests never exercised converters reopening a checked path.
+  // Replace the original immediately after broker approval; subprocess fakes
+  // must still see approved bytes. Native macOS capability stays platform-owned.
+  it.each(['feed', 'story', 'video', 'video-story', 'conversion-failure'])('isolates %s conversion from source replacement and cleans staged bytes', async kind => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-convert-test-'));
+    const video = kind.startsWith('video');
+    const file = path.join(dir, video ? 'clip.mp4' : 'image.png');
+    const png = Buffer.alloc(24);
+    Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+    png.write('IHDR', 12);
+    png.writeUInt32BE(4, 16);
+    png.writeUInt32BE(40, 20);
+    const approved = video ? Buffer.from('approved-video') : Buffer.concat([png, Buffer.from('approved')]);
+    const replaced = video ? Buffer.from('unapproved-video') : Buffer.concat([png, Buffer.from('unapproved')]);
+    await writeFile(file, approved);
+    const inputs: string[] = [];
+    const spawn = vi.spyOn(childProcess, 'spawnSync').mockImplementation(((command: string, args: string[]) => {
+      const input = args[command === 'sips' ? 5 : 1];
+      inputs.push(input);
+      expect(input).not.toBe(file);
+      const bytes = readFileSync(input);
+      expect([approved.toString('hex'), Buffer.from('trimmed-video').toString('hex')]).toContain(bytes.toString('hex'));
+      if (kind === 'conversion-failure') return { status: 1, stderr: 'fixture conversion failed', stdout: '' };
+      if (command === 'sips') writeFileSync(args[7], approved);
+      else if (args.length === 2) return { status: 0, stdout: JSON.stringify({ width: 100, height: 100,
+        durationMs: bytes.equals(approved) ? 20000 : 10000 }), stderr: '' };
+      else writeFileSync(args[2], args.length === 4 ? Buffer.from('trimmed-video')
+        : Buffer.from('ffd8ffc0000b08000100010101110000', 'hex'));
+      return { status: 0, stdout: '{}', stderr: '' };
+    }) as typeof childProcess.spawnSync);
+    const run = () => kind === 'video-story' ? instagramMedia.publishStoryViaPrivateApi({
+      page: {}, mediaItem: { type: 'video', filePath: file }, currentUserId: 'fixture-user', apiContext: {},
+      fetcher: async () => new Response(JSON.stringify({ status: 'ok', media: { pk: 'fixture-pk' } })),
+    }) : Promise.resolve(video ? instagramMedia.readVideoAsset(file)
+      : kind === 'story' ? instagramMedia.prepareImageAssetForPrivateStoryUpload(file)
+        : instagramMedia.prepareImageAssetForPrivateUpload(file));
+    try {
+      const result = withRecipeHost(undefined, run, {
+        directory: dir, temporaryRoot: dir, open: candidate => openSync(candidate, 'r'),
+        read: candidate => { const bytes = readFileSync(candidate); writeFileSync(candidate, replaced); return bytes; },
+      });
+      if (process.platform !== 'darwin' || kind === 'conversion-failure') {
+        await expect(result).rejects.toThrow(process.platform !== 'darwin' ? 'does not support' : 'failed to normalize');
+      } else {
+        const asset = await result;
+        if (kind === 'video-story') expect(asset).toMatchObject({ mediaPk: 'fixture-pk' });
+        else expect(asset).toMatchObject({ bytes: approved });
+        expect(inputs.length).toBeGreaterThan(0);
+      }
+      if (process.platform !== 'darwin') expect(spawn).not.toHaveBeenCalled();
+      for (const input of inputs) await expect(access(input)).rejects.toThrow();
+      expect(await readFile(file)).toEqual(replaced);
+      expect(await readdir(dir)).toEqual([path.basename(file)]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 file-state recurrence, unit tier. Real uploader and broker-approved
   // descriptors; old tests never reached multipart init with task-only files.
   // The old resume write fails after init, before any part can be transferred.

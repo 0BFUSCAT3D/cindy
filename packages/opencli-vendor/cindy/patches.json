@@ -3219,5 +3219,37 @@
     "file": "cli-manifest.json",
     "before": "Show Midjourney quota, conservative batch estimates, and account-consumption trend",
     "after": "Show Midjourney current quota and conservative batch estimates (historical trend unavailable)"
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "export function prepareImageAssetForPrivateUpload(filePath) {",
+    "after": "// Converters must never reopen a source path after the host approved its bytes.\n// The existing invocation directory owns and cleans every staged copy.\nfunction stagePrivateMediaBytes(filePath, bytes) {\n    const stagedPath = path.join(recipeTemporaryDirectory(), `input-${crypto.randomUUID()}${path.extname(filePath)}`);\n    fs.writeFileSync(recipeOutputPath(stagedPath), bytes, { mode: 0o600 });\n    return stagedPath;\n}\nexport function prepareImageAssetForPrivateUpload(filePath) {"
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    const outputPath = buildPrivateNormalizedImagePath(filePath);\n    const result = spawnSync('sips', [",
+    "after": "    const inputPath = stagePrivateMediaBytes(filePath, asset.bytes);\n    const outputPath = buildPrivateNormalizedImagePath(filePath);\n    const result = spawnSync('sips', [",
+    "count": 2
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "        INSTAGRAM_PRIVATE_PAD_COLOR,\n        filePath,",
+    "after": "        INSTAGRAM_PRIVATE_PAD_COLOR,\n        inputPath,",
+    "count": 2
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    const metadata = readVideoMetadata(filePath);\n    const coverImage = generateVideoCoverImage(filePath);",
+    "after": "    const stagedPath = stagePrivateMediaBytes(filePath, bytes);\n    const metadata = readVideoMetadata(stagedPath);\n    const coverImage = generateVideoCoverImage(stagedPath);"
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "        bytes,\n        coverImage,",
+    "after": "        bytes,\n        stagedPath,\n        coverImage,"
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "    const trimmedPath = trimVideoForInstagramStory(filePath, INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS);",
+    "after": "    const trimmedPath = trimVideoForInstagramStory(asset.stagedPath, INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS);"
   }
 ]

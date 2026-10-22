@@ -331,6 +331,13 @@ function buildPrivateNormalizedImagePath(filePath) {
     const parsed = path.parse(filePath);
     return path.join(recipeTemporaryDirectory(), `opencli-instagram-private-${parsed.name}-${crypto.randomUUID()}${parsed.ext || '.png'}`);
 }
+// Converters must never reopen a source path after the host approved its bytes.
+// The existing invocation directory owns and cleans every staged copy.
+function stagePrivateMediaBytes(filePath, bytes) {
+    const stagedPath = path.join(recipeTemporaryDirectory(), `input-${crypto.randomUUID()}${path.extname(filePath)}`);
+    fs.writeFileSync(recipeOutputPath(stagedPath), bytes, { mode: 0o600 });
+    return stagedPath;
+}
 export function prepareImageAssetForPrivateUpload(filePath) {
     const asset = readImageAsset(filePath);
     const normalizedDimensions = getInstagramFeedNormalizedDimensions(asset.width, asset.height);
@@ -340,6 +347,7 @@ export function prepareImageAssetForPrivateUpload(filePath) {
     if (process.platform !== 'darwin') {
         throw new CommandExecutionError(`Instagram private publish does not support auto-normalizing ${asset.fileName} on ${process.platform}`, `Use images within ${INSTAGRAM_MIN_FEED_ASPECT_RATIO.toFixed(2)}-${INSTAGRAM_MAX_FEED_ASPECT_RATIO.toFixed(2)} aspect ratio, or use the UI route`);
     }
+    const inputPath = stagePrivateMediaBytes(filePath, asset.bytes);
     const outputPath = buildPrivateNormalizedImagePath(filePath);
     const result = spawnSync('sips', [
         '--padToHeightWidth',
@@ -347,7 +355,7 @@ export function prepareImageAssetForPrivateUpload(filePath) {
         String(normalizedDimensions.width),
         '--padColor',
         INSTAGRAM_PRIVATE_PAD_COLOR,
-        filePath,
+        inputPath,
         '--out',
         outputPath,
     ], {
@@ -374,6 +382,7 @@ export function prepareImageAssetForPrivateStoryUpload(filePath) {
     if (process.platform !== 'darwin') {
         throw new CommandExecutionError(`Instagram private story publish does not support auto-normalizing ${asset.fileName} on ${process.platform}`, `Use images within ${INSTAGRAM_MIN_STORY_ASPECT_RATIO.toFixed(2)}-${INSTAGRAM_MAX_STORY_ASPECT_RATIO.toFixed(2)} aspect ratio, or use the UI route`);
     }
+    const inputPath = stagePrivateMediaBytes(filePath, asset.bytes);
     const outputPath = buildPrivateNormalizedImagePath(filePath);
     const result = spawnSync('sips', [
         '--padToHeightWidth',
@@ -381,7 +390,7 @@ export function prepareImageAssetForPrivateStoryUpload(filePath) {
         String(normalizedDimensions.width),
         '--padColor',
         INSTAGRAM_PRIVATE_PAD_COLOR,
-        filePath,
+        inputPath,
         '--out',
         outputPath,
     ], {
@@ -501,8 +510,9 @@ FileHandle.standardOutput.write(json)
 }
 export function readVideoAsset(filePath) {
     const bytes = readRecipeFileSync(filePath);
-    const metadata = readVideoMetadata(filePath);
-    const coverImage = generateVideoCoverImage(filePath);
+    const stagedPath = stagePrivateMediaBytes(filePath, bytes);
+    const metadata = readVideoMetadata(stagedPath);
+    const coverImage = generateVideoCoverImage(stagedPath);
     return {
         filePath,
         fileName: path.basename(filePath),
@@ -512,6 +522,7 @@ export function readVideoAsset(filePath) {
         durationMs: metadata.durationMs,
         byteLength: bytes.length,
         bytes,
+        stagedPath,
         coverImage,
         cleanupPaths: coverImage.cleanupPath ? [coverImage.cleanupPath] : [],
     };
@@ -561,7 +572,7 @@ function prepareVideoAssetForPrivateStoryUpload(filePath) {
     if (asset.durationMs <= INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS) {
         return asset;
     }
-    const trimmedPath = trimVideoForInstagramStory(filePath, INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS);
+    const trimmedPath = trimVideoForInstagramStory(asset.stagedPath, INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS);
     const trimmedAsset = readVideoAsset(trimmedPath);
     return {
         ...trimmedAsset,
