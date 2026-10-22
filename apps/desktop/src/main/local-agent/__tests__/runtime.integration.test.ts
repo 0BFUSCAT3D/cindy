@@ -246,6 +246,29 @@ describe('local client runtime lifecycle', () => {
       }),
     );
   });
+  it('keeps the effort chosen by send.effort when instructions rebuild the session', async () => {
+    const f = await fixture(),
+      second = handle('second');
+    cleanups.push(() => second.close());
+    f.maker.startLocalAgentSession.mockImplementationOnce(async () => second);
+    await f.runtime.call('send', message);
+    f.first.getObservedCurrentTurnTerminal.mockReturnValue({ kind: 'done' });
+    f.first.onEvent.mock.calls[0][0]({ type: 'done', data: { status: 'completed' } });
+    await f.runtime.call('instructions', { instructions: 'new context' });
+    await f.runtime.call('send', { parts: message.parts });
+    expect(f.maker.startLocalAgentSession).toHaveBeenLastCalledWith(
+      'pi',
+      expect.objectContaining({ effort: 'high', userPrompt: 'new context' }),
+    );
+  });
+  it('removes accepted input images once their turn settles', async () => {
+    const f = await fixture();
+    await f.runtime.call('send', { parts: [image] });
+    expect(await inputFiles(f.directory)).toHaveLength(1);
+    f.first.getObservedCurrentTurnTerminal.mockReturnValue({ kind: 'done' });
+    f.first.onEvent.mock.calls[0][0]({ type: 'done', data: { status: 'completed' } });
+    await vi.waitFor(async () => expect(await inputFiles(f.directory)).toEqual([]));
+  });
   it('removes images written for a send that is rejected before the engine takes it', async () => {
     const f = await fixture();
     await expect(

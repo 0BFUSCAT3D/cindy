@@ -205,6 +205,8 @@ export async function openLocalAgentRuntime(
   localize = (_code: string, fallback: string) => fallback,
 ): Promise<LocalAgentRuntime> {
   let instructions = input.instructions;
+  // The effort last applied by send.effort survives an instructions rebuild.
+  let effort = input.effort;
   const sessionId = `local-agent-${randomUUID()}`;
   let handle: Session;
   let closed = false,
@@ -232,7 +234,7 @@ export async function openLocalAgentRuntime(
       workingDir: input.cwd,
       providerId: input.model.provider,
       model: input.model.model,
-      effort: input.effort as StartSessionOptions['effort'],
+      effort: effort as StartSessionOptions['effort'],
       userPrompt: instructions,
       makerMemoryEnabled: false,
       permissionMode: 'bypassPermissions',
@@ -299,8 +301,10 @@ export async function openLocalAgentRuntime(
       const claimed =
         event.type === 'done' && next.beginTurnContinuationWait(event.turnContinuationId) !== null;
       projection.accept(event, !claimed);
-      if (!preparing && !claimed && next.getObservedCurrentTurnTerminal().kind !== 'none')
+      if (!preparing && !claimed && next.getObservedCurrentTurnTerminal().kind !== 'none') {
         busy = false;
+        releaseInputs();
+      }
     });
     next.onStatusChange((status) => {
       if (status === 'closed') unsubscribe();
@@ -325,6 +329,11 @@ export async function openLocalAgentRuntime(
           block.type === 'image' ? fs.rm(block.path, { force: true }) : undefined,
         ),
       ).catch(() => {});
+  };
+  // Inputs the engine took during the current turn; it no longer reads them once the turn settles.
+  let turnInputs: UserMessage[] = [];
+  const releaseInputs = () => {
+    for (const content of turnInputs.splice(0)) void discard(content);
   };
   const message = async (params: Record<string, unknown>): Promise<UserMessage> => {
     if (!Array.isArray(params.parts) || !params.parts.length || params.parts.length > 64)
@@ -419,6 +428,7 @@ export async function openLocalAgentRuntime(
           assertCurrent(current);
           if (!busy) throw new LocalAgentError('NOT_RUNNING', '当前没有正在运行的回答。');
           await handle.steer(content);
+          turnInputs.push(content);
         } catch (error) {
           await discard(content);
           throw error;
@@ -441,14 +451,18 @@ export async function openLocalAgentRuntime(
           handle = await start(previous.sdkSessionId, current);
           appliedInstructions = applying;
         }
-        if (params.effort !== undefined)
+        if (params.effort !== undefined) {
           await handle.setEffort(params.effort as Parameters<Session['setEffort']>[0]);
+          effort = string(params.effort);
+        }
         assertCurrent(current);
         preparing = false;
         const generation = ++turn;
         projection.begin();
         // Some harnesses await the entire turn; acceptance must not block tool delivery/control RPCs.
         const sending = content;
+        releaseInputs();
+        turnInputs.push(sending);
         void (async () => {
           const result = await handle.send(sending);
           if (!result.accepted) await discard(sending);
@@ -478,7 +492,8 @@ export async function openLocalAgentRuntime(
       ++epoch;
       busy = false;
       await handle.close({ reason: 'account-boundary' });
-      await fs.rm(temporary, { recursive: true, force: true });
+      // The engine is confirmed closed; leftover input files must not report it as still running.
+      await fs.rm(temporary, { recursive: true, force: true }).catch(() => {});
     },
   };
 }

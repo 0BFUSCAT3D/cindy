@@ -291,6 +291,16 @@ describe('local application authorization and lifecycle', () => {
     grantWrites.fail = false;
     expect(JSON.parse(await fs.readFile(file, 'utf8')).grants).toHaveLength(1);
   });
+  it('rolls back a resume binding whose open could not be persisted', async () => {
+    const f = await fixture(),
+      secret = await f.connect();
+    grantWrites.fail = true;
+    expect((await f.start(secret, 'lost')).error).toBeDefined();
+    grantWrites.fail = false;
+    expect((await f.start(secret, 'kept')).error).toBeUndefined();
+    const stored = JSON.parse(await fs.readFile(path.join(f.directory, 'grants.json'), 'utf8'));
+    expect(Object.keys(stored.bindings)).toHaveLength(1);
+  });
   it('keeps revoke pending until an engine still starting is closed, and reports a failed late close', async () => {
     let release!: () => void, began!: () => void;
     const started = new Promise<void>((resolve) => {

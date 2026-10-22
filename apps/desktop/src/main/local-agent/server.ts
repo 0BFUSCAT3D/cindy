@@ -535,8 +535,20 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
             '本机接入的恢复记录已满，请在 Cindy 中撤销连接后重新连接。',
           );
         run.resumeKey = binding && resumeKey ? resumeKey : token();
-        bindings[run.resumeKey] = { owner: grant.id, model: model.id, native: run.runtime.id };
-        await persist();
+        const key = run.resumeKey,
+          prior = bindings[key],
+          added = { owner: grant.id, model: model.id, native: run.runtime.id };
+        bindings[key] = added;
+        try {
+          await persist();
+        } catch (error) {
+          // The caller never receives this handle; keep a resumable prior binding intact.
+          if (bindings[key] === added) {
+            if (prior) bindings[key] = prior;
+            else delete bindings[key];
+          }
+          throw error;
+        }
         assertGrant(grant);
         return { id: run.resumeKey, resumed: run.runtime.resumed, sessionId };
       } catch (error) {
