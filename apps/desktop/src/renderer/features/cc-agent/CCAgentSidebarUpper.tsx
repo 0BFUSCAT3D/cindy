@@ -3106,7 +3106,7 @@ function ExpandedView({
    * archive / archive-now 都直接执行，不弹确认框：归档可逆（菜单里就有「恢复」），
    *   行内入口本身已经是两步确认，菜单入口再弹一次纯属多余摩擦。例外有两个：
    *   worktree 有未提交改动 —— 归档会顺带回收 worktree；任务绑定了 active 自动化
-   *   —— 归档后自动化会暂停。这两种情况升级到 ConfirmDialog 展示对应提醒；
+   *   —— 后续运行会恢复原任务。这两种情况升级到 ConfirmDialog 展示对应提醒；
    * unarchive 是 archive 的反向操作，无副作用，直接 patch 即可，不弹确认。
    *
    * 执行序列（关子进程 / 写库 / 乐观补丁 / 释放内存 / refresh / 跳转）抽在
@@ -3178,7 +3178,7 @@ function ExpandedView({
       // 归档一律不弹确认框:它是可逆的(菜单里就有「恢复」),菜单入口与行内
       // 快捷按钮同一口径直接执行 —— 行内那个本身已经是两步确认。
       // 例外:worktree 有未提交改动(归档会顺带回收 worktree)、或任务绑定了
-      // active 自动化(归档后会暂停),这时升级到确认弹窗展示对应提醒。
+      // active 自动化(后续运行会恢复原任务),这时升级到确认弹窗展示对应提醒。
       if (isArchiveLike) {
         await runSessionAction(sessionId, 'archive', {
           activeSessionId: viewedSessionIdRef.current,

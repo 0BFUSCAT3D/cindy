@@ -8,9 +8,13 @@ const executePreRunHookMock = vi.hoisted(() => vi.fn());
 const restoreArchivedSessionForSend = vi.hoisted(() => vi.fn());
 vi.mock('../../localDb/ipc/sessions', () => ({ restoreArchivedSessionForSend }));
 
-vi.mock('node:child_process', () => ({
-  spawn: (...args: unknown[]) => spawnMock(...args),
-}));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: (...args: unknown[]) => spawnMock(...args),
+  };
+});
 
 vi.mock('../pre-run-hook', () => ({
   executePreRunHook: executePreRunHookMock,

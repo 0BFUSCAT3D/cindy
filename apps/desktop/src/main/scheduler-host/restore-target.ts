@@ -7,6 +7,7 @@ import {
   type SessionRowSnapshot,
 } from '../localDb/ipc/sessions';
 import { withSessionRouteLock } from '../localDb/sessionRouteLock';
+import { getManagedWorktreeReadinessForSession } from '../worktree/restore';
 
 type ScheduledTargetLifecycle = Pick<SessionRowSnapshot, 'source' | 'orcaRole' | 'orcaRemoteLead'>;
 
@@ -41,7 +42,6 @@ export async function restoreScheduledTarget(
     // Hooks run before native session startup. Reuse send-time snapshot recovery
     // before either a hook or an Agent can touch a recycled managed worktree.
     if (managed && dir) {
-      const { getManagedWorktreeReadinessForSession } = await import('../worktree/restore');
       const ready = await getManagedWorktreeReadinessForSession(sessionId, dir);
       if (ready !== 'ready') throw new Error('Scheduled task worktree could not be restored');
     }
