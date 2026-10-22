@@ -111,6 +111,11 @@ export class OpenCliPage extends CDPBasePage {
     return this.evaluate<T>(js);
   }
 
+  /** Adapter compatibility name for the existing guarded CDP input path. */
+  async insertText(text: string): Promise<void> {
+    await this.nativeType(text);
+  }
+
   async cdp(
     method: string,
     params?: Record<string, unknown>,

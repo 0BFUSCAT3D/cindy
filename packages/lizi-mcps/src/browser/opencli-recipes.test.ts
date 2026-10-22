@@ -75,6 +75,50 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 / 4354393901, unit: real LinkedIn sender + real host page with
+  // in-memory transport and fake clock. Previous tests never reached insertText.
+  // Text insertion must reach CDP; a transport error must stop before Send.
+  it.each(['ok', 'input-error', 'composer-mismatch'])('runs the verified sender through native text input (%s)', async mode => {
+    vi.useFakeTimers();
+    const calls: BrowserControlRequest[] = [];
+    const thread = 'https://www.linkedin.com/messaging/thread/fixture/';
+    const message = 'Fixture 中文 message';
+    let inserted = '';
+    let sent = false;
+    const page = new OpenCliPage({ targetId: 'fixture', call: async request => {
+      calls.push(request);
+      const method = request.recipeCommand?.method;
+      if (method === 'Cindy.begin') return { ok: true, action: request.action, data: { sessionId: 'fixture-session' } };
+      if (method === 'Input.insertText') {
+        if (mode === 'input-error') return { ok: false, action: request.action, message: 'fixture input failed' };
+        inserted = String(request.recipeCommand?.params?.text);
+      }
+      const fn = request.request?.fn || '';
+      const result = fn.includes('__OPENCLI_LINKEDIN_PROBE__')
+        ? { url: thread, headerNames: ['Fixture Person'], bodyText: 'Last fixture message', composerFound: true,
+          latestMessageText: 'Last fixture message' }
+        : fn.includes('__OPENCLI_LINKEDIN_FOCUS_COMPOSER__') ? { ok: true }
+          : fn.includes('__OPENCLI_LINKEDIN_READ_COMPOSER__') ? { ok: true, composerText: mode === 'composer-mismatch' ? 'Other text' : inserted }
+            : fn.includes('__OPENCLI_LINKEDIN_CLICK_SEND__') ? (sent = true, { ok: true, sent: true }) : true;
+      return { ok: true, action: request.action, data: { result } };
+    } });
+    try {
+      const pending = executeAdapter('linkedin/safe-send', { 'thread-url': thread, 'expected-name': 'Fixture Person',
+        'expected-last-text': 'Last fixture message', message, send: true }, page);
+      const checked = pending.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+      await vi.runAllTimersAsync();
+      const outcome = await checked;
+      if (mode === 'ok') {
+        expect(outcome.error).toBeUndefined();
+        expect(outcome.value).toMatchObject([{ status: 'sent', recipient: 'Fixture Person' }]);
+      } else {
+        expect(outcome.error?.message).toContain(mode === 'input-error' ? 'fixture input failed' : 'composer_text_mismatch');
+      }
+      expect(calls.filter(call => call.recipeCommand?.method === 'Input.insertText')).toHaveLength(1);
+      expect(sent).toBe(mode === 'ok');
+      if (mode === 'ok') expect(inserted).toBe(message);
+    } finally { await page.dispose(); }
+  });
   // #6826 CodeQL URL family, unit: real adapter helpers must distinguish
   // a site's host from attacker-controlled prefixes, suffixes and query text.
   // Existing navigation tests used only legitimate origins.
