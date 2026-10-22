@@ -18,6 +18,9 @@ const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
 const string = (v: unknown) => (typeof v === 'string' ? v : '');
 
+/** How long a usage-less terminal error waits for its paired done before ending the turn. */
+const ERROR_USAGE_GRACE_MS = 250;
+
 /** Final snapshots must not repeat already-streamed text/thinking. */
 export function createEventProjection(
   emit: (event: unknown) => void,
@@ -59,8 +62,19 @@ export function createEventProjection(
   const ignoredTools = new Set<string>();
   const streamed = new Map<string, string>();
   let failure: string | undefined;
+  let pendingError: string | undefined;
+  let errorGrace: ReturnType<typeof setTimeout> | undefined;
+  const settleError = () => {
+    clearTimeout(errorGrace);
+    const failed = pendingError;
+    pendingError = undefined;
+    if (failed === undefined || ended) return;
+    ended = true;
+    emit({ type: 'turn_end', data: { status: 'failed', message: failed } });
+  };
   return {
     begin() {
+      settleError();
       textSeen = false;
       failure = undefined;
       streamed.clear();
@@ -124,18 +138,24 @@ export function createEventProjection(
         (typeof d.isTerminal === 'boolean' ? d.isTerminal : d.willRetry !== true) &&
         !ended
       ) {
+        const failed = string(d.message) || message('EXECUTION_FAILED', 'Cindy 执行未完成。');
         if (d.usage) {
           addEventUsage(d);
           reportUsage();
+        } else if (pendingError === undefined) {
+          // Claude reports a failed result as error then a paired done carrying the usage;
+          // other engines may stop at the error, so the wait is bounded.
+          pendingError = failed;
+          errorGrace = setTimeout(settleError, ERROR_USAGE_GRACE_MS);
+          errorGrace.unref?.();
+          return;
         }
         ended = true;
-        emit({
-          type: 'turn_end',
-          data: {
-            status: 'failed',
-            message: string(d.message) || message('EXECUTION_FAILED', 'Cindy 执行未完成。'),
-          },
-        });
+        emit({ type: 'turn_end', data: { status: 'failed', message: failed } });
+      } else if (event.type === 'done' && pendingError !== undefined) {
+        addEventUsage(d);
+        reportUsage();
+        settleError();
       } else if (event.type === 'done' && !ended) {
         if (!textSeen && string(d.result)) emit({ type: 'text', data: d.result });
         addEventUsage(d);
@@ -168,6 +188,7 @@ export function createEventProjection(
       if (!ended) failure ??= message;
     },
     fail(message: string, status: 'failed' | 'interrupted' = 'failed') {
+      settleError();
       if (!ended) {
         ended = true;
         emit({ type: 'turn_end', data: { status, message } });

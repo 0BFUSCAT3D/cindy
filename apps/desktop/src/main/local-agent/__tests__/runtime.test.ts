@@ -232,4 +232,32 @@ describe('native event projection', () => {
     expect(emit.mock.calls.map(([event]) => event.type)).toEqual(['usage', 'turn_end']);
     expect(emit.mock.calls[0][0].data).toEqual({ input: 7, cached: 0, output: 2 });
   });
+  // Claude's failed result: a usage-less terminal error, then the paired done with usage.
+  it('reports a failed turn usage before its end, and still ends when no done follows', () => {
+    vi.useFakeTimers();
+    try {
+      const emit = vi.fn(),
+        p = createEventProjection(emit);
+      p.begin();
+      p.accept({ type: 'error', data: { message: 'failed', isTerminal: true } });
+      p.accept({
+        type: 'done',
+        data: { is_error: true, usageSegments: [{ inputTokens: 4, outputTokens: 1 }] },
+      });
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'usage', data: { input: 4, cached: 0, output: 1 } },
+        { type: 'turn_end', data: { status: 'failed', message: 'failed' } },
+      ]);
+      p.begin();
+      emit.mockClear();
+      p.accept({ type: 'error', data: { message: 'stopped', isTerminal: true } });
+      expect(emit).not.toHaveBeenCalled();
+      vi.runAllTimers();
+      expect(emit.mock.calls.map(([event]) => event)).toEqual([
+        { type: 'turn_end', data: { status: 'failed', message: 'stopped' } },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
