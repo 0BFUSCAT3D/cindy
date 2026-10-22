@@ -10348,6 +10348,18 @@
       "rootNotLoaded": "The original message is not in the loaded history",
       "rootUnavailable": "The original message is no longer in this chat, so a thread can’t start here",
       "openFailed": "The thread didn’t open. Try again."
+    },
+    "projects": {
+      "title": "Linked Projects",
+      "description": "Read project materials when needed. Linking a project does not assign its sessions or start background work.",
+      "empty": "No linked projects yet.",
+      "choose": "Choose a project",
+      "add": "Add",
+      "remove": "Remove {{name}}",
+      "otherComputer": "On another computer",
+      "unavailable": "Directory unavailable",
+      "failed": "Could not update projects. Reload to check the saved state.",
+      "noAvailable": "Add more projects from the project list first."
     }
   },
   "common": {
