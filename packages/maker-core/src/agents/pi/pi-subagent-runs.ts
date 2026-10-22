@@ -3150,6 +3150,53 @@ async function terminalResultProcessIdentities(
  * which PIDs are still alive, exceeded that budget on hosted runners (8238ms
  * against an 8000ms cap) and failed a dead child closed.
  */
+/** Full Linux argv, or null if that pid is already gone. `'unknown'` is fail-closed. */
+async function readLinuxProcArgs(pid: string): Promise<string | null | 'unknown'> {
+  try {
+    const cmdline = await fs.readFile(`/proc/${pid}/cmdline`);
+    const args = cmdline.toString('utf8').split('\0').filter((part) => part.length > 0).join(' ');
+    return args.trim() ? args : null;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'unknown';
+  }
+}
+
+/** Add same-user processes `ps` omitted. An unreadable live command line is unknown. */
+async function supplementLinuxProcCommandLines(
+  commands: string[],
+  seenPids: Set<string>,
+  uid: number,
+  deadline: number,
+): Promise<string[] | null> {
+  let names: string[];
+  try {
+    names = await fs.readdir('/proc');
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    if (Date.now() >= deadline) return null;
+    if (!/^[1-9]\d*$/.test(name) || seenPids.has(name)) continue;
+    let statusText: string;
+    try {
+      statusText = await fs.readFile(`/proc/${name}/status`, 'utf8');
+    } catch {
+      continue;
+    }
+    const uidField = statusText.split('\n').find((line) => line.startsWith('Uid:'));
+    const realUid = uidField ? Number(uidField.slice(4).trim().split(/\s+/)[0]) : Number.NaN;
+    if (realUid !== uid) continue;
+    const stateField = statusText.split('\n').find((line) => line.startsWith('State:'));
+    if (stateField?.slice(6).trim().startsWith('Z')) continue;
+    const args = await readLinuxProcArgs(name);
+    if (args === 'unknown') return null;
+    if (!args) continue;
+    commands.push(args);
+    seenPids.add(name);
+  }
+  return commands;
+}
+
 async function readRecoveryProcessInventory(deadline: number): Promise<string[] | null> {
   try {
     const remaining = Math.floor(deadline - Date.now());
@@ -3285,17 +3332,37 @@ async function readRecoveryProcessInventory(deadline: number): Promise<string[] 
     }
     const uid = process.geteuid?.();
     if (!Number.isSafeInteger(uid)) return null;
+    // COLUMNS does not always yield to -ww when stdout is a pipe. A clipped
+    // line can drop --session-id and look like the child already exited.
     const { stdout } = await execFileAsync('ps', ['-ww', '-u', String(uid), '-o', 'pid=,args='], {
-      encoding: 'utf8', timeout: Math.min(KILL_PROBE_TIMEOUT_MS, remaining), maxBuffer: 4 * 1024 * 1024,
+      encoding: 'utf8',
+      timeout: Math.min(KILL_PROBE_TIMEOUT_MS, remaining),
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, COLUMNS: '1000000' },
     });
     const lines = stdout.trim().split('\n');
     const commands: string[] = [];
+    const seenPids = new Set<string>();
     for (const line of lines) {
+      if (Date.now() >= deadline) return null;
       const match = /^\s*([1-9]\d*)\s+(.+)$/.exec(line);
       if (!match || !match[2]!.trim()) return null;
-      commands.push(match[2]!);
+      const pid = match[1]!;
+      let command = match[2]!;
+      if (process.platform === 'linux') {
+        const full = await readLinuxProcArgs(pid);
+        if (full === 'unknown') return null;
+        // Only replace a clipped listing. A missing or unrelated /proc entry
+        // keeps the ps text so a test stub pid is not overwritten.
+        const visible = command.endsWith('+') ? command.slice(0, -1) : command;
+        if (visible && full?.includes(visible)) command = full;
+      }
+      commands.push(command);
+      seenPids.add(pid);
     }
-    return commands.length > 0 ? commands : null;
+    if (commands.length === 0) return null;
+    if (process.platform !== 'linux') return commands;
+    return supplementLinuxProcCommandLines(commands, seenPids, uid, deadline);
   } catch {
     return null;
   }
