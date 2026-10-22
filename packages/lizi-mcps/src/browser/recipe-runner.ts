@@ -13,11 +13,14 @@ import type { BrowserControlRequest, BrowserControlResult } from '@cindy/browser
 import { buildExtractFnSource, type ExtractSpec } from './extract.js';
 import type { Recipe, RecipeStep } from './recipe-loader.js';
 import { isHttpUrl } from './url-guard.js';
+import { runOpenCliAdapter } from './opencli-page.js';
+import type { RecipeFiles } from '@jackwener/opencli/cindy';
 
 export interface RecipeRunDeps {
   call: (req: BrowserControlRequest) => Promise<BrowserControlResult>;
   targetId?: string;
   recipeSecrets?: { read(key: string): string | null; write(key: string, value: string): boolean };
+  recipeFiles?: () => Promise<RecipeFiles>;
   logger?: { warn?: (message: string, meta?: unknown) => void };
 }
 
@@ -311,7 +314,6 @@ export async function runRecipe(
   if (recipe.adapter) {
     let started = false;
     try {
-      const { runOpenCliAdapter } = await import('./opencli-page.js');
       const args = { ...(inputs ?? {}) };
       for (const [from, to] of Object.entries(recipe.adapterInputMap ?? {})) {
         if (Object.hasOwn(args, from)) { args[to] = args[from]; if (from !== to) delete args[from]; }

@@ -1,3 +1,4 @@
+import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -9,7 +10,7 @@ import { INSTAGRAM_HOME_URL, gotoInstagramHome } from './_shared/navigation.js';
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const SUPPORTED_VIDEO_EXTENSIONS = new Set(['.mp4']);
 const MAX_MEDIA_ITEMS = 10;
-const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = '/tmp/instagram_post_protocol_trace.json';
+const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = `${recipeDiagnosticPath("instagram_post_protocol_trace.json")}`;
 export function buildEnsureComposerOpenJs() {
     return `
     (() => {
@@ -486,7 +487,7 @@ async function injectImageViaBrowser(page, imagePaths, selector) {
         return {
             name: path.basename(imagePath),
             type: mimeType,
-            base64: fs.readFileSync(imagePath).toString('base64'),
+            base64: readRecipeFileSync(imagePath).toString('base64'),
         };
     });
     const chunkKey = `__opencliInstagramUpload_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -772,14 +773,14 @@ async function waitForPreview(page, maxWaitSeconds = 12) {
         if (state.state === 'preview')
             return;
         if (state.state === 'failed') {
-            await page.screenshot({ path: '/tmp/instagram_post_preview_debug.png' });
-            throw makeUploadFailure('Inspect /tmp/instagram_post_preview_debug.png. ' + (state.detail || ''));
+            await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_preview_debug.png")}` });
+            throw makeUploadFailure(`Inspect ${recipeDiagnosticPath("instagram_post_preview_debug.png")}. ` + (state.detail || ''));
         }
         if (attempt < attempts - 1)
             await page.wait({ time: 1 });
     }
-    await page.screenshot({ path: '/tmp/instagram_post_preview_debug.png' });
-    throw new CommandExecutionError('Instagram image preview did not appear after upload', 'The selected file input may not match the active composer; inspect /tmp/instagram_post_preview_debug.png');
+    await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_preview_debug.png")}` });
+    throw new CommandExecutionError('Instagram image preview did not appear after upload', `The selected file input may not match the active composer; inspect ${recipeDiagnosticPath("instagram_post_preview_debug.png")}`);
 }
 async function waitForPreviewMaybe(page, maxWaitSeconds = 4) {
     const attempts = Math.max(1, Math.ceil(maxWaitSeconds * 2));
@@ -959,13 +960,13 @@ async function advanceToCaptionEditor(page) {
             throw makeUploadFailure(uploadState.detail);
         }
     }
-    await page.screenshot({ path: '/tmp/instagram_post_caption_debug.png' });
-    throw new CommandExecutionError('Instagram caption editor did not appear', 'Instagram may have changed the publish flow; inspect /tmp/instagram_post_caption_debug.png');
+    await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_caption_debug.png")}` });
+    throw new CommandExecutionError('Instagram caption editor did not appear', `Instagram may have changed the publish flow; inspect ${recipeDiagnosticPath("instagram_post_caption_debug.png")}`);
 }
 async function waitForCaptionEditor(page) {
     if (!(await hasCaptionEditor(page))) {
-        await page.screenshot({ path: '/tmp/instagram_post_caption_debug.png' });
-        throw new CommandExecutionError('Instagram caption editor did not appear', 'Instagram may have changed the publish flow; inspect /tmp/instagram_post_caption_debug.png');
+        await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_caption_debug.png")}` });
+        throw new CommandExecutionError('Instagram caption editor did not appear', `Instagram may have changed the publish flow; inspect ${recipeDiagnosticPath("instagram_post_caption_debug.png")}`);
     }
 }
 async function rethrowUploadFailureIfPresent(page, originalError) {
@@ -1235,16 +1236,16 @@ async function ensureCaptionFilled(page, content) {
             await page.wait({ time: 0.5 });
         }
     }
-    await page.screenshot({ path: '/tmp/instagram_post_caption_fill_debug.png' });
-    throw new CommandExecutionError('Instagram caption did not stick before sharing', 'Inspect /tmp/instagram_post_caption_fill_debug.png for the caption editor state');
+    await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_caption_fill_debug.png")}` });
+    throw new CommandExecutionError('Instagram caption did not stick before sharing', `Inspect ${recipeDiagnosticPath("instagram_post_caption_fill_debug.png")} for the caption editor state`);
 }
 async function waitForPublishSuccess(page) {
     let settledStreak = 0;
     for (let attempt = 0; attempt < 90; attempt++) {
         const result = await page.evaluate(buildPublishStatusProbeJs());
         if (result?.failed) {
-            await page.screenshot({ path: '/tmp/instagram_post_share_debug.png' });
-            throw new CommandExecutionError('Instagram post share failed', 'Inspect /tmp/instagram_post_share_debug.png for the share failure state');
+            await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_share_debug.png")}` });
+            throw new CommandExecutionError('Instagram post share failed', `Inspect ${recipeDiagnosticPath("instagram_post_share_debug.png")} for the share failure state`);
         }
         if (result?.ok) {
             return result.url || '';
@@ -1261,8 +1262,8 @@ async function waitForPublishSuccess(page) {
             await page.wait({ time: 1 });
         }
     }
-    await page.screenshot({ path: '/tmp/instagram_post_share_debug.png' });
-    throw new CommandExecutionError('Instagram post share confirmation did not appear', 'Inspect /tmp/instagram_post_share_debug.png for the final publish state');
+    await page.screenshot({ path: `${recipeDiagnosticPath("instagram_post_share_debug.png")}` });
+    throw new CommandExecutionError('Instagram post share confirmation did not appear', `Inspect ${recipeDiagnosticPath("instagram_post_share_debug.png")} for the final publish state`);
 }
 async function resolveProfileUrl(page, currentUserId = '') {
     if (currentUserId) {

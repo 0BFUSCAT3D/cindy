@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, AuthRequiredError, EmptyResultError, TimeoutError } from '@jackwener/opencli/errors';
 import fs from 'node:fs';
@@ -36,7 +37,7 @@ function readManifest(manifestPath, { offset, limit }) {
   if (!path) return null;
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(path, 'utf8'));
+    parsed = JSON.parse(readRecipeFileSync(path, 'utf8'));
   } catch (error) {
     throw new ArgumentError('manifestPath', `failed to read JSON manifest: ${error?.message || error}`);
   }

@@ -1,1 +1,1 @@
-export const modules: Record<string, () => Promise<unknown>>;
+export const modules: Record<string, true>;

@@ -4,8 +4,8 @@ import { getRegistry, type CliCommand, type Arg } from "../src/registry.js";
 import { executePipeline } from "../src/pipeline/index.js";
 import type { IPage } from "../src/types.js";
 import { modules } from "./modules.js";
-import { withRecipeHost, type RecipeSecrets } from "./host.js";
-export type { RecipeSecrets } from "./host.js";
+import { withRecipeHost, type RecipeSecrets, type RecipeFiles } from "./host.js";
+export type { RecipeSecrets, RecipeFiles } from "./host.js";
 
 export { CDPBasePage } from "../src/browser/base-page.js";
 export { buildEvaluateExpression } from "../src/browser/utils.js";
@@ -26,7 +26,6 @@ export async function loadAdapter(id: string): Promise<CliCommand> {
   if (!entry) throw new Error(`Unknown bundled adapter: ${id}`);
   const load = modules[entry.modulePath];
   if (!load) throw new Error(`Missing bundled adapter module: ${id}`);
-  await load();
   const command = getRegistry().get(id);
   if (!command?.func && !command?.pipeline)
     throw new Error(`Adapter did not register: ${id}`);
@@ -97,6 +96,7 @@ export async function executeAdapter(
   page: IPage,
   secrets?: RecipeSecrets,
   onExecutionStart?: () => void,
+  files?: RecipeFiles,
 ): Promise<unknown> {
   return withRecipeHost(secrets, async () => {
     const command = await loadAdapter(id);
@@ -118,5 +118,5 @@ export async function executeAdapter(
       );
     if (command.browser === false) return command.func!(args);
     return command.func!(page, args);
-  });
+  }, files);
 }

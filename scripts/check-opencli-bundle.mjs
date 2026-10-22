@@ -19,6 +19,16 @@ try {
     root,
     configFile: false,
     logLevel: "warn",
+    plugins: [{
+      name: 'assert-static-recipe-entry',
+      generateBundle(_options, bundle) {
+        for (const output of Object.values(bundle)) {
+          if (output.type === 'chunk' && output.dynamicImports.length) {
+            throw new Error(`Recipe bundle retained runtime imports: ${output.fileName}`);
+          }
+        }
+      },
+    }],
     ssr: { noExternal: true },
     build: {
       ssr: "packages/opencli-vendor/cindy/index.ts",

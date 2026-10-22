@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -50,7 +51,7 @@ export function readFileForUpload(filePath) {
     if (stat.size > MAX_FILE_SOURCE_BYTES) {
         throw new ArgumentError(`--file exceeds ${MAX_FILE_SOURCE_BYTES} bytes (got ${stat.size}); use a smaller file or upload via the NotebookLM UI for now.`);
     }
-    const buf = fs.readFileSync(abs);
+    const buf = readRecipeFileSync(abs);
     return { base64: buf.toString('base64'), filename: path.basename(abs), size: stat.size };
 }
 

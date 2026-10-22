@@ -1,3 +1,6 @@
+import * as __cindy_node_fs from "node:fs";
+import * as __cindy_node_path from "node:path";
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * ChatGPT web browser automation helpers.
  * Cross-platform: works on Linux/macOS/Windows via OpenCLI's CDP browser automation.
@@ -529,11 +532,10 @@ async function buildChatGPTBackendHeaders(page, { includeAuthorization = false }
         page.getCookies({ url: `${CHATGPT_URL}/api/auth/session` }).catch(() => []),
         page.getCookies({ domain: CHATGPT_DOMAIN }).catch(() => []),
         page.getCookies({ domain: `.${CHATGPT_DOMAIN}` }).catch(() => []),
-        page.getCookies().catch(() => []),
     ]);
     const cookiesByName = new Map();
     for (const cookie of cookieLists.flat()) {
-        if (!cookie?.name || typeof cookie.value !== 'string') continue;
+        if (!cookie?.name || typeof cookie.value !== 'string' || ![CHATGPT_DOMAIN, `.${CHATGPT_DOMAIN}`].includes(cookie.domain)) continue;
         if (!cookiesByName.has(cookie.name) || cookie.domain === CHATGPT_DOMAIN || cookie.domain === `.${CHATGPT_DOMAIN}`) {
             cookiesByName.set(cookie.name, cookie);
         }
@@ -1765,11 +1767,10 @@ async function buildChatGPTConversationHeaders(page, { includeAuthorization = fa
         page.getCookies({ url: `${CHATGPT_URL}/api/auth/session` }).catch(() => []),
         page.getCookies({ domain: CHATGPT_DOMAIN }).catch(() => []),
         page.getCookies({ domain: `.${CHATGPT_DOMAIN}` }).catch(() => []),
-        page.getCookies().catch(() => []),
     ]);
     const cookiesByName = new Map();
     for (const cookie of cookieLists.flat()) {
-        if (!cookie?.name || typeof cookie.value !== 'string') continue;
+        if (!cookie?.name || typeof cookie.value !== 'string' || ![CHATGPT_DOMAIN, `.${CHATGPT_DOMAIN}`].includes(cookie.domain)) continue;
         if (!cookiesByName.has(cookie.name) || cookie.domain === CHATGPT_DOMAIN || cookie.domain === `.${CHATGPT_DOMAIN}`) {
             cookiesByName.set(cookie.name, cookie);
         }
@@ -2463,8 +2464,8 @@ function imageMimeFromPath(filePath) {
 }
 
 export async function prepareChatGPTImagePaths(imagePaths) {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = __cindy_node_fs;
+    const path = __cindy_node_path;
     const absPaths = imagePaths.map(filePath => path.default.resolve(filePath));
     const allowedExts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic', '.heif']);
 
@@ -2538,8 +2539,8 @@ async function waitForChatGPTUploadPreview(page, fileNames) {
 }
 
 async function uploadChatGPTChunkedFiles(page, paths, selector, mimeForPath) {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = __cindy_node_fs;
+    const path = __cindy_node_path;
     if (typeof page.evaluateOnce !== 'function') {
         throw new CommandExecutionError('File upload fallback requires a browser backend with evaluateOnce support.');
     }
@@ -2552,7 +2553,7 @@ async function uploadChatGPTChunkedFiles(page, paths, selector, mimeForPath) {
     const files = paths.map(absPath => ({
         name: path.default.basename(absPath),
         mime: mimeForPath(absPath),
-        bytes: fs.default.readFileSync(absPath),
+        bytes: readRecipeFileSync(absPath),
     }));
     let fallbackResult;
     try {
@@ -2628,7 +2629,7 @@ async function uploadChatGPTChunkedFiles(page, paths, selector, mimeForPath) {
 }
 
 export async function uploadChatGPTImages(page, imagePaths) {
-    const path = await import('node:path');
+    const path = __cindy_node_path;
     const prepared = await prepareChatGPTImagePaths(imagePaths);
     if (!prepared.ok) return prepared;
     const absPaths = prepared.paths;
@@ -2672,7 +2673,7 @@ const CHATGPT_ATTACHMENT_CARD_JS = `
 
 /** Attach documents to the active composer and verify new, ready attachment chips. */
 export async function uploadChatGPTFiles(page, filePaths) {
-    const path = await import('node:path');
+    const path = __cindy_node_path;
     const prepared = await prepareChatGPTFilePaths(filePaths);
     if (!prepared.ok) return prepared;
     const names = prepared.paths.map(file => path.default.basename(file));
@@ -3379,8 +3380,8 @@ export async function openProjectKnowledgeDialog(page) {
  */
 export async function uploadChatGPTProjectFiles(page, projectId, filePaths) {
     const id = parseChatGPTProjectId(projectId);
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = __cindy_node_fs;
+    const path = __cindy_node_path;
 
     const prepared = await prepareChatGPTFilePaths(filePaths);
     if (!prepared.ok) return { ...prepared, inputError: true };
@@ -3419,7 +3420,7 @@ export async function uploadChatGPTProjectFiles(page, projectId, filePaths) {
         const files = absPaths.map(absPath => ({
             name: path.default.basename(absPath),
             mime: mimeFromFilePath(absPath),
-            base64: fs.default.readFileSync(absPath).toString('base64'),
+            base64: readRecipeFileSync(absPath).toString('base64'),
         }));
         const fallbackResult = requireObjectEvaluateResult(unwrapEvaluateResult(await page.evaluate(`
             (() => {
@@ -3529,8 +3530,8 @@ async function waitForChatGPTProjectUploadConfirmation(page, fileNames) {
  * Accepts all file types with a 512 MB per-file limit (matching ChatGPT's project limit).
  */
 export async function prepareChatGPTFilePaths(filePaths) {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = __cindy_node_fs;
+    const path = __cindy_node_path;
     const absPaths = filePaths.map(filePath => path.default.resolve(filePath));
 
     for (const absPath of absPaths) {

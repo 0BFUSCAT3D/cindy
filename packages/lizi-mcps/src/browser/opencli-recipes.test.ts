@@ -6,6 +6,10 @@ import { createBrowserMcpServer } from "./server.js";
 import { OpenCliPage } from "./opencli-page.js";
 import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
+import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -13,6 +17,53 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 security review: real adapter entries, unit tier with fake browser
+  // and network. Existing tests did not cover cross-site cookies or direct
+  // file reads. Minimal inputs: foreign cookie and an unbrokered local PNG.
+  it('does not forward foreign cookies when the browser returns mixed domains', async () => {
+    const getCookies = vi.fn(async () => [
+      { name: 'session', value: 'fake-own', domain: '.chatgpt.com' },
+      { name: 'foreign', value: 'fake-private', domain: '.example.test' },
+      { name: 'suffix', value: 'fake-private', domain: '.evilchatgpt.com' },
+    ]);
+    const fetch = vi.fn(async () => { throw new Error('captured request'); });
+    vi.stubGlobal('fetch', fetch);
+    const page = {
+      nativeClick: vi.fn(), getCookies,
+      evaluate: async (js: string) => js === 'window.location.href'
+        ? 'https://chatgpt.com/new'
+        : { isLoggedIn: true, hasComposer: true, hasLoginGate: false, model: 'fast', found: false },
+    } as unknown as IPage;
+    await expect(executeAdapter('chatgpt/model', { model: 'advanced' }, page)).rejects.toThrow('captured request');
+    expect(fetch).toHaveBeenCalled();
+    const request = fetch.mock.calls[0] as unknown as [string, { headers: { cookie: string } }];
+    expect(request[1].headers.cookie).toBe('session=fake-own');
+    expect(getCookies.mock.calls.every(args => args.length > 0)).toBe(true);
+  });
+
+  it('refuses direct media reads without the host file broker', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-media-test-'));
+    try {
+      const file = path.join(dir, 'private.png');
+      await writeFile(file, 'fake-private-image');
+      const call = vi.fn(async (request: BrowserControlRequest) => ({
+        ok: true, action: request.action, data: { targetId: 't', result: request.request?.fn?.includes('atob(')
+          ? { ok: true, data: { url: 'https://example.test/uploaded' } } : 'https://yollomi.com' },
+      }));
+      const result = await runRecipe(loadRecipes().get('opencli:yollomi/upload')!, { file }, { call });
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain('host file broker');
+      expect(call.mock.calls.some(([req]) => req.request?.fn?.includes('atob('))).toBe(false);
+      const read = vi.fn(() => Buffer.from('approved-image'));
+      const approved = await runRecipe(loadRecipes().get('opencli:yollomi/upload')!, { file }, {
+        call, recipeFiles: async () => ({ read, open: () => { throw new Error('unused'); } }),
+      });
+      expect(approved.ok).toBe(true);
+      expect(read).toHaveBeenCalledWith(file);
+      expect(call.mock.calls.some(([req]) => req.request?.fn?.includes(Buffer.from('approved-image').toString('base64')))).toBe(true);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // Review #6826: goto must await the requested DOM settle interval on both
   // initial open and existing-tab navigation. Unit tier, real page JS with
   // fake timers/DOM; no prior adapter test exercised navigation options.

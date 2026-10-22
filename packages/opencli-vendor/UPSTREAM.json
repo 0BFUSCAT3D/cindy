@@ -24,10 +24,94 @@
     },
     "clis/web/read.js": {
       "upstreamSha256": "7314286c520f9fa0c9b874d04524343eaf8327ad9f4b2dc66debab04341e24ba"
+    },
+    "clis/_atlassian/shared.js": {
+      "upstreamSha256": "d40247e4160924c45442a33328293365ca59b412b27d7324aef595d98187b6c5"
+    },
+    "clis/bilibili/utils.js": {
+      "upstreamSha256": "f0cbcec63994c2907f17f3b06e25b3b31721c6eb5d6a7324980d0fde0d2b59ec"
+    },
+    "clis/chatgpt/utils.js": {
+      "upstreamSha256": "ff30f6c44cd46d723af0e7de0d2ab39e393203c141342d12877ae79fe1e8c636"
+    },
+    "clis/claude/utils.js": {
+      "upstreamSha256": "8584975e273d9a14e07a60501077fc4838c5af737951910562ae411ba0f5d301"
+    },
+    "clis/deepseek/utils.js": {
+      "upstreamSha256": "47bf1eea78e3b0e1e9ad8a794c26205080c08b4e9e0f698800a2bc7bbd817329"
+    },
+    "clis/douyin/_shared/imagex-upload.js": {
+      "upstreamSha256": "5034c3475bed5f6aba09586de0a56f09ee443021c12712b317eba2fadd4de3c9"
+    },
+    "clis/douyin/_shared/tos-upload.js": {
+      "upstreamSha256": "aff91dc8450afb47ef37e9b31f9a20643c5eb77833e58f6909c58259c689ecfc"
+    },
+    "clis/grok/export-all.js": {
+      "upstreamSha256": "9ccaaad33eb9d06c8e9c7cadc96bd07c7a6aa37eb9f9fb22fec2bdd11e3a4df5"
+    },
+    "clis/instagram/_shared/private-publish.js": {
+      "upstreamSha256": "9b424666e8a8c770447798c3c33f5520f687a83615e29da5e83f7235dfc4beb4"
+    },
+    "clis/instagram/_shared/protocol-capture.js": {
+      "upstreamSha256": "4c2e7fff2c0cba7e44ca84dfb1e4aa5e96176338d7db0737b4c96f5d8462ca34"
+    },
+    "clis/instagram/post.js": {
+      "upstreamSha256": "8bc348f567990dafa969196362f821e07aaf1520d59c55c8821cb98e88dd71b1"
+    },
+    "clis/linux-do/feed.js": {
+      "upstreamSha256": "f1ee18ddf3c7016938d050360bd104984db597dd9ce4034614e96a0ff874810a"
+    },
+    "clis/midjourney/utils.js": {
+      "upstreamSha256": "d70f599f01738956a7d0deccaa5c0919f6ba4d0f5f88ef0c7e56bc79b7626b97"
+    },
+    "clis/notebooklm/add-source.js": {
+      "upstreamSha256": "66eb84fb1ed88be3afa781e7e6dab1b3df260dc30d0442eab8ad27d3fdd48db2"
+    },
+    "clis/paperreview/utils.js": {
+      "upstreamSha256": "d8c3accc2a25bbfdcfb3b4d27307faef3b1806f03d67d64ef95ceee6d3eb4e52"
+    },
+    "clis/slock/attachment-upload.js": {
+      "upstreamSha256": "b68e1b623f09b93661fe5aa7fb45a4596ea47b0209e56b6645d359cb3b3c010d"
+    },
+    "clis/twitter/archive.js": {
+      "upstreamSha256": "b983f3fb74cf89948918d2ba59093ef3ddd2880e1633a6480795752ed7c46664"
+    },
+    "clis/twitter/bookmarks.js": {
+      "upstreamSha256": "a86b947097543da3f7117c64cbb5e33b6580d625d625887bb91db80270afb735"
+    },
+    "clis/twitter/likes.js": {
+      "upstreamSha256": "abe19eb0bd540f7b05dd137d7be48d84bfb2a009c414e5c50f0cd8c4a010462e"
+    },
+    "clis/twitter/post.js": {
+      "upstreamSha256": "b1011fa9deb4c449f5add647edd0d813b528a2d14650d3986f848831ca54b39e"
+    },
+    "clis/twitter/utils.js": {
+      "upstreamSha256": "5d1f7449edc691ac03f1f70d87f3de7c4c2a6a3633f569b53bcd006468fb93a6"
+    },
+    "clis/wechat-channels/publish.js": {
+      "upstreamSha256": "6a35b4ef55793fb47b6072db70a1ce55e8680f182d453e05e3441f2285edd044"
+    },
+    "clis/weixin/create-draft.js": {
+      "upstreamSha256": "b6b7b95fe20af010159d4fdeb36c177e40417998d34b0bd34ca3cd3476abe05b"
+    },
+    "clis/xiaohongshu/publish.js": {
+      "upstreamSha256": "ad9ffe50e26051885aa49a04bcbe49a718b20cf27c73a00ae7c822b2b37edd79"
+    },
+    "clis/yollomi/upload.js": {
+      "upstreamSha256": "0439796bc24bab1a2de8a2635fb04c01bf68edff3f973575c2429640f1252a21"
+    },
+    "clis/yollomi/utils.js": {
+      "upstreamSha256": "4d1ef9a38e7a0a4b6ddebb7808c2a4ee4f2b8990e376c0827cc9bf12963a7e62"
+    },
+    "clis/zhihu/write-shared.js": {
+      "upstreamSha256": "5be11c78357b4999776b0e914e25d41a029f13265f56037bfee1299b02e3dfa3"
+    },
+    "src/browser/base-page.ts": {
+      "upstreamSha256": "c32e038601cb58ed02dc3c1288a1335ba87d8e03b2cba1871ef3167931359718"
     }
   },
   "files": {
-    "clis/_atlassian/shared.js": "d40247e4160924c45442a33328293365ca59b412b27d7324aef595d98187b6c5",
+    "clis/_atlassian/shared.js": "d5edb3a2d1d5ca5b578953a87554df76ff8ba1f710638b380dcc970051ca1938",
     "clis/_shared/common.js": "0d70b3b99d9e03aae3bf476d8f5ca21435018b62fb4936d6d40fa6febe5155f5",
     "clis/_shared/google-account.js": "0a17bd23206b65378560d0514c0f5c3c27d3bad9ba58d23190d6fa7f1e59400c",
     "clis/_shared/search-adapter.js": "e3d77ac024970330244d753cc526cfc24f9edb5c0947acab0b6749355fb6f381",
@@ -128,7 +212,7 @@
     "clis/bilibili/summary.js": "4b155643f97ef7c14bd75d976a4d554b21ee1b751b2097070c7205a5b66c5433",
     "clis/bilibili/unfollow.js": "346d991ccb816357dc2af3d472aa5e9e7533ea2c62a94fe924729cb3b5d28569",
     "clis/bilibili/user-videos.js": "4955b227504472e50aefc6a48faf799c3231e4441d9f608416251f5519d55174",
-    "clis/bilibili/utils.js": "f0cbcec63994c2907f17f3b06e25b3b31721c6eb5d6a7324980d0fde0d2b59ec",
+    "clis/bilibili/utils.js": "c8821c13041f3a3d51059bdac242ce54fa6c8bb77016a0f12a9aba87ab396807",
     "clis/bilibili/video.js": "a652cc631b695b729a826061ba0a3b7feed7719f294b6151745a14bab3505d5c",
     "clis/binance/asks.js": "e881cc998616958eb520c4e31549b99472bb0612799e1bd2bc1763c57398ea70",
     "clis/binance/depth.js": "1d638af9d76c92778bfc96d6d847cab96bd904a9493ad423e1d6ea5116a799cd",
@@ -200,7 +284,7 @@
     "clis/chatgpt/read.js": "44ed9824abd6568227ac2164b3175ec14251e3ef09c161cdaea8da89cd355d0c",
     "clis/chatgpt/send.js": "535cfb3fba02ca3d00e0d5804c617ac9c67cdc2f1581abc92c27ae57bbb4d76b",
     "clis/chatgpt/status.js": "c61a2407c5b4d375f2c09c51de83c7800d5a501993329c308eac209328e50e6b",
-    "clis/chatgpt/utils.js": "ff30f6c44cd46d723af0e7de0d2ab39e393203c141342d12877ae79fe1e8c636",
+    "clis/chatgpt/utils.js": "64e667c5e7a42cc4b945ea743a09a056f9cc79db0c0b1ea0167ce0c2544c26d8",
     "clis/chess/analyze.js": "6310c246f7d03e73736d5b885706a6bfe7cd057761c3a3a5d13109a9afd67ae2",
     "clis/chess/game.js": "cdf30c1fef8813af0acff84c028c31225f47044db144fb71af32c47342639dab",
     "clis/chess/games.js": "0d8df9fcbe4f49982bc7f1b82581b5e581ae72808de1c41a5dd85568881b6bad",
@@ -214,7 +298,7 @@
     "clis/claude/read.js": "3bbd68a637d7d0505034a2feed4e270763c5cea14da2b8d580fafc64ca3d4612",
     "clis/claude/send.js": "05f822f839288ec0233ed77c11da365bcc1d366ce9aeeb6c3aa6095db01a9e27",
     "clis/claude/status.js": "01259c8136adf38e0a129a1a7d9ccc2df91d878f4fd5e046004f5e7b7b64e051",
-    "clis/claude/utils.js": "8584975e273d9a14e07a60501077fc4838c5af737951910562ae411ba0f5d301",
+    "clis/claude/utils.js": "8b37c6b2080afe97401d8c3e0978f37ead3ebd027054dfde9b501a960701a4c2",
     "clis/cnki/search.js": "6520d91f0cf43ac3b3d7b399a811cb0fd146c6829145e78562b6c79acf417b6f",
     "clis/coingecko/categories.js": "8a29d7626371f2820d8ed583b0d086b4578d65d270b1b911ecca09303ae60388",
     "clis/coingecko/coin.js": "5aec5929266fdb3a4cdc10f58da3749879d65ed88f267b91756d9220533a763c",
@@ -266,7 +350,7 @@
     "clis/deepseek/send.js": "64fc9bd159a6e39f4e5a2b7a734ee0498b979dc652587b326d756833d7467a45",
     "clis/deepseek/status.js": "d26c1b40774618d53abc85a88467a81690798af42286d806791c7902a9c892b4",
     "clis/deepseek/usage.js": "da5908b8dae865fd4c7f6e6c01afeea2460c10333b126a9734f399ae19f002ba",
-    "clis/deepseek/utils.js": "47bf1eea78e3b0e1e9ad8a794c26205080c08b4e9e0f698800a2bc7bbd817329",
+    "clis/deepseek/utils.js": "070b84ce87ab5ceae4b794d43b07581ca3b450354b008750987a069a0c1cb525",
     "clis/defillama/protocol.js": "509e04905e836cab678d51ed46e7658095fa58502cd1f80d288ad93a71729f4e",
     "clis/defillama/protocols.js": "bd73c95fcf37760ec4a78d7c98bdc4ac2568e9e1e10953871d07d3626de1386f",
     "clis/defillama/utils.js": "a205c83f8a76451386605908933d0e7aba7fb98818adfadc48de116dd906ff80",
@@ -318,12 +402,12 @@
     "clis/douyin/_shared/browser-fetch.js": "50117bc3144a7d4824150a04da173758747b16e77405bbce9f47dbf2d2c6e525",
     "clis/douyin/_shared/creation-id.js": "7764baf7e84773233a9ae1881b5dd6f5be49cf24dd4e8d02524beb2d0087973a",
     "clis/douyin/_shared/evaluate-result.js": "e83d57918fda3f1b39e7b58b462415dc91451eaea4c325b509bf59f43a3f5c6d",
-    "clis/douyin/_shared/imagex-upload.js": "5034c3475bed5f6aba09586de0a56f09ee443021c12712b317eba2fadd4de3c9",
+    "clis/douyin/_shared/imagex-upload.js": "e11ced5fbb78eb921f212d752c325ddd7b0f77c6a2fbc2cf8838fa1b7a0e41ff",
     "clis/douyin/_shared/public-api.js": "4c8140adb5f4a3c7b8e5946d614241c719d494f6bb5f5546c72125f272fd1606",
     "clis/douyin/_shared/sts2.js": "0759c0b4ac5542ad06a7bc03af5370579721f9af249ff29ad6230bdb6a2d7c46",
     "clis/douyin/_shared/text-extra.js": "4caa2e8660eba04115476ee212deaa7ac578271e3df18c4513295b9c15fca3dd",
     "clis/douyin/_shared/timing.js": "4bdc8fc4f64015253c884540e473d780bad4f97823e9ed91dff4fe83773b905b",
-    "clis/douyin/_shared/tos-upload.js": "aff91dc8450afb47ef37e9b31f9a20643c5eb77833e58f6909c58259c689ecfc",
+    "clis/douyin/_shared/tos-upload.js": "dbf121f85f7842623698b8e061eee91644111c421edeb4466e40c2fbb4bfbbb6",
     "clis/douyin/_shared/transcode.js": "2fc7d05b9748efd4ddf5333ae8da31560f2417773a2e5cc4fffe3b9ed7306e36",
     "clis/douyin/_shared/types.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
     "clis/douyin/_shared/vod-upload.js": "8030db92de71acce559e8ba4c1d89d93846e7bcf8c8f2c470def958283cf3c3c",
@@ -448,7 +532,7 @@
     "clis/grok/auth.js": "8c7cc107e0fa3af1b711abfe7ef14252c2a5547df48fd0575f08ce81f4ef3b95",
     "clis/grok/delete.js": "eb2914d1464ef9ee27ff37238bea15c79c8edadfe2c797ab23a43b21f60aa007",
     "clis/grok/detail.js": "2c1cd623a22b2e4a6de25a3198772ac68cd9df955e49f03f7d7559b452c4dce0",
-    "clis/grok/export-all.js": "9ccaaad33eb9d06c8e9c7cadc96bd07c7a6aa37eb9f9fb22fec2bdd11e3a4df5",
+    "clis/grok/export-all.js": "1f878302fe14094fc18473e10660ea32e2cdc2280b22c0f22312f0d7cc1058be",
     "clis/grok/export-utils.js": "b6301268bf9e0ea42d2544a9d7ca3666a1380eb26bbde5d4489ac55a27c6a56a",
     "clis/grok/export.js": "5ec1917addda187c613bf59653ed7200b93e0071b46194e30f7c1fc3cc4619b4",
     "clis/grok/history.js": "18a5e905273547973d41838026554fc2873ae293879db953b7fc6f76eeb278df",
@@ -517,8 +601,8 @@
     "clis/indeed/utils.js": "432ee24c15fdd18df6d9e9a54fbfcdd75edf86708eae88b64dcd4bec06822118",
     "clis/instagram/_shared/navigation.js": "acb71a106f5086de5e2053d8fda4bfd1ecc67ce96fb3c0722b118d1501ca7725",
     "clis/instagram/_shared/post-like.js": "e1acb51a3f00823df80f18c89f529f2613e62b75a3525e1a872861049e39dbda",
-    "clis/instagram/_shared/private-publish.js": "9b424666e8a8c770447798c3c33f5520f687a83615e29da5e83f7235dfc4beb4",
-    "clis/instagram/_shared/protocol-capture.js": "4c2e7fff2c0cba7e44ca84dfb1e4aa5e96176338d7db0737b4c96f5d8462ca34",
+    "clis/instagram/_shared/private-publish.js": "f512a2547eef68d8071d2d4b71a5d09ad0172e5221e53b25a6570d4d6e1741cd",
+    "clis/instagram/_shared/protocol-capture.js": "0af438ef1c5ebb8bc1af4fe532dd3191724fc694ad35c25f651785ad1468a121",
     "clis/instagram/_shared/read-response.js": "7805d4fc63e6ecb767136a6c7ae5415a000c41768b047f2ee539eb23f76bb513",
     "clis/instagram/_shared/runtime-info.js": "40ecefbf47ee65685048d9b8f61ba12dc9666d5e1ba8c048828b9e7eff74592c",
     "clis/instagram/_shared/user-id.js": "7218cc94ade8b6ffbe2c0c5fce53dad7688b35b4063e85743685192f0d3cc405",
@@ -533,9 +617,9 @@
     "clis/instagram/following.js": "f42334a31aca1a727a11874836e814584b8cbac7e51a876c80b8d0d4d38775c9",
     "clis/instagram/like.js": "40eca5c72564f704c40cf27b6c4da1bc38ee4d875224415cd88292a74e1b7bb0",
     "clis/instagram/note.js": "5c409f7e6d2da0ab2c875729154b1af04c4ec00c6a2d51e4807bc3c3ea50abf8",
-    "clis/instagram/post.js": "8bc348f567990dafa969196362f821e07aaf1520d59c55c8821cb98e88dd71b1",
+    "clis/instagram/post.js": "c2741bec14db3e64087d2c558047070ddb3f426a9a6e9cd9493bc4292c75f975",
     "clis/instagram/profile.js": "40f400cdabdcfcc216c5e7fa4bb321f1b70e00a5a5b83bac3c2ee1c276fca312",
-    "clis/instagram/reel.js": "cc8d447225f2b569d2b8399918cec1a14047818e836940b31591192fe39a4610",
+    "clis/instagram/reel.js": "507eeb55ecc41126a7e402436fd61ec530883d5781436d220122efbe67a90708",
     "clis/instagram/save.js": "fc5105071edad389d6004247a1113473ade4b8da3e174ed6c06ef151d5a468ec",
     "clis/instagram/saved.js": "95fbb7d994bd68e502b0b6a7fce70f24c3cf58083d5aefb1af54dfdd288781ec",
     "clis/instagram/search.js": "a38879e761271d167bef752359442b0be84611cca727b2b323467772d2d45239",
@@ -650,7 +734,7 @@
     "clis/linkedin-learning/trending.js": "990efb0dab3a85673fa7fdaf3be2aef06e9797168aca9daca2bf5ec2d101e619",
     "clis/linux-do/auth.js": "c50b18590dae70291194caac1838d055d77e76c771777a2d95402df24972d5dc",
     "clis/linux-do/categories.js": "90e41f28c34a19949bed630ab3b7e6d835b9acce5a16c2f31bb6cf5cae7cceea",
-    "clis/linux-do/feed.js": "f1ee18ddf3c7016938d050360bd104984db597dd9ce4034614e96a0ff874810a",
+    "clis/linux-do/feed.js": "c5a999e1b70c1a94c395f283101ad8a345a356bc31ec8a31bd930e69a3570212",
     "clis/linux-do/format.js": "3bf7d13bb36bfb682d47415b54bfa25ec804f9b53de01ae21c01f547bb59e678",
     "clis/linux-do/search.js": "54fd88b0d86ba5de9d08562ccf8e3dc9cdeb73108fc3bd2ce80102dd69c15a25",
     "clis/linux-do/tags.js": "d364c8cef0c6f19aa21f755844ac2a748deaa3f9aea3afa0c0a3ceb17e9e2339",
@@ -698,7 +782,7 @@
     "clis/midjourney/quota.js": "c9be85847c01d7a0d9673dc45b2ddbadc77a2de885825530b08886fe6e310a0f",
     "clis/midjourney/settings.js": "bcec44f911c62f1621f0a8776199c7ab3918df16c648e9fa2216f11e0bfea6bf",
     "clis/midjourney/status.js": "1382504f9b9cbe73864bc05f4d3f398ea38ae3fa18a4379428b7cdfee8ecfc2b",
-    "clis/midjourney/utils.js": "d70f599f01738956a7d0deccaa5c0919f6ba4d0f5f88ef0c7e56bc79b7626b97",
+    "clis/midjourney/utils.js": "17f7ebe690df1d88526dee4570b777a1b6239e9d19602ff0da95dedbd1ffea9c",
     "clis/midjourney/whoami.js": "78424e609c5cc0022ec7c2590cc902371f4431207d2f0b1079a9cdf9fa1beea9",
     "clis/minimax/music.js": "7e0ed13d0741ba08755a1b4added08f5ccd996b1265f8cc8712cc4947b216a35",
     "clis/minimax/utils.js": "078b0a871354155ebf5c7bb68b0c682515531c7c5c7b37acdb8626787aee0cdd",
@@ -708,7 +792,7 @@
     "clis/mubu/recent.js": "c942df22f5a5471e0603ad4a9145b3f2165b7d7501b8a880fd1294c2d54aecc1",
     "clis/mubu/search.js": "27a36be32428b2ee469a2290a73de4ae42c11b2ddac3438c6d60d7f46a7a9b6a",
     "clis/mubu/utils.js": "084cda4a7f1b06a2e4702517ed942ab0b29deff640b5097d4c92f6ee81d83b88",
-    "clis/notebooklm/add-source.js": "66eb84fb1ed88be3afa781e7e6dab1b3df260dc30d0442eab8ad27d3fdd48db2",
+    "clis/notebooklm/add-source.js": "5e2aae357fc7085fa26ee2d02490f243bcdd8ad7821b41cb0ba6ef16e82ba62c",
     "clis/notebooklm/auth.js": "03eeb11bbf5160b46bb01bd40bb5a06add947e5e0841b28731f6fa79fee9f2db",
     "clis/notebooklm/create.js": "8b6e73960db406cf55351b128a217027ae6f8cd6c969f335385d33e83db09f7b",
     "clis/notebooklm/current.js": "164f185ab66af82d2b51697b7c2338393314f228717f4b3d09592e57ab5a4085",
@@ -792,7 +876,7 @@
     "clis/paperreview/feedback.js": "198fb6ff0c8c151e7d42ea5853781460bf273a96be685bf74fc072977141f5a2",
     "clis/paperreview/review.js": "5f9c372061f10e5329d5711523457537aee7c21b10d8a2fb790937492b1d1f74",
     "clis/paperreview/submit.js": "a618f96d7f0b1e9c887a3ca44e23f411f471845cd521c72fb41df8fef6b335fb",
-    "clis/paperreview/utils.js": "d8c3accc2a25bbfdcfb3b4d27307faef3b1806f03d67d64ef95ceee6d3eb4e52",
+    "clis/paperreview/utils.js": "fa002545ac4d0342cd64d13e5890ab51f7a8219c01e355c516161244ee30bd04",
     "clis/pinterest/board-create.js": "11559ab31594c8ef079e64f0775e1765ddd340f90c818a3d9e2717a881b13550",
     "clis/pinterest/board-delete.js": "7ebe57101e3dee3b2a5a09c1253a84fcd327148c4e48d917dce8700c09a7bf60",
     "clis/pinterest/board-pins.js": "31dc289e09cb6c547b733464ba96cf40bd05d07000b736c4dc2e53050a1f8bf9",
@@ -929,7 +1013,7 @@
     "clis/sinafinance/stock-rank.js": "47e0046029346a72b5fb557978a1798992f9b6378514eb6ae4a56f534740fd9d",
     "clis/sinafinance/stock.js": "935f4d226d0addad6d72da8d7a26c1331dcceaa70325a50788956b91ccc1b408",
     "clis/slock/attachment-download.js": "d160a1d72614b5071746eda5d8d7033af652492204389ba9777f087e22c56be5",
-    "clis/slock/attachment-upload.js": "b68e1b623f09b93661fe5aa7fb45a4596ea47b0209e56b6645d359cb3b3c010d",
+    "clis/slock/attachment-upload.js": "22842025b2e7eb17fdb634ba90104def98f26067bbd8ca4ece544f52249e1a59",
     "clis/slock/attachment-url.js": "7c4c0d3d63b9cd682c7f64f532b9f487db2af61793d7a476a43c0414272faeab",
     "clis/slock/auth-verify.js": "ceceeb7a496edf2bd5371c5592bdc9d1109a5c3775c1929ee245474f150f1ad0",
     "clis/slock/bookmark-add.js": "4df49e0ca84b81adb467d9d96c2eeaaaf157d0541a69b7605e84fae31cf88ad9",
@@ -1061,14 +1145,14 @@
     "clis/tvmaze/show.js": "bfd76054316b2309835c9e041af6c3b8c6ff234f9f78eee5f519d9cd3aabb065",
     "clis/tvmaze/utils.js": "0eba0730644e1d1eb433dde45ec65d3db36856cb202420f962d032366a65aeb1",
     "clis/twitter/accept.js": "ae85da341b400e535538700e78c8958a649425783cc9ca163da11aafd0fbf17d",
-    "clis/twitter/archive.js": "b983f3fb74cf89948918d2ba59093ef3ddd2880e1633a6480795752ed7c46664",
+    "clis/twitter/archive.js": "8f853d7df2a062f67bbc62fa8523a9e5f7414c2ebafd7c552abe4b218d9a6632",
     "clis/twitter/article.js": "8a9838423d895f2a81da36c149132ca4d455dbfb121617f473afa04ba745f5d5",
     "clis/twitter/auth.js": "4f626b2313472183676837ab20abc237a0cc8dc5246ef547262b311587b3cbed",
     "clis/twitter/block.js": "c5ae3dfb44d100be31c54943dc16b4c84a35c915b6fa4d0c9746f71aa9348933",
     "clis/twitter/bookmark-folder.js": "8797a227580ec5388c0207a600ac23738e633b8bc9634650944b38c5e5e26a6c",
     "clis/twitter/bookmark-folders.js": "5d318c1d623b74ba8fb4fb680b4a93578bd604034a7b6c1bd695c106d86ef60e",
     "clis/twitter/bookmark.js": "8f775d736c3638f7e016d4341e994a9d1843ba199032ec17067b20f0344f4fbe",
-    "clis/twitter/bookmarks.js": "a86b947097543da3f7117c64cbb5e33b6580d625d625887bb91db80270afb735",
+    "clis/twitter/bookmarks.js": "d6ce8ff45827e9a9deedc6788f2d7bd4a0e17fceaf74644370d379115cae096c",
     "clis/twitter/collection.js": "896d740afd40132d25345cd817f4b9c9cab19a37b6b0e63b0ac44d6aa5540cfe",
     "clis/twitter/delete.js": "a705c98df94f952e35b4d85da1b40a1227e6dd71e6fc488043c4364b7cb0857a",
     "clis/twitter/device-follow.js": "9034f37c6f71fb7c56a1f6f505e3aeeb02b4fb833c55e4380381ba8f5d113889",
@@ -1079,7 +1163,7 @@
     "clis/twitter/following.js": "8837ea224c0e3619594c6109396d6831bc52451c150232ebba12b7989dfc8aa6",
     "clis/twitter/hide-reply.js": "c4fa23b98b57ea345c702dd6075ae1dc09961dffaf13e58f4cf88ed312db02b2",
     "clis/twitter/like.js": "8d512e0a083baeec4f6760f6d821e5eb9c597b089604a9eec49acce39bd9ae88",
-    "clis/twitter/likes.js": "abe19eb0bd540f7b05dd137d7be48d84bfb2a009c414e5c50f0cd8c4a010462e",
+    "clis/twitter/likes.js": "a3dadbd9a7a04dd8794cc6bc836d051f031db5ee2500c51d8277e4d9af1a9351",
     "clis/twitter/list-add-batch.js": "4d10676a75817b2e6155df68b19bac79b3301ac444073a8cb8bd3ecf5bcef446",
     "clis/twitter/list-add-core.js": "095baf186a1abc5dd81cd547423f982f7e0a86cb121d0185f851b43b248df1f4",
     "clis/twitter/list-add.js": "ea8eb41bd2e369fcf5630fd51e61b825d4de5a92a568427e945d5465fb10d2bb",
@@ -1093,7 +1177,7 @@
     "clis/twitter/lists.js": "a8553e7e2acedde80e7f9e8a03e7762fe03e9ba751585feb1cf9892ca137a9ae",
     "clis/twitter/mute-word.js": "b1c411c56819dc40566e1fedd3b3809006b06e610dfe1e4216159bbc4343bed7",
     "clis/twitter/notifications.js": "ffdc5b84bc00178ef81df61b02646468bba1fbb2031fe984a8126019c446e998",
-    "clis/twitter/post.js": "b1011fa9deb4c449f5add647edd0d813b528a2d14650d3986f848831ca54b39e",
+    "clis/twitter/post.js": "5eb353c0df070f52af3f4b3f5c2844bb78fb7d6471b758e5806a2e60c4ebff7d",
     "clis/twitter/profile.js": "a92e986946b35c58c8b7bc0b43ab991709eaf668034abc7f98a040d4712f6f49",
     "clis/twitter/quote.js": "00846f0ed6c94575bc621fa63723655399d00de8e99cb489f350ff8693e22752",
     "clis/twitter/reply-dm.js": "05b84cbb7c32c5ef0abd6011e14ae87f4e555befce37e646a45d101d1fa75302",
@@ -1111,7 +1195,7 @@
     "clis/twitter/unlike.js": "183aaf8d883fe57d504e28f41ad46aaaa6e639d7d7c562b87a06f3852fc525c9",
     "clis/twitter/unretweet.js": "207a14240eb519b1be6c5e35ded2a9c3002f3cc42d8ad96d9315df88f706bdaf",
     "clis/twitter/user-timeline.js": "d80d311ca4090a7c63a7ff8c6b33d612f51d7132a6f289665957bcebda321b00",
-    "clis/twitter/utils.js": "5d1f7449edc691ac03f1f70d87f3de7c4c2a6a3633f569b53bcd006468fb93a6",
+    "clis/twitter/utils.js": "0292af2590660d055ab736139f0bbfe8be5ea9e8425b55e65b45ccad52da5bc3",
     "clis/uisdc/news.js": "7450fa65ec39331fbb4e0e911bf6ebb4bf4cd9e43e5f72b59fbba740b723ae32",
     "clis/uiverse/_shared.js": "664ac45bd9c7c0dbf908ee178742a24d3985844a43e9b5d8fa116ef3b5a60067",
     "clis/uiverse/code.js": "3efffa78519d4c545b4c8fb2bb9c7ff607322b6a9dad8443cc7a3af4df217cd3",
@@ -1136,7 +1220,7 @@
     "clis/wanfang/search.js": "1713664acba438a57e797d2ffba61387f97070909d3cd95a43180d2b1a6df7d5",
     "clis/web/read.js": "f5801d44449d3856fb72d3d3b18674c846b66d53112ac8b4b494b8f3aed6ed51",
     "clis/wechat-channels/auth.js": "87273b45899f69ad523ccb3474b328cc2f915d0c2891900a78dbaceaa9ed2958",
-    "clis/wechat-channels/publish.js": "6a35b4ef55793fb47b6072db70a1ce55e8680f182d453e05e3441f2285edd044",
+    "clis/wechat-channels/publish.js": "9b157178d15b4515ca7519548859d625100f2c120e99e1185824c73a1f99491c",
     "clis/weibo/auth.js": "a67993a6302b445465ab09a1e2eaf0048b41f373b235801c07198ce9de263c07",
     "clis/weibo/comments.js": "f2b9bb520ace7e3f530e0af09fb45ad251795ff1d61be93e96ecc4a8330f709c",
     "clis/weibo/delete.js": "866a54ed27988df25d0d0499a58820246915f05af3d2c613ac9df7f022ca0113",
@@ -1150,7 +1234,7 @@
     "clis/weibo/user-posts.js": "6e406fd15cf0bcfcd188179445549e793e9ae102209da3bde8d4fe7912bd98e1",
     "clis/weibo/user.js": "1707d64c298265817a270b09996ccfbe24f55b001dabafff4fbdd58366b207d2",
     "clis/weibo/utils.js": "3b8e7077369b89042924bdeb981af2e133f5b308ca4d26ca80b29f41fbcad69d",
-    "clis/weixin/create-draft.js": "b6b7b95fe20af010159d4fdeb36c177e40417998d34b0bd34ca3cd3476abe05b",
+    "clis/weixin/create-draft.js": "5daa902225d4814df72c933604f0b95036ae73ec00c3e3466557cc3e0a10136f",
     "clis/weixin/download.js": "52234ac2b72888f7e8f836cd4756759c50e5e45c3200c1f1e5a7e451284f4ae5",
     "clis/weixin/drafts.js": "23c1ed53b94f3dabd6f416751176c24fec9f018bc86e8f2957a3e392709c7e27",
     "clis/weixin/search.js": "2b75a2a7b78af38c86c229a57ec86b420b9eb209a5bab564f0ef65587eca7ea9",
@@ -1228,7 +1312,7 @@
     "clis/xiaohongshu/note.js": "09c08e2b8c69ee3a16daafc6fdcebf63fb016b99640adb8a157b80b3287f0833",
     "clis/xiaohongshu/notifications.js": "1262c0172fabc45aa21ae65643d19e242856062e73caf0377a95cf94914000a3",
     "clis/xiaohongshu/pinia-helpers.js": "c2b7639c4ddc2cd078a01eb62c66c0c37548b7b3fd5aac3c631ac53a36c68686",
-    "clis/xiaohongshu/publish.js": "ad9ffe50e26051885aa49a04bcbe49a718b20cf27c73a00ae7c822b2b37edd79",
+    "clis/xiaohongshu/publish.js": "1a63f020aa2803026f2c417cf23ce300911244f2557ac19c008d018c00ff9397",
     "clis/xiaohongshu/risk-control.js": "6e7c15a8a27de78a45fbe01d206bbbd43fab23bd9aa4cf39c900bf6c838c7242",
     "clis/xiaohongshu/saved.js": "c69f484e82b016a07ac699d3622236b8e0d2440826ff497f1ddbabb97137a2c7",
     "clis/xiaohongshu/search.js": "333f5db3d62dfb3227bb59f47b5ce8e509901d6438b42e3038ec61624ea0d329",
@@ -1270,9 +1354,9 @@
     "clis/yollomi/remove-bg.js": "dcbdb9d48603bdcc528884d87169d67c31e7e3dd0d12bd2ca1a70f997bfc2fc0",
     "clis/yollomi/restore.js": "6bd1988650f884bdfcefbbc5add8eb9260534e2bb6d7ff7624171be6383f313b",
     "clis/yollomi/try-on.js": "64b0cb281ff66f7f09bc15bc590ccb23245078f69b41027dfd458918947f1bfd",
-    "clis/yollomi/upload.js": "0439796bc24bab1a2de8a2635fb04c01bf68edff3f973575c2429640f1252a21",
+    "clis/yollomi/upload.js": "16af6d564d0b85f9527e7dad0b9132a58ee196ffbb90487e8bef6716db8de4de",
     "clis/yollomi/upscale.js": "c8af76d01004a75ba7cf5c2120777936d052ba0d1b4b96b558de0af5ba4f6f2e",
-    "clis/yollomi/utils.js": "4d1ef9a38e7a0a4b6ddebb7808c2a4ee4f2b8990e376c0827cc9bf12963a7e62",
+    "clis/yollomi/utils.js": "5ab8d8755b2d7de376308987ded324233cf273a3b135c6bfebd2c5c6e2fd0887",
     "clis/yollomi/video.js": "d9080992f8ecf4dc41627190014f760ccc255cad5b6f97e9d18c263892f50721",
     "clis/youdao/note.js": "dd511f473dd50d84b4baade69da710f19f02d2f84d69719f016b022d8efb826d",
     "clis/youtube/auth.js": "976f10a7fa03f2d46c5f0b27c113ee6e18faf1bbdaca8592528bae041e252039",
@@ -1331,7 +1415,7 @@
     "clis/zhihu/user-arg.js": "d701ebe20a5c7ca4c997a024e929a559415cbee269921df132aed838b0b59ad1",
     "clis/zhihu/user-articles.js": "33c33df443439994d8e7ff2c10156559e6fc663323a7ef768d9fb7ae88197d73",
     "clis/zhihu/user.js": "ee49fbab83d6429e24299bcfb759f56e16f952bca140d4748f7833236d5f9650",
-    "clis/zhihu/write-shared.js": "5be11c78357b4999776b0e914e25d41a029f13265f56037bfee1299b02e3dfa3",
+    "clis/zhihu/write-shared.js": "a72eeef1fba24ca6cae162858da2c1a47c209441b3ad5cd9183ea355e582d906",
     "clis/zlibrary/info.js": "b8e7af76fb4cb0e19cfd30319df74c9a147fd767ea218c4e095700339c1c7883",
     "clis/zlibrary/search.js": "56627632933eb3de4c05d8766e15ad8c9e78297c6fc66bfe54c149276f39f0e9",
     "clis/zlibrary/utils.js": "63dfa74f171ccd0e918b609d4d85ff9ae000dcc45d23fce8c8729e52d5d3931a",
@@ -1346,7 +1430,7 @@
     "src/adapter-source.ts": "efb86669cab97a8a79bda82c72a73eab09539fb91dc35ee415cbeed1d865e5f8",
     "src/browser/article-extract.ts": "af5345c6384e6aaa9cadb42a27011947dc4caa5beefcd8d6836cc7373b048342",
     "src/browser/ax-snapshot.ts": "1524cb389045b361fc89c57820c3a608ef85c4768c249b1e5ac21ccfb3b3a8b3",
-    "src/browser/base-page.ts": "c32e038601cb58ed02dc3c1288a1335ba87d8e03b2cba1871ef3167931359718",
+    "src/browser/base-page.ts": "0c1b2d0cbd82426c41b429acc84a6a367d64628c02df98a28ae84ba33738426c",
     "src/browser/bridge-readiness.ts": "14692b5292fd1c1e9ad06eeba8ec7efb64062716c7a40098253ca003d3ec2176",
     "src/browser/bridge.ts": "faa6c51f9f165f56807c714cc821e157345ed1d2685067869c6e905280d5d25c",
     "src/browser/cdp.ts": "0558dc14d65741c39f9c3fe8461e1dd3b3ae0cbdd0b7ddafbd1f02e1153d04b3",

@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { stat } from 'node:fs/promises';
 import { CliError } from '@jackwener/opencli/errors';
 const RESULT_ROW_RESERVED_KEYS = new Set(['status', 'outcome', 'message', 'target_type', 'target']);
 const NAV_SCOPE_SELECTOR = 'header, nav, [role="banner"], [role="navigation"]';
@@ -15,7 +16,7 @@ const EXPLICIT_IDENTITY_META_TOKEN_GROUPS = [
 const IN_PAGE_EXPLICIT_IDENTITY_META_TOKEN_GROUPS = JSON.stringify(EXPLICIT_IDENTITY_META_TOKEN_GROUPS);
 function defaultFileReaderDeps() {
     return {
-        readFile,
+        readFile: readRecipeFileSync,
         stat: (path) => stat(path),
         decodeUtf8: (raw) => new TextDecoder('utf-8', { fatal: true }).decode(raw),
     };

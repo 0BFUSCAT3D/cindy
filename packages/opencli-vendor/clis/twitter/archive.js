@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ArgumentError, CommandExecutionError } from '@jackwener/opencli/errors';
@@ -36,7 +37,7 @@ export function loadJsonlArchiveState(filePath) {
     let count = 0;
     if (!filePath || !fs.existsSync(filePath))
         return { seen, count };
-    const text = fs.readFileSync(filePath, 'utf8');
+    const text = readRecipeFileSync(filePath, 'utf8');
     for (const [index, line] of text.split('\n').entries()) {
         const trimmed = line.trim();
         if (!trimmed)

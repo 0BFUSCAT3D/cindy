@@ -1,3 +1,4 @@
+import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 /**
  * Xiaohongshu 图文笔记 publisher — creator center UI automation.
  *
@@ -179,7 +180,7 @@ async function uploadImages(page, absPaths) {
     }
     // ── Fallback: legacy base64 DataTransfer injection ─────────────────
     const images = absPaths.map((absPath) => {
-        const base64 = fs.readFileSync(absPath).toString('base64');
+        const base64 = readRecipeFileSync(absPath).toString('base64');
         const ext = path.extname(absPath).toLowerCase();
         return { name: path.basename(absPath), mimeType: SUPPORTED_EXTENSIONS[ext], base64 };
     });
@@ -271,8 +272,8 @@ async function fillField(page, selectors, text, fieldName) {
     })(${JSON.stringify(selectors)})
   `);
     if (!located.ok) {
-        await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
-        throw new Error(`Could not find ${fieldName} input. Debug screenshot: /tmp/xhs_publish_${fieldName}_debug.png`);
+        await page.screenshot({ path: `${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}` });
+        throw new Error(`Could not find ${fieldName} input. Debug screenshot: ${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}`);
     }
     const applyInPage = () => page.evaluate(`
       ((selector, expectedText) => {
@@ -363,8 +364,8 @@ async function fillField(page, selectors, text, fieldName) {
       })(${JSON.stringify(located.sel)}, ${JSON.stringify(text)})
     `);
         if (!prepared?.ok) {
-            await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
-            throw new Error(`Could not prepare ${fieldName} input. Debug screenshot: /tmp/xhs_publish_${fieldName}_debug.png`);
+            await page.screenshot({ path: `${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}` });
+            throw new Error(`Could not prepare ${fieldName} input. Debug screenshot: ${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}`);
         }
         try {
             await page.insertText(text);
@@ -401,9 +402,9 @@ async function fillField(page, selectors, text, fieldName) {
         result = await applyInPage();
     }
     if (!result?.ok) {
-        await page.screenshot({ path: `/tmp/xhs_publish_${fieldName}_debug.png` });
+        await page.screenshot({ path: `${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}` });
         const actual = typeof result?.actual === 'string' ? result.actual : '';
-        throw new Error(`Failed to set ${fieldName}. Expected "${text}", got "${actual}". Debug screenshot: /tmp/xhs_publish_${fieldName}_debug.png`);
+        throw new Error(`Failed to set ${fieldName}. Expected "${text}", got "${actual}". Debug screenshot: ${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}`);
     }
 }
 /**
@@ -1038,9 +1039,9 @@ async function assertComposerMediaCount(page, expectedCount, label) {
         throw new CommandExecutionError(`${label}: could not verify current composer media count`);
     }
     if (state.count < expectedCount) {
-        await page.screenshot({ path: '/tmp/xhs_publish_media_debug.png' });
+        await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_media_debug.png")}` });
         throw new CommandExecutionError(`${label}: expected at least ${expectedCount} visible media item(s), got ${state.count}. ` +
-            'Debug screenshot: /tmp/xhs_publish_media_debug.png');
+            `Debug screenshot: ${recipeDiagnosticPath("xhs_publish_media_debug.png")}`);
     }
 }
 /**
@@ -1050,38 +1051,38 @@ async function assertComposerMediaCount(page, expectedCount, label) {
 async function runTextImageFlow(page, cards, cardStyle) {
     const entry = await clickByText(page, TEXT_IMAGE_ENTRY_LABEL);
     if (!entry?.ok) {
-        await page.screenshot({ path: '/tmp/xhs_publish_textimage_debug.png' });
+        await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_textimage_debug.png")}` });
         throw new CommandExecutionError(`文字配图: could not click "${TEXT_IMAGE_ENTRY_LABEL}" entry. ` +
-            'Debug: /tmp/xhs_publish_textimage_debug.png');
+            `Debug: ${recipeDiagnosticPath("xhs_publish_textimage_debug.png")}`);
     }
     if (!(await waitForFirstCard(page))) {
-        await page.screenshot({ path: '/tmp/xhs_publish_textimage_debug.png' });
+        await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_textimage_debug.png")}` });
         throw new CommandExecutionError(`文字配图: 写文字 card editor did not appear after clicking "${TEXT_IMAGE_ENTRY_LABEL}". ` +
-            'Debug: /tmp/xhs_publish_textimage_debug.png');
+            `Debug: ${recipeDiagnosticPath("xhs_publish_textimage_debug.png")}`);
     }
     for (let i = 0; i < cards.length; i++) {
         if (i > 0) {
             const added = await addCard(page, i + 1);
             if (!added) {
-                await page.screenshot({ path: '/tmp/xhs_publish_addcard_debug.png' });
+                await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_addcard_debug.png")}` });
                 throw new CommandExecutionError(`文字配图: new card editor #${i + 1} did not render after "${ADD_CARD_LABEL}". ` +
-                    'Debug: /tmp/xhs_publish_addcard_debug.png');
+                    `Debug: ${recipeDiagnosticPath("xhs_publish_addcard_debug.png")}`);
             }
         }
         await fillCard(page, cards[i], i);
     }
     const generated = await clickGenerate(page);
     if (!generated) {
-        await page.screenshot({ path: '/tmp/xhs_publish_generate_debug.png' });
+        await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_generate_debug.png")}` });
         throw new CommandExecutionError(`文字配图: "${GENERATE_LABEL}" did not advance to the 预览图片 step. ` +
-            'Debug: /tmp/xhs_publish_generate_debug.png');
+            `Debug: ${recipeDiagnosticPath("xhs_publish_generate_debug.png")}`);
     }
     const appliedStyle = await selectCardStyle(page, cardStyle);
     const next = await clickByText(page, PREVIEW_NEXT_LABEL);
     if (!next?.ok) {
-        await page.screenshot({ path: '/tmp/xhs_publish_next_debug.png' });
+        await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_next_debug.png")}` });
         throw new CommandExecutionError(`文字配图: could not click "${PREVIEW_NEXT_LABEL}". ` +
-            'Debug: /tmp/xhs_publish_next_debug.png');
+            `Debug: ${recipeDiagnosticPath("xhs_publish_next_debug.png")}`);
     }
     await page.wait({ time: 2 }); // editor render
     return appliedStyle;
@@ -1224,12 +1225,12 @@ cli({
         const tabResult = await selectImageTextTab(page);
         const surface = await waitForPublishSurfaceState(page, tabResult?.ok ? 5_000 : 2_000);
         if (surface.state === 'video_surface') {
-            await page.screenshot({ path: '/tmp/xhs_publish_tab_debug.png' });
+            await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_tab_debug.png")}` });
             const detail = tabResult?.ok
                 ? `clicked "${tabResult.text}"`
                 : `visible candidates: ${(tabResult?.visibleTexts || []).join(' | ') || 'none'}`;
             throw new Error('Still on the video publish page after trying to select 图文. ' +
-                `Details: ${detail}. Debug screenshot: /tmp/xhs_publish_tab_debug.png`);
+                `Details: ${detail}. Debug screenshot: ${recipeDiagnosticPath("xhs_publish_tab_debug.png")}`);
         }
         // ── Step 3: Acquire images — text-image generation and/or upload ──────────
         let appliedCardStyle = cardStyle;
@@ -1240,9 +1241,9 @@ cli({
         else {
             const upload = await uploadImages(page, absImagePaths);
             if (!upload.ok) {
-                await page.screenshot({ path: '/tmp/xhs_publish_upload_debug.png' });
+                await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_upload_debug.png")}` });
                 throw new CommandExecutionError(`Image injection failed: ${upload.error ?? 'unknown'}. ` +
-                    'Debug screenshot: /tmp/xhs_publish_upload_debug.png');
+                    `Debug screenshot: ${recipeDiagnosticPath("xhs_publish_upload_debug.png")}`);
             }
             await page.wait({ time: UPLOAD_SETTLE_MS / 1_000 });
             await waitForUploads(page);
@@ -1250,9 +1251,9 @@ cli({
         // ── Step 3b: Wait for editor form to render ───────────────────────────────
         const formReady = await waitForEditForm(page);
         if (!formReady) {
-            await page.screenshot({ path: '/tmp/xhs_publish_form_debug.png' });
+            await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_form_debug.png")}` });
             throw new CommandExecutionError('Editing form did not appear after image acquisition. The page layout may have changed. ' +
-                'Debug screenshot: /tmp/xhs_publish_form_debug.png');
+                `Debug screenshot: ${recipeDiagnosticPath("xhs_publish_form_debug.png")}`);
         }
         if (isTextImage) {
             await assertComposerMediaCount(page, cards.length, '文字配图 generated images');
@@ -1261,9 +1262,9 @@ cli({
         if (isTextImage && absImagePaths.length > 0) {
             const upload = await uploadImages(page, absImagePaths);
             if (!upload.ok) {
-                await page.screenshot({ path: '/tmp/xhs_publish_append_debug.png' });
+                await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_append_debug.png")}` });
                 throw new CommandExecutionError(`Appending images failed: ${upload.error ?? 'unknown'}. ` +
-                    'Debug screenshot: /tmp/xhs_publish_append_debug.png');
+                    `Debug screenshot: ${recipeDiagnosticPath("xhs_publish_append_debug.png")}`);
             }
             await page.wait({ time: UPLOAD_SETTLE_MS / 1_000 });
             await waitForUploads(page);
@@ -1399,12 +1400,12 @@ cli({
             }
         }
         if (!invokeResult?.ok) {
-            await page.screenshot({ path: '/tmp/xhs_publish_submit_debug.png' });
+            await page.screenshot({ path: `${recipeDiagnosticPath("xhs_publish_submit_debug.png")}` });
             const viaClause = invokeResult?.via ? ` (via=${invokeResult.via})` : '';
             const errorClause = invokeResult?.error ? `, error=${invokeResult.error}` : '';
             const lastMethodClause = invokeResult?.lastMethodError ? `, lastMethodError=${invokeResult.lastMethodError}` : '';
             throw new Error(`Could not trigger "${actionLabels[0]}" action${viaClause}${errorClause}${lastMethodClause}. ` +
-                'Debug screenshot: /tmp/xhs_publish_submit_debug.png');
+                `Debug screenshot: ${recipeDiagnosticPath("xhs_publish_submit_debug.png")}`);
         }
         // ── Step 8: Verify success ─────────────────────────────────────────────────
         await page.wait({ time: 4 });

@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -195,7 +196,7 @@ async function attachImagesViaDataTransfer(page, absPaths) {
         return {
             name: path.basename(absPath),
             mime,
-            base64: fs.readFileSync(absPath).toString('base64'),
+            base64: readRecipeFileSync(absPath).toString('base64'),
         };
     });
     const upload = requirePostActionResult(await page.evaluate(`(() => {

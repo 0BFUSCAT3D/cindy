@@ -36,6 +36,7 @@ import {
 } from './target-resolver.js';
 import { TargetError, type TargetErrorCode } from './target-errors.js';
 import { CliError, CommandExecutionError } from '../errors.js';
+import { generateInterceptorJs, generateReadInterceptedJs } from '../interceptor.js';
 import { formatSnapshot } from '../snapshotFormatter.js';
 import { installVisualRefOverlayJs, removeVisualRefOverlayJs } from './visual-refs.js';
 
@@ -1201,7 +1202,6 @@ export abstract class BasePage implements IPage {
   }
 
   async installInterceptor(pattern: string): Promise<void> {
-    const { generateInterceptorJs } = await import('../interceptor.js');
     await this.evaluate(generateInterceptorJs(JSON.stringify(pattern), {
       arrayName: '__opencli_xhr',
       patchGuard: '__opencli_interceptor_patched',
@@ -1209,7 +1209,6 @@ export abstract class BasePage implements IPage {
   }
 
   async getInterceptedRequests(): Promise<unknown[]> {
-    const { generateReadInterceptedJs } = await import('../interceptor.js');
     const result = await this.evaluate(generateReadInterceptedJs('__opencli_xhr'));
     return Array.isArray(result) ? result : [];
   }

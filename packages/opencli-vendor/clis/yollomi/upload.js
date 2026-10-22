@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * Yollomi image upload — POST /api/upload (FormData)
  *
@@ -35,7 +36,7 @@ cli({
         const mime = MIME_MAP[ext];
         if (!mime)
             throw new CliError('INVALID_TYPE', `Unsupported file type: ${ext}`, 'Supported: jpg, png, gif, webp, mp4, mov');
-        const data = fs.readFileSync(filePath);
+        const data = readRecipeFileSync(filePath);
         // Note: base64 encoding inflates size ~33%. Video cap is conservative to avoid
         // OOM when the base64 string is injected into the browser JS engine via page.evaluate().
         const maxSize = mime.startsWith('video/') ? 20 * 1024 * 1024 : 10 * 1024 * 1024;

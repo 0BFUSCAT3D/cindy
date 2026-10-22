@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 // attachment-upload.js
 // POST /api/attachments/upload — multipart, field name `files` (max 5 per call,
 // 50MB each), server-scoped (requires X-Server-Id). Bugen source-verified the
@@ -60,7 +61,7 @@ cli({
       throw new ArgumentError(`file is ${stat.size} bytes, exceeds server limit ${MAX_BYTES} (50 MiB). Split or compress before upload.`);
     }
 
-    const buf = fs.readFileSync(abs);
+    const buf = readRecipeFileSync(abs);
     const filename = path.basename(abs);
     const b64 = buf.toString('base64');
 

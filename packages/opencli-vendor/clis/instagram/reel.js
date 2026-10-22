@@ -1,3 +1,4 @@
+import { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -215,10 +216,10 @@ async function waitForVideoPreview(page, maxWaitSeconds = 20) {
         if (attempt < maxWaitSeconds * 2 - 1)
             await page.wait({ time: 0.5 });
     }
-    await page.screenshot({ path: '/tmp/instagram_reel_preview_debug.png' });
+    await page.screenshot({ path: `${recipeDiagnosticPath("instagram_reel_preview_debug.png")}` });
     throw new CommandExecutionError('Instagram reel preview did not appear after upload', lastDetail
-        ? `Inspect /tmp/instagram_reel_preview_debug.png. Last visible dialog text: ${lastDetail}`
-        : 'Inspect /tmp/instagram_reel_preview_debug.png for the upload state');
+        ? `Inspect ${recipeDiagnosticPath("instagram_reel_preview_debug.png")}. Last visible dialog text: ${lastDetail}`
+        : `Inspect ${recipeDiagnosticPath("instagram_reel_preview_debug.png")} for the upload state`);
 }
 async function clickAction(page, labels, scope = 'any') {
     const result = await page.evaluate(buildClickActionJs(labels, scope));

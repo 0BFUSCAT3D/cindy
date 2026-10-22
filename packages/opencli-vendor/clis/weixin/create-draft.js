@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -123,7 +124,7 @@ async function injectImageFile(page, image) {
         }
     }
 
-    const base64 = fs.readFileSync(image.absPath).toString('base64');
+    const base64 = readRecipeFileSync(image.absPath).toString('base64');
     const fallback = await evaluate(page, `(() => {
         var input = document.querySelector(${JSON.stringify(IMAGE_FILE_INPUT_SELECTOR)});
         if (!input) return { ok: false, reason: 'image file input not found' };

@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { CliError, getErrorMessage } from '@jackwener/opencli/errors';
@@ -77,7 +78,7 @@ export async function readPdfFile(inputPath) {
     }
     let buffer;
     try {
-        buffer = await fs.readFile(resolvedPath);
+        buffer = await readRecipeFileSync(resolvedPath);
     }
     catch {
         throw new CliError('FILE_READ_ERROR', `Unable to read file: ${resolvedPath}`, 'Check file permissions and try again');

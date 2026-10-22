@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -126,7 +127,7 @@ function readResumeFile(filePath, expected = null) {
         return null;
     let parsed;
     try {
-        parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        parsed = JSON.parse(readRecipeFileSync(filePath, 'utf8'));
     }
     catch (error) {
         throw new CommandExecutionError(`Could not parse Twitter likes resume file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);

@@ -1,3 +1,6 @@
+import * as __cindy_node_fs from "node:fs";
+import * as __cindy_node_path from "node:path";
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 
 export const CLAUDE_DOMAIN = 'claude.ai';
@@ -365,8 +368,8 @@ async function waitForFilePreview(page, fileName) {
 }
 
 export async function sendWithFile(page, filePath, prompt) {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = __cindy_node_fs;
+    const path = __cindy_node_path;
     const absPath = path.default.resolve(filePath);
 
     if (!fs.default.existsSync(absPath)) {
@@ -409,7 +412,7 @@ export async function sendWithFile(page, filePath, prompt) {
     }
 
     if (!uploaded) {
-        const content = fs.default.readFileSync(absPath);
+        const content = readRecipeFileSync(absPath);
         const base64 = content.toString('base64');
         const fallbackResult = await page.evaluate(`(async () => {
             var binary = atob('${base64}');

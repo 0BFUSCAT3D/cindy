@@ -1,3 +1,4 @@
+import * as __cindy_node_crypto from "node:crypto";
 /**
  * Bilibili shared helpers: WBI signing, authenticated fetch, nav data, UID resolution.
  */
@@ -212,7 +213,7 @@ function getMixinKey(imgKey, subKey) {
     return MIXIN_KEY_ENC_TAB.map(i => raw[i] || '').join('').slice(0, 32);
 }
 async function md5(text) {
-    const { createHash } = await import('node:crypto');
+    const { createHash } = __cindy_node_crypto;
     return createHash('md5').update(text).digest('hex');
 }
 export async function wbiSign(page, params) {

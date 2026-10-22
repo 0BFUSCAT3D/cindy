@@ -1,4 +1,4 @@
-import fs from 'node:fs/promises';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const MAX_FILE_COUNT = 20;
@@ -43,6 +43,11 @@ export async function resolveUploadFiles(
   candidates: unknown,
   allowedRoots: string[],
 ): Promise<string[]> {
+  return resolveUploadFilesSync(candidates, allowedRoots);
+}
+
+/** Synchronous adapters share exactly the same file policy as native uploads. */
+export function resolveUploadFilesSync(candidates: unknown, allowedRoots: string[]): string[] {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     throw new Error('paths must contain at least one file');
   }
@@ -54,8 +59,8 @@ export async function resolveUploadFiles(
   for (const root of allowedRoots) {
     if (!path.isAbsolute(root)) continue;
     try {
-      const resolved = await fs.realpath(root);
-      const stat = await fs.stat(resolved);
+      const resolved = fs.realpathSync(root);
+      const stat = fs.statSync(resolved);
       if (stat.isDirectory()) roots.push(resolved);
     } catch {
       // A missing optional root grants nothing.
@@ -74,8 +79,8 @@ export async function resolveUploadFiles(
     let resolved: string;
     let stat;
     try {
-      resolved = await fs.realpath(candidate);
-      stat = await fs.stat(resolved);
+      resolved = fs.realpathSync(candidate);
+      stat = fs.statSync(resolved);
     } catch {
       throw new Error(`upload file does not exist: ${path.basename(candidate) || 'unnamed'}`);
     }

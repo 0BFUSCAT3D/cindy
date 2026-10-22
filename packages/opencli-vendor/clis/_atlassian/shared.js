@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { stat } from 'node:fs/promises';
 import { htmlToMarkdown as coreHtmlToMarkdown } from '@jackwener/opencli/utils';
 import {
     ArgumentError,
@@ -302,7 +303,7 @@ export async function readUtf8File(filePath) {
     }
     let raw;
     try {
-        raw = await readFile(path);
+        raw = readRecipeFileSync(path);
     } catch {
         throw new ArgumentError(`File could not be read: ${path}`);
     }

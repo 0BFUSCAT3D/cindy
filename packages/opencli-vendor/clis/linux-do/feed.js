@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * linux.do unified feed — route latest/hot/top topics by site, tag, or category.
  *
@@ -40,7 +41,7 @@ function getMetadataCachePath(name) {
 }
 async function readMetadataCache(name) {
     try {
-        const raw = await fs.promises.readFile(getMetadataCachePath(name), 'utf-8');
+        const raw = await readRecipeFileSync(getMetadataCachePath(name), 'utf-8');
         const parsed = JSON.parse(raw);
         if (!parsed || !Array.isArray(parsed.data) || typeof parsed.fetchedAt !== 'string')
             return null;

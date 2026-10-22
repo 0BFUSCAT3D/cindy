@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import {
   ArgumentError,
   AuthRequiredError,
@@ -879,7 +880,7 @@ export async function recordQuotaSnapshot(account, source = 'unknown') {
 export async function readQuotaTrend(account) {
   let raw = '';
   try {
-    raw = await fs.readFile(USAGE_SNAPSHOT_PATH, 'utf8');
+    raw = await readRecipeFileSync(USAGE_SNAPSHOT_PATH, 'utf8');
   } catch (error) {
     if (error?.code !== 'ENOENT') throw new CommandExecutionError(`Could not read Midjourney usage snapshots: ${errorMessage(error)}`);
   }
@@ -1050,7 +1051,7 @@ async function injectImagesFallback(page, localPaths) {
       if (!Number.isInteger(fileIndex) || fileIndex < 0) {
         throw new CommandExecutionError('Midjourney reference upload fallback could not initialize its transfer buffer');
       }
-      const base64 = (await fs.readFile(localPath)).toString('base64');
+      const base64 = (await readRecipeFileSync(localPath)).toString('base64');
       const chunkSize = 96 * 1024;
       for (let offset = 0; offset < base64.length; offset += chunkSize) {
         const chunk = base64.slice(offset, offset + chunkSize);

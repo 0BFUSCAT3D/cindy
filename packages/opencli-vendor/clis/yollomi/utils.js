@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * Yollomi API utilities — browser cookie strategy.
  *
@@ -87,7 +88,7 @@ export function resolveImageInput(input) {
         '.webp': 'image/webp', '.bmp': 'image/bmp',
     };
     const mime = mimeMap[ext] || 'image/png';
-    const data = fs.readFileSync(resolved);
+    const data = readRecipeFileSync(resolved);
     return `data:${mime};base64,${data.toString('base64')}`;
 }
 export async function downloadOutput(url, outputDir, filename) {

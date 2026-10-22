@@ -1,3 +1,4 @@
+import { openRecipeFileSync, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * TOS (ByteDance Object Storage) multipart uploader with resume support.
  *
@@ -19,7 +20,7 @@ function getResumeFilePath(filePath) {
 }
 function loadResumeState(resumePath, fileSize) {
     try {
-        const raw = fs.readFileSync(resumePath, 'utf8');
+        const raw = readRecipeFileSync(resumePath, 'utf8');
         const state = JSON.parse(raw);
         if (state.fileSize === fileSize && state.uploadId && Array.isArray(state.parts)) {
             return state;
@@ -298,7 +299,7 @@ export async function tosUpload(options) {
     let uploadedBytes = completedParts.length * PART_SIZE;
     if (onProgress)
         onProgress(Math.min(uploadedBytes, fileSize), fileSize);
-    const fd = fs.openSync(filePath, 'r');
+    const fd = openRecipeFileSync(filePath);
     try {
         for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
             if (completedPartNumbers.has(partNumber)) {

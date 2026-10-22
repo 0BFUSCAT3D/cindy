@@ -9,6 +9,7 @@ import {
   type BrowserEvaluateFunction,
   type ScreenshotOptions,
   type RecipeSecrets,
+  type RecipeFiles,
 } from "@jackwener/opencli/cindy";
 import type {
   BrowserControlRequest,
@@ -20,6 +21,7 @@ interface PageDeps {
   call(request: BrowserControlRequest): Promise<BrowserControlResult>;
   targetId?: string;
   recipeSecrets?: RecipeSecrets;
+  recipeFiles?: () => Promise<RecipeFiles>;
   onExecutionStart?: () => void;
 }
 
@@ -285,7 +287,8 @@ export async function runOpenCliAdapter(
     command.domain ? `https://${command.domain}` : undefined,
   );
   try {
-    return await executeAdapter(id, inputs, page, deps.recipeSecrets, deps.onExecutionStart);
+    const files = await deps.recipeFiles?.();
+    return await executeAdapter(id, inputs, page, deps.recipeSecrets, deps.onExecutionStart, files);
   } finally {
     await page.dispose();
   }

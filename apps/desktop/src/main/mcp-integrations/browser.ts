@@ -20,6 +20,8 @@ import type { BrowserMcpDeps } from '@cindy/mcps';
 
 import { createLogger } from '../logger.js';
 import { genericOAuthSecretIo } from '../secrets/providerSecretStore.js';
+import { resolveUploadFilesSync } from './browser-backend/rsb-webview-upload-policy.js';
+import { artifactSessionRoot } from './browser-backend/rsb-webview-artifacts.js';
 import { extractBrowserAvailability, type BrowserAvailability } from './browser-availability.js';
 import { loadUserBrowserRecipes, type UserRecipesResult } from '../browser-recipes/loader.js';
 import { writeUserRecipe, type WriteUserRecipeResult } from '../browser-recipes/writer.js';
@@ -468,9 +470,21 @@ export function getBrowserMcpDeps(): {
   getUserRecipes(): Promise<UserRecipesResult>;
   saveUserRecipe(input: Parameters<typeof writeUserRecipe>[0]): Promise<WriteUserRecipeResult>;
   recipeSecrets: { read(key: string): string | null; write(key: string, value: string): boolean };
+  recipeFiles: NonNullable<BrowserMcpDeps['recipeFiles']>;
   pageReadsRestricted(target: { profile?: string; targetId?: string }): Promise<boolean>;
 } {
   return {
+    recipeFiles: async (sessionId) => {
+      const roots = sessionId ? [
+        artifactSessionRoot(nodePath.join(app.getPath('temp'), 'cindy-browser-artifacts'), sessionId),
+        ...await resolveSessionUploadRoots(sessionId),
+      ] : [];
+      const resolve = (file: string) => resolveUploadFilesSync([file], roots)[0];
+      return {
+        read: (file) => fs.readFileSync(resolve(file)),
+        open: (file) => fs.openSync(resolve(file), 'r'),
+      };
+    },
     recipeSecrets: {
       read: (key) => genericOAuthSecretIo.readStrict(browserRecipeSecretId(key)),
       write: (key, value) => genericOAuthSecretIo.write(browserRecipeSecretId(key), value),

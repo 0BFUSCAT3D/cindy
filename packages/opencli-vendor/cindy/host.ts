@@ -1,17 +1,46 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+/** No filesystem effects at import time; tmpdir exists on every host platform. */
+export function recipeDiagnosticPath(name: string): string {
+  return join(tmpdir(), name);
+}
 
 export interface RecipeSecrets {
   read(key: string): string | null;
   write(key: string, value: string): boolean;
 }
 
-const context = new AsyncLocalStorage<{ secrets?: RecipeSecrets }>();
+export interface RecipeFiles {
+  read(file: string): Buffer;
+  open(file: string): number;
+}
+
+const context = new AsyncLocalStorage<{ secrets?: RecipeSecrets; files?: RecipeFiles }>();
 export function withRecipeHost<T>(
   secrets: RecipeSecrets | undefined,
   run: () => Promise<T>,
+  files?: RecipeFiles,
 ): Promise<T> {
-  return context.run({ secrets }, run);
+  return context.run({ secrets, files }, run);
+}
+
+/** Adapter bytes are available only through the host's session upload policy. */
+export function readRecipeFileSync(file: string): Buffer;
+export function readRecipeFileSync(file: string, encoding: BufferEncoding): string;
+export function readRecipeFileSync(file: string, encoding?: BufferEncoding): Buffer | string {
+  const files = context.getStore()?.files;
+  if (!files) throw new Error('This recipe requires the host file broker');
+  const bytes = files.read(file);
+  return encoding ? bytes.toString(encoding) : bytes;
+}
+
+export function openRecipeFileSync(file: string): number {
+  const files = context.getStore()?.files;
+  if (!files) throw new Error('This recipe requires the host file broker');
+  return files.open(file);
 }
 
 /** Legacy OpenCLI files are read only on explicit execution, never on import.

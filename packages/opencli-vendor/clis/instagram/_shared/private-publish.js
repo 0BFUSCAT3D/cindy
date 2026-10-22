@@ -1,3 +1,4 @@
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -271,7 +272,7 @@ function readImageDimensions(filePath, bytes) {
     return dimensions;
 }
 export function readImageAsset(filePath) {
-    const bytes = fs.readFileSync(filePath);
+    const bytes = readRecipeFileSync(filePath);
     const { width, height } = readImageDimensions(filePath, bytes);
     return {
         filePath,
@@ -498,7 +499,7 @@ FileHandle.standardOutput.write(json)
     };
 }
 export function readVideoAsset(filePath) {
-    const bytes = fs.readFileSync(filePath);
+    const bytes = readRecipeFileSync(filePath);
     const metadata = readVideoMetadata(filePath);
     const coverImage = generateVideoCoverImage(filePath);
     return {

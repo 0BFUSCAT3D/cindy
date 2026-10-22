@@ -780,6 +780,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           const runResult = await runRecipe(entry.recipe, args.inputs as Record<string, unknown> | undefined, {
             targetId: args.targetId,
             recipeSecrets: deps.recipeSecrets,
+            recipeFiles: deps.recipeFiles,
             call: async (req) => {
               lastCallDispatched = false;
               const res = await runtime.call({
