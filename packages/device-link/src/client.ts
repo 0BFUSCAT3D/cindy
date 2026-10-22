@@ -700,6 +700,8 @@ interface PeerTransportState {
    * relay 时，ACK 不能继续投进可能已失效的直连通道。
    */
   lastInboundPath: DeviceLinkPeerPath;
+  /** 直连尚未写出时的缓冲进展；持续不下降也要切回 relay，不能只等待已发送帧的 ACK。 */
+  directBufferWait?: { channel: DeviceLinkDirectChannel; bytes: number; since: number };
 }
 
 interface PendingInboundLinkOffer {
@@ -3345,6 +3347,10 @@ export class DeviceLinkClient {
       const sentDirect = this.sendReliableFramesDirect(peer, pending, frames, wireBytes, direct);
       // null: 一帧都没写进直连且通道已撤下，本次立即改走 relay。
       if (sentDirect !== null) return sentDirect;
+      // 撤下通道可能把更早的 direct 帧也恢复成未发送。先由 detach 安排的恢复
+      // 从队头推进 ACK，不能让当前短尾帧抢占 relay 探测预算，卡住缺失的大队头。
+      const head = peer.pending.values().next().value;
+      if (head && head !== pending && !head.sent) return 0;
     }
     const peers = this.getReadyReliablePeers(pending.envelope.dst!);
     const budgetNow = this.monotonicNow();
@@ -3437,7 +3443,7 @@ export class DeviceLinkClient {
 
   /**
    * 经直连写出一条可靠消息的全部分片。返回 null 表示一帧都没写出且通道已撤下，
-   * 调用方立即改走 relay；返回 0 表示直连缓冲已满，帧留在队列等 drained()。
+   * 调用方改走 relay；返回 0 表示暂缓发送或部分写入后已安排从队头恢复。
    */
   private sendReliableFramesDirect(
     peer: PeerTransportState,
@@ -3450,9 +3456,21 @@ export class DeviceLinkClient {
     const buffered = channel.bufferedAmount ?? 0;
     // 与 relay 一致：缓冲排空后单条大消息总能发出，不会被软上限永久卡住。
     if (buffered > 0 && buffered + wireBytes > DIRECT_PATH_HIGH_WATER_BYTES) {
+      const now = this.monotonicNow();
+      const waiting = peer.directBufferWait;
+      if (!waiting || waiting.channel !== channel || buffered < waiting.bytes) {
+        peer.directBufferWait = { channel, bytes: buffered, since: now };
+      } else {
+        waiting.bytes = buffered;
+        if (now - waiting.since >= retransmitBaseMs(peer.rtt, this.timing.transportRetryIntervalMs)) {
+          this.detachDirectPath(dst, 'buffer-timeout');
+          return null;
+        }
+      }
       pending.lastBlockedBy = 'direct-buffer';
       return 0;
     }
+    peer.directBufferWait = undefined;
     let sent = 0;
     for (const frame of frames) {
       try {
@@ -3470,7 +3488,11 @@ export class DeviceLinkClient {
     if (pending.envelope.id) this.pending.get(pending.envelope.id)?.noteFirstWrite?.();
     this.noteReliableWrite(peer, pending, sent, 'direct');
     // 只写出部分分片：整条消息改由 relay 从头重发，接收端丢弃重复分片。
-    if (sent < frames.length) this.detachDirectPath(dst, 'send-failed');
+    if (sent < frames.length) {
+      this.detachDirectPath(dst, 'send-failed');
+      // 这些片已属于撤下的直连，不能再计入新一轮 relay 的恢复预算。
+      return 0;
+    }
     return sent;
   }
 
@@ -3487,6 +3509,7 @@ export class DeviceLinkClient {
     const peer = this.peerTransport.get(deviceId);
     let resent = 0;
     if (peer) {
+      peer.directBufferWait = undefined;
       peer.lastInboundPath = 'relay';
       for (const pending of peer.pending.values()) {
         if (pending.path !== 'direct') continue;
@@ -3501,7 +3524,7 @@ export class DeviceLinkClient {
       }
     }
     const message = `device-link direct path closed dst=${deviceId.slice(0, 8)} reason=${reason} resendViaRelay=${resent}`;
-    if (reason === 'ack-timeout' || reason === 'send-failed') this.log.warn(message);
+    if (reason === 'ack-timeout' || reason === 'buffer-timeout' || reason === 'send-failed') this.log.warn(message);
     else this.log.info(message);
     this.emitPeerPathChanged({ deviceId, path: 'relay', reason, ...(resent > 0 ? { resent } : {}) });
     if (resent === 0) return;
@@ -3930,6 +3953,7 @@ export class DeviceLinkClient {
     peer.receiveReady = false;
     peer.pendingLinkConfirmation = null;
     peer.outboundLinkConfirmationAck = null;
+    peer.directBufferWait = undefined;
     peer.lastInboundPath = 'relay';
   }
 
@@ -4675,13 +4699,18 @@ export class DeviceLinkClient {
         // 经直连写出的帧到了重发期限仍未确认：直连已不可信，撤下并改走 relay。
         // 这些帧恢复为未发送、重试次数从零计，直连的失败不消耗 relay 的重试预算。
         this.detachDirectPath(dst, 'ack-timeout');
+        // 本轮可能在非队头短帧处超时；让 detach 的微任务从最早未确认帧重启恢复。
+        return;
       }
       if (pending.attempts >= this.timing.transportMaxRetryAttempts) {
         this.handleReliableRetryExhausted(dst, pending.seq);
         return;
       }
       const admittingNew = !pending.sent;
-      if (admittingNew && this.shouldHoldRecoverySend(peer, this.estimateReliableFrameCount(pending))) {
+      // 回退后队头可能尚未发送，而后面的 relay 帧仍在途。累计 ACK 不能越过
+      // 缺失队头，尾帧不可能释放预算；必须允许队头整条发出，再等 ACK 推进。
+      if (admittingNew && pending !== head
+        && this.shouldHoldRecoverySend(peer, this.estimateReliableFrameCount(pending))) {
         pending.lastBlockedBy = 'recovery-ack';
         break;
       }

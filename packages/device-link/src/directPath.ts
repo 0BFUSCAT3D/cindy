@@ -35,6 +35,8 @@ export type DeviceLinkDirectCloseReason =
   | 'send-failed'
   /** 经直连发出的帧过了重发期限仍未确认。 */
   | 'ack-timeout'
+  /** 直连发送缓冲持续无进展，尚未写出的帧也改走 relay。 */
+  | 'buffer-timeout'
   /** relay 报告对端已离线；在线状态以 relay 为准。 */
   | 'peer-offline'
   /** 控制链路被显式关闭或撤权。 */
@@ -67,5 +69,5 @@ export interface DeviceLinkPeerPathChanged {
   resent?: number;
 }
 
-/** 直连发送缓冲软上限：超过后帧留在可靠队列，等 `drained()` 再发。 */
+/** 直连发送缓冲软上限：暂留可靠队列等 `drained()`，持续无进展则回退 relay。 */
 export const DIRECT_PATH_HIGH_WATER_BYTES = 1024 * 1024;

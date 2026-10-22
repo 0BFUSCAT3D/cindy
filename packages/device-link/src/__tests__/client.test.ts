@@ -39,10 +39,11 @@ import { resolveRemoteInvokeTimeoutMs } from '../invokePolicy.js';
 import { SESSION_ACTIVITY_CHANNEL } from '../topics.js';
 import { resolveDesktopIceServers, REMOTE_DESKTOP_ICE_CONFIG_TIMEOUT_MS } from '../remoteDesktopIceConfig.js';
 import { REMOTE_DESKTOP_ICE_SERVERS } from '../remoteDesktopIce.js';
-import type {
-  DeviceLinkDirectChannel,
-  DeviceLinkDirectPathHandle,
-  DeviceLinkPeerPathChanged,
+import {
+  DIRECT_PATH_HIGH_WATER_BYTES,
+  type DeviceLinkDirectChannel,
+  type DeviceLinkDirectPathHandle,
+  type DeviceLinkPeerPathChanged,
 } from '../directPath.js';
 
 type Handler = (...args: unknown[]) => void;
@@ -10498,6 +10499,7 @@ function connectDirect(
 ) {
   const drop = { toLeft: false, toRight: false };
   const failSend = { left: false, right: false };
+  const buffered = { left: 0, right: 0 };
   const frames = { toLeft: [] as Envelope[], toRight: [] as Envelope[] };
   const closeReasons: string[] = [];
   let open = true;
@@ -10506,6 +10508,7 @@ function connectDirect(
     const direction = from === 'left' ? 'toRight' : 'toLeft';
     const target = from === 'left' ? 'right' : 'left';
     return {
+      get bufferedAmount() { return buffered[from]; },
       send(text) {
         if (!open || failSend[from]) throw new Error('direct channel unavailable');
         frames[direction].push(JSON.parse(text) as Envelope);
@@ -10521,13 +10524,150 @@ function connectDirect(
   };
   handles.left = left.client.attachDirectPath(right.id, channel('left'));
   handles.right = right.client.attachDirectPath(left.id, channel('right'));
-  return { drop, failSend, frames, closeReasons, handles, isOpen: () => open };
+  return { drop, failSend, buffered, frames, closeReasons, handles, isOpen: () => open };
 }
 
 const reliableKinds = (envs: readonly Envelope[] | undefined, kind: Envelope['kind'], src?: string): number =>
   (envs ?? []).filter(env => env.kind === kind && parseTransportPayload(env.payload) && (!src || env.src === src)).length;
 
 describe('直连优先、中继兜底(Device Link direct path)', () => {
+  it('replays a partially written large head while an older relay tail is still in flight', async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ timing: { pingIntervalMs: 1_000_000, transportRetryIntervalMs: 1_000 } });
+    try {
+      h.client.start(); await vi.advanceTimersByTimeAsync(0); h.current().ack();
+      const opening = establishInboundReliableLink(h, 'peer-stream');
+      await vi.advanceTimersByTimeAsync(0); await opening;
+      h.client.sendInvokeResult('dev-b', 'head', {
+        ok: true, result: 'x'.repeat(MAX_TRANSPORT_CHUNK_BYTES * (TRANSPORT_RETRY_PASS_BUDGET + 1)),
+      });
+      h.client.sendInvokeResult('dev-b', 'tail', {
+        ok: true, result: 'y'.repeat(MAX_TRANSPORT_CHUNK_BYTES * (TRANSPORT_RETRY_PASS_BUDGET + 4)),
+      });
+      const initial = h.current().sent.slice();
+      const initialHead = initial.filter(env => env.id === 'head');
+      let writes = 0;
+      h.client.attachDirectPath('dev-b', {
+        send() { if (++writes > TRANSPORT_RETRY_PASS_BUDGET) throw new Error('direct write interrupted'); },
+        close() {},
+      });
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(writes).toBe(TRANSPORT_RETRY_PASS_BUDGET + 1);
+      expect(h.client.getPeerPath('dev-b')).toBe('relay');
+      const fallbackHead = h.current().sent.slice(initial.length).filter(env => env.id === 'head');
+      expect(fallbackHead).toHaveLength(initialHead.length);
+      // Reuse the original sequence and every fragment; the receiver can assemble and deduplicate it.
+      expect(fallbackHead.map(env => parseTransportPayload(env.payload)?.meta))
+        .toEqual(initialHead.map(env => parseTransportPayload(env.payload)?.meta));
+    } finally { h.client.stop(); vi.useRealTimers(); }
+  });
+
+  // A small tail can reach its retry deadline while a fragmented head is still cooling down.
+  it.each(['ack-timeout', 'send-failed'])('replays from the large head when a later direct result triggers %s', async (trigger) => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay();
+    const host = makeRelayClient(relay, 'desktop', { transportRetryIntervalMs: 1_000, requestTimeoutMs: 30_000 });
+    const a = makeRelayClient(relay, 'viewer-a', { requestTimeoutMs: 30_000 });
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const large = 'x'.repeat(MAX_TRANSPORT_CHUNK_BYTES * (TRANSPORT_RETRY_PASS_BUDGET + 1));
+    const results: unknown[] = [];
+    const request = (index: number) => {
+      void a.invoke('desktop', { channel: 'local-db:sessions:get', args: [String(index)] }).then(
+        value => { results[index] = value; }, error => { results[index] = error; },
+      );
+    };
+    let executions = 0;
+    host.onFrame((env) => {
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src!, env.id!, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind === 'invoke') {
+        executions++;
+        host.sendInvokeResult(env.src!, env.id!, { ok: true, result: executions === 1 ? large : 'small' });
+      }
+    });
+    try {
+      host.start(); a.start();
+      await pump();
+      const opening = a.openLink('desktop', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
+      await pump(); await opening;
+      const direct = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
+      direct.drop.toLeft = true;
+      for (let index = 0; index < 2; index++) request(index);
+      await pump();
+      expect(executions).toBe(2);
+      expect(results).toHaveLength(0);
+      if (trigger === 'send-failed') {
+        direct.failSend.right = true;
+        request(2);
+      } else {
+        await vi.advanceTimersByTimeAsync(1_100);
+      }
+      await pump();
+      const expectedCount = trigger === 'send-failed' ? 3 : 2;
+      expect(results).toHaveLength(expectedCount);
+      expect(results[0]).toEqual({ ok: true, result: large });
+      for (const result of results.slice(1)) expect(result).toEqual({ ok: true, result: 'small' });
+      expect(executions).toBe(expectedCount);
+      expect(host.getPeerPath('viewer-a')).toBe('relay');
+    } finally {
+      host.stop(); a.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  // A healthy relay must remain usable even when no direct frame ever gets its first write.
+  it.each([false, true])('handles direct buffer pressure before the first write (stalled=%s)', async (stalled) => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay();
+    const timing = { transportRetryIntervalMs: 1_000, requestTimeoutMs: 30_000 };
+    const host = makeRelayClient(relay, 'desktop', timing);
+    const a = makeRelayClient(relay, 'viewer-a', timing);
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    let executions = 0;
+    host.onFrame((env) => {
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src!, env.id!, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind === 'invoke') {
+        executions++;
+        host.sendInvokeResult(env.src!, env.id!, { ok: true, result: 'ok' });
+      }
+    });
+    try {
+      host.start(); a.start();
+      await pump();
+      const opening = a.openLink('desktop', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
+      await pump(); await opening;
+      const direct = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
+      direct.buffered.left = DIRECT_PATH_HIGH_WATER_BYTES;
+      let result: unknown;
+      void a.invoke('desktop', { channel: 'local-db:sessions:get', args: ['s1'] }).then(
+        value => { result = value; }, error => { result = error; },
+      );
+      await pump();
+      expect(executions).toBe(0);
+      expect(result).toBeUndefined();
+      expect(a.getPeerPath('desktop')).toBe('direct');
+      await vi.advanceTimersByTimeAsync(500);
+      if (stalled) {
+        // Bytes draining slowly are progress: don't turn a healthy slow channel into a timeout.
+        direct.buffered.left--;
+        direct.handles.left!.drained();
+        await vi.advanceTimersByTimeAsync(600);
+        expect(a.getPeerPath('desktop')).toBe('direct');
+        await vi.advanceTimersByTimeAsync(1_000);
+      } else {
+        direct.buffered.left = 0;
+        direct.handles.left!.drained();
+      }
+      await pump();
+      expect(result).toEqual({ ok: true, result: 'ok' });
+      expect(executions).toBe(1);
+      expect(a.getPeerPath('desktop')).toBe(stalled ? 'relay' : 'direct');
+      expect(reliableKinds(relay.deliveredTo.get('desktop'), 'invoke')).toBe(stalled ? 1 : 0);
+    } finally {
+      host.stop(); a.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back to relay on a stalled direct path without re-running the command or disturbing another controller', async () => {
     vi.useFakeTimers();
     const relay = new MemoryRelay();
