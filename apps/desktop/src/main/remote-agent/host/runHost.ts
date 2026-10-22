@@ -1030,12 +1030,14 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     let virtualParent = shadowDir;
     /** 控制端有对应目录的各级上级目录在影子里的位置(下标 = 向上几级)。 */
     const mappedAncestors: string[] = [];
+    const taskAncestors: string[] = [payload.workspace.workingDir];
     for (let up = 1; up <= MAX_ANCESTOR_LEVELS; up += 1) {
       const nextReal = foreignPath.dirname(realParent);
       if (nextReal === realParent) break;
       realParent = nextReal;
       virtualParent = path.dirname(virtualParent);
       mappedAncestors[up] = virtualParent;
+      taskAncestors[up] = realParent;
       pathAliases.push({ from: realParent, to: virtualParent });
     }
     // 控制端报来的各级上级目录里不存在的标记名(只认有对应目录的级别；通往工作区的那一级目录名不算)。
@@ -1043,6 +1045,17 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       ? payload.ancestorMarkers.levels.flatMap(({ up, present }) => {
           const dir = mappedAncestors[up];
           const towardWorkspace = path.basename(up === 1 ? shadowDir : mappedAncestors[up - 1] ?? '');
+          const absent = payload.ancestorMarkers!.names.filter((name) => !present.includes(name) && name !== towardWorkspace);
+          return dir && absent.length ? [{ dir, absent: new Set(absent) }] : [];
+        })
+      : [];
+    // 镜像外的绝对路径原样交给任务电脑：只复用它已确认不存在的标记，不猜这台电脑上级目录里隐藏文件的存在性。
+    // Windows 与 POSIX 的路径格式不同，不能拿一边的绝对路径直接匹配另一边的 file URI。
+    const samePathFormat = (payload.workspace.platform === 'win32') === (process.platform === 'win32');
+    const taskAncestorAbsence = payload.virtualWorkspace && payload.ancestorMarkers && samePathFormat
+      ? payload.ancestorMarkers.levels.flatMap(({ up, present }) => {
+          const dir = taskAncestors[up];
+          const towardWorkspace = foreignPath.basename(taskAncestors[up - 1] ?? '');
           const absent = payload.ancestorMarkers!.names.filter((name) => !present.includes(name) && name !== towardWorkspace);
           return dir && absent.length ? [{ dir, absent: new Set(absent) }] : [];
         })
@@ -1104,7 +1117,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     }
     if (personal.permissions) await mergeLocalPermissions(path.join(shadowDir, '.claude', 'settings.local.json'), Object.fromEntries(Object.entries(personal.permissions).map(([key, rules]) => [key, rules?.map(projectText)])));
     // virtualParent 停在控制端有对应目录的最上一级(与控制端 shadowAliases 逐级映射的范围一致)。
-    const shortcutLayout: ExecServerShortcutLayout = { mirrorRoot, mappedRoot: virtualParent, ancestorAbsence };
+    const shortcutLayout: ExecServerShortcutLayout = { mirrorRoot, mappedRoot: virtualParent, ancestorAbsence, taskAncestorAbsence };
     return { shadowDir, mirrorRoot, shortcutLayout, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };
   }
 

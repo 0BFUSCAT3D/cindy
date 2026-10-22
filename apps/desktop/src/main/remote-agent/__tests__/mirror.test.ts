@@ -516,14 +516,13 @@ describe('shadow on the other computer', () => {
     host.dispose();
   });
 
-  // 2026-10-22 远程供应商调查：Codex 建线程时沿虚拟工作区逐级向上找 .git、Skill 目录与插件清单。垫出来的层级与
-  // 这台电脑自己的上级目录在任务所在电脑上没有对应目录，转过去只会得到「不存在」，却每条都要跨机往返一次，
-  // 现场启动因此拖到几分钟。这些查询由这台电脑直接回答；真实上级目录里任务所在电脑报了「没有」的标记同样直接
-  // 回答；其余(工作区本身、报了「有」的标记、其它名字)照常转过去。
+  // 2026-10-22 远程供应商调查：Codex 沿虚拟工作区逐级查找，虚拟垫层与任务电脑已报「没有」的标记可以本机回答。
+  // 镜像外的隐藏文件可能在任务电脑同一路径真实存在(#6844 review)，没有确认不存在的一律照常转发。
   it('answers lookups the task computer cannot map on this computer and forwards the rest', async () => {
     const project = path.join(root, 'work', 'proj');
     write(path.join(project, 'hello.txt'), 'hi');
     write(path.join(root, 'work', '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    write(path.join(root, '.bashrc'), 'export TASK_SHELL_CONFIG=1\n');
     const inputs: HostedStartInput[] = [];
     let stop!: () => void;
     const stopped = new Promise<void>((resolve) => { stop = resolve; });
@@ -594,12 +593,16 @@ describe('shadow on the other computer', () => {
       { target: path.join(top, 'not-a-marker'), local: false },
       { target: path.join(input.mirrorRoot, 'home', '.agents', 'skills'), local: false },
       { target: path.join(path.parse(input.mirrorRoot).root, 'not-a-cindy-dir', 'tool'), local: false },
+      // 镜像外的绝对路径会原样交给任务电脑；同一路径下的隐藏文件/已存在标记不能凭点前缀判不存在。
+      { target: path.join(root, '.bashrc'), local: false },
+      { target: path.join(root, 'work', '.git', 'HEAD'), local: false },
+      { target: path.join(root, 'work', '.codex-plugin', 'plugin.json'), local: true },
       { target: path.join(grandparent, '.git'), local: true },
       { target: path.join(grandparent, '.cursor-plugin', 'plugin.json'), local: true },
       { target: path.join(padded, '.git'), local: true },
       { target: path.join(padded, '.codex-plugin', 'plugin.json'), local: true },
       { target: path.join(input.mirrorRoot, 'workspace', '.agents', 'skills'), local: true },
-      { target: path.join(path.dirname(path.dirname(input.mirrorRoot)), '.claude-plugin', 'plugin.json'), local: true },
+      { target: path.join(path.dirname(path.dirname(input.mirrorRoot)), '.claude-plugin', 'plugin.json'), local: false },
     ];
     const ws = new WebSocket(`${input.tunnel.url.replace(/^http/, 'ws')}/ws/exec-server`, { headers: { authorization: `Bearer ${input.tunnel.token}` } });
     const replies = new Map<number, { error?: { code?: number } }>();
@@ -608,24 +611,26 @@ describe('shadow on the other computer', () => {
       replies.set(message.id, message);
     });
     await once(ws, 'open');
-    cases.forEach(({ target }, index) => ws.send(JSON.stringify({ id: index + 1, method: 'fs/getMetadata', params: { path: pathToFileURL(target).href } })));
-    const localIds = cases.flatMap(({ local }, index) => local ? [index + 1] : []);
-    const forwardedIds = cases.flatMap(({ local }, index) => local ? [] : [index + 1]);
-    await vi.waitFor(() => {
-      expect([...replies.keys()].sort((a, b) => a - b)).toEqual(localIds);
-      expect([...forwarded].sort((a, b) => a - b)).toEqual(forwardedIds);
-    });
-    for (const id of localIds) expect(replies.get(id)?.error?.code).toBe(EXEC_SERVER_NOT_FOUND_CODE);
-    // 本机回答的路径在任务所在电脑上确实不存在：要么映射不到(转过去会被原样当成那台电脑的路径查)，要么映射到的
-    // 真实路径不在。存在的(上级目录里的 .git)照常转过去。
-    for (const { target } of cases.filter(({ local }) => local)) {
-      const real = mapped.localPathFromAgent(target);
-      expect(real === null || !fs.existsSync(real)).toBe(true);
+    try {
+      cases.forEach(({ target }, index) => ws.send(JSON.stringify({ id: index + 1, method: 'fs/getMetadata', params: { path: pathToFileURL(target).href } })));
+      const localIds = cases.flatMap(({ local }, index) => local ? [index + 1] : []);
+      const forwardedIds = cases.flatMap(({ local }, index) => local ? [] : [index + 1]);
+      await vi.waitFor(() => {
+        expect([...replies.keys()].sort((a, b) => a - b)).toEqual(localIds);
+        expect([...forwarded].sort((a, b) => a - b)).toEqual(forwardedIds);
+      });
+      for (const id of localIds) expect(replies.get(id)?.error?.code).toBe(EXEC_SERVER_NOT_FOUND_CODE);
+      // 映射不到的绝对路径会原样转发；本机回答的所有目标在任务电脑上都确实不存在。
+      for (const { target } of cases.filter(({ local }) => local)) {
+        const real = mapped.localPathFromAgent(target) ?? target;
+        expect(fs.existsSync(real)).toBe(false);
+      }
+      expect(fs.existsSync(mapped.localPathFromAgent(path.join(parent, '.git', 'HEAD'))!)).toBe(true);
+      expect(fs.readFileSync(path.join(root, '.bashrc'), 'utf8')).toContain('TASK_SHELL_CONFIG');
+    } finally {
+      ws.close();
+      await handle.close({ reason: 'navigation' });
+      host.dispose();
     }
-    expect(fs.existsSync(mapped.localPathFromAgent(path.join(parent, '.git', 'HEAD'))!)).toBe(true);
-
-    ws.close();
-    await handle.close({ reason: 'navigation' });
-    host.dispose();
   });
 });

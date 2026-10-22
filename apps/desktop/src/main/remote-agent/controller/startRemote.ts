@@ -300,6 +300,27 @@ export async function startRemoteAgentSession(
   deps: StartRemoteAgentDeps,
 ): Promise<AgentSessionHandle> {
   if (!opts.sessionId) throw new Error('remote agent sessions require a session id');
+  // 第一处异步准备之前登记，MCP 启动期间的删除/归档也不能漏掉。
+  const sessionId = opts.sessionId;
+  const abort = new AbortController();
+  const cancel = () => abort.abort();
+  const cancels = pendingStarts.get(sessionId) ?? new Set<() => void>();
+  pendingStarts.set(sessionId, cancels);
+  cancels.add(cancel);
+  try {
+    return await prepareAndStartRemoteAgentSession(kind, opts, deps, abort.signal);
+  } finally {
+    cancels.delete(cancel);
+    if (!cancels.size && pendingStarts.get(sessionId) === cancels) pendingStarts.delete(sessionId);
+  }
+}
+
+async function prepareAndStartRemoteAgentSession(
+  kind: RemoteAgentKind,
+  opts: StartSessionOptions,
+  deps: StartRemoteAgentDeps,
+  signal: AbortSignal,
+): Promise<AgentSessionHandle> {
   // 附加目录(只读引用)与可写目录分开跟踪，运行中任一侧变化都重算执行器根目录：
   // 否则新授予的目录过不了本机 shell/root 判定，撤掉的还被本机上限当可信根。
   let extraDirs = [...new Set(opts.extraDirs ?? [])];
@@ -352,6 +373,10 @@ export async function startRemoteAgentSession(
     void executor.close();
     throw error;
   });
+  if (signal.aborted) {
+    try { mcp.dispose(); } finally { await executor.close(); }
+    throw new Error('[REMOTE_AGENT_EXPIRED] The task has ended on this computer.');
+  }
   const router = createReverseHttpRouter({ executor, mcpTarget: (name) => mcp.servers.get(name) });
 
   // 连回对方时按最新值打开(换模型、推理强度等在已让出名额时只记在这里)。
@@ -824,7 +849,6 @@ export async function startRemoteAgentSession(
 
   // 第一次启动期间任务被删除或归档：标成已关闭(还没发出的打开不再发)，已发出的立即让对方结束；
   // 在等的打开随之以「任务已结束」失败。
-  const sessionId = opts.sessionId;
   const cancelStart = () => {
     if (linkState === 'closed') return;
     linkState = 'closed';
@@ -835,9 +859,7 @@ export async function startRemoteAgentSession(
     });
     if (client) void client.close('close', 'navigation').catch(() => undefined);
   };
-  const cancels = pendingStarts.get(sessionId) ?? new Set<() => void>();
-  pendingStarts.set(sessionId, cancels);
-  cancels.add(cancelStart);
+  signal.addEventListener('abort', cancelStart, { once: true });
   try {
     await connect(false, (started) => {
       firstStarted = started;
@@ -899,8 +921,7 @@ export async function startRemoteAgentSession(
     await disposeLocal();
     throw localizeRemoteError(error);
   } finally {
-    cancels.delete(cancelStart);
-    if (!cancels.size && pendingStarts.get(sessionId) === cancels) pendingStarts.delete(sessionId);
+    signal.removeEventListener('abort', cancelStart);
   }
   touch();
   deps.log?.info('remote agent session started', { kind, runId: activeNow()?.runId });

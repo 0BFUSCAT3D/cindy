@@ -113,7 +113,7 @@ afterEach(() => {
 });
 
 describe('multiplexed poll', () => {
-  // 长等待最多两个，另有一个只给还没被带上过的新任务的补位名额，合计不超过 3 个(远低于共享的 12 个在途配额)。
+  // 长等待最多两个，另留一个给没有在途覆盖的任务，持续到普通 poll 接手；合计不超过 3 个。
   it.each([130, 1000])('refreshes all %i idle runs before host expiry with at most three polls', async count => {
     vi.useFakeTimers();
     const host = fakeHost(REMOTE_AGENT_READ_WAIT_MS);
@@ -184,10 +184,13 @@ describe('multiplexed poll', () => {
     poller.register(sinks[1].run);
     await vi.advanceTimersByTimeAsync(1);
     poller.register(sinks[2].run);
-    const appendedAt = Date.now();
-    host.runs.get(sinks[2].run.runId)!.log.append({ t: 'ws', kind: 'message', data: 'initialize' });
-    await vi.waitFor(() => expect(sinks[2].text()).toContain('initialize'));
-    expect(Date.now() - appendedAt).toBeLessThan(1_000);
+    // #6844 review：首包只有连接打开，initialize 与后续文件查询分别到达；补位必须持续到普通 poll 接手。
+    for (const data of ['open', 'initialize', 'fs/getMetadata']) {
+      const appendedAt = Date.now();
+      host.runs.get(sinks[2].run.runId)!.log.append({ t: 'ws', kind: 'message', data });
+      await vi.waitFor(() => expect(sinks[2].text()).toContain(data));
+      expect(Date.now() - appendedAt).toBeLessThan(1_000);
+    }
     for (const run of host.runs.values()) run.log.end();
     await vi.advanceTimersByTimeAsync(REMOTE_AGENT_READ_WAIT_MS);
     expect(sinks.every((sink) => sink.done)).toBe(true);

@@ -3,9 +3,9 @@
  *
  * Codex 建线程时沿工作目录逐级向上找 `.git`、Skill 目录与插件清单(`.codex-plugin/plugin.json` 等)，
  * 每一次都经设备互联往返一次，且上一条回来才发下一条。虚拟工作区固定垫了 MAX_ANCESTOR_LEVELS 层
- * (`workspace/p/…`)，再往上是这台电脑自己的目录。任务所在电脑只认工作区及其真实上级、home、tmp 与
- * additional(见 controller/startRemote 的 shadowAliases)，其余路径原样当成它自己的路径去查，只会得到
- * 「不存在」。2026-10-22 现场：一次启动 277 次文件操作里约 150 次是这类查询，每次跨机 0.5–3 秒，启动
+ * (`workspace/p/…`)，再往上是这台电脑自己的目录。工作区及其真实上级、home、tmp 与 additional
+ * 有显式映射(见 controller/startRemote 的 shadowAliases)，镜像根内的其余层级在任务电脑没有对应目录。
+ * 镜像外的绝对路径则会原样转发，不能仅凭以点开头就判不存在。2026-10-22 现场：每次跨机 0.5–3 秒，启动
  * 拖到几分钟、甚至撞上 5 分钟上限。
  *
  * 工作区的真实上级目录在任务所在电脑上是存在的，Codex 在每一级查 `.git` 与三种插件清单(实测每级 6 次)。
@@ -35,6 +35,8 @@ export interface ExecServerShortcutLayout {
   mappedRoot: string;
   /** 工作区各级真实上级目录(影子里的位置)里，任务所在电脑报了「没有」的名字。 */
   ancestorAbsence?: ReadonlyArray<{ dir: string; absent: ReadonlySet<string> }>;
+  /** 任务电脑确认不存在的原始绝对路径；仅两端路径格式相同时提供，供镜像外查询核对。 */
+  taskAncestorAbsence?: ReadonlyArray<{ dir: string; absent: ReadonlySet<string> }>;
 }
 
 function isWithin(target: string, root: string): boolean {
@@ -42,12 +44,17 @@ function isWithin(target: string, root: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function reportedAbsent(target: string, ancestors: ExecServerShortcutLayout['ancestorAbsence']): boolean {
+  return (ancestors ?? []).some(({ dir, absent }) => (
+    target !== dir && isWithin(target, dir) && absent.has(path.relative(dir, target).split(path.sep)[0])
+  ));
+}
+
 /**
  * 这个本机路径在任务所在电脑上是否注定不存在：
  * - 镜像根内：不在已映射的工作区(及其真实上级)、home、tmp、additional 之下的，都是虚拟工作区垫出来的层级；
  *   在真实上级目录里、任务所在电脑报了「没有」的名字之下的，同样不存在；
- * - 镜像根外：只认这台电脑上级目录下直接以点开头的标记(`.git`、`.agents`、`.codex-plugin` …)，
- *   它们是 Codex 沿上级目录查找的产物；其它路径(如那台电脑的 shell 路径)照常转发。
+ * - 镜像根外：只按任务电脑确认不存在的原始绝对路径回答；其余路径照常转发，包括隐藏文件与未知的标记。
  */
 function unreachableOnTaskComputer(target: string, layout: ExecServerShortcutLayout): boolean {
   if (!path.isAbsolute(target)) return false;
@@ -58,21 +65,9 @@ function unreachableOnTaskComputer(target: string, layout: ExecServerShortcutLay
     const first = path.relative(mirrorRoot, resolved).split(path.sep)[0];
     if (MAPPED_TOP_LEVEL.has(first)) return false;
     if (!isWithin(resolved, path.resolve(layout.mappedRoot))) return true;
-    return (layout.ancestorAbsence ?? []).some(({ dir, absent }) => {
-      if (resolved === dir || !isWithin(resolved, dir)) return false;
-      return absent.has(path.relative(dir, resolved).split(path.sep)[0]);
-    });
+    return reportedAbsent(resolved, layout.ancestorAbsence);
   }
-  // 镜像根外：找出与镜像根最深的共同上级。
-  let common = path.dirname(mirrorRoot);
-  while (!isWithin(resolved, common)) {
-    const parent = path.dirname(common);
-    if (parent === common) return false;
-    common = parent;
-  }
-  if (resolved === common) return false;
-  const first = path.relative(common, resolved).split(path.sep)[0];
-  return first.length > 1 && first.startsWith('.');
+  return reportedAbsent(resolved, layout.taskAncestorAbsence);
 }
 
 /**

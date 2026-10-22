@@ -1305,8 +1305,9 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
   `fs/readFile`、`fs/open` 的缺省/read 模式与目录读取按读取，显式非 read 的 open 模式仍从严按写入；`fs/walk` 按
   目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
-  B 的隧道对 A 映射不到的路径(虚拟工作区垫出的层级、B 自己上级目录下的点开头标记)，以及 A 在 `open` 的
-  `ancestorMarkers` 里报了「没有」的上级目录标记，只读查询直接回 exec-server
+  B 的隧道对镜像根内 A 映射不到的虚拟垫层，以及 A 在 `open` 的 `ancestorMarkers` 里明确报了「没有」的上级目录
+  标记，只读查询由 B 本机回答。镜像根外的绝对路径照常转发，只有两端路径格式相同且 A 明确报告其缺失的标记
+  才可本机回答；隐藏文件和未知外部标记不能凭名字判不存在。本机回答使用
   原生的不存在错误 `-32004`(固定版本 `codex-rs/exec-server/src/remote_file_system.rs` 按 NotFound 处理)，不转给 A；
   B 的 Codex 在执行环境断开时按同一个 id 重新 `environment/add`，先用实验接口 `environment/status` 判断。两者都随
   Codex 版本可能变化，升级时一并核对(见 [`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)
