@@ -46,6 +46,7 @@ import { s2Fetch } from '../../../opencli-vendor/clis/semanticscholar/utils.js';
 import { buildEutilsUrl } from '../../../opencli-vendor/clis/pubmed/utils.js';
 import { log as recipeLog } from '@jackwener/opencli/logger';
 import { createProgressBar, DownloadProgressTracker } from '@jackwener/opencli/download/progress';
+import { CommandExecutionError } from '@jackwener/opencli/errors';
 
 // Wrap the native namespace so tests can replace only the subprocess boundary.
 vi.mock('node:child_process', async importOriginal => ({
@@ -60,6 +61,44 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 / review 4353330401, unit: real Instagram adapter + host page.
+  // Earlier tests did not enter the ten-item pre-share recovery branch. A
+  // failed composer must be dismissed before the next navigation, without
+  // pretending the host can reset its browser window. No real account writes.
+  it('cleans the Instagram composer before retrying a ten-item post', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-instagram-recovery-'));
+    try {
+      const file = path.join(dir, 'image.jpg');
+      await writeFile(file, 'fixture');
+      vi.useFakeTimers();
+      vi.stubEnv('OPENCLI_INSTAGRAM_CAPTURE', '0');
+      vi.spyOn(instagramMedia, 'resolveInstagramPrivatePublishConfig')
+        .mockRejectedValue(new CommandExecutionError('Instagram private route fixture unavailable'));
+      const events: string[] = [];
+      let composers = 0;
+      const checked = expect(runOpenCliAdapter('instagram/post', {
+        media: Array(10).fill(file).join(','),
+      }, {
+        targetId: 'instagram-target',
+        recipeFiles: async () => ({ read: readFileSync, open: file => openSync(file, 'r') }),
+        call: async request => {
+          if (request.url?.includes('__opencli_reset=')) events.push('navigate');
+          const js = request.request?.fn ?? '';
+          let result: unknown = true;
+          if (js.includes('closeByText')) { events.push('dismiss'); result = { ok: false }; }
+          if (js.includes('hasLoginField')) {
+            events.push('composer');
+            result = ++composers === 1 ? { ok: false } : { ok: false, reason: 'auth' };
+          }
+          return { ok: true, action: request.action, data: { result, cookies: [], sessionId: 'fixture' } };
+        },
+      })).rejects.toThrow('Instagram login required before posting');
+      await vi.runAllTimersAsync();
+      await checked;
+      expect(events).toEqual(['navigate', 'dismiss', 'composer', 'dismiss', 'navigate', 'dismiss', 'composer']);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 log privacy, unit tier: the real search adapter must retain full,
   // partial and no-URL results without copying account activity to host stderr.
   // Existing registration/file tests never executed detail enrichment.

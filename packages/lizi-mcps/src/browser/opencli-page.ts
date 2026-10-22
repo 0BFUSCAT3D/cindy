@@ -255,8 +255,8 @@ export class OpenCliPage extends CDPBasePage {
       this._lastUrl = null;
     }
   }
-  // OpenCLI's closeWindow releases a lease. Cindy owns browser/tab lifetime.
-  async closeWindow(): Promise<void> {}
+  // Window reset is optional. Omit it so adapters use their existing cleanup
+  // fallback rather than treating a no-op as a successful browser reset.
 
   async setFileInput(
     files: string[],
