@@ -194,6 +194,11 @@ describe('remote agent channel', () => {
       .toEqual({ op: 'reply', runId, requestId: otherId, payload: { uploadId: otherId, chunks: 2, bytes: 10 } });
     expect(parseRemoteAgentRequest({ op: 'push', runId, seq: 3, frames: [{ connId: 'c1', kind: 'message', data: '{}' }] }))
       .toEqual({ op: 'push', runId, seq: 3, frames: [{ connId: 'c1', kind: 'message', data: '{}' }] });
+    // Optional busy-state addition to v1: retain only true; legacy senders omit it.
+    for (const hold of [true, false, 'true']) {
+      expect(parseRemoteAgentRequest({ op: 'push', runId, seq: 3, hold, frames: [{ connId: 'c1', kind: 'message', data: '{}' }] }))
+        .toEqual({ op: 'push', runId, seq: 3, ...(hold === true ? { hold: true } : {}), frames: [{ connId: 'c1', kind: 'message', data: '{}' }] });
+    }
     expect(parseRemoteAgentRequest({ op: 'close', runId, mode: 'detach', reason: 'navigation' })).toEqual({ op: 'close', runId, mode: 'detach', reason: 'navigation' });
     expect(parseRemoteAgentRequest({ op: 'upload', uploadId: otherId, index: 0, data: 'AAAA' }))
       .toEqual({ op: 'upload', uploadId: otherId, index: 0, data: 'AAAA' });

@@ -180,7 +180,7 @@ export class RemoteAgentRunClient implements PolledRun {
       for (let attempt = 1; ; attempt += 1) {
         if (this.closed) return;
         try {
-          await this.invoke([{ op: 'push', runId: this.runId, seq, frames }]);
+          await this.invoke([{ op: 'push', runId: this.runId, seq, frames, ...(this.holdsRemote() ? { hold: true } : {}) }]);
           return;
         } catch (error) {
           const retryable = isRetryableLinkError(error) && attempt < MAX_PUSH_DELIVER_ATTEMPTS;

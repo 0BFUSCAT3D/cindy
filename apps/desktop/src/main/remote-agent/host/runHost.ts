@@ -2081,12 +2081,15 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     waitMs: number,
     signal?: AbortSignal,
   ): Promise<RemoteAgentPollResult> {
-    const touch = () => {
+    const touch = (updateHold: boolean) => {
       const t = now();
       for (const { runId, hold } of wanted) {
         const run = runs.get(key(controller, runId));
         if (!run) continue;
         run.lastReadAt = t;
+        // Only apply the snapshot when this request arrives; an older long poll returning later must
+        // not clear a newer hold received with a process startup reply.
+        if (!updateHold) continue;
         // 控制端那边还有这个任务的工作在进行：按有活动算，不按闲置收回。
         if (hold) run.activeAt = run.heldAt = t;
         else run.heldAt = undefined;
@@ -2096,11 +2099,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       const run = runs.get(key(controller, runId));
       return run && run.log.isValidCursor(cursor) ? [{ run, cursor }] : [];
     });
-    touch();
+    touch(true);
     const initial = live();
     const anyReady = initial.length < wanted.length || initial.some(({ run, cursor }) => run.log.isReady(cursor));
     if (!anyReady && waitMs > 0) await waitForAny(initial.map(({ run }) => run.log), waitMs, signal);
-    touch();
+    touch(false);
     const out: RemoteAgentPollResult = { runs: [] };
     let budget = REMOTE_AGENT_POLL_MAX_BYTES;
     const start = wanted.length ? pollRotation++ % wanted.length : 0;
@@ -2627,6 +2630,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       }
       case 'push': {
         const run = requireRun(controller, request.runId);
+        // The first local process may start between poll batches. Its startup reply carries the hold
+        // immediately; retries refresh the lease without delivering the frames again.
+        if (request.hold) run.activeAt = run.heldAt = now();
         if (run.pushSeq.has(request.seq)) return {};
         run.pushSeq.add(request.seq);
         // Codex 执行环境在控制端的输出与回包：控制端那边还在干活。

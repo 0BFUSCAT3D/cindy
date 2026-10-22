@@ -12,6 +12,8 @@ import path from 'node:path';
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { RemoteAgentPoller } from '../controller/poller';
+import { RemoteAgentRunClient } from '../controller/runClient';
 import { createRemoteAgentHost, hostSessionIdFor, type HostedStartInput } from '../host/runHost';
 
 /** 协议层 id 是 36 位 UUID 形态。 */
@@ -246,7 +248,7 @@ describe('idle reclaim by the provider', () => {
       await vi.advanceTimersByTimeAsync(5_000);
       await settle();
     };
-    return { host, handle: () => handle, pass, rows };
+    return { host, handle: () => handle, pass, rows, cursor: () => cursor };
   }
 
   it.each(['turn', 'background', 'wake', 'hold', 'rewind'] as const)('keeps a run while it is busy (%s) and reclaims it after a full idle period', async (reason) => {
@@ -293,6 +295,53 @@ describe('idle reclaim by the provider', () => {
       expect(host.runCount()).toBe(0);
       expect(rows.at(-1)).toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
     } finally { host.dispose(); }
+  });
+
+  // Unit regression: a Codex process starts just after this run's poll batch. Its push must protect the
+  // first 70-second gap before another poll can report hold; a previously waiting poll must not clear it.
+  // Real RunClient.push -> Host.handle entry points; the existing held-run test begins after the first hold.
+  it.each([false, true])('keeps new local work before its first held poll (older poll waiting: %s)', async (waiting) => {
+    const { host, handle, pass, rows, cursor } = await openBusy(1, { turn: false, background: 0, wake: 0 }, 'codex');
+    let localBusy = true;
+    const client = new RemoteAgentRunClient(RUN_1, new RemoteAgentPoller(args => host.handle('controller-1', args[0])), {
+      onEvent() {}, onState() {}, onWs() {}, onClosed() {},
+      onRequest: async () => ({ type: 'callback', value: undefined }),
+      holdsRemote: () => localBusy,
+    }, () => RUN_2);
+    const abort = new AbortController();
+    let previousPoll: Promise<unknown> | undefined;
+    try {
+      await pass(0);
+      if (waiting) {
+        let returned = false;
+        previousPoll = host.handle('controller-1', {
+          op: 'poll', runs: [{ runId: RUN_1, cursor: cursor() }], waitMs: 10_000,
+        }, abort.signal).then(result => { returned = true; return result; });
+        await settle();
+        expect(returned).toBe(false);
+      }
+      await client.push([{ connId: 'exec-1', kind: 'message', data: '{"id":1,"result":{}}' }]);
+      handle().emit({ type: 'done', data: {}, source: 'codex' } as AgentEvent);
+      await previousPoll;
+      await settle();
+      clock += 70_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      expect(host.runCount()).toBe(1);
+      localBusy = false;
+      await pass(0);
+      await pass(50_000);
+      expect(host.runCount()).toBe(1);
+      await pass(20_000);
+      await pass(0);
+      expect(host.runCount()).toBe(0);
+      expect(rows.at(-1)).toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
+    } finally {
+      abort.abort();
+      await previousPoll?.catch(() => undefined);
+      client.abandon('test-finished');
+      host.dispose();
+    }
   });
 
   // Codex / Pi 在 commitRewindFiles 返回前已经完成原生回退，不需要等待下一次发送保存。

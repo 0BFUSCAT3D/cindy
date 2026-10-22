@@ -166,7 +166,8 @@ export type RemoteAgentRequest =
    */
   | { op: 'poll'; runs: Array<{ runId: string; cursor: number; hold?: true }>; waitMs?: number }
   | { op: 'reply'; runId: string; requestId: string; payload: RemoteAgentPayload }
-  | { op: 'push'; runId: string; seq: number; frames: RemoteAgentPushFrame[] }
+  /** hold: local work has started; protect it with the startup reply before the next poll batch. */
+  | { op: 'push'; runId: string; seq: number; frames: RemoteAgentPushFrame[]; hold?: true }
   | { op: 'close'; runId: string; mode: 'close' | 'detach'; reason: RemoteAgentTeardownReason }
   /**
    * 供应商组(组所在电脑 → 组内电脑)：组所在电脑删掉某个受邀者后，请组内电脑清掉替这个受邀者
@@ -511,7 +512,10 @@ export function parseRemoteAgentRequest(value: unknown): RemoteAgentRequest {
     case 'reply':
       return { op: 'reply', runId: id(v.runId), requestId: id(v.requestId), payload: payload(v.payload) };
     case 'push':
-      return { op: 'push', runId: id(v.runId), seq: count(v.seq, Number.MAX_SAFE_INTEGER), frames: pushFrames(v.frames) };
+      return {
+        op: 'push', runId: id(v.runId), seq: count(v.seq, Number.MAX_SAFE_INTEGER), frames: pushFrames(v.frames),
+        ...(v.hold === true ? { hold: true as const } : {}),
+      };
     case 'close':
       return {
         op: 'close',
