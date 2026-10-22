@@ -14,6 +14,7 @@ import { Tip } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { useAgentCapabilities } from '@/hooks/useAgentCapabilities';
 import { useProviders } from '@/hooks/useProviders';
+import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import {
   sessionModelSupportsFastMode,
 } from '@cindy/model-providers';
@@ -134,8 +135,6 @@ export function ScheduleFormDialog({
   const { t } = useTranslation();
   const formApi = useScheduleForm(initial);
   const { form, setField, selectModelConfiguration, setDestination, setRunMode, selectBoundSession, applyTemplateAgentFields, reset, toInput, validate } = formApi;
-  const caps = useAgentCapabilities(form.agentKind);
-  const { providers, loading: providersLoading } = useProviders();
   // "运行会话"三态(fresh / persistent / bound)与心跳形态派生值。
   // hasRealBinding = targetSessionId 为真实会话 id(B 已绑 / C 已选 / MCP 手绑),
   // 此时目录 / worktree / fastMode 由绑定会话决定,表单隐藏对应字段。
@@ -151,6 +150,13 @@ export function ScheduleFormDialog({
     : undefined;
   // 绑定任务的 Agent 所在电脑(null = 本机)。运行位置跟随任务,模型面板只列这一处。
   const boundAgentDeviceId = boundSessionReference?.agentDeviceId ?? null;
+  const selectedAgentDeviceId = isBound ? boundAgentDeviceId : form.agentDeviceId || null;
+  const caps = useAgentCapabilities(form.agentKind, selectedAgentDeviceId ?? undefined);
+  const localProviders = useProviders();
+  const deviceProviders = useDeviceProviders(selectedAgentDeviceId ?? undefined);
+  const { providers, loading: providersLoading } = selectedAgentDeviceId ? deviceProviders : localProviders;
+  // Do not calibrate saved choices against a provisional local or loading snapshot.
+  const modelCatalogReady = (!isBound || !!boundSessionReference) && !caps.loading && !providersLoading;
   const hideWorkspaceFields = runMode === 'bound' || isBound;
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState<'gallery' | 'form'>('form');
@@ -460,6 +466,8 @@ export function ScheduleFormDialog({
   // 显式模型,下次 fire runner setModel 反向改掉绑定会话的模型。
   useEffect(() => {
     if (form.targetSessionId.trim()) return;
+    // Local recent-model preferences do not describe another computer's catalog.
+    if (selectedAgentDeviceId) return;
     if (form.model) return;
     // 默认路由限定在表单已选的来源内,模型与来源成对回填(已选来源保持不变)。
     const route = getScheduleDefaultRoute(
@@ -470,7 +478,7 @@ export function ScheduleFormDialog({
     if (!route.model) return;
     setField('model', route.model);
     if (route.providerId && !form.providerId.trim()) setField('providerId', route.providerId);
-  }, [form.model, form.agentKind, form.targetSessionId, form.providerId, setField, providers, providersLoading]);
+  }, [form.model, form.agentKind, form.targetSessionId, form.providerId, setField, providers, providersLoading, selectedAgentDeviceId]);
 
   // 绑定任务的显式模型属于任务所在电脑的目录。读到任务位置后让表单与之成对,之后切到
   // 「每次新建任务」时模型与运行位置仍然一致。
@@ -481,10 +489,10 @@ export function ScheduleFormDialog({
   }, [isBound, boundSessionReference, form.model, form.agentDeviceId, setField]);
 
   useEffect(() => {
-    if (form.modelAgentKind || !currentModelEfforts || !form.effort) return;
+    if (!modelCatalogReady || form.modelAgentKind || !currentModelEfforts || !form.effort) return;
     const allowed = currentModelEfforts as readonly string[];
     if (!allowed.includes(form.effort)) setField('effort', '');
-  }, [form.modelAgentKind, currentModelEfforts, form.effort, setField]);
+  }, [modelCatalogReady, form.modelAgentKind, currentModelEfforts, form.effort, setField]);
 
   // Fast 模式门控：agent 级 hasFastMode × 该 (生效来源, 模型) 的 supportsFastMode（per-provider，
   // 唯一真相）。生效来源按 form.providerId 解析（空则该模型的默认来源）。Claude 当前 hasFastMode
@@ -498,10 +506,10 @@ export function ScheduleFormDialog({
   // 切到 Claude / 不支持 fast 的模型时，清掉表单里残留的 fast 态，
   // 杜绝脏值经 toInput 流向 createSession（与上面 effort 失配自动清除同思路）。
   useEffect(() => {
-    if (!form.modelAgentKind && !caps.loading && providers.length > 0 && form.fastMode && !showFastModeToggle) {
+    if (modelCatalogReady && !form.modelAgentKind && providers.length > 0 && form.fastMode && !showFastModeToggle) {
       setField('fastMode', false);
     }
-  }, [form.modelAgentKind, caps.loading, providers.length, form.fastMode, showFastModeToggle, setField]);
+  }, [modelCatalogReady, form.modelAgentKind, providers.length, form.fastMode, showFastModeToggle, setField]);
 
   const handleSubmit = async () => {
     const err = validate();
@@ -1396,7 +1404,7 @@ export function ScheduleFormDialog({
                           fastMode: fast,
                         });
                       }}
-                      agentDeviceId={isBound ? boundAgentDeviceId : form.agentDeviceId || null}
+                      agentDeviceId={selectedAgentDeviceId}
                       remoteLocation={isProjectAutomationMode ? 'none' : isBound ? 'locked' : 'any'}
                       onFollowSession={() => selectModelConfiguration(null,
                         boundSessionReference?.agentKind === 'cc' ? 'claude-code' : boundSessionReference?.agentKind)}

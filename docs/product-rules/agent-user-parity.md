@@ -74,7 +74,8 @@ Worker 工具省略 working_dir 时保持继承 Lead 任务记录目录，不跟
   （`HELPER_CATEGORY_DESCRIPTIONS`）、`cindy_schedulerMcpServer.ts`
   （`SCHEDULER_CATEGORY_DESCRIPTIONS`）、`xdt-helper/capabilities.ts` 的 `self-management`。
 - 定时任务的 Agent 运行位置：`packages/lizi-mcps/src/scheduler/listModels.ts`（与协同 Worker 的
-  `list_available_models` 共用 host 实现）、`create.ts` / `update.ts` 的 `agentDeviceId`；执行见
+  `list_available_models` 共用 host 实现；模型项的 `id` 对应 `model`，`providers[].id` 对应
+  `providerId`）、`create.ts` / `update.ts` 的 `agentDeviceId`；执行见
   `apps/desktop/src/main/scheduler-host/runner.ts`（按那台电脑的已授权目录解析，不回落本机同名来源）。
 - 跨电脑定时任务：`packages/lizi-mcps/src/scheduler/_devices.ts`、
   `apps/desktop/src/main/mcp-integrations/schedulerDevices.ts`。
