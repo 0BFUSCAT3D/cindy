@@ -29,10 +29,12 @@ import { readUtf8File } from '../../../opencli-vendor/clis/_atlassian/shared.js'
 import { resolvePayload } from '../../../opencli-vendor/clis/zhihu/write-shared.js';
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
 import { prepareChatGPTFilePaths } from '../../../opencli-vendor/clis/chatgpt/utils.js';
-import { readFileSync, openSync } from 'node:fs';
+import { readFileSync, openSync, fstatSync } from 'node:fs';
 import { AsyncResource } from 'node:async_hooks';
 // @ts-expect-error Upstream JavaScript helpers have no declarations.
 import { validateLocalReferences } from '../../../opencli-vendor/clis/midjourney/utils.js';
+// @ts-expect-error Pinned upstream JavaScript uploader has no declarations.
+import { tosUpload } from '../../../opencli-vendor/clis/douyin/_shared/tos-upload.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -41,6 +43,68 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 file-state recurrence, unit tier. Real uploader and broker-approved
+  // descriptors; old tests never reached multipart init with task-only files.
+  // The old resume write fails after init, before any part can be transferred.
+  it.each([null, 'init', 'transfer', 'finish'])('uploads without disk state and closes the input after failure at %s', async fail => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-tos-test-'));
+    const file = path.join(dir, 'clip.mp4');
+    await writeFile(file, 'fixture-video');
+    const opened: number[] = [];
+    const phases: string[] = [];
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      const phase = new URL(url).searchParams.get('phase')!;
+      phases.push(phase);
+      if (phase === 'init') return new Response('<UploadId>invalid-fixture-upload</UploadId>', { status: fail === phase ? 500 : 200 });
+      if (phase === 'transfer') {
+        expect(Buffer.from(init.body as Uint8Array).toString()).toBe('fixture-video');
+        return new Response(JSON.stringify({ code: fail === phase ? 4000 : 2000, data: { crc32: 'fixture-crc' } }));
+      }
+      return new Response(JSON.stringify({ code: fail === phase ? 4000 : 2000, data: { key: 'fixture-completed' } }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const output = vi.fn(() => { throw new Error('no extra disk state'); });
+    const run = () => tosUpload({ filePath: 'clip.mp4', uploadInfo: {
+      tos_upload_url: 'https://upload.example.test/video', auth: 'invalid-fixture-auth',
+    } });
+    try {
+      await expect(withRecipeHost(undefined, run, {
+        directory: dir, read: () => { throw new Error('input rejected'); },
+        open: () => { throw new Error('input rejected'); }, output,
+      })).rejects.toThrow();
+      expect(fetch).not.toHaveBeenCalled();
+      const inputOnlyOutput = vi.fn((candidate: string) => {
+        if (candidate === file) return candidate;
+        throw new Error('no extra disk state');
+      });
+      const running = withRecipeHost(undefined, run, {
+        directory: dir, read: readFileSync,
+        open: file => { const fd = openSync(file, 'r'); opened.push(fd); return fd; }, output: inputOnlyOutput,
+      });
+      if (fail) await expect(running).rejects.toThrow(fail === 'init' ? 'TOS init multipart upload failed'
+        : fail === 'transfer' ? 'TOS upload part 1 failed' : 'TOS complete multipart upload failed');
+      else expect(await running).toBe('fixture-completed');
+      expect(phases).toEqual(fail === 'init' ? ['init'] : fail === 'transfer' ? ['init', 'transfer'] : ['init', 'transfer', 'finish']);
+      expect(output).not.toHaveBeenCalled();
+      expect(inputOnlyOutput).not.toHaveBeenCalled();
+      expect(opened).toHaveLength(1);
+      expect(() => fstatSync(opened[0])).toThrow();
+      expect(await readdir(dir)).toEqual(['clip.mp4']);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  // #6826 quota regression, unit tier. Actual adapter result must survive a
+  // broker denying all optional files; older coverage never ran quota/account.
+  it.each(['quota', 'account'])('returns current Midjourney %s without historical snapshot files', async command => {
+    const io = vi.fn(() => { throw new Error('host denied optional state'); });
+    const result = await executeAdapter(`midjourney/${command}`, {}, {
+      goto: async () => {}, fetchJson: async () => ({ user_id: 'fixture-user', plan: { type: 'basic' }, total_credits: 120000, period_credits_used: 60000 }),
+    } as unknown as IPage, undefined, undefined, { directory: tmpdir(), read: io, open: io, output: io });
+    expect(result).toMatchObject([{ plan: 'basic', remaining_minutes: 2, used_minutes: 1,
+      avg_daily_minutes: null, projected_exhaustion_date: null }]);
+    expect(io).not.toHaveBeenCalled();
+  });
+
   // #6826 credentials-and-local-storage: production broker, unit tier. Prior
   // file tests did not cover a missing encrypted entry with a legacy file present.
   // Only invalid fixture credentials are written under an isolated temp root.
@@ -727,7 +791,7 @@ describe("bundled OpenCLI recipes", () => {
       const all = await query();
       expect(all.ok).toBe(true);
       expect(all.recipeCount).toBe(loadRecipes().size);
-      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'opencli:ones/login', 'opencli:ones/token-info', 'opencli:xiaoyuzhou/history', 'opencli:paperreview/submit', 'opencli:paperreview/review', 'opencli:paperreview/feedback', 'opencli:quark/share-tree', 'opencli:quark/save', 'books-list', 'hockey-search']) {
+      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'opencli:ones/login', 'opencli:ones/token-info', 'opencli:xiaoyuzhou/history', 'opencli:paperreview/submit', 'opencli:paperreview/review', 'opencli:paperreview/feedback', 'opencli:quark/share-tree', 'opencli:quark/save', 'opencli:kimi/storage-get', 'opencli:kimi/storage-keys', 'opencli:kimi/cookies', 'opencli:kimi/idb-list', 'books-list', 'hockey-search']) {
         expect(JSON.stringify(all)).not.toContain(id);
         const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: id } } });
         expect(JSON.parse((response.content as Array<{ text: string }>)[0].text).ok).toBe(false);

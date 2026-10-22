@@ -19,8 +19,6 @@ export const MIDJOURNEY_IMAGINE_URL = `${MIDJOURNEY_URL}/imagine`;
 export const MIDJOURNEY_CDN = 'https://cdn.midjourney.com';
 export const COMPOSER_SELECTOR = '#desktop_input_bar';
 export const CREDITS_PER_FAST_MINUTE = 60_000;
-export const MIDJOURNEY_SITE_DIR = path.join(os.homedir(), '.opencli', 'sites', 'midjourney');
-export const USAGE_SNAPSHOT_PATH = path.join(MIDJOURNEY_SITE_DIR, 'usage-snapshots.jsonl');
 export const IMAGE_EXTENSIONS = new Map([
   ['.png', 'image/png'],
   ['.jpg', 'image/jpeg'],
@@ -867,45 +865,13 @@ export async function recordQuotaSnapshot(account, source = 'unknown') {
     periodCreditsUsed: numberOrNull(account?.period_credits_used ?? account?.credit_period_usage),
     remainingCredits: numberOrNull(account?.total_credits ?? account?.credits_total),
   };
-  try {
-    await fs.mkdir(recipeOutputPath(MIDJOURNEY_SITE_DIR), { recursive: true });
-    await fs.appendFile(recipeOutputPath(USAGE_SNAPSHOT_PATH), `${JSON.stringify(row)}\n`, 'utf8');
-  } catch (error) {
-    // A local monitoring write must never turn a completed paid job into a
-    // reported command failure: that would invite an accidental paid retry.
-    log.warn(`Could not persist Midjourney quota snapshot: ${errorMessage(error)}`);
-  }
+  // Cindy does not persist optional account-monitoring snapshots.
   return row;
 }
 
-export async function readQuotaTrend(account) {
-  let raw = '';
-  try {
-    raw = await readRecipeFileSync(USAGE_SNAPSHOT_PATH, 'utf8');
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw new CommandExecutionError(`Could not read Midjourney usage snapshots: ${errorMessage(error)}`);
-  }
-  const currentStart = isoFromMillis(account?.billing_period?.start);
-  const rows = raw.split(/\r?\n/).filter(Boolean).flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line);
-      return parsed?.billingStart === currentStart ? [parsed] : [];
-    } catch {
-      return [];
-    }
-  }).filter((row) => Number.isFinite(Date.parse(row.observedAt)) && Number.isFinite(Number(row.periodCreditsUsed)));
-  if (rows.length < 2) return { avgDailyMinutes: null, projectedExhaustionDate: null };
-  const first = rows[0];
-  const last = rows.at(-1);
-  const elapsedDays = (Date.parse(last.observedAt) - Date.parse(first.observedAt)) / 86_400_000;
-  const usedMinutes = creditsToFastMinutes(Number(last.periodCreditsUsed) - Number(first.periodCreditsUsed));
-  if (!(elapsedDays >= 1) || !(usedMinutes > 0)) return { avgDailyMinutes: null, projectedExhaustionDate: null };
-  const avgDailyMinutes = Number((usedMinutes / elapsedDays).toFixed(2));
-  const remainingMinutes = creditsToFastMinutes(account?.total_credits ?? account?.credits_total);
-  const projected = remainingMinutes > 0
-    ? new Date(Date.now() + (remainingMinutes / avgDailyMinutes) * 86_400_000).toISOString()
-    : null;
-  return { avgDailyMinutes, projectedExhaustionDate: projected };
+export async function readQuotaTrend(_account) {
+  // Current quota remains available without a cross-call history store.
+  return { avgDailyMinutes: null, projectedExhaustionDate: null };
 }
 
 export function parseReferenceArgument(value, label, { multiple = true, allowStyleCode = false } = {}) {

@@ -469,12 +469,6 @@ import "../clis/ke/chengjiao.js";
 import "../clis/ke/ershoufang.js";
 import "../clis/ke/xiaoqu.js";
 import "../clis/ke/zufang.js";
-import "../clis/kimi/audit-extras.js";
-import "../clis/kimi/auth.js";
-import "../clis/kimi/chat.js";
-import "../clis/kimi/storage.js";
-import "../clis/kimi/ui.js";
-import "../clis/kimi/usage.js";
 import "../clis/lesswrong/comments.js";
 import "../clis/lesswrong/curated.js";
 import "../clis/lesswrong/frontpage.js";
@@ -1503,12 +1497,6 @@ export const modules = {
   "ke/ershoufang.js": true,
   "ke/xiaoqu.js": true,
   "ke/zufang.js": true,
-  "kimi/audit-extras.js": true,
-  "kimi/auth.js": true,
-  "kimi/chat.js": true,
-  "kimi/storage.js": true,
-  "kimi/ui.js": true,
-  "kimi/usage.js": true,
   "lesswrong/comments.js": true,
   "lesswrong/curated.js": true,
   "lesswrong/frontpage.js": true,

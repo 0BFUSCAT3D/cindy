@@ -7,6 +7,7 @@
     "ones": "Deferred: the login adapter accepts account passwords as model inputs and prints reusable bearer tokens. Login must use the existing trusted input handoff instead.",
     "xiaoyuzhou": "Deferred: authenticated adapters require manually configured access/refresh tokens without a host secure configuration entry. Plaintext credential fallback is removed; the independent public Cindy recipe remains available.",
     "paperreview": "Deferred: submit returns a reusable review capability token and review/feedback accept it as a model input. Keep capability credentials inside the host before inclusion.",
-    "quark": "Deferred: share-tree returns a reusable share capability stoken and save accepts it as a model input. Keep capability credentials inside the host before inclusion."
+    "quark": "Deferred: share-tree returns a reusable share capability stoken and save accepts it as a model input. Keep capability credentials inside the host before inclusion.",
+    "kimi": "Deferred: storage-get returns arbitrary Web Storage values and cookies exposes credential previews. Remove these diagnostic credential exits before inclusion; no model-facing raw secrets."
   }
 }

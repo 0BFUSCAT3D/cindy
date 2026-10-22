@@ -1,49 +1,12 @@
-import { closeRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
-import { openRecipeFileSync, readRecipeFileSync } from '@jackwener/opencli/cindy/host';
+import { closeRecipeFileSync, openRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
- * TOS (ByteDance Object Storage) multipart uploader with resume support.
- *
- * Uses AWS Signature V4 (HMAC-SHA256) with STS2 temporary credentials.
- * For the init multipart upload call, the pre-computed auth from TosUploadInfo is used.
- * For PUT part uploads and the final complete call, AWS4 is computed from STS2 credentials.
+ * TOS multipart upload. Progress and upload IDs live only in this invocation;
+ * no cross-call resume files are read or persisted by Cindy.
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
 const PART_SIZE = 5 * 1024 * 1024; // 5 MB minimum per TOS/S3 spec
-const RESUME_DIR = path.join(os.homedir(), '.opencli', 'douyin-resume');
-// ── Resume file helpers ──────────────────────────────────────────────────────
-function getResumeFilePath(filePath) {
-    const hash = crypto.createHash('sha256').update(filePath).digest('hex');
-    return path.join(RESUME_DIR, `${hash}.json`);
-}
-function loadResumeState(resumePath, fileSize) {
-    try {
-        const raw = readRecipeFileSync(resumePath, 'utf8');
-        const state = JSON.parse(raw);
-        if (state.fileSize === fileSize && state.uploadId && Array.isArray(state.parts)) {
-            return state;
-        }
-    }
-    catch {
-        // no valid resume state
-    }
-    return null;
-}
-function saveResumeState(resumePath, state) {
-    fs.mkdirSync(recipeOutputPath(path.dirname(resumePath)), { recursive: true });
-    fs.writeFileSync(recipeOutputPath(resumePath), JSON.stringify(state, null, 2), 'utf8');
-}
-function deleteResumeState(resumePath) {
-    try {
-        fs.unlinkSync(recipeOutputPath(resumePath));
-    }
-    catch {
-        // ignore if not found
-    }
-}
 // ── AWS Signature V4 ─────────────────────────────────────────────────────────
 function hmacSha256(key, data) {
     return crypto.createHmac('sha256', key).update(data, 'utf8').digest();
@@ -265,47 +228,20 @@ export function setReadSyncOverride(fn) {
 }
 // ── Public API ───────────────────────────────────────────────────────────────
 export async function tosUpload(options) {
-    const { filePath, uploadInfo, credentials, onProgress } = options;
-    // Validate file exists
-    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(filePath)))) {
-        throw new CommandExecutionError(`Video file not found: ${filePath}`, 'Ensure the file path is correct and accessible.');
-    }
-    const { size: fileSize } = fs.statSync(recipeOutputPath(resolveRecipePath(filePath)));
-    if (fileSize === 0) {
-        throw new CommandExecutionError(`Video file is empty: ${filePath}`);
-    }
-    const { tos_upload_url: tosUrl, auth, upload_header: uploadHeader, user_id: userId } = uploadInfo;
-    const parsedTosUrl = new URL(tosUrl);
-    const region = extractRegionFromHost(parsedTosUrl.host);
-    const resumePath = getResumeFilePath(filePath);
-    let resumeState = loadResumeState(resumePath, fileSize);
-    let uploadId;
-    let completedParts;
-    if (resumeState) {
-        // Resume from previous state
-        uploadId = resumeState.uploadId;
-        completedParts = resumeState.parts;
-    }
-    else {
-        // Start fresh
-        uploadId = await initMultipartUpload(tosUrl, auth, uploadHeader, userId);
-        completedParts = [];
-        saveResumeState(resumePath, { uploadId, fileSize, parts: completedParts });
-    }
-    // Determine which parts are already done
-    const completedPartNumbers = new Set(completedParts.map(p => p.partNumber));
-    // Calculate total parts
-    const totalParts = Math.ceil(fileSize / PART_SIZE);
-    // Track uploaded bytes for progress
-    let uploadedBytes = completedParts.length * PART_SIZE;
-    if (onProgress)
-        onProgress(Math.min(uploadedBytes, fileSize), fileSize);
+    const { filePath, uploadInfo, onProgress } = options;
+    // Approve and open the source before creating any remote multipart upload.
     const fd = openRecipeFileSync(filePath);
     try {
+        const { size: fileSize } = fs.fstatSync(fd);
+        if (fileSize === 0) {
+            throw new CommandExecutionError(`Video file is empty: ${filePath}`);
+        }
+        const { tos_upload_url: tosUrl, auth, upload_header: uploadHeader, user_id: userId } = uploadInfo;
+        const uploadId = await initMultipartUpload(tosUrl, auth, uploadHeader, userId);
+        const completedParts = [];
+        const totalParts = Math.ceil(fileSize / PART_SIZE);
+        if (onProgress) onProgress(0, fileSize);
         for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
-            if (completedPartNumbers.has(partNumber)) {
-                continue; // already uploaded
-            }
             const offset = (partNumber - 1) * PART_SIZE;
             const chunkSize = Math.min(PART_SIZE, fileSize - offset);
             const buffer = Buffer.allocUnsafe(chunkSize);
@@ -316,18 +252,13 @@ export async function tosUpload(options) {
             }
             const crc32 = await uploadPart(tosUrl, partNumber, uploadId, buffer, auth, uploadHeader, userId);
             completedParts.push({ partNumber, crc32 });
-            saveResumeState(resumePath, { uploadId, fileSize, parts: completedParts });
-            uploadedBytes = Math.min(offset + chunkSize, fileSize);
-            if (onProgress)
-                onProgress(uploadedBytes, fileSize);
+            if (onProgress) onProgress(Math.min(offset + chunkSize, fileSize), fileSize);
         }
+        return await completeMultipartUpload(tosUrl, uploadId, completedParts, auth, uploadHeader, userId);
     }
     finally {
         closeRecipeFileSync(fd);
     }
-    const completedKey = await completeMultipartUpload(tosUrl, uploadId, completedParts, auth, uploadHeader, userId);
-    deleteResumeState(resumePath);
-    return completedKey;
 }
 // ── Internal exports for testing ─────────────────────────────────────────────
-export { PART_SIZE, RESUME_DIR, extractRegionFromHost, getResumeFilePath, loadResumeState, saveResumeState, deleteResumeState, computeAws4Headers, extractUploadId, crc32Hex, gatewayBaseUrl, gatewayHeaders, };
+export { PART_SIZE, extractRegionFromHost, computeAws4Headers, extractUploadId, crc32Hex, gatewayBaseUrl, gatewayHeaders, };

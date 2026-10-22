@@ -11,14 +11,14 @@
 - 170 个站点/应用，1,223 条命令（916 read、307 write）。
 - 1,112 个命令模块，所有生产共享代码、JSON 和其他资源一并引入；不引入上游测试。
 - 上游快照完整保留，但默认目录独立选择：排除 Z-Library、Slock、Claude.ai、Spotify、ONES、
-  小宇宙适配器、PaperReview 和 Quark 共 92 条，剩余 1,131 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
+  小宇宙适配器、PaperReview、Quark 和 Kimi 共 121 条，剩余 1,102 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
   同步会沿用此选择，排除条目不进入模块导入表和可执行目录。
 - Cindy 原有 56 个 ID：47 个转到新版适配器，7 个保留原流程，两个爬虫练习站移至
   `packages/lizi-mcps/src/browser/recipe-examples`，不再出现在默认列表。
   逐项记录见 [legacy-coverage.json](cindy/legacy-coverage.json)。
 - Cindy 独立增加 App Store 搜索、Google Play 搜索、TapTap 中国站游戏详情、Steam 玩家评价、
   Open Library 书目查询和 Crossref 文献/DOI 查询，共 6 个配方，位于
-  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,216 个可发现 ID、169 份指南；这个数包含别名和兼容入口。
+  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,187 个可发现 ID、168 份指南；这个数包含别名和兼容入口。
 - 兼容入口保持输入名，输出改为新版结构化结果；用户本地覆盖层仍优先于内置层。
 
 通过 `browser(action="siteguide")` 查询精简完整目录；传 `site`（域名或上游站点名）
@@ -43,6 +43,8 @@
   会把可复用能力令牌放入模型结果或参数。完整来源保留，不增加配置或句柄存储机制。
 - ONES 暂不进入默认目录：密码参数和令牌打印不符合宿主代输入及凭据边界。
   登录继续使用已有的通用代输入流程，不新增站点专用配置。
+- Kimi 暂不进入默认目录：存储读取与 Cookie 诊断会把任意存储值或授权材料预览返回模型。
+  完整来源保留，不新增秘密键猜测或凭据脱敏机制。
 - 文章 stdout 输出改为 MCP 返回值；
   Readability 脚本随构建打包，避免安装包运行时查找源码文件。
 - 主进程使用静态入口加载所选命令及其执行依赖，不在运行期动态导入模块；导入不执行命令。
@@ -54,6 +56,10 @@
   成功和失败均沿用调用 finally 清理，源文件保留；外部 Chrome 与内嵌浏览器使用相同的暂存入口。
 - 图片、音频和下载成果的默认路径与目录参数元数据均使用任务内相对路径；
   诊断截图及跟踪文件按调用隔离，结束后清理，兼容 Windows。
+- 抖音分片上传先批准并打开源文件，再创建远端上传；上传 ID 和进度只存于本次调用，
+  不读写跨调用断点文件。初始化、分片、完成失败及成功都关闭源描述符，不自动重试。
+- Midjourney 保留当前额度和批次估算，不读写历史监控快照；历史趋势字段返回空值，
+  不因可选的历史存储不可用而丢掉已取得的当前额度或误报付费操作失败。
 - 共享 Node 文件下载复用浏览器运行层的 SSRF fetch：首跳与每次重定向均检查协议、DNS/IP，
   连接固定在已校验的公网地址；跨 origin 移除鉴权头，正文结束或失败后释放连接。
   这条下载路径使用受保护的直连，不读取适配器的代理环境变量；需要代理的站点可沿用浏览器操作。

@@ -13,7 +13,7 @@ cli({
   site: 'midjourney',
   name: 'quota',
   aliases: ['account'],
-  description: 'Show Midjourney quota, conservative batch estimates, and account-consumption trend',
+  description: 'Show Midjourney current quota and conservative batch estimates (historical trend unavailable)',
   access: 'read',
   example: 'opencli midjourney quota -f yaml',
   domain: 'www.midjourney.com',

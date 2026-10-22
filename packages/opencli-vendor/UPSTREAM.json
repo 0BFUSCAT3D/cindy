@@ -219,6 +219,9 @@
     },
     "src/browser/cdp.ts": {
       "upstreamSha256": "0558dc14d65741c39f9c3fe8461e1dd3b3ae0cbdd0b7ddafbd1f02e1153d04b3"
+    },
+    "clis/midjourney/quota.js": {
+      "upstreamSha256": "c9be85847c01d7a0d9673dc45b2ddbadc77a2de885825530b08886fe6e310a0f"
     }
   },
   "files": {
@@ -518,7 +521,7 @@
     "clis/douyin/_shared/sts2.js": "0759c0b4ac5542ad06a7bc03af5370579721f9af249ff29ad6230bdb6a2d7c46",
     "clis/douyin/_shared/text-extra.js": "4caa2e8660eba04115476ee212deaa7ac578271e3df18c4513295b9c15fca3dd",
     "clis/douyin/_shared/timing.js": "4bdc8fc4f64015253c884540e473d780bad4f97823e9ed91dff4fe83773b905b",
-    "clis/douyin/_shared/tos-upload.js": "07490cd63bd14031f255d03fad3c43910edc82b42ba880d551cce136ee9f0f49",
+    "clis/douyin/_shared/tos-upload.js": "00f1e6fd11be46279447d86e02560e9c7f9bbe3704103b204a6bf5006d0662ad",
     "clis/douyin/_shared/transcode.js": "2fc7d05b9748efd4ddf5333ae8da31560f2417773a2e5cc4fffe3b9ed7306e36",
     "clis/douyin/_shared/types.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
     "clis/douyin/_shared/vod-upload.js": "8030db92de71acce559e8ba4c1d89d93846e7bcf8c8f2c470def958283cf3c3c",
@@ -890,10 +893,10 @@
     "clis/midjourney/generate.js": "370bf20986bb40e8c80f57b7b5fda61930e1b09c38433f732b25412c826ee9fb",
     "clis/midjourney/history.js": "2ed49c8ceef4f9731014246329db5c5143e362d9d8f4c87e3ea38c67f613c36b",
     "clis/midjourney/login.js": "f235209ecae8eea22efe41a50fff08441a1cbe8cd2b51021d961d251f0da65eb",
-    "clis/midjourney/quota.js": "c9be85847c01d7a0d9673dc45b2ddbadc77a2de885825530b08886fe6e310a0f",
+    "clis/midjourney/quota.js": "51ea3faaadba3866a7ec9095de27fcc17da1dde1a49f63c3f4381f5e5dfa069c",
     "clis/midjourney/settings.js": "bcec44f911c62f1621f0a8776199c7ab3918df16c648e9fa2216f11e0bfea6bf",
     "clis/midjourney/status.js": "1382504f9b9cbe73864bc05f4d3f398ea38ae3fa18a4379428b7cdfee8ecfc2b",
-    "clis/midjourney/utils.js": "645e331a02a04591447c2496a4a6298eb726b7195f995c0e0dd1da43c2c337c2",
+    "clis/midjourney/utils.js": "f368913a9c03b1c8c6db5e2696a542e6787a49c19bd11dee21b7a152eda4881e",
     "clis/midjourney/whoami.js": "78424e609c5cc0022ec7c2590cc902371f4431207d2f0b1079a9cdf9fa1beea9",
     "clis/minimax/music.js": "a192c07d35827813ca229d4fae2e4136153aaa8e987d2335db33605daaa65837",
     "clis/minimax/utils.js": "07c258f4481a8c3524d66cc686915222a3a8f0b9879626e0a520571226974e51",
@@ -1651,6 +1654,6 @@
     "src/verify.ts": "9ad21f961c94b750dca8db63a6ffc78689dda5186f1d443ab8f912eef30b2fc9",
     "src/version.ts": "7bb1ede5cfc1f796e434cacd08cb9f903022f8c9375b17237aa16ad7d825aa2b",
     "LICENSE": "0210b8b66cf00358242cb921ba2be3a46dfe0190159b1b952388a3880ce1ff54",
-    "cli-manifest.json": "29ae519d76909a34d71010afddca96892f27fe0980bfcfd112d62d567b27b5d7"
+    "cli-manifest.json": "e3db617c4eb424df4256c1d1646a45c4b5bb7da94c170bbf1598c46e0b762fa4"
   }
 }
