@@ -6,14 +6,14 @@
  * each asks here before acting and exactly one card claims it:
  *
  * 1. a card that is already dictating — the press stops it;
- * 2. the card holding keyboard focus. Focus in any other text field or dialog
- *    means the press belongs there (the composer or the global overlay), so no
- *    card claims it;
+ * 2. the card holding keyboard focus. Focus on any control outside every card
+ *    (a text field, button, link, menu or dialog) means the press belongs there
+ *    (the composer or the global overlay), so no card claims it;
  * 3. otherwise an Orca lead's card, then the card that appeared most recently.
  *
  * A minimized or hidden card never starts dictation.
  */
-import { isEditableKeyboardTarget } from '@/lib/editableKeyboardTarget';
+import { isForeignKeyboardControl } from '@/lib/editableKeyboardTarget';
 
 export type AskUserVoiceShortcutCard = {
   /** Orca lead card: wins step 3 over worker cards, even newer ones. */
@@ -24,8 +24,6 @@ export type AskUserVoiceShortcutCard = {
 };
 
 type Entry = AskUserVoiceShortcutCard & { order: number };
-
-const FOREIGN_LAYER_SELECTOR = '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]';
 
 const cards = new Set<Entry>();
 let lastOrder = 0;
@@ -51,7 +49,7 @@ function resolveOwner(focus: EventTarget | null): Entry | null {
   if (focused) {
     const holder = entries.find((entry) => entry.getElement()?.contains(focused));
     if (holder) return holder.canStart() ? holder : null;
-    if (isEditableKeyboardTarget(focused) || focused.closest(FOREIGN_LAYER_SELECTOR)) return null;
+    if (isForeignKeyboardControl(focused)) return null;
   }
 
   let pick: Entry | null = null;

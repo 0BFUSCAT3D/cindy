@@ -89,6 +89,11 @@ interface AskUserQuestionPromptProps {
    * shortcut goes to a lead card before a worker card that appeared later.
    */
   voiceShortcutPreferred?: boolean;
+  /**
+   * The host view is actually on screen. A card can stay mounted inside a
+   * collapsed or hidden panel with a CSS box, so geometry alone cannot tell.
+   */
+  hostVisible?: boolean;
   sessionId?: string;
   workingDir?: string;
   remoteHostId?: string | null;
@@ -160,6 +165,7 @@ function AskUserQuestionForm({
   onDraftChange,
   voiceBridge,
   voiceShortcutPreferred = false,
+  hostVisible = true,
 }: AskUserQuestionPromptProps) {
   const { t } = useTranslation();
   const { requestId, questions } = pending;
@@ -526,7 +532,7 @@ function AskUserQuestionForm({
       preferred: voiceShortcutPreferred,
       getElement: () => cardRef.current,
       isBusy: () => dictationRef.current.isBusy || pendingVoiceStartRef.current,
-      canStart: () => viewerState !== 'minimized',
+      canStart: () => viewerState !== 'minimized' && hostVisible,
     });
     const claim = (phase?: 'start' | 'tap' | 'end') => {
       const now = performance.now();
@@ -577,7 +583,7 @@ function AskUserQuestionForm({
       window.removeEventListener('keydown', onKeyDown, true);
       unsubscribe?.();
     };
-  }, [beginVoiceInput, viewerState, voiceBridge, voiceShortcutOrder, voiceShortcutPreferred]);
+  }, [beginVoiceInput, hostVisible, viewerState, voiceBridge, voiceShortcutOrder, voiceShortcutPreferred]);
 
   // ── Custom input submit (single-select mode) ──
   const handleCustomSubmit = useCallback(() => {

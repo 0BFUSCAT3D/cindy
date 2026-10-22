@@ -300,9 +300,10 @@ describe('voice shortcut ownership across cards', () => {
     for (const listener of [...listeners]) listener(payload);
   });
 
-  function cardProps(index: number, viewerState: 'expanded' | 'minimized' = 'expanded', preferred = false) {
+  function cardProps(index: number, viewerState: 'expanded' | 'minimized' = 'expanded', preferred = false, hostVisible = true) {
     return {
       voiceShortcutPreferred: preferred,
+      hostVisible,
       sessionId: `pane-${index}`,
       pending: { requestId: `req-${index}`, questions: [{ question: `第 ${index} 题？`, options: [{ label: '甲' }, { label: '乙' }] }] },
       onAnswer: vi.fn(),
@@ -313,11 +314,16 @@ describe('voice shortcut ownership across cards', () => {
     };
   }
 
-  function renderPanes(states: Array<'expanded' | 'minimized'> = ['expanded', 'expanded'], preferredIndex?: number) {
+  function renderPanes(
+    states: Array<'expanded' | 'minimized'> = ['expanded', 'expanded'],
+    preferredIndex?: number,
+    hiddenIndex?: number,
+  ) {
     const tree = (current: typeof states) => createElement('div', null,
       createElement('input', { 'data-testid': 'sidebar-search' }),
+      createElement('button', { 'data-testid': 'sidebar-tab', type: 'button' }, 'tab'),
       ...current.map((state, index) => createElement('section', { key: index, 'data-testid': `pane-${index}` },
-        createElement(AskUserQuestionPrompt, cardProps(index, state, index === preferredIndex)))),
+        createElement(AskUserQuestionPrompt, cardProps(index, state, index === preferredIndex, index !== hiddenIndex)))),
     );
     const view = render(tree(states));
     const voiceIn = (index: number) => within(view.getByTestId(`pane-${index}`)).getByTestId('ask-user-voice');
@@ -395,6 +401,25 @@ describe('voice shortcut ownership across cards', () => {
     expect(start).not.toHaveBeenCalled();
     // Unclaimed, the main process falls back to the global voice overlay.
     expect(claimed).toEqual([]);
+  });
+
+  it('leaves the press unclaimed when a button outside every card has focus', async () => {
+    const { view } = renderPanes();
+    view.getByTestId('sidebar-tab').focus();
+    await press({ id: 'p1', phase: 'start' });
+
+    expect(start).not.toHaveBeenCalled();
+    expect(claimed).toEqual([]);
+  });
+
+  it('never gives the press to a card whose host view is hidden', async () => {
+    // Pane 1 is newest but sits in a collapsed panel; its box still exists.
+    const { voiceIn } = renderPanes(['expanded', 'expanded'], undefined, 1);
+    await press({ id: 'p1', phase: 'start' });
+
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    expect(voiceIn(0).getAttribute('aria-pressed')).toBe('true');
+    expect(voiceIn(1).getAttribute('aria-pressed')).toBe('false');
   });
 
   it('lets the card that is recording take the next press, wherever focus is', async () => {
