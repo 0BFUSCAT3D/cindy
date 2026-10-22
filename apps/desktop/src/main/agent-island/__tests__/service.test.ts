@@ -56,6 +56,8 @@ function handleInteractionRequestForTest(
 }
 
 const mocks = vi.hoisted(() => ({
+  patchSessionMetaInDb: vi.fn(),
+  remoteInvoke: vi.fn(),
   getSessionRowSnapshot: vi.fn<() => Promise<{
     status: string;
     title: string | null;
@@ -139,7 +141,10 @@ vi.mock('electron', () => {
 
 vi.mock('../../localDb/ipc/sessions.js', () => ({
   getSessionRowSnapshot: mocks.getSessionRowSnapshot,
+  patchSessionMetaInDb: mocks.patchSessionMetaInDb,
 }));
+
+vi.mock('../../device-link/index.js', () => ({ remoteInvoke: mocks.remoteInvoke }));
 
 vi.mock('../companionIdentity.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../companionIdentity.js')>()),
@@ -162,6 +167,8 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 import { resetEpermGuidanceForTest } from '../../file-access/permissions.js';
 
 beforeEach(() => {
+  mocks.patchSessionMetaInDb.mockReset();
+  mocks.remoteInvoke.mockReset();
   setDeepLinkMainWindow(null);
   takePendingDeepLink();
   mocks.getSessionRowSnapshot.mockReset();
@@ -311,9 +318,9 @@ describe('Agent Island window geometry', () => {
     };
 
     expect(computeAgentIslandWindowBounds(display)).toEqual({
-      x: 624,
+      x: 724,
       y: -900,
-      width: 680,
+      width: 480,
       height: 580,
     });
   });
@@ -337,9 +344,9 @@ describe('Agent Island window geometry', () => {
     };
 
     expect(computeAgentIslandWindowBounds(display, true)).toEqual({
-      x: 564,
+      x: 664,
       y: -900,
-      width: 800,
+      width: 600,
       height: 640,
     });
   });
@@ -350,9 +357,9 @@ describe('Agent Island window geometry', () => {
     };
 
     expect(computeAgentIslandWindowBounds(display, { expanded: true, contentHeight: 240 })).toEqual({
-      x: 564,
+      x: 664,
       y: -900,
-      width: 800,
+      width: 600,
       height: 320,
     });
   });
@@ -363,16 +370,16 @@ describe('Agent Island window geometry', () => {
     };
 
     expect(computeAgentIslandWindowBounds(display, { expanded: false, centerXRatio: 1 })).toEqual({
-      x: 1088,
+      x: 1288,
       y: -900,
-      width: 680,
+      width: 480,
       height: 580,
     });
 
     expect(computeAgentIslandWindowBounds(display, { expanded: true, centerXRatio: 1 })).toEqual({
-      x: 1028,
+      x: 1228,
       y: -900,
-      width: 800,
+      width: 600,
       height: 640,
     });
   });
@@ -610,6 +617,69 @@ describe('AgentIslandService native publishing', () => {
     expect(source.getSessionActivitySnapshot(meta.sessionId)).toMatchObject({ phase: 'completed', attention: true });
     source.resetRuntimeState(); controller.resetRuntimeState();
     mocks.tapWindowBroadcast.mockReset();
+  });
+
+  // Swipe actions must use the real lifecycle entry and retain attention on failure.
+  // Existing focus tests do not cover background completion actions (unit tier).
+  it('reads or archives completed tasks without focusing, and retains failed archives', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, headless: true, publish: () => true, suspend: () => undefined },
+    });
+    service.setEnabled(false);
+    const meta = { sessionId: 'swipe-task', agentKind: 'codex' as const };
+    service.handleUserPrompt(meta, 'run');
+    await service.handleCompletionAction(meta.sessionId, 'archive');
+    expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+    service.handleAgentEvent(meta, doneEvent());
+    mocks.patchSessionMetaInDb.mockRejectedValueOnce(new Error('offline'));
+    await service.handleCompletionAction(meta.sessionId, 'archive');
+    expect(service.getSessionActivitySnapshot(meta.sessionId)).toMatchObject({ attention: true });
+    expect(mocks.showMessageBox).toHaveBeenCalled();
+    mocks.patchSessionMetaInDb.mockResolvedValueOnce({ status: 'archived' });
+    await service.handleCompletionAction(meta.sessionId, 'archive');
+    expect(mocks.patchSessionMetaInDb).toHaveBeenLastCalledWith(meta.sessionId, { status: 'archived' });
+    expect(service.getSessionActivitySnapshot(meta.sessionId)?.attention ?? false).toBe(false);
+    service.handleUserPrompt(meta, 'again');
+    service.handleAgentEvent(meta, doneEvent());
+    await service.handleCompletionAction(meta.sessionId, 'mark-read');
+    expect(service.getSessionActivitySnapshot(meta.sessionId)?.attention ?? false).toBe(false);
+    expect(mocks.patchSessionMetaInDb).toHaveBeenCalledTimes(2);
+    service.resetRuntimeState();
+  });
+
+  it('routes remote swipe actions to their owner and excludes companion archives', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn<(state: AgentIslandDisplayState) => boolean>(() => true);
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish, suspend: () => undefined },
+    });
+    syncEnabledForTest(service, publish);
+    const input = { sessionId: 'remote-swipe', deviceId: 'owner-device', deviceName: 'Mac',
+      title: 'Task', workingDir: null, workspaceKind: null, agentKind: 'codex', detail: '' };
+    const complete = () => {
+      service.setDeviceSessions([{ ...input, phase: 'running' }]);
+      service.setDeviceSessions([{ ...input, phase: 'completed' }]);
+    };
+    complete();
+    mocks.remoteInvoke.mockResolvedValueOnce({ ok: false, error: { message: 'offline' } });
+    await service.handleCompletionAction(input.sessionId, 'mark-read');
+    expect(publish.mock.calls.at(-1)?.[0].sessions).toContainEqual(expect.objectContaining({ sessionId: input.sessionId, attention: true }));
+    mocks.remoteInvoke.mockResolvedValue({ ok: true });
+    await service.handleCompletionAction(input.sessionId, 'mark-read');
+    expect(mocks.remoteInvoke).toHaveBeenLastCalledWith('owner-device', 'notification:clear-session-attention', ['remote-swipe', 'explicit']);
+    expect(publish.mock.calls.at(-1)?.[0].sessions.some(s => s.sessionId === input.sessionId && s.attention)).toBe(false);
+    complete();
+    await service.handleCompletionAction(input.sessionId, 'archive');
+    expect(mocks.remoteInvoke).toHaveBeenLastCalledWith('owner-device', 'local-db:sessions:patch-meta', ['remote-swipe', { status: 'archived' }]);
+    const count = mocks.remoteInvoke.mock.calls.length;
+    service.setDeviceSessions([{ ...input, phase: 'completed', companion: { name: 'Teammate', avatar: '', avatarColor: 'teal' } }]);
+    await service.handleCompletionAction(input.sessionId, 'archive');
+    expect(mocks.remoteInvoke).toHaveBeenCalledTimes(count);
+    expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+    service.resetRuntimeState();
   });
 
   it('keeps compact activity broadcasting alive in headless mode', async () => {
@@ -4596,7 +4666,7 @@ describe('AgentIslandService native publishing', () => {
     };
     handleInteractionRequestForTest(service, { sessionId: 's1', agentKind: 'codex' }, request);
     expect(publish.mock.calls.at(-1)?.[0]).toMatchObject({ mode: 'expanded' });
-    expect(latestNativeFrame(publish)).toMatchObject({ width: 800 });
+    expect(latestNativeFrame(publish)).toMatchObject({ width: 600 });
 
     setLayoutPreference({ expandedContentWidth: 700 });
     expect(publish.mock.calls.at(-1)?.[0]).toMatchObject({ mode: 'expanded' });
@@ -4757,7 +4827,7 @@ describe('AgentIslandService native publishing', () => {
 
       const framesById = new Map(latestNativeFrames(publish).map((frame) => [frame.displayId, frame]));
       expect(framesById.get(1)).toMatchObject({ width: 368 });
-      expect(framesById.get(2)).toMatchObject({ width: 800 });
+      expect(framesById.get(2)).toMatchObject({ width: 600 });
       vi.runOnlyPendingTimers();
     } finally {
       vi.useRealTimers();

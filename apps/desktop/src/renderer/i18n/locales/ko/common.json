@@ -1073,6 +1073,9 @@
   },
   "agentIsland": {
     "native": {
+      "markRead": "읽음으로 표시",
+      "archive": "보관",
+      "actionFailed": "작업을 완료하지 못했습니다. 알림은 유지됩니다. 다시 시도해 주세요.",
       "newConversationTitle": "새 세션",
       "newConversationHint": "새 세션 시작",
       "muteSound": "Agent Island 소리 끄기",

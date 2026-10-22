@@ -70,6 +70,7 @@ interface MacAgentIslandNativeHostOptions {
   onExpand: (displayId?: number | null) => void;
   onCollapse: (displayId?: number | null) => void;
   onFocusSession: (sessionId: string) => void;
+  onCompletionAction?: (sessionId: string, action: 'mark-read' | 'archive') => Promise<boolean>;
   onOpenSettings: () => void;
   onNewMessage: () => void;
   onToggleSound: () => void;
@@ -507,6 +508,26 @@ export class MacAgentIslandNativeHost {
 
     if (payload.type === 'focus-session' && this.child === child && typeof payload.sessionId === 'string') {
       this.options.onFocusSession(payload.sessionId);
+      return;
+    }
+
+    if (
+      payload.type === 'completion-action' && this.child === child
+      && typeof payload.sessionId === 'string' && payload.sessionId.length > 0
+      && (payload.action === 'mark-read' || payload.action === 'archive')
+    ) {
+      const { sessionId, action, requestId } = payload;
+      const reply = (success: boolean): void => {
+        if (this.child !== child || typeof requestId !== 'string') return;
+        try {
+          child.stdin.write(`${JSON.stringify({ type: 'completion-action-result', requestId, success })}\n`);
+        } catch (error) {
+          log.warn('failed to send completion action result', { error });
+        }
+      };
+      void Promise.resolve()
+        .then(() => this.options.onCompletionAction?.(sessionId, action) ?? false)
+        .then(reply, () => reply(false));
       return;
     }
 

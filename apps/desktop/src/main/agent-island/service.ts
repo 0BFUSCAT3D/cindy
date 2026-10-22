@@ -75,7 +75,7 @@ import {
   type AgentIslandSoundSettings,
   type AgentIslandScreenLayoutMetrics,
 } from '../../shared/agentIsland.js';
-import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
+import { getSessionRowSnapshot, patchSessionMetaInDb } from '../localDb/ipc/sessions.js';
 import { setAgentIslandCompanionChangeSink } from '../localDb/agentIslandSessionPatch.js';
 import {
   companionAvatarHasArtwork,
@@ -423,6 +423,7 @@ export class AgentIslandService {
       onExpand: (displayId) => this.handleNativeExpand(displayId),
       onCollapse: () => this.handleNativeCollapse(),
       onFocusSession: (sessionId) => this.focusSession(sessionId),
+      onCompletionAction: (sessionId, action) => this.handleCompletionAction(sessionId, action),
       onOpenSettings: () => this.dispatchMainWindowCommand('open-agent-island-settings', { playSelectSound: true }),
       onNewMessage: () => this.dispatchMainWindowCommand('new-maker', { playSelectSound: true }),
       onToggleSound: () => this.dispatchMainWindowCommand('toggle-agent-island-sound'),
@@ -2653,6 +2654,40 @@ export class AgentIslandService {
     openMainWindowSession(nextSessionId, islandEntryId ? { islandEntryId } : undefined);
   }
 
+  private readonly completionActionsPending = new Set<string>();
+
+  async handleCompletionAction(sessionId: string, action: 'mark-read' | 'archive'): Promise<boolean> {
+    const session = this.state.sessions.get(sessionId);
+    if (!session || session.phase !== 'completed' || this.completionActionsPending.has(sessionId)) return false;
+    // Companion main tasks have their own lifecycle; only their notification may be read here.
+    if (action === 'archive' && session.companion) return false;
+    const generation = session.activityGeneration;
+    this.completionActionsPending.add(sessionId);
+    try {
+      if (session.sourceDeviceId) {
+        const { remoteInvoke } = await import('../device-link/index.js');
+        const result = await remoteInvoke(session.sourceDeviceId,
+          action === 'archive' ? 'local-db:sessions:patch-meta' : 'notification:clear-session-attention',
+          action === 'archive' ? [sessionId, { status: 'archived' }] : [sessionId, 'explicit']);
+        if (!result.ok) throw new Error(result.error.message);
+      } else if (action === 'archive') {
+        await patchSessionMetaInDb(sessionId, { status: 'archived' });
+      }
+      const current = this.state.sessions.get(sessionId);
+      if (current && (current !== session || current.activityGeneration !== generation)) return false;
+      clearAppBadgeSessionAttention(sessionId, 'explicit');
+      // Keep the local mirror in sync even when the remote push arrives later.
+      this.handleSessionAttentionCleared(sessionId, 'explicit');
+      return true;
+    } catch (error) {
+      log.warn('island completion action failed', { action, error });
+      void dialog.showMessageBox({ type: 'error', message: t('agentIsland.native.actionFailed') });
+      return false;
+    } finally {
+      this.completionActionsPending.delete(sessionId);
+    }
+  }
+
   /** 记下这次点击并取代之前的任何一次;被点的卡不是未读完成 / 报错时不留可处置记录。 */
   private recordIslandEntryAlert(sessionId: string, now: number): string | null {
     const stamp = readAgentIslandUnreadTerminalStamp(this.state, sessionId);
@@ -2757,6 +2792,8 @@ function collapseManualExpandedStateForInactiveDisplay(displayState: AgentIsland
 function buildAgentIslandStrings(): AgentIslandStrings {
   return {
     appName: BRAND_NAME,
+    markRead: t('agentIsland.native.markRead'),
+    archive: t('agentIsland.native.archive'),
     newConversationTitle: t('agentIsland.native.newConversationTitle'),
     newConversationHint: t('agentIsland.native.newConversationHint'),
     muteSound: t('agentIsland.native.muteSound'),

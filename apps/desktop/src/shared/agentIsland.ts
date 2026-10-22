@@ -426,6 +426,8 @@ export function createEmptyAgentIslandPillSnapshot(): AgentIslandPillSnapshot {
  */
 export interface AgentIslandStrings {
   appName: string;
+  markRead?: string;
+  archive?: string;
   newConversationTitle: string;
   newConversationHint: string;
   muteSound: string;
@@ -480,7 +482,7 @@ export const DEFAULT_AGENT_ISLAND_STRINGS: AgentIslandStrings = {
   deny: 'Deny',
 };
 
-export const AGENT_ISLAND_MAX_EXPANDED_WIDTH = 640;
+export const AGENT_ISLAND_MAX_EXPANDED_WIDTH = 440;
 export const AGENT_ISLAND_MAX_RESIZABLE_WIDTH = 920;
 export const AGENT_ISLAND_MIN_EXPANDED_WIDTH = 360;
 export const AGENT_ISLAND_IDLE_EXPANDED_WIDTH = 340;

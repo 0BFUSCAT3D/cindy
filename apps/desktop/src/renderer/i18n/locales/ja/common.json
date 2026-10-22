@@ -1073,6 +1073,9 @@
   },
   "agentIsland": {
     "native": {
+      "markRead": "既読にする",
+      "archive": "アーカイブ",
+      "actionFailed": "操作を完了できませんでした。通知は保持されています。もう一度お試しください。",
       "newConversationTitle": "新しいセッション",
       "newConversationHint": "新しいセッションを開始",
       "muteSound": "Agent Island の音をミュート",
