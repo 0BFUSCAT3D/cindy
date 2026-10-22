@@ -1,5 +1,5 @@
 import { resolveRecipePath, statRecipeFileSync } from '@jackwener/opencli/cindy/host';
-import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
+import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * WeChat Channels (视频号) publish — UI automation for WeChat Video Channels creator center.
  *
@@ -257,8 +257,7 @@ async function uploadFile(page, absPath) {
   `);
 
   if (!result?.ok) {
-    await page.screenshot({ path: `${recipeDiagnosticPath("wechat-channels_publish_upload_debug.png")}` });
-    throw new CommandExecutionError(`视频文件注入失败: ${result?.error ?? 'unknown'}\n截图已保存到 ${recipeDiagnosticPath("wechat-channels_publish_upload_debug.png")}`);
+    throw new CommandExecutionError(`视频文件注入失败: ${result?.error ?? 'unknown'}`);
   }
 }
 
@@ -368,9 +367,8 @@ async function fillField(page, selectors, text, fieldName) {
   `);
 
   if (!result?.ok) {
-    await page.screenshot({ path: `${recipeDiagnosticPath(`wechat-channels_publish_${fieldName}_debug.png`)}` });
     throw new CommandExecutionError(
-      `找不到 ${fieldName} 输入框，截图已保存到 ${recipeDiagnosticPath(`wechat-channels_publish_${fieldName}_debug.png`)}`
+      `找不到 ${fieldName} 输入框`
     );
   }
 }
@@ -503,10 +501,9 @@ async function setScheduleTime(page, dt) {
   `);
 
   if (!result?.ok) {
-    await page.screenshot({ path: `${recipeDiagnosticPath("wechat-channels_schedule_debug.png")}` });
     const reason = result?.reason ? String(result.reason) : 'empty picker result';
     throw new CommandExecutionError(
-      `定时设置失败 (${reason})，截图: ${recipeDiagnosticPath("wechat-channels_schedule_debug.png")}`,
+      `定时设置失败 (${reason})`,
     );
   }
 
@@ -546,10 +543,8 @@ async function clickPublish(page, isDraft) {
   `);
 
   if (!clicked?.ok) {
-    await page.screenshot({ path: `${recipeDiagnosticPath("wechat-channels_publish_submit_debug.png")}` });
     throw new CommandExecutionError(
-      `找不到"${labels[0]}"按钮（按钮可能被禁用或表单未完成），` +
-      `截图已保存到 ${recipeDiagnosticPath("wechat-channels_publish_submit_debug.png")}`
+      `找不到"${labels[0]}"按钮（按钮可能被禁用或表单未完成）`
     );
   }
   return clicked;
@@ -696,9 +691,8 @@ cli({
 
     const isSuccess = submitSucceeded({ isDraft, finalUrl, successMsg });
     if (!isSuccess) {
-      await page.screenshot({ path: `${recipeDiagnosticPath("wechat-channels_publish_result_debug.png")}` });
       throw new CommandExecutionError(
-        `未能验证${isDraft ? '草稿保存' : '发布'}成功，截图已保存到 ${recipeDiagnosticPath("wechat-channels_publish_result_debug.png")}`,
+        `未能验证${isDraft ? '草稿保存' : '发布'}成功`,
         `url=${finalUrl || ''} message=${successMsg || ''}`,
       );
     }

@@ -4131,5 +4131,160 @@
     "file": "src/pipeline/template.ts",
     "before": "export function render(template: unknown, ctx: RenderContext): unknown {\n  if (typeof template !== 'string') return template;\n  const trimmed = template.trim();\n  // Full expression: entire string is a single ${{ ... }}\n  // Use [^}] to prevent matching across }} boundaries (e.g. \"${{ a }}-${{ b }}\")\n  const fullMatch = trimmed.match(/^\\$\\{\\{\\s*([^}]*(?:\\}[^}][^}]*)*)\\s*\\}\\}$/);\n  if (fullMatch && !trimmed.includes('}}-') && !trimmed.includes('}}${{')) return evalExpr(fullMatch[1].trim(), ctx);\n  // Check if the entire string is a single expression (no other text around it)\n  const singleExpr = trimmed.match(/^\\$\\{\\{\\s*([\\s\\S]*?)\\s*\\}\\}$/);\n  if (singleExpr) {\n    // Verify it's truly a single expression (no other ${{ inside)\n    const inner = singleExpr[1];\n    if (!inner.includes('${{')) return evalExpr(inner.trim(), ctx);\n  }\n  return template.replace(/\\$\\{\\{\\s*(.*?)\\s*\\}\\}/g, (_m, expr) => String(evalExpr(expr.trim(), ctx)));\n}\n\nexport function evalExpr(expr: string, ctx: RenderContext): unknown {\n",
     "after": "export function render(template: unknown, ctx: RenderContext): unknown {\n  if (typeof template !== 'string') return template;\n  const trimmed = template.trim();\n  if (trimmed.startsWith('${{') && trimmed.endsWith('}}')) {\n    const inner = trimmed.slice(3, -2);\n    const singleClosingBraces = !inner.includes('}}') && !inner.endsWith('}');\n    if (singleClosingBraces || !inner.includes('${{')) return evalExpr(inner.trim(), ctx);\n  }\n  // Scan delimiters once rather than retrying a backtracking regexp at each\n  // opener. Keep malformed/unclosed templates as text, as before.\n  const parts: string[] = [];\n  let cursor = 0;\n  while (cursor < template.length) {\n    const start = template.indexOf('${{', cursor);\n    if (start < 0) break;\n    const end = template.indexOf('}}', start + 3);\n    if (end < 0) break;\n    const expr = template.slice(start + 3, end);\n    parts.push(template.slice(cursor, start));\n    parts.push(/[\\r\\n\\u2028\\u2029]/.test(expr)\n      ? template.slice(start, end + 2) : String(evalExpr(expr.trim(), ctx)));\n    cursor = end + 2;\n  }\n  parts.push(template.slice(cursor));\n  return parts.join('');\n}\n\nexport function evalExpr(expr: string, ctx: RenderContext): unknown {\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "        if (state.state === 'failed') {\n            await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_preview_debug.png\")}` });\n            throw makeUploadFailure(`Inspect ${recipeDiagnosticPath(\"instagram_post_preview_debug.png\")}. ` + (state.detail || ''));\n        }\n",
+    "after": "        if (state.state === 'failed') {\n            throw makeUploadFailure(state.detail);\n        }\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "    }\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_preview_debug.png\")}` });\n    throw new CommandExecutionError('Instagram image preview did not appear after upload', `The selected file input may not match the active composer; inspect ${recipeDiagnosticPath(\"instagram_post_preview_debug.png\")}`);\n}\n",
+    "after": "    }\n    throw new CommandExecutionError('Instagram image preview did not appear after upload', 'The selected file input may not match the active composer');\n}\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "    }\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_caption_debug.png\")}` });\n    throw new CommandExecutionError('Instagram caption editor did not appear', `Instagram may have changed the publish flow; inspect ${recipeDiagnosticPath(\"instagram_post_caption_debug.png\")}`);\n}\n",
+    "after": "    }\n    throw new CommandExecutionError('Instagram caption editor did not appear', 'Instagram may have changed the publish flow');\n}\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "    if (!(await hasCaptionEditor(page))) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_caption_debug.png\")}` });\n        throw new CommandExecutionError('Instagram caption editor did not appear', `Instagram may have changed the publish flow; inspect ${recipeDiagnosticPath(\"instagram_post_caption_debug.png\")}`);\n    }\n",
+    "after": "    if (!(await hasCaptionEditor(page))) {\n        throw new CommandExecutionError('Instagram caption editor did not appear', 'Instagram may have changed the publish flow');\n    }\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "    }\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_caption_fill_debug.png\")}` });\n    throw new CommandExecutionError('Instagram caption did not stick before sharing', `Inspect ${recipeDiagnosticPath(\"instagram_post_caption_fill_debug.png\")} for the caption editor state`);\n}\n",
+    "after": "    }\n    throw new CommandExecutionError('Instagram caption did not stick before sharing', 'The caption did not match before sharing; posting stopped');\n}\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "        if (result?.failed) {\n            await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_share_debug.png\")}` });\n            throw new CommandExecutionError('Instagram post share failed', `Inspect ${recipeDiagnosticPath(\"instagram_post_share_debug.png\")} for the share failure state`);\n        }\n",
+    "after": "        if (result?.failed) {\n            throw new CommandExecutionError('Instagram post share failed', 'Instagram reported a share failure; check the current page before another attempt');\n        }\n"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "    }\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_post_share_debug.png\")}` });\n    throw new CommandExecutionError('Instagram post share confirmation did not appear', `Inspect ${recipeDiagnosticPath(\"instagram_post_share_debug.png\")} for the final publish state`);\n}\n",
+    "after": "    }\n    throw new CommandExecutionError('Instagram post share confirmation did not appear', 'The share outcome is unconfirmed; check the current page before another attempt');\n}\n"
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "import { recipeFileExistsSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';\n",
+    "after": "import { recipeFileExistsSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';\n"
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "    }\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"instagram_reel_preview_debug.png\")}` });\n    throw new CommandExecutionError('Instagram reel preview did not appear after upload', lastDetail\n        ? `Inspect ${recipeDiagnosticPath(\"instagram_reel_preview_debug.png\")}. Last visible dialog text: ${lastDetail}`\n        : `Inspect ${recipeDiagnosticPath(\"instagram_reel_preview_debug.png\")} for the upload state`);\n}\n",
+    "after": "    }\n    throw new CommandExecutionError('Instagram reel preview did not appear after upload', lastDetail\n        ? `Last visible dialog text: ${lastDetail}`\n        : 'The upload did not reach the preview stage');\n}\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';\n/**\n",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';\n/**\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "    if (!located.ok) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}` });\n        throw new Error(`Could not find ${fieldName} input. Debug screenshot: ${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}`);\n    }\n",
+    "after": "    if (!located.ok) {\n        throw new Error(`Could not find ${fieldName} input.`);\n    }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        if (!prepared?.ok) {\n            await page.screenshot({ path: `${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}` });\n            throw new Error(`Could not prepare ${fieldName} input. Debug screenshot: ${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}`);\n        }\n",
+    "after": "        if (!prepared?.ok) {\n            throw new Error(`Could not prepare ${fieldName} input.`);\n        }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "    if (!result?.ok) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}` });\n        const actual = typeof result?.actual === 'string' ? result.actual : '';\n        throw new Error(`Failed to set ${fieldName}. Expected \"${text}\", got \"${actual}\". Debug screenshot: ${recipeDiagnosticPath(`xhs_publish_${fieldName}_debug.png`)}`);\n    }\n",
+    "after": "    if (!result?.ok) {\n        const actual = typeof result?.actual === 'string' ? result.actual : '';\n        throw new Error(`Failed to set ${fieldName}. Expected \"${text}\", got \"${actual}\".`);\n    }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "    if (state.count < expectedCount) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_media_debug.png\")}` });\n        throw new CommandExecutionError(`${label}: expected at least ${expectedCount} visible media item(s), got ${state.count}. ` +\n            `Debug screenshot: ${recipeDiagnosticPath(\"xhs_publish_media_debug.png\")}`);\n    }\n",
+    "after": "    if (state.count < expectedCount) {\n        throw new CommandExecutionError(`${label}: expected at least ${expectedCount} visible media item(s), got ${state.count}. `);\n    }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "    if (!entry?.ok) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_textimage_debug.png\")}` });\n        throw new CommandExecutionError(`文字配图: could not click \"${TEXT_IMAGE_ENTRY_LABEL}\" entry. ` +\n            `Debug: ${recipeDiagnosticPath(\"xhs_publish_textimage_debug.png\")}`);\n    }\n    if (!(await waitForFirstCard(page))) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_textimage_debug.png\")}` });\n        throw new CommandExecutionError(`文字配图: 写文字 card editor did not appear after clicking \"${TEXT_IMAGE_ENTRY_LABEL}\". ` +\n            `Debug: ${recipeDiagnosticPath(\"xhs_publish_textimage_debug.png\")}`);\n    }\n",
+    "after": "    if (!entry?.ok) {\n        throw new CommandExecutionError(`文字配图: could not click \"${TEXT_IMAGE_ENTRY_LABEL}\" entry. `);\n    }\n    if (!(await waitForFirstCard(page))) {\n        throw new CommandExecutionError(`文字配图: 写文字 card editor did not appear after clicking \"${TEXT_IMAGE_ENTRY_LABEL}\". `);\n    }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "            if (!added) {\n                await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_addcard_debug.png\")}` });\n                throw new CommandExecutionError(`文字配图: new card editor #${i + 1} did not render after \"${ADD_CARD_LABEL}\". ` +\n                    `Debug: ${recipeDiagnosticPath(\"xhs_publish_addcard_debug.png\")}`);\n            }\n",
+    "after": "            if (!added) {\n                throw new CommandExecutionError(`文字配图: new card editor #${i + 1} did not render after \"${ADD_CARD_LABEL}\". `);\n            }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "    if (!generated) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_generate_debug.png\")}` });\n        throw new CommandExecutionError(`文字配图: \"${GENERATE_LABEL}\" did not advance to the 预览图片 step. ` +\n            `Debug: ${recipeDiagnosticPath(\"xhs_publish_generate_debug.png\")}`);\n    }\n",
+    "after": "    if (!generated) {\n        throw new CommandExecutionError(`文字配图: \"${GENERATE_LABEL}\" did not advance to the 预览图片 step. `);\n    }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "    if (!next?.ok) {\n        await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_next_debug.png\")}` });\n        throw new CommandExecutionError(`文字配图: could not click \"${PREVIEW_NEXT_LABEL}\". ` +\n            `Debug: ${recipeDiagnosticPath(\"xhs_publish_next_debug.png\")}`);\n    }\n",
+    "after": "    if (!next?.ok) {\n        throw new CommandExecutionError(`文字配图: could not click \"${PREVIEW_NEXT_LABEL}\". `);\n    }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        if (surface.state === 'video_surface') {\n            await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_tab_debug.png\")}` });\n            const detail = tabResult?.ok\n",
+    "after": "        if (surface.state === 'video_surface') {\n            const detail = tabResult?.ok\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "            throw new Error('Still on the video publish page after trying to select 图文. ' +\n                `Details: ${detail}. Debug screenshot: ${recipeDiagnosticPath(\"xhs_publish_tab_debug.png\")}`);\n        }\n",
+    "after": "            throw new Error('Still on the video publish page after trying to select 图文. ' +\n                `Details: ${detail}.`);\n        }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "            if (!upload.ok) {\n                await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_upload_debug.png\")}` });\n                throw new CommandExecutionError(`Image injection failed: ${upload.error ?? 'unknown'}. ` +\n                    `Debug screenshot: ${recipeDiagnosticPath(\"xhs_publish_upload_debug.png\")}`);\n            }\n",
+    "after": "            if (!upload.ok) {\n                throw new CommandExecutionError(`Image injection failed: ${upload.error ?? 'unknown'}. `);\n            }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        if (!formReady) {\n            await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_form_debug.png\")}` });\n            throw new CommandExecutionError('Editing form did not appear after image acquisition. The page layout may have changed. ' +\n                `Debug screenshot: ${recipeDiagnosticPath(\"xhs_publish_form_debug.png\")}`);\n        }\n",
+    "after": "        if (!formReady) {\n            throw new CommandExecutionError('Editing form did not appear after image acquisition. The page layout may have changed. ');\n        }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "            if (!upload.ok) {\n                await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_append_debug.png\")}` });\n                throw new CommandExecutionError(`Appending images failed: ${upload.error ?? 'unknown'}. ` +\n                    `Debug screenshot: ${recipeDiagnosticPath(\"xhs_publish_append_debug.png\")}`);\n            }\n",
+    "after": "            if (!upload.ok) {\n                throw new CommandExecutionError(`Appending images failed: ${upload.error ?? 'unknown'}. `);\n            }\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "        if (!invokeResult?.ok) {\n            await page.screenshot({ path: `${recipeDiagnosticPath(\"xhs_publish_submit_debug.png\")}` });\n            const viaClause = invokeResult?.via ? ` (via=${invokeResult.via})` : '';\n",
+    "after": "        if (!invokeResult?.ok) {\n            const viaClause = invokeResult?.via ? ` (via=${invokeResult.via})` : '';\n"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "            const lastMethodClause = invokeResult?.lastMethodError ? `, lastMethodError=${invokeResult.lastMethodError}` : '';\n            throw new Error(`Could not trigger \"${actionLabels[0]}\" action${viaClause}${errorClause}${lastMethodClause}. ` +\n                `Debug screenshot: ${recipeDiagnosticPath(\"xhs_publish_submit_debug.png\")}`);\n        }\n",
+    "after": "            const lastMethodClause = invokeResult?.lastMethodError ? `, lastMethodError=${invokeResult.lastMethodError}` : '';\n            throw new Error(`Could not trigger \"${actionLabels[0]}\" action${viaClause}${errorClause}${lastMethodClause}. `);\n        }\n"
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "import { resolveRecipePath, statRecipeFileSync } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';\n/**\n",
+    "after": "import { resolveRecipePath, statRecipeFileSync } from '@jackwener/opencli/cindy/host';\nimport { readRecipeFileSync } from '@jackwener/opencli/cindy/host';\n/**\n"
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "  if (!result?.ok) {\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"wechat-channels_publish_upload_debug.png\")}` });\n    throw new CommandExecutionError(`视频文件注入失败: ${result?.error ?? 'unknown'}\\n截图已保存到 ${recipeDiagnosticPath(\"wechat-channels_publish_upload_debug.png\")}`);\n  }\n",
+    "after": "  if (!result?.ok) {\n    throw new CommandExecutionError(`视频文件注入失败: ${result?.error ?? 'unknown'}`);\n  }\n"
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "  if (!result?.ok) {\n    await page.screenshot({ path: `${recipeDiagnosticPath(`wechat-channels_publish_${fieldName}_debug.png`)}` });\n    throw new CommandExecutionError(\n      `找不到 ${fieldName} 输入框，截图已保存到 ${recipeDiagnosticPath(`wechat-channels_publish_${fieldName}_debug.png`)}`\n    );\n",
+    "after": "  if (!result?.ok) {\n    throw new CommandExecutionError(\n      `找不到 ${fieldName} 输入框`\n    );\n"
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "  if (!result?.ok) {\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"wechat-channels_schedule_debug.png\")}` });\n    const reason = result?.reason ? String(result.reason) : 'empty picker result';\n    throw new CommandExecutionError(\n      `定时设置失败 (${reason})，截图: ${recipeDiagnosticPath(\"wechat-channels_schedule_debug.png\")}`,\n    );\n",
+    "after": "  if (!result?.ok) {\n    const reason = result?.reason ? String(result.reason) : 'empty picker result';\n    throw new CommandExecutionError(\n      `定时设置失败 (${reason})`,\n    );\n"
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "  if (!clicked?.ok) {\n    await page.screenshot({ path: `${recipeDiagnosticPath(\"wechat-channels_publish_submit_debug.png\")}` });\n    throw new CommandExecutionError(\n      `找不到\"${labels[0]}\"按钮（按钮可能被禁用或表单未完成），` +\n      `截图已保存到 ${recipeDiagnosticPath(\"wechat-channels_publish_submit_debug.png\")}`\n    );\n",
+    "after": "  if (!clicked?.ok) {\n    throw new CommandExecutionError(\n      `找不到\"${labels[0]}\"按钮（按钮可能被禁用或表单未完成）`\n    );\n"
+  },
+  {
+    "file": "clis/wechat-channels/publish.js",
+    "before": "    if (!isSuccess) {\n      await page.screenshot({ path: `${recipeDiagnosticPath(\"wechat-channels_publish_result_debug.png\")}` });\n      throw new CommandExecutionError(\n        `未能验证${isDraft ? '草稿保存' : '发布'}成功，截图已保存到 ${recipeDiagnosticPath(\"wechat-channels_publish_result_debug.png\")}`,\n        `url=${finalUrl || ''} message=${successMsg || ''}`,\n",
+    "after": "    if (!isSuccess) {\n      throw new CommandExecutionError(\n        `未能验证${isDraft ? '草稿保存' : '发布'}成功`,\n        `url=${finalUrl || ''} message=${successMsg || ''}`,\n"
   }
 ]

@@ -38,6 +38,8 @@ import { validateLocalReferences } from '../../../opencli-vendor/clis/midjourney
 import { tosUpload } from '../../../opencli-vendor/clis/douyin/_shared/tos-upload.js';
 // @ts-expect-error Pinned upstream JavaScript media helpers have no declarations.
 import * as instagramMedia from '../../../opencli-vendor/clis/instagram/_shared/private-publish.js';
+// @ts-expect-error Pinned upstream JavaScript page probes have no declarations.
+import { buildInspectUploadStageJs } from '../../../opencli-vendor/clis/instagram/post.js';
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
 import { downloadRemoteImage, MAX_IMAGE_SIZE_BYTES } from '../../../opencli-vendor/clis/twitter/utils.js';
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
@@ -75,6 +77,46 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 / 4354589825, unit: the real publishing entries must retain the
+  // original failure without advertising an already-cleaned diagnostic file.
+  // Existing temporary-file tests covered cleanup, but never adapter errors.
+  // Minimal states: pending Instagram preview, missing XHS entry, failed video injection.
+  it.each(['instagram', 'xiaohongshu', 'wechat-channels'])('reports %s publishing failures without temporary screenshot paths', async site => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-publish-error-'));
+    const file = path.join(dir, site === 'wechat-channels' ? 'clip.mp4' : 'image.jpg');
+    await writeFile(file, 'fixture');
+    const screenshot = vi.fn(async () => { throw new Error('fixture screenshot unavailable'); });
+    vi.stubEnv('OPENCLI_INSTAGRAM_CAPTURE', '0');
+    vi.spyOn(instagramMedia, 'resolveInstagramPrivatePublishConfig')
+      .mockRejectedValue(new CommandExecutionError('Instagram private route fixture unavailable'));
+    const page = {
+      goto: async () => {}, wait: async () => {}, getCookies: async () => [],
+      ...(site === 'instagram' ? { setFileInput: async () => {} } : {}),
+      screenshot,
+      evaluate: async (js: string) => {
+        if (js === '() => location.href') return site === 'xiaohongshu'
+          ? 'https://creator.xiaohongshu.com/publish/publish' : 'https://channels.weixin.qq.com/platform/post/create';
+        if (site === 'instagram') {
+          if (js === buildInspectUploadStageJs()) return { state: 'pending' };
+          return { ok: true, selectors: ['input[type="file"]'] };
+        }
+        return site === 'xiaohongshu' ? { ok: false, state: 'image_surface' }
+          : { ok: false, error: 'fixture upload rejection' };
+      },
+    } as unknown as IPage;
+    const inputs = site === 'instagram' ? { media: file } : site === 'xiaohongshu'
+      ? { title: 'Fixture', content: 'Fixture', 'card-text': 'Fixture' } : { video: file };
+    const expected = site === 'instagram' ? 'Instagram image preview did not appear after upload'
+      : site === 'xiaohongshu' ? '文字配图: could not click' : '视频文件注入失败: fixture upload rejection';
+    try {
+      await expect(executeAdapter(`${site}/${site === 'instagram' ? 'post' : 'publish'}`, inputs, page,
+        undefined, undefined, { read: readFileSync, open: file => openSync(file, 'r'), temporaryRoot: dir }))
+        .rejects.toThrow(expected);
+      expect(screenshot).not.toHaveBeenCalled();
+      expect(await readdir(dir)).toEqual([path.basename(file)]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 / 4354393901, unit: real LinkedIn sender + real host page with
   // in-memory transport and fake clock. Previous tests never reached insertText.
   // Text insertion must reach CDP; a transport error must stop before Send.
