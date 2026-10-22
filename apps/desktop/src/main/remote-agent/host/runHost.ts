@@ -850,7 +850,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     }
     for (const run of runs.values()) {
       if (run.closedAt !== undefined) {
-        if (t - run.closedAt > REMOTE_AGENT_HOST_RETAIN_MS) void disposeRun(run);
+        // 闲置收回的通知必须覆盖控制端 2 分钟的断链重试；否则恢复后只读到 missing，会误关本机部分。
+        const retainMs = run.idleReclaimed ? REMOTE_AGENT_HOST_IDLE_MS : REMOTE_AGENT_HOST_RETAIN_MS;
+        if (t - run.closedAt > retainMs) void disposeRun(run);
         continue;
       }
       if (!deps.isControllerAuthorized(run.controller)) {

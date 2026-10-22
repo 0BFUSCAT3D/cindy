@@ -310,6 +310,28 @@ describe('idle reclaim by the provider', () => {
     } finally { host.dispose(); }
   });
 
+  // poller 允许断链后重试 2 分钟：收回通知不能在普通收尾的 60 秒后被删掉，否则连回只读到 missing，
+  // 使用方会关闭本应保留的本机部分。用 90 秒无 poll 复现，再确认恢复窗口结束后仍能清理。
+  it('retains the idle reclaim notification across a recoverable disconnect and eventually removes it', async () => {
+    const { host, pass, rows } = await openBusy(1, { turn: false, background: 0, wake: 0 });
+    try {
+      await pass(70_000);
+      expect(host.runCount()).toBe(0);
+      clock += 90_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      await pass(0);
+      expect(rows.at(-1)).toEqual({ t: 'closed', reason: 'ended', idleReclaimed: true });
+      clock += 200_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      const result = await host.handle('controller-1', {
+        op: 'poll', runs: [{ runId: RUN_1, cursor: 0 }], waitMs: 0,
+      });
+      expect(result).toMatchObject({ runs: [{ runId: RUN_1, missing: true }] });
+    } finally { host.dispose(); }
+  });
+
   it('never reclaims with 0 minutes and declares the setting in caps', async () => {
     const { host, pass } = await openBusy(0, { turn: false, background: 0, wake: 0 });
     try {

@@ -1456,7 +1456,8 @@ Codex 原生图片恢复（#6412）在既有 `maker:remote-agent:v1` 上追加�
     执行中的调用、Claude Code 待生效的回退(`commitRewindFiles` 成功后到下一个 `done`；Codex / Pi 返回时已完成回退)、还没启动好，或 Agent 状态里有在跑 / 在准备的
     回合、后台任务、待唤醒续跑(中转任务看组内电脑报来的同一组字段)；巡检时忙就把闲置起点移到此刻。活动 = 打开、
     `call` / `reply` / `push`、写进事件流的非 `state` 行；只被 `poll` 不算(闲着的任务 A 也一直在拉)。
-  - **收尾**：`closed` 行写 `reason: 'ended'` 并带可选 `idleReclaimed: true`。旧 A 不认识这个字段，按 `ended` 静默收起，
+  - **收尾**：`closed` 行写 `reason: 'ended'` 并带可选 `idleReclaimed: true`，保留 3 分钟以覆盖 A 的 2 分钟断链重试
+    （普通收尾保留 1 分钟）；Agent 进程与名额仍在收回时立即释放。旧 A 不认识这个字段，按 `ended` 静默收起，
     Maker 把事件流结束当成句柄已死、自动关闭任务，下次发送照常重建并带原生会话 id 接回(本机后台命令随句柄结束)；
     新 A 不关句柄，与连接池让出名额同一状态(released)，本机部分保留，下次要 B 干活时连回。中转时组所在电脑把这个字段
     原样转给受邀者(`relayClosed`)，`ended` 本来就在正常收尾的原因里，不触发换电脑。
