@@ -194,14 +194,18 @@ export class OpenCliPage extends CDPBasePage {
   async tabs(): Promise<
     Array<{ page: string; url?: string; active: boolean }>
   > {
-    const data = await this.request({ action: "tabs" });
-    return ((data.tabs ?? []) as Array<{ targetId: string; url?: string }>).map(
-      (tab) => ({
-        page: tab.targetId,
-        url: tab.url,
-        active: tab.targetId === this.targetId,
-      }),
-    );
+    const data = await this.request({ action: "tabs" }, false);
+    const tabs = [];
+    for (const tab of (data.tabs ?? []) as Array<{ targetId: string; url?: string }>) {
+      // Binding is not visibility. Probe without adopting another target;
+      // a tab that disappeared during enumeration is not known to be visible.
+      const visibility = await this.request({
+        action: 'act', targetId: tab.targetId,
+        request: { kind: 'evaluate', fn: "() => document.visibilityState === 'visible'" },
+      }, false).catch(() => ({ result: false }));
+      tabs.push({ page: tab.targetId, url: tab.url, active: visibility.result === true });
+    }
+    return tabs;
   }
 
   async selectTab(target: number | string): Promise<void> {
@@ -211,6 +215,7 @@ export class OpenCliPage extends CDPBasePage {
         ? tabs[target]
         : tabs.find((item) => item.page === target);
     if (!tab) throw new Error(`Browser tab not found: ${target}`);
+    await this.request({ action: 'focus', targetId: tab.page }, false);
     this.targetId = tab.page;
     this._lastUrl = tab.url ?? null;
   }

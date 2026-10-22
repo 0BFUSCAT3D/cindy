@@ -61,6 +61,52 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 / review 4353609017, unit: the real Gemini activation helper and
+  // host page must resume a hidden response, including a reused bound tab.
+  // Earlier foreground-login tests never exercised tab discovery/selection.
+  it.each(['gemini-target', 'other-target'])('activates the hidden Gemini response bound to %s', async targetId => {
+    let visible = false;
+    const page = new OpenCliPage({ targetId, call: async request => {
+      if (request.action === 'tabs') return { ok: true, action: request.action, data: { tabs: [
+        { targetId: 'gemini-target', url: 'https://gemini.google.com/app' },
+      ] } };
+      if (request.action === 'focus') {
+        expect(request.targetId).toBe('gemini-target');
+        visible = true;
+      }
+      const js = request.request?.fn ?? '';
+      return { ok: true, action: request.action, data: { result: js.includes('visibilityState') ? visible
+        : js.includes('fixture-response') ? visible ? 'ready' : 'pending' : 'https://gemini.google.com/app' } };
+    } });
+    await gemini.ensureGeminiPage(page);
+    expect(await page.evaluate('fixture-response')).toBe('ready');
+    expect(page.getActivePage()).toBe('gemini-target');
+  });
+
+  it.each(['target-id', 1])('preserves tab binding if explicit selection %s cannot focus', async target => {
+    const page = new OpenCliPage({ targetId: 'original', call: async request => {
+      if (request.action === 'focus') return { ok: false, action: request.action, message: 'fixture focus failed' };
+      return { ok: true, action: request.action, data: request.action === 'tabs'
+        ? { tabs: [{ targetId: 'original' }, { targetId: 'target-id' }] }
+        : { result: false } };
+    } });
+    await expect(page.selectTab(target)).rejects.toThrow('fixture focus failed');
+    expect(page.getActivePage()).toBe('original');
+  });
+
+  it('reports current visibility without changing the bound target', async () => {
+    let visible = true;
+    const page = new OpenCliPage({ targetId: 'bound', call: async request => ({
+      ok: true, action: request.action, data: request.action === 'tabs'
+        ? { targetId: 'unrelated-response-target', tabs: [{ targetId: 'bound' }, { targetId: 'other' }] }
+        : { targetId: request.targetId, result: request.targetId === 'bound' && visible },
+    }) });
+    expect((await page.tabs()).map(tab => tab.active)).toEqual([true, false]);
+    visible = false;
+    expect((await page.tabs()).map(tab => tab.active)).toEqual([false, false]);
+    expect(page.getActivePage()).toBe('bound');
+  });
+
   // #6826 / review 4353330401, unit: real Instagram adapter + host page.
   // Earlier tests did not enter the ten-item pre-share recovery branch. A
   // failed composer must be dismissed before the next navigation, without
