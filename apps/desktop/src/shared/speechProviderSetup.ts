@@ -19,7 +19,11 @@ const references: Record<Exclude<SpeechService, 'bailian'>, string[]> = {
   openai: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
 };
 
-const bailianWorkspaceHost = /^[a-z0-9-]+\.(cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/;
+const bailianTokenPlanHosts = [
+  'token-plan.cn-beijing.maas.aliyuncs.com',
+  'token-plan.ap-southeast-1.maas.aliyuncs.com',
+];
+const bailianWorkspaceHost = /^(?!token-plan\.)[a-z0-9-]+\.(cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/;
 
 function bailianReferences(hostname: string): string[] {
   // Match the native HTTP endpoint/model scope in #6660. Public DashScope uses
@@ -27,6 +31,11 @@ function bailianReferences(hostname: string): string[] {
   // These suggestions neither rewrite the connection nor prove account access.
   if (['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'].includes(hostname))
     return ['qwen3-tts-flash'];
+  // Token Plan has its own model scope; it isn't a workspace. Its documented
+  // Beijing TTS model uses the existing DashScope HTTP adapter, not CosyVoice.
+  // https://help.aliyun.com/zh/model-studio/token-plan-multimodal-gen
+  if (hostname === 'token-plan.cn-beijing.maas.aliyuncs.com')
+    return ['qwen-audio-3.0-tts-plus'];
   const region = bailianWorkspaceHost.exec(hostname)?.[1];
   if (region === 'cn-beijing') return ['cosyvoice-v3-flash', 'cosyvoice-v3-plus'];
   if (region === 'ap-southeast-1') return ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'];
@@ -67,6 +76,7 @@ export function speechServiceForUrl(value: string): SpeechService | undefined {
         'dashscope-intl.aliyuncs.com',
         'dashscope-us.aliyuncs.com',
       ].includes(url.hostname) ||
+        bailianTokenPlanHosts.includes(url.hostname) ||
         bailianWorkspaceHost.test(url.hostname)) &&
       ['/api/v1', '/compatible-mode/v1'].includes(path)
     )

@@ -20,13 +20,30 @@ export default {
     'bailian-existing': {
       about: 'Existing Beijing workspace recommends CosyVoice and preserves its chat model',
     },
+    'token-plan': { about: 'Token Plan recommends Qwen-Audio instead of workspace CosyVoice' },
+    'token-plan-existing': { about: 'Existing Token Plan uses the same Qwen-Audio recommendation' },
+    'speech-visibility': { about: 'Previously hidden speech can be shown and hidden through model management' },
     subscription: { about: 'Existing OpenAI subscription creates a separate API-key connection' },
   },
   async ready(page) {
     await page.getByTestId('provider-model-toolbar').waitFor();
   },
   async check(page, ui) {
-    const existing = ['default', 'bailian-existing'].includes(ui.case);
+    if (ui.case === 'speech-visibility') {
+      const toggle = page.getByRole('switch', { name: 'MiniMax Speech 2.8 HD', exact: true });
+      await toggle.waitFor();
+      assert.equal(await toggle.isEnabled(), true);
+      assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+      await ui.capture('hidden-speech');
+      await toggle.click();
+      await page.getByTestId('speech-visible').filter({ hasText: 'true' }).waitFor({ state: 'attached' });
+      assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+      await ui.capture('shown-speech');
+      await toggle.click();
+      await page.getByTestId('speech-visible').filter({ hasText: 'false' }).waitFor({ state: 'attached' });
+      return;
+    }
+    const existing = ['default', 'bailian-existing', 'token-plan-existing'].includes(ui.case);
     if (existing || ui.case === 'subscription') {
       await page
         .getByRole('button', {
@@ -38,7 +55,7 @@ export default {
       await page.getByTestId('add-provider').click();
       await ui.capture('single-add-entry');
       const name =
-        ui.case === 'minimax' ? /MiniMax/ : ui.case === 'elevenlabs' ? /ElevenLabs/ : ui.case === 'bailian-fallback' ? /Fallback API/ : /API/;
+        ui.case === 'token-plan' ? /Token Plan/ : ui.case === 'minimax' ? /MiniMax/ : ui.case === 'elevenlabs' ? /ElevenLabs/ : ui.case === 'bailian-fallback' ? /Fallback API/ : /API/;
       const buttons = page.getByRole('dialog').getByRole('button').filter({ hasText: name });
       await buttons.first().click();
       if (ui.case === 'minimax')
@@ -58,6 +75,8 @@ export default {
     const recommendedId =
       ui.case === 'elevenlabs'
         ? 'eleven_flash_v2_5'
+        : ui.case.startsWith('token-plan')
+          ? 'qwen-audio-3.0-tts-plus'
         : ['bailian', 'bailian-fallback'].includes(ui.case)
           ? 'qwen3-tts-flash'
           : ui.case === 'bailian-existing'
@@ -68,6 +87,8 @@ export default {
     const recommended = page.getByRole('checkbox', { name: new RegExp(recommendedId) });
     await recommended.waitFor();
     assert.equal(await recommended.getAttribute('aria-checked'), 'true');
+    if (ui.case.startsWith('token-plan'))
+      assert.equal(await page.getByRole('checkbox', { name: /cosyvoice/ }).count(), 0);
     if (ui.case === 'bailian') {
       // PR #6768: first-screen discoverability, before any test-induced scrolling.
       const box = await recommended.boundingBox();

@@ -57,7 +57,14 @@ vi.mock('@/components/icons/ProviderLogoMark', () => ({
 
 import { AddProviderWizard, OFFICIAL_API_PRESETS } from '@/components/settings/AddProviderWizard';
 import { AddSpeechModelsDialog } from '@/components/settings/AddSpeechModelsDialog';
+import { UnifiedModelList } from '@/components/settings/UnifiedModelList';
+import { speechModels } from '../../main/voice-conversation/models';
+import { __resetForTest as resetVisibility, setModelVisibilityOwner } from '@/state/modelVisibilityPrefs';
 import { createCustomProvider, updateCustomProvider, deleteCustomProvider, readCustomProviderKey } from '@/lib/customProviders';
+
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: vi.fn() }),
+}));
 
 const anthropicProvider = {
   id: 'anthropic',
@@ -1572,6 +1579,55 @@ describe('speech models in the existing provider wizard', () => {
       expect.objectContaining({ id: 'my-private-speech-model', mode: 'audio_speech' }),
     ]);
   });
+  // #6768 review regression (unit): the actual wizard saves an unchecked discovered
+  // TTS model, then the management switch must restore its companion picker entry.
+  // Existing tests stopped at defaultEnabled:false or disabled every saved addition.
+  it('can show a previously unchecked discovered speech model through model management', async () => {
+    const syncVisibility = vi.fn<(owner: string, generation: number, overrides: Record<string, boolean>) => Promise<void>>(async () => undefined);
+    Object.assign(window.electronAPI.maker, {
+      claimLegacyModelVisibilityOwner: () => ({ dataOwnerId: 'speech-review', ownerGeneration: 1,
+        canWriteOwnerScoped: true, claimed: true, claimedByOtherOwner: false,
+        canInitialize: true, profileOrigin: 'new' }),
+      syncModelVisibility: syncVisibility,
+    });
+    await setModelVisibilityOwner('speech-review', 1, 'cloud');
+    try {
+      vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models: [
+        { id: 'my-later-tts', name: 'Later speech', discoveredMetadata: { mode: 'audio_speech' } },
+      ] });
+      await enter('elevenlabs-api');
+      fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+      await waitFor(() => expect(createCustomProvider).toHaveBeenCalledTimes(1));
+      const config = vi.mocked(createCustomProvider).mock.calls[0][0];
+      expect(config.runtimes.codex?.models.find(model => model.id === 'my-later-tts')?.defaultEnabled).toBe(false);
+      const provider = buildUserProvider(config);
+      const other = buildUserProvider({ ...config, id: 'another-connection' });
+      const deps = {
+        catalog: { ...BUNDLED_CATALOG, providers: [provider, other] },
+        gatewayAllowed: false, disabled: () => false, readKey: () => 'fake-key',
+        gatewayConnection: () => ({ baseUrl: '', apiKey: '' }),
+        visibilityOverride: (agent: string, providerId: string, modelId: string) =>
+          (syncVisibility.mock.lastCall?.[2] as Record<string, boolean> | undefined)?.[`${agent}:${providerId}:${modelId}`],
+      };
+      cleanup();
+      const view = { ...provider, connected: true,
+        availableMediaModelIds: speechModels(deps).filter(model => model.providerId === provider.id).map(model => model.id) };
+      render(<UnifiedModelList provider={view} focusModelId="my-later-tts" />);
+      const toggle = await screen.findByRole('switch', { name: 'Later speech' });
+      expect((toggle as HTMLButtonElement).disabled).toBe(false);
+      expect(toggle.getAttribute('aria-checked')).toBe('false');
+      fireEvent.click(toggle);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Later speech' }).getAttribute('aria-checked')).toBe('true'));
+      expect(speechModels(deps).filter(model => model.id === 'my-later-tts' && model.pickerVisible !== false).map(model => model.providerId)).toEqual([provider.id]);
+      cleanup();
+      render(<UnifiedModelList provider={view} focusModelId="my-later-tts" />);
+      expect((await screen.findByRole('switch', { name: 'Later speech' })).getAttribute('aria-checked')).toBe('true');
+      expect(config.runtimes.codex?.models.find(model => model.id === 'my-later-tts')?.defaultEnabled).toBe(false);
+    } finally {
+      cleanup();
+      resetVisibility();
+    }
+  });
 });
 
 // PR #6768 / #6660 integration regression (Renderer unit): the real wizard and
@@ -1585,6 +1641,8 @@ describe('Alibaba speech recommendations follow the actual endpoint', () => {
     ['https://ws-test.cn-beijing.maas.aliyuncs.com/api/v1', 'cosyvoice-v3-flash'],
     ['https://work-unit.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'cosyvoice-v3-flash'],
     ['https://ws-test.ap-southeast-1.maas.aliyuncs.com/api/v1', 'qwen-audio-3.0-tts-flash'],
+    ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen-audio-3.0-tts-plus'],
+    ['https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', null],
     ['https://dashscope-us.aliyuncs.com/compatible-mode/v1', null],
   ] as const;
   const publicUrl = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
