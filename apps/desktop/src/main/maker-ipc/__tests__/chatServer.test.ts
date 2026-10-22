@@ -567,6 +567,21 @@ describe('Chat Server result delivery and refresh', () => {
     await vi.advanceTimersByTimeAsync(16000); expect(failures()).toHaveLength(1); expect(deps.dispatch).toHaveBeenCalledOnce();
   });
 
+  it.each([undefined, 30_000, 120_000])('waits for PUT 429 cooldown %s before retrying the same reply', async delay => {
+    replyImages.mockResolvedValue({ text: 'image', attachments: [replyImage] });
+    await start();
+    const wait = Math.max(60_000, delay ?? 0);
+    fixture.upload.mockRejectedValueOnce(Object.assign(new Error('MEDIA_UPLOAD_FAILED'),
+      { status: 429, retryAt: delay === undefined ? undefined : Date.now() + delay })).mockResolvedValue([imageBlock]);
+    await service.settleLaneTurn({ ...terminal, resultText: '![](cindy-media://image)' });
+    await vi.advanceTimersByTimeAsync(wait - 1000);
+    expect(fixture.upload).toHaveBeenCalledOnce(); expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.upload).toHaveBeenCalledTimes(2);
+    expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'image' }, imageBlock]);
+    expect(replyImages).toHaveBeenCalledOnce(); expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
 
   it.each([{ codexErrorInfo: 'serverOverloaded' }, { reason: 'upstream-overload' }, { errorStatus: 529 }])
     ('submits only the capacity category after the SDK terminal %j', async signals => {
@@ -1542,6 +1557,16 @@ describe('Chat Server result delivery and refresh', () => {
         expect(prompt()).toContain('unrelated main group chatter');
         expect(downloaded).toEqual(expect.arrayContaining([answerFile, unrelatedFile]));
       }
+      // #6708: a talk step is an ordinary reply despite having a plan; work keeps its artifact path.
+      replyImages.mockResolvedValue({ text: 'image', attachments: [replyImage] });
+      fixture.upload.mockResolvedValue([imageBlock]);
+      await service.settleLaneTurn({ ...terminal, resultText: '![](cindy-media://image)' });
+      if (kind === 'talk') {
+        expect(replyImages).toHaveBeenCalledOnce();
+        expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'image' }, imageBlock]);
+        expect(fixture.upload).toHaveBeenCalledWith(roomId, expect.any(String), [replyImage], botId, expect.any(Function));
+      } else expect(replyImages).not.toHaveBeenCalled();
+      expect(deliveries()[0][2]).not.toHaveProperty('continueDiscussion');
     });
 
     it('sends without holding the request for a helper-model arrangement decision', async () => {

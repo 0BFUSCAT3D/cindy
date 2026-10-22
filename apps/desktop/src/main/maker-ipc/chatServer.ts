@@ -1473,15 +1473,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           };
           let contentText = text;
           let files: ChatContentBlock[] = [];
+          const ordinaryReply = !run.plan || run.plan.kind === 'talk';
           try {
             if (terminal.outcome !== 'error') {
-              if (!run.plan) {
+              if (ordinaryReply) {
                 pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(text, run.sessionId, assertCurrent) };
                 contentText = pending.reply.text;
                 produced.push(...pending.reply.attachments);
               }
               files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`,
-                produced, run.execution.bot_id, run.plan ? undefined : assertCurrent);
+                produced, run.execution.bot_id, ordinaryReply ? assertCurrent : undefined);
               assertCurrent();
             }
           } catch (error) {
@@ -1491,7 +1492,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               && !['STALE_EXECUTOR', 'STALE_EXECUTION', 'EXECUTION_EXPIRED'].includes(code);
             const permanentUpload = code === 'MEDIA_UPLOAD_FAILED' && status !== undefined
               && status >= 400 && status < 500 && ![408, 429].includes(status);
-            if (run.plan || !(fileRefusedHere(error) || permanentMediaResponse || permanentUpload
+            if (!ordinaryReply || !(fileRefusedHere(error) || permanentMediaResponse || permanentUpload
               || ['INVALID_MEDIA_URL', 'ERR_INVALID_URL'].includes(code))) throw error;
             terminal = pending.terminal = { ...terminal, outcome: 'error', failureCode: 'RUNTIME_ERROR' };
           }
@@ -1520,10 +1521,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // or post the private result under a new execution identity.
         const recoveringAuth = error instanceof ChatResponseError && recoverableAuth(error);
         if (!(error instanceof ChatResponseError) || retryableResponse(error)) {
-          const delayed = recoveringAuth || (error instanceof ChatResponseError && error.status === 429);
+          const rateLimited = chatErrorDiagnostic(error).status === 429;
+          const retryAt = rateLimited && error instanceof Error && 'retryAt' in error && typeof error.retryAt === 'number' ? error.retryAt : 0;
+          const delayed = recoveringAuth || rateLimited;
           pending.keepLease = delayed;
           pending.retryAt = delayed
-            ? Math.max(Date.now() + CHAT_AUTH_RETRY_MS, error instanceof ChatResponseError ? error.retryAt ?? 0 : 0)
+            ? Math.max(Date.now() + CHAT_AUTH_RETRY_MS, retryAt)
             : Date.now() + 15000;
           return;
         }

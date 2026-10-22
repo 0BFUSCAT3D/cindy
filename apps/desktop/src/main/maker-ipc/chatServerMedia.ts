@@ -1,4 +1,5 @@
 import { chatErrorDiagnostic } from './chatServerErrors.js';
+import { retryAfterDeadline } from '@cindy/auth-client';
 import { net } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -78,7 +79,8 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
           stage = 'upload';
           const response = await net.fetch(signedUrl(upload.uploadUrl), { method: 'PUT', redirect: 'error',
             headers: { 'Content-Type': attachment.mimeType }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(60000) });
-          if (!response.ok) throw Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: response.status });
+          if (!response.ok) throw Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: response.status,
+            ...(response.status === 429 ? { retryAt: retryAfterDeadline(response) } : {}) });
           checkUpload();
           stage = 'complete';
           await api(`/conversations/${roomId}/media/${upload.id}/complete`, 'POST', { operationId: `seal:${upload.id}` }, actorId);
