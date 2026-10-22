@@ -68,6 +68,7 @@ interface ScheduledModelTarget {
   agentKind: AgentKind;
   status: string;
   remoteHostId?: string | null;
+  agentDeviceId?: string | null;
   orcaRole?: string | null;
 }
 
@@ -108,7 +109,7 @@ export async function applyScheduledModelSelection(
   deps: {
     getTarget: () => Promise<ScheduledModelTarget | null>;
     isBusy: () => boolean;
-    resolveSelection: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
+    resolveSelection: (selection: ScheduledModelSelection, target?: ScheduledModelTarget | null) => Promise<ScheduledModelSelection>;
     switchHarness: (selection: ScheduledModelSelection) => Promise<{ engineReady: boolean; retryPending?: boolean }>;
     applyModel: (selection: ScheduledModelSelection) => Promise<void>;
   },
@@ -116,11 +117,13 @@ export async function applyScheduledModelSelection(
   const target = await deps.getTarget();
   // The runner owns missing/archived target recovery, including persistent-task rebinding.
   if (!target || target.status === 'archived' || target.status === 'deleted') {
-    return deps.resolveSelection(selection);
+    return deps.resolveSelection(selection, target);
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);
-  const resolved = await deps.resolveSelection(selection);
+  // Automation changes model preferences within the bound task's execution location.
+  // Persisted baselines from older clients have no location of their own.
+  const resolved = await deps.resolveSelection(selection, target);
   if (target.agentKind !== resolved.agentKind) {
     const result = await deps.switchHarness(resolved);
     if (!result.engineReady || result.retryPending) throw new Error('Scheduled Harness switch did not become ready');
