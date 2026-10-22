@@ -1185,14 +1185,18 @@ export class WechatIM extends BaseIM implements RichChannelIM {
             active.routeSessionId = sessionId;
           }
         },
-        turnPermissionPolicy: createWechatTurnPermissionPolicy(task.id, {
-          onInteractionStateChange: (state) => {
-            void this.#requireStore().setWaitingDesktop(
-              task.bindingEpoch,
-              task.id,
-              state === 'waiting',
-            );
-          },
+        // Only credential-verified companion owners inherit the native mode.
+        // Guests and standalone channels retain the mandatory turn policy.
+        ...(companion && requesterIsOwner ? {} : {
+          turnPermissionPolicy: createWechatTurnPermissionPolicy(task.id, {
+            onInteractionStateChange: (state) => {
+              void this.#requireStore().setWaitingDesktop(
+                task.bindingEpoch,
+                task.id,
+                state === 'waiting',
+              );
+            },
+          }),
         }),
       });
     } catch (error) {
@@ -1367,7 +1371,7 @@ export class WechatIM extends BaseIM implements RichChannelIM {
       return;
     }
     if (companion && /^\/(?:permission|model|project)(?:\s|$)/.test(command)) {
-      await this.#commitSimpleReply(task, '请在 Cindy 的伙伴设置中调整模型和权限。');
+      await this.#commitSimpleReply(task, '请在 Cindy 中打开这位伙伴：模型在伙伴设置中调整，权限在对话输入框下方切换。');
       return;
     }
     if (/^\/permission(?:\s|$)/.test(command)) {
@@ -2072,8 +2076,8 @@ export function wechatPreDispatchFailureText(reason: string, companion = false):
     reason.includes(WECHAT_TURN_PERMISSION_POLICY_UNSUPPORTED)
     || reason.includes('unsupported_turn_permission')
   )) {
-    return '当前伙伴的模型或权限模式不支持微信的逐次权限确认，消息无法启动。\n'
-      + '请主人在 Cindy 的伙伴设置中选择 Claude Code 或 Codex，并将权限设为自动审查或询问，然后重试。';
+    return '这条消息需要逐次权限确认，但伙伴当前的模型或权限模式不支持，消息无法启动。\n'
+      + '请主人在 Cindy 中打开这位伙伴，检查伙伴设置中的模型，并在对话输入框下方选择默认权限或自动审批。';
   }
   if (reason.includes(`${WECHAT_TURN_PERMISSION_POLICY_UNSUPPORTED}:agent`)) {
     // 当前权限模式若是换 Agent 后仍不兼容的档位(bypassPermissions / acceptEdits),
