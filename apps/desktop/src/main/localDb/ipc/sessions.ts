@@ -1855,6 +1855,8 @@ export function registerSessionIpc(
         status: sessions.status,
         title: sessions.title,
         agentKind: sessions.agentKind,
+        agentDeviceId: sessions.agentDeviceId,
+        remoteHostId: sessions.remoteHostId,
       })
       .from(sessions)
       .where(inArray(sessions.id, sessionIds));
@@ -1869,6 +1871,7 @@ export function registerSessionIpc(
         status: row.status,
         title: row.title,
         agentKind: normalizeDbAgentKind(row.agentKind),
+        agentDeviceId: row.agentDeviceId && !row.remoteHostId ? row.agentDeviceId : null,
       };
     });
   });

@@ -476,6 +476,38 @@ describe('MakerScheduleRunner model selection', () => {
       expect(mocks.setSessionEffort).toHaveBeenLastCalledWith(h.session.id, null);
       expect(mocks.backfillSessionMeta.mock.calls.at(-1)?.[2].effort).toBeUndefined();
     });
+
+    // 自动化选了另一台电脑上的供应商:新建任务必须带上运行位置,并按那台的目录解析;本机停用轴
+    // 与默认路由不参与(修复前本机裁决把那台的来源判成不可用,且任务建在本机)。
+    it.each(['resolved', 'unavailable'] as const)('creates a fresh remote-agent task on its computer (%s)', async (outcome) => {
+      const h = createSessionHarness();
+      const remoteProviders = [{
+        id: 'remote-sub', name: 'Remote', connected: true, agents: ['claude-code'],
+        models: { 'claude-code': [{ id: 'claude-opus-5-5', name: 'Opus', efforts: ['high'], defaultEffort: 'high' }] },
+      }] as unknown as ProviderView[];
+      const resolveModelSelection = vi.fn(async (choice: Parameters<typeof resolveScheduledModelSelection>[0],
+        location?: { agentDeviceId: string }) => {
+        if (outcome === 'unavailable') throw new Error('[REMOTE_AGENT_UNAVAILABLE] Selected remote provider or model is unavailable.');
+        expect(location).toEqual({ agentDeviceId: 'studio' });
+        return resolveScheduledModelSelection(choice, remoteProviders);
+      });
+      const checkModelRoute = vi.fn(async () => ({ kind: 'reject' as const, reason: 'explicit-source-unavailable' as const }));
+      const resolveDefaultModelRoute = vi.fn(async () => null);
+      // 建好的任务行带运行位置,派发前复核按那台电脑处理(生产 isAgentOnOtherDevice 读 sessions 行)。
+      const harness = createRunnerHarness(h, null, { resolveModelSelection, checkModelRoute, resolveDefaultModelRoute,
+        isAgentOnOtherDevice: async () => true });
+      const schedule = baseSchedule({ modelAgentKind: 'claude-code', model: 'claude-opus-5-5',
+        providerId: 'remote-sub', agentDeviceId: 'studio' });
+      if (outcome === 'unavailable') {
+        await expect(harness.runner.fire(schedule, createFireContext())).rejects.toThrow('REMOTE_AGENT_UNAVAILABLE');
+        expect(harness.createSession).not.toHaveBeenCalled();
+      } else {
+        const opts = await fireToCompletion(harness, h, schedule);
+        expect(opts).toMatchObject({ agentDeviceId: 'studio', providerId: 'remote-sub', model: 'claude-opus-5-5', effort: 'high' });
+      }
+      expect(checkModelRoute).not.toHaveBeenCalled();
+      expect(resolveDefaultModelRoute).not.toHaveBeenCalled();
+    });
   });
 
   describe('effort reconcile —— fire 时按所选模型能力 clamp(issue #456)', () => {

@@ -288,8 +288,14 @@ export interface MakerScheduleRunnerDeps {
   ) => Promise<(() => void) | ScheduledModelSelectionLease>;
   preserveModelPreferences?: (sessionId: string) => Promise<() => Promise<void>>;
   onModelDispatched?: (sessionId: string, clientId: string) => void;
-  /** Resolve the same provider-specific snapshot for fresh explicit choices. */
-  resolveModelSelection?: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
+  /**
+   * Resolve the same provider-specific snapshot for fresh explicit choices. With
+   * agentDeviceId the snapshot comes from that computer's authorized catalog.
+   */
+  resolveModelSelection?: (
+    selection: ScheduledModelSelection,
+    location?: { agentDeviceId: string },
+  ) => Promise<ScheduledModelSelection>;
   /** Apply Pi's route and context-window transaction while the send lock is held. */
   applyPiModelSelectionUnderLock?: (
     sessionId: string,
@@ -1181,11 +1187,18 @@ export class MakerScheduleRunner implements ScheduleRunner {
     const explicitProviderId = schedule.providerId?.trim() ? schedule.providerId.trim() : null;
     const defaultRouteProviderId = explicitProviderId ?? (isHeartbeat ? heartbeatProviderId : null);
     const followsNewTaskDefault = !rawModel?.trim();
+    // 新建任务的 Agent 在另一台电脑运行:模型与来源属于那台的已授权目录,本机的默认路由、
+    // 停用轴与能力表都不适用,统一交给 resolveModelSelection 按那台目录解析。绑定的任务
+    // 仍存在时运行位置跟随它(heartbeat 分支由 acquirePendingAgentSwitch 按任务所在位置解析)。
+    const freshAgentDeviceId = isHeartbeat ? null : schedule.agentDeviceId?.trim() || null;
+    if (freshAgentDeviceId && followsNewTaskDefault) {
+      throw new Error('schedule route unavailable: a remote agent location requires an explicit model');
+    }
     // Fresh Claude schedules must freeze the same provider rail the UI would use for this model.
     // Leaving providerId null delegates credential selection to the legacy auth fallback, which can
     // silently choose the Cindy gateway even when the only usable source is an Anthropic subscription.
     const shouldMaterializeFreshClaudeProvider =
-      !isHeartbeat && effectiveAgentKind === 'claude-code' && !explicitProviderId;
+      !isHeartbeat && !freshAgentDeviceId && effectiveAgentKind === 'claude-code' && !explicitProviderId;
     let dynamicDefaultRoute: {
       model: string;
       providerId: string | null;
@@ -1247,7 +1260,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // 不打断」豁免 —— 保存过的路由被用户停用后,本次 run 必须以明确错误失败(run 历史
     // 可见),不能继续经停用路由扣费;隐式默认落点被停用而有启用替代拷贝时改路由过去。
     let reroutedProviderId: string | null = null;
-    if (this.deps.checkModelRoute) {
+    if (this.deps.checkModelRoute && !freshAgentDeviceId) {
       const verdict = await this.checkRouteFor(isHeartbeat ? sessionId : undefined, effectiveAgentKind, model, createProviderId);
       if (verdict.kind === 'reject') {
         throw new Error(
@@ -1259,16 +1272,19 @@ export class MakerScheduleRunner implements ScheduleRunner {
         reroutedProviderId = verdict.providerId;
       }
     }
-    if (!isHeartbeat && schedule.modelAgentKind && !resolvedSelection) {
+    if (!isHeartbeat && (schedule.modelAgentKind || freshAgentDeviceId) && !resolvedSelection) {
       if (!this.deps.resolveModelSelection)
         throw new Error('Scheduled model selection is not available');
-      resolvedSelection = await this.deps.resolveModelSelection({
+      const selection: ScheduledModelSelection = {
         agentKind: effectiveAgentKind,
         model,
         providerId: createProviderId,
         effort: (schedule.effort as Effort | undefined) ?? null,
         fastMode: fastMode ?? false,
-      });
+      };
+      resolvedSelection = freshAgentDeviceId
+        ? await this.deps.resolveModelSelection(selection, { agentDeviceId: freshAgentDeviceId })
+        : await this.deps.resolveModelSelection(selection);
       createProviderId = resolvedSelection.providerId;
       fastMode = resolvedSelection.fastMode;
       schedule = {
@@ -1496,6 +1512,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       resumeSessionId,
       // Explicit null means Cindy's default route for Pi.
       providerId: createProviderId,
+      ...(freshAgentDeviceId ? { agentDeviceId: freshAgentDeviceId } : {}),
       vendorOptions: { source: 'scheduler' as const },
     };
     let session: Awaited<ReturnType<Maker['createSession']>>;

@@ -149,6 +149,8 @@ export function ScheduleFormDialog({
   const boundSessionReference = isBound
     ? boundSessionReferences.get(form.targetSessionId)
     : undefined;
+  // 绑定任务的 Agent 所在电脑(null = 本机)。运行位置跟随任务,模型面板只列这一处。
+  const boundAgentDeviceId = boundSessionReference?.agentDeviceId ?? null;
   const hideWorkspaceFields = runMode === 'bound' || isBound;
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState<'gallery' | 'form'>('form');
@@ -249,9 +251,14 @@ export function ScheduleFormDialog({
     const description = hookGenDesc.trim();
     if (!description || hookGenerating) return;
     const hasSessionTarget = hasRealBinding(form);
-    const resolveBoundSessionRoute = needsBoundSessionGenerationRouteResolution(form);
+    // 脚本在本机生成。Agent 在另一台电脑时它的模型与来源只在那台可用,改用本机的
+    // 辅助模型兜底链,不把那台的来源 id 当成本机来源。
+    const remoteAgentLocation = hasSessionTarget ? boundAgentDeviceId : form.agentDeviceId || null;
+    const resolveBoundSessionRoute = !remoteAgentLocation && needsBoundSessionGenerationRouteResolution(form);
     const inheritsBoundSessionModel = usesBoundSessionGenerationModel(form);
-    const providerId = resolveBoundSessionRoute
+    const providerId = remoteAgentLocation
+      ? undefined
+      : resolveBoundSessionRoute
       ? form.providerId.trim() || undefined
       : resolveScheduleGenerationProviderId({
         providers,
@@ -259,7 +266,7 @@ export function ScheduleFormDialog({
         model: form.model,
         agentKind: form.agentKind,
       });
-    if (!resolveBoundSessionRoute && !providerId) {
+    if (!remoteAgentLocation && !resolveBoundSessionRoute && !providerId) {
       toast.warning(t('scheduler.editor.validation.modelUnavailable', { model: form.model }));
       return;
     }
@@ -273,8 +280,8 @@ export function ScheduleFormDialog({
         providerId: providerId ?? undefined,
         // bound 任务的缺省模型/来源维度由 main 按绑定会话补齐；provider/model 的显式
         // 覆盖仍原样透传。persistent 任务即使已回写 targetSessionId，也按任务级选择生成。
-        agentKind: resolveBoundSessionRoute ? undefined : form.agentKind,
-        model: inheritsBoundSessionModel ? undefined : form.model.trim() || undefined,
+        agentKind: resolveBoundSessionRoute || remoteAgentLocation ? undefined : form.agentKind,
+        model: inheritsBoundSessionModel || remoteAgentLocation ? undefined : form.model.trim() || undefined,
         // 绑定会话任务:workingDir 不发(表单残留值可能是改绑前的过期项目目录,
         // 显式值会压过会话解析),真实 cwd 由 main 按会话 meta.workDir 解析 ——
         // 落盘目录/自测环境与生产运行一致
@@ -304,6 +311,8 @@ export function ScheduleFormDialog({
     providers,
     form.name,
     form.providerId,
+    form.agentDeviceId,
+    boundAgentDeviceId,
     form.effort,
     form.agentKind,
     form.model,
@@ -462,6 +471,14 @@ export function ScheduleFormDialog({
     setField('model', route.model);
     if (route.providerId && !form.providerId.trim()) setField('providerId', route.providerId);
   }, [form.model, form.agentKind, form.targetSessionId, form.providerId, setField, providers, providersLoading]);
+
+  // 绑定任务的显式模型属于任务所在电脑的目录。读到任务位置后让表单与之成对,之后切到
+  // 「每次新建任务」时模型与运行位置仍然一致。
+  useEffect(() => {
+    if (!isBound || !boundSessionReference || !form.model.trim()) return;
+    const location = boundSessionReference.agentDeviceId ?? '';
+    if ((form.agentDeviceId ?? '') !== location) setField('agentDeviceId', location);
+  }, [isBound, boundSessionReference, form.model, form.agentDeviceId, setField]);
 
   useEffect(() => {
     if (form.modelAgentKind || !currentModelEfforts || !form.effort) return;
@@ -1366,11 +1383,21 @@ export function ScheduleFormDialog({
                     )}
                     <div className="min-w-0 flex-1" />
                     <ModelEffortChip
-                      onSelect={({ engine, modelId, providerId, effort, fast }) => selectModelConfiguration({
-                        agentKind: engine === 'cc' ? 'claude-code' : engine,
-                        model: modelId, providerId, effort: (effort ?? '') as typeof form.effort,
-                        fastMode: fast,
-                      })}
+                      onSelect={({ engine, modelId, providerId, effort, fast, agentDevice }) => {
+                        const agentDeviceId = agentDevice?.deviceId ?? '';
+                        // 绑定任务的运行位置跟随任务:只接受它所在那台电脑目录里的行。
+                        if (isBound && agentDeviceId !== (boundAgentDeviceId ?? '')) {
+                          toast.warning(t('scheduler.chips.model.boundLocationLocked'));
+                          return false;
+                        }
+                        selectModelConfiguration({
+                          agentKind: engine === 'cc' ? 'claude-code' : engine,
+                          model: modelId, providerId, agentDeviceId, effort: (effort ?? '') as typeof form.effort,
+                          fastMode: fast,
+                        });
+                      }}
+                      agentDeviceId={isBound ? boundAgentDeviceId : form.agentDeviceId || null}
+                      remoteLocation={isProjectAutomationMode ? 'none' : isBound ? 'locked' : 'any'}
                       onFollowSession={() => selectModelConfiguration(null,
                         boundSessionReference?.agentKind === 'cc' ? 'claude-code' : boundSessionReference?.agentKind)}
                       agentKind={form.agentKind}

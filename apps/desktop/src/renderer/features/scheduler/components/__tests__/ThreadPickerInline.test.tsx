@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/sessionService', () => ({ list: mocks.list }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
+  // ScheduleChips 经模型面板的远程位置候选间接加载 i18n 初始化。
+  initReactI18next: { type: '3rdParty', init: () => undefined },
 }));
 
 import { ThreadPickerInline } from '../ScheduleChips';
