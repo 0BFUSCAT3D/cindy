@@ -363,6 +363,30 @@ describe('dev 沙箱凭证隔离(XDT_ISOLATED_AUTH)', () => {
     expect(getPreferredSharedCodexAuthPath('owner-a')).toBe(releaseAuth);
   });
 
+  // 同一恢复入口也支持旧 auth.json 的 id_token workspace；sub 不能证明 workspace 一致。
+  it.each([
+    { label: '缺少 account_id 时使用嵌套 workspace', accountId: undefined, claims: { 'https://api.openai.com/auth': { chatgpt_account_id: 'acct-1' } }, useCli: true },
+    { label: '空 account_id 时使用顶层 workspace', accountId: '', claims: { chatgpt_account_id: 'acct-1' }, useCli: true },
+    { label: '只有 sub 时不能确认 workspace', accountId: undefined, claims: { sub: 'acct-1' }, useCli: false },
+    { label: '不同 workspace 时不切换', accountId: undefined, claims: { chatgpt_account_id: 'acct-other', sub: 'acct-1' }, useCli: false },
+    { label: '非空 account_id 优先于 id_token workspace', accountId: 'acct-other', claims: { chatgpt_account_id: 'acct-1' }, useCli: false },
+  ])('$label', ({ accountId, claims, useCli }) => {
+    const { releaseAuth, systemAuth } = fixture();
+    const now = Math.floor(Date.now() / 1000);
+    const token = (payload: unknown) =>
+      `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
+    fs.mkdirSync(path.dirname(releaseAuth), { recursive: true });
+    fs.writeFileSync(releaseAuth, JSON.stringify({ tokens: {
+      access_token: token({ exp: now - 3600 }), account_id: accountId, id_token: token(claims),
+    } }));
+    fs.writeFileSync(systemAuth, JSON.stringify({ tokens: {
+      access_token: token({ exp: now + 3600 }), account_id: useCli ? accountId : 'acct-1', id_token: token(claims),
+    } }));
+    bindReleaseOpenAi(releaseAuth);
+
+    expect(getPreferredSharedCodexAuthPath('owner-a')).toBe(useCli ? systemAuth : releaseAuth);
+  });
+
   it('共享 Dev 直接使用 Release 登录态，不重链接或改 binding', async () => {
     const { releaseAuth, systemAuth } = fixture();
     h.userDataDir = path.join(h.appDataDir, 'CindyGlobal');

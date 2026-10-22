@@ -6,6 +6,7 @@ import path from 'node:path';
 import { brandUserDataDirName } from '@cindy/maker-shared/brand-identity';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { shouldSuppressLocalCodexAuth } from './codex-auth-invalidation.js';
+import { codexWorkspaceIdFromTokens } from './codex-auth-identity.js';
 
 /** 本机 Codex CLI 默认维护的 OpenAI 登录态。 */
 export function getCodexCliAuthPath(): string {
@@ -57,7 +58,7 @@ type CodexOAuthCandidate = { accountId: string | null; expiresAtMs: number | nul
 function readCodexOAuthCandidate(pathname: string): CodexOAuthCandidate | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(pathname, 'utf8')) as {
-      tokens?: { access_token?: unknown; account_id?: unknown };
+      tokens?: { access_token?: unknown; account_id?: unknown; id_token?: unknown };
     };
     const token = parsed.tokens?.access_token;
     if (typeof token !== 'string' || token.length === 0) return null;
@@ -73,7 +74,7 @@ function readCodexOAuthCandidate(pathname: string): CodexOAuthCandidate | null {
       // Unknown expiry must not discard an otherwise supported login format.
     }
     return {
-      accountId: typeof parsed.tokens?.account_id === 'string' ? parsed.tokens.account_id : null,
+      accountId: codexWorkspaceIdFromTokens(parsed.tokens),
       expiresAtMs,
     };
   } catch {
