@@ -31,7 +31,7 @@ interface Session {
   transport: RecipeTransport;
   unsubscribe: () => void;
   timer: ReturnType<typeof setTimeout>;
-  capture?: { patterns: string[]; entries: Map<string, CaptureEntry> };
+  capture?: { patterns: string[]; entries: Map<string, CaptureEntry>; error?: string };
 }
 
 /** Invocation-local CDP sessions preserve object/node IDs across commands.
@@ -89,6 +89,7 @@ export class RecipeBrowserSessions {
       return {};
     }
     if (method === "Cindy.captureRead") {
+      if (session.capture?.error) throw new Error(session.capture.error);
       const entries = session.capture?.entries;
       const result = [...(entries?.values() ?? [])].map((entry) => ({
         ...entry,
@@ -108,7 +109,7 @@ export class RecipeBrowserSessions {
     params: Record<string, unknown>,
   ): Promise<void> {
     const capture = session.capture;
-    if (!capture) return;
+    if (!capture || capture.error) return;
     const requestId = String(params.requestId ?? "");
     if (!requestId) return;
     if (method === "Network.requestWillBeSent") {
@@ -126,8 +127,16 @@ export class RecipeBrowserSessions {
           !capture.patterns.some((pattern) => request.url!.includes(pattern)))
       )
         return;
-      if (capture.entries.size >= 100)
-        capture.entries.delete(capture.entries.keys().next().value!);
+      if (!capture.entries.has(requestId) && capture.entries.size >= 100) {
+        const completed = [...capture.entries.values()].find(entry => entry.captureComplete);
+        if (!completed) {
+          // Keep the existing bound; losing any unfinished request would make
+          // network-idle consumers report success without complete evidence.
+          capture.error = 'Network capture capacity exceeded (100 unfinished requests)';
+          return;
+        }
+        capture.entries.delete(completed.requestId);
+      }
       capture.entries.set(requestId, {
         kind: "cdp",
         requestId,
@@ -164,10 +173,13 @@ export class RecipeBrowserSessions {
           (sum, item) => sum + (item.responsePreview?.length ?? 0),
           0,
         );
-        for (const [id, item] of capture.entries) {
+        for (const item of capture.entries.values()) {
           if (retained <= 8_000_000) break;
+          if (!item.responsePreview) continue;
           retained -= item.responsePreview?.length ?? 0;
-          capture.entries.delete(id);
+          // Payload pressure cannot erase completion tracking.
+          delete item.responsePreview;
+          item.responseBodyTruncated = true;
         }
       } catch {
         entry.error = "Response body unavailable";

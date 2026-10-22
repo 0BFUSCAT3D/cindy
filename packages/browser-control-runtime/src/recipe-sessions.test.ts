@@ -2,6 +2,34 @@ import { describe, expect, it, vi } from "vitest";
 import { RecipeBrowserSessions } from "./recipe-sessions.js";
 
 describe("recipe browser sessions", () => {
+  // #6826 / 4353868431: real capture API, unit tier. The old small-response
+  // tests never crossed the count/payload bounds with an older in-flight request.
+  it.each(['count', 'payload'] as const)('keeps unfinished requests across the %s cap', async cap => {
+    const sessions = new RecipeBrowserSessions();
+    let event = (_method: string, _params: Record<string, unknown>) => {};
+    const id = sessions.begin('target', {
+      send: async () => ({ body: cap === 'payload' ? 'x'.repeat(1_000_000) : 'done' }),
+      subscribe: listener => { event = listener; return () => {}; }, dispose: () => {},
+    });
+    const start = (requestId: string) => event('Network.requestWillBeSent', {
+      requestId, request: { url: 'https://example.test/api' },
+    });
+    try {
+      await sessions.call('target', id, 'Cindy.captureStart');
+      start('unfinished');
+      for (let i = 0; i < (cap === 'count' ? 101 : 9); i++) {
+        start(`complete-${i}`);
+        event('Network.loadingFinished', { requestId: `complete-${i}` });
+        await Promise.resolve();
+      }
+      const read = await sessions.call('target', id, 'Cindy.captureRead') as { entries: Array<Record<string, unknown>> };
+      expect(read.entries).toContainEqual(expect.objectContaining({ requestId: 'unfinished', captureComplete: false }));
+      expect(read.entries.length).toBeLessThanOrEqual(100);
+      expect(read.entries.reduce((sum, entry) => sum + String(entry.responsePreview ?? '').length, 0)).toBeLessThanOrEqual(8_000_000);
+      expect(await sessions.call('target', id, 'Cindy.captureRead')).toMatchObject({ entries: [{ requestId: 'unfinished' }] });
+    } finally { sessions.dispose(); }
+  });
+
   // Review #6826: a valid large response must be distinguishable from malformed
   // JSON. Public session capture/read entry; unit tier. Existing small-body
   // coverage did not cross the one-million-character boundary or cover base64.

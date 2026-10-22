@@ -76,7 +76,7 @@ function isInterestingNetworkEntry(entry) {
 
 async function drainNetworkCapture(page, sink) {
     if (!page.readNetworkCapture) return [];
-    const raw = await page.readNetworkCapture().catch(() => []);
+    const raw = await page.readNetworkCapture();
     const entries = Array.isArray(raw) ? raw.map(normalizeNetworkEntry).filter(entry => entry.url) : [];
     sink.push(...entries.filter(entry => entry.captureComplete !== false));
     return entries;

@@ -61,6 +61,66 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 / 4353868420, unit: metadata discovery and execution must reject the
+  // retired code-extraction mode before any browser operation. No previous OTP case.
+  it.each([true, false, 'true'])('rejects Proton code mode %s before page effects', async value => {
+    const effect = vi.fn(async () => { throw new Error('unexpected mailbox read'); });
+    const start = vi.fn();
+    const recipe = loadRecipes().get('opencli:proton/inbox')!;
+    expect(recipe).toBeDefined();
+    await expect(executeAdapter('proton/inbox', { 'read-code': value },
+      new Proxy({}, { get: () => effect }) as IPage, undefined, start)).rejects.toThrow('read-code');
+    expect(start).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+    expect(recipe.inputs).not.toHaveProperty('read-code');
+  });
+
+  it('keeps Proton inbox metadata available without opening message bodies', async () => {
+    const goto = vi.fn(async () => { throw new Error('unexpected message navigation'); });
+    const page = { goto, evaluate: async (_fn: unknown, operation: string) => operation === 'identity'
+      ? { account: { id: 'account' }, localID: '0' }
+      : operation === 'messages' ? { messages: [{ id: 'message', address: 'sender@example.test',
+        senderName: 'Sender', subject: 'Fixture subject', timestamp: 1, labels: ['0'] }], total: 1, localID: '0' }
+        : { origin: 'https://mail.proton.me', path: '/u/0/inbox' },
+    } as unknown as IPage;
+    expect(await executeAdapter('proton/inbox', { limit: 1 }, page)).toEqual([
+      { id: 'message', sender: 'sender@example.test', subject: 'Fixture subject', time: 1, code: null },
+    ]);
+    expect(goto).not.toHaveBeenCalled();
+  });
+
+  // #6826 capture-cap recurrence, unit: real web reader + session owner.
+  // Saturation of 101 concurrent requests must fail before content extraction;
+  // an empty fallback on capture errors would falsely report network idle.
+  it('rejects saturated network capture instead of extracting a falsely idle page', async () => {
+    vi.useFakeTimers();
+    const sessions = new RecipeBrowserSessions();
+    let event = (_method: string, _params: Record<string, unknown>) => {};
+    const id = sessions.begin('web', {
+      send: async () => ({}), subscribe: listener => { event = listener; return () => {}; }, dispose: () => {},
+    });
+    const evaluate = vi.fn(async () => ({ title: 'Too early', contentHtml: '<p>Partial</p>' }));
+    const page = {
+      startNetworkCapture: async () => { await sessions.call('web', id, 'Cindy.captureStart'); return true; },
+      readNetworkCapture: async () => (await sessions.call('web', id, 'Cindy.captureRead') as { entries: unknown[] }).entries,
+      goto: async () => {
+        for (let i = 0; i < 101; i++) event('Network.requestWillBeSent', {
+          requestId: String(i), request: { url: 'https://example.test/api' },
+        });
+        for (let i = 1; i < 101; i++) event('Network.loadingFailed', { requestId: String(i) });
+      }, evaluate,
+    } as unknown as IPage;
+    try {
+      const checked = expect(executeAdapter('web/read', { url: 'https://example.test', 'wait-until': 'networkidle', wait: 5 }, page))
+        .rejects.toThrow('Network capture capacity exceeded');
+      await vi.advanceTimersByTimeAsync(1500);
+      await checked;
+      expect(evaluate).not.toHaveBeenCalled();
+      await sessions.call('web', id, 'Cindy.captureStart');
+      expect(await sessions.call('web', id, 'Cindy.captureRead')).toEqual({ entries: [] });
+    } finally { sessions.dispose(); }
+  });
+
   // #6826 / review 4353609017, unit: the real Gemini activation helper and
   // host page must resume a hidden response, including a reused bound tab.
   // Earlier foreground-login tests never exercised tab discovery/selection.
@@ -265,7 +325,7 @@ describe("bundled OpenCLI recipes", () => {
     const start = vi.fn();
     for (const [id, required, key, value] of cases) {
       await expect(executeAdapter(id, { ...required, [key]: value }, page, undefined, start))
-        .rejects.toThrow('Local recipe file export');
+        .rejects.toThrow('Recipe mode is unavailable');
       expect(loadRecipes().get(`opencli:${id}`)!.inputs).not.toHaveProperty(key);
     }
     expect(start).not.toHaveBeenCalled();

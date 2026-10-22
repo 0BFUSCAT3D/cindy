@@ -102,7 +102,7 @@ export async function executeAdapter(
     const command = await loadAdapter(id);
     const entry = entries.get(id)!;
     const excludedArg = entry.excludedArgs?.find(name => Object.prototype.hasOwnProperty.call(inputs, name));
-    if (excludedArg) throw new Error(`Local recipe file export is unavailable: ${excludedArg}; use content or links and the host file tools`);
+    if (excludedArg) throw new Error(`Recipe mode is unavailable in Cindy: ${excludedArg}; use the selected recipe inputs`);
     // Discovery and execution use the same selected argument defaults.
     const args = prepareInputs(entry.args, inputs);
     if (!files?.output) {

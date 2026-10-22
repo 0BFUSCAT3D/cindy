@@ -4041,5 +4041,10 @@
     "file": "clis/linkedin/search.js",
     "before": "// \"missing description\"), and log every failure to stderr with the offending\n// URL so debugging is possible. Successful rows have `detail_error: null`.",
     "after": "// \"missing description\"). Cindy returns these details only to the caller,\n// without duplicating browsing activity in host logs. Successful rows have `detail_error: null`."
+  },
+  {
+    "file": "clis/web/read.js",
+    "before": "    const raw = await page.readNetworkCapture().catch(() => []);",
+    "after": "    const raw = await page.readNetworkCapture();"
   }
 ]

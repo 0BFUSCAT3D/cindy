@@ -12,6 +12,7 @@
     "band/post": ["output"],
     "doubao/meeting-transcript": ["download"],
     "midjourney/generate": ["output"],
+    "proton/inbox": ["read-code"],
     "twitter/bookmarks": ["resume-file", "output-file"],
     "twitter/likes": ["resume-file", "output-file"],
     "web/read": ["output", "download-images"],

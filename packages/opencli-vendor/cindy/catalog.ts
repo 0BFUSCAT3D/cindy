@@ -30,7 +30,9 @@ export const canonicalCatalog = upstreamCatalog.filter(entry => !(entry.site in 
     return {
       ...entry, excludedArgs,
       description: entry.site === 'doubao' && entry.name === 'meeting-transcript'
-        ? 'Read the meeting transcript from a Doubao conversation' : entry.description,
+        ? 'Read the meeting transcript from a Doubao conversation'
+        : entry.site === 'proton' && entry.name === 'inbox'
+          ? 'List sender-filtered inbox metadata via API' : entry.description,
       args: entry.args.filter(arg => !excludedArgs.includes(arg.name)).map(arg => {
         const selected = { ...arg, help: arg.help?.replace(' Prefer --output-file for large archives.', '')
           .replace(' Incompatible with --output-file.', '') };

@@ -1383,7 +1383,7 @@
     "clis/v2ex/topic.js": "ba0e01735fc4dc122ed4f3b4130586fe6c065aded1612e50c3d9eb8ba19dfe0e",
     "clis/v2ex/user.js": "e6a254fc2e61f640942b1570fd720417e2ad96f0d9a32d61128e65ea040ce561",
     "clis/wanfang/search.js": "1713664acba438a57e797d2ffba61387f97070909d3cd95a43180d2b1a6df7d5",
-    "clis/web/read.js": "e4f1fc889910d18a5739ee56b3ff3a083cce6f6b25a8905ae49c8f711371d015",
+    "clis/web/read.js": "df5f7e41d8ba4cc49338be56a421e09a8b6ff99036380283dcc040ed6a50a362",
     "clis/wechat-channels/auth.js": "87273b45899f69ad523ccb3474b328cc2f915d0c2891900a78dbaceaa9ed2958",
     "clis/wechat-channels/publish.js": "dec92e03bf8c41f7709b1c2c9cf9d0e276ed1f99a019d3aea8a90eda3cedd909",
     "clis/weibo/auth.js": "a67993a6302b445465ab09a1e2eaf0048b41f373b235801c07198ce9de263c07",
