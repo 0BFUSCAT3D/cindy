@@ -470,7 +470,7 @@ process.stdin.on('end', () => {
     version: 1,
     runId,
     taskId: 'tool-fixture',
-    parentSessionId: 'parent-fixture',
+    parentSessionId: path.basename(root),
     ...(options.runtimeOwnerId ? { runtimeOwnerId: options.runtimeOwnerId } : {}),
     ...(options.guestIsolation ? { guestIsolation: true } : {}),
     runDir,
@@ -557,8 +557,8 @@ afterEach(async () => {
 
 describe('Cindy durable PI Subagent runner', () => {
   /**
-   * result.json is an attachment, not the verdict. Nothing in the product reads
-   * it back; status.json is what the Host converges on. So a failure to write it
+   * result.json is a best-effort attachment; status.json is the primary record.
+   * Account-boundary recovery may read a valid receipt, but a failure to write it
    * must not be able to change what the run reports — the old code let the throw
    * from the success path land in the failure handler, which rewrote the state
    * to `failed` and republished, and a throw from the failure handler escaped it
@@ -598,6 +598,20 @@ describe('Cindy durable PI Subagent runner', () => {
       });
       await waitForClose(fixture.child, fixture.stderr);
     });
+  });
+
+  // #6694 integration: use the actual runner's persisted receipt, after its
+  // child and runner have exited. A hand-built JSON fixture alone cannot prove
+  // that the independent artifact has the identity required by recovery.
+  it('recovers account teardown from a real terminal receipt after status corruption', async () => {
+    const fixture = await makeFixture();
+    await waitForClose(fixture.child, fixture.stderr);
+    const files = ['result.json', 'transcript.jsonl', 'config.json'];
+    const before = await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file))));
+    await writeFile(path.join(fixture.runDir, 'status.json'), Buffer.alloc(72_506));
+    await expect(stopForAccountBoundary(fixture.root, { timeoutMs: 0 })).resolves.toBe(true);
+    expect(await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file)))))
+      .toEqual(before);
   });
 
   // A profile prompt long enough to blow the platform spawn command line budget

@@ -14,6 +14,16 @@
 子代理详情的可选 `resultReady` 透传到本机与设备互联控制卡：显式 `false` 时中间输出不阻止
 插话，`true` 时改为排队；旧宿主或 runner 缺少该字段时，界面保留按输出判断的回退。
 
+### 损坏状态的账号边界恢复
+
+`status.json` 仍是展示和控制的主记录。账号边界读取不到状态时，可以使用同目录的
+完整终态 `result.json` 作为独立结束回执：必须匹配 `config.json` 的 runId、taskId、
+parentSessionId、runDir 和全部 child/session/agent 身份，并确认所有子任务均为终态。
+该回执由 runner 在终止子进程、解除定时器后写出；续跑使用新 UUID，不复用旧 generation。
+可读的运行态不被结果附件覆盖。缺少、损坏、超限、链接文件、身份不符或不完整的回执仍
+保持未知并阻止账号交接，不能仅凭宿主退出、文件陈旧或 stop 无回执放行。恢复只读取证据，
+不修改或删除原状态、结果和对话文件，也不宣称验证了 OS 进程退出。
+
 ## 对标与取舍
 
 对照社区 [pi-subagents 工具契约](https://github.com/nicobailon/pi-subagents/blob/main/docs/tool-reference.md)、

@@ -1420,6 +1420,100 @@ describe('PI durable subagent run store', () => {
           .resolves.toBe(false);
       });
 
+      // #6694 unit boundary regression: a real runner writes this separate
+      // terminal artifact before status. Existing unreadable-status cases have
+      // no receipt and must keep refusing the account handover.
+      async function terminalReceiptHome(write: (dir: string) => Promise<void>) {
+        const agentHome = await homeWithUnreadableRun(write);
+        const root = piSubagentRunRoot(agentHome, 'session-1');
+        const dir = path.join(root, runId);
+        const task = { childId: 'child-1', sessionId: 'native-1', agent: 'scout' };
+        const config = {
+          version: 1, runId, runDir: dir, taskId: 'tool-1', parentSessionId: 'session-1',
+          cwd: dir, binary: 'pi', tasks: [task],
+        };
+        const result = {
+          version: 1, runId, taskId: 'tool-1', state: 'completed', completedAt: 100,
+          tasks: [{ ...task, status: 'completed', output: 'original result' }],
+        };
+        await writeFile(path.join(dir, 'config.json'), JSON.stringify(config));
+        await writeFile(path.join(dir, 'result.json'), JSON.stringify(result));
+        await writeFile(path.join(dir, 'transcript.jsonl'), 'original transcript\n');
+        return { agentHome, root, dir, config, result };
+      }
+
+      it.each([
+        ...cases,
+        ['contains zero bytes', async (dir: string) => writeFile(path.join(dir, 'status.json'), Buffer.alloc(72_506))],
+      ] satisfies typeof cases)('accepts a matching terminal receipt when status %s, without changing history', async (_label, write) => {
+        const { agentHome, root, dir } = await terminalReceiptHome(write);
+        const files = ['config.json', 'status.json', 'result.json', 'transcript.jsonl'];
+        const before = await Promise.all(files.map(file => readFile(path.join(dir, file)).catch(() => null)));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0, { hostPid: process.pid, killUnresponsiveRunners: true }))
+          .resolves.toBe(true);
+        await expect(stopPiSubagentRunsForAccountBoundary(root, { timeoutMs: 0 }))
+          .resolves.toBe(true);
+        expect(await Promise.all(files.map(file => readFile(path.join(dir, file)).catch(() => null))))
+          .toEqual(before);
+        expect(existsSync(path.join(dir, 'controls'))).toBe(false);
+      });
+
+      it.each(['failed', 'stopped'])('also recognizes a complete %s receipt', async state => {
+        const { agentHome, dir, result } = await terminalReceiptHome(async () => {});
+        result.state = state;
+        result.tasks[0]!.status = state;
+        await writeFile(path.join(dir, 'result.json'), JSON.stringify(result));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(true);
+      });
+
+      it.each([
+        ['another generation', { runId: '123e4567-e89b-42d3-a456-426614174099' }],
+        ['another task', { taskId: 'other-tool' }],
+        ['unfinished run', { state: 'running' }],
+        ['missing child', { tasks: [] }],
+        ['unfinished child', { tasks: [{ childId: 'child-1', sessionId: 'native-1', agent: 'scout', status: 'running' }] }],
+        ['different child identity', { tasks: [{ childId: 'child-1', sessionId: 'other-native', agent: 'scout', status: 'completed' }] }],
+      ])('refuses a receipt for %s', async (_label, patch) => {
+        const { agentHome, dir, result } = await terminalReceiptHome(async () => {});
+        await writeFile(path.join(dir, 'result.json'), JSON.stringify({ ...result, ...patch }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0, { killUnresponsiveRunners: true }))
+          .resolves.toBe(false);
+      });
+
+      it('refuses a receipt detached from its original run directory', async () => {
+        const { agentHome, dir, config } = await terminalReceiptHome(async () => {});
+        await writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, runDir: path.dirname(dir) }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
+      });
+
+      it.skipIf(process.platform === 'win32')('does not follow a linked terminal result', async () => {
+        const { agentHome, dir } = await terminalReceiptHome(async () => {});
+        const resultFile = path.join(dir, 'result.json');
+        const outside = path.join(agentHome, 'outside-result.json');
+        await writeFile(outside, await readFile(resultFile));
+        await rm(resultFile);
+        await symlink(outside, resultFile);
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
+      });
+
+      it('does not replace a readable live status with the result artifact', async () => {
+        const { agentHome, root } = await terminalReceiptHome(async () => {});
+        await writeStatus(root, status(runId, { updatedAt: Date.now() }));
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0)).resolves.toBe(false);
+      });
+
+      it.each(cases)('keeps refusing when the result artifact %s', async (_label, write) => {
+        const { agentHome, dir } = await terminalReceiptHome(async () => {});
+        await rm(path.join(dir, 'result.json'));
+        // The malformed artifacts share the same bounded reader. Move the
+        // fixture's malformed status bytes to the independent result file.
+        await write(dir);
+        const bytes = await readFile(path.join(dir, 'status.json')).catch(() => null);
+        if (bytes) await writeFile(path.join(dir, 'result.json'), bytes);
+        await expect(stopAllPiSubagentRunsForExit(agentHome, 0, { killUnresponsiveRunners: true }))
+          .resolves.toBe(false);
+      });
+
       it('still reports success once every run is readable and reclaimed', async () => {
         usePlatform('linux');
         // Verifiable once, then reaped by the kill: a confirmed reclaim.

@@ -3005,8 +3005,8 @@ const DEFAULT_KILL_BUDGET_MS = 8_000;
  * Runs under `root` that this sweep still owns, as one universe.
  *
  * `status` is undefined when status.json is missing, corrupt, oversized or
- * unreadable. Those runs stay in the set deliberately, and every pass of the
- * sweep derives its work from *this* function: when the stop pass and the kill
+ * unreadable. Without a matching independent terminal receipt those runs stay
+ * in the set deliberately. Every sweep pass derives work from *this* function: when the stop pass and the kill
  * pass disagree about which runs exist, a record we cannot read drops out of the
  * escalation and the boundary reports itself clean.
  *
@@ -3038,6 +3038,7 @@ async function sweepableRunsUnderRoot(
   for (const runId of runIds) {
     const status = statuses.get(runId);
     if ((status && isPiSubagentTerminal(status.state)) || staleRunIds.has(runId)) continue;
+    if (!status && await hasTerminalResultReceipt(root, runId)) continue;
     if (
       scope.runtimeOwnerId !== undefined
       && status?.runtimeOwnerId !== undefined
@@ -3049,6 +3050,50 @@ async function sweepableRunsUnderRoot(
     sweepable.push({ runId, status });
   }
   return sweepable;
+}
+
+/**
+ * The runner publishes result.json after killing/disarming its children, just
+ * before the terminal status. That independent receipt survives a damaged
+ * status file (#6694). Resume always creates a new UUID, never reuses this run.
+ * Only a complete receipt for this exact config can retire an unreadable run;
+ * age, a dead host, and an unanswered stop request are not completion evidence.
+ * Keep both files untouched, including the corrupt status, for diagnosis.
+ */
+async function hasTerminalResultReceipt(root: string, runId: string): Promise<boolean> {
+  try {
+    const runDir = path.join(root, runId);
+    const [config, value] = await Promise.all([
+      readSmallJson(path.join(runDir, 'config.json')),
+      readSmallJson(path.join(runDir, 'result.json')),
+    ]);
+    if (!isResumeConfig(config, runId)
+      || config.parentSessionId !== path.basename(root)
+      || typeof config.runDir !== 'string'
+      || path.resolve(config.runDir) !== path.resolve(runDir)
+      || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const result = value as Record<string, unknown>;
+    if (result.version !== 1 || result.runId !== runId || result.taskId !== config.taskId
+      || !isState(result.state) || !isPiSubagentTerminal(result.state)
+      || !finiteNonNegative(result.completedAt)
+      || !Array.isArray(result.tasks) || result.tasks.length !== config.tasks.length) return false;
+    const seen = new Set<string>();
+    return result.tasks.every((value: unknown) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const task = value as Record<string, unknown>;
+      if (typeof task.childId !== 'string' || !task.childId || seen.has(task.childId)) return false;
+      seen.add(task.childId);
+      const expected = config.tasks.find((candidate) => candidate?.childId === task.childId);
+      return expected !== undefined
+        && typeof expected.sessionId === 'string' && expected.sessionId.length > 0
+        && typeof expected.agent === 'string' && expected.agent.length > 0
+        && task.sessionId === expected.sessionId && task.agent === expected.agent
+        && isState(task.status) && isPiSubagentTerminal(task.status);
+    });
+  } catch {
+    // Bounded reads reject missing, corrupt, oversized and linked artifacts.
+    return false;
+  }
 }
 
 /** Resolve false if `work` has not settled within `ms`, without leaking a timer. */
@@ -3066,8 +3111,8 @@ async function raceWithDeadline(work: Promise<boolean>, ms: number): Promise<boo
 
 /**
  * Request stop for every non-terminal run under `roots` and wait until they are
- * all terminal (or the deadline passes). An unreadable status stays in scope so
- * a corrupt record can never keep a child alive past its boundary.
+ * all terminal (or the deadline passes). An unreadable status without a validated
+ * terminal result receipt stays in scope so a corrupt record can never keep a child alive past its boundary.
  */
 async function stopPiSubagentRunsUnderRoots(
   roots: readonly string[],
