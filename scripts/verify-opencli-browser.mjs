@@ -93,6 +93,19 @@ try {
     url,
   );
   await page.goto(url);
+  // #6822 accepts labels/prefixes; adapter CDP must select the same canonical
+  // target before its first command, then keep that scope through disposal.
+  const labelled = await runtime.call({ action: 'open', profile: 'recipe-test', url, label: 'recipe-fixture-alias' });
+  assert.equal(labelled.ok, true);
+  for (const targetId of ['recipe-fixture-alias', labelled.data.targetId.slice(0, 8)]) {
+    const aliasPage = new OpenCliPage({ targetId, call: (request) => runtime.call({ ...request, profile: 'recipe-test' }) });
+    try {
+      await aliasPage.getCookies();
+      const document = await aliasPage.cdp('DOM.getDocument');
+      assert.ok(document.root.nodeId);
+    } finally { await aliasPage.dispose(); }
+  }
+  console.log(JSON.stringify({ ok: true, checks: ['CDP-label', 'CDP-target-prefix'] }));
   assert.equal(await page.evaluate("document.title"), "Recipe fixture");
   assert.equal(await page.evaluate((a, b) => a + b, 2, 3), 5);
   await page.fillText("#name", "Cindy fixture");

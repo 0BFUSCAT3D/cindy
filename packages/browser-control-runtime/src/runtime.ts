@@ -22,6 +22,7 @@ import type {
 import { parseBrowserProxyServer, redactBrowserProxyText } from './proxy.js';
 import { RecipeBrowserSessions } from './recipe-sessions.js';
 import { openRecipeSocket } from './recipe-socket.js';
+import { resolveTargetIdFromTabs } from './_generated/extension/src/browser/target-id.js';
 
 type Method = 'GET' | 'POST' | 'DELETE';
 interface DispatchPlan {
@@ -264,9 +265,14 @@ export function createBrowserControlRuntime(
           const listed = await dispatchBrowserControlRequest({ method: 'GET', path: '/tabs', query: request.profile ? { profile: request.profile } : undefined });
           if (listed.status >= 400) throw new Error('Cannot resolve browser recipe target');
           const tabs = (listed.body as { tabs?: Array<{ targetId: string; wsUrl?: string }> }).tabs ?? [];
-          const tab = tabs.find(item => item.targetId === request.targetId);
+          const resolved = resolveTargetIdFromTabs(request.targetId, tabs);
+          if (!resolved.ok) throw new Error(`Selected browser recipe target is ${resolved.reason}`);
+          const tab = tabs.find(item => item.targetId === resolved.targetId);
           if (!tab?.wsUrl) throw new Error('Selected browser recipe target is unavailable');
-          const data = { sessionId: recipeSessions.begin(scope, await openRecipeSocket(tab.wsUrl)) };
+          const data = {
+            targetId: tab.targetId,
+            sessionId: recipeSessions.begin(JSON.stringify([request.profile ?? '', tab.targetId]), await openRecipeSocket(tab.wsUrl)),
+          };
           return { ok: true, action: request.action, data };
         } catch (error) {
           return { ok: false, action: request.action, message: error instanceof Error ? error.message : String(error) };
