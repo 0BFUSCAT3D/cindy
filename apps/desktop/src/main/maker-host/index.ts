@@ -666,6 +666,15 @@ export async function refreshCodexGatewayHost(
 // clears owner-scoped bookkeeping by epoch. Keep it across resetMaker; IPC is not
 // registered again after an account switch. MCP factories bind before it is ready.
 let _resolveBotCapabilityAgentKind: BotCapabilityServiceDeps['resolveBotAgentKind'] | null = null;
+// Bootstrap owns IM/hook modules that depend back on this host. Bind their reader
+// once, but read the current owner's stores on each call (including after resetMaker).
+let _readBotConversationConnections: BotCapabilityServiceDeps['readConversationConnections'];
+export function setBotConversationConnectionsReader(
+  reader: NonNullable<BotCapabilityServiceDeps['readConversationConnections']>,
+): void {
+  _readBotConversationConnections = reader;
+}
+
 export function setBotCapabilityAgentKindResolver(
   resolver: BotCapabilityServiceDeps['resolveBotAgentKind'] | null,
 ): void {
@@ -895,18 +904,8 @@ function createDesktopBotCapabilityService() {
     getMaker, getPluginRegistry, isBotToolsetAvailable,
     listMcpServers: listBotRuntimeMcpServers,
     readConversationConnections: async (botId) => {
-      const [{ buildBotImConnectionListPayload }, { readWechatChannelSettings }, { readXCompanionAssignment }] = await Promise.all([
-        import('../im/shared/botImConnectionRuntime.js'),
-        import('../im/wechat/channelSettings.js'),
-        import('../hook-control/ipc.js'),
-      ]);
-      const connections: NonNullable<import('@cindy/mcps').BotControlState['conversations']>['connections'] =
-        buildBotImConnectionListPayload(botId).connections
-          .map(record => ({ channel: record.service ?? record.channel, connectionId: record.id, status: record.status.kind }));
-      if (readWechatChannelSettings().companionBotId === botId) connections.push({ channel: 'wechat', status: 'assigned' });
-      const x = readXCompanionAssignment();
-      if (x?.botId === botId) connections.push({ channel: 'x', status: x.enabled ? 'assigned' : 'disabled' });
-      return connections;
+      if (!_readBotConversationConnections) throw new Error('Bot conversation connections reader is not initialized');
+      return _readBotConversationConnections(botId);
     },
     resolveBotAgentKind: async (sessionId, chain) => _resolveBotCapabilityAgentKind?.(sessionId, chain) ?? null,
   });

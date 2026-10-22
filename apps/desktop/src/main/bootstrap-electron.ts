@@ -291,6 +291,10 @@ import {
   startImConnection,
   stopImConnection,
 } from './im';
+import { buildBotImConnectionListPayload } from './im/shared/botImConnectionRuntime.js';
+import { readWechatChannelSettings } from './im/wechat/channelSettings.js';
+import { readXCompanionAssignment } from './hook-control/ipc.js';
+import type { BotControlState } from '@cindy/mcps';
 import { setTelegramRemoteSource } from './device-link/telegramRemoteControl';
 import * as authManager from './authManager';
 import { createAuthCredentialRecovery } from './authCredentialRecovery';
@@ -692,6 +696,7 @@ import {
   restartCodexAfterAuthModeChange,
   waitForInitialCustomMcpRefresh,
   registerPiAgentIfAvailable,
+  setBotConversationConnectionsReader,
 } from './maker-host/index.js';
 import { createPiRuntimeRecovery } from './agent-binaries/pi-runtime-recovery.js';
 import { createDynamicMaker } from './maker-host/dynamic-maker.js';
@@ -6257,6 +6262,17 @@ const registerIpcHandlers = () => {
   disposePiRuntimeRecovery = () => piRuntimeRecovery.dispose();
   const registerMakerIpcsAfterSplash = async (): Promise<void> => {
     if (makerIpcsRegistered) return;
+    // Compose here: IM runtime and hook IPC depend on maker-host, so the host
+    // receives a reader instead of importing those modules during tool calls.
+    setBotConversationConnectionsReader(async (botId) => {
+      const connections: NonNullable<BotControlState['conversations']>['connections'] =
+        buildBotImConnectionListPayload(botId).connections
+          .map(record => ({ channel: record.service ?? record.channel, connectionId: record.id, status: record.status.kind }));
+      if (readWechatChannelSettings().companionBotId === botId) connections.push({ channel: 'wechat', status: 'assigned' });
+      const x = readXCompanionAssignment();
+      if (x?.botId === botId) connections.push({ channel: 'x', status: x.enabled ? 'assigned' : 'disabled' });
+      return connections;
+    });
     // 模型供应商目录(providers.json)按「OSS 真源 / bundled 兜底」加载一次存内存:必须在第一次
     // getMakerCore()(下面构造 Maker、同步从 getActiveCatalog() 派生 availableModels)之前完成,
     // 否则首个进程会用内置兜底目录派生模型清单。ensureActiveCatalogLoaded 幂等且永不抛
