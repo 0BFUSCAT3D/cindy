@@ -52,6 +52,8 @@ function PluginTaskTabPillIcon({ state }: { state: PluginTaskTabState }) {
 function PluginTaskBody({ state, ctx }: TabKindBodyProps<PluginTaskTabState>) {
   const ghost = useInstalledGhostByInstance(state.instanceId);
   const runtimeState = useGhostRuntimeState(state.instanceId);
+  // 归属未知时只保留页签和选中位,不为可能属于远端的任务加载本机插件页。
+  if (ctx.remoteHostId || ctx.deviceLinkDeviceId !== null) return null;
   // 停用 / 卸载的瞬间可用性投影已把页签隐藏,这里只兜住收起前的一两帧。
   if (!ghost || ghost.enabled === false || !ghost.manifest.taskView) return null;
   if (runtimeState === 'crashed' || runtimeState === 'fused') {

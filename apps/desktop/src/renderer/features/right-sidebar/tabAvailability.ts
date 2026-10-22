@@ -19,6 +19,8 @@ export interface RightSidebarTabAvailability {
    * 不随任务归属变化。缺省 = 不做可用性过滤。
    */
   pluginViewGhosts?: readonly InstalledGhost[];
+  /** 任务归属未解析时仍保留本机插件页签的投影;正文另按已确认的归属加载。 */
+  pluginTaskGhosts?: readonly InstalledGhost[];
 }
 
 function isUnavailablePluginView(
@@ -42,7 +44,7 @@ function isUnavailablePluginTask(
   if (tab.kind !== 'plugin-task') return false;
   const instanceId = (tab.state as { instanceId?: unknown } | null)?.instanceId;
   if (typeof instanceId !== 'string' || !instanceId) return true;
-  const ghost = availability.installedGhosts.find(
+  const ghost = (availability.pluginTaskGhosts ?? availability.installedGhosts).find(
     (candidate) => installedGhostStoragePart(candidate) === instanceId,
   );
   return !ghost || ghost.enabled === false || !ghost.manifest.taskView;
@@ -143,6 +145,8 @@ export function buildTabAvailabilities(input: TabAvailabilityInput): TabAvailabi
     session: {
       installedGhosts:
         input.remoteHostId || input.deviceLinkDeviceId !== null ? [] : input.installedGhosts,
+      pluginTaskGhosts:
+        input.remoteHostId || input.deviceLinkDeviceId ? [] : input.installedGhosts,
       subagentsAvailable: input.subagentsAvailable === true || !eligibilityKnown,
       hiddenTabIds: input.hiddenTabIds,
     },

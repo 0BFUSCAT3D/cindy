@@ -70,6 +70,7 @@ vi.mock('../lib/rsbBrowserBridge', async () => {
 });
 
 import { RightSidebarShell } from '../RightSidebarShell';
+import '../plugins/plugin-task';
 import { BrowserTabBody } from '../plugins/web-browser/BrowserTabBody';
 import type { WebBrowserState } from '../plugins/web-browser';
 import type { TabKindBodyProps } from '../types';
@@ -896,6 +897,47 @@ describe('RightSidebarShell empty state', () => {
     expect(tabsIpc.close).not.toHaveBeenCalled();
     expect(getBucket('s1').tabs.map(tab => tab.id)).toEqual(['old-simulator']);
     view.unmount();
+  });
+
+  // #6861:冷启动归属未知不能收起插件任务页或改写恢复的选择;正文只在确认本机后加载。
+  // 真实 Shell → 可用性投影 → plugin-task → GhostWebviewBody;旧覆盖只测已解析的清单。
+  // 最小输入:持久化任务页 + undefined→null/远端;另带普通页检测选中位丢失。tier:unit。
+  it.each([
+    { device: null, mixed: false }, { device: 'other-device', mixed: false },
+    { device: null, mixed: true }, { device: 'other-device', mixed: true },
+  ])('preserves plugin task selection until ownership resolves ($device, mixed=$mixed)', async ({ device, mixed }) => {
+    installedGhostsMock.list = [{
+      manifest: { id: 'alpha', name: 'Alpha', taskView: { html: 'task.html', title: 'Task Page' } },
+      enabled: true, dir: '/tmp/alpha',
+    }];
+    const onAllTabsClosed = vi.fn();
+    tabsIpc.list.mockResolvedValueOnce({
+      tabs: [
+        ...(mixed ? [{ id: 'files', kind: 'file-browser', state: null }] : []),
+        { id: 'plugin-task', kind: 'plugin-task', state: { instanceId: 'alpha' } },
+      ], activeTabId: 'plugin-task',
+    });
+    const props = {
+      sessionId: 's1', workdir: '/tmp/repo', remoteHostId: null, isMac: true, onAllTabsClosed,
+    };
+    const view = render(createElement(RightSidebarShell, props));
+    await waitFor(() => expect(getBucket('s1').hydrated).toBe(true));
+    expect(screen.getByText('Task Page')).toBeTruthy();
+    expect(onAllTabsClosed).not.toHaveBeenCalled();
+    expect(tabsIpc.setActive).not.toHaveBeenCalled();
+    expect(document.querySelector('webview')).toBeNull();
+    view.rerender(createElement(RightSidebarShell, { ...props, deviceLinkDeviceId: device }));
+    if (device === null) {
+      await waitFor(() => expect(document.querySelector('webview')?.getAttribute('src')).toBe('cindy-ghost://alpha/task.html?session=s1'));
+      expect(getBucket('s1').activeTabId).toBe('plugin-task');
+      expect(onAllTabsClosed).not.toHaveBeenCalled();
+      expect(tabsIpc.setActive).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(screen.queryByText('Task Page')).toBeNull());
+      expect(document.querySelector('webview')).toBeNull();
+      expect(onAllTabsClosed).toHaveBeenCalledTimes(mixed ? 0 : 1);
+    }
+    expect(tabsIpc.close).not.toHaveBeenCalled();
   });
 
   it('keeps a persisted Subagents-only sidebar intact while Pi eligibility is loading', async () => {
