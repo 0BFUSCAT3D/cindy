@@ -21,6 +21,21 @@ reader 的刷新完成（仍遵守节流/退避），不改变返回结构、授
 仍使用缓存优先读取；旧被控端忽略新增参数，返回其已有快照。自动续跑只使用实际受限窗口的可信
 重置时刻，不把请求成功当成已恢复，也不将远程快照替换为本机账号。无需服务端或 Mobile 原生更新。
 
+## 群内独立头像
+
+Chat Server 的 `/me.capabilities` 新增可选 `groupMemberAvatar: 1`；Desktop 的群投影对应
+`supportsMemberAvatar`，未声明时不展示换头像入口，也不退回账号头像编辑器。
+成员投影沿用 `avatar` 返回当前群的有效头像，并新增可选 `groupAvatar`（可空覆盖值）和
+`defaultAvatarUrl`（账号头像）。旧桌面与手机忽略新增字段，沿既有 `avatar` 显示路径读取。
+手机经电脑读取群资源时，成员解析须保留有效的 HTTPS `avatarUrl`，交给现有头像组件显示；
+缺失或非法地址沿用原头像回退。回归覆盖群头像、恢复账号头像与旧数据解析，不新增手机编辑入口。
+Desktop 既有 `chatServer.manage` 增加 `avatar` action；本机校验裁剪字节后复用 OSS 头像上传，
+复用 `POST /conversations/:id/nickname`，仅提交当前成员与可选 `avatar` 公开地址，`null` 恢复账号头像。
+该接口的 `nickname` 与 `avatar` 均为可选，至少提供一项；未传的字段保持原值，不回传缓存昵称。
+昵称请求的旧字段、空串归一化、响应和幂等摘要保持兼容；不新增头像 HTTP 路由。
+不新增 IPC channel 或设备互联权限。新服务端先部署，客户端随后发布；旧客户端在新服务端仍可读，
+旧服务端拒绝新 action，不能写入全局账号资料。服务端新增可空列，回滚保留列与已保存头像。
+
 ## 远程链路流量治理：交互优先名额与 Subagent 变更推送
 
 交互类 invoke（`maker:send`、`maker:abort-session`、`maker:input:enqueue` / `steer` / `stop` /
@@ -1765,11 +1780,12 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   同账号不带 `model` 的 `view` 用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model` 的发送前查询只在回显模型一致时
   临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist 或凭证访问。
 - **成员状态可选 `quota`（2026-10-21 用户确认）**：`ProviderGroupView.members[]` 增加可选
-  `quota: { usedPercent, resetAtMs: number | null, windowMs }`，只是选电脑排序用的那一个窗口（provider-groups.md §5、§10
-  的进度条），不带 5 小时窗口、模型桶名、账号标识或重置卡。组所在电脑本机界面与同账号 `view` 回包都带；读不到配额的成员
+  `quota: { usedPercent, resetAtMs: number | null, windowMs }`，只是选电脑排序用的那一个窗口（provider-groups.md §5），
+  同账号电脑据此提议任务进行中换号（§6.2）；2026-10-22 起界面不再画进度条（§10），字段保留。不带 5 小时窗口、模型桶名、
+  账号标识或重置卡。组所在电脑本机界面与同账号 `view` 回包都带；读不到配额的成员
   省略。`parseProviderGroupRemoteView` 只收有限数值（百分比收敛到 0–100，窗口 0–31 天，重置时刻为正数或 `null`），
-  分享来的成员一律丢弃；受邀者的匿名状态是白名单投影，不带此字段。旧组所在电脑不回此字段，查看端不画进度条；
-  旧查看端忽略它。不新增 channel、请求参数或持久数据。
+  分享来的成员一律丢弃；受邀者的匿名状态是白名单投影，不带此字段。旧组所在电脑不回此字段，查看端按读不到配额处理、
+  不提议换到这台；旧查看端忽略它。不新增 channel、请求参数或持久数据。
 - 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、`runtime.ts`、
   `router.ts`、`remoteClient.ts`、`remoteHandler.ts`、`service.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
   `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。

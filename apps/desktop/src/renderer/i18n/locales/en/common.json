@@ -687,10 +687,6 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
-      "pace": {
-        "used": "{{used}}% used",
-        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
-      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
@@ -9722,7 +9718,9 @@
           "topic": "Topic",
           "description": "Description",
           "save": "Save",
-          "myProfile": "My profile",
+          "myProfile": "My profile in this group",
+          "groupAvatar": "Change group avatar",
+          "groupAvatarHint": "Only shown in this group. Your account and other groups stay unchanged. Reset to use your account avatar.",
           "editProfile": "Edit name and photo",
           "nickname": "My name in this group",
           "nicknameHint": "Only shown here. Leave empty to use your profile name.",

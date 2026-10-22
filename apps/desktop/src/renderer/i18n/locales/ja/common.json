@@ -680,10 +680,6 @@
         "share": "ほかの人から共有されたパソコンのクォータは表示されません"
       },
       "runningCount_other": "{{count}} 件実行中",
-      "pace": {
-        "used": "{{used}}% 使用",
-        "usedExpected": "{{used}}% 使用、目安 {{expected}}%"
-      },
       "limitAria": "{{name}} の同時実行数の上限",
       "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} の重み",
@@ -9688,7 +9684,9 @@
           "topic": "トピック",
           "description": "説明",
           "save": "保存",
-          "myProfile": "自分のプロフィール",
+          "myProfile": "このグループでのプロフィール",
+          "groupAvatar": "グループ内のアバターを変更",
+          "groupAvatarHint": "このグループにのみ表示されます。アカウントや他のグループには影響しません。リセットするとアカウントのアバターに戻ります。",
           "editProfile": "名前と画像を編集",
           "nickname": "このグループでの名前",
           "nicknameHint": "このグループだけに表示。空欄ならプロフィール名を使用します。",
