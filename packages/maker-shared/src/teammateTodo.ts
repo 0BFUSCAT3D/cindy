@@ -160,6 +160,11 @@ export function todoLocalDate(now: Date, zone: string): string {
 export function effectiveTodoDeadline(t: TeammateTodo): TodoDeadline | null {
   return t.deadlineOverride ? t.deadlineOverride.value : t.sourceDeadline;
 }
+/** One due occurrence of a todo: moving its deadline makes it a new one, so the "due" dot lights again. */
+export function todoDueKey(t: TeammateTodo): string {
+  const deadline = effectiveTodoDeadline(t);
+  return `${t.id}@${deadline?.kind === 'instant' ? deadline.at : deadline?.date ?? ''}`;
+}
 /** Date-only items sort at the end of their source-local day, without inventing a stored time. */
 export function createTodoDueComparator() {
   const values = new Map<string, number>();

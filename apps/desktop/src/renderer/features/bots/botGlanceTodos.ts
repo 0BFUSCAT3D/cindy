@@ -16,6 +16,7 @@ import {
   queryTodoItems,
   scheduleTodoDeferralRefresh,
   todoDue,
+  todoDueKey,
   type TeammateTodo,
   type TodoListQuery,
   type TodoPatch,
@@ -195,12 +196,6 @@ export function useGlanceTodos(host: GlanceTodoHost, enabled = true) {
   return { ...state, refresh };
 }
 
-/** 一条待办这一次到期的身份：改了期限就是一次新的到期，入口红点会再亮。 */
-function dueKey(t: TeammateTodo): string {
-  const deadline = t.deadlineOverride ? t.deadlineOverride.value : t.sourceDeadline;
-  return `${t.id}@${deadline?.kind === 'instant' ? deadline.at : deadline?.date ?? ''}`;
-}
-
 const SEEN_PREFIX = 'cindy:bots:glance-due-seen:';
 
 function readSeen(botId: string): Set<string> {
@@ -221,13 +216,13 @@ export function dueTodos(todos: GlanceTodos, now = new Date()): TeammateTodo[] {
 export function hasUnseenDue(botId: string, due: readonly TeammateTodo[]): boolean {
   if (due.length === 0) return false;
   const seen = readSeen(botId);
-  return due.some((t) => !seen.has(dueKey(t)));
+  return due.some((t) => !seen.has(todoDueKey(t)));
 }
 
 /** 打开近况就算看过了：只记当前到期的这几条，旧记录随之淘汰。 */
 export function markDueSeen(botId: string, due: readonly TeammateTodo[]): void {
   try {
-    window.localStorage.setItem(SEEN_PREFIX + botId, JSON.stringify(due.map(dueKey)));
+    window.localStorage.setItem(SEEN_PREFIX + botId, JSON.stringify(due.map(todoDueKey)));
   } catch {
     // 本地存储不可用时只是红点多亮一次，不影响待办本身。
   }
