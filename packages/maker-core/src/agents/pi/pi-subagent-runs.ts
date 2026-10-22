@@ -3164,13 +3164,19 @@ async function terminalResultProcessIdentities(
  * against an 8000ms cap) and failed a dead child closed.
  */
 /** Full Linux argv, or null if that pid is already gone. `'unknown'` is fail-closed. */
-async function readLinuxProcArgs(pid: string): Promise<string | null | 'unknown'> {
+async function readLinuxProcArgs(
+  pid: string,
+  options: { ignorePermission?: boolean } = {},
+): Promise<string | null | 'unknown'> {
   try {
     const cmdline = await fs.readFile(`/proc/${pid}/cmdline`);
     const args = cmdline.toString('utf8').split('\0').filter((part) => part.length > 0).join(' ');
     return args.trim() ? args : null;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'unknown';
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    if (options.ignorePermission && (code === 'EACCES' || code === 'EPERM')) return null;
+    return 'unknown';
   }
 }
 
@@ -3196,7 +3202,9 @@ async function linuxProcfsLiveIdentities(
   for (const name of names) {
     if (Date.now() >= deadline) return 'unknown';
     if (!/^[1-9]\d*$/.test(name)) continue;
-    const args = await readLinuxProcArgs(name);
+    // Other users' cmdlines are often unreadable. Skip those; a permission
+    // error is not evidence that our own child is still alive.
+    const args = await readLinuxProcArgs(name, { ignorePermission: true });
     if (args === 'unknown') return 'unknown';
     if (!args) continue;
     for (const id of sought) {

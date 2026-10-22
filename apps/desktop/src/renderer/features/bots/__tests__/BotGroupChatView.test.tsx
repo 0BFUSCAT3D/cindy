@@ -3838,3 +3838,17 @@ describe('pending main-chat copies across accounts', () => {
     expect(mocks.reply).toHaveBeenCalledTimes(1);
   });
 });
+
+// #6550: actual timeline must project a bot's component body before Markdown rendering.
+it('renders component body as readable text without changing the message', async () => {
+  const content = 'Before\n\n```cindy-ui\n' + JSON.stringify({ seq: 1, version: 1, op: 'create', id: 'body', kind: 'text', props: { text: 'Readable answer' } }) + '\n```\n\nAfter';
+  const reply = msg({ id: 'rich-body', sequence: 1, authorKind: 'bot', authorBotId: 'a', content });
+  mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [reply] }) });
+  renderView();
+  await screen.findByText(/Readable answer/);
+  const body = screen.getByTestId('bot-group-timeline');
+  expect(body.textContent).toContain('Before');
+  expect(body.textContent).toContain('After');
+  expect(body.textContent).not.toContain('"op":"create"');
+  expect(reply.content).toBe(content);
+});
