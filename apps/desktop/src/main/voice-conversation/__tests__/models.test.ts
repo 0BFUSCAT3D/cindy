@@ -8,6 +8,7 @@ import {
 } from '@cindy/model-providers';
 import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from '../models.js';
 import { speechRequest } from '../speechProtocols.js';
+import { loadSpeechVoices } from '../voices.js';
 import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { voiceModelKey } from '../../../shared/voiceConversation.js';
 
@@ -87,6 +88,28 @@ it('keeps Gateway entitlement and supported-protocol gates', () => {
   expect(speechModels(d).map((m) => m.id)).toEqual(['new-speech']);
   expect(speechModels({ ...d, gatewayAllowed: false })).toEqual([]);
 });
+
+// Unit: a new Gateway selection needs a usable reference default, while a saved
+// manual ID remains the request value. Existing OpenAI-only fixtures missed this.
+it.each(['elevenlabs/eleven_multilingual_v2', 'minimax/speech-2.8-hd'])(
+  'uses the reference default without restricting manual voices for %s',
+  async (modelId) => {
+    const d = deps([{ id: 'xd', audioModels: [model(modelId)] }] as Catalog['providers']);
+    const selected = speechModels(d)[0];
+    expect(selected.defaultVoice).not.toBe('');
+    const choice = { providerId: 'xd', modelId, voice: 'saved-manual-voice' };
+    const connection = resolveSpeechConnection(d, choice);
+    const fetcher = vi.fn();
+    const catalog = await loadSpeechVoices(connection, modelId, fetcher, () => {}, 'xd');
+    expect(catalog.voices[0]?.id).toBe(selected.defaultVoice);
+    expect(JSON.parse(speechRequest(connection, { ...choice, text: 'hello' }).body)).toMatchObject({
+      model: modelId,
+      voice: choice.voice,
+      response_format: 'pcm',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  },
+);
 
 // Unit regression: resolveSpeechConnection -> speechRequest must send Gateway TTS
 // to /v1/audio/speech. Live root endpoints returned 404; previous fixtures already

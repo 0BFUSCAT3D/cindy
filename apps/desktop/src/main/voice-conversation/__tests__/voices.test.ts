@@ -48,6 +48,12 @@ describe('provider voice catalogs', () => {
       source: 'manual',
       voices: [],
     });
+    // A known vendor prefix alone must not invent compatibility for new versions.
+    for (const modelId of ['elevenlabs/eleven_v4', 'minimax/speech-3.0-hd', 'speech-2.8-hd']) {
+      expect(
+        await loadSpeechVoices(connection('openai'), modelId, fetcher, () => {}, 'xd'),
+      ).toEqual({ source: 'manual', voices: [] });
+    }
     expect(fetcher).not.toHaveBeenCalled();
   });
 

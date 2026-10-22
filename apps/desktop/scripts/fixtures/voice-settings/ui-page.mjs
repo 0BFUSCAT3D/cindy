@@ -12,6 +12,36 @@ export default {
       'const empty = {}; export const EMPTY_LIGHT_STATE = empty; export const makerChatStore = { subscribeLight: () => () => {}, getLightSnapshot: () => empty };',
   },
   cases: {
+    'gateway-elevenlabs': {
+      about: 'Gateway replacement reference voices with separate selection and audition',
+      data: {
+        gatewayReference: true,
+        protocol: 'openai',
+        modelId: 'elevenlabs/eleven_v3',
+        menu: true,
+      },
+    },
+    'gateway-minimax': {
+      about: 'Gateway MiniMax system candidates in a narrow drawer, still labeled as references',
+      viewport: { width: 320, height: 900 },
+      data: {
+        gatewayReference: true,
+        protocol: 'openai',
+        modelId: 'minimax/speech-2.8-turbo',
+        menu: true,
+      },
+    },
+    'gateway-manual': {
+      about: 'A saved manual Gateway voice survives a populated reference catalog and preview',
+      viewport: { width: 320, height: 900 },
+      data: {
+        gatewayReference: true,
+        protocol: 'openai',
+        modelId: 'elevenlabs/eleven_multilingual_v2',
+        manual: true,
+        speed: 0.95,
+      },
+    },
     default: { about: 'ElevenLabs default 1× without an override', data: {} },
     narrow: {
       about: 'Saved speed in a narrow settings drawer',
@@ -170,6 +200,39 @@ export default {
       return;
     }
     assert.equal(await standalonePreview.count(), 0);
+    if (ui.data.gatewayReference) {
+      const label = await ui.t('bots.voiceMode.voice');
+      const trigger = page.getByRole('button', { name: label, exact: true });
+      const menu = page.getByRole('dialog', { name: label });
+      const voices = await page.evaluate(() => window.__uiPage.ctx.data.gatewayVoices);
+      const choice = voices[1];
+      await page.getByText(await ui.t('bots.voiceMode.voicesReference'), { exact: true }).waitFor();
+      await menu.getByRole('button', { name: choice.name, exact: true }).focus();
+      await page.keyboard.press('Tab');
+      const preview = menu.getByRole('button', {
+        name: await ui.t('bots.voiceMode.previewVoice', { voice: choice.name }),
+        exact: true,
+      });
+      assert.equal(await preview.evaluate((el) => el === document.activeElement), true);
+      await ui.capture('reference-menu');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => window.__uiPage.ctx.data.previewRequests.length === 1);
+      const request = await page.evaluate(() => window.__uiPage.ctx.data.previewRequests[0]);
+      assert.equal(request.providerId, 'xd');
+      assert.equal(request.modelId, ui.data.modelId);
+      assert.equal(request.voice, choice.id);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.savedVoice), voices[0].id);
+      await page.keyboard.press('Escape');
+      await menu.waitFor({ state: 'hidden' });
+      assert.equal(await trigger.evaluate((el) => el === document.activeElement), true);
+      await page
+        .getByRole('button', { name: await ui.t('bots.voiceMode.refreshVoices'), exact: true })
+        .click();
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.previewRequests.length), 1);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.savedVoice), voices[0].id);
+      await trigger.click();
+      return;
+    }
     if (ui.data.systemCatalog) {
       const label = await ui.t('bots.voiceMode.voice');
       const trigger = page.getByRole('button', { name: label, exact: true });

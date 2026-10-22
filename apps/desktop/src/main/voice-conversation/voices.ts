@@ -3,7 +3,7 @@ import {
   type SpeechVoiceCatalog,
   type SpeechVoice,
 } from '../../shared/voiceConversation.js';
-import { referenceSpeechVoices } from '../../shared/speechVoices.js';
+import { gatewayReferenceSpeechVoices, referenceSpeechVoices } from '../../shared/speechVoices.js';
 import { alibabaSystemVoices } from '../../shared/alibabaSpeechVoices.js';
 import { loadDashscopeVoices } from './dashscopeVoices.js';
 import type { SpeechConnection } from './speech.js';
@@ -51,8 +51,14 @@ export async function loadSpeechVoices(
   modelId: string,
   fetcher: typeof fetch,
   assertCurrent: () => void,
+  providerId?: string,
 ): Promise<SpeechVoiceCatalog> {
   assertCurrent();
+  if (providerId === 'xd' && connection.protocol === 'openai') {
+    const voices = gatewayReferenceSpeechVoices(modelId);
+    if (voices.length)
+      return { source: 'reference', voices: voices.map((voice) => ({ ...voice })) };
+  }
   if (connection.protocol === 'openai' || connection.protocol === 'qwen-tts') {
     const voices =
       connection.protocol === 'qwen-tts'

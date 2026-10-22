@@ -19,7 +19,7 @@ import {
   type SpeechModelSelection,
   type VoiceConversationSelection,
 } from '../../shared/voiceConversation.js';
-import { referenceSpeechVoices } from '../../shared/speechVoices.js';
+import { gatewayReferenceSpeechVoices, referenceSpeechVoices } from '../../shared/speechVoices.js';
 import type { SpeechConnection } from './speech.js';
 
 export type SpeechCatalogDeps = {
@@ -134,7 +134,10 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
             providerId: 'xd',
             providerName: provider.name,
             protocol: 'openai',
-            defaultVoice: referenceSpeechVoices(media.id, 'openai')[0] ?? '',
+            defaultVoice:
+              gatewayReferenceSpeechVoices(media.id)[0]?.id ??
+              referenceSpeechVoices(media.id, 'openai')[0] ??
+              '',
           },
           connection: {
             baseUrl: base.toString().replace(/\/+$/, ''),
