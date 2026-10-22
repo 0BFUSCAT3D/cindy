@@ -52,22 +52,39 @@ function releaseOpenAiConnectionOwner(): string | null {
   }
 }
 
-function hasUsableCodexOAuth(pathname: string): boolean {
+type CodexOAuthCandidate = { accountId: string | null; expiresAtMs: number | null };
+
+function readCodexOAuthCandidate(pathname: string): CodexOAuthCandidate | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(pathname, 'utf8')) as {
-      tokens?: { access_token?: unknown };
+      tokens?: { access_token?: unknown; account_id?: unknown };
     };
-    return (
-      typeof parsed.tokens?.access_token === 'string' && parsed.tokens.access_token.length > 0
-    );
+    const token = parsed.tokens?.access_token;
+    if (typeof token !== 'string' || token.length === 0) return null;
+    let expiresAtMs: number | null = null;
+    try {
+      // Expiry is only a source-selection hint. Opaque tokens keep their existing behavior;
+      // the account RPC remains authoritative about whether a credential actually works.
+      const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+      if (typeof claims.exp === 'number' && Number.isFinite(claims.exp)) {
+        expiresAtMs = claims.exp * 1000;
+      }
+    } catch {
+      // Unknown expiry must not discard an otherwise supported login format.
+    }
+    return {
+      accountId: typeof parsed.tokens?.account_id === 'string' ? parsed.tokens.account_id : null,
+      expiresAtMs,
+    };
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
  * 普通 Dev 只读复用同 owner、同区域 Release 的登录态；Release 不可用时沿用
- * 原有的本机 Codex 共享来源。Packaged 行为保持不变，仍只与本机 Codex 协调。
+ * 原有的本机 Codex 共享来源。Release 已过期且本机有同账号的有效授权时优先本机，
+ * 避免旧快照挡住已经恢复的本机登录。Packaged 仍只与本机 Codex 协调。
  */
 export function getPreferredSharedCodexAuthPath(activeOwnerId: string | null): string {
   if (!app.isPackaged) {
@@ -81,12 +98,28 @@ export function getPreferredSharedCodexAuthPath(activeOwnerId: string | null): s
       return releaseAuth;
     }
     const releaseOwner = releaseOpenAiConnectionOwner();
+    const release = readCodexOAuthCandidate(releaseAuth);
     if (
-      hasUsableCodexOAuth(releaseAuth) &&
+      release &&
       !shouldSuppressLocalCodexAuth(path.dirname(releaseAuth), releaseAuth) &&
       activeOwnerId !== null &&
       activeOwnerId === releaseOwner
     ) {
+      const now = Date.now();
+      if (release.expiresAtMs !== null && release.expiresAtMs <= now) {
+        const cliAuth = getCodexCliAuthPath();
+        const cli = readCodexOAuthCandidate(cliAuth);
+        // Do not switch accounts/workspaces or replace a refreshable Release credential
+        // with another expired/unknown token. Both source files remain untouched.
+        if (
+          release.accountId &&
+          cli?.accountId === release.accountId &&
+          cli.expiresAtMs !== null &&
+          cli.expiresAtMs > now
+        ) {
+          return cliAuth;
+        }
+      }
       return releaseAuth;
     }
   }
