@@ -642,13 +642,14 @@ describe('Cindy durable PI Subagent runner', () => {
       return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
     });
     try {
-      // A PID alone does not mean the child's startup writes have reached the
-      // runner. Killing it first can make the fixture exit on EPIPE, so the
-      // inventory correctly sees no orphan instead of exercising this case.
+      // CI #6768: the PID is published before the fake child's prompt output.
+      // Killing the runner in that window can make the child exit on EPIPE,
+      // invalidating the live-orphan premise. Wait until the real runner has
+      // persisted the last startup event, so no output races its pipe closing.
       await waitFor(async () => {
         const [run] = await listPiSubagentRuns(fixture.root);
-        return run?.tasks[0]?.toolUses === 1 ? true : null;
-      }, undefined, 'the child startup event to reach the runner');
+        return run?.state === 'running' && run.tasks[0]?.toolUses === 1 ? true : null;
+      }, undefined, 'the runner to receive the hanging child startup output');
       fixture.child.kill('SIGTERM');
       await waitForClose(fixture.child, fixture.stderr);
       const receipt = JSON.parse(await readFile(path.join(fixture.runDir, 'result.json'), 'utf8'));
