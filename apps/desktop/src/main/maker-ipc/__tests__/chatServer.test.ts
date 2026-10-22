@@ -586,6 +586,53 @@ describe('Chat Server result delivery and refresh', () => {
   });
 
   // #6761: ordinary reply files must reach the completion payload, not remain local links.
+  it.each(['revision', 'revoked', 'requester-left', 'lease', 'temporary'])('refuses reply files when %s changes after the last tool call', async change => {
+    let revoked = false;
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (route === '/executions/claim') {
+        const next = claimed ? null : { ...execution, requester_id: selfId, access_mode: 'tools' };
+        claimed = true; return { body: { execution: next } };
+      }
+      if (revoked && change === 'temporary' && route.endsWith('/members')) return { status: 503, body: { code: 'UNAVAILABLE' } };
+      if (route.endsWith('/members')) return { body: [
+        { id: botId, kind: 'bot', ownerActorId: selfId, state: 'joined',
+          accessRevision: revoked && change === 'revision' ? 2 : 1, guestAccess: revoked && change === 'revoked' ? 'chat' : 'tools' },
+        { id: selfId, kind: 'human', ownerActorId: selfId, state: revoked && change === 'requester-left' ? 'left' : 'joined' },
+      ] };
+      if (revoked && change === 'lease' && body?.action === 'heartbeat') return { status: 409, body: { code: 'STALE_EXECUTION' } };
+      return response(route);
+    });
+    replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [{ id: 'pdf', name: 'report.pdf' }] });
+    await start();
+    await authorizeGroupTool('lane', 'local-bot', 'read-self');
+    revoked = true;
+    const uploads = fixture.upload.mock.calls.length;
+    await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
+    expect(fixture.upload.mock.calls.length).toBe(uploads);
+    expect(deliveries()).toHaveLength(0);
+    if (change === 'temporary') revoked = false;
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(fixture.upload.mock.calls.length).toBe(uploads + (change === 'temporary' ? 1 : 0));
+    expect(deliveries()).toHaveLength(change === 'temporary' ? 1 : 0);
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
+  async function startFileReply() {
+    const original = fixture.handle.getMockImplementation()!;
+    fixture.handle.mockImplementation((route, method, body) => {
+      const result = original(route, method, body);
+      if (route === '/executions/claim' && result?.body?.execution) {
+        result.body.execution = { ...result.body.execution, access_mode: 'owner', requester_id: selfId };
+      }
+      if (route.endsWith('/members')) return { body: [
+        { id: botId, kind: 'bot', ownerActorId: selfId, state: 'joined', accessRevision: 1, guestAccess: 'tools' },
+        { id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined' },
+      ] };
+      return result;
+    });
+    await start();
+  }
+
   it('delivers a PDF reply and retries a lost completion ACK without another upload', async () => {
     const file = { id: 'pdf', name: 'report.pdf', category: 'file', mimeType: 'application/pdf', size: 0, path: null, url: null };
     replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [file] });
@@ -595,7 +642,7 @@ describe('Chat Server result delivery and refresh', () => {
       if (body?.action === 'complete' && ++attempts === 1) throw new Error('ECONNRESET');
       return response(route);
     });
-    await start();
+    await startFileReply();
     const uploads = fixture.upload.mock.calls.length;
     await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
     expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'Report' }, { type: 'media', mediaId: 'pdf', caption: 'report.pdf' }]);
@@ -613,7 +660,7 @@ describe('Chat Server result delivery and refresh', () => {
     replyImages.mockResolvedValue({ text: 'Delivered', attachments: images });
     const blocks = [...images, pdf].map(file => ({ type: 'media', mediaId: file.id }));
     fixture.upload.mockRejectedValueOnce(Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 503 })).mockResolvedValue(blocks);
-    await start();
+    await startFileReply();
     await service.settleLaneTurn({ ...terminal, resultText: '![image](cindy-media://image) [Report](./report.pdf)' });
     expect(deliveries()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(16000);
@@ -627,7 +674,7 @@ describe('Chat Server result delivery and refresh', () => {
   it('refuses mixed attachments exceeding the shared twenty-file limit before upload', async () => {
     replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [{ id: 'pdf' }] });
     replyImages.mockResolvedValue({ text: 'Images', attachments: Array.from({ length: 20 }, (_, i) => ({ ...replyImage, id: `image-${i}` })) });
-    await start();
+    await startFileReply();
     const uploads = fixture.upload.mock.calls.length;
     await service.settleLaneTurn({ ...terminal, resultText: 'Images and PDF' });
     expect(fixture.upload.mock.calls.length).toBe(uploads);
@@ -637,7 +684,7 @@ describe('Chat Server result delivery and refresh', () => {
 
   it('fails a refused reply file instead of publishing a successful local path', async () => {
     replyFiles.prepare.mockRejectedValue(new Error('ATTACHMENT_UNAVAILABLE'));
-    await start();
+    await startFileReply();
     await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
     expect(deliveries()).toHaveLength(0);
     expect(fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail')).toHaveLength(1);
@@ -646,7 +693,7 @@ describe('Chat Server result delivery and refresh', () => {
   it.each([400, 413, 415, 422])('reports a file rejected by the media service (%s)', async status => {
     replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [{ id: 'pdf', name: 'report.pdf' }] });
     fixture.upload.mockRejectedValueOnce(new ChatResponseError('FILE_REFUSED', status));
-    await start();
+    await startFileReply();
     await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
     expect(deliveries()).toHaveLength(0);
     expect(fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail')).toHaveLength(1);
@@ -656,7 +703,7 @@ describe('Chat Server result delivery and refresh', () => {
     replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [{ id: 'pdf', name: 'report.pdf' }] });
     fixture.upload.mockRejectedValueOnce(Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 503 }))
       .mockResolvedValueOnce([{ type: 'media', mediaId: 'pdf', caption: 'report.pdf' }]);
-    await start();
+    await startFileReply();
     await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
     expect(deliveries()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(16000);
@@ -1663,7 +1710,7 @@ describe('Chat Server result delivery and refresh', () => {
       });
       replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [{ id: 'pdf', name: 'report.pdf' }] });
       fixture.upload.mockImplementationOnce(async () => kind === 'talk' ? [{ type: 'media', mediaId: 'pdf', caption: 'report.pdf' }] : []);
-      await start();
+      if (kind === 'talk') await startFileReply(); else await start();
       await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
       expect(deliveries()[0][2]).not.toHaveProperty('continueDiscussion');
       if (kind === 'talk') {

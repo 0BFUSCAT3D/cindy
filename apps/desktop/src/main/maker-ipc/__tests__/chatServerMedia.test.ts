@@ -12,6 +12,21 @@ import type { BotGroupAttachment } from '../../../shared/botGroupChat.js';
 const attachment: BotGroupAttachment = { id: 'file', name: 'picture.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://test', path: null };
 
 describe('chat private media', () => {
+  it.each(['read', 'put', 'seal'])('awaits live authorization before %s', async deniedStage => {
+    let stage = 'read';
+    const readBytes = vi.fn(async () => Buffer.from('private report'));
+    f.fetch.mockReset().mockImplementation(async () => { stage = 'seal'; return new Response('', { status: 200 }); });
+    const api = vi.fn(async route => {
+      if (route.endsWith('/media')) { stage = 'put'; return { id: 'media', uploadUrl: 'https://upload.example.test/signed' }; }
+      return {};
+    }) as unknown as ChatApi;
+    const validate = async () => { await Promise.resolve(); if (stage === deniedStage) throw new Error('REVOKED'); };
+    await expect(createChatMedia(api, () => true).upload('room', 'operation', [{ ...attachment, readBytes }], 'actor', validate)).rejects.toThrow('REVOKED');
+    if (deniedStage === 'read') expect(readBytes).not.toHaveBeenCalled();
+    if (deniedStage !== 'seal') expect(f.fetch).not.toHaveBeenCalled();
+    expect(vi.mocked(api).mock.calls.some(([route]) => route.endsWith('/complete'))).toBe(false);
+  });
+
   it.each([undefined, '120'])('preserves PUT 429 Retry-After %s for settlement backoff', async retryAfter => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png') });
     f.fetch.mockResolvedValue(new Response('', { status: 429, headers: retryAfter ? { 'Retry-After': retryAfter } : {} }));

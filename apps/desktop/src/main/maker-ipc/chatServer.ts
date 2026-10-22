@@ -1407,6 +1407,31 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       executorId, epoch: run.execution.epoch, action, ...extra,
     }, run.execution.bot_id);
   }
+  async function validateExecutionAuthority(run: Running): Promise<void> {
+    const execution = run.execution;
+    const assertCurrent = () => {
+      if (!current() || running.get(execution.id) !== run) throw new GroupToolAuthorizationError();
+    };
+    assertCurrent();
+    // Recheck metadata and the execution lease at the tool or file-delivery boundary.
+    // Group administrators cannot grant access to someone else's companion.
+    try {
+      const members = await api<Member[]>(`/conversations/${execution.conversation_id}/members`);
+      assertCurrent();
+      const companion = members.find(m => m.id === execution.bot_id && m.kind === 'bot' && m.state === 'joined');
+      const requester = members.find(m => m.id === execution.requester_id && m.state === 'joined');
+      if (execution.access_mode === 'chat' || !companion || companion.ownerActorId !== selfId || !requester
+        || companion.accessRevision !== execution.access_revision
+        || (execution.access_mode === 'owner' ? requester.ownerActorId !== selfId : companion.guestAccess !== 'tools'))
+        throw new GroupToolAuthorizationError();
+      await updateExecution(run, 'heartbeat');
+    } catch (error) {
+      if (error instanceof ChatResponseError && [401, 403, 404, 409, 410].includes(error.status))
+        throw new GroupToolAuthorizationError();
+      throw error;
+    }
+    assertCurrent();
+  }
   // Compatibility cache for servers which do not yet return failure_code.
   // The server execution status still owns whether a notice is displayed.
   const failureCodes = new Map<string, BotGroupRuntimeFailureCode>();
@@ -1488,8 +1513,22 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
                 produced.push(...pending.reply.attachments, ...pending.fileReply.attachments);
                 if (produced.length > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
               }
+              const validateUpload = async () => {
+                assertCurrent();
+                if (pending.fileReply?.attachments.length) {
+                  try { await validateExecutionAuthority(run); }
+                  catch (error) {
+                    // Definitive revocation ends delivery; transport failures retain
+                    // the same result for retry without running the Agent again.
+                    if (error instanceof GroupToolAuthorizationError) throw new ChatResponseError('PERMISSION_DENIED', 403);
+                    throw error;
+                  }
+                }
+                assertCurrent();
+              };
+              if (ordinaryReply) await validateUpload();
               files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`,
-                produced, run.execution.bot_id, ordinaryReply ? assertCurrent : undefined);
+                produced, run.execution.bot_id, ordinaryReply ? validateUpload : undefined);
               assertCurrent();
             }
           } catch (error) {
@@ -1664,24 +1703,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           botId: bot.id, mode: execution.access_mode,
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
-          validate: async () => {
-            // Recheck metadata and the execution lease at the actual tool boundary.
-            // Group administrators cannot grant access to someone else's companion.
-            try {
-              const members = await api<Member[]>(`/conversations/${s.room.id}/members`);
-              const companion = members.find(m => m.id === execution.bot_id && m.kind === 'bot' && m.state === 'joined');
-              const requester = members.find(m => m.id === execution.requester_id && m.state === 'joined');
-              if (!companion || companion.ownerActorId !== selfId || !requester
-                || companion.accessRevision !== execution.access_revision
-                || (execution.access_mode === 'owner' ? requester.ownerActorId !== selfId : companion.guestAccess !== 'tools'))
-                throw new GroupToolAuthorizationError();
-              await updateExecution(run, 'heartbeat');
-            } catch (error) {
-              if (error instanceof ChatResponseError && [401, 403, 404, 409, 410].includes(error.status))
-                throw new GroupToolAuthorizationError();
-              throw error;
-            }
-          },
+          validate: () => validateExecutionAuthority(run),
         });
         if (run.plan && run.workspace?.ownerSessionId) {
           const settings = workspaces().read(s.room.id)!;
