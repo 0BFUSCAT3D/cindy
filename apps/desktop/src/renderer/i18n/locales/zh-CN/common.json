@@ -689,10 +689,6 @@
         "share": "别人分享的电脑不显示配额"
       },
       "runningCount_other": "{{count}} 个任务运行中",
-      "pace": {
-        "used": "已用 {{used}}%",
-        "usedExpected": "已用 {{used}}%，该用到 {{expected}}%"
-      },
       "limitAria": "{{name}} 的并发上限",
       "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} 的权重",

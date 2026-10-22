@@ -689,10 +689,6 @@
         "share": "다른 사람이 공유한 컴퓨터의 할당량은 표시되지 않습니다"
       },
       "runningCount_other": "{{count}}개 실행 중",
-      "pace": {
-        "used": "{{used}}% 사용",
-        "usedExpected": "{{used}}% 사용, 기준 {{expected}}%"
-      },
       "limitAria": "{{name}}의 동시 실행 한도",
       "limitOption_other": "한도 {{count}}",
       "weightAria": "{{name}}의 가중치",

@@ -696,10 +696,6 @@
       },
       "runningCount_one": "{{count}} task running",
       "runningCount_other": "{{count}} tasks running",
-      "pace": {
-        "used": "{{used}}% used",
-        "usedExpected": "{{used}}% used, {{expected}}% expected by now"
-      },
       "limitAria": "Task limit for {{name}}",
       "limitOption_one": "Max {{count}}",
       "limitOption_other": "Max {{count}}",
