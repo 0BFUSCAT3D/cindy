@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   LOCAL_AGENT_CLIENT,
+  assertSendDispatched,
   type Maker,
   type AgentEvent,
   type Session,
@@ -370,7 +371,10 @@ export async function openLocalAgentRuntime(
         preparing = false;
         projection.begin();
         // Some harnesses await the entire turn; acceptance must not block tool delivery/control RPCs.
-        void handle.send(content).catch(() => {
+        void (async () => {
+          const result = await handle.send(content);
+          assertSendDispatched(result, 'local-agent/send');
+        })().catch(() => {
           if (!closed && epoch === current) {
             busy = false;
             projection.fail(localize('EXECUTION_FAILED', 'Cindy 未能完成本次发送。'));
