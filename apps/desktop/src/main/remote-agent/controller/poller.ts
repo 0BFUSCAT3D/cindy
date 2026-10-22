@@ -2,8 +2,10 @@
  * 远程 Agent 事件拉取(控制端，每台运行 Agent 的电脑一个)。
  *
  * 同一台电脑上的全部任务共用一个拉取器：每个 `poll` 最多携带 64 个任务的游标，按整批轮转，
- * 对方没有新数据时挂起最多 READ_WAIT_MS。新任务登记时可另发一个 poll，同时在途最多两个。
- * 两个 poll 返回的数据可能重叠，按 from 去重，游标只前进不后退。
+ * 对方没有新数据时挂起最多 READ_WAIT_MS。新任务登记时可另发一个 poll，长等待同时在途最多两个；
+ * 两个都被只含旧任务的长等待占着时，再留一个名额给还没被任何 poll 带上过的新任务(排在最前)，
+ * 否则新任务要等旧长等待超时(恰好等于 Codex 执行环境握手的 10 秒上限)才有人拉。
+ * 几个 poll 返回的数据可能重叠，按 from 去重，游标只前进不后退。
  *
  * 链路抖动：poll 按游标幂等，可恢复的错误退避后重拉；对方长时间不可达时结束全部任务。
  */
@@ -24,6 +26,8 @@ const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 5_000;
 /** 同时在途的 poll 上限：一个长等待 + 一个覆盖新任务的。 */
 const MAX_INFLIGHT_POLLS = 2;
+/** 有还没被任何 poll 带上过的新任务时，多留的一个补位名额。 */
+const FRESH_RUN_EXTRA_POLLS = 1;
 /** 对方连续几次立刻返回、却没有任何新数据时，放慢重拉(防止对方行为异常时空转)。 */
 const EMPTY_FAST_STREAK = 3;
 const EMPTY_FAST_MS = 50;
@@ -66,6 +70,8 @@ export function remoteAgentErrorFrom(error: unknown, fallbackCode = 'REMOTE_AGEN
 
 export class RemoteAgentPoller {
   private readonly entries = new Map<string, Entry>();
+  /** 登记后还没被任何 poll 带上过的任务：下一个 poll 先带它们，必要时用补位名额。 */
+  private readonly unpolled = new Set<string>();
   private inflight = 0;
   /** 有任务还没被任何在途 poll 覆盖。 */
   private needFresh = false;
@@ -87,12 +93,14 @@ export class RemoteAgentPoller {
   register(run: PolledRun): void {
     if (this.entries.has(run.runId)) return;
     this.entries.set(run.runId, { run, cursor: 0 });
+    this.unpolled.add(run.runId);
     this.needFresh = true;
     this.ensure();
   }
 
   unregister(runId: string): void {
     this.entries.delete(runId);
+    this.unpolled.delete(runId);
   }
 
   get size(): number {
@@ -102,19 +110,28 @@ export class RemoteAgentPoller {
   private ensure(): void {
     if (this.entries.size === 0 || this.retryTimer) return;
     if (this.inflight > 0 && !this.needFresh) return;
-    if (this.inflight >= MAX_INFLIGHT_POLLS) return;
+    const limit = this.unpolled.size > 0 ? MAX_INFLIGHT_POLLS + FRESH_RUN_EXTRA_POLLS : MAX_INFLIGHT_POLLS;
+    if (this.inflight >= limit) return;
     this.needFresh = false;
     void this.pollOnce();
   }
 
   private snapshot(): Array<{ runId: string; cursor: number }> {
     const all = [...this.entries.values()].map((entry) => ({ runId: entry.run.runId, cursor: entry.cursor }));
-    if (all.length <= REMOTE_AGENT_MAX_POLL_RUNS) return all;
-    // 按整批推进，避免大量空闲任务在下次被拉取前超过 host 的存活期限。
-    const start = this.rotation % all.length;
-    this.rotation = (start + REMOTE_AGENT_MAX_POLL_RUNS) % all.length;
-    this.needFresh = true;
-    return [...all.slice(start), ...all.slice(0, start)].slice(0, REMOTE_AGENT_MAX_POLL_RUNS);
+    let wanted = all;
+    if (all.length > REMOTE_AGENT_MAX_POLL_RUNS) {
+      // 按整批推进，避免大量空闲任务在下次被拉取前超过 host 的存活期限；还没被带上过的新任务排在最前。
+      const start = this.rotation % all.length;
+      const fresh = all.filter((item) => this.unpolled.has(item.runId)).slice(0, REMOTE_AGENT_MAX_POLL_RUNS);
+      const rotated = [...all.slice(start), ...all.slice(0, start)]
+        .filter((item) => !this.unpolled.has(item.runId))
+        .slice(0, REMOTE_AGENT_MAX_POLL_RUNS - fresh.length);
+      this.rotation = (start + rotated.length) % all.length;
+      this.needFresh = true;
+      wanted = [...fresh, ...rotated];
+    }
+    for (const { runId } of wanted) this.unpolled.delete(runId);
+    return wanted;
   }
 
   private async pollOnce(): Promise<void> {
@@ -267,6 +284,7 @@ export class RemoteAgentPoller {
   private lose(entry: Entry, reason: string, error: RemoteAgentErrorInfo): void {
     if (this.entries.get(entry.run.runId) !== entry) return;
     this.entries.delete(entry.run.runId);
+    this.unpolled.delete(entry.run.runId);
     try {
       entry.run.onLost(reason, error);
     } catch (handlerError) {

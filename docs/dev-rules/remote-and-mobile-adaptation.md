@@ -122,8 +122,11 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
    被控端和普通远控请求。被控端侧对无人拉取的任务按任务超时(3 分钟)收尾，不波及其它任务。
 3. **多 peer**：被控端按 `(控制端, runId)` 隔离任务；默认每台控制设备最多 16 个任务、整机最多 64 个，
    主人可在「远程与分享」调整（最多 1000）。控制端每台被控端一个拉取器，每次 `poll` 最多带 64 个任务，
-   按整批轮转，挂起最多 10s，同时在途最多两个，任务再多也不占满共享的 12 个在途配额；
-   `poll.test.ts` 用 130 / 1000 个空闲任务验证拉取间隔始终短于 3 分钟的回收期限。
+   按整批轮转，挂起最多 10s，长等待同时在途最多两个；另留一个补位名额，只在有「登记后还没被任何 poll
+   带上过」的新任务时使用(新任务排在最前)，合计不超过 3 个，任务再多也不占满共享的 12 个在途配额。
+   补位名额解决的是：两个长等待都只含空闲的旧任务时，新任务的第一个事件(Codex 执行环境的 initialize
+   握手)要等旧长等待超时 10s 才有人拉，正好撞上 Codex 握手的 10s 上限(2026-10-22 调查)。
+   `poll.test.ts` 用 130 / 1000 个空闲任务验证拉取间隔始终短于 3 分钟的回收期限，并复现上述新任务等待。
    被控端连续立即返回空结果时控制端放慢到 1s 一次，防止空转。2 台控制端共享被控端、
    其中一台静默的回归仍需在双实例实机验证中补测。
 
@@ -149,6 +152,40 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
 电脑的中继在首次回推超过 2s 时记一条日志，任务结束时有慢回推或闸门拒绝再记汇总
 (`controller/execServerRelay.ts`)。回归见 `codex/app-server/client.test.ts`、
 `codex/__tests__/device-hosted-guest.test.ts` 与 `remote-agent/__tests__/linkActivity.test.ts`。
+
+**托管 Codex 启动的跨机往返与执行环境恢复**(2026-10-22 远程供应商调查：启动 277 次串行文件操作、每次跨机
+0.5–3s，启动几分钟、撞 5 分钟上限；握手失败后「能聊天但没有 Shell 与文件工具」)：
+
+- **不可能存在的路径在 Agent 所在电脑直接回答**(`host/execServerShortcut.ts`)：Codex 沿工作目录逐级向上找
+  `.git`、Skill 目录与插件清单。虚拟工作区垫出的层级(真实根目录以上的 `workspace/p/…`)、镜像根本身，以及镜像根
+  之外这台电脑上级目录下以点开头的标记(`.git`、`.agents`、`.codex-plugin` …)在任务所在电脑上没有对应目录
+  (只认工作区及其真实上级、`home`、`tmp`、`additional`，见 `controller/startRemote.ts` 的 `shadowAliases`)，
+  转过去只会被当作它自己的路径查、得到「不存在」。这类 `fs/getMetadata`、`fs/canonicalize`、`fs/readFile`、
+  `fs/readDirectory` 由隧道直接回 exec-server 原生的不存在错误(`-32004`，Codex 按 NotFound 处理，固定 0.159.2
+  源码与实测)，不进事件流；其余照常转发。现场样本中约 150 次查询属于此类。
+  工作区的**真实上级目录**在任务所在电脑上存在，Codex 在每一级查 `.git` 与三种插件清单(实测每级 6 次，项目在
+  9 层深处时 54 次)。任务所在电脑打开任务时报来各级有没有 `ANCESTOR_MARKER_NAMES` 里的名字(`open` 的可选字段
+  `ancestorMarkers`，`controller/projectFiles.ts` 的 `collectAncestorMarkers`，只看名字在不在、查不准按「有」)，
+  报了「没有」的同样在本机直接回答；报了「有」、没报的级别、工作区本身照常转发。名单以这次打开时为准，任务连回
+  时重新报一次；任务进行中有人在上级目录新建 `.git` 等，要等连回后 Codex 才看得到(上级目录很少在任务中变化)。
+  故障半径：只改这一个任务隧道上的只读查询，不动 link 与其它任务；`ancestorMarkers` 是可选字段，旧被控端解码时
+  丢弃、旧控制端不带，都退回逐个转发。回归：`mirror.test.ts` 用真实隧道、控制端映射与磁盘核对「本机回答的路径
+  在任务所在电脑上确实不存在，存在的照常转发」；`plumbing.test.ts` 核对格式不对整段丢弃。升级 Codex 时核对
+  `-32004`、查询方法名与上级目录查找的名字。实测(2026-10-22，Windows 本机真实 Codex 0.159.2，项目 9 层深、
+  3 个 Skill，poll 与 push 各加延迟模拟链路)：启动跨机请求 244 → 82(只回答垫出层级)→ 28(再加上级目录标记)；
+  每次往返约 200ms 时启动 15.1s → 6.1s → 3.1s，约 800ms 时 53.9s → 21.9s → 10.1s。剩下的是工作区本身的查找
+  与真实 Skill 文件读取。
+- **执行环境断开后自动重新登记**(`codex/index.ts` 的 `repairHostedEnvironmentIfDisconnected`)：首次握手失败的
+  环境，Codex 只记一次结果、之后每轮都跳过，链路恢复也不会自己重连。每轮 `turn/start` 前，隧道上已没有开着的
+  WebSocket 连接(`linkActivity` 的 `wsConnectionsOpen` 为 0)时问一次 `environment/status`；`disconnected` 或
+  `unknown` 就按同一个 id 再 `environment/add`，这一轮带上的环境选择换成新连接(Codex 的
+  `failed_resolution_is_replaced_from_the_environment_manager` 同一路径)。连接开着时不发任何请求，正常发送不多一次
+  往返；查询或重新登记失败只记日志，照常发送。回归：`device-hosted-guest.test.ts`。
+- **第一次启动期间删除或归档任务就让对方停下**(`controller/startRemote.ts` 的 `cancelPendingRemoteStart`，由
+  任务的运行期清理调用)：控制端把连接标成已关闭，已发出的打开立即 `close`；被控端收到后不再换电脑、不再启动，
+  迟到完成的 Agent 立刻关闭。此前启动阶段没有取消入口，对方会在几分钟后仍启动并跑完这一轮。回归：`roundtrip.test.ts`。
+- **诊断**：任务所在电脑的本机 exec-server 首次输出超过 2s、或进程自己退出时记一条(退出码、信号、stderr 字节数、
+  运行时长，不记内容)；供应商组中转的一批帧排队加推送超过 2s 时每个任务记第一次(排队与推送两段耗时)。
 
 ## 协同远端 Worker 的轮询与恢复
 

@@ -4,20 +4,25 @@
  * 映射回你这台的真实路径。
  */
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import WebSocket from 'ws';
 
 import {
   collectAncestorInstructionFiles,
+  collectAncestorMarkers,
   collectInstructionImports,
   collectPersonalConfig,
   collectProjectInstructionFiles,
 } from '../controller/projectFiles';
 import { shadowAliases, startRemoteAgentSession } from '../controller/startRemote';
+import { EXEC_SERVER_NOT_FOUND_CODE } from '../host/execServerShortcut';
 import { createRemoteAgentHost, mirrorSegments, type HostedStartInput } from '../host/runHost';
 import { hostedStartOptions } from '../host/service';
 import { ExecutorWorkspace } from '../executor/workspace';
@@ -507,6 +512,119 @@ describe('shadow on the other computer', () => {
     expect(workspace.resolve(input.extraDirs![1])).toBe(path.join(root, 'external'));
     expect(workspace.toAgentPath(path.join(root, 'external', 'a.ts'))).toBe(path.join(input.extraDirs![1], 'a.ts'));
 
+    await handle.close({ reason: 'navigation' });
+    host.dispose();
+  });
+
+  // 2026-10-22 远程供应商调查：Codex 建线程时沿虚拟工作区逐级向上找 .git、Skill 目录与插件清单。垫出来的层级与
+  // 这台电脑自己的上级目录在任务所在电脑上没有对应目录，转过去只会得到「不存在」，却每条都要跨机往返一次，
+  // 现场启动因此拖到几分钟。这些查询由这台电脑直接回答；真实上级目录里任务所在电脑报了「没有」的标记同样直接
+  // 回答；其余(工作区本身、报了「有」的标记、其它名字)照常转过去。
+  it('answers lookups the task computer cannot map on this computer and forwards the rest', async () => {
+    const project = path.join(root, 'work', 'proj');
+    write(path.join(project, 'hello.txt'), 'hi');
+    write(path.join(root, 'work', '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    const inputs: HostedStartInput[] = [];
+    let stop!: () => void;
+    const stopped = new Promise<void>((resolve) => { stop = resolve; });
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => {
+        inputs.push(input);
+        // 事件流一直开着，任务(和它的隧道)活到测试结束。
+        return {
+          ...idleHandle(input),
+          async close() { stop(); },
+          events: () => ({
+            [Symbol.asyncIterator]: (): AsyncIterator<AgentEvent> => ({
+              next: async () => {
+                await stopped;
+                return { done: true, value: undefined };
+              },
+            }),
+          }),
+        };
+      },
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: path.join(root, 'host'),
+    });
+    const forwarded = new Set<number>();
+    const handle = await startRemoteAgentSession('claude-code', {
+      sessionId: 'task-lookups',
+      workingDir: project,
+      model: 'claude-opus',
+      permissionMode: 'default',
+    }, {
+      invoke: async (args) => {
+        const request = JSON.parse(JSON.stringify(args[0])) as { op: string };
+        // 本测试只看哪些消息到了任务所在电脑：不让控制端关掉这条连接(Claude Code 的控制端没有 exec-server 中继)。
+        if (request.op === 'push') return {};
+        const result = JSON.parse(JSON.stringify(await host.handle('controller-1', request) ?? null)) as { runs?: Array<{ data?: string }> } | null;
+        for (const run of request.op === 'poll' ? result?.runs ?? [] : []) {
+          for (const line of Buffer.from(run.data ?? '', 'base64').toString('utf8').split('\n').filter(Boolean)) {
+            const item = JSON.parse(line) as { t?: string; kind?: string; data?: string };
+            if (item.t === 'ws' && item.kind === 'message' && item.data) forwarded.add((JSON.parse(item.data) as { id: number }).id);
+          }
+        }
+        return result;
+      },
+      rgPath: RG,
+      prepareMcp: async () => ({ servers: new Map(), dispose() {} }),
+      collectProjectFiles: async () => [],
+      collectAncestorMarkers,
+      isGitRepo: async () => false,
+      newId: randomUUID,
+    });
+    const [input] = inputs;
+    // 任务所在电脑上的映射(控制端实际使用的那一份)：有对应目录的最上一级是项目的真实根目录。
+    const mapped = new ExecutorWorkspace({ workingDir: project, aliases: shadowAliases({ ...input, virtualWorkspace: true }, project, []) });
+    let top = input.shadowDir;
+    while (mapped.localPathFromAgent(path.dirname(top)) !== null && path.dirname(top) !== top) top = path.dirname(top);
+    const padded = path.dirname(top);
+    expect(padded.startsWith(path.join(input.mirrorRoot, 'workspace'))).toBe(true);
+    const parent = path.dirname(input.shadowDir);
+    const grandparent = path.dirname(parent);
+    const cases = [
+      { target: path.join(input.shadowDir, 'hello.txt'), local: false },
+      { target: path.join(input.shadowDir, '.git'), local: false },
+      { target: path.join(parent, '.git'), local: false },
+      { target: path.join(parent, '.git', 'HEAD'), local: false },
+      { target: path.join(top, 'not-a-marker'), local: false },
+      { target: path.join(input.mirrorRoot, 'home', '.agents', 'skills'), local: false },
+      { target: path.join(path.parse(input.mirrorRoot).root, 'not-a-cindy-dir', 'tool'), local: false },
+      { target: path.join(grandparent, '.git'), local: true },
+      { target: path.join(grandparent, '.cursor-plugin', 'plugin.json'), local: true },
+      { target: path.join(padded, '.git'), local: true },
+      { target: path.join(padded, '.codex-plugin', 'plugin.json'), local: true },
+      { target: path.join(input.mirrorRoot, 'workspace', '.agents', 'skills'), local: true },
+      { target: path.join(path.dirname(path.dirname(input.mirrorRoot)), '.claude-plugin', 'plugin.json'), local: true },
+    ];
+    const ws = new WebSocket(`${input.tunnel.url.replace(/^http/, 'ws')}/ws/exec-server`, { headers: { authorization: `Bearer ${input.tunnel.token}` } });
+    const replies = new Map<number, { error?: { code?: number } }>();
+    ws.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { id: number; error?: { code?: number } };
+      replies.set(message.id, message);
+    });
+    await once(ws, 'open');
+    cases.forEach(({ target }, index) => ws.send(JSON.stringify({ id: index + 1, method: 'fs/getMetadata', params: { path: pathToFileURL(target).href } })));
+    const localIds = cases.flatMap(({ local }, index) => local ? [index + 1] : []);
+    const forwardedIds = cases.flatMap(({ local }, index) => local ? [] : [index + 1]);
+    await vi.waitFor(() => {
+      expect([...replies.keys()].sort((a, b) => a - b)).toEqual(localIds);
+      expect([...forwarded].sort((a, b) => a - b)).toEqual(forwardedIds);
+    });
+    for (const id of localIds) expect(replies.get(id)?.error?.code).toBe(EXEC_SERVER_NOT_FOUND_CODE);
+    // 本机回答的路径在任务所在电脑上确实不存在：要么映射不到(转过去会被原样当成那台电脑的路径查)，要么映射到的
+    // 真实路径不在。存在的(上级目录里的 .git)照常转过去。
+    for (const { target } of cases.filter(({ local }) => local)) {
+      const real = mapped.localPathFromAgent(target);
+      expect(real === null || !fs.existsSync(real)).toBe(true);
+    }
+    expect(fs.existsSync(mapped.localPathFromAgent(path.join(parent, '.git', 'HEAD'))!)).toBe(true);
+
+    ws.close();
     await handle.close({ reason: 'navigation' });
     host.dispose();
   });

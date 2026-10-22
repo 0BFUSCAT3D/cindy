@@ -35,6 +35,7 @@ import { ExecutorWorkspace, projectPathText } from '../executor/workspace';
 import type {
   RemoteAgentOpenPayload,
   RemoteAgentWireAncestorFile,
+  RemoteAgentWireAncestorMarkers,
   RemoteAgentWireFile,
   RemoteAgentWireImportFile,
   RemoteAgentWirePersonal,
@@ -80,6 +81,8 @@ export interface StartRemoteAgentDeps {
   collectProjectFiles(workingDir: string): Promise<RemoteAgentWireFile[]>;
   /** 项目上级目录里的说明文件；缺省不同步。 */
   collectAncestorFiles?(workingDir: string): Promise<RemoteAgentWireAncestorFile[]>;
+  /** 项目各级上级目录里 Codex 要找的名字有没有(对方据此少问)；缺省不带，对方照常逐个来问。 */
+  collectAncestorMarkers?(workingDir: string): Promise<RemoteAgentWireAncestorMarkers>;
   /** 你这台的个人配置；缺省不同步。 */
   collectPersonal?(kind: RemoteAgentKind, projectFiles: readonly RemoteAgentWireFile[]): Promise<{
     personal: RemoteAgentWirePersonal;
@@ -278,6 +281,18 @@ function isNativeSessionId(id: unknown): id is string {
  * → connecting …；closed 是句柄已关闭或对方意外结束。
  */
 type LinkState = 'connecting' | 'connected' | 'releasing' | 'released' | 'closed';
+
+/** 第一次启动还没完成的远程任务(按任务 id)：任务被删除或归档时据此让对方停下。 */
+const pendingStarts = new Map<string, Set<() => void>>();
+
+/**
+ * 任务被删除或归档时调用。第一次启动还没完成(对方可能还在准备、在供应商组里换电脑或启动 Agent)的，
+ * 立即告诉对方结束这个任务，不让它迟到地启动并跑完这一轮(2026-10-22：慢启动期间删掉的任务，对方几分钟后
+ * 仍换到另一台电脑启动并生成了回复)。启动已完成的任务由 Maker 照常关闭，这里不管。
+ */
+export function cancelPendingRemoteStart(sessionId: string): void {
+  for (const cancel of [...pendingStarts.get(sessionId) ?? []]) cancel();
+}
 
 export async function startRemoteAgentSession(
   kind: RemoteAgentKind,
@@ -638,6 +653,9 @@ export async function startRemoteAgentSession(
     const startOptions = openOptions(reconnect);
     const projectFiles = await deps.collectProjectFiles(opts.workingDir).catch(() => []);
     const ancestorFiles = await (deps.collectAncestorFiles?.(opts.workingDir) ?? Promise.resolve([])).catch(() => []);
+    // 每次打开(含连回)都重新看一遍：上级目录里的标记以这次打开时为准。
+    const ancestorMarkers = await (deps.collectAncestorMarkers?.(opts.workingDir) ?? Promise.resolve(undefined))
+      .catch(() => undefined);
     const collectedPersonal = await (deps.collectPersonal?.(kind, projectFiles) ?? Promise.resolve(null))
       .catch(() => null);
     personalRoots = collectedPersonal?.roots ?? [];
@@ -663,6 +681,7 @@ export async function startRemoteAgentSession(
       },
       projectFiles,
       ancestorFiles,
+      ...(ancestorMarkers ? { ancestorMarkers } : {}),
       ...(importFiles.length ? { importFiles } : {}),
       personal,
       mcpServers: [...mcp.servers.keys()],
@@ -803,6 +822,22 @@ export async function startRemoteAgentSession(
     },
   };
 
+  // 第一次启动期间任务被删除或归档：标成已关闭(还没发出的打开不再发)，已发出的立即让对方结束；
+  // 在等的打开随之以「任务已结束」失败。
+  const sessionId = opts.sessionId;
+  const cancelStart = () => {
+    if (linkState === 'closed') return;
+    linkState = 'closed';
+    const client = active;
+    deps.log?.info('remote agent: task removed while starting; ending it on the other computer', {
+      kind,
+      ...(client ? { runId: client.runId } : {}),
+    });
+    if (client) void client.close('close', 'navigation').catch(() => undefined);
+  };
+  const cancels = pendingStarts.get(sessionId) ?? new Set<() => void>();
+  pendingStarts.set(sessionId, cancels);
+  cancels.add(cancelStart);
   try {
     await connect(false, (started) => {
       firstStarted = started;
@@ -863,6 +898,9 @@ export async function startRemoteAgentSession(
   } catch (error) {
     await disposeLocal();
     throw localizeRemoteError(error);
+  } finally {
+    cancels.delete(cancelStart);
+    if (!cancels.size && pendingStarts.get(sessionId) === cancels) pendingStarts.delete(sessionId);
   }
   touch();
   deps.log?.info('remote agent session started', { kind, runId: activeNow()?.runId });
