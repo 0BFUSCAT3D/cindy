@@ -541,17 +541,23 @@ describe('shared provider rail weekly quota', () => {
     for (const read of Object.values(reads)) expect(read).not.toHaveBeenCalled();
 
     const next = insight();
-    next.quota!.accounts[0].windows[0] = {
+    next.quota!.accounts[0].windows.unshift({
       kind: 'scoped',
-      label: null,
+      label: 'Fable',
       remainingPercent: 0,
       resetsAt: null,
       windowMinutes: 10_080,
-    };
+    });
     command.mockResolvedValue(next);
+    await tick();
+    expect(bar()?.getAttribute('data-weekly-remaining')).toBe('21');
+    next.quota!.accounts[0].windows[1].remainingPercent = 0;
     await tick();
     expect(bar()?.getAttribute('data-weekly-remaining')).toBe('0');
     expect(bar()?.firstElementChild?.getAttribute('style')).toBe('width: 0%;');
+    next.quota!.accounts[0].windows.pop();
+    await tick();
+    expect(bar()).toBeNull();
   });
 
   it('hides revoked, grouped, multiple, unavailable, balance-only and non-weekly quotas', async () => {
@@ -604,8 +610,13 @@ describe('shared provider rail weekly quota', () => {
 
   // E2E: changing directory remounted the rail 1.2s after its last read.
   it('reuses quota across directory remounts and shares in-flight reads', async () => {
+    let finishFirst!: (value: ProviderShareInsights) => void;
+    command.mockImplementationOnce(() => new Promise<ProviderShareInsights>((done) => { finishFirst = done; }));
     const first = render(<Rail />);
-    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+      finishFirst(insight());
+    });
     await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
     first.unmount();
     const second = render(<Rail />);
@@ -614,7 +625,9 @@ describe('shared provider rail weekly quota', () => {
     expect(command).toHaveBeenCalledTimes(1);
     let resolve!: (value: ProviderShareInsights) => void;
     command.mockImplementation(() => new Promise<ProviderShareInsights>((done) => { resolve = done; }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(3800); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(command).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2800); });
     expect(command).toHaveBeenCalledTimes(2);
     second.unmount();
     render(<><Rail /><Rail /></>);

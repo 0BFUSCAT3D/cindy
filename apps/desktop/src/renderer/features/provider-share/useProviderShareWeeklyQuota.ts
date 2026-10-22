@@ -40,7 +40,7 @@ function readWeeklyQuota(view: ProviderShareInsights): ProviderWeeklyQuota | nul
   const account = view.quota.accounts[0];
   if (account.state !== 'ready' || account.balance) return null;
   const window = account.windows.find(
-    (item) => item.kind === 'week' || item.windowMinutes === 10_080,
+    (item) => item.kind === 'week',
   );
   return window
     ? weeklyQuota(
@@ -160,6 +160,7 @@ export function useProviderShareWeeklyQuota(deviceId: string): ProviderWeeklyQuo
         }).finally(() => {
           if (entry.pending === request) {
             entry.pending = null;
+            entry.lastRead = Date.now();
             for (const listener of entry.listeners) listener();
           }
         });
