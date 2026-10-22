@@ -9075,7 +9075,8 @@
       "conflict": "Settings changed on the other device. Reload before saving.",
       "unsupported": "Update Cindy on the other device to edit these settings.",
       "discardDescription": "Reloading will discard these unsaved settings.",
-      "leaveDescription": "Leaving will discard these unsaved settings."
+      "leaveDescription": "Leaving will discard these unsaved settings.",
+      "finishOnHost": "Finish this on {{device}}."
     },
     "devicePicker": {
       "local": "This Device",

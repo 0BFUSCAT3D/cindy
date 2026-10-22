@@ -9041,7 +9041,8 @@
       "conflict": "다른 기기에서 설정이 변경되었습니다. 저장하기 전에 다시 불러오세요.",
       "unsupported": "이 설정을 편집하려면 다른 기기의 Cindy를 업데이트하세요.",
       "discardDescription": "다시 불러오면 저장하지 않은 설정이 삭제됩니다.",
-      "leaveDescription": "나가면 저장하지 않은 설정이 삭제됩니다."
+      "leaveDescription": "나가면 저장하지 않은 설정이 삭제됩니다.",
+      "finishOnHost": "{{device}}에서 진행하세요."
     },
     "devicePicker": {
       "local": "이 기기",

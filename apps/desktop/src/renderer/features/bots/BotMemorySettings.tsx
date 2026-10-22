@@ -19,6 +19,7 @@ import {
   type BotMemorySummary,
 } from '../../../shared/botMemory';
 import { useBotTranslation } from './botPronounContext';
+import { useBotSettingsTarget } from './useBotSettingsTarget';
 
 const SEARCH_DEBOUNCE_MS = 200;
 const SAVE_DEBOUNCE_MS = 800;
@@ -27,7 +28,11 @@ type View =
   { kind: 'list' } | { kind: 'detail'; filename: string } | { kind: 'edit'; filename: string };
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict';
 
-const memoryApi = () => window.electronAPI.localDb.bots.memory;
+/** The teammate's computer serves the memory; the pages never assume it is this one. */
+function useMemoryApi() {
+  const target = useBotSettingsTarget();
+  return useCallback(() => target.memory, [target]);
+}
 const isConflict = (error: unknown) => {
   const ipc = extractIpcError(error);
   return ipc?.code === 'PRECONDITION_FAILED' && ipc.message.includes(BOT_MEMORY_CHANGED);
@@ -159,6 +164,7 @@ function MemoryList({
   onOpen: (filename: string) => void;
 }) {
   const { t } = useBotTranslation();
+  const memoryApi = useMemoryApi();
   const { day } = useDateLabels();
   const [query, setQuery] = useState('');
   const [entries, setEntries] = useState<BotMemorySummary[] | null>(null);
@@ -309,6 +315,7 @@ function MemoryDetail({
   onMissing: () => void;
 }) {
   const { t } = useBotTranslation();
+  const memoryApi = useMemoryApi();
   const { stamp } = useDateLabels();
   const { confirm } = useConfirmDialog();
   const [detail, setDetail] = useState<BotMemoryDetail | null>(null);
@@ -442,6 +449,7 @@ function MemoryEditor({
   onDone: () => void;
 }) {
   const { t } = useBotTranslation();
+  const memoryApi = useMemoryApi();
   const { confirm } = useConfirmDialog();
   const [title, setTitle] = useState(initial.title);
   const [body, setBody] = useState(initial.body);
