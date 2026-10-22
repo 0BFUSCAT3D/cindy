@@ -1,3 +1,5 @@
+import { isRemoteSessionSticky } from '@/lib/makerTransport';
+import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 /**
  * RolePillDropdown — worker pane header 的 role pill + popover dropdown。
  *
@@ -15,7 +17,7 @@ import {
   type WheelEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Plus, X, EllipsisVertical, Pencil, Monitor, WifiOff } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Plus, X, EllipsisVertical, Pencil, Monitor, WifiOff, Folder } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppShortcutDisplay } from '@/hooks/useAppShortcut';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
@@ -52,11 +54,13 @@ export function workerDeviceName(
 }
 
 function WorkerModelLine({
+  workerSessionId,
   model,
   effort,
   device,
   reserveClassName = 'mr-7',
 }: {
+  workerSessionId: string;
   model: string;
   effort: string | null;
   device?: WorkerExecutionDevice;
@@ -65,6 +69,18 @@ function WorkerModelLine({
 }) {
   const { t } = useTranslation();
   const effortLabel = workerEffortLabel(t, effort);
+  const [project, setProject] = useState<{name: string; path: string} | null>(null);
+  useEffect(() => {
+    setProject(null);
+    if (device || isRemoteSessionSticky(workerSessionId)) return;
+    let cancelled = false;
+    const owner = getDataOwnerGeneration();
+    void window.electronAPI?.localDb?.orcaWorkflows?.projectLabel?.(workerSessionId).then((value) => {
+      const current = getDataOwnerGeneration();
+      if (!cancelled && owner.dataOwnerId === current.dataOwnerId && owner.generation === current.generation) setProject(value);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [workerSessionId, device?.deviceId]);
   if (device) {
     const name = workerDeviceName(t, device);
     return (
@@ -101,6 +117,7 @@ function WorkerModelLine({
         reserveClassName,
       )}
     >
+      {project && <Tip text={project.path}><span className="inline-flex min-w-0 items-center gap-1"><Folder size={11} aria-hidden className="shrink-0" /><span className="truncate">{project.name}</span><span>·</span></span></Tip>}
       <span className="min-w-0 truncate">{simplifyModelName(model)}</span>
       {effortLabel ? <span className="shrink-0">· {effortLabel}</span> : null}
     </div>
@@ -339,7 +356,7 @@ function WorkerSummary({
         )}
       </div>
       {!compact && (
-        <WorkerModelLine model={worker.model} effort={worker.effort} device={worker.executionDevice} />
+        <WorkerModelLine workerSessionId={worker.sessionId} model={worker.model} effort={worker.effort} device={worker.executionDevice} />
       )}
     </>
   );
@@ -671,6 +688,7 @@ function WorkerLayoutMenu({
                           )}
                         </div>
                         <WorkerModelLine
+                          workerSessionId={w.sessionId}
                           model={w.model}
                           effort={w.effort}
                           device={w.executionDevice}
@@ -1418,6 +1436,7 @@ export function RolePillDropdown({
                     {/* 副行: 简化 model 名 (去 provider 前缀) + 档位文字.
                         各模型档位集合不同,不用信号条假装同一把尺子. */}
                     <WorkerModelLine
+                      workerSessionId={w.sessionId}
                       model={w.model}
                       effort={w.effort}
                       device={w.executionDevice}
