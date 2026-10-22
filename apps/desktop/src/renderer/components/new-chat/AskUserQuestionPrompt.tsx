@@ -243,6 +243,7 @@ function AskUserQuestionForm({
   dictationRef.current = dictation;
   const [voiceSubmitting, setVoiceSubmitting] = useState(false);
   const voiceSubmitRef = useRef(false);
+  const voiceLocked = dictation.isBusy || voiceSubmitting;
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -425,6 +426,7 @@ function AskUserQuestionForm({
   // ── Single-select: click option -> advance ──
   const handleSingleSelect = useCallback(
     (label: string) => {
+      if (voiceSubmitRef.current) return;
       markStarted();
       advance(label);
     },
@@ -433,6 +435,7 @@ function AskUserQuestionForm({
 
   // ── Multi-select: toggle checkbox ──
   const handleToggle = useCallback((label: string) => {
+    if (voiceSubmitRef.current) return;
     markStarted();
     setSelectedLabels((prev) => {
       const next = new Set(prev);
@@ -475,7 +478,7 @@ function AskUserQuestionForm({
 
   // ── Back ──
   const handleBack = useCallback(() => {
-    if (currentIndex === 0) return;
+    if (voiceSubmitRef.current || currentIndex === 0) return;
     ++voiceRevision.current;
     setVoiceFeedback('hint');
     snapshotButtons();
@@ -497,11 +500,13 @@ function AskUserQuestionForm({
 
   // ── Skip ──
   const handleSkip = useCallback(() => {
+    if (voiceSubmitRef.current) return;
     advance('');
   }, [advance]);
 
   // ── Custom input toggle ──
   const handleCustomOptionClick = useCallback(() => {
+    if (voiceSubmitRef.current) return;
     setShowCustomInput(true);
     setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
@@ -621,7 +626,7 @@ function AskUserQuestionForm({
   }, [voiceBridge, currentIndex, voiceRevision.current, selectedLabels, customInput, showCustomInput, voiceFeedback]);
   useLayoutEffect(() => {
     voiceHandler.current = (text) => {
-      if (isAnimating || referencePreviewOpen || !currentQ || dictationRef.current.isBusy) return;
+      if (isAnimating || referencePreviewOpen || !currentQ || dictationRef.current.isBusy || voiceSubmitRef.current) return;
       onViewerStateChange('expanded');
       const result = parseVoiceQuestionSelection(text, options.map((option) => option.label));
       if (result.kind === 'cancel') {
@@ -660,12 +665,12 @@ function AskUserQuestionForm({
     };
   });
   useLayoutEffect(() => {
-    if (!voiceBridge || isAnimating || referencePreviewOpen || dictation.isBusy) return;
+    if (!voiceBridge || isAnimating || referencePreviewOpen || voiceLocked) return;
     voiceBridge.current = voiceTarget;
     return () => {
       if (voiceBridge.current === voiceTarget) voiceBridge.current = null;
     };
-  }, [voiceBridge, voiceTarget, isAnimating, referencePreviewOpen, dictation.isBusy]);
+  }, [voiceBridge, voiceTarget, isAnimating, referencePreviewOpen, voiceLocked]);
 
   const voiceNotice = voiceBridge ? (
     <div className="flex flex-wrap items-center gap-2 text-13 leading-5 text-[var(--text-secondary)]">
@@ -691,7 +696,7 @@ function AskUserQuestionForm({
 
       // Dictation owns the answer field until it stops: switching questions
       // would write the rest of the transcript into a different answer.
-      if (dictationRef.current.isBusy) return;
+      if (dictationRef.current.isBusy || voiceSubmitRef.current) return;
 
       // If custom input is focused in single-select mode, handle Escape only
       if (showCustomInput && !isMultiSelect) {
@@ -764,7 +769,7 @@ function AskUserQuestionForm({
     <div className="flex gap-2.5">
       {pending.delivery === 'async' && startedRef.current && (
         <Button variant="secondary" palette="confirmation" size="lg" compact
-          type="button" onClick={() => onAnswer(requestId, {})}>
+          type="button" disabled={voiceLocked} onClick={() => { if (!voiceSubmitRef.current) onAnswer(requestId, {}); }}>
           {t('chat.askUserQuestion.close')}
         </Button>
       )}
@@ -779,7 +784,7 @@ function AskUserQuestionForm({
               size="lg"
               compact
               type="button"
-              disabled={dictation.isBusy}
+              disabled={voiceLocked}
               onClick={handleBack}
             >
               <span className="flex items-center gap-1.5">
@@ -795,7 +800,7 @@ function AskUserQuestionForm({
             size="lg"
             compact
             type="button"
-            disabled={dictation.isBusy}
+            disabled={voiceLocked}
             onClick={handleSkip}
           >
             {t('chat.askUserQuestion.skip')}
@@ -809,7 +814,9 @@ function AskUserQuestionForm({
               size="lg"
               compact
               type="button"
+              loading={voiceSubmitting}
               onClick={() => {
+                if (voiceSubmitRef.current) return;
                 if (isMultiSelect) {
                   handleNext();
                 } else {
@@ -823,7 +830,7 @@ function AskUserQuestionForm({
                   : dictation.isBusy || existingAnswer === undefined)
               }
             >
-              {voiceSubmitting ? voiceSubmitLabel : isLastQuestion ? t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit') : t('chat.askUserQuestion.next')}
+              {isLastQuestion ? t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit') : t('chat.askUserQuestion.next')}
             </Button>
           )}
         </>
@@ -869,7 +876,7 @@ function AskUserQuestionForm({
             <AutoGrowingAnswerTextarea
               textareaRef={inputRef}
               value={answerValue}
-              readOnly={dictation.isBusy}
+              readOnly={voiceLocked}
               onCompositionStart={markStarted}
               onChange={(e) => { markStarted(); setAnswerText(e.target.value); }}
               onKeyDown={(e) => {
@@ -881,7 +888,7 @@ function AskUserQuestionForm({
                 if (e.key === 'Escape') {
                   // Closing the row mid-dictation would leave the rest of the
                   // transcript writing into a hidden field.
-                  if (dictation.isBusy) return;
+                  if (voiceSubmitRef.current || dictation.isBusy) return;
                   e.preventDefault();
                   setShowCustomInput(false);
                   setAnswerText('');
@@ -944,6 +951,7 @@ function AskUserQuestionForm({
                 'flex min-w-0 flex-1 items-center justify-between py-[6px] text-left',
                 'transition-colors hover:bg-[var(--ask-option-hover)]',
               )}
+              disabled={voiceLocked}
               onClick={handleCustomOptionClick}
             >
               <div className="flex items-center gap-3">
@@ -958,7 +966,7 @@ function AskUserQuestionForm({
                 {options.length + 1}
               </div>
             </button>
-            {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} onClick={beginVoiceInput} />)}
+            {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} disabled={voiceSubmitting} onClick={beginVoiceInput} />)}
           </div>
         )}
       </div>
@@ -1019,7 +1027,7 @@ function AskUserQuestionForm({
                 {idx > 0 && <div className="h-px bg-[var(--ask-option-divider)]" />}
                 <button
                   type="button"
-                  disabled={dictation.isBusy}
+                  disabled={voiceLocked}
                   className={cn(
                     'flex w-full items-center justify-between px-[16px] py-[14px] text-left',
                     'transition-colors hover:bg-[var(--ask-option-hover)]',
@@ -1085,7 +1093,7 @@ function AskUserQuestionForm({
             <AutoGrowingAnswerTextarea
               textareaRef={inputRef}
               value={answerValue}
-              readOnly={dictation.isBusy}
+              readOnly={voiceLocked}
               onCompositionStart={markStarted}
               onChange={(e) => { markStarted(); setAnswerText(e.target.value); }}
               onKeyDown={(e) => {
@@ -1094,7 +1102,7 @@ function AskUserQuestionForm({
                   submitDirectAnswer();
                 }
                 if (e.key === 'Escape') {
-                  if (dictation.isBusy) return;
+                  if (voiceSubmitRef.current || dictation.isBusy) return;
                   e.preventDefault();
                   handleSkip();
                 }

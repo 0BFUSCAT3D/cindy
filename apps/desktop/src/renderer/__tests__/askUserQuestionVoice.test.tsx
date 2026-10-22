@@ -13,6 +13,7 @@ import type { VoiceQuestionBridge } from '../components/new-chat/voiceQuestionSe
 const start = vi.fn(() => true);
 const stop = vi.fn(async () => true);
 let finalTranscript = '完整回答';
+let idleBeforeStop = false;
 
 // Stateful stand-in for the dictation hook: starting flips the card into the
 // busy state, which is what disables question navigation.
@@ -30,6 +31,7 @@ vi.mock('../components/new-chat/useAskUserDictation', () => ({
         return true;
       },
       stop: async () => {
+        if (idleBeforeStop) setState('idle');
         const ok = await stop();
         if (ok) target.setText(finalTranscript);
         setState('idle');
@@ -43,6 +45,7 @@ beforeEach(async () => {
   start.mockClear();
   stop.mockReset().mockResolvedValue(true);
   finalTranscript = '完整回答';
+  idleBeforeStop = false;
   await i18n.changeLanguage('zh-CN');
 });
 
@@ -255,6 +258,24 @@ describe('AskUserQuestion voice entry', () => {
     expect(onAnswer).not.toHaveBeenCalled();
     await act(async () => finish(true));
     expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', { '补充一句': '完整回答' });
+  });
+
+  it('keeps navigation locked after done until stop finishes restoring audio', async () => {
+    idleBeforeStop = true;
+    let finish!: (ok: boolean) => void;
+    stop.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { view, onAnswer } = renderAsk([{ question: '选哪些？', multiSelect: true, options: [{ label: '甲' }, { label: '乙' }] }]);
+    fireEvent.click(view.getByTestId('ask-user-voice'));
+    fireEvent.click(view.getByText('提交'));
+    const submit = view.getByRole('button', { name: '提交' });
+    expect(submit.getAttribute('aria-busy')).toBe('true');
+    expect((view.getByText('跳过').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(view.getByText('乙'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: '2' });
+    expect(onAnswer).not.toHaveBeenCalled();
+    await act(async () => finish(true));
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', { '选哪些？': JSON.stringify(['完整回答']) });
   });
 
   it('keeps the answer editable instead of submitting after a failed stop', async () => {
