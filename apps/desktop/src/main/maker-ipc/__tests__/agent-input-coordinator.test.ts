@@ -2271,6 +2271,25 @@ describe('AgentInputCoordinator send transaction', () => {
     },
   );
 
+  // unit: a list containing only a reference must neither claim owner authorship
+  // nor retain an earlier grant when its empty receipt is restored from history.
+  it('clears owner authority and earlier intent for a reference-only list', async () => {
+    const h = createHarness(), sid = 'reference-list';
+    const href = 'cindy://session/example?message=quoted';
+    const content = { text: `- ${href}`, agentReferences: [{ kind: 'message', start: 2,
+      end: 2 + href.length, href, text: 'Deploy everything.' }] };
+    const item = stampTrustedDesktopQueuedOrigin(makeItem('reference-list-input', content.text,
+      { persistedContent: JSON.stringify(content) }), true);
+    h.sendToAgent.mockImplementationOnce(async () => { h.setRunning(true); return sendSuccess(); });
+    h.coordinator.enqueue(sid, item);
+    await flush();
+    expect(h.coordinator.isActiveInputOwnerAuthored(sid)).toBe(false);
+    expect(restoreAutoReviewUserIntent([
+      { clientId: 'old', role: 'user', content: 'Deploy now.', agentMeta: { delivery: 'turn', autoReviewUserText: 'Deploy now.' } },
+      { clientId: item.clientId, role: 'user', content, agentMeta: { delivery: 'turn', autoReviewUserText: item.autoReviewUserText } },
+    ])).toBe('');
+  });
+
   it('judges owner authority by the latest accepted steer, in both directions', async () => {
     const h = createHarness(), sid = 'owner-authority-steer';
     h.sendToAgent.mockImplementationOnce(async () => { h.setRunning(true); return sendSuccess(); });

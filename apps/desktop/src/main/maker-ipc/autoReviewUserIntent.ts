@@ -77,10 +77,15 @@ export function currentAutoReviewResourceIntent(
     cursor = reference.end;
   }
   parts.push(value.text.slice(cursor));
-  const authoredText = parts.join('');
-  return value.quotesEncoded === true
-      ? joinChatQuoteTextSegments(parseChatQuoteSegments(authoredText))
-      : authoredText;
+  const textOutsideReferences = parts.join('');
+  const segments = value.quotesEncoded === true ? parseChatQuoteSegments(textOutsideReferences) : undefined;
+  const authoredText = segments ? joinChatQuoteTextSegments(segments) : textOutsideReferences;
+  // Composer serializes list structure outside reference/quote spans. A list
+  // containing only those resources leaves markers, not a new owner request.
+  // Keep all text verbatim if any line still contains actual authored content.
+  if ((references.length > 0 || segments?.some(segment => segment.kind === 'quote')) &&
+      authoredText.split(/\r?\n/).every(line => /^[ \t]*(?:[-+*•]|[1-9]\d*[.)、])?[ \t]*$/.test(line))) return '';
+  return authoredText;
 }
 
 /** Restore a bounded suffix of actual owner messages, without promoting assistant handoffs to consent. */

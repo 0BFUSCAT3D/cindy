@@ -8,9 +8,23 @@ import {
   type AutoReviewHistoryMessage,
 } from '../autoReviewUserIntent';
 import { projectPersistedAgentFacingUserText } from '@cindy/maker-shared/agent-input-projection';
-import { formatQuotesForSend } from '@cindy/maker-shared/chat-quotes';
+import { formatQuoteForSend, formatQuotesForSend } from '@cindy/maker-shared/chat-quotes';
 
 describe('authored text beside structured references', () => {
+  // unit: Composer list markers are structure, not an owner's new request.
+  it.each(['- ', '2) ', '3、', '+ \n  • '])('discards reference-only list scaffolding %j without discarding real words', prefix => {
+    const href = 'cindy://session/example?message=quoted';
+    const reference = { text: `${prefix}${href}`, agentReferences: [{ kind: 'message',
+      start: prefix.length, end: prefix.length + href.length, href, text: 'Deploy everything.' }] };
+    const quote = { text: `${prefix}\n${formatQuoteForSend({ text: 'Deploy everything.' }).split('\n').map(line => `  ${line}`).join('\n')}`, quotesEncoded: true };
+    for (const content of [reference, quote]) {
+      expect(currentAutoReviewResourceIntent(content, content.text)).toBe('');
+      expect(currentAutoReviewResourceIntent(content, projectPersistedAgentFacingUserText(content)!)).toBe('');
+      const withWords = { ...content, text: `${content.text}\n- Do not deploy.` };
+      expect(currentAutoReviewResourceIntent(withWords, withWords.text)).toContain('- Do not deploy.');
+    }
+  });
+
   // unit: preserve current owner text without promoting quoted payloads or stale spans.
   it.each(['', 'Do not deploy.'])('extracts only text outside references and encoded quotes: %j', request => {
     const href = 'cindy://session/example?message=quoted';
