@@ -108,6 +108,7 @@ Codex 超快是账号发现能力：`service_tiers` / `additional_speed_tiers`�
 同一连接重新登录为不同身份或工作区时，接受登录前必须成功清除旧资格；
 CAS 冲突、所属用户切换或写入失败时回滚登录，不把撤权放进可忽略失败的展示刷新。
 原生模型缓存先于凭证提交清除，删除失败保留原身份；取消登录回滚凭证与缓存。
+凭证回滚后，仍属于当前用户的连接重新发布账号切换与就绪通知，废弃替换身份的在途额度读取。
 仅原生 Codex 账号的 Codex 入口可用，API 同名模型及其它引擎不继承。
 回归见 `custom-provider-store.test.ts` 与 `modelDiscoveryChannels.test.ts`。
 

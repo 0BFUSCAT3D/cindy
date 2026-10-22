@@ -90,6 +90,8 @@ function credential(subject: string, account = 'workspace') {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(broadcastCodexAccountAuthStarted).mockReset();
+  vi.mocked(broadcastCodexAccountAuthReady).mockReset();
   state.root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-codex-account-auth-'));
   state.owner = { dataOwnerId: 'owner-a', generation: 1 };
   state.raw = credential('person-a');
@@ -303,6 +305,25 @@ describe('native Codex account credentials', () => {
     const result = await loginCodexAccount('account-a', () => true);
     expect(result.rollbackCredentials?.()).toBe(true);
     expect(codexAccountState('account-a').authenticated).toBe(false);
+  });
+  it.each([false, true])('resynchronizes rollback quota reads only for the original owner (owner changed: %s)', async (ownerChanged) => {
+    await loginCodexAccount('account-a', () => true);
+    state.raw = credential('person-b');
+    const result = await loginCodexAccount('account-a', () => true);
+    const events: string[] = [];
+    vi.mocked(broadcastCodexAccountAuthStarted).mockImplementationOnce(() => {
+      events.push(`start:${codexAccountState('account-a').identity}`);
+    });
+    vi.mocked(broadcastCodexAccountAuthReady).mockImplementationOnce(() => {
+      events.push(`ready:${codexAccountState('account-a').identity}`);
+    });
+    if (ownerChanged) state.owner = { dataOwnerId: 'owner-b', generation: 2 };
+    expect(result.rollbackCredentials?.()).toBe(true);
+    expect(events).toEqual(ownerChanged ? [] : [
+      'start:person-a@example.test', 'ready:person-a@example.test',
+    ]);
+    state.owner = { dataOwnerId: 'owner-a', generation: 1 };
+    expect(codexAccountState('account-a').identity).toBe('person-a@example.test');
   });
   it('cancels a pending login without installing its credentials', async () => {
     state.hold = true;

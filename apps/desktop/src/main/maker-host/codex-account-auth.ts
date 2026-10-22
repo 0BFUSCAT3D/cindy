@@ -282,6 +282,12 @@ export async function loginCodexAccount(
           if (previous === null) fs.rmSync(path.join(home, file), { force: true });
           else fs.writeFileSync(path.join(home, file), previous, { mode: 0o600 });
         });
+        // The replacement's ready event may already have started a quota read.
+        // Invalidate those renderer reads, then resume from the restored identity.
+        if (getActiveAppSession().generation === owner.generation) {
+          broadcastCodexAccountAuthStarted(providerId);
+          broadcastCodexAccountAuthReady(providerId);
+        }
         return true;
       } catch {
         return false;
